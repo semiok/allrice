@@ -292,7 +292,7 @@ declare d allrice_native_calendar_decisions; p allrice_native_calendar_plans; a 
 begin
   select * into d from allrice_native_calendar_decisions where decision_id=$1;
   select * into p from allrice_native_calendar_plans where period_id=d.period_id;
-  select * into a from allrice_automations where id=p.automation_id;
+  select owner_automation.* into a from allrice_automations owner_automation where owner_automation.id=p.automation_id;
   select * into v from allrice_native_recurring_versions where automation_id=p.automation_id and revision=p.revision;
   if d.decision_id is null or p.closed_decision_id is distinct from d.decision_id
     or not allrice_ordinary_monthly_version_proved(a.id,p.revision) or d.decided_at<p.created_at then return false; end if;

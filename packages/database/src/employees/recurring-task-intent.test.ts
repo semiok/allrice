@@ -4,6 +4,15 @@ import { explicitRecurringTaskIntent as intent } from './recurring-task-intent.t
 
 const accepted: { text: string; rule: RecurringScheduleRule }[] = [
   {
+    text: '请每月31日02:30:17，时区America/New_York，整理本会话报表。请分别列出金额和异常。',
+    rule: {
+      kind: 'monthly',
+      monthDay: 31,
+      time: '02:30:17',
+      timezone: 'America/New_York',
+    },
+  },
+  {
     text: '请每月31日02:30:45，时区America/New_York，整理本会话报表。',
     rule: {
       kind: 'monthly',
@@ -153,6 +162,24 @@ const accepted: { text: string; rule: RecurringScheduleRule }[] = [
 ];
 
 describe('explicit recurring intent in one complete current human message', () => {
+  it.each(['分别', '逐项', '逐一', '依次'])(
+    'recognizes a work action with the ordering adverb %s without rewriting the source',
+    (adverb) => {
+      const text = `请每隔十五分钟，整理报表。请${adverb}列出金额和异常。`;
+      expect(intent(text)).toEqual({
+        rule: { kind: 'every', seconds: 900 },
+        authoritativeRequest: text,
+      });
+    },
+  );
+  it.each([
+    '请每月31日02:30:17，时区America/New_York，整理报表。请分别列出金额，如果我确认再创建任务。',
+    '请每月31日02:30:17，时区America/New_York，整理报表。请分别列出金额和异常。以后默认简洁。',
+    '“请每月31日02:30:17，时区America/New_York，整理报表。请分别列出金额和异常。”',
+    '请每月31日02:30:17，时区America/New_York，整理报表。请分别不要创建任务。',
+  ])('keeps authorization boundaries around work adverbs: %s', (text) => {
+    expect(intent(text)).toBeNull();
+  });
   it.each([
     '每周一09:30整理报表。',
     '每周一09:30，时区北京时间，整理报表。',
