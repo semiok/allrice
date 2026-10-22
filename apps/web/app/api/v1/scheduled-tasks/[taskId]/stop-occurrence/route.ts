@@ -38,7 +38,8 @@ export async function GET(request: Request, { params }: RouteContext) {
   try {
     const context = await getRequestContext(request);
     if (!context) throw new DataAccessError('authentication_required');
-    const { workspaceId, occurrenceId, runId, ...extra } = taskQuery(request);
+    const { workspaceId, occurrenceId, runId, source, ...extra } =
+      taskQuery(request);
     if (Object.keys(extra).length)
       throw new SyntaxError('Unexpected stop query');
     return Response.json(
@@ -49,6 +50,7 @@ export async function GET(request: Request, { params }: RouteContext) {
         {
           occurrenceId: UuidSchema.parse(occurrenceId),
           runId: UuidSchema.parse(runId),
+          ...(source ? { source } : {}),
         },
       ),
     );

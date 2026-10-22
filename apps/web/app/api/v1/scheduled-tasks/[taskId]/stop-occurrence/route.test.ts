@@ -116,4 +116,21 @@ describe('occurrence stop transport', () => {
     expect(f.stop).not.toHaveBeenCalled();
     expect(f.read).not.toHaveBeenCalled();
   });
+  it('preserves explicit manual source during readback on a native parent', async () => {
+    expect(
+      (
+        await GET(
+          new Request(
+            url + `&occurrenceId=${OCCURRENCE}&runId=${RUN}&source=manual`,
+          ),
+          params,
+        )
+      ).status,
+    ).toBe(200);
+    expect(f.read).toHaveBeenCalledExactlyOnceWith(f.context, WORKSPACE, TASK, {
+      ...body,
+      source: 'manual',
+    });
+    expect(f.stop).not.toHaveBeenCalled();
+  });
 });

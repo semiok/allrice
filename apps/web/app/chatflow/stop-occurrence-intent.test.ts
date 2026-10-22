@@ -192,4 +192,28 @@ describe('exact occurrence stop identity and uncertain acknowledgement', () => {
     clearStopOccurrenceIntent(storage, { ...intent, runId: OTHER });
     expect(storage.getItem(intent.storageKey)).toBeNull();
   });
+  it('retains explicit manual identity on a native parent and refuses a native/omitted-source readback', () => {
+    const manual = { ...intent, source: 'manual' as const };
+    const storage = new MemoryStorage();
+    saveStopOccurrenceIntent(storage, manual);
+    expect(
+      new URL(
+        stopOccurrenceURL(manual, true),
+        'https://fixture',
+      ).searchParams.get('source'),
+    ).toBe('manual');
+    expect(() => resolveStopOccurrenceReceipt(manual, receipt())).toThrow();
+    expect(() =>
+      resolveStopOccurrenceReceipt(manual, {
+        ...receipt(),
+        source: 'native_occurrence',
+      }),
+    ).toThrow();
+    expect(
+      resolveStopOccurrenceReceipt(manual, { ...receipt(), source: 'manual' })
+        .state,
+    ).toBe('unconfirmed');
+    expect(() => clearStopOccurrenceIntent(storage, intent)).toThrow();
+    clearStopOccurrenceIntent(storage, manual);
+  });
 });

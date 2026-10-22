@@ -387,3 +387,8 @@ export {
 } from './automation-catalog.ts';
 
 export * from './workbench-files.ts';
+export {
+  runManualAutomation,
+  getManualAutomationRun,
+  ManualAutomationRunError,
+} from './automation-manual.ts';

@@ -13,6 +13,7 @@ import {
   type AutomationCatalogTask,
   type RequestContext,
   type RunSnapshot,
+  type RecurringOccurrence,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import { acquireDevAdmission } from './dev-maintenance.ts';
@@ -138,20 +139,22 @@ async function manage(
   const [partition] = await tx<
     { activation: NativeOnceReadiness }[]
   >`select activation from allrice_native_once_partitions where partition_id='allrice-recurring-v1'`;
-  return (
-    writable &&
-    settings.available &&
-    settings.settings.cloud &&
-    nativeRecurringProductEnabled() &&
-    !!partition &&
-    nativeOnceReady(partition.activation)
-  );
+  const canRunNow = writable && settings.available && settings.settings.cloud;
+  return {
+    canRunNow,
+    canManage:
+      canRunNow &&
+      nativeRecurringProductEnabled() &&
+      !!partition &&
+      nativeOnceReady(partition.activation),
+  };
 }
 async function project(
   tx: Tx,
   row: Row,
   writable: boolean,
   canExecute: boolean,
+  canRunNow = false,
 ): Promise<AutomationCatalogTask> {
   let definition: AutomationCatalogTask['definition'];
   let nextRunAt: string | null = null,
@@ -202,6 +205,13 @@ async function project(
     createdAt: row.created_at.toISOString(),
     nextRunAt,
     canStop,
+    revision: Number(row.revision),
+    canRunNow:
+      canRunNow &&
+      row.target_active &&
+      !row.deleted_at &&
+      ['native_once', 'native_recurring'].includes(row.clock_owner) &&
+      !row.native_once_cancelled_at,
     definition,
   });
 }
@@ -217,18 +227,88 @@ export async function listAutomationCatalog(
       contextInput,
       query.workspaceId,
     );
-    const canExecute = await manage(tx, context, ownerId, writable);
+    const capabilities = await manage(tx, context, ownerId, writable);
     const all = await rows(tx, context, ownerId, query, before),
       page = all.slice(0, 50),
       last = page.at(-1);
     return {
       tasks: await Promise.all(
-        page.map((row) => project(tx, row, writable, canExecute)),
+        page.map((row) =>
+          project(
+            tx,
+            row,
+            writable,
+            capabilities.canManage,
+            capabilities.canRunNow,
+          ),
+        ),
       ),
       nextCursor:
         all.length > 50 && last ? encode(last.cursor_at, last.id) : null,
     };
   });
+}
+function historyRunStatus(
+  state: string | null,
+  runId: string | null,
+): RecurringOccurrence['status'] {
+  switch (state) {
+    case 'succeeded':
+    case 'failed':
+    case 'canceled':
+    case 'running':
+      return state;
+    case 'waiting_input':
+    case 'waiting_approval':
+      return 'awaiting_input';
+    default:
+      return runId ? 'queued' : 'pending';
+  }
+}
+async function manualHistory(
+  tx: Tx,
+  context: RequestContext,
+  ownerId: string,
+  taskId: string,
+  before: ReturnType<typeof cursor>,
+) {
+  const rows = await tx<
+    {
+      id: string;
+      run_id: string;
+      session_id: string;
+      manual_request_id: string;
+      manual_revision: number;
+      manual_requested_at: Date;
+      cursor_at: string;
+      state: string | null;
+      error_message: string | null;
+    }[]
+  >`select ar.id,ar.run_id,ar.session_id,ar.manual_request_id,ar.manual_revision,ar.manual_requested_at,
+    to_char(ar.manual_requested_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') cursor_at,r.state,ar.error_message
+    from allrice_automation_runs ar join allrice_runs r on r.id=ar.run_id and r.organization_id=ar.organization_id and r.workspace_id=ar.workspace_id and r.owner_id=${ownerId}
+    where ar.automation_id=${taskId} and ar.organization_id=${context.organizationId} and ar.workspace_id=${context.workspaceId!} and ar.manual_request_id is not null
+    ${before ? tx`and (ar.manual_requested_at,ar.id)<(${before.at}::text::timestamptz,${before.id}::uuid)` : tx``}
+    order by ar.manual_requested_at desc,ar.id desc limit 51`;
+  return rows.map((o) => ({
+    cursorAt: o.cursor_at,
+    id: o.id,
+    projection: {
+      id: o.id,
+      taskId,
+      revision: Number(o.manual_revision),
+      scheduledAt: o.manual_requested_at.toISOString(),
+      status: historyRunStatus(o.state, o.run_id),
+      runId: o.run_id,
+      sessionId: o.session_id,
+      errorMessage: o.error_message,
+      source: {
+        kind: 'manual' as const,
+        requestId: o.manual_request_id,
+        requestedAt: o.manual_requested_at.toISOString(),
+      },
+    },
+  }));
 }
 export async function getAutomationCatalogTask(
   contextInput: RequestContext,
@@ -247,26 +327,45 @@ export async function getAutomationCatalogTask(
     );
     const [row] = await rows(tx, context, ownerId, {}, null, taskId);
     if (!row) throw new DataAccessError('not_found');
+    const capabilities = await manage(tx, context, ownerId, writable);
     const task = await project(
       tx,
       row,
       writable,
-      await manage(tx, context, ownerId, writable),
+      capabilities.canManage,
+      capabilities.canRunNow,
     );
     if (row.clock_owner === 'native_recurring') {
-      const history = await readRecurringOccurrenceRows(tx, row, before, 51),
-        page = history.slice(0, 50),
+      const native = await readRecurringOccurrenceRows(tx, row, before, 51);
+      const history = [
+        ...native.map((o) => ({
+          cursorAt: o.cursor_at,
+          id: o.occurrence_id,
+          projection: {
+            ...recurringOccurrenceProjection(row, o),
+            sessionId: row.session_id,
+            source: { kind: 'native_occurrence' as const },
+          },
+        })),
+        ...(await manualHistory(tx, context, ownerId, row.id, before)),
+      ].sort((a, b) =>
+        a.cursorAt === b.cursorAt
+          ? a.id < b.id
+            ? 1
+            : a.id > b.id
+              ? -1
+              : 0
+          : a.cursorAt < b.cursorAt
+            ? 1
+            : -1,
+      );
+      const page = history.slice(0, 50),
         last = page.at(-1);
       return {
         task,
-        occurrences: page.map((o) => ({
-          ...recurringOccurrenceProjection(row, o),
-          sessionId: row.session_id,
-        })),
+        occurrences: page.map((o) => o.projection),
         nextCursor:
-          history.length > 50 && last
-            ? encode(last.cursor_at, last.occurrence_id)
-            : null,
+          history.length > 50 && last ? encode(last.cursorAt, last.id) : null,
       };
     }
     // One-off/legacy outcomes are read from real Runs; no synthetic completion.
@@ -279,10 +378,14 @@ export async function getAutomationCatalogTask(
         cursor_at: string;
         state: string | null;
         error_message: string | null;
+        manual_request_id: string | null;
+        manual_revision: number | null;
+        manual_requested_at: Date | null;
+        native_once_occurrence_id: string | null;
       }[]
     >`
       select ar.id,ar.run_id,ar.session_id,ar.scheduled_for,to_char(ar.scheduled_for at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') cursor_at,
-        r.state,ar.error_message from allrice_automation_runs ar
+        r.state,ar.error_message,ar.manual_request_id,ar.manual_revision,ar.manual_requested_at,ar.native_once_occurrence_id from allrice_automation_runs ar
       left join allrice_runs r on r.id=ar.run_id and r.organization_id=ar.organization_id and r.workspace_id=ar.workspace_id and r.owner_id=${ownerId}
       where ar.automation_id=${row.id} and ar.organization_id=${context.organizationId} and ar.workspace_id=${workspaceId}
       ${before ? tx`and (ar.scheduled_for,ar.id)<(${before.at}::text::timestamptz,${before.id}::uuid)` : tx``}
@@ -294,20 +397,24 @@ export async function getAutomationCatalogTask(
       occurrences: page.map((o) => ({
         id: o.id,
         taskId: row.id,
-        revision: Number(row.revision),
+        revision: Number(o.manual_revision ?? row.revision),
         scheduledAt: o.scheduled_for.toISOString(),
-        status: ['succeeded', 'failed', 'canceled', 'running'].includes(
-          o.state ?? '',
-        )
-          ? o.state
-          : ['waiting_input', 'waiting_approval'].includes(o.state ?? '')
-            ? 'awaiting_input'
-            : o.run_id
-              ? 'queued'
-              : 'pending',
+        status: historyRunStatus(o.state, o.run_id),
         runId: o.run_id,
         sessionId: o.session_id,
         errorMessage: o.error_message,
+        source:
+          o.manual_request_id && o.manual_requested_at
+            ? {
+                kind: 'manual' as const,
+                requestId: o.manual_request_id,
+                requestedAt: o.manual_requested_at.toISOString(),
+              }
+            : {
+                kind: o.native_once_occurrence_id
+                  ? ('native_occurrence' as const)
+                  : ('legacy_run' as const),
+              },
       })),
       nextCursor:
         history.length > 50 && last ? encode(last.cursor_at, last.id) : null,
@@ -315,10 +422,15 @@ export async function getAutomationCatalogTask(
   });
 }
 // Presentation-only identity: recurring history uses the native occurrence ID;
-// once/legacy history uses its durable automation_run ID (including manual Runs).
-// The server chooses that interpretation from the owned plan, never the caller.
+// once/legacy and manual history use their durable automation_run ID. The
+// server verifies the persisted source and exact Run rather than inferring it
+// from a native parent plan or selecting its latest Run.
 const OccurrenceRunInputSchema = z
-  .object({ occurrenceId: UuidSchema, runId: UuidSchema })
+  .object({
+    occurrenceId: UuidSchema,
+    runId: UuidSchema,
+    source: z.enum(['manual', 'native_occurrence', 'legacy_run']).optional(),
+  })
   .strict();
 type OccurrenceRunInput = z.infer<typeof OccurrenceRunInputSchema>;
 function activeOccurrenceRun(run: RunSnapshot) {
@@ -353,13 +465,28 @@ async function occurrenceRunAuthority(
       state: RunSnapshot['status'];
       job_status: RunSnapshot['job']['status'];
       cancel_requested_at: Date | null;
+      manual_request_id: string | null;
+      native_once_occurrence_id: string | null;
+      native_recurring_occurrence_id: string | null;
     }[]
-  >`select r.state,j.status job_status,j.cancel_requested_at
+  >`select r.state,j.status job_status,j.cancel_requested_at,ar.manual_request_id,ar.native_once_occurrence_id,ar.native_recurring_occurrence_id
     from allrice_automation_runs ar
     join allrice_runs r on r.id=ar.run_id and r.organization_id=ar.organization_id and r.workspace_id=ar.workspace_id and r.owner_id=${access.ownerId}
     join allrice_jobs j on j.run_id=r.id and j.organization_id=r.organization_id and j.workspace_id=r.workspace_id and j.owner_id=r.owner_id
     where ar.automation_id=${plan.id} and ar.organization_id=${access.context.organizationId} and ar.workspace_id=${workspaceId} and ar.run_id=${input.runId}
-      ${plan.clock_owner === 'native_recurring' ? tx`and ar.native_recurring_occurrence_id=${input.occurrenceId} and exists(select 1 from allrice_native_recurring_occurrences o where o.occurrence_id=ar.native_recurring_occurrence_id and o.automation_id=ar.automation_id)` : tx`and ar.id=${input.occurrenceId}`}`;
+      ${
+        input.source === 'manual'
+          ? tx`and ar.manual_request_id is not null and ar.id=${input.occurrenceId}`
+          : input.source === 'native_occurrence'
+            ? tx`and ar.manual_request_id is null and ((ar.native_recurring_occurrence_id=${input.occurrenceId}
+              and exists(select 1 from allrice_native_recurring_occurrences o where o.occurrence_id=ar.native_recurring_occurrence_id and o.automation_id=ar.automation_id))
+              or (ar.native_once_occurrence_id is not null and ar.id=${input.occurrenceId}))`
+            : input.source === 'legacy_run'
+              ? tx`and ar.manual_request_id is null and ar.native_once_occurrence_id is null and ar.native_recurring_occurrence_id is null and ar.id=${input.occurrenceId}`
+              : tx`and ar.manual_request_id is null and ((ar.native_recurring_occurrence_id=${input.occurrenceId}
+                and exists(select 1 from allrice_native_recurring_occurrences o where o.occurrence_id=ar.native_recurring_occurrence_id and o.automation_id=ar.automation_id))
+                or (ar.native_recurring_occurrence_id is null and ar.id=${input.occurrenceId}))`
+      }`;
   if (!bound) throw new DataAccessError('not_found');
   return { ...access, bound };
 }
@@ -379,6 +506,12 @@ export async function getAutomationCatalogOccurrenceRun(
   return {
     taskId,
     occurrenceId: input.occurrenceId,
+    source: access.bound.manual_request_id
+      ? 'manual'
+      : access.bound.native_once_occurrence_id ||
+          access.bound.native_recurring_occurrence_id
+        ? 'native_occurrence'
+        : 'legacy_run',
     run,
     canStop:
       access.writable && activeOccurrenceRun(run) && !run.cancelRequestedAt,

@@ -7,6 +7,7 @@ export type StopOccurrenceIntent = {
   taskId: string;
   occurrenceId: string;
   runId: string;
+  source?: 'manual' | 'native_occurrence' | 'legacy_run';
 };
 type IntentStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 const prefix = 'allrice:stop-occurrence:v1:';
@@ -43,6 +44,7 @@ export function parseStopOccurrenceIntent(
     'occurrenceId',
     'runId',
   ];
+  if (intent && Object.hasOwn(intent, 'source')) keys.push('source');
   const scope: unknown = storageKey.startsWith(prefix)
     ? JSON.parse(storageKey.slice(prefix.length))
     : null;
@@ -65,6 +67,11 @@ export function parseStopOccurrenceIntent(
     throw new Error('停止记录的身份不匹配。');
   UuidSchema.parse(intent.occurrenceId);
   UuidSchema.parse(intent.runId);
+  if (
+    intent.source !== undefined &&
+    !['manual', 'native_occurrence', 'legacy_run'].includes(intent.source)
+  )
+    throw new Error('停止记录的来源不匹配。');
   return intent;
 }
 
@@ -90,7 +97,8 @@ export function clearStopOccurrenceIntent(
     const saved = parseStopOccurrenceIntent(raw, intent.storageKey);
     if (
       saved.occurrenceId !== intent.occurrenceId ||
-      saved.runId !== intent.runId
+      saved.runId !== intent.runId ||
+      saved.source !== intent.source
     )
       throw new Error('另一项停止请求拥有此记录。');
   }
@@ -107,6 +115,7 @@ export function stopOccurrenceURL(
   if (readback) {
     query.set('occurrenceId', intent.occurrenceId);
     query.set('runId', intent.runId);
+    if (intent.source) query.set('source', intent.source);
   }
   return (
     '/api/v1/scheduled-tasks/' +
@@ -128,6 +137,7 @@ export function resolveStopOccurrenceReceipt(
   if (
     receipt.taskId !== intent.taskId ||
     receipt.occurrenceId !== intent.occurrenceId ||
+    (intent.source !== undefined && receipt.source !== intent.source) ||
     run.id !== intent.runId ||
     run.workspaceId !== intent.workspaceId ||
     run.organizationId !== scope[0] ||

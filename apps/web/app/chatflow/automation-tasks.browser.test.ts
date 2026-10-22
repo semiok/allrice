@@ -9,9 +9,11 @@ import type {
   AutomationCatalogTask,
   ChangeRecurringTaskInput,
   RecurringTaskOperation,
+  ManualAutomationRunInput,
   RunSnapshot,
 } from '@allrice/contracts';
 import { stopOccurrenceStorageKey } from './stop-occurrence-intent';
+import { manualRunStorageKey } from './manual-run-intent';
 
 const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
@@ -44,6 +46,7 @@ const entry = (): AutomationCatalogTask => ({
   createdAt: '2026-10-21T01:00:00.000Z',
   nextRunAt: '2099-01-01T01:00:00.000Z',
   canStop: true,
+  revision: 1,
   definition: {
     kind: 'recurring',
     task: {
@@ -166,7 +169,11 @@ suite(
     });
     async function fixture(
       width = 1280,
-      options: { running?: boolean; storageFailure?: boolean } = {},
+      options: {
+        running?: boolean;
+        storageFailure?: boolean;
+        manual?: boolean;
+      } = {},
     ) {
       const page = await browser.newPage({ viewport: { width, height: 900 } }),
         task = entry(),
@@ -178,6 +185,54 @@ suite(
           principalScope: string;
         }> = [],
         operations = new Map<string, RecurringTaskOperation>();
+      task.canRunNow = options.manual === true;
+      const manualReceipts = new Map<
+        string,
+        ReturnType<typeof manualReceipt>
+      >();
+      function manualReceipt(input: ManualAutomationRunInput) {
+        const now = '2026-10-22T01:00:00.000Z';
+        return {
+          source: 'manual',
+          taskId: TASK,
+          request: input,
+          requestDigest: 'sha256:' + 'a'.repeat(64),
+          automationRunId: OCCURRENCE,
+          requestedAt: now,
+          sessionId: CHAT,
+          run: {
+            id: RUN,
+            organizationId: ORG,
+            workspaceId: WORKSPACE,
+            ownerId: VIEWER,
+            status: 'queued',
+            cancelRequestedAt: null,
+            result: null,
+            error: null,
+            createdAt: now,
+            updatedAt: now,
+            job: {
+              id: OTHER_RUN,
+              organizationId: ORG,
+              workspaceId: WORKSPACE,
+              ownerId: VIEWER,
+              status: 'queued',
+              idempotencyKey: 'employee-message:' + OCCURRENCE,
+              priority: 0,
+              attempt: 0,
+              maxAttempts: 2,
+              availableAt: now,
+              timeoutAt: now,
+              payload: {
+                schemaVersion: 1,
+                type: 'allrice.employee.run',
+                input: {},
+              },
+              lease: null,
+            },
+          },
+        };
+      }
       const state = {
         dropAck: false,
         mismatch: false,
@@ -186,9 +241,12 @@ suite(
         stopRequested: false,
         stopTerminal: false,
         newerHistory: false,
+        dropManualAck: false,
+        holdManual: null as 'POST' | 'GET' | null,
       };
       const heldStops: Array<{ method: string; respond: () => Promise<void> }> =
         [];
+      const heldManual: Array<{ respond: () => Promise<void> }> = [];
       const errors: string[] = [];
       page.on('pageerror', (e) => errors.push(e.message));
       // A real browser and real component, with no request outside this fixture.
@@ -224,6 +282,34 @@ suite(
             request.headers()['x-fixture-viewer'],
           ].join('/'),
         });
+        if (url.pathname.endsWith('/run')) {
+          const id =
+            request.method() === 'POST'
+              ? (request.postDataJSON() as ManualAutomationRunInput).requestId
+              : url.searchParams.get('requestId')!;
+          if (request.method() === 'POST')
+            manualReceipts.set(
+              id,
+              manualReceipt(request.postDataJSON() as ManualAutomationRunInput),
+            );
+          const reply = manualReceipts.get(id),
+            respond = () =>
+              route.fulfill({
+                status: reply ? 202 : 404,
+                json: reply ?? { error: 'not_found' },
+              });
+          if (state.holdManual === request.method()) {
+            heldManual.push({ respond });
+            return;
+          }
+          if (request.method() === 'POST' && state.dropManualAck) {
+            state.dropManualAck = false;
+            await route.abort();
+            return;
+          }
+          await respond();
+          return;
+        }
         if (url.pathname.endsWith('/stop-occurrence')) {
           if (request.method() === 'POST') state.stopRequested = true;
           const exact =
@@ -305,6 +391,7 @@ suite(
           const rejected = body.expectedRevision !== current.revision;
           if (!rejected) {
             current.revision++;
+            task.revision = current.revision;
             if (body.action === 'update') {
               current.name = body.name;
               current.prompt = body.prompt;
@@ -412,6 +499,13 @@ suite(
         state,
         errors,
         heldStops,
+        heldManual,
+        manualRequests: (method?: string) =>
+          requests.filter(
+            (r) =>
+              new URL(r.url).pathname.endsWith('/run') &&
+              (!method || r.method === method),
+          ),
         open,
         history: async () => {
           await open();
@@ -676,6 +770,106 @@ suite(
         await f.close();
       }
     });
+    it('creates one explicit manual Run from a paused plan without PATCH or future-time changes', async () => {
+      const f = await fixture(1280, { manual: true });
+      try {
+        if (f.task.definition.kind !== 'recurring') throw Error('fixture kind');
+        f.task.definition.task.status = 'paused';
+        const before = structuredClone(f.task);
+        await f.open();
+        await f.page
+          .getByRole('button', { name: '立即执行', exact: true })
+          .click();
+        await f.page
+          .getByText(
+            '已创建本次立即执行，可在运行记录查看结果。原定计划保持不变。',
+            { exact: true },
+          )
+          .waitFor();
+        expect(f.manualRequests('POST')).toHaveLength(1);
+        expect(f.manualRequests('POST')[0]!.body).toMatchObject({
+          requestId: expect.any(String),
+          expectedRevision: 1,
+        });
+        expect(f.requests.filter((r) => r.method === 'PATCH')).toEqual([]);
+        expect(f.task).toEqual(before);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
+    it('sends zero manual POST when session storage cannot persist the request', async () => {
+      const f = await fixture(1280, { manual: true, storageFailure: true });
+      try {
+        await f.open();
+        await f.page
+          .getByRole('button', { name: '立即执行', exact: true })
+          .click();
+        await f.page.getByText(/fixture storage unavailable/).waitFor();
+        expect(f.manualRequests()).toHaveLength(0);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
+    it('restores a lost manual ACK as user-triggered GET of the original request despite a later plan revision', async () => {
+      const f = await fixture(1280, { manual: true });
+      try {
+        await f.open();
+        f.state.dropManualAck = true;
+        await f.page
+          .getByRole('button', { name: '立即执行', exact: true })
+          .click();
+        const check = () =>
+          f.page.getByRole('button', { name: '检查立即执行结果', exact: true });
+        await expect.poll(() => check().isEnabled()).toBe(true);
+        const original = f.manualRequests('POST')[0]!
+            .body as ManualAutomationRunInput,
+          key = manualRunStorageKey(
+            [ORG, WORKSPACE, VIEWER].join('/'),
+            WORKSPACE,
+            TASK,
+          );
+        const saved = await f.page.evaluate(
+          (k) => sessionStorage.getItem(k),
+          key,
+        );
+        expect(saved).not.toContain('never-persist');
+        f.task.revision = 9;
+        if (f.task.definition.kind === 'recurring')
+          f.task.definition.task.revision = 9;
+        await f.page
+          .getByRole('button', { name: '显示或隐藏右栏', exact: true })
+          .click();
+        await f.page
+          .getByRole('button', { name: '显示或隐藏右栏', exact: true })
+          .click();
+        await check().waitFor();
+        expect(f.manualRequests('POST')).toHaveLength(1);
+        expect(f.manualRequests('GET')).toHaveLength(0);
+        await check().click();
+        await f.page
+          .getByText(
+            '已创建本次立即执行，可在运行记录查看结果。原定计划保持不变。',
+            { exact: true },
+          )
+          .waitFor();
+        expect(f.manualRequests('POST')).toHaveLength(1);
+        expect(f.manualRequests('GET')).toHaveLength(1);
+        expect(
+          new URL(f.manualRequests('GET')[0]!.url).searchParams.get(
+            'requestId',
+          ),
+        ).toBe(original.requestId);
+        expect(original.expectedRevision).toBe(1);
+        expect(
+          await f.page.evaluate((k) => sessionStorage.getItem(k), key),
+        ).toBeNull();
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
     const scopeChanges = [
       {
         label: '组织',
@@ -747,6 +941,111 @@ suite(
           const target = new URL(f.stopRequests('GET')[0]!.url);
           expect(target.searchParams.get('occurrenceId')).toBe(OCCURRENCE);
           expect(target.searchParams.get('runId')).toBe(RUN);
+        } finally {
+          await f.close();
+        }
+      },
+    );
+    it.each(
+      scopeChanges.flatMap((change) =>
+        ['POST', 'GET'].map((method) => ({ ...change, method })),
+      ),
+    )(
+      'ignores an old manual $method response after changing $label',
+      async (change) => {
+        const f = await fixture(1280, { manual: true });
+        try {
+          await f.open();
+          if (change.method === 'GET') f.state.dropManualAck = true;
+          else f.state.holdManual = 'POST';
+          await f.page
+            .getByRole('button', { name: '立即执行', exact: true })
+            .click();
+          if (change.method === 'GET') {
+            const check = f.page.getByRole('button', {
+              name: '检查立即执行结果',
+              exact: true,
+            });
+            await expect.poll(() => check.isEnabled()).toBe(true);
+            f.state.holdManual = 'GET';
+            await check.click();
+          }
+          await expect.poll(() => f.heldManual.length).toBe(1);
+          const oldScope = [ORG, WORKSPACE, VIEWER].join('/'),
+            key = manualRunStorageKey(oldScope, WORKSPACE, TASK),
+            saved = await f.page.evaluate(
+              (k) => sessionStorage.getItem(k),
+              key,
+            );
+          expect(saved).not.toBeNull();
+          await f.page
+            .getByRole('button', { name: '切换' + change.label, exact: true })
+            .click();
+          if (change.taskId === OTHER_TASK)
+            await f.page
+              .getByRole('heading', { name: '另一个任务', exact: true })
+              .waitFor();
+          else
+            await f.page
+              .getByText('当前范围没有该任务。', { exact: true })
+              .waitFor();
+          const oldReads = () =>
+              f.requests.filter(
+                (r) =>
+                  r.method === 'GET' &&
+                  r.principalScope === oldScope &&
+                  new URL(r.url).pathname === `/api/v1/scheduled-tasks/${TASK}`,
+              ).length,
+            before = oldReads(),
+            delivered = f.page.waitForResponse(
+              (r) => r.url() === f.manualRequests().at(-1)!.url,
+            );
+          await f.heldManual[0]!.respond();
+          await (await delivered).finished();
+          await f.page.evaluate(
+            () =>
+              new Promise<void>((done) =>
+                requestAnimationFrame(() =>
+                  requestAnimationFrame(() => done()),
+                ),
+              ),
+          );
+          expect(
+            await f.page
+              .getByText(
+                '已创建本次立即执行，可在运行记录查看结果。原定计划保持不变。',
+                { exact: true },
+              )
+              .count(),
+          ).toBe(0);
+          expect(
+            await f.page
+              .getByRole('button', { name: '检查立即执行结果', exact: true })
+              .count(),
+          ).toBe(0);
+          expect(
+            await f.page.evaluate((k) => sessionStorage.getItem(k), key),
+          ).toBe(saved);
+          expect(
+            await f.page.evaluate(
+              (k) => sessionStorage.getItem(k),
+              manualRunStorageKey(
+                [
+                  change.organizationId,
+                  change.workspaceId,
+                  change.viewerId,
+                ].join('/'),
+                change.workspaceId,
+                change.taskId,
+              ),
+            ),
+          ).toBeNull();
+          expect(oldReads()).toBe(before);
+          expect(f.manualRequests('POST')).toHaveLength(1);
+          expect(f.manualRequests('GET')).toHaveLength(
+            change.method === 'GET' ? 1 : 0,
+          );
+          expect(f.errors).toEqual([]);
         } finally {
           await f.close();
         }

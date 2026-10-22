@@ -42,6 +42,7 @@ import {
 import native from './dsh-upstream/automation/TaskManagerPage.module.css';
 import card from './dsh-upstream/automation/ScheduleCreateCard.module.css';
 import css from './automation-tasks.module.css';
+import { AutomationManualRun } from './automation-manual-run';
 
 type Identity = {
   workspaceId: string;
@@ -841,6 +842,7 @@ function AutomationDetailBody({
           body: JSON.stringify({
             occurrenceId: intent.occurrenceId,
             runId: intent.runId,
+            ...(intent.source ? { source: intent.source } : {}),
           }),
         }),
       );
@@ -1159,6 +1161,19 @@ function AutomationDetailBody({
               </div>
             )}
             <div className={css.management}>
+              {definition &&
+                definition.kind !== 'legacy' &&
+                task.revision !== undefined && (
+                  <AutomationManualRun
+                    scope={scope}
+                    workspaceId={workspaceId}
+                    taskId={taskId}
+                    revision={task.revision}
+                    available={task.canRunNow === true}
+                    headers={headers}
+                    onChanged={() => load()}
+                  />
+                )}
               {nativeTask && (
                 <Button
                   variant="outline"
@@ -1258,6 +1273,7 @@ function AutomationDetailBody({
                 />
                 <div className={native.deliveryBody}>
                   <time className={native.deliveryTime}>
+                    {o.source?.kind === 'manual' ? '立即执行 · ' : ''}
                     {time(o.scheduledAt)}
                   </time>
                   <p className={css.caption}>
@@ -1297,6 +1313,7 @@ function AutomationDetailBody({
                             taskId,
                             occurrenceId: o.id,
                             runId: o.runId!,
+                            ...(o.source ? { source: o.source.kind } : {}),
                           })
                         }
                       >

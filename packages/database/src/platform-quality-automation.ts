@@ -279,7 +279,7 @@ export async function reservePlatformQualityOccurrence(
   const [row] =
     await tx`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,scheduled_for,quality_occurrence,status,error_code,error_message,completed_at,native_recurring_occurrence_id)
     values(${id},${rule.organization_id},${rule.workspace_id},${rule.id},${scheduledFor},${tx.json(origin)},${reason ? 'failed' : 'queued'},${reason},${reason ? '本轮未执行；不会补跑积压周期。' : null},${reason ? clock!.now : null},${native?.occurrenceId ?? null})
-    on conflict(automation_id,scheduled_for) where folder_event_id is null do nothing returning id`;
+    on conflict(automation_id,scheduled_for) where folder_event_id is null and manual_request_id is null do nothing returning id`;
   return row ? { id: String(row.id), reason, origin } : null;
 }
 
