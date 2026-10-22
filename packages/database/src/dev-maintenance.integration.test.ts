@@ -317,6 +317,98 @@ suite('Durable maintenance fence, without installed host authority', () => {
     const [clock] = await fixture.db`select clock_timestamp() now`;
     expect(lease!.lease!.expiresAt > clock!.now.toISOString()).toBe(true);
   });
+  it('clamps a finish after wall-clock rollback without completing another permit', async () => {
+    const permit = await startDevProducer({
+        instanceBootId: instances.worker.bootId,
+        role: 'worker',
+        producer: 'provider_probe',
+      }),
+      other = await startDevProducer({
+        instanceBootId: instances.web.bootId,
+        role: 'web',
+        producer: 'provider_probe',
+      });
+    const initialEpoch = (await readDevMaintenance())!.epoch;
+    const [started] = await fixture.db<{ started_at: string }[]>`
+      update allrice_dev_producer_permits
+      set started_at=clock_timestamp()+interval '1 day'
+      where id=${permit.id} and instance_boot_id=${permit.instanceBootId}
+      returning started_at::text started_at`;
+    try {
+      // A future stored start simulates rollback without changing the OS clock.
+      // Both mismatched pairs identify real rows/boots, but neither is authority.
+      for (const wrong of [
+        { id: permit.id, instanceBootId: other.instanceBootId },
+        { id: other.id, instanceBootId: permit.instanceBootId },
+        { id: randomUUID(), instanceBootId: permit.instanceBootId },
+      ])
+        await expect(finishDevProducer(wrong)).rejects.toMatchObject({
+          code: 'dev_barrier_stale',
+        });
+      expect(
+        (
+          await fixture.db`select count(*)::int n from allrice_dev_producer_permits
+          where id in (${permit.id},${other.id}) and finished_at is null`
+        )[0]!.n,
+      ).toBe(2);
+      expect(await requestDevMaintenance(owner, instances)).toMatchObject({
+        requested: false,
+        busy: { permits: 2 },
+      });
+      await finishDevProducer(permit);
+      const [first] = await fixture.db<
+        { finished_at: string | null; clamped: boolean | null }[]
+      >`select finished_at::text finished_at,finished_at=started_at clamped
+        from allrice_dev_producer_permits
+        where id=${permit.id} and instance_boot_id=${permit.instanceBootId}`;
+      expect(first).toEqual({
+        finished_at: started!.started_at,
+        clamped: true,
+      });
+      expect(await requestDevMaintenance(owner, instances)).toMatchObject({
+        requested: false,
+        busy: { permits: 1 },
+      });
+      expect(await readDevMaintenance()).toMatchObject({
+        state: 'open',
+        epoch: initialEpoch,
+      });
+      await finishDevProducer(permit);
+      const [again] = await fixture.db<
+        { finished_at: string | null; clamped: boolean | null }[]
+      >`select finished_at::text finished_at,finished_at=started_at clamped
+        from allrice_dev_producer_permits
+        where id=${permit.id} and instance_boot_id=${permit.instanceBootId}`;
+      // Text preserves PostgreSQL microseconds for the exact idempotency check.
+      expect(again).toEqual(first);
+      const [unfinished] =
+        await fixture.db`select finished_at is null unfinished from allrice_dev_producer_permits
+        where id=${other.id} and instance_boot_id=${other.instanceBootId}`;
+      expect(unfinished?.unfinished).toBe(true);
+      await finishDevProducer(other);
+      // Seed a valid past completion so idempotency cannot pass merely because
+      // the simulated future start would clamp a second clock read identically.
+      const [completed] = await fixture.db<{ finished_at: string }[]>`
+        update allrice_dev_producer_permits
+        set started_at=clock_timestamp()-interval '2 hours',finished_at=clock_timestamp()-interval '1 hour'
+        where id=${other.id} and instance_boot_id=${other.instanceBootId}
+        returning finished_at::text finished_at`;
+      await finishDevProducer(other);
+      const [preserved] =
+        await fixture.db`select finished_at::text finished_at from allrice_dev_producer_permits
+        where id=${other.id} and instance_boot_id=${other.instanceBootId}`;
+      expect(preserved?.finished_at).toBe(completed!.finished_at);
+      expect((await requestDevMaintenance(owner, instances)).requested).toBe(
+        true,
+      );
+    } finally {
+      // If the regression fails against the old implementation, undo only this
+      // fixture's unfinished future start so the existing cleanup can proceed.
+      await fixture.db`update allrice_dev_producer_permits
+        set started_at=least(started_at,clock_timestamp())
+        where id=${permit.id} and instance_boot_id=${permit.instanceBootId} and finished_at is null`;
+    }
+  });
   it('unfinished producer permits stay busy regardless of age; only the exact instance may finish', async () => {
     const permit = await startDevProducer({
       instanceBootId: instances.worker.bootId,
