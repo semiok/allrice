@@ -766,7 +766,9 @@ suite(
             .getByRole('button', { name: '查看本轮结果 ↗', exact: true })
             .click();
           expect(await f.page.getByLabel('原会话').textContent()).toBe(CHAT);
-          expect(f.requests.filter((r) => r.method === 'PATCH')).toHaveLength(1);
+          expect(f.requests.filter((r) => r.method === 'PATCH')).toHaveLength(
+            1,
+          );
           expect(f.requests.filter((r) => r.method === 'POST')).toHaveLength(0);
           expect(
             await f.page.evaluate(
