@@ -14,8 +14,10 @@ import {
   WorkbenchTerminalBrowserFrameSchema,
   WorkbenchTerminalServerFrameSchema,
   TerminalTargetSchema,
+  TerminalStreamModeSchema,
   workbenchTerminalSocketPath,
   workbenchTerminalProtocol,
+  workbenchTerminalStreamProtocol,
   bridgeSocketMaximumFrameBytes,
   bridgeSocketMaximumBufferedBytes,
   terminalMaximumPending,
@@ -73,6 +75,9 @@ export function createTerminalLoopbackAuthorization(port) {
               resolve({
                 target: TerminalTargetSchema.parse(result.target),
                 deviceName: String(result.deviceName),
+                streamMode: TerminalStreamModeSchema.parse(
+                  result.streamMode ?? 'pull',
+                ),
               });
             } catch {
               reject(Error('TERMINAL_AUTH_RESPONSE_INVALID'));
@@ -104,9 +109,11 @@ export function createWorkbenchTerminalGateway({
     perMessageDeflate: false,
     maxPayload: bridgeSocketMaximumFrameBytes,
     handleProtocols: (protocols) =>
-      protocols.has(workbenchTerminalProtocol)
-        ? workbenchTerminalProtocol
-        : false,
+      protocols.has(workbenchTerminalStreamProtocol)
+        ? workbenchTerminalStreamProtocol
+        : protocols.has(workbenchTerminalProtocol)
+          ? workbenchTerminalProtocol
+          : false,
   });
   const owners = new Set(),
     admissions = new Set(),
@@ -159,6 +166,11 @@ export function createWorkbenchTerminalGateway({
       id: randomUUID(),
       ws,
       target: access.target,
+      streamMode:
+        ws.protocol === workbenchTerminalStreamProtocol &&
+        access.streamMode === 'push'
+          ? 'push'
+          : 'pull',
       work: createPendingWork(),
       channel: null,
       stopped: false,
@@ -292,7 +304,7 @@ export function createWorkbenchTerminalGateway({
         state.stop();
         return;
       } else if (frame.type === 'terminal.next') {
-        if (!pending.stream || pending.credit) {
+        if (state.streamMode === 'push' || !pending.stream || pending.credit) {
           state.stop();
           return;
         }
@@ -327,6 +339,7 @@ export function createWorkbenchTerminalGateway({
       (async () => {
         state.channel = await transport.openTerminal({
           target: state.target,
+          ...(state.streamMode === 'push' ? { streamMode: 'push' } : {}),
           id: state.id,
           onFrame: async (incoming) => {
             await channelReady.promise;
@@ -342,6 +355,7 @@ export function createWorkbenchTerminalGateway({
                 ...frame,
                 target: access.target,
                 deviceName: access.deviceName,
+                ...(state.streamMode === 'push' ? { streamMode: 'push' } : {}),
               });
               return;
             }
@@ -356,7 +370,10 @@ export function createWorkbenchTerminalGateway({
               frame.type === 'terminal.frame' ||
               frame.type === 'terminal.fragment'
             ) {
-              if (!pending.stream || !pending.credit)
+              if (
+                !pending.stream ||
+                (state.streamMode === 'pull' && !pending.credit)
+              )
                 throw Error('TERMINAL_UNSOLICITED_OUTPUT');
               if (frame.type === 'terminal.fragment') {
                 const previous = pending.fragment;
@@ -422,7 +439,10 @@ export function createWorkbenchTerminalGateway({
         if (
           req.method !== 'GET' ||
           req.headers.upgrade?.toLowerCase() !== 'websocket' ||
-          req.headers['sec-websocket-protocol'] !== workbenchTerminalProtocol
+          ![
+            workbenchTerminalProtocol,
+            workbenchTerminalStreamProtocol,
+          ].includes(req.headers['sec-websocket-protocol'])
         )
           throw Error();
       } catch {

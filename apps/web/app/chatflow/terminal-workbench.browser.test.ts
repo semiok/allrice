@@ -11,6 +11,7 @@ import {
   type TerminalNativeFrameSchema,
   WorkbenchTerminalBrowserFrameSchema,
   type TerminalTarget,
+  type TerminalStreamMode,
 } from '@allrice/contracts';
 import { nativeTerminalAssetResponse } from '../../lib/chatflow/native-terminal-asset';
 
@@ -42,6 +43,8 @@ type FixtureState = {
   screenRequests: number;
   inputs: Array<{ type: string; sequence: number; data?: string }>;
   errors: string[];
+  streamMode: TerminalStreamMode;
+  nextCredits: number;
 };
 
 suite('official terminal browser adapter', { timeout: 30000 }, () => {
@@ -140,7 +143,10 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
             if (client.readyState === 1) client.send(JSON.stringify(frame));
           };
           const deliver = (requestId: string, stream: Stream) => {
-            if (stream.credit && stream.missing) {
+            if (
+              (state.streamMode === 'push' || stream.credit) &&
+              stream.missing
+            ) {
               streams.delete(requestId);
               send({
                 version: 1,
@@ -153,20 +159,25 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
               });
               return;
             }
-            if (!stream.credit || !stream.pending.length) return;
-            stream.credit = false;
-            send({
-              version: 1,
-              type: 'terminal.frame',
-              requestId,
-              frame: stream.pending.shift(),
-            });
+            while (
+              stream.pending.length &&
+              (state.streamMode === 'push' || stream.credit)
+            ) {
+              stream.credit = false;
+              send({
+                version: 1,
+                type: 'terminal.frame',
+                requestId,
+                frame: stream.pending.shift(),
+              });
+            }
           };
           send({
             version: 1,
             type: 'terminal.ready',
             target,
             deviceName: 'Fixture.local',
+            ...(state.streamMode === 'push' ? { streamMode: 'push' } : {}),
           });
           client.on('message', (raw) => {
             try {
@@ -178,6 +189,9 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
                 return;
               }
               if (frame.type === 'terminal.next') {
+                state.nextCredits++;
+                if (state.streamMode === 'push')
+                  throw Error('Push stream must not issue next credits');
                 const stream = streams.get(frame.requestId);
                 if (!stream || stream.credit)
                   throw Error('Unexpected duplicate stream credit');
@@ -201,8 +215,17 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
                   return;
                 }
                 if (frame.input.type === 'resize') {
-                  process.info.cols = frame.input.cols;
-                  process.info.rows = frame.input.rows;
+                  process.info = {
+                    ...process.info,
+                    cols: frame.input.cols,
+                    rows: frame.input.rows,
+                  };
+                  // The pinned native Host broadcasts resized state before ACK.
+                  stream.pending.push({
+                    type: 'state',
+                    info: process.info,
+                    writable: true,
+                  });
                 }
                 stream.pending.push({
                   type: 'ack',
@@ -304,6 +327,7 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
                     credit: false,
                     missing: true,
                   });
+                  deliver(frame.requestId, streams.get(frame.requestId)!);
                   return;
                 }
                 const pending: Frame[] =
@@ -328,6 +352,7 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
                   pending,
                   credit: false,
                 });
+                deliver(frame.requestId, streams.get(frame.requestId)!);
               }
             } catch (error) {
               state.errors.push(
@@ -365,6 +390,7 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
       waitForTerminal?: boolean;
       delayScreen?: Promise<void>;
       failModel?: boolean;
+      streamMode?: TerminalStreamMode;
     } = {},
   ) {
     const token = randomUUID();
@@ -376,6 +402,8 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
       errors: [],
       connections: 0,
       screenRequests: 0,
+      streamMode: options.streamMode ?? 'pull',
+      nextCredits: 0,
     };
     fixtures.set(token, state);
     const context = await browser.newContext({
@@ -426,6 +454,84 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
       },
     };
   }
+
+  it('renders a continuous 205-key native burst in the official model/xterm without network credits', async () => {
+    const f = await fixture({ streamMode: 'push' });
+    try {
+      const input = f.page.locator('[data-sidebar-terminal] textarea');
+      await expect
+        .poll(() =>
+          input.evaluate(
+            (element) => (element as HTMLTextAreaElement).readOnly,
+          ),
+        )
+        .toBe(false);
+      // Writable input does not prove that xterm has parsed its first snapshot.
+      await expect
+        .poll(
+          async () =>
+            (await f.page.locator('.xterm-rows').textContent())?.replace(
+              /\s/gu,
+              '',
+            ) ?? '',
+          { timeout: 5000 },
+        )
+        .toContain('native%');
+      await input.pressSequentially('x'.repeat(205), { delay: 1 });
+      await expect
+        .poll(
+          () =>
+            f.state.inputs
+              .filter((item) => item.type === 'write')
+              .map((item) => item.data)
+              .join(''),
+          { timeout: 5000 },
+        )
+        .toBe('x'.repeat(205));
+      await expect
+        .poll(
+          async () =>
+            (await f.page.locator('.xterm-rows').textContent())?.replace(
+              /\s/gu,
+              '',
+            ) ?? '',
+          { timeout: 5000 },
+        )
+        .toContain('x'.repeat(205));
+      await input.press('Tab');
+      await input.press('Enter');
+      await input.press('Control+c');
+      await expect
+        .poll(() =>
+          f.state.inputs
+            .filter((item) => item.type === 'write')
+            .map((item) => item.data)
+            .join(''),
+        )
+        .toBe('x'.repeat(205) + '\t\r\x03');
+      expect(f.state.nextCredits).toBe(0);
+      expect(f.state.creates).toBe(1);
+    } catch (error) {
+      console.error('Terminal burst fixture state', {
+        inputBytes: f.state.inputs
+          .filter((item) => item.type === 'write')
+          .map((item) => item.data)
+          .join('').length,
+        host: [...f.state.processes.values()].map((process) => ({
+          cols: process.info.cols,
+          rows: process.info.rows,
+          outputSequence: process.sequence,
+        })),
+        dom: await f.page.locator('.xterm-rows').evaluate((element) => ({
+          displayedXCount: element.textContent?.match(/x/gu)?.length ?? 0,
+          rect: element.getBoundingClientRect().toJSON(),
+        })),
+      });
+      throw error;
+    } finally {
+      await f.close();
+    }
+  });
 
   it('passes raw Tab, Enter and Ctrl+C through official xterm and native ACK ordering', async () => {
     const f = await fixture();

@@ -4,6 +4,7 @@ import {
   TerminalTargetSchema,
   UuidSchema,
   type RequestContext,
+  type TerminalStreamMode,
 } from '@allrice/contracts';
 import { bridgeDeviceStatus, BridgeDataError } from './bridge.ts';
 import { getDatabase } from './core/client.ts';
@@ -84,10 +85,13 @@ export async function resolveWorkbenchTerminalTarget(
     // revalidation request itself proves current transport reachability.
     if (
       !environment ||
-      environment.humanTerminalVersion !== 1 ||
+      (environment.humanTerminalVersion !== 1 &&
+        environment.humanTerminalVersion !== 2) ||
       (requirePresence && !target.present)
     )
       throw new BridgeDataError('device_offline');
+    const streamMode: TerminalStreamMode =
+      environment.humanTerminalVersion === 2 ? 'push' : 'pull';
     return {
       target: TerminalTargetSchema.parse({
         organizationId: context.organizationId,
@@ -102,6 +106,7 @@ export async function resolveWorkbenchTerminalTarget(
         label: target.label,
       }),
       deviceName: target.name,
+      streamMode,
     };
   });
 }

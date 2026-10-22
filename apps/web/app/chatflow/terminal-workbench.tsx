@@ -31,7 +31,7 @@ import type { TerminalIdentity, TerminalPin } from './terminal-transport';
 import guide from './workbench-modules.module.css';
 import css from './terminal-workbench.module.css';
 
-type TerminalDevice = BridgeDevice & { humanTerminalVersion?: 1 };
+type TerminalDevice = BridgeDevice & { humanTerminalVersion?: 1 | 2 };
 type Target = TerminalPin & {
   deviceName: string;
   label: string;
@@ -146,7 +146,9 @@ export function TerminalGuide(props: {
           grantId: grant.id,
           label: grant.label,
           online: device.status === 'online',
-          supported: device.humanTerminalVersion === 1,
+          supported:
+            device.humanTerminalVersion === 1 ||
+            device.humanTerminalVersion === 2,
         })),
       ),
     [devices],
