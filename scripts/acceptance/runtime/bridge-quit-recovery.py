@@ -63,7 +63,9 @@ core.chmod(0o700)
 subprocess.run(["/usr/bin/codesign", "--force", "--deep", "--sign", "-",
                 "--timestamp=none", str(app)], check=True, capture_output=True)
 report = {"fixture": "packaged native host with synthetic Core, no real device state",
+          "sourceHostSha256": hashlib.sha256((source / "Contents/MacOS/RiceBridgeApp").read_bytes()).hexdigest(),
           "hostSha256": hashlib.sha256(host.read_bytes()).hexdigest(),
+          "outerFixtureAdhocResigned": True,
           "version": info["CFBundleVersion"], "root": str(root), "cases": []}
 
 
@@ -99,6 +101,19 @@ def menu(pid, title):
     return ui(pid, [f'click menu item "{title}" of menu 1 of menu bar item "Rice" of last menu bar'])
 
 
+def recovery_menu_visible(pid):
+    # The previous status window is a separate presentation observation. The
+    # menu is the recovery entrypoint; observe it first, then explicitly open
+    # and verify the real status view without inferring why a window is absent.
+    ui(pid, ['key code 53'])
+    ui(pid, ['click menu bar item "Rice" of last menu bar'])
+    try:
+        titles = ui(pid, ['get name of menu items of menu 1 of menu bar item "Rice" of last menu bar'])
+        return "退出未完成" in titles and "退出恢复…" in titles
+    finally:
+        ui(pid, ['key code 53'])
+
+
 def status(pid):
     return ui(pid, ['get value of text area 1 of scroll area 1 of window "Rice Bridge · 本地电脑"'])
 
@@ -106,6 +121,15 @@ def status(pid):
 def press(pid, title):
     wait(lambda: title in ui(pid, ['get name of buttons of window 1']))
     ui(pid, [f'click button "{title}" of window 1'])
+
+
+def process_absent(pid):
+    observed = subprocess.run(["ps", "-p", str(pid), "-o", "args="],
+                              capture_output=True, text=True, timeout=2)
+    if observed.returncode == 0:
+        return False
+    assert observed.returncode == 1 and not observed.stdout.strip() and not observed.stderr.strip(), "process observation failed; absence unconfirmed"
+    return True
 
 
 try:
@@ -136,11 +160,19 @@ try:
             else:
                 if mode in ["hung", "ack-without-exit"]:
                     # Exercise the real production 60s boundary, no test override.
-                    wait(lambda: "退出未完成" in status(child.pid), 65)
-                    assert 59 <= time.monotonic() - started < 66
+                    wait(lambda: recovery_menu_visible(child.pid), 65)
+                    recovery_elapsed = time.monotonic() - started
+                    assert 59 <= recovery_elapsed < 66
+                    row["recoveryMenuObserved"] = True
+                    row["recoveryMenuAfterMs"] = round(recovery_elapsed * 1000)
+                    row["statusWindowVisibleAtRecovery"] = "Rice Bridge · 本地电脑" in ui(child.pid, ['get name of windows'])
+                    menu(child.pid, "查看状态…")
+                    wait(lambda: "退出未完成" in status(child.pid))
+                    row["recoveryStatusOpenedAndVerified"] = True
+                    row["recoveryStatusAfterMs"] = round((time.monotonic() - started) * 1000)
                 else:
                     wait(lambda: "退出未完成" in status(child.pid))
-                row["recoveryAfterMs"] = round((time.monotonic() - started) * 1000)
+                row["recoveryAfterMs"] = row.get("recoveryMenuAfterMs", round((time.monotonic() - started) * 1000))
                 assert child.poll() is None
                 menu(child.pid, "退出诊断与日志…")
                 wait(lambda: ui(child.pid, ['get name of buttons of window 1']).find("关闭") >= 0)
@@ -148,13 +180,23 @@ try:
                 parsed = json.loads(diagnostic)
                 assert parsed["coreResponse"] == "unavailable"
                 assert parsed["quitRecovery"] is True
+                assert parsed["coreRunning"] is True
+                assert parsed["waitLimitMs"] == 60000
+                if mode in ["hung", "ack-without-exit"]:
+                    assert parsed["hostQuitError"] == "DESKTOP_STOP_TIMEOUT"
+                row["recoveryDiagnostic"] = parsed
                 assert "deviceId" not in parsed and "workspaceLabels" not in parsed
                 press(child.pid, "关闭")
                 row["fallbackDiagnostics"] = True
                 if mode == "ack-without-exit":
+                    assert (root / "stop-count").read_text() == "1"
                     (root / "complete").touch()
                     wait(lambda: child.poll() is not None)
                     assert child.returncode == 0
+                    wait(lambda: process_absent(owned_core))
+                    assert (root / "stop-count").read_text() == "1"
+                    row["stopCount"] = 1
+                    row["lateOwnedCoreExitConfirmed"] = True
                     row["lateCompletionClosesHost"] = True
                 else:
                     menu(child.pid, "退出恢复…")
@@ -172,7 +214,9 @@ try:
                         assert child.returncode == 0
                         row["explicitOwnedCoreForceExit"] = True
             row["passed"] = True
-        except Exception:
+        except Exception as error:
+            row["failureType"] = type(error).__name__
+            row["failure"] = str(error)
             row["hostExitCode"] = child.poll()
             row["stopCount"] = (root / "stop-count").read_text() if (root / "stop-count").exists() else "none"
             try:
