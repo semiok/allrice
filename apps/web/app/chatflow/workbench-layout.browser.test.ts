@@ -6091,13 +6091,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         name: '工作过程',
         exact: true,
       });
-      const toggle = process.getByRole('button');
+      const toggle = process.getByRole('button', { name: /^工作过程/ });
       await expect.poll(() => toggle.innerText()).toContain('1 次未成功');
       expect(await toggle.innerText()).toContain('1 次未成功');
       expect(await toggle.getAttribute('aria-expanded')).toBe('false');
       expect(await process.getByRole('list').count()).toBe(0);
       await toggle.focus();
       await f.page.keyboard.press('Enter');
+      await process
+        .getByRole('region', { name: '工作步骤', exact: true })
+        .getByRole('button')
+        .click();
       const groups = process.getByRole('list', { name: '工作步骤' });
       expect(await groups.getByRole('listitem').count()).toBe(10);
       expect(await groups.innerText()).toContain('已查询第 1 个标的的行情');
@@ -7481,6 +7485,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       streamingOutput: true,
       controlledStream: true,
     });
+    f.state.preferences[user]!.transcriptView = 'standard';
     const operations = ['first', 'second'].map((nativeCallId, index) => ({
       nativeCallId,
       createdAt: now,
