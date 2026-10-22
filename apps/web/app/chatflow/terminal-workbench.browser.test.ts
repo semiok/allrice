@@ -215,8 +215,17 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
                   return;
                 }
                 if (frame.input.type === 'resize') {
-                  process.info.cols = frame.input.cols;
-                  process.info.rows = frame.input.rows;
+                  process.info = {
+                    ...process.info,
+                    cols: frame.input.cols,
+                    rows: frame.input.rows,
+                  };
+                  // The pinned native Host broadcasts resized state before ACK.
+                  stream.pending.push({
+                    type: 'state',
+                    info: process.info,
+                    writable: true,
+                  });
                 }
                 stream.pending.push({
                   type: 'ack',
@@ -457,6 +466,17 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
           ),
         )
         .toBe(false);
+      // Writable input does not prove that xterm has parsed its first snapshot.
+      await expect
+        .poll(
+          async () =>
+            (await f.page.locator('.xterm-rows').textContent())?.replace(
+              /\s/gu,
+              '',
+            ) ?? '',
+          { timeout: 5000 },
+        )
+        .toContain('native%');
       await input.pressSequentially('x'.repeat(205), { delay: 1 });
       await expect
         .poll(
@@ -471,12 +491,13 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
       await expect
         .poll(
           async () =>
-            (await f.page.locator('.xterm-rows').textContent())
-              ?.replace(/\s/gu, '')
-              .includes('x'.repeat(205)),
+            (await f.page.locator('.xterm-rows').textContent())?.replace(
+              /\s/gu,
+              '',
+            ) ?? '',
           { timeout: 5000 },
         )
-        .toBe(true);
+        .toContain('x'.repeat(205));
       await input.press('Tab');
       await input.press('Enter');
       await input.press('Control+c');
@@ -490,6 +511,23 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
         .toBe('x'.repeat(205) + '\t\r\x03');
       expect(f.state.nextCredits).toBe(0);
       expect(f.state.creates).toBe(1);
+    } catch (error) {
+      console.error('Terminal burst fixture state', {
+        inputBytes: f.state.inputs
+          .filter((item) => item.type === 'write')
+          .map((item) => item.data)
+          .join('').length,
+        host: [...f.state.processes.values()].map((process) => ({
+          cols: process.info.cols,
+          rows: process.info.rows,
+          outputSequence: process.sequence,
+        })),
+        dom: await f.page.locator('.xterm-rows').evaluate((element) => ({
+          displayedXCount: element.textContent?.match(/x/gu)?.length ?? 0,
+          rect: element.getBoundingClientRect().toJSON(),
+        })),
+      });
+      throw error;
     } finally {
       await f.close();
     }
