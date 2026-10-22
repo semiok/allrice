@@ -96,7 +96,7 @@ export async function verifyDeliveryBrowser(input: {
     await page.goto(`http://127.0.0.1:${address.port}`);
     const name = input.artifact.version.fileName;
     await page
-      .getByRole('button', { name: `打开 ${name}`, exact: true })
+      .getByRole('button', { name: `侧栏预览 ${name}`, exact: true })
       .first()
       .waitFor();
     if (input.failed) {
@@ -107,7 +107,7 @@ export async function verifyDeliveryBrowser(input: {
       await page.keyboard.press('Escape');
     }
     await page
-      .getByRole('button', { name: `打开 ${name}`, exact: true })
+      .getByRole('button', { name: `侧栏预览 ${name}`, exact: true })
       .first()
       .click();
     const link = page.getByRole('link', { name: '下载', exact: true });
