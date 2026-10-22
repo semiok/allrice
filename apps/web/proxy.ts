@@ -43,6 +43,7 @@ const bridgeDevicePaths = new Set([
   '/api/v1/bridge/device/workspace-selections/next',
   '/api/v1/bridge/device/revoke',
   '/api/v1/bridge/device/runtime-profile',
+  '/api/v1/bridge/device/terminals/authorize',
   '/api/v1/bridge/device/operations/next',
   '/api/v1/bridge/browser-workspaces',
   '/api/v1/bridge/browser-workspaces/capture',
