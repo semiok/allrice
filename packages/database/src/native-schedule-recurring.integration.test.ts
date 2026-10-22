@@ -205,8 +205,8 @@ suite(
       id: string,
       scheduledAt = new Date(Date.now() - 180_000).toISOString(),
     ) {
-      const c = (await snapshot(id)).control;
-      const rule = c.rule;
+      const c = (await snapshot(id)).control,
+        rule = c.rule;
       await mutate({ kind: 'session_initializing', controlId: c.controlId });
       await mutate({ kind: 'session_ready', controlId: c.controlId });
       // Explicit synthetic component receipt. Actual timer behavior is separately
@@ -875,9 +875,11 @@ suite(
       ).toHaveLength(1);
     });
     it('manual metadata and the first legal native target can share an instant without competing for scheduled uniqueness', async () => {
-      const t = await task('同刻索引身份隔离', undefined, {
-          prepareNative: false,
-        }),
+      const t = await task(
+          '同刻索引身份隔离',
+          { kind: 'every', seconds: 60 },
+          { prepareNative: false },
+        ),
         manual = await runManualAutomation(f.context, f.workspaceId, t.id, {
           requestId: randomUUID(),
           expectedRevision: 1,

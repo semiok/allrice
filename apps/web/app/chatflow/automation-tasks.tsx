@@ -42,8 +42,8 @@ import {
 import native from './dsh-upstream/automation/TaskManagerPage.module.css';
 import card from './dsh-upstream/automation/ScheduleCreateCard.module.css';
 import css from './automation-tasks.module.css';
-import { RecurringWeekdays } from './recurring-weekdays';
 import { AutomationManualRun } from './automation-manual-run';
+import { RecurringWeekdays } from './recurring-weekdays';
 
 type Identity = {
   workspaceId: string;
