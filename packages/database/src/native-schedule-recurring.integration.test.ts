@@ -1458,24 +1458,38 @@ suite(
         (select count(*)::int from allrice_runs) runs,
         (select count(*)::int from allrice_jobs) jobs,
         (select count(*)::int from allrice_audit_events) audits`
-        )[0];
+        )[0]!;
       const beforeTransaction = await transactionalCounts();
       await f.db`update allrice_memberships set role='viewer' where user_id=${f.ownerId} and organization_id=${f.organizationId}`;
       try {
         await expect(
           runManualAutomation(f.context, f.workspaceId, t.id, input),
         ).rejects.toMatchObject({ code: 'authority_denied' });
+        expect(await transactionalCounts()).toEqual(beforeTransaction);
       } finally {
         await f.db`update allrice_memberships set role='admin' where user_id=${f.ownerId} and organization_id=${f.organizationId}`;
       }
       await cloud(false);
+      const cloudDisabled = await transactionalCounts();
+      expect(cloudDisabled).toEqual({
+        ...beforeTransaction,
+        audits: beforeTransaction.audits + 1,
+      });
       try {
         await expect(
           runManualAutomation(f.context, f.workspaceId, t.id, input),
         ).rejects.toMatchObject({ code: 'authority_denied' });
+        expect(await transactionalCounts()).toEqual(cloudDisabled);
       } finally {
         await cloud(true);
       }
+      // The two authorized setting changes each write one audit. Denied
+      // manual calls must still add no business row or audit of their own.
+      const cloudRestored = await transactionalCounts();
+      expect(cloudRestored).toEqual({
+        ...beforeTransaction,
+        audits: beforeTransaction.audits + 2,
+      });
       await expect(
         runManualAutomation(
           { ...f.context, actor: { type: 'user', id: randomUUID() } },
@@ -1484,13 +1498,15 @@ suite(
           input,
         ),
       ).rejects.toMatchObject({ code: 'authority_denied' });
+      expect(await transactionalCounts()).toEqual(cloudRestored);
       await expect(
         runManualAutomation(f.context, randomUUID(), t.id, input),
       ).rejects.toMatchObject({ code: 'unavailable' });
+      expect(await transactionalCounts()).toEqual(cloudRestored);
       expect(
         await f.db`select id from allrice_automation_runs where automation_id=${t.id}`,
       ).toHaveLength(0);
-      expect(await transactionalCounts()).toEqual(beforeTransaction);
+      expect(await transactionalCounts()).toEqual(cloudRestored);
       expect(await manualBoundary(t.id)).toEqual(before);
     });
     it('confirmed rollback leaves zero work; lost manual COMMIT ACK only reads the original durable request', async () => {
@@ -2472,9 +2488,26 @@ suite(
     });
     it('rejects a legacy internal message even before the dispatcher fills run_id', async () => {
       const t = await task(),
-        occurrenceId = randomUUID();
+        occurrenceId = randomUUID(),
+        legacyId = randomUUID();
+      // A legacy NULL occurrence needs a genuine legacy parent. Keep the
+      // native birth fence and the leased source/target setup unchanged.
+      await f.db`insert into allrice_automations
+        (id,organization_id,workspace_id,owner_id,name,prompt,trigger_type,schedule,status,
+         conversation_mode,employee_assignment_id,session_id,clock_owner)
+        values(${legacyId},${f.organizationId},${f.workspaceId},${f.ownerId},'Legacy internal source',
+          'Isolated legacy source only','schedule',${f.db.json({ frequency: 'daily', time: '08:30', timezone: 'Asia/Shanghai' })},
+          'paused','reuse',${f.assignmentId},${t.sessionId},'legacy')`;
       await f.db`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,status,scheduled_for)
-        values(${occurrenceId},${f.organizationId},${f.workspaceId},${t.id},'queued',clock_timestamp())`;
+        values(${occurrenceId},${f.organizationId},${f.workspaceId},${legacyId},'queued',clock_timestamp())`;
+      const [legacy] =
+        await f.db`select ar.run_id,ar.conversation_snapshot,a.clock_owner
+        from allrice_automation_runs ar join allrice_automations a on a.id=ar.automation_id where ar.id=${occurrenceId}`;
+      expect(legacy).toEqual({
+        run_id: null,
+        conversation_snapshot: null,
+        clock_owner: 'legacy',
+      });
       const r = await leasedChat(
         chatRequest,
         { kind: 'every', seconds: 120 },

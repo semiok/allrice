@@ -1022,6 +1022,14 @@ suite(
         task: { revision: 6, conversationMode: 'reuse' },
       });
       await sqlBinding(t.id);
+      // Binding the SQL Task does not run the production settlement tick.
+      // Use the same bounded materializer path as the lifecycle fixture below.
+      for (
+        let i = 0;
+        i < 8 && (await operation(t, resume.operationId)).status === 'pending';
+        i++
+      )
+        await materializeNativeCalendar(calendar(), writer, reference);
       expect(await operation(t, resume.operationId)).toMatchObject({
         status: 'applied',
         task: { status: 'enabled', revision: 6 },

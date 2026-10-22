@@ -1347,9 +1347,25 @@ suite(
     });
     it('does not promote a previous internal trigger into human authority through confirmation', async () => {
       const a = await task();
-      const occurrenceId = randomUUID();
+      const occurrenceId = randomUUID(),
+        legacyId = randomUUID();
+      // Seed only the legacy source row; never downgrade a new native AR.
+      await f.db`insert into allrice_automations
+        (id,organization_id,workspace_id,owner_id,name,prompt,trigger_type,schedule,status,
+         conversation_mode,employee_assignment_id,session_id,clock_owner)
+        values(${legacyId},${f.organizationId},${f.workspaceId},${f.ownerId},'Legacy internal source',
+          'Isolated legacy source only','schedule',${f.db.json({ frequency: 'daily', time: '08:30', timezone: 'Asia/Shanghai' })},
+          'paused','reuse',${f.assignmentId},${a.sessionId},'legacy')`;
       await f.db`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,status,scheduled_for)
-        values(${occurrenceId},${f.organizationId},${f.workspaceId},${a.task.id},'queued',clock_timestamp())`;
+        values(${occurrenceId},${f.organizationId},${f.workspaceId},${legacyId},'queued',clock_timestamp())`;
+      const [legacySource] =
+        await f.db`select ar.run_id,ar.conversation_snapshot,a.clock_owner
+        from allrice_automation_runs ar join allrice_automations a on a.id=ar.automation_id where ar.id=${occurrenceId}`;
+      expect(legacySource).toEqual({
+        run_id: null,
+        conversation_snapshot: null,
+        clock_owner: 'legacy',
+      });
       const first = await leasedChat(colloquialRequest, occurrenceId);
       await first.complete(clarification);
       const r = await leasedChat('是的', randomUUID(), first.input.sessionId);
@@ -1401,9 +1417,25 @@ suite(
     });
     it('rejects a legacy occurrence before its run_id link is filled', async () => {
       const a = await task(),
-        occurrenceId = randomUUID();
+        occurrenceId = randomUUID(),
+        legacyId = randomUUID();
+      // Seed only the legacy source row; never downgrade a new native AR.
+      await f.db`insert into allrice_automations
+        (id,organization_id,workspace_id,owner_id,name,prompt,trigger_type,schedule,status,
+         conversation_mode,employee_assignment_id,session_id,clock_owner)
+        values(${legacyId},${f.organizationId},${f.workspaceId},${f.ownerId},'Legacy internal source',
+          'Isolated legacy source only','schedule',${f.db.json({ frequency: 'daily', time: '08:30', timezone: 'Asia/Shanghai' })},
+          'paused','reuse',${f.assignmentId},${a.sessionId},'legacy')`;
       await f.db`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,status,scheduled_for)
-        values(${occurrenceId},${f.organizationId},${f.workspaceId},${a.task.id},'queued',clock_timestamp())`;
+        values(${occurrenceId},${f.organizationId},${f.workspaceId},${legacyId},'queued',clock_timestamp())`;
+      const [legacySource] =
+        await f.db`select ar.run_id,ar.conversation_snapshot,a.clock_owner
+        from allrice_automation_runs ar join allrice_automations a on a.id=ar.automation_id where ar.id=${occurrenceId}`;
+      expect(legacySource).toEqual({
+        run_id: null,
+        conversation_snapshot: null,
+        clock_owner: 'legacy',
+      });
       const r = await leasedChat('请在 15 分钟后回复校验词。', occurrenceId);
       try {
         const [legacy] =
