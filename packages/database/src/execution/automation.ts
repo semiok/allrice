@@ -1137,7 +1137,7 @@ export async function claimDueAutomations(limit = 10) {
           organization_id, workspace_id, automation_id, scheduled_for
         ) values (
           ${row.organization_id}, ${row.workspace_id}, ${row.id}, ${scheduledFor}
-        ) on conflict (automation_id, scheduled_for) where folder_event_id is null do nothing
+        ) on conflict (automation_id, scheduled_for) where folder_event_id is null and manual_request_id is null do nothing
         returning *
       `;
         if (!runs[0]) {

@@ -38,6 +38,10 @@ import {
 } from './automation-catalog.ts';
 import { updateWorkAutomation } from './work-automation.ts';
 import {
+  runManualAutomation,
+  getManualAutomationRun,
+} from './automation-manual.ts';
+import {
   claimNextJob,
   startClaimedJob,
   heartbeatJob,
@@ -266,6 +270,60 @@ suite(
       });
       return { control, write };
     }
+    it('manual execution preserves a native once target and cancellation forbids only new manual requests', async () => {
+      const t = await task();
+      const boundary = async () => ({
+        plan: (
+          await f.db`select to_jsonb(a) data from allrice_automations a where id=${t.task.id}`
+        )[0]!.data,
+        control: (
+          await f.db`select to_jsonb(c) data from allrice_native_once_controls c where automation_id=${t.task.id}`
+        )[0]!.data,
+        journal:
+          await f.db`select * from allrice_native_once_journal where control_id=(select control_id from allrice_native_once_controls where automation_id=${t.task.id}) order by write_id`,
+        occurrences:
+          await f.db`select * from allrice_native_once_occurrences where automation_id=${t.task.id}`,
+      });
+      const before = await boundary(),
+        input = { requestId: randomUUID(), expectedRevision: 1 },
+        manual = await runManualAutomation(
+          f.context,
+          f.workspaceId,
+          t.task.id,
+          input,
+        );
+      expect(await boundary()).toEqual(before);
+      expect(
+        (await getAutomationCatalogTask(f.context, f.workspaceId, t.task.id))
+          .occurrences[0],
+      ).toMatchObject({
+        id: manual.automationRunId,
+        source: { kind: 'manual', requestId: input.requestId },
+      });
+      await cancelOnceTask(f.context, t.sessionId, t.task.id);
+      const canceled = await boundary();
+      await expect(
+        runManualAutomation(f.context, f.workspaceId, t.task.id, {
+          requestId: randomUUID(),
+          expectedRevision: 1,
+        }),
+      ).rejects.toMatchObject({ code: 'unavailable' });
+      expect(
+        (
+          await getManualAutomationRun(
+            f.context,
+            f.workspaceId,
+            t.task.id,
+            input.requestId,
+          )
+        ).run.id,
+      ).toBe(manual.run.id);
+      expect(
+        (await runManualAutomation(f.context, f.workspaceId, t.task.id, input))
+          .run.id,
+      ).toBe(manual.run.id);
+      expect(await boundary()).toEqual(canceled);
+    });
     async function counts() {
       const [row] =
         await f.db`select (select count(*)::int from allrice_messages) messages,
