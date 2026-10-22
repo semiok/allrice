@@ -118,6 +118,53 @@ class MemoryStorage {
 }
 
 describe('recurring task form parameters', () => {
+  it('preserves weekly execution days, timezone and seconds through editing and recovery', () => {
+    const weekly = task({
+      rule: {
+        kind: 'weekly',
+        weekdays: [1, 3, 7],
+        time: '09:30:05',
+        timezone: 'America/New_York',
+      },
+    });
+    const form = recurringDraft(weekly);
+    expect(form).toMatchObject({
+      kind: 'weekly',
+      weekdays: [1, 3, 7],
+      time: '09:30',
+      timezone: 'America/New_York',
+    });
+    expect(recurringContent(form, weekly.rule).rule).toEqual(weekly.rule);
+    expect(
+      recurringContent({ ...form, weekdays: [2, 7] }, weekly.rule).rule,
+    ).toEqual({ ...weekly.rule, weekdays: [2, 7] });
+    const changed = recurringContent(
+      { ...form, weekdays: [7, 2], time: '10:00' },
+      weekly.rule,
+    );
+    expect(changed.rule).toEqual({
+      kind: 'weekly',
+      weekdays: [2, 7],
+      time: '10:00:00',
+      timezone: 'America/New_York',
+    });
+    const intent = {
+      ...createIntent(),
+      body: { clientRequestId: REQUEST, ...changed },
+    };
+    const storage = new MemoryStorage();
+    saveRecurringIntent(storage, intent);
+    expect(parseRecurringIntent(storage.getItem(KEY)!, KEY)).toEqual(intent);
+  });
+
+  it.each([[], [0], [8], [1, 1], [1.5]].map((weekdays) => ({ weekdays })))(
+    'rejects invalid weekly days %j before a write',
+    ({ weekdays }) => {
+      expect(() =>
+        recurringContent(draft({ kind: 'weekly', weekdays })),
+      ).toThrow();
+    },
+  );
   it('creates flat normalized content with whole-second intervals', () => {
     expect(
       recurringContent(

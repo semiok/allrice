@@ -310,7 +310,9 @@ export async function openNativeScheduleControlHost(
         prompt: PROMPT,
         ...(timing.kind === 'every'
           ? { every_seconds: timing.every_seconds }
-          : { daily: timing.daily }),
+          : timing.kind === 'weekly'
+            ? { weekly: timing.weekly }
+            : { daily: timing.daily }),
       });
     },
     async updateRecurring(sessionId, id, expected, rule) {
@@ -367,8 +369,11 @@ export async function openNativeScheduleControlHost(
     )
       return { kind: 'every', every_seconds: rule.seconds };
     if (
-      rule?.kind === 'daily' &&
-      Object.keys(rule).sort().join(',') === 'kind,time,timezone' &&
+      ['daily', 'weekly'].includes(rule?.kind) &&
+      Object.keys(rule).sort().join(',') ===
+        (rule.kind === 'weekly'
+          ? 'kind,time,timezone,weekdays'
+          : 'kind,time,timezone') &&
       /^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/.test(rule.time) &&
       typeof rule.timezone === 'string' &&
       rule.timezone.length <= 64
@@ -377,6 +382,29 @@ export async function openNativeScheduleControlHost(
         new Intl.DateTimeFormat('en', { timeZone: rule.timezone });
       } catch {
         throw new NativeScheduleOnceError('binding_invalid');
+      }
+      if (rule.kind === 'weekly') {
+        if (
+          !Array.isArray(rule.weekdays) ||
+          rule.weekdays.length < 1 ||
+          rule.weekdays.length > 7 ||
+          !Array.from(rule.weekdays).every(
+            (day, i, days) =>
+              Number.isInteger(day) &&
+              day >= 1 &&
+              day <= 7 &&
+              (i === 0 || day > days[i - 1]),
+          )
+        )
+          throw new NativeScheduleOnceError('binding_invalid');
+        return {
+          kind: 'weekly',
+          weekly: {
+            time: rule.time,
+            time_zone: rule.timezone,
+            weekdays: [...rule.weekdays],
+          },
+        };
       }
       return {
         kind: 'daily',

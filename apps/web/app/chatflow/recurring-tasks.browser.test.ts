@@ -580,6 +580,86 @@ suite('recurring tasks through the actual clock header', () => {
     });
   }
 
+  it.each([1280, 390])(
+    'creates and edits a weekly rule without losing weekdays or exposing another scope at %s px',
+    async (width) => {
+      const f = await fixture(width);
+      try {
+        await open(f.page);
+        const form = await fill(f.page, '每周核对');
+        await form
+          .getByRole('combobox', { name: /执行周期/ })
+          .selectOption('weekly');
+        await form.getByLabel('执行时间', { exact: true }).fill('09:30');
+        await form
+          .getByLabel('IANA时区', { exact: true })
+          .fill('Asia/Shanghai');
+        await form.getByLabel('周三', { exact: true }).check();
+        await form.getByRole('button', { name: '创建', exact: true }).click();
+        const row = card(f.page, '每周核对');
+        await row
+          .getByText('每周一、三 09:30 · Asia/Shanghai · 版本 1', {
+            exact: true,
+          })
+          .waitFor();
+        const body = CreateRecurringTaskInputSchema.parse(
+          JSON.parse(writes(f.state, 'POST')[0]!.body),
+        );
+        expect(body.rule).toEqual({
+          kind: 'weekly',
+          weekdays: [1, 3],
+          time: '09:30:00',
+          timezone: 'Asia/Shanghai',
+        });
+        await row.getByRole('button', { name: '编辑', exact: true }).click();
+        const edit = panel(f.page).getByRole('form', {
+          name: '编辑周期任务',
+          exact: true,
+        });
+        expect(await edit.getByLabel('周一', { exact: true }).isChecked()).toBe(
+          true,
+        );
+        expect(await edit.getByLabel('周三', { exact: true }).isChecked()).toBe(
+          true,
+        );
+        await edit.getByLabel('周一', { exact: true }).uncheck();
+        await edit.getByLabel('周日', { exact: true }).check();
+        await edit
+          .getByRole('button', { name: '保存修改', exact: true })
+          .click();
+        await row
+          .getByText('每周三、日 09:30 · Asia/Shanghai · 版本 2', {
+            exact: true,
+          })
+          .waitFor();
+        const changed = ChangeRecurringTaskInputSchema.parse(
+          JSON.parse(writes(f.state, 'PATCH')[0]!.body),
+        );
+        expect(changed).toMatchObject({
+          action: 'update',
+          expectedRevision: 1,
+          rule: { kind: 'weekly', weekdays: [3, 7] },
+        });
+        expect(
+          writes(f.state).every(
+            (request) =>
+              request.sessionId === CHAT && request.viewer === VIEWER,
+          ),
+        ).toBe(true);
+        expect(await saved(f.page)).toEqual([]);
+        expect(
+          await f.page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBe(true);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+    20_000,
+  );
+
   it.each([
     { width: 1280, daily: false },
     { width: 1280, daily: true },
