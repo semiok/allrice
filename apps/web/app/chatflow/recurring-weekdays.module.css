@@ -1,0 +1,22 @@
+.weekdays {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid #d2d7df;
+  border-radius: 6px;
+}
+
+.weekdays label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.weekdays label input {
+  width: 16px;
+  min-height: 16px;
+  height: 16px;
+  padding: 0;
+}

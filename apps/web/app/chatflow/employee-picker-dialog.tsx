@@ -2,8 +2,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   EmployeeInstanceSchema,
-  employeeColorPalette,
-  type EmployeePaletteColor,
   type EmployeeInstance,
 } from '@allrice/contracts';
 import {
@@ -20,6 +18,13 @@ import {
 import css from './employee-sidebar.module.css';
 import dialog from './compact-dialog.module.css';
 import createCss from './employee-create.module.css';
+import formCss from './employee-profile-form.module.css';
+import {
+  EmployeeProfileForm,
+  defaultEmployeeProfileFormValues,
+  mergeEmployeeProfileForm,
+  type EmployeeProfileFormValues,
+} from './employee-profile-form';
 import {
   employeeChoices,
   employeeChoiceId,
@@ -44,25 +49,14 @@ export function EmployeePickerDialog({
     (workspace.employees.find((e) => e.isDefault) ?? workspace.employees[0])
       ?.id ?? '';
   const [creating, setCreating] = useState(false);
-  const [name, setName] = useState('');
-  const [color, setColor] = useState<EmployeePaletteColor>('blue');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const request = useRef<{ payload: string; id: string } | null>(null);
   const active = useRef<AbortController | null>(null);
   useEffect(() => () => active.current?.abort(), []);
-  async function createEmployee() {
-    const normalizedName = name.trim();
-    if (active.current || !sourceId || !normalizedName) return;
-    const profile = {
-      name: normalizedName,
-      expressionStyle: 'structured',
-      appearance: {
-        avatarType: 'initials',
-        avatarValue: Array.from(normalizedName)[0]!,
-        accentColor: color,
-      },
-    };
+  async function createEmployee(values: EmployeeProfileFormValues) {
+    if (active.current || !sourceId || !values.name.trim()) return;
+    const profile = mergeEmployeeProfileForm({}, values);
     const payload = JSON.stringify({
       workspaceId: workspace.workspaceId,
       assignmentId: sourceId,
@@ -105,89 +99,30 @@ export function EmployeePickerDialog({
     <DshDialog
       key={creating ? 'create' : 'choose'}
       ariaLabel={creating ? '创建自己的 AI 员工' : '选择 AI 员工'}
-      eyebrow="新的工作"
+      eyebrow={creating ? undefined : '新的工作'}
       title={creating ? '创建自己的 AI 员工' : '这次和谁一起工作？'}
-      className={dialog.dialog}
-      bodyClassName={dialog.body}
-      onClose={onClose}
+      className={creating ? formCss.dialog : dialog.dialog}
+      bodyClassName={creating ? formCss.body : dialog.body}
+      onClose={() => {
+        if (!active.current) onClose();
+      }}
       initialFocusSelector={
-        creating ? '#employee-name' : '[data-create-employee]'
+        creating ? '[data-employee-name]' : '[data-create-employee]'
       }
     >
       {creating ? (
-        <form
-          className={createCss.form}
-          onSubmit={(event) => {
-            event.preventDefault();
-            void createEmployee();
+        <EmployeeProfileForm
+          mode="create"
+          initialValue={defaultEmployeeProfileFormValues}
+          busy={busy}
+          disabled={!sourceId}
+          error={error}
+          onSubmit={createEmployee}
+          onCancel={() => {
+            setError('');
+            setCreating(false);
           }}
-        >
-          <label className={createCss.nameLabel} htmlFor="employee-name">
-            员工名字
-          </label>
-          <input
-            id="employee-name"
-            className={createCss.nameInput}
-            value={name}
-            maxLength={120}
-            required
-            disabled={busy}
-            placeholder="例如： 文案专家、财务助手、商务分析师"
-            onChange={(event) => setName(event.target.value)}
-          />
-          <fieldset className={createCss.colors} disabled={busy}>
-            <legend>员工配色</legend>
-            <div className={createCss.palette}>
-              {(
-                Object.keys(employeeColorPalette) as EmployeePaletteColor[]
-              ).map((id) => (
-                <label key={id} className={createCss.colorChoice}>
-                  <input
-                    type="radio"
-                    name="employee-color"
-                    value={id}
-                    checked={color === id}
-                    onChange={() => setColor(id)}
-                  />
-                  <span
-                    className={createCss.swatch}
-                    style={{ backgroundColor: employeeColorPalette[id].value }}
-                    aria-hidden="true"
-                  >
-                    {color === id ? '✓' : ''}
-                  </span>
-                  <span>{employeeColorPalette[id].label}</span>
-                </label>
-              ))}
-            </div>
-          </fieldset>
-          <div
-            className={createCss.preview}
-            style={employeeAccentStyle(name, color)}
-            aria-label="员工预览"
-          >
-            <span className={createCss.avatar} aria-hidden="true">
-              {Array.from(name.trim())[0] || 'A'}
-            </span>
-            <div>
-              <strong>{name.trim() || '你的 AI 员工'}</strong>
-              <p>{employeeColorPalette[color].label} · 前台识别色预览</p>
-            </div>
-          </div>
-          {error ? <p role="alert">{error}</p> : null}
-          <div className={createCss.actions}>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => setCreating(false)}
-            >
-              返回
-            </button>
-            <button type="submit" disabled={busy || !sourceId || !name.trim()}>
-              {busy ? '正在创建…' : '创建'}
-            </button>
-          </div>
-        </form>
+        />
       ) : (
         <>
           <div className={css.picker}>

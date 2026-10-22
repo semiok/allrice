@@ -32,6 +32,7 @@ import {
   type RecurringTaskIntent,
 } from './recurring-task-intent';
 import css from './recurring-tasks.module.css';
+import { RecurringWeekdays } from './recurring-weekdays';
 
 type Props = {
   sessionId: string;
@@ -72,6 +73,8 @@ function ruleLabel(task: RecurringTask): string {
   const rule = task.rule;
   if (rule.kind === 'daily')
     return `每天 ${rule.time.endsWith(':00') ? rule.time.slice(0, 5) : rule.time} · ${rule.timezone}`;
+  if (rule.kind === 'weekly')
+    return `每周${rule.weekdays.map((day) => '一二三四五六日'[day - 1]).join('、')} ${rule.time.endsWith(':00') ? rule.time.slice(0, 5) : rule.time} · ${rule.timezone}`;
   return rule.seconds % 60 === 0
     ? `每 ${rule.seconds / 60} 分钟`
     : `每 ${Math.floor(rule.seconds / 60)} 分 ${rule.seconds % 60} 秒`;
@@ -86,7 +89,9 @@ function timeLabel(value: string, task?: RecurringTask): string {
       minute: '2-digit',
       hourCycle: 'h23',
       timeZoneName: 'short',
-      ...(task?.rule.kind === 'daily' ? { timeZone: task.rule.timezone } : {}),
+      ...(task && task.rule.kind !== 'every'
+        ? { timeZone: task.rule.timezone }
+        : {}),
     }).format(new Date(value));
   } catch {
     return value;
@@ -825,6 +830,7 @@ function RecurringTasksContent({
             >
               <option value="every">每隔一段时间</option>
               <option value="daily">每天</option>
+              <option value="weekly">每周</option>
             </select>
           </label>
           {draft.kind === 'every' ? (
@@ -846,7 +852,7 @@ function RecurringTasksContent({
           ) : (
             <div className={css.daily}>
               <label>
-                每天时间
+                {draft.kind === 'weekly' ? '执行时间' : '每天时间'}
                 <input
                   type="time"
                   step="60"
@@ -885,10 +891,22 @@ function RecurringTasksContent({
               </label>
             </div>
           )}
+          {draft.kind === 'weekly' && (
+            <RecurringWeekdays
+              days={draft.weekdays}
+              disabled={locked}
+              onChange={(weekdays) => updateDraft({ weekdays })}
+            />
+          )}
+          {draft.kind !== 'every' && (
+            <p className={css.hint}>
+              按所选时区执行。夏令时跳过不存在的当地时间，重复时间只执行一次；停机后只处理最近一期。
+            </p>
+          )}
           {editing && (
             <p className={css.hint}>
               修改影响之后的期次，已排队任务可继续。
-              {editing.rule.kind === 'daily' &&
+              {editing.rule.kind !== 'every' &&
               !editing.rule.time.endsWith(':00')
                 ? '原时间含秒，未修改分钟时保留原秒数。'
                 : ''}

@@ -33,6 +33,7 @@ import {
 import native from './dsh-upstream/automation/TaskManagerPage.module.css';
 import card from './dsh-upstream/automation/ScheduleCreateCard.module.css';
 import css from './automation-tasks.module.css';
+import { RecurringWeekdays } from './recurring-weekdays';
 
 type Identity = {
   workspaceId: string;
@@ -84,6 +85,8 @@ export function automationFrequency(entry: AutomationCatalogTask) {
         : `每 ${rule.seconds} 秒`;
   if (rule?.kind === 'daily')
     return `每天 ${rule.time.endsWith(':00') ? rule.time.slice(0, 5) : rule.time} · ${rule.timezone}`;
+  if (rule?.kind === 'weekly')
+    return `每周${rule.weekdays.map((day) => '一二三四五六日'[day - 1]).join('、')} ${rule.time.endsWith(':00') ? rule.time.slice(0, 5) : rule.time} · ${rule.timezone}`;
   if (d.kind === 'legacy') {
     const s = d.schedule;
     if (s.frequency === 'once') return '一次性 · ' + time(s.runAt!, s.timezone);
@@ -883,12 +886,13 @@ function AutomationDetailBody({
                       onChange={(e) =>
                         setDraft({
                           ...draft,
-                          kind: e.target.value as 'every' | 'daily',
+                          kind: e.target.value as RecurringTaskDraft['kind'],
                         })
                       }
                     >
                       <option value="every">每 N 分钟</option>
                       <option value="daily">每天</option>
+                      <option value="weekly">每周</option>
                     </select>
                   </label>
                   {draft.kind === 'every' ? (
@@ -937,10 +941,21 @@ function AutomationDetailBody({
                     </>
                   )}
                 </div>
+                {draft.kind === 'weekly' && (
+                  <RecurringWeekdays
+                    days={draft.weekdays}
+                    disabled={!editable || disabled}
+                    onChange={(weekdays) => setDraft({ ...draft, weekdays })}
+                  />
+                )}
                 <p className={css.caption}>
                   {draft.kind === 'every'
                     ? '至少 1 分钟。间隔自任务创建或修改规则时起计，不受时区影响。'
-                    : '按所选时区的本地时间执行。'}
+                    : '按所选时区执行。夏令时跳过不存在的当地时间，重复时间只执行一次；停机后只处理最近一期。'}
+                  {nativeTask.rule.kind !== 'every' &&
+                  !nativeTask.rule.time.endsWith(':00')
+                    ? '原时间含秒，未修改分钟时保留原秒数。'
+                    : ''}
                 </p>
               </form>
             ) : definition?.kind === 'legacy' ? (

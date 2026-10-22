@@ -21,8 +21,9 @@ const secondsPerUnit: Readonly<Record<string, number>> = {
 };
 const numberPattern = '[0-9零〇一二两三四五六七八九十百千万]+';
 const requestPrefix = '(?:请\\s*|麻烦(?:你)?\\s*)?(?:(?:帮我|为我)\\s*)?';
+// Match the same explicit relative anchor as once requests, only for intervals.
 const everyRequest = new RegExp(
-  `^${requestPrefix}每(?:隔)?\\s*(${numberPattern})\\s*(分钟|小时|天)\\s*[，,:：]?\\s*(.+)$`,
+  `^${requestPrefix}(?:(?:从现在(?:起|开始)?|现在开始)\\s*)?每(?:隔)?\\s*(${numberPattern})\\s*(分钟|小时|天)\\s*[，,:：]?\\s*(.+)$`,
   'su',
 );
 // A named IANA zone (including its explicit UTC identifier), never a local
@@ -30,6 +31,10 @@ const everyRequest = new RegExp(
 const zonePattern = '(?:[A-Za-z_+-]+(?:/[A-Za-z0-9_+-]+)+|UTC)';
 const dailyRequest = new RegExp(
   `^${requestPrefix}(?:每天|每日)\\s*((?:[01]?\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d)?)\\s*[，,]?\\s*(?:时区\\s*[:：]?\\s*)?(${zonePattern})\\s*[，,:：]?\\s*(.+)$`,
+  'su',
+);
+const weeklyRequest = new RegExp(
+  `^${requestPrefix}每(?:周|星期)\\s*([一二三四五六日天](?:\\s*[、,，和及]\\s*(?:周|星期)?[一二三四五六日天])*)\\s*[，,]?\\s*((?:[01]?\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d)?)\\s*[，,]?\\s*(?:时区\\s*[:：]?\\s*)?(${zonePattern})\\s*[，,:：]?\\s*(.+)$`,
   'su',
 );
 const otherTime = new RegExp(
@@ -151,7 +156,7 @@ function maskQuotedArguments(text: string): string | null {
 function recurringQualifier(clause: string): boolean {
   return (
     new RegExp(
-      `^${requestPrefix}(?:实际)?(?:创建|安排|设置)(?:一个)?(?:周期|定时|重复)任务$`,
+      `^${requestPrefix}(?:实际)?(?:创建|安排|设置)(?:一个)?(?:周期|定时|重复)(?:任务|提醒)$`,
       'u',
     ).test(clause) ||
     /^(?:请)?(?:不要|别|无需)(?:现在|立即|马上)执行$/u.test(clause)
@@ -252,6 +257,40 @@ export function explicitRecurringTaskIntent(
       recurringWork(every[3]!)
       ? { rule: { kind: 'every', seconds }, authoritativeRequest: text }
       : null;
+  }
+  const weekly = prose.match(weeklyRequest);
+  if (weekly) {
+    if (!explicitWork(weekly[4]!)) return null;
+    const weekdays = weekly[1]!
+      .replaceAll('星期', '')
+      .replaceAll('周', '')
+      .split(/[、,，和及]/u)
+      .map(
+        (value) =>
+          '一二三四五六日'.indexOf(value.trim().replaceAll('天', '日')) + 1,
+      )
+      .sort((a, b) => a - b);
+    if (
+      weekdays.some((value) => value < 1) ||
+      new Set(weekdays).size !== weekdays.length
+    )
+      return null;
+    const timezone = weekly[3]!;
+    try {
+      new Intl.DateTimeFormat('en', { timeZone: timezone });
+    } catch {
+      return null;
+    }
+    const [hour, minute, second = '00'] = weekly[2]!.split(':');
+    return {
+      rule: {
+        kind: 'weekly',
+        weekdays,
+        time: `${hour!.padStart(2, '0')}:${minute}:${second}`,
+        timezone,
+      },
+      authoritativeRequest: text,
+    };
   }
   const daily = prose.match(dailyRequest);
   if (!daily || !explicitWork(daily[3]!)) return null;

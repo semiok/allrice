@@ -1,0 +1,263 @@
+.dialog.dialog {
+  width: min(640px, 100%);
+  max-height: calc(100dvh - 48px);
+  border-radius: 12px;
+  color: var(--dsw-alias-label-primary);
+}
+.dialog > header {
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+}
+.dialog > header h2 {
+  margin: 0;
+  font-size: 15px;
+  line-height: 23px;
+  font-weight: 500;
+}
+.dialog > header button {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: transparent;
+}
+.dialog > header button:hover {
+  background: var(--allrice-sidebar-hover);
+}
+.body {
+  padding: 16px 18px 18px;
+}
+.form {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  color: var(--dsw-alias-label-primary);
+  font-size: 14px;
+  line-height: 1.55;
+}
+.fields,
+.colors {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.identity {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 9px;
+  background: var(--allrice-employee-bg);
+}
+.nameRow {
+  display: flex;
+  align-items: flex-end;
+  gap: 11px;
+  min-width: 0;
+}
+.avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--employee-start);
+  color: var(--employee-avatar-foreground);
+  font-size: 20px;
+  font-weight: 500;
+}
+.nameField {
+  flex: 1;
+  min-width: 0;
+}
+.nameField label,
+.field label,
+.colors legend {
+  display: block;
+  margin: 0 0 6px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
+}
+.nameField input,
+.field textarea,
+.field select {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 14px;
+  line-height: 20px;
+}
+.nameField input::placeholder {
+  color: var(--dsw-alias-label-tertiary);
+}
+.field textarea {
+  min-height: 60px;
+  line-height: 1.6;
+  resize: vertical;
+}
+.field select {
+  height: 36px;
+  padding: 5px 9px;
+}
+.colors {
+  margin-top: 16px;
+}
+.palette {
+  display: grid;
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  gap: 6px;
+}
+.colorChoice {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 0;
+  border-radius: 6px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 17px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.colorChoice:hover {
+  background: var(--allrice-sidebar-hover);
+}
+.colorChoice input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.swatch {
+  display: grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  border-radius: 7px;
+  color: #090d16;
+  font-size: 16px;
+}
+.colorChoice input:checked + .swatch {
+  outline: 2px solid var(--dsw-alias-label-primary);
+  outline-offset: 3px;
+}
+.colorChoice input:focus-visible + .swatch {
+  outline: 2px solid #4678e9;
+  outline-offset: 3px;
+}
+.settings {
+  display: grid;
+  gap: 13px;
+  margin-top: 18px;
+}
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+  padding-top: 15px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+.actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 5px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  background: var(--allrice-employee-bg);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  cursor: pointer;
+}
+.actions button[type='submit'] {
+  border-color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-bg-base);
+}
+.actions button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.fields:disabled .colorChoice,
+.fields:disabled .colorChoice input {
+  cursor: default;
+}
+.dialog > header button:focus-visible,
+.actions button:focus-visible,
+.nameField input:focus-visible,
+.field textarea:focus-visible,
+.field select:focus-visible {
+  outline: 2px solid #4678e9;
+  outline-offset: 2px;
+}
+@media (max-width: 680px) {
+  .palette {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 8px;
+  }
+}
+@media (max-width: 500px) {
+  .dialog > header {
+    padding: 12px 14px;
+  }
+  .body {
+    padding: 14px;
+  }
+  .identity {
+    padding: 12px;
+  }
+  .nameRow {
+    gap: 9px;
+  }
+}
+@media (max-width: 560px), (pointer: coarse) {
+  .nameField input,
+  .field textarea,
+  .field select {
+    min-height: 44px;
+    font-size: 16px;
+  }
+  .field select {
+    height: 44px;
+  }
+  .avatar {
+    width: 40px;
+    height: 40px;
+    font-size: 22px;
+  }
+  .dialog > header button,
+  .actions button {
+    min-height: 44px;
+  }
+  .dialog > header button {
+    width: 44px;
+  }
+  .colorChoice {
+    min-height: 65px;
+  }
+}
