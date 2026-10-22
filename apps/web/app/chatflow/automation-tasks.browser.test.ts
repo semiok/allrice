@@ -396,9 +396,13 @@ suite(
               current.name = body.name;
               current.prompt = body.prompt;
               current.rule = body.rule;
+              if (body.conversationMode !== undefined)
+                current.conversationMode = body.conversationMode;
               task.name = body.name;
               task.prompt = body.prompt;
-            } else if (body.action === 'pause') current.status = 'paused';
+            } else if (body.action === 'conversation')
+              current.conversationMode = body.conversationMode;
+            else if (body.action === 'pause') current.status = 'paused';
             else if (body.action === 'resume') current.status = 'enabled';
             else {
               current.status = 'deleted';

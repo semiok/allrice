@@ -43,6 +43,7 @@ import {
   experienceNativeCalendarEnabled,
 } from './experience-native.ts';
 import { isDeepStrictEqual } from 'node:util';
+import type { NativeOrdinaryJobBinding } from './native-schedule-once-authority.ts';
 import { access, realpath, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { isAbsolute } from 'node:path';
@@ -75,6 +76,10 @@ import { readContentPrincipal } from './content-maintenance.ts';
 import { readWorkAutomation } from './work-automation.ts';
 import { assertWorkbenchSession } from './artifact-review.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
+import {
+  prepareAutomationConversation,
+  type AutomationConversationSnapshot,
+} from './automation-conversation.ts';
 import type { ResourcePrincipal } from './resource-principal.ts';
 import {
   scheduleIdentity,
@@ -125,6 +130,8 @@ export type RecurringPlan = {
   owner_id: string;
   employee_assignment_id: string;
   session_id: string;
+  conversation_mode: 'reuse' | 'new_each_run';
+  native_create_conversation_mode: 'reuse' | 'new_each_run' | null;
   name: string;
   prompt: string;
   status: 'enabled' | 'paused';
@@ -294,11 +301,12 @@ export async function readRecurringOccurrenceRows(
       run_id: string | null;
       run_state: string | null;
       error_message: string | null;
+      session_id: string | null;
     }[]
   >`
     select o.occurrence_id,o.revision,coalesce(p.business_scheduled_for,o.scheduled_at) scheduled_at,
       to_char(coalesce(p.business_scheduled_for,o.scheduled_at) at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') cursor_at,
-      o.outbox_state,o.outbox_reason,r.id run_id,r.state run_state,j.last_error_message error_message
+      o.outbox_state,o.outbox_reason,r.id run_id,r.state run_state,j.last_error_message error_message,ar.session_id
     from allrice_native_recurring_occurrences o
     left join allrice_native_calendar_periods p on p.period_id=o.calendar_period_id
     left join allrice_automation_runs ar on ar.native_recurring_occurrence_id=o.occurrence_id and ar.automation_id=o.automation_id
@@ -335,6 +343,7 @@ export function recurringOccurrenceProjection(
     scheduledAt: o.scheduled_at.toISOString(),
     status,
     runId: o.run_id,
+    sessionId: o.session_id,
     errorMessage:
       o.outbox_state === 'blocked'
         ? o.outbox_reason === 'paused_or_deleted'
@@ -343,7 +352,8 @@ export function recurringOccurrenceProjection(
             ? '恢复之前的周期不补发。'
             : o.outbox_reason === 'ORDINARY_MONTHLY_COALESCED'
               ? '停机期间的旧期次未执行，只处理最近一期。'
-              : o.outbox_reason === 'ORDINARY_MONTHLY_ALREADY_CLAIMED'
+              : o.outbox_reason === 'ORDINARY_MONTHLY_ALREADY_CLAIMED' ||
+                  o.outbox_reason === 'ORDINARY_FIXED_ALREADY_CLAIMED'
                 ? '本期已由此前排队的任务处理，没有重复执行。'
                 : '本期权限或任务配置发生变化，未执行。'
         : o.error_message,
@@ -386,6 +396,7 @@ export async function readRecurringTaskProjection(
       id: p.id,
       clientRequestId: p.native_recurring_request_id,
       sessionId: p.session_id,
+      conversationMode: p.conversation_mode,
       name: p.name,
       prompt: p.prompt,
       rule: p.schedule.rule,
@@ -420,6 +431,7 @@ export async function readRecurringTaskProjection(
     id: p.id,
     clientRequestId: p.native_recurring_request_id,
     sessionId: p.session_id,
+    conversationMode: p.conversation_mode,
     name: p.name,
     prompt: p.prompt,
     rule: p.schedule.rule,
@@ -455,6 +467,9 @@ async function originalRequest(
       clientRequestId: p.native_recurring_request_id,
       ...content,
       rule: monthly.rule,
+      ...(p.native_create_conversation_mode === null
+        ? {}
+        : { conversationMode: p.native_create_conversation_mode }),
     });
   }
   const fixed = NativeRecurringRevisionSchema.parse(v.configuration);
@@ -463,6 +478,9 @@ async function originalRequest(
     name: fixed.name,
     prompt: fixed.prompt,
     rule: fixed.rule,
+    ...(p.native_create_conversation_mode === null
+      ? {}
+      : { conversationMode: p.native_create_conversation_mode }),
   });
 }
 async function readOperation(
@@ -557,10 +575,10 @@ async function enrollRecurringTask(
   const fixedRule = FixedRecurringScheduleRuleSchema.parse(input.rule);
   const [p] = await tx<Plan[]>`insert into allrice_automations
       (organization_id,workspace_id,owner_id,name,prompt,trigger_type,schedule,status,conversation_mode,employee_assignment_id,session_id,
-       next_run_at,clock_owner,native_recurring_request_id,native_recurring_request_digest,native_recurring_revision)
+       next_run_at,clock_owner,native_recurring_request_id,native_recurring_request_digest,native_recurring_revision,native_create_conversation_mode)
       values(${scope.organizationId},${scope.workspaceId},${scope.ownerId},${input.name},${input.prompt},'schedule',
-        ${json(tx, { frequency: 'native_recurring', rule: input.rule })},'enabled','reuse',${target.employee_assignment_id},${sessionId},
-        null,'native_recurring',${input.clientRequestId},${digest},1) returning *`;
+        ${json(tx, { frequency: 'native_recurring', rule: input.rule })},'enabled',${input.conversationMode ?? 'reuse'},${target.employee_assignment_id},${sessionId},
+        null,'native_recurring',${input.clientRequestId},${digest},1,${input.conversationMode ?? null}) returning *`;
   const control: NativeRecurringControl = {
     kind: 'recurring',
     partitionId: partition.partition_id,
@@ -602,6 +620,7 @@ export async function createRecurringTaskFromExecutionContext(
     name: string;
     prompt: string;
     rule: RecurringScheduleRule;
+    conversationMode?: 'reuse' | 'new_each_run';
   },
 ) {
   const { ctx, scope } = employeeChatIdentity(input);
@@ -632,6 +651,9 @@ export async function createRecurringTaskFromExecutionContext(
     name: input.name,
     prompt: input.prompt,
     rule,
+    ...(input.conversationMode === undefined
+      ? {}
+      : { conversationMode: input.conversationMode }),
     arguments: input.arguments,
   });
   return employeeAccessTransaction(getDatabase(), async (tx) => {
@@ -673,6 +695,9 @@ export async function createRecurringTaskFromExecutionContext(
       name: input.name,
       prompt: authoritativeRequest,
       rule,
+      ...(input.conversationMode === undefined
+        ? {}
+        : { conversationMode: input.conversationMode }),
     });
     return enrollRecurringTask(
       tx,
@@ -686,6 +711,11 @@ export async function createRecurringTaskFromExecutionContext(
         if (!intent) throw new NativeRecurringProductError('intent_required');
         if (!isDeepStrictEqual(rule, intent.rule))
           throw new NativeRecurringProductError('rule_mismatch');
+        if (
+          (input.conversationMode ?? 'reuse') !==
+          (intent.conversationMode ?? 'reuse')
+        )
+          throw new NativeRecurringProductError('intent_required');
       },
     );
   });
@@ -850,9 +880,22 @@ export async function changeRecurringTask(
     const [op] = await tx<
       OperationRow[]
     >`insert into allrice_native_recurring_operations
-      (organization_id,owner_id,operation_id,automation_id,request,request_digest,status,error_message)
-      values(${scope.organizationId},${scope.ownerId},${input.operationId},${p.id},${json(tx, input)},${digest},${reason ? 'rejected' : 'pending'},${reason}) returning *`;
+      (organization_id,owner_id,operation_id,automation_id,request,request_digest,status,error_message,native_revision_before)
+      values(${scope.organizationId},${scope.ownerId},${input.operationId},${p.id},${json(tx, input)},${digest},${reason ? 'rejected' : 'pending'},${reason},${p.native_recurring_revision}) returning *`;
     if (reason) return readOperation(tx, op!, p, true);
+    if (input.action === 'conversation') {
+      const nextRevision = Number(p.revision) + 1;
+      if (!Number.isSafeInteger(nextRevision))
+        throw new NativeRecurringProductError('limit');
+      await tx`update allrice_automations set conversation_mode=${input.conversationMode},revision=${nextRevision},updated_at=clock_timestamp() where id=${p.id}`;
+      await tx`update allrice_native_recurring_operations set status='applied',updated_at=clock_timestamp()
+        where organization_id=${scope.organizationId} and owner_id=${scope.ownerId} and operation_id=${input.operationId}`;
+      await audit(tx, scope, p.id, input.action);
+      const [updated] = await tx<
+        Plan[]
+      >`select * from allrice_automations where id=${p.id}`;
+      return readOperation(tx, { ...op!, status: 'applied' }, updated!, true);
+    }
     if (monthly) {
       await changeOrdinaryMonthlyTaskInTransaction(tx, p, monthly, input);
       await audit(tx, scope, p.id, input.action);
@@ -881,7 +924,7 @@ export async function changeRecurringTask(
       };
       await tx`insert into allrice_native_recurring_versions(automation_id,revision,configuration) values(${p.id},${nextRevision},
         ${json(tx, { ...version, reservationDigest: reservation(p, control, version) })})`;
-      await tx`update allrice_automations set name=${input.name},prompt=${input.prompt},schedule=${json(tx, { frequency: 'native_recurring', rule: input.rule })},
+      await tx`update allrice_automations set name=${input.name},prompt=${input.prompt},conversation_mode=${input.conversationMode ?? p.conversation_mode},schedule=${json(tx, { frequency: 'native_recurring', rule: input.rule })},
         revision=${nextRevision},native_recurring_revision=${nextRevision},updated_at=clock_timestamp() where id=${p.id}`;
       control.revision = nextRevision;
       control.rule = fixedRule;
@@ -1074,6 +1117,7 @@ type DispatchReservation = {
   businessScheduledFor?: string;
   principal: ResourcePrincipal;
   plan: Plan;
+  conversation?: AutomationConversationSnapshot;
 };
 const dispatchReservations = new WeakMap<Tx, DispatchReservation>();
 
@@ -1087,6 +1131,7 @@ export function nativeRecurringMessageReservation(
   const r = dispatchReservations.get(tx);
   if (
     !r ||
+    !r.conversation ||
     !('businessSessionId' in r.control.dispatch) ||
     r.occurrence.occurrence_id !== occurrenceId ||
     !isDeepStrictEqual(r.principal, principal)
@@ -1106,7 +1151,7 @@ export function nativeRecurringMessageReservation(
   ].join('\n');
   return {
     workspaceId: r.plan.workspace_id,
-    sessionId: r.control.dispatch.businessSessionId,
+    sessionId: r.conversation.targetSessionId,
     clientMessageId: r.occurrence.client_message_id,
     prompt: prompt.length <= 40_000 ? prompt : original,
   };
@@ -1152,6 +1197,24 @@ async function enqueueOrdinaryRecurringBusiness(
   scheduledFor: string,
 ) {
   const { occurrence: live, plan, principal } = reservation;
+  const [prior] =
+    await tx`select id from allrice_automation_runs where automation_id=${plan.id}
+    and scheduled_for=${scheduledFor}::timestamptz and folder_event_id is null and manual_request_id is null`;
+  if (prior) throw new NativeRecurringProductError('binding_conflict');
+  const execution = await prepareAutomationConversation(
+    tx,
+    principal,
+    scope,
+    plan,
+    target,
+    {
+      kind: 'scheduled',
+      nativeKind: 'recurring',
+      occurrenceId: live.occurrence_id,
+      scheduledFor,
+    },
+  );
+  reservation.conversation = execution.conversation;
   dispatchReservations.set(tx, reservation);
   try {
     const { prepareNativeRecurringChatRunInTransaction } =
@@ -1168,7 +1231,8 @@ async function enqueueOrdinaryRecurringBusiness(
     const business = {
       ...queued,
       ...scope,
-      sessionId: target.id,
+      sessionId: execution.target.id,
+      conversation: execution.conversation,
       employeeAssignmentId: target.employee_assignment_id,
       employeeInstanceId: target.employee_instance_id,
       clientMessageId: live.client_message_id,
@@ -1176,8 +1240,8 @@ async function enqueueOrdinaryRecurringBusiness(
       snapshotDigest: runtimePolicyDigest(frozen.execution_snapshot),
     };
     const [run] = await tx<{ id: string }[]>`insert into allrice_automation_runs
-      (organization_id,workspace_id,automation_id,scheduled_for,run_id,session_id,status,native_recurring_occurrence_id)
-      values(${scope.organizationId},${scope.workspaceId},${plan.id},${scheduledFor}::timestamptz,${queued.runId},${target.id},'queued',${live.occurrence_id})
+      (organization_id,workspace_id,automation_id,scheduled_for,run_id,session_id,status,native_recurring_occurrence_id,conversation_snapshot)
+      values(${scope.organizationId},${scope.workspaceId},${plan.id},${scheduledFor}::timestamptz,${queued.runId},${execution.target.id},'queued',${live.occurrence_id},${json(tx, execution.conversation)})
       on conflict(automation_id,scheduled_for) where folder_event_id is null and manual_request_id is null do nothing returning id`;
     if (!run) throw new NativeRecurringProductError('binding_conflict');
     return { business, automationRunId: run.id };
@@ -1356,6 +1420,7 @@ async function dispatchOrdinaryMonthlyNative(
           workspaceId: queued.business.workspaceId,
           ownerId: queued.business.ownerId,
           sessionId: queued.business.sessionId,
+          conversation: queued.business.conversation,
           employeeAssignmentId: queued.business.employeeAssignmentId,
           employeeInstanceId: queued.business.employeeInstanceId,
           clientMessageId: queued.business.clientMessageId,
@@ -1573,6 +1638,52 @@ export async function dispatchNextNativeRecurringOccurrence(workerId: string) {
     const { reservationDigest, ...configuration } = version;
     if (reservation(plan, control, configuration) !== reservationDigest)
       throw new NativeRecurringProductError('binding_conflict');
+    // A previously paid business P wins across native revisions. Read and
+    // prove its original ordinary queue binding before creating any new chat.
+    const [paid] = await tx<
+      (Omit<NativeOrdinaryJobBinding, 'run_id'> & {
+        id: string;
+        run_id: string | null;
+        job_id: string | null;
+        conversation_snapshot: unknown;
+        snapshot_proved: boolean;
+        legacy_reuse: boolean;
+      })[]
+    >`select ar.id,ar.run_id,j.id job_id,ar.organization_id,ar.workspace_id,${scope.ownerId}::uuid owner_id,
+      ar.conversation_snapshot,
+      case when ar.conversation_snapshot is not null then allrice_automation_conversation_handoff_proved(ar.id) else false end snapshot_proved,
+      (ar.native_once_occurrence_id is null and o.automation_id=ar.automation_id and o.scheduled_at=ar.scheduled_for
+        and c.automation_id=ar.automation_id and c.immutable_identity->>'organizationId'=ar.organization_id::text
+        and c.immutable_identity->>'workspaceId'=ar.workspace_id::text and c.immutable_identity->>'ownerId'=${scope.ownerId}
+        and c.immutable_identity->'dispatch'->>'consumer' is null
+        and ar.session_id::text=c.immutable_identity->'dispatch'->>'businessSessionId') legacy_reuse,
+      o.occurrence_id,o.outbox_state,o.payload_digest,o.business_binding,
+      c.immutable_identity || jsonb_build_object('dispatch',c.immutable_identity->'dispatch' || jsonb_build_object('clientMessageId',o.client_message_id::text)) control
+      from allrice_automation_runs ar left join allrice_jobs j on j.run_id=ar.run_id
+        and j.organization_id=ar.organization_id and j.workspace_id=ar.workspace_id and j.owner_id=${scope.ownerId}
+      left join allrice_native_recurring_occurrences o on o.occurrence_id=ar.native_recurring_occurrence_id
+        and o.automation_id=ar.automation_id
+      left join allrice_native_recurring_controls c on c.partition_id=o.partition_id and c.control_id=o.control_id
+      where ar.automation_id=${plan.id} and ar.organization_id=${scope.organizationId} and ar.workspace_id=${scope.workspaceId}
+        and ar.scheduled_for=${live.payload.receipt.scheduledAt}::timestamptz and ar.folder_event_id is null and ar.manual_request_id is null`;
+    if (paid) {
+      const { proveNativeOrdinaryJobBinding } =
+        await import('./native-schedule-once-authority.ts');
+      const proved =
+        !!paid.run_id &&
+        !!paid.job_id &&
+        (paid.conversation_snapshot !== null
+          ? paid.snapshot_proved
+          : paid.legacy_reuse === true &&
+            (await proveNativeOrdinaryJobBinding(tx, paid.job_id, {
+              ...paid,
+              run_id: paid.run_id,
+            })));
+      if (!proved) throw new NativeRecurringProductError('binding_conflict');
+      await tx`update allrice_native_recurring_occurrences set outbox_state='blocked',outbox_reason='ORDINARY_FIXED_ALREADY_CLAIMED'
+        where occurrence_id=${live.occurrence_id}`;
+      return;
+    }
     const queued = await enqueueOrdinaryRecurringBusiness(
       tx,
       {

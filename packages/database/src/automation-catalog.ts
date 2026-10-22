@@ -343,7 +343,7 @@ export async function getAutomationCatalogTask(
           id: o.occurrence_id,
           projection: {
             ...recurringOccurrenceProjection(row, o),
-            sessionId: row.session_id,
+            sessionId: o.session_id ?? row.session_id,
             source: { kind: 'native_occurrence' as const },
           },
         })),

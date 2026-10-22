@@ -186,6 +186,7 @@ suite(
     async function task(
       sessionId?: string,
       prompt = '请在原会话回复测试标记。',
+      conversationMode?: 'reuse' | 'new_each_run',
     ) {
       const id = sessionId ?? (await chat()).id;
       const input = {
@@ -194,6 +195,7 @@ suite(
         prompt,
         runAt: new Date(Date.now() + 6_500).toISOString(),
         timezone: 'Asia/Shanghai',
+        ...(conversationMode === undefined ? {} : { conversationMode }),
       };
       return {
         sessionId: id,
@@ -270,6 +272,121 @@ suite(
       });
       return { control, write };
     }
+    it.each(['reuse', 'new_each_run'] as const)(
+      'conversation once parent rejects a pointerless new NULL snapshot at COMMIT (%s)',
+      async (conversationMode) => {
+        const t = await task(undefined, undefined, conversationMode);
+        const arId = randomUUID();
+        let reachedCommit = false;
+        await expect(
+          f.db.begin(async (tx) => {
+            const [born] = await tx`insert into allrice_automation_runs
+              (id,organization_id,workspace_id,automation_id,session_id,scheduled_for,status)
+              values(${arId},${f.organizationId},${f.workspaceId},${t.task.id},${t.sessionId},clock_timestamp(),'queued')
+              returning conversation_snapshot,manual_request_id,native_once_occurrence_id,native_recurring_occurrence_id`;
+            expect(born).toEqual({
+              conversation_snapshot: null,
+              manual_request_id: null,
+              native_once_occurrence_id: null,
+              native_recurring_occurrence_id: null,
+            });
+            reachedCommit = true;
+          }),
+        ).rejects.toMatchObject({ code: '23514' });
+        expect(reachedCommit).toBe(true);
+        expect(
+          await f.db`select id from allrice_automation_runs where id=${arId}`,
+        ).toHaveLength(0);
+      },
+    );
+
+    it.each(['reuse', 'new_each_run'] as const)(
+      'conversation once %s is frozen at create, targets the real queue and remains revision1',
+      async (conversationMode) => {
+        const t = await task(
+          undefined,
+          '一次性核对，只输出本轮结果。',
+          conversationMode,
+        );
+        const [before] =
+          await f.db`select to_jsonb(c) control from allrice_native_once_controls c where automation_id=${t.task.id}`;
+        expect(await createOnceTask(f.context, t.sessionId, t.input)).toEqual(
+          t.task,
+        );
+        expect(t.task.conversationMode).toBe(conversationMode);
+        const changed = conversationMode === 'reuse' ? 'new_each_run' : 'reuse';
+        await expect(
+          f.db`update allrice_automations set conversation_mode=${changed} where id=${t.task.id}`,
+        ).rejects.toMatchObject({ code: '23514' });
+        await expect(
+          changeAutomationCatalogTask(f.context, f.workspaceId, t.task.id, {
+            action: 'conversation',
+            operationId: randomUUID(),
+            expectedRevision: 1,
+            conversationMode: changed,
+          }),
+        ).rejects.toThrow();
+        expect(
+          (
+            await f.db`select to_jsonb(c) control from allrice_native_once_controls c where automation_id=${t.task.id}`
+          )[0],
+        ).toEqual(before);
+        await receipt(t.task.id);
+        await dispatchNextNativeOnceOccurrence(randomUUID());
+        const [ar] =
+          await f.db`select ar.*,j.id job_id,er.session_id employee_session,
+        allrice_automation_conversation_handoff_proved(ar.id) proof from allrice_automation_runs ar
+        join allrice_jobs j on j.run_id=ar.run_id join allrice_employee_runs er on er.run_id=ar.run_id where ar.automation_id=${t.task.id}`;
+        expect(ar).toMatchObject({
+          proof: true,
+          conversation_snapshot: {
+            mode: conversationMode,
+            businessRevision: 1,
+            sourceSessionId: t.sessionId,
+            targetSessionId: ar!.session_id,
+          },
+        });
+        const [timeProof] = await f.db`select
+          allrice_automation_conversation_scheduled_target_proved(ar.automation_id,ar.native_once_occurrence_id,
+            ar.native_recurring_occurrence_id,ar.scheduled_for) exact_p,
+          allrice_automation_conversation_scheduled_target_proved(ar.automation_id,ar.native_once_occurrence_id,
+            ar.native_recurring_occurrence_id,ar.scheduled_for+interval '1 second') wrong_p
+          from allrice_automation_runs ar where ar.id=${ar!.id}`;
+        expect(timeProof).toEqual({ exact_p: true, wrong_p: false });
+        expect(ar!.employee_session).toBe(ar!.session_id);
+        if (conversationMode === 'reuse')
+          expect(ar!.session_id).toBe(t.sessionId);
+        else expect(ar!.session_id).not.toBe(t.sessionId);
+        expect(
+          await f.db.begin((tx) => lockNativeOnceJobAdmission(tx, ar!.job_id)),
+        ).toMatchObject({ allowed: true });
+        const projection = (
+          await listOnceTasks(f.context, t.sessionId, {
+            clientRequestId: t.input.clientRequestId,
+          })
+        ).tasks[0]!;
+        expect(projection).toMatchObject({
+          sessionId: t.sessionId,
+          resultSessionId: ar!.session_id,
+          conversationMode,
+        });
+        expect(await createOnceTask(f.context, t.sessionId, t.input)).toEqual(
+          projection,
+        );
+        expect(
+          Number(
+            (
+              await f.db`select revision from allrice_automations where id=${t.task.id}`
+            )[0]!.revision,
+          ),
+        ).toBe(1);
+        await f.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${t.sessionId}`;
+        expect(
+          await f.db.begin((tx) => lockNativeOnceJobAdmission(tx, ar!.job_id)),
+        ).toMatchObject({ allowed: false });
+        await f.db`update allrice_chat_sessions set archived_at=null where id=${t.sessionId}`;
+      },
+    );
     it('manual execution preserves a native once target and cancellation forbids only new manual requests', async () => {
       const t = await task();
       const boundary = async () => ({

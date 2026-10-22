@@ -52,6 +52,12 @@ import {
   type NativeOnceTask,
 } from './native-schedule-once-state.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
+import { AutomationConversationSnapshotSchema } from './automation-conversation.ts';
+import {
+  runManualAutomation,
+  getManualAutomationRun,
+} from './automation-manual.ts';
+import { getAutomationCatalogTask } from './automation-catalog.ts';
 import * as client from './core/client.ts';
 
 const suite =
@@ -175,13 +181,14 @@ suite(
         title: 'Ordinary monthly SQL',
       });
     }
-    async function publicTask() {
+    async function publicTask(conversationMode?: 'reuse' | 'new_each_run') {
       const s = await session(),
         input = {
           clientRequestId: randomUUID(),
           name: '月末核对',
           prompt: '核对本月报表，逐项列出异常。保留原始要求。',
           rule,
+          ...(conversationMode === undefined ? {} : { conversationMode }),
         };
       const task = await createRecurringTask(f.context, s.id, input);
       return { id: task.id, sessionId: s.id, input };
@@ -454,6 +461,8 @@ suite(
     async function afterWebWinsDiscovery<T>(
       operationId: string,
       webAction: () => Promise<T>,
+      workerAction = () =>
+        materializeOrdinaryMonthlyCalendar(calendar(), writer, reference),
     ) {
       const gate = await f.db.reserve(),
         key = `recurring-operation:${f.organizationId}:${f.ownerId}:${operationId}`;
@@ -481,11 +490,7 @@ suite(
             { timeout: 5000, interval: 10 },
           )
           .toBe(true);
-        materializer = materializeOrdinaryMonthlyCalendar(
-          calendar(),
-          writer,
-          reference,
-        ).then(
+        materializer = workerAction().then(
           (value) => ({ value }),
           (error) => ({ error }),
         );
@@ -515,6 +520,624 @@ suite(
       if ('error' in m) throw m.error;
       return { web: w.value, materialized: m.value };
     }
+
+    async function conversationBoundary(id: string) {
+      const [r] = await f.db`select
+        (select to_jsonb(a)-array['revision','conversation_mode','updated_at'] from allrice_automations a where a.id=${id}) plan,
+        (select to_jsonb(c) from allrice_native_recurring_controls c where c.automation_id=${id}) control,
+        (select jsonb_agg(to_jsonb(v) order by v.revision) from allrice_native_recurring_versions v where v.automation_id=${id}) versions,
+        (select jsonb_agg(to_jsonb(p) order by p.period_id) from allrice_native_calendar_plans p where p.automation_id=${id}) plans,
+        (select jsonb_agg(to_jsonb(p) order by p.period_id) from allrice_native_calendar_periods p where p.automation_id=${id}) periods,
+        (select jsonb_agg(to_jsonb(arm) order by arm.arm_id) from allrice_native_calendar_arms arm join allrice_native_calendar_periods p on p.period_id=arm.period_id where p.automation_id=${id}) arms,
+        (select jsonb_agg(to_jsonb(j) order by j.write_id) from allrice_native_recurring_journal j join allrice_native_recurring_controls c on c.control_id=j.control_id where c.automation_id=${id}) journal`;
+      return r;
+    }
+
+    it.each(['reuse', 'new_each_run'] as const)(
+      'conversation monthly parent rejects a pointerless new NULL snapshot at COMMIT (%s)',
+      async (conversationMode) => {
+        const t = await publicTask(conversationMode);
+        const arId = randomUUID();
+        let reachedCommit = false;
+        await expect(
+          f.db.begin(async (tx) => {
+            const [born] = await tx`insert into allrice_automation_runs
+              (id,organization_id,workspace_id,automation_id,session_id,scheduled_for,status)
+              values(${arId},${f.organizationId},${f.workspaceId},${t.id},${t.sessionId},clock_timestamp(),'queued')
+              returning conversation_snapshot,manual_request_id,native_once_occurrence_id,native_recurring_occurrence_id`;
+            expect(born).toEqual({
+              conversation_snapshot: null,
+              manual_request_id: null,
+              native_once_occurrence_id: null,
+              native_recurring_occurrence_id: null,
+            });
+            reachedCommit = true;
+          }),
+        ).rejects.toMatchObject({ code: '23514' });
+        expect(reachedCommit).toBe(true);
+        expect(
+          await f.db`select id from allrice_automation_runs where id=${arId}`,
+        ).toHaveLength(0);
+      },
+    );
+
+    it.each(['enabled', 'paused'] as const)(
+      'conversation policy keeps every native/P byte for %s monthly, with exact ACK and both directions',
+      async (status) => {
+        const t = await publicTask('reuse');
+        await sqlBinding(t.id);
+        let expectedRevision = 1;
+        if (status === 'paused') {
+          await changeRecurringTask(f.context, t.sessionId, t.id, {
+            action: 'pause',
+            operationId: randomUUID(),
+            expectedRevision,
+          });
+          expectedRevision++;
+        }
+        for (const conversationMode of ['new_each_run', 'reuse'] as const) {
+          const before = await conversationBoundary(t.id),
+            input = {
+              action: 'conversation' as const,
+              operationId: randomUUID(),
+              expectedRevision,
+              conversationMode,
+            };
+          const first = await changeRecurringTask(
+            f.context,
+            t.sessionId,
+            t.id,
+            input,
+          );
+          expect(first).toMatchObject({
+            status: 'applied',
+            request: input,
+            task: { revision: expectedRevision + 1, conversationMode, status },
+          });
+          expect(await conversationBoundary(t.id)).toEqual(before);
+          expect(
+            await changeRecurringTask(f.context, t.sessionId, t.id, input),
+          ).toEqual(first);
+          expect(await operation(t, input.operationId)).toEqual(first);
+          const original = await listRecurringTasks(f.context, t.sessionId, {
+            clientRequestId: t.input.clientRequestId,
+          });
+          expect(original.request).toEqual(t.input); // Explicit create reuse never becomes the current choice.
+          expectedRevision++;
+        }
+      },
+    );
+
+    it.each(['update', 'pause', 'delete'] as const)(
+      'conversation native1→business2→3 then %s native4 keeps the exact old-native decision',
+      async (action) => {
+        const t = await publicTask();
+        await sqlBinding(t.id);
+        for (const [expectedRevision, conversationMode] of [
+          [1, 'new_each_run'],
+          [2, 'reuse'],
+        ] as const)
+          await changeRecurringTask(f.context, t.sessionId, t.id, {
+            action: 'conversation',
+            operationId: randomUUID(),
+            expectedRevision,
+            conversationMode,
+          });
+        const input = {
+          operationId: randomUUID(),
+          expectedRevision: 3,
+          ...(action === 'update'
+            ? { action, name: '完整新版本', prompt: '保留原始工作。', rule }
+            : { action }),
+        };
+        const changed = await changeRecurringTask(
+          f.context,
+          t.sessionId,
+          t.id,
+          input,
+        );
+        expect(changed.task).toMatchObject({ revision: 4 });
+        const [op] =
+          await f.db`select native_revision_before from allrice_native_recurring_operations where operation_id=${input.operationId}`;
+        expect(Number(op!.native_revision_before)).toBe(1);
+        const [proof] =
+          await f.db`select allrice_ordinary_monthly_version_proved(${t.id}::uuid,4) version,
+        allrice_ordinary_monthly_clock_proved(${t.id}::uuid) clock,
+        (select bool_and(allrice_ordinary_monthly_decision_proved(d.decision_id)) from allrice_native_calendar_decisions d join allrice_native_calendar_plans p on p.period_id=d.period_id where p.automation_id=${t.id}) decisions`;
+        expect(proof).toMatchObject({
+          version: true,
+          clock: true,
+          decisions: true,
+        });
+        await expect(
+          f.db`update allrice_native_recurring_operations set native_revision_before=3 where operation_id=${input.operationId}`,
+        ).rejects.toMatchObject({ code: '23514' });
+        if (action === 'update') await sqlBinding(t.id);
+        else if (action === 'delete') {
+          await retireSqlTasks(t.id);
+          await materializeOrdinaryMonthlyCalendar(
+            calendar(),
+            writer,
+            reference,
+          );
+          expect(await operation(t, input.operationId)).toMatchObject({
+            status: 'applied',
+            task: { status: 'deleted' },
+          });
+        }
+      },
+    );
+
+    it.each(['reuse', 'new_each_run'] as const)(
+      'conversation monthly %s proves recovered A>P through the original period and rejects another business P',
+      async (conversationMode) => {
+        const t = await historicalTask('latest');
+        await changeRecurringTask(f.context, t.sessionId, t.id, {
+          action: 'conversation',
+          operationId: randomUUID(),
+          expectedRevision: 1,
+          conversationMode,
+        });
+        const bound = await sqlBinding(t.id),
+          [recovered] =
+            await f.db`select p.business_scheduled_for,arm.native_at,
+            exists(select 1 from allrice_native_calendar_arms old where old.period_id=np.period_id
+              and old.status='absent' and old.absence_proof is not null and old.attempt<arm.attempt) exact_absence
+            from allrice_native_calendar_periods np join allrice_native_calendar_plans p on p.period_id=np.plan_id
+            join allrice_native_calendar_arms arm on arm.arm_id=np.current_arm_id where np.period_id=${bound.periodId}`;
+        expect(recovered!.business_scheduled_for).toEqual(t.P);
+        expect(recovered!.exact_absence).toBe(true);
+        expect(recovered!.native_at.getTime()).toBeGreaterThan(t.P.getTime());
+        await bound.receipt();
+        expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
+          true,
+        );
+        const [scheduled] = await f.db`select ar.*,j.id job_id,
+          allrice_automation_conversation_handoff_proved(ar.id) conversation_proof,
+          allrice_ordinary_monthly_handoff_proved(ar.native_recurring_occurrence_id) monthly_proof,
+          allrice_automation_conversation_scheduled_target_proved(ar.automation_id,ar.native_once_occurrence_id,
+            ar.native_recurring_occurrence_id,ar.scheduled_for) target_proof
+          from allrice_automation_runs ar join allrice_jobs j on j.run_id=ar.run_id where ar.automation_id=${t.id}`;
+        expect(scheduled).toMatchObject({
+          conversation_proof: true,
+          monthly_proof: true,
+          target_proof: true,
+          conversation_snapshot: {
+            mode: conversationMode,
+            businessRevision: 2,
+            sourceSessionId: t.sessionId,
+          },
+        });
+        expect(scheduled!.scheduled_for).toEqual(t.P);
+        expect(scheduled!.session_id === t.sessionId).toBe(
+          conversationMode === 'reuse',
+        );
+        const [outcome] =
+          await f.db`select p.business_scheduled_for,d.outcome,n.business_scheduled_for successor,
+          (select count(*)::int from allrice_automation_runs ar where ar.automation_id=${t.id}) ars,
+          (select count(*)::int from allrice_runs r join allrice_automation_runs ar on ar.run_id=r.id where ar.automation_id=${t.id}) runs,
+          (select count(*)::int from allrice_jobs j join allrice_automation_runs ar on ar.run_id=j.run_id where ar.automation_id=${t.id}) jobs
+          from allrice_native_calendar_plans p join allrice_native_calendar_decisions d on d.decision_id=p.closed_decision_id
+          join allrice_native_calendar_plans n on n.period_id=d.successor_period_id where p.period_id=${bound.periodId}`;
+        expect(outcome).toMatchObject({
+          business_scheduled_for: t.P,
+          outcome: 'queued',
+          ars: 1,
+          runs: 1,
+          jobs: 1,
+        });
+        expect(outcome!.successor.getTime()).toBeGreaterThan(Date.now());
+        const frozen = AutomationConversationSnapshotSchema.parse(
+            scheduled!.conversation_snapshot,
+          ),
+          { digest, ...body } = frozen;
+        expect(digest).toBe(runtimePolicyDigest(body));
+        if (frozen.trigger.kind !== 'scheduled')
+          throw Error('expected a scheduled monthly snapshot');
+        // Read-only forged AR/snapshot values exercise the mandatory production
+        // time-identity proof. Never update the actual immutable AR, P or receipt.
+        for (const wrongP of [
+          recovered!.native_at.toISOString(),
+          new Date(t.P.getTime() + 1000).toISOString(),
+        ]) {
+          const wrongBody = {
+              ...body,
+              trigger: { ...frozen.trigger, scheduledFor: wrongP },
+            },
+            wrongSnapshot = {
+              ...wrongBody,
+              digest: runtimePolicyDigest(wrongBody),
+            };
+          const [negative] = await f.db`select
+            allrice_automation_conversation_snapshot_valid(forged.conversation_snapshot) snapshot_valid,
+            allrice_automation_conversation_scheduled_target_proved(forged.automation_id,forged.native_once_occurrence_id,
+              forged.native_recurring_occurrence_id,forged.scheduled_for) target_proved
+            from allrice_automation_runs ar cross join lateral jsonb_populate_record(null::allrice_automation_runs,
+              to_jsonb(ar)||jsonb_build_object('scheduled_for',${wrongP}::text,'conversation_snapshot',${f.db.json(wrongSnapshot)})) forged
+            where ar.id=${scheduled!.id}`;
+          expect(negative).toEqual({
+            snapshot_valid: true,
+            target_proved: false,
+          });
+        }
+        for (const sessionId of [
+          ...new Set([t.sessionId, scheduled!.session_id]),
+        ]) {
+          await f.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${sessionId}`;
+          try {
+            expect(
+              await f.db.begin((tx) =>
+                lockNativeOnceJobAdmission(tx, scheduled!.job_id),
+              ),
+            ).toMatchObject({ allowed: false });
+            expect(
+              (
+                await f.db`select allrice_automation_conversation_handoff_proved(${scheduled!.id}::uuid) valid`
+              )[0]?.valid,
+            ).toBe(true);
+          } finally {
+            await f.db`update allrice_chat_sessions set archived_at=null where id=${sessionId}`;
+          }
+        }
+        expect(
+          await f.db.begin((tx) =>
+            lockNativeOnceJobAdmission(tx, scheduled!.job_id),
+          ),
+        ).toMatchObject({ allowed: true });
+        const [unchanged] =
+          await f.db`select ar.scheduled_for,ar.conversation_snapshot,o.scheduled_at,p.business_scheduled_for,
+          allrice_automation_conversation_handoff_proved(ar.id) conversation_proof,
+          allrice_ordinary_monthly_handoff_proved(o.occurrence_id) monthly_proof
+          from allrice_automation_runs ar join allrice_native_recurring_occurrences o on o.occurrence_id=ar.native_recurring_occurrence_id
+          join allrice_native_calendar_plans p on p.period_id=o.calendar_period_id where ar.id=${scheduled!.id}`;
+        expect(unchanged).toEqual({
+          scheduled_for: t.P,
+          conversation_snapshot: frozen,
+          scheduled_at: recovered!.native_at,
+          business_scheduled_for: t.P,
+          conversation_proof: true,
+          monthly_proof: true,
+        });
+      },
+    );
+
+    it('conversation policy before materialization preserves the same P, then binds target/Run/Job and manual request independently', async () => {
+      const t = await historicalTask('latest'),
+        before = await conversationBoundary(t.id);
+      await changeRecurringTask(f.context, t.sessionId, t.id, {
+        action: 'conversation',
+        operationId: randomUUID(),
+        expectedRevision: 1,
+        conversationMode: 'new_each_run',
+      });
+      expect(await conversationBoundary(t.id)).toEqual(before);
+      const bound = await sqlBinding(t.id); // Shared fresh reader must accept business2/native1.
+      await bound.receipt();
+      expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
+        true,
+      );
+      const [scheduled] =
+        await f.db`select ar.*,j.id job_id,er.session_id employee_session,
+        s.employee_version_id target_version,er.employee_version_id frozen_version,
+        allrice_automation_conversation_handoff_proved(ar.id) proof,
+        allrice_ordinary_monthly_handoff_proved(ar.native_recurring_occurrence_id) monthly_proof
+        from allrice_automation_runs ar join allrice_jobs j on j.run_id=ar.run_id
+        join allrice_employee_runs er on er.run_id=ar.run_id join allrice_chat_sessions s on s.id=ar.session_id where ar.automation_id=${t.id}`;
+      expect(scheduled!.session_id).not.toBe(t.sessionId);
+      expect(scheduled!.employee_session).toBe(scheduled!.session_id);
+      expect(scheduled!.target_version).toBe(scheduled!.frozen_version);
+      expect(scheduled).toMatchObject({
+        proof: true,
+        monthly_proof: true,
+        conversation_snapshot: {
+          mode: 'new_each_run',
+          businessRevision: 2,
+          sourceSessionId: t.sessionId,
+          targetSessionId: scheduled!.session_id,
+        },
+      });
+      expect(
+        (await getAutomationCatalogTask(f.context, f.workspaceId, t.id))
+          .occurrences,
+      ).toEqual([
+        expect.objectContaining({
+          sessionId: scheduled!.session_id,
+          runId: scheduled!.run_id,
+        }),
+      ]);
+      const manualInput = { requestId: randomUUID(), expectedRevision: 2 },
+        [manual, duplicate] = await Promise.all([
+          runManualAutomation(f.context, f.workspaceId, t.id, manualInput),
+          runManualAutomation(f.context, f.workspaceId, t.id, manualInput),
+        ]);
+      expect(duplicate).toEqual(manual);
+      expect(manual.sessionId).not.toBe(t.sessionId);
+      expect(manual.sessionId).not.toBe(scheduled!.session_id);
+      const nativeAfter = await conversationBoundary(t.id);
+      await changeRecurringTask(f.context, t.sessionId, t.id, {
+        action: 'conversation',
+        operationId: randomUUID(),
+        expectedRevision: 2,
+        conversationMode: 'reuse',
+      });
+      expect(await conversationBoundary(t.id)).toEqual(nativeAfter);
+      expect(
+        await getManualAutomationRun(
+          f.context,
+          f.workspaceId,
+          t.id,
+          manualInput.requestId,
+        ),
+      ).toEqual(manual);
+      for (const jobId of [manual.run.job.id, scheduled!.job_id])
+        expect(
+          await f.db.begin((tx) => lockNativeOnceJobAdmission(tx, jobId)),
+        ).toMatchObject({ scheduled: true, allowed: true });
+      for (const revoked of [t.sessionId, manual.sessionId]) {
+        await f.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${revoked}`;
+        expect(
+          await f.db.begin((tx) =>
+            lockNativeOnceJobAdmission(tx, manual.run.job.id),
+          ),
+        ).toMatchObject({ scheduled: true, allowed: false });
+        await f.db`update allrice_chat_sessions set archived_at=null where id=${revoked}`;
+      }
+      expect(
+        await f.db`select id from allrice_chat_sessions where id in (${t.sessionId},${manual.sessionId},${scheduled!.session_id})`,
+      ).toHaveLength(3);
+      await expect(
+        f.db`update allrice_automation_runs set conversation_snapshot=null where id=${manual.automationRunId}`,
+      ).rejects.toMatchObject({ code: '23514' });
+      await expect(
+        f.db`update allrice_automations set native_create_conversation_mode='new_each_run' where id=${t.id}`,
+      ).rejects.toMatchObject({ code: '23514' });
+      await expect(
+        f.db`update allrice_automations set conversation_mode='new_each_run',revision=4 where id=${t.id}`,
+      ).rejects.toMatchObject({ code: '23514' });
+    });
+
+    it('conversation edit winning the real user-lock race freezes one complete new-mode execution, without clock reset', async () => {
+      const t = await historicalTask('latest'),
+        b = await sqlBinding(t.id);
+      await b.receipt();
+      const operationId = randomUUID(),
+        result = await afterWebWinsDiscovery(
+          operationId,
+          () =>
+            changeRecurringTask(f.context, t.sessionId, t.id, {
+              operationId,
+              expectedRevision: 1,
+              action: 'conversation',
+              conversationMode: 'new_each_run',
+            }),
+          () => dispatchNextNativeRecurringOccurrence(randomUUID()),
+        );
+      expect(result).toMatchObject({
+        web: { status: 'applied' },
+        materialized: true,
+      });
+      const rows =
+        await f.db`select conversation_snapshot from allrice_automation_runs where automation_id=${t.id}`;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.conversation_snapshot).toMatchObject({
+        mode: 'new_each_run',
+        businessRevision: 2,
+        sourceSessionId: t.sessionId,
+      });
+    });
+
+    it('conversation gap cannot be invented from missing/pending/rejected/foreign operations or a wrong old native version', async () => {
+      const t = await publicTask();
+      for (const revision of [2, 3])
+        await expect(
+          f.db`update allrice_automations set revision=${revision} where id=${t.id}`,
+        ).rejects.toMatchObject({ code: '23514' });
+      const request = {
+        operationId: randomUUID(),
+        action: 'conversation',
+        expectedRevision: 1,
+        conversationMode: 'new_each_run',
+      };
+      await expect(
+        f.db.begin(async (tx) => {
+          await tx`insert into allrice_native_recurring_operations(organization_id,owner_id,operation_id,automation_id,request,request_digest,status,native_revision_before)
+          values(${f.organizationId},${f.ownerId},${request.operationId},${t.id},${tx.json(request)},${runtimePolicyDigest({ sessionId: t.sessionId, taskId: t.id, input: request })},'pending',1)`;
+        }),
+      ).rejects.toMatchObject({ code: '23514' });
+      await expect(
+        f.db.begin(async (tx) => {
+          await tx`insert into allrice_native_recurring_operations(organization_id,owner_id,operation_id,automation_id,request,request_digest,status,native_revision_before)
+          values(${f.organizationId},${f.ownerId},${request.operationId},${t.id},${tx.json(request)},${runtimePolicyDigest({ sessionId: t.sessionId, taskId: t.id, input: request })},'applied',1)`;
+        }),
+      ).rejects.toMatchObject({ code: '23514' });
+      const rejected = await changeRecurringTask(f.context, t.sessionId, t.id, {
+        ...request,
+        expectedRevision: 99,
+      });
+      expect(rejected.status).toBe('rejected');
+      const [proof] =
+        await f.db`select allrice_ordinary_monthly_business_revision_proved(${t.id}::uuid,1) valid`;
+      expect(proof!.valid).toBe(true);
+      await expect(
+        f.db`update allrice_automations set revision=2,conversation_mode='new_each_run' where id=${t.id}`,
+      ).rejects.toMatchObject({ code: '23514' });
+      const legitimate = { ...request, operationId: randomUUID() };
+      await changeRecurringTask(f.context, t.sessionId, t.id, legitimate);
+      await expect(
+        changeRecurringTask(f.context, t.sessionId, t.id, {
+          ...legitimate,
+          conversationMode: 'reuse',
+        }),
+      ).rejects.toThrow('request_conflict');
+    });
+
+    it('conversation gap remains legal through paused update and resume without reactivating an absent old P', async () => {
+      const t = await publicTask();
+      await changeRecurringTask(f.context, t.sessionId, t.id, {
+        operationId: randomUUID(),
+        expectedRevision: 1,
+        action: 'pause',
+      });
+      await changeRecurringTask(f.context, t.sessionId, t.id, {
+        operationId: randomUUID(),
+        expectedRevision: 2,
+        action: 'conversation',
+        conversationMode: 'new_each_run',
+      });
+      expect(
+        await changeRecurringTask(f.context, t.sessionId, t.id, {
+          operationId: randomUUID(),
+          expectedRevision: 3,
+          action: 'update',
+          name: '暂停期间的新内容',
+          prompt: '完整工作保持暂停。',
+          rule,
+        }),
+      ).toMatchObject({
+        status: 'applied',
+        task: {
+          status: 'paused',
+          revision: 4,
+          nextRunAt: null,
+          conversationMode: 'new_each_run',
+        },
+      });
+      expect((await stateCounts(t.id)).open_plans).toBe(0);
+      expect((await stateCounts(t.id)).arms).toBe(0);
+      await changeRecurringTask(f.context, t.sessionId, t.id, {
+        operationId: randomUUID(),
+        expectedRevision: 4,
+        action: 'conversation',
+        conversationMode: 'reuse',
+      });
+      const resume = {
+        operationId: randomUUID(),
+        expectedRevision: 5,
+        action: 'resume',
+      };
+      expect(
+        await changeRecurringTask(f.context, t.sessionId, t.id, resume),
+      ).toMatchObject({
+        status: 'pending',
+        task: { revision: 6, conversationMode: 'reuse' },
+      });
+      await sqlBinding(t.id);
+      expect(await operation(t, resume.operationId)).toMatchObject({
+        status: 'applied',
+        task: { status: 'enabled', revision: 6 },
+      });
+    });
+
+    it.each([null, 2, 99])(
+      'conversation gap rejects a full operation with old-native predecessor %s',
+      async (nativeBefore) => {
+        const t = await publicTask();
+        await changeRecurringTask(f.context, t.sessionId, t.id, {
+          action: 'conversation',
+          operationId: randomUUID(),
+          expectedRevision: 1,
+          conversationMode: 'new_each_run',
+        });
+        const input = {
+          action: 'pause' as const,
+          operationId: randomUUID(),
+          expectedRevision: 2,
+        };
+        await expect(
+          f.db.begin(async (tx) => {
+            const [p] = await tx<
+              Parameters<typeof changeOrdinaryMonthlyTaskInTransaction>[1][]
+            >`select * from allrice_automations where id=${t.id} for update`;
+            const [c] =
+              await tx`select snapshot from allrice_native_recurring_controls where automation_id=${t.id}`;
+            await tx`insert into allrice_native_recurring_operations(organization_id,owner_id,operation_id,automation_id,request,request_digest,status,native_revision_before)
+          values(${f.organizationId},${f.ownerId},${input.operationId},${t.id},${tx.json(input)},${runtimePolicyDigest({ sessionId: t.sessionId, taskId: t.id, input })},'pending',${nativeBefore})`;
+            await changeOrdinaryMonthlyTaskInTransaction(
+              tx,
+              p!,
+              c!.snapshot.control,
+              input,
+            );
+          }),
+        ).rejects.toMatchObject({ code: '23514' });
+        const read = await getRecurringTask(f.context, t.sessionId, t.id);
+        if (!('task' in read)) throw Error('missing monthly task detail');
+        expect(read.task).toMatchObject({
+          revision: 2,
+          conversationMode: 'new_each_run',
+        });
+      },
+    );
+
+    it('conversation dispatch winning the real automation/user lock race keeps its old-mode Run after the policy edit', async () => {
+      const t = await historicalTask('latest'),
+        b = await sqlBinding(t.id);
+      await b.receipt();
+      const gate = await f.db.reserve();
+      let dispatch: Promise<boolean> | undefined,
+        edit: ReturnType<typeof changeRecurringTask> | undefined;
+      try {
+        await gate`begin`;
+        const [holder] =
+          await gate`select pg_backend_pid() pid,id from allrice_automations where id=${t.id} for update`;
+        dispatch = dispatchNextNativeRecurringOccurrence(randomUUID());
+        let workerPid: number | undefined;
+        await expect
+          .poll(
+            async () => {
+              const [row] = await f.db<
+                { pid: number }[]
+              >`select pid from pg_stat_activity where datname=current_database()
+            and ${holder!.pid}=any(pg_blocking_pids(pid)) and query like '%allrice_automations%for update%'`;
+              workerPid = row?.pid;
+              return !!workerPid;
+            },
+            { timeout: 5000, interval: 10 },
+          )
+          .toBe(true);
+        edit = changeRecurringTask(f.context, t.sessionId, t.id, {
+          action: 'conversation',
+          operationId: randomUUID(),
+          expectedRevision: 1,
+          conversationMode: 'new_each_run',
+        });
+        await expect
+          .poll(
+            async () => {
+              const [row] =
+                await f.db`select exists(select 1 from pg_stat_activity where datname=current_database()
+            and ${workerPid!}=any(pg_blocking_pids(pid)) and query like '%allrice_users%for no key update%') blocked`;
+              return row!.blocked;
+            },
+            { timeout: 5000, interval: 10 },
+          )
+          .toBe(true);
+      } finally {
+        try {
+          await gate`commit`;
+        } finally {
+          gate.release();
+          await Promise.allSettled([dispatch, edit]);
+        }
+      }
+      expect(await dispatch!).toBe(true);
+      expect(await edit!).toMatchObject({
+        status: 'applied',
+        task: { revision: 2, conversationMode: 'new_each_run' },
+      });
+      const rows =
+        await f.db`select ar.*,j.id job_id from allrice_automation_runs ar join allrice_jobs j on j.run_id=ar.run_id where ar.automation_id=${t.id}`;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        session_id: t.sessionId,
+        conversation_snapshot: { mode: 'reuse', businessRevision: 1 },
+      });
+      expect(
+        await f.db.begin((tx) =>
+          lockNativeOnceJobAdmission(tx, rows[0]!.job_id),
+        ),
+      ).toMatchObject({ allowed: true });
+    });
 
     it('creates from current human monthly source, preserves all sentences, and shares fixed weekly controls', async () => {
       const s = await session(),

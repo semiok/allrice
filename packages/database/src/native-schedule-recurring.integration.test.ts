@@ -184,7 +184,10 @@ suite(
     async function task(
       prompt = '核对固定测试数据，只输出本期结果。',
       rule: RecurringScheduleRule = { kind: 'every', seconds: 60 },
-      options: { prepareNative?: boolean } = {},
+      options: {
+        prepareNative?: boolean;
+        conversationMode?: 'reuse' | 'new_each_run';
+      } = {},
     ) {
       const session = await createChatSession(f.context, {
         workspaceId: f.workspaceId,
@@ -196,6 +199,9 @@ suite(
         name: '每期核对',
         prompt,
         rule,
+        ...(options.conversationMode === undefined
+          ? {}
+          : { conversationMode: options.conversationMode }),
       };
       const result = await createRecurringTask(f.context, session.id, input);
       if (options.prepareNative !== false) await prepareNativeTask(result.id);
@@ -279,6 +285,7 @@ suite(
       text = chatRequest,
       rule: RecurringScheduleRule = { kind: 'every', seconds: 120 },
       clientMessageId = randomUUID(),
+      conversationMode?: 'reuse' | 'new_each_run',
     ) {
       // All rows belong to this disposable fixture schema, never shared Dev.
       await f.db`update allrice_jobs set status='canceled' where status='queued'`;
@@ -305,6 +312,7 @@ suite(
         name: '周期原话测试',
         prompt: '模型改写不能替换真人原文',
         rule,
+        ...(conversationMode === undefined ? {} : { conversationMode }),
       };
       return {
         input: {
@@ -335,6 +343,390 @@ suite(
         (select count(*)::int from allrice_native_recurring_journal) journal`;
       return row!;
     }
+    it.each(['reuse', 'new_each_run'] as const)(
+      'conversation fixed parent rejects a pointerless new NULL snapshot at COMMIT (%s)',
+      async (conversationMode) => {
+        const t = await task(undefined, undefined, { conversationMode });
+        const arId = randomUUID();
+        let reachedCommit = false;
+        await expect(
+          f.db.begin(async (tx) => {
+            const [born] = await tx`insert into allrice_automation_runs
+              (id,organization_id,workspace_id,automation_id,session_id,scheduled_for,status)
+              values(${arId},${f.organizationId},${f.workspaceId},${t.id},${t.sessionId},clock_timestamp(),'queued')
+              returning conversation_snapshot,manual_request_id,native_once_occurrence_id,native_recurring_occurrence_id`;
+            expect(born).toEqual({
+              conversation_snapshot: null,
+              manual_request_id: null,
+              native_once_occurrence_id: null,
+              native_recurring_occurrence_id: null,
+            });
+            reachedCommit = true;
+          }),
+        ).rejects.toMatchObject({ code: '23514' });
+        expect(reachedCommit).toBe(true);
+        expect(
+          await f.db`select id from allrice_automation_runs where id=${arId}`,
+        ).toHaveLength(0);
+      },
+    );
+
+    it('conversation fixed periods freeze different targets or the source, preserve old Run admission and immutable original create input', async () => {
+      const t = await task(
+        '核对本期数据。',
+        { kind: 'every', seconds: 60 },
+        { conversationMode: 'new_each_run' },
+      );
+      await receipt(t.id);
+      expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
+        true,
+      );
+      const [first] =
+        await f.db`select ar.*,j.id job_id,allrice_automation_conversation_handoff_proved(ar.id) proof
+        from allrice_automation_runs ar join allrice_jobs j on j.run_id=ar.run_id where ar.automation_id=${t.id}`;
+      expect(first!.session_id).not.toBe(t.sessionId);
+      expect(first).toMatchObject({
+        proof: true,
+        conversation_snapshot: {
+          mode: 'new_each_run',
+          businessRevision: 1,
+          sourceSessionId: t.sessionId,
+        },
+      });
+      const before = await snapshot(t.id),
+        policy = {
+          operationId: randomUUID(),
+          expectedRevision: 1,
+          action: 'conversation',
+          conversationMode: 'reuse',
+        };
+      expect(
+        await changeRecurringTask(f.context, t.sessionId, t.id, policy),
+      ).toMatchObject({
+        status: 'applied',
+        task: { revision: 2, conversationMode: 'reuse' },
+      });
+      expect(await snapshot(t.id)).toEqual(before);
+      expect(
+        (
+          await listRecurringTasks(f.context, t.sessionId, {
+            clientRequestId: t.input.clientRequestId,
+          })
+        ).request,
+      ).toEqual(t.input);
+      expect(
+        await f.db.begin((tx) => lockNativeOnceJobAdmission(tx, first!.job_id)),
+      ).toMatchObject({ allowed: true });
+      await receipt(t.id);
+      expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
+        true,
+      );
+      const rows =
+        await f.db`select ar.*,j.id job_id from allrice_automation_runs ar join allrice_jobs j on j.run_id=ar.run_id where ar.automation_id=${t.id} order by ar.scheduled_for`;
+      expect(rows).toHaveLength(2);
+      expect(rows[1]).toMatchObject({
+        session_id: t.sessionId,
+        conversation_snapshot: {
+          mode: 'reuse',
+          businessRevision: 2,
+          targetSessionId: t.sessionId,
+        },
+      });
+      for (const row of rows) {
+        const [timeProof] = await f.db`select
+          allrice_automation_conversation_scheduled_target_proved(ar.automation_id,ar.native_once_occurrence_id,
+            ar.native_recurring_occurrence_id,ar.scheduled_for) exact_p,
+          allrice_automation_conversation_scheduled_target_proved(ar.automation_id,ar.native_once_occurrence_id,
+            ar.native_recurring_occurrence_id,ar.scheduled_for+interval '1 second') wrong_p
+          from allrice_automation_runs ar where ar.id=${row.id}`;
+        expect(timeProof).toEqual({ exact_p: true, wrong_p: false });
+      }
+      const history = await getAutomationCatalogTask(
+        f.context,
+        f.workspaceId,
+        t.id,
+      );
+      expect(history.occurrences).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            sessionId: first!.session_id,
+            runId: first!.run_id,
+          }),
+          expect.objectContaining({
+            sessionId: t.sessionId,
+            runId: rows[1]!.run_id,
+          }),
+        ]),
+      );
+      await f.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${first!.session_id}`;
+      expect(
+        await f.db.begin((tx) => lockNativeOnceJobAdmission(tx, first!.job_id)),
+      ).toMatchObject({ allowed: false });
+      expect(
+        await f.db.begin((tx) =>
+          lockNativeOnceJobAdmission(tx, rows[1]!.job_id),
+        ),
+      ).toMatchObject({ allowed: true });
+      await f.db`update allrice_chat_sessions set archived_at=null where id=${first!.session_id}`;
+      await f.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${t.sessionId}`;
+      for (const row of rows)
+        expect(
+          await f.db.begin((tx) => lockNativeOnceJobAdmission(tx, row.job_id)),
+        ).toMatchObject({ allowed: false });
+      await f.db`update allrice_chat_sessions set archived_at=null where id=${t.sessionId}`;
+    });
+    it.each(['schedule', 'folder'] as const)(
+      'conversation NULL birth scope leaves legacy %s new_each_run records intact',
+      async (triggerType) => {
+        const source = await createChatSession(f.context, {
+          workspaceId: f.workspaceId,
+          employeeAssignmentId: f.assignmentId,
+          title: 'Legacy conversation compatibility',
+        });
+        const id = randomUUID(),
+          arId = randomUUID(),
+          schedule = {
+            frequency: 'daily',
+            time: '08:30',
+            timezone: 'Asia/Shanghai',
+          },
+          folder = {
+            contractVersion: 1,
+            deviceId: randomUUID(),
+            folderGrantId: randomUUID(),
+            folderGrantVersion: 1,
+            relativePath: '.',
+            extensions: ['csv'],
+            ignorePaths: ['processed'],
+          };
+        await f.db`insert into allrice_automations
+          (id,organization_id,workspace_id,owner_id,name,prompt,trigger_type,schedule,folder,status,
+            conversation_mode,employee_assignment_id,session_id)
+          values(${id},${f.organizationId},${f.workspaceId},${f.ownerId},'Legacy scope','保留原有每轮新聊天语义。',${triggerType},
+            ${triggerType === 'schedule' ? f.db.json(schedule) : null},${triggerType === 'folder' ? f.db.json(folder) : null},'paused',
+            'new_each_run',${f.assignmentId},${source.id})`;
+        await f.db.begin(async (tx) => {
+          await tx`insert into allrice_automation_runs
+            (id,organization_id,workspace_id,automation_id,scheduled_for,status)
+            values(${arId},${f.organizationId},${f.workspaceId},${id},clock_timestamp(),'queued')`;
+        });
+        const [saved] =
+          await f.db`select ar.conversation_snapshot,a.clock_owner,a.conversation_mode,a.native_create_conversation_mode
+          from allrice_automation_runs ar join allrice_automations a on a.id=ar.automation_id where ar.id=${arId}`;
+        expect(saved).toEqual({
+          conversation_snapshot: null,
+          clock_owner: 'legacy',
+          conversation_mode: 'new_each_run',
+          native_create_conversation_mode: null,
+        });
+      },
+    );
+
+    it('conversation fixed paid P survives an archived old target while the old Job stays denied', async () => {
+      const t = await task(
+        '同一个业务周期最多付费一次。',
+        { kind: 'every', seconds: 60 },
+        { conversationMode: 'new_each_run', prepareNative: false },
+      );
+      const P = new Date(
+        Math.floor((Date.now() - 180_000) / 1000) * 1000,
+      ).toISOString();
+      await prepareNativeTask(t.id, P);
+      await receipt(t.id);
+      expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
+        true,
+      );
+      const [paid] =
+        await f.db`select ar.id,ar.run_id,ar.session_id,j.id job_id,
+        ar.native_recurring_occurrence_id occurrence_id
+        from allrice_automation_runs ar join allrice_jobs j on j.run_id=ar.run_id where ar.automation_id=${t.id}`;
+      expect(paid).toBeDefined();
+      expect(paid!.session_id).not.toBe(t.sessionId);
+      await f.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${paid!.session_id}`;
+      expect(
+        await f.db.begin((tx) => lockNativeOnceJobAdmission(tx, paid!.job_id)),
+      ).toMatchObject({
+        scheduled: true,
+        runId: paid!.run_id,
+        allowed: false,
+      });
+      expect(
+        (
+          await f.db`select allrice_automation_conversation_handoff_proved(${paid!.id}::uuid) valid`
+        )[0]?.valid,
+      ).toBe(true);
+
+      // Component-only legal rule change: the original put/receipt and journal
+      // remain intact. Only an accepted update to a different native rule can
+      // select another target; a bare scheduledAt rewind is forbidden.
+      const daily = {
+        kind: 'daily' as const,
+        time: P.slice(11, 19),
+        timezone: 'UTC',
+      };
+      const update = {
+        operationId: randomUUID(),
+        expectedRevision: 1,
+        action: 'update' as const,
+        name: '新规则保留原业务去重',
+        prompt: t.input.prompt,
+        rule: daily,
+      };
+      expect(
+        await changeRecurringTask(f.context, t.sessionId, t.id, update),
+      ).toMatchObject({ status: 'pending' });
+      const pending = await snapshot(t.id),
+        previous = structuredClone(pending.task) as NativeRecurringTask,
+        changed: NativeRecurringTask = {
+          ...previous,
+          record: {
+            id: previous.record.id,
+            kind: 'daily',
+            title: previous.record.title,
+            prompt: previous.record.prompt,
+            time: `${daily.time}.000`,
+            timeZone: daily.timezone,
+            scheduledAt: P,
+          },
+        };
+      // Prove that the same change without changing the rule is rejected by
+      // the real SQL store, rather than permitting arbitrary Task rewrites.
+      const rewind = structuredClone(previous);
+      rewind.record.scheduledAt = P;
+      const badMutation: NativeRecurringMutation = {
+        kind: 'put_task',
+        controlId: pending.control.controlId,
+        task: rewind,
+      };
+      const badWrite = {
+        writeId: randomUUID(),
+        digest: nativeOnceDigest(badMutation),
+        mutation: badMutation,
+      };
+      expect(await store.commitMutation(writer, badWrite)).toBe('rejected');
+      expect(await store.readExactCommit(writer, badWrite)).toBe('absent');
+      await mutate({
+        kind: 'put_task',
+        controlId: pending.control.controlId,
+        task: changed,
+      });
+      await mutate({
+        kind: 'confirm_command',
+        controlId: pending.control.controlId,
+        commandId: update.operationId,
+        nativeTaskId: changed.record.id,
+      });
+      const delivery = {
+          scheduledAt: P,
+          deliveredAt: new Date().toISOString(),
+          messageId: randomUUID(),
+        },
+        current = structuredClone(
+          (await snapshot(t.id)).task,
+        ) as NativeRecurringTask;
+      current.lastDelivery = delivery;
+      current.deliveryHistory = {
+        ...current.deliveryHistory,
+        records: [
+          ...(current.deliveryHistory?.records ?? []),
+          { ...delivery, prompt: current.record.prompt },
+        ],
+      };
+      current.record.scheduledAt = new Date(
+        Date.parse(P) + 86_400_000,
+      ).toISOString();
+      await mutate({
+        kind: 'put_task',
+        controlId: pending.control.controlId,
+        task: current,
+      });
+      const [duplicate] =
+        await f.db`select occurrence_id,outbox_state,payload from allrice_native_recurring_occurrences
+        where automation_id=${t.id} and revision=2 and scheduled_at=${P}::timestamptz`;
+      expect(duplicate).toMatchObject({
+        outbox_state: 'pending',
+        payload: { revision: { revision: 2 }, receipt: { scheduledAt: P } },
+      });
+      expect(duplicate!.occurrence_id).not.toBe(paid!.occurrence_id);
+      const businessState = async () =>
+        (
+          await f.db`select
+        (select count(*)::int from allrice_chat_sessions) chats,
+        (select count(*)::int from allrice_messages) messages,
+        (select count(*)::int from allrice_employee_runs) employee_runs,
+        (select count(*)::int from allrice_automation_runs) automation_runs,
+        (select count(*)::int from allrice_runs) runs,
+        (select count(*)::int from allrice_jobs) jobs,
+        (select count(*)::int from allrice_model_usage_ledger) usage,
+        (select count(*)::int from allrice_runtime_reservations) reservations,
+        (select to_jsonb(ar) from allrice_automation_runs ar where ar.id=${paid!.id}) original_ar,
+        (select to_jsonb(r) from allrice_runs r where r.id=${paid!.run_id}) original_run,
+        (select to_jsonb(j) from allrice_jobs j where j.id=${paid!.job_id}) original_job,
+        (select to_jsonb(er) from allrice_employee_runs er where er.run_id=${paid!.run_id}) original_employee_run,
+        (select to_jsonb(o) from allrice_native_recurring_occurrences o where o.occurrence_id=${paid!.occurrence_id}) original_occurrence,
+        (select to_jsonb(s) from allrice_chat_sessions s where s.id=${paid!.session_id}) original_target`
+        )[0];
+      const before = await businessState();
+      expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
+        true,
+      );
+      const [terminal] =
+        await f.db`select outbox_state,outbox_reason,business_binding from allrice_native_recurring_occurrences
+        where occurrence_id=${duplicate!.occurrence_id}`;
+      expect(terminal).toEqual({
+        outbox_state: 'blocked',
+        outbox_reason: 'ORDINARY_FIXED_ALREADY_CLAIMED',
+        business_binding: null,
+      });
+      expect(await businessState()).toEqual(before);
+      expect(
+        await f.db.begin((tx) => lockNativeOnceJobAdmission(tx, paid!.job_id)),
+      ).toMatchObject({ allowed: false });
+      expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
+        false,
+      );
+    });
+
+    it('conversation leaves the original fixed pause/resume native gap legal before another full update', async () => {
+      const t = await task();
+      await changeRecurringTask(f.context, t.sessionId, t.id, {
+        operationId: randomUUID(),
+        expectedRevision: 1,
+        action: 'pause',
+      });
+      await changeRecurringTask(f.context, t.sessionId, t.id, {
+        operationId: randomUUID(),
+        expectedRevision: 2,
+        action: 'resume',
+      });
+      const before = await snapshot(t.id);
+      await changeRecurringTask(f.context, t.sessionId, t.id, {
+        operationId: randomUUID(),
+        expectedRevision: 3,
+        action: 'conversation',
+        conversationMode: 'new_each_run',
+      });
+      expect(await snapshot(t.id)).toEqual(before);
+      const input = {
+        operationId: randomUUID(),
+        expectedRevision: 4,
+        action: 'update',
+        name: '完整新名称',
+        prompt: '完整的新工作，不省略原文。',
+        rule: t.input.rule,
+      };
+      expect(
+        await changeRecurringTask(f.context, t.sessionId, t.id, input),
+      ).toMatchObject({
+        status: 'pending',
+        task: { revision: 5, conversationMode: 'new_each_run' },
+      });
+      const [p] =
+        await f.db`select revision,native_recurring_revision from allrice_automations where id=${t.id}`;
+      expect(Number(p!.revision)).toBe(5);
+      expect(Number(p!.native_recurring_revision)).toBe(5);
+    });
+
     it('maps two periods to two messages/Runs, exact retries never multiply work', async () => {
       const t = await task();
       expect(
@@ -830,7 +1222,7 @@ suite(
         await f.db.begin((tx) =>
           lockNativeOnceJobAdmission(tx, first.run.job.id),
         ),
-      ).toMatchObject({ scheduled: false, allowed: true });
+      ).toMatchObject({ scheduled: true, runId: first.run.id, allowed: true });
       expect(
         (await getAutomationCatalogTask(f.context, f.workspaceId, t.id))
           .occurrences,
@@ -1047,9 +1439,25 @@ suite(
       expect(await manualBoundary(t.id)).toEqual(deleted);
     });
     it('current viewer/cloud revocation and foreign scope create no manual work, even with a cached admin context', async () => {
-      const t = await task(),
+      const t = await task(
+          '核对本轮数据。',
+          { kind: 'every', seconds: 60 },
+          { conversationMode: 'new_each_run' },
+        ),
         input = { requestId: randomUUID(), expectedRevision: 1 },
         before = await manualBoundary(t.id);
+      const transactionalCounts = async () =>
+        (
+          await f.db`select
+        (select count(*)::int from allrice_chat_sessions) chats,
+        (select count(*)::int from allrice_messages) messages,
+        (select count(*)::int from allrice_employee_runs) employee_runs,
+        (select count(*)::int from allrice_automation_runs) automation_runs,
+        (select count(*)::int from allrice_runs) runs,
+        (select count(*)::int from allrice_jobs) jobs,
+        (select count(*)::int from allrice_audit_events) audits`
+        )[0];
+      const beforeTransaction = await transactionalCounts();
       await f.db`update allrice_memberships set role='viewer' where user_id=${f.ownerId} and organization_id=${f.organizationId}`;
       try {
         await expect(
@@ -1080,12 +1488,29 @@ suite(
       expect(
         await f.db`select id from allrice_automation_runs where automation_id=${t.id}`,
       ).toHaveLength(0);
+      expect(await transactionalCounts()).toEqual(beforeTransaction);
       expect(await manualBoundary(t.id)).toEqual(before);
     });
     it('confirmed rollback leaves zero work; lost manual COMMIT ACK only reads the original durable request', async () => {
-      const t = await task(),
+      const t = await task(
+          '核对本轮数据。',
+          { kind: 'every', seconds: 60 },
+          { conversationMode: 'new_each_run' },
+        ),
         input = { requestId: randomUUID(), expectedRevision: 1 },
         before = await manualBoundary(t.id);
+      const counts = async () =>
+        (
+          await f.db`select
+        (select count(*)::int from allrice_chat_sessions) chats,
+        (select count(*)::int from allrice_messages) messages,
+        (select count(*)::int from allrice_employee_runs) employee_runs,
+        (select count(*)::int from allrice_automation_runs) automation_runs,
+        (select count(*)::int from allrice_runs) runs,
+        (select count(*)::int from allrice_jobs) jobs,
+        (select count(*)::int from allrice_audit_events) audits`
+        )[0];
+      const beforeCounts = await counts();
       function fault(afterCommit: boolean) {
         return new Proxy(f.db, {
           get(target, key, receiver) {
@@ -1117,6 +1542,7 @@ suite(
       expect(
         await f.db`select id from allrice_automation_runs where automation_id=${t.id}`,
       ).toHaveLength(0);
+      expect(await counts()).toEqual(beforeCounts);
       spy = vi.spyOn(client, 'getDatabase').mockReturnValue(fault(true));
       try {
         await expect(
@@ -1132,6 +1558,7 @@ suite(
         input.requestId,
       );
       expect(original.request).toEqual(input);
+      expect(original.sessionId).not.toBe(t.sessionId);
       expect(
         await f.db`select ar.id from allrice_automation_runs ar join allrice_jobs j on j.run_id=ar.run_id where ar.automation_id=${t.id}`,
       ).toHaveLength(1);
@@ -1637,6 +2064,64 @@ suite(
       expect(last.tasks.map((p) => p.id)).toEqual([ids[0]]);
       expect(last.nextCursor).toBeNull();
     });
+    it('conversation tool mode is authorized only by the current human and remains in exact create replay', async () => {
+      const text = '请每隔两分钟回复本轮核对结果；每次新建聊天',
+        r = await leasedChat(
+          text,
+          { kind: 'every', seconds: 120 },
+          randomUUID(),
+          'new_each_run',
+        );
+      try {
+        const before = await enrollmentCounts();
+        await expect(
+          createRecurringTaskFromExecutionContext({
+            ...r.input,
+            conversationMode: 'reuse',
+          }),
+        ).rejects.toThrow('intent_required');
+        expect(await enrollmentCounts()).toEqual(before);
+        const created = await createRecurringTaskFromExecutionContext(r.input);
+        expect(created).toMatchObject({
+          conversationMode: 'new_each_run',
+          prompt: text,
+        });
+        expect(await createRecurringTaskFromExecutionContext(r.input)).toEqual(
+          created,
+        );
+        expect(
+          (
+            await listRecurringTasks(f.context, r.input.sessionId, {
+              clientRequestId: created.clientRequestId,
+            })
+          ).request,
+        ).toMatchObject({ conversationMode: 'new_each_run', prompt: text });
+        await expect(
+          createRecurringTaskFromExecutionContext({
+            ...r.input,
+            conversationMode: 'reuse',
+          }),
+        ).rejects.toThrow('request_conflict');
+      } finally {
+        await r.finish();
+      }
+      const denied = await leasedChat(
+        '请每隔两分钟回复“每次新建聊天”',
+        { kind: 'every', seconds: 120 },
+        randomUUID(),
+        'new_each_run',
+      );
+      try {
+        const before = await enrollmentCounts();
+        await expect(
+          createRecurringTaskFromExecutionContext(denied.input),
+        ).rejects.toThrow('intent_required');
+        expect(await enrollmentCounts()).toEqual(before);
+      } finally {
+        await denied.finish();
+      }
+    });
+
     it('creates from the exact current human rule and preserves original bytes/version through duplicate calls', async () => {
       const r = await leasedChat();
       try {

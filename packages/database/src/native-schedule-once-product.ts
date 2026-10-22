@@ -47,6 +47,10 @@ import { readWorkAutomation } from './work-automation.ts';
 import { assertWorkbenchSession } from './artifact-review.ts';
 import type { ResourcePrincipal } from './resource-principal.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
+import {
+  prepareAutomationConversation,
+  type AutomationConversationSnapshot,
+} from './automation-conversation.ts';
 import { acquireDevAdmission } from './dev-maintenance.ts';
 import {
   nativeOnceDigest,
@@ -70,6 +74,8 @@ export type OncePlan = {
   owner_id: string;
   employee_assignment_id: string;
   session_id: string;
+  conversation_mode: 'reuse' | 'new_each_run';
+  native_create_conversation_mode: 'reuse' | 'new_each_run' | null;
   name: string;
   prompt: string;
   schedule: { runAt: string; timezone: string };
@@ -245,10 +251,11 @@ export async function readOnceTaskProjection(
       run_state: string | null;
       job_status: string | null;
       error_message: string | null;
+      result_session_id: string | null;
     }[]
   >`
     select c.snapshot->'control'->'command'->>'status' command_status,c.snapshot->'task' task,
-      o.outbox_state,o.outbox_reason,r.id run_id,r.state run_state,j.status job_status,j.last_error_message error_message
+      o.outbox_state,o.outbox_reason,r.id run_id,r.state run_state,j.status job_status,j.last_error_message error_message,ar.session_id result_session_id
     from allrice_native_once_controls c
     left join allrice_native_once_occurrences o on o.partition_id=c.partition_id and o.control_id=c.control_id
     left join allrice_automation_runs ar on ar.native_once_occurrence_id=o.occurrence_id and ar.automation_id=c.automation_id
@@ -284,6 +291,8 @@ export async function readOnceTaskProjection(
     name: p.name,
     prompt: p.prompt,
     sessionId: p.session_id,
+    conversationMode: p.conversation_mode,
+    resultSessionId: state?.result_session_id ?? null,
     runAt: p.schedule.runAt,
     timezone: p.schedule.timezone,
     status,
@@ -346,10 +355,10 @@ async function enroll(
     throw new NativeOnceProductError('disabled');
   const [p] = await tx<Plan[]>`insert into allrice_automations
     (organization_id,workspace_id,owner_id,name,prompt,trigger_type,schedule,status,conversation_mode,employee_assignment_id,session_id,next_run_at,
-      clock_owner,native_once_request_id,native_once_request_digest)
+      clock_owner,native_once_request_id,native_once_request_digest,native_create_conversation_mode)
     values(${scope.organizationId},${scope.workspaceId},${scope.ownerId},${input.name},${input.prompt},'schedule',
-      ${json(tx, { frequency: 'once', runAt, timezone: input.timezone })},'enabled','reuse',${target.employee_assignment_id},${target.id},${runAt},
-      'native_once',${input.clientRequestId},${requestDigest}) returning *`;
+      ${json(tx, { frequency: 'once', runAt, timezone: input.timezone })},'enabled',${input.conversationMode ?? 'reuse'},${target.employee_assignment_id},${target.id},${runAt},
+      'native_once',${input.clientRequestId},${requestDigest},${input.conversationMode ?? null}) returning *`;
   const control: NativeOnceControl = {
     partitionId: partition.partition_id,
     controlId: randomUUID(),
@@ -718,6 +727,7 @@ export async function createOnceTaskFromExecutionContext(
     name: string;
     prompt: string;
     delayMinutes: number;
+    conversationMode?: 'reuse' | 'new_each_run';
   },
 ) {
   const { ctx, scope } = employeeChatIdentity(input);
@@ -749,6 +759,9 @@ export async function createOnceTaskFromExecutionContext(
     name: input.name.trim(),
     prompt: input.prompt.trim(),
     delayMinutes: input.delayMinutes,
+    ...(input.conversationMode === undefined
+      ? {}
+      : { conversationMode: input.conversationMode }),
   });
   return employeeAccessTransaction(getDatabase(), async (tx) => {
     await tx`set local lock_timeout='1000ms'`;
@@ -792,6 +805,11 @@ export async function createOnceTaskFromExecutionContext(
     if (!intent) throw new NativeOnceProductError('intent_required');
     if (intent.delayMinutes !== input.delayMinutes)
       throw new NativeOnceProductError('time_mismatch');
+    if (
+      (input.conversationMode ?? 'reuse') !==
+      (intent.conversationMode ?? 'reuse')
+    )
+      throw new NativeOnceProductError('intent_required');
     const [clock] = await tx<{ now: Date }[]>`select clock_timestamp() now`;
     return enroll(
       tx,
@@ -807,6 +825,9 @@ export async function createOnceTaskFromExecutionContext(
           clock!.now.getTime() + input.delayMinutes * 60_000,
         ).toISOString(),
         timezone: 'Asia/Shanghai',
+        ...(input.conversationMode === undefined
+          ? {}
+          : { conversationMode: input.conversationMode }),
       }),
       logicalDigest,
     );
@@ -838,6 +859,7 @@ type DispatchReservation = {
   control: NativeOnceControl;
   plan: Plan;
   principal: ResourcePrincipal;
+  conversation: AutomationConversationSnapshot;
 };
 const dispatchReservations = new WeakMap<Tx, DispatchReservation>();
 
@@ -862,7 +884,7 @@ export function nativeOnceMessageReservation(
   ].join('\n');
   return {
     workspaceId: r.plan.workspace_id,
-    sessionId: r.control.dispatch.businessSessionId,
+    sessionId: r.conversation.targetSessionId,
     clientMessageId: r.control.dispatch.clientMessageId,
     // New chat requests are bounded to 32k. Existing/form tasks may use the
     // entire 40k message limit: retain their original behavior and every byte.
@@ -1025,7 +1047,30 @@ export async function dispatchNextNativeOnceOccurrence(workerId: string) {
       where o.occurrence_id=${occurrence.occurrence_id} and o.automation_id=${plan.id} and o.revision=${plan.revision}
         and c.native_task_id=o.payload->>'nativeTaskId' and c.immutable_control->'dispatch'=o.payload->'control'->'dispatch'`;
     if (!mapped) throw new NativeOnceProductError('binding_conflict');
-    dispatchReservations.set(tx, { occurrence, control, plan, principal });
+    const [prior] =
+      await tx`select id from allrice_automation_runs where automation_id=${plan.id}
+      and scheduled_for=${occurrence.payload.receipt.scheduledAt}::timestamptz and folder_event_id is null and manual_request_id is null`;
+    if (prior) throw new NativeOnceProductError('binding_conflict');
+    const execution = await prepareAutomationConversation(
+      tx,
+      principal,
+      scope,
+      plan,
+      target,
+      {
+        kind: 'scheduled',
+        nativeKind: 'once',
+        occurrenceId: occurrence.occurrence_id,
+        scheduledFor: occurrence.payload.receipt.scheduledAt,
+      },
+    );
+    dispatchReservations.set(tx, {
+      occurrence,
+      control,
+      plan,
+      principal,
+      conversation: execution.conversation,
+    });
     try {
       const { prepareNativeOnceChatRunInTransaction } =
         await import('./workspace/service.ts');
@@ -1044,15 +1089,16 @@ export async function dispatchNextNativeOnceOccurrence(workerId: string) {
         organizationId: scope.organizationId,
         workspaceId: scope.workspaceId,
         ownerId: scope.ownerId,
-        sessionId: target.id,
+        sessionId: execution.target.id,
+        conversation: execution.conversation,
         employeeAssignmentId: target.employee_assignment_id,
         employeeInstanceId: target.employee_instance_id,
         clientMessageId: control.dispatch.clientMessageId,
         payloadDigest: occurrence.payload_digest,
         snapshotDigest: runtimePolicyDigest(frozen.execution_snapshot),
       };
-      await tx`insert into allrice_automation_runs(organization_id,workspace_id,automation_id,scheduled_for,run_id,session_id,status,native_once_occurrence_id)
-        values(${scope.organizationId},${scope.workspaceId},${plan.id},${occurrence.payload.receipt.scheduledAt}::timestamptz,${queued.runId},${target.id},'queued',${occurrence.occurrence_id})`;
+      await tx`insert into allrice_automation_runs(organization_id,workspace_id,automation_id,scheduled_for,run_id,session_id,status,native_once_occurrence_id,conversation_snapshot)
+        values(${scope.organizationId},${scope.workspaceId},${plan.id},${occurrence.payload.receipt.scheduledAt}::timestamptz,${queued.runId},${execution.target.id},'queued',${occurrence.occurrence_id},${json(tx, execution.conversation)})`;
       await tx`update allrice_native_once_occurrences set outbox_state='enqueued',business_binding=${json(tx, business)} where occurrence_id=${occurrence.occurrence_id}`;
       await tx`update allrice_automations set next_run_at=null,status='paused',updated_at=clock_timestamp() where id=${plan.id}`;
     } finally {

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { TimestampSchema, UuidSchema } from './common.ts';
+import { AutomationConversationModeSchema } from './automation.ts';
 
 const TimezoneSchema = z
   .string()
@@ -23,6 +24,7 @@ export const CreateOnceTaskInputSchema = z
     prompt: z.string().trim().min(1).max(40_000),
     runAt: TimestampSchema,
     timezone: TimezoneSchema,
+    conversationMode: AutomationConversationModeSchema.optional(),
   })
   .strict();
 export type CreateOnceTaskInput = z.infer<typeof CreateOnceTaskInputSchema>;
@@ -34,6 +36,8 @@ export const OnceTaskSchema = z
     name: z.string().min(1).max(160),
     prompt: z.string().min(1).max(40_000),
     sessionId: UuidSchema,
+    conversationMode: AutomationConversationModeSchema.optional(),
+    resultSessionId: UuidSchema.nullable().optional(),
     runAt: TimestampSchema,
     timezone: TimezoneSchema,
     status: z.enum([

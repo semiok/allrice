@@ -382,6 +382,9 @@ suite('recurring tasks through the actual clock header', () => {
             name: input.name,
             prompt: input.prompt,
             rule: input.rule,
+            ...(input.conversationMode === undefined
+              ? {}
+              : { conversationMode: input.conversationMode }),
             createdAt: new Date().toISOString(),
           });
           state.creates.set(
@@ -410,7 +413,17 @@ suite('recurring tasks through the actual clock header', () => {
               revision: found.revision + 1,
               updatedAt: new Date().toISOString(),
               ...(input.action === 'update'
-                ? { name: input.name, prompt: input.prompt, rule: input.rule }
+                ? {
+                    name: input.name,
+                    prompt: input.prompt,
+                    rule: input.rule,
+                    ...(input.conversationMode === undefined
+                      ? {}
+                      : { conversationMode: input.conversationMode }),
+                  }
+                : {}),
+              ...(input.action === 'conversation'
+                ? { conversationMode: input.conversationMode }
                 : {}),
               ...(input.action === 'pause'
                 ? { status: 'paused' as const, nextRunAt: null }
@@ -581,6 +594,110 @@ suite('recurring tasks through the actual clock header', () => {
   }
 
   it.each([1280, 390])(
+    'conversation monthly create/edit freezes the exact UI intent and opens the actual historical target at %s px',
+    async (width) => {
+      const f = await fixture(width);
+      try {
+        await open(f.page);
+        const name = '独立会话的月报',
+          form = await fill(f.page, name);
+        await form
+          .getByRole('combobox', { name: /执行周期/ })
+          .selectOption('monthly');
+        await form.getByLabel('每月日期', { exact: true }).fill('31');
+        await form.getByLabel('执行时间', { exact: true }).fill('02:30');
+        await form
+          .getByLabel('IANA时区', { exact: true })
+          .fill('America/New_York');
+        await form
+          .getByRole('combobox', { name: '执行会话', exact: true })
+          .selectOption('new_each_run');
+        await form.getByRole('button', { name: '创建', exact: true }).click();
+        await panel(f.page)
+          .getByText('周期任务已创建。', { exact: true })
+          .waitFor();
+        const input = CreateRecurringTaskInputSchema.parse(
+          JSON.parse(writes(f.state, 'POST')[0]!.body),
+        );
+        expect(input).toMatchObject({
+          conversationMode: 'new_each_run',
+          rule: {
+            kind: 'monthly',
+            monthDay: 31,
+            time: '02:30:00',
+            timezone: 'America/New_York',
+          },
+        });
+        const created = f.state.tasks
+            .get(lane())!
+            .find((t) => t.name === name)!,
+          nextRunAt = created.nextRunAt;
+        await card(f.page, name)
+          .getByRole('button', { name: '编辑', exact: true })
+          .click();
+        const edit = panel(f.page).getByRole('form', {
+          name: '编辑周期任务',
+          exact: true,
+        });
+        await edit
+          .getByRole('combobox', { name: '执行会话', exact: true })
+          .selectOption('reuse');
+        await edit
+          .getByRole('button', { name: '保存修改', exact: true })
+          .click();
+        await panel(f.page)
+          .getByText('操作已应用。', { exact: true })
+          .waitFor();
+        const changed = ChangeRecurringTaskInputSchema.parse(
+          JSON.parse(writes(f.state, 'PATCH')[0]!.body),
+        );
+        expect(changed).toEqual({
+          action: 'conversation',
+          operationId: changed.operationId,
+          expectedRevision: 1,
+          conversationMode: 'reuse',
+        });
+        expect(
+          f.state.tasks.get(lane())!.find((t) => t.id === created.id),
+        ).toMatchObject({
+          revision: 2,
+          conversationMode: 'reuse',
+          nextRunAt,
+          rule: created.rule,
+          prompt: created.prompt,
+        });
+        const actualTarget = randomUUID();
+        f.state.occurrences.set(created.id, [
+          {
+            id: randomUUID(),
+            taskId: created.id,
+            revision: 1,
+            scheduledAt: '2026-09-30T06:30:17.000Z',
+            status: 'queued',
+            runId: randomUUID(),
+            sessionId: actualTarget,
+            errorMessage: null,
+          },
+        ]);
+        await card(f.page, name)
+          .getByRole('button', { name: '执行记录', exact: true })
+          .click();
+        await panel(f.page)
+          .getByRole('button', { name: '查看本轮结果', exact: true })
+          .click();
+        expect(await f.page.getByLabel('已打开会话').textContent()).toBe(
+          actualTarget,
+        );
+        expect(await saved(f.page)).toEqual([]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+    20000,
+  );
+
+  it.each([1280, 390])(
     'creates monthly from the minute form and edits an existing seconds rule with exact CAS at %s px',
     async (width) => {
       const f = await fixture(width);
@@ -662,6 +779,7 @@ suite('recurring tasks through the actual clock header', () => {
           clientRequestId: createInput.clientRequestId,
           name,
           prompt: original,
+          conversationMode: 'reuse',
           rule: {
             kind: 'monthly',
             monthDay: 31,
@@ -745,6 +863,7 @@ suite('recurring tasks through the actual clock header', () => {
           action: 'update',
           name: existing.name,
           prompt: original,
+          conversationMode: 'reuse',
           rule: {
             kind: 'monthly',
             monthDay: 30,

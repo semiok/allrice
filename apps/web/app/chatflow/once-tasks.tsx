@@ -143,7 +143,8 @@ function matchesRequest(
     task.name === body.name &&
     task.prompt === body.prompt &&
     task.runAt === body.runAt &&
-    task.timezone === body.timezone
+    task.timezone === body.timezone &&
+    (task.conversationMode ?? 'reuse') === (body.conversationMode ?? 'reuse')
   );
 }
 
@@ -220,6 +221,9 @@ function OnceTasksMenu({
   });
   const [formOpen, setFormOpen] = useState(false);
   const [prompt, setPrompt] = useState('');
+  const [conversationMode, setConversationMode] = useState<
+    'reuse' | 'new_each_run'
+  >('reuse');
   const [time, setTime] = useState(() =>
     localDateTime(new Date(Date.now() + 60 * 60_000)),
   );
@@ -720,6 +724,7 @@ function OnceTasksMenu({
       prompt: prompt.trim(),
       runAt: date.toISOString(),
       timezone,
+      conversationMode,
     });
     if (!result.success) {
       setNotice({ text: '请检查任务内容和执行时间后重试。', error: true });
@@ -899,8 +904,26 @@ function OnceTasksMenu({
                         />
                       </div>
                       <p className={css.hint}>
-                        按当前时区 {timezone}，在本对话执行一次。
+                        按当前时区 {timezone} 执行一次。
                       </p>
+                      <div className={css.field}>
+                        <label htmlFor={`${id}-conversation`}>执行会话</label>
+                        <select
+                          id={`${id}-conversation`}
+                          value={conversationMode}
+                          disabled={busy || pending !== null}
+                          onChange={(event) =>
+                            setConversationMode(
+                              event.target.value === 'new_each_run'
+                                ? 'new_each_run'
+                                : 'reuse',
+                            )
+                          }
+                        >
+                          <option value="reuse">沿用来源聊天</option>
+                          <option value="new_each_run">每次新建聊天</option>
+                        </select>
+                      </div>
                       <button
                         type="submit"
                         className={css.primary}
@@ -959,6 +982,25 @@ function OnceTasksMenu({
                             <p className={css.error}>{task.errorMessage}</p>
                           )}
                         <div className={css.actions}>
+                          <span>
+                            执行会话：
+                            {task.conversationMode === 'new_each_run'
+                              ? '每次新建聊天'
+                              : '沿用来源聊天'}
+                          </span>
+                          {task.runId && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOpen(false);
+                                onOpenSession(
+                                  task.resultSessionId ?? task.sessionId,
+                                );
+                              }}
+                            >
+                              查看本轮结果
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => {
