@@ -625,10 +625,13 @@ suite(
           (await snapshot(t.id)).task,
         ) as NativeRecurringTask;
       current.lastDelivery = delivery;
+      const deliveryHistory = current.deliveryHistory;
+      if (!deliveryHistory)
+        throw Error('expected_known_native_delivery_history');
       current.deliveryHistory = {
-        ...current.deliveryHistory,
+        ...deliveryHistory,
         records: [
-          ...(current.deliveryHistory?.records ?? []),
+          ...deliveryHistory.records,
           { ...delivery, prompt: current.record.prompt },
         ],
       };
