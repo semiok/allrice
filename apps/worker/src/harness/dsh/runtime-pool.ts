@@ -1045,6 +1045,16 @@ export class DshRuntimePool {
     await runtime?.client.close();
   }
 
+  /** An execution owns this object, even after another caller cleared the
+   * pool or installed a new same-key runtime. Map absence is not a close ACK.
+   * Wait the original client's real close promise and leave replacements alone. */
+  async closeOwned(runtime: DshRuntime) {
+    if (this.runtimes.get(runtime.sessionId) === runtime)
+      this.runtimes.delete(runtime.sessionId);
+    this.clearInputDelivery(runtime);
+    await runtime.client.close();
+  }
+
   async close() {
     const runtimes = [...this.runtimes.values()];
     this.runtimes.clear();

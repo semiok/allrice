@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { JobPayloadSchema, UuidSchema } from '@allrice/contracts';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 import { createAssistantLocalCommandFixture } from './local-command-assistant.fixture.ts';
@@ -7,6 +8,7 @@ import {
   parkNativeQuestion,
   readNativeQuestionWait,
   beginNativeTask,
+  beginNativeTaskWithStopReceipt,
   continueNativeQuestion,
 } from './task-native-wait.ts';
 import { refreshTaskClock, readTaskClock } from './task-clock.ts';
@@ -18,7 +20,11 @@ import {
   heartbeatJob,
   cancelRun,
   enqueueRun,
+  finishJobDrain,
+  bindJobNativeSession,
 } from './execution/queue.ts';
+import { nativeBindingDescriptor } from './native-session-binding.fixture.ts';
+import { createTaskProgressRuntime } from './task-progress.ts';
 import { acquireConversationRuntime } from './conversation/conversation-runtime.ts';
 import {
   ensureGeneralEmployeeInstance,
@@ -48,7 +54,7 @@ suite('MET153 durable native waits and queue authority', () => {
     vi.unstubAllEnvs();
     await fixture?.close();
   });
-  async function setup() {
+  async function setup(withStopReceipt = false) {
     const f = await createAssistantLocalCommandFixture(
       fixture.db,
       'ask',
@@ -56,6 +62,41 @@ suite('MET153 durable native waits and queue authority', () => {
       { skipChild: true, deferRuntimeRoot: true },
     );
     f.requestContext.memberships = f.context.policySnapshot.memberships;
+    if (withStopReceipt) {
+      // The generic assistant fixture leaves Job.input empty. This fresh
+      // employee segment must carry the exact source identities used by the
+      // production employee handler, not synthetic replacement IDs.
+      const [employeeRun] = await f.db<
+        {
+          session_id: string;
+          user_message_id: string;
+          assistant_message_id: string;
+          employee_assignment_id: string;
+          employee_version_id: string;
+        }[]
+      >`select session_id,user_message_id,assistant_message_id,employee_assignment_id,employee_version_id
+        from allrice_employee_runs where run_id=${f.rootRunId}
+          and organization_id=${f.org} and workspace_id=${f.workspace} and owner_id=${f.user}`;
+      if (!employeeRun) throw Error('fixture_employee_run_missing');
+      expect(employeeRun.session_id).toBe(f.session);
+      const payload = {
+        schemaVersion: 1,
+        type: 'allrice.employee.run',
+        input: {
+          sessionId: UuidSchema.parse(employeeRun.session_id),
+          userMessageId: UuidSchema.parse(employeeRun.user_message_id),
+          assistantMessageId: UuidSchema.parse(
+            employeeRun.assistant_message_id,
+          ),
+          employeeAssignmentId: UuidSchema.parse(
+            employeeRun.employee_assignment_id,
+          ),
+          employeeVersionId: UuidSchema.parse(employeeRun.employee_version_id),
+        },
+      };
+      JobPayloadSchema.parse(payload);
+      await f.db`update allrice_jobs set payload=${f.db.json(payload)} where id=${f.worker.jobId}`;
+    }
     await f.db`update allrice_jobs set attempt=1 where id=${f.worker.jobId}`;
     const checkpoint = {
       sessionId: `dsh-${f.session}`,
@@ -84,9 +125,296 @@ suite('MET153 durable native waits and queue authority', () => {
       configChecksum: runtime!.config_checksum,
       generation: runtime!.thread_generation,
     };
-    expect(await beginNativeTask({ ...owner, attempt: 1 })).toBe(true);
-    return { f, checkpoint, owner };
+    if (withStopReceipt)
+      await bindJobNativeSession({
+        workerId: f.worker.workerId,
+        jobId: f.worker.jobId,
+        leaseToken: f.worker.leaseToken,
+        attempt: 1,
+        subject: {
+          kind: 'chat',
+          id: f.session,
+          configChecksum: runtime!.config_checksum,
+          generation: runtime!.thread_generation,
+          expectedThreadId: checkpoint.sessionId,
+        },
+        descriptor: nativeBindingDescriptor({
+          organizationId: f.org,
+          workspaceId: f.workspace,
+          ownerId: f.user,
+          contextKey: f.session,
+        }),
+      });
+    const stopReceipt = withStopReceipt
+      ? await beginNativeTaskWithStopReceipt({
+          ...owner,
+          attempt: 1,
+          sessionId: f.session,
+        })
+      : null;
+    if (stopReceipt) expect(stopReceipt.started).toBe(true);
+    else expect(await beginNativeTask({ ...owner, attempt: 1 })).toBe(true);
+    return { f, checkpoint, owner, stopReceipt };
   }
+
+  async function stoppedSegment() {
+    const s = await setup(true);
+    if (!s.stopReceipt?.started)
+      throw Error('expected authorized native segment');
+    return {
+      ...s,
+      stopReceipt: s.stopReceipt,
+      closed: {
+        nativeSessionId: s.checkpoint.sessionId,
+        runtimeId: randomUUID(),
+      },
+    };
+  }
+  async function cancelSegment(s: Awaited<ReturnType<typeof stoppedSegment>>) {
+    await cancelRun(s.f.requestContext, s.f.workspace, s.f.rootRunId, {
+      reason: 'exact synthetic native stop',
+    });
+  }
+  async function dispatchState(s: Awaited<ReturnType<typeof stoppedSegment>>) {
+    return (
+      await s.f
+        .db`select state from allrice_native_task_dispatches where run_id=${s.f.rootRunId} and attempt=1`
+    )[0]!.state;
+  }
+
+  it('settles only the confirmed canceled native segment without changing Run/Job or model usage', async () => {
+    const s = await stoppedSegment();
+    const callId = randomUUID();
+    await createTaskProgressRuntime({
+      context: s.f.context,
+      worker: s.f.worker,
+    })({
+      action: 'start',
+      kind: 'model',
+      nativeSessionId: s.closed.nativeSessionId,
+      callId,
+    });
+    await cancelSegment(s);
+    const before = await s.f
+      .db`select to_jsonb(j) value from allrice_jobs j where id=${s.f.worker.jobId}`;
+    expect(await s.stopReceipt.confirmStopped(s.closed)).toEqual({
+      completed: true,
+      reused: false,
+    });
+    expect(await dispatchState(s)).toBe('completed');
+    expect(
+      await s.f
+        .db`select to_jsonb(j) value from allrice_jobs j where id=${s.f.worker.jobId}`,
+    ).toEqual(before);
+    expect(
+      (
+        await s.f
+          .db`select finished_at from allrice_task_calls where run_id=${s.f.rootRunId} and call_id=${callId}`
+      )[0]!.finished_at,
+    ).toBeNull();
+    expect(await s.stopReceipt.confirmStopped(s.closed)).toEqual({
+      completed: true,
+      reused: false,
+    });
+    expect(
+      (
+        await s.f
+          .db`select count(*)::int n from allrice_audit_events where resource_id=${s.f.rootRunId} and action='native_task.dispatch.stop_confirmed'`
+      )[0]!.n,
+    ).toBe(1);
+    expect(() =>
+      s.stopReceipt.confirmStopped({ ...s.closed, runtimeId: randomUUID() }),
+    ).toThrow('native_stop_instance_changed');
+  });
+
+  it('accepts only the original minted receipt after terminal cancellation released the lease', async () => {
+    const s = await stoppedSegment();
+    await cancelSegment(s);
+    await finishJobDrain({ ...s.f.worker });
+    const before = await s.f
+      .db`select to_jsonb(j) value from allrice_jobs j where id=${s.f.worker.jobId}`;
+    expect(before[0]!.value).toMatchObject({
+      status: 'canceled',
+      worker_id: null,
+      lease_token: null,
+    });
+    expect(await s.stopReceipt.confirmStopped(s.closed)).toMatchObject({
+      completed: true,
+    });
+    expect(
+      await s.f
+        .db`select to_jsonb(j) value from allrice_jobs j where id=${s.f.worker.jobId}`,
+    ).toEqual(before);
+    await expect(
+      beginNativeTaskWithStopReceipt({
+        ...s.owner,
+        attempt: 1,
+        sessionId: s.f.session,
+      }),
+    ).rejects.toThrow('native_wait_lease_lost');
+    expect(JSON.parse(JSON.stringify(s.stopReceipt))).toEqual({
+      started: true,
+    });
+  });
+
+  it('does not turn a noncancel failure into a completed/replayable native dispatch', async () => {
+    const s = await stoppedSegment();
+    await expect(s.stopReceipt.confirmStopped(s.closed)).rejects.toThrow(
+      'native_stop_cancellation_changed',
+    );
+    expect(await dispatchState(s)).toBe('started');
+    expect(await beginNativeTask({ ...s.owner, attempt: 1 })).toBe(false);
+  });
+
+  it('rejects another native session and never retries that unknown receipt write', async () => {
+    const s = await stoppedSegment();
+    await cancelSegment(s);
+    const foreign = { ...s.closed, nativeSessionId: 'dsh-' + randomUUID() };
+    const first = s.stopReceipt.confirmStopped(foreign);
+    await expect(first).rejects.toThrow('native_stop_binding_changed');
+    expect(s.stopReceipt.confirmStopped(foreign)).toBe(first);
+    expect(() => s.stopReceipt.confirmStopped(s.closed)).toThrow(
+      'native_stop_instance_changed',
+    );
+    expect(await dispatchState(s)).toBe('started');
+  });
+
+  it('rejects a replaced lease or attempt while preserving the original started intent', async () => {
+    const s = await stoppedSegment();
+    await cancelSegment(s);
+    await s.f
+      .db`update allrice_jobs set lease_token=${randomUUID()} where id=${s.f.worker.jobId}`;
+    await expect(s.stopReceipt.confirmStopped(s.closed)).rejects.toThrow(
+      'native_stop_incarnation_changed',
+    );
+    expect(await dispatchState(s)).toBe('started');
+    const next = await stoppedSegment();
+    await cancelSegment(next);
+    await next.f
+      .db`update allrice_jobs set attempt=2 where id=${next.f.worker.jobId}`;
+    await expect(next.stopReceipt.confirmStopped(next.closed)).rejects.toThrow(
+      'native_stop_cancellation_changed',
+    );
+    expect(await dispatchState(next)).toBe('started');
+  });
+
+  it('records an original stop after revocation without granting new execution authority', async () => {
+    const s = await stoppedSegment();
+    await cancelSegment(s);
+    await finishJobDrain({ ...s.f.worker });
+    await s.f
+      .db`update allrice_memberships set active=false where id=${s.f.membership}`;
+    expect(await s.stopReceipt.confirmStopped(s.closed)).toMatchObject({
+      completed: true,
+    });
+    await expect(
+      beginNativeTaskWithStopReceipt({
+        ...s.owner,
+        attempt: 1,
+        sessionId: s.f.session,
+      }),
+    ).rejects.toThrow();
+    expect(
+      (
+        await s.f
+          .db`select status,worker_id,lease_token from allrice_jobs where id=${s.f.worker.jobId}`
+      )[0],
+    ).toMatchObject({ status: 'canceled', worker_id: null, lease_token: null });
+  });
+
+  it('cannot complete a timed-out attempt using a cancellation stop receipt', async () => {
+    const s = await stoppedSegment();
+    // The real clock refresh owns Job.timeout_at. Exhaust its original frozen
+    // policy instead of fabricating a deadline that refresh would overwrite.
+    const [clock] = await s.f
+      .db`select policy from allrice_task_clocks where run_id=${s.f.rootRunId}`;
+    expect(clock!.policy.timeoutMs).toBeGreaterThan(0);
+    await s.f
+      .db`update allrice_task_clocks set active_ms=${clock!.policy.timeoutMs + 1} where run_id=${s.f.rootRunId}`;
+    const stopped = await heartbeatJob(
+      s.f.worker.workerId,
+      s.f.worker.jobId,
+      s.f.worker.leaseToken,
+      30000,
+    );
+    expect(stopped).toMatchObject({ active: false, canceled: false });
+    expect(
+      (
+        await s.f
+          .db`select drain_reason from allrice_jobs where id=${s.f.worker.jobId}`
+      )[0]!.drain_reason,
+    ).toBe('timeout');
+    await expect(s.stopReceipt.confirmStopped(s.closed)).rejects.toThrow(
+      'native_stop_cancellation_changed',
+    );
+    expect(await dispatchState(s)).toBe('started');
+  });
+
+  it('keeps the parked question continuation separate from a closed canceled dispatch', async () => {
+    const s = await stoppedSegment();
+    await parkNativeQuestion({ ...s.owner, checkpoint: s.checkpoint });
+    await cancelSegment(s);
+    await maintainQueue();
+    const [job] = await s.f
+      .db`select status,worker_id,lease_token,drain_reason,cancel_requested_at from allrice_jobs where id=${s.f.worker.jobId}`;
+    expect(job).toMatchObject({
+      status: 'canceled',
+      worker_id: null,
+      lease_token: null,
+      drain_reason: null,
+    });
+    expect(job!.cancel_requested_at).not.toBeNull();
+    const waits = await s.f
+      .db`select to_jsonb(w) value from allrice_native_question_waits w where run_id=${s.f.rootRunId}`;
+    // Parking already released execution authority; normal cancellation has no
+    // running receipt drain. That earlier fence must reject this stale port.
+    await expect(s.stopReceipt.confirmStopped(s.closed)).rejects.toThrow(
+      'native_stop_cancellation_changed',
+    );
+    expect(await dispatchState(s)).toBe('parked');
+    expect(
+      await s.f
+        .db`select to_jsonb(w) value from allrice_native_question_waits w where run_id=${s.f.rootRunId}`,
+    ).toEqual(waits);
+    expect(
+      (
+        await s.f
+          .db`select count(*)::int n from allrice_audit_events where resource_id=${s.f.rootRunId} and action='native_task.dispatch.stop_confirmed'`
+      )[0]!.n,
+    ).toBe(0);
+  });
+
+  it('cannot mint a stop port for a foreign source session or execution scope', async () => {
+    const s = await stoppedSegment();
+    await expect(
+      beginNativeTaskWithStopReceipt({
+        ...s.owner,
+        attempt: 1,
+        sessionId: randomUUID(),
+      }),
+    ).rejects.toThrow('native_stop_attempt_changed');
+    for (const context of [
+      { ...s.f.context, organizationId: randomUUID() },
+      { ...s.f.context, workspaceId: randomUUID() },
+    ])
+      await expect(
+        beginNativeTaskWithStopReceipt({
+          context,
+          worker: s.f.worker,
+          attempt: 1,
+          sessionId: s.f.session,
+        }),
+      ).rejects.toThrow('native_wait_lease_lost');
+    await expect(
+      beginNativeTaskWithStopReceipt({
+        ...s.owner,
+        worker: { ...s.f.worker, jobId: randomUUID() },
+        attempt: 1,
+        sessionId: s.f.session,
+      }),
+    ).rejects.toThrow('native_wait_lease_lost');
+    expect(await dispatchState(s)).toBe('started');
+  });
   it('parks without a lease, wakes only for the exact typed answer and rejects the previous owner', async () => {
     const { f, checkpoint, owner } = await setup();
     await parkNativeQuestion({ ...owner, checkpoint });
