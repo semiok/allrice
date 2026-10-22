@@ -1,9 +1,11 @@
 import type { ChatFlowEventEnvelope } from '@allrice/contracts';
 import type { Message } from '../../app/chatflow/chatflow-types';
-import { currentAssistantEvents } from '../execution/assistant-stream';
 import { nativeProcessGroups } from './native-process-groups';
 import type { NativeExperienceItem } from './native-experience';
-import type { WorkProgressPart } from './work-progress';
+import {
+  currentWorkProgressEvents,
+  type WorkProgressPart,
+} from './work-progress';
 
 /** Use native adoption anchors, never submission timestamps, as process boundaries. */
 export function steeringProgress(
@@ -13,7 +15,7 @@ export function steeringProgress(
   parts: WorkProgressPart[] | undefined,
   running: boolean,
 ) {
-  const current = currentAssistantEvents(events);
+  const current = currentWorkProgressEvents(events);
   const boundaries = messages
     .map((message) => {
       const proof = message.steering!;
@@ -62,7 +64,7 @@ export function steeringProgress(
       message: index === 0 ? undefined : boundaries[index - 1]!.message,
       items: items.filter((item) => belongs(item.sequence)),
       parts: segmentRows
-        ? nativeProcessGroups(segmentRows, last && running)
+        ? nativeProcessGroups(segmentRows, last && running, current)
         : undefined,
       last,
     };

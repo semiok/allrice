@@ -625,3 +625,9 @@ PDF/Excel将现有LoadingIndicator传给真实原生正文的必需loading注入
 ### MET198：桌面业务页通过现有公开 Dock 接入
 
 此项沿用已固定的 `ui-dockkit@0.2.1-rc.2`、现有原生 store 和已导出的 `openContent.replaceTab`；只增加 AllRice 业务页注册、开始页卡片与宿主输入样式。标签、分栏、浮动、全屏、关闭和恢复仍由 DSH 管理，没有新增上游源码补丁或执行内核补偿。文件多部门授权由 AllRice 数据层负责；经验和工作流复用既有读取/事务。手机导航与终端不在此项实施范围，详细边界见[原生工作台说明](../features/native-workbench/README.md#met-198桌面统一工作台)。
+
+### MET199：账号阅读偏好与原生过程展示
+
+复用固定 `ui-chat@0.2.1-rc.2` 的四档 presentation policy 和当前答案代次的手动开合规则；来源与必要 import 适配记录在 UI 账本。先验证原生模块注册及完整插件的注入契约：现有 SaaS 外壳没有原生 `uiSession/uiConversation/configForms` 服务，不能只加载 bundle 就获得完整聊天宿主。继续沿用既有源码适配边界，把公开的 Run、答案代次、最终回复、已采纳插话及真正进入下一轮的输入投影给原生策略，不为阅读偏好新增一套 Session 或执行宿主。
+
+`fontSize/transcriptView/collapseTiming` 与原有 `streamingOutput` 共用 `/api/v1/me/preferences` 和认证用户主键。PATCH 原子更新实际提交的字段，旧客户端的单一流式开关保存不重置新字段；默认正文14px、详细、回答结束后。正文字体复用现有原生 theme token，派生变量在会话边界重算；代码11px和终端13px保留原生默认，不提供配置。设置菜单移除经验记录，经验能力与正式工作台入口不变。以上均为展示偏好，不更改模型执行配置、权限或工具记录。

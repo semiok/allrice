@@ -1,6 +1,12 @@
 'use client';
 
-import { memo, useState, useEffect, type RefObject } from 'react';
+import {
+  memo,
+  useState,
+  useEffect,
+  type RefObject,
+  type CSSProperties,
+} from 'react';
 import {
   modelGovernanceFailureText,
   nativeExecutionFailureText,
@@ -8,6 +14,7 @@ import {
   mcpFailureCopy,
   type WorkbenchArtifact,
   type InteractionStatus,
+  type UserPreferences,
 } from '@allrice/contracts';
 import type { AssistantTreeView } from '@allrice/database';
 
@@ -47,11 +54,15 @@ import { AutomationRunTaskCards } from './automation-run-task-cards';
 import { AssistantMessageActions } from './message-feedback';
 import { presentAssistantTree } from '../../lib/chatflow/assistant-tree-presenter';
 import { isMessageRunActive } from './run-view';
+import { workProcessPresentation } from '../../lib/chatflow/work-process-presentation';
 
 interface ChatTranscriptProps {
   onOpenReference?: (reference: ReferenceDraft) => void;
   messageImages?: MessageImageSource;
   streamingOutput?: boolean;
+  fontSize?: UserPreferences['fontSize'];
+  transcriptView?: UserPreferences['transcriptView'];
+  collapseTiming?: UserPreferences['collapseTiming'];
   atBottom: boolean;
   employeeName?: string;
   localCommandsEnabled?: boolean;
@@ -79,6 +90,9 @@ export const ChatTranscript = memo(function ChatTranscript({
   onOpenReference,
   messageImages,
   streamingOutput = false,
+  fontSize = 14,
+  transcriptView = 'detailed',
+  collapseTiming = 'completion',
   atBottom,
   employeeName = 'AI 员工',
   localCommandsEnabled = false,
@@ -165,8 +179,27 @@ export const ChatTranscript = memo(function ChatTranscript({
       assistantRuns.has(m.steering.runId),
   );
   const embedded = new Set(adopted.map((m) => m.id));
+  // Queued drafts and in-turn answers/steering are not a new exchange.
+  const followedByInput = new Set<string>();
+  let laterInput = false;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!;
+    if (message.role === 'assistant' && laterInput)
+      followedByInput.add(message.id);
+    if (
+      message.role === 'user' &&
+      !message.steering &&
+      message.content.interaction?.type !== 'user_question_answer' &&
+      !message.id.startsWith('optimistic-')
+    )
+      laterInput = true;
+  }
   return (
-    <div className={chatUi.root}>
+    <div
+      className={chatUi.root}
+      data-conversation-typography
+      style={{ '--dsh-content-font-size': `${fontSize}px` } as CSSProperties}
+    >
       <div className={chatUi.scroll} data-chat-scroll>
         <div className={chatUi.column} ref={transcriptColumn}>
           {messages
@@ -329,6 +362,18 @@ export const ChatTranscript = memo(function ChatTranscript({
                               <>
                                 {feedback}
                                 <SteeredWorkProcess
+                                  transcriptView={transcriptView}
+                                  collapseTiming={collapseTiming}
+                                  presentation={workProcessPresentation(
+                                    traceEvents,
+                                    processParts,
+                                    message.runId ?? message.id,
+                                    followedByInput.has(message.id),
+                                    adopted.some(
+                                      (input) =>
+                                        input.steering?.runId === message.runId,
+                                    ),
+                                  )}
                                   events={traceEvents}
                                   messages={adopted.filter(
                                     (m) => m.steering?.runId === message.runId,

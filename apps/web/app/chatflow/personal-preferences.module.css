@@ -1,0 +1,262 @@
+.section {
+  color: var(--dsw-alias-label-primary);
+  font-size: 14px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.section > h2 {
+  margin: 0;
+  font-size: 23px;
+  line-height: 32px;
+  font-weight: 500;
+  letter-spacing: -0.4px;
+}
+
+.root {
+  min-width: 0;
+}
+
+.lead {
+  margin: 8px 0 25px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+}
+
+.list {
+  border: 1px solid var(--dsw-alias-border-primary);
+  border-radius: 14px;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  min-height: 88px;
+  padding: 22px 18px;
+}
+
+.row + .row {
+  border-top: 1px solid var(--dsw-alias-border-primary);
+}
+
+.copy {
+  min-width: 0;
+}
+
+.copy h3 {
+  margin: 0;
+  font-size: 14px;
+  line-height: 21px;
+  font-weight: 500;
+}
+
+.copy p {
+  margin: 5px 0 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 19px;
+}
+
+.fontStepper {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 24px 32px;
+  align-items: center;
+  width: 136px;
+  height: 36px;
+  border-radius: 9px;
+  background: var(--dsw-alias-bg-module-platform);
+}
+
+.fontStepper:focus-within {
+  outline: 2px solid var(--dsw-alias-border-focus, #3b82f6);
+  outline-offset: 3px;
+}
+
+.fontStepper .stepButton {
+  width: 32px;
+  min-width: 0;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font-size: 19px;
+  line-height: 1;
+}
+
+.fontStepper .stepButton:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.stepButton:disabled {
+  opacity: 0.4;
+}
+
+.fontInput {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.fontInput > input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  appearance: textfield;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  box-shadow: none;
+}
+
+.fontInput > input::-webkit-outer-spin-button,
+.fontInput > input::-webkit-inner-spin-button {
+  appearance: none;
+  margin: 0;
+}
+
+.fontInput > input:focus-visible {
+  outline: none;
+}
+
+.fontInput > input:disabled {
+  opacity: 0.5;
+}
+
+.unit {
+  padding-left: 4px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+}
+
+.select {
+  position: relative;
+  width: 137px;
+  max-width: 100%;
+}
+
+.select select {
+  box-sizing: border-box;
+  width: 100%;
+  height: 36px;
+  padding: 0 28px 0 12px;
+  border: 0;
+  border-radius: 9px;
+  appearance: none;
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.select select:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.select select:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.select > svg {
+  position: absolute;
+  top: 12px;
+  right: 10px;
+  color: var(--dsw-alias-label-secondary);
+  pointer-events: none;
+}
+
+.status {
+  margin: 18px 0 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin: 14px 0 0;
+  color: var(--dsw-alias-label-primary);
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.error > span {
+  min-width: 0;
+  flex: 1 1 180px;
+}
+
+.error > button {
+  flex: none;
+}
+
+@media (max-width: 600px) {
+  .section > h2 {
+    font-size: 22px;
+  }
+
+  .row {
+    gap: 12px;
+    padding: 19px 14px;
+  }
+
+  .select,
+  .fontStepper {
+    width: 126px;
+  }
+
+  .select select {
+    padding-left: 10px;
+    font-size: 12px;
+  }
+}
+
+@media (pointer: coarse) {
+  .select {
+    width: 144px;
+  }
+
+  .fontStepper {
+    grid-template-columns: 38px minmax(0, 1fr) 22px 38px;
+    min-width: 136px;
+    height: 44px;
+  }
+
+  .fontStepper .stepButton {
+    width: 38px;
+    height: 44px;
+  }
+
+  .fontInput > input {
+    font-size: 16px;
+  }
+
+  .select select {
+    height: 44px;
+    font-size: 14px;
+  }
+
+  .select > svg {
+    top: 16px;
+  }
+}

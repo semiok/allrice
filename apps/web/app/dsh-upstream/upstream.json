@@ -127,8 +127,8 @@
           "target": "apps/web/app/dsh-upstream/ui-content-tokens.css",
           "patch": "scripts/dsh-ui-patches/native-ui-content-tokens.css.patch",
           "upstreamSha256": "b6e1e8387edbfa60ec03bb29aad7c01245c0adbd22229d5a6f2916caa7e7b427",
-          "sha256": "4385b07378ca67daf72e957727b4a2fed3eb6a7e818961b6e846c1fd1942e974",
-          "patchSha256": "06704878424f522c8c787bdbeeb47e90773dbf93bd5142515d027d19225d691f"
+          "sha256": "1f21be146a8049105fb25b38bca212ad85740294886f7bdba61782cbc4ea2df3",
+          "patchSha256": "63a57856ae12f8abfe31d78d498c43a60731959df85c9d7a7a9ac44d8e5a421e"
         }
       ],
       "excerpts": [
@@ -1243,6 +1243,31 @@
           "target": "apps/web/app/chatflow/dsh-upstream/automation/ScheduleCreateCard.module.css",
           "upstreamSha256": "05da6b5ba044b07461a7d88c3da9bd516b0018dafc6ba05c76f43b8db3fc7c2e",
           "sha256": "05da6b5ba044b07461a7d88c3da9bd516b0018dafc6ba05c76f43b8db3fc7c2e"
+        }
+      ]
+    },
+    {
+      "id": "native-work-presentation",
+      "version": "0.2.1-rc.2",
+      "commit": "687f282e8625c6b8d11ff58211a90524be2e4317",
+      "license": "MIT",
+      "integration": "native-source-with-recorded-import-adapters",
+      "files": [
+        {
+          "source": "packages/client/ui-chat/src/client/presentation-policy.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/presentation/presentation-policy.ts",
+          "upstreamSha256": "912c229eafcb3a136aaf86809a8417fd81d55a2f124ac3378a4d661b4f055fde",
+          "sha256": "378ce23503a66061e3ab31dd879d2ae588a439199bc0933d10de68c8739652cf",
+          "patch": "scripts/dsh-ui-patches/presentation-presentation-policy.ts.patch",
+          "patchSha256": "e3597f908e04baaed679c7af1853f6abba5401a45ff160207666231068ab1556"
+        },
+        {
+          "source": "packages/client/ui-chat/src/client/stores.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/presentation/stores.ts",
+          "upstreamSha256": "1587f1cc9895ee8d3b56b2ba876d4d5445473980380c34c9392ab84967ea4fa8",
+          "sha256": "cdcee5453afbbeb416f8fc1806f31f5252594a8f3c646872803efe99a71ced57",
+          "patch": "scripts/dsh-ui-patches/presentation-stores.ts.patch",
+          "patchSha256": "2f8d266e59517db1d5aea51c018434c905884941c2a18caf0f6b7059db84c319"
         }
       ]
     }

@@ -11,7 +11,14 @@ import {
 } from './native-experience';
 
 export type WorkProgressPart =
-  | { kind: 'reply'; id: string; sequence: number; text: string }
+  | {
+      kind: 'reply';
+      id: string;
+      sequence: number;
+      text: string;
+      /** Matched against the accepted final text/completion, never row position. */
+      readonly finalAnswer?: boolean;
+    }
   | {
       kind: 'steps';
       id: string;
@@ -20,12 +27,25 @@ export type WorkProgressPart =
       closed?: boolean;
     };
 
+/** Public events may carry generation on the envelope instead of the payload. */
+export function currentWorkProgressEvents(events: ChatFlowEventEnvelope[]) {
+  return currentAssistantEvents(
+    events.map((event): ChatFlowEventEnvelope => ({
+      ...event,
+      payload: {
+        ...event.payload,
+        generation: event.payload.generation ?? event.generation,
+      },
+    })),
+  );
+}
+
 /** Only a current native text delta means that the model is still replying.
  * A completed intermediate reply must not keep the whole turn in "replying".
  * Projection/usage telemetry does not change the active phase.
  */
 export function isReplyStreaming(events: ChatFlowEventEnvelope[]) {
-  for (const event of currentAssistantEvents(events).reverse()) {
+  for (const event of currentWorkProgressEvents(events).reverse()) {
     if (event.type === 'assistant.text.delta')
       return (
         event.payload.textMode !== 'replace' &&
@@ -60,7 +80,7 @@ export function projectWorkProgress(
   streamingOutput = true,
   operations: readonly CloudOperationView[] = [],
 ) {
-  const current = currentAssistantEvents(events);
+  const current = currentWorkProgressEvents(events);
   const replies = assistantReplies(current);
   const items = projectNativeExperience(current);
   for (const op of operations) {
@@ -135,6 +155,7 @@ export function projectWorkProgress(
       id: `reply:${reply.id}`,
       text: reply.id === finalReplyId ? finalText : reply.text,
       kind: 'reply' as const,
+      ...(reply.id === finalReplyId ? { finalAnswer: true } : {}),
     })),
     ...items
       .filter(
@@ -155,7 +176,8 @@ export function projectWorkProgress(
       id: 'final-reply',
       sequence: (current.at(-1)?.sequence ?? 0) + 1,
       text: finalText,
+      finalAnswer: true,
     });
-  const parts = nativeProcessGroups(ordered, running);
+  const parts = nativeProcessGroups(ordered, running, current);
   return { items, parts, finalText };
 }
