@@ -103,7 +103,7 @@ async function lockBusiness(
         and t.workspace_id=x.workspace_id and t.tenant_employee_id=x.employee_id and not t.active) for share of i,x,e`;
   const admission: NativeCalendarAdmission = {
     allowed:
-      experienceNativeCalendarEnabled() &&
+      (purpose === 'native' || experienceNativeCalendarEnabled()) &&
       !!principal?.writable &&
       !!target &&
       !!rule &&
@@ -375,7 +375,7 @@ export async function materializeExperienceNativeCalendar(
     }
     if (!allowHandoff) return false;
     const [candidate] = await tx<Rule[]>`select a.* from allrice_automations a
-      join allrice_users u on u.id=a.owner_id and u.status='active' and u.archived_at is null
+      join allrice_users u on u.id=a.owner_id and u.status='active'
       join allrice_organizations o on o.id=a.organization_id and o.archived_at is null
       join allrice_workspaces w on w.id=a.workspace_id and w.organization_id=o.id and w.archived_at is null
       join allrice_employee_assignments x on x.id=a.employee_assignment_id and x.user_id=a.owner_id and x.active

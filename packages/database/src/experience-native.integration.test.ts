@@ -285,6 +285,66 @@ suite(
       await createSqlTask();
       receiptWrite = await receipt();
     });
+    it('keeps disabled receipts pending and rejects self-proved cancellation without original policy or authority invalidation', async () => {
+      vi.stubEnv('ALLRICE_NATIVE_CALENDAR_ENABLED', '0');
+      try {
+        expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
+          false,
+        );
+        const [saved] =
+          await f.db`select outbox_state,outbox_owner_id from allrice_native_recurring_occurrences where calendar_period_id=${p.periodId}`;
+        expect(saved).toMatchObject({
+          outbox_state: 'pending',
+          outbox_owner_id: null,
+        });
+      } finally {
+        vi.stubEnv('ALLRICE_NATIVE_CALENDAR_ENABLED', '1');
+      }
+      const [receipt] =
+        await f.db`select occurrence_id from allrice_native_recurring_occurrences where calendar_period_id=${p.periodId}`;
+      for (const kind of ['authority', 'policy', 'receipt'] as const) {
+        await expect(
+          f.db.begin(async (tx) => {
+            // A terminal decision must prove a real independent change, never
+            // use its own pause write to manufacture revoked authority.
+            await tx`update allrice_automations set status='paused',next_run_at=null where id=${automationId}`;
+            const d = {
+              decisionId: randomUUID(),
+              periodId: p.periodId,
+              kind,
+              outcome: kind === 'authority' ? 'authority_blocked' : 'canceled',
+              revision: p.revision,
+              decidedAt: new Date().toISOString(),
+              receiptOccurrenceId:
+                kind === 'receipt' ? receipt!.occurrence_id : null,
+              automationRunId: null,
+              successorPeriodId: null,
+              lease:
+                kind === 'receipt'
+                  ? {
+                      ownerId: randomUUID(),
+                      epoch: 1,
+                      tokenDigest: nativeOnceDigest('unclaimed'),
+                    }
+                  : null,
+              budget: null,
+            };
+            // Deliberately bypass the TS schema to test the durable SQL fence.
+            await tx`insert into allrice_native_calendar_decisions
+          (decision_id,period_id,kind,outcome,revision,occurrence_id,decision,decision_digest,decided_at)
+          values(${d.decisionId},${d.periodId},${d.kind},${d.outcome},${d.revision},${d.receiptOccurrenceId},
+            ${tx.json(d)},${nativeOnceDigest(d)},${d.decidedAt}::timestamptz)`;
+          }),
+        ).rejects.toMatchObject({ code: '23514' });
+        const [unchanged] =
+          await f.db`select status,next_run_at from allrice_automations where id=${automationId}`;
+        expect(unchanged!.status).toBe('enabled');
+        expect(unchanged!.next_run_at.toISOString()).toBe(initialP);
+        expect(
+          await f.db`select decision_id from allrice_native_calendar_decisions where period_id=${p.periodId}`,
+        ).toHaveLength(0);
+      }
+    });
     it('commits empty original experience Run, terminal decision and exact N once, preserving old native ACK', async () => {
       const oldPeriod = p.periodId,
         oldArm = a.armId,

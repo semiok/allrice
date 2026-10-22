@@ -252,8 +252,13 @@ begin
       end if;
     end if;
   elsif new.kind='policy' then
-    if (a.revision=new.revision and a.native_recurring_revision=new.revision
-      and (a.revision>p.revision or a.status<>'enabled' or a.deleted_at is not null)) is not true then
+    if (a.revision=new.revision and a.native_recurring_revision=new.revision and a.revision>p.revision
+      and exists(select 1 from allrice_native_recurring_versions current_version
+        join allrice_native_recurring_versions previous_version on previous_version.automation_id=current_version.automation_id
+          and previous_version.revision=p.revision
+        where current_version.automation_id=a.id and current_version.revision=new.revision
+          and (current_version.configuration->>'policyRevision')::bigint>
+            (previous_version.configuration->>'policyRevision')::bigint)) is not true then
       raise exception 'calendar cancellation lacks current policy invalidation' using errcode='23514';
     end if;
   end if;
@@ -266,14 +271,16 @@ begin
     raise exception 'calendar decision lacks exact same-parent successor plan' using errcode='23514';
   end if;
   if new.kind='authority' or new.outcome='authority_blocked' then
-    if a.status='enabled' and a.deleted_at is null and a.revision=p.revision and exists(
+    -- status is deliberately absent: this decision's own pause write is not
+    -- independent evidence that the original authority was revoked.
+    if a.deleted_at is null and a.revision=p.revision and exists(
       select 1 from allrice_users u join allrice_organizations o on o.id=a.organization_id and o.archived_at is null
       join allrice_workspaces w on w.id=a.workspace_id and w.organization_id=o.id and w.archived_at is null
       join allrice_employee_assignments x on x.id=a.employee_assignment_id and x.user_id=u.id and x.active
       join allrice_employees e on e.id=x.employee_id and e.status='active'
       join allrice_employee_instances i on i.id=(a.experience_binding->>'instanceId')::uuid and i.assignment_id=x.id
         and i.organization_id=a.organization_id and i.workspace_id=a.workspace_id and i.owner_id=a.owner_id and i.archived_at is null
-      where u.id=a.owner_id and u.status='active' and u.archived_at is null
+      where u.id=a.owner_id and u.status='active'
         and exists(select 1 from allrice_memberships m where m.user_id=u.id and m.organization_id=o.id
           and m.active and m.role in ('member','admin') and (m.workspace_id is null or m.workspace_id=w.id))
         and not exists(select 1 from allrice_platform_employee_tenant_assignments t where t.organization_id=x.organization_id
