@@ -16,6 +16,7 @@ import {
   updateExperiencePolicy,
 } from './experience-consolidation.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
+import { changeEmployeeInstanceLifecycle } from './employees/employee-instances.ts';
 import { nextScheduleAt } from './execution/automation.ts';
 import {
   nativeOnceDigest,
@@ -188,6 +189,8 @@ suite(
         db: f.db,
         partitionId: 'allrice-recurring-v1',
         ownerId: 'isolated-experience-writer',
+        lockTimeoutMs: 5000,
+        statementTimeoutMs: 10000,
         reference,
         readiness: () => ready,
         decodeTask: (v) => structuredClone(v) as NativeOnceTask,
@@ -443,6 +446,185 @@ suite(
       expect(await store.readExactCommit(writer, receiptWrite)).toBe(
         'committed',
       );
+    });
+    it('discards an unlocked plan snapshot after real policy off closes P while the materializer waits', async () => {
+      expect(await store.renewWriter(writer)).not.toBeNull();
+      await policy('monthly');
+      const [selected] =
+        await f.db`select period_id from allrice_native_calendar_plans
+        where automation_id=${automationId} and closed_decision_id is null`;
+      expect(
+        await f.db`select period_id from allrice_native_calendar_periods where period_id=${selected!.period_id}`,
+      ).toHaveLength(0);
+      const gate = await f.db.reserve(),
+        key = `experience-policy:${f.organizationId}`;
+      const [held] =
+        await gate`select pg_backend_pid() pid,pg_advisory_lock(hashtextextended(${key},183))`;
+      let web: Promise<{ value: unknown } | { error: unknown }> | undefined,
+        materializer:
+          Promise<{ value: boolean } | { error: unknown }> | undefined;
+      try {
+        web = policy('off').then(
+          (value) => ({ value }),
+          (error) => ({ error }),
+        );
+        let webPid: number | undefined;
+        await expect
+          .poll(
+            async () => {
+              const [waiting] = await f.db<
+                { pid: number }[]
+              >`select pid from pg_stat_activity
+            where datname=current_database() and ${held!.pid}=any(pg_blocking_pids(pid))`;
+              webPid = waiting?.pid;
+              return !!webPid;
+            },
+            { timeout: 5000, interval: 10 },
+          )
+          .toBe(true);
+        materializer = materializeExperienceNativeCalendar(
+          calendar(),
+          writer,
+          reference,
+          false,
+        ).then(
+          (value) => ({ value }),
+          (error) => ({ error }),
+        );
+        await expect
+          .poll(
+            async () => {
+              const [waiting] =
+                await f.db`select exists(select 1 from pg_stat_activity
+            where datname=current_database() and pid<>${webPid!}
+              and ${held!.pid}=any(pg_blocking_pids(pid))
+              and query like '%pg_advisory_xact_lock%') blocked`;
+              return waiting!.blocked;
+            },
+            { timeout: 5000, interval: 10 },
+          )
+          .toBe(true);
+      } finally {
+        try {
+          await gate`select pg_advisory_unlock(hashtextextended(${key},183))`;
+        } finally {
+          gate.release();
+          await Promise.allSettled([web, materializer]);
+        }
+      }
+      const w = await web!,
+        m = await materializer!;
+      if ('error' in w) throw w.error;
+      if ('error' in m) throw m.error;
+      expect(m.value).toBe(false);
+      expect(
+        await f.db`select kind,outcome from allrice_native_calendar_decisions where period_id=${selected!.period_id}`,
+      ).toEqual([
+        expect.objectContaining({ kind: 'policy', outcome: 'canceled' }),
+      ]);
+      expect(
+        await f.db`select period_id from allrice_native_calendar_periods where period_id=${selected!.period_id}`,
+      ).toHaveLength(0);
+      expect(
+        await f.db`select period_id from allrice_native_calendar_plans where automation_id=${automationId} and closed_decision_id is null`,
+      ).toHaveLength(0);
+      expect(await store.readExactCommit(writer, receiptWrite)).toBe(
+        'committed',
+      );
+    });
+    it('closes a prepared no-Task experience P after real instance archive without rewriting native state or backfilling on restore', async () => {
+      expect(await store.renewWriter(writer)).not.toBeNull();
+      await policy('monthly');
+      expect(
+        await materializeExperienceNativeCalendar(
+          calendar(),
+          writer,
+          reference,
+          false,
+        ),
+      ).toBe(true);
+      const b = await load(),
+        oldPeriod = p.periodId;
+      expect(a).toMatchObject({
+        status: 'prepared',
+        nativeTaskId: null,
+        createWriter: null,
+      });
+      const nativeBefore = structuredClone({ period: b.period, arm: b.arm });
+      const [instance] = await f.db<
+        { revision: number }[]
+      >`select revision from allrice_employee_instances where id=${c.dispatch.employeeInstanceId}`;
+      const archived = await changeEmployeeInstanceLifecycle(
+        f.context,
+        c.dispatch.employeeInstanceId,
+        {
+          workspaceId: f.workspaceId,
+          expectedRevision: instance!.revision,
+          operation: 'archive',
+          requestId: randomUUID(),
+        },
+      );
+      expect(archived.archivedAt).not.toBeNull();
+      expect(
+        await materializeExperienceNativeCalendar(
+          calendar(),
+          writer,
+          reference,
+          false,
+        ),
+      ).toBe(true);
+      const [decision] =
+        await f.db`select * from allrice_native_calendar_decisions where period_id=${oldPeriod}`;
+      expect(decision).toMatchObject({
+        kind: 'authority',
+        outcome: 'authority_blocked',
+        automation_run_id: null,
+        successor_period_id: null,
+      });
+      // Closed never-started P leaves the live-work projection, while its
+      // independent durable native identity and business decision remain.
+      const closed = await calendar().readExactCalendarArm(
+        a.armId,
+        a.requestDigest,
+      );
+      expect(closed.state).toBe('absent');
+      if (closed.state !== 'absent')
+        throw Error('missing retained experience arm');
+      expect({ period: closed.period, arm: closed.arm }).toEqual(nativeBefore);
+      const [terminal] =
+        await f.db`select business_decision_id from allrice_native_calendar_periods where period_id=${oldPeriod}`;
+      expect(terminal!.business_decision_id).toBe(decision!.decision_id);
+      expect(
+        await f.db`select period_id from allrice_native_calendar_plans where automation_id=${automationId} and closed_decision_id is null`,
+      ).toHaveLength(0);
+      expect(await store.readExactCommit(writer, receiptWrite)).toBe(
+        'committed',
+      );
+      await changeEmployeeInstanceLifecycle(
+        f.context,
+        c.dispatch.employeeInstanceId,
+        {
+          workspaceId: f.workspaceId,
+          expectedRevision: archived.revision,
+          operation: 'restore',
+          sourceRevision: instance!.revision,
+          requestId: randomUUID(),
+        },
+      );
+      expect(
+        await materializeExperienceNativeCalendar(
+          calendar(),
+          writer,
+          reference,
+          false,
+        ),
+      ).toBe(false);
+      const [rule] =
+        await f.db`select status,next_run_at from allrice_automations where id=${automationId}`;
+      expect(rule).toMatchObject({ status: 'paused', next_run_at: null });
+      expect(
+        await f.db`select decision_id from allrice_native_calendar_decisions where period_id=${oldPeriod}`,
+      ).toHaveLength(1);
     });
   },
 );
