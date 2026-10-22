@@ -738,6 +738,7 @@ suite(
             action: 'update',
             name: original.name,
             prompt: original.prompt,
+            conversationMode: 'reuse',
             rule: {
               kind: 'monthly',
               monthDay: 30,

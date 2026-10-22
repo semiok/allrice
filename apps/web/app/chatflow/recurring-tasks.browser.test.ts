@@ -1000,6 +1000,7 @@ suite('recurring tasks through the actual clock header', () => {
           action: 'update',
           name: existing.name,
           prompt: original,
+          conversationMode: 'reuse',
           rule: {
             kind: 'monthly',
             monthDay: 29,
