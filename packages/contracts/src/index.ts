@@ -43,6 +43,14 @@ export * from './platform-employee-history.ts';
 export * from './content-maintenance.ts';
 export * from './employee-tool-catalog.ts';
 export * from './bridge.ts';
+export {
+  BridgeDeviceSchema,
+  type BridgeDevice,
+  BridgeEnvironmentSchema,
+  type BridgeEnvironment,
+  HeartbeatBridgeDeviceInputSchema,
+  PairBridgeDeviceResponseSchema,
+} from './bridge-human-terminal.ts';
 export * from './workbench-terminal.ts';
 export * from './file-survey.ts';
 export * from './local-files.ts';
