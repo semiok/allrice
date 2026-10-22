@@ -242,6 +242,13 @@ suite(
       await load();
       expect(p.businessScheduledFor).toBe(initialP);
       expect(a.nativeAt).toBe(initialP);
+      const [proof] =
+        await f.db`select allrice_native_calendar_plan_proved(${p.periodId}::uuid) period_proved,
+        allrice_native_calendar_plan_proved(${automationId}::uuid) automation_not_period`;
+      expect(proof).toMatchObject({
+        period_proved: true,
+        automation_not_period: false,
+      });
       const [r] =
         await f.db`select clock_owner,next_run_at from allrice_automations where id=${automationId}`;
       expect(r!.clock_owner).toBe('native_recurring');

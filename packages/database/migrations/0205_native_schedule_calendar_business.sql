@@ -157,7 +157,7 @@ select exists(select 1 from allrice_native_calendar_plans p
   join allrice_native_recurring_controls c on c.partition_id=p.partition_id and c.control_id=p.control_id and c.automation_id=p.automation_id
   join allrice_native_recurring_versions v on v.automation_id=p.automation_id and v.revision=p.revision
   join allrice_automations a on a.id=p.automation_id and a.clock_owner='native_recurring'
-  where p.period_id=id and allrice_native_calendar_control_valid(c.snapshot->'control')
+  where p.period_id=$1 and allrice_native_calendar_control_valid(c.snapshot->'control')
     and allrice_native_calendar_revision_valid(v.configuration)
     and p.plan->>'revisionDigest'=allrice_native_control_document_digest(v.configuration)
     and c.native_task_id is null and c.snapshot->'control'->'dispatch'->>'consumer'='experience-consolidation-v1'
