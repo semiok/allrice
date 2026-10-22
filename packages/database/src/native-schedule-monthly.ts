@@ -33,7 +33,7 @@ import {
   NativeCalendarPlanSchema,
   type NativeCalendarPlan,
 } from './native-schedule-calendar-business-state.ts';
-import type { createNativeCalendarSqlStore } from './native-schedule-calendar-sql.ts';
+import type { createNativeRecurringSqlStore } from './native-schedule-recurring-sql.ts';
 import {
   calendarPlanFor,
   insertCalendarPlanInTransaction,
@@ -381,7 +381,9 @@ export async function changeOrdinaryMonthlyTaskInTransaction(
 /** One accepted business intent, using the common live writer transaction.
  * No due-time scan creates business work here. */
 export async function materializeOrdinaryMonthlyCalendar(
-  calendar: ReturnType<typeof createNativeCalendarSqlStore>,
+  calendar: NonNullable<
+    ReturnType<typeof createNativeRecurringSqlStore>['calendar']
+  >,
   writer: NativeOnceWriter,
   reference: NativeOnceReference,
 ) {

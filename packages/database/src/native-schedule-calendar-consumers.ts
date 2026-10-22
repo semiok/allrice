@@ -8,7 +8,7 @@ import type {
   NativeCalendarAdmission,
   NativeCalendarControl,
 } from './native-schedule-calendar-state.ts';
-import type { createNativeCalendarSqlStore } from './native-schedule-calendar-sql.ts';
+import type { createNativeRecurringSqlStore } from './native-schedule-recurring-sql.ts';
 import {
   lockExperienceCalendarAdmissions,
   materializeExperienceNativeCalendar,
@@ -38,7 +38,9 @@ export async function lockNativeCalendarAdmissions(
   return result;
 }
 export async function materializeNativeCalendar(
-  calendar: ReturnType<typeof createNativeCalendarSqlStore>,
+  calendar: NonNullable<
+    ReturnType<typeof createNativeRecurringSqlStore>['calendar']
+  >,
   writer: NativeOnceWriter,
   reference: NativeOnceReference,
   allowHandoff = true,
