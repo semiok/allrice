@@ -181,9 +181,35 @@ const PutMutation = z
     task: z.unknown(),
   })
   .strict();
+const ApplyRevisionMutation = z
+  .object({
+    kind: z.literal('calendar'),
+    action: z.literal('apply_revision'),
+    controlId: UuidSchema,
+    expectedControlVersion: Version,
+    revision: Revision,
+    planId: UuidSchema,
+    planDigest: Digest,
+  })
+  .strict();
+const RetireMutation = z
+  .object({
+    kind: z.literal('calendar'),
+    action: z.literal('retire_task'),
+    controlId: UuidSchema,
+    periodId: UuidSchema,
+    armId: UuidSchema,
+    retirementId: UuidSchema,
+    nativeTaskId: Key,
+    taskDigest: Digest,
+    expectedArmVersion: Version,
+  })
+  .strict();
 export const NativeCalendarMutationSchema = z.union([
   SessionMutation,
   PutMutation,
+  ApplyRevisionMutation,
+  RetireMutation,
 ]);
 export type NativeCalendarMutation = z.infer<
   typeof NativeCalendarMutationSchema
@@ -279,6 +305,8 @@ export function validateCalendarBinding(
       a.periodId === p.periodId &&
       (a.reason !== 'business_target' ||
         a.nativeAt === p.businessScheduledFor) &&
+      (a.reason !== 'future_recovery' ||
+        Date.parse(a.nativeAt) >= Date.parse(p.businessScheduledFor)) &&
       (p.currentArmId !== a.armId ||
         (p.state === 'prepared' &&
           ['prepared', 'creating'].includes(a.status)) ||

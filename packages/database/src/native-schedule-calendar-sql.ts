@@ -42,6 +42,11 @@ import {
   validateRecurringTask,
 } from './native-schedule-recurring-state.ts';
 import type { NativeRecurringPartitionControl } from './native-schedule-recurring-loader.ts';
+import {
+  NativeCalendarPlanSchema,
+  calendarPlanDigest,
+  type NativeCalendarPlan,
+} from './native-schedule-calendar-business-state.ts';
 
 export type NativeCalendarSqlOptions = Omit<
   NativeScheduleControlSqlOptions<NativeCalendarControl>,
@@ -60,6 +65,7 @@ export type NativeCalendarSqlOptions = Omit<
   lockAdmission: (
     tx: TransactionSql,
     controls: readonly NativeCalendarControl[],
+    purpose?: 'initialize' | 'native',
   ) => Promise<ReadonlyMap<string, NativeCalendarAdmission>>;
 };
 type ControlRow = {
@@ -79,6 +85,7 @@ type PeriodRow = {
   state: NativeCalendarPeriod['state'];
   version: number | string;
   plan_id?: string | null;
+  business_decision_id?: string | null;
 };
 type ArmRow = {
   arm_id: string;
@@ -98,7 +105,20 @@ type ArmRow = {
 };
 type CalendarJournal = ReturnType<
   typeof prepareNativeCalendarTaskPut
->['journal'];
+>['journal'] & {
+  revisionLink?: {
+    plan: NativeCalendarPlan;
+    planDigest: string;
+    revision: NativeCalendarRevision;
+  };
+  retirement?: {
+    retirementId: string;
+    armId: string;
+    nativeTaskId: string;
+    taskDigest: string;
+    task: NativeOnceTask;
+  };
+};
 type JournalRow = {
   partition_id: string;
   write_id: string;
@@ -508,11 +528,62 @@ export function createNativeCalendarSqlStore(
           'exact_conflict',
         );
       } else requireCalendar(j.receiptLinks.length === 0, 'exact_conflict');
-    } else
+    } else {
       requireCalendar(
         j.calendarLinks.length === 0 && j.receiptLinks.length === 0,
         'exact_conflict',
       );
+      if (m.action === 'apply_revision') {
+        const [plan] = await tx<
+          { plan: NativeCalendarPlan; plan_digest: string }[]
+        >`
+          select plan,plan_digest from allrice_native_calendar_plans where period_id=${m.planId}`;
+        requireCalendar(
+          plan &&
+            j.revisionLink &&
+            c.revision === m.revision &&
+            j.revisionLink.planDigest === m.planDigest &&
+            plan.plan_digest === m.planDigest &&
+            calendarPlanDigest(plan.plan) === m.planDigest &&
+            isDeepStrictEqual(j.revisionLink.plan, plan.plan) &&
+            isDeepStrictEqual(
+              j.revisionLink.revision,
+              await revision(tx, c, m.revision),
+            ),
+          'exact_conflict',
+        );
+      } else if (m.action === 'retire_task') {
+        const [retired] = await tx<
+          {
+            arm_id: string;
+            native_task_id: string;
+            task_snapshot: unknown;
+            task_digest: string;
+            write_id: string;
+          }[]
+        >`
+          select * from allrice_native_calendar_retirements where retirement_id=${m.retirementId}
+            and partition_id=${partitionId} and control_id=${c.controlId}`;
+        requireCalendar(
+          retired &&
+            j.retirement &&
+            retired.write_id === r.write_id &&
+            retired.arm_id === m.armId &&
+            retired.native_task_id === m.nativeTaskId &&
+            retired.task_digest === m.taskDigest &&
+            nativeOnceDigest(retired.task_snapshot) === m.taskDigest &&
+            isDeepStrictEqual(j.retirement, {
+              retirementId: m.retirementId,
+              armId: m.armId,
+              nativeTaskId: m.nativeTaskId,
+              taskDigest: m.taskDigest,
+              task: retired.task_snapshot,
+            }),
+          'exact_conflict',
+        );
+      } else
+        requireCalendar(!j.revisionLink && !j.retirement, 'exact_conflict');
+    }
     return r;
   }
   async function exact(
@@ -552,6 +623,7 @@ export function createNativeCalendarSqlStore(
   async function commitMutation(
     given: NativeOnceWriter,
     raw: NativeCalendarWrite,
+    transaction?: TransactionSql,
   ): Promise<'committed' | 'rejected'> {
     if (!enabled()) return 'rejected';
     const w = structuredClone(given),
@@ -565,11 +637,62 @@ export function createNativeCalendarSqlStore(
           write.digest === nativeOnceDigest(write.mutation),
         'write_invalid',
       );
-      return await base.bounded(async (tx) => {
+      const work = async (
+        tx: TransactionSql,
+      ): Promise<'committed' | 'rejected'> => {
         const prior = await exact(tx, w, write);
         if (prior === 'committed') return prior;
         requireCalendar(prior === 'absent', 'exact_conflict');
         const m = write.mutation;
+        if (m.action === 'retire_task') {
+          const locked = await lockArm(tx, w, m.periodId, m.armId);
+          const { control: c, period: pp, arm: aa, partition: p } = locked;
+          const [intent] = await tx<
+            { retirement_id: string; record_digest: string }[]
+          >`
+            select i.retirement_id,i.record_digest from allrice_native_calendar_retirement_intents i
+            join allrice_native_calendar_periods p on p.period_id=${pp.periodId} and p.business_decision_id=i.decision_id
+            where i.retirement_id=${m.retirementId} and i.arm_id=${aa.armId} and i.native_task_id=${m.nativeTaskId}`;
+          const task = validateCalendarTask(
+            c,
+            pp,
+            aa,
+            aa.taskSnapshot,
+            options.decodeTask,
+          );
+          requireCalendar(
+            intent &&
+              m.controlId === c.controlId &&
+              aa.nativeTaskId === m.nativeTaskId &&
+              aa.snapshotVersion === m.expectedArmVersion &&
+              nativeOnceDigest(task) === m.taskDigest &&
+              nativeOnceDigest(task.record) === intent.record_digest,
+            'retirement_conflict',
+          );
+          const j: CalendarJournal = {
+            writer: calendarWriterIdentity(w),
+            reference,
+            write,
+            identity: calendarControlIdentity(c),
+            beforeDigest: nativeOnceDigest({ control: c, period: pp, arm: aa }),
+            afterDigest: nativeOnceDigest(locked.row.snapshot),
+            calendarLinks: [],
+            receiptLinks: [],
+            retirement: {
+              retirementId: m.retirementId,
+              armId: aa.armId,
+              nativeTaskId: m.nativeTaskId,
+              taskDigest: m.taskDigest,
+              task,
+            },
+          };
+          await tx`insert into allrice_native_calendar_retirements
+            (retirement_id,arm_id,partition_id,control_id,native_task_id,task_snapshot,task_digest,write_id)
+            values(${m.retirementId},${aa.armId},${partitionId},${c.controlId},${m.nativeTaskId},${json(tx, task)},${m.taskDigest},${write.writeId})`;
+          await insertJournal(tx, w, write, locked.row.snapshot, j);
+          await base.requireActive(tx, p, w);
+          return 'committed';
+        }
         if (m.action !== 'put_task') {
           const locked = await lockControl(tx, w, m.controlId);
           const { row, control: c, partition: p } = locked;
@@ -581,7 +704,33 @@ export function createNativeCalendarSqlStore(
             'snapshot_cas',
           );
           const next = structuredClone(row.snapshot);
-          if (m.action === 'session_initializing') {
+          let revisionLink: CalendarJournal['revisionLink'];
+          if (m.action === 'apply_revision') {
+            const [planned] = await tx<
+              { plan: NativeCalendarPlan; plan_digest: string }[]
+            >`
+              select plan,plan_digest from allrice_native_calendar_plans where period_id=${m.planId}
+                and control_id=${c.controlId} and revision=${m.revision} and closed_decision_id is null for share`;
+            const v = await revision(tx, c, m.revision);
+            requireCalendar(
+              planned &&
+                m.revision > c.revision &&
+                c.sessionState === 'ready' &&
+                planned.plan_digest === m.planDigest &&
+                calendarPlanDigest(planned.plan) === m.planDigest &&
+                locked.admission?.allowed &&
+                locked.admission.currentRevision === m.revision &&
+                locked.admission.policyRevision === v.policyRevision &&
+                locked.admission.policyDigest === v.policyDigest,
+              'revision_changed',
+            );
+            next.control.revision = m.revision;
+            revisionLink = {
+              plan: NativeCalendarPlanSchema.parse(planned.plan),
+              planDigest: m.planDigest,
+              revision: v,
+            };
+          } else if (m.action === 'session_initializing') {
             requireCalendar(
               c.sessionState === 'reserved' ||
                 c.sessionState === 'initializing',
@@ -605,6 +754,7 @@ export function createNativeCalendarSqlStore(
             afterDigest: nativeOnceDigest(next),
             calendarLinks: [],
             receiptLinks: [],
+            ...(revisionLink ? { revisionLink } : {}),
           };
           const updated =
             await tx`update allrice_native_recurring_controls set snapshot=${json(tx, next)},
@@ -617,6 +767,9 @@ export function createNativeCalendarSqlStore(
         }
         const locked = await lockArm(tx, w, m.periodId, m.armId);
         const { control: c, period: pp, arm: aa, partition: p } = locked;
+        const [retired] =
+          await tx`select 1 from allrice_native_calendar_retirements where arm_id=${aa.armId}`;
+        requireCalendar(!retired, 'task_retired');
         requireCalendar(m.controlId === c.controlId, 'write_invalid');
         const recheck = await exact(tx, w, write);
         if (recheck === 'committed') return recheck;
@@ -659,7 +812,8 @@ export function createNativeCalendarSqlStore(
         await insertJournal(tx, w, write, planned.after, planned.journal);
         await base.requireActive(tx, p, w);
         return 'committed';
-      });
+      };
+      return transaction ? await work(transaction) : await base.bounded(work);
     } catch (e) {
       if (
         e instanceof NativeCalendarStateError ||
@@ -692,7 +846,7 @@ export function createNativeCalendarSqlStore(
         isDeepStrictEqual(c.reference, reference),
       'reservation_invalid',
     );
-    const admissions = await options.lockAdmission(tx, [c]);
+    const admissions = await options.lockAdmission(tx, [c], 'initialize');
     const a = admissions.get(c.controlId);
     requireCalendar(
       a?.allowed &&
@@ -792,6 +946,7 @@ export function createNativeCalendarSqlStore(
       businessScheduledFor: string;
       nativeAt: string;
       reason: NativeCalendarArm['reason'];
+      planId?: string;
     },
   ) {
     requireEnabled();
@@ -821,15 +976,34 @@ export function createNativeCalendarSqlStore(
       input.nativeAt,
       input.reason,
     );
+    if (input.planId) {
+      const [plan] = await tx<
+        { plan: NativeCalendarPlan; plan_digest: string }[]
+      >`
+        select plan,plan_digest from allrice_native_calendar_plans where period_id=${input.planId}
+          and closed_decision_id is null for update`;
+      requireCalendar(
+        plan &&
+          input.planId === pp.periodId &&
+          plan.plan.periodId === pp.periodId &&
+          plan.plan.controlId === pp.controlId &&
+          plan.plan.automationId === pp.automationId &&
+          plan.plan.revision === pp.revision &&
+          plan.plan.businessScheduledFor === pp.businessScheduledFor &&
+          plan.plan.initialArmId === aa.armId &&
+          calendarPlanDigest(plan.plan) === plan.plan_digest,
+        'plan_changed',
+      );
+    }
     const now = await base.requireActive(tx, l.partition, w);
     requireCalendar(
       aa.reason !== 'future_recovery' || Date.parse(aa.nativeAt) > now,
       'recovery_not_future',
     );
     await tx`insert into allrice_native_calendar_periods
-          (period_id,partition_id,control_id,automation_id,revision,business_scheduled_for,current_arm_id,state,version)
+          (period_id,partition_id,control_id,automation_id,revision,business_scheduled_for,current_arm_id,state,version,plan_id)
           values(${pp.periodId},${partitionId},${pp.controlId},${pp.automationId},${pp.revision},
-            ${pp.businessScheduledFor}::timestamptz,${pp.currentArmId},'prepared',0)`;
+            ${pp.businessScheduledFor}::timestamptz,${pp.currentArmId},'prepared',0,${input.planId ?? null})`;
     await insertArm(tx, w, aa);
     return { period: pp, arm: aa };
   }
@@ -855,6 +1029,7 @@ export function createNativeCalendarSqlStore(
       calendarAdmissionReason(pp, v, l.admission) === null,
       'authority_changed',
     );
+    requireCalendar(!l.periodRow.business_decision_id, 'period_decided');
     requireCalendar(
       pp.currentArmId === old.armId &&
         pp.state === 'recovery_required' &&
@@ -935,6 +1110,95 @@ export function createNativeCalendarSqlStore(
 
   return {
     loadTaskRecordsInTransaction,
+    commitMutationInTransaction: (
+      tx: TransactionSql,
+      w: NativeOnceWriter,
+      write: NativeCalendarWrite,
+    ) => commitMutation(w, write, tx),
+    /** Business code composes its locks and native prepare in this SAME primary
+     * transaction. It must take business locks before calling native helpers. */
+    withTransaction: base.bounded,
+    async loadCalendarState(w: NativeOnceWriter) {
+      requireEnabled();
+      return base.bounded(async (tx) => {
+        const p = await base.partition(tx, 'share');
+        await base.requireActive(tx, p, w);
+        const parents = await tx<
+          ControlRow[]
+        >`select control_id,immutable_identity,snapshot,snapshot_version
+          from allrice_native_recurring_controls where partition_id=${partitionId}
+          and snapshot->'control'->>'kind'='calendar' order by control_id limit 10001`;
+        requireCalendar(parents.length <= 10_000, 'control_limit');
+        const bindings = [];
+        const ps = await tx<
+          PeriodRow[]
+        >`select p.* from allrice_native_calendar_periods p
+          join allrice_native_calendar_arms a on a.arm_id=p.current_arm_id and a.period_id=p.period_id
+          where p.partition_id=${partitionId} and (p.business_decision_id is null or a.status='creating'
+            or (a.native_task_id is not null and not exists(select 1 from allrice_native_calendar_retirements d where d.arm_id=a.arm_id)))
+          order by p.period_id limit 10001`;
+        requireCalendar(ps.length <= 10_000, 'task_limit');
+        for (const pr of ps) {
+          const [ar] = await tx<
+            ArmRow[]
+          >`select * from allrice_native_calendar_arms where arm_id=${pr.current_arm_id}`;
+          requireCalendar(ar, 'arm_missing');
+          const pp = period(pr),
+            aa = arm(ar);
+          const c = parents.find((r) => r.control_id === pr.control_id);
+          requireCalendar(c, 'control_missing');
+          validateCalendarBinding(control(c), pp, aa);
+          const [intent] = await tx<
+            { retirement_id: string; record_digest: string }[]
+          >`
+            select retirement_id,record_digest from allrice_native_calendar_retirement_intents where arm_id=${aa.armId}`;
+          bindings.push({
+            period: pp,
+            arm: aa,
+            closed:
+              pr.business_decision_id !== null &&
+              pr.business_decision_id !== undefined,
+            retirement: intent
+              ? {
+                  retirementId: intent.retirement_id,
+                  recordDigest: intent.record_digest,
+                }
+              : null,
+          });
+        }
+        await base.requireActive(tx, p, w);
+        return {
+          controls: parents.map((r) => ({
+            control: control(r),
+            version: Number(r.snapshot_version),
+          })),
+          bindings,
+        };
+      });
+    },
+    async readExactCalendarRetirement(retirementId: string) {
+      if (!enabled()) return 'unknown' as const;
+      try {
+        return await base.bounded(async (tx) => {
+          const [r] = await tx<
+            { write_id: string }[]
+          >`select write_id from allrice_native_calendar_retirements
+            where retirement_id=${retirementId} and partition_id=${partitionId}`;
+          if (!r) return 'absent' as const;
+          const j = await journalRow(tx, r.write_id);
+          requireCalendar(
+            j &&
+              j.mutation.action === 'retire_task' &&
+              j.mutation.retirementId === retirementId,
+            'exact_conflict',
+          );
+          await verifyJournal(tx, j);
+          return 'committed' as const;
+        }, true);
+      } catch {
+        return 'unknown' as const;
+      }
+    },
     initializeControlInTransaction,
     prepareCalendarPeriodInTransaction,
     prepareCalendarArmInTransaction,
@@ -990,6 +1254,7 @@ export function createNativeCalendarSqlStore(
         const l = await lockArm(tx, w, input.periodId, input.armId);
         const pp = l.period,
           aa = l.arm;
+        requireCalendar(!l.periodRow.business_decision_id, 'period_decided');
         const v = await revision(tx, l.control, pp.revision);
         requireCalendar(
           calendarAdmissionReason(pp, v, l.admission) === null,

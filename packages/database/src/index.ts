@@ -370,6 +370,11 @@ export {
   type NativeCalendarPlan,
   type NativeCalendarDecision,
 } from './native-schedule-calendar-business-state.ts';
+export {
+  experienceNativeCalendarEnabled,
+  lockExperienceCalendarAdmissions,
+  materializeExperienceNativeCalendar,
+} from './experience-native.ts';
 export type { NativeRecurringPartitionControl } from './native-schedule-recurring-loader.ts';
 
 export {

@@ -90,6 +90,7 @@ export const NativeCalendarDecisionSchema = z
       hasRun !== (v.automationRunId !== null) ||
       (v.outcome === 'budget') !== (v.budget !== null) ||
       (advances && !receipt) ||
+      (receipt && v.outcome === 'canceled') ||
       (v.kind === 'policy' && v.outcome !== 'canceled') ||
       (v.kind === 'authority' && v.outcome !== 'authority_blocked') ||
       v.successorPeriodId === v.periodId

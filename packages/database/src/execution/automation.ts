@@ -1169,7 +1169,7 @@ export async function claimDueAutomations(limit = 10) {
           // An archived instance must not poison the shared automation tick.
           // Do not overwrite a concurrent policy update or restored rule.
           await sql`update allrice_automations set status='paused',next_run_at=null,updated_at=clock_timestamp()
-          where id=${candidate.id} and status='enabled' and revision=${candidate.revision} and next_run_at<=clock_timestamp()`;
+          where id=${candidate.id} and clock_owner='legacy' and status='enabled' and revision=${candidate.revision} and next_run_at<=clock_timestamp()`;
           return null;
         }
         throw error;

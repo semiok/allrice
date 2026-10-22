@@ -49,7 +49,7 @@ import {
 } from './experience-consolidation-contracts.ts';
 
 type Tx = postgres.TransactionSql;
-type Rule = {
+export type ExperienceScheduleRule = {
   id: string;
   organization_id: string;
   workspace_id: string;
@@ -59,6 +59,7 @@ type Rule = {
   next_run_at: Date | null;
   schedule: unknown;
 };
+type Rule = ExperienceScheduleRule;
 const deny = (): never => {
   throw new ExperienceError('source_changed');
 };
@@ -233,6 +234,9 @@ export async function updateExperiencePolicy(
         schedule=${tx.json({ ...schedule, frequency: schedule.frequency === 'off' ? 'weekly' : schedule.frequency })},
         experience_binding=${tx.json({ ...binding, policyDigest: runtimePolicyDigest(policy) })},revision=revision+1,
         next_run_at=${policy.frequency === 'off' ? null : nextScheduleAt(schedule)},updated_at=clock_timestamp() where id=${rule.id}`;
+      const { syncExperienceNativePolicyInTransaction } =
+        await import('./experience-native.ts');
+      await syncExperienceNativePolicyInTransaction(tx, rule.id);
     }
     // An already dispatched batch is interrupted by its normal lease/guard;
     // it can never commit after this policy revision changes.
@@ -314,23 +318,67 @@ export async function syncExperienceConsolidationSchedules() {
   return count;
 }
 
-/** The Automation row is already locked by its producer. Reserve sources once. */
-export async function claimExperienceOccurrence(
+export type ExperienceOccurrenceReservation =
+  | { outcome: 'queued' | 'empty' | 'already_claimed'; automationRunId: string }
+  | {
+      outcome: 'budget';
+      budget: {
+        globalCount: number;
+        organizationCount: number;
+        instanceCount: number;
+      };
+    }
+  | { outcome: 'policy_blocked'; reason: 'disabled' | 'policy_changed' };
+
+/** Original source/budget/Run reservation, composable with the calendar P
+ * decision. The caller already owns the business automation lock. An exact
+ * historical Run is checked before budget counts or any source reservation. */
+export async function reserveExperienceOccurrenceInTransaction(
   tx: Tx,
   rule: Rule,
-  nextRunAt: Date,
-) {
-  if (!experienceReviewEnabled()) return null;
+  scheduledFor: Date,
+  nativeRecurringOccurrenceId: string | null = null,
+): Promise<ExperienceOccurrenceReservation> {
+  if (!experienceReviewEnabled())
+    return { outcome: 'policy_blocked', reason: 'disabled' };
   const binding = ExperienceAutomationBindingSchema.parse(
     rule.experience_binding,
   );
+  async function existing() {
+    const [row] = await tx<
+      {
+        id: string;
+        organization_id: string;
+        workspace_id: string;
+        experience_occurrence: unknown;
+      }[]
+    >`
+      select id,organization_id,workspace_id,experience_occurrence from allrice_automation_runs
+      where automation_id=${rule.id} and scheduled_for=${scheduledFor} and folder_event_id is null for share`;
+    if (!row) return null;
+    const occurrence = ExperienceOccurrenceSchema.parse(
+      row.experience_occurrence,
+    );
+    if (
+      row.organization_id !== rule.organization_id ||
+      row.workspace_id !== rule.workspace_id ||
+      occurrence.ownerId !== rule.owner_id ||
+      occurrence.assignmentId !== rule.employee_assignment_id ||
+      occurrence.instanceId !== binding.instanceId ||
+      occurrence.id !== row.id
+    )
+      return deny();
+    return row.id;
+  }
+  const prior = await existing();
+  if (prior) return { outcome: 'already_claimed', automationRunId: prior };
   const policy = await readExperiencePolicy(rule.organization_id, tx);
   if (
     policy.frequency === 'off' ||
     runtimePolicyDigest(policy) !== binding.policyDigest
   ) {
     await tx`update allrice_automations set status='paused',next_run_at=null where id=${rule.id}`;
-    return null;
+    return { outcome: 'policy_blocked', reason: 'policy_changed' };
   }
   await tx`select pg_advisory_xact_lock(hashtext('experience-consolidation-daily-budget'))`;
   const [budget] = await tx<
@@ -340,13 +388,19 @@ export async function claimExperienceOccurrence(
       count(*) filter(where experience_occurrence->>'instanceId'=${binding.instanceId})::int instance_count
     from allrice_automation_runs where experience_occurrence is not null
       and jsonb_array_length(experience_occurrence->'sources')>0 and created_at>clock_timestamp()-interval '24 hours'`;
-  await tx`update allrice_automations set next_run_at=${nextRunAt},last_run_at=clock_timestamp(),updated_at=clock_timestamp() where id=${rule.id}`;
   if (
     budget!.global_count >= limits.globalDailyRuns ||
     budget!.org_count >= limits.organizationDailyRuns ||
     budget!.instance_count >= 1
   )
-    return null;
+    return {
+      outcome: 'budget',
+      budget: {
+        globalCount: budget!.global_count,
+        organizationCount: budget!.org_count,
+        instanceCount: budget!.instance_count,
+      },
+    };
   const owner = {
     organizationId: rule.organization_id,
     workspaceId: rule.workspace_id,
@@ -423,14 +477,35 @@ export async function claimExperienceOccurrence(
     : null;
   const [written] =
     await tx`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,scheduled_for,status,
-    experience_occurrence,completed_at,error_code,native_root_origin) values(${occurrence.id},${rule.organization_id},${rule.workspace_id},${rule.id},
-      ${rule.next_run_at!},${sources.length ? 'queued' : 'succeeded'},${tx.json(occurrence)},${sources.length ? null : new Date()},${sources.length ? null : 'EXPERIENCE_NO_NEW_EVIDENCE'},${origin ? tx.json(origin) : null})
+    experience_occurrence,completed_at,error_code,native_root_origin,native_recurring_occurrence_id) values(${occurrence.id},${rule.organization_id},${rule.workspace_id},${rule.id},
+      ${scheduledFor},${sources.length ? 'queued' : 'succeeded'},${tx.json(occurrence)},${sources.length ? null : new Date()},${sources.length ? null : 'EXPERIENCE_NO_NEW_EVIDENCE'},${origin ? tx.json(origin) : null},${nativeRecurringOccurrenceId})
     on conflict(automation_id,scheduled_for) where folder_event_id is null do nothing returning id`;
-  if (!written) return null;
-  if (!sources.length) return null; // No job, route, native runtime or model charge.
+  if (!written) {
+    const exact = await existing();
+    if (!exact) return deny();
+    return { outcome: 'already_claimed', automationRunId: exact };
+  }
+  if (!sources.length)
+    return { outcome: 'empty', automationRunId: occurrence.id }; // No job, route, native runtime or model charge.
   await tx`update allrice_experience_reviews set consolidation_occurrence_id=${occurrence.id}
     where memory_id in ${tx(sources.map((s) => s.id))} and consolidation_occurrence_id is null`;
-  return occurrence.id;
+  return { outcome: 'queued', automationRunId: occurrence.id };
+}
+
+/** Legacy producer keeps its public result and original advancement rules. */
+export async function claimExperienceOccurrence(
+  tx: Tx,
+  rule: Rule,
+  nextRunAt: Date,
+) {
+  const result = await reserveExperienceOccurrenceInTransaction(
+    tx,
+    rule,
+    rule.next_run_at!,
+  );
+  if (result.outcome === 'policy_blocked') return null;
+  await tx`update allrice_automations set next_run_at=${nextRunAt},last_run_at=clock_timestamp(),updated_at=clock_timestamp() where id=${rule.id}`;
+  return result.outcome === 'queued' ? result.automationRunId : null;
 }
 
 async function loadOccurrence(

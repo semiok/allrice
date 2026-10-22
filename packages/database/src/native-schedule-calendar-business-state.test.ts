@@ -69,6 +69,16 @@ describe('calendar immutable business decisions', () => {
       }).outcome,
     ).toBe('canceled');
   });
+  it('a live receipt alone cannot cancel an authorized current period and swallow N', () => {
+    expect(() =>
+      NativeCalendarDecisionSchema.parse({
+        ...queued,
+        outcome: 'canceled',
+        automationRunId: null,
+        successorPeriodId: null,
+      }),
+    ).toThrow();
+  });
   it('persists the exact new P and original calendar revision in an intent', () => {
     const plan = NativeCalendarPlanSchema.parse({
       periodId: id(2),

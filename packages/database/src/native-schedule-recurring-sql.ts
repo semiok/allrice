@@ -391,6 +391,10 @@ export function createNativeRecurringSqlStore(
     commitMutation,
     /** Format operations only. Lifecycle remains the common base above. */
     calendar: calendar && {
+      withTransaction: calendar.withTransaction,
+      commitMutationInTransaction: calendar.commitMutationInTransaction,
+      loadCalendarState: calendar.loadCalendarState,
+      readExactCalendarRetirement: calendar.readExactCalendarRetirement,
       initializeControlInTransaction: calendar.initializeControlInTransaction,
       prepareCalendarPeriodInTransaction:
         calendar.prepareCalendarPeriodInTransaction,
