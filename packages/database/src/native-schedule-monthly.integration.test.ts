@@ -1912,10 +1912,19 @@ suite(
       values(${t.id},2,${f.db.json({ ...altered, revision: 2 })},${f.db.json(v!.business_content)},${altered.contentDigest})`).rejects.toMatchObject(
         { code: '23514' },
       );
+      const [beforeClockForgery] =
+        await f.db`select to_jsonb(a) row from allrice_automations a where id=${t.id}`;
       await expect(f.db`update allrice_automations set clock_owner='legacy',native_recurring_request_id=null,native_recurring_request_digest=null,
       native_recurring_revision=null,native_recurring_resume_after=null where id=${t.id}`).rejects.toMatchObject(
-        { code: 'P1921' },
+        {
+          code: '23514',
+          message:
+            'automation conversation source/create identity is immutable',
+        },
       );
+      const [afterClockForgery] =
+        await f.db`select to_jsonb(a) row from allrice_automations a where id=${t.id}`;
+      expect(afterClockForgery).toEqual(beforeClockForgery);
       const fixed = await createRecurringTask(f.context, t.sessionId, {
         clientRequestId: randomUUID(),
         name: '固定周报',
