@@ -4,6 +4,7 @@ import {
 } from '@allrice/contracts';
 import { explicitOnceTaskIntent } from './once-task-intent.ts';
 import { explicitRecurringTaskIntent } from './recurring-task-intent.ts';
+import { scheduleConversationIntent } from './schedule-conversation-intent.ts';
 
 const number = '[0-9零〇一二两三四五六七八九十百千万]+';
 const prefix = '(?:请\\s*|麻烦(?:你)?\\s*)?(?:(?:帮我|为我)\\s*)?';
@@ -45,7 +46,8 @@ export function clarifiedScheduleIntent(
     !item.options?.some((o) => o.label === choice.selected[0])
   )
     return null;
-  const work = request.trim().match(timedWork);
+  const requestedConversation = scheduleConversationIntent(request);
+  const work = requestedConversation.request.trim().match(timedWork);
   if (!work) return null;
   // Reuse the established quote/condition/negation/multiple-clock checks.
   // This synthetic sentence validates work only; it grants no scheduling right.
@@ -53,7 +55,19 @@ export function clarifiedScheduleIntent(
   if (!body || !explicitOnceTaskIntent(`${work[1]}${work[2]}后执行${body}`))
     return null;
   const label = choice.selected[0]!;
-  const selected = label.match(frequency);
+  const selectedConversation = scheduleConversationIntent(label);
+  if (
+    requestedConversation.conversationMode &&
+    selectedConversation.conversationMode &&
+    requestedConversation.conversationMode !==
+      selectedConversation.conversationMode
+  )
+    return null;
+  const mode =
+    selectedConversation.conversationMode ??
+    requestedConversation.conversationMode;
+  const conversation = mode === undefined ? {} : { conversationMode: mode };
+  const selected = selectedConversation.request.match(frequency);
   if (
     !selected ||
     (selected[1] && selected[4]) ||
@@ -66,13 +80,23 @@ export function clarifiedScheduleIntent(
       `每隔${selected[2]}${selected[3]}提醒我完成本次要求`,
     );
     return intent
-      ? { kind: 'recurring' as const, ...intent, authoritativeRequest }
+      ? {
+          kind: 'recurring' as const,
+          ...intent,
+          authoritativeRequest,
+          ...conversation,
+        }
       : null;
   }
   const intent = explicitOnceTaskIntent(
     `${selected[2]}${selected[3]}后提醒我完成本次要求`,
   );
   return intent
-    ? { kind: 'once' as const, ...intent, authoritativeRequest }
+    ? {
+        kind: 'once' as const,
+        ...intent,
+        authoritativeRequest,
+        ...conversation,
+      }
     : null;
 }

@@ -23,6 +23,7 @@ import {
   clearRecurringIntent,
   parseRecurringIntent,
   recurringContent,
+  recurringEditRequest,
   recurringDraft,
   recurringStorageKey,
   resolveRecurringIntent,
@@ -272,7 +273,7 @@ export function AutomationTaskList(
             </header>
             {!props.sessionId && (
               <p className={css.caption}>
-                统一管理各位 AI 员工的任务。到期后由原会话中的员工执行。
+                统一管理各位 AI 员工的任务。到期后由对应员工按任务设置执行。
               </p>
             )}
             {!props.sessionId && (
@@ -636,7 +637,9 @@ function AutomationDetailBody({
     const timer = setInterval(() => void check(), 4000);
     return () => clearInterval(timer);
   }, [check, pending, visible]);
-  const change = async (action: ChangeRecurringTaskInput['action']) => {
+  const change = async (
+    action: Exclude<ChangeRecurringTaskInput['action'], 'conversation'>,
+  ) => {
     if (
       !nativeTask ||
       !storageKey ||
@@ -653,12 +656,7 @@ function AutomationDetailBody({
         action === 'update' ? recurringContent(draft!, nativeTask.rule) : null;
       const body: ChangeRecurringTaskInput =
         action === 'update'
-          ? {
-              action,
-              operationId: crypto.randomUUID(),
-              expectedRevision: nativeTask.revision,
-              ...content!,
-            }
+          ? recurringEditRequest(nativeTask, content!, crypto.randomUUID())
           : {
               action,
               operationId: crypto.randomUUID(),
@@ -1019,6 +1017,29 @@ function AutomationDetailBody({
                     }
                   />
                 </label>
+                <label>
+                  执行会话
+                  <select
+                    aria-label="执行会话"
+                    value={draft.conversationMode ?? 'reuse'}
+                    disabled={!editable || disabled}
+                    onChange={(e) =>
+                      setDraft({
+                        ...draft,
+                        conversationMode:
+                          e.target.value === 'new_each_run'
+                            ? 'new_each_run'
+                            : 'reuse',
+                      })
+                    }
+                  >
+                    <option value="reuse">沿用来源聊天</option>
+                    <option value="new_each_run">每次新建聊天</option>
+                  </select>
+                </label>
+                <p className={css.caption}>
+                  只影响尚未排队的执行，已排队的本轮保持原会话；来源聊天继续用于管理和权限验证。
+                </p>
                 <h3>运行时间</h3>
                 <div className={css.rules}>
                   <label>
@@ -1210,6 +1231,15 @@ function AutomationDetailBody({
               <div className={css.form}>
                 <h3>工作内容</h3>
                 <p className={native.readonlyPrompt}>{task.prompt}</p>
+                {definition?.kind === 'once' && (
+                  <p>
+                    执行会话：
+                    {definition.task.conversationMode === 'new_each_run'
+                      ? '每次新建聊天'
+                      : '沿用来源聊天'}
+                    （创建时确定）
+                  </p>
+                )}
                 <h3>运行时间</h3>
                 <p>{automationFrequency(task)}</p>
                 <p className={css.caption}>
@@ -1403,11 +1433,13 @@ function AutomationDetailBody({
                       </Button>
                     </div>
                   )}
-                  {o.runId && o.sessionId && (
+                  {o.runId && (o.sessionId ?? task.sessionId) && (
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => onOpenSession(o.sessionId!)}
+                      onClick={() =>
+                        onOpenSession(o.sessionId ?? task.sessionId!)
+                      }
                     >
                       查看本轮结果 ↗
                     </Button>

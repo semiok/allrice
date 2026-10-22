@@ -91,7 +91,9 @@ export async function readCurrentCalendarPlanInTransaction(
     where p.period_id=${selected.plan.periodId} and p.control_id=${selected.control.controlId}
       and p.partition_id=${selected.control.partitionId} and p.automation_id=${selected.control.automationId}
       and p.closed_decision_id is null and a.clock_owner='native_recurring'
-      and a.status='enabled' and a.deleted_at is null and a.revision=p.revision
+      and a.status='enabled' and a.deleted_at is null
+      and case c.immutable_identity->'dispatch'->>'consumer' when 'ordinary-monthly-v1'
+        then allrice_ordinary_monthly_business_revision_proved(a.id,p.revision) else a.revision=p.revision end
       and a.native_recurring_revision=p.revision and a.next_run_at=p.business_scheduled_for`;
   if (!fresh) return null;
   const control = NativeCalendarControlSchema.parse(fresh.snapshot.control),

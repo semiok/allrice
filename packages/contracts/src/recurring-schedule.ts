@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { TimestampSchema, UuidSchema } from './common.ts';
+import { AutomationConversationModeSchema } from './automation.ts';
 
 const TimezoneSchema = z
   .string()
@@ -79,6 +80,8 @@ export const CreateRecurringTaskInputSchema = z
   .object({
     clientRequestId: UuidSchema,
     ...TaskContent,
+    // Preserve absent legacy inputs byte-for-byte in exact request digests.
+    conversationMode: AutomationConversationModeSchema.optional(),
   })
   .strict();
 export type CreateRecurringTaskInput = z.infer<
@@ -102,6 +105,7 @@ export const RecurringOccurrenceSchema = z
       'not_executed',
     ]),
     runId: UuidSchema.nullable(),
+    sessionId: UuidSchema.nullable().optional(),
     errorMessage: z.string().nullable(),
   })
   .strict();
@@ -112,6 +116,7 @@ export const RecurringTaskSchema = z
     id: UuidSchema,
     clientRequestId: UuidSchema,
     sessionId: UuidSchema,
+    conversationMode: AutomationConversationModeSchema.optional(),
     ...TaskContent,
     revision: z.number().int().positive().safe(),
     status: z.enum([
@@ -142,11 +147,19 @@ export const ChangeRecurringTaskInputSchema = z.discriminatedUnion('action', [
       ...OperationIdentity,
       action: z.literal('update'),
       ...TaskContent,
+      conversationMode: AutomationConversationModeSchema.optional(),
     })
     .strict(),
   z.object({ ...OperationIdentity, action: z.literal('pause') }).strict(),
   z.object({ ...OperationIdentity, action: z.literal('resume') }).strict(),
   z.object({ ...OperationIdentity, action: z.literal('delete') }).strict(),
+  z
+    .object({
+      ...OperationIdentity,
+      action: z.literal('conversation'),
+      conversationMode: AutomationConversationModeSchema,
+    })
+    .strict(),
 ]);
 export type ChangeRecurringTaskInput = z.infer<
   typeof ChangeRecurringTaskInputSchema

@@ -22,6 +22,7 @@ import {
   mergeRecurringTasks,
   parseRecurringIntent,
   recurringContent,
+  recurringEditRequest,
   recurringDraft,
   recurringIntentURL,
   recurringStorageKey,
@@ -42,7 +43,10 @@ type Props = {
   onOpenSession: (id: string) => void;
 };
 type Lane = 'list' | 'history' | 'exact' | 'write';
-type Action = Exclude<ChangeRecurringTaskInput['action'], 'update'>;
+type Action = Exclude<
+  ChangeRecurringTaskInput['action'],
+  'update' | 'conversation'
+>;
 type Pager = { cursor: string | null; expanded: boolean; seen: Set<string> };
 const pager = (): Pager => ({ cursor: null, expanded: false, seen: new Set() });
 const taskLabels: Record<RecurringTask['status'], string> = {
@@ -651,12 +655,11 @@ function RecurringTasksContent({
         const latest = list.tasks.find((task) => task.id === editing.id);
         if (!latest?.canManage || latest.revision !== editing.revision)
           throw new Error('任务状态已变化，请重新选择编辑。');
-        const body = ChangeRecurringTaskInputSchema.parse({
-          action: 'update',
-          operationId: crypto.randomUUID(),
-          expectedRevision: editing.revision,
-          ...content,
-        });
+        const body = recurringEditRequest(
+          editing,
+          content,
+          crypto.randomUUID(),
+        );
         void send({
           version: 1,
           storageKey,
@@ -749,7 +752,7 @@ function RecurringTasksContent({
         </button>
       </div>
       <p className={css.hint}>
-        由当前AI在这个会话中执行。暂停期间不执行，恢复从下一期开始；已排队的任务可继续。
+        由当前AI按任务设置的聊天方式执行。暂停期间不执行，恢复从下一期开始；已排队的任务可继续。
       </p>
       {storageError && (
         <p className={css.error} role="alert">
@@ -850,6 +853,27 @@ function RecurringTasksContent({
               </option>
             </select>
           </label>
+          <label>
+            执行会话
+            <select
+              value={draft.conversationMode ?? 'reuse'}
+              disabled={locked}
+              onChange={(event) =>
+                updateDraft({
+                  conversationMode:
+                    event.target.value === 'new_each_run'
+                      ? 'new_each_run'
+                      : 'reuse',
+                })
+              }
+            >
+              <option value="reuse">沿用来源聊天</option>
+              <option value="new_each_run">每次新建聊天</option>
+            </select>
+          </label>
+          <p className={css.hint}>
+            来源聊天用于管理和权限验证。修改只影响尚未排队的执行，已排队的本轮保持原会话。
+          </p>
           {draft.kind === 'every' ? (
             <label>
               间隔分钟
@@ -1179,6 +1203,16 @@ function RecurringTasksContent({
                 <p className={css.hint}>任务版本 {item.revision}</p>
                 {item.errorMessage && (
                   <p className={css.error}>{item.errorMessage}</p>
+                )}
+                {item.runId && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onOpenSession(item.sessionId ?? history.task!.sessionId)
+                    }
+                  >
+                    查看本轮结果
+                  </button>
                 )}
               </li>
             ))}

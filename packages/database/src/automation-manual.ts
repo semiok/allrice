@@ -23,6 +23,7 @@ import {
 import { readWorkAutomation } from './work-automation.ts';
 import { getRun } from './execution/queue.ts';
 import type { ResourcePrincipal } from './resource-principal.ts';
+import { prepareAutomationConversation } from './automation-conversation.ts';
 
 type Tx = TransactionSql;
 const MANUAL_PREFIX =
@@ -41,6 +42,7 @@ type Plan = {
   native_once_cancelled_at: Date | null;
   clock_owner: string;
   prompt: string;
+  name: string;
 };
 type ManualRow = {
   id: string;
@@ -262,7 +264,7 @@ export async function runManualAutomation(
         plan.deleted_at ||
         plan.native_once_cancelled_at ||
         !['enabled', 'paused'].includes(plan.status) ||
-        plan.conversation_mode !== 'reuse' ||
+        !['reuse', 'new_each_run'].includes(plan.conversation_mode) ||
         !plan.session_id
       )
         throw new ManualAutomationRunError('unavailable');
@@ -288,11 +290,19 @@ export async function runManualAutomation(
         taskId,
         input.requestId,
       );
+      const execution = await prepareAutomationConversation(
+        tx,
+        context,
+        scope,
+        plan,
+        target,
+        { kind: 'manual', requestId: input.requestId },
+      );
       const [row] = await tx<ManualRow[]>`insert into allrice_automation_runs
       (id,organization_id,workspace_id,automation_id,session_id,status,scheduled_for,
-       manual_request_id,manual_request_digest,manual_revision,manual_source,manual_requested_at)
-      values(${id},${scope.organizationId},${workspaceId},${taskId},${target.id},'queued',date_trunc('milliseconds',transaction_timestamp()),
-       ${input.requestId},${digest},${input.expectedRevision},'user',date_trunc('milliseconds',transaction_timestamp())) returning *`;
+       manual_request_id,manual_request_digest,manual_revision,manual_source,manual_requested_at,conversation_snapshot)
+      values(${id},${scope.organizationId},${workspaceId},${taskId},${execution.target.id},'queued',date_trunc('milliseconds',transaction_timestamp()),
+       ${input.requestId},${digest},${input.expectedRevision},'user',date_trunc('milliseconds',transaction_timestamp()),${tx.json(execution.conversation)}) returning *`;
       if (!row) throw new ManualAutomationRunError('binding_conflict');
       reservations.set(tx, {
         context,

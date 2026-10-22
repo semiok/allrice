@@ -19,11 +19,12 @@ export type RecurringTaskDraft = {
   timezone: string;
   weekdays: number[];
   monthDay: string;
+  conversationMode?: 'reuse' | 'new_each_run';
 };
 
 export type RecurringTaskContent = Pick<
   CreateRecurringTaskInput,
-  'name' | 'prompt' | 'rule'
+  'name' | 'prompt' | 'rule' | 'conversationMode'
 >;
 
 type IntentScope = {
@@ -109,6 +110,7 @@ export function recurringDraft(task?: RecurringTask): RecurringTaskDraft {
       task && task.rule.kind !== 'every' ? task.rule.timezone : timezone,
     weekdays: task?.rule.kind === 'weekly' ? [...task.rule.weekdays] : [1],
     monthDay: task?.rule.kind === 'monthly' ? String(task.rule.monthDay) : '1',
+    conversationMode: task?.conversationMode ?? 'reuse',
   };
 }
 
@@ -182,13 +184,40 @@ export function recurringContent(
     name,
     prompt,
     rule,
+    ...(draft.conversationMode === undefined
+      ? {}
+      : { conversationMode: draft.conversationMode }),
   });
   if (!parsed.success) throw new Error('名称、执行内容或周期格式不正确。');
   return {
     name: parsed.data.name,
     prompt: parsed.data.prompt,
     rule: parsed.data.rule,
+    ...(parsed.data.conversationMode === undefined
+      ? {}
+      : { conversationMode: parsed.data.conversationMode }),
   };
+}
+
+/** Policy-only edits must not reset a native clock or monthly P. */
+export function recurringEditRequest(
+  task: RecurringTask,
+  content: RecurringTaskContent,
+  operationId: string,
+): ChangeRecurringTaskInput {
+  const identity = { operationId, expectedRevision: task.revision };
+  return ChangeRecurringTaskInputSchema.parse(
+    content.name === task.name &&
+      content.prompt === task.prompt &&
+      stable(content.rule) === stable(task.rule)
+      ? {
+          ...identity,
+          action: 'conversation',
+          conversationMode:
+            content.conversationMode ?? task.conversationMode ?? 'reuse',
+        }
+      : { ...identity, action: 'update', ...content },
+  );
 }
 
 /** Restoring this record never grants permission to send its write again. */
@@ -310,7 +339,11 @@ export function resolveRecurringIntent(
     if (
       !task.success ||
       task.data.sessionId !== intent.sessionId ||
-      task.data.clientRequestId !== intent.body.clientRequestId
+      task.data.clientRequestId !== intent.body.clientRequestId ||
+      (result.source === 'write' &&
+        task.data.revision === 1 &&
+        (task.data.conversationMode ?? 'reuse') !==
+          (intent.body.conversationMode ?? 'reuse'))
     )
       return { state: 'unconfirmed' };
     return {

@@ -722,6 +722,12 @@ export const riceToolDefinitions = [
         name: { type: 'string', minLength: 1, maxLength: 160 },
         prompt: { type: 'string', minLength: 1, maxLength: 40000 },
         delayMinutes: { type: 'integer', minimum: 1, maximum: 525600 },
+        conversationMode: {
+          type: 'string',
+          enum: ['reuse', 'new_each_run'],
+          description:
+            '仅按当前用户明确指令或本轮提问卡的确切选择填写；省略沿用来源聊天。完整预约句末可用“；每次新建聊天”或“；沿用来源聊天”。不得从任务引用、偏好或历史推断。',
+        },
         rule: {
           oneOf: [
             {

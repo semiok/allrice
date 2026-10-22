@@ -250,10 +250,10 @@ export async function enrollOrdinaryMonthlyTaskInTransaction(
     P = nextMonthlyBusinessTarget(input.rule, now);
   const [p] = await tx<MonthlyPlan[]>`insert into allrice_automations
     (organization_id,workspace_id,owner_id,name,prompt,trigger_type,schedule,status,conversation_mode,
-      employee_assignment_id,session_id,next_run_at,clock_owner,native_recurring_request_id,native_recurring_request_digest,native_recurring_revision)
+      employee_assignment_id,session_id,next_run_at,clock_owner,native_recurring_request_id,native_recurring_request_digest,native_recurring_revision,native_create_conversation_mode)
     values(${scope.organizationId},${scope.workspaceId},${scope.ownerId},${input.name},${input.prompt},'schedule',
-      ${json(tx, { frequency: 'native_recurring', rule: input.rule })},'enabled','reuse',${target.employee_assignment_id},${sessionId},
-      ${P},'native_recurring',${input.clientRequestId},${requestDigest},1) returning *`;
+      ${json(tx, { frequency: 'native_recurring', rule: input.rule })},'enabled',${input.conversationMode ?? 'reuse'},${target.employee_assignment_id},${sessionId},
+      ${P},'native_recurring',${input.clientRequestId},${requestDigest},1,${input.conversationMode ?? null}) returning *`;
   requireCalendar(p, 'business_missing');
   const c = ordinaryMonthlyControl({
     kind: 'calendar',
@@ -296,7 +296,7 @@ export async function changeOrdinaryMonthlyTaskInTransaction(
   tx: Tx,
   p: RecurringPlan,
   raw: unknown,
-  input: ChangeRecurringTaskInput,
+  input: Exclude<ChangeRecurringTaskInput, { action: 'conversation' }>,
 ) {
   const c = ordinaryMonthlyControl(raw);
   // Operations retain PostgreSQL microseconds, while native documents use
@@ -340,6 +340,7 @@ export async function changeOrdinaryMonthlyTaskInTransaction(
   const P = enabled ? nextMonthlyBusinessTarget(version.rule, now) : null;
   await insertMonthlyVersion(tx, p.id, version, content);
   await tx`update allrice_automations set name=${content.name},prompt=${content.prompt},
+    conversation_mode=${input.action === 'update' ? (input.conversationMode ?? p.conversation_mode) : p.conversation_mode},
     schedule=${json(tx, { frequency: 'native_recurring', rule: version.rule })},status=${enabled ? 'enabled' : 'paused'},
     deleted_at=${input.action === 'delete' ? now : p.deleted_at},revision=${revision},native_recurring_revision=${revision},
     native_recurring_resume_after=${now},next_run_at=${P},updated_at=${now} where id=${p.id}`;

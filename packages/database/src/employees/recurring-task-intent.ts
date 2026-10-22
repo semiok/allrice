@@ -1,9 +1,14 @@
-import type { RecurringScheduleRule } from '@allrice/contracts';
+import type {
+  RecurringScheduleRule,
+  AutomationConversationMode,
+} from '@allrice/contracts';
+import { scheduleConversationIntent } from './schedule-conversation-intent.ts';
 
 export type RecurringTaskIntent = {
   rule: RecurringScheduleRule;
   /** Exact current human message, never a model-selected task body. */
   authoritativeRequest: string;
+  conversationMode?: AutomationConversationMode;
 };
 
 const maximumSeconds = 31_536_000;
@@ -266,7 +271,12 @@ export function explicitRecurringTaskIntent(
     /(?:^|\n)(?:[ \t]*>| {4}| {0,3}\t)|```|~~~/u.test(text)
   )
     return null;
-  const prose = maskQuotedArguments(text)?.trim();
+  const selection = scheduleConversationIntent(text);
+  const conversation =
+    selection.conversationMode === undefined
+      ? {}
+      : { conversationMode: selection.conversationMode };
+  const prose = maskQuotedArguments(selection.request)?.trim();
   if (!prose) return null;
   const every = prose.match(everyRequest);
   if (every) {
@@ -275,7 +285,11 @@ export function explicitRecurringTaskIntent(
     return seconds >= 60 &&
       seconds <= maximumSeconds &&
       recurringWork(every[3]!)
-      ? { rule: { kind: 'every', seconds }, authoritativeRequest: text }
+      ? {
+          rule: { kind: 'every', seconds },
+          authoritativeRequest: text,
+          ...conversation,
+        }
       : null;
   }
   const monthly = prose.match(monthlyRequest);
@@ -297,6 +311,7 @@ export function explicitRecurringTaskIntent(
         timezone,
       },
       authoritativeRequest: text,
+      ...conversation,
     };
   }
   const weekly = prose.match(weeklyRequest);
@@ -331,6 +346,7 @@ export function explicitRecurringTaskIntent(
         timezone,
       },
       authoritativeRequest: text,
+      ...conversation,
     };
   }
   const daily = prose.match(dailyRequest);
@@ -349,5 +365,6 @@ export function explicitRecurringTaskIntent(
       timezone,
     },
     authoritativeRequest: text,
+    ...conversation,
   };
 }

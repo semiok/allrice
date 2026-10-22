@@ -4,7 +4,10 @@ import {
   NativeOnceProductError,
   NativeRecurringProductError,
 } from '@allrice/database';
-import { RecurringScheduleRuleSchema } from '@allrice/contracts';
+import {
+  RecurringScheduleRuleSchema,
+  AutomationConversationModeSchema,
+} from '@allrice/contracts';
 import { z } from 'zod';
 
 import { HandlerError, confirmToolFailure } from '../../errors.js';
@@ -13,6 +16,7 @@ import type { RiceToolHandler } from '../types.js';
 const content = {
   name: z.string().trim().min(1).max(160),
   prompt: z.string().trim().min(1).max(40_000),
+  conversationMode: AutomationConversationModeSchema.optional(),
 };
 const CreateScheduleArguments = z.union([
   z
@@ -59,6 +63,9 @@ export const createAutomation: RiceToolHandler = async ({
     },
     name: parsed.data.name,
     prompt: parsed.data.prompt,
+    ...(parsed.data.conversationMode === undefined
+      ? {}
+      : { conversationMode: parsed.data.conversationMode }),
   };
   const reject = (error: unknown): never => {
     const rejected = (code: string, message: string): never => {
@@ -111,6 +118,7 @@ export const createAutomation: RiceToolHandler = async ({
         sessionId: task.sessionId,
         status: task.status,
         prompt: task.prompt,
+        conversationMode: task.conversationMode,
       }),
       summary:
         task.status === 'preparing'
@@ -133,6 +141,7 @@ export const createAutomation: RiceToolHandler = async ({
       sessionId: automation.sessionId,
       status: automation.status,
       prompt: automation.prompt,
+      conversationMode: automation.conversationMode,
     }),
     summary:
       automation.status === 'preparing'

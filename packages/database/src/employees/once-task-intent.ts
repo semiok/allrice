@@ -1,7 +1,11 @@
+import { scheduleConversationIntent } from './schedule-conversation-intent.ts';
+import type { AutomationConversationMode } from '@allrice/contracts';
+
 export type OnceTaskIntent = {
   delayMinutes: number;
   /** Exact human request, including the source request of a confirmed exchange. */
   authoritativeRequest: string;
+  conversationMode?: AutomationConversationMode;
 };
 
 const maximumDelayMinutes = 525_600;
@@ -158,7 +162,8 @@ export function explicitOnceTaskIntent(text: string): OnceTaskIntent | null {
     /(?:^|\n)(?:[ \t]*>| {4}| {0,3}\t)|```|~~~/u.test(text)
   )
     return null;
-  const prose = maskQuotedArguments(text);
+  const selection = scheduleConversationIntent(text);
+  const prose = maskQuotedArguments(selection.request);
   if (prose === null) return null;
   const reminder = prose.trim().match(reminderRequest);
   const match = reminder
@@ -190,7 +195,15 @@ export function explicitOnceTaskIntent(text: string): OnceTaskIntent | null {
       return null;
     work = true;
   }
-  return work ? { delayMinutes: minutes, authoritativeRequest: text } : null;
+  return work
+    ? {
+        delayMinutes: minutes,
+        authoritativeRequest: text,
+        ...(selection.conversationMode === undefined
+          ? {}
+          : { conversationMode: selection.conversationMode }),
+      }
+    : null;
 }
 
 export function isOnceTaskConfirmationReply(text: string): boolean {
