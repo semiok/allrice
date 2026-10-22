@@ -93,6 +93,8 @@ async function productionDatabase(
       'dispatchNextNativeRecurringOccurrence',
       'createNativeRecurringSqlStore',
       'lockNativeRecurringAdmissions',
+      'lockExperienceCalendarAdmissions',
+      'materializeExperienceNativeCalendar',
     ]);
     // Keep the lifecycle independent of the document/receipt format. The exact
     // profile selects a fixed in-repository adapter, never a fallback backend.
@@ -107,12 +109,32 @@ async function productionDatabase(
         const store = db.createNativeRecurringSqlStore({
           ...options,
           lockAdmission: db.lockNativeRecurringAdmissions,
+          calendar: {
+            enabled: true,
+            lockAdmission: db.lockExperienceCalendarAdmissions,
+          },
         });
+        const calendar = store.calendar;
         return {
           ...store,
+          calendar: calendar && {
+            ...calendar,
+            materialize: (writer, allowHandoff) =>
+              db.materializeExperienceNativeCalendar(
+                calendar,
+                writer,
+                options.reference,
+                allowHandoff,
+              ),
+          },
           commitMutation(writer, write) {
             if (write.mutation.kind === 'reject_command')
               return Promise.resolve('rejected');
+            if (write.mutation.kind === 'calendar')
+              return store.commitMutation(writer, {
+                ...write,
+                mutation: write.mutation,
+              });
             return store.commitMutation(writer, {
               ...write,
               mutation: write.mutation,
@@ -121,6 +143,11 @@ async function productionDatabase(
           readExactCommit(writer, write) {
             if (write.mutation.kind === 'reject_command')
               return Promise.resolve('unknown');
+            if (write.mutation.kind === 'calendar')
+              return store.readExactCommit(writer, {
+                ...write,
+                mutation: write.mutation,
+              });
             return store.readExactCommit(writer, {
               ...write,
               mutation: write.mutation,

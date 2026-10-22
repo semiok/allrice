@@ -25,6 +25,13 @@ import type * as SdkModule from '@deepseek-ai/dsh-sdk-jsonrpc-server';
 import type * as ScheduleModule from '@deepseek-ai/dsh-schedule';
 import { randomUUID, createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import {
+  createNativeCalendarGeneration,
+  type NativeCalendarControl,
+  type NativeCalendarGeneration,
+  type NativeCalendarWorkerPorts,
+} from './native-schedule-calendar.ts';
+import type { NativeCalendarMutation } from '@allrice/database';
 import type { StorageBackend, KvUnit } from '@deepseek-ai/dsh-storage';
 import type {
   ScheduleTask,
@@ -106,8 +113,11 @@ export interface NativeScheduleRecurringControl extends Omit<
   };
 }
 export type NativeScheduleAnyControl =
-  NativeScheduleControl | NativeScheduleRecurringControl;
+  | NativeScheduleControl
+  | NativeScheduleRecurringControl
+  | NativeCalendarControl;
 export type NativeScheduleMutation =
+  | NativeCalendarMutation
   | { kind: 'session_initializing' | 'session_ready'; controlId: string }
   | { kind: 'put_task'; controlId: string; task: ScheduleTask }
   | { kind: 'delete_task'; controlId: string; nativeTaskId: string }
@@ -178,6 +188,8 @@ export interface NativeScheduleWorkspaceWrite {
 }
 
 export interface NativeScheduleOnceStore {
+  /** Same generation and writer; this port owns no lifecycle or Host. */
+  calendar?: NativeCalendarWorkerPorts | null;
   acquireWriter(): Promise<null | {
     writer: NativeScheduleWriter;
     /** Conservative server TTL measured from before this request was sent. */
@@ -382,6 +394,32 @@ function controlsMap(rows: readonly NativeScheduleAnyControl[]) {
   for (const raw of rows) {
     const c = structuredClone(raw),
       revision = JSON.stringify([c.automationId, c.revision]);
+    if (c.kind === 'calendar') {
+      if (
+        c.binding !== 'rotating-at-v1' ||
+        c.partitionId !== 'allrice-recurring-v1' ||
+        c.nativeTaskId !== null ||
+        !c.controlId ||
+        !c.organizationId ||
+        !c.workspaceId ||
+        !c.ownerId ||
+        !c.automationId ||
+        !c.controlSessionId ||
+        !Number.isSafeInteger(c.revision) ||
+        c.revision < 1 ||
+        c.dispatch.consumer !== 'experience-consolidation-v1' ||
+        !c.dispatch.employeeAssignmentId ||
+        !c.dispatch.employeeInstanceId ||
+        map.has(c.controlId) ||
+        sessions.has(c.controlSessionId) ||
+        revisions.has(revision)
+      )
+        throw new NativeScheduleOnceError('binding_invalid');
+      map.set(c.controlId, c);
+      sessions.add(c.controlSessionId);
+      revisions.add(revision);
+      continue;
+    }
     if (
       !c.controlId ||
       !c.organizationId ||
@@ -421,6 +459,19 @@ function controlsMap(rows: readonly NativeScheduleAnyControl[]) {
   return map;
 }
 function controlIdentity(c: NativeScheduleAnyControl) {
+  if (c.kind === 'calendar')
+    return {
+      kind: c.kind,
+      binding: c.binding,
+      controlId: c.controlId,
+      organizationId: c.organizationId,
+      workspaceId: c.workspaceId,
+      ownerId: c.ownerId,
+      automationId: c.automationId,
+      controlSessionId: c.controlSessionId,
+      reference: c.reference,
+      dispatch: c.dispatch,
+    };
   if (c.kind === 'recurring')
     return {
       kind: c.kind,
@@ -682,6 +733,7 @@ interface Generation {
   closed: boolean;
   ready: boolean;
   writes: Set<Promise<void>>;
+  calendar?: NativeCalendarGeneration;
 }
 export interface NativeScheduleOnceOptions {
   /** Omitted is disabled. This flag is deployment-owned, never a tool argument. */
@@ -766,7 +818,12 @@ export function createNativeScheduleOnceController(
     const task = (async () => {
       await fenced(
         g,
-        mutation.kind !== 'put_task' && mutation.kind !== 'delete_task',
+        mutation.kind !== 'put_task' &&
+          mutation.kind !== 'delete_task' &&
+          !(
+            mutation.kind === 'calendar' &&
+            ['put_task', 'retire_task'].includes(mutation.action)
+          ),
       );
       const write: NativeScheduleWrite = {
         writeId: randomUUID(),
@@ -795,6 +852,12 @@ export function createNativeScheduleOnceController(
     void task.finally(() => g.writes.delete(task)).catch(() => undefined);
     return task;
   }
+  function track<T>(g: Generation, task: Promise<T>) {
+    const pending = task.then(() => undefined);
+    g.writes.add(pending);
+    void pending.finally(() => g.writes.delete(pending)).catch(() => undefined);
+    return task;
+  }
   function update<C extends NativeScheduleAnyControl>(
     g: Generation,
     c: C,
@@ -817,6 +880,13 @@ export function createNativeScheduleOnceController(
     const c = [...g.controls.values()].find(
       (row) => row.controlSessionId === task.sessionId,
     );
+    if (c?.kind === 'calendar') {
+      const calendar = g.calendar;
+      if (!calendar || !isDeepStrictEqual(task, value))
+        return failure('task_invalid');
+      calendar.bindingFor(id, task, loading);
+      return { task, control: c };
+    }
     if (c?.kind === 'recurring') {
       const history =
         task.deliveryHistory?.records ??
@@ -939,6 +1009,17 @@ export function createNativeScheduleOnceController(
                 if (table !== 'tasks') failure('task_invalid');
                 try {
                   const { task, control } = taskControl(g, id, value, false);
+                  if (control.kind === 'calendar') {
+                    const calendar = g.calendar;
+                    if (!calendar) return failure('binding_invalid');
+                    const { binding, mutation } = calendar.putMutation(
+                      id,
+                      task,
+                    );
+                    await mutate(g, mutation);
+                    calendar.acceptedPut(binding, task);
+                    return;
+                  }
                   await mutate(g, {
                     kind: 'put_task',
                     controlId: control.controlId,
@@ -957,12 +1038,19 @@ export function createNativeScheduleOnceController(
               }),
             deleteRecord: (table, id) =>
               operation(async () => {
+                if (table === 'tasks' && g.calendar?.hasTask(id)) {
+                  const { binding, mutation } = g.calendar.retireMutation(id);
+                  await mutate(g, mutation);
+                  g.calendar.acceptedRetirement(binding);
+                  return;
+                }
                 const c = [...g.controls.values()].find(
-                  (row) => row.nativeTaskId === id,
+                  (row) => row.kind !== 'calendar' && row.nativeTaskId === id,
                 );
                 if (
                   table !== 'tasks' ||
                   !c ||
+                  c.kind === 'calendar' ||
                   c.command.kind !== 'delete' ||
                   c.command.status !== 'pending'
                 )
@@ -1208,6 +1296,28 @@ export function createNativeScheduleOnceController(
   }
   async function prepare(g: Generation, c: NativeScheduleAnyControl) {
     await fenced(g, true);
+    if (c.kind === 'calendar') {
+      const calendar = g.calendar;
+      if (!calendar || digest(c.reference) !== digest(options.source.reference))
+        return failure('binding_invalid');
+      if (c.sessionState === 'reserved') {
+        await calendar.sessionMutation(c, 'session_initializing');
+        update(g, c, { sessionState: 'initializing' });
+        await g.host!.initializeSession(c.controlSessionId);
+      } else {
+        try {
+          await g.host!.resumeSession(c.controlSessionId);
+        } catch {
+          failure('history_missing');
+        }
+      }
+      await fenced(g, true);
+      if (c.sessionState !== 'ready') {
+        await calendar.sessionMutation(c, 'session_ready');
+        update(g, g.controls.get(c.controlId)!, { sessionState: 'ready' });
+      }
+      return;
+    }
     if (c.sessionState === 'reserved') {
       await mutate(g, { kind: 'session_initializing', controlId: c.controlId });
       update(g, c, { sessionState: 'initializing' });
@@ -1242,10 +1352,33 @@ export function createNativeScheduleOnceController(
     };
     current = g;
     try {
-      g.controls = controlsMap(grant.controls);
       if (digest(grant.reference) !== digest(options.source.reference))
         failure('binding_invalid');
       deadline(g, sentAt, grant.remainingMs);
+      if (options.store.calendar) {
+        for (let i = 0; i < 2; i++)
+          if (!(await track(g, options.store.calendar.materialize(g.writer))))
+            break;
+      }
+      g.controls = controlsMap(
+        options.store.calendar
+          ? await options.store.loadControls(g.writer)
+          : grant.controls,
+      );
+      if (options.store.calendar) {
+        g.calendar = createNativeCalendarGeneration({
+          ports: options.store.calendar,
+          writer: g.writer,
+          host: () => g.host!,
+          fence: () => fenced(g, true),
+          mutate: (m) => mutate(g, m),
+          track: <T>(p: Promise<T>) => track(g, p),
+          loadTaskRecords: () => options.store.loadTaskRecords(g.writer),
+          digest,
+        });
+        await g.calendar.reload();
+      } else if ([...g.controls.values()].some((c) => c.kind === 'calendar'))
+        failure('binding_invalid');
       g.backend = backend(g);
       g.auxiliaryBackend = auxiliaryBackend(g);
       await fenced(g, true);
@@ -1282,6 +1415,10 @@ export function createNativeScheduleOnceController(
       return failure('lease_lost');
     locallyLive(g, true);
     deadline(g, sentAt, renewed.remainingMs);
+    if (options.store.calendar)
+      for (let i = 0; i < 2; i++)
+        if (!(await track(g, options.store.calendar.materialize(g.writer))))
+          break;
     const fresh = controlsMap(await options.store.loadControls(g.writer));
     const keys = (rows: Map<string, NativeScheduleAnyControl>) =>
       digest(
@@ -1303,10 +1440,21 @@ export function createNativeScheduleOnceController(
         failure('binding_invalid');
     }
     g.controls = fresh;
+    await g.calendar?.reload();
     return true;
   }
   async function commands(g: Generation) {
+    if (options.store.calendar) {
+      for (let i = 0; i < 2; i++)
+        if (
+          !(await track(g, options.store.calendar.materialize(g.writer, false)))
+        )
+          break;
+      g.controls = controlsMap(await options.store.loadControls(g.writer));
+      await g.calendar?.reload();
+    }
     for (const c of [...g.controls.values()]) {
+      if (c.kind === 'calendar') continue;
       if (c.command.status !== 'pending') continue;
       await fenced(g, true);
       const catalog = await g.host!.catalog();
@@ -1425,7 +1573,12 @@ export function createNativeScheduleOnceController(
           failure('task_invalid');
         await fenced(g, true);
         await g.host!.deleteOnce(c.controlSessionId, id);
-        if (!g.controls.get(c.controlId)?.taskDeleted)
+        const confirmed = g.controls.get(c.controlId);
+        if (
+          !confirmed ||
+          confirmed.kind === 'calendar' ||
+          !confirmed.taskDeleted
+        )
           failure('binding_invalid');
       }
       await mutate(g, {
@@ -1444,6 +1597,7 @@ export function createNativeScheduleOnceController(
           : {}),
       });
     }
+    await g.calendar?.tick();
   }
   async function runTick() {
     if (options.enabled !== true || stopped || terminal) return;

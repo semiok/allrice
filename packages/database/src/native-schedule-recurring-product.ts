@@ -1,4 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { NativeCalendarControlSchema } from './native-schedule-calendar-state.ts';
+import {
+  dispatchExperienceCalendarNative,
+  experienceNativeCalendarEnabled,
+} from './experience-native.ts';
 import { isDeepStrictEqual } from 'node:util';
 import { access, realpath, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
@@ -986,8 +991,11 @@ export async function dispatchNextNativeRecurringOccurrence(workerId: string) {
     >`select o.* from allrice_native_recurring_occurrences o
       where (o.outbox_state='pending' or (o.outbox_state='blocked' and o.payload->'control'->'dispatch'->>'consumer'='platform-quality-v1'
         and o.outbox_reason<>'QUALITY_TARGET_ALREADY_CLAIMED'
-        and not exists(select 1 from allrice_automation_runs ar where ar.native_recurring_occurrence_id=o.occurrence_id)))
+        and not exists(select 1 from allrice_automation_runs ar where ar.native_recurring_occurrence_id=o.occurrence_id))
+        or (o.outbox_state='blocked' and o.payload->'control'->'dispatch'->>'consumer'='experience-consolidation-v1'
+          and o.calendar_period_id is not null and not exists(select 1 from allrice_native_calendar_decisions d where d.period_id=o.calendar_period_id)))
         and (o.outbox_owner_id is null or o.outbox_expires_at<=clock_timestamp())
+        and (o.calendar_period_id is null or ${experienceNativeCalendarEnabled()})
       order by o.created_at,o.occurrence_id limit 1 for update of o skip locked`;
     if (!row) return null;
     const [claimed] = await tx<
@@ -1007,6 +1015,25 @@ export async function dispatchNextNativeRecurringOccurrence(workerId: string) {
     >`select partition_id,control_id,snapshot from allrice_native_recurring_controls
       where partition_id=${occurrence.partition_id} and control_id=${occurrence.control_id}`;
     if (!projection) throw new NativeRecurringProductError('binding_conflict');
+    const rawControl: unknown = projection.snapshot.control;
+    if (
+      rawControl &&
+      typeof rawControl === 'object' &&
+      'kind' in rawControl &&
+      rawControl.kind === 'calendar'
+    ) {
+      // A deployment switch must never consume an already durable calendar P.
+      // Leave its exact receipt for a later enabled dispatcher.
+      if (!experienceNativeCalendarEnabled()) return;
+      await dispatchExperienceCalendarNative(
+        tx,
+        NativeCalendarControlSchema.parse(rawControl),
+        occurrence,
+        workerId,
+        tokenDigest,
+      );
+      return;
+    }
     const control = NativeRecurringControlSchema.parse(
       projection.snapshot.control,
     );

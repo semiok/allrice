@@ -108,6 +108,7 @@ export const ExperienceSummarySchema = z
           'off',
           'not_scheduled',
           'scheduled',
+          'preparing',
           'paused',
           'unavailable',
         ]),

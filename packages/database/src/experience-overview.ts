@@ -41,7 +41,7 @@ export async function readExperienceSummary(sql: Sql, target: Target) {
     company?.value ?? settings.find((r) => r.scope_type === 'system')?.value,
   );
   const [rule] = await sql`
-    select status,last_run_at,next_run_at from allrice_automations
+    select id,clock_owner,status,last_run_at,next_run_at from allrice_automations
     where organization_id=${org} and workspace_id=${workspace} and owner_id=${owner}
       and experience_binding->>'instanceId'=${instance} and deleted_at is null
     order by created_at desc,id desc limit 1`;
@@ -103,6 +103,15 @@ export async function readExperienceSummary(sql: Sql, target: Target) {
         where e.organization_id=${org} and e.workspace_id=${workspace} and e.owner_id=${owner}
           and e.instance_id=${instance} and e.origin_kind='derived') adopted_total`;
   const enabled = experienceReviewEnabled();
+  let prepared = true;
+  if (rule?.clock_owner === 'native_recurring' && rule.status === 'enabled') {
+    const [native] =
+      await sql`select arm.native_task_id,arm.status from allrice_native_calendar_plans plan
+      left join allrice_native_calendar_periods period on period.plan_id=plan.period_id
+      left join allrice_native_calendar_arms arm on arm.arm_id=period.current_arm_id and arm.period_id=period.period_id
+      where plan.automation_id=${rule.id} and plan.closed_decision_id is null`;
+    prepared = !!native?.native_task_id && native.status === 'bound';
+  }
   const state = !target.available
     ? 'unavailable'
     : !enabled || policy.frequency === 'off'
@@ -110,7 +119,9 @@ export async function readExperienceSummary(sql: Sql, target: Target) {
       : !rule
         ? 'not_scheduled'
         : rule.status === 'enabled'
-          ? 'scheduled'
+          ? prepared
+            ? 'scheduled'
+            : 'preparing'
           : 'paused';
   return ExperienceSummarySchema.parse({
     enabled,
@@ -126,7 +137,7 @@ export async function readExperienceSummary(sql: Sql, target: Target) {
       state,
       lastCheckedAt: rule?.last_run_at?.toISOString() ?? null,
       nextRunAt:
-        state === 'scheduled'
+        state === 'scheduled' || state === 'preparing'
           ? (rule?.next_run_at?.toISOString() ?? null)
           : null,
       lastOccurrence: last
