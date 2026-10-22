@@ -4089,10 +4089,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       });
       await tree.getByRole('button', { name: '交付成果', exact: true }).click();
       expect(
-        await tree.getByRole('button', { name: /^搜索资料 ·/ }).count(),
+        await tree
+          .getByRole('button', { name: raw.version.fileName, exact: true })
+          .count(),
       ).toBe(0);
       await tree.getByRole('button', { name: '全部', exact: true }).click();
-      await tree.getByRole('button', { name: /^搜索资料 ·/ }).click();
+      await tree
+        .getByRole('button', { name: raw.version.fileName, exact: true })
+        .click();
       await f.panel
         .getByText('已经发布的公告摘录。', { exact: true })
         .waitFor();
