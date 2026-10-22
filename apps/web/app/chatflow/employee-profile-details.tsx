@@ -3,13 +3,21 @@ import { useId, useState, type ReactNode } from 'react';
 import type {
   EmployeeAccentColor,
   EmployeeDetails,
-  EmployeeDetailsProfile,
   EmployeeContentReference,
   EmployeeResolvedContent,
   ReferenceSelection,
   ContentOwnership,
 } from '@allrice/contracts';
 import { employeeAccent, employeeAccentStyle } from './employee-navigation';
+import {
+  IconEditOutlineRegular,
+  IconSparkleRegular,
+  IconShieldOutlineRegular,
+} from '@deepseek-ai/dsh-client-ui-primitives';
+import {
+  createEmployeeScenePrompt,
+  adjustEmployeeContentPrompt,
+} from './employee-detail-prompts';
 import css from './employee-profile-details.module.css';
 
 export interface EmployeeProfileDetailsData {
@@ -87,31 +95,15 @@ export function ContentSourceBadge({
       className={css.badge}
       data-maintenance={maintainable ? scope : 'readonly'}
     >
-      {scope ? scopeNames[scope] : '已有授权引用'} ·{' '}
-      {maintainable ? '可维护' : '只读'}
+      {scope !== 'personal' || !maintainable ? (
+        <IconShieldOutlineRegular size={13} />
+      ) : null}
+      {scope
+        ? scope === 'personal'
+          ? `个人${maintainable ? '' : '只读'}`
+          : `${scopeNames[scope]}继承`
+        : '已有授权引用'}
     </span>
-  );
-}
-
-function ProfileSource({
-  profile,
-  field,
-}: {
-  profile: EmployeeDetailsProfile;
-  field: EmployeeDetailsProfile['personalFields'][number];
-}) {
-  const personal = profile.personalFields.includes(field);
-  return (
-    <ContentSourceBadge
-      scope={
-        personal
-          ? 'personal'
-          : profile.source.kind === 'platform'
-            ? 'platform'
-            : null
-      }
-      canMaintain={personal && profile.canMaintainPersonal}
-    />
   );
 }
 
@@ -120,16 +112,26 @@ export function EmployeeProfileDetails({
   onPreview,
   view = 'personal',
   experienceContent,
+  onEdit,
+  onPrepare,
+  onClose,
 }: {
   details: EmployeeDetails;
   onPreview: (reference: ReferenceSelection) => void;
   view?: 'personal' | 'shared';
   experienceContent?: ReactNode;
+  onEdit?: () => void;
+  onPrepare?: (text: string) => void;
+  onClose?: () => void;
 }) {
   const { profile, content } = details;
   const [section, setSection] = useState<Section>('requirements');
   const [sceneId, setSceneId] = useState('');
   const tabsId = useId();
+  const personal =
+    view === 'personal' &&
+    profile.kind === 'custom' &&
+    profile.canMaintainPersonal;
   const publishedRules = content.platform.revisionId
     ? content.platform.requirements
     : [...profile.identity.behaviorRules, ...profile.identity.safetyBoundaries];
@@ -155,10 +157,22 @@ export function EmployeeProfileDetails({
   const rows = selected.filter(
     (source) => sectionFor(source.reference.sourceKind) === section,
   );
-  const version =
-    profile.source.kind === 'platform'
-      ? `平台模板 v${profile.source.templateRevision}`
-      : '已配发版本';
+  const prepareContent =
+    personal && onPrepare
+      ? (source: EmployeeResolvedContent) =>
+          onPrepare(
+            adjustEmployeeContentPrompt({
+              employeeName: profile.name,
+              sceneName: content.common.some(
+                (reference) =>
+                  exactKey(reference) === exactKey(source.reference),
+              )
+                ? undefined
+                : scene?.name,
+              source,
+            }),
+          )
+      : undefined;
   return (
     <div className={css.details}>
       {view === 'shared' && (
@@ -180,42 +194,44 @@ export function EmployeeProfileDetails({
       >
         <div className={css.identity}>
           <span className={css.avatar} aria-hidden="true">
-            {profile.name.slice(0, 1)}
+            {Array.from(profile.name)[0]}
           </span>
-          <div>
+          <div className={css.identityText}>
             <h3>{profile.name}</h3>
-            <p>
-              {profile.kind === 'custom' ? '定制 AI 员工' : '通用 AI 员工'} ·{' '}
-              {version}
-              {view === 'personal'
-                ? ` · 个人设置 v${profile.revision}`
-                : ' · 共享只读视图'}
-            </p>
+            <p className={css.mission}>{profile.identity.mission}</p>
+          </div>
+          <div className={css.profileActions}>
+            {personal && onEdit && (
+              <button
+                className={css.action}
+                type="button"
+                aria-label="编辑员工"
+                onClick={onEdit}
+              >
+                <IconEditOutlineRegular size={16} />
+                编辑
+              </button>
+            )}
+            {onClose && (
+              <button
+                className={css.close}
+                type="button"
+                aria-label="关闭员工详情"
+                onClick={onClose}
+              >
+                ×
+              </button>
+            )}
           </div>
         </div>
-        <p>{profile.description}</p>
         <dl className={css.persona}>
-          {(
-            [
-              ['role', '角色'],
-              ['mission', '使命'],
-              ['workStyle', '工作方式'],
-            ] as const
-          ).map(([field, label]) => (
-            <div key={field}>
-              <dt>
-                {label}
-                <ProfileSource profile={profile} field={field} />
-              </dt>
-              <dd>{profile.identity[field]}</dd>
-            </div>
-          ))}
+          <div>
+            <dt>工作方式</dt>
+            <dd>{profile.identity.workStyle}</dd>
+          </div>
           {profile.expressionStyle && (
             <div>
-              <dt>
-                表达偏好
-                <ProfileSource profile={profile} field="expressionStyle" />
-              </dt>
+              <dt>表达偏好</dt>
               <dd>
                 {
                   {
@@ -228,192 +244,194 @@ export function EmployeeProfileDetails({
             </div>
           )}
         </dl>
-        <details className={css.origin}>
-          <summary>查看人设来源与版本</summary>
-          <p>
-            名称
-            <ProfileSource profile={profile} field="name" />
-          </p>
-          <p>
-            简介
-            <ProfileSource profile={profile} field="description" />
-          </p>
-          <p>当前配发版本：{profile.source.employeeVersionId}</p>
-          {view === 'personal' && <p>个人设置版本：v{profile.revision}</p>}
-        </details>
       </section>
-      {content.scenes.length > 0 && (
-        <label className={css.scene}>
-          工作场景（可选）
-          <select
-            value={sceneId}
-            onChange={(event) => setSceneId(event.target.value)}
-          >
-            <option value="">通用内容</option>
-            {content.scenes.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </select>
-          <span>
-            {scene ? scene.appliesWhen : '查看所有任务共同采用的要求与资料。'}
-          </span>
-        </label>
-      )}
-      {content.scenes.length === 0 && profile.kind === 'custom' && (
-        <section className={css.scene} aria-label="工作场景">
-          <strong>工作场景</strong>
-          <span>
-            {view === 'personal'
-              ? '暂无已保存的工作场景。'
-              : '暂无可查看的共享场景。'}
-          </span>
-          {view === 'personal' && (
-            <span>
-              可在聊天中说明希望它负责哪些工作，保存后即生效并显示在这里。
-            </span>
-          )}
-        </section>
-      )}
-      <div className={css.tabs} role="tablist" aria-label="工作内容">
-        {(Object.entries(sectionNames) as [Section, string][]).map(
-          ([key, name], index, entries) => (
+      <section className={css.workArea} aria-label="工作场景与内容">
+        <aside className={css.sceneRail} aria-label="工作场景导航">
+          <h4>工作场景</h4>
+          <div className={css.sceneList} role="group" aria-label="工作场景">
             <button
-              key={key}
               type="button"
-              role="tab"
-              id={`${tabsId}-${key}`}
-              aria-controls={`${tabsId}-panel`}
-              aria-selected={section === key}
-              tabIndex={section === key ? 0 : -1}
-              onClick={() => setSection(key)}
-              onKeyDown={(event) => {
-                const next =
-                  event.key === 'ArrowRight'
-                    ? (index + 1) % entries.length
-                    : event.key === 'ArrowLeft'
-                      ? (index + entries.length - 1) % entries.length
-                      : event.key === 'Home'
-                        ? 0
-                        : event.key === 'End'
-                          ? entries.length - 1
-                          : -1;
-                if (next < 0) return;
-                event.preventDefault();
-                setSection(entries[next]![0]);
-                document
-                  .getElementById(`${tabsId}-${entries[next]![0]}`)
-                  ?.focus();
-              }}
+              className={css.sceneButton}
+              aria-pressed={!scene}
+              onClick={() => setSceneId('')}
             >
-              {name}
+              通用内容
             </button>
-          ),
-        )}
-      </div>
-      <section
-        className={css.content}
-        role="tabpanel"
-        id={`${tabsId}-panel`}
-        aria-labelledby={`${tabsId}-${section}`}
-        tabIndex={0}
-      >
-        {section !== 'procedures' && (
-          <p className={css.hint}>
-            {scene ? '通用内容与当前场景共同采用。' : '当前已生效的长期内容。'}
-            {view === 'personal'
-              ? '维护标记表示你的权限，调整请在聊天中说明。'
-              : '本视图仅供查看共享内容。'}
-          </p>
-        )}
-        {section === 'experience' &&
-          (experienceContent ?? (
-            <p className={css.notice}>
-              经验整理按生效策略执行；当前未读取到整理状态。
-            </p>
-          ))}
-        {section === 'requirements' && publishedRules.length > 0 && (
-          <article className={css.item}>
-            <header>
-              <h4>
-                {content.platform.revisionId ? '平台通用要求' : '历史配发要求'}
-              </h4>
-              <ContentSourceBadge
-                scope={content.platform.revisionId ? 'platform' : null}
-                canMaintain={false}
-              />
-            </header>
-            <ul>
-              {publishedRules.map((text, i) => (
-                <li key={i}>{text}</li>
-              ))}
-            </ul>
-            <details className={css.origin}>
-              <summary>查看来源与版本</summary>
-              <p>
-                来源版本：
-                {content.platform.revisionId ??
-                  profile.source.employeeVersionId}
-              </p>
-            </details>
-          </article>
-        )}
-        {section === 'procedures' ? (
-          <div className={css.procedureGroups}>
-            {procedureGroups.map((group) => {
-              const entries = rows.filter(
-                (source) => source.reference.sourceKind === group.kind,
-              );
-              const headingId = `${tabsId}-${group.kind}-heading`;
-              return (
-                <section
-                  key={group.kind}
-                  className={css.procedureGroup}
-                  aria-labelledby={headingId}
-                >
-                  <div className={css.procedureIntroduction}>
-                    <h3 id={headingId}>{group.title}</h3>
-                    <p>{group.description}</p>
-                  </div>
-                  {entries.length ? (
-                    entries.map((source) => (
-                      <ContentItem
-                        key={exactKey(source.reference)}
-                        source={source}
-                        onPreview={onPreview}
-                      />
-                    ))
-                  ) : (
-                    <p className={css.empty}>{group.empty}</p>
-                  )}
-                </section>
-              );
-            })}
+            {content.scenes.map((entry) => (
+              <button
+                key={entry.id}
+                type="button"
+                className={css.sceneButton}
+                aria-pressed={sceneId === entry.id}
+                onClick={() => setSceneId(entry.id)}
+              >
+                {entry.name}
+              </button>
+            ))}
           </div>
-        ) : (
-          rows.map((source) => (
-            <ContentItem
-              key={exactKey(source.reference)}
-              source={source}
-              onPreview={onPreview}
-            />
-          ))
-        )}
-        {section !== 'procedures' &&
-          !rows.length &&
-          !(section === 'requirements' && publishedRules.length) && (
-            <p className={css.empty}>
-              {
-                {
-                  requirements: '暂无已生效的执行要求。',
-                  procedures: '暂无已生效的执行流程。',
-                  references: '暂无已引用的参考资料。',
-                  experience: '暂无已引用经验。',
-                }[section]
-              }
+          {content.scenes.length === 0 && profile.kind === 'custom' && (
+            <p className={css.sceneEmpty}>
+              {view === 'personal'
+                ? '暂无已保存的工作场景。'
+                : '暂无可查看的共享场景。'}
             </p>
           )}
+          {personal && onPrepare && (
+            <div className={css.sceneFooter}>
+              <button
+                className={css.action}
+                type="button"
+                aria-label="AI新增工作场景"
+                onClick={() => onPrepare(createEmployeeScenePrompt(details))}
+              >
+                <IconSparkleRegular size={16} />
+                AI 新增
+              </button>
+            </div>
+          )}
+        </aside>
+        <div className={css.workMain} aria-label={scene?.name ?? '通用内容'}>
+          <div className={css.tabs} role="tablist" aria-label="工作内容">
+            {(Object.entries(sectionNames) as [Section, string][]).map(
+              ([key, name], index, entries) => (
+                <button
+                  key={key}
+                  type="button"
+                  role="tab"
+                  id={`${tabsId}-${key}`}
+                  aria-controls={`${tabsId}-panel`}
+                  aria-selected={section === key}
+                  tabIndex={section === key ? 0 : -1}
+                  onClick={() => setSection(key)}
+                  onKeyDown={(event) => {
+                    const next =
+                      event.key === 'ArrowRight'
+                        ? (index + 1) % entries.length
+                        : event.key === 'ArrowLeft'
+                          ? (index + entries.length - 1) % entries.length
+                          : event.key === 'Home'
+                            ? 0
+                            : event.key === 'End'
+                              ? entries.length - 1
+                              : -1;
+                    if (next < 0) return;
+                    event.preventDefault();
+                    setSection(entries[next]![0]);
+                    document
+                      .getElementById(`${tabsId}-${entries[next]![0]}`)
+                      ?.focus();
+                  }}
+                >
+                  {name}
+                </button>
+              ),
+            )}
+          </div>
+          <section
+            className={css.content}
+            role="tabpanel"
+            id={`${tabsId}-panel`}
+            aria-labelledby={`${tabsId}-${section}`}
+            tabIndex={0}
+          >
+            {scene?.appliesWhen && (
+              <p className={css.hint}>{scene.appliesWhen}</p>
+            )}
+            {section === 'experience' &&
+              (experienceContent ?? (
+                <p className={css.notice}>
+                  经验整理按生效策略执行；当前未读取到整理状态。
+                </p>
+              ))}
+            {section === 'requirements' && publishedRules.length > 0 && (
+              <article className={css.item}>
+                <header>
+                  <div className={css.itemHeading}>
+                    <h4>
+                      {content.platform.revisionId
+                        ? '平台通用要求'
+                        : '历史配发要求'}
+                    </h4>
+                    <ContentSourceBadge
+                      scope={content.platform.revisionId ? 'platform' : null}
+                      canMaintain={false}
+                    />
+                  </div>
+                </header>
+                <ul>
+                  {publishedRules.map((text, i) => (
+                    <li key={i}>{text}</li>
+                  ))}
+                </ul>
+                <details className={css.origin}>
+                  <summary>查看来源与版本</summary>
+                  <p>
+                    来源版本：
+                    {content.platform.revisionId ??
+                      profile.source.employeeVersionId}
+                  </p>
+                </details>
+              </article>
+            )}
+            {section === 'procedures' ? (
+              <div className={css.procedureGroups}>
+                {procedureGroups.map((group) => {
+                  const entries = rows.filter(
+                    (source) => source.reference.sourceKind === group.kind,
+                  );
+                  const headingId = `${tabsId}-${group.kind}-heading`;
+                  return (
+                    <section
+                      key={group.kind}
+                      className={css.procedureGroup}
+                      aria-labelledby={headingId}
+                    >
+                      <div className={css.procedureIntroduction}>
+                        <h3 id={headingId}>{group.title}</h3>
+                        <p>{group.description}</p>
+                      </div>
+                      {entries.length ? (
+                        entries.map((source) => (
+                          <ContentItem
+                            key={exactKey(source.reference)}
+                            source={source}
+                            onPreview={onPreview}
+                            onPrepare={prepareContent}
+                          />
+                        ))
+                      ) : (
+                        <p className={css.empty}>{group.empty}</p>
+                      )}
+                    </section>
+                  );
+                })}
+              </div>
+            ) : (
+              rows.map((source) => (
+                <ContentItem
+                  key={exactKey(source.reference)}
+                  source={source}
+                  onPreview={onPreview}
+                  onPrepare={prepareContent}
+                />
+              ))
+            )}
+            {section !== 'procedures' &&
+              !rows.length &&
+              !(section === 'requirements' && publishedRules.length) && (
+                <p className={css.empty}>
+                  {
+                    {
+                      requirements: '暂无已生效的执行要求。',
+                      procedures: '暂无已生效的执行流程。',
+                      references: '暂无已引用的参考资料。',
+                      experience: '暂无已引用经验。',
+                    }[section]
+                  }
+                </p>
+              )}
+          </section>
+        </div>
       </section>
     </div>
   );
@@ -422,9 +440,11 @@ export function EmployeeProfileDetails({
 function ContentItem({
   source,
   onPreview,
+  onPrepare,
 }: {
   source: EmployeeResolvedContent;
   onPreview: (reference: ReferenceSelection) => void;
+  onPrepare?: (source: EmployeeResolvedContent) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const procedure =
@@ -441,33 +461,50 @@ function ContentItem({
   return (
     <article className={itemClass}>
       <header>
-        <h4>
-          {source.referenceFile && !procedure ? (
-            <button
-              className={css.file}
-              type="button"
-              onClick={() => onPreview(source.referenceFile!)}
-            >
-              {source.title}
-            </button>
-          ) : (
-            source.title
-          )}
-        </h4>
-        <div className={procedure ? css.procedureMetadata : undefined}>
-          {procedure && (
-            <span className={css.procedureStatus}>
-              {source.reference.sourceKind === 'workflow' ? '已绑定' : '已生效'}
-              {source.referenceFile
-                ? ` · v${source.referenceFile.revision}`
-                : ''}
-            </span>
-          )}
-          <ContentSourceBadge
-            scope={source.ownership?.scope ?? null}
-            canMaintain={source.canMaintain}
-          />
+        <div className={css.itemHeading}>
+          <h4>
+            {source.referenceFile && !procedure ? (
+              <button
+                className={css.file}
+                type="button"
+                onClick={() => onPreview(source.referenceFile!)}
+              >
+                {source.title}
+              </button>
+            ) : (
+              source.title
+            )}
+          </h4>
+          <div className={procedure ? css.procedureMetadata : undefined}>
+            {procedure && (
+              <span className={css.procedureStatus}>
+                {source.reference.sourceKind === 'workflow'
+                  ? '已绑定'
+                  : '已生效'}
+                {source.referenceFile
+                  ? ` · v${source.referenceFile.revision}`
+                  : ''}
+              </span>
+            )}
+            <ContentSourceBadge
+              scope={source.ownership?.scope ?? null}
+              canMaintain={source.canMaintain}
+            />
+          </div>
         </div>
+        {onPrepare &&
+          source.canMaintain &&
+          source.ownership?.scope === 'personal' && (
+            <button
+              type="button"
+              className={css.action}
+              aria-label={`AI调整${source.title}`}
+              onClick={() => onPrepare(source)}
+            >
+              <IconSparkleRegular size={16} />
+              AI 调整
+            </button>
+          )}
       </header>
       <p className={procedure ? css.procedureBody : css.excerpt}>
         {source.body

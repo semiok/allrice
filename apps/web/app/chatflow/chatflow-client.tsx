@@ -355,14 +355,25 @@ export function ChatFlowClient({
         ]
       : []),
   ];
+  const carriedEmployeeDraft = useRef<{
+    scope: string;
+    generation: number;
+  } | null>(null);
   useEffect(() => {
+    const carried = carriedEmployeeDraft.current;
+    carriedEmployeeDraft.current = null;
+    if (
+      carried?.scope === settingsScope &&
+      carried.generation === captureSelection().generation
+    )
+      return;
     setSessionReferences([]);
     setReferenceSelections([]);
     setReferencePickerOpen(false);
     setReferenceLibraryOpen(false);
     setReferenceToView(null);
     setCompanyReferences([]);
-  }, [settingsScope, activeId]);
+  }, [settingsScope, activeId, captureSelection]);
   const preferences = usePersonalPreferences(workspace, tenantHeaders);
   useEffect(() => {
     setSettings(null);
@@ -1410,12 +1421,16 @@ export function ChatFlowClient({
     count: companyReferences.length,
     taskScope,
   };
-  function prepareDraft(prepared: PreparedComposerDraft) {
+  function prepareDraft(prepared: PreparedComposerDraft, atStart = false) {
     if (busy || composing.current) return;
     const selection = captureSelection();
-    let insertion = appendComposerDraft(draftStore.getSnapshot(), prepared);
+    const insert = (current: string) =>
+      atStart && current.length
+        ? appendComposerDraft(prepared.text, prepareComposerText(current))
+        : appendComposerDraft(current, prepared);
+    let insertion = insert(draftStore.getSnapshot());
     setDraft((current) => {
-      insertion = appendComposerDraft(current, prepared);
+      insertion = insert(current);
       return insertion.text;
     });
     requestAnimationFrame(() => {
@@ -1433,6 +1448,35 @@ export function ChatFlowClient({
         insertion.selectionEnd,
       );
     });
+  }
+
+  function prepareEmployeeDraft(text: string, instanceId: string) {
+    if (!workspace) throw Error('工作区已变化，请重新打开员工详情。');
+    if (busy || composing.current)
+      throw Error('请先完成当前输入或等待工作结束，再调整员工内容。');
+    const employee = employeeChoices(workspace).find(
+      (entry) => entry.instanceId === instanceId,
+    );
+    if (!employee || employeeChoiceId(employee) !== detailsAssignmentId)
+      throw Error('这位员工已不在当前工作区，请重新打开详情。');
+    if (activeEmployee?.instanceId !== instanceId || sessionArchived) {
+      // Open a draft for the exact employee without discarding the caller's
+      // unsent text, attachments or authorized reference selections.
+      const wasSession = captureSelection().sessionId !== null;
+      resetRunState();
+      selectSession(null);
+      setHistory(null);
+      setPendingEmployeeAssignmentId(employeeChoiceId(employee));
+      if (wasSession)
+        carriedEmployeeDraft.current = {
+          scope: settingsScope,
+          generation: captureSelection().generation,
+        };
+    }
+    if (layout.compact) setSidebarCollapsed(true);
+    // Method writes require an explicit leading request. Keep any previous
+    // draft intact after that request instead of weakening the server gate.
+    prepareDraft(prepareComposerText(text), true);
   }
 
   async function prepareNextStep(step: TaskNextStep, snapshot: TaskNextSteps) {
@@ -2498,6 +2542,8 @@ export function ChatFlowClient({
         }
         workspaceId={workspace.workspaceId}
         headers={tenantHeaders}
+        onPrepare={prepareEmployeeDraft}
+        onProfileUpdated={registerEmployeeInstance}
       />
 
       {referencePickerOpen && (

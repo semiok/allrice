@@ -1444,12 +1444,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                         : state.createdEmployeeInstances.length
                           ? {
                               instances: [
-                                {
-                                  ...state.createdEmployeeInstances[0]!,
-                                  id: id(7),
-                                  kind: 'general',
-                                  profile: {},
-                                },
+                                ...(state.createdEmployeeInstances[0]!.id ===
+                                id(7)
+                                  ? []
+                                  : [
+                                      {
+                                        ...state.createdEmployeeInstances[0]!,
+                                        id: id(7),
+                                        kind: 'general',
+                                        profile: {},
+                                      },
+                                    ]),
                                 ...state.createdEmployeeInstances,
                               ],
                             }
@@ -4874,6 +4879,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         revision: 1,
         profile: {
           name: employeeName,
+          mission: '理解目标，推进工作，交付清晰、可用的结果。',
+          workStyle:
+            '先确认目标和资料，再分步执行；信息不足时及时说明，交付时列出待确认事项。',
           expressionStyle: 'structured',
           appearance: {
             avatarType: 'initials',
@@ -4936,12 +4944,34 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const picker = f.page.getByRole('dialog', {
           name: '创建自己的 AI 员工',
         });
-        expect(await picker.getByRole('combobox').count()).toBe(0);
+        await picker.getByRole('combobox', { name: '表达偏好' }).waitFor();
+        expect(
+          await picker.getByRole('combobox', { name: '表达偏好' }).count(),
+        ).toBe(1);
+        expect(
+          await picker.getByText('基础员工', { exact: true }).count(),
+        ).toBe(0);
         expect(
           await picker.getByRole('radio', { name: '科技蓝' }).isChecked(),
         ).toBe(true);
         expect(await picker.getByRole('radio').count()).toBe(10);
         const nameInput = picker.getByRole('textbox', { name: '员工名字' });
+        for (const field of ['员工名字', '使命', '工作方式'])
+          expect(
+            await picker
+              .getByRole('textbox', { name: field, exact: true })
+              .evaluate((node) => getComputedStyle(node).fontSize),
+          ).toBe(width < 600 ? '16px' : '14px');
+        expect(
+          await picker
+            .getByRole('textbox', { name: '使命', exact: true })
+            .inputValue(),
+        ).toBe(created.profile.mission);
+        expect(
+          await picker
+            .getByRole('textbox', { name: '工作方式', exact: true })
+            .inputValue(),
+        ).toBe(created.profile.workStyle);
         expect(await nameInput.getAttribute('placeholder')).toBe(
           '例如： 文案专家、财务助手、商务分析师',
         );
@@ -5019,7 +5049,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(
         await details.locator('[data-employee-accent="violet"]').count(),
       ).toBe(1);
-      await details.getByRole('button', { name: '关闭', exact: true }).click();
+      await details
+        .getByRole('button', { name: /^关闭(?:员工详情)?$/, exact: true })
+        .click();
       await f.page
         .getByRole('button', { name: '新的工作', exact: true })
         .click();
@@ -5256,6 +5288,399 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
+  it.each([1440, 390])(
+    'custom employee adjustments prepare scoped main-chat drafts without sending or writing at %ipx',
+    async (width) => {
+      const f = await fixture({
+        width,
+        touch: width < 600,
+        employeeCount: 2,
+        employeeHistory: true,
+        employeeDetails: true,
+      });
+      const composer = f.page.getByRole('textbox', {
+        name: '给 Rice 的消息',
+        exact: true,
+      });
+      const openDetails = async () => {
+        const entry = f.page.getByRole('button', {
+          name: '查看Rice详情',
+          exact: true,
+        });
+        if (!(await entry.isVisible()))
+          await f.page
+            .getByRole('button', { name: '展开侧边栏', exact: true })
+            .click();
+        await entry.click();
+        return f.page.getByRole('dialog', {
+          name: 'Rice员工详情',
+          exact: true,
+        });
+      };
+      try {
+        f.state.employeeDetails.profile.kind = 'custom';
+        await composer.fill('保留这份已有草稿，不要自动发送。');
+        let dialog = await openDetails();
+        await dialog
+          .getByRole('button', { name: 'AI新增工作场景', exact: true })
+          .click();
+        await expect.poll(() => dialog.count()).toBe(0);
+        const sceneDraft = await composer.inputValue();
+        expect(sceneDraft).toContain('保留这份已有草稿，不要自动发送。');
+        expect(sceneDraft).toContain('Rice');
+        expect(sceneDraft).toContain('请新增我的工作场景：');
+        expect(sceneDraft).toContain('每周对账');
+        expect(sceneDraft).toContain('每月审计');
+        expect(f.state.messageInputs).toEqual([]);
+        expect(f.writes).toEqual([]);
+
+        await composer.fill('第二份尚未发送的草稿。');
+        dialog = await openDetails();
+        await dialog
+          .getByRole('button', { name: '每周对账', exact: true })
+          .click();
+        await dialog
+          .getByRole('button', { name: 'AI调整每周核对', exact: true })
+          .click();
+        await expect.poll(() => dialog.count()).toBe(0);
+        const adjustmentDraft = await composer.inputValue();
+        expect(adjustmentDraft).toContain('第二份尚未发送的草稿。');
+        expect(adjustmentDraft).toContain('Rice');
+        expect(adjustmentDraft).toContain('每周对账');
+        expect(adjustmentDraft).toContain('每周核对');
+        expect(adjustmentDraft).not.toContain('月度审计正文');
+        expect(adjustmentDraft).not.toContain('未启用草稿不能显示');
+        expect(f.state.messageInputs).toEqual([]);
+        expect(f.writes).toEqual([]);
+
+        await composer.fill('通用补充之前的未发送草稿。');
+        dialog = await openDetails();
+        await dialog
+          .getByRole('button', { name: '每周对账', exact: true })
+          .click();
+        await dialog
+          .getByRole('button', { name: 'AI调整个人输出偏好', exact: true })
+          .click();
+        await expect.poll(() => dialog.count()).toBe(0);
+        const commonDraft = await composer.inputValue();
+        expect(commonDraft.startsWith('请调整我的通用执行要求：')).toBe(true);
+        expect(commonDraft).toContain('范围：通用内容 · 执行要求');
+        expect(commonDraft).toContain('个人输出偏好');
+        expect(commonDraft).toContain('通用补充之前的未发送草稿。');
+        expect(commonDraft).not.toContain('请调整我的工作场景');
+        expect(f.state.messageInputs).toEqual([]);
+        expect(f.writes).toEqual([]);
+
+        f.state.employeeDetails.profile.canMaintainPersonal = false;
+        dialog = await openDetails();
+        await dialog
+          .getByRole('tab', { name: '执行要求', exact: true })
+          .waitFor();
+        for (const name of ['编辑员工', 'AI新增工作场景', /^AI调整/])
+          expect(await dialog.getByRole('button', { name }).count()).toBe(0);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+    30_000,
+  );
+
+  it.each([1440, 390])(
+    'custom employee editing preserves unsaved values on failure and reloads saved identity and persona at %ipx',
+    async (width) => {
+      const f = await fixture({
+        width,
+        touch: width < 600,
+        employeeCount: 2,
+        employeeHistory: true,
+        employeeDetails: true,
+      });
+      let instance = EmployeeInstanceSchema.parse({
+        id: id(7),
+        assignmentId: id(7),
+        organizationId: org,
+        workspaceId: workspace,
+        ownerId: user,
+        kind: 'custom',
+        revision: 2,
+        profile: {
+          name: 'Rice',
+          description: '保留未由表单修改的个人简介',
+          role: '保留未由表单修改的个人角色',
+          mission: '帮助完成研究',
+          workStyle: '按步骤交付',
+          expressionStyle: 'concise',
+          appearance: {
+            avatarType: 'initials',
+            avatarValue: 'R',
+            accentColor: 'violet',
+          },
+        },
+        creationSource: structuredClone(f.state.employeeDetails.profile.source),
+        source: structuredClone(f.state.employeeDetails.profile.source),
+        createdAt: now,
+        updatedAt: now,
+        archivedAt: null,
+      });
+      const writes: Array<Record<string, unknown>> = [];
+      let failSave = true;
+      const openDetails = async (name: string) => {
+        const entry = f.page.getByRole('button', {
+          name: `查看${name}详情`,
+          exact: true,
+        });
+        if (!(await entry.isVisible()))
+          await f.page
+            .getByRole('button', { name: '展开侧边栏', exact: true })
+            .click();
+        await entry.click();
+        const details = f.page.getByRole('dialog', {
+          name: `${name}员工详情`,
+          exact: true,
+        });
+        await details
+          .getByRole('button', { name: '编辑员工', exact: true })
+          .waitFor();
+        return details;
+      };
+      try {
+        f.state.createdEmployeeInstances = [instance];
+        f.state.employeeDetails.profile.kind = 'custom';
+        await f.page.route(
+          `**/api/v1/employee-instances/${id(7)}*`,
+          async (route) => {
+            if (
+              new URL(route.request().url()).pathname !==
+              `/api/v1/employee-instances/${id(7)}`
+            )
+              return route.fallback();
+            if (route.request().method() === 'GET')
+              return route.fulfill({
+                contentType: 'application/json',
+                body: JSON.stringify({ instance }),
+              });
+            expect(route.request().method()).toBe('PATCH');
+            const body = route.request().postDataJSON();
+            writes.push(body);
+            if (failSave)
+              return route.fulfill({
+                status: 503,
+                contentType: 'application/json',
+                body: JSON.stringify({ error: { message: '保存暂时失败。' } }),
+              });
+            instance = EmployeeInstanceSchema.parse({
+              ...instance,
+              revision: instance.revision + 1,
+              profile: body.profile,
+            });
+            f.state.createdEmployeeInstances = [instance];
+            const profile = f.state.employeeDetails.profile;
+            profile.name = instance.profile.name!;
+            profile.revision = instance.revision;
+            profile.appearance = instance.profile.appearance;
+            profile.identity.mission = instance.profile.mission!;
+            profile.identity.workStyle = instance.profile.workStyle!;
+            profile.expressionStyle = instance.profile.expressionStyle;
+            return route.fulfill({
+              contentType: 'application/json',
+              body: JSON.stringify({ instance }),
+            });
+          },
+        );
+        await f.page.reload();
+        await f.page.getByRole('textbox', { name: '给 Rice 的消息' }).waitFor();
+        let details = await openDetails('Rice');
+        if (process.env.ALLRICE_EMPLOYEE_SCREENSHOT)
+          await f.page.screenshot({
+            path: `${process.env.ALLRICE_EMPLOYEE_SCREENSHOT}-details-${width}.png`,
+            fullPage: true,
+          });
+        await details
+          .getByRole('button', { name: '编辑员工', exact: true })
+          .click();
+        const editor = f.page.getByRole('dialog', {
+          name: '编辑员工',
+          exact: true,
+        });
+        const field = (name: string) =>
+          editor.getByRole('textbox', { name, exact: true });
+        await expect.poll(() => field('员工名字').inputValue()).toBe('Rice');
+        expect(await field('使命').inputValue()).toBe('帮助完成研究');
+        expect(await field('工作方式').inputValue()).toBe('按步骤交付');
+        expect(
+          await editor.getByRole('radio', { name: '鸢尾紫' }).isChecked(),
+        ).toBe(true);
+        expect(await editor.getByRole('radio').count()).toBe(10);
+        await field('员工名字').fill('财务伙伴');
+        await field('使命').fill('核对企业报表，交付可追溯结果。');
+        await field('工作方式').fill('先核对凭据，再按月汇总。');
+        await editor
+          .getByRole('combobox', { name: '表达偏好' })
+          .selectOption('structured');
+        await editor.getByRole('radio', { name: '活力橙' }).check();
+        if (process.env.ALLRICE_EMPLOYEE_SCREENSHOT)
+          await f.page.screenshot({
+            path: `${process.env.ALLRICE_EMPLOYEE_SCREENSHOT}-edit-${width}.png`,
+            fullPage: true,
+          });
+        await editor.getByRole('button', { name: '保存', exact: true }).click();
+        await editor.getByRole('alert').waitFor();
+        expect(await field('员工名字').inputValue()).toBe('财务伙伴');
+        expect(await field('使命').inputValue()).toBe(
+          '核对企业报表，交付可追溯结果。',
+        );
+        expect(instance.revision).toBe(2);
+        expect(writes).toHaveLength(1);
+        failSave = false;
+        await editor.getByRole('button', { name: '保存', exact: true }).click();
+        await expect.poll(() => editor.count()).toBe(0);
+        expect(writes).toHaveLength(2);
+        for (const write of writes) {
+          expect(write).toMatchObject({
+            workspaceId: workspace,
+            expectedRevision: 2,
+            profile: {
+              name: '财务伙伴',
+              description: '保留未由表单修改的个人简介',
+              role: '保留未由表单修改的个人角色',
+              mission: '核对企业报表，交付可追溯结果。',
+              workStyle: '先核对凭据，再按月汇总。',
+              expressionStyle: 'structured',
+              appearance: {
+                avatarType: 'initials',
+                avatarValue: '财',
+                accentColor: 'orange',
+              },
+            },
+          });
+          expect(write).not.toHaveProperty('ownerId');
+        }
+        await expect
+          .poll(() =>
+            f.page
+              .locator('main > section')
+              .getAttribute('data-employee-accent'),
+          )
+          .toBe('orange');
+        details = f.page.getByRole('dialog', {
+          name: '财务伙伴员工详情',
+          exact: true,
+        });
+        await details
+          .getByText('核对企业报表，交付可追溯结果。', { exact: true })
+          .waitFor();
+        await details
+          .getByText('先核对凭据，再按月汇总。', { exact: true })
+          .waitFor();
+        await details
+          .getByRole('button', { name: /^关闭(?:员工详情)?$/, exact: true })
+          .click();
+        details = await openDetails('财务伙伴');
+        await details
+          .getByRole('button', { name: '编辑员工', exact: true })
+          .click();
+        await expect
+          .poll(() => field('员工名字').inputValue())
+          .toBe('财务伙伴');
+        expect(await field('使命').inputValue()).toBe(
+          '核对企业报表，交付可追溯结果。',
+        );
+        expect(await field('工作方式').inputValue()).toBe(
+          '先核对凭据，再按月汇总。',
+        );
+        expect(
+          await editor.getByRole('radio', { name: '活力橙' }).isChecked(),
+        ).toBe(true);
+        await field('员工名字').fill('取消的临时名字');
+        await editor.getByRole('button', { name: '取消', exact: true }).click();
+        await details
+          .getByRole('button', { name: '编辑员工', exact: true })
+          .waitFor();
+        expect(writes).toHaveLength(2);
+        expect(instance.profile.name).toBe('财务伙伴');
+        expect(
+          await details.getByText('取消的临时名字', { exact: true }).count(),
+        ).toBe(0);
+        expect(f.state.messageInputs).toEqual([]);
+        expect(f.writes).toEqual([]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+    45_000,
+  );
+
+  it.each([403, 404])(
+    'custom employee raw editor denial %s clears private details after cancel or Escape',
+    async (status) => {
+      const f = await fixture({
+        employeeCount: 2,
+        employeeHistory: true,
+        employeeDetails: true,
+      });
+      let rawReads = 0;
+      try {
+        f.state.employeeDetails.profile.kind = 'custom';
+        await f.page.route(
+          `**/api/v1/employee-instances/${id(7)}*`,
+          async (route) => {
+            if (
+              new URL(route.request().url()).pathname !==
+              `/api/v1/employee-instances/${id(7)}`
+            )
+              return route.fallback();
+            expect(route.request().method()).toBe('GET');
+            rawReads++;
+            return route.fulfill({
+              status,
+              contentType: 'application/json',
+              body: JSON.stringify({ error: { message: 'No access' } }),
+            });
+          },
+        );
+        await f.page
+          .getByRole('button', { name: '查看Rice详情', exact: true })
+          .click();
+        const details = f.page.getByRole('dialog', {
+          name: 'Rice员工详情',
+          exact: true,
+        });
+        await details.getByText('个人输出偏好正文', { exact: true }).waitFor();
+        await details
+          .getByRole('button', { name: '编辑员工', exact: true })
+          .click();
+        const editor = f.page.getByRole('dialog', {
+          name: '编辑员工',
+          exact: true,
+        });
+        await editor.getByRole('alert').waitFor();
+        expect(await editor.getByRole('textbox').count()).toBe(0);
+        if (status === 403) await f.page.keyboard.press('Escape');
+        else
+          await editor
+            .getByRole('button', { name: '关闭', exact: true })
+            .click();
+        const denied = f.page.getByRole('dialog', {
+          name: 'AI 员工详情',
+          exact: true,
+        });
+        await denied.getByRole('alert').waitFor();
+        for (const text of ['个人输出偏好正文', '帮助完成研究', '按步骤交付'])
+          expect(await denied.getByText(text, { exact: true }).count()).toBe(0);
+        for (const name of ['编辑员工', 'AI新增工作场景', /^AI调整/])
+          expect(await denied.getByRole('button', { name }).count()).toBe(0);
+        expect(rawReads).toBe(1);
+        expect(f.writes).toEqual([]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+    20_000,
+  );
+
   it('reopening employee details reads the current persisted preference and hides models', async () => {
     const f = await fixture({
       employeeCount: 2,
@@ -5273,7 +5698,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         exact: true,
       });
       await dialog.getByText('简洁，结论优先', { exact: true }).waitFor();
-      await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+      await dialog
+        .getByRole('button', { name: /^关闭(?:员工详情)?$/, exact: true })
+        .click();
       f.state.employeeDetails.profile.expressionStyle = 'exploratory';
       f.state.employeeDetails.profile.revision++;
       await open.click();
@@ -5293,7 +5720,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   });
 
   it.each([1440, 390])(
-    'MET182 readonly detail keeps effective scope, permissions and pinned files at %ipx',
+    'MET182 effective detail keeps scope, scene navigation, permissions and pinned files at %ipx',
     async (width) => {
       const f = await fixture({
         width,
@@ -5371,10 +5798,25 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           expect(
             await dialog.locator(`[data-maintenance="${scope}"]`).count(),
           ).toBeGreaterThan(0);
-        const scenes = dialog.getByRole('combobox', {
-          name: '工作场景（可选）',
-        });
-        await scenes.selectOption(id(50));
+        expect(await dialog.getByRole('combobox').count()).toBe(0);
+        const scene = (name: string) =>
+          dialog.getByRole('button', { name, exact: true });
+        expect(await scene('通用内容').getAttribute('aria-pressed')).toBe(
+          'true',
+        );
+        for (const name of ['每周对账', '每月审计'])
+          expect(await scene(name).isVisible()).toBe(true);
+        const tabWidths = await dialog
+          .getByRole('tab')
+          .evaluateAll((tabs) =>
+            tabs.map((tab) => tab.getBoundingClientRect().width),
+          );
+        expect(tabWidths).toHaveLength(4);
+        expect(Math.max(...tabWidths) - Math.min(...tabWidths)).toBeLessThan(1);
+        await scene('每周对账').click();
+        expect(await scene('每周对账').getAttribute('aria-pressed')).toBe(
+          'true',
+        );
         await dialog
           .getByText('每周核对正文', { exact: true })
           .first()
@@ -5388,7 +5830,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(
           await dialog.getByText('月度审计正文', { exact: true }).count(),
         ).toBe(0);
-        await scenes.selectOption(id(51));
+        await scene('每月审计').click();
         await dialog
           .getByText('月度审计正文', { exact: true })
           .first()
@@ -5432,12 +5874,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(
           await dialog.getByRole('tabpanel').locator('details').count(),
         ).toBe(0);
-        await scenes.selectOption(id(50));
+        await scene('每周对账').click();
+        expect(
+          await dialog
+            .getByRole('tab', { name: '执行流程', exact: true })
+            .getAttribute('aria-selected'),
+        ).toBe('true');
         await executableWorkflows
           .getByText('暂无已绑定的可执行 Workflow。', { exact: true })
           .waitFor();
         expect(await textProcedures.innerText()).toContain('对账流程正文');
-        await scenes.selectOption(id(51));
+        await scene('每月审计').click();
         await executableWorkflows
           .getByText(workflow.body, { exact: true })
           .waitFor();
@@ -5716,7 +6163,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await open();
       await tab();
       await expect.poll(() => f.state.experienceReads).toBe(1);
-      await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+      await dialog
+        .getByRole('button', { name: /^关闭(?:员工详情)?$/, exact: true })
+        .click();
       f.state.experienceDelay = null;
       f.state.experienceCandidates = [];
       await open();
@@ -5835,7 +6284,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await expect.poll(() => f.state.employeeDetailReads).toBe(1);
       await f.page
         .getByRole('dialog')
-        .getByRole('button', { name: '关闭', exact: true })
+        .getByRole('button', { name: /^关闭(?:员工详情)?$/, exact: true })
         .click();
       f.state.employeeDetailDelay = null;
       f.state.employeeDetails.profile.expressionStyle = 'exploratory';
@@ -5850,7 +6299,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(
         await dialog.getByText('简洁，结论优先', { exact: true }).count(),
       ).toBe(0);
-      await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+      await dialog
+        .getByRole('button', { name: /^关闭(?:员工详情)?$/, exact: true })
+        .click();
       f.state.employeeDetailStatus = 403;
       await open.click();
       const denied = f.page.getByRole('dialog', {
@@ -5885,12 +6336,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         name: 'Rice员工详情',
         exact: true,
       });
-      await intro
-        .getByText('负责研究、分析与文件交付', { exact: true })
-        .waitFor();
+      await intro.getByText('帮助完成研究', { exact: true }).waitFor();
       await intro.getByRole('tab', { name: '执行要求', exact: true }).waitFor();
       expect(await intro.getByText('Office', { exact: true }).count()).toBe(0);
-      await intro.getByRole('button', { name: '关闭', exact: true }).click();
+      await intro
+        .getByRole('button', { name: /^关闭(?:员工详情)?$/, exact: true })
+        .click();
 
       if ((await rice.getAttribute('aria-expanded')) !== 'true')
         await rice.click();
