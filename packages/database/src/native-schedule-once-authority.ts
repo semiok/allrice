@@ -99,6 +99,28 @@ export async function lockNativeOnceJobAdmission(
         (await isPlatformQualityJobAuthorized(tx, job)),
     };
   }
+  if (
+    kind === 'recurring' &&
+    binding.control?.dispatch.consumer === 'experience-consolidation-v1'
+  ) {
+    const [job] = await tx<
+      JobRow[]
+    >`select * from allrice_jobs where id=${jobId}`;
+    const { lockExperienceCalendarJobAdmission } =
+      await import('./experience-native.ts');
+    return {
+      scheduled: true,
+      runId: binding.run_id,
+      allowed:
+        binding.outbox_state === 'enqueued' &&
+        !!job &&
+        (await lockExperienceCalendarJobAdmission(
+          tx,
+          job,
+          binding.occurrence_id,
+        )),
+    };
+  }
   await tx`set local lock_timeout='500ms'`;
   await tx`set local statement_timeout='10000ms'`;
   const deny = (): NativeOnceJobAdmission => ({

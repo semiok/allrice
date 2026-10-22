@@ -295,8 +295,15 @@ suite(
       await expect(fixed.loadControls(writer)).rejects.toThrow();
       await expect(f.db`update allrice_automations set clock_owner='native_recurring',native_recurring_request_id=id,
       native_recurring_request_digest=${v.reservationDigest},native_recurring_revision=1 where id=${c.automationId}`).rejects.toMatchObject(
-        { code: '23514' },
+        {
+          code: 'P1921',
+          message:
+            'experience native clock lacks exact scoped plan/policy proof',
+        },
       );
+      const [unchanged] =
+        await f.db`select clock_owner from allrice_automations where id=${c.automationId}`;
+      expect(unchanged!.clock_owner).toBe('legacy');
     });
     it('prepares a saved overdue P with a distinct future recovery A', async () => {
       const [business] = await f.db<

@@ -181,9 +181,35 @@ const PutMutation = z
     task: z.unknown(),
   })
   .strict();
+const ApplyRevisionMutation = z
+  .object({
+    kind: z.literal('calendar'),
+    action: z.literal('apply_revision'),
+    controlId: UuidSchema,
+    expectedControlVersion: Version,
+    revision: Revision,
+    planId: UuidSchema,
+    planDigest: Digest,
+  })
+  .strict();
+const RetireMutation = z
+  .object({
+    kind: z.literal('calendar'),
+    action: z.literal('retire_task'),
+    controlId: UuidSchema,
+    periodId: UuidSchema,
+    armId: UuidSchema,
+    retirementId: UuidSchema,
+    nativeTaskId: Key,
+    taskDigest: Digest,
+    expectedArmVersion: Version,
+  })
+  .strict();
 export const NativeCalendarMutationSchema = z.union([
   SessionMutation,
   PutMutation,
+  ApplyRevisionMutation,
+  RetireMutation,
 ]);
 export type NativeCalendarMutation = z.infer<
   typeof NativeCalendarMutationSchema
@@ -279,6 +305,8 @@ export function validateCalendarBinding(
       a.periodId === p.periodId &&
       (a.reason !== 'business_target' ||
         a.nativeAt === p.businessScheduledFor) &&
+      (a.reason !== 'future_recovery' ||
+        Date.parse(a.nativeAt) >= Date.parse(p.businessScheduledFor)) &&
       (p.currentArmId !== a.armId ||
         (p.state === 'prepared' &&
           ['prepared', 'creating'].includes(a.status)) ||
@@ -355,13 +383,18 @@ function stableUuid(parts: readonly string[]) {
   const h = createHash('sha256').update(JSON.stringify(parts)).digest('hex');
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }
+/** Reconfiguration can cancel a future period and accept the same wall-clock P
+ * under a new immutable period. Its late old receipt must not occupy the new
+ * period's outbox identity. The original business Run remains unique by P. */
 export function calendarOccurrenceIdentity(
   automationId: string,
+  periodId: string,
   businessScheduledFor: string,
 ) {
   const key = nativeOnceDigest([
-    'calendar',
+    'calendar-period-v1',
     automationId,
+    periodId,
     businessScheduledFor,
   ]);
   return {
@@ -476,6 +509,7 @@ export function prepareNativeCalendarTaskPut(input: {
         // Recovery A and messageId never become the business identity P.
         const identity = calendarOccurrenceIdentity(
           c.automationId,
+          p.periodId,
           p.businessScheduledFor,
         );
         const payload = {
