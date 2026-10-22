@@ -118,7 +118,7 @@ function fixture<C extends NativeScheduleAnyControl = NativeScheduleControl>(
   function apply(write: NativeScheduleWrite) {
     const m = write.mutation,
       c = rows.find((r) => r.controlId === m.controlId)!;
-    if (!c) throw Error('fixture mapping missing');
+    if (!c || c.kind === 'calendar') throw Error('fixture mapping missing');
     if (m.kind === 'session_initializing') c.sessionState = 'initializing';
     if (m.kind === 'session_ready') c.sessionState = 'ready';
     if (m.kind === 'put_task') {
