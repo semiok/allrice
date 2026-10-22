@@ -2,8 +2,9 @@ import {
   HarnessEventSchema,
   UserQuestionRequestSchema,
 } from '@allrice/contracts';
+import { QueueError } from '@allrice/database';
 import type * as SubscriptionHome from '../codex-subscription-home.js';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { createServer, type ServerResponse } from 'node:http';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -16,10 +17,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { HarnessExecutionInput, HarnessToolCall } from './adapter.js';
 import { DshRuntimePool, type DshRuntime } from './dsh/runtime-pool.js';
 import { DshStartupRejection } from './dsh/startup-rejection.js';
-import { HandlerError } from '../errors.js';
+import { HandlerError, confirmToolFailure } from '../errors.js';
 import { HarnessEventBatcher } from './delta-batcher.js';
 import { getAssistantFailureUsage } from './dsh/assistant-outcome.js';
 import { assertAssistantProviderOutputBound } from './dsh/assistant-provider.js';
+import type { DshRunTimingReport } from './dsh/run-timing.js';
 import {
   DshHarnessAdapter,
   normalizeAllRiceManagedFileLinks,
@@ -154,8 +156,17 @@ function executionInput(input: {
 /** Actual native Host and its persisted Session; the HTTP peer is synthetic. */
 async function schedulingRuntime(
   replies: readonly (
-    string | { id: string; arguments: Record<string, unknown> }
+    | string
+    | { id: string; wireName?: string; arguments: Record<string, unknown> }
   )[],
+  options: {
+    beforeFinish?: (requestIndex: number) => Promise<void>;
+    usage?: readonly {
+      prompt_tokens: number;
+      completion_tokens: number;
+      prompt_tokens_details: { cached_tokens: number };
+    }[];
+  } = {},
 ) {
   const root = await mkdtemp(resolve(tmpdir(), 'allrice-schedule-transport-'));
   const requests: Record<string, unknown>[] = [];
@@ -175,11 +186,13 @@ async function schedulingRuntime(
             created: 1,
             model: 'schedule-transport',
             choices: [{ index: 0, delta, finish_reason: finish }],
+            ...(finish && options.usage?.[requests.length - 1]
+              ? { usage: options.usage[requests.length - 1] }
+              : {}),
           })}\n\n`,
         );
       if (typeof reply === 'string') {
         send({ role: 'assistant', content: reply }, null);
-        send({}, 'stop');
       } else {
         send(
           {
@@ -190,7 +203,7 @@ async function schedulingRuntime(
                 id: reply.id,
                 type: 'function',
                 function: {
-                  name: 'automation_create',
+                  name: reply.wireName ?? 'automation_create',
                   arguments: JSON.stringify(reply.arguments),
                 },
               },
@@ -198,9 +211,20 @@ async function schedulingRuntime(
           },
           null,
         );
-        send({}, 'tool_calls');
       }
-      res.end('data: [DONE]\n\n');
+      const finish = async () => {
+        await options.beforeFinish?.(requests.length - 1);
+        if (res.destroyed) return;
+        send({}, typeof reply === 'string' ? 'stop' : 'tool_calls');
+        res.end('data: [DONE]\n\n');
+      };
+      void finish().catch((error: unknown) => {
+        res.destroy(
+          error instanceof Error
+            ? error
+            : new Error('synthetic response failed'),
+        );
+      });
     });
   });
   server.listen(0, '127.0.0.1');
@@ -267,6 +291,450 @@ const schedulingTools: HarnessExecutionInput['tools'] = [
 ];
 
 describe('DshHarnessAdapter', () => {
+  it('checks plain completion authority once after the native reply while retaining both dispatch checks and an available tool directory', async () => {
+    const diagnostics = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const runtime = await schedulingRuntime(['SYNTHETIC_REMINDER']);
+    const events: HarnessEvent[] = [];
+    const input = executionInput({
+      prompt: 'Return a brief synthetic reminder.',
+      provider: runtime.provider,
+      events,
+    });
+    input.workDirectory = runtime.root;
+    input.tools = schedulingTools;
+    const progress = vi.fn(async () => ({ paused: false }));
+    input.progress = progress;
+    let nativeReplyObserved = false;
+    const dispatchChecks: number[] = [],
+      completionChecks: number[] = [];
+    const append = input.onEvent;
+    input.onEvent = async (event) => {
+      if (
+        event.type === 'assistant.delta' &&
+        event.textMode === 'replace' &&
+        event.sourceEventType === 'assistant/message'
+      )
+        nativeReplyObserved = true;
+      await append(event);
+    };
+    input.contentGuard = {
+      generationId: randomUUID(),
+      check: async () => {
+        if (nativeReplyObserved) completionChecks.push(runtime.requests.length);
+        else dispatchChecks.push(runtime.requests.length);
+      },
+    };
+    try {
+      const result = await runtime.adapter.execute(input);
+      expect(result.answer).toBe('SYNTHETIC_REMINDER');
+      expect(input.tools).not.toHaveLength(0);
+      expect(dispatchChecks).toEqual([0, 0]);
+      expect(completionChecks).toEqual([1]);
+      expect(progress).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'start', kind: 'model' }),
+      );
+      expect(progress).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'finish', kind: 'model' }),
+      );
+      expect(runtime.requests).toHaveLength(1);
+      expect(
+        events.filter((event) => event.type === 'tool.started'),
+      ).toHaveLength(0);
+      expect(
+        events.filter((event) => event.type === 'assistant.completed'),
+      ).toMatchObject([{ text: 'SYNTHETIC_REMINDER' }]);
+      expect(
+        events.filter((event) => event.type === 'usage.updated'),
+      ).toHaveLength(1);
+      const reports = diagnostics.mock.calls
+        .filter(([label]) => label === '[AllRice:run-timing]')
+        .map(([, report]) => JSON.parse(String(report)) as DshRunTimingReport);
+      expect(reports).toHaveLength(1);
+      const report = reports[0]!;
+      expect(report).toMatchObject({
+        event: 'allrice.dsh_run_timing',
+        runId: input.executionEnvironment.ALLRICE_RUN_ID,
+        sessionId: input.kernel.sessionId,
+        outcome: 'completed',
+        contentChecks: {
+          calls: 3,
+          failed: 0,
+          pending: 0,
+          phases: {
+            nativeDispatch: { calls: 1 },
+            modelAdmission: { calls: 1 },
+            afterNativeResult: { calls: 0 },
+            beforeDeliveryValidation: { calls: 0 },
+            beforePublication: { calls: 1 },
+          },
+        },
+        modelChain: { calls: 1, completed: 1, unclosed: 0 },
+      });
+      const points = [
+        report.points.preparationCompleted,
+        report.points.firstNativeChunk,
+        report.points.firstVisibleText,
+        report.points.nativeTurnEnded,
+        report.points.beforePublication,
+        report.points.publicationCompleted,
+      ];
+      for (const point of points) {
+        expect(point).toEqual(expect.any(Number));
+        expect(point).toBeGreaterThanOrEqual(0);
+        expect(point).toBeLessThanOrEqual(report.elapsedMs);
+      }
+      expect(points).toEqual([...points].sort((a, b) => a! - b!));
+      expect(Object.values(report.capabilities)).toEqual(Array(5).fill(false));
+      expect(Object.values(report.wire)).toEqual(Array(4).fill(null));
+      expect(JSON.stringify(report)).not.toContain('SYNTHETIC_REMINDER');
+    } finally {
+      await runtime.close();
+    }
+  }, 30_000);
+
+  it('records one run report without native model timing and preserves execution when logging fails', async () => {
+    const diagnostics = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const adapter = createAdapter();
+    const events: HarnessEvent[] = [];
+    const input = executionInput({ prompt: 'synthetic legacy timing', events });
+    const first = await adapter.execute(input);
+    const reports = diagnostics.mock.calls
+      .filter(([label]) => label === '[AllRice:run-timing]')
+      .map(([, report]) => JSON.parse(String(report)) as DshRunTimingReport);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatchObject({
+      outcome: 'completed',
+      modelChain: { calls: 0, completed: 0 },
+      points: {
+        firstNativeChunk: expect.any(Number),
+        firstVisibleText: expect.any(Number),
+        nativeTurnEnded: expect.any(Number),
+        publicationCompleted: expect.any(Number),
+      },
+    });
+    expect(
+      diagnostics.mock.calls.some(
+        ([label]) => label === '[AllRice:model-timing]',
+      ),
+    ).toBe(false);
+    diagnostics.mockImplementation(() => {
+      throw Error('synthetic diagnostic sink unavailable');
+    });
+    const second = await adapter.execute(
+      executionInput({
+        prompt: 'synthetic legacy timing again',
+        events,
+        sameSessionAs: input,
+        threadId: first.threadId,
+      }),
+    );
+    expect(second.answer).toBe('turn-2');
+    expect(
+      events.filter((event) => event.type === 'assistant.completed'),
+    ).toHaveLength(2);
+    expect(
+      events.filter((event) => event.type === 'usage.updated'),
+    ).toHaveLength(2);
+    expect(
+      diagnostics.mock.calls.filter(
+        ([label]) => label === '[AllRice:run-timing]',
+      ),
+    ).toHaveLength(2);
+  });
+
+  it.each(['content_revoked', 'lease_lost'] as const)(
+    'does not complete or replay a visible plain reply when %s before provider completion',
+    async (failure) => {
+      let release!: () => void;
+      const finishing = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const runtime = await schedulingRuntime(['SYNTHETIC_PARTIAL_REPLY'], {
+        beforeFinish: async () => finishing,
+      });
+      const events: HarnessEvent[] = [];
+      const input = executionInput({
+        prompt: 'Return a synthetic reply.',
+        provider: runtime.provider,
+        events,
+      });
+      input.workDirectory = runtime.root;
+      let current = true;
+      const denial =
+        failure === 'lease_lost'
+          ? new QueueError('lease_lost')
+          : new HandlerError('EMPLOYEE_CONTENT_UNAVAILABLE', failure, false);
+      input.contentGuard = {
+        generationId: randomUUID(),
+        check: async () => {
+          if (!current) throw denial;
+        },
+      };
+      const running = runtime.adapter.execute(input).then(
+        (result) => ({ result }),
+        (error: unknown) => ({ error }),
+      );
+      try {
+        await expect
+          .poll(
+            () =>
+              events.some(
+                (event) =>
+                  event.type === 'assistant.delta' &&
+                  event.text.includes('SYNTHETIC_PARTIAL_REPLY'),
+              ),
+            { timeout: 15_000 },
+          )
+          .toBe(true);
+        expect(
+          events.some(
+            (event) =>
+              event.type === 'assistant.delta' &&
+              event.textMode === 'replace' &&
+              event.sourceEventType === 'assistant/message',
+          ),
+        ).toBe(false);
+        current = false;
+        release();
+        const stopped = await running;
+        expect(stopped).toMatchObject({
+          error: {
+            code:
+              failure === 'lease_lost'
+                ? 'EMPLOYEE_CONTENT_CHECK_UNAVAILABLE'
+                : 'EMPLOYEE_CONTENT_UNAVAILABLE',
+            retryable: false,
+            ...(failure === 'lease_lost'
+              ? { cause: denial }
+              : { message: failure }),
+          },
+        });
+        expect(runtime.requests).toHaveLength(1);
+        expect(
+          events.some((event) => event.type === 'assistant.completed'),
+        ).toBe(false);
+      } finally {
+        release();
+        await runtime.close();
+      }
+    },
+    30_000,
+  );
+
+  it('does not publish completion when cancellation arrives while its final authority check is awaiting', async () => {
+    const runtime = await schedulingRuntime(['SYNTHETIC_CANCELED_REPLY']);
+    const events: HarnessEvent[] = [];
+    const controller = new AbortController();
+    const input = executionInput({
+      prompt: 'Return a synthetic reply.',
+      provider: runtime.provider,
+      events,
+      signal: controller.signal,
+    });
+    input.workDirectory = runtime.root;
+    let nativeReplyObserved = false,
+      finalCheckAwaiting = false;
+    let release!: () => void;
+    const checking = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const append = input.onEvent;
+    input.onEvent = async (event) => {
+      if (
+        event.type === 'assistant.delta' &&
+        event.textMode === 'replace' &&
+        event.sourceEventType === 'assistant/message'
+      )
+        nativeReplyObserved = true;
+      await append(event);
+    };
+    input.contentGuard = {
+      generationId: randomUUID(),
+      check: async () => {
+        if (nativeReplyObserved) {
+          finalCheckAwaiting = true;
+          await checking;
+        }
+      },
+    };
+    const running = runtime.adapter.execute(input).then(
+      (result) => ({ result }),
+      (error: unknown) => ({ error }),
+    );
+    try {
+      await expect
+        .poll(() => finalCheckAwaiting, { timeout: 15_000 })
+        .toBe(true);
+      controller.abort();
+      release();
+      expect(await running).toHaveProperty('error');
+      expect(runtime.requests).toHaveLength(1);
+      expect(events.some((event) => event.type === 'assistant.completed')).toBe(
+        false,
+      );
+    } finally {
+      controller.abort();
+      release();
+      await runtime.close();
+    }
+  }, 30_000);
+
+  it.each(['Broker envelope', 'native function'] as const)(
+    'retains completion authority barriers after a %s tool has executed',
+    async (transport) => {
+      const native = transport === 'native function';
+      const call: HarnessToolCall = {
+        id: randomUUID(),
+        name: native ? 'local.fs.list' : 'automation.create',
+        arguments: native
+          ? { path: '.', limit: 20 }
+          : {
+              name: 'synthetic task',
+              prompt: 'Synthetic reminder',
+              delayMinutes: 2,
+            },
+      };
+      const runtime = await schedulingRuntime([
+        native
+          ? {
+              id: call.id,
+              wireName: 'local_fs_list',
+              arguments: call.arguments,
+            }
+          : `<allrice_tool_call>${JSON.stringify(call)}</allrice_tool_call>`,
+        'SYNTHETIC_TOOL_RECEIPT_OBSERVED',
+      ]);
+      const events: HarnessEvent[] = [];
+      const onToolCall = vi.fn(async () => ({
+        modelContent: '{"syntheticReceipt":true}',
+        summary: 'synthetic receipt',
+      }));
+      const input = executionInput({
+        prompt: native
+          ? 'List a synthetic directory.'
+          : 'Set one synthetic reminder.',
+        provider: runtime.provider,
+        events,
+        onToolCall,
+      });
+      input.workDirectory = runtime.root;
+      input.tools = native
+        ? [
+            {
+              name: 'local.fs.list',
+              description: 'List files through the synthetic Broker',
+              inputSchema: { type: 'object' },
+            },
+          ]
+        : schedulingTools;
+      const onTurnStarted = vi.fn(async () => {});
+      input.onTurnStarted = onTurnStarted;
+      let nativeReplyObserved = false;
+      const completionChecks: number[] = [];
+      const append = input.onEvent;
+      input.onEvent = async (event) => {
+        if (
+          event.type === 'assistant.delta' &&
+          event.textMode === 'replace' &&
+          event.sourceEventType === 'assistant/message'
+        )
+          nativeReplyObserved = true;
+        await append(event);
+      };
+      input.contentGuard = {
+        generationId: randomUUID(),
+        check: async () => {
+          if (nativeReplyObserved)
+            completionChecks.push(runtime.requests.length);
+        },
+      };
+      try {
+        const result = await runtime.adapter.execute(input);
+        expect(result.answer).toBe('SYNTHETIC_TOOL_RECEIPT_OBSERVED');
+        expect(onToolCall).toHaveBeenCalledExactlyOnceWith(call);
+        expect(onTurnStarted).toHaveBeenCalledTimes(native ? 1 : 2);
+        expect(runtime.requests).toHaveLength(2);
+        expect(completionChecks).toEqual([2, 2, 2]);
+        expect(
+          events.filter((event) => event.type === 'tool.completed'),
+        ).toMatchObject([
+          { name: call.name, source: native ? 'harness' : 'tool_broker' },
+        ]);
+        expect(
+          events.filter((event) => event.type === 'assistant.completed'),
+        ).toHaveLength(1);
+      } finally {
+        await runtime.close();
+      }
+    },
+    30_000,
+  );
+
+  it('rechecks current authority after the final-delivery callback waits', async () => {
+    const runtime = await schedulingRuntime(['SYNTHETIC_CHECKED_REPLY']);
+    const events: HarnessEvent[] = [];
+    const input = executionInput({
+      prompt: 'Return a synthetic reply.',
+      provider: runtime.provider,
+      events,
+    });
+    input.workDirectory = runtime.root;
+    let current = true,
+      deliveryAwaiting = false;
+    let release!: () => void;
+    const checking = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    input.contentGuard = {
+      generationId: randomUUID(),
+      check: async () => {
+        if (!current)
+          throw new HandlerError(
+            'EMPLOYEE_CONTENT_UNAVAILABLE',
+            'revoked during final delivery',
+            false,
+          );
+      },
+    };
+    const deliveryCheck = vi.fn(
+      async (candidate: { projectedText: string }) => {
+        deliveryAwaiting = true;
+        await checking;
+        return {
+          status: 'valid' as const,
+          candidateDigest:
+            'sha256:' +
+            createHash('sha256').update(candidate.projectedText).digest('hex'),
+          factSetDigest: 'sha256:' + 'a'.repeat(64),
+          issues: [],
+          linked: [],
+          textRepairEligible: false,
+        };
+      },
+    );
+    input.finalDelivery = { check: deliveryCheck };
+    const running = runtime.adapter.execute(input).then(
+      (result) => ({ result }),
+      (error: unknown) => ({ error }),
+    );
+    try {
+      await expect.poll(() => deliveryAwaiting, { timeout: 15_000 }).toBe(true);
+      current = false;
+      release();
+      expect(await running).toMatchObject({
+        error: { code: 'EMPLOYEE_CONTENT_UNAVAILABLE', retryable: false },
+      });
+      expect(deliveryCheck).toHaveBeenCalledTimes(1);
+      expect(runtime.requests).toHaveLength(1);
+      expect(events.some((event) => event.type === 'assistant.completed')).toBe(
+        false,
+      );
+    } finally {
+      release();
+      await runtime.close();
+    }
+  }, 30_000);
+
   it.each([
     {
       prompt: '请每隔两分钟提醒我喝水。',
@@ -343,6 +811,171 @@ describe('DshHarnessAdapter', () => {
     },
     30_000,
   );
+
+  it('returns a confirmed scheduling rejection to the native loop and closes its failed tool outcome', async () => {
+    const prompt = '请每隔两分钟提醒我喝水。';
+    const call = {
+      id: randomUUID(),
+      name: 'automation.create',
+      arguments: {
+        name: '周期校验',
+        prompt,
+        rule: { kind: 'every', seconds: 120 },
+      },
+    };
+    const answer = '尚未创建任务，请补充缺失信息。';
+    const runtime = await schedulingRuntime(
+      [
+        `<allrice_tool_call>${JSON.stringify(call)}</allrice_tool_call>`,
+        answer,
+      ],
+      {
+        usage: [
+          {
+            prompt_tokens: 100,
+            completion_tokens: 5,
+            prompt_tokens_details: { cached_tokens: 20 },
+          },
+          {
+            prompt_tokens: 120,
+            completion_tokens: 4,
+            prompt_tokens_details: { cached_tokens: 30 },
+          },
+        ],
+      },
+    );
+    const failure = new HandlerError(
+      'AUTOMATION_REQUEST_UNCLEAR',
+      '未创建任务，需要明确的工作。',
+      false,
+    );
+    const progress = vi.fn().mockResolvedValue({});
+    const events: HarnessEvent[] = [];
+    const onToolCall = vi.fn(async () => {
+      throw failure;
+    });
+    const input = executionInput({
+      prompt,
+      provider: runtime.provider,
+      events,
+      onToolCall,
+    });
+    confirmToolFailure(failure, {
+      runId: input.executionEnvironment.ALLRICE_RUN_ID!,
+      callId: call.id,
+      toolName: call.name,
+    });
+    input.currentUserRequest = prompt;
+    input.workDirectory = runtime.root;
+    input.tools = schedulingTools;
+    input.progress = progress;
+    try {
+      const result = await runtime.adapter.execute(input);
+      expect(result.answer).toBe(answer);
+      expect(result.usageComplete).toBe(true);
+      // This actual OpenAI-compatible adapter reports read cache but no write
+      // cache receipt; missing cache detail must remain unknown, not zero.
+      expect(result.cacheUsageKnown).toBe(false);
+      expect(result.usage).toEqual({
+        inputTokens: 170,
+        cachedInputTokens: 50,
+        outputTokens: 9,
+      });
+      expect(onToolCall).toHaveBeenCalledExactlyOnceWith(call);
+      expect(runtime.requests).toHaveLength(2);
+      const continuation = JSON.stringify(runtime.requests[1]);
+      expect(continuation).toContain('AUTOMATION_REQUEST_UNCLEAR');
+      expect(continuation).toContain('confirmed failure receipt');
+      expect(continuation).toContain('outcome-unknown writes');
+      expect(progress).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'finish',
+          kind: 'tool',
+          callId: call.id,
+          outcome: 'error',
+          resultDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+        }),
+      );
+      expect(
+        events.filter((event) => event.type === 'tool.failed'),
+      ).toHaveLength(1);
+      expect(events.some((event) => event.type === 'tool.completed')).toBe(
+        false,
+      );
+      expect(
+        events.filter((event) => event.type === 'assistant.completed'),
+      ).toEqual([expect.objectContaining({ text: answer })]);
+    } finally {
+      await runtime.close();
+    }
+  }, 30_000);
+
+  it('does not dispatch another native turn when cancellation arrives during failed tool settlement', async () => {
+    const prompt = '请每隔两分钟提醒我喝水。';
+    const call = {
+      id: randomUUID(),
+      name: 'automation.create',
+      arguments: {
+        name: '周期校验',
+        prompt,
+        rule: { kind: 'every', seconds: 120 },
+      },
+    };
+    const runtime = await schedulingRuntime([
+      `<allrice_tool_call>${JSON.stringify(call)}</allrice_tool_call>`,
+      'MUST_NOT_RUN',
+    ]);
+    const controller = new AbortController();
+    const failure = new HandlerError(
+      'AUTOMATION_REQUEST_UNCLEAR',
+      '未创建任务',
+      false,
+    );
+    const input = executionInput({
+      prompt,
+      provider: runtime.provider,
+      signal: controller.signal,
+      onToolCall: async () => {
+        throw failure;
+      },
+    });
+    confirmToolFailure(failure, {
+      runId: input.executionEnvironment.ALLRICE_RUN_ID!,
+      callId: call.id,
+      toolName: call.name,
+    });
+    input.workDirectory = runtime.root;
+    input.tools = schedulingTools;
+    let settlementEntered = false;
+    let release!: () => void;
+    const settling = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    input.progress = async (value) => {
+      if (value.action === 'finish' && value.kind === 'tool') {
+        settlementEntered = true;
+        await settling;
+      }
+      return {};
+    };
+    const execution = runtime.adapter
+      .execute(input)
+      .catch((error: unknown) => error);
+    try {
+      await expect
+        .poll(() => settlementEntered, { timeout: 15_000 })
+        .toBe(true);
+      controller.abort();
+      release();
+      expect(await execution).toMatchObject({ code: 'EXECUTION_ABORTED' });
+      expect(runtime.requests).toHaveLength(1);
+    } finally {
+      controller.abort();
+      release();
+      await execution;
+      await runtime.close();
+    }
+  }, 30_000);
 
   it('stops on an unknown recurring Broker result without another provider turn or write', async () => {
     const prompt = '请每隔两分钟提醒我喝水。';
@@ -1208,6 +1841,7 @@ describe('DshHarnessAdapter', () => {
     input.onTurnStarted = async ({ turnId }) => {
       started.push(turnId);
     };
+
     const result = await adapter.execute(input);
     expect(events.some((event) => event.type === 'assistant.delta')).toBe(true);
     expect(
@@ -1699,6 +2333,90 @@ describe('DshHarnessAdapter', () => {
     },
   );
 
+  it.each(['unconfirmed', 'run', 'call', 'name', 'serialized'] as const)(
+    'does not recover a %s failure receipt from an error code alone',
+    async (mismatch) => {
+      const adapter = createAdapter();
+      const events: HarnessEvent[] = [];
+      const progress = vi.fn().mockResolvedValue({});
+      let failure = new HandlerError(
+        'AUTOMATION_REQUEST_UNCLEAR',
+        '未创建任务',
+        false,
+      );
+      const input = executionInput({
+        prompt: 'use-tool',
+        events,
+        onToolCall: async (call) => {
+          if (mismatch !== 'unconfirmed')
+            confirmToolFailure(failure, {
+              runId:
+                mismatch === 'run'
+                  ? randomUUID()
+                  : input.executionEnvironment.ALLRICE_RUN_ID!,
+              callId: mismatch === 'call' ? randomUUID() : call.id,
+              toolName: mismatch === 'name' ? 'automation.create' : call.name,
+            });
+          if (mismatch === 'serialized')
+            failure = Object.assign(
+              new HandlerError(failure.code, failure.message, false),
+              JSON.parse(JSON.stringify(failure)),
+            );
+          throw failure;
+        },
+      });
+      input.progress = progress;
+      const thrown = await adapter
+        .execute(input)
+        .catch((error: unknown) => error);
+      expect(thrown).toBe(failure);
+      expect(progress.mock.calls.map(([value]) => value)).not.toContainEqual(
+        expect.objectContaining({ action: 'finish', kind: 'tool' }),
+      );
+      expect(events.some((event) => event.type === 'assistant.completed')).toBe(
+        false,
+      );
+    },
+  );
+
+  it('does not recover a confirmed rejection after cancellation or a failed tool progress settlement', async () => {
+    for (const scenario of ['canceled', 'lease-lost'] as const) {
+      const adapter = createAdapter();
+      const controller = new AbortController();
+      const events: HarnessEvent[] = [];
+      const failure = new HandlerError(
+        'AUTOMATION_REQUEST_UNCLEAR',
+        '未创建任务',
+        false,
+      );
+      const leaseLost = new HandlerError('TASK_LEASE_LOST', '租约失效', false);
+      const input = executionInput({
+        prompt: 'use-tool',
+        signal: controller.signal,
+        events,
+        onToolCall: async (call) => {
+          confirmToolFailure(failure, {
+            runId: input.executionEnvironment.ALLRICE_RUN_ID!,
+            callId: call.id,
+            toolName: call.name,
+          });
+          if (scenario === 'canceled') controller.abort();
+          throw failure;
+        },
+      });
+      input.progress = vi.fn(async (value) => {
+        if (value.action === 'finish' && value.kind === 'tool') throw leaseLost;
+        return {};
+      });
+      await expect(adapter.execute(input)).rejects.toMatchObject({
+        code: scenario === 'canceled' ? 'EXECUTION_ABORTED' : 'TASK_LEASE_LOST',
+      });
+      expect(events.some((event) => event.type === 'assistant.completed')).toBe(
+        false,
+      );
+    }
+  });
+
   it('routes tool envelopes only through the AllRice Tool Broker callback', async () => {
     const adapter = createAdapter();
     const events: HarnessEvent[] = [];
@@ -1753,7 +2471,6 @@ describe('DshHarnessAdapter', () => {
     input.onTurnStarted = async ({ turnId }) => {
       started.push(turnId);
     };
-
     const result = await adapter.execute(input);
 
     expect(result.answer).toBe('native-search-finished');

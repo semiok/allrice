@@ -9,11 +9,12 @@ import {
   TerminalNativeFrameSchema,
   terminalMaximumPending,
   terminalMaximumScreenBytes,
-  workbenchTerminalProtocol,
+  workbenchTerminalStreamProtocol,
   workbenchTerminalSocketPath,
   type TerminalInput,
   type TerminalRequest,
   type TerminalTarget,
+  type TerminalStreamMode,
   type WorkbenchTerminalBrowserFrame,
 } from '@allrice/contracts';
 
@@ -28,12 +29,15 @@ type RemoteResult =
   | { ok: true; value?: unknown }
   | { ok: false; error: Error & { code: string; details?: unknown } };
 type NativeFrame = ReturnType<typeof TerminalNativeFrameSchema.parse>;
+const maximumBufferedFrames = 4096;
 type Pending = {
   result?: (result: RemoteResult) => void;
   next?: (result: IteratorResult<NativeFrame>) => void;
   reject?: (error: Error) => void;
   error?: Error;
   ended?: boolean;
+  mode?: TerminalStreamMode;
+  inbox?: Array<{ frame: NativeFrame; bytes: number }>;
   fragments?: { total: number; parts: string[]; bytes: number };
   abort: () => void;
   timer?: ReturnType<typeof setTimeout>;
@@ -51,7 +55,8 @@ function remoteError(value: {
 
 /** AllRice owns authentication and this carrier. The official DSH model owns
  * input ordering, acknowledgements, process identity and reconnect semantics.
- * One next credit reads one native item; input and RPC are never replayed. */
+ * Push streams use the native gateway's local-inbox semantics. Legacy peers
+ * retain their one-item credits. Input and RPC are never replayed. */
 export class TerminalCarrier {
   readonly generation = createSnapshotStore<
     { id: number; host: { home: string } } | undefined
@@ -73,6 +78,9 @@ export class TerminalCarrier {
   private attempt = 0;
   private revision = 0;
   private ended = false;
+  private streamMode: TerminalStreamMode = 'pull';
+  private bufferedBytes = 0;
+  private bufferedFrames = 0;
   onReset?: () => void;
 
   constructor(
@@ -149,7 +157,7 @@ export class TerminalCarrier {
       location.href,
     );
     url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const socket = new WebSocket(url, workbenchTerminalProtocol);
+    const socket = new WebSocket(url, workbenchTerminalStreamProtocol);
     this.socket = socket;
     socket.addEventListener('message', (event) => {
       if (this.socket !== socket || this.ended) return;
@@ -169,6 +177,7 @@ export class TerminalCarrier {
           )
             throw Error('终端连接目标不匹配');
           this.attempt = 0;
+          this.streamMode = frame.streamMode ?? 'pull';
           this.state.set({
             phase: 'connected',
             target: frame.target,
@@ -205,6 +214,7 @@ export class TerminalCarrier {
             this.clear(frame.requestId);
           }
         } else if (frame.type === 'terminal.finished') {
+          if (item.fragments) throw Error('终端屏幕分片未完成');
           item.ended = true;
           if (frame.error) item.error = remoteError(frame.error);
           if (item.next) {
@@ -212,6 +222,7 @@ export class TerminalCarrier {
             else item.next({ done: true, value: undefined });
             item.next = undefined;
             item.reject = undefined;
+            this.clear(frame.requestId);
           }
         } else if (frame.type === 'terminal.fragment') {
           const fragments = (item.fragments ??= {
@@ -220,23 +231,29 @@ export class TerminalCarrier {
             bytes: 0,
           });
           if (
-            !item.next ||
+            (!item.next && item.mode !== 'push') ||
+            !item.inbox ||
             fragments.total !== frame.total ||
             fragments.parts.length !== frame.index
           )
             throw Error('终端屏幕分片顺序无效');
-          fragments.bytes += new TextEncoder().encode(frame.data).byteLength;
-          if (fragments.bytes > terminalMaximumScreenBytes)
+          const bytes = new TextEncoder().encode(frame.data).byteLength;
+          if (this.bufferedBytes + bytes > terminalMaximumScreenBytes)
             throw Error('终端屏幕超出传输上限');
+          fragments.bytes += bytes;
+          this.bufferedBytes += bytes;
           fragments.parts.push(frame.data);
           if (fragments.parts.length === fragments.total) {
+            // Replace the fragment reservation with the decoded native item;
+            // do not charge both representations to the inbox.
+            this.bufferedBytes -= fragments.bytes;
+            item.fragments = undefined;
             this.deliver(
               item,
               TerminalNativeFrameSchema.parse(
                 JSON.parse(fragments.parts.join('')),
               ),
             );
-            item.fragments = undefined;
           }
         } else if (frame.type === 'terminal.frame') {
           if (item.fragments) throw Error('终端屏幕分片未完成');
@@ -264,7 +281,20 @@ export class TerminalCarrier {
   }
 
   private deliver(item: Pending, frame: NativeFrame) {
-    if (!item.next) throw Error('终端未请求的屏幕数据');
+    if (!item.inbox || item.ended) throw Error('终端流状态无效');
+    if (!item.next) {
+      if (item.mode !== 'push') throw Error('终端未请求的屏幕数据');
+      const bytes = new TextEncoder().encode(JSON.stringify(frame)).byteLength;
+      if (
+        this.bufferedBytes + bytes > terminalMaximumScreenBytes ||
+        this.bufferedFrames >= maximumBufferedFrames
+      )
+        throw Error('终端屏幕缓冲区已满');
+      item.inbox.push({ frame, bytes });
+      this.bufferedBytes += bytes;
+      this.bufferedFrames++;
+      return;
+    }
     const next = item.next;
     item.next = undefined;
     item.reject = undefined;
@@ -328,6 +358,17 @@ export class TerminalCarrier {
     this.pending.delete(id);
     if (item.timer) clearTimeout(item.timer);
     item.abort();
+    this.discardInbox(item);
+  }
+
+  private discardInbox(item: Pending) {
+    for (const entry of item.inbox ?? []) {
+      this.bufferedBytes -= entry.bytes;
+      this.bufferedFrames--;
+    }
+    if (item.inbox) item.inbox.length = 0;
+    this.bufferedBytes -= item.fragments?.bytes ?? 0;
+    item.fragments = undefined;
   }
 
   private async call(
@@ -397,21 +438,24 @@ export class TerminalCarrier {
   private stream(action: 'attach' | 'retain', id: string, signal: AbortSignal) {
     const requestId = crypto.randomUUID();
     const item: Pending = {
+      inbox: [],
       abort: () => signal.removeEventListener('abort', cancel),
     };
     let opened = false;
     const cancel = () => {
-      if (!this.pending.has(requestId)) return;
-      try {
-        this.send({ version: 1, type: 'terminal.cancel', requestId });
-      } catch {
-        /* detach never replays */
+      if (this.pending.has(requestId)) {
+        try {
+          this.send({ version: 1, type: 'terminal.cancel', requestId });
+        } catch {
+          /* detach never replays */
+        }
       }
       item.ended = true;
       item.next?.({ done: true, value: undefined });
       item.next = undefined;
       item.reject = undefined;
       this.clear(requestId);
+      this.discardInbox(item);
     };
     const iterator: AsyncIterableIterator<NativeFrame> & {
       send(input: TerminalInput): void;
@@ -421,23 +465,39 @@ export class TerminalCarrier {
       },
       next: async () => {
         signal.throwIfAborted();
-        if (item.error) throw item.error;
-        if (item.ended) return { done: true, value: undefined };
+        const entry = item.inbox?.shift();
+        if (entry) {
+          this.bufferedBytes -= entry.bytes;
+          this.bufferedFrames--;
+          return { done: false, value: entry.frame };
+        }
+        if (item.error) {
+          this.clear(requestId);
+          throw item.error;
+        }
+        if (item.ended) {
+          this.clear(requestId);
+          return { done: true, value: undefined };
+        }
         if (!opened) {
           await this.ready(signal);
           signal.throwIfAborted();
-          if (this.pending.size >= terminalMaximumPending)
-            throw Error('终端连接过多');
-          opened = true;
-          this.pending.set(requestId, item);
-          signal.addEventListener('abort', cancel, { once: true });
-          this.send({
-            version: 1,
-            type: 'terminal.request',
-            requestId,
-            action,
-            args: { id },
-          });
+          if (item.ended) return { done: true, value: undefined };
+          if (!opened) {
+            if (this.pending.size >= terminalMaximumPending)
+              throw Error('终端连接过多');
+            opened = true;
+            item.mode = this.streamMode;
+            this.pending.set(requestId, item);
+            signal.addEventListener('abort', cancel, { once: true });
+            this.send({
+              version: 1,
+              type: 'terminal.request',
+              requestId,
+              action,
+              args: { id },
+            });
+          }
         }
         if (item.next) throw Error('终端流不能并发读取');
         return await new Promise<IteratorResult<NativeFrame>>(
@@ -445,7 +505,8 @@ export class TerminalCarrier {
             item.next = resolve;
             item.reject = reject;
             try {
-              this.send({ version: 1, type: 'terminal.next', requestId });
+              if (item.mode === 'pull')
+                this.send({ version: 1, type: 'terminal.next', requestId });
             } catch (error) {
               item.next = undefined;
               item.reject = undefined;
@@ -458,8 +519,11 @@ export class TerminalCarrier {
         cancel();
         return { done: true, value: undefined };
       },
-      send: (input) =>
-        this.send({ version: 1, type: 'terminal.input', requestId, input }),
+      send: (input) => {
+        if (item.ended || item.error || !this.pending.has(requestId))
+          throw this.carrierError('终端流已结束');
+        this.send({ version: 1, type: 'terminal.input', requestId, input });
+      },
     };
     return iterator;
   }

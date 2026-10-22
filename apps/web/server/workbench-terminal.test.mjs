@@ -7,6 +7,7 @@ import { afterEach, expect, it } from 'vitest';
 import {
   bridgeSocketProtocol,
   workbenchTerminalProtocol,
+  workbenchTerminalStreamProtocol,
 } from '@allrice/contracts';
 import { AllRiceHttpServer } from '../server.mjs';
 import { createBridgeSocketGateway } from './bridge-socket.mjs';
@@ -37,7 +38,7 @@ function target() {
     label: 'Authorized test folder',
   };
 }
-async function fixture({ delayOpen = false } = {}) {
+async function fixture({ delayOpen = false, streamMode = 'pull' } = {}) {
   const identity = target(),
     frames = [],
     opened = [];
@@ -90,7 +91,7 @@ async function fixture({ delayOpen = false } = {}) {
         error.status = 404;
         throw error;
       }
-      return { target: { ...identity }, deviceName: 'Test Mac' };
+      return { target: { ...identity }, deviceName: 'Test Mac', streamMode };
     },
     transport: {
       openTerminal: async (input) => {
@@ -124,7 +125,7 @@ async function fixture({ delayOpen = false } = {}) {
   const browser = (options = {}) => {
     const socket = new WebSocket(
       options.url ?? url,
-      workbenchTerminalProtocol,
+      options.protocol ?? workbenchTerminalProtocol,
       {
         headers: {
           cookie: 'allrice_session=synthetic',
@@ -375,4 +376,170 @@ it('keeps a live native attachment when only the folder display label changes', 
   await until(() => f.resolves > before + 1);
   expect(f.seen.some((frame) => frame.type === 'terminal.end')).toBe(false);
   expect(b.socket.readyState).toBe(WebSocket.OPEN);
+});
+
+it('carries a continuous native burst on the authenticated v2 channel without next credits', async () => {
+  const f = await fixture({ streamMode: 'push' }),
+    b = f.browser({ protocol: workbenchTerminalStreamProtocol });
+  await until(() =>
+    b.received.some((frame) => frame.type === 'terminal.ready'),
+  );
+  expect(b.socket.protocol).toBe(workbenchTerminalStreamProtocol);
+  expect(b.received[0].streamMode).toBe('push');
+  expect(
+    f.seen.find((frame) => frame.type === 'terminal.open').streamMode,
+  ).toBe('push');
+  const id = request(b.socket, 'attach', { id: info.id });
+  await until(() => f.seen.some((frame) => frame.requestId === id));
+  const native = [];
+  for (let index = 1; index <= 205; index++) {
+    send(b.socket, {
+      type: 'terminal.input',
+      requestId: id,
+      input: {
+        type: 'write',
+        sequence: index,
+        data: index === 205 ? '\r\t\x03' : 'x',
+      },
+    });
+    native.push({ type: 'ack', sequence: index });
+    native.push({ type: 'output', sequence: index, data: String(index) });
+  }
+  await until(
+    () =>
+      f.seen.filter((frame) => frame.type === 'terminal.input').length === 205,
+  );
+  for (const frame of native)
+    f.bridgeSend({ type: 'terminal.frame', requestId: id, frame });
+  await until(
+    () =>
+      b.received.filter((frame) => frame.type === 'terminal.frame').length ===
+      native.length,
+  );
+  expect(
+    b.received
+      .filter((frame) => frame.type === 'terminal.frame')
+      .map((frame) => frame.frame),
+  ).toEqual(native);
+  expect(f.seen.some((frame) => frame.type === 'terminal.next')).toBe(false);
+  expect(
+    f.seen.filter((frame) => frame.type === 'terminal.input').at(-1).input.data,
+  ).toBe('\r\t\x03');
+  expect(f.opened).toHaveLength(1);
+});
+
+it.each([
+  { streamMode: 'push', protocol: workbenchTerminalProtocol },
+  { streamMode: 'pull', protocol: workbenchTerminalStreamProtocol },
+])(
+  'keeps legacy pull when browser/Bridge push support does not match: $streamMode/$protocol',
+  async (options) => {
+    const f = await fixture({ streamMode: options.streamMode }),
+      b = f.browser({ protocol: options.protocol });
+    await until(() =>
+      b.received.some((frame) => frame.type === 'terminal.ready'),
+    );
+    expect(b.received[0]).not.toHaveProperty('streamMode');
+    expect(
+      f.seen.find((frame) => frame.type === 'terminal.open'),
+    ).not.toHaveProperty('streamMode');
+    const id = request(b.socket, 'retain', { id: info.id });
+    send(b.socket, { type: 'terminal.next', requestId: id });
+    await until(() => f.seen.some((frame) => frame.type === 'terminal.next'));
+    f.bridgeSend({
+      type: 'terminal.frame',
+      requestId: id,
+      frame: { type: 'retained' },
+    });
+    await until(() =>
+      b.received.some((frame) => frame.frame?.type === 'retained'),
+    );
+    expect(b.socket.readyState).toBe(WebSocket.OPEN);
+  },
+);
+
+it('forwards bounded push fragments in order and rejects a stray legacy next on a push stream', async () => {
+  const f = await fixture({ streamMode: 'push' }),
+    b = f.browser({ protocol: workbenchTerminalStreamProtocol });
+  await until(() =>
+    b.received.some((frame) => frame.type === 'terminal.ready'),
+  );
+  const id = request(b.socket, 'attach', { id: info.id });
+  await until(() => f.seen.some((frame) => frame.requestId === id));
+  const encoded = JSON.stringify({
+    type: 'snapshot',
+    sequence: 0,
+    screen: 'x'.repeat(1_600_000),
+    info,
+    writable: true,
+  });
+  const chunks = encoded.match(/[\s\S]{1,100000}/g);
+  for (let index = 0; index < chunks.length; index++)
+    f.bridgeSend({
+      type: 'terminal.fragment',
+      requestId: id,
+      index,
+      total: chunks.length,
+      data: chunks[index],
+    });
+  await until(
+    () =>
+      b.received.filter((frame) => frame.type === 'terminal.fragment')
+        .length === chunks.length,
+  );
+  expect(
+    b.received
+      .filter((frame) => frame.type === 'terminal.fragment')
+      .map((frame) => frame.data)
+      .join(''),
+  ).toBe(encoded);
+  send(b.socket, { type: 'terminal.next', requestId: id });
+  await until(() => f.seen.some((frame) => frame.type === 'terminal.end'));
+  expect(f.seen.some((frame) => frame.type === 'terminal.next')).toBe(false);
+});
+
+it('preserves target revocation and temporary-outage semantics on a continuous stream', async () => {
+  const f = await fixture({ streamMode: 'push' }),
+    b = f.browser({ protocol: workbenchTerminalStreamProtocol });
+  await until(() =>
+    b.received.some((frame) => frame.type === 'terminal.ready'),
+  );
+  f.disallow();
+  await until(() => f.seen.some((frame) => frame.type === 'terminal.end'));
+  expect(f.seen.find((frame) => frame.type === 'terminal.end').revoke).toBe(
+    true,
+  );
+  const g = await fixture({ streamMode: 'push' }),
+    c = g.browser({ protocol: workbenchTerminalStreamProtocol });
+  await until(() =>
+    c.received.some((frame) => frame.type === 'terminal.ready'),
+  );
+  g.failAuthorization();
+  await until(() => g.seen.some((frame) => frame.type === 'terminal.end'));
+  expect(g.seen.find((frame) => frame.type === 'terminal.end').revoke).toBe(
+    false,
+  );
+});
+
+it('detaches a push stream whose accumulated fragments exceed the native screen byte budget', async () => {
+  const f = await fixture({ streamMode: 'push' }),
+    b = f.browser({ protocol: workbenchTerminalStreamProtocol });
+  await until(() =>
+    b.received.some((frame) => frame.type === 'terminal.ready'),
+  );
+  const id = request(b.socket, 'attach', { id: info.id });
+  await until(() => f.seen.some((frame) => frame.requestId === id));
+  for (let index = 0; index < 18; index++)
+    f.bridgeSend({
+      type: 'terminal.fragment',
+      requestId: id,
+      index,
+      total: 18,
+      data: 'x'.repeat(131072),
+    });
+  await until(() => f.seen.some((frame) => frame.type === 'terminal.end'));
+  expect(f.seen.find((frame) => frame.type === 'terminal.end').revoke).toBe(
+    false,
+  );
+  expect(f.seen.some((frame) => frame.type === 'terminal.next')).toBe(false);
 });

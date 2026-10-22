@@ -13,10 +13,11 @@ import {
 export type RecurringTaskDraft = {
   name: string;
   prompt: string;
-  kind: 'every' | 'daily';
+  kind: 'every' | 'daily' | 'weekly';
   minutes: string;
   time: string;
   timezone: string;
+  weekdays: number[];
 };
 
 export type RecurringTaskContent = Pick<
@@ -101,8 +102,11 @@ export function recurringDraft(task?: RecurringTask): RecurringTaskDraft {
     kind: task?.rule.kind ?? 'every',
     minutes:
       task?.rule.kind === 'every' ? String(task.rule.seconds / 60) : '60',
-    time: task?.rule.kind === 'daily' ? task.rule.time.slice(0, 5) : '09:00',
-    timezone: task?.rule.kind === 'daily' ? task.rule.timezone : timezone,
+    time:
+      task && task.rule.kind !== 'every' ? task.rule.time.slice(0, 5) : '09:00',
+    timezone:
+      task && task.rule.kind !== 'every' ? task.rule.timezone : timezone,
+    weekdays: task?.rule.kind === 'weekly' ? [...task.rule.weekdays] : [1],
   };
 }
 
@@ -131,14 +135,25 @@ export function recurringContent(
     rule = { kind: 'every', seconds };
   } else {
     if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(draft.time))
-      throw new Error('请选择有效的每日时间。');
+      throw new Error('请选择有效的执行时间。');
     // Editing text must not truncate a pre-existing rule's nonzero seconds.
     const time =
-      previousRule?.kind === 'daily' &&
+      previousRule &&
+      previousRule.kind !== 'every' &&
       previousRule.time.slice(0, 5) === draft.time
         ? previousRule.time
         : draft.time + ':00';
-    rule = { kind: 'daily', time, timezone: draft.timezone.trim() };
+    rule =
+      draft.kind === 'weekly'
+        ? {
+            kind: 'weekly',
+            time,
+            timezone: draft.timezone.trim(),
+            weekdays: [...draft.weekdays].sort((a, b) => a - b),
+          }
+        : { kind: 'daily', time, timezone: draft.timezone.trim() };
+    if (draft.kind === 'weekly' && draft.weekdays.length === 0)
+      throw new Error('请至少选择一个执行日。');
     try {
       new Intl.DateTimeFormat('en', { timeZone: rule.timezone });
     } catch {

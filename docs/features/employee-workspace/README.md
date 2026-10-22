@@ -9,8 +9,12 @@
 After login, a tenant user works with the AI employees published to that
 workspace. Rice is the only seeded employee today. Platform administrators
 configure and publish employee runtime packages from the Runtime Console;
-tenant users consume those packages and cannot create employees, edit their
-models or install Skills.
+tenant users consume those packages and can create personal custom instances
+from an assigned employee. They can update the instance's name, appearance and
+personal work preferences through the shared create/edit form (MET201), while
+models and platform employee packages remain governed by the platform. Personal
+Skills use the existing governed installation path; see the personal Skills
+feature guide.
 
 ## Current layout
 
