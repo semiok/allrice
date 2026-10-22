@@ -216,7 +216,7 @@ export function EmployeeProfileDetails({
               <button
                 className={css.close}
                 type="button"
-                aria-label="关闭员工详情"
+                aria-label="关闭"
                 onClick={onClose}
               >
                 ×
