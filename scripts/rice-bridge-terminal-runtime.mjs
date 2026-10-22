@@ -175,6 +175,8 @@ export async function prepareTerminalRuntime(
               'indirect.cjs',
               'src/koffi/index.cjs',
               'src/koffi/indirect.cjs',
+              'src/koffi/src/static.cjs',
+              'src/koffi/src/trampolines.cjs',
             ]
           : ['.'];
     for (const path of paths) {
@@ -257,11 +259,15 @@ export async function verifyTerminalPackage(
   if (digest(bytes) !== expected.manifestSha256)
     throw Error('HUMAN_TERMINAL_RUNTIME_INTEGRITY_FAILED');
   const manifest = JSON.parse(bytes.toString('utf8'));
-  verifyTerminalRuntime(root, manifest, {
+  const require = verifyTerminalRuntime(root, manifest, {
     platform: 'darwin',
     architecture: expected.architecture,
     nodeVersion: '22.23.2',
   });
+  if (process.platform === 'darwin' && expected.architecture === process.arch) {
+    require('node-pty');
+    require('koffi');
+  }
   for (const item of manifest.files.filter(
     (file) => file.path.endsWith('.node') || file.executable,
   )) {

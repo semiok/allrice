@@ -102,6 +102,10 @@ test.skipIf(process.platform !== 'darwin')(
         manifestSha256: built.manifestSha256,
       });
       const require = verifyTerminalRuntime(built.runtime, built.manifest);
+      // The shipped SEA eagerly verifies both native ABIs. Loading only the
+      // controller can leave Koffi's lazy static loader outside the copy set.
+      assert.equal(typeof require('node-pty').spawn, 'function');
+      assert.equal(typeof require('koffi').load, 'function');
       const { Context } = require('@deepseek-ai/cordis');
       const {
         LocalSubprocessRuntime,
