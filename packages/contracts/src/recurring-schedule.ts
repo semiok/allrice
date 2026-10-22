@@ -16,7 +16,7 @@ const TimezoneSchema = z
   }, 'Choose an IANA timezone');
 
 /** Wall-clock daily and elapsed-time intervals have different semantics. */
-export const RecurringScheduleRuleSchema = z.discriminatedUnion('kind', [
+export const FixedRecurringScheduleRuleSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('every'),
@@ -46,6 +46,25 @@ export const RecurringScheduleRuleSchema = z.discriminatedUnion('kind', [
         ),
     })
     .strict(),
+]);
+export type FixedRecurringScheduleRule = z.infer<
+  typeof FixedRecurringScheduleRuleSchema
+>;
+
+/** Monthly business targets rotate native at Tasks; they are never a native
+ * fixed recurring rule. A missing day is clamped to that month's last day. */
+export const MonthlyScheduleRuleSchema = z
+  .object({
+    kind: z.literal('monthly'),
+    monthDay: z.number().int().min(1).max(31),
+    time: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/),
+    timezone: TimezoneSchema,
+  })
+  .strict();
+export type MonthlyScheduleRule = z.infer<typeof MonthlyScheduleRuleSchema>;
+export const RecurringScheduleRuleSchema = z.discriminatedUnion('kind', [
+  ...FixedRecurringScheduleRuleSchema.options,
+  MonthlyScheduleRuleSchema,
 ]);
 export type RecurringScheduleRule = z.infer<typeof RecurringScheduleRuleSchema>;
 

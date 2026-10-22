@@ -32,6 +32,7 @@ export function makeHealthResponse(
 export * from './api.ts';
 export * from './task-native-wait.ts';
 export * from './automation.ts';
+export * from './automation-manual.ts';
 export * from './native-schedule.ts';
 export * from './recurring-schedule.ts';
 export * from './folder-trigger.ts';

@@ -297,6 +297,7 @@ export function ExperienceSummaryCard({
     off: '自动整理已关闭',
     not_scheduled: counts.pendingSources ? '等待后台安排' : '等待新增反馈',
     scheduled: '已安排自动整理',
+    preparing: '正在准备自动整理',
     paused: '自动整理已暂停',
     unavailable: '员工暂不可用，保留历史记录',
   }[schedule.state];

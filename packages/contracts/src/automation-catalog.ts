@@ -6,6 +6,7 @@ import {
   RecurringOccurrenceSchema,
 } from './recurring-schedule.ts';
 import { AutomationScheduleSchema } from './automation.ts';
+import { AutomationOccurrenceSourceSchema } from './automation-manual.ts';
 
 /** AllRice-owned presentation contract; native clock records stay in the adapter. */
 export const AutomationCatalogTaskSchema = z
@@ -21,6 +22,8 @@ export const AutomationCatalogTaskSchema = z
     createdAt: TimestampSchema,
     nextRunAt: TimestampSchema.nullable(),
     canStop: z.boolean(),
+    canRunNow: z.boolean().optional(),
+    revision: z.number().int().positive().optional(),
     definition: z.discriminatedUnion('kind', [
       z
         .object({ kind: z.literal('recurring'), task: RecurringTaskSchema })
@@ -61,6 +64,7 @@ export const AutomationCatalogHistorySchema = z
       .array(
         RecurringOccurrenceSchema.extend({
           sessionId: UuidSchema.nullable(),
+          source: AutomationOccurrenceSourceSchema.optional(),
         }),
       )
       .max(50),

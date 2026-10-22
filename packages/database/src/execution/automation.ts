@@ -1137,7 +1137,7 @@ export async function claimDueAutomations(limit = 10) {
           organization_id, workspace_id, automation_id, scheduled_for
         ) values (
           ${row.organization_id}, ${row.workspace_id}, ${row.id}, ${scheduledFor}
-        ) on conflict (automation_id, scheduled_for) where folder_event_id is null do nothing
+        ) on conflict (automation_id, scheduled_for) where folder_event_id is null and manual_request_id is null do nothing
         returning *
       `;
         if (!runs[0]) {
@@ -1169,7 +1169,7 @@ export async function claimDueAutomations(limit = 10) {
           // An archived instance must not poison the shared automation tick.
           // Do not overwrite a concurrent policy update or restored rule.
           await sql`update allrice_automations set status='paused',next_run_at=null,updated_at=clock_timestamp()
-          where id=${candidate.id} and status='enabled' and revision=${candidate.revision} and next_run_at<=clock_timestamp()`;
+          where id=${candidate.id} and clock_owner='legacy' and status='enabled' and revision=${candidate.revision} and next_run_at<=clock_timestamp()`;
           return null;
         }
         throw error;

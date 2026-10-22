@@ -2,9 +2,9 @@ import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import {
-  RecurringScheduleRuleSchema,
+  FixedRecurringScheduleRuleSchema as RecurringScheduleRuleSchema,
   UuidSchema,
-  type RecurringScheduleRule,
+  type FixedRecurringScheduleRule as RecurringScheduleRule,
 } from '@allrice/contracts';
 import {
   nativeOnceDigest,

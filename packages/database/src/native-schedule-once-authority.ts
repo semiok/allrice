@@ -76,6 +76,16 @@ export async function lockNativeOnceJobAdmission(
   if (!binding) return { scheduled: false, allowed: true };
   if (
     kind === 'recurring' &&
+    binding.control?.dispatch.consumer === 'ordinary-monthly-v1'
+  ) {
+    const [proof] = await tx<
+      { valid: boolean }[]
+    >`select allrice_ordinary_monthly_handoff_proved(${binding.occurrence_id}::uuid) valid`;
+    if (process.env.ALLRICE_NATIVE_CALENDAR_ENABLED !== '1' || !proof?.valid)
+      return { scheduled: true, runId: binding.run_id, allowed: false };
+  }
+  if (
+    kind === 'recurring' &&
     binding.control?.dispatch.consumer === 'platform-quality-v1'
   ) {
     // Quality is a private static-check consumer, not a personal cloud chat.
@@ -97,6 +107,28 @@ export async function lockNativeOnceJobAdmission(
         binding.outbox_state === 'enqueued' &&
         !!job &&
         (await isPlatformQualityJobAuthorized(tx, job)),
+    };
+  }
+  if (
+    kind === 'recurring' &&
+    binding.control?.dispatch.consumer === 'experience-consolidation-v1'
+  ) {
+    const [job] = await tx<
+      JobRow[]
+    >`select * from allrice_jobs where id=${jobId}`;
+    const { lockExperienceCalendarJobAdmission } =
+      await import('./experience-native.ts');
+    return {
+      scheduled: true,
+      runId: binding.run_id,
+      allowed:
+        binding.outbox_state === 'enqueued' &&
+        !!job &&
+        (await lockExperienceCalendarJobAdmission(
+          tx,
+          job,
+          binding.occurrence_id,
+        )),
     };
   }
   await tx`set local lock_timeout='500ms'`;

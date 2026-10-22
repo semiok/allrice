@@ -335,12 +335,64 @@ export {
   createNativeRecurringSqlStore,
   type NativeRecurringSqlOptions,
 } from './native-schedule-recurring-sql.ts';
+export {
+  createNativeCalendarSqlStore,
+  type NativeCalendarSqlOptions,
+  type NativeCalendarArmRead,
+} from './native-schedule-calendar-sql.ts';
+export {
+  NativeCalendarControlSchema,
+  NativeCalendarRevisionSchema,
+  NativeCalendarPeriodSchema,
+  NativeCalendarArmSchema,
+  NativeCalendarMutationSchema,
+  NativeCalendarStateError,
+  calendarControlIdentity,
+  calendarPeriodIdentity,
+  calendarArmIdentity,
+  calendarArmRequestDigest,
+  prepareNativeCalendarTaskPut,
+  validateCalendarTask,
+  type NativeCalendarControl,
+  type NativeCalendarRevision,
+  type NativeCalendarPeriod,
+  type NativeCalendarArm,
+  type NativeCalendarSnapshot,
+  type NativeCalendarAdmission,
+  type NativeCalendarMutation,
+  type NativeCalendarWrite,
+} from './native-schedule-calendar-state.ts';
+export {
+  NativeCalendarPlanSchema,
+  NativeCalendarDecisionSchema,
+  calendarPlanDigest,
+  calendarDecisionDigest,
+  type NativeCalendarPlan,
+  type NativeCalendarDecision,
+} from './native-schedule-calendar-business-state.ts';
+export {
+  experienceNativeCalendarEnabled,
+  lockExperienceCalendarAdmissions,
+  materializeExperienceNativeCalendar,
+} from './experience-native.ts';
+export type { NativeRecurringPartitionControl } from './native-schedule-recurring-loader.ts';
+export {
+  lockNativeCalendarAdmissions,
+  materializeNativeCalendar,
+} from './native-schedule-calendar-consumers.ts';
 
 export {
   listAutomationCatalog,
   getAutomationCatalogTask,
   getAutomationCatalogOperation,
   changeAutomationCatalogTask,
+  getAutomationCatalogOccurrenceRun,
+  stopAutomationCatalogOccurrence,
 } from './automation-catalog.ts';
 
 export * from './workbench-files.ts';
+export {
+  runManualAutomation,
+  getManualAutomationRun,
+  ManualAutomationRunError,
+} from './automation-manual.ts';

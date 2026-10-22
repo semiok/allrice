@@ -37,6 +37,10 @@ const weeklyRequest = new RegExp(
   `^${requestPrefix}每(?:周|星期)\\s*([一二三四五六日天](?:\\s*[、,，和及]\\s*(?:周|星期)?[一二三四五六日天])*)\\s*[，,]?\\s*((?:[01]?\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d)?)\\s*[，,]?\\s*(?:时区\\s*[:：]?\\s*)?(${zonePattern})\\s*[，,:：]?\\s*(.+)$`,
   'su',
 );
+const monthlyRequest = new RegExp(
+  `^${requestPrefix}每月\\s*(?:(${numberPattern})\\s*(?:日|号)|(?:末|最后一天))\\s*[，,]?\\s*((?:[01]?\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d)?)\\s*[，,]?\\s*(?:时区\\s*[:：]?\\s*)?(${zonePattern})\\s*[，,:：]?\\s*(.+)$`,
+  'su',
+);
 const otherTime = new RegExp(
   `${numberPattern}\\s*(?:秒|分(?:钟)?|小时|天|周|个月|月|年)(?:之后|以后|后|内|前)|${numberPattern}\\s*次|[0-9]{1,2}[:：][0-9]{2}|[0-9零一二两三四五六七八九十]+\\s*[点时](?:整|钟|回复|提醒|执行|发送|$)|[0-9]{4}[-/年][0-9]{1,2}`,
   'u',
@@ -163,14 +167,29 @@ function recurringQualifier(clause: string): boolean {
   );
 }
 
-function taskClause(clause: string): boolean {
-  const request = clause
-    .replace(/^(?:请)?(?:然后|最后|同时|并且|并|再)\s*/u, '')
-    .replace(/^(?:请)?(?:帮我|为我)\s*/u, '')
-    .replace(
-      /^(?:请)?(?:在(?:这个|当前)(?:对话|会话)(?:中|里)?|在此(?:对话|会话))\s*/u,
-      '',
-    );
+function normalizedTaskClause(clause: string): string {
+  return (
+    clause
+      .replace(/^(?:请)?(?:然后|最后|同时|并且|并|再)\s*/u, '')
+      .replace(/^(?:请)?(?:帮我|为我)\s*/u, '')
+      .replace(
+        /^(?:请)?(?:在(?:这个|当前)(?:对话|会话)(?:中|里)?|在此(?:对话|会话))\s*/u,
+        '',
+      )
+      // Recognize ordering words only before an explicit work action. Applying
+      // denial checks to the remaining instruction avoids treating the 别 in
+      // 分别 as a cancellation, while preserving later denials and conditions.
+      .replace(
+        new RegExp(
+          `^((?:请)?)(?:(?:只|仅|分别|逐项|逐一|依次)\\s*){1,3}(?=${actionPattern})`,
+          'u',
+        ),
+        '$1',
+      )
+  );
+}
+
+function taskClause(request: string): boolean {
   const match = request.match(
     /^(?:请)?(?:只|仅)?(回复|回答|提醒|告诉|检查|整理|生成|汇总|查询|查找|总结|读取|列出|编写|执行|完成|发送|翻译|给出|附上|使用|分成|保持)(.+)$/u,
   );
@@ -192,17 +211,18 @@ function explicitWork(text: string): boolean {
   let work = false;
   for (const clause of clauses) {
     if (recurringQualifier(clause)) continue;
+    const instruction = normalizedTaskClause(clause);
     if (
       // These are outer instructions, not words inside quoted task content.
-      conditionalInstruction.test(clause) ||
-      deniedInstruction.test(clause) ||
-      nestedSchedule.test(clause) ||
-      exampleScaffolding.test(clause) ||
+      conditionalInstruction.test(instruction) ||
+      deniedInstruction.test(instruction) ||
+      nestedSchedule.test(instruction) ||
+      exampleScaffolding.test(instruction) ||
       /[?？]|长期|永久|默认|偏好|习惯|今后|以后|大约|大概|左右|差不多|稍后|待会|等会|过会|尽快|至少|至多|最迟|最多|最少|或者|或是|还是|是否|怎么|如何|能否|可否|能不能|可不可以|(?:吗|么|呢|行不行|好不好)$|刚才|上次|之前|此前|上述|上面|同上|照旧|照办|原计划|已确认|已经确认|已同意|(?:这个|那个|该|这项|那项)(?:的)?(?:任务|工作|要求|计划)|今天|明天|后天|今晚|明早|周末|星期|礼拜|下周|本周|下月|本月|明年|开始|起始|截至|截止|直到|结束|终止|持续|有效期|生效|到期|时区|当地时间|本地时间/u.test(
-        clause,
+        instruction,
       ) ||
-      otherTime.test(clause) ||
-      !taskClause(clause)
+      otherTime.test(instruction) ||
+      !taskClause(instruction)
     )
       return false;
     work = true;
@@ -257,6 +277,27 @@ export function explicitRecurringTaskIntent(
       recurringWork(every[3]!)
       ? { rule: { kind: 'every', seconds }, authoritativeRequest: text }
       : null;
+  }
+  const monthly = prose.match(monthlyRequest);
+  if (monthly) {
+    const monthDay = monthly[1] ? positiveInteger(monthly[1]) : 31;
+    if (!monthDay || monthDay > 31 || !explicitWork(monthly[4]!)) return null;
+    const timezone = monthly[3]!;
+    try {
+      new Intl.DateTimeFormat('en', { timeZone: timezone });
+    } catch {
+      return null;
+    }
+    const [hour, minute, second = '00'] = monthly[2]!.split(':');
+    return {
+      rule: {
+        kind: 'monthly',
+        monthDay,
+        time: `${hour!.padStart(2, '0')}:${minute}:${second}`,
+        timezone,
+      },
+      authoritativeRequest: text,
+    };
   }
   const weekly = prose.match(weeklyRequest);
   if (weekly) {
