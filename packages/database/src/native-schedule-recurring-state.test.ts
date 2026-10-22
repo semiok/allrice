@@ -666,4 +666,109 @@ describe('recurring revision updates and terminal deletion', () => {
       ),
     ).toBe(false);
   });
+
+  it('matches the complete weekly weekday set and canonical timezone', () => {
+    const rule = {
+      kind: 'weekly' as const,
+      time: '01:30:00',
+      timezone: 'America/New_York',
+      weekdays: [1, 7],
+    };
+    const record = {
+      ...task().record,
+      kind: 'weekly' as const,
+      time: '01:30:00.000',
+      timeZone: 'US/Eastern',
+      weekdays: [1, 7],
+    };
+    expect(recurringRecordMatches(record, rule)).toBe(true);
+    for (const weekdays of [undefined, [], [1], [7, 1], [1, 1], [1, 6]])
+      expect(recurringRecordMatches({ ...record, weekdays }, rule)).toBe(false);
+    expect(recurringRecordMatches({ ...record, kind: 'daily' }, rule)).toBe(
+      false,
+    );
+    expect(
+      recurringRecordMatches({ ...record, timeZone: 'Mars/Invalid' }, rule),
+    ).toBe(false);
+    expect(
+      recurringRecordMatches({ ...record, time: '02:30:00.000' }, rule),
+    ).toBe(false);
+    expect(
+      NativeRecurringControlSchema.safeParse(
+        control({ rule: { ...rule, weekdays: [7, 1] } }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it('preserves weekly identity and revision through a rule update and one native receipt', () => {
+    const rule = {
+      kind: 'weekly' as const,
+      time: '09:30:00',
+      timezone: 'Asia/Shanghai',
+      weekdays: [1, 7],
+    };
+    const weeklyTask = (next: number, records: Receipt[] = []) => {
+      const value = task(next, records);
+      value.record = {
+        id: value.record.id,
+        kind: 'weekly',
+        title: value.record.title,
+        prompt: value.record.prompt,
+        scheduledAt: value.record.scheduledAt,
+        time: `${rule.time}.000`,
+        timeZone: rule.timezone,
+        weekdays: [...rule.weekdays],
+      };
+      return value;
+    };
+    const weeklyVersions = new Map([
+      [1, version()],
+      [2, { ...version(2), rule }],
+    ]);
+    const updated = prepare(put(weeklyTask(604_800)), {
+      before: {
+        control: control({
+          revision: 2,
+          rule,
+          command: { id: ID.command, kind: 'update', status: 'pending' },
+        }),
+        task: task(),
+      },
+      revisions: weeklyVersions,
+    });
+    expect(updated.occurrences).toEqual([]);
+    expect(updated.after.control.appliedRule).toEqual(rule);
+    expect(recurringControlIdentity(updated.after.control)).toEqual(
+      recurringControlIdentity(control()),
+    );
+    const confirmed = prepare(
+      {
+        kind: 'confirm_command',
+        controlId: ID.control,
+        commandId: ID.command,
+        nativeTaskId: 'native-task-a',
+      },
+      { before: updated.after, revisions: weeklyVersions },
+    );
+    const delivered = weeklyTask(1_209_600, [receipt(604_800)]);
+    const consumed = prepare(put(delivered), {
+      before: confirmed.after,
+      revisions: weeklyVersions,
+      admission: admission({ currentRevision: 2 }),
+    });
+    expect(consumed.occurrences).toHaveLength(1);
+    expect(consumed.occurrences[0]?.payload).toMatchObject({
+      revision: { revision: 2, rule },
+      nativeTaskId: 'native-task-a',
+      receipt: { scheduledAt: instant(604_800) },
+    });
+    expect(consumed.after.control.controlSessionId).toBe('recurring-control-a');
+    expect(
+      prepare(put(delivered), {
+        before: consumed.after,
+        revisions: weeklyVersions,
+        admission: admission({ currentRevision: 2 }),
+      }).occurrences,
+    ).toEqual([]);
+  });
 });
