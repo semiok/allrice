@@ -15,7 +15,11 @@ import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { HarnessExecutionInput } from '../adapter.js';
 import * as CodexSubscription from '../../codex-subscription-home.js';
-import { DshRuntimePool, configuredDshNativeLaunch } from './runtime-pool.js';
+import {
+  DshRuntimePool,
+  configuredDshNativeLaunch,
+  type DshRuntime,
+} from './runtime-pool.js';
 
 let root: string;
 const pools: DshRuntimePool[] = [];
@@ -94,6 +98,93 @@ function pool(native = false, capturePrompt?: string) {
   pools.push(instance);
   return instance;
 }
+
+/** Pool lifecycle seam only: these clients never spawn a native Host. */
+function ownedClient(
+  close: () => Promise<void>,
+  sessionId: string = randomUUID(),
+) {
+  const runtime = {
+    id: randomUUID(),
+    sessionId,
+    client: { close: vi.fn(close) },
+  } as unknown as DshRuntime;
+  return runtime;
+}
+function cachedRuntimes(instance: DshRuntimePool) {
+  return Reflect.get(instance, 'runtimes') as Map<string, DshRuntime>;
+}
+
+it('owned close waits the original client even when the pool mapping is already empty', async () => {
+  const runtimes = pool();
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const original = ownedClient(() => pending);
+  let closed = false;
+  const confirmation = runtimes.closeOwned(original).then(() => {
+    closed = true;
+  });
+  await Promise.resolve();
+  expect(original.client.close).toHaveBeenCalledOnce();
+  expect(closed).toBe(false);
+  release();
+  await confirmation;
+  expect(closed).toBe(true);
+});
+
+it('owned close removes only its own current mapping', async () => {
+  const runtimes = pool(),
+    original = ownedClient(async () => {});
+  cachedRuntimes(runtimes).set(original.sessionId, original);
+  await runtimes.closeOwned(original);
+  expect(runtimes.get(original.sessionId)).toBeUndefined();
+  expect(original.client.close).toHaveBeenCalledOnce();
+});
+
+it('owned close leaves a same-key replacement running and closes only the captured instance', async () => {
+  const runtimes = pool(),
+    original = ownedClient(async () => {}),
+    replacement = ownedClient(async () => {}, original.sessionId);
+  cachedRuntimes(runtimes).set(original.sessionId, replacement);
+  await runtimes.closeOwned(original);
+  expect(runtimes.get(original.sessionId)).toBe(replacement);
+  expect(original.client.close).toHaveBeenCalledOnce();
+  expect(replacement.client.close).not.toHaveBeenCalled();
+});
+
+it('owned close joins the original pending close after global pool shutdown cleared its mapping', async () => {
+  const runtimes = pool();
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const original = ownedClient(() => pending);
+  cachedRuntimes(runtimes).set(original.sessionId, original);
+  const globalClose = runtimes.close();
+  expect(runtimes.get(original.sessionId)).toBeUndefined();
+  let confirmed = false;
+  const ownClose = runtimes.closeOwned(original).then(() => {
+    confirmed = true;
+  });
+  await Promise.resolve();
+  expect(confirmed).toBe(false);
+  release();
+  await Promise.all([globalClose, ownClose]);
+  expect(confirmed).toBe(true);
+});
+
+it('owned close rejection remains unconfirmed and does not close a replacement', async () => {
+  const runtimes = pool(),
+    failure = Error('original close unconfirmed'),
+    original = ownedClient(() => Promise.reject(failure)),
+    replacement = ownedClient(async () => {}, original.sessionId);
+  cachedRuntimes(runtimes).set(original.sessionId, replacement);
+  await expect(runtimes.closeOwned(original)).rejects.toBe(failure);
+  expect(runtimes.get(original.sessionId)).toBe(replacement);
+  expect(replacement.client.close).not.toHaveBeenCalled();
+});
 
 function request(): Parameters<DshRuntimePool['acquire']>[0] {
   const sessionId = randomUUID();

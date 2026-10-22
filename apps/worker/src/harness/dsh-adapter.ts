@@ -602,7 +602,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
     let rootDrainTask: Promise<unknown> | undefined;
     let rootStopTask: Promise<unknown> | undefined;
     let ownedDrop: Promise<void> | undefined;
-    const dropOwnedHost = () => (ownedDrop ??= this.runtimePool.drop(threadId));
+    const dropOwnedHost = () =>
+      (ownedDrop ??= this.runtimePool.closeOwned(runtime));
     const stopWindow = new ReceiptDrainWindow(dropOwnedHost);
     const assistantFailureSignal = new AbortController();
     const executionSignal = assistant
@@ -1516,6 +1517,21 @@ export class DshHarnessAdapter implements HarnessAdapter {
               .catch(() => undefined)) ?? failedUsage;
         await dropOwnedHost();
       }
+      // The original dispatch owns this closure. dropOwnedHost awaits the
+      // exact child's close event, rather than treating interrupt/abort, a
+      // generic RPC error or a deleted pool entry as physical confirmation.
+      // The database port accepts only this already-authorized canceled
+      // attempt; retryable failures/crashes and usage remain unknown.
+      if (input.questionWait?.confirmStopped)
+        await input.questionWait
+          .confirmStopped({
+            nativeSessionId: runtime.sessionId,
+            runtimeId: runtime.id,
+          })
+          .catch(() => {
+            // Preserve the original execution failure and durable started
+            // intent on a rejected or unknown receipt write. Never retry it.
+          });
       const attachUsage = (failure: unknown) => {
         const runId =
           input.assistants?.rootRunId ??
