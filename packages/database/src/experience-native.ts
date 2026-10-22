@@ -3,6 +3,7 @@ import {
   insertCalendarPlanInTransaction as insertPlan,
   insertCalendarDecisionInTransaction as insertDecision,
   prepareCalendarRetirementsInTransaction as prepareRetirements,
+  readCurrentCalendarPlanInTransaction,
 } from './native-schedule-calendar-business.ts';
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
@@ -333,13 +334,42 @@ export async function materializeExperienceNativeCalendar(
     >`
       select c.control_id,c.snapshot,c.snapshot_version,p.plan,p.plan_digest from allrice_native_calendar_plans p
       join allrice_native_recurring_controls c on c.control_id=p.control_id and c.partition_id=p.partition_id
-      where p.closed_decision_id is null and not exists(select 1 from allrice_native_calendar_periods np where np.period_id=p.period_id)
+      join allrice_automations business on business.id=p.automation_id
+      where p.closed_decision_id is null and (
+        not exists(select 1 from allrice_native_calendar_periods np where np.period_id=p.period_id)
+        or not exists(select 1 from allrice_users u
+          join allrice_organizations org on org.id=business.organization_id and org.archived_at is null
+          join allrice_workspaces w on w.id=business.workspace_id and w.organization_id=org.id and w.archived_at is null
+          join allrice_employee_assignments x on x.id=business.employee_assignment_id and x.user_id=u.id and x.active
+          join allrice_employees e on e.id=x.employee_id and e.status='active'
+          join allrice_employee_instances i on i.id=(business.experience_binding->>'instanceId')::uuid and i.assignment_id=x.id
+            and i.organization_id=business.organization_id and i.workspace_id=business.workspace_id
+            and i.owner_id=business.owner_id and i.archived_at is null
+          where u.id=business.owner_id and u.status='active'
+            and exists(select 1 from allrice_memberships m where m.user_id=u.id and m.organization_id=org.id
+              and m.active and m.role in ('member','admin') and (m.workspace_id is null or m.workspace_id=w.id))
+            and not exists(select 1 from allrice_platform_employee_tenant_assignments t where t.organization_id=x.organization_id
+              and t.workspace_id=x.workspace_id and t.tenant_employee_id=x.employee_id and not t.active)))
         and c.immutable_identity->'dispatch'->>'consumer'=${CONSUMER}
       order by p.created_at,p.period_id limit 1`;
     if (pending) {
-      const c = NativeCalendarControlSchema.parse(pending.snapshot.control),
-        plan = NativeCalendarPlanSchema.parse(pending.plan);
-      const gate = await lockBusiness(tx, c, 'native');
+      const discovered = NativeCalendarControlSchema.parse(
+          pending.snapshot.control,
+        ),
+        selectedPlan = NativeCalendarPlanSchema.parse(pending.plan);
+      const gate = await lockBusiness(tx, discovered, 'native');
+      const fresh = await readCurrentCalendarPlanInTransaction(tx, {
+        control: discovered,
+        plan: selectedPlan,
+        planDigest: pending.plan_digest,
+      });
+      if (!fresh) return false;
+      const c = fresh.control,
+        plan = fresh.plan;
+      requireCalendar(
+        isDeepStrictEqual(c.reference, reference),
+        'reference_changed',
+      );
       if (!gate.admission.allowed || gate.admission.status !== 'enabled') {
         await tx`update allrice_automations set status='paused',next_run_at=null where id=${c.automationId}`;
         await insertDecision(tx, {
@@ -355,18 +385,20 @@ export async function materializeExperienceNativeCalendar(
           lease: null,
           budget: null,
         });
+        await prepareRetirements(tx, c.controlId);
         return true;
       }
+      if (fresh.hasNativePeriod) return false;
       if (c.revision < plan.revision) {
         if (c.sessionState !== 'ready') return false;
         const mutation = {
           kind: 'calendar' as const,
           action: 'apply_revision' as const,
           controlId: c.controlId,
-          expectedControlVersion: Number(pending.snapshot_version),
+          expectedControlVersion: fresh.snapshotVersion,
           revision: plan.revision,
           planId: plan.periodId,
-          planDigest: pending.plan_digest,
+          planDigest: fresh.planDigest,
         };
         const write: NativeCalendarWrite = {
           writeId: randomUUID(),

@@ -854,8 +854,43 @@ alter table allrice_native_calendar_decisions add constraint native_calendar_bus
         or (decision->'budget'->>'organizationCount')::bigint>=8 or (decision->'budget'->>'instanceCount')::bigint>=1)))
   ) is true);
 
+-- Authority withdrawal can finish an accepted update/resume before native
+-- create. The immutable decision was proved against actual revocation at its
+-- own COMMIT; restoring permission must not erase that terminal evidence.
+-- Unknown create or an unretired Task still prevents this acknowledgement.
+create function allrice_ordinary_monthly_operation_authority_terminal_proved(automation uuid, operation uuid)
+returns boolean language sql as $$
+select exists(select 1 from allrice_native_recurring_operations op
+  join allrice_automations a on a.id=op.automation_id
+  join allrice_native_recurring_controls c on c.automation_id=a.id
+  join allrice_native_calendar_plans p on p.automation_id=a.id and p.control_id=c.control_id and p.partition_id=c.partition_id
+  join allrice_native_recurring_versions v on v.automation_id=a.id and v.revision=p.revision
+  join allrice_native_calendar_decisions d on d.period_id=p.period_id and d.decision_id=p.closed_decision_id
+  where op.automation_id=$1 and op.operation_id=$2 and op.organization_id=a.organization_id and op.owner_id=a.owner_id
+    and op.status in ('pending','applied') and op.request->>'action' in ('update','resume')
+    and p.revision=(op.request->>'expectedRevision')::bigint+1
+    and p.plan->'cause'=jsonb_build_object('kind','operation','operationId',op.operation_id::text)
+    and allrice_ordinary_monthly_scope_proved(a.id) and allrice_ordinary_monthly_version_proved(a.id,p.revision)
+    and p.plan->>'revisionDigest'=allrice_native_control_document_digest(v.configuration)
+    and p.created_at=(v.configuration->>'acceptedAt')::timestamptz and p.created_at>=op.created_at
+    and d.kind='authority' and d.outcome='authority_blocked' and d.revision=p.revision and d.decided_at>=p.created_at
+    and d.occurrence_id is null and d.automation_run_id is null and d.successor_period_id is null
+    and d.decision->'lease'='null'::jsonb and d.decision->'budget'='null'::jsonb
+    and a.status='paused' and a.deleted_at is null and a.next_run_at is null
+    and a.revision=p.revision and a.native_recurring_revision=p.revision
+    and not exists(select 1 from allrice_native_calendar_plans open_plan
+      where open_plan.automation_id=a.id and open_plan.closed_decision_id is null)
+    and not exists(select 1 from allrice_native_calendar_periods np where np.period_id=p.period_id
+      and np.business_decision_id is distinct from d.decision_id)
+    and not exists(select 1 from allrice_native_calendar_periods np
+      join allrice_native_calendar_arms arm on arm.period_id=np.period_id
+      where np.automation_id=a.id and (arm.status='creating' or (arm.native_task_id is not null
+        and not exists(select 1 from allrice_native_calendar_retirements r where r.arm_id=arm.arm_id)))))
+$$;
+
 create function allrice_ordinary_monthly_operation_fence() returns trigger language plpgsql as $$
 declare a allrice_automations; v allrice_native_recurring_versions; action text; target_revision bigint;
+  version_proved boolean; duplicate_accepted boolean;
 begin
   if not exists(select 1 from allrice_native_recurring_controls c where c.automation_id=new.automation_id
     and c.immutable_identity->'dispatch'->>'consumer'='ordinary-monthly-v1') then return new; end if;
@@ -876,13 +911,17 @@ begin
   end if;
   if new.status='rejected' then return new; end if;
   select * into v from allrice_native_recurring_versions where automation_id=a.id and revision=target_revision;
-  if allrice_ordinary_monthly_version_proved(a.id,target_revision) is not true or a.native_recurring_revision<target_revision
-    or exists(select 1 from allrice_native_recurring_operations other where other.automation_id=a.id
+  version_proved:=allrice_ordinary_monthly_version_proved(a.id,target_revision);
+  duplicate_accepted:=exists(select 1 from allrice_native_recurring_operations other where other.automation_id=a.id
       and other.operation_id<>new.operation_id and other.status in ('pending','applied')
-      and other.request->'expectedRevision'=new.request->'expectedRevision') then
-    raise exception 'ordinary monthly operation lacks its unique accepted revision' using errcode='23514';
+      and other.request->'expectedRevision'=new.request->'expectedRevision');
+  if version_proved is not true or a.native_recurring_revision<target_revision or duplicate_accepted then
+    raise exception 'ordinary monthly operation lacks its unique accepted revision' using errcode='23514',
+      detail=jsonb_build_object('versionProved',version_proved,'currentRevision',a.native_recurring_revision,
+        'targetRevision',target_revision,'duplicateAccepted',duplicate_accepted)::text;
   end if;
   if new.status='pending' then return new; end if;
+  if allrice_ordinary_monthly_operation_authority_terminal_proved(a.id,new.operation_id) then return new; end if;
   if action='delete' then
     if a.deleted_at is null or exists(select 1 from allrice_native_calendar_plans p where p.automation_id=a.id and p.closed_decision_id is null)
       or exists(select 1 from allrice_native_calendar_periods p join allrice_native_calendar_arms arm on arm.period_id=p.period_id
@@ -895,6 +934,8 @@ begin
     if not exists(select 1 from allrice_native_calendar_plans p join allrice_native_calendar_periods np on np.plan_id=p.period_id
       join allrice_native_calendar_arms arm on arm.arm_id=np.current_arm_id and arm.period_id=np.period_id
       where p.automation_id=a.id and p.revision=target_revision and arm.native_task_id is not null and arm.status in ('bound','received')
+        and (p.closed_decision_id is null or exists(select 1 from allrice_native_calendar_decisions d
+          where d.decision_id=p.closed_decision_id and d.kind='receipt' and d.outcome in ('queued','already_claimed','coalesced')))
         and p.plan->'cause'=jsonb_build_object('kind','operation','operationId',new.operation_id::text)) then
       raise exception 'ordinary monthly operation lacks an actual bound successor Task' using errcode='23514';
     end if;

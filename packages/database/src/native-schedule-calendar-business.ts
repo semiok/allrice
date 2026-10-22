@@ -1,10 +1,14 @@
 /** Shared business-intent writes; native Task journals remain independent. */
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import type { TransactionSql } from 'postgres';
 import { nativeOnceDigest } from './native-schedule-once-state.ts';
-import type {
-  NativeCalendarControl,
-  NativeCalendarRevision,
+import {
+  NativeCalendarControlSchema,
+  calendarControlIdentity,
+  requireCalendar,
+  type NativeCalendarControl,
+  type NativeCalendarRevision,
 } from './native-schedule-calendar-state.ts';
 import {
   NativeCalendarPlanSchema,
@@ -57,6 +61,60 @@ export async function insertCalendarDecisionInTransaction(
     values(${d.decisionId},${d.periodId},${d.kind},${d.outcome},${d.revision},${d.receiptOccurrenceId},${d.automationRunId},
       ${d.successorPeriodId},${json(tx, d)},${calendarDecisionDigest(d)},${d.decidedAt}::timestamptz)`;
 }
+
+/** The caller holds its original principal/business/automation locks. Discovery
+ * happens before those locks and is only a hint: Web may have closed/replaced
+ * P while the Worker waited. Do not take a control/partition lock here; native
+ * writes retain their business -> partition -> control order below this read. */
+export async function readCurrentCalendarPlanInTransaction(
+  tx: Tx,
+  selected: {
+    control: NativeCalendarControl;
+    plan: NativeCalendarPlan;
+    planDigest: string;
+  },
+) {
+  const [fresh] = await tx<
+    {
+      snapshot: { control: unknown };
+      snapshot_version: number | string;
+      plan: NativeCalendarPlan;
+      plan_digest: string;
+      has_native_period: boolean;
+    }[]
+  >`select c.snapshot,c.snapshot_version,p.plan,p.plan_digest,
+      exists(select 1 from allrice_native_calendar_periods np where np.period_id=p.period_id) has_native_period
+    from allrice_native_calendar_plans p
+    join allrice_native_recurring_controls c on c.partition_id=p.partition_id and c.control_id=p.control_id
+      and c.automation_id=p.automation_id
+    join allrice_automations a on a.id=p.automation_id
+    where p.period_id=${selected.plan.periodId} and p.control_id=${selected.control.controlId}
+      and p.partition_id=${selected.control.partitionId} and p.automation_id=${selected.control.automationId}
+      and p.closed_decision_id is null and a.clock_owner='native_recurring'
+      and a.status='enabled' and a.deleted_at is null and a.revision=p.revision
+      and a.native_recurring_revision=p.revision and a.next_run_at=p.business_scheduled_for`;
+  if (!fresh) return null;
+  const control = NativeCalendarControlSchema.parse(fresh.snapshot.control),
+    plan = NativeCalendarPlanSchema.parse(fresh.plan);
+  requireCalendar(
+    isDeepStrictEqual(
+      calendarControlIdentity(control),
+      calendarControlIdentity(selected.control),
+    ) &&
+      isDeepStrictEqual(plan, selected.plan) &&
+      fresh.plan_digest === selected.planDigest &&
+      calendarPlanDigest(plan) === fresh.plan_digest,
+    'plan_changed',
+  );
+  return {
+    control,
+    plan,
+    planDigest: fresh.plan_digest,
+    snapshotVersion: Number(fresh.snapshot_version),
+    hasNativePeriod: fresh.has_native_period,
+  };
+}
+
 export async function prepareCalendarRetirementsInTransaction(
   tx: Tx,
   controlId?: string,

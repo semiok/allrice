@@ -1348,7 +1348,21 @@ async function dispatchOrdinaryMonthlyNative(
         outcome = 'queued';
         targetP = nextMonthlyBusinessTarget(version.rule, now);
         binding = {
-          ...queued.business,
+          // Persist the exact monthly handoff identity, independently of the
+          // public queue response's created/delivery/activeRunId projection.
+          runId: queued.business.runId,
+          jobId: queued.business.jobId,
+          organizationId: queued.business.organizationId,
+          workspaceId: queued.business.workspaceId,
+          ownerId: queued.business.ownerId,
+          sessionId: queued.business.sessionId,
+          employeeAssignmentId: queued.business.employeeAssignmentId,
+          employeeInstanceId: queued.business.employeeInstanceId,
+          clientMessageId: queued.business.clientMessageId,
+          snapshotDigest: queued.business.snapshotDigest,
+          userMessageId: queued.business.userMessageId,
+          assistantMessageId: queued.business.assistantMessageId,
+          employeeVersionId: queued.business.employeeVersionId,
           consumer: 'ordinary-monthly-v1',
           periodId: p.periodId,
           decisionId,

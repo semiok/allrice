@@ -39,6 +39,7 @@ import {
   insertCalendarPlanInTransaction,
   insertCalendarDecisionInTransaction,
   prepareCalendarRetirementsInTransaction,
+  readCurrentCalendarPlanInTransaction,
 } from './native-schedule-calendar-business.ts';
 import { nextMonthlyBusinessTarget } from './native-schedule-monthly-time.ts';
 import type { RecurringPlan } from './native-schedule-recurring-product.ts';
@@ -297,8 +298,18 @@ export async function changeOrdinaryMonthlyTaskInTransaction(
   raw: unknown,
   input: ChangeRecurringTaskInput,
 ) {
-  const c = ordinaryMonthlyControl(raw),
-    now = await instant(tx),
+  const c = ordinaryMonthlyControl(raw);
+  // Operations retain PostgreSQL microseconds, while native documents use
+  // exact milliseconds. Round the saved operation up in SQL before choosing
+  // acceptedAt; a JS Date would already have lost that ordering evidence.
+  const [clock] = await tx<{ now: Date }[]>`select greatest(
+      date_trunc('milliseconds',clock_timestamp()),
+      date_trunc('milliseconds',created_at)+case when created_at=date_trunc('milliseconds',created_at)
+        then interval '0 milliseconds' else interval '1 millisecond' end) now
+    from allrice_native_recurring_operations where automation_id=${p.id} and operation_id=${input.operationId}
+      and organization_id=${p.organization_id} and owner_id=${p.owner_id} and status='pending'`;
+  requireCalendar(clock, 'operation_missing');
+  const now = clock.now,
     revision = Number(p.revision) + 1;
   requireCalendar(Number.isSafeInteger(revision), 'revision_limit');
   const [previous] = await tx<
@@ -387,18 +398,27 @@ export async function materializeOrdinaryMonthlyCalendar(
       join allrice_native_recurring_controls c on c.control_id=p.control_id and c.partition_id=p.partition_id
       where c.immutable_identity->'dispatch'->>'consumer'=${ordinaryMonthlyConsumer}
         and p.closed_decision_id is null
-        and not exists(select 1 from allrice_native_calendar_periods np where np.period_id=p.period_id)
+        and (not exists(select 1 from allrice_native_calendar_periods np where np.period_id=p.period_id)
+          or not allrice_ordinary_monthly_authorized(p.automation_id))
       order by p.created_at,p.period_id limit 1`;
     if (pending) {
-      const c = ordinaryMonthlyControl(pending.snapshot.control),
-        plan = NativeCalendarPlanSchema.parse(pending.plan);
+      const discovered = ordinaryMonthlyControl(pending.snapshot.control),
+        selectedPlan = NativeCalendarPlanSchema.parse(pending.plan);
       requireCalendar(
-        isDeepStrictEqual(c.reference, reference),
+        isDeepStrictEqual(discovered.reference, reference),
         'reference_changed',
       );
-      const fact = (await lockOrdinaryMonthlyAdmissions(tx, [c])).get(
-        c.controlId,
+      const fact = (await lockOrdinaryMonthlyAdmissions(tx, [discovered])).get(
+        discovered.controlId,
       );
+      const fresh = await readCurrentCalendarPlanInTransaction(tx, {
+        control: discovered,
+        plan: selectedPlan,
+        planDigest: pending.plan_digest,
+      });
+      if (!fresh) return false;
+      const c = ordinaryMonthlyControl(fresh.control),
+        plan = fresh.plan;
       if (!fact?.allowed || fact.status !== 'enabled') {
         await tx`update allrice_automations set status='paused',next_run_at=null where id=${c.automationId}`;
         await insertCalendarDecisionInTransaction(tx, {
@@ -415,18 +435,22 @@ export async function materializeOrdinaryMonthlyCalendar(
           budget: null,
         });
         await prepareCalendarRetirementsInTransaction(tx, c.controlId);
+        await tx`update allrice_native_recurring_operations op set status='applied',updated_at=clock_timestamp()
+          where op.automation_id=${c.automationId} and op.status='pending'
+            and allrice_ordinary_monthly_operation_authority_terminal_proved(op.automation_id,op.operation_id)`;
         return true;
       }
+      if (fresh.hasNativePeriod) return false;
       if (c.revision < plan.revision) {
         if (c.sessionState !== 'ready') return false;
         const mutation = {
           kind: 'calendar' as const,
           action: 'apply_revision' as const,
           controlId: c.controlId,
-          expectedControlVersion: Number(pending.snapshot_version),
+          expectedControlVersion: fresh.snapshotVersion,
           revision: plan.revision,
           planId: plan.periodId,
-          planDigest: pending.plan_digest,
+          planDigest: fresh.planDigest,
         };
         const write: NativeCalendarWrite = {
           writeId: randomUUID(),
@@ -459,10 +483,14 @@ export async function materializeOrdinaryMonthlyCalendar(
       from allrice_native_recurring_operations op join allrice_automations a on a.id=op.automation_id
       join allrice_native_recurring_controls c on c.automation_id=a.id
       where op.status='pending' and c.immutable_identity->'dispatch'->>'consumer'=${ordinaryMonthlyConsumer}
-        and ((op.request->>'action' in ('update','resume') and exists(
+        and (allrice_ordinary_monthly_operation_authority_terminal_proved(op.automation_id,op.operation_id)
+        or (op.request->>'action' in ('update','resume') and exists(
           select 1 from allrice_native_calendar_plans p join allrice_native_calendar_periods np on np.plan_id=p.period_id
           join allrice_native_calendar_arms arm on arm.period_id=np.period_id and arm.native_task_id is not null
-          where p.control_id=c.control_id and p.plan->'cause'=jsonb_build_object('kind','operation','operationId',op.operation_id::text)))
+          where p.control_id=c.control_id and (p.closed_decision_id is null or exists(
+            select 1 from allrice_native_calendar_decisions d where d.decision_id=p.closed_decision_id and d.kind='receipt'
+              and d.outcome in ('queued','already_claimed','coalesced')))
+            and p.plan->'cause'=jsonb_build_object('kind','operation','operationId',op.operation_id::text)))
         or (op.request->>'action'='delete' and a.deleted_at is not null
           and not exists(select 1 from allrice_native_calendar_periods p join allrice_native_calendar_arms arm on arm.period_id=p.period_id
             where p.control_id=c.control_id and (arm.status='creating' or (arm.native_task_id is not null

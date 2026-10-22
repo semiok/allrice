@@ -166,7 +166,7 @@ suite(
         vi.unstubAllEnvs();
       }
     }, 30_000);
-    it('recovers/delivers/decides/retires with fixed coexistence and a cold public reopen', async () => {
+    it('recovers/delivers/retires with live Session enrollment, fixed coexistence and cold reopen', async () => {
       // Vitest injects --require/--conditions. Run the built production code in a
       // normal Node child, never change execArgv or weaken artifact approval.
       const url = new URL(f.databaseUrl),
@@ -227,6 +227,10 @@ suite(
             automationId: seeded.automationId,
             P: seeded.P.toISOString(),
             fixedId,
+            lateEnrollment: {
+              context: f.context,
+              employeeAssignmentId: f.assignmentId,
+            },
           }),
         ],
         { env, timeout: 170_000, maxBuffer: 8 * 1024 * 1024 },
@@ -264,7 +268,24 @@ suite(
       expect(evidence.consumer).toBe('ordinary-monthly-v1');
       expect(evidence.businessRunId).toBeTruthy();
       expect(evidence.ordinaryJobId).toBeTruthy();
-      expect(evidence.coldEpoch).toBe(evidence.firstEpoch + 1);
+      expect(evidence.liveAddition).toMatchObject({
+        pid: child.pid,
+        originalEpoch: evidence.firstEpoch,
+        reopenedEpoch: evidence.firstEpoch + 1,
+        initialHistoryCount: 2,
+        historyCount: 3,
+        refreshClose: { kind: 'public_host_backend_drained' },
+      });
+      expect(evidence.liveAddition.automationId).not.toBe(seeded.automationId);
+      expect(evidence.liveAddition.automationId).not.toBe(fixedId);
+      expect(Date.parse(evidence.liveAddition.P)).toBeGreaterThan(
+        Date.now() + 7 * 86_400_000,
+      );
+      expect(evidence.runningEpoch).toBe(evidence.liveAddition.reopenedEpoch);
+      expect(evidence.coldEpoch).toBe(evidence.runningEpoch + 1);
+      expect(evidence.firstHistoryCount).toBe(3);
+      expect(evidence.coldHistoryCount).toBe(3);
+      expect(evidence.durable.controls).toHaveLength(3);
       expect(evidence.retiredTaskId).not.toBe(evidence.nextTaskId);
       process.stdout.write(
         result.stdout
