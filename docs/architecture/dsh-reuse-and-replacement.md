@@ -622,6 +622,10 @@ Web 九个已用包固定0.2.1-rc.2，另显式登记 primitives 实际引用的
 
 PDF/Excel将现有LoadingIndicator传给真实原生正文的必需loading注入值，动态chunk仍仅在打开文件时从本地同源接口加载。真实并发预览回归覆盖chunk注册、解析阶段反馈和原生可读内容；类型、来源、浏览器和实际Dev按版本留证。MCP/调度依旧复用当前Worker和原生Host，未因为UI升级增加另一套执行服务。
 
-### MET198：桌面业务页通过现有公开 Dock 接入
+### MET198：统一 Dock、紧凑文件页与人类终端
 
-此项沿用已固定的 `ui-dockkit@0.2.1-rc.2`、现有原生 store 和已导出的 `openContent.replaceTab`；只增加 AllRice 业务页注册、开始页卡片与宿主输入样式。标签、分栏、浮动、全屏、关闭和恢复仍由 DSH 管理，没有新增上游源码补丁或执行内核补偿。文件多部门授权由 AllRice 数据层负责；经验和工作流复用既有读取/事务。手机导航与终端不在此项实施范围，详细边界见[原生工作台说明](../features/native-workbench/README.md#met-198桌面统一工作台)。
+沿用固定的 `ui-dockkit@0.2.1-rc.2`、原生 store 和 `openContent.replaceTab`；标签、分栏、浮动、全屏、关闭及恢复不另造状态机。紧凑文件列表复用原生类型图标和菜单，上传/参考设置仍走 AllRice 文件权限与幂等回执；主对话和桌面输入默认 14px。顶部模块统一选中态，定时图标按当前会话出现，复用已有右栏列表/详情。左侧保留全局自动化导航；会话行时钟经已登记宿主槽接入，原生活动状态优先。经验、工作流沿用原有服务，本轮不另做手机导航。
+
+真实人类终端完整消费同版 `ClientTerminals`、`RemoteStream`、`TerminalBody` 及 Bridge 的 `TerminalController` / `LocalSubprocessRuntime`，不复刻 xterm、PTY 或重连状态机。集中适配只负责 AllRice cookie/登录身份、当前会话、设备与目录授权，以及既有 Bridge WSS 的窄传输和浏览器 Storage 作用域；Web 原生资产保持完整并登记固定 SHA。`0.6.0-dev.58` 客户端只有实际声明 `humanTerminalVersion: 1` 才被网页采用。授权目录是初始 cwd，不是 OS 沙箱；此人类 shell 不产生 Agent Run，不调用模型、不自动喂入聊天历史，也不回放断线输入。
+
+切页或暂时断网保留后台 PTY，显式关闭、确定撤权和 Bridge 退出等待原生清理；授权证据 unknown 且租期过期时停止输入、保留 PTY，不误杀或冒称清理完成。x64/arm64 SEA 的独立终端副资源由固定 manifest 校验，使用既有数据库登录与授权事实，不增加 SQL migration。若上游直接支持相同的身份、Bridge 传输和 Storage 能力，应退役对应集中适配；不能以图标、编译或合成回归替代最终双架构包与真实 Dev 联合验收。详细行为和交付门槛见[原生工作台说明](../features/native-workbench/README.md#met-198桌面统一工作台)。

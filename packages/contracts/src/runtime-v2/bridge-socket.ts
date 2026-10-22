@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { UuidSchema } from '../common.ts';
+import { BridgeTerminalServerFrameSchema } from '../workbench-terminal.ts';
 import {
   ProjectPreviewRequestSchema,
   ProjectPreviewDataSchema,
@@ -74,6 +75,7 @@ export const BridgeSocketMessageSchema = z.discriminatedUnion('type', [
   ProjectPreviewDataSchema,
   ProjectPreviewEndSchema,
   ProjectPreviewAckSchema,
+  BridgeTerminalServerFrameSchema,
 ]);
 
 export function bridgeSocketOperationPath(input: BridgeSocketRequest) {

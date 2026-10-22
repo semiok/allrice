@@ -1,6 +1,7 @@
 'use client';
 import {
   DockLayout,
+  type TabId,
   dockPaneIds,
   findPaneContentTab,
   findTabPane,
@@ -8,6 +9,7 @@ import {
 import {
   FileTypeIcon,
   classifyFileType,
+  IconClockOutlineRegular,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import moduleUi from './workbench-modules.module.css';
 import { GUIDE_KIND, pageAddress } from './dsh-upstream/dock/contract/seed';
@@ -64,6 +66,20 @@ import sidebarUi from './dsh-upstream/dock/SidebarRight.module.css';
 import { inputRetry } from '../../lib/chatflow/input-retry';
 import { readJson } from './chatflow-utils';
 import { AssistantMarkdown } from './assistant-markdown';
+import {
+  TerminalGuide,
+  TerminalIcon,
+  TerminalWorkbench,
+} from './terminal-workbench';
+import {
+  closeNativeTerminalTab,
+  nativeTerminalRuntime,
+  retainNativeTerminalTab,
+  retainTerminalOwner,
+  terminalContentId,
+  terminalPin,
+} from './terminal-native';
+import type { TerminalIdentity } from './terminal-transport';
 
 const RichDiff = lazy(() =>
   import('./cline-adapter/tool-file-diff').then((m) => ({
@@ -88,6 +104,8 @@ class DiffBoundary extends Component<
 }
 type Props = {
   desktop?: boolean;
+  terminalIdentity?: { organizationId: string; ownerId: string };
+  onOpenComputerSettings?: () => void;
   moduleRequest?: {
     kind: WorkbenchModule | 'guide' | 'reference';
     revision: number;
@@ -102,13 +120,20 @@ type Props = {
     onOpenFile: (id: string, title: string) => void,
   ) => ReactNode;
   onModuleViewed?: (kind: WorkbenchModule) => void;
+  onActiveModule?: (kind: WorkbenchModule | 'schedule' | null) => void;
   open: boolean;
   width: number;
   dockScope: string;
   filesRequest?: number;
   selectionRequest?: number;
-  taskRequest?: { id: string; title: string; revision: number };
+  taskRequest?: {
+    id: string;
+    title: string;
+    revision: number;
+    kind?: 'scheduleTask' | 'sessionSchedules';
+  };
   renderTask?: (taskId: string, active: boolean) => ReactNode;
+  renderSessionTasks?: (sessionId: string, active: boolean) => ReactNode;
   onBrowseFiles?: () => void;
   sessionId: string | null;
   workspaceId: string;
@@ -133,13 +158,69 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
   const panel = useRef<HTMLElement>(null),
     previousFocus = useRef<HTMLElement | null>(null);
   const close = props.onClose;
+  const [terminalTitles, setTerminalTitles] = useState<Record<string, string>>(
+    {},
+  );
+  const terminalIdentity: TerminalIdentity | null =
+    props.terminalIdentity && props.sessionId
+      ? {
+          ...props.terminalIdentity,
+          workspaceId: props.workspaceId,
+          sessionId: props.sessionId,
+        }
+      : null;
+  const terminalClose = useRef<(id: TabId) => void>(() => {});
   const dock = useNativeDock(
     props.dockScope,
-    () => true,
+    (id) => {
+      terminalClose.current(id);
+      return true;
+    },
     props.onClose,
     props.desktop ? '开始' : '交付成果',
   );
+  terminalClose.current = (id) => {
+    const tab = dock.surface.layout.tabs[id];
+    if (terminalIdentity && tab?.kind === 'terminal')
+      void closeNativeTerminalTab(terminalIdentity, tab.id, tab.contentId);
+  };
+  const terminalLayout = useRef(dock.surface.layout);
+  terminalLayout.current = dock.surface.layout;
+  useEffect(() => {
+    if (!terminalIdentity) return;
+    retainTerminalOwner(terminalIdentity);
+    for (const tab of Object.values(dock.surface.layout.tabs)) {
+      if (tab.kind !== 'terminal') continue;
+      const pin = terminalPin(tab.contentId);
+      if (!pin) continue;
+      void nativeTerminalRuntime(terminalIdentity, pin)
+        .then((runtime) => {
+          if (terminalLayout.current.tabs[tab.id]?.contentId === tab.contentId)
+            retainNativeTerminalTab(runtime, tab.id, tab.contentId);
+        })
+        .catch(() => undefined);
+    }
+  }, [props.dockScope, dock.surface.layout]);
   const fullscreen = props.narrow || dock.surface.layout.mode === 'fullscreen';
+  const activeModule = useRef(props.onActiveModule);
+  activeModule.current = props.onActiveModule;
+  useEffect(() => {
+    const layout = dock.surface.layout;
+    const pane = layout.nodes[layout.activePaneId];
+    const tab =
+      pane?.kind === 'pane' && pane.activeTabId
+        ? layout.tabs[pane.activeTabId]
+        : null;
+    activeModule.current?.(
+      !props.open || !tab
+        ? null
+        : ['files', 'experience', 'workflow'].includes(tab.kind)
+          ? (tab.kind as WorkbenchModule)
+          : ['scheduleTask', 'sessionSchedules'].includes(tab.kind)
+            ? 'schedule'
+            : null,
+    );
+  }, [props.open, dock.surface.layout]);
   useEffect(() => {
     if (!props.open) return;
     const element = panel.current;
@@ -237,7 +318,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
     const request = props.taskRequest;
     if (!request || lastTaskRequest.current === request.revision) return;
     lastTaskRequest.current = request.revision;
-    dock.open('scheduleTask', request.id, request.title);
+    dock.open(request.kind ?? 'scheduleTask', request.id, request.title);
   });
   const lastFilesRequest = useRef(0);
   useEffect(() => {
@@ -343,6 +424,12 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                           size={17}
                         />
                       </span>
+                    ) : ['scheduleTask', 'sessionSchedules'].includes(
+                        tab.kind,
+                      ) ? (
+                      <IconClockOutlineRegular size={17} />
+                    ) : tab.kind === 'terminal' ? (
+                      <TerminalIcon />
                     ) : tab.kind === GUIDE_KIND ? (
                       <WorkbenchIcon kind="start" size={16} />
                     ) : (
@@ -351,7 +438,13 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                         size={16}
                       />
                     )}
-                    <span>{tab.kind === GUIDE_KIND ? '开始' : tab.title}</span>
+                    <span>
+                      {tab.kind === GUIDE_KIND
+                        ? '开始'
+                        : tab.kind === 'terminal'
+                          ? (terminalTitles[tab.contentId] ?? tab.title)
+                          : tab.title}
+                    </span>
                   </span>
                 )
               : (tab) => (tab.kind === GUIDE_KIND ? '交付成果' : tab.title)
@@ -373,7 +466,47 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
           }
           keepMounted={() => true}
           renderTab={(tab) =>
-            tab.kind === 'scheduleTask' ? (
+            tab.kind === 'terminal' && terminalIdentity ? (
+              <TerminalWorkbench
+                identity={terminalIdentity}
+                tabId={tab.id}
+                contentId={tab.contentId}
+                onTitle={(title) =>
+                  setTerminalTitles((previous) =>
+                    previous[tab.contentId] === title
+                      ? previous
+                      : { ...previous, [tab.contentId]: title },
+                  )
+                }
+                active={
+                  props.open &&
+                  findTabPane(dock.surface.layout, tab.id).activeTabId ===
+                    tab.id
+                }
+                onOpenComputerSettings={props.onOpenComputerSettings}
+                onNew={() => {
+                  void closeNativeTerminalTab(
+                    terminalIdentity,
+                    tab.id,
+                    tab.contentId,
+                  );
+                  dock.open(
+                    GUIDE_KIND,
+                    pageAddress(GUIDE_KIND),
+                    '开始',
+                    findTabPane(dock.surface.layout, tab.id).id,
+                    tab.id,
+                  );
+                }}
+              />
+            ) : tab.kind === 'sessionSchedules' ? (
+              props.renderSessionTasks?.(
+                tab.contentId,
+                props.open &&
+                  findTabPane(dock.surface.layout, tab.id).activeTabId ===
+                    tab.id,
+              )
+            ) : tab.kind === 'scheduleTask' ? (
               props.renderTask?.(
                 tab.contentId,
                 props.open &&
@@ -384,6 +517,33 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
               <WorkbenchStart
                 experience={!!props.experienceAvailable}
                 workflow={!!props.workflowAvailable}
+                terminal={
+                  terminalIdentity ? (
+                    <TerminalGuide
+                      identity={terminalIdentity}
+                      headers={props.tenantHeaders}
+                      active={
+                        props.open &&
+                        findTabPane(dock.surface.layout, tab.id).activeTabId ===
+                          tab.id
+                      }
+                      readOnly={props.readOnly}
+                      onOpenComputerSettings={props.onOpenComputerSettings}
+                      onLaunch={(pin, shellPath) => {
+                        const count = Object.values(
+                          dock.surface.layout.tabs,
+                        ).filter((entry) => entry.kind === 'terminal').length;
+                        dock.open(
+                          'terminal',
+                          terminalContentId(pin, shellPath),
+                          `终端 ${count + 1}`,
+                          findTabPane(dock.surface.layout, tab.id).id,
+                          tab.id,
+                        );
+                      }}
+                    />
+                  ) : undefined
+                }
                 onOpen={(kind) => {
                   dock.open(
                     kind,

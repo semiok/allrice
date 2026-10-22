@@ -190,8 +190,10 @@ function requireWorkspaceMember(context: RequestContext, workspaceId: string) {
 function mapDevice(row: DeviceRow, now = Date.now()): BridgeDevice {
   // The shutdown heartbeat is recent too. Its explicit stopped/paused report
   // takes precedence over the heartbeat window, which only detects lost peers.
-  const paused = BridgeEnvironmentSchema.safeParse(row.metadata?.environment)
-    .data?.paused;
+  const environment = BridgeEnvironmentSchema.safeParse(
+    row.metadata?.environment,
+  ).data;
+  const paused = environment?.paused;
   const status = row.revoked_at
     ? 'revoked'
     : !paused &&
@@ -210,6 +212,9 @@ function mapDevice(row: DeviceRow, now = Date.now()): BridgeDevice {
     protocolVersion: row.protocol_version,
     capabilities: row.capabilities,
     status,
+    ...(environment?.humanTerminalVersion === 1
+      ? { humanTerminalVersion: 1 }
+      : {}),
     ...(row.client_version !== undefined
       ? { clientVersion: row.client_version }
       : {}),

@@ -11,6 +11,7 @@ import {
   withPreparationStep,
   type PreparationObserver,
 } from './preparation-progress.js';
+import type { HumanTerminalRelay } from './human-terminal-relay.js';
 
 import {
   BridgeCapabilities,
@@ -35,6 +36,8 @@ import {
   type BridgeDevice,
   type BridgeFolderGrant,
   type BridgeWorkspaceSelectionRequest,
+  type TerminalTarget,
+  TerminalTargetSchema,
 } from '@allrice/contracts';
 
 import {
@@ -1145,6 +1148,57 @@ async function startSession(
     : null;
   let transport: BridgeDualTransport | null = null;
   let transportIdentity = '';
+  let humanTerminalRelay: HumanTerminalRelay | undefined;
+  if (
+    operationLedgerEnabled &&
+    process.env.ALLRICE_BRIDGE_WSS_ENABLED !== '0' &&
+    process.platform === 'darwin' &&
+    ['arm64', 'x64'].includes(process.arch)
+  ) {
+    try {
+      const [{ HumanTerminalHost }, { HumanTerminalRelay }] = await Promise.all(
+        [
+          import('./human-terminal-host.js'),
+          import('./human-terminal-relay.js'),
+        ],
+      );
+      humanTerminalRelay = new HumanTerminalRelay(
+        new HumanTerminalHost({
+          server: config.server,
+          deviceId: config.deviceId,
+          authorizeTarget: async (target: TerminalTarget) => {
+            try {
+              const reply = await bridgeRequest<{ target: unknown }>({
+                server: config.server,
+                path: '/api/v1/bridge/device/terminals/authorize',
+                method: 'POST',
+                token,
+                body: { target },
+                timeoutMs: 2500,
+                maximumResponseBytes: 8192,
+              });
+              const current = TerminalTargetSchema.parse(reply.target);
+              const expected = TerminalTargetSchema.parse(target);
+              return (Object.keys(expected) as (keyof TerminalTarget)[]).every(
+                (key) => key === 'label' || current[key] === expected[key],
+              )
+                ? 'current'
+                : 'revoked';
+            } catch (error) {
+              if (
+                error instanceof BridgeClientError &&
+                [401, 403, 404].includes(error.status)
+              )
+                return 'revoked';
+              return 'unknown';
+            }
+          },
+        }),
+      );
+    } catch {
+      console.warn('HUMAN_TERMINAL_RUNTIME_UNAVAILABLE');
+    }
+  }
   const { ProjectPreviewRelay } = await import('./project-preview-relay.js');
   let projectPreviewRelay: InstanceType<typeof ProjectPreviewRelay> | undefined;
   const currentTransport = () => {
@@ -1162,6 +1216,7 @@ async function startSession(
         server: config.server,
         deviceId: config.deviceId,
         token,
+        keepConnected: Boolean(humanTerminalRelay),
         onPreview: (frame, send) => {
           if (!runner || !journal) {
             void send({
@@ -1176,6 +1231,26 @@ async function startSession(
           projectPreviewRelay.receive(frame, send);
         },
         onPreviewDisconnect: () => projectPreviewRelay?.close(),
+        onTerminal: (frame, send) => {
+          if (!humanTerminalRelay) {
+            void send({
+              version: 1,
+              type: 'terminal.ended',
+              id: frame.id,
+              error: {
+                code: 'terminal/unavailable',
+                message: '请更新或重新连接 Rice Bridge 后使用终端',
+              },
+            });
+            return;
+          }
+          humanTerminalRelay.receive(frame, send);
+        },
+        onTerminalDisconnect: () => {
+          void humanTerminalRelay?.disconnect().catch(() => {
+            console.warn('HUMAN_TERMINAL_DETACH_PENDING');
+          });
+        },
       });
       transportIdentity = identity;
     }
@@ -1322,6 +1397,9 @@ async function startSession(
       managedPdf: { state: pdfState, profile: pdfProfile, reason: pdfReason },
     });
   const publish = () => {
+    if (humanTerminalRelay && !stopping && !state.environment!.paused)
+      state.environment!.humanTerminalVersion = 1;
+    else delete state.environment!.humanTerminalVersion;
     projectFolderTriggerEnvironment(
       state.environment!,
       folderRuntimeAvailable && Boolean(folderTriggers?.canAdvertise),
@@ -1722,6 +1800,15 @@ async function startSession(
         connectionFailure(error);
       });
   }, 20_000);
+  const humanTerminalTimer = humanTerminalRelay
+    ? setInterval(() => {
+        if (!stopping)
+          void humanTerminalRelay?.revalidate().catch(() => {
+            console.warn('HUMAN_TERMINAL_CLEANUP_PENDING');
+          });
+      }, 5_000)
+    : undefined;
+  humanTerminalTimer?.unref();
   // Browser control is independent of a folder grant or a Linux command VM.
   // Capture this pairing so a later re-pair cannot lend its credentials to an
   // already running browser. Cleanup/outbox/revocations run even with opt-in off.
@@ -1741,6 +1828,7 @@ async function startSession(
   let runtimeReady = false;
   let browserStopUnconfirmed = false;
   let folderStopUnconfirmed = false;
+  let terminalStopUnconfirmed = false;
   try {
     const [
       { LocalBrowserController },
@@ -1985,6 +2073,7 @@ async function startSession(
     }
   } finally {
     clearInterval(heartbeatTimer);
+    clearInterval(humanTerminalTimer);
     commandAbort.abort();
     options.onStopPhase?.('browser');
     await browserTask;
@@ -2005,6 +2094,11 @@ async function startSession(
     options.signal?.removeEventListener('abort', stop);
     (transport as BridgeDualTransport | null)?.close();
     await (heartbeatInFlight as Promise<void> | null)?.catch(() => undefined);
+    options.onStopPhase?.('local_processes');
+    await humanTerminalRelay?.dispose().catch(() => {
+      terminalStopUnconfirmed = true;
+      console.warn('HUMAN_TERMINAL_CLEANUP_PENDING');
+    });
     if (journal) {
       options.onStopPhase?.('local_processes');
       await (
@@ -2041,7 +2135,8 @@ async function startSession(
     state.phase =
       browserStopUnconfirmed ||
       folderStopUnconfirmed ||
-      preparationStopUnconfirmed
+      preparationStopUnconfirmed ||
+      terminalStopUnconfirmed
         ? 'stopping'
         : 'stopped';
     state.activeForeground = 0;
@@ -2049,7 +2144,8 @@ async function startSession(
     if (
       !browserStopUnconfirmed &&
       !folderStopUnconfirmed &&
-      !preparationStopUnconfirmed
+      !preparationStopUnconfirmed &&
+      !terminalStopUnconfirmed
     )
       options.onNotice?.('BRIDGE_STOPPED');
     publish();
@@ -2057,6 +2153,7 @@ async function startSession(
   if (browserStopUnconfirmed) throw Error('LOCAL_BROWSER_CLEANUP_PENDING');
   if (folderStopUnconfirmed) throw Error('FOLDER_TRIGGER_STOP_UNCONFIRMED');
   if (preparationStopUnconfirmed) throw Error('STOP_NOT_CONFIRMED');
+  if (terminalStopUnconfirmed) throw Error('HUMAN_TERMINAL_CLEANUP_PENDING');
   console.info('Rice Bridge 已停止');
   return requestedSettings;
 }

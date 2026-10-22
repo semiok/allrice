@@ -337,7 +337,7 @@ header.conversationHeader::after {
 /* Match DSH ui-chat MessageItem.module.css @ 46a7f68: the bubble owns
    whitespace and long-token wrapping. Remove when the pinned bubble catches up. */
 .userBubble {
-  font-size: 16px;
+  font-size: 14px;
   line-height: 24px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -345,19 +345,19 @@ header.conversationHeader::after {
 
 /* Scope the employee identity to the conversation, leaving platform branding intact. */
 .employeeConversation {
-  --dsw-font-markdown-base: 16px/26px var(--dsw-font-family);
-  --dsw-font-markdown-base-font-size: 16px;
-  --dsw-font-markdown-base-line-height: 26px;
-  --dsw-font-markdown-base-strong: 600 16px/26px var(--dsw-font-family);
-  --dsw-font-markdown-base-strong-font-size: 16px;
-  --dsw-font-markdown-base-strong-line-height: 26px;
-  --dsw-font-markdown-base-italic: italic 16px/26px var(--dsw-font-family);
-  --dsw-font-markdown-base-italic-font-size: 16px;
-  --dsw-font-markdown-base-italic-line-height: 26px;
-  --dsw-font-markdown-base-strong-italic: italic 600 16px/26px
+  --dsw-font-markdown-base: 14px/24px var(--dsw-font-family);
+  --dsw-font-markdown-base-font-size: 14px;
+  --dsw-font-markdown-base-line-height: 24px;
+  --dsw-font-markdown-base-strong: 600 14px/24px var(--dsw-font-family);
+  --dsw-font-markdown-base-strong-font-size: 14px;
+  --dsw-font-markdown-base-strong-line-height: 24px;
+  --dsw-font-markdown-base-italic: italic 14px/24px var(--dsw-font-family);
+  --dsw-font-markdown-base-italic-font-size: 14px;
+  --dsw-font-markdown-base-italic-line-height: 24px;
+  --dsw-font-markdown-base-strong-italic: italic 600 14px/24px
     var(--dsw-font-family);
-  --dsw-font-markdown-base-strong-italic-font-size: 16px;
-  --dsw-font-markdown-base-strong-italic-line-height: 26px;
+  --dsw-font-markdown-base-strong-italic-font-size: 14px;
+  --dsw-font-markdown-base-strong-italic-line-height: 24px;
   --dsw-alias-state-business-primary: color-mix(
     in srgb,
     var(--employee-end) 45%,
@@ -774,7 +774,7 @@ header.conversationHeader::after {
   outline: 0;
   background: transparent;
   color: var(--dsw-alias-label-primary);
-  font-size: 16px;
+  font-size: 14px;
   line-height: 24px;
 }
 
@@ -2008,4 +2008,27 @@ div.composerAttachmentMenu,
   font: inherit;
   text-align: left;
   cursor: pointer;
+}
+
+/* The global automation catalog is a lightweight navigation row, like DSH. */
+.automationNavigation {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 9px;
+  width: 100%;
+  min-height: 36px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.automationNavigation:hover,
+.automationNavigation[aria-current='page'] {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
 }

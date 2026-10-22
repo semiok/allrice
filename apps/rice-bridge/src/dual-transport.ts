@@ -11,6 +11,9 @@ import {
   ProjectPreviewClientFrameSchema,
   type ProjectPreviewServerFrame,
   type ProjectPreviewClientFrame,
+  BridgeTerminalClientFrameSchema,
+  type BridgeTerminalServerFrame,
+  type BridgeTerminalClientFrame,
 } from '@allrice/contracts';
 import {
   bridgeRequest,
@@ -46,6 +49,8 @@ export class BridgeDualTransport {
   private pending = new Map<string, Pending>();
   private wakeups = new Set<() => void>();
   private credentialRejected = false;
+  private welcomed = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   readonly origin: string;
   constructor(
     private readonly config: {
@@ -53,6 +58,9 @@ export class BridgeDualTransport {
       deviceId: string;
       token: string;
       enabled?: boolean;
+      /** Human terminal streams need an idle connection too. Only maintain a
+       * socket after the server has welcomed this exact paired identity. */
+      keepConnected?: boolean;
       // Transport timing only. Tests still use real network sockets.
       retryBaseMs?: number;
       handshakeTimeoutMs?: number;
@@ -61,6 +69,11 @@ export class BridgeDualTransport {
         send: (frame: ProjectPreviewClientFrame) => Promise<boolean>,
       ) => void;
       onPreviewDisconnect?: () => void;
+      onTerminal?: (
+        frame: BridgeTerminalServerFrame,
+        send: (frame: BridgeTerminalClientFrame) => Promise<boolean>,
+      ) => void;
+      onTerminalDisconnect?: () => void;
     },
   ) {
     const url = new URL(config.server);
@@ -116,12 +129,14 @@ export class BridgeDualTransport {
         if (this.socket !== socket) return;
         this.ready = false;
         this.config.onPreviewDisconnect?.();
+        this.config.onTerminalDisconnect?.();
         this.socket = null;
         const base = this.config.retryBaseMs ?? 1000;
         this.nextConnectAt =
           Date.now() +
           Math.min(30000, base * 2 ** Math.min(5, this.failures++)) *
             (0.75 + Math.random() * 0.5);
+        this.scheduleReconnect();
         for (const [id, p] of this.pending) {
           clearTimeout(p.timer);
           p.reject(new SocketUnavailable(true));
@@ -162,6 +177,9 @@ export class BridgeDualTransport {
             )
               throw Error();
             this.ready = true;
+            this.welcomed = true;
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = undefined;
             this.failures = 0;
             this.nextConnectAt = 0;
             settle(true);
@@ -172,31 +190,22 @@ export class BridgeDualTransport {
                 throw Error('PROJECT_PREVIEW_UNAVAILABLE');
               this.config.onPreview(
                 frame as ProjectPreviewServerFrame,
-                async (output) => {
-                  if (
-                    this.socket !== socket ||
-                    !this.ready ||
-                    socket.readyState !== WebSocket.OPEN
-                  )
-                    return false;
-                  const text = JSON.stringify(
+                (output) =>
+                  this.sendEvent(
+                    socket,
                     ProjectPreviewClientFrameSchema.parse(output),
-                  );
-                  if (
-                    Buffer.byteLength(text) > bridgeSocketMaximumFrameBytes ||
-                    socket.bufferedAmount + Buffer.byteLength(text) >
-                      bridgeSocketMaximumBufferedBytes
-                  ) {
-                    socket.terminate();
-                    return false;
-                  }
-                  return new Promise<boolean>((resolve) =>
-                    socket.send(text, (error) => {
-                      if (error) socket.terminate();
-                      resolve(!error);
-                    }),
-                  );
-                },
+                  ),
+              );
+            } else if (frame.type.startsWith('terminal.')) {
+              if (!this.config.onTerminal)
+                throw Error('HUMAN_TERMINAL_UNAVAILABLE');
+              this.config.onTerminal(
+                frame as BridgeTerminalServerFrame,
+                (output) =>
+                  this.sendEvent(
+                    socket,
+                    BridgeTerminalClientFrameSchema.parse(output),
+                  ),
               );
             } else if (frame.type === 'wakeup')
               for (const wake of this.wakeups) wake();
@@ -220,6 +229,56 @@ export class BridgeDualTransport {
     if (this.credentialRejected)
       throw new BridgeClientError('DEVICE_UNAUTHORIZED', 401);
     return connected;
+  }
+
+  private scheduleReconnect() {
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+    if (
+      this.closed ||
+      this.credentialRejected ||
+      !this.welcomed ||
+      !this.config.keepConnected
+    )
+      return;
+    // Reconnect only the carrier. Never repeat an RPC, creation, terminal input
+    // or any execution whose acknowledgement may have been lost.
+    this.reconnectTimer = setTimeout(
+      () => {
+        this.reconnectTimer = undefined;
+        void this.connect()
+          .then((connected) => {
+            if (!connected) this.scheduleReconnect();
+          })
+          .catch(() => this.scheduleReconnect());
+      },
+      Math.max(1, Math.ceil(this.nextConnectAt - Date.now()) + 1),
+    );
+    this.reconnectTimer.unref();
+  }
+
+  private async sendEvent(socket: WebSocket, output: unknown) {
+    if (
+      this.socket !== socket ||
+      !this.ready ||
+      socket.readyState !== WebSocket.OPEN
+    )
+      return false;
+    const text = JSON.stringify(output);
+    if (
+      Buffer.byteLength(text) > bridgeSocketMaximumFrameBytes ||
+      socket.bufferedAmount + Buffer.byteLength(text) >
+        bridgeSocketMaximumBufferedBytes
+    ) {
+      socket.terminate();
+      return false;
+    }
+    return new Promise<boolean>((resolve) =>
+      socket.send(text, (error) => {
+        if (error) socket.terminate();
+        resolve(!error);
+      }),
+    );
   }
 
   private async rpc(frame: BridgeSocketRequest, timeoutMs: number) {
@@ -338,7 +397,10 @@ export class BridgeDualTransport {
 
   close() {
     this.config.onPreviewDisconnect?.();
+    this.config.onTerminalDisconnect?.();
     this.closed = true;
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
     for (const wake of this.wakeups) wake();
     this.socket?.terminate();
   }

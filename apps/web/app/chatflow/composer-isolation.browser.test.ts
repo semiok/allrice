@@ -1764,12 +1764,18 @@ suite(
           await f.page
             .getByRole('menuitem', { name: '参考资料', exact: true })
             .click();
-          if (width > 760)
+          if (width > 760) {
             await f.page
               .getByRole('region', { name: '工作区文件', exact: true })
-              .getByRole('button', { name: '用于本次任务', exact: true })
+              .getByRole('button', {
+                name: `文件选项 ${reference.fileName}`,
+                exact: true,
+              })
               .click();
-          else
+            await f.page
+              .getByRole('menuitem', { name: '用于本次任务', exact: true })
+              .click();
+          } else
             await f.page
               .getByRole('button', { name: '引用 v1', exact: true })
               .click();

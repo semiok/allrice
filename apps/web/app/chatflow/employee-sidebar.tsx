@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   IconChevronDownOutlineRegular,
   IconChevronRightOutlineRegular,
+  IconClockOutlineRegular,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { useSessionArchive } from './use-session-archive';
 import type { Session, Workspace } from './chatflow-types';
@@ -33,8 +34,10 @@ export function EmployeeSidebar({
   onPrepareSession,
   onDetails,
   archive,
+  scheduledSessions,
 }: {
   archive?: ReturnType<typeof useSessionArchive>;
+  scheduledSessions?: ReadonlySet<string>;
   workspace: Workspace;
   sessions: Session[];
   activeId: string | null;
@@ -267,6 +270,16 @@ export function EmployeeSidebar({
                   <SessionNodeItem
                     key={node.id}
                     node={node}
+                    leading={
+                      scheduledSessions?.has(node.id) ? (
+                        <span
+                          title="有启用中的定时任务"
+                          aria-label="有启用中的定时任务"
+                        >
+                          <IconClockOutlineRegular size={14} />
+                        </span>
+                      ) : undefined
+                    }
                     currentId={activeId ?? undefined}
                     now={Date.now()}
                     onOpen={onSelectSession}

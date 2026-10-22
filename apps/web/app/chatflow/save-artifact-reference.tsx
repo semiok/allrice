@@ -7,10 +7,14 @@ import {
   ReferenceSaveResultSchema,
   type ReferenceArtifactSaveInput,
 } from '@allrice/contracts';
-import { Button } from '@deepseek-ai/dsh-client-ui-primitives';
+import {
+  Button,
+  FileTypeIcon,
+  classifyFileType,
+} from '@deepseek-ai/dsh-client-ui-primitives';
 import { DshDialog } from './dsh-upstream/Dialog';
 import { workbenchJson } from '../../lib/chatflow/workbench-model';
-import css from './reference-library.module.css';
+import css from './save-artifact-reference.module.css';
 
 type Props = {
   workspaceId: string;
@@ -93,6 +97,7 @@ function SaveDialog({
         }),
       );
       setSaved(true);
+      window.dispatchEvent(new Event('allrice:workbench-files-changed'));
     } catch (e) {
       setError(e instanceof Error ? e.message : '保存失败，请重试');
     } finally {
@@ -103,12 +108,18 @@ function SaveDialog({
     <DshDialog
       title="保存为参考资料"
       ariaLabel="保存为参考资料"
-      onClose={onClose}
+      onClose={() => {
+        if (!busy) onClose();
+      }}
+      className={css.dialog}
       bodyClassName={css.body}
     >
-      <p className={css.fileTitle}>
-        {fileName} · v{version}
-      </p>
+      <div className={css.file}>
+        <FileTypeIcon kind={classifyFileType(fileName)} size={32} />
+        <p className={css.fileTitle}>
+          {fileName} · v{version}
+        </p>
+      </div>
       {saved ? (
         <>
           <p role="status">
@@ -138,13 +149,13 @@ function SaveDialog({
                 value={scope}
                 onChange={(e) => setScope(e.target.value as typeof scope)}
               >
-                <option value="personal">个人 · 仅自己</option>
+                <option value="personal">仅自己</option>
                 {options?.maintenanceLevel !== 'personal' &&
                   !!options?.departments.length && (
-                    <option value="department">部门</option>
+                    <option value="department">指定部门</option>
                   )}
                 {options?.maintenanceLevel === 'company' && (
-                  <option value="company">公司</option>
+                  <option value="company">全公司</option>
                 )}
               </select>
             </label>
@@ -193,6 +204,15 @@ function SaveDialog({
           )}
           <div className={css.actions}>
             <Button
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              onClick={onClose}
+            >
+              取消
+            </Button>
+            <Button
+              size="sm"
               disabled={
                 busy ||
                 !options?.writable ||
@@ -202,7 +222,6 @@ function SaveDialog({
             >
               {busy ? '正在保存…' : '保存'}
             </Button>
-            <Button onClick={onClose}>取消</Button>
           </div>
         </>
       )}

@@ -6,6 +6,7 @@ import { mkdir, readFile, writeFile, chmod } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { verifyPdfPackage } from './rice-bridge-pdf-runtime.mjs';
 import { verifyFileGuardianPackage } from './rice-bridge-file-runtime.mjs';
+import { verifyTerminalPackage } from './rice-bridge-terminal-runtime.mjs';
 
 assert.equal(process.platform, 'darwin');
 assert.ok(['arm64', 'x64'].includes(process.arch));
@@ -95,6 +96,9 @@ const manifest = {
   browserRuntimeManifestSha256: sha256(
     await readFile(`${binary}.runtime/manifest.json`),
   ),
+  terminalRuntimeManifestSha256: sha256(
+    await readFile(`${binary}.terminal-runtime/manifest.json`),
+  ),
   signing: 'ad-hoc; not notarized',
   credentialsEmbedded: false,
   sandboxDefault: 'auto-prepare; explicit pauses preserved',
@@ -111,6 +115,10 @@ await verifyPdfPackage(binary, {
 await verifyFileGuardianPackage(binary, {
   architecture: targetArch,
   sha256: manifest.fileGuardianSha256,
+});
+await verifyTerminalPackage(binary, {
+  architecture: targetArch,
+  manifestSha256: manifest.terminalRuntimeManifestSha256,
 });
 await writeFile(
   join(folder, 'release.json'),
@@ -148,7 +156,8 @@ await writeFile(
     '7. 沙箱检查失败只影响需要该环境的功能；不回退到宿主 Shell。修复环境后重启可重新准备，关闭沙箱后也请重启 Bridge。\n' +
     '8. 独立浏览器配对后自动准备，网页自动建立本人设备的使用关系，无需重复授权。主动关闭过的设置会保留，可执行 browser enable（或双击对应命令文件）后重启恢复。它使用本机已安装的受信任 Chrome、独立 Profile 和 Chromium 沙箱，不使用个人浏览器 Profile，也不是 Linux VM。\n' +
     '9. 关闭独立浏览器后请重启 Bridge；删除保留的登录状态需在网页撤销授权并等待本机清理确认。包内 RiceBrowserLauncher 和 RiceBridge.runtime 必须完整保留；资源缺失、被篡改或校验失败会拒绝运行。不会自动下载 Chrome。\n' +
-    '10. 此包不含任何租户配对凭证或模型密钥。这是独立命令包，菜单栏 App 为另一分发入口；不含自更新和正式签名安装程序。\n',
+    '10. 此包不含任何租户配对凭证或模型密钥。这是独立命令包，菜单栏 App 为另一分发入口；不含自更新和正式签名安装程序。\n' +
+    '11. 网页“新建终端”连接此 Mac 的真实交互 Shell，以已授权文件夹为起始目录，权限与当前 Mac 用户一致。关闭终端标签会结束该终端；收起工作台或刷新页面会保留，停止 Bridge 会结束所有终端。\n',
 );
 const zip = join(
   output,
