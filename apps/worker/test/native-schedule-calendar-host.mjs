@@ -8,9 +8,15 @@ import process from 'node:process';
 import { setTimeout } from 'node:timers';
 import { URL } from 'node:url';
 import * as database from '@allrice/database';
+import { loadNativeRecurringPartitionRows } from '../../../packages/database/dist/native-schedule-recurring-loader.js';
+import {
+  nativeOnceWorkspaceDigest,
+  validateNativeOnceWorkspaceSnapshot,
+} from '../../../packages/database/dist/native-schedule-workspace-state.js';
 import {
   createNativeOnceControlSource,
   parseNativeScheduleControlReference,
+  verifyNativeOnceControlHistory,
 } from '../dist/native-schedule-once-loader.js';
 import { createNativeOnceWorkerRuntime } from '../dist/native-schedule-once-runtime.js';
 import { installDshNativeArtifact } from '../dist/harness/dsh-native-artifact.js';
@@ -87,6 +93,48 @@ async function main() {
       await db`select * from allrice_native_once_partitions where partition_id='allrice-recurring-v1'`;
     assert.ok(p);
     return p;
+  }
+  async function persistence() {
+    return db.begin('isolation level repeatable read read only', async (tx) => {
+      const rows = await loadNativeRecurringPartitionRows(tx, reference, true);
+      assert.equal(rows.length, 2);
+      assert.deepEqual(rows.map((r) => r.kind).sort(), [
+        'calendar',
+        'recurring',
+      ]);
+      const controls = rows.map(({ kind, snapshot: { control: c } }) => ({
+        kind,
+        controlId: c.controlId,
+        automationId: c.automationId,
+        controlSessionId: c.controlSessionId,
+        sessionState: c.sessionState,
+        nativeTaskId: c.nativeTaskId,
+      }));
+      assert.ok(controls.every((c) => c.sessionState === 'ready'));
+      const [p] =
+        await tx`select workspace_snapshot from allrice_native_once_partitions where partition_id='allrice-recurring-v1'`;
+      const [journal] = await tx`select * from allrice_native_once_journal
+          where partition_id='allrice-recurring-v1' and entry_kind='workspace'
+          order by (after_snapshot->>'revision')::bigint desc limit 1`;
+      validateNativeOnceWorkspaceSnapshot(p.workspace_snapshot, {
+        stateRoot: reference.stateRoot,
+        controlSessionIds: new Set(controls.map((c) => c.controlSessionId)),
+      });
+      assert.ok(p.workspace_snapshot.revision > 0);
+      assert.equal(p.workspace_snapshot.global.initialized, true);
+      assert.deepEqual(journal.reference, reference);
+      assert.deepEqual(journal.after_snapshot, p.workspace_snapshot);
+      assert.equal(
+        journal.after_digest,
+        nativeOnceWorkspaceDigest(p.workspace_snapshot),
+      );
+      assert.equal(journal.journal.afterDigest, journal.after_digest);
+      assert.equal(
+        journal.journal.afterRevision,
+        p.workspace_snapshot.revision,
+      );
+      return { controls, workspace: p.workspace_snapshot, journal };
+    });
   }
   async function cycle() {
     const [p] =
@@ -239,14 +287,22 @@ async function main() {
   const running = await partition();
   assert.equal(Number(running.epoch), epoch);
   assert.equal(running.owner_id, writer.owner_id);
-  const sessions = Object.values(
-    running.workspace_snapshot.tables.workspaces,
-  ).flatMap((w) => w.sessionIds);
+  // The SDK control path persists Sessions to JSONL, without registering them
+  // in workspace.sessionIds. Preserve the entire actual workspace/journal,
+  // and prove Session durability through its real public persistence reader.
+  const durable = await persistence();
+  const sessions = durable.controls.map((c) => c.controlSessionId);
   assert.ok(sessions.includes(fixedBirth.control_session_id));
   assert.ok(sessions.includes(calendar.control_session_id));
   await runtime.stop();
   const firstClose = await closed(epoch),
     firstStats = runtime.status().controller.stats;
+  assert.deepEqual(await persistence(), durable);
+  const firstHistoryCount = await verifyNativeOnceControlHistory(
+    reference,
+    durable.controls,
+  );
+  assert.equal(firstHistoryCount, 2);
   if (interrupted) throw Error('actual_calendar_host_interrupted');
   runtime = open();
   if (interrupted) throw Error('actual_calendar_host_interrupted_before_tick');
@@ -255,6 +311,7 @@ async function main() {
   assert.equal(runtime.status().faultCount, 0);
   const resumed = await partition(),
     resumedCycle = await cycle();
+  assert.deepEqual(await persistence(), durable);
   assert.equal(Number(resumed.epoch), epoch + 1);
   assert.equal(resumedCycle.native_task_id, complete.native_task_id);
   assert.equal(resumedCycle.next_task_id, complete.next_task_id);
@@ -273,6 +330,12 @@ async function main() {
   );
   await runtime.stop();
   const secondClose = await closed(epoch + 1);
+  assert.deepEqual(await persistence(), durable);
+  const coldHistoryCount = await verifyNativeOnceControlHistory(
+    reference,
+    durable.controls,
+  );
+  assert.equal(coldHistoryCount, 2);
   process.stdout.write(
     `NATIVE_CALENDAR_HOST_EVIDENCE ${JSON.stringify({
       artifactId: reference.artifactId,
@@ -294,6 +357,9 @@ async function main() {
       coldEpoch: Number(resumed.epoch),
       firstStats,
       coldStats: runtime.status().controller.stats,
+      firstHistoryCount,
+      coldHistoryCount,
+      durable,
       firstClose,
       secondClose,
     })}\n`,
