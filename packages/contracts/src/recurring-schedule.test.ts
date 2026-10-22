@@ -4,6 +4,7 @@ import {
   CreateRecurringTaskInputSchema,
   RecurringOccurrenceSchema,
   RecurringScheduleRuleSchema,
+  FixedRecurringScheduleRuleSchema,
   RecurringTaskDetailQuerySchema,
   RecurringTaskHistorySchema,
   RecurringTaskListQuerySchema,
@@ -66,6 +67,34 @@ function occurrence() {
 }
 
 describe('recurring schedule rules have bounded, explicit semantics', () => {
+  it('keeps monthly business rules out of fixed native rules', () => {
+    const monthly = {
+      kind: 'monthly',
+      monthDay: 31,
+      time: '02:30:45',
+      timezone: 'America/New_York',
+    };
+    expect(RecurringScheduleRuleSchema.parse(monthly)).toEqual(monthly);
+    expect(FixedRecurringScheduleRuleSchema.safeParse(monthly).success).toBe(
+      false,
+    );
+    for (const monthDay of [0, 32, 1.5])
+      expect(
+        RecurringScheduleRuleSchema.safeParse({ ...monthly, monthDay }).success,
+      ).toBe(false);
+    for (const kind of ['daily', 'weekly', 'every']) {
+      const fixed =
+        kind === 'every'
+          ? { kind, seconds: 60 }
+          : {
+              kind,
+              time: '09:30:00',
+              timezone: 'Asia/Shanghai',
+              ...(kind === 'weekly' ? { weekdays: [1, 3] } : {}),
+            };
+      expect(FixedRecurringScheduleRuleSchema.parse(fixed)).toEqual(fixed);
+    }
+  });
   it.each([60, 61, 3_600, 31_536_000])(
     'accepts an elapsed interval of %s whole seconds',
     (seconds) => {

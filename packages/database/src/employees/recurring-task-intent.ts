@@ -36,6 +36,10 @@ const weeklyRequest = new RegExp(
   `^${requestPrefix}每(?:周|星期)\\s*([一二三四五六日天](?:\\s*[、,，和及]\\s*(?:周|星期)?[一二三四五六日天])*)\\s*[，,]?\\s*((?:[01]?\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d)?)\\s*[，,]?\\s*(?:时区\\s*[:：]?\\s*)?(${zonePattern})\\s*[，,:：]?\\s*(.+)$`,
   'su',
 );
+const monthlyRequest = new RegExp(
+  `^${requestPrefix}每月\\s*(?:(${numberPattern})\\s*(?:日|号)|(?:末|最后一天))\\s*[，,]?\\s*((?:[01]?\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d)?)\\s*[，,]?\\s*(?:时区\\s*[:：]?\\s*)?(${zonePattern})\\s*[，,:：]?\\s*(.+)$`,
+  'su',
+);
 const otherTime = new RegExp(
   `${numberPattern}\\s*(?:秒|分(?:钟)?|小时|天|周|个月|月|年)(?:之后|以后|后|内|前)|${numberPattern}\\s*次|[0-9]{1,2}[:：][0-9]{2}|[0-9零一二两三四五六七八九十]+\\s*[点时](?:整|钟|回复|提醒|执行|发送|$)|[0-9]{4}[-/年][0-9]{1,2}`,
   'u',
@@ -256,6 +260,27 @@ export function explicitRecurringTaskIntent(
       recurringWork(every[3]!)
       ? { rule: { kind: 'every', seconds }, authoritativeRequest: text }
       : null;
+  }
+  const monthly = prose.match(monthlyRequest);
+  if (monthly) {
+    const monthDay = monthly[1] ? positiveInteger(monthly[1]) : 31;
+    if (!monthDay || monthDay > 31 || !explicitWork(monthly[4]!)) return null;
+    const timezone = monthly[3]!;
+    try {
+      new Intl.DateTimeFormat('en', { timeZone: timezone });
+    } catch {
+      return null;
+    }
+    const [hour, minute, second = '00'] = monthly[2]!.split(':');
+    return {
+      rule: {
+        kind: 'monthly',
+        monthDay,
+        time: `${hour!.padStart(2, '0')}:${minute}:${second}`,
+        timezone,
+      },
+      authoritativeRequest: text,
+    };
   }
   const weekly = prose.match(weeklyRequest);
   if (weekly) {

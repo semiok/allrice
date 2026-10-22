@@ -4,6 +4,24 @@ import { explicitRecurringTaskIntent as intent } from './recurring-task-intent.t
 
 const accepted: { text: string; rule: RecurringScheduleRule }[] = [
   {
+    text: '请每月31日02:30:45，时区America/New_York，整理本会话报表。',
+    rule: {
+      kind: 'monthly',
+      monthDay: 31,
+      time: '02:30:45',
+      timezone: 'America/New_York',
+    },
+  },
+  {
+    text: '每月末 9:00，Asia/Shanghai，回复校验词「MONTHLY」。',
+    rule: {
+      kind: 'monthly',
+      monthDay: 31,
+      time: '09:00:00',
+      timezone: 'Asia/Shanghai',
+    },
+  },
+  {
     text: '请每周一和周三，09:30，时区Asia/Shanghai，整理报告；附上数据来源。',
     rule: {
       kind: 'weekly',
@@ -148,7 +166,7 @@ describe('explicit recurring intent in one complete current human message', () =
     '示例：每周一09:30，时区Asia/Shanghai，整理报表。',
     '每周一24:00，时区Asia/Shanghai，整理报表。',
     '每周末09:30，时区Asia/Shanghai，整理报表。',
-    '每月一日09:30，时区Asia/Shanghai，整理报表。',
+    '每月一日09:30，整理报表。',
   ])('keeps weekly authorization boundaries: %s', (text) => {
     expect(intent(text)).toBeNull();
   });

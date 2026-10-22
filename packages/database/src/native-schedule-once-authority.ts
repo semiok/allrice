@@ -76,6 +76,16 @@ export async function lockNativeOnceJobAdmission(
   if (!binding) return { scheduled: false, allowed: true };
   if (
     kind === 'recurring' &&
+    binding.control?.dispatch.consumer === 'ordinary-monthly-v1'
+  ) {
+    const [proof] = await tx<
+      { valid: boolean }[]
+    >`select allrice_ordinary_monthly_handoff_proved(${binding.occurrence_id}::uuid) valid`;
+    if (!proof?.valid)
+      return { scheduled: true, runId: binding.run_id, allowed: false };
+  }
+  if (
+    kind === 'recurring' &&
     binding.control?.dispatch.consumer === 'platform-quality-v1'
   ) {
     // Quality is a private static-check consumer, not a personal cloud chat.

@@ -13,11 +13,12 @@ import {
 export type RecurringTaskDraft = {
   name: string;
   prompt: string;
-  kind: 'every' | 'daily' | 'weekly';
+  kind: 'every' | 'daily' | 'weekly' | 'monthly';
   minutes: string;
   time: string;
   timezone: string;
   weekdays: number[];
+  monthDay: string;
 };
 
 export type RecurringTaskContent = Pick<
@@ -107,6 +108,7 @@ export function recurringDraft(task?: RecurringTask): RecurringTaskDraft {
     timezone:
       task && task.rule.kind !== 'every' ? task.rule.timezone : timezone,
     weekdays: task?.rule.kind === 'weekly' ? [...task.rule.weekdays] : [1],
+    monthDay: task?.rule.kind === 'monthly' ? String(task.rule.monthDay) : '1',
   };
 }
 
@@ -151,7 +153,22 @@ export function recurringContent(
             timezone: draft.timezone.trim(),
             weekdays: [...draft.weekdays].sort((a, b) => a - b),
           }
-        : { kind: 'daily', time, timezone: draft.timezone.trim() };
+        : draft.kind === 'monthly'
+          ? {
+              kind: 'monthly',
+              time,
+              timezone: draft.timezone.trim(),
+              monthDay: Number(draft.monthDay),
+            }
+          : { kind: 'daily', time, timezone: draft.timezone.trim() };
+    if (
+      draft.kind === 'monthly' &&
+      (!draft.monthDay.trim() ||
+        !Number.isInteger(Number(draft.monthDay)) ||
+        Number(draft.monthDay) < 1 ||
+        Number(draft.monthDay) > 31)
+    )
+      throw new Error('请选择1至31日。');
     if (draft.kind === 'weekly' && draft.weekdays.length === 0)
       throw new Error('请至少选择一个执行日。');
     try {

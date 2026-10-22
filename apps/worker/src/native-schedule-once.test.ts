@@ -518,6 +518,49 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
+it('reopens before admitting a Session added between refresh and calendar commands', async () => {
+  const first = row(),
+    second = row(),
+    f = fixture([first]);
+  const unexpected = vi.fn(async () => {
+    throw Error('unexpected calendar Task mutation');
+  });
+  f.store.calendar = {
+    loadCalendarState: vi.fn(async () => ({ controls: [], bindings: [] })),
+    materialize: vi.fn(async () => false),
+    beginCalendarArmCreate: unexpected,
+    confirmCalendarArmAbsent: unexpected,
+    prepareCalendarArm: unexpected,
+    readExactCalendarArm: unexpected,
+    readExactCalendarRetirement: unexpected,
+  };
+  let added = false;
+  vi.spyOn(f.store, 'loadControls').mockImplementation(async () => {
+    if (!added && f.trace.includes('mount:1')) {
+      added = true;
+      f.rows.push(structuredClone(second));
+    }
+    return structuredClone(f.rows);
+  });
+  const controller = f.create();
+  try {
+    await controller.tick();
+    expect(added).toBe(true);
+    expect(controller.status().state).toBe('cold');
+    expect(f.creations()).toBe(0);
+    expect(f.trace).toContain('release:1');
+    await controller.tick();
+    expect(controller.status().state).toBe('active');
+    expect(f.trace.indexOf(`init:${second.controlSessionId}`)).toBeLessThan(
+      f.trace.indexOf('mount:2'),
+    );
+    expect(f.trace).toContain(`resume:${first.controlSessionId}`);
+    expect(f.creations()).toBe(2);
+  } finally {
+    await controller.stop();
+  }
+});
+
 describe('once target_not_future catalog absence', () => {
   function rejectedCreate() {
     const f = fixture(),

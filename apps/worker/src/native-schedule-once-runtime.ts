@@ -93,8 +93,8 @@ async function productionDatabase(
       'dispatchNextNativeRecurringOccurrence',
       'createNativeRecurringSqlStore',
       'lockNativeRecurringAdmissions',
-      'lockExperienceCalendarAdmissions',
-      'materializeExperienceNativeCalendar',
+      'lockNativeCalendarAdmissions',
+      'materializeNativeCalendar',
     ]);
     // Keep the lifecycle independent of the document/receipt format. The exact
     // profile selects a fixed in-repository adapter, never a fallback backend.
@@ -111,7 +111,7 @@ async function productionDatabase(
           lockAdmission: db.lockNativeRecurringAdmissions,
           calendar: {
             enabled: true,
-            lockAdmission: db.lockExperienceCalendarAdmissions,
+            lockAdmission: db.lockNativeCalendarAdmissions,
           },
         });
         const calendar = store.calendar;
@@ -120,7 +120,7 @@ async function productionDatabase(
           calendar: calendar && {
             ...calendar,
             materialize: (writer, allowHandoff) =>
-              db.materializeExperienceNativeCalendar(
+              db.materializeNativeCalendar(
                 calendar,
                 writer,
                 options.reference,
