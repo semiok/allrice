@@ -3051,10 +3051,11 @@ suite(
     it('a late assistant stop acknowledgement cannot refresh a different session after its panel unmounts', async () => {
       const f = await fixture({ running: true });
       try {
+        // Running work is already visible under the native display policy.
+        // Wait for the assistant panel without clicking its stop control.
         await f.page
-          .getByRole('region', { name: '工作过程', exact: true })
-          .getByRole('button')
-          .click();
+          .getByRole('region', { name: '助手任务', exact: true })
+          .waitFor();
         await f.page
           .getByRole('button', {
             name: '取消整项任务（含所有助手）',
@@ -3363,16 +3364,14 @@ suite(
       const f = await fixture({ running: true });
       try {
         await f.page
-          .getByRole('region', { name: '工作过程', exact: true })
-          .getByRole('button')
-          .click();
-        await f.page.getByText(/已请求停止不代表进程已退出/).waitFor();
+          .getByRole('region', { name: '助手任务', exact: true })
+          .getByText(/已请求停止不代表进程已退出/)
+          .waitFor();
         await f.page.reload();
         await f.page
-          .getByRole('region', { name: '工作过程', exact: true })
-          .getByRole('button')
-          .click();
-        await f.page.getByText(/已请求停止不代表进程已退出/).waitFor();
+          .getByRole('region', { name: '助手任务', exact: true })
+          .getByText(/已请求停止不代表进程已退出/)
+          .waitFor();
         await f.context.setOffline(true);
         f.disconnect();
         const failedRead = await f.page.waitForEvent(
@@ -3400,10 +3399,9 @@ suite(
       const f = await fixture({ running: true });
       try {
         await f.page
-          .getByRole('region', { name: '工作过程', exact: true })
-          .getByRole('button')
-          .click();
-        await f.page.getByText(/已请求停止不代表进程已退出/).waitFor();
+          .getByRole('region', { name: '助手任务', exact: true })
+          .getByText(/已请求停止不代表进程已退出/)
+          .waitFor();
         await f.page.getByText('分工、结果与消耗', { exact: true }).click();
         await expect
           .poll(

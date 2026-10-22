@@ -49,6 +49,49 @@ const render = (overrides: Partial<ComponentProps<typeof WorkProcess>> = {}) =>
   );
 
 describe('native process display surface', () => {
+  it('keeps live lifecycle-only thinking in the phase row without duplicating it as a step', () => {
+    const thinking: NativeExperienceItem[] = [
+      {
+        id: 'think:1',
+        kind: 'think',
+        status: 'started',
+        title: '正在处理',
+        sequence: 1,
+      },
+    ];
+    for (const processParts of [
+      undefined,
+      [
+        {
+          kind: 'steps' as const,
+          id: 'thinking',
+          sequence: 1,
+          items: thinking,
+        },
+      ],
+    ]) {
+      const html = render({
+        items: thinking,
+        parts: processParts,
+        running: true,
+      });
+      expect(html).toContain('思考中…');
+      expect(html).not.toContain('分析任务与处理步骤');
+      expect(html).not.toContain('aria-label="工作步骤"');
+    }
+    // The projection still retains settled lifecycle history and actual failures.
+    expect(
+      render({ items: thinking, parts: undefined, transcriptView: 'verbose' }),
+    ).toContain('分析任务与处理步骤');
+    expect(
+      render({
+        items: [{ ...thinking[0]!, status: 'failed' }],
+        parts: undefined,
+        running: true,
+      }),
+    ).toContain('分析任务与处理步骤');
+  });
+
   it('retains the accepted final answer outside completed process folding', () => {
     const html = render();
     expect(html).toContain('data-process-open="false"');

@@ -29,6 +29,7 @@ import type { NativeExperienceItem } from '../../lib/chatflow/native-experience'
 import {
   summarizeWorkProcess,
   type WorkProcessCategory,
+  type WorkProcessStep,
 } from '../../lib/chatflow/work-process';
 import { IconThinkOutline14 } from './dsh-upstream/ProgressIcons';
 import reasoning from './dsh-upstream/ReasoningRow.module.css';
@@ -62,6 +63,19 @@ const stepIcons: Record<WorkProcessCategory, ReactNode> = {
   tool: <IconCordisPluginOutlineRegular />,
 };
 const noop = () => {};
+
+/** A live reasoning lifecycle adds no detail beyond the current phase header. */
+function onlyLiveThinking(steps: WorkProcessStep[], running: boolean) {
+  return (
+    running &&
+    steps.length > 0 &&
+    steps.every(
+      (step) =>
+        step.category === 'think' &&
+        ['started', 'updated'].includes(step.status),
+    )
+  );
+}
 
 /** DSH's native disclosure/Think chrome over Allrice's public event summary. */
 export function WorkProcess({
@@ -150,7 +164,7 @@ export function WorkProcess({
         ? '已停止'
         : '工作过程';
   const expandable = Boolean(
-    process.steps.length ||
+    (process.steps.length && !onlyLiveThinking(process.steps, running)) ||
     Children.toArray(children).length ||
     traceStatus === 'failed',
   );
@@ -199,7 +213,16 @@ export function WorkProcess({
   if (parts) {
     // The native policy owns folding; the accepted final answer stays visible.
     const showHistory = display.open;
-    const renderPart = (part: WorkProgressPart, index: number) =>
+    const visibleParts = parts.filter(
+      (part) =>
+        part.kind === 'reply' ||
+        !onlyLiveThinking(
+          summarizeWorkProcess(part.items).steps,
+          running && !part.closed,
+        ) ||
+        part.items.some((item) => item.operationId && renderOperation),
+    );
+    const renderPart = (part: WorkProgressPart) =>
       part.kind === 'reply' ? (
         <div
           key={
@@ -213,7 +236,7 @@ export function WorkProcess({
             accessibleFiles={accessibleFiles}
             onOpenArtifact={onOpenArtifact}
             text={part.text}
-            streaming={streaming && running && index === parts.length - 1}
+            streaming={streaming && running && part === parts.at(-1)}
             artifacts={artifacts}
           />
         </div>
@@ -273,21 +296,25 @@ export function WorkProcess({
             </>
           }
         />
-        <div className={styles.processFlow}>
-          {parts.map(renderPart)}
-          {traceStatus === 'failed' ? (
-            <button
-              className={styles.nativeTraceRetry}
-              type="button"
-              onClick={onRetry}
-            >
-              过程加载失败，点击重试
-            </button>
-          ) : null}
-          {Children.toArray(children).length ? (
-            <div hidden={!showHistory}>{children}</div>
-          ) : null}
-        </div>
+        {visibleParts.length ||
+        traceStatus === 'failed' ||
+        Children.toArray(children).length ? (
+          <div className={styles.processFlow}>
+            {visibleParts.map(renderPart)}
+            {traceStatus === 'failed' ? (
+              <button
+                className={styles.nativeTraceRetry}
+                type="button"
+                onClick={onRetry}
+              >
+                过程加载失败，点击重试
+              </button>
+            ) : null}
+            {Children.toArray(children).length ? (
+              <div hidden={!showHistory}>{children}</div>
+            ) : null}
+          </div>
+        ) : null}
       </section>
     );
   }
@@ -427,7 +454,7 @@ function NativeStepsGroup({
 }) {
   const [open, setOpen] = useState(false);
   const { steps } = summarizeWorkProcess(items);
-  if (!steps.length) return null;
+  if (!steps.length || onlyLiveThinking(steps, running)) return null;
   if (!grouped) return <WorkProcessSteps items={items} running={running} />;
   const categories = [...new Set(steps.map((step) => step.label))].join('、');
   const live = [...steps]
