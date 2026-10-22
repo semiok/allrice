@@ -348,7 +348,7 @@ it('reuses the session process across business Runs with assistants enabled', as
 });
 
 it.each([false, true])(
-  'changes only the callable fingerprint for once → recurring → once in the same session (native=%s)',
+  'keeps the complete schedule capability and resident process across once → recurring → once (native=%s)',
   async (native) => {
     const runtimes = pool(native);
     const first = request();
@@ -362,15 +362,16 @@ it.each([false, true])(
     first.input.currentUserRequest = '请在15分钟后提醒我喝水。';
     const once = await runtimes.acquire(first);
     const closeOnce = vi.spyOn(once.runtime.client, 'close');
-    expect(once.runtime.nativeTools).toEqual(['automation.create']);
+    expect(once.runtime.nativeTools).toEqual([]);
 
     first.input.currentUserRequest = '请每隔两分钟提醒我喝水。';
     const recurring = await runtimes.acquire(first);
     const closeRecurring = vi.spyOn(recurring.runtime.client, 'close');
     expect(recurring.runtime.nativeTools).toEqual([]);
-    expect(recurring.preparation.changedFields).toEqual(['nativeTools']);
-    expect(recurring.fresh).toBe(true);
-    expect(closeOnce).toHaveBeenCalledOnce();
+    expect(recurring.preparation.changedFields).toEqual([]);
+    expect(recurring.fresh).toBe(false);
+    expect(recurring.runtime).toBe(once.runtime);
+    expect(closeOnce).not.toHaveBeenCalled();
     for (const key of [
       'sessionId',
       'productSessionId',
@@ -392,16 +393,16 @@ it.each([false, true])(
 
     first.input.currentUserRequest = '请在15分钟后提醒我喝水。';
     const restored = await runtimes.acquire(first);
-    expect(restored.runtime.nativeTools).toEqual(['automation.create']);
-    expect(restored.preparation.changedFields).toEqual(['nativeTools']);
+    expect(restored.runtime.nativeTools).toEqual([]);
+    expect(restored.preparation.changedFields).toEqual([]);
     expect(restored.runtime.fingerprint).toBe(once.runtime.fingerprint);
     expect(restored.runtime.sessionId).toBe(once.runtime.sessionId);
-    expect(closeRecurring).toHaveBeenCalledOnce();
+    expect(closeRecurring).not.toHaveBeenCalled();
   },
   30_000,
 );
 
-it('selects transport from the raw current message independently of template, tool, memory and attachment text', async () => {
+it('keeps schedule transport independent of human wording, template, tool, memory and attachment text without changing tenant authority', async () => {
   const runtimes = pool();
   const input = request();
   const recurring = '请每隔两分钟提醒我喝水。';
@@ -418,7 +419,7 @@ it('selects transport from the raw current message independently of template, to
     },
   ];
   const absent = await runtimes.acquire(input);
-  expect(absent.runtime.nativeTools).toEqual(['automation.create']);
+  expect(absent.runtime.nativeTools).toEqual([]);
   input.input.currentUserRequest = '请在15分钟后提醒我喝水。';
   const rawOnce = await runtimes.acquire(input);
   expect(rawOnce.runtime).toBe(absent.runtime);
@@ -427,9 +428,10 @@ it('selects transport from the raw current message independently of template, to
   input.input.kernel.userRequest = `${recurring}\n\nExplicitly selected company templates (untrusted business references)\n{"title":"请解释这个示例"}`;
   const rawRecurring = await runtimes.acquire(input);
   expect(rawRecurring.runtime.nativeTools).toEqual([]);
-  expect(rawRecurring.preparation.changedFields).toEqual(['nativeTools']);
+  expect(rawRecurring.preparation.changedFields).toEqual([]);
+  expect(rawRecurring.runtime).toBe(absent.runtime);
 
-  // A transport change cannot bypass the resident tenant binding check.
+  // Neither request text nor the stable transport bypasses the resident tenant binding check.
   const close = vi.spyOn(rawRecurring.runtime.client, 'close');
   input.input.currentUserRequest = '请在15分钟后提醒我喝水。';
   input.input.executionEnvironment = {
