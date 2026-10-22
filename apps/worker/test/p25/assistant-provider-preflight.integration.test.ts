@@ -780,6 +780,7 @@ integration(
           nativeSessionId: threadId,
         }));
       const prompt = vi.fn();
+      const close = vi.fn(async () => {});
       acquire.mockImplementationOnce(async (value) => {
         expect(value.nativePin!.firstJobId).toBe(f.worker.jobId);
         // Only the initialization port is synthetic. Real handler, adapter,
@@ -792,6 +793,7 @@ integration(
             setRequestHandler: vi.fn(),
             subscribe: () => () => {},
             prompt,
+            close,
           },
         } as unknown as DshRuntime;
         return {
@@ -815,6 +817,7 @@ integration(
         });
         expect(prompt).not.toHaveBeenCalled();
         expect(acquire).toHaveBeenCalledOnce();
+        expect(close).toHaveBeenCalledOnce();
         noNativeAccess();
         expect(
           await database.db`select native_session_id from allrice_native_session_bindings where first_job_id=${f.worker.jobId}`,
