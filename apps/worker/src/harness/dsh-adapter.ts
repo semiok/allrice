@@ -22,7 +22,7 @@ import {
 import type { NativeSessionPin } from '@allrice/database';
 
 import { AgentLoopGuard } from '../agent-loop-guard.js';
-import { HandlerError } from '../errors.js';
+import { HandlerError, isConfirmedToolFailure } from '../errors.js';
 import { contentGuardFailure } from './dsh/content-guard.js';
 import {
   assertFinalDelivery,
@@ -1393,16 +1393,38 @@ export class DshHarnessAdapter implements HarnessAdapter {
               status: 'failed',
             },
           });
-          // These bounded, read-only input failures are tool outcomes. Let DSH
-          // correct the selection without discarding already delivered files.
-          // Admission, cancellation and unknown execution failures remain fatal.
-          if (
+          const readSelectionFailure =
             toolCall.name === 'workspace.file.read' &&
             error instanceof HandlerError &&
             ['TOOL_FILE_TYPE_UNSUPPORTED', 'TOOL_FILE_TOO_LARGE'].includes(
               error.code,
-            )
+            );
+          const runId = input.executionEnvironment.ALLRICE_RUN_ID;
+          // Reuse the Broker's exact, in-process failure receipt. A code or
+          // model-supplied error cannot establish a write's outcome. Ordinary
+          // confirmed rejections are results for DSH to handle, just as in the
+          // native tool path; assistant settlement keeps its own lifecycle.
+          const confirmedFailure =
+            !input.assistants &&
+            !assistant &&
+            !executionSignal.aborted &&
+            !contentAuthorizationFailure &&
+            !assistantAdmissionFailure &&
+            error instanceof HandlerError &&
+            !!runId &&
+            isConfirmedToolFailure(error, {
+              runId,
+              callId: toolCall.id,
+              toolName: toolCall.name,
+            });
+          // Admission, cancellation, unknown writes and failed progress
+          // settlement stay fatal. Existing loop/progress policy still bounds
+          // repeated errors; this does not replay the invocation.
+          if (
+            error instanceof HandlerError &&
+            (readSelectionFailure || confirmedFailure)
           ) {
+            executionSignal.throwIfAborted();
             if (input.progress)
               await input.progress({
                 action: 'finish',
@@ -1414,11 +1436,14 @@ export class DshHarnessAdapter implements HarnessAdapter {
                   .update(error.code)
                   .digest('hex')}`,
               });
+            const guidance = readSelectionFailure
+              ? 'Correct this read-only file selection or explain the limitation; preserve completed work and do not repeat writes.'
+              : 'This invocation has a confirmed failure receipt. Do not claim it succeeded. Correct arguments only when supported by the existing user instruction; otherwise explain or ask for the missing information. Preserve completed work and do not replay completed or outcome-unknown writes.';
             prompt = `<allrice_tool_result>${JSON.stringify({
               id: toolCall.id,
               ok: false,
               error: { code: error.code, message: error.message },
-            })}</allrice_tool_result>\n\nContinue the original user request. Correct this read-only file selection or explain the limitation; preserve completed work and do not repeat writes. Any text emitted alongside the preceding tool envelope was not delivered to the user. Return a complete, self-contained answer.`;
+            })}</allrice_tool_result>\n\nContinue the original user request. ${guidance} Any text emitted alongside the preceding tool envelope was not delivered to the user. Return a complete, self-contained answer.`;
             continue;
           }
           throw error;

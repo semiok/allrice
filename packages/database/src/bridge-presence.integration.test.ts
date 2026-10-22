@@ -99,7 +99,7 @@ async function terminalFixture(tenant?: { org: string; workspace: string }) {
     sandbox: 'unavailable' as const,
     preview: 'unavailable' as const,
     paused: false,
-    humanTerminalVersion: 1 as const,
+    humanTerminalVersion: 1 as 1 | 2,
   };
   const heartbeat = (changes: Partial<typeof environment> = {}) =>
     heartbeatBridgeDevice(f.token, {
@@ -175,6 +175,7 @@ suite(
       ]);
       const expected = {
         deviceName: 'Synthetic Bridge',
+        streamMode: 'pull',
         target: {
           organizationId: f.org,
           workspaceId: f.workspace,
@@ -206,6 +207,55 @@ suite(
       expect(
         await database`select id from allrice_runs where owner_id=${f.owner}`,
       ).toHaveLength(0);
+    });
+    it('human terminal authority advertises push only for version 2 while preserving the same private grant identity', async () => {
+      const f = await terminalFixture();
+      const legacy = await resolveWorkbenchTerminalTarget(f.context, f.input);
+      expect(legacy.streamMode).toBe('pull');
+      await f.heartbeat({ humanTerminalVersion: 2 });
+      expect(await listBridgeDevices(f.context, f.workspace)).toMatchObject([
+        { id: f.device, humanTerminalVersion: 2 },
+      ]);
+      const expected = { ...legacy, streamMode: 'push' };
+      await expect(
+        resolveWorkbenchTerminalTarget(f.context, f.input),
+      ).resolves.toEqual(expected);
+      await expect(
+        revalidateBridgeTerminalTarget(f.token, legacy.target),
+      ).resolves.toEqual(expected);
+      await f.heartbeat({ humanTerminalVersion: 1 });
+      await expect(
+        revalidateBridgeTerminalTarget(f.token, legacy.target),
+      ).resolves.toEqual(legacy);
+      expect(
+        await database`select id from allrice_bridge_commands where device_id=${f.device}`,
+      ).toHaveLength(0);
+      expect(
+        await database`select id from allrice_runs where owner_id=${f.owner}`,
+      ).toHaveLength(0);
+    });
+    it('human terminal push capability cannot bypass current login or folder grant authority', async () => {
+      const f = await terminalFixture();
+      await f.heartbeat({ humanTerminalVersion: 2 });
+      const { target, streamMode } = await resolveWorkbenchTerminalTarget(
+        f.context,
+        f.input,
+      );
+      expect(streamMode).toBe('push');
+      await database`update allrice_bridge_folder_grants set revoked_at=now() where id=${f.grant}`;
+      await expect(
+        resolveWorkbenchTerminalTarget(f.context, f.input),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await expect(
+        revalidateBridgeTerminalTarget(f.token, target),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await database`update allrice_bridge_folder_grants set revoked_at=null where id=${f.grant}`;
+      const current = await resolveWorkbenchTerminalTarget(f.context, f.input);
+      expect(current.streamMode).toBe('push');
+      await database`update allrice_sessions set revoked_at=now() where id=${f.context.sessionId!}`;
+      await expect(
+        revalidateBridgeTerminalTarget(f.token, current.target),
+      ).rejects.toMatchObject({ code: 'not_found' });
     });
     it('human terminal authority rejects foreign owners, tenants, workspaces, chats, devices, grants and login sessions', async () => {
       const own = await terminalFixture(),
