@@ -212,8 +212,9 @@ function mapDevice(row: DeviceRow, now = Date.now()): BridgeDevice {
     protocolVersion: row.protocol_version,
     capabilities: row.capabilities,
     status,
-    ...(environment?.humanTerminalVersion === 1
-      ? { humanTerminalVersion: 1 }
+    ...(environment?.humanTerminalVersion === 1 ||
+    environment?.humanTerminalVersion === 2
+      ? { humanTerminalVersion: environment.humanTerminalVersion }
       : {}),
     ...(row.client_version !== undefined
       ? { clientVersion: row.client_version }

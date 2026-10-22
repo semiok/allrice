@@ -30,6 +30,22 @@ export const RecurringScheduleRuleSchema = z.discriminatedUnion('kind', [
       timezone: TimezoneSchema,
     })
     .strict(),
+  z
+    .object({
+      kind: z.literal('weekly'),
+      time: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/),
+      timezone: TimezoneSchema,
+      /** Canonical ISO weekdays: Monday 1 through Sunday 7. */
+      weekdays: z
+        .array(z.number().int().min(1).max(7))
+        .min(1)
+        .max(7)
+        .refine(
+          (days) => days.every((day, i) => i === 0 || day > days[i - 1]!),
+          'Choose unique ascending ISO weekdays',
+        ),
+    })
+    .strict(),
 ]);
 export type RecurringScheduleRule = z.infer<typeof RecurringScheduleRuleSchema>;
 

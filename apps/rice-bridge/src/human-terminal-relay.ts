@@ -26,6 +26,8 @@ type Request = {
   readonly ready: Promise<void>;
   readonly markReady: () => void;
   iterator?: AsyncIterator<unknown>;
+  pump?: Promise<void>;
+  closing?: Promise<void>;
   nextPending: boolean;
   finished: boolean;
 };
@@ -36,6 +38,7 @@ type Channel = {
     { type: 'terminal.open' }
   >['target'];
   readonly send: Send;
+  readonly streamMode: 'pull' | 'push';
   readonly abort: AbortController;
   readonly owner: Promise<HumanTerminalOwner>;
   readonly requests: Map<string, Request>;
@@ -44,13 +47,15 @@ type Channel = {
   ended: boolean;
   inputBytes: number;
   admission: Promise<void>;
+  ending?: Promise<void>;
 };
 
 /** A typed carrier only. It never allocates PTYs, parses shell output, rewrites
- * control bytes or replays commands. Each downstream credit pulls one item
- * from the original DSH iterator, preserving native output backpressure. */
+ * control bytes or replays commands. Push streams await each bounded carrier
+ * send before reading again; legacy streams still read one item per credit. */
 export class HumanTerminalRelay {
   private readonly channels = new Map<string, Channel>();
+  private readonly ownedChannels = new Set<Channel>();
   private closed = false;
   private validation: Promise<void> | null = null;
 
@@ -78,7 +83,7 @@ export class HumanTerminalRelay {
    * dispose/revoke instead. */
   async disconnect() {
     await Promise.all(
-      [...this.channels.values()].map((channel) => this.end(channel)),
+      [...this.ownedChannels].map((channel) => this.end(channel)),
     );
   }
 
@@ -100,12 +105,13 @@ export class HumanTerminalRelay {
     if (frame.type === 'terminal.open') {
       if (this.channels.has(frame.id))
         throw Error('HUMAN_TERMINAL_DUPLICATE_CHANNEL');
-      if (this.channels.size >= 8)
+      if (this.ownedChannels.size >= 8)
         throw Error('HUMAN_TERMINAL_CHANNEL_LIMIT_REACHED');
       const channel: Channel = {
         id: frame.id,
         target: frame.target,
         send,
+        streamMode: frame.streamMode ?? 'pull',
         abort: new AbortController(),
         owner: this.host.acquire(frame.target),
         requests: new Map(),
@@ -116,6 +122,7 @@ export class HumanTerminalRelay {
         admission: Promise.resolve(),
       };
       this.channels.set(channel.id, channel);
+      this.ownedChannels.add(channel);
       await channel.owner;
       if (channel.ended) return;
       channel.opened = true;
@@ -206,6 +213,8 @@ export class HumanTerminalRelay {
         throw Error('HUMAN_TERMINAL_INPUT_UNAVAILABLE');
       request.input.push(frame.input);
     } else if (frame.type === 'terminal.next') {
+      if (channel.streamMode === 'push')
+        throw Error('HUMAN_TERMINAL_CREDIT_UNAVAILABLE');
       if (request.action !== 'attach' && request.action !== 'retain')
         throw Error('HUMAN_TERMINAL_STREAM_UNAVAILABLE');
       if (request.nextPending) throw Error('HUMAN_TERMINAL_DUPLICATE_CREDIT');
@@ -229,12 +238,35 @@ export class HumanTerminalRelay {
     }
   }
 
+  private async pump(channel: Channel, request: Request) {
+    while (!request.finished && !channel.ended) {
+      const next = await request.iterator!.next();
+      if (request.finished || channel.ended || next.done) return;
+      // Legacy credits pass this same cached authorization and local grant
+      // check. Continuous output must not outlive that authority lease either.
+      try {
+        await this.host.validate(channel.target);
+      } catch (error) {
+        // end() joins this pump; initiate it without awaiting our own drain.
+        void this.end(
+          channel,
+          !isHumanTerminalAuthorityUnknown(error),
+          failure(error),
+        ).catch(() => {});
+        throw error;
+      }
+      if (request.finished || channel.ended) return;
+      await this.emitNative(channel, request, next.value);
+    }
+  }
+
   private async start(
     channel: Channel,
     request: Request,
     frame: Extract<BridgeTerminalServerFrame, { type: 'terminal.request' }>,
   ) {
     const streaming = frame.action === 'attach' || frame.action === 'retain';
+    let completion: { error?: Failure; notify: boolean } | undefined;
     try {
       const owner = await channel.owner;
       const args = terminalRpcArguments[frame.action].parse(frame.args);
@@ -265,7 +297,7 @@ export class HumanTerminalRelay {
             requestId: request.id,
             result: { ok: true, value },
           });
-        await this.finish(channel, request, undefined, false);
+        completion = { notify: false };
       }
     } catch (error) {
       if (!request.finished && !channel.ended && !streaming)
@@ -276,14 +308,31 @@ export class HumanTerminalRelay {
           requestId: request.id,
           result: { ok: false, error: failure(error) },
         });
-      await this.finish(
-        channel,
-        request,
-        streaming ? failure(error) : undefined,
-        streaming,
-      );
+      completion = {
+        error: streaming ? failure(error) : undefined,
+        notify: streaming,
+      };
     } finally {
       request.markReady();
+    }
+    if (completion)
+      await this.finish(channel, request, completion.error, completion.notify);
+    else if (
+      channel.streamMode === 'push' &&
+      !request.finished &&
+      !channel.ended
+    ) {
+      // Track only the read/send loop here. Its completion closes the request
+      // separately, so finish() can join the pump without awaiting itself.
+      request.pump = this.pump(channel, request);
+      void request.pump
+        .then(
+          () => this.finish(channel, request),
+          (error: unknown) => this.finish(channel, request, failure(error)),
+        )
+        .catch((error: unknown) =>
+          this.end(channel, false, failure(error)).catch(() => {}),
+        );
     }
   }
 
@@ -335,60 +384,77 @@ export class HumanTerminalRelay {
     }
   }
 
-  private async finish(
+  private finish(
     channel: Channel,
     request: Request,
     error?: Failure,
     notify = true,
-  ) {
-    if (request.finished) return;
+  ): Promise<void> {
+    if (request.closing) return request.closing;
     request.finished = true;
     request.abort.abort(error);
-    await request.input.return();
-    await request.iterator?.return?.();
-    if (channel.requests.get(request.id) === request)
-      channel.requests.delete(request.id);
-    if (!channel.ended && notify)
-      await this.emit(channel, {
-        version: 1,
-        type: 'terminal.finished',
-        id: channel.id,
-        requestId: request.id,
-        ...(error ? { error } : {}),
-      });
+    return (request.closing = (async () => {
+      await request.input.return();
+      await request.ready;
+      try {
+        await request.iterator?.return?.();
+      } finally {
+        // A cancelled send or a failed read is already represented by the
+        // request/channel error; joining it still proves the pump has stopped.
+        await request.pump?.catch(() => {});
+      }
+      if (channel.requests.get(request.id) === request)
+        channel.requests.delete(request.id);
+      if (!channel.ended && notify)
+        await this.emit(channel, {
+          version: 1,
+          type: 'terminal.finished',
+          id: channel.id,
+          requestId: request.id,
+          ...(error ? { error } : {}),
+        });
+    })());
   }
 
-  private async end(channel: Channel, revoke = false, error?: Failure) {
-    if (channel.ended) return;
+  private end(
+    channel: Channel,
+    revoke = false,
+    error?: Failure,
+  ): Promise<void> {
+    if (channel.ending) return channel.ending;
     channel.ended = true;
     this.channels.delete(channel.id);
     channel.abort.abort(error);
-    const results = await Promise.allSettled(
-      [...channel.requests.values()].map((request) =>
-        this.finish(channel, request, undefined, false),
-      ),
-    );
-    const owner = await channel.owner.catch(() => null);
-    if (owner) await this.host.release(owner, revoke);
-    const cleanupFailure = results.find(
-      (result) => result.status === 'rejected',
-    );
-    await channel.send({
-      version: 1,
-      type: 'terminal.ended',
-      id: channel.id,
-      ...(error || cleanupFailure
-        ? {
-            error:
-              error ??
-              failure(
-                cleanupFailure?.status === 'rejected'
-                  ? cleanupFailure.reason
-                  : undefined,
-              ),
-          }
-        : {}),
-    });
+    return (channel.ending = (async () => {
+      const results = await Promise.allSettled(
+        [...channel.requests.values()].map((request) =>
+          this.finish(channel, request, undefined, false),
+        ),
+      );
+      const owner = await channel.owner.catch(() => null);
+      if (owner) await this.host.release(owner, revoke);
+      const cleanupFailure = results.find(
+        (result) => result.status === 'rejected',
+      );
+      await channel.send({
+        version: 1,
+        type: 'terminal.ended',
+        id: channel.id,
+        ...(error || cleanupFailure
+          ? {
+              error:
+                error ??
+                failure(
+                  cleanupFailure?.status === 'rejected'
+                    ? cleanupFailure.reason
+                    : undefined,
+                ),
+            }
+          : {}),
+      });
+      if (cleanupFailure) throw cleanupFailure.reason;
+      this.ownedChannels.delete(channel);
+    })());
   }
 
   private async emit(channel: Channel, frame: BridgeTerminalClientFrame) {

@@ -170,6 +170,7 @@ suite(
     }
     async function task(
       prompt = '核对固定测试数据，只输出本期结果。',
+      rule: RecurringScheduleRule = { kind: 'every', seconds: 60 },
       options: { prepareNative?: boolean } = {},
     ) {
       const session = await createChatSession(f.context, {
@@ -181,7 +182,7 @@ suite(
         clientRequestId: randomUUID(),
         name: '每期核对',
         prompt,
-        rule: { kind: 'every' as const, seconds: 60 },
+        rule,
       };
       const result = await createRecurringTask(f.context, session.id, input);
       if (options.prepareNative !== false) await prepareNativeTask(result.id);
@@ -191,7 +192,8 @@ suite(
       id: string,
       scheduledAt = new Date(Date.now() - 180_000).toISOString(),
     ) {
-      const c = (await snapshot(id)).control;
+      const c = (await snapshot(id)).control,
+        rule = c.rule;
       await mutate({ kind: 'session_initializing', controlId: c.controlId });
       await mutate({ kind: 'session_ready', controlId: c.controlId });
       // Explicit synthetic component receipt. Actual timer behavior is separately
@@ -201,8 +203,14 @@ suite(
         status: 'active',
         record: {
           id: randomUUID(),
-          kind: 'every',
-          everySeconds: 60,
+          ...(rule.kind === 'every'
+            ? { kind: 'every', everySeconds: rule.seconds }
+            : {
+                kind: rule.kind,
+                time: rule.time + '.000',
+                timeZone: rule.timezone,
+                ...(rule.kind === 'weekly' ? { weekdays: rule.weekdays } : {}),
+              }),
           title: 'AllRice once control',
           prompt:
             'Synthetic schedule control only. Never execute business work.',
@@ -378,6 +386,49 @@ suite(
           (a) => a.id === t.id,
         ),
       ).toBe(false);
+    });
+    it('hands a weekly receipt to the same ordinary queue exactly once and keeps original history after pause', async () => {
+      const rule = {
+        kind: 'weekly' as const,
+        weekdays: [1, 3, 7],
+        time: '09:30:05',
+        timezone: 'Asia/Kathmandu',
+      };
+      const t = await task('只输出每周期核对结果。', rule);
+      const before = await snapshot(t.id);
+      const write = await receipt(t.id);
+      expect(await store.commitMutation(writer, write)).toBe('committed');
+      expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
+        true,
+      );
+      expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
+        false,
+      );
+      const [counts] =
+        await f.db`select count(*)::int count from allrice_automation_runs where automation_id=${t.id}`;
+      expect(counts!.count).toBe(1);
+      expect(
+        await getRecurringTask(f.context, t.sessionId, t.id),
+      ).toMatchObject({
+        task: { rule },
+        occurrences: [expect.objectContaining({ status: 'queued' })],
+      });
+      await changeRecurringTask(f.context, t.sessionId, t.id, {
+        operationId: randomUUID(),
+        expectedRevision: 1,
+        action: 'pause',
+      });
+      const after = await snapshot(t.id);
+      expect(after.control.controlSessionId).toBe(
+        before.control.controlSessionId,
+      );
+      expect(after.control.nativeTaskId).toBe(before.control.nativeTaskId);
+      expect(
+        await getRecurringTask(f.context, t.sessionId, t.id),
+      ).toMatchObject({
+        task: { status: 'paused' },
+        occurrences: [expect.objectContaining({ status: 'queued' })],
+      });
     });
     it('pause/resume serializes with receipts; late pre-resume periods stay unexecuted', async () => {
       const t = await task();
@@ -811,7 +862,11 @@ suite(
       ).toHaveLength(1);
     });
     it('manual metadata and the first legal native target can share an instant without competing for scheduled uniqueness', async () => {
-      const t = await task('同刻索引身份隔离', { prepareNative: false }),
+      const t = await task(
+          '同刻索引身份隔离',
+          { kind: 'every', seconds: 60 },
+          { prepareNative: false },
+        ),
         manual = await runManualAutomation(f.context, f.workspaceId, t.id, {
           requestId: randomUUID(),
           expectedRevision: 1,
@@ -1804,6 +1859,45 @@ suite(
         }
       },
     );
+    it('compares all weekly days, time and timezone with the current human request before any write', async () => {
+      const rule = {
+        kind: 'weekly' as const,
+        weekdays: [1, 3],
+        time: '09:30:00',
+        timezone: 'Asia/Shanghai',
+      };
+      const c = await leasedChat(
+        '请每周一、三09:30，时区Asia/Shanghai，在当前对话中只回复校验词「WEEKLY-EXACT」。请实际创建周期任务。',
+        rule,
+      );
+      try {
+        const before = await enrollmentCounts();
+        for (const changed of [
+          { ...rule, weekdays: [1, 4] },
+          { ...rule, time: '10:30:00' },
+          { ...rule, timezone: 'UTC' },
+        ]) {
+          await expect(
+            createRecurringTaskFromExecutionContext({
+              ...c.input,
+              rule: changed,
+            }),
+          ).rejects.toMatchObject({ code: 'rule_mismatch' });
+          expect(await enrollmentCounts()).toEqual(before);
+        }
+        const saved = await createRecurringTaskFromExecutionContext(c.input);
+        expect(saved.rule).toEqual(rule);
+        expect(saved.prompt).toBe(
+          '请每周一、三09:30，时区Asia/Shanghai，在当前对话中只回复校验词「WEEKLY-EXACT」。请实际创建周期任务。',
+        );
+        expect(saved.prompt).not.toBe(c.input.prompt);
+        expect(
+          (await createRecurringTaskFromExecutionContext(c.input)).id,
+        ).toBe(saved.id);
+      } finally {
+        await c.finish();
+      }
+    });
     it('requires the current matching job lease, message and permission even on exact ACK replay', async () => {
       const r = await leasedChat();
       try {

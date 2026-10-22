@@ -532,6 +532,93 @@ suite(
       };
     }
     it.each([1280, 390])(
+      'edits a weekly rule in the unified right panel, preserves seconds and discards unsaved days at %ipx',
+      async (width) => {
+        const f = await fixture(width);
+        try {
+          if (f.task.definition.kind !== 'recurring')
+            throw Error('fixture kind');
+          f.task.definition.task.rule = {
+            kind: 'weekly',
+            weekdays: [1, 3],
+            time: '09:30:05',
+            timezone: 'Asia/Shanghai',
+          };
+          await f.open();
+          expect(
+            await f.page
+              .getByRole('combobox', { name: '重复', exact: true })
+              .inputValue(),
+          ).toBe('weekly');
+          expect(
+            await f.page.getByLabel('周一', { exact: true }).isChecked(),
+          ).toBe(true);
+          expect(
+            await f.page.getByLabel('周三', { exact: true }).isChecked(),
+          ).toBe(true);
+          await f.page.getByLabel('周一', { exact: true }).uncheck();
+          await f.page.getByLabel('周日', { exact: true }).check();
+          await f.page
+            .getByRole('button', { name: '显示或隐藏右栏', exact: true })
+            .click();
+          await f.page
+            .getByRole('button', { name: '显示或隐藏右栏', exact: true })
+            .click();
+          expect(
+            await f.page.getByLabel('周一', { exact: true }).isChecked(),
+          ).toBe(true);
+          expect(
+            await f.page.getByLabel('周日', { exact: true }).isChecked(),
+          ).toBe(false);
+          expect(
+            f.requests.filter((request) => request.method === 'PATCH'),
+          ).toHaveLength(0);
+          await f.page.getByLabel('周一', { exact: true }).uncheck();
+          await f.page.getByLabel('周日', { exact: true }).check();
+          await f.page
+            .getByRole('button', { name: '保存修改', exact: true })
+            .click();
+          await f.page.getByText('设置已更新。', { exact: true }).waitFor();
+          expect(
+            f.requests.filter((request) => request.method === 'PATCH'),
+          ).toEqual([
+            expect.objectContaining({
+              body: expect.objectContaining({
+                expectedRevision: 1,
+                action: 'update',
+                rule: {
+                  kind: 'weekly',
+                  weekdays: [3, 7],
+                  time: '09:30:05',
+                  timezone: 'Asia/Shanghai',
+                },
+              }),
+            }),
+          ]);
+          await f.page.reload();
+          await f.open();
+          expect(
+            await f.page.getByLabel('周三', { exact: true }).isChecked(),
+          ).toBe(true);
+          expect(
+            await f.page.getByLabel('周日', { exact: true }).isChecked(),
+          ).toBe(true);
+          expect(
+            await f.page.getByLabel('周一', { exact: true }).isChecked(),
+          ).toBe(false);
+          expect(f.task.definition.task.rule.time).toBe('09:30:05');
+          expect(
+            await f.page.evaluate(
+              () => document.documentElement.scrollWidth <= innerWidth,
+            ),
+          ).toBe(true);
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+    );
+    it.each([1280, 390])(
       'supports catalog, saved edits, history and original chat at %ipx',
       async (width) => {
         const f = await fixture(width);
