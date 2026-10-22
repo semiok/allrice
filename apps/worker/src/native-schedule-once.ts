@@ -89,7 +89,8 @@ export interface NativeScheduleControl {
 }
 export type NativeScheduleRecurringRule =
   | { kind: 'every'; seconds: number }
-  | { kind: 'daily'; time: string; timezone: string };
+  | { kind: 'daily'; time: string; timezone: string }
+  | { kind: 'weekly'; time: string; timezone: string; weekdays: number[] };
 /** revision/rule are desired; applied* describe the durably installed rule. */
 export interface NativeScheduleRecurringControl extends Omit<
   NativeScheduleControl,
@@ -335,12 +336,29 @@ function recurringRuleValid(rule: NativeScheduleRecurringRule): boolean {
       rule.seconds <= 31_536_000
     );
   if (
-    rule.kind !== 'daily' ||
-    Object.keys(rule).sort().join(',') !== 'kind,time,timezone' ||
+    !['daily', 'weekly'].includes(rule.kind) ||
+    Object.keys(rule).sort().join(',') !==
+      (rule.kind === 'weekly'
+        ? 'kind,time,timezone,weekdays'
+        : 'kind,time,timezone') ||
     !/^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/.test(rule.time) ||
     typeof rule.timezone !== 'string' ||
     !rule.timezone ||
     rule.timezone.length > 64
+  )
+    return false;
+  if (
+    rule.kind === 'weekly' &&
+    (!Array.isArray(rule.weekdays) ||
+      rule.weekdays.length < 1 ||
+      rule.weekdays.length > 7 ||
+      !Array.from(rule.weekdays).every(
+        (day, i, days) =>
+          Number.isInteger(day) &&
+          day >= 1 &&
+          day <= 7 &&
+          (i === 0 || day > days[i - 1]!),
+      ))
   )
     return false;
   try {
@@ -357,7 +375,14 @@ function recurringRecordMatches(
   if (record.kind !== rule.kind) return false;
   if (rule.kind === 'every')
     return record.kind === 'every' && record.everySeconds === rule.seconds;
-  if (record.kind !== 'daily') return false;
+  if (record.kind !== 'daily' && record.kind !== 'weekly') return false;
+  if (
+    rule.kind === 'weekly' &&
+    (record.kind !== 'weekly' ||
+      record.weekdays.length !== rule.weekdays.length ||
+      record.weekdays.some((day, i) => day !== rule.weekdays[i]))
+  )
+    return false;
   try {
     return (
       record.time === `${rule.time}.000` &&

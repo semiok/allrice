@@ -4,6 +4,51 @@ import { explicitRecurringTaskIntent as intent } from './recurring-task-intent.t
 
 const accepted: { text: string; rule: RecurringScheduleRule }[] = [
   {
+    text: '请每周一和周三，09:30，时区Asia/Shanghai，整理报告；附上数据来源。',
+    rule: {
+      kind: 'weekly',
+      weekdays: [1, 3],
+      time: '09:30:00',
+      timezone: 'Asia/Shanghai',
+    },
+  },
+  {
+    text: '每周一09:30，时区Asia/Shanghai，回复标记。',
+    rule: {
+      kind: 'weekly',
+      weekdays: [1],
+      time: '09:30:00',
+      timezone: 'Asia/Shanghai',
+    },
+  },
+  {
+    text: '请每周一、三09:30，时区Asia/Shanghai，汇总本会话报表。请创建周期任务。',
+    rule: {
+      kind: 'weekly',
+      weekdays: [1, 3],
+      time: '09:30:00',
+      timezone: 'Asia/Shanghai',
+    },
+  },
+  {
+    text: '每星期天 1:30:05，America/New_York，回复「如果明天需要，三分钟后再说」。',
+    rule: {
+      kind: 'weekly',
+      weekdays: [7],
+      time: '01:30:05',
+      timezone: 'America/New_York',
+    },
+  },
+  {
+    text: '麻烦你帮我每周日、周一09:30，时区Asia/Kathmandu，整理结果；请附上来源。',
+    rule: {
+      kind: 'weekly',
+      weekdays: [1, 7],
+      time: '09:30:00',
+      timezone: 'Asia/Kathmandu',
+    },
+  },
+  {
     text: '每 2 分钟就提醒我一次，要吃药',
     rule: { kind: 'every', seconds: 120 },
   },
@@ -90,6 +135,23 @@ const accepted: { text: string; rule: RecurringScheduleRule }[] = [
 ];
 
 describe('explicit recurring intent in one complete current human message', () => {
+  it.each([
+    '每周一09:30整理报表。',
+    '每周一09:30，时区北京时间，整理报表。',
+    '每周一、一09:30，时区Asia/Shanghai，整理报表。',
+    '每周一、天、日09:30，时区Asia/Shanghai，整理报表。',
+    '每周一09:30，时区Asia/Shanghai，如果我确认就整理报表。',
+    '每周一09:30，时区Asia/Shanghai，整理报表。不要创建任务。',
+    '每周一09:30，时区Asia/Shanghai，整理报表；每周三也整理。',
+    '每周一09:30，时区Asia/Shanghai，整理报表。以后默认简洁。',
+    '「每周一09:30，时区Asia/Shanghai，整理报表。」',
+    '示例：每周一09:30，时区Asia/Shanghai，整理报表。',
+    '每周一24:00，时区Asia/Shanghai，整理报表。',
+    '每周末09:30，时区Asia/Shanghai，整理报表。',
+    '每月一日09:30，时区Asia/Shanghai，整理报表。',
+  ])('keeps weekly authorization boundaries: %s', (text) => {
+    expect(intent(text)).toBeNull();
+  });
   it.each([
     '每两分钟如果我确认就提醒我喝水。',
     '每两分钟提醒我一次，如果没喝水就提醒我。',
@@ -207,7 +269,6 @@ describe('explicit recurring intent in one complete current human message', () =
     '每天09:60，时区Asia/Shanghai，回复标记。',
     '每天09:30:60，时区Asia/Shanghai，回复标记。',
     '每天09:30:05.5，时区Asia/Shanghai，回复标记。',
-    '每周一09:30，时区Asia/Shanghai，回复标记。',
     '每七天的周一回复标记。',
     '每月31日提醒我提交报告。',
     '每个月提醒我提交报告。',

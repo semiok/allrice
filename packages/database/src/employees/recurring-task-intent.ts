@@ -32,6 +32,10 @@ const dailyRequest = new RegExp(
   `^${requestPrefix}(?:每天|每日)\\s*((?:[01]?\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d)?)\\s*[，,]?\\s*(?:时区\\s*[:：]?\\s*)?(${zonePattern})\\s*[，,:：]?\\s*(.+)$`,
   'su',
 );
+const weeklyRequest = new RegExp(
+  `^${requestPrefix}每(?:周|星期)\\s*([一二三四五六日天](?:\\s*[、,，和及]\\s*(?:周|星期)?[一二三四五六日天])*)\\s*[，,]?\\s*((?:[01]?\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d)?)\\s*[，,]?\\s*(?:时区\\s*[:：]?\\s*)?(${zonePattern})\\s*[，,:：]?\\s*(.+)$`,
+  'su',
+);
 const otherTime = new RegExp(
   `${numberPattern}\\s*(?:秒|分(?:钟)?|小时|天|周|个月|月|年)(?:之后|以后|后|内|前)|${numberPattern}\\s*次|[0-9]{1,2}[:：][0-9]{2}|[0-9零一二两三四五六七八九十]+\\s*[点时](?:整|钟|回复|提醒|执行|发送|$)|[0-9]{4}[-/年][0-9]{1,2}`,
   'u',
@@ -252,6 +256,40 @@ export function explicitRecurringTaskIntent(
       recurringWork(every[3]!)
       ? { rule: { kind: 'every', seconds }, authoritativeRequest: text }
       : null;
+  }
+  const weekly = prose.match(weeklyRequest);
+  if (weekly) {
+    if (!explicitWork(weekly[4]!)) return null;
+    const weekdays = weekly[1]!
+      .replaceAll('星期', '')
+      .replaceAll('周', '')
+      .split(/[、,，和及]/u)
+      .map(
+        (value) =>
+          '一二三四五六日'.indexOf(value.trim().replaceAll('天', '日')) + 1,
+      )
+      .sort((a, b) => a - b);
+    if (
+      weekdays.some((value) => value < 1) ||
+      new Set(weekdays).size !== weekdays.length
+    )
+      return null;
+    const timezone = weekly[3]!;
+    try {
+      new Intl.DateTimeFormat('en', { timeZone: timezone });
+    } catch {
+      return null;
+    }
+    const [hour, minute, second = '00'] = weekly[2]!.split(':');
+    return {
+      rule: {
+        kind: 'weekly',
+        weekdays,
+        time: `${hour!.padStart(2, '0')}:${minute}:${second}`,
+        timezone,
+      },
+      authoritativeRequest: text,
+    };
   }
   const daily = prose.match(dailyRequest);
   if (!daily || !explicitWork(daily[3]!)) return null;
