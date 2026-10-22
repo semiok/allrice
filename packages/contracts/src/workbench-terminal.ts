@@ -5,6 +5,9 @@ import { UuidSchema } from './common.ts';
  * between the authenticated browser and its paired Bridge, never an Agent. */
 export const workbenchTerminalSocketPath = '/api/v1/workbench-terminal/socket';
 export const workbenchTerminalProtocol = 'allrice.terminal.v1';
+export const workbenchTerminalStreamProtocol = 'allrice.terminal.v2';
+export const TerminalStreamModeSchema = z.enum(['pull', 'push']);
+export type TerminalStreamMode = z.infer<typeof TerminalStreamModeSchema>;
 export const terminalMaximumScreenBytes = 2 * 1024 * 1024;
 export const terminalMaximumPending = 24;
 export const TerminalIdSchema = z.string().regex(/^[\w-]{1,128}$/u);
@@ -236,6 +239,7 @@ export const WorkbenchTerminalServerFrameSchema = z.discriminatedUnion('type', [
   TerminalReadySchema.safeExtend({
     target: TerminalTargetSchema,
     deviceName: z.string().min(1).max(120),
+    streamMode: TerminalStreamModeSchema.optional(),
   }),
   TerminalResultSchema,
   TerminalFrameSchema,
@@ -254,6 +258,7 @@ export const BridgeTerminalServerFrameSchema = z.discriminatedUnion('type', [
       type: z.literal('terminal.open'),
       ...channel,
       target: TerminalTargetSchema,
+      streamMode: TerminalStreamModeSchema.optional(),
     })
     .strict(),
   TerminalRequestSchema.safeExtend(channel),

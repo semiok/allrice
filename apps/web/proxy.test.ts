@@ -120,6 +120,44 @@ describe('Rice Bridge portal boundary', () => {
     ).toBe(true);
   });
 
+  it('passes terminal device revalidation to its Bearer handler without a browser cookie', () => {
+    vi.stubEnv('ALLRICE_PORTAL_AUTH_ENABLED', '1');
+    try {
+      const path = '/api/v1/bridge/device/terminals/authorize';
+      expect(isBridgeDeviceApiPath(path)).toBe(true);
+      for (const host of ['allrice.bplabs.xyz', 'allrice-snow.bplabs.xyz']) {
+        const request = new NextRequest(`https://${host}${path}`, {
+          method: 'POST',
+          headers: { host, authorization: 'Bearer synthetic-device-token' },
+        });
+        expect(request.cookies.size).toBe(0);
+        expect(proxy(request).headers.get('x-middleware-next')).toBe('1');
+        for (const other of [
+          '/api/v1/bridge/device/terminals',
+          path + '/extra',
+          path + '-extra',
+          '/api/v1/workbench-terminal/authorize',
+          '/api/v1/bridge/devices',
+        ]) {
+          expect(isBridgeDeviceApiPath(other)).toBe(false);
+          expect(
+            proxy(
+              new NextRequest(`https://${host}${other}`, {
+                method: 'POST',
+                headers: {
+                  host,
+                  authorization: 'Bearer synthetic-device-token',
+                },
+              }),
+            ).status,
+          ).toBe(401);
+        }
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('keeps browser device management behind the portal session', () => {
     expect(isBridgeDeviceApiPath('/api/v1/bridge/browser-workspaces')).toBe(
       true,

@@ -82,15 +82,26 @@ async function fixture() {
   const relay = new HumanTerminalRelay(host);
   cleanup.push(() => relay.dispose());
   const frames: BridgeTerminalClientFrame[] = [];
+  const received: BridgeTerminalServerFrame[] = [];
+  const modes = new Map<string, 'pull' | 'push'>();
   const send = async (frame: BridgeTerminalClientFrame) => {
     frames.push(frame);
     return true;
   };
-  const receive = (frame: BridgeTerminalServerFrame) =>
+  const receive = (frame: BridgeTerminalServerFrame) => {
+    received.push(frame);
     relay.receive(frame, send);
-  async function open(scope = target) {
+  };
+  async function open(scope = target, streamMode?: 'pull' | 'push') {
     const id = randomUUID();
-    receive({ version: 1, type: 'terminal.open', id, target: scope });
+    modes.set(id, streamMode ?? 'pull');
+    receive({
+      version: 1,
+      type: 'terminal.open',
+      id,
+      target: scope,
+      ...(streamMode ? { streamMode } : {}),
+    });
     await eventually(
       () =>
         frames.find(
@@ -156,7 +167,8 @@ async function fixture() {
         receive({ version: 1, type: 'terminal.input', id, requestId, input });
       },
       async next() {
-        receive({ version: 1, type: 'terminal.next', id, requestId });
+        if (modes.get(id) !== 'push')
+          receive({ version: 1, type: 'terminal.next', id, requestId });
         const first = await eventually(
           () =>
             frames
@@ -228,6 +240,7 @@ async function fixture() {
     host,
     relay,
     frames,
+    received,
     receive,
     open,
     rpc,
@@ -239,6 +252,405 @@ async function fixture() {
     },
   };
 }
+
+function controlledStream(values: unknown[] = []) {
+  const queued = [...values];
+  let closed = false;
+  let waiting: ((value: IteratorResult<unknown>) => void) | undefined;
+  const iterator: AsyncIterableIterator<unknown> & {
+    push(value: unknown): void;
+  } = {
+    [Symbol.asyncIterator]() {
+      return this;
+    },
+    next: vi.fn(async () => {
+      if (closed) return { done: true as const, value: undefined };
+      if (queued.length) return { done: false as const, value: queued.shift() };
+      if (waiting) throw Error('Concurrent native read');
+      return await new Promise<IteratorResult<unknown>>((resolve) => {
+        waiting = resolve;
+      });
+    }),
+    return: vi.fn(async () => {
+      closed = true;
+      waiting?.({ done: true, value: undefined });
+      waiting = undefined;
+      return { done: true as const, value: undefined };
+    }),
+    push(value) {
+      if (closed) throw Error('Native stream is closed');
+      if (waiting) {
+        const resolve = waiting;
+        waiting = undefined;
+        resolve({ done: false, value });
+      } else queued.push(value);
+    },
+  };
+  return iterator;
+}
+
+async function carrierFixture(
+  values: unknown[],
+  sendFrame: (
+    frame: BridgeTerminalClientFrame,
+  ) => Promise<boolean> = async () => true,
+  streamMode?: 'pull' | 'push',
+) {
+  const target: TerminalTarget = {
+    organizationId: randomUUID(),
+    workspaceId: randomUUID(),
+    ownerId: randomUUID(),
+    loginSessionId: randomUUID(),
+    sessionId: randomUUID(),
+    deviceId: randomUUID(),
+    grantId: randomUUID(),
+    grantVersion: 1,
+    rootFingerprint: 'a'.repeat(64),
+    label: 'Carrier test',
+  };
+  const native = controlledStream(values);
+  const stream = vi.fn(() => native);
+  const owner = { stream, call: vi.fn(async () => undefined) };
+  const host = {
+    acquire: vi.fn(async () => owner),
+    validate: vi.fn(async () => '/carrier-test'),
+    release: vi.fn(async () => undefined),
+    revalidate: vi.fn(async () => undefined),
+    dispose: vi.fn(async () => undefined),
+  };
+  const relay = new HumanTerminalRelay(host as unknown as HumanTerminalHost);
+  cleanup.push(() => relay.dispose());
+  const frames: BridgeTerminalClientFrame[] = [];
+  const send = async (frame: BridgeTerminalClientFrame) => {
+    frames.push(frame);
+    return await sendFrame(frame);
+  };
+  const receive = (frame: BridgeTerminalServerFrame) =>
+    relay.receive(frame, send);
+  const id = randomUUID();
+  receive({
+    version: 1,
+    type: 'terminal.open',
+    id,
+    target,
+    ...(streamMode ? { streamMode } : {}),
+  });
+  await eventually(
+    () => frames.find((frame) => frame.type === 'terminal.ready'),
+    Boolean,
+  );
+  const requestId = randomUUID();
+  receive({
+    version: 1,
+    type: 'terminal.request',
+    id,
+    requestId,
+    action: 'attach',
+    args: { id: 'carrier-terminal' },
+  });
+  await eventually(
+    () => stream.mock.calls.length,
+    (count) => count === 1,
+  );
+  return { id, requestId, relay, host, native, frames, receive };
+}
+
+it('legacy channels read exactly one native frame for each credit', async () => {
+  const f = await carrierFixture([
+    { type: 'ack', sequence: 1 },
+    { type: 'output', sequence: 1, data: 'legacy' },
+  ]);
+  expect(f.native.next).not.toHaveBeenCalled();
+  f.receive({
+    version: 1,
+    type: 'terminal.next',
+    id: f.id,
+    requestId: f.requestId,
+  });
+  await eventually(
+    () => f.frames.filter((frame) => frame.type === 'terminal.frame'),
+    (frames) => frames.length === 1,
+  );
+  await delay(20);
+  expect(f.native.next).toHaveBeenCalledTimes(1);
+  f.receive({
+    version: 1,
+    type: 'terminal.next',
+    id: f.id,
+    requestId: f.requestId,
+  });
+  await eventually(
+    () => f.frames.filter((frame) => frame.type === 'terminal.frame'),
+    (frames) => frames.length === 2,
+  );
+  expect(f.native.next).toHaveBeenCalledTimes(2);
+});
+
+it('push streams preserve a burst of native ACKs and output without read credits', async () => {
+  const values = Array.from({ length: 205 }, (_, index) => [
+    { type: 'ack', sequence: index + 1 },
+    { type: 'output', sequence: index + 1, data: String(index) },
+  ]).flat();
+  const f = await carrierFixture(values, undefined, 'push');
+  const pushed = await eventually(
+    () => f.frames.filter((frame) => frame.type === 'terminal.frame'),
+    (frames) => frames.length === values.length,
+  );
+  expect(
+    pushed.map((frame) => frame.type === 'terminal.frame' && frame.frame),
+  ).toEqual(values);
+  // One idle native read remains pending; it is cancelled by the relay owner.
+  expect(f.native.next).toHaveBeenCalledTimes(values.length + 1);
+  await f.relay.disconnect();
+  expect(f.native.return).toHaveBeenCalledTimes(1);
+  expect(f.host.release).toHaveBeenCalledTimes(1);
+});
+
+it('push backpressure stops native reads and concurrent disconnects join a cancelled send', async () => {
+  let resolveBlocked!: (value: boolean) => void;
+  const blocked = new Promise<boolean>((resolve) => {
+    resolveBlocked = resolve;
+  });
+  const f = await carrierFixture(
+    [
+      { type: 'output', sequence: 1, data: 'first' },
+      { type: 'output', sequence: 2, data: 'must stay unread' },
+    ],
+    async (frame) => (frame.type === 'terminal.frame' ? await blocked : true),
+    'push',
+  );
+  await eventually(
+    () => f.frames.some((frame) => frame.type === 'terminal.frame'),
+    Boolean,
+  );
+  expect(f.native.next).toHaveBeenCalledTimes(1);
+  f.receive({
+    version: 1,
+    type: 'terminal.cancel',
+    id: f.id,
+    requestId: f.requestId,
+  });
+  await eventually(
+    () => vi.mocked(f.native.return!).mock.calls.length,
+    Boolean,
+  );
+  let firstDone = false;
+  let secondDone = false;
+  const first = f.relay.disconnect().then(() => {
+    firstDone = true;
+  });
+  const second = f.relay.disconnect().then(() => {
+    secondDone = true;
+  });
+  await delay(20);
+  expect(firstDone).toBe(false);
+  expect(secondDone).toBe(false);
+  expect(f.host.release).not.toHaveBeenCalled();
+  resolveBlocked(true);
+  await Promise.all([first, second]);
+  expect(f.native.next).toHaveBeenCalledTimes(1);
+  expect(f.host.release).toHaveBeenCalledTimes(1);
+  expect(
+    f.frames.filter((frame) => frame.type === 'terminal.ended'),
+  ).toHaveLength(1);
+});
+
+it('a failed push send drains its pump and releases its owner without another native read', async () => {
+  const f = await carrierFixture(
+    [
+      { type: 'output', sequence: 1, data: 'carrier full' },
+      { type: 'output', sequence: 2, data: 'must stay unread' },
+    ],
+    async (frame) => frame.type !== 'terminal.frame',
+    'push',
+  );
+  await eventually(
+    () => f.frames.some((frame) => frame.type === 'terminal.ended'),
+    Boolean,
+  );
+  await f.relay.disconnect();
+  expect(f.native.next).toHaveBeenCalledTimes(1);
+  expect(f.native.return).toHaveBeenCalledTimes(1);
+  expect(f.host.release).toHaveBeenCalledTimes(1);
+});
+
+it('push channels reject read credits and drain the active stream', async () => {
+  const f = await carrierFixture([], undefined, 'push');
+  f.receive({
+    version: 1,
+    type: 'terminal.next',
+    id: f.id,
+    requestId: f.requestId,
+  });
+  const ended = await eventually(
+    () => f.frames.find((frame) => frame.type === 'terminal.ended'),
+    Boolean,
+  );
+  expect(ended).toMatchObject({
+    error: { message: 'HUMAN_TERMINAL_CREDIT_UNAVAILABLE' },
+  });
+  await f.relay.disconnect();
+  expect(f.native.return).toHaveBeenCalledTimes(1);
+});
+
+it('push output revalidates authority before delivery and drains on revocation', async () => {
+  const f = await carrierFixture([], undefined, 'push');
+  f.host.validate.mockRejectedValueOnce(
+    Error('HUMAN_TERMINAL_AUTHORIZATION_REVOKED'),
+  );
+  f.native.push({ type: 'output', sequence: 1, data: 'must not be delivered' });
+  const ended = await eventually(
+    () => f.frames.find((frame) => frame.type === 'terminal.ended'),
+    Boolean,
+  );
+  expect(ended).toMatchObject({
+    error: { message: 'HUMAN_TERMINAL_AUTHORIZATION_REVOKED' },
+  });
+  expect(f.frames.some((frame) => frame.type === 'terminal.frame')).toBe(false);
+  expect(f.host.release).toHaveBeenCalledWith(expect.anything(), true);
+  await f.relay.disconnect();
+  expect(f.native.return).toHaveBeenCalledTimes(1);
+});
+
+it('push preserves the cached authorization lease and detaches expired unknown authority without revoking the owner', async () => {
+  const authority = await fixture();
+  await authority.host.validate(authority.target);
+  const now = Date.now();
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 400);
+  authority.authorize('unknown');
+  const f = await carrierFixture([], undefined, 'push');
+  f.host.validate.mockImplementation(() =>
+    authority.host.validate(authority.target),
+  );
+  f.native.push({ type: 'output', sequence: 1, data: 'cached authority' });
+  await eventually(
+    () => f.frames.filter((frame) => frame.type === 'terminal.frame').length,
+    (count) => count === 1,
+  );
+  expect(authority.authority).toHaveBeenCalledTimes(1);
+
+  clock.mockReturnValue(now + 600);
+  f.native.push({ type: 'output', sequence: 2, data: 'unexpired lease' });
+  await eventually(
+    () => f.frames.filter((frame) => frame.type === 'terminal.frame').length,
+    (count) => count === 2,
+  );
+  expect(authority.authority).toHaveBeenCalledTimes(2);
+
+  clock.mockReturnValue(now + 6_000);
+  f.native.push({ type: 'output', sequence: 3, data: 'must not be delivered' });
+  const ended = await eventually(
+    () => f.frames.find((frame) => frame.type === 'terminal.ended'),
+    Boolean,
+  );
+  expect(ended).toMatchObject({
+    error: { message: 'HUMAN_TERMINAL_AUTHORIZATION_UNAVAILABLE' },
+  });
+  expect(
+    f.frames.filter((frame) => frame.type === 'terminal.frame'),
+  ).toHaveLength(2);
+  expect(f.host.release).toHaveBeenCalledWith(expect.anything(), false);
+  await f.relay.disconnect();
+  expect(f.native.return).toHaveBeenCalledTimes(1);
+});
+
+it.skipIf(process.platform !== 'darwin')(
+  'push carries a real native character burst and ordered ACKs without credits',
+  async () => {
+    const f = await fixture();
+    const channel = await f.open(f.target, 'push');
+    const terminal = await f.create(channel);
+    const retention = f.stream(channel, terminal, 'retain');
+    expect(await retention.next()).toEqual({ type: 'retained' });
+    const stream = f.stream(channel, terminal);
+    expect(await stream.next()).toMatchObject({
+      type: 'snapshot',
+      writable: true,
+    });
+    const text = '0123456789abcdef'.repeat(12);
+    const command = `printf '%s' '${text}' > burst-order; printf '\\nNATIVE_PUSH_DONE\\n'\r`;
+    let sequence = 0;
+    for (const data of command)
+      stream.send({ type: 'write', sequence: ++sequence, data });
+    const acknowledgements: number[] = [];
+    let output = '';
+    while (
+      acknowledgements.length !== sequence ||
+      !output.includes('NATIVE_PUSH_DONE\r\n')
+    ) {
+      const frame = await stream.next();
+      if (frame.type === 'ack') {
+        expect(frame.refusal).toBeUndefined();
+        acknowledgements.push(frame.sequence);
+      } else if (frame.type === 'output') output += frame.data;
+    }
+    expect(acknowledgements).toEqual(
+      Array.from({ length: sequence }, (_, index) => index + 1),
+    );
+    expect(await readFile(join(f.root, 'burst-order'), 'utf8')).toBe(text);
+    expect(f.received.some((frame) => frame.type === 'terminal.next')).toBe(
+      false,
+    );
+    await f.relay.disconnect();
+    const reconnected = await f.open(f.target, 'push');
+    expect(await f.rpc(reconnected, 'list')).toMatchObject({
+      ok: true,
+      value: [{ id: terminal, state: 'running' }],
+    });
+  },
+  15_000,
+);
+
+it.skipIf(process.platform !== 'darwin')(
+  'revocation drains a push attachment and terminates its native background processes',
+  async () => {
+    const f = await fixture();
+    const channel = await f.open(f.target, 'push');
+    const terminal = await f.create(channel);
+    const stream = f.stream(channel, terminal);
+    await stream.next();
+    stream.send({
+      type: 'write',
+      sequence: 1,
+      data: "sleep 100 & printf '%s' $! > push-background.pid\r",
+    });
+    const pid = await eventually(
+      () =>
+        readFile(join(f.root, 'push-background.pid'), 'utf8').catch(() => ''),
+      (value) => /^\d+$/.test(value),
+    );
+    process.kill(Number(pid), 0);
+    f.config.grants[0]!.revokedAt = new Date().toISOString();
+    stream.send({
+      type: 'write',
+      sequence: 2,
+      data: 'printf forbidden > push-revoked-input\r',
+    });
+    const ended = await eventually(
+      () =>
+        f.frames.find(
+          (frame) => frame.id === channel && frame.type === 'terminal.ended',
+        ),
+      Boolean,
+    );
+    expect(ended).toMatchObject({
+      error: { message: 'HUMAN_TERMINAL_GRANT_UNAVAILABLE' },
+    });
+    await eventually(() => {
+      try {
+        process.kill(Number(pid), 0);
+        return false;
+      } catch {
+        return true;
+      }
+    }, Boolean);
+    await expect(
+      readFile(join(f.root, 'push-revoked-input')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    await f.relay.disconnect();
+  },
+  15_000,
+);
 
 it.skipIf(process.platform !== 'darwin')(
   'native PTY passes TTY, Tab, Ctrl+C, resize and owned background-process cleanup through the typed relay',
