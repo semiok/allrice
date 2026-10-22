@@ -231,7 +231,11 @@ select (num_nonnulls($2,$3)=1 and (
             and o.payload->'receipt'=coalesce(arm.task_snapshot->'deliveryHistory'->'records'->0,arm.task_snapshot->'lastDelivery'))))))) is true
 $$;
 
-create function allrice_automation_conversation_handoff_proved(automation_run uuid) returns boolean language plpgsql volatile as $$
+-- This fixed-shape, ID-scoped proof does not need a new custom plan for each
+-- heartbeat retry. Only the plan is reused; every call still reads current rows.
+-- Keep the setting local to this function and preserve caller lock ordering.
+create function allrice_automation_conversation_handoff_proved(automation_run uuid) returns boolean language plpgsql volatile
+set plan_cache_mode = force_generic_plan as $$
 begin
   return (
 select exists(select 1 from allrice_automation_runs ar
