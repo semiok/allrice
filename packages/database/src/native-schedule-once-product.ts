@@ -8,6 +8,7 @@ import {
   type ScheduleTarget as Target,
 } from './native-schedule-authority.ts';
 import { employeeAccessTransaction } from './employees/employee-access-cancellation.ts';
+import { readScheduleClarification } from './employees/schedule-clarification-authority.ts';
 import {
   explicitOnceTaskIntent,
   confirmedOnceTaskIntent,
@@ -633,6 +634,9 @@ async function readOnceTaskIntent(
   current: Awaited<ReturnType<typeof assertEmployeeChatExecution>>,
 ) {
   const { text } = current;
+  const clarified = await readScheduleClarification(tx, input, text);
+  if (clarified)
+    return clarified.intent?.kind === 'once' ? clarified.intent : null;
   const direct = explicitOnceTaskIntent(text);
   if (direct || !isOnceTaskConfirmationReply(text)) return direct;
   const ctx = input.context;

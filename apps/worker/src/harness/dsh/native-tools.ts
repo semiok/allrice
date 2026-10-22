@@ -1,6 +1,5 @@
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
-import { explicitRecurringTaskIntent } from '@allrice/database';
 import { HandlerError } from '../../errors.js';
 import { isDshNativeTool, privateDshNativeToolNames } from './tool-bridge.js';
 
@@ -27,18 +26,13 @@ export function nativeSessionRecoveryFailure(error: unknown) {
 export async function selectDshNativeTools(
   names: readonly string[],
   verifiedEntrypoint?: string,
-  currentUserRequest?: string,
 ) {
-  // Only the server-loaded current human message selects this transport.
-  // Kernel text can include untrusted templates; a missing raw message keeps
-  // the prior native vocabulary. SQL still authorizes the eventual operation.
-  const recurring =
-    names.includes('automation.create') &&
-    currentUserRequest !== undefined &&
-    explicitRecurringTaskIntent(currentUserRequest) !== null;
+  // The host owns the current once/recurring schema. Pinned artifacts still
+  // advertise a once-only automation_create, so always use the existing Broker
+  // envelope for this capability. Transport is not natural-language authority:
+  // clarification can change the intended frequency after initialization.
   const requested = names.filter(
-    (name) =>
-      isDshNativeTool(name) && !(recurring && name === 'automation.create'),
+    (name) => isDshNativeTool(name) && name !== 'automation.create',
   );
   if (!verifiedEntrypoint) return requested; // offline protocol fixtures
   const require = createRequire(verifiedEntrypoint);

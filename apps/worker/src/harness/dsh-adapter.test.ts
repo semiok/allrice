@@ -272,6 +272,7 @@ describe('DshHarnessAdapter', () => {
       prompt: '请每隔两分钟提醒我喝水。',
       rule: { kind: 'every', seconds: 120 },
     },
+    { prompt: '1 分钟尖叫一次', rule: { kind: 'every', seconds: 60 } },
     {
       prompt: '请每天09:30，时区Asia/Shanghai，提醒我检查报表。',
       rule: { kind: 'daily', time: '09:30:00', timezone: 'Asia/Shanghai' },
@@ -393,7 +394,7 @@ describe('DshHarnessAdapter', () => {
     }
   }, 30_000);
 
-  it('recovers the same persisted Session across once → recurring → once callable changes', async () => {
+  it('recovers the same persisted Session across once → recurring → once with the complete stable host tool schema', async () => {
     const oncePrompt = '请在15分钟后提醒我喝水。';
     const recurringPrompt = '请每隔两分钟提醒我喝水。';
     const onceArgs = { name: '一次校验', prompt: oncePrompt, delayMinutes: 15 };
@@ -404,11 +405,11 @@ describe('DshHarnessAdapter', () => {
     };
     const envelopeId = randomUUID();
     const runtime = await schedulingRuntime([
-      { id: randomUUID(), arguments: onceArgs },
+      `<allrice_tool_call>${JSON.stringify({ id: randomUUID(), name: 'automation.create', arguments: onceArgs })}</allrice_tool_call>`,
       'FIRST_ONCE_RECEIPT',
       `<allrice_tool_call>${JSON.stringify({ id: envelopeId, name: 'automation.create', arguments: recurringArgs })}</allrice_tool_call>`,
       'RECURRING_RECEIPT',
-      { id: randomUUID(), arguments: onceArgs },
+      `<allrice_tool_call>${JSON.stringify({ id: randomUUID(), name: 'automation.create', arguments: onceArgs })}</allrice_tool_call>`,
       'SECOND_ONCE_RECEIPT',
     ]);
     const onToolCall = vi.fn(async (call: HarnessToolCall) => ({
@@ -465,18 +466,18 @@ describe('DshHarnessAdapter', () => {
         onceProcess.nativeTools,
         recurringProcess.nativeTools,
         restoredProcess.nativeTools,
-      ]).toEqual([['automation.create'], [], ['automation.create']]);
+      ]).toEqual([[], [], []]);
       expect(
         new Set([onceProcess.id, recurringProcess.id, restoredProcess.id]).size,
-      ).toBe(3);
+      ).toBe(1);
       expect(runtime.requests).toHaveLength(6);
-      expect(JSON.stringify(runtime.requests[0]?.tools)).toContain(
+      expect(JSON.stringify(runtime.requests[0]?.tools ?? [])).not.toContain(
         'automation_create',
       );
       expect(JSON.stringify(runtime.requests[2]?.tools ?? [])).not.toContain(
         'automation_create',
       );
-      expect(JSON.stringify(runtime.requests[4]?.tools)).toContain(
+      expect(JSON.stringify(runtime.requests[4]?.tools ?? [])).not.toContain(
         'automation_create',
       );
       expect(JSON.stringify(runtime.requests[2]?.messages)).toContain(
