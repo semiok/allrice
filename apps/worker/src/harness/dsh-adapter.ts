@@ -44,6 +44,12 @@ import {
 import { assertAssistantProviderOutputBound } from './dsh/assistant-provider.js';
 import { projectNativeUsage } from './dsh/native-usage.js';
 import { DshAssistantStream } from './dsh/assistant-stream.js';
+import {
+  DshRunTiming,
+  type DshContentCheckPhase,
+  type DshRunTimingOutcome,
+  type DshRunTimingPoint,
+} from './dsh/run-timing.js';
 import { toolActivityDetail } from './dsh/tool-activity.js';
 import { DshStartupRejection } from './dsh/startup-rejection.js';
 import { nativeSessionRecoveryFailure } from './dsh/native-tools.js';
@@ -174,6 +180,39 @@ export class DshHarnessAdapter implements HarnessAdapter {
   }
 
   async execute(input: HarnessExecutionInput): Promise<HarnessExecutionResult> {
+    const timing = new DshRunTiming({
+      runId:
+        input.executionEnvironment.ALLRICE_RUN_ID ??
+        input.assistants?.rootRunId ??
+        null,
+      sessionId: input.kernel.sessionId,
+      attempt: input.attempt,
+      generation: input.generation,
+      onDiagnostic: (report) => {
+        console.info('[AllRice:run-timing]', JSON.stringify(report));
+      },
+    });
+    let outcome: DshRunTimingOutcome = 'failed';
+    try {
+      const result = await this.executeObserved(input, timing);
+      outcome = result.assistantStatus === 'partial' ? 'partial' : 'completed';
+      return result;
+    } catch (error) {
+      outcome = input.signal.aborted
+        ? 'aborted'
+        : error instanceof NativeQuestionParked
+          ? 'waiting'
+          : 'failed';
+      throw error;
+    } finally {
+      timing.finish(outcome);
+    }
+  }
+
+  private async executeObserved(
+    input: HarnessExecutionInput,
+    timing: DshRunTiming,
+  ): Promise<HarnessExecutionResult> {
     const preparationStarted = performance.now();
     assertAssistantProviderOutputBound(
       input.providerSnapshot,
@@ -357,10 +396,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
     let turnId: string | null = null;
     let assistantAdmissionFailure: HandlerError | undefined;
     let contentAuthorizationFailure: HandlerError | undefined;
-    const checkContent = async () => {
+    const checkContent = async (phase: DshContentCheckPhase = 'other') => {
       if (!input.contentGuard) return;
       try {
-        await input.contentGuard.check();
+        await timing.checkContent(phase, () => input.contentGuard!.check());
       } catch (error) {
         contentAuthorizationFailure ??= contentGuardFailure(error);
         throw contentAuthorizationFailure;
@@ -383,7 +422,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           delivery: input.inputDelivery,
           signal: input.signal,
           turnId: () => turnId,
-          checkContent,
+          checkContent: () => checkContent('inputGate'),
           assistant,
         });
       }
@@ -400,7 +439,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           )
         )
           throw Error('personal_skill_frozen_identity_mismatch');
-        await checkContent();
+        await checkContent('personalSkill');
         return { allowed: true };
       }
       if (
@@ -408,7 +447,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         method === 'allrice/content-scene-adopt'
       ) {
         try {
-          await checkContent();
+          await checkContent('sceneLoad');
           if (method === 'allrice/content-scene-load') {
             const selection = EmployeeSceneReadSchema.omit({
               receiptId: true,
@@ -442,7 +481,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
             nativeSessionId: params.nativeSessionId,
           });
         }
-        await checkContent();
+        await checkContent('nativeDispatch');
         return { allowed: true };
       }
       if (
@@ -452,13 +491,17 @@ export class DshHarnessAdapter implements HarnessAdapter {
         method === 'allrice/assistant/tool' ||
         method === 'allrice/assistant/proposal'
       )
-        await checkContent();
+        await checkContent(
+          method === 'allrice/tool-call' || method === 'allrice/assistant/tool'
+            ? 'toolDispatch'
+            : 'modelAdmission',
+        );
       if (method === 'allrice/progress') {
         if (
           params.action === 'model_prepare' ||
           (params.action === 'start' && params.kind === 'model')
         )
-          await checkContent();
+          await checkContent('modelAdmission');
         if (!input.progress) throw Error('task_progress_disabled');
         if (params.nativeSessionId !== threadId) {
           if (!assistant) throw Error('task_progress_native_scope');
@@ -468,7 +511,14 @@ export class DshHarnessAdapter implements HarnessAdapter {
             nativeSessionId: params.nativeSessionId,
           });
         }
-        return input.progress(params);
+        const progress = await input.progress(params);
+        if (params.kind === 'model' && typeof params.callId === 'string') {
+          // Worker progress receipts bracket the model call chain, including
+          // native middleware. They are not socket/send/Provider boundaries.
+          if (params.action === 'start') timing.modelStarted(params.callId);
+          if (params.action === 'finish') timing.modelFinished(params.callId);
+        }
+        return progress;
       }
       if (method === 'allrice/assistant/final-delivery-origin') {
         if (
@@ -499,7 +549,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
             nativeSessionId: threadId,
             callId: params.callId,
           });
-        await checkContent();
+        await checkContent('deliveryRepair');
         if (method === 'allrice/assistant/delivery-repair-inspect')
           return { ...(await repair.inspect(params.candidate)) };
         return repair.authorize({
@@ -634,7 +684,14 @@ export class DshHarnessAdapter implements HarnessAdapter {
     let usageComplete = true;
     let cacheUsageKnown = true;
     const fallbackGuard = input.progress ? undefined : new AgentLoopGuard();
+    let toolActivityObserved = false;
     const emit = async (event: HarnessEventPayload) => {
+      if (
+        event.type === 'tool.started' ||
+        event.type === 'tool.completed' ||
+        event.type === 'tool.failed'
+      )
+        toolActivityObserved = true;
       const sourceEventType =
         event.type === 'assistant.delta'
           ? 'assistant/chunk'
@@ -853,6 +910,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         }
       }
       const preparationMs = performance.now() - preparationStarted;
+      timing.mark('preparationCompleted');
       // This receipt measures preparation before prompting. Its own write is
       // excluded; native Skill body loads are measured on their tool receipts.
       await emit({
@@ -908,6 +966,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
             }
           : await this.runOnce({
               runtime,
+              onTimingPoint: (point) => timing.mark(point),
               prompt,
               images: callIndex === 0 ? (input.images ?? []) : [],
               sessionReferences:
@@ -943,14 +1002,16 @@ export class DshHarnessAdapter implements HarnessAdapter {
                   finalDeliveryUnavailable();
                 await input.onTurnStarted?.({ threadId, turnId: nextTurnId });
               },
-              onDelta: async (text, source, replyId, textMode) =>
-                emit({
+              onDelta: async (text, source, replyId, textMode) => {
+                if (text) timing.mark('firstVisibleText');
+                await emit({
                   type: 'assistant.delta',
                   text,
                   ...source,
                   replyId,
                   textMode,
-                }),
+                });
+              },
               onNative: async (event) => {
                 // Directory registration is not adoption. Attach exact frozen
                 // identity only to an actual native Skill call/result.
@@ -1011,7 +1072,18 @@ export class DshHarnessAdapter implements HarnessAdapter {
         usageComplete &&= result.usageComplete;
         cacheUsageKnown &&= result.cacheUsageKnown;
         const toolCall = parseDshToolCall(result.answer);
-        await checkContent();
+        // This narrow path has no external join/validation/wait between its
+        // three adjacent checks. Keep the final current-authority barrier;
+        // do not reuse it across tools, resumed waits or assistant work.
+        const plainCompletion =
+          !toolCall &&
+          !input.assistants &&
+          !assistant &&
+          !input.finalDelivery &&
+          callIndex === 0 &&
+          !input.questionWait?.resume &&
+          !toolActivityObserved;
+        if (!plainCompletion) await checkContent('afterNativeResult');
         if (!toolCall) {
           if (assistantAdmissionFailure) throw assistantAdmissionFailure;
           // These capabilities remain in this call frame. Never attach them to
@@ -1068,7 +1140,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           const projectedCandidate =
             normalizeAllRiceManagedFileLinks(nativeCandidate);
           executionSignal.throwIfAborted();
-          await checkContent();
+          if (!plainCompletion) await checkContent('beforeDeliveryValidation');
           const deliveryReceipt = finalDelivery
             ? await assertFinalDelivery({
                 port: finalDelivery,
@@ -1111,7 +1183,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
               })
             : undefined;
           executionSignal.throwIfAborted();
-          await checkContent();
+          await checkContent('beforePublication');
+          executionSignal.throwIfAborted();
           if (assistant) {
             // The owned native tree stays held through facts/policy and finish.
             // Stop and await the active-run
@@ -1193,6 +1266,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
               sourceEventType: 'allrice/assistant-partial',
               sourcePayload: { status: 'partial' },
             });
+          timing.mark('beforePublication');
           await emit({
             type: 'assistant.completed',
             text: answer,
@@ -1200,6 +1274,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
               (joined?.publicMessageId as string | undefined) ?? result.replyId,
             ...(result.completionSource ?? {}),
           });
+          timing.mark('publicationCompleted');
           await emit({
             type: 'usage.updated',
             ...usage,
@@ -1576,6 +1651,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
   }
 
   private async runOnce(input: {
+    onTimingPoint(point: DshRunTimingPoint): void;
     sessionReferences?: SessionReferenceSnapshot[];
     runtime: DshRuntime;
     prompt: string;
@@ -2136,6 +2212,27 @@ export class DshHarnessAdapter implements HarnessAdapter {
       }
     };
     const unsubscribe = input.runtime.client.subscribe((notification) => {
+      if (notification.params.sessionId === input.runtime.sessionId) {
+        // Observe arrival before the asynchronous persistence/projection
+        // chain. This is native IPC intake, never Provider first-byte timing.
+        const frame = record(notification.params.frame);
+        const nativeEvent = record(notification.params.event);
+        if (
+          (notification.method === 'session.assistant-stream' &&
+            frame?.type === 'chunk' &&
+            record(frame.chunk)) ||
+          (notification.method === 'session.event' &&
+            nativeEvent?.type === 'assistant/chunk' &&
+            !nativeEvent.surfaceOp)
+        )
+          input.onTimingPoint('firstNativeChunk');
+        if (
+          notification.method === 'session.event' &&
+          nativeEvent?.type === 'turn/end' &&
+          !nativeEvent.surfaceOp
+        )
+          input.onTimingPoint('nativeTurnEnded');
+      }
       eventChain = eventChain
         .then(() => processNotification(notification))
         .catch((error: unknown) => {
