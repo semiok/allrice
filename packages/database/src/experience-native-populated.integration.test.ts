@@ -3,6 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
 import { authorizeFixturePlatformAdministrator } from './platform-authority.fixture.ts';
 import { seedExperienceCalendarRule } from './experience-native.fixture.ts';
+import { loadPlatformContentCatalog } from './platform-content/catalog.ts';
+import { synchronizePlatformContent } from './platform-content/sync.ts';
+import { freezeEmployeeBaseSkills } from './employees/employee-base-skills.ts';
 import { createNativeRecurringSqlStore } from './native-schedule-recurring-sql.ts';
 import {
   lockNativeRecurringAdmissions,
@@ -72,6 +75,15 @@ suite(
         personalProfile: 'writable',
       });
       vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
+      // Match the original experience suite's actual published Skill setup.
+      await synchronizePlatformContent(await loadPlatformContentCatalog());
+      const published = await freezeEmployeeBaseSkills([]);
+      expect(published.catalog).toBeTruthy();
+      expect(
+        published.nativeSkills.some(
+          (s) => s.name === 'experience-consolidation',
+        ),
+      ).toBe(true);
       await authorizeFixturePlatformAdministrator(f.db, f.ownerId);
       const previous = await readExperiencePolicy(f.organizationId);
       await updateExperiencePolicy(f.context, f.organizationId, {
