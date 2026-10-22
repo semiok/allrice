@@ -41,7 +41,7 @@ import {
 } from './automation-catalog.ts';
 import { listAutomations } from './execution/automation.ts';
 import { claimNextJob, startClaimedJob, failJob } from './execution/queue.ts';
-import type { RecurringScheduleRule } from '@allrice/contracts';
+import type { FixedRecurringScheduleRule as RecurringScheduleRule } from '@allrice/contracts';
 import { employeeChatUuid } from './employees/employee-chat-authority.ts';
 import {
   employeeManifest,

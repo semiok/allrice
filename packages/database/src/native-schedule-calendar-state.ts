@@ -516,7 +516,10 @@ export function prepareNativeCalendarTaskPut(input: {
   if (m.action !== 'put_task')
     throw new NativeCalendarStateError('write_invalid');
   const v = NativeCalendarRevisionSchema.parse(input.revision);
-  requireCalendar(v.revision === p.revision, 'revision_missing');
+  requireCalendar(
+    v.revision === p.revision && v.consumer === c.dispatch.consumer,
+    'revision_missing',
+  );
   requireCalendar(
     ['creating', 'bound', 'received'].includes(a.status),
     'create_not_started',

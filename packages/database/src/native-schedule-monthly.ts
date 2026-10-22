@@ -362,7 +362,7 @@ export async function changeOrdinaryMonthlyTaskInTransaction(
       }),
     );
   await prepareCalendarRetirementsInTransaction(tx, c.controlId);
-  if (input.action === 'pause')
+  if (input.action === 'pause' || (input.action === 'update' && !enabled))
     await tx`update allrice_native_recurring_operations set status='applied',updated_at=${now}
     where automation_id=${p.id} and operation_id=${input.operationId}`;
 }

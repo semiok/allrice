@@ -257,3 +257,40 @@ it('does not retry or relabel an unknown recurring COMMIT as a confirmed failure
     }),
   ).toBe(false);
 });
+
+it('routes an explicit monthly rule through the original recurring creation authority without changing the work', async () => {
+  const c = recurringCall();
+  c.arguments = {
+    name: '月末核对',
+    prompt: '模型参数仍由数据库核对真人原文',
+    rule: {
+      kind: 'monthly',
+      monthDay: 31,
+      time: '02:30:17',
+      timezone: 'America/New_York',
+    },
+  };
+  c.input.call.arguments = c.arguments;
+  const saved = {
+    id: randomUUID(),
+    clientRequestId: randomUUID(),
+    sessionId: c.input.sessionId,
+    name: '月末核对',
+    prompt: '每月31号02:30:17，时区America/New_York，核对本月账目。',
+    rule: c.arguments.rule,
+    status: 'preparing',
+    nextRunAt: null,
+  };
+  createRecurring.mockResolvedValueOnce(saved);
+  const result = await createAutomation(c);
+  expect(JSON.parse(result.modelContent)).toMatchObject({
+    rule: saved.rule,
+    prompt: saved.prompt,
+    status: 'preparing',
+    nextRunAt: null,
+  });
+  expect(createRecurring).toHaveBeenCalledWith(
+    expect.objectContaining({ rule: saved.rule, arguments: c.arguments }),
+  );
+  expect(create).not.toHaveBeenCalled();
+});

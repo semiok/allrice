@@ -9,6 +9,7 @@ import { setTimeout } from 'node:timers';
 import { URL } from 'node:url';
 import * as database from '@allrice/database';
 import { loadNativeRecurringPartitionRows } from '../../../packages/database/dist/native-schedule-recurring-loader.js';
+import { lockNativeOnceJobAdmission } from '../../../packages/database/dist/native-schedule-once-authority.js';
 import {
   nativeOnceWorkspaceDigest,
   validateNativeOnceWorkspaceSnapshot,
@@ -44,6 +45,12 @@ async function main() {
     `NATIVE_CALENDAR_HOST_CHILD_START ${JSON.stringify({ pid: process.pid, startedAt })}\n`,
   );
   const input = JSON.parse(process.argv[2] ?? 'null');
+  const consumer = input.consumer ?? 'experience-consolidation-v1';
+  assert.ok(
+    ['experience-consolidation-v1', 'ordinary-monthly-v1'].includes(consumer),
+  );
+  const ordinary = consumer === 'ordinary-monthly-v1';
+  if (ordinary) assert.equal(process.env.ALLRICE_RUN_NATIVE_MONTHLY_HOST, '1');
   const url = new URL(process.env.DATABASE_URL),
     authorized = new URL(process.env.ALLRICE_TEST_DATABASE_URL);
   assert.equal(url.pathname, '/allrice_b2');
@@ -139,7 +146,7 @@ async function main() {
   async function cycle() {
     const [p] =
       await db`select p.period_id,p.business_scheduled_for,p.current_arm_id,
-      a.arm_id,a.native_at,a.native_task_id,a.task_snapshot,d.outcome,d.automation_run_id,d.successor_period_id,
+      a.arm_id,a.native_at,a.native_task_id,a.task_snapshot,d.outcome,d.decided_at,d.automation_run_id,d.successor_period_id,
       successor.business_scheduled_for next_p,next_arm.native_task_id next_task_id,retirement.retirement_id
       from allrice_native_calendar_periods p
       join allrice_native_calendar_arms a on a.arm_id=p.current_arm_id and a.period_id=p.period_id
@@ -192,6 +199,7 @@ async function main() {
     await db`select * from allrice_native_recurring_controls where automation_id=${input.fixedId}`;
   const [calendar] =
     await db`select * from allrice_native_recurring_controls where automation_id=${input.automationId}`;
+  assert.equal(calendar.immutable_identity.dispatch.consumer, consumer);
   assert.ok(fixedBirth.native_task_id);
   const initial = await cycle();
   assert.equal(initial.business_scheduled_for.toISOString(), input.P);
@@ -207,7 +215,10 @@ async function main() {
   });
   const complete = await waitFor(
     cycle,
-    (p) => p.outcome === 'empty' && p.next_task_id && p.retirement_id,
+    (p) =>
+      p.outcome === (ordinary ? 'queued' : 'empty') &&
+      p.next_task_id &&
+      p.retirement_id,
     30_000,
   );
   assert.notEqual(complete.native_task_id, complete.next_task_id);
@@ -218,18 +229,55 @@ async function main() {
     complete.native_at.toISOString(),
   );
   assert.ok(complete.task_snapshot.lastDelivery.messageId);
-  const [empty] =
+  const [business] =
     await db`select * from allrice_automation_runs where id=${complete.automation_run_id}`;
-  assert.equal(empty.status, 'succeeded');
-  assert.equal(empty.run_id, null);
-  assert.equal(empty.error_code, 'EXPERIENCE_NO_NEW_EVIDENCE');
-  assert.equal(empty.scheduled_for.toISOString(), input.P);
-  assert.equal(
-    (
-      await db`select id from allrice_jobs where payload->>'type'='allrice.experience.consolidate'`
-    ).length,
-    0,
-  );
+  assert.equal(business.scheduled_for.toISOString(), input.P);
+  let ordinaryJobId;
+  if (ordinary) {
+    assert.equal(business.status, 'queued');
+    assert.ok(business.run_id);
+    assert.equal(business.manual_request_id, null);
+    assert.equal(business.folder_event_id, null);
+    const [job] =
+      await db`select id from allrice_jobs where run_id=${business.run_id}`;
+    ordinaryJobId = job.id;
+    assert.deepEqual(
+      await db.begin((tx) => lockNativeOnceJobAdmission(tx, job.id)),
+      { scheduled: true, allowed: true, runId: business.run_id },
+    );
+    const workerId = randomUUID(),
+      claimed = await database.claimNextJob(workerId, 120000);
+    assert.equal(claimed.id, job.id);
+    assert.ok(
+      await database.startClaimedJob(workerId, claimed.id, claimed.lease.token),
+    );
+    const [current] =
+      await db`select a.prompt,er.prompt_snapshot from allrice_automations a
+      join allrice_employee_runs er on er.run_id=${business.run_id} where a.id=${input.automationId}`;
+    assert.ok(current.prompt_snapshot.userRequest.endsWith(current.prompt));
+    const [next] =
+      await db`select allrice_ordinary_monthly_next(v.configuration->'rule',${complete.decided_at}) target
+      from allrice_native_recurring_versions v where v.automation_id=${input.automationId} and v.revision=1`;
+    assert.equal(complete.next_p.toISOString(), next.target.toISOString());
+    await database.failJob({
+      workerId,
+      jobId: claimed.id,
+      leaseToken: claimed.lease.token,
+      code: 'HOST_FIXTURE_NO_MODEL',
+      message: 'Original admission/preparation proved; provider not invoked',
+      retryable: false,
+    });
+  } else {
+    assert.equal(business.status, 'succeeded');
+    assert.equal(business.run_id, null);
+    assert.equal(business.error_code, 'EXPERIENCE_NO_NEW_EVIDENCE');
+    assert.equal(
+      (
+        await db`select id from allrice_jobs where payload->>'type'='allrice.experience.consolidate'`
+      ).length,
+      0,
+    );
+  }
   const modules = await source.loadModules();
   // Readback only: never acquire/renew/release another writer or open a Host.
   const observer = database.createNativeRecurringSqlStore({
@@ -248,7 +296,7 @@ async function main() {
     lockAdmission: database.lockNativeRecurringAdmissions,
     calendar: {
       enabled: true,
-      lockAdmission: database.lockExperienceCalendarAdmissions,
+      lockAdmission: database.lockNativeCalendarAdmissions,
     },
     proveClosed: async () => null,
   });
@@ -343,6 +391,9 @@ async function main() {
       startedAt,
       profileId: reference.profileId,
       models: 0,
+      consumer,
+      businessRunId: business.run_id,
+      ordinaryJobId,
       P: input.P,
       A: complete.native_at.toISOString(),
       N: complete.next_p.toISOString(),

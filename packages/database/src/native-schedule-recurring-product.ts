@@ -302,7 +302,7 @@ export async function readRecurringOccurrenceRows(
     from allrice_native_recurring_occurrences o
     left join allrice_native_calendar_periods p on p.period_id=o.calendar_period_id
     left join allrice_automation_runs ar on ar.native_recurring_occurrence_id=o.occurrence_id and ar.automation_id=o.automation_id
-      and ar.manual_request_id is null
+      and ar.folder_event_id is null and ar.manual_request_id is null
     left join allrice_runs r on r.id=ar.run_id and r.organization_id=${p.organization_id} and r.workspace_id=${p.workspace_id} and r.owner_id=${p.owner_id}
     left join allrice_jobs j on j.run_id=r.id
     where o.automation_id=${p.id}
@@ -364,7 +364,8 @@ export async function readRecurringTaskProjection(
     const [op] = await tx<
       { status: string; action: string }[]
     >`select status,request->>'action' action from allrice_native_recurring_operations
-      where automation_id=${p.id} order by created_at desc,operation_id desc limit 1`;
+      where automation_id=${p.id} and request->>'action'='delete' and status in ('pending','applied')
+      order by created_at desc,operation_id desc limit 1`;
     const [current] = await tx<
       { native_at: Date; native_task_id: string | null }[]
     >`select arm.native_at,arm.native_task_id
@@ -539,6 +540,8 @@ async function enrollRecurringTask(
       and owner_id=${scope.ownerId} and clock_owner='native_recurring' and deleted_at is null`;
   if (count!.count >= 1000) throw new NativeRecurringProductError('limit');
   if (input.rule.kind === 'monthly') {
+    if (!ordinaryMonthlyEnabled())
+      throw new NativeRecurringProductError('disabled');
     const p = await enrollOrdinaryMonthlyTaskInTransaction(
       tx,
       scope,
@@ -1175,7 +1178,7 @@ async function enqueueOrdinaryRecurringBusiness(
     const [run] = await tx<{ id: string }[]>`insert into allrice_automation_runs
       (organization_id,workspace_id,automation_id,scheduled_for,run_id,session_id,status,native_recurring_occurrence_id)
       values(${scope.organizationId},${scope.workspaceId},${plan.id},${scheduledFor}::timestamptz,${queued.runId},${target.id},'queued',${live.occurrence_id})
-      on conflict(automation_id,scheduled_for) where manual_request_id is null do nothing returning id`;
+      on conflict(automation_id,scheduled_for) where folder_event_id is null and manual_request_id is null do nothing returning id`;
     if (!run) throw new NativeRecurringProductError('binding_conflict');
     return { business, automationRunId: run.id };
   } finally {
@@ -1307,7 +1310,7 @@ async function dispatchOrdinaryMonthlyNative(
       { id: string; native_recurring_occurrence_id: string | null }[]
     >`
       select id,native_recurring_occurrence_id from allrice_automation_runs where automation_id=${plan.id}
-        and scheduled_for=${p.businessScheduledFor}::timestamptz and manual_request_id is null for share`;
+        and scheduled_for=${p.businessScheduledFor}::timestamptz and folder_event_id is null and manual_request_id is null for share`;
     if (prior) {
       const [proof] = await tx<
         { valid: boolean }[]

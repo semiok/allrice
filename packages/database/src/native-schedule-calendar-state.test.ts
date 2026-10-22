@@ -3,6 +3,7 @@ import {
   NativeCalendarArmSchema,
   NativeCalendarControlSchema,
   NativeCalendarRevisionSchema,
+  NativeMonthlyCalendarRevisionSchema,
   calendarArmRequestDigest,
   calendarControlIdentity,
   calendarWriterIdentity,
@@ -14,6 +15,7 @@ import {
   type NativeCalendarWrite,
 } from './native-schedule-calendar-state.ts';
 import { NativeRecurringControlSchema } from './native-schedule-recurring-state.ts';
+import { runtimePolicyDigest } from './runtime-policy.ts';
 import {
   nativeOnceDigest,
   type NativeOnceTask,
@@ -220,6 +222,92 @@ function delivered(value = task()): NativeOnceTask {
 }
 
 describe('independent calendar identity and rotating at binding', () => {
+  it('keeps a complete 40000-unit Chinese request out of the short native revision and pins its digest', () => {
+    const prompt = '请核对账目，逐项汇总。'.repeat(3333) + '核对月末。',
+      content = { name: '月末汇总', prompt: prompt.padEnd(40000, '米') };
+    expect(content.prompt.length).toBe(40000);
+    expect(Buffer.byteLength(JSON.stringify(content))).toBeGreaterThan(65536);
+    expect(() => nativeOnceDigest(content)).toThrow('native_once_json_limit');
+    const monthly = NativeCalendarControlSchema.parse({
+      ...c,
+      dispatch: {
+        ...c.dispatch,
+        consumer: 'ordinary-monthly-v1',
+        businessSessionId: id(30),
+      },
+    });
+    const version = NativeMonthlyCalendarRevisionSchema.parse({
+      kind: 'calendar',
+      binding: 'rotating-at-v1',
+      consumer: 'ordinary-monthly-v1',
+      revision: 1,
+      contentDigest: runtimePolicyDigest(content),
+      reservationDigest: nativeOnceDigest('reservation'),
+      acceptedAt: v.acceptedAt,
+      rule: {
+        kind: 'monthly',
+        monthDay: 31,
+        time: '02:00:05',
+        timezone: 'America/New_York',
+      },
+    });
+    const arm = freshArm();
+    arm.requestDigest = calendarArmRequestDigest(monthly, p, {
+      armId: arm.armId,
+      periodId: arm.periodId,
+      attempt: arm.attempt,
+      nativeAt: arm.nativeAt,
+      reason: arm.reason,
+    });
+    const admission = {
+      consumer: 'ordinary-monthly-v1' as const,
+      allowed: true,
+      currentRevision: 1,
+      revisionDigest: nativeOnceDigest(version),
+      status: 'enabled',
+      resumeAfter: null,
+    };
+    const bound = prepare({
+      control: monthly,
+      revision: version,
+      arm,
+      admission,
+    });
+    const received = withTask(delivered(), {
+      control: monthly,
+      revision: version,
+      arm: bound.arm,
+      period: bound.period,
+      admission,
+    });
+    expect(received.occurrences).toHaveLength(1);
+    expect(received.occurrences[0]!.payload.revision).toEqual(version);
+    expect(Buffer.byteLength(JSON.stringify(received.journal))).toBeLessThan(
+      65536,
+    );
+    expect(JSON.stringify(received.journal)).not.toContain(content.prompt);
+    expect(() =>
+      NativeMonthlyCalendarRevisionSchema.parse({
+        ...version,
+        prompt: content.prompt,
+      }),
+    ).toThrow();
+    const stale = withTask(delivered(), {
+      control: monthly,
+      revision: version,
+      arm: bound.arm,
+      period: bound.period,
+      admission: {
+        ...admission,
+        revisionDigest: nativeOnceDigest({
+          ...version,
+          contentDigest: nativeOnceDigest('edited'),
+        }),
+      },
+    });
+    expect(stale.occurrences[0]!.reason).toBe('configuration_changed');
+    expect(() => prepare({ revision: version })).toThrow('revision_missing');
+  });
   it('keeps monthly out of the fixed control and fixes the calendar parent to null Task', () => {
     expect(NativeCalendarControlSchema.parse(c)).toEqual(c);
     expect(NativeRecurringControlSchema.safeParse(c).success).toBe(false);

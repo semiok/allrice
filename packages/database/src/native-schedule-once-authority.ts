@@ -81,7 +81,7 @@ export async function lockNativeOnceJobAdmission(
     const [proof] = await tx<
       { valid: boolean }[]
     >`select allrice_ordinary_monthly_handoff_proved(${binding.occurrence_id}::uuid) valid`;
-    if (!proof?.valid)
+    if (process.env.ALLRICE_NATIVE_CALENDAR_ENABLED !== '1' || !proof?.valid)
       return { scheduled: true, runId: binding.run_id, allowed: false };
   }
   if (
