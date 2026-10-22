@@ -5,6 +5,7 @@ import { isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { experiencePolicySchedule } from '@allrice/contracts';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
 import { authorizeFixturePlatformAdministrator } from '../../../packages/database/src/platform-authority.fixture.ts';
 import { seedExperienceCalendarRule } from '../../../packages/database/src/experience-native.fixture.ts';
@@ -18,6 +19,7 @@ import {
   initializeNativeRecurringPartition,
 } from '../../../packages/database/src/native-schedule-recurring-product.ts';
 import * as client from '../../../packages/database/src/core/client.ts';
+import { nextScheduleAt } from '../../../packages/database/src/execution/automation.ts';
 import { parseNativeScheduleControlReference } from '../src/native-schedule-once-loader.ts';
 
 const run = promisify(execFile);
@@ -36,8 +38,8 @@ suite(
     beforeAll(async () => {
       if (
         process.env.DATABASE_URL ||
-        new URL(process.env.ALLRICE_TEST_DATABASE_URL ?? '').pathname !==
-          '/allrice_b2'
+        process.env.ALLRICE_TEST_DATABASE_URL !==
+          'postgres://a123@127.0.0.1:5432/allrice_b2'
       )
         throw Error('actual_host_requires_authorized_allrice_b2_fixture');
       vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
@@ -81,6 +83,35 @@ suite(
         adoptionMode: 'off',
       });
       seeded = await seedExperienceCalendarRule(f, 'empty');
+      // Preserve a genuine missed business target under the saved monthly
+      // policy. The shared SQL helper's arbitrary old timestamp is unsuitable
+      // as proof of a real monthly clock. No native Task/receipt exists yet.
+      const schedule = experiencePolicySchedule(
+        await readExperiencePolicy(f.organizationId),
+      );
+      expect(schedule).toEqual({
+        frequency: 'monthly',
+        timezone: 'America/New_York',
+        time: '02:30',
+        weekday: 1,
+        monthDay: 31,
+      });
+      const P = nextScheduleAt(
+        schedule,
+        new Date(Date.now() - 45 * 86_400_000),
+      );
+      expect(P.getTime()).toBeLessThan(Date.now());
+      expect(
+        nextScheduleAt(schedule, new Date(P.getTime() - 1)).toISOString(),
+      ).toBe(P.toISOString());
+      const [saved] = await f.db<{ next_run_at: Date }[]>`
+        update allrice_automations set next_run_at=${P}
+        where id=${seeded.automationId} and organization_id=${f.organizationId}
+        and workspace_id=${f.workspaceId} and owner_id=${f.ownerId}
+        and clock_owner='legacy' and status='enabled'
+        returning next_run_at`;
+      expect(saved?.next_run_at.toISOString()).toBe(P.toISOString());
+      seeded.P = P;
       await initializeNativeRecurringPartition(reference);
       const chat = await createChatSession(f.context, {
         workspaceId: f.workspaceId,

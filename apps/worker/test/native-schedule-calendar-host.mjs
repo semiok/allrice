@@ -29,6 +29,11 @@ process.once('SIGINT', stop);
 async function main() {
   assert.equal(process.env.ALLRICE_RUN_DB_INTEGRATION, '1');
   assert.equal(process.env.ALLRICE_RUN_NATIVE_CALENDAR_HOST, '1');
+  assert.ok(
+    process.env.ALLRICE_TEST_DATABASE_URL ===
+      'postgres://a123@127.0.0.1:5432/allrice_b2',
+    'actual Host requires the exact local fixture authorization',
+  );
   process.stdout.write(
     `NATIVE_CALENDAR_HOST_CHILD_START ${JSON.stringify({ pid: process.pid, startedAt })}\n`,
   );
@@ -127,7 +132,9 @@ async function main() {
       assert.ok(Number.isFinite(Date.parse(p.proof.evidence[key])));
     return p.proof;
   }
+  if (interrupted) throw Error('actual_calendar_host_interrupted_before_open');
   runtime = open();
+  if (interrupted) throw Error('actual_calendar_host_interrupted_before_tick');
   await runtime.tick();
   assert.equal(runtime.status().state, 'active');
   assert.equal(runtime.status().faultCount, 0);
@@ -242,6 +249,7 @@ async function main() {
     firstStats = runtime.status().controller.stats;
   if (interrupted) throw Error('actual_calendar_host_interrupted');
   runtime = open();
+  if (interrupted) throw Error('actual_calendar_host_interrupted_before_tick');
   await runtime.tick();
   assert.equal(runtime.status().state, 'active');
   assert.equal(runtime.status().faultCount, 0);
