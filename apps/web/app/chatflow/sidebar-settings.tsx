@@ -1,9 +1,12 @@
 'use client';
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import {
   Button,
+  IconChevronDownOutlineRegular,
+  IconPlusOutlineRegular,
   IconSettingsOutlineMedium,
+  Input,
   Switch,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import { PersonalSkillsSettings } from './personal-skills-settings';
@@ -13,7 +16,6 @@ import native from './dsh-upstream/settings/SettingsRoot.module.css';
 import { MonthlyQuota } from './monthly-quota';
 import { StorageUsage } from './storage-usage';
 import { AccountPasswordSettings } from './account-password-settings';
-import { ExperiencePanel } from '../workspace/experience/experience-panel';
 import { ComputerSettings } from './computer-settings';
 import { BridgeSettings } from './bridge-dialog';
 import type { useBridge } from './use-bridge';
@@ -22,10 +24,234 @@ import { WorkAutomationSettings } from './work-automation-settings';
 import type { useMonthlyQuota } from './use-monthly-quota';
 import type { usePersonalPreferences } from './use-personal-preferences';
 import styles from './sidebar-settings.module.css';
+import preferenceStyles from './personal-preferences.module.css';
+
+const transcriptViewOptions = [
+  { value: 'compact', label: '简洁' },
+  { value: 'standard', label: '标准' },
+  { value: 'detailed', label: '详细' },
+  { value: 'verbose', label: '完全展开' },
+] as const;
+const collapseTimingOptions = [
+  { value: 'completion', label: '回答结束后' },
+  { value: 'next-input', label: '下次有新消息时' },
+] as const;
+
+function PersonalPreferencesSettings({
+  preferences,
+}: {
+  preferences: ReturnType<typeof usePersonalPreferences>;
+}) {
+  const id = useId();
+  const [fontSizeDraft, setFontSizeDraft] = useState(
+    String(preferences.value.fontSize),
+  );
+  const disabled = preferences.pending || !preferences.available;
+  const expanded = preferences.value.transcriptView === 'verbose';
+  useEffect(() => {
+    setFontSizeDraft(String(preferences.value.fontSize));
+  }, [preferences.value.fontSize, preferences.scope, preferences.pending]);
+
+  function saveFontSize(value: number) {
+    if (disabled) return;
+    const fontSize = Math.min(22, Math.max(10, value));
+    setFontSizeDraft(String(fontSize));
+    if (fontSize !== preferences.value.fontSize)
+      void preferences.setPreferences({ fontSize });
+  }
+  function commitFontSize() {
+    const fontSize = Number(fontSizeDraft);
+    if (!fontSizeDraft.trim() || !Number.isInteger(fontSize)) {
+      setFontSizeDraft(String(preferences.value.fontSize));
+      return;
+    }
+    saveFontSize(fontSize);
+  }
+  function stepFontSize(direction: -1 | 1) {
+    const draft = Number(fontSizeDraft);
+    const current =
+      fontSizeDraft.trim() && Number.isInteger(draft)
+        ? Math.min(22, Math.max(10, draft))
+        : preferences.value.fontSize;
+    saveFontSize(current + direction);
+  }
+
+  return (
+    <div className={preferenceStyles.root} aria-busy={preferences.pending}>
+      <p className={preferenceStyles.lead}>调整对话的阅读和展示方式。</p>
+      <div className={preferenceStyles.list}>
+        <div className={preferenceStyles.row}>
+          <div className={preferenceStyles.copy}>
+            <h3>流式输出</h3>
+            <p>实时显示文字和阶段性回复，关闭后统一展示。</p>
+          </div>
+          <Switch
+            label="流式输出"
+            checked={preferences.value.streamingOutput}
+            disabled={disabled}
+            onChange={(streamingOutput) => {
+              if (streamingOutput !== preferences.value.streamingOutput)
+                void preferences.setPreferences({ streamingOutput });
+            }}
+          />
+        </div>
+        <div className={preferenceStyles.row}>
+          <div className={preferenceStyles.copy}>
+            <h3>
+              <label htmlFor={`${id}-font-size`}>字号大小</label>
+            </h3>
+            <p id={`${id}-font-help`}>仅影响会话正文的字号。</p>
+          </div>
+          <div
+            className={preferenceStyles.fontStepper}
+            role="group"
+            aria-label="会话正文字号"
+          >
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className={preferenceStyles.stepButton}
+              aria-label="减小字号"
+              disabled={disabled || preferences.value.fontSize <= 10}
+              onPointerDown={(event) => event.preventDefault()}
+              onClick={() => stepFontSize(-1)}
+            >
+              <span aria-hidden="true">−</span>
+            </Button>
+            <Input
+              id={`${id}-font-size`}
+              className={preferenceStyles.fontInput}
+              type="number"
+              inputMode="numeric"
+              min={10}
+              max={22}
+              step={1}
+              value={fontSizeDraft}
+              aria-describedby={`${id}-font-help`}
+              disabled={disabled}
+              onChange={(event) => setFontSizeDraft(event.target.value)}
+              onBlur={commitFontSize}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  event.currentTarget.blur();
+                }
+              }}
+            />
+            <span className={preferenceStyles.unit} aria-hidden="true">
+              px
+            </span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className={preferenceStyles.stepButton}
+              aria-label="增大字号"
+              disabled={disabled || preferences.value.fontSize >= 22}
+              onPointerDown={(event) => event.preventDefault()}
+              onClick={() => stepFontSize(1)}
+            >
+              <IconPlusOutlineRegular size={13} />
+            </Button>
+          </div>
+        </div>
+        <div className={preferenceStyles.row}>
+          <div className={preferenceStyles.copy}>
+            <h3>
+              <label htmlFor={`${id}-transcript-view`}>工作步骤展示</label>
+            </h3>
+            <p id={`${id}-view-help`}>选择工具调用过程的详细程度。</p>
+          </div>
+          <div className={preferenceStyles.select}>
+            <select
+              id={`${id}-transcript-view`}
+              aria-describedby={`${id}-view-help`}
+              value={preferences.value.transcriptView}
+              disabled={disabled}
+              onChange={(event) => {
+                const option = transcriptViewOptions.find(
+                  (item) => item.value === event.target.value,
+                );
+                if (option && option.value !== preferences.value.transcriptView)
+                  void preferences.setPreferences({
+                    transcriptView: option.value,
+                  });
+              }}
+            >
+              {transcriptViewOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <IconChevronDownOutlineRegular size={12} />
+          </div>
+        </div>
+        <div className={preferenceStyles.row}>
+          <div className={preferenceStyles.copy}>
+            <h3>
+              <label htmlFor={`${id}-collapse-timing`}>工作步骤收起时机</label>
+            </h3>
+            <p id={`${id}-timing-help`}>
+              {expanded
+                ? '完全展开时，工作步骤保持展开。'
+                : '选择何时自动收起已完成的步骤。'}
+            </p>
+          </div>
+          <div className={preferenceStyles.select}>
+            <select
+              id={`${id}-collapse-timing`}
+              aria-describedby={`${id}-timing-help`}
+              value={preferences.value.collapseTiming}
+              disabled={disabled || expanded}
+              onChange={(event) => {
+                const option = collapseTimingOptions.find(
+                  (item) => item.value === event.target.value,
+                );
+                if (option && option.value !== preferences.value.collapseTiming)
+                  void preferences.setPreferences({
+                    collapseTiming: option.value,
+                  });
+              }}
+            >
+              {collapseTimingOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <IconChevronDownOutlineRegular size={12} />
+          </div>
+        </div>
+      </div>
+      {preferences.error ? (
+        <div role="alert" className={preferenceStyles.error}>
+          <span>{preferences.error}</span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={preferences.pending}
+            onClick={() => void preferences.reload()}
+          >
+            重新读取
+          </Button>
+        </div>
+      ) : (
+        <p role="status" className={preferenceStyles.status}>
+          {preferences.pending
+            ? '正在同步偏好…'
+            : preferences.available
+              ? '自动保存，适用于你的所有 AI 员工。'
+              : '个人偏好暂不可用。'}
+        </p>
+      )}
+    </div>
+  );
+}
 
 export function SidebarSettings({
-  experienceEnabled = false,
-  sessionId,
   capabilities,
   collapsed,
   workspaceId,
@@ -84,7 +310,6 @@ export function SidebarSettings({
     { id: 'capabilities', label: '能力与环境' },
     { id: 'apps', label: '已连接应用' },
     { id: 'computer', label: '我的电脑' },
-    ...(experienceEnabled ? [{ id: 'experience', label: '经验记录' }] : []),
     { id: 'preferences', label: '个人偏好' },
   ];
   const close = () => onSectionChange(null);
@@ -129,7 +354,11 @@ export function SidebarSettings({
                 <div
                   key={row.id}
                   hidden={row.id !== options?.only}
-                  className={styles.section}
+                  className={
+                    row.id === 'preferences'
+                      ? preferenceStyles.section
+                      : styles.section
+                  }
                 >
                   {row.id === 'computer' && bridge.bridgeOpen ? (
                     <div className={styles.computerChildHeading}>
@@ -167,43 +396,7 @@ export function SidebarSettings({
                   )}
                   {row.id === 'capabilities' && capabilities}
                   {row.id === 'preferences' && (
-                    <>
-                      <div className={styles.preferenceRow}>
-                        <div>
-                          <h3>流式输出</h3>
-                          <p>实时展示文字和阶段性回复；关闭后统一展示。</p>
-                        </div>
-                        <Switch
-                          label="流式输出"
-                          checked={preferences.value.streamingOutput}
-                          disabled={
-                            preferences.pending || !preferences.available
-                          }
-                          onChange={(value) =>
-                            void preferences.setStreamingOutput(value)
-                          }
-                        />
-                      </div>
-                      <p className={styles.preferenceHint}>
-                        仅影响你的回复展示方式，所有员工通用。工作状态和用时始终实时更新。
-                      </p>
-                      <p role="status" className={styles.preferenceHint}>
-                        {preferences.pending
-                          ? '正在同步偏好…'
-                          : `当前：${preferences.value.streamingOutput ? '流式输出' : '统一输出'}`}
-                      </p>
-                      {preferences.error && (
-                        <p role="alert">
-                          {preferences.error}
-                          <button
-                            type="button"
-                            onClick={() => void preferences.reload()}
-                          >
-                            重新读取
-                          </button>
-                        </p>
-                      )}
-                    </>
+                    <PersonalPreferencesSettings preferences={preferences} />
                   )}
                   {row.id === 'account' && (
                     <>
@@ -246,13 +439,6 @@ export function SidebarSettings({
                   {/* Bridge 工具随客户端提供；应用设置只管理远端连接。 */}
                   {row.id === 'apps' && (
                     <ConnectedApps workspaceId={workspaceId} />
-                  )}
-                  {row.id === 'experience' && (
-                    <ExperiencePanel
-                      workspaceId={workspaceId}
-                      sessionId={sessionId}
-                      embedded
-                    />
                   )}
                   {row.id === 'skills' && (
                     <PersonalSkillsSettings

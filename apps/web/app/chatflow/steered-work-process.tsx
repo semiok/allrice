@@ -1,6 +1,7 @@
 import type { ComponentProps } from 'react';
 import type { ChatFlowEventEnvelope } from '@allrice/contracts';
 import { steeringProgress } from '../../lib/chatflow/steering-progress';
+import { workProcessPresentation } from '../../lib/chatflow/work-process-presentation';
 import type { Message } from './chatflow-types';
 import type { MessageImageSource } from './message-image-cache';
 import { WorkProcess } from './work-process';
@@ -21,6 +22,9 @@ export function SteeredWorkProcess({
   employeeName: string;
 }) {
   if (!messages.length) return <WorkProcess {...props} />;
+  const presentation =
+    props.presentation ??
+    workProcessPresentation(events, props.parts, undefined, false, true);
   return steeringProgress(
     events,
     messages,
@@ -56,6 +60,13 @@ export function SteeredWorkProcess({
         {...props}
         items={segment.items}
         parts={segment.parts}
+        presentation={{
+          ...presentation,
+          // Adopted input stays outside every segment's process disclosure.
+          // It is part of this turn, never the next-input collapse trigger.
+          hasInterleavedInput: true,
+          finalReplyId: segment.last ? presentation.finalReplyId : undefined,
+        }}
         timing={segment.last ? props.timing : undefined}
         running={segment.last && props.running}
         streaming={segment.last && props.streaming}

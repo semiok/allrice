@@ -63,3 +63,6 @@ apps/web/app/dsh-upstream/ui-content-tokens.css
 
 # Pinned native automation presentation, checked by dsh-ui.
 apps/web/app/chatflow/dsh-upstream/automation/
+
+# Pinned native chat presentation policy/disclosure; verified by dsh-ui.
+apps/web/app/chatflow/dsh-upstream/presentation/

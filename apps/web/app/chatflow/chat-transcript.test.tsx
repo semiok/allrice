@@ -281,6 +281,7 @@ describe('historical transcript capability gating', () => {
         ],
         undefined,
         {
+          transcriptView: 'standard',
           runViews: {
             'run-0': {
               runId: 'run-0',
@@ -398,7 +399,7 @@ describe('historical transcript capability gating', () => {
     expect(html).not.toContain('助手任务');
   });
 
-  it('shows execution for actual tool work and waiting from the authoritative clock', () => {
+  it('shows execution with compact steps and waiting from the authoritative clock', () => {
     const run = {
       runId: 'run-0',
       status: 'running' as const,
@@ -433,6 +434,7 @@ describe('historical transcript capability gating', () => {
       [{ ...messages[0]!, status: 'pending' }],
       undefined,
       {
+        transcriptView: 'compact',
         runTraces: {
           'run-0': {
             status: 'loaded',

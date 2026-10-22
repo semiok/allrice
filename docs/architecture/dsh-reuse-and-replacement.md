@@ -629,3 +629,9 @@ PDF/Excel将现有LoadingIndicator传给真实原生正文的必需loading注入
 真实人类终端完整消费同版 `ClientTerminals`、`RemoteStream`、`TerminalBody` 及 Bridge 的 `TerminalController` / `LocalSubprocessRuntime`，不复刻 xterm、PTY 或重连状态机。集中适配只负责 AllRice cookie/登录身份、当前会话、设备与目录授权，以及既有 Bridge WSS 的窄传输和浏览器 Storage 作用域；Web 原生资产保持完整并登记固定 SHA。`0.6.0-dev.58` 客户端只有实际声明 `humanTerminalVersion: 1` 才被网页采用。授权目录是初始 cwd，不是 OS 沙箱；此人类 shell 不产生 Agent Run，不调用模型、不自动喂入聊天历史，也不回放断线输入。
 
 切页或暂时断网保留后台 PTY，显式关闭、确定撤权和 Bridge 退出等待原生清理；授权证据 unknown 且租期过期时停止输入、保留 PTY，不误杀或冒称清理完成。x64/arm64 SEA 的独立终端副资源由固定 manifest 校验，使用既有数据库登录与授权事实，不增加 SQL migration。若上游直接支持相同的身份、Bridge 传输和 Storage 能力，应退役对应集中适配；不能以图标、编译或合成回归替代最终双架构包与真实 Dev 联合验收。详细行为和交付门槛见[原生工作台说明](../features/native-workbench/README.md#met-198桌面统一工作台)。
+
+### MET199：账号阅读偏好与原生过程展示
+
+复用固定 `ui-chat@0.2.1-rc.2` 的四档 presentation policy 和当前答案代次的手动开合规则；来源与必要 import 适配记录在 UI 账本。先验证原生模块注册及完整插件的注入契约：现有 SaaS 外壳没有原生 `uiSession/uiConversation/configForms` 服务，不能只加载 bundle 就获得完整聊天宿主。继续沿用既有源码适配边界，把公开的 Run、答案代次、最终回复、已采纳插话及真正进入下一轮的输入投影给原生策略，不为阅读偏好新增一套 Session 或执行宿主。
+
+`fontSize/transcriptView/collapseTiming` 与原有 `streamingOutput` 共用 `/api/v1/me/preferences` 和认证用户主键。PATCH 原子更新实际提交的字段，旧客户端的单一流式开关保存不重置新字段；默认正文14px、详细、回答结束后。正文字体复用现有原生 theme token，派生变量在会话边界重算；代码11px和终端13px保留原生默认，不提供配置。设置菜单移除经验记录，经验能力与正式工作台入口不变。以上均为展示偏好，不更改模型执行配置、权限或工具记录。
