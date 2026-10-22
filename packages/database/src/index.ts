@@ -307,6 +307,16 @@ export {
   type NativeOnceClosedProof,
 } from './native-schedule-once-sql.ts';
 export { nativeOnceDigest } from './native-schedule-once-state.ts';
+export {
+  prepareNativeScheduleControlUpgrade,
+  applyNativeScheduleControlUpgrade,
+  readNativeScheduleControlUpgrade,
+  NativeScheduleControlUpgradeError,
+  type NativeScheduleControlUpgradePlan,
+  type NativeControlArtifactCompatibilityEvidence,
+  type NativeControlOfflineStoppedAttestation,
+  type NativeControlUpgradeApproval,
+} from './native-schedule-control-upgrade.ts';
 
 export {
   createRecurringTask,
