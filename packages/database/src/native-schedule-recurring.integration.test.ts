@@ -168,7 +168,10 @@ suite(
       expect(await store.readExactCommit(writer, write)).toBe('committed');
       return write;
     }
-    async function task(prompt = '核对固定测试数据，只输出本期结果。') {
+    async function task(
+      prompt = '核对固定测试数据，只输出本期结果。',
+      options: { prepareNative?: boolean } = {},
+    ) {
       const session = await createChatSession(f.context, {
         workspaceId: f.workspaceId,
         employeeAssignmentId: f.assignmentId,
@@ -181,7 +184,14 @@ suite(
         rule: { kind: 'every' as const, seconds: 60 },
       };
       const result = await createRecurringTask(f.context, session.id, input);
-      const c = (await snapshot(result.id)).control;
+      if (options.prepareNative !== false) await prepareNativeTask(result.id);
+      return { id: result.id, sessionId: session.id, input };
+    }
+    async function prepareNativeTask(
+      id: string,
+      scheduledAt = new Date(Date.now() - 180_000).toISOString(),
+    ) {
+      const c = (await snapshot(id)).control;
       await mutate({ kind: 'session_initializing', controlId: c.controlId });
       await mutate({ kind: 'session_ready', controlId: c.controlId });
       // Explicit synthetic component receipt. Actual timer behavior is separately
@@ -196,7 +206,7 @@ suite(
           title: 'AllRice once control',
           prompt:
             'Synthetic schedule control only. Never execute business work.',
-          scheduledAt: new Date(Date.now() - 180_000).toISOString(),
+          scheduledAt,
         },
       };
       await mutate({ kind: 'put_task', controlId: c.controlId, task: native });
@@ -206,7 +216,6 @@ suite(
         commandId: c.command.id,
         nativeTaskId: native.record.id,
       });
-      return { id: result.id, sessionId: session.id, input };
     }
     async function receipt(id: string) {
       const s = await snapshot(id),
@@ -773,17 +782,9 @@ suite(
           },
         }),
       ]);
-      // SQL component fixture only: a public store mutation places the next
-      // native target at the same instant as the manual metadata. These remain
-      // two identities; no manual request manufactures a native receipt.
-      const s = await snapshot(t.id),
-        native = structuredClone(s.task) as NativeRecurringTask;
-      native.record.scheduledAt = first.requestedAt;
-      await mutate({
-        kind: 'put_task',
-        controlId: s.control.controlId,
-        task: native,
-      });
+      // Deliver the original legal P. Manual execution cannot move an existing
+      // native target, and this fixture must obey the same production guard.
+      const originalP = (await snapshot(t.id)).task!.record.scheduledAt;
       await receipt(t.id);
       expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
         true,
@@ -792,20 +793,71 @@ suite(
         await f.db`select run_id,scheduled_for,manual_request_id,native_recurring_occurrence_id from allrice_automation_runs where automation_id=${t.id}`;
       expect(both).toHaveLength(2);
       expect(new Set(both.map((x) => x.run_id)).size).toBe(2);
-      expect(both.map((x) => x.scheduled_for.toISOString())).toEqual([
-        first.requestedAt,
-        first.requestedAt,
-      ]);
+      expect(
+        both
+          .find((x) => x.native_recurring_occurrence_id !== null)!
+          .scheduled_for.toISOString(),
+      ).toBe(originalP);
+      expect(
+        both
+          .find((x) => x.manual_request_id !== null)!
+          .scheduled_for.toISOString(),
+      ).toBe(first.requestedAt);
+      expect((await snapshot(t.id)).task!.record.scheduledAt).toBe(
+        new Date(Date.parse(originalP) + 60_000).toISOString(),
+      );
       expect(
         both.filter((x) => x.native_recurring_occurrence_id !== null),
       ).toHaveLength(1);
     });
+    it('manual metadata and the first legal native target can share an instant without competing for scheduled uniqueness', async () => {
+      const t = await task('同刻索引身份隔离', { prepareNative: false }),
+        manual = await runManualAutomation(f.context, f.workspaceId, t.id, {
+          requestId: randomUUID(),
+          expectedRevision: 1,
+        });
+      // SQL component fixture only. This is the first Task, with no previous
+      // native target or receipt; it never rewrites an already-existing P.
+      expect((await snapshot(t.id)).task).toBeNull();
+      await prepareNativeTask(t.id, manual.requestedAt);
+      await receipt(t.id);
+      expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
+        true,
+      );
+      const rows =
+        await f.db`select run_id,scheduled_for,manual_request_id,native_recurring_occurrence_id
+        from allrice_automation_runs where automation_id=${t.id}`;
+      expect(rows).toHaveLength(2);
+      expect(new Set(rows.map((r) => r.run_id)).size).toBe(2);
+      expect(
+        rows.every((r) => r.scheduled_for.toISOString() === manual.requestedAt),
+      ).toBe(true);
+      expect(
+        rows.filter(
+          (r) =>
+            r.manual_request_id !== null &&
+            r.native_recurring_occurrence_id === null,
+        ),
+      ).toHaveLength(1);
+      expect(
+        rows.filter(
+          (r) =>
+            r.manual_request_id === null &&
+            r.native_recurring_occurrence_id !== null,
+        ),
+      ).toHaveLength(1);
+    });
     it('paused manual execution stays paused; exact old request retains its original revision after edit and deletion', async () => {
       const t = await task();
-      await changeRecurringTask(f.context, t.sessionId, t.id, {
-        operationId: randomUUID(),
-        expectedRevision: 1,
-        action: 'pause',
+      expect(
+        await changeRecurringTask(f.context, t.sessionId, t.id, {
+          operationId: randomUUID(),
+          expectedRevision: 1,
+          action: 'pause',
+        }),
+      ).toMatchObject({
+        status: 'applied',
+        task: { revision: 2, status: 'paused' },
       });
       const before = await manualBoundary(t.id),
         input = { requestId: randomUUID(), expectedRevision: 2 },
@@ -816,13 +868,19 @@ suite(
           input,
         );
       expect(await manualBoundary(t.id)).toEqual(before);
-      await changeRecurringTask(f.context, t.sessionId, t.id, {
+      const update = {
         operationId: randomUUID(),
         expectedRevision: 2,
-        action: 'update',
+        action: 'update' as const,
         name: '改名后任务',
         prompt: '新的工作正文',
-        rule: { kind: 'every', seconds: 60 },
+        rule: t.input.rule,
+      };
+      expect(
+        await changeRecurringTask(f.context, t.sessionId, t.id, update),
+      ).toMatchObject({
+        status: 'pending',
+        task: { revision: 3, status: 'paused' },
       });
       expect(
         (await runManualAutomation(f.context, f.workspaceId, t.id, input)).run
@@ -840,12 +898,55 @@ suite(
           expectedRevision: 2,
         }),
       ).rejects.toMatchObject({ code: 'revision_conflict' });
-      await changeRecurringTask(f.context, t.sessionId, t.id, {
-        operationId: randomUUID(),
-        expectedRevision: 3,
-        action: 'delete',
+      // A rejected operation is not a persisted delete intent. The previous
+      // same-rule update must be confirmed before a new delete is accepted.
+      expect(
+        await changeRecurringTask(f.context, t.sessionId, t.id, {
+          operationId: randomUUID(),
+          expectedRevision: 3,
+          action: 'delete',
+        }),
+      ).toMatchObject({
+        status: 'rejected',
+        errorMessage: '上一项操作仍在确认，请稍后查看结果。',
+        task: { revision: 3, status: 'paused' },
       });
+      expect(
+        (
+          await f.db`select deleted_at,revision from allrice_automations where id=${t.id}`
+        )[0],
+      ).toMatchObject({ deleted_at: null, revision: 3 });
+      const pendingUpdate = await snapshot(t.id);
+      await mutate({
+        kind: 'confirm_command',
+        controlId: pendingUpdate.control.controlId,
+        commandId: update.operationId,
+        nativeTaskId: pendingUpdate.control.nativeTaskId,
+      });
+      expect(
+        await changeRecurringTask(f.context, t.sessionId, t.id, {
+          operationId: randomUUID(),
+          expectedRevision: 3,
+          action: 'delete',
+        }),
+      ).toMatchObject({
+        status: 'pending',
+        task: { revision: 4, status: 'deleting' },
+      });
+      const deleteIntent = (
+        await f.db`select deleted_at,revision from allrice_automations where id=${t.id}`
+      )[0]!;
+      expect(deleteIntent.deleted_at).not.toBeNull();
+      expect(deleteIntent.revision).toBe(4);
+      expect((await snapshot(t.id)).control).toMatchObject({
+        command: { kind: 'delete', status: 'pending' },
+        taskDeleted: false,
+      });
+      expect((await snapshot(t.id)).task).not.toBeNull();
       const deleted = await manualBoundary(t.id);
+      const countBefore = (
+        await f.db`select count(*)::int n from allrice_automation_runs where automation_id=${t.id}`
+      )[0]!.n;
       expect(
         (
           await getManualAutomationRun(
@@ -866,6 +967,17 @@ suite(
           expectedRevision: 4,
         }),
       ).rejects.toMatchObject({ code: 'unavailable' });
+      await expect(
+        runManualAutomation(f.context, f.workspaceId, t.id, {
+          requestId: randomUUID(),
+          expectedRevision: 3,
+        }),
+      ).rejects.toMatchObject({ code: 'unavailable' });
+      expect(
+        (
+          await f.db`select count(*)::int n from allrice_automation_runs where automation_id=${t.id}`
+        )[0]!.n,
+      ).toBe(countBefore);
       expect(await manualBoundary(t.id)).toEqual(deleted);
     });
     it('current viewer/cloud revocation and foreign scope create no manual work, even with a cached admin context', async () => {
