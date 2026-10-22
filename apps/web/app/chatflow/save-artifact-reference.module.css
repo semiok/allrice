@@ -1,0 +1,73 @@
+.dialog {
+  width: min(420px, calc(100vw - 28px));
+  border-radius: 18px;
+}
+.body {
+  display: grid;
+  gap: 18px;
+  padding: 20px 24px 24px;
+  font-size: 13px;
+}
+.file {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-l1);
+}
+.file > svg {
+  flex: none;
+}
+.fileTitle {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+.hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.8;
+  color: var(--dsw-alias-label-tertiary);
+}
+.upload {
+  display: grid;
+  gap: 18px;
+}
+.upload label {
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary);
+}
+.upload input,
+.upload select {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  padding: 9px 12px;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-base);
+  font: inherit;
+  font-size: 13px;
+}
+.upload input::placeholder {
+  color: var(--dsw-alias-label-tertiary);
+}
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+.error {
+  margin: 0;
+  color: light-dark(#b53549, #f79bae);
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}

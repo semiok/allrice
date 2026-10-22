@@ -23,6 +23,9 @@ export function UnifiedWorkbenchControls(props: {
   headers: Record<string, string>;
   refreshKey: string;
   open: boolean;
+  selected?: WorkbenchModule | 'schedule' | null;
+  schedule?: boolean;
+  onSchedule?: () => void;
   onOpen: (kind: WorkbenchModule) => void;
   onToggle: () => void;
   entryRef?: Ref<HTMLButtonElement>;
@@ -81,6 +84,9 @@ export function UnifiedWorkbenchControls(props: {
       experience={!!props.instanceId}
       workflow={workflow.available}
       open={props.open}
+      selected={props.selected}
+      schedule={props.schedule}
+      onSchedule={props.onSchedule}
       onOpen={(kind) => {
         marks.current[kind]();
         props.onOpen(kind);

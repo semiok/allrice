@@ -50,6 +50,7 @@ interface ChatSidebarProps {
   onPrepareSession: (sessionId: string) => void;
   onOpenAutomations?: () => void;
   automationsActive?: boolean;
+  scheduledSessions?: ReadonlySet<string>;
 }
 
 export function ChatSidebar({
@@ -76,6 +77,7 @@ export function ChatSidebar({
   onPrepareSession,
   onOpenAutomations,
   automationsActive = false,
+  scheduledSessions,
 }: ChatSidebarProps) {
   const sidebar = useRef<HTMLElement>(null);
   const showingArchive = archive?.filter === 'only';
@@ -213,7 +215,7 @@ export function ChatSidebar({
         </div>
         {onOpenAutomations && (
           <button
-            className={sidebarUi.newSession}
+            className={styles.automationNavigation}
             type="button"
             aria-label="自动化任务"
             title="自动化任务"
@@ -280,6 +282,7 @@ export function ChatSidebar({
         )}
         <div className={sidebarUi.regionArea}>
           <EmployeeSidebar
+            scheduledSessions={scheduledSessions}
             archive={archive}
             key={
               employeePreferenceKey(workspace) ??

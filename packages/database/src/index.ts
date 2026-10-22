@@ -48,6 +48,7 @@ export * from './workspace-readiness.ts';
 export * from './experience.ts';
 export { collectPendingExperienceEvidence } from './experience-evidence.ts';
 export * from './bridge.ts';
+export * from './workbench-terminal.ts';
 export * from './local-files.ts';
 export * from './bridge-settings.ts';
 export * from './bridge-sandbox-network.ts';

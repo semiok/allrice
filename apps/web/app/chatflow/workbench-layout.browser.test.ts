@@ -36,6 +36,7 @@ import {
   type InteractionStatus,
   type ChatFlowEventEnvelope,
   type EmployeeAccentColor,
+  type AutomationCatalogTask,
 } from '@allrice/contracts';
 import type { ArtifactPreview } from '../../lib/chatflow/workbench-model';
 import type {
@@ -220,6 +221,45 @@ function artifact(n: number, sessionId = A) {
   });
 }
 
+function recurringTask(
+  n: number,
+  sessionId = A,
+  status: 'enabled' | 'paused' = 'enabled',
+): AutomationCatalogTask {
+  return {
+    id: id(n),
+    name: `定时工作 ${n}`,
+    prompt: `检查合成工作 ${n} 的进度`,
+    employeeId: id(7),
+    employeeName: 'Rice',
+    sessionId,
+    sessionTitle: session(sessionId).title,
+    sourceArchived: false,
+    createdAt: now,
+    nextRunAt: status === 'enabled' ? '2099-01-01T01:00:00.000Z' : null,
+    canStop: true,
+    definition: {
+      kind: 'recurring',
+      task: {
+        id: id(n),
+        name: `定时工作 ${n}`,
+        prompt: `检查合成工作 ${n} 的进度`,
+        sessionId,
+        clientRequestId: id(n + 100),
+        rule: { kind: 'every', seconds: 120 },
+        revision: 1,
+        status,
+        nextRunAt: status === 'enabled' ? '2099-01-01T01:00:00.000Z' : null,
+        errorMessage: null,
+        createdAt: now,
+        updatedAt: now,
+        canManage: true,
+        latestOccurrence: null,
+      },
+    },
+  };
+}
+
 function navigationHistory(count: number, paragraphs = 90): Message[] {
   return Array.from({ length: count }, (_, i) => [
     {
@@ -342,6 +382,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       controlledStream?: boolean;
       queue?: boolean;
       brandContent?: { kind: 'general' | 'custom'; registered: boolean };
+      scheduledTasks?: AutomationCatalogTask[];
     } = {},
   ) {
     const context = await browser.newContext({
@@ -523,6 +564,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       updateReads: 0,
       workbenchFiles: [] as WorkbenchFile[],
       workbenchExperienceKeys: [] as string[],
+      scheduledTasks: options.scheduledTasks ?? [],
+      scheduledReads: [] as Array<{
+        sessionId: string | null;
+        cursor: string | null;
+      }>,
       workbenchMutations: [] as Array<{
         method: string;
         body: Record<string, unknown>;
@@ -727,6 +773,33 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ).values(),
         );
 
+      if (
+        path === '/api/v1/scheduled-tasks' &&
+        route.request().method() === 'GET'
+      ) {
+        const sessionId = url.searchParams.get('sessionId');
+        state.scheduledReads.push({
+          sessionId,
+          cursor: url.searchParams.get('cursor'),
+        });
+        return answer({
+          tasks: state.scheduledTasks.filter(
+            (task) => !sessionId || task.sessionId === sessionId,
+          ),
+          nextCursor: null,
+        });
+      }
+      const scheduledTaskDetail = path.match(
+        /^\/api\/v1\/scheduled-tasks\/([a-f0-9-]{36})$/,
+      );
+      if (scheduledTaskDetail && route.request().method() === 'GET') {
+        const task = state.scheduledTasks.find(
+          (item) => item.id === scheduledTaskDetail[1],
+        );
+        return task
+          ? answer({ task, occurrences: [], nextCursor: null })
+          : answer({ error: { message: '任务不存在' } }, 404);
+      }
       if (path === '/api/v1/workbench/updates') {
         state.updateReads++;
         return answer({
@@ -1819,7 +1892,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             await page
               .locator('[data-chat-scroll]')
               .getByRole('button', {
-                name: `打开 ${state.items[0]!.version.fileName}`,
+                name: `侧栏预览 ${state.items[0]!.version.fileName}`,
                 exact: true,
               })
               .click();
@@ -1848,7 +1921,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     };
   }
 
-  it('MET198 desktop start replaces itself with a module, plus follows native guide rules, and terminal stays absent', async () => {
+  it('MET198 desktop start replaces itself with a module, plus follows native guide rules, and terminal stays in Start', async () => {
     const f = await fixture({ employeeDetails: true });
     try {
       const header = f.page.locator('main > section header');
@@ -1869,9 +1942,35 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('button', { name: '新建标签页', exact: true })
           .count(),
       ).toBe(0);
-      expect(await f.panel.getByText('新建终端', { exact: true }).count()).toBe(
+      expect(
+        await f.panel
+          .getByRole('button', { name: '新建终端', exact: true })
+          .count(),
+      ).toBe(1);
+      expect(await header.getByRole('button', { name: /终端/ }).count()).toBe(
         0,
       );
+      await f.panel
+        .getByRole('button', { name: '新建终端', exact: true })
+        .click();
+      await f.panel
+        .getByRole('status')
+        .filter({ hasText: '安装并连接 Bridge，授权文件夹后即可使用终端。' })
+        .waitFor();
+      await f.panel
+        .getByRole('button', { name: '连接电脑', exact: true })
+        .click();
+      const settings = f.page.getByRole('dialog', {
+        name: '设置',
+        exact: true,
+      });
+      await settings
+        .getByRole('heading', { name: '连接与管理电脑', exact: true })
+        .waitFor();
+      await settings
+        .getByRole('button', { name: '关闭设置', exact: true })
+        .click();
+      await expect.poll(() => settings.count()).toBe(0);
       await f.panel
         .getByRole('button', { name: /工作区文件.*文件、交付成果与参考资料/ })
         .click();
@@ -1919,33 +2018,37 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       });
       expect(
         await dialog
-          .getByRole('radio', { name: '仅自己', exact: true })
-          .isChecked(),
-      ).toBe(true);
-      await dialog.getByRole('radio', { name: '全公司', exact: true }).check();
+          .getByRole('combobox', { name: '可见范围', exact: true })
+          .inputValue(),
+      ).toBe('personal');
+      await dialog
+        .getByRole('combobox', { name: '可见范围', exact: true })
+        .selectOption('company');
       expect(
         await dialog
           .getByRole('checkbox', { name: '内容部', exact: true })
           .count(),
       ).toBe(0);
       await dialog
-        .getByRole('radio', { name: '指定部门', exact: true })
-        .check();
+        .getByRole('combobox', { name: '可见范围', exact: true })
+        .selectOption('departments');
       await dialog
         .getByRole('checkbox', { name: '内容部', exact: true })
         .check();
       await dialog
         .getByRole('checkbox', { name: '运营部', exact: true })
         .check();
-      await dialog.getByLabel('选择文件').setInputFiles({
+      await dialog.getByLabel('选择上传文件', { exact: true }).setInputFiles({
         name: '组织资料.txt',
         mimeType: 'text/plain',
         buffer: Buffer.from('组织资料'),
       });
       await dialog
-        .getByRole('checkbox', { name: '设为长期参考', exact: false })
+        .getByRole('checkbox', { name: '设为参考资料', exact: false })
         .check();
-      await dialog.getByRole('button', { name: '保存', exact: true }).click();
+      await dialog
+        .getByRole('button', { name: '上传文件', exact: true })
+        .click();
       await expect.poll(() => f.state.workbenchMutations.length).toBe(2);
       expect(f.state.workbenchMutations[0]).toMatchObject({
         method: 'POST',
@@ -1962,16 +2065,19 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .getByRole('button', { name: '组织资料.txt', exact: true })
         .waitFor();
       await f.panel
-        .getByRole('button', { name: '设置 组织资料.txt', exact: true })
+        .getByRole('button', { name: '文件选项 组织资料.txt', exact: true })
+        .click();
+      await f.page
+        .getByRole('menuitem', { name: '可见范围', exact: true })
         .click();
       const settings = f.page.getByRole('dialog', {
-        name: '文件设置',
+        name: '可见范围',
         exact: true,
       });
       await settings.waitFor();
       expect(
         await settings
-          .getByText('调整文件范围不会公开原始聊天或其他附件。', {
+          .getByText('共享这份文件，不公开原聊天。', {
             exact: true,
           })
           .count(),
@@ -2024,6 +2130,177 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await header
         .getByRole('button', { name: '经验管理', exact: true })
         .waitFor();
+    } finally {
+      await f.close();
+    }
+  }, 30000);
+
+  it('compact workbench opens one session schedule in the existing right detail and tracks actual module selection', async () => {
+    const f = await fixture({
+      scheduledTasks: [
+        recurringTask(9800, B),
+        recurringTask(9801, A, 'paused'),
+      ],
+    });
+    try {
+      const header = f.page.locator('main > section header');
+      await expect.poll(() => f.state.scheduledReads.length).toBeGreaterThan(0);
+      expect(
+        await header
+          .getByRole('button', { name: '当前会话的定时任务', exact: true })
+          .count(),
+      ).toBe(0);
+      const scheduledRow = f.page.locator(`[data-row-key="session:${B}"]`);
+      await scheduledRow
+        .getByLabel('有启用中的定时任务', { exact: true })
+        .waitFor();
+      await scheduledRow.click();
+      const clock = header.getByRole('button', {
+        name: '当前会话的定时任务',
+        exact: true,
+      });
+      await clock.waitFor();
+      await clock.click();
+      const detail = f.panel.getByRole('region', {
+        name: '自动化任务详情：定时工作 9800',
+        exact: true,
+      });
+      await detail
+        .getByRole('textbox', { name: '任务名称', exact: true })
+        .waitFor();
+      expect(await f.panel.getAttribute('role')).toBe('complementary');
+      expect(await f.page.getByRole('dialog').count()).toBe(0);
+      expect(await clock.getAttribute('aria-pressed')).toBe('true');
+      await clock.click();
+      expect(
+        await f.panel.getByRole('tab', { name: /定时工作 9800/ }).count(),
+      ).toBe(1);
+      f.state.files = [
+        {
+          id: id(9810),
+          fileName: '会话附件.md',
+          mediaType: 'text/markdown',
+          sizeBytes: 20,
+          visibility: 'private',
+          ownedByMe: true,
+          category: 'uploads',
+          deliverableVersion: null,
+        },
+      ];
+      const files = header.getByRole('button', {
+        name: '工作区文件',
+        exact: true,
+      });
+      await files.click();
+      await expect.poll(() => files.getAttribute('aria-pressed')).toBe('true');
+      expect(await clock.getAttribute('aria-pressed')).toBe('false');
+      expect(
+        await header
+          .getByRole('button', { name: '展开工作台', exact: true })
+          .count(),
+      ).toBe(0);
+      await f.panel
+        .getByRole('button', { name: '会话附件.md', exact: true })
+        .click();
+      await f.panel
+        .getByRole('heading', { name: '上传的文件', exact: true })
+        .waitFor();
+      await expect.poll(() => files.getAttribute('aria-pressed')).toBe('false');
+      await f.panel
+        .getByRole('button', { name: '关闭工作台', exact: true })
+        .click();
+      await header
+        .getByRole('button', { name: '展开工作台', exact: true })
+        .waitFor();
+      expect(await clock.getAttribute('aria-pressed')).toBe('false');
+      await f.page.locator(`[data-row-key="session:${A}"]`).click();
+      await expect.poll(() => clock.count()).toBe(0);
+      expect(f.state.workbenchMutations).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  }, 30000);
+
+  it('compact workbench scopes multiple active schedules to the current session and reuses its right editor', async () => {
+    const f = await fixture({
+      scheduledTasks: [
+        recurringTask(9820),
+        recurringTask(9821),
+        recurringTask(9822, A, 'paused'),
+        recurringTask(9823, B),
+      ],
+    });
+    try {
+      const clock = f.page
+        .locator('main > section header')
+        .getByRole('button', { name: '当前会话的定时任务', exact: true });
+      await clock.click();
+      const tasks = f.panel.getByRole('region', {
+        name: '当前会话的定时任务',
+        exact: true,
+      });
+      await tasks.getByRole('button', { name: /定时工作 9820/ }).waitFor();
+      expect(
+        await tasks.getByRole('button', { name: /定时工作 9821/ }).count(),
+      ).toBe(1);
+      expect(
+        await tasks
+          .getByRole('button', { name: /定时工作 9822|定时工作 9823/ })
+          .count(),
+      ).toBe(0);
+      expect(
+        await tasks
+          .getByRole('combobox', { name: '筛选员工', exact: true })
+          .count(),
+      ).toBe(0);
+      expect(
+        await tasks
+          .getByRole('button', { name: '已暂停 / 已结束', exact: true })
+          .count(),
+      ).toBe(0);
+      expect(await f.page.getByRole('dialog').count()).toBe(0);
+      expect(f.state.scheduledReads.some((r) => r.sessionId === A)).toBe(true);
+      await clock.click();
+      expect(
+        await f.panel.getByRole('tab', { name: /^定时任务/ }).count(),
+      ).toBe(1);
+      await tasks.getByRole('button', { name: /定时工作 9821/ }).click();
+      await f.panel
+        .getByRole('region', {
+          name: '自动化任务详情：定时工作 9821',
+          exact: true,
+        })
+        .getByRole('textbox', { name: '工作内容', exact: true })
+        .waitFor();
+      expect(await f.panel.getAttribute('role')).toBe('complementary');
+      expect(await f.page.getByRole('dialog').count()).toBe(0);
+      expect(f.state.workbenchMutations).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  }, 30000);
+
+  it('compact workbench preserves native live-activity priority over the scheduled-session clock', async () => {
+    const scheduledSession = id(600);
+    const f = await fixture({
+      employeeHistory: true,
+      running: true,
+      scheduledTasks: [recurringTask(9830, scheduledSession)],
+    });
+    try {
+      const row = f.page.locator(
+        `[data-row-key="session:${scheduledSession}"]`,
+      );
+      await expect.poll(() => f.state.scheduledReads.length).toBeGreaterThan(0);
+      await row.waitFor();
+      expect(
+        await row.getByLabel('有启用中的定时任务', { exact: true }).count(),
+      ).toBe(0);
+      expect(await row.innerText()).toContain('进行中');
+      f.state.historyRunning = false;
+      await f.page.reload();
+      await row.getByLabel('有启用中的定时任务', { exact: true }).waitFor();
+      expect(await row.innerText()).not.toContain('进行中');
     } finally {
       await f.close();
     }
@@ -3465,18 +3742,18 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .locator('p')
           .first()
           .evaluate((node) => getComputedStyle(node).fontSize),
-      ).toBe('16px');
+      ).toBe('14px');
       expect(
         await row
           .locator('strong')
           .first()
           .evaluate((node) => getComputedStyle(node).fontSize),
-      ).toBe('16px');
+      ).toBe('14px');
       expect(
         await f.page
           .getByRole('textbox', { name: '给 Rice 的消息' })
           .evaluate((node) => getComputedStyle(node).fontSize),
-      ).toBe('16px');
+      ).toBe('14px');
       const code = row.locator('pre code').first();
       await code.waitFor();
       expect(
@@ -3901,7 +4178,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .getByLabel('保存范围')
             .locator('option')
             .allTextContents(),
-        ).toEqual(['个人 · 仅自己']);
+        ).toEqual(['仅自己']);
         await Promise.all([
           f.page.waitForResponse('**/api/v1/workspace/monthly-quota?*'),
           f.page.evaluate(() => window.dispatchEvent(new Event('focus'))),
@@ -8625,7 +8902,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .filter({ hasText: '圆形海报.png' })
           .first();
         await card
-          .getByRole('button', { name: '圆形海报.png 打开方式' })
+          .getByRole('button', { name: '圆形海报.png 文件选项' })
           .click();
         const downloaded = f.page.waitForEvent('download');
         await f.page
@@ -8659,13 +8936,22 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .first();
         await card.waitFor();
         expect(await card.locator('svg').count()).toBeGreaterThan(0);
+        expect(
+          await card
+            .getByRole('button', { name: '打开 report-10.md', exact: true })
+            .count(),
+        ).toBe(0);
         const menu = card.getByRole('button', {
-          name: 'report-10.md 打开方式',
+          name: 'report-10.md 文件选项',
         });
         await menu.click();
         await f.page
           .getByRole('menuitem', { name: '侧栏预览', exact: true })
           .waitFor();
+        expect(await f.page.getByRole('menuitem').allTextContents()).toEqual([
+          '侧栏预览',
+          '下载文件',
+        ]);
         await f.page.keyboard.press('Escape');
         await expect
           .poll(() =>
@@ -10418,7 +10704,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page.reload();
       await f.page
         .locator('[data-chat-scroll]')
-        .getByRole('button', { name: '打开 report-10.md', exact: true })
+        .getByRole('button', { name: '侧栏预览 report-10.md', exact: true })
         .click();
       const heading = f.panel.getByRole('heading', { name: /COIN/ });
       await heading.waitFor();

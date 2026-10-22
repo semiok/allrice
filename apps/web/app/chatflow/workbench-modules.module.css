@@ -20,6 +20,9 @@
 .entries .toggle:hover {
   background: var(--dsw-alias-interactive-bg-hover);
 }
+.entries .entry > svg {
+  stroke-width: 1.65;
+}
 .entries .entry:focus-visible,
 .entries .toggle:focus-visible {
   outline: 2px solid var(--dsw-alias-state-business-primary);
@@ -33,6 +36,21 @@
 }
 .workflow {
   color: light-dark(#447bcc, #82acff);
+}
+.schedule {
+  color: light-dark(#579494, #8cc9c9);
+}
+.entries .files[aria-pressed='true'] {
+  background: light-dark(#fff5df, #b6882730);
+}
+.entries .experience[aria-pressed='true'] {
+  background: light-dark(#f4eefc, #9d66e330);
+}
+.entries .workflow[aria-pressed='true'] {
+  background: light-dark(#edf3ff, #558df330);
+}
+.entries .schedule[aria-pressed='true'] {
+  background: light-dark(#edf5f5, #4a939330);
 }
 .entries .toggle {
   color: var(--dsw-alias-label-secondary);

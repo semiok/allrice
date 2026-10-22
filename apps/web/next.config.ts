@@ -8,6 +8,15 @@ const nextConfig: NextConfig = {
     '@deepseek-ai/cordis',
   ],
   outputFileTracingIncludes: {
+    '/api/dsh-ui/terminal-gateway': [
+      './node_modules/@deepseek-ai/dsh-api-gateway/lib/client.browser.js',
+    ],
+    '/api/dsh-ui/terminal-model': [
+      './node_modules/@deepseek-ai/dsh-api-terminal-controller/lib/client.js',
+    ],
+    '/api/dsh-ui/terminal-screen': [
+      './node_modules/@deepseek-ai/dsh-client-ui-sidebar-terminal/lib/client.terminal.js',
+    ],
     '/api/dsh-ui/excel': [
       './node_modules/@deepseek-ai/dsh-client-ui-sidebar-documentpreview/lib/client.excel.js',
     ],

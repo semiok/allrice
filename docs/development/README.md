@@ -201,14 +201,26 @@ This prevents the misleading state where liveness passes but a teammate is devel
 
 ## Unified desktop workbench schema (MET198)
 
-The existing `ALLRICE_WORKBENCH_ENABLED` surface uses migration
-`0201_workbench_file_policies.sql` for explicit file sharing, reference-origin
-bindings and idempotent policy receipts. Apply migrations through the normal
-`pnpm db:migrate` / `pnpm db:setup` workflow before switching the matching Web
-release. No backfill changes existing file/chat permissions. Mobile navigation,
-Bridge binaries and DSH execution packages are not replaced by this UI feature.
-For the current behavior and authorization boundaries see
-[the native workbench guide](../features/native-workbench/README.md#met-198桌面统一工作台).
+现有 `ALLRICE_WORKBENCH_ENABLED` 工作台使用
+`0201_workbench_file_policies.sql` 管理显式文件共享、参考来源绑定及幂等回执。
+切换匹配 Web 版本前仍按正常 `pnpm db:migrate` / `pnpm db:setup` 流程处理，
+不回填或推测修改旧文件/聊天权限。本次紧凑列表、14px 桌面对话、统一图标、
+会话条件时钟及真实人类终端扩展不新增 SQL migration，也不重做手机导航。
+
+终端目标客户端为 `0.6.0-dev.58`，网页只采用在线且声明
+`humanTerminalVersion: 1` 的设备，旧包或离线时引导现有电脑设置。
+Web cookie/Origin、真实登录、会话和目录授权先由服务端核实，再经既有 Bridge WSS
+连接固定 DSH `0.2.1-rc.2` 人类终端；授权目录仅选择初始 cwd，不构成 OS 沙箱。
+该路径不创建 Agent Run、不调用模型、不自动重放输入；临时失联保留 PTY，
+关闭标签、确定撤权或 Bridge 退出进入相应清理，unknown 不当作撤权或已停止。
+
+Web 的原生终端资产须通过 `pnpm dsh-ui:verify`；macOS x64/arm64 SEA/App 必须连同
+对应 `.terminal-runtime` 固定 manifest 副资源一起打包、校验和验收。
+终端浏览器、Web/Bridge 传输及数据库权限回归已接入相应测试入口，
+仍需对最终候选逐架构验证真实 PTY，并在 Dev 用普通隔离账号检查实际页面与授权。
+本地回归不代表 Dev 或双架构发布验收已完成，原生执行身份也不能借 UI 验收绕过既有测量流程。
+行为、复用来源和退出/恢复边界见
+[原生工作台说明](../features/native-workbench/README.md#met-198桌面统一工作台)。
 
 ## Troubleshooting
 

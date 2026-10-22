@@ -56,7 +56,11 @@ import {
   companyAssetUrl,
 } from './company-template-publisher';
 import { AssistantHistoryButton } from './assistant-history-button';
-import { AutomationTaskList, AutomationTaskDetail } from './automation-tasks';
+import {
+  AutomationTaskList,
+  AutomationTaskDetail,
+  useSessionAutomations,
+} from './automation-tasks';
 import { WorkspaceStartup } from './workspace-startup';
 import { QueuedMessagesDock } from './queued-messages-dock';
 import { TaskPlanDock } from './task-plan-dock';
@@ -83,6 +87,8 @@ import { MessageFeedbackProvider } from './message-feedback';
 import { ChatTranscript } from './chat-transcript';
 import { ConversationTurnNavigator } from './conversation-turn-navigator';
 import { ArtifactWorkbench } from './artifact-workbench';
+import { TerminalCleanupStatus } from './terminal-workbench';
+import { releaseTerminalOwner } from './terminal-native';
 import { useArtifactWorkbench } from './use-artifact-workbench';
 import { useWorkbenchLayout } from './use-workbench-layout';
 import { useWorkbenchResize, WorkbenchSplitter } from './workbench-splitter';
@@ -269,6 +275,17 @@ export function ChatFlowClient({
     workspace?.sessions.find((s) => s.id === activeId)?.archivedAt,
   );
   const settingsScope = `${workspace?.organizationId}/${workspace?.workspaceId}/${workspace?.viewerId}`;
+  useEffect(() => {
+    if (!workspace?.viewerId) return;
+    const owner = {
+      organizationId: workspace.organizationId,
+      workspaceId: workspace.workspaceId,
+      ownerId: workspace.viewerId,
+    };
+    return () => {
+      void releaseTerminalOwner(owner);
+    };
+  }, [workspace?.organizationId, workspace?.workspaceId, workspace?.viewerId]);
   const [automationNavigation, setAutomationNavigation] = useState<{
     scope: string;
     view: 'catalog' | 'create';
@@ -284,9 +301,15 @@ export function ChatFlowClient({
     id: string;
     title: string;
     revision: number;
+    kind?: 'scheduleTask' | 'sessionSchedules';
+    sourceSessionId?: string;
   } | null>(null);
   const currentAutomationRequest =
-    automationRequest?.scope === settingsScope ? automationRequest : undefined;
+    automationRequest?.scope === settingsScope &&
+    (!automationRequest.sourceSessionId ||
+      automationRequest.sourceSessionId === activeId)
+      ? automationRequest
+      : undefined;
   const currentSettingsScope = useRef(settingsScope);
   currentSettingsScope.current = settingsScope;
   const imageScope = `${settingsScope}/${activeId}`;
@@ -419,12 +442,16 @@ export function ChatFlowClient({
   } = layout;
   const workbenchRequested =
     (workbenchEnabled || !!currentAutomationRequest) && layout.open;
-  const openAutomationTask = (task: { id: string; name?: string }) => {
+  const openAutomationTask = (
+    task: { id: string; name?: string },
+    sourceSessionId?: string,
+  ) => {
     setAutomationRequest((previous) => ({
       scope: settingsScope,
       id: task.id,
       title: task.name ?? '自动化任务',
       revision: (previous?.revision ?? 0) + 1,
+      sourceSessionId,
     }));
     layout.show();
   };
@@ -466,6 +493,45 @@ export function ChatFlowClient({
   } | null>(null);
   const currentModuleRequest =
     moduleRequest?.scope === fileScope ? moduleRequest : undefined;
+  const [activeModule, setActiveModule] = useState<{
+    scope: string;
+    kind: WorkbenchModule | 'schedule' | null;
+  } | null>(null);
+  const sessionAutomations = useSessionAutomations({
+    enabled: workbenchEnabled && !!workspace,
+    workspaceId: workspace?.workspaceId ?? '',
+    scope: settingsScope,
+    headers: tenantHeaders,
+    refreshKey: `${history?.messages.length}/${history?.messages.at(-1)?.status}`,
+  });
+  const currentSessionTasks = sessionAutomations.filter(
+    (task) => task.sessionId === activeId,
+  );
+  const scheduledSessions = useMemo(
+    () =>
+      new Set(
+        sessionAutomations.flatMap((task) =>
+          task.sessionId ? [task.sessionId] : [],
+        ),
+      ),
+    [sessionAutomations],
+  );
+  const openSessionTasks = () => {
+    if (!activeId || !currentSessionTasks.length) return;
+    if (currentSessionTasks.length === 1)
+      openAutomationTask(currentSessionTasks[0]!, activeId);
+    else {
+      setAutomationRequest((previous) => ({
+        scope: settingsScope,
+        id: activeId,
+        title: '定时任务',
+        kind: 'sessionSchedules',
+        sourceSessionId: activeId,
+        revision: (previous?.revision ?? 0) + 1,
+      }));
+      layout.show();
+    }
+  };
   const requestWorkbenchModule = (
     kind: WorkbenchModule | 'guide' | 'reference',
     options?: {
@@ -1675,6 +1741,7 @@ export function ChatFlowClient({
         />
       )}
       <ChatSidebar
+        scheduledSessions={scheduledSessions}
         experienceEnabled={experienceEnabled}
         automationsActive={automationsOpen}
         onOpenAutomations={() => {
@@ -1848,6 +1915,19 @@ export function ChatFlowClient({
                         headers={tenantHeaders}
                         refreshKey={`${activeId}/${history?.messages.length}/${history?.messages.at(-1)?.status}`}
                         open={workbenchOpen}
+                        selected={
+                          activeModule?.scope === fileScope
+                            ? activeModule.kind === 'schedule' &&
+                              currentAutomationRequest?.sourceSessionId !==
+                                activeId
+                              ? null
+                              : activeModule.kind
+                            : null
+                        }
+                        schedule={
+                          !sessionArchived && currentSessionTasks.length > 0
+                        }
+                        onSchedule={openSessionTasks}
                         onOpen={(kind) => requestWorkbenchModule(kind)}
                         onToggle={() => {
                           if (workbenchOpen) dismissWorkbench();
@@ -2176,6 +2256,13 @@ export function ChatFlowClient({
               kind,
             )
           }
+          onActiveModule={(kind) =>
+            setActiveModule((previous) =>
+              previous?.scope === fileScope && previous.kind === kind
+                ? previous
+                : { scope: fileScope, kind },
+            )
+          }
           renderModule={(kind, active, onOpenFile) => (
             <Suspense fallback={<p role="status">正在打开工作台…</p>}>
               {kind === 'files' ? (
@@ -2301,6 +2388,19 @@ export function ChatFlowClient({
           )}
           onOpenReference={openReference}
           taskRequest={currentAutomationRequest}
+          renderSessionTasks={(sessionId, active) =>
+            active ? (
+              <AutomationTaskList
+                workspaceId={workspace.workspaceId}
+                scope={settingsScope}
+                headers={tenantHeaders}
+                sessionId={sessionId}
+                employees={[]}
+                onSelect={(task) => openAutomationTask(task, sessionId)}
+                onNew={() => {}}
+              />
+            ) : null
+          }
           renderTask={(taskId, active) => (
             <AutomationTaskDetail
               taskId={taskId}
@@ -2321,6 +2421,15 @@ export function ChatFlowClient({
           dockScope={`${workspace.organizationId}/${workspace.workspaceId}/${workspace.viewerId ?? 'anonymous'}/${activeId ?? 'draft'}`}
           sessionId={activeId}
           workspaceId={workspace.workspaceId}
+          terminalIdentity={
+            workspace.viewerId
+              ? {
+                  organizationId: workspace.organizationId,
+                  ownerId: workspace.viewerId,
+                }
+              : undefined
+          }
+          onOpenComputerSettings={openBridgeSettings}
           tenantHeaders={tenantHeaders}
           artifacts={workbench.artifacts}
           selectedId={workbench.selectedId}
@@ -2363,6 +2472,15 @@ export function ChatFlowClient({
         attachment={attachmentPreview}
         onClose={() => setAttachmentPreview(null)}
       />
+      {workbenchEnabled && workspace.viewerId && (
+        <TerminalCleanupStatus
+          owner={{
+            organizationId: workspace.organizationId,
+            workspaceId: workspace.workspaceId,
+            ownerId: workspace.viewerId,
+          }}
+        />
+      )}
 
       <EmployeeDetailsDialog
         onClose={() => setEmployeeDetailsOpen(false)}

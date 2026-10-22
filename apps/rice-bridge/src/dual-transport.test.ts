@@ -7,6 +7,8 @@ import { afterEach, expect, it } from 'vitest';
 import {
   bridgeSocketPath,
   bridgeSocketMaximumFrameBytes,
+  type BridgeTerminalClientFrame,
+  type BridgeTerminalServerFrame,
 } from '@allrice/contracts';
 import { BridgeDualTransport } from './dual-transport.js';
 
@@ -22,14 +24,24 @@ async function fixture(
     stall?: boolean;
     wrongDevice?: boolean;
     stallHandshake?: boolean;
+    keepConnected?: boolean;
+    retryBaseMs?: number;
+    onTerminal?: (
+      frame: BridgeTerminalServerFrame,
+      send: (frame: BridgeTerminalClientFrame) => Promise<boolean>,
+    ) => void;
+    onTerminalDisconnect?: () => void;
   } = {},
 ) {
   const deviceId = randomUUID(),
     operationId = randomUUID();
   const token = 'synthetic-p12-device-token';
   const calls: { channel: string; path: string; body: unknown }[] = [];
+  const terminalFrames: BridgeTerminalClientFrame[] = [];
   let lose = options.lose,
     connections = 0;
+  let rejection = options.reject;
+  let upgrades = 0;
   const server = createServer((req, res) => {
     void (async () => {
       const chunks: Buffer[] = [];
@@ -53,15 +65,16 @@ async function fixture(
   const sockets: WebSocket[] = [];
   let upgradeSeen = false;
   server.on('upgrade', (req, socket, head) => {
+    upgrades++;
     upgradeSeen = true;
     expect(req.url).toBe(bridgeSocketPath);
     expect(req.headers.authorization).toBe(`Bearer ${token}`);
     expect(req.headers.origin).toBeUndefined();
     expect(req.headers.cookie).toBeUndefined();
     if (options.stallHandshake) return;
-    if (options.disabled || options.reject) {
+    if (options.disabled || rejection) {
       socket.end(
-        `HTTP/1.1 ${options.reject ?? 404} Rejected\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`,
+        `HTTP/1.1 ${rejection ?? 404} Rejected\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`,
       );
       return;
     }
@@ -81,10 +94,15 @@ async function fixture(
       );
       ws.on('message', (raw) => {
         const frame = JSON.parse(raw.toString()) as {
+          type?: string;
           id: string;
           action: string;
           body: unknown;
         };
+        if (frame.type?.startsWith('terminal.')) {
+          terminalFrames.push(frame as unknown as BridgeTerminalClientFrame);
+          return;
+        }
         calls.push({ channel: 'ws', path: frame.action, body: frame.body });
         if (frame.action === lose) {
           lose = undefined;
@@ -120,8 +138,11 @@ async function fixture(
     server: origin,
     deviceId,
     token,
-    retryBaseMs: 1,
+    retryBaseMs: options.retryBaseMs ?? 1,
+    keepConnected: options.keepConnected,
     handshakeTimeoutMs: 1000,
+    onTerminal: options.onTerminal,
+    onTerminalDisconnect: options.onTerminalDisconnect,
   });
   cleanup.push(() => client.close());
   const request = (
@@ -143,6 +164,14 @@ async function fixture(
     calls,
     sockets,
     request,
+    deviceId,
+    terminalFrames,
+    rejectNewConnections(status: number) {
+      rejection = status;
+    },
+    get upgrades() {
+      return upgrades;
+    },
     get connections() {
       return connections;
     },
@@ -166,6 +195,136 @@ it('uses native authenticated WebSocket, shares one connection across concurrent
   const closing = f.client.waitForWork(30000);
   f.client.close();
   await closing;
+});
+
+it('maintains a welcomed human-terminal socket through an idle disconnect without sending another operation', async () => {
+  const f = await fixture({ keepConnected: true });
+  await f.request();
+  expect(f.calls).toHaveLength(1);
+  f.sockets[0]!.terminate();
+  for (let i = 0; i < 200 && f.connections < 2; i++)
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  expect(f.connections).toBe(2);
+  expect(f.calls).toHaveLength(1);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(f.upgrades).toBe(2);
+});
+
+it('stops scheduled idle reconnect on close and never maintains an endpoint that was not welcomed', async () => {
+  let disconnected = false;
+  const f = await fixture({
+    keepConnected: true,
+    retryBaseMs: 100,
+    onTerminalDisconnect: () => {
+      disconnected = true;
+    },
+  });
+  await f.request();
+  f.sockets[0]!.terminate();
+  for (let i = 0; i < 100 && !disconnected; i++)
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  expect(disconnected).toBe(true);
+  f.client.close();
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  expect(f.upgrades).toBe(1);
+  const unsupported = await fixture({ keepConnected: true, disabled: true });
+  expect(await unsupported.request()).toEqual({ ok: true, channel: 'http' });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  expect(unsupported.upgrades).toBe(1);
+  expect(unsupported.calls).toHaveLength(1);
+});
+
+it('an explicit credential rejection ends idle reconnect maintenance without HTTP execution fallback', async () => {
+  const f = await fixture({ keepConnected: true });
+  await f.request();
+  f.rejectNewConnections(401);
+  f.sockets[0]!.terminate();
+  for (let i = 0; i < 200 && f.upgrades < 2; i++)
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  expect(f.connections).toBe(1);
+  expect(f.upgrades).toBe(2);
+  await expect(f.request()).rejects.toMatchObject({ status: 401 });
+  expect(f.calls).toHaveLength(1);
+});
+
+it('routes typed terminal frames over the authenticated socket and fences old senders after reconnect', async () => {
+  const callbacks: {
+    frame: BridgeTerminalServerFrame;
+    send: (frame: BridgeTerminalClientFrame) => Promise<boolean>;
+  }[] = [];
+  let disconnected = false;
+  const f = await fixture({
+    onTerminal: (frame, send) => {
+      callbacks.push({ frame, send });
+    },
+    onTerminalDisconnect: () => {
+      disconnected = true;
+    },
+  });
+  await f.request();
+  const open: BridgeTerminalServerFrame = {
+    version: 1,
+    type: 'terminal.open',
+    id: randomUUID(),
+    target: {
+      organizationId: randomUUID(),
+      workspaceId: randomUUID(),
+      ownerId: randomUUID(),
+      loginSessionId: randomUUID(),
+      sessionId: randomUUID(),
+      deviceId: f.deviceId,
+      grantId: randomUUID(),
+      grantVersion: 1,
+      rootFingerprint: 'a'.repeat(64),
+      label: 'Authorized directory',
+    },
+  };
+  f.sockets[0]!.send(JSON.stringify(open));
+  for (let i = 0; i < 100 && !callbacks.length; i++)
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  expect(callbacks[0]?.frame).toEqual(open);
+  expect(
+    await callbacks[0]!.send({
+      version: 1,
+      type: 'terminal.ready',
+      id: open.id,
+    }),
+  ).toBe(true);
+  for (let i = 0; i < 100 && !f.terminalFrames.length; i++)
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  expect(f.terminalFrames).toEqual([
+    { version: 1, type: 'terminal.ready', id: open.id },
+  ]);
+  const closed = once(f.sockets[0]!, 'close');
+  f.sockets[0]!.terminate();
+  await closed;
+  for (let i = 0; i < 100 && !disconnected; i++)
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  expect(disconnected).toBe(true);
+  for (let i = 0; i < 100 && f.connections < 2; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await f.request();
+  }
+  expect(f.connections).toBe(2);
+  expect(
+    await callbacks[0]!.send({
+      version: 1,
+      type: 'terminal.ready',
+      id: open.id,
+    }),
+  ).toBe(false);
+  f.sockets[1]!.send(JSON.stringify(open));
+  for (let i = 0; i < 100 && callbacks.length < 2; i++)
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  expect(
+    await callbacks[1]!.send({
+      version: 1,
+      type: 'terminal.ready',
+      id: open.id,
+    }),
+  ).toBe(true);
+  expect(f.calls.every((call) => call.channel === 'ws')).toBe(true);
 });
 
 it('falls back to unchanged HTTP when the server has no WSS endpoint', async () => {
