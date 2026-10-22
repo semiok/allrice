@@ -992,6 +992,130 @@ suite(
         await r.finish();
       }
     });
+    async function confirmedFrequency(
+      r: Awaited<ReturnType<typeof leasedChat>>,
+      label = '每隔 1 分钟提醒',
+    ) {
+      const followup = await sendChatMessage(
+        f.context,
+        f.workspaceId,
+        r.input.sessionId,
+        {
+          clientMessageId: randomUUID(),
+          text: 'Isolated typed answer fixture',
+          deliveryMode: 'follow_up',
+        },
+      );
+      const questionId = `question-${randomUUID()}`;
+      const turnId = `dsh-${r.input.context.runId}:turn:1`;
+      const question = {
+        questionId,
+        questions: [
+          {
+            id: 'frequency',
+            question: '一次还是循环？',
+            options: [
+              { label: '1 分钟后提醒一次' },
+              { label: '每隔 1 分钟提醒' },
+            ],
+            multiSelect: false,
+          },
+        ],
+      };
+      const answer = {
+        questionId,
+        answers: [{ id: 'frequency', selected: [label] }],
+      };
+      const clientId = followup.userMessage.clientMessageId;
+      await f.db`insert into allrice_run_events(organization_id,workspace_id,run_id,sequence,event_type,payload)
+        select ${f.organizationId},${f.workspaceId},${r.input.context.runId},coalesce(max(sequence),0)+1,'harness.native',
+          ${f.db.json({ sourceEventType: 'session/user-question', turnId, generation: 1, nativePayload: question })}
+        from allrice_run_events where run_id=${r.input.context.runId}`;
+      await f.db`update allrice_messages set content=${f.db.json({ text: `提醒频率：${label}`, citations: [], interaction: { type: 'user_question_answer', answer } })}
+        where id=${followup.userMessage.id}`;
+      await f.db`insert into allrice_conversation_followups(run_id,organization_id,workspace_id,session_id,owner_id,user_message_id,assistant_message_id,client_user_message_id,mode,state)
+        values(${followup.run.id},${f.organizationId},${f.workspaceId},${r.input.sessionId},${r.input.context.policySnapshot.subjectId},
+          ${followup.userMessage.id},${followup.assistantMessage.id},${clientId},'follow_up','consumed') on conflict(run_id) do nothing`;
+      const [c] =
+        await f.db`insert into allrice_conversation_commands(organization_id,workspace_id,session_id,owner_id,followup_run_id,command_type,
+        client_user_message_id,expected_generation,expected_turn_id,message,input_kind,state,native_proof)
+        values(${f.organizationId},${f.workspaceId},${r.input.sessionId},${r.input.context.policySnapshot.subjectId},${followup.run.id},'steer',
+          ${clientId},1,${turnId},${'allrice:user-question:v1:' + JSON.stringify(answer)},'ask_user','consumed',
+          ${f.db.json({ status: 'adopted', turnId, inputId: clientId, sequence: 18, messageId: questionId, checkpoint: 'question_resolved' })}) returning id`;
+      return { commandId: c!.id, followup, questionId, turnId };
+    }
+    it('creates the reported recurring shorthand only after its same-Run typed confirmation, preserves both human sources, and compares the chosen rule', async () => {
+      const r = await leasedChat('1 分钟尖叫一次', {
+        kind: 'every',
+        seconds: 60,
+      });
+      try {
+        const before = await enrollmentCounts();
+        await expect(
+          createRecurringTaskFromExecutionContext(r.input),
+        ).rejects.toMatchObject({ code: 'intent_required' });
+        expect(await enrollmentCounts()).toEqual(before);
+        const choice = await confirmedFrequency(r);
+        for (const patch of [
+          { state: 'claimed' },
+          { expected_generation: 2 },
+          { expected_turn_id: 'other:turn:1' },
+          { native_proof: { status: 'pending' } },
+        ]) {
+          const [original] =
+            await f.db`select * from allrice_conversation_commands where id=${choice.commandId}`;
+          await f.db`update allrice_conversation_commands set ${f.db(patch)} where id=${choice.commandId}`;
+          await expect(
+            createRecurringTaskFromExecutionContext(r.input),
+          ).rejects.toMatchObject({ code: 'intent_required' });
+          await f.db`update allrice_conversation_commands set state=${original!.state},expected_generation=${original!.expected_generation},
+            expected_turn_id=${original!.expected_turn_id},native_proof=${f.db.json(original!.native_proof)} where id=${choice.commandId}`;
+          expect(await enrollmentCounts()).toEqual(before);
+        }
+        await expect(
+          createRecurringTaskFromExecutionContext({
+            ...r.input,
+            rule: { kind: 'every', seconds: 120 },
+          }),
+        ).rejects.toMatchObject({ code: 'rule_mismatch' });
+        const created = await createRecurringTaskFromExecutionContext(r.input);
+        expect(created).toMatchObject({
+          rule: { kind: 'every', seconds: 60 },
+          prompt: '1 分钟尖叫一次\n用户已确认的提醒频率：每隔 1 分钟提醒',
+        });
+        expect(await createRecurringTaskFromExecutionContext(r.input)).toEqual(
+          created,
+        );
+        expect((await enrollmentCounts()).plans).toBe(before.plans + 1);
+        await f.db`insert into allrice_task_calls(run_id,native_session_id,call_id,kind,name,outcome,finished_at)
+          values(${r.input.context.runId},'fixture-native-session',${r.input.callId},'tool','automation.create','success',clock_timestamp())`;
+        await expect(
+          createRecurringTaskFromExecutionContext({
+            ...r.input,
+            callId: randomUUID(),
+          }),
+        ).rejects.toMatchObject({ code: 'intent_required' });
+        expect((await enrollmentCounts()).plans).toBe(before.plans + 1);
+      } finally {
+        await r.finish();
+      }
+    });
+    it('does not override a selected one-time reminder with a recurring call', async () => {
+      const r = await leasedChat('1 分钟尖叫一次', {
+        kind: 'every',
+        seconds: 60,
+      });
+      try {
+        const before = await enrollmentCounts();
+        await confirmedFrequency(r, '1 分钟后提醒一次');
+        await expect(
+          createRecurringTaskFromExecutionContext(r.input),
+        ).rejects.toMatchObject({ code: 'intent_required' });
+        expect(await enrollmentCounts()).toEqual(before);
+      } finally {
+        await r.finish();
+      }
+    });
     it('compares the full daily wall-clock and explicit IANA timezone before enrollment', async () => {
       const text =
         '请每天09:30，时区Asia/Shanghai，在这个对话中只回复校验词「RECURRING-NL-B」。请创建周期任务。';

@@ -609,7 +609,6 @@ export class DshRuntimePool {
     const nativeTools = await selectDshNativeTools(
       input.input.tools.map((tool) => tool.name),
       nativeIdentity?.args[0],
-      input.input.currentUserRequest,
     );
     // Store only per-field hashes in memory so diagnostics can name changed
     // configuration without recording its values.
