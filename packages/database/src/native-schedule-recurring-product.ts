@@ -43,6 +43,7 @@ import {
 } from './native-schedule-authority.ts';
 import { employeeAccessTransaction } from './employees/employee-access-cancellation.ts';
 import { explicitRecurringTaskIntent } from './employees/recurring-task-intent.ts';
+import { readScheduleClarification } from './employees/schedule-clarification-authority.ts';
 import {
   assertEmployeeChatExecution,
   assertEmployeeChatHumanSource,
@@ -529,11 +530,17 @@ export async function createRecurringTaskFromExecutionContext(
     await assertEmployeeChatHumanSource(tx, input, current);
     if (!nativeRecurringProductEnabled())
       throw new NativeRecurringProductError('disabled');
-    const intent = explicitRecurringTaskIntent(current.text);
+    const clarified = await readScheduleClarification(tx, input, current.text);
+    const intent = clarified
+      ? clarified.intent?.kind === 'recurring'
+        ? clarified.intent
+        : null
+      : explicitRecurringTaskIntent(current.text);
+    const authoritativeRequest = intent?.authoritativeRequest ?? current.text;
     const enrollment = CreateRecurringTaskInputSchema.parse({
       clientRequestId: requestId,
       name: input.name,
-      prompt: current.text,
+      prompt: authoritativeRequest,
       rule,
     });
     return enrollRecurringTask(
@@ -541,9 +548,8 @@ export async function createRecurringTaskFromExecutionContext(
       ownerScope,
       target,
       input.sessionId,
-      // Validation above bounds the content. Preserve the exact current-human
-      // bytes in storage, including surrounding whitespace.
-      { ...enrollment, prompt: current.text },
+      // Preserve the original work and, when used, the actual human selection.
+      { ...enrollment, prompt: authoritativeRequest },
       digest,
       () => {
         if (!intent) throw new NativeRecurringProductError('intent_required');

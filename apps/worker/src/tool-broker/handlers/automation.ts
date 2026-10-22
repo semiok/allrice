@@ -86,7 +86,7 @@ export const createAutomation: RiceToolHandler = async ({
       if (error.code === 'intent_required')
         rejected(
           'AUTOMATION_REQUEST_UNCLEAR',
-          '未创建任务。当前用户消息需明确说明每隔整数分钟、小时或天数，或每日 HH:mm[:ss] 与 IANA 时区，并包含具体工作。引用、条件、否定、历史认可、多种周期及周/月规则不能作为本次授权，请先澄清。',
+          '未创建任务。需要明确的周期和具体工作，或当前任务提问卡中用户已选定的完整提醒频率。支持每隔整数分钟、小时或天数，或每日 HH:mm[:ss] 与 IANA 时区。请结合当前对话澄清缺失信息，不要要求用户重发已知工作；引用、条件、否定、无关历史、多种周期及周/月规则不代表创建授权。',
         );
       if (error.code === 'rule_mismatch')
         rejected(
