@@ -38,9 +38,16 @@ import {
   getAutomationCatalogTask,
   getAutomationCatalogOperation,
   changeAutomationCatalogTask,
+  getAutomationCatalogOccurrenceRun,
+  stopAutomationCatalogOccurrence,
 } from './automation-catalog.ts';
-import { listAutomations } from './execution/automation.ts';
-import { claimNextJob, startClaimedJob, failJob } from './execution/queue.ts';
+import { listAutomations, runAutomationNow } from './execution/automation.ts';
+import {
+  claimNextJob,
+  startClaimedJob,
+  failJob,
+  maintainQueue,
+} from './execution/queue.ts';
 import type { RecurringScheduleRule } from '@allrice/contracts';
 import { employeeChatUuid } from './employees/employee-chat-authority.ts';
 import {
@@ -525,6 +532,176 @@ suite(
       await expect(
         f.db`delete from allrice_native_recurring_occurrences where automation_id=${t.id}`,
       ).rejects.toMatchObject({ code: '23514' });
+    });
+    it('stops only an exact recurring occurrence, preserves native plans/history and still dispatches the next period', async () => {
+      const t = await task('MET192 exact occurrence stop');
+      await receipt(t.id);
+      expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
+        true,
+      );
+      await receipt(t.id);
+      expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
+        true,
+      );
+      const history = await getAutomationCatalogTask(
+        f.context,
+        f.workspaceId,
+        t.id,
+      );
+      const [newer, selected] = history.occurrences;
+      expect(newer?.runId).toBeTruthy();
+      expect(selected?.runId).toBeTruthy();
+      const exact = { occurrenceId: selected!.id, runId: selected!.runId! };
+      for (const wrong of [
+        { ...exact, occurrenceId: newer!.id },
+        { ...exact, runId: newer!.runId! },
+      ])
+        await expect(
+          stopAutomationCatalogOccurrence(
+            f.context,
+            f.workspaceId,
+            t.id,
+            wrong,
+          ),
+        ).rejects.toMatchObject({ code: 'not_found' });
+      const other = await task('MET192 unrelated same-owner plan');
+      await expect(
+        stopAutomationCatalogOccurrence(
+          f.context,
+          f.workspaceId,
+          other.id,
+          exact,
+        ),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await expect(
+        stopAutomationCatalogOccurrence(f.context, randomUUID(), t.id, exact),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await expect(
+        stopAutomationCatalogOccurrence(
+          { ...f.context, actor: { type: 'user', id: randomUUID() } },
+          f.workspaceId,
+          t.id,
+          exact,
+        ),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+      const protectedState = async () => ({
+        plan: (
+          await f.db`select to_jsonb(a) data from allrice_automations a where id=${t.id}`
+        )[0]!.data,
+        native: await snapshot(t.id),
+        counts: await enrollmentCounts(),
+        occurrences:
+          await f.db`select * from allrice_native_recurring_occurrences where automation_id=${t.id} order by occurrence_id`,
+      });
+      const before = await protectedState();
+      const stopped = await stopAutomationCatalogOccurrence(
+        f.context,
+        f.workspaceId,
+        t.id,
+        exact,
+      );
+      expect(stopped.run).toMatchObject({
+        id: exact.runId,
+        status: 'queued',
+        job: { status: 'queued' },
+        cancelRequestedAt: expect.any(String),
+      });
+      const repeat = await stopAutomationCatalogOccurrence(
+        f.context,
+        f.workspaceId,
+        t.id,
+        exact,
+      );
+      expect(repeat.run.cancelRequestedAt).toBe(stopped.run.cancelRequestedAt);
+      expect(await protectedState()).toEqual(before);
+      expect(
+        (
+          await getAutomationCatalogOccurrenceRun(
+            f.context,
+            f.workspaceId,
+            t.id,
+            { occurrenceId: newer!.id, runId: newer!.runId! },
+          )
+        ).run.cancelRequestedAt,
+      ).toBeNull();
+      await maintainQueue(1000);
+      const terminal = await getAutomationCatalogOccurrenceRun(
+        f.context,
+        f.workspaceId,
+        t.id,
+        exact,
+      );
+      expect(terminal.run.status).toBe('canceled');
+      expect(
+        (
+          await stopAutomationCatalogOccurrence(
+            f.context,
+            f.workspaceId,
+            t.id,
+            exact,
+          )
+        ).run,
+      ).toEqual(terminal.run);
+      expect(await protectedState()).toEqual(before);
+      await receipt(t.id);
+      expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
+        true,
+      );
+      expect(
+        (await getAutomationCatalogTask(f.context, f.workspaceId, t.id))
+          .occurrences,
+      ).toHaveLength(3);
+    });
+    it('uses the durable manual/legacy history identity without changing its schedule or selecting a later Run', async () => {
+      const session = await createChatSession(f.context, {
+        workspaceId: f.workspaceId,
+        employeeAssignmentId: f.assignmentId,
+        title: 'MET192 manual stop',
+      });
+      const id = randomUUID(),
+        schedule = {
+          frequency: 'weekly',
+          weekday: 2,
+          time: '09:00',
+          timezone: 'Asia/Shanghai',
+        };
+      await f.db`insert into allrice_automations(id,organization_id,workspace_id,owner_id,name,prompt,trigger_type,schedule,status,conversation_mode,employee_assignment_id,session_id,next_run_at) values(${id},${f.organizationId},${f.workspaceId},${f.ownerId},'MET192 manual stop','核对测试数据','schedule',${f.db.json(schedule)},'enabled','reuse',${f.assignmentId},${session.id},'2099-01-01T01:00:00Z')`;
+      await runAutomationNow(f.context, f.workspaceId, id);
+      const first = (
+        await getAutomationCatalogTask(f.context, f.workspaceId, id)
+      ).occurrences[0]!;
+      await runAutomationNow(f.context, f.workspaceId, id);
+      const before = (
+        await f.db`select to_jsonb(a) data from allrice_automations a where id=${id}`
+      )[0]!.data;
+      const target = { occurrenceId: first.id, runId: first.runId! };
+      const result = await stopAutomationCatalogOccurrence(
+        f.context,
+        f.workspaceId,
+        id,
+        target,
+      );
+      expect(result.run.id).toBe(first.runId);
+      expect(result.run.cancelRequestedAt).not.toBeNull();
+      const newer = (
+        await getAutomationCatalogTask(f.context, f.workspaceId, id)
+      ).occurrences[0]!;
+      expect(newer.id).not.toBe(first.id);
+      expect(
+        (
+          await getAutomationCatalogOccurrenceRun(
+            f.context,
+            f.workspaceId,
+            id,
+            { occurrenceId: newer.id, runId: newer.runId! },
+          )
+        ).run.cancelRequestedAt,
+      ).toBeNull();
+      expect(
+        (
+          await f.db`select to_jsonb(a) data from allrice_automations a where id=${id}`
+        )[0]!.data,
+      ).toEqual(before);
     });
     it('catalog reads across sessions without seeding and rejects foreign scope', async () => {
       const first = await task('MET197 catalog group: first');

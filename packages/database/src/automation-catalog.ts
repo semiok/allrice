@@ -9,8 +9,10 @@ import {
   RequestContextSchema,
   TimestampSchema,
   UuidSchema,
+  isTerminalRunStatus,
   type AutomationCatalogTask,
   type RequestContext,
+  type RunSnapshot,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import { acquireDevAdmission } from './dev-maintenance.ts';
@@ -19,6 +21,12 @@ import { nextScheduleAt } from './execution/automation.ts';
 import { DataAccessError } from './data.ts';
 import { readContentPrincipal } from './content-maintenance.ts';
 import { readWorkAutomation } from './work-automation.ts';
+import {
+  getRun,
+  QueueError,
+  requestRunCancellationTransaction,
+} from './execution/queue.ts';
+import { isTerminalJobStatus } from './queue/policy.ts';
 import {
   nativeRecurringProductEnabled,
   readRecurringTaskProjection,
@@ -63,7 +71,12 @@ function cursor(raw?: string) {
 }
 const encode = (at: string, id: string) =>
   Buffer.from(JSON.stringify({ at, id })).toString('base64url');
-async function authority(tx: Tx, raw: RequestContext, workspaceId: string) {
+async function authority(
+  tx: Tx,
+  raw: RequestContext,
+  workspaceId: string,
+  forWrite = false,
+) {
   const context = RequestContextSchema.parse(raw);
   UuidSchema.parse(workspaceId);
   if (context.actor.type !== 'user')
@@ -71,7 +84,7 @@ async function authority(tx: Tx, raw: RequestContext, workspaceId: string) {
   if (context.workspaceId && context.workspaceId !== workspaceId)
     throw new DataAccessError('not_found');
   const scoped = { ...context, workspaceId };
-  const principal = await readContentPrincipal(scoped, tx);
+  const principal = await readContentPrincipal(scoped, tx, forWrite);
   if (!principal) throw new DataAccessError('authorization_denied');
   return {
     context: scoped,
@@ -300,6 +313,132 @@ export async function getAutomationCatalogTask(
         history.length > 50 && last ? encode(last.cursor_at, last.id) : null,
     };
   });
+}
+// Presentation-only identity: recurring history uses the native occurrence ID;
+// once/legacy history uses its durable automation_run ID (including manual Runs).
+// The server chooses that interpretation from the owned plan, never the caller.
+const OccurrenceRunInputSchema = z
+  .object({ occurrenceId: UuidSchema, runId: UuidSchema })
+  .strict();
+type OccurrenceRunInput = z.infer<typeof OccurrenceRunInputSchema>;
+function activeOccurrenceRun(run: RunSnapshot) {
+  return (
+    !isTerminalRunStatus(run.status) && !isTerminalJobStatus(run.job.status)
+  );
+}
+async function occurrenceRunAuthority(
+  tx: Tx,
+  contextInput: RequestContext,
+  workspaceId: string,
+  taskId: string,
+  input: OccurrenceRunInput,
+  forWrite = false,
+) {
+  const access = await authority(tx, contextInput, workspaceId, forWrite);
+  if (forWrite && !access.writable)
+    throw new DataAccessError('authorization_denied');
+  const [plan] = await rows(
+    tx,
+    access.context,
+    access.ownerId,
+    {},
+    null,
+    taskId,
+  );
+  if (!plan) throw new DataAccessError('not_found');
+  // No latest-Run selection and no new scheduling authority. The same catalog
+  // scope excludes privileged business consumers and other owners' plans.
+  const [bound] = await tx<
+    {
+      state: RunSnapshot['status'];
+      job_status: RunSnapshot['job']['status'];
+      cancel_requested_at: Date | null;
+    }[]
+  >`select r.state,j.status job_status,j.cancel_requested_at
+    from allrice_automation_runs ar
+    join allrice_runs r on r.id=ar.run_id and r.organization_id=ar.organization_id and r.workspace_id=ar.workspace_id and r.owner_id=${access.ownerId}
+    join allrice_jobs j on j.run_id=r.id and j.organization_id=r.organization_id and j.workspace_id=r.workspace_id and j.owner_id=r.owner_id
+    where ar.automation_id=${plan.id} and ar.organization_id=${access.context.organizationId} and ar.workspace_id=${workspaceId} and ar.run_id=${input.runId}
+      ${plan.clock_owner === 'native_recurring' ? tx`and ar.native_recurring_occurrence_id=${input.occurrenceId} and exists(select 1 from allrice_native_recurring_occurrences o where o.occurrence_id=ar.native_recurring_occurrence_id and o.automation_id=ar.automation_id)` : tx`and ar.id=${input.occurrenceId}`}`;
+  if (!bound) throw new DataAccessError('not_found');
+  return { ...access, bound };
+}
+/** Exact readback only; it never resubmits an uncertain stop request. */
+export async function getAutomationCatalogOccurrenceRun(
+  contextInput: RequestContext,
+  workspaceId: string,
+  taskId: string,
+  raw: unknown,
+) {
+  UuidSchema.parse(taskId);
+  const input = OccurrenceRunInputSchema.parse(raw);
+  const access = await getDatabase().begin((tx) =>
+    occurrenceRunAuthority(tx, contextInput, workspaceId, taskId, input),
+  );
+  const run = await getRun(access.context, workspaceId, input.runId);
+  return {
+    taskId,
+    occurrenceId: input.occurrenceId,
+    run,
+    canStop:
+      access.writable && activeOccurrenceRun(run) && !run.cancelRequestedAt,
+  };
+}
+/** Stop one already-dispatched Run through the ordinary durable cancel chain. */
+export async function stopAutomationCatalogOccurrence(
+  contextInput: RequestContext,
+  workspaceId: string,
+  taskId: string,
+  raw: unknown,
+) {
+  UuidSchema.parse(taskId);
+  const input = OccurrenceRunInputSchema.parse(raw);
+  try {
+    await getDatabase().begin(async (tx) => {
+      const { context, bound } = await occurrenceRunAuthority(
+        tx,
+        contextInput,
+        workspaceId,
+        taskId,
+        input,
+        true,
+      );
+      // Repeated or late requests do not modify terminal results or request a
+      // different Run. The normal cancel transaction owns root/job lock order,
+      // usage and physical-stop receipts; this layer never synthesizes canceled.
+      if (
+        isTerminalRunStatus(bound.state) ||
+        isTerminalJobStatus(bound.job_status) ||
+        bound.cancel_requested_at
+      )
+        return;
+      await requestRunCancellationTransaction(
+        tx,
+        context,
+        input.runId,
+        'user_requested',
+      );
+    });
+  } catch (error) {
+    if (!(error instanceof QueueError) || error.code !== 'conflict')
+      throw error;
+    // Completion may win after the exact binding check. The failed transaction
+    // rolls back its root edits, then reads only the original, now-terminal Run.
+    const receipt = await getAutomationCatalogOccurrenceRun(
+      contextInput,
+      workspaceId,
+      taskId,
+      input,
+    );
+    if (activeOccurrenceRun(receipt.run)) throw error;
+    return receipt;
+  }
+  return getAutomationCatalogOccurrenceRun(
+    contextInput,
+    workspaceId,
+    taskId,
+    input,
+  );
 }
 export async function getAutomationCatalogOperation(
   context: RequestContext,

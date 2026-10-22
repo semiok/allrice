@@ -30,6 +30,15 @@ import {
   type RecurringTaskDraft,
   type RecurringTaskIntent,
 } from './recurring-task-intent';
+import {
+  clearStopOccurrenceIntent,
+  parseStopOccurrenceIntent,
+  resolveStopOccurrenceReceipt,
+  saveStopOccurrenceIntent,
+  stopOccurrenceStorageKey,
+  stopOccurrenceURL,
+  type StopOccurrenceIntent,
+} from './stop-occurrence-intent';
 import native from './dsh-upstream/automation/TaskManagerPage.module.css';
 import card from './dsh-upstream/automation/ScheduleCreateCard.module.css';
 import css from './automation-tasks.module.css';
@@ -427,6 +436,18 @@ function AutomationDetailBody({
     timezone: 'Asia/Shanghai',
   });
   const [legacyUnknown, setLegacyUnknown] = useState(false);
+  const [stopIntent, setStopIntent] = useState<StopOccurrenceIntent | null>(
+    null,
+  );
+  const [stopConfirm, setStopConfirm] = useState<StopOccurrenceIntent | null>(
+    null,
+  );
+  const [stopReady, setStopReady] = useState(false),
+    [stopBusy, setStopBusy] = useState(false),
+    [stopError, setStopError] = useState(''),
+    [stopNotice, setStopNotice] = useState('');
+  const stopRef = useRef<StopOccurrenceIntent | null>(null);
+  const stopWriting = useRef(false);
   const mounted = useRef(true),
     controller = useRef<AbortController | null>(null);
   const pendingRef = useRef(pending);
@@ -498,6 +519,22 @@ function AutomationDetailBody({
       controller.current?.abort();
     };
   }, []);
+  useEffect(() => {
+    try {
+      const key = stopOccurrenceStorageKey(scope, workspaceId, taskId);
+      const raw = sessionStorage.getItem(key);
+      const intent = raw ? parseStopOccurrenceIntent(raw, key) : null;
+      stopRef.current = intent;
+      setStopIntent(intent);
+      if (intent)
+        setStopNotice('上次停止请求待核实；只会读取原本轮结果，不会再次提交。');
+      setStopReady(true);
+    } catch (cause) {
+      setStopError(
+        cause instanceof Error ? cause.message : '无法读取停止记录。',
+      );
+    }
+  }, [scope, workspaceId, taskId]);
   useEffect(() => {
     if (!visible) return;
     let cancelled = false;
@@ -736,6 +773,89 @@ function AutomationDetailBody({
     }
   };
   const disabled = busy || !!pending || !restored || !!storageError;
+  const settleStop = async (
+    intent: StopOccurrenceIntent,
+    response: Response,
+  ) => {
+    const result = resolveStopOccurrenceReceipt(intent, await read(response));
+    if (!mounted.current || stopRef.current?.runId !== intent.runId) return;
+    if (result.state === 'terminal') {
+      clearStopOccurrenceIntent(sessionStorage, intent);
+      stopRef.current = null;
+      setStopIntent(null);
+      setStopNotice(
+        result.run.status === 'canceled'
+          ? '本轮已取消。未来计划仍按原设置执行。'
+          : '本轮已经结束，保留原结果。未来计划仍按原设置执行。',
+      );
+      await load();
+    } else
+      setStopNotice(
+        result.state === 'stopping'
+          ? '已请求停止本轮，等待执行退出。可检查本轮结果；未来计划仍按原设置执行。'
+          : '尚未核实停止结果。只会读取原本轮，不会再次提交。',
+      );
+  };
+  const checkStop = async () => {
+    const intent = stopRef.current;
+    if (!intent || stopWriting.current) return;
+    stopWriting.current = true;
+    setStopBusy(true);
+    setStopError('');
+    try {
+      await settleStop(
+        intent,
+        await fetch(stopOccurrenceURL(intent, true), {
+          headers,
+          cache: 'no-store',
+        }),
+      );
+    } catch (cause) {
+      if (mounted.current)
+        setStopError(
+          cause instanceof Error ? cause.message : '本轮结果待核实。',
+        );
+    } finally {
+      stopWriting.current = false;
+      if (mounted.current) setStopBusy(false);
+    }
+  };
+  const stopOccurrence = async (intent: StopOccurrenceIntent) => {
+    if (!stopReady || stopRef.current || stopWriting.current) return;
+    stopWriting.current = true;
+    setStopBusy(true);
+    setStopConfirm(null);
+    setStopError('');
+    let saved = false;
+    try {
+      saveStopOccurrenceIntent(sessionStorage, intent);
+      saved = true;
+      stopRef.current = intent;
+      setStopIntent(intent);
+      setStopNotice('正在请求停止本轮；未来计划仍按原设置执行。');
+      await settleStop(
+        intent,
+        await fetch(stopOccurrenceURL(intent), {
+          method: 'POST',
+          headers: { ...headers, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            occurrenceId: intent.occurrenceId,
+            runId: intent.runId,
+          }),
+        }),
+      );
+    } catch (cause) {
+      if (!saved) setStopReady(false);
+      if (mounted.current)
+        setStopError(
+          (cause instanceof Error ? cause.message : '停止结果待核实。') +
+            ' 不会自动重试；请检查原本轮结果。',
+        );
+    } finally {
+      stopWriting.current = false;
+      if (mounted.current) setStopBusy(false);
+    }
+  };
   const editable = !!nativeTask?.canManage;
   const changed =
     !!nativeTask &&
@@ -824,6 +944,26 @@ function AutomationDetailBody({
           <p role="status" className={native.notice}>
             {notice}
           </p>
+        )}
+        {stopError && (
+          <p role="alert" className={css.error}>
+            {stopError}
+          </p>
+        )}
+        {stopNotice && (
+          <p role="status" className={native.notice}>
+            {stopNotice}
+          </p>
+        )}
+        {stopIntent && (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={stopBusy}
+            onClick={() => void checkStop()}
+          >
+            检查本轮停止结果
+          </Button>
         )}
         {pending && (
           <Button
@@ -1136,6 +1276,58 @@ function AutomationDetailBody({
                   </p>
                   {o.errorMessage && (
                     <p className={css.error}>{o.errorMessage}</p>
+                  )}
+                  {o.runId &&
+                    ['queued', 'running', 'awaiting_input'].includes(
+                      o.status,
+                    ) && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={!stopReady || stopBusy || !!stopIntent}
+                        onClick={() =>
+                          setStopConfirm({
+                            version: 1,
+                            storageKey: stopOccurrenceStorageKey(
+                              scope,
+                              workspaceId,
+                              taskId,
+                            ),
+                            workspaceId,
+                            taskId,
+                            occurrenceId: o.id,
+                            runId: o.runId!,
+                          })
+                        }
+                      >
+                        停止本轮
+                      </Button>
+                    )}
+                  {stopConfirm?.occurrenceId === o.id && (
+                    <div
+                      role="alertdialog"
+                      aria-label="确认停止本轮"
+                      className={css.confirm}
+                    >
+                      <p>
+                        仅停止 {time(o.scheduledAt)}{' '}
+                        这一轮。未来计划仍按原设置执行。
+                      </p>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setStopConfirm(null)}
+                      >
+                        返回
+                      </Button>
+                      <Button
+                        size="sm"
+                        disabled={stopBusy || !!stopIntent}
+                        onClick={() => void stopOccurrence(stopConfirm)}
+                      >
+                        确认停止本轮
+                      </Button>
+                    </div>
                   )}
                   {o.runId && o.sessionId && (
                     <Button
