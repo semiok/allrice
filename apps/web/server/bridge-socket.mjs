@@ -313,7 +313,7 @@ export async function createBridgeSocketGateway({
   }
 
   return {
-    openTerminal({ target, id, onFrame, onClose }) {
+    openTerminal({ target, id, streamMode, onFrame, onClose }) {
       if (stopping || !enabled())
         return Promise.reject(Error('TERMINAL_BRIDGE_UNAVAILABLE'));
       const client = [...clients].find(
@@ -344,6 +344,7 @@ export async function createBridgeSocketGateway({
                   type: 'terminal.open',
                   id,
                   target,
+                  ...(streamMode === 'push' ? { streamMode: 'push' } : {}),
                 }),
               ))
             )

@@ -404,7 +404,7 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         const dialog = page.getByRole('dialog');
         await dialog.getByText(/已配发基础人设与公司／部门共享内容/).waitFor();
         await dialog
-          .getByRole('heading', { name: '公司共享场景', exact: true })
+          .getByRole('button', { name: '公司共享场景', exact: true })
           .waitFor();
         expect(await dialog.innerText()).not.toMatch(
           /PRIVATE_|CANDIDATE_|财务共享场景|个人设置 v/,
@@ -414,9 +414,11 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
             .locator('[data-maintenance]:not([data-maintenance="readonly"])')
             .count(),
         ).toBe(0);
+        for (const name of ['编辑员工', 'AI新增工作场景', /^AI调整/])
+          expect(await dialog.getByRole('button', { name }).count()).toBe(0);
         await dialog
-          .getByLabel('工作场景（可选）')
-          .selectOption({ label: '公司共享场景' });
+          .getByRole('button', { name: '公司共享场景', exact: true })
+          .click();
         await dialog
           .getByRole('tab', { name: '参考资料', exact: true })
           .click();

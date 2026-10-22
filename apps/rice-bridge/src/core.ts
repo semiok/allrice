@@ -1398,7 +1398,7 @@ async function startSession(
     });
   const publish = () => {
     if (humanTerminalRelay && !stopping && !state.environment!.paused)
-      state.environment!.humanTerminalVersion = 1;
+      state.environment!.humanTerminalVersion = 2;
     else delete state.environment!.humanTerminalVersion;
     projectFolderTriggerEnvironment(
       state.environment!,
