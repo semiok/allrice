@@ -17,7 +17,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { HarnessExecutionInput, HarnessToolCall } from './adapter.js';
 import { DshRuntimePool, type DshRuntime } from './dsh/runtime-pool.js';
 import { DshStartupRejection } from './dsh/startup-rejection.js';
-import { HandlerError } from '../errors.js';
+import { HandlerError, confirmToolFailure } from '../errors.js';
 import { HarnessEventBatcher } from './delta-batcher.js';
 import { getAssistantFailureUsage } from './dsh/assistant-outcome.js';
 import { assertAssistantProviderOutputBound } from './dsh/assistant-provider.js';
@@ -159,7 +159,14 @@ async function schedulingRuntime(
     | string
     | { id: string; wireName?: string; arguments: Record<string, unknown> }
   )[],
-  options: { beforeFinish?: (requestIndex: number) => Promise<void> } = {},
+  options: {
+    beforeFinish?: (requestIndex: number) => Promise<void>;
+    usage?: readonly {
+      prompt_tokens: number;
+      completion_tokens: number;
+      prompt_tokens_details: { cached_tokens: number };
+    }[];
+  } = {},
 ) {
   const root = await mkdtemp(resolve(tmpdir(), 'allrice-schedule-transport-'));
   const requests: Record<string, unknown>[] = [];
@@ -179,6 +186,9 @@ async function schedulingRuntime(
             created: 1,
             model: 'schedule-transport',
             choices: [{ index: 0, delta, finish_reason: finish }],
+            ...(finish && options.usage?.[requests.length - 1]
+              ? { usage: options.usage[requests.length - 1] }
+              : {}),
           })}\n\n`,
         );
       if (typeof reply === 'string') {
@@ -801,6 +811,171 @@ describe('DshHarnessAdapter', () => {
     },
     30_000,
   );
+
+  it('returns a confirmed scheduling rejection to the native loop and closes its failed tool outcome', async () => {
+    const prompt = '请每隔两分钟提醒我喝水。';
+    const call = {
+      id: randomUUID(),
+      name: 'automation.create',
+      arguments: {
+        name: '周期校验',
+        prompt,
+        rule: { kind: 'every', seconds: 120 },
+      },
+    };
+    const answer = '尚未创建任务，请补充缺失信息。';
+    const runtime = await schedulingRuntime(
+      [
+        `<allrice_tool_call>${JSON.stringify(call)}</allrice_tool_call>`,
+        answer,
+      ],
+      {
+        usage: [
+          {
+            prompt_tokens: 100,
+            completion_tokens: 5,
+            prompt_tokens_details: { cached_tokens: 20 },
+          },
+          {
+            prompt_tokens: 120,
+            completion_tokens: 4,
+            prompt_tokens_details: { cached_tokens: 30 },
+          },
+        ],
+      },
+    );
+    const failure = new HandlerError(
+      'AUTOMATION_REQUEST_UNCLEAR',
+      '未创建任务，需要明确的工作。',
+      false,
+    );
+    const progress = vi.fn().mockResolvedValue({});
+    const events: HarnessEvent[] = [];
+    const onToolCall = vi.fn(async () => {
+      throw failure;
+    });
+    const input = executionInput({
+      prompt,
+      provider: runtime.provider,
+      events,
+      onToolCall,
+    });
+    confirmToolFailure(failure, {
+      runId: input.executionEnvironment.ALLRICE_RUN_ID!,
+      callId: call.id,
+      toolName: call.name,
+    });
+    input.currentUserRequest = prompt;
+    input.workDirectory = runtime.root;
+    input.tools = schedulingTools;
+    input.progress = progress;
+    try {
+      const result = await runtime.adapter.execute(input);
+      expect(result.answer).toBe(answer);
+      expect(result.usageComplete).toBe(true);
+      // This actual OpenAI-compatible adapter reports read cache but no write
+      // cache receipt; missing cache detail must remain unknown, not zero.
+      expect(result.cacheUsageKnown).toBe(false);
+      expect(result.usage).toEqual({
+        inputTokens: 170,
+        cachedInputTokens: 50,
+        outputTokens: 9,
+      });
+      expect(onToolCall).toHaveBeenCalledExactlyOnceWith(call);
+      expect(runtime.requests).toHaveLength(2);
+      const continuation = JSON.stringify(runtime.requests[1]);
+      expect(continuation).toContain('AUTOMATION_REQUEST_UNCLEAR');
+      expect(continuation).toContain('confirmed failure receipt');
+      expect(continuation).toContain('outcome-unknown writes');
+      expect(progress).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'finish',
+          kind: 'tool',
+          callId: call.id,
+          outcome: 'error',
+          resultDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+        }),
+      );
+      expect(
+        events.filter((event) => event.type === 'tool.failed'),
+      ).toHaveLength(1);
+      expect(events.some((event) => event.type === 'tool.completed')).toBe(
+        false,
+      );
+      expect(
+        events.filter((event) => event.type === 'assistant.completed'),
+      ).toEqual([expect.objectContaining({ text: answer })]);
+    } finally {
+      await runtime.close();
+    }
+  }, 30_000);
+
+  it('does not dispatch another native turn when cancellation arrives during failed tool settlement', async () => {
+    const prompt = '请每隔两分钟提醒我喝水。';
+    const call = {
+      id: randomUUID(),
+      name: 'automation.create',
+      arguments: {
+        name: '周期校验',
+        prompt,
+        rule: { kind: 'every', seconds: 120 },
+      },
+    };
+    const runtime = await schedulingRuntime([
+      `<allrice_tool_call>${JSON.stringify(call)}</allrice_tool_call>`,
+      'MUST_NOT_RUN',
+    ]);
+    const controller = new AbortController();
+    const failure = new HandlerError(
+      'AUTOMATION_REQUEST_UNCLEAR',
+      '未创建任务',
+      false,
+    );
+    const input = executionInput({
+      prompt,
+      provider: runtime.provider,
+      signal: controller.signal,
+      onToolCall: async () => {
+        throw failure;
+      },
+    });
+    confirmToolFailure(failure, {
+      runId: input.executionEnvironment.ALLRICE_RUN_ID!,
+      callId: call.id,
+      toolName: call.name,
+    });
+    input.workDirectory = runtime.root;
+    input.tools = schedulingTools;
+    let settlementEntered = false;
+    let release!: () => void;
+    const settling = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    input.progress = async (value) => {
+      if (value.action === 'finish' && value.kind === 'tool') {
+        settlementEntered = true;
+        await settling;
+      }
+      return {};
+    };
+    const execution = runtime.adapter
+      .execute(input)
+      .catch((error: unknown) => error);
+    try {
+      await expect
+        .poll(() => settlementEntered, { timeout: 15_000 })
+        .toBe(true);
+      controller.abort();
+      release();
+      expect(await execution).toMatchObject({ code: 'EXECUTION_ABORTED' });
+      expect(runtime.requests).toHaveLength(1);
+    } finally {
+      controller.abort();
+      release();
+      await execution;
+      await runtime.close();
+    }
+  }, 30_000);
 
   it('stops on an unknown recurring Broker result without another provider turn or write', async () => {
     const prompt = '请每隔两分钟提醒我喝水。';
@@ -2157,6 +2332,90 @@ describe('DshHarnessAdapter', () => {
       expect(onToolCall).toHaveBeenCalledTimes(1);
     },
   );
+
+  it.each(['unconfirmed', 'run', 'call', 'name', 'serialized'] as const)(
+    'does not recover a %s failure receipt from an error code alone',
+    async (mismatch) => {
+      const adapter = createAdapter();
+      const events: HarnessEvent[] = [];
+      const progress = vi.fn().mockResolvedValue({});
+      let failure = new HandlerError(
+        'AUTOMATION_REQUEST_UNCLEAR',
+        '未创建任务',
+        false,
+      );
+      const input = executionInput({
+        prompt: 'use-tool',
+        events,
+        onToolCall: async (call) => {
+          if (mismatch !== 'unconfirmed')
+            confirmToolFailure(failure, {
+              runId:
+                mismatch === 'run'
+                  ? randomUUID()
+                  : input.executionEnvironment.ALLRICE_RUN_ID!,
+              callId: mismatch === 'call' ? randomUUID() : call.id,
+              toolName: mismatch === 'name' ? 'automation.create' : call.name,
+            });
+          if (mismatch === 'serialized')
+            failure = Object.assign(
+              new HandlerError(failure.code, failure.message, false),
+              JSON.parse(JSON.stringify(failure)),
+            );
+          throw failure;
+        },
+      });
+      input.progress = progress;
+      const thrown = await adapter
+        .execute(input)
+        .catch((error: unknown) => error);
+      expect(thrown).toBe(failure);
+      expect(progress.mock.calls.map(([value]) => value)).not.toContainEqual(
+        expect.objectContaining({ action: 'finish', kind: 'tool' }),
+      );
+      expect(events.some((event) => event.type === 'assistant.completed')).toBe(
+        false,
+      );
+    },
+  );
+
+  it('does not recover a confirmed rejection after cancellation or a failed tool progress settlement', async () => {
+    for (const scenario of ['canceled', 'lease-lost'] as const) {
+      const adapter = createAdapter();
+      const controller = new AbortController();
+      const events: HarnessEvent[] = [];
+      const failure = new HandlerError(
+        'AUTOMATION_REQUEST_UNCLEAR',
+        '未创建任务',
+        false,
+      );
+      const leaseLost = new HandlerError('TASK_LEASE_LOST', '租约失效', false);
+      const input = executionInput({
+        prompt: 'use-tool',
+        signal: controller.signal,
+        events,
+        onToolCall: async (call) => {
+          confirmToolFailure(failure, {
+            runId: input.executionEnvironment.ALLRICE_RUN_ID!,
+            callId: call.id,
+            toolName: call.name,
+          });
+          if (scenario === 'canceled') controller.abort();
+          throw failure;
+        },
+      });
+      input.progress = vi.fn(async (value) => {
+        if (value.action === 'finish' && value.kind === 'tool') throw leaseLost;
+        return {};
+      });
+      await expect(adapter.execute(input)).rejects.toMatchObject({
+        code: scenario === 'canceled' ? 'EXECUTION_ABORTED' : 'TASK_LEASE_LOST',
+      });
+      expect(events.some((event) => event.type === 'assistant.completed')).toBe(
+        false,
+      );
+    }
+  });
 
   it('routes tool envelopes only through the AllRice Tool Broker callback', async () => {
     const adapter = createAdapter();
