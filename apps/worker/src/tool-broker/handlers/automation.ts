@@ -74,7 +74,7 @@ export const createAutomation: RiceToolHandler = async ({
       if (error.code === 'intent_required')
         rejected(
           'AUTOMATION_REQUEST_UNCLEAR',
-          '未创建任务。当前用户消息需明确要求一次性未来执行，并说明整数分钟、小时或天数及任务内容；引用、询问、条件或周期要求不能作为本次授权。请澄清后再创建。',
+          '未创建任务。尚不能确定一次性任务的时间和内容，或确认回复没有对应的未完成请求。请结合当前对话澄清缺失信息，不要要求用户重复已经明确的指令；引用、否定或条件表达不代表创建授权。',
         );
       if (error.code === 'time_mismatch')
         rejected(
