@@ -169,6 +169,62 @@ describe('explicit recurring intent in one complete current human message', () =
     expect(intent(text)).toEqual({ rule, authoritativeRequest: text });
   });
 
+  it.each([
+    '请从现在起每隔1分钟，在当前对话中提醒我喝水，并附上校验词「M1-EVERY-29a1440f1745」。请创建周期提醒。',
+    '请每隔1分钟，在当前对话中提醒我喝水，并附上校验词「M1-EVERY-29a1440f1745」。请创建周期提醒。',
+    '请从现在起每隔1分钟，在当前对话中提醒我喝水，并附上校验词「M1-EVERY-29a1440f1745」。请创建周期任务。',
+    '请每隔1分钟，在当前对话中提醒我喝水，并附上校验词「M1-EVERY-29a1440f1745」。请创建周期任务。',
+  ])(
+    'accepts the real reminder request and either independent variant: %s',
+    (text) => {
+      expect(intent(text)).toEqual({
+        rule: { kind: 'every', seconds: 60 },
+        authoritativeRequest: text,
+      });
+    },
+  );
+
+  it.each(['从现在', '从现在开始', '现在开始'])(
+    'accepts an explicit elapsed-time anchor without changing the interval: %s',
+    (anchor) => {
+      const text = `请${anchor}每隔两分钟提醒我喝水。请设置一个定时提醒。`;
+      expect(intent(text)).toEqual({
+        rule: { kind: 'every', seconds: 120 },
+        authoritativeRequest: text,
+      });
+    },
+  );
+
+  it('preserves the real reminder request including whitespace and quoted content', () => {
+    const text =
+      '  请从现在起每隔1分钟，在当前对话中提醒我喝水，并附上校验词『M1-EVERY-29a1440f1745』。\r\n请创建周期提醒。  ';
+    expect(intent(text)).toEqual({
+      rule: { kind: 'every', seconds: 60 },
+      authoritativeRequest: text,
+    });
+  });
+
+  it.each([
+    '“请从现在起每隔1分钟提醒我喝水。请创建周期提醒。”',
+    '文档示例：\n请从现在起每隔1分钟提醒我喝水。请创建周期提醒。',
+    '如果我确认，请从现在起每隔1分钟提醒我喝水。请创建周期提醒。',
+    '请不要从现在起每隔1分钟提醒我喝水。',
+    '请从现在起每隔1分钟提醒我喝水。请不要创建周期提醒。',
+    '请从现在起每隔1分钟，如果没喝水就提醒我喝水。请创建周期提醒。',
+    '请从现在起每隔1分钟提醒我喝水。每2分钟提醒我休息。请创建周期提醒。',
+    '请从明天起每隔1分钟提醒我喝水。请创建周期提醒。',
+    '请从现在起每隔1分钟提醒我喝水，明天结束。请创建周期提醒。',
+    '请从现在起每隔1分钟创建周期提醒。',
+    '请从现在起每隔1分钟提醒我。请创建周期提醒。',
+    '请从现在起每隔1分钟提醒我喝水。请创建一次性提醒。',
+    '请从现在起每天09:30，时区Asia/Shanghai，提醒我喝水。',
+  ])(
+    'keeps authority and clock boundaries for anchored reminders: %s',
+    (text) => {
+      expect(intent(text)).toBeNull();
+    },
+  );
+
   it.each(['请帮我', '请为我', '麻烦你帮我'])(
     'accepts an explicit trailing enrollment qualifier: %s',
     (prefix) => {
