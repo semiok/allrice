@@ -181,7 +181,12 @@ suite('MET166 PR3a private project checkpoints', () => {
       callId = randomUUID();
     const args = { action: 'deliver', project, baseline: f.opened.project };
     const delivery = (await f.call(args, callId)) as {
-      artifacts: { objectId: string; fileName: string }[];
+      sourceDigest: string;
+      artifacts: {
+        objectId: string;
+        versionId: string;
+        fileName: string;
+      }[];
       report: { executions: unknown[] };
     };
     expect(await f.call(args, callId)).toEqual(delivery);
@@ -204,6 +209,31 @@ suite('MET166 PR3a private project checkpoints', () => {
     expect(Buffer.from(source['pnpm-lock.yaml']!).toString()).toBe(
       'lockfileVersion: 9.0\n',
     );
+    const sourceArtifact = delivery.artifacts.find(
+      (artifact) => artifact.fileName === 'project-source.zip',
+    )!;
+    const digest = (bytes: Uint8Array) =>
+      `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+    expect(sourceArtifact).toMatchObject({
+      sourcePackage: {
+        kind: 'source-only',
+        project,
+        sourceDigest: delivery.sourceDigest,
+        artifact: {
+          objectId: sourceArtifact.objectId,
+          versionId: sourceArtifact.versionId,
+          checksum: digest(files.get('project-source.zip')!),
+        },
+        files: Object.entries(source).map(([path, bytes]) => ({
+          path,
+          sizeBytes: bytes.byteLength,
+          sha256: digest(bytes),
+        })),
+      },
+    });
+    for (const artifact of delivery.artifacts)
+      if (artifact !== sourceArtifact)
+        expect(artifact).not.toHaveProperty('sourcePackage');
     expect(files.get('project-changes.diff')!.toString()).toContain(
       '-bad();\n+good();',
     );

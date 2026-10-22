@@ -1,16 +1,16 @@
 {
   "schemaVersion": 1,
-  "version": "1.0.4",
-  "contentChecksum": "sha256:c3e3af137176bb68b64393b6ba0f9ea5bb7fb1e5d24ac7bb3af651121edf014e",
-  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/project-development?content-sha256=c3e3af137176bb68b64393b6ba0f9ea5bb7fb1e5d24ac7bb3af651121edf014e",
+  "version": "1.0.5",
+  "contentChecksum": "sha256:9e0713425a3ba06986570a09c8e8e30900c4bb0db18d8bd08a02967c9e715e8f",
+  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/project-development?content-sha256=9e0713425a3ba06986570a09c8e8e30900c4bb0db18d8bd08a02967c9e715e8f",
   "license": "Apache-2.0",
-  "reviewedBy": "MET-189 saved project network and execution budget review",
+  "reviewedBy": "MET-184 source package disclosure review",
   "resources": [
     {
       "path": "references/delivery.md",
       "mediaType": "text/markdown",
-      "byteLength": 1956,
-      "checksum": "sha256:28f26648e4cb6398b89795af6020ee7ee0a8be827206fcddd2d53c941af06684"
+      "byteLength": 3588,
+      "checksum": "sha256:cf66e000cdb74bb6c3bde67310e7aa88b579f633ee88298eb33901a753cb0694"
     },
     {
       "path": "references/workflow.md",
@@ -29,5 +29,5 @@
       "name": "workspace.skill.read"
     }
   ],
-  "checksum": "sha256:5be10cc6a0b20a2cb5a2fb275148268c7bf56d769a3488fc3e3e376a1f92fc00"
+  "checksum": "sha256:082931ad478600fbe9b273eafde146fd4f86968176190fafe23282f165e62644"
 }
