@@ -231,7 +231,9 @@ select (num_nonnulls($2,$3)=1 and (
             and o.payload->'receipt'=coalesce(arm.task_snapshot->'deliveryHistory'->'records'->0,arm.task_snapshot->'lastDelivery'))))))) is true
 $$;
 
-create function allrice_automation_conversation_handoff_proved(automation_run uuid) returns boolean language sql as $$
+create function allrice_automation_conversation_handoff_proved(automation_run uuid) returns boolean language plpgsql volatile as $$
+begin
+  return (
 select exists(select 1 from allrice_automation_runs ar
   join allrice_automations a on a.id=ar.automation_id and a.organization_id=ar.organization_id and a.workspace_id=ar.workspace_id
   join allrice_chat_sessions source on source.id=a.session_id and source.organization_id=a.organization_id
@@ -286,6 +288,8 @@ select exists(select 1 from allrice_automation_runs ar
           'clientMessageId',m.client_message_id::text,'payloadDigest',coalesce(once.payload_digest,recurring.payload_digest),
           'snapshotDigest',allrice_native_control_document_digest(er.execution_snapshot),'conversation',ar.conversation_snapshot)
         and m.client_message_id::text=case when ar.native_once_occurrence_id is not null then oc.client_message_id else recurring.client_message_id::text end)))
+  );
+end;
 $$;
 
 create function allrice_automation_conversation_birth_fence() returns trigger language plpgsql as $$
