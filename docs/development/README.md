@@ -118,6 +118,19 @@ same service boot ID, PID, ordered stages, elapsed/CPU time and instrumented rea
 counters. Missing counters remain null. They do not include paths, file content,
 credentials or raw errors, and do not skip validation or change readiness.
 
+Worker emits one bounded `[AllRice:run-timing]` record for each DSH Harness
+execution, including failures and parked user questions. The scope is
+`harness-execute`, starting at the adapter rather than queue admission. It
+records preparation, native IPC chunk arrival, first visible text, the final
+native turn ending and reply publication. Content-check durations are grouped
+by phase; `sumMs` includes overlapping calls, while `unionMs` counts their
+overlap once. Model-chain durations bracket Worker progress receipts and can
+include native middleware, authorization and IPC. They are not Provider
+inference or network-only timings. Unsupported socket/send/first-Provider-event
+fields remain `null`; existing native model-timing records remain separate.
+These observations add no database events, do not include message contents or
+credentials, and never change retries, authorization or execution outcomes.
+
 MET-157 Office content is synchronized by the normal `db:setup` / `content:sync`
 workflow. Deploy its application changes and catalog together: the catalog
 records replacements for the two legacy document Skills, and the employee
