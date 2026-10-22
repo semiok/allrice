@@ -335,6 +335,33 @@ export {
   createNativeRecurringSqlStore,
   type NativeRecurringSqlOptions,
 } from './native-schedule-recurring-sql.ts';
+export {
+  createNativeCalendarSqlStore,
+  type NativeCalendarSqlOptions,
+  type NativeCalendarArmRead,
+} from './native-schedule-calendar-sql.ts';
+export {
+  NativeCalendarControlSchema,
+  NativeCalendarRevisionSchema,
+  NativeCalendarPeriodSchema,
+  NativeCalendarArmSchema,
+  NativeCalendarMutationSchema,
+  NativeCalendarStateError,
+  calendarControlIdentity,
+  calendarPeriodIdentity,
+  calendarArmIdentity,
+  calendarArmRequestDigest,
+  prepareNativeCalendarTaskPut,
+  validateCalendarTask,
+  type NativeCalendarControl,
+  type NativeCalendarRevision,
+  type NativeCalendarPeriod,
+  type NativeCalendarArm,
+  type NativeCalendarSnapshot,
+  type NativeCalendarAdmission,
+  type NativeCalendarMutation,
+  type NativeCalendarWrite,
+} from './native-schedule-calendar-state.ts';
 
 export {
   listAutomationCatalog,

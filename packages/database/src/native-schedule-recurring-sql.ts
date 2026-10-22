@@ -1,6 +1,11 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { TransactionSql } from 'postgres';
 import {
+  createNativeCalendarSqlStore,
+  type NativeCalendarSqlOptions,
+} from './native-schedule-calendar-sql.ts';
+import type { NativeCalendarWrite } from './native-schedule-calendar-state.ts';
+import {
   createNativeScheduleControlSqlStore,
   NativeOnceSqlError,
   type NativeScheduleControlSqlOptions,
@@ -28,6 +33,11 @@ export type NativeRecurringSqlOptions = Omit<
   NativeScheduleControlSqlOptions<NativeRecurringControl>,
   'loadControls'
 > & {
+  /** Explicit dormant-protocol opt-in only. Current fixed Workers omit this.
+   * Calendar parents still have their own independent loader and validator. */
+  calendar?: Pick<NativeCalendarSqlOptions, 'lockAdmission'> & {
+    enabled: true;
+  };
   decodeTask: (raw: unknown) => NativeRecurringTask;
   lockAdmission: (
     tx: TransactionSql,
@@ -58,6 +68,10 @@ export function createNativeRecurringSqlStore(
     deny('configuration_invalid');
   const partitionId = options.partitionId,
     reference = structuredClone(options.reference);
+  const calendar =
+    options.calendar?.enabled === true
+      ? createNativeCalendarSqlStore({ ...options, ...options.calendar })
+      : null;
   async function controls(tx: TransactionSql) {
     const rows = await tx<
       Row[]
@@ -206,10 +220,14 @@ export function createNativeRecurringSqlStore(
   }
   async function commitMutation(
     given: NativeOnceWriter,
-    raw: NativeRecurringWrite,
+    raw: NativeRecurringWrite | NativeCalendarWrite,
   ): Promise<'committed' | 'rejected'> {
+    if (raw.mutation.kind === 'calendar')
+      return calendar
+        ? calendar.commitMutation(given, raw as NativeCalendarWrite)
+        : 'rejected';
     const writer = structuredClone(given),
-      write = structuredClone(raw);
+      write = structuredClone(raw as NativeRecurringWrite);
     try {
       nativeOnceDigest(write);
       if (
@@ -378,11 +396,20 @@ export function createNativeRecurringSqlStore(
     commitMutation,
     async readExactCommit(
       writer: NativeOnceWriter,
-      write: NativeRecurringWrite,
+      write: NativeRecurringWrite | NativeCalendarWrite,
     ): Promise<'committed' | 'absent' | 'unknown'> {
+      if (write.mutation.kind === 'calendar')
+        return calendar
+          ? calendar.readExactCommit(writer, write as NativeCalendarWrite)
+          : 'unknown';
       try {
         return await base.bounded(
-          (tx) => exact(tx, structuredClone(writer), structuredClone(write)),
+          (tx) =>
+            exact(
+              tx,
+              structuredClone(writer),
+              structuredClone(write as NativeRecurringWrite),
+            ),
           true,
         );
       } catch {
