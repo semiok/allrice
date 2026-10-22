@@ -10,7 +10,12 @@ export function createWebRuntimeClose({
   let closing;
   return () => {
     if (closing) return closing;
-    const pending = [server.previewGateway, cloudPreview, server.bridgeGateway]
+    const pending = [
+      server.terminalGateway,
+      server.previewGateway,
+      cloudPreview,
+      server.bridgeGateway,
+    ]
       .filter(Boolean)
       .map((gateway) => {
         try {

@@ -72,9 +72,9 @@
           "source": "packages/client/ui-workspace/src/client/rows/Rows.tsx",
           "target": "apps/web/app/chatflow/dsh-upstream/workspace/Rows.tsx",
           "upstreamSha256": "b8a7da793a526a1b4e04f321be547dfb2983b73b6604c474ed1fcb41e8493408",
-          "sha256": "c78223e05b0962a78b0ad458b4ac36df0bef914fa0de62df869f06ce23a55be0",
+          "sha256": "8e5936b5ccb11b61a03905b752f2c88f6560f098abf1c305efa86dfb80654a62",
           "patch": "scripts/dsh-ui-patches/Rows.tsx.patch",
-          "patchSha256": "5040e400ea042fa654672f7074c645a705371009230ab02a2425c147f8349765"
+          "patchSha256": "bd58dde13ec90db6b6afcc2b4ea2bc64b63e31aa5459f0c591b36eb6572307f2"
         },
         {
           "source": "packages/client/ui-workspace/src/client/rows/Rows.module.css",
@@ -1270,6 +1270,57 @@
           "patchSha256": "2f8d266e59517db1d5aea51c018434c905884941c2a18caf0f6b7059db84c319"
         }
       ]
+    },
+    {
+      "id": "native-terminal",
+      "version": "0.2.1-rc.2",
+      "commit": "687f282e8625c6b8d11ff58211a90524be2e4317",
+      "license": "MIT",
+      "integration": "official-browser-chunks-with-authenticated-bridge-carrier",
+      "packages": [
+        {
+          "name": "@deepseek-ai/dsh-api-gateway",
+          "version": "0.2.1-rc.2",
+          "assets": [
+            {
+              "path": "lib/client.browser.js",
+              "sha256": "3043de82334846a3a5654b7317830c5403f90e9aeca692d3c15e30e01d16505d",
+              "exports": ["RemoteStream", "RemoteStreamCarrierError"]
+            }
+          ]
+        },
+        {
+          "name": "@deepseek-ai/dsh-api-terminal-controller",
+          "version": "0.2.1-rc.2",
+          "assets": [
+            {
+              "path": "lib/client.js",
+              "sha256": "f0529cc255e2fe5b5649dc4ae1e158f615d051feb442cd91abddb2a418fece10",
+              "exports": ["ClientTerminals"]
+            }
+          ]
+        },
+        {
+          "name": "@deepseek-ai/dsh-client-ui-sidebar-terminal",
+          "version": "0.2.1-rc.2",
+          "assets": [
+            {
+              "path": "lib/client.terminal.js",
+              "sha256": "0821b155ce820424ff788474fedea3e6f606d95cea6ebe03b580660e7701eb6f",
+              "exports": ["TerminalBody"]
+            }
+          ]
+        }
+      ],
+      "adaptations": [
+        {
+          "target": "apps/web/app/chatflow/native-client-module.ts; terminal-native.ts; terminal-transport.ts",
+          "reuse": "Exact official ClientTerminals model, RemoteStream supervisor and TerminalBody including xterm 6 and FitAddon. No model, terminal parser or command input replacement.",
+          "productChanges": "One serialized official chunk registration slot; lexical Storage facade scoped by AllRice organization, workspace, owner, chat, device and folder grant; cookie-authorized WebSocket carries native RPC, stream credits and opaque input to the paired Bridge. Tabs retain stable native identity; explicit close uses the pinned native durable close record even while its lazy chunk is pending.",
+          "removalCriteria": "Replace the carrier/storage facade when upstream supports the same authenticated Bridge transport and owner-scoped storage capability directly."
+        }
+      ],
+      "files": []
     }
   ]
 }

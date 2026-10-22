@@ -17,6 +17,9 @@ import {
   bridgeSocketProtocol,
   ProjectPreviewClientFrameSchema,
   ProjectPreviewServerFrameSchema,
+  BridgeTerminalClientFrameSchema,
+  BridgeTerminalServerFrameSchema,
+  terminalMaximumScreenBytes,
 } from '@allrice/contracts';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createPendingWork } from './pending-work.mjs';
@@ -118,6 +121,8 @@ export async function createBridgeSocketGateway({
     ownedClients = new Set(),
     previews = new Map(),
     ownedPreviews = new Set(),
+    terminals = new Map(),
+    ownedTerminals = new Set(),
     admissions = new Set(),
     work = createPendingWork();
   let stopping = false,
@@ -141,7 +146,7 @@ export async function createBridgeSocketGateway({
     if (client.closing) return;
     client.closing = true;
     clients.delete(client);
-    const entries = [...client.previews];
+    const entries = [...client.previews, ...client.terminals];
     for (const entry of entries) entry.requestClose();
     client.ws.close(code, reason);
     const timer = setTimeout(() => client.ws.terminate(), 1000);
@@ -258,7 +263,10 @@ export async function createBridgeSocketGateway({
   }, heartbeatMs);
   timer.unref();
 
-  function previewOwner(client, id, onFrame, onClose) {
+  function previewOwner(client, id, onFrame, onClose, kind = 'preview') {
+    const registry = kind === 'terminal' ? terminals : previews,
+      owners = kind === 'terminal' ? ownedTerminals : ownedPreviews,
+      membership = kind === 'terminal' ? client.terminals : client.previews;
     const entry = {
       client,
       id,
@@ -272,39 +280,103 @@ export async function createBridgeSocketGateway({
       terminal: false,
       done: null,
     };
-    ownedPreviews.add(entry);
-    client.previews.add(entry);
-    previews.set(id, entry);
-    entry.requestClose = () => {
+    owners.add(entry);
+    membership.add(entry);
+    registry.set(id, entry);
+    entry.requestClose = (revoke = false) => {
       if (entry.closed) return;
       entry.closed = true;
-      previews.delete(id);
+      registry.delete(id);
       if (!entry.terminal && !client.closing)
         entry.work.track(
-          sendAsync(client, {
-            version: 1,
-            type: 'preview.end',
-            id,
-            error: true,
-          }),
+          sendAsync(
+            client,
+            kind === 'terminal'
+              ? { version: 1, type: 'terminal.end', id, revoke }
+              : { version: 1, type: 'preview.end', id, error: true },
+          ),
         );
       entry.done = (async () => {
         await entry.work.drain();
         await onClose?.();
       })();
       observeCleanup(entry.done, () => {
-        ownedPreviews.delete(entry);
-        client.previews.delete(entry);
+        owners.delete(entry);
+        membership.delete(entry);
       });
     };
-    entry.close = () => {
-      entry.requestClose();
+    entry.close = (revoke = false) => {
+      entry.requestClose(revoke);
       return entry.done;
     };
     return entry;
   }
 
   return {
+    openTerminal({ target, id, onFrame, onClose }) {
+      if (stopping || !enabled())
+        return Promise.reject(Error('TERMINAL_BRIDGE_UNAVAILABLE'));
+      const client = [...clients].find(
+        (c) =>
+          !c.closing &&
+          c.connection.deviceId === target.deviceId &&
+          c.connection.organizationId === target.organizationId &&
+          c.connection.workspaceId === target.workspaceId,
+      );
+      if (
+        !client ||
+        ownedTerminals.size >= 64 ||
+        client.terminals.size >= 8 ||
+        terminals.has(id)
+      )
+        return Promise.reject(Error('TERMINAL_BRIDGE_UNAVAILABLE'));
+      const entry = previewOwner(client, id, onFrame, onClose, 'terminal');
+      return work.run(() =>
+        entry.work.run(async () => {
+          try {
+            if (!(await current(client)) || entry.closed || stopping)
+              throw Error('TERMINAL_BRIDGE_UNAVAILABLE');
+            if (
+              !(await sendAsync(
+                client,
+                BridgeTerminalServerFrameSchema.parse({
+                  version: 1,
+                  type: 'terminal.open',
+                  id,
+                  target,
+                }),
+              ))
+            )
+              throw Error('TERMINAL_BRIDGE_UNAVAILABLE');
+            if (entry.closed || stopping || client.closing)
+              throw Error('TERMINAL_BRIDGE_UNAVAILABLE');
+            return {
+              send: (frame) =>
+                entry.work.run(async () => {
+                  if (entry.closed || stopping || client.closing) return false;
+                  if (!(await current(client))) {
+                    terminate(client);
+                    return false;
+                  }
+                  if (entry.closed || stopping || client.closing) return false;
+                  return sendAsync(
+                    client,
+                    BridgeTerminalServerFrameSchema.parse({
+                      ...frame,
+                      version: 1,
+                      id,
+                    }),
+                  );
+                }),
+              close: entry.close,
+            };
+          } catch (error) {
+            entry.requestClose();
+            throw error;
+          }
+        }),
+      );
+    },
     openPreview(input) {
       if (stopping || !enabled())
         return Promise.reject(Error('PROJECT_PREVIEW_UNAVAILABLE'));
@@ -451,6 +523,7 @@ export async function createBridgeSocketGateway({
               socketClosed,
               work: createPendingWork(),
               previews: new Set(),
+              terminals: new Set(),
               alive: true,
               checking: false,
               closing: false,
@@ -476,6 +549,57 @@ export async function createBridgeSocketGateway({
                   parsed = JSON.parse(data.toString('utf8'));
                 } catch {
                   /* strict RPC path below */
+                }
+                if (
+                  typeof parsed?.type === 'string' &&
+                  parsed.type.startsWith('terminal.')
+                ) {
+                  let frame;
+                  try {
+                    frame = BridgeTerminalClientFrameSchema.parse(parsed);
+                  } catch {
+                    terminate(client, 4000, 'INVALID_TERMINAL_FRAME');
+                    return;
+                  }
+                  const entry = terminals.get(frame.id);
+                  if (!entry) return;
+                  if (entry.client !== client) {
+                    terminate(client, 4000, 'TERMINAL_IDENTITY');
+                    return;
+                  }
+                  entry.bytes += data.length;
+                  pendingBytes += data.length;
+                  if (
+                    entry.bytes > terminalMaximumScreenBytes + 512 * 1024 ||
+                    pendingBytes > 16 * 1024 * 1024
+                  ) {
+                    terminate(client, 4013, 'TERMINAL_BACKPRESSURE');
+                    return;
+                  }
+                  entry.queue = entry.work.track(
+                    entry.queue
+                      .then(async () => {
+                        if (stopping || entry.closed || client.closing) return;
+                        if (!(await current(client))) {
+                          terminate(client);
+                          return;
+                        }
+                        if (stopping || entry.closed || client.closing) return;
+                        if (frame.type === 'terminal.ended')
+                          entry.terminal = true;
+                        await entry.onFrame(frame);
+                        if (frame.type === 'terminal.ended')
+                          entry.requestClose();
+                      })
+                      .catch(() => {
+                        entry.requestClose();
+                      })
+                      .finally(() => {
+                        entry.bytes -= data.length;
+                        pendingBytes -= data.length;
+                      }),
+                  );
+                  return;
                 }
                 if (
                   typeof parsed?.type === 'string' &&
@@ -665,7 +789,7 @@ export async function createBridgeSocketGateway({
       stopping = true;
       clearInterval(timer);
       for (const admission of admissions) admission.stop();
-      const entries = [...ownedPreviews],
+      const entries = [...ownedPreviews, ...ownedTerminals],
         owners = [...ownedClients];
       for (const entry of entries) entry.requestClose();
       for (const client of owners) terminate(client);

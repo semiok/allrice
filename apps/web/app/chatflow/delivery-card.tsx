@@ -2,14 +2,13 @@
 
 import { useState } from 'react';
 import {
-  IconChevronDownOutlineRegular,
+  IconEllipsisOutlineRegular,
   Menu,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { WorkbenchArtifact } from '@allrice/contracts';
 import { artifactKindLabel } from '../../lib/chatflow/workbench-model';
 import { PresentedFileCard } from './dsh-upstream/deliverables/PresentedFileCard';
 import styles from './workbench.module.css';
-import { LocalArtifactFileDialog } from './local-file-actions';
 
 /** Native DSH presentation; file access remains the existing authenticated API. */
 export function DeliveryCard({
@@ -20,7 +19,6 @@ export function DeliveryCard({
   onOpen: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [localDialog, setLocalDialog] = useState(false);
   const name = artifact.version.fileName;
   const card = (
     <PresentedFileCard
@@ -33,35 +31,26 @@ export function DeliveryCard({
       onPreview={() => onOpen(artifact.id)}
       actions={
         <div className={styles.deliveryActions}>
-          <button
-            type="button"
-            aria-label={`打开 ${name}`}
-            onClick={() => onOpen(artifact.id)}
-          >
-            打开
-          </button>
           <Menu
             open={open}
             anchor={
               <button
                 type="button"
-                aria-label={`${name} 打开方式`}
+                aria-label={`${name} 文件选项`}
                 aria-haspopup="menu"
                 aria-expanded={open}
                 onClick={() => setOpen(!open)}
               >
-                <IconChevronDownOutlineRegular size={12} />
+                <IconEllipsisOutlineRegular size={18} />
               </button>
             }
             items={[
               { id: 'preview', label: '侧栏预览' },
               { id: 'download', label: '下载文件' },
-              { id: 'local-save', label: '保存到电脑 / 打开' },
             ]}
             onSelect={(id) => {
               setOpen(false);
               if (id === 'preview') onOpen(artifact.id);
-              if (id === 'local-save') setLocalDialog(true);
               if (id === 'download') {
                 const link = document.createElement('a');
                 link.href = `/api/v1/files/${artifact.object.id}/download?name=${encodeURIComponent(name)}`;
@@ -79,15 +68,5 @@ export function DeliveryCard({
       }
     />
   );
-  return (
-    <>
-      {card}
-      {localDialog && (
-        <LocalArtifactFileDialog
-          artifact={artifact}
-          onClose={() => setLocalDialog(false)}
-        />
-      )}
-    </>
-  );
+  return card;
 }

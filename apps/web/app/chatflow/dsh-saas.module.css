@@ -760,7 +760,7 @@ header.conversationHeader::after {
   outline: 0;
   background: transparent;
   color: var(--dsw-alias-label-primary);
-  font-size: 16px;
+  font-size: 14px;
   line-height: 24px;
 }
 
@@ -1994,4 +1994,27 @@ div.composerAttachmentMenu,
   font: inherit;
   text-align: left;
   cursor: pointer;
+}
+
+/* The global automation catalog is a lightweight navigation row, like DSH. */
+.automationNavigation {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 9px;
+  width: 100%;
+  min-height: 36px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.automationNavigation:hover,
+.automationNavigation[aria-current='page'] {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
 }

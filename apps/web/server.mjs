@@ -19,6 +19,10 @@ import {
   createBridgeSocketGateway,
 } from './server/bridge-socket.mjs';
 import { createProjectPreviewGateway } from './server/project-preview.mjs';
+import {
+  createWorkbenchTerminalGateway,
+  createTerminalLoopbackAuthorization,
+} from './server/workbench-terminal.mjs';
 import { createDevRequestHandler } from './server/dev-maintenance.mjs';
 import { createWebRuntimeClose } from './server/close-runtime.mjs';
 
@@ -28,7 +32,12 @@ import { createWebRuntimeClose } from './server/close-runtime.mjs';
 export class AllRiceHttpServer extends Server {
   bridgeGateway = null;
   previewGateway = null;
+  terminalGateway = null;
   emit(event, ...args) {
+    if (event === 'upgrade' && this.terminalGateway?.matches(args[0])) {
+      void this.terminalGateway.upgrade(...args);
+      return true;
+    }
     if (
       (event === 'request' || event === 'upgrade') &&
       this.previewGateway?.matches(args[0])
@@ -89,6 +98,15 @@ export async function startAllRiceWeb({
         runtimeFeatureEnabled('ALLRICE_BRIDGE_WSS_ENABLED') &&
         runtimeFeatureEnabled('ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED'),
       dispatch: createBridgeLoopbackDispatch(port),
+    });
+    server.terminalGateway = createWorkbenchTerminalGateway({
+      resolveAccess: createTerminalLoopbackAuthorization(port),
+      enabled: () =>
+        runtimeFeatureEnabled('ALLRICE_BRIDGE_WSS_ENABLED') &&
+        runtimeFeatureEnabled('ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED'),
+      transport: {
+        openTerminal: (input) => server.bridgeGateway.openTerminal(input),
+      },
     });
   }
   if (

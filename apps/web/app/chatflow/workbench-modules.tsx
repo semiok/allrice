@@ -1,6 +1,16 @@
 'use client';
-import { useCallback, useEffect, useRef, useState, type Ref } from 'react';
-import { IconFolderOpenOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type Ref,
+  type ReactNode,
+} from 'react';
+import {
+  IconFolderOpenOutlineRegular,
+  IconClockOutlineRegular,
+} from '@deepseek-ai/dsh-client-ui-primitives';
 import { z } from 'zod';
 import { workbenchJson } from '../../lib/chatflow/workbench-model';
 import css from './workbench-modules.module.css';
@@ -12,7 +22,7 @@ export const moduleLabels = {
 };
 export function WorkbenchIcon({
   kind,
-  size = 22,
+  size = 20,
 }: {
   kind: WorkbenchModule | 'panel' | 'fullscreen' | 'restore' | 'start';
   size?: number;
@@ -65,6 +75,9 @@ export function WorkbenchEntries(props: {
   workflow: boolean;
   experience: boolean;
   open: boolean;
+  selected?: WorkbenchModule | 'schedule' | null;
+  schedule?: boolean;
+  onSchedule?: () => void;
   onOpen: (kind: WorkbenchModule) => void;
   onToggle: () => void;
   entryRef?: Ref<HTMLButtonElement>;
@@ -82,6 +95,7 @@ export function WorkbenchEntries(props: {
           type="button"
           key={kind}
           className={`${css.entry} ${css[kind]}`}
+          aria-pressed={props.open && props.selected === kind}
           title={moduleLabels[kind]}
           aria-label={`${moduleLabels[kind]}${props.counts[kind] ? `，${props.counts[kind]} 项新增` : ''}`}
           onClick={() => props.onOpen(kind)}
@@ -94,19 +108,32 @@ export function WorkbenchEntries(props: {
           )}
         </button>
       ))}
-      <span className={css.separator} />
-      <button
-        type="button"
-        className={css.toggle}
-        ref={props.entryRef}
-        title={props.open ? '收起工作台' : '展开工作台'}
-        aria-label={props.open ? '收起工作台' : '展开工作台'}
-        aria-expanded={props.open}
-        aria-controls="artifact-workbench"
-        onClick={props.onToggle}
-      >
-        <WorkbenchIcon kind="panel" />
-      </button>
+      {props.schedule && (
+        <button
+          type="button"
+          className={`${css.entry} ${css.schedule}`}
+          aria-label="当前会话的定时任务"
+          title="当前会话的定时任务"
+          aria-pressed={props.open && props.selected === 'schedule'}
+          onClick={props.onSchedule}
+        >
+          <IconClockOutlineRegular size={20} />
+        </button>
+      )}
+      {!props.open && (
+        <button
+          type="button"
+          className={css.toggle}
+          ref={props.entryRef}
+          title={props.open ? '收起工作台' : '展开工作台'}
+          aria-label={props.open ? '收起工作台' : '展开工作台'}
+          aria-expanded={props.open}
+          aria-controls="artifact-workbench"
+          onClick={props.onToggle}
+        >
+          <WorkbenchIcon kind="panel" />
+        </button>
+      )}
     </div>
   );
 }
@@ -114,6 +141,7 @@ export function WorkbenchStart(props: {
   experience: boolean;
   workflow: boolean;
   onOpen: (kind: WorkbenchModule) => void;
+  terminal?: ReactNode;
 }) {
   return (
     <div className={css.guide}>
@@ -150,6 +178,7 @@ export function WorkbenchStart(props: {
             <span className={css.chevron}>›</span>
           </button>
         ))}
+        {props.terminal}
       </div>
     </div>
   );

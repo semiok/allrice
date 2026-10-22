@@ -10,6 +10,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { RequestContext } from '@allrice/contracts';
 import {
   bridgeDeviceStatus,
+  BridgeDataError,
   heartbeatBridgeDevice,
   listBridgeDevices,
   requestBridgeWorkspaceSelection,
@@ -17,6 +18,10 @@ import {
   completeBridgeWorkspaceSelection,
 } from './bridge.ts';
 import type * as Client from './core/client.ts';
+import {
+  resolveWorkbenchTerminalTarget,
+  revalidateBridgeTerminalTarget,
+} from './workbench-terminal.ts';
 
 let database: ReturnType<typeof postgres>, admin: ReturnType<typeof postgres>;
 vi.mock('./core/client.ts', async (original) => ({
@@ -29,9 +34,9 @@ const suite =
     ? describe.sequential
     : describe.skip;
 
-async function fixture() {
-  const org = randomUUID(),
-    workspace = randomUUID(),
+async function fixture(tenant?: { org: string; workspace: string }) {
+  const org = tenant?.org ?? randomUUID(),
+    workspace = tenant?.workspace ?? randomUUID(),
     owner = randomUUID(),
     device = randomUUID();
   const token = `synthetic-presence-${randomUUID()}`;
@@ -55,13 +60,61 @@ async function fixture() {
   };
   await database.begin(async (tx) => {
     await tx`insert into allrice_users(id,email,display_name,password_hash) values(${owner},${`${owner}@example.test`},'Synthetic presence','not-login')`;
-    await tx`insert into allrice_organizations(id,slug,name) values(${org},${`presence-${org}`},'Synthetic presence')`;
-    await tx`insert into allrice_workspaces(id,organization_id,slug,name) values(${workspace},${org},'presence','Synthetic presence')`;
+    if (!tenant) {
+      await tx`insert into allrice_organizations(id,slug,name) values(${org},${`presence-${org}`},'Synthetic presence')`;
+      await tx`insert into allrice_workspaces(id,organization_id,slug,name) values(${workspace},${org},'presence','Synthetic presence')`;
+    }
     await tx`insert into allrice_memberships(id,organization_id,workspace_id,user_id,role) values(${context.memberships[0]!.id},${org},${workspace},${owner},'admin')`;
     await tx`insert into allrice_bridge_devices(id,organization_id,workspace_id,owner_id,name,platform,protocol_version,capabilities,token_hash,last_seen_at)
       values(${device},${org},${workspace},${owner},'Synthetic Bridge','macos-arm64',2,array['local.fs.list'],${createHash('sha256').update(token).digest('hex')},now()-interval '1 second')`;
   });
   return { org, workspace, owner, device, token, context };
+}
+
+async function terminalFixture(tenant?: { org: string; workspace: string }) {
+  const f = await fixture(tenant),
+    session = randomUUID(),
+    grant = randomUUID(),
+    employee = randomUUID(),
+    version = randomUUID(),
+    assignment = randomUUID();
+  await database.begin(async (tx) => {
+    await tx`insert into allrice_sessions(id,user_id,token_hash,expires_at)
+      values(${f.context.sessionId!},${f.owner},${createHash('sha256').update(randomUUID()).digest('hex')},now()+interval '1 day')`;
+    await tx`insert into allrice_employees(id,organization_id,workspace_id,employee_key,name)
+      values(${employee},${f.org},${f.workspace},${`human-terminal-${employee}`},'Synthetic human terminal')`;
+    await tx`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest)
+      values(${version},${f.org},${f.workspace},${employee},1,'Synthetic terminal fixture','synthetic','No model execution','[]',${'sha256:' + 'a'.repeat(64)},'{}')`;
+    await tx`insert into allrice_employee_assignments(id,organization_id,workspace_id,employee_id,employee_version_id,user_id)
+      values(${assignment},${f.org},${f.workspace},${employee},${version},${f.owner})`;
+    await tx`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,title,employee_assignment_id,employee_version_id)
+      values(${session},${f.org},${f.workspace},${f.owner},'Synthetic human terminal',${assignment},${version})`;
+    await tx`insert into allrice_bridge_folder_grants(id,organization_id,workspace_id,owner_id,device_id,label,root_fingerprint)
+      values(${grant},${f.org},${f.workspace},${f.owner},${f.device},'Authorized initial directory',${'a'.repeat(64)})`;
+  });
+  const environment = {
+    version: 1 as const,
+    clientVersion: '0.6.0-dev.58',
+    browser: 'unavailable' as const,
+    sandbox: 'unavailable' as const,
+    preview: 'unavailable' as const,
+    paused: false,
+    humanTerminalVersion: 1 as const,
+  };
+  const heartbeat = (changes: Partial<typeof environment> = {}) =>
+    heartbeatBridgeDevice(f.token, {
+      protocolVersion: 2,
+      capabilities: ['local.fs.list'],
+      environment: { ...environment, ...changes },
+    });
+  await heartbeat();
+  const input = {
+    workspaceId: f.workspace,
+    sessionId: session,
+    deviceId: f.device,
+    grantId: grant,
+  };
+  return { ...f, session, grant, input, environment, heartbeat };
 }
 
 suite(
@@ -108,6 +161,318 @@ suite(
         await admin.unsafe(`drop schema ${schema} cascade`);
         await admin.end();
       }
+    });
+
+    it('human terminal authority binds the actual login, private chat and grant generation without mutating presence', async () => {
+      const f = await terminalFixture();
+      const before =
+        await database`select d.last_seen_at,d.updated_at,g.runtime_generation,t.metadata
+        from allrice_bridge_devices d join allrice_bridge_folder_grants g on g.device_id=d.id
+        join allrice_execution_targets t on t.target_key='bridge.'||d.id::text
+        where d.id=${f.device} and g.id=${f.grant}`;
+      expect(await listBridgeDevices(f.context, f.workspace)).toMatchObject([
+        { id: f.device, humanTerminalVersion: 1 },
+      ]);
+      const expected = {
+        deviceName: 'Synthetic Bridge',
+        target: {
+          organizationId: f.org,
+          workspaceId: f.workspace,
+          ownerId: f.owner,
+          loginSessionId: f.context.sessionId,
+          sessionId: f.session,
+          deviceId: f.device,
+          grantId: f.grant,
+          grantVersion: 1,
+          rootFingerprint: 'a'.repeat(64),
+          label: 'Authorized initial directory',
+        },
+      };
+      await expect(
+        resolveWorkbenchTerminalTarget(f.context, f.input),
+      ).resolves.toEqual(expected);
+      await expect(
+        revalidateBridgeTerminalTarget(f.token, expected.target),
+      ).resolves.toEqual(expected);
+      expect(
+        await database`select d.last_seen_at,d.updated_at,g.runtime_generation,t.metadata
+        from allrice_bridge_devices d join allrice_bridge_folder_grants g on g.device_id=d.id
+        join allrice_execution_targets t on t.target_key='bridge.'||d.id::text
+        where d.id=${f.device} and g.id=${f.grant}`,
+      ).toEqual(before);
+      expect(
+        await database`select id from allrice_bridge_commands where device_id=${f.device}`,
+      ).toHaveLength(0);
+      expect(
+        await database`select id from allrice_runs where owner_id=${f.owner}`,
+      ).toHaveLength(0);
+    });
+    it('human terminal authority rejects foreign owners, tenants, workspaces, chats, devices, grants and login sessions', async () => {
+      const own = await terminalFixture(),
+        other = await terminalFixture(),
+        coworker = await terminalFixture(own);
+      const { target } = await resolveWorkbenchTerminalTarget(
+        own.context,
+        own.input,
+      );
+      for (const [context, input, code] of [
+        [other.context, own.input, 'authorization_denied'],
+        [coworker.context, own.input, 'not_found'],
+        [
+          own.context,
+          { ...own.input, deviceId: coworker.device, grantId: coworker.grant },
+          'not_found',
+        ],
+        [
+          coworker.context,
+          { ...coworker.input, deviceId: own.device, grantId: own.grant },
+          'not_found',
+        ],
+        [
+          { ...own.context, actor: { type: 'user' as const, id: other.owner } },
+          own.input,
+          'not_found',
+        ],
+        [{ ...own.context, organizationId: other.org }, own.input, 'not_found'],
+        [
+          own.context,
+          { ...own.input, workspaceId: other.workspace },
+          'authorization_denied',
+        ],
+        [own.context, { ...own.input, sessionId: other.session }, 'not_found'],
+        [own.context, { ...own.input, deviceId: other.device }, 'not_found'],
+        [own.context, { ...own.input, grantId: other.grant }, 'not_found'],
+        [
+          { ...own.context, sessionId: other.context.sessionId },
+          own.input,
+          'not_found',
+        ],
+        [{ ...own.context, sessionId: randomUUID() }, own.input, 'not_found'],
+        [
+          {
+            ...own.context,
+            actor: { type: 'service' as const, id: randomUUID() },
+          },
+          own.input,
+          'authorization_denied',
+        ],
+      ] as const) {
+        await expect(
+          resolveWorkbenchTerminalTarget(context, input),
+        ).rejects.toMatchObject({ code });
+      }
+      await expect(
+        revalidateBridgeTerminalTarget(other.token, target),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await expect(
+        revalidateBridgeTerminalTarget(coworker.token, target),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await expect(
+        revalidateBridgeTerminalTarget(own.token, {
+          ...target,
+          ownerId: other.owner,
+        }),
+      ).rejects.toMatchObject({ code: 'not_found' });
+    });
+    it('human terminal authority uses the current database role even when cached context still says admin', async () => {
+      const f = await terminalFixture();
+      const { target } = await resolveWorkbenchTerminalTarget(
+        f.context,
+        f.input,
+      );
+      expect(f.context.memberships[0]!.role).toBe('admin');
+      await database`update allrice_memberships set role='viewer' where id=${f.context.memberships[0]!.id}`;
+      await expect(
+        resolveWorkbenchTerminalTarget(f.context, f.input),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await expect(
+        revalidateBridgeTerminalTarget(f.token, target),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await database`update allrice_memberships set role='member' where id=${f.context.memberships[0]!.id}`;
+      await expect(
+        revalidateBridgeTerminalTarget(f.token, target),
+      ).resolves.toMatchObject({ target });
+    });
+    it.each([
+      'archived chat',
+      'revoked grant',
+      'revoked pairing',
+      'logged out',
+      'expired login',
+      'disabled user',
+      'inactive membership',
+      'archived organization',
+      'archived workspace',
+      'paused device',
+    ] as const)(
+      'human terminal authority revokes a previously valid target after %s',
+      async (change) => {
+        const f = await terminalFixture();
+        const { target } = await resolveWorkbenchTerminalTarget(
+          f.context,
+          f.input,
+        );
+        if (change === 'archived chat')
+          await database`update allrice_chat_sessions set archived_at=now() where id=${f.session}`;
+        else if (change === 'revoked grant')
+          await database`update allrice_bridge_folder_grants set revoked_at=now() where id=${f.grant}`;
+        else if (change === 'revoked pairing')
+          await database`update allrice_bridge_devices set revoked_at=now() where id=${f.device}`;
+        else if (change === 'logged out')
+          await database`update allrice_sessions set revoked_at=now() where id=${f.context.sessionId!}`;
+        else if (change === 'expired login')
+          await database`update allrice_sessions set created_at=now()-interval '2 days',expires_at=now()-interval '1 day' where id=${f.context.sessionId!}`;
+        else if (change === 'disabled user')
+          await database`update allrice_users set status='disabled' where id=${f.owner}`;
+        else if (change === 'inactive membership')
+          await database`update allrice_memberships set active=false where id=${f.context.memberships[0]!.id}`;
+        else if (change === 'archived organization')
+          await database`update allrice_organizations set archived_at=now() where id=${f.org}`;
+        else if (change === 'archived workspace')
+          await database`update allrice_workspaces set archived_at=now() where id=${f.workspace}`;
+        else if (change === 'paused device')
+          await f.heartbeat({ paused: true });
+        await expect(
+          resolveWorkbenchTerminalTarget(f.context, f.input),
+        ).rejects.toMatchObject({ code: 'not_found' });
+        await expect(
+          revalidateBridgeTerminalTarget(f.token, target),
+        ).rejects.toMatchObject({
+          code:
+            change === 'revoked pairing' ? 'device_unauthorized' : 'not_found',
+        });
+      },
+    );
+    it.each(['expired', 'missing', 'future'] as const)(
+      'human terminal authority retains an authorized target with %s heartbeat while declining a new browser admission',
+      async (heartbeat) => {
+        const f = await terminalFixture();
+        const { target } = await resolveWorkbenchTerminalTarget(
+          f.context,
+          f.input,
+        );
+        const lastSeen =
+          heartbeat === 'missing'
+            ? null
+            : new Date(Date.now() + (heartbeat === 'future' ? 60000 : -91000));
+        await database`update allrice_bridge_devices set last_seen_at=${lastSeen} where id=${f.device}`;
+        const before =
+          await database`select last_seen_at,updated_at from allrice_bridge_devices where id=${f.device}`;
+        await expect(
+          resolveWorkbenchTerminalTarget(f.context, f.input),
+        ).rejects.toBeInstanceOf(BridgeDataError);
+        await expect(
+          resolveWorkbenchTerminalTarget(f.context, f.input),
+        ).rejects.toMatchObject({ code: 'device_offline' });
+        await expect(
+          revalidateBridgeTerminalTarget(f.token, target),
+        ).resolves.toMatchObject({ target });
+        expect(
+          await database`select last_seen_at,updated_at from allrice_bridge_devices where id=${f.device}`,
+        ).toEqual(before);
+        await database`update allrice_sessions set revoked_at=now() where id=${f.context.sessionId!}`;
+        await expect(
+          revalidateBridgeTerminalTarget(f.token, target),
+        ).rejects.toMatchObject({ code: 'not_found' });
+      },
+    );
+    it.each([
+      'legacy capability report',
+      'missing environment',
+      'missing execution target',
+    ] as const)(
+      'human terminal authority treats %s as unavailable evidence rather than process revocation',
+      async (report) => {
+        const f = await terminalFixture();
+        const { target } = await resolveWorkbenchTerminalTarget(
+          f.context,
+          f.input,
+        );
+        if (report === 'legacy capability report') {
+          const { humanTerminalVersion, ...legacyEnvironment } = f.environment;
+          expect(humanTerminalVersion).toBe(1);
+          await heartbeatBridgeDevice(f.token, {
+            protocolVersion: 2,
+            capabilities: ['local.fs.list'],
+            environment: legacyEnvironment,
+          });
+        } else if (report === 'missing environment') {
+          await database`update allrice_execution_targets set metadata=metadata-'environment' where target_key=${`bridge.${f.device}`}`;
+        } else {
+          await database`delete from allrice_execution_targets where target_key=${`bridge.${f.device}`}`;
+        }
+        expect(
+          (await listBridgeDevices(f.context, f.workspace))[0]
+            ?.humanTerminalVersion,
+        ).toBeUndefined();
+        await expect(
+          resolveWorkbenchTerminalTarget(f.context, f.input),
+        ).rejects.toBeInstanceOf(BridgeDataError);
+        await expect(
+          resolveWorkbenchTerminalTarget(f.context, f.input),
+        ).rejects.toMatchObject({ code: 'device_offline' });
+        await expect(
+          revalidateBridgeTerminalTarget(f.token, target),
+        ).rejects.toBeInstanceOf(BridgeDataError);
+        await expect(
+          revalidateBridgeTerminalTarget(f.token, target),
+        ).rejects.toMatchObject({ code: 'device_offline' });
+        await database`update allrice_bridge_folder_grants set revoked_at=now() where id=${f.grant}`;
+        await expect(
+          revalidateBridgeTerminalTarget(f.token, target),
+        ).rejects.toMatchObject({ code: 'not_found' });
+      },
+    );
+    it('human terminal authority accepts a display-only folder label change without accepting a changed security pin', async () => {
+      const f = await terminalFixture();
+      const { target } = await resolveWorkbenchTerminalTarget(
+        f.context,
+        f.input,
+      );
+      await database`update allrice_bridge_folder_grants set label='Renamed authorized initial directory' where id=${f.grant}`;
+      const [grant] =
+        await database`select runtime_generation from allrice_bridge_folder_grants where id=${f.grant}`;
+      expect(grant!.runtime_generation).toBe(target.grantVersion);
+      const current = await resolveWorkbenchTerminalTarget(f.context, f.input);
+      expect(current.target).toEqual({
+        ...target,
+        label: 'Renamed authorized initial directory',
+      });
+      await expect(
+        revalidateBridgeTerminalTarget(f.token, target),
+      ).resolves.toEqual(current);
+      await expect(
+        revalidateBridgeTerminalTarget(f.token, {
+          ...target,
+          grantVersion: target.grantVersion + 1,
+        }),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await expect(
+        revalidateBridgeTerminalTarget(f.token, {
+          ...target,
+          rootFingerprint: 'b'.repeat(64),
+        }),
+      ).rejects.toMatchObject({ code: 'not_found' });
+    });
+    it('human terminal authority rejects a stale grant generation after revoke and reauthorize with the same identity', async () => {
+      const f = await terminalFixture();
+      const { target } = await resolveWorkbenchTerminalTarget(
+        f.context,
+        f.input,
+      );
+      await database`update allrice_bridge_folder_grants set revoked_at=now() where id=${f.grant}`;
+      await database`update allrice_bridge_folder_grants set revoked_at=null where id=${f.grant}`;
+      const current = await resolveWorkbenchTerminalTarget(f.context, f.input);
+      expect(current.target).toEqual({
+        ...target,
+        grantVersion: target.grantVersion + 2,
+      });
+      await expect(
+        revalidateBridgeTerminalTarget(f.token, target),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await expect(
+        revalidateBridgeTerminalTarget(f.token, current.target),
+      ).resolves.toEqual(current);
     });
     it.each(['canceled', 'failed'])(
       'acknowledges a late picker receipt after %s without reviving the request',

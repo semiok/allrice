@@ -16,6 +16,10 @@ import {
   prepareFileGuardian,
   fileSeaPlugin,
 } from './rice-bridge-file-runtime.mjs';
+import {
+  prepareTerminalRuntime,
+  terminalSeaPlugin,
+} from './rice-bridge-terminal-runtime.mjs';
 
 const staticEnvironment = [
   'ALLRICE_BRIDGE_DEVICE_TOKEN',
@@ -58,6 +62,7 @@ const browserRuntime = await preparePlaywrightRuntime(output);
 const pdfRuntime = await preparePdfRuntime(output);
 const pdfGuardian = await preparePdfGuardian(output);
 const fileGuardian = await prepareFileGuardian(output);
+const terminalRuntime = await prepareTerminalRuntime(output);
 // Use the lockfile's esbuild (tsx dependency), not a transient global binary.
 {
   const require = createRequire(import.meta.url);
@@ -72,6 +77,7 @@ const fileGuardian = await prepareFileGuardian(output);
       playwrightSeaPlugin(browserRuntime.manifest),
       pdfSeaPlugin(pdfRuntime.manifest, pdfGuardian.guardianSha256),
       fileSeaPlugin(fileGuardian),
+      terminalSeaPlugin(terminalRuntime.manifest),
     ],
     ...(staticBuild
       ? {

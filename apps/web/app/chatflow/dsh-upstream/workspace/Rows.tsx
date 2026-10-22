@@ -554,9 +554,11 @@ export function SearchResultItem({ result, currentId, onOpen, onUnarchive, t }: 
  * @returns the session row.
  */
 export function SessionNodeItem({
-  node, currentId, now, onOpen, onRenameRequest, renderSlot, onReveal, drag, t,
+  node, currentId, now, onOpen, onRenameRequest, renderSlot, onReveal, drag, t, leading,
 }: {
   node: SessionNode
+  /** Authorized host marker; native activity/archived priority remains in charge. */
+  leading?: ReactNode
   currentId: string | undefined
   now: number
   onOpen: (id: SessionNode['id']) => void
@@ -642,7 +644,7 @@ export function SessionNodeItem({
       <span className={css.slot}>
         {!row.archived && !row.blank && (showStatus
           ? <SessionStatusDots statuses={statuses} />
-          : null)}
+          : leading ?? null)}
       </span>
       <span
         ref={titleRef}

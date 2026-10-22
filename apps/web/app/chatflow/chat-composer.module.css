@@ -10,8 +10,9 @@
       transparent
     );
     box-shadow:
-      0 2px 5px light-dark(#14223206, #0000001a),
-      0 12px 32px -17px light-dark(#14223230, #00000060);
+      0 2px 6px light-dark(#20385c08, #00000024),
+      0 9px 28px light-dark(#20385c0e, #00000030),
+      0 22px 60px light-dark(#20385c10, #00000035);
     transition:
       border-color 140ms ease,
       box-shadow 140ms ease;
@@ -24,15 +25,16 @@
       var(--dsw-alias-border-l2-darkmode-thin)
     );
     box-shadow:
-      0 2px 5px light-dark(#14223206, #0000001a),
-      0 14px 34px -17px light-dark(#4766b036, #00000060);
+      0 2px 6px light-dark(#20385c08, #00000024),
+      0 9px 28px light-dark(#20385c12, #00000030),
+      0 22px 60px light-dark(#20385c14, #00000035);
   }
 
   .card textarea {
     min-height: 54px;
     padding: 1px 18px 0;
     font-family: var(--ds-font-family-ui, ui-sans-serif, system-ui, sans-serif);
-    font-size: 16px;
+    font-size: 14px;
     font-weight: 400;
     line-height: 25px;
   }

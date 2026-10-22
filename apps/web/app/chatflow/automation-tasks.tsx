@@ -132,6 +132,7 @@ function useHeaders(headers: Record<string, string>) {
 /** Flat catalog across employees and conversations. Host SQL owns its scope. */
 export function AutomationTaskList(
   props: Identity & {
+    sessionId?: string;
     employees: Array<{ id: string; name: string }>;
     selectedId?: string | null;
     onSelect: (task: AutomationCatalogTask) => void;
@@ -155,6 +156,7 @@ export function AutomationTaskList(
     credentials,
     query,
     employeeId,
+    props.sessionId,
   ]);
   const current = useRef(generation);
   current.current = generation;
@@ -167,6 +169,7 @@ export function AutomationTaskList(
       setError('');
       const qs = new URLSearchParams({
         workspaceId: props.workspaceId,
+        ...(props.sessionId ? { sessionId: props.sessionId } : {}),
         ...(query ? { query } : {}),
         ...(employeeId ? { employeeId } : {}),
         ...(cursor ? { cursor } : {}),
@@ -197,7 +200,14 @@ export function AutomationTaskList(
           setLoading(false);
       }
     },
-    [props.workspaceId, credentials, query, employeeId, generation],
+    [
+      props.workspaceId,
+      props.sessionId,
+      credentials,
+      query,
+      employeeId,
+      generation,
+    ],
   );
   useEffect(() => {
     setResult({ tasks: [], nextCursor: null });
@@ -220,62 +230,72 @@ export function AutomationTaskList(
       window.removeEventListener('allrice:automation-changed', refresh);
   }, [load]);
   const tasks = result.tasks.filter(
-    (t) => filter === 'all' || (filter === 'active' ? active(t) : !active(t)),
+    (t) =>
+      (!props.sessionId || active(t)) &&
+      (filter === 'all' || (filter === 'active' ? active(t) : !active(t))),
   );
   return (
     <section
       className={`${native.page} ${css.catalog}`}
-      aria-label="自动化任务"
+      aria-label={props.sessionId ? '当前会话的定时任务' : '自动化任务'}
     >
       <div className={native.listPane}>
         <div className={native.pageScroll}>
           <div className={native.pageContent}>
             <header className={native.pageHeading}>
-              <h1>自动化任务</h1>
+              <h1>{props.sessionId ? '当前会话的定时任务' : '自动化任务'}</h1>
               <div className={native.creationActions}>
                 <Button variant="outline" size="sm" onClick={() => void load()}>
                   刷新
                 </Button>
-                <Button size="sm" onClick={props.onNew}>
-                  新的自动化任务
-                </Button>
+                {!props.sessionId && (
+                  <Button size="sm" onClick={props.onNew}>
+                    新的自动化任务
+                  </Button>
+                )}
               </div>
             </header>
-            <p className={css.caption}>
-              统一管理各位 AI 员工的任务。到期后由原会话中的员工执行。
-            </p>
-            <div className={native.filters}>
-              <div className={native.filterTabs}>
-                {[
-                  ['all', '全部'],
-                  ['active', '进行中'],
-                  ['inactive', '已暂停 / 已结束'],
-                ].map(([id, label]) => (
-                  <button
-                    key={id}
-                    type="button"
-                    aria-pressed={filter === id}
-                    className={`${native.filterTab} ${filter === id ? native.filterTabActive : ''}`}
-                    onClick={() => setFilter(id!)}
+            {!props.sessionId && (
+              <p className={css.caption}>
+                统一管理各位 AI 员工的任务。到期后由原会话中的员工执行。
+              </p>
+            )}
+            {!props.sessionId && (
+              <div className={native.filters}>
+                <div className={native.filterTabs}>
+                  {[
+                    ['all', '全部'],
+                    ['active', '进行中'],
+                    ['inactive', '已暂停 / 已结束'],
+                  ].map(([id, label]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      aria-pressed={filter === id}
+                      className={`${native.filterTab} ${filter === id ? native.filterTabActive : ''}`}
+                      onClick={() => setFilter(id!)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {!props.sessionId && (
+                  <select
+                    aria-label="筛选员工"
+                    className={css.employeeFilter}
+                    value={employeeId}
+                    onChange={(e) => setEmployeeId(e.target.value)}
                   >
-                    {label}
-                  </button>
-                ))}
+                    <option value="">所有员工</option>
+                    {props.employees.map((e) => (
+                      <option key={e.id} value={e.id}>
+                        {e.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
-              <select
-                aria-label="筛选员工"
-                className={css.employeeFilter}
-                value={employeeId}
-                onChange={(e) => setEmployeeId(e.target.value)}
-              >
-                <option value="">所有员工</option>
-                {props.employees.map((e) => (
-                  <option key={e.id} value={e.id}>
-                    {e.name}
-                  </option>
-                ))}
-              </select>
-            </div>
+            )}
             <label className={css.search}>
               <span aria-hidden>⌕</span>
               <input
@@ -1211,4 +1231,75 @@ export function AutomationTaskCard({
       </div>
     </div>
   );
+}
+
+/** One authorized catalog read supplies all row markers and the current-session
+ * entry. It neither starts a clock nor opens or activates any conversation. */
+export function useSessionAutomations(
+  input: Identity & { enabled: boolean; refreshKey: string },
+) {
+  const credentials = useHeaders(input.headers);
+  const [revision, setRevision] = useState(0);
+  const [snapshot, setSnapshot] = useState<{
+    key: string;
+    tasks: AutomationCatalogTask[];
+  } | null>(null);
+  const key = JSON.stringify([input.scope, input.workspaceId, credentials]);
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === 'visible') setRevision((n) => n + 1);
+    };
+    window.addEventListener('allrice:automation-changed', refresh);
+    window.addEventListener('focus', refresh);
+    return () => {
+      window.removeEventListener('allrice:automation-changed', refresh);
+      window.removeEventListener('focus', refresh);
+    };
+  }, []);
+  useEffect(() => {
+    if (!input.enabled || !input.workspaceId) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      void (async () => {
+        let cursor: string | null = null;
+        const tasks: AutomationCatalogTask[] = [],
+          seen = new Set<string>();
+        do {
+          const qs = new URLSearchParams({
+            workspaceId: input.workspaceId,
+            ...(cursor ? { cursor } : {}),
+          });
+          const page = AutomationCatalogSchema.parse(
+            await read(
+              await fetch('/api/v1/scheduled-tasks?' + qs, {
+                headers: Object.fromEntries(credentials),
+                cache: 'no-store',
+                signal: controller.signal,
+              }),
+            ),
+          );
+          tasks.push(...page.tasks.filter(active));
+          cursor = page.nextCursor;
+          if (cursor && seen.has(cursor))
+            throw Error('INVALID_AUTOMATION_CURSOR');
+          if (cursor) seen.add(cursor);
+        } while (cursor && !controller.signal.aborted);
+        if (!controller.signal.aborted) setSnapshot({ key, tasks });
+      })().catch(() => {
+        if (!controller.signal.aborted) setSnapshot(null);
+      });
+    }, 180);
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [
+    key,
+    input.enabled,
+    input.workspaceId,
+    credentials,
+    input.refreshKey,
+    revision,
+  ]);
+  return snapshot?.key === key ? snapshot.tasks : [];
 }

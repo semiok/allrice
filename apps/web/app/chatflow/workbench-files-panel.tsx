@@ -15,6 +15,10 @@ import {
   type WorkbenchFileSharing,
 } from '@allrice/contracts';
 import {
+  FileTypeIcon,
+  classifyFileType,
+  Menu,
+  IconEllipsisOutlineRegular,
   IconPlusOutlineRegular,
   IconRefreshOutlineRegular,
 } from '@deepseek-ai/dsh-client-ui-primitives';
@@ -71,6 +75,7 @@ export function WorkbenchFilesPanel(props: {
     [loading, setLoading] = useState(false),
     [revision, setRevision] = useState(0);
   const [editor, setEditor] = useState<WorkbenchFile | 'upload' | null>(null),
+    [editorMode, setEditorMode] = useState<'sharing' | 'reference'>('sharing'),
     [using, setUsing] = useState<string | null>(null);
   const [pending, setPending] = useState<{
     fileId: string;
@@ -250,6 +255,18 @@ export function WorkbenchFilesPanel(props: {
   if (!props.active) return null;
   return (
     <section className={css.panel} aria-label="工作区文件">
+      <header className={css.heading}>
+        <h2>工作区文件</h2>
+        <button
+          type="button"
+          className={css.upload}
+          onClick={() => setEditor('upload')}
+          disabled={!catalog?.options.writable}
+        >
+          <IconPlusOutlineRegular size={16} />
+          上传
+        </button>
+      </header>
       <div className={css.toolbar}>
         <select
           aria-label="文件范围"
@@ -280,15 +297,6 @@ export function WorkbenchFilesPanel(props: {
           onClick={reload}
         >
           <IconRefreshOutlineRegular size={18} />
-        </button>
-        <button
-          type="button"
-          className={css.upload}
-          onClick={() => setEditor('upload')}
-          disabled={!catalog?.options.writable}
-        >
-          <IconPlusOutlineRegular size={18} />
-          上传
         </button>
       </div>
       <nav className={css.tabs} aria-label="文件类型">
@@ -348,59 +356,55 @@ export function WorkbenchFilesPanel(props: {
         </p>
       )}
       <div className={css.list} aria-busy={loading}>
-        <div className={css.listHead}>
-          <span>名称</span>
-          <span>可见范围</span>
-        </div>
         {files.map((file) => (
           <article
             className={css.file}
             key={file.objectId}
             data-file-id={file.objectId}
           >
-            <div className={css.fileMain}>
+            <button
+              type="button"
+              className={css.fileMain}
+              onClick={() => props.onOpen(file)}
+              title={file.fileName}
+              aria-label={file.fileName}
+            >
               <span className={css.fileIcon}>
-                <WorkbenchIcon kind="files" size={19} />
+                <FileTypeIcon
+                  kind={classifyFileType(file.fileName)}
+                  size={28}
+                />
               </span>
-              <button
-                type="button"
-                className={css.fileName}
-                onClick={() => props.onOpen(file)}
-                title={file.fileName}
-              >
+              <span className={css.fileName}>
                 {isToolResultFile(file.fileName, file.objectId)
                   ? `${file.fileName.startsWith('tool-result-web-search-') ? '搜索资料' : '工具记录'} · ${file.objectId.slice(0, 8)}`
                   : file.fileName}
-              </button>
+              </span>
               <small>
+                <span>
+                  {file.fileName.split('.').at(-1)?.toUpperCase() || '文件'}
+                </span>
+                <span>·</span>
                 {file.artifact ? `v${file.artifact.version} · ` : ''}
                 {size(file.sizeBytes)}
+                <span>·</span>
+                <span className={css.range} title={range(file)}>
+                  {range(file)}
+                </span>
                 {file.isReference
                   ? ` · 长期参考${file.reference && file.reference.checksum !== file.checksum ? ' · 早期版本' : ''}${file.reference?.processing === 'ready' ? '' : file.reference?.processing === 'failed' ? ' · 处理失败' : file.reference?.processing === 'unsupported' ? ' · 仅文件' : ' · 准备中'}`
                   : ''}
               </small>
-            </div>
-            <span className={css.range} title={range(file)}>
-              {range(file)}
-            </span>
-            <div className={css.fileActions}>
-              <button
-                type="button"
-                disabled={props.readOnly || using !== null}
-                onClick={() => void useFile(file)}
-              >
-                {using === file.objectId ? '准备中…' : '用于本次任务'}
-              </button>
-              {file.canMaintain && (
-                <button
-                  type="button"
-                  aria-label={`设置 ${file.fileName}`}
-                  onClick={() => setEditor(file)}
-                >
-                  设置
-                </button>
-              )}
-            </div>
+            </button>
+            <FileMenu
+              file={file}
+              disabled={props.readOnly || using !== null}
+              onUse={() => void useFile(file)}
+              onEdit={(mode) => {
+                setEditorMode(mode);
+                setEditor(file);
+              }}
+            />
           </article>
         ))}
         {!files.length && !loading && !error && (
@@ -434,6 +438,7 @@ export function WorkbenchFilesPanel(props: {
               : editor.objectId + '/' + editor.revision
           }
           file={editor === 'upload' ? null : editor}
+          mode={editorMode}
           options={catalog.options}
           workspaceId={props.workspaceId}
           headers={props.headers}
@@ -448,8 +453,63 @@ export function WorkbenchFilesPanel(props: {
     </section>
   );
 }
+function FileMenu({
+  file,
+  disabled,
+  onUse,
+  onEdit,
+}: {
+  file: WorkbenchFile;
+  disabled: boolean;
+  onUse: () => void;
+  onEdit: (mode: 'sharing' | 'reference') => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Menu
+      open={open}
+      anchor={
+        <button
+          type="button"
+          className={css.fileMenu}
+          aria-label={`文件选项 ${file.fileName}`}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
+        >
+          <IconEllipsisOutlineRegular size={18} />
+        </button>
+      }
+      items={[
+        { id: 'use', label: '用于本次任务', disabled },
+        ...(file.canMaintain && !file.isReference
+          ? [{ id: 'reference', label: '设为参考资料' }]
+          : []),
+        ...(file.canMaintain ? [{ id: 'sharing', label: '可见范围' }] : []),
+        { id: 'download', label: '下载文件' },
+      ]}
+      onClose={() => setOpen(false)}
+      onSelect={(id) => {
+        setOpen(false);
+        if (id === 'use' && !disabled) onUse();
+        if (id === 'sharing' || id === 'reference') onEdit(id);
+        if (id === 'download') {
+          const a = document.createElement('a');
+          a.href = `/api/v1/files/${file.objectId}/download?name=${encodeURIComponent(file.fileName)}`;
+          a.download = file.fileName;
+          document.body.append(a);
+          a.click();
+          a.remove();
+        }
+      }}
+      align="end"
+      portal
+    />
+  );
+}
 function FileSettings(props: {
   file: WorkbenchFile | null;
+  mode: 'sharing' | 'reference';
   options: WorkbenchFileCatalog['options'];
   workspaceId: string;
   headers: Record<string, string>;
@@ -467,7 +527,9 @@ function FileSettings(props: {
   const [departments, setDepartments] = useState(
       props.file?.sharing.departmentIds ?? [],
     ),
-    [reference, setReference] = useState(props.file?.isReference ?? false),
+    [reference, setReference] = useState(
+      !!props.file && (props.mode === 'reference' || props.file.isReference),
+    ),
     [file, setFile] = useState<File | null>(null),
     [busy, setBusy] = useState(false),
     [error, setError] = useState('');
@@ -477,6 +539,7 @@ function FileSettings(props: {
     objectId?: string;
   } | null>(null);
   const mutationRequests = useRef(new Map<string, string>());
+  const picker = useRef<HTMLInputElement>(null);
   const canCompany = props.options.maintenanceLevel === 'company',
     canDepartments =
       canCompany || props.options.maintenanceLevel === 'department';
@@ -581,8 +644,20 @@ function FileSettings(props: {
   }
   return (
     <DshDialog
-      title={props.file ? '文件设置' : '上传文件'}
-      ariaLabel={props.file ? '文件设置' : '上传文件'}
+      title={
+        props.file
+          ? props.mode === 'reference'
+            ? '设为参考资料'
+            : '可见范围'
+          : '上传文件'
+      }
+      ariaLabel={
+        props.file
+          ? props.mode === 'reference'
+            ? '设为参考资料'
+            : '可见范围'
+          : '上传文件'
+      }
       onClose={() => {
         if (!busy) props.onClose();
       }}
@@ -591,17 +666,78 @@ function FileSettings(props: {
     >
       <form onSubmit={(event) => void save(event)} className={css.form}>
         {props.file ? (
-          <p className={css.filename}>{props.file.fileName}</p>
+          <>
+            <div className={css.fileIdentity}>
+              <FileTypeIcon
+                kind={classifyFileType(props.file.fileName)}
+                size={32}
+              />
+              <div>
+                <p className={css.filename}>{props.file.fileName}</p>
+                <small>
+                  {props.file.artifact
+                    ? `v${props.file.artifact.version} · `
+                    : ''}
+                  {size(props.file.sizeBytes)}
+                </small>
+              </div>
+            </div>
+            {props.mode === 'reference' && (
+              <p className={css.hint}>保留当前版本，供后续工作查找使用。</p>
+            )}
+          </>
         ) : (
-          <label>
-            选择文件
-            <input
-              type="file"
+          <div
+            className={css.dropzone}
+            onDragOver={(event) => {
+              event.preventDefault();
+            }}
+            onDrop={(event) => {
+              event.preventDefault();
+              if (!busy) {
+                setFile(event.dataTransfer.files[0] ?? null);
+                reservation.current = null;
+              }
+            }}
+          >
+            {file ? (
+              <div className={css.fileIdentity}>
+                <FileTypeIcon kind={classifyFileType(file.name)} size={32} />
+                <div>
+                  <p className={css.filename}>{file.name}</p>
+                  <small>{size(file.size)}</small>
+                </div>
+              </div>
+            ) : (
+              <>
+                <IconPlusOutlineRegular size={28} />
+                <p>拖入文件，或选择文件</p>
+                <small>文档、图片、表格与其他工作文件</small>
+              </>
+            )}
+            <button
+              type="button"
               disabled={busy}
-              onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-              required
+              className={css.chooseFile}
+              onClick={() => picker.current?.click()}
+            >
+              {file ? '更换文件' : '选择文件'}
+            </button>
+            <input
+              ref={picker}
+              hidden
+              type="file"
+              aria-label="选择上传文件"
+              disabled={busy}
+              onChange={(event) => {
+                const next = event.target.files?.[0];
+                if (next) {
+                  setFile(next);
+                  reservation.current = null;
+                }
+              }}
             />
-          </label>
+          </div>
         )}
         <fieldset disabled={busy}>
           <legend>可见范围</legend>
@@ -610,27 +746,35 @@ function FileSettings(props: {
               当前为{range(props.file)}。请选择要保存的新范围。
             </p>
           )}
-          <div className={css.ranges}>
+          <select
+            className={css.scopeSelect}
+            aria-label="可见范围"
+            value={scope ?? ''}
+            onChange={(event) =>
+              setScope(event.target.value as WorkbenchFileSharing['scope'])
+            }
+          >
+            {scope === null && (
+              <option value="" disabled>
+                选择新的可见范围
+              </option>
+            )}
             {(['personal', 'departments', 'company'] as const).map((value) => (
-              <label key={value}>
-                <input
-                  type="radio"
-                  name="visibility"
-                  value={value}
-                  checked={scope === value}
-                  disabled={
-                    value === 'personal'
-                      ? !privateAllowed
-                      : value === 'company'
-                        ? !canCompany
-                        : !canDepartments
-                  }
-                  onChange={() => setScope(value)}
-                />
+              <option
+                key={value}
+                value={value}
+                disabled={
+                  value === 'personal'
+                    ? !privateAllowed
+                    : value === 'company'
+                      ? !canCompany
+                      : !canDepartments
+                }
+              >
                 {scopeNames[value]}
-              </label>
+              </option>
             ))}
-          </div>
+          </select>
           {scope === 'departments' && (
             <div className={css.departments} aria-label="选择可见部门">
               {choices.map((department) => (
@@ -660,18 +804,20 @@ function FileSettings(props: {
                 : '仅你自己可见。'}
           </p>
         </fieldset>
-        <label className={css.reference}>
-          <input
-            type="checkbox"
-            checked={reference}
-            disabled={busy}
-            onChange={(event) => setReference(event.target.checked)}
-          />
-          <span>
-            设为长期参考<small>保留确切版本，供后续任务按需检索使用。</small>
-          </span>
-        </label>
-        <p className={css.hint}>调整文件范围不会公开原始聊天或其他附件。</p>
+        {props.mode !== 'reference' && (
+          <label className={css.reference}>
+            <span>
+              设为参考资料<small>在后续工作中按需查找使用。</small>
+            </span>
+            <input
+              type="checkbox"
+              checked={reference}
+              disabled={busy}
+              onChange={(event) => setReference(event.target.checked)}
+            />
+          </label>
+        )}
+        <p className={css.hint}>共享这份文件，不公开原聊天。</p>
         {error && (
           <p role="alert" className={css.error}>
             {error}
@@ -683,9 +829,20 @@ function FileSettings(props: {
           </button>
           <button
             type="submit"
-            disabled={busy || !props.options.writable || scope === null}
+            disabled={
+              busy ||
+              !props.options.writable ||
+              scope === null ||
+              (!props.file && !file)
+            }
           >
-            {busy ? '正在保存…' : '保存'}
+            {busy
+              ? '正在保存…'
+              : props.file
+                ? props.mode === 'reference'
+                  ? '设为参考资料'
+                  : '保存修改'
+                : '上传文件'}
           </button>
         </div>
       </form>

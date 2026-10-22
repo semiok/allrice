@@ -133,7 +133,17 @@
        aria-description={result.archived ? t('toast.archivedNotOpenable') : undefined}
        onClick={() => { onOpen(result.id) }}
      >
-@@ -550,18 +561,13 @@
+@@ -543,25 +554,22 @@
+  * @returns the session row.
+  */
+ export function SessionNodeItem({
+-  node, currentId, now, onOpen, onRenameRequest, renderSlot, onReveal, drag, t,
++  node, currentId, now, onOpen, onRenameRequest, renderSlot, onReveal, drag, t, leading,
+ }: {
+   node: SessionNode
++  /** Authorized host marker; native activity/archived priority remains in charge. */
++  leading?: ReactNode
+   currentId: string | undefined
    now: number
    onOpen: (id: SessionNode['id']) => void
    /** Open the rename dialog from a title double-click (id + current title). */
@@ -154,7 +164,7 @@
    const row = node
    const title = displayTitle(node, t)
    const selected = node.id === currentId
-@@ -595,6 +601,10 @@
+@@ -595,6 +603,10 @@
        )}
        role="treeitem"
        aria-selected={selected}
@@ -165,12 +175,12 @@
        aria-description={row.archived ? t('toast.archivedNotOpenable') : undefined}
        onClick={() => { onOpen(node.id) }}
        onPointerEnter={marquee.enter}
-@@ -632,12 +642,12 @@
+@@ -632,12 +644,12 @@
        <span className={css.slot}>
          {!row.archived && !row.blank && (showStatus
            ? <SessionStatusDots statuses={statuses} />
 -          : renderSlot('sidebar.session.row.leading', { sessionId: node.id }))}
-+          : null)}
++          : leading ?? null)}
        </span>
        <span
          ref={titleRef}
@@ -180,7 +190,7 @@
            ? undefined
            : (e) => { e.stopPropagation(); onRenameRequest(node.id, row.title) }}
        >
-@@ -661,7 +671,7 @@
+@@ -661,7 +673,7 @@
        {/* The strip's clicks stay in the strip: the trigger and every
            row.action entry act without also opening the row, so an entry's
            button needs no propagation handling of its own. */}
@@ -189,7 +199,7 @@
          <span className={css.rowActions} onClick={(e) => { e.stopPropagation() }}>
            <Menu
              open={menuOpen}
-@@ -693,7 +703,7 @@
+@@ -693,7 +705,7 @@
    return (
      <HoverCard
        anchor={ownRow}
