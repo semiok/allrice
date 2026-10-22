@@ -624,6 +624,54 @@ suite(
       },
     );
     it.each([1440, 390])(
+      'changes only the conversation mode in the unified editor and retains its source, clock and history at %ipx',
+      async (width) => {
+        const f = await fixture(width);
+        try {
+          if (f.task.definition.kind !== 'recurring')
+            throw Error('fixture kind');
+          const before = structuredClone(f.task.definition.task),
+            sourceSession = f.task.sessionId;
+          await f.open();
+          await f.page
+            .getByRole('combobox', { name: '执行会话', exact: true })
+            .selectOption('new_each_run');
+          await f.page
+            .getByRole('button', { name: '保存修改', exact: true })
+            .click();
+          await f.page.getByText('设置已更新。', { exact: true }).waitFor();
+          const writes = f.requests.filter((r) => r.method === 'PATCH');
+          expect(writes).toHaveLength(1);
+          const input = ChangeRecurringTaskInputSchema.parse(writes[0]!.body);
+          expect(input).toEqual({
+            operationId: input.operationId,
+            expectedRevision: before.revision,
+            action: 'conversation',
+            conversationMode: 'new_each_run',
+          });
+          expect(f.task.sessionId).toBe(sourceSession);
+          expect(f.task.definition.task).toEqual({
+            ...before,
+            revision: before.revision + 1,
+            conversationMode: 'new_each_run',
+          });
+          await f.page.reload();
+          await f.open();
+          expect(
+            await f.page
+              .getByRole('combobox', { name: '执行会话', exact: true })
+              .inputValue(),
+          ).toBe('new_each_run');
+          expect(f.requests.filter((r) => r.method === 'PATCH')).toHaveLength(
+            1,
+          );
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+    );
+    it.each([1440, 390])(
       'reads and edits monthly in the unified right panel with exact CAS and unchanged history at %ipx',
       async (width) => {
         const f = await fixture(width);

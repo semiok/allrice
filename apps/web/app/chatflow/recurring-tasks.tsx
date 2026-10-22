@@ -752,7 +752,7 @@ function RecurringTasksContent({
         </button>
       </div>
       <p className={css.hint}>
-        由当前AI在这个会话中执行。暂停期间不执行，恢复从下一期开始；已排队的任务可继续。
+        由当前AI按任务设置的聊天方式执行。暂停期间不执行，恢复从下一期开始；已排队的任务可继续。
       </p>
       {storageError && (
         <p className={css.error} role="alert">

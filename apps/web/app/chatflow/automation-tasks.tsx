@@ -273,7 +273,7 @@ export function AutomationTaskList(
             </header>
             {!props.sessionId && (
               <p className={css.caption}>
-                统一管理各位 AI 员工的任务。到期后由原会话中的员工执行。
+                统一管理各位 AI 员工的任务。到期后由对应员工按任务设置执行。
               </p>
             )}
             {!props.sessionId && (
