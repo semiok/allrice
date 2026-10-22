@@ -1172,8 +1172,10 @@ suite(
         false,
       );
       const history = await getRecurringTask(f.context, t.sessionId, t.id);
-      expect('occurrences' in history && history.occurrences).toHaveLength(1);
-      expect('occurrences' in history && history.occurrences[0]).toMatchObject({
+      const occurrences =
+        'occurrences' in history ? history.occurrences : undefined;
+      expect(occurrences).toHaveLength(1);
+      expect(occurrences?.[0]).toMatchObject({
         scheduledAt: t.P.toISOString(),
         runId: r!.run_id,
       });

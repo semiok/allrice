@@ -8,10 +8,11 @@ import {
   calendarControlIdentity,
   calendarWriterIdentity,
   prepareNativeCalendarTaskPut,
+  type NativeCalendarAdmission,
   type NativeCalendarArm,
   type NativeCalendarControl,
   type NativeCalendarPeriod,
-  type NativeCalendarRevision,
+  type NativeExperienceCalendarRevision,
   type NativeCalendarWrite,
 } from './native-schedule-calendar-state.ts';
 import { NativeRecurringControlSchema } from './native-schedule-recurring-state.ts';
@@ -64,7 +65,7 @@ const c: NativeCalendarControl = {
     employeeInstanceId: id(7),
   },
 };
-const v: NativeCalendarRevision = {
+const v: NativeExperienceCalendarRevision = {
   kind: 'calendar',
   binding: 'rotating-at-v1',
   consumer: 'experience-consolidation-v1',
@@ -266,7 +267,7 @@ describe('independent calendar identity and rotating at binding', () => {
       revisionDigest: nativeOnceDigest(version),
       status: 'enabled',
       resumeAfter: null,
-    };
+    } satisfies NativeCalendarAdmission;
     const bound = prepare({
       control: monthly,
       revision: version,
@@ -321,7 +322,10 @@ describe('independent calendar identity and rotating at binding', () => {
       NativeCalendarControlSchema.safeParse({ ...c, rule: { kind: 'daily' } })
         .success,
     ).toBe(false);
-    expect(NativeCalendarRevisionSchema.parse(v).schedule).toEqual(v.schedule);
+    const parsed = NativeCalendarRevisionSchema.parse(v);
+    if (parsed.consumer !== 'experience-consolidation-v1')
+      throw Error('expected experience calendar revision');
+    expect(parsed.schedule).toEqual(v.schedule);
     expect(
       NativeCalendarRevisionSchema.safeParse({
         ...v,

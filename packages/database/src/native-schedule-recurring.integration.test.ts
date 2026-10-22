@@ -157,6 +157,19 @@ suite(
       >`select snapshot from allrice_native_recurring_controls where automation_id=${id}`;
       return r!.snapshot;
     }
+    function taskScheduledAt(task: unknown) {
+      if (!task || typeof task !== 'object' || !('record' in task))
+        throw Error('expected saved recurring Task');
+      const record = task.record;
+      if (
+        !record ||
+        typeof record !== 'object' ||
+        !('scheduledAt' in record) ||
+        typeof record.scheduledAt !== 'string'
+      )
+        throw Error('expected saved recurring Task scheduledAt');
+      return record.scheduledAt;
+    }
     async function mutate(mutation: NativeRecurringMutation) {
       expect(await store.renewWriter(writer)).not.toBeNull();
       const write = {
@@ -835,7 +848,7 @@ suite(
       ]);
       // Deliver the original legal P. Manual execution cannot move an existing
       // native target, and this fixture must obey the same production guard.
-      const originalP = (await snapshot(t.id)).task!.record.scheduledAt;
+      const originalP = taskScheduledAt((await snapshot(t.id)).task);
       await receipt(t.id);
       expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
         true,
@@ -854,7 +867,7 @@ suite(
           .find((x) => x.manual_request_id !== null)!
           .scheduled_for.toISOString(),
       ).toBe(first.requestedAt);
-      expect((await snapshot(t.id)).task!.record.scheduledAt).toBe(
+      expect(taskScheduledAt((await snapshot(t.id)).task)).toBe(
         new Date(Date.parse(originalP) + 60_000).toISOString(),
       );
       expect(
