@@ -39,6 +39,11 @@ import {
 import { readLocalPythonArchive } from './local-python-archive.js';
 import { localPythonSupervisor } from './local-python-supervisor.js';
 import type { LocalPythonTransport } from './local-python-client.js';
+import {
+  withPreparationStep,
+  type PreparationObserver,
+  type PreparationStep,
+} from './preparation-progress.js';
 
 const attemptLabel = 'xyz.bplabs.allrice.python.attempt',
   digestLabel = 'xyz.bplabs.allrice.python.payload';
@@ -49,6 +54,7 @@ const digest = (p: RuntimeLocalPythonPayload) =>
     .digest('hex');
 interface Container {
   Id: string;
+  Name?: string;
   Config: { Image: string; Labels: Record<string, string> };
   Mounts: { Type: string; Name: string; Destination: string }[];
   State: {
@@ -62,6 +68,7 @@ interface Container {
 /** One private Engine, pinned image and existing operation attempt. No host mounts. */
 export class LocalPythonRunner {
   readonly api: LocalDockerApi;
+  onPreparationStep?: PreparationObserver;
   private probed = false;
   constructor(
     readonly config: {
@@ -75,18 +82,26 @@ export class LocalPythonRunner {
   }
   async preflight(signal: AbortSignal, deep = !this.probed) {
     const release = this.config.release;
-    await this.api.verifySocket();
-    signal.throwIfAborted();
-    const info = await this.api.json<{
-      OSType: string;
-      Architecture: string;
-      CgroupVersion: string;
-      MemoryLimit: boolean;
-      SwapLimit: boolean;
-      PidsLimit: boolean;
-      CpuCfsQuota: boolean;
-      SecurityOptions: string[];
-    }>('GET', '/info');
+    const step = <T>(name: PreparationStep, operation: () => Promise<T>) =>
+      withPreparationStep(this.onPreparationStep, 'python', name, async () => {
+        signal.throwIfAborted();
+        const value = await operation();
+        signal.throwIfAborted();
+        return value;
+      });
+    await step('engine_socket', () => this.api.verifySocket());
+    const info = await step('engine_info', () =>
+      this.api.json<{
+        OSType: string;
+        Architecture: string;
+        CgroupVersion: string;
+        MemoryLimit: boolean;
+        SwapLimit: boolean;
+        PidsLimit: boolean;
+        CpuCfsQuota: boolean;
+        SecurityOptions: string[];
+      }>('GET', '/info', undefined, 15_000, signal),
+    );
     if (
       info.OSType !== 'linux' ||
       !(
@@ -102,11 +117,13 @@ export class LocalPythonRunner {
       !info.SecurityOptions.some((s) => s.startsWith('name=seccomp'))
     )
       throw new LocalCommandError('ISOLATION_UNAVAILABLE');
-    const image = await this.api.json<{
-      Id: string;
-      Os: string;
-      Architecture: string;
-    }>('GET', `/images/${release.imageId}/json`);
+    const image = await step('image_check', () =>
+      this.api.json<{
+        Id: string;
+        Os: string;
+        Architecture: string;
+      }>('GET', `/images/${release.imageId}/json`, undefined, 15_000, signal),
+    );
     if (
       image.Id !== release.imageId ||
       image.Os !== 'linux' ||
@@ -115,57 +132,77 @@ export class LocalPythonRunner {
       throw new LocalCommandError('TOOLCHAIN_CHANGED');
     if (deep || !this.probed) {
       const attempt = randomUUID();
-      const probe = await this.api.json<{ Id: string }>(
-        'POST',
-        `/containers/create?name=allrice-python-probe-${attempt}`,
-        {
-          Image: release.imageId,
-          Entrypoint: ['/opt/python/bin/python'],
-          Cmd: ['-I', '/opt/allrice/probe.py', 'probe'],
-          User: '65532:65532',
-          Env: ['MPLBACKEND=Agg', 'LANG=C.UTF-8'],
-          Labels: {
-            [attemptLabel]: attempt,
-            'xyz.bplabs.allrice.python.probe': '1',
-          },
-          HostConfig: this.hostConfig(512, 1000, 64),
-        },
-      );
-      let logs = '';
-      const abort = () => {
-        void this.api
-          .json('POST', `/containers/${probe.Id}/kill?signal=KILL`)
-          .catch(() => undefined);
-      };
-      signal.addEventListener('abort', abort, { once: true });
+      const name = `allrice-python-probe-${attempt}`;
+      let probeId: string | undefined;
+      let createRequested = false;
       try {
-        signal.throwIfAborted();
-        await this.api.json('POST', `/containers/${probe.Id}/start`);
-        if (signal.aborted) {
-          await this.api.json(
+        const probe = await step('probe_create', () => {
+          createRequested = true;
+          return this.api.json<{ Id: string }>(
             'POST',
-            `/containers/${probe.Id}/kill?signal=KILL`,
+            `/containers/create?name=${name}`,
+            {
+              Image: release.imageId,
+              Entrypoint: ['/opt/python/bin/python'],
+              Cmd: ['-I', '/opt/allrice/probe.py', 'probe'],
+              User: '65532:65532',
+              Env: ['MPLBACKEND=Agg', 'LANG=C.UTF-8'],
+              Labels: {
+                [attemptLabel]: attempt,
+                'xyz.bplabs.allrice.python.probe': '1',
+              },
+              HostConfig: this.hostConfig(512, 1000, 64),
+            },
+            15_000,
+            signal,
           );
-          signal.throwIfAborted();
-        }
-        await this.api.logs(
-          probe.Id,
-          (bytes) => {
-            logs += bytes.toString('utf8');
-            if (Buffer.byteLength(logs) > 32768)
-              throw new LocalCommandError('INVALID_PROFILE_PROBE');
-          },
-          60_000,
+        });
+        if (!/^[a-f0-9]{64}$/.test(probe.Id))
+          throw new LocalCommandError('INVALID_DAEMON_RESPONSE');
+        const created = await step('probe_inspect', () =>
+          this.api.json<Container>(
+            'GET',
+            `/containers/${probe.Id}/json`,
+            undefined,
+            15_000,
+            signal,
+          ),
         );
-        signal.throwIfAborted();
-        const state = await this.api.json<Container>(
-          'GET',
-          `/containers/${probe.Id}/json`,
+        this.assertProbeIdentity(created, name, attempt, probe.Id);
+        probeId = probe.Id;
+        await step('probe_start', () =>
+          this.api.json(
+            'POST',
+            `/containers/${probe.Id}/start`,
+            undefined,
+            15_000,
+            signal,
+          ),
         );
+        let logs = '';
+        await step('probe_logs', () =>
+          this.api.logs(
+            probe.Id,
+            (bytes) => {
+              logs += bytes.toString('utf8');
+              if (Buffer.byteLength(logs) > 32768)
+                throw new LocalCommandError('INVALID_PROFILE_PROBE');
+            },
+            60_000,
+            signal,
+          ),
+        );
+        const state = await step('probe_inspect', () =>
+          this.api.json<Container>(
+            'GET',
+            `/containers/${probe.Id}/json`,
+            undefined,
+            15_000,
+            signal,
+          ),
+        );
+        this.assertProbeIdentity(state, name, attempt, probe.Id);
         if (
-          state.Id !== probe.Id ||
-          state.Config.Image !== release.imageId ||
-          state.Config.Labels[attemptLabel] !== attempt ||
           state.State.Running ||
           state.State.Status !== 'exited' ||
           state.State.ExitCode !== 0
@@ -191,11 +228,19 @@ export class LocalPythonRunner {
         )
           throw new LocalCommandError('PROFILE_PROBE_FAILED');
       } finally {
-        signal.removeEventListener('abort', abort);
-        await this.removeProbe(probe.Id, attempt);
+        // The canceled preparation signal must not abandon an owned side effect.
+        if (createRequested)
+          await withPreparationStep(
+            this.onPreparationStep,
+            'python',
+            'probe_cleanup',
+            () => this.removeProbe(name, attempt, probeId),
+          );
       }
+      signal.throwIfAborted();
       this.probed = true;
     }
+    signal.throwIfAborted();
     return RuntimeLocalPythonProfileSchema.parse({
       contractVersion: 1,
       profileVersion: 1,
@@ -224,25 +269,94 @@ export class LocalPythonRunner {
       inputStreamingVersion: 1,
     });
   }
-  private async removeProbe(id: string, attempt: string) {
-    const state = await this.api.json<Container>(
-      'GET',
-      `/containers/${id}/json`,
-    );
+  private assertProbeIdentity(
+    state: Container,
+    name: string,
+    attempt: string,
+    id?: string,
+  ) {
     if (
-      state.Config.Labels[attemptLabel] !== attempt ||
-      state.Config.Image !== this.config.release.imageId
+      !/^[a-f0-9]{64}$/.test(state?.Id) ||
+      (id !== undefined && state.Id !== id) ||
+      ![name, `/${name}`].includes(state.Name ?? '') ||
+      state.Config?.Labels?.[attemptLabel] !== attempt ||
+      state.Config?.Labels?.['xyz.bplabs.allrice.python.probe'] !== '1' ||
+      state.Config?.Image !== this.config.release.imageId ||
+      typeof state.State?.Running !== 'boolean'
     )
       throw new LocalCommandError('CONTAINER_IDENTITY_CHANGED');
-    if (state.State.Running)
-      await this.api.json('POST', `/containers/${id}/kill?signal=KILL`);
-    const stopped = await this.api.json<Container>(
-      'GET',
-      `/containers/${id}/json`,
-    );
-    if (stopped.State.Running)
+  }
+  private async removeProbe(name: string, attempt: string, knownId?: string) {
+    const cleanup = new AbortController();
+    const timer = setTimeout(() => cleanup.abort(), 10_000);
+    const inspect = async (reference: string) => {
+      const state = await this.api
+        .json<Container>(
+          'GET',
+          `/containers/${reference}/json`,
+          undefined,
+          10_000,
+          cleanup.signal,
+        )
+        .catch((error: unknown) => {
+          if (
+            error instanceof LocalCommandError &&
+            error.code === 'DAEMON_HTTP_404'
+          )
+            return null;
+          throw error;
+        });
+      if (state) this.assertProbeIdentity(state, name, attempt, knownId);
+      return state;
+    };
+    try {
+      let state = await inspect(knownId ?? name);
+      // A lost create response is not evidence that create did not commit.
+      // Wait for this unique name, without ever retrying the create request.
+      while (!state && knownId === undefined) {
+        await delay(50, undefined, { signal: cleanup.signal });
+        state = await inspect(name);
+      }
+      if (state) {
+        const id = state.Id;
+        knownId = id;
+        if (state.State.Running) {
+          // Even a lost kill response is reconciled by inspection, not a retry.
+          await this.api
+            .json(
+              'POST',
+              `/containers/${id}/kill?signal=KILL`,
+              undefined,
+              10_000,
+              cleanup.signal,
+            )
+            .catch(() => undefined);
+        }
+        const stopped = await inspect(id);
+        if (stopped?.State.Running)
+          throw new LocalCommandError('STOP_NOT_CONFIRMED');
+        if (stopped) {
+          await this.api
+            .json(
+              'DELETE',
+              `/containers/${id}`,
+              undefined,
+              10_000,
+              cleanup.signal,
+            )
+            .catch(() => undefined);
+          if (await inspect(id))
+            throw new LocalCommandError('STOP_NOT_CONFIRMED');
+        }
+      }
+      if (await inspect(name))
+        throw new LocalCommandError('STOP_NOT_CONFIRMED');
+      cleanup.signal.throwIfAborted();
+    } catch {
       throw new LocalCommandError('STOP_NOT_CONFIRMED');
-    await this.api.json('DELETE', `/containers/${id}`);
+    } finally {
+      clearTimeout(timer);
+    }
   }
   private hostConfig(memory: number, cpu: number, pids: number) {
     return {

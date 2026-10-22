@@ -7,6 +7,10 @@ import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import type { BridgeStopPhase } from './desktop-shutdown.js';
+import {
+  withPreparationStep,
+  type PreparationObserver,
+} from './preparation-progress.js';
 
 import {
   BridgeCapabilities,
@@ -1085,6 +1089,8 @@ type StartOptions = {
   onState?: (state: BridgeRuntimeState) => void;
   /** Read-only shutdown progress. It cannot release ownership or confirm an effect. */
   onStopPhase?: (phase: BridgeStopPhase) => void;
+  /** Allowlisted diagnostics only; never controls completion or ownership. */
+  onPreparationStep?: PreparationObserver;
   onNotice?: (
     code:
       | 'BRIDGE_CONNECTED'
@@ -1336,7 +1342,21 @@ async function startSession(
       workspaceLabels: [...state.workspaceLabels],
     });
   };
-  if (managedSandbox) managedSandbox.onPreparation = publish;
+  if (managedSandbox) {
+    managedSandbox.onPreparation = publish;
+    managedSandbox.onPreparationStep = options.onPreparationStep;
+  }
+  let preparationStopUnconfirmed = false;
+  const preparationFailure = (error: unknown) => {
+    if (
+      error instanceof Error &&
+      (error.message === 'STOP_NOT_CONFIRMED' ||
+        ('code' in error && error.code === 'STOP_NOT_CONFIRMED'))
+    ) {
+      preparationStopUnconfirmed = true;
+      console.warn('STOP_NOT_CONFIRMED');
+    }
+  };
   const updateFacts = async () => {
     if (journal) {
       const facts = await journal.diagnosticCounts();
@@ -1476,15 +1496,19 @@ async function startSession(
               environment.browser = 'preparing';
               publish();
             }
-            environment.browser = await prepareBridgeBrowser(
-              config,
-              commandAbort.signal,
-              (version) => {
-                browserVersion = version;
-              },
+            environment.browser = await withPreparationStep(
+              options.onPreparationStep,
+              'browser',
+              'browser_prepare',
+              () =>
+                prepareBridgeBrowser(config, commandAbort.signal, (version) => {
+                  browserVersion = version;
+                }),
             );
+            commandAbort.signal.throwIfAborted();
             delete readinessErrors.browser;
           } catch (error) {
+            preparationFailure(error);
             if (
               error instanceof Error &&
               error.message === 'LOCAL_BROWSER_CLEANUP_PENDING'
@@ -1507,38 +1531,51 @@ async function startSession(
             return;
           }
           try {
-            const { profile, reportFailed } =
-              await prepareAndReportLocalCommand({
-                signal: commandAbort.signal,
-                prepare: async () => {
-                  if (
-                    managedSandbox &&
-                    !process.env.ALLRICE_LOCAL_DOCKER_SOCKET
-                  ) {
-                    await managedSandbox.prepareNodeImage(commandAbort.signal);
-                  }
-                  try {
-                    return await runner.preflight(commandAbort.signal);
-                  } catch (error) {
-                    if (Date.now() - lastSandboxResume < 60_000) throw error;
-                    lastSandboxResume = Date.now();
-                    environment.sandbox = 'preparing';
-                    publish();
-                    return prepareLocalSandbox(runner, commandAbort.signal);
-                  }
-                },
-                report: (verified) =>
-                  bridgeRequest({
-                    server: config.server,
-                    path: '/api/v1/bridge/device/runtime-profile',
-                    method: 'POST',
-                    token,
-                    body: { contractVersion: 1, ...verified, available: true },
-                    maximumResponseBytes: 4096,
-                    timeoutMs: 5000,
-                    signal: commandAbort.signal,
-                  }),
-              });
+            const { profile, reportFailed } = await withPreparationStep(
+              options.onPreparationStep,
+              'command',
+              'command_prepare',
+              () =>
+                prepareAndReportLocalCommand({
+                  signal: commandAbort.signal,
+                  prepare: async () => {
+                    if (
+                      managedSandbox &&
+                      !process.env.ALLRICE_LOCAL_DOCKER_SOCKET
+                    ) {
+                      await managedSandbox.prepareNodeImage(
+                        commandAbort.signal,
+                      );
+                    }
+                    try {
+                      return await runner.preflight(commandAbort.signal);
+                    } catch (error) {
+                      commandAbort.signal.throwIfAborted();
+                      if (Date.now() - lastSandboxResume < 60_000) throw error;
+                      lastSandboxResume = Date.now();
+                      environment.sandbox = 'preparing';
+                      publish();
+                      return prepareLocalSandbox(runner, commandAbort.signal);
+                    }
+                  },
+                  report: (verified) =>
+                    bridgeRequest({
+                      server: config.server,
+                      path: '/api/v1/bridge/device/runtime-profile',
+                      method: 'POST',
+                      token,
+                      body: {
+                        contractVersion: 1,
+                        ...verified,
+                        available: true,
+                      },
+                      maximumResponseBytes: 4096,
+                      timeoutMs: 5000,
+                      signal: commandAbort.signal,
+                    }),
+                }),
+            );
+            commandAbort.signal.throwIfAborted();
             if (reportFailed)
               console.warn('LOCAL_COMMAND_PROFILE_REPORT_UNAVAILABLE');
             // A verified local runtime may stay physically ready after a
@@ -1548,6 +1585,7 @@ async function startSession(
             delete readinessErrors.sandbox;
             environment.sandbox = 'ready';
           } catch (error) {
+            preparationFailure(error);
             environment.sandbox = 'unavailable';
             readinessErrors.sandbox = readinessErrorCode(
               error,
@@ -1562,9 +1600,15 @@ async function startSession(
           if (!pdfProfile && Date.now() - lastPdfProbe < 60_000) return;
           try {
             lastPdfProbe = Date.now();
-            const profile = pdfProfile
-              ? await pdfRunner.preflight()
-              : await pdfRunner.probe(commandAbort.signal);
+            const profile = await withPreparationStep(
+              options.onPreparationStep,
+              'pdf',
+              'pdf_prepare',
+              () =>
+                pdfProfile
+                  ? pdfRunner.preflight()
+                  : pdfRunner.probe(commandAbort.signal),
+            );
             commandAbort.signal.throwIfAborted();
             await bridgeRequest({
               server: config.server,
@@ -1581,6 +1625,7 @@ async function startSession(
             pdfState = 'ready';
             pdfReason = 'ready';
           } catch (error) {
+            preparationFailure(error);
             pdfState = 'unsupported';
             pdfReason = readinessErrorCode(error, 'pdf_runtime_unavailable');
           }
@@ -1596,6 +1641,7 @@ async function startSession(
                     commandAbort.signal,
                     false,
                   );
+                  commandAbort.signal.throwIfAborted();
                   await bridgeRequest({
                     server: config.server,
                     path: '/api/v1/bridge/device/runtime-profile',
@@ -1637,6 +1683,7 @@ async function startSession(
                 pythonReason = 'ready';
               }
             } catch (error) {
+              preparationFailure(error);
               pythonState = 'unsupported';
               pythonReason = readinessErrorCode(
                 error,
@@ -1646,6 +1693,7 @@ async function startSession(
           }
         })(),
       ]);
+      commandAbort.signal.throwIfAborted();
       environment.preview = await bridgePreviewState(config, environment).catch(
         () => 'unavailable',
       );
@@ -1986,20 +2034,29 @@ async function startSession(
         .catch(() => undefined);
       await updateFacts().catch(() => undefined);
     }
-    if (!folderStopUnconfirmed) {
+    if (!folderStopUnconfirmed && !preparationStopUnconfirmed) {
       options.onStopPhase?.('journal');
       await journal?.close();
     }
     state.phase =
-      browserStopUnconfirmed || folderStopUnconfirmed ? 'stopping' : 'stopped';
+      browserStopUnconfirmed ||
+      folderStopUnconfirmed ||
+      preparationStopUnconfirmed
+        ? 'stopping'
+        : 'stopped';
     state.activeForeground = 0;
     state.activeServices = 0;
-    if (!browserStopUnconfirmed && !folderStopUnconfirmed)
+    if (
+      !browserStopUnconfirmed &&
+      !folderStopUnconfirmed &&
+      !preparationStopUnconfirmed
+    )
       options.onNotice?.('BRIDGE_STOPPED');
     publish();
   }
   if (browserStopUnconfirmed) throw Error('LOCAL_BROWSER_CLEANUP_PENDING');
   if (folderStopUnconfirmed) throw Error('FOLDER_TRIGGER_STOP_UNCONFIRMED');
+  if (preparationStopUnconfirmed) throw Error('STOP_NOT_CONFIRMED');
   console.info('Rice Bridge 已停止');
   return requestedSettings;
 }

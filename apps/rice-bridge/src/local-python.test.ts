@@ -377,7 +377,7 @@ async function engine(
       });
       return json({ Id });
     }
-    const id = /\/containers\/([^/]+)\//.exec(path)?.[1],
+    const id = /\/containers\/([^/?]+)(?:[/?]|$)/.exec(path)?.[1],
       c =
         containers.get(id ?? '') ??
         [...containers.values()].find((c) => c.Name === id);
@@ -403,6 +403,7 @@ async function engine(
       return;
     }
     if (req.method === 'DELETE') {
+      if (c) containers.delete(c.Id);
       res.end();
       return;
     }
