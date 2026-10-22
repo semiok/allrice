@@ -848,6 +848,51 @@ async function enqueueRunCore(
   };
 }
 
+/** Explicit human manual request. This retains the original browser policy
+ * lane and requires its own transaction-local manual reservation, never a
+ * native receipt or an ambient caller-selected employee binding. */
+export async function enqueueManualAutomationRunInTransaction(
+  transaction: TransactionSql,
+  context: RequestContext,
+  manualRunId: string,
+  input: unknown,
+  options: EnqueueOptions,
+) {
+  if (
+    Object.keys(options).some(
+      (k) => !['employeeBinding', 'conversationDelivery'].includes(k),
+    ) ||
+    !options.employeeBinding ||
+    !options.conversationDelivery ||
+    options.conversationDelivery.requestedMode !== 'follow_up'
+  )
+    throw new QueueError('policy_denied');
+  const { assertManualAutomationQueueBinding } =
+    await import('../automation-manual.ts');
+  await assertManualAutomationQueueBinding(
+    transaction,
+    context,
+    manualRunId,
+    options.employeeBinding,
+    options.conversationDelivery.clientUserMessageId,
+  );
+  const admission: RunAdmission = { kind: 'browser', context };
+  const parsed = await prepareEnqueueRun(
+    admission,
+    input,
+    options,
+    transaction,
+  );
+  if (
+    parsed.submission.type !== 'allrice.employee.run' ||
+    parsed.workspaceId !== context.workspaceId ||
+    parsed.submission.idempotencyKey !==
+      `employee-message:${options.conversationDelivery.clientUserMessageId}`
+  )
+    throw new QueueError('policy_denied');
+  return enqueueRunInTransaction(admission, parsed, transaction);
+}
+
 /** Internal ordinary-employee path; product dispatcher already owns the
  * occurrence and content lock order, and this same TX verifies it again. */
 export async function enqueueNativeOnceRunInTransaction(

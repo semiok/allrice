@@ -382,6 +382,13 @@ export {
   getAutomationCatalogTask,
   getAutomationCatalogOperation,
   changeAutomationCatalogTask,
+  getAutomationCatalogOccurrenceRun,
+  stopAutomationCatalogOccurrence,
 } from './automation-catalog.ts';
 
 export * from './workbench-files.ts';
+export {
+  runManualAutomation,
+  getManualAutomationRun,
+  ManualAutomationRunError,
+} from './automation-manual.ts';

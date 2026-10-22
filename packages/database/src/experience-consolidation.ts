@@ -479,7 +479,7 @@ export async function reserveExperienceOccurrenceInTransaction(
     await tx`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,scheduled_for,status,
     experience_occurrence,completed_at,error_code,native_root_origin,native_recurring_occurrence_id) values(${occurrence.id},${rule.organization_id},${rule.workspace_id},${rule.id},
       ${scheduledFor},${sources.length ? 'queued' : 'succeeded'},${tx.json(occurrence)},${sources.length ? null : new Date()},${sources.length ? null : 'EXPERIENCE_NO_NEW_EVIDENCE'},${origin ? tx.json(origin) : null},${nativeRecurringOccurrenceId})
-    on conflict(automation_id,scheduled_for) where folder_event_id is null do nothing returning id`;
+    on conflict(automation_id,scheduled_for) where folder_event_id is null and manual_request_id is null do nothing returning id`;
   if (!written) {
     const exact = await existing();
     if (!exact) return deny();

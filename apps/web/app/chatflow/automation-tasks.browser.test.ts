@@ -9,7 +9,11 @@ import type {
   AutomationCatalogTask,
   ChangeRecurringTaskInput,
   RecurringTaskOperation,
+  ManualAutomationRunInput,
+  RunSnapshot,
 } from '@allrice/contracts';
+import { stopOccurrenceStorageKey } from './stop-occurrence-intent';
+import { manualRunStorageKey } from './manual-run-intent';
 
 const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
@@ -21,7 +25,15 @@ const ORG = '11111111-1111-4111-8111-111111111111',
   VIEWER = '33333333-3333-4333-8333-333333333333',
   EMPLOYEE = '44444444-4444-4444-8444-444444444444',
   CHAT = '55555555-5555-4555-8555-555555555555',
-  TASK = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  TASK = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  OCCURRENCE = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+  RUN = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+  OTHER_ORG = '66666666-6666-4666-8666-666666666666',
+  OTHER_WORKSPACE = '77777777-7777-4777-8777-777777777777',
+  OTHER_VIEWER = '88888888-8888-4888-8888-888888888888',
+  OTHER_TASK = '99999999-9999-4999-8999-999999999999',
+  OTHER_OCCURRENCE = 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+  OTHER_RUN = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const entry = (): AutomationCatalogTask => ({
   id: TASK,
   name: '喝水',
@@ -34,6 +46,7 @@ const entry = (): AutomationCatalogTask => ({
   createdAt: '2026-10-21T01:00:00.000Z',
   nextRunAt: '2099-01-01T01:00:00.000Z',
   canStop: true,
+  revision: 1,
   definition: {
     kind: 'recurring',
     task: {
@@ -72,13 +85,18 @@ suite(
       import React,{StrictMode,useState} from 'react';import {createRoot} from 'react-dom/client';
       import {AutomationTaskList,AutomationTaskDetail,AutomationTaskCard} from './app/chatflow/automation-tasks';
       import {AutomationTrigger} from './app/chatflow/automation-trigger';
-      const scope='${ORG}/${WORKSPACE}/${VIEWER}',headers={'x-fixture-viewer':'${VIEWER}','x-test-secret':'never-persist'};
       function Fixture(){const [selected,setSelected]=useState(null),[opened,setOpened]=useState(''),[hide,setHide]=useState(false),[mode,setMode]=useState('list');
+        const [identity,setIdentity]=useState({organizationId:'${ORG}',workspaceId:'${WORKSPACE}',viewerId:'${VIEWER}',taskId:null});
+        const scope=[identity.organizationId,identity.workspaceId,identity.viewerId].join('/'),headers={'x-fixture-organization':identity.organizationId,'x-fixture-viewer':identity.viewerId,'x-test-secret':'never-persist'};
         return <><button onClick={()=>setHide(v=>!v)}>显示或隐藏右栏</button><button onClick={()=>setMode('list')}>返回任务列表</button>
+        <button onClick={()=>setIdentity(v=>({...v,organizationId:'${OTHER_ORG}'}))}>切换组织</button>
+        <button onClick={()=>setIdentity(v=>({...v,workspaceId:'${OTHER_WORKSPACE}'}))}>切换工作区</button>
+        <button onClick={()=>setIdentity(v=>({...v,viewerId:'${OTHER_VIEWER}'}))}>切换用户</button>
+        <button onClick={()=>setIdentity(v=>({...v,taskId:'${OTHER_TASK}'}))}>切换任务</button>
         <div style={{display:'flex',height:'calc(100vh - 50px)',minWidth:0}}>
-          {mode==='list'&&<div className="list"><AutomationTaskList workspaceId="${WORKSPACE}" scope={scope} headers={headers} employees={[{id:'${EMPLOYEE}',name:'Rice'}]} selectedId={selected?.id} onSelect={setSelected} onNew={()=>setMode('new')}/></div>}
+          {mode==='list'&&<div className="list"><AutomationTaskList workspaceId={identity.workspaceId} scope={scope} headers={headers} employees={[{id:'${EMPLOYEE}',name:'Rice'}]} selectedId={selected?.id} onSelect={setSelected} onNew={()=>setMode('new')}/></div>}
           {mode==='new'&&<p>说明时间和工作内容，创建新的任务</p>}
-          {selected&&!hide&&<aside className="detail"><AutomationTaskDetail taskId={selected.id} active={!hide} workspaceId="${WORKSPACE}" scope={scope} headers={headers} onOpenSession={setOpened}/></aside>}
+          {selected&&!hide&&<aside className="detail"><AutomationTaskDetail taskId={identity.taskId??selected.id} active={!hide} workspaceId={identity.workspaceId} scope={scope} headers={headers} onOpenSession={setOpened}/></aside>}
         </div><output aria-label="原会话">{opened}</output>
         </>;
       } createRoot(document.getElementById('root')).render(<StrictMode><Fixture/></StrictMode>);
@@ -149,18 +167,106 @@ suite(
       await browser?.close();
       await new Promise<void>((r) => server?.close(() => r()));
     });
-    async function fixture(width = 1280) {
+    async function fixture(
+      width = 1280,
+      options: {
+        running?: boolean;
+        storageFailure?: boolean;
+        manual?: boolean;
+      } = {},
+    ) {
       const page = await browser.newPage({ viewport: { width, height: 900 } }),
         task = entry(),
         requests: Array<{
           method: string;
           operationId: string | null;
           body: unknown;
+          url: string;
+          principalScope: string;
         }> = [],
         operations = new Map<string, RecurringTaskOperation>();
-      const state = { dropAck: false, mismatch: false };
+      task.canRunNow = options.manual === true;
+      const manualReceipts = new Map<
+        string,
+        ReturnType<typeof manualReceipt>
+      >();
+      function manualReceipt(input: ManualAutomationRunInput) {
+        const now = '2026-10-22T01:00:00.000Z';
+        return {
+          source: 'manual',
+          taskId: TASK,
+          request: input,
+          requestDigest: 'sha256:' + 'a'.repeat(64),
+          automationRunId: OCCURRENCE,
+          requestedAt: now,
+          sessionId: CHAT,
+          run: {
+            id: RUN,
+            organizationId: ORG,
+            workspaceId: WORKSPACE,
+            ownerId: VIEWER,
+            status: 'queued',
+            cancelRequestedAt: null,
+            result: null,
+            error: null,
+            createdAt: now,
+            updatedAt: now,
+            job: {
+              id: OTHER_RUN,
+              organizationId: ORG,
+              workspaceId: WORKSPACE,
+              ownerId: VIEWER,
+              status: 'queued',
+              idempotencyKey: 'employee-message:' + OCCURRENCE,
+              priority: 0,
+              attempt: 0,
+              maxAttempts: 2,
+              availableAt: now,
+              timeoutAt: now,
+              payload: {
+                schemaVersion: 1,
+                type: 'allrice.employee.run',
+                input: {},
+              },
+              lease: null,
+            },
+          },
+        };
+      }
+      const state = {
+        dropAck: false,
+        mismatch: false,
+        dropStopAck: false,
+        holdStop: null as 'POST' | 'GET' | null,
+        stopRequested: false,
+        stopTerminal: false,
+        newerHistory: false,
+        dropManualAck: false,
+        holdManual: null as 'POST' | 'GET' | null,
+      };
+      const heldStops: Array<{ method: string; respond: () => Promise<void> }> =
+        [];
+      const heldManual: Array<{ respond: () => Promise<void> }> = [];
       const errors: string[] = [];
       page.on('pageerror', (e) => errors.push(e.message));
+      // A real browser and real component, with no request outside this fixture.
+      await page.route('**/*', (route) =>
+        new URL(route.request().url()).origin === origin
+          ? route.fallback()
+          : route.abort('blockedbyclient'),
+      );
+      if (options.storageFailure)
+        await page.addInitScript(() => {
+          const original = Storage.prototype.setItem;
+          Storage.prototype.setItem = function (key, value) {
+            if (this === window.sessionStorage)
+              throw new DOMException(
+                'fixture storage unavailable',
+                'QuotaExceededError',
+              );
+            original.call(this, key, value);
+          };
+        });
       await page.route('**/api/v1/scheduled-tasks**', async (route) => {
         const request = route.request(),
           url = new URL(request.url()),
@@ -169,7 +275,114 @@ suite(
           method: request.method(),
           operationId,
           body: request.postDataJSON(),
+          url: request.url(),
+          principalScope: [
+            request.headers()['x-fixture-organization'],
+            url.searchParams.get('workspaceId'),
+            request.headers()['x-fixture-viewer'],
+          ].join('/'),
         });
+        if (url.pathname.endsWith('/run')) {
+          const id =
+            request.method() === 'POST'
+              ? (request.postDataJSON() as ManualAutomationRunInput).requestId
+              : url.searchParams.get('requestId')!;
+          if (request.method() === 'POST')
+            manualReceipts.set(
+              id,
+              manualReceipt(request.postDataJSON() as ManualAutomationRunInput),
+            );
+          const reply = manualReceipts.get(id),
+            respond = () =>
+              route.fulfill({
+                status: reply ? 202 : 404,
+                json: reply ?? { error: 'not_found' },
+              });
+          if (state.holdManual === request.method()) {
+            heldManual.push({ respond });
+            return;
+          }
+          if (request.method() === 'POST' && state.dropManualAck) {
+            state.dropManualAck = false;
+            await route.abort();
+            return;
+          }
+          await respond();
+          return;
+        }
+        if (url.pathname.endsWith('/stop-occurrence')) {
+          if (request.method() === 'POST') state.stopRequested = true;
+          const exact =
+            request.method() === 'POST'
+              ? (request.postDataJSON() as {
+                  occurrenceId: string;
+                  runId: string;
+                })
+              : {
+                  occurrenceId: url.searchParams.get('occurrenceId')!,
+                  runId: url.searchParams.get('runId')!,
+                };
+          const now = '2026-10-22T01:00:00.000Z';
+          const run: RunSnapshot = {
+            id: exact.runId,
+            organizationId: ORG,
+            workspaceId: WORKSPACE,
+            ownerId: VIEWER,
+            status: state.stopTerminal ? 'canceled' : 'running',
+            job: {
+              id: OTHER_RUN,
+              organizationId: ORG,
+              workspaceId: WORKSPACE,
+              ownerId: VIEWER,
+              status: state.stopTerminal ? 'canceled' : 'running',
+              idempotencyKey: 'exact-browser-occurrence',
+              priority: 0,
+              attempt: 1,
+              maxAttempts: 1,
+              availableAt: now,
+              timeoutAt: now,
+              payload: { schemaVersion: 1, type: 'employee.chat', input: {} },
+              lease: null,
+            },
+            cancelRequestedAt: state.stopRequested ? now : null,
+            result: null,
+            error: null,
+            createdAt: now,
+            updatedAt: now,
+          };
+          const reply = {
+            taskId: TASK,
+            occurrenceId: exact.occurrenceId,
+            run,
+            canStop: false,
+          };
+          const respond = () => route.fulfill({ json: reply });
+          if (state.holdStop === request.method()) {
+            heldStops.push({ method: request.method(), respond });
+            return;
+          }
+          if (request.method() === 'POST' && state.dropStopAck) {
+            state.dropStopAck = false;
+            await route.abort();
+            return;
+          }
+          await respond();
+          return;
+        }
+        const foreignScope =
+          request.headers()['x-fixture-organization'] !== ORG ||
+          request.headers()['x-fixture-viewer'] !== VIEWER ||
+          url.searchParams.get('workspaceId') !== WORKSPACE;
+        if (foreignScope) {
+          await route.fulfill({
+            status: url.pathname === '/api/v1/scheduled-tasks' ? 200 : 404,
+            json:
+              url.pathname === '/api/v1/scheduled-tasks'
+                ? { tasks: [], nextCursor: null }
+                : { message: '当前范围没有该任务。' },
+          });
+          return;
+        }
         if (request.method() === 'PATCH') {
           const body = request.postDataJSON() as ChangeRecurringTaskInput;
           if (task.definition.kind !== 'recurring')
@@ -178,6 +391,7 @@ suite(
           const rejected = body.expectedRevision !== current.revision;
           if (!rejected) {
             current.revision++;
+            task.revision = current.revision;
             if (body.action === 'update') {
               current.name = body.name;
               current.prompt = body.prompt;
@@ -227,18 +441,27 @@ suite(
           });
           return;
         }
-        if (url.pathname.endsWith(TASK)) {
+        if (url.pathname.endsWith(TASK) || url.pathname.endsWith(OTHER_TASK)) {
+          const displayed = structuredClone(task);
+          if (url.pathname.endsWith(OTHER_TASK)) {
+            displayed.id = OTHER_TASK;
+            displayed.name = '另一个任务';
+            if (displayed.definition.kind === 'recurring')
+              displayed.definition.task.id = OTHER_TASK;
+          }
+          const differentHistory =
+            state.newerHistory || displayed.id === OTHER_TASK;
           await route.fulfill({
             json: {
-              task,
+              task: displayed,
               occurrences: [
                 {
-                  id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-                  taskId: TASK,
+                  id: differentHistory ? OTHER_OCCURRENCE : OCCURRENCE,
+                  taskId: displayed.id,
                   revision: 1,
                   scheduledAt: '2026-10-21T01:00:00.000Z',
-                  status: 'succeeded',
-                  runId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+                  status: options.running ? 'running' : 'succeeded',
+                  runId: differentHistory ? OTHER_RUN : RUN,
                   sessionId: CHAT,
                   errorMessage: null,
                 },
@@ -275,7 +498,36 @@ suite(
         requests,
         state,
         errors,
+        heldStops,
+        heldManual,
+        manualRequests: (method?: string) =>
+          requests.filter(
+            (r) =>
+              new URL(r.url).pathname.endsWith('/run') &&
+              (!method || r.method === method),
+          ),
         open,
+        history: async () => {
+          await open();
+          await page.getByRole('tab', { name: '任务运行记录' }).click();
+          await page
+            .getByRole('button', { name: '停止本轮', exact: true })
+            .waitFor();
+        },
+        submitStop: async () => {
+          await page
+            .getByRole('button', { name: '停止本轮', exact: true })
+            .click();
+          await page
+            .getByRole('button', { name: '确认停止本轮', exact: true })
+            .click();
+        },
+        stopRequests: (method?: string) =>
+          requests.filter(
+            (r) =>
+              new URL(r.url).pathname.endsWith('/stop-occurrence') &&
+              (!method || r.method === method),
+          ),
         close: () => page.close(),
       };
     }
@@ -490,5 +742,466 @@ suite(
         await f.close();
       }
     });
+    it('sends zero stop POSTs when this component cannot persist its exact target', async () => {
+      const f = await fixture(1280, { running: true, storageFailure: true });
+      try {
+        await f.history();
+        await f.submitStop();
+        await f.page.getByText(/fixture storage unavailable/).waitFor();
+        expect(f.stopRequests('POST')).toEqual([]);
+        expect(f.requests.filter((r) => r.method === 'PATCH')).toEqual([]);
+        expect(
+          await f.page
+            .getByRole('button', { name: '停止本轮', exact: true })
+            .isDisabled(),
+        ).toBe(true);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
+    it('restores the original stop as GET-only even when a different occurrence now appears in history', async () => {
+      const f = await fixture(1280, { running: true });
+      try {
+        await f.history();
+        // History mounting does not fan out into per-Run reads or polling.
+        expect(f.stopRequests()).toEqual([]);
+        f.state.dropStopAck = true;
+        await f.submitStop();
+        const check = f.page.getByRole('button', {
+          name: '检查本轮停止结果',
+          exact: true,
+        });
+        await expect.poll(() => check.isEnabled()).toBe(true);
+        expect(f.stopRequests('POST')).toHaveLength(1);
+        const saved = await f.page.evaluate(() =>
+          JSON.stringify(sessionStorage),
+        );
+        expect(saved).toContain(OCCURRENCE);
+        expect(saved).toContain(RUN);
+        expect(saved).not.toMatch(/never-persist|headers|credential/);
+        f.state.newerHistory = true;
+        await f.page.reload();
+        await f.history();
+        await check.waitFor();
+        expect(f.stopRequests('POST')).toHaveLength(1);
+        expect(f.stopRequests('GET')).toHaveLength(0);
+        expect(
+          await f.page
+            .getByRole('button', { name: '停止本轮', exact: true })
+            .isDisabled(),
+        ).toBe(true);
+        await check.click();
+        await f.page
+          .getByText(
+            '已请求停止本轮，等待执行退出。可检查本轮结果；未来计划仍按原设置执行。',
+            { exact: true },
+          )
+          .waitFor();
+        expect(f.stopRequests('POST')).toHaveLength(1);
+        const reads = f.stopRequests('GET');
+        expect(reads).toHaveLength(1);
+        expect(Object.fromEntries(new URL(reads[0]!.url).searchParams)).toEqual(
+          { workspaceId: WORKSPACE, occurrenceId: OCCURRENCE, runId: RUN },
+        );
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
+    it('keeps stop occurrence distinct from future plan pause and delete controls', async () => {
+      const f = await fixture(1280, { running: true });
+      try {
+        await f.history();
+        const originalPlan = structuredClone(f.task);
+        await f.submitStop();
+        await f.page
+          .getByText(
+            '已请求停止本轮，等待执行退出。可检查本轮结果；未来计划仍按原设置执行。',
+            { exact: true },
+          )
+          .waitFor();
+        expect(f.stopRequests('POST').map((r) => r.body)).toEqual([
+          { occurrenceId: OCCURRENCE, runId: RUN },
+        ]);
+        expect(f.requests.filter((r) => r.method === 'PATCH')).toEqual([]);
+        expect(f.task).toEqual(originalPlan);
+        await f.page.getByRole('tab', { name: '规则', exact: true }).click();
+        await f.page
+          .getByRole('button', { name: '暂停任务', exact: true })
+          .click();
+        await f.page
+          .getByRole('button', { name: '恢复任务', exact: true })
+          .waitFor();
+        await f.page
+          .getByRole('button', { name: '删除任务', exact: true })
+          .click();
+        await f.page
+          .getByRole('button', { name: '确认删除', exact: true })
+          .click();
+        await expect
+          .poll(
+            () =>
+              f.task.definition.kind === 'recurring' &&
+              f.task.definition.task.status,
+          )
+          .toBe('deleted');
+        expect(
+          f.requests
+            .filter((r) => r.method === 'PATCH')
+            .map((r) => (r.body as ChangeRecurringTaskInput).action),
+        ).toEqual(['pause', 'delete']);
+        expect(f.stopRequests('POST')).toHaveLength(1);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
+    it('creates one explicit manual Run from a paused plan without PATCH or future-time changes', async () => {
+      const f = await fixture(1280, { manual: true });
+      try {
+        if (f.task.definition.kind !== 'recurring') throw Error('fixture kind');
+        f.task.definition.task.status = 'paused';
+        const before = structuredClone(f.task);
+        await f.open();
+        await f.page
+          .getByRole('button', { name: '立即执行', exact: true })
+          .click();
+        await f.page
+          .getByText(
+            '已创建本次立即执行，可在运行记录查看结果。原定计划保持不变。',
+            { exact: true },
+          )
+          .waitFor();
+        expect(f.manualRequests('POST')).toHaveLength(1);
+        expect(f.manualRequests('POST')[0]!.body).toMatchObject({
+          requestId: expect.any(String),
+          expectedRevision: 1,
+        });
+        expect(f.requests.filter((r) => r.method === 'PATCH')).toEqual([]);
+        expect(f.task).toEqual(before);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
+    it('sends zero manual POST when session storage cannot persist the request', async () => {
+      const f = await fixture(1280, { manual: true, storageFailure: true });
+      try {
+        await f.open();
+        await f.page
+          .getByRole('button', { name: '立即执行', exact: true })
+          .click();
+        await f.page.getByText(/fixture storage unavailable/).waitFor();
+        expect(f.manualRequests()).toHaveLength(0);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
+    it('restores a lost manual ACK as user-triggered GET of the original request despite a later plan revision', async () => {
+      const f = await fixture(1280, { manual: true });
+      try {
+        await f.open();
+        f.state.dropManualAck = true;
+        await f.page
+          .getByRole('button', { name: '立即执行', exact: true })
+          .click();
+        const check = () =>
+          f.page.getByRole('button', { name: '检查立即执行结果', exact: true });
+        await expect.poll(() => check().isEnabled()).toBe(true);
+        const original = f.manualRequests('POST')[0]!
+            .body as ManualAutomationRunInput,
+          key = manualRunStorageKey(
+            [ORG, WORKSPACE, VIEWER].join('/'),
+            WORKSPACE,
+            TASK,
+          );
+        const saved = await f.page.evaluate(
+          (k) => sessionStorage.getItem(k),
+          key,
+        );
+        expect(saved).not.toContain('never-persist');
+        f.task.revision = 9;
+        if (f.task.definition.kind === 'recurring')
+          f.task.definition.task.revision = 9;
+        await f.page
+          .getByRole('button', { name: '显示或隐藏右栏', exact: true })
+          .click();
+        await f.page
+          .getByRole('button', { name: '显示或隐藏右栏', exact: true })
+          .click();
+        await check().waitFor();
+        expect(f.manualRequests('POST')).toHaveLength(1);
+        expect(f.manualRequests('GET')).toHaveLength(0);
+        await check().click();
+        await f.page
+          .getByText(
+            '已创建本次立即执行，可在运行记录查看结果。原定计划保持不变。',
+            { exact: true },
+          )
+          .waitFor();
+        expect(f.manualRequests('POST')).toHaveLength(1);
+        expect(f.manualRequests('GET')).toHaveLength(1);
+        expect(
+          new URL(f.manualRequests('GET')[0]!.url).searchParams.get(
+            'requestId',
+          ),
+        ).toBe(original.requestId);
+        expect(original.expectedRevision).toBe(1);
+        expect(
+          await f.page.evaluate((k) => sessionStorage.getItem(k), key),
+        ).toBeNull();
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
+    const scopeChanges = [
+      {
+        label: '组织',
+        organizationId: OTHER_ORG,
+        workspaceId: WORKSPACE,
+        viewerId: VIEWER,
+        taskId: TASK,
+      },
+      {
+        label: '工作区',
+        organizationId: ORG,
+        workspaceId: OTHER_WORKSPACE,
+        viewerId: VIEWER,
+        taskId: TASK,
+      },
+      {
+        label: '用户',
+        organizationId: ORG,
+        workspaceId: WORKSPACE,
+        viewerId: OTHER_VIEWER,
+        taskId: TASK,
+      },
+      {
+        label: '任务',
+        organizationId: ORG,
+        workspaceId: WORKSPACE,
+        viewerId: VIEWER,
+        taskId: OTHER_TASK,
+      },
+    ];
+    it.each(scopeChanges)(
+      'ignores an old in-flight stop POST after changing $label',
+      async (change) => {
+        const f = await fixture(1280, { running: true });
+        try {
+          await f.history();
+          f.state.holdStop = 'POST';
+          f.state.stopTerminal = true;
+          await f.submitStop();
+          await expect.poll(() => f.heldStops.length).toBe(1);
+          await verifyOldResponseIsolation(f, change);
+          expect(f.stopRequests('POST')).toHaveLength(1);
+          expect(f.stopRequests('GET')).toHaveLength(0);
+        } finally {
+          await f.close();
+        }
+      },
+    );
+    it.each(scopeChanges)(
+      'ignores an old in-flight exact readback GET after changing $label',
+      async (change) => {
+        const f = await fixture(1280, { running: true });
+        try {
+          await f.history();
+          f.state.dropStopAck = true;
+          await f.submitStop();
+          const check = f.page.getByRole('button', {
+            name: '检查本轮停止结果',
+            exact: true,
+          });
+          await expect.poll(() => check.isEnabled()).toBe(true);
+          f.state.holdStop = 'GET';
+          f.state.stopTerminal = true;
+          await check.click();
+          await expect.poll(() => f.heldStops.length).toBe(1);
+          await verifyOldResponseIsolation(f, change);
+          expect(f.stopRequests('POST')).toHaveLength(1);
+          expect(f.stopRequests('GET')).toHaveLength(1);
+          const target = new URL(f.stopRequests('GET')[0]!.url);
+          expect(target.searchParams.get('occurrenceId')).toBe(OCCURRENCE);
+          expect(target.searchParams.get('runId')).toBe(RUN);
+        } finally {
+          await f.close();
+        }
+      },
+    );
+    it.each(
+      scopeChanges.flatMap((change) =>
+        ['POST', 'GET'].map((method) => ({ ...change, method })),
+      ),
+    )(
+      'ignores an old manual $method response after changing $label',
+      async (change) => {
+        const f = await fixture(1280, { manual: true });
+        try {
+          await f.open();
+          if (change.method === 'GET') f.state.dropManualAck = true;
+          else f.state.holdManual = 'POST';
+          await f.page
+            .getByRole('button', { name: '立即执行', exact: true })
+            .click();
+          if (change.method === 'GET') {
+            const check = f.page.getByRole('button', {
+              name: '检查立即执行结果',
+              exact: true,
+            });
+            await expect.poll(() => check.isEnabled()).toBe(true);
+            f.state.holdManual = 'GET';
+            await check.click();
+          }
+          await expect.poll(() => f.heldManual.length).toBe(1);
+          const oldScope = [ORG, WORKSPACE, VIEWER].join('/'),
+            key = manualRunStorageKey(oldScope, WORKSPACE, TASK),
+            saved = await f.page.evaluate(
+              (k) => sessionStorage.getItem(k),
+              key,
+            );
+          expect(saved).not.toBeNull();
+          await f.page
+            .getByRole('button', { name: '切换' + change.label, exact: true })
+            .click();
+          if (change.taskId === OTHER_TASK)
+            await f.page
+              .getByRole('heading', { name: '另一个任务', exact: true })
+              .waitFor();
+          else
+            await f.page
+              .getByText('当前范围没有该任务。', { exact: true })
+              .waitFor();
+          const oldReads = () =>
+              f.requests.filter(
+                (r) =>
+                  r.method === 'GET' &&
+                  r.principalScope === oldScope &&
+                  new URL(r.url).pathname === `/api/v1/scheduled-tasks/${TASK}`,
+              ).length,
+            before = oldReads(),
+            delivered = f.page.waitForResponse(
+              (r) => r.url() === f.manualRequests().at(-1)!.url,
+            );
+          await f.heldManual[0]!.respond();
+          await (await delivered).finished();
+          await f.page.evaluate(
+            () =>
+              new Promise<void>((done) =>
+                requestAnimationFrame(() =>
+                  requestAnimationFrame(() => done()),
+                ),
+              ),
+          );
+          expect(
+            await f.page
+              .getByText(
+                '已创建本次立即执行，可在运行记录查看结果。原定计划保持不变。',
+                { exact: true },
+              )
+              .count(),
+          ).toBe(0);
+          expect(
+            await f.page
+              .getByRole('button', { name: '检查立即执行结果', exact: true })
+              .count(),
+          ).toBe(0);
+          expect(
+            await f.page.evaluate((k) => sessionStorage.getItem(k), key),
+          ).toBe(saved);
+          expect(
+            await f.page.evaluate(
+              (k) => sessionStorage.getItem(k),
+              manualRunStorageKey(
+                [
+                  change.organizationId,
+                  change.workspaceId,
+                  change.viewerId,
+                ].join('/'),
+                change.workspaceId,
+                change.taskId,
+              ),
+            ),
+          ).toBeNull();
+          expect(oldReads()).toBe(before);
+          expect(f.manualRequests('POST')).toHaveLength(1);
+          expect(f.manualRequests('GET')).toHaveLength(
+            change.method === 'GET' ? 1 : 0,
+          );
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+    );
+    async function verifyOldResponseIsolation(
+      f: Awaited<ReturnType<typeof fixture>>,
+      change: (typeof scopeChanges)[number],
+    ) {
+      const oldScope = [ORG, WORKSPACE, VIEWER].join('/');
+      const oldKey = stopOccurrenceStorageKey(oldScope, WORKSPACE, TASK);
+      const saved = await f.page.evaluate(
+        (key) => sessionStorage.getItem(key),
+        oldKey,
+      );
+      expect(saved).not.toBeNull();
+      await f.page
+        .getByRole('button', { name: '切换' + change.label, exact: true })
+        .click();
+      if (change.taskId === OTHER_TASK)
+        await f.page
+          .getByRole('heading', { name: '另一个任务', exact: true })
+          .waitFor();
+      else
+        await f.page
+          .getByText('当前范围没有该任务。', { exact: true })
+          .waitFor();
+      const oldHistoryReads = () =>
+        f.requests.filter(
+          (r) =>
+            r.method === 'GET' &&
+            r.principalScope === oldScope &&
+            new URL(r.url).pathname === `/api/v1/scheduled-tasks/${TASK}`,
+        ).length;
+      const before = oldHistoryReads();
+      const delivered = f.page.waitForResponse(
+        (response) => response.url() === f.stopRequests().at(-1)!.url,
+      );
+      await f.heldStops[0]!.respond();
+      await (await delivered).finished();
+      await f.page.evaluate(
+        () =>
+          new Promise<void>((done) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => done())),
+          ),
+      );
+      expect(
+        await f.page
+          .getByText('本轮已取消。未来计划仍按原设置执行。', { exact: true })
+          .count(),
+      ).toBe(0);
+      expect(
+        await f.page
+          .getByRole('button', { name: '检查本轮停止结果', exact: true })
+          .count(),
+      ).toBe(0);
+      expect(
+        await f.page.evaluate((key) => sessionStorage.getItem(key), oldKey),
+      ).toBe(saved);
+      const currentKey = stopOccurrenceStorageKey(
+        [change.organizationId, change.workspaceId, change.viewerId].join('/'),
+        change.workspaceId,
+        change.taskId,
+      );
+      expect(
+        await f.page.evaluate((key) => sessionStorage.getItem(key), currentKey),
+      ).toBeNull();
+      expect(oldHistoryReads()).toBe(before);
+      expect(f.errors).toEqual([]);
+    }
   },
 );
