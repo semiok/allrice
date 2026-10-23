@@ -60,14 +60,15 @@ it.each([
     await new Promise<void>((resolve) => server.listen(socket, resolve));
     try {
       const { CloudRunnerBackend } = await import('./backend.js');
-      const { cloudToolchainImageV1 } = await import('@allrice/contracts');
+      const { cloudPlatform, cloudToolchainImageV1 } =
+        await import('@allrice/contracts');
       vi.stubEnv('ALLRICE_CLOUD_DOCKER_SOCKET', socket);
       const backend = new CloudRunnerBackend(socket);
       vi.spyOn(backend, 'json').mockImplementation(async (_method, path) =>
         path === '/info'
           ? {
               OSType: 'linux',
-              Architecture: 'amd64',
+              Architecture: cloudPlatform.architecture,
               CgroupVersion: '2',
               MemoryLimit: true,
               SwapLimit: true,
@@ -76,15 +77,18 @@ it.each([
               SecurityOptions: ['name=seccomp'],
               Runtimes: { runsc: { path: '/usr/local/bin/runsc' } },
             }
-          : { Id: cloudToolchainImageV1, Os: 'linux', Architecture: 'amd64' },
+          : {
+              Id: cloudToolchainImageV1,
+              Os: 'linux',
+              Architecture: cloudPlatform.architecture,
+            },
       );
       probe.mockResolvedValue({
         stdout: JSON.stringify({
           ready: true,
           projectServices: true,
           watchdog: 'met166-service-v1',
-          runtimeChecksum:
-            '1a4995a70b3c8b7d36f55d7d2dc6d15185ebe420de653b1a330b42d36c0e6b4a',
+          runtimeChecksum: cloudPlatform.runtimeChecksum.slice(7),
           projectWebDevelopment: budget,
         }),
       });

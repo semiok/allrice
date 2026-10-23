@@ -4,6 +4,7 @@ import {
   type ProjectDependencyResolveInput,
 } from './project-dependency-resolution.ts';
 import { projectToolReleases } from './project-tool-releases.ts';
+import { cloudPlatform, cloudPlatforms } from './runtime-v2/cloud-platform.ts';
 
 /** Fixed controller, not a model-provided script. Only package declarations are
  * interpolated as JSON. Managers never see user config, scripts, files or keys. */
@@ -116,11 +117,16 @@ export function projectResolutionScript(input: ProjectDependencyResolveInput) {
     asset:
       args.manager === 'pnpm'
         ? projectToolReleases.pnpm
-        : projectToolReleases.uv.amd64,
+        : projectToolReleases.uv[cloudPlatform.architecture],
   };
+  // amd64 output stays byte-identical to already approved resolver scripts.
+  const resolver = pythonResolver.replaceAll(
+    cloudPlatforms.amd64.pythonPlatform,
+    cloudPlatform.pythonPlatform,
+  );
   return args.manager === 'pnpm'
     ? `const plan=${JSON.stringify(plan)};\n${nodeResolver}`
-    : `import json\nplan=json.loads(${JSON.stringify(JSON.stringify(plan))})\n${pythonResolver}`;
+    : `import json\nplan=json.loads(${JSON.stringify(JSON.stringify(plan))})\n${resolver}`;
 }
 
 export function projectResolutionCloudArguments(

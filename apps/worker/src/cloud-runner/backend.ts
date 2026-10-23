@@ -20,6 +20,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { Duplex } from 'node:stream';
 import {
+  cloudPlatform,
   cloudToolchainImageV1,
   cloudPythonImageV1,
   cloudRuntimeImage,
@@ -74,6 +75,7 @@ import {
   type PngArtifactValidation,
 } from '@allrice/storage';
 import { officeSandboxImage } from '../office/runtime.js';
+import { colimaEnvironmentPath, colimaExecutable } from './colima.js';
 import {
   ProjectPreparation,
   ProjectEvents,
@@ -260,7 +262,7 @@ function attestWatchdog() {
   if (!watchdogAttestation) {
     attestationExpires = Infinity;
     const executable =
-      process.platform === 'darwin' ? '/usr/local/bin/colima' : '/usr/bin/sudo';
+      process.platform === 'darwin' ? colimaExecutable() : '/usr/bin/sudo';
     const args =
       process.platform === 'darwin'
         ? [
@@ -282,7 +284,7 @@ function attestWatchdog() {
           return await promisify(execFile)(executable, args, {
             timeout: 15000,
             maxBuffer: 4096,
-            env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: homedir() },
+            env: { PATH: colimaEnvironmentPath(), HOME: homedir() },
           });
         } catch (error) {
           if (attempt >= 2) throw error;
@@ -687,7 +689,9 @@ export class CloudRunnerBackend {
     }>('GET', '/info');
     if (
       info.OSType !== 'linux' ||
-      !['x86_64', 'amd64'].includes(info.Architecture) ||
+      !(cloudPlatform.dockerArchitectures as readonly string[]).includes(
+        info.Architecture,
+      ) ||
       info.CgroupVersion !== '2' ||
       !info.MemoryLimit ||
       !info.SwapLimit ||
@@ -705,7 +709,7 @@ export class CloudRunnerBackend {
     if (
       image.Id !== imageDigest ||
       image.Os !== 'linux' ||
-      image.Architecture !== 'amd64'
+      image.Architecture !== cloudPlatform.architecture
     )
       throw new CloudRunnerError('CLOUD_TOOLCHAIN_CHANGED');
     // This is fixed trusted infrastructure attestation, never tenant-selected CLI.
@@ -726,14 +730,13 @@ export class CloudRunnerBackend {
       (requireProjectService &&
         (attestation.projectServices !== true ||
           attestation.watchdog !== 'met166-service-v1')) ||
-      attestation.runtimeChecksum !==
-        '1a4995a70b3c8b7d36f55d7d2dc6d15185ebe420de653b1a330b42d36c0e6b4a'
+      attestation.runtimeChecksum !== cloudPlatform.runtimeChecksum.slice(7)
     )
       throw new CloudRunnerError('CLOUD_WATCHDOG_UNAVAILABLE');
     return {
       backend: 'cloud-gvisor-v1',
       runtime: 'runsc',
-      architecture: 'amd64',
+      architecture: cloudPlatform.architecture,
       imageDigest: image.Id,
     } as const;
   }

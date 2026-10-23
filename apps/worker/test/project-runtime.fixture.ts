@@ -4,6 +4,7 @@ import {
   CloudProjectCommandSchema,
   cloudToolchainImageV1,
   cloudPythonImageV1,
+  cloudPlatform,
 } from '@allrice/contracts';
 import { projectCacheKey } from '@allrice/project-runtime';
 import { savedProjectFixture } from '../../rice-bridge/test/saved-project-fixture.js';
@@ -13,6 +14,9 @@ export function cloudProjectFixture(manager: 'pnpm' | 'uv' = 'pnpm') {
     imageDigest = manager === 'uv' ? cloudPythonImageV1 : cloudToolchainImageV1;
   const projectSource = {
     ...a.projectSource!,
+    // The shared saved-project source is a local Bridge fixture; a cloud
+    // source is frozen on the server's own platform.
+    architecture: cloudPlatform.architecture,
     executionOrigin: {
       toolName: 'workspace.project' as const,
       callId: randomUUID(),
@@ -23,7 +27,7 @@ export function cloudProjectFixture(manager: 'pnpm' | 'uv' = 'pnpm') {
       spec: a.projectPreparation!,
       scope: f.scope,
       image: imageDigest,
-      architecture: 'amd64',
+      architecture: cloudPlatform.architecture,
     }),
   };
   const command = CloudProjectCommandSchema.parse({

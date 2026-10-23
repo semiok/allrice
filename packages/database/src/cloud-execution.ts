@@ -15,6 +15,7 @@ import {
 import { createHash, randomUUID } from 'node:crypto';
 import { linkTaskOperationCall } from './task-clock.ts';
 import {
+  cloudPlatform,
   CloudCommandInputSchema,
   SandboxExecutionPolicySchema,
   sandboxExecutionBudgetSpec,
@@ -522,7 +523,7 @@ export async function createCloudProjectOperation(
         version: 1,
         project: args.project,
         snapshot: source.document,
-        architecture: 'amd64',
+        architecture: cloudPlatform.architecture,
         origin: selected.workerOrigin,
         executionOrigin: {
           toolName: 'workspace.project',
@@ -543,7 +544,7 @@ export async function createCloudProjectOperation(
                     ownerId: ctx.policySnapshot.subjectId,
                   },
                   image: imageDigest,
-                  architecture: 'amd64',
+                  architecture: cloudPlatform.architecture,
                 }),
               ),
             )

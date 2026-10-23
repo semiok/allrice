@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { UuidSchema } from '../common.ts';
 import { ChecksumSchema } from '../runs.ts';
 import { isRuntimeRelativePath } from './policy.ts';
+import { cloudPlatform } from './cloud-platform.ts';
 import {
   SandboxNetworkRequestSchema,
   SandboxNetworkGrantSchema,
@@ -14,11 +15,9 @@ import { ProjectDependencyResolveInputSchema } from '../project-dependency-resol
 import { projectResolutionCloudArguments } from '../project-resolution-script.ts';
 
 /** P15 fixed server-side runtime. Never inherited from a Bridge profile. */
-export const cloudToolchainImageV1 =
-  'sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5';
+export const cloudToolchainImageV1: string = cloudPlatform.images.node;
 /** Additional approved runtime, not a replacement for frozen Node commands. */
-export const cloudPythonImageV1 =
-  'sha256:d6a52afde3d7c99d8cba9c89ff5078a8e1b6a177f97512ff4facfa4f930fe38e';
+export const cloudPythonImageV1: string = cloudPlatform.images.python;
 export const cloudBackendV1 = 'cloud-gvisor-v1' as const;
 export const CloudCommandLanguageSchema = z.enum(['javascript', 'python']);
 export type CloudCommandLanguage = z.infer<typeof CloudCommandLanguageSchema>;
@@ -227,12 +226,10 @@ export const CloudExecutionProfileSchema = z
   .object({
     backend: z.literal(cloudBackendV1),
     imageDigest: z.literal(cloudToolchainImageV1),
-    architecture: z.literal('amd64'),
+    architecture: z.literal(cloudPlatform.architecture),
     runtime: z.literal('runsc'),
     runtimeVersion: z.literal('release-20260831.0'),
-    runtimeChecksum: z.literal(
-      'sha256:1a4995a70b3c8b7d36f55d7d2dc6d15185ebe420de653b1a330b42d36c0e6b4a',
-    ),
+    runtimeChecksum: z.literal(cloudPlatform.runtimeChecksum),
     network: z.literal('none'),
     sandboxNetwork: SandboxNetworkGrantSchema.optional(),
     maximumConcurrency: z.number().int().min(1).max(32),

@@ -9,6 +9,7 @@ import { isCompiledRepositoryExecution } from './platform-repair-contracts.ts';
 import { createHash } from 'node:crypto';
 import { runtimeFeatureEnabled } from '@allrice/contracts';
 import {
+  cloudPlatform,
   CloudExecutionPayloadSchema,
   projectRuntimeCacheIdentity,
   cloudPythonImageV1,
@@ -95,7 +96,7 @@ export function cloudCommandBinding(
       toolchainDigest: digest({
         backend: payload.backend,
         imageDigest: payload.imageDigest,
-        architecture: 'amd64',
+        architecture: cloudPlatform.architecture,
       }),
       budgetDigest: digest(
         payload.executionBudget
@@ -424,7 +425,7 @@ export async function checkCloudBindingAuthority(
                     ownerId: binding.requestedBy.id,
                   },
                   image: project.imageDigest,
-                  architecture: 'amd64',
+                  architecture: cloudPlatform.architecture,
                 }),
               ),
             )

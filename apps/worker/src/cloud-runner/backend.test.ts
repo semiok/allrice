@@ -8,9 +8,11 @@ import {
   CloudCommandSchema,
   CloudCommandInputSchema,
   CloudExecutionProfileSchema,
+  cloudPlatform,
   cloudToolchainImageV1,
 } from '@allrice/contracts';
 import { CloudRunnerBackend, cloudSupervisor } from './backend.js';
+import { colimaEnvironmentPath, colimaExecutable } from './colima.js';
 
 const command = (script: string, extra: Record<string, unknown> = {}) =>
   CloudCommandSchema.parse({
@@ -164,11 +166,10 @@ describe('P15 cloud contract fail-closed', () => {
     const profile = {
       backend: 'cloud-gvisor-v1',
       imageDigest: cloudToolchainImageV1,
-      architecture: 'amd64',
+      architecture: cloudPlatform.architecture,
       runtime: 'runsc',
       runtimeVersion: 'release-20260831.0',
-      runtimeChecksum:
-        'sha256:1a4995a70b3c8b7d36f55d7d2dc6d15185ebe420de653b1a330b42d36c0e6b4a',
+      runtimeChecksum: cloudPlatform.runtimeChecksum,
       network: 'none',
       maximumConcurrency: 2,
     };
@@ -515,18 +516,22 @@ suite('P15 actual SaaS-host dedicated VM + gVisor', () => {
       expect((await backend.inspect(id))?.State.Running).toBe(true);
       await delay(1000);
       const { stdout } = await promisify(execFile)(
-        '/usr/local/bin/colima',
+        colimaExecutable(),
         [
           'ssh',
           '--profile',
-          'allrice-cloud-b4',
+          process.env.ALLRICE_CLOUD_PROFILE ?? 'allrice-cloud-b4',
           '--',
           'sudo',
           'python3',
           '-c',
           "import glob,json,os;out=[]\nfor p in glob.glob('/proc/[0-9]*/status'):\n try:\n  s=open(p).read();n=s.splitlines()[0];\n  if os.readlink(p.replace('status','exe'))=='/usr/local/bin/gvisor-bin/gvisor_sentry':out.append({'name':n,'seccomp':next((l for l in s.splitlines() if l.startswith('Seccomp:')),'missing')})\n except OSError:pass\nprint(json.dumps(out))",
         ],
-        { timeout: 5000, maxBuffer: 4096 },
+        {
+          timeout: 5000,
+          maxBuffer: 4096,
+          env: { ...process.env, PATH: colimaEnvironmentPath() },
+        },
       );
       const sentries = JSON.parse(stdout);
       expect(

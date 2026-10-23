@@ -16,6 +16,7 @@ import {
   type StorageObject,
   type StoragePort,
   type BridgeReadinessState,
+  cloudPlatform,
 } from '@allrice/contracts';
 import {
   createAssistantFixtureDatabase,
@@ -212,7 +213,7 @@ suite(
       const profile = CloudExecutionProfileSchema.parse({
         backend: 'cloud-gvisor-v1',
         runtime: 'runsc',
-        architecture: 'amd64',
+        architecture: cloudPlatform.architecture,
         imageDigest: cloudToolchainImageV1,
         network: 'none',
         ...(sandbox.network
@@ -227,8 +228,7 @@ suite(
           : {}),
         maximumConcurrency: 2,
         runtimeVersion: 'release-20260831.0',
-        runtimeChecksum:
-          'sha256:1a4995a70b3c8b7d36f55d7d2dc6d15185ebe420de653b1a330b42d36c0e6b4a',
+        runtimeChecksum: cloudPlatform.runtimeChecksum,
       });
       await f.db`insert into allrice_execution_targets(id,organization_id,workspace_id,target_key,kind,label,state,capabilities,metadata)
       values(${target},${f.org},${f.workspace},${'project-cloud-' + target},'cloud_sandbox','Synthetic isolated project cloud','online',${f.db.json(['process.execute'])},'{}')`;
@@ -403,7 +403,7 @@ suite(
             cacheKey: source.cacheKey,
             manager: p.manager,
             managerVersion: p.managerVersion,
-            platform: 'linux-amd64' as const,
+            platform: cloudPlatform.linuxPlatform,
             runtimeImage: payload.imageDigest,
             packageCount: p.packages.length,
             archiveHits: 0,
@@ -1994,7 +1994,7 @@ suite(
               cacheKey: s.cacheKey,
               manager: p.manager,
               managerVersion: p.managerVersion,
-              platform: 'linux-amd64' as const,
+              platform: cloudPlatform.linuxPlatform,
               runtimeImage: payload.imageDigest,
               packageCount: p.packages.length,
               archiveHits: 0,
