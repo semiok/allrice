@@ -28,7 +28,7 @@ import styles from './dsh-saas.module.css';
 
 interface ChatSidebarProps {
   experienceEnabled?: boolean;
-  capabilities: ReactNode;
+  capabilities: (section: 'work' | 'computer') => ReactNode;
   archive?: ReturnType<typeof useSessionArchive>;
   activeId: string | null;
   collapsed: boolean;
@@ -43,6 +43,7 @@ interface ChatSidebarProps {
   onBridge: () => void;
   bridge: ReturnType<typeof useBridge>;
   bridgeReleases: ReturnType<typeof useBridgeReleases>;
+  onCapabilitiesChange: () => void;
   onCollapsedChange: (collapsed: boolean) => void;
   onNewSession: (assignmentId?: string) => void;
   onOpenEmployeeDetails: (assignmentId?: string) => void;
@@ -70,6 +71,7 @@ export function ChatSidebar({
   onBridge,
   bridge,
   bridgeReleases,
+  onCapabilitiesChange,
   onCollapsedChange,
   onNewSession,
   onOpenEmployeeDetails,
@@ -317,6 +319,7 @@ export function ChatSidebar({
             onBridge={onBridge}
             bridge={bridge}
             bridgeReleases={bridgeReleases}
+            onCapabilitiesChange={onCapabilitiesChange}
           />
         </div>
       </div>

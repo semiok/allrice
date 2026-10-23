@@ -195,6 +195,29 @@
 .capabilitySetting p {
   margin-top: 5px;
 }
+.workAutomation .capabilitySetting {
+  padding: 21px 0;
+  border-top: 0;
+  border-bottom: 1px solid var(--dsw-alias-border-primary);
+}
+.workAutomation .capabilitySetting p {
+  font-size: 12px;
+  line-height: 1.75;
+}
+.workAutomation .capabilitySetting small {
+  padding: 0;
+  background: transparent;
+}
+.section .settingsIntro {
+  margin: -10px 0 4px;
+  font-size: 12px;
+  line-height: 1.8;
+}
+.section .settingsFootnote {
+  margin-top: 20px;
+  font-size: 11px;
+  line-height: 1.85;
+}
 .capabilitySetting small {
   display: inline-block;
   font-size: 11px;
@@ -380,8 +403,27 @@
   background: transparent;
   font-size: 13px;
 }
+.computerPage .browserRetention {
+  grid-template-columns: minmax(0, 1fr) max-content;
+}
+.browserRetention > div {
+  min-width: 0;
+}
+.browserRetention > button {
+  white-space: nowrap;
+}
 .computerPage .browserRetention::after {
   display: none;
+}
+.computerCapabilities {
+  padding-inline: var(--computer-content-inset);
+}
+.browserDeviceHeading {
+  padding-inline: var(--computer-content-inset);
+  margin: 22px 0 4px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  font-weight: 500;
 }
 .computerClearRow {
   padding-inline: var(--computer-content-inset);
