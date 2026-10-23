@@ -17,6 +17,11 @@ import {
   updateOrganizationPerson,
 } from '../organization-administration.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
+import {
+  CurrentPlatformTestOriginSchema,
+  freezePlatformTestExecutionBinding,
+  newCurrentPlatformTestOrigin,
+} from '../conversation/current-platform-test-binding.ts';
 import { searchToolBrokerMemories } from '../execution/tool-broker.ts';
 import * as toolSelection from '@allrice/contracts';
 import {
@@ -1363,13 +1368,36 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       await fixture.db`select to_jsonb(t) data from allrice_employee_method_tests t where test_id=${x.test.id}`;
     const [platform] =
       await fixture.db`select to_jsonb(t) data from allrice_platform_employee_test_runs t where id=${x.test.id}`;
+    const originalOrigin = CurrentPlatformTestOriginSchema.parse(
+      platform!.data.native_root_origin,
+    );
+    const frozenSource = {
+      platformEmployeeId: platform!.data.employee_id,
+      platformRevisionId: platform!.data.revision_id,
+      purpose: 'method_candidate' as const,
+      definitionChecksum: originalOrigin.birthSource.definitionChecksum,
+      definition: platform!.data.frozen_definition,
+      runtimeProfile: platform!.data.frozen_runtime_profile,
+      nativeSkills: platform!.data.frozen_native_skills,
+      packageChecksum: platform!.data.frozen_package_checksum,
+    };
     const clone = async (owner = x.f.a.user.id, index = 0) => {
       const id = randomUUID(),
         requestId = randomUUID();
       const created = `2027-01-01T00:00:00.${index % 2 ? '000001' : '000002'}Z`;
-      // Synthetic persisted history, not extra executions. All rows remain in
-      // this isolated schema; copying complete records preserves table invariants.
-      await fixture.db`insert into allrice_platform_employee_test_runs select (jsonb_populate_record(null::allrice_platform_employee_test_runs,${fixture.db.json({ ...platform!.data, id, created_at: created })})).*`;
+      const scope = { ...originalOrigin.scope, ownerId: owner, testId: id };
+      const origin = newCurrentPlatformTestOrigin({
+        scope,
+        source: frozenSource,
+      });
+      const executionBinding = freezePlatformTestExecutionBinding({
+        origin,
+        scope,
+        source: frozenSource,
+      });
+      // Synthetic history only, no extra execution. Each new row needs its
+      // own coherent first-INSERT identity rather than the original test ID.
+      await fixture.db`insert into allrice_platform_employee_test_runs select (jsonb_populate_record(null::allrice_platform_employee_test_runs,${fixture.db.json({ ...platform!.data, id, created_at: created, input: { ...platform!.data.input, ownerId: owner }, native_root_origin: origin, native_execution_binding: executionBinding })})).*`;
       await fixture.db`insert into allrice_employee_method_tests select (jsonb_populate_record(null::allrice_employee_method_tests,${fixture.db.json({ ...method!.data, test_id: id, owner_id: owner, request_id: requestId, binding_digest: `synthetic:${id}`, created_at: created, run_id: null, route_decision_id: null })})).*`;
       return id;
     };

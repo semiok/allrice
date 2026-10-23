@@ -223,7 +223,11 @@ suite(
         rootSeed: p.test.id,
         distributionGeneration: 'dsh-0.2.1-rc.2-687f282',
         artifactId: 'sha256:' + 'a'.repeat(64),
-        frozenIdentity: { checksum: p.runtimePackage.checksum },
+        schemaVersion: 2,
+        birthSource: {
+          purpose: 'platform_preview',
+          packageChecksum: p.runtimePackage.checksum,
+        },
       });
       await expect(
         fixture.db`update allrice_platform_employee_test_runs set native_root_origin=null where id=${p.test.id}`,

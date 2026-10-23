@@ -1,5 +1,9 @@
 import type * as NativeBudget from './run-memory-context.ts';
-import { bindJobNativeSession } from './execution/queue.ts';
+import {
+  bindJobNativeSession,
+  prepareJobNativeSession,
+} from './execution/queue.ts';
+import { newNativeGeneration } from './conversation/current-execution-binding.ts';
 import {
   nativeBindingDescriptor,
   nativeBindingInsertGate,
@@ -529,12 +533,20 @@ suite(
         .filter((f) => f.endsWith('.sql'))
         .sort())
         await db.unsafe(await readFile(new URL(file, dir), 'utf8'));
+      vi.spyOn(globalThis, 'fetch').mockRejectedValue(
+        Error('No provider/network in SQL-only B2a acceptance'),
+      );
       vi.stubEnv('ALLRICE_EXPERIENCE_REVIEW_ENABLED', '1');
       vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '1');
       vi.stubEnv('ALLRICE_NATIVE_CALENDAR_ENABLED', '1');
       await synchronizePlatformContent(await loadPlatformContentCatalog());
     }, 120000);
     beforeEach(async () => {
+      vi.stubEnv(
+        'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
+        'sha256:' + 'a'.repeat(64),
+      );
+      vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
       // Prior fixtures must not consume this case's production daily quota.
       // Only this suite's disposable schema is changed; limits stay unchanged.
       await db`update allrice_automation_runs set created_at=clock_timestamp()-interval '2 days' where experience_occurrence is not null`;
@@ -545,10 +557,22 @@ suite(
       await db`update allrice_jobs set status='canceled',completed_at=clock_timestamp() where status in ('queued','claimed','running')`;
     });
     afterAll(async () => {
+      vi.restoreAllMocks();
       vi.unstubAllEnvs();
       await db?.end({ timeout: 5 });
-      if (admin && /^experience_consolidation_[a-f0-9]{32}$/.test(schema))
+      if (admin && /^experience_consolidation_[a-f0-9]{32}$/.test(schema)) {
         await admin.unsafe(`drop schema ${schema} cascade`);
+        const [row] =
+          await admin`select to_regnamespace(${schema}) is null absent`;
+        expect(row!.absent).toBe(true);
+        console.log(
+          JSON.stringify({
+            kind: 'b2a-experience-sql-cleanup',
+            schema,
+            schemaRemoved: row!.absent,
+          }),
+        );
+      }
       await admin?.end({ timeout: 5 });
     });
     async function validationFixture(
@@ -730,6 +754,42 @@ suite(
         ),
       ).toHaveLength(1);
       expect(tests[0]!.input.prompt).toContain('complete-a');
+      const original = tests[0]!;
+      expect(original.native_root_origin).toMatchObject({
+        schemaVersion: 2,
+        contextKind: 'platform_employee_test',
+        contextId: original.id,
+        artifactId: 'sha256:' + 'a'.repeat(64),
+      });
+      expect(original.native_execution_binding).toMatchObject({
+        source: {
+          platformRevisionId: original.revision_id,
+          purpose: 'experience_validation',
+          packageChecksum: original.frozen_package_checksum,
+        },
+        scope: {
+          testId: original.id,
+          organizationId: f.org,
+          workspaceId: f.workspace,
+          ownerId: f.user,
+        },
+      });
+      expect(
+        await db`select id from allrice_runs where execution_spec->>'platformEmployeeTestRunId'=${original.id}`,
+      ).toHaveLength(0);
+      const [published] =
+        await db`select r.id,r.checksum from allrice_employee_version_sources s join allrice_platform_employee_revisions r on r.id=s.platform_revision_id where s.employee_version_id=${f.instance.source.employeeVersionId}`;
+      expect(original.native_execution_binding.source).toMatchObject({
+        platformRevisionId: published!.id,
+        definitionChecksum: published!.checksum,
+      });
+      // A later deployment approval must not rebind the already queued test.
+      vi.stubEnv(
+        'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
+        'sha256:' + 'b'.repeat(64),
+      );
+      vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'b'.repeat(64));
+
       const validationWorker = randomUUID();
       const test = (await claimNextPlatformEmployeeTestRun(validationWorker))!;
       const pin = await bindJobNativeSession({
@@ -741,10 +801,29 @@ suite(
         descriptor: nativeBindingDescriptor({
           ...test.previewContext,
           contextKey: test.id,
-          distributionGeneration: test.runtimeProfile.distributionGeneration,
+          distributionGeneration: newNativeGeneration,
         }),
       });
       expect(pin.binding.contextId).toBe(test.id);
+      expect(pin.binding.artifactId).toBe('sha256:' + 'a'.repeat(64));
+      const prepared = await prepareJobNativeSession({
+        workerId: validationWorker,
+        jobId: test.previewExecution.jobId,
+        leaseToken: test.previewExecution.leaseToken,
+        attempt: test.previewExecution.jobAttempt,
+        subject: { kind: 'platform_employee_test', id: test.id },
+        nativeSessionId: pin.binding.nativeSessionId,
+        storageContextKey: test.id,
+      });
+      expect(prepared.executionBinding).toMatchObject({
+        kind: 'current_platform_test_run_execution',
+        test: original.native_execution_binding,
+      });
+      expect(test.runtimeProfile).toEqual(original.frozen_runtime_profile);
+      expect(test.experienceCandidate!.modelSnapshot).toEqual(
+        original.experience_binding.model,
+      );
+
       expect(pin.conversation).toBeUndefined();
       expect(test.experienceCandidate?.instructions).toContain(
         f.output.drafts[0]!.rule,
@@ -787,6 +866,44 @@ suite(
       await expect(
         db`update allrice_automation_runs set experience_validation_plan=null where id=${f.occurrence.id}`,
       ).rejects.toThrow('immutable');
+    });
+    it('B2a missing executor approval leaves experience validation unqueued without a Run or false coverage', async () => {
+      const f = await validationFixture();
+      vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', undefined);
+      await expect(syncExperienceValidations()).rejects.toThrow();
+      expect(
+        await db`select id from allrice_platform_employee_test_runs where experience_binding->>'occurrenceId'=${f.occurrence.id}`,
+      ).toHaveLength(0);
+      const [row] =
+        await db`select experience_validation_plan from allrice_automation_runs where id=${f.occurrence.id}`;
+      expect(row!.experience_validation_plan).toBeNull();
+      expect(
+        await db`select id from allrice_runs where organization_id=${f.org} and execution_spec->>'handler'='platform_employee_test'`,
+      ).toHaveLength(0);
+      expect(await listExperienceDrafts(f.owner)).not.toHaveLength(0);
+    });
+    it('B2a revoked source before claim fails the current-bound experience test without a Run', async () => {
+      const f = await validationFixture();
+      await syncExperienceValidations();
+      const [row] =
+        await db`select * from allrice_platform_employee_test_runs where experience_binding->>'occurrenceId'=${f.occurrence.id}`;
+      expect(row!.native_root_origin.schemaVersion).toBe(2);
+      await db`update allrice_employee_instances set archived_at=clock_timestamp() where id=${f.instance.id}`;
+      expect(await claimNextPlatformEmployeeTestRun(randomUUID())).toBeNull();
+      const [after] =
+        await db`select * from allrice_platform_employee_test_runs where id=${row!.id}`;
+      expect(after!.status).toBe('failed');
+      expect(after!.native_execution_binding).toEqual(
+        row!.native_execution_binding,
+      );
+      expect(after!.native_root_origin).toEqual(row!.native_root_origin);
+      expect(
+        await db`select id from allrice_runs where execution_spec->>'platformEmployeeTestRunId'=${row!.id}`,
+      ).toHaveLength(0);
+      await syncExperienceValidations();
+      expect(
+        await db`select id from allrice_platform_employee_test_runs where experience_binding->>'occurrenceId'=${f.occurrence.id}`,
+      ).toHaveLength(1);
     });
     function skillEvent(
       test: NonNullable<

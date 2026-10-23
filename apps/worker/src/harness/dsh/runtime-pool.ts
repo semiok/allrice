@@ -13,12 +13,9 @@ import type {
   NativeSessionDescriptor,
   NativeRootOrigin,
   NativeSessionPin,
-  EmployeeRunExecutionBinding,
+  NativeRunExecutionBinding,
 } from '@allrice/database';
-import {
-  EmployeeRunExecutionBindingSchema,
-  nativeRootDigest,
-} from '@allrice/database';
+import { currentExecutionForNativeInput } from './current-execution-source.js';
 
 import { HandlerError } from '../../errors.js';
 import {
@@ -315,45 +312,14 @@ export class DshRuntimePool {
     input: HarnessExecutionInput,
     pin?: NativeSessionPin,
     origin?: NativeRootOrigin | null,
-    executionBinding?: EmployeeRunExecutionBinding | null,
+    executionBinding?: NativeRunExecutionBinding | null,
   ) {
-    const currentBinding =
-      executionBinding == null
-        ? null
-        : EmployeeRunExecutionBindingSchema.parse(executionBinding);
-    // This fact only comes from the leased SQL prepare closure. Validate its
-    // exact caller and original source before translating to the approved
-    // executor; never alter the source kernel or infer approval from a pin.
-    if ((origin?.schemaVersion === 2) !== !!currentBinding)
-      throw Error('DSH_NATIVE_ARTIFACT_EXECUTION_BINDING_REQUIRED');
-    if (
-      currentBinding &&
-      (!origin ||
-        origin.schemaVersion !== 2 ||
-        currentBinding.originDigest !== nativeRootDigest(origin) ||
-        currentBinding.scope.runId !==
-          input.executionEnvironment.ALLRICE_RUN_ID ||
-        currentBinding.scope.organizationId !==
-          input.executionEnvironment.ALLRICE_ORGANIZATION_ID ||
-        currentBinding.scope.workspaceId !==
-          input.executionEnvironment.ALLRICE_WORKSPACE_ID ||
-        currentBinding.scope.ownerId !==
-          input.executionEnvironment.ALLRICE_OWNER_ID ||
-        currentBinding.scope.sessionId !== input.kernel.sessionId ||
-        currentBinding.source.employeeVersionId !==
-          input.kernel.employeeVersionId ||
-        (currentBinding.source.packageChecksum ?? undefined) !==
-          input.kernel.runtimePackageChecksum ||
-        (currentBinding.source.declaredGeneration ?? undefined) !==
-          input.kernel.runtimeDistributionGeneration ||
-        currentBinding.execution.artifactId !== origin.artifactId ||
-        currentBinding.execution.generation !== origin.distributionGeneration ||
-        currentBinding.execution.profileId !== origin.profileId ||
-        (pin &&
-          (pin.bindingBasis !== 'business_root_origin' ||
-            pin.rootOriginDigest !== currentBinding.originDigest)))
-    )
-      throw Error('DSH_NATIVE_ARTIFACT_EXECUTION_BINDING_MISMATCH');
+    const currentBinding = currentExecutionForNativeInput(
+      input,
+      origin,
+      executionBinding,
+      pin,
+    );
     // Even a pin cannot turn a deployment/constructor override into approval.
     const identity = checkedDshNativeLaunch({
       command: this.runtimeCommand ?? '',
@@ -430,7 +396,7 @@ export class DshRuntimePool {
     threadId: string,
     pin?: NativeSessionPin,
     origin?: NativeRootOrigin | null,
-    executionBinding?: EmployeeRunExecutionBinding | null,
+    executionBinding?: NativeRunExecutionBinding | null,
   ): NativeSessionDescriptor | null {
     const identity = this.launch(input, pin, origin, executionBinding);
     if (!identity) return null; // Standalone fixture, no approved artifact.
@@ -511,7 +477,7 @@ export class DshRuntimePool {
     threadId: string,
     pin?: NativeSessionPin,
     origin?: NativeRootOrigin | null,
-    executionBinding?: EmployeeRunExecutionBinding | null,
+    executionBinding?: NativeRunExecutionBinding | null,
   ) {
     const launch = this.launch(input, pin, origin, executionBinding);
     const descriptor = this.describeNativeSession(
@@ -537,7 +503,7 @@ export class DshRuntimePool {
     nativeSkills: NonNullable<HarnessExecutionInput['nativeSkills']>;
     nativePin?: NativeSessionPin;
     nativeOrigin?: NativeRootOrigin | null;
-    nativeExecutionBinding?: EmployeeRunExecutionBinding | null;
+    nativeExecutionBinding?: NativeRunExecutionBinding | null;
     requireRecovery?: boolean;
   }) {
     const acquireStarted = performance.now();

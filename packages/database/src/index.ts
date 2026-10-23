@@ -271,6 +271,10 @@ export {
   type EmployeeRunExecutionBinding,
 } from './conversation/current-execution-binding.ts';
 export {
+  NativeRunExecutionBindingSchema,
+  type NativeRunExecutionBinding,
+} from './conversation/native-run-execution-binding.ts';
+export {
   verifyNativeArtifactReferenceCoverage,
   type NativeArtifactReferenceApproval,
 } from './conversation/native-artifact-references.ts';

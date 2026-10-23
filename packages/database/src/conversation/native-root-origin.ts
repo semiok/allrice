@@ -13,6 +13,7 @@ export {
   newNativeGeneration,
   type CurrentEmployeeChatOrigin,
 } from './current-execution-binding.ts';
+import { CurrentPlatformTestOriginSchema } from './current-platform-test-binding.ts';
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 export const NativeRootOriginV1Schema = z
   .object({
@@ -51,6 +52,7 @@ export const NativeRootOriginV1Schema = z
 export const NativeRootOriginSchema = z.union([
   NativeRootOriginV1Schema,
   CurrentEmployeeChatOriginSchema,
+  CurrentPlatformTestOriginSchema,
 ]);
 export type NativeRootOriginV1 = z.infer<typeof NativeRootOriginV1Schema>;
 export type NativeRootOrigin = z.infer<typeof NativeRootOriginSchema>;

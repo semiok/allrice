@@ -24,7 +24,11 @@ import {
   PlatformPreviewContextError,
   resolvePlatformPreviewContext,
 } from '../platform-employees/preview-context.ts';
-import { newEmployeeNativeRootOrigin } from '../conversation/native-root-origin.ts';
+import {
+  newCurrentPlatformTestOrigin,
+  freezePlatformTestExecutionBinding,
+} from '../conversation/current-platform-test-binding.ts';
+import { readCurrentPlatformTestExecutionRecord } from '../conversation/platform-test-execution-record.ts';
 import { createHash, randomUUID } from 'node:crypto';
 
 import type postgres from 'postgres';
@@ -133,6 +137,8 @@ interface TestRunRow {
   frozen_definition: unknown | null;
   frozen_native_skills: unknown | null;
   frozen_package_checksum: string | null;
+  native_root_origin: unknown | null;
+  native_execution_binding: unknown | null;
   created_at: Date;
   started_at: Date | null;
   timeout_at: Date | null;
@@ -574,23 +580,43 @@ export async function queuePlatformEmployeeTestRun(
       packageChecksum: runtimePackage.checksum,
     });
     const testId = randomUUID();
-    const origin = newEmployeeNativeRootOrigin(
-      'platform_employee_test',
+    const executionSource = {
+      platformEmployeeId: employeeId,
+      platformRevisionId: revision.id,
+      purpose: 'platform_preview' as const,
+      definitionChecksum: revision.checksum,
+      definition: frozen.definition,
+      runtimeProfile: frozen.runtimeProfile,
+      nativeSkills: frozen.nativeSkills,
+      packageChecksum: runtimePackage.checksum,
+    };
+    const executionScope = {
+      organizationId: preview.context.organization_id,
+      workspaceId: preview.context.workspace_id,
+      ownerId: preview.context.owner_id,
       testId,
-      runtimePackage,
-    );
+    };
+    const origin = newCurrentPlatformTestOrigin({
+      scope: executionScope,
+      source: executionSource,
+    });
+    const nativeBinding = freezePlatformTestExecutionBinding({
+      origin,
+      scope: executionScope,
+      source: executionSource,
+    });
     return transaction<TestRunRow[]>`
       insert into allrice_platform_employee_test_runs (
         id, employee_id, revision_id, requested_by_label, status, input,
         frozen_runtime_profile, frozen_definition, frozen_native_skills,
-        frozen_package_checksum, native_root_origin
+        frozen_package_checksum, native_root_origin, native_execution_binding
       ) values (
         ${testId}, ${employeeId}, ${compilation.revisionId}, ${actorLabel}, 'queued',
         ${transaction.json(testInput)},
         ${transaction.json(frozen.runtimeProfile)},
         ${transaction.json(frozen.definition)},
         ${transaction.json(frozen.nativeSkills)},
-        ${runtimePackage.checksum}, ${origin ? transaction.json(origin) : null}
+        ${runtimePackage.checksum}, ${transaction.json(origin)}, ${transaction.json(nativeBinding)}
       )
       returning id, employee_id, revision_id, requested_by_label, purpose, status,
         input, output, frozen_runtime_profile, frozen_definition,
@@ -840,7 +866,7 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
       select id, employee_id, revision_id, requested_by_label, status, input, purpose,
         output, frozen_runtime_profile, frozen_definition,
         frozen_native_skills, frozen_package_checksum, created_at, started_at,
-        timeout_at, completed_at
+        timeout_at, completed_at, native_root_origin, native_execution_binding
       from allrice_platform_employee_test_runs
       where status = 'queued' and available_at <= clock_timestamp()
         and frozen_runtime_profile is not null
@@ -856,7 +882,13 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
     let frozen: ReturnType<
       typeof validatePlatformEmployeeTestExecutionSnapshot
     >;
+    let parsedInput: ReturnType<
+      typeof CreatePlatformEmployeeTestRunInputSchema.parse
+    >;
     try {
+      // A corrupt queued input must be finalized through the same zero-Run
+      // failure path, not throw before that guard and poison every claim.
+      parsedInput = CreatePlatformEmployeeTestRunInputSchema.parse(row.input);
       frozen = validatePlatformEmployeeTestExecutionSnapshot({
         runtimeProfile: row.frozen_runtime_profile,
         definition: row.frozen_definition,
@@ -893,9 +925,6 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
       return null;
     }
     const { runtimeProfile, definition, nativeSkills } = frozen;
-    const parsedInput = CreatePlatformEmployeeTestRunInputSchema.parse(
-      row.input,
-    );
     let previewContext: Awaited<
       ReturnType<typeof resolvePlatformPreviewContext>
     >['context'];
@@ -951,6 +980,41 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
           error: {
             code: 'TEST_ENVIRONMENT_UNAVAILABLE',
             message: error.message,
+          },
+        }),
+      });
+      return null;
+    }
+    try {
+      if (
+        (row.native_root_origin as { schemaVersion?: unknown } | null)
+          ?.schemaVersion === 2
+      ) {
+        readCurrentPlatformTestExecutionRecord(row, {
+          organizationId: previewContext.organization_id,
+          workspaceId: previewContext.workspace_id,
+          ownerId: previewContext.owner_id,
+        });
+      } else if (row.native_execution_binding != null) {
+        throw Error('HISTORICAL_PLATFORM_TEST_EXECUTION_BINDING_REFUSED');
+      }
+    } catch {
+      await transaction`update allrice_platform_employee_test_runs
+        set status='running',worker_id=${workerId},started_at=clock_timestamp(),timeout_at=clock_timestamp()
+        where id=${row.id} and status='queued'`;
+      await finalizePlatformEmployeeTestRunInTransaction(transaction, {
+        testRunId: row.id,
+        finalizedByLabel: 'platform-test-execution-binding-validator',
+        output: PlatformEmployeeTestRunOutputSchema.parse({
+          answer: null,
+          provider: null,
+          model: null,
+          threadId: null,
+          usage: null,
+          events: [],
+          error: {
+            code: 'TEST_EXECUTION_BINDING_INVALID',
+            message: '配置试用的执行来源校验失败，请重新发起专项验收。',
           },
         }),
       });

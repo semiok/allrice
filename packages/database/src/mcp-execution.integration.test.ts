@@ -89,6 +89,7 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
     // Explicit synthetic birth issuer for newly compiled current-generation
     // previews. This is not approval of an installed/native launch artifact.
     vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
+    vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
     const url = new URL(base);
     url.search = '';
     admin = postgres(url.toString(), { max: 1, onnotice: () => {} });

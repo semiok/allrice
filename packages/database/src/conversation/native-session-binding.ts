@@ -20,6 +20,14 @@ import {
   freezeEmployeeRunExecutionBinding,
   type EmployeeRunExecutionBinding,
 } from './current-execution-binding.ts';
+import {
+  readCurrentPlatformTestExecutionRecord,
+  type PlatformTestExecutionRecord,
+} from './platform-test-execution-record.ts';
+import {
+  LeasedPlatformTestExecutionBindingSchema,
+  type LeasedPlatformTestExecutionBinding,
+} from './native-run-execution-binding.ts';
 import type { JobRow } from '../queue/row-mappers.ts';
 import {
   isPlatformTechnicalJobAuthorized,
@@ -202,6 +210,7 @@ export async function freezeChatRunExecutionBinding(
     sessionId: input.sessionId,
   });
   if (origin?.schemaVersion !== 2) return null;
+  if (origin.contextKind !== 'chat') return deny();
   const [version] =
     await tx`select v.id,v.manifest,v.config_checksum from allrice_employee_versions v
     join allrice_chat_sessions c on c.id=${input.sessionId} and c.organization_id=v.organization_id and c.workspace_id=v.workspace_id
@@ -247,6 +256,7 @@ async function readLeasedChatExecutionBinding(
     if (run.native_execution_binding != null) return deny();
     return null;
   }
+  if (origin.contextKind !== 'chat') return deny();
   return assertEmployeeRunExecutionBinding(run.native_execution_binding, {
     origin,
     scope: {
@@ -262,6 +272,62 @@ async function readLeasedChatExecutionBinding(
       manifest: run.manifest,
     },
     executionSnapshot: run.execution_snapshot,
+  });
+}
+
+/** Only the queue's real leased closure calls this. Plain SELECT preserves
+ * the existing Job/root/finalizer lock order. No current deployment rebinding. */
+async function readLeasedPlatformTestExecutionBinding(
+  tx: Tx,
+  job: JobRow,
+  origin: NativeRootOrigin | null,
+  testId: string,
+  workerId: string,
+): Promise<LeasedPlatformTestExecutionBinding | null> {
+  const [test] = await tx`select t.* from allrice_platform_employee_test_runs t
+    join allrice_runs r on r.id=${job.run_id}
+      and r.execution_spec->>'platformEmployeeTestRunId'=t.id::text
+      and r.execution_spec->>'employeeRevisionId'=t.revision_id::text
+      and r.execution_spec->>'handler'='platform_employee_preview'
+    join allrice_organizations o on o.id=r.organization_id and o.archived_at is null
+    join allrice_workspaces w on w.id=r.workspace_id and w.organization_id=o.id and w.archived_at is null
+    join allrice_users u on u.id=r.owner_id and u.status='active'
+    where t.id=${testId} and t.status='running' and t.worker_id=${workerId}
+      and t.timeout_at>clock_timestamp() and r.state='running'
+      and r.organization_id=${job.organization_id} and r.workspace_id=${job.workspace_id} and r.owner_id=${job.owner_id}
+      and exists(select 1 from allrice_memberships m where m.organization_id=r.organization_id
+        and (m.workspace_id is null or m.workspace_id=r.workspace_id) and m.user_id=r.owner_id and m.active)`;
+  const payload = job.payload as {
+    type?: string;
+    input?: Record<string, unknown>;
+  };
+  if (
+    !test ||
+    payload.type !== 'platform_employee_preview' ||
+    payload.input?.testRunId !== testId
+  )
+    return deny();
+  if (origin?.schemaVersion !== 2) {
+    if (test.native_execution_binding != null) return deny();
+    return null;
+  }
+  if (origin.contextKind !== 'platform_employee_test') return deny();
+  const checked = readCurrentPlatformTestExecutionRecord(
+    test as PlatformTestExecutionRecord,
+    {
+      organizationId: job.organization_id,
+      workspaceId: job.workspace_id,
+      ownerId: job.owner_id,
+    },
+  );
+  if (nativeRootDigest(checked.origin) !== nativeRootDigest(origin))
+    return deny();
+  return LeasedPlatformTestExecutionBindingSchema.parse({
+    kind: 'current_platform_test_run_execution',
+    test: checked.executionBinding,
+    runId: job.run_id,
+    jobId: job.id,
+    attempt: job.attempt,
   });
 }
 
@@ -309,11 +375,20 @@ async function readNativeRootOrigin(
       }),
     };
   } else {
-    [row] =
-      await tx`select t.native_root_origin,t.frozen_runtime_profile from allrice_platform_employee_test_runs t
+    [row] = await tx`select t.* from allrice_platform_employee_test_runs t
       join allrice_runs r on r.id=${job.run_id} and r.execution_spec->>'platformEmployeeTestRunId'=t.id::text
       where t.id=${s.id} and r.organization_id=${job.organization_id} and r.workspace_id=${job.workspace_id} and r.owner_id=${job.owner_id}`;
     if (!row) return deny();
+    if (row.native_root_origin?.schemaVersion === 2)
+      return readCurrentPlatformTestExecutionRecord(
+        row as PlatformTestExecutionRecord,
+        {
+          organizationId: job.organization_id,
+          workspaceId: job.workspace_id,
+          ownerId: job.owner_id,
+        },
+      ).origin;
+    if (row.native_execution_binding != null) return deny();
     if (row.native_root_origin == null) return null;
     const profile = PlatformEmployeeRuntimeProfileSchema.parse(
       row.frozen_runtime_profile,
@@ -345,7 +420,15 @@ export async function prepareLeasedNativeSession(
   const executionBinding =
     input.subject.kind === 'chat'
       ? await readLeasedChatExecutionBinding(tx, job, origin, input.subject.id)
-      : null;
+      : input.subject.kind === 'platform_employee_test'
+        ? await readLeasedPlatformTestExecutionBinding(
+            tx,
+            job,
+            origin,
+            input.subject.id,
+            input.workerId,
+          )
+        : null;
   const reader = origin
     ? nativeOriginReaderForOrigin(origin, {
         organizationId: job.organization_id,
@@ -458,6 +541,14 @@ export async function bindLeasedNativeSession(
   const origin = await readNativeRootOrigin(tx, job, s);
   if (s.kind === 'chat')
     await readLeasedChatExecutionBinding(tx, job, origin, s.id);
+  else if (s.kind === 'platform_employee_test')
+    await readLeasedPlatformTestExecutionBinding(
+      tx,
+      job,
+      origin,
+      s.id,
+      input.workerId,
+    );
   const reader = origin
     ? nativeOriginReaderForOrigin(origin, {
         organizationId: job.organization_id,
