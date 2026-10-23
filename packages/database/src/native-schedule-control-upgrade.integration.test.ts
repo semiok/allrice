@@ -48,12 +48,23 @@ run('offline control artifact upgrade in an owned synthetic SQL schema', () => {
   beforeAll(async () => {
     fixture = await createAssistantFixtureDatabase();
     db = fixture.db;
+    const [scope] = await db<
+      { database: string; schema: string }[]
+    >`select current_database() database,current_schema() schema`;
+    expect(scope!.database).toBe(
+      new URL(process.env.ALLRICE_TEST_DATABASE_URL!).pathname.slice(1),
+    );
+    expect(scope!.schema).toMatch(/^p25_[a-f0-9]{32}$/);
     await db`insert into allrice_users(id,email,display_name,password_hash) values(${owner},${`${owner}@example.test`},'Synthetic upgrade','not-login')`;
     await db`insert into allrice_organizations(id,slug,name) values(${org},${`upgrade-${org}`},'Synthetic upgrade')`;
     await db`insert into allrice_workspaces(id,organization_id,slug,name) values(${workspace},${org},'upgrade','Synthetic upgrade')`;
   }, 120_000);
   afterAll(async () => {
-    await fixture?.close();
+    if (fixture)
+      console.info(
+        'CONTROL_CLOUD_SQL_CLEANUP',
+        JSON.stringify(await fixture.close()),
+      );
   }, 30_000);
   async function clock() {
     const [r] = await db<
@@ -841,5 +852,396 @@ run('offline control artifact upgrade in an owned synthetic SQL schema', () => {
           }),
         ).rejects.toThrow('readback_conflict');
     }
+  });
+  // Synthetic SQL metadata only: these credentials exercise DB fences, never
+  // claim that the real Dev VM was observed or that the historical work settled.
+  let historicalCloudSeeded = false;
+  const cloudOperation = '44cff0b1-a2db-4953-a7b0-8e74c9f414ec';
+  const cloudRun = '0c350e53-4ad8-4e57-bdc0-f4472e74d0d3';
+  const cloudJob = '6a42bf8b-9a3b-432a-9fb1-e4123bbccc8a';
+  const cloudAttempt = '6275fd00-d4d6-4440-a340-95662caaa7b8';
+  let cloudTarget: string;
+  async function seedHistoricalCloud() {
+    if (historicalCloudSeeded) return;
+    cloudTarget = randomUUID();
+    const grant = randomUUID();
+    await db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input,completed_at)
+      values(${cloudRun},${org},${workspace},${owner},'failed','{}','{}',clock_timestamp()-interval '1 hour')`;
+    await db`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,timeout_at,payload)
+      values(${cloudJob},${org},${workspace},${owner},${cloudRun},'failed',${randomUUID()},clock_timestamp()+interval '10 minutes','{}')`;
+    await db`insert into allrice_runtime_roots(root_run_id,organization_id,workspace_id,task,deadline_at)
+      values(${cloudRun},${org},${workspace},'{}',clock_timestamp()-interval '1 hour')`;
+    await db`insert into allrice_execution_targets(id,organization_id,workspace_id,target_key,kind,label,state,capabilities)
+      values(${cloudTarget},${org},${workspace},${`synthetic.${cloudTarget}`},'cloud_sandbox','Synthetic historical metadata','online','["process.execute"]')`;
+    await db`insert into allrice_cloud_execution_grants(id,organization_id,workspace_id,owner_id,target_id,version,profile)
+      values(${grant},${org},${workspace},${owner},${cloudTarget},1,'{}')`;
+    await db`insert into allrice_runtime_operations(id,organization_id,workspace_id,run_id,root_run_id,target_id,attempt_id,attempt_number,generation,fence,idempotency_key,initial_snapshot,snapshot,lease_owner,lease_token_hash,lease_expires_at)
+      values(${cloudOperation},${org},${workspace},${cloudRun},${cloudRun},${cloudTarget},${cloudAttempt},1,1,1,${randomUUID()},'{"status":"unknown"}','{"status":"unknown"}',${randomUUID()},${pin('synthetic expired lease')},clock_timestamp()-interval '1 hour')`;
+    await db`insert into allrice_cloud_execution_attempts(operation_id,lease_token) values(${cloudOperation},'synthetic-history-only')`;
+    await db`insert into allrice_cloud_execution_inputs(operation_id,organization_id,workspace_id,owner_id,run_id,grant_id,job_id,worker_id,job_lease_token,binding,payload)
+      values(${cloudOperation},${org},${workspace},${owner},${cloudRun},${grant},${cloudJob},${randomUUID()},${randomUUID()},${db.json({ attempt: { attemptId: cloudAttempt } })},'{}')`;
+    for (const receipt of [
+      '4ab77a79-4be3-409b-a49c-4c24c0d1b9ad',
+      '5d9c2725-e96f-4e4a-a91a-8df5119b5417',
+    ])
+      await db`insert into allrice_runtime_operation_receipts(receipt_id,operation_id,payload,disposition)
+        values(${receipt},${cloudOperation},'{"syntheticUnresolved":true}','applied')`;
+    historicalCloudSeeded = true;
+  }
+  async function cloudSnapshot() {
+    const [v] = await db<
+      { snapshot: Record<string, unknown>; database: string; schema: string }[]
+    >`
+      select allrice_native_control_historical_cloud_snapshot() snapshot,current_database() database,current_schema() schema`;
+    return {
+      ...v!.snapshot,
+      scope: { database: v!.database, schema: v!.schema, readOnly: 'on' },
+    };
+  }
+  async function cloudCredential(
+    c: Awaited<ReturnType<typeof seed>>,
+    ttlMs = 100_000,
+  ) {
+    await seedHistoricalCloud();
+    const at = await clock(),
+      planId = randomUUID();
+    const [v] = await db<
+      { facts: Record<string, unknown> }[]
+    >`select allrice_native_control_upgrade_facts(${c.partitionId}) facts`;
+    const locks = [
+      '/synthetic/maintenance.lock',
+      '/synthetic/delivery.lock',
+    ].map((path) => ({
+      path,
+      ownerPid: 7301,
+      ownerBirth: 'synthetic-root-birth',
+      tokenDigest: pin(path),
+      acquiredAtMs: at - 100,
+      ownershipEvidenceDigest: pin(`owned ${path}`),
+    }));
+    const processes = ['web', 'worker'].map((role, i) => ({
+      role,
+      pid: 7302 + i,
+      birth: `synthetic-${role}-birth`,
+      stopMode: 'normal',
+      stopRequestedAtMs: at - 50,
+      exitConfirmedAtMs: at - 10,
+      exitEvidenceDigest: pin(`${role} exit`),
+    }));
+    const lifecycle = processes.map((p) => ({
+      identity: {
+        service: p.role,
+        pid: p.pid,
+        environment: 'dev',
+        bootId: `synthetic-${p.role}`,
+      },
+      producerLifecycle: {
+        role: p.role,
+        instance: { bootId: `synthetic-${p.role}` },
+        releaseAdmission: 'disabled',
+        unknownOutcomes: [],
+        activeRoots: 0,
+        pendingRoots: 0,
+        unresolvedRoots: 0,
+        retainedChildren: 0,
+      },
+    }));
+    const observation = {
+      kind: 'native-control-cloud-absence-observation-v1',
+      planId,
+      partitionId: c.partitionId,
+      beforeReference: c.before,
+      afterReference: c.after,
+      operationId: cloudOperation,
+      readerPin: {
+        sha256:
+          '96957a756e54118896bd3b75586c62d57b6f725ef263821e5a493ebed59163e9',
+      },
+      baselinePin: {
+        sha256:
+          '22e6ba2d85ce9ec1a917b1c032478ccc97fa300070cbbd9a4a97121cea9bd5ce',
+      },
+      observedAtMs: at,
+      expiresAtMs: at + ttlMs,
+      locks,
+      processes,
+      lifecycle,
+      lifecyclePin: { sha256: 'b'.repeat(64) },
+      controlFacts: v!.facts,
+      sqlSnapshot: await cloudSnapshot(),
+      physical: {
+        configuredSocket: '/synthetic/docker.sock',
+        containerName: `allrice-cloud-${cloudAttempt}`,
+        nameProbeStatus: 404,
+        labelProbeStatus: 200,
+        labelMatchIds: [],
+      },
+      inventory: {
+        socketPath: '/synthetic/docker.sock',
+        status: 200,
+        body: [],
+      },
+      historicalOutcomeKnown: false,
+      cleanupClaimed: false,
+      globalResourceIdleProven: false,
+    };
+    return {
+      kind: 'native-control-cloud-absence-credential-v1',
+      observation,
+      approval: {
+        kind: 'native-control-cloud-absence-source-approval-v1',
+        reviewedBy: 'root',
+        reviewedAtMs: at,
+        observationDigest: nativeOnceDigest(observation),
+        reviewPolicyDigest: pin('synthetic root source policy'),
+        offlineProofDigest: pin('synthetic original stop proof'),
+        operatorSha256: 'a'.repeat(64),
+        verifierSha256: 'b'.repeat(64),
+        releaseSha: 'c'.repeat(40),
+        sourceTree: 'd'.repeat(40),
+      },
+    };
+  }
+  async function prepareCloud(
+    c: Awaited<ReturnType<typeof seed>>,
+    credential?: Awaited<ReturnType<typeof cloudCredential>>,
+  ) {
+    const proof = credential ?? (await cloudCredential(c));
+    const p = await prepareNativeScheduleControlUpgrade({
+      db,
+      requestId: proof.observation.planId,
+      partitionId: c.partitionId,
+      beforeReference: c.before,
+      afterReference: c.after,
+      artifactEvidence: evidence(c.before, c.after),
+      historicalCloudAbsenceCredential: proof,
+    });
+    const auth = await authorize(p);
+    auth.offlineStoppedAttestation.locks = proof.observation.locks;
+    auth.offlineStoppedAttestation.processes = proof.observation
+      .processes as NativeControlOfflineStoppedAttestation['processes'];
+    auth.approval.attestationDigest = nativeOnceDigest(
+      auth.offlineStoppedAttestation,
+    );
+    return { p, auth, proof };
+  }
+  it('historical cloud absence: missing proof and rootReviewed JSON retain the original raw guard', async () => {
+    await seedHistoricalCloud();
+    const c = await seed();
+    const [raw] = await db`select allrice_native_control_upgrade_idle() counts`;
+    expect(raw!.counts.clouds).toBe(1);
+    await expect(prepare(c)).rejects.toThrow('not_idle');
+    await expect(
+      prepareNativeScheduleControlUpgrade({
+        db,
+        requestId: randomUUID(),
+        partitionId: c.partitionId,
+        beforeReference: c.before,
+        afterReference: c.after,
+        artifactEvidence: evidence(c.before, c.after),
+        historicalCloudAbsenceCredential: { rootReviewed: true },
+      }),
+    ).rejects.toThrow();
+    const [n] =
+      await db`select count(*)::int n from allrice_native_control_cloud_absences`;
+    expect(n!.n).toBe(0);
+  });
+  it.each(['allrice-once-control-v1', 'allrice-recurring-control-v1'] as const)(
+    'historical cloud absence: exact %s plan/apply preserves unknown and every original row',
+    async (profile) => {
+      const c = await seed(profile),
+        before = await cloudSnapshot(),
+        { p, auth } = await prepareCloud(c);
+      const [counts] =
+        await db`select allrice_native_control_cloud_coverage(${db.json(p.plan)}) v,allrice_native_control_upgrade_idle() raw`;
+      expect(counts!.v).toMatchObject({
+        rawUncleanedCloudAttempts: 1,
+        preservedUnresolvedCloudAttempts: 1,
+        unpreservedCloudAttempts: 0,
+        historicalOutcomeKnown: false,
+        cleanupClaimed: false,
+      });
+      expect(counts!.raw.clouds).toBe(1);
+      await apply(p, auth);
+      expect((await row(c.partitionId)).reference).toEqual(c.after);
+      expect(await cloudSnapshot()).toEqual(before);
+      expect(
+        await readNativeScheduleControlUpgrade({
+          db,
+          planId: p.plan.planId,
+          expected: expected(p, auth),
+        }),
+      ).toMatchObject({ status: 'applied' });
+      for (const statement of [
+        db`update allrice_native_control_cloud_absences set credential=credential where plan_id=${p.plan.planId}`,
+        db`delete from allrice_native_control_cloud_absences where plan_id=${p.plan.planId}`,
+      ])
+        await expect(statement).rejects.toThrow('immutable');
+    },
+  );
+  it.each([
+    'tuple',
+    'original byte',
+    'new attempt',
+    'live lease',
+    'receipt',
+  ] as const)(
+    'historical cloud absence: actual COMMIT rejects %s changes and rolls back original history',
+    async (change) => {
+      const c = await seed(),
+        before = await cloudSnapshot(),
+        { p, auth } = await prepareCloud(c),
+        original = await row(c.partitionId);
+      const fenced = {
+        begin: (options: string, work: (tx: unknown) => Promise<unknown>) =>
+          db.begin(options, async (tx) => {
+            const result = await work(tx);
+            if (change === 'tuple')
+              await tx`update allrice_native_recurring_controls set snapshot_version=snapshot_version+1,snapshot=snapshot||'{"newByte":true}' where partition_id=${c.partitionId}`;
+            if (change === 'original byte')
+              await tx`update allrice_cloud_execution_attempts set lease_token='a changed original byte' where operation_id=${cloudOperation}`;
+            if (change === 'live lease')
+              await tx`update allrice_runtime_operations set lease_expires_at=clock_timestamp()+interval '1 minute' where id=${cloudOperation}`;
+            if (change === 'receipt')
+              await tx`insert into allrice_runtime_operation_receipts(receipt_id,operation_id,payload,disposition) values(${randomUUID()},${cloudOperation},'{}','stale')`;
+            if (change === 'new attempt') {
+              const operation = randomUUID();
+              await tx`insert into allrice_runtime_operations(id,organization_id,workspace_id,run_id,root_run_id,target_id,attempt_id,attempt_number,generation,fence,idempotency_key,initial_snapshot,snapshot)
+          values(${operation},${org},${workspace},${cloudRun},${cloudRun},${cloudTarget},${randomUUID()},1,1,1,${randomUUID()},'{"status":"unknown"}','{"status":"unknown"}')`;
+              await tx`insert into allrice_cloud_execution_attempts(operation_id,lease_token) values(${operation},'synthetic-new-active')`;
+            }
+            return result;
+          }),
+      } as unknown as Sql;
+      await expect(apply(p, auth, fenced)).rejects.toThrow(
+        'commit_unknown_readback_only',
+      );
+      expect(await row(c.partitionId)).toEqual(original);
+      expect(await cloudSnapshot()).toEqual(before);
+      expect(
+        await readNativeScheduleControlUpgrade({
+          db,
+          planId: p.plan.planId,
+          expected: expected(p, auth),
+        }),
+      ).toMatchObject({ status: 'not_applied' });
+    },
+  );
+  it('historical cloud absence: changed lock scope and expired credential cannot reuse the reviewed exception', async () => {
+    const c = await seed(),
+      { p, auth } = await prepareCloud(c);
+    auth.offlineStoppedAttestation.locks[0]!.tokenDigest =
+      pin('changed owner lock');
+    auth.approval.attestationDigest = nativeOnceDigest(
+      auth.offlineStoppedAttestation,
+    );
+    await expect(apply(p, auth)).rejects.toThrow('not_idle');
+    const next = await seed(),
+      short = await cloudCredential(next, 1000),
+      x = await prepareCloud(next, short);
+    const expired = {
+      begin: (options: string, work: (tx: unknown) => Promise<unknown>) =>
+        db.begin(options, async (tx) => {
+          const result = await work(tx);
+          await tx`select pg_sleep(1.1)`;
+          return result;
+        }),
+    } as unknown as Sql;
+    await expect(apply(x.p, x.auth, expired)).rejects.toThrow(
+      'commit_unknown_readback_only',
+    );
+    expect((await row(next.partitionId)).reference).toEqual(next.before);
+  });
+  it('historical cloud absence: lost actual COMMIT acknowledgement is resolved by independent exact readback', async () => {
+    const c = await seed(),
+      { p, auth } = await prepareCloud(c),
+      before = await cloudSnapshot();
+    const lost = {
+      begin: async (
+        options: string,
+        work: (tx: unknown) => Promise<unknown>,
+      ) => {
+        await db.begin(options, work as never);
+        throw Error('synthetic lost original commit ACK');
+      },
+    } as unknown as Sql;
+    await expect(apply(p, auth, lost)).rejects.toThrow(
+      'commit_unknown_readback_only',
+    );
+    expect(
+      await readNativeScheduleControlUpgrade({
+        db,
+        planId: p.plan.planId,
+        expected: expected(p, auth),
+      }),
+    ).toMatchObject({ status: 'applied' });
+    expect(await cloudSnapshot()).toEqual(before);
+    await expect(apply(p, auth)).rejects.toThrow(
+      'already_applied_readback_only',
+    );
+  });
+  it('historical cloud absence: a credential cannot commit without its exact plan FK', async () => {
+    const c = await seed(),
+      proof = await cloudCredential(c),
+      digest = nativeOnceDigest(proof);
+    await expect(db`insert into allrice_native_control_cloud_absences(plan_id,partition_id,credential_digest,before_reference,after_reference,credential)
+      values(${proof.observation.planId},${c.partitionId},${digest},${db.json({ ...c.before })},${db.json(c.after)},${db.json(JSON.parse(JSON.stringify(proof)))})`).rejects.toThrow(
+      'foreign key',
+    );
+    expect(
+      (
+        await db`select 1 from allrice_native_control_cloud_absences where plan_id=${proof.observation.planId}`
+      ).length,
+    ).toBe(0);
+  });
+  it('historical cloud absence: an altered target cannot reuse the original physical credential', async () => {
+    const c = await seed(),
+      proof = await cloudCredential(c);
+    proof.observation.afterReference = {
+      ...proof.observation.afterReference,
+      storageId: 'a different target',
+    };
+    proof.approval.observationDigest = nativeOnceDigest(proof.observation);
+    await expect(prepareCloud(c, proof)).rejects.toThrow('credential rejected');
+    expect((await row(c.partitionId)).reference).toEqual(c.before);
+  });
+  it('historical cloud absence: prepared credential and plan survive a lost COMMIT receipt together', async () => {
+    const c = await seed(),
+      proof = await cloudCredential(c),
+      before = await cloudSnapshot();
+    const lost = {
+      begin: async (
+        options: string,
+        work: (tx: unknown) => Promise<unknown>,
+      ) => {
+        await db.begin(options, work as never);
+        throw Error('synthetic lost prepare COMMIT receipt');
+      },
+    } as unknown as Sql;
+    await expect(
+      prepareNativeScheduleControlUpgrade({
+        db: lost,
+        requestId: proof.observation.planId,
+        partitionId: c.partitionId,
+        beforeReference: c.before,
+        afterReference: c.after,
+        artifactEvidence: evidence(c.before, c.after),
+        historicalCloudAbsenceCredential: proof,
+      }),
+    ).rejects.toThrow('lost prepare COMMIT receipt');
+    const read = await readNativeScheduleControlUpgrade({
+      db,
+      planId: proof.observation.planId,
+    });
+    expect(read).toMatchObject({
+      status: 'plan_only',
+      plan: { historicalCloudAbsenceDigest: nativeOnceDigest(proof) },
+    });
+    expect(await cloudSnapshot()).toEqual(before);
+    expect(
+      (
+        await db`select credential_digest from allrice_native_control_cloud_absences where plan_id=${proof.observation.planId}`
+      )[0]!.credential_digest,
+    ).toBe(nativeOnceDigest(proof));
   });
 });
