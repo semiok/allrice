@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import {
   claimExperienceOccurrence,
   dispatchExperienceOccurrence,
-  recoverExperienceOccurrences,
 } from '../experience-consolidation.ts';
 import { EmployeeInstanceError } from '../employees/employee-instances.ts';
 import { ExperienceError } from '../experience.ts';
@@ -1045,16 +1044,8 @@ async function makeClaim(
 
 export async function claimDueAutomations(limit = 10) {
   const sql = getDatabase();
-  for (const id of await recoverExperienceOccurrences(limit)) {
-    try {
-      await dispatchExperienceOccurrence(id);
-    } catch {
-      /* Durable failure retained by dispatcher. */
-    }
-  }
-  const { recoverPlatformQualityOccurrences, claimPlatformQualityOccurrence } =
+  const { claimPlatformQualityOccurrence } =
     await import('../platform-quality-automation.ts');
-  const recovered = await recoverPlatformQualityOccurrences(limit);
   const due = await sql<AutomationRow[]>`
     select a.*, latest.status as last_run_status,
       latest.session_id as last_session_id
@@ -1186,7 +1177,7 @@ export async function claimDueAutomations(limit = 10) {
         await markClaimFailed(claim, error);
     }
   }
-  return recovered + claims.length + brandReminders;
+  return claims.length + brandReminders;
 }
 
 export async function runAutomationNow(

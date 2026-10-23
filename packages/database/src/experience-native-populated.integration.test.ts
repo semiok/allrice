@@ -17,6 +17,7 @@ import {
 } from './experience-native.ts';
 import {
   dispatchExperienceOccurrence,
+  recoverExperienceOccurrences,
   getExperienceExecution,
   readExperiencePolicy,
   reserveExperienceOccurrenceInTransaction,
@@ -24,7 +25,7 @@ import {
   type ExperienceScheduleRule,
 } from './experience-consolidation.ts';
 import { claimNextJob, startClaimedJob } from './execution/queue.ts';
-import { nextScheduleAt } from './execution/automation.ts';
+import { claimDueAutomations, nextScheduleAt } from './execution/automation.ts';
 import { lockNativeOnceJobAdmission } from './native-schedule-once-authority.ts';
 import {
   nativeOnceDigest,
@@ -280,7 +281,21 @@ suite(
           expect(source!.consolidation_occurrence_id).toBe(
             d!.automation_run_id,
           );
+          const [pending] =
+            await f.db`select run_id,status from allrice_automation_runs where id=${d!.automation_run_id}`;
+          expect(pending).toMatchObject({ run_id: null, status: 'queued' });
+          // Recovery consumes a committed native AR, never the legacy due clock.
+          expect(await claimDueAutomations(1)).toBe(0);
+          const [stillPending] =
+            await f.db`select run_id,status from allrice_automation_runs where id=${d!.automation_run_id}`;
+          expect(stillPending).toEqual(pending);
+          expect(await recoverExperienceOccurrences(1)).toContain(
+            d!.automation_run_id,
+          );
           await dispatchExperienceOccurrence(d!.automation_run_id);
+          expect(await recoverExperienceOccurrences(1)).not.toContain(
+            d!.automation_run_id,
+          );
           await dispatchExperienceOccurrence(d!.automation_run_id);
           const [run] =
             await f.db`select * from allrice_automation_runs where id=${d!.automation_run_id}`;

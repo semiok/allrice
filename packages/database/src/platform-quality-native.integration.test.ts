@@ -17,6 +17,7 @@ import {
 } from 'vitest';
 import * as client from './core/client.ts';
 import { createPlatformQualityNativeFixture } from './platform-quality-native.fixture.ts';
+import { claimDueAutomations } from './execution/automation.ts';
 import {
   authenticateSession,
   createSession,
@@ -419,9 +420,14 @@ suite(
         await f.db`select * from allrice_sessions order by id`,
       );
       expect(afterRevoke).not.toEqual(logins);
+      // Native pending ARs are recovered by the automation producer, not by
+      // asking the legacy due scanner to execute a non-time queue obligation.
+      expect(await claimDueAutomations(1)).toBe(0);
+      expect((await occurrence(queued[0]!.id)).run_id).toBeNull();
+      expect(await counts()).toEqual(before);
       // Scheduled static execution uses current platform authority, no borrowed
       // browser session and no fabricated login for its correlation context.
-      expect(await recoverPlatformQualityOccurrences()).toBe(1);
+      expect(await recoverPlatformQualityOccurrences(1)).toBe(1);
       const row = await occurrence(queued[0]!.id);
       expect(row.run_id).toBeTruthy();
       expect(row.session_id).toBeTruthy();

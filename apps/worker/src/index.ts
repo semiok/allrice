@@ -16,6 +16,9 @@ import {
   closeDatabase,
   maintainQueue,
   collectPendingExperienceEvidence,
+  recoverExperienceOccurrences,
+  dispatchExperienceOccurrence,
+  recoverPlatformQualityOccurrences,
   syncExperienceConsolidationSchedules,
   syncExperienceValidations,
   syncExperienceAdoptions,
@@ -576,7 +579,16 @@ async function runAutomationTick() {
       );
       await syncAutomationRuns();
       await processFolderTriggerEvents(Math.max(1, concurrency));
-      const claimed = await claimDueAutomations(Math.max(1, concurrency));
+      const limit = Math.max(1, concurrency);
+      for (const id of await recoverExperienceOccurrences(limit)) {
+        try {
+          await dispatchExperienceOccurrence(id);
+        } catch {
+          /* Durable failure retained by dispatcher. */
+        }
+      }
+      const recovered = await recoverPlatformQualityOccurrences(limit);
+      const claimed = recovered + (await claimDueAutomations(limit));
       if (claimed > 0) {
         console.info('[M6] queued automation runs', { count: claimed });
       }
