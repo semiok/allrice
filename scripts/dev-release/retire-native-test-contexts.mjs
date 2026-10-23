@@ -14,7 +14,7 @@ import {
   reviewedTestChatPhysicalScope,
   verifyReviewedTestChatCloudCarry,
 } from './reviewed-test-chat-preserved-cloud.mjs';
-import { collectTerminalNativeAbsence } from './terminal-native-physical-absence.mjs';
+import { collectReviewedTestChatNativeObservation } from './terminal-native-physical-absence.mjs';
 
 if (process.argv.length === 2) {
   console.log(
@@ -205,58 +205,63 @@ try {
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
     }
-    const healths = [];
-    for (const health of r.healthUrls ?? []) {
-      const response = await fetch(health, {
-        signal: globalThis.AbortSignal.timeout(10_000),
-      });
-      need(response.ok, 'NATIVE_RETIREMENT_SERVICE_NOT_READY');
-      const value = await response.json();
-      healths.push(value);
-      need(
-        value.identity?.sourceSha === r.releaseSha &&
-          value.identity?.sourceTree === r.sourceTree &&
-          [
-            'pendingRoots',
-            'activeRoots',
-            'retainedChildren',
-            'unresolvedRoots',
-          ].every((k) => value.producerLifecycle?.[k] === 0),
-        'NATIVE_RETIREMENT_SERVICE_BUSY',
-      );
-    }
     need(
       Array.isArray(r.healthUrls) && r.healthUrls.length === 2,
       'NATIVE_RETIREMENT_BOTH_SERVICE_HEALTH_REQUIRED',
     );
     const laterReviewedChat = r.kind === REVIEWED_TEST_CHAT_REVIEW_KIND;
-    const readHealths = () =>
-      Promise.all(
+    const readHealths = async (signal) => {
+      // Await both read-only requests, including failure. The shared observer
+      // supplies its remaining global deadline; no disconnected request lingers.
+      const results = await Promise.allSettled(
         r.healthUrls.map(async (url) => {
           const response = await fetch(url, {
-            signal: globalThis.AbortSignal.timeout(10000),
+            signal: signal
+              ? globalThis.AbortSignal.any([
+                  signal,
+                  globalThis.AbortSignal.timeout(10_000),
+                ])
+              : globalThis.AbortSignal.timeout(10_000),
           });
           need(response.ok, 'NATIVE_RETIREMENT_SERVICE_NOT_READY');
           return response.json();
         }),
       );
-    const completePhysical = (suffix) =>
-      collectTerminalNativeAbsence({
+      const failed = results.find((r) => r.status === 'rejected');
+      if (failed) throw failed.reason;
+      return results.map((r) => r.value);
+    };
+    // The sealed slot5 carry path validates both complete identities and strict
+    // lifecycle facts inside its one full observation. Do not fail on an
+    // initial transient root before the bounded read-only observer can run.
+    if (r.historicalCloudCarry === undefined) {
+      for (const value of await readHealths()) {
+        need(
+          value.identity?.sourceSha === r.releaseSha &&
+            value.identity?.sourceTree === r.sourceTree &&
+            [
+              'pendingRoots',
+              'activeRoots',
+              'retainedChildren',
+              'unresolvedRoots',
+            ].every((k) => value.producerLifecycle?.[k] === 0),
+          'NATIVE_RETIREMENT_SERVICE_BUSY',
+        );
+      }
+    }
+    const completePhysical = (suffix, readStep) =>
+      collectReviewedTestChatNativeObservation({
+        plan: input.value,
         scope: reviewedTestChatPhysicalScope(r, input.value),
         review: r,
         planDigest: input.value.digest,
         requestId: input.value.requestId,
         reviewSha256: hash(review.bytes),
         readHealths,
+        readStep,
         evidencePath: a.output + suffix,
         saveEvidence: save,
       });
-    const physicalProof = laterReviewedChat
-      ? await completePhysical('.physical-before.json')
-      : undefined;
-    const classifyBusy = laterReviewedChat
-      ? verifyReviewedTestChatCloudCarry
-      : verifyRetirementBusy;
     const readBusy = () =>
       db.getDatabase().begin('read only', async (tx) => {
         await tx`set local statement_timeout='5000'`;
@@ -273,30 +278,25 @@ try {
         }
         return row;
       });
-    const busyClassification = await classifyBusy({
-      review: r,
-      plan: input.value,
-      ...(laterReviewedChat
-        ? {
-            physicalProof,
-            evidencePath: a.output + '.cloud-before.json',
-            saveEvidence: save,
-          }
-        : {}),
-      sql: db.getDatabase(),
-      readBusy,
-      healths,
-      readHealths: () =>
-        Promise.all(
-          r.healthUrls.map(async (url) => {
-            const response = await fetch(url, {
-              signal: globalThis.AbortSignal.timeout(10_000),
-            });
-            need(response.ok, 'NATIVE_RETIREMENT_SERVICE_NOT_READY');
-            return response.json();
-          }),
-        ),
-    });
+    const busyClassification = laterReviewedChat
+      ? await verifyReviewedTestChatCloudCarry({
+          review: r,
+          plan: input.value,
+          collectPhysicalObservation: (suffix, step) =>
+            completePhysical('.before' + suffix, step),
+          evidencePath: a.output + '.cloud-before.json',
+          saveEvidence: save,
+          sql: db.getDatabase(),
+          readBusy,
+          readHealths,
+        })
+      : await verifyRetirementBusy({
+          review: r,
+          plan: input.value,
+          sql: db.getDatabase(),
+          readBusy,
+          readHealths,
+        });
     if (r.historicalCloudCarry !== undefined) {
       // Physical probes may outlive the first owner/active checks. Keep the
       // same private bytes and owner birth before creating any write intent.
@@ -368,15 +368,14 @@ try {
       const result = await db.applyNativeTestChatRetirement(input.value);
       if (laterReviewedChat) {
         await save(a.output + '.committed.json', result);
-        const physicalAfter = await completePhysical('.physical-after.json');
         const busyAfter = await verifyReviewedTestChatCloudCarry({
           review: r,
           plan: input.value,
           sql: db.getDatabase(),
           readBusy,
-          healths: await readHealths(),
           readHealths,
-          physicalProof: physicalAfter,
+          collectPhysicalObservation: (suffix, step) =>
+            completePhysical('.after' + suffix, step),
           evidencePath: a.output + '.cloud-after.json',
           saveEvidence: save,
         });

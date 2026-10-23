@@ -4,16 +4,18 @@ import { randomUUID } from 'node:crypto';
 import { posix } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
+import { observeCompleteReadOnlyQuiescence } from './retirement-readonly-observer.mjs';
 import {
   assertNoOwnedCloudContainers,
   collectHistoricalExitedContainerObservation,
   readCompleteCloudInventory,
+  reviewedRetirementServicesIdle,
+  lifecycleActivity,
   exitedContainerEvidenceDigest as digest,
 } from './retirement-preserved-cloud.mjs';
 import {
   HISTORICAL_CLOUD,
   assertReviewedCloudBusy,
-  assertReviewedCloudHealths,
   assertReviewedHistoricalCloudFacts,
   assertReviewedExitedContainerPhysical,
   readReviewedCloudObservation,
@@ -52,6 +54,8 @@ export function reviewedTestChatPhysicalScope(review, plan) {
       UUID.test(plan.requestId) &&
       SHA.test(plan.digest) &&
       SHA.test(plan.authorizationEvidenceDigest) &&
+      review.requestId === plan.requestId &&
+      review.planDigest === plan.digest &&
       carry.requestId === plan.requestId &&
       carry.planDigest === plan.digest &&
       carry.authorizationEvidenceDigest === plan.authorizationEvidenceDigest &&
@@ -189,7 +193,7 @@ function physicalScope(review, plan, proof, scope) {
 
 /** Pure observations only; the issuing path below always loads private pins and
  * independently runs the fixed actual GETs. No chat/control approval is accepted. */
-export function classifyReviewedTestChatCloudCarry(input) {
+function classifyReviewedTestChatCloudFacts(input) {
   const {
     review,
     plan,
@@ -214,8 +218,8 @@ export function classifyReviewedTestChatCloudCarry(input) {
   physicalScope(review, plan, physicalProof, scope);
   assertReviewedCloudBusy(rawBefore, 1);
   assertReviewedCloudBusy(rawAfter, 1);
-  assertReviewedCloudHealths(healthBefore, review);
-  assertReviewedCloudHealths(healthAfter, review);
+  const beforeIdle = reviewedRetirementServicesIdle(healthBefore, review);
+  const afterIdle = reviewedRetirementServicesIdle(healthAfter, review);
   assertReviewedHistoricalCloudFacts({
     baseline,
     before,
@@ -252,22 +256,161 @@ export function classifyReviewedTestChatCloudCarry(input) {
     });
   }
   return {
-    rawBusy: { ...rawBefore },
-    finalRawBusy: { ...rawAfter },
-    rawUncleanedCloudAttempts: 1,
-    preservedUnresolvedCloudAttempts: 1,
-    unpreservedCloudAttempts: 0,
-    unclassifiedOwnedCloudContainers: 0,
-    ...(preservedExitedContainer ? { preservedExitedContainer } : {}),
-    exactTestChatScopes: scope.scopes,
-    oldArtifactIds: scope.artifactIds,
-    historicalOutcomeKnown: false,
-    cleanupClaimed: false,
-    globalResourceIdleProven: false,
-    databaseWritten: false,
-    modelCalls: 0,
+    idle: beforeIdle && afterIdle,
+    classification: {
+      rawBusy: { ...rawBefore },
+      finalRawBusy: { ...rawAfter },
+      rawUncleanedCloudAttempts: 1,
+      preservedUnresolvedCloudAttempts: 1,
+      unpreservedCloudAttempts: 0,
+      unclassifiedOwnedCloudContainers: 0,
+      ...(preservedExitedContainer ? { preservedExitedContainer } : {}),
+      exactTestChatScopes: scope.scopes,
+      oldArtifactIds: scope.artifactIds,
+      historicalOutcomeKnown: false,
+      cleanupClaimed: false,
+      globalResourceIdleProven: false,
+      databaseWritten: false,
+      modelCalls: 0,
+    },
   };
 }
+export function classifyReviewedTestChatCloudCarry(observation) {
+  const { idle, classification } =
+    classifyReviewedTestChatCloudFacts(observation);
+  need(idle, 'CURRENT_LIFECYCLE_BUSY');
+  return classification;
+}
+
+/** Uses the common bounded mechanism, but only this exact chat authority and
+ * classifier. Every attempted round contains fresh target physical evidence. */
+export function observeReviewedTestChatQuiescence({
+  review,
+  plan,
+  ...options
+}) {
+  reviewedTestChatPhysicalScope(review, plan);
+  return observeCompleteReadOnlyQuiescence({
+    ...options,
+    classifyObservation: (observation) => {
+      const facts = classifyReviewedTestChatCloudFacts({
+        ...observation,
+        review,
+        plan,
+      });
+      const scope = reviewedTestChatPhysicalScope(review, plan);
+      const healthPairs = [observation.healthBefore, observation.healthAfter];
+      for (const target of [
+        observation.targetPhysicalBefore,
+        observation.targetPhysicalAfter,
+      ]) {
+        need(
+          target && typeof target === 'object',
+          'TARGET_PHYSICAL_ROUND_REQUIRED',
+        );
+        physicalScope(review, plan, target.physicalProof, scope);
+        healthPairs.push(target.healthBefore, target.healthAfter);
+      }
+      // Do not short-circuit: a busy first pair must not mask a later hard error.
+      const idlePairs = healthPairs.map((healths) =>
+        reviewedRetirementServicesIdle(healths, review, true),
+      );
+      same(
+        observation.physicalProof,
+        observation.targetPhysicalAfter.physicalProof,
+        'FINAL_PHYSICAL_ROUND_CHANGED',
+      );
+      return {
+        idle: facts.idle && idlePairs.every(Boolean),
+        classification: { classification: facts.classification, observation },
+        activity: {
+          serviceAndTargetBrackets: healthPairs.map(lifecycleActivity),
+        },
+      };
+    },
+  });
+}
+
+/** Production wiring is injected only with bounded read-only readers. Tests can
+ * exercise this exact order without a real database, VM or service. */
+export async function collectReviewedTestChatRound(
+  {
+    review,
+    plan,
+    attempt,
+    readBusy,
+    readHealths,
+    reader,
+    sql,
+    baseline,
+    collectPhysicalObservation,
+    readInventory = readCompleteCloudInventory,
+    readExited = collectHistoricalExitedContainerObservation,
+    recordedExitedObservation,
+    verifierSha256,
+    sharedVerifierSha256,
+    physicalVerifierSha256,
+  },
+  step,
+) {
+  reviewedTestChatPhysicalScope(review, plan);
+  need(
+    Number.isSafeInteger(attempt) &&
+      attempt > 0 &&
+      typeof collectPhysicalObservation === 'function',
+    'TARGET_PHYSICAL_ROUND_REQUIRED',
+  );
+  const rawBefore = await step(() => readBusy());
+  assertReviewedCloudBusy(rawBefore, 1);
+  const healthBefore = await step((signal) => readHealths(signal));
+  reviewedRetirementServicesIdle(healthBefore, review, true);
+  const before = await step(() => reader.readSnapshot(sql));
+  const targetPhysicalBefore = await step(() =>
+    collectPhysicalObservation(
+      '.attempt-' + attempt + '.target-before.json',
+      step,
+    ),
+  );
+  const physicalBefore = await step(() => reader.physicalAbsence());
+  const inventory = await step(() =>
+    readInventory(physicalBefore.configuredSocket),
+  );
+  const exitedObservation =
+    review.historicalCloudCarry.preservedExitedContainer === undefined
+      ? undefined
+      : await step(() => readExited(physicalBefore, step));
+  const physicalAfter = await step(() => reader.physicalAbsence());
+  const targetPhysicalAfter = await step(() =>
+    collectPhysicalObservation(
+      '.attempt-' + attempt + '.target-after.json',
+      step,
+    ),
+  );
+  const after = await step(() => reader.readSnapshot(sql));
+  const rawAfter = await step(() => readBusy());
+  const healthAfter = await step((signal) => readHealths(signal));
+  return {
+    baseline,
+    rawBefore,
+    rawAfter,
+    healthBefore,
+    healthAfter,
+    before,
+    after,
+    physicalBefore,
+    physicalAfter,
+    inventory,
+    exitedObservation,
+    targetPhysicalBefore,
+    targetPhysicalAfter,
+    physicalProof: targetPhysicalAfter.physicalProof,
+    recordedExitedObservation,
+    verifierSha256,
+    sharedVerifierSha256,
+    physicalVerifierSha256,
+  };
+}
+
 async function source() {
   const pin = HISTORICAL_CLOUD.readerPin;
   same(
@@ -300,16 +443,18 @@ export async function verifyReviewedTestChatCloudCarry({
   plan,
   sql,
   readBusy,
-  healths,
   readHealths,
-  physicalProof,
+  collectPhysicalObservation,
   evidencePath,
   saveEvidence,
 }) {
   reviewedTestChatPhysicalScope(review, plan);
-  const rawBefore = await readBusy();
-  assertReviewedCloudBusy(rawBefore, 1);
-  assertReviewedCloudHealths(healths, review);
+  need(
+    typeof saveEvidence === 'function' &&
+      typeof evidencePath === 'string' &&
+      typeof collectPhysicalObservation === 'function',
+    'PRIVATE_EVIDENCE_REQUIRED',
+  );
   const verifierSha256 = await readReviewedCloudModuleDigest(import.meta.url),
     sharedVerifierSha256 = await readReviewedCloudModuleDigest(
       new URL('./retirement-preserved-cloud.mjs', import.meta.url),
@@ -317,90 +462,71 @@ export async function verifyReviewedTestChatCloudCarry({
     physicalVerifierSha256 = await readReviewedCloudModuleDigest(
       new URL('./terminal-retirement-preserved-cloud.mjs', import.meta.url),
     );
-  const p = review.historicalCloudCarry.preservedExitedContainer,
-    recordedExitedObservation =
-      p === undefined
-        ? undefined
-        : await readReviewedCloudObservation(p.observationPin);
-  const r = await source(),
-    baseline = r.readReviewedBaseline(HISTORICAL_CLOUD.baselinePin),
-    before = await r.readSnapshot(sql),
-    physicalBefore = await r.physicalAbsence(),
-    inventory = await readCompleteCloudInventory(
-      physicalBefore.configuredSocket,
-    ),
-    exitedObservation =
-      p === undefined
-        ? undefined
-        : await collectHistoricalExitedContainerObservation(physicalBefore),
-    physicalAfter = await r.physicalAbsence(),
-    after = await r.readSnapshot(sql),
-    rawAfter = await readBusy(),
-    healthAfter = await readHealths();
-  const result = classifyReviewedTestChatCloudCarry({
+  const p = review.historicalCloudCarry.preservedExitedContainer;
+  const recordedExitedObservation =
+    p === undefined
+      ? undefined
+      : await readReviewedCloudObservation(p.observationPin);
+  const reader = await source(),
+    baseline = reader.readReviewedBaseline(HISTORICAL_CLOUD.baselinePin);
+  let attempt = 0;
+  const result = await observeReviewedTestChatQuiescence({
     review,
     plan,
-    physicalProof,
-    baseline,
-    before,
-    after,
-    physicalBefore,
-    physicalAfter,
-    inventory,
-    recordedExitedObservation,
-    exitedObservation,
-    verifierSha256,
-    sharedVerifierSha256,
-    physicalVerifierSha256,
-    rawBefore,
-    rawAfter,
-    healthBefore: healths,
-    healthAfter,
+    readObservation: async (step) => {
+      const observation = await collectReviewedTestChatRound(
+        {
+          review,
+          plan,
+          attempt: ++attempt,
+          readBusy,
+          readHealths,
+          reader,
+          sql,
+          baseline,
+          collectPhysicalObservation,
+          recordedExitedObservation,
+          verifierSha256,
+          sharedVerifierSha256,
+          physicalVerifierSha256,
+        },
+        step,
+      );
+      for (const [url, original] of [
+        [import.meta.url, verifierSha256],
+        [
+          new URL('./retirement-preserved-cloud.mjs', import.meta.url),
+          sharedVerifierSha256,
+        ],
+        [
+          new URL('./terminal-retirement-preserved-cloud.mjs', import.meta.url),
+          physicalVerifierSha256,
+        ],
+      ])
+        same(
+          original,
+          await step(() => readReviewedCloudModuleDigest(url)),
+          'VERIFIER_CHANGED',
+        );
+      return observation;
+    },
   });
-  same(
-    verifierSha256,
-    await readReviewedCloudModuleDigest(import.meta.url),
-    'VERIFIER_CHANGED',
-  );
-  same(
-    sharedVerifierSha256,
-    await readReviewedCloudModuleDigest(
-      new URL('./retirement-preserved-cloud.mjs', import.meta.url),
-    ),
-    'VERIFIER_CHANGED',
-  );
-  same(
-    physicalVerifierSha256,
-    await readReviewedCloudModuleDigest(
-      new URL('./terminal-retirement-preserved-cloud.mjs', import.meta.url),
-    ),
-    'VERIFIER_CHANGED',
-  );
-  need(
-    typeof saveEvidence === 'function' && typeof evidencePath === 'string',
-    'PRIVATE_EVIDENCE_REQUIRED',
-  );
   const evidence = JSON.parse(
     JSON.stringify({
       kind: 'reviewed-test-chat-cloud-verification-v1',
       requestId: plan.requestId,
       planDigest: plan.digest,
-      physicalProof,
-      physicalBefore,
-      physicalAfter,
-      inventory,
-      exitedObservation,
+      ...result.observation,
       recordedObservationPin: p?.observationPin,
-      verifierSha256,
-      sharedVerifierSha256,
-      physicalVerifierSha256,
+      quiescenceObservation: result.quiescenceObservation,
       historicalOutcomeKnown: false,
       cleanupClaimed: false,
     }),
   );
   await saveEvidence(evidencePath, evidence);
   return {
-    ...result,
+    ...result.classification,
+    quiescenceObservation: result.quiescenceObservation,
     privateCloudEvidence: { path: evidencePath, digest: digest(evidence) },
   };
 }
