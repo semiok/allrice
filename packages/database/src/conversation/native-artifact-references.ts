@@ -120,7 +120,10 @@ export async function verifyNativeArtifactReferenceCoverage(
       select * from jsonb_to_recordset(${tx.json(transitions.map((t) => ({ contextId: t.scope.contextId, organizationId: t.scope.organizationId, workspaceId: t.scope.workspaceId, ownerId: t.scope.ownerId, targetArtifactId: t.target.artifactId, generation: t.target.generation, originDigest: t.originDigest, storageNamespace: t.storageNamespace })))}) as t(
        "contextId" uuid,"organizationId" uuid,"workspaceId" uuid,"ownerId" uuid,"targetArtifactId" text,generation text,"originDigest" text,"storageNamespace" text)
     ), origins as (
-      select 'origin:chat' source,id source_context_id,native_root_origin origin,organization_id,workspace_id,owner_id from allrice_chat_sessions
+      select 'origin:chat' source,c.id source_context_id,coalesce(c.native_root_origin,adopted.receipt#>'{adoption,effectiveOrigin}') origin,c.organization_id,c.workspace_id,c.owner_id
+      from allrice_chat_sessions c left join allrice_native_chat_executor_transitions adopted
+        on c.native_root_origin is null and adopted.context_id=c.id and adopted.sequence=1 and adopted.receipt->>'schemaVersion'='2'
+          and adopted.organization_id=c.organization_id and adopted.workspace_id=c.workspace_id and adopted.owner_id=c.owner_id
       union all select 'origin:platform_technical',id,native_root_origin,null,null,null from allrice_platform_technical_tasks
       union all select 'origin:experience_consolidation',id,native_root_origin,null,null,null from allrice_automation_runs
       union all select 'origin:platform_employee_test',id,native_root_origin,null,null,null from allrice_platform_employee_test_runs
@@ -184,6 +187,13 @@ export async function verifyNativeArtifactReferenceCoverage(
           select 1 from allrice_native_session_bindings b where b.context_kind='chat' and b.context_id=c.id)`;
       const remaining = nullChats.filter(
         (c) =>
+          !transitions.some(
+            (t) =>
+              t.scope.contextId === c.id &&
+              t.scope.organizationId === c.organization_id &&
+              t.scope.workspaceId === c.workspace_id &&
+              t.scope.ownerId === c.owner_id,
+          ) &&
           !retiredChatContexts.some(
             (r) =>
               r.contextId === c.id &&

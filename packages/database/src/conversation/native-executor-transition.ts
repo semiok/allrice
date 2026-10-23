@@ -34,7 +34,7 @@ const pinSchema = z
     bytes: z.number().int().positive(),
   })
   .strict();
-function pinnedJson(pin: z.infer<typeof pinSchema>) {
+export function readPinnedExecutorEvidence(pin: z.infer<typeof pinSchema>) {
   if (
     !isAbsolute(pin.path) ||
     normalize(pin.path) !== pin.path ||
@@ -57,17 +57,26 @@ function pinnedJson(pin: z.infer<typeof pinSchema>) {
 }
 type TransitionRow = { receipt: unknown };
 type FirstRunRow = { native_execution_binding: unknown };
-function resolveTransitionChain(
+export function resolveTransitionChain(
   scope: ExecutorTransitionScope,
   origin: NativeRootOrigin | null,
   rows: readonly TransitionRow[],
   exact?: ExecutorTransitionRef,
 ): ExecutorTransitionReceipt | null {
+  if (origin === null && rows.length) {
+    const first = ExecutorTransitionReceiptSchema.parse(rows[0]!.receipt);
+    if (first.schemaVersion !== 2 || !first.adoption) fail('ADOPTION_REQUIRED');
+    origin = NativeRootOriginSchema.parse(first.adoption.effectiveOrigin);
+  }
   let prior: ExecutorTransitionReceipt | null = null,
     found: ExecutorTransitionReceipt | null = null;
   for (const row of rows) {
     const receipt = ExecutorTransitionReceiptSchema.parse(row.receipt);
     if (
+      (receipt.schemaVersion === 2 &&
+        (prior !== null ||
+          !receipt.adoption ||
+          !same(receipt.adoption.effectiveOrigin, origin))) ||
       !origin ||
       origin.contextKind !== 'chat' ||
       !same(receipt.scope, scope) ||
@@ -262,13 +271,13 @@ export async function applyReviewedChatExecutorTransition(input: {
   approvalFile: z.infer<typeof pinSchema>;
 }) {
   const approval = approvalSchema.parse(
-    pinnedJson(pinSchema.parse(input.approvalFile)),
+    readPinnedExecutorEvidence(pinSchema.parse(input.approvalFile)),
   );
   const evidence = [
     approval.artifactProof,
     approval.historyProof,
     approval.closeProof,
-  ].map(pinnedJson) as Record<string, unknown>[];
+  ].map(readPinnedExecutorEvidence) as Record<string, unknown>[];
   const [artifact, history, close] = evidence;
   if (
     artifact?.kind !== 'verified-native-artifact-v1' ||
@@ -320,8 +329,13 @@ export async function applyReviewedChatExecutorTransition(input: {
       and organization_id=${s.organizationId} and workspace_id=${s.workspaceId} and owner_id=${s.ownerId} and archived_at is null for update`;
       if (!chat) fail('SCOPE');
       await tx`select a.id from allrice_employee_assignments a join allrice_chat_sessions c on c.employee_assignment_id=a.id where c.id=${s.contextId} and a.active for share of a`;
-      const origin = NativeRootOriginSchema.parse(chat.native_root_origin);
+      const origin = await readEffectiveChatExecutorOrigin(
+        tx,
+        { ...s, sessionId: s.contextId },
+        chat.native_root_origin,
+      );
       if (
+        !origin ||
         origin.contextKind !== 'chat' ||
         origin.profileId !== 'restricted' ||
         origin.distributionGeneration !== approval.target.generation
@@ -526,7 +540,10 @@ export async function verifiedChatExecutorTransitions(tx: Reader) {
         workspaceId: c.workspace_id,
         ownerId: c.owner_id,
       });
-    const origin = NativeRootOriginSchema.parse(c.native_root_origin);
+    const origin =
+      c.native_root_origin == null
+        ? null
+        : NativeRootOriginSchema.parse(c.native_root_origin);
     const receipt = resolveTransitionChain(scope, origin, rows);
     if (!receipt) fail('REFERENCE_MISSING');
     const ref = executorTransitionRef(receipt);
@@ -577,10 +594,42 @@ export async function readAppliedChatExecutorTransition(input: {
   const receipt = await readChatExecutorTransition(
     input.db,
     { ...scope, sessionId: scope.contextId },
-    NativeRootOriginSchema.parse(row.native_root_origin),
+    row.native_root_origin == null
+      ? null
+      : NativeRootOriginSchema.parse(row.native_root_origin),
     ref,
   );
   if (!receipt || receipt.approvalDigest !== digest.parse(input.approvalDigest))
     fail('READBACK_CONFLICT');
   return receipt;
+}
+
+/** Raw NULL is not authority. Only a complete, committed exact-scope chain may
+ * supply the effective origin. Callers validate its immutable source as usual. */
+export async function readEffectiveChatExecutorOrigin(
+  tx: Reader,
+  input: {
+    organizationId: string;
+    workspaceId: string;
+    ownerId: string;
+    sessionId: string;
+  },
+  rawOrigin: unknown,
+): Promise<NativeRootOrigin | null> {
+  if (rawOrigin != null) return NativeRootOriginSchema.parse(rawOrigin);
+  const rows = await tx<
+    TransitionRow[]
+  >`select receipt from allrice_native_chat_executor_transitions where context_id=${input.sessionId} order by sequence`;
+  if (!rows.length) return null;
+  const scope = ExecutorTransitionScopeSchema.parse({
+    contextKind: 'chat',
+    contextId: input.sessionId,
+    organizationId: input.organizationId,
+    workspaceId: input.workspaceId,
+    ownerId: input.ownerId,
+  });
+  resolveTransitionChain(scope, null, rows);
+  const first = ExecutorTransitionReceiptSchema.parse(rows[0]!.receipt);
+  if (!first.adoption) fail('ADOPTION_REQUIRED');
+  return NativeRootOriginSchema.parse(first.adoption.effectiveOrigin);
 }
