@@ -11,7 +11,10 @@ import {
   type ExperienceSummary,
 } from '@allrice/contracts';
 import { DshDialog } from './dsh-upstream/Dialog';
-import { EmployeeProfileDetails } from './employee-profile-details';
+import {
+  EmployeeProfileDetails,
+  EmployeeProfileSkeleton,
+} from './employee-profile-details';
 import {
   EmployeeProfileForm,
   employeeProfileFormFromRaw,
@@ -286,10 +289,10 @@ function EmployeeDetailsReader(props: EmployeeDetailsDialogProps) {
       className={
         editor
           ? formCss.dialog
-          : `${css.dialog} ${data && !reference ? css.profileDialog : ''}`
+          : `${css.dialog} ${!reference ? css.profileDialog : ''}`
       }
       onClose={editor ? cancelEdit : props.onClose}
-      title={editor ? '编辑员工' : (data?.profile.name ?? 'AI 员工详情')}
+      title={editor ? '编辑员工' : 'AI 员工详情'}
       initialFocusSelector={editor?.instance ? 'input' : undefined}
     >
       {editor ? (
@@ -331,7 +334,7 @@ function EmployeeDetailsReader(props: EmployeeDetailsDialogProps) {
           </button>
         </>
       ) : !data ? (
-        <p role="status">正在读取当前内容…</p>
+        <EmployeeProfileSkeleton />
       ) : reference ? (
         <EmployeeReferencePreview
           key={reference.revisionId}
@@ -358,7 +361,6 @@ function EmployeeDetailsReader(props: EmployeeDetailsDialogProps) {
             onPrepare={
               props.organizationView || !props.onPrepare ? undefined : prepare
             }
-            onClose={props.onClose}
             view={props.organizationView ? 'shared' : 'personal'}
             experienceContent={
               props.organizationView

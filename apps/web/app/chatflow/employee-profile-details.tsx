@@ -107,6 +107,49 @@ export function ContentSourceBadge({
   );
 }
 
+export function EmployeeProfileSkeleton() {
+  return (
+    <div
+      className={`${css.details} ${css.skeleton}`}
+      role="status"
+      aria-label="正在加载员工详情"
+      aria-busy="true"
+    >
+      <div className={css.intro} aria-hidden="true">
+        <div className={css.identity}>
+          <span className={css.skeletonAvatar} />
+          <div className={css.identityText}>
+            <span className={css.skeletonName} />
+            <span className={css.skeletonMission} />
+          </div>
+        </div>
+        <div className={css.skeletonPersona}>
+          <span />
+          <span />
+        </div>
+      </div>
+      <div className={css.workArea} aria-hidden="true">
+        <div className={css.sceneRail}>
+          <span className={css.skeletonName} />
+          <span className={css.skeletonScene} />
+        </div>
+        <div className={css.workMain}>
+          <div className={css.skeletonTabs}>
+            {Array.from({ length: 4 }, (_, index) => (
+              <span key={index} />
+            ))}
+          </div>
+          <div className={css.skeletonLines}>
+            {Array.from({ length: 6 }, (_, index) => (
+              <span key={index} />
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function EmployeeProfileDetails({
   details,
   onPreview,
@@ -114,7 +157,6 @@ export function EmployeeProfileDetails({
   experienceContent,
   onEdit,
   onPrepare,
-  onClose,
 }: {
   details: EmployeeDetails;
   onPreview: (reference: ReferenceSelection) => void;
@@ -122,7 +164,6 @@ export function EmployeeProfileDetails({
   experienceContent?: ReactNode;
   onEdit?: () => void;
   onPrepare?: (text: string) => void;
-  onClose?: () => void;
 }) {
   const { profile, content } = details;
   const [section, setSection] = useState<Section>('requirements');
@@ -212,16 +253,6 @@ export function EmployeeProfileDetails({
                 编辑
               </button>
             )}
-            {onClose && (
-              <button
-                className={css.close}
-                type="button"
-                aria-label="关闭"
-                onClick={onClose}
-              >
-                ×
-              </button>
-            )}
           </div>
         </div>
         <dl className={css.persona}>
@@ -269,13 +300,6 @@ export function EmployeeProfileDetails({
               </button>
             ))}
           </div>
-          {content.scenes.length === 0 && profile.kind === 'custom' && (
-            <p className={css.sceneEmpty}>
-              {view === 'personal'
-                ? '暂无已保存的工作场景。'
-                : '暂无可查看的共享场景。'}
-            </p>
-          )}
           {personal && onPrepare && (
             <div className={css.sceneFooter}>
               <button
