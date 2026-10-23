@@ -36,9 +36,15 @@ type Sent = {
 };
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
+  vi.useRealTimers();
   for (const close of cleanups.splice(0).reverse()) await close();
   vi.unstubAllGlobals();
 });
+class CarrierError extends Error {}
+const unavailableAuthority = {
+  code: 'terminal/unavailable',
+  message: 'HUMAN_TERMINAL_AUTHORIZATION_UNAVAILABLE',
+};
 async function until(check: () => boolean) {
   const end = Date.now() + 4000;
   while (!check()) {
@@ -94,8 +100,10 @@ async function fixture(mode: TerminalStreamMode = 'push') {
   const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   vi.stubGlobal('location', { href: origin + '/', protocol: 'http:' });
   vi.stubGlobal('WebSocket', WebSocket);
-  const carrier = new TerminalCarrier(target, target, (message) =>
-    Error(message),
+  const carrier = new TerminalCarrier(
+    target,
+    target,
+    (message) => new CarrierError(message),
   );
   cleanups.push(async () => {
     carrier.dispose();
@@ -123,13 +131,19 @@ async function fixture(mode: TerminalStreamMode = 'push') {
     );
   };
   const open = async (id = info.id) => {
+    const previous = sent.filter(
+      (frame) => frame.action === 'attach' && frame.args?.id === id,
+    ).length;
     const stream = carrier.remote.attach(
       target.sessionId as never,
       id,
     ) as unknown as Stream;
     const first = stream.next();
-    await until(() =>
-      sent.some((frame) => frame.action === 'attach' && frame.args?.id === id),
+    await until(
+      () =>
+        sent.filter(
+          (frame) => frame.action === 'attach' && frame.args?.id === id,
+        ).length > previous,
     );
     const requestId = sent
       .filter((frame) => frame.action === 'attach' && frame.args?.id === id)
@@ -328,7 +342,7 @@ it('discards stale unread data on disconnect and never replays an old input on r
   await f.barrier();
   f.clients[0]!.close(4009);
   await until(() => f.carrier.state.getSnapshot().phase === 'disconnected');
-  await expect(stream.next()).rejects.toThrow('Bridge 连接已断开');
+  await expect(stream.next()).rejects.toThrow('终端连接已断开');
   await until(
     () =>
       f.clients.length === 2 &&
@@ -338,4 +352,104 @@ it('discards stale unread data on disconnect and never replays an old input on r
     f.sent.filter((frame) => frame.type === 'terminal.input'),
   ).toHaveLength(1);
   expect(f.sent.filter((frame) => frame.action === 'attach')).toHaveLength(1);
+});
+
+it('reauthenticates after temporary authority loss without replaying input or an unfinished RPC', async () => {
+  const f = await fixture(),
+    { stream, first, requestId } = await f.open();
+  f.native(requestId, snapshot());
+  await first;
+  const previousGeneration = f.carrier.generation.getSnapshot()!.id;
+  stream.send({ type: 'write', sequence: 1, data: 'once' });
+  f.native(requestId, { type: 'output', sequence: 1, data: 'stale output' });
+  const closing = f.carrier.remote.close(f.target.sessionId as never, info.id);
+  await until(() => f.sent.some((frame) => frame.action === 'close'));
+  await f.barrier();
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  f.send({ type: 'terminal.ended', error: unavailableAuthority });
+  await until(() => f.carrier.state.getSnapshot().phase !== 'connected');
+
+  expect(f.carrier.state.getSnapshot().phase).toBe('disconnected');
+  expect(f.carrier.generation.getSnapshot()).toBeUndefined();
+  expect(f.carrier.state.getSnapshot().error).toContain('正在重新验证');
+  expect(f.carrier.state.getSnapshot().error).not.toContain('HUMAN_TERMINAL');
+  await expect(stream.next()).rejects.toBeInstanceOf(CarrierError);
+  expect(await closing).toMatchObject({
+    ok: false,
+    error: {
+      code: 'gateway/internal',
+      message: expect.stringContaining('授权'),
+    },
+  });
+  expect(() =>
+    stream.send({ type: 'write', sequence: 2, data: 'late' }),
+  ).toThrow(CarrierError);
+
+  await vi.advanceTimersByTimeAsync(999);
+  expect(f.clients).toHaveLength(1);
+  await vi.advanceTimersByTimeAsync(1);
+  await until(() => f.carrier.state.getSnapshot().phase === 'connected');
+  expect(f.clients).toHaveLength(2);
+  expect(f.carrier.generation.getSnapshot()!.id).toBeGreaterThan(
+    previousGeneration,
+  );
+  expect(f.carrier.state.getSnapshot().error).toBeUndefined();
+  expect(
+    f.sent.filter((frame) => frame.type === 'terminal.input'),
+  ).toHaveLength(1);
+  expect(f.sent.filter((frame) => frame.action === 'close')).toHaveLength(1);
+  expect(f.sent.filter((frame) => frame.action === 'attach')).toHaveLength(1);
+
+  const replacement = await f.open();
+  f.native(replacement.requestId, snapshot(info.id, 'fresh snapshot'));
+  expect((await replacement.first).value).toEqual(
+    snapshot(info.id, 'fresh snapshot'),
+  );
+});
+
+it.each([
+  {
+    code: 'terminal/unavailable',
+    message: 'HUMAN_TERMINAL_AUTHORIZATION_REVOKED',
+  },
+  { code: 'gateway/internal', message: unavailableAuthority.message },
+  { ...unavailableAuthority, message: unavailableAuthority.message + '_OTHER' },
+  {
+    code: 'terminal/unavailable',
+    message: 'HUMAN_TERMINAL_CREDIT_UNAVAILABLE',
+  },
+])(
+  'keeps permanent or unrecognized terminal failure $message ended',
+  async (error) => {
+    const f = await fixture();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    f.send({ type: 'terminal.ended', error });
+    await until(() => f.carrier.state.getSnapshot().phase === 'ended');
+    f.carrier.retryConnection();
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(f.clients).toHaveLength(1);
+    expect(f.carrier.state.getSnapshot().phase).toBe('ended');
+    expect(f.carrier.generation.getSnapshot()).toBeUndefined();
+  },
+);
+
+it('manual retry replaces the backoff once and disposal cannot restart it', async () => {
+  const f = await fixture();
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  f.send({ type: 'terminal.ended', error: unavailableAuthority });
+  await until(() => f.carrier.state.getSnapshot().phase === 'disconnected');
+  f.carrier.retryConnection();
+  f.carrier.retryConnection();
+  await until(() => f.carrier.state.getSnapshot().phase === 'connected');
+  await vi.advanceTimersByTimeAsync(15000);
+  expect(f.clients).toHaveLength(2);
+  expect(f.carrier.state.getSnapshot().phase).toBe('connected');
+
+  f.send({ type: 'terminal.ended', error: unavailableAuthority });
+  await until(() => f.carrier.state.getSnapshot().phase === 'disconnected');
+  f.carrier.dispose();
+  f.carrier.retryConnection();
+  await vi.advanceTimersByTimeAsync(30000);
+  expect(f.clients).toHaveLength(2);
+  expect(f.carrier.state.getSnapshot().phase).toBe('ended');
 });

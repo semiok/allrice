@@ -4,18 +4,17 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
   type ComponentType,
 } from 'react';
 import {
   Button,
-  Menu,
   PluginArtworkTerminal,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import { createPortal } from 'react-dom';
 import type { TerminalView } from '@deepseek-ai/dsh-api-terminal-controller/client';
-import type { TerminalShell } from '@deepseek-ai/dsh-api-terminal-controller/types';
 import type { BridgeDevice } from './chatflow-types';
 import { readJson } from './chatflow-utils';
 import {
@@ -106,9 +105,8 @@ export function TerminalGuide(props: {
   const [devices, setDevices] = useState<TerminalDevice[] | null>(null);
   const [selected, setSelected] = useState('');
   const [notice, setNotice] = useState('');
-  const [menu, setMenu] = useState(false);
-  const [shells, setShells] = useState<readonly TerminalShell[] | null>(null);
-  const [shellPath, setShellPath] = useState<string>();
+  const [launching, setLaunching] = useState(false);
+  const launchRequest = useRef<AbortController | null>(null);
   const [revision, setRevision] = useState(0);
   const scope = `${props.identity.organizationId}/${props.identity.workspaceId}/${props.identity.ownerId}`;
   useEffect(() => {
@@ -161,7 +159,6 @@ export function TerminalGuide(props: {
       ? undefined
       : (targets.find((value) => value.online && value.supported) ??
         targets[0]));
-  const ready = !props.readOnly && target?.online && target.supported;
   useEffect(() => {
     if (!selected && target)
       setSelected(target.deviceId + '/' + target.grantId);
@@ -186,100 +183,80 @@ export function TerminalGuide(props: {
     return true;
   };
   useEffect(() => {
-    if (!menu || !target || !ready) return;
+    setLaunching(false);
+    return () => {
+      const pending = launchRequest.current;
+      launchRequest.current = null;
+      pending?.abort();
+    };
+  }, [
+    scope,
+    props.identity.sessionId,
+    props.active,
+    props.readOnly,
+    target?.deviceId,
+    target?.grantId,
+  ]);
+  const launch = async () => {
+    if (!props.active || launchRequest.current || !check() || !target) return;
     const abort = new AbortController();
-    setShells(null);
-    void nativeTerminalRuntime(props.identity, target)
-      .then(async (runtime) => {
-        const result = await runtime.models.launchShells(
-          props.identity.sessionId as never,
-          abort.signal,
+    launchRequest.current = abort;
+    setLaunching(true);
+    setNotice('');
+    try {
+      const runtime = await nativeTerminalRuntime(props.identity, target);
+      const choices = await runtime.models.launchShells(
+        props.identity.sessionId as never,
+        abort.signal,
+      );
+      if (abort.signal.aborted) return;
+      // Pinned DSH discovery returns the verified execution default first.
+      // Its remembered selection belongs to the former chooser, not new tabs.
+      const shellPath = choices.shells[0]?.path;
+      if (!shellPath) throw Error('这台电脑没有可用的默认 Shell');
+      props.onLaunch(target, shellPath);
+    } catch (error) {
+      if (!abort.signal.aborted)
+        setNotice(
+          error instanceof Error ? error.message : '默认 Shell 读取失败',
         );
-        if (!abort.signal.aborted) {
-          setShells(result.shells);
-          setShellPath(result.selectedShell);
-        }
-      })
-      .catch((error) => {
-        if (!abort.signal.aborted)
-          setNotice(error instanceof Error ? error.message : 'Shell 读取失败');
-      });
-    return () => abort.abort();
-  }, [menu, target?.deviceId, target?.grantId, ready]);
+    } finally {
+      if (launchRequest.current === abort) launchRequest.current = null;
+      if (!abort.signal.aborted) setLaunching(false);
+    }
+  };
   return (
-    <div className={css.guideEntry}>
+    <div className={css.guideEntry} data-terminal-guide>
       <div className={`${guide.card} ${css.card}`}>
-        <button
+        <Button
           type="button"
+          variant="ghost"
           className={css.launch}
           aria-label="新建终端"
-          onClick={() => {
-            if (check() && target) props.onLaunch(target, shellPath);
-          }}
-        >
-          <span className={`${guide.tile} ${css.tile}`}>
-            <PluginArtworkTerminal size={30} />
-          </span>
-          <span className={css.guideCopy}>
-            <strong>新建终端</strong>
-            <small>
-              {target
-                ? `${target.deviceName} · ${target.label}`
-                : '在你的电脑上运行命令'}
-            </small>
-          </span>
-        </button>
-        <Menu
-          portal
-          open={menu}
-          onClose={() => setMenu(false)}
-          anchor={
-            <button
-              type="button"
-              className={css.shellPicker}
-              aria-label="选择终端 Shell"
-              aria-expanded={menu}
-              onClick={() => {
-                if (check()) setMenu((value) => !value);
-              }}
-            >
-              ⌄
-            </button>
-          }
-          items={
-            shells?.length
-              ? shells.map((shell) => ({ id: shell.path, label: shell.name }))
-              : [
-                  {
-                    id: 'loading',
-                    label: shells ? '没有可用的 Shell' : '正在读取 Shell…',
-                    disabled: true,
-                  },
-                ]
-          }
-          selectedId={shellPath}
-          onSelect={(path) => {
-            setMenu(false);
-            setShellPath(path);
-            if (target)
-              void nativeTerminalRuntime(props.identity, target).then(
-                (runtime) => {
-                  runtime.models.selectShell(path);
-                  props.onLaunch(target, path);
-                },
-              );
-          }}
+          disabled={launching || !props.active}
+          aria-busy={launching}
+          onClick={() => void launch()}
         />
+        <span className={`${guide.tile} ${css.tile}`} aria-hidden="true">
+          <PluginArtworkTerminal size={30} />
+        </span>
+        <span className={css.guideCopy}>
+          <strong>{launching ? '正在打开终端…' : '新建终端'}</strong>
+          <small>
+            {target
+              ? `${target.deviceName} · ${target.label}`
+              : '在你的电脑上运行命令'}
+          </small>
+        </span>
       </div>
       {targets.length > 1 && (
         <select
           className={css.targetPicker}
           aria-label="终端电脑与文件夹"
+          disabled={launching}
           value={target ? `${target.deviceId}/${target.grantId}` : ''}
           onChange={(event) => {
             setSelected(event.target.value);
-            setShellPath(undefined);
-            setShells(null);
             setNotice('');
           }}
         >
@@ -439,6 +416,16 @@ function NativeTerminalBody(props: {
     props.model.state.getSnapshot,
   );
   useEffect(() => {
+    // Native failInput detaches its stream if a resize/input races carrier loss.
+    // Recover only a confirmed process after fresh carrier authorization.
+    if (
+      carrier.phase === 'connected' &&
+      state.phase === 'disconnected' &&
+      state.info
+    )
+      props.model.connect();
+  }, [carrier.phase, state.phase, state.info, props.model]);
+  useEffect(() => {
     if (state.title) props.onTitle?.(state.title);
   }, [state.title, props.onTitle]);
   const [themeRevision, setThemeRevision] = useState(0);
@@ -478,9 +465,15 @@ function NativeTerminalBody(props: {
   const Body: ComponentType<TerminalScreenProps> =
     props.runtime.screen.TerminalBody;
   return (
-    <section className={css.terminal} aria-label="电脑终端">
+    <section
+      className={css.terminal}
+      aria-label="电脑终端"
+      data-terminal-workbench
+    >
       <div className={css.metadata}>
-        <span className={css.device}>{carrier.deviceName ?? '我的电脑'}</span>
+        <span className={css.device} title={carrier.deviceName ?? '我的电脑'}>
+          {carrier.deviceName ?? '我的电脑'}
+        </span>
         <span
           className={css.folder}
           title={
@@ -502,10 +495,12 @@ function NativeTerminalBody(props: {
         >
           <i />
           {carrier.phase === 'connected'
-            ? 'Bridge 已连接'
+            ? '终端已连接'
             : carrier.phase === 'ended'
               ? '连接已结束'
-              : 'Bridge 连接中'}
+              : carrier.error
+                ? '正在重新验证终端授权'
+                : '终端连接中'}
         </span>
       </div>
       <div className={css.screen}>
@@ -523,6 +518,18 @@ function NativeTerminalBody(props: {
           t={t}
         />
       </div>
+      {carrier.error && carrier.phase !== 'ended' && (
+        <div className={css.notice}>
+          <span role="status">{carrier.error}</span>
+          <button
+            type="button"
+            disabled={carrier.phase !== 'disconnected'}
+            onClick={() => props.runtime.carrier.retryConnection()}
+          >
+            立即重试连接
+          </button>
+        </div>
+      )}
       {carrier.phase === 'ended' && (
         <div className={css.notice}>
           <span role="alert">{carrier.error}</span>
