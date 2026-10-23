@@ -103,7 +103,6 @@ import {
   readExperiencePolicy,
 } from './experience-consolidation.ts';
 import {
-  claimDueAutomations,
   syncAutomationRuns,
   listAutomations,
   runAutomationNow,
@@ -3694,7 +3693,7 @@ suite(
         db`update allrice_automation_runs set experience_execution=${db.json({ ...frozen, model: { ...frozen.model, model: 'another' } })} where id=${f.occurrence.id}`,
       ).rejects.toThrow('occurrence is immutable');
     });
-    it('keeps experience rules out of legacy due scanning before native handoff', async () => {
+    it('keeps overdue experience rules private and unchanged when ordinary entry is attempted before native handoff', async () => {
       const bad = await source(),
         good = await source();
       await db`update allrice_employee_instances set archived_at=clock_timestamp() where id=${bad.instance.id}`;
@@ -3705,9 +3704,16 @@ suite(
       const ruleIds = [bad.rule.id, good.rule.id];
       const before =
         await db`select id,status,next_run_at,last_run_at,revision,clock_owner from allrice_automations where id in ${db(ruleIds)} order by id`;
-      expect(
-        await Promise.all([claimDueAutomations(), claimDueAutomations()]),
-      ).toEqual([0, 0]);
+      for (const f of [bad, good]) {
+        await expect(
+          runAutomationNow(f.owner, f.workspace, f.rule.id),
+        ).rejects.toMatchObject({ code: 'not_found' });
+        expect(
+          (await listAutomations(f.owner, f.workspace)).automations.some(
+            (row) => row.id === f.rule.id,
+          ),
+        ).toBe(false);
+      }
       expect(
         await db`select id,status,next_run_at,last_run_at,revision,clock_owner from allrice_automations where id in ${db(ruleIds)} order by id`,
       ).toEqual(before);
@@ -3787,54 +3793,29 @@ suite(
         }
       },
     );
-    it('rechecks experience ownership after an ordinary due candidate waits for its row lock', async () => {
+    it('rejects the old ordinary execution entry before and after a historical rule gains its private experience binding', async () => {
       const f = await source();
       await db`update allrice_automations set experience_binding=null,next_run_at=clock_timestamp()-interval '1 minute' where id=${f.rule.id}`;
-      const [before] =
-        await db`select id,status,next_run_at,last_run_at,revision,clock_owner from allrice_automations where id=${f.rule.id}`;
-      let release!: () => void, acquired!: (pid: number) => void;
-      const gate = new Promise<void>((resolve) => {
-          release = resolve;
-        }),
-        ready = new Promise<number>((resolve) => {
-          acquired = resolve;
-        });
-      const held = db.begin(async (tx) => {
-        await tx`update allrice_automations set experience_binding=${tx.json(f.rule.experience_binding)} where id=${f.rule.id}`;
-        acquired((await tx`select pg_backend_pid() pid`)[0]!.pid);
-        await gate;
-      });
-      void held.catch(() => undefined);
-      const pid = await ready,
-        tick = claimDueAutomations(1);
-      void tick.catch(() => undefined);
-      try {
-        await expect
-          .poll(
-            async () =>
-              Number(
-                (
-                  await db`select count(*) n from pg_stat_activity where ${pid}=any(pg_blocking_pids(pid))`
-                )[0]!.n,
-              ),
-            { timeout: 3000 },
-          )
-          .toBeGreaterThan(0);
-      } finally {
-        release();
-        await held;
-      }
-      expect(await tick).toBe(0);
-      expect(
+      const state = async () =>
         (
-          await db`select id,status,next_run_at,last_run_at,revision,clock_owner from allrice_automations where id=${f.rule.id}`
-        )[0],
-      ).toEqual(before);
+          await db`select to_jsonb(a) data from allrice_automations a where id=${f.rule.id}`
+        )[0]!.data;
+      const ordinary = await state();
+      await expect(
+        runAutomationNow(f.owner, f.workspace, f.rule.id),
+      ).rejects.toMatchObject({ code: 'legacy_schedule_retired' });
+      expect(await state()).toEqual(ordinary);
+      await db`update allrice_automations set experience_binding=${db.json(f.rule.experience_binding)} where id=${f.rule.id}`;
+      const privateRule = await state();
+      await expect(
+        runAutomationNow(f.owner, f.workspace, f.rule.id),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      expect(await state()).toEqual(privateRule);
       expect(
-        (
-          await db`select experience_binding from allrice_automations where id=${f.rule.id}`
-        )[0]!.experience_binding,
-      ).toEqual(f.rule.experience_binding);
+        (await listAutomations(f.owner, f.workspace)).automations.some(
+          (row) => row.id === f.rule.id,
+        ),
+      ).toBe(false);
       expect(
         await db`select id from allrice_automation_runs where automation_id=${f.rule.id}`,
       ).toHaveLength(0);

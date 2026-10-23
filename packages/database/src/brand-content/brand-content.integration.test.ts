@@ -21,6 +21,7 @@ import {
   type WorkflowPackage,
 } from '@allrice/contracts';
 import {
+  AssistantFixtureCleanupError,
   assistantFixture,
   assistantFixtureStorage,
   createAssistantFixtureDatabase,
@@ -57,7 +58,7 @@ import {
   setWorkflowPackageBinding,
 } from '../capabilities/workflow-packages.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
-import { claimDueAutomations } from '../execution/automation.ts';
+import { runAutomationNow } from '../execution/automation.ts';
 import { getWorkAutomation, updateWorkAutomation } from '../work-automation.ts';
 import {
   cancelOnceTask,
@@ -88,8 +89,9 @@ import {
   brandContentStageInput,
 } from './workflow-start.ts';
 import {
-  claimBrandContentReminder,
   registerBrandContentReminder,
+  lockBrandContentReminder,
+  completeBrandContentReminder,
   type BrandContentReminderRegistration,
 } from './scheduling.ts';
 import { reconcileBrandNativeReminderAttempt } from './native-reminder.ts';
@@ -660,7 +662,7 @@ async function prepareReminderPlan(
   return { ...draft, reviewed, plan, plannedAt, input };
 }
 
-/** Explicit pre-native history for the still-supported migration tests only.
+/** Explicit pre-native history for retention and retired-entry tests only.
  * This is not a production registration or an alternative flag-OFF API. The
  * real approved plan/files/package and all FK/immutable triggers remain intact.
  * No control, journal, occurrence, message or terminal receipt is fabricated. */
@@ -668,7 +670,6 @@ async function seedHistoricalLegacyReminder(
   actor: Actor,
   prepared: Awaited<ReturnType<typeof prepareReminderPlan>>,
   workflow: WorkflowPackage,
-  createdAt?: { anchor: string; micros: 123 | 789 },
 ): Promise<BrandContentReminderRegistration> {
   return fixture.db.begin(async (tx) => {
     const [owned] = await tx<{ owned: boolean }[]>`select
@@ -717,7 +718,7 @@ async function seedHistoricalLegacyReminder(
         ${prepared.brand.brandId},${plan.id},${plan.revision + 1},${plan.article_id},${plan.bundle_id},
         ${plan.review_id},${plan.bundle_digest},${actor.session.id},${workflow.workflow.id},${workflow.checksum},
         ${automationId},${plan.planned_at},${prepared.input.requestId},${requestDigest},'user',${occurrenceId},${messageId},
-        coalesce(${createdAt?.anchor ?? null}::text::timestamptz + ${createdAt?.micros ?? 0} * interval '1 microsecond',clock_timestamp()))`;
+        clock_timestamp())`;
     const registered = await mutateBrandContentInTransaction(
       actor.context,
       {
@@ -834,6 +835,13 @@ suite(
             adminClosed: true,
           });
         }
+      } catch (error) {
+        if (error instanceof AssistantFixtureCleanupError)
+          console.error(
+            'BRAND_SQL_FIXTURE_CLEANUP_FAILED',
+            JSON.stringify(error.cleanup),
+          );
+        throw error;
       } finally {
         vi.restoreAllMocks();
         vi.unstubAllEnvs();
@@ -1872,7 +1880,7 @@ suite(
           const originalPackage = await ensureReminderPackage();
           const f = await prepareReminderPlan(
             a,
-            'actual-scanner-reminder',
+            'actual-native-reminder',
             3_000,
           );
           const [countsBefore] = await fixture.db<
@@ -2085,15 +2093,9 @@ suite(
             `/api/v1/files/${f.document.object.id}/download`,
           );
           expect(message!.content.text).toContain('不表示已对外发布');
-          expect(
-            await fixture.db.begin((tx) =>
-              claimBrandContentReminder(
-                tx,
-                registered.automationId,
-                f.plannedAt,
-              ),
-            ),
-          ).toBeNull();
+          await expect(
+            runAutomationNow(a.context, a.workspace, registered.automationId),
+          ).rejects.toMatchObject({ code: 'grant_invalid' });
           const [after] = await fixture.db<
             {
               runs: number;
@@ -2205,11 +2207,9 @@ suite(
             reminderStatus: 'not_registered',
             reminderMessageId: null,
           });
-          expect(
-            await fixture.db.begin((tx) =>
-              claimBrandContentReminder(tx, first.automationId, f.plannedAt),
-            ),
-          ).toBeNull();
+          await expect(
+            runAutomationNow(a.context, a.workspace, first.automationId),
+          ).rejects.toMatchObject({ code: 'grant_invalid' });
         });
 
         it('persists a real failed occurrence with no message when current owner, cloud, source, approval or package authority is lost before native receipt consumption', async () => {
@@ -2398,7 +2398,7 @@ suite(
           expect(await runJobCounts()).toEqual(countsBefore);
         }, 45_000);
 
-        it('preserves original IDs/P, rejects the locked legacy scanner and ordinary once APIs, and consumes one SQL receipt exactly once without Run/Job', async () => {
+        it('preserves original IDs/P, rejects ordinary execution and once APIs, and consumes one SQL receipt exactly once without Run/Job', async () => {
           const f = await enrolled('native-original-private-target');
           const original = f.original,
             c = await control(f.registered.automationId);
@@ -2470,18 +2470,9 @@ suite(
           const countsBefore = await runJobCounts(),
             clock = await preparedClock(f);
           await waitUntilReminder(new Date(clock.control.at));
-          // A scanner may have read its candidate before ownership changed.
-          // Exercise its sink's lock-time check as well as the outer scanner.
-          expect(
-            await fixture.db.begin((tx) =>
-              claimBrandContentReminder(
-                tx,
-                f.registered.automationId,
-                f.plannedAt,
-              ),
-            ),
-          ).toBeNull();
-          expect(await claimDueAutomations(16)).toBe(0);
+          await expect(
+            runAutomationNow(a.context, a.workspace, f.registered.automationId),
+          ).rejects.toMatchObject({ code: 'grant_invalid' });
           const [beforeReceipt] = await fixture.db`select
           (select count(*)::int from allrice_automation_runs where automation_id=${f.registered.automationId}) as occurrences,
           (select count(*)::int from allrice_messages where id=${original.reserved_message_id}) as messages`;
@@ -2842,25 +2833,21 @@ suite(
           expect(await runJobCounts()).toEqual(countsBefore);
         }, 60_000);
 
-        it('enrolls an already registered overdue legacy reminder on enable without changing business revision, original IDs or P', async () => {
+        it('keeps an overdue legacy reminder unchanged without a native receipt and replays only its original registration', async () => {
           const workflow = await ensureReminderPackage();
           const f = await prepareReminderPlan(
             a,
-            'native-adopt-overdue-legacy',
+            'retained-overdue-legacy',
             3_000,
           );
           const registered = await seedHistoricalLegacyReminder(a, f, workflow);
           const originalRows = async () => {
-            const [row] = await fixture.db<
-              {
-                revision: number;
-                reminder: unknown;
-                plan: unknown;
-                automation: unknown;
-              }[]
-            >`
-              select a.revision,to_jsonb(r) as reminder,to_jsonb(p) as plan,
-                to_jsonb(a)-array['clock_owner','native_once_request_id','native_once_request_digest','updated_at'] as automation
+            const [row] = await fixture.db`
+              select to_jsonb(r) as reminder,to_jsonb(p) as plan,to_jsonb(a) as automation,
+                (select count(*)::int from allrice_native_once_controls where automation_id=a.id) as controls,
+                (select count(*)::int from allrice_brand_native_reminder_targets where automation_id=a.id) as targets,
+                (select count(*)::int from allrice_automation_runs where automation_id=a.id) as occurrences,
+                (select count(*)::int from allrice_messages where id=r.reserved_message_id) as messages
               from allrice_brand_content_reminders r
               join allrice_brand_content_plans p on p.id=r.plan_id
               join allrice_automations a on a.id=r.automation_id
@@ -2869,129 +2856,103 @@ suite(
           };
           const before = await originalRows(),
             countsBefore = await runJobCounts();
-          const [legacy] = await fixture.db`select clock_owner,
-            (select count(*)::int from allrice_native_once_controls where automation_id=a.id) as controls,
-            (select count(*)::int from allrice_brand_native_reminder_targets where automation_id=a.id) as targets
-            from allrice_automations a where a.id=${registered.automationId}`;
-          expect(legacy).toEqual({
-            clock_owner: 'legacy',
+          expect(before).toMatchObject({
+            automation: { clock_owner: 'legacy', status: 'enabled' },
             controls: 0,
             targets: 0,
-          });
-          // Observe server time normally; an already passed original P is not
-          // rewritten to a future business schedule to make migration succeed.
-          await waitUntilReminder(f.plannedAt);
-          expect(await reconcileBrandNativeReminderAttempt()).toBe(true);
-          expect(await reconcileBrandNativeReminderAttempt()).toBe(false);
-          expect(await originalRows()).toEqual(before);
-          const original = await identity(registered.automationId);
-          expect(original).toMatchObject({
-            plan_revision: registered.revision,
-            business_revision: before.revision,
-            session_id: a.session.id,
-            scheduled_for: f.plannedAt,
-            reminder_snapshot: {
-              request_id: f.input.requestId,
-              plan_id: f.input.planId,
-              bundle_digest: f.reviewed.result.bundleDigest,
-              workflow_revision_id: workflow.workflow.id,
-              package_digest: workflow.checksum,
-            },
-            automation_snapshot: {
-              clock_owner: 'native_once',
-              native_once_request_id: original.reminder_id,
-              schedule: { frequency: 'once', runAt: f.plannedAt.toISOString() },
-            },
-          });
-          const c = await control(registered.automationId);
-          expect(c.revision).toBe(1);
-          expect(c.dispatch).toMatchObject({
-            consumer: 'brand-reminder-v1',
-            reminderId: original.reminder_id,
-            businessRevision: before.revision,
-            plannedAt: f.plannedAt.toISOString(),
-            businessOccurrenceId: original.reserved_occurrence_id,
-            businessMessageId: original.reserved_message_id,
-            businessSessionId: a.session.id,
-          });
-          expect(Date.parse(c.at)).toBeGreaterThan(f.plannedAt.getTime());
-          expect(
-            await fixture.db.begin((tx) =>
-              claimBrandContentReminder(
-                tx,
-                registered.automationId,
-                f.plannedAt,
-              ),
-            ),
-          ).toBeNull();
-          const [after] = await fixture.db`select a.clock_owner,
-            (select count(*)::int from allrice_native_once_controls where automation_id=a.id) as controls,
-            (select count(*)::int from allrice_brand_native_reminder_targets where automation_id=a.id) as targets,
-            (select count(*)::int from allrice_automation_runs where automation_id=a.id) as occurrences,
-            (select count(*)::int from allrice_messages where id=${original.reserved_message_id}) as messages
-            from allrice_automations a where a.id=${registered.automationId}`;
-          expect(after).toEqual({
-            clock_owner: 'native_once',
-            controls: 1,
-            targets: 1,
             occurrences: 0,
             messages: 0,
           });
+          await waitUntilReminder(f.plannedAt);
+          // Even a genuine locked legacy gate cannot enter the retained native sink.
+          await expect(
+            fixture.db.begin(async (tx) => {
+              const gate = await lockBrandContentReminder(
+                tx,
+                registered.automationId,
+              );
+              if (!gate) throw Error('historical_brand_gate_missing');
+              return completeBrandContentReminder(tx, gate, {});
+            }),
+          ).rejects.toMatchObject({ code: 'invalid_state' });
+          expect(await reconcileBrandNativeReminderAttempt()).toBe(false);
+          expect(await dispatchNextNativeOnceOccurrence(randomUUID())).toBe(
+            false,
+          );
+          await expect(
+            runAutomationNow(a.context, a.workspace, registered.automationId),
+          ).rejects.toMatchObject({ code: 'grant_invalid' });
+          try {
+            vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', '0');
+            const replay = await registerBrandContentReminder(
+              a.context,
+              f.input,
+              {
+                db: fixture.db,
+                workflow: reminderPin(workflow),
+              },
+            );
+            expect(replay).toMatchObject({
+              automationId: registered.automationId,
+              planId: registered.planId,
+              revision: registered.revision,
+              replayed: true,
+              status: 'registered',
+              messageId: null,
+            });
+          } finally {
+            vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', '1');
+          }
+          expect(await originalRows()).toEqual(before);
           expect(await runJobCounts()).toEqual(countsBefore);
         }, 15_000);
 
-        it('advances a microsecond-precise legacy cursor past a future cloud-denied actor to an authorized reminder in the same millisecond', async () => {
-          expect(b.user).not.toBe(a.user);
+        it('leaves future historical reminders untouched for both cloud-denied and authorized owners while new registrations enroll natively', async () => {
           const deniedWorkflow = await prepareReminderPackage(
             b,
             await prepareReminderMethod(b),
           );
           const allowedWorkflow = await ensureReminderPackage();
-          const r1 = await prepareReminderPlan(
+          const deniedPlan = await prepareReminderPlan(
             b,
-            'cursor-earliest-denied',
+            'retained-denied-legacy',
             60_000,
           );
-          const r2 = await prepareReminderPlan(
+          const allowedPlan = await prepareReminderPlan(
             a,
-            'cursor-next-authorized',
+            'retained-authorized-legacy',
             60_000,
           );
-          let anchor: string | null = null;
-          // Both legacy rows are explicit pre-native history. Keep the actual
-          // immutable INSERT trigger/default intact and retain SQL microseconds;
-          // no OFF API registration or frozen created_at rewrite is involved.
-          const registerAt = async (
-            actor: Actor,
-            prepared: Awaited<ReturnType<typeof prepareReminderPlan>>,
-            workflow: WorkflowPackage,
-            micros: 123 | 789,
-          ) => {
-            if (anchor === null) {
-              const [clock] = await fixture.db<
-                { anchor: string }[]
-              >`select date_trunc('milliseconds',clock_timestamp())::text as anchor`;
-              anchor = clock!.anchor;
-            }
-            return seedHistoricalLegacyReminder(actor, prepared, workflow, {
-              anchor,
-              micros,
-            });
-          };
+          const first = await seedHistoricalLegacyReminder(
+            b,
+            deniedPlan,
+            deniedWorkflow,
+          );
+          const second = await seedHistoricalLegacyReminder(
+            a,
+            allowedPlan,
+            allowedWorkflow,
+          );
+          const ids = [first.automationId, second.automationId];
+          const legacyState = async () => fixture.db`
+            select to_jsonb(r) as reminder,to_jsonb(p) as plan,to_jsonb(a) as automation,
+              (select count(*)::int from allrice_native_once_controls where automation_id=a.id) as controls,
+              (select count(*)::int from allrice_brand_native_reminder_targets where automation_id=a.id) as targets,
+              (select count(*)::int from allrice_automation_runs where automation_id=a.id) as occurrences,
+              (select count(*)::int from allrice_messages where id=r.reserved_message_id) as messages
+            from allrice_brand_content_reminders r
+            join allrice_brand_content_plans p on p.id=r.plan_id
+            join allrice_automations a on a.id=r.automation_id
+            where a.id in ${fixture.db(ids)} order by a.id`;
+          const before = await legacyState(),
+            countsBefore = await runJobCounts();
           let cloudRevoked = false;
           try {
-            const first = await registerAt(b, r1, deniedWorkflow, 123);
-            const second = await registerAt(a, r2, allowedWorkflow, 789);
             const work = await getWorkAutomation(
               b.context,
               b.workspace,
               fixture.db,
             );
-            expect(work.settings.cloud).toBe(true);
-            expect(
-              (await getWorkAutomation(a.context, a.workspace, fixture.db))
-                .settings.cloud,
-            ).toBe(true);
             await updateWorkAutomation(
               b.context,
               b.workspace,
@@ -3003,120 +2964,32 @@ suite(
               fixture.db,
             );
             cloudRevoked = true;
-            const [precision] = await fixture.db<
-              {
-                same_millisecond: boolean;
-                ordered: boolean;
-                first_fraction: number;
-                second_fraction: number;
-                first_created_at: Date;
-                second_created_at: Date;
-                not_due: boolean;
-              }[]
-            >`select
-              date_trunc('milliseconds',x.created_at)=date_trunc('milliseconds',y.created_at) as same_millisecond,
-              x.created_at<y.created_at as ordered,
-              mod((extract(epoch from x.created_at)*1000000)::bigint,1000)::int as first_fraction,
-              mod((extract(epoch from y.created_at)*1000000)::bigint,1000)::int as second_fraction,
-              x.created_at as first_created_at,y.created_at as second_created_at,
-              x.scheduled_for>clock_timestamp() as not_due
-              from allrice_brand_content_reminders x cross join allrice_brand_content_reminders y
-              where x.automation_id=${first.automationId} and y.automation_id=${second.automationId}`;
-            expect(precision).toMatchObject({
-              same_millisecond: true,
-              ordered: true,
-              first_fraction: 123,
-              second_fraction: 789,
-              not_due: true,
-            });
-            // Both collapse to the same JS Date; using it as the next SQL
-            // cursor would select R1 forever instead of reaching R2.
-            expect(precision!.first_created_at.getTime()).toBe(
-              precision!.second_created_at.getTime(),
+            await expect(
+              registerBrandContentReminder(b.context, deniedPlan.input, {
+                db: fixture.db,
+                workflow: reminderPin(deniedWorkflow),
+              }),
+            ).rejects.toMatchObject({ code: 'authority_denied' });
+            const reconciled = await Promise.all([
+              reconcileBrandNativeReminderAttempt(),
+              reconcileBrandNativeReminderAttempt(),
+            ]);
+            expect(reconciled).toEqual([false, false]);
+            expect(await legacyState()).toEqual(before);
+
+            const native = await enrolled(
+              'independent-native-after-retirement',
+              60_000,
             );
-            const [schema] = await fixture.db<
-              { immutable_trigger_enabled: boolean; created_default: string }[]
-            >`
-              select (select tgenabled='O' from pg_trigger
-                where tgrelid='allrice_brand_content_reminders'::regclass
-                  and tgname='allrice_brand_content_reminder_fixed') as immutable_trigger_enabled,
-                pg_get_expr(d.adbin,d.adrelid) as created_default
-              from pg_attrdef d join pg_attribute a on a.attrelid=d.adrelid and a.attnum=d.adnum
-              where a.attrelid='allrice_brand_content_reminders'::regclass and a.attname='created_at'`;
-            expect(schema).toEqual({
-              immutable_trigger_enabled: true,
-              created_default: 'clock_timestamp()',
-            });
-            const reminderState = async (automationId: string) => {
-              const [row] = await fixture.db`
-                select to_jsonb(r) as reminder,to_jsonb(p) as plan,
-                  to_jsonb(a)-array['clock_owner','native_once_request_id','native_once_request_digest','updated_at'] as automation,
-                  a.revision,a.clock_owner,
-                  (select count(*)::int from allrice_native_once_controls where automation_id=a.id) as controls,
-                  (select count(*)::int from allrice_brand_native_reminder_targets where automation_id=a.id) as targets,
-                  (select count(*)::int from allrice_automation_runs where automation_id=a.id) as occurrences,
-                  (select count(*)::int from allrice_messages where id=r.reserved_message_id) as messages
-                from allrice_brand_content_reminders r
-                join allrice_brand_content_plans p on p.id=r.plan_id
-                join allrice_automations a on a.id=r.automation_id where a.id=${automationId}`;
-              return row!;
-            };
-            const deniedBefore = await reminderState(first.automationId);
-            const allowedBefore = await reminderState(second.automationId);
-            expect(deniedBefore).toMatchObject({
-              clock_owner: 'legacy',
-              controls: 0,
-              targets: 0,
-              occurrences: 0,
-              messages: 0,
-            });
-            expect(allowedBefore).toMatchObject({
-              clock_owner: 'legacy',
-              controls: 0,
-              targets: 0,
-              occurrences: 0,
-              messages: 0,
-            });
-            const countsBefore = await runJobCounts();
-            vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', '1');
-            for (let attempt = 0; attempt < 6; attempt++)
-              await reconcileBrandNativeReminderAttempt();
-            const deniedAfter = await reminderState(first.automationId);
-            const allowedAfter = await reminderState(second.automationId);
-            expect(deniedAfter).toEqual(deniedBefore);
-            expect(allowedAfter).toEqual({
-              ...allowedBefore,
-              clock_owner: 'native_once',
-              controls: 1,
-              targets: 1,
-            });
-            const admitted = await identity(second.automationId);
-            expect(admitted).toMatchObject({
-              business_revision: allowedBefore.revision,
-              plan_revision: second.revision,
-              scheduled_for: r2.plannedAt,
-              session_id: a.session.id,
-              reminder_snapshot: { request_id: r2.input.requestId },
-            });
-            const c = await control(second.automationId);
-            expect(c.revision).toBe(1);
-            expect(c.dispatch).toMatchObject({
+            expect(
+              (await control(native.registered.automationId)).dispatch,
+            ).toMatchObject({
               consumer: 'brand-reminder-v1',
-              businessRevision: allowedBefore.revision,
-              plannedAt: r2.plannedAt.toISOString(),
-              businessOccurrenceId: admitted.reserved_occurrence_id,
-              businessMessageId: admitted.reserved_message_id,
-              businessSessionId: a.session.id,
+              plannedAt: native.plannedAt.toISOString(),
             });
+            expect(await legacyState()).toEqual(before);
             expect(await runJobCounts()).toEqual(countsBefore);
-            const [stillFuture] = await fixture.db<
-              { not_due: boolean }[]
-            >`select
-              scheduled_for>clock_timestamp() as not_due from allrice_brand_content_reminders
-              where automation_id=${first.automationId}`;
-            expect(stillFuture?.not_due).toBe(true);
           } finally {
-            vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', '1');
             if (cloudRevoked) {
               const work = await getWorkAutomation(
                 b.context,

@@ -225,23 +225,6 @@ export async function deletePlatformQualitySchedule(
   return getPlatformQualitySchedule(context);
 }
 
-/** Called only with the existing scheduler's rule row lock held. */
-export async function claimPlatformQualityOccurrence(
-  tx: Tx,
-  rule: Rule,
-  nextRunAt: Date,
-) {
-  const result = await reservePlatformQualityOccurrence(
-    tx,
-    rule,
-    rule.next_run_at!,
-  );
-  // Legacy only. Native projections are updated exclusively from committed
-  // public task records, never by computing the next due time in SQL.
-  await tx`update allrice_automations set next_run_at=${nextRunAt},last_run_at=clock_timestamp(),updated_at=clock_timestamp() where id=${rule.id}`;
-  return result && !result.reason ? result.id : null;
-}
-
 /** Shared business sink. The caller locks the rule and supplies the actual
  * source target; native receipts must never read the next_run_at projection. */
 export async function reservePlatformQualityOccurrence(
