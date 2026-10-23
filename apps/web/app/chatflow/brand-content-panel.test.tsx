@@ -503,6 +503,7 @@ browserSuite(
     let reads = 0;
     let failNextSave = true;
     let failNextReminder = true;
+    let refuseNextReminder = false;
 
     beforeAll(async () => {
       const root = process.cwd();
@@ -551,6 +552,21 @@ browserSuite(
           const input = JSON.parse(raw) as Record<string, unknown>;
           posts.push(input);
           if (path.endsWith('/reminder')) {
+            if (refuseNextReminder) {
+              refuseNextReminder = false;
+              response.writeHead(503);
+              response.end(
+                JSON.stringify({
+                  error: {
+                    code: 'DEPENDENCY_UNAVAILABLE',
+                    message: '到点提醒暂不可用，本次未登记；原排期已保留。',
+                    retryable: false,
+                    requestId: id(99),
+                  },
+                }),
+              );
+              return;
+            }
             if (failNextReminder) {
               failNextReminder = false;
               response.writeHead(503);
@@ -846,6 +862,48 @@ browserSuite(
         await dialog.getByText('已排期 · 待人工发布', { exact: true }).count(),
       ).toBe(1);
       await page.close();
+    }, 30000);
+    it('shows a canonical unavailable reminder as unregistered, with no automatic resend or success claim', async () => {
+      Object.assign(board, approvedFixture());
+      Object.assign(board.plans[0]!, {
+        reminderStatus: 'not_registered',
+        automationId: null,
+        runId: null,
+        automationRunId: null,
+      });
+      refuseNextReminder = true;
+      const before = posts.length;
+      const page = await browser.newPage();
+      try {
+        await page.goto(origin);
+        const dialog = page.getByRole('dialog', { name: '内容工作台' });
+        await dialog.getByLabel('品牌名称').waitFor();
+        await dialog
+          .getByRole('button', { name: '排期与回执', exact: true })
+          .click();
+        await dialog
+          .getByRole('button', { name: '开启到点提醒', exact: true })
+          .click();
+        await dialog
+          .getByRole('alert')
+          .getByText('到点提醒暂不可用，本次未登记；原排期已保留。', {
+            exact: true,
+          })
+          .waitFor();
+        expect(posts).toHaveLength(before + 1);
+        expect(board.plans[0]!.reminderStatus).toBe('not_registered');
+        expect(
+          await dialog
+            .getByText('提醒已登记，尚未确认执行', { exact: true })
+            .count(),
+        ).toBe(0);
+        await dialog.getByRole('button', { name: '刷新', exact: true }).click();
+        await dialog.getByText('未登记提醒', { exact: true }).waitFor();
+        expect(posts).toHaveLength(before + 1);
+      } finally {
+        refuseNextReminder = false;
+        await page.close();
+      }
     }, 30000);
   },
 );

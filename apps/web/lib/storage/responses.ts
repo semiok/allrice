@@ -1,5 +1,6 @@
 import {
   DataAccessError,
+  LegacyScheduleRetiredError,
   EmployeeInstanceError,
   EmployeeRuntimeContentError,
   IdentityError,
@@ -15,6 +16,17 @@ import { executionErrorResponse } from '../execution/responses';
 import { employeeHubErrorResponse } from '../employeehub/responses';
 
 export function storageErrorResponse(error: unknown) {
+  if (error instanceof LegacyScheduleRetiredError) {
+    const response = apiProblem({
+      status: 410,
+      code: 'CONFLICT',
+      message:
+        '历史定时任务仅支持查看、暂停和删除。后续执行请在对话中创建新任务。',
+      retryable: false,
+    });
+    response.headers.set('Cache-Control', 'private, no-store');
+    return response;
+  }
   if (
     error instanceof EmployeeInstanceError ||
     error instanceof EmployeeRuntimeContentError

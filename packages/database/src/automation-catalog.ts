@@ -18,7 +18,7 @@ import {
 import { getDatabase } from './core/client.ts';
 import { acquireDevAdmission } from './dev-maintenance.ts';
 import { lockSchedulePrincipal } from './native-schedule-authority.ts';
-import { nextScheduleAt } from './execution/automation.ts';
+import { LegacyScheduleRetiredError } from './execution/automation.ts';
 import { DataAccessError } from './data.ts';
 import { readContentPrincipal } from './content-maintenance.ts';
 import { readWorkAutomation } from './work-automation.ts';
@@ -185,10 +185,7 @@ async function project(
       schedule,
       revision: Number(row.revision),
       status: row.deleted_at ? 'deleted' : row.status,
-      canManage:
-        writable &&
-        !row.deleted_at &&
-        !(schedule.frequency === 'once' && row.last_run_at),
+      canManage: false,
     };
     nextRunAt = row.next_run_at?.toISOString() ?? null;
     canStop = writable && !row.deleted_at;
@@ -630,8 +627,9 @@ export async function changeAutomationCatalogTask(
           .strict(),
       ])
       .parse(raw);
-    // Existing legacy executor remains the sole clock. Catalog edits only
-    // update its owned configuration and preserve all historical Run rows.
+    if (input.action === 'update' || input.action === 'resume')
+      throw new LegacyScheduleRetiredError();
+    // Historical legacy entries only accept pause or soft deletion.
     await getDatabase().begin(async (tx) => {
       const { context: scoped, ownerId } = await authority(
         tx,
@@ -651,47 +649,8 @@ export async function changeAutomationCatalogTask(
       if (!p) throw new DataAccessError('not_found');
       if (Number(p.revision) !== input.expectedRevision)
         throw new DataAccessError('grant_invalid');
-      const originalSchedule = AutomationScheduleSchema.parse(p.schedule);
-      if (
-        originalSchedule.frequency === 'once' &&
-        p.last_run_at &&
-        ['update', 'resume'].includes(input.action)
-      )
-        throw new DataAccessError('grant_invalid');
-      const schedule =
-        input.action === 'update'
-          ? input.schedule
-          : AutomationScheduleSchema.parse(p.schedule);
-      const status =
-        input.action === 'pause' || input.action === 'delete'
-          ? 'paused'
-          : input.action === 'resume'
-            ? 'enabled'
-            : p.status;
-      if (status === 'enabled') {
-        const [current] =
-          await tx`select a.id from allrice_employee_assignments a
-          join allrice_employees e on e.id=a.employee_id and e.organization_id=a.organization_id and e.workspace_id=a.workspace_id
-          where a.id=${p.employee_assignment_id} and a.organization_id=${scoped.organizationId} and a.workspace_id=${workspaceId}
-            and a.user_id=${ownerId} and a.active and e.status='active' and e.employee_key not like 'platform-%'
-            and (${p.session_id}::uuid is null or exists(select 1 from allrice_chat_sessions s where s.id=${p.session_id} and s.organization_id=a.organization_id and s.workspace_id=a.workspace_id and s.owner_id=a.user_id and s.archived_at is null))`;
-        if (!current) throw new DataAccessError('authorization_denied');
-        const settings = await readWorkAutomation(tx, {
-          organizationId: scoped.organizationId,
-          workspaceId,
-          userId: ownerId,
-        });
-        if (!settings.available || !settings.settings.cloud)
-          throw new DataAccessError('authorization_denied');
-      }
-      const next =
-        status === 'paused'
-          ? null
-          : input.action === 'resume' || input.action === 'update'
-            ? nextScheduleAt(schedule)
-            : p.next_run_at;
-      await tx`update allrice_automations set name=${input.action === 'update' ? input.name : p.name},prompt=${input.action === 'update' ? input.prompt : p.prompt},
-        schedule=${tx.json(schedule)},status=${status},next_run_at=${next},revision=revision+1,deleted_at=${input.action === 'delete' ? new Date() : null},updated_at=clock_timestamp() where id=${p.id}`;
+      await tx`update allrice_automations set status='paused',next_run_at=null,revision=revision+1,
+        deleted_at=${input.action === 'delete' ? new Date() : null},updated_at=clock_timestamp() where id=${p.id}`;
       await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason) values(${scoped.organizationId},${workspaceId},${ownerId},${'automation.' + input.action},'automation',${p.id},'allowed','automation_catalog_legacy_control')`;
     });
     return {

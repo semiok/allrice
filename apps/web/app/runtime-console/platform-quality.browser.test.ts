@@ -74,6 +74,7 @@ suite(
         occurrences: [],
       };
       const scheduleWrites: Record<string, unknown>[] = [];
+      let scheduleRefusal: 'confirmed' | 'json' | 'html' | null = null;
       let scheduleReads = 0,
         releaseInitialScheduleRead: (() => void) | undefined;
       const initialScheduleRead = new Promise<void>((done) => {
@@ -99,6 +100,23 @@ suite(
               }
               const input = route.request().postDataJSON();
               scheduleWrites.push(input);
+              if (scheduleRefusal)
+                return route.fulfill({
+                  status: 503,
+                  contentType:
+                    scheduleRefusal === 'html'
+                      ? 'text/html'
+                      : 'application/json',
+                  body:
+                    scheduleRefusal === 'html'
+                      ? '<html>Gateway unavailable</html>'
+                      : JSON.stringify({
+                          error:
+                            scheduleRefusal === 'confirmed'
+                              ? 'quality_schedule_unavailable'
+                              : 'gateway_unavailable',
+                        }),
+                });
               if (
                 input.expectedRevision !==
                 (scheduleView.schedule?.revision ?? 0)
@@ -215,6 +233,29 @@ suite(
         await daily.getByRole('button', { name: '移除每日规则' }).click();
         await daily.getByRole('button', { name: '开启每日质检' }).waitFor();
         expect(scheduleWrites).toHaveLength(3);
+        for (const refusal of ['confirmed', 'json', 'html'] as const) {
+          scheduleRefusal = refusal;
+          const beforeWrites = scheduleWrites.length;
+          await daily.getByRole('button', { name: '开启每日质检' }).click();
+          await daily
+            .getByRole('alert')
+            .getByText(
+              refusal === 'confirmed'
+                ? '每日质检暂不可用，本次设置未保存。'
+                : '操作结果尚未确认。已回读配置，请核对后再操作。',
+              { exact: true },
+            )
+            .waitFor();
+          expect(scheduleWrites).toHaveLength(beforeWrites + 1);
+          expect(scheduleView.schedule).toBeNull();
+          expect(await daily.getByText('已开启', { exact: true }).count()).toBe(
+            0,
+          );
+          await daily.getByRole('button', { name: '刷新每日质检' }).click();
+          await expect.poll(() => daily.getByRole('alert').count()).toBe(0);
+          expect(scheduleWrites).toHaveLength(beforeWrites + 1);
+        }
+        scheduleRefusal = null;
         await page
           .getByRole('button', { name: '检查错误样例', exact: true })
           .click();

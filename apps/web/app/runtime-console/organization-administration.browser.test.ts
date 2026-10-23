@@ -68,6 +68,9 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
   const failures: string[] = [];
   beforeAll(async () => {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
+    vi.stubEnv('ALLRICE_EXPERIENCE_REVIEW_ENABLED', '1');
+    vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '1');
+    vi.stubEnv('ALLRICE_NATIVE_CALENDAR_ENABLED', '1');
     fixture = await createAssistantFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     ports.storage.mockReturnValue(assistantFixtureStorage(fixture.db));
@@ -347,6 +350,161 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
       await context.close();
     }
   }, 45000);
+
+  it.each([
+    'ALLRICE_EXPERIENCE_REVIEW_ENABLED',
+    'ALLRICE_NATIVE_RECURRING_ENABLED',
+    'ALLRICE_NATIVE_CALENDAR_ENABLED',
+  ])(
+    'refuses enabling with %s off without saving, while all-off still allows closing',
+    async (disabledFlag) => {
+      const admin = (await authenticateSession(adminToken))!;
+      const company = await createManagedOrganization(admin, {
+        name: '不可用整理设置',
+      });
+      const context = await browser.newContext();
+      await context.addCookies([
+        { name: 'fixture_session', value: adminToken, url: origin },
+      ]);
+      const page = await context.newPage();
+      const url = `${origin}/api/v1/admin/organizations/${company.organizationId}/experience-policy`;
+      const original = (await (await context.request.get(url)).json()).policy;
+      const state = async () => ({
+        settings:
+          await fixture.db`select value from allrice_settings where scope_type='organization'
+        and scope_id=${company.organizationId} and key='employee_experience_policy'`,
+        rules:
+          await fixture.db`select id,revision,status from allrice_automations where organization_id=${company.organizationId}`,
+      });
+      const before = await state();
+      try {
+        await page.goto(`${origin}/?organizationId=${company.organizationId}`);
+        await page
+          .getByRole('tab', { name: 'AI 员工与工作沉淀', exact: true })
+          .click();
+        await page.getByText('经验自动整理设置', { exact: true }).click();
+        const frequency = page.getByLabel('整理频率', { exact: true });
+        await frequency.waitFor();
+        await frequency.selectOption('weekly');
+        vi.stubEnv(disabledFlag, '0');
+        const rejected = page.waitForResponse(
+          (r) => r.url() === url && r.request().method() === 'PUT',
+        );
+        await page
+          .getByRole('button', { name: '保存整理设置', exact: true })
+          .click();
+        const response = await rejected;
+        expect(response.status()).toBe(503);
+        expect(response.headers()['cache-control']).toBe('private, no-store');
+        expect(await response.json()).toMatchObject({
+          code: 'EXPERIENCE_SCHEDULING_UNAVAILABLE',
+        });
+        await page
+          .getByText('经验自动整理暂不可用，本次设置未保存；仍可关闭整理。', {
+            exact: true,
+          })
+          .waitFor();
+        expect((await (await context.request.get(url)).json()).policy).toEqual(
+          original,
+        );
+        expect(await state()).toEqual(before);
+        for (const flag of [
+          'ALLRICE_EXPERIENCE_REVIEW_ENABLED',
+          'ALLRICE_NATIVE_RECURRING_ENABLED',
+          'ALLRICE_NATIVE_CALENDAR_ENABLED',
+        ])
+          vi.stubEnv(flag, '0');
+        await frequency.selectOption('off');
+        const closed = page.waitForResponse(
+          (r) => r.url() === url && r.request().method() === 'PUT',
+        );
+        await page
+          .getByRole('button', { name: '保存整理设置', exact: true })
+          .click();
+        expect((await closed).status()).toBe(200);
+        await page
+          .getByText('已关闭自动整理。已生成的草稿和历史记录保留。', {
+            exact: true,
+          })
+          .waitFor();
+        expect(
+          (await (await context.request.get(url)).json()).policy,
+        ).toMatchObject({ frequency: 'off', revision: original.revision + 1 });
+      } finally {
+        for (const flag of [
+          'ALLRICE_EXPERIENCE_REVIEW_ENABLED',
+          'ALLRICE_NATIVE_RECURRING_ENABLED',
+          'ALLRICE_NATIVE_CALENDAR_ENABLED',
+        ])
+          vi.stubEnv(flag, '1');
+        await context.close();
+      }
+    },
+    30000,
+  );
+
+  it.each(['json', 'html'])(
+    'does not claim a generic %s 503 was a rejected save or resend it',
+    async (format) => {
+      const admin = (await authenticateSession(adminToken))!;
+      const company = await createManagedOrganization(admin, {
+        name: '未知保存结果',
+      });
+      const context = await browser.newContext();
+      await context.addCookies([
+        { name: 'fixture_session', value: adminToken, url: origin },
+      ]);
+      const page = await context.newPage();
+      const url = `${origin}/api/v1/admin/organizations/${company.organizationId}/experience-policy`;
+      const before =
+        await fixture.db`select value from allrice_settings where scope_type='organization'
+      and scope_id=${company.organizationId} and key='employee_experience_policy'`;
+      let writes = 0;
+      await page.route(url, async (route) => {
+        if (route.request().method() !== 'PUT') return route.continue();
+        writes++;
+        return route.fulfill({
+          status: 503,
+          contentType: format === 'json' ? 'application/json' : 'text/html',
+          body:
+            format === 'json'
+              ? JSON.stringify({ code: 'GATEWAY_UNAVAILABLE' })
+              : '<html>Gateway unavailable</html>',
+        });
+      });
+      try {
+        await page.goto(`${origin}/?organizationId=${company.organizationId}`);
+        await page
+          .getByRole('tab', { name: 'AI 员工与工作沉淀', exact: true })
+          .click();
+        await page.getByText('经验自动整理设置', { exact: true }).click();
+        const frequency = page.getByLabel('整理频率', { exact: true });
+        await frequency.waitFor();
+        await frequency.selectOption('weekly');
+        await page
+          .getByRole('button', { name: '保存整理设置', exact: true })
+          .click();
+        await page
+          .getByText('未确认保存结果，请重新读取后核对。', { exact: true })
+          .waitFor();
+        expect(writes).toBe(1);
+        expect(
+          await page
+            .getByText('经验自动整理暂不可用，本次设置未保存；仍可关闭整理。', {
+              exact: true,
+            })
+            .count(),
+        ).toBe(0);
+        expect(
+          await fixture.db`select value from allrice_settings where scope_type='organization'
+        and scope_id=${company.organizationId} and key='employee_experience_policy'`,
+        ).toEqual(before);
+      } finally {
+        await context.close();
+      }
+    },
+    30000,
+  );
 
   it.each([1440, 390])(
     'shows organization AI instances and exact shared detail/file boundaries (%i)',

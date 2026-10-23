@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { DataAccessError } from '@allrice/database';
+import {
+  DataAccessError,
+  QualityScheduleUnavailableError,
+} from '@allrice/database';
 import type * as Database from '@allrice/database';
 const mocks = vi.hoisted(() => ({
   auth: vi.fn(),
@@ -67,5 +70,27 @@ describe('private quality schedule HTTP boundary', () => {
     ).toBe(200);
     expect(mocks.remove).toHaveBeenCalledWith(context, { expectedRevision: 1 });
     expect((await GET(new Request(url))).status).toBe(200);
+  });
+  it('distinguishes a confirmed unavailable schedule from an unknown write failure', async () => {
+    mocks.auth.mockResolvedValue({
+      actor: { type: 'user', id: 'actual-owner' },
+    });
+    mocks.update.mockRejectedValueOnce(new QualityScheduleUnavailableError());
+    const refused = await PUT(writeRequest('PUT', '{}'));
+    expect(refused.status).toBe(503);
+    expect(refused.headers.get('cache-control')).toBe('private, no-store');
+    expect(await refused.json()).toEqual({
+      error: 'quality_schedule_unavailable',
+      message: '每日质检暂不可用，本次设置未保存。',
+    });
+    mocks.update.mockRejectedValueOnce(
+      new Error('unknown commit acknowledgement'),
+    );
+    const unknown = await PUT(writeRequest('PUT', '{}'));
+    expect(unknown.status).toBe(500);
+    expect(await unknown.json()).not.toMatchObject({
+      error: 'quality_schedule_unavailable',
+    });
+    expect(mocks.update).toHaveBeenCalledTimes(2);
   });
 });

@@ -4,6 +4,13 @@ import { employeeHubErrorResponse } from '../employeehub/responses';
 
 export function brandContentErrorResponse(error: unknown) {
   if (error instanceof BrandContentError) {
+    if (error.code === 'reminder_unavailable')
+      return apiProblem({
+        status: 503,
+        code: 'DEPENDENCY_UNAVAILABLE',
+        message: '到点提醒暂不可用，本次未登记；原排期已保留。',
+        retryable: false,
+      });
     const missing = error.code === 'not_found';
     const denied = error.code === 'authority_denied';
     return apiProblem({
