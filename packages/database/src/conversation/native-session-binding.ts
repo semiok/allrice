@@ -42,6 +42,15 @@ import {
 } from './native-origin-reader.ts';
 import { nativeContextExecutionRetired } from './native-context-retirement.ts';
 
+import {
+  readChatTransitionRef,
+  assertChatTransitionPin,
+} from './native-executor-transition.ts';
+import {
+  executorTransitionRef,
+  assertTransitionDescriptor,
+} from './native-executor-transition-contract.ts';
+
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 export const NativeSessionDescriptorSchema = z
   .object({
@@ -57,6 +66,8 @@ export const NativeSessionDescriptorSchema = z
     storageContextKey: z.string().min(1).max(100),
     storageNamespace: z.string().min(1).max(4096),
     originReaderApprovalDigest: digest.optional(),
+    /** Actual leased execution only; never rewrites the first-writer pin. */
+    executorTransitionDigest: digest.optional(),
   })
   .strict();
 export type NativeSessionDescriptor = z.infer<
@@ -135,7 +146,7 @@ type Tx = postgres.TransactionSql;
 /** Same immutable chat birth check for admission and leased native binding.
  * Does not lock a Job or grant execution. Only the binder may start a Session. */
 export async function readChatNativeRootOrigin(
-  tx: Tx,
+  tx: Tx | postgres.Sql,
   input: {
     organizationId: string;
     workspaceId: string;
@@ -203,14 +214,16 @@ export async function freezeChatRunExecutionBinding(
     executionSnapshot: unknown;
   },
 ): Promise<EmployeeRunExecutionBinding | null> {
+  await tx`select id from allrice_chat_sessions where id=${input.sessionId} and organization_id=${input.organizationId} and workspace_id=${input.workspaceId} and owner_id=${input.ownerId} for share`;
   const origin = await readChatNativeRootOrigin(tx, {
     organizationId: input.organizationId,
     workspaceId: input.workspaceId,
     ownerId: input.ownerId,
     sessionId: input.sessionId,
   });
-  if (origin?.schemaVersion !== 2) return null;
-  if (origin.contextKind !== 'chat') return deny();
+  const transition = await readChatTransitionRef(tx, input, origin);
+  if (origin?.schemaVersion !== 2 && !transition) return null;
+  if (origin?.contextKind !== 'chat') return deny();
   const [version] =
     await tx`select v.id,v.manifest,v.config_checksum from allrice_employee_versions v
     join allrice_chat_sessions c on c.id=${input.sessionId} and c.organization_id=v.organization_id and c.workspace_id=v.workspace_id
@@ -220,6 +233,7 @@ export async function freezeChatRunExecutionBinding(
   if (!version) return deny();
   return freezeEmployeeRunExecutionBinding({
     origin,
+    transition,
     scope: {
       organizationId: input.organizationId,
       workspaceId: input.workspaceId,
@@ -252,13 +266,24 @@ async function readLeasedChatExecutionBinding(
     where e.run_id=${job.run_id} and e.session_id=${sessionId} and e.organization_id=${job.organization_id}
       and e.workspace_id=${job.workspace_id} and e.owner_id=${job.owner_id}`;
   if (!run) return deny();
-  if (origin?.schemaVersion !== 2) {
+  const transition = await readChatTransitionRef(
+    tx,
+    {
+      organizationId: job.organization_id,
+      workspaceId: job.workspace_id,
+      ownerId: job.owner_id,
+      sessionId,
+    },
+    origin,
+  );
+  if (origin?.schemaVersion !== 2 && !transition) {
     if (run.native_execution_binding != null) return deny();
     return null;
   }
-  if (origin.contextKind !== 'chat') return deny();
+  if (origin?.contextKind !== 'chat') return deny();
   return assertEmployeeRunExecutionBinding(run.native_execution_binding, {
     origin,
+    transition,
     scope: {
       organizationId: job.organization_id,
       workspaceId: job.workspace_id,
@@ -429,13 +454,19 @@ export async function prepareLeasedNativeSession(
             input.workerId,
           )
         : null;
-  const reader = origin
-    ? nativeOriginReaderForOrigin(origin, {
-        organizationId: job.organization_id,
-        workspaceId: job.workspace_id,
-        ownerId: job.owner_id,
-      })
-    : undefined;
+  const transition =
+    executionBinding?.kind === 'current_employee_execution' &&
+    executionBinding.schemaVersion === 2
+      ? executionBinding.transition
+      : undefined;
+  const reader =
+    origin && !transition
+      ? nativeOriginReaderForOrigin(origin, {
+          organizationId: job.organization_id,
+          workspaceId: job.workspace_id,
+          ownerId: job.owner_id,
+        })
+      : undefined;
   const originReaderAdopted = reader
     ? await checkNativeOriginReaderBindings(tx, reader)
     : false;
@@ -467,13 +498,15 @@ export async function prepareLeasedNativeSession(
     throw new NativeSessionBindingError('NATIVE_SESSION_BINDING_CONFLICT');
   const descriptor = NativeSessionDescriptorSchema.parse({
     nativeSessionId: pin.native_session_id,
-    artifactId: pin.artifact_id,
-    artifactManifestDigest: pin.artifact_manifest_digest,
+    artifactId: transition?.target.artifactId ?? pin.artifact_id,
+    artifactManifestDigest:
+      transition?.target.artifactId ?? pin.artifact_manifest_digest,
+    ...(transition ? { executorTransitionDigest: transition.digest } : {}),
     distributionGeneration: pin.distribution_generation,
     profileId: pin.profile_id,
     storageContextKey: pin.storage_context_key,
     storageNamespace: pin.storage_namespace,
-    ...(pin.origin_reader_approval_digest
+    ...(!transition && pin.origin_reader_approval_digest
       ? { originReaderApprovalDigest: pin.origin_reader_approval_digest }
       : {}),
   });
@@ -539,9 +572,15 @@ export async function bindLeasedNativeSession(
   )
     deny();
   const origin = await readNativeRootOrigin(tx, job, s);
-  if (s.kind === 'chat')
-    await readLeasedChatExecutionBinding(tx, job, origin, s.id);
-  else if (s.kind === 'platform_employee_test')
+  const executionBinding =
+    s.kind === 'chat'
+      ? await readLeasedChatExecutionBinding(tx, job, origin, s.id)
+      : null;
+  const transition =
+    executionBinding?.schemaVersion === 2
+      ? executionBinding.transition
+      : undefined;
+  if (s.kind === 'platform_employee_test')
     await readLeasedPlatformTestExecutionBinding(
       tx,
       job,
@@ -549,16 +588,26 @@ export async function bindLeasedNativeSession(
       s.id,
       input.workerId,
     );
-  const reader = origin
-    ? nativeOriginReaderForOrigin(origin, {
-        organizationId: job.organization_id,
-        workspaceId: job.workspace_id,
-        ownerId: job.owner_id,
-      })
-    : undefined;
+  const reader =
+    origin && !transition
+      ? nativeOriginReaderForOrigin(origin, {
+          organizationId: job.organization_id,
+          workspaceId: job.workspace_id,
+          ownerId: job.owner_id,
+        })
+      : undefined;
   if (reader) await checkNativeOriginReaderBindings(tx, reader);
-  if (
-    origin
+  if (transition) {
+    assertTransitionDescriptor(transition, d);
+    if (
+      d.executorTransitionDigest !== transition.digest ||
+      d.originReaderApprovalDigest !== undefined ||
+      s.kind !== 'chat'
+    )
+      deny();
+  } else if (
+    d.executorTransitionDigest !== undefined ||
+    (origin
       ? d.artifactId !== (reader?.targetArtifactId ?? origin.artifactId) ||
         d.distributionGeneration !== origin.distributionGeneration ||
         d.profileId !== origin.profileId ||
@@ -566,7 +615,7 @@ export async function bindLeasedNativeSession(
         d.originReaderApprovalDigest !== reader?.approvalDigest ||
         (reader && d.storageNamespace !== reader.storageNamespace)
       : d.distributionGeneration === newNativeGeneration ||
-        d.originReaderApprovalDigest !== undefined
+        d.originReaderApprovalDigest !== undefined)
   )
     deny();
   const bindingBasis = origin
@@ -679,6 +728,7 @@ export async function bindLeasedNativeSession(
       ${job.run_id},${job.id},${job.attempt},${bindingBasis},${rootOriginDigest},${d.originReaderApprovalDigest ?? null}) on conflict(native_session_id) do nothing`;
   const [pin] =
     await tx`select * from allrice_native_session_bindings where native_session_id=${d.nativeSessionId}`;
+  if (transition && pin) await assertChatTransitionPin(tx, transition, pin);
   const equal =
     pin &&
     pin.organization_id === job.organization_id &&
@@ -688,19 +738,30 @@ export async function bindLeasedNativeSession(
     pin.context_id === s.id &&
     pin.storage_context_key === key &&
     pin.storage_namespace === d.storageNamespace &&
-    pin.artifact_id === d.artifactId &&
-    pin.artifact_manifest_digest === d.artifactManifestDigest &&
+    (transition ||
+      (pin.artifact_id === d.artifactId &&
+        pin.artifact_manifest_digest === d.artifactManifestDigest)) &&
     pin.distribution_generation === d.distributionGeneration &&
     pin.profile_id === d.profileId &&
     pin.binding_basis === bindingBasis &&
     pin.root_origin_digest === rootOriginDigest &&
-    pin.origin_reader_approval_digest ===
-      (d.originReaderApprovalDigest ?? null);
+    (transition ||
+      pin.origin_reader_approval_digest ===
+        (d.originReaderApprovalDigest ?? null));
   if (!equal)
     throw new NativeSessionBindingError('NATIVE_SESSION_BINDING_CONFLICT');
   await checkDeadline();
   const binding: NativeSessionPin = {
-    ...d,
+    nativeSessionId: pin!.native_session_id,
+    artifactId: pin!.artifact_id,
+    artifactManifestDigest: pin!.artifact_manifest_digest,
+    distributionGeneration: pin!.distribution_generation,
+    profileId: pin!.profile_id,
+    storageContextKey: pin!.storage_context_key,
+    storageNamespace: pin!.storage_namespace,
+    ...(pin!.origin_reader_approval_digest
+      ? { originReaderApprovalDigest: pin!.origin_reader_approval_digest }
+      : {}),
     organizationId: pin!.organization_id,
     workspaceId: pin!.workspace_id,
     ownerId: pin!.owner_id,
@@ -713,5 +774,9 @@ export async function bindLeasedNativeSession(
     bindingBasis: pin!.binding_basis,
     rootOriginDigest: pin!.root_origin_digest,
   };
-  return { binding, conversation };
+  return {
+    binding,
+    conversation,
+    ...(transition ? { effectiveDescriptor: d } : {}),
+  };
 }

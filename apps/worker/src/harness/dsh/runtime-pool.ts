@@ -15,6 +15,7 @@ import type {
   NativeSessionPin,
   NativeRunExecutionBinding,
 } from '@allrice/database';
+import { assertTransitionDescriptor } from '@allrice/database';
 import { currentExecutionForNativeInput } from './current-execution-source.js';
 
 import { HandlerError } from '../../errors.js';
@@ -352,16 +353,29 @@ export class DshRuntimePool {
       artifactId: identity.artifactId,
       profileId,
     });
-    const selected: ReturnType<typeof originDshNativeLaunch> = pin
-      ? pinnedDshNativeLaunch(pin)
-      : origin
-        ? originDshNativeLaunch(origin, profileId, {
-            organizationId:
-              input.executionEnvironment.ALLRICE_ORGANIZATION_ID ?? '',
-            workspaceId: input.executionEnvironment.ALLRICE_WORKSPACE_ID ?? '',
-            ownerId: input.executionEnvironment.ALLRICE_OWNER_ID ?? '',
-          })
-        : legacyDshNativeLaunch(fallback, profileId);
+    const transition =
+      currentBinding && 'transition' in currentBinding
+        ? currentBinding.transition
+        : undefined;
+    const selected: ReturnType<typeof originDshNativeLaunch> = transition
+      ? {
+          ...nativeArtifactLaunchForPin({
+            artifactId: transition.target.artifactId,
+            profileId,
+          }),
+          originStorageNamespace: transition.storageNamespace,
+        }
+      : pin
+        ? pinnedDshNativeLaunch(pin)
+        : origin
+          ? originDshNativeLaunch(origin, profileId, {
+              organizationId:
+                input.executionEnvironment.ALLRICE_ORGANIZATION_ID ?? '',
+              workspaceId:
+                input.executionEnvironment.ALLRICE_WORKSPACE_ID ?? '',
+              ownerId: input.executionEnvironment.ALLRICE_OWNER_ID ?? '',
+            })
+          : legacyDshNativeLaunch(fallback, profileId);
     if (origin && origin.rootSeed !== harnessContextKey(input.kernel))
       throw Error('DSH_NATIVE_ARTIFACT_NEW_ROOT_FROZEN_IDENTITY');
     // Birth package provenance is checked by SQL against the original immutable
@@ -433,6 +447,10 @@ export class DshRuntimePool {
       profileId: identity.profileId,
       storageContextKey: storage.storageContextKey,
       storageNamespace: storage.storageNamespace,
+      ...(executionBinding?.kind === 'current_employee_execution' &&
+      executionBinding.schemaVersion === 2
+        ? { executorTransitionDigest: executionBinding.transition.digest }
+        : {}),
       ...(identity.originReaderApprovalDigest
         ? { originReaderApprovalDigest: identity.originReaderApprovalDigest }
         : {}),
@@ -563,10 +581,24 @@ export class DshRuntimePool {
           '原生会话尚未获得当前任务授权。',
           false,
         );
+      const transition =
+        input.nativeExecutionBinding?.kind === 'current_employee_execution' &&
+        input.nativeExecutionBinding.schemaVersion === 2
+          ? input.nativeExecutionBinding.transition
+          : undefined;
+      if (transition) assertTransitionDescriptor(transition, descriptor);
       if (
-        Object.entries(descriptor).some(
-          ([k, v]) => input.nativePin![k as keyof NativeSessionPin] !== v,
-        ) ||
+        (transition
+          ? input.nativePin.nativeSessionId !== descriptor.nativeSessionId ||
+            input.nativePin.storageContextKey !==
+              descriptor.storageContextKey ||
+            input.nativePin.storageNamespace !== descriptor.storageNamespace ||
+            input.nativePin.distributionGeneration !==
+              descriptor.distributionGeneration ||
+            input.nativePin.profileId !== descriptor.profileId
+          : Object.entries(descriptor).some(
+              ([k, v]) => input.nativePin![k as keyof NativeSessionPin] !== v,
+            )) ||
         input.nativePin.organizationId !== organizationId ||
         input.nativePin.workspaceId !== workspaceId ||
         input.nativePin.ownerId !== ownerId

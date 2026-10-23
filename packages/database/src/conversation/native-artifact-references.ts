@@ -1,3 +1,4 @@
+import { verifiedChatExecutorTransitions } from './native-executor-transition.ts';
 import { posix } from 'node:path';
 import { z } from 'zod';
 import { getDatabase } from '../core/client.ts';
@@ -79,6 +80,16 @@ export async function verifyNativeArtifactReferenceCoverage(
     async (tx) => {
       await tx`set local statement_timeout='5000'`;
       const retiredContexts = await readVerifiedNativeChatRetirements(tx);
+      const transitions = await verifiedChatExecutorTransitions(tx);
+      for (const t of transitions)
+        if (
+          !approved.some(
+            (a) =>
+              a.artifactId === t.target.artifactId &&
+              a.generation === t.target.generation,
+          )
+        )
+          throw Error('DSH_NATIVE_TRANSITION_TARGET_UNVERIFIED');
       const references = await tx<
         {
           source: string;
@@ -96,6 +107,9 @@ export async function verifyNativeArtifactReferenceCoverage(
         "approvalDigest" text,"sourceArtifactId" text,"targetArtifactId" text,generation text,"profileId" text,
         "organizationId" uuid,"workspaceId" uuid,"ownerId" uuid,"contextId" uuid,
         "originDigest" text,"sourceOrigin" jsonb,"storageNamespace" text)
+    ), transitions as (
+      select * from jsonb_to_recordset(${tx.json(transitions.map((t) => ({ contextId: t.scope.contextId, organizationId: t.scope.organizationId, workspaceId: t.scope.workspaceId, ownerId: t.scope.ownerId, targetArtifactId: t.target.artifactId, generation: t.target.generation, originDigest: t.originDigest, storageNamespace: t.storageNamespace })))}) as t(
+       "contextId" uuid,"organizationId" uuid,"workspaceId" uuid,"ownerId" uuid,"targetArtifactId" text,generation text,"originDigest" text,"storageNamespace" text)
     ), origins as (
       select 'origin:chat' source,native_root_origin origin,organization_id,workspace_id,owner_id from allrice_chat_sessions
       union all select 'origin:platform_technical',native_root_origin,null,null,null from allrice_platform_technical_tasks
@@ -118,9 +132,12 @@ export async function verifyNativeArtifactReferenceCoverage(
         where d."contextKind"=r.context_kind and d."contextId"=r.context_id
           and d."organizationId"=r.organization_id and d."workspaceId"=r.workspace_id
           and d."ownerId"=r.owner_id)
-    ) select r.source,r.artifact_id as "artifactId",r.generation,r.profile_id as "profileId",
+    ) select r.source,coalesce(t."targetArtifactId",r.artifact_id) as "artifactId",coalesce(t.generation,r.generation) generation,r.profile_id as "profileId",
+      array_agg(distinct r.artifact_id) as "historicalArtifactIds",
       count(*)::int records,
       bool_and(coalesce(case
+        when t."contextId" is not null then a."artifactId"=t."targetArtifactId" and a.generation=t.generation and r.profile_id='restricted'
+          and (r.storage_namespace is null or r.storage_namespace=t."storageNamespace")
         when r.origin is not null and exists(select 1 from compatible s where s."sourceArtifactId"=r.artifact_id)
           then c."sourceArtifactId"=r.artifact_id and c."sourceOrigin"=r.origin and c.generation=r.generation and c."profileId"=r.profile_id
         when r.origin_reader_approval_digest is not null then c."approvalDigest"=r.origin_reader_approval_digest
@@ -133,11 +150,55 @@ export async function verifyNativeArtifactReferenceCoverage(
           a."storageRoot"||'/'||r.organization_id||'/'||r.workspace_id||'/'||r.owner_id||'/'||r.storage_context_key||'/sessions'
           or (r.context_kind='platform_employee_test' and r.context_id::text=r.storage_context_key
             and r.storage_namespace=a."previewStorageRoot"||'/'||r.context_id||'/'||r.organization_id||'/'||r.workspace_id||'/'||r.owner_id||'/'||r.storage_context_key||'/sessions')) end,false)) covered
-    from refs r left join approved a on a."artifactId"=r.artifact_id
+    from refs r left join transitions t on r.context_kind='chat' and r.context_id=t."contextId"
+      and r.organization_id=t."organizationId" and r.workspace_id=t."workspaceId" and r.owner_id=t."ownerId"
+      left join approved a on a."artifactId"=coalesce(t."targetArtifactId",r.artifact_id)
       left join compatible c on r.context_kind='chat' and c."contextId"=r.context_id
         and c."organizationId"=r.organization_id and c."workspaceId"=r.workspace_id and c."ownerId"=r.owner_id
-    group by r.source,r.artifact_id,r.generation,r.profile_id
-    order by r.source,r.artifact_id,r.generation,r.profile_id`;
+    group by r.source,coalesce(t."targetArtifactId",r.artifact_id),coalesce(t.generation,r.generation),r.profile_id
+    order by r.source,coalesce(t."targetArtifactId",r.artifact_id),coalesce(t.generation,r.generation),r.profile_id`;
+      // NULL origin + no pin is an implicit legacy executor dependency, even
+      // when archived. An old reference count of zero is not retirement proof.
+      const nullChats = await tx<
+        {
+          id: string;
+          organization_id: string;
+          workspace_id: string;
+          owner_id: string;
+        }[]
+      >`select c.id,c.organization_id,c.workspace_id,c.owner_id
+        from allrice_chat_sessions c where c.native_root_origin is null and not exists(
+          select 1 from allrice_native_session_bindings b where b.context_kind='chat' and b.context_id=c.id)`;
+      const remaining = nullChats.filter(
+        (c) =>
+          !retiredContexts.some(
+            (r) =>
+              r.contextId === c.id &&
+              r.organizationId === c.organization_id &&
+              r.workspaceId === c.workspace_id &&
+              r.ownerId === c.owner_id,
+          ),
+      );
+      if (remaining.length) {
+        const id =
+          process.env.ALLRICE_DSH_RETAINED_1_ARTIFACT_ID?.trim() ||
+          process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID?.trim() ||
+          null;
+        references.push({
+          source: 'implicit:legacy-chat',
+          artifactId: id,
+          generation: 'dsh-0.1.5-rc.3-a4c74a9',
+          profileId: 'restricted',
+          records: remaining.length,
+          covered:
+            !!id &&
+            approved.some(
+              (a) =>
+                a.artifactId === id &&
+                a.generation === 'dsh-0.1.5-rc.3-a4c74a9',
+            ),
+        });
+      }
       // A closed Host still owns history and a future restart. There is no
       // implicit retirement from TTL, lack of business pins or terminal tasks.
       const [schema] =

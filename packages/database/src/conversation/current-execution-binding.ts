@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import {
   allRiceToolManifest,
@@ -20,23 +19,13 @@ export const employeeExecutionSourceFamily =
   'allrice_declarative_employee_v1' as const;
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 
-// Kept byte-for-byte in meaning from native-root-origin: v1 origin checksums
-// and persisted reader approvals must not change when v2 is introduced.
-function canonical(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonical);
-  if (value !== null && typeof value === 'object')
-    return Object.fromEntries(
-      Object.entries(value)
-        .toSorted(([a], [b]) => a.localeCompare(b))
-        .map(([k, v]) => [k, canonical(v)]),
-    );
-  return value;
-}
-export const nativeRootDigest = (value: unknown) =>
-  'sha256:' +
-  createHash('sha256')
-    .update(JSON.stringify(canonical(value)))
-    .digest('hex');
+import { nativeRootDigest } from './native-identity-digest.ts';
+export { nativeRootDigest } from './native-identity-digest.ts';
+import { NativeRootOriginV1Schema } from './native-origin-v1.ts';
+import {
+  ExecutorTransitionRefSchema,
+  type ExecutorTransitionRef,
+} from './native-executor-transition-contract.ts';
 
 export const CurrentEmployeeExecutionTupleSchema = z
   .object({
@@ -427,7 +416,7 @@ const runScope = ownerScope
   .extend({ sessionId: UuidSchema, runId: UuidSchema })
   .strict();
 export type EmployeeRunExecutionScope = z.infer<typeof runScope>;
-export const EmployeeRunExecutionBindingSchema = z
+const EmployeeRunExecutionBindingV1Schema = z
   .object({
     schemaVersion: z.literal(1),
     kind: z.literal('current_employee_execution'),
@@ -451,6 +440,34 @@ export const EmployeeRunExecutionBindingSchema = z
         message: 'CURRENT_EMPLOYEE_EXECUTION_BINDING_INVALID',
       });
   });
+export const EmployeeRunExecutionBindingSchema = z.union([
+  EmployeeRunExecutionBindingV1Schema,
+  z
+    .object({
+      ...EmployeeRunExecutionBindingV1Schema.shape,
+      schemaVersion: z.literal(2),
+      transition: ExecutorTransitionRefSchema,
+    })
+    .strict()
+    .superRefine((binding, context) => {
+      const { digest: expected, ...payload } = binding;
+      if (
+        nativeRootDigest(payload) !== expected ||
+        !equal(binding.sourcePolicy, policyFor(binding.source)) ||
+        !equal(binding.execution, binding.transition.target) ||
+        binding.originDigest !== binding.transition.originDigest ||
+        binding.scope.sessionId !== binding.transition.scope.contextId ||
+        binding.scope.organizationId !==
+          binding.transition.scope.organizationId ||
+        binding.scope.workspaceId !== binding.transition.scope.workspaceId ||
+        binding.scope.ownerId !== binding.transition.scope.ownerId
+      )
+        context.addIssue({
+          code: 'custom',
+          message: 'CURRENT_EMPLOYEE_EXECUTION_BINDING_INVALID',
+        });
+    }),
+]);
 export type EmployeeRunExecutionBinding = z.infer<
   typeof EmployeeRunExecutionBindingSchema
 >;
@@ -459,27 +476,42 @@ export type EmployeeRunExecutionBindingInput = {
   scope: EmployeeRunExecutionScope;
   source: EmployeeExecutionSourceInput;
   executionSnapshot: unknown;
+  /** Private committed SQL receipt only. Not a new origin or a model field. */
+  transition?: ExecutorTransitionRef;
 };
 /** Freeze once inside admission, alongside the unchanged execution_snapshot. */
 export function freezeEmployeeRunExecutionBinding(
   input: EmployeeRunExecutionBindingInput,
 ): EmployeeRunExecutionBinding {
   const scope = runScope.parse(input.scope);
-  const origin = CurrentEmployeeChatOriginSchema.parse(input.origin);
+  const transition = input.transition
+    ? ExecutorTransitionRefSchema.parse(input.transition)
+    : undefined;
+  const origin = transition
+    ? z
+        .union([NativeRootOriginV1Schema, CurrentEmployeeChatOriginSchema])
+        .parse(input.origin)
+    : CurrentEmployeeChatOriginSchema.parse(input.origin);
   need(
-    origin.contextId === scope.sessionId &&
-      equal(origin.scope, {
-        organizationId: scope.organizationId,
-        workspaceId: scope.workspaceId,
-        ownerId: scope.ownerId,
-      }),
+    origin.contextKind === 'chat' &&
+      origin.profileId === 'restricted' &&
+      origin.rootSeed === scope.sessionId &&
+      origin.contextId === scope.sessionId &&
+      (origin.schemaVersion === 1 ||
+        equal(origin.scope, {
+          organizationId: scope.organizationId,
+          workspaceId: scope.workspaceId,
+          ownerId: scope.ownerId,
+        })),
     'CURRENT_EMPLOYEE_EXECUTION_SCOPE_MISMATCH',
   );
   const { source, sourcePolicy } = validateEmployeeExecutionSource(
     input.source,
   );
   need(
-    sourcePolicy.family === origin.sourcePolicy.family,
+    origin.schemaVersion === 2
+      ? sourcePolicy.family === origin.sourcePolicy.family
+      : source.declaredGeneration === newNativeGeneration,
     'CURRENT_EMPLOYEE_EXECUTION_FAMILY_MISMATCH',
   );
   const snapshot = EmployeeExecutionSnapshotSchema.parse(
@@ -517,13 +549,23 @@ export function freezeEmployeeRunExecutionBinding(
       ),
     'CURRENT_EMPLOYEE_EXECUTION_CAPABILITIES_MISMATCH',
   );
+  if (transition)
+    need(
+      transition.originDigest === nativeRootDigest(origin) &&
+        transition.scope.contextId === scope.sessionId &&
+        transition.scope.organizationId === scope.organizationId &&
+        transition.scope.workspaceId === scope.workspaceId &&
+        transition.scope.ownerId === scope.ownerId,
+      'CURRENT_EMPLOYEE_TRANSITION_SCOPE_MISMATCH',
+    );
   const payload = {
-    schemaVersion: 1 as const,
+    schemaVersion: transition ? (2 as const) : (1 as const),
+    ...(transition ? { transition } : {}),
     kind: 'current_employee_execution' as const,
     scope,
     originDigest: nativeRootDigest(origin),
     source,
-    execution: {
+    execution: transition?.target ?? {
       artifactId: origin.artifactId,
       generation: origin.distributionGeneration,
       profileId: origin.profileId,

@@ -215,6 +215,7 @@ export interface HarnessExecutionInput {
       >,
     ) => Promise<{
       binding: NativeSessionPin | null;
+      effectiveDescriptor?: NativeSessionDescriptor;
       origin?: NativeRootOrigin | null;
       /** SQL-verified per-Run fact; stays in this trusted closure, never RPC. */
       executionBinding?: NativeRunExecutionBinding | null;
@@ -226,6 +227,7 @@ export interface HarnessExecutionInput {
     }>;
     bind: (descriptor: NativeSessionDescriptor) => Promise<{
       binding: NativeSessionPin;
+      effectiveDescriptor?: NativeSessionDescriptor;
       generation?: number;
     }>;
   };

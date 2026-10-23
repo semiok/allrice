@@ -320,12 +320,18 @@ export class DshHarnessAdapter implements HarnessAdapter {
           prepared.executionBinding,
         );
       const bound = prepared?.binding
-        ? { binding: prepared.binding, generation: prepared.generation }
+        ? {
+            binding: prepared.binding,
+            effectiveDescriptor: prepared.effectiveDescriptor,
+            generation: prepared.generation,
+          }
         : await input.nativeBinding.bind(nativeDescriptor);
       if (
         Object.entries(nativeDescriptor).some(
           ([key, value]) =>
-            bound.binding[key as keyof NativeSessionPin] !== value,
+            (bound.effectiveDescriptor ?? bound.binding)[
+              key as keyof typeof nativeDescriptor
+            ] !== value,
         )
       )
         throw new HandlerError(
