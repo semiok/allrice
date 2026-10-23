@@ -1,10 +1,12 @@
-// Inert until the private, source-pinned terminal retirement operator calls it.
+// Inert until a private, source-pinned, exact-scope retirement operator calls it.
 // No Native/VM launch, closure, signaling or database mutation exists here.
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { readFile, lstat, realpath } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { reviewedTestChatPhysicalScope } from './reviewed-test-chat-preserved-cloud.mjs';
+import { reviewedRetirementServicesIdle } from './retirement-preserved-cloud.mjs';
 const need = (v, c) => {
   if (!v) throw Error(c);
 };
@@ -188,26 +190,9 @@ export function assertTerminalServiceIdle(healths, review) {
     );
   }
 }
-/** Collect a complete ps inventory and every reviewed runtime-data/writer range.
- * The review must bind actual retained reader roots and the full plan scope;
- * a caller-provided "physicalAbsent" flag is not an observation. */
-export async function collectTerminalNativeAbsence({
-  scope,
-  review,
-  planDigest,
-  requestId,
-  reviewSha256,
-  readHealths,
-  evidencePath,
-  saveEvidence,
-  probe = command,
-}) {
-  need(
-    typeof evidencePath === 'string' &&
-      evidencePath.startsWith('/') &&
-      typeof saveEvidence === 'function',
-    'TERMINAL_NATIVE_EVIDENCE_REQUIRED',
-  );
+/** The terminal entry remains exclusive to its original nonchat authority. */
+export async function collectTerminalNativeAbsence(input) {
+  const { review, planDigest, requestId } = input;
   need(
     review.kind === 'allrice-dev-terminal-nonchat-retirement-review' &&
       review.rootReviewed === true &&
@@ -215,6 +200,69 @@ export async function collectTerminalNativeAbsence({
       review.planDigest === planDigest &&
       review.requestId === requestId,
     'TERMINAL_NATIVE_EXACT_REVIEW_REQUIRED',
+  );
+  return collectExactNativeAbsence(input);
+}
+
+/** A separately reviewed development-test chat plan keeps its original type,
+ * IDs and digest. Reuse observations, never relabel its authority as nonchat. */
+function assertReviewedChatInput(input) {
+  const expected = reviewedTestChatPhysicalScope(input.review, input.plan);
+  need(
+    input.requestId === input.plan.requestId &&
+      input.planDigest === input.plan.digest,
+    'REVIEWED_TEST_CHAT_PHYSICAL_AUTHORITY_CHANGED',
+  );
+  same(input.scope, expected, 'REVIEWED_TEST_CHAT_PHYSICAL_SCOPE_CHANGED');
+}
+export async function collectReviewedTestChatNativeAbsence(input) {
+  assertReviewedChatInput(input);
+  return collectExactNativeAbsence(input);
+}
+
+/** Whole-round observation only. Valid temporary roots are recorded, never
+ * called idle here. The reviewed-chat round classifier must inspect both health
+ * pairs; unknowns, changed identities, target processes/writers still throw. */
+export async function collectReviewedTestChatNativeObservation(input) {
+  assertReviewedChatInput(input);
+  need(
+    typeof input.readStep === 'function',
+    'REVIEWED_TEST_CHAT_BOUNDED_READ_STEP_REQUIRED',
+  );
+  return collectExactNativeAbsence(input, {
+    readStep: input.readStep,
+    validateHealths: (healths, review) =>
+      reviewedRetirementServicesIdle(healths, review, true),
+    retainServiceHealth: true,
+  });
+}
+
+/** Collect a complete ps inventory and every reviewed runtime-data/writer range.
+ * Both typed entries validate their own exact authority before this shared read.
+ * A caller-provided "physicalAbsent" flag is not an observation. */
+async function collectExactNativeAbsence(
+  {
+    scope,
+    review,
+    planDigest,
+    requestId,
+    reviewSha256,
+    readHealths,
+    evidencePath,
+    saveEvidence,
+    probe = command,
+  },
+  {
+    validateHealths = assertTerminalServiceIdle,
+    retainServiceHealth = false,
+    readStep = (read) => read(),
+  } = {},
+) {
+  need(
+    typeof evidencePath === 'string' &&
+      evidencePath.startsWith('/') &&
+      typeof saveEvidence === 'function',
+    'TERMINAL_NATIVE_EVIDENCE_REQUIRED',
   );
   need(
     Array.isArray(review.artifactRoots) &&
@@ -280,14 +328,11 @@ export async function collectTerminalNativeAbsence({
       'TERMINAL_NATIVE_NAMESPACE_UNCOVERED',
     );
   const observedAt = new Date().toISOString();
-  const healthBefore = await readHealths();
-  assertTerminalServiceIdle(healthBefore, review);
-  const beforeRaw = await probe('/bin/ps', [
-    '-A',
-    '-ww',
-    '-o',
-    'pid=,ppid=,lstart=,command=',
-  ]);
+  const healthBefore = await readStep((signal) => readHealths(signal));
+  validateHealths(healthBefore, review);
+  const beforeRaw = await readStep(() =>
+    probe('/bin/ps', ['-A', '-ww', '-o', 'pid=,ppid=,lstart=,command=']),
+  );
   const before = parseCompleteProcesses(beforeRaw);
   need(
     nativeProcesses(before, roots).length === 0,
@@ -297,12 +342,9 @@ export async function collectTerminalNativeAbsence({
   for (const p of [...storageRoots].sort((a, b) =>
     a.path.localeCompare(b.path),
   )) {
-    const raw = await probe('/usr/sbin/lsof', [
-      '-nP',
-      '-F0pcfan',
-      '+D',
-      p.path,
-    ]);
+    const raw = await readStep(() =>
+      probe('/usr/sbin/lsof', ['-nP', '-F0pcfan', '+D', p.path]),
+    );
     need(
       parseNamespaceWriters(raw).length === 0,
       'TERMINAL_NATIVE_WRITER_ACTIVE',
@@ -311,19 +353,18 @@ export async function collectTerminalNativeAbsence({
   }
   // +D cannot enumerate unlinked files retained by a live descriptor. Scan
   // that complete inventory too; never convert lsof/permission errors to zero.
-  const unlinkedRaw = await probe('/usr/sbin/lsof', ['-nP', '-F0pcfan', '+L1']);
+  const unlinkedRaw = await readStep(() =>
+    probe('/usr/sbin/lsof', ['-nP', '-F0pcfan', '+L1']),
+  );
   const unlinkedWriters = parseNamespaceWriters(unlinkedRaw).filter((w) =>
     storageRoots.some(
       (p) => w.name === p.path || w.name.startsWith(p.path + sep),
     ),
   );
   need(unlinkedWriters.length === 0, 'TERMINAL_NATIVE_WRITER_ACTIVE');
-  const afterRaw = await probe('/bin/ps', [
-    '-A',
-    '-ww',
-    '-o',
-    'pid=,ppid=,lstart=,command=',
-  ]);
+  const afterRaw = await readStep(() =>
+    probe('/bin/ps', ['-A', '-ww', '-o', 'pid=,ppid=,lstart=,command=']),
+  );
   need(
     nativeProcesses(parseCompleteProcesses(afterRaw), roots).length === 0,
     'TERMINAL_NATIVE_PROCESS_ACTIVE',
@@ -335,8 +376,8 @@ export async function collectTerminalNativeAbsence({
       hex(await readFile(p.path)) === p.sha256,
       'TERMINAL_NATIVE_MANIFEST_CHANGED',
     );
-  const healthAfter = await readHealths();
-  assertTerminalServiceIdle(healthAfter, review);
+  const healthAfter = await readStep((signal) => readHealths(signal));
+  validateHealths(healthAfter, review);
   need(
     Date.now() - Date.parse(observedAt) < 120_000,
     'TERMINAL_NATIVE_OBSERVATION_EXPIRED',
@@ -358,7 +399,7 @@ export async function collectTerminalNativeAbsence({
   };
   await saveEvidence(evidencePath, evidence);
   const evidenceSha256 = hex(JSON.stringify(evidence, null, 2) + '\n');
-  return {
+  const physicalProof = {
     kind: 'terminal-native-physical-absence-v1',
     workerBootId: review.serviceIdentities[1].bootId,
     workerBootStartedAt: review.serviceIdentities[1].startedAt,
@@ -388,4 +429,7 @@ export async function collectTerminalNativeAbsence({
     operatorSha256: review.operatorSha256,
     reviewSha256,
   };
+  return retainServiceHealth
+    ? { physicalProof, healthBefore, healthAfter }
+    : physicalProof;
 }

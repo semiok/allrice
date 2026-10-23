@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import http from 'node:http';
@@ -7,6 +8,7 @@ import {
   HISTORICAL_CLOUD as H,
   classifyRetirementCloudCarry,
   verifyRetirementBusy,
+  observeRetirementQuiescence,
   HISTORICAL_EXITED_CONTAINER as E,
   exitedContainerEvidenceDigest,
   readHistoricalExitedContainer,
@@ -927,5 +929,431 @@ describe('fixed read-only Docker inspect transport (mock HTTP, no socket/server/
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+// Full synthetic observation records; this never opens SQL, HTTP, VM or Native.
+function quiescenceProof(withExitedContainer = false) {
+  const p = withExitedContainer ? exitedProof() : proof();
+  for (const h of [...p.healthBefore, ...p.healthAfter]) h.status = 'ready';
+  return p;
+}
+function fakeObservationClock() {
+  let time = 0;
+  return {
+    now: () => time,
+    advance: (ms) => {
+      time += ms;
+    },
+    sleep: vi.fn(async (ms) => {
+      time += ms;
+    }),
+  };
+}
+function observeSynthetic(
+  p,
+  readObservation,
+  clock = fakeObservationClock(),
+  extra = {},
+) {
+  return observeRetirementQuiescence({
+    review: p.review,
+    plan: p.plan,
+    readObservation,
+    now: clock.now,
+    sleep: clock.sleep,
+    timeoutMs: 20,
+    intervalMs: 5,
+    ...extra,
+  });
+}
+
+describe('bounded retirement observation does not retry mutations or stitch snapshots', () => {
+  it.each(['activeRoots', 'pendingRoots', 'retainedChildren'])(
+    'repeats the entire observation for transient %s, accepting only a new fully idle bracket',
+    async (key) => {
+      const p = quiescenceProof(true),
+        clock = fakeObservationClock();
+      const original = clone(p),
+        rounds = [];
+      const readObservation = vi.fn(async (step) => {
+        const current = clone(p),
+          n = rounds.length;
+        const order = [];
+        // All eight classes are freshly observed for each round; they are not
+        // independently cached until their individual readiness happens to pass.
+        for (const name of [
+          'rawBefore',
+          'healthBefore',
+          'before',
+          'inventory',
+          'exitedObservation',
+          'physicalAfter',
+          'after',
+          'rawAfter',
+          'healthAfter',
+        ])
+          await step(async () => {
+            order.push(name);
+            return current[name];
+          });
+        rounds.push(order);
+        if (n === 0) current.healthBefore[0].producerLifecycle[key] = 1;
+        return current;
+      });
+      const result = await observeSynthetic(p, readObservation, clock);
+      expect(result.quiescenceObservation).toMatchObject({
+        attempts: 2,
+        mutationRetried: false,
+      });
+      expect(result).toMatchObject({
+        databaseWritten: false,
+        historicalOutcomeKnown: false,
+        rawUncleanedCloudAttempts: 1,
+        historicalExitedContainerPreservation: { containerRemoved: false },
+      });
+      expect(rounds).toHaveLength(2);
+      expect(rounds[0]).toEqual(rounds[1]);
+      expect(p).toEqual(original);
+      expect(clock.sleep).toHaveBeenCalledTimes(1);
+      expect(() =>
+        classifyRetirementCloudCarry({
+          ...p,
+          healthBefore: p.healthBefore.map((h, i) =>
+            i === 0
+              ? {
+                  ...h,
+                  producerLifecycle: { ...h.producerLifecycle, [key]: 1 },
+                }
+              : h,
+          ),
+        }),
+      ).toThrow('NATIVE_RETIREMENT_CLOUD_CURRENT_LIFECYCLE_BUSY');
+    },
+  );
+
+  it('does not stitch an idle before from one round with an idle after from another', async () => {
+    const p = quiescenceProof(),
+      clock = fakeObservationClock();
+    let n = 0;
+    const readObservation = vi.fn(async () => {
+      const current = clone(p);
+      current[
+        n++ % 2 === 0 ? 'healthBefore' : 'healthAfter'
+      ][1].producerLifecycle.activeRoots = 1;
+      return current;
+    });
+    await expect(observeSynthetic(p, readObservation, clock)).rejects.toThrow(
+      'NATIVE_RETIREMENT_QUIESCENCE_TIMEOUT',
+    );
+    expect(readObservation).toHaveBeenCalledTimes(4);
+    expect(clock.now()).toBe(20);
+  });
+
+  it('continuous busy ends at the single deadline and preserves counter evidence', async () => {
+    const p = quiescenceProof(),
+      clock = fakeObservationClock();
+    p.healthAfter[1].producerLifecycle.pendingRoots = 1;
+    const readObservation = vi.fn(async () => clone(p));
+    const error = await observeSynthetic(p, readObservation, clock).catch(
+      (error) => error,
+    );
+    expect(error.message).toBe('NATIVE_RETIREMENT_QUIESCENCE_TIMEOUT');
+    expect(error.quiescenceObservation).toMatchObject({
+      attempts: 4,
+      mutationRetried: false,
+    });
+    expect(error.quiescenceObservation.activity).toHaveLength(4);
+    expect(readObservation).toHaveBeenCalledTimes(4);
+  });
+
+  it('awaits an in-flight bounded read but refuses its late idle result and starts no next step', async () => {
+    const p = quiescenceProof(),
+      clock = fakeObservationClock();
+    const later = vi.fn();
+    let completed = false;
+    const readObservation = vi.fn(async (step) => {
+      await step(async (signal) => {
+        expect(signal).toBeInstanceOf(globalThis.AbortSignal);
+        clock.advance(21);
+        completed = true;
+      });
+      later();
+      return p;
+    });
+    await expect(observeSynthetic(p, readObservation, clock)).rejects.toThrow(
+      'NATIVE_RETIREMENT_QUIESCENCE_TIMEOUT',
+    );
+    expect(completed).toBe(true);
+    expect(later).not.toHaveBeenCalled();
+    expect(readObservation).toHaveBeenCalledTimes(1);
+    expect(clock.sleep).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'identity',
+      (p) => {
+        p.healthAfter[1].identity.bootId = 'different-boot';
+      },
+      'NATIVE_RETIREMENT_CLOUD_CURRENT_IDENTITY_CHANGED',
+    ],
+    [
+      'unknown',
+      (p) => {
+        p.healthAfter[1].producerLifecycle.unknownOutcomes = [
+          'business_lifetime_unknown',
+        ];
+      },
+      'NATIVE_RETIREMENT_CLOUD_CURRENT_LIFECYCLE_BUSY',
+    ],
+    [
+      'unresolved',
+      (p) => {
+        p.healthAfter[1].producerLifecycle.unresolvedRoots = 1;
+      },
+      'NATIVE_RETIREMENT_CLOUD_CURRENT_LIFECYCLE_BUSY',
+    ],
+    [
+      'negative counter',
+      (p) => {
+        p.healthAfter[1].producerLifecycle.pendingRoots = -1;
+      },
+      'NATIVE_RETIREMENT_CLOUD_CURRENT_LIFECYCLE_BUSY',
+    ],
+    [
+      'unsafe counter',
+      (p) => {
+        p.healthAfter[1].producerLifecycle.activeRoots =
+          Number.MAX_SAFE_INTEGER + 1;
+      },
+      'NATIVE_RETIREMENT_CLOUD_CURRENT_LIFECYCLE_BUSY',
+    ],
+    [
+      'NaN counter',
+      (p) => {
+        p.healthAfter[1].producerLifecycle.activeRoots = NaN;
+      },
+      'NATIVE_RETIREMENT_CLOUD_CURRENT_LIFECYCLE_BUSY',
+    ],
+    [
+      'string counter',
+      (p) => {
+        p.healthAfter[1].producerLifecycle.activeRoots = '0';
+      },
+      'NATIVE_RETIREMENT_CLOUD_CURRENT_LIFECYCLE_BUSY',
+    ],
+    [
+      'missing counter',
+      (p) => {
+        delete p.healthAfter[1].producerLifecycle.retainedChildren;
+      },
+      'NATIVE_RETIREMENT_CLOUD_CURRENT_LIFECYCLE_BUSY',
+    ],
+    [
+      'not ready',
+      (p) => {
+        p.healthAfter[1].status = 'not_ready';
+      },
+      'NATIVE_RETIREMENT_SERVICE_NOT_READY',
+    ],
+    [
+      'role mismatch',
+      (p) => {
+        p.healthAfter[1].producerLifecycle.role = 'web';
+      },
+      'NATIVE_RETIREMENT_CLOUD_CURRENT_LIFECYCLE_BUSY',
+    ],
+    [
+      'new Job',
+      (p) => {
+        p.rawAfter.jobs = 1;
+      },
+      'NATIVE_RETIREMENT_DEV_BUSY',
+    ],
+    [
+      'new cloud',
+      (p) => {
+        p.rawAfter.clouds = 2;
+      },
+      'NATIVE_RETIREMENT_DEV_BUSY',
+    ],
+    [
+      'old SQL changed',
+      (p) => {
+        p.after.attempt.rowSha256 = 'f'.repeat(64);
+      },
+      'NATIVE_RETIREMENT_HISTORICAL_CLOUD_SQL_CHANGED',
+    ],
+    [
+      'physical changed',
+      (p) => {
+        p.physicalAfter.vm.bootId = 'different-vm';
+      },
+      'NATIVE_RETIREMENT_CLOUD_PHYSICAL_IDENTITY_CHANGED',
+    ],
+  ])(
+    'rejects %s immediately even alongside a transient root',
+    async (_name, change, code) => {
+      const p = quiescenceProof(),
+        clock = fakeObservationClock();
+      p.healthBefore[0].producerLifecycle.activeRoots = 1;
+      change(p);
+      const readObservation = vi.fn(async () => p);
+      await expect(observeSynthetic(p, readObservation, clock)).rejects.toThrow(
+        code,
+      );
+      expect(readObservation).toHaveBeenCalledTimes(1);
+      expect(clock.sleep).not.toHaveBeenCalled();
+    },
+  );
+
+  it('a newly visible container is a hard failure, not a reason to try another observation', async () => {
+    const p = quiescenceProof(),
+      clock = fakeObservationClock();
+    p.healthBefore[0].producerLifecycle.activeRoots = 1;
+    p.inventory.body.push({
+      Id: 'f'.repeat(64),
+      Names: ['/allrice-cloud-unreviewed'],
+      State: 'running',
+      Labels: {},
+    });
+    const readObservation = vi.fn(async () => p);
+    await expect(observeSynthetic(p, readObservation, clock)).rejects.toThrow(
+      'NATIVE_RETIREMENT_CLOUD_CONTAINER_OR_RESERVATION_PRESENT',
+    );
+    expect(readObservation).toHaveBeenCalledTimes(1);
+    expect(clock.sleep).not.toHaveBeenCalled();
+  });
+
+  it('never catches SQL/network/probe failures as transient activity', async () => {
+    const p = quiescenceProof(),
+      clock = fakeObservationClock();
+    const error = Error('SQL_READ_RESULT_UNKNOWN');
+    const readObservation = vi.fn(async () => {
+      throw error;
+    });
+    await expect(observeSynthetic(p, readObservation, clock)).rejects.toBe(
+      error,
+    );
+    expect(readObservation).toHaveBeenCalledTimes(1);
+    expect(clock.sleep).not.toHaveBeenCalled();
+  });
+});
+
+function actualOperatorHealthBoundary() {
+  const source = readFileSync(
+    new URL('./retire-native-test-contexts.mjs', import.meta.url),
+    'utf8',
+  );
+  const start = source.indexOf('    const readHealths = async (signal) =>');
+  const end = source.indexOf('    const completePhysical =', start);
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  return {
+    source,
+    boundary: new AsyncFunction(
+      'r',
+      'need',
+      'fetch',
+      'AbortSignal',
+      "const laterReviewedChat = r.kind === 'allrice-dev-reviewed-archived-test-chat-retirement-v1'; const healths = [];\n" +
+        source.slice(start, end) +
+        '\nreturn readHealths;',
+    ),
+  };
+}
+
+describe('actual retirement operator initial boundary and mutation placement', () => {
+  it.each([undefined, 'allrice-dev-reviewed-archived-test-chat-retirement-v1'])(
+    'does not reject carry kind %s initial transient before reaching its full observer',
+    async (kind) => {
+      const { source, boundary } = actualOperatorHealthBoundary();
+      const p = quiescenceProof();
+      if (kind) p.review.kind = kind;
+      p.healthBefore[0].producerLifecycle.activeRoots = 1;
+      const fetch = vi.fn(async (url) => ({
+        ok: true,
+        json: async () => clone(p.healthBefore[url === 'web' ? 0 : 1]),
+      }));
+      const need = (ok, code) => {
+        if (!ok) throw Error(code);
+      };
+      const readHealths = await boundary(
+        { ...p.review, healthUrls: ['web', 'worker'] },
+        need,
+        fetch,
+        globalThis.AbortSignal,
+      );
+      expect(fetch).not.toHaveBeenCalled(); // carry waits only inside the complete observer
+      expect((await readHealths())[0].producerLifecycle.activeRoots).toBe(1);
+      expect(source.match(/await verifyRetirementBusy\(/g)).toHaveLength(1);
+      expect(
+        source.match(/await db\.applyNativeTestChatRetirement\(/g),
+      ).toHaveLength(1);
+      expect(source.indexOf('await verifyRetirementBusy(')).toBeLessThan(
+        source.indexOf("const intentPath = a.output + '.intent.json';"),
+      );
+      expect(
+        source.indexOf('NATIVE_RETIREMENT_CLOUD_AUTHORITY_CHANGED'),
+      ).toBeLessThan(
+        source.indexOf("const intentPath = a.output + '.intent.json';"),
+      );
+    },
+  );
+  it('preserves the non-carry initial refusal', async () => {
+    const { boundary } = actualOperatorHealthBoundary();
+    const p = quiescenceProof();
+    p.healthBefore[0].producerLifecycle.activeRoots = 1;
+    const fetch = vi.fn(async (url) => ({
+      ok: true,
+      json: async () => clone(p.healthBefore[url === 'web' ? 0 : 1]),
+    }));
+    const need = (ok, code) => {
+      if (!ok) throw Error(code);
+    };
+    const r = {
+      releaseSha: p.review.releaseSha,
+      sourceTree: p.review.sourceTree,
+      healthUrls: ['web', 'worker'],
+    };
+    await expect(
+      boundary(r, need, fetch, globalThis.AbortSignal),
+    ).rejects.toThrow('NATIVE_RETIREMENT_SERVICE_BUSY');
+  });
+  it('awaits both health reads even when one rejects', async () => {
+    const { boundary } = actualOperatorHealthBoundary(),
+      p = quiescenceProof();
+    let finishOther,
+      otherFinished = false;
+    const fetch = vi.fn((url) =>
+      url === 'web'
+        ? Promise.reject(Error('READ_FAILED'))
+        : new Promise((resolve) => {
+            finishOther = () => {
+              otherFinished = true;
+              resolve({ ok: true, json: async () => p.healthBefore[1] });
+            };
+          }),
+    );
+    const readHealths = await boundary(
+      { ...p.review, healthUrls: ['web', 'worker'] },
+      (ok, code) => {
+        if (!ok) throw Error(code);
+      },
+      fetch,
+      globalThis.AbortSignal,
+    );
+    let settled = false;
+    const pending = readHealths().catch((e) => {
+      settled = true;
+      return e;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    finishOther();
+    expect((await pending).message).toBe('READ_FAILED');
+    expect(otherFinished).toBe(true);
   });
 });

@@ -1,5 +1,7 @@
 import {
   classifyReviewedTestChatCloudCarry,
+  observeReviewedTestChatQuiescence,
+  collectReviewedTestChatRound,
   reviewedTestChatPhysicalScope,
   REVIEWED_TEST_CHAT_REVIEW_KIND,
 } from './reviewed-test-chat-preserved-cloud.mjs';
@@ -338,6 +340,8 @@ function chatSubject() {
     item.bindings = [];
   }
   s.review.kind = REVIEWED_TEST_CHAT_REVIEW_KIND;
+  s.review.requestId = s.plan.requestId;
+  s.review.planDigest = s.plan.digest;
   s.review.developmentTestScopesApproved = true;
   s.review.historicalCloudCarry.kind =
     'allrice-dev-reviewed-test-chat-exact-cloud-v1';
@@ -487,5 +491,272 @@ describe('future exact reviewed test chats, isolated from the sealed slot5 autho
     expect(() => classifyReviewedTestChatCloudCarry(s)).toThrow(
       'CONTAINER_OR_RESERVATION_PRESENT',
     );
+  });
+});
+
+function chatRoundSubject() {
+  const s = chatSubject();
+  for (const list of [s.healthBefore, s.healthAfter])
+    for (const h of list) h.status = 'ready';
+  s.targetPhysicalBefore = {
+    physicalProof: clone(s.physicalProof),
+    healthBefore: clone(s.healthBefore),
+    healthAfter: clone(s.healthAfter),
+  };
+  s.targetPhysicalAfter = clone(s.targetPhysicalBefore);
+  return s;
+}
+async function runChatObserver(subject, change = () => {}, settings = {}) {
+  let tick = 0,
+    rounds = 0;
+  const order = [];
+  const observations = [];
+  const result = await observeReviewedTestChatQuiescence({
+    review: subject.review,
+    plan: subject.plan,
+    timeoutMs: 100,
+    intervalMs: 10,
+    now: () => tick,
+    sleep: async (ms) => {
+      tick += ms;
+    },
+    readObservation: async (step) => {
+      const s = clone(subject);
+      change(s, ++rounds);
+      let busyReads = 0,
+        healthReads = 0,
+        snapshotReads = 0,
+        vmReads = 0,
+        targetReads = 0;
+      const record = (name, value) => {
+        order.push([rounds, name]);
+        return clone(value);
+      };
+      const observation = await collectReviewedTestChatRound(
+        {
+          review: s.review,
+          plan: s.plan,
+          attempt: rounds,
+          baseline: s.baseline,
+          recordedExitedObservation: s.recordedExitedObservation,
+          verifierSha256: s.verifierSha256,
+          sharedVerifierSha256: s.sharedVerifierSha256,
+          physicalVerifierSha256: s.physicalVerifierSha256,
+          readBusy: async () =>
+            record(
+              'raw' + ++busyReads,
+              busyReads === 1 ? s.rawBefore : s.rawAfter,
+            ),
+          readHealths: async () =>
+            record(
+              'health' + ++healthReads,
+              healthReads === 1 ? s.healthBefore : s.healthAfter,
+            ),
+          reader: {
+            readSnapshot: async () =>
+              record(
+                'history' + ++snapshotReads,
+                snapshotReads === 1 ? s.before : s.after,
+              ),
+            physicalAbsence: async () =>
+              record(
+                'vm' + ++vmReads,
+                vmReads === 1 ? s.physicalBefore : s.physicalAfter,
+              ),
+          },
+          collectPhysicalObservation: async (suffix) =>
+            record(
+              'target' + ++targetReads + suffix,
+              targetReads === 1
+                ? s.targetPhysicalBefore
+                : s.targetPhysicalAfter,
+            ),
+          readInventory: async () => record('inventory', s.inventory),
+          readExited: async () => record('full-inspect', s.exitedObservation),
+        },
+        step,
+      );
+      observations.push(observation);
+      return observation;
+    },
+    ...settings,
+  });
+  return { result, rounds, order, observations };
+}
+describe('reviewed-chat complete bounded observation uses separate authority', () => {
+  it('repeats the actual full production read wiring, retaining only one complete idle round', async () => {
+    const s = chatRoundSubject();
+    const r = await runChatObserver(s, (p, attempt) => {
+      if (attempt === 1) {
+        p.healthBefore[0].producerLifecycle.activeRoots = 1;
+        p.targetPhysicalAfter.healthAfter[1].producerLifecycle.pendingRoots = 1;
+      }
+    });
+    expect(r.rounds).toBe(2);
+    expect(r.result.quiescenceObservation).toMatchObject({
+      attempts: 2,
+      completeReadOnlyAttempts: true,
+      mutationRetried: false,
+    });
+    expect(r.result.observation).toEqual(r.observations[1]);
+    expect(r.result.observation).not.toEqual(r.observations[0]);
+    for (const i of [1, 2])
+      expect(r.order.filter(([n]) => n === i).map(([, name]) => name)).toEqual([
+        'raw1',
+        'health1',
+        'history1',
+        'target1.attempt-' + i + '.target-before.json',
+        'vm1',
+        'inventory',
+        'full-inspect',
+        'vm2',
+        'target2.attempt-' + i + '.target-after.json',
+        'history2',
+        'raw2',
+        'health2',
+      ]);
+    expect(r.result.classification.exactTestChatScopes).toEqual(
+      s.plan.snapshots.map((v) => v.scope),
+    );
+    expect(r.result.classification.rawUncleanedCloudAttempts).toBe(1);
+    expect(r.result.classification.cleanupClaimed).toBe(false);
+  });
+  it('bounds continuous target-bracket activity without any mutation or generic error retry', async () => {
+    let rounds = 0;
+    await expect(
+      runChatObserver(chatRoundSubject(), (p) => {
+        rounds++;
+        p.targetPhysicalBefore.healthAfter[0].producerLifecycle.retainedChildren = 1;
+      }),
+    ).rejects.toThrow('NATIVE_RETIREMENT_QUIESCENCE_TIMEOUT');
+    expect(rounds).toBe(10);
+  });
+  it.each([
+    [
+      'identity',
+      (s) => {
+        s.healthAfter[1].identity.bootId = 'changed';
+      },
+    ],
+    [
+      'unknown',
+      (s) => {
+        s.targetPhysicalAfter.healthAfter[1].producerLifecycle.unknownOutcomes =
+          ['unknown'];
+      },
+    ],
+    [
+      'unresolved',
+      (s) => {
+        s.targetPhysicalBefore.healthBefore[1].producerLifecycle.unresolvedRoots = 1;
+      },
+    ],
+    [
+      'negative root',
+      (s) => {
+        s.healthAfter[1].producerLifecycle.activeRoots = -1;
+      },
+    ],
+    [
+      'fractional root',
+      (s) => {
+        s.healthAfter[1].producerLifecycle.pendingRoots = 0.5;
+      },
+    ],
+    [
+      'not ready',
+      (s) => {
+        s.targetPhysicalAfter.healthAfter[1].status = 'starting';
+      },
+    ],
+    [
+      'new raw job',
+      (s) => {
+        s.rawAfter.jobs = 1;
+      },
+    ],
+    [
+      'live runtime',
+      (s) => {
+        s.rawAfter.runtimes = 1;
+      },
+    ],
+    [
+      'changed history',
+      (s) => {
+        s.after.receipts.ids.push('new-row');
+      },
+    ],
+    [
+      'changed VM',
+      (s) => {
+        s.physicalAfter.vmState = 'changed';
+      },
+    ],
+    [
+      'running container',
+      (s) => {
+        s.exitedObservation.inspectAfter.body.State.Pid = 123;
+      },
+    ],
+    [
+      'target writer',
+      (s) => {
+        s.targetPhysicalAfter.physicalProof.writers.push({ pid: 1 });
+      },
+    ],
+    [
+      'target native process',
+      (s) => {
+        s.targetPhysicalBefore.physicalProof.nativeProcesses.push({ pid: 1 });
+      },
+    ],
+    [
+      'changed target scope',
+      (s) => {
+        s.targetPhysicalAfter.physicalProof.scopeDigest =
+          'sha256:' + 'f'.repeat(64);
+      },
+    ],
+    [
+      'protected PPT',
+      (s) => {
+        s.plan.snapshots[0].scope.contextId =
+          '68e76b6b-2e75-45b7-b628-951945b12044';
+      },
+    ],
+    [
+      'wrong authority',
+      (s) => {
+        s.review.kind = 'allrice-dev-test-chat-retirement-review';
+      },
+    ],
+  ])(
+    'does not retry %s even alongside transient activity',
+    async (_name, change) => {
+      let rounds = 0;
+      await expect(
+        runChatObserver(chatRoundSubject(), (s) => {
+          rounds++;
+          s.healthBefore[0].producerLifecycle.activeRoots = 1;
+          change(s);
+        }),
+      ).rejects.toThrow();
+      expect(rounds).toBe(1);
+    },
+  );
+  it('does not convert a thrown lifecycle-shaped read error into a retry', async () => {
+    let reads = 0;
+    await expect(
+      observeReviewedTestChatQuiescence({
+        review: chatRoundSubject().review,
+        plan: chatRoundSubject().plan,
+        readObservation: async () => {
+          reads++;
+          throw Error('NATIVE_RETIREMENT_CLOUD_CURRENT_LIFECYCLE_BUSY');
+        },
+      }),
+    ).rejects.toThrow('NATIVE_RETIREMENT_CLOUD_CURRENT_LIFECYCLE_BUSY');
+    expect(reads).toBe(1);
   });
 });
