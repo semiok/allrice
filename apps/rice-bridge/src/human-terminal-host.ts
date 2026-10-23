@@ -10,6 +10,7 @@ import {
 import { LocalSubprocessRuntime } from '@deepseek-ai/dsh-subprocess-local';
 import type { TerminalTarget } from '@allrice/contracts';
 import { readConfig, type BridgeConfig } from './config.js';
+import { humanTerminalLocaleEnvironment } from './human-terminal-environment.js';
 
 type NativeOwner = Parameters<TerminalController['create']>[0];
 type NativeSession = NativeOwner['session'];
@@ -19,6 +20,22 @@ type AuthorityObservation = {
   result: 'current' | 'revoked' | 'unknown';
   pending?: Promise<void>;
 };
+
+/** Keep native process ownership and credential scrubbing; only the human
+ * terminal's locale overrides differ from the stock provider. */
+class HumanTerminalSubprocessRuntime extends LocalSubprocessRuntime {
+  override spawnTerminal(
+    spec: Parameters<LocalSubprocessRuntime['spawnTerminal']>[0],
+  ) {
+    return super.spawnTerminal({
+      ...spec,
+      env: {
+        ...spec.env,
+        ...humanTerminalLocaleEnvironment({ ...process.env, ...spec.env }),
+      },
+    });
+  }
+}
 
 /** This is the only AllRice-to-DSH execution adapter. The native controller owns
  * PTYs, screens, input ordering, retention, cleanup and process exit facts. A
@@ -45,7 +62,7 @@ export class HumanTerminalHost {
       terminal?: Partial<TerminalControllerConfig>;
     },
   ) {
-    new LocalSubprocessRuntime(this.ctx);
+    new HumanTerminalSubprocessRuntime(this.ctx);
     // DSH explicitly separates user terminals from Agent sandbox approval. Its
     // controller requires this provider's presence but never calls its policy.
     this.ctx.provide('sandboxPolicy', {});
