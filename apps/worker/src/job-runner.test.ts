@@ -5,6 +5,7 @@ const ports = vi.hoisted(() => ({
   append: vi.fn(),
   complete: vi.fn(),
   fail: vi.fn(),
+  failStart: vi.fn(),
   finish: vi.fn(),
   isolation: vi.fn(),
   cleanup: vi.fn(),
@@ -20,6 +21,7 @@ vi.mock('@allrice/database', () => ({
   appendJobEvent: ports.append,
   completeJob: ports.complete,
   failJob: ports.fail,
+  failClaimedJobStart: ports.failStart,
   finishJobDrain: ports.finish,
 }));
 vi.mock('./isolation.js', () => ({
@@ -29,6 +31,7 @@ vi.mock('./workflow-engine.js', () => ({
   WorkflowPaused: class extends Error {},
 }));
 import { runClaimedJob, type ClaimedJobRunnerInput } from './job-runner.js';
+import { QueueError } from '@allrice/database';
 
 /** Worker orchestration seam only. Real lease/receipt authorization is tested
  * separately against isolated PostgreSQL and an actual native DSH process. */
@@ -55,6 +58,7 @@ describe('Worker canceled-handler receipt finalization', () => {
       ports.append,
       ports.complete,
       ports.fail,
+      ports.failStart,
       ports.finish,
       ports.cleanup,
     ])
@@ -77,6 +81,76 @@ describe('Worker canceled-handler receipt finalization', () => {
     };
     return { value, abort: () => abort() };
   }
+  it('settles a rolled-back admission deadlock without starting any handler or heartbeat', async () => {
+    ports.start.mockRejectedValue(
+      Object.assign(new Error('deadlock'), { code: '40P01' }),
+    );
+    const handler = vi.fn();
+    await runClaimedJob(input().value, handler);
+    expect(ports.failStart).toHaveBeenCalledExactlyOnceWith({
+      workerId: 'worker',
+      jobId: 'job',
+      leaseToken: 'lease',
+    });
+    expect(handler).not.toHaveBeenCalled();
+    expect(ports.isolation).not.toHaveBeenCalled();
+    expect(ports.heartbeat).not.toHaveBeenCalled();
+    expect(ports.fail).not.toHaveBeenCalled();
+  });
+  it('does not settle an uncertain start COMMIT or replay the handler', async () => {
+    const failure = Object.assign(new Error('connection lost'), {
+      code: '08006',
+    });
+    ports.start.mockRejectedValue(failure);
+    const handler = vi.fn();
+    await expect(runClaimedJob(input().value, handler)).rejects.toBe(failure);
+    expect(ports.failStart).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
+  });
+  it.each(['lease_lost', 'policy_denied'] as const)(
+    'leaves %s admission to its canonical owner',
+    async (code) => {
+      ports.start.mockRejectedValue(new QueueError(code));
+      await runClaimedJob(input().value, vi.fn());
+      expect(ports.failStart).not.toHaveBeenCalled();
+    },
+  );
+  it('does not overwrite a claim lost before deadlock settlement', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    ports.start.mockRejectedValue(
+      Object.assign(new Error('deadlock'), { code: '40P01' }),
+    );
+    ports.failStart.mockRejectedValue(new QueueError('lease_lost'));
+    await runClaimedJob(input().value, vi.fn());
+    expect(ports.fail).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        phase: 'admission',
+        sqlState: '40P01',
+        settlement: 'lease_lost',
+      }),
+    );
+    log.mockRestore();
+  });
+  it('reports an unconfirmed failure receipt instead of claiming it was settled', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    ports.start.mockRejectedValue(
+      Object.assign(new Error('deadlock'), { code: '40P01' }),
+    );
+    const failure = new Error('receipt connection lost');
+    ports.failStart.mockRejectedValue(failure);
+    await expect(runClaimedJob(input().value, vi.fn())).rejects.toBe(failure);
+    expect(log).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        phase: 'admission',
+        sqlState: '40P01',
+        settlement: 'unconfirmed',
+      }),
+    );
+    log.mockRestore();
+  });
   it('finishes a canceled Job only after its handler has returned and isolation is cleaned', async () => {
     const f = input();
     let started!: () => void;

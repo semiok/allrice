@@ -3,6 +3,7 @@ import {
   QueueError,
   appendJobEvent,
   completeJob,
+  failClaimedJobStart,
   failJob,
   finishJobDrain,
   heartbeatJob,
@@ -98,6 +99,38 @@ export async function runClaimedJob(
   } catch (error) {
     if (error instanceof QueueError && error.code === 'policy_denied') return;
     if (isLeaseLoss(error)) return;
+    if (
+      error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      error.code === '40P01'
+    ) {
+      try {
+        await failClaimedJobStart({
+          workerId: input.workerId,
+          jobId: input.jobId,
+          leaseToken: input.leaseToken,
+        });
+      } catch (settlementError) {
+        console.error('[M5] Worker admission deadlock settlement', {
+          jobId: input.jobId,
+          phase: 'admission',
+          sqlState: '40P01',
+          settlement: isLeaseLoss(settlementError)
+            ? 'lease_lost'
+            : 'unconfirmed',
+          settlementCode:
+            settlementError &&
+            typeof settlementError === 'object' &&
+            'code' in settlementError &&
+            typeof settlementError.code === 'string'
+              ? settlementError.code
+              : 'unknown',
+        });
+        if (!isLeaseLoss(settlementError)) throw settlementError;
+      }
+      return;
+    }
     throw error;
   }
   if (!execution) return;

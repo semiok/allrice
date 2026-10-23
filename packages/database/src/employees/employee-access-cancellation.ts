@@ -9,12 +9,15 @@ export class EmployeeAccessBusyError extends Error {
   }
 }
 
+export const employeeAccessTransactionMaxAttempts = 5;
+
 /** Employee mutations hold identity/assignment locks. Worker admission holds
  * root/job locks first. NOWAIT below aborts this entire transaction instead of
  * waiting in the reverse order; bounded retries start with no locks held. */
 async function retryEmployeeAccessTransaction<T>(
   run: () => Promise<T>,
   retryLockBusy: () => boolean,
+  retryDeadlock: boolean,
 ): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
@@ -24,11 +27,17 @@ async function retryEmployeeAccessTransaction<T>(
         !error ||
         typeof error !== 'object' ||
         !('code' in error) ||
-        error.code !== '55P03' ||
-        !retryLockBusy()
+        !(
+          (error.code === '55P03' && retryLockBusy()) ||
+          (error.code === '40P01' && retryDeadlock)
+        )
       )
         throw error;
-      if (attempt >= 4) throw new EmployeeAccessBusyError();
+      if (attempt + 1 >= employeeAccessTransactionMaxAttempts) {
+        // Preserve the known rolled-back SQLSTATE for pre-start settlement.
+        if (error.code === '40P01') throw error;
+        throw new EmployeeAccessBusyError();
+      }
       await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
     }
   }
@@ -37,11 +46,17 @@ async function retryEmployeeAccessTransaction<T>(
 export function employeeAccessTransaction<T>(
   sql: ReturnType<typeof getDatabase>,
   run: (tx: postgres.TransactionSql) => Promise<T>,
-  options: { retryLockBusy?: () => boolean } = {},
+  options: {
+    retryLockBusy?: () => boolean;
+    /** Opt in only for SQL-only transactions with no external effects. A 40P01
+     * aborts the whole transaction; connection/COMMIT uncertainty is not retried. */
+    retryDeadlock?: boolean;
+  } = {},
 ) {
   return retryEmployeeAccessTransaction(
     () => sql.begin(run),
     options.retryLockBusy ?? (() => true),
+    options.retryDeadlock ?? false,
   );
 }
 
