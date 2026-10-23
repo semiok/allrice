@@ -2786,7 +2786,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   it.each([1440, 390])(
     'expands tool details downward without moving the clicked header at %ipx',
     async (width) => {
-      const f = await fixture({ width, touch: width < 760 });
+      const f = await fixture({
+        width,
+        touch: width < 760,
+        streamingOutput: false,
+      });
       const operations = Array.from({ length: 5 }, (_, index) => ({
         snapshot: {
           status: 'succeeded',
@@ -7012,93 +7016,96 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
   );
 
-  it('reuses native rows for chronological Chinese steps, retains failures and uses the employee identity', async () => {
-    const f = await fixture();
-    try {
-      f.state.employeeName = 'Office 文档助手';
-      f.state.events = Array.from({ length: 10 }, (_, i) => ({
-        schemaVersion: 3,
-        eventId: id(700 + i),
-        organizationId: org,
-        workspaceId: workspace,
-        conversationId: A,
-        runId: run,
-        generation: 1,
-        sequence: i + 1,
-        cursor: `${run}:${i + 1}`,
-        harness: 'dsh',
-        occurredAt: now,
-        sourceEvent: null,
-        type: i === 8 ? 'tool.failed' : 'tool.completed',
-        payload: {
-          toolCallId: `call-${i}`,
-          name: i === 9 ? 'workspace.export.create' : 'market.quote',
-          ...(i === 8
-            ? { summary: '行情服务超时' }
-            : {
-                summary:
-                  i === 9
-                    ? '已生成财报摘要.docx'
-                    : `已查询第 ${i + 1} 个标的的行情`,
-              }),
-        },
-      }));
-      await f.page.reload();
-      const process = f.page.getByRole('region', {
-        name: '工作过程',
-        exact: true,
-      });
-      const toggle = process.getByRole('button', { name: /^工作过程/ });
-      await expect.poll(() => toggle.innerText()).toContain('1 次未成功');
-      expect(await toggle.innerText()).toContain('1 次未成功');
-      expect(await toggle.getAttribute('aria-expanded')).toBe('false');
-      expect(await process.getByRole('list').count()).toBe(0);
-      await toggle.focus();
-      await f.page.keyboard.press('Enter');
-      await process
-        .getByRole('region', { name: '工作步骤', exact: true })
-        .getByRole('button')
-        .click();
-      const groups = process.getByRole('list', { name: '工作步骤' });
-      expect(await groups.getByRole('listitem').count()).toBe(10);
-      expect(await groups.innerText()).toContain('已查询第 1 个标的的行情');
-      expect(await groups.innerText()).toContain('已生成财报摘要.docx');
-      expect(await groups.getByRole('button').count()).toBe(0);
-      expect(await groups.locator('svg').count()).toBe(10);
-      expect(await groups.innerText()).not.toMatch(/累计|已完成|次操作/);
-      expect(await groups.innerText()).toContain('行情服务超时');
-      expect(
-        await groups.evaluate(
-          (el) => getComputedStyle(el.parentElement!).maxHeight,
-        ),
-      ).toBe('360px');
-      expect(await f.page.getByLabel('助手任务', { exact: true }).count()).toBe(
-        0,
-      );
-      expect(
-        await f.page.locator('[id^="message-"]').last().innerText(),
-      ).toContain('Office 文档助手');
-      expect(
-        await f.page
-          .getByRole('textbox', { name: '给 Office 文档助手 的消息' })
-          .getAttribute('placeholder'),
-      ).toBe('继续和 Office 文档助手 工作…');
-      expect(
-        await f.page
-          .locator('[data-employee-accent]')
-          .getAttribute('data-employee-accent'),
-      ).toBe('orange');
-      if (globalThis.process.env.ALLRICE_EMPLOYEE_SCREENSHOT)
-        await f.page.screenshot({
-          path: `${globalThis.process.env.ALLRICE_EMPLOYEE_SCREENSHOT}-process.png`,
+  it.each([false, true])(
+    'reuses native rows for chronological Chinese steps, retains failures and uses the employee identity streaming=%s',
+    async (streamingOutput) => {
+      const f = await fixture({ streamingOutput });
+      try {
+        f.state.employeeName = 'Office 文档助手';
+        f.state.events = Array.from({ length: 10 }, (_, i) => ({
+          schemaVersion: 3,
+          eventId: id(700 + i),
+          organizationId: org,
+          workspaceId: workspace,
+          conversationId: A,
+          runId: run,
+          generation: 1,
+          sequence: i + 1,
+          cursor: `${run}:${i + 1}`,
+          harness: 'dsh',
+          occurredAt: now,
+          sourceEvent: null,
+          type: i === 8 ? 'tool.failed' : 'tool.completed',
+          payload: {
+            toolCallId: `call-${i}`,
+            name: i === 9 ? 'workspace.export.create' : 'market.quote',
+            ...(i === 8
+              ? { summary: '行情服务超时' }
+              : {
+                  summary:
+                    i === 9
+                      ? '已生成财报摘要.docx'
+                      : `已查询第 ${i + 1} 个标的的行情`,
+                }),
+          },
+        }));
+        await f.page.reload();
+        const process = f.page.getByRole('region', {
+          name: '工作过程',
+          exact: true,
         });
-      await toggle.focus();
-      await f.page.keyboard.press(' ');
-      expect(await toggle.getAttribute('aria-expanded')).toBe('false');
-    } finally {
-      await f.close();
-    }
-  });
+        const toggle = process.getByRole('button', { name: /^工作过程/ });
+        await expect.poll(() => toggle.innerText()).toContain('1 次未成功');
+        expect(await toggle.innerText()).toContain('1 次未成功');
+        expect(await toggle.getAttribute('aria-expanded')).toBe('false');
+        expect(await process.getByRole('list').count()).toBe(0);
+        await toggle.focus();
+        await f.page.keyboard.press('Enter');
+        await process
+          .getByRole('region', { name: '工作步骤', exact: true })
+          .getByRole('button')
+          .click();
+        const groups = process.getByRole('list', { name: '工作步骤' });
+        expect(await groups.getByRole('listitem').count()).toBe(10);
+        expect(await groups.innerText()).toContain('已查询第 1 个标的的行情');
+        expect(await groups.innerText()).toContain('已生成财报摘要.docx');
+        expect(await groups.getByRole('button').count()).toBe(0);
+        expect(await groups.locator('svg').count()).toBe(10);
+        expect(await groups.innerText()).not.toMatch(/累计|已完成|次操作/);
+        expect(await groups.innerText()).toContain('行情服务超时');
+        expect(
+          await groups.evaluate(
+            (el) => getComputedStyle(el.parentElement!).maxHeight,
+          ),
+        ).toBe('360px');
+        expect(
+          await f.page.getByLabel('助手任务', { exact: true }).count(),
+        ).toBe(0);
+        expect(
+          await f.page.locator('[id^="message-"]').last().innerText(),
+        ).toContain('Office 文档助手');
+        expect(
+          await f.page
+            .getByRole('textbox', { name: '给 Office 文档助手 的消息' })
+            .getAttribute('placeholder'),
+        ).toBe('继续和 Office 文档助手 工作…');
+        expect(
+          await f.page
+            .locator('[data-employee-accent]')
+            .getAttribute('data-employee-accent'),
+        ).toBe('orange');
+        if (globalThis.process.env.ALLRICE_EMPLOYEE_SCREENSHOT)
+          await f.page.screenshot({
+            path: `${globalThis.process.env.ALLRICE_EMPLOYEE_SCREENSHOT}-process.png`,
+          });
+        await toggle.focus();
+        await f.page.keyboard.press(' ');
+        expect(await toggle.getAttribute('aria-expanded')).toBe('false');
+      } finally {
+        await f.close();
+      }
+    },
+  );
 
   it.each([1440, 1280, 390, 320])(
     'lets an ordinary member control three Bridge capabilities in native settings without flashing the panel at %ipx',
