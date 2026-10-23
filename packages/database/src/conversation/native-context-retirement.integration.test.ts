@@ -38,6 +38,7 @@ import {
 } from '../brand-content/rules.ts';
 import {
   NativeRootOriginSchema,
+  nativeRootDigest,
   newNativeGeneration,
 } from './native-root-origin.ts';
 import {
@@ -50,6 +51,7 @@ import {
   nativeContextExecutionRetired,
   previewNativeTestChatRetirement,
   readNativeTestChatRetirement,
+  readVerifiedNativeChatRetirements,
   type NativeTestChatRetirementScope,
 } from './native-context-retirement.ts';
 
@@ -338,6 +340,85 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
     return nativeSessionId;
   }
 
+  // Clone only owned synthetic lifecycle rows for scan-size/corruption checks.
+  // No trigger is disabled: pins precede the terminal retirement INSERT.
+  async function copyRetiredContexts(
+    tx: postgres.TransactionSql,
+    f: Subject,
+    ids: string[],
+    change: {
+      context?: Record<string, postgres.JSONValue>;
+      binding?: Record<string, postgres.JSONValue>;
+      retirement?: (
+        origin: postgres.JSONValue,
+        bindings: Record<string, postgres.JSONValue>[],
+      ) => Record<string, postgres.JSONValue>;
+    } = {},
+  ) {
+    for (const id of ids) {
+      const origin = NativeRootOriginSchema.parse({
+        ...f.origin,
+        contextId: id,
+        rootSeed: id,
+      });
+      await tx`insert into allrice_chat_sessions
+        select (jsonb_populate_record(null::allrice_chat_sessions,to_jsonb(s) ||
+          ${tx.json({ id, native_root_origin: origin, ...change.context })})).*
+        from allrice_chat_sessions s where id=${f.session}`;
+      await tx`insert into allrice_native_session_bindings
+        select (jsonb_populate_record(null::allrice_native_session_bindings,to_jsonb(b) ||
+          jsonb_build_object('native_session_id','dsh-copy-' || ${id}::text || '-' || native_session_id,
+            'context_id',${id}::uuid,'storage_context_key',${id}::text,
+            'storage_namespace',replace(storage_namespace,${f.session},${id}),
+            'root_origin_digest',${nativeRootDigest(origin)}::text) ||
+          ${tx.json(change.binding ?? {})})).*
+        from allrice_native_session_bindings b where context_kind='chat' and context_id=${f.session}`;
+      const pins = await tx<
+        { value: Record<string, postgres.JSONValue> }[]
+      >`select (to_jsonb(b)-'bound_at') || jsonb_build_object('bound_at_micros',
+          (extract(epoch from b.bound_at)*1000000)::bigint::text) value
+        from allrice_native_session_bindings b where context_kind='chat'
+          and context_id=${id} order by native_session_id`;
+      const patch = {
+        context_id: id,
+        request_id: randomUUID(),
+        origin_snapshot: origin,
+        binding_snapshot: pins.map((r) => r.value),
+        ...change.retirement?.(
+          origin,
+          pins.map((r) => r.value),
+        ),
+      };
+      await tx`insert into allrice_native_context_retirements
+        select (jsonb_populate_record(null::allrice_native_context_retirements,to_jsonb(r) ||
+          ${tx.json(patch)})).* from allrice_native_context_retirements r
+        where context_kind='chat' and context_id=${f.session}`;
+    }
+  }
+
+  async function observedRetirementScan() {
+    return fixture.db.begin(
+      'isolation level repeatable read read only',
+      async (tx) => {
+        await tx`set local statement_timeout='5000'`;
+        const [settings] = await tx`select
+          current_setting('transaction_read_only') read_only,
+          current_setting('transaction_isolation') isolation`;
+        const statements: string[] = [];
+        const observed = new Proxy(tx, {
+          apply(query, thisArg, args: unknown[]) {
+            const fragments = args[0];
+            if (Array.isArray(fragments) && 'raw' in fragments)
+              statements.push(fragments.join('?').replaceAll(/\s+/g, ' '));
+            return Reflect.apply(query, thisArg, args);
+          },
+        });
+        const scopes = await readVerifiedNativeChatRetirements(observed);
+        return { scopes, statements, settings };
+      },
+    );
+  }
+
   // Seed the real deferred brand/context and article/bundle foreign-key pairs.
   // The bundle references the already existing artifact; it creates no new file,
   // message or deliverable whose ordinary preservation would catch this race.
@@ -403,6 +484,49 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
     });
     return { articleId, bundleId, content };
   }
+
+  it('batches 22 retirements into three real read-only statements and checks every context beyond the first batch', async () => {
+    const empty = await observedRetirementScan();
+    expect(empty.scopes).toEqual([]);
+    expect(empty.statements).toHaveLength(1);
+    const f = await subject();
+    await appendPin(f);
+    const output = await independentArtifact(f);
+    await finish(f);
+    const plan = await previewNativeTestChatRetirement(request([scope(f)]));
+    await applyNativeTestChatRetirement(plan);
+    const before = await evidence(f);
+    const retired = await retirementRows(f);
+    const first = Array.from({ length: 21 }, () => randomUUID());
+    await fixture.db.begin((tx) => copyRetiredContexts(tx, f, first));
+    const batch = await observedRetirementScan();
+    expect(batch.settings).toEqual({
+      read_only: 'on',
+      isolation: 'repeatable read',
+    });
+    expect(batch.scopes.map((s) => s.contextId)).toEqual(
+      [f.session, ...first].sort(),
+    );
+    expect(batch.statements).toHaveLength(3);
+    expect(
+      (await coverageWithout(f.origin.artifactId)).retiredContexts,
+    ).toEqual(batch.scopes);
+    const remaining = Array.from({ length: 29 }, () => randomUUID());
+    await fixture.db.begin((tx) => copyRetiredContexts(tx, f, remaining));
+    const multiple = await observedRetirementScan();
+    expect(multiple.scopes.map((s) => s.contextId)).toEqual(
+      [f.session, ...first, ...remaining].sort(),
+    );
+    expect(multiple.statements).toHaveLength(5);
+    expect(await evidence(f)).toEqual(before);
+    expect(await retirementRows(f)).toEqual(retired);
+    expect(
+      await readArtifactBytes(
+        assistantFixtureStorage(fixture.db),
+        output.object,
+      ),
+    ).toEqual(Buffer.from(output.body));
+  }, 30_000);
 
   it('keeps archived, never-bound chat origins protected until an explicit terminal retirement', async () => {
     const f = await subject(false);
@@ -940,5 +1064,138 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
     ).toEqual(history.messages);
     expect(await evidence(f)).toEqual(after);
     expect(await retirementRows(f)).toEqual(retired);
+  }, 30_000);
+  it('rejects scope, complete-row, microsecond and late-batch corruption without hiding foreign pins', async () => {
+    const f = await subject();
+    const foreign = await subject(false);
+    await finish(f);
+    await finish(foreign);
+    await applyNativeTestChatRetirement(
+      await previewNativeTestChatRetirement(request([scope(f)])),
+    );
+    await applyNativeTestChatRetirement(
+      await previewNativeTestChatRetirement(request([scope(foreign)])),
+    );
+    // A valid never-bound retirement retains its empty snapshot semantics.
+    expect((await observedRetirementScan()).scopes).toContainEqual(
+      scope(foreign),
+    );
+    const before = await evidence(f);
+    const retired = await retirementRows(f);
+    const lateId = 'ffffffff-ffff-4fff-bfff-fffffffffff0';
+    const missingId = 'ffffffff-ffff-4fff-bfff-fffffffffff1';
+    const changed = 'NATIVE_RETIREMENT_REFERENCE_SNAPSHOT_CHANGED';
+    const cases: {
+      name: string;
+      change: NonNullable<Parameters<typeof copyRetiredContexts>[3]>;
+      error: string;
+    }[] = [
+      {
+        name: 'unarchived context',
+        change: { context: { archived_at: null } },
+        error: changed,
+      },
+      {
+        name: 'missing context',
+        change: { retirement: () => ({ context_id: missingId }) },
+        error: changed,
+      },
+      ...[
+        ['organization_id', foreign.org],
+        ['workspace_id', foreign.workspace],
+        ['owner_id', foreign.user],
+      ].map(([key, value]) => ({
+        name: `retirement ${key} mismatch`,
+        change: { retirement: () => ({ [key!]: value! }) },
+        error: changed,
+      })),
+      {
+        name: 'changed complete origin snapshot',
+        change: {
+          retirement: (origin) => ({
+            origin_snapshot: {
+              ...NativeRootOriginSchema.parse(origin),
+              rootSeed: 'unreviewed-root-seed',
+            },
+          }),
+        },
+        error: changed,
+      },
+      {
+        name: 'foreign owner pin absent from the reviewed snapshot',
+        change: {
+          binding: { owner_id: foreign.user },
+          retirement: () => ({ binding_snapshot: [] }),
+        },
+        error: 'NATIVE_RETIREMENT_BINDING_SCOPE_CONFLICT',
+      },
+      {
+        name: 'foreign organization/workspace pin absent from the snapshot',
+        change: {
+          binding: {
+            organization_id: foreign.org,
+            workspace_id: foreign.workspace,
+          },
+          retirement: () => ({ binding_snapshot: [] }),
+        },
+        error: 'NATIVE_RETIREMENT_BINDING_SCOPE_CONFLICT',
+      },
+      ...[
+        ['first_job_id', randomUUID()],
+        ['origin_reader_approval_digest', digest('unreviewed reader')],
+        ['storage_namespace', '/unreviewed/storage/namespace'],
+      ].map(([key, value]) => ({
+        name: `complete binding field ${key} changed`,
+        change: {
+          retirement: (
+            _origin: postgres.JSONValue,
+            pins: Record<string, postgres.JSONValue>[],
+          ) => ({
+            binding_snapshot: pins.map((pin) => ({ ...pin, [key!]: value! })),
+          }),
+        },
+        error: changed,
+      })),
+      {
+        name: 'one microsecond binding timestamp difference',
+        change: {
+          retirement: (_origin, pins) => ({
+            binding_snapshot: pins.map((pin) => ({
+              ...pin,
+              bound_at_micros: (
+                BigInt(String(pin.bound_at_micros)) + 1n
+              ).toString(),
+            })),
+          }),
+        },
+        error: changed,
+      },
+      {
+        name: 'unreviewed pin row',
+        change: { retirement: () => ({ binding_snapshot: [] }) },
+        error: changed,
+      },
+      {
+        name: 'unsupported retirement lifecycle kind',
+        change: { retirement: () => ({ context_kind: 'platform_technical' }) },
+        error: 'NATIVE_RETIREMENT_KIND_UNSUPPORTED',
+      },
+    ];
+    for (const c of cases) {
+      await expect(
+        fixture.db.begin(async (tx) => {
+          await copyRetiredContexts(tx, f, [lateId], c.change);
+          await readVerifiedNativeChatRetirements(tx);
+        }),
+        c.name,
+      ).rejects.toThrow(c.error);
+    }
+    expect(
+      await fixture.db`select context_id from allrice_native_context_retirements
+      where context_id in (${lateId},${missingId})`,
+    ).toEqual([]);
+    expect(await evidence(f)).toEqual(before);
+    expect(await retirementRows(f)).toEqual(retired);
+    expect((await observedRetirementScan()).scopes).toContainEqual(scope(f));
   }, 30_000);
 });

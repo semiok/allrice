@@ -389,27 +389,81 @@ export async function readVerifiedNativeChatRetirements(tx: Tx) {
   const rows =
     await tx`select * from allrice_native_context_retirements order by context_kind,context_id`;
   const result: NativeTestChatRetirementScope[] = [];
-  for (const r of rows) {
-    // Other business kinds need their own reviewed lifecycle implementation.
-    if (r.context_kind !== 'chat') fail('NATIVE_RETIREMENT_KIND_UNSUPPORTED');
-    const scope = scopeSchema.parse({
-      contextKind: r.context_kind,
-      contextId: r.context_id,
-      organizationId: r.organization_id,
-      workspaceId: r.workspace_id,
-      ownerId: r.owner_id,
+  // Keep the caller's transaction/snapshot and the complete row fingerprints.
+  // Bound each lookup instead of issuing two statements for every retirement.
+  for (let offset = 0; offset < rows.length; offset += 50) {
+    const batch = rows.slice(offset, offset + 50);
+    const scopes = batch.map((r) => {
+      // Other business kinds need their own reviewed lifecycle implementation.
+      if (r.context_kind !== 'chat') fail('NATIVE_RETIREMENT_KIND_UNSUPPORTED');
+      return scopeSchema.parse({
+        contextKind: r.context_kind,
+        contextId: r.context_id,
+        organizationId: r.organization_id,
+        workspaceId: r.workspace_id,
+        ownerId: r.owner_id,
+      });
     });
-    const [context] =
-      await tx`select native_root_origin,archived_at from allrice_chat_sessions
-      where id=${scope.contextId} and organization_id=${scope.organizationId}
-        and workspace_id=${scope.workspaceId} and owner_id=${scope.ownerId}`;
-    if (
-      !context?.archived_at ||
-      !same(context.native_root_origin, r.origin_snapshot) ||
-      !same(await bindings(tx, scope), r.binding_snapshot)
-    )
-      fail('NATIVE_RETIREMENT_REFERENCE_SNAPSHOT_CHANGED');
-    result.push(scope);
+    const ids = scopes.map((scope) => scope.contextId);
+    const contexts = new Map(
+      (
+        await tx<
+          {
+            id: string;
+            organization_id: string;
+            workspace_id: string;
+            owner_id: string;
+            native_root_origin: postgres.JSONValue;
+            archived: boolean;
+          }[]
+        >`select id,organization_id,workspace_id,owner_id,native_root_origin,
+          archived_at is not null archived
+        from allrice_chat_sessions where id in ${tx(ids)}`
+      ).map((context) => [context.id, context]),
+    );
+    const bindingRows = await tx<
+      { context_id: string; value: Record<string, postgres.JSONValue> }[]
+    >`select context_id,(to_jsonb(b)-'bound_at') || jsonb_build_object('bound_at_micros',
+        (extract(epoch from b.bound_at)*1000000)::bigint::text) value
+      from allrice_native_session_bindings b where context_kind='chat'
+        and context_id in ${tx(ids)} order by context_id,native_session_id`;
+    const bindingValues = new Map<
+      string,
+      Record<string, postgres.JSONValue>[]
+    >();
+    for (const binding of bindingRows) {
+      const values = bindingValues.get(binding.context_id) ?? [];
+      values.push(binding.value);
+      bindingValues.set(binding.context_id, values);
+    }
+    for (let index = 0; index < batch.length; index++) {
+      const r = batch[index]!;
+      const scope = scopes[index]!;
+      const context = contexts.get(scope.contextId);
+      if (
+        !context?.archived ||
+        context.organization_id !== scope.organizationId ||
+        context.workspace_id !== scope.workspaceId ||
+        context.owner_id !== scope.ownerId ||
+        !same(context.native_root_origin, r.origin_snapshot)
+      )
+        fail('NATIVE_RETIREMENT_REFERENCE_SNAPSHOT_CHANGED');
+      // Do not filter foreign binding rows out of the query: their presence
+      // invalidates retirement even if the reviewed rows would still match.
+      const values = bindingValues.get(scope.contextId) ?? [];
+      if (
+        values.some(
+          (b) =>
+            b.organization_id !== scope.organizationId ||
+            b.workspace_id !== scope.workspaceId ||
+            b.owner_id !== scope.ownerId,
+        )
+      )
+        fail('NATIVE_RETIREMENT_BINDING_SCOPE_CONFLICT');
+      if (!same(values, r.binding_snapshot))
+        fail('NATIVE_RETIREMENT_REFERENCE_SNAPSHOT_CHANGED');
+      result.push(scope);
+    }
   }
   return result;
 }
