@@ -192,7 +192,9 @@ export async function lockAutomationConversationJobAdmission(
     principal = await readContentPrincipal(
       scheduleIdentity(scope),
       tx,
-      'update_user',
+      // Admission reads authority; it does not allocate a policy version.
+      // SHARE still fences revocation and is compatible with Run view readers.
+      true,
     ),
     work = await readWorkAutomation(tx, { ...scope, userId: scope.ownerId });
   if (!principal?.writable || !work.available || !work.settings.cloud)

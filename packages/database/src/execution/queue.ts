@@ -1,4 +1,7 @@
-import { employeeAccessTransaction } from '../employees/employee-access-cancellation.ts';
+import {
+  employeeAccessTransaction,
+  employeeAccessTransactionMaxAttempts,
+} from '../employees/employee-access-cancellation.ts';
 import {
   lockNativeOnceJobAdmission,
   type NativeOnceJobAdmission,
@@ -2499,6 +2502,7 @@ export async function startClaimedJob(
       }
       const clock = await refreshTaskClock(transaction, job.run_id);
       if (clock) running.timeout_at = clock.deadlineAt;
+      await assertStartLeaseCurrent(transaction, job);
       return {
         execution: {
           context,
@@ -2508,7 +2512,9 @@ export async function startClaimedJob(
         denied: false,
       };
     },
-    { retryLockBusy: () => retryOnceLock },
+    // Retrying starts from a fresh transaction and rechecks current authority
+    // and the exact claim. No handler/model/tool has been started at this point.
+    { retryLockBusy: () => retryOnceLock, retryDeadlock: true },
   );
   if (!result) return null;
   if (result.denied) throw new QueueError('policy_denied');
@@ -2545,6 +2551,7 @@ async function lockedLeasedJob(
   jobId: string,
   leaseToken: string,
   once?: NativeOnceJobAdmission,
+  expectedStatus: 'running' | 'claimed' = 'running',
 ) {
   // These transactions contain only queue control/receipt SQL, never model,
   // tool or human waits. A blocked heartbeat/event write must roll back rather
@@ -2565,7 +2572,7 @@ async function lockedLeasedJob(
     throw new QueueError('policy_denied');
   if (
     !job ||
-    job.status !== 'running' ||
+    job.status !== expectedStatus ||
     job.worker_id !== workerId ||
     job.lease_token !== leaseToken ||
     !job.lease_expires_at ||
@@ -2575,6 +2582,76 @@ async function lockedLeasedJob(
     throw new QueueError('lease_lost');
   }
   return job;
+}
+
+async function assertStartLeaseCurrent(
+  transaction: TransactionSql,
+  job: JobRow,
+) {
+  const [clock] = await transaction<
+    { now: Date }[]
+  >`select clock_timestamp() as now`;
+  if (!job.lease_expires_at || job.lease_expires_at <= clock!.now)
+    throw new QueueError('lease_lost');
+}
+
+/** A known rolled-back start failure has not entered the handler. Settle only
+ * this still-claimed incarnation; never fail a running/reclaimed Job after an
+ * uncertain COMMIT, or re-enter admission while cleaning up a revoked claim. */
+export async function failClaimedJobStart(input: {
+  workerId: string;
+  jobId: string;
+  leaseToken: string;
+}) {
+  const workerId = UuidSchema.parse(input.workerId);
+  const jobId = UuidSchema.parse(input.jobId);
+  const leaseToken = UuidSchema.parse(input.leaseToken);
+  return employeeAccessTransaction(
+    getDatabase(),
+    async (transaction) => {
+      const job = await lockedLeasedJob(
+        transaction,
+        workerId,
+        jobId,
+        leaseToken,
+        undefined,
+        'claimed',
+      );
+      const [clock] = await transaction<
+        { now: Date }[]
+      >`select clock_timestamp() as now`;
+      await assertStartLeaseCurrent(transaction, job);
+      const stopped = queueStopCause(job, clock!.now);
+      if (stopped) {
+        await transitionStoppedJob(
+          transaction,
+          job,
+          stopped,
+          'worker_returned',
+        );
+      } else {
+        await transitionTerminal(transaction, job, {
+          jobStatus: 'failed',
+          runStatus: 'failed',
+          eventType: 'run.failed',
+          code: 'JOB_START_DEADLOCK',
+          message:
+            'Job admission transaction repeatedly deadlocked before execution',
+          payload: {
+            code: 'JOB_START_DEADLOCK',
+            phase: 'admission',
+            sqlState: '40P01',
+            attempt: job.attempt,
+            transactionAttempts: employeeAccessTransactionMaxAttempts,
+          },
+        });
+      }
+      // Terminal transition clears the lease. Check the original locked claim
+      // after all writes so a lock wait past its deadline rolls everything back.
+      await assertStartLeaseCurrent(transaction, job);
+    },
+    { retryLockBusy: () => false, retryDeadlock: true },
+  );
 }
 
 /** Same pre-root mutex as runtimeLedger.createRoot, including when no root row
