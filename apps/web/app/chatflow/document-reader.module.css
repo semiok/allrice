@@ -73,6 +73,11 @@
   width: 20px;
   height: 20px;
 }
+.controls svg.opticalIcon {
+  flex: none;
+  width: 22px;
+  height: 22px;
+}
 .controls svg > * {
   stroke-width: 1.75;
   vector-effect: non-scaling-stroke;
