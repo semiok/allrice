@@ -43,10 +43,7 @@ import {
   repositoryRequiredChecks,
 } from './platform-repository-publication-contracts.ts';
 import { repositoryCommitIdentity } from './platform-repository-git.ts';
-import {
-  ensureDefaultEmployee,
-  createChatSession,
-} from './workspace/service.ts';
+import { ensureDefaultEmployee } from './workspace/service.ts';
 import { acceptedRepositoryFixture } from './platform-repository-publication.fixture.ts';
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -135,11 +132,17 @@ suite('private publication canonical queue and authority boundaries', () => {
     const [job] =
       await f.db`select id from allrice_jobs where run_id=${run.run.id}`;
     await f.db`update allrice_jobs set status='succeeded' where id=${job!.id}`;
-    await ensureDefaultEmployee(execution, execution.workspaceId!);
-    const session = await createChatSession(execution, {
-      workspaceId: execution.workspaceId!,
-      title: 'Synthetic accepted fixture',
-    });
+    const assignment = await ensureDefaultEmployee(
+      execution,
+      execution.workspaceId!,
+    );
+    // The accepted repair source is historical SQL evidence, not a new
+    // employee execution. Keep its unbound origin without inventing approval.
+    const session = { id: randomUUID() };
+    await f.db`insert into allrice_chat_sessions
+      (id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,title)
+      values(${session.id},${execution.organizationId},${execution.workspaceId!},${admin.actor.id},
+        ${assignment.id},${assignment.employeeVersionId},'Synthetic accepted fixture')`;
     sourceId = randomUUID();
     await f.db`insert into allrice_platform_repair_tasks(id,request_id,organization_id,workspace_id,owner_id,run_id,job_id,session_id,input_digest,frozen,candidate,report) values(${sourceId},${source.frozen.requestId},${execution.organizationId},${execution.workspaceId!},${admin.actor.id},${run.run.id},${job!.id},${session.id},${source.frozen.fingerprint},${f.db.json(source.frozen)},${f.db.json(source.candidate)},${f.db.json(source.report)})`;
     await updatePlatformRepositoryCredential(admin, {

@@ -16,6 +16,7 @@ import {
 } from '@allrice/contracts';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
+import { approveSyntheticCurrentEmployeeExecution } from './current-execution.fixture.ts';
 import * as client from './core/client.ts';
 import {
   createBridgeFolderGrant,
@@ -69,6 +70,7 @@ suite(
     let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
       root: string;
     beforeAll(async () => {
+      approveSyntheticCurrentEmployeeExecution();
       database = await createAssistantFixtureDatabase();
       root = await realpath(
         await mkdtemp(join(tmpdir(), 'allrice-folder-db-')),
@@ -77,6 +79,7 @@ suite(
     }, 60_000);
     afterAll(async () => {
       vi.restoreAllMocks();
+      vi.unstubAllEnvs();
       await database?.close();
       if (root) await rm(root, { recursive: true, force: true });
     });

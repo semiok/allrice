@@ -266,6 +266,8 @@ export {
 export {
   EmployeeRunExecutionBindingSchema,
   nativeRootDigest,
+  newCurrentEmployeeChatOrigin,
+  validateEmployeeExecutionSource,
   type EmployeeRunExecutionBinding,
 } from './conversation/current-execution-binding.ts';
 export {

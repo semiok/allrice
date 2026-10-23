@@ -808,6 +808,7 @@ suite(
         'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
         'sha256:' + 'b'.repeat(64),
       );
+      vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'b'.repeat(64));
       a = await prepareActor('A');
       b = await prepareActor('B');
       const instance = await createEmployeeInstance(a.context, {

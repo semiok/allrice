@@ -7,7 +7,7 @@ import type postgres from 'postgres';
 import type { RequestContext, Role } from '@allrice/contracts';
 import {
   ensureDefaultEmployee,
-  createChatSession,
+  getChatSessionHistory,
 } from './workspace/service.ts';
 
 export async function createExperienceFixture(
@@ -65,11 +65,14 @@ export async function createExperienceFixture(
   const [assignment] = await db<{ id: string; employee_version_id: string }[]>`
     select id,employee_version_id from allrice_employee_assignments where user_id=${user} and workspace_id=${workspace}
       and (${publishedVersion}::uuid is null or employee_version_id=${publishedVersion}) order by created_at desc limit 1`;
-  const session = await createChatSession(owner, {
-    workspaceId: workspace,
-    title: 'P20 completed task',
-    employeeAssignmentId: assignment!.id,
-  });
+  // This fixture represents an already completed historical task, not a new
+  // admission. Keep its original unbound history instead of manufacturing a
+  // current executor approval or a per-Run binding for the synthetic result.
+  const sessionId = randomUUID();
+  await db`insert into allrice_chat_sessions
+    (id,organization_id,workspace_id,owner_id,title,employee_assignment_id,employee_version_id)
+    values(${sessionId},${org},${workspace},${user},'P20 completed task',${assignment!.id},${assignment!.employee_version_id})`;
+  const { session } = await getChatSessionHistory(owner, workspace, sessionId);
   const run = randomUUID(),
     message = randomUUID(),
     assistant = randomUUID();

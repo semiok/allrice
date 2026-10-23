@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 import { createExperienceFixture } from './experience.fixture.ts';
+import { approveSyntheticCurrentEmployeeExecution } from './current-execution.fixture.ts';
 import { createAssistantLocalCommandFixture } from './local-command-assistant.fixture.ts';
 import * as client from './core/client.ts';
 import {
@@ -28,6 +29,7 @@ suite('session archive: actual isolated PostgreSQL, no model', () => {
   let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
   beforeAll(async () => {
     fixture = await createAssistantFixtureDatabase();
+    approveSyntheticCurrentEmployeeExecution();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     for (const flag of [
       'ALLRICE_ASSISTANTS_ENABLED',
