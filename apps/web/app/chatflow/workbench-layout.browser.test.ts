@@ -5022,6 +5022,111 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     30_000,
   );
 
+  it.each([1440, 390])(
+    'employee details keep a wide stable loading shell and an independent visible close control after long scrolling at %ipx',
+    async (width) => {
+      const f = await fixture({
+        width,
+        touch: width < 600,
+        employeeCount: 2,
+        employeeHistory: true,
+        employeeDetails: true,
+      });
+      let releaseRead = () => {};
+      const gate = new Promise<void>((resolve) => {
+        releaseRead = resolve;
+      });
+      try {
+        f.state.employeeDetails.profile.kind = 'custom';
+        f.state.employeeDetails.content.scenes = [];
+        f.state.employeeDetails.content.platform.requirements = Array.from(
+          { length: 60 },
+          (_, index) => `核对资料 ${index + 1}，保留事实依据与待确认事项。`,
+        );
+        await f.page.route(
+          `**/api/v1/employee-instances/${id(7)}/content?*`,
+          async (route) => {
+            await gate;
+            await route.fulfill({ json: f.state.employeeDetails });
+          },
+        );
+        const entry = f.page.getByRole('button', {
+          name: '查看Rice详情',
+          exact: true,
+        });
+        if (!(await entry.isVisible()))
+          await f.page
+            .getByRole('button', { name: '展开侧边栏', exact: true })
+            .click();
+        await entry.click();
+        const loading = f.page.getByRole('dialog', {
+          name: 'AI 员工详情',
+          exact: true,
+        });
+        await loading
+          .getByRole('status', { name: '正在加载员工详情', exact: true })
+          .waitFor();
+        const before = await loading.boundingBox();
+        expect(before).not.toBeNull();
+        expect(before!.width).toBe(width === 1440 ? 1120 : width - 24);
+        expect(await loading.getByText('正在读取当前内容…').count()).toBe(0);
+        const initialClose = await loading
+          .getByRole('button', { name: '关闭', exact: true })
+          .boundingBox();
+        releaseRead();
+        const details = f.page.getByRole('dialog', {
+          name: 'Rice员工详情',
+          exact: true,
+        });
+        await details
+          .getByText('核对资料 60，保留事实依据与待确认事项。')
+          .waitFor();
+        expect(await details.boundingBox()).toEqual(before);
+        const close = details.getByRole('button', {
+          name: '关闭',
+          exact: true,
+        });
+        expect(await close.count()).toBe(1);
+        expect(
+          await details
+            .getByRole('region', { name: '基础与人设', exact: true })
+            .getByRole('button', { name: '关闭', exact: true })
+            .count(),
+        ).toBe(0);
+        expect(await details.getByText('暂无已保存的工作场景。').count()).toBe(
+          0,
+        );
+        await details.getByRole('button', { name: 'AI新增工作场景' }).waitFor();
+        const scroll = details.locator(':scope > div').first();
+        expect(
+          await scroll.evaluate((node) => {
+            node.scrollTop = node.scrollHeight;
+            return node.scrollTop;
+          }),
+        ).toBeGreaterThan(100);
+        expect(await close.boundingBox()).toEqual(initialClose);
+        expect(
+          await details.evaluate(
+            (node) => node.scrollWidth <= node.clientWidth,
+          ),
+        ).toBe(true);
+        if (process.env.ALLRICE_EMPLOYEE_SCREENSHOT)
+          await f.page.screenshot({
+            path: `${process.env.ALLRICE_EMPLOYEE_SCREENSHOT}-fixed-close-${width}.png`,
+          });
+        await close.click();
+        expect(await details.count()).toBe(0);
+        expect(f.writes).toEqual([]);
+        expect(f.state.messageInputs).toEqual([]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        releaseRead();
+        await f.close();
+      }
+    },
+    30_000,
+  );
+
   it('uses the published employee color across sidebar, picker, conversation and profile', async () => {
     const f = await fixture({
       employeeCount: 2,
