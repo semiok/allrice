@@ -5486,9 +5486,25 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await loading
           .getByRole('status', { name: '正在加载员工详情', exact: true })
           .waitFor();
+        // Next may load the generic DSH dialog sheet after the feature sheet.
+        // Recreate that real production order, rather than relying on the
+        // fixture bundler's feature-CSS-last ordering.
+        await loading.evaluate((node) => {
+          const nativeClass = node.classList.item(0);
+          if (!nativeClass) throw Error('Native dialog class missing');
+          const sheet = document.createElement('style');
+          sheet.textContent = `.${CSS.escape(nativeClass)} { width: min(560px, 100%); max-height: min(680px, calc(100dvh - 48px)); }`;
+          document.head.appendChild(sheet);
+        });
         const before = await loading.boundingBox();
         expect(before).not.toBeNull();
         expect(before!.width).toBe(width === 1440 ? 1120 : width - 24);
+        expect(before!.height).toBe(
+          Math.min(
+            820,
+            f.page.viewportSize()!.height - (width < 640 ? 24 : 48),
+          ),
+        );
         expect(await loading.getByText('正在读取当前内容…').count()).toBe(0);
         const initialClose = await loading
           .getByRole('button', { name: '关闭', exact: true })
