@@ -1,7 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import type postgres from 'postgres';
 import { z } from 'zod';
-import { newInternalNativeRootOrigin } from './conversation/native-root-origin.ts';
+import { newCurrentInternalNativeRootOrigin } from './conversation/native-root-origin.ts';
 import {
   ExperienceCollectionPolicySchema,
   ExperiencePolicySettingsSchema,
@@ -476,10 +476,14 @@ export async function reserveExperienceOccurrenceInTransaction(
     sources,
   });
   const origin = sources.length
-    ? newInternalNativeRootOrigin('experience_consolidation', occurrence.id, {
-        recipe: 'allrice-experience-consolidation/v1',
-        occurrence,
-      })
+    ? newCurrentInternalNativeRootOrigin(
+        'experience_consolidation',
+        occurrence.id,
+        {
+          recipe: 'allrice-experience-consolidation/v1',
+          occurrence,
+        },
+      )
     : null;
   const [written] =
     await tx`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,scheduled_for,status,

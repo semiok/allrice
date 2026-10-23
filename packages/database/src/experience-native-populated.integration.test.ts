@@ -71,6 +71,12 @@ suite(
       vi.stubEnv('ALLRICE_NATIVE_CALENDAR_ENABLED', '1');
       vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
+      // This suite reserves new executable occurrences using SQL only.
+      vi.stubEnv(
+        'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
+        'sha256:' + 'a'.repeat(64),
+      );
+      vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
       f = await createP27CodexWorkerFixture({
         allowCiDatabase: true,
         personalProfile: 'writable',

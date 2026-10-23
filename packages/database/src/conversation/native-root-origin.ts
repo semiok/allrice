@@ -5,6 +5,7 @@ import {
   CurrentEmployeeChatOriginSchema,
   nativeRootDigest,
   newNativeGeneration,
+  readApprovedCurrentEmployeeExecution,
 } from './current-execution-binding.ts';
 export {
   assertCurrentEmployeeChatOrigin,
@@ -121,6 +122,22 @@ export function newInternalNativeRootOrigin(
   recipe: unknown,
 ): NativeRootOriginV1 | null {
   if (!process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID) return null;
+  return issue(kind, id, {
+    kind: 'internal_recipe',
+    checksum: nativeRootDigest(recipe),
+  });
+}
+/** Strict first-INSERT policy for executable internal work. Historical NULL/v1
+ * readback and same-ID recovery never call this factory. Empty consolidation
+ * has no executable birth and must retain its zero-Run/zero-Job path. */
+export function newCurrentInternalNativeRootOrigin(
+  kind: 'platform_technical' | 'experience_consolidation',
+  id: string,
+  recipe: unknown,
+): NativeRootOriginV1 {
+  // Reuse the independently configured current-target approval. In particular,
+  // PRIMARY must match even when no compatibility reader is configured.
+  readApprovedCurrentEmployeeExecution();
   return issue(kind, id, {
     kind: 'internal_recipe',
     checksum: nativeRootDigest(recipe),
