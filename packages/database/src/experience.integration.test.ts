@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type * as Client from './core/client.ts';
 import { createExperienceStore } from './experience.ts';
 import { createExperienceFixture } from './experience.fixture.ts';
+import { approveSyntheticCurrentEmployeeExecution } from './current-execution.fixture.ts';
 import {
   createChatSession,
   sendChatMessage,
@@ -56,6 +57,7 @@ suite(
           url.username === 'allrice')
       ))
         throw Error('Dedicated B2/CI database only');
+      approveSyntheticCurrentEmployeeExecution();
       admin = postgres(url.toString(), { max: 1, onnotice: () => {} });
       const extensions = await admin<
         { extname: string }[]

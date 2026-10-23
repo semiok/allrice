@@ -8,6 +8,10 @@ import {
   employeeAccessTransaction,
 } from './employee-access-cancellation.ts';
 import { assertSessionReferencesReadable } from '../workspace/session-references.ts';
+import {
+  assertCurrentEmployeeChatOrigin,
+  assertEmployeeRunExecutionBinding,
+} from '../conversation/current-execution-binding.ts';
 import { readEmployeeOrganizationContext } from './organization-context.ts';
 import { projectEmployeeTaskSuggestions } from './task-suggestions.ts';
 import { freezeManagedPythonBinding } from './managed-python-binding.ts';
@@ -1697,6 +1701,14 @@ export async function resolveEmployeeExecution(input: {
       prompt_snapshot: unknown;
       native_skills: unknown;
       execution_snapshot: unknown;
+      native_execution_binding: unknown;
+      native_root_origin: { schemaVersion?: number } | null;
+      session_id: string;
+      employee_version_id: string;
+      config_checksum: string;
+      birth_version_id: string | null;
+      birth_manifest: unknown;
+      birth_config_checksum: string | null;
       current_user_request: string | null;
       system_prompt: string;
       manifest: unknown;
@@ -1704,11 +1716,17 @@ export async function resolveEmployeeExecution(input: {
   >`
     select er.provider_snapshot, er.skill_bindings, er.native_skills,
       er.prompt_snapshot,
-      er.execution_snapshot,
+      er.execution_snapshot,er.native_execution_binding,er.session_id,er.employee_version_id,
+      c.native_root_origin,v.config_checksum,bv.id birth_version_id,bv.manifest birth_manifest,bv.config_checksum birth_config_checksum,
       m.content->>'text' current_user_request,
       v.system_prompt, v.manifest
     from allrice_employee_runs er
     join allrice_employee_versions v on v.id = er.employee_version_id
+      and v.organization_id=er.organization_id and v.workspace_id=er.workspace_id
+    join allrice_chat_sessions c on c.id=er.session_id and c.organization_id=er.organization_id
+      and c.workspace_id=er.workspace_id and c.owner_id=er.owner_id
+    left join allrice_employee_versions bv on bv.id::text=c.native_root_origin#>>'{birthSource,employeeVersionId}'
+      and bv.organization_id=er.organization_id and bv.workspace_id=er.workspace_id and bv.employee_id=v.employee_id
     left join allrice_messages m on m.id=er.user_message_id and m.session_id=er.session_id
       and m.organization_id=er.organization_id and m.workspace_id=er.workspace_id
       and m.owner_id=er.owner_id and m.role='user'
@@ -1719,6 +1737,30 @@ export async function resolveEmployeeExecution(input: {
   `;
   const row = rows[0];
   if (!row) throw new EmployeeHubError('not_found');
+  if (
+    row.native_root_origin?.schemaVersion === 2 ||
+    row.native_execution_binding != null
+  ) {
+    const origin = assertCurrentEmployeeChatOrigin(row.native_root_origin, {
+      ...input,
+      sessionId: row.session_id,
+      source: {
+        employeeVersionId: row.birth_version_id!,
+        configChecksum: row.birth_config_checksum!,
+        manifest: row.birth_manifest,
+      },
+    });
+    assertEmployeeRunExecutionBinding(row.native_execution_binding, {
+      origin,
+      scope: { ...input, sessionId: row.session_id },
+      source: {
+        employeeVersionId: row.employee_version_id,
+        configChecksum: row.config_checksum,
+        manifest: row.manifest,
+      },
+      executionSnapshot: row.execution_snapshot,
+    });
+  }
   const promptSnapshot = EmployeePromptSnapshotSchema.parse(
     row.prompt_snapshot,
   );

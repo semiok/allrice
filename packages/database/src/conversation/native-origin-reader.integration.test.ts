@@ -37,7 +37,7 @@ import type {
   NativeSessionLeaseInput,
 } from './native-session-binding.ts';
 import {
-  NativeRootOriginSchema,
+  NativeRootOriginV1Schema,
   nativeRootDigest,
   newNativeGeneration,
 } from './native-root-origin.ts';
@@ -179,7 +179,7 @@ suite(
       await fixture.db`update allrice_jobs set attempt=1 where id=${f.worker.jobId}`;
       const [birth] = await fixture.db`select native_root_origin
       from allrice_chat_sessions where id=${f.session}`;
-      const origin = NativeRootOriginSchema.parse(birth!.native_root_origin);
+      const origin = NativeRootOriginV1Schema.parse(birth!.native_root_origin);
       expect(origin).toMatchObject({
         artifactId: original.artifactId,
         contextId: f.session,

@@ -1,14 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import {
-  PlatformEmployeeRuntimeProfileSchema,
-  type EmployeeRuntimePackage,
-} from '@allrice/contracts';
+import type { EmployeeRuntimePackage } from '@allrice/contracts';
 import * as client from './core/client.ts';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 import { createAssistantAuthorityFixture } from './assistant-authority.fixture.ts';
 import { createEmployeeAdministrationFixture } from './employee-administration.fixture.ts';
-import { queuePlatformEmployeeTestRun } from './employees/platform-employees.ts';
+import { buildEmployeeRuntimePackage } from './platform-employees/runtime-package.ts';
 import { createSession, authenticateSession } from './identity.ts';
 import {
   createAssignedChatSession,
@@ -36,6 +33,7 @@ suite(
       fixture = await createAssistantFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
       vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', current);
+      vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', current);
       vi.stubEnv(
         'ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS',
         JSON.stringify([current]),
@@ -44,17 +42,27 @@ suite(
       vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
       const e = await createEmployeeAdministrationFixture(fixture.db);
-      const queued = await queuePlatformEmployeeTestRun(e.employeeId, {
-        environment: 'company',
-        workspaceId: e.workspaceId,
-        ownerId: e.ownerId,
-        prompt: 'Synthetic package fixture; never execute a model',
+      const skills = await fixture.db<
+        Parameters<typeof buildEmployeeRuntimePackage>[0]['skills']
+      >`select * from allrice_platform_dsh_skills where id=${e.skillId}`;
+      // Freeze the exact tools this suite actually uses, rather than granting
+      // extra tools outside the immutable source package as the old fixture did.
+      runtimePackage = buildEmployeeRuntimePackage({
+        revision: 1,
+        definition: {
+          ...e.definition,
+          capabilities: {
+            ...e.definition.capabilities,
+            toolNames: [
+              'workspace.skill.read',
+              'assistant.delegate',
+              'assistant.report',
+              'workspace.export.create',
+            ],
+          },
+        },
+        skills,
       });
-      const [row] =
-        await fixture.db`select frozen_runtime_profile from allrice_platform_employee_test_runs where id=${queued.testRun!.id}`;
-      runtimePackage = PlatformEmployeeRuntimeProfileSchema.parse(
-        row!.frozen_runtime_profile,
-      ).runtimePackage!;
     }, 120000);
     afterAll(async () => {
       vi.restoreAllMocks();
@@ -65,11 +73,17 @@ suite(
       const f = await createAssistantAuthorityFixture(fixture.db, {
         configure: false,
         runtimePackage,
-        allowedTools: [
-          'assistant.delegate',
-          'assistant.report',
-          'workspace.export.create',
-        ],
+        allowedTools: runtimePackage.runtimeManifest.toolNames,
+        runtimePolicy: {
+          harness: 'dsh',
+          provider: runtimePackage.runtimeManifest.provider,
+          model: runtimePackage.runtimeManifest.model,
+          reasoningEffort: 'xhigh',
+          timeoutMs: 300000,
+          fallbackModels: [],
+          credentialReference: 'deployment:synthetic',
+          baseUrl: null,
+        },
       });
       const login = await createSession(f.user);
       const context = await authenticateSession(login.token, {
@@ -78,12 +92,14 @@ suite(
       });
       if (!context) throw Error('isolated login required');
       vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', artifact);
+      vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', artifact);
       const session = await createAssignedChatSession(context, {
         workspaceId: f.workspace,
         employeeAssignmentId: f.assignment,
         title: 'Synthetic package rollout',
       });
       vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', current);
+      vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', current);
       return { ...f, context, chat: session.id };
     }
     type Subject = Awaited<ReturnType<typeof subject>>;

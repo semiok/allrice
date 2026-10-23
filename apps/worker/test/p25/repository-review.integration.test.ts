@@ -94,6 +94,7 @@ suite(
         'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
         'sha256:' + 'a'.repeat(64),
       );
+      vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
       f = await createAssistantFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
       vi.stubEnv('ALLRICE_ENV', 'development');

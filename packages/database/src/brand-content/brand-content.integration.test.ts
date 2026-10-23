@@ -9,6 +9,7 @@ import { deflateSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   ExecutionContextSchema,
+  EmployeeDefinitionSchema,
   BrandContentWorkflowInvocationSchema,
   brandContentWorkflowTemplates,
   makeObjectKey,
@@ -95,6 +96,7 @@ import {
   type BrandContentReminderRegistration,
 } from './scheduling.ts';
 import { reconcileBrandNativeReminderAttempt } from './native-reminder.ts';
+import { employeeManifestChecksum } from '../employees/employee-config.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -131,10 +133,21 @@ async function prepareActor(label: 'A' | 'B') {
   });
   if (!context) throw Error('isolated_brand_content_login_failed');
   const [assignment] = await fixture.db<
-    { id: string }[]
-  >`select id from allrice_employee_assignments
-    where organization_id=${org} and workspace_id=${workspace} and user_id=${user} and active`;
+    { id: string; employee_version_id: string; manifest: unknown }[]
+  >`select a.id,a.employee_version_id,v.manifest from allrice_employee_assignments a
+    join allrice_employee_versions v on v.id=a.employee_version_id
+    where a.organization_id=${org} and a.workspace_id=${workspace} and a.user_id=${user} and a.active`;
   if (!assignment) throw Error('isolated_brand_content_assignment_missing');
+  // assistantFixture retains a deliberately synthetic historical checksum.
+  // New business chats use a separate valid publication, preserving that old
+  // Run/version and its evidence rather than rewriting the immutable source.
+  const versionId = randomUUID();
+  await fixture.db`insert into allrice_employee_versions
+    (id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest,provider_snapshot)
+    select ${versionId},organization_id,workspace_id,employee_id,version+1,name,model,system_prompt,capabilities,
+      ${employeeManifestChecksum(EmployeeDefinitionSchema.parse(assignment.manifest))},manifest,provider_snapshot
+    from allrice_employee_versions where id=${assignment.employee_version_id}`;
+  await fixture.db`update allrice_employee_assignments set employee_version_id=${versionId} where id=${assignment.id}`;
   const instance = await createEmployeeInstance(context, {
     workspaceId: workspace,
     assignmentId: assignment.id,
@@ -808,6 +821,7 @@ suite(
         'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
         'sha256:' + 'b'.repeat(64),
       );
+      vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'b'.repeat(64));
       a = await prepareActor('A');
       b = await prepareActor('B');
       const instance = await createEmployeeInstance(a.context, {

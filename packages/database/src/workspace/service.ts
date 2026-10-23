@@ -64,8 +64,7 @@ import {
   type WorkspaceMemorySchema,
 } from '@allrice/contracts';
 import { z } from 'zod';
-import { newEmployeeNativeRootOrigin } from '../conversation/native-root-origin.ts';
-import { EmployeeManifestSchema } from '@allrice/contracts';
+import { newCurrentEmployeeChatOrigin } from '../conversation/current-execution-binding.ts';
 import type { TransactionSql } from 'postgres';
 
 import {
@@ -608,8 +607,10 @@ export async function createAssignedChatSession(
   // Browser state can be stale after an administrator updates an employee;
   // accepting its version would silently pin a new Session to old abilities.
   const employeeVersionId = assignment.employeeVersionId;
-  const versions = await sql<{ id: string; manifest: unknown }[]>`
-    select id,manifest from allrice_employee_versions
+  const versions = await sql<
+    { id: string; manifest: unknown; config_checksum: string }[]
+  >`
+    select id,manifest,config_checksum from allrice_employee_versions
     where id = ${employeeVersionId}
       and organization_id = ${context.organizationId}
       and workspace_id = ${workspaceId}
@@ -622,16 +623,18 @@ export async function createAssignedChatSession(
     : randomUUID();
   const [existing] =
     await sql`select id from allrice_chat_sessions where id=${fixedSessionId}`;
-  const manifest = !existing
-    ? EmployeeManifestSchema.parse(versions[0].manifest)
-    : null;
   const origin = !existing
-    ? newEmployeeNativeRootOrigin(
-        'chat',
-        fixedSessionId,
-        manifest?.schemaVersion === 2 ? manifest.runtimePackage : null,
-        employeeVersionId,
-      )
+    ? newCurrentEmployeeChatOrigin({
+        organizationId: context.organizationId,
+        workspaceId,
+        ownerId: requireUser(context),
+        sessionId: fixedSessionId,
+        source: {
+          employeeVersionId,
+          configChecksum: versions[0].config_checksum,
+          manifest: versions[0].manifest,
+        },
+      })
     : null;
   const rows = await sql<SessionRow[]>`
     insert into allrice_chat_sessions (

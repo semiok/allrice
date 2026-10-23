@@ -15,6 +15,7 @@ import type * as Client from './core/client.ts';
 import { assertRuntimeFixtureDatabase } from './runtime-fixture-database.ts';
 import { createExperienceStore } from './experience.ts';
 import { createExperienceFixture } from './experience.fixture.ts';
+import { approveSyntheticCurrentEmployeeExecution } from './current-execution.fixture.ts';
 import { collectPendingExperienceEvidence } from './experience-evidence.ts';
 import {
   prepareEmployeeInstanceSnapshot,
@@ -177,6 +178,7 @@ suite('MET183 incremental evidence — isolated database, no model', () => {
     if (!value) throw Error('Explicit dedicated test DB required');
     const url = new URL(value);
     assertRuntimeFixtureDatabase(url);
+    approveSyntheticCurrentEmployeeExecution();
     admin = postgres(url.toString(), { max: 1, onnotice: () => {} });
     const extensions = await admin<
       { extname: string }[]

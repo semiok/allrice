@@ -2,7 +2,6 @@
 import { randomUUID } from 'node:crypto';
 import { experiencePolicySchedule } from '@allrice/contracts';
 import type { P27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
-import { createChatSession } from './workspace/service.ts';
 import { prepareEmployeeInstanceSnapshot } from './employees/employee-instances.ts';
 import { collectPendingExperienceEvidence } from './experience-evidence.ts';
 import {
@@ -17,12 +16,14 @@ export async function captureCalendarFixtureSource(
   f: P27CodexWorkerFixture,
   instanceId: string,
 ) {
-  const session = await createChatSession(f.context, {
-    workspaceId: f.workspaceId,
-    employeeAssignmentId: f.assignmentId,
-    employeeInstanceId: instanceId,
-    title: 'Isolated incremental calendar evidence',
-  });
+  // Completed synthetic history is evidence input, not a current admission.
+  // Preserve its instance and NULL origin rather than inventing an executor
+  // approval or binding for the historical result inserted below.
+  const session = { id: randomUUID() };
+  await f.db`insert into allrice_chat_sessions
+    (id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_instance_id,employee_version_id,title)
+    values(${session.id},${f.organizationId},${f.workspaceId},${f.ownerId},${f.assignmentId},${instanceId},${f.employeeVersionId},
+      'Isolated incremental calendar evidence')`;
   const instance = await prepareEmployeeInstanceSnapshot(
     f.context,
     session.id,

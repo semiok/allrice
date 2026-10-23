@@ -14,6 +14,7 @@ import type { ResourcePrincipal } from '../resource-principal.ts';
 import { selectCheckedFinalDeliveryArtifact } from '../final-delivery-rollout.ts';
 import {
   bindLeasedNativeSession,
+  freezeChatRunExecutionBinding,
   prepareLeasedNativeSession,
   NativeSessionLeaseInputSchema,
   NativeSessionPreparationInputSchema,
@@ -1616,12 +1617,24 @@ async function enqueueRunInTransaction(
       },
       createdAt: new Date().toISOString(),
     });
+    const nativeExecutionBinding = await freezeChatRunExecutionBinding(
+      transaction,
+      {
+        organizationId: context.organizationId,
+        workspaceId,
+        ownerId,
+        sessionId: options.employeeBinding.sessionId,
+        runId: run.id,
+        employeeVersionId: options.employeeBinding.employeeVersionId,
+        executionSnapshot,
+      },
+    );
     await transaction`
       insert into allrice_employee_runs (
         run_id, organization_id, workspace_id, owner_id,
         employee_assignment_id, employee_version_id, session_id,
         user_message_id, assistant_message_id, status, provider_snapshot,
-        skill_bindings, native_skills, prompt_snapshot, execution_snapshot,
+        skill_bindings, native_skills, prompt_snapshot, execution_snapshot, native_execution_binding,
         created_at
       ) values (
         ${run.id}, ${context.organizationId}, ${workspaceId}, ${ownerId},
@@ -1637,6 +1650,7 @@ async function enqueueRunInTransaction(
         ${transaction.json(toJsonValue(options.employeeBinding.nativeSkills))},
         ${transaction.json(toJsonValue(options.employeeBinding.promptSnapshot))},
         ${transaction.json(toJsonValue(executionSnapshot))},
+        ${nativeExecutionBinding ? transaction.json(toJsonValue(nativeExecutionBinding)) : null},
         ${executionSnapshot.createdAt}
       )
     `;

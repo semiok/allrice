@@ -63,6 +63,7 @@ export function createJobNativeBinding(input: {
               )
             : { binding: null }),
           origin: value.origin,
+          executionBinding: value.executionBinding,
           ...('originReaderAdopted' in value
             ? { originReaderAdopted: value.originReaderAdopted }
             : {}),

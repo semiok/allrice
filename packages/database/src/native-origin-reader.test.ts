@@ -23,7 +23,7 @@ import {
 import {
   nativeRootDigest,
   newNativeGeneration,
-  type NativeRootOrigin,
+  type NativeRootOriginV1,
 } from './conversation/native-root-origin.ts';
 
 const invalid = 'DSH_NATIVE_ORIGIN_READER_APPROVAL_INVALID';
@@ -53,7 +53,7 @@ describe('exact unbound-chat origin reader configuration', () => {
   let secondApprovalPath: string;
   let secondStorageRoot: string;
   let scope: NativeOriginReaderScope;
-  let origin: NativeRootOrigin;
+  let origin: NativeRootOriginV1;
 
   beforeEach(() => {
     for (const name of new Set([
@@ -486,7 +486,7 @@ describe('exact unbound-chat origin reader configuration', () => {
 
   const changedOrigins: [
     string,
-    (value: NativeRootOrigin) => NativeRootOrigin,
+    (value: NativeRootOriginV1) => NativeRootOriginV1,
   ][] = [
     [
       'source artifact',

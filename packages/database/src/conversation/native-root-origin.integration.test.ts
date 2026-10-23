@@ -22,7 +22,6 @@ import {
   manageEmployeeAssignments,
 } from '../employees/employeehub.ts';
 import { ensureGeneralEmployeeInstance } from '../employees/employee-instances.ts';
-import { employeeManifestChecksum } from '../employees/employee-config.ts';
 import {
   createAssignedChatSession,
   sendChatMessage,
@@ -72,6 +71,7 @@ suite(
         'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
         'sha256:' + 'a'.repeat(64),
       );
+      vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
     }, 120000);
@@ -84,6 +84,17 @@ suite(
       const f = await createAssistantAuthorityFixture(fixture.db, {
         configure: false,
         runtimePackage,
+        allowedTools: runtimePackage.runtimeManifest.toolNames,
+        runtimePolicy: {
+          harness: 'dsh',
+          provider: runtimePackage.runtimeManifest.provider,
+          model: runtimePackage.runtimeManifest.model,
+          reasoningEffort: 'xhigh',
+          timeoutMs: 300000,
+          fallbackModels: [],
+          credentialReference: 'deployment:synthetic',
+          baseUrl: null,
+        },
       });
       const login = await createSession(f.user);
       const context = await authenticateSession(login.token, {
@@ -132,7 +143,8 @@ suite(
       expect(first!.native_root_origin).toMatchObject({
         contextId: id,
         rootSeed: id,
-        frozenIdentity: { checksum: runtimePackage.checksum },
+        schemaVersion: 2,
+        birthSource: { packageChecksum: runtimePackage.checksum },
       });
       vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', undefined);
       await createAssignedChatSession(f.context, input, { sessionId: id });
@@ -159,7 +171,7 @@ suite(
         ).toHaveLength(1);
       }
     });
-    it('a new Session with an old frozen package stays legacy, and NULL cannot be backfilled by UPDATE', async () => {
+    it('a new Session preserves its old source package while selecting current execution; historical NULL cannot be backfilled', async () => {
       const { runtimePackage } = await packaged();
       runtimePackage.runtimeManifest.distributionGeneration =
         DSH_MISSING_FROZEN_GENERATION;
@@ -172,9 +184,16 @@ suite(
       });
       const [r] =
         await fixture.db`select native_root_origin from allrice_chat_sessions where id=${s.id}`;
-      expect(r!.native_root_origin).toBeNull();
+      expect(r!.native_root_origin).toMatchObject({
+        schemaVersion: 2,
+        distributionGeneration: 'dsh-0.2.1-rc.2-687f282',
+        birthSource: {
+          packageChecksum: runtimePackage.checksum,
+          declaredGeneration: DSH_MISSING_FROZEN_GENERATION,
+        },
+      });
       await expect(
-        fixture.db`update allrice_chat_sessions set native_root_origin='{}'::jsonb where id=${s.id}`,
+        fixture.db`update allrice_chat_sessions set native_root_origin='{}'::jsonb where id=${f.session}`,
       ).rejects.toThrow('native root origin is immutable');
     });
     it('an old pre-upgrade Session is never retroactively issued a candidate origin', async () => {
@@ -211,6 +230,20 @@ suite(
       ).rejects.toThrow('native root origin is immutable');
     });
     function resign(p: EmployeeRuntimePackage) {
+      const m = p.runtimeManifest;
+      p.capabilityFingerprint = runtimePackageChecksum({
+        distributionGeneration: m.distributionGeneration,
+        provider: m.provider,
+        model: m.model,
+        tools: [...m.toolNames].sort(),
+        skills: p.skills.map((s) => ({
+          name: s.name,
+          checksum: s.checksum,
+          requiredToolRefs: [...s.requiredToolRefs].sort(),
+          ...(s.bundle ? { bundleChecksum: s.bundle.checksum } : {}),
+        })),
+        deniedCapabilities: [...m.deniedCapabilities].sort(),
+      });
       p.checksum = runtimePackageChecksum({
         schemaVersion: p.schemaVersion,
         packageVersion: p.packageVersion,
@@ -232,7 +265,7 @@ suite(
       const id = randomUUID(),
         manifest = { ...f.manifest, runtimePackage };
       await fixture.db`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest,provider_snapshot)
-   select ${id},organization_id,workspace_id,employee_id,(select max(version)+1 from allrice_employee_versions where employee_id=${f.employee}),name,model,system_prompt,capabilities,${employeeManifestChecksum(manifest)},${fixture.db.json(manifest)},provider_snapshot from allrice_employee_versions where id=${f.version}`;
+   select ${id},organization_id,workspace_id,employee_id,(select max(version)+1 from allrice_employee_versions where employee_id=${f.employee}),name,model,system_prompt,capabilities,${runtimePackage.checksum},${fixture.db.json(manifest)},provider_snapshot from allrice_employee_versions where id=${f.version}`;
       return id;
     }
     async function send(f: Awaited<ReturnType<typeof authority>>, id: string) {
@@ -295,7 +328,9 @@ suite(
           await fixture.db`select native_root_origin from allrice_chat_sessions where id=${s.id}`
         )[0]!.native_root_origin,
       ).toEqual(birth!.native_root_origin);
-      expect(birth!.native_root_origin.frozenIdentity.sourceId).toBe(f.version);
+      expect(birth!.native_root_origin.birthSource.employeeVersionId).toBe(
+        f.version,
+      );
       // Queued A is admitted after the mutable Session now points to B. Its
       // own CAS/Run snapshot stays A; only immutable birth A proves origin.
       const descriptor = nativeBindingDescriptor({
@@ -351,11 +386,8 @@ suite(
           DSH_MISSING_FROZEN_GENERATION;
         resign(oldPackage);
         const f = await authority(oldPackage),
-          s = await createAssignedChatSession(f.context, {
-            workspaceId: f.workspace,
-            employeeAssignmentId: f.assignment,
-            title: 'Legacy family boundary',
-          });
+          // A real pre-upgrade first INSERT from the fixture, not a new v2 birth.
+          s = { id: f.session };
         const candidate = await publishVersion(f, runtimePackage);
         const [user] =
           await fixture.db`select email from allrice_users where id=${f.user}`;
@@ -389,7 +421,7 @@ suite(
         const [newRow] =
           await fixture.db`select employee_version_id,native_root_origin from allrice_chat_sessions where id=${fresh.id}`;
         expect(newRow!.employee_version_id).toBe(candidate);
-        expect(newRow!.native_root_origin.frozenIdentity.sourceId).toBe(
+        expect(newRow!.native_root_origin.birthSource.employeeVersionId).toBe(
           candidate,
         );
       },
@@ -424,11 +456,16 @@ suite(
       );
       const { runtimePackage } = await packaged(),
         f = await authority(runtimePackage);
-      const setArtifact = (letter: string) =>
+      const setArtifact = (letter: string) => {
+        vi.stubEnv(
+          'ALLRICE_DSH_NATIVE_ARTIFACT_ID',
+          'sha256:' + letter.repeat(64),
+        );
         vi.stubEnv(
           'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
           'sha256:' + letter.repeat(64),
         );
+      };
       setArtifact('c');
       const chat = await createAssignedChatSession(f.context, {
         workspaceId: f.workspace,

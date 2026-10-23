@@ -51,7 +51,6 @@ import {
   prepareEmployeeContentContext,
   assertEmployeeContentContext,
 } from './employees/employee-runtime-content.ts';
-import { createChatSession } from './workspace/service.ts';
 import {
   syncExperienceValidations,
   experienceValidationStillCurrent,
@@ -1105,14 +1104,13 @@ suite(
       includeSkills = true,
       allowSourceTool = true,
     ) {
-      const session = sessionId
-        ? { id: sessionId }
-        : await createChatSession(f.owner, {
-            workspaceId: f.workspace,
-            employeeAssignmentId: f.instance.assignmentId,
-            employeeInstanceId: f.instance.id,
-            title: 'Synthetic experience use',
-          });
+      // These cases exercise readers against deliberately partial historical
+      // execution snapshots. Do not issue a new v2 birth for a synthetic Run.
+      const session = { id: sessionId ?? randomUUID() };
+      if (!sessionId)
+        await db`insert into allrice_chat_sessions
+          (id,organization_id,workspace_id,owner_id,title,employee_assignment_id,employee_version_id,employee_instance_id)
+          values(${session.id},${f.org},${f.workspace},${f.user},'Synthetic experience use',${f.instance.assignmentId},${f.instance.source.employeeVersionId},${f.instance.id})`;
       const content = await freezeEmployeeRuntimeContent(f.owner, {
         instanceId: f.instance.id,
         employeeId: f.frozen.occurrence.employeeId,
@@ -2296,12 +2294,13 @@ suite(
     );
     it('leaves an independent draft usable when another source in the same batch loses its Skill', async () => {
       const f = await source(true, true, true, true);
-      const session = await createChatSession(f.owner, {
-        workspaceId: f.workspace,
-        employeeAssignmentId: f.instance.assignmentId,
-        employeeInstanceId: f.instance.id,
-        title: 'Synthetic independent source',
-      });
+      // This is already-completed evidence with an intentionally partial
+      // snapshot, so preserve an unbound historical source rather than faking
+      // a current executor approval or a per-Run binding.
+      const session = { id: randomUUID() };
+      await db`insert into allrice_chat_sessions
+        (id,organization_id,workspace_id,owner_id,title,employee_assignment_id,employee_version_id,employee_instance_id)
+        values(${session.id},${f.org},${f.workspace},${f.user},'Synthetic independent source',${f.instance.assignmentId},${f.instance.source.employeeVersionId},${f.instance.id})`;
       const runId = randomUUID(),
         message = randomUUID(),
         assistant = randomUUID();

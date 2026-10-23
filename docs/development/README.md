@@ -11,10 +11,12 @@ pnpm --filter @allrice/worker... build
 node apps/worker/scripts/prepare-native-artifact.mjs --root="$PWD"
 # Review the measured ID; put this line with its actual digest in .env:
 # ALLRICE_DSH_NATIVE_ARTIFACT_ID=sha256:<reviewed 64-character digest>
+# ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID=sha256:<same reviewed digest>
 pnpm dev
 ```
 
-The measured ID must be explicitly supplied in `.env` or the environment. Missing
+Both IDs must be explicitly supplied in `.env` or the environment. New employee
+chats require the birth approval to match the measured primary. Missing
 preparation is rejected before database setup. The default path then provisions a
 private development database, migrates and verifies it, creates local storage
 and starts the isolated Office renderer and both application processes.

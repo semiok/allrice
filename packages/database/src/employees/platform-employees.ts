@@ -90,6 +90,7 @@ export {
   platformEmployeeTestExecutionTerminalState,
   platformEmployeeTestTimeoutAt,
   platformEmployeeTestTimeoutGraceMs,
+  runtimePackageChecksum,
   runtimePackageSystemPrompt,
   validatePlatformEmployeeTestExecutionSnapshot,
 } from '../platform-employees/runtime-package.ts';

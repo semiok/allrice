@@ -73,6 +73,7 @@ async function main() {
     expectedId = process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID;
   assert.ok(root && isAbsolute(root) && expectedId);
   assert.equal(reference.artifactId, expectedId);
+  assert.equal(process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID, expectedId);
   assert.equal((await readdir(reference.stateRoot)).length, 0);
   const db = database.getDatabase();
   const [scope] =
