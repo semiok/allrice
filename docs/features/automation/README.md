@@ -1,6 +1,6 @@
 # Automation
 
-> Status: **Native once and recurring task management implemented behind explicit deployment flags; legacy consumers retained pending migration.**
+> Status: **Native task management behind explicit deployment flags; legacy creation/edit/resume/manual entries closed, old due consumer retained pending final retirement.**
 
 AllRice 的自动化参考飞书智能伙伴的“触发器 + 技能/工作流 + 执行记录”模型，但复用 AllRice 已有的 Employee、Run、Job、Worker 和权限快照。
 
@@ -49,7 +49,15 @@ AllRice 的自动化参考飞书智能伙伴的“触发器 + 技能/工作流 +
 
 周期聊天创建复用当前权限、真实 Run/Job 租约及冻结工具检查，并与登记放在同一个数据库事务。工具规则必须与服务端读取的当前真人原话完整一致，模型改写不能替换保存的工作；内部定时、文件夹、工作流和平台来源不能递归创建任务。同一调用使用固定请求标识和原参数摘要，丢失回执后先精确回读，改变参数不能成为同一请求。`preparing` 只代表已保存、等待原生确认，`nextRunAt` 以服务端事实为准。
 
-现有原生 `automation_create` 参数仍用于一次性任务；明确周期请求通过既有 Broker envelope 传完整规则，继续使用原会话的执行包和身份。工具集合的变化进入原有运行时复用指纹，不修改 DSH 核心或历史 writer。原有普通自动化、经验整理、质量任务等消费者迁移继续按独立切片推进；旧消费者没有被改成新时钟所有者。
+现有原生 `automation_create` 参数仍用于一次性任务；明确周期请求通过既有 Broker envelope 传完整规则，继续使用原会话的执行包和身份。工具集合的变化进入原有运行时复用指纹，不修改 DSH 核心或历史 writer。消费者迁移按独立切片推进；旧消费者没有被改成新时钟所有者。
+
+### 旧入口与原生不可用
+
+历史普通定时任务只保留查看、暂停和软删除，正文与时间不可编辑，也不能恢复或立即执行。旧 generic API 对创建、编辑、恢复和手动执行返回不可重试的 410；读取列表不再自动创建示例任务。暂停和删除保留原任务、逐次执行记录和失败事实。当前原生定时任务及文件夹触发不受这项退休限制影响。
+
+经验整理的非关闭设置要求 review、recurring、calendar 三个正式开关同时可用；新品牌提醒要求 once 开关和可用的原生分区；开启每日质检要求 recurring 开关和成功的原生登记。不可用时拒绝保存，不回退到 SQL 到期时钟。已登记的品牌请求仍可在重新核对当前授权后精确回读；关闭经验整理、暂停和删除已有质检规则继续可用。
+
+界面只对带专用错误标识的确定拒绝说明“未保存／未登记”。普通代理 503、无效响应或未知提交仍显示结果未确认，并沿原请求或配置读回核对，不自动重发。旧 due consumer 及其最终删除是后续切片；经验、质量的待派发恢复已经放在现有 Worker producer 内，不能随删除旧时钟一起删掉。
 
 ## 品牌内容发布提醒（MET192 旧消费者迁移）
 

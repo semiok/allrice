@@ -16,6 +16,39 @@ const answer = (label = '每隔 1 分钟提醒') => ({
   answers: [{ id: 'timing', selected: [label] }],
 });
 
+it('freezes only the actual typed frequency/mode choice, never an unselected model option', () => {
+  const label = '每隔 1 分钟提醒；每次新建聊天',
+    typed = {
+      ...question,
+      questions: [
+        {
+          ...question.questions[0]!,
+          options: [{ label }, { label: '每隔 1 分钟提醒；沿用来源聊天' }],
+        },
+      ],
+    };
+  expect(
+    clarifiedScheduleIntent('1 分钟尖叫一次', typed, answer(label)),
+  ).toMatchObject({ kind: 'recurring', conversationMode: 'new_each_run' });
+  expect(
+    clarifiedScheduleIntent(
+      '1 分钟尖叫一次',
+      typed,
+      answer('每隔 1 分钟提醒；沿用来源聊天'),
+    ),
+  ).toMatchObject({ conversationMode: 'reuse' });
+  expect(
+    clarifiedScheduleIntent(
+      '1 分钟尖叫一次；沿用来源聊天',
+      typed,
+      answer(label),
+    ),
+  ).toBeNull();
+  expect(
+    clarifiedScheduleIntent('1 分钟尖叫一次', question, answer(label)),
+  ).toBeNull();
+});
+
 it('uses the actual selected frequency for the reported shorthand without deriving authority from the question description', () => {
   expect(clarifiedScheduleIntent('1 分钟尖叫一次', question, answer())).toEqual(
     {

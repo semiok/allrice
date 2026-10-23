@@ -20,7 +20,8 @@ export class BrandContentError extends Error {
       | 'source_reference_invalid'
       | 'workflow_pin_required'
       | 'receipt_invalid'
-      | 'reminder_unconfirmed',
+      | 'reminder_unconfirmed'
+      | 'reminder_unavailable',
   ) {
     super(code);
   }

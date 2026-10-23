@@ -475,6 +475,7 @@ suite('once task header: scoped UI with synthetic HTTP', () => {
             sessionId,
             runAt: input.runAt,
             timezone: input.timezone,
+            conversationMode: input.conversationMode,
             status: 'pending',
             runId: null,
             canCancel: true,
@@ -577,6 +578,54 @@ suite('once task header: scoped UI with synthetic HTTP', () => {
       .toBe(0);
   }
 
+  it('conversation once create keeps a read-only choice and opens the exact actual target', async () => {
+    const f = await fixture();
+    try {
+      f.state.tasks[A]!.push(
+        task({
+          id: RUN,
+          clientRequestId: D,
+          name: '独立会话中的本轮',
+          prompt: '独立会话中的本轮',
+          status: 'queued',
+          runId: RUN,
+          canCancel: false,
+          conversationMode: 'new_each_run',
+          resultSessionId: C,
+        }),
+      );
+      await open(f.page);
+      await fill(f.page);
+      await f.page
+        .getByRole('combobox', { name: '执行会话', exact: true })
+        .selectOption('new_each_run');
+      await f.page
+        .getByRole('button', { name: '创建任务', exact: true })
+        .click();
+      await f.page.getByText('定时任务已创建。', { exact: true }).waitFor();
+      expect(JSON.parse(posts(f.state)[0]!.body).conversationMode).toBe(
+        'new_each_run',
+      );
+      const created = f.page
+        .getByRole('listitem')
+        .filter({ hasText: '明天整理这段纯文本' });
+      await created
+        .getByText('执行会话：每次新建聊天', { exact: true })
+        .waitFor();
+      expect(await created.getByRole('combobox').count()).toBe(0);
+      const bound = f.page
+        .getByRole('listitem')
+        .filter({ hasText: '独立会话中的本轮' });
+      await bound
+        .getByRole('button', { name: '查看本轮结果', exact: true })
+        .click();
+      expect(await f.page.getByLabel('已打开会话').textContent()).toBe(C);
+      expect(posts(f.state)).toHaveLength(1);
+      expect(f.errors).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
   it('creates in this chat, lists the same AI across chats, navigates and retains canceled tasks', async () => {
     const f = await fixture();
     try {
@@ -613,6 +662,7 @@ suite('once task header: scoped UI with synthetic HTTP', () => {
       const body = JSON.parse(request.body);
       expect(Object.keys(body).sort()).toEqual([
         'clientRequestId',
+        'conversationMode',
         'name',
         'prompt',
         'runAt',

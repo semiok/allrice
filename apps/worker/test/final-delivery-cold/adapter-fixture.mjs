@@ -157,6 +157,8 @@ export async function fixture({
     return { message, seq };
   }
   const client = {
+    // In-process RPC fixture only; lifecycle cleanup below disposes its agent.
+    close: vi.fn(async () => {}),
     setRequestHandler: vi.fn((handler) => {
       requestHandler = handler;
     }),

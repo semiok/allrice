@@ -56,7 +56,7 @@ import {
   continueNativeQuestion,
   claimConversationSteer,
   consumeConversationSteer,
-  beginNativeTask,
+  beginNativeTaskWithStopReceipt,
   completeNativeTask,
   readParkedNativeUsage,
   NativeWaitAuthorityError,
@@ -1411,19 +1411,21 @@ export async function executeEmployeeRun({
       officeFirstDeliveryPolicy,
       execution.context.runId,
     );
-    if (
-      questionWait &&
-      !(await beginNativeTask({
+    if (questionWait) {
+      const nativeTask = await beginNativeTaskWithStopReceipt({
         context: execution.context,
         worker: workflowLease,
         attempt: execution.job.attempt,
-      }))
-    )
-      throw new HandlerError(
-        'DSH_EXECUTION_OUTCOME_UNKNOWN',
-        '先前执行进程已中断；结果不明的操作不会自动重跑，请查看已保留的内容与执行记录。',
-        false,
-      );
+        sessionId: input.sessionId,
+      });
+      if (!nativeTask.started)
+        throw new HandlerError(
+          'DSH_EXECUTION_OUTCOME_UNKNOWN',
+          '先前执行进程已中断；结果不明的操作不会自动重跑，请查看已保留的内容与执行记录。',
+          false,
+        );
+      questionWait.confirmStopped = nativeTask.confirmStopped;
+    }
     const nativeBinding = createJobNativeBinding({
       lease: workflowLease,
       attempt: execution.job.attempt,

@@ -38,6 +38,10 @@ import {
 } from './automation-catalog.ts';
 import { updateWorkAutomation } from './work-automation.ts';
 import {
+  runManualAutomation,
+  getManualAutomationRun,
+} from './automation-manual.ts';
+import {
   claimNextJob,
   startClaimedJob,
   heartbeatJob,
@@ -182,6 +186,7 @@ suite(
     async function task(
       sessionId?: string,
       prompt = '请在原会话回复测试标记。',
+      conversationMode?: 'reuse' | 'new_each_run',
     ) {
       const id = sessionId ?? (await chat()).id;
       const input = {
@@ -190,6 +195,7 @@ suite(
         prompt,
         runAt: new Date(Date.now() + 6_500).toISOString(),
         timezone: 'Asia/Shanghai',
+        ...(conversationMode === undefined ? {} : { conversationMode }),
       };
       return {
         sessionId: id,
@@ -266,6 +272,175 @@ suite(
       });
       return { control, write };
     }
+    it.each(['reuse', 'new_each_run'] as const)(
+      'conversation once parent rejects a pointerless new NULL snapshot at COMMIT (%s)',
+      async (conversationMode) => {
+        const t = await task(undefined, undefined, conversationMode);
+        const arId = randomUUID();
+        let reachedCommit = false;
+        await expect(
+          f.db.begin(async (tx) => {
+            const [born] = await tx`insert into allrice_automation_runs
+              (id,organization_id,workspace_id,automation_id,session_id,scheduled_for,status)
+              values(${arId},${f.organizationId},${f.workspaceId},${t.task.id},${t.sessionId},clock_timestamp(),'queued')
+              returning conversation_snapshot,manual_request_id,native_once_occurrence_id,native_recurring_occurrence_id`;
+            expect(born).toEqual({
+              conversation_snapshot: null,
+              manual_request_id: null,
+              native_once_occurrence_id: null,
+              native_recurring_occurrence_id: null,
+            });
+            reachedCommit = true;
+          }),
+        ).rejects.toMatchObject({ code: '23514' });
+        expect(reachedCommit).toBe(true);
+        expect(
+          await f.db`select id from allrice_automation_runs where id=${arId}`,
+        ).toHaveLength(0);
+      },
+    );
+
+    it.each(['reuse', 'new_each_run'] as const)(
+      'conversation once %s is frozen at create, targets the real queue and remains revision1',
+      async (conversationMode) => {
+        const t = await task(
+          undefined,
+          '一次性核对，只输出本轮结果。',
+          conversationMode,
+        );
+        const [before] =
+          await f.db`select to_jsonb(c) control from allrice_native_once_controls c where automation_id=${t.task.id}`;
+        expect(await createOnceTask(f.context, t.sessionId, t.input)).toEqual(
+          t.task,
+        );
+        expect(t.task.conversationMode).toBe(conversationMode);
+        const changed = conversationMode === 'reuse' ? 'new_each_run' : 'reuse';
+        await expect(
+          f.db`update allrice_automations set conversation_mode=${changed} where id=${t.task.id}`,
+        ).rejects.toMatchObject({ code: '23514' });
+        await expect(
+          changeAutomationCatalogTask(f.context, f.workspaceId, t.task.id, {
+            action: 'conversation',
+            operationId: randomUUID(),
+            expectedRevision: 1,
+            conversationMode: changed,
+          }),
+        ).rejects.toThrow();
+        expect(
+          (
+            await f.db`select to_jsonb(c) control from allrice_native_once_controls c where automation_id=${t.task.id}`
+          )[0],
+        ).toEqual(before);
+        await receipt(t.task.id);
+        await dispatchNextNativeOnceOccurrence(randomUUID());
+        const [ar] =
+          await f.db`select ar.*,j.id job_id,er.session_id employee_session,
+        allrice_automation_conversation_handoff_proved(ar.id) proof from allrice_automation_runs ar
+        join allrice_jobs j on j.run_id=ar.run_id join allrice_employee_runs er on er.run_id=ar.run_id where ar.automation_id=${t.task.id}`;
+        expect(ar).toMatchObject({
+          proof: true,
+          conversation_snapshot: {
+            mode: conversationMode,
+            businessRevision: 1,
+            sourceSessionId: t.sessionId,
+            targetSessionId: ar!.session_id,
+          },
+        });
+        const [timeProof] = await f.db`select
+          allrice_automation_conversation_scheduled_target_proved(ar.automation_id,ar.native_once_occurrence_id,
+            ar.native_recurring_occurrence_id,ar.scheduled_for) exact_p,
+          allrice_automation_conversation_scheduled_target_proved(ar.automation_id,ar.native_once_occurrence_id,
+            ar.native_recurring_occurrence_id,ar.scheduled_for+interval '1 second') wrong_p
+          from allrice_automation_runs ar where ar.id=${ar!.id}`;
+        expect(timeProof).toEqual({ exact_p: true, wrong_p: false });
+        expect(ar!.employee_session).toBe(ar!.session_id);
+        if (conversationMode === 'reuse')
+          expect(ar!.session_id).toBe(t.sessionId);
+        else expect(ar!.session_id).not.toBe(t.sessionId);
+        expect(
+          await f.db.begin((tx) => lockNativeOnceJobAdmission(tx, ar!.job_id)),
+        ).toMatchObject({ allowed: true });
+        const projection = (
+          await listOnceTasks(f.context, t.sessionId, {
+            clientRequestId: t.input.clientRequestId,
+          })
+        ).tasks[0]!;
+        expect(projection).toMatchObject({
+          sessionId: t.sessionId,
+          resultSessionId: ar!.session_id,
+          conversationMode,
+        });
+        expect(await createOnceTask(f.context, t.sessionId, t.input)).toEqual(
+          projection,
+        );
+        expect(
+          Number(
+            (
+              await f.db`select revision from allrice_automations where id=${t.task.id}`
+            )[0]!.revision,
+          ),
+        ).toBe(1);
+        await f.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${t.sessionId}`;
+        expect(
+          await f.db.begin((tx) => lockNativeOnceJobAdmission(tx, ar!.job_id)),
+        ).toMatchObject({ allowed: false });
+        await f.db`update allrice_chat_sessions set archived_at=null where id=${t.sessionId}`;
+      },
+    );
+    it('manual execution preserves a native once target and cancellation forbids only new manual requests', async () => {
+      const t = await task();
+      const boundary = async () => ({
+        plan: (
+          await f.db`select to_jsonb(a) data from allrice_automations a where id=${t.task.id}`
+        )[0]!.data,
+        control: (
+          await f.db`select to_jsonb(c) data from allrice_native_once_controls c where automation_id=${t.task.id}`
+        )[0]!.data,
+        journal:
+          await f.db`select * from allrice_native_once_journal where control_id=(select control_id from allrice_native_once_controls where automation_id=${t.task.id}) order by write_id`,
+        occurrences:
+          await f.db`select * from allrice_native_once_occurrences where automation_id=${t.task.id}`,
+      });
+      const before = await boundary(),
+        input = { requestId: randomUUID(), expectedRevision: 1 },
+        manual = await runManualAutomation(
+          f.context,
+          f.workspaceId,
+          t.task.id,
+          input,
+        );
+      expect(await boundary()).toEqual(before);
+      expect(
+        (await getAutomationCatalogTask(f.context, f.workspaceId, t.task.id))
+          .occurrences[0],
+      ).toMatchObject({
+        id: manual.automationRunId,
+        source: { kind: 'manual', requestId: input.requestId },
+      });
+      await cancelOnceTask(f.context, t.sessionId, t.task.id);
+      const canceled = await boundary();
+      await expect(
+        runManualAutomation(f.context, f.workspaceId, t.task.id, {
+          requestId: randomUUID(),
+          expectedRevision: 1,
+        }),
+      ).rejects.toMatchObject({ code: 'unavailable' });
+      expect(
+        (
+          await getManualAutomationRun(
+            f.context,
+            f.workspaceId,
+            t.task.id,
+            input.requestId,
+          )
+        ).run.id,
+      ).toBe(manual.run.id);
+      expect(
+        (await runManualAutomation(f.context, f.workspaceId, t.task.id, input))
+          .run.id,
+      ).toBe(manual.run.id);
+      expect(await boundary()).toEqual(canceled);
+    });
     async function counts() {
       const [row] =
         await f.db`select (select count(*)::int from allrice_messages) messages,
@@ -1172,9 +1347,25 @@ suite(
     });
     it('does not promote a previous internal trigger into human authority through confirmation', async () => {
       const a = await task();
-      const occurrenceId = randomUUID();
+      const occurrenceId = randomUUID(),
+        legacyId = randomUUID();
+      // Seed only the legacy source row; never downgrade a new native AR.
+      await f.db`insert into allrice_automations
+        (id,organization_id,workspace_id,owner_id,name,prompt,trigger_type,schedule,status,
+         conversation_mode,employee_assignment_id,session_id,clock_owner)
+        values(${legacyId},${f.organizationId},${f.workspaceId},${f.ownerId},'Legacy internal source',
+          'Isolated legacy source only','schedule',${f.db.json({ frequency: 'daily', time: '08:30', timezone: 'Asia/Shanghai' })},
+          'paused','reuse',${f.assignmentId},${a.sessionId},'legacy')`;
       await f.db`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,status,scheduled_for)
-        values(${occurrenceId},${f.organizationId},${f.workspaceId},${a.task.id},'queued',clock_timestamp())`;
+        values(${occurrenceId},${f.organizationId},${f.workspaceId},${legacyId},'queued',clock_timestamp())`;
+      const [legacySource] =
+        await f.db`select ar.run_id,ar.conversation_snapshot,a.clock_owner
+        from allrice_automation_runs ar join allrice_automations a on a.id=ar.automation_id where ar.id=${occurrenceId}`;
+      expect(legacySource).toEqual({
+        run_id: null,
+        conversation_snapshot: null,
+        clock_owner: 'legacy',
+      });
       const first = await leasedChat(colloquialRequest, occurrenceId);
       await first.complete(clarification);
       const r = await leasedChat('是的', randomUUID(), first.input.sessionId);
@@ -1226,9 +1417,25 @@ suite(
     });
     it('rejects a legacy occurrence before its run_id link is filled', async () => {
       const a = await task(),
-        occurrenceId = randomUUID();
+        occurrenceId = randomUUID(),
+        legacyId = randomUUID();
+      // Seed only the legacy source row; never downgrade a new native AR.
+      await f.db`insert into allrice_automations
+        (id,organization_id,workspace_id,owner_id,name,prompt,trigger_type,schedule,status,
+         conversation_mode,employee_assignment_id,session_id,clock_owner)
+        values(${legacyId},${f.organizationId},${f.workspaceId},${f.ownerId},'Legacy internal source',
+          'Isolated legacy source only','schedule',${f.db.json({ frequency: 'daily', time: '08:30', timezone: 'Asia/Shanghai' })},
+          'paused','reuse',${f.assignmentId},${a.sessionId},'legacy')`;
       await f.db`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,status,scheduled_for)
-        values(${occurrenceId},${f.organizationId},${f.workspaceId},${a.task.id},'queued',clock_timestamp())`;
+        values(${occurrenceId},${f.organizationId},${f.workspaceId},${legacyId},'queued',clock_timestamp())`;
+      const [legacySource] =
+        await f.db`select ar.run_id,ar.conversation_snapshot,a.clock_owner
+        from allrice_automation_runs ar join allrice_automations a on a.id=ar.automation_id where ar.id=${occurrenceId}`;
+      expect(legacySource).toEqual({
+        run_id: null,
+        conversation_snapshot: null,
+        clock_owner: 'legacy',
+      });
       const r = await leasedChat('请在 15 分钟后回复校验词。', occurrenceId);
       try {
         const [legacy] =

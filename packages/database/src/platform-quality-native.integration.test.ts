@@ -17,6 +17,7 @@ import {
 } from 'vitest';
 import * as client from './core/client.ts';
 import { createPlatformQualityNativeFixture } from './platform-quality-native.fixture.ts';
+import { claimDueAutomations } from './execution/automation.ts';
 import {
   authenticateSession,
   createSession,
@@ -27,9 +28,12 @@ import {
   createPlatformQualityCheck,
   getPlatformQualityCheck,
   getPlatformQualityExecution,
+  ensureQualityEmployee,
 } from './platform-quality.ts';
 import {
-  claimPlatformQualityOccurrence,
+  reservePlatformQualityOccurrence,
+  QualityScheduleUnavailableError,
+  type QualityScheduleRule,
   deletePlatformQualitySchedule,
   dispatchPlatformQualityOccurrence,
   getPlatformQualitySchedule,
@@ -68,6 +72,8 @@ import {
 } from './execution/automation.ts';
 import type { QualityScheduleOrigin } from './platform-quality-contracts.ts';
 import { getWorkAutomation, updateWorkAutomation } from './work-automation.ts';
+import * as quality from './platform-quality.ts';
+import * as qualityNative from './platform-quality-native.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -194,6 +200,76 @@ suite(
         loginToken: login.token,
         rule: view.schedule!,
       };
+    }
+    /** Historical metadata for the still-retained migration/recovery boundary.
+     * It cannot be created by enabling the production API with flags OFF. */
+    async function historicalSchedule() {
+      const login = await createSession(admin.actor.id);
+      const context = (await authenticateSession(login.token))!;
+      const current = await getPlatformQualitySchedule(context);
+      if (current.schedule)
+        await deletePlatformQualitySchedule(context, {
+          expectedRevision: current.schedule.revision,
+        });
+      const employee = await ensureQualityEmployee(context);
+      const id = randomUUID(),
+        P = new Date(Date.now() - 1_000),
+        schedule = {
+          frequency: 'daily',
+          time: '09:00',
+          timezone: 'Asia/Shanghai',
+        };
+      await f.db`insert into allrice_automations(id,organization_id,workspace_id,owner_id,name,prompt,trigger_type,schedule,status,
+        conversation_mode,employee_assignment_id,next_run_at,quality_binding,clock_owner)
+        values(${id},${employee.internal.organization_id},${employee.internal.workspace_id},${admin.actor.id},
+          'Isolated historical quality rule','Static quality fixture','schedule',${f.db.json(schedule)},'enabled',
+          'new_each_run',${employee.assignmentId},${P},${f.db.json({ version: 1, caseId: 'project.static.v1', variant: 'correct' })},'legacy')`;
+      const view = await getPlatformQualitySchedule(context);
+      return { context, rule: view.schedule!, P };
+    }
+    /** Shared business sink only: no native receipt or Host clock is implied. */
+    async function reserveBusinessOccurrence(id: string, scheduledFor: Date) {
+      return f.db.begin(async (tx) => {
+        await tx`select id from allrice_users where id=${admin.actor.id} for no key update`;
+        const [rule] = await tx<
+          QualityScheduleRule[]
+        >`select * from allrice_automations where id=${id} for update`;
+        if (!rule) throw Error('quality_fixture_rule_missing');
+        return reservePlatformQualityOccurrence(tx, rule, scheduledFor);
+      });
+    }
+    async function scheduleBoundary() {
+      return normalize({
+        rules:
+          await f.db`select * from allrice_automations where owner_id=${admin.actor.id} and quality_binding is not null order by id`,
+        occurrences:
+          await f.db`select r.* from allrice_automation_runs r join allrice_automations a on a.id=r.automation_id where a.owner_id=${admin.actor.id} and a.quality_binding is not null order by r.id`,
+        controls:
+          await f.db`select c.* from allrice_native_recurring_controls c join allrice_automations a on a.id=c.automation_id where a.owner_id=${admin.actor.id} order by c.control_id`,
+        versions:
+          await f.db`select v.* from allrice_native_recurring_versions v join allrice_automations a on a.id=v.automation_id where a.owner_id=${admin.actor.id} order by v.automation_id,v.revision`,
+        nativeOccurrences:
+          await f.db`select r.* from allrice_native_recurring_occurrences r join allrice_automations a on a.id=r.automation_id where a.owner_id=${admin.actor.id} order by r.occurrence_id`,
+        audit:
+          await f.db`select * from allrice_audit_events where actor_id=${admin.actor.id} and action like 'automation.quality.%' order by id`,
+      });
+    }
+    async function employeeBoundary() {
+      return normalize({
+        workspaces: await f.db`select * from allrice_workspaces order by id`,
+        memberships: await f.db`select * from allrice_memberships order by id`,
+        employees: await f.db`select * from allrice_employees order by id`,
+        versions:
+          await f.db`select * from allrice_employee_versions order by id`,
+        assignments:
+          await f.db`select * from allrice_employee_assignments order by id`,
+        instances:
+          await f.db`select * from allrice_employee_instances order by id`,
+        tenantDeployments:
+          await f.db`select d.* from allrice_platform_employee_tenant_assignments d order by to_jsonb(d)::text`,
+        qualityDeployments:
+          await f.db`select d.* from allrice_platform_quality_deployments d order by to_jsonb(d)::text`,
+      });
     }
     async function snapshot(id: string) {
       const [row] = await f.db<{ snapshot: NativeRecurringSnapshot }[]>`
@@ -354,6 +430,166 @@ suite(
       });
     }
 
+    it.each(['create', 'edit'] as const)(
+      'rejects flag-OFF %s before employee materialization without changing rules, revisions or occurrences',
+      async (mode) => {
+        const existing = mode === 'edit' ? await freshSchedule() : null;
+        const context =
+          existing?.context ??
+          (await authenticateSession(
+            (await createSession(admin.actor.id)).token,
+          ))!;
+        if (existing) {
+          const pending = await reserveBusinessOccurrence(
+            existing.rule.id,
+            new Date(),
+          );
+          expect(pending?.reason).toBeNull();
+        }
+        const before = await scheduleBoundary(),
+          employees = await employeeBoundary(),
+          work = await counts();
+        const ensure = vi.spyOn(quality, 'ensureQualityEmployee');
+        vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '0');
+        try {
+          await expect(
+            updatePlatformQualitySchedule(context, {
+              expectedRevision: existing?.rule.revision ?? 0,
+              enabled: true,
+              time: '10:00',
+            }),
+          ).rejects.toBeInstanceOf(QualityScheduleUnavailableError);
+          expect(ensure).not.toHaveBeenCalled();
+          expect(await scheduleBoundary()).toEqual(before);
+          expect(await employeeBoundary()).toEqual(employees);
+          expect(await counts()).toEqual(work);
+        } finally {
+          ensure.mockRestore();
+          vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '1');
+        }
+      },
+    );
+    it('rolls back a new enabled rule when the actual native partition is not ready', async () => {
+      const context = (await authenticateSession(
+        (await createSession(admin.actor.id)).token,
+      ))!;
+      const [partition] =
+        await f.db`select activation from allrice_native_once_partitions where partition_id='allrice-recurring-v1'`;
+      const before = await scheduleBoundary(),
+        work = await counts();
+      await f.db`update allrice_native_once_partitions set activation=${f.db.json({ ...partition!.activation, storageReady: false })} where partition_id='allrice-recurring-v1'`;
+      try {
+        await expect(
+          updatePlatformQualitySchedule(context, {
+            expectedRevision: 0,
+            enabled: true,
+            time: '10:00',
+          }),
+        ).rejects.toBeInstanceOf(QualityScheduleUnavailableError);
+        expect(await scheduleBoundary()).toEqual(before);
+        expect(await counts()).toEqual(work);
+        // ensureQualityEmployee precedes the configuration transaction. This
+        // failure proves schedule/native rollback, not employee rollback.
+      } finally {
+        await f.db`update allrice_native_once_partitions set activation=${f.db.json(partition!.activation)} where partition_id='allrice-recurring-v1'`;
+      }
+    });
+    it.each(['create', 'edit'] as const)(
+      'rolls back real configuration/native writes and queued history when enrollment reports false on %s',
+      async (mode) => {
+        const existing = mode === 'edit' ? await freshSchedule() : null;
+        const context =
+          existing?.context ??
+          (await authenticateSession(
+            (await createSession(admin.actor.id)).token,
+          ))!;
+        if (existing) {
+          const pending = await reserveBusinessOccurrence(
+            existing.rule.id,
+            new Date(),
+          );
+          expect(pending?.reason).toBeNull();
+        }
+        const before = await scheduleBoundary(),
+          work = await counts(),
+          original = qualityNative.syncPlatformQualityNative;
+        // Inject only a failure result after the ORIGINAL SQL sync writes.
+        // This exercises rollback of real control/version writes, not a fake
+        // successful writer, receipt, occurrence or enqueue implementation.
+        const sync = vi
+          .spyOn(qualityNative, 'syncPlatformQualityNative')
+          .mockImplementationOnce(async (...args) => {
+            expect(await original(...args)).toBe(true);
+            return false;
+          });
+        try {
+          await expect(
+            updatePlatformQualitySchedule(context, {
+              expectedRevision: existing?.rule.revision ?? 0,
+              enabled: true,
+              time: '10:00',
+            }),
+          ).rejects.toBeInstanceOf(QualityScheduleUnavailableError);
+          expect(sync).toHaveBeenCalledTimes(1);
+          expect(await scheduleBoundary()).toEqual(before);
+          expect(await counts()).toEqual(work);
+        } finally {
+          sync.mockRestore();
+        }
+      },
+    );
+    it.each(['native', 'legacy'] as const)(
+      'still pauses and deletes existing %s history with the native flag OFF',
+      async (kind) => {
+        const { context, rule } =
+          kind === 'native'
+            ? await freshSchedule()
+            : await historicalSchedule();
+        const pending = await reserveBusinessOccurrence(rule.id, new Date());
+        expect(pending?.reason).toBeNull();
+        const work = await counts();
+        const ensure = vi.spyOn(quality, 'ensureQualityEmployee');
+        vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '0');
+        try {
+          const paused = await updatePlatformQualitySchedule(context, {
+            expectedRevision: rule.revision,
+            enabled: false,
+            time: '09:00',
+          });
+          expect(paused.schedule).toMatchObject({
+            id: rule.id,
+            revision: rule.revision + 1,
+            enabled: false,
+            nextRunAt: null,
+          });
+          expect(ensure).not.toHaveBeenCalled();
+          expect((await occurrence(pending!.id)).error_code).toBe(
+            'QUALITY_SCHEDULE_PAUSED',
+          );
+          const deleted = await deletePlatformQualitySchedule(context, {
+            expectedRevision: paused.schedule!.revision,
+          });
+          expect(deleted.schedule).toBeNull();
+          expect(deleted.occurrences.some((r) => r.id === pending!.id)).toBe(
+            true,
+          );
+          const [history] =
+            await f.db`select revision,status,deleted_at,next_run_at from allrice_automations where id=${rule.id}`;
+          expect(history).toMatchObject({
+            revision: rule.revision + 2,
+            status: 'paused',
+            deleted_at: expect.any(Date),
+            next_run_at: null,
+          });
+          expect((await occurrence(pending!.id)).run_id).toBeNull();
+          expect(await counts()).toEqual(work);
+        } finally {
+          ensure.mockRestore();
+          vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '1');
+        }
+      },
+    );
+
     it('maps one native receipt into one private original quality occurrence/Run/Job; replay and recovery cannot duplicate it', async () => {
       const { context, loginToken, rule } = await freshSchedule();
       const historical = await unrelatedHistory(),
@@ -419,9 +655,14 @@ suite(
         await f.db`select * from allrice_sessions order by id`,
       );
       expect(afterRevoke).not.toEqual(logins);
+      // Native pending ARs are recovered by the automation producer, not by
+      // asking the legacy due scanner to execute a non-time queue obligation.
+      expect(await claimDueAutomations(1)).toBe(0);
+      expect((await occurrence(queued[0]!.id)).run_id).toBeNull();
+      expect(await counts()).toEqual(before);
       // Scheduled static execution uses current platform authority, no borrowed
       // browser session and no fabricated login for its correlation context.
-      expect(await recoverPlatformQualityOccurrences()).toBe(1);
+      expect(await recoverPlatformQualityOccurrences(1)).toBe(1);
       const row = await occurrence(queued[0]!.id);
       expect(row.run_id).toBeTruthy();
       expect(row.session_id).toBeTruthy();
@@ -769,10 +1010,7 @@ suite(
     });
 
     it('legacy due work remains legacy until reserved, and an already queued original occurrence survives enrollment unchanged', async () => {
-      vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '0');
-      const { context, rule } = await freshSchedule();
-      vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '1');
-      await f.db`update allrice_automations set next_run_at=clock_timestamp()-interval '1 second' where id=${rule.id}`;
+      const { context, rule, P } = await historicalSchedule();
       const before = await counts();
       await migrateOneLegacyQualitySchedule();
       const [due] =
@@ -784,15 +1022,13 @@ suite(
       expect(await qualityRows(rule.id)).toHaveLength(0);
       expect(await counts()).toEqual(before);
 
-      const oldId = await f.db.begin(async (tx) => {
-        const [r] =
-          await tx`select * from allrice_automations where id=${rule.id} for update`;
-        return claimPlatformQualityOccurrence(
-          tx,
-          r as Parameters<typeof claimPlatformQualityOccurrence>[1],
-          nextScheduleAt(r!.schedule),
-        );
-      });
+      const reserved = await reserveBusinessOccurrence(rule.id, P);
+      expect(reserved?.reason).toBeNull();
+      const oldId = reserved!.id;
+      // Explicit historical metadata: the legacy producer had advanced its
+      // projection before handoff. The real shared sink above owns the AR;
+      // this fixture neither runs the old producer nor fabricates a receipt.
+      await f.db`update allrice_automations set next_run_at=${nextScheduleAt({ frequency: 'daily', time: rule.time, timezone: 'Asia/Shanghai' })} where id=${rule.id}`;
       expect(oldId).toBeTruthy();
       const original = normalize(
         await f.db`select * from allrice_automation_runs where id=${oldId!}`,

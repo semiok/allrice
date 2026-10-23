@@ -4,6 +4,78 @@ import { explicitRecurringTaskIntent as intent } from './recurring-task-intent.t
 
 const accepted: { text: string; rule: RecurringScheduleRule }[] = [
   {
+    text: '请每月31日02:30:17，时区America/New_York，整理本会话报表。请分别列出金额和异常。',
+    rule: {
+      kind: 'monthly',
+      monthDay: 31,
+      time: '02:30:17',
+      timezone: 'America/New_York',
+    },
+  },
+  {
+    text: '请每月31日02:30:45，时区America/New_York，整理本会话报表。',
+    rule: {
+      kind: 'monthly',
+      monthDay: 31,
+      time: '02:30:45',
+      timezone: 'America/New_York',
+    },
+  },
+  {
+    text: '每月末 9:00，Asia/Shanghai，回复校验词「MONTHLY」。',
+    rule: {
+      kind: 'monthly',
+      monthDay: 31,
+      time: '09:00:00',
+      timezone: 'Asia/Shanghai',
+    },
+  },
+  {
+    text: '请每周一和周三，09:30，时区Asia/Shanghai，整理报告；附上数据来源。',
+    rule: {
+      kind: 'weekly',
+      weekdays: [1, 3],
+      time: '09:30:00',
+      timezone: 'Asia/Shanghai',
+    },
+  },
+  {
+    text: '每周一09:30，时区Asia/Shanghai，回复标记。',
+    rule: {
+      kind: 'weekly',
+      weekdays: [1],
+      time: '09:30:00',
+      timezone: 'Asia/Shanghai',
+    },
+  },
+  {
+    text: '请每周一、三09:30，时区Asia/Shanghai，汇总本会话报表。请创建周期任务。',
+    rule: {
+      kind: 'weekly',
+      weekdays: [1, 3],
+      time: '09:30:00',
+      timezone: 'Asia/Shanghai',
+    },
+  },
+  {
+    text: '每星期天 1:30:05，America/New_York，回复「如果明天需要，三分钟后再说」。',
+    rule: {
+      kind: 'weekly',
+      weekdays: [7],
+      time: '01:30:05',
+      timezone: 'America/New_York',
+    },
+  },
+  {
+    text: '麻烦你帮我每周日、周一09:30，时区Asia/Kathmandu，整理结果；请附上来源。',
+    rule: {
+      kind: 'weekly',
+      weekdays: [1, 7],
+      time: '09:30:00',
+      timezone: 'Asia/Kathmandu',
+    },
+  },
+  {
     text: '每 2 分钟就提醒我一次，要吃药',
     rule: { kind: 'every', seconds: 120 },
   },
@@ -90,6 +162,41 @@ const accepted: { text: string; rule: RecurringScheduleRule }[] = [
 ];
 
 describe('explicit recurring intent in one complete current human message', () => {
+  it.each(['分别', '逐项', '逐一', '依次'])(
+    'recognizes a work action with the ordering adverb %s without rewriting the source',
+    (adverb) => {
+      const text = `请每隔十五分钟，整理报表。请${adverb}列出金额和异常。`;
+      expect(intent(text)).toEqual({
+        rule: { kind: 'every', seconds: 900 },
+        authoritativeRequest: text,
+      });
+    },
+  );
+  it.each([
+    '请每月31日02:30:17，时区America/New_York，整理报表。请分别列出金额，如果我确认再创建任务。',
+    '请每月31日02:30:17，时区America/New_York，整理报表。请分别列出金额和异常。以后默认简洁。',
+    '“请每月31日02:30:17，时区America/New_York，整理报表。请分别列出金额和异常。”',
+    '请每月31日02:30:17，时区America/New_York，整理报表。请分别不要创建任务。',
+  ])('keeps authorization boundaries around work adverbs: %s', (text) => {
+    expect(intent(text)).toBeNull();
+  });
+  it.each([
+    '每周一09:30整理报表。',
+    '每周一09:30，时区北京时间，整理报表。',
+    '每周一、一09:30，时区Asia/Shanghai，整理报表。',
+    '每周一、天、日09:30，时区Asia/Shanghai，整理报表。',
+    '每周一09:30，时区Asia/Shanghai，如果我确认就整理报表。',
+    '每周一09:30，时区Asia/Shanghai，整理报表。不要创建任务。',
+    '每周一09:30，时区Asia/Shanghai，整理报表；每周三也整理。',
+    '每周一09:30，时区Asia/Shanghai，整理报表。以后默认简洁。',
+    '「每周一09:30，时区Asia/Shanghai，整理报表。」',
+    '示例：每周一09:30，时区Asia/Shanghai，整理报表。',
+    '每周一24:00，时区Asia/Shanghai，整理报表。',
+    '每周末09:30，时区Asia/Shanghai，整理报表。',
+    '每月一日09:30，整理报表。',
+  ])('keeps weekly authorization boundaries: %s', (text) => {
+    expect(intent(text)).toBeNull();
+  });
   it.each([
     '每两分钟如果我确认就提醒我喝水。',
     '每两分钟提醒我一次，如果没喝水就提醒我。',
@@ -106,6 +213,62 @@ describe('explicit recurring intent in one complete current human message', () =
   it.each(accepted)('parses the explicit rule: $text', ({ text, rule }) => {
     expect(intent(text)).toEqual({ rule, authoritativeRequest: text });
   });
+
+  it.each([
+    '请从现在起每隔1分钟，在当前对话中提醒我喝水，并附上校验词「M1-EVERY-29a1440f1745」。请创建周期提醒。',
+    '请每隔1分钟，在当前对话中提醒我喝水，并附上校验词「M1-EVERY-29a1440f1745」。请创建周期提醒。',
+    '请从现在起每隔1分钟，在当前对话中提醒我喝水，并附上校验词「M1-EVERY-29a1440f1745」。请创建周期任务。',
+    '请每隔1分钟，在当前对话中提醒我喝水，并附上校验词「M1-EVERY-29a1440f1745」。请创建周期任务。',
+  ])(
+    'accepts the real reminder request and either independent variant: %s',
+    (text) => {
+      expect(intent(text)).toEqual({
+        rule: { kind: 'every', seconds: 60 },
+        authoritativeRequest: text,
+      });
+    },
+  );
+
+  it.each(['从现在', '从现在开始', '现在开始'])(
+    'accepts an explicit elapsed-time anchor without changing the interval: %s',
+    (anchor) => {
+      const text = `请${anchor}每隔两分钟提醒我喝水。请设置一个定时提醒。`;
+      expect(intent(text)).toEqual({
+        rule: { kind: 'every', seconds: 120 },
+        authoritativeRequest: text,
+      });
+    },
+  );
+
+  it('preserves the real reminder request including whitespace and quoted content', () => {
+    const text =
+      '  请从现在起每隔1分钟，在当前对话中提醒我喝水，并附上校验词『M1-EVERY-29a1440f1745』。\r\n请创建周期提醒。  ';
+    expect(intent(text)).toEqual({
+      rule: { kind: 'every', seconds: 60 },
+      authoritativeRequest: text,
+    });
+  });
+
+  it.each([
+    '“请从现在起每隔1分钟提醒我喝水。请创建周期提醒。”',
+    '文档示例：\n请从现在起每隔1分钟提醒我喝水。请创建周期提醒。',
+    '如果我确认，请从现在起每隔1分钟提醒我喝水。请创建周期提醒。',
+    '请不要从现在起每隔1分钟提醒我喝水。',
+    '请从现在起每隔1分钟提醒我喝水。请不要创建周期提醒。',
+    '请从现在起每隔1分钟，如果没喝水就提醒我喝水。请创建周期提醒。',
+    '请从现在起每隔1分钟提醒我喝水。每2分钟提醒我休息。请创建周期提醒。',
+    '请从明天起每隔1分钟提醒我喝水。请创建周期提醒。',
+    '请从现在起每隔1分钟提醒我喝水，明天结束。请创建周期提醒。',
+    '请从现在起每隔1分钟创建周期提醒。',
+    '请从现在起每隔1分钟提醒我。请创建周期提醒。',
+    '请从现在起每隔1分钟提醒我喝水。请创建一次性提醒。',
+    '请从现在起每天09:30，时区Asia/Shanghai，提醒我喝水。',
+  ])(
+    'keeps authority and clock boundaries for anchored reminders: %s',
+    (text) => {
+      expect(intent(text)).toBeNull();
+    },
+  );
 
   it.each(['请帮我', '请为我', '麻烦你帮我'])(
     'accepts an explicit trailing enrollment qualifier: %s',
@@ -207,7 +370,6 @@ describe('explicit recurring intent in one complete current human message', () =
     '每天09:60，时区Asia/Shanghai，回复标记。',
     '每天09:30:60，时区Asia/Shanghai，回复标记。',
     '每天09:30:05.5，时区Asia/Shanghai，回复标记。',
-    '每周一09:30，时区Asia/Shanghai，回复标记。',
     '每七天的周一回复标记。',
     '每月31日提醒我提交报告。',
     '每个月提醒我提交报告。',

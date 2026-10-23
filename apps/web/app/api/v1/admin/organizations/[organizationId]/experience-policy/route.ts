@@ -46,6 +46,14 @@ export async function PUT(request: Request, route: Route) {
   } catch (error) {
     if (error instanceof ExperienceError && error.code === 'conflict')
       return Response.json({ code: 'conflict' }, { status: 409, headers });
+    if (error instanceof ExperienceError && error.code === 'disabled')
+      return Response.json(
+        {
+          code: 'EXPERIENCE_SCHEDULING_UNAVAILABLE',
+          message: '经验自动整理暂不可用，本次设置未保存；仍可关闭整理。',
+        },
+        { status: 503, headers },
+      );
     return executionErrorResponse(error);
   }
 }

@@ -23,6 +23,7 @@ import {
   clearRecurringIntent,
   parseRecurringIntent,
   recurringContent,
+  recurringEditRequest,
   recurringDraft,
   recurringStorageKey,
   resolveRecurringIntent,
@@ -30,9 +31,20 @@ import {
   type RecurringTaskDraft,
   type RecurringTaskIntent,
 } from './recurring-task-intent';
+import {
+  clearStopOccurrenceIntent,
+  parseStopOccurrenceIntent,
+  resolveStopOccurrenceReceipt,
+  saveStopOccurrenceIntent,
+  stopOccurrenceStorageKey,
+  stopOccurrenceURL,
+  type StopOccurrenceIntent,
+} from './stop-occurrence-intent';
 import native from './dsh-upstream/automation/TaskManagerPage.module.css';
 import card from './dsh-upstream/automation/ScheduleCreateCard.module.css';
 import css from './automation-tasks.module.css';
+import { AutomationManualRun } from './automation-manual-run';
+import { RecurringWeekdays } from './recurring-weekdays';
 
 type Identity = {
   workspaceId: string;
@@ -84,6 +96,10 @@ export function automationFrequency(entry: AutomationCatalogTask) {
         : `每 ${rule.seconds} 秒`;
   if (rule?.kind === 'daily')
     return `每天 ${rule.time.endsWith(':00') ? rule.time.slice(0, 5) : rule.time} · ${rule.timezone}`;
+  if (rule?.kind === 'weekly')
+    return `每周${rule.weekdays.map((day) => '一二三四五六日'[day - 1]).join('、')} ${rule.time.endsWith(':00') ? rule.time.slice(0, 5) : rule.time} · ${rule.timezone}`;
+  if (rule?.kind === 'monthly')
+    return `每月 ${rule.monthDay} 日 ${rule.time.endsWith(':00') ? rule.time.slice(0, 5) : rule.time} · ${rule.timezone}`;
   if (d.kind === 'legacy') {
     const s = d.schedule;
     if (s.frequency === 'once') return '一次性 · ' + time(s.runAt!, s.timezone);
@@ -257,7 +273,7 @@ export function AutomationTaskList(
             </header>
             {!props.sessionId && (
               <p className={css.caption}>
-                统一管理各位 AI 员工的任务。到期后由原会话中的员工执行。
+                统一管理各位 AI 员工的任务。到期后由对应员工按任务设置执行。
               </p>
             )}
             {!props.sessionId && (
@@ -420,13 +436,19 @@ function AutomationDetailBody({
   const [restored, setRestored] = useState(false),
     [storageError, setStorageError] = useState('');
   const [confirm, setConfirm] = useState<'delete' | 'cancel' | null>(null);
-  const [legacyDraft, setLegacyDraft] = useState({
-    name: '',
-    prompt: '',
-    time: '09:00',
-    timezone: 'Asia/Shanghai',
-  });
   const [legacyUnknown, setLegacyUnknown] = useState(false);
+  const [stopIntent, setStopIntent] = useState<StopOccurrenceIntent | null>(
+    null,
+  );
+  const [stopConfirm, setStopConfirm] = useState<StopOccurrenceIntent | null>(
+    null,
+  );
+  const [stopReady, setStopReady] = useState(false),
+    [stopBusy, setStopBusy] = useState(false),
+    [stopError, setStopError] = useState(''),
+    [stopNotice, setStopNotice] = useState('');
+  const stopRef = useRef<StopOccurrenceIntent | null>(null);
+  const stopWriting = useRef(false);
   const mounted = useRef(true),
     controller = useRef<AbortController | null>(null);
   const pendingRef = useRef(pending);
@@ -475,16 +497,6 @@ function AutomationDetailBody({
             ? recurringDraft(data.task.definition.task)
             : null,
         );
-        const legacy =
-          data.task.definition.kind === 'legacy'
-            ? data.task.definition.schedule
-            : null;
-        setLegacyDraft({
-          name: data.task.name,
-          prompt: data.task.prompt,
-          time: legacy?.time ?? '09:00',
-          timezone: legacy?.timezone ?? 'Asia/Shanghai',
-        });
       }
       return data;
     },
@@ -498,6 +510,22 @@ function AutomationDetailBody({
       controller.current?.abort();
     };
   }, []);
+  useEffect(() => {
+    try {
+      const key = stopOccurrenceStorageKey(scope, workspaceId, taskId);
+      const raw = sessionStorage.getItem(key);
+      const intent = raw ? parseStopOccurrenceIntent(raw, key) : null;
+      stopRef.current = intent;
+      setStopIntent(intent);
+      if (intent)
+        setStopNotice('上次停止请求待核实；只会读取原本轮结果，不会再次提交。');
+      setStopReady(true);
+    } catch (cause) {
+      setStopError(
+        cause instanceof Error ? cause.message : '无法读取停止记录。',
+      );
+    }
+  }, [scope, workspaceId, taskId]);
   useEffect(() => {
     if (!visible) return;
     let cancelled = false;
@@ -593,7 +621,9 @@ function AutomationDetailBody({
     const timer = setInterval(() => void check(), 4000);
     return () => clearInterval(timer);
   }, [check, pending, visible]);
-  const change = async (action: ChangeRecurringTaskInput['action']) => {
+  const change = async (
+    action: Exclude<ChangeRecurringTaskInput['action'], 'conversation'>,
+  ) => {
     if (
       !nativeTask ||
       !storageKey ||
@@ -610,12 +640,7 @@ function AutomationDetailBody({
         action === 'update' ? recurringContent(draft!, nativeTask.rule) : null;
       const body: ChangeRecurringTaskInput =
         action === 'update'
-          ? {
-              action,
-              operationId: crypto.randomUUID(),
-              expectedRevision: nativeTask.revision,
-              ...content!,
-            }
+          ? recurringEditRequest(nativeTask, content!, crypto.randomUUID())
           : {
               action,
               operationId: crypto.randomUUID(),
@@ -689,28 +714,12 @@ function AutomationDetailBody({
       if (mounted.current) setBusy(false);
     }
   };
-  const legacyChange = async (
-    action: 'update' | 'pause' | 'resume' | 'delete',
-  ) => {
+  const legacyChange = async (action: 'pause' | 'delete') => {
     if (busy || legacyUnknown || !task || definition?.kind !== 'legacy') return;
     setBusy(true);
     setError('');
     setConfirm(null);
     try {
-      const content =
-        action === 'update'
-          ? {
-              name: legacyDraft.name,
-              prompt: legacyDraft.prompt,
-              schedule: {
-                ...definition.schedule,
-                ...(definition.schedule.frequency !== 'once'
-                  ? { time: legacyDraft.time }
-                  : {}),
-                timezone: legacyDraft.timezone,
-              },
-            }
-          : {};
       await read(
         await fetch(url, {
           method: 'PATCH',
@@ -718,7 +727,6 @@ function AutomationDetailBody({
           body: JSON.stringify({
             action,
             expectedRevision: definition.revision,
-            ...content,
           }),
         }),
       );
@@ -736,6 +744,90 @@ function AutomationDetailBody({
     }
   };
   const disabled = busy || !!pending || !restored || !!storageError;
+  const settleStop = async (
+    intent: StopOccurrenceIntent,
+    response: Response,
+  ) => {
+    const result = resolveStopOccurrenceReceipt(intent, await read(response));
+    if (!mounted.current || stopRef.current?.runId !== intent.runId) return;
+    if (result.state === 'terminal') {
+      clearStopOccurrenceIntent(sessionStorage, intent);
+      stopRef.current = null;
+      setStopIntent(null);
+      setStopNotice(
+        result.run.status === 'canceled'
+          ? '本轮已取消。未来计划仍按原设置执行。'
+          : '本轮已经结束，保留原结果。未来计划仍按原设置执行。',
+      );
+      await load();
+    } else
+      setStopNotice(
+        result.state === 'stopping'
+          ? '已请求停止本轮，等待执行退出。可检查本轮结果；未来计划仍按原设置执行。'
+          : '尚未核实停止结果。只会读取原本轮，不会再次提交。',
+      );
+  };
+  const checkStop = async () => {
+    const intent = stopRef.current;
+    if (!intent || stopWriting.current) return;
+    stopWriting.current = true;
+    setStopBusy(true);
+    setStopError('');
+    try {
+      await settleStop(
+        intent,
+        await fetch(stopOccurrenceURL(intent, true), {
+          headers,
+          cache: 'no-store',
+        }),
+      );
+    } catch (cause) {
+      if (mounted.current)
+        setStopError(
+          cause instanceof Error ? cause.message : '本轮结果待核实。',
+        );
+    } finally {
+      stopWriting.current = false;
+      if (mounted.current) setStopBusy(false);
+    }
+  };
+  const stopOccurrence = async (intent: StopOccurrenceIntent) => {
+    if (!stopReady || stopRef.current || stopWriting.current) return;
+    stopWriting.current = true;
+    setStopBusy(true);
+    setStopConfirm(null);
+    setStopError('');
+    let saved = false;
+    try {
+      saveStopOccurrenceIntent(sessionStorage, intent);
+      saved = true;
+      stopRef.current = intent;
+      setStopIntent(intent);
+      setStopNotice('正在请求停止本轮；未来计划仍按原设置执行。');
+      await settleStop(
+        intent,
+        await fetch(stopOccurrenceURL(intent), {
+          method: 'POST',
+          headers: { ...headers, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            occurrenceId: intent.occurrenceId,
+            runId: intent.runId,
+            ...(intent.source ? { source: intent.source } : {}),
+          }),
+        }),
+      );
+    } catch (cause) {
+      if (!saved) setStopReady(false);
+      if (mounted.current)
+        setStopError(
+          (cause instanceof Error ? cause.message : '停止结果待核实。') +
+            ' 不会自动重试；请检查原本轮结果。',
+        );
+    } finally {
+      stopWriting.current = false;
+      if (mounted.current) setStopBusy(false);
+    }
+  };
   const editable = !!nativeTask?.canManage;
   const changed =
     !!nativeTask &&
@@ -825,6 +917,26 @@ function AutomationDetailBody({
             {notice}
           </p>
         )}
+        {stopError && (
+          <p role="alert" className={css.error}>
+            {stopError}
+          </p>
+        )}
+        {stopNotice && (
+          <p role="status" className={native.notice}>
+            {stopNotice}
+          </p>
+        )}
+        {stopIntent && (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={stopBusy}
+            onClick={() => void checkStop()}
+          >
+            检查本轮停止结果
+          </Button>
+        )}
         {pending && (
           <Button
             variant="outline"
@@ -872,6 +984,29 @@ function AutomationDetailBody({
                     }
                   />
                 </label>
+                <label>
+                  执行会话
+                  <select
+                    aria-label="执行会话"
+                    value={draft.conversationMode ?? 'reuse'}
+                    disabled={!editable || disabled}
+                    onChange={(e) =>
+                      setDraft({
+                        ...draft,
+                        conversationMode:
+                          e.target.value === 'new_each_run'
+                            ? 'new_each_run'
+                            : 'reuse',
+                      })
+                    }
+                  >
+                    <option value="reuse">沿用来源聊天</option>
+                    <option value="new_each_run">每次新建聊天</option>
+                  </select>
+                </label>
+                <p className={css.caption}>
+                  只影响尚未排队的执行，已排队的本轮保持原会话；来源聊天继续用于管理和权限验证。
+                </p>
                 <h3>运行时间</h3>
                 <div className={css.rules}>
                   <label>
@@ -883,12 +1018,34 @@ function AutomationDetailBody({
                       onChange={(e) =>
                         setDraft({
                           ...draft,
-                          kind: e.target.value as 'every' | 'daily',
+                          kind: e.target.value as RecurringTaskDraft['kind'],
                         })
                       }
                     >
-                      <option value="every">每 N 分钟</option>
-                      <option value="daily">每天</option>
+                      <option
+                        value="every"
+                        disabled={nativeTask.rule.kind === 'monthly'}
+                      >
+                        每 N 分钟
+                      </option>
+                      <option
+                        value="daily"
+                        disabled={nativeTask.rule.kind === 'monthly'}
+                      >
+                        每天
+                      </option>
+                      <option
+                        value="weekly"
+                        disabled={nativeTask.rule.kind === 'monthly'}
+                      >
+                        每周
+                      </option>
+                      <option
+                        value="monthly"
+                        disabled={nativeTask.rule.kind !== 'monthly'}
+                      >
+                        每月
+                      </option>
                     </select>
                   </label>
                   {draft.kind === 'every' ? (
@@ -937,80 +1094,65 @@ function AutomationDetailBody({
                     </>
                   )}
                 </div>
-                <p className={css.caption}>
-                  {draft.kind === 'every'
-                    ? '至少 1 分钟。间隔自任务创建或修改规则时起计，不受时区影响。'
-                    : '按所选时区的本地时间执行。'}
-                </p>
-              </form>
-            ) : definition?.kind === 'legacy' ? (
-              <div className={css.form}>
-                <label>
-                  任务名称
-                  <input
-                    aria-label="任务名称"
-                    disabled={!definition.canManage || busy || legacyUnknown}
-                    value={legacyDraft.name}
-                    onChange={(e) =>
-                      setLegacyDraft({ ...legacyDraft, name: e.target.value })
-                    }
+                {draft.kind === 'weekly' && (
+                  <RecurringWeekdays
+                    days={draft.weekdays}
+                    disabled={!editable || disabled}
+                    onChange={(weekdays) => setDraft({ ...draft, weekdays })}
                   />
-                </label>
-                <label>
-                  工作内容
-                  <textarea
-                    aria-label="工作内容"
-                    className={native.instruction}
-                    disabled={!definition.canManage || busy || legacyUnknown}
-                    value={legacyDraft.prompt}
-                    onChange={(e) =>
-                      setLegacyDraft({ ...legacyDraft, prompt: e.target.value })
-                    }
-                  />
-                </label>
-                <h3>运行时间</h3>
-                <p>{automationFrequency(task)}</p>
-                {definition.schedule.frequency !== 'once' && (
+                )}
+                {draft.kind === 'monthly' && (
                   <label>
-                    执行时间
+                    每月日期
                     <input
-                      aria-label="执行时间"
-                      type="time"
-                      disabled={!definition.canManage || busy || legacyUnknown}
-                      value={legacyDraft.time}
+                      aria-label="每月日期"
+                      type="number"
+                      min="1"
+                      max="31"
+                      step="1"
+                      disabled={!editable || disabled}
+                      value={draft.monthDay}
                       onChange={(e) =>
-                        setLegacyDraft({ ...legacyDraft, time: e.target.value })
+                        setDraft({ ...draft, monthDay: e.target.value })
                       }
                     />
                   </label>
                 )}
-                <label>
-                  时区
-                  <input
-                    aria-label="时区"
-                    disabled={!definition.canManage || busy || legacyUnknown}
-                    value={legacyDraft.timezone}
-                    onChange={(e) =>
-                      setLegacyDraft({
-                        ...legacyDraft,
-                        timezone: e.target.value,
-                      })
-                    }
-                  />
-                </label>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={!definition.canManage || busy || legacyUnknown}
-                  onClick={() => void legacyChange('update')}
-                >
-                  保存修改
-                </Button>
+                <p className={css.caption}>
+                  {draft.kind === 'every'
+                    ? '至少 1 分钟。间隔自任务创建或修改规则时起计，不受时区影响。'
+                    : draft.kind === 'monthly'
+                      ? '不存在的日期按当月最后一天；夏令时缺失时间顺延，重复时间只执行一次；停机后只处理最近一期。'
+                      : '按所选时区执行。夏令时跳过不存在的当地时间，重复时间只执行一次；停机后只处理最近一期。'}
+                  {nativeTask.rule.kind !== 'every' &&
+                  !nativeTask.rule.time.endsWith(':00')
+                    ? '原时间含秒，未修改分钟时保留原秒数。'
+                    : ''}
+                </p>
+              </form>
+            ) : definition?.kind === 'legacy' ? (
+              <div className={css.form}>
+                <h3>工作内容</h3>
+                <p className={native.readonlyPrompt}>{task.prompt}</p>
+                <h3>运行时间</h3>
+                <p>{automationFrequency(task)}</p>
+                <p>
+                  历史任务支持查看、暂停和删除。后续执行请在对话中创建新任务。
+                </p>
               </div>
             ) : (
               <div className={css.form}>
                 <h3>工作内容</h3>
                 <p className={native.readonlyPrompt}>{task.prompt}</p>
+                {definition?.kind === 'once' && (
+                  <p>
+                    执行会话：
+                    {definition.task.conversationMode === 'new_each_run'
+                      ? '每次新建聊天'
+                      : '沿用来源聊天'}
+                    （创建时确定）
+                  </p>
+                )}
                 <h3>运行时间</h3>
                 <p>{automationFrequency(task)}</p>
                 <p className={css.caption}>
@@ -1019,6 +1161,19 @@ function AutomationDetailBody({
               </div>
             )}
             <div className={css.management}>
+              {definition &&
+                definition.kind !== 'legacy' &&
+                task.revision !== undefined && (
+                  <AutomationManualRun
+                    scope={scope}
+                    workspaceId={workspaceId}
+                    taskId={taskId}
+                    revision={task.revision}
+                    available={task.canRunNow === true}
+                    headers={headers}
+                    onChanged={() => load()}
+                  />
+                )}
               {nativeTask && (
                 <Button
                   variant="outline"
@@ -1038,20 +1193,18 @@ function AutomationDetailBody({
                   {nativeTask.status === 'paused' ? '恢复任务' : '暂停任务'}
                 </Button>
               )}
-              {definition?.kind === 'legacy' && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={!definition.canManage || busy || legacyUnknown}
-                  onClick={() =>
-                    void legacyChange(
-                      definition.status === 'paused' ? 'resume' : 'pause',
-                    )
-                  }
-                >
-                  {definition.status === 'paused' ? '恢复任务' : '暂停任务'}
-                </Button>
-              )}
+              {definition?.kind === 'legacy' &&
+                definition.status === 'enabled' &&
+                task.canStop && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busy || legacyUnknown}
+                    onClick={() => void legacyChange('pause')}
+                  >
+                    暂停任务
+                  </Button>
+                )}
               {task.canStop && (
                 <Button
                   variant="ghost"
@@ -1118,6 +1271,7 @@ function AutomationDetailBody({
                 />
                 <div className={native.deliveryBody}>
                   <time className={native.deliveryTime}>
+                    {o.source?.kind === 'manual' ? '立即执行 · ' : ''}
                     {time(o.scheduledAt)}
                   </time>
                   <p className={css.caption}>
@@ -1137,11 +1291,66 @@ function AutomationDetailBody({
                   {o.errorMessage && (
                     <p className={css.error}>{o.errorMessage}</p>
                   )}
-                  {o.runId && o.sessionId && (
+                  {o.runId &&
+                    ['queued', 'running', 'awaiting_input'].includes(
+                      o.status,
+                    ) && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={!stopReady || stopBusy || !!stopIntent}
+                        onClick={() =>
+                          setStopConfirm({
+                            version: 1,
+                            storageKey: stopOccurrenceStorageKey(
+                              scope,
+                              workspaceId,
+                              taskId,
+                            ),
+                            workspaceId,
+                            taskId,
+                            occurrenceId: o.id,
+                            runId: o.runId!,
+                            ...(o.source ? { source: o.source.kind } : {}),
+                          })
+                        }
+                      >
+                        停止本轮
+                      </Button>
+                    )}
+                  {stopConfirm?.occurrenceId === o.id && (
+                    <div
+                      role="alertdialog"
+                      aria-label="确认停止本轮"
+                      className={css.confirm}
+                    >
+                      <p>
+                        仅停止 {time(o.scheduledAt)}{' '}
+                        这一轮。未来计划仍按原设置执行。
+                      </p>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setStopConfirm(null)}
+                      >
+                        返回
+                      </Button>
+                      <Button
+                        size="sm"
+                        disabled={stopBusy || !!stopIntent}
+                        onClick={() => void stopOccurrence(stopConfirm)}
+                      >
+                        确认停止本轮
+                      </Button>
+                    </div>
+                  )}
+                  {o.runId && (o.sessionId ?? task.sessionId) && (
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => onOpenSession(o.sessionId!)}
+                      onClick={() =>
+                        onOpenSession(o.sessionId ?? task.sessionId!)
+                      }
                     >
                       查看本轮结果 ↗
                     </Button>

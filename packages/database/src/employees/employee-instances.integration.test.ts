@@ -106,10 +106,7 @@ import * as queue from '../execution/queue.ts';
 import * as accessCancellation from './employee-access-cancellation.ts';
 import { updateEmployeeRelease } from './employee-quality.ts';
 import * as folderTriggers from '../folder-triggers.ts';
-import {
-  createAutomation,
-  claimDueAutomations,
-} from '../execution/automation.ts';
+import { lockSchedulePrincipal } from '../native-schedule-authority.ts';
 import { createAssistantFixtureDatabase } from '../assistant-runtime.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
 import { assertWorkbenchSession } from '../artifact-review.ts';
@@ -7388,37 +7385,32 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
   });
   it('keeps scheduled work independent of browser logins while rechecking current membership', async () => {
     const f = await setup();
-    const rule = await createAutomation(f.a.context, {
-      workspaceId: f.a.workspaceId,
-      employeeAssignmentId: f.assignment.id,
-      name: 'Synthetic daily task',
-      prompt: 'Return the synthetic count',
-      schedule: { frequency: 'daily', time: '09:00', timezone: 'UTC' },
-    });
     await revokeSession(f.a.login.token);
     await expect(
       createEmployeeInstance(f.a.context, f.input('Expired')),
     ).rejects.toMatchObject({ code: 'authorization_denied' });
-    const tick = async () => {
-      await fixture.db`update allrice_automations set next_run_at=clock_timestamp()-interval '1 second' where id=${rule.id}`;
-      await claimDueAutomations();
-      return fixture.db`select r.run_id,r.status,e.execution_snapshot from allrice_automation_runs r left join allrice_employee_runs e on e.run_id=r.run_id where r.automation_id=${rule.id} order by r.created_at`;
-    };
-    const first = await tick();
-    expect(first).toHaveLength(1);
-    expect(first[0]).toMatchObject({
-      status: 'queued',
-      execution_snapshot: {
-        instance: { id: f.assignment.id, ownerId: f.a.user.id },
-      },
-    });
+    // The actual receipt -> Run/Job/history path is covered by the recurring
+    // integration suite. Here retain this fixture's current identity gate,
+    // without using the retired legacy due scanner to manufacture a Run.
+    const authority = () =>
+      fixture.db.begin((tx) =>
+        lockSchedulePrincipal(
+          tx,
+          {
+            organizationId: f.a.organizationId,
+            workspaceId: f.a.workspaceId,
+            ownerId: f.a.user.id,
+          },
+          randomUUID(),
+        ),
+      );
+    const principal = await authority();
+    expect(principal.actor).toEqual({ type: 'user', id: f.a.user.id });
+    expect(principal).not.toHaveProperty('sessionId');
+    expect(principal).not.toHaveProperty('authenticatedAt');
     await fixture.db`update allrice_memberships set active=false where user_id=${f.a.user.id} and organization_id=${f.a.organizationId}`;
-    const afterRevocation = await tick();
-    expect(afterRevocation).toHaveLength(2);
-    expect(afterRevocation[0]!.run_id).toBe(first[0]!.run_id);
-    expect(afterRevocation[1]).toMatchObject({
-      status: 'failed',
-      run_id: null,
+    await expect(authority()).rejects.toMatchObject({
+      code: 'authorization_denied',
     });
   });
   it('serializes simultaneous actual task admissions for one user across two instances without a lock upgrade deadlock', async () => {

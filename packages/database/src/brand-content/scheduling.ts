@@ -308,6 +308,8 @@ export async function registerBrandContentReminder(
       await options.beforeCommit?.(tx);
       return registration(prior, true);
     }
+    if (process.env.ALLRICE_NATIVE_ONCE_ENABLED !== '1')
+      fail('reminder_unavailable');
     const { plan, article, bundle, brandName } = await approvedPlan(
       tx,
       identity,
@@ -357,11 +359,8 @@ export async function registerBrandContentReminder(
       tx,
       { authority: 'scheduler', beforeCommit: options.beforeCommit },
     );
-    if (process.env.ALLRICE_NATIVE_ONCE_ENABLED === '1') {
-      const { enrollBrandReminderNative } =
-        await import('./native-reminder.ts');
-      await enrollBrandReminderNative(tx, saved);
-    }
+    const { enrollBrandReminderNative } = await import('./native-reminder.ts');
+    await enrollBrandReminderNative(tx, saved);
     return registration(saved, false);
   });
 }

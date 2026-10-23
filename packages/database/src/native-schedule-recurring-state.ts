@@ -2,9 +2,9 @@ import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import {
-  RecurringScheduleRuleSchema,
+  FixedRecurringScheduleRuleSchema as RecurringScheduleRuleSchema,
   UuidSchema,
-  type RecurringScheduleRule,
+  type FixedRecurringScheduleRule as RecurringScheduleRule,
 } from '@allrice/contracts';
 import {
   nativeOnceDigest,
@@ -108,6 +108,7 @@ export type NativeRecurringTask = NativeOnceTask & {
     everySeconds?: number;
     time?: string;
     timeZone?: string;
+    weekdays?: number[];
   };
 };
 export type NativeRecurringMutation = { controlId: string } & (
@@ -179,6 +180,13 @@ export function recurringRecordMatches(
 ) {
   if (record.kind !== rule.kind) return false;
   if (rule.kind === 'every') return record.everySeconds === rule.seconds;
+  if (
+    rule.kind === 'weekly' &&
+    (!Array.isArray(record.weekdays) ||
+      record.weekdays.length !== rule.weekdays.length ||
+      record.weekdays.some((day, i) => day !== rule.weekdays[i]))
+  )
+    return false;
   try {
     return (
       typeof record.timeZone === 'string' &&
@@ -221,7 +229,7 @@ export function validateRecurringTask(
       task.sessionId === c.controlSessionId &&
       task.record.title === TITLE &&
       task.record.prompt === PROMPT &&
-      ['every', 'daily'].includes(task.record.kind) &&
+      ['every', 'daily', 'weekly'].includes(task.record.kind) &&
       task.status === 'active' &&
       Instant.safeParse(task.record.scheduledAt).success &&
       c.sessionState === 'ready' &&

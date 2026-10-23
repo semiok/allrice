@@ -34,6 +34,12 @@ const reservedSchema = z
   })
   .strict();
 const dispatchWindowMs = 15 * 60_000;
+export class QualityScheduleUnavailableError extends Error {
+  readonly code = 'quality_schedule_unavailable';
+  constructor() {
+    super('quality_schedule_unavailable');
+  }
+}
 export type QualityScheduleRule = {
   id: string;
   owner_id: string;
@@ -133,6 +139,8 @@ export async function updatePlatformQualitySchedule(
 ) {
   const input = UpdateQualityScheduleSchema.parse(raw),
     owner = await realAdminLogin(context);
+  if (input.enabled && process.env.ALLRICE_NATIVE_RECURRING_ENABLED !== '1')
+    throw new QualityScheduleUnavailableError();
   const { ensureQualityEmployee } = await import('./platform-quality.ts');
   // Do not restore paused/excluded assignments just to pause an existing rule.
   const employee =
@@ -176,7 +184,9 @@ export async function updatePlatformQualitySchedule(
     if (!written) throw Error('QUALITY_SCHEDULE_WRITE_UNCONFIRMED');
     const { syncPlatformQualityNative } =
       await import('./platform-quality-native.ts');
-    await syncPlatformQualityNative(tx, written.id);
+    const nativeSynced = await syncPlatformQualityNative(tx, written.id);
+    if (input.enabled && !nativeSynced)
+      throw new QualityScheduleUnavailableError();
     await auditConfiguration(
       tx,
       context,
@@ -279,7 +289,7 @@ export async function reservePlatformQualityOccurrence(
   const [row] =
     await tx`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,scheduled_for,quality_occurrence,status,error_code,error_message,completed_at,native_recurring_occurrence_id)
     values(${id},${rule.organization_id},${rule.workspace_id},${rule.id},${scheduledFor},${tx.json(origin)},${reason ? 'failed' : 'queued'},${reason},${reason ? '本轮未执行；不会补跑积压周期。' : null},${reason ? clock!.now : null},${native?.occurrenceId ?? null})
-    on conflict(automation_id,scheduled_for) where folder_event_id is null do nothing returning id`;
+    on conflict(automation_id,scheduled_for) where folder_event_id is null and manual_request_id is null do nothing returning id`;
   return row ? { id: String(row.id), reason, origin } : null;
 }
 

@@ -67,7 +67,6 @@ vi.mock('@allrice/database', async (original) => ({
   createToolBrokerExportObject,
   createTraceableMemory,
   createDefaultManagedBrowserTask,
-  createAutomationFromExecutionContext: vi.fn(),
   dispatchBridgeCommand,
   createLocalFileOperation,
   waitLocalCommandOperation,

@@ -715,13 +715,19 @@ export const riceToolDefinitions = [
   {
     name: 'automation.create',
     description:
-      '支持单次和周期定时任务，绑定当前对话。一次性使用 delayMinutes，也可承接当前会话紧邻上一轮尚未创建的明确请求及用户的确认回复。周期使用 rule：每隔整数分钟/小时/天换算 seconds（最短每分钟），或每日 HH:mm:ss 及用户明确给出的 IANA 时区。时间表达有歧义时可用提问卡澄清，频率选项用“1分钟后提醒一次”或“每隔1分钟提醒”等完整时间；用户选定后按该答案创建，无需要求用户重发原始工作。不得把已创建任务重复创建。不能从引用、条件或无关历史推断授权，不猜时区；尚未支持周/月。定时任务发送文字或执行工作，不具备播放本机音效的能力；不要因此声称不支持周期任务。返回 preparing 只表示已保存、等待调度确认，不表示工作已执行。',
+      '支持单次和周期定时任务，绑定当前对话。仅在用户明确要求未来执行具体工作时创建。一次性使用 delayMinutes，也可承接当前会话紧邻上一轮尚未创建的明确请求及用户的确认回复。周期使用 rule：每隔整数分钟/小时/天换算 seconds（最短每分钟），或每日/每周/每月明确 HH:mm:ss 及用户明确给出的 IANA 时区。每周 weekdays 为升序且不重复的 ISO 星期，周一1至周日7；例如“每周一、三09:30，时区Asia/Shanghai，汇总报表”。每月 monthDay 为1至31，月末不足该日时在当月最后一天执行；错过多轮仅处理最近一轮，不补跑全部历史。时间表达有歧义时可用提问卡澄清，频率选项用“1分钟后提醒一次”或“每隔1分钟提醒”等完整时间；用户选定后按该答案创建，无需要求用户重发原始工作。不得把已创建任务重复创建。不能从引用、条件或无关历史推断授权，不猜时区。定时任务发送文字或执行工作，不具备播放本机音效的能力；不要因此声称不支持周期任务。返回 preparing 只表示已保存、等待调度确认，不表示工作已执行。',
     inputSchema: {
       type: 'object',
       properties: {
         name: { type: 'string', minLength: 1, maxLength: 160 },
         prompt: { type: 'string', minLength: 1, maxLength: 40000 },
         delayMinutes: { type: 'integer', minimum: 1, maximum: 525600 },
+        conversationMode: {
+          type: 'string',
+          enum: ['reuse', 'new_each_run'],
+          description:
+            '仅按当前用户明确指令或本轮提问卡的确切选择填写；省略沿用来源聊天。完整预约句末可用“；每次新建聊天”或“；沿用来源聊天”。不得从任务引用、偏好或历史推断。',
+        },
         rule: {
           oneOf: [
             {
@@ -744,6 +750,40 @@ export const riceToolDefinitions = [
                 timezone: { type: 'string', minLength: 1, maxLength: 64 },
               },
               required: ['kind', 'time', 'timezone'],
+              additionalProperties: false,
+            },
+            {
+              type: 'object',
+              properties: {
+                kind: { type: 'string', enum: ['weekly'] },
+                time: {
+                  type: 'string',
+                  pattern: '^(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d$',
+                },
+                timezone: { type: 'string', minLength: 1, maxLength: 64 },
+                weekdays: {
+                  type: 'array',
+                  minItems: 1,
+                  maxItems: 7,
+                  uniqueItems: true,
+                  items: { type: 'integer', minimum: 1, maximum: 7 },
+                },
+              },
+              required: ['kind', 'time', 'timezone', 'weekdays'],
+              additionalProperties: false,
+            },
+            {
+              type: 'object',
+              properties: {
+                kind: { type: 'string', enum: ['monthly'] },
+                monthDay: { type: 'integer', minimum: 1, maximum: 31 },
+                time: {
+                  type: 'string',
+                  pattern: '^(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d$',
+                },
+                timezone: { type: 'string', minLength: 1, maxLength: 64 },
+              },
+              required: ['kind', 'monthDay', 'time', 'timezone'],
               additionalProperties: false,
             },
           ],

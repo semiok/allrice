@@ -77,6 +77,13 @@ function fixture(options: {
     truncated: false,
   };
   const client = {
+    // The adapter closes the captured runtime directly. Keep the existing
+    // disposal-order label while settling this fake client's pending RPCs.
+    close: vi.fn(async () => {
+      order.push('drop');
+      rejectRecover?.(Error('owned recovery host closed'));
+      rejectPrompt?.(new Error('native runtime closed'));
+    }),
     interrupt: vi.fn(async () => ({})),
     recover: vi.fn(async () => {
       order.push('recover');
@@ -206,11 +213,9 @@ function fixture(options: {
     },
   });
   vi.spyOn(DshRuntimePool.prototype, 'touch').mockImplementation(() => {});
-  vi.spyOn(DshRuntimePool.prototype, 'drop').mockImplementation(async () => {
-    order.push('drop');
-    rejectRecover?.(Error('owned recovery host closed'));
-    rejectPrompt?.(new Error('native runtime closed'));
-  });
+  vi.spyOn(DshRuntimePool.prototype, 'drop').mockImplementation(() =>
+    client.close(),
+  );
   const input: HarnessExecutionInput = {
     kernel: {
       schemaVersion: 1,

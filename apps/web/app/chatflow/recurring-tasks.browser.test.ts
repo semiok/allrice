@@ -382,6 +382,9 @@ suite('recurring tasks through the actual clock header', () => {
             name: input.name,
             prompt: input.prompt,
             rule: input.rule,
+            ...(input.conversationMode === undefined
+              ? {}
+              : { conversationMode: input.conversationMode }),
             createdAt: new Date().toISOString(),
           });
           state.creates.set(
@@ -410,7 +413,17 @@ suite('recurring tasks through the actual clock header', () => {
               revision: found.revision + 1,
               updatedAt: new Date().toISOString(),
               ...(input.action === 'update'
-                ? { name: input.name, prompt: input.prompt, rule: input.rule }
+                ? {
+                    name: input.name,
+                    prompt: input.prompt,
+                    rule: input.rule,
+                    ...(input.conversationMode === undefined
+                      ? {}
+                      : { conversationMode: input.conversationMode }),
+                  }
+                : {}),
+              ...(input.action === 'conversation'
+                ? { conversationMode: input.conversationMode }
                 : {}),
               ...(input.action === 'pause'
                 ? { status: 'paused' as const, nextRunAt: null }
@@ -579,6 +592,533 @@ suite('recurring tasks through the actual clock header', () => {
       };
     });
   }
+
+  it.each([1280, 390])(
+    'conversation monthly create/edit freezes the exact UI intent and opens the actual historical target at %s px',
+    async (width) => {
+      const f = await fixture(width);
+      try {
+        await open(f.page);
+        const name = '独立会话的月报',
+          form = await fill(f.page, name);
+        await form
+          .getByRole('combobox', { name: /执行周期/ })
+          .selectOption('monthly');
+        await form.getByLabel('每月日期', { exact: true }).fill('31');
+        await form.getByLabel('执行时间', { exact: true }).fill('02:30');
+        await form
+          .getByLabel('IANA时区', { exact: true })
+          .fill('America/New_York');
+        await form
+          .getByRole('combobox', { name: '执行会话', exact: true })
+          .selectOption('new_each_run');
+        await form.getByRole('button', { name: '创建', exact: true }).click();
+        await panel(f.page)
+          .getByText('周期任务已创建。', { exact: true })
+          .waitFor();
+        const input = CreateRecurringTaskInputSchema.parse(
+          JSON.parse(writes(f.state, 'POST')[0]!.body),
+        );
+        expect(input).toMatchObject({
+          conversationMode: 'new_each_run',
+          rule: {
+            kind: 'monthly',
+            monthDay: 31,
+            time: '02:30:00',
+            timezone: 'America/New_York',
+          },
+        });
+        const created = f.state.tasks
+            .get(lane())!
+            .find((t) => t.name === name)!,
+          nextRunAt = created.nextRunAt;
+        await card(f.page, name)
+          .getByRole('button', { name: '编辑', exact: true })
+          .click();
+        const edit = panel(f.page).getByRole('form', {
+          name: '编辑周期任务',
+          exact: true,
+        });
+        await edit
+          .getByRole('combobox', { name: '执行会话', exact: true })
+          .selectOption('reuse');
+        await edit
+          .getByRole('button', { name: '保存修改', exact: true })
+          .click();
+        await panel(f.page)
+          .getByText('操作已应用。', { exact: true })
+          .waitFor();
+        const changed = ChangeRecurringTaskInputSchema.parse(
+          JSON.parse(writes(f.state, 'PATCH')[0]!.body),
+        );
+        expect(changed).toEqual({
+          action: 'conversation',
+          operationId: changed.operationId,
+          expectedRevision: 1,
+          conversationMode: 'reuse',
+        });
+        expect(
+          f.state.tasks.get(lane())!.find((t) => t.id === created.id),
+        ).toMatchObject({
+          revision: 2,
+          conversationMode: 'reuse',
+          nextRunAt,
+          rule: created.rule,
+          prompt: created.prompt,
+        });
+        const actualTarget = randomUUID();
+        f.state.occurrences.set(created.id, [
+          {
+            id: randomUUID(),
+            taskId: created.id,
+            revision: 1,
+            scheduledAt: '2026-09-30T06:30:17.000Z',
+            status: 'queued',
+            runId: randomUUID(),
+            sessionId: actualTarget,
+            errorMessage: null,
+          },
+        ]);
+        await card(f.page, name)
+          .getByRole('button', { name: '执行记录', exact: true })
+          .click();
+        await panel(f.page)
+          .getByRole('button', { name: '查看本轮结果', exact: true })
+          .click();
+        expect(await f.page.getByLabel('已打开会话').textContent()).toBe(
+          actualTarget,
+        );
+        expect(await saved(f.page)).toEqual([]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+    20000,
+  );
+
+  it.each([1280, 390])(
+    'creates monthly from the minute form and edits an existing seconds rule with exact CAS at %s px',
+    async (width) => {
+      const f = await fixture(width);
+      try {
+        const name = '新建月末报表',
+          original =
+            '核对本月报表，分别列出金额和异常。\n保留每条原始要求；最后给出汇总。',
+          existing = task({
+            id: randomUUID(),
+            clientRequestId: randomUUID(),
+            name: '既有月末核对',
+            prompt: original,
+            revision: 7,
+            rule: {
+              kind: 'monthly',
+              monthDay: 31,
+              time: '02:30:17',
+              timezone: 'America/New_York',
+            },
+          }),
+          queued: RecurringOccurrence = {
+            id: randomUUID(),
+            taskId: existing.id,
+            revision: 7,
+            scheduledAt: '2026-09-30T06:30:17.000Z',
+            status: 'queued',
+            runId: randomUUID(),
+            errorMessage: null,
+          },
+          canceled: RecurringOccurrence = {
+            id: randomUUID(),
+            taskId: existing.id,
+            revision: 6,
+            scheduledAt: '2026-08-31T06:30:17.000Z',
+            status: 'not_executed',
+            runId: null,
+            errorMessage: '该期已取消，未产生执行。',
+          };
+        f.state.tasks.set(lane(), [existing, task()]);
+        f.state.occurrences.set(existing.id, [queued, canceled]);
+        await open(f.page);
+        const form = await fill(f.page, name);
+        // A controlled textarea's existing text participates in its wrapping
+        // label text. Scope the unique content field to this actual form.
+        expect(await form.locator('textarea').count()).toBe(1);
+        await form.locator('textarea').fill(original);
+        await form
+          .getByRole('combobox', { name: /执行周期/ })
+          .selectOption('monthly');
+        await form.getByLabel('每月日期', { exact: true }).fill('31');
+        await form.getByLabel('执行时间', { exact: true }).fill('02:30');
+        await form
+          .getByLabel('IANA时区', { exact: true })
+          .fill('America/New_York');
+        await form
+          .getByText(
+            '按所选时区执行；不存在的日期按当月最后一天。夏令时缺失时间顺延，重复时间只执行一次；停机后只处理最近一期。',
+            { exact: true },
+          )
+          .waitFor();
+        await form.getByRole('button', { name: '创建', exact: true }).click();
+        const created = card(f.page, name);
+        await created
+          .getByText('每月31日 02:30 · America/New_York · 版本 1', {
+            exact: true,
+          })
+          .waitFor();
+        expect(await created.locator('p[title]').getAttribute('title')).toBe(
+          original,
+        );
+        expect(writes(f.state, 'POST')).toHaveLength(1);
+        const createRequest = writes(f.state, 'POST')[0]!,
+          createInput = CreateRecurringTaskInputSchema.parse(
+            JSON.parse(createRequest.body),
+          );
+        // The actual create form selects minutes. Nonzero seconds below belong
+        // to an existing server rule; this path does not claim seconds creation.
+        expect(createInput).toEqual({
+          clientRequestId: createInput.clientRequestId,
+          name,
+          prompt: original,
+          conversationMode: 'reuse',
+          rule: {
+            kind: 'monthly',
+            monthDay: 31,
+            time: '02:30:00',
+            timezone: 'America/New_York',
+          },
+        });
+        expect(JSON.parse(createRequest.persisted[0]![1]).body).toEqual(
+          createInput,
+        );
+        expect(
+          f.state.creates.get(lane() + '/' + createInput.clientRequestId),
+        ).toEqual(createInput);
+        const row = card(f.page, existing.name);
+        await row
+          .getByText('每月31日 02:30:17 · America/New_York · 版本 7', {
+            exact: true,
+          })
+          .waitFor();
+        await row.getByRole('button', { name: '编辑', exact: true }).click();
+        const edit = panel(f.page).getByRole('form', {
+            name: '编辑周期任务',
+            exact: true,
+          }),
+          frequency = edit.getByRole('combobox', { name: /执行周期/ });
+        await edit.getByText('编辑 · 版本 7', { exact: true }).waitFor();
+        expect(await frequency.inputValue()).toBe('monthly');
+        expect(
+          await edit.getByLabel('每月日期', { exact: true }).inputValue(),
+        ).toBe('31');
+        expect(
+          await edit.getByLabel('执行时间', { exact: true }).inputValue(),
+        ).toBe('02:30');
+        expect(
+          await edit.getByLabel('IANA时区', { exact: true }).inputValue(),
+        ).toBe('America/New_York');
+        expect(await edit.locator('textarea').inputValue()).toBe(original);
+        await edit
+          .getByText(
+            '修改影响之后的期次，已排队任务可继续。原时间含秒，未修改分钟时保留原秒数。',
+            { exact: true },
+          )
+          .waitFor();
+        // Playwright retargets a labeled option to the select for isDisabled.
+        // Inspect the native option state, preserving every family restriction.
+        expect(await frequency.isEnabled()).toBe(true);
+        expect(
+          await frequency.evaluate((select) => {
+            if (!(select instanceof HTMLSelectElement))
+              throw Error('expected monthly select');
+            return [...select.options].map((option) => ({
+              value: option.value,
+              disabled: option.disabled,
+            }));
+          }),
+        ).toEqual([
+          { value: 'every', disabled: true },
+          { value: 'daily', disabled: true },
+          { value: 'weekly', disabled: true },
+          { value: 'monthly', disabled: false },
+        ]);
+        expect(await frequency.inputValue()).toBe('monthly');
+        await edit.getByLabel('每月日期', { exact: true }).fill('30');
+        await edit
+          .getByRole('button', { name: '保存修改', exact: true })
+          .click();
+        await row
+          .getByText('每月30日 02:30:17 · America/New_York · 版本 8', {
+            exact: true,
+          })
+          .waitFor();
+        expect(writes(f.state, 'PATCH')).toHaveLength(1);
+        const changeRequest = writes(f.state, 'PATCH')[0]!,
+          changeInput = ChangeRecurringTaskInputSchema.parse(
+            JSON.parse(changeRequest.body),
+          );
+        expect(changeRequest.taskId).toBe(existing.id);
+        expect(changeInput).toEqual({
+          operationId: changeInput.operationId,
+          expectedRevision: 7,
+          action: 'update',
+          name: existing.name,
+          prompt: original,
+          conversationMode: 'reuse',
+          rule: {
+            kind: 'monthly',
+            monthDay: 30,
+            time: '02:30:17',
+            timezone: 'America/New_York',
+          },
+        });
+        expect(JSON.parse(changeRequest.persisted[0]![1]).body).toEqual(
+          changeInput,
+        );
+        expect(
+          f.state.operations.get(lane() + '/' + changeInput.operationId),
+        ).toMatchObject({
+          request: changeInput,
+          status: 'applied',
+          task: {
+            revision: 8,
+            prompt: original,
+            rule: {
+              kind: 'monthly',
+              monthDay: 30,
+              time: '02:30:17',
+              timezone: 'America/New_York',
+            },
+          },
+        });
+        expect(await row.locator('p[title]').getAttribute('title')).toBe(
+          original,
+        );
+        await row
+          .getByRole('button', { name: '执行记录', exact: true })
+          .click();
+        const history = f.page.getByRole('region', {
+          name: '周期任务执行记录',
+          exact: true,
+        });
+        await history
+          .getByText(existing.name + '的执行记录', { exact: true })
+          .waitFor();
+        await history.getByText('排队中', { exact: true }).waitFor();
+        await history.getByText('任务版本 7', { exact: true }).waitFor();
+        await history.getByText('未执行', { exact: true }).waitFor();
+        await history.getByText('任务版本 6', { exact: true }).waitFor();
+        await history
+          .getByText(canceled.errorMessage!, { exact: true })
+          .waitFor();
+        await history
+          .locator(`time[datetime="${queued.scheduledAt}"]`)
+          .waitFor();
+        expect(f.state.occurrences.get(existing.id)).toEqual([
+          queued,
+          canceled,
+        ]);
+        await history
+          .getByRole('button', { name: '关闭记录', exact: true })
+          .click();
+        await card(f.page)
+          .getByRole('button', { name: '编辑', exact: true })
+          .click();
+        const fixedEdit = panel(f.page).getByRole('form', {
+            name: '编辑周期任务',
+            exact: true,
+          }),
+          fixedFrequency = fixedEdit.getByRole('combobox', {
+            name: /执行周期/,
+          });
+        expect(await fixedFrequency.inputValue()).toBe('every');
+        expect(await fixedFrequency.isEnabled()).toBe(true);
+        expect(
+          await fixedFrequency.evaluate((select) => {
+            if (!(select instanceof HTMLSelectElement))
+              throw Error('expected fixed select');
+            return [...select.options].map((option) => ({
+              value: option.value,
+              disabled: option.disabled,
+            }));
+          }),
+        ).toEqual([
+          { value: 'every', disabled: false },
+          { value: 'daily', disabled: false },
+          { value: 'weekly', disabled: false },
+          { value: 'monthly', disabled: true },
+        ]);
+        await fixedFrequency.selectOption('weekly');
+        expect(await fixedFrequency.inputValue()).toBe('weekly');
+        await fixedEdit
+          .getByRole('button', { name: '关闭', exact: true })
+          .click();
+        // A later server revision rejects a deliberate stale monthly edit. The
+        // user must make a new decision; the UI must not silently retry it.
+        f.state.defer.add('list');
+        await row.getByRole('button', { name: '编辑', exact: true }).click();
+        const staleEdit = panel(f.page).getByRole('form', {
+          name: '编辑周期任务',
+          exact: true,
+        });
+        await staleEdit.getByText('编辑 · 版本 8', { exact: true }).waitFor();
+        await staleEdit.getByLabel('每月日期', { exact: true }).fill('29');
+        const current = f.state.tasks
+            .get(lane())!
+            .find((value) => value.id === existing.id)!,
+          externalPrompt = original + '\n另一页面已补充核对要求。';
+        f.state.tasks.set(
+          lane(),
+          f.state.tasks
+            .get(lane())!
+            .map((value) =>
+              value.id === existing.id
+                ? { ...current, revision: 9, prompt: externalPrompt }
+                : value,
+            ),
+        );
+        await staleEdit
+          .getByRole('button', { name: '保存修改', exact: true })
+          .click();
+        await panel(f.page)
+          .getByText(/当前版本为 9.*重新选择/)
+          .waitFor();
+        await row
+          .getByText('每月30日 02:30:17 · America/New_York · 版本 9', {
+            exact: true,
+          })
+          .waitFor();
+        expect(await row.locator('p[title]').getAttribute('title')).toBe(
+          externalPrompt,
+        );
+        expect(await staleEdit.count()).toBe(0);
+        const staleInput = ChangeRecurringTaskInputSchema.parse(
+          JSON.parse(writes(f.state, 'PATCH')[1]!.body),
+        );
+        expect(staleInput).toEqual({
+          operationId: staleInput.operationId,
+          expectedRevision: 8,
+          action: 'update',
+          name: existing.name,
+          prompt: original,
+          conversationMode: 'reuse',
+          rule: {
+            kind: 'monthly',
+            monthDay: 29,
+            time: '02:30:17',
+            timezone: 'America/New_York',
+          },
+        });
+        expect(staleInput.operationId).not.toBe(changeInput.operationId);
+        expect(
+          f.state.operations.get(lane() + '/' + staleInput.operationId),
+        ).toMatchObject({
+          request: staleInput,
+          status: 'rejected',
+          task: { revision: 9, prompt: externalPrompt, rule: { monthDay: 30 } },
+        });
+        expect(writes(f.state, 'POST')).toHaveLength(1);
+        expect(writes(f.state, 'PATCH')).toHaveLength(2);
+        expect(
+          writes(f.state).every(
+            (request) =>
+              request.sessionId === CHAT &&
+              request.workspace === WORKSPACE &&
+              request.viewer === VIEWER,
+          ),
+        ).toBe(true);
+        expect(await saved(f.page)).toEqual([]);
+        expect(
+          await f.page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBe(true);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+    20_000,
+  );
+
+  it.each([1280, 390])(
+    'creates and edits a weekly rule without losing weekdays or exposing another scope at %s px',
+    async (width) => {
+      const f = await fixture(width);
+      try {
+        await open(f.page);
+        const form = await fill(f.page, '每周核对');
+        await form
+          .getByRole('combobox', { name: /执行周期/ })
+          .selectOption('weekly');
+        await form.getByLabel('执行时间', { exact: true }).fill('09:30');
+        await form
+          .getByLabel('IANA时区', { exact: true })
+          .fill('Asia/Shanghai');
+        await form.getByLabel('周三', { exact: true }).check();
+        await form.getByRole('button', { name: '创建', exact: true }).click();
+        const row = card(f.page, '每周核对');
+        await row
+          .getByText('每周一、三 09:30 · Asia/Shanghai · 版本 1', {
+            exact: true,
+          })
+          .waitFor();
+        const body = CreateRecurringTaskInputSchema.parse(
+          JSON.parse(writes(f.state, 'POST')[0]!.body),
+        );
+        expect(body.rule).toEqual({
+          kind: 'weekly',
+          weekdays: [1, 3],
+          time: '09:30:00',
+          timezone: 'Asia/Shanghai',
+        });
+        await row.getByRole('button', { name: '编辑', exact: true }).click();
+        const edit = panel(f.page).getByRole('form', {
+          name: '编辑周期任务',
+          exact: true,
+        });
+        expect(await edit.getByLabel('周一', { exact: true }).isChecked()).toBe(
+          true,
+        );
+        expect(await edit.getByLabel('周三', { exact: true }).isChecked()).toBe(
+          true,
+        );
+        await edit.getByLabel('周一', { exact: true }).uncheck();
+        await edit.getByLabel('周日', { exact: true }).check();
+        await edit
+          .getByRole('button', { name: '保存修改', exact: true })
+          .click();
+        await row
+          .getByText('每周三、日 09:30 · Asia/Shanghai · 版本 2', {
+            exact: true,
+          })
+          .waitFor();
+        const changed = ChangeRecurringTaskInputSchema.parse(
+          JSON.parse(writes(f.state, 'PATCH')[0]!.body),
+        );
+        expect(changed).toMatchObject({
+          action: 'update',
+          expectedRevision: 1,
+          rule: { kind: 'weekly', weekdays: [3, 7] },
+        });
+        expect(
+          writes(f.state).every(
+            (request) =>
+              request.sessionId === CHAT && request.viewer === VIEWER,
+          ),
+        ).toBe(true);
+        expect(await saved(f.page)).toEqual([]);
+        expect(
+          await f.page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBe(true);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+    20_000,
+  );
 
   it.each([
     { width: 1280, daily: false },

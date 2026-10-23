@@ -4,7 +4,10 @@ import {
   NativeOnceProductError,
   NativeRecurringProductError,
 } from '@allrice/database';
-import { RecurringScheduleRuleSchema } from '@allrice/contracts';
+import {
+  RecurringScheduleRuleSchema,
+  AutomationConversationModeSchema,
+} from '@allrice/contracts';
 import { z } from 'zod';
 
 import { HandlerError, confirmToolFailure } from '../../errors.js';
@@ -13,6 +16,7 @@ import type { RiceToolHandler } from '../types.js';
 const content = {
   name: z.string().trim().min(1).max(160),
   prompt: z.string().trim().min(1).max(40_000),
+  conversationMode: AutomationConversationModeSchema.optional(),
 };
 const CreateScheduleArguments = z.union([
   z
@@ -43,7 +47,7 @@ export const createAutomation: RiceToolHandler = async ({
   if (!parsed.success) {
     throw new HandlerError(
       'TOOL_INPUT_INVALID',
-      '定时参数需提供 name、prompt，以及 delayMinutes 或 rule 之一。一次性延迟为 1–525600 分钟；周期仅支持每隔至少 60 秒，或每日明确时间和 IANA 时区。',
+      '定时参数需提供 name、prompt，以及 delayMinutes 或 rule 之一。一次性延迟为 1–525600 分钟；周期支持每隔至少 60 秒，或每日、每周明确时间和 IANA 时区。',
       false,
     );
   }
@@ -59,6 +63,9 @@ export const createAutomation: RiceToolHandler = async ({
     },
     name: parsed.data.name,
     prompt: parsed.data.prompt,
+    ...(parsed.data.conversationMode === undefined
+      ? {}
+      : { conversationMode: parsed.data.conversationMode }),
   };
   const reject = (error: unknown): never => {
     const rejected = (code: string, message: string): never => {
@@ -86,12 +93,12 @@ export const createAutomation: RiceToolHandler = async ({
       if (error.code === 'intent_required')
         rejected(
           'AUTOMATION_REQUEST_UNCLEAR',
-          '未创建任务。需要明确的周期和具体工作，或当前任务提问卡中用户已选定的完整提醒频率。支持每隔整数分钟、小时或天数，或每日 HH:mm[:ss] 与 IANA 时区。请结合当前对话澄清缺失信息，不要要求用户重发已知工作；引用、条件、否定、无关历史、多种周期及周/月规则不代表创建授权。',
+          '未创建任务。需要明确的周期和具体工作，或当前任务提问卡中用户已选定的完整提醒频率。支持每隔整数分钟、小时或天数，或每日、每周 HH:mm[:ss] 与 IANA 时区；每周还需明确执行日。请结合当前对话澄清缺失信息，不要要求用户重发已知工作；引用、条件、否定、无关历史、多种周期及每月规则不代表创建授权。',
         );
       if (error.code === 'rule_mismatch')
         rejected(
           'AUTOMATION_RULE_MISMATCH',
-          '未创建任务。周期、时间或时区与当前用户原话不一致，请按明确原话传参，不要自行猜测或修改。',
+          '未创建任务。周期、执行日、时间或时区与当前用户原话不一致，请按明确原话传参，不要自行猜测或修改。',
         );
     }
     throw error;
@@ -111,6 +118,7 @@ export const createAutomation: RiceToolHandler = async ({
         sessionId: task.sessionId,
         status: task.status,
         prompt: task.prompt,
+        conversationMode: task.conversationMode,
       }),
       summary:
         task.status === 'preparing'
@@ -133,6 +141,7 @@ export const createAutomation: RiceToolHandler = async ({
       sessionId: automation.sessionId,
       status: automation.status,
       prompt: automation.prompt,
+      conversationMode: automation.conversationMode,
     }),
     summary:
       automation.status === 'preparing'

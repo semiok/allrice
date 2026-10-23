@@ -9,6 +9,7 @@ import {
   mergeRecurringTasks,
   parseRecurringIntent,
   recurringContent,
+  recurringEditRequest,
   recurringDraft,
   recurringIntentURL,
   recurringStorageKey,
@@ -118,6 +119,165 @@ class MemoryStorage {
 }
 
 describe('recurring task form parameters', () => {
+  it.each([
+    { kind: 'every', seconds: 60 },
+    { kind: 'daily', time: '02:30:17', timezone: 'America/New_York' },
+    {
+      kind: 'weekly',
+      weekdays: [1, 3],
+      time: '02:30:17',
+      timezone: 'America/New_York',
+    },
+    {
+      kind: 'monthly',
+      monthDay: 31,
+      time: '02:30:17',
+      timezone: 'America/New_York',
+    },
+  ] as const)(
+    'conversation-only edit keeps the full $kind clock out of its exact CAS request',
+    (rawRule) => {
+      const rule =
+        rawRule.kind === 'weekly'
+          ? { ...rawRule, weekdays: [...rawRule.weekdays] }
+          : rawRule;
+      const original = task({ rule, revision: 3, conversationMode: 'reuse' });
+      const content = recurringContent(
+        { ...recurringDraft(original), conversationMode: 'new_each_run' },
+        original.rule,
+      );
+      const body = recurringEditRequest(original, content, OPERATION);
+      expect(body).toEqual({
+        action: 'conversation',
+        operationId: OPERATION,
+        expectedRevision: 3,
+        conversationMode: 'new_each_run',
+      });
+      const intent = changeIntent(body),
+        storage = new MemoryStorage();
+      saveRecurringIntent(storage, intent);
+      expect(parseRecurringIntent(storage.getItem(KEY)!, KEY)).toEqual(intent);
+      expect(
+        resolveRecurringIntent(intent, {
+          source: 'write',
+          status: 503,
+          body: {},
+        }),
+      ).toEqual({ state: 'unconfirmed' });
+      expect(
+        resolveRecurringIntent(intent, {
+          source: 'readback',
+          status: 200,
+          body: {
+            operation: operation(intent, {
+              task: task({
+                ...original,
+                revision: 4,
+                conversationMode: 'new_each_run',
+              }),
+            }),
+          },
+        }),
+      ).toMatchObject({ state: 'settled', outcome: 'applied' });
+      expect(
+        recurringEditRequest(
+          original,
+          { ...content, prompt: original.prompt + '\n保留全部新要求。' },
+          OTHER,
+        ),
+      ).toMatchObject({
+        action: 'update',
+        conversationMode: 'new_each_run',
+        rule: original.rule,
+      });
+    },
+  );
+  it('preserves monthly day, explicit timezone, nonzero seconds and the whole original work through editing/readback', () => {
+    const monthly = task({
+      rule: {
+        kind: 'monthly',
+        monthDay: 31,
+        time: '02:30:17',
+        timezone: 'America/New_York',
+      },
+      prompt: '核对完整月报，分别列出异常。保留所有原始要求。',
+    });
+    const form = recurringDraft(monthly);
+    expect(form).toMatchObject({
+      kind: 'monthly',
+      monthDay: '31',
+      time: '02:30',
+      timezone: 'America/New_York',
+    });
+    expect(recurringContent(form, monthly.rule)).toMatchObject({
+      prompt: monthly.prompt,
+      rule: monthly.rule,
+    });
+    const content = recurringContent({ ...form, monthDay: '30' }, monthly.rule);
+    expect(content.rule).toEqual({ ...monthly.rule, monthDay: 30 });
+    const intent = {
+      ...createIntent(),
+      body: { clientRequestId: REQUEST, ...content },
+    };
+    const storage = new MemoryStorage();
+    saveRecurringIntent(storage, intent);
+    expect(parseRecurringIntent(storage.getItem(KEY)!, KEY)).toEqual(intent);
+  });
+  it.each(['', '0', '32', '1.5', 'Infinity'])(
+    'rejects an invalid monthly day %j before persisting a request',
+    (monthDay) => {
+      expect(() =>
+        recurringContent(draft({ kind: 'monthly', monthDay })),
+      ).toThrow();
+    },
+  );
+  it('preserves weekly execution days, timezone and seconds through editing and recovery', () => {
+    const weekly = task({
+      rule: {
+        kind: 'weekly',
+        weekdays: [1, 3, 7],
+        time: '09:30:05',
+        timezone: 'America/New_York',
+      },
+    });
+    const form = recurringDraft(weekly);
+    expect(form).toMatchObject({
+      kind: 'weekly',
+      weekdays: [1, 3, 7],
+      time: '09:30',
+      timezone: 'America/New_York',
+    });
+    expect(recurringContent(form, weekly.rule).rule).toEqual(weekly.rule);
+    expect(
+      recurringContent({ ...form, weekdays: [2, 7] }, weekly.rule).rule,
+    ).toEqual({ ...weekly.rule, weekdays: [2, 7] });
+    const changed = recurringContent(
+      { ...form, weekdays: [7, 2], time: '10:00' },
+      weekly.rule,
+    );
+    expect(changed.rule).toEqual({
+      kind: 'weekly',
+      weekdays: [2, 7],
+      time: '10:00:00',
+      timezone: 'America/New_York',
+    });
+    const intent = {
+      ...createIntent(),
+      body: { clientRequestId: REQUEST, ...changed },
+    };
+    const storage = new MemoryStorage();
+    saveRecurringIntent(storage, intent);
+    expect(parseRecurringIntent(storage.getItem(KEY)!, KEY)).toEqual(intent);
+  });
+
+  it.each([[], [0], [8], [1, 1], [1.5]].map((weekdays) => ({ weekdays })))(
+    'rejects invalid weekly days %j before a write',
+    ({ weekdays }) => {
+      expect(() =>
+        recurringContent(draft({ kind: 'weekly', weekdays })),
+      ).toThrow();
+    },
+  );
   it('creates flat normalized content with whole-second intervals', () => {
     expect(
       recurringContent(
@@ -127,10 +287,18 @@ describe('recurring task form parameters', () => {
       name: '日报',
       prompt: '整理进展',
       rule: { kind: 'every', seconds: 90 },
+      conversationMode: 'reuse',
     });
     expect(recurringContent(draft({ minutes: '525600' })).rule).toEqual({
       kind: 'every',
       seconds: 31_536_000,
+    });
+    const legacy = draft({ minutes: '1.5' });
+    delete legacy.conversationMode;
+    expect(recurringContent(legacy)).toEqual({
+      name: '日报',
+      prompt: '整理进展',
+      rule: { kind: 'every', seconds: 90 },
     });
   });
 

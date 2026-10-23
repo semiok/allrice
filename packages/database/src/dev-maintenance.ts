@@ -214,7 +214,7 @@ export async function finishDevProducer(permit: {
   const id = z.uuid().parse(permit.id),
     boot = z.uuid().parse(permit.instanceBootId);
   const rows =
-    await getDatabase()`update allrice_dev_producer_permits set finished_at=coalesce(finished_at,clock_timestamp())
+    await getDatabase()`update allrice_dev_producer_permits set finished_at=coalesce(finished_at,greatest(started_at,clock_timestamp()))
     where id=${id} and instance_boot_id=${boot} returning id`;
   if (!rows.length) throw new DevMaintenanceError('dev_barrier_stale');
 }

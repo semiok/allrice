@@ -75,6 +75,22 @@ function row(
     ...overrides,
   };
 }
+function recurringRecordFields(rule: NativeScheduleRecurringRule) {
+  if (rule.kind === 'every')
+    return { kind: 'every' as const, everySeconds: rule.seconds };
+  if (rule.kind === 'weekly')
+    return {
+      kind: 'weekly' as const,
+      time: `${rule.time}.000`,
+      timeZone: rule.timezone,
+      weekdays: [...rule.weekdays],
+    };
+  return {
+    kind: 'daily' as const,
+    time: `${rule.time}.000`,
+    timeZone: rule.timezone,
+  };
+}
 function fixture<C extends NativeScheduleAnyControl = NativeScheduleControl>(
   initial: C[] = [row()] as unknown as C[],
 ) {
@@ -118,7 +134,7 @@ function fixture<C extends NativeScheduleAnyControl = NativeScheduleControl>(
   function apply(write: NativeScheduleWrite) {
     const m = write.mutation,
       c = rows.find((r) => r.controlId === m.controlId)!;
-    if (!c) throw Error('fixture mapping missing');
+    if (!c || c.kind === 'calendar') throw Error('fixture mapping missing');
     if (m.kind === 'session_initializing') c.sessionState = 'initializing';
     if (m.kind === 'session_ready') c.sessionState = 'ready';
     if (m.kind === 'put_task') {
@@ -337,13 +353,7 @@ function fixture<C extends NativeScheduleAnyControl = NativeScheduleControl>(
                 title: TITLE,
                 prompt: PROMPT,
                 scheduledAt: '2030-01-01T00:00:00.000Z',
-                ...(rule.kind === 'every'
-                  ? { kind: 'every' as const, everySeconds: rule.seconds }
-                  : {
-                      kind: 'daily' as const,
-                      time: `${rule.time}.000`,
-                      timeZone: rule.timezone,
-                    }),
+                ...recurringRecordFields(rule),
               },
               deliveryHistory: {
                 records: [],
@@ -374,9 +384,14 @@ function fixture<C extends NativeScheduleAnyControl = NativeScheduleControl>(
               (rule.kind === 'every'
                 ? old.record.kind === 'every' &&
                   old.record.everySeconds === rule.seconds
-                : old.record.kind === 'daily' &&
+                : (old.record.kind === 'daily' ||
+                    old.record.kind === 'weekly') &&
                   old.record.time === `${rule.time}.000` &&
-                  old.record.timeZone === rule.timezone);
+                  old.record.timeZone === rule.timezone &&
+                  (rule.kind !== 'weekly' ||
+                    (old.record.kind === 'weekly' &&
+                      JSON.stringify(old.record.weekdays) ===
+                        JSON.stringify(rule.weekdays))));
             if (same) return old.record; // Public Schedule no-op performs no KV write.
             const task: ScheduleTask = {
               ...old,
@@ -385,13 +400,7 @@ function fixture<C extends NativeScheduleAnyControl = NativeScheduleControl>(
                 title: TITLE,
                 prompt: PROMPT,
                 scheduledAt: '2030-01-01T01:00:00.000Z',
-                ...(rule.kind === 'every'
-                  ? { kind: 'every' as const, everySeconds: rule.seconds }
-                  : {
-                      kind: 'daily' as const,
-                      time: `${rule.time}.000`,
-                      timeZone: rule.timezone,
-                    }),
+                ...recurringRecordFields(rule),
               },
             };
             await h.unit!.putRecord('tasks', id, task);
@@ -507,6 +516,49 @@ function fixture<C extends NativeScheduleAnyControl = NativeScheduleControl>(
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
+});
+
+it('reopens before admitting a Session added between refresh and calendar commands', async () => {
+  const first = row(),
+    second = row(),
+    f = fixture([first]);
+  const unexpected = vi.fn(async () => {
+    throw Error('unexpected calendar Task mutation');
+  });
+  f.store.calendar = {
+    loadCalendarState: vi.fn(async () => ({ controls: [], bindings: [] })),
+    materialize: vi.fn(async () => false),
+    beginCalendarArmCreate: unexpected,
+    confirmCalendarArmAbsent: unexpected,
+    prepareCalendarArm: unexpected,
+    readExactCalendarArm: unexpected,
+    readExactCalendarRetirement: unexpected,
+  };
+  let added = false;
+  vi.spyOn(f.store, 'loadControls').mockImplementation(async () => {
+    if (!added && f.trace.includes('mount:1')) {
+      added = true;
+      f.rows.push(structuredClone(second));
+    }
+    return structuredClone(f.rows);
+  });
+  const controller = f.create();
+  try {
+    await controller.tick();
+    expect(added).toBe(true);
+    expect(controller.status().state).toBe('cold');
+    expect(f.creations()).toBe(0);
+    expect(f.trace).toContain('release:1');
+    await controller.tick();
+    expect(controller.status().state).toBe('active');
+    expect(f.trace.indexOf(`init:${second.controlSessionId}`)).toBeLessThan(
+      f.trace.indexOf('mount:2'),
+    );
+    expect(f.trace).toContain(`resume:${first.controlSessionId}`);
+    expect(f.creations()).toBe(2);
+  } finally {
+    await controller.stop();
+  }
 });
 
 describe('once target_not_future catalog absence', () => {
@@ -1098,6 +1150,12 @@ describe('recurring control union over the same fenced Host and KV lifecycle', (
   it.each<NativeScheduleRecurringRule>([
     { kind: 'every', seconds: 60 },
     { kind: 'daily', time: '09:30:00', timezone: 'Asia/Shanghai' },
+    {
+      kind: 'weekly',
+      time: '09:30:00',
+      timezone: 'Asia/Shanghai',
+      weekdays: [1, 7],
+    },
   ])('creates %j once across repeated ticks', async (rule) => {
     const f = fixture([recurringRow(rule)]),
       c = f.create();
@@ -1110,6 +1168,82 @@ describe('recurring control union over the same fenced Host and KV lifecycle', (
       rule.kind,
     );
     await c.stop();
+  });
+
+  it.each(
+    [[], [0], [8], [1, 1], [7, 1], [1.5]].map((weekdays) => ({ weekdays })),
+  )(
+    'rejects malformed weekly weekdays $weekdays before opening a Host',
+    async ({ weekdays }) => {
+      const f = fixture([
+          recurringRow({
+            kind: 'weekly',
+            time: '09:30:00',
+            timezone: 'UTC',
+            weekdays,
+          }),
+        ]),
+        c = f.create();
+      try {
+        await expect(c.tick()).rejects.toMatchObject({
+          code: 'binding_invalid',
+        });
+        expect(f.factory).not.toHaveBeenCalled();
+      } finally {
+        await c.stop();
+      }
+    },
+  );
+
+  it('keeps weekly Task and Session identities across an update and cold restore', async () => {
+    const f = fixture([
+        recurringRow({
+          kind: 'weekly',
+          time: '09:30:00',
+          timezone: 'UTC',
+          weekdays: [1],
+        }),
+      ]),
+      first = f.create();
+    let second: ReturnType<typeof f.create> | undefined;
+    try {
+      await first.tick();
+      const id = f.rows[0]!.nativeTaskId!,
+        session = f.rows[0]!.controlSessionId;
+      f.rows[0]!.revision = 2;
+      f.rows[0]!.rule = {
+        kind: 'weekly',
+        time: '08:00:00',
+        timezone: 'Europe/London',
+        weekdays: [2, 7],
+      };
+      f.rows[0]!.command = {
+        id: randomUUID(),
+        kind: 'update',
+        status: 'pending',
+      };
+      await first.tick();
+      const saved = structuredClone(f.records.get(id)!);
+      expect(saved.record).toMatchObject({
+        kind: 'weekly',
+        time: '08:00:00.000',
+        timeZone: 'Europe/London',
+        weekdays: [2, 7],
+      });
+      await first.stop();
+      second = f.create();
+      await second.tick();
+      expect(f.rows[0]!.nativeTaskId).toBe(id);
+      expect(f.rows[0]!.controlSessionId).toBe(session);
+      expect(f.rows[0]!.appliedRevision).toBe(2);
+      expect(f.records.get(id)).toEqual(saved);
+      expect(f.creations()).toBe(1);
+      expect(f.updates()).toBe(1);
+      expect(f.trace).toContain(`resume:${session}`);
+    } finally {
+      await second?.stop();
+      await first.stop();
+    }
   });
 
   it('confirms metadata-only edits through a same-rule SDK update without resetting target', async () => {
@@ -1425,6 +1559,65 @@ describe('recurring control public Host selector adapter with scripted services 
       prompt: PROMPT,
     });
   });
+
+  it('uses the public weekly selector and complete expected-record CAS for timing edits', async () => {
+    const f = await adapter();
+    const rule: NativeScheduleRecurringRule = {
+      kind: 'weekly',
+      time: '04:15:00',
+      timezone: 'Asia/Shanghai',
+      weekdays: [1, 7],
+    };
+    await f.host.createRecurring!('same-session', rule);
+    expect(f.schedule.create).toHaveBeenCalledWith(SessionId('same-session'), {
+      title: TITLE,
+      prompt: PROMPT,
+      weekly: {
+        time: '04:15:00',
+        time_zone: 'Asia/Shanghai',
+        weekdays: [1, 7],
+      },
+    });
+    await f.host.updateRecurring!('same-session', f.record.id, f.record, rule);
+    expect(f.schedule.update).toHaveBeenCalledWith({
+      sessionId: SessionId('same-session'),
+      id: f.record.id,
+      expected: f.record,
+      title: TITLE,
+      prompt: PROMPT,
+      change: {
+        kind: 'weekly',
+        weekly: {
+          time: '04:15:00',
+          time_zone: 'Asia/Shanghai',
+          weekdays: [1, 7],
+        },
+      },
+    });
+  });
+
+  it.each(
+    [[], [0], [8], [1, 1], [7, 1], [1.5]].map((weekdays) => ({ weekdays })),
+  )(
+    'rejects noncanonical weekly selector $weekdays at the actual factory boundary',
+    async ({ weekdays }) => {
+      const f = await adapter();
+      const rule: NativeScheduleRecurringRule = {
+        kind: 'weekly',
+        time: '04:15:00',
+        timezone: 'Asia/Shanghai',
+        weekdays,
+      };
+      await expect(
+        f.host.createRecurring!('same-session', rule),
+      ).rejects.toMatchObject({ code: 'binding_invalid' });
+      await expect(
+        f.host.updateRecurring!('same-session', f.record.id, f.record, rule),
+      ).rejects.toMatchObject({ code: 'binding_invalid' });
+      expect(f.schedule.create).not.toHaveBeenCalled();
+      expect(f.schedule.update).not.toHaveBeenCalled();
+    },
+  );
 
   it('defers only an explicit non-mutating schedule_conflict', async () => {
     const f = await adapter();
@@ -2011,5 +2204,178 @@ describe('one focused real public Host composition test, zero provider/tool bodi
       }
     },
     20000,
+  );
+});
+
+describe('weekly real public Host composition; no database or execution grant', () => {
+  it.runIf(!!process.env.ALLRICE_NATIVE_ONCE_PROBE_MODULE_BASE)(
+    'creates and updates one weekly Task, records a real receipt, then cold-resumes its original Session',
+    async () => {
+      const req = createRequire(
+        process.env.ALLRICE_NATIVE_ONCE_PROBE_MODULE_BASE!,
+      );
+      const componentReq = createRequire(
+        req.resolve('@deepseek-ai/dsh-api-session-controller'),
+      );
+      const loaded: Record<string, unknown> = {};
+      for (const [key, name] of Object.entries(moduleNames))
+        loaded[key] = await import(
+          pathToFileURL(
+            (['commands', 'connection'].includes(key)
+              ? componentReq
+              : req
+            ).resolve('@deepseek-ai/' + name),
+          ).href
+        );
+      const modules = loaded as unknown as NativeSchedulePublicModules;
+      const contexts: InstanceType<
+        NativeSchedulePublicModules['cordis']['Context']
+      >[] = [];
+      class CapturingContext extends modules.cordis.Context {
+        constructor() {
+          super();
+          contexts.push(this);
+        }
+      }
+      const publicModules = {
+        ...modules,
+        cordis: { ...modules.cordis, Context: CapturingContext },
+      };
+      const root = await mkdtemp(join(tmpdir(), 'public-weekly-control-'));
+      const control = recurringRow({
+        kind: 'weekly',
+        time: new Date(Date.now() + 120_000).toISOString().slice(11, 19),
+        timezone: 'UTC',
+        weekdays: [1, 2, 3, 4, 5, 6, 7],
+      });
+      const f = fixture([control]);
+      f.source.reference.stateRoot = root;
+      f.source.loadModules = vi.fn(async () => publicModules);
+      f.source.loadHostFactory = vi.fn(
+        async () =>
+          (
+            await import(
+              new URL(
+                '../dsh/native-schedule-host-factory.mjs',
+                import.meta.url,
+              ).href
+            )
+          ).openNativeScheduleControlHost,
+      );
+      const lifecycle: string[] = [];
+      let creations = 0,
+        updates = 0;
+      const factory: NativeScheduleHostFactory = async (input) => {
+        const host = await openPublicNativeScheduleOnceHost(input);
+        return {
+          ...host,
+          async initializeSession(id) {
+            lifecycle.push(`initialize:${id}`);
+            return host.initializeSession(id);
+          },
+          async resumeSession(id) {
+            lifecycle.push(`resume:${id}`);
+            return host.resumeSession(id);
+          },
+          async mountSchedule() {
+            lifecycle.push('mount');
+            return host.mountSchedule();
+          },
+          async createRecurring(id, rule) {
+            creations++;
+            return host.createRecurring!(id, rule);
+          },
+          async updateRecurring(session, id, expected, rule) {
+            updates++;
+            return host.updateRecurring!(session, id, expected, rule);
+          },
+        };
+      };
+      const first = createNativeScheduleOnceController({
+        enabled: true,
+        store: f.store,
+        source: f.source,
+        hostFactory: factory,
+      });
+      let second:
+        ReturnType<typeof createNativeScheduleOnceController> | undefined;
+      try {
+        await first.tick();
+        const id = f.rows[0]!.nativeTaskId!,
+          session = f.rows[0]!.controlSessionId;
+        expect(f.rows[0]!.command.status).toBe('confirmed');
+        expect(f.records.get(id)!.record.kind).toBe('weekly');
+        // Boot has completed. Only the real public Schedule selects and delivers
+        // this near-future target; no receipt or clock result is injected.
+        const due = new Date(Math.ceil((Date.now() + 4_000) / 1_000) * 1_000);
+        const rule: NativeScheduleRecurringRule = {
+          kind: 'weekly',
+          time: due.toISOString().slice(11, 19),
+          timezone: 'UTC',
+          weekdays: [due.getUTCDay() || 7],
+        };
+        f.rows[0]!.revision = 2;
+        f.rows[0]!.rule = rule;
+        f.rows[0]!.command = {
+          id: randomUUID(),
+          kind: 'update',
+          status: 'pending',
+        };
+        await first.tick();
+        expect(f.rows[0]!.command.status).toBe('confirmed');
+        expect(f.rows[0]!.nativeTaskId).toBe(id);
+        expect(f.records.get(id)!.record.scheduledAt).toBe(due.toISOString());
+        await until(
+          () => !!f.records.get(id)?.lastDelivery,
+          'real weekly receipt not observed',
+        );
+        const receipt = f.records.get(id)!.lastDelivery!;
+        expect(receipt.scheduledAt).toBe(due.toISOString());
+        const inbox = contexts[0]!.sessions
+          .get(SessionId(session))!
+          .ownEvents()
+          .flatMap((event) =>
+            event.type === 'agent/inbox/spliced'
+              ? event.data.inserted.filter(
+                  (message) => message.id === receipt.messageId,
+                )
+              : [],
+          );
+        expect(inbox).toHaveLength(1);
+        expect(inbox[0]!.source).toEqual({ kind: 'schedule' });
+        const saved = structuredClone(f.records.get(id)!);
+        expect(saved.deliveryHistory!.records).toHaveLength(1);
+        expect(Date.parse(saved.record.scheduledAt)).toBeGreaterThan(
+          due.getTime(),
+        );
+        await first.stop();
+        second = createNativeScheduleOnceController({
+          enabled: true,
+          store: f.store,
+          source: f.source,
+          hostFactory: factory,
+        });
+        await second.tick();
+        expect(f.rows[0]!.nativeTaskId).toBe(id);
+        expect(f.rows[0]!.controlSessionId).toBe(session);
+        expect(f.rows[0]!.appliedRule).toEqual(rule);
+        expect(f.records.get(id)).toEqual(saved);
+        expect(creations).toBe(1);
+        expect(updates).toBe(1);
+        expect(lifecycle).toEqual([
+          `initialize:${session}`,
+          'mount',
+          `resume:${session}`,
+          'mount',
+        ]);
+        expect(first.status().stats.adapterCalls).toBe(0);
+        expect(second.status().stats.adapterCalls).toBe(0);
+      } finally {
+        await second?.stop();
+        await first.stop();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+    30_000,
   );
 });

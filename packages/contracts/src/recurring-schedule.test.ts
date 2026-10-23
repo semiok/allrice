@@ -4,6 +4,7 @@ import {
   CreateRecurringTaskInputSchema,
   RecurringOccurrenceSchema,
   RecurringScheduleRuleSchema,
+  FixedRecurringScheduleRuleSchema,
   RecurringTaskDetailQuerySchema,
   RecurringTaskHistorySchema,
   RecurringTaskListQuerySchema,
@@ -66,6 +67,34 @@ function occurrence() {
 }
 
 describe('recurring schedule rules have bounded, explicit semantics', () => {
+  it('keeps monthly business rules out of fixed native rules', () => {
+    const monthly = {
+      kind: 'monthly',
+      monthDay: 31,
+      time: '02:30:45',
+      timezone: 'America/New_York',
+    };
+    expect(RecurringScheduleRuleSchema.parse(monthly)).toEqual(monthly);
+    expect(FixedRecurringScheduleRuleSchema.safeParse(monthly).success).toBe(
+      false,
+    );
+    for (const monthDay of [0, 32, 1.5])
+      expect(
+        RecurringScheduleRuleSchema.safeParse({ ...monthly, monthDay }).success,
+      ).toBe(false);
+    for (const kind of ['daily', 'weekly', 'every']) {
+      const fixed =
+        kind === 'every'
+          ? { kind, seconds: 60 }
+          : {
+              kind,
+              time: '09:30:00',
+              timezone: 'Asia/Shanghai',
+              ...(kind === 'weekly' ? { weekdays: [1, 3] } : {}),
+            };
+      expect(FixedRecurringScheduleRuleSchema.parse(fixed)).toEqual(fixed);
+    }
+  });
   it.each([60, 61, 3_600, 31_536_000])(
     'accepts an elapsed interval of %s whole seconds',
     (seconds) => {
@@ -104,6 +133,38 @@ describe('recurring schedule rules have bounded, explicit semantics', () => {
     },
   );
 
+  it.each(
+    [[1], [7], [1, 3, 7], [1, 2, 3, 4, 5, 6, 7]].map((weekdays) => ({
+      weekdays,
+    })),
+  )('preserves canonical weekly ISO weekdays $weekdays', ({ weekdays }) => {
+    const rule = {
+      kind: 'weekly',
+      time: '09:30:00',
+      timezone: 'Asia/Shanghai',
+      weekdays,
+    };
+    expect(RecurringScheduleRuleSchema.parse(rule)).toEqual(rule);
+    expect(
+      CreateRecurringTaskInputSchema.parse({ ...create(), rule }).rule,
+    ).toEqual(rule);
+  });
+
+  it.each(
+    [[], [0], [8], [1.5], [1, 1], [7, 1], [1, 2, 3, 4, 5, 6, 7, 7]].map(
+      (weekdays) => ({ weekdays }),
+    ),
+  )('rejects noncanonical weekly weekdays $weekdays', ({ weekdays }) => {
+    expect(
+      RecurringScheduleRuleSchema.safeParse({
+        kind: 'weekly',
+        time: '09:30:00',
+        timezone: 'UTC',
+        weekdays,
+      }).success,
+    ).toBe(false);
+  });
+
   it.each([
     { kind: 'daily', time: '24:00:00', timezone: 'UTC' },
     { kind: 'daily', time: '12:60:00', timezone: 'UTC' },
@@ -114,6 +175,20 @@ describe('recurring schedule rules have bounded, explicit semantics', () => {
     { kind: 'every', seconds: 60, timezone: 'UTC' },
     { kind: 'daily', time: '09:30:00', timezone: 'UTC', seconds: 60 },
     { kind: 'weekly', day: 1, time: '09:30:00', timezone: 'UTC' },
+    { kind: 'weekly', weekdays: [1], time: '09:30', timezone: 'UTC' },
+    {
+      kind: 'weekly',
+      weekdays: [1],
+      time: '09:30:00',
+      timezone: 'Mars/Invalid',
+    },
+    {
+      kind: 'weekly',
+      weekdays: [1],
+      time: '09:30:00',
+      timezone: 'UTC',
+      day: 1,
+    },
     { kind: 'monthly', day: 1, time: '09:30:00', timezone: 'UTC' },
     { kind: 'cron', expression: '* * * * *' },
   ])('rejects unsupported or ambiguous rule data %j', (rule) => {

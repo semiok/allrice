@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { TransactionSql as Tx } from 'postgres';
 import { getDatabase } from '../core/client.ts';
 import { acquireDevAdmission } from '../dev-maintenance.ts';
+import { BrandContentError } from './rules.ts';
 import {
   nativeOnceDigest,
   nativeOnceReady,
@@ -141,7 +142,8 @@ async function insertControl(
 export async function enrollBrandReminderNative(tx: Tx, row: ReminderRow) {
   const [partition] =
     await tx`select activation from allrice_native_once_partitions where partition_id=${PARTITION} for share`;
-  if (!partition || !nativeOnceReady(partition.activation)) fail();
+  if (!partition || !nativeOnceReady(partition.activation))
+    throw new BrandContentError('reminder_unavailable');
   const [automation] =
     await tx`select revision,clock_owner from allrice_automations where id=${row.automation_id} for update`;
   if (

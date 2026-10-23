@@ -100,6 +100,13 @@ export interface HarnessExecutionInput {
       },
     ): Promise<void>;
     adopted(proof: RuntimeNativeInputProof): Promise<void>;
+    /** Original dispatch's private receipt port. Called only after the exact
+     * native child has closed; never reconstructed from RPC/JSON or tool data.
+     * This settles a canceled dispatch, not model usage or new execution. */
+    confirmStopped?(receipt: {
+      nativeSessionId: string;
+      runtimeId: string;
+    }): Promise<unknown>;
   };
   /** Trusted Worker progress port. Never supplied by model/browser arguments. */
   progress?: (

@@ -1,6 +1,7 @@
 import { archivePrivateExperience } from '../experience-runtime.ts';
 import { nativeContextExecutionRetired } from '../conversation/native-context-retirement.ts';
 import type { ResourcePrincipal } from '../resource-principal.ts';
+import type { enqueueManualAutomationRunInTransaction } from '../execution/queue.ts';
 import { readSessionMcpFailures } from './mcp-failures.ts';
 import {
   archiveSessionActivity,
@@ -1999,6 +2000,72 @@ async function prepareNativeScheduledChatRunInTransaction(
       : (await import('../native-schedule-recurring-product.ts'))
           .nativeRecurringMessageReservation;
   const reservation = readReservation(transaction, context, occurrenceId);
+  const queue = await import('../execution/queue.ts');
+  const enqueue =
+    kind === 'once'
+      ? queue.enqueueNativeOnceRunInTransaction
+      : queue.enqueueNativeRecurringRunInTransaction;
+  return prepareAutomationChatRunInTransaction(
+    transaction,
+    context,
+    reservation,
+    kind === 'once' ? 'native_once_occurrence' : 'native_recurring_occurrence',
+    (submission, options) =>
+      enqueue(transaction, context, occurrenceId, submission, options),
+  );
+}
+
+/** Browser manual request uses the same real message/employee/queue machinery
+ * while retaining its own identity and the actual authenticated browser context. */
+export async function prepareManualAutomationChatRunInTransaction(
+  transaction: TransactionSql,
+  context: RequestContext,
+  manualRunId: string,
+) {
+  const { manualAutomationMessageReservation } =
+    await import('../automation-manual.ts');
+  const reservation = manualAutomationMessageReservation(
+    transaction,
+    context,
+    manualRunId,
+  );
+  const queue = await import('../execution/queue.ts');
+  return prepareAutomationChatRunInTransaction(
+    transaction,
+    context,
+    reservation,
+    'automation_manual_request',
+    (submission, options) =>
+      queue.enqueueManualAutomationRunInTransaction(
+        transaction,
+        context,
+        manualRunId,
+        submission,
+        options,
+      ),
+  );
+}
+
+type PreparedAutomationChatInput = Awaited<
+  ReturnType<typeof prepareChatRunInput>
+>;
+async function prepareAutomationChatRunInTransaction(
+  transaction: TransactionSql,
+  context: ResourcePrincipal,
+  reservation: {
+    workspaceId: string;
+    sessionId: string;
+    clientMessageId: string;
+    prompt: string;
+  },
+  reason: string,
+  enqueue: (
+    submission: PreparedAutomationChatInput['submission'],
+    options: PreparedAutomationChatInput['enqueueOptions'],
+  ) => Promise<
+    Awaited<ReturnType<typeof enqueueManualAutomationRunInTransaction>>
+  >,
+) {
   const workspaceId = reservation.workspaceId;
   const [session] = await transaction<SessionRow[]>`
     select * from allrice_chat_sessions where id=${reservation.sessionId}
@@ -2043,18 +2110,7 @@ async function prepareNativeScheduledChatRunInTransaction(
     binding,
     database,
   );
-  const queue = await import('../execution/queue.ts');
-  const enqueue =
-    kind === 'once'
-      ? queue.enqueueNativeOnceRunInTransaction
-      : queue.enqueueNativeRecurringRunInTransaction;
-  const queued = await enqueue(
-    transaction,
-    context,
-    occurrenceId,
-    submission,
-    enqueueOptions,
-  );
+  const queued = await enqueue(submission, enqueueOptions);
   if (queued.delivery === 'steer_pending')
     throw new DataAccessError('authorization_denied');
   await audit(
@@ -2064,10 +2120,7 @@ async function prepareNativeScheduledChatRunInTransaction(
       action: 'message.create',
       resourceType: 'message',
       resourceId: result.userMessage.id,
-      reason:
-        kind === 'once'
-          ? 'native_once_occurrence'
-          : 'native_recurring_occurrence',
+      reason,
     },
     transaction,
   );

@@ -4,6 +4,7 @@ import type { JobRow } from './queue/row-mappers.ts';
 import { readContentPrincipal } from './content-maintenance.ts';
 import { readWorkAutomation } from './work-automation.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
+import { lockAutomationConversationJobAdmission } from './automation-conversation.ts';
 
 export type NativeOnceJobAdmission =
   | {
@@ -12,6 +13,83 @@ export type NativeOnceJobAdmission =
       allowed: boolean;
     }
   | { scheduled: false; allowed: true };
+
+export type NativeOrdinaryJobBinding = {
+  run_id: string;
+  organization_id: string;
+  workspace_id: string;
+  owner_id: string;
+  occurrence_id: string;
+  outbox_state: string;
+  payload_digest: string;
+  business_binding: Record<string, unknown> | null;
+  control: {
+    dispatch: {
+      consumer?: string;
+      businessSessionId: string;
+      employeeAssignmentId: string;
+      employeeInstanceId: string;
+      clientMessageId: string;
+    };
+  };
+};
+
+/** Exact historical ordinary queue binding, independent of today's source or
+ * target authorization. Callers must apply their own current authority gate.
+ * Legacy NULL runs keep their original strict source=target identity here. */
+export async function proveNativeOrdinaryJobBinding(
+  tx: TransactionSql,
+  jobId: string,
+  binding: NativeOrdinaryJobBinding,
+): Promise<boolean> {
+  if (
+    !binding.control?.dispatch ||
+    binding.outbox_state !== 'enqueued' ||
+    !binding.business_binding
+  )
+    return false;
+  const d = binding.control.dispatch,
+    scope = {
+      organizationId: binding.organization_id,
+      workspaceId: binding.workspace_id,
+      actor: { id: binding.owner_id },
+    };
+  const [frozen] = await tx<
+    {
+      execution_snapshot: unknown;
+      user_message_id: string;
+      assistant_message_id: string;
+      employee_version_id: string;
+    }[]
+  >`
+    select er.execution_snapshot,er.user_message_id,er.assistant_message_id,er.employee_version_id
+    from allrice_employee_runs er join allrice_messages m on m.id=er.user_message_id and m.session_id=er.session_id
+      and m.organization_id=er.organization_id and m.workspace_id=er.workspace_id and m.owner_id=er.owner_id and m.role='user'
+    where er.run_id=${binding.run_id} and er.session_id=${d.businessSessionId} and er.employee_assignment_id=${d.employeeAssignmentId}
+      and er.organization_id=${scope.organizationId} and er.workspace_id=${scope.workspaceId} and er.owner_id=${scope.actor.id}
+      and m.client_message_id=${d.clientMessageId}`;
+  if (!frozen) return false;
+  const expected = {
+    runId: binding.run_id,
+    jobId,
+    organizationId: scope.organizationId,
+    workspaceId: scope.workspaceId,
+    ownerId: scope.actor.id,
+    sessionId: d.businessSessionId,
+    employeeAssignmentId: d.employeeAssignmentId,
+    employeeInstanceId: d.employeeInstanceId,
+    clientMessageId: d.clientMessageId,
+    payloadDigest: binding.payload_digest,
+    snapshotDigest: runtimePolicyDigest(frozen.execution_snapshot),
+    userMessageId: frozen.user_message_id,
+    assistantMessageId: frozen.assistant_message_id,
+    employeeVersionId: frozen.employee_version_id,
+  };
+  const actual = Object.fromEntries(
+    Object.keys(expected).map((key) => [key, binding.business_binding![key]]),
+  );
+  return isDeepStrictEqual(expected, actual);
+}
 
 /** Called BEFORE root/job locks. Only native scheduled work receives this additional
  * current-authority gate; an ordinary chat keeps its existing policy. Consumers
@@ -29,28 +107,11 @@ export async function lockNativeOnceJobAdmission(
   const [schema] =
     await tx`select to_regclass(format('%I.allrice_native_once_occurrences',current_schema())) is not null as available`;
   if (!schema?.available) return { scheduled: false, allowed: true };
-  type Binding = {
-    run_id: string;
-    organization_id: string;
-    workspace_id: string;
-    owner_id: string;
-    occurrence_id: string;
-    outbox_state: string;
-    payload_digest: string;
-    business_binding: Record<string, unknown> | null;
-    control: {
-      dispatch: {
-        consumer?: string;
-        businessSessionId: string;
-        employeeAssignmentId: string;
-        employeeInstanceId: string;
-        clientMessageId: string;
-      };
-    };
-  };
+  const conversation = await lockAutomationConversationJobAdmission(tx, jobId);
+  if (conversation) return conversation;
   let kind: 'once' | 'recurring' = 'once';
   let [binding] = await tx<
-    Binding[]
+    NativeOrdinaryJobBinding[]
   >`select j.run_id,j.organization_id,j.workspace_id,j.owner_id,ar.native_once_occurrence_id occurrence_id,
       o.outbox_state,o.payload_digest,o.business_binding,c.immutable_control control
     from allrice_automation_runs ar join allrice_jobs j on j.run_id=ar.run_id
@@ -62,7 +123,7 @@ export async function lockNativeOnceJobAdmission(
       await tx`select to_regclass(format('%I.allrice_native_recurring_occurrences',current_schema())) is not null as available`;
     if (recurringSchema?.available) {
       [binding] = await tx<
-        Binding[]
+        NativeOrdinaryJobBinding[]
       >`select j.run_id,j.organization_id,j.workspace_id,j.owner_id,ar.native_recurring_occurrence_id occurrence_id,
         o.outbox_state,o.payload_digest,o.business_binding,
         c.immutable_identity || jsonb_build_object('dispatch',c.immutable_identity->'dispatch' || jsonb_build_object('clientMessageId',o.client_message_id::text)) control
@@ -74,6 +135,16 @@ export async function lockNativeOnceJobAdmission(
     }
   }
   if (!binding) return { scheduled: false, allowed: true };
+  if (
+    kind === 'recurring' &&
+    binding.control?.dispatch.consumer === 'ordinary-monthly-v1'
+  ) {
+    const [proof] = await tx<
+      { valid: boolean }[]
+    >`select allrice_ordinary_monthly_handoff_proved(${binding.occurrence_id}::uuid) valid`;
+    if (process.env.ALLRICE_NATIVE_CALENDAR_ENABLED !== '1' || !proof?.valid)
+      return { scheduled: true, runId: binding.run_id, allowed: false };
+  }
   if (
     kind === 'recurring' &&
     binding.control?.dispatch.consumer === 'platform-quality-v1'
@@ -97,6 +168,28 @@ export async function lockNativeOnceJobAdmission(
         binding.outbox_state === 'enqueued' &&
         !!job &&
         (await isPlatformQualityJobAuthorized(tx, job)),
+    };
+  }
+  if (
+    kind === 'recurring' &&
+    binding.control?.dispatch.consumer === 'experience-consolidation-v1'
+  ) {
+    const [job] = await tx<
+      JobRow[]
+    >`select * from allrice_jobs where id=${jobId}`;
+    const { lockExperienceCalendarJobAdmission } =
+      await import('./experience-native.ts');
+    return {
+      scheduled: true,
+      runId: binding.run_id,
+      allowed:
+        binding.outbox_state === 'enqueued' &&
+        !!job &&
+        (await lockExperienceCalendarJobAdmission(
+          tx,
+          job,
+          binding.occurrence_id,
+        )),
     };
   }
   await tx`set local lock_timeout='500ms'`;
@@ -142,43 +235,9 @@ export async function lockNativeOnceJobAdmission(
       and a.user_id=${scope.actor.id} and a.active and e.status='active' and e.employee_key not like 'platform-%'
       and i.archived_at is null and s.archived_at is null for share of a,e,i,s`;
   if (!target) return deny();
-  const [frozen] = await tx<
-    {
-      execution_snapshot: unknown;
-      user_message_id: string;
-      assistant_message_id: string;
-      employee_version_id: string;
-    }[]
-  >`
-    select er.execution_snapshot,er.user_message_id,er.assistant_message_id,er.employee_version_id
-    from allrice_employee_runs er join allrice_messages m on m.id=er.user_message_id and m.session_id=er.session_id
-      and m.organization_id=er.organization_id and m.workspace_id=er.workspace_id and m.owner_id=er.owner_id and m.role='user'
-    where er.run_id=${binding.run_id} and er.session_id=${d.businessSessionId} and er.employee_assignment_id=${d.employeeAssignmentId}
-      and er.organization_id=${scope.organizationId} and er.workspace_id=${scope.workspaceId} and er.owner_id=${scope.actor.id}
-      and m.client_message_id=${d.clientMessageId}`;
-  if (!frozen) return deny();
-  const expected = {
-    runId: binding.run_id,
-    jobId,
-    organizationId: scope.organizationId,
-    workspaceId: scope.workspaceId,
-    ownerId: scope.actor.id,
-    sessionId: d.businessSessionId,
-    employeeAssignmentId: d.employeeAssignmentId,
-    employeeInstanceId: d.employeeInstanceId,
-    clientMessageId: d.clientMessageId,
-    payloadDigest: binding.payload_digest,
-    snapshotDigest: runtimePolicyDigest(frozen.execution_snapshot),
-    userMessageId: frozen.user_message_id,
-    assistantMessageId: frozen.assistant_message_id,
-    employeeVersionId: frozen.employee_version_id,
-  };
-  const actual = Object.fromEntries(
-    Object.keys(expected).map((key) => [key, binding.business_binding![key]]),
-  );
   return {
     scheduled: true,
     runId: binding.run_id,
-    allowed: isDeepStrictEqual(expected, actual),
+    allowed: await proveNativeOrdinaryJobBinding(tx, jobId, binding),
   };
 }
