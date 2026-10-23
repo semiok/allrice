@@ -17,7 +17,9 @@ export function currentExecutionForNativeInput(
   value: NativeRunExecutionBinding | null | undefined,
   pin?: NativeSessionPin,
 ) {
-  if ((origin?.schemaVersion === 2) !== (value != null))
+  const isTransition =
+    value?.kind === 'current_employee_execution' && value.schemaVersion === 2;
+  if (!isTransition && (origin?.schemaVersion === 2) !== (value != null))
     throw Error('DSH_NATIVE_ARTIFACT_EXECUTION_BINDING_REQUIRED');
   if (value == null) return null;
   const leased = NativeRunExecutionBindingSchema.parse(value);
@@ -29,12 +31,12 @@ export function currentExecutionForNativeInput(
   };
   if (
     !origin ||
-    origin.schemaVersion !== 2 ||
+    (!isTransition && origin.schemaVersion !== 2) ||
     current.originDigest !== nativeRootDigest(origin) ||
     current.scope.organizationId !== env.ALLRICE_ORGANIZATION_ID ||
     current.scope.workspaceId !== env.ALLRICE_WORKSPACE_ID ||
     current.scope.ownerId !== env.ALLRICE_OWNER_ID ||
-    current.execution.artifactId !== origin.artifactId ||
+    (!isTransition && current.execution.artifactId !== origin.artifactId) ||
     current.execution.generation !== origin.distributionGeneration ||
     current.execution.profileId !== origin.profileId ||
     (current.source.packageChecksum ?? undefined) !==
@@ -46,6 +48,26 @@ export function currentExecutionForNativeInput(
         pin.rootOriginDigest !== current.originDigest))
   )
     return bad();
+  if (isTransition) {
+    const t =
+      leased.kind === 'current_employee_execution' && leased.schemaVersion === 2
+        ? leased.transition
+        : null;
+    if (
+      !t ||
+      t.originDigest !== current.originDigest ||
+      t.scope.contextId !== origin.contextId ||
+      t.scope.organizationId !== env.ALLRICE_ORGANIZATION_ID ||
+      t.scope.workspaceId !== env.ALLRICE_WORKSPACE_ID ||
+      t.scope.ownerId !== env.ALLRICE_OWNER_ID ||
+      nativeRootDigest(t.target) !== nativeRootDigest(current.execution) ||
+      (pin &&
+        (pin.contextKind !== 'chat' ||
+          pin.contextId !== origin.contextId ||
+          pin.storageNamespace !== t.storageNamespace))
+    )
+      return bad();
+  }
   if (isTest) {
     if (
       origin.contextKind !== 'platform_employee_test' ||

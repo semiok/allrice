@@ -1,3 +1,9 @@
+import { readChatNativeRootOrigin } from '../conversation/native-session-binding.ts';
+import { readChatExecutorTransition } from '../conversation/native-executor-transition.ts';
+import {
+  executorTransitionRef,
+  ExecutorTransitionRefSchema,
+} from '../conversation/native-executor-transition-contract.ts';
 import {
   freezePersonalSkills,
   freezePersonalSkillsInTransaction,
@@ -8,10 +14,7 @@ import {
   employeeAccessTransaction,
 } from './employee-access-cancellation.ts';
 import { assertSessionReferencesReadable } from '../workspace/session-references.ts';
-import {
-  assertCurrentEmployeeChatOrigin,
-  assertEmployeeRunExecutionBinding,
-} from '../conversation/current-execution-binding.ts';
+import { assertEmployeeRunExecutionBinding } from '../conversation/current-execution-binding.ts';
 import { readEmployeeOrganizationContext } from './organization-context.ts';
 import { projectEmployeeTaskSuggestions } from './task-suggestions.ts';
 import { freezeManagedPythonBinding } from './managed-python-binding.ts';
@@ -1741,17 +1744,26 @@ export async function resolveEmployeeExecution(input: {
     row.native_root_origin?.schemaVersion === 2 ||
     row.native_execution_binding != null
   ) {
-    const origin = assertCurrentEmployeeChatOrigin(row.native_root_origin, {
+    const origin = await readChatNativeRootOrigin(sql, {
       ...input,
       sessionId: row.session_id,
-      source: {
-        employeeVersionId: row.birth_version_id!,
-        configChecksum: row.birth_config_checksum!,
-        manifest: row.birth_manifest,
-      },
     });
+    const frozen = row.native_execution_binding as {
+      schemaVersion?: number;
+      transition?: unknown;
+    } | null;
+    const receipt =
+      frozen?.schemaVersion === 2
+        ? await readChatExecutorTransition(
+            sql,
+            { ...input, sessionId: row.session_id },
+            origin,
+            ExecutorTransitionRefSchema.parse(frozen.transition),
+          )
+        : null;
     assertEmployeeRunExecutionBinding(row.native_execution_binding, {
       origin,
+      ...(receipt ? { transition: executorTransitionRef(receipt) } : {}),
       scope: { ...input, sessionId: row.session_id },
       source: {
         employeeVersionId: row.employee_version_id,

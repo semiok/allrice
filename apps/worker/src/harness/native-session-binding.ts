@@ -41,6 +41,9 @@ export function createJobNativeBinding(input: {
     await input.onBound?.(value, descriptor);
     return {
       binding: value.binding,
+      ...(value.effectiveDescriptor
+        ? { effectiveDescriptor: value.effectiveDescriptor }
+        : {}),
       ...(value.conversation
         ? { generation: value.conversation.generation }
         : {}),
@@ -58,8 +61,16 @@ export function createJobNativeBinding(input: {
         return {
           ...(value.binding
             ? await adopted(
-                { binding: value.binding, conversation: value.conversation },
-                value.binding,
+                {
+                  binding: value.binding,
+                  conversation: value.conversation,
+                  ...('effectiveDescriptor' in value
+                    ? { effectiveDescriptor: value.effectiveDescriptor }
+                    : {}),
+                },
+                ('effectiveDescriptor' in value
+                  ? value.effectiveDescriptor
+                  : undefined) ?? value.binding,
               )
             : { binding: null }),
           origin: value.origin,
