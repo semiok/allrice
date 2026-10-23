@@ -1,6 +1,6 @@
 /** Real isolated PostgreSQL authority/queue checks; no physical or paid-model claims. */
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LocalStorageAdapter } from '@allrice/storage';
@@ -30,23 +30,23 @@ import {
   isPlatformQualityServiceAuthorized,
   platformQualityCompletionAllowed,
 } from './platform-quality.ts';
+import { initializeNativeRecurringPartition } from './native-schedule-recurring-product.ts';
 import type { JobRow } from './queue/row-mappers.ts';
 import * as queue from './execution/queue.ts';
 import {
   updatePlatformQualitySchedule,
   getPlatformQualitySchedule,
   deletePlatformQualitySchedule,
-  claimPlatformQualityOccurrence,
+  reservePlatformQualityOccurrence,
+  type QualityScheduleRule,
   dispatchPlatformQualityOccurrence,
   recoverPlatformQualityOccurrences,
   qualityOccurrenceRequestId,
 } from './platform-quality-automation.ts';
 import {
-  claimDueAutomations,
   createAutomation,
   listAutomations,
   runAutomationNow,
-  nextScheduleAt,
 } from './execution/automation.ts';
 import {
   claimNextJob,
@@ -72,7 +72,8 @@ suite(
     let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
       company: Awaited<ReturnType<typeof createExperienceFixture>>,
       admin: RequestContext,
-      adminEmail: string;
+      adminEmail: string,
+      scheduleRoot: string;
     beforeAll(async () => {
       // Explicit SQL-only issuer for current-generation technical roots; not
       // approval/installation of any native runtime artifact.
@@ -144,11 +145,43 @@ suite(
       });
       await fixture.db`update allrice_platform_employee_revisions set definition=${fixture.db.json(definition)},runtime_profile=${fixture.db.json(profile)},checksum=${runtimePackage.checksum},status='published',published_at=now() where id=${r!.id}`;
       await fixture.db`update allrice_platform_employees set status='published' where id=${r!.employee_id}`;
+      // Configuration uses the real native enrollment boundary; no Host or
+      // receipt is needed for the shared business-reservation checks below.
+      vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '1');
+      scheduleRoot = await realpath(
+        await mkdtemp(join(tmpdir(), 'allrice-quality-business-sql-')),
+      );
+      const reference = {
+        artifactId: `sha256:${'b'.repeat(64)}`,
+        profileId: 'allrice-recurring-control-v1',
+        storageId: 'isolated-quality-business-sql',
+        stateRoot: scheduleRoot,
+      };
+      vi.stubEnv(
+        'ALLRICE_NATIVE_RECURRING_REFERENCE',
+        JSON.stringify(reference),
+      );
+      expect(await initializeNativeRecurringPartition(reference)).toMatchObject(
+        {
+          reference,
+          activation: {
+            enabled: true,
+            storageReady: true,
+            legacyClockExcluded: true,
+            controlArtifactApproved: true,
+          },
+        },
+      );
     }, 120000);
     afterAll(async () => {
-      vi.restoreAllMocks();
-      vi.unstubAllEnvs();
-      await fixture?.close();
+      try {
+        await fixture?.close();
+      } finally {
+        vi.restoreAllMocks();
+        vi.unstubAllEnvs();
+        if (scheduleRoot)
+          await rm(scheduleRoot, { recursive: true, force: true });
+      }
     });
     const submit = (
       variant: 'defect' | 'correct' = 'defect',
@@ -676,22 +709,46 @@ suite(
         enabled: true,
         time: '09:00',
       });
+      const [saved] =
+        await fixture.db`select clock_owner from allrice_automations where id=${view.schedule!.id}`;
+      expect(saved!.clock_owner).toBe('native_recurring');
       return { context, rule: view.schedule! };
     }
-    async function due(id: string, age = '1 second') {
-      await fixture.db`update allrice_automations set next_run_at=clock_timestamp()-${age}::interval where id=${id}`;
-    }
-    async function claimOnly(id: string) {
+    /** Explicit component input to the same sink used by native receipts.
+     * It commits a real business AR, but proves neither a public receipt nor a
+     * Host clock decision. The original dispatcher/queue then creates the Run. */
+    async function reserveOccurrence(id: string, scheduledFor = new Date()) {
       return fixture.db.begin(async (tx) => {
-        const [rule] =
-          await tx`select * from allrice_automations where id=${id} for update`;
-        // SQL rows here deliberately exercise the persisted scheduler contract.
-        return claimPlatformQualityOccurrence(
+        await tx`select id from allrice_users where id=${admin.actor.id} for no key update`;
+        const [rule] = await tx<
+          QualityScheduleRule[]
+        >`select * from allrice_automations where id=${id} for update`;
+        if (!rule) throw Error('quality_fixture_rule_missing');
+        const result = await reservePlatformQualityOccurrence(
           tx,
-          rule as Parameters<typeof claimPlatformQualityOccurrence>[1],
-          nextScheduleAt(rule!.schedule),
+          rule,
+          scheduledFor,
         );
+        const [saved] =
+          await tx`select next_run_at from allrice_automations where id=${id}`;
+        expect(saved!.next_run_at).toEqual(rule.next_run_at);
+        return result;
       });
+    }
+    async function queuedOccurrence(id: string) {
+      const reserved = await reserveOccurrence(id);
+      if (!reserved || reserved.reason)
+        throw Error(
+          `quality_fixture_reservation_${reserved?.reason ?? 'duplicate'}`,
+        );
+      const [row] =
+        await fixture.db`select status,run_id,native_recurring_occurrence_id from allrice_automation_runs where id=${reserved.id}`;
+      expect(row).toMatchObject({
+        status: 'queued',
+        run_id: null,
+        native_recurring_occurrence_id: null,
+      });
+      return reserved.id;
     }
     async function occurrence(id: string) {
       const [row] =
@@ -704,14 +761,33 @@ suite(
       const row = await occurrence(id);
       if (row.check_id) await cancelPlatformQualityCheck(admin, row.check_id);
     }
-    it('two scheduler ticks admit one private occurrence/Run/Job and keep ordinary automation APIs separate', async () => {
+    it('concurrent business reservations commit one private occurrence and dispatch one Run/Job while ordinary APIs stay separate', async () => {
       const { context, rule } = await freshSchedule();
-      await due(rule.id);
-      await Promise.all([claimDueAutomations(), claimDueAutomations()]);
+      const scheduledFor = new Date();
+      const reservations = await Promise.all([
+        reserveOccurrence(rule.id, scheduledFor),
+        reserveOccurrence(rule.id, scheduledFor),
+      ]);
+      expect(reservations.filter(Boolean)).toHaveLength(1);
+      const reserved = reservations.find((r) => r !== null)!;
+      expect(reserved.reason).toBeNull();
+      expect((await occurrence(reserved.id)).run_id).toBeNull();
+      expect(
+        (
+          await Promise.all([
+            dispatchPlatformQualityOccurrence(reserved.id),
+            dispatchPlatformQualityOccurrence(reserved.id),
+          ])
+        ).some(Boolean),
+      ).toBe(true);
       const rows =
         await fixture.db`select id from allrice_automation_runs where automation_id=${rule.id}`;
       expect(rows).toHaveLength(1);
       const row = await occurrence(rows[0]!.id);
+      expect(row.scheduled_for).toEqual(scheduledFor);
+      expect(
+        await fixture.db`select id from allrice_jobs where run_id=${row.run_id}`,
+      ).toHaveLength(1);
       expect(row.run_id).toBeTruthy();
       expect(row.quality_run_id).toBe(row.run_id);
       expect(row.quality_session_id).toBe(row.session_id);
@@ -754,8 +830,7 @@ suite(
     });
     it('recovers an occurrence committed before enqueue; a rolled-back enqueue and a lost ACK never create duplicate Runs', async () => {
       const { rule } = await freshSchedule();
-      await due(rule.id);
-      const id = (await claimOnly(rule.id))!;
+      const id = await queuedOccurrence(rule.id);
       const original = queue.enqueueRun;
       await fixture.db
         .unsafe(`create function quality_rollback_fixture() returns trigger language plpgsql as $$ begin
@@ -803,8 +878,7 @@ suite(
     });
     it('pause and edits reject unbound old occurrences but do not cancel a bound Run', async () => {
       const { context, rule } = await freshSchedule();
-      await due(rule.id);
-      const staleId = (await claimOnly(rule.id))!;
+      const staleId = await queuedOccurrence(rule.id);
       const edited = await updatePlatformQualitySchedule(context, {
         expectedRevision: rule.revision,
         enabled: true,
@@ -821,8 +895,7 @@ suite(
           time: '09:00',
         }),
       ).rejects.toThrow('conflict');
-      await due(rule.id);
-      const boundId = (await claimOnly(rule.id))!;
+      const boundId = await queuedOccurrence(rule.id);
       expect(await dispatchPlatformQualityOccurrence(boundId)).toBe(true);
       const row = await occurrence(boundId),
         lease = await start(await getPlatformQualityCheck(admin, row.check_id));
@@ -840,8 +913,7 @@ suite(
     });
     it('concurrent configuration CAS yields one winner; deletion preserves history and prevents recovery', async () => {
       const { context, rule } = await freshSchedule();
-      await due(rule.id);
-      const id = (await claimOnly(rule.id))!;
+      const id = await queuedOccurrence(rule.id);
       const writes = await Promise.allSettled([
         updatePlatformQualitySchedule(context, {
           expectedRevision: rule.revision,
@@ -870,10 +942,15 @@ suite(
         await fixture.db`select id from allrice_audit_events where resource_id=${rule.id}`,
       ).not.toHaveLength(0);
     });
-    it('expired and busy days are explicitly not executed; restart advances to the future without catch-up', async () => {
+    it('records explicit expired and busy reservations without advancing the native projection or admitting a check', async () => {
       const { context, rule } = await freshSchedule();
-      await due(rule.id, '2 days');
-      expect(await claimOnly(rule.id)).toBeNull();
+      const [projection] =
+        await fixture.db`select next_run_at from allrice_automations where id=${rule.id}`;
+      const expired = await reserveOccurrence(
+        rule.id,
+        new Date(Date.now() - 2 * 86_400_000),
+      );
+      expect(expired?.reason).toBe('QUALITY_DISPATCH_EXPIRED');
       const missed = (
         await getPlatformQualitySchedule(context)
       ).occurrences.find(
@@ -881,14 +958,16 @@ suite(
       )!;
       expect(missed.accepted).toBe(false);
       expect(missed.checkId).toBeNull();
-      const [future] =
-        await fixture.db`select next_run_at from allrice_automations where id=${rule.id}`;
-      expect(future!.next_run_at.getTime()).toBeGreaterThan(Date.now());
-      await due(rule.id);
-      const activeId = (await claimOnly(rule.id))!;
+      const activeId = await queuedOccurrence(rule.id);
       expect(await dispatchPlatformQualityOccurrence(activeId)).toBe(true);
-      await due(rule.id);
-      expect(await claimOnly(rule.id)).toBeNull();
+      const blocked = await reserveOccurrence(
+        rule.id,
+        new Date(Date.now() + 1_000),
+      );
+      expect(blocked?.reason).toBe('QUALITY_BUSY');
+      const [unchanged] =
+        await fixture.db`select next_run_at from allrice_automations where id=${rule.id}`;
+      expect(unchanged).toEqual(projection);
       const busy = (await getPlatformQualitySchedule(context)).occurrences.find(
         (o) => o.notExecutedReason === 'QUALITY_BUSY',
       )!;
@@ -910,8 +989,7 @@ suite(
           { expectedRevision: rule.revision, enabled: false, time: '09:00' },
         ),
       ).rejects.toThrow('authorization_denied');
-      await due(rule.id);
-      const id = (await claimOnly(rule.id))!;
+      const id = await queuedOccurrence(rule.id);
       const pending = await occurrence(id);
       await expect(
         createPlatformQualityCheck(
@@ -939,16 +1017,14 @@ suite(
     });
     it('current account revocation and excluded assignments block unbound recovery instead of restoring authority', async () => {
       const { context, rule } = await freshSchedule();
-      await due(rule.id);
-      const id = (await claimOnly(rule.id))!;
+      const id = await queuedOccurrence(rule.id);
       vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', 'nobody@example.test');
       expect(await dispatchPlatformQualityOccurrence(id)).toBe(false);
       expect((await occurrence(id)).error_code).toBe(
         'QUALITY_PREPARATION_BLOCKED',
       );
       vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', adminEmail);
-      await due(rule.id);
-      const excludedId = (await claimOnly(rule.id))!;
+      const excludedId = await queuedOccurrence(rule.id);
       const [d] =
         await fixture.db`select * from allrice_platform_quality_deployments where owner_id=${admin.actor.id}`;
       await fixture.db`update allrice_employee_assignments set active=false,selection_mode='exclude' where id=${d!.assignment_id}`;
@@ -966,38 +1042,39 @@ suite(
       // pre-existing final authority regression below, never a real tenant.
       await fixture.db`update allrice_employee_assignments set active=true,selection_mode='include' where id=${d!.assignment_id}`;
     });
-    it('ordinary daily schedule still admits one original employee Run with the folder-era partial index', async () => {
+    it('refuses a new ordinary legacy schedule without adding a rule, occurrence or job', async () => {
       const [assignment] =
         await fixture.db`select id from allrice_employee_assignments where user_id=${company.owner.actor.id} and workspace_id=${company.workspace} and active limit 1`;
-      const rule = await createAutomation(company.owner, {
-        workspaceId: company.workspace,
-        name: 'ordinary schedule regression',
-        prompt: 'ordinary fixed task',
-        triggerType: 'schedule',
-        schedule: {
-          frequency: 'daily',
-          time: '09:00',
-          timezone: 'Asia/Shanghai',
-        },
-        employeeAssignmentId: assignment!.id,
-        enabled: true,
-      });
-      await due(rule.id);
-      await Promise.all([claimDueAutomations(), claimDueAutomations()]);
-      const rows =
-        await fixture.db`select * from allrice_automation_runs where automation_id=${rule.id}`;
-      expect(rows).toHaveLength(1);
-      expect(rows[0]!.quality_occurrence).toBeNull();
-      expect(rows[0]!.run_id).toBeTruthy();
+      const beforeRules =
+        await fixture.db`select id from allrice_automations where owner_id=${company.user} order by id`;
+      const beforeOccurrences =
+        await fixture.db`select id from allrice_automation_runs where organization_id=${company.org} order by id`;
+      const beforeJobs =
+        await fixture.db`select id from allrice_jobs where owner_id=${company.user} order by id`;
+      await expect(
+        createAutomation(company.owner, {
+          workspaceId: company.workspace,
+          name: 'ordinary schedule regression',
+          prompt: 'ordinary fixed task',
+          triggerType: 'schedule',
+          schedule: {
+            frequency: 'daily',
+            time: '09:00',
+            timezone: 'Asia/Shanghai',
+          },
+          employeeAssignmentId: assignment!.id,
+          enabled: true,
+        }),
+      ).rejects.toMatchObject({ code: 'legacy_schedule_retired' });
       expect(
-        await fixture.db`select id from allrice_platform_quality_checks where run_id=${rows[0]!.run_id}`,
-      ).toHaveLength(0);
-      await queue.cancelRun(
-        company.owner,
-        company.workspace,
-        rows[0]!.run_id,
-        {},
-      );
+        await fixture.db`select id from allrice_automations where owner_id=${company.user} order by id`,
+      ).toEqual(beforeRules);
+      expect(
+        await fixture.db`select id from allrice_automation_runs where organization_id=${company.org} order by id`,
+      ).toEqual(beforeOccurrences);
+      expect(
+        await fixture.db`select id from allrice_jobs where owner_id=${company.user} order by id`,
+      ).toEqual(beforeJobs);
     });
     it('a paused or excluded QA assignment is never restored on submission', async () => {
       const [d] =

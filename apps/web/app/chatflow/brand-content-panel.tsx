@@ -11,6 +11,7 @@ import {
 } from 'react';
 import { z } from 'zod';
 import {
+  ApiErrorSchema,
   BrandContentActionSchema,
   BrandContentBoardSchema,
   BrandContentBrandSchema,
@@ -2413,6 +2414,14 @@ async function fetchJson(
       throw new Error('服务返回的内容无法读取，请刷新核对结果。');
   }
   if (!response.ok) {
+    if (response.status === 503 && url.endsWith('/reminder')) {
+      const problem = ApiErrorSchema.safeParse(value);
+      if (
+        problem.success &&
+        problem.data.error.code === 'DEPENDENCY_UNAVAILABLE'
+      )
+        throw new Error(problem.data.error.message);
+    }
     if (response.status === 409)
       throw new Error(
         '记录已变化或本次操作与当前状态不符。输入仍保留，请刷新核对版本后再提交。',

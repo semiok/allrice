@@ -1,4 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import {
+  createSession,
+  authenticateSession,
+  revokeSession,
+} from './identity.ts';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -41,7 +46,13 @@ import {
   getAutomationCatalogOccurrenceRun,
   stopAutomationCatalogOccurrence,
 } from './automation-catalog.ts';
-import { listAutomations, runAutomationNow } from './execution/automation.ts';
+import {
+  listAutomations,
+  runAutomationNow,
+  createAutomation,
+  updateAutomation,
+  deleteAutomation,
+} from './execution/automation.ts';
 import {
   runManualAutomation,
   getManualAutomationRun,
@@ -1124,56 +1135,114 @@ suite(
           .occurrences,
       ).toHaveLength(3);
     });
-    it('uses the durable manual/legacy history identity without changing its schedule or selecting a later Run', async () => {
-      const session = await createChatSession(f.context, {
+    it('dispatches after browser logout, rechecks current membership, and preserves the first frozen Run', async () => {
+      const login = await createSession(f.ownerId);
+      const browser = await authenticateSession(login.token, {
+        organizationId: f.organizationId,
+        workspaceId: f.workspaceId,
+      });
+      expect(browser).not.toBeNull();
+      const session = await createChatSession(browser!, {
         workspaceId: f.workspaceId,
         employeeAssignmentId: f.assignmentId,
-        title: 'MET192 manual stop',
+        title: 'Native background identity',
       });
-      const id = randomUUID(),
-        schedule = {
-          frequency: 'weekly',
-          weekday: 2,
-          time: '09:00',
-          timezone: 'Asia/Shanghai',
-        };
-      await f.db`insert into allrice_automations(id,organization_id,workspace_id,owner_id,name,prompt,trigger_type,schedule,status,conversation_mode,employee_assignment_id,session_id,next_run_at) values(${id},${f.organizationId},${f.workspaceId},${f.ownerId},'MET192 manual stop','核对测试数据','schedule',${f.db.json(schedule)},'enabled','reuse',${f.assignmentId},${session.id},'2099-01-01T01:00:00Z')`;
-      await runAutomationNow(f.context, f.workspaceId, id);
-      const first = (
-        await getAutomationCatalogTask(f.context, f.workspaceId, id)
-      ).occurrences[0]!;
-      await runAutomationNow(f.context, f.workspaceId, id);
-      const before = (
-        await f.db`select to_jsonb(a) data from allrice_automations a where id=${id}`
-      )[0]!.data;
-      const target = { occurrenceId: first.id, runId: first.runId! };
+      const t = await createRecurringTask(browser!, session.id, {
+        clientRequestId: randomUUID(),
+        name: 'Background membership check',
+        prompt: 'Return the synthetic count',
+        rule: { kind: 'every', seconds: 60 },
+      });
+      await prepareNativeTask(t.id);
+      await revokeSession(login.token);
+      expect(await authenticateSession(login.token)).toBeNull();
+      await receipt(t.id);
+      expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
+        true,
+      );
+      const history = () =>
+        f.db`select ar.id,ar.run_id,ar.status,er.execution_snapshot,
+          md5(row_to_json(ar)::text) occurrence_digest,md5(row_to_json(er)::text) employee_run_digest
+          from allrice_automation_runs ar join allrice_employee_runs er on er.run_id=ar.run_id
+          where ar.automation_id=${t.id} order by ar.id`;
+      const first = await history();
+      expect(first).toHaveLength(1);
+      expect(first[0]).toMatchObject({
+        status: 'queued',
+        execution_snapshot: {
+          instance: { id: f.assignmentId, ownerId: f.ownerId },
+        },
+      });
+      // Queue the next synthetic SQL component receipt before revocation, then
+      // exercise the real dispatcher authority fence. This is not Host timing.
+      await receipt(t.id);
+      const memberships = await f.db`select id,active from allrice_memberships
+        where user_id=${f.ownerId} and organization_id=${f.organizationId}`;
+      await f.db`update allrice_memberships set active=false
+        where user_id=${f.ownerId} and organization_id=${f.organizationId}`;
+      try {
+        expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
+          true,
+        );
+        expect(await history()).toEqual(first);
+        expect(
+          await f.db`select outbox_state,business_binding from allrice_native_recurring_occurrences
+            where automation_id=${t.id} and outbox_state='blocked'`,
+        ).toMatchObject([{ outbox_state: 'blocked', business_binding: null }]);
+      } finally {
+        for (const row of memberships)
+          await f.db`update allrice_memberships set active=${row.active} where id=${row.id}`;
+      }
+    });
+    it('stops the exact native manual request while preserving the plan and a later Run', async () => {
+      const t = await task(
+        '核对测试数据',
+        { kind: 'daily', time: '09:00:00', timezone: 'Asia/Shanghai' },
+        { conversationMode: 'reuse' },
+      );
+      const first = await runManualAutomation(f.context, f.workspaceId, t.id, {
+        requestId: randomUUID(),
+        expectedRevision: 1,
+      });
+      const newer = await runManualAutomation(f.context, f.workspaceId, t.id, {
+        requestId: randomUUID(),
+        expectedRevision: 1,
+      });
+      expect(newer.automationRunId).not.toBe(first.automationRunId);
+      expect(newer.run.id).not.toBe(first.run.id);
+      expect(
+        await f.db`select ar.id,j.id job_id from allrice_automation_runs ar join allrice_jobs j on j.run_id=ar.run_id
+          where ar.automation_id=${t.id} and ar.manual_request_id in ${f.db([first.request.requestId, newer.request.requestId])}`,
+      ).toHaveLength(2);
+      const before = await manualBoundary(t.id);
+      const target = {
+        occurrenceId: first.automationRunId,
+        runId: first.run.id,
+        source: 'manual' as const,
+      };
       const result = await stopAutomationCatalogOccurrence(
         f.context,
         f.workspaceId,
-        id,
+        t.id,
         target,
       );
-      expect(result.run.id).toBe(first.runId);
+      expect(result.run.id).toBe(first.run.id);
       expect(result.run.cancelRequestedAt).not.toBeNull();
-      const newer = (
-        await getAutomationCatalogTask(f.context, f.workspaceId, id)
-      ).occurrences[0]!;
-      expect(newer.id).not.toBe(first.id);
       expect(
         (
           await getAutomationCatalogOccurrenceRun(
             f.context,
             f.workspaceId,
-            id,
-            { occurrenceId: newer.id, runId: newer.runId! },
+            t.id,
+            {
+              occurrenceId: newer.automationRunId,
+              runId: newer.run.id,
+              source: 'manual',
+            },
           )
         ).run.cancelRequestedAt,
       ).toBeNull();
-      expect(
-        (
-          await f.db`select to_jsonb(a) data from allrice_automations a where id=${id}`
-        )[0]!.data,
-      ).toEqual(before);
+      expect(await manualBoundary(t.id)).toEqual(before);
     });
     async function manualBoundary(id: string) {
       return {
@@ -1821,7 +1890,26 @@ suite(
         ids.sort(),
       );
     });
-    it('edits existing weekly legacy configuration without replacing its clock and preserves deleted history', async () => {
+    it('refuses legacy update, resume and manual entry while retaining pause, CAS and deleted history', async () => {
+      const counts = async () =>
+        (
+          await f.db`select (select count(*)::int from allrice_automations) automations,
+          (select count(*)::int from allrice_employees) employees,
+          (select count(*)::int from allrice_employee_assignments) assignments,
+          (select count(*)::int from allrice_audit_events) audits`
+        )[0];
+      const beforeReads = await counts();
+      await listAutomations(f.context, f.workspaceId);
+      await listAutomations(f.context, f.workspaceId);
+      await expect(
+        createAutomation(f.context, {
+          workspaceId: f.workspaceId,
+          name: 'No legacy seed',
+          prompt: 'No new task',
+          schedule: { frequency: 'daily', time: '09:00', timezone: 'UTC' },
+        }),
+      ).rejects.toMatchObject({ code: 'legacy_schedule_retired' });
+      expect(await counts()).toEqual(beforeReads);
       const session = await createChatSession(f.context, {
         workspaceId: f.workspaceId,
         employeeAssignmentId: f.assignmentId,
@@ -1834,28 +1922,65 @@ suite(
           time: '09:00',
           timezone: 'Asia/Shanghai',
         };
+      // Historical metadata only; no production legacy creation is permitted.
       await f.db`insert into allrice_automations(id,organization_id,workspace_id,owner_id,name,prompt,trigger_type,schedule,status,conversation_mode,employee_assignment_id,session_id,next_run_at) values(${id},${f.organizationId},${f.workspaceId},${f.ownerId},'MET197 legacy weekly','整理现有周报','schedule',${f.db.json(schedule)},'enabled','reuse',${f.assignmentId},${session.id},'2099-01-01T01:00:00Z')`;
       expect(
         (await getAutomationCatalogTask(f.context, f.workspaceId, id)).task
           .definition,
       ).toMatchObject({ kind: 'legacy', schedule, revision: 1 });
-      const update = {
-        action: 'update',
-        expectedRevision: 1,
-        name: 'MET197 weekly edited',
-        prompt: '整理原周报',
-        schedule: { ...schedule, time: '10:15' },
-      };
-      await changeAutomationCatalogTask(f.context, f.workspaceId, id, update);
+      const before = (
+        await f.db`select to_jsonb(a) data from allrice_automations a where id=${id}`
+      )[0]!.data;
       await expect(
-        changeAutomationCatalogTask(f.context, f.workspaceId, id, update),
+        changeAutomationCatalogTask(f.context, f.workspaceId, id, {
+          action: 'update',
+          expectedRevision: 1,
+          name: 'MET197 weekly edited',
+          prompt: '整理原周报',
+          schedule: { ...schedule, time: '10:15' },
+        }),
+      ).rejects.toMatchObject({ code: 'legacy_schedule_retired' });
+      await expect(
+        changeAutomationCatalogTask(f.context, f.workspaceId, id, {
+          action: 'resume',
+          expectedRevision: 1,
+        }),
+      ).rejects.toMatchObject({ code: 'legacy_schedule_retired' });
+      await expect(
+        runAutomationNow(f.context, f.workspaceId, id),
+      ).rejects.toMatchObject({ code: 'legacy_schedule_retired' });
+      await expect(
+        updateAutomation(f.context, f.workspaceId, id, {
+          expectedRevision: 1,
+          status: 'enabled',
+        }),
+      ).rejects.toMatchObject({ code: 'legacy_schedule_retired' });
+      expect(
+        (
+          await f.db`select to_jsonb(a) data from allrice_automations a where id=${id}`
+        )[0]!.data,
+      ).toEqual(before);
+      expect(
+        await f.db`select id from allrice_automation_runs where automation_id=${id}`,
+      ).toHaveLength(0);
+      await changeAutomationCatalogTask(f.context, f.workspaceId, id, {
+        action: 'pause',
+        expectedRevision: 1,
+      });
+      await expect(
+        changeAutomationCatalogTask(f.context, f.workspaceId, id, {
+          action: 'pause',
+          expectedRevision: 1,
+        }),
       ).rejects.toMatchObject({ code: 'grant_invalid' });
-      const [actual] =
-        await f.db`select clock_owner,revision,schedule from allrice_automations where id=${id}`;
-      expect(actual).toMatchObject({
+      const [paused] =
+        await f.db`select clock_owner,revision,schedule,status,next_run_at from allrice_automations where id=${id}`;
+      expect(paused).toMatchObject({
         clock_owner: 'legacy',
         revision: 2,
-        schedule: { frequency: 'weekly', weekday: 2, time: '10:15' },
+        schedule,
+        status: 'paused',
+        next_run_at: null,
       });
       await changeAutomationCatalogTask(f.context, f.workspaceId, id, {
         action: 'delete',
@@ -1865,7 +1990,7 @@ suite(
         (
           await listAutomationCatalog(f.context, {
             workspaceId: f.workspaceId,
-            query: 'MET197 weekly edited',
+            query: 'MET197 legacy weekly',
           })
         ).tasks,
       ).toHaveLength(0);
@@ -1873,6 +1998,47 @@ suite(
         (await getAutomationCatalogTask(f.context, f.workspaceId, id)).task
           .definition,
       ).toMatchObject({ kind: 'legacy', status: 'deleted', revision: 3 });
+    });
+    it('keeps generic legacy pause and soft deletion available without deleting its original occurrence', async () => {
+      const id = randomUUID(),
+        occurrenceId = randomUUID();
+      await f.db`insert into allrice_automations(id,organization_id,workspace_id,owner_id,name,prompt,trigger_type,schedule,status,conversation_mode,employee_assignment_id,next_run_at)
+        values(${id},${f.organizationId},${f.workspaceId},${f.ownerId},'Historical generic control','Original prompt','schedule',
+          ${f.db.json({ frequency: 'daily', time: '09:00', timezone: 'UTC' })},'enabled','reuse',${f.assignmentId},'2099-01-01T09:00:00Z')`;
+      await f.db`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,scheduled_for,status,error_code)
+        values(${occurrenceId},${f.organizationId},${f.workspaceId},${id},'2026-01-01T09:00:00Z','failed','HISTORICAL_FAILURE')`;
+      const history = async () =>
+        (
+          await f.db`select to_jsonb(ar) data from allrice_automation_runs ar where id=${occurrenceId}`
+        )[0]!.data;
+      const original = await history();
+      await updateAutomation(f.context, f.workspaceId, id, {
+        status: 'paused',
+        expectedRevision: 1,
+      });
+      await expect(
+        updateAutomation(f.context, f.workspaceId, id, {
+          status: 'paused',
+          expectedRevision: 1,
+        }),
+      ).rejects.toMatchObject({ code: 'grant_invalid' });
+      await deleteAutomation(f.context, f.workspaceId, id);
+      expect(
+        (
+          await f.db`select status,revision,deleted_at,next_run_at from allrice_automations where id=${id}`
+        )[0],
+      ).toMatchObject({
+        status: 'paused',
+        revision: 3,
+        deleted_at: expect.any(Date),
+        next_run_at: null,
+      });
+      expect(await history()).toEqual(original);
+      expect(
+        (await listAutomations(f.context, f.workspaceId)).automations.some(
+          (row) => row.id === id,
+        ),
+      ).toBe(false);
     });
     it('PostgreSQL rejects an outbox lease expiring at COMMIT and rolls back the whole Run', async () => {
       const t = await task();

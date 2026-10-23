@@ -61,12 +61,23 @@ export function ExperiencePolicyPanel({
           expectedRevision: revision,
         }),
       });
-      if (!response.ok)
+      if (!response.ok) {
+        if (response.status === 503) {
+          const refusal: unknown = await response.json().catch(() => null);
+          if (
+            typeof refusal === 'object' &&
+            refusal !== null &&
+            'code' in refusal &&
+            refusal.code === 'EXPERIENCE_SCHEDULING_UNAVAILABLE'
+          )
+            throw Error('经验自动整理暂不可用，本次设置未保存；仍可关闭整理。');
+        }
         throw Error(
           response.status === 409
             ? '设置已变化，请重新读取。'
-            : '保存失败，请检查时间和时区。',
+            : '未确认保存结果，请重新读取后核对。',
         );
+      }
       const policy = ExperienceCollectionPolicySchema.parse(
         (await response.json()).policy,
       );
@@ -77,7 +88,9 @@ export function ExperiencePolicyPanel({
         'validationMode' in policy ? policy.validationMode : 'off',
       );
       setNotice(
-        '已保存。整理按下一周期执行，不补跑错过周期；开启专项验证后，也会检查已有待验证草稿。',
+        policy.frequency === 'off'
+          ? '已关闭自动整理。已生成的草稿和历史记录保留。'
+          : '已保存。整理按下一周期执行，不补跑错过周期；开启专项验证后，也会检查已有待验证草稿。',
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : '保存失败');

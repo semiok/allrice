@@ -1,5 +1,6 @@
 import {
   getPlatformQualitySchedule,
+  QualityScheduleUnavailableError,
   updatePlatformQualitySchedule,
   deletePlatformQualitySchedule,
 } from '@allrice/database';
@@ -36,6 +37,14 @@ async function write(request: Request, remove: boolean) {
     )(context, JSON.parse(text));
     return Response.json(QualityScheduleViewSchema.parse(result), { headers });
   } catch (error) {
+    if (error instanceof QualityScheduleUnavailableError)
+      return Response.json(
+        {
+          error: 'quality_schedule_unavailable',
+          message: '每日质检暂不可用，本次设置未保存。',
+        },
+        { status: 503, headers },
+      );
     return executionErrorResponse(error);
   }
 }

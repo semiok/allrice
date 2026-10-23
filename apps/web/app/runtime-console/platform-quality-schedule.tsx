@@ -92,6 +92,18 @@ export function PlatformQualitySchedule({
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(input),
       });
+      if (response.status === 503) {
+        const refusal: unknown = await response.json().catch(() => null);
+        if (
+          typeof refusal === 'object' &&
+          refusal !== null &&
+          'error' in refusal &&
+          refusal.error === 'quality_schedule_unavailable'
+        ) {
+          if (mounted.current) setError('每日质检暂不可用，本次设置未保存。');
+          return;
+        }
+      }
       if (!response.ok) throw Error('schedule_write_unconfirmed');
       QualityScheduleViewSchema.parse(await response.json());
       await read();

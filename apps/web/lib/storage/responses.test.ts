@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { DataAccessError, IdentityError } from '@allrice/database';
+import {
+  DataAccessError,
+  IdentityError,
+  LegacyScheduleRetiredError,
+} from '@allrice/database';
 import type * as DatabaseModule from '@allrice/database';
 import { GET } from '../../app/api/v1/files/[id]/download/route';
+import { storageErrorResponse } from './responses';
 
 const ports = vi.hoisted(() => ({
   context: vi.fn(),
@@ -57,5 +62,19 @@ describe('file download identity responses', () => {
       error: { code: 'AUTHORIZATION_DENIED' },
     });
     expect(ports.storage).not.toHaveBeenCalled();
+  });
+});
+
+it('returns a permanent private retirement response for the old schedule entry points', async () => {
+  const response = storageErrorResponse(new LegacyScheduleRetiredError());
+  expect(response.status).toBe(410);
+  expect(response.headers.get('cache-control')).toBe('private, no-store');
+  expect(await response.json()).toMatchObject({
+    error: {
+      code: 'CONFLICT',
+      retryable: false,
+      message:
+        '历史定时任务仅支持查看、暂停和删除。后续执行请在对话中创建新任务。',
+    },
   });
 });

@@ -93,6 +93,9 @@ import { collectPendingExperienceEvidence } from './experience-evidence.ts';
 import { createExperienceStore } from './experience.ts';
 import {
   syncExperienceConsolidationSchedules,
+  reserveExperienceOccurrenceInTransaction,
+  dispatchExperienceOccurrence,
+  type ExperienceScheduleRule,
   prepareExperienceExecution,
   getExperienceExecution,
   listExperienceDrafts,
@@ -288,6 +291,80 @@ async function currentRequirement(f: Awaited<ReturnType<typeof source>>) {
   });
   return { contentId, setId: base.setId };
 }
+/** The source/budget sink used by native calendar admission. The explicit P
+ * below is component-test input, not a due-time decision or native receipt.
+ * Only metadata comes from source(); the production sink creates the AR. */
+async function reserveOccurrence(
+  f: Awaited<ReturnType<typeof source>>,
+  scheduledFor: Date,
+) {
+  return db.begin(async (tx) => {
+    await tx`select pg_advisory_xact_lock(hashtextextended(${`experience-policy:${f.org}`},183))`;
+    const [rule] = await tx<
+      ExperienceScheduleRule[]
+    >`select * from allrice_automations where id=${f.rule.id} for update`;
+    if (!rule) throw Error('experience_fixture_rule_missing');
+    expect(rule).toMatchObject({
+      organization_id: f.org,
+      workspace_id: f.workspace,
+      owner_id: f.user,
+      employee_assignment_id: f.instance.assignmentId,
+    });
+    const result = await reserveExperienceOccurrenceInTransaction(
+      tx,
+      rule,
+      scheduledFor,
+      null,
+    );
+    // This fixture must not inherit the retired producer's clock advancement.
+    const [saved] =
+      await tx`select next_run_at from allrice_automations where id=${rule.id}`;
+    expect(saved!.next_run_at).toEqual(rule.next_run_at);
+    return result;
+  });
+}
+async function dispatchedOccurrence(f: Awaited<ReturnType<typeof source>>) {
+  const scheduledFor = new Date();
+  const reservations = await Promise.all([
+    reserveOccurrence(f, scheduledFor),
+    reserveOccurrence(f, scheduledFor),
+  ]);
+  expect(reservations.map((r) => r.outcome).sort()).toEqual([
+    'already_claimed',
+    'queued',
+  ]);
+  const ids = reservations.map((r) => {
+    if (r.outcome !== 'queued' && r.outcome !== 'already_claimed')
+      throw Error(`experience_fixture_reservation_${r.outcome}`);
+    return r.automationRunId;
+  });
+  expect(ids[1]).toBe(ids[0]);
+  // Both transactions have committed before the real dispatcher is invoked.
+  const [pending] =
+    await db`select * from allrice_automation_runs where id=${ids[0]!}`;
+  expect(pending).toMatchObject({
+    automation_id: f.rule.id,
+    organization_id: f.org,
+    workspace_id: f.workspace,
+    scheduled_for: scheduledFor,
+    run_id: null,
+    status: 'queued',
+    experience_execution: null,
+  });
+  expect(
+    ExperienceOccurrenceSchema.parse(
+      pending!.experience_occurrence,
+    ).sources.map((s) => s.id),
+  ).toContain(f.candidate.id);
+  await dispatchExperienceOccurrence(ids[0]!);
+  const [occurrence] =
+    await db`select * from allrice_automation_runs where id=${ids[0]!}`;
+  expect(occurrence?.run_id).toBeTruthy();
+  expect(
+    await db`select id from allrice_jobs where run_id=${occurrence!.run_id}`,
+  ).toHaveLength(1);
+  return occurrence!;
+}
 async function queued(
   withSkill = false,
   withRule = false,
@@ -307,12 +384,8 @@ async function queued(
     target,
   );
   const current = withRule ? await currentRequirement(f) : null;
-  await db`update allrice_automations set next_run_at=clock_timestamp()-interval '1 second' where id=${f.rule.id}`;
-  await Promise.all([claimDueAutomations(), claimDueAutomations()]);
-  const [occurrence] =
-    await db`select * from allrice_automation_runs where automation_id=${f.rule.id} order by created_at desc,id desc limit 1`;
-  expect(occurrence?.run_id).toBeTruthy();
-  return { ...f, current, occurrence: occurrence! };
+  const occurrence = await dispatchedOccurrence(f);
+  return { ...f, current, occurrence };
 }
 async function leased(
   withSkill = false,
@@ -459,6 +532,8 @@ suite(
         .sort())
         await db.unsafe(await readFile(new URL(file, dir), 'utf8'));
       vi.stubEnv('ALLRICE_EXPERIENCE_REVIEW_ENABLED', '1');
+      vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '1');
+      vi.stubEnv('ALLRICE_NATIVE_CALENDAR_ENABLED', '1');
       await synchronizePlatformContent(await loadPlatformContentCatalog());
     }, 120000);
     beforeEach(async () => {
@@ -2243,10 +2318,7 @@ suite(
         (c) => c.source?.runId === runId,
       )!;
       expect(independent).toBeTruthy();
-      await db`update allrice_automations set next_run_at=clock_timestamp()-interval '1 second' where id=${f.rule.id}`;
-      await claimDueAutomations();
-      const [occurrence] =
-        await db`select * from allrice_automation_runs where automation_id=${f.rule.id}`;
+      const occurrence = await dispatchedOccurrence(f);
       const workerId = randomUUID(),
         job = (await claimNextJob(workerId, 120000, {
           allowBackground: true,
@@ -3355,10 +3427,7 @@ suite(
     it('freezes actual effective rules and refuses output after those rules change', async () => {
       const f = await source();
       const current = await currentRequirement(f);
-      await db`update allrice_automations set next_run_at=clock_timestamp()-interval '1 second' where id=${f.rule.id}`;
-      await claimDueAutomations();
-      const [batch] =
-        await db`select run_id from allrice_automation_runs where automation_id=${f.rule.id}`;
+      const batch = await dispatchedOccurrence(f);
       const frozen = await getExperienceExecution(batch!.run_id);
       expect(frozen.occurrence.currentRules.sources[0]?.body).toBe(
         '以实际退款逐条扣减，不以预算代替实际发生。',
@@ -3595,19 +3664,24 @@ suite(
           .pendingSources,
       ).toBe(102);
     });
-    it('records empty periods without a Run or model execution', async () => {
+    it('records an empty reservation without a Run or model execution', async () => {
       const f = await source();
       await deleteWorkspaceMemory(f.owner, f.workspace, f.candidate.id);
-      await db`update allrice_automations set next_run_at=clock_timestamp()-interval '1 second' where id=${f.rule.id}`;
-      await claimDueAutomations();
+      const reserved = await reserveOccurrence(f, new Date());
+      expect(reserved.outcome).toBe('empty');
+      if (reserved.outcome !== 'empty')
+        throw Error(`experience_fixture_empty_${reserved.outcome}`);
       const [row] =
-        await db`select * from allrice_automation_runs where automation_id=${f.rule.id}`;
+        await db`select * from allrice_automation_runs where id=${reserved.automationRunId}`;
       expect(row).toMatchObject({
         run_id: null,
         status: 'succeeded',
         error_code: 'EXPERIENCE_NO_NEW_EVIDENCE',
         experience_execution: null,
       });
+      expect(
+        await db`select id from allrice_jobs where owner_id=${f.user}`,
+      ).toHaveLength(0);
       expect(
         (await getExperienceOverview(f.owner, f.instance.id)).summary.schedule
           .lastOccurrence?.outcome,
@@ -3620,31 +3694,153 @@ suite(
         db`update allrice_automation_runs set experience_execution=${db.json({ ...frozen, model: { ...frozen.model, model: 'another' } })} where id=${f.occurrence.id}`,
       ).rejects.toThrow('occurrence is immutable');
     });
-    it('pauses an archived earliest rule while later private and ordinary schedules still dispatch', async () => {
+    it('keeps experience rules out of legacy due scanning before native handoff', async () => {
       const bad = await source(),
         good = await source();
       await db`update allrice_employee_instances set archived_at=clock_timestamp() where id=${bad.instance.id}`;
+      // Deliberate overdue staging metadata: even an unhanded-off rule must
+      // wait for the native writer, rather than fall back to the legacy clock.
       await db`update allrice_automations set next_run_at=clock_timestamp()-interval '2 minutes' where id=${bad.rule.id}`;
       await db`update allrice_automations set next_run_at=clock_timestamp()-interval '1 minute' where id=${good.rule.id}`;
-      const [plain] =
-        await db`insert into allrice_automations(organization_id,workspace_id,owner_id,name,prompt,trigger_type,schedule,status,conversation_mode,employee_assignment_id,next_run_at)
-        select organization_id,workspace_id,owner_id,'普通定时任务','描述一次对账步骤','schedule',schedule,'enabled','new_each_run',employee_assignment_id,clock_timestamp()-interval '30 seconds' from allrice_automations where id=${good.rule.id} returning id`;
-      await claimDueAutomations();
+      const ruleIds = [bad.rule.id, good.rule.id];
+      const before =
+        await db`select id,status,next_run_at,last_run_at,revision,clock_owner from allrice_automations where id in ${db(ruleIds)} order by id`;
+      expect(
+        await Promise.all([claimDueAutomations(), claimDueAutomations()]),
+      ).toEqual([0, 0]);
+      expect(
+        await db`select id,status,next_run_at,last_run_at,revision,clock_owner from allrice_automations where id in ${db(ruleIds)} order by id`,
+      ).toEqual(before);
+      expect(
+        await db`select id from allrice_automation_runs where automation_id in ${db(ruleIds)}`,
+      ).toHaveLength(0);
+      expect(
+        await db`select id from allrice_jobs where owner_id in ${db([bad.user, good.user])}`,
+      ).toHaveLength(0);
+    });
+    it.each([
+      'ALLRICE_EXPERIENCE_REVIEW_ENABLED',
+      'ALLRICE_NATIVE_RECURRING_ENABLED',
+      'ALLRICE_NATIVE_CALENDAR_ENABLED',
+    ])(
+      'does not write policy/rules or materialize when %s is off, but still allows closing',
+      async (flag) => {
+        const f = await source(),
+          policy = await readExperiencePolicy(f.org);
+        const state = async () => ({
+          settings:
+            await db`select value from allrice_settings where scope_type='organization' and scope_id=${f.org} and key='employee_experience_policy'`,
+          rules:
+            await db`select to_jsonb(a) data from allrice_automations a where organization_id=${f.org} order by id`,
+          occurrences:
+            await db`select to_jsonb(ar) data from allrice_automation_runs ar where organization_id=${f.org} order by id`,
+        });
+        const before = await state();
+        try {
+          vi.stubEnv(flag, '0');
+          await expect(
+            updateExperiencePolicy(f.reviewer, f.org, {
+              expectedRevision: policy.revision,
+              frequency: 'daily',
+              timezone: 'UTC',
+              time: '04:00',
+              weekday: 1,
+              monthDay: 1,
+            }),
+          ).rejects.toMatchObject({ code: 'disabled' });
+          expect(await syncExperienceConsolidationSchedules()).toBe(0);
+          expect(await state()).toEqual(before);
+          expect(await readExperiencePolicy(f.org)).toEqual(policy);
+          for (const key of [
+            'ALLRICE_EXPERIENCE_REVIEW_ENABLED',
+            'ALLRICE_NATIVE_RECURRING_ENABLED',
+            'ALLRICE_NATIVE_CALENDAR_ENABLED',
+          ])
+            vi.stubEnv(key, '0');
+          const closed = await updateExperiencePolicy(f.reviewer, f.org, {
+            expectedRevision: policy.revision,
+            frequency: 'off',
+            timezone: 'UTC',
+            time: '04:00',
+            weekday: 1,
+            monthDay: 1,
+          });
+          expect(closed).toMatchObject({
+            frequency: 'off',
+            revision: policy.revision + 1,
+          });
+          expect((await state()).rules).toEqual([
+            expect.objectContaining({
+              data: expect.objectContaining({
+                status: 'paused',
+                next_run_at: null,
+              }),
+            }),
+          ]);
+        } finally {
+          for (const key of [
+            'ALLRICE_EXPERIENCE_REVIEW_ENABLED',
+            'ALLRICE_NATIVE_RECURRING_ENABLED',
+            'ALLRICE_NATIVE_CALENDAR_ENABLED',
+          ])
+            vi.stubEnv(key, '1');
+        }
+      },
+    );
+    it('rechecks experience ownership after an ordinary due candidate waits for its row lock', async () => {
+      const f = await source();
+      await db`update allrice_automations set experience_binding=null,next_run_at=clock_timestamp()-interval '1 minute' where id=${f.rule.id}`;
+      const [before] =
+        await db`select id,status,next_run_at,last_run_at,revision,clock_owner from allrice_automations where id=${f.rule.id}`;
+      let release!: () => void, acquired!: (pid: number) => void;
+      const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+        ready = new Promise<number>((resolve) => {
+          acquired = resolve;
+        });
+      const held = db.begin(async (tx) => {
+        await tx`update allrice_automations set experience_binding=${tx.json(f.rule.experience_binding)} where id=${f.rule.id}`;
+        acquired((await tx`select pg_backend_pid() pid`)[0]!.pid);
+        await gate;
+      });
+      void held.catch(() => undefined);
+      const pid = await ready,
+        tick = claimDueAutomations(1);
+      void tick.catch(() => undefined);
+      try {
+        await expect
+          .poll(
+            async () =>
+              Number(
+                (
+                  await db`select count(*) n from pg_stat_activity where ${pid}=any(pg_blocking_pids(pid))`
+                )[0]!.n,
+              ),
+            { timeout: 3000 },
+          )
+          .toBeGreaterThan(0);
+      } finally {
+        release();
+        await held;
+      }
+      expect(await tick).toBe(0);
       expect(
         (
-          await db`select status from allrice_automations where id=${bad.rule.id}`
-        )[0]!.status,
-      ).toBe('paused');
+          await db`select id,status,next_run_at,last_run_at,revision,clock_owner from allrice_automations where id=${f.rule.id}`
+        )[0],
+      ).toEqual(before);
       expect(
         (
-          await db`select run_id from allrice_automation_runs where automation_id=${good.rule.id}`
-        )[0]!.run_id,
-      ).toBeTruthy();
+          await db`select experience_binding from allrice_automations where id=${f.rule.id}`
+        )[0]!.experience_binding,
+      ).toEqual(f.rule.experience_binding);
       expect(
-        (
-          await db`select run_id from allrice_automation_runs where automation_id=${plain!.id}`
-        )[0]!.run_id,
-      ).toBeTruthy();
+        await db`select id from allrice_automation_runs where automation_id=${f.rule.id}`,
+      ).toHaveLength(0);
+      expect(
+        await db`select id from allrice_jobs where owner_id=${f.user}`,
+      ).toHaveLength(0);
     });
     it('serializes first materialization with an organization policy update', async () => {
       const f = await source(false, false),

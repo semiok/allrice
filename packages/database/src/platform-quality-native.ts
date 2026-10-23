@@ -24,6 +24,7 @@ import {
 } from './native-schedule-recurring-state.ts';
 import {
   qualityScheduleConfigurationDigest,
+  QualityScheduleUnavailableError,
   reservePlatformQualityOccurrence,
   type QualityScheduleRule,
 } from './platform-quality-automation.ts';
@@ -119,7 +120,8 @@ export async function syncPlatformQualityNative(tx: Tx, automationId: string) {
     if (rule.clock_owner !== 'legacy') invalid();
     const [partition] =
       await tx`select activation from allrice_native_once_partitions where partition_id=${PARTITION} for share`;
-    if (!partition || !nativeOnceReady(partition.activation)) invalid();
+    if (!partition || !nativeOnceReady(partition.activation))
+      throw new QualityScheduleUnavailableError();
     // A due legacy occurrence belongs to the old consumer until it is reserved.
     // The bounded migration retries after that transaction advances its clock.
     if (

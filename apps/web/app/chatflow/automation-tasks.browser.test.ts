@@ -386,6 +386,25 @@ suite(
         }
         if (request.method() === 'PATCH') {
           const body = request.postDataJSON() as ChangeRecurringTaskInput;
+          if (task.definition.kind === 'legacy') {
+            if (!['pause', 'delete'].includes(body.action))
+              return route.fulfill({
+                status: 410,
+                json: { message: '历史定时任务只读' },
+              });
+            if (body.expectedRevision !== task.definition.revision)
+              return route.fulfill({
+                status: 409,
+                json: { message: '版本冲突' },
+              });
+            task.definition.revision++;
+            task.revision = task.definition.revision;
+            task.definition.status =
+              body.action === 'delete' ? 'deleted' : 'paused';
+            task.nextRunAt = null;
+            if (body.action === 'delete') task.canStop = false;
+            return route.fulfill({ json: { task: structuredClone(task) } });
+          }
           if (task.definition.kind !== 'recurring')
             throw new Error('fixture kind');
           const current = task.definition.task;
@@ -481,8 +500,10 @@ suite(
           json: {
             tasks:
               task.name.includes(filter) &&
-              task.definition.kind === 'recurring' &&
-              task.definition.task.status !== 'deleted'
+              (task.definition.kind === 'recurring'
+                ? task.definition.task.status !== 'deleted'
+                : task.definition.kind === 'legacy' &&
+                  task.definition.status !== 'deleted')
                 ? [task]
                 : [],
             nextCursor: null,
@@ -536,6 +557,84 @@ suite(
         close: () => page.close(),
       };
     }
+    it.each([1440, 390])(
+      'shows legacy history read-only, allows pause/delete, and never resumes or starts work at %ipx',
+      async (width) => {
+        const f = await fixture(width);
+        f.task.definition = {
+          kind: 'legacy',
+          schedule: {
+            frequency: 'daily',
+            time: '09:00',
+            timezone: 'Asia/Shanghai',
+          },
+          status: 'enabled',
+          revision: 1,
+          canManage: false,
+        };
+        try {
+          await f.page.getByRole('button', { name: /喝水/ }).click();
+          await f.page
+            .getByText(
+              '历史任务支持查看、暂停和删除。后续执行请在对话中创建新任务。',
+              { exact: true },
+            )
+            .waitFor();
+          expect(
+            await f.page
+              .getByRole('textbox', { name: '任务名称', exact: true })
+              .count(),
+          ).toBe(0);
+          expect(
+            await f.page
+              .getByRole('button', { name: '保存修改', exact: true })
+              .count(),
+          ).toBe(0);
+          expect(
+            await f.page
+              .getByRole('button', { name: '恢复任务', exact: true })
+              .count(),
+          ).toBe(0);
+          await f.page
+            .getByRole('button', { name: '暂停任务', exact: true })
+            .click();
+          await f.page.getByText('设置已更新。', { exact: true }).waitFor();
+          expect(f.task.definition.status).toBe('paused');
+          expect(
+            await f.page
+              .getByRole('button', { name: '恢复任务', exact: true })
+              .count(),
+          ).toBe(0);
+          await f.page
+            .getByRole('button', { name: '删除任务', exact: true })
+            .click();
+          await f.page
+            .getByRole('button', { name: '确认删除', exact: true })
+            .click();
+          await expect
+            .poll(
+              () =>
+                f.task.definition.kind === 'legacy' && f.task.definition.status,
+            )
+            .toBe('deleted');
+          expect(
+            f.requests.filter((r) => r.method === 'PATCH').map((r) => r.body),
+          ).toEqual([
+            { action: 'pause', expectedRevision: 1 },
+            { action: 'delete', expectedRevision: 2 },
+          ]);
+          expect(f.requests.filter((r) => r.method === 'POST')).toEqual([]);
+          expect(f.errors).toEqual([]);
+          expect(
+            await f.page.evaluate(
+              () => document.documentElement.scrollWidth <= innerWidth,
+            ),
+          ).toBe(true);
+        } finally {
+          await f.close();
+        }
+      },
+    );
     it.each([1280, 390])(
       'edits a weekly rule in the unified right panel, preserves seconds and discards unsaved days at %ipx',
       async (width) => {

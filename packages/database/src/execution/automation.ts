@@ -13,7 +13,6 @@ import {
   AutomationScheduleSchema,
   FolderTriggerConfigSchema,
   CreateAutomationInputSchema,
-  type ExecutionContext,
   RequestContextSchema,
   UpdateAutomationInputSchema,
   UuidSchema,
@@ -25,10 +24,14 @@ import {
 
 import { DataAccessError } from '../data.ts';
 import { getDatabase } from '../core/client.ts';
-import {
-  ensureDefaultEmployee,
-  resolveWorkspaceId,
-} from '../workspace/service.ts';
+import { resolveWorkspaceId } from '../workspace/service.ts';
+
+export class LegacyScheduleRetiredError extends Error {
+  readonly code = 'legacy_schedule_retired';
+  constructor() {
+    super('legacy_schedule_retired');
+  }
+}
 
 type AutomationRunStatus = AutomationRun['status'];
 
@@ -313,251 +316,6 @@ async function getAutomationRow(
   return row;
 }
 
-const demoAutomationTemplates = [
-  {
-    name: '每日经营晨报',
-    description: '传统文化企业每日经营数据、订单和客户动态摘要。',
-    employeeKey: 'builtin-ecommerce-analyst',
-    schedule: {
-      frequency: 'daily' as const,
-      time: '09:00',
-      timezone: 'Asia/Shanghai',
-    },
-    prompt:
-      '请整理昨天的经营晨报。结合工作区中的销售数据、订单、客户记录和相关文件，输出：一、核心经营指标；二、较前日的变化；三、异常和风险；四、需要老板关注的三件事；五、今天建议推进的行动。不要编造缺失数据，明确标注数据来源和待补充信息。',
-  },
-  {
-    name: '传统文化内容选题策划',
-    description: '围绕节气、非遗、传统工艺和品牌故事生成内容选题。',
-    employeeKey: 'builtin-short-video-growth',
-    schedule: {
-      frequency: 'weekly' as const,
-      time: '09:30',
-      weekday: 1,
-      timezone: 'Asia/Shanghai',
-    },
-    prompt:
-      '请为本周制定传统文化内容选题计划。结合近期节气、传统节日、非遗文化、用户兴趣和品牌定位，输出至少 8 个短视频或图文选题，每个包含标题、核心观点、内容结构、开头 3 秒话术、适合的素材和发布建议，并标注优先级。',
-  },
-  {
-    name: '客户与项目跟进提醒',
-    description: '整理重点客户、合作项目和即将逾期的跟进事项。',
-    employeeKey: 'builtin-sales-coach',
-    schedule: {
-      frequency: 'weekly' as const,
-      time: '16:30',
-      weekday: 5,
-      timezone: 'Asia/Shanghai',
-    },
-    prompt:
-      '请整理本周客户与项目跟进情况。根据工作区中的客户记录、合作项目和对话，输出重点客户状态、已承诺事项、待跟进事项、潜在风险和下周跟进话术。按紧急程度排序，不确定的信息请列为待确认。',
-  },
-  {
-    name: '文化活动效果复盘',
-    description: '复盘展览、课程、文创活动或线上活动的效果并提出改进建议。',
-    employeeKey: 'builtin-growth-strategist',
-    schedule: {
-      frequency: 'weekly' as const,
-      time: '17:00',
-      weekday: 5,
-      timezone: 'Asia/Shanghai',
-    },
-    prompt:
-      '请复盘本周的传统文化活动、展览、课程或营销项目。重点分析参与人数、转化、收入、内容传播、客户反馈和执行成本；输出活动结论、做得好的地方、问题根因、下一次应该停止或继续的事项，以及一份可执行的优化清单。',
-  },
-  {
-    name: '活动页与商品文案优化',
-    description: '持续检查文化产品和活动页面的卖点、结构与转化路径。',
-    employeeKey: 'builtin-ecommerce-page-builder',
-    schedule: {
-      frequency: 'weekly' as const,
-      time: '10:00',
-      weekday: 3,
-      timezone: 'Asia/Shanghai',
-    },
-    prompt:
-      '请检查本周需要推广的文化产品、课程或活动页面。结合已有资料和历史反馈，给出页面结构、主标题、副标题、核心卖点、信任证明、用户疑虑处理和行动按钮建议；同时指出当前页面最可能影响转化的三个问题。',
-  },
-  {
-    name: '传统文化知识库整理',
-    description: '整理企业积累的文化资料、产品知识和讲解口径。',
-    employeeKey: 'builtin-cultural-researcher',
-    schedule: {
-      frequency: 'weekly' as const,
-      time: '10:30',
-      weekday: 3,
-      timezone: 'Asia/Shanghai',
-    },
-    prompt:
-      '请整理本周新增的传统文化资料、产品资料、活动记录和客户常见问题。输出结构化知识卡片，包含主题、事实依据、可用于对外传播的表达、不可确认的信息和关联产品；发现重复或矛盾内容时请标记出来。',
-  },
-  {
-    name: '非遗项目进度周报',
-    description: '汇总非遗项目、合作方和重点交付节点，提前识别风险。',
-    employeeKey: 'builtin-growth-strategist',
-    schedule: {
-      frequency: 'weekly' as const,
-      time: '09:00',
-      weekday: 1,
-      timezone: 'Asia/Shanghai',
-    },
-    prompt:
-      '请生成非遗项目进度周报。按项目列出本周进展、已完成交付、待办事项、负责人、截止时间、合作方反馈和风险；最后给老板输出一页式总览，标记需要决策、需要协调和可以继续推进的事项。',
-  },
-  {
-    name: '文创产品上新计划',
-    description: '从文化主题、用户需求和销售目标出发规划文创产品上新。',
-    employeeKey: 'builtin-ecommerce-page-builder',
-    schedule: {
-      frequency: 'weekly' as const,
-      time: '11:00',
-      weekday: 2,
-      timezone: 'Asia/Shanghai',
-    },
-    prompt:
-      '请制定本周文创产品上新计划。结合现有产品资料、传统文化主题、用户反馈和销售目标，输出产品定位、文化故事、目标人群、价格带、主图与详情页卖点、发布节奏和首周验证指标。对缺少依据的判断请标注假设。',
-  },
-  {
-    name: '展览与活动筹备清单',
-    description: '把展览、讲座、研学和文化活动拆解为可执行的筹备任务。',
-    employeeKey: 'builtin-growth-strategist',
-    schedule: {
-      frequency: 'weekly' as const,
-      time: '14:00',
-      weekday: 2,
-      timezone: 'Asia/Shanghai',
-    },
-    prompt:
-      '请检查近期展览、讲座、研学或文化活动的筹备情况。按时间倒排输出场地、内容、嘉宾、物料、宣传、报名、现场执行和复盘任务，标注负责人、截止时间、依赖关系和当前风险，最后给出本周最重要的五项推进动作。',
-  },
-  {
-    name: '文化课程与研学复盘',
-    description: '分析课程、研学和讲解项目的参与体验与交付质量。',
-    employeeKey: 'builtin-cultural-course-planner',
-    schedule: {
-      frequency: 'weekly' as const,
-      time: '16:00',
-      weekday: 4,
-      timezone: 'Asia/Shanghai',
-    },
-    prompt:
-      '请复盘本周文化课程、研学活动或讲解服务。分析报名、到场、满意度、复购、投诉、讲师表现和客户反馈，提炼最受欢迎的内容与体验问题，并提出课程优化、服务改进和下一次销售跟进建议。',
-  },
-  {
-    name: '品牌故事素材提炼',
-    description: '从企业历史、技艺传承和客户案例中提炼品牌传播素材。',
-    employeeKey: 'builtin-cultural-brand-storyteller',
-    schedule: {
-      frequency: 'weekly' as const,
-      time: '15:00',
-      weekday: 4,
-      timezone: 'Asia/Shanghai',
-    },
-    prompt:
-      '请从本周新增的企业历史、传承故事、工艺资料、客户案例和活动记录中提炼品牌传播素材。输出 3 个品牌故事、5 个短视频切入点、2 个客户案例表达和可直接使用的金句；区分已核实事实与需要补充的信息。',
-  },
-  {
-    name: '客户定制方案初稿',
-    description: '根据客户需求快速形成文化项目、礼赠或活动定制方案。',
-    employeeKey: 'builtin-sales-coach',
-    schedule: {
-      frequency: 'daily' as const,
-      time: '15:30',
-      timezone: 'Asia/Shanghai',
-    },
-    prompt:
-      '请检查近期新增的客户需求和合作沟通，整理需要推进的定制项目。为每个项目形成方案初稿，包含客户目标、文化主题、产品或服务组合、交付方式、时间计划、预算信息、待确认问题和下一步沟通话术。',
-  },
-  {
-    name: '用户反馈与舆情周报',
-    description: '汇总用户评价、客服反馈和公开传播中的问题与机会。',
-    employeeKey: 'builtin-ecommerce-analyst',
-    schedule: {
-      frequency: 'weekly' as const,
-      time: '17:30',
-      weekday: 5,
-      timezone: 'Asia/Shanghai',
-    },
-    prompt:
-      '请生成用户反馈与舆情周报。汇总客户评价、客服记录、活动反馈和公开内容中的正向反馈、常见问题、负面风险和潜在需求，按影响范围和紧急程度排序，并给出产品、内容、服务和管理四个方面的改进建议。',
-  },
-  {
-    name: '经营会议材料',
-    description: '把经营数据、项目进展和文化业务成果整理成老板会议材料。',
-    employeeKey: 'builtin-ecommerce-analyst',
-    schedule: {
-      frequency: 'weekly' as const,
-      time: '09:00',
-      weekday: 1,
-      timezone: 'Asia/Shanghai',
-    },
-    prompt:
-      '请准备月度经营会议材料。综合本月收入、订单、客户、产品、活动、内容、项目和团队事项，输出结论先行的经营摘要、关键数据、重点成果、问题与风险、需要老板决策的事项以及下月行动计划。没有月度数据时请使用已有资料并明确缺口。',
-  },
-] as const;
-
-async function ensureDemoAutomations(
-  context: RequestContext,
-  workspaceId: string,
-) {
-  await ensureDefaultEmployee(context, workspaceId);
-  const sql = getDatabase();
-  const existing = await sql<{ name: string }[]>`
-    select name from allrice_automations
-    where organization_id = ${context.organizationId}
-      and workspace_id = ${workspaceId}
-      and owner_id = ${userId(context)}
-      and name in ${sql(demoAutomationTemplates.map((template) => template.name))}
-  `;
-  const existingNames = new Set(existing.map((row) => row.name));
-  const assignments = await sql<{ employee_key: string; id: string }[]>`
-    select e.employee_key, a.id
-    from allrice_employee_assignments a
-    join allrice_employees e on e.id = a.employee_id
-    where a.organization_id = ${context.organizationId}
-      and a.workspace_id = ${workspaceId}
-      and a.user_id = ${userId(context)}
-      and a.active
-      and e.status = 'active'
-  `;
-  const assignmentByKey = new Map(
-    assignments.map((assignment) => [assignment.employee_key, assignment.id]),
-  );
-  const ownerId = userId(context);
-  await sql.begin(async (transaction) => {
-    for (const template of demoAutomationTemplates) {
-      if (existingNames.has(template.name)) continue;
-      const employeeAssignmentId =
-        assignmentByKey.get(template.employeeKey) ??
-        assignmentByKey.get('default-assistant') ??
-        null;
-      const rows = await transaction<{ id: string }[]>`
-        insert into allrice_automations (
-          organization_id, workspace_id, owner_id, name, description, prompt,
-          trigger_type, schedule, status, conversation_mode,
-          employee_assignment_id, next_run_at
-        ) values (
-          ${context.organizationId}, ${workspaceId}, ${ownerId},
-          ${template.name}, ${`演示模板 · ${template.description}`},
-          ${template.prompt}, 'schedule', ${transaction.json(template.schedule)},
-          'paused', 'new_each_run', ${employeeAssignmentId}, null
-        ) returning id
-      `;
-      if (!rows[0]) throw new Error('demo automation creation failed');
-      await transaction`
-        insert into allrice_audit_events (
-          organization_id, workspace_id, actor_id, action, resource_type,
-          resource_id, decision, reason, request_id
-        ) values (
-          ${context.organizationId}, ${workspaceId}, ${ownerId},
-          'automation.create', 'automation', ${rows[0].id}, 'allowed',
-          'seeded_traditional_culture_demo_template', ${context.requestId}
-        )
-      `;
-    }
-  });
-}
-
 async function audit(
   context: RequestContext,
   workspaceId: string,
@@ -584,8 +342,6 @@ export async function listAutomations(
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   if (!canAccessWorkspace(context, workspaceId))
     throw new DataAccessError('authorization_denied');
-  if (triggerType !== 'folder')
-    await ensureDemoAutomations(context, workspaceId);
   const sql = getDatabase();
   const rows = await sql<AutomationRow[]>`
     select a.*, latest.status as last_run_status,
@@ -642,116 +398,7 @@ export async function createAutomation(
     await audit(context, workspaceId, 'automation.create', row.id);
     return mapAutomation(row);
   }
-  const nextRunAt = parsed.enabled ? nextScheduleAt(parsed.schedule!) : null;
-  if (parsed.employeeAssignmentId) {
-    const sql = getDatabase();
-    const assignment = await sql<{ id: string }[]>`
-      select id from allrice_employee_assignments
-      where id = ${parsed.employeeAssignmentId}
-        and organization_id = ${context.organizationId}
-        and workspace_id = ${workspaceId}
-        and user_id = ${userId(context)} and active
-    `;
-    if (!assignment[0]) throw new DataAccessError('authorization_denied');
-  }
-  const sql = getDatabase();
-  const rows = await sql<AutomationRow[]>`
-    insert into allrice_automations (
-      organization_id, workspace_id, owner_id, name, description, prompt,
-      trigger_type, schedule, status, conversation_mode,
-      employee_assignment_id, next_run_at
-    ) values (
-      ${context.organizationId}, ${workspaceId}, ${userId(context)}, ${parsed.name},
-      ${parsed.description}, ${parsed.prompt}, ${parsed.triggerType},
-      ${sql.json(parsed.schedule!)}, ${parsed.enabled ? 'enabled' : 'paused'},
-      ${parsed.conversationMode},
-      ${parsed.employeeAssignmentId ?? null}, ${nextRunAt}
-    ) returning *, null::text as last_run_status,
-      null::uuid as last_session_id
-  `;
-  const row = rows[0];
-  if (!row) throw new Error('automation creation failed');
-  await audit(context, workspaceId, 'automation.create', row.id);
-  return mapAutomation(row);
-}
-
-export async function createAutomationFromExecutionContext(input: {
-  context: ExecutionContext;
-  sessionId?: string;
-  name: string;
-  prompt: string;
-  delayMinutes: number;
-}) {
-  const { context } = input;
-  const workspaceId = context.workspaceId;
-  const ownerId = context.policySnapshot.subjectId;
-  if (
-    !workspaceId ||
-    context.policySnapshot.organizationId !== context.organizationId ||
-    context.policySnapshot.subjectId !== context.delegatedBy.id ||
-    !context.policySnapshot.grants.some(
-      (grant) =>
-        grant.resourceType === 'automation' &&
-        grant.action === 'resource:write' &&
-        (grant.workspaceId === null || grant.workspaceId === workspaceId),
-    )
-  ) {
-    throw new DataAccessError('authorization_denied');
-  }
-  if (!Number.isInteger(input.delayMinutes) || input.delayMinutes < 1) {
-    throw new DataAccessError('authorization_denied');
-  }
-  const sql = getDatabase();
-  let employeeAssignmentId: string | null = null;
-  let sessionId: string | null = null;
-  if (input.sessionId) {
-    const sessions = await sql<
-      { id: string; employee_assignment_id: string }[]
-    >`
-      select id, employee_assignment_id
-      from allrice_chat_sessions
-      where id = ${UuidSchema.parse(input.sessionId)}
-        and organization_id = ${context.organizationId}
-        and workspace_id = ${workspaceId}
-        and owner_id = ${ownerId}
-        and archived_at is null
-    `;
-    const session = sessions[0];
-    if (!session) throw new DataAccessError('authorization_denied');
-    sessionId = session.id;
-    employeeAssignmentId = session.employee_assignment_id;
-  }
-  const runAt = new Date(Date.now() + input.delayMinutes * 60_000);
-  const schedule = AutomationScheduleSchema.parse({
-    frequency: 'once',
-    runAt: runAt.toISOString(),
-    timezone: 'Asia/Shanghai',
-  });
-  const rows = await sql<AutomationRow[]>`
-    insert into allrice_automations (
-      organization_id, workspace_id, owner_id, name, description, prompt,
-      trigger_type, schedule, status, conversation_mode,
-      employee_assignment_id, session_id, next_run_at
-    ) values (
-      ${context.organizationId}, ${workspaceId}, ${ownerId},
-      ${input.name.trim().slice(0, 160)}, '', ${input.prompt.trim()},
-      'schedule', ${sql.json(schedule)}, 'enabled', 'reuse',
-      ${employeeAssignmentId}, ${sessionId}, ${runAt}
-    ) returning *, null::text as last_run_status,
-      null::uuid as last_session_id
-  `;
-  const row = rows[0];
-  if (!row) throw new Error('automation creation failed');
-  await sql`
-    insert into allrice_audit_events (
-      organization_id, workspace_id, actor_id, action, resource_type,
-      resource_id, decision, reason
-    ) values (
-      ${context.organizationId}, ${workspaceId}, ${ownerId},
-      'automation.create', 'automation', ${row.id}, 'allowed', 'automation_tool'
-    )
-  `;
-  return mapAutomation(row);
+  throw new LegacyScheduleRetiredError();
 }
 
 export async function updateAutomation(
@@ -812,52 +459,22 @@ export async function updateAutomation(
     await audit(context, workspaceId, 'automation.update', row.id);
     return mapAutomation(row);
   }
-  if (parsed.folder) throw new DataAccessError('grant_invalid');
-  const schedule =
-    parsed.schedule ?? AutomationScheduleSchema.parse(current.schedule);
-  const status = parsed.status ?? current.status;
-  const completedOneTimeTask =
-    status === 'enabled' &&
-    schedule.frequency === 'once' &&
-    !parsed.schedule &&
-    current.last_run_at !== null;
-  const effectiveStatus = completedOneTimeTask ? 'paused' : status;
-  const nextRunAt =
-    effectiveStatus === 'enabled' &&
-    (parsed.schedule || current.status === 'paused' || !current.next_run_at)
-      ? nextScheduleAt(schedule)
-      : effectiveStatus === 'paused'
-        ? null
-        : current.next_run_at;
-  if (parsed.employeeAssignmentId) {
-    const sql = getDatabase();
-    const assignment = await sql<{ id: string }[]>`
-      select id from allrice_employee_assignments
-      where id = ${parsed.employeeAssignmentId}
-        and organization_id = ${context.organizationId}
-        and workspace_id = ${workspaceId}
-        and user_id = ${userId(context)} and active
-    `;
-    if (!assignment[0]) throw new DataAccessError('authorization_denied');
-  }
+  if (
+    parsed.status !== 'paused' ||
+    Object.keys(parsed).some(
+      (key) => !['status', 'expectedRevision'].includes(key),
+    )
+  )
+    throw new LegacyScheduleRetiredError();
   const sql = getDatabase();
-  const rows = await sql<AutomationRow[]>`
+  const [row] = await sql<AutomationRow[]>`
     update allrice_automations
-    set name = coalesce(${parsed.name ?? null}, name),
-        description = coalesce(${parsed.description ?? null}, description),
-        prompt = coalesce(${parsed.prompt ?? null}, prompt),
-        schedule = ${sql.json(schedule)},
-        status = ${effectiveStatus},
-        conversation_mode = coalesce(${parsed.conversationMode ?? null}, conversation_mode),
-        employee_assignment_id = ${parsed.employeeAssignmentId === undefined ? current.employee_assignment_id : parsed.employeeAssignmentId},
-        next_run_at = ${nextRunAt},
-        updated_at = now()
-    where id = ${current.id}
-    returning *, null::text as last_run_status,
-      null::uuid as last_session_id
+    set status='paused',next_run_at=null,revision=revision+1,updated_at=clock_timestamp()
+    where id=${current.id} and clock_owner='legacy' and deleted_at is null
+      and revision=${parsed.expectedRevision ?? current.revision}
+    returning *,null::text as last_run_status,null::uuid as last_session_id
   `;
-  const row = rows[0];
-  if (!row) throw new Error('automation update failed');
+  if (!row) throw new DataAccessError('grant_invalid');
   await audit(context, workspaceId, 'automation.update', row.id);
   return mapAutomation(row);
 }
@@ -878,7 +495,15 @@ export async function deleteAutomation(
   const sql = getDatabase();
   if (current.trigger_type === 'folder')
     await sql`update allrice_automations set status='paused',deleted_at=clock_timestamp(),revision=revision+1,updated_at=clock_timestamp() where id=${current.id}`;
-  else await sql`delete from allrice_automations where id = ${current.id}`;
+  else {
+    const [deleted] = await sql<{ id: string }[]>`
+      update allrice_automations
+      set status='paused',next_run_at=null,deleted_at=clock_timestamp(),revision=revision+1,updated_at=clock_timestamp()
+      where id=${current.id} and clock_owner='legacy' and deleted_at is null
+      returning id
+    `;
+    if (!deleted) throw new DataAccessError('grant_invalid');
+  }
   await audit(context, workspaceId, 'automation.delete', current.id);
 }
 
@@ -1054,7 +679,7 @@ export async function claimDueAutomations(limit = 10) {
       select r.status, r.session_id from allrice_automation_runs r
       where r.automation_id = a.id order by r.created_at desc limit 1
     ) latest on true
-    where a.clock_owner='legacy' and a.trigger_type='schedule' and a.deleted_at is null and a.status = 'enabled' and a.next_run_at is not null and a.next_run_at <= now()
+    where a.clock_owner='legacy' and a.trigger_type='schedule' and a.experience_binding is null and a.deleted_at is null and a.status = 'enabled' and a.next_run_at is not null and a.next_run_at <= now()
     order by a.next_run_at, a.id
     limit ${limit}
   `;
@@ -1085,7 +710,7 @@ export async function claimDueAutomations(limit = 10) {
           select r.status, r.session_id from allrice_automation_runs r
           where r.automation_id = a.id order by r.created_at desc limit 1
         ) latest on true
-        where a.id = ${candidate.id} and a.clock_owner='legacy' and a.status = 'enabled' and a.deleted_at is null and a.trigger_type='schedule'
+        where a.id = ${candidate.id} and a.clock_owner='legacy' and a.status = 'enabled' and a.deleted_at is null and a.trigger_type='schedule' and a.experience_binding is null
         for update of a
       `;
         const row = locked[0];
@@ -1194,24 +819,7 @@ export async function runAutomationNow(
   )
     throw new DataAccessError('grant_invalid');
   if (row.trigger_type === 'folder') throw new DataAccessError('grant_invalid');
-  const sql = getDatabase();
-  const runs = await sql<AutomationRunRow[]>`
-    insert into allrice_automation_runs (
-      organization_id, workspace_id, automation_id, scheduled_for
-    ) values (
-      ${row.organization_id}, ${row.workspace_id}, ${row.id}, now()
-    ) returning *
-  `;
-  if (!runs[0]) throw new Error('manual automation run creation failed');
-  const claim = await makeClaim(row, runs[0]);
-  try {
-    const run = await enqueueClaim(claim);
-    await audit(context, workspaceId, 'automation.run', row.id);
-    return run;
-  } catch (error) {
-    await markClaimFailed(claim, error);
-    throw error;
-  }
+  throw new LegacyScheduleRetiredError();
 }
 
 export async function syncAutomationRuns() {

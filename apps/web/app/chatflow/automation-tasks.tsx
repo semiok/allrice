@@ -436,12 +436,6 @@ function AutomationDetailBody({
   const [restored, setRestored] = useState(false),
     [storageError, setStorageError] = useState('');
   const [confirm, setConfirm] = useState<'delete' | 'cancel' | null>(null);
-  const [legacyDraft, setLegacyDraft] = useState({
-    name: '',
-    prompt: '',
-    time: '09:00',
-    timezone: 'Asia/Shanghai',
-  });
   const [legacyUnknown, setLegacyUnknown] = useState(false);
   const [stopIntent, setStopIntent] = useState<StopOccurrenceIntent | null>(
     null,
@@ -503,16 +497,6 @@ function AutomationDetailBody({
             ? recurringDraft(data.task.definition.task)
             : null,
         );
-        const legacy =
-          data.task.definition.kind === 'legacy'
-            ? data.task.definition.schedule
-            : null;
-        setLegacyDraft({
-          name: data.task.name,
-          prompt: data.task.prompt,
-          time: legacy?.time ?? '09:00',
-          timezone: legacy?.timezone ?? 'Asia/Shanghai',
-        });
       }
       return data;
     },
@@ -730,28 +714,12 @@ function AutomationDetailBody({
       if (mounted.current) setBusy(false);
     }
   };
-  const legacyChange = async (
-    action: 'update' | 'pause' | 'resume' | 'delete',
-  ) => {
+  const legacyChange = async (action: 'pause' | 'delete') => {
     if (busy || legacyUnknown || !task || definition?.kind !== 'legacy') return;
     setBusy(true);
     setError('');
     setConfirm(null);
     try {
-      const content =
-        action === 'update'
-          ? {
-              name: legacyDraft.name,
-              prompt: legacyDraft.prompt,
-              schedule: {
-                ...definition.schedule,
-                ...(definition.schedule.frequency !== 'once'
-                  ? { time: legacyDraft.time }
-                  : {}),
-                timezone: legacyDraft.timezone,
-              },
-            }
-          : {};
       await read(
         await fetch(url, {
           method: 'PATCH',
@@ -759,7 +727,6 @@ function AutomationDetailBody({
           body: JSON.stringify({
             action,
             expectedRevision: definition.revision,
-            ...content,
           }),
         }),
       );
@@ -1165,67 +1132,13 @@ function AutomationDetailBody({
               </form>
             ) : definition?.kind === 'legacy' ? (
               <div className={css.form}>
-                <label>
-                  任务名称
-                  <input
-                    aria-label="任务名称"
-                    disabled={!definition.canManage || busy || legacyUnknown}
-                    value={legacyDraft.name}
-                    onChange={(e) =>
-                      setLegacyDraft({ ...legacyDraft, name: e.target.value })
-                    }
-                  />
-                </label>
-                <label>
-                  工作内容
-                  <textarea
-                    aria-label="工作内容"
-                    className={native.instruction}
-                    disabled={!definition.canManage || busy || legacyUnknown}
-                    value={legacyDraft.prompt}
-                    onChange={(e) =>
-                      setLegacyDraft({ ...legacyDraft, prompt: e.target.value })
-                    }
-                  />
-                </label>
+                <h3>工作内容</h3>
+                <p className={native.readonlyPrompt}>{task.prompt}</p>
                 <h3>运行时间</h3>
                 <p>{automationFrequency(task)}</p>
-                {definition.schedule.frequency !== 'once' && (
-                  <label>
-                    执行时间
-                    <input
-                      aria-label="执行时间"
-                      type="time"
-                      disabled={!definition.canManage || busy || legacyUnknown}
-                      value={legacyDraft.time}
-                      onChange={(e) =>
-                        setLegacyDraft({ ...legacyDraft, time: e.target.value })
-                      }
-                    />
-                  </label>
-                )}
-                <label>
-                  时区
-                  <input
-                    aria-label="时区"
-                    disabled={!definition.canManage || busy || legacyUnknown}
-                    value={legacyDraft.timezone}
-                    onChange={(e) =>
-                      setLegacyDraft({
-                        ...legacyDraft,
-                        timezone: e.target.value,
-                      })
-                    }
-                  />
-                </label>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={!definition.canManage || busy || legacyUnknown}
-                  onClick={() => void legacyChange('update')}
-                >
-                  保存修改
-                </Button>
+                <p>
+                  历史任务支持查看、暂停和删除。后续执行请在对话中创建新任务。
+                </p>
               </div>
             ) : (
               <div className={css.form}>
@@ -1280,20 +1193,18 @@ function AutomationDetailBody({
                   {nativeTask.status === 'paused' ? '恢复任务' : '暂停任务'}
                 </Button>
               )}
-              {definition?.kind === 'legacy' && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={!definition.canManage || busy || legacyUnknown}
-                  onClick={() =>
-                    void legacyChange(
-                      definition.status === 'paused' ? 'resume' : 'pause',
-                    )
-                  }
-                >
-                  {definition.status === 'paused' ? '恢复任务' : '暂停任务'}
-                </Button>
-              )}
+              {definition?.kind === 'legacy' &&
+                definition.status === 'enabled' &&
+                task.canStop && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busy || legacyUnknown}
+                    onClick={() => void legacyChange('pause')}
+                  >
+                    暂停任务
+                  </Button>
+                )}
               {task.canStop && (
                 <Button
                   variant="ghost"

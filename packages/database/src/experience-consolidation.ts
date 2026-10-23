@@ -222,6 +222,10 @@ export async function updateExperiencePolicy(
         ('validationMode' in previous ? previous.validationMode : 'off'),
       revision: previous.revision + 1,
     });
+    const { experienceNativeCalendarEnabled } =
+      await import('./experience-native.ts');
+    if (policy.frequency !== 'off' && !experienceNativeCalendarEnabled())
+      throw new ExperienceError('disabled');
     await tx`insert into allrice_settings(scope_type,scope_id,key,value)
       values('organization',${org},'employee_experience_policy',${tx.json(policy)})
       on conflict(scope_type,scope_id,key) do update set value=excluded.value,updated_at=clock_timestamp()`;
@@ -251,7 +255,9 @@ export async function updateExperiencePolicy(
 
 /** Materialize only instances with NEW captured evidence. No historical chat scan. */
 export async function syncExperienceConsolidationSchedules() {
-  if (!experienceReviewEnabled()) return 0;
+  const { experienceNativeCalendarEnabled } =
+    await import('./experience-native.ts');
+  if (!experienceNativeCalendarEnabled()) return 0;
   const db = getDatabase();
   const instances = await db<
     {
