@@ -173,11 +173,11 @@ suite('member work settings: real browser, route and PostgreSQL', () => {
       expect(await cloud.getAttribute('aria-checked')).toBe('false');
       await page.getByRole('button', { name: '重新读取' }).click();
       await page
-        .getByRole('switch', { name: '我的电脑自动工作', checked: false })
+        .getByRole('switch', { name: '电脑自动工作', checked: false })
         .waitFor();
       expect(
         await page
-          .getByRole('switch', { name: '我的电脑自动工作' })
+          .getByRole('switch', { name: '电脑自动工作' })
           .getAttribute('aria-checked'),
       ).toBe('false');
       const before = gets;

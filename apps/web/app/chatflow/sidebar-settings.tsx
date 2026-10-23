@@ -9,7 +9,6 @@ import {
   Input,
   Switch,
 } from '@deepseek-ai/dsh-client-ui-primitives';
-import { PersonalSkillsSettings } from './personal-skills-settings';
 import { ConnectedApps } from '../workspace/mcp/connected-apps';
 import { SettingsPanel } from './dsh-upstream/settings/SettingsRoot';
 import native from './dsh-upstream/settings/SettingsRoot.module.css';
@@ -36,6 +35,23 @@ const collapseTimingOptions = [
   { value: 'completion', label: '回答结束后' },
   { value: 'next-input', label: '下次有新消息时' },
 ] as const;
+
+export type SettingsSection =
+  'preferences' | 'computer' | 'work' | 'apps' | 'account';
+
+export function normalizeSettingsSection(
+  section: string | null,
+): SettingsSection | null {
+  if (section === 'capabilities' || section === 'experience') return 'work';
+  if (section === 'skills') return 'preferences';
+  return section === 'preferences' ||
+    section === 'computer' ||
+    section === 'work' ||
+    section === 'apps' ||
+    section === 'account'
+    ? section
+    : null;
+}
 
 function PersonalPreferencesSettings({
   preferences,
@@ -263,10 +279,11 @@ export function SidebarSettings({
   onBridge,
   bridge,
   bridgeReleases,
+  onCapabilitiesChange,
 }: {
   experienceEnabled?: boolean;
   sessionId?: string;
-  capabilities: ReactNode;
+  capabilities: (section: 'work' | 'computer') => ReactNode;
   collapsed: boolean;
   workspaceId: string;
   monthlyQuota: ReturnType<typeof useMonthlyQuota>;
@@ -277,17 +294,21 @@ export function SidebarSettings({
   onBridge: () => void;
   bridge: ReturnType<typeof useBridge>;
   bridgeReleases: ReturnType<typeof useBridgeReleases>;
+  onCapabilitiesChange: () => void;
 }) {
-  const [visited, setVisited] = useState(() => new Set(['account']));
+  const activeSection = normalizeSettingsSection(section);
+  const [visited, setVisited] = useState(
+    () => new Set<SettingsSection>(['preferences']),
+  );
   const [loggingOut, setLoggingOut] = useState(false);
   const [logoutError, setLogoutError] = useState('');
   const backButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    if (section === 'computer' && bridge.bridgeOpen) {
+    if (activeSection === 'computer' && bridge.bridgeOpen) {
       backButton.current?.focus();
       backButton.current?.scrollIntoView({ block: 'nearest' });
     }
-  }, [section, bridge.bridgeOpen]);
+  }, [activeSection, bridge.bridgeOpen]);
   async function logout() {
     setLoggingOut(true);
     setLogoutError('');
@@ -303,14 +324,12 @@ export function SidebarSettings({
       setLoggingOut(false);
     }
   }
-  const rows = [
-    { id: 'account', label: '账号与用量' },
-    { id: 'work', label: '员工工作方式' },
-    { id: 'skills', label: '我的技能' },
-    { id: 'capabilities', label: '能力与环境' },
-    { id: 'apps', label: '已连接应用' },
-    { id: 'computer', label: '我的电脑' },
+  const rows: { id: SettingsSection; label: string }[] = [
     { id: 'preferences', label: '个人偏好' },
+    { id: 'computer', label: '我的电脑' },
+    { id: 'work', label: '工作方式' },
+    { id: 'apps', label: '已链接应用' },
+    { id: 'account', label: '账号与用量' },
   ];
   const close = () => onSectionChange(null);
   return (
@@ -324,24 +343,29 @@ export function SidebarSettings({
           aria-label="设置"
           title="设置"
           aria-haspopup="dialog"
-          aria-expanded={section !== null}
+          aria-expanded={activeSection !== null}
           onClick={() => {
-            onSectionChange('account');
-            void monthlyQuota.reload();
+            onSectionChange('preferences');
+            void preferences.reload();
           }}
         >
           <IconSettingsOutlineMedium size={20} />
           {!collapsed && <span className={native.triggerLabel}>设置</span>}
         </button>
       </div>
-      {section !== null && (
+      {activeSection !== null && (
         <SettingsPanel
           rows={rows}
-          activeId={section}
+          activeId={activeSection}
           onSelect={(id) => {
+            const nextSection = normalizeSettingsSection(id);
+            if (!nextSection) return;
             if (id === 'preferences') void preferences.reload();
-            setVisited((current) => new Set([...current, section, id]));
-            onSectionChange(id);
+            if (id === 'account') void monthlyQuota.reload();
+            setVisited(
+              (current) => new Set([...current, activeSection, nextSection]),
+            );
+            onSectionChange(nextSection);
           }}
           onClose={close}
           renderSlot={(name, _props, options) => {
@@ -349,7 +373,7 @@ export function SidebarSettings({
             if (name === 'settings.close') return '关闭设置';
             if (name !== 'settings.section') return null;
             return rows
-              .filter((row) => visited.has(row.id) || row.id === section)
+              .filter((row) => visited.has(row.id) || row.id === activeSection)
               .map((row) => (
                 <div
                   key={row.id}
@@ -394,7 +418,6 @@ export function SidebarSettings({
                       {row.label}
                     </h2>
                   )}
-                  {row.id === 'capabilities' && capabilities}
                   {row.id === 'preferences' && (
                     <PersonalPreferencesSettings preferences={preferences} />
                   )}
@@ -440,17 +463,12 @@ export function SidebarSettings({
                   {row.id === 'apps' && (
                     <ConnectedApps workspaceId={workspaceId} />
                   )}
-                  {row.id === 'skills' && (
-                    <PersonalSkillsSettings
-                      key={workspaceId}
-                      workspaceId={workspaceId}
-                      active={section === 'skills'}
-                    />
-                  )}
                   {row.id === 'work' && (
                     <WorkAutomationSettings
                       key={workspaceId}
                       workspaceId={workspaceId}
+                      capabilities={capabilities('work')}
+                      onCapabilitiesChange={onCapabilitiesChange}
                     />
                   )}
                   {row.id === 'computer' && (
@@ -458,9 +476,13 @@ export function SidebarSettings({
                       <div hidden={bridge.bridgeOpen}>
                         <ComputerSettings
                           workspaceId={workspaceId}
-                          active={section === 'computer' && !bridge.bridgeOpen}
+                          active={
+                            activeSection === 'computer' && !bridge.bridgeOpen
+                          }
                           onBridge={onBridge}
                           bridge={bridge}
+                          capabilities={capabilities('computer')}
+                          onCapabilitiesChange={onCapabilitiesChange}
                         />
                       </div>
                       {bridge.bridgeOpen && (

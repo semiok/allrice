@@ -95,6 +95,7 @@ import { useWorkbenchResize, WorkbenchSplitter } from './workbench-splitter';
 import { useWorkspaceReadiness } from './use-workspace-readiness';
 import { useTaskNextSteps } from './use-task-next-steps';
 import { CapabilityContent } from './capability-panel';
+import { normalizeSettingsSection } from './sidebar-settings';
 import { capabilityLabels } from './capability-catalog';
 import {
   appendComposerDraft,
@@ -379,19 +380,8 @@ export function ChatFlowClient({
     setSettings(null);
     if (!workspace?.workspaceId) return;
     const url = new URL(window.location.href);
-    const section = url.searchParams.get('settings');
-    if (
-      !section ||
-      ![
-        'apps',
-        'computer',
-        'capabilities',
-        'work',
-        'experience',
-        'skills',
-      ].includes(section)
-    )
-      return;
+    const section = normalizeSettingsSection(url.searchParams.get('settings'));
+    if (!section) return;
     setSettings({ scope: settingsScope, section });
     url.searchParams.delete('settings');
     try {
@@ -422,7 +412,8 @@ export function ChatFlowClient({
     sessionId: activeId,
     headers: tenantHeaders,
     visible:
-      settings?.scope === settingsScope && settings.section === 'capabilities',
+      settings?.scope === settingsScope &&
+      (settings.section === 'work' || settings.section === 'computer'),
   });
   const [sessionActions] = useState(() =>
     createSessionActions(captureSelection),
@@ -1816,17 +1807,15 @@ export function ChatFlowClient({
           if (layout.compact) setSidebarCollapsed(true);
         }}
         archive={archive}
-        capabilities={
+        capabilities={(section) => (
           <CapabilityContent
-            key={`capabilities/${workspace.viewerId}/${workspace.workspaceId}/${activeId}`}
+            key={`capabilities/${section}/${workspace.viewerId}/${workspace.workspaceId}/${activeId}`}
+            scope={section}
             data={readiness.data}
             loading={readiness.loading}
             error={readiness.error}
             busy={busy}
             onRefresh={() => void readiness.reload()}
-            onConnections={() => {
-              setSettings({ scope: settingsScope, section: 'apps' });
-            }}
             onBridge={() => {
               void openBridgeSettings();
             }}
@@ -1844,7 +1833,7 @@ export function ChatFlowClient({
               if (layout.compact) setSidebarCollapsed(true);
             }}
           />
-        }
+        )}
         settingsSection={
           bridgeOpen
             ? 'computer'
@@ -1854,11 +1843,20 @@ export function ChatFlowClient({
         }
         onSettingsSectionChange={(section) => {
           setBridgeOpen(false);
-          if (bridgeOpen) void readiness.reload();
+          const nextSection = normalizeSettingsSection(section);
+          if (
+            bridgeOpen ||
+            nextSection === 'work' ||
+            nextSection === 'computer'
+          )
+            void readiness.reload();
           setSettings(
-            section === null ? null : { scope: settingsScope, section },
+            nextSection === null
+              ? null
+              : { scope: settingsScope, section: nextSection },
           );
         }}
+        onCapabilitiesChange={() => void readiness.reload()}
         onBridge={() => void openBridgeSettings()}
         bridge={bridge}
         bridgeReleases={bridgeReleases}

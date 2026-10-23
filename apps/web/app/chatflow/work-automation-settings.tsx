@@ -1,6 +1,5 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
-import Link from 'next/link';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Button, Switch } from '@deepseek-ai/dsh-client-ui-primitives';
 import {
   WorkAutomationViewSchema,
@@ -13,14 +12,12 @@ const choices = [
   {
     key: 'cloud',
     title: '云端自动工作',
-    description:
-      '在已授权范围内处理文档、计算、浏览网页和使用已连接应用。关闭后，执行操作会逐次向你确认。',
+    description: '自动处理文档、计算、网页和应用任务。关闭后，执行前逐次确认。',
   },
   {
     key: 'computer',
-    title: '我的电脑自动工作',
-    description:
-      '在已选择的文件夹和 Bridge 环境内直接执行。关闭后，写文件、运行命令和浏览器操作会逐次向你确认。',
+    title: '电脑自动工作',
+    description: '在已授权范围内执行本地操作。关闭后，执行前逐次确认。',
   },
   {
     key: 'assistants',
@@ -32,8 +29,12 @@ type View = z.infer<typeof WorkAutomationViewSchema>;
 
 export function WorkAutomationSettings({
   workspaceId,
+  capabilities,
+  onCapabilitiesChange,
 }: {
   workspaceId: string;
+  capabilities?: ReactNode;
+  onCapabilitiesChange?: () => void;
 }) {
   const [view, setView] = useState<View | null>(null);
   const [busy, setBusy] = useState<keyof WorkAutomation | null>(null);
@@ -86,7 +87,10 @@ export function WorkAutomationSettings({
         throw Error(body.error?.message ?? '设置未保存，请刷新后重试。');
       const value = WorkAutomationViewSchema.parse(body);
       if (value.workspaceId !== workspaceId) throw Error('工作区已变化。');
-      if (generation.current === requestGeneration) setView(value);
+      if (generation.current === requestGeneration) {
+        setView(value);
+        onCapabilitiesChange?.();
+      }
     } catch (cause) {
       if (generation.current === requestGeneration)
         setError(cause instanceof Error ? cause.message : '保存失败');
@@ -95,9 +99,13 @@ export function WorkAutomationSettings({
     }
   }
   return (
-    <section aria-label="员工工作方式设置">
-      <p>
-        在已授权范围内自动工作。新增账号、文件夹或扩大范围时，员工会再向你确认。
+    <section
+      aria-label="工作方式设置"
+      className={styles.workAutomation}
+      aria-busy={busy !== null}
+    >
+      <p className={styles.settingsIntro}>
+        选择员工执行任务时，哪些操作可以直接完成。
       </p>
       {error ? (
         <p role="alert">
@@ -121,15 +129,7 @@ export function WorkAutomationSettings({
               <div>
                 <strong>{choice.title}</strong>
                 <p>{choice.description}</p>
-                <small>
-                  {busy === choice.key
-                    ? '正在保存…'
-                    : view.settings[choice.key]
-                      ? '已开启'
-                      : choice.key === 'assistants'
-                        ? '独立工作'
-                        : '每次确认'}
-                </small>
+                {busy === choice.key && <small role="status">正在保存…</small>}
               </div>
               <Switch
                 label={choice.title}
@@ -139,18 +139,12 @@ export function WorkAutomationSettings({
               />
             </div>
           ))}
-          <p>
-            <Link
-              href={`/automation?workspaceId=${encodeURIComponent(workspaceId)}`}
-            >
-              文件夹自动处理
-            </Link>
-          </p>
-          <p>
-            仅影响你在当前工作区的后续操作；进行中的工作可在任务中停止。电脑能力开关在「我的电脑」管理。
-          </p>
         </>
       ) : null}
+      {capabilities}
+      <p className={styles.settingsFootnote}>
+        仅影响当前工作区的后续任务。新增账号、文件夹或扩大操作范围时，员工会向你确认。进行中的工作可在任务中停止。
+      </p>
     </section>
   );
 }

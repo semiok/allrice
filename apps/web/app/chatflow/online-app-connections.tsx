@@ -62,12 +62,12 @@ export function OnlineAppConnections({
   if (failed)
     return (
       <p role="status">
-        连接状态暂时无法读取，请刷新能力状态或查看“已连接应用”。
+        连接状态暂时无法读取，请刷新能力状态或查看“已链接应用”。
       </p>
     );
   if (connections === null) return <p role="status">正在同步应用连接…</p>;
   if (!connections.length)
-    return <p>尚未添加在线应用，可在“已连接应用”中连接。</p>;
+    return <p>尚未添加在线应用，可在“已链接应用”中连接。</p>;
   return (
     <ul className={styles.connections} aria-label="在线应用连接状态">
       {connections.map((connection) => (

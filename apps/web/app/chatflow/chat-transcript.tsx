@@ -21,7 +21,9 @@ import type { AssistantTreeView } from '@allrice/database';
 import {
   isReplyStreaming,
   projectWorkProgress,
+  type WorkProgressPart,
 } from '../../lib/chatflow/work-progress';
+import { summarizeWorkProcess } from '../../lib/chatflow/work-process';
 
 import { AssistantMarkdown, ArtifactLinkResolver } from './assistant-markdown';
 import type { MessageImageSource } from './message-image-cache';
@@ -342,7 +344,7 @@ export const ChatTranscript = memo(function ChatTranscript({
                             // History text arrives before the native event trace.
                             // Keep a settled streaming reply in the same process
                             // frame while its steps and timing are being restored.
-                            const processParts =
+                            const processParts: WorkProgressPart[] | undefined =
                               timeline.parts ??
                               (streamingOutput &&
                               !messageIsRunning &&
@@ -350,6 +352,22 @@ export const ChatTranscript = memo(function ChatTranscript({
                               message.runId &&
                               responseText
                                 ? [
+                                    // Legacy traces restore steps without named
+                                    // reply boundaries. The parts renderer must
+                                    // keep those rows beside the saved answer.
+                                    ...(summarizeWorkProcess(timeline.items)
+                                      .steps.length
+                                      ? [
+                                          {
+                                            kind: 'steps' as const,
+                                            id: 'history-steps',
+                                            sequence:
+                                              timeline.items[0]?.sequence ?? 0,
+                                            items: timeline.items,
+                                            closed: true,
+                                          },
+                                        ]
+                                      : []),
                                     {
                                       kind: 'reply' as const,
                                       id: 'history-reply',

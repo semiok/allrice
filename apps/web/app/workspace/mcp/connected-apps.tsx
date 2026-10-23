@@ -167,7 +167,7 @@ export function ConnectedApps({
     (c) => visibleConnection(c) || c.id === connectionId,
   );
   return (
-    <section className={styles.apps} aria-label="已连接应用">
+    <section className={styles.apps} aria-label="已链接应用">
       <p>
         连接你的应用，让员工在你的授权范围内使用。个人连接仅你可用，断开共享应用只影响你自己。
       </p>
