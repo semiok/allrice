@@ -198,30 +198,48 @@ try {
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
     }
-    const healths = [];
-    for (const health of r.healthUrls ?? []) {
-      const response = await fetch(health, {
-        signal: globalThis.AbortSignal.timeout(10_000),
-      });
-      need(response.ok, 'NATIVE_RETIREMENT_SERVICE_NOT_READY');
-      const value = await response.json();
-      healths.push(value);
-      need(
-        value.identity?.sourceSha === r.releaseSha &&
-          value.identity?.sourceTree === r.sourceTree &&
-          [
-            'pendingRoots',
-            'activeRoots',
-            'retainedChildren',
-            'unresolvedRoots',
-          ].every((k) => value.producerLifecycle?.[k] === 0),
-        'NATIVE_RETIREMENT_SERVICE_BUSY',
-      );
-    }
     need(
       Array.isArray(r.healthUrls) && r.healthUrls.length === 2,
       'NATIVE_RETIREMENT_BOTH_SERVICE_HEALTH_REQUIRED',
     );
+    const readHealths = async (signal) => {
+      // Await both read-only requests, including failure. The shared observer
+      // supplies its remaining global deadline; no disconnected request lingers.
+      const results = await Promise.allSettled(
+        r.healthUrls.map(async (url) => {
+          const response = await fetch(url, {
+            signal: signal
+              ? globalThis.AbortSignal.any([
+                  signal,
+                  globalThis.AbortSignal.timeout(10_000),
+                ])
+              : globalThis.AbortSignal.timeout(10_000),
+          });
+          need(response.ok, 'NATIVE_RETIREMENT_SERVICE_NOT_READY');
+          return response.json();
+        }),
+      );
+      const failed = results.find((r) => r.status === 'rejected');
+      if (failed) throw failed.reason;
+      return results.map((r) => r.value);
+    };
+    // The reviewed carry path validates both complete identities and strict
+    // lifecycle facts inside its one full observation. Do not fail on an
+    // initial transient root before the bounded read-only observer can run.
+    if (r.historicalCloudCarry === undefined) {
+      for (const value of await readHealths())
+        need(
+          value.identity?.sourceSha === r.releaseSha &&
+            value.identity?.sourceTree === r.sourceTree &&
+            [
+              'pendingRoots',
+              'activeRoots',
+              'retainedChildren',
+              'unresolvedRoots',
+            ].every((k) => value.producerLifecycle?.[k] === 0),
+          'NATIVE_RETIREMENT_SERVICE_BUSY',
+        );
+    }
     const readBusy = () =>
       db.getDatabase().begin('read only', async (tx) => {
         await tx`set local statement_timeout='5000'`;
@@ -238,17 +256,7 @@ try {
       plan: input.value,
       sql: db.getDatabase(),
       readBusy,
-      healths,
-      readHealths: () =>
-        Promise.all(
-          r.healthUrls.map(async (url) => {
-            const response = await fetch(url, {
-              signal: globalThis.AbortSignal.timeout(10_000),
-            });
-            need(response.ok, 'NATIVE_RETIREMENT_SERVICE_NOT_READY');
-            return response.json();
-          }),
-        ),
+      readHealths,
     });
     if (r.historicalCloudCarry !== undefined) {
       // Physical probes may outlive the first owner/active checks. Keep the
