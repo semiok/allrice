@@ -544,19 +544,18 @@ export type BrandReminderGate = NonNullable<
   Awaited<ReturnType<typeof lockBrandContentReminder>>
 >;
 
-/** Shared locked business sink. A copied JSON object cannot authorize a write. */
+/** Native-only locked business sink. A copied JSON object cannot authorize a write. */
 export async function completeBrandContentReminder(
   tx: Tx,
   gate: BrandReminderGate,
   options: {
-    clockOwner: 'legacy' | 'native_once';
     blocked?: string;
     nativeOccurrenceId?: string;
   },
 ): Promise<string | null> {
   if (
     reminderGates.get(tx) !== gate ||
-    gate.automation.clock_owner !== options.clockOwner ||
+    gate.automation.clock_owner !== 'native_once' ||
     !gate.automation.due
   )
     fail('invalid_state');
@@ -608,28 +607,4 @@ export async function completeBrandContentReminder(
     { authority: 'scheduler' },
   );
   return occurrenceId;
-}
-
-/** The legacy scanner must recheck clock ownership under the same business
- * locks: its earlier candidate read is not authority after a migration. */
-export async function claimBrandContentReminder(
-  tx: Tx,
-  automationId: string,
-  scheduledFor: Date,
-): Promise<string | null> {
-  const [delivered] = await tx<
-    { automation_run_id: string }[]
-  >`select r.automation_run_id
-    from allrice_brand_content_reminders r join allrice_automations a on a.id=r.automation_id and a.brand_content_binding=r.id
-    where a.id=${automationId} and a.clock_owner='legacy' and r.state='reminded'`;
-  if (delivered) return delivered.automation_run_id;
-  const gate = await lockBrandContentReminder(tx, automationId);
-  if (!gate || gate.automation.clock_owner !== 'legacy' || !gate.automation.due)
-    return null;
-  return completeBrandContentReminder(tx, gate, {
-    clockOwner: 'legacy',
-    ...(scheduledFor.getTime() !== gate.binding.scheduled_for.getTime()
-      ? { blocked: 'BINDING_MISMATCH' }
-      : {}),
-  });
 }

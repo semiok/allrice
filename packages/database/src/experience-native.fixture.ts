@@ -6,7 +6,7 @@ import { createChatSession } from './workspace/service.ts';
 import { prepareEmployeeInstanceSnapshot } from './employees/employee-instances.ts';
 import { collectPendingExperienceEvidence } from './experience-evidence.ts';
 import {
-  claimExperienceOccurrence,
+  reserveExperienceOccurrenceInTransaction,
   readExperiencePolicy,
   type ExperienceScheduleRule,
 } from './experience-consolidation.ts';
@@ -90,7 +90,16 @@ export async function seedExperienceCalendarRule(
         ExperienceScheduleRule[]
       >`select * from allrice_automations where id=${automationId} for update`;
       if (!rule) throw Error('calendar_fixture_legacy_rule_missing');
-      return claimExperienceOccurrence(tx, rule, nextScheduleAt(schedule, P));
+      const reserved = await reserveExperienceOccurrenceInTransaction(
+        tx,
+        rule,
+        P,
+      );
+      if (reserved.outcome !== 'queued')
+        throw Error(`calendar_fixture_legacy_reservation_${reserved.outcome}`);
+      // Explicit historical metadata: the original reservation already advanced P.
+      await tx`update allrice_automations set next_run_at=${nextScheduleAt(schedule, P)},last_run_at=clock_timestamp(),updated_at=clock_timestamp() where id=${rule.id}`;
+      return reserved.automationRunId;
     });
     if (!legacyOccurrenceId)
       throw Error('calendar_fixture_legacy_reservation_missing');

@@ -25,7 +25,7 @@ import {
   type ExperienceScheduleRule,
 } from './experience-consolidation.ts';
 import { claimNextJob, startClaimedJob } from './execution/queue.ts';
-import { claimDueAutomations, nextScheduleAt } from './execution/automation.ts';
+import { runAutomationNow, nextScheduleAt } from './execution/automation.ts';
 import { lockNativeOnceJobAdmission } from './native-schedule-once-authority.ts';
 import {
   nativeOnceDigest,
@@ -285,7 +285,9 @@ suite(
             await f.db`select run_id,status from allrice_automation_runs where id=${d!.automation_run_id}`;
           expect(pending).toMatchObject({ run_id: null, status: 'queued' });
           // Recovery consumes a committed native AR, never the legacy due clock.
-          expect(await claimDueAutomations(1)).toBe(0);
+          await expect(
+            runAutomationNow(f.context, f.workspaceId, seeded.automationId),
+          ).rejects.toMatchObject({ code: 'not_found' });
           const [stillPending] =
             await f.db`select run_id,status from allrice_automation_runs where id=${d!.automation_run_id}`;
           expect(stillPending).toEqual(pending);

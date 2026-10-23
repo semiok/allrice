@@ -1999,46 +1999,161 @@ suite(
           .definition,
       ).toMatchObject({ kind: 'legacy', status: 'deleted', revision: 3 });
     });
-    it('keeps generic legacy pause and soft deletion available without deleting its original occurrence', async () => {
-      const id = randomUUID(),
-        occurrenceId = randomUUID();
-      await f.db`insert into allrice_automations(id,organization_id,workspace_id,owner_id,name,prompt,trigger_type,schedule,status,conversation_mode,employee_assignment_id,next_run_at)
+    it.each(['failed', 'queued'] as const)(
+      'preserves unbound legacy %s history across pause, stale CAS and deletion',
+      async (status) => {
+        const id = randomUUID(),
+          occurrenceId = randomUUID();
+        await f.db`insert into allrice_automations(id,organization_id,workspace_id,owner_id,name,prompt,trigger_type,schedule,status,conversation_mode,employee_assignment_id,next_run_at)
         values(${id},${f.organizationId},${f.workspaceId},${f.ownerId},'Historical generic control','Original prompt','schedule',
           ${f.db.json({ frequency: 'daily', time: '09:00', timezone: 'UTC' })},'enabled','reuse',${f.assignmentId},'2099-01-01T09:00:00Z')`;
-      await f.db`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,scheduled_for,status,error_code)
-        values(${occurrenceId},${f.organizationId},${f.workspaceId},${id},'2026-01-01T09:00:00Z','failed','HISTORICAL_FAILURE')`;
+        const errorCode = status === 'failed' ? 'HISTORICAL_FAILURE' : null,
+          errorMessage =
+            status === 'failed' ? 'Original admission failure' : null;
+        await f.db`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,scheduled_for,status,error_code,error_message)
+        values(${occurrenceId},${f.organizationId},${f.workspaceId},${id},'2026-01-01T09:00:00Z',${status},${errorCode},${errorMessage})`;
+        const history = async () =>
+          (
+            await f.db`select to_jsonb(ar) data from allrice_automation_runs ar where id=${occurrenceId}`
+          )[0]!.data;
+        const original = await history();
+        const otherId = randomUUID();
+        await f.db`insert into allrice_users(id,email,display_name,password_hash)
+        values(${otherId},${`${otherId}@example.test`},'Other history owner','not-login')`;
+        await f.db`insert into allrice_memberships(organization_id,workspace_id,user_id,role)
+        values(${f.organizationId},${f.workspaceId},${otherId},'member')`;
+        const otherLogin = await createSession(otherId);
+        const other = (await authenticateSession(otherLogin.token, {
+          organizationId: f.organizationId,
+          workspaceId: f.workspaceId,
+        }))!;
+        expect(other.actor.id).toBe(otherId);
+        const assertPrivate = async () => {
+          expect(
+            (
+              await listAutomationCatalog(other, {
+                workspaceId: f.workspaceId,
+                query: 'Historical generic control',
+              })
+            ).tasks,
+          ).toHaveLength(0);
+          await expect(
+            getAutomationCatalogTask(other, f.workspaceId, id),
+          ).rejects.toMatchObject({ code: 'not_found' });
+        };
+        await assertPrivate();
+        const counts = async () =>
+          (
+            await f.db`select
+        (select count(*)::int from allrice_runs where organization_id=${f.organizationId}) runs,
+        (select count(*)::int from allrice_jobs where organization_id=${f.organizationId}) jobs,
+        (select count(*)::int from allrice_messages where organization_id=${f.organizationId}) messages,
+        (select count(*)::int from allrice_native_once_occurrences where automation_id=${id}) once_receipts,
+        (select count(*)::int from allrice_native_recurring_occurrences where automation_id=${id}) recurring_receipts`
+          )[0];
+        const before = await counts();
+        const projected = async () =>
+          (await getAutomationCatalogTask(f.context, f.workspaceId, id))
+            .occurrences;
+        const expected = [
+          {
+            id: occurrenceId,
+            taskId: id,
+            status: status === 'failed' ? 'failed' : 'pending',
+            runId: null,
+            errorMessage,
+            scheduledAt: '2026-01-01T09:00:00.000Z',
+            source: { kind: 'legacy_run' },
+          },
+        ];
+        expect(await projected()).toMatchObject(expected);
+        await updateAutomation(f.context, f.workspaceId, id, {
+          status: 'paused',
+          expectedRevision: 1,
+        });
+        await expect(
+          updateAutomation(f.context, f.workspaceId, id, {
+            status: 'paused',
+            expectedRevision: 1,
+          }),
+        ).rejects.toMatchObject({ code: 'grant_invalid' });
+        await deleteAutomation(f.context, f.workspaceId, id);
+        expect(
+          (
+            await f.db`select status,revision,deleted_at,next_run_at from allrice_automations where id=${id}`
+          )[0],
+        ).toMatchObject({
+          status: 'paused',
+          revision: 3,
+          deleted_at: expect.any(Date),
+          next_run_at: null,
+        });
+        expect(await history()).toEqual(original);
+        expect(await projected()).toMatchObject(expected);
+        await assertPrivate();
+        expect(await counts()).toEqual(before);
+        expect(
+          (await listAutomations(f.context, f.workspaceId)).automations.some(
+            (row) => row.id === id,
+          ),
+        ).toBe(false);
+      },
+    );
+    it('projects an actual bound Run before the stale legacy occurrence status and retains that occurrence unchanged', async () => {
+      const session = await createChatSession(f.context, {
+        workspaceId: f.workspaceId,
+        employeeAssignmentId: f.assignmentId,
+        title: 'Bound legacy history projection',
+      });
+      const submitted = await sendChatMessage(
+        f.context,
+        f.workspaceId,
+        session.id,
+        {
+          clientMessageId: randomUUID(),
+          text: 'Isolated queued history fixture; no model execution.',
+        },
+      );
+      expect(submitted.run.status).toBe('queued');
+      const id = randomUUID(),
+        occurrenceId = randomUUID();
+      await f.db`insert into allrice_automations(id,organization_id,workspace_id,owner_id,name,prompt,trigger_type,schedule,status,conversation_mode,employee_assignment_id,session_id)
+        values(${id},${f.organizationId},${f.workspaceId},${f.ownerId},'Bound historical task','Original prompt','schedule',
+          ${f.db.json({ frequency: 'daily', time: '09:00', timezone: 'UTC' })},'paused','reuse',${f.assignmentId},${session.id})`;
+      // A historical AR projection can lag the real queue. Do not create or
+      // rewrite a terminal Run to verify display precedence.
+      await f.db`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,run_id,session_id,scheduled_for,status,error_code,error_message)
+        values(${occurrenceId},${f.organizationId},${f.workspaceId},${id},${submitted.run.id},${session.id},
+          '2026-01-01T09:00:00Z','failed','HISTORICAL_FAILURE','Original historical failure')`;
       const history = async () =>
         (
           await f.db`select to_jsonb(ar) data from allrice_automation_runs ar where id=${occurrenceId}`
         )[0]!.data;
       const original = await history();
-      await updateAutomation(f.context, f.workspaceId, id, {
-        status: 'paused',
-        expectedRevision: 1,
+      const projected = async () =>
+        (await getAutomationCatalogTask(f.context, f.workspaceId, id))
+          .occurrences;
+      expect(await projected()).toMatchObject([
+        {
+          id: occurrenceId,
+          runId: submitted.run.id,
+          status: 'queued',
+        },
+      ]);
+      await stopAutomationCatalogOccurrence(f.context, f.workspaceId, id, {
+        occurrenceId,
+        runId: submitted.run.id,
+        source: 'legacy_run',
       });
-      await expect(
-        updateAutomation(f.context, f.workspaceId, id, {
-          status: 'paused',
-          expectedRevision: 1,
-        }),
-      ).rejects.toMatchObject({ code: 'grant_invalid' });
-      await deleteAutomation(f.context, f.workspaceId, id);
-      expect(
-        (
-          await f.db`select status,revision,deleted_at,next_run_at from allrice_automations where id=${id}`
-        )[0],
-      ).toMatchObject({
-        status: 'paused',
-        revision: 3,
-        deleted_at: expect.any(Date),
-        next_run_at: null,
-      });
+      await maintainQueue(1000);
+      expect(await projected()).toMatchObject([
+        {
+          id: occurrenceId,
+          runId: submitted.run.id,
+          status: 'canceled',
+        },
+      ]);
       expect(await history()).toEqual(original);
-      expect(
-        (await listAutomations(f.context, f.workspaceId)).automations.some(
-          (row) => row.id === id,
-        ),
-      ).toBe(false);
     });
     it('PostgreSQL rejects an outbox lease expiring at COMMIT and rolls back the whole Run', async () => {
       const t = await task();
