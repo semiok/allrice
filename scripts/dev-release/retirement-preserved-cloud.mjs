@@ -221,22 +221,58 @@ export function assertNoOwnedCloudContainers(inventory, physical) {
   }
 }
 
-// Canonical full inspect/daemon digests are bound to the final private review.
+// Object keys are canonical; ordinary arrays remain ordered evidence.
+function canonicalEvidenceValue(v) {
+  return Array.isArray(v)
+    ? v.map(canonicalEvidenceValue)
+    : v && typeof v === 'object'
+      ? Object.fromEntries(
+          Object.keys(v)
+            .sort()
+            .map((k) => [k, canonicalEvidenceValue(v[k])]),
+        )
+      : v;
+}
+// Docker does not promise root Mounts order. Sort the complete entries, retaining
+// every field and duplicate. Never sort Env/Cmd/Args or any nested array.
+export function canonicalExitedContainerInspect(body) {
+  need(
+    body &&
+      typeof body === 'object' &&
+      !Array.isArray(body) &&
+      Array.isArray(body.Mounts),
+    'NATIVE_RETIREMENT_EXITED_CONTAINER_INSPECT_UNCONFIRMED',
+  );
+  const mounts = body.Mounts.map((value) => ({
+    value,
+    key: JSON.stringify(canonicalEvidenceValue(value)),
+  }));
+  mounts.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  return { ...body, Mounts: mounts.map((m) => m.value) };
+}
+function isDockerInspectBody(v) {
+  return (
+    v &&
+    !Array.isArray(v) &&
+    /^[a-f0-9]{64}$/.test(v.Id) &&
+    typeof v.Name === 'string' &&
+    typeof v.Created === 'string' &&
+    v.State &&
+    v.Config &&
+    v.HostConfig &&
+    Array.isArray(v.Mounts)
+  );
+}
+// Private review callers already use this digest for root Docker inspect bodies;
+// normalize that one semantic set here so their raw capture pin stays unchanged.
 export function exitedContainerEvidenceDigest(value) {
-  const sorted = (v) =>
-    Array.isArray(v)
-      ? v.map(sorted)
-      : v && typeof v === 'object'
-        ? Object.fromEntries(
-            Object.keys(v)
-              .sort()
-              .map((k) => [k, sorted(v[k])]),
-          )
-        : v;
+  const input = isDockerInspectBody(value)
+    ? canonicalExitedContainerInspect(value)
+    : value;
   return (
     'sha256:' +
     createHash('sha256')
-      .update(JSON.stringify(sorted(value)))
+      .update(JSON.stringify(canonicalEvidenceValue(input)))
       .digest('hex')
   );
 }
@@ -378,8 +414,8 @@ function assertExitedContainerPreserved({
   same(before, expected, 'NATIVE_RETIREMENT_EXITED_CONTAINER_IDENTITY_CHANGED');
   same(after, before, 'NATIVE_RETIREMENT_EXITED_CONTAINER_IDENTITY_CHANGED');
   same(
-    inspectBefore.body,
-    inspectAfter.body,
+    canonicalExitedContainerInspect(inspectBefore.body),
+    canonicalExitedContainerInspect(inspectAfter.body),
     'NATIVE_RETIREMENT_EXITED_CONTAINER_INSPECT_CHANGED',
   );
   same(
