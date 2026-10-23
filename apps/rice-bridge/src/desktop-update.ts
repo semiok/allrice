@@ -75,11 +75,13 @@ const installer = (quiescent: () => Promise<void> = async () => undefined) =>
       });
     }),
   );
-function nativeEnvironment() {
+export function nativeEnvironment(
+  environment: NodeJS.ProcessEnv = process.env,
+) {
   return Object.fromEntries(
-    ['HOME', 'USER', 'LOGNAME', 'TMPDIR', 'LANG']
-      .filter((key) => process.env[key] !== undefined)
-      .map((key) => [key, process.env[key]!])
+    ['HOME', 'USER', 'LOGNAME', 'TMPDIR', 'LANG', 'LC_CTYPE', 'LC_ALL']
+      .filter((key) => environment[key] !== undefined)
+      .map((key) => [key, environment[key]!])
       .concat([['PATH', '/usr/bin:/bin:/usr/sbin:/sbin']]),
   );
 }

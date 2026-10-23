@@ -1,5 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import {
+  appendFile,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -21,6 +28,7 @@ const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
   for (const close of cleanup.splice(0).reverse()) await close();
+  vi.unstubAllEnvs();
 });
 
 async function eventually<T>(
@@ -756,6 +764,163 @@ it.skipIf(process.platform !== 'darwin')(
     ).toMatchObject({ ok: false, error: { code: 'terminal/unavailable' } });
   },
   25_000,
+);
+
+it.skipIf(process.platform !== 'darwin').each([
+  {
+    name: 'missing locale',
+    locale: { LANG: undefined, LC_CTYPE: undefined, LC_ALL: undefined },
+    expected: ['en_US.UTF-8', 'en_US.UTF-8', 'unset'],
+  },
+  {
+    name: 'C locale',
+    locale: { LANG: 'C', LC_CTYPE: 'C', LC_ALL: 'C' },
+    expected: ['C', 'en_US.UTF-8', ''],
+  },
+  {
+    name: 'bare UTF-8 is not a macOS LANG locale',
+    locale: { LANG: 'UTF-8', LC_CTYPE: undefined, LC_ALL: undefined },
+    expected: ['en_US.UTF-8', 'en_US.UTF-8', 'unset'],
+  },
+  {
+    name: 'bare UTF-8 is not a macOS LC_ALL locale',
+    locale: { LANG: 'C', LC_CTYPE: 'C', LC_ALL: 'UTF-8' },
+    expected: ['C', 'en_US.UTF-8', ''],
+  },
+  {
+    name: 'existing UTF-8 LANG',
+    locale: { LANG: 'zh_CN.UTF-8', LC_CTYPE: undefined, LC_ALL: undefined },
+    expected: ['zh_CN.UTF-8', 'unset', 'unset'],
+  },
+  {
+    name: 'UTF-8 LC_CTYPE behind non-UTF-8 LC_ALL',
+    locale: { LANG: 'C', LC_CTYPE: 'UTF-8', LC_ALL: 'POSIX' },
+    expected: ['C', 'UTF-8', ''],
+  },
+  {
+    name: 'UTF-8 LC_ALL priority over C LC_CTYPE and LANG',
+    locale: { LANG: 'C', LC_CTYPE: 'C', LC_ALL: 'ja_JP.UTF-8' },
+    expected: ['C', 'C', 'ja_JP.UTF-8'],
+  },
+  {
+    name: 'UTF-8 LC_CTYPE priority over different UTF-8 LANG',
+    locale: {
+      LANG: 'zh_CN.UTF-8',
+      LC_CTYPE: 'ja_JP.UTF-8',
+      LC_ALL: 'en_US.ISO8859-1',
+    },
+    expected: ['zh_CN.UTF-8', 'ja_JP.UTF-8', ''],
+  },
+  {
+    name: 'UTF-8 LANG behind C LC_CTYPE',
+    locale: { LANG: 'zh_CN.UTF-8', LC_CTYPE: 'C', LC_ALL: undefined },
+    expected: ['zh_CN.UTF-8', 'zh_CN.UTF-8', 'unset'],
+  },
+])(
+  'native PTY preserves Chinese filenames and input bytes with $name',
+  async ({ name, locale, expected }) => {
+    for (const [key, value] of Object.entries(locale)) vi.stubEnv(key, value);
+    const f = await fixture();
+    const fileName = '日报-中文-🙂.txt';
+    await writeFile(join(f.root, fileName), 'fixture');
+    let shellPid: number | undefined;
+    let verified: Record<string, unknown> | undefined;
+    try {
+      const channel = await f.open();
+      const terminal = await f.create(channel);
+      const stream = f.stream(channel, terminal);
+      expect(await stream.next()).toMatchObject({
+        type: 'snapshot',
+        writable: true,
+      });
+      let sequence = 0;
+      let output = '';
+      async function command(data: string, marker: string) {
+        stream.send({ type: 'write', sequence: ++sequence, data });
+        for (let count = 0; count < 100; count++) {
+          const frame = await stream.next();
+          if (frame.type === 'output') output += frame.data;
+          if (output.includes(`\r\n${marker}\r\n`)) return;
+        }
+        throw Error('Too many locale terminal frames');
+      }
+      await command(
+        "printf '%s' $$ > locale-shell.pid; printf '%s\\n' \"${LANG-unset}\" \"${LC_CTYPE-unset}\" \"${LC_ALL-unset}\" > locale-values; /usr/bin/locale charmap > locale-charmap; printf '\\nLOCALE_LS_BEGIN\\n'; /bin/ls; printf '\\nLOCALE_LS_END\\n'\r",
+        'LOCALE_LS_END',
+      );
+      shellPid = Number(
+        await readFile(join(f.root, 'locale-shell.pid'), 'utf8'),
+      );
+      expect(Number.isSafeInteger(shellPid) && shellPid > 1).toBe(true);
+      const listing = output
+        .split('\r\nLOCALE_LS_BEGIN\r\n')[1]!
+        .split('\r\nLOCALE_LS_END\r\n')[0]!;
+      expect(listing).toContain(fileName);
+      expect(listing).not.toContain('\uFFFD');
+      expect(
+        (await readFile(join(f.root, 'locale-values'), 'utf8'))
+          .replace(/\n$/, '')
+          .split('\n'),
+      ).toEqual(expected);
+      expect(
+        (await readFile(join(f.root, 'locale-charmap'), 'utf8')).trim(),
+      ).toMatch(/^UTF-?8$/i);
+      const input = '中文输入-🙂-准确字节';
+      output = '';
+      await command(
+        `printf '%s' '${input}' > locale-input; printf '\\nLOCALE_INPUT_END\\n'\r`,
+        'LOCALE_INPUT_END',
+      );
+      expect(await readFile(join(f.root, 'locale-input'))).toEqual(
+        Buffer.from(input, 'utf8'),
+      );
+      expect(await f.rpc(channel, 'close', { id: terminal })).toMatchObject({
+        ok: true,
+      });
+      verified = {
+        locale,
+        effectiveLocale: expected,
+        listing,
+        inputSha256: createHash('sha256').update(input).digest('hex'),
+        passed: true,
+      };
+    } finally {
+      await f.relay.dispose();
+      const ownedPid = shellPid;
+      if (ownedPid)
+        await eventually(
+          () => {
+            try {
+              process.kill(ownedPid, 0);
+              return false;
+            } catch (error) {
+              return (error as NodeJS.ErrnoException).code === 'ESRCH';
+            }
+          },
+          Boolean,
+          'locale terminal process exit',
+        );
+      await rm(f.root, { recursive: true, force: true });
+      await expect(readFile(join(f.root, fileName))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      const proof = {
+        name,
+        root: f.root,
+        shellPid,
+        ...verified,
+        shellExited: shellPid !== undefined,
+        removed: true,
+      };
+      if (process.env.ALLRICE_TERMINAL_LOCALE_EVIDENCE_PATH)
+        await appendFile(
+          process.env.ALLRICE_TERMINAL_LOCALE_EVIDENCE_PATH,
+          JSON.stringify(proof) + '\n',
+          { mode: 0o600 },
+        );
+    }
+  },
+  20_000,
 );
 
 it.skipIf(process.platform !== 'darwin')(
