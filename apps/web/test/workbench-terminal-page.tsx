@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { DockLayout, type TabId } from '@deepseek-ai/dsh-client-ui-dockkit';
 import {
@@ -17,6 +17,8 @@ import {
 import { useNativeDock, dockLabels } from '../app/chatflow/use-native-dock';
 import workbench from '../app/chatflow/workbench.module.css';
 import { WorkbenchStart } from '../app/chatflow/workbench-modules';
+import { useBridge } from '../app/chatflow/use-bridge';
+import type { Workspace } from '../app/chatflow/chatflow-types';
 import '../app/dsh-upstream/design-platform.css';
 import '../app/dsh-upstream/base.css';
 
@@ -29,6 +31,22 @@ const identity = {
 const contentId =
   'terminal://55555555-5555-4555-8555-555555555555/66666666-6666-4666-8666-666666666666/88888888-8888-4888-8888-888888888888';
 function TerminalSurface(props: { identity: typeof identity }) {
+  const [, setBridgeError] = useState('');
+  const workspace = useMemo(
+    () =>
+      ({
+        organizationId: props.identity.organizationId,
+        workspaceId: props.identity.workspaceId,
+        viewerId: props.identity.ownerId,
+      }) as Workspace,
+    [props.identity],
+  );
+  const headers = useMemo(() => ({}), []);
+  const bridge = useBridge({
+    workspace,
+    tenantHeaders: headers,
+    setError: setBridgeError,
+  });
   const [visible, setVisible] = useState(true);
   const [resizeArmed, setResizeArmed] = useState(false);
   const [launched, setLaunched] = useState({ shell: '', grant: '' });
@@ -96,6 +114,9 @@ function TerminalSurface(props: { identity: typeof identity }) {
   return (
     <>
       <div data-test-controls>
+        <button onClick={() => void bridge.loadBridgeDevices()}>
+          刷新电脑状态
+        </button>
         <button onClick={() => setVisible((value) => !value)}>
           折叠或展开工作台
         </button>

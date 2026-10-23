@@ -440,6 +440,7 @@
   padding: 4px;
   background: transparent;
 }
+.nativeDock :global(button[data-dockkit-add-tab]),
 .nativeDock :global(button[data-dockkit-split-button]),
 .nativeDock :global([data-dockkit-strip-chrome]) button {
   display: grid;
@@ -451,18 +452,28 @@
   border-radius: 8px;
   color: var(--dsw-alias-label-secondary);
 }
+.nativeDock :global([data-dockkit-add-tab]) svg,
 .nativeDock :global([data-dockkit-split-button]) svg,
 .nativeDock :global([data-dockkit-strip-chrome]) button > svg {
   width: 20px;
   height: 20px;
 }
+.nativeDock :global([data-dockkit-add-tab]) svg > *,
+.nativeDock :global([data-dockkit-strip-chrome]) button > svg > *,
 .nativeDock :global([data-dockkit-split-button]) svg > * {
   stroke-width: 1.75;
   vector-effect: non-scaling-stroke;
 }
+.nativeDock :global([data-dockkit-add-tab]):hover:not(:disabled),
 .nativeDock :global([data-dockkit-split-button]):hover:not(:disabled),
 .nativeDock :global([data-dockkit-strip-chrome]) button:hover:not(:disabled) {
   background: var(--dsw-alias-interactive-bg-hover);
+}
+.nativeDock :global([data-dockkit-add-tab]):focus-visible,
+.nativeDock :global([data-dockkit-split-button]):focus-visible,
+.nativeDock :global([data-dockkit-strip-chrome]) button:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 2px;
 }
 .nativeDock :global([data-dockkit-strip]) :global([role='tab']) {
   padding: 0 8px;

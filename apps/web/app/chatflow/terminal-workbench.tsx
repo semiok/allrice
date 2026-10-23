@@ -23,6 +23,7 @@ import {
   terminalPin,
   terminalShellPath,
   terminalCleanupFailures,
+  terminalRecoveryView,
   type TerminalRuntime,
   type TerminalScreenProps,
 } from './terminal-native';
@@ -419,7 +420,19 @@ function NativeTerminalBody(props: {
     props.model.state.getSnapshot,
     props.model.state.getSnapshot,
   );
+  const previousCarrierPhase = useRef(carrier.phase);
   useEffect(() => {
+    const recovered =
+      carrier.phase === 'connected' &&
+      previousCarrierPhase.current !== 'connected';
+    previousCarrierPhase.current = carrier.phase;
+    // A permanent carrier end leaves DSH's view failed. Once fresh browser
+    // authorization succeeds, reuse its public inventory recovery to distinguish
+    // a retained PTY from a process destroyed by a complete Bridge restart.
+    if (recovered && state.phase === 'failed' && state.info) {
+      void props.model.refresh();
+      return;
+    }
     // Native failInput detaches its stream if a resize/input races carrier loss.
     // Recover only a confirmed process after fresh carrier authorization.
     if (
@@ -468,6 +481,10 @@ function NativeTerminalBody(props: {
   );
   const Body: ComponentType<TerminalScreenProps> =
     props.runtime.screen.TerminalBody;
+  const view = useMemo(
+    () => terminalRecoveryView(props.runtime, props.model),
+    [props.runtime, props.model],
+  );
   return (
     <section
       className={css.terminal}
@@ -518,7 +535,7 @@ function NativeTerminalBody(props: {
           })}
           useTerminal={useTerminal}
           useTheme={(selector) => selector(theme)}
-          view={() => props.model}
+          view={() => view}
           t={t}
         />
       </div>
@@ -537,6 +554,12 @@ function NativeTerminalBody(props: {
       {carrier.phase === 'ended' && (
         <div className={css.notice}>
           <span role="alert">{carrier.error}</span>
+          <button
+            type="button"
+            onClick={() => props.runtime.carrier.reauthorizeConnection()}
+          >
+            重新验证并连接
+          </button>
           <button type="button" onClick={props.onOpenComputerSettings}>
             连接电脑
           </button>

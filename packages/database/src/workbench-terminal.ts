@@ -79,12 +79,13 @@ export async function resolveWorkbenchTerminalTarget(
     const environment = BridgeEnvironmentSchema.safeParse(
       target?.environment,
     ).data;
-    if (!target || environment?.paused) throw new DataAccessError('not_found');
-    // An old/missing heartbeat is absence of availability evidence, not proof
-    // that a retained human process was revoked. A device's authenticated
-    // revalidation request itself proves current transport reachability.
+    if (!target) throw new DataAccessError('not_found');
+    // A paused device or old/missing heartbeat is absence of availability
+    // evidence, not proof that terminal authority was revoked. A device's
+    // authenticated revalidation itself proves current transport reachability.
     if (
       !environment ||
+      environment.paused ||
       (environment.humanTerminalVersion !== 1 &&
         environment.humanTerminalVersion !== 2) ||
       (requirePresence && !target.present)
