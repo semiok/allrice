@@ -69,14 +69,14 @@ export const EmployeeExecutionSourceSchema = z
       .strict(),
     sourceBase
       .extend({
-        packageSchema: z.literal(2),
+        packageSchema: z.union([z.literal(1), z.literal(2)]),
         packageChecksum: digest,
         declaredGeneration: z.literal(DSH_MISSING_FROZEN_GENERATION),
       })
       .strict(),
     sourceBase
       .extend({
-        packageSchema: z.literal(2),
+        packageSchema: z.union([z.literal(1), z.literal(2)]),
         packageChecksum: digest,
         declaredGeneration: z.literal(newNativeGeneration),
       })
@@ -97,6 +97,8 @@ export type EmployeeExecutionSource = z.infer<
 >;
 const sourceVariant = z.enum([
   'definition_only',
+  'legacy_published_package_v1',
+  'current_published_package_v1',
   'legacy_published_package_v2',
   'current_published_package_v2',
 ]);
@@ -106,6 +108,10 @@ function variantFor(
   source: EmployeeExecutionSource,
 ): EmployeeExecutionSourceVariant {
   if (source.packageSchema === null) return 'definition_only';
+  if (source.packageSchema === 1)
+    return source.declaredGeneration === newNativeGeneration
+      ? 'current_published_package_v1'
+      : 'legacy_published_package_v1';
   return source.declaredGeneration === newNativeGeneration
     ? 'current_published_package_v2'
     : 'legacy_published_package_v2';
@@ -116,11 +122,12 @@ function sourcePolicyDigest(variant: EmployeeExecutionSourceVariant) {
     family: employeeExecutionSourceFamily,
     variant,
     manifestSchema: 2,
-    packageSchema: variant === 'definition_only' ? null : 2,
+    packageSchema:
+      variant === 'definition_only' ? null : variant.endsWith('_v1') ? 1 : 2,
     declaredGeneration:
       variant === 'definition_only'
         ? null
-        : variant === 'legacy_published_package_v2'
+        : variant.startsWith('legacy_')
           ? DSH_MISSING_FROZEN_GENERATION
           : newNativeGeneration,
     executionGeneration: newNativeGeneration,
@@ -199,7 +206,7 @@ export function validateEmployeeExecutionSource(
   let skills: ReturnType<typeof frozenPackageSkills> = [];
   if (pkg !== null) {
     need(
-      pkg.schemaVersion === 2,
+      pkg.schemaVersion === 1 || pkg.schemaVersion === 2,
       'CURRENT_EXECUTION_SOURCE_PACKAGE_SCHEMA_UNSUPPORTED',
     );
     need(

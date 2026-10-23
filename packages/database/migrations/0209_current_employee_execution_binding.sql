@@ -53,7 +53,7 @@ returns boolean language sql immutable as $$
     and manifest->>'schemaVersion'='2'
     and manifest#>>'{runtimePolicy,harness}'='dsh'
     and (manifest->'runtimePackage'='null'::jsonb or
-      (manifest#>>'{runtimePackage,schemaVersion}'='2' and
+      (manifest#>>'{runtimePackage,schemaVersion}' in ('1','2') and
        manifest#>>'{runtimePackage,runtimeManifest,distributionGeneration}' in ('dsh-0.1.5-rc.3-a4c74a9','dsh-0.2.1-rc.2-687f282'))),false)
   else coalesce(origin->>'distributionGeneration' = manifest#>>'{runtimePackage,runtimeManifest,distributionGeneration}',false)
   end;

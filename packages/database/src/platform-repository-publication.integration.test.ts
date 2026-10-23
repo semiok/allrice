@@ -136,6 +136,7 @@ suite('private publication canonical queue and authority boundaries', () => {
       execution,
       execution.workspaceId!,
     );
+    if (!assignment) throw new Error('default_employee_assignment_missing');
     // The accepted repair source is historical SQL evidence, not a new
     // employee execution. Keep its unbound origin without inventing approval.
     const session = { id: randomUUID() };

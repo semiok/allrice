@@ -110,6 +110,7 @@ suite(
       expect(prepared).toEqual({
         ...bound,
         origin: null,
+        executionBinding: null,
         requiresRecovery: true,
       });
       await fixture.db`update allrice_jobs set cancel_requested_at=clock_timestamp(),cancel_reason='user_request' where id=${f.input.jobId}`;

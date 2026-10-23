@@ -71,7 +71,14 @@ const tools = [
   'workspace.export.create',
   'workspace.skill.read',
 ];
-type SourceKind = 'default-rice' | 'legacy-package2' | 'current-package2';
+type SourceKind =
+  | 'default-rice'
+  | 'legacy-package2'
+  | 'current-package2'
+  | 'legacy-package1-plain'
+  | 'current-package1-plain'
+  | 'legacy-package1-empty'
+  | 'current-package1-empty';
 
 integration(
   'MET195 current execution binding: complete isolated SQL chain',
@@ -79,6 +86,8 @@ integration(
     let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
     let schema: string;
     let currentPackage: EmployeeRuntimePackage;
+    let plainPackage: EmployeeRuntimePackage;
+    let emptyPackage: EmployeeRuntimePackage;
     let platformSource: Pick<
       Awaited<ReturnType<typeof createEmployeeAdministrationFixture>>,
       'employeeId' | 'revisionId'
@@ -125,21 +134,42 @@ integration(
       const skills = await fixture.db<
         Parameters<typeof buildEmployeeRuntimePackage>[0]['skills']
       >`select * from allrice_platform_dsh_skills where id=${template.skillId}`;
+      const definition = {
+        ...template.definition,
+        capabilities: {
+          ...template.definition.capabilities,
+          toolNames: tools,
+        },
+      };
       currentPackage = buildEmployeeRuntimePackage({
         revision: 1,
-        definition: {
-          ...template.definition,
-          capabilities: {
-            ...template.definition.capabilities,
-            toolNames: tools,
-          },
-        },
+        definition,
         skills,
       });
       expect(currentPackage.schemaVersion).toBe(2);
-      expect(verifiedRuntimePackageChecksum(currentPackage)).toBe(
-        currentPackage.checksum,
-      );
+      plainPackage = buildEmployeeRuntimePackage({
+        revision: 1,
+        definition,
+        skills: skills.map(({ bundle: unused, ...skill }) => {
+          void unused;
+          return skill;
+        }),
+      });
+      emptyPackage = buildEmployeeRuntimePackage({
+        revision: 1,
+        definition: {
+          ...definition,
+          capabilities: { ...definition.capabilities, nativeSkillIds: [] },
+        },
+        skills: [],
+      });
+      expect(plainPackage.schemaVersion).toBe(1);
+      expect(plainPackage.skills).toHaveLength(1);
+      expect(plainPackage.skills[0]!.bundle).toBeUndefined();
+      expect(emptyPackage.schemaVersion).toBe(1);
+      expect(emptyPackage.skills).toEqual([]);
+      for (const pkg of [currentPackage, plainPackage, emptyPackage])
+        expect(verifiedRuntimePackageChecksum(pkg)).toBe(pkg.checksum);
     }, 120_000);
 
     afterEach(async () => {
@@ -177,11 +207,16 @@ integration(
     }, 30_000);
 
     function packageFor(kind: Exclude<SourceKind, 'default-rice'>) {
-      const pkg = structuredClone(currentPackage);
-      pkg.runtimeManifest.distributionGeneration =
-        kind === 'legacy-package2'
-          ? DSH_MISSING_FROZEN_GENERATION
-          : newNativeGeneration;
+      const pkg = structuredClone(
+        kind.endsWith('-plain')
+          ? plainPackage
+          : kind.endsWith('-empty')
+            ? emptyPackage
+            : currentPackage,
+      );
+      pkg.runtimeManifest.distributionGeneration = kind.startsWith('legacy-')
+        ? DSH_MISSING_FROZEN_GENERATION
+        : newNativeGeneration;
       const p = pkg.runtimeManifest;
       pkg.capabilityFingerprint = runtimePackageChecksum({
         distributionGeneration: p.distributionGeneration,
@@ -377,7 +412,15 @@ integration(
       });
     };
 
-    it.each(['default-rice', 'legacy-package2', 'current-package2'] as const)(
+    it.each([
+      'default-rice',
+      'legacy-package2',
+      'current-package2',
+      'legacy-package1-plain',
+      'current-package1-plain',
+      'legacy-package1-empty',
+      'current-package1-empty',
+    ] as const)(
       '%s creates v2 at real chat INSERT and carries a current execution binding through send/resolve/leased bind',
       async (kind) => {
         const f = await subject(kind);
@@ -385,11 +428,11 @@ integration(
         expect(origin.birthSource).toMatchObject({
           employeeVersionId: f.version,
           configChecksum: f.configChecksum,
-          packageSchema: kind === 'default-rice' ? null : 2,
+          packageSchema: f.manifest.runtimePackage?.schemaVersion ?? null,
           declaredGeneration:
             kind === 'default-rice'
               ? null
-              : kind === 'legacy-package2'
+              : kind.startsWith('legacy-')
                 ? DSH_MISSING_FROZEN_GENERATION
                 : newNativeGeneration,
         });
@@ -397,6 +440,12 @@ integration(
           expect(f.manifest.key).toBe('default-assistant');
           expect(f.manifest.runtimePackage).toBeNull();
         }
+        if (kind.includes('package1'))
+          expect(origin.sourcePolicy.variant).toBe(
+            kind.startsWith('legacy-')
+              ? 'legacy_published_package_v1'
+              : 'current_published_package_v1',
+          );
         const id = await send(f),
           before = await stored(id);
         const binding = EmployeeRunExecutionBindingSchema.parse(
@@ -437,47 +486,52 @@ integration(
       30_000,
     );
 
-    it('updates the same-family source for the next message while birth and already queued Run remain immutable', async () => {
-      const f = await subject('legacy-package2');
-      const origin = await birth(f),
-        first = await send(f),
-        before = await stored(first);
-      const input = await lease(f, first);
-      const nextManifest = EmployeeDefinitionSchema.parse({
-        ...f.manifest,
-        runtimePackage: null,
-      });
-      const nextVersion = randomUUID();
-      await fixture.db`insert into allrice_employee_versions
+    it.each([null, 'current-package1-plain'] as const)(
+      'updates the same-family source to %s for the next message while birth and already queued Run remain immutable',
+      async (target) => {
+        const f = await subject('legacy-package2');
+        const origin = await birth(f),
+          first = await send(f),
+          before = await stored(first);
+        const input = await lease(f, first);
+        const nextManifest = EmployeeDefinitionSchema.parse({
+          ...f.manifest,
+          runtimePackage: target === null ? null : packageFor(target),
+        });
+        const nextVersion = randomUUID();
+        await fixture.db`insert into allrice_employee_versions
       (id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest,provider_snapshot)
       values(${nextVersion},${f.org},${f.workspace},${f.employee},2,${nextManifest.name},${nextManifest.provider.model},
-      ${nextManifest.systemPrompt},${fixture.db.json(nextManifest.capabilities)},${employeeManifestChecksum(nextManifest)},
+      ${nextManifest.systemPrompt},${fixture.db.json(nextManifest.capabilities)},${nextManifest.runtimePackage?.checksum ?? employeeManifestChecksum(nextManifest)},
       ${fixture.db.json(nextManifest)},${fixture.db.json(nextManifest.provider)})`;
-      await fixture.db`update allrice_employee_assignments set employee_version_id=${nextVersion} where id=${f.assignment}`;
-      const next = await send(f),
-        after = await stored(next);
-      expect(after.employee_version_id).toBe(nextVersion);
-      expect(
-        EmployeeRunExecutionBindingSchema.parse(after.native_execution_binding)
-          .source,
-      ).toMatchObject({
-        employeeVersionId: nextVersion,
-        packageSchema: null,
-        packageChecksum: null,
-      });
-      expect(await birth(f)).toEqual(origin);
-      expect(await stored(first)).toEqual(before);
-      expect((await prepare(input)).executionBinding).toEqual(
-        before.native_execution_binding,
-      );
-      expect((await bindJobNativeSession(input)).binding.artifactId).toBe(
-        currentArtifact,
-      );
-      expect(
-        (await resolveEmployeeExecution({ ...scope(f), runId: first }))
-          .executionSnapshot?.employee.versionId,
-      ).toBe(f.version);
-    }, 30_000);
+        await fixture.db`update allrice_employee_assignments set employee_version_id=${nextVersion} where id=${f.assignment}`;
+        const next = await send(f),
+          after = await stored(next);
+        expect(after.employee_version_id).toBe(nextVersion);
+        expect(
+          EmployeeRunExecutionBindingSchema.parse(
+            after.native_execution_binding,
+          ).source,
+        ).toMatchObject({
+          employeeVersionId: nextVersion,
+          packageSchema: nextManifest.runtimePackage?.schemaVersion ?? null,
+          packageChecksum: nextManifest.runtimePackage?.checksum ?? null,
+        });
+        expect(await birth(f)).toEqual(origin);
+        expect(await stored(first)).toEqual(before);
+        expect((await prepare(input)).executionBinding).toEqual(
+          before.native_execution_binding,
+        );
+        expect((await bindJobNativeSession(input)).binding.artifactId).toBe(
+          currentArtifact,
+        );
+        expect(
+          (await resolveEmployeeExecution({ ...scope(f), runId: first }))
+            .executionSnapshot?.employee.versionId,
+        ).toBe(f.version);
+      },
+      30_000,
+    );
 
     it.each([
       ['tenant-inheritance', 'legacy-package2'],

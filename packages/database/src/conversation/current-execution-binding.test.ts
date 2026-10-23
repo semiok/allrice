@@ -107,6 +107,7 @@ function fingerprint(pkg: EmployeeRuntimePackage) {
 }
 function packaged(
   generation: string = newNativeGeneration,
+  format: 'bundled' | 'plain' | 'empty' = 'bundled',
 ): EmployeeExecutionSourceInput {
   const input = definitionOnly();
   const manifest = EmployeeDefinitionSchema.parse(input.manifest);
@@ -165,29 +166,36 @@ function packaged(
   const pkg = buildEmployeeRuntimePackage({
     revision: 1,
     definition,
-    skills: [
-      {
-        id: randomUUID(),
-        name: 'synthetic-reference',
-        description: 'Synthetic resource fixture',
-        content,
-        checksum: skillBytesChecksum(content),
-        model_invocable: true,
-        user_invocable: true,
-        required_tool_refs: ['workspace.skill.read'],
-        source: 'allrice',
-        source_ref: bundlePayload.sourceRef,
-        version: bundlePayload.version,
-        license: bundlePayload.license,
-        review_status: 'reviewed',
-        reviewed_by_label: bundlePayload.reviewedBy,
-        reviewed_at: new Date(timestamp),
-        bundle: {
-          ...bundlePayload,
-          checksum: skillBundleChecksum(bundlePayload),
-        },
-      },
-    ],
+    skills:
+      format === 'empty'
+        ? []
+        : [
+            {
+              id: randomUUID(),
+              name: 'synthetic-reference',
+              description: 'Synthetic resource fixture',
+              content,
+              checksum: skillBytesChecksum(content),
+              model_invocable: true,
+              user_invocable: true,
+              required_tool_refs: ['workspace.skill.read'],
+              source: 'allrice',
+              source_ref: bundlePayload.sourceRef,
+              version: bundlePayload.version,
+              license: bundlePayload.license,
+              review_status: 'reviewed',
+              reviewed_by_label: bundlePayload.reviewedBy,
+              reviewed_at: new Date(timestamp),
+              ...(format === 'bundled'
+                ? {
+                    bundle: {
+                      ...bundlePayload,
+                      checksum: skillBundleChecksum(bundlePayload),
+                    },
+                  }
+                : {}),
+            },
+          ],
   });
   pkg.runtimeManifest.distributionGeneration = generation;
   fingerprint(pkg);
@@ -305,6 +313,57 @@ describe('current employee source policy: immutable original identities', () => 
       );
     },
   );
+  it.each([
+    [newNativeGeneration, 'plain'],
+    [newNativeGeneration, 'empty'],
+    [DSH_MISSING_FROZEN_GENERATION, 'plain'],
+    [DSH_MISSING_FROZEN_GENERATION, 'empty'],
+  ] as const)(
+    'accepts real schema1 builder output for %s / %s with immutable provenance and current execution',
+    (generation, format) => {
+      const input = packaged(generation, format),
+        before = structuredClone(input),
+        pkg = packageOf(input);
+      expect(pkg.schemaVersion).toBe(1);
+      expect(pkg.skills).toHaveLength(format === 'plain' ? 1 : 0);
+      expect(pkg.skills.every((skill) => skill.bundle === undefined)).toBe(
+        true,
+      );
+      const validated = validateEmployeeExecutionSource(input);
+      expect(validated.source).toMatchObject({
+        employeeVersionId: input.employeeVersionId,
+        configChecksum: input.configChecksum,
+        manifestDigest: nativeRootDigest(input.manifest),
+        declaredGeneration: generation,
+        packageSchema: 1,
+        packageChecksum: pkg.checksum,
+      });
+      expect(validated.sourcePolicy.variant).toBe(
+        generation === newNativeGeneration
+          ? 'current_published_package_v1'
+          : 'legacy_published_package_v1',
+      );
+      expect(
+        validateEmployeeExecutionSource({
+          ...input,
+          manifest: jsonbOrder(input.manifest),
+        }),
+      ).toEqual(validated);
+      const birth = chat(input),
+        execution = run(input, birth),
+        binding = freezeEmployeeRunExecutionBinding(execution);
+      expect(birth.origin.birthSource).toEqual(validated.source);
+      expect(binding.execution).toEqual({
+        artifactId: artifact,
+        generation: newNativeGeneration,
+        profileId: 'restricted',
+      });
+      expect(assertEmployeeRunExecutionBinding(binding, execution)).toEqual(
+        binding,
+      );
+      expect(input).toEqual(before);
+    },
+  );
   it.each([false, true])(
     'keeps config/package checksums valid after JSONB object key reorder (packaged %s)',
     (hasPackage) => {
@@ -348,36 +407,58 @@ describe('current employee source policy: immutable original identities', () => 
       }),
     ).toThrow();
   });
-  it('rejects schema1 packages and unreviewed generations even when validly rehashed', () => {
+  it('rejects schema1 packages containing resource bundles even when validly rehashed', () => {
     const source = packaged();
     packageOf(source).schemaVersion = 1;
     source.configChecksum = reseal(packageOf(source)).checksum;
     expect(() => validateEmployeeExecutionSource(source)).toThrow(
-      'PACKAGE_SCHEMA_UNSUPPORTED',
-    );
-    expect(() =>
-      validateEmployeeExecutionSource(packaged('dsh-unreviewed')),
-    ).toThrow('GENERATION_UNSUPPORTED');
-  });
-  it('requires the original package hash, declaration and capability fingerprint to agree', () => {
-    const hash = packaged();
-    manifestOf(hash).runtimePackage!.checksum = artifact;
-    hash.configChecksum = artifact;
-    expect(() => validateEmployeeExecutionSource(hash)).toThrow(
-      'CHECKSUM_MISMATCH',
-    );
-    const declaration = packaged();
-    manifestOf(declaration).capabilityBindings.toolNames = [];
-    expect(() => validateEmployeeExecutionSource(declaration)).toThrow(
-      'DECLARATION_MISMATCH',
-    );
-    const capability = packaged();
-    packageOf(capability).capabilityFingerprint = artifact;
-    capability.configChecksum = reseal(packageOf(capability)).checksum;
-    expect(() => validateEmployeeExecutionSource(capability)).toThrow(
-      'CAPABILITY_FINGERPRINT_MISMATCH',
+      'legacy_package_contains_bundle',
     );
   });
+  it.each(['bundled', 'plain', 'empty'] as const)(
+    'rejects an unreviewed generation in a validly rehashed %s package',
+    (format) => {
+      expect(() =>
+        validateEmployeeExecutionSource(packaged('dsh-unreviewed', format)),
+      ).toThrow('GENERATION_UNSUPPORTED');
+    },
+  );
+  it.each(['bundled', 'plain', 'empty'] as const)(
+    'requires the original %s package hash, declaration and capability fingerprint to agree',
+    (format) => {
+      const hash = packaged(newNativeGeneration, format);
+      manifestOf(hash).runtimePackage!.checksum = artifact;
+      hash.configChecksum = artifact;
+      expect(() => validateEmployeeExecutionSource(hash)).toThrow(
+        'CHECKSUM_MISMATCH',
+      );
+      const declaration = packaged(newNativeGeneration, format);
+      manifestOf(declaration).capabilityBindings.toolNames = [];
+      expect(() => validateEmployeeExecutionSource(declaration)).toThrow(
+        'DECLARATION_MISMATCH',
+      );
+      const capability = packaged(newNativeGeneration, format);
+      packageOf(capability).capabilityFingerprint = artifact;
+      capability.configChecksum = reseal(packageOf(capability)).checksum;
+      expect(() => validateEmployeeExecutionSource(capability)).toThrow(
+        'CAPABILITY_FINGERPRINT_MISMATCH',
+      );
+    },
+  );
+  it.each(['content', 'governance', 'unknown-tool'] as const)(
+    'rejects schema1 plain-skill %s tampering after resealing its outer package',
+    (change) => {
+      const input = packaged(newNativeGeneration, 'plain'),
+        pkg = packageOf(input);
+      if (change === 'content') pkg.skills[0]!.content += 'unreviewed change';
+      if (change === 'governance')
+        pkg.runtimeManifest.skillGovernance[0]!.name = 'wrong-source';
+      if (change === 'unknown-tool')
+        pkg.skills[0]!.requiredToolRefs = ['workspace.not-a-real-tool'];
+      input.configChecksum = fingerprint(pkg).checksum;
+      expect(() => validateEmployeeExecutionSource(input)).toThrow();
+    },
+  );
   it.each([
     'unknown-tool',
     'bad-resource',
@@ -478,13 +559,17 @@ describe('current employee v2 birth and per-Run binding', () => {
       }),
     ).toThrow('CHECKSUM_MISMATCH');
   });
-  it('allows all three reviewed source variants on later Runs without changing the birth tuple/source', () => {
+  it('allows all reviewed source formats on later Runs without changing the birth tuple/source', () => {
     const birth = chat(packaged(DSH_MISSING_FROZEN_GENERATION)),
       original = structuredClone(birth.origin);
     for (const source of [
       definitionOnly(),
       packaged(),
       packaged(DSH_MISSING_FROZEN_GENERATION),
+      packaged(newNativeGeneration, 'plain'),
+      packaged(newNativeGeneration, 'empty'),
+      packaged(DSH_MISSING_FROZEN_GENERATION, 'plain'),
+      packaged(DSH_MISSING_FROZEN_GENERATION, 'empty'),
     ]) {
       const input = run(source, birth),
         binding = freezeEmployeeRunExecutionBinding(input);
@@ -670,47 +755,58 @@ describe('current employee v2 birth and per-Run binding', () => {
     ).toThrow();
     expect(() => EmployeeRunExecutionBindingSchema.parse({})).toThrow();
   });
-  it('rejects a changed frozen definition, foreign actor, or augmented grants', () => {
-    const input = run();
-    const original = EmployeeExecutionSnapshotSchema.parse(
-      input.executionSnapshot,
-    );
-    expect(() =>
-      freezeEmployeeRunExecutionBinding({
-        ...input,
-        executionSnapshot: {
-          ...original,
-          employee: { ...original.employee, definitionChecksum: artifact },
-        },
-      }),
-    ).toThrow('SNAPSHOT_SOURCE_MISMATCH');
-    expect(() =>
-      freezeEmployeeRunExecutionBinding({
-        ...input,
-        executionSnapshot: {
-          ...original,
-          tenantContext: { ...original.tenantContext, actorId: randomUUID() },
-        },
-      }),
-    ).toThrow('SCOPE_MISMATCH');
-    const source = definitionOnly();
-    manifestOf(source).securityPolicy.deniedCapabilities = ['secret:use'];
-    source.configChecksum = employeeManifestChecksum(manifestOf(source));
-    const denied = run(source),
-      snap = EmployeeExecutionSnapshotSchema.parse(denied.executionSnapshot);
-    expect(() =>
-      freezeEmployeeRunExecutionBinding({
-        ...denied,
-        executionSnapshot: {
-          ...snap,
-          capabilitySnapshot: {
-            ...snap.capabilitySnapshot,
-            grantedCapabilities: ['secret:use'],
+  it.each(['definition', 'plain', 'empty'] as const)(
+    'rejects a changed frozen definition, foreign actor, or augmented grants for %s',
+    (format) => {
+      const source =
+        format === 'definition'
+          ? definitionOnly()
+          : packaged(newNativeGeneration, format);
+      const input = run(source);
+      const original = EmployeeExecutionSnapshotSchema.parse(
+        input.executionSnapshot,
+      );
+      expect(() =>
+        freezeEmployeeRunExecutionBinding({
+          ...input,
+          executionSnapshot: {
+            ...original,
+            employee: { ...original.employee, definitionChecksum: artifact },
           },
-        },
-      }),
-    ).toThrow('CAPABILITIES_MISMATCH');
-  });
+        }),
+      ).toThrow('SNAPSHOT_SOURCE_MISMATCH');
+      expect(() =>
+        freezeEmployeeRunExecutionBinding({
+          ...input,
+          executionSnapshot: {
+            ...original,
+            tenantContext: { ...original.tenantContext, actorId: randomUUID() },
+          },
+        }),
+      ).toThrow('SCOPE_MISMATCH');
+      manifestOf(source).securityPolicy.deniedCapabilities = ['secret:use'];
+      if (format === 'definition')
+        source.configChecksum = employeeManifestChecksum(manifestOf(source));
+      else {
+        packageOf(source).runtimeManifest.deniedCapabilities = ['secret:use'];
+        source.configChecksum = fingerprint(packageOf(source)).checksum;
+      }
+      const denied = run(source),
+        snap = EmployeeExecutionSnapshotSchema.parse(denied.executionSnapshot);
+      expect(() =>
+        freezeEmployeeRunExecutionBinding({
+          ...denied,
+          executionSnapshot: {
+            ...snap,
+            capabilitySnapshot: {
+              ...snap.capabilitySnapshot,
+              grantedCapabilities: ['secret:use'],
+            },
+          },
+        }),
+      ).toThrow('CAPABILITIES_MISMATCH');
+    },
+  );
   it('does not silently retarget a persisted origin when deployment approval changes', () => {
     const input = run(),
       binding = freezeEmployeeRunExecutionBinding(input);

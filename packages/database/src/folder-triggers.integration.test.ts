@@ -148,12 +148,14 @@ suite(
         },
       });
       const [a] = await database.db<
-        { employee_assignment_id: string }[]
-      >`select employee_assignment_id from allrice_chat_sessions where id=${f.session}`;
+        { employee_assignment_id: string; employee_key: string }[]
+      >`select s.employee_assignment_id,e.employee_key from allrice_chat_sessions s
+        join allrice_employee_assignments a on a.id=s.employee_assignment_id
+        join allrice_employees e on e.id=a.employee_id where s.id=${f.session}`;
       // Published versions are immutable. Seed a normal new publication and move
       // the assignment to it instead of mutating the unrelated execution fixture.
       const manifest = employeeManifest({
-        key: 'folder-fixture',
+        key: a!.employee_key,
         name: 'Folder Fixture',
         description: 'Synthetic fixture only',
         toolNames: ['local.file.import', 'workspace.file.read'],

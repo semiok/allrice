@@ -86,8 +86,10 @@ a new native package or rewrite a historical source checksum. New births require
 `ALLRICE_DSH_NATIVE_ARTIFACT_ID`; missing or conflicting approval fails closed.
 
 The reviewed source family accepts schema-v2 employee definitions with either no
-content package, or a verified schema-v2 published package declaring the known
-0.1.5 or current 0.2.1 generation. Original configuration/package checksums,
+content package, or a verified schema-v1/v2 published package declaring the known
+0.1.5 or current 0.2.1 generation. The existing publisher emits schema v1 for
+plain-text Skills or no Skills and schema v2 for bundled resources; both retain
+their original format. Schema v1 cannot contain bundles. Original configuration/package checksums,
 Skill resources, governance, tool declarations and capability fingerprints are
 validated. The original raw manifest also gets a canonical digest. An absent
 package stays absent. Unsupported schemas, generations and damaged sources are
@@ -109,7 +111,9 @@ existing version-compatibility predicate. Historical NULL/v1 chats and queued
 Runs are not backfilled or rebound; v1 reader approvals cannot authorize v2
 births. Migration 0209 adds only the private nullable column and guards.
 
-This slice does not migrate internal preview/consolidation/diagnostic issuers,
+Business chats created by the existing quality/repair entrypoints follow the
+same admission checks. This slice does not migrate separate internal
+preview/consolidation/diagnostic native-root issuers,
 retire historical code, or complete single-package convergence. Those remain
 separate verified steps. The SQL/Worker protocol tests use explicit synthetic
 approval seams and do not count as real native or Dev acceptance.
