@@ -9,8 +9,15 @@
   font-size: 13px;
   line-height: 1.5;
 }
-/* The native Office action owns its compact icon-button geometry. */
-.panel button:not(:where([data-office-font-warning] button)),
+/* Native Office and terminal controls own their geometry and theme variants. */
+.panel
+  button:not(
+    :where(
+      [data-office-font-warning] button,
+      [data-terminal-workbench] button,
+      [data-terminal-guide] button
+    )
+  ),
 .entry {
   font: inherit;
   cursor: pointer;

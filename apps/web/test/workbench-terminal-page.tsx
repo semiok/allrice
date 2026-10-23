@@ -5,13 +5,20 @@ import {
   TerminalWorkbench,
   TerminalCleanupStatus,
   TerminalIcon,
+  TerminalGuide,
 } from '../app/chatflow/terminal-workbench';
 import {
   closeNativeTerminalTab,
   retainTerminalOwner,
   releaseTerminalOwner,
+  nativeTerminalRuntime,
+  terminalPin,
 } from '../app/chatflow/terminal-native';
 import { useNativeDock, dockLabels } from '../app/chatflow/use-native-dock';
+import workbench from '../app/chatflow/workbench.module.css';
+import { WorkbenchStart } from '../app/chatflow/workbench-modules';
+import '../app/dsh-upstream/design-platform.css';
+import '../app/dsh-upstream/base.css';
 
 const identity = {
   organizationId: '11111111-1111-4111-8111-111111111111',
@@ -23,6 +30,14 @@ const contentId =
   'terminal://55555555-5555-4555-8555-555555555555/66666666-6666-4666-8666-666666666666/88888888-8888-4888-8888-888888888888';
 function TerminalSurface(props: { identity: typeof identity }) {
   const [visible, setVisible] = useState(true);
+  const [resizeArmed, setResizeArmed] = useState(false);
+  const [launched, setLaunched] = useState({ shell: '', grant: '' });
+  const [launchCount, setLaunchCount] = useState(0);
+  const [guideSessionId, setGuideSessionId] = useState(
+    props.identity.sessionId,
+  );
+  const [guideActive, setGuideActive] = useState(true);
+  const guideMode = new URLSearchParams(location.search).has('guide');
   const close = useRef<(id: TabId) => void>(() => {});
   const dock = useNativeDock(
     JSON.stringify(props.identity),
@@ -39,13 +54,82 @@ function TerminalSurface(props: { identity: typeof identity }) {
       void closeNativeTerminalTab(props.identity, id, tab.contentId);
   };
   useEffect(() => {
-    dock.open('terminal', contentId, 'zsh');
+    if (!guideMode) dock.open('terminal', contentId, 'zsh');
   }, []);
+  if (guideMode)
+    return (
+      <div className={workbench.panel} style={{ height: 'calc(100vh - 30px)' }}>
+        <WorkbenchStart
+          experience
+          workflow
+          onOpen={() => {}}
+          terminal={
+            <TerminalGuide
+              identity={{ ...props.identity, sessionId: guideSessionId }}
+              headers={{}}
+              active={guideActive}
+              onLaunch={(pin, shell) => {
+                setLaunched({ shell: shell ?? '', grant: pin.grantId });
+                setLaunchCount((count) => count + 1);
+              }}
+            />
+          }
+        />
+        <div data-test-controls>
+          <button>普通工作台按钮</button>
+          <button
+            onClick={() =>
+              setGuideSessionId('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')
+            }
+          >
+            切换终端会话
+          </button>
+          <button onClick={() => setGuideActive((active) => !active)}>
+            切换终端入口显示
+          </button>
+          <output aria-label="新终端 Shell">{launched.shell}</output>
+          <output aria-label="新终端授权文件夹">{launched.grant}</output>
+          <output aria-label="新终端启动次数">{launchCount}</output>
+        </div>
+      </div>
+    );
   return (
     <>
       <div data-test-controls>
         <button onClick={() => setVisible((value) => !value)}>
           折叠或展开工作台
+        </button>
+        <button
+          onClick={() => {
+            const tab = Object.values(dock.surface.layout.tabs).find(
+              (tab) => tab.kind === 'terminal',
+            );
+            const pin = terminalPin(contentId)!;
+            if (!tab) return;
+            void nativeTerminalRuntime(props.identity, pin).then((runtime) => {
+              const model = runtime.models.view(
+                props.identity.sessionId as never,
+                tab.id,
+                contentId,
+              );
+              const stop = runtime.carrier.state.subscribe(() => {
+                if (
+                  runtime.carrier.state.getSnapshot().phase !== 'disconnected'
+                )
+                  return;
+                stop();
+                const info = model.state.getSnapshot().info;
+                if (info)
+                  model.resize(
+                    info.cols === 500 ? 499 : info.cols + 1,
+                    info.rows,
+                  );
+              });
+              setResizeArmed(true);
+            });
+          }}
+        >
+          {resizeArmed ? '已安排断连调整' : '断连时调整终端'}
         </button>
         <button
           onClick={() => {
@@ -58,7 +142,7 @@ function TerminalSurface(props: { identity: typeof identity }) {
           关闭终端标签
         </button>
       </div>
-      <div style={{ height: 'calc(100vh - 50px)' }}>
+      <div className={workbench.panel} style={{ height: 'calc(100vh - 50px)' }}>
         {visible && (
           <DockLayout
             state={dock.surface.layout}

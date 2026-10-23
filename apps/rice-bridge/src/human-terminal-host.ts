@@ -13,6 +13,12 @@ import { readConfig, type BridgeConfig } from './config.js';
 
 type NativeOwner = Parameters<TerminalController['create']>[0];
 type NativeSession = NativeOwner['session'];
+type AuthorityObservation = {
+  checkedAt: number;
+  lastCurrentAt: number;
+  result: 'current' | 'revoked' | 'unknown';
+  pending?: Promise<void>;
+};
 
 /** This is the only AllRice-to-DSH execution adapter. The native controller owns
  * PTYs, screens, input ordering, retention, cleanup and process exit facts. A
@@ -22,16 +28,10 @@ export class HumanTerminalHost {
   private readonly ctx = new Context();
   private readonly controller: TerminalController;
   private readonly owners = new Map<string, HumanTerminalOwner>();
+  private readonly removals = new Map<HumanTerminalOwner, Promise<void>>();
+  private readonly pendingAuthorization = new Set<Promise<void>>();
   private disposed = false;
-  private readonly authorization = new Map<
-    string,
-    {
-      checkedAt: number;
-      lastCurrentAt: number;
-      result: 'current' | 'revoked' | 'unknown';
-      pending?: Promise<void>;
-    }
-  >();
+  private readonly authorization = new Map<string, AuthorityObservation>();
 
   constructor(
     private readonly options: {
@@ -99,6 +99,7 @@ export class HumanTerminalHost {
       throw Error('HUMAN_TERMINAL_GRANT_CHANGED');
     await access(root, constants.R_OK | constants.X_OK);
     await this.authorize(target, refresh);
+    if (this.disposed) throw Error('HUMAN_TERMINAL_HOST_CLOSED');
     return root;
   }
 
@@ -167,6 +168,7 @@ export class HumanTerminalHost {
     // Native owner cleanup retries retained failures; do not erase ownership
     // or report a successful shutdown before its awaited process cleanup.
     for (const owner of [...this.owners.values()]) await this.remove(owner);
+    await Promise.all(this.pendingAuthorization);
     await this.ctx.fiber.dispose();
   }
 
@@ -176,12 +178,22 @@ export class HumanTerminalHost {
     return owner.directory;
   }
 
-  private async remove(owner: HumanTerminalOwner) {
-    await owner.dispose();
-    if (this.owners.get(owner.agent.id) === owner) {
-      this.owners.delete(owner.agent.id);
-      this.authorization.delete(owner.agent.id);
-    }
+  private remove(owner: HumanTerminalOwner) {
+    const current = this.removals.get(owner);
+    if (current) return current;
+    const removing = Promise.resolve()
+      .then(() => owner.dispose())
+      .then(() => {
+        if (this.owners.get(owner.agent.id) === owner) {
+          this.owners.delete(owner.agent.id);
+          this.authorization.delete(owner.agent.id);
+        }
+      })
+      .finally(() => {
+        if (this.removals.get(owner) === removing) this.removals.delete(owner);
+      });
+    this.removals.set(owner, removing);
+    return removing;
   }
 
   private async prune() {
@@ -196,6 +208,7 @@ export class HumanTerminalHost {
   }
 
   private async authorize(target: TerminalTarget, refresh: boolean) {
+    if (this.disposed) throw Error('HUMAN_TERMINAL_HOST_CLOSED');
     const key = ownerKey(target);
     let observation = this.authorization.get(key);
     if (!observation) {
@@ -209,28 +222,61 @@ export class HumanTerminalHost {
       observation = { checkedAt: 0, lastCurrentAt: 0, result: 'unknown' };
       this.authorization.set(key, observation);
     }
-    if (observation.pending) await observation.pending;
-    else if (refresh || Date.now() - observation.checkedAt >= 500) {
+    this.rejectRevoked(observation);
+    if (
+      !observation.pending &&
+      (refresh || Date.now() - observation.checkedAt >= 500)
+    ) {
       const current = observation;
-      current.pending = (async () => {
-        current.result = await this.options
-          .authorizeTarget(target)
+      const pending = (async () => {
+        const result = await Promise.resolve()
+          .then(() => this.options.authorizeTarget(target))
           .catch(() => 'unknown' as const);
+        // A retired owner, replaced observation or disposed Bridge cannot be
+        // revived by a late HTTP result from its previous authorization check.
+        if (this.disposed || this.authorization.get(key) !== current) return;
+        current.result = result;
         current.checkedAt = Date.now();
         if (current.result === 'current')
           current.lastCurrentAt = current.checkedAt;
+        else if (current.result === 'revoked') {
+          const owner = this.owners.get(key);
+          // Revocation must stop an idle attachment too, without waiting for
+          // another key or the maintenance timer. Reuse retryable native
+          // cleanup; failure retains the owner for revalidate()/dispose().
+          if (owner) void this.remove(owner).catch(() => {});
+        }
       })().finally(() => {
-        delete current.pending;
+        if (current.pending === pending) delete current.pending;
+        this.pendingAuthorization.delete(pending);
       });
-      await current.pending;
+      current.pending = pending;
+      this.pendingAuthorization.add(pending);
     }
-    if (observation.result === 'revoked')
-      throw Error('HUMAN_TERMINAL_AUTHORIZATION_REVOKED');
+    // Refresh in the background while the existing authorization lease is
+    // valid. Waiting for every 500 ms HTTP check adds a network round trip to
+    // interactive input and echo. First admission, exact lease expiry and
+    // explicit maintenance still await authority; the five-second lease is
+    // never extended by an unknown result or an in-flight request.
     if (
+      refresh ||
+      !observation.lastCurrentAt ||
+      Date.now() - observation.lastCurrentAt >= 5_000
+    )
+      await observation.pending;
+    if (this.disposed) throw Error('HUMAN_TERMINAL_HOST_CLOSED');
+    this.rejectRevoked(observation);
+    if (
+      this.authorization.get(key) !== observation ||
       !observation.lastCurrentAt ||
       Date.now() - observation.lastCurrentAt >= 5_000
     )
       throw new HumanTerminalAuthorityUnknown();
+  }
+
+  private rejectRevoked(observation: AuthorityObservation) {
+    if (observation.result === 'revoked')
+      throw Error('HUMAN_TERMINAL_AUTHORIZATION_REVOKED');
   }
 }
 
