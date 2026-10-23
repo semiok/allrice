@@ -1,7 +1,14 @@
 /** Pinned DSH has no upload or bookmark artwork; keep these file-action gaps here. */
-export function WorkbenchFileIcon({ kind }: { kind: 'upload' | 'reference' }) {
+export function WorkbenchFileIcon({
+  kind,
+  className,
+}: {
+  kind: 'upload' | 'reference';
+  className?: string;
+}) {
   return (
     <svg
+      className={className}
       width="20"
       height="20"
       viewBox="0 0 24 24"

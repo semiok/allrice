@@ -103,13 +103,16 @@ export function WorkbenchFileToolbarActions(
         ((file.canMaintain || file.isReference) &&
           actionButton(
             file.isReference ? '已设为参考资料' : '设为参考资料',
-            <WorkbenchFileIcon kind="reference" />,
+            <WorkbenchFileIcon
+              kind="reference"
+              className={reader.opticalIcon}
+            />,
             () => setEditor('reference'),
             file.isReference || !file.canMaintain,
           ))}
       {actionButton(
         '可见范围',
-        <IconSettingsOutlineRegular size={20} />,
+        <IconSettingsOutlineRegular size={20} className={reader.opticalIcon} />,
         () => setEditor('sharing'),
         !file.canMaintain,
       )}

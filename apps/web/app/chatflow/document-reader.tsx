@@ -82,15 +82,16 @@ export function DocumentToolbar(props: {
             )
           }
         />
-        <a
-          className={styles.download}
-          href={props.downloadUrl}
-          download
-          title="下载"
-          aria-label="下载"
-        >
-          <IconDownloadOutlineRegular size={20} />
-        </a>
+        <Tooltip label="下载" side="bottom" delayMs={500} portal>
+          <a
+            className={styles.download}
+            href={props.downloadUrl}
+            download
+            aria-label="下载"
+          >
+            <IconDownloadOutlineRegular size={20} />
+          </a>
+        </Tooltip>
         {hasMenuActions && (
           <Menu
             open={open}
