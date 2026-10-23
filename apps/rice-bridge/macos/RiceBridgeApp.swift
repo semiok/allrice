@@ -92,7 +92,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         child.arguments = ["desktop"]
         child.currentDirectoryURL = resource
         var environment: [String: String] = [:]
-        for key in ["HOME", "USER", "LOGNAME", "TMPDIR", "LANG"] {
+        for key in ["HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_CTYPE", "LC_ALL"] {
             environment[key] = ProcessInfo.processInfo.environment[key]
         }
         environment["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"

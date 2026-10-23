@@ -1,11 +1,35 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import {
   DesktopUpdater,
+  nativeEnvironment,
   validateDrainedUpdateTicket,
 } from './desktop-update.js';
 import { parseDesktopRequest } from './desktop-protocol.js';
 
 afterEach(() => vi.unstubAllGlobals());
+it('passes all original locale precedence inputs across the native update restart without normalizing Core or forwarding secrets', () => {
+  const environment = {
+    HOME: '/synthetic/home',
+    USER: 'locale-test',
+    LANG: 'zh_CN.UTF-8',
+    LC_CTYPE: 'ja_JP.UTF-8',
+    LC_ALL: 'C',
+    PATH: '/untrusted/path',
+    ALLRICE_BRIDGE_DEVICE_TOKEN: 'synthetic-do-not-forward',
+  };
+  expect(nativeEnvironment(environment)).toEqual({
+    HOME: environment.HOME,
+    USER: environment.USER,
+    LANG: environment.LANG,
+    LC_CTYPE: environment.LC_CTYPE,
+    LC_ALL: environment.LC_ALL,
+    PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
+  });
+  expect(nativeEnvironment({ LANG: 'C' })).toEqual({
+    LANG: 'C',
+    PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
+  });
+});
 it('binds the drained install ticket to request, action and original host/Core PIDs', () => {
   const id = '00000000-0000-4000-8000-000000000011';
   const original = { hostPid: 4321, corePid: 4322 };
