@@ -63,9 +63,13 @@ export async function synchronizeTenantEmployeeAccess(tx: Tx, scope: Scope) {
   }
   // A new employee version is not conversation activity; preserve sidebar recency.
   await tx`update allrice_chat_sessions s set employee_version_id=a.employee_version_id
-    from allrice_employee_assignments a where s.employee_assignment_id=a.id
+    from allrice_employee_assignments a
+    join allrice_employee_versions v on v.id=a.employee_version_id
+      and v.employee_id=a.employee_id and v.organization_id=a.organization_id and v.workspace_id=a.workspace_id
+    where s.employee_assignment_id=a.id
       and s.organization_id=${organizationId} and s.workspace_id=${workspaceId} and a.active
       and s.employee_version_id<>a.employee_version_id
+      and allrice_native_session_version_compatible(s.native_root_origin,v.manifest)
       and exists(select 1 from allrice_platform_employee_tenant_assignments d where d.tenant_employee_id=a.employee_id
         and d.organization_id=a.organization_id and d.workspace_id=a.workspace_id and d.active)`;
   await prepareTenantCloudGrants(tx, scope);

@@ -258,8 +258,16 @@ export { getExperienceProvenance } from './experience-provenance.ts';
 
 export {
   NativeRootOriginSchema,
+  NativeRootOriginV1Schema,
   type NativeRootOrigin,
+  type NativeRootOriginV1,
 } from './conversation/native-root-origin.ts';
+// Private backend fact. Never part of the model/tool/kernel public schemas.
+export {
+  EmployeeRunExecutionBindingSchema,
+  nativeRootDigest,
+  type EmployeeRunExecutionBinding,
+} from './conversation/current-execution-binding.ts';
 export {
   verifyNativeArtifactReferenceCoverage,
   type NativeArtifactReferenceApproval,

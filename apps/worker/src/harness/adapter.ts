@@ -1,4 +1,7 @@
-import type { NativeRootOrigin } from '@allrice/database';
+import type {
+  NativeRootOrigin,
+  EmployeeRunExecutionBinding,
+} from '@allrice/database';
 import type { BoundDeliveryRepair } from '../final-delivery/repair.js';
 import type {
   FinalDeliveryPort,
@@ -213,6 +216,8 @@ export interface HarnessExecutionInput {
     ) => Promise<{
       binding: NativeSessionPin | null;
       origin?: NativeRootOrigin | null;
+      /** SQL-verified per-Run fact; stays in this trusted closure, never RPC. */
+      executionBinding?: EmployeeRunExecutionBinding | null;
       /** At least one immutable target-writer binding in this same scope. */
       originReaderAdopted?: boolean;
       /** A pin/prior adoption/retry cannot create an empty replacement. */

@@ -20,6 +20,9 @@ suite('message-scoped attachment delivery', () => {
   it('freezes corrected same-name input references through queued messages and retry without weakening file access', async () => {
     vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
+    // Synthetic SQL approval only; this suite never starts a native process.
+    vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
+    vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
     const f = await createP27CodexWorkerFixture({ allowCiDatabase: true });
     try {
       const session = await createAssignedChatSession(f.context, {

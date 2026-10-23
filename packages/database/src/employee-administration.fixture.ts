@@ -1,6 +1,6 @@
 // Synthetic records for isolated PostgreSQL/UI tests; never invokes a provider.
 import { randomUUID } from 'node:crypto';
-import { expect, vi } from 'vitest';
+import { expect } from 'vitest';
 import type {
   PlatformEmployeeDefinition,
   SkillBundle,
@@ -11,6 +11,7 @@ import {
   publishPlatformEmployee,
 } from './employees/platform-employees.ts';
 import { skillBundleChecksum, skillBytesChecksum } from './skill-bundles.ts';
+import { approveSyntheticCurrentEmployeeExecution } from './current-execution.fixture.ts';
 import type { getDatabase } from './core/client.ts';
 export async function createEmployeeAdministrationFixture(
   db: ReturnType<typeof getDatabase>,
@@ -18,8 +19,7 @@ export async function createEmployeeAdministrationFixture(
 ) {
   // Synthetic database-only approval, not a measured executable artifact.
   // Real native acceptance supplies its own independently measured exact ID.
-  if (!process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID)
-    vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
+  approveSyntheticCurrentEmployeeExecution();
   const organizationId = randomUUID(),
     workspaceId = randomUUID(),
     ownerId = randomUUID();

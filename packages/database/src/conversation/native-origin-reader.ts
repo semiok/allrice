@@ -6,10 +6,11 @@ import type postgres from 'postgres';
 import { UuidSchema } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
 import {
-  NativeRootOriginSchema,
+  NativeRootOriginV1Schema,
   nativeRootDigest,
   newNativeGeneration,
   type NativeRootOrigin,
+  type NativeRootOriginV1,
 } from './native-root-origin.ts';
 
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -40,7 +41,7 @@ const policySchema = z
       .strict(),
     evidenceDigest: digest,
     contexts: z
-      .array(scope.extend({ origin: NativeRootOriginSchema }).strict())
+      .array(scope.extend({ origin: NativeRootOriginV1Schema }).strict())
       .min(1)
       .max(64),
   })
@@ -54,7 +55,7 @@ export interface NativeOriginReaderApproval extends NativeOriginReaderScope {
   profileId: 'restricted';
   contextId: string;
   originDigest: string;
-  sourceOrigin: NativeRootOrigin;
+  sourceOrigin: NativeRootOriginV1;
   storageNamespace: string;
   evidenceDigest: string;
 }
@@ -269,6 +270,19 @@ export function nativeOriginReaderForOrigin(
   input: NativeOriginReaderScope,
 ) {
   const entries = configuredNativeOriginReaders();
+  // v2 business births already name their verified current executor. They are
+  // never authorized by a historical v1 reader approval, even in the same scope.
+  if (origin.schemaVersion === 2) {
+    if (
+      entries.some(
+        (item) =>
+          item.contextId === origin.contextId ||
+          item.sourceArtifactId === origin.artifactId,
+      )
+    )
+      fail();
+    return undefined;
+  }
   const entry = entries.find((item) => item.contextId === origin.contextId);
   if (!entry) {
     // A new or unreviewed reference to a retired source is never covered by a

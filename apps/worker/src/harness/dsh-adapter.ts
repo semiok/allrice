@@ -265,6 +265,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       threadId,
       prepared?.binding ?? undefined,
       prepared?.origin,
+      prepared?.executionBinding,
     );
     // The existing pool selected an independently measured/approved artifact.
     // A newly frozen checked Run must use that exact protocol-tested identity;
@@ -316,6 +317,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           threadId,
           prepared.binding ?? undefined,
           prepared.origin,
+          prepared.executionBinding,
         );
       const bound = prepared?.binding
         ? { binding: prepared.binding, generation: prepared.generation }
@@ -355,6 +357,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
       systemInstructions,
       nativeSkills,
       nativePin,
+      nativeOrigin: prepared?.origin,
+      nativeExecutionBinding: prepared?.executionBinding,
       requireRecovery: prepared?.requiresRecovery,
     });
     const runtimeBindingStarted = performance.now();

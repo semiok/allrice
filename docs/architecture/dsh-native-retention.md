@@ -76,6 +76,44 @@ business INSERT. Existing origins are fulfilled from their own approved ID;
 retries preserve their original family. No pin/origin means the existing legacy
 policy, not permission to issue a new origin during execution.
 
+### Current employee execution binding (MET195 B1)
+
+New ordinary employee chats use an explicit schema-v2 business origin. The
+immutable employee version remains their **source**; the independently approved
+native artifact is their **executor**. Changing employee content does not create
+a new native package or rewrite a historical source checksum. New births require
+`ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID` to equal the approved primary
+`ALLRICE_DSH_NATIVE_ARTIFACT_ID`; missing or conflicting approval fails closed.
+
+The reviewed source family accepts schema-v2 employee definitions with either no
+content package, or a verified schema-v2 published package declaring the known
+0.1.5 or current 0.2.1 generation. Original configuration/package checksums,
+Skill resources, governance, tool declarations and capability fingerprints are
+validated. The original raw manifest also gets a canonical digest. An absent
+package stays absent. Unsupported schemas, generations and damaged sources are
+rejected rather than translated into invented packages.
+
+Each admitted Run atomically stores a private, immutable
+`allrice_employee_runs.native_execution_binding` with its original execution
+snapshot. It records the exact tenant/owner/session/Run, per-Run source, birth
+origin digest and executor tuple. Admission, resolution, leased preparation,
+binding and Worker recovery all verify the fact; it grants no additional tool
+or user authority. The Worker keeps the source kernel unchanged and selects the
+executor through the existing approved-artifact ports. Run IDs and binding
+digests do not enter the runtime reuse fingerprint.
+
+Subsequent employee versions may change within this reviewed family. The new
+Run records that version while the chat retains its original birth source.
+Assignment, publication/canary and tenant roster synchronization share the
+existing version-compatibility predicate. Historical NULL/v1 chats and queued
+Runs are not backfilled or rebound; v1 reader approvals cannot authorize v2
+births. Migration 0209 adds only the private nullable column and guards.
+
+This slice does not migrate internal preview/consolidation/diagnostic issuers,
+retire historical code, or complete single-package convergence. Those remain
+separate verified steps. The SQL/Worker protocol tests use explicit synthetic
+approval seams and do not count as real native or Dev acceptance.
+
 ## Cleanup and limits
 
 ### Exact unbound chat adoption (MET195 prerequisite)

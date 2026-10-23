@@ -173,6 +173,9 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
   const currentMethodTools = toolSelection.withEmployeeCustomizationTools;
   let legacyMethodTools = true;
   beforeAll(async () => {
+    // Synthetic SQL approval only; production must provide a measured artifact.
+    vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
+    vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
     fixture = await createAssistantFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     vi.spyOn(

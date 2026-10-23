@@ -157,6 +157,13 @@ export async function createP27CodexWorkerFixture(
     })());
 
   try {
+    if (options.allowCiDatabase && !options.throughMigration) {
+      // Only the explicit synthetic test path may supply a fake SQL approval.
+      // Live model drivers and historical migration fixtures remain unchanged.
+      const { approveSyntheticCurrentEmployeeExecution } =
+        await import('../../../packages/database/src/current-execution.fixture.ts');
+      approveSyntheticCurrentEmployeeExecution();
+    }
     const {
       createAssistantFixtureDatabase,
       AssistantFixtureInitializationError,

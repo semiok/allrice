@@ -449,6 +449,9 @@ export async function updateEmployeeRelease(
         update allrice_chat_sessions session
         set employee_version_id = assignment.employee_version_id
         from allrice_employee_assignments assignment
+        join allrice_employee_versions version on version.id=assignment.employee_version_id
+          and version.employee_id=assignment.employee_id and version.organization_id=assignment.organization_id
+          and version.workspace_id=assignment.workspace_id
         where assignment.id = session.employee_assignment_id
           and assignment.organization_id = ${context.organizationId}
           and assignment.workspace_id = ${workspaceId}
@@ -457,6 +460,7 @@ export async function updateEmployeeRelease(
           and session.organization_id = assignment.organization_id
           and session.workspace_id = assignment.workspace_id
           and session.employee_version_id <> assignment.employee_version_id
+          and allrice_native_session_version_compatible(session.native_root_origin,version.manifest)
       `;
     } else {
       await transaction`

@@ -15,6 +15,31 @@ import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { HarnessExecutionInput } from '../adapter.js';
 import * as CodexSubscription from '../../codex-subscription-home.js';
+import * as NativeArtifact from '../dsh-native-artifact.js';
+import * as NativeRetention from '../dsh-native-retention.js';
+import * as NativeStorage from '../dsh-native-storage.js';
+import {
+  DSH_MISSING_FROZEN_GENERATION,
+  PlatformEmployeeDefinitionSchema,
+} from '@allrice/contracts';
+import {
+  employeeManifest,
+  employeeManifestChecksum,
+} from '../../../../../packages/database/src/employees/employee-config.ts';
+import {
+  buildEmployeeRuntimePackage,
+  runtimePackageChecksum,
+} from '../../../../../packages/database/src/platform-employees/runtime-package.ts';
+import {
+  EmployeeRunExecutionBindingSchema,
+  nativeRootDigest,
+  newCurrentEmployeeChatOrigin,
+  validateEmployeeExecutionSource,
+} from '../../../../../packages/database/src/conversation/current-execution-binding.ts';
+import {
+  skillBundleChecksum,
+  skillBytesChecksum,
+} from '../../../../../packages/database/src/skill-bundles.ts';
 import {
   DshRuntimePool,
   configuredDshNativeLaunch,
@@ -248,6 +273,358 @@ function request(): Parameters<DshRuntimePool['acquire']>[0] {
     nativeSkills: [],
   };
 }
+
+/** The verified artifact/SQL ports are seams here. The child is the existing
+ * protocol fixture: this tests Worker binding/reuse, not production approval. */
+function currentExecutionRequest(variant: 'definition' | 'legacy' | 'current') {
+  const runtimes = pool(),
+    value = request();
+  const artifactId = 'sha256:' + 'c'.repeat(64);
+  vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', artifactId);
+  vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', artifactId);
+  const manifest = employeeManifest({
+    key: 'current-pool',
+    name: 'Synthetic current pool',
+    description: 'Synthetic Worker binding fixture',
+    toolNames: [],
+    runtimePolicy: {
+      harness: 'dsh',
+      provider: 'openai-compatible',
+      model: 'synthetic-model',
+      reasoningEffort: 'low',
+      timeoutMs: 300000,
+      fallbackModels: [],
+      credentialReference: 'test:synthetic',
+      baseUrl: 'http://127.0.0.1:1/v1',
+    },
+  });
+  if (manifest.schemaVersion !== 2)
+    throw Error('Expected current fixture definition');
+  if (variant !== 'definition') {
+    const { harness: ignored, ...modelPolicy } = manifest.runtimePolicy;
+    void ignored;
+    const definition = PlatformEmployeeDefinitionSchema.parse({
+      schemaVersion: 1,
+      key: manifest.key,
+      name: manifest.name,
+      description: manifest.description,
+      appearance: manifest.appearance,
+      identity: {
+        ...manifest.identity,
+        expressionStyle: 'structured',
+        outputLanguage: 'zh-CN',
+      },
+      systemPrompt: manifest.systemPrompt,
+      modelPolicy,
+      capabilities: {
+        nativeSkillIds: [],
+        workflowRevisionIds: [],
+        knowledgeRevisionIds: [],
+        toolNames: [],
+        connectorRefs: [],
+      },
+      securityPolicy: { ...manifest.securityPolicy, bridgeAccess: 'none' },
+    });
+    const content = '# Synthetic reviewed capability\nNo tools required.\n';
+    const bundle = {
+      schemaVersion: 1 as const,
+      version: '1.0.0',
+      contentChecksum: skillBytesChecksum(content),
+      sourceRef: 'https://example.test/reviewed',
+      license: 'Apache-2.0',
+      reviewedBy: 'fixture-reviewer',
+      resources: [],
+      dependencies: [],
+    };
+    const pkg = buildEmployeeRuntimePackage({
+      revision: 1,
+      definition,
+      skills: [
+        {
+          id: randomUUID(),
+          name: 'synthetic-reviewed',
+          description: 'Synthetic capability fixture',
+          content,
+          checksum: skillBytesChecksum(content),
+          model_invocable: true,
+          user_invocable: true,
+          required_tool_refs: [],
+          source: 'allrice',
+          source_ref: bundle.sourceRef,
+          version: bundle.version,
+          license: bundle.license,
+          review_status: 'reviewed',
+          reviewed_by_label: bundle.reviewedBy,
+          reviewed_at: new Date('2026-10-01T00:00:00Z'),
+          bundle: { ...bundle, checksum: skillBundleChecksum(bundle) },
+        },
+      ],
+    });
+    if (variant === 'legacy') {
+      pkg.runtimeManifest.distributionGeneration =
+        DSH_MISSING_FROZEN_GENERATION;
+      pkg.capabilityFingerprint = runtimePackageChecksum({
+        distributionGeneration: DSH_MISSING_FROZEN_GENERATION,
+        provider: pkg.runtimeManifest.provider,
+        model: pkg.runtimeManifest.model,
+        tools: [],
+        skills: pkg.skills.map((skill) => ({
+          name: skill.name,
+          checksum: skill.checksum,
+          requiredToolRefs: [],
+          bundleChecksum: skill.bundle!.checksum,
+        })),
+        deniedCapabilities: [...pkg.runtimeManifest.deniedCapabilities].sort(),
+      });
+      pkg.checksum = runtimePackageChecksum({
+        schemaVersion: pkg.schemaVersion,
+        packageVersion: pkg.packageVersion,
+        capabilityFingerprint: pkg.capabilityFingerprint,
+        files: {
+          identityMd: pkg.files.identityMd,
+          soulMd: pkg.files.soulMd,
+          userMd: pkg.files.userMd,
+          agentsMd: pkg.files.agentsMd,
+        },
+        skills: pkg.skills,
+        runtimeManifest: pkg.runtimeManifest,
+      });
+    }
+    manifest.runtimePackage = pkg;
+    value.input.kernel.runtimePackageChecksum = pkg.checksum;
+    value.input.kernel.runtimeDistributionGeneration =
+      pkg.runtimeManifest.distributionGeneration;
+  }
+  const sourceInput = {
+    employeeVersionId: value.input.kernel.employeeVersionId,
+    configChecksum:
+      manifest.runtimePackage?.checksum ?? employeeManifestChecksum(manifest),
+    manifest,
+  };
+  const scope = {
+    organizationId: value.input.executionEnvironment.ALLRICE_ORGANIZATION_ID!,
+    workspaceId: value.input.executionEnvironment.ALLRICE_WORKSPACE_ID!,
+    ownerId: value.input.executionEnvironment.ALLRICE_OWNER_ID!,
+    sessionId: value.input.kernel.sessionId!,
+    runId: value.input.executionEnvironment.ALLRICE_RUN_ID!,
+  };
+  const origin = newCurrentEmployeeChatOrigin({
+    ...scope,
+    source: sourceInput,
+  });
+  const payload = {
+    schemaVersion: 1 as const,
+    kind: 'current_employee_execution' as const,
+    scope,
+    originDigest: nativeRootDigest(origin),
+    ...validateEmployeeExecutionSource(sourceInput),
+    execution: {
+      artifactId,
+      generation: origin.distributionGeneration,
+      profileId: origin.profileId,
+    },
+    executionSnapshotDigest: nativeRootDigest({ trustedSqlFixture: true }),
+  };
+  const executionBinding = EmployeeRunExecutionBindingSchema.parse({
+    ...payload,
+    digest: nativeRootDigest(payload),
+  });
+  const launch = {
+    artifactId,
+    generation: origin.distributionGeneration,
+    version: '0.2.1-rc.2',
+    command: process.execPath,
+    args: [resolve(import.meta.dirname, '../fixtures/dsh-fake-runtime.mjs')],
+    profile: join(root, 'synthetic-profile.yml'),
+  };
+  vi.spyOn(NativeArtifact, 'checkedDshNativeLaunch').mockReturnValue({
+    artifactId,
+    profileId: 'restricted',
+  });
+  vi.spyOn(NativeArtifact, 'nativeArtifactLaunchForPin').mockImplementation(
+    (input) => {
+      if (input.artifactId !== artifactId || input.profileId !== 'restricted')
+        throw Error('unapproved fixture executor');
+      return launch;
+    },
+  );
+  vi.spyOn(NativeRetention, 'originDshNativeLaunch').mockReturnValue(launch);
+  vi.spyOn(NativeRetention, 'pinnedDshNativeLaunch').mockReturnValue(launch);
+  const descriptor = runtimes.describeNativeSession(
+    value.input,
+    value.threadId,
+    undefined,
+    origin,
+    executionBinding,
+  )!;
+  const pin = {
+    ...descriptor,
+    organizationId: scope.organizationId,
+    workspaceId: scope.workspaceId,
+    ownerId: scope.ownerId,
+    contextKind: 'chat' as const,
+    contextId: scope.sessionId,
+    firstRunId: scope.runId,
+    firstJobId: randomUUID(),
+    firstAttempt: 1,
+    boundAt: new Date().toISOString(),
+    bindingBasis: 'business_root_origin' as const,
+    rootOriginDigest: nativeRootDigest(origin),
+  };
+  return {
+    runtimes,
+    value: {
+      ...value,
+      nativeOrigin: origin,
+      nativeExecutionBinding: executionBinding,
+      nativePin: pin,
+    },
+    payload,
+    launch,
+  };
+}
+
+it.each(['definition', 'legacy', 'current'] as const)(
+  'uses the SQL-bound current executor for %s sources without rewriting the kernel',
+  (variant) => {
+    const { runtimes, value, launch } = currentExecutionRequest(variant);
+    const before = structuredClone(value.input.kernel);
+    expect(
+      runtimes.describeNativeSession(
+        value.input,
+        value.threadId,
+        value.nativePin,
+        value.nativeOrigin,
+        value.nativeExecutionBinding,
+      ),
+    ).toMatchObject({
+      artifactId: launch.artifactId,
+      distributionGeneration: 'dsh-0.2.1-rc.2-687f282',
+      profileId: 'restricted',
+    });
+    expect(value.input.kernel).toEqual(before);
+    expect(value.input.kernel.runtimeDistributionGeneration).toBe(
+      variant === 'definition'
+        ? undefined
+        : variant === 'legacy'
+          ? DSH_MISSING_FROZEN_GENERATION
+          : launch.generation,
+    );
+  },
+);
+
+it.each([
+  'run',
+  'owner',
+  'workspace',
+  'session',
+  'version',
+  'checksum',
+  'generation',
+  'missing-binding',
+  'missing-origin',
+  'corrupt-digest',
+] as const)(
+  'refuses a current executor binding with changed %s before starting a native child',
+  async (changed) => {
+    const { runtimes, value } = currentExecutionRequest('legacy');
+    const next: Parameters<DshRuntimePool['acquire']>[0] = {
+      ...value,
+      input: {
+        ...value.input,
+        kernel: { ...value.input.kernel },
+        executionEnvironment: { ...value.input.executionEnvironment },
+      },
+    };
+    if (changed === 'run' || changed === 'owner' || changed === 'workspace')
+      next.input.executionEnvironment = {
+        ...next.input.executionEnvironment,
+        [changed === 'run'
+          ? 'ALLRICE_RUN_ID'
+          : changed === 'owner'
+            ? 'ALLRICE_OWNER_ID'
+            : 'ALLRICE_WORKSPACE_ID']: randomUUID(),
+      };
+    if (changed === 'session') next.input.kernel.sessionId = randomUUID();
+    if (changed === 'version')
+      next.input.kernel.employeeVersionId = randomUUID();
+    if (changed === 'checksum')
+      next.input.kernel.runtimePackageChecksum = 'sha256:' + 'b'.repeat(64);
+    if (changed === 'generation')
+      next.input.kernel.runtimeDistributionGeneration = 'unreviewed';
+    if (changed === 'missing-binding') next.nativeExecutionBinding = null;
+    if (changed === 'missing-origin') next.nativeOrigin = null;
+    if (changed === 'corrupt-digest')
+      next.nativeExecutionBinding = {
+        ...value.nativeExecutionBinding,
+        digest: 'sha256:' + 'b'.repeat(64),
+      };
+    await expect(runtimes.acquire(next)).rejects.toThrow();
+    expect(runtimes.get(value.threadId)).toBeUndefined();
+  },
+);
+
+it.each(['definition', 'legacy', 'current'] as const)(
+  'checks recovery storage for a %s source using its current SQL execution binding',
+  async (variant) => {
+    const { runtimes, value } = currentExecutionRequest(variant);
+    // The real pool must reach the exact storage port with current execution,
+    // even when the original definition declares a legacy/absent generation.
+    // Stop at that port; this is not another fake Host startup or recovery QA.
+    const storageUnavailable = new Error('synthetic storage unavailable');
+    const reader = vi
+      .spyOn(NativeStorage, 'assertStoredNativeSession')
+      .mockRejectedValue(storageUnavailable);
+    await expect(
+      runtimes.acquire({ ...value, requireRecovery: true }),
+    ).rejects.toBe(storageUnavailable);
+    expect(runtimes.get(value.threadId)).toBeUndefined();
+    expect(reader).toHaveBeenCalledTimes(1);
+    expect(
+      reader.mock.calls.every(
+        (call) =>
+          call[1].nativeSessionId === value.nativePin.nativeSessionId &&
+          call[1].artifactId === value.nativePin.artifactId,
+      ),
+    ).toBe(true);
+  },
+);
+
+it('reuses one current executor across Run bindings while rechecking the new Run identity', async () => {
+  const { runtimes, value, payload } = currentExecutionRequest('legacy');
+  const first = await runtimes.acquire(value);
+  const nextRun = randomUUID();
+  const nextPayload = {
+    ...payload,
+    scope: { ...payload.scope, runId: nextRun },
+  };
+  const next = {
+    ...value,
+    nativeExecutionBinding: EmployeeRunExecutionBindingSchema.parse({
+      ...nextPayload,
+      digest: nativeRootDigest(nextPayload),
+    }),
+    input: {
+      ...value.input,
+      executionEnvironment: {
+        ...value.input.executionEnvironment,
+        ALLRICE_RUN_ID: nextRun,
+      },
+      assistants: { ...value.input.assistants!, rootRunId: nextRun },
+    },
+  };
+  const second = await runtimes.acquire(next);
+  expect(second.runtime).toBe(first.runtime);
+  expect(second.preparation).toMatchObject({
+    cache: 'hit',
+    reason: 'reused',
+    changedFields: [],
+  });
+  expect(second.runtime.fingerprintParts).not.toHaveProperty(
+    'nativeExecutionBinding',
+  );
+  expect(second.runtime.fingerprintParts).not.toHaveProperty('runId');
+});
 
 async function codexRequest() {
   const platform = join(root, 'platform');

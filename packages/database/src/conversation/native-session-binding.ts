@@ -12,7 +12,14 @@ import {
   nativeRootDigest,
   newNativeGeneration,
   type NativeRootOrigin,
+  type NativeRootOriginV1,
 } from './native-root-origin.ts';
+import {
+  assertCurrentEmployeeChatOrigin,
+  assertEmployeeRunExecutionBinding,
+  freezeEmployeeRunExecutionBinding,
+  type EmployeeRunExecutionBinding,
+} from './current-execution-binding.ts';
 import type { JobRow } from '../queue/row-mappers.ts';
 import {
   isPlatformTechnicalJobAuthorized,
@@ -131,9 +138,11 @@ export async function readChatNativeRootOrigin(
 ): Promise<NativeRootOrigin | null> {
   if (await nativeContextExecutionRetired(tx, 'chat', input.sessionId))
     return deny();
-  const [row] = await tx`select c.native_root_origin,v.manifest,v.id source_id
+  const [row] =
+    await tx`select c.native_root_origin,v.manifest,v.id source_id,v.config_checksum
     from allrice_chat_sessions c
-    left join allrice_employee_versions v on v.id::text=c.native_root_origin#>>'{frozenIdentity,sourceId}'
+    left join allrice_employee_versions v on v.id::text=case when c.native_root_origin->>'schemaVersion'='2'
+      then c.native_root_origin#>>'{birthSource,employeeVersionId}' else c.native_root_origin#>>'{frozenIdentity,sourceId}' end
       and v.organization_id=c.organization_id and v.workspace_id=c.workspace_id
       and v.employee_id=(select employee_id from allrice_employee_assignments where id=c.employee_assignment_id)
     where c.id=${input.sessionId} and c.organization_id=${input.organizationId}
@@ -143,6 +152,15 @@ export async function readChatNativeRootOrigin(
           and e.organization_id=c.organization_id and e.workspace_id=c.workspace_id and e.owner_id=c.owner_id))`;
   if (!row) return deny();
   if (row.native_root_origin == null) return null;
+  if (row.native_root_origin.schemaVersion === 2)
+    return assertCurrentEmployeeChatOrigin(row.native_root_origin, {
+      ...input,
+      source: {
+        employeeVersionId: row.source_id,
+        configChecksum: row.config_checksum,
+        manifest: row.manifest,
+      },
+    });
   const manifest = EmployeeManifestSchema.parse(row.manifest);
   if (
     manifest.schemaVersion !== 2 ||
@@ -163,6 +181,90 @@ export async function readChatNativeRootOrigin(
   );
 }
 
+/** Admission freezes the original published source alongside the Run. The
+ * current assignment is intentionally not consulted here. NULL/v1 stays NULL. */
+export async function freezeChatRunExecutionBinding(
+  tx: Tx,
+  input: {
+    organizationId: string;
+    workspaceId: string;
+    ownerId: string;
+    sessionId: string;
+    runId: string;
+    employeeVersionId: string;
+    executionSnapshot: unknown;
+  },
+): Promise<EmployeeRunExecutionBinding | null> {
+  const origin = await readChatNativeRootOrigin(tx, {
+    organizationId: input.organizationId,
+    workspaceId: input.workspaceId,
+    ownerId: input.ownerId,
+    sessionId: input.sessionId,
+  });
+  if (origin?.schemaVersion !== 2) return null;
+  const [version] =
+    await tx`select v.id,v.manifest,v.config_checksum from allrice_employee_versions v
+    join allrice_chat_sessions c on c.id=${input.sessionId} and c.organization_id=v.organization_id and c.workspace_id=v.workspace_id
+    join allrice_employee_assignments a on a.id=c.employee_assignment_id and a.employee_id=v.employee_id
+    where v.id=${input.employeeVersionId} and v.organization_id=${input.organizationId}
+      and v.workspace_id=${input.workspaceId} and c.owner_id=${input.ownerId}`;
+  if (!version) return deny();
+  return freezeEmployeeRunExecutionBinding({
+    origin,
+    scope: {
+      organizationId: input.organizationId,
+      workspaceId: input.workspaceId,
+      ownerId: input.ownerId,
+      sessionId: input.sessionId,
+      runId: input.runId,
+    },
+    source: {
+      employeeVersionId: version.id,
+      configChecksum: version.config_checksum,
+      manifest: version.manifest,
+    },
+    executionSnapshot: input.executionSnapshot,
+  });
+}
+
+/** Only called with a leased, authorized chat Job. Rechecks the persisted Run
+ * binding and immutable original version; never repairs or creates a binding. */
+async function readLeasedChatExecutionBinding(
+  tx: Tx,
+  job: JobRow,
+  origin: NativeRootOrigin | null,
+  sessionId: string,
+): Promise<EmployeeRunExecutionBinding | null> {
+  const [run] =
+    await tx`select e.native_execution_binding,e.execution_snapshot,v.id,v.manifest,v.config_checksum
+    from allrice_employee_runs e join allrice_employee_versions v on v.id=e.employee_version_id
+      and v.organization_id=e.organization_id and v.workspace_id=e.workspace_id
+    join allrice_employee_assignments a on a.id=e.employee_assignment_id and a.employee_id=v.employee_id
+    where e.run_id=${job.run_id} and e.session_id=${sessionId} and e.organization_id=${job.organization_id}
+      and e.workspace_id=${job.workspace_id} and e.owner_id=${job.owner_id}`;
+  if (!run) return deny();
+  if (origin?.schemaVersion !== 2) {
+    if (run.native_execution_binding != null) return deny();
+    return null;
+  }
+  return assertEmployeeRunExecutionBinding(run.native_execution_binding, {
+    origin,
+    scope: {
+      organizationId: job.organization_id,
+      workspaceId: job.workspace_id,
+      ownerId: job.owner_id,
+      sessionId,
+      runId: job.run_id,
+    },
+    source: {
+      employeeVersionId: run.id,
+      configChecksum: run.config_checksum,
+      manifest: run.manifest,
+    },
+    executionSnapshot: run.execution_snapshot,
+  });
+}
+
 /** Read only the leased subject's immutable business birth fact. This is
  * selection evidence, never prompt permission; the normal binder still checks
  * every live Run/Job/subject/owner/cancellation and deadline below. */
@@ -172,7 +274,7 @@ async function readNativeRootOrigin(
   s: NativeSessionLeaseInput['subject'],
 ): Promise<NativeRootOrigin | null> {
   if (await nativeContextExecutionRetired(tx, s.kind, s.id)) return deny();
-  let row, identity: NativeRootOrigin['frozenIdentity'];
+  let row, identity: NativeRootOriginV1['frozenIdentity'];
   if (s.kind === 'chat')
     return readChatNativeRootOrigin(tx, {
       organizationId: job.organization_id,
@@ -240,6 +342,10 @@ export async function prepareLeasedNativeSession(
   input: NativeSessionPreparationInput,
 ) {
   const origin = await readNativeRootOrigin(tx, job, input.subject);
+  const executionBinding =
+    input.subject.kind === 'chat'
+      ? await readLeasedChatExecutionBinding(tx, job, origin, input.subject.id)
+      : null;
   const reader = origin
     ? nativeOriginReaderForOrigin(origin, {
         organizationId: job.organization_id,
@@ -264,6 +370,7 @@ export async function prepareLeasedNativeSession(
     return {
       binding: null,
       origin,
+      executionBinding,
       ...(reader ? { originReaderAdopted } : {}),
       conversation: undefined,
       requiresRecovery:
@@ -298,6 +405,7 @@ export async function prepareLeasedNativeSession(
   return {
     ...admitted,
     origin,
+    executionBinding,
     ...(reader ? { originReaderAdopted } : {}),
     requiresRecovery: true,
   };
@@ -348,6 +456,8 @@ export async function bindLeasedNativeSession(
   )
     deny();
   const origin = await readNativeRootOrigin(tx, job, s);
+  if (s.kind === 'chat')
+    await readLeasedChatExecutionBinding(tx, job, origin, s.id);
   const reader = origin
     ? nativeOriginReaderForOrigin(origin, {
         organizationId: job.organization_id,

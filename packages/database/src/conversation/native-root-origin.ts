@@ -1,10 +1,20 @@
-import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { EmployeeRuntimePackageSchema, UuidSchema } from '@allrice/contracts';
 
-export const newNativeGeneration = 'dsh-0.2.1-rc.2-687f282' as const;
+import {
+  CurrentEmployeeChatOriginSchema,
+  nativeRootDigest,
+  newNativeGeneration,
+} from './current-execution-binding.ts';
+export {
+  assertCurrentEmployeeChatOrigin,
+  newCurrentEmployeeChatOrigin,
+  nativeRootDigest,
+  newNativeGeneration,
+  type CurrentEmployeeChatOrigin,
+} from './current-execution-binding.ts';
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
-export const NativeRootOriginSchema = z
+export const NativeRootOriginV1Schema = z
   .object({
     schemaVersion: z.literal(1),
     contextKind: z.enum([
@@ -38,23 +48,13 @@ export const NativeRootOriginSchema = z
         message: 'Chat birth requires its immutable published version',
       });
   });
+export const NativeRootOriginSchema = z.union([
+  NativeRootOriginV1Schema,
+  CurrentEmployeeChatOriginSchema,
+]);
+export type NativeRootOriginV1 = z.infer<typeof NativeRootOriginV1Schema>;
 export type NativeRootOrigin = z.infer<typeof NativeRootOriginSchema>;
 type Kind = NativeRootOrigin['contextKind'];
-function canonical(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonical);
-  if (value !== null && typeof value === 'object')
-    return Object.fromEntries(
-      Object.entries(value)
-        .toSorted(([a], [b]) => a.localeCompare(b))
-        .map(([k, v]) => [k, canonical(v)]),
-    );
-  return value;
-}
-export const nativeRootDigest = (value: unknown) =>
-  'sha256:' +
-  createHash('sha256')
-    .update(JSON.stringify(canonical(value)))
-    .digest('hex');
 export const nativeRootSeed = (kind: Kind, id: string) =>
   kind === 'experience_consolidation'
     ? `experience-${UuidSchema.parse(id)}`
@@ -62,8 +62,8 @@ export const nativeRootSeed = (kind: Kind, id: string) =>
 function issue(
   kind: Kind,
   id: string,
-  frozenIdentity: NativeRootOrigin['frozenIdentity'],
-): NativeRootOrigin {
+  frozenIdentity: NativeRootOriginV1['frozenIdentity'],
+): NativeRootOriginV1 {
   // This independently configured ID is not derived from a local manifest,
   // current catalog, timestamp, worker version, model or browser input.
   const artifactId = digest.parse(process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID);
@@ -82,7 +82,7 @@ function issue(
     artifactId !== process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID
   )
     throw Error('DSH_NATIVE_ORIGIN_READER_NEW_BIRTH_MISMATCH');
-  return NativeRootOriginSchema.parse({
+  return NativeRootOriginV1Schema.parse({
     schemaVersion: 1,
     contextKind: kind,
     contextId: id,
@@ -100,7 +100,7 @@ export function newEmployeeNativeRootOrigin(
   id: string,
   runtimePackage: unknown,
   employeeVersionId?: string,
-): NativeRootOrigin | null {
+): NativeRootOriginV1 | null {
   if (runtimePackage == null) return null;
   const value = EmployeeRuntimePackageSchema.parse(runtimePackage);
   if (value.runtimeManifest.distributionGeneration !== newNativeGeneration)
@@ -117,7 +117,7 @@ export function newInternalNativeRootOrigin(
   kind: 'platform_technical' | 'experience_consolidation',
   id: string,
   recipe: unknown,
-): NativeRootOrigin | null {
+): NativeRootOriginV1 | null {
   if (!process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID) return null;
   return issue(kind, id, {
     kind: 'internal_recipe',
@@ -129,9 +129,9 @@ export function newInternalNativeRootOrigin(
 export function retryNativeRootOrigin(
   source: unknown,
   id: string,
-): NativeRootOrigin | null {
+): NativeRootOriginV1 | null {
   if (source == null) return null;
-  const origin = NativeRootOriginSchema.parse(source);
+  const origin = NativeRootOriginV1Schema.parse(source);
   if (origin.contextKind !== 'platform_employee_test')
     throw Error('NATIVE_ROOT_ORIGIN_INVALID');
   return {
@@ -144,10 +144,10 @@ export function assertNativeRootOrigin(
   value: unknown,
   kind: Kind,
   id: string,
-  frozenIdentity: NativeRootOrigin['frozenIdentity'],
-): NativeRootOrigin | null {
+  frozenIdentity: NativeRootOriginV1['frozenIdentity'],
+): NativeRootOriginV1 | null {
   if (value == null) return null;
-  const origin = NativeRootOriginSchema.parse(value);
+  const origin = NativeRootOriginV1Schema.parse(value);
   if (
     origin.contextKind !== kind ||
     origin.contextId !== id ||

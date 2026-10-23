@@ -13,6 +13,11 @@ import type {
   NativeSessionDescriptor,
   NativeRootOrigin,
   NativeSessionPin,
+  EmployeeRunExecutionBinding,
+} from '@allrice/database';
+import {
+  EmployeeRunExecutionBindingSchema,
+  nativeRootDigest,
 } from '@allrice/database';
 
 import { HandlerError } from '../../errors.js';
@@ -310,7 +315,45 @@ export class DshRuntimePool {
     input: HarnessExecutionInput,
     pin?: NativeSessionPin,
     origin?: NativeRootOrigin | null,
+    executionBinding?: EmployeeRunExecutionBinding | null,
   ) {
+    const currentBinding =
+      executionBinding == null
+        ? null
+        : EmployeeRunExecutionBindingSchema.parse(executionBinding);
+    // This fact only comes from the leased SQL prepare closure. Validate its
+    // exact caller and original source before translating to the approved
+    // executor; never alter the source kernel or infer approval from a pin.
+    if ((origin?.schemaVersion === 2) !== !!currentBinding)
+      throw Error('DSH_NATIVE_ARTIFACT_EXECUTION_BINDING_REQUIRED');
+    if (
+      currentBinding &&
+      (!origin ||
+        origin.schemaVersion !== 2 ||
+        currentBinding.originDigest !== nativeRootDigest(origin) ||
+        currentBinding.scope.runId !==
+          input.executionEnvironment.ALLRICE_RUN_ID ||
+        currentBinding.scope.organizationId !==
+          input.executionEnvironment.ALLRICE_ORGANIZATION_ID ||
+        currentBinding.scope.workspaceId !==
+          input.executionEnvironment.ALLRICE_WORKSPACE_ID ||
+        currentBinding.scope.ownerId !==
+          input.executionEnvironment.ALLRICE_OWNER_ID ||
+        currentBinding.scope.sessionId !== input.kernel.sessionId ||
+        currentBinding.source.employeeVersionId !==
+          input.kernel.employeeVersionId ||
+        (currentBinding.source.packageChecksum ?? undefined) !==
+          input.kernel.runtimePackageChecksum ||
+        (currentBinding.source.declaredGeneration ?? undefined) !==
+          input.kernel.runtimeDistributionGeneration ||
+        currentBinding.execution.artifactId !== origin.artifactId ||
+        currentBinding.execution.generation !== origin.distributionGeneration ||
+        currentBinding.execution.profileId !== origin.profileId ||
+        (pin &&
+          (pin.bindingBasis !== 'business_root_origin' ||
+            pin.rootOriginDigest !== currentBinding.originDigest)))
+    )
+      throw Error('DSH_NATIVE_ARTIFACT_EXECUTION_BINDING_MISMATCH');
     // Even a pin cannot turn a deployment/constructor override into approval.
     const identity = checkedDshNativeLaunch({
       command: this.runtimeCommand ?? '',
@@ -318,6 +361,8 @@ export class DshRuntimePool {
       profile: this.cordisConfig,
     });
     if (!identity) {
+      if (currentBinding)
+        throw Error('DSH_NATIVE_ARTIFACT_CURRENT_EXECUTOR_UNAPPROVED');
       if (
         input.kernel.runtimeDistributionGeneration !== undefined &&
         input.kernel.runtimeDistributionGeneration !==
@@ -357,9 +402,18 @@ export class DshRuntimePool {
     // publication. A later same-generation Run may carry an updated package;
     // its own checksum is verified by the normal frozen Run binding below.
     checkedDshNativeLaunch(selected);
+    if (
+      currentBinding &&
+      (selected.artifactId !== currentBinding.execution.artifactId ||
+        selected.generation !== currentBinding.execution.generation ||
+        profileId !== currentBinding.execution.profileId)
+    )
+      throw Error('DSH_NATIVE_ARTIFACT_EXECUTION_BINDING_MISMATCH');
     assertDshFrozenCompatibility(
-      input.kernel.runtimeDistributionGeneration ??
-        (origin?.frozenIdentity.kind === 'internal_recipe'
+      currentBinding?.execution.generation ??
+        input.kernel.runtimeDistributionGeneration ??
+        (origin?.schemaVersion === 1 &&
+        origin.frozenIdentity.kind === 'internal_recipe'
           ? origin.distributionGeneration
           : pin?.bindingBasis === 'business_root_origin' &&
               ('internalTask' in input.kernel || profileId === 'technical')
@@ -376,8 +430,9 @@ export class DshRuntimePool {
     threadId: string,
     pin?: NativeSessionPin,
     origin?: NativeRootOrigin | null,
+    executionBinding?: EmployeeRunExecutionBinding | null,
   ): NativeSessionDescriptor | null {
-    const identity = this.launch(input, pin, origin);
+    const identity = this.launch(input, pin, origin, executionBinding);
     if (!identity) return null; // Standalone fixture, no approved artifact.
     const generation = DSH_FROZEN_PROFILE_GENERATIONS.find(
       (value) => value === identity.generation,
@@ -456,9 +511,16 @@ export class DshRuntimePool {
     threadId: string,
     pin?: NativeSessionPin,
     origin?: NativeRootOrigin | null,
+    executionBinding?: EmployeeRunExecutionBinding | null,
   ) {
-    const launch = this.launch(input, pin, origin);
-    const descriptor = this.describeNativeSession(input, threadId, pin, origin);
+    const launch = this.launch(input, pin, origin, executionBinding);
+    const descriptor = this.describeNativeSession(
+      input,
+      threadId,
+      pin,
+      origin,
+      executionBinding,
+    );
     if (launch && descriptor)
       await assertStoredNativeSession(
         launch.args[0]!,
@@ -474,12 +536,19 @@ export class DshRuntimePool {
     systemInstructions: string;
     nativeSkills: NonNullable<HarnessExecutionInput['nativeSkills']>;
     nativePin?: NativeSessionPin;
+    nativeOrigin?: NativeRootOrigin | null;
+    nativeExecutionBinding?: EmployeeRunExecutionBinding | null;
     requireRecovery?: boolean;
   }) {
     const acquireStarted = performance.now();
     let nativeIdentity: ReturnType<DshRuntimePool['launch']>;
     try {
-      nativeIdentity = this.launch(input.input, input.nativePin);
+      nativeIdentity = this.launch(
+        input.input,
+        input.nativePin,
+        input.nativeOrigin,
+        input.nativeExecutionBinding,
+      );
     } catch (error) {
       if (error instanceof HandlerError) throw error;
       const code =
@@ -518,6 +587,8 @@ export class DshRuntimePool {
       input.input,
       input.threadId,
       input.nativePin,
+      input.nativeOrigin,
+      input.nativeExecutionBinding,
     );
     if (descriptor) {
       if (!input.nativePin)
@@ -567,6 +638,8 @@ export class DshRuntimePool {
         input.input,
         input.threadId,
         input.nativePin,
+        input.nativeOrigin,
+        input.nativeExecutionBinding,
       );
     const credentialStarted = performance.now();
     const dshPlatformHome =
