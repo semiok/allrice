@@ -3,6 +3,8 @@
 import { createHash } from 'node:crypto';
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import http from 'node:http';
+import { performance } from 'node:perf_hooks';
+import { setTimeout as delay } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { pathToFileURL } from 'node:url';
 
@@ -132,7 +134,8 @@ function assertBusy(raw, expectedClouds) {
   );
 }
 
-function assertHealths(healths, review) {
+function healthsIdle(healths, review, requireReady = false) {
+  let idle = true;
   const expected = review.historicalCloudCarry.serviceIdentities;
   need(
     Array.isArray(healths) &&
@@ -167,20 +170,27 @@ function assertHealths(healths, review) {
         pin[k],
         'NATIVE_RETIREMENT_CLOUD_CURRENT_IDENTITY_CHANGED',
       );
+    if (requireReady)
+      need(h.status === 'ready', 'NATIVE_RETIREMENT_SERVICE_NOT_READY');
     need(
       s?.role === role &&
         s.instance?.bootId === pin.bootId &&
         s.releaseAdmission === 'disabled' &&
         isDeepStrictEqual(s.unknownOutcomes, []) &&
-        [
-          'activeRoots',
-          'pendingRoots',
-          'unresolvedRoots',
-          'retainedChildren',
-        ].every((k) => s[k] === 0),
+        s.unresolvedRoots === 0 &&
+        ['activeRoots', 'pendingRoots', 'retainedChildren'].every(
+          (k) => Number.isSafeInteger(s[k]) && s[k] >= 0,
+        ),
       'NATIVE_RETIREMENT_CLOUD_CURRENT_LIFECYCLE_BUSY',
     );
+    // Never return early on a busy first service: the second service's identity
+    // or unknown state may be a hard failure, rather than temporary activity.
+    if (
+      ['activeRoots', 'pendingRoots', 'retainedChildren'].some((k) => s[k] > 0)
+    )
+      idle = false;
   }
+  return idle;
 }
 
 export function assertNoOwnedCloudContainers(inventory, physical) {
@@ -519,7 +529,7 @@ async function readExitedBaseline() {
 
 // Pure classification of observations already collected by the pinned reader.
 // A caller-supplied JSON claim never substitutes for verifyRetirementBusy().
-export function classifyRetirementCloudCarry({
+function classifyRetirementCloudFacts({
   review,
   plan,
   baseline,
@@ -537,8 +547,8 @@ export function classifyRetirementCloudCarry({
   assertCarryReview(review, plan);
   assertBusy(rawBefore, 1);
   assertBusy(rawAfter, 1);
-  assertHealths(healthBefore, review);
-  assertHealths(healthAfter, review);
+  const beforeIdle = healthsIdle(healthBefore, review);
+  const afterIdle = healthsIdle(healthAfter, review);
   need(
     baseline?.enabled === true &&
       baseline.rootReviewed === true &&
@@ -583,24 +593,129 @@ export function classifyRetirementCloudCarry({
     });
   else assertNoOwnedCloudContainers(inventory, physicalBefore);
   return {
-    rawBusy: { ...rawBefore },
-    finalRawBusy: { ...rawAfter },
-    rawUncleanedCloudAttempts: 1,
-    preservedUnresolvedCloudAttempts: 1,
-    unpreservedCloudAttempts: 0,
-    unclassifiedOwnedCloudContainers: 0,
-    ...(exitedPreservation
-      ? { historicalExitedContainerPreservation: exitedPreservation }
-      : {}),
-    historicalOutcomeKnown: false,
-    cleanupClaimed: false,
-    globalResourceIdleProven: false,
-    physicalAbsenceObserved: true,
-    databaseWritten: false,
-    modelCalls: 0,
-    readerPin: { ...HISTORICAL_CLOUD.readerPin },
-    baselinePin: { ...HISTORICAL_CLOUD.baselinePin },
+    idle: beforeIdle && afterIdle,
+    classification: {
+      rawBusy: { ...rawBefore },
+      finalRawBusy: { ...rawAfter },
+      rawUncleanedCloudAttempts: 1,
+      preservedUnresolvedCloudAttempts: 1,
+      unpreservedCloudAttempts: 0,
+      unclassifiedOwnedCloudContainers: 0,
+      ...(exitedPreservation
+        ? { historicalExitedContainerPreservation: exitedPreservation }
+        : {}),
+      historicalOutcomeKnown: false,
+      cleanupClaimed: false,
+      globalResourceIdleProven: false,
+      physicalAbsenceObserved: true,
+      databaseWritten: false,
+      modelCalls: 0,
+      readerPin: { ...HISTORICAL_CLOUD.readerPin },
+      baselinePin: { ...HISTORICAL_CLOUD.baselinePin },
+    },
   };
+}
+
+export function classifyRetirementCloudCarry(observation) {
+  const { idle, classification } = classifyRetirementCloudFacts(observation);
+  need(idle, 'NATIVE_RETIREMENT_CLOUD_CURRENT_LIFECYCLE_BUSY');
+  return classification;
+}
+
+// Only complete, successful read-only observations can be repeated. A hard
+// error is never caught/reclassified as activity. No mutation callback exists.
+export async function observeRetirementQuiescence({
+  review,
+  plan,
+  readObservation,
+  timeoutMs = 30_000,
+  intervalMs = 250,
+  now = () => performance.now(),
+  sleep = (ms) => delay(ms),
+}) {
+  need(
+    Number.isSafeInteger(timeoutMs) &&
+      timeoutMs > 0 &&
+      timeoutMs <= 60_000 &&
+      Number.isSafeInteger(intervalMs) &&
+      intervalMs > 0 &&
+      intervalMs <= 1_000,
+    'NATIVE_RETIREMENT_QUIESCENCE_LIMIT_INVALID',
+  );
+  const started = now(),
+    deadline = started + timeoutMs;
+  let attempts = 0;
+  const activity = [];
+  const check = () => {
+    need(now() < deadline, 'NATIVE_RETIREMENT_QUIESCENCE_TIMEOUT');
+  };
+  const step = async (read) => {
+    check();
+    const signal = globalThis.AbortSignal.timeout(
+      Math.max(1, Math.ceil(deadline - now())),
+    );
+    // Some pinned legacy physical reads have their own finite synchronous
+    // deadline. Await their completion; never abandon them with Promise.race.
+    const value = await read(signal);
+    check();
+    return value;
+  };
+  while (true) {
+    check();
+    attempts++;
+    const observation = await readObservation(step);
+    check();
+    const beforeIdle = healthsIdle(observation.healthBefore, review, true);
+    const afterIdle = healthsIdle(observation.healthAfter, review, true);
+    // All raw/history/container/physical facts are checked even when one of
+    // these roots is active. A new cloud/job or changed old row is not retryable.
+    const { classification } = classifyRetirementCloudFacts({
+      ...observation,
+      review,
+      plan,
+    });
+    check();
+    if (beforeIdle && afterIdle)
+      return {
+        ...classification,
+        quiescenceObservation: {
+          attempts,
+          elapsedMs: Math.max(0, now() - started),
+          completeReadOnlyAttempts: true,
+          mutationRetried: false,
+        },
+      };
+    if (activity.length < 32)
+      activity.push({
+        attempt: attempts,
+        before: observation.healthBefore.map((h) => ({
+          role: h.identity.service,
+          activeRoots: h.producerLifecycle.activeRoots,
+          pendingRoots: h.producerLifecycle.pendingRoots,
+          retainedChildren: h.producerLifecycle.retainedChildren,
+        })),
+        after: observation.healthAfter.map((h) => ({
+          role: h.identity.service,
+          activeRoots: h.producerLifecycle.activeRoots,
+          pendingRoots: h.producerLifecycle.pendingRoots,
+          retainedChildren: h.producerLifecycle.retainedChildren,
+        })),
+      });
+    try {
+      check();
+      await sleep(Math.min(intervalMs, deadline - now()));
+      check();
+    } catch (error) {
+      // This diagnostic carries only validated counters, never upstream data.
+      if (error.message === 'NATIVE_RETIREMENT_QUIESCENCE_TIMEOUT')
+        error.quiescenceObservation = {
+          attempts,
+          activity,
+          mutationRetried: false,
+        };
+      throw error;
+    }
+  }
 }
 
 function readDocker(socketPath, path) {
@@ -657,10 +772,9 @@ export async function verifyRetirementBusy({
   sql,
   readBusy,
   readHealths,
-  healths,
 }) {
-  const rawBefore = await readBusy();
   if (review.historicalCloudCarry === undefined) {
+    const rawBefore = await readBusy();
     assertBusy(rawBefore, 0);
     return {
       rawBusy: { ...rawBefore },
@@ -673,8 +787,6 @@ export async function verifyRetirementBusy({
     };
   }
   assertCarryReview(review, plan);
-  assertBusy(rawBefore, 1);
-  assertHealths(healths, review);
   let exitedBaseline;
   if (review.historicalCloudCarry.preservedExitedContainer !== undefined) {
     exitedReview(review, plan);
@@ -691,46 +803,58 @@ export async function verifyRetirementBusy({
   );
   const reader = await import(pathToFileURL(pin.path));
   const baseline = reader.readReviewedBaseline(HISTORICAL_CLOUD.baselinePin);
-  const before = await reader.readSnapshot(sql);
-  const physicalBefore = await reader.physicalAbsence();
-  const inventory = await readInventory(physicalBefore.configuredSocket);
-  let exitedObservation;
-  if (exitedBaseline) {
-    const observedAt = new Date().toISOString();
-    const inspectBefore = await readHistoricalExitedContainer(
-      physicalBefore.configuredSocket,
-    );
-    const inventoryAfter = await readInventory(physicalBefore.configuredSocket);
-    const inspectAfter = await readHistoricalExitedContainer(
-      physicalBefore.configuredSocket,
-    );
-    exitedObservation = {
-      observedAt,
-      baseline: exitedBaseline,
-      inspectBefore,
-      inspectAfter,
-      inventoryAfter,
-    };
-  }
-  // Same original probe brackets the extra inventory, fencing VM/daemon/socket
-  // changes without introducing any recovery or container lifecycle API.
-  const physicalAfter = await reader.physicalAbsence();
-  const after = await reader.readSnapshot(sql);
-  const rawAfter = await readBusy();
-  const healthAfter = await readHealths();
-  return classifyRetirementCloudCarry({
+  return observeRetirementQuiescence({
     review,
     plan,
-    baseline,
-    rawBefore,
-    rawAfter,
-    healthBefore: healths,
-    healthAfter,
-    before,
-    after,
-    physicalBefore,
-    physicalAfter,
-    inventory,
-    exitedObservation,
+    readObservation: async (step) => {
+      const rawBefore = await step(() => readBusy());
+      assertBusy(rawBefore, 1);
+      const healthBefore = await step((signal) => readHealths(signal));
+      healthsIdle(healthBefore, review, true);
+      const before = await step(() => reader.readSnapshot(sql));
+      const physicalBefore = await step(() => reader.physicalAbsence());
+      const inventory = await step(() =>
+        readInventory(physicalBefore.configuredSocket),
+      );
+      let exitedObservation;
+      if (exitedBaseline) {
+        const observedAt = new Date().toISOString();
+        const inspectBefore = await step(() =>
+          readHistoricalExitedContainer(physicalBefore.configuredSocket),
+        );
+        const inventoryAfter = await step(() =>
+          readInventory(physicalBefore.configuredSocket),
+        );
+        const inspectAfter = await step(() =>
+          readHistoricalExitedContainer(physicalBefore.configuredSocket),
+        );
+        exitedObservation = {
+          observedAt,
+          baseline: exitedBaseline,
+          inspectBefore,
+          inspectAfter,
+          inventoryAfter,
+        };
+      }
+      // Every retry refreshes the entire bracket; no old inventory, physical
+      // absence, health, raw count or historical snapshot crosses attempts.
+      const physicalAfter = await step(() => reader.physicalAbsence());
+      const after = await step(() => reader.readSnapshot(sql));
+      const rawAfter = await step(() => readBusy());
+      const healthAfter = await step((signal) => readHealths(signal));
+      return {
+        baseline,
+        rawBefore,
+        rawAfter,
+        healthBefore,
+        healthAfter,
+        before,
+        after,
+        physicalBefore,
+        physicalAfter,
+        inventory,
+        exitedObservation,
+      };
+    },
   });
 }
