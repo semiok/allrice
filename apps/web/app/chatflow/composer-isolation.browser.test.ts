@@ -1743,6 +1743,7 @@ suite(
                       reference,
                     },
                   ],
+                  quotableFileIds: [childId],
                   truncated: false,
                   options: {
                     writable: false,
@@ -1773,7 +1774,7 @@ suite(
               })
               .click();
             await f.page
-              .getByRole('menuitem', { name: '用于本次任务', exact: true })
+              .getByRole('menuitem', { name: '引用文件', exact: true })
               .click();
           } else
             await f.page
