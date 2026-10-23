@@ -1,9 +1,18 @@
 // Exact local Dev control-upgrade observation only. Import is inert.
 // No recovery, stop, cleanup, model, VM lifecycle or database write API exists here.
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { lstat, readFile, realpath } from 'node:fs/promises';
-import http from 'node:http';
+import { fileURLToPath } from 'node:url';
+import {
+  HISTORICAL_EXITED_CONTAINER,
+  assertNoOwnedCloudContainers,
+  assertHistoricalExitedContainerObservation,
+  collectHistoricalExitedContainerObservation,
+  exitedContainerEvidenceDigest as inventoryDigest,
+  nativeCloudInventoryIdentity,
+  readCompleteCloudInventory as inventory,
+} from './retirement-preserved-cloud.mjs';
 import { isDeepStrictEqual } from 'node:util';
 import { pathToFileURL } from 'node:url';
 
@@ -56,45 +65,6 @@ async function reader() {
   const r = await import(pathToFileURL(CONTROL_CLOUD_READER.path));
   return { r, baseline: r.readReviewedBaseline(CONTROL_CLOUD_BASELINE) };
 }
-function inventory(socketPath) {
-  return new Promise((resolve, reject) => {
-    const q = http.request(
-      {
-        socketPath,
-        method: 'GET',
-        path: '/v1.45/containers/json?all=1',
-        headers: { connection: 'close' },
-      },
-      (r) => {
-        const chunks = [];
-        let size = 0;
-        r.on('data', (b) => {
-          size += b.length;
-          if (size > 1_048_576)
-            q.destroy(Error('NATIVE_CONTROL_CLOUD_INVENTORY_LIMIT'));
-          else chunks.push(b);
-        });
-        r.on('error', reject);
-        r.on('end', () => {
-          try {
-            resolve({
-              socketPath,
-              status: r.statusCode,
-              body: JSON.parse(Buffer.concat(chunks).toString()),
-            });
-          } catch {
-            reject(Error('NATIVE_CONTROL_CLOUD_INVENTORY_UNKNOWN'));
-          }
-        });
-      },
-    );
-    q.setTimeout(5000, () =>
-      q.destroy(Error('NATIVE_CONTROL_CLOUD_INVENTORY_TIMEOUT')),
-    );
-    q.on('error', reject);
-    q.end();
-  });
-}
 async function sqlFacts(sql, partitionId) {
   return sql.begin('isolation level repeatable read read only', async (tx) => {
     await tx`set local statement_timeout='5000'`;
@@ -105,17 +75,70 @@ async function sqlFacts(sql, partitionId) {
     return JSON.parse(JSON.stringify(v));
   });
 }
+async function sharedVerifierDigest() {
+  const path = fileURLToPath(
+    new URL('./retirement-preserved-cloud.mjs', import.meta.url),
+  );
+  const stat = await lstat(path);
+  need(
+    (await realpath(path)) === path && stat.isFile() && stat.size <= 1_048_576,
+    'INVENTORY_VERIFIER_CHANGED',
+  );
+  return hash(await readFile(path));
+}
+function rethrowInventory(error) {
+  if (error instanceof Error && error.message.startsWith('NATIVE_RETIREMENT_'))
+    throw Error(
+      'NATIVE_CONTROL_CLOUD_' +
+        error.message.slice('NATIVE_RETIREMENT_'.length),
+      { cause: error },
+    );
+  throw error;
+}
+function inventoryCheck(work) {
+  try {
+    return work();
+  } catch (error) {
+    rethrowInventory(error);
+  }
+}
+async function inventoryRead(work) {
+  try {
+    return await work();
+  } catch (error) {
+    rethrowInventory(error);
+  }
+}
 async function collect(sql, partitionId) {
+  const sharedVerifierSha256 = await sharedVerifierDigest();
   const { r, baseline } = await reader();
   const sqlBefore = await r.readSnapshot(sql),
     controlBefore = await sqlFacts(sql, partitionId);
   const physicalBefore = await r.physicalAbsence();
-  const inventoryBefore = await inventory(physicalBefore.configuredSocket);
-  const inventoryAfter = await inventory(physicalBefore.configuredSocket);
+  const inventoryBefore = await inventoryRead(() =>
+    inventory(physicalBefore.configuredSocket),
+  );
+  let exitedObservation;
+  if (
+    Array.isArray(inventoryBefore.body) &&
+    inventoryBefore.body.some((c) => c?.Id === HISTORICAL_EXITED_CONTAINER.id)
+  )
+    exitedObservation = await inventoryRead(() =>
+      collectHistoricalExitedContainerObservation(physicalBefore),
+    );
+  const inventoryAfter =
+    exitedObservation?.inventoryAfter ??
+    (await inventoryRead(() => inventory(physicalBefore.configuredSocket)));
   const physicalAfter = await r.physicalAbsence();
   const controlAfter = await sqlFacts(sql, partitionId),
     sqlAfter = await r.readSnapshot(sql);
+  need(
+    sharedVerifierSha256 === (await sharedVerifierDigest()),
+    'INVENTORY_VERIFIER_CHANGED',
+  );
   return {
+    sharedVerifierSha256,
+    ...(exitedObservation === undefined ? {} : { exitedObservation }),
     baseline,
     sqlBefore,
     sqlAfter,
@@ -179,6 +202,195 @@ function lifecycle(healths, review, offline) {
     );
   }
 }
+function inventoryEnvelope(v, physical) {
+  need(
+    v?.socketPath === physical.configuredSocket &&
+      v.status === 200 &&
+      Array.isArray(v.body),
+    'CONTAINER_OR_UNCONFIRMED_INVENTORY',
+  );
+}
+/** Physical collection and semantic ownership are shared with slot5. No chat
+ * approval, plan kind or scope is imported or accepted by the control branch. */
+function physicalInventory(a, observation, nowMs) {
+  for (const v of [a.inventoryBefore, a.inventoryAfter])
+    inventoryEnvelope(v, a.physicalBefore);
+  const identity = (v) => inventoryCheck(() => nativeCloudInventoryIdentity(v));
+  if (observation) {
+    const h = HISTORICAL_EXITED_CONTAINER;
+    // Validate every other row with the unchanged ownership guard first.
+    for (const v of [a.inventoryBefore, a.inventoryAfter])
+      inventoryCheck(() =>
+        assertNoOwnedCloudContainers(
+          { ...v, body: v.body.filter((c) => c?.Id !== h.id) },
+          a.physicalBefore,
+        ),
+      );
+    const preservation = {
+      historicalPin: h.historicalPin,
+      inspectPin: h.inspectPin,
+      inventoryPin: h.inventoryPin,
+      inspectDigest: inventoryDigest(observation.inspectBefore?.body),
+      physicalIdentityDigest: inventoryDigest(a.physicalBefore),
+    };
+    const result = inventoryCheck(() =>
+      assertHistoricalExitedContainerObservation({
+        preservation,
+        physical: a.physicalBefore,
+        inventory: a.inventoryBefore,
+        observation,
+        nowMs,
+      }),
+    );
+    same(
+      identity(a.inventoryBefore),
+      identity(a.inventoryAfter),
+      'INVENTORY_CHANGED',
+    );
+    return result;
+  }
+  for (const v of [a.inventoryBefore, a.inventoryAfter])
+    inventoryCheck(() => assertNoOwnedCloudContainers(v, a.physicalBefore));
+  same(
+    identity(a.inventoryBefore),
+    identity(a.inventoryAfter),
+    'INVENTORY_CHANGED',
+  );
+  return null;
+}
+function controlExitedApproval({ o, a, review, input, offline, nowMs }) {
+  const p = review.controlExitedContainerPreservation;
+  const prepare = review.phase === 'prepare',
+    h = HISTORICAL_EXITED_CONTAINER;
+  need(
+    review.kind === 'allrice-dev-native-control-upgrade-review-v1' &&
+      p?.kind === 'native-control-exact-exited-container-preservation-v1' &&
+      p.enabled === true &&
+      p.rootReviewed === true &&
+      p.reviewedBy === 'root' &&
+      p.phase === review.phase &&
+      p.planId === o.planId &&
+      p.partitionId === o.partitionId &&
+      p.planDigest === (prepare ? null : input.planDigest) &&
+      p.credentialDigest ===
+        (prepare ? null : input.plan?.historicalCloudAbsenceDigest) &&
+      (prepare ||
+        (/^sha256:[a-f0-9]{64}$/.test(p.planDigest) &&
+          /^sha256:[a-f0-9]{64}$/.test(p.credentialDigest))) &&
+      p.nonce === o.inventoryNonce &&
+      p.containerId === h.id &&
+      p.containerName === h.name &&
+      p.releaseSha === review.releaseSha &&
+      /^[a-f0-9]{40}$/.test(p.releaseSha) &&
+      p.sourceTree === review.sourceTree &&
+      /^[a-f0-9]{40}$/.test(p.sourceTree) &&
+      p.reviewedAtMs === review.reviewedAtMs &&
+      o.observedAtMs <= p.reviewedAtMs &&
+      p.reviewedAtMs <= nowMs &&
+      p.expiresAtMs === o.expiresAtMs &&
+      nowMs < p.expiresAtMs &&
+      p.offlineProofDigest === 'sha256:' + review.offlineProofPin?.sha256 &&
+      p.locksDigest === inventoryDigest(offline.locks) &&
+      p.processesDigest === inventoryDigest(offline.processes) &&
+      p.inventoryDigest === inventoryDigest(o.inventory) &&
+      p.inspectDigest === o.preservedExitedContainer?.inspectDigest &&
+      p.exitedEvidenceDigest === o.exitedEvidenceDigest &&
+      p.exitedEvidenceFileDigest ===
+        'sha256:' + review.exitedEvidencePin?.sha256 &&
+      p.physicalIdentityDigest === inventoryDigest(o.physical),
+    'CONTROL_EXITED_EXACT_APPROVAL_REQUIRED',
+  );
+  same(p.beforeReference, o.beforeReference, 'CONTROL_EXITED_TUPLE_CHANGED');
+  same(p.afterReference, o.afterReference, 'CONTROL_EXITED_TUPLE_CHANGED');
+  for (const key of ['historicalPin', 'inspectPin', 'inventoryPin'])
+    same(p[key], h[key], 'CONTROL_EXITED_EVIDENCE_CHANGED');
+  same(
+    p.inventoryVerifierSha256,
+    a.sharedVerifierSha256,
+    'INVENTORY_VERIFIER_CHANGED',
+  );
+  return p;
+}
+function controlInventory({
+  observation: o,
+  actual: a,
+  review,
+  input,
+  offline,
+  nowMs,
+}) {
+  inventoryEnvelope(o.inventory, o.physical);
+  const nonempty =
+    o.inventory.body.length > 0 ||
+    a.inventoryBefore?.body?.length > 0 ||
+    a.inventoryAfter?.body?.length > 0;
+  if (nonempty) {
+    need(
+      review.kind === 'allrice-dev-native-control-upgrade-review-v1' &&
+        /^[a-f0-9]{40}$/.test(review.releaseSha) &&
+        /^[a-f0-9]{40}$/.test(review.sourceTree) &&
+        /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
+          o.inventoryNonce,
+        ) &&
+        /^[a-f0-9]{64}$/.test(o.sharedVerifierSha256) &&
+        o.sharedVerifierSha256 === a.sharedVerifierSha256 &&
+        o.sharedVerifierSha256 === review.inventoryVerifierSha256,
+      'INVENTORY_VERIFIER_OR_NONCE_REQUIRED',
+    );
+  }
+  const current = physicalInventory(a, a.exitedObservation, nowMs);
+  const captured = physicalInventory(
+    {
+      physicalBefore: o.physical,
+      inventoryBefore: o.inventory,
+      inventoryAfter:
+        a.recordedExitedObservation?.inventoryAfter ?? o.inventory,
+    },
+    a.recordedExitedObservation,
+    nowMs,
+  );
+  if (captured) {
+    same(
+      captured,
+      o.preservedExitedContainer,
+      'CONTROL_EXITED_OBSERVATION_CHANGED',
+    );
+    same(
+      inventoryDigest(a.recordedExitedObservation),
+      o.exitedEvidenceDigest,
+      'CONTROL_EXITED_EVIDENCE_CHANGED',
+    );
+  }
+  same(
+    inventoryCheck(() => nativeCloudInventoryIdentity(o.inventory)),
+    inventoryCheck(() => nativeCloudInventoryIdentity(a.inventoryBefore)),
+    'INVENTORY_CHANGED',
+  );
+  need(
+    Boolean(current) === Boolean(captured),
+    'CONTROL_EXITED_OBSERVATION_CHANGED',
+  );
+  if (current) {
+    controlExitedApproval({ o, a, review, input, offline, nowMs });
+    same(
+      current.identity,
+      captured.identity,
+      'CONTROL_EXITED_OBSERVATION_CHANGED',
+    );
+    same(
+      current.inspectDigest,
+      captured.inspectDigest,
+      'CONTROL_EXITED_OBSERVATION_CHANGED',
+    );
+  } else
+    need(
+      review.controlExitedContainerPreservation === undefined &&
+        o.preservedExitedContainer === undefined &&
+        o.exitedEvidenceDigest === undefined,
+      'CONTROL_EXITED_UNEXPECTED_APPROVAL',
+    );
+}
+
 /** Pure checks of already collected observations; never an issuing API. */
 export function assertNativeControlCloudAbsence({
   observation: o,
@@ -278,16 +490,14 @@ export function assertNativeControlCloudAbsence({
   same(o.physical, a.baseline.physical, 'PHYSICAL_CHANGED');
   same(a.physicalBefore, o.physical, 'PHYSICAL_CHANGED');
   same(a.physicalAfter, a.physicalBefore, 'PHYSICAL_CHANGED');
-  for (const v of [o.inventory, a.inventoryBefore, a.inventoryAfter])
-    need(
-      v?.socketPath === o.physical.configuredSocket &&
-        v.status === 200 &&
-        Array.isArray(v.body) &&
-        v.body.length === 0,
-      'CONTAINER_OR_UNCONFIRMED_INVENTORY',
-    );
-  same(a.inventoryBefore, a.inventoryAfter, 'INVENTORY_CHANGED');
-  same(o.inventory, a.inventoryBefore, 'INVENTORY_CHANGED');
+  controlInventory({
+    observation: o,
+    actual: a,
+    review,
+    input,
+    offline,
+    nowMs,
+  });
   need(
     o.historicalOutcomeKnown === false &&
       o.cleanupClaimed === false &&
@@ -344,6 +554,15 @@ export async function verifyNativeControlCloudAbsence({
   );
   await actualOffline(offline);
   const actual = await collect(sql, review.partitionId);
+  if (o.preservedExitedContainer !== undefined) {
+    const raw = await pinned(review.exitedEvidencePin);
+    same(
+      inventoryDigest(raw.value),
+      o.exitedEvidenceDigest,
+      'CONTROL_EXITED_EVIDENCE_CHANGED',
+    );
+    actual.recordedExitedObservation = raw.value;
+  }
   await actualOffline(offline);
   assertNativeControlCloudAbsence({
     observation: o,
@@ -388,6 +607,17 @@ export async function verifyNativeControlCloudAbsence({
         releaseSha: review.releaseSha,
         sourceTree: review.sourceTree,
         offlineProofDigest: 'sha256:' + review.offlineProofPin.sha256,
+        ...(o.inventoryNonce === undefined
+          ? {}
+          : {
+              inventoryNonce: o.inventoryNonce,
+              inventoryVerifierSha256: o.sharedVerifierSha256,
+            }),
+        ...(o.preservedExitedContainer === undefined
+          ? {}
+          : {
+              inventoryPreservation: review.controlExitedContainerPreservation,
+            }),
       },
     },
   };
@@ -414,13 +644,15 @@ export async function captureDisabledNativeControlCloudAbsence({
   same(a.physicalBefore, a.baseline.physical, 'PHYSICAL_CHANGED');
   same(a.controlBefore, a.controlAfter, 'CONTROL_SQL_CHANGED');
   idle(a.controlBefore.idle);
-  need(
-    a.inventoryBefore?.status === 200 &&
-      isDeepStrictEqual(a.inventoryBefore.body, []) &&
-      isDeepStrictEqual(a.inventoryBefore, a.inventoryAfter),
-    'CONTAINER_OR_UNCONFIRMED_INVENTORY',
+  const preservedExitedContainer = physicalInventory(
+    a,
+    a.exitedObservation,
+    Date.now(),
   );
   return {
+    ...(a.exitedObservation === undefined
+      ? {}
+      : { exitedContainerRawEvidence: a.exitedObservation }),
     enabled: false,
     requiresSeparateRootReview: true,
     observation: {
@@ -442,6 +674,18 @@ export async function captureDisabledNativeControlCloudAbsence({
       sqlSnapshot: a.sqlBefore,
       physical: a.physicalBefore,
       inventory: a.inventoryBefore,
+      ...(a.inventoryBefore.body.length
+        ? {
+            inventoryNonce: randomUUID(),
+            sharedVerifierSha256: a.sharedVerifierSha256,
+          }
+        : {}),
+      ...(a.exitedObservation === undefined
+        ? {}
+        : {
+            preservedExitedContainer,
+            exitedEvidenceDigest: inventoryDigest(a.exitedObservation),
+          }),
       historicalOutcomeKnown: false,
       cleanupClaimed: false,
       globalResourceIdleProven: false,
@@ -462,6 +706,15 @@ export async function verifyNativeControlCloudAbsenceAfter({
   const life = await pinned(observation.lifecyclePin);
   await actualOffline(offline);
   const actual = await collect(sql, review.partitionId);
+  if (observation.preservedExitedContainer !== undefined) {
+    const raw = await pinned(review.exitedEvidencePin);
+    same(
+      inventoryDigest(raw.value),
+      observation.exitedEvidenceDigest,
+      'CONTROL_EXITED_EVIDENCE_CHANGED',
+    );
+    actual.recordedExitedObservation = raw.value;
+  }
   await actualOffline(offline);
   assertNativeControlCloudAbsence({
     observation,

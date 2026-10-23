@@ -420,3 +420,13 @@ export {
   assertTransitionDescriptor,
   type ExecutorTransitionRef,
 } from './conversation/native-executor-transition-contract.ts';
+
+export {
+  previewNativeTerminalTestRetirement,
+  applyNativeTerminalTestRetirement,
+  readNativeTerminalTestRetirement,
+  nativeTerminalTestPhysicalScope,
+  NativeTerminalTestPlanSchema,
+  type NativeTerminalTestScope,
+  type NativeTerminalTestPlan,
+} from './conversation/native-terminal-test-retirement.ts';

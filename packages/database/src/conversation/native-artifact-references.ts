@@ -7,6 +7,7 @@ import {
   assertDshCloseArtifactCoverage,
 } from '../providers/dsh-runtime-close-observations.ts';
 import { configuredNativeOriginReaders } from './native-origin-reader.ts';
+import { readVerifiedNativeTerminalTestRetirements } from './native-terminal-test-retirement.ts';
 import { readVerifiedNativeChatRetirements } from './native-context-retirement.ts';
 
 const approval = z
@@ -83,7 +84,11 @@ export async function verifyNativeArtifactReferenceCoverage(
     'isolation level repeatable read read only',
     async (tx) => {
       await tx`set local statement_timeout='5000'`;
-      const retiredContexts = await readVerifiedNativeChatRetirements(tx);
+      const retiredChatContexts = await readVerifiedNativeChatRetirements(tx);
+      const retiredContexts = [
+        ...retiredChatContexts,
+        ...(await readVerifiedNativeTerminalTestRetirements(tx)),
+      ];
       const transitions = await verifiedChatExecutorTransitions(tx);
       for (const t of transitions)
         if (
@@ -115,10 +120,10 @@ export async function verifyNativeArtifactReferenceCoverage(
       select * from jsonb_to_recordset(${tx.json(transitions.map((t) => ({ contextId: t.scope.contextId, organizationId: t.scope.organizationId, workspaceId: t.scope.workspaceId, ownerId: t.scope.ownerId, targetArtifactId: t.target.artifactId, generation: t.target.generation, originDigest: t.originDigest, storageNamespace: t.storageNamespace })))}) as t(
        "contextId" uuid,"organizationId" uuid,"workspaceId" uuid,"ownerId" uuid,"targetArtifactId" text,generation text,"originDigest" text,"storageNamespace" text)
     ), origins as (
-      select 'origin:chat' source,native_root_origin origin,organization_id,workspace_id,owner_id from allrice_chat_sessions
-      union all select 'origin:platform_technical',native_root_origin,null,null,null from allrice_platform_technical_tasks
-      union all select 'origin:experience_consolidation',native_root_origin,null,null,null from allrice_automation_runs
-      union all select 'origin:platform_employee_test',native_root_origin,null,null,null from allrice_platform_employee_test_runs
+      select 'origin:chat' source,id source_context_id,native_root_origin origin,organization_id,workspace_id,owner_id from allrice_chat_sessions
+      union all select 'origin:platform_technical',id,native_root_origin,null,null,null from allrice_platform_technical_tasks
+      union all select 'origin:experience_consolidation',id,native_root_origin,null,null,null from allrice_automation_runs
+      union all select 'origin:platform_employee_test',id,native_root_origin,null,null,null from allrice_platform_employee_test_runs
     ), retired as (
       select * from jsonb_to_recordset(${tx.json(retiredContexts)}) as d(
         "contextKind" text,"contextId" uuid,"organizationId" uuid,"workspaceId" uuid,"ownerId" uuid)
@@ -129,13 +134,17 @@ export async function verifyNativeArtifactReferenceCoverage(
       from allrice_native_session_bindings
       union all
       select source,origin->>'artifactId',origin->>'distributionGeneration',origin->>'profileId',
-        null,organization_id,workspace_id,owner_id,null,origin->>'contextKind',(origin->>'contextId')::uuid,
+        null,organization_id,workspace_id,owner_id,null,
+         case when source='origin:chat' then origin->>'contextKind' else substr(source,8) end,
+         case when source='origin:chat' then (origin->>'contextId')::uuid else source_context_id end,
         origin,null,null from origins where origin is not null
     ), refs as (
       select r.* from all_refs r where not exists(select 1 from retired d
         where d."contextKind"=r.context_kind and d."contextId"=r.context_id
-          and d."organizationId"=r.organization_id and d."workspaceId"=r.workspace_id
-          and d."ownerId"=r.owner_id)
+          and ((r.source in ('origin:platform_employee_test','origin:experience_consolidation','origin:platform_technical')
+            and r.origin->>'contextKind'=r.context_kind and r.origin->>'contextId'=r.context_id::text)
+            or (d."organizationId"=r.organization_id and d."workspaceId"=r.workspace_id
+              and d."ownerId"=r.owner_id)))
     ) select r.source,coalesce(t."targetArtifactId",r.artifact_id) as "artifactId",coalesce(t.generation,r.generation) generation,r.profile_id as "profileId",
       array_agg(distinct r.artifact_id) as "historicalArtifactIds",
       count(*)::int records,
@@ -175,7 +184,7 @@ export async function verifyNativeArtifactReferenceCoverage(
           select 1 from allrice_native_session_bindings b where b.context_kind='chat' and b.context_id=c.id)`;
       const remaining = nullChats.filter(
         (c) =>
-          !retiredContexts.some(
+          !retiredChatContexts.some(
             (r) =>
               r.contextId === c.id &&
               r.organizationId === c.organization_id &&
@@ -263,7 +272,7 @@ export async function verifyNativeArtifactReferenceCoverage(
       const closeCoverage = assertDshCloseArtifactCoverage(
         closeObservations,
         approved.map((a) => a.artifactId),
-        retiredContexts,
+        retiredChatContexts,
       );
       return {
         references,

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  HISTORICAL_EXITED_CONTAINER as E,
+  exitedContainerEvidenceDigest as d,
+} from './retirement-preserved-cloud.mjs';
+import actualInventory from './fixtures/native-control-cloud-inventory.actual.fixture.json';
+import actualExitedIdentity from './fixtures/native-control-exited-identity.actual.fixture.json';
+import {
   assertNativeControlCloudAbsence,
   verifyNativeControlCloudAbsence,
   CONTROL_CLOUD_READER,
@@ -406,4 +412,358 @@ describe('exact historical cloud absence observations, synthetic evidence only',
       }),
     ).toThrow(/^NATIVE_CONTROL_CLOUD_/);
   });
+});
+
+// Raw Docker list/old projected identity are exact root read-only captures.
+// All control tuple/process/daemon/inspect responses remain synthetic offline
+// fixtures: these tests never claim a fresh Docker/Dev observation.
+function recordedSubject({ officeOnly = false } = {}) {
+  const s = subject(),
+    inv = {
+      ...clone(actualInventory),
+      socketPath: baseline.physical.configuredSocket,
+    };
+  if (officeOnly)
+    inv.body = inv.body.filter((c) =>
+      c.Names.includes('/allrice-office-met157'),
+    );
+  s.observation.inventory = clone(inv);
+  s.actual.inventoryBefore = clone(inv);
+  s.actual.inventoryAfter = clone(inv);
+  s.observation.inventoryNonce = 'f325557f-7d61-4237-bdab-8876ad8234c6';
+  s.observation.sharedVerifierSha256 = 'a'.repeat(64);
+  s.actual.sharedVerifierSha256 = 'a'.repeat(64);
+  Object.assign(s.review, {
+    kind: 'allrice-dev-native-control-upgrade-review-v1',
+    releaseSha: '5'.repeat(40),
+    sourceTree: '6'.repeat(40),
+    inventoryVerifierSha256: 'a'.repeat(64),
+    offlineProofPin: { sha256: '7'.repeat(64) },
+    exitedEvidencePin: {
+      path: '/synthetic/control-raw-evidence.json',
+      sha256: 'e'.repeat(64),
+    },
+  });
+  if (officeOnly) return s;
+  const target = actualInventory.body.find((c) => c.Id === E.id),
+    v = actualExitedIdentity;
+  // Only the recorded projection is real. The full Docker response is a
+  // synthetic reconstruction for pure classification; no actual GET is claimed.
+  const body = {
+    Id: v.id,
+    Name: v.name,
+    Created: v.created,
+    State: clone(v.state),
+    Image: target.ImageID,
+    Config: { Labels: clone(v.labels) },
+    HostConfig: {
+      RestartPolicy: clone(v.restartPolicy),
+      AutoRemove: v.autoRemove,
+      NetworkMode: v.networkMode,
+    },
+    Mounts: clone(target.Mounts),
+  };
+  const exited = {
+    observedAt: new Date(s.observation.observedAtMs).toISOString(),
+    baseline: {
+      historical: { notTouchingUnknownOtherContainer: E.attemptId },
+      inspect: clone(v),
+      inventory: clone(inv),
+    },
+    inspectBefore: {
+      socketPath: inv.socketPath,
+      status: 200,
+      body: clone(body),
+    },
+    inspectAfter: {
+      socketPath: inv.socketPath,
+      status: 200,
+      body: clone(body),
+    },
+    inventoryAfter: clone(inv),
+  };
+  s.actual.recordedExitedObservation = clone(exited);
+  s.actual.exitedObservation = clone(exited);
+  const summary = {
+    containerId: E.id,
+    containerName: E.name,
+    state: 'exited',
+    pid: 0,
+    rawOwnedCloudContainers: 1,
+    preservedExitedContainers: 1,
+    unclassifiedOwnedCloudContainers: 0,
+    historicalOutcomeKnown: false,
+    cleanupClaimed: false,
+    containerRemoved: false,
+    inspectDigest: d(body),
+    physicalIdentityDigest: d(s.observation.physical),
+    observedAt: exited.observedAt,
+    identity: {
+      ...clone(v),
+      mounts: clone(v.mounts).sort((a, b) =>
+        a.Destination.localeCompare(b.Destination),
+      ),
+    },
+    historicalPin: clone(E.historicalPin),
+    inspectPin: clone(E.inspectPin),
+    inventoryPin: clone(E.inventoryPin),
+  };
+  s.observation.preservedExitedContainer = summary;
+  s.observation.exitedEvidenceDigest = d(exited);
+  s.review.controlExitedContainerPreservation = {
+    kind: 'native-control-exact-exited-container-preservation-v1',
+    enabled: true,
+    rootReviewed: true,
+    reviewedBy: 'root',
+    phase: 'prepare',
+    planId: s.observation.planId,
+    partitionId: s.observation.partitionId,
+    planDigest: null,
+    credentialDigest: null,
+    nonce: s.observation.inventoryNonce,
+    containerId: E.id,
+    containerName: E.name,
+    releaseSha: s.review.releaseSha,
+    sourceTree: s.review.sourceTree,
+    reviewedAtMs: s.review.reviewedAtMs,
+    expiresAtMs: s.observation.expiresAtMs,
+    beforeReference: clone(s.observation.beforeReference),
+    afterReference: clone(s.observation.afterReference),
+    offlineProofDigest: 'sha256:' + s.review.offlineProofPin.sha256,
+    locksDigest: d(s.offline.locks),
+    processesDigest: d(s.offline.processes),
+    inventoryDigest: d(inv),
+    inspectDigest: d(body),
+    physicalIdentityDigest: d(s.observation.physical),
+    exitedEvidenceDigest: s.observation.exitedEvidenceDigest,
+    exitedEvidenceFileDigest: 'sha256:' + s.review.exitedEvidencePin.sha256,
+    historicalPin: clone(E.historicalPin),
+    inspectPin: clone(E.inspectPin),
+    inventoryPin: clone(E.inventoryPin),
+    inventoryVerifierSha256: s.actual.sharedVerifierSha256,
+  };
+  return s;
+}
+describe('root captured inventory: six raw rows remain visible', () => {
+  it('accepts the full captured inventory only under separate exact control preservation', () => {
+    const s = recordedSubject(),
+      before = clone(s);
+    expect(s.observation.inventory.body).toHaveLength(6);
+    expect(actualExitedIdentity.state.Pid).toBe(0);
+    expect(() => assertNativeControlCloudAbsence(s)).not.toThrow();
+    expect(s).toEqual(before);
+    expect(s.observation.sqlSnapshot.operation.status).toBe('unknown');
+    expect(s.observation.sqlSnapshot.attempt.cleanupConfirmedAt).toBeNull();
+  });
+  it('does not mistake the captured noncloud running Office infrastructure for a cloud producer', () => {
+    const s = recordedSubject({ officeOnly: true });
+    expect(s.observation.inventory.body[0].State).toBe('running');
+    expect(() => assertNativeControlCloudAbsence(s)).not.toThrow();
+  });
+  it.each([
+    (s) => delete s.review.controlExitedContainerPreservation,
+    (s) => (s.review.controlExitedContainerPreservation.enabled = false),
+    (s) =>
+      (s.review.controlExitedContainerPreservation.kind =
+        'allrice-dev-test-chat-retirement-exact-exited-container-v1'),
+    (s) => (s.review.controlExitedContainerPreservation.phase = 'apply'),
+    (s) =>
+      (s.review.controlExitedContainerPreservation.planId = 'another-plan'),
+    (s) =>
+      (s.review.controlExitedContainerPreservation.partitionId =
+        'another-partition'),
+    (s) =>
+      (s.review.controlExitedContainerPreservation.nonce = 'another-nonce'),
+    (s) =>
+      (s.review.controlExitedContainerPreservation.planDigest =
+        'sha256:' + 'f'.repeat(64)),
+    (s) =>
+      (s.review.controlExitedContainerPreservation.credentialDigest =
+        'sha256:' + 'f'.repeat(64)),
+    (s) =>
+      (s.review.controlExitedContainerPreservation.containerId = 'f'.repeat(
+        64,
+      )),
+    (s) =>
+      (s.review.controlExitedContainerPreservation.releaseSha = 'f'.repeat(40)),
+    (s) =>
+      (s.review.controlExitedContainerPreservation.sourceTree = 'f'.repeat(40)),
+    (s) =>
+      (s.review.controlExitedContainerPreservation.offlineProofDigest =
+        'sha256:' + 'f'.repeat(64)),
+    (s) =>
+      (s.review.controlExitedContainerPreservation.locksDigest =
+        'sha256:' + 'f'.repeat(64)),
+    (s) =>
+      (s.review.controlExitedContainerPreservation.processesDigest =
+        'sha256:' + 'f'.repeat(64)),
+    (s) =>
+      (s.review.controlExitedContainerPreservation.inventoryDigest =
+        'sha256:' + 'f'.repeat(64)),
+    (s) =>
+      (s.review.controlExitedContainerPreservation.inspectDigest =
+        'sha256:' + 'f'.repeat(64)),
+    (s) =>
+      (s.review.controlExitedContainerPreservation.physicalIdentityDigest =
+        'sha256:' + 'f'.repeat(64)),
+  ])(
+    'requires independent exact control/source/nonce/credential authority (%#)',
+    (change) => {
+      const s = recordedSubject();
+      change(s);
+      expect(() => assertNativeControlCloudAbsence(s)).toThrow(
+        /^NATIVE_CONTROL_CLOUD_/,
+      );
+    },
+  );
+  it.each(['stateRoot', 'storageId', 'profileId', 'artifactId'])(
+    'binds both complete control tuples including %s',
+    (key) => {
+      for (const phase of ['beforeReference', 'afterReference']) {
+        const s = recordedSubject();
+        s.review.controlExitedContainerPreservation[phase][key] = 'another';
+        expect(() => assertNativeControlCloudAbsence(s)).toThrow(
+          'CONTROL_EXITED_TUPLE_CHANGED',
+        );
+      }
+    },
+  );
+  it.each(['historicalPin', 'inspectPin', 'inventoryPin'])(
+    'cannot substitute a chat approval or change preserved %s bytes',
+    (key) => {
+      const s = recordedSubject();
+      s.review.controlExitedContainerPreservation[key].sha256 = 'f'.repeat(64);
+      expect(() => assertNativeControlCloudAbsence(s)).toThrow(
+        'CONTROL_EXITED_EVIDENCE_CHANGED',
+      );
+    },
+  );
+  it('requires the same tracked shared physical verifier, not an unchecked transitive dependency', () => {
+    const s = recordedSubject();
+    s.actual.sharedVerifierSha256 = 'b'.repeat(64);
+    expect(() => assertNativeControlCloudAbsence(s)).toThrow(
+      'INVENTORY_VERIFIER_OR_NONCE_REQUIRED',
+    );
+  });
+  it('requires a fresh observed nonce even when the inventory contains only Office infrastructure', () => {
+    const s = recordedSubject({ officeOnly: true });
+    delete s.observation.inventoryNonce;
+    expect(() => assertNativeControlCloudAbsence(s)).toThrow(
+      'INVENTORY_VERIFIER_OR_NONCE_REQUIRED',
+    );
+  });
+  it('keeps the control credential below the original65KiB bound while retaining all six raw rows', () => {
+    const s = recordedSubject();
+    const stored = {
+      observation: s.observation,
+      approval: {
+        inventoryPreservation: s.review.controlExitedContainerPreservation,
+      },
+    };
+    expect(Buffer.byteLength(JSON.stringify(stored))).toBeLessThan(65_536);
+    expect(stored.observation.inventory.body).toHaveLength(6);
+    expect(stored.observation).not.toHaveProperty('exitedObservation');
+    expect(stored.observation).toHaveProperty('exitedEvidenceDigest');
+  });
+  it.each([
+    (s) => delete s.actual.recordedExitedObservation,
+    (s) =>
+      (s.actual.recordedExitedObservation.inspectAfter.body.HostConfig.AutoRemove = true),
+    (s) => (s.observation.exitedEvidenceDigest = 'sha256:' + 'f'.repeat(64)),
+    (s) =>
+      (s.review.controlExitedContainerPreservation.exitedEvidenceFileDigest =
+        'sha256:' + 'f'.repeat(64)),
+    (s) => (s.review.kind = 'allrice-dev-test-chat-retirement-review'),
+  ])(
+    'requires the separately pinned raw evidence and control authorizer (%#)',
+    (change) => {
+      const s = recordedSubject();
+      change(s);
+      expect(() => assertNativeControlCloudAbsence(s)).toThrow(
+        /^NATIVE_CONTROL_CLOUD_/,
+      );
+    },
+  );
+  it('apply binds its own durable credential/plan and never reuses prepare approval', () => {
+    const s = recordedSubject(),
+      p = s.review.controlExitedContainerPreservation;
+    s.review.phase = 'apply';
+    s.input = {
+      plan: {
+        planId: s.observation.planId,
+        beforeReference: clone(s.observation.beforeReference),
+        afterReference: clone(s.observation.afterReference),
+        historicalCloudAbsenceDigest: 'sha256:' + '9'.repeat(64),
+      },
+      planDigest: 'sha256:' + '8'.repeat(64),
+    };
+    expect(() => assertNativeControlCloudAbsence(s)).toThrow(
+      'CONTROL_EXITED_EXACT_APPROVAL_REQUIRED',
+    );
+    Object.assign(p, {
+      phase: 'apply',
+      planDigest: s.input.planDigest,
+      credentialDigest: s.input.plan.historicalCloudAbsenceDigest,
+    });
+    expect(() => assertNativeControlCloudAbsence(s)).not.toThrow();
+    p.credentialDigest = 'sha256:' + 'f'.repeat(64);
+    expect(() => assertNativeControlCloudAbsence(s)).toThrow(
+      'CONTROL_EXITED_EXACT_APPROVAL_REQUIRED',
+    );
+  });
+  it.each(['running', 'paused', 'created', 'exited'])(
+    'blocks every OTHER %s cloud/reservation in the actual list',
+    (State) => {
+      const s = recordedSubject(),
+        c = clone(s.actual.inventoryBefore.body.find((c) => c.Id === E.id));
+      Object.assign(c, {
+        Id: 'f'.repeat(64),
+        Names: ['/renamed-reservation'],
+        State,
+      });
+      c.Labels = { 'xyz.bplabs.allrice.cloud.slot-owner': 'current' };
+      s.actual.inventoryBefore.body.push(c);
+      expect(() => assertNativeControlCloudAbsence(s)).toThrow(
+        /^NATIVE_CONTROL_CLOUD_/,
+      );
+    },
+  );
+  it('does not accept new noncloud infrastructure after the signed inventory capture', () => {
+    const s = recordedSubject({ officeOnly: true });
+    s.actual.inventoryAfter.body.push({
+      ...clone(s.actual.inventoryAfter.body[0]),
+      Id: 'f'.repeat(64),
+      Names: ['/new-office'],
+    });
+    expect(() => assertNativeControlCloudAbsence(s)).toThrow(
+      'INVENTORY_CHANGED',
+    );
+  });
+  it.each([
+    (s) => (s.actual.exitedObservation.inspectAfter.body.State.Pid = 1),
+    (s) => (s.actual.exitedObservation.inspectAfter.body.State.Running = true),
+    (s) =>
+      (s.actual.exitedObservation.inspectAfter.body.HostConfig.RestartPolicy.Name =
+        'always'),
+    (s) =>
+      (s.actual.exitedObservation.inspectAfter.body.HostConfig.AutoRemove = true),
+    (s) =>
+      (s.actual.exitedObservation.inspectAfter.body.Config.Labels[
+        'xyz.bplabs.allrice.cloud.slot-owner'
+      ] = 'current'),
+    (s) => (s.actual.exitedObservation.inspectAfter.body.Mounts[0].RW = false),
+    (s) => delete s.actual.exitedObservation,
+    (s) => (s.actual.physicalAfter.dockerId = 'other'),
+    (s) => (s.actual.sqlAfter.operation.status = 'running'),
+    (s) => (s.actual.controlAfter.idle.jobs = 1),
+  ])(
+    'keeps all current activity/full inspect/daemon/raw44 guards (%#)',
+    (change) => {
+      const s = recordedSubject();
+      change(s);
+      expect(() => assertNativeControlCloudAbsence(s)).toThrow(
+        /^NATIVE_CONTROL_CLOUD_/,
+      );
+    },
+  );
 });

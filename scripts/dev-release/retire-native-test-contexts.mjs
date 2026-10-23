@@ -9,6 +9,12 @@ import { homedir } from 'node:os';
 import { parseArgs } from 'node:util';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { verifyRetirementBusy } from './retirement-preserved-cloud.mjs';
+import {
+  REVIEWED_TEST_CHAT_REVIEW_KIND,
+  reviewedTestChatPhysicalScope,
+  verifyReviewedTestChatCloudCarry,
+} from './reviewed-test-chat-preserved-cloud.mjs';
+import { collectTerminalNativeAbsence } from './terminal-native-physical-absence.mjs';
 
 if (process.argv.length === 2) {
   console.log(
@@ -127,7 +133,8 @@ try {
     const r = review.value;
     const state = resolve(homedir(), 'allrice-dev', '.local');
     need(
-      r.kind === 'allrice-dev-test-chat-retirement-review' &&
+      (r.kind === 'allrice-dev-test-chat-retirement-review' ||
+        r.kind === REVIEWED_TEST_CHAT_REVIEW_KIND) &&
         r.rootReviewed === true &&
         r.reviewedBy === 'root' &&
         r.developmentTestScopesApproved === true &&
@@ -222,6 +229,34 @@ try {
       Array.isArray(r.healthUrls) && r.healthUrls.length === 2,
       'NATIVE_RETIREMENT_BOTH_SERVICE_HEALTH_REQUIRED',
     );
+    const laterReviewedChat = r.kind === REVIEWED_TEST_CHAT_REVIEW_KIND;
+    const readHealths = () =>
+      Promise.all(
+        r.healthUrls.map(async (url) => {
+          const response = await fetch(url, {
+            signal: globalThis.AbortSignal.timeout(10000),
+          });
+          need(response.ok, 'NATIVE_RETIREMENT_SERVICE_NOT_READY');
+          return response.json();
+        }),
+      );
+    const completePhysical = (suffix) =>
+      collectTerminalNativeAbsence({
+        scope: reviewedTestChatPhysicalScope(r, input.value),
+        review: r,
+        planDigest: input.value.digest,
+        requestId: input.value.requestId,
+        reviewSha256: hash(review.bytes),
+        readHealths,
+        evidencePath: a.output + suffix,
+        saveEvidence: save,
+      });
+    const physicalProof = laterReviewedChat
+      ? await completePhysical('.physical-before.json')
+      : undefined;
+    const classifyBusy = laterReviewedChat
+      ? verifyReviewedTestChatCloudCarry
+      : verifyRetirementBusy;
     const readBusy = () =>
       db.getDatabase().begin('read only', async (tx) => {
         await tx`set local statement_timeout='5000'`;
@@ -231,11 +266,23 @@ try {
         (select count(*)::int from allrice_platform_employee_test_runs where status in ('queued','running')) tests,
         (select count(*)::int from allrice_runtime_operations where lease_expires_at>clock_timestamp()) leases,
         (select count(*)::int from allrice_provider_authorization_flows where state in ('pending','running','awaiting_user')) auth`;
+        if (laterReviewedChat) {
+          const [live] =
+            await tx`select count(*)::int runtimes from allrice_dsh_runtime_instances where status='live'`;
+          return { ...row, runtimes: live.runtimes };
+        }
         return row;
       });
-    const busyClassification = await verifyRetirementBusy({
+    const busyClassification = await classifyBusy({
       review: r,
       plan: input.value,
+      ...(laterReviewedChat
+        ? {
+            physicalProof,
+            evidencePath: a.output + '.cloud-before.json',
+            saveEvidence: save,
+          }
+        : {}),
       sql: db.getDatabase(),
       readBusy,
       healths,
@@ -319,7 +366,22 @@ try {
         at: new Date().toISOString(),
       });
       const result = await db.applyNativeTestChatRetirement(input.value);
-      await save(a.output, { ...result, busyClassification });
+      if (laterReviewedChat) {
+        await save(a.output + '.committed.json', result);
+        const physicalAfter = await completePhysical('.physical-after.json');
+        const busyAfter = await verifyReviewedTestChatCloudCarry({
+          review: r,
+          plan: input.value,
+          sql: db.getDatabase(),
+          readBusy,
+          healths: await readHealths(),
+          readHealths,
+          physicalProof: physicalAfter,
+          evidencePath: a.output + '.cloud-after.json',
+          saveEvidence: save,
+        });
+        await save(a.output, { ...result, busyClassification, busyAfter });
+      } else await save(a.output, { ...result, busyClassification });
       console.log(
         JSON.stringify({
           mode: 'apply',

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import type { Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
@@ -979,7 +980,7 @@ run('offline control artifact upgrade in an owned synthetic SQL schema', () => {
       inventory: {
         socketPath: '/synthetic/docker.sock',
         status: 200,
-        body: [],
+        body: [] as Record<string, unknown>[],
       },
       historicalOutcomeKnown: false,
       cleanupClaimed: false,
@@ -1025,16 +1026,243 @@ run('offline control artifact upgrade in an owned synthetic SQL schema', () => {
     );
     return { p, auth, proof };
   }
+  async function inventoryCredential(
+    c: Awaited<ReturnType<typeof seed>>,
+    officeOnly = false,
+  ) {
+    const proof = await cloudCredential(c);
+    const raw = JSON.parse(
+      readFileSync(
+        new URL(
+          '../../../scripts/dev-release/fixtures/native-control-cloud-inventory.actual.fixture.json',
+          import.meta.url,
+        ),
+        'utf8',
+      ),
+    ) as { status: number; body: Record<string, unknown>[] };
+    const recorded = JSON.parse(
+      readFileSync(
+        new URL(
+          '../../../scripts/dev-release/fixtures/native-control-exited-identity.actual.fixture.json',
+          import.meta.url,
+        ),
+        'utf8',
+      ),
+    );
+    if (officeOnly) raw.body = raw.body.filter((row) => row.Id !== recorded.id);
+    const inventory = {
+      ...raw,
+      socketPath: proof.observation.physical.configuredSocket,
+    };
+    const nonce = randomUUID(),
+      sharedVerifierSha256 = 'e'.repeat(64);
+    const pins = {
+      historicalPin: {
+        path: '/synthetic/original-unknown.json',
+        sha256:
+          '96f8c32c29a9cef5324f97845e8a7861f46b778952ee9067778ae2481235a2da',
+      },
+      inspectPin: {
+        path: '/synthetic/recorded-stopped.json',
+        sha256:
+          'cd2ca6577a2941c4316787987c45087137dc3ee0a6cca0b72a0a42bd87843d2b',
+      },
+      inventoryPin: {
+        path: '/synthetic/recorded-inventory.json',
+        sha256:
+          'b59255b4d7a25c7ddf1babdf7b574e4ed85cc62b6d0e1d1671290ac203525b6d',
+      },
+    };
+    const identity = {
+      ...recorded,
+      mounts: (recorded.mounts as Record<string, unknown>[]).sort((a, b) =>
+        String(a.Destination).localeCompare(String(b.Destination)),
+      ),
+    };
+    const summary = {
+      containerId: recorded.id,
+      containerName: recorded.name,
+      state: 'exited',
+      pid: 0,
+      rawOwnedCloudContainers: 1,
+      preservedExitedContainers: 1,
+      unclassifiedOwnedCloudContainers: 0,
+      historicalOutcomeKnown: false,
+      cleanupClaimed: false,
+      containerRemoved: false,
+      inspectDigest: pin(
+        'Synthetic complete GET body held in a separate private proof',
+      ),
+      physicalIdentityDigest: nativeOnceDigest(proof.observation.physical),
+      observedAt: new Date(proof.observation.observedAtMs).toISOString(),
+      identity,
+      ...pins,
+    };
+    const observation = {
+      ...proof.observation,
+      inventory,
+      inventoryNonce: nonce,
+      sharedVerifierSha256,
+      ...(officeOnly
+        ? {}
+        : {
+            preservedExitedContainer: summary,
+            exitedEvidenceDigest: pin(
+              'Synthetic complete before/after GET evidence',
+            ),
+          }),
+    };
+    const preservation = {
+      kind: 'native-control-exact-exited-container-preservation-v1',
+      enabled: true,
+      rootReviewed: true,
+      reviewedBy: 'root',
+      phase: 'prepare',
+      planId: observation.planId,
+      partitionId: observation.partitionId,
+      planDigest: null,
+      credentialDigest: null,
+      nonce,
+      beforeReference: observation.beforeReference,
+      afterReference: observation.afterReference,
+      containerId: recorded.id,
+      containerName: recorded.name,
+      releaseSha: proof.approval.releaseSha,
+      sourceTree: proof.approval.sourceTree,
+      reviewedAtMs: proof.approval.reviewedAtMs,
+      expiresAtMs: observation.expiresAtMs,
+      offlineProofDigest: proof.approval.offlineProofDigest,
+      locksDigest: nativeOnceDigest(observation.locks),
+      processesDigest: nativeOnceDigest(observation.processes),
+      inventoryDigest: nativeOnceDigest(inventory),
+      inspectDigest: summary.inspectDigest,
+      physicalIdentityDigest: summary.physicalIdentityDigest,
+      exitedEvidenceDigest: observation.exitedEvidenceDigest,
+      exitedEvidenceFileDigest: pin('Synthetic private600 raw evidence bytes'),
+      inventoryVerifierSha256: sharedVerifierSha256,
+      ...pins,
+    };
+    return {
+      ...proof,
+      observation,
+      approval: {
+        ...proof.approval,
+        observationDigest: nativeOnceDigest(observation),
+        inventoryNonce: nonce,
+        inventoryVerifierSha256: sharedVerifierSha256,
+        ...(officeOnly ? {} : { inventoryPreservation: preservation }),
+      },
+    };
+  }
+  it.each(['allrice-once-control-v1', 'allrice-recurring-control-v1'] as const)(
+    'recorded inventory: exact %s plan/apply keeps all six rows and unknown history',
+    async (profile) => {
+      const c = await seed(profile),
+        proof = await inventoryCredential(c),
+        before = await cloudSnapshot();
+      expect(proof.observation.inventory.body).toHaveLength(6);
+      expect(Buffer.byteLength(JSON.stringify(proof))).toBeLessThan(65_536);
+      const { p, auth } = await prepareCloud(c, proof);
+      await apply(p, auth);
+      expect((await row(c.partitionId)).reference).toEqual(c.after);
+      expect(await cloudSnapshot()).toEqual(before);
+      expect(
+        await readNativeScheduleControlUpgrade({
+          db,
+          planId: p.plan.planId,
+          expected: expected(p, auth),
+        }),
+      ).toMatchObject({ status: 'applied' });
+    },
+  );
+  it('recorded inventory: noncloud Office infrastructure needs no cloud exception', async () => {
+    const c = await seed('allrice-once-control-v1'),
+      proof = await inventoryCredential(c, true);
+    const { p, auth } = await prepareCloud(c, proof);
+    await apply(p, auth);
+    expect((await row(c.partitionId)).reference).toEqual(c.after);
+  });
+  it('recorded inventory: SQL rejects other clouds and forged scope/nonce/source/stopped evidence even with matching document digests', async () => {
+    const c = await seed(),
+      valid = await inventoryCredential(c);
+    const [accepted] =
+      await db`select allrice_native_control_cloud_inventory_valid(${db.json(JSON.parse(JSON.stringify(valid.observation)))},${db.json(JSON.parse(JSON.stringify(valid.approval)))}) allowed`;
+    expect(accepted!.allowed).toBe(true);
+    for (const scenario of [
+      'chat approval',
+      'nonce',
+      'partition',
+      'from storage',
+      'source',
+      'shared verifier',
+      'active pid',
+      'exit code',
+      'restart',
+      'auto remove',
+      'false closure',
+      'missing raw digest',
+      'other reservation',
+      'renamed target',
+      'running target',
+    ]) {
+      const bad = JSON.parse(JSON.stringify(valid)),
+        p = bad.approval.inventoryPreservation;
+      if (scenario === 'chat approval')
+        p.kind = 'allrice-dev-test-chat-retirement-exact-exited-container-v1';
+      if (scenario === 'nonce') p.nonce = randomUUID();
+      if (scenario === 'partition') p.partitionId = 'other';
+      if (scenario === 'from storage') p.beforeReference.storageId = 'other';
+      if (scenario === 'source') p.releaseSha = 'f'.repeat(40);
+      if (scenario === 'shared verifier')
+        bad.approval.inventoryVerifierSha256 = 'f'.repeat(64);
+      if (scenario === 'active pid')
+        bad.observation.preservedExitedContainer.identity.state.Pid = 1;
+      if (scenario === 'exit code')
+        bad.observation.preservedExitedContainer.identity.state.ExitCode = 0;
+      if (scenario === 'restart')
+        bad.observation.preservedExitedContainer.identity.restartPolicy.Name =
+          'always';
+      if (scenario === 'auto remove')
+        bad.observation.preservedExitedContainer.identity.autoRemove = true;
+      if (scenario === 'false closure')
+        bad.observation.preservedExitedContainer.historicalOutcomeKnown = true;
+      if (scenario === 'missing raw digest')
+        delete bad.observation.exitedEvidenceDigest;
+      if (scenario === 'other reservation')
+        bad.observation.inventory.body.push({
+          Id: 'f'.repeat(64),
+          Names: ['/renamed'],
+          Labels: { 'xyz.bplabs.allrice.cloud.slot-owner': 'current' },
+          State: 'created',
+          Mounts: [],
+        });
+      const target = bad.observation.inventory.body.find(
+        (r: Record<string, unknown>) => r.Id === p.containerId,
+      );
+      if (scenario === 'renamed target') target.Names = ['/renamed'];
+      if (scenario === 'running target') target.State = 'running';
+      // Keep submitted SHA proofs self-consistent so assertions exercise actual
+      // field/authority fences, not merely the outer document digest check.
+      p.inventoryDigest = nativeOnceDigest(bad.observation.inventory);
+      bad.approval.observationDigest = nativeOnceDigest(bad.observation);
+      const [result] =
+        await db`select allrice_native_control_cloud_inventory_valid(${db.json(bad.observation)},${db.json(bad.approval)}) allowed`;
+      expect(result!.allowed, scenario).toBe(false);
+    }
+  });
   it('historical cloud absence: missing proof and rootReviewed JSON retain the original raw guard', async () => {
     await seedHistoricalCloud();
     const c = await seed();
+    const absencesBefore =
+      await db`select to_jsonb(a) row from allrice_native_control_cloud_absences a order by plan_id`;
+    const deniedRequestId = randomUUID();
     const [raw] = await db`select allrice_native_control_upgrade_idle() counts`;
     expect(raw!.counts.clouds).toBe(1);
     await expect(prepare(c)).rejects.toThrow('not_idle');
     await expect(
       prepareNativeScheduleControlUpgrade({
         db,
-        requestId: randomUUID(),
+        requestId: deniedRequestId,
         partitionId: c.partitionId,
         beforeReference: c.before,
         afterReference: c.after,
@@ -1042,9 +1270,12 @@ run('offline control artifact upgrade in an owned synthetic SQL schema', () => {
         historicalCloudAbsenceCredential: { rootReviewed: true },
       }),
     ).rejects.toThrow();
-    const [n] =
-      await db`select count(*)::int n from allrice_native_control_cloud_absences`;
-    expect(n!.n).toBe(0);
+    expect(
+      await db`select to_jsonb(a) row from allrice_native_control_cloud_absences a order by plan_id`,
+    ).toEqual(absencesBefore);
+    expect(
+      await db`select plan_id from allrice_native_control_cloud_absences where partition_id=${c.partitionId} or credential->'approval'->>'requestId'=${deniedRequestId}`,
+    ).toEqual([]);
   });
   it.each(['allrice-once-control-v1', 'allrice-recurring-control-v1'] as const)(
     'historical cloud absence: exact %s plan/apply preserves unknown and every original row',

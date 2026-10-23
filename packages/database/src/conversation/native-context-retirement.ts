@@ -402,7 +402,7 @@ export async function readNativeTestChatRetirement(input: unknown) {
  * executable coverage set. Archived alone never qualifies for this list. */
 export async function readVerifiedNativeChatRetirements(tx: Tx) {
   const rows =
-    await tx`select * from allrice_native_context_retirements order by context_kind,context_id`;
+    await tx`select * from allrice_native_context_retirements where context_kind='chat' order by context_kind,context_id`;
   const result: NativeTestChatRetirementScope[] = [];
   // Keep the caller's transaction/snapshot and the complete row fingerprints.
   // Bound each lookup instead of issuing two statements for every retirement.

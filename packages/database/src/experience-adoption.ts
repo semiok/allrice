@@ -105,7 +105,7 @@ async function consumeExperienceAdoptions(reassessment?: Reassessment) {
     : await db`select a.id from allrice_automation_runs a
     left join allrice_settings org on org.scope_type='organization' and org.scope_id=a.organization_id and org.key='employee_experience_policy'
     left join allrice_settings sys on sys.scope_type='system' and sys.scope_id is null and sys.key='employee_experience_policy'
-    where a.status='succeeded' and a.experience_receipt is not null and (a.experience_adoption_plan is null or (a.experience_adoption_plan->>'status'='awaiting_validation' and exists(
+    where a.status='succeeded' and not exists(select 1 from allrice_native_context_retirements retired where retired.context_kind='experience_consolidation' and retired.context_id=a.id) and a.experience_receipt is not null and (a.experience_adoption_plan is null or (a.experience_adoption_plan->>'status'='awaiting_validation' and exists(
         select 1 from allrice_platform_employee_test_runs ready
         join jsonb_array_elements(coalesce(a.experience_adoption_plan->'pendingDrafts','[]'::jsonb)) pending(value)
           on ready.experience_binding->'draftIndex'=pending.value where ready.purpose='experience_validation'
@@ -125,6 +125,14 @@ async function consumeExperienceAdoptions(reassessment?: Reassessment) {
           ? await tx`select id,organization_id,experience_adoption_plan from allrice_automation_runs where id=${row.id} and status='succeeded' for update`
           : await tx`select id,organization_id,experience_adoption_plan from allrice_automation_runs where id=${row.id} and (experience_adoption_plan is null or experience_adoption_plan->>'status'='awaiting_validation') for update skip locked`;
         if (!batch) return;
+        if (
+          (
+            await tx`select 1 from allrice_native_context_retirements where context_kind='experience_consolidation' and context_id=${row.id}`
+          ).length
+        ) {
+          if (reassessment) return deny();
+          return;
+        }
         if (
           reassessment &&
           !Array.isArray(batch.experience_adoption_plan?.drafts)

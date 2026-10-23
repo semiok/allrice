@@ -22,6 +22,32 @@ export const HISTORICAL_CLOUD = Object.freeze({
     sha256: '22e6ba2d85ce9ec1a917b1c032478ccc97fa300070cbbd9a4a97121cea9bd5ce',
   }),
 });
+// A single independently reviewed stopped container remains historical unknown.
+// These original evidence bytes authorize preservation, never removal or closure.
+const EXITED_PREFIX = '/Users/a123/.local/state/allrice-delivery/';
+export const HISTORICAL_EXITED_CONTAINER = Object.freeze({
+  id: 'c059c14ced1dcd6664c7131382a5ef0975c7c6ce1245932892dd921c45a070be',
+  name: '/allrice-cloud-91e4fa1c-14af-499a-a2dd-d1989ce056b9',
+  attemptId: '91e4fa1c-14af-499a-a2dd-d1989ce056b9',
+  historicalPin: Object.freeze({
+    path:
+      EXITED_PREFIX +
+      'sixth-environment-acceptance-20261007/cloud-owned-cleanup-preflight.json',
+    sha256: '96f8c32c29a9cef5324f97845e8a7861f46b778952ee9067778ae2481235a2da',
+  }),
+  inspectPin: Object.freeze({
+    path:
+      EXITED_PREFIX +
+      'met195-execution-convergence-20261023/c-drafts/retirement-entry-audit/actual-slot5-20261024/historical-exited-container-inspect-readonly.private.json',
+    sha256: 'cd2ca6577a2941c4316787987c45087137dc3ee0a6cca0b72a0a42bd87843d2b',
+  }),
+  inventoryPin: Object.freeze({
+    path:
+      EXITED_PREFIX +
+      'met195-execution-convergence-20261023/c-drafts/retirement-entry-audit/actual-slot5-20261024/cloud-inventory-refusal-readonly.private.json',
+    sha256: 'b59255b4d7a25c7ddf1babdf7b574e4ed85cc62b6d0e1d1671290ac203525b6d',
+  }),
+});
 const ARTIFACT =
   'sha256:76c014931795dc22967bcc5e1e44cb722f6575ce22fe6a2408d4eeae90de9998';
 const IDS = [
@@ -195,6 +221,323 @@ export function assertNoOwnedCloudContainers(inventory, physical) {
   }
 }
 
+// Object keys are canonical; ordinary arrays remain ordered evidence.
+function canonicalEvidenceValue(v) {
+  return Array.isArray(v)
+    ? v.map(canonicalEvidenceValue)
+    : v && typeof v === 'object'
+      ? Object.fromEntries(
+          Object.keys(v)
+            .sort()
+            .map((k) => [k, canonicalEvidenceValue(v[k])]),
+        )
+      : v;
+}
+// Docker does not promise root Mounts order. Sort the complete entries, retaining
+// every field and duplicate. Never sort Env/Cmd/Args or any nested array.
+export function canonicalExitedContainerInspect(body) {
+  need(
+    body &&
+      typeof body === 'object' &&
+      !Array.isArray(body) &&
+      Array.isArray(body.Mounts),
+    'NATIVE_RETIREMENT_EXITED_CONTAINER_INSPECT_UNCONFIRMED',
+  );
+  const mounts = body.Mounts.map((value) => ({
+    value,
+    key: JSON.stringify(canonicalEvidenceValue(value)),
+  }));
+  mounts.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  return { ...body, Mounts: mounts.map((m) => m.value) };
+}
+function isDockerInspectBody(v) {
+  return (
+    v &&
+    !Array.isArray(v) &&
+    /^[a-f0-9]{64}$/.test(v.Id) &&
+    typeof v.Name === 'string' &&
+    typeof v.Created === 'string' &&
+    v.State &&
+    v.Config &&
+    v.HostConfig &&
+    Array.isArray(v.Mounts)
+  );
+}
+// Private review callers already use this digest for root Docker inspect bodies;
+// normalize that one semantic set here so their raw capture pin stays unchanged.
+export function exitedContainerEvidenceDigest(value) {
+  const input = isDockerInspectBody(value)
+    ? canonicalExitedContainerInspect(value)
+    : value;
+  return (
+    'sha256:' +
+    createHash('sha256')
+      .update(JSON.stringify(canonicalEvidenceValue(input)))
+      .digest('hex')
+  );
+}
+function exitedReview(review, plan) {
+  const p = review.historicalCloudCarry.preservedExitedContainer;
+  const h = HISTORICAL_EXITED_CONTAINER;
+  need(
+    p?.kind === 'allrice-dev-test-chat-retirement-exact-exited-container-v1' &&
+      p.enabled === true &&
+      p.rootReviewed === true &&
+      p.reviewedBy === 'root' &&
+      p.requestId === plan.requestId &&
+      p.planDigest === plan.digest &&
+      /^sha256:[a-f0-9]{64}$/.test(plan.authorizationEvidenceDigest) &&
+      p.authorizationEvidenceDigest === plan.authorizationEvidenceDigest &&
+      p.containerId === h.id &&
+      p.containerName === h.name &&
+      p.releaseSha === review.releaseSha &&
+      p.sourceTree === review.sourceTree &&
+      p.serviceIdentityDigest ===
+        exitedContainerEvidenceDigest(
+          review.historicalCloudCarry.serviceIdentities,
+        ) &&
+      /^sha256:[a-f0-9]{64}$/.test(p.inspectDigest) &&
+      /^sha256:[a-f0-9]{64}$/.test(p.physicalIdentityDigest) &&
+      Date.parse(p.reviewedAt) <= Date.now() &&
+      Date.parse(p.expiresAt) > Date.now() &&
+      Date.parse(p.expiresAt) - Date.parse(p.reviewedAt) <= 30 * 60_000,
+    'NATIVE_RETIREMENT_EXITED_CONTAINER_EXACT_REVIEW_REQUIRED',
+  );
+  for (const key of ['historicalPin', 'inspectPin', 'inventoryPin'])
+    same(
+      p[key],
+      h[key],
+      'NATIVE_RETIREMENT_EXITED_CONTAINER_EVIDENCE_PIN_CHANGED',
+    );
+  return p;
+}
+function stableInventory(inventory) {
+  need(
+    inventory?.status === 200 &&
+      Array.isArray(inventory.body) &&
+      new Set(inventory.body.map((c) => c?.Id)).size === inventory.body.length,
+    'NATIVE_RETIREMENT_CLOUD_INVENTORY_UNCONFIRMED',
+  );
+  // Only Docker's relative human Status text and array order are presentation.
+  return inventory.body
+    .map((c) => {
+      const row = { ...c };
+      delete row.Status;
+      return {
+        ...row,
+        Names: [...c.Names].sort(),
+        Mounts: [...c.Mounts].sort((a, b) =>
+          a.Destination.localeCompare(b.Destination),
+        ),
+      };
+    })
+    .sort((a, b) => a.Id.localeCompare(b.Id));
+}
+const mountIdentity = (mounts) =>
+  mounts
+    .map((m) => ({
+      Type: m.Type,
+      Name: m.Name,
+      Source: m.Source,
+      Destination: m.Destination,
+      RW: m.RW,
+    }))
+    .sort((a, b) => a.Destination.localeCompare(b.Destination));
+function inspectedIdentity(response, physical) {
+  need(
+    response?.socketPath === physical.configuredSocket &&
+      response.status === 200 &&
+      response.body &&
+      Array.isArray(response.body.Mounts),
+    'NATIVE_RETIREMENT_EXITED_CONTAINER_INSPECT_UNCONFIRMED',
+  );
+  const c = response.body;
+  return {
+    status: response.status,
+    id: c.Id,
+    name: c.Name,
+    created: c.Created,
+    state: c.State,
+    labels: c.Config?.Labels,
+    restartPolicy: c.HostConfig?.RestartPolicy,
+    autoRemove: c.HostConfig?.AutoRemove,
+    mounts: mountIdentity(c.Mounts),
+    networkMode: c.HostConfig?.NetworkMode,
+  };
+}
+function assertExitedContainerPreserved({
+  review,
+  plan,
+  physical,
+  inventory,
+  observation,
+}) {
+  return assertHistoricalExitedContainerObservation({
+    preservation: exitedReview(review, plan),
+    physical,
+    inventory,
+    observation,
+  });
+}
+/** Physical classification only. Chat/control callers retain independent exact
+ * issuing authority; this shared checker cannot approve or write either plan. */
+export function assertHistoricalExitedContainerObservation({
+  preservation: p,
+  physical,
+  inventory,
+  observation,
+  nowMs = Date.now(),
+}) {
+  const h = HISTORICAL_EXITED_CONTAINER;
+  for (const key of ['historicalPin', 'inspectPin', 'inventoryPin'])
+    same(
+      p?.[key],
+      h[key],
+      'NATIVE_RETIREMENT_EXITED_CONTAINER_EVIDENCE_PIN_CHANGED',
+    );
+  need(
+    observation &&
+      Date.parse(observation.observedAt) <= nowMs &&
+      nowMs - Date.parse(observation.observedAt) <= 120_000,
+    'NATIVE_RETIREMENT_EXITED_CONTAINER_FRESH_INSPECT_REQUIRED',
+  );
+  same(
+    exitedContainerEvidenceDigest(physical),
+    p.physicalIdentityDigest,
+    'NATIVE_RETIREMENT_EXITED_CONTAINER_DAEMON_CHANGED',
+  );
+  const { baseline, inspectBefore, inspectAfter, inventoryAfter } = observation;
+  need(
+    baseline?.historical?.notTouchingUnknownOtherContainer === h.attemptId,
+    'NATIVE_RETIREMENT_EXITED_CONTAINER_ORIGINAL_UNKNOWN_REQUIRED',
+  );
+  same(
+    stableInventory(inventory),
+    stableInventory(baseline.inventory),
+    'NATIVE_RETIREMENT_EXITED_CONTAINER_INVENTORY_CHANGED',
+  );
+  same(
+    stableInventory(inventoryAfter),
+    stableInventory(inventory),
+    'NATIVE_RETIREMENT_EXITED_CONTAINER_INVENTORY_CHANGED',
+  );
+  same(
+    inventoryAfter.socketPath,
+    physical.configuredSocket,
+    'NATIVE_RETIREMENT_CLOUD_INVENTORY_UNCONFIRMED',
+  );
+  const before = inspectedIdentity(inspectBefore, physical),
+    after = inspectedIdentity(inspectAfter, physical);
+  const expected = {
+    ...baseline.inspect,
+    mounts: mountIdentity(baseline.inspect.mounts),
+  };
+  same(before, expected, 'NATIVE_RETIREMENT_EXITED_CONTAINER_IDENTITY_CHANGED');
+  same(after, before, 'NATIVE_RETIREMENT_EXITED_CONTAINER_IDENTITY_CHANGED');
+  same(
+    canonicalExitedContainerInspect(inspectBefore.body),
+    canonicalExitedContainerInspect(inspectAfter.body),
+    'NATIVE_RETIREMENT_EXITED_CONTAINER_INSPECT_CHANGED',
+  );
+  same(
+    exitedContainerEvidenceDigest(inspectBefore.body),
+    p.inspectDigest,
+    'NATIVE_RETIREMENT_EXITED_CONTAINER_INSPECT_CHANGED',
+  );
+  need(
+    before.id === h.id &&
+      before.name === h.name &&
+      before.created === '2026-10-04T02:24:40.086837435Z' &&
+      before.state?.Status === 'exited' &&
+      before.state.Pid === 0 &&
+      before.state.Running === false &&
+      before.state.Paused === false &&
+      before.state.Restarting === false &&
+      before.state.Dead === false &&
+      before.state.OOMKilled === false &&
+      before.state.Error === '' &&
+      before.state.FinishedAt === '2026-10-04T02:24:45.291475245Z' &&
+      before.restartPolicy?.Name === 'no' &&
+      before.restartPolicy.MaximumRetryCount === 0 &&
+      before.autoRemove === false &&
+      before.networkMode === 'none' &&
+      before.labels?.['xyz.bplabs.allrice.backend'] === 'cloud-gvisor-v1' &&
+      before.labels?.['xyz.bplabs.allrice.cloud.attempt'] === h.attemptId,
+    'NATIVE_RETIREMENT_EXITED_CONTAINER_NOT_EXACTLY_STOPPED',
+  );
+  for (const full of [inventory, inventoryAfter]) {
+    const matches = full.body.filter((c) => c.Id === h.id);
+    need(
+      matches.length === 1 &&
+        matches[0].State === 'exited' &&
+        isDeepStrictEqual(matches[0].Names, [h.name]),
+      'NATIVE_RETIREMENT_EXITED_CONTAINER_INVENTORY_CHANGED',
+    );
+    same(
+      matches[0].Labels,
+      before.labels,
+      'NATIVE_RETIREMENT_EXITED_CONTAINER_IDENTITY_CHANGED',
+    );
+    same(
+      matches[0].ImageID,
+      inspectBefore.body.Image,
+      'NATIVE_RETIREMENT_EXITED_CONTAINER_IDENTITY_CHANGED',
+    );
+    same(
+      mountIdentity(matches[0].Mounts),
+      before.mounts,
+      'NATIVE_RETIREMENT_EXITED_CONTAINER_IDENTITY_CHANGED',
+    );
+    // Only the one fully verified constant can be preserved; all other owned
+    // clouds/reservations still pass through the unchanged original guard.
+    assertNoOwnedCloudContainers(
+      { ...full, body: full.body.filter((c) => c.Id !== h.id) },
+      physical,
+    );
+  }
+  return {
+    containerId: h.id,
+    containerName: h.name,
+    state: 'exited',
+    pid: 0,
+    rawOwnedCloudContainers: 1,
+    preservedExitedContainers: 1,
+    unclassifiedOwnedCloudContainers: 0,
+    historicalOutcomeKnown: false,
+    cleanupClaimed: false,
+    containerRemoved: false,
+    inspectDigest: p.inspectDigest,
+    physicalIdentityDigest: p.physicalIdentityDigest,
+    observedAt: observation.observedAt,
+    identity: before,
+    historicalPin: { ...h.historicalPin },
+    inspectPin: { ...h.inspectPin },
+    inventoryPin: { ...h.inventoryPin },
+  };
+}
+export async function readHistoricalExitedContainerBaseline() {
+  const result = {};
+  for (const [key, pin] of [
+    ['historical', HISTORICAL_EXITED_CONTAINER.historicalPin],
+    ['inspect', HISTORICAL_EXITED_CONTAINER.inspectPin],
+    ['inventory', HISTORICAL_EXITED_CONTAINER.inventoryPin],
+  ]) {
+    need(
+      (await realpath(pin.path)) === pin.path &&
+        (await lstat(pin.path)).isFile(),
+      'NATIVE_RETIREMENT_EXITED_CONTAINER_EVIDENCE_CHANGED',
+    );
+    const bytes = await readFile(pin.path);
+    same(
+      createHash('sha256').update(bytes).digest('hex'),
+      pin.sha256,
+      'NATIVE_RETIREMENT_EXITED_CONTAINER_EVIDENCE_CHANGED',
+    );
+    result[key] = JSON.parse(bytes);
+  }
+  return result;
+}
+
 // Pure classification of observations already collected by the pinned reader.
 // A caller-supplied JSON claim never substitutes for verifyRetirementBusy().
 export function classifyRetirementCloudCarry({
@@ -210,6 +553,7 @@ export function classifyRetirementCloudCarry({
   physicalBefore,
   physicalAfter,
   inventory,
+  exitedObservation,
 }) {
   assertCarryReview(review, plan);
   assertBusy(rawBefore, 1);
@@ -249,7 +593,16 @@ export function classifyRetirementCloudCarry({
     physicalBefore,
     'NATIVE_RETIREMENT_CLOUD_PHYSICAL_IDENTITY_CHANGED',
   );
-  assertNoOwnedCloudContainers(inventory, physicalBefore);
+  let exitedPreservation;
+  if (review.historicalCloudCarry.preservedExitedContainer !== undefined)
+    exitedPreservation = assertExitedContainerPreserved({
+      review,
+      plan,
+      physical: physicalBefore,
+      inventory,
+      observation: exitedObservation,
+    });
+  else assertNoOwnedCloudContainers(inventory, physicalBefore);
   return {
     rawBusy: { ...rawBefore },
     finalRawBusy: { ...rawAfter },
@@ -257,6 +610,9 @@ export function classifyRetirementCloudCarry({
     preservedUnresolvedCloudAttempts: 1,
     unpreservedCloudAttempts: 0,
     unclassifiedOwnedCloudContainers: 0,
+    ...(exitedPreservation
+      ? { historicalExitedContainerPreservation: exitedPreservation }
+      : {}),
     historicalOutcomeKnown: false,
     cleanupClaimed: false,
     globalResourceIdleProven: false,
@@ -268,13 +624,13 @@ export function classifyRetirementCloudCarry({
   };
 }
 
-function readInventory(socketPath) {
+function readDocker(socketPath, path) {
   return new Promise((resolve, reject) => {
     const q = http.request(
       {
         socketPath,
         method: 'GET',
-        path: '/v1.45/containers/json?all=1',
+        path,
         headers: { connection: 'close' },
       },
       (r) => {
@@ -308,6 +664,32 @@ function readInventory(socketPath) {
   });
 }
 
+const readInventory = (socketPath) =>
+  readDocker(socketPath, '/v1.45/containers/json?all=1');
+export const readHistoricalExitedContainer = (socketPath) =>
+  readDocker(
+    socketPath,
+    '/v1.45/containers/' + HISTORICAL_EXITED_CONTAINER.id + '/json',
+  );
+
+export {
+  stableInventory as nativeCloudInventoryIdentity,
+  readInventory as readCompleteCloudInventory,
+};
+/** Actual fixed GETs only; no plan approval is inferred by this collector. */
+export async function collectHistoricalExitedContainerObservation(physical) {
+  const baseline = await readHistoricalExitedContainerBaseline(),
+    observedAt = new Date().toISOString();
+  const inspectBefore = await readHistoricalExitedContainer(
+    physical.configuredSocket,
+  );
+  const inventoryAfter = await readInventory(physical.configuredSocket);
+  const inspectAfter = await readHistoricalExitedContainer(
+    physical.configuredSocket,
+  );
+  return { observedAt, baseline, inspectBefore, inspectAfter, inventoryAfter };
+}
+
 export async function verifyRetirementBusy({
   review,
   plan,
@@ -332,6 +714,11 @@ export async function verifyRetirementBusy({
   assertCarryReview(review, plan);
   assertBusy(rawBefore, 1);
   assertHealths(healths, review);
+  let exitedBaseline;
+  if (review.historicalCloudCarry.preservedExitedContainer !== undefined) {
+    exitedReview(review, plan);
+    exitedBaseline = await readHistoricalExitedContainerBaseline();
+  }
   const pin = HISTORICAL_CLOUD.readerPin;
   need(
     (await realpath(pin.path)) === pin.path &&
@@ -346,6 +733,24 @@ export async function verifyRetirementBusy({
   const before = await reader.readSnapshot(sql);
   const physicalBefore = await reader.physicalAbsence();
   const inventory = await readInventory(physicalBefore.configuredSocket);
+  let exitedObservation;
+  if (exitedBaseline) {
+    const observedAt = new Date().toISOString();
+    const inspectBefore = await readHistoricalExitedContainer(
+      physicalBefore.configuredSocket,
+    );
+    const inventoryAfter = await readInventory(physicalBefore.configuredSocket);
+    const inspectAfter = await readHistoricalExitedContainer(
+      physicalBefore.configuredSocket,
+    );
+    exitedObservation = {
+      observedAt,
+      baseline: exitedBaseline,
+      inspectBefore,
+      inspectAfter,
+      inventoryAfter,
+    };
+  }
   // Same original probe brackets the extra inventory, fencing VM/daemon/socket
   // changes without introducing any recovery or container lifecycle API.
   const physicalAfter = await reader.physicalAbsence();
@@ -365,5 +770,6 @@ export async function verifyRetirementBusy({
     physicalBefore,
     physicalAfter,
     inventory,
+    exitedObservation,
   });
 }

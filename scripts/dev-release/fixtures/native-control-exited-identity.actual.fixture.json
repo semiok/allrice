@@ -1,0 +1,51 @@
+{
+  "status": 200,
+  "id": "c059c14ced1dcd6664c7131382a5ef0975c7c6ce1245932892dd921c45a070be",
+  "name": "/allrice-cloud-91e4fa1c-14af-499a-a2dd-d1989ce056b9",
+  "created": "2026-10-04T02:24:40.086837435Z",
+  "state": {
+    "Status": "exited",
+    "Running": false,
+    "Paused": false,
+    "Restarting": false,
+    "OOMKilled": false,
+    "Dead": false,
+    "Pid": 0,
+    "ExitCode": 124,
+    "Error": "",
+    "StartedAt": "2026-10-04T02:24:40.454070212Z",
+    "FinishedAt": "2026-10-04T02:24:45.291475245Z"
+  },
+  "labels": {
+    "xyz.bplabs.allrice.backend": "cloud-gvisor-v1",
+    "xyz.bplabs.allrice.cloud.attempt": "91e4fa1c-14af-499a-a2dd-d1989ce056b9",
+    "xyz.bplabs.allrice.cloud.deadline": "1791080685209",
+    "xyz.bplabs.allrice.cloud.kind": "project",
+    "xyz.bplabs.allrice.project.cache": "sha256:4f1d97b0e91b2ef09fe98d54d2776c7c0cfe77f917e2f707c09d3b2cf770ef3c",
+    "xyz.bplabs.allrice.project.evidence": "{\"version\":1,\"projectId\":\"bc27882d-9076-5102-8c8a-24c417234a21\",\"sourceDigest\":\"sha256:01ae6ae8c43e510a59003eb24f26acaabf78e2dd0021eb274cdabfa2530ff323\",\"lockChecksum\":\"sha256:15709a4944e0a189685e0bc13e56d1d0d37a88e24d8b7ecc2415e5d4b1eff1ee\",\"cacheKey\":\"sha256:4f1d97b0e91b2ef09fe98d54d2776c7c0cfe77f917e2f707c09d3b2cf770ef3c\",\"manager\":\"pnpm\",\"managerVersion\":\"10.33.3\",\"platform\":\"linux-amd64\",\"runtimeImage\":\"sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5\",\"packageCount\":0,\"archiveHits\":0,\"downloadedArchives\":0,\"downloadedBytes\":0,\"cacheVolume\":\"allrice-project-cache-4f1d97b0e91b2ef09fe98d54d2776c7c0cfe77f917e2f707c09d3b2cf770ef3c\",\"sourceDirectoryModified\":false,\"hostEnvironmentModified\":false}",
+    "xyz.bplabs.allrice.project.image": "sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5",
+    "xyz.bplabs.allrice.project.payload": "b7065ceb73920a36baa6c9f4511de915f0e1fe8a69690bfc28bf985eab242a44"
+  },
+  "restartPolicy": {
+    "Name": "no",
+    "MaximumRetryCount": 0
+  },
+  "autoRemove": false,
+  "mounts": [
+    {
+      "Type": "volume",
+      "Name": "allrice-project-work-91e4fa1c-14af-499a-a2dd-d1989ce056b9",
+      "Source": "/var/lib/docker/volumes/allrice-project-work-91e4fa1c-14af-499a-a2dd-d1989ce056b9/_data",
+      "Destination": "/tmp/work",
+      "RW": true
+    },
+    {
+      "Type": "volume",
+      "Name": "allrice-project-cache-4f1d97b0e91b2ef09fe98d54d2776c7c0cfe77f917e2f707c09d3b2cf770ef3c",
+      "Source": "/var/lib/docker/volumes/allrice-project-cache-4f1d97b0e91b2ef09fe98d54d2776c7c0cfe77f917e2f707c09d3b2cf770ef3c/_data",
+      "Destination": "/cache",
+      "RW": true
+    }
+  ],
+  "networkMode": "none"
+}
