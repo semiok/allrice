@@ -10,7 +10,7 @@
   --ed-button: var(--allrice-employee-bg, #f3f4f6);
   --ed-hover: var(--allrice-sidebar-hover, #eceef1);
 }
-.dialog {
+.dialog[role='dialog'] {
   width: min(1120px, 100%);
   max-height: min(900px, calc(100dvh - 48px));
   color: var(--ed-fg);
@@ -518,7 +518,7 @@
   }
 }
 @media (max-width: 640px) {
-  .dialog {
+  .dialog[role='dialog'] {
     max-height: calc(100dvh - 24px);
   }
   .profileDialog {
