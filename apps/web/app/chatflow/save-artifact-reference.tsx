@@ -11,7 +11,10 @@ import {
   Button,
   FileTypeIcon,
   classifyFileType,
+  Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives';
+import { WorkbenchFileIcon } from './workbench-file-icon';
+import reader from './document-reader.module.css';
 import { DshDialog } from './dsh-upstream/Dialog';
 import { workbenchJson } from '../../lib/chatflow/workbench-model';
 import css from './save-artifact-reference.module.css';
@@ -22,12 +25,26 @@ type Props = {
   versionId: string;
   fileName: string;
   version: number;
+  icon?: boolean;
 };
 export function SaveArtifactReference(props: Props) {
   const [open, setOpen] = useState(false);
   return (
     <>
-      <Button onClick={() => setOpen(true)}>保存为参考资料</Button>
+      {props.icon ? (
+        <Tooltip label="设为参考资料" side="bottom" portal>
+          <button
+            type="button"
+            className={reader.iconButton}
+            aria-label="设为参考资料"
+            onClick={() => setOpen(true)}
+          >
+            <WorkbenchFileIcon kind="reference" />
+          </button>
+        </Tooltip>
+      ) : (
+        <Button onClick={() => setOpen(true)}>保存为参考资料</Button>
+      )}
       {open && <SaveDialog {...props} onClose={() => setOpen(false)} />}
     </>
   );

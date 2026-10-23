@@ -83,7 +83,10 @@ export function WorkspaceFileTree(props: {
               displayName:
                 category === 'tool-results'
                   ? `${file.fileName.startsWith('tool-result-web-search-') ? '搜索资料' : '工具记录'} · ${file.id.slice(0, 8)}`
-                  : file.fileName,
+                  : file.fileName +
+                    (file.deliverableVersion
+                      ? ` · v${file.deliverableVersion}`
+                      : ''),
               type: 'file',
             })),
             truncated: result.files.length >= 100,

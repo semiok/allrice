@@ -11,9 +11,11 @@ import {
   type ArtifactPreview,
 } from '../../lib/chatflow/workbench-model';
 import { isToolResultFile } from '../../lib/chatflow/document-reader-model';
-import { DocumentToolbar, DocumentVersions } from './document-reader';
+import { DocumentToolbar } from './document-reader';
 import reader from './document-reader.module.css';
 import styles from './workbench.module.css';
+import { WorkbenchFileToolbarActions } from './workbench-file-toolbar-actions';
+import type { WorkbenchFileReferenceProps } from './use-workbench-file-reference';
 
 export function WorkspaceFilePreview(props: {
   objectId: string;
@@ -22,7 +24,10 @@ export function WorkspaceFilePreview(props: {
   tenantHeaders: Record<string, string>;
   active?: boolean;
   unified?: boolean;
-  onVersion: (id: string, title: string) => void;
+  fileActions?: Pick<
+    WorkbenchFileReferenceProps,
+    'sessionId' | 'readOnly' | 'onUse' | 'onTemplate'
+  >;
 }) {
   const [preview, setPreview] = useState<ArtifactPreview | null>(null);
   const [error, setError] = useState('');
@@ -69,6 +74,18 @@ export function WorkspaceFilePreview(props: {
             : props.title
         }
         downloadUrl={`${base}/download${query}`}
+        quickActions={
+          props.fileActions ? (
+            <WorkbenchFileToolbarActions
+              {...props.fileActions}
+              objectId={props.objectId}
+              fileName={props.title}
+              workspaceId={props.workspaceId}
+              headers={props.tenantHeaders}
+              active={props.active ?? true}
+            />
+          ) : undefined
+        }
         actions={[
           { id: 'refresh', label: '刷新文件' },
           ...(preview?.kind === 'html'
@@ -91,17 +108,7 @@ export function WorkspaceFilePreview(props: {
             setSource(false);
           }
         }}
-      >
-        {!toolResult ? (
-          <DocumentVersions
-            baseUrl={baseUrl}
-            objectId={props.objectId}
-            workspaceId={props.workspaceId}
-            headers={props.tenantHeaders}
-            onSelect={(v) => props.onVersion(v.objectId, v.fileName)}
-          />
-        ) : null}
-      </DocumentToolbar>
+      />
       <div
         className={`${reader.content} ${hasNativeViewport(preview) && !source ? reader.officeContent : ''}`}
       >
