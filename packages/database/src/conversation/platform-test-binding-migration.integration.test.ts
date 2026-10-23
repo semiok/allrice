@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createAssistantFixtureDatabase } from '../assistant-runtime.fixture.ts';
+import { assertRuntimeFixtureDatabase } from '../runtime-fixture-database.ts';
 import { source, scope } from './platform-test-binding.fixture.ts';
 import {
   freezePlatformTestExecutionBinding,
@@ -28,6 +29,10 @@ suite(
       prompt: 'Synthetic only',
     };
     beforeAll(async () => {
+      const value = process.env.ALLRICE_TEST_DATABASE_URL;
+      if (!value) throw Error('Dedicated ALLRICE_TEST_DATABASE_URL required');
+      const databaseUrl = new URL(value);
+      assertRuntimeFixtureDatabase(databaseUrl);
       vi.stubEnv(
         'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
         'sha256:' + 'a'.repeat(64),
@@ -42,7 +47,7 @@ suite(
       const db = f.db;
       const [where] =
         await db`select current_database() db,current_schema() schema`;
-      expect(where!.db).toBe('allrice_b2');
+      expect(where!.db).toBe(databaseUrl.pathname.slice(1));
       expect(where!.schema).toMatch(/^p25_[a-f0-9]{32}$/);
       await db`insert into allrice_users(id,email,display_name,password_hash) values(${own.ownerId},${own.ownerId + '@example.test'},'Synthetic','not-a-login')`;
       await db`insert into allrice_organizations(id,slug,name) values(${own.organizationId},${own.organizationId},'Synthetic')`;
