@@ -1,10 +1,15 @@
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
+import http from 'node:http';
+import { EventEmitter } from 'node:events';
 import {
   HISTORICAL_CLOUD as H,
   classifyRetirementCloudCarry,
   verifyRetirementBusy,
+  HISTORICAL_EXITED_CONTAINER as E,
+  exitedContainerEvidenceDigest,
+  readHistoricalExitedContainer,
 } from './retirement-preserved-cloud.mjs';
 
 const clone = (v) => globalThis.structuredClone(v);
@@ -460,5 +465,467 @@ describe('original strict-zero default path', () => {
     ).rejects.toThrow('NATIVE_RETIREMENT_CLOUD_CARRY_REVIEW_REQUIRED');
     expect(extra.sql).not.toHaveBeenCalled();
     expect(extra.readHealths).not.toHaveBeenCalled();
+  });
+});
+
+// Deliberately synthetic Docker responses. Production loads the three fixed
+// original evidence files, then performs real GET inspect twice on that daemon.
+function exitedProof() {
+  const p = proof();
+  p.plan.authorizationEvidenceDigest = digest;
+  const mounts = [
+    {
+      Type: 'volume',
+      Name: 'synthetic-retained-work',
+      Source: '/synthetic/work',
+      Destination: '/tmp/work',
+      RW: true,
+    },
+  ];
+  const labels = {
+    'xyz.bplabs.allrice.backend': 'cloud-gvisor-v1',
+    'xyz.bplabs.allrice.cloud.attempt': E.attemptId,
+  };
+  const body = {
+    Id: E.id,
+    Name: E.name,
+    Created: '2026-10-04T02:24:40.086837435Z',
+    Image: 'sha256:' + '8'.repeat(64),
+    State: {
+      Status: 'exited',
+      Running: false,
+      Paused: false,
+      Restarting: false,
+      OOMKilled: false,
+      Dead: false,
+      Pid: 0,
+      ExitCode: 124,
+      Error: '',
+      StartedAt: '2026-10-04T02:24:40.454070212Z',
+      FinishedAt: '2026-10-04T02:24:45.291475245Z',
+    },
+    Config: { Labels: clone(labels), Env: ['SYNTHETIC=1'] },
+    HostConfig: {
+      RestartPolicy: { Name: 'no', MaximumRetryCount: 0 },
+      AutoRemove: false,
+      NetworkMode: 'none',
+    },
+    Mounts: clone(mounts),
+  };
+  const c = {
+    Id: E.id,
+    Names: [E.name],
+    ImageID: body.Image,
+    Image: body.Image,
+    Labels: clone(labels),
+    Mounts: clone(mounts),
+    State: 'exited',
+    Status: 'Exited (124) 2 weeks ago',
+  };
+  const unrelated = {
+    Id: '9'.repeat(64),
+    Names: ['/synthetic-existing-office'],
+    Labels: {},
+    Mounts: [],
+    State: 'running',
+    Status: 'Up 3 days',
+  };
+  p.inventory.body = [c, unrelated];
+  const inspect = {
+    status: 200,
+    id: body.Id,
+    name: body.Name,
+    created: body.Created,
+    state: clone(body.State),
+    labels: clone(labels),
+    restartPolicy: clone(body.HostConfig.RestartPolicy),
+    autoRemove: false,
+    mounts: clone(mounts),
+    networkMode: 'none',
+  };
+  p.exitedObservation = {
+    observedAt: new Date().toISOString(),
+    baseline: {
+      historical: { notTouchingUnknownOtherContainer: E.attemptId },
+      inspect,
+      inventory: clone(p.inventory),
+    },
+    inventoryAfter: clone(p.inventory),
+    inspectBefore: {
+      socketPath: p.physicalBefore.configuredSocket,
+      status: 200,
+      body: clone(body),
+    },
+    inspectAfter: {
+      socketPath: p.physicalBefore.configuredSocket,
+      status: 200,
+      body: clone(body),
+    },
+  };
+  p.review.historicalCloudCarry.preservedExitedContainer = {
+    kind: 'allrice-dev-test-chat-retirement-exact-exited-container-v1',
+    enabled: true,
+    rootReviewed: true,
+    reviewedBy: 'root',
+    requestId: p.plan.requestId,
+    planDigest: p.plan.digest,
+    authorizationEvidenceDigest: digest,
+    containerId: E.id,
+    containerName: E.name,
+    releaseSha: p.review.releaseSha,
+    sourceTree: p.review.sourceTree,
+    serviceIdentityDigest: exitedContainerEvidenceDigest(
+      p.review.historicalCloudCarry.serviceIdentities,
+    ),
+    physicalIdentityDigest: exitedContainerEvidenceDigest(p.physicalBefore),
+    inspectDigest: exitedContainerEvidenceDigest(body),
+    reviewedAt: new Date(Date.now() - 1000).toISOString(),
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    historicalPin: clone(E.historicalPin),
+    inspectPin: clone(E.inspectPin),
+    inventoryPin: clone(E.inventoryPin),
+  };
+  return p;
+}
+
+describe('one exact historical exited container is preserved, never cleaned or closed', () => {
+  it('reproduces the live refusal without the new explicit preservation branch', () => {
+    const p = exitedProof();
+    delete p.review.historicalCloudCarry.preservedExitedContainer;
+    expect(() => classifyRetirementCloudCarry(p)).toThrow(
+      'NATIVE_RETIREMENT_CLOUD_CONTAINER_OR_RESERVATION_PRESENT',
+    );
+  });
+  it('preserves the fixed stopped container and all raw unknown facts; existing unrelated office remains outside cloud ownership', () => {
+    const p = exitedProof(),
+      original = clone(p);
+    const result = classifyRetirementCloudCarry(p);
+    expect(result).toMatchObject({
+      rawUncleanedCloudAttempts: 1,
+      preservedUnresolvedCloudAttempts: 1,
+      unpreservedCloudAttempts: 0,
+      historicalOutcomeKnown: false,
+      cleanupClaimed: false,
+      globalResourceIdleProven: false,
+      databaseWritten: false,
+      historicalExitedContainerPreservation: {
+        containerId: E.id,
+        rawOwnedCloudContainers: 1,
+        preservedExitedContainers: 1,
+        unclassifiedOwnedCloudContainers: 0,
+        pid: 0,
+        historicalOutcomeKnown: false,
+        cleanupClaimed: false,
+        containerRemoved: false,
+      },
+    });
+    expect(p).toEqual(original);
+  });
+  it.each([
+    (p) =>
+      (p.review.historicalCloudCarry.preservedExitedContainer.enabled = false),
+    (p) =>
+      (p.review.historicalCloudCarry.preservedExitedContainer.rootReviewed = false),
+    (p) =>
+      (p.review.historicalCloudCarry.preservedExitedContainer.requestId =
+        'other-request'),
+    (p) =>
+      (p.review.historicalCloudCarry.preservedExitedContainer.planDigest =
+        'sha256:' + 'f'.repeat(64)),
+    (p) =>
+      (p.review.historicalCloudCarry.preservedExitedContainer.authorizationEvidenceDigest =
+        'sha256:' + 'f'.repeat(64)),
+    (p) =>
+      (p.review.historicalCloudCarry.preservedExitedContainer.containerId =
+        'f'.repeat(64)),
+    (p) =>
+      (p.review.historicalCloudCarry.preservedExitedContainer.containerName =
+        '/renamed'),
+    (p) =>
+      (p.review.historicalCloudCarry.preservedExitedContainer.releaseSha =
+        'f'.repeat(40)),
+    (p) =>
+      (p.review.historicalCloudCarry.preservedExitedContainer.sourceTree =
+        'f'.repeat(40)),
+    (p) =>
+      (p.review.historicalCloudCarry.preservedExitedContainer.serviceIdentityDigest =
+        'sha256:' + 'f'.repeat(64)),
+    (p) =>
+      (p.review.historicalCloudCarry.preservedExitedContainer.reviewedAt =
+        new Date(Date.now() + 60_000).toISOString()),
+    (p) =>
+      (p.review.historicalCloudCarry.preservedExitedContainer.expiresAt =
+        new Date(Date.now() - 1000).toISOString()),
+    (p) =>
+      (p.review.historicalCloudCarry.preservedExitedContainer.expiresAt =
+        new Date(Date.now() + 31 * 60_000).toISOString()),
+  ])(
+    'rejects an inexact, disabled or stale authority before accepting any JSON observation (%#)',
+    (change) => {
+      const p = exitedProof();
+      change(p);
+      expect(() => classifyRetirementCloudCarry(p)).toThrow(
+        'NATIVE_RETIREMENT_EXITED_CONTAINER_EXACT_REVIEW_REQUIRED',
+      );
+    },
+  );
+  it.each(['historicalPin', 'inspectPin', 'inventoryPin'])(
+    'requires exact original %s path and bytes',
+    (key) => {
+      const p = exitedProof();
+      p.review.historicalCloudCarry.preservedExitedContainer[key].sha256 =
+        'f'.repeat(64);
+      expect(() => classifyRetirementCloudCarry(p)).toThrow(
+        'NATIVE_RETIREMENT_EXITED_CONTAINER_EVIDENCE_PIN_CHANGED',
+      );
+    },
+  );
+  it('refuses a disabled preservation branch before loading files, SQL or Docker', async () => {
+    const p = exitedProof();
+    p.review.historicalCloudCarry.preservedExitedContainer.enabled = false;
+    const sql = vi.fn(() => {
+        throw Error('NO_SQL');
+      }),
+      readHealths = vi.fn(() => {
+        throw Error('NO_HEALTH');
+      });
+    await expect(
+      verifyRetirementBusy({
+        review: p.review,
+        plan: p.plan,
+        sql,
+        readBusy: async () => p.rawBefore,
+        healths: p.healthBefore,
+        readHealths,
+      }),
+    ).rejects.toThrow(
+      'NATIVE_RETIREMENT_EXITED_CONTAINER_EXACT_REVIEW_REQUIRED',
+    );
+    expect(sql).not.toHaveBeenCalled();
+    expect(readHealths).not.toHaveBeenCalled();
+  });
+  it.each([
+    (p) => delete p.exitedObservation,
+    (p) =>
+      (p.exitedObservation.observedAt = new Date(
+        Date.now() - 121_000,
+      ).toISOString()),
+    (p) =>
+      (p.exitedObservation.observedAt = new Date(
+        Date.now() + 1000,
+      ).toISOString()),
+  ])('does not accept absent/stale/future physical evidence (%#)', (change) => {
+    const p = exitedProof();
+    change(p);
+    expect(() => classifyRetirementCloudCarry(p)).toThrow(
+      'NATIVE_RETIREMENT_EXITED_CONTAINER_FRESH_INSPECT_REQUIRED',
+    );
+  });
+  it.each(['inspectBefore', 'inspectAfter'])(
+    'requires an actual successful same-socket %s',
+    (key) => {
+      for (const change of [
+        (o) => (o.status = 404),
+        (o) => (o.socketPath = '/other.sock'),
+      ]) {
+        const p = exitedProof();
+        change(p.exitedObservation[key]);
+        expect(() => classifyRetirementCloudCarry(p)).toThrow(
+          'NATIVE_RETIREMENT_EXITED_CONTAINER_INSPECT_UNCONFIRMED',
+        );
+      }
+    },
+  );
+  it('checks full inspect fields beyond the old identity projection and both observations', () => {
+    for (const key of ['inspectBefore', 'inspectAfter', 'both']) {
+      const p = exitedProof();
+      for (const phase of key === 'both'
+        ? ['inspectBefore', 'inspectAfter']
+        : [key])
+        p.exitedObservation[phase].body.HostConfig.Memory = 1024;
+      expect(() => classifyRetirementCloudCarry(p)).toThrow(
+        'NATIVE_RETIREMENT_EXITED_CONTAINER_INSPECT_CHANGED',
+      );
+    }
+  });
+  it.each([
+    (b) => (b.State.Pid = 1),
+    (b) => (b.State.Running = true),
+    (b) => (b.State.Paused = true),
+    (b) => (b.State.Restarting = true),
+    (b) => (b.HostConfig.RestartPolicy.Name = 'always'),
+    (b) => (b.HostConfig.AutoRemove = true),
+    (b) =>
+      (b.Config.Labels['xyz.bplabs.allrice.cloud.slot-owner'] = 'new-owner'),
+    (b) => (b.Mounts[0].Source = '/changed'),
+    (b) => (b.Name = '/renamed'),
+    (b) => (b.Created = '2026-10-24T00:00:00Z'),
+    (b) => (b.State.FinishedAt = '2026-10-24T00:00:00Z'),
+  ])(
+    'rejects changed state/labels/mounts/history even when rootReviewed stays true (%#)',
+    (change) => {
+      const p = exitedProof();
+      change(p.exitedObservation.inspectAfter.body);
+      expect(() => classifyRetirementCloudCarry(p)).toThrow(
+        /EXITED_CONTAINER_/,
+      );
+    },
+  );
+  it('cannot approve an active process merely by rewriting every submitted projection/digest', () => {
+    const p = exitedProof();
+    p.exitedObservation.inspectBefore.body.State.Pid = 1;
+    p.exitedObservation.inspectAfter.body.State.Pid = 1;
+    p.exitedObservation.baseline.inspect.state.Pid = 1;
+    p.review.historicalCloudCarry.preservedExitedContainer.inspectDigest =
+      exitedContainerEvidenceDigest(p.exitedObservation.inspectBefore.body);
+    expect(() => classifyRetirementCloudCarry(p)).toThrow(
+      'NATIVE_RETIREMENT_EXITED_CONTAINER_NOT_EXACTLY_STOPPED',
+    );
+  });
+  it.each(['running', 'paused', 'created', 'restarting', 'exited'])(
+    'still refuses any new %s cloud/reservation, before or after',
+    (State) => {
+      for (const phase of ['inventory', 'inventoryAfter']) {
+        const p = exitedProof(),
+          target =
+            phase === 'inventory'
+              ? p.inventory
+              : p.exitedObservation.inventoryAfter;
+        target.body.push({
+          Id: 'a'.repeat(64),
+          Names: ['/renamed-reservation'],
+          Labels: { 'xyz.bplabs.allrice.cloud.slot-owner': 'other' },
+          State,
+          Mounts: [],
+        });
+        expect(() => classifyRetirementCloudCarry(p)).toThrow(
+          /INVENTORY_CHANGED/,
+        );
+      }
+    },
+  );
+  it('the unchanged owned-cloud guard still catches another cloud even with a matching submitted inventory', () => {
+    const p = exitedProof(),
+      c = {
+        Id: 'a'.repeat(64),
+        Names: ['/allrice-cloud-new'],
+        Labels: {},
+        Mounts: [],
+        State: 'exited',
+      };
+    for (const v of [
+      p.inventory,
+      p.exitedObservation.inventoryAfter,
+      p.exitedObservation.baseline.inventory,
+    ])
+      v.body.push(clone(c));
+    expect(() => classifyRetirementCloudCarry(p)).toThrow(
+      'NATIVE_RETIREMENT_CLOUD_CONTAINER_OR_RESERVATION_PRESENT',
+    );
+  });
+  it('rejects any new/unseen ordinary container too, without adding an ignore list', () => {
+    const p = exitedProof();
+    p.exitedObservation.inventoryAfter.body.push({
+      Id: 'a'.repeat(64),
+      Names: ['/new-user-container'],
+      Labels: {},
+      Mounts: [],
+      State: 'running',
+    });
+    expect(() => classifyRetirementCloudCarry(p)).toThrow(/INVENTORY_CHANGED/);
+  });
+  it('refuses removal/rename/duplicate IDs and a changed original unknown evidence', () => {
+    for (const change of [
+      (p) => p.exitedObservation.inventoryAfter.body.shift(),
+      (p) => (p.inventory.body[0].Names = ['/renamed']),
+      (p) =>
+        p.exitedObservation.inventoryAfter.body.push(
+          clone(p.inventory.body[0]),
+        ),
+      (p) =>
+        (p.exitedObservation.baseline.historical.notTouchingUnknownOtherContainer =
+          'other'),
+    ]) {
+      const p = exitedProof();
+      change(p);
+      expect(() => classifyRetirementCloudCarry(p)).toThrow(
+        /INVENTORY_|ORIGINAL_UNKNOWN/,
+      );
+    }
+  });
+  it('does not weaken raw busy, current owner/lifecycle, SQL unknown or daemon guards', () => {
+    for (const change of [
+      (p) => (p.rawAfter.jobs = 1),
+      (p) => (p.after.operation.status = 'running'),
+      (p) => (p.healthAfter[1].identity.bootId = 'other'),
+      (p) => (p.healthAfter[1].producerLifecycle.activeRoots = 1),
+      (p) => (p.physicalAfter.dockerId = 'other'),
+    ]) {
+      const p = exitedProof();
+      change(p);
+      expect(() => classifyRetirementCloudCarry(p)).toThrow();
+    }
+    const p = exitedProof();
+    p.review.historicalCloudCarry.preservedExitedContainer.physicalIdentityDigest =
+      'sha256:' + 'f'.repeat(64);
+    expect(() => classifyRetirementCloudCarry(p)).toThrow(
+      'NATIVE_RETIREMENT_EXITED_CONTAINER_DAEMON_CHANGED',
+    );
+  });
+  it('accepts Docker display age/array order changes while preserving every measured identity byte', () => {
+    const p = exitedProof();
+    p.exitedObservation.inventoryAfter.body[0].Status =
+      'Exited (124) 3 weeks ago';
+    p.exitedObservation.inventoryAfter.body.reverse();
+    expect(
+      classifyRetirementCloudCarry(p).historicalExitedContainerPreservation
+        .preservedExitedContainers,
+    ).toBe(1);
+  });
+});
+
+describe('fixed read-only Docker inspect transport (mock HTTP, no socket/server/VM)', () => {
+  it('uses only GET for the full fixed ID and reads independent responses', async () => {
+    const calls = [];
+    let n = 0;
+    const spy = vi
+      .spyOn(http, 'request')
+      .mockImplementation((options, respond) => {
+        calls.push(options);
+        const q = new EventEmitter();
+        q.setTimeout = () => q;
+        q.destroy = (e) => q.emit('error', e);
+        q.end = () =>
+          globalThis.queueMicrotask(() => {
+            const r = new EventEmitter();
+            r.statusCode = 200;
+            respond(r);
+            r.emit(
+              'data',
+              Buffer.from(JSON.stringify({ Id: E.id, sequence: ++n })),
+            );
+            r.emit('end');
+          });
+        return q;
+      });
+    try {
+      const before = await readHistoricalExitedContainer(
+          '/synthetic/never-open.sock',
+        ),
+        after = await readHistoricalExitedContainer(
+          '/synthetic/never-open.sock',
+        );
+      expect(calls).toHaveLength(2);
+      for (const c of calls)
+        expect(c).toMatchObject({
+          method: 'GET',
+          socketPath: '/synthetic/never-open.sock',
+          path: '/v1.45/containers/' + E.id + '/json',
+        });
+      expect(before.body.sequence).toBe(1);
+      expect(after.body.sequence).toBe(2);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
