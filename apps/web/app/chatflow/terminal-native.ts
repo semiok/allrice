@@ -61,6 +61,31 @@ export type TerminalRuntime = {
   tabs: Map<string, string>;
   dispose: () => Promise<void>;
 };
+
+/** Keep the pinned DSH view and all of its process/input semantics. Its two
+ * explicit recovery controls also need to replace an ended AllRice socket;
+ * model.connect() alone cannot revive an unavailable carrier. */
+export function terminalRecoveryView(
+  runtime: TerminalRuntime,
+  model: TerminalView,
+): TerminalView {
+  const connect = () => {
+    runtime.carrier.reauthorizeConnection();
+    model.connect();
+  };
+  const refresh = () => {
+    runtime.carrier.reauthorizeConnection();
+    return model.refresh();
+  };
+  return new Proxy(model, {
+    get(target, key) {
+      if (key === 'connect') return connect;
+      if (key === 'refresh') return refresh;
+      const value: unknown = Reflect.get(target, key, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
 const runtimes = new Map<string, Promise<TerminalRuntime>>();
 let currentOwner = '';
 let ownerGeneration = 0;
@@ -68,6 +93,42 @@ type OwnerIdentity = Pick<
   TerminalIdentity,
   'organizationId' | 'workspaceId' | 'ownerId'
 >;
+
+/** A fresh, in-scope device read may recheck already-open terminals. This only
+ * authenticates the transport; DSH lists/attaches the old process and reports
+ * missingTerminal when Bridge shutdown destroyed it. It never creates a shell. */
+export function reauthorizeNativeTerminalConnections(
+  owner: OwnerIdentity,
+  available: readonly TerminalPin[],
+) {
+  const expected = JSON.stringify([
+    owner.organizationId,
+    owner.workspaceId,
+    owner.ownerId,
+  ]);
+  if (currentOwner !== expected) return;
+  const generation = ownerGeneration;
+  for (const [key, pending] of runtimes) {
+    void pending
+      .then((runtime) => {
+        if (
+          currentOwner !== expected ||
+          generation !== ownerGeneration ||
+          runtime.ownerGeneration !== generation ||
+          runtimes.get(key) !== pending ||
+          (!runtime.tabs.size && !cleanupGroups.get(key)?.failures.length) ||
+          !available.some(
+            (pin) =>
+              pin.deviceId === runtime.pin.deviceId &&
+              pin.grantId === runtime.pin.grantId,
+          )
+        )
+          return;
+        runtime.carrier.reauthorizeConnection();
+      })
+      .catch(() => undefined);
+  }
+}
 type CleanupFailure = {
   key: string;
   id: string;
@@ -295,7 +356,10 @@ export function nativeTerminalRuntime(
             ...failure,
             key: key + '/' + failure.id,
             owner: identity,
-            retry: () => models.retryClose(failure.id),
+            retry: () => {
+              carrier.reauthorizeConnection();
+              models.retryClose(failure.id);
+            },
           })),
         });
         publishCleanup();

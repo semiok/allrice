@@ -2131,6 +2131,36 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .getByRole('searchbox', { name: '查找文件', exact: true })
         .waitFor();
       expect(await f.panel.getByRole('tab', { name: /开始/ }).count()).toBe(0);
+      expect(
+        await f.panel
+          .locator(
+            '[data-dockkit-add-tab], [data-dockkit-split-button], [data-dockkit-strip-chrome] button',
+          )
+          .evaluateAll((buttons) =>
+            buttons.map((button) => {
+              const glyph = button.querySelector('svg')!;
+              return {
+                target: [
+                  button.getBoundingClientRect().width,
+                  button.getBoundingClientRect().height,
+                ],
+                glyph: [
+                  glyph.getBoundingClientRect().width,
+                  glyph.getBoundingClientRect().height,
+                ],
+                strokes: [...glyph.children].map(
+                  (path) => getComputedStyle(path).strokeWidth,
+                ),
+              };
+            }),
+          ),
+      ).toEqual(
+        Array.from({ length: 4 }, () => ({
+          target: [32, 32],
+          glyph: [20, 20],
+          strokes: expect.arrayContaining(['1.75px']),
+        })),
+      );
       await f.panel
         .getByRole('button', { name: '新建标签页', exact: true })
         .click();
@@ -5255,6 +5285,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const capabilities = computer.locator('[data-bridge-capabilities]');
         expect(await capabilities.getAttribute('open')).toBeNull();
         expect(
+          await capabilities.locator(':scope > summary').innerText(),
+        ).toContain('7 项可用 · 1 项未就绪');
+        expect(
           await capabilities
             .locator('strong')
             .filter({ hasText: /^文件读取$/ })
@@ -5265,6 +5298,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .locator('strong')
           .filter({ hasText: /^文件读取$/ })
           .waitFor();
+        expect(
+          await capabilities.getByText('本机应用', { exact: true }).count(),
+        ).toBe(0);
+        expect(await capabilities.locator('strong').count()).toBe(8);
+        expect(f.state.bridgeDevices[0]!.readiness).toHaveLength(9);
         await capabilities.locator(':scope > summary').click();
         await assertFits(computer);
         if (process.env.ALLRICE_DIALOG_SCREENSHOT)
@@ -5633,6 +5671,18 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const initialClose = await loading
           .getByRole('button', { name: '关闭', exact: true })
           .boundingBox();
+        const headingStyle = await loading
+          .getByRole('heading', { name: 'AI 员工详情', exact: true })
+          .evaluate((heading) => {
+            const style = getComputedStyle(heading);
+            return {
+              font: style.fontFamily,
+              size: style.fontSize,
+              height: style.lineHeight,
+              weight: style.fontWeight,
+              color: style.color,
+            };
+          });
         releaseRead();
         const details = f.page.getByRole('dialog', {
           name: 'Rice员工详情',
@@ -5676,6 +5726,25 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           });
         await close.click();
         expect(await details.count()).toBe(0);
+        await f.page.getByRole('button', { name: '设置', exact: true }).click();
+        const settings = f.page.getByRole('dialog', {
+          name: '设置',
+          exact: true,
+        });
+        expect(
+          await settings
+            .locator('nav > div:first-child')
+            .evaluate((heading) => {
+              const style = getComputedStyle(heading);
+              return {
+                font: style.fontFamily,
+                size: style.fontSize,
+                height: style.lineHeight,
+                weight: style.fontWeight,
+                color: style.color,
+              };
+            }),
+        ).toEqual(headingStyle);
         expect(f.writes).toEqual([]);
         expect(f.state.messageInputs).toEqual([]);
         expect(f.errors).toEqual([]);
@@ -9946,9 +10015,27 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               ],
             })),
         ).toEqual({ target: [32, 32], glyph: [20, 20] });
+      const download = toolbar.getByRole('link', { name: '下载', exact: true });
+      expect(await download.count()).toBe(1);
+      expect(await download.getAttribute('title')).toBe('下载');
+      expect(await download.textContent()).toBe('');
+      expect(await download.getAttribute('download')).toBe('');
+      await download.focus();
       expect(
-        await toolbar.getByRole('link', { name: '下载', exact: true }).count(),
-      ).toBe(1);
+        await download.evaluate((link) => document.activeElement === link),
+      ).toBe(true);
+      expect(
+        await download.evaluate((link) => ({
+          target: [
+            link.getBoundingClientRect().width,
+            link.getBoundingClientRect().height,
+          ],
+          glyph: [
+            link.querySelector('svg')!.getBoundingClientRect().width,
+            link.querySelector('svg')!.getBoundingClientRect().height,
+          ],
+        })),
+      ).toEqual({ target: [32, 32], glyph: [20, 20] });
       const reads = f.state.workbenchPreviewReads;
       f.state.filePreview = {
         kind: 'text',

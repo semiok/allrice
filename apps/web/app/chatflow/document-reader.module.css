@@ -62,15 +62,20 @@
   white-space: nowrap;
   cursor: pointer;
 }
+.toolbar .download,
 .toolbar .iconButton,
 .controls [data-office-font-warning] button {
   width: 32px;
   height: 32px;
   padding: 6px;
 }
-.controls [data-office-font-warning] svg {
+.controls svg {
   width: 20px;
   height: 20px;
+}
+.controls svg > * {
+  stroke-width: 1.75;
+  vector-effect: non-scaling-stroke;
 }
 .toolbar .download:hover,
 .toolbar button:hover:not(:disabled) {

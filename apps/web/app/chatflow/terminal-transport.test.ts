@@ -101,8 +101,8 @@ async function fixture(mode: TerminalStreamMode = 'push') {
   vi.stubGlobal('location', { href: origin + '/', protocol: 'http:' });
   vi.stubGlobal('WebSocket', WebSocket);
   const carrier = new TerminalCarrier(
-    target,
-    target,
+    { ...target },
+    { deviceId: target.deviceId, grantId: target.grantId },
     (message) => new CarrierError(message),
   );
   cleanups.push(async () => {
@@ -452,4 +452,64 @@ it('manual retry replaces the backoff once and disposal cannot restart it', asyn
   await vi.advanceTimersByTimeAsync(30000);
   expect(f.clients).toHaveLength(2);
   expect(f.carrier.state.getSnapshot().phase).toBe('ended');
+});
+
+it('explicit reauthorization replaces an ended socket without replaying old input', async () => {
+  const f = await fixture();
+  const old = await f.open();
+  f.native(old.requestId, snapshot());
+  await old.first;
+  old.stream.send({ type: 'write', sequence: 1, data: 'old-input' });
+  await until(() => f.sent.some((frame) => frame.type === 'terminal.input'));
+  f.clients[0]!.close(4403);
+  await until(() => f.carrier.state.getSnapshot().phase === 'ended');
+  const sentBefore = f.sent.length;
+
+  f.carrier.reauthorizeConnection();
+  f.carrier.reauthorizeConnection();
+  await until(() => f.carrier.state.getSnapshot().phase === 'connected');
+  expect(f.clients).toHaveLength(2);
+  expect(f.carrier.state.getSnapshot().target).toEqual(f.target);
+  expect(f.sent.slice(sentBefore)).toEqual([]);
+  expect(() =>
+    old.stream.send({ type: 'write', sequence: 2, data: 'stale' }),
+  ).toThrow();
+  expect(f.sent.filter((frame) => frame.action === 'create')).toEqual([]);
+  const fresh = await f.open();
+  f.native(fresh.requestId, snapshot());
+  await fresh.first;
+  fresh.stream.send({ type: 'write', sequence: 1, data: 'fresh-input' });
+  await until(
+    () =>
+      f.sent.filter((frame) => frame.type === 'terminal.input').length === 2,
+  );
+  expect(
+    f.sent
+      .filter((frame) => frame.type === 'terminal.input')
+      .map((frame) => frame.input?.data),
+  ).toEqual(['old-input', 'fresh-input']);
+});
+
+it('fresh authorization must return the same pinned target before a recovered connection can carry RPC', async () => {
+  const f = await fixture();
+  f.clients[0]!.close(4403);
+  await until(() => f.carrier.state.getSnapshot().phase === 'ended');
+  // The real ready gate validates each identity again, even on explicit retry.
+  f.target.grantId = randomUUID();
+  f.carrier.reauthorizeConnection();
+  await until(() => f.clients.length === 2);
+  await until(() => f.carrier.state.getSnapshot().phase === 'ended');
+  expect(f.carrier.state.getSnapshot().error).toBe('终端连接目标不匹配');
+  expect(f.carrier.generation.getSnapshot()).toBeUndefined();
+  expect(f.sent).toEqual([]);
+});
+
+it('explicit reauthorization cannot revive a disposed terminal owner', async () => {
+  const f = await fixture();
+  f.carrier.dispose();
+  f.carrier.reauthorizeConnection();
+  await delay(30);
+  expect(f.clients).toHaveLength(1);
+  expect(f.carrier.state.getSnapshot().phase).toBe('ended');
+  expect(f.carrier.generation.getSnapshot()).toBeUndefined();
 });

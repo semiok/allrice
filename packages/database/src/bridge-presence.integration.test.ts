@@ -353,7 +353,6 @@ suite(
       'inactive membership',
       'archived organization',
       'archived workspace',
-      'paused device',
     ] as const)(
       'human terminal authority revokes a previously valid target after %s',
       async (change) => {
@@ -380,8 +379,6 @@ suite(
           await database`update allrice_organizations set archived_at=now() where id=${f.org}`;
         else if (change === 'archived workspace')
           await database`update allrice_workspaces set archived_at=now() where id=${f.workspace}`;
-        else if (change === 'paused device')
-          await f.heartbeat({ paused: true });
         await expect(
           resolveWorkbenchTerminalTarget(f.context, f.input),
         ).rejects.toMatchObject({ code: 'not_found' });
@@ -391,6 +388,49 @@ suite(
           code:
             change === 'revoked pairing' ? 'device_unauthorized' : 'not_found',
         });
+      },
+    );
+    it('human terminal authority treats pause as temporary unavailability and admits the same target after resume', async () => {
+      const f = await terminalFixture();
+      await f.heartbeat({ humanTerminalVersion: 2 });
+      const current = await resolveWorkbenchTerminalTarget(f.context, f.input);
+      await f.heartbeat({ paused: true, humanTerminalVersion: 2 });
+      for (const resolve of [
+        () => resolveWorkbenchTerminalTarget(f.context, f.input),
+        () => revalidateBridgeTerminalTarget(f.token, current.target),
+      ]) {
+        await expect(resolve()).rejects.toBeInstanceOf(BridgeDataError);
+        await expect(resolve()).rejects.toMatchObject({
+          code: 'device_offline',
+        });
+      }
+      await f.heartbeat({ humanTerminalVersion: 2 });
+      await expect(
+        resolveWorkbenchTerminalTarget(f.context, f.input),
+      ).resolves.toEqual(current);
+      await expect(
+        revalidateBridgeTerminalTarget(f.token, current.target),
+      ).resolves.toEqual(current);
+    });
+    it.each(['revoked grant', 'logged out'] as const)(
+      'human terminal pause does not weaken denial after %s',
+      async (change) => {
+        const f = await terminalFixture();
+        const { target } = await resolveWorkbenchTerminalTarget(
+          f.context,
+          f.input,
+        );
+        await f.heartbeat({ paused: true });
+        if (change === 'revoked grant')
+          await database`update allrice_bridge_folder_grants set revoked_at=now() where id=${f.grant}`;
+        else
+          await database`update allrice_sessions set revoked_at=now() where id=${f.context.sessionId!}`;
+        await expect(
+          resolveWorkbenchTerminalTarget(f.context, f.input),
+        ).rejects.toMatchObject({ code: 'not_found' });
+        await expect(
+          revalidateBridgeTerminalTarget(f.token, target),
+        ).rejects.toMatchObject({ code: 'not_found' });
       },
     );
     it.each(['expired', 'missing', 'future'] as const)(

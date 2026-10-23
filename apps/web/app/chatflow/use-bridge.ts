@@ -6,6 +6,7 @@ import { BridgeRefreshCoordinator } from './bridge-refresh';
 import { bridgeWorkspaceIssue } from './bridge-view';
 import type { BridgeDevice, Workspace } from './chatflow-types';
 import { readJson } from './chatflow-utils';
+import { reauthorizeNativeTerminalConnections } from './terminal-native';
 
 type UseBridgeOptions = {
   setError: (message: string) => void;
@@ -40,6 +41,8 @@ export function useBridge({
   } | null>(null);
   const refresh = useRef(new BridgeRefreshCoordinator());
   const workspaceId = workspace?.workspaceId;
+  const organizationId = workspace?.organizationId;
+  const viewerId = workspace?.viewerId;
   const scope = JSON.stringify([
     workspaceId ?? null,
     Object.entries(tenantHeaders).sort(([left], [right]) =>
@@ -89,6 +92,23 @@ export function useBridge({
           refreshedAt: new Date().toISOString(),
           error: null,
         });
+        if (!quiet && organizationId && viewerId) {
+          reauthorizeNativeTerminalConnections(
+            {
+              organizationId,
+              workspaceId,
+              ownerId: viewerId,
+            },
+            result.devices.flatMap((device) =>
+              device.status === 'online' && !bridgeWorkspaceIssue(device)
+                ? device.folderGrants.map((grant) => ({
+                    deviceId: device.id,
+                    grantId: grant.id,
+                  }))
+                : [],
+            ),
+          );
+        }
         if (
           result.devices.some(
             (device) =>
@@ -121,7 +141,7 @@ export function useBridge({
         }
       }
     },
-    [scope, tenantHeaders, workspaceId],
+    [scope, tenantHeaders, workspaceId, organizationId, viewerId],
   );
 
   const disconnectBridgeWorkspace = useCallback(
