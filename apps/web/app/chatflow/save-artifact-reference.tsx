@@ -39,7 +39,10 @@ export function SaveArtifactReference(props: Props) {
             aria-label="设为参考资料"
             onClick={() => setOpen(true)}
           >
-            <WorkbenchFileIcon kind="reference" />
+            <WorkbenchFileIcon
+              kind="reference"
+              className={reader.opticalIcon}
+            />
           </button>
         </Tooltip>
       ) : (
