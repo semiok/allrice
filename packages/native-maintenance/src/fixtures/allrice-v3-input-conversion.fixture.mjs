@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { releasedV3SessionFormatCodec } from '@deepseek-ai/dsh-session-format-v3-to-v4';
 

@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -13,7 +14,7 @@ import {
   SessionId,
   SessionLogOffset,
 } from '@deepseek-ai/dsh-session';
-import { validateAllriceSessionJournal } from '../../apps/worker/dsh/allrice-session-compatibility.mjs';
+import { validateAllriceSessionJournal } from '../../../apps/worker/dsh/allrice-session-compatibility.mjs';
 
 // This is a pure, opt-in data preparation API, not a persistence migration or
 // an approval grant. Its caller must separately authorize exact scope, check
