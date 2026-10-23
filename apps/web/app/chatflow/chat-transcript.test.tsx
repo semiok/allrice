@@ -182,6 +182,75 @@ describe('historical transcript capability gating', () => {
 
   afterEach(() => vi.clearAllMocks());
 
+  it.each([false, true])(
+    'retains tool-only history steps before the saved answer with streaming=%s',
+    (streamingOutput) => {
+      const text = '已完成历史资料检查。';
+      const events: ChatFlowEventEnvelope[] = [
+        {
+          schemaVersion: 3,
+          eventId: 'historical-read',
+          organizationId: 'org',
+          workspaceId: 'workspace',
+          conversationId: 'session',
+          runId: 'run-0',
+          generation: 1,
+          cursor: 'run-0:1',
+          harness: 'dsh',
+          occurredAt: messages[0]!.createdAt,
+          sourceEvent: null,
+          sequence: 1,
+          type: 'tool.completed',
+          payload: {
+            toolCallId: 'read',
+            name: 'read',
+            summary: '已读取历史资料',
+          },
+        },
+        {
+          schemaVersion: 3,
+          eventId: 'historical-failed-tool',
+          organizationId: 'org',
+          workspaceId: 'workspace',
+          conversationId: 'session',
+          runId: 'run-0',
+          generation: 1,
+          cursor: 'run-0:2',
+          harness: 'dsh',
+          occurredAt: messages[0]!.createdAt,
+          sourceEvent: null,
+          sequence: 2,
+          type: 'tool.failed',
+          payload: {
+            toolCallId: 'query',
+            name: 'market.quote',
+            summary: '行情服务超时',
+          },
+        },
+      ];
+      const overrides = {
+        streamingOutput,
+        runTraces: { 'run-0': { status: 'loaded' as const, events } },
+      };
+      const history = [{ ...messages[0]!, content: { text } }];
+      const folded = render(false, history, [], overrides);
+      expect(folded).toContain('aria-label="工作步骤"');
+      expect(folded).toContain('1 次未成功');
+      expect(folded.split(text)).toHaveLength(2);
+
+      const expanded = render(false, history, [], {
+        ...overrides,
+        transcriptView: 'verbose',
+      });
+      expect(expanded).toContain('已读取历史资料');
+      expect(expanded).toContain('行情服务超时');
+      expect(expanded.indexOf('已读取历史资料')).toBeLessThan(
+        expanded.indexOf(text),
+      );
+      expect(expanded.split(text)).toHaveLength(2);
+    },
+  );
+
   it.each(['completed', 'failed'] as const)(
     'does not present settled %s history as running during a stale connection',
     (status) => {

@@ -37,7 +37,7 @@ export const UserPreferencesSchema = z.object({
 export type UserPreferences = z.infer<typeof UserPreferencesSchema>;
 
 export const defaultUserPreferences: UserPreferences = {
-  streamingOutput: false,
+  streamingOutput: true,
   fontSize: 14,
   transcriptView: 'detailed',
   collapseTiming: 'completion',

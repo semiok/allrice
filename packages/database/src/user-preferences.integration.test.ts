@@ -22,9 +22,10 @@ suite('account output preferences', () => {
     vi.restoreAllMocks();
     if (fixture) await fixture.close();
   });
-  it('defaults off, persists for a normal member across workspaces, and isolates other users', async () => {
+  it('defaults on, persists for a normal member across workspaces, and isolates other users', async () => {
     const f = await createExperienceFixture(fixture.db);
     expect(await getUserPreferences(f.owner)).toEqual(defaultUserPreferences);
+    expect((await getUserPreferences(f.owner)).streamingOutput).toBe(true);
     const saved = await updateUserPreferences(f.owner, {
       streamingOutput: true,
     });
@@ -89,5 +90,16 @@ suite('account output preferences', () => {
     ])
       await expect(updateUserPreferences(f.owner, update)).rejects.toThrow();
     expect(await getUserPreferences(f.owner)).toEqual(saved);
+  });
+  it('retains the streaming default when first saving a display preference or inserting a new account row', async () => {
+    const f = await createExperienceFixture(fixture.db);
+    const saved = await updateUserPreferences(f.owner, { fontSize: 16 });
+    expect(saved.streamingOutput).toBe(true);
+    const [inserted] = await fixture.db`
+      insert into allrice_user_preferences(user_id)
+      values (${f.neighbor.actor.id}) returning streaming_output
+    `;
+    expect(inserted?.streaming_output).toBe(true);
+    expect((await getUserPreferences(f.neighbor)).streamingOutput).toBe(true);
   });
 });

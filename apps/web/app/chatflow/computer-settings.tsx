@@ -1,6 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import {
   IconChevronRightOutlineRegular,
   Switch,
@@ -54,16 +60,23 @@ export function ComputerSettings({
   active,
   onBridge,
   bridge,
+  capabilities,
+  onCapabilitiesChange,
 }: {
   workspaceId: string;
   active: boolean;
   onBridge: () => void;
   bridge: ReturnType<typeof useBridge>;
+  capabilities?: ReactNode;
+  onCapabilitiesChange?: () => void;
 }) {
   const [computers, setComputers] = useState<Computer[] | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const generation = useRef(0);
+  const lastCapabilities = useRef<string | null>(null);
+  const capabilitiesChanged = useRef(onCapabilitiesChange);
+  capabilitiesChanged.current = onCapabilitiesChange;
   const { loadBridgeDevices } = bridge;
   const view = projectBridgeView(
     bridge.bridgeDevices,
@@ -72,6 +85,26 @@ export function ComputerSettings({
   useEffect(() => {
     if (active) void loadBridgeDevices(false, true);
   }, [active, loadBridgeDevices]);
+  useEffect(() => {
+    if (!computers) return;
+    const snapshot = JSON.stringify(
+      computers.map((computer) => ({
+        id: computer.device.id,
+        status: computer.device.status,
+        settings: computer.settings,
+        environment: computer.environment,
+        revision: computer.revision,
+        pending: computer.pending,
+        supported: computer.supported,
+      })),
+    );
+    if (
+      lastCapabilities.current !== null &&
+      lastCapabilities.current !== snapshot
+    )
+      capabilitiesChanged.current?.();
+    lastCapabilities.current = snapshot;
+  }, [computers]);
   const refresh = useCallback(
     async (signal?: AbortSignal) => {
       const current = ++generation.current;
@@ -91,8 +124,10 @@ export function ComputerSettings({
           ),
         ),
       );
-      if (!signal?.aborted && current === generation.current)
+      if (!signal?.aborted && current === generation.current) {
         setComputers(next);
+        setError('');
+      }
     },
     [workspaceId],
   );
@@ -162,7 +197,9 @@ export function ComputerSettings({
   }
   return (
     <div className={styles.computerPage} data-computer-settings>
-      <p className={styles.computerIntro}>设置员工的本地权限和浏览器偏好。</p>
+      <p className={styles.computerIntro}>
+        连接电脑，管理授权文件夹和本地能力。
+      </p>
       <button
         data-computer-control
         data-computer-management-entry
@@ -261,6 +298,16 @@ export function ComputerSettings({
               </div>
             );
           })}
+        </section>
+      ))}
+      <div className={styles.computerCapabilities}>{capabilities}</div>
+      {computers?.map((computer) => (
+        <div key={computer.device.id}>
+          {computers.length > 1 && (
+            <h3 className={styles.browserDeviceHeading}>
+              {computer.device.name}的浏览器登录
+            </h3>
+          )}
           {computer.environment?.browserDefaultsVersion === 1 ? (
             <BrowserLoginSettings
               workspaceId={workspaceId}
@@ -273,7 +320,7 @@ export function ComputerSettings({
               后，浏览器将默认保留登录，文件和运行时长使用平台统一规则。
             </p>
           )}
-        </section>
+        </div>
       ))}
     </div>
   );

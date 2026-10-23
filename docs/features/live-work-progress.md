@@ -14,7 +14,7 @@
 
 ## Allrice 接入
 
-用户可在「设置 → 个人偏好」开启流式输出以查看以下交错过程。默认采用统一输出，任务结束后展示最终答复；详见 [个人偏好](./personal-preferences.md)。
+流式输出默认开启，展示以下交错过程。用户可在「设置 → 个人偏好」关闭，改为任务结束后统一展示最终答复；已有账号保存过的选择保持不变。详见 [个人偏好](./personal-preferences.md)。
 
 - 复用现有 DSH `DisclosureRow`、过程图标、`AssistantMarkdown`，按官方的「过程 → 中间回复 → 过程 → 最终答复」组织阅读。Allrice 仅适配事件，不复制 DSH 的会话宿主或再建执行引擎。
 - DSH 适配层按原生 session / turn / step 区分公开回复，切换步骤时重置增量缓冲。`assistant/message` 校准这一段文字，也支持只返回完整消息的模型；`llm/retry` 只清除相应步骤的失败半段，保留此前的进展。
