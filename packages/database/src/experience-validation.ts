@@ -1,7 +1,10 @@
 import { readContentPrincipal } from './content-maintenance.ts';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { newEmployeeNativeRootOrigin } from './conversation/native-root-origin.ts';
+import {
+  newCurrentPlatformTestOrigin,
+  freezePlatformTestExecutionBinding,
+} from './conversation/current-platform-test-binding.ts';
 import type postgres from 'postgres';
 import {
   ExperienceModelSnapshotSchema,
@@ -344,7 +347,7 @@ export async function syncExperienceValidations() {
         from allrice_platform_employee_test_runs where purpose='experience_validation' and created_at>clock_timestamp()-interval '24 hours'`;
       if (budget!.global_count >= 64 || budget!.org_count >= 8) return;
       const [base] =
-        await tx`select r.employee_id,r.id,r.runtime_profile,r.definition from allrice_employee_version_sources s
+        await tx`select r.employee_id,r.id,r.runtime_profile,r.definition,r.checksum from allrice_employee_version_sources s
         join allrice_platform_employee_revisions r on r.id=s.platform_revision_id and r.employee_id=s.platform_employee_id
         where s.employee_version_id=${o.employeeVersionId} and s.employee_id=${o.employeeId} and s.organization_id=${o.organizationId}
           and s.workspace_id=${o.workspaceId} and r.status='published' for share of r`;
@@ -444,15 +447,35 @@ export async function syncExperienceValidations() {
           model,
           timeoutMs: Math.min(model.runLimits.timeoutMs, 300000),
         });
-        const origin = newEmployeeNativeRootOrigin(
-          'platform_employee_test',
+        const executionSource = {
+          platformEmployeeId: base.employee_id,
+          platformRevisionId: base.id,
+          purpose: 'experience_validation' as const,
+          definitionChecksum: base.checksum,
+          definition: frozen.definition,
+          runtimeProfile: frozen.runtimeProfile,
+          nativeSkills: frozen.nativeSkills,
+          packageChecksum: profile.runtimePackage!.checksum,
+        };
+        const executionScope = {
+          organizationId: o.organizationId,
+          workspaceId: o.workspaceId,
+          ownerId: o.ownerId,
           testId,
-          profile.runtimePackage,
-        );
+        };
+        const origin = newCurrentPlatformTestOrigin({
+          scope: executionScope,
+          source: executionSource,
+        });
+        const nativeBinding = freezePlatformTestExecutionBinding({
+          origin,
+          scope: executionScope,
+          source: executionSource,
+        });
         await tx`insert into allrice_platform_employee_test_runs(id,employee_id,revision_id,requested_by_label,status,input,
-          frozen_runtime_profile,frozen_definition,frozen_native_skills,frozen_package_checksum,purpose,experience_binding,native_root_origin)
+          frozen_runtime_profile,frozen_definition,frozen_native_skills,frozen_package_checksum,purpose,experience_binding,native_root_origin,native_execution_binding)
           values(${testId},${base.employee_id},${base.id},${o.ownerId},'queued',${tx.json({ prompt: prompt(), environment: 'platform', workspaceId: o.workspaceId, ownerId: o.ownerId })},
-            ${tx.json(frozen.runtimeProfile)},${tx.json(frozen.definition)},${tx.json(frozen.nativeSkills)},${profile.runtimePackage!.checksum},'experience_validation',${tx.json(b)},${origin ? tx.json(origin) : null})`;
+            ${tx.json(frozen.runtimeProfile)},${tx.json(frozen.definition)},${tx.json(frozen.nativeSkills)},${profile.runtimePackage!.checksum},'experience_validation',${tx.json(b)},${tx.json(origin)},${tx.json(nativeBinding)})`;
         plan.push({ draftIndex, testId });
       }
       await savePlan(plan);

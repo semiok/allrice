@@ -212,6 +212,7 @@ suite('P18 exact package publication authority with real PostgreSQL', () => {
     // This SQL-only publication fixture explicitly issues current-generation
     // birth facts; it never installs/approves a real native artifact.
     vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
+    vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
     const url = new URL(base);
     url.search = '';
     admin = postgres(url.toString(), { max: 2, onnotice: () => {} });
@@ -386,16 +387,37 @@ suite('P18 exact package publication authority with real PostgreSQL', () => {
     ).toBe(trial.checksum);
   });
   it('keeps a legacy success without an exact package hash as history, not release authority', async () => {
-    const f = await fixture(),
-      trial = await f.preview();
-    await db`update allrice_platform_employee_test_runs set frozen_package_checksum=null where id=${trial.id}`;
-    expect((await f.publish()).valid).toBe(false);
+    const f = await fixture();
+    expect((await compilePlatformEmployee(f.employeeId)).valid).toBe(true);
+    const trialId = randomUUID();
+    // Historical terminal rows may predate frozen snapshots and native origins.
+    // Seed that history at first INSERT; a newly issued V2 source is immutable.
+    const [history] = await db`insert into allrice_platform_employee_test_runs
+      (id,employee_id,revision_id,requested_by_label,status,input,output,
+        frozen_runtime_profile,frozen_definition,frozen_native_skills,frozen_package_checksum,
+        native_root_origin,native_execution_binding,purpose,completed_at)
+      values(${trialId},${f.employeeId},${f.revisionId},${f.ownerId},'succeeded',
+        ${db.json({ environment: 'company', workspaceId: f.workspaceId, ownerId: f.ownerId, prompt: 'Historical successful preview.' })},
+        ${db.json({ answer: 'Historical success without an exact package proof.', provider: 'openai-codex', model: 'gpt-5.6-luna', threadId: null, usage: null, events: [], error: null })},
+        null,null,null,null,null,null,'platform_preview',clock_timestamp()) returning *`;
+    expect(history).toMatchObject({
+      status: 'succeeded',
+      frozen_runtime_profile: null,
+      frozen_definition: null,
+      frozen_native_skills: null,
+      frozen_package_checksum: null,
+      native_root_origin: null,
+      native_execution_binding: null,
+    });
+    const result = await f.publish();
+    expect(result.valid).toBe(false);
+    expect(result.errors.join(' ')).toContain('确切运行包');
     expect(await f.assigned()).toBe(0);
     expect(
       (
-        await db`select status from allrice_platform_employee_test_runs where id=${trial.id}`
-      )[0]!.status,
-    ).toBe('succeeded');
+        await db`select * from allrice_platform_employee_test_runs where id=${trialId}`
+      )[0],
+    ).toEqual(history);
   });
   it('rejects a different current draft between preliminary gates and the publication transaction', async () => {
     const f = await fixture();

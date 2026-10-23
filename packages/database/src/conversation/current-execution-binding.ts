@@ -6,6 +6,7 @@ import {
   EmployeeDefinitionSchema,
   EmployeeExecutionSnapshotSchema,
   UuidSchema,
+  type EmployeeRuntimePackage,
 } from '@allrice/contracts';
 import { employeeManifestChecksum } from '../employees/employee-config.ts';
 import {
@@ -181,6 +182,88 @@ function assertTools(tools: readonly string[]) {
   );
 }
 
+/** Validate an original declarative package, not a Run's actual authority.
+ * Shared by tenant-chat and platform-test source schemas. Callers parse their
+ * own immutable source schema first; no synthetic manifest or re-publication. */
+export function validateCurrentDeclarativeRuntimePackage(input: {
+  runtimePackage: EmployeeRuntimePackage;
+  expectedChecksum: string;
+  declaration: {
+    provider: string;
+    model: string;
+    toolNames: readonly string[];
+    deniedCapabilities: readonly string[];
+  };
+}): ReturnType<typeof frozenPackageSkills> {
+  const pkg = input.runtimePackage;
+  need(
+    pkg.schemaVersion === 1 || pkg.schemaVersion === 2,
+    'CURRENT_EXECUTION_SOURCE_PACKAGE_SCHEMA_UNSUPPORTED',
+  );
+  need(
+    pkg.runtimeManifest.distributionGeneration ===
+      DSH_MISSING_FROZEN_GENERATION ||
+      pkg.runtimeManifest.distributionGeneration === newNativeGeneration,
+    'CURRENT_EXECUTION_SOURCE_GENERATION_UNSUPPORTED',
+  );
+  need(
+    verifiedRuntimePackageChecksum(pkg) === pkg.checksum &&
+      input.expectedChecksum === pkg.checksum,
+    'CURRENT_EXECUTION_SOURCE_CHECKSUM_MISMATCH',
+  );
+  // These existing validators include bundle/resource checksums, paths,
+  // runtime/image dependencies and exact immutable governance provenance.
+  const skills = frozenPackageSkills(pkg);
+  const published = pkg.runtimeManifest;
+  assertTools(published.toolNames);
+  need(
+    published.provider === input.declaration.provider &&
+      published.model === input.declaration.model &&
+      equal(sorted(published.toolNames), sorted(input.declaration.toolNames)) &&
+      equal(
+        sorted(published.deniedCapabilities),
+        sorted(input.declaration.deniedCapabilities),
+      ),
+    'CURRENT_EXECUTION_SOURCE_DECLARATION_MISMATCH',
+  );
+  need(
+    new Set(skills.map((skill) => skill.id)).size === skills.length &&
+      new Set(skills.map((skill) => skill.name)).size === skills.length &&
+      published.skillGovernance.length === skills.length &&
+      new Set(published.skillGovernance.map((item) => item.id)).size ===
+        skills.length,
+    'CURRENT_EXECUTION_SOURCE_GOVERNANCE_INVALID',
+  );
+  for (const skill of skills) {
+    assertTools(skill.requiredToolRefs);
+    need(
+      published.skillGovernance.find((item) => item.id === skill.id)?.name ===
+        skill.name,
+      'CURRENT_EXECUTION_SOURCE_GOVERNANCE_INVALID',
+    );
+  }
+  // Reuse the package checksum algorithm with the original generation. This
+  // is the capability payload emitted by buildEmployeeRuntimePackage.
+  need(
+    pkg.capabilityFingerprint ===
+      runtimePackageChecksum({
+        distributionGeneration: published.distributionGeneration,
+        provider: published.provider,
+        model: published.model,
+        tools: sorted(published.toolNames),
+        skills: skills.map((skill) => ({
+          name: skill.name,
+          checksum: skill.checksum,
+          requiredToolRefs: sorted(skill.requiredToolRefs),
+          ...(skill.bundle ? { bundleChecksum: skill.bundle.checksum } : {}),
+        })),
+        deniedCapabilities: sorted(published.deniedCapabilities),
+      }),
+    'CURRENT_EXECUTION_SOURCE_CAPABILITY_FINGERPRINT_MISMATCH',
+  );
+  return skills;
+}
+
 export type EmployeeExecutionSourceInput = {
   employeeVersionId: string;
   configChecksum: string;
@@ -205,74 +288,16 @@ export function validateEmployeeExecutionSource(
   const pkg = manifest.runtimePackage;
   let skills: ReturnType<typeof frozenPackageSkills> = [];
   if (pkg !== null) {
-    need(
-      pkg.schemaVersion === 1 || pkg.schemaVersion === 2,
-      'CURRENT_EXECUTION_SOURCE_PACKAGE_SCHEMA_UNSUPPORTED',
-    );
-    need(
-      pkg.runtimeManifest.distributionGeneration ===
-        DSH_MISSING_FROZEN_GENERATION ||
-        pkg.runtimeManifest.distributionGeneration === newNativeGeneration,
-      'CURRENT_EXECUTION_SOURCE_GENERATION_UNSUPPORTED',
-    );
-    need(
-      verifiedRuntimePackageChecksum(pkg) === pkg.checksum &&
-        configChecksum === pkg.checksum,
-      'CURRENT_EXECUTION_SOURCE_CHECKSUM_MISMATCH',
-    );
-    // These existing validators include bundle/resource checksums, paths,
-    // runtime/image dependencies and exact immutable governance provenance.
-    skills = frozenPackageSkills(pkg);
-    const published = pkg.runtimeManifest;
-    assertTools(published.toolNames);
-    need(
-      published.provider === manifest.runtimePolicy.provider &&
-        published.model === manifest.runtimePolicy.model &&
-        equal(
-          sorted(published.toolNames),
-          sorted(manifest.capabilityBindings.toolNames),
-        ) &&
-        equal(
-          sorted(published.deniedCapabilities),
-          sorted(manifest.securityPolicy.deniedCapabilities),
-        ),
-      'CURRENT_EXECUTION_SOURCE_DECLARATION_MISMATCH',
-    );
-    need(
-      new Set(skills.map((skill) => skill.id)).size === skills.length &&
-        new Set(skills.map((skill) => skill.name)).size === skills.length &&
-        published.skillGovernance.length === skills.length &&
-        new Set(published.skillGovernance.map((item) => item.id)).size ===
-          skills.length,
-      'CURRENT_EXECUTION_SOURCE_GOVERNANCE_INVALID',
-    );
-    for (const skill of skills) {
-      assertTools(skill.requiredToolRefs);
-      need(
-        published.skillGovernance.find((item) => item.id === skill.id)?.name ===
-          skill.name,
-        'CURRENT_EXECUTION_SOURCE_GOVERNANCE_INVALID',
-      );
-    }
-    // Reuse the package checksum algorithm with the original generation. This
-    // is the capability payload emitted by buildEmployeeRuntimePackage.
-    need(
-      pkg.capabilityFingerprint ===
-        runtimePackageChecksum({
-          distributionGeneration: published.distributionGeneration,
-          provider: published.provider,
-          model: published.model,
-          tools: sorted(published.toolNames),
-          skills: skills.map((skill) => ({
-            name: skill.name,
-            checksum: skill.checksum,
-            requiredToolRefs: sorted(skill.requiredToolRefs),
-            ...(skill.bundle ? { bundleChecksum: skill.bundle.checksum } : {}),
-          })),
-          deniedCapabilities: sorted(published.deniedCapabilities),
-        }),
-      'CURRENT_EXECUTION_SOURCE_CAPABILITY_FINGERPRINT_MISMATCH',
-    );
+    skills = validateCurrentDeclarativeRuntimePackage({
+      runtimePackage: pkg,
+      expectedChecksum: configChecksum,
+      declaration: {
+        provider: manifest.runtimePolicy.provider,
+        model: manifest.runtimePolicy.model,
+        toolNames: manifest.capabilityBindings.toolNames,
+        deniedCapabilities: manifest.securityPolicy.deniedCapabilities,
+      },
+    });
   } else {
     need(
       employeeManifestChecksum(manifest) === configChecksum,
