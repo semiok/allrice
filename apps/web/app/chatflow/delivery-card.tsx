@@ -25,8 +25,7 @@ export function DeliveryCard({
       file={{
         path: name,
         description:
-          artifact.version.changeSummary ||
-          `${artifactKindLabel(artifact)} · v${artifact.version.version}`,
+          artifact.version.changeSummary || artifactKindLabel(artifact),
       }}
       onPreview={() => onOpen(artifact.id)}
       actions={

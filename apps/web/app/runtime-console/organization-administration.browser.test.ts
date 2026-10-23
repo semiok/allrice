@@ -606,8 +606,9 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
           expectedRevision: 1,
           action: 'archive',
         });
-        await dialog.getByRole('button', { name: '更多文件操作' }).click();
-        await page.getByRole('menuitem', { name: '刷新预览' }).click();
+        await dialog
+          .getByRole('button', { name: '刷新预览', exact: true })
+          .click();
         await dialog.getByRole('alert').waitFor();
         expect(await dialog.innerText()).not.toContain('共享资料-v1.txt');
         expect(await dialog.getByRole('link', { name: /下载/ }).count()).toBe(

@@ -855,19 +855,14 @@ function AutomationDetailBody({
         setError('');
       })
       .catch((e) => setError(e.message));
-  const original = task.sessionId ? (
-    <Button
-      variant="ghost"
-      size="sm"
-      onClick={() => onOpenSession(task.sessionId!)}
-    >
-      打开原会话 ↗
-    </Button>
-  ) : null;
   return (
     <section className={css.detail} aria-label={'自动化任务详情：' + task.name}>
       <div className={native.detailTabsBar}>
-        <div role="tablist" aria-label="任务详情" className={native.detailTabs}>
+        <div
+          role="tablist"
+          aria-label="任务详情"
+          className={`${native.detailTabs} ${css.detailTabs}`}
+        >
           {[
             ['rule', '规则'],
             ['history', '任务运行记录'],
@@ -876,7 +871,7 @@ function AutomationDetailBody({
               type="button"
               role="tab"
               key={id}
-              className={native.detailTab}
+              className={`${native.detailTab} ${css.detailTab}`}
               aria-selected={tab === id}
               onClick={() => setTab(id!)}
             >
@@ -884,7 +879,6 @@ function AutomationDetailBody({
             </button>
           ))}
         </div>
-        {original}
       </div>
       <div className={css.detailScroll}>
         <header>

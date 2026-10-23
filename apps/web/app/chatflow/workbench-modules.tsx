@@ -10,6 +10,8 @@ import {
 import {
   IconFolderOpenOutlineRegular,
   IconClockOutlineRegular,
+  IconPanelLeftOutlineRegular,
+  IconChevronRightOutlineRegular,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import { z } from 'zod';
 import { workbenchJson } from '../../lib/chatflow/workbench-model';
@@ -24,18 +26,38 @@ export function WorkbenchIcon({
   kind,
   size = 20,
 }: {
-  kind: WorkbenchModule | 'panel' | 'fullscreen' | 'restore' | 'start';
+  kind:
+    | WorkbenchModule
+    | 'panel'
+    | 'fullscreen'
+    | 'restore'
+    | 'start'
+    | 'schedule'
+    | 'chevron-right';
   size?: number;
 }) {
-  if (kind === 'files') return <IconFolderOpenOutlineRegular size={size} />;
+  if (kind === 'files')
+    return <IconFolderOpenOutlineRegular size={size} className={css.glyph} />;
+  if (kind === 'schedule')
+    return <IconClockOutlineRegular size={size} className={css.glyph} />;
+  if (kind === 'panel')
+    return (
+      <IconPanelLeftOutlineRegular
+        size={size}
+        className={`${css.glyph} ${css.panelGlyph}`}
+      />
+    );
+  if (kind === 'chevron-right')
+    return <IconChevronRightOutlineRegular size={size} className={css.glyph} />;
   return (
     <svg
+      className={css.glyph}
       width={size}
       height={size}
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="1.65"
+      strokeWidth="1.75"
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
@@ -51,11 +73,6 @@ export function WorkbenchIcon({
           <rect x="14" y="15" width="7" height="6" rx="1.5" />
           <rect x="3" y="15" width="7" height="6" rx="1.5" />
           <path d="M6.5 9v6M10 6h7.5v9" />
-        </>
-      ) : kind === 'panel' ? (
-        <>
-          <rect x="3" y="4" width="18" height="16" rx="1.8" />
-          <path d="M15 4v16" />
         </>
       ) : kind === 'start' ? (
         <>
@@ -117,7 +134,7 @@ export function WorkbenchEntries(props: {
           aria-pressed={props.open && props.selected === 'schedule'}
           onClick={props.onSchedule}
         >
-          <IconClockOutlineRegular size={20} />
+          <WorkbenchIcon kind="schedule" />
         </button>
       )}
       {!props.open && (
@@ -175,7 +192,9 @@ export function WorkbenchStart(props: {
                     : '打开这位员工的业务工作台'}
               </small>
             </span>
-            <span className={css.chevron}>›</span>
+            <span className={css.chevron} aria-hidden="true">
+              <WorkbenchIcon kind="chevron-right" />
+            </span>
           </button>
         ))}
         {props.terminal}

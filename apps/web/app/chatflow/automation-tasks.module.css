@@ -64,6 +64,40 @@
   font-size: 14px;
   --detail-gutter: 24px;
 }
+.detailTabs {
+  gap: 24px;
+}
+/* Keep native text tabs from inheriting the workbench's generic button frame. */
+.detail .detailTab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.detail .detailTab:hover {
+  color: var(--dsw-alias-label-primary);
+}
+.detail .detailTab[aria-selected='true'] {
+  color: var(--dsw-alias-label-primary);
+}
+.detail .detailTab[aria-selected='true']::after {
+  background: currentColor;
+}
+.detail .detailTab:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: -4px;
+  border-radius: 4px;
+}
 .detailScroll {
   flex: 1;
   min-height: 0;

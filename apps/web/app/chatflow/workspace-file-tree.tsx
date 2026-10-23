@@ -14,6 +14,7 @@ import { zh } from './dsh-upstream/files/locales';
 import type { WorkspaceFile } from './chatflow-types';
 import { readJson } from './chatflow-utils';
 import { isToolResultFile } from '../../lib/chatflow/document-reader-model';
+import { WorkbenchFileCatalogSchema } from '@allrice/contracts';
 
 // Object-store categories, not a host filesystem path. IDs give duplicate names
 // separate identities; displayName keeps the actual filename on the native row.
@@ -54,12 +55,34 @@ export function WorkspaceFileTree(props: {
           error: { code: 'workspace-file/not-found', message: '目录已不存在' },
         };
       try {
-        const result = await readJson<{ files: WorkspaceFile[] }>(
-          await fetch(
-            `/api/v1/files?workspaceId=${encodeURIComponent(props.workspaceId)}`,
-            { headers: props.tenantHeaders, signal },
+        const catalog = WorkbenchFileCatalogSchema.parse(
+          await readJson<unknown>(
+            await fetch(
+              `/api/v1/workbench/files?workspaceId=${encodeURIComponent(props.workspaceId)}`,
+              { headers: props.tenantHeaders, signal },
+            ),
           ),
         );
+        // Keep native tree presentation; share the catalog's latest-file and ACL rules.
+        const visible: WorkspaceFile[] = catalog.files.map((file) => ({
+          id: file.objectId,
+          fileName: file.fileName,
+          mediaType: file.mediaType,
+          sizeBytes: file.sizeBytes,
+          ownedByMe: file.ownedByMe,
+          visibility:
+            file.sharing.scope === 'personal'
+              ? 'private'
+              : file.sharing.scope === 'company'
+                ? 'organization'
+                : 'workspace',
+          category:
+            file.category === 'upload' &&
+            !isToolResultFile(file.fileName, file.objectId)
+              ? 'uploads'
+              : 'exports',
+          deliverableVersion: file.artifact?.version ?? null,
+        }));
         if (signal.aborted)
           return {
             ok: false,
@@ -73,7 +96,7 @@ export function WorkspaceFileTree(props: {
               (category !== 'exports' ||
                 !isToolResultFile(file.fileName, file.id));
         for (const [id, file] of files) if (belongs(file)) files.delete(id);
-        const matching = result.files.filter(belongs);
+        const matching = visible.filter(belongs);
         for (const file of matching) files.set(file.id, file);
         return {
           ok: true,
@@ -86,7 +109,7 @@ export function WorkspaceFileTree(props: {
                   : file.fileName,
               type: 'file',
             })),
-            truncated: result.files.length >= 100,
+            truncated: catalog.truncated,
           },
         };
       } catch (error) {

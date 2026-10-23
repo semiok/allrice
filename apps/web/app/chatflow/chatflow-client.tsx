@@ -1576,6 +1576,28 @@ export function ChatFlowClient({
     return loadBridgeDevices(true);
   };
 
+  const useWorkbenchReference = (reference: ReferenceRevision) => {
+    if (
+      referenceSelections.length >= 3 &&
+      !referenceSelections.some(
+        (item) => item.revisionId === reference.revisionId,
+      )
+    ) {
+      setError('每次任务最多引用 3 份资料。');
+      return;
+    }
+    setReferenceSelections((current) =>
+      current.some((item) => item.revisionId === reference.revisionId)
+        ? current
+        : [...current, reference],
+    );
+    requestAnimationFrame(() => composerInput.current?.focus());
+  };
+  const viewWorkbenchTemplate = (reference: ReferenceRevision) => {
+    setRecommendedTemplates(false);
+    setReferenceToView(reference);
+    setReferenceLibraryOpen(true);
+  };
   const renderComposer = (hero = false) => (
     <DraftChatComposer
       taskSuggestions={
@@ -2337,40 +2359,8 @@ export function ChatFlowClient({
                     if (artifact) showWorkbench(artifact.id);
                     else onOpenFile(file.objectId, file.fileName);
                   }}
-                  onTemplates={() => {
-                    setRecommendedTemplates(true);
-                    setReferenceToView(null);
-                    setReferenceLibraryOpen(true);
-                  }}
-                  onHistory={() => {
-                    setRecommendedTemplates(false);
-                    setReferenceToView(null);
-                    setReferenceLibraryOpen(true);
-                  }}
-                  onTemplate={(reference) => {
-                    setRecommendedTemplates(false);
-                    setReferenceToView(reference);
-                    setReferenceLibraryOpen(true);
-                  }}
-                  onUse={(reference: ReferenceRevision) => {
-                    if (
-                      referenceSelections.length >= 3 &&
-                      !referenceSelections.some(
-                        (item) => item.revisionId === reference.revisionId,
-                      )
-                    ) {
-                      setError('每次任务最多引用 3 份资料。');
-                      return;
-                    }
-                    setReferenceSelections((current) =>
-                      current.some(
-                        (item) => item.revisionId === reference.revisionId,
-                      )
-                        ? current
-                        : [...current, reference],
-                    );
-                    requestAnimationFrame(() => composerInput.current?.focus());
-                  }}
+                  onTemplate={viewWorkbenchTemplate}
+                  onUse={useWorkbenchReference}
                 />
               ) : kind === 'experience' ? (
                 <WorkbenchExperiencePanel
@@ -2434,6 +2424,8 @@ export function ChatFlowClient({
             </Suspense>
           )}
           onOpenReference={openReference}
+          onUseFileReference={useWorkbenchReference}
+          onTemplateFile={viewWorkbenchTemplate}
           taskRequest={currentAutomationRequest}
           renderSessionTasks={(sessionId, active) =>
             active ? (

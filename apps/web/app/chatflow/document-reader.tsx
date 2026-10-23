@@ -1,19 +1,19 @@
 'use client';
 
-import { memo, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { memo, useMemo, useState, type ReactNode } from 'react';
 import {
+  Button,
   CodeBlock,
   FileTypeIcon,
-  IconChevronDownOutlineRegular,
   IconDownloadOutlineRegular,
   IconEllipsisOutlineRegular,
+  IconRefreshOutlineRegular,
   Menu,
   PathLabel,
+  Tooltip,
   languageForPath,
   type MenuEntry,
 } from '@deepseek-ai/dsh-client-ui-primitives';
-import type { DeliverableVersion } from '@allrice/contracts';
-import { workbenchJson } from '../../lib/chatflow/workbench-model';
 import { searchResultDocument } from '../../lib/chatflow/document-reader-model';
 import { documentTextWindows } from '../../lib/chatflow/document-text-window';
 import { AssistantMarkdown } from './assistant-markdown';
@@ -29,148 +29,99 @@ export function DocumentToolbar(props: {
   actions: MenuEntry[];
   onAction: (id: string) => void;
   children?: ReactNode;
+  quickActions?: ReactNode;
   missingFonts?: readonly string[];
 }) {
   const [open, setOpen] = useState(false);
+  const refresh = props.actions.find(
+    (action) => action.id === 'refresh' && 'label' in action,
+  );
+  const refreshLabel =
+    refresh && 'label' in refresh && typeof refresh.label === 'string'
+      ? refresh.label
+      : '刷新文件';
+  const menuActions = props.actions.filter((action) => action.id !== 'refresh');
+  const hasMenuActions = menuActions.some((action) => 'label' in action);
   return (
     <header
       className={`${native.header} ${styles.toolbar}`}
       aria-label="文件操作"
     >
-      <FileTypeIcon path={props.title} size={20} />
-      <PathLabel path={props.title} className={styles.name} />
-      {props.children}
-      <FontNotice
-        key={props.downloadUrl}
-        fonts={props.missingFonts ?? []}
-        t={(key, params) =>
-          Object.entries(params ?? {}).reduce(
-            (text, [name, value]) =>
-              text.replaceAll(`{${name}}`, String(value)),
-            officeZh[key] as string,
-          )
-        }
-      />
-      <a className={styles.download} href={props.downloadUrl} download>
-        <IconDownloadOutlineRegular size={16} />
-        下载
-      </a>
-      <Menu
-        open={open}
-        anchor={
-          <button
-            type="button"
-            className={styles.iconButton}
-            aria-label="更多文件操作"
-            aria-expanded={open}
-            onClick={() => setOpen(!open)}
-          >
-            <IconEllipsisOutlineRegular size={18} />
-          </button>
-        }
-        items={props.actions}
-        onSelect={(id) => {
-          setOpen(false);
-          props.onAction(id);
-        }}
-        onClose={() => setOpen(false)}
-        align="end"
-        portal
-      />
+      <div className={styles.identity}>
+        <FileTypeIcon path={props.title} size={20} />
+        <PathLabel path={props.title} className={styles.name} />
+      </div>
+      <div className={styles.controls}>
+        {props.children}
+        {refresh && 'label' in refresh && (
+          <Tooltip label={refreshLabel} side="bottom" delayMs={500} portal>
+            <Button
+              type="button"
+              size="sm"
+              className={styles.iconButton}
+              aria-label={refreshLabel}
+              disabled={refresh.disabled}
+              onClick={() => {
+                setOpen(false);
+                props.onAction(refresh.id);
+              }}
+            >
+              <IconRefreshOutlineRegular size={20} />
+            </Button>
+          </Tooltip>
+        )}
+        {props.quickActions}
+        <FontNotice
+          key={props.downloadUrl}
+          fonts={props.missingFonts ?? []}
+          t={(key, params) =>
+            Object.entries(params ?? {}).reduce(
+              (text, [name, value]) =>
+                text.replaceAll(`{${name}}`, String(value)),
+              officeZh[key] as string,
+            )
+          }
+        />
+        <a className={styles.download} href={props.downloadUrl} download>
+          <IconDownloadOutlineRegular size={20} />
+          下载
+        </a>
+        {hasMenuActions && (
+          <Menu
+            open={open}
+            anchor={
+              <Tooltip
+                label="更多文件操作"
+                side="bottom"
+                delayMs={500}
+                disabled={open}
+                portal
+              >
+                <Button
+                  type="button"
+                  size="sm"
+                  className={styles.iconButton}
+                  aria-label="更多文件操作"
+                  aria-haspopup="menu"
+                  aria-expanded={open}
+                  onClick={() => setOpen(!open)}
+                >
+                  <IconEllipsisOutlineRegular size={20} />
+                </Button>
+              </Tooltip>
+            }
+            items={menuActions}
+            onSelect={(id) => {
+              setOpen(false);
+              props.onAction(id);
+            }}
+            onClose={() => setOpen(false)}
+            align="end"
+            portal
+          />
+        )}
+      </div>
     </header>
-  );
-}
-
-export function DocumentVersions(props: {
-  objectId: string;
-  workspaceId: string;
-  headers: Record<string, string>;
-  version?: number;
-  baseUrl?: string;
-  onSelect: (
-    version: Pick<
-      DeliverableVersion,
-      'id' | 'objectId' | 'fileName' | 'version' | 'createdAt'
-    >,
-  ) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [versions, setVersions] = useState<
-    Pick<
-      DeliverableVersion,
-      'id' | 'objectId' | 'fileName' | 'version' | 'createdAt'
-    >[]
-  >([]);
-  const [error, setError] = useState(false);
-  const [loading, setLoading] = useState(false);
-  useEffect(() => {
-    if (!open) return;
-    const controller = new AbortController();
-    setVersions([]);
-    setError(false);
-    setLoading(true);
-    void workbenchJson(
-      `${props.baseUrl ?? '/api/v1/files'}/${props.objectId}/versions?workspaceId=${encodeURIComponent(props.workspaceId)}`,
-      props.headers,
-      { signal: controller.signal },
-    )
-      .then((value) => {
-        if (!controller.signal.aborted)
-          setVersions((value as { versions: DeliverableVersion[] }).versions);
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setError(true);
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoading(false);
-      });
-    return () => controller.abort();
-  }, [open, props.objectId, props.workspaceId, props.headers, props.baseUrl]);
-  return (
-    <Menu
-      open={open}
-      anchor={
-        <button
-          type="button"
-          className={styles.version}
-          aria-label="历史版本"
-          aria-expanded={open}
-          onClick={() => setOpen(!open)}
-        >
-          {props.version ? `v${props.version}` : '版本'}
-          <IconChevronDownOutlineRegular size={12} />
-        </button>
-      }
-      items={
-        versions.length
-          ? versions.map((v) => ({
-              id: v.id,
-              label: `v${v.version} · ${new Date(v.createdAt).toLocaleDateString('zh-CN')}`,
-            }))
-          : [
-              {
-                id: 'loading',
-                label: error
-                  ? '版本读取失败，请重新打开'
-                  : loading
-                    ? '正在读取版本…'
-                    : '暂无历史版本',
-                disabled: true,
-              },
-            ]
-      }
-      selectedId={versions.find((v) => v.objectId === props.objectId)?.id}
-      onSelect={(id) => {
-        const version = versions.find((v) => v.id === id);
-        if (version) {
-          props.onSelect(version);
-          setOpen(false);
-        }
-      }}
-      onClose={() => setOpen(false)}
-      align="end"
-      portal
-    />
   );
 }
 

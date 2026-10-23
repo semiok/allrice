@@ -130,6 +130,9 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+.chevron {
+  position: relative;
+}
 .tile {
   position: relative;
   pointer-events: none;
