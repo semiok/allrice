@@ -160,8 +160,23 @@ lines.on('line', (line) => {
     return;
   }
   if (frame.method === 'shutdown') {
-    respond(frame.id, {});
-    setImmediate(() => process.exit(0));
+    // Synthetic protocol fixture only: this exercises Worker parsing/ownership,
+    // never proves actual SDK shutdown or storage durability.
+    process.stdout.write(
+      `${JSON.stringify({
+        jsonrpc: '2.0',
+        id: frame.id,
+        result: {
+          allriceClose: {
+            version: 1,
+            sdkShutdown: true,
+            rootDisposed: true,
+            priorFramesFlushed: true,
+          },
+        },
+      })}\n`,
+      () => process.exit(0),
+    );
     return;
   }
   if (frame.method === 'session/interrupt') {

@@ -282,6 +282,20 @@ export interface HarnessExecutionResult {
   } | null;
 }
 
+export interface HarnessRuntimeClosureSnapshot {
+  id: string;
+  threadId: string;
+  nativeArtifactId: string | null;
+  state: 'closing' | 'unconfirmed';
+  processState: 'running' | 'exited' | 'unknown';
+  stdioClosed: boolean;
+  exitCode: number | null;
+  signal: string | null;
+  shutdownAcknowledged: boolean | null;
+  wrapperCleanupConfirmed: boolean | null;
+  terminationAttempted: string | null;
+}
+
 export interface HarnessRuntimeProcessSnapshot {
   id: string;
   organizationId: string;
@@ -325,6 +339,7 @@ export interface HarnessAdapter {
   compact?(input: { threadId: string }): Promise<void>;
   recover?(input: { threadId: string }): Promise<void>;
   runtimeInventory?(): readonly HarnessRuntimeProcessSnapshot[];
+  runtimeClosureInventory?(): readonly HarnessRuntimeClosureSnapshot[];
   close?(): Promise<void>;
 }
 import type {

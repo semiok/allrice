@@ -1,3 +1,4 @@
+import { installDshCloseObservationIdentity } from './harness/dsh-close-observer.js';
 import { processNextReference } from './reference-processing.js';
 import { startCloudProjectPreviewTransport } from './cloud-runner/project-preview-transport.js';
 import { runtimeFeatureEnabled } from '@allrice/contracts';
@@ -25,7 +26,6 @@ import {
   queueSummary,
   recoverCodexAuthorizationFlows,
   recordCodexProviderStatus,
-  markWorkerDshRuntimesOffline,
   replaceWorkerDshRuntimeInventory,
   syncAutomationRuns,
   recordWorkerCapabilities,
@@ -53,6 +53,15 @@ import {
 } from './harness/dsh-native-retention.js';
 import { fileURLToPath } from 'node:url';
 import { closeHarnessAdapters, getHarnessRouter } from './harness/router.js';
+import {
+  closeWorkerResources,
+  startWorkerShutdownTask,
+  WorkerShutdownError,
+} from './worker-shutdown.js';
+import {
+  verifyWorkerDshRuntimeClosure,
+  DshWorkerCloseError,
+} from './harness/dsh-worker-close.js';
 import { executeNextPlatformEmployeeTest } from './platform-employee-tests.js';
 import { executeNextMcpDiscovery } from './mcp/lifecycle.js';
 import { recoverMcpRuntimeOperations } from './mcp/executor.js';
@@ -177,6 +186,12 @@ const nativeArtifactReferenceCoverage = await startup.run(
   'native_reference_coverage',
   () => verifyConfiguredDshNativeReferences(nativeArtifact),
 );
+if (!serviceBuildIdentity) throw Error('DSH_CLOSE_SERVICE_IDENTITY_REQUIRED');
+installDshCloseObservationIdentity({
+  workerId,
+  workerBootId: serviceBuildIdentity.bootId,
+  serviceManifestDigest: serviceBuildIdentity.manifestDigest,
+});
 const nativeOnceControlSource = configuredNativeOnceControlSource();
 startup.mark('verification_checks_completed');
 const producerLifecycle = await startup.run('producer_lifecycle', () =>
@@ -210,9 +225,9 @@ let lastDatabaseError: string | undefined;
 let stopping = false;
 const runProducer = workerProducerRunner(producerLifecycle, () => stopping);
 const maintenanceReportingAborter = new AbortController();
-let tickRunning = false;
+let queueTask: Promise<void> | null = null;
 let automationTask: Promise<void> | null = null;
-let platformEmployeeTestTickRunning = false;
+let platformEmployeeTestTask: Promise<void> | null = null;
 const activeExecutions = new Set<Promise<void>>();
 const activeAborters = new Set<() => void>();
 let platformEmployeeTestAborter: AbortController | null = null;
@@ -336,7 +351,13 @@ function refreshCodexProviderStatus() {
 
 let codexAuthorizationTask: Promise<void> | null = null;
 function codexAuthorizationTick() {
-  if (codexAuthorizationTask || stopping || !databaseReady) return;
+  if (
+    codexAuthorizationTask ||
+    stopping ||
+    !databaseReady ||
+    codexAuthorizationBroker.hasUnconfirmedClose()
+  )
+    return;
   codexAuthorizationTask = runProducer('provider_authorization', async () => {
     await codexAuthorizationBroker.tick();
   })
@@ -500,9 +521,14 @@ async function runClaimed(jobId: string, leaseToken: string) {
   }
 }
 
-async function tick() {
-  if (tickRunning || stopping || !databaseReady) return;
-  tickRunning = true;
+function tick() {
+  if (queueTask || stopping || !databaseReady) return queueTask;
+  queueTask = runQueueTick().finally(() => {
+    queueTask = null;
+  });
+  return queueTask;
+}
+async function runQueueTick() {
   try {
     await runProducer(
       'ordinary_consumer',
@@ -536,8 +562,6 @@ async function tick() {
     databaseReady = false;
     lastDatabaseError =
       error instanceof Error ? error.message : 'Unknown queue error';
-  } finally {
-    tickRunning = false;
   }
 }
 
@@ -644,9 +668,15 @@ function maintenanceReportingTick() {
     });
 }
 
-async function platformEmployeeTestTick() {
-  if (platformEmployeeTestTickRunning || stopping || !databaseReady) return;
-  platformEmployeeTestTickRunning = true;
+function platformEmployeeTestTick() {
+  if (platformEmployeeTestTask || stopping || !databaseReady)
+    return platformEmployeeTestTask;
+  platformEmployeeTestTask = runPlatformEmployeeTestTick().finally(() => {
+    platformEmployeeTestTask = null;
+  });
+  return platformEmployeeTestTask;
+}
+async function runPlatformEmployeeTestTick() {
   const aborter = new AbortController();
   platformEmployeeTestAborter = aborter;
   try {
@@ -663,7 +693,6 @@ async function platformEmployeeTestTick() {
     });
   } finally {
     platformEmployeeTestAborter = null;
-    platformEmployeeTestTickRunning = false;
   }
 }
 
@@ -748,18 +777,40 @@ function shutdown(signal: string) {
   startup.mark('shutdown_requested');
   stopping = true;
   // Fence preview admission before waiting for commands or service shutdown.
-  const previewClosing = cloudPreviewTransport?.close();
-  void previewClosing?.catch(() => undefined);
+  const previewClosing = startWorkerShutdownTask(() =>
+    cloudPreviewTransport?.close(),
+  );
   // stop() fences further once ticks/consumer admission synchronously, then
   // drains the current tick, public Schedule/SDK/root, both backends and writes.
-  const nativeOnceClosing = Promise.all(
-    nativeScheduleControls.map((control) => control.stop()),
+  const nativeClosing = nativeScheduleControls.map((control) =>
+    startWorkerShutdownTask(() => control.stop()),
   );
-  void nativeOnceClosing.catch(() => undefined);
   shutdownTask = (async () => {
     console.info(`[M5] received ${signal}; stopping worker`);
     stopping = true;
-    stopPressureLog();
+    const fenceTasks = [
+      { name: 'pressure_log', run: stopPressureLog },
+      { name: 'mcp_abort', run: () => mcpDiscoveryAborter.abort() },
+      {
+        name: 'maintenance_abort',
+        run: () => maintenanceReportingAborter.abort(),
+      },
+      {
+        name: 'employee_test_abort',
+        run: () => platformEmployeeTestAborter?.abort(),
+      },
+      {
+        name: 'http_server',
+        run: () =>
+          new Promise<void>((resolve, reject) => {
+            server.close((error) => (error ? reject(error) : resolve()));
+          }),
+      },
+      ...[...activeAborters].map((abort, index) => ({
+        name: `execution_abort_${index}`,
+        run: abort,
+      })),
+    ].map(({ name, run }) => ({ name, task: startWorkerShutdownTask(run) }));
     clearInterval(readinessTimer);
     clearInterval(codexProviderStatusTimer);
     clearInterval(dshRuntimeInventoryTimer);
@@ -768,41 +819,95 @@ function shutdown(signal: string) {
     clearInterval(cloudRecoveryTimer);
     clearInterval(managedCloudTimer);
     clearInterval(mcpRecoveryTimer);
-    mcpDiscoveryAborter.abort();
-    maintenanceReportingAborter.abort();
     clearInterval(automationTimer);
     clearInterval(platformEmployeeTestTimer);
     clearInterval(codexAuthorizationTimer);
-    for (const abort of activeAborters) abort();
-    platformEmployeeTestAborter?.abort();
-    server.close();
-    await Promise.allSettled(activeExecutions);
-    await stopCloudProjectServices();
-    await previewClosing;
-    if (mcpDiscoveryTask) await mcpDiscoveryTask;
-    if (cloudRecoveryTask) await cloudRecoveryTask;
-    if (managedCloudTask) await managedCloudTask;
-    if (mcpRecoveryTask) await mcpRecoveryTask;
-    await codexAuthorizationBroker.close();
-    await codexAuthorizationTask;
-    await codexProbeTask;
-    await maintenanceReportingTask;
-    await nativeOnceClosing;
-    await automationTask;
-    await producerLifecycle.waitForCurrentRoots();
-    await closeHarnessAdapters();
-    await dshInventoryTask;
-    await markWorkerDshRuntimesOffline(workerId).catch(() => undefined);
-    await removeWorkerCapabilities(workerId).catch(() => undefined);
-    await closeDatabase();
+    await closeWorkerResources({
+      drainTasks: [
+        ...fenceTasks.map(({ name, task }) => ({ name, run: () => task })),
+        {
+          name: 'executions',
+          run: async () => {
+            // A claim already awaiting SQL can publish its execution after the
+            // first abort snapshot. Drain that tick, then abort/wait the new set.
+            const results: PromiseSettledResult<unknown>[] =
+              await Promise.allSettled([queueTask]);
+            results.push(
+              ...(await Promise.allSettled(
+                [...activeAborters].map((abort) =>
+                  startWorkerShutdownTask(abort),
+                ),
+              )),
+            );
+            results.push(...(await Promise.allSettled([...activeExecutions])));
+            const errors = results.flatMap((result) =>
+              result.status === 'rejected' ? [result.reason] : [],
+            );
+            if (errors.length)
+              throw new AggregateError(
+                errors,
+                'Execution drain remains unconfirmed',
+              );
+          },
+        },
+        { name: 'preview', run: () => previewClosing },
+        { name: 'mcp_discovery', run: () => mcpDiscoveryTask },
+        { name: 'cloud_recovery', run: () => cloudRecoveryTask },
+        { name: 'managed_cloud', run: () => managedCloudTask },
+        { name: 'mcp_recovery', run: () => mcpRecoveryTask },
+        {
+          name: 'authorization_close',
+          run: () => codexAuthorizationBroker.close(),
+        },
+        { name: 'authorization_tick', run: () => codexAuthorizationTask },
+        { name: 'provider_probe', run: () => codexProbeTask },
+        { name: 'maintenance_reporting', run: () => maintenanceReportingTask },
+        ...nativeClosing.map((task, index) => ({
+          name: `native_control_${index}`,
+          run: () => task,
+        })),
+        { name: 'automation', run: () => automationTask },
+        { name: 'employee_test', run: () => platformEmployeeTestTask },
+      ],
+      waitForProducerRoots: () => producerLifecycle.waitForCurrentRoots(),
+      stopCloudProjects: stopCloudProjectServices,
+      closeHarness: closeHarnessAdapters,
+      waitForInventory: async () => {
+        await dshInventoryTask;
+      },
+      verifyRuntimeClosure: async () => {
+        try {
+          const summary = await verifyWorkerDshRuntimeClosure({
+            workerId,
+            workerBootId: serviceBuildIdentity.bootId,
+            serviceManifestDigest: serviceBuildIdentity.manifestDigest,
+            runtimeInventory: () => getHarnessRouter().runtimeInventory(),
+            closureInventory: () =>
+              getHarnessRouter().runtimeClosureInventory(),
+          });
+          console.info('[MET-195] native close readback', summary);
+        } catch (error) {
+          if (error instanceof DshWorkerCloseError)
+            console.error('[MET-195] native close unconfirmed', error.summary);
+          throw error;
+        }
+      },
+      removeCapabilities: () => removeWorkerCapabilities(workerId),
+      closeDatabase,
+    });
     process.exit(0);
   })();
   return shutdownTask;
 }
 
 const stopWorker = (signal: string) => {
-  void shutdown(signal).catch(() => {
-    console.error('[M5] shutdown incomplete; resource closure unconfirmed');
+  void shutdown(signal).catch((error) => {
+    console.error('[M5] shutdown incomplete; resource closure unconfirmed', {
+      failedStages:
+        error instanceof WorkerShutdownError
+          ? error.failures.map(({ name }) => name)
+          : ['shutdown_setup'],
+    });
     process.exitCode = 1;
   });
 };

@@ -18,6 +18,7 @@ import * as CodexSubscription from '../../codex-subscription-home.js';
 import * as NativeArtifact from '../dsh-native-artifact.js';
 import * as NativeRetention from '../dsh-native-retention.js';
 import * as NativeStorage from '../dsh-native-storage.js';
+import * as CloseObserver from '../dsh-close-observer.js';
 import {
   DSH_MISSING_FROZEN_GENERATION,
   PlatformEmployeeDefinitionSchema,
@@ -134,6 +135,178 @@ function cachedRuntimes(instance: DshRuntimePool) {
   return Reflect.get(instance, 'runtimes') as Map<string, DshRuntime>;
 }
 
+/** Ownership-only clients and the factory gate below never spawn a child. A
+ * deliberately rejected close has no external resources for afterEach to reap. */
+function ownershipPool() {
+  return new DshRuntimePool({
+    runtimeRoot: join(root, 'ownership'),
+    runtimeCommand: process.execPath,
+    runtimeArgs: ['/synthetic/never-spawned.mjs'],
+    credentialResolver: { resolve: async () => ({ apiKey: 'synthetic-only' }) },
+  });
+}
+function ownedRuntime(close: () => Promise<void>) {
+  return Object.assign(ownedClient(close), { nativeTools: [] });
+}
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+it('global close preserves a rejection while attempting every captured owner', async () => {
+  const instance = ownershipPool(),
+    failure = Error('original close rejected');
+  const failed = ownedRuntime(async () => {
+    throw failure;
+  });
+  const other = ownedRuntime(async () => {});
+  cachedRuntimes(instance).set(failed.sessionId, failed);
+  cachedRuntimes(instance).set(other.sessionId, other);
+  const closing = instance.close();
+  await expect(closing).rejects.toBeInstanceOf(AggregateError);
+  expect(failed.client.close).toHaveBeenCalledOnce();
+  expect(other.client.close).toHaveBeenCalledOnce();
+  expect(instance.close()).toBe(closing);
+  expect(instance.closureInventory()).toMatchObject([
+    { id: failed.id, state: 'unconfirmed' },
+  ]);
+});
+
+it('concurrent global closes share the unresolved original promise and every owner', async () => {
+  const instance = ownershipPool(),
+    held = deferred();
+  const original = ownedRuntime(() => held.promise);
+  cachedRuntimes(instance).set(original.sessionId, original);
+  let completed = false;
+  const first = instance.close(),
+    second = instance.close();
+  expect(second).toBe(first);
+  void second.then(() => {
+    completed = true;
+  });
+  await Promise.resolve();
+  expect(completed).toBe(false);
+  expect(original.client.close).toHaveBeenCalledOnce();
+  held.resolve();
+  await Promise.all([first, second]);
+  expect(completed).toBe(true);
+  expect(instance.closureInventory()).toEqual([]);
+});
+
+it('failed drop retains ownership for inventory, repeated drop and global close', async () => {
+  const instance = ownershipPool(),
+    failure = Error('drop unconfirmed');
+  const original = ownedRuntime(async () => {
+    throw failure;
+  });
+  cachedRuntimes(instance).set(original.sessionId, original);
+  await expect(instance.drop(original.sessionId)).rejects.toBe(failure);
+  expect(instance.get(original.sessionId)).toBeUndefined();
+  expect(instance.inventory()).toMatchObject([{ id: original.id }]);
+  expect(instance.closureInventory()).toMatchObject([
+    { id: original.id, state: 'unconfirmed' },
+  ]);
+  await expect(instance.drop(original.sessionId)).rejects.toBeInstanceOf(
+    AggregateError,
+  );
+  await expect(instance.close()).rejects.toBeInstanceOf(AggregateError);
+  expect(original.client.close).toHaveBeenCalledOnce();
+});
+
+it('a witnessed exit stays owned until its durable close settles, without appearing live', async () => {
+  const instance = ownershipPool(),
+    held = deferred();
+  const original = ownedRuntime(() => held.promise);
+  Object.assign(original.client, {
+    processState: () => ({
+      state: 'exited',
+      stdioClosed: true,
+      exitCode: 0,
+      signal: null,
+    }),
+  });
+  const closing = instance.closeOwned(original);
+  await Promise.resolve();
+  expect(instance.inventory()).toEqual([]);
+  expect(instance.closureInventory()).toMatchObject([
+    { id: original.id, state: 'closing', processState: 'exited' },
+  ]);
+  held.resolve();
+  await closing;
+  expect(instance.closureInventory()).toEqual([]);
+});
+
+it('input hold disposal failure does not skip the original child close', async () => {
+  const instance = ownershipPool(),
+    failure = Error('hold disposal failed');
+  const original = ownedRuntime(async () => {});
+  vi.spyOn(instance, 'clearInputDelivery').mockImplementation(() => {
+    throw failure;
+  });
+  await expect(instance.closeOwned(original)).rejects.toBe(failure);
+  expect(original.client.close).toHaveBeenCalledOnce();
+  expect(instance.closureInventory()).toMatchObject([
+    { id: original.id, state: 'unconfirmed' },
+  ]);
+});
+
+it.each([false, true])(
+  'global close waits an in-flight owner reservation; write failure=%s',
+  async (writeFailure) => {
+    const instance = ownershipPool(),
+      entered = deferred(),
+      held = deferred();
+    vi.spyOn(CloseObserver, 'createObservedDshClient').mockImplementation(
+      async (input) => {
+        entered.resolve();
+        await held.promise;
+        try {
+          input.assertAdmissionOpen?.();
+        } catch (error) {
+          if (writeFailure)
+            throw new AggregateError([
+              error,
+              Error('never-spawned receipt failed'),
+            ]);
+          throw error;
+        }
+        throw Error('The concurrent close must fence before any spawn');
+      },
+    );
+    const acquisition = instance
+      .acquire(request())
+      .catch((error: unknown) => error);
+    await entered.promise;
+    let completed = false;
+    const closing = instance.close();
+    const result = closing.then(
+      () => {
+        completed = true;
+        return null;
+      },
+      (error: unknown) => error,
+    );
+    await Promise.resolve();
+    expect(completed).toBe(false);
+    held.resolve();
+    if (writeFailure) {
+      expect(await acquisition).toBeInstanceOf(AggregateError);
+      expect(await result).toBeInstanceOf(AggregateError);
+    } else {
+      expect(await acquisition).toMatchObject({
+        code: 'DSH_RUNTIME_POOL_CLOSING',
+      });
+      expect(await result).toBeNull();
+      expect(completed).toBe(true);
+    }
+    expect(CloseObserver.createObservedDshClient).toHaveBeenCalledOnce();
+    expect(instance.inventory()).toEqual([]);
+  },
+);
+
 it('owned close waits the original client even when the pool mapping is already empty', async () => {
   const runtimes = pool();
   let release!: () => void;
@@ -195,7 +368,7 @@ it('owned close joins the original pending close after global pool shutdown clea
 });
 
 it('owned close rejection remains unconfirmed and does not close a replacement', async () => {
-  const runtimes = pool(),
+  const runtimes = ownershipPool(),
     failure = Error('original close unconfirmed'),
     original = ownedClient(() => Promise.reject(failure)),
     replacement = ownedClient(async () => {}, original.sessionId);
@@ -203,6 +376,12 @@ it('owned close rejection remains unconfirmed and does not close a replacement',
   await expect(runtimes.closeOwned(original)).rejects.toBe(failure);
   expect(runtimes.get(original.sessionId)).toBe(replacement);
   expect(replacement.client.close).not.toHaveBeenCalled();
+  await expect(runtimes.close()).rejects.toBeInstanceOf(AggregateError);
+  expect(original.client.close).toHaveBeenCalledOnce();
+  expect(replacement.client.close).toHaveBeenCalledOnce();
+  expect(runtimes.closureInventory()).toMatchObject([
+    { id: original.id, state: 'unconfirmed' },
+  ]);
 });
 
 function request(): Parameters<DshRuntimePool['acquire']>[0] {

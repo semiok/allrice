@@ -842,12 +842,13 @@ describe('bounded assistant diagnostic consumption', () => {
     expect(getAssistantFailureDiagnostics(error)).toBeUndefined();
   });
   it('removes a stalled diagnostic RPC after its own 2s deadline, not the 5min model deadline', async () => {
-    // A minimal local JSON-RPC process; it deliberately ignores diagnostics.
+    // A synthetic JSON-RPC process: ignores diagnostics and returns the explicit
+    // synthetic close receipt; no SDK/Native shutdown is claimed by this fixture.
     const client = new DshProtocolClient({
       command: process.execPath,
       args: [
         '-e',
-        "require('node:readline').createInterface({input:process.stdin}).on('line',s=>{const f=JSON.parse(s);if(f.method==='shutdown'){process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:f.id,result:{}})+'\\n');process.exit(0);}})",
+        "require('node:readline').createInterface({input:process.stdin}).on('line',s=>{const f=JSON.parse(s);if(f.method==='shutdown'){process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:f.id,result:{allriceClose:{version:1,sdkShutdown:true,rootDisposed:true,priorFramesFlushed:true}}})+'\\n',()=>process.exit(0));}})",
       ],
       cwd: process.cwd(),
       environment: {},

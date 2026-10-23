@@ -411,3 +411,5 @@ export {
   getManualAutomationRun,
   ManualAutomationRunError,
 } from './automation-manual.ts';
+
+export * from './providers/dsh-runtime-close-observations.ts';

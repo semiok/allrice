@@ -2,6 +2,10 @@ import type postgres from 'postgres';
 import { z } from 'zod';
 import { getDatabase } from '../core/client.ts';
 import {
+  readDshRuntimeCloseCoverage,
+  assertDshContextPhysicallyClosed,
+} from '../providers/dsh-runtime-close-observations.ts';
+import {
   NativeRootOriginSchema,
   nativeRootDigest,
   type NativeRootOrigin,
@@ -160,7 +164,14 @@ async function preservation(tx: Tx, sessionId: string) {
     from allrice_storage_objects o where id in (
       select object_id from allrice_deliverable_versions where session_id=${sessionId}
       union select object_id from allrice_file_references where session_id=${sessionId})`;
-  return { messages, versions, files, artifacts, businessReferences, objects };
+  return {
+    messages,
+    versions,
+    files,
+    artifacts,
+    businessReferences,
+    objects,
+  };
 }
 
 async function assertIdle(tx: Tx, scope: NativeTestChatRetirementScope) {
@@ -201,6 +212,10 @@ async function assertIdle(tx: Tx, scope: NativeTestChatRetirementScope) {
       and status='enabled' and deleted_at is null
   ) select 1 from busy limit 1`;
   if (busy) fail('NATIVE_RETIREMENT_CONTEXT_BUSY');
+  assertDshContextPhysicallyClosed(
+    await readDshRuntimeCloseCoverage(tx, { context: scope }),
+    scope,
+  );
 }
 
 async function snapshot(

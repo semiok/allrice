@@ -1691,6 +1691,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
     await this.runtimePool.close();
   }
 
+  runtimeClosureInventory() {
+    return this.runtimePool.closureInventory();
+  }
+
   runtimeInventory() {
     return this.runtimePool.inventory();
   }

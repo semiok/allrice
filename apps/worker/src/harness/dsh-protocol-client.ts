@@ -1,3 +1,4 @@
+import type { DshCloseObservationDetails } from '@allrice/database';
 import type { SessionReferenceSnapshot } from '@allrice/contracts';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface, type Interface } from 'node:readline';
@@ -32,12 +33,37 @@ export interface DshProtocolLaunch {
   cwd: string;
   environment: Readonly<Record<string, string>>;
   requestTimeoutMs: number;
+  observeClose?: (details: DshCloseObservationDetails) => Promise<void>;
 }
 
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+export interface DshRuntimeProcessState {
+  state: 'running' | 'exited' | 'unknown';
+  stdioClosed: boolean;
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+}
+
+export interface DshRuntimeCloseEvidence {
+  process: DshRuntimeProcessState;
+  shutdownAcknowledged: boolean;
+  wrapperCleanupConfirmed: boolean;
+  terminationAttempted: 'SIGTERM' | 'SIGKILL' | null;
+}
+
+export class DshRuntimeCloseError extends HandlerError {
+  constructor(public readonly evidence: DshRuntimeCloseEvidence) {
+    super(
+      'DSH_RUNTIME_CLOSE_UNCONFIRMED',
+      'DSH runtime closure remains unconfirmed; process facts are retained',
+      false,
+    );
+  }
 }
 
 export class DshProtocolClient {
@@ -50,6 +76,13 @@ export class DshProtocolClient {
   private inboundRequestHandler: DshInboundRequestHandler | null = null;
   private requestId = 0;
   private closing = false;
+  private closeTask: Promise<void> | undefined;
+  private processExit: {
+    code: number | null;
+    signal: NodeJS.Signals | null;
+  } | null = null;
+  private stdioClosed = false;
+  private closeEvidence: DshRuntimeCloseEvidence | null = null;
   private terminalError: Error | null = null;
 
   constructor(private readonly launch: DshProtocolLaunch) {
@@ -72,6 +105,9 @@ export class DshProtocolClient {
         ),
       ),
     );
+    this.child.once('exit', (code, signal) => {
+      this.processExit = { code, signal };
+    });
     this.closed = new Promise((resolve) => {
       this.child.once('error', (error) => {
         this.fail(
@@ -83,6 +119,8 @@ export class DshProtocolClient {
         );
       });
       this.child.once('close', (code, signal) => {
+        this.processExit = { code, signal };
+        this.stdioClosed = true;
         this.fail(
           new HandlerError(
             'DSH_RUNTIME_CLOSED',
@@ -389,26 +427,150 @@ export class DshProtocolClient {
     };
   }
 
-  async close() {
-    if (this.closing) return this.closed;
+  processState(): DshRuntimeProcessState {
+    return {
+      state: this.processExit
+        ? 'exited'
+        : this.child.pid
+          ? 'running'
+          : 'unknown',
+      stdioClosed: this.stdioClosed,
+      exitCode: this.processExit?.code ?? null,
+      signal: this.processExit?.signal ?? null,
+    };
+  }
+
+  closureEvidence(): DshRuntimeCloseEvidence | null {
+    return this.closeEvidence
+      ? { ...this.closeEvidence, process: this.processState() }
+      : null;
+  }
+
+  close(): Promise<void> {
+    if (this.closeTask) return this.closeTask;
     this.closing = true;
+    this.closeTask = this.performClose();
+    return this.closeTask;
+  }
+
+  private async waitForProcessClose(timeoutMs: number): Promise<boolean> {
+    if (this.stdioClosed) return true;
+    let timer: NodeJS.Timeout | undefined;
     try {
-      await this.request('shutdown', undefined, 2_000);
+      return await Promise.race([
+        this.closed.then(() => true),
+        new Promise<false>((resolve) => {
+          timer = setTimeout(() => resolve(false), timeoutMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async performClose() {
+    const observationErrors: unknown[] = [];
+    const observations: Promise<void>[] = [];
+    const observe = (details: DshCloseObservationDetails) => {
+      if (!this.launch.observeClose) return;
+      // Persistence must never postpone or abandon physical child cleanup.
+      // Each rejection is observed immediately and propagated after reaping.
+      observations.push(
+        Promise.resolve()
+          .then(() => this.launch.observeClose!(details))
+          .then(
+            () => undefined,
+            (error) => {
+              observationErrors.push(error);
+            },
+          ),
+      );
+    };
+    observe({ kind: 'close_started' });
+    let wrapper: Extract<
+      DshCloseObservationDetails,
+      { kind: 'close_request' }
+    >['wrapper'] = null;
+    let shutdownAcknowledged = false;
+    let wrapperCleanupConfirmed = false;
+    let terminationAttempted: 'SIGTERM' | 'SIGKILL' | null = null;
+    try {
+      const result = await this.request('shutdown', undefined, 2_000);
+      shutdownAcknowledged = true;
+      const proof = record(result.allriceClose);
+      if (
+        proof?.version === 1 &&
+        typeof proof.sdkShutdown === 'boolean' &&
+        typeof proof.rootDisposed === 'boolean' &&
+        typeof proof.priorFramesFlushed === 'boolean'
+      )
+        wrapper = {
+          version: 1,
+          sdkShutdown: proof.sdkShutdown,
+          rootDisposed: proof.rootDisposed,
+          priorFramesFlushed: proof.priorFramesFlushed,
+        };
+      wrapperCleanupConfirmed = !!(
+        wrapper?.sdkShutdown &&
+        wrapper.rootDisposed &&
+        wrapper.priorFramesFlushed
+      );
     } catch {
-      // Shutdown is best-effort; process isolation remains authoritative.
+      // Still own and reap this exact child. A failed request can never become
+      // a semantic close confirmation solely because the process later exits.
     }
-    this.lines.close();
+    observe({
+      kind: 'close_request',
+      acknowledged: shutdownAcknowledged,
+      wrapper,
+    });
     this.child.stdin.end();
-    if (this.child.exitCode === null && this.child.signalCode === null) {
-      this.child.kill('SIGTERM');
-      const timer = setTimeout(() => {
-        if (this.child.exitCode === null && this.child.signalCode === null) {
-          this.child.kill('SIGKILL');
-        }
-      }, 2_000);
-      timer.unref();
+    // Let an acknowledged shutdown finish naturally before escalating. The
+    // bounded waits do not abandon cleanup: the real close event is awaited below.
+    if (!(await this.waitForProcessClose(2_000))) {
+      if (!this.processExit) {
+        terminationAttempted = 'SIGTERM';
+        this.child.kill('SIGTERM');
+      }
+      if (!(await this.waitForProcessClose(2_000)) && !this.processExit) {
+        terminationAttempted = 'SIGKILL';
+        this.child.kill('SIGKILL');
+      }
     }
-    return this.closed;
+    await this.closed;
+    this.lines.close();
+    const evidence: DshRuntimeCloseEvidence = Object.freeze({
+      process: Object.freeze(this.processState()),
+      shutdownAcknowledged,
+      wrapperCleanupConfirmed,
+      terminationAttempted,
+    });
+    this.closeEvidence = evidence;
+    observe({
+      kind: 'process_closed',
+      fact: {
+        source: 'child_close',
+        stdioClosed: true,
+        exitCode: evidence.process.exitCode,
+        signal: evidence.process.signal,
+        terminationAttempted,
+      },
+    });
+    await Promise.all(observations);
+    const failure =
+      !shutdownAcknowledged ||
+      !wrapperCleanupConfirmed ||
+      evidence.process.exitCode !== 0 ||
+      evidence.process.signal !== null ||
+      terminationAttempted !== null
+        ? new DshRuntimeCloseError(evidence)
+        : null;
+    if (observationErrors.length)
+      throw new AggregateError(
+        [...(failure ? [failure] : []), ...observationErrors],
+        'DSH runtime close observation remains unconfirmed',
+      );
+    if (failure) throw failure;
   }
 
   private request(
@@ -417,6 +579,14 @@ export class DshProtocolClient {
     timeoutMs = this.launch.requestTimeoutMs,
   ): Promise<Record<string, unknown>> {
     if (this.terminalError) return Promise.reject(this.terminalError);
+    if (this.closing && method !== 'shutdown')
+      return Promise.reject(
+        new HandlerError(
+          'DSH_RUNTIME_CLOSING',
+          'DSH runtime is closing',
+          false,
+        ),
+      );
     const id = ++this.requestId;
     return new Promise((resolve, reject) => {
       const timer =

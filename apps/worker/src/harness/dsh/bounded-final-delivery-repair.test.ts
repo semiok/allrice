@@ -394,7 +394,48 @@ async function fixture(mode: string) {
     abort.abort();
     delivery.dispose();
     await loop;
-    await pool.close();
+    // This test-owned SDK transport predates the production close receipt.
+    // Reap its child, but retain the unconfirmed owner instead of inventing ACKs.
+    const exited = {
+      state: 'exited',
+      stdioClosed: true,
+      exitCode: 0,
+      signal: null,
+    };
+    await expect(pool.close()).rejects.toMatchObject({
+      errors: [
+        {
+          errors: [
+            {
+              code: 'DSH_RUNTIME_CLOSE_UNCONFIRMED',
+              evidence: {
+                process: exited,
+                shutdownAcknowledged: true,
+                wrapperCleanupConfirmed: false,
+                terminationAttempted: null,
+              },
+            },
+          ],
+        },
+      ],
+    });
+    expect(client.processState()).toEqual(exited);
+    expect(pool.inventory()).toEqual([]);
+    expect(pool.closureInventory()).toEqual([
+      {
+        id: runtime.id,
+        threadId: runtime.sessionId,
+        nativeArtifactId: null,
+        state: 'unconfirmed',
+        processState: 'exited',
+        stdioClosed: true,
+        exitCode: 0,
+        signal: null,
+        shutdownAcknowledged: true,
+        wrapperCleanupConfirmed: false,
+        terminationAttempted: null,
+      },
+    ]);
     await rm(root, { recursive: true, force: true });
   });
   await request(client, 'fixture/start', {

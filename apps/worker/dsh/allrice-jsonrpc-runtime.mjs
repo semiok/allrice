@@ -321,7 +321,10 @@ const brokerNativeTools = [
         type: 'string',
         description: 'Relative directory path. Defaults to .',
       },
-      limit: { type: 'integer', description: 'Maximum entries from 1 to 200.' },
+      limit: {
+        type: 'integer',
+        description: 'Maximum entries from 1 to 200.',
+      },
       survey: {
         type: 'object',
         description:
@@ -361,7 +364,10 @@ const brokerNativeTools = [
         required: true,
         description: 'Text to search for.',
       },
-      limit: { type: 'integer', description: 'Maximum matches from 1 to 100.' },
+      limit: {
+        type: 'integer',
+        description: 'Maximum matches from 1 to 100.',
+      },
     },
   },
   {
@@ -605,7 +611,10 @@ const brokerNativeTools = [
         description:
           'Focused Chinese or English search query, 1 to 200 characters.',
       },
-      limit: { type: 'integer', description: 'Maximum results from 1 to 10.' },
+      limit: {
+        type: 'integer',
+        description: 'Maximum results from 1 to 10.',
+      },
     },
   },
   {
@@ -836,7 +845,9 @@ function nativeSkillSnapshot(value) {
       ? { whenToUse: value.whenToUse }
       : {}),
     ...(value.metadata
-      ? { metadata: Object.freeze(globalThis.structuredClone(value.metadata)) }
+      ? {
+          metadata: Object.freeze(globalThis.structuredClone(value.metadata)),
+        }
       : {}),
   });
 }
@@ -1144,6 +1155,7 @@ class AllRiceHarnessSdkJsonRpcServer extends AllRiceSdkRoot {
         compact: true,
         recover: true,
         close: true,
+        allriceCloseEvidence: 1,
       },
     };
   }
@@ -1879,7 +1891,9 @@ class AllRiceHarnessSdkJsonRpcServer extends AllRiceSdkRoot {
       case 'initialize':
         return this.initialize(params);
       case 'session/resume':
-        await this.ensureRoot(requiredSessionId(params), { resumeOnly: true });
+        await this.ensureRoot(requiredSessionId(params), {
+          resumeOnly: true,
+        });
         return {};
       case 'session/wait':
         return this.waitRoot(requiredSessionId(params));
@@ -1972,23 +1986,84 @@ server.userQuestionNotify = (notice) =>
       : 'session.user-question',
     notice,
   );
-let exiting = false;
+// Closure evidence concerns the public SDK/root/transport APIs below. It is
+// not a substitute for a storage readback or proof of every plugin's internals.
+let shutdownPreparation;
+let exitTask;
+let requestedExitCode = 0;
 
-async function disposeAndExit(code) {
-  if (exiting) return;
-  exiting = true;
-  await Promise.allSettled([
-    Promise.resolve().then(() => transport.flush()),
-    Promise.resolve().then(() => ctx.root.fiber.dispose()),
-  ]);
-  process.exit(code);
+function prepareShutdown() {
+  if (shutdownPreparation) return shutdownPreparation;
+  shutdownPreparation = (async () => {
+    const receipt = {
+      version: 1,
+      sdkShutdown: false,
+      rootDisposed: false,
+      priorFramesFlushed: false,
+    };
+    // Each public cleanup API is attempted once. Safe boolean failures remain
+    // visible in the RPC receipt; raw plugin errors are never forwarded.
+    for (const [stage, operation] of [
+      ['sdkShutdown', () => server.shutdown()],
+      ['rootDisposed', () => ctx.root.fiber.dispose()],
+      ['priorFramesFlushed', () => transport.flush()],
+    ]) {
+      try {
+        await operation();
+        receipt[stage] = true;
+      } catch {
+        /* false is retained */
+      }
+    }
+    return receipt;
+  })();
+  return shutdownPreparation;
+}
+
+function disposeAndExit(code) {
+  if (code !== 0 && requestedExitCode === 0) requestedExitCode = code;
+  if (exitTask) return exitTask;
+  exitTask = (async () => {
+    try {
+      const receipt = await prepareShutdown();
+      if (
+        (!receipt.sdkShutdown ||
+          !receipt.rootDisposed ||
+          !receipt.priorFramesFlushed) &&
+        requestedExitCode === 0
+      )
+        requestedExitCode = 1;
+    } catch {
+      if (requestedExitCode === 0) requestedExitCode = 1;
+    }
+    // For an RPC shutdown, setImmediate below runs after the transport queues
+    // its response. Verify that final barrier too; an earlier receipt is not enough.
+    try {
+      await transport.flush();
+    } catch {
+      if (requestedExitCode === 0) requestedExitCode = 1;
+    }
+    process.exit(requestedExitCode);
+  })();
+  return exitTask;
 }
 
 transport.onRequest(async (method, params) => {
+  if (method === 'shutdown') {
+    try {
+      const allriceClose = await prepareShutdown();
+      setImmediate(() => void disposeAndExit(0));
+      return { allriceClose };
+    } catch {
+      setImmediate(() => void disposeAndExit(1));
+      // Do not expose plugin errors or credential-bearing diagnostics.
+      throw new Error('ALLRICE_RUNTIME_CLOSE_UNCONFIRMED');
+    }
+  }
+  if (shutdownPreparation) throw new Error('ALLRICE_RUNTIME_CLOSING');
   if (method === 'initialize') await ctx.get('loader')?.await();
-  const result = await server.handleRequest(method, params);
-  if (method === 'shutdown') setImmediate(() => void disposeAndExit(0));
-  return result;
+  if (shutdownPreparation) throw new Error('ALLRICE_RUNTIME_CLOSING');
+  return server.handleRequest(method, params);
 });
 transport.start();
 process.stdin.on('end', () => void disposeAndExit(0));
