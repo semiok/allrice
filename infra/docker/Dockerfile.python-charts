@@ -1,5 +1,6 @@
 FROM node@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS node-runtime
-FROM python:3.11.13-slim-bookworm@sha256:cec9aa7aa96eea4fa036e9b82be1e6b325f2e3707f462d885868df51ec0a4b47
+# Multi-arch index; resolves to the amd64 manifest sha256:cec9aa7a… on x86_64.
+FROM python:3.11.13-slim-bookworm@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 RUN apt-get update && apt-cache policy fonts-noto-cjk && apt-get install -y --no-install-recommends \
       fonts-noto-cjk=1:20220127+repack1-1 libstdc++6 \

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
+import { cloudPlatform } from './runtime-v2/cloud-platform.ts';
 
 /** Only a saved immutable HTML version. Models never supply URLs or bytes. */
 export const StaticBrowserReferenceSchema = z
@@ -10,8 +11,7 @@ export const StaticBrowserReferenceSchema = z
   })
   .strict();
 export const staticBrowserMaximumBytes = 100_000;
-export const staticBrowserImageV1 =
-  'sha256:e0ef9ce00e900780e7b34a876a38549eb83ba597c62cb7d22c4986af2b725c77';
+export const staticBrowserImageV1: string = cloudPlatform.images.staticBrowser;
 export const StaticBrowserTargetSchema = StaticBrowserReferenceSchema.extend({
   version: z.literal(1),
   objectId: UuidSchema,

@@ -20,6 +20,7 @@ import {
   projectArtifactsMatchOutputs,
 } from './project-outputs.ts';
 import { isRuntimeRelativePath } from './runtime-v2/policy.ts';
+import { cloudPlatform } from './runtime-v2/cloud-platform.ts';
 import {
   SandboxNetworkRequestSchema,
   SandboxNetworkObservationSchema,
@@ -228,7 +229,7 @@ export const CloudProjectCommandSchema = z
         (a.projectPreparation.manager === 'uv') ||
       c.imageDigest !== image ||
       a.imageDigest !== image ||
-      s.architecture !== 'amd64' ||
+      s.architecture !== cloudPlatform.architecture ||
       !s.executionOrigin ||
       a.projectPreparation.projectId !== s.project.projectId ||
       a.projectPreparation.sourceDigest !== s.snapshot.sourceDigest ||

@@ -5,6 +5,7 @@ import {
   ProjectServiceStartInputSchema,
   CloudExecutionProfileSchema,
   cloudToolchainImageV1,
+  cloudPlatform,
 } from '@allrice/contracts';
 import { assistantFixtureStorage } from './assistant-runtime.fixture.ts';
 import { createAssistantLocalCommandFixture } from './local-command-assistant.fixture.ts';
@@ -77,13 +78,12 @@ export async function cloudProjectServiceCandidate(
     profile = CloudExecutionProfileSchema.parse({
       backend: 'cloud-gvisor-v1',
       runtime: 'runsc',
-      architecture: 'amd64',
+      architecture: cloudPlatform.architecture,
       imageDigest: cloudToolchainImageV1,
       network: 'none',
       maximumConcurrency: 2,
       runtimeVersion: 'release-20260831.0',
-      runtimeChecksum:
-        'sha256:1a4995a70b3c8b7d36f55d7d2dc6d15185ebe420de653b1a330b42d36c0e6b4a',
+      runtimeChecksum: cloudPlatform.runtimeChecksum,
     });
   await db`insert into allrice_execution_targets(id,organization_id,workspace_id,target_key,kind,label,state,capabilities,metadata) values(${target},${f.org},${f.workspace},${'cloud-project-' + target},'cloud_sandbox','Isolated cloud project fixture','online',${db.json(['process.execute'])},'{}')`;
   await db`insert into allrice_cloud_execution_grants(id,organization_id,workspace_id,owner_id,target_id,version,profile,enabled) values(${grant},${f.org},${f.workspace},${f.user},${target},1,${db.json(profile)},true)`;

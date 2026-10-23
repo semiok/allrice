@@ -10,6 +10,7 @@ import http.client
 import json
 import math
 import os
+import platform
 import re
 import select
 import stat
@@ -25,7 +26,36 @@ DEADLINE = "xyz.bplabs.allrice.cloud.deadline"
 SERVICE_LEASES = "/run/allrice-cloud-project-leases"
 SANDBOX_LEASES = "/run/allrice-cloud-sandbox-leases"
 SANDBOX = "xyz.bplabs.allrice.cloud.sandbox-execution"
-PYTHON_IMAGE = "sha256:d6a52afde3d7c99d8cba9c89ff5078a8e1b6a177f97512ff4facfa4f930fe38e"
+# Native toolchain for this VM; mirrors packages/contracts cloud-platform.ts.
+# gVisor cannot run foreign-architecture binaries, so only one set is valid.
+PLATFORMS = {
+    "x86_64": {
+        "python": "sha256:d6a52afde3d7c99d8cba9c89ff5078a8e1b6a177f97512ff4facfa4f930fe38e",
+        "runsc": "1a4995a70b3c8b7d36f55d7d2dc6d15185ebe420de653b1a330b42d36c0e6b4a",
+        "sidecars": {
+            "checkpointgofer": "205cc047fcbbec7de29fb41f2ef403a22aa0063332e3f4f13a566f4d56a95d84",
+            "gvisor-sentry-prewarmer": "3315d7ad7c2d3751d349e4976fa02da1da6fd7e41746c35622304e5fabe4fce0",
+            "gvisor_sentry": "66f1e15d15424a87fc883df4597c5d0cfcd442ce3f82e208a69110f0949613c1",
+            "runsc-metric-server": "7e01c8637f2412aefe4a26eefc8e40f4e8184dc95be44b2b646f38ab3d260033",
+        },
+    },
+    "aarch64": {
+        "python": "sha256:7ed9955c9d0de199f9902c3086581ddeb673975e4a8094067b9254168ffa8ccc",
+        "runsc": "d5679775682cd4cb11ba7bf7bd8e04235622aa8797d518dd280064e5cd27ed5d",
+        "sidecars": {
+            "checkpointgofer": "b8679df902c900f7c5c5660a4a1b0c7f8433da19760e3c8c126eddbb238f2511",
+            "gvisor-sentry-prewarmer": "502b8b28f6a98a345a3e4bee8e1542dadaead1839e78697ba1296791adcd7632",
+            "gvisor_sentry": "c49b09cd42d2ae2d2d0d33cc32f746240b5b528db1864f922097c6958312bc07",
+            "runsc-metric-server": "da7ee8385f7ab07d6bd81a0ec5ee6f6e5e9989210af3a629147ba3d9cf2b0681",
+        },
+    },
+}
+# Host-side unit tests import this file on macOS; never let an unknown machine
+# compare equal to anything (None would match a missing container Image).
+UNSUPPORTED = "unsupported-architecture"
+NATIVE = PLATFORMS.get(platform.machine(), {
+    "python": UNSUPPORTED, "runsc": UNSUPPORTED, "sidecars": {UNSUPPORTED: UNSUPPORTED}})
+PYTHON_IMAGE = NATIVE["python"]
 SANDBOX_SUPERVISORS = ["925a800ef4deb97b09bae13c5f3b40f481d03f833160bb46f8760e56bd118837","062418f01144a4d2ee8267a125ba6cf230e877a1ca8600bf7f01f1c863999bbd"]
 STREAM_SUPERVISORS = ['306ed1c4a4efe4206ee187e9ac5a5354a4e0a378b26103172ee1b8d0fbe8e483', '99bda5c2b2226377b54b279a2d3f22617e583193df58d9f4ebc069c9f3c3fa81']
 SERVICE = "xyz.bplabs.allrice.cloud.service"
@@ -49,13 +79,8 @@ SANDBOX_IMAGE_ENV = {
 PROJECT_SUPERVISORS = {NODE_IMAGE: '413e53ec4862f034e5f19f41ff18b012a72b7e7fc757309b5803fb0ef1878d89', PYTHON_IMAGE: 'e92d90241c72ecb266ae866993a2319527a609a6bfea22ff48350f8e2026e55f'}
 STATE = "/run/allrice-cloud-watchdog.json"
 CAPACITY = "/run/allrice-cloud-capacity.json"
-EXPECTED = "1a4995a70b3c8b7d36f55d7d2dc6d15185ebe420de653b1a330b42d36c0e6b4a"
-SIDECARS = {
-    "checkpointgofer": "205cc047fcbbec7de29fb41f2ef403a22aa0063332e3f4f13a566f4d56a95d84",
-    "gvisor-sentry-prewarmer": "3315d7ad7c2d3751d349e4976fa02da1da6fd7e41746c35622304e5fabe4fce0",
-    "gvisor_sentry": "66f1e15d15424a87fc883df4597c5d0cfcd442ce3f82e208a69110f0949613c1",
-    "runsc-metric-server": "7e01c8637f2412aefe4a26eefc8e40f4e8184dc95be44b2b646f38ab3d260033",
-}
+EXPECTED = NATIVE["runsc"]
+SIDECARS = NATIVE["sidecars"]
 
 
 class Docker(http.client.HTTPConnection):
@@ -487,6 +512,8 @@ def attest():
 
 
 if __name__ == "__main__":
+    if platform.machine() not in PLATFORMS:
+        sys.exit("unsupported VM architecture: " + platform.machine())
     if len(sys.argv) == 4 and sys.argv[1] == '--sandbox-execution-lease':
         sys.exit(service_lease_channel(sys.argv[2], sys.argv[3], True))
     if len(sys.argv) == 4 and sys.argv[1] == '--project-service-lease':

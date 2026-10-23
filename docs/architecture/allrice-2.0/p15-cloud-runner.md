@@ -6,7 +6,7 @@
 
 P15 让同一个 Session/Run 在**没有 Bridge** 时，使用获准云端文件执行 Node.js 脚本，并交付不可变工件。DSH 仍是唯一 Agent Loop；新适配器在 Tool Broker 后执行一个已审批操作，不另建 Agent Loop。
 
-目前的可用后端**只针对当前 Intel macOS SaaS 开发宿主**：固定 `allrice-cloud-b4` Colima/VZ Linux VM、固定 Unix Docker socket、固定 `/usr/local/bin/colima`、gVisor/runsc 与固定 amd64 Node 镜像。它不是 M5 本地沙箱，也不是宿主临时目录。Linux Prod、其他 Colima 路径、ARM 云宿主、远端 Docker、Kubernetes 尚未适配；不能宣称“任何云服务器开箱即用”。未知后端或版本失败即拒绝，不回落到 runc/宿主进程。
+2026-10-24 起，服务端宿主只用 Apple silicon Mac（见下文「Apple silicon（arm64）宿主」）；Intel 宿主 `allrice-cloud-b4` 只保留到 M1 切换完成，Linux 部署暂不考虑。以下原始描述针对 Intel 宿主：固定 `allrice-cloud-b4` Colima/VZ Linux VM、固定 Unix Docker socket、固定 `/usr/local/bin/colima`、gVisor/runsc 与固定 amd64 Node 镜像。它不是 M5 本地沙箱，也不是宿主临时目录。Linux Prod、其他 Colima 路径、ARM 云宿主、远端 Docker、Kubernetes 尚未适配；不能宣称“任何云服务器开箱即用”。未知后端或版本失败即拒绝，不回落到 runc/宿主进程。
 
 第一版仅 Node 22.23.2 的非交互脚本；无包安装、无任意出站、无 PTY、无个人浏览器 Cookie、无自动上传/搬迁本地文件。单次最多 60 秒；不是无限时后台任务平台。镜像里的程序仍受同一沙箱约束，但对外不提供任意 Shell 命令工具。新的 feature flag、云 grant、冻结工具和存储写权限都必须显式启用；迁移不自动授权现有租户。
 
@@ -96,6 +96,37 @@ colima ssh --profile allrice-cloud-b4 -- sudo /usr/local/lib/allrice-cloud/watch
 本次镜像来自现有 B2 的**只读 image save** 再 load 到新 VM，同样验证固定 ID；未为导出镜像修改 B2。上面的公网 pull 是新安装替代步骤，执行后还必须通过 backend preflight 与整套隔离实测，不能以下载完成当验收。
 
 4. 增量数据库迁移 0082、部署代码、启用 flags、授予特定租户 grant/冻结工具是四个独立步骤。`installCloudExecutionGrant` 要求当前管理员，目标与 owner 同租户；没有公开“模型自授予”入口。先合成身份/随机 schema 测试，再按批次门禁决定 Dev 灰度；本文不授权修改线上数据库。
+
+## Apple silicon（arm64）宿主
+
+2026-10-24，MET-216。gVisor 不经 Rosetta/binfmt 转译外架构程序：在 arm64 VM 里用 runsc 启动 amd64 镜像直接报 `exec format error`，而回落 runc 被禁止。因此 Apple silicon 宿主使用**原生 arm64** VM、runsc 与镜像，不做跨架构模拟。
+
+- 架构默认取宿主 CPU（Apple silicon 为 arm64，Intel 为 amd64）。Web 与 Worker 在同一宿主上，因此天然一致；`ALLRICE_CLOUD_ARCHITECTURE=amd64|arm64` 只用于显式覆盖，非法值启动即失败。两套固定值集中在 `packages/contracts/src/runtime-v2/cloud-platform.ts`；`watchdog.py` 按 VM 的 `platform.machine()` 选同一套 runsc/sidecar/Python 镜像哈希。租户、模型都不能选择。
+- Node 镜像是多架构 OCI index，两种架构共用同一 ID；Python、Office、静态浏览器镜像在各自架构 VM 本地构建，ID 分别登记。`infra/python-charts/requirements.lock` 同时登记 amd64 与 aarch64 wheel 哈希；`Dockerfile.python-charts` 的基础镜像改为多架构 index 摘要（在 x86_64 上仍解析到原 amd64 manifest `cec9aa7a…`）。
+- Colima 二进制用 `ALLRICE_CLOUD_COLIMA` 固定（Apple silicon Homebrew 为 `/opt/homebrew/bin/colima`，缺省仍是 `/usr/local/bin/colima`），profile 用 `ALLRICE_CLOUD_PROFILE`。
+- 授权（grant）、云命令与项目源码都冻结了创建时的架构与镜像，只在同架构宿主上有效。AllRice 仍在开发阶段，换宿主时**不做旧数据兼容**：切换时用一次性 SQL 把启用中的计算授权改成新平台的工具链值（步骤见 MET-216），旧会话里的云端执行记录可能无法打开或续跑，直接放弃。
+- amd64 一套只为切换前仍在 Intel 宿主上运行的 Dev 保留。切换完成并删除 Intel 宿主上的 AllRice 后，可移除 amd64 固定值（CI 仍在 x86_64 上跑单测，届时需一并调整）。Rice Bridge 是另一套本地执行代码，继续同时支持 Intel 与 Apple silicon Mac，不受本节影响。
+
+arm64 VM 建法与上文相同，只把 `--arch x86_64` 换成 `--arch aarch64`，gVisor 下载路径换成 `.../release/20260831.0/aarch64/`（归档 SHA-512 `9e60dd88…5583b90`，随包 `.sha512` 校验）。若 VM 无 DNS，只给 Docker 守护进程加宿主代理（`/etc/systemd/system/docker.service.d/http-proxy.conf`），构建时用 Docker CLI 的 `proxies` 配置传入；沙箱容器本身仍是 `network=none`。
+
+| arm64 二进制                         | SHA-256                                                            |
+| ------------------------------------ | ------------------------------------------------------------------ |
+| `runsc`                              | `d5679775682cd4cb11ba7bf7bd8e04235622aa8797d518dd280064e5cd27ed5d` |
+| `gvisor-bin/checkpointgofer`         | `b8679df902c900f7c5c5660a4a1b0c7f8433da19760e3c8c126eddbb238f2511` |
+| `gvisor-bin/gvisor-sentry-prewarmer` | `502b8b28f6a98a345a3e4bee8e1542dadaead1839e78697ba1296791adcd7632` |
+| `gvisor-bin/gvisor_sentry`           | `c49b09cd42d2ae2d2d0d33cc32f746240b5b528db1864f922097c6958312bc07` |
+| `gvisor-bin/runsc-metric-server`     | `da7ee8385f7ab07d6bd81a0ec5ee6f6e5e9989210af3a629147ba3d9cf2b0681` |
+
+| arm64 镜像  | 来源                                                                                 | 镜像 ID                                                                   |
+| ----------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
+| Node        | 多架构 index（与 amd64 相同）                                                        | `sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5` |
+| Python 图表 | `Dockerfile.python-charts`                                                           | `sha256:7ed9955c9d0de199f9902c3086581ddeb673975e4a8094067b9254168ffa8ccc` |
+| Office      | `Dockerfile.office-sandbox`                                                          | `sha256:626642de85da4eb15000882355d377355839cf5afcd5c1b4b1aa5e1808c231fa` |
+| 静态浏览器  | `scripts/build-static-browser-runtime.mjs`，`ALLRICE_CHROMIUM_VERSION=156.0.8078.47` | `sha256:36845fa95d472b53236d14322b9d10999bfd81b9a18f0cd8d2e5e967bb346cef` |
+
+Debian 只保留 bookworm-security 中最新的 Chromium，原来锁定的 `154.0.8037.92` 已无法再构建，所以 Dockerfile 改为 `CHROMIUM_VERSION` 构建参数：缺省仍是 amd64 镜像对应的 154，arm64 构建时传入当时的安全版本。构建脚本用 `ALLRICE_CLOUD_PROFILE`/`ALLRICE_CLOUD_DOCKER_SOCKET` 选择 VM，`ALLRICE_DOCKER_CLI` 指定 docker 客户端。
+
+**arm64 实测（M1 Pro，VM `allrice-cloud-arm`，3 CPU / 4 GiB）**：`watchdog.py --attest` 返回 `ready: true` 与 arm64 runsc 哈希；在 `ALLRICE_CLOUD_ARCHITECTURE=arm64` 下，`backend.test.ts`（含 Worker SIGKILL + guest SIGSTOP 后 VM 守护仍终止、Sentry `Seccomp: 2`）、`python-charts`、`input-streaming`、`office/native`、`project-service-guard.native` 与新增 `static-browser.native` 共 45 个真实后端测试全部通过。
 
 ## 预算、未知结果与故障恢复
 

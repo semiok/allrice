@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { createInterface } from 'node:readline';
+import { colimaEnvironmentPath, colimaExecutable } from './colima.js';
 
 /** One trusted VM pipe owns the physical five-second lease. Project code
  * cannot reach this file or ingress. EOF/crash never extends the lease. */
@@ -26,7 +27,7 @@ async function openGuard(
     String(deadline),
   ];
   const child = spawn(
-    process.platform === 'darwin' ? '/usr/local/bin/colima' : '/usr/bin/sudo',
+    process.platform === 'darwin' ? colimaExecutable() : '/usr/bin/sudo',
     process.platform === 'darwin'
       ? [
           'ssh',
@@ -39,7 +40,7 @@ async function openGuard(
       : ['-n', ...fixed],
     {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: homedir() },
+      env: { PATH: colimaEnvironmentPath(), HOME: homedir() },
     },
   );
   let sequence = 0,
