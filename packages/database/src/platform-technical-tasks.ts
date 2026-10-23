@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { newInternalNativeRootOrigin } from './conversation/native-root-origin.ts';
+import { newCurrentInternalNativeRootOrigin } from './conversation/native-root-origin.ts';
 import type postgres from 'postgres';
 import {
   DshExecutionSnapshotSchema,
@@ -95,7 +95,7 @@ export async function bindPlatformTechnicalTask(
   );
   if (internal.organization_id !== context.organizationId)
     throw new DataAccessError('authorization_denied');
-  const origin = newInternalNativeRootOrigin(
+  const origin = newCurrentInternalNativeRootOrigin(
     'platform_technical',
     binding.id,
     binding.frozen,
