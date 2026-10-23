@@ -99,7 +99,7 @@ suite('account output preferences', () => {
       insert into allrice_user_preferences(user_id)
       values (${f.neighbor.actor.id}) returning streaming_output
     `;
-    expect(inserted.streaming_output).toBe(true);
+    expect(inserted?.streaming_output).toBe(true);
     expect((await getUserPreferences(f.neighbor)).streamingOutput).toBe(true);
   });
 });
