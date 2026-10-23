@@ -109,7 +109,7 @@ Run records that version while the chat retains its original birth source.
 Assignment, publication/canary and tenant roster synchronization share the
 existing version-compatibility predicate. Historical NULL/v1 chats and queued
 Runs are not backfilled or rebound; v1 reader approvals cannot authorize v2
-births. Migration 0209 adds only the private nullable column and guards.
+births. Migration 0210 adds only the private nullable column and guards.
 
 Business chats created by the existing quality/repair entrypoints follow the
 same admission checks. This slice does not migrate separate internal
