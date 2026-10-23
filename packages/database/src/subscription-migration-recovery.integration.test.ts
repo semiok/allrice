@@ -192,12 +192,12 @@ integration('subscription incremental migration and cold SQL readers', () => {
     const legacySandboxPolicy = vi
       .spyOn(sandboxExecutionPolicy, 'freezeSandboxExecutionPolicy')
       .mockResolvedValueOnce(undefined as never);
-    // This historical chat predates terminal native execution retirement.
-    // Omit only that future admission read while seeding the 0096 Run; keep
-    // production fail-closed when migration 0199 has not been installed.
-    const legacyRetirement = vi
-      .spyOn(nativeContextRetirement, 'nativeContextExecutionRetired')
-      .mockResolvedValueOnce(false);
+    // Historical employee-row seeding must not consult future native admission
+    // tables. Observe without mocking so an accidental read fails closed.
+    const legacyRetirement = vi.spyOn(
+      nativeContextRetirement,
+      'nativeContextExecutionRetired',
+    );
     // This synthetic tenant manifest has no platform publication. Its historical
     // seed must not consult the later immutable version-source registry either.
     const legacyPublication = vi
@@ -242,6 +242,25 @@ integration('subscription incremental migration and cold SQL readers', () => {
       });
     try {
       task = await fixture.prepareOrdinaryTask('Migration fixture. No model.');
+      // Seed old data without installing future native admission tables/columns.
+      // The incremental subscription journey must still begin at real 0096.
+      const [historical] = await fixture.db`
+        select to_regclass('allrice_native_context_retirements') is null as no_retirements,
+          not exists (
+            select 1 from information_schema.columns
+            where table_schema=current_schema() and table_name='allrice_employee_runs'
+              and column_name='native_execution_binding'
+          ) as no_execution_binding,
+          to_jsonb(e) as employee_run
+        from allrice_employee_runs e where run_id=${task.runId}`;
+      expect(historical!.no_retirements).toBe(true);
+      expect(historical!.no_execution_binding).toBe(true);
+      expect(historical!.employee_run.status).toBe('running');
+      expect(historical!.employee_run.execution_snapshot.modelSnapshot).toEqual(
+        JSON.parse(
+          JSON.stringify(task.binding.executionSnapshot.modelSnapshot),
+        ),
+      );
       expect(
         JSON.parse(JSON.stringify(task.binding.executionSnapshot)),
       ).not.toHaveProperty('instance');
@@ -259,7 +278,7 @@ integration('subscription incremental migration and cold SQL readers', () => {
         task.binding.executionSnapshot.capabilitySnapshot.bindings.toolNames,
       ).not.toContain('workspace.personal_skill.install');
       expect(legacySandboxPolicy).toHaveBeenCalledTimes(1);
-      expect(legacyRetirement).toHaveBeenCalledTimes(1);
+      expect(legacyRetirement).not.toHaveBeenCalled();
       expect(
         JSON.parse(JSON.stringify(task.binding.executionSnapshot)),
       ).not.toHaveProperty('sandboxExecutionPolicy');

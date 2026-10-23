@@ -450,8 +450,47 @@ export async function createP27CodexWorkerFixture(
               },
             },
           },
-          { employeeBinding: binding },
+          // The 0096 checkpoint represents an already-created historical Run,
+          // not admission by today's binary into an incompletely migrated DB.
+          // Keep the real generic queue/lease path and seed only its historical
+          // employee row below; current-schema fixtures use real admission.
+          options.throughMigration ? {} : { employeeBinding: binding },
         );
+        if (options.throughMigration) {
+          const [run] = await db<{ policy_snapshot_id: string }[]>`
+            select policy_snapshot_id from allrice_runs
+            where id=${submission.run.id} and organization_id=${organizationId}
+              and workspace_id=${workspaceId} and owner_id=${ownerId}`;
+          requireFixture(run, 'P27_HISTORICAL_RUN_MISSING');
+          const snapshot = {
+            ...binding.executionSnapshot,
+            tenantContext: {
+              organizationId,
+              workspaceId,
+              actorId: ownerId,
+              policySnapshotId: run.policy_snapshot_id,
+            },
+            createdAt: new Date().toISOString(),
+          };
+          await db`
+            insert into allrice_employee_runs (
+              run_id, organization_id, workspace_id, owner_id,
+              employee_assignment_id, employee_version_id, session_id,
+              user_message_id, assistant_message_id, status, provider_snapshot,
+              skill_bindings, native_skills, prompt_snapshot, execution_snapshot,
+              created_at
+            ) values (
+              ${submission.run.id}, ${organizationId}, ${workspaceId}, ${ownerId},
+              ${assignmentId}, ${employeeVersionId}, ${sessionId},
+              ${userMessageId}, ${assistantMessageId}, 'queued',
+              ${db.json(JSON.parse(JSON.stringify(binding.providerSnapshot)))},
+              ${db.json(JSON.parse(JSON.stringify(binding.skillBindings)))},
+              ${db.json(JSON.parse(JSON.stringify(binding.nativeSkills)))},
+              ${db.json(JSON.parse(JSON.stringify(binding.promptSnapshot)))},
+              ${db.json(JSON.parse(JSON.stringify(snapshot)))},
+              ${snapshot.createdAt}
+            )`;
+        }
         const [pending] = await db<
           { count: number }[]
         >`select count(*)::int as count from allrice_jobs where status='queued'`;
