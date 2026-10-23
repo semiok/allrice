@@ -3,6 +3,10 @@
 // Root supplies reviewed artifact/public-history and normal-stop OS evidence.
 // This script does not stop/start services, take locks, or activate a supervisor.
 import { createHash } from 'node:crypto';
+import {
+  verifyNativeControlCloudAbsence,
+  verifyNativeControlCloudAbsenceAfter,
+} from './native-control-cloud-absence.mjs';
 import { execFileSync } from 'node:child_process';
 import { lstat, open, readFile, readdir, realpath } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
@@ -403,6 +407,7 @@ export async function nativeControlUpgradeStep({
   intentPath,
   binding,
   artifactEvidence,
+  historicalCloudAbsenceCredential,
 }) {
   let prior;
   try {
@@ -465,6 +470,9 @@ export async function nativeControlUpgradeStep({
           beforeReference: input.beforeReference,
           afterReference: input.afterReference,
           artifactEvidence,
+          ...(historicalCloudAbsenceCredential === undefined
+            ? {}
+            : { historicalCloudAbsenceCredential }),
           ...(input.ttlMs === undefined ? {} : { ttlMs: input.ttlMs }),
         })
       : await api.applyNativeScheduleControlUpgrade({
@@ -580,6 +588,12 @@ async function main() {
       reviewSha256: hash(review.bytes),
       releaseSha: r.releaseSha,
       sourceTree: r.sourceTree,
+      ...(r.historicalCloudObservationPin === undefined
+        ? {}
+        : {
+            historicalCloudObservationSha256:
+              r.historicalCloudObservationPin.sha256,
+          }),
     };
     let prior;
     try {
@@ -638,6 +652,40 @@ async function main() {
         api.nativeOnceDigest(input.value.plan) === input.value.planDigest,
         'PLAN_DIGEST_CONFLICT',
       );
+    let historicalCloudAbsenceCredential, historicalCloudObservation;
+    if (
+      r.phase === 'apply' &&
+      input.value.plan.historicalCloudAbsenceDigest !== undefined
+    )
+      need(
+        r.historicalCloudObservationPin !== undefined,
+        'CLOUD_OBSERVATION_REQUIRED',
+      );
+    if (
+      r.historicalCloudObservationPin !== undefined &&
+      mode !== 'readback' &&
+      !prior
+    ) {
+      const verifier =
+        a.root + '/scripts/dev-release/native-control-cloud-absence.mjs';
+      need(
+        sha(r.cloudVerifierSha256) &&
+          (await realpath(verifier)) === verifier &&
+          hash(await readFile(verifier)) === r.cloudVerifierSha256,
+        'CLOUD_VERIFIER_CHANGED',
+      );
+      const verified = await verifyNativeControlCloudAbsence({
+        sql: api.getDatabase(),
+        review: r,
+        reviewSha256: hash(review.bytes),
+        input: input.value,
+        offline: offline.value,
+        digest: api.nativeOnceDigest,
+        mode,
+      });
+      historicalCloudAbsenceCredential = verified.credential;
+      historicalCloudObservation = verified.observation;
+    }
     mayHaveWritten = mode !== 'readback' && !prior;
     const result = await nativeControlUpgradeStep({
       api,
@@ -649,7 +697,18 @@ async function main() {
       intentPath,
       binding,
       artifactEvidence,
+      historicalCloudAbsenceCredential,
     });
+    if (historicalCloudObservation && result.mode !== 'readback') {
+      await verifyNativeControlCloudAbsenceAfter({
+        sql: api.getDatabase(),
+        review: r,
+        input: input.value,
+        offline: offline.value,
+        observation: historicalCloudObservation,
+        result: result.result,
+      });
+    }
     mayHaveWritten = false;
     await save(a.output, {
       kind: 'native-control-upgrade-operator-receipt-v1',
