@@ -3,8 +3,6 @@ import { isDeepStrictEqual } from 'node:util';
 import type { TransactionSql as Tx } from 'postgres';
 import { z } from 'zod';
 import type { QualityScheduleOrigin } from './platform-quality-contracts.ts';
-import { getDatabase } from './core/client.ts';
-import { acquireDevAdmission } from './dev-maintenance.ts';
 import { DataAccessError } from './data.ts';
 import { isPlatformAdmin } from './platform-authority.ts';
 import { cloudStableId } from './cloud-execution.ts';
@@ -122,8 +120,8 @@ export async function syncPlatformQualityNative(tx: Tx, automationId: string) {
       await tx`select activation from allrice_native_once_partitions where partition_id=${PARTITION} for share`;
     if (!partition || !nativeOnceReady(partition.activation))
       throw new QualityScheduleUnavailableError();
-    // A due legacy occurrence belongs to the old consumer until it is reserved.
-    // The bounded migration retries after that transaction advances its clock.
+    // Do not reinterpret an overdue historical target as a new native schedule.
+    // The authorized configuration transaction must supply a future target.
     if (
       rule.status === 'enabled' &&
       rule.next_run_at &&
@@ -248,36 +246,6 @@ export async function lockPlatformQualityNativeAdmission(
     status: r.deleted_at ? 'deleted' : (r.status as 'enabled' | 'paused'),
     resumeAfter: r.native_recurring_resume_after?.toISOString() ?? null,
   };
-}
-
-// Scan cursor is only fairness metadata, never a timer or execution identity.
-let legacyCursor: { at: string; id: string } | null = null;
-export async function migrateOneLegacyQualitySchedule() {
-  if (process.env.ALLRICE_NATIVE_RECURRING_ENABLED !== '1') return false;
-  const db = getDatabase();
-  const [candidate] = await db<{ id: string; owner_id: string; at: string }[]>`
-    select id,owner_id,created_at::text at from allrice_automations
-    where quality_binding is not null and clock_owner='legacy' and deleted_at is null
-      and (${legacyCursor?.at ?? null}::text::timestamptz is null or (created_at,id)>(${legacyCursor?.at ?? null}::text::timestamptz,${legacyCursor?.id ?? null}::uuid))
-    order by created_at,id limit 1`;
-  if (!candidate) {
-    legacyCursor = null;
-    return false;
-  }
-  await db.begin(async (tx) => {
-    await tx`set local lock_timeout='1000ms'`;
-    await tx`set local statement_timeout='10000ms'`;
-    await acquireDevAdmission(tx);
-    const gate = await lockQualityRule(tx, candidate.owner_id, candidate.id);
-    if (
-      gate?.allowed &&
-      gate.rule.clock_owner === 'legacy' &&
-      !gate.rule.deleted_at
-    )
-      await syncPlatformQualityNative(tx, candidate.id);
-  });
-  legacyCursor = { at: candidate.at, id: candidate.id };
-  return true;
 }
 
 type Receipt = {

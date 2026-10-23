@@ -498,22 +498,6 @@ export async function reserveExperienceOccurrenceInTransaction(
   return { outcome: 'queued', automationRunId: occurrence.id };
 }
 
-/** Legacy producer keeps its public result and original advancement rules. */
-export async function claimExperienceOccurrence(
-  tx: Tx,
-  rule: Rule,
-  nextRunAt: Date,
-) {
-  const result = await reserveExperienceOccurrenceInTransaction(
-    tx,
-    rule,
-    rule.next_run_at!,
-  );
-  if (result.outcome === 'policy_blocked') return null;
-  await tx`update allrice_automations set next_run_at=${nextRunAt},last_run_at=clock_timestamp(),updated_at=clock_timestamp() where id=${rule.id}`;
-  return result.outcome === 'queued' ? result.automationRunId : null;
-}
-
 async function loadOccurrence(
   tx: Tx | ReturnType<typeof getDatabase>,
   id: string,

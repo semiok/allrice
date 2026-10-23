@@ -17,7 +17,6 @@ import {
 } from 'vitest';
 import * as client from './core/client.ts';
 import { createPlatformQualityNativeFixture } from './platform-quality-native.fixture.ts';
-import { claimDueAutomations } from './execution/automation.ts';
 import {
   authenticateSession,
   createSession,
@@ -43,7 +42,6 @@ import {
 } from './platform-quality-automation.ts';
 import {
   assertQualityNativeOccurrence,
-  migrateOneLegacyQualitySchedule,
   syncPlatformQualityNative,
 } from './platform-quality-native.ts';
 import {
@@ -201,7 +199,7 @@ suite(
         rule: view.schedule!,
       };
     }
-    /** Historical metadata for the still-retained migration/recovery boundary.
+    /** Historical metadata for retained recovery and history boundaries.
      * It cannot be created by enabling the production API with flags OFF. */
     async function historicalSchedule() {
       const login = await createSession(admin.actor.id);
@@ -655,9 +653,8 @@ suite(
         await f.db`select * from allrice_sessions order by id`,
       );
       expect(afterRevoke).not.toEqual(logins);
-      // Native pending ARs are recovered by the automation producer, not by
-      // asking the legacy due scanner to execute a non-time queue obligation.
-      expect(await claimDueAutomations(1)).toBe(0);
+      // The automation producer recovers the durable business obligation;
+      // an empty native outbox does not invoke a legacy due producer.
       expect((await occurrence(queued[0]!.id)).run_id).toBeNull();
       expect(await counts()).toEqual(before);
       // Scheduled static execution uses current platform authority, no borrowed
@@ -1009,44 +1006,45 @@ suite(
       expect(await store.assertWriter(writer)).toBe(true);
     });
 
-    it('legacy due work remains legacy until reserved, and an already queued original occurrence survives enrollment unchanged', async () => {
+    it('leaves historical quality rules untouched when the native outbox is empty and recovers an already committed original occurrence once', async () => {
       const { context, rule, P } = await historicalSchedule();
       const before = await counts();
-      await migrateOneLegacyQualitySchedule();
-      const [due] =
-        await f.db`select * from allrice_automations where id=${rule.id}`;
-      expect(due!.clock_owner).toBe('legacy');
+      const originalRule = normalize(
+        await f.db`select * from allrice_automations where id=${rule.id}`,
+      );
+      expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
+        false,
+      );
+      expect(
+        normalize(
+          await f.db`select * from allrice_automations where id=${rule.id}`,
+        ),
+      ).toEqual(originalRule);
       expect(
         await f.db`select control_id from allrice_native_recurring_controls where automation_id=${rule.id}`,
       ).toHaveLength(0);
       expect(await qualityRows(rule.id)).toHaveLength(0);
       expect(await counts()).toEqual(before);
 
+      // Only the existing shared business reservation prepares this durable
+      // historical obligation; no due clock or native receipt is fabricated.
       const reserved = await reserveBusinessOccurrence(rule.id, P);
       expect(reserved?.reason).toBeNull();
       const oldId = reserved!.id;
-      // Explicit historical metadata: the legacy producer had advanced its
-      // projection before handoff. The real shared sink above owns the AR;
-      // this fixture neither runs the old producer nor fabricates a receipt.
-      await f.db`update allrice_automations set next_run_at=${nextScheduleAt({ frequency: 'daily', time: rule.time, timezone: 'Asia/Shanghai' })} where id=${rule.id}`;
-      expect(oldId).toBeTruthy();
       const original = normalize(
-        await f.db`select * from allrice_automation_runs where id=${oldId!}`,
+        await f.db`select * from allrice_automation_runs where id=${oldId}`,
       );
-      // The module's keyset cursor may need the tail/reset tick. A bounded
-      // metadata rescan never consumes a queued occurrence or invents a receipt.
-      let enrolled = false;
-      for (let i = 0; i < 4 && !enrolled; i++) {
-        await migrateOneLegacyQualitySchedule();
-        enrolled =
-          (
-            await f.db`select control_id from allrice_native_recurring_controls where automation_id=${rule.id}`
-          ).length === 1;
-      }
-      expect(enrolled).toBe(true);
+      expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
+        false,
+      );
       expect(
         normalize(
-          await f.db`select * from allrice_automation_runs where id=${oldId!}`,
+          await f.db`select * from allrice_automations where id=${rule.id}`,
+        ),
+      ).toEqual(originalRule);
+      expect(
+        normalize(
+          await f.db`select * from allrice_automation_runs where id=${oldId}`,
         ),
       ).toEqual(original);
       expect(
@@ -1055,7 +1053,7 @@ suite(
       expect(await counts()).toEqual(before);
       expect(await recoverPlatformQualityOccurrences()).toBe(1);
       expect(await recoverPlatformQualityOccurrences()).toBe(0);
-      const row = await occurrence(oldId!);
+      const row = await occurrence(oldId);
       expect(row.native_recurring_occurrence_id).toBeNull();
       expect(row.frozen.scheduleOrigin).toEqual(
         original[0]!.quality_occurrence,
