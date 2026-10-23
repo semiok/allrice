@@ -333,7 +333,9 @@ suite('U1 exact-chat transition, actual isolated SQL only', () => {
         complete: true,
         missing: 0,
         privateFactsVerified: true,
-        nativeSessionIds: facts.bindings.map((p: any) => p.native_session_id),
+        nativeSessionIds: facts.bindings.map(
+          (p: { native_session_id: string }) => p.native_session_id,
+        ),
       }),
       closeProof: await pin({
         kind: 'reviewed-native-chat-offline-v1',
@@ -360,8 +362,16 @@ suite('U1 exact-chat transition, actual isolated SQL only', () => {
       await fixture.db`select native_root_origin from allrice_chat_sessions where id=${f.chat}`;
     return r!.native_root_origin;
   }
-  async function insertRaw(r: any, approval: any) {
-    await fixture.db`insert into allrice_native_chat_executor_transitions(request_id,context_id,organization_id,workspace_id,owner_id,sequence,receipt,digest,approval) values(${r.requestId},${r.scope.contextId},${r.scope.organizationId},${r.scope.workspaceId},${r.scope.ownerId},${r.sequence},${fixture.db.json(r)},${r.digest},${fixture.db.json(approval)})`;
+  async function insertRaw(
+    r: Record<string, unknown> & {
+      requestId: string;
+      scope: ReturnType<typeof scope>;
+      sequence: number;
+      digest: string;
+    },
+    approval: unknown,
+  ) {
+    await fixture.db`insert into allrice_native_chat_executor_transitions(request_id,context_id,organization_id,workspace_id,owner_id,sequence,receipt,digest,approval) values(${r.requestId},${r.scope.contextId},${r.scope.organizationId},${r.scope.workspaceId},${r.scope.ownerId},${r.sequence},${fixture.db.json(r as never)},${r.digest},${fixture.db.json(approval as never)})`;
   }
   it('validates many exact-chat transition chains in a bounded number of relation reads', async () => {
     const expected = [];

@@ -72,6 +72,13 @@ suite(
     let thirdStorageRoot: string;
     let policyPath: string;
 
+    // assistantFixture creates a separate NULL-origin, unpinned seed chat.
+    // It is not covered by an exact U1 origin-reader approval for f.session.
+    const legacySeed = {
+      artifactId: 'sha256:' + '0'.repeat(64),
+      generation: 'dsh-0.1.5-rc.3-a4c74a9' as const,
+      storageRoot: '/synthetic-legacy-seed',
+    };
     const clearPolicy = () => {
       for (const key of Object.keys(process.env))
         if (key.startsWith('ALLRICE_DSH_ORIGIN_READER_'))
@@ -80,6 +87,7 @@ suite(
 
     beforeEach(async () => {
       clearPolicy();
+      vi.stubEnv('ALLRICE_DSH_RETAINED_1_ARTIFACT_ID', legacySeed.artifactId);
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', target);
       vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', target);
       vi.stubEnv(
@@ -322,6 +330,7 @@ suite(
       additional: { artifactId: string; storageRoot: string }[] = [],
     ) =>
       verifyNativeArtifactReferenceCoverage([
+        legacySeed,
         {
           artifactId: target,
           generation: newNativeGeneration,
@@ -633,6 +642,22 @@ suite(
           selectCheckedFinalDeliveryArtifact(tx, scope(f)),
         ),
       ).toBe(target);
+      const [implicit] =
+        await fixture.db`select count(*)::int n from allrice_chat_sessions c
+        where c.organization_id=${f.org} and c.native_root_origin is null and not exists(
+          select 1 from allrice_native_session_bindings b where b.context_kind='chat' and b.context_id=c.id)`;
+      expect(implicit!.n).toBe(1);
+      // A current reader proof must not silently authorize the separate legacy
+      // seed. Explicit inventory is required even after f.session first-binds.
+      await expect(
+        verifyNativeArtifactReferenceCoverage([
+          {
+            artifactId: target,
+            generation: newNativeGeneration,
+            storageRoot: join(temporary!, 'current-data'),
+          },
+        ]),
+      ).rejects.toThrow('implicit:legacy-chat');
       const coverage = await targetCoverage();
       expect(coverage.compatibleOrigins).toEqual([
         {
@@ -644,6 +669,7 @@ suite(
       ]);
       expect(coverage.references).toContainEqual({
         source: 'origin:chat',
+        historicalArtifactIds: [source],
         artifactId: source,
         generation: newNativeGeneration,
         profileId: 'restricted',
@@ -652,6 +678,7 @@ suite(
       });
       expect(coverage.references).toContainEqual({
         source: 'binding',
+        historicalArtifactIds: [target],
         artifactId: target,
         generation: newNativeGeneration,
         profileId: 'restricted',

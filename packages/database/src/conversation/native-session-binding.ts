@@ -46,10 +46,7 @@ import {
   readChatTransitionRef,
   assertChatTransitionPin,
 } from './native-executor-transition.ts';
-import {
-  executorTransitionRef,
-  assertTransitionDescriptor,
-} from './native-executor-transition-contract.ts';
+import { assertTransitionDescriptor } from './native-executor-transition-contract.ts';
 
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 export const NativeSessionDescriptorSchema = z

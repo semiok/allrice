@@ -67,12 +67,18 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
   let runtimePackage: EmployeeRuntimePackage;
   let storageRoot: string;
   const artifacts = new Map<string, string>();
+  const legacySeed = {
+    artifactId: digest('synthetic separate legacy seed'),
+    generation: 'dsh-0.1.5-rc.3-a4c74a9' as const,
+    storageRoot: '/synthetic-legacy-seed',
+  };
 
   beforeAll(async () => {
     // Ambient reader policies must never authorize or alter an owned fixture.
     for (const key of Object.keys(process.env))
       if (key.startsWith('ALLRICE_DSH_ORIGIN_READER_'))
         vi.stubEnv(key, undefined);
+    vi.stubEnv('ALLRICE_DSH_RETAINED_1_ARTIFACT_ID', legacySeed.artifactId);
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
     vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
     vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
@@ -276,15 +282,16 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
     return rows.map((r) => r.value);
   }
   const coverageWithout = (artifactId: string) =>
-    verifyNativeArtifactReferenceCoverage(
-      [...artifacts]
+    verifyNativeArtifactReferenceCoverage([
+      legacySeed,
+      ...[...artifacts]
         .filter(([id]) => id !== artifactId)
         .map(([id, root]) => ({
           artifactId: id,
           generation: newNativeGeneration,
           storageRoot: root,
         })),
-    );
+    ]);
 
   async function independentArtifact(f: Subject) {
     const versionId = randomUUID();
@@ -497,6 +504,28 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
     await applyNativeTestChatRetirement(plan);
     const before = await evidence(f);
     const retired = await retirementRows(f);
+    // Its independent fixture seed stays a legacy dependency even if archived;
+    // retiring f.session never implicitly retires another context.
+    const seed =
+      await fixture.db`select id from allrice_chat_sessions c where c.organization_id=${f.org}
+      and c.native_root_origin is null and not exists(select 1 from allrice_native_session_bindings b where b.context_kind='chat' and b.context_id=c.id)`;
+    expect(seed).toHaveLength(1);
+    await fixture.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${seed[0]!.id}`;
+    await expect(
+      verifyNativeArtifactReferenceCoverage(
+        [...artifacts].map(([artifactId, root]) => ({
+          artifactId,
+          generation: newNativeGeneration,
+          storageRoot: root,
+        })),
+      ),
+    ).rejects.toThrow('implicit:legacy-chat');
+    expect(
+      (
+        await fixture.db`select native_root_origin from allrice_chat_sessions where id=${seed[0]!.id}`
+      )[0]!.native_root_origin,
+    ).toBeNull();
+
     const first = Array.from({ length: 21 }, () => randomUUID());
     await fixture.db.begin((tx) => copyRetiredContexts(tx, f, first));
     const batch = await observedRetirementScan();
