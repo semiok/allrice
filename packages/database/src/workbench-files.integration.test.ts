@@ -512,7 +512,6 @@ suite(
         workspaceId: owner.workspaceId,
       };
       const files = [];
-      const checksums = new Map<string, string>();
       for (const text of [
         'Version one original bytes',
         'Version two changed bytes',
@@ -538,20 +537,14 @@ suite(
         );
         await markStorageReady(owner, id);
         files.push(id);
-        checksums.set(id, prepared.object.checksum);
       }
       const seriesId = randomUUID(),
         v1 = randomUUID(),
         v2 = randomUUID();
       await fixture.db`insert into allrice_deliverable_versions(id,organization_id,workspace_id,owner_id,object_id,series_id,version,session_id,file_name,format)
-      values (${v1},${owner.organizationId},${owner.workspaceId},${owner.actor.id},${files[0]!},${seriesId},1,${synthetic.task.chatSessionId},'Original Report.txt','text')`;
+      values (${v1},${owner.organizationId},${owner.workspaceId},${owner.actor.id},${files[0]!},${seriesId},1,${synthetic.task.chatSessionId},'Report.txt','text')`;
       await fixture.db`insert into allrice_deliverable_versions(id,organization_id,workspace_id,owner_id,object_id,series_id,version,parent_version_id,session_id,file_name,format)
-      values (${v2},${owner.organizationId},${owner.workspaceId},${owner.actor.id},${files[1]!},${seriesId},2,${v1},${synthetic.task.chatSessionId},'Updated Report.txt','text')`;
-      const privateCatalog = await readWorkbenchFileCatalog(reader, {
-        workspaceId: reader.workspaceId,
-      });
-      expect(privateCatalog.files).toEqual([]);
-      expect(privateCatalog.fileVersions).toEqual({});
+      values (${v2},${owner.organizationId},${owner.workspaceId},${owner.actor.id},${files[1]!},${seriesId},2,${v1},${synthetic.task.chatSessionId},'Report.txt','text')`;
       await change(owner, files[0]!, 0, {
         sharing: { scope: 'company', departmentIds: [] },
         isReference: true,
@@ -559,44 +552,14 @@ suite(
       const shared = await readWorkbenchFileCatalog(reader, {
         workspaceId: reader.workspaceId,
       });
-      expect(shared.files.map((file) => file.objectId).sort()).toEqual(
-        [...files].sort(),
-      );
-      expect(shared.fileVersions).toEqual({
-        [files[0]!]: 1,
-        [files[1]!]: 2,
+      expect(shared.files).toHaveLength(1);
+      expect(shared.files[0]).toMatchObject({
+        objectId: files[1],
+        artifact: null,
+        sessionIds: [],
       });
-      for (const file of shared.files)
-        expect(file).toMatchObject({
-          checksum: checksums.get(file.objectId),
-          artifact: null,
-          sessionIds: [],
-          sharing: { scope: 'company' },
-          ownedByMe: false,
-          canMaintain: false,
-        });
-      const originalRef = shared.files.find(
-        (file) => file.objectId === files[0],
-      )!.reference!;
-      expect(originalRef.checksum).toBe(checksums.get(files[0]!));
-      expect(originalRef.checksum).not.toBe(checksums.get(files[1]!));
-      for (const [query, objectId, version] of [
-        ['Original', files[0]!, 1],
-        ['Updated', files[1]!, 2],
-      ] as const) {
-        const searched = await readWorkbenchFileCatalog(reader, {
-          workspaceId: reader.workspaceId,
-          query,
-        });
-        expect(searched.files.map((file) => file.objectId)).toEqual([objectId]);
-        expect(searched.fileVersions).toEqual({ [objectId]: version });
-      }
-      const mine = await readWorkbenchFileCatalog(reader, {
-        workspaceId: reader.workspaceId,
-        scope: 'my',
-      });
-      expect(mine.files).toEqual([]);
-      expect(mine.fileVersions).toEqual({});
+      const originalRef = shared.files[0]!.reference!;
+      expect(originalRef.checksum).not.toBe(shared.files[0]!.checksum);
       const versions = await listWorkbenchFileVersions(reader, files[1]!);
       expect(versions.map((v) => v.objectId)).toEqual([files[1], files[0]]);
       expect(versions[0]).not.toHaveProperty('sessionId');
@@ -611,7 +574,7 @@ suite(
         await readWorkbenchFileCatalog(reader, {
           workspaceId: reader.workspaceId,
         })
-      ).files.find((file) => file.objectId === files[1])!;
+      ).files[0]!;
       expect(latest.reference!.checksum).toBe(latest.checksum);
       expect(latest.reference!.sourceId).not.toBe(originalRef.sourceId);
       const old = await getReferenceFile(

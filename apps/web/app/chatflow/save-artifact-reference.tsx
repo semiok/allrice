@@ -54,7 +54,6 @@ function SaveDialog({
   headers,
   versionId,
   fileName,
-  version,
   onClose,
 }: Props & { onClose: () => void }) {
   const [options, setOptions] = useState<z.infer<
@@ -133,9 +132,7 @@ function SaveDialog({
     >
       <div className={css.file}>
         <FileTypeIcon kind={classifyFileType(fileName)} size={32} />
-        <p className={css.fileTitle}>
-          {fileName} · v{version}
-        </p>
+        <p className={css.fileTitle}>{fileName}</p>
       </div>
       {saved ? (
         <>
@@ -149,13 +146,13 @@ function SaveDialog({
                     ?.name ?? '部门')}
             参考资料，可从输入框附件菜单的“参考资料”查看。
           </p>
-          <p className={css.hint}>保留所选成果版本；重复保存会返回已有资料。</p>
+          <p className={css.hint}>保留这份成果内容；重复保存会返回已有资料。</p>
           <Button onClick={onClose}>完成</Button>
         </>
       ) : (
         <>
           <p className={css.hint}>
-            保存当前版本，后续成果修改不会自动覆盖这份资料。
+            保存当前文件，后续修改不会覆盖这份参考资料。
           </p>
           <div className={css.upload}>
             <label>

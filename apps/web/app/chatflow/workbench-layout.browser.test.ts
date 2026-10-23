@@ -422,6 +422,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       artifacts?: boolean;
       initialArtifacts?: ReturnType<typeof artifact>[];
       initialFiles?: WorkspaceFile[];
+      initialMessages?: Message[];
       disabled?: boolean;
       taskSuggestions?: boolean;
       localMcp?: boolean;
@@ -531,7 +532,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         stopActivity?: boolean;
       }>,
       startupFailure: options.startup === 'failed',
-      messages: null as Message[] | null,
+      messages: (options.initialMessages ?? null) as Message[] | null,
       workMethods: [] as NonNullable<Message['workMethods']>,
       queue: [] as QueuedMessage[],
       queuedStarted: [] as Message[],
@@ -763,42 +764,59 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           contentType: 'application/json',
           body: JSON.stringify(data),
         });
-      const workbenchFiles = () =>
-        Array.from(
+      const workbenchFiles = () => {
+        const latestBySeries = new Map<string, ReturnType<typeof artifact>>();
+        for (const item of state.items) {
+          const previous = latestBySeries.get(item.version.seriesId);
+          if (!previous || previous.version.version < item.version.version)
+            latestBySeries.set(item.version.seriesId, item);
+        }
+        const latest = [...latestBySeries.values()];
+        const superseded = new Set(
+          state.items
+            .filter(
+              (item) =>
+                latestBySeries.get(item.version.seriesId)?.id !== item.id,
+            )
+            .map((item) => item.object.id),
+        );
+        return Array.from(
           new Map(
             [
-              ...state.files.map((file): WorkbenchFile => ({
-                objectId: file.id,
-                workspaceId: state.workspace,
-                fileName: file.fileName,
-                mediaType: file.mediaType,
-                checksum: `sha256:${'a'.repeat(64)}`,
-                sizeBytes: file.sizeBytes,
-                createdAt: now,
-                ownedByMe: file.ownedByMe ?? true,
-                canMaintain: true,
-                revision: 0,
-                sharing: {
-                  scope:
-                    file.visibility === 'private'
-                      ? 'personal'
-                      : file.visibility === 'organization'
-                        ? 'company'
-                        : 'workspace',
-                  departmentIds: [],
-                  departmentNames: [],
-                },
-                category: file.fileName.startsWith('tool-result-')
-                  ? 'upload'
-                  : file.category === 'exports'
-                    ? 'artifact'
-                    : 'upload',
-                sessionIds: [A],
-                artifact: null,
-                isReference: false,
-                reference: null,
-              })),
-              ...state.items.map((item): WorkbenchFile => ({
+              ...state.files
+                .filter((file) => !superseded.has(file.id))
+                .map((file): WorkbenchFile => ({
+                  objectId: file.id,
+                  workspaceId: state.workspace,
+                  fileName: file.fileName,
+                  mediaType: file.mediaType,
+                  checksum: `sha256:${'a'.repeat(64)}`,
+                  sizeBytes: file.sizeBytes,
+                  createdAt: now,
+                  ownedByMe: file.ownedByMe ?? true,
+                  canMaintain: true,
+                  revision: 0,
+                  sharing: {
+                    scope:
+                      file.visibility === 'private'
+                        ? 'personal'
+                        : file.visibility === 'organization'
+                          ? 'company'
+                          : 'workspace',
+                    departmentIds: [],
+                    departmentNames: [],
+                  },
+                  category: file.fileName.startsWith('tool-result-')
+                    ? 'upload'
+                    : file.category === 'exports'
+                      ? 'artifact'
+                      : 'upload',
+                  sessionIds: [A],
+                  artifact: null,
+                  isReference: false,
+                  reference: null,
+                })),
+              ...latest.map((item): WorkbenchFile => ({
                 objectId: item.object.id,
                 workspaceId: state.workspace,
                 fileName: item.version.fileName,
@@ -834,6 +852,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             ].map((file) => [file.objectId, file]),
           ).values(),
         );
+      };
 
       if (
         path === '/api/v1/scheduled-tasks' &&
@@ -904,13 +923,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         );
         return answer({
           files,
-          fileVersions: Object.fromEntries(
-            state.items
-              .filter((item) =>
-                files.some((file) => file.objectId === item.object.id),
-              )
-              .map((item) => [item.object.id, item.version.version]),
-          ),
           // This synthetic catalog explicitly offers text files and fixed company
           // templates; images and unsupported reference revisions stay unquotable.
           quotableFileIds: files
@@ -2024,7 +2036,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             await panel
               .getByRole('region', { name: '工作区文件', exact: true })
               .getByRole('button', {
-                name: `${name} · v${state.items[0]!.version.version}`,
+                name,
                 exact: true,
               })
               .click();
@@ -4072,7 +4084,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
   );
 
-  it('file list opens each named version with its fixed content, download and reference save', async () => {
+  it('file list shows only the latest file while historical message cards preserve fixed content, download and reference save', async () => {
     const f = await fixture({ artifacts: true });
     try {
       const older = artifact(10),
@@ -4084,7 +4096,26 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       latest.version.parentObjectId = older.object.id;
       older.stale = true;
       older.latestVersionId = latest.id;
+      older.provenance.runId = id(9592);
       f.state.items = [latest, older];
+      f.state.messages = [
+        {
+          id: id(9590),
+          role: 'assistant',
+          runId: older.provenance.runId,
+          status: 'completed',
+          content: { text: '此前完成的经营简报。' },
+          createdAt: older.version.createdAt,
+        },
+        {
+          id: id(20),
+          role: 'assistant',
+          runId: latest.provenance.runId,
+          status: 'completed',
+          content: { text: '当前完成的经营简报。' },
+          createdAt: latest.version.createdAt,
+        },
+      ];
       f.state.artifactTexts[older.id] =
         '# 旧版固定正文\n\n只属于第一版的内容。';
       f.state.artifactTexts[latest.id] =
@@ -4115,18 +4146,33 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         name: '工作区文件',
         exact: true,
       });
-      const v1 = files.getByRole('button', {
-        name: '经营简报.md · v1',
+      const current = files.getByRole('button', {
+        name: '经营简报.md',
         exact: true,
       });
-      const v2 = files.getByRole('button', {
-        name: '经营简报.md · v2',
-        exact: true,
-      });
-      await v1.waitFor();
-      expect(await v2.count()).toBe(1);
-      expect(await files.locator('article').count()).toBe(2);
-      await v1.click();
+      await current.waitFor();
+      expect(await current.count()).toBe(1);
+      expect(await files.locator('article').count()).toBe(1);
+      expect(
+        await files.locator(`[data-file-id="${older.object.id}"]`).count(),
+      ).toBe(0);
+      expect(await files.innerText()).not.toMatch(/·\s*v\d/);
+      await current.click();
+      await f.panel
+        .getByRole('heading', { name: '新版固定正文', exact: true })
+        .waitFor();
+      expect(
+        await f.panel
+          .getByRole('link', { name: '下载', exact: true })
+          .getAttribute('href'),
+      ).toContain(latest.object.id);
+      await f.panel
+        .getByRole('button', { name: '关闭工作台', exact: true })
+        .click();
+      await f.page
+        .locator(`#message-${id(9590)}`)
+        .getByRole('button', { name: '侧栏预览 经营简报.md', exact: true })
+        .click();
       await f.panel
         .getByRole('heading', { name: '旧版固定正文', exact: true })
         .waitFor();
@@ -4152,7 +4198,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         name: '保存为参考资料',
         exact: true,
       });
-      expect(await save.innerText()).toContain('经营简报.md · v1');
+      expect(await save.innerText()).toContain('经营简报.md');
+      expect(await save.innerText()).not.toMatch(/·\s*v\d/);
       await save.getByRole('button', { name: '保存', exact: true }).click();
       await save.getByRole('status').waitFor();
       expect(saved).toEqual([
@@ -4168,7 +4215,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .locator('header')
         .getByRole('button', { name: '工作区文件', exact: true })
         .click();
-      await v2.click();
+      await current.click();
       await f.panel
         .getByRole('heading', { name: '新版固定正文', exact: true })
         .waitFor();
@@ -4207,9 +4254,28 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     latest.version.parentObjectId = older.object.id;
     older.stale = true;
     older.latestVersionId = latest.id;
+    older.provenance.runId = id(9592);
     const f = await fixture({
       width: 390,
       initialArtifacts: [latest, older],
+      initialMessages: [
+        {
+          id: id(9590),
+          role: 'assistant',
+          runId: older.provenance.runId,
+          status: 'completed',
+          content: { text: '此前完成的报告。' },
+          createdAt: older.version.createdAt,
+        },
+        {
+          id: id(20),
+          role: 'assistant',
+          runId: latest.provenance.runId,
+          status: 'completed',
+          content: { text: '当前完成的报告。' },
+          createdAt: latest.version.createdAt,
+        },
+      ],
       initialFiles: [latest, older].map((item) => ({
         id: item.object.id,
         fileName: item.version.fileName,
@@ -4280,8 +4346,21 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const list = f.panel.locator('[data-files-state="tree"]');
       await list.getByRole('button', { name: '交付文件', exact: true }).click();
       await list
+        .getByRole('button', { name: latest.version.fileName, exact: true })
+        .waitFor();
+      expect(
+        await list
+          .getByRole('button', { name: older.version.fileName, exact: true })
+          .count(),
+      ).toBe(0);
+      expect(await list.innerText()).not.toMatch(/·\s*v\d/);
+      await f.panel
+        .getByRole('button', { name: '关闭工作台', exact: true })
+        .click();
+      await f.page
+        .locator(`#message-${id(9590)}`)
         .getByRole('button', {
-          name: `${older.version.fileName} · v1`,
+          name: `侧栏预览 ${older.version.fileName}`,
           exact: true,
         })
         .click();
@@ -4313,91 +4392,124 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   }, 20_000);
 
-  it('tool search records stay in process files and render readable output with original source links', async () => {
-    const f = await fixture();
-    try {
+  it.each([1440, 390])(
+    'tool search records stay in process files and render readable output with original source links at %ipx',
+    async (width) => {
       const raw = artifact(10);
       raw.version.fileName = `tool-result-web-search-${raw.object.id}.txt`;
       raw.version.changeSummary = `Tool result web.search; Run ${run}; call call-1`;
       raw.provenance.kind = 'legacy_deliverable';
-      f.state.items = [raw];
-      f.state.files = [
-        {
-          id: raw.object.id,
-          fileName: raw.version.fileName,
-          mediaType: 'text/plain',
-          sizeBytes: 120,
-          visibility: 'private',
-          ownedByMe: true,
-          category: 'exports',
-          deliverableVersion: 1,
-        },
-      ];
-      f.state.filePreview = {
-        kind: 'text',
-        mediaType: 'text/plain',
-        text: JSON.stringify({
-          provider: 'fixture',
-          query: '官方公告',
-          output:
-            '[查看官方公告](https://example.com/news)\n\n已经发布的公告摘录。\n\nRevenue $100 and price $25.',
-        }),
-      };
-      await f.page.reload();
-      expect(await f.panel.count()).toBe(0);
-      await f.page
-        .getByRole('button', { name: '工作区文件', exact: true })
-        .click();
-      const tree = f.panel.getByRole('region', {
-        name: '工作区文件',
-        exact: true,
+      const f = await fixture({
+        width,
+        initialArtifacts: [raw],
+        initialFiles: [
+          {
+            id: raw.object.id,
+            fileName: raw.version.fileName,
+            mediaType: 'text/plain',
+            sizeBytes: 120,
+            visibility: 'private',
+            ownedByMe: true,
+            category: 'exports',
+            deliverableVersion: 1,
+          },
+        ],
       });
-      await tree.getByRole('button', { name: '交付成果', exact: true }).click();
-      expect(
-        await tree
-          .getByRole('button', {
-            name: `${raw.version.fileName} · v1`,
-            exact: true,
-          })
-          .count(),
-      ).toBe(0);
-      await tree.getByRole('button', { name: '全部', exact: true }).click();
-      await tree
-        .getByRole('button', {
-          name: `${raw.version.fileName} · v1`,
-          exact: true,
-        })
-        .click();
-      await f.panel
-        .getByText('已经发布的公告摘录。', { exact: true })
-        .waitFor();
-      expect(
+      try {
+        f.state.filePreview = {
+          kind: 'text',
+          mediaType: 'text/plain',
+          text: JSON.stringify({
+            provider: 'fixture',
+            query: '官方公告',
+            output:
+              '[查看官方公告](https://example.com/news)\n\n已经发布的公告摘录。\n\nRevenue $100 and price $25.',
+          }),
+        };
+        expect(await f.panel.count()).toBe(0);
+        await f.page
+          .getByRole('button', { name: '工作区文件', exact: true })
+          .click();
+        const tree =
+          width > 760
+            ? f.panel.getByRole('region', {
+                name: '工作区文件',
+                exact: true,
+              })
+            : f.panel.locator('[data-files-state="tree"]');
+        if (width > 760) {
+          await tree
+            .getByRole('button', { name: '交付成果', exact: true })
+            .click();
+          expect(
+            await tree
+              .getByRole('button', { name: raw.version.fileName, exact: true })
+              .count(),
+          ).toBe(0);
+          await tree.getByRole('button', { name: '全部', exact: true }).click();
+          await tree
+            .getByRole('button', { name: raw.version.fileName, exact: true })
+            .click();
+        } else {
+          const label = `搜索资料 · ${raw.object.id.slice(0, 8)}`;
+          await tree
+            .getByRole('button', { name: '上传文件', exact: true })
+            .click();
+          expect(
+            await tree
+              .getByRole('button', { name: raw.version.fileName, exact: true })
+              .count(),
+          ).toBe(0);
+          await tree
+            .getByRole('button', { name: '交付文件', exact: true })
+            .click();
+          expect(
+            await tree
+              .getByRole('button', { name: label, exact: true })
+              .count(),
+          ).toBe(0);
+          await tree
+            .getByRole('button', { name: '过程资料', exact: true })
+            .click();
+          await tree
+            .getByRole('button', { name: label, exact: true })
+            .waitFor();
+          expect(await tree.locator('[data-files-entry="file"]').count()).toBe(
+            1,
+          );
+          await tree.getByRole('button', { name: label, exact: true }).click();
+        }
         await f.panel
-          .getByRole('link', { name: '查看官方公告', exact: true })
-          .getAttribute('href'),
-      ).toBe('https://example.com/news');
-      expect(await f.panel.getByText(/"provider"/).count()).toBe(0);
-      await f.panel
-        .getByText('Revenue $100 and price $25.', { exact: true })
-        .waitFor();
-      expect(await f.panel.locator('.katex').count()).toBe(0);
-      await f.fileAction('查看源文本');
-      await expect
-        .poll(() =>
-          f.panel
-            .getByRole('region', { name: '源文本', exact: true })
-            .innerText(),
-        )
-        .toContain('provider');
-      expect(
+          .getByText('已经发布的公告摘录。', { exact: true })
+          .waitFor();
+        expect(
+          await f.panel
+            .getByRole('link', { name: '查看官方公告', exact: true })
+            .getAttribute('href'),
+        ).toBe('https://example.com/news');
+        expect(await f.panel.getByText(/"provider"/).count()).toBe(0);
         await f.panel
-          .getByRole('link', { name: '下载', exact: true })
-          .getAttribute('href'),
-      ).toContain(raw.object.id);
-    } finally {
-      await f.close();
-    }
-  });
+          .getByText('Revenue $100 and price $25.', { exact: true })
+          .waitFor();
+        expect(await f.panel.locator('.katex').count()).toBe(0);
+        await f.fileAction('查看源文本');
+        await expect
+          .poll(() =>
+            f.panel
+              .getByRole('region', { name: '源文本', exact: true })
+              .innerText(),
+          )
+          .toContain('provider');
+        expect(
+          await f.panel
+            .getByRole('link', { name: '下载', exact: true })
+            .getAttribute('href'),
+        ).toContain(raw.object.id);
+      } finally {
+        await f.close();
+      }
+    },
+  );
 
   it.each([390, 1440])(
     'saves the selected artifact through the full workbench and survives parent refresh at %ipx',
@@ -9670,7 +9782,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await tree.waitFor();
       release();
       await tree
-        .getByRole('button', { name: 'report-10.md · v1', exact: true })
+        .getByRole('button', { name: 'report-10.md', exact: true })
         .waitFor();
       expect(await tree.isVisible()).toBe(true);
       await f.openWorkbench();
@@ -11887,7 +11999,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .click();
       await f.panel
         .getByRole('region', { name: '工作区文件', exact: true })
-        .getByRole('button', { name: 'report-11.md · v1', exact: true })
+        .getByRole('button', { name: 'report-11.md', exact: true })
         .click();
       await expect
         .poll(() => f.panel.locator('[data-document-id]:visible').count())

@@ -236,8 +236,6 @@ export function WorkbenchFilesPanel(props: {
       )}
       <div className={css.list} aria-busy={loading}>
         {files.map((file) => {
-          const version =
-            catalog?.fileVersions[file.objectId] ?? file.artifact?.version;
           return (
             <article
               className={css.file}
@@ -249,7 +247,7 @@ export function WorkbenchFilesPanel(props: {
                 className={css.fileMain}
                 onClick={() => props.onOpen(file)}
                 title={file.fileName}
-                aria-label={file.fileName + (version ? ` · v${version}` : '')}
+                aria-label={file.fileName}
               >
                 <span className={css.fileIcon}>
                   <FileTypeIcon
@@ -261,7 +259,6 @@ export function WorkbenchFilesPanel(props: {
                   {isToolResultFile(file.fileName, file.objectId)
                     ? `${file.fileName.startsWith('tool-result-web-search-') ? '搜索资料' : '工具记录'} · ${file.objectId.slice(0, 8)}`
                     : file.fileName}
-                  {version ? ` · v${version}` : ''}
                 </span>
                 <small>
                   <span>
@@ -274,7 +271,7 @@ export function WorkbenchFilesPanel(props: {
                     {range(file)}
                   </span>
                   {file.isReference
-                    ? ` · 长期参考${file.reference && file.reference.checksum !== file.checksum ? ' · 早期版本' : ''}${file.reference?.processing === 'ready' ? '' : file.reference?.processing === 'failed' ? ' · 处理失败' : file.reference?.processing === 'unsupported' ? '' : ' · 准备中'}`
+                    ? ` · 长期参考${file.reference?.processing === 'ready' ? '' : file.reference?.processing === 'failed' ? ' · 处理失败' : file.reference?.processing === 'unsupported' ? '' : ' · 准备中'}`
                     : ''}
                 </small>
               </button>
@@ -581,16 +578,11 @@ export function FileSettings(props: {
               />
               <div>
                 <p className={css.filename}>{props.file.fileName}</p>
-                <small>
-                  {props.file.artifact
-                    ? `v${props.file.artifact.version} · `
-                    : ''}
-                  {size(props.file.sizeBytes)}
-                </small>
+                <small>{size(props.file.sizeBytes)}</small>
               </div>
             </div>
             {props.mode === 'reference' && (
-              <p className={css.hint}>保留当前版本，供后续工作查找使用。</p>
+              <p className={css.hint}>保存这份文件，供后续工作查找使用。</p>
             )}
           </>
         ) : (

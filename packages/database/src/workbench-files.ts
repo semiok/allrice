@@ -583,6 +583,9 @@ export async function readWorkbenchFileCatalog(
       and not exists(select 1 from allrice_company_asset_revisions r where r.snapshot_object_id=o.id)
       and not exists(select 1 from allrice_company_asset_materials m where m.object_id=o.id)
       and not exists(select 1 from allrice_company_run_assets r where r.material_object_id=o.id)
+      and (d.series_id is null or not exists(select 1 from allrice_deliverable_versions newer
+        join allrice_storage_objects ready on ready.id=newer.object_id and ready.state='ready' and ready.deleted_at is null
+        where newer.series_id=d.series_id and newer.version>d.version))
     order by o.created_at desc,o.id limit 201`;
   const references = await listReferenceRevisions(
     context,
@@ -621,8 +624,7 @@ export async function readWorkbenchFileCatalog(
             { object_id: string }[]
           >`select v.object_id from allrice_deliverable_versions v
             join allrice_storage_objects o on o.id=v.object_id and o.state='ready' and o.deleted_at is null
-            where v.series_id=${origin.row.series_id} and v.organization_id=${context.organizationId}
-              and v.file_name ilike ${pattern} order by v.version desc limit 1`;
+            where v.series_id=${origin.row.series_id} order by v.version desc limit 1`;
           if (latest) {
             candidates.set(latest.object_id, ref);
             continue;
@@ -636,8 +638,6 @@ export async function readWorkbenchFileCatalog(
     }
   }
   const result: WorkbenchFile[] = [];
-  // Version labels remain available without exposing private artifact Sessions.
-  const versions = new Map<string, number>();
   for (const [objectId, reference] of candidates) {
     try {
       const file = await readWorkbenchFile(context, objectId),
@@ -721,12 +721,6 @@ export async function readWorkbenchFileCatalog(
             : null,
         }),
       );
-      if (
-        file.row.artifact_version !== null &&
-        Number.isInteger(file.row.artifact_version) &&
-        file.row.artifact_version > 0
-      )
-        versions.set(objectId, file.row.artifact_version);
     } catch (error) {
       if (error instanceof DataAccessError) continue;
       throw error;
@@ -737,15 +731,8 @@ export async function readWorkbenchFileCatalog(
       b.createdAt.localeCompare(a.createdAt) ||
       b.objectId.localeCompare(a.objectId),
   );
-  const files = result.slice(0, 200);
   return {
-    files,
-    fileVersions: Object.fromEntries(
-      files.flatMap((file) => {
-        const version = versions.get(file.objectId);
-        return version === undefined ? [] : [[file.objectId, version] as const];
-      }),
-    ),
+    files: result.slice(0, 200),
     truncated: rows.length > 200 || result.length > 200,
     options: {
       writable: options.writable,

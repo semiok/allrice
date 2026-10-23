@@ -289,9 +289,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
     dock.open(
       'artifact',
       id,
-      artifact
-        ? `${artifact.version.fileName} · v${artifact.version.version}`
-        : '所选成果',
+      artifact ? artifact.version.fileName : '所选成果',
       paneId,
     );
   }
@@ -602,7 +600,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                     );
                   else
                     dock.open(
-                      'file',
+                      'managedFile',
                       file.id,
                       file.fileName,
                       findTabPane(dock.surface.layout, tab.id).id,
@@ -765,7 +763,6 @@ function ArtifactTabBody(
       <ArtifactSummaryCards
         artifacts={props.artifacts}
         onOpen={props.onSelect}
-        allVersions
       />
       {props.nextCursor ? (
         <button
@@ -894,11 +891,9 @@ export function ReadOnlyArtifactPreview({
 export function ArtifactSummaryCards({
   artifacts,
   onOpen,
-  allVersions = false,
 }: {
   artifacts: WorkbenchArtifact[];
   onOpen: (id: string) => void;
-  allVersions?: boolean;
 }) {
   const series = new Map<string, WorkbenchArtifact>();
   for (const a of artifacts)
@@ -907,7 +902,7 @@ export function ArtifactSummaryCards({
       series.get(a.version.seriesId)!.version.version < a.version.version
     )
       series.set(a.version.seriesId, a);
-  const newest = allVersions ? artifacts : [...series.values()];
+  const newest = [...series.values()];
   // An empty native deliverables wrapper still contributes its top margin.
   // Mount it only for an actual file, keeping optimistic -> accepted turns still.
   if (!newest.length) return null;
@@ -1215,7 +1210,7 @@ function ArtifactReview({
         </div>
       ) : null}
       {!artifact ? (
-        <p role="status">{readError ? '文件暂未加载。' : '正在读取版本…'}</p>
+        <p role="status">{readError ? '文件暂未加载。' : '正在读取文件…'}</p>
       ) : (
         <>
           <DocumentToolbar

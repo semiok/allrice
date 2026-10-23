@@ -5,7 +5,6 @@ import { WorkbenchFileCatalogSchema, UuidSchema } from '@allrice/contracts';
 export const WorkbenchFileActionsCatalogSchema =
   WorkbenchFileCatalogSchema.extend({
     quotableFileIds: z.array(UuidSchema).default([]),
-    fileVersions: z.record(UuidSchema, z.number().int().positive()).default({}),
   });
 export type WorkbenchFileActionsCatalog = z.infer<
   typeof WorkbenchFileActionsCatalogSchema
