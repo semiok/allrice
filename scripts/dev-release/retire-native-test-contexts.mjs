@@ -8,6 +8,7 @@ import { resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { parseArgs } from 'node:util';
 import { pathToFileURL, fileURLToPath } from 'node:url';
+import { verifyRetirementBusy } from './retirement-preserved-cloud.mjs';
 
 if (process.argv.length === 2) {
   console.log(
@@ -197,12 +198,14 @@ try {
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
     }
+    const healths = [];
     for (const health of r.healthUrls ?? []) {
       const response = await fetch(health, {
         signal: globalThis.AbortSignal.timeout(10_000),
       });
       need(response.ok, 'NATIVE_RETIREMENT_SERVICE_NOT_READY');
       const value = await response.json();
+      healths.push(value);
       need(
         value.identity?.sourceSha === r.releaseSha &&
           value.identity?.sourceTree === r.sourceTree &&
@@ -219,20 +222,65 @@ try {
       Array.isArray(r.healthUrls) && r.healthUrls.length === 2,
       'NATIVE_RETIREMENT_BOTH_SERVICE_HEALTH_REQUIRED',
     );
-    const busy = await db.getDatabase().begin('read only', async (tx) => {
-      await tx`set local statement_timeout='5000'`;
-      const [row] = await tx`select
+    const readBusy = () =>
+      db.getDatabase().begin('read only', async (tx) => {
+        await tx`set local statement_timeout='5000'`;
+        const [row] = await tx`select
         (select count(*)::int from allrice_jobs where status in ('queued','claimed','running','retry_wait','waiting_approval')) jobs,
         (select count(*)::int from allrice_cloud_execution_attempts where cleanup_confirmed_at is null) clouds,
         (select count(*)::int from allrice_platform_employee_test_runs where status in ('queued','running')) tests,
         (select count(*)::int from allrice_runtime_operations where lease_expires_at>clock_timestamp()) leases,
         (select count(*)::int from allrice_provider_authorization_flows where state in ('pending','running','awaiting_user')) auth`;
-      return row;
+        return row;
+      });
+    const busyClassification = await verifyRetirementBusy({
+      review: r,
+      plan: input.value,
+      sql: db.getDatabase(),
+      readBusy,
+      healths,
+      readHealths: () =>
+        Promise.all(
+          r.healthUrls.map(async (url) => {
+            const response = await fetch(url, {
+              signal: globalThis.AbortSignal.timeout(10_000),
+            });
+            need(response.ok, 'NATIVE_RETIREMENT_SERVICE_NOT_READY');
+            return response.json();
+          }),
+        ),
     });
-    need(
-      Object.values(busy).every((n) => n === 0),
-      'NATIVE_RETIREMENT_DEV_BUSY',
-    );
+    if (r.historicalCloudCarry !== undefined) {
+      // Physical probes may outlive the first owner/active checks. Keep the
+      // same private bytes and owner birth before creating any write intent.
+      for (const [path, bytes] of [
+        [a.review, review.bytes],
+        [a.input, input.bytes],
+        [r.activeReleasePath, active.bytes],
+        [r.qaLockPath, lock.bytes],
+      ]) {
+        need(
+          (await privateInput(path)).bytes.equals(bytes),
+          'NATIVE_RETIREMENT_CLOUD_AUTHORITY_CHANGED',
+        );
+      }
+      need(
+        execFileSync(
+          '/bin/ps',
+          ['-p', String(lock.value.pid), '-o', 'lstart='],
+          {
+            encoding: 'utf8',
+          },
+        ).trim() === lock.value.processStart,
+        'NATIVE_RETIREMENT_OWNER_CHANGED',
+      );
+      try {
+        await lstat(r.deploymentLockPath);
+        throw Error('NATIVE_RETIREMENT_DEPLOYMENT_BUSY');
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+    }
     // A persisted intent means the result may be unknown. Read the original
     // receipt instead of reissuing a mutation, even when the caller repeats apply.
     const intentPath = a.output + '.intent.json';
@@ -258,6 +306,7 @@ try {
           mode: 'readback',
           databaseWritten: false,
           originalIntent: intentPath,
+          busyClassification,
           ...result,
         }),
       );
@@ -270,12 +319,13 @@ try {
         at: new Date().toISOString(),
       });
       const result = await db.applyNativeTestChatRetirement(input.value);
-      await save(a.output, result);
+      await save(a.output, { ...result, busyClassification });
       console.log(
         JSON.stringify({
           mode: 'apply',
           databaseWritten: !result.alreadyApplied,
           output: a.output,
+          busyClassification,
           ...result,
         }),
       );
