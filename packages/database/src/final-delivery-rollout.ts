@@ -1,3 +1,4 @@
+import { readChatTransitionRef } from './conversation/native-executor-transition.ts';
 import { z } from 'zod';
 import type postgres from 'postgres';
 import { readChatNativeRootOrigin } from './conversation/native-session-binding.ts';
@@ -34,7 +35,13 @@ export async function selectCheckedFinalDeliveryArtifact(
 ): Promise<string | undefined> {
   const approved = checkedFinalDeliveryArtifacts();
   if (!approved.length) return;
+  await tx`select id from allrice_chat_sessions where id=${input.sessionId} and organization_id=${input.organizationId} and workspace_id=${input.workspaceId} and owner_id=${input.ownerId} for share`;
   const origin = await readChatNativeRootOrigin(tx, input);
+  const transition = await readChatTransitionRef(tx, input, origin);
+  if (transition)
+    return approved.includes(transition.target.artifactId)
+      ? transition.target.artifactId
+      : undefined;
   if (!origin) return; // Explicit old business birth, never current primary.
   const reader = nativeOriginReaderForOrigin(origin, input);
   if (reader) {

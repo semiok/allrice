@@ -38,7 +38,12 @@ describe('AllRice DSH protocol runtime', () => {
     const error = await failure;
     const replay = new Promise<Error>((resolve) => client.onFailure(resolve));
     expect(await replay).toBe(error);
-    await expect(client.close()).resolves.toBeUndefined();
+    await expect(client.close()).rejects.toMatchObject({
+      code: 'DSH_RUNTIME_CLOSE_UNCONFIRMED',
+      evidence: {
+        process: { state: 'exited', stdioClosed: true, signal: 'SIGKILL' },
+      },
+    });
   });
 
   it('long-lived join ignores acknowledgement timeout but process exit still rejects it', async () => {
@@ -69,7 +74,13 @@ describe('AllRice DSH protocol runtime', () => {
     await expect(client.assistant('flush', {})).rejects.toMatchObject({
       code: 'DSH_REQUEST_TIMEOUT',
     });
-    await client.close();
+    await expect(client.close()).rejects.toMatchObject({
+      code: 'DSH_RUNTIME_CLOSE_UNCONFIRMED',
+    });
+    expect(client.processState()).toMatchObject({
+      state: 'exited',
+      stdioClosed: true,
+    });
     expect(await joining).toMatchObject({ code: 'DSH_RUNTIME_CLOSED' });
   });
   it('rejects the retired Gemini composition without a model call', async () => {

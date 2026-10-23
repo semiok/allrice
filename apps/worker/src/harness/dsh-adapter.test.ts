@@ -18,6 +18,7 @@ import type { HarnessExecutionInput, HarnessToolCall } from './adapter.js';
 import { DshRuntimePool, type DshRuntime } from './dsh/runtime-pool.js';
 import { DshStartupRejection } from './dsh/startup-rejection.js';
 import { HandlerError, confirmToolFailure } from '../errors.js';
+import { getDshCleanupFailures } from './dsh-client-cleanup.js';
 import { HarnessEventBatcher } from './delta-batcher.js';
 import { getAssistantFailureUsage } from './dsh/assistant-outcome.js';
 import { assertAssistantProviderOutputBound } from './dsh/assistant-provider.js';
@@ -234,11 +235,35 @@ describe('confirmed native dispatch stop receipt', () => {
   it('does not fabricate a stop receipt when close is unconfirmed', async () => {
     const unknown = Error('exact child close unconfirmed');
     const f = stoppedExecution(() => Promise.reject(unknown));
-    expect(await f.adapter.execute(f.input).catch((e: unknown) => e)).toBe(
-      unknown,
-    );
+    const failure = await f.adapter.execute(f.input).catch((e: unknown) => e);
+    expect(failure).toBe(f.original);
+    expect(getDshCleanupFailures(failure)).toEqual([unknown]);
+    expect(failure).toMatchObject({
+      code: 'NATIVE_SESSION_ADMISSION_DENIED',
+      retryable: false,
+    });
     expect(f.confirmStopped).not.toHaveBeenCalled();
     expect(f.prompt).not.toHaveBeenCalled();
+  });
+
+  it('retains unconfirmed cleanup separately when cancellation wins', async () => {
+    const controller = new AbortController();
+    const unknown = Error('canceled child close unconfirmed');
+    const f = stoppedExecution(async () => {
+      controller.abort();
+      throw unknown;
+    });
+    f.input.signal = controller.signal;
+    const failure = await f.adapter.execute(f.input).catch((e: unknown) => e);
+    expect(failure).toMatchObject({
+      code: 'EXECUTION_ABORTED',
+      retryable: false,
+    });
+    expect(getDshCleanupFailures(failure)).toEqual([unknown]);
+    expect(failure).toHaveProperty('cause', unknown);
+    expect(f.confirmStopped).not.toHaveBeenCalled();
+    expect(f.prompt).not.toHaveBeenCalled();
+    expect(f.drop).toHaveBeenCalledOnce();
   });
 
   it('does not retry an unknown/rejected receipt write or replace the original error', async () => {
@@ -1665,6 +1690,30 @@ describe('DshHarnessAdapter', () => {
       code: 'DSH_EXECUTION_OUTCOME_UNKNOWN',
       retryable: false,
     });
+    expect(getDshCleanupFailures(error)).toHaveLength(1);
+    expect(getDshCleanupFailures(error)[0]).toMatchObject({
+      code: 'DSH_RUNTIME_CLOSE_UNCONFIRMED',
+      retryable: false,
+      evidence: {
+        process: {
+          state: 'exited',
+          stdioClosed: true,
+          exitCode: null,
+          signal: 'SIGKILL',
+        },
+        shutdownAcknowledged: false,
+        wrapperCleanupConfirmed: false,
+      },
+    });
+    expect(error).toHaveProperty('cause', getDshCleanupFailures(error)[0]);
+    expect(adapter.runtimeClosureInventory()).toMatchObject([
+      {
+        state: 'unconfirmed',
+        processState: 'exited',
+        stdioClosed: true,
+        wrapperCleanupConfirmed: false,
+      },
+    ]);
     expect(
       events.some(
         (e) =>

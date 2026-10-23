@@ -411,3 +411,12 @@ export {
   getManualAutomationRun,
   ManualAutomationRunError,
 } from './automation-manual.ts';
+
+export * from './providers/dsh-runtime-close-observations.ts';
+// Private server/Worker contract. Not exported as a model tool or HTTP API.
+export {
+  ExecutorTransitionRefSchema,
+  executorTransitionRef,
+  assertTransitionDescriptor,
+  type ExecutorTransitionRef,
+} from './conversation/native-executor-transition-contract.ts';

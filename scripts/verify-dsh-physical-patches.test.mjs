@@ -77,6 +77,23 @@ describe('physical DSH patch governance', () => {
     const ledger = JSON.parse(
       await readFile(join(root, 'apps/worker/dsh/patch-ledger.json'), 'utf8'),
     );
+    expect(
+      ledger.patches.filter(
+        (entry) => entry.id === 'allrice-observed-native-close-v1',
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        kind: 'protocol-extension',
+        issue: 'MET-195',
+        path: 'apps/worker/dsh/allrice-jsonrpc-runtime.mjs',
+      }),
+    ]);
+    expect(
+      ledger.physicalPatches.some(
+        (entry) =>
+          entry.responsibilityId === 'allrice-observed-native-close-v1',
+      ),
+    ).toBe(false);
     const workspace = parse(
       await readFile(join(root, 'pnpm-workspace.yaml'), 'utf8'),
     );
@@ -96,7 +113,7 @@ describe('physical DSH patch governance', () => {
           ...ledger.retainedPhysicalVersions,
         ],
       }),
-    ).resolves.toEqual({ physicalPatchCount: 5, ledgerEntryCount: 23 });
+    ).resolves.toEqual({ physicalPatchCount: 5, ledgerEntryCount: 24 });
   });
   it('supports the paired migration owner without counting unrelated patches or adapters', async () => {
     await expect(verifyDshPhysicalPatches(await fixture())).resolves.toEqual({

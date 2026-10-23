@@ -1,3 +1,4 @@
+import { createObservedDshClient } from './harness/dsh-close-observer.js';
 import { mkdir, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
@@ -15,10 +16,15 @@ import {
 } from '@allrice/database';
 
 import { DSH_DISTRIBUTION_CURRENT_VERSION } from './harness/dsh-distribution.js';
-import { dshEgressEnvironment } from './harness/dsh-egress-environment.js';
 import {
+  closeDshClientAfterFailure,
+  DshClientCleanupError,
+  withDshClient,
+} from './harness/dsh-client-cleanup.js';
+import { dshEgressEnvironment } from './harness/dsh-egress-environment.js';
+import type {
   DshProtocolClient,
-  type DshNotification,
+  DshNotification,
 } from './harness/dsh-protocol-client.js';
 
 import { codexSubscriptionHome } from './codex-subscription-home.js';
@@ -31,7 +37,9 @@ function runtimeEnvironment(root: string, slot: 1 | 2) {
     ALLRICE_CODEX_AUTH_TRANSPORT: '1',
     ...dshEgressEnvironment(),
     ...(process.env.ALLRICE_CODEX_QUOTA_COMMAND
-      ? { ALLRICE_CODEX_QUOTA_COMMAND: process.env.ALLRICE_CODEX_QUOTA_COMMAND }
+      ? {
+          ALLRICE_CODEX_QUOTA_COMMAND: process.env.ALLRICE_CODEX_QUOTA_COMMAND,
+        }
       : {}),
     DSH_CORDIS_CONFIG: resolve(
       process.env.ALLRICE_DSH_CORDIS_CONFIG ??
@@ -58,33 +66,45 @@ function runtimeEnvironment(root: string, slot: 1 | 2) {
   };
 }
 
-async function createAuthorizationClient(root: string, slot: 1 | 2) {
+async function createAuthorizationClient(
+  root: string,
+  slot: 1 | 2,
+  purpose: 'codex_authorization' | 'codex_probe' = 'codex_authorization',
+) {
   const home = codexSubscriptionHome(slot);
   await Promise.all([
     mkdir(root, { recursive: true, mode: 0o700 }),
     mkdir(home, { recursive: true, mode: 0o700 }),
   ]);
-  const client = new DshProtocolClient({
-    command: process.execPath,
-    args: [
-      '--import',
-      resolve(import.meta.dirname, '../dsh/allrice-codex-auth-transport.mjs'),
-      resolve(import.meta.dirname, '../dsh/allrice-jsonrpc-runtime.mjs'),
-    ],
-    cwd: root,
-    environment: runtimeEnvironment(root, slot),
-    requestTimeoutMs: 300_000,
+  const client = await createObservedDshClient({
+    context: { kind: 'provider', purpose, slot },
+    authorizationTransport: true,
+    launch: {
+      command: process.execPath,
+      args: [
+        '--import',
+        resolve(import.meta.dirname, '../dsh/allrice-codex-auth-transport.mjs'),
+        resolve(import.meta.dirname, '../dsh/allrice-jsonrpc-runtime.mjs'),
+      ],
+      cwd: root,
+      environment: runtimeEnvironment(root, slot),
+      requestTimeoutMs: 300_000,
+    },
   });
-  await client.initialize({
-    cwd: root,
-    provider: 'openai-codex',
-    model:
-      process.env.ALLRICE_DSH_CODEX_MODEL ??
-      process.env.ALLRICE_CODEX_MODEL ??
-      'gpt-6.1-sol',
-    maxTokens: 256,
-    expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
-  });
+  try {
+    await client.initialize({
+      cwd: root,
+      provider: 'openai-codex',
+      model:
+        process.env.ALLRICE_DSH_CODEX_MODEL ??
+        process.env.ALLRICE_CODEX_MODEL ??
+        'gpt-6.1-sol',
+      maxTokens: 256,
+      expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
+    });
+  } catch (error) {
+    return closeDshClientAfterFailure(client, error);
+  }
   return client;
 }
 
@@ -145,32 +165,38 @@ export async function probeDshCodexProvider(
       checkedAt,
       quota: null,
     };
-  let client: DshProtocolClient | null = null;
   try {
-    client = await createAuthorizationClient(
+    const client = await createAuthorizationClient(
       resolve(executionRoot, 'provider-probe', String(slot)),
       slot,
+      'codex_probe',
     );
-    const status = await client.providerStatus();
-    // Optional official account-RPC adapter. Failure to read allowance is not
-    // evidence of either exhausted quota or disconnected model credentials.
-    const rawQuota =
-      status.configured === true
-        ? await client.providerQuota().catch(() => null)
-        : null;
-    return {
-      provider: 'codex',
-      authMode: 'chatgpt_subscription',
-      status: status.configured === true ? 'connected' : 'disconnected',
-      cliVersion: `dsh-${DSH_DISTRIBUTION_CURRENT_VERSION}`,
-      detailCode:
-        status.configured === true
-          ? 'dsh_openai_codex_provider_ready'
-          : 'dsh_openai_codex_authorization_required',
-      checkedAt,
-      quota: codexQuotaObservation(rawQuota, status.configured === true),
-    };
-  } catch {
+    return await withDshClient(
+      client,
+      async (): Promise<CodexProviderStatus> => {
+        const status = await client.providerStatus();
+        // Optional official account-RPC adapter. Failure to read allowance is not
+        // evidence of either exhausted quota or disconnected model credentials.
+        const rawQuota =
+          status.configured === true
+            ? await client.providerQuota().catch(() => null)
+            : null;
+        return {
+          provider: 'codex',
+          authMode: 'chatgpt_subscription',
+          status: status.configured === true ? 'connected' : 'disconnected',
+          cliVersion: `dsh-${DSH_DISTRIBUTION_CURRENT_VERSION}`,
+          detailCode:
+            status.configured === true
+              ? 'dsh_openai_codex_provider_ready'
+              : 'dsh_openai_codex_authorization_required',
+          checkedAt,
+          quota: codexQuotaObservation(rawQuota, status.configured === true),
+        };
+      },
+    );
+  } catch (error) {
+    if (error instanceof DshClientCleanupError) throw error;
     return {
       provider: 'codex',
       authMode: 'chatgpt_subscription',
@@ -179,8 +205,6 @@ export async function probeDshCodexProvider(
       detailCode: 'dsh_provider_probe_failed',
       checkedAt,
     };
-  } finally {
-    await client?.close();
   }
 }
 
@@ -199,7 +223,8 @@ async function runDeviceAuthorization(input: {
   let client: DshProtocolClient;
   try {
     client = await createAuthorizationClient(root, slot);
-  } catch {
+  } catch (error) {
+    if (error instanceof DshClientCleanupError) throw error;
     await completeCodexAuthorization({
       flowId: input.flow.id,
       workerId: input.workerId,
@@ -208,88 +233,99 @@ async function runDeviceAuthorization(input: {
     });
     return;
   }
-  let challengePublished = false;
-  const unsubscribe = client.subscribe((notification) => {
-    if (challengePublished) return;
-    const challenge = parseDshAuthorizationChallenge(notification);
-    if (!challenge) return;
-    challengePublished = true;
-    void publishCodexAuthorizationChallenge({
-      flowId: input.flow.id,
-      workerId: input.workerId,
-      ...challenge,
+  return withDshClient(client, async () => {
+    let challengePublished = false;
+    const unsubscribe = client.subscribe((notification) => {
+      if (challengePublished) return;
+      const challenge = parseDshAuthorizationChallenge(notification);
+      if (!challenge) return;
+      challengePublished = true;
+      void publishCodexAuthorizationChallenge({
+        flowId: input.flow.id,
+        workerId: input.workerId,
+        ...challenge,
+      });
     });
-  });
-  let cancellationRequested = false;
-  const monitor = setInterval(() => {
-    void (async () => {
-      const state = await codexAuthorizationFlowState(input.flow.id).catch(
-        () => null,
+    let cancellationRequested = false;
+    const monitor = setInterval(() => {
+      void (async () => {
+        const state = await codexAuthorizationFlowState(input.flow.id).catch(
+          () => null,
+        );
+        if (
+          !cancellationRequested &&
+          (state === 'canceled' || state === 'expired')
+        ) {
+          cancellationRequested = true;
+          await client.cancelCodexAuthorization().catch(() => undefined);
+        }
+      })();
+    }, 1_000);
+    const abort = () => {
+      cancellationRequested = true;
+      void client.cancelCodexAuthorization().catch(() => undefined);
+    };
+    input.signal.addEventListener('abort', abort, { once: true });
+    try {
+      const result = await client.authorizeCodex();
+      const connected = result.status === 'authorized';
+      // Publish the slot health before ending the flow: the admin stops polling
+      // on completion and activation must never see the previous account status.
+      await recordCodexProviderStatus(
+        await probeDshCodexProvider(input.executionRoot, slot),
+        slot,
       );
-      if (
-        !cancellationRequested &&
-        (state === 'canceled' || state === 'expired')
-      ) {
-        cancellationRequested = true;
-        await client.cancelCodexAuthorization().catch(() => undefined);
+      await completeCodexAuthorization({
+        flowId: input.flow.id,
+        workerId: input.workerId,
+        connected,
+        detailCode: connected
+          ? 'dsh_openai_codex_provider_ready'
+          : 'dsh_openai_codex_authorization_canceled',
+      });
+    } catch (error) {
+      if (error instanceof DshClientCleanupError) throw error;
+      if (cancellationRequested) return;
+      const detailCode = codexAuthorizationFailureCode(error);
+      console.warn('[Codex authorization] request failed', {
+        flowId: input.flow.id,
+        slot,
+        phase: challengePublished ? 'awaiting_user' : 'request_code',
+        detailCode,
+      });
+      await completeCodexAuthorization({
+        flowId: input.flow.id,
+        workerId: input.workerId,
+        connected: false,
+        detailCode,
+      });
+    } finally {
+      clearInterval(monitor);
+      try {
+        unsubscribe();
+      } finally {
+        input.signal.removeEventListener('abort', abort);
       }
-    })();
-  }, 1_000);
-  const abort = () => {
-    cancellationRequested = true;
-    void client.cancelCodexAuthorization().catch(() => undefined);
-  };
-  input.signal.addEventListener('abort', abort, { once: true });
-  try {
-    const result = await client.authorizeCodex();
-    const connected = result.status === 'authorized';
-    // Publish the slot health before ending the flow: the admin stops polling
-    // on completion and activation must never see the previous account status.
-    await recordCodexProviderStatus(
-      await probeDshCodexProvider(input.executionRoot, slot),
-      slot,
-    );
-    await completeCodexAuthorization({
-      flowId: input.flow.id,
-      workerId: input.workerId,
-      connected,
-      detailCode: connected
-        ? 'dsh_openai_codex_provider_ready'
-        : 'dsh_openai_codex_authorization_canceled',
-    });
-  } catch (error) {
-    if (cancellationRequested) return;
-    const detailCode = codexAuthorizationFailureCode(error);
-    console.warn('[Codex authorization] request failed', {
-      flowId: input.flow.id,
-      slot,
-      phase: challengePublished ? 'awaiting_user' : 'request_code',
-      detailCode,
-    });
-    await completeCodexAuthorization({
-      flowId: input.flow.id,
-      workerId: input.workerId,
-      connected: false,
-      detailCode,
-    });
-  } finally {
-    clearInterval(monitor);
-    unsubscribe();
-    input.signal.removeEventListener('abort', abort);
-    await client.close();
-  }
+    }
+  });
 }
 
 export class CodexAuthorizationBroker {
   private active: Promise<void> | null = null;
   private abortController: AbortController | null = null;
+  private closeFailure: DshClientCleanupError | null = null;
 
   constructor(
     private readonly workerId: string,
     private readonly executionRoot: string,
   ) {}
 
+  hasUnconfirmedClose() {
+    return this.closeFailure !== null;
+  }
+
   tick() {
+    if (this.closeFailure) return Promise.reject(this.closeFailure);
     if (this.active) return this.active;
     this.abortController = new AbortController();
     this.active = claimCodexAuthorizationFlow(this.workerId)
@@ -304,10 +340,14 @@ export class CodexAuthorizationBroker {
           : undefined,
       )
       .catch((error: unknown) => {
+        if (error instanceof DshClientCleanupError) this.closeFailure = error;
         console.error('[MET-81] DSH Codex Provider authorization failed', {
           message:
             error instanceof Error ? error.message : 'authorization_failed',
         });
+        // The producer permit must remain unresolved when owned cleanup is
+        // unconfirmed; logging alone must not convert it to normal completion.
+        throw error;
       })
       .finally(() => {
         this.active = null;
@@ -319,5 +359,6 @@ export class CodexAuthorizationBroker {
   async close() {
     this.abortController?.abort();
     await this.active;
+    if (this.closeFailure) throw this.closeFailure;
   }
 }

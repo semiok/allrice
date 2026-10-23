@@ -144,10 +144,26 @@ export class HarnessRouter {
   }
 
   async close() {
-    await Promise.allSettled(
+    const results = await Promise.allSettled(
       [...this.adapters.values()].map((adapter) =>
-        adapter.close ? adapter.close() : Promise.resolve(),
+        Promise.resolve().then(() => adapter.close?.()),
       ),
+    );
+    const failures = results.flatMap((result) =>
+      result.status === 'rejected' ? [result.reason] : [],
+    );
+    if (failures.length)
+      throw new AggregateError(
+        failures,
+        'Harness adapter closure remains unconfirmed',
+      );
+  }
+
+  runtimeClosureInventory() {
+    return [...this.adapters.values()].flatMap((adapter) =>
+      adapter.runtimeClosureInventory
+        ? [...adapter.runtimeClosureInventory()]
+        : [],
     );
   }
 

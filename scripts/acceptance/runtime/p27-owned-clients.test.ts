@@ -5,8 +5,18 @@ import { describe, expect, it } from 'vitest';
 import { DshProtocolClient } from '../../../apps/worker/src/harness/dsh-protocol-client.ts';
 import { observeP27Clients } from './p27-owned-clients.ts';
 
+async function reap(client: DshProtocolClient) {
+  // Synthetic never-initialized children cannot provide the new semantic ack.
+  // Test teardown may accept only their witnessed physical exit, not success.
+  await client.close().catch(() => {});
+  expect(client.processState()).toMatchObject({
+    state: 'exited',
+    stdioClosed: true,
+  });
+}
+
 describe('P27 owned host exit evidence (synthetic process; no provider)', () => {
-  it('closes a real spawned host whose initialize never answers, before marking it stopped', async () => {
+  it('reaps a never-initialized child but preserves unconfirmed semantic close', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'allrice-p27-client-test-'));
     const observer = observeP27Clients(DshProtocolClient);
     const client = new DshProtocolClient({
@@ -26,24 +36,47 @@ describe('P27 owned host exit evidence (synthetic process; no provider)', () => 
       expect(observer.snapshot()).toEqual({
         owned: 1,
         closed: 0,
+        physicallyExited: 0,
+        closeUnconfirmed: 0,
         allStopped: false,
+        allPhysicallyExited: false,
       });
       const stopping = observer.closeAll();
       expect(observer.snapshot().allStopped).toBe(false);
-      await stopping;
+      await expect(stopping).rejects.toMatchObject({
+        errors: [
+          {
+            code: 'DSH_RUNTIME_CLOSE_UNCONFIRMED',
+            evidence: {
+              process: { state: 'exited', stdioClosed: true },
+              shutdownAcknowledged: false,
+              wrapperCleanupConfirmed: false,
+            },
+          },
+        ],
+      });
       await expect(initialization).rejects.toThrow();
       expect(observer.snapshot()).toEqual({
         owned: 1,
-        closed: 1,
-        allStopped: true,
+        closed: 0,
+        physicallyExited: 1,
+        closeUnconfirmed: 1,
+        allStopped: false,
+        allPhysicallyExited: true,
       });
+      await expect(observer.closeAll()).rejects.toThrow(
+        'P27 owned close remains unconfirmed',
+      );
     } finally {
-      await client.close();
-      observer.restore();
-      await rm(directory, { recursive: true });
+      try {
+        await reap(client);
+      } finally {
+        observer.restore();
+        await rm(directory, { recursive: true });
+      }
     }
   }, 10000);
-  it('denies late initialization after stopping and waits for that new owned process to exit', async () => {
+  it('denies late initialization and retains its separate physical-exit and unconfirmed-close facts', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'allrice-p27-client-test-'));
     const observer = observeP27Clients(DshProtocolClient);
     await observer.closeAll();
@@ -61,16 +94,32 @@ describe('P27 owned host exit evidence (synthetic process; no provider)', () => 
           provider: 'synthetic',
           model: 'never-called',
         }),
-      ).rejects.toThrow('p27_stopping');
+      ).rejects.toMatchObject({
+        message: 'p27_stopping',
+        cause: {
+          code: 'DSH_RUNTIME_CLOSE_UNCONFIRMED',
+          evidence: {
+            process: { state: 'exited', stdioClosed: true },
+            shutdownAcknowledged: false,
+            wrapperCleanupConfirmed: false,
+          },
+        },
+      });
       expect(observer.snapshot()).toEqual({
         owned: 1,
-        closed: 1,
-        allStopped: true,
+        closed: 0,
+        physicallyExited: 1,
+        closeUnconfirmed: 1,
+        allStopped: false,
+        allPhysicallyExited: true,
       });
     } finally {
-      await client.close();
-      observer.restore();
-      await rm(directory, { recursive: true });
+      try {
+        await reap(client);
+      } finally {
+        observer.restore();
+        await rm(directory, { recursive: true });
+      }
     }
   }, 10000);
 });

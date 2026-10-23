@@ -1,4 +1,5 @@
 import { retainedReaderFixture } from './retained-reader-fixture.js';
+import { closeLegacyFixtureClient } from './legacy-client-close.js';
 import { join, resolve } from 'node:path';
 
 import { DSH_DISTRIBUTION_CURRENT_VERSION } from '../../src/harness/dsh-distribution.js';
@@ -64,9 +65,24 @@ export async function legacySessionFixture(
       });
       return { client, notices };
     },
+    closeClient(client: DshProtocolClient) {
+      if (!clients.includes(client))
+        throw new Error('Legacy fixture cannot close a foreign client');
+      return closeLegacyFixtureClient(client, reader);
+    },
     async close() {
-      await Promise.allSettled(clients.map((client) => client.close()));
+      const results = await Promise.allSettled(
+        clients.map((client) => closeLegacyFixtureClient(client, reader)),
+      );
       await fixture.close();
+      const failures = results.flatMap((result) =>
+        result.status === 'rejected' ? [result.reason] : [],
+      );
+      if (failures.length)
+        throw new AggregateError(
+          failures,
+          'Legacy fixture close evidence failed',
+        );
     },
   };
 }
