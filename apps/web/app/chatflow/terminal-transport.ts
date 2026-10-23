@@ -78,6 +78,7 @@ export class TerminalCarrier {
   private attempt = 0;
   private revision = 0;
   private ended = false;
+  private disposed = false;
   private streamMode: TerminalStreamMode = 'pull';
   private bufferedBytes = 0;
   private bufferedFrames = 0;
@@ -144,7 +145,7 @@ export class TerminalCarrier {
   }
 
   private connect() {
-    if (this.ended) return;
+    if (this.ended || this.disposed) return;
     this.reconnect = undefined;
     this.state.set({ ...this.state.getSnapshot(), phase: 'connecting' });
     const query = new URLSearchParams({
@@ -306,6 +307,21 @@ export class TerminalCarrier {
   retryConnection() {
     if (this.ended || this.state.getSnapshot().phase !== 'disconnected') return;
     if (this.reconnect) clearTimeout(this.reconnect);
+    this.connect();
+  }
+
+  /** An explicit recovery action starts a new, fully authorized socket. An
+   * ended connection never resumes its requests or input, and a disposed owner
+   * can never be revived. terminal.ready must validate the pinned target again
+   * before DSH receives a new connection generation. */
+  reauthorizeConnection() {
+    const { phase } = this.state.getSnapshot();
+    if (this.disposed || phase === 'connected' || phase === 'connecting')
+      return;
+    if (this.reconnect) clearTimeout(this.reconnect);
+    this.ended = false;
+    this.attempt = 0;
+    this.state.set({ ...this.state.getSnapshot(), error: undefined });
     this.connect();
   }
 
@@ -590,6 +606,7 @@ export class TerminalCarrier {
   }
 
   dispose() {
+    this.disposed = true;
     this.end('终端页面已退出');
   }
 }

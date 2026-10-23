@@ -17,8 +17,11 @@
   background: var(--ed-bg);
 }
 .dialog > header h2 {
-  font-size: 15px;
-  line-height: 22px;
+  margin: 0;
+  color: var(--dsw-alias-label-primary);
+  font-size: 17px;
+  line-height: 24px;
+  font-weight: 600;
 }
 .profileDialog {
   height: min(820px, calc(100dvh - 48px));
@@ -26,13 +29,6 @@
 .profileDialog > header {
   align-items: center;
   padding: 10px 16px;
-}
-.profileDialog > header h2 {
-  margin: 0;
-  color: var(--ed-sub);
-  font-size: 13px;
-  line-height: 20px;
-  font-weight: 400;
 }
 .profileDialog > header button {
   display: grid;

@@ -45,6 +45,8 @@ type FixtureState = {
   readyConnections: number;
   authorize?: Promise<void>;
   interruptAuthorization?: () => void;
+  endAuthorization?: () => void;
+  authorizationRevoked?: boolean;
   screenRequests: number;
   inputs: Array<{ type: string; sequence: number; data?: string }>;
   shells: Array<{ path: string; args: string[]; name: string }>;
@@ -210,6 +212,11 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
             });
             client.close(4009);
           };
+          state.endAuthorization = () => client.close(4403);
+          if (state.authorizationRevoked) {
+            client.close(4403);
+            return;
+          }
           const deliver = (requestId: string, stream: Stream) => {
             if (
               (state.streamMode === 'push' || stream.credit) &&
@@ -776,6 +783,103 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
       }
     },
   );
+
+  it('native reconnect reauthorizes an ended carrier and keeps the original process without replay', async () => {
+    const f = await fixture();
+    try {
+      const input = f.page.locator('[data-sidebar-terminal] textarea');
+      await expect.poll(() => input.isEditable()).toBe(true);
+      await input.pressSequentially('before');
+      await expect
+        .poll(() =>
+          f.state.inputs
+            .filter((item) => item.type === 'write')
+            .map((item) => item.data)
+            .join(''),
+        )
+        .toBe('before');
+      const id = [...f.state.processes.keys()][0];
+      f.state.endAuthorization!();
+      await f.page.getByText('连接已结束', { exact: true }).waitFor();
+      await f.page
+        .getByRole('button', { name: '重新连接', exact: true })
+        .click();
+      await expect.poll(() => input.isEditable()).toBe(true);
+      await input.pressSequentially('after');
+      await expect
+        .poll(() =>
+          f.state.inputs
+            .filter((item) => item.type === 'write')
+            .map((item) => item.data)
+            .join(''),
+        )
+        .toBe('beforeafter');
+      expect(f.state.connections).toBe(2);
+      expect(f.state.creates).toBe(1);
+      expect([...f.state.processes.keys()]).toEqual([id]);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it.each(['native reconnect', 'computer refresh'] as const)(
+    '%s recovers the transport after Host restart and shows the missing original terminal without creating another shell',
+    async (action) => {
+      const f = await fixture();
+      try {
+        const input = f.page.locator('[data-sidebar-terminal] textarea');
+        await expect.poll(() => input.isEditable()).toBe(true);
+        f.state.processes.clear();
+        f.state.endAuthorization!();
+        await f.page.getByText('连接已结束', { exact: true }).waitFor();
+        await f.page
+          .getByRole('button', {
+            name: action === 'native reconnect' ? '重新连接' : '刷新电脑状态',
+            exact: true,
+          })
+          .click();
+        await f.page
+          .getByText('此终端已不存在，请新建终端。', { exact: true })
+          .waitFor();
+        await f.page
+          .getByRole('button', { name: '新建终端', exact: true })
+          .waitFor();
+        await f.page.getByText('终端已连接', { exact: true }).waitFor();
+        expect(f.state.connections).toBe(2);
+        expect(f.state.creates).toBe(1);
+        expect(f.state.processes.size).toBe(0);
+        expect(f.state.inputs.filter((item) => item.type === 'write')).toEqual(
+          [],
+        );
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
+  it('fresh recovery keeps a genuinely revoked authorization blocked', async () => {
+    const f = await fixture();
+    try {
+      const input = f.page.locator('[data-sidebar-terminal] textarea');
+      await expect.poll(() => input.isEditable()).toBe(true);
+      f.state.authorizationRevoked = true;
+      f.state.endAuthorization!();
+      await f.page.getByText('连接已结束', { exact: true }).waitFor();
+      await f.page
+        .getByRole('button', { name: '重新验证并连接', exact: true })
+        .click();
+      await expect.poll(() => f.state.connections).toBe(2);
+      await f.page.getByText('连接已结束', { exact: true }).waitFor();
+      expect(f.state.readyConnections).toBe(1);
+      expect(f.state.creates).toBe(1);
+      expect(await input.isEditable()).toBe(false);
+      expect(f.state.inputs.filter((item) => item.type === 'write')).toEqual(
+        [],
+      );
+    } finally {
+      await f.close();
+    }
+  });
 
   it('retains an interrupted close intent and explicitly retries it after fresh authorization', async () => {
     const f = await fixture({ streamMode: 'push' });

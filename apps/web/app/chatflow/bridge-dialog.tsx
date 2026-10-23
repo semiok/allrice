@@ -14,7 +14,6 @@ import {
   IconGlobeOutlineRegular,
   IconRefreshOutlineRegular,
   IconRightUpOutlineRegular,
-  IconCordisPluginOutlineRegular,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import {
   BridgeReleaseDownloads,
@@ -315,9 +314,7 @@ export function BridgeSettings({
                               ? IconRightUpOutlineRegular
                               : row.capability === 'local.office'
                                 ? IconDeliverDocRegular
-                                : row.capability === 'local.mcp'
-                                  ? IconCordisPluginOutlineRegular
-                                  : IconCodeOutlineRegular;
+                                : IconCodeOutlineRegular;
                     return (
                       <div
                         key={row.capability}

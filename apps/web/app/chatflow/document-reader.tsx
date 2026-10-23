@@ -82,9 +82,14 @@ export function DocumentToolbar(props: {
             )
           }
         />
-        <a className={styles.download} href={props.downloadUrl} download>
+        <a
+          className={styles.download}
+          href={props.downloadUrl}
+          download
+          title="下载"
+          aria-label="下载"
+        >
           <IconDownloadOutlineRegular size={20} />
-          下载
         </a>
         {hasMenuActions && (
           <Menu

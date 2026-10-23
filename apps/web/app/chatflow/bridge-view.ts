@@ -60,6 +60,7 @@ const readinessReasons: Record<string, string> = {
 };
 
 export function bridgeCapabilityRows(device: BridgeDevice) {
+  // Settings presentation only; capability reports and grants stay unchanged.
   const names = [
     ['local.fs.read', '文件读取'],
     ['local.fs.write', '文件修改'],
@@ -68,7 +69,6 @@ export function bridgeCapabilityRows(device: BridgeDevice) {
     ['local.process', '本机沙箱计算'],
     ['local.development', '项目开发'],
     ['local.preview', '项目预览'],
-    ['local.mcp', '本机应用'],
     ['local.office', '本地 Office'],
   ] as const;
   return names.flatMap(([capability, label]) => {
