@@ -123,7 +123,7 @@ describe('EmployeeProfileDetails', () => {
     expect(html).not.toContain('<select');
     expect(html).toContain('暂无已生效的执行要求');
   });
-  it('explains an empty custom scene list without inventing active content or exposing private state in shared view', () => {
+  it('keeps common content and allowed actions without empty scene copy in personal or shared view', () => {
     const details = employeeDetailsFixture();
     details.profile.kind = 'custom';
     details.content.scenes = [];
@@ -135,7 +135,8 @@ describe('EmployeeProfileDetails', () => {
       />,
     );
     expect(personal).toContain('工作场景');
-    expect(personal).toContain('暂无已保存的工作场景');
+    expect(personal).toContain('通用内容');
+    expect(personal).not.toContain('暂无已保存的工作场景');
     expect(personal).toContain('AI新增工作场景');
     expect(personal).not.toContain('<select');
     const shared = renderToStaticMarkup(
@@ -145,7 +146,8 @@ describe('EmployeeProfileDetails', () => {
         onPreview={() => {}}
       />,
     );
-    expect(shared).toContain('暂无可查看的共享场景');
+    expect(shared).toContain('通用内容');
+    expect(shared).not.toContain('暂无可查看的共享场景');
     expect(shared).not.toContain('可在聊天中说明');
     expect(shared).not.toContain('AI新增工作场景');
   });
