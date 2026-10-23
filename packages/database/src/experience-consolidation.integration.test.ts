@@ -3779,9 +3779,82 @@ suite(
           .pendingSources,
       ).toBe(102);
     });
+    it.each(['missing', 'mismatched'] as const)(
+      'rolls back a nonempty occurrence on %s executor approval without consuming its source',
+      async (mode) => {
+        const f = await source();
+        const counts = () => db`
+          select (select count(*)::int from allrice_automation_runs where automation_id=${f.rule.id}) occurrences,
+            (select count(*)::int from allrice_runs where owner_id=${f.user}) runs,
+            (select count(*)::int from allrice_jobs where owner_id=${f.user}) jobs`;
+        const before = await counts();
+        const reviews =
+          await db`select * from allrice_experience_reviews where memory_id=${f.candidate.id}`;
+        vi.stubEnv(
+          'ALLRICE_DSH_NATIVE_ARTIFACT_ID',
+          mode === 'missing' ? undefined : 'sha256:' + 'b'.repeat(64),
+        );
+        try {
+          await expect(reserveOccurrence(f, new Date())).rejects.toThrow();
+          expect(await counts()).toEqual(before);
+          expect(
+            await db`select * from allrice_experience_reviews where memory_id=${f.candidate.id}`,
+          ).toEqual(reviews);
+        } finally {
+          vi.stubEnv(
+            'ALLRICE_DSH_NATIVE_ARTIFACT_ID',
+            'sha256:' + 'a'.repeat(64),
+          );
+        }
+      },
+    );
+    it('retains a previously queued occurrence on replay after executor approval is removed', async () => {
+      const f = await source(),
+        scheduledFor = new Date();
+      const queued = await reserveOccurrence(f, scheduledFor);
+      expect(queued.outcome).toBe('queued');
+      if (queued.outcome !== 'queued')
+        throw Error('expected_nonempty_occurrence');
+      const original =
+        await db`select * from allrice_automation_runs where id=${queued.automationRunId}`;
+      expect(original[0]!.native_root_origin).toMatchObject({
+        contextKind: 'experience_consolidation',
+        contextId: queued.automationRunId,
+        rootSeed: `experience-${queued.automationRunId}`,
+        profileId: 'restricted',
+        artifactId: 'sha256:' + 'a'.repeat(64),
+      });
+      vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', undefined);
+      vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', undefined);
+      try {
+        expect(await reserveOccurrence(f, scheduledFor)).toEqual({
+          outcome: 'already_claimed',
+          automationRunId: queued.automationRunId,
+        });
+        expect(
+          await db`select * from allrice_automation_runs where id=${queued.automationRunId}`,
+        ).toEqual(original);
+        expect(
+          await db`select id from allrice_jobs where owner_id=${f.user}`,
+        ).toHaveLength(0);
+      } finally {
+        vi.stubEnv(
+          'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
+          'sha256:' + 'a'.repeat(64),
+        );
+        vi.stubEnv(
+          'ALLRICE_DSH_NATIVE_ARTIFACT_ID',
+          'sha256:' + 'a'.repeat(64),
+        );
+      }
+    });
     it('records an empty reservation without a Run or model execution', async () => {
       const f = await source();
       await deleteWorkspaceMemory(f.owner, f.workspace, f.candidate.id);
+      // No executable work exists, so missing deployment approval must not
+      // turn this successful no-op into a Run, Job or failed reservation.
+      vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', undefined);
+      vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', undefined);
       const reserved = await reserveOccurrence(f, new Date());
       expect(reserved.outcome).toBe('empty');
       if (reserved.outcome !== 'empty')
@@ -3793,6 +3866,7 @@ suite(
         status: 'succeeded',
         error_code: 'EXPERIENCE_NO_NEW_EVIDENCE',
         experience_execution: null,
+        native_root_origin: null,
       });
       expect(
         await db`select id from allrice_jobs where owner_id=${f.user}`,

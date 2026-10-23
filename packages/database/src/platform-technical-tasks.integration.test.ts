@@ -74,6 +74,12 @@ suite(
       };
       vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', adminEmail);
       vi.stubEnv('ALLRICE_ENV', 'test');
+      // SQL-only birth identity; this does not approve a real native Host.
+      vi.stubEnv(
+        'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
+        'sha256:' + 'a'.repeat(64),
+      );
+      vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
       await fixture.db`update allrice_model_connections set status='ready' where id='52000000-0000-4000-8000-000000000001'`;
       await fixture.db`update allrice_model_providers set enabled=true where provider_key='codex'`;
     }, 120000);
@@ -125,6 +131,8 @@ suite(
         descriptor: nativeBindingDescriptor({
           ...task,
           profileId: 'technical',
+          contextKey: task.id,
+          distributionGeneration: 'dsh-0.2.1-rc.2-687f282',
         }),
       };
       const first = await bindJobNativeSession(input);
@@ -176,6 +184,66 @@ suite(
       expect(
         (await getPlatformTechnicalTask(admin, a.task.id)).task.status,
       ).toBe('canceled');
+    });
+    it.each(['missing', 'mismatched'] as const)(
+      'rejects %s execution approval without leaving a technical task, Run or Job',
+      async (mode) => {
+        const counts = () => fixture.db`
+          select (select count(*)::int from allrice_platform_technical_tasks) tasks,
+            (select count(*)::int from allrice_runs) runs,
+            (select count(*)::int from allrice_jobs) jobs`;
+        const before = await counts();
+        vi.stubEnv(
+          'ALLRICE_DSH_NATIVE_ARTIFACT_ID',
+          mode === 'missing' ? undefined : 'sha256:' + 'b'.repeat(64),
+        );
+        try {
+          await expect(submit()).rejects.toThrow();
+          expect(await counts()).toEqual(before);
+        } finally {
+          vi.stubEnv(
+            'ALLRICE_DSH_NATIVE_ARTIFACT_ID',
+            'sha256:' + 'a'.repeat(64),
+          );
+        }
+      },
+    );
+    it('returns the original technical task on a repeated request after approval is removed', async () => {
+      const requestId = randomUUID();
+      const detail = await submit('Original executable birth', requestId);
+      const original = await fixture.db`
+        select native_root_origin,frozen_configuration,run_id,job_id
+        from allrice_platform_technical_tasks where id=${detail.task.id}`;
+      expect(original[0]!.native_root_origin).toMatchObject({
+        contextKind: 'platform_technical',
+        contextId: detail.task.id,
+        rootSeed: detail.task.id,
+        profileId: 'technical',
+        artifactId: 'sha256:' + 'a'.repeat(64),
+      });
+      vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', undefined);
+      vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', undefined);
+      try {
+        expect(
+          (await submit('Original executable birth', requestId)).task.id,
+        ).toBe(detail.task.id);
+        expect(
+          await fixture.db`
+          select native_root_origin,frozen_configuration,run_id,job_id
+          from allrice_platform_technical_tasks where id=${detail.task.id}`,
+        ).toEqual(original);
+      } finally {
+        vi.stubEnv(
+          'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
+          'sha256:' + 'a'.repeat(64),
+        );
+        vi.stubEnv(
+          'ALLRICE_DSH_NATIVE_ARTIFACT_ID',
+          'sha256:' + 'a'.repeat(64),
+        );
+        await cancelPlatformTechnicalTask(admin, detail.task.id);
+        await maintainQueue();
+      }
     });
     it('rejects ordinary submissions, private tool names, cross-account details and untrusted queue binding without orphan Jobs', async () => {
       await expect(
