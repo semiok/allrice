@@ -7,41 +7,80 @@
   height: 100%;
 }
 .toolbar {
-  height: 52px;
+  flex-wrap: wrap;
+  height: auto;
+  min-height: 52px;
   gap: 8px;
-  padding: 0 12px;
+  padding: 9px 12px;
   background: var(--dsw-alias-bg-base, #fff);
+}
+.identity {
+  display: flex;
+  flex: 1 1 160px;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+.identity > svg {
+  flex: none;
 }
 .name {
   flex: 1;
   min-width: 0;
   font-size: 13px;
 }
+.controls {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  max-width: 100%;
+  margin-left: auto;
+  gap: 4px;
+}
+.controls > * {
+  flex: none;
+}
 .toolbar .download,
-.toolbar .iconButton,
-.toolbar .version {
+.toolbar .iconButton {
   display: inline-flex;
   flex: none;
   align-items: center;
   justify-content: center;
   gap: 4px;
-  min-height: 32px;
-  padding: 6px 8px;
+  height: 32px;
+  padding: 0 8px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--dsw-radius-sm, 8px);
   color: var(--dsw-alias-label-secondary, #606873);
   background: transparent;
   text-decoration: none;
-  font-size: 12px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 20px;
   white-space: nowrap;
+  cursor: pointer;
 }
-.toolbar .download {
-  color: var(--dsw-alias-brand-primary, #3970d9);
-  background: var(--dsw-alias-bg-layer-1, #f3f5f8);
+.toolbar .iconButton,
+.controls [data-office-font-warning] button {
+  width: 32px;
+  height: 32px;
+  padding: 6px;
 }
-.toolbar a:hover,
-.toolbar button:hover {
-  background: var(--dsw-alias-interaction-hover, #edf0f4);
+.controls [data-office-font-warning] svg {
+  width: 20px;
+  height: 20px;
+}
+.toolbar .download:hover,
+.toolbar button:hover:not(:disabled) {
+  color: var(--dsw-alias-label-primary, #20242b);
+  background: var(--dsw-alias-interactive-bg-hover, #edf0f4);
+}
+.toolbar a:focus-visible,
+.toolbar button:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary, #3970d9);
+  outline-offset: 2px;
 }
 .content {
   flex: 1;
@@ -103,13 +142,7 @@
 @media (max-width: 600px) {
   .toolbar {
     gap: 4px;
-    padding: 0 8px;
-    height: 56px;
-  }
-  .toolbar .download,
-  .toolbar .iconButton,
-  .toolbar .version {
-    min-height: 40px;
+    padding: 7px 8px;
   }
   .content {
     padding: 0 12px;
@@ -128,4 +161,15 @@
   min-height: 0;
   min-width: 0;
   overflow: hidden;
+}
+
+.actionAnchor {
+  display: inline-flex;
+  flex: none;
+}
+.actionNotice {
+  flex-basis: 100%;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }

@@ -28,8 +28,10 @@ import {
   hasSourcePreview,
   hasNativeViewport,
 } from './native-document-preview';
-import { DocumentToolbar, DocumentVersions } from './document-reader';
+import { DocumentToolbar } from './document-reader';
 import { SaveArtifactReference } from './save-artifact-reference';
+import { WorkbenchFileToolbarActions } from './workbench-file-toolbar-actions';
+import type { ReferenceRevision } from '@allrice/contracts';
 import reader from './document-reader.module.css';
 import { isToolResultExport } from '../../lib/chatflow/document-reader-model';
 import { ChangesetPanel } from './changeset-panel';
@@ -151,6 +153,8 @@ type Props = {
   readOnly?: boolean;
   onContinued?: (runId: string) => void;
   onOpenReference?: (reference: ReferenceSelection) => void;
+  onUseFileReference?: (reference: ReferenceRevision) => void;
+  onTemplateFile?: (reference: ReferenceRevision) => void;
 };
 
 /** Focus-contained narrow panel; keeps the same component mounted when resized. */
@@ -285,9 +289,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
     dock.open(
       'artifact',
       id,
-      artifact
-        ? `${artifact.version.fileName} · v${artifact.version.version}`
-        : '所选成果',
+      artifact ? artifact.version.fileName : '所选成果',
       paneId,
     );
   }
@@ -598,7 +600,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                     );
                   else
                     dock.open(
-                      'file',
+                      'managedFile',
                       file.id,
                       file.fileName,
                       findTabPane(dock.surface.layout, tab.id).id,
@@ -607,6 +609,16 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
               />
             ) : tab.kind === 'file' || tab.kind === 'managedFile' ? (
               <WorkspaceFilePreview
+                fileActions={
+                  props.onUseFileReference
+                    ? {
+                        sessionId: props.sessionId,
+                        readOnly: props.readOnly,
+                        onUse: props.onUseFileReference,
+                        onTemplate: props.onTemplateFile,
+                      }
+                    : undefined
+                }
                 unified={tab.kind === 'managedFile'}
                 active={
                   props.open &&
@@ -617,14 +629,6 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                 title={tab.title}
                 workspaceId={props.workspaceId}
                 tenantHeaders={props.tenantHeaders}
-                onVersion={(id, title) =>
-                  dock.open(
-                    tab.kind,
-                    id,
-                    title,
-                    findTabPane(dock.surface.layout, tab.id).id,
-                  )
-                }
               />
             ) : (
               <ArtifactTabBody
@@ -668,12 +672,12 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                 <button
                   type="button"
                   aria-label={fullscreen ? '退出全屏' : '全屏查看'}
+                  className={moduleUi.iconButton}
                   onClick={() => dock.setFullscreen(!fullscreen)}
                 >
                   {props.desktop ? (
                     <WorkbenchIcon
                       kind={fullscreen ? 'restore' : 'fullscreen'}
-                      size={19}
                     />
                   ) : fullscreen ? (
                     '↙'
@@ -682,8 +686,13 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                   )}
                 </button>
               ) : null}
-              <button type="button" aria-label="关闭工作台" onClick={close}>
-                {props.desktop ? <WorkbenchIcon kind="panel" size={19} /> : '×'}
+              <button
+                type="button"
+                className={moduleUi.iconButton}
+                aria-label="关闭工作台"
+                onClick={close}
+              >
+                {props.desktop ? <WorkbenchIcon kind="panel" /> : '×'}
               </button>
             </>
           }
@@ -722,12 +731,13 @@ function ArtifactTabBody(
           sessionId={props.sessionId}
           workspaceId={props.workspaceId}
           tenantHeaders={props.tenantHeaders}
-          onSelect={props.onSelect}
           readOnly={props.readOnly}
           onContinued={props.onContinued}
           onCatalog={props.onCatalog}
           onReload={props.onReload}
           onOpenReference={props.onOpenReference}
+          onUseFileReference={props.onUseFileReference}
+          onTemplateFile={props.onTemplateFile}
         />
       </div>
     );
@@ -958,24 +968,26 @@ function ArtifactReview({
   sessionId,
   workspaceId,
   tenantHeaders,
-  onSelect,
   onContinued,
   readOnly = false,
   onCatalog,
   onReload,
   onOpenReference,
+  onUseFileReference,
+  onTemplateFile,
 }: {
   active: boolean;
   artifactId: string;
   sessionId: string;
   workspaceId: string;
   tenantHeaders: Record<string, string>;
-  onSelect: (id: string) => void;
   readOnly?: boolean;
   onContinued?: (runId: string) => void;
   onCatalog: () => void;
   onReload: () => Promise<void>;
   onOpenReference?: (reference: ReferenceSelection) => void;
+  onUseFileReference?: (reference: ReferenceRevision) => void;
+  onTemplateFile?: (reference: ReferenceRevision) => void;
 }) {
   const [artifact, setArtifact] = useState<WorkbenchArtifact | null>(null),
     [preview, setPreview] = useState<ArtifactPreview | null>(null),
@@ -1198,7 +1210,7 @@ function ArtifactReview({
         </div>
       ) : null}
       {!artifact ? (
-        <p role="status">{readError ? '文件暂未加载。' : '正在读取版本…'}</p>
+        <p role="status">{readError ? '文件暂未加载。' : '正在读取文件…'}</p>
       ) : (
         <>
           <DocumentToolbar
@@ -1215,6 +1227,38 @@ function ArtifactReview({
                 : artifact.version.fileName
             }
             downloadUrl={`/api/v1/files/${artifact.object.id}/download?name=${encodeURIComponent(artifact.version.fileName)}`}
+            quickActions={
+              onUseFileReference ? (
+                <WorkbenchFileToolbarActions
+                  objectId={artifact.object.id}
+                  fileName={artifact.version.fileName}
+                  workspaceId={workspaceId}
+                  sessionId={sessionId}
+                  headers={tenantHeaders}
+                  active={active}
+                  readOnly={readOnly}
+                  onUse={onUseFileReference}
+                  onTemplate={onTemplateFile}
+                  referenceAction={
+                    !readOnly &&
+                    !toolResult &&
+                    ['document', 'plan', 'file'].includes(artifact.kind) ? (
+                      <SaveArtifactReference
+                        key={artifact.version.id}
+                        workspaceId={workspaceId}
+                        headers={tenantHeaders}
+                        versionId={artifact.version.id}
+                        fileName={artifact.version.fileName}
+                        version={artifact.version.version}
+                        icon
+                      />
+                    ) : (
+                      false
+                    )
+                  }
+                />
+              ) : undefined
+            }
             actions={[
               { id: 'catalog', label: '查看所有成果' },
               { id: 'refresh', label: '刷新文件' },
@@ -1264,14 +1308,8 @@ function ArtifactReview({
               }
             }}
           >
-            <DocumentVersions
-              objectId={artifact.object.id}
-              workspaceId={workspaceId}
-              headers={tenantHeaders}
-              version={artifact.version.version}
-              onSelect={(version) => onSelect(version.id)}
-            />
-            {!readOnly &&
+            {!onUseFileReference &&
+              !readOnly &&
               !toolResult &&
               ['document', 'plan', 'file'].includes(artifact.kind) && (
                 <SaveArtifactReference
@@ -1353,17 +1391,6 @@ function ArtifactReview({
           <div
             className={`${reader.content} ${hasNativeViewport(preview) && view === 'preview' ? reader.officeContent : ''}`}
           >
-            {artifact.stale ? (
-              <p className={styles.muted}>
-                正在查看 v{artifact.version.version}。
-                <button
-                  type="button"
-                  onClick={() => onSelect(artifact.latestVersionId)}
-                >
-                  查看最新版本
-                </button>
-              </p>
-            ) : null}
             {artifact.kind === 'changeset' ? (
               <ChangesetPanel
                 key={artifact.id}
