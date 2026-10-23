@@ -1,6 +1,10 @@
-const utf8Locale = (value: string | undefined): value is string =>
+const utf8Locale = (
+  value: string | undefined,
+  allowBareEncoding = false,
+): value is string =>
   value !== undefined &&
-  /^(?:[a-z][a-z0-9_-]*\.)?utf-?8(?:@[a-z0-9_-]+)?$/i.test(value);
+  (/^[a-z][a-z0-9_-]*\.utf-?8(?:@[a-z0-9_-]+)?$/i.test(value) ||
+    (allowBareEncoding && /^utf-?8$/i.test(value)));
 
 /** Only the human PTY receives these overrides; Core and Agent environments
  * retain the inherited locale. An empty POSIX LC_ALL restores category priority
@@ -15,7 +19,12 @@ export function humanTerminalLocaleEnvironment(
   const clearAll: Record<string, string> = environment.LC_ALL
     ? { LC_ALL: '' }
     : {};
-  if (utf8Locale(ctype) || (!ctype && utf8Locale(language))) return clearAll;
+  // Darwin accepts a bare encoding only for LC_CTYPE, not LANG or LC_ALL.
+  if (
+    utf8Locale(ctype, platform === 'darwin') ||
+    (!ctype && utf8Locale(language))
+  )
+    return clearAll;
   const selected = utf8Locale(language)
     ? language
     : platform === 'darwin'
@@ -24,6 +33,6 @@ export function humanTerminalLocaleEnvironment(
   return {
     ...clearAll,
     LC_CTYPE: selected,
-    ...(!language ? { LANG: selected } : {}),
+    ...(!language || /^utf-?8$/i.test(language) ? { LANG: selected } : {}),
   };
 }

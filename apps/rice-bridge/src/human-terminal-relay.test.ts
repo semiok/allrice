@@ -778,6 +778,16 @@ it.skipIf(process.platform !== 'darwin').each([
     expected: ['C', 'en_US.UTF-8', ''],
   },
   {
+    name: 'bare UTF-8 is not a macOS LANG locale',
+    locale: { LANG: 'UTF-8', LC_CTYPE: undefined, LC_ALL: undefined },
+    expected: ['en_US.UTF-8', 'en_US.UTF-8', 'unset'],
+  },
+  {
+    name: 'bare UTF-8 is not a macOS LC_ALL locale',
+    locale: { LANG: 'C', LC_CTYPE: 'C', LC_ALL: 'UTF-8' },
+    expected: ['C', 'en_US.UTF-8', ''],
+  },
+  {
     name: 'existing UTF-8 LANG',
     locale: { LANG: 'zh_CN.UTF-8', LC_CTYPE: undefined, LC_ALL: undefined },
     expected: ['zh_CN.UTF-8', 'unset', 'unset'],
