@@ -2,6 +2,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
 import * as client from '../../../packages/database/src/core/client.ts';
 import { createAssistantFixtureDatabase } from '../../../packages/database/src/assistant-runtime.fixture.ts';
+import { assertRuntimeFixtureDatabase } from '../../../packages/database/src/runtime-fixture-database.ts';
+import {
+  readDshRuntimeCloseCoverage as barrelReadCoverage,
+  finalizeWorkerDshRuntimeInventory as barrelFinalizeInventory,
+} from '@allrice/database';
 import { employeeManifest } from '../../../packages/database/src/employees/employee-config.ts';
 import {
   reserveDshRuntimeOwner,
@@ -45,7 +50,11 @@ suite(
       // The original fixture enforces the exact approved local/CI pair before
       // it creates any schema. Never use DATABASE_URL or an application fallback.
       const fixtureUrl = new URL(process.env.ALLRICE_TEST_DATABASE_URL!);
-      f = await createAssistantFixtureDatabase();
+      assertRuntimeFixtureDatabase(fixtureUrl);
+      // The verifier and these fixtures must execute the same source functions.
+      expect(barrelReadCoverage).toBe(readDshRuntimeCloseCoverage);
+      expect(barrelFinalizeInventory).toBe(finalizeWorkerDshRuntimeInventory);
+      f = await createAssistantFixtureDatabase({ ownSchemaOnly: true });
       const [where] =
         await f.db`select current_database() db,current_schema() schema`;
       if (!where) throw Error('Private fixture database identity missing');
@@ -53,6 +62,13 @@ suite(
       report.database = where.db;
       expect(where.schema).toMatch(/^p25_[a-f0-9]{32}$/);
       report.schema = where.schema;
+      // CI db:setup has a fully migrated public schema. A temporary private
+      // relation rename must fail, never resolve to public or cache its OID.
+      const [scope] =
+        await f.db`select current_database() db,current_schemas(false) schemas`;
+      expect(scope?.db).toBe(where.db);
+      expect(scope?.schemas).toEqual([where.schema]);
+      report.querySearchPath = scope?.schemas;
       vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
       vi.spyOn(globalThis, 'fetch').mockRejectedValue(
         Error('No HTTP/provider allowed'),
@@ -216,6 +232,27 @@ suite(
         runtimeInventory: () => live,
         closureInventory: () => closed,
       });
+    it('uses the same source functions and own-only connection for a confirmed current-boot close', async () => {
+      const i = identity(),
+        x = await runtime(i);
+      await close(x);
+      const before = await evidence();
+      await expect(verify(i)).resolves.toMatchObject({
+        workerId: i.workerId,
+        workerBootId: i.workerBootId,
+        observedRuntimes: 1,
+        physicalExited: [x.owner.runtimeId],
+        liveOrUnknown: [],
+        unconfirmed: [],
+        readbackConfirmed: true,
+        physicalRegistryUpdated: true,
+      });
+      expect(await row(x.owner.runtimeId)).toMatchObject({
+        worker_id: i.workerId,
+        status: 'offline',
+      });
+      expect(await evidence()).toEqual(before);
+    });
     it('only current-boot witnessed exits become offline; other boot/worker/tenant and legacy unknown remain byte-identical', async () => {
       const i = identity(),
         a = await runtime(i);

@@ -1,4 +1,5 @@
 import { installDshCloseObservationIdentity } from './harness/dsh-close-observer.js';
+import { observeDshWorkerCloseIdentity } from './harness/dsh-worker-close-identity.js';
 import { processNextReference } from './reference-processing.js';
 import { startCloudProjectPreviewTransport } from './cloud-runner/project-preview-transport.js';
 import { runtimeFeatureEnabled } from '@allrice/contracts';
@@ -186,12 +187,15 @@ const nativeArtifactReferenceCoverage = await startup.run(
   'native_reference_coverage',
   () => verifyConfiguredDshNativeReferences(nativeArtifact),
 );
-if (!serviceBuildIdentity) throw Error('DSH_CLOSE_SERVICE_IDENTITY_REQUIRED');
-installDshCloseObservationIdentity({
+const nativeCloseIdentity = await observeDshWorkerCloseIdentity({
   workerId,
-  workerBootId: serviceBuildIdentity.bootId,
-  serviceManifestDigest: serviceBuildIdentity.manifestDigest,
+  workerBootId: startup.bootId,
+  entrypoint: import.meta.url,
+  nativeArtifactId: nativeArtifact.artifactId,
+  serviceBuildIdentity,
 });
+installDshCloseObservationIdentity(nativeCloseIdentity.identity);
+console.info('[MET-195] worker native close identity', nativeCloseIdentity);
 const nativeOnceControlSource = configuredNativeOnceControlSource();
 startup.mark('verification_checks_completed');
 const producerLifecycle = await startup.run('producer_lifecycle', () =>
@@ -476,6 +480,7 @@ const server = createServer(async (request, response) => {
                   : lastDatabaseError,
         ),
         ...(serviceBuildIdentity ? { identity: serviceBuildIdentity } : {}),
+        nativeCloseIdentity,
         nativeArtifact,
         retainedNativeArtifacts,
         nativeArtifactReferenceCoverage,
@@ -878,9 +883,7 @@ function shutdown(signal: string) {
       verifyRuntimeClosure: async () => {
         try {
           const summary = await verifyWorkerDshRuntimeClosure({
-            workerId,
-            workerBootId: serviceBuildIdentity.bootId,
-            serviceManifestDigest: serviceBuildIdentity.manifestDigest,
+            ...nativeCloseIdentity.identity,
             runtimeInventory: () => getHarnessRouter().runtimeInventory(),
             closureInventory: () =>
               getHarnessRouter().runtimeClosureInventory(),

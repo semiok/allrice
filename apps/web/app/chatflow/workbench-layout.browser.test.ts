@@ -336,6 +336,10 @@ function navigationHistory(count: number, paragraphs = 90): Message[] {
 
 suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   let browser: Browser, server: Server, origin: string;
+  const downloadFixtures = new Map<
+    string,
+    { fileName: string; body: string }
+  >();
   beforeAll(async () => {
     const root = process.cwd(),
       require = createRequire(import.meta.url);
@@ -366,6 +370,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       f.path.endsWith('.css'),
     ).contents;
     server = createServer((request, response) => {
+      const download = downloadFixtures.get(request.url!);
+      if (download) {
+        response.writeHead(200, {
+          'content-type': 'text/plain; charset=utf-8',
+          'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(download.fileName)}`,
+        });
+        response.end(download.body);
+        return;
+      }
       const path = new URL(request.url!, 'http://localhost').pathname;
       response.writeHead(200, {
         'content-type':
@@ -9991,6 +10004,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
 
   it('file detail exposes refresh, quoting, reference and visibility icons with working actions', async () => {
     const f = await fixture();
+    let downloadPath: string | undefined;
     try {
       const file = catalogFile(9520, { fileName: '项目说明.txt' });
       f.state.workbenchFiles.push(file);
@@ -10031,12 +10045,42 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                 button.querySelector('svg')!.getBoundingClientRect().height,
               ],
             })),
-        ).toEqual({ target: [32, 32], glyph: [20, 20] });
+        ).toEqual({
+          target: [32, 32],
+          glyph: ['设为参考资料', '可见范围'].includes(name)
+            ? [22, 22]
+            : [20, 20],
+        });
       const download = toolbar.getByRole('link', { name: '下载', exact: true });
       expect(await download.count()).toBe(1);
-      expect(await download.getAttribute('title')).toBe('下载');
+      expect(await download.getAttribute('title')).toBeNull();
       expect(await download.textContent()).toBe('');
       expect(await download.getAttribute('download')).toBe('');
+      await toolbar
+        .getByRole('button', { name: '刷新文件', exact: true })
+        .hover();
+      const refreshTooltip = f.page.getByRole('tooltip').filter({
+        hasText: '刷新文件',
+      });
+      await refreshTooltip.waitFor();
+      const tooltipStyle = (node: Element) => {
+        const style = getComputedStyle(node);
+        return {
+          background: style.backgroundColor,
+          radius: style.borderRadius,
+          font: style.fontSize,
+          padding: style.padding,
+        };
+      };
+      const refreshTooltipStyle = await refreshTooltip.evaluate(tooltipStyle);
+      await download.hover();
+      const downloadTooltip = f.page.getByRole('tooltip').filter({
+        hasText: '下载',
+      });
+      await downloadTooltip.waitFor();
+      expect(await downloadTooltip.evaluate(tooltipStyle)).toEqual(
+        refreshTooltipStyle,
+      );
       await download.focus();
       expect(
         await download.evaluate((link) => document.activeElement === link),
@@ -10053,6 +10097,24 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ],
         })),
       ).toEqual({ target: [32, 32], glyph: [20, 20] });
+      const downloadUrl = new URL(
+        (await download.getAttribute('href'))!,
+        f.page.url(),
+      );
+      // Native anchor downloads can bypass page routing; serve real bytes from
+      // the isolated loopback fixture instead of its fallback HTML page.
+      downloadPath = downloadUrl.pathname + downloadUrl.search;
+      downloadFixtures.set(downloadPath, {
+        fileName: file.fileName,
+        body: '工具栏下载校验',
+      });
+      const downloaded = f.page.waitForEvent('download');
+      await download.click();
+      const fileDownload = await downloaded;
+      expect(fileDownload.suggestedFilename()).toBe(file.fileName);
+      expect(await readFile((await fileDownload.path())!, 'utf8')).toBe(
+        '工具栏下载校验',
+      );
       const reads = f.state.workbenchPreviewReads;
       f.state.filePreview = {
         kind: 'text',
@@ -10140,6 +10202,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(f.state.workbenchMutations).toHaveLength(2);
       expect(f.state.messageInputs).toHaveLength(0);
     } finally {
+      if (downloadPath) downloadFixtures.delete(downloadPath);
       await f.close();
     }
   }, 20_000);

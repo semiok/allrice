@@ -16,6 +16,7 @@ import {
 import { AssistantRuntimeError } from '@allrice/database';
 import { DSH_INSTALLED_DISTRIBUTION } from '@allrice/contracts';
 import { HandlerError } from '../../errors.js';
+import { getDshCleanupFailures } from '../dsh-client-cleanup.js';
 import { DshStartupRejection } from './startup-rejection.js';
 
 afterEach(() => {
@@ -799,6 +800,62 @@ describe('bounded assistant diagnostic consumption', () => {
     expect(f.order.filter((item) => item === 'diagnostics')).toHaveLength(1);
     expect(f.order).toContain('drop');
   });
+  it.each([false, true])(
+    'prevents retry after unconfirmed cleanup while retaining classification and usage (frozen %s)',
+    async (frozen) => {
+      const earlierCause = Error('earlier operation cause');
+      const original = new HandlerError(
+        'TRANSIENT_ADMISSION',
+        'original transient failure',
+        true,
+        { cause: earlierCause },
+      );
+      if (frozen) Object.freeze(original);
+      const receipt = {
+        usage: { inputTokens: 120, cachedInputTokens: 8, outputTokens: 7 },
+        usageComplete: false,
+        cacheUsageKnown: false,
+      };
+      const closeFailure = new HandlerError(
+        'DSH_RUNTIME_CLOSE_UNCONFIRMED',
+        'unconfirmed synthetic close',
+        false,
+      );
+      const f = fixture({ originalError: original, failureUsage: receipt });
+      f.client.close.mockImplementation(async () => {
+        f.order.push('drop');
+        throw closeFailure;
+      });
+      const failure = await f.adapter.execute(f.input).catch((e: unknown) => e);
+      expect(failure).toBeInstanceOf(HandlerError);
+      expect(failure).toMatchObject({
+        code: original.code,
+        message: original.message,
+        retryable: false,
+        cause: original,
+      });
+      expect(original.retryable).toBe(true);
+      expect(original.cause).toBe(earlierCause);
+      expect(getDshCleanupFailures(failure)).toEqual([closeFailure]);
+      expect(
+        getAssistantFailureUsage(
+          failure,
+          f.input.assistants!.rootRunId,
+          f.input.attempt,
+        ),
+      ).toEqual(receipt);
+      expect(
+        getAssistantFailureUsage(failure, randomUUID(), f.input.attempt),
+      ).toBeUndefined();
+      expect(getAssistantFailureDiagnostics(failure)).toEqual(f.diagnostics);
+      expect(f.client.prompt).toHaveBeenCalledOnce();
+      expect(f.order.indexOf('failureUsage')).toBeLessThan(
+        f.order.indexOf('drop'),
+      );
+      expect(f.order.filter((x) => x === 'drop')).toHaveLength(1);
+      expect(f.order).not.toContain('finish');
+    },
+  );
   it('captures a thrown failure before cancel/drop without replacing the original object', async () => {
     const original = Object.freeze(
       Object.assign(Error('not-diagnostic-evidence'), { retryable: false }),

@@ -52,6 +52,7 @@ import {
 } from './dsh/run-timing.js';
 import { toolActivityDetail } from './dsh/tool-activity.js';
 import { DshStartupRejection } from './dsh/startup-rejection.js';
+import { retainDshCleanupFailure } from './dsh-client-cleanup.js';
 import { nativeSessionRecoveryFailure } from './dsh/native-tools.js';
 import type {
   HarnessAdapter,
@@ -1502,6 +1503,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       await stopWindow
         .within(() => cancellationTask ?? Promise.resolve())
         .catch(() => {});
+      let cleanupFailure: { error: unknown } | undefined;
       try {
         if (
           assistant &&
@@ -1519,14 +1521,20 @@ export class DshHarnessAdapter implements HarnessAdapter {
             (await stopWindow
               .within(() => assistant.failureUsage!())
               .catch(() => undefined)) ?? failedUsage;
-        await dropOwnedHost();
+        try {
+          await dropOwnedHost();
+        } catch (closeError) {
+          // Keep the execution failure and its usage receipt as the primary
+          // outcome. Pool ownership/durable close evidence remain unresolved.
+          cleanupFailure = { error: closeError };
+        }
       }
       // The original dispatch owns this closure. dropOwnedHost awaits the
       // exact child's close event, rather than treating interrupt/abort, a
       // generic RPC error or a deleted pool entry as physical confirmation.
       // The database port accepts only this already-authorized canceled
       // attempt; retryable failures/crashes and usage remain unknown.
-      if (input.questionWait?.confirmStopped)
+      if (!cleanupFailure && input.questionWait?.confirmStopped)
         await input.questionWait
           .confirmStopped({
             nativeSessionId: runtime.sessionId,
@@ -1548,18 +1556,21 @@ export class DshHarnessAdapter implements HarnessAdapter {
             failedUsage,
           );
       };
-      if (input.signal.aborted) {
-        const aborted = new HandlerError(
-          'EXECUTION_ABORTED',
-          'DSH execution was interrupted',
-          false,
-        );
-        attachAssistantFailureDiagnostics(aborted, assistantDiagnostics);
-        attachUsage(aborted);
-        throw aborted;
-      }
-      attachUsage(error);
-      throw error;
+      const failure = input.signal.aborted
+        ? new HandlerError(
+            'EXECUTION_ABORTED',
+            'DSH execution was interrupted',
+            false,
+          )
+        : error;
+      const finalFailure = cleanupFailure
+        ? retainDshCleanupFailure(failure, cleanupFailure.error)
+        : failure;
+      // An unconfirmed close may conservatively disable a retryable failure.
+      // Bind trusted usage/diagnostics to the exact object the Worker receives.
+      attachAssistantFailureDiagnostics(finalFailure, assistantDiagnostics);
+      attachUsage(finalFailure);
+      throw finalFailure;
     } finally {
       try {
         if (cancellationTimer) clearInterval(cancellationTimer);
