@@ -145,6 +145,8 @@ export class TerminalCarrier {
 
   private connect() {
     if (this.ended) return;
+    this.reconnect = undefined;
+    this.state.set({ ...this.state.getSnapshot(), phase: 'connecting' });
     const query = new URLSearchParams({
       organizationId: this.identity.organizationId,
       workspaceId: this.identity.workspaceId,
@@ -190,6 +192,17 @@ export class TerminalCarrier {
           return;
         }
         if (frame.type === 'terminal.ended') {
+          // Older Bridges report temporary authority lookup failures with the
+          // same domain code as permanent terminal failures. Only this exact
+          // pair is recoverable; a new carrier must authenticate again before
+          // the native model can reattach its existing process.
+          if (
+            frame.error?.code === 'terminal/unavailable' &&
+            frame.error.message === 'HUMAN_TERMINAL_AUTHORIZATION_UNAVAILABLE'
+          ) {
+            this.disconnect('终端授权暂时无法验证，正在重新验证并恢复连接。');
+            return;
+          }
           this.end(frame.error?.message ?? '终端连接已结束');
           return;
         }
@@ -269,15 +282,31 @@ export class TerminalCarrier {
         this.end('终端连接未获授权，请检查账号和电脑连接');
         return;
       }
-      this.generation.set(undefined);
-      this.state.set({
-        ...this.state.getSnapshot(),
-        phase: 'disconnected',
-      });
-      this.failPending(this.carrierError('Bridge 连接已断开'));
-      const wait = Math.min(1000 * 2 ** this.attempt++, 15000);
-      this.reconnect = setTimeout(() => this.connect(), wait);
+      this.disconnect();
     });
+  }
+
+  private disconnect(message?: string) {
+    const socket = this.socket;
+    // Ignore late output and the close event from this physical connection.
+    this.socket = undefined;
+    if (this.reconnect) clearTimeout(this.reconnect);
+    this.generation.set(undefined);
+    this.state.set({
+      ...this.state.getSnapshot(),
+      phase: 'disconnected',
+      error: message,
+    });
+    this.failPending(this.carrierError(message ?? '终端连接已断开'));
+    socket?.close();
+    const wait = Math.min(1000 * 2 ** this.attempt++, 15000);
+    this.reconnect = setTimeout(() => this.connect(), wait);
+  }
+
+  retryConnection() {
+    if (this.ended || this.state.getSnapshot().phase !== 'disconnected') return;
+    if (this.reconnect) clearTimeout(this.reconnect);
+    this.connect();
   }
 
   private deliver(item: Pending, frame: NativeFrame) {

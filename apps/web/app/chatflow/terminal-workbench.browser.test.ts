@@ -38,14 +38,48 @@ type FixtureState = {
   processes: Map<string, { info: Info; screen: string; sequence: number }>;
   creates: number;
   closes: number;
+  closeRequests: number;
   failClose?: boolean;
+  holdClose?: boolean;
   connections: number;
+  readyConnections: number;
+  authorize?: Promise<void>;
+  interruptAuthorization?: () => void;
   screenRequests: number;
   inputs: Array<{ type: string; sequence: number; data?: string }>;
+  shells: Array<{ path: string; args: string[]; name: string }>;
+  shellRequests: number;
+  shellsReady?: Promise<void>;
   errors: string[];
   streamMode: TerminalStreamMode;
   nextCredits: number;
 };
+
+function authorizationGate() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
+function contrastRatio(foreground: string, background: string) {
+  const luminance = (color: string) => {
+    const [r, g, b] = color
+      .match(/[\d.]+/g)!
+      .slice(0, 3)
+      .map((channel) => {
+        const value = Number(channel) / 255;
+        return value <= 0.04045
+          ? value / 12.92
+          : ((value + 0.055) / 1.055) ** 2.4;
+      });
+    return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
+  };
+  const a = luminance(foreground),
+    b = luminance(background);
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}
 
 suite('official terminal browser adapter', { timeout: 30000 }, () => {
   let browser: Browser, origin: string, server: ReturnType<typeof createServer>;
@@ -89,6 +123,29 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
         return;
       }
       const path = new URL(request.url ?? '/', 'http://localhost').pathname;
+      if (path === '/api/v1/bridge/devices') {
+        response.setHeader('content-type', 'application/json');
+        response.end(
+          JSON.stringify({
+            devices: [
+              {
+                id: target.deviceId,
+                name: 'Fixture.local',
+                status: 'online',
+                humanTerminalVersion: 2,
+                folderGrants: [
+                  { id: target.grantId, label: target.label },
+                  {
+                    id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+                    label: 'Second folder',
+                  },
+                ],
+              },
+            ],
+          }),
+        );
+        return;
+      }
       if (path.startsWith('/api/dsh-ui/terminal-')) {
         const name = path.slice('/api/dsh-ui/terminal-'.length);
         if (!['gateway', 'model', 'screen'].includes(name)) {
@@ -106,7 +163,7 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
       }
       response.setHeader('content-type', 'text/html');
       response.end(
-        '<!doctype html><html><head><link rel="stylesheet" href="/app.css"><style>:root{--dsw-alias-label-primary:#20242d;--dsw-alias-label-secondary:#606775;--dsw-alias-label-tertiary:#7c8390;--dsw-alias-bg-base:#fff;--dsw-alias-bg-l1:#fff;--dsw-alias-border-l2:#e2e5e9;--dsw-alias-border-l3:#d9dde4;--dsw-alias-border-l4:#eceef3;--dsw-alias-state-business-primary:#3478ef;--dsw-alias-interactive-bg-hover:#f3f5f8;color-scheme:light}*{box-sizing:border-box}body{margin:0;font:14px system-ui}button{font:inherit}</style></head><body><div id="root"></div><script src="/app.js"></script></body></html>',
+        '<!doctype html><html><head><link rel="stylesheet" href="/app.css"><style>:root{--dsw-alias-label-primary:#20242d;--dsw-alias-label-secondary:#606775;--dsw-alias-label-tertiary:#7c8390;--dsw-alias-bg-base:#fff;--dsw-alias-border-l2:#e2e5e9;--dsw-alias-border-l3:#d9dde4;--dsw-alias-border-l4:#eceef3;--dsw-alias-state-business-primary:#3478ef;--dsw-alias-interactive-bg-hover:#f3f5f8;color-scheme:light}*{box-sizing:border-box}body{margin:0;font:14px system-ui}button{font:inherit}</style></head><body><div id="root"></div><script src="/app.js"></script></body></html>',
       );
     });
     const { WebSocketServer } = createRequire(
@@ -142,6 +199,17 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
           const send = (frame: unknown) => {
             if (client.readyState === 1) client.send(JSON.stringify(frame));
           };
+          state.interruptAuthorization = () => {
+            send({
+              version: 1,
+              type: 'terminal.ended',
+              error: {
+                code: 'terminal/unavailable',
+                message: 'HUMAN_TERMINAL_AUTHORIZATION_UNAVAILABLE',
+              },
+            });
+            client.close(4009);
+          };
           const deliver = (requestId: string, stream: Stream) => {
             if (
               (state.streamMode === 'push' || stream.credit) &&
@@ -172,15 +240,34 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
               });
             }
           };
-          send({
-            version: 1,
-            type: 'terminal.ready',
-            target,
-            deviceName: 'Fixture.local',
-            ...(state.streamMode === 'push' ? { streamMode: 'push' } : {}),
-          });
+          let authorized = false;
+          const ready = () => {
+            authorized = true;
+            state.readyConnections++;
+            send({
+              version: 1,
+              type: 'terminal.ready',
+              target: {
+                ...target,
+                sessionId:
+                  new URL(request.url!, 'http://localhost').searchParams.get(
+                    'sessionId',
+                  ) ?? target.sessionId,
+                grantId:
+                  new URL(request.url!, 'http://localhost').searchParams.get(
+                    'grantId',
+                  ) ?? target.grantId,
+              },
+              deviceName: 'Fixture.local',
+              ...(state.streamMode === 'push' ? { streamMode: 'push' } : {}),
+            });
+          };
+          if (state.authorize) void state.authorize.then(ready);
+          else ready();
           client.on('message', (raw) => {
             try {
+              if (!authorized)
+                throw Error('Request before fresh authorization');
               const frame = WorkbenchTerminalBrowserFrameSchema.parse(
                 JSON.parse(raw.toString()),
               );
@@ -269,9 +356,12 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
                   maxRows: 200,
                   scrollback: 1000,
                 });
-              else if (frame.action === 'shells')
-                result([{ path: '/bin/zsh', args: ['-i'], name: 'zsh' }]);
-              else if (frame.action === 'list')
+              else if (frame.action === 'shells') {
+                state.shellRequests++;
+                if (state.shellsReady)
+                  void state.shellsReady.then(() => result(state.shells));
+                else result(state.shells);
+              } else if (frame.action === 'list')
                 result(
                   [...state.processes.values()].map((value) => value.info),
                 );
@@ -296,6 +386,8 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
                 }
                 result(state.processes.get(request.id)!.info);
               } else if (frame.action === 'close') {
+                state.closeRequests++;
+                if (state.holdClose) return;
                 if (state.failClose)
                   send({
                     version: 1,
@@ -391,6 +483,9 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
       delayScreen?: Promise<void>;
       failModel?: boolean;
       streamMode?: TerminalStreamMode;
+      guide?: boolean;
+      shells?: FixtureState['shells'];
+      rememberedShell?: string;
     } = {},
   ) {
     const token = randomUUID();
@@ -398,9 +493,15 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
       processes: new Map(),
       creates: 0,
       closes: 0,
+      closeRequests: 0,
       inputs: [],
+      shells: options.shells ?? [
+        { path: '/bin/zsh', args: ['-i'], name: 'zsh' },
+      ],
+      shellRequests: 0,
       errors: [],
       connections: 0,
+      readyConnections: 0,
       screenRequests: 0,
       streamMode: options.streamMode ?? 'pull',
       nextCredits: 0,
@@ -410,6 +511,23 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
       viewport: { width: 1100, height: 720 },
     });
     await context.addCookies([{ name: 'fixture', value: token, url: origin }]);
+    if (options.rememberedShell) {
+      const scope = JSON.stringify([
+        target.organizationId,
+        target.workspaceId,
+        target.ownerId,
+        target.sessionId,
+        target.deviceId,
+        target.grantId,
+      ]);
+      await context.addInitScript(
+        ({ key, value }) => localStorage.setItem(key, value),
+        {
+          key: `allrice.terminal.native.v1.${scope}.dsh.terminal.shell`,
+          value: options.rememberedShell,
+        },
+      );
+    }
     const page = await context.newPage();
     page.setDefaultTimeout(8000);
     const errors: string[] = [];
@@ -424,7 +542,9 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
       await page.route('**/api/dsh-ui/terminal-model?*', (route) =>
         route.abort(),
       );
-    await page.goto(origin, { waitUntil: 'domcontentloaded' });
+    await page.goto(origin + (options.guide ? '/?guide' : ''), {
+      waitUntil: 'domcontentloaded',
+    });
     if (options.waitForTerminal !== false) {
       try {
         await page
@@ -572,6 +692,143 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
     }
   });
 
+  it.each(['pull', 'push'] as const)(
+    'recovers the same native process after temporary authority loss in %s mode',
+    async (streamMode) => {
+      const f = await fixture({ streamMode });
+      const authority = authorizationGate();
+      try {
+        const input = f.page.locator('[data-sidebar-terminal] textarea');
+        const writes = () =>
+          f.state.inputs
+            .filter((item) => item.type === 'write')
+            .map((item) => item.data)
+            .join('');
+        await expect
+          .poll(() =>
+            input.evaluate(
+              (element) => (element as HTMLTextAreaElement).readOnly,
+            ),
+          )
+          .toBe(false);
+        await input.pressSequentially('before');
+        await expect.poll(writes).toBe('before');
+        await f.page.getByRole('button', { name: '断连时调整终端' }).click();
+        await f.page.getByRole('button', { name: '已安排断连调整' }).waitFor();
+        const id = [...f.state.processes.keys()][0];
+        f.state.authorize = authority.promise;
+        f.state.interruptAuthorization!();
+        await f.page
+          .getByRole('status')
+          .filter({ hasText: '终端授权暂时无法验证' })
+          .waitFor();
+        await expect
+          .poll(() =>
+            input.evaluate(
+              (element) => (element as HTMLTextAreaElement).readOnly,
+            ),
+          )
+          .toBe(true);
+        await input.pressSequentially('ignored');
+        await expect.poll(() => f.state.connections, { timeout: 5000 }).toBe(2);
+        expect(f.state.readyConnections).toBe(1);
+        expect(writes()).toBe('before');
+        expect(f.state.creates).toBe(1);
+        expect([...f.state.processes.keys()]).toEqual([id]);
+        expect(
+          await f.page
+            .getByText('HUMAN_TERMINAL_AUTHORIZATION_UNAVAILABLE')
+            .count(),
+        ).toBe(0);
+
+        authority.resolve();
+        await expect
+          .poll(() =>
+            input.evaluate(
+              (element) => (element as HTMLTextAreaElement).readOnly,
+            ),
+          )
+          .toBe(false);
+        await expect
+          .poll(() => f.page.locator('.xterm-rows').textContent())
+          .toContain('before');
+        await input.pressSequentially('after');
+        await expect.poll(writes).toBe('beforeafter');
+        expect(f.state.creates).toBe(1);
+        expect([...f.state.processes.keys()]).toEqual([id]);
+        await expect
+          .poll(() => f.page.getByText('终端已连接', { exact: true }).count())
+          .toBe(1);
+      } catch (error) {
+        console.error('Terminal authorization recovery fixture state', {
+          streamMode,
+          connections: f.state.connections,
+          readyConnections: f.state.readyConnections,
+          creates: f.state.creates,
+          processes: [...f.state.processes.keys()],
+          host: f.state.errors,
+          body: await f.page.locator('body').innerText(),
+        });
+        throw error;
+      } finally {
+        authority.resolve();
+        await f.close();
+      }
+    },
+  );
+
+  it('retains an interrupted close intent and explicitly retries it after fresh authorization', async () => {
+    const f = await fixture({ streamMode: 'push' });
+    const authority = authorizationGate();
+    try {
+      const id = [...f.state.processes.keys()][0];
+      f.state.holdClose = true;
+      await f.page.getByRole('button', { name: '关闭终端标签' }).click();
+      await expect.poll(() => f.state.closeRequests).toBe(1);
+      f.state.authorize = authority.promise;
+      f.state.interruptAuthorization!();
+      await f.page
+        .getByRole('alert')
+        .filter({ hasText: '终端授权暂时无法验证' })
+        .waitFor();
+      await expect.poll(() => f.state.connections, { timeout: 5000 }).toBe(2);
+      expect(f.state.readyConnections).toBe(1);
+      expect(f.state.closeRequests).toBe(1);
+      expect([...f.state.processes.keys()]).toEqual([id]);
+      expect(
+        await f.page.evaluate(
+          () =>
+            Object.keys(localStorage).filter((key) =>
+              key.includes('.dsh.terminal.close.v1.'),
+            ).length,
+        ),
+      ).toBe(1);
+
+      f.state.holdClose = false;
+      await f.page.getByRole('button', { name: '重试结束' }).click();
+      expect(f.state.closeRequests).toBe(1);
+      authority.resolve();
+      await expect.poll(() => f.state.closes).toBe(1);
+      expect(f.state.closeRequests).toBe(2);
+      expect(f.state.creates).toBe(1);
+      expect(f.state.processes.size).toBe(0);
+      await expect.poll(() => f.page.getByRole('alert').count()).toBe(0);
+      await expect
+        .poll(() =>
+          f.page.evaluate(
+            () =>
+              Object.keys(localStorage).filter((key) =>
+                key.includes('.dsh.terminal.close.v1.'),
+              ).length,
+          ),
+        )
+        .toBe(0);
+    } finally {
+      authority.resolve();
+      await f.close();
+    }
+  });
+
   it('collapse and reload reattach the same identity; tab close terminates it once', async () => {
     const f = await fixture();
     try {
@@ -631,6 +888,201 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
       await f.close();
     }
   });
+
+  it.each(['light', 'dark'] as const)(
+    'preserves native missing-terminal button contrast inside the workbench in %s theme',
+    async (theme) => {
+      const f = await fixture();
+      try {
+        f.state.processes.clear();
+        await f.page.reload();
+        await f.page
+          .getByRole('alert')
+          .filter({ hasText: '此终端已不存在' })
+          .waitFor();
+        await f.page.emulateMedia({ colorScheme: theme });
+        await f.page.evaluate((theme) => {
+          document.documentElement.style.colorScheme = theme;
+          document.body.toggleAttribute('data-ds-dark-theme', theme === 'dark');
+        }, theme);
+        const button = f.page.getByRole('button', {
+          name: '新建终端',
+          exact: true,
+        });
+        for (const interaction of ['hover', 'focus'] as const) {
+          if (interaction === 'hover') await button.hover();
+          else {
+            await button.press('Tab');
+            await f.page.keyboard.press('Shift+Tab');
+            await f.page.mouse.move(0, 0);
+          }
+          const colors = await button.evaluate((element) => {
+            const css = getComputedStyle(element);
+            return {
+              foreground: css.color,
+              background: css.backgroundColor,
+              outline: css.outlineStyle,
+            };
+          });
+          expect(
+            contrastRatio(colors.foreground, colors.background),
+          ).toBeGreaterThanOrEqual(4.5);
+          if (interaction === 'focus') expect(colors.outline).not.toBe('none');
+          if (process.env.ALLRICE_TERMINAL_UI_SCREENSHOT_DIR)
+            await f.page.screenshot({
+              path: resolve(
+                process.env.ALLRICE_TERMINAL_UI_SCREENSHOT_DIR,
+                `terminal-missing-${theme}-${interaction}.png`,
+              ),
+              fullPage: true,
+              style: '[data-test-controls]{display:none!important}',
+            });
+        }
+        expect(f.state.creates).toBe(1);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
+  it.each(['light', 'dark'] as const)(
+    'launches the detected default from one native guide card in %s theme',
+    async (theme) => {
+      const f = await fixture({
+        guide: true,
+        waitForTerminal: false,
+        rememberedShell: '/bin/bash',
+        shells: [
+          { path: '/usr/local/bin/fish', name: 'fish', args: ['-i'] },
+          { path: '/bin/bash', name: 'bash', args: ['-i'] },
+        ],
+      });
+      try {
+        await f.page
+          .locator('[data-terminal-guide] small')
+          .filter({ hasText: 'Fixture.local · AI-what' })
+          .waitFor();
+        await f.page.emulateMedia({ colorScheme: theme });
+        await f.page.evaluate((theme) => {
+          document.documentElement.style.colorScheme = theme;
+          document.body.toggleAttribute('data-ds-dark-theme', theme === 'dark');
+        }, theme);
+        const guide = f.page.locator('[data-terminal-guide]');
+        const button = guide.getByRole('button', {
+          name: '新建终端',
+          exact: true,
+        });
+        expect(await guide.getByRole('button').count()).toBe(1);
+        expect(await guide.locator('[aria-haspopup="menu"]').count()).toBe(0);
+        expect(f.state.shellRequests).toBe(0);
+        expect(f.state.creates).toBe(0);
+        const geometry = await button.evaluate((element) => {
+          const rect = element.getBoundingClientRect();
+          const parent = element.parentElement!.getBoundingClientRect();
+          return {
+            widthGap: parent.width - rect.width,
+            heightGap: parent.height - rect.height,
+            border: getComputedStyle(element).borderWidth,
+          };
+        });
+        expect(geometry.widthGap).toBeLessThanOrEqual(2);
+        expect(geometry.heightGap).toBeLessThanOrEqual(2);
+        expect(geometry.border).toBe('0px');
+        for (const interaction of ['hover', 'focus'] as const) {
+          if (interaction === 'hover') await button.hover();
+          else {
+            await button.press('Tab');
+            await f.page.keyboard.press('Shift+Tab');
+            await f.page.mouse.move(0, 0);
+          }
+          if (interaction === 'focus')
+            expect(
+              await button.evaluate(
+                (element) => getComputedStyle(element).outlineOffset,
+              ),
+            ).toBe('-2px');
+          if (process.env.ALLRICE_TERMINAL_UI_SCREENSHOT_DIR)
+            await f.page.screenshot({
+              path: resolve(
+                process.env.ALLRICE_TERMINAL_UI_SCREENSHOT_DIR,
+                `terminal-guide-${theme}-${interaction}.png`,
+              ),
+              fullPage: true,
+              style: '[data-test-controls]{display:none!important}',
+            });
+        }
+        await button.click();
+        await expect
+          .poll(() =>
+            f.page.getByLabel('新终端 Shell', { exact: true }).textContent(),
+          )
+          .toBe('/usr/local/bin/fish');
+        expect(f.state.shellRequests).toBe(1);
+        const secondGrant = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+        await guide
+          .getByLabel('终端电脑与文件夹')
+          .selectOption(`${target.deviceId}/${secondGrant}`);
+        await button.click();
+        await expect
+          .poll(() => f.page.getByLabel('新终端授权文件夹').textContent())
+          .toBe(secondGrant);
+        expect(f.state.creates).toBe(0);
+        expect(
+          await f.page
+            .getByRole('button', { name: '普通工作台按钮' })
+            .evaluate((element) => getComputedStyle(element).borderWidth),
+        ).toBe('1px');
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
+  it.each(['session', 'inactive'] as const)(
+    'cancels a delayed default-shell launch when the guide becomes %s',
+    async (change) => {
+      const f = await fixture({ guide: true, waitForTerminal: false });
+      const shells = authorizationGate();
+      try {
+        await f.page
+          .locator('[data-terminal-guide] small')
+          .filter({ hasText: 'Fixture.local' })
+          .waitFor();
+        f.state.shellsReady = shells.promise;
+        const launch = f.page.getByRole('button', {
+          name: '新建终端',
+          exact: true,
+        });
+        await launch.click();
+        await expect.poll(() => f.state.shellRequests).toBe(1);
+        await f.page
+          .getByRole('button', {
+            name: change === 'session' ? '切换终端会话' : '切换终端入口显示',
+          })
+          .click();
+        await expect.poll(() => launch.getAttribute('aria-busy')).toBe('false');
+        if (change === 'inactive')
+          await f.page
+            .getByRole('button', { name: '切换终端入口显示' })
+            .click();
+        await launch.click();
+        await expect.poll(() => f.state.shellRequests).toBe(2);
+        shells.resolve();
+        await expect
+          .poll(() => f.page.getByLabel('新终端启动次数').textContent())
+          .toBe('1');
+        expect(
+          await f.page
+            .getByLabel('新终端 Shell', { exact: true })
+            .textContent(),
+        ).toBe('/bin/zsh');
+        expect(f.state.creates).toBe(0);
+      } finally {
+        shells.resolve();
+        await f.close();
+      }
+    },
+  );
 
   it('keeps failed cleanup visible after the tab closes and retries the native durable intent', async () => {
     const f = await fixture();
