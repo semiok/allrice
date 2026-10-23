@@ -119,7 +119,6 @@ import {
 import {
   lockPlatformQualityNativeAdmission,
   dispatchPlatformQualityNative,
-  migrateOneLegacyQualitySchedule,
 } from './platform-quality-native.ts';
 
 type Tx = TransactionSql;
@@ -1509,7 +1508,7 @@ export async function dispatchNextNativeRecurringOccurrence(workerId: string) {
       where occurrence_id=${row.occurrence_id} returning *`;
     return claimed!;
   });
-  if (!occurrence) return migrateOneLegacyQualitySchedule();
+  if (!occurrence) return false;
   await db.begin(async (tx) => {
     await tx`set local lock_timeout='1000ms'`;
     await tx`set local statement_timeout='10000ms'`;

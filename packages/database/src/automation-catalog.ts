@@ -365,7 +365,7 @@ export async function getAutomationCatalogTask(
           history.length > 50 && last ? encode(last.cursorAt, last.id) : null,
       };
     }
-    // One-off/legacy outcomes are read from real Runs; no synthetic completion.
+    // Prefer a real Run; an unbound historical occurrence retains its own status.
     const history = await tx<
       {
         id: string;
@@ -374,6 +374,7 @@ export async function getAutomationCatalogTask(
         scheduled_for: Date;
         cursor_at: string;
         state: string | null;
+        automation_status: string;
         error_message: string | null;
         manual_request_id: string | null;
         manual_revision: number | null;
@@ -382,7 +383,7 @@ export async function getAutomationCatalogTask(
       }[]
     >`
       select ar.id,ar.run_id,ar.session_id,ar.scheduled_for,to_char(ar.scheduled_for at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') cursor_at,
-        r.state,ar.error_message,ar.manual_request_id,ar.manual_revision,ar.manual_requested_at,ar.native_once_occurrence_id from allrice_automation_runs ar
+        r.state,ar.status as automation_status,ar.error_message,ar.manual_request_id,ar.manual_revision,ar.manual_requested_at,ar.native_once_occurrence_id from allrice_automation_runs ar
       left join allrice_runs r on r.id=ar.run_id and r.organization_id=ar.organization_id and r.workspace_id=ar.workspace_id and r.owner_id=${ownerId}
       where ar.automation_id=${row.id} and ar.organization_id=${context.organizationId} and ar.workspace_id=${workspaceId}
       ${before ? tx`and (ar.scheduled_for,ar.id)<(${before.at}::text::timestamptz,${before.id}::uuid)` : tx``}
@@ -396,7 +397,10 @@ export async function getAutomationCatalogTask(
         taskId: row.id,
         revision: Number(o.manual_revision ?? row.revision),
         scheduledAt: o.scheduled_for.toISOString(),
-        status: historyRunStatus(o.state, o.run_id),
+        status: historyRunStatus(
+          o.state ?? (o.run_id === null ? o.automation_status : null),
+          o.run_id,
+        ),
         runId: o.run_id,
         sessionId: o.session_id,
         errorMessage: o.error_message,

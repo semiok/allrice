@@ -17,6 +17,7 @@ import {
 } from '@allrice/contracts';
 import type { TransactionSql } from 'postgres';
 import { readProjectSource } from './saved-project-authority.ts';
+import { projectSourcePackageReceipt } from './project-source-package.ts';
 import {
   projectSourceArchive,
   projectSourceDiff,
@@ -348,13 +349,25 @@ export async function executeProjectWorkspace(
           },
         },
       );
-      artifacts.push({
+      const artifact = {
         artifactId: a.id,
         objectId: a.object.id,
         versionId: a.id,
         fileName: a.version.fileName,
         checksum: a.object.checksum,
         downloadUrl: `/api/v1/files/${a.object.id}/download?workspaceId=${ctx.workspaceId}&name=${encodeURIComponent(file.name)}`,
+      };
+      artifacts.push({
+        ...artifact,
+        ...(file.name === 'project-source.zip'
+          ? {
+              sourcePackage: projectSourcePackageReceipt({
+                project: args.project,
+                snapshot: prepared.source.document,
+                artifact,
+              }),
+            }
+          : {}),
       });
     }
     return {

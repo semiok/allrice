@@ -281,7 +281,6 @@ export async function reconcileBrandNativeReminderAttempt() {
     // was rejected before creation. Expose the original deterministic failure.
     if (state.gate.blocked || c.revision >= MAX_ATTEMPTS) {
       await completeBrandContentReminder(tx, state.gate, {
-        clockOwner: 'native_once',
         blocked: state.gate.blocked ?? 'NATIVE_ATTEMPT_LIMIT',
       });
       return true;
@@ -298,40 +297,7 @@ export async function reconcileBrandNativeReminderAttempt() {
       where reminder_id=${state.target.reminder_id} and attempt=${c.revision} and control_id=${c.controlId}`;
     return true;
   });
-  return result === null ? migrateOneLegacyBrandReminder() : result;
-}
-
-// Only a scan hint, never an execution identity or receipt. Restart may repeat
-// metadata checks; every mutation remains locked/idempotent. Advancing past an
-// unavailable future reminder prevents it from starving unrelated live plans.
-let legacyCursor: { createdAt: string; id: string } | null = null;
-async function migrateOneLegacyBrandReminder() {
-  const db = getDatabase();
-  const [candidate] = await db<
-    { id: string; created_at_cursor: string; automation_id: string }[]
-  >`select r.id,r.created_at::text created_at_cursor,r.automation_id
-    from allrice_brand_content_reminders r join allrice_automations a on a.id=r.automation_id
-    where r.state='registered' and a.clock_owner='legacy' and a.status='enabled' and a.deleted_at is null
-      and (${legacyCursor?.createdAt ?? null}::text::timestamptz is null or (r.created_at,r.id)>(${legacyCursor?.createdAt ?? null}::text::timestamptz,${legacyCursor?.id ?? null}::uuid))
-    order by r.created_at,r.id limit 1`;
-  if (!candidate) {
-    legacyCursor = null;
-    return false;
-  }
-  await db.begin(async (tx) => {
-    await tx`set local lock_timeout='1000ms'`;
-    await tx`set local statement_timeout='10000ms'`;
-    await acquireDevAdmission(tx);
-    const gate = await lockBrandContentReminder(tx, candidate.automation_id);
-    if (!gate || gate.automation.clock_owner !== 'legacy') return;
-    if (gate.blocked) {
-      if (gate.automation.due)
-        await completeBrandContentReminder(tx, gate, { clockOwner: 'legacy' });
-    } else await enrollBrandReminderNative(tx, gate.binding);
-  });
-  // One transaction/brand per call; never keep R1 locks while checking R2.
-  legacyCursor = { createdAt: candidate.created_at_cursor, id: candidate.id };
-  return true;
+  return result ?? false;
 }
 
 type Receipt = {
@@ -388,7 +354,6 @@ export async function dispatchBrandNativeReminder(
       ? (live.outbox_reason ?? 'NATIVE_RECEIPT_BLOCKED')
       : null);
   await completeBrandContentReminder(tx, state.gate, {
-    clockOwner: 'native_once',
     nativeOccurrenceId: live.occurrence_id,
     ...(denied ? { blocked: denied } : {}),
   });

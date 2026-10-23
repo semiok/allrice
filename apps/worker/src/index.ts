@@ -10,7 +10,6 @@ import { createServer } from 'node:http';
 import { UuidSchema, makeHealthResponse } from '@allrice/contracts';
 import {
   runMaintenanceExecutionTick,
-  claimDueAutomations,
   processFolderTriggerEvents,
   claimNextJob,
   closeDatabase,
@@ -588,9 +587,10 @@ async function runAutomationTick() {
         }
       }
       const recovered = await recoverPlatformQualityOccurrences(limit);
-      const claimed = recovered + (await claimDueAutomations(limit));
-      if (claimed > 0) {
-        console.info('[M6] queued automation runs', { count: claimed });
+      if (recovered > 0) {
+        console.info('[M6] recovered quality occurrences', {
+          count: recovered,
+        });
       }
       // Reuse this background producer, keeping collection off the foreground
       // claim/completion path. It persists evidence without any model calls.
