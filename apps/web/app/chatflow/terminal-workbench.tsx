@@ -27,6 +27,7 @@ import {
   type TerminalScreenProps,
 } from './terminal-native';
 import type { TerminalIdentity, TerminalPin } from './terminal-transport';
+import { WorkbenchIcon } from './workbench-modules';
 import guide from './workbench-modules.module.css';
 import css from './terminal-workbench.module.css';
 
@@ -247,6 +248,9 @@ export function TerminalGuide(props: {
               ? `${target.deviceName} · ${target.label}`
               : '在你的电脑上运行命令'}
           </small>
+        </span>
+        <span className={`${guide.chevron} ${css.chevron}`} aria-hidden="true">
+          <WorkbenchIcon kind="chevron-right" />
         </span>
       </div>
       {targets.length > 1 && (

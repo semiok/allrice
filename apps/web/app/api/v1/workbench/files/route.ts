@@ -1,7 +1,9 @@
-import { WorkbenchFileCatalogSchema, UuidSchema } from '@allrice/contracts';
+import { UuidSchema } from '@allrice/contracts';
+import { WorkbenchFileActionsCatalogSchema } from '../../../../../lib/chatflow/workbench-file-actions';
 import {
   readWorkbenchFileCatalog,
   uploadWorkbenchFile,
+  isIndexableKnowledgeTextSource,
 } from '@allrice/database';
 import { z } from 'zod';
 import {
@@ -29,10 +31,28 @@ export async function GET(request: Request) {
         .max(200)
         .parse(params.get('query') ?? ''),
     };
+    const catalog = WorkbenchFileActionsCatalogSchema.parse(
+      await readWorkbenchFileCatalog(context, input),
+    );
+    // This only projects existing processing capabilities; reference preparation
+    // still checks current authority and exact bytes on the original endpoint.
+    const quotableFileIds = catalog.files
+      .filter((file) => {
+        if (file.reference?.companyTemplate) return true;
+        const current =
+          file.reference?.checksum === file.checksum ? file.reference : null;
+        if (current?.status === 'archived') return false;
+        if (current?.processing === 'ready') return true;
+        if (
+          current &&
+          ['unsupported', 'failed', 'uploading'].includes(current.processing)
+        )
+          return false;
+        return isIndexableKnowledgeTextSource(file);
+      })
+      .map((file) => file.objectId);
     return Response.json(
-      WorkbenchFileCatalogSchema.parse(
-        await readWorkbenchFileCatalog(context, input),
-      ),
+      { ...catalog, quotableFileIds },
       { headers: workbenchFileHeaders },
     );
   } catch (error) {
