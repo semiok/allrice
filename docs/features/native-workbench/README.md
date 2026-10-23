@@ -36,6 +36,8 @@ DSH `0.2.1-rc.2` 的公开 `DockLayout` 和现有已登记的原生 store 继续
 
 浏览器完整加载固定 DSH `0.2.1-rc.2` 的 `ClientTerminals`、`RemoteStream` 与 `TerminalBody`，包括原生 xterm、FitAddon、输入排序、ACK、屏幕快照和恢复逻辑；Bridge 完整使用同版 `TerminalController` 与 `LocalSubprocessRuntime` 管理真实 PTY。资产版本与 SHA-256 登记于 WebUI 来源账本，同源加载器只集中承担模块注册及用户作用域 Storage 适配，不重写终端模拟器或命令输入表单。
 
+人类终端的 locale 适配跟踪 [MET-213](https://linear.app/metasnowsky/issue/MET-213)：macOS 原生启动器和更新重启仅继承 `LANG`、`LC_CTYPE`、`LC_ALL` 原值，Core 及员工执行环境不设全局默认。创建人类 PTY 时，独立 `HumanTerminalHost` 在原生 subprocess seam 集中补字符编码：已有 UTF-8 `LC_ALL` 保持最高优先级；否则将非 UTF-8 `LC_ALL` 清为空值，依次保留 UTF-8 `LC_CTYPE` 或 `LANG`。空 `LC_ALL` 按 POSIX 规则不遮蔽类别设置，也符合原生终端公开接口仅接收字符串的约束。缺少 UTF-8 字符分类时仅在此终端采用 `en_US.UTF-8`（其他 POSIX 平台为 `C.UTF-8`），不改用户 Shell 配置或系统 locale。原生 DSH 仍处理环境合成、凭据过滤、PTY 输入和清理；已有终端保持原启动环境，更新后新建终端才采用修复。
+
 网页通过校验 cookie、Origin 和真实登录会话的 WebSocket 接入既有 Bridge WSS。服务端绑定组织、工作区、本人、会话、设备、授权目录版本及指纹；Bridge 再核对本地授权目录与当前服务端权限，不接受浏览器传入任意本机路径或 owner。顶栏一行显示设备、授权初始目录与连接状态，当前 shell 位置由终端提示符展示。授权目录只选择初始 cwd，**不构成 OS 文件系统沙箱**：这是本机用户权限下的人类 shell，独立于员工的沙箱和审批执行。
 
 该入口不创建 Agent 或 Run，不调用模型，也不把输入输出自动加入模型历史或交付成果。Tab、Ctrl+C 等按原字节传给原生 PTY；流信用与原生 ACK 保留背压。断线只重建输出/保留连接，不自动重放输入或其他可能产生副作用的命令。Bridge 生命周期内刷新复连同一身份；进程已消失时明确要求新建，不偷偷分配替代 shell。
