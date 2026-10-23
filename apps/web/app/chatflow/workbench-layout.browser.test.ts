@@ -6042,6 +6042,26 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         name: '给 Rice 的消息',
         exact: true,
       });
+      const replaceDraft = async (text: string) => {
+        await composer.fill(text);
+        await expect.poll(() => composer.inputValue()).toBe(text);
+      };
+      const preparedDraft = async (dialog: Locator) => {
+        await expect.poll(() => dialog.count()).toBe(0);
+        // Preparing a draft restores focus and the caret in animationFrame.
+        // Wait for that handoff before fill's select-all/insertText sequence.
+        await expect
+          .poll(() =>
+            composer.evaluate(
+              (input: HTMLTextAreaElement) =>
+                document.activeElement === input &&
+                input.selectionStart === input.value.length &&
+                input.selectionEnd === input.value.length,
+            ),
+          )
+          .toBe(true);
+        return composer.inputValue();
+      };
       const openDetails = async () => {
         const entry = f.page.getByRole('button', {
           name: '查看Rice详情',
@@ -6059,13 +6079,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       };
       try {
         f.state.employeeDetails.profile.kind = 'custom';
-        await composer.fill('保留这份已有草稿，不要自动发送。');
+        await replaceDraft('保留这份已有草稿，不要自动发送。');
         let dialog = await openDetails();
         await dialog
           .getByRole('button', { name: 'AI新增工作场景', exact: true })
           .click();
-        await expect.poll(() => dialog.count()).toBe(0);
-        const sceneDraft = await composer.inputValue();
+        const sceneDraft = await preparedDraft(dialog);
         expect(sceneDraft).toContain('保留这份已有草稿，不要自动发送。');
         expect(sceneDraft).toContain('Rice');
         expect(sceneDraft).toContain('请新增我的工作场景：');
@@ -6074,7 +6093,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(f.state.messageInputs).toEqual([]);
         expect(f.writes).toEqual([]);
 
-        await composer.fill('第二份尚未发送的草稿。');
+        await replaceDraft('第二份尚未发送的草稿。');
         dialog = await openDetails();
         await dialog
           .getByRole('button', { name: '每周对账', exact: true })
@@ -6082,8 +6101,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await dialog
           .getByRole('button', { name: 'AI调整每周核对', exact: true })
           .click();
-        await expect.poll(() => dialog.count()).toBe(0);
-        const adjustmentDraft = await composer.inputValue();
+        const adjustmentDraft = await preparedDraft(dialog);
         expect(adjustmentDraft).toContain('第二份尚未发送的草稿。');
         expect(adjustmentDraft).toContain('Rice');
         expect(adjustmentDraft).toContain('每周对账');
@@ -6093,7 +6111,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(f.state.messageInputs).toEqual([]);
         expect(f.writes).toEqual([]);
 
-        await composer.fill('通用补充之前的未发送草稿。');
+        await replaceDraft('通用补充之前的未发送草稿。');
         dialog = await openDetails();
         await dialog
           .getByRole('button', { name: '每周对账', exact: true })
@@ -6101,8 +6119,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await dialog
           .getByRole('button', { name: 'AI调整个人输出偏好', exact: true })
           .click();
-        await expect.poll(() => dialog.count()).toBe(0);
-        const commonDraft = await composer.inputValue();
+        const commonDraft = await preparedDraft(dialog);
         expect(commonDraft.startsWith('请调整我的通用执行要求：')).toBe(true);
         expect(commonDraft).toContain('范围：通用内容 · 执行要求');
         expect(commonDraft).toContain('个人输出偏好');
