@@ -89,8 +89,8 @@ function closeHarness(failures = []) {
     new URL('./allrice-jsonrpc-runtime.mjs', import.meta.url),
     'utf8',
   );
-  const start = source.indexOf('// Closure evidence concerns');
-  const end = source.indexOf('transport.start();', start);
+  const start = source.indexOf('let initializeStarted = false;');
+  const end = source.indexOf("process.stdin.on('end'", start);
   expect(start).toBeGreaterThan(0);
   expect(end).toBeGreaterThan(start);
   const calls = [],
@@ -115,7 +115,15 @@ function closeHarness(failures = []) {
     setImmediate: (operation) => queued.push(operation),
   };
   runInNewContext(
-    source.slice(start, end) + '\nglobalThis.exitResult = () => exitTask;',
+    source.slice(start, end) +
+      `
+      // Supply already-created public ports; never execute the SDK factory.
+      initializeStarted = moduleLoadStarted = sdkCreated = rootCreated = true;
+      ownedServer = server;
+      ownedContext = ctx;
+      runtimeTask = Promise.resolve({ server, ctx });
+      globalThis.exitResult = () => exitTask;
+      `,
     context,
     { timeout: 1000 },
   );

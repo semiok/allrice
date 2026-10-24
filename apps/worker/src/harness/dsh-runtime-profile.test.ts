@@ -70,7 +70,10 @@ describe('AllRice restricted DSH profile', () => {
       expect(pkg.devDependencies[name]).toBeUndefined();
     }
     const production = await readFile(
-      resolve(import.meta.dirname, '../../dsh/allrice-jsonrpc-runtime.mjs'),
+      resolve(
+        import.meta.dirname,
+        '../../dsh/allrice-jsonrpc-implementation.mjs',
+      ),
       'utf8',
     );
     expect(production).not.toContain('p24_proposal');
