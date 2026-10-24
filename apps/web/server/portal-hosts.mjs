@@ -10,33 +10,35 @@ export const builtInAdminHosts = [
   'allrice-dsh.traditionow.ai',
 ];
 
+/** Loopback hosts; ALLRICE_LOCAL_PORTAL decides what they serve. */
+export const loopbackHosts = ['localhost', '127.0.0.1', '::1'];
+
 const label = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?';
+const namePattern = new RegExp(`^${label}(?:\\.${label})*$`);
+const ipv6Pattern = /^\[[0-9a-f:.]+\]$/;
 // A DNS name or a bracketed IPv6 address, then an optional port.
 const entryPattern = new RegExp(
-  `^(?:(${label}(?:\\.${label})*)|(\\[[0-9a-f:.]+\\]))(?::([0-9]{1,5}))?$`,
+  `^(${label}(?:\\.${label})*|\\[[0-9a-f:.]+\\])(?::([0-9]{1,5}))?$`,
 );
 
+/** The canonical hostname, or null when `host` is not one: a lowercase DNS name
+ * already in canonical form (plain IPv4 included), or an IPv6 address in brackets,
+ * returned compressed and without them. */
 const parsedHost = (host) => {
+  const ipv6 = ipv6Pattern.test(host);
+  if (!ipv6 && !namePattern.test(host)) return null;
   try {
-    const url = new URL(`http://${host}`);
-    if (
-      url.pathname === '/' &&
-      !url.search &&
-      !url.hash &&
-      !url.username &&
-      !url.password &&
-      !url.port
-    )
-      return url.hostname.replace(/^\[(.*)\]$/, '$1');
+    const hostname = new URL(`http://${host}`).hostname;
+    return ipv6 ? hostname.slice(1, -1) : hostname === host ? host : null;
   } catch {
-    // Not a host.
+    return null;
   }
-  return null;
 };
 
-/** A hostname as the portal compares it: URL's canonical form (lowercase,
- * compressed IPv6 without brackets, plain IPv4), so equal hosts compare equal.
- * Anything that is not a bare host is returned unchanged and matches no entry. */
+/** A hostname as the portal compares it: IPv6 compressed without brackets, so
+ * equivalent spellings compare equal. Anything else that is not strictly a host
+ * (userinfo, paths, other IPv4 spellings) is returned unchanged and matches only
+ * itself, as before. */
 export const canonicalHost = (host) => parsedHost(host) ?? host;
 
 /** Portal entries a deployment adds for its own domain: comma separated
@@ -51,11 +53,15 @@ export function configuredPortalEntries(variable, env = process.env) {
       const bareIpv6 =
         !entry.startsWith('[') && entry.indexOf(':') !== entry.lastIndexOf(':');
       const match = entryPattern.exec(bareIpv6 ? `[${entry}]` : entry);
-      const host = match ? parsedHost(match[1] ?? match[2]) : null;
-      const port = match?.[3] === undefined ? null : Number(match[3]);
+      const host = match ? parsedHost(match[1]) : null;
+      const port = match?.[2] === undefined ? null : Number(match[2]);
       if (!host || (port !== null && (port < 1 || port > 65535)))
         throw Error(
           `${variable}: "${entry}" is not a host name with an optional port`,
+        );
+      if (loopbackHosts.includes(host))
+        throw Error(
+          `${variable}: "${entry}" is a loopback host; ALLRICE_LOCAL_PORTAL decides what it serves`,
         );
       return {
         host,

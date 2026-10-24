@@ -6,6 +6,7 @@ export interface PortalEntry {
 }
 export const builtInEmployeeHosts: readonly string[];
 export const builtInAdminHosts: readonly string[];
+export const loopbackHosts: readonly string[];
 export function canonicalHost(host: string): string;
 export function configuredPortalEntries(
   variable: string,

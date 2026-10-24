@@ -72,6 +72,21 @@ describe('portal hosts', () => {
       expect(portalAccountKind(host)).toBe('employee');
     expect(portalAccountKind('a.bplabs.xyz/x')).toBeUndefined();
   });
+  it('compares any other Host spelling literally, as before', () => {
+    vi.stubEnv('ALLRICE_EMPLOYEE_PORTAL_HOSTS', '');
+    vi.stubEnv('ALLRICE_ADMIN_PORTAL_HOSTS', '');
+    for (const host of [
+      '@allrice-admin.bplabs.xyz',
+      'allrice-admin.bplabs.xyz/path/..',
+      'u:p@allrice-admin.bplabs.xyz',
+    ])
+      expect(resolvePortal(host)).toBeNull();
+    for (const host of ['allrice.bplabs.xyz/path/..', '@allrice.bplabs.xyz'])
+      expect(isUnifiedPortalHost(host)).toBe(false);
+    // Other IPv4 spellings are not the loopback entry.
+    for (const host of ['0x7f.1', '127.1', '2130706433'])
+      expect(isUnifiedPortalHost(host)).toBe(false);
+  });
   it('refuses malformed and conflicting entries', () => {
     for (const bad of [
       'rice.example.com/path',
@@ -84,6 +99,10 @@ describe('portal hosts', () => {
       'rice.example.com:70000',
       '[2001:db8::g]',
       '999.1.1.1',
+      '127.1',
+      'localhost:3000',
+      '127.0.0.1',
+      '[::1]',
     ]) {
       vi.stubEnv('ALLRICE_EMPLOYEE_PORTAL_HOSTS', bad);
       expect(() => isUnifiedPortalHost('rice.example.com')).toThrow(
