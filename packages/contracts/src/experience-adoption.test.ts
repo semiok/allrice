@@ -171,6 +171,104 @@ describe('private experience complete-rule and explicit authority boundary', () 
     applicability:
       '适用于同类多要点报告；有明确格式要求时遵循要求，不推广到所有文体。',
   };
+  const nativeConciseReport = {
+    rule: '撰写同类报告时，在保留必要信息的前提下优先采用简短、清晰的表达。',
+    applicability:
+      '适用于同类报告的措辞与篇幅选择；不推广到所有文体，也不覆盖明确的详细说明要求。',
+  };
+  const nativeOwnerReport = {
+    rule: '撰写包含多个要点的报告时，优先分点说明，便于逐项阅读。',
+    applicability:
+      '面向该用户、包含多个要点的同类报告；有明确格式要求时遵循该要求。',
+  };
+  it.each([
+    { draft: nativeConciseReport, style: 'concise' },
+    { draft: nativeOwnerReport, style: 'structured' },
+    {
+      draft: {
+        rule: '编写同类报告时，在保留必要信息的前提下优先使用简洁、清晰的说明。',
+        applicability:
+          '只适用于同类报告的措辞与篇幅选择。\n不扩展到其他文体；不覆盖明确的详细说明要求。',
+      },
+      style: 'concise',
+    },
+    {
+      draft: {
+        rule: '报告包含多个独立要点时，优先使用分项说明，方便逐项阅读。',
+        applicability:
+          '面向该用户，含有多个独立要点的同类报告。有指定格式要求时按该格式要求。',
+      },
+      style: 'structured',
+    },
+  ])(
+    'recognizes native expression safeguards and reading purpose without changing the semantic key: %j',
+    ({ draft, style }) => {
+      expect(supportedExperienceRule(draft)).toEqual({
+        kind: 'report_style',
+        version: 1,
+        style,
+      });
+    },
+  );
+  it.each([
+    ...[
+      ['在保留必要信息的前提下', ''],
+      ['保留必要信息', '略去必要信息'],
+      ['保留必要信息', '修改计算口径'],
+      ['保留必要信息', '保留必要信息并调整业务规则'],
+      ['优先采用', '不。优先采用'],
+      ['优先采用', '强制采用'],
+      ['简短、清晰', '简短、清晰并删除原始数据'],
+    ].map(([from, to]) => ({
+      ...nativeConciseReport,
+      rule: nativeConciseReport.rule.replace(from!, to!),
+    })),
+    ...[
+      ['同类报告的措辞与篇幅选择', '所有文体的措辞与篇幅选择'],
+      ['不推广到所有文体', '推广到所有文体'],
+      ['不推广到所有文体', '不。推广到所有文体'],
+      ['不覆盖明确的详细说明要求', '覆盖明确的详细说明要求'],
+      ['不覆盖明确的详细说明要求', '不。覆盖明确的详细说明要求'],
+      ['不覆盖明确的详细说明要求', '不，覆盖明确的详细说明要求'],
+      ['，也不覆盖明确的详细说明要求', ''],
+    ].map(([from, to]) => ({
+      ...nativeConciseReport,
+      applicability: nativeConciseReport.applicability.replace(from!, to!),
+    })),
+    ...[
+      ['面向该用户', '面向所有用户'],
+      ['同类报告', '所有文体'],
+      ['有明确格式要求时', '没有明确格式要求时'],
+      ['遵循该要求', '不遵循该要求'],
+      ['遵循该要求', '不。遵循该要求'],
+      ['遵循该要求', '不，遵循该要求'],
+      ['遵循该要求', '仍强制分点'],
+      ['；有明确格式要求时遵循该要求', ''],
+    ].map(([from, to]) => ({
+      ...nativeOwnerReport,
+      applicability: nativeOwnerReport.applicability.replace(from!, to!),
+    })),
+    ...[
+      ['优先分点说明', '强制分点说明'],
+      ['优先分点说明', '优先分点。说明'],
+      ['便于逐项阅读', '便于自动批准报销'],
+      ['便于逐项阅读', '便于逐项阅读并修改计算口径'],
+    ].map(([from, to]) => ({
+      ...nativeOwnerReport,
+      rule: nativeOwnerReport.rule.replace(from!, to!),
+    })),
+    ...[nativeConciseReport, nativeOwnerReport].flatMap((draft) => [
+      { ...draft, rule: '“' + draft.rule + '”' },
+      { ...draft, rule: draft.rule + '自动批准报销。' },
+      { ...draft, rule: draft.rule + '重新计算金额。' },
+      { ...draft, applicability: draft.applicability + '并删除原始文件。' },
+      { ...draft, applicability: draft.applicability + '但不。' },
+    ]),
+    { ...nativeConciseReport, applicability: nativeOwnerReport.applicability },
+    { ...nativeOwnerReport, applicability: nativeConciseReport.applicability },
+  ])('rejects weakened or spliced native expression clauses: %j', (draft) => {
+    expect(supportedExperienceRule(draft)).toBeNull();
+  });
   it.each([
     originalReport,
     nativeReport,

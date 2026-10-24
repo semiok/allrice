@@ -5,7 +5,7 @@ import { ExperienceSkillValidationSchema } from './experience-validation.ts';
 
 const Digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 // Recognition grammar evolves independently of the semantic key and tombstones.
-export const REPORT_STYLE_RECOGNIZER_VERSION = 'report-style-clauses-v3';
+export const REPORT_STYLE_RECOGNIZER_VERSION = 'report-style-clauses-v4';
 
 export const SupportedExperienceRuleSchema = z.discriminatedUnion('kind', [
   z
@@ -33,7 +33,11 @@ export const ExperienceAdoptionProofSchema = z
     sourceDigest: Digest,
     rule: SupportedExperienceRuleSchema,
     recognizerVersion: z
-      .enum(['report-style-clauses-v2', REPORT_STYLE_RECOGNIZER_VERSION])
+      .enum([
+        'report-style-clauses-v2',
+        'report-style-clauses-v3',
+        REPORT_STYLE_RECOGNIZER_VERSION,
+      ])
       .optional(),
     validation: z.discriminatedUnion('kind', [
       z
@@ -166,23 +170,49 @@ function completeReportStyle(rule: string, applicability: string) {
   const noOtherGenres = '不(?:推及|推广到|扩展到)(?:所有|其他)文体';
   const unformattedReport = `(?:仅|只)?适用于(?:包含|含有)?${points}[、，,]?(?:且|并且)无指定格式要求的(?:同类)?报告`;
   const reportTopic = `(?:仅|只)?适用于(?:同类)?(?:包含|含有)?${points}(?:的)?报告`;
-  const formatPriority = '有(?:明确|指定)格式要求时(?:遵循|按)(?:该格式)?要求';
+  const formatPriority =
+    '有(?:明确|指定)格式要求时(?:遵循|按)(?:该(?:格式)?)?要求';
   const limitedScope = new RegExp(
     `^(?:${unformattedReport}${boundary}${noOtherGenres}|${reportTopic}${boundary}${formatPriority}${boundary}${noOtherGenres})$`,
     'u',
   );
-  if (!presentationOnly.test(scope) && !limitedScope.test(scope)) return null;
-  const writing = `(?:撰写|编写|输出|交付)(?:(?:包含|含有)?${points}的)?报告时`;
+  const writingVerb = '(?:撰写|编写|输出|交付)';
+  const writing = `${writingVerb}(?:(?:包含|含有)?${points}的)?报告时`;
   const reportCondition = `(?:当)?报告(?:包含|含有)${points}时`;
   const context = `(?:${writing}|${reportCondition})[，,]?(?:优先)?`;
   const structuredObject =
     '(?:(?:分点|分项|分条)(?:方式|结构|(?:表达|说明)(?:的结构)?)|条理清晰的(?:方式|表达|说明|结构))';
+  const structuredAction = `${context}(?:(?:采用|使用|保持)${structuredObject}|(?:按要点)?(?:分点|分项|分条)(?:说明|表达))`;
+
+  // These are complete action/scope pairs, not removable explanatory suffixes.
+  // Concision preserves necessary facts and yields to explicit detail requests;
+  // the owner-scoped structure rule yields to a specified format. Neither
+  // branch accepts new business actions or generalizes beyond similar reports.
   if (
     new RegExp(
-      `^${context}(?:(?:采用|使用|保持)${structuredObject}|(?:按要点)?(?:分点|分项|分条)(?:说明|表达))$`,
+      `^(?:仅|只)?适用于同类报告的措辞与篇幅选择${boundary}${noOtherGenres}${boundary}(?:也)?不覆盖明确的详细说明要求$`,
+      'u',
+    ).test(scope) &&
+    new RegExp(
+      `^${writingVerb}同类报告时[，,]?在保留必要信息的前提下优先(?:采用|使用|保持)(?:简洁|简短)[、，,]清晰的(?:表达|说明)$`,
       'u',
     ).test(action)
   )
+    return 'concise' as const;
+  if (
+    new RegExp(
+      `^面向该用户[、，,](?:包含|含有)${points}的同类报告${boundary}${formatPriority}$`,
+      'u',
+    ).test(scope) &&
+    new RegExp(
+      `^${structuredAction}${boundary}(?:便于|方便)逐项阅读$`,
+      'u',
+    ).test(action)
+  )
+    return 'structured' as const;
+
+  if (!presentationOnly.test(scope) && !limitedScope.test(scope)) return null;
+  if (new RegExp(`^${structuredAction}$`, 'u').test(action))
     return 'structured' as const;
   if (
     new RegExp(
