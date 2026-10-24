@@ -177,7 +177,10 @@ status() {
   echo "running sha:        web $(ready_sha "http://127.0.0.1:$(web_port)/api/health/ready" | cut -c1-8)  worker $(ready_sha "http://127.0.0.1:$(worker_port)/health/ready" | cut -c1-8)  (empty = not ready)"
   echo "native artifact:    $(penv "$WORKER_PLIST" ALLRICE_DSH_NATIVE_ARTIFACT_ID) (configured)"
   echo "tools version:      $(cat "$BIN/TOOLS_VERSION" 2>/dev/null || echo "unknown ($BIN)")"
-  [ -e "$INFLIGHT" ] && echo "UNFINISHED DEPLOY (phase '$(sed -n 1p "$INFLIGHT/state" 2>/dev/null)'): run deploy-dev --release-manager --recover"
+  if [ -e "$INFLIGHT" ]; then
+    if lock_held "$LOCK"; then echo "DEPLOY IN PROGRESS (phase '$(sed -n 1p "$INFLIGHT/state" 2>/dev/null)')"
+    else echo "UNFINISHED DEPLOY (phase '$(sed -n 1p "$INFLIGHT/state" 2>/dev/null)'): run deploy-dev --release-manager --recover"; fi
+  fi
   "$BIN/deploy-lock" status || true
   [ -f "$LOG" ] && { echo "recent deploys:"; tail -5 "$LOG"; }
   return 0
@@ -271,10 +274,10 @@ deploy() {
     --ref) ref=${2:?}; shift 2 ;; --force) force=1; shift ;; --skip-smoke) smoke=0; shift ;;
     *) die "unknown option $1" 2 ;; esac; done
   local t0; t0=$(date +%s)
+  ! lock_held "$LOCK" || die "a deploy is in progress ($("$BIN/deploy-lock" status)); stop and retry later" 3
   [ ! -e "$INFLIGHT" ] || die "an earlier deploy did not finish; run deploy-dev --release-manager --recover first"
   local avail; avail=$(df -g "$HOME" | awk 'NR==2{print $4}')
   [ "$avail" -ge 20 ] || die "only ${avail}G free; clean up before building"
-  ! lock_held "$LOCK" || die "deploy lock is held ($("$BIN/deploy-lock" status)); stop and retry later" 3
 
   git -C "$REPO" fetch -q origin
   local sha; sha=$(resolve_ref "$ref")
@@ -303,7 +306,7 @@ deploy() {
   fi
   BUILT=1 # from here the build is kept, also when the lock is busy
 
-  take_lock || die "deploy lock was taken meanwhile; build kept at $rel (rerun deploy-dev later)" 3
+  take_lock || die "another deploy started meanwhile; build kept at $rel (rerun deploy-dev later)" 3
   [ ! -e "$INFLIGHT" ] || die "an earlier deploy did not finish; build kept at $rel. Run deploy-dev --release-manager --recover first"
   [ "$(release_of)" = "$cur_rel" ] || die "Dev changed while this version was building; build kept at $rel, start again"
   local down_at; down_at=$(date +%s)
