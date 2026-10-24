@@ -5,6 +5,7 @@ import {
   canonicalHost,
   loopbackHosts,
   portalEntries,
+  type PortalEntry,
 } from '../../server/portal-hosts.mjs';
 export type PortalKind = 'platform_admin' | 'tenant';
 
@@ -103,21 +104,26 @@ export function portalAuthEnabled() {
   return process.env.ALLRICE_PORTAL_AUTH_ENABLED === '1';
 }
 
-/** A request's Host as the portal compares it: the canonical hostname without
- * port or brackets, or '' (matching no entry) unless it is strictly host[:port]
- * with IPv6 in brackets. Every exported check reads the raw Host through this
- * exactly once, so the checks always agree. */
+/** A request's Host as the portal has always compared it: lowercase, without port
+ * or brackets. Built-in and loopback hosts are compared in exactly this form, as
+ * before; every exported check reads the raw Host through it once. */
 export function normalizeHost(value: string | null | undefined) {
-  const first = (value ?? '').split(',')[0]?.trim().toLowerCase() ?? '';
-  const match = /^(\[[^\]]*\]|[^:[\]]*)(?::[0-9]{1,5})?$/.exec(first);
-  return match?.[1] === undefined ? '' : canonicalHost(match[1]);
+  if (!value) return '';
+  const first = value.split(',')[0]?.trim().toLowerCase() ?? '';
+  if (first.startsWith('[')) {
+    const end = first.indexOf(']');
+    return end >= 0 ? first.slice(1, end) : first;
+  }
+  return first.split(':')[0] ?? '';
 }
 
-const employeeHosts = () => [
-  ...builtInEmployeeHosts,
-  ...portalEntries().employee.map((entry) => entry.host),
-];
-const adminHosts = () => portalEntries().admin.map((entry) => entry.host);
+/** Whether a normalized host is one of these configured entries. Entries are
+ * canonical, so an IPv6 host is compressed first and its equivalent spellings
+ * match; loopback hosts are never entries. */
+const listed = (entries: readonly PortalEntry[], host: string) => {
+  const form = host.includes(':') ? canonicalHost(`[${host}]`) : host;
+  return entries.some((entry) => entry.host === form);
+};
 
 /** Where this deployment's employees sign in: its first configured entry (with its
  * port), else the shared allrice.bplabs.xyz. */
@@ -129,7 +135,8 @@ export const adminPortalAuthority = () =>
   portalEntries().admin[0]?.authority ?? 'allrice-admin.bplabs.xyz';
 
 // These take a normalized host; the exported checks below normalize once.
-const isEmployeeHost = (host: string) => employeeHosts().includes(host);
+const isEmployeeHost = (host: string) =>
+  builtInEmployeeHosts.includes(host) || listed(portalEntries().employee, host);
 const isUnifiedHost = (host: string) =>
   isEmployeeHost(host) ||
   (loopbackHosts.includes(host) &&
@@ -140,12 +147,6 @@ const isUnifiedHost = (host: string) =>
 export function isEmployeePortalHost(host: string | null | undefined) {
   return isEmployeeHost(normalizeHost(host));
 }
-
-/** A portal's hostnames; the admin portal also takes ALLRICE_ADMIN_PORTAL_HOSTS. */
-const portalHosts = (portal: PortalDefinition) =>
-  portal.kind === 'platform_admin'
-    ? [...portal.hosts, ...adminHosts()]
-    : portal.hosts;
 
 /** The shared entry never selects a person or organization from its hostname. */
 export function isUnifiedPortalHost(host: string | null | undefined) {
@@ -164,9 +165,13 @@ function portalForHost(normalized: string) {
       definitions.find((definition) => definition.key === localKey) ?? null
     );
   }
+  // The admin portal also takes ALLRICE_ADMIN_PORTAL_HOSTS.
   return (
-    definitions.find((definition) =>
-      portalHosts(definition).includes(normalized),
+    definitions.find(
+      (definition) =>
+        definition.hosts.includes(normalized) ||
+        (definition.kind === 'platform_admin' &&
+          listed(portalEntries().admin, normalized)),
     ) ?? null
   );
 }
@@ -236,8 +241,8 @@ export function legacyPortalNavigation(request: {
   // entries, are served here rather than moved.
   if (
     host === 'allrice-admin.bplabs.xyz' ||
-    employeeHosts().includes(host) ||
-    adminHosts().includes(host)
+    listed(portalEntries().employee, host) ||
+    listed(portalEntries().admin, host)
   )
     return null;
   const url = new URL(request.url);
