@@ -67,6 +67,9 @@ export interface ProjectLockPlatformFacts {
   cloudOnly: boolean;
   /** Cloud execution is on and granted to this employee (undefined: not known here). */
   cloudUsable: boolean | undefined;
+  /** The Bridge also lacks a feature this request needs: a matching lock alone does
+   * not make it run there. */
+  bridgeNeedsUpgrade: boolean;
 }
 
 /** A uv lock pins wheels for one CPU architecture and no backend this call may use

@@ -21,6 +21,10 @@ export function projectLockPlatformMessage(f: ProjectLockPlatformFacts) {
   ];
   if (bridges.length)
     parts.push(`本机 Bridge 是 ${bridges.map(cpu).join('、')}，装不上。`);
+  if (f.bridgeNeedsUpgrade)
+    parts.push(
+      '本机 Bridge 的版本也不支持本次请求用到的功能，换成匹配的锁也要先升级 Bridge。',
+    );
   if (cloudMayRun && !f.toolLocal && !lockFitsServer)
     parts.push(`云端是 ${cpu(f.serverArchitecture)}，也装不上。`);
   const blocked = [
@@ -32,7 +36,7 @@ export function projectLockPlatformMessage(f: ProjectLockPlatformFacts) {
   ];
   if (blocked.length) parts.push(`另外：${blocked.join('；')}。`);
   const options: string[] = [];
-  if (canResolve)
+  if (canResolve && !f.bridgeNeedsUpgrade)
     for (const architecture of bridges)
       options.push(
         `用 resolve 重新解析依赖并指定 architecture: ${architecture}（只上传依赖声明，生成 ${cpu(architecture)} 可用的新项目版本），再用新版本在本机执行`,
