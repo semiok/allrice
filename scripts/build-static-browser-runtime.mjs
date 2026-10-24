@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module';
 import { mkdtemp, copyFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 const require = createRequire(import.meta.url);
@@ -32,12 +32,26 @@ try {
     'infra/docker/Dockerfile.static-browser',
     join(directory, 'Dockerfile'),
   );
+  // Same socket the Worker uses (ALLRICE_CLOUD_DOCKER_SOCKET); images are
+  // native to that VM, so build there and pin the resulting ID per arch.
+  const socket =
+    process.env.ALLRICE_CLOUD_DOCKER_SOCKET ??
+    join(
+      homedir(),
+      `.colima/${process.env.ALLRICE_CLOUD_PROFILE ?? 'allrice-cloud-b4'}/docker.sock`,
+    );
   execFileSync(
-    '/usr/local/bin/docker',
+    process.env.ALLRICE_DOCKER_CLI ?? '/usr/local/bin/docker',
     [
       '--host',
-      'unix:///Users/a123/.colima/allrice-cloud-b4/docker.sock',
+      `unix://${socket}`,
       'build',
+      ...(process.env.ALLRICE_CHROMIUM_VERSION
+        ? [
+            '--build-arg',
+            `CHROMIUM_VERSION=${process.env.ALLRICE_CHROMIUM_VERSION}`,
+          ]
+        : []),
       '--target',
       'runtime',
       '-t',

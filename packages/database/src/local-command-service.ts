@@ -39,6 +39,8 @@ import {
   type StoragePort,
   resolveExecutionChoice,
   bridgeProjectPackageLimit,
+  projectLockArchitectures,
+  cloudPlatform,
 } from '@allrice/contracts';
 import {
   assertSavedProjectAuthority,
@@ -70,6 +72,7 @@ import {
   localCommandEnabled,
 } from './local-command-profile.ts';
 import {
+  ProjectLockPlatformError,
   RuntimePolicyError,
   requestRuntimeActionApproval,
   runtimePolicyDigest as digest,
@@ -350,6 +353,26 @@ async function createLocalBridgeToolOperation(
     args.projectPreparation.packages.length > bridgeProjectPackageLimit
   )
     throw new RuntimePolicyError('local_runner_upgrade_required');
+  // Same rule as project selection: this Bridge cannot install a lock pinned to
+  // the other CPU architecture.
+  if (
+    args?.projectPreparation &&
+    profile &&
+    !projectLockArchitectures(args.projectPreparation).includes(
+      profile.architecture,
+    )
+  )
+    throw new ProjectLockPlatformError({
+      lockArchitectures: projectLockArchitectures(args.projectPreparation),
+      bridgeArchitectures: [profile.architecture],
+      serverArchitecture: cloudPlatform.architecture,
+      userLocalOnly: false,
+      localInputs: false,
+      toolLocal: true,
+      cloudOnly: false,
+      cloudUsable: undefined,
+      currentBridgeArchitectures: [profile.architecture],
+    });
   if (
     args?.projectPreparation &&
     (!profile?.features?.includes('project_preparation') ||

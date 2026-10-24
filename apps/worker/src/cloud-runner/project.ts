@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { inFlightHeartbeat } from './service-diagnostics.js';
 import {
+  cloudPlatform,
   CloudProjectCommandSchema,
   CloudProjectRunResultSchema,
   RuntimeProjectPreparationEvidenceSchema,
@@ -286,6 +287,11 @@ export async function prepareCloudProject(
 ) {
   const command = CloudProjectCommandSchema.parse(input.command),
     scope = RuntimeProjectScopeSchema.parse(input.scope);
+  // A source frozen on another host architecture never runs here.
+  if (
+    command.arguments.projectSource.architecture !== cloudPlatform.architecture
+  )
+    throw Error('CLOUD_TOOLCHAIN_CHANGED');
   const bundle = readSavedProjectSource(command.arguments),
     spec = validateProjectPreparation(command, bundle.files);
   const profile = projectProfile(command);
@@ -298,7 +304,7 @@ export async function prepareCloudProject(
             spec,
             scope,
             image: command.imageDigest,
-            architecture: 'amd64',
+            architecture: cloudPlatform.architecture,
           }),
         ),
       )
@@ -339,7 +345,7 @@ export async function prepareCloudProject(
     await check();
     const tool = await preparation.tool(
       spec.manager,
-      'amd64',
+      cloudPlatform.architecture,
       signal,
       spec.offline,
       input.onPreparationBytes,
@@ -348,7 +354,7 @@ export async function prepareCloudProject(
       command,
       files: bundle.files,
       scope,
-      architecture: 'amd64',
+      architecture: cloudPlatform.architecture,
       signal,
       maintainLease,
       onBytes: input.onPreparationBytes,
@@ -363,7 +369,7 @@ export async function prepareCloudProject(
       cacheKey,
       manager: spec.manager,
       managerVersion: spec.managerVersion,
-      platform: 'linux-amd64',
+      platform: cloudPlatform.linuxPlatform,
       runtimeImage: command.imageDigest,
       packageCount: spec.packages.length,
       archiveHits: prepared.archiveHits,

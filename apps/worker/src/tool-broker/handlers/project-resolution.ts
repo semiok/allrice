@@ -6,6 +6,8 @@ import {
 } from '@allrice/database';
 import {
   ProjectDependencyResolveInputSchema,
+  cloudPlatform,
+  projectLockArchitectures,
   projectResolutionErrorMessage,
 } from '@allrice/contracts';
 import { readResolvedProject } from '@allrice/project-runtime';
@@ -25,6 +27,8 @@ export const runProjectResolution: RiceToolHandler = async ({
     context: input.context,
     callId: input.call.id,
     arguments: args,
+    // A uv call that names no CPU resolves for this cloud's.
+    architecture: cloudPlatform.architecture,
   });
   const result = await runCloudCommandOperation(created, {
     storage,
@@ -98,13 +102,16 @@ export const runProjectResolution: RiceToolHandler = async ({
       '保存的项目源码与依赖回执不一致，未安装。',
       false,
     );
+  const projectPreparation = resolved.forProject(project.project.projectId);
   return {
     modelContent: JSON.stringify({
       ...project,
       operationId: result.operationId,
       status: 'resolved',
       installed: false,
-      projectPreparation: resolved.forProject(project.project.projectId),
+      projectPreparation,
+      // Where this lock installs; a backend of another CPU cannot run it.
+      architectures: projectLockArchitectures(projectPreparation),
       nextAction:
         '依赖已解析并保存，尚未安装或验证。用返回的精确 project 和 projectPreparation 执行验证；如果 apply 添加源码，必须采用新 sourceDigest。后续任务先 open 精确 source 恢复。',
     }),

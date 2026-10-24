@@ -9,6 +9,8 @@ import {
   ProjectRunnableInputSchema,
   projectWorkflowBudget,
   bridgeProjectPackageLimit,
+  projectLockArchitectures,
+  cloudPlatform,
   ExecutionChoiceSchema,
   isLocalCommandProfileForPlatform,
   resolveExecutionChoice,
@@ -21,6 +23,7 @@ import {
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import {
+  ProjectLockPlatformError,
   RuntimePolicyError,
   runtimePolicyDigest as digest,
 } from './runtime-policy.ts';
@@ -223,6 +226,10 @@ export async function selectProjectExecution(
           ? 'local'
           : 'auto';
     const localOnly = constraints.localOnly || run.local_inputs;
+    // A uv lock pins wheels for the CPU architecture it was resolved for; only a
+    // backend of a listed architecture can install it.
+    const lockArchitectures = projectLockArchitectures(args.projectPreparation);
+    const cloudFits = lockArchitectures.includes(cloudPlatform.architecture);
     const [cloud] =
       input.cloudReady &&
       cloudExecutionEnabled() &&
@@ -271,10 +278,9 @@ export async function selectProjectExecution(
         'local.process',
       );
       let state = discovery.state;
-      if (!c.online) state = 'offline';
       // Current Bridge releases cannot silently drop finite network/budget
       // requests. Its separately versioned adapter must advertise support first.
-      else if (
+      const requestGap =
         args.action === 'execute' &&
         ((args.network &&
           (!args.execution ||
@@ -282,14 +288,10 @@ export async function selectProjectExecution(
             !parsed.data.features?.includes('sandbox_network_v1'))) ||
           (args.execution &&
             (!parsed.success ||
-              !parsed.data.features?.includes('sandbox_execution_v1'))))
-      )
-        state = 'unsupported';
-      else if (
-        args.projectPreparation.packages.length > bridgeProjectPackageLimit
-      )
-        state = 'unsupported';
-      else if (
+              !parsed.data.features?.includes('sandbox_execution_v1'))));
+      const tooLarge =
+        args.projectPreparation.packages.length > bridgeProjectPackageLimit;
+      const profileGap =
         state !== 'preparing' &&
         state !== 'busy' &&
         (!parsed.success ||
@@ -297,9 +299,17 @@ export async function selectProjectExecution(
           !parsed.data.features?.includes('saved_project_source') ||
           !parsed.data.features.includes('project_preparation') ||
           (args.action === 'service_start' &&
-            !parsed.data.features.includes('project_services')))
+            !parsed.data.features.includes('project_services')));
+      // What only a newer Bridge fixes, unlike its CPU or its availability.
+      const needsUpgrade = requestGap || tooLarge || profileGap;
+      if (!c.online) state = 'offline';
+      else if (requestGap || tooLarge) state = 'unsupported';
+      else if (
+        parsed.success &&
+        !lockArchitectures.includes(parsed.data.architecture)
       )
         state = 'unsupported';
+      else if (profileGap) state = 'unsupported';
       else if (
         state === 'ready' &&
         (!parsed.success ||
@@ -319,6 +329,7 @@ export async function selectProjectExecution(
         device,
         profile: parsed.success ? parsed.data : null,
         state,
+        needsUpgrade,
       };
     });
     const rank = [
@@ -337,11 +348,50 @@ export async function selectProjectExecution(
       select snapshot from allrice_runtime_operations where id=${prior.metadata.operationId} and organization_id=${ctx.organizationId}
         and workspace_id=${ctx.workspaceId} and snapshot->'binding'->'requestedBy'->>'id'=${owner} and run_id=${ctx.runId}`
       : [];
+    // A lock pinned to a CPU architecture that no backend this call may use has: say
+    // so, with the architectures, instead of a generic "unavailable". The cloud's
+    // architecture is fixed, so no cloud probe is needed for this; whether the cloud
+    // grant and target are usable stays with the normal selection (the tool probes
+    // after "cloud_unavailable"), so a revoked grant is not reported as a mismatch.
+    const facts = {
+      lockArchitectures,
+      serverArchitecture: cloudPlatform.architecture,
+      userLocalOnly: constraints.localOnly || constraints.location === 'local',
+      localInputs: run.local_inputs,
+      toolLocal: constraints.location === 'auto' && args.location === 'local',
+      cloudOnly: constraints.location === 'cloud',
+      cloudUsable:
+        cloudExecutionEnabled() && tools.includes('cloud.process.execute'),
+    };
+    const cloudOption =
+      facts.cloudUsable &&
+      !facts.userLocalOnly &&
+      !facts.localInputs &&
+      !facts.toolLocal;
+    // A request for the cloud only leaves the Bridges out of this call.
+    const bridgeArchitectures = facts.cloudOnly
+      ? []
+      : classified.flatMap((c) => (c.profile ? [c.profile.architecture] : []));
+    if (
+      !prior &&
+      !(cloudOption && cloudFits) &&
+      !bridgeArchitectures.some((a) => lockArchitectures.includes(a)) &&
+      ((cloudOption && !cloudFits) || bridgeArchitectures.length > 0)
+    )
+      throw new ProjectLockPlatformError({
+        ...facts,
+        bridgeArchitectures,
+        currentBridgeArchitectures: facts.cloudOnly
+          ? []
+          : classified.flatMap((c) =>
+              c.profile && !c.needsUpgrade ? [c.profile.architecture] : [],
+            ),
+      });
     const bound = prior?.metadata.choice.location;
     const choice = resolveExecutionChoice({
       location,
       local: device?.state ?? null,
-      cloudAvailable: !!cloud,
+      cloudAvailable: !!cloud && cloudFits,
       localInputs: localOnly,
       ...(bound === 'local' || bound === 'cloud'
         ? { boundLocation: bound }

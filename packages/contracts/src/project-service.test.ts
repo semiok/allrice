@@ -1,3 +1,4 @@
+import { cloudPlatform } from './runtime-v2/cloud-platform.ts';
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
@@ -70,7 +71,7 @@ const projectSource = {
   version: 1,
   project,
   snapshot,
-  architecture: 'amd64',
+  architecture: cloudPlatform.architecture,
   cacheKey: digest('cache'),
   origin: {
     jobId: id,

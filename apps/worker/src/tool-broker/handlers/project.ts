@@ -8,6 +8,7 @@ import {
   waitLocalCommandOperation,
   createCloudProjectOperation,
   RuntimePolicyError,
+  ProjectLockPlatformError,
   cloudExecutionEnabled,
   projectServiceWorkerControl,
   readProjectService,
@@ -20,6 +21,7 @@ import {
 } from '@allrice/contracts';
 import { LocalStorageAdapter } from '@allrice/storage';
 import { HandlerError } from '../../errors.js';
+import { projectLockPlatformMessage } from './project-lock-message.js';
 import type { RiceToolHandler } from '../types.js';
 import { waitForLocalAdmission } from './local-admission.js';
 import { runProjectResolution } from './project-resolution.js';
@@ -363,6 +365,12 @@ export const runProjectWorkspace: RiceToolHandler = async ({
       throw new HandlerError(
         'PROJECT_RESOLUTION_REQUIRES_CLOUD',
         '当前任务要求仅在本地处理，因此没有启动云端依赖解析。请使用已有锁文件；不要通过其他工具绕过该限制。',
+        false,
+      );
+    if (error instanceof ProjectLockPlatformError)
+      throw new HandlerError(
+        'PROJECT_LOCK_PLATFORM_MISMATCH',
+        projectLockPlatformMessage(error.facts),
         false,
       );
     if (
