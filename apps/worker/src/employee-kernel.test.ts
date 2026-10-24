@@ -6,6 +6,7 @@ import type { ContextCheckpoint } from '@allrice/contracts';
 import {
   assembleEmployeeKernel,
   bootstrapConversationForCheckpoint,
+  bootstrapContextForCheckpoint,
   employeeInstanceInstructions,
 } from './employee-kernel.js';
 
@@ -179,3 +180,33 @@ it.each(['general', 'custom'] as const)(
     expect(text).toContain('Only status:installed is installation success');
   },
 );
+
+it('keeps independent checkpoint and exact uncovered message receipts, and declines unidentified legacy history', () => {
+  const id = randomUUID();
+  const messages = [{ id, role: 'user' as const, text: 'same text' }];
+  const first = bootstrapContextForCheckpoint(messages)!;
+  expect(first.segments).toHaveLength(1);
+  expect(
+    bootstrapContextForCheckpoint([{ ...messages[0]!, text: 'changed' }])!
+      .segments[0]!.digest,
+  ).not.toBe(first.segments[0]!.digest);
+  expect(
+    bootstrapContextForCheckpoint([{ role: 'user', text: 'legacy' }]),
+  ).toBeUndefined();
+  const checkpoint = {
+    summaryVersion: 'extractive-v1',
+    generation: 1,
+    coveredThroughMessageId: id,
+    summary: 'retained facts',
+  } as ContextCheckpoint;
+  const covered = bootstrapContextForCheckpoint(messages, checkpoint)!;
+  expect(covered.segments).toHaveLength(1);
+  expect(covered.segments[0]!.key).toBe('checkpoint');
+  expect(covered.segments[0]!.text).toContain('retained facts');
+  expect(
+    bootstrapContextForCheckpoint(messages, {
+      ...checkpoint,
+      summary: 'new fact',
+    })!.segments[0]!.digest,
+  ).not.toBe(covered.segments[0]!.digest);
+});

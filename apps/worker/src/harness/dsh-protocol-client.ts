@@ -1,3 +1,8 @@
+import {
+  BootstrapCoverageResultSchema,
+  type BootstrapCoverageQuery,
+  type BootstrapReceipt,
+} from '@allrice/contracts';
 import type { DshCloseObservationDetails } from '@allrice/database';
 import type { SessionReferenceSnapshot } from '@allrice/contracts';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -237,6 +242,7 @@ export class DshProtocolClient {
     return {
       name: serverInfo.name,
       version: serverInfo.version,
+      bootstrapCoverage: record(result.capabilities)?.bootstrapCoverage === 1,
       skillRegistrationMs:
         typeof skillRegistrationMs === 'number' &&
         Number.isFinite(skillRegistrationMs) &&
@@ -252,11 +258,13 @@ export class DshProtocolClient {
     text: string,
     images: readonly HarnessImageInput[] = [],
     sessionReferences: readonly SessionReferenceSnapshot[] = [],
+    bootstrapReceipt?: BootstrapReceipt,
   ) {
     const result = await this.request('session/prompt', {
       sessionId,
       contentBlocks: [{ type: 'text', text }],
       images,
+      ...(bootstrapReceipt ? { bootstrapReceipt } : {}),
       ...(sessionReferences.length ? { sessionReferences } : {}),
     });
     if (typeof result.messageId !== 'string' || !result.messageId) {
@@ -340,6 +348,12 @@ export class DshProtocolClient {
             }
           : null,
     };
+  }
+
+  async bootstrapCoverage(sessionId: string, query: BootstrapCoverageQuery) {
+    return BootstrapCoverageResultSchema.parse(
+      await this.request('session/bootstrap-coverage', { sessionId, query }),
+    );
   }
 
   async recover(sessionId: string) {

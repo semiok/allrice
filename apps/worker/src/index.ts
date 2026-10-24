@@ -8,6 +8,7 @@ import { detectWorkerCapacity } from './worker-capacity.js';
 import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { createNativeRunDiagnosticsHttpHandler } from './native-run-diagnostics-http.js';
 
 import { UuidSchema, makeHealthResponse } from '@allrice/contracts';
 import {
@@ -400,7 +401,9 @@ function refreshDshRuntimeInventory() {
     });
 }
 
+const nativeRunDiagnosticsHttp = createNativeRunDiagnosticsHttpHandler();
 const server = createServer(async (request, response) => {
+  if (await nativeRunDiagnosticsHttp(request, response, stopping)) return;
   response.setHeader('content-type', 'application/json; charset=utf-8');
   if (/^[a-f0-9]{40}$/.test(process.env.ALLRICE_RELEASE_SHA ?? ''))
     response.setHeader(

@@ -9,6 +9,7 @@ import {
   FrozenMcpToolSchema,
   mcpCallIsReadOnly,
   McpCallInputSchema,
+  McpDescribeInputSchema,
   McpExecutionPayloadSchema,
   RuntimeActionBindingSchema,
   RuntimeOperationSnapshotSchema,
@@ -18,6 +19,7 @@ import {
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import { createMcpStore } from './mcp-connections.ts';
+import { managedMcpRunContext } from './mcp-managed-connections.ts';
 import {
   assertEmployeeMcpAuthorization,
   createEmployeeMcpBindingStore,
@@ -98,31 +100,24 @@ export function createMcpOperationLedger(
   );
 }
 
-/** The model chooses only an entry from this Run's already-frozen service tool
- * list. Job/Worker, target, credential revision and grant are server facts. */
-export async function createMcpRuntimeOperation(
+/** Shared selection for metadata reads and execution. This only reads the
+ * live Run and its exact frozen/current managed grant; it never creates an
+ * operation, resolves a credential or contacts the remote service. */
+async function resolveMcpRuntimeTool(
   input: {
     context: ExecutionContext;
-    arguments: unknown;
-    callId: string;
+    connectionId: string;
+    tool: string;
     assistant?: AssistantOperationOrigin;
   },
-  database: Database = getDatabase(),
+  database: Database,
 ) {
   if (!mcpExecutionEnabled())
     throw new RuntimePolicyError('runtime_policy_disabled');
-  const args = McpCallInputSchema.parse(input.arguments),
-    ctx = input.context,
+  const ctx = input.context,
     owner = ctx.policySnapshot.subjectId;
-  // Canonicalization rejects non-JSON, sparse arrays and non-finite values.
-  digest(args);
-  if (
-    !ctx.workspaceId ||
-    !input.callId ||
-    input.callId.length > 255 ||
-    Buffer.byteLength(JSON.stringify(args.arguments)) > 131072
-  )
-    throw new RuntimePolicyError('invalid_tool_call');
+  if (!ctx.workspaceId) throw new RuntimePolicyError('mcp_binding_denied');
+  const args = input;
   const [run] = await database<
     {
       project_id: string | null;
@@ -186,6 +181,72 @@ export async function createMcpRuntimeOperation(
     scope,
     tool,
   );
+  await assertEmployeeMcpAuthorization(
+    database,
+    scope,
+    tool,
+    run.employee_version_id,
+  );
+  return { run, scope, tool, endpoint };
+}
+
+/** Exact input metadata, not permission to execute. The actual call rechecks
+ * the same selection and all existing approval/lease/unknown-effect rules. */
+export async function describeMcpRuntimeTool(
+  input: { context: ExecutionContext; arguments: unknown },
+  database: Database = getDatabase(),
+) {
+  const args = McpDescribeInputSchema.parse(input.arguments);
+  await managedMcpRunContext(input.context, database);
+  const { tool } = await resolveMcpRuntimeTool(
+    { context: input.context, ...args },
+    database,
+  );
+  await managedMcpRunContext(input.context, database);
+  return {
+    connectionId: tool.connectionId,
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema,
+    schemaDigest: digest(tool.inputSchema),
+    risk: tool.risk,
+  };
+}
+
+/** The model chooses only an entry from this Run's already-frozen service tool
+ * list. Job/Worker, target, credential revision and grant are server facts. */
+export async function createMcpRuntimeOperation(
+  input: {
+    context: ExecutionContext;
+    arguments: unknown;
+    callId: string;
+    assistant?: AssistantOperationOrigin;
+  },
+  database: Database = getDatabase(),
+) {
+  if (!mcpExecutionEnabled())
+    throw new RuntimePolicyError('runtime_policy_disabled');
+  const args = McpCallInputSchema.parse(input.arguments),
+    ctx = input.context,
+    owner = ctx.policySnapshot.subjectId;
+  // Canonicalization rejects non-JSON, sparse arrays and non-finite values.
+  digest(args);
+  if (
+    !ctx.workspaceId ||
+    !input.callId ||
+    input.callId.length > 255 ||
+    Buffer.byteLength(JSON.stringify(args.arguments)) > 131072
+  )
+    throw new RuntimePolicyError('invalid_tool_call');
+  const { run, scope, tool, endpoint } = await resolveMcpRuntimeTool(
+    {
+      context: ctx,
+      connectionId: args.connectionId,
+      tool: args.tool,
+      ...(input.assistant ? { assistant: input.assistant } : {}),
+    },
+    database,
+  );
   const readOnly = mcpCallIsReadOnly({
     endpoint,
     tool,
@@ -193,12 +254,6 @@ export async function createMcpRuntimeOperation(
   });
   if (input.assistant && !readOnly)
     throw new RuntimePolicyError('assistant_mcp_read_only_required');
-  await assertEmployeeMcpAuthorization(
-    database,
-    scope,
-    tool,
-    run.employee_version_id,
-  );
   const payload = McpExecutionPayloadSchema.parse({
     capability: 'cloud.mcp.call',
     tool,

@@ -100,7 +100,15 @@ export function installSessionReferenceAdmission(ctx) {
           )
             throw new Error('SESSION_REFERENCE_INVALID_DURABLE_CONTEXT');
           return [
-            freezeMessage({ ...message, source: { kind: 'user' } }),
+            freezeMessage({
+              ...message,
+              source: {
+                kind: 'user',
+                ...(message.source.allriceBootstrap
+                  ? { allriceBootstrap: message.source.allriceBootstrap }
+                  : {}),
+              },
+            }),
             freezeMessage(context),
           ];
         }),

@@ -425,6 +425,179 @@ const schedulingTools: HarnessExecutionInput['tools'] = [
 ];
 
 describe('DshHarnessAdapter', () => {
+  it('does not attribute a replaced workflow prompt or its reply to inherited SQL message identities', async () => {
+    const runtime = await schedulingRuntime(['STEP_REPLY', 'CHAT_REPLY']);
+    const hash = (role: string, text: string) =>
+      `sha256:${createHash('sha256').update(JSON.stringify({ role, text })).digest('hex')}`;
+    const first = executionInput({
+      prompt: 'SYNTHETIC_STEP_INPUT',
+      provider: runtime.provider,
+    });
+    first.workDirectory = runtime.root;
+    first.tools = [];
+    const user = {
+      key: `user:${first.kernel.userMessageId}`,
+      digest: hash('user', 'ORIGINAL_SQL_INPUT'),
+    };
+    first.kernel.bootstrapContext = {
+      segments: [],
+      userMessage: user,
+      assistantMessageId: first.kernel.assistantMessageId ?? undefined,
+    };
+    try {
+      const a = await runtime.adapter.execute(first);
+      const next = executionInput({
+        prompt: 'FOLLOW_UP',
+        provider: runtime.provider,
+        sameSessionAs: first,
+        threadId: a.threadId,
+      });
+      next.workDirectory = runtime.root;
+      next.tools = [];
+      next.kernel.bootstrapContext = {
+        segments: [
+          { ...user, text: 'user: ORIGINAL_SQL_INPUT' },
+          {
+            key: `assistant:${first.kernel.assistantMessageId}`,
+            digest: hash('assistant', 'STEP_REPLY'),
+            text: 'assistant: STEP_REPLY',
+          },
+        ],
+      };
+      await runtime.adapter.execute(next);
+      const messages = runtime.requests[1]!.messages as {
+        role: string;
+        content: unknown;
+      }[];
+      const prompt = JSON.stringify(
+        messages.findLast(
+          (m) =>
+            m.role === 'user' &&
+            JSON.stringify(m.content).includes('FOLLOW_UP'),
+        ),
+      );
+      expect(prompt).toContain('ORIGINAL_SQL_INPUT');
+      expect(prompt).toContain('assistant: STEP_REPLY');
+    } finally {
+      await runtime.close();
+    }
+  }, 30_000);
+
+  it('uses adopted native coverage across Runs and imports a changed checkpoint without duplicating SQL messages', async () => {
+    const runtime = await schedulingRuntime([
+      'FIRST_REPLY',
+      'SECOND_REPLY',
+      'THIRD_REPLY',
+    ]);
+    const hash = (role: string, text: string) =>
+      `sha256:${createHash('sha256').update(JSON.stringify({ role, text })).digest('hex')}`;
+    const checkpoint = {
+      key: 'checkpoint',
+      digest: `sha256:${'a'.repeat(64)}`,
+      text: 'CHECKPOINT_ONE',
+    };
+    const old = {
+      key: `user:${randomUUID()}`,
+      digest: hash('user', 'OLD_MESSAGE'),
+      text: 'user: OLD_MESSAGE',
+    };
+    const first = executionInput({
+      prompt: 'FIRST_REQUEST',
+      provider: runtime.provider,
+    });
+    first.workDirectory = runtime.root;
+    first.tools = [];
+    first.kernel.bootstrapConversation = 'LEGACY_BOOTSTRAP_MUST_NOT_BE_USED';
+    first.kernel.bootstrapContext = {
+      segments: [checkpoint, old],
+      userMessage: {
+        key: `user:${first.kernel.userMessageId}`,
+        digest: hash('user', first.kernel.userRequest),
+      },
+      assistantMessageId: first.kernel.assistantMessageId ?? undefined,
+    };
+    try {
+      const a = await runtime.adapter.execute(first);
+      const second = executionInput({
+        prompt: 'SECOND_REQUEST',
+        provider: runtime.provider,
+        sameSessionAs: first,
+        threadId: a.threadId,
+      });
+      second.workDirectory = runtime.root;
+      second.tools = [];
+      second.kernel.bootstrapContext = {
+        segments: [
+          checkpoint,
+          old,
+          {
+            ...first.kernel.bootstrapContext!.userMessage!,
+            text: 'user: FIRST_REQUEST',
+          },
+          {
+            key: `assistant:${first.kernel.assistantMessageId}`,
+            digest: hash('assistant', a.answer),
+            text: `assistant: ${a.answer}`,
+          },
+        ],
+        userMessage: {
+          key: `user:${second.kernel.userMessageId}`,
+          digest: hash('user', second.kernel.userRequest),
+        },
+        assistantMessageId: second.kernel.assistantMessageId ?? undefined,
+      };
+      const b = await runtime.adapter.execute(second);
+      const third = executionInput({
+        prompt: 'THIRD_REQUEST',
+        provider: runtime.provider,
+        sameSessionAs: first,
+        threadId: b.threadId,
+      });
+      third.workDirectory = runtime.root;
+      third.tools = [];
+      third.kernel.bootstrapContext = {
+        ...second.kernel.bootstrapContext,
+        segments: [
+          {
+            ...checkpoint,
+            digest: `sha256:${'b'.repeat(64)}`,
+            text: 'CHECKPOINT_TWO',
+          },
+          ...second.kernel.bootstrapContext!.segments.slice(1),
+        ],
+      };
+      await runtime.adapter.execute(third);
+      const messages = runtime.requests.map(
+        (request) => request.messages as { role: string; content: unknown }[],
+      );
+      const lastUser = (index: number) =>
+        JSON.stringify(
+          messages[index]!.findLast(
+            (m) =>
+              m.role === 'user' &&
+              JSON.stringify(m.content).includes(
+                ['FIRST_REQUEST', 'SECOND_REQUEST', 'THIRD_REQUEST'][index]!,
+              ),
+          ),
+        );
+      expect(lastUser(0)).toContain('CHECKPOINT_ONE');
+      expect(lastUser(0)).toContain('OLD_MESSAGE');
+      expect(lastUser(0)).not.toContain('LEGACY_BOOTSTRAP');
+      expect(lastUser(1)).toContain('SECOND_REQUEST');
+      expect(lastUser(1)).not.toMatch(
+        /CHECKPOINT_ONE|OLD_MESSAGE|FIRST_REQUEST|FIRST_REPLY/,
+      );
+      expect(JSON.stringify(messages[1])).toContain('FIRST_REPLY'); // Retained in native history.
+      expect(lastUser(2)).toContain('CHECKPOINT_TWO');
+      expect(lastUser(2)).not.toMatch(
+        /CHECKPOINT_ONE|OLD_MESSAGE|FIRST_REQUEST|FIRST_REPLY/,
+      );
+      expect(runtime.requests).toHaveLength(3);
+    } finally {
+      await runtime.close();
+    }
+  }, 30_000);
+
   it('checks plain completion authority once after the native reply while retaining both dispatch checks and an available tool directory', async () => {
     const diagnostics = vi.spyOn(console, 'info').mockImplementation(() => {});
     const runtime = await schedulingRuntime(['SYNTHETIC_REMINDER']);

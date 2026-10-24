@@ -641,3 +641,26 @@ PDF/Excel将现有LoadingIndicator传给真实原生正文的必需loading注入
 复用固定 `ui-chat@0.2.1-rc.2` 的四档 presentation policy 和当前答案代次的手动开合规则；来源与必要 import 适配记录在 UI 账本。先验证原生模块注册及完整插件的注入契约：现有 SaaS 外壳没有原生 `uiSession/uiConversation/configForms` 服务，不能只加载 bundle 就获得完整聊天宿主。继续沿用既有源码适配边界，把公开的 Run、答案代次、最终回复、已采纳插话及真正进入下一轮的输入投影给原生策略，不为阅读偏好新增一套 Session 或执行宿主。
 
 `fontSize/transcriptView/collapseTiming` 与原有 `streamingOutput` 共用 `/api/v1/me/preferences` 和认证用户主键。PATCH 原子更新实际提交的字段，旧客户端的单一流式开关保存不重置新字段；默认正文14px、详细、回答结束后。正文字体复用现有原生 theme token，派生变量在会话边界重算；代码11px和终端13px保留原生默认，不提供配置。设置菜单移除经验记录，经验能力与正式工作台入口不变。以上均为展示偏好，不更改模型执行配置、权限或工具记录。
+
+## MET200：原生上下文覆盖与按需工具参数（2026-10-24）
+
+继续固定 DSH `0.2.1-rc.2`、官方 commit
+`687f282e8625c6b8d11ff58211a90524be2e4317`；没有新增上游补丁或替换依赖。
+`allrice-jsonrpc-lifecycle-v1` 增加窄的 `session/bootstrap-coverage` 能力：从公开
+`Session.snapshotEvents()` 读取已采纳消息的 AllRice 来源摘要，按原会话、代际、
+SQL 消息 ID 和内容匹配。压缩及冷恢复仍由原生 SDK/persistence 负责，无第二份历史
+或摘要存储。未确认覆盖的历史保守导入，工作流步骤不冒充整段聊天，仓库修复与审核
+保留原有历史隔离；旧 artifact 未声明此能力时沿用原 bootstrap 行为。
+
+`allrice-managed-native-mcp-public-v2` 的父级工具增加只读 `describe` action。
+完整目录保留名称、描述、风险和 schema 摘要；精确参数按需经过原有 frozen/current
+授权选择取得，执行仍重新检查批准和未知效果。必须实际验证批准 carrier 同时支持
+该输入和工具声明；旧 carrier 保留完整 schema。子助手的已冻结只读执行边界不扩大，
+由主员工查询后传入精确 schema。schema 变化继续使运行配置指纹失效。
+
+后台 Run 诊断只复用对应批准 artifact 的公开 persistence `open(id, 'read')`、
+`handle.read()` 与 `expandAssistantStream()`，从 SQL 的原生回执定位确切 Run 切片。
+不启动 SDK/Agent，不建索引或迁移 journal，不合成缺失 turn 结束；只返回事件类别、
+时间、次数和用量，隐藏内容、思考、工具参数/结果及路径。缺失或不支持的原生事实
+保留 unavailable/partial，供应商 wire 时间仍为 unknown。新 adapter 内容必须独立
+测量、批准并通过 Dev 验证；保留的旧原生包和其存储不随本次变更重绑。

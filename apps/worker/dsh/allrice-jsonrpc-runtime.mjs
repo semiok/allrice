@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { readBootstrapCoverage } from './allrice-bootstrap-coverage.mjs';
+import { BootstrapReceiptSchema } from '@allrice/contracts/native-runtime';
 import {
   PersonalSkillPinSchema,
   ExperienceSourceHandleSchema,
@@ -1030,20 +1032,29 @@ class AllRiceHarnessSdkJsonRpcServer extends AllRiceSdkRoot {
       : [];
     const contentBlocks = [...(params.contentBlocks ?? []), ...imageBlocks];
     const record = await this.ensureRoot(params.sessionId);
-    if (!params.sessionReferences?.length) {
+    if (!params.sessionReferences?.length && !params.bootstrapReceipt) {
       this.assertRoot(record, params.sessionId);
       return this.sdk.prompt({ ...params, contentBlocks });
     }
     this.assertRoot(record, params.sessionId);
     const agent = record.agent;
-    const context = await prepareSessionReferenceContext(
-      agent,
-      params.sessionReferences,
-    );
+    const context = params.sessionReferences?.length
+      ? await prepareSessionReferenceContext(agent, params.sessionReferences)
+      : undefined;
     this.assertRoot(record, params.sessionId);
     const message = createUserMessage({
       content: contentBlocks,
-      source: { kind: 'user', allriceSessionReference: context },
+      source: {
+        kind: 'user',
+        ...(context ? { allriceSessionReference: context } : {}),
+        ...(params.bootstrapReceipt
+          ? {
+              allriceBootstrap: BootstrapReceiptSchema.parse(
+                params.bootstrapReceipt,
+              ),
+            }
+          : {}),
+      },
     });
     agent.followup(message);
     return { messageId: message.id };
@@ -1156,6 +1167,7 @@ class AllRiceHarnessSdkJsonRpcServer extends AllRiceSdkRoot {
         recover: true,
         close: true,
         allriceCloseEvidence: 1,
+        bootstrapCoverage: 1,
       },
     };
   }
@@ -1864,6 +1876,12 @@ class AllRiceHarnessSdkJsonRpcServer extends AllRiceSdkRoot {
           params,
           () => this.prompt(params),
         );
+      case 'session/bootstrap-coverage': {
+        const sessionId = requiredSessionId(params);
+        const record = this.roots.get(sessionId);
+        if (record) this.assertRoot(record, sessionId);
+        return readBootstrapCoverage(record?.agent.session, params.query);
+      }
       case 'session/projection':
         return this.sessionProjection(params);
       case 'session/recover':

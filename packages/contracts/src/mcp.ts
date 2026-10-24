@@ -203,8 +203,16 @@ export const McpCallInputSchema = z
     arguments: z.record(z.string(), z.unknown()),
   })
   .strict();
+/** Metadata lookup is bounded to one exact tool; it cannot execute a call. */
+export const McpDescribeInputSchema = McpCallInputSchema.pick({
+  connectionId: true,
+  tool: true,
+})
+  .extend({ action: z.literal('describe') })
+  .strict();
 /** Credentials belong in the signed-in connection form, never model inputs. */
 export const McpManagedActionSchema = z.discriminatedUnion('action', [
+  McpDescribeInputSchema,
   z
     .object({
       action: z.literal('connect'),
