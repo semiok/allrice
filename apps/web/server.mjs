@@ -1,5 +1,5 @@
 import { createCloudProjectPreviewTransport } from './server/cloud-project-preview.mjs';
-import { checkPortalHostConfiguration } from './server/portal-hosts.mjs';
+import { portalEntries } from './server/portal-hosts.mjs';
 import {
   cloudArchitectureTranslationProblem,
   runtimeFeatureEnabled,
@@ -88,6 +88,9 @@ export async function startAllRiceWeb({
     httpServer: server,
   });
   await app.prepare();
+  // After prepare, so Next's .env files count: a malformed or conflicting portal
+  // host list stops startup here (requests refuse it too, in any start mode).
+  portalEntries();
   const handle = createDevRequestHandler(lifecycle, app.getRequestHandler());
   server.on('request', (req, res) => {
     void handle(req, res).catch(() => {
@@ -161,8 +164,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const i = args.indexOf(name);
     return i < 0 ? fallback : args[i + 1];
   };
-  // A malformed or conflicting portal host list stops startup, not a request.
-  checkPortalHostConfiguration();
   // Same check as the Worker: Web also derives cloud profiles from the host CPU.
   if (runtimeFeatureEnabled('ALLRICE_CLOUD_RUNNER_ENABLED')) {
     const problem = cloudArchitectureTranslationProblem();
