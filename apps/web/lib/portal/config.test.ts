@@ -7,7 +7,7 @@ import {
   resolvePortal,
   tenantTrialPortal,
 } from './config';
-import { checkPortalHostConfiguration } from '../../server/portal-hosts.mjs';
+import { portalEntries } from '../../server/portal-hosts.mjs';
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -58,12 +58,32 @@ describe('portal hosts', () => {
     );
     for (const value of ['[2001:db8::1]:8443', 'A.b:443', '[::1]', '::1'])
       expect(normalizeHost(normalizeHost(value))).toBe(normalizeHost(value));
+    // Equivalent spellings of one address are one host.
+    vi.stubEnv(
+      'ALLRICE_EMPLOYEE_PORTAL_HOSTS',
+      '[2001:db8::1]:8443,::ffff:1.2.3.4',
+    );
+    for (const host of [
+      '[2001:0db8:0:0:0:0:0:1]:8443',
+      '[2001:DB8::1]',
+      '[::ffff:1.2.3.4]',
+      '[::ffff:102:304]',
+    ])
+      expect(portalAccountKind(host)).toBe('employee');
+    expect(portalAccountKind('a.bplabs.xyz/x')).toBeUndefined();
   });
   it('refuses malformed and conflicting entries', () => {
     for (const bad of [
       'rice.example.com/path',
+      'rice.example.com/path/..',
       'https://rice.example.com',
       'u@rice.example.com',
+      '@rice.example.com',
+      '*.example.com',
+      'rice.example.com:0',
+      'rice.example.com:70000',
+      '[2001:db8::g]',
+      '999.1.1.1',
     ]) {
       vi.stubEnv('ALLRICE_EMPLOYEE_PORTAL_HOSTS', bad);
       expect(() => isUnifiedPortalHost('rice.example.com')).toThrow(
@@ -71,18 +91,23 @@ describe('portal hosts', () => {
       );
     }
     expect(() =>
-      checkPortalHostConfiguration({
+      portalEntries({
         ALLRICE_EMPLOYEE_PORTAL_HOSTS: 'a.bplabs.xyz',
         ALLRICE_ADMIN_PORTAL_HOSTS: 'A.bplabs.xyz:8443',
       }),
     ).toThrow(/a\.bplabs\.xyz/);
+    // Built-in entries count on both sides.
+    for (const env of [
+      { ALLRICE_ADMIN_PORTAL_HOSTS: 'allrice.bplabs.xyz' },
+      { ALLRICE_EMPLOYEE_PORTAL_HOSTS: 'allrice-admin.bplabs.xyz' },
+      { ALLRICE_EMPLOYEE_PORTAL_HOSTS: 'allrice-dsh.traditionow.ai' },
+    ])
+      expect(() => portalEntries(env)).toThrow(/both employee and admin/);
+    // A conflicting list refuses requests too, whatever started the server.
+    vi.stubEnv('ALLRICE_EMPLOYEE_PORTAL_HOSTS', 'allrice-admin.bplabs.xyz');
+    expect(() => portalAccountKind('allrice-admin.bplabs.xyz')).toThrow();
     expect(() =>
-      checkPortalHostConfiguration({
-        ALLRICE_ADMIN_PORTAL_HOSTS: 'allrice.bplabs.xyz',
-      }),
-    ).toThrow();
-    expect(() =>
-      checkPortalHostConfiguration({
+      portalEntries({
         ALLRICE_EMPLOYEE_PORTAL_HOSTS: 'a.bplabs.xyz',
         ALLRICE_ADMIN_PORTAL_HOSTS: 'a-admin.bplabs.xyz',
       }),

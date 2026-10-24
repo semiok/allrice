@@ -1,5 +1,10 @@
 import { safeNavigationQuery } from './navigation-query';
-import { configuredPortalEntries } from '../../server/portal-hosts.mjs';
+import {
+  builtInAdminHosts,
+  builtInEmployeeHosts,
+  canonicalHost,
+  portalEntries,
+} from '../../server/portal-hosts.mjs';
 export type PortalKind = 'platform_admin' | 'tenant';
 
 export interface PortalDefinition {
@@ -28,12 +33,7 @@ const definitions: readonly PortalDefinition[] = [
     kind: 'platform_admin',
     title: 'Allrice 管理后台',
     subtitle: '使用管理员账号登录，管理公司、员工与平台配置。',
-    hosts: [
-      'allrice-admin.bplabs.xyz',
-      'allrice-admin.traditionow.ai',
-      'allrice-dsh.bplabs.xyz',
-      'allrice-dsh.traditionow.ai',
-    ],
+    hosts: builtInAdminHosts,
     username: process.env.ALLRICE_PLATFORM_ADMIN_USER ?? 'admin',
     passwordEnvironmentVariable: 'ALLRICE_PLATFORM_ADMIN_PASSWORD',
     homePath: '/runtime-console',
@@ -102,48 +102,45 @@ export function portalAuthEnabled() {
   return process.env.ALLRICE_PORTAL_AUTH_ENABLED === '1';
 }
 
-/** Hostname without brackets or port; idempotent, so a normalized value (a bare
- * IPv6 address included) normalizes to itself. */
+/** Canonical hostname without brackets or port, compared the same way as the
+ * configured entries; idempotent, so a normalized value normalizes to itself. */
 export function normalizeHost(value: string | null | undefined) {
   if (!value) return '';
   const first = value.split(',')[0]?.trim().toLowerCase() ?? '';
-  if (first.startsWith('[')) {
-    const end = first.indexOf(']');
-    return end >= 0 ? first.slice(1, end) : first;
-  }
-  // More than one colon: a bare IPv6 address, which carries no port.
-  if (first.indexOf(':') !== first.lastIndexOf(':')) return first;
-  return first.split(':')[0] ?? '';
+  // [IPv6]:port; a bare IPv6 address (more than one colon, no port); name:port.
+  const host = first.startsWith('[')
+    ? first.slice(0, first.indexOf(']') + 1 || undefined)
+    : first.indexOf(':') !== first.lastIndexOf(':')
+      ? `[${first}]`
+      : (first.split(':')[0] ?? '');
+  return canonicalHost(host);
 }
 
-const configuredHosts = (variable: string) =>
-  configuredPortalEntries(variable).map((entry) => entry.host);
+const employeeHosts = () => [
+  ...builtInEmployeeHosts,
+  ...portalEntries().employee.map((entry) => entry.host),
+];
+const adminHosts = () => portalEntries().admin.map((entry) => entry.host);
 
 /** Where this deployment's employees sign in: its first configured entry (with its
  * port), else the shared allrice.bplabs.xyz. */
 export const employeePortalAuthority = () =>
-  configuredPortalEntries('ALLRICE_EMPLOYEE_PORTAL_HOSTS')[0]?.authority ??
-  'allrice.bplabs.xyz';
+  portalEntries().employee[0]?.authority ?? 'allrice.bplabs.xyz';
 
 /** Where this deployment's platform admins sign in. */
 export const adminPortalAuthority = () =>
-  configuredPortalEntries('ALLRICE_ADMIN_PORTAL_HOSTS')[0]?.authority ??
-  'allrice-admin.bplabs.xyz';
+  portalEntries().admin[0]?.authority ?? 'allrice-admin.bplabs.xyz';
 
 /** The shared employee entry: allrice.bplabs.xyz, plus the hosts a deployment lists
  * in ALLRICE_EMPLOYEE_PORTAL_HOSTS (its own domain; comma separated). */
 export function isEmployeePortalHost(host: string | null | undefined) {
-  const value = normalizeHost(host);
-  return (
-    value === 'allrice.bplabs.xyz' ||
-    configuredHosts('ALLRICE_EMPLOYEE_PORTAL_HOSTS').includes(value)
-  );
+  return employeeHosts().includes(normalizeHost(host));
 }
 
 /** A portal's hostnames; the admin portal also takes ALLRICE_ADMIN_PORTAL_HOSTS. */
 const portalHosts = (portal: PortalDefinition) =>
   portal.kind === 'platform_admin'
-    ? [...portal.hosts, ...configuredHosts('ALLRICE_ADMIN_PORTAL_HOSTS')]
+    ? [...portal.hosts, ...adminHosts()]
     : portal.hosts;
 
 /** The shared entry never selects a person or organization from its hostname. */
@@ -240,8 +237,8 @@ export function legacyPortalNavigation(request: {
   // entries, are served here rather than moved.
   if (
     host === 'allrice-admin.bplabs.xyz' ||
-    configuredHosts('ALLRICE_EMPLOYEE_PORTAL_HOSTS').includes(host) ||
-    configuredHosts('ALLRICE_ADMIN_PORTAL_HOSTS').includes(host)
+    employeeHosts().includes(host) ||
+    adminHosts().includes(host)
   )
     return null;
   const url = new URL(request.url);
