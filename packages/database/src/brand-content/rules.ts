@@ -64,10 +64,23 @@ export function assertBrandContentAuthority(
     if (authority !== 'scheduler') brandContentFail('authority_denied');
   } else if (authority === 'scheduler') brandContentFail('authority_denied');
   if (
-    ['topics.decide', 'article.review', 'receipt.record'].includes(
-      action.operation,
-    ) &&
+    [
+      'topics.decide',
+      'article.review',
+      'receipt.record',
+      'feedback.record',
+      'experience.propose',
+      'experience.review',
+    ].includes(action.operation) &&
     authority !== 'user'
+  )
+    brandContentFail('authority_denied');
+  if (action.operation === 'retrospective.save' && authority !== 'workflow')
+    brandContentFail('authority_denied');
+  if (
+    'experienceUses' in action &&
+    action.experienceUses?.length &&
+    authority !== 'workflow'
   )
     brandContentFail('authority_denied');
   if (authority === 'workflow' && !action.workflow)

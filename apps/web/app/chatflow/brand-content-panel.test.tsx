@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
 import {
   BrandContentBoardSchema,
+  BrandFeedbackInputSchema,
   type BrandContentBoard,
   type WorkflowPackage,
 } from '@allrice/contracts';
@@ -610,6 +611,15 @@ browserSuite(
             });
             board.brand.contextRevisionId = id(50);
             board.brand.revision++;
+          } else if (input.operation === 'feedback.record') {
+            board.feedback = [
+              {
+                ...BrandFeedbackInputSchema.strip().parse(input),
+                id: id(70),
+                digest: digest('a'),
+                createdAt: now,
+              },
+            ];
           } else if (input.operation === 'article.review') {
             board.articles[0]!.state = 'changes_requested';
             board.articles[0]!.revision++;
@@ -693,7 +703,13 @@ browserSuite(
         await page.goto(origin);
         const dialog = page.getByRole('dialog', { name: '内容工作台' });
         await dialog.getByLabel('品牌名称').waitFor();
-        for (const label of ['品牌资料', '选题', '稿件', '排期与回执']) {
+        for (const label of [
+          '品牌资料',
+          '选题',
+          '稿件',
+          '排期与回执',
+          '反馈与经验',
+        ]) {
           await dialog
             .getByRole('button', { name: label, exact: true })
             .click();
@@ -722,6 +738,128 @@ browserSuite(
           .click();
         if (width === 390)
           await page.screenshot({ path: '/tmp/met194-brand-content-390.png' });
+        await page.close();
+      }
+    }, 30000);
+
+    it('records an external metric snapshot with unknown fields, preserves a draft on refresh and rereads the saved source on mobile', async () => {
+      Object.assign(board, boardFixture(), {
+        feedback: [],
+        unavailableFeedbackSources: true,
+      });
+      const page = await browser.newPage({
+        viewport: { width: 390, height: 844 },
+      });
+      try {
+        await page.goto(origin);
+        const dialog = page.getByRole('dialog', { name: '内容工作台' });
+        const openFeedback = async () => {
+          await dialog
+            .getByRole('button', { name: '反馈与经验', exact: true })
+            .click();
+          await dialog.getByText('录入发布反馈', { exact: true }).click();
+        };
+        await openFeedback();
+        await dialog
+          .getByText(
+            '部分历史反馈的附件已不可用，相关反馈、复盘和经验已隐藏。仍可使用其他有效资料。',
+            { exact: true },
+          )
+          .waitFor();
+        await dialog
+          .getByLabel('发布内容标题', { exact: true })
+          .fill('合成 UI 反馈样本');
+        await dialog.getByLabel('平台', { exact: true }).fill('Bilibili');
+        await dialog
+          .getByLabel('公开发布链接', { exact: true })
+          .fill('https://www.bilibili.com/video/BV1synthetic/');
+        await dialog
+          .getByLabel('实际发布时间（本地时间）', { exact: true })
+          .fill('2026-01-01T10:00');
+        await dialog
+          .getByLabel('指标采样时间（本地时间）', { exact: true })
+          .fill('2026-01-02T10:00');
+        await dialog
+          .getByLabel('数据来源链接', { exact: true })
+          .fill('https://api.bilibili.com/x/web-interface/view?bvid=synthetic');
+        await dialog.getByLabel('点赞', { exact: true }).fill('0');
+        await dialog.getByLabel('收藏', { exact: true }).fill('2');
+        await dialog
+          .getByLabel('来源说明与观测证据', { exact: true })
+          .fill('仅用于 UI 测试的合成观测数据。');
+        await dialog
+          .getByLabel('数据局限', { exact: true })
+          .fill('阅读量未知，不能判断效果或转化。');
+        await page.reload();
+        await openFeedback();
+        expect(
+          await dialog.getByLabel('发布内容标题', { exact: true }).inputValue(),
+        ).toBe('合成 UI 反馈样本');
+        expect(
+          await dialog.getByLabel('点赞', { exact: true }).inputValue(),
+        ).toBe('0');
+        expect(
+          await dialog.getByLabel('阅读 / 播放', { exact: true }).inputValue(),
+        ).toBe('');
+        const previousReads = reads;
+        await dialog
+          .getByRole('button', { name: '保存反馈快照', exact: true })
+          .click();
+        await dialog
+          .getByText('反馈快照已保存，未知指标保持未知。', { exact: true })
+          .waitFor();
+        expect(posts.at(-1)).toMatchObject({
+          operation: 'feedback.record',
+          publicationKind: 'imported_publication',
+          metrics: {
+            views: null,
+            likes: 0,
+            comments: null,
+            shares: null,
+            saves: 2,
+          },
+          sourceType: 'public_page',
+        });
+        expect(posts.at(-1)).not.toHaveProperty('receiptId');
+        expect(reads).toBeGreaterThan(previousReads);
+        await dialog
+          .getByLabel('选择复盘样本 合成 UI 反馈样本', { exact: true })
+          .waitFor();
+        expect(
+          await dialog
+            .getByText(
+              '阅读 / 播放：未知 · 点赞：0 · 评论：未知 · 分享：未知 · 收藏：2',
+              { exact: true },
+            )
+            .count(),
+        ).toBe(1);
+        expect(
+          await dialog
+            .getByRole('link', { name: '查看数据来源', exact: true })
+            .getAttribute('href'),
+        ).toBe('https://api.bilibili.com/x/web-interface/view?bvid=synthetic');
+        expect(
+          await dialog
+            .getByRole('button', { name: '复盘选中样本（0）', exact: true })
+            .isDisabled(),
+        ).toBe(true);
+        await dialog
+          .getByLabel('选择复盘样本 合成 UI 反馈样本', { exact: true })
+          .check();
+        board.feedback = [];
+        await dialog.getByRole('button', { name: '刷新', exact: true }).click();
+        await dialog
+          .getByText('还没有发布反馈。先录入真实来源和采样时间。', {
+            exact: true,
+          })
+          .waitFor();
+        expect(
+          await dialog
+            .getByRole('button', { name: '复盘选中样本（0）', exact: true })
+            .isDisabled(),
+        ).toBe(true);
+      } finally {
+        delete board.unavailableFeedbackSources;
         await page.close();
       }
     }, 30000);

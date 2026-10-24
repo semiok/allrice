@@ -1,4 +1,14 @@
-import { ExperienceReadPinsSchema } from '@allrice/contracts';
+import {
+  ExperienceReadPinsSchema,
+  BrandContentWorkflowInvocationSchema,
+  BrandFeedbackInputSchema,
+  BrandContextContentSchema,
+  BrandContentFileRefSchema,
+  type Membership,
+} from '@allrice/contracts';
+import { BrandContentError } from '../brand-content/rules.ts';
+import type { BrandContentIdentity } from '../brand-content/types.ts';
+import { ArtifactReviewError } from '../artifact-review.ts';
 import { assertExperienceReadPins } from '../experience-adoption.ts';
 import { ExperienceError } from '../experience.ts';
 import {
@@ -37,6 +47,7 @@ import { runtimePolicyDigest } from '../runtime-policy.ts';
 import {
   getEmployeeInstance,
   readEmployeeVersionPublication,
+  EmployeeInstanceError,
 } from './employee-instances.ts';
 import { resolveEmployeeContentSource } from './employee-content-sources.ts';
 import {
@@ -270,17 +281,125 @@ type ContentContextRow = {
   invalidated_at: Date | null;
 };
 type PersonalProvenance = {
+  brand_workflow: unknown;
   experience_reads: unknown;
   personal_skills: unknown;
   has_personal_skills: boolean;
   personal_instance_id: string | null;
   native_personal_pins: { id: string; personal: unknown }[] | null;
 };
+function brandInvocation(raw: unknown) {
+  if (raw === null || raw === undefined) return null;
+  const parsed = BrandContentWorkflowInvocationSchema.safeParse(raw);
+  if (!parsed.success) return unavailable();
+  return parsed.data;
+}
+function brandContextKey(raw: unknown) {
+  const invocation = brandInvocation(raw);
+  return invocation
+    ? runtimePolicyDigest({
+        instanceId: invocation.instanceId,
+        brandId: invocation.input.brandId,
+        contextRevisionId: invocation.input.contextRevisionId,
+        platform: invocation.input.platform,
+        campaignKey: invocation.input.context.campaign?.key ?? null,
+      })
+    : null;
+}
+
+async function assertBrandProvenance(
+  reader: ContentIdentity,
+  row: PersonalProvenance,
+  sql: ContentSql,
+) {
+  const invocation = brandInvocation(row.brand_workflow);
+  if (!invocation) return;
+  if (
+    invocation.instanceId !== row.personal_instance_id ||
+    reader.actor.type !== 'user' ||
+    !reader.workspaceId
+  )
+    return unavailable();
+  try {
+    await getEmployeeInstance(reader, invocation.instanceId, sql);
+    const sources = await brandSourceSessions(
+      {
+        organizationId: reader.organizationId,
+        workspaceId: reader.workspaceId,
+      },
+      row.brand_workflow,
+      sql,
+    );
+    if (sources.sessions.length) {
+      const active = await sql<
+        { id: string }[]
+      >`select id from allrice_chat_sessions
+        where id in ${sql(sources.sessions)} and organization_id=${reader.organizationId}
+          and workspace_id=${reader.workspaceId} and owner_id=${reader.actor.id}
+          and coalesce(employee_instance_id,employee_assignment_id)=${invocation.instanceId}
+          and archived_at is null`;
+      // Owners can still view archived provenance in the board, but a new
+      // dispatch or native summary must not reuse its derived business text.
+      if (active.length !== sources.sessions.length) return unavailable();
+    }
+    const memberships = await sql<
+      {
+        id: string;
+        workspace_id: string | null;
+        role: Membership['role'];
+      }[]
+    >`select id,workspace_id,role from allrice_memberships
+      where organization_id=${reader.organizationId} and user_id=${reader.actor.id}
+        and active and (workspace_id is null or workspace_id=${reader.workspaceId}) order by id`;
+    // Legacy uploaded-file reads still take ResourcePrincipal. Rehydrate its
+    // real memberships; do not manufacture a browser session/authentication.
+    const who = {
+      ...reader,
+      requestId: invocation.startId,
+      memberships: memberships.map((m) => ({
+        id: m.id,
+        userId: reader.actor.id,
+        organizationId: reader.organizationId,
+        workspaceId: m.workspace_id,
+        role: m.role,
+        active: true,
+      })),
+    };
+    // The domain readers use only the query/json interface shared by Sql and
+    // TransactionSql. Dispatch/compaction call this with the locked transaction;
+    // an unlocked reference preview is rechecked by that gate before dispatch.
+    const { assertBrandFeedbackInput } =
+      await import('../brand-content/feedback.ts');
+    await assertBrandFeedbackInput(
+      sql as ContentTx,
+      who as BrandContentIdentity,
+      {
+        organizationId: reader.organizationId,
+        workspaceId: reader.workspaceId,
+        ownerId: reader.actor.id,
+        instanceId: invocation.instanceId,
+      },
+      invocation.input,
+    );
+  } catch (error) {
+    if (
+      error instanceof BrandContentError ||
+      error instanceof ArtifactReviewError ||
+      error instanceof DataAccessError ||
+      error instanceof EmployeeInstanceError ||
+      error instanceof ZodError
+    )
+      return unavailable();
+    throw error;
+  }
+}
+
 async function assertPersonalProvenance(
   reader: ContentIdentity,
   row: PersonalProvenance,
   sql: ContentSql,
 ) {
+  await assertBrandProvenance(reader, row, sql);
   try {
     await assertExperienceReadPins(reader, row.experience_reads, sql);
   } catch (error) {
@@ -315,7 +434,7 @@ function identity(scope: RunScope): ContentIdentity {
 async function ownedRun(scope: RunScope, sql: ContentSql) {
   const [row] = await sql<
     RunRow[]
-  >`select er.experience_reads,er.execution_snapshot ? 'personalSkills' as has_personal_skills,er.execution_snapshot->'instance'->>'id' as personal_instance_id,(select jsonb_agg(jsonb_build_object('id',n->'id','personal',n->'personal')) from jsonb_array_elements(er.native_skills) n where n ? 'personal') as native_personal_pins,er.execution_snapshot->'personalSkills' as personal_skills,er.execution_snapshot->'content' as content,
+  >`select er.execution_snapshot->'workflowInvocation' brand_workflow,er.experience_reads,er.execution_snapshot ? 'personalSkills' as has_personal_skills,er.execution_snapshot->'instance'->>'id' as personal_instance_id,(select jsonb_agg(jsonb_build_object('id',n->'id','personal',n->'personal')) from jsonb_array_elements(er.native_skills) n where n ? 'personal') as native_personal_pins,er.execution_snapshot->'personalSkills' as personal_skills,er.execution_snapshot->'content' as content,
       er.content_generation_id,er.content_scene_state,er.reference_reads,er.prompt_snapshot->>'userRequest' as user_request,er.user_message_id,er.prompt_snapshot->'sessionReferences' as session_references,er.prompt_snapshot->'referenceSelections' as reference_selections
     from allrice_employee_runs er join allrice_chat_sessions s on s.id=er.session_id
     where er.run_id=${scope.runId} and er.session_id=${scope.sessionId}
@@ -323,6 +442,98 @@ async function ownedRun(scope: RunScope, sql: ContentSql) {
       and s.owner_id=er.owner_id and s.organization_id=er.organization_id and s.workspace_id=er.workspace_id and s.archived_at is null`;
   if (!row) return unavailable();
   return row;
+}
+
+/** Discover only this invocation's immutable business references before taking
+ * the shared Session locks. Source ACL reads must never lock an unseen Session
+ * after the generation lock (including files produced in another Session). */
+async function brandSourceSessions(
+  scope: Pick<RunScope, 'organizationId' | 'workspaceId'>,
+  raw: unknown,
+  sql: ContentSql,
+) {
+  const invocation = brandInvocation(raw);
+  if (!invocation) return { instanceId: null, sessions: [] as string[] };
+  const sessions = new Set<string>(),
+    contextIds = new Set([invocation.input.contextRevisionId]),
+    feedbackIds = new Set((invocation.input.feedback ?? []).map((f) => f.id)),
+    objectIds = new Set<string>();
+  const reports = (invocation.input.experiences ?? []).map(
+    (e) => e.retrospectiveId,
+  );
+  if (reports.length) {
+    const rows = await sql<
+      { session_id: string; context_id: string; feedback_ids: string[] }[]
+    >`
+      select session_id,context_id,feedback_ids from allrice_brand_content_retrospectives
+      where id in ${sql(reports)} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
+        and instance_id=${invocation.instanceId} and brand_id=${invocation.input.brandId}`;
+    for (const row of rows) {
+      sessions.add(row.session_id);
+      contextIds.add(row.context_id);
+      for (const id of row.feedback_ids) feedbackIds.add(id);
+    }
+  }
+  const receiptIds = new Set<string>();
+  if (feedbackIds.size) {
+    const rows = await sql<
+      { content: unknown }[]
+    >`select content from allrice_brand_content_feedback
+      where id in ${sql([...feedbackIds])} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
+        and instance_id=${invocation.instanceId} and brand_id=${invocation.input.brandId}`;
+    for (const row of rows) {
+      const parsed = BrandFeedbackInputSchema.safeParse(row.content);
+      if (!parsed.success) return unavailable();
+      contextIds.add(parsed.data.contextRevisionId);
+      for (const file of parsed.data.evidenceFiles)
+        objectIds.add(file.objectId);
+      if (parsed.data.receiptId) receiptIds.add(parsed.data.receiptId);
+    }
+  }
+  if (receiptIds.size) {
+    const rows = await sql<
+      {
+        session_id: string;
+        context_id: string;
+        evidence_files: unknown[];
+        content: unknown;
+        images: { file: unknown }[];
+      }[]
+    >`select a.session_id,a.context_id,r.evidence_files,b.content,b.images
+      from allrice_brand_content_receipts r
+      join allrice_brand_content_plans p on p.id=r.plan_id and p.brand_id=r.brand_id
+      join allrice_brand_content_articles a on a.id=p.article_id and a.brand_id=r.brand_id
+      join allrice_brand_content_bundles b on b.id=p.bundle_id and b.article_id=a.id
+      where r.id in ${sql([...receiptIds])} and r.organization_id=${scope.organizationId} and r.workspace_id=${scope.workspaceId}
+        and r.instance_id=${invocation.instanceId} and r.brand_id=${invocation.input.brandId}`;
+    for (const row of rows) {
+      sessions.add(row.session_id);
+      contextIds.add(row.context_id);
+      for (const raw of [
+        ...row.evidence_files,
+        row.content,
+        ...row.images.map((image) => image.file),
+      ])
+        objectIds.add(BrandContentFileRefSchema.parse(raw).objectId);
+    }
+  }
+  const contexts = await sql<
+    { content: unknown }[]
+  >`select content from allrice_brand_content_contexts
+    where id in ${sql([...contextIds])} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
+      and instance_id=${invocation.instanceId} and brand_id=${invocation.input.brandId}`;
+  for (const row of contexts)
+    for (const file of BrandContextContentSchema.parse(row.content).sourceFiles)
+      objectIds.add(file.objectId);
+  if (objectIds.size) {
+    const rows = await sql<
+      { session_id: string }[]
+    >`select distinct session_id from allrice_deliverable_versions
+      where object_id in ${sql([...objectIds])} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
+        and session_id is not null`;
+    for (const row of rows) sessions.add(row.session_id);
+  }
+  return { instanceId: invocation.instanceId, sessions: [...sessions].sort() };
 }
 
 /** Discover immutable dependencies before acquiring locks. Never acquire a new
@@ -339,8 +550,14 @@ async function contentGraph(scope: RunScope, sql: ContentSql) {
     messages = new Set<string>();
   const nodes = new Map<string, unknown>();
   const add = async (
-    row: Pick<RunRow, 'content' | 'personal_skills' | 'session_references'>,
+    row: Pick<
+      RunRow,
+      'content' | 'personal_skills' | 'session_references' | 'brand_workflow'
+    >,
   ) => {
+    const brand = await brandSourceSessions(scope, row.brand_workflow, sql);
+    if (brand.instanceId) instances.add(brand.instanceId);
+    for (const id of brand.sessions) sessions.add(id);
     if (row.content) {
       const parsed = EmployeeRuntimeContentSchema.safeParse(row.content);
       if (!parsed.success) return unavailable();
@@ -379,7 +596,7 @@ async function contentGraph(scope: RunScope, sql: ContentSql) {
         | 'reference_reads'
       >[]
     >`
-      select distinct experience_reads,execution_snapshot ? 'personalSkills' as has_personal_skills,execution_snapshot->'instance'->>'id' as personal_instance_id,(select jsonb_agg(jsonb_build_object('id',n->'id','personal',n->'personal')) from jsonb_array_elements(native_skills) n where n ? 'personal') as native_personal_pins,execution_snapshot->'personalSkills' as personal_skills,execution_snapshot->'content' as content,content_scene_state,reference_reads,prompt_snapshot->'sessionReferences' as session_references,prompt_snapshot->'referenceSelections' as reference_selections
+      select distinct execution_snapshot->'workflowInvocation' brand_workflow,experience_reads,execution_snapshot ? 'personalSkills' as has_personal_skills,execution_snapshot->'instance'->>'id' as personal_instance_id,(select jsonb_agg(jsonb_build_object('id',n->'id','personal',n->'personal')) from jsonb_array_elements(native_skills) n where n ? 'personal') as native_personal_pins,execution_snapshot->'personalSkills' as personal_skills,execution_snapshot->'content' as content,content_scene_state,reference_reads,prompt_snapshot->'sessionReferences' as session_references,prompt_snapshot->'referenceSelections' as reference_selections
       from allrice_employee_runs where content_generation_id=${id} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
         and error_code is distinct from 'STEER_CONSUMED' limit 129`;
     if (rows.length > 128) return unavailable();
@@ -461,6 +678,7 @@ async function generationIsReadable(
   reader: ContentIdentity = identity(scope),
   visited = new Set<string>(),
   locked = false,
+  expectedBrandKey?: string | null,
 ) {
   if (visited.has(generationId)) return true;
   if (visited.size >= 128) return false;
@@ -470,6 +688,10 @@ async function generationIsReadable(
     where generation_id=${generationId} and session_id=${scope.sessionId} and organization_id=${scope.organizationId}
       and workspace_id=${scope.workspaceId} and owner_id=${scope.ownerId} and invalidated_at is null`;
   if (!generation) return false;
+  const brandKey =
+    expectedBrandKey === undefined && scope.runId
+      ? brandContextKey((await ownedRun(scope, sql)).brand_workflow)
+      : expectedBrandKey;
   const rows = await sql<
     (PersonalProvenance & {
       content: unknown;
@@ -480,7 +702,7 @@ async function generationIsReadable(
         { sessionId: string; messages: { id: string }[] }[] | null;
     })[]
   >`
-    select distinct experience_reads,execution_snapshot ? 'personalSkills' as has_personal_skills,execution_snapshot->'instance'->>'id' as personal_instance_id,(select jsonb_agg(jsonb_build_object('id',n->'id','personal',n->'personal')) from jsonb_array_elements(native_skills) n where n ? 'personal') as native_personal_pins,execution_snapshot->'personalSkills' as personal_skills,execution_snapshot->'content' as content,content_scene_state,reference_reads,prompt_snapshot->'sessionReferences' as session_references,prompt_snapshot->'referenceSelections' as reference_selections
+    select distinct execution_snapshot->'workflowInvocation' brand_workflow,experience_reads,execution_snapshot ? 'personalSkills' as has_personal_skills,execution_snapshot->'instance'->>'id' as personal_instance_id,(select jsonb_agg(jsonb_build_object('id',n->'id','personal',n->'personal')) from jsonb_array_elements(native_skills) n where n ? 'personal') as native_personal_pins,execution_snapshot->'personalSkills' as personal_skills,execution_snapshot->'content' as content,content_scene_state,reference_reads,prompt_snapshot->'sessionReferences' as session_references,prompt_snapshot->'referenceSelections' as reference_selections
     from allrice_employee_runs where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
       and session_id=${scope.sessionId} and owner_id=${scope.ownerId} and content_generation_id=${generationId}
       and error_code is distinct from 'STEER_CONSUMED' limit 129`;
@@ -489,6 +711,14 @@ async function generationIsReadable(
   if (rows.length > 128) return false;
   for (const row of rows) {
     try {
+      // Ordinary referenced notes remain usable, but brand-derived answers
+      // cannot be imported into another brand, campaign, platform or context.
+      if (
+        row.brand_workflow &&
+        brandKey !== undefined &&
+        brandContextKey(row.brand_workflow) !== brandKey
+      )
+        return false;
       await assertPersonalProvenance(reader, row, sql);
       await assertReferenceSelections(
         reader,
@@ -535,6 +765,7 @@ async function generationIsReadable(
           sql,
           visited,
           locked,
+          brandKey,
         );
     } catch (error) {
       if (
@@ -560,6 +791,7 @@ export async function assertEmployeeContentReferenceMessages(
   sql: ContentSql = getDatabase(),
   visited = new Set<string>(),
   locked = false,
+  expectedBrandKey?: string | null,
 ) {
   if (!messageIds.length) return;
   const [session] = await sql<
@@ -598,10 +830,37 @@ export async function assertEmployeeContentReferenceMessages(
         reader,
         visited,
         locked,
+        expectedBrandKey,
       ))
     )
       return unavailable();
   }
+}
+
+async function generationBrandScopeMatches(
+  scope: RunScope,
+  generationId: string,
+  key: string | null,
+  sql: ContentSql,
+) {
+  const rows = await sql<{ brand_workflow: unknown }[]>`
+    select distinct execution_snapshot->'workflowInvocation' brand_workflow
+    from allrice_employee_runs where content_generation_id=${generationId}
+      and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
+      and session_id=${scope.sessionId} and owner_id=${scope.ownerId}
+      and error_code is distinct from 'STEER_CONSUMED' limit 129`;
+  return (
+    rows.length <= 128 &&
+    rows.every((row) => brandContextKey(row.brand_workflow) === key)
+  );
+}
+
+/** Frozen workflow inputs are checked even when recovering an already saved
+ * load step. Historical snapshots without a brand invocation stay unchanged. */
+export async function assertEmployeeBrandWorkflowContext(scope: RunScope) {
+  await withContentLocks(scope, async (tx) => {
+    await assertBrandProvenance(identity(scope), await ownedRun(scope, tx), tx);
+  });
 }
 
 /** Bind once per Run. A content generation outlives native process/config
@@ -655,6 +914,22 @@ export async function prepareEmployeeContentContext(scope: RunScope) {
     let discardHistory = false;
     if (
       context &&
+      !(await generationBrandScopeMatches(
+        scope,
+        context.generation_id,
+        brandContextKey(run.brand_workflow),
+        tx,
+      ))
+    ) {
+      if (run.content_generation_id) return { rejected: true as const };
+      // A change of business scope retires otherwise valid history; it does
+      // not revoke that history for readers still using its original scope.
+      await tx`update allrice_employee_content_contexts set retired_at=clock_timestamp(),updated_at=clock_timestamp() where generation_id=${context.generation_id}`;
+      context = undefined;
+      discardHistory = true;
+    }
+    if (
+      context &&
       !(await generationIsReadable(
         scope,
         context.generation_id,
@@ -699,6 +974,7 @@ export async function prepareEmployeeContentContext(scope: RunScope) {
                   and previous.organization_id=${scope.organizationId} and previous.workspace_id=${scope.workspaceId}
                   and previous.owner_id=${scope.ownerId} and previous.session_id=m.session_id
                   and not er.method_authoring and previous.retired_at is not null
+                  and er.execution_snapshot->'workflowInvocation' is null
                   and previous.invalidated_at is null))
             )`
       : null;
@@ -710,12 +986,13 @@ export async function prepareEmployeeContentContext(scope: RunScope) {
     // A new task must not inherit previous scene tool results or native
     // summaries. Ordinary visible messages retain their provenance above.
     const [priorScene] =
-      await tx`select run_id from allrice_employee_runs where content_generation_id=${context!.generation_id} and (execution_snapshot->'personalSkills' is not null or content_scene_state is not null or reference_reads is not null or jsonb_array_length(experience_reads)>0 or jsonb_array_length(coalesce(prompt_snapshot->'referenceSelections','[]'::jsonb))>0) limit 1`;
+      await tx`select run_id from allrice_employee_runs where content_generation_id=${context!.generation_id} and (execution_snapshot->'workflowInvocation' is not null or execution_snapshot->'personalSkills' is not null or content_scene_state is not null or reference_reads is not null or jsonb_array_length(experience_reads)>0 or jsonb_array_length(coalesce(prompt_snapshot->'referenceSelections','[]'::jsonb))>0) limit 1`;
     return {
       ...current,
       generationId: context!.generation_id,
       nativeContextKey:
         ExperienceReadPinsSchema.parse(run.experience_reads ?? []).length ||
+        run.brand_workflow ||
         run.personal_skills ||
         current.scenes.length ||
         current.sources.some((s) => s.referenceFile) ||

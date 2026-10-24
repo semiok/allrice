@@ -371,6 +371,7 @@ export async function resolveEmployeeContentSource(
       and not exists(select 1 from allrice_experience_reviews e where e.memory_id=m.id
         and (e.origin_kind='incremental' or e.status<>'approved'
           or exists(select 1 from allrice_employee_runs origin where origin.run_id=e.run_id and origin.method_authoring)))
+      and not exists(select 1 from allrice_brand_content_experiences brand where brand.memory_id=m.id)
     ${lock ? sql`for share of m,r` : sql``}`;
   if (!memory) return unavailable(ref);
   // Workspace memory is not a new company/department publication. MET183
