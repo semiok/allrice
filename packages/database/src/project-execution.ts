@@ -23,6 +23,7 @@ import {
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import {
+  ProjectLockPlatformError,
   RuntimePolicyError,
   runtimePolicyDigest as digest,
 } from './runtime-policy.ts';
@@ -348,25 +349,34 @@ export async function selectProjectExecution(
       select snapshot from allrice_runtime_operations where id=${prior.metadata.operationId} and organization_id=${ctx.organizationId}
         and workspace_id=${ctx.workspaceId} and snapshot->'binding'->'requestedBy'->>'id'=${owner} and run_id=${ctx.runId}`
       : [];
-    // When neither the cloud nor any Bridge can install the lock, say why instead of
-    // reporting a generic unavailable backend: the dependencies need resolving again.
-    // Only once the cloud has really been checked: the tool first selects without a
-    // cloud probe and probes only after "cloud_unavailable"; throwing earlier would
-    // skip that probe and refuse a healthy cloud.
-    const cloudChecked =
-      input.cloudReady ||
-      !cloudExecutionEnabled() ||
-      !tools.includes('cloud.process.execute');
+    // A lock pinned to a CPU architecture that no backend this call may use has: say
+    // so, with the architectures, instead of a generic "unavailable". The cloud's
+    // architecture is fixed, so no cloud probe is needed for this; whether the cloud
+    // grant and target are usable stays with the normal selection (the tool probes
+    // after "cloud_unavailable"), so a revoked grant is not reported as a mismatch.
+    const localRequired = location === 'local' || localOnly;
+    const cloudOption =
+      !localRequired &&
+      cloudExecutionEnabled() &&
+      tools.includes('cloud.process.execute');
+    const bridgeArchitectures = classified.flatMap((c) =>
+      c.profile ? [c.profile.architecture] : [],
+    );
     if (
       !prior &&
-      cloudChecked &&
-      lockArchitectures.length < 2 &&
-      !(cloud && cloudFits) &&
-      !classified.some(
-        (c) => c.profile && lockArchitectures.includes(c.profile.architecture),
-      )
+      !(cloudOption && cloudFits) &&
+      !bridgeArchitectures.some((a) => lockArchitectures.includes(a)) &&
+      ((cloudOption && !cloudFits) || bridgeArchitectures.length > 0)
     )
-      throw new RuntimePolicyError('project_lock_platform_mismatch');
+      throw new ProjectLockPlatformError(
+        lockArchitectures,
+        bridgeArchitectures,
+        cloudOption
+          ? cloudPlatform.architecture
+          : localRequired
+            ? 'local_required'
+            : 'disabled',
+      );
     const bound = prior?.metadata.choice.location;
     const choice = resolveExecutionChoice({
       location,

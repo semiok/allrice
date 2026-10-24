@@ -8,6 +8,7 @@ import {
   waitLocalCommandOperation,
   createCloudProjectOperation,
   RuntimePolicyError,
+  ProjectLockPlatformError,
   cloudExecutionEnabled,
   projectServiceWorkerControl,
   readProjectService,
@@ -17,6 +18,7 @@ import {
   projectServiceLimits,
   cloudPythonImageV1,
   cloudToolchainImageV1,
+  cloudPlatform,
 } from '@allrice/contracts';
 import { LocalStorageAdapter } from '@allrice/storage';
 import { HandlerError } from '../../errors.js';
@@ -30,6 +32,25 @@ import {
   CloudProjectServiceStartError,
 } from '../../cloud-runner/executor.js';
 import { requireSuccessfulCloudCommand } from '../../cloud-runner/tool-result.js';
+
+const cpuName = (a: string) =>
+  a === 'amd64' ? 'Intel（x86_64）' : a === 'arm64' ? 'Apple 芯片（arm64）' : a;
+/** Exactly why nothing could run the project, and the one action that helps. */
+function projectLockPlatformMessage(error: ProjectLockPlatformError) {
+  const lock = error.lockArchitectures.length
+    ? `只能装在 ${error.lockArchitectures.map(cpuName).join('、')} 上`
+    : '在任何一种 CPU 架构上都装不全';
+  const bridge = error.bridgeArchitectures.length
+    ? `本机 Bridge 是 ${[...new Set(error.bridgeArchitectures)].map(cpuName).join('、')}，装不上。`
+    : '';
+  const next =
+    error.cloud === 'local_required'
+      ? `本次要求只在本机执行。依赖解析目前只按服务器的 CPU 架构（${cpuName(cloudPlatform.architecture)}）生成锁，还不能为本机生成可用的锁；如果可以在云端执行，请去掉"只在本机运行"的要求后重试。`
+      : error.cloud === 'disabled'
+        ? '云端执行没有开启，或这个员工不能使用云端执行。'
+        : `云端是 ${cpuName(error.cloud)}，也装不上。这通常是在另一种架构的服务器上解析的旧锁：请用 resolve 重新解析依赖（会按 ${cpuName(error.cloud)} 生成新的项目版本），再用新版本执行。`;
+  return `这个项目的依赖锁里有${lock}的安装包，本次没有执行。${bridge}${next}`;
+}
 
 export const runProjectWorkspace: RiceToolHandler = async ({
   input,
@@ -365,13 +386,10 @@ export const runProjectWorkspace: RiceToolHandler = async ({
         '当前任务要求仅在本地处理，因此没有启动云端依赖解析。请使用已有锁文件；不要通过其他工具绕过该限制。',
         false,
       );
-    if (
-      error instanceof RuntimePolicyError &&
-      error.code === 'project_lock_platform_mismatch'
-    )
+    if (error instanceof ProjectLockPlatformError)
       throw new HandlerError(
         'PROJECT_LOCK_PLATFORM_MISMATCH',
-        '这个项目的依赖锁里有只适用于另一种 CPU 架构的安装包，云端和当前可用的本机环境都装不上，本次没有执行。请用 resolve 重新解析依赖（会生成新的项目版本），再用新版本执行。',
+        projectLockPlatformMessage(error),
         false,
       );
     if (
