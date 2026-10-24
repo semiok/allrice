@@ -37,26 +37,39 @@ const profile = (p: (typeof cloudPlatforms)[keyof typeof cloudPlatforms]) => ({
 
 describe('cloud platform selection', () => {
   it('refuses a Rosetta-translated Node unless the architecture is explicit', () => {
-    const translated = () => true,
-      native = () => false;
+    const translated = () => 'translated' as const,
+      native = () => 'native' as const,
+      unknown = () => ({ unknown: 'sysctl: permission denied' });
     expect(
-      cloudArchitectureTranslationProblem({ platform: 'darwin', translated }),
+      cloudArchitectureTranslationProblem({
+        platform: 'darwin',
+        translation: translated,
+      }),
     ).toMatch(/Rosetta/);
     expect(
       cloudArchitectureTranslationProblem({
         platform: 'darwin',
-        translated: native,
+        translation: unknown,
+      }),
+    ).toMatch(/Cannot tell.*permission denied/);
+    expect(
+      cloudArchitectureTranslationProblem({
+        platform: 'darwin',
+        translation: native,
       }),
     ).toBeNull();
     expect(
       cloudArchitectureTranslationProblem({
         platform: 'darwin',
         override: 'arm64',
-        translated,
+        translation: translated,
       }),
     ).toBeNull();
     expect(
-      cloudArchitectureTranslationProblem({ platform: 'linux', translated }),
+      cloudArchitectureTranslationProblem({
+        platform: 'linux',
+        translation: translated,
+      }),
     ).toBeNull();
   });
   it('follows the host CPU unless explicitly overridden', () => {
