@@ -35,9 +35,11 @@ try{
 }catch(e){diagnostics=safe(diagnostics+'\n'+String(e.name)+': '+String(e.message));const code=/^PROJECT_RESOLUTION_[A-Z_]+$/.test(e.message)?e.message:phase==='manager_download'?'PROJECT_RESOLUTION_DOWNLOAD_FAILED':'PROJECT_RESOLUTION_INTERNAL';await write({status:'failed',exitCode:Math.max(1,Math.min(exitCode,255)),errorCode:code});}
 `;
 
-const pythonResolver = String.raw`
-import os,sys,json,hashlib,subprocess,urllib.request,tarfile,re,platform
-from packaging.tags import Tag,sys_tags
+// V1: the original controller. A request without `architecture` (every request stored
+// before targets existed) must regenerate it byte for byte, or its record stops verifying.
+const pythonResolverV1 = String.raw`
+import os,sys,json,hashlib,subprocess,urllib.request,tarfile,re
+from packaging.tags import sys_tags
 from packaging.utils import parse_wheel_filename,canonicalize_name
 work='/tmp/work/resolve';os.mkdir(work,0o700)
 phase='manager_download';diagnostics='';exit_code=1
@@ -74,18 +76,14 @@ try:
         members=tar.getmembers()
         if any(m.issym() or m.islnk() or m.name.startswith('/') or '..' in m.name.split('/') or not(m.isdir() or m.isfile()) for m in members):raise RuntimeError('PROJECT_RESOLUTION_TOOL_INTEGRITY')
         tar.extractall(work, members=members, filter='data')
-    uv=work+'/'+plan['uvDirectory']+'/uv'
+    uv=work+'/uv-x86_64-unknown-linux-gnu/uv'
     with open(work+'/requirements.in','w') as f:f.write(plan['manifest']['text'])
-    phase='resolve';exit_code=run([uv,'pip','compile','requirements.in','--python','/opt/python/bin/python','--python-version','3.11','--python-platform',plan['target']['pythonPlatform'],'--only-binary',':all:','--generate-hashes','--no-annotate','--no-header','--default-index','https://pypi.org/simple','--output-file','resolved.txt'])
+    phase='resolve';exit_code=run([uv,'pip','compile','requirements.in','--python','/opt/python/bin/python','--python-version','3.11','--python-platform','x86_64-unknown-linux-gnu','--only-binary',':all:','--generate-hashes','--no-annotate','--no-header','--default-index','https://pypi.org/simple','--output-file','resolved.txt'])
     if exit_code:raise RuntimeError('PROJECT_RESOLUTION_PACKAGE_FAILED')
     phase='lock_validation'
     with open(work+'/resolved.txt') as f:raw=f.read(200001)
     if len(raw.encode())>200000:raise RuntimeError('PROJECT_RESOLUTION_LIMIT')
-    # Wheels for the target CPU: this interpreter's own tags (cloud and Bridge use the same
-    # Python and glibc base image on both CPUs) with the machine name swapped.
-    native=platform.machine();target=plan['target']['machine'];tags={}
-    for i,tag in enumerate(sys_tags()):tags.setdefault(Tag(tag.interpreter,tag.abi,tag.platform.replace(native,target)),i)
-    wheels=[];lines=[]
+    tags={tag:i for i,tag in enumerate(sys_tags())};wheels=[];lines=[]
     for line in re.sub(r'\\\r?\n\s*',' ',raw).splitlines():
         line=line.strip()
         if not line or line.startswith('#'):continue
@@ -112,25 +110,67 @@ except Exception as error:
     code=str(error) if re.fullmatch('PROJECT_RESOLUTION_[A-Z_]+',str(error)) else 'PROJECT_RESOLUTION_DOWNLOAD_FAILED' if phase=='manager_download' else 'PROJECT_RESOLUTION_INTERNAL'
     write(dict(status='failed',exitCode=max(1,min(exit_code,255)),errorCode=code))
 `;
+const replaceOnce = (text: string, from: string, to: string) => {
+  if (text.split(from).length !== 2)
+    throw Error(`project resolver template changed: ${from}`);
+  return text.replace(from, to);
+};
+/** V2: the same controller resolving for a given CPU. uv still runs natively on the
+ * server; the lock targets the CPU (same Python 3.11 and glibc base image) that will
+ * install it, with every manylinux baseline that CPU defines, ordered as packaging does. */
+const pythonResolverForTarget = (
+  [
+    [
+      'from packaging.tags import sys_tags',
+      'from packaging.tags import compatible_tags,cpython_tags',
+    ],
+    [
+      "    uv=work+'/uv-x86_64-unknown-linux-gnu/uv'",
+      [
+        "    uv=work+'/'+plan['uvDirectory']+'/uv'",
+        "    arch=plan['target']['machine'];glibc=int(os.confstr('CS_GNU_LIBC_VERSION').split('.')[-1])",
+        "    legacy={17:'manylinux2014',12:'manylinux2010',5:'manylinux1'};platforms=[]",
+        "    for minor in range(glibc,(5 if arch=='x86_64' else 17)-1,-1):",
+        "        platforms.append('manylinux_2_%d_%s'%(minor,arch))",
+        "        if minor in legacy:platforms.append(legacy[minor]+'_'+arch)",
+        "    platforms.append('linux_'+arch);target_platform='%s-manylinux_2_%d'%(arch,glibc)",
+      ].join('\n'),
+    ],
+    [
+      "'--python-platform','x86_64-unknown-linux-gnu'",
+      "'--python-platform',target_platform",
+    ],
+    [
+      '    tags={tag:i for i,tag in enumerate(sys_tags())};wheels=[];lines=[]',
+      '    tags={tag:i for i,tag in enumerate([*cpython_tags(platforms=platforms),*compatible_tags(platforms=platforms)])};wheels=[];lines=[]',
+    ],
+  ] as const
+).reduce((text, [from, to]) => replaceOnce(text, from, to), pythonResolverV1);
 
 export function projectResolutionScript(input: ProjectDependencyResolveInput) {
   const args = ProjectDependencyResolveInputSchema.parse(input);
   const manifest = projectResolutionManifest(args);
   if (args.manager === 'pnpm')
     return `const plan=${JSON.stringify({ manifest, asset: projectToolReleases.pnpm })};\n${nodeResolver}`;
-  // uv runs natively on the server; the lock targets the CPU that will install it.
-  const target =
-    cloudPlatforms[args.architecture ?? cloudPlatform.architecture];
+  const asset = projectToolReleases.uv[cloudPlatform.architecture];
+  if (!args.architecture) {
+    // V1 bytes: identical to the approved amd64 controller; arm64 swaps in the native
+    // platform for both the uv build and the wheels.
+    const resolver = pythonResolverV1.replaceAll(
+      cloudPlatforms.amd64.pythonPlatform,
+      cloudPlatform.pythonPlatform,
+    );
+    return `import json\nplan=json.loads(${JSON.stringify(JSON.stringify({ manifest, asset }))})\n${resolver}`;
+  }
   const plan = {
     manifest,
-    asset: projectToolReleases.uv[cloudPlatform.architecture],
+    asset,
     uvDirectory: `uv-${cloudPlatform.pythonPlatform}`,
     target: {
-      machine: target.pythonPlatform.split('-')[0],
-      pythonPlatform: target.pythonPlatform,
+      machine: cloudPlatforms[args.architecture].pythonPlatform.split('-')[0],
     },
   };
-  return `import json\nplan=json.loads(${JSON.stringify(JSON.stringify(plan))})\n${pythonResolver}`;
+  return `import json\nplan=json.loads(${JSON.stringify(JSON.stringify(plan))})\n${pythonResolverForTarget}`;
 }
 
 export function projectResolutionCloudArguments(

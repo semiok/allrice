@@ -13,6 +13,7 @@ const facts = (
   toolLocal: false,
   cloudOnly: false,
   cloudUsable: true,
+  bridgeNeedsUpgrade: false,
   ...over,
 });
 
@@ -26,6 +27,13 @@ describe('project lock platform message', () => {
     const text = projectLockPlatformMessage(facts({ userLocalOnly: true }));
     expect(text).not.toMatch(/用 resolve/);
     expect(text).toMatch(/本次任务不允许/);
+  });
+  it('does not present a new lock as enough for a Bridge that needs upgrading', () => {
+    const text = projectLockPlatformMessage(
+      facts({ localInputs: true, bridgeNeedsUpgrade: true }),
+    );
+    expect(text).toMatch(/先升级 Bridge/);
+    expect(text).not.toMatch(/architecture: amd64/);
   });
   it('names every obstacle together', () => {
     const text = projectLockPlatformMessage(

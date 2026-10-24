@@ -144,48 +144,62 @@ describe('cloud platform selection', () => {
     ).toBe(false);
   });
 
-  it('runs the native uv build and resolves wheels for the target CPU', async () => {
+  it('keeps the original controller bytes for requests without a target CPU', async () => {
+    // Stored resolution records (made before targets existed) are verified by
+    // regenerating their script; these are the bytes of commit 11657e1a.
     const input: ProjectDependencyResolveInput = {
       action: 'resolve',
       manager: 'uv',
       packages: [{ name: 'six', version: '1.17.0' }],
     };
-    const plan = (script: string) =>
-      JSON.parse(JSON.parse(/plan=json\.loads\((".*")\)/.exec(script)![1]!));
+    const { createHash } = await import('node:crypto');
+    const digest = (script: string) =>
+      createHash('sha256').update(script).digest('hex');
     const amd = await load('amd64');
-    expect(plan(amd.resolution.projectResolutionScript(input))).toMatchObject({
-      asset: { fileName: 'uv-0.8.22-x86_64.tar.gz' },
-      uvDirectory: 'uv-x86_64-unknown-linux-gnu',
-      target: {
-        machine: 'x86_64',
-        pythonPlatform: 'x86_64-unknown-linux-gnu',
-      },
-    });
+    const amdScript = amd.resolution.projectResolutionScript(input);
+    expect(digest(amdScript)).toBe(
+      '3f4f830a5a560f5b0ae3f041b40c449711ea7e7a479e44ca544d0b9941bf7cdb',
+    );
+    expect(amdScript).toContain('uv-x86_64-unknown-linux-gnu');
     const arm = await load('arm64');
     const armScript = arm.resolution.projectResolutionScript(input);
-    expect(plan(armScript)).toMatchObject({
+    expect(digest(armScript)).toBe(
+      '36d2734963870721813ad489accf0a19f4627ead694a20f83cd97da39a6d440e',
+    );
+    expect(armScript).not.toContain('x86_64');
+  });
+  it('runs the native uv build and resolves wheels for a named target CPU', async () => {
+    const input: ProjectDependencyResolveInput = {
+      action: 'resolve',
+      manager: 'uv',
+      packages: [{ name: 'six', version: '1.17.0' }],
+      architecture: 'amd64',
+    };
+    const plan = (script: string) =>
+      JSON.parse(JSON.parse(/plan=json\.loads\((".*")\)/.exec(script)![1]!));
+    // An Intel Bridge's lock on an Apple-silicon server: native uv, x86_64 wheels.
+    const arm = await load('arm64');
+    const script = arm.resolution.projectResolutionScript(input);
+    expect(plan(script)).toMatchObject({
       asset: { fileName: 'uv-0.8.22-aarch64.tar.gz' },
       uvDirectory: 'uv-aarch64-unknown-linux-gnu',
-      target: { machine: 'aarch64' },
+      target: { machine: 'x86_64' },
     });
-    // An Intel Bridge's lock on an Apple-silicon server: native uv, x86_64 wheels.
+    for (const fragment of [
+      "'--python-platform',target_platform",
+      'cpython_tags(platforms=platforms)',
+      "legacy={17:'manylinux2014',12:'manylinux2010',5:'manylinux1'}",
+    ])
+      expect(script).toContain(fragment);
+    expect(script).not.toContain('sys_tags');
     expect(
       plan(
         arm.resolution.projectResolutionScript({
           ...input,
-          architecture: 'amd64',
+          architecture: 'arm64',
         }),
       ),
-    ).toMatchObject({
-      uvDirectory: 'uv-aarch64-unknown-linux-gnu',
-      target: {
-        machine: 'x86_64',
-        pythonPlatform: 'x86_64-unknown-linux-gnu',
-      },
-    });
-    expect(armScript).toContain(
-      'Tag(tag.interpreter,tag.abi,tag.platform.replace(native,target))',
-    );
+    ).toMatchObject({ target: { machine: 'aarch64' } });
   });
   it('accepts a target CPU for uv resolutions only', async () => {
     const { ProjectDependencyResolveInputSchema } =

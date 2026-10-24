@@ -278,10 +278,9 @@ export async function selectProjectExecution(
         'local.process',
       );
       let state = discovery.state;
-      if (!c.online) state = 'offline';
       // Current Bridge releases cannot silently drop finite network/budget
       // requests. Its separately versioned adapter must advertise support first.
-      else if (
+      const requestGap =
         args.action === 'execute' &&
         ((args.network &&
           (!args.execution ||
@@ -289,19 +288,10 @@ export async function selectProjectExecution(
             !parsed.data.features?.includes('sandbox_network_v1'))) ||
           (args.execution &&
             (!parsed.success ||
-              !parsed.data.features?.includes('sandbox_execution_v1'))))
-      )
-        state = 'unsupported';
-      else if (
-        args.projectPreparation.packages.length > bridgeProjectPackageLimit
-      )
-        state = 'unsupported';
-      else if (
-        parsed.success &&
-        !lockArchitectures.includes(parsed.data.architecture)
-      )
-        state = 'unsupported';
-      else if (
+              !parsed.data.features?.includes('sandbox_execution_v1'))));
+      const tooLarge =
+        args.projectPreparation.packages.length > bridgeProjectPackageLimit;
+      const profileGap =
         state !== 'preparing' &&
         state !== 'busy' &&
         (!parsed.success ||
@@ -309,9 +299,17 @@ export async function selectProjectExecution(
           !parsed.data.features?.includes('saved_project_source') ||
           !parsed.data.features.includes('project_preparation') ||
           (args.action === 'service_start' &&
-            !parsed.data.features.includes('project_services')))
+            !parsed.data.features.includes('project_services')));
+      // What only a newer Bridge fixes, unlike its CPU or its availability.
+      const needsUpgrade = requestGap || tooLarge || profileGap;
+      if (!c.online) state = 'offline';
+      else if (requestGap || tooLarge) state = 'unsupported';
+      else if (
+        parsed.success &&
+        !lockArchitectures.includes(parsed.data.architecture)
       )
         state = 'unsupported';
+      else if (profileGap) state = 'unsupported';
       else if (
         state === 'ready' &&
         (!parsed.success ||
@@ -331,6 +329,7 @@ export async function selectProjectExecution(
         device,
         profile: parsed.success ? parsed.data : null,
         state,
+        needsUpgrade,
       };
     });
     const rank = [
@@ -379,7 +378,13 @@ export async function selectProjectExecution(
       !bridgeArchitectures.some((a) => lockArchitectures.includes(a)) &&
       ((cloudOption && !cloudFits) || bridgeArchitectures.length > 0)
     )
-      throw new ProjectLockPlatformError({ ...facts, bridgeArchitectures });
+      throw new ProjectLockPlatformError({
+        ...facts,
+        bridgeArchitectures,
+        bridgeNeedsUpgrade:
+          !facts.cloudOnly &&
+          classified.some((c) => c.profile && c.needsUpgrade),
+      });
     const bound = prior?.metadata.choice.location;
     const choice = resolveExecutionChoice({
       location,
