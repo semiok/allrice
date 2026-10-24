@@ -135,3 +135,16 @@ export function mcpCatalogInstructions(
     ),
   ].join('\n\n');
 }
+
+/** Admission precedes carrier selection. Bound both possible prompts, including
+ * discovery rules that can exceed a small tool's inline schema. */
+export function mcpCatalogAdmissionInstructions(
+  catalog: EmployeeKernelRequest['mcpToolCatalog'],
+) {
+  const inline = mcpCatalogInstructions(catalog, false);
+  const deferred = mcpCatalogInstructions(catalog, true);
+  return Buffer.byteLength(inline, 'utf8') >=
+    Buffer.byteLength(deferred, 'utf8')
+    ? inline
+    : deferred;
+}

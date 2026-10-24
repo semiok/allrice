@@ -133,6 +133,7 @@ import {
   assertAssistantTaskComplete,
 } from '../harness/dsh/assistant-outcome.js';
 import { assertAssistantProviderOutputBound } from '../harness/dsh/assistant-provider.js';
+import { mcpCatalogAdmissionInstructions } from '../harness/dsh/native-tools.js';
 import { DshStartupRejection } from '../harness/dsh/startup-rejection.js';
 import type {
   HarnessExecutionInput,
@@ -1087,7 +1088,9 @@ export async function executeEmployeeRun({
             estimatedInputTokens: estimateConversationTokens(
               [
                 kernel.systemInstructions,
-                JSON.stringify(kernel.mcpToolCatalog ?? []),
+                ...(kernel.mcpToolCatalog?.length
+                  ? [mcpCatalogAdmissionInstructions(kernel.mcpToolCatalog)]
+                  : []),
                 kernel.bootstrapConversation,
                 kernel.authorizedMemoryContext,
                 kernel.userRequest,
@@ -1287,7 +1290,9 @@ export async function executeEmployeeRun({
       const estimatedInputTokens = estimateConversationTokens(
         [
           routedKernel.systemInstructions,
-          JSON.stringify(routedKernel.mcpToolCatalog ?? []),
+          ...(routedKernel.mcpToolCatalog?.length
+            ? [mcpCatalogAdmissionInstructions(routedKernel.mcpToolCatalog)]
+            : []),
           routedKernel.bootstrapConversation,
           routedKernel.authorizedMemoryContext,
           routedKernel.userRequest,

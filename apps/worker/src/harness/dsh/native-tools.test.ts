@@ -7,6 +7,7 @@ import {
   selectDshNativeTools,
   supportsMcpSchemaLookup,
   mcpCatalogInstructions,
+  mcpCatalogAdmissionInstructions,
 } from './native-tools.js';
 
 const roots: string[] = [];
@@ -145,4 +146,30 @@ it('keeps the entire stable directory while loading schemas only on supported ca
   expect(mcpCatalogInstructions(tools, false)).toContain(
     'EXACT_SCHEMA_SENTINEL',
   );
+});
+
+it('bounds admission for both small-schema discovery rules and large legacy inline schemas', () => {
+  const tool = {
+    connectionId: '00000000-0000-4000-8000-000000000001',
+    name: 'read',
+    description: 'Read a public resource',
+    risk: 'read_only' as const,
+    inputSchema: { type: 'object' },
+  };
+  expect(mcpCatalogAdmissionInstructions(undefined)).toBe('');
+  expect(mcpCatalogAdmissionInstructions([])).toBe('');
+  expect(mcpCatalogAdmissionInstructions([tool])).toContain(
+    'action="describe"',
+  );
+  expect(
+    mcpCatalogAdmissionInstructions([
+      {
+        ...tool,
+        inputSchema: {
+          type: 'object',
+          description: '完整参数约束'.repeat(1_000),
+        },
+      },
+    ]),
+  ).toContain('完整参数约束');
 });
