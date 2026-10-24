@@ -18,6 +18,7 @@ import {
 import {
   assertChatTransitionPin,
   readChatExecutorTransition,
+  readEffectiveChatExecutorOrigin,
 } from '../conversation/native-executor-transition.ts';
 import {
   assertTransitionDescriptor,
@@ -242,7 +243,7 @@ async function readNativeDiagnosticExecution(
   const frozen = EmployeeRunExecutionBindingSchema.parse(
     employee.native_execution_binding,
   );
-  const origin = original;
+  let origin = original;
   let transition: ExecutorTransitionRef | undefined;
   if (frozen.schemaVersion === 2) {
     const receipt = await readChatExecutorTransition(
@@ -253,9 +254,20 @@ async function readNativeDiagnosticExecution(
     );
     if (!receipt) unavailable();
     transition = executorTransitionRef(receipt);
-    // U1 cannot adopt a NULL origin. Only U2 may supply an effective origin,
-    // after this Run's exact committed adoption ref has been proven.
-    if (origin == null) unavailable();
+    // This lookup is permitted only after this Run's exact committed ref has
+    // been proven. Pre-adoption Runs never enter this branch.
+    if (origin == null) {
+      const effective = await readEffectiveChatExecutorOrigin(db, scope, null);
+      if (
+        !effective ||
+        effective.contextKind !== 'chat' ||
+        effective.contextId !== scope.sessionId ||
+        effective.rootSeed !== scope.sessionId ||
+        effective.profileId !== 'restricted'
+      )
+        unavailable();
+      origin = effective;
+    }
     await assertChatTransitionPin(db, transition, binding);
   }
   if (!employee.version_id || !employee.config_checksum) unavailable();
