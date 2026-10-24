@@ -36,8 +36,8 @@ try{
 `;
 
 const pythonResolver = String.raw`
-import os,sys,json,hashlib,subprocess,urllib.request,tarfile,re
-from packaging.tags import sys_tags
+import os,sys,json,hashlib,subprocess,urllib.request,tarfile,re,platform
+from packaging.tags import Tag,sys_tags
 from packaging.utils import parse_wheel_filename,canonicalize_name
 work='/tmp/work/resolve';os.mkdir(work,0o700)
 phase='manager_download';diagnostics='';exit_code=1
@@ -74,14 +74,18 @@ try:
         members=tar.getmembers()
         if any(m.issym() or m.islnk() or m.name.startswith('/') or '..' in m.name.split('/') or not(m.isdir() or m.isfile()) for m in members):raise RuntimeError('PROJECT_RESOLUTION_TOOL_INTEGRITY')
         tar.extractall(work, members=members, filter='data')
-    uv=work+'/uv-x86_64-unknown-linux-gnu/uv'
+    uv=work+'/'+plan['uvDirectory']+'/uv'
     with open(work+'/requirements.in','w') as f:f.write(plan['manifest']['text'])
-    phase='resolve';exit_code=run([uv,'pip','compile','requirements.in','--python','/opt/python/bin/python','--python-version','3.11','--python-platform','x86_64-unknown-linux-gnu','--only-binary',':all:','--generate-hashes','--no-annotate','--no-header','--default-index','https://pypi.org/simple','--output-file','resolved.txt'])
+    phase='resolve';exit_code=run([uv,'pip','compile','requirements.in','--python','/opt/python/bin/python','--python-version','3.11','--python-platform',plan['target']['pythonPlatform'],'--only-binary',':all:','--generate-hashes','--no-annotate','--no-header','--default-index','https://pypi.org/simple','--output-file','resolved.txt'])
     if exit_code:raise RuntimeError('PROJECT_RESOLUTION_PACKAGE_FAILED')
     phase='lock_validation'
     with open(work+'/resolved.txt') as f:raw=f.read(200001)
     if len(raw.encode())>200000:raise RuntimeError('PROJECT_RESOLUTION_LIMIT')
-    tags={tag:i for i,tag in enumerate(sys_tags())};wheels=[];lines=[]
+    # Wheels for the target CPU: this interpreter's own tags (cloud and Bridge use the same
+    # Python and glibc base image on both CPUs) with the machine name swapped.
+    native=platform.machine();target=plan['target']['machine'];tags={}
+    for i,tag in enumerate(sys_tags()):tags.setdefault(Tag(tag.interpreter,tag.abi,tag.platform.replace(native,target)),i)
+    wheels=[];lines=[]
     for line in re.sub(r'\\\r?\n\s*',' ',raw).splitlines():
         line=line.strip()
         if not line or line.startswith('#'):continue
@@ -112,21 +116,21 @@ except Exception as error:
 export function projectResolutionScript(input: ProjectDependencyResolveInput) {
   const args = ProjectDependencyResolveInputSchema.parse(input);
   const manifest = projectResolutionManifest(args);
+  if (args.manager === 'pnpm')
+    return `const plan=${JSON.stringify({ manifest, asset: projectToolReleases.pnpm })};\n${nodeResolver}`;
+  // uv runs natively on the server; the lock targets the CPU that will install it.
+  const target =
+    cloudPlatforms[args.architecture ?? cloudPlatform.architecture];
   const plan = {
     manifest,
-    asset:
-      args.manager === 'pnpm'
-        ? projectToolReleases.pnpm
-        : projectToolReleases.uv[cloudPlatform.architecture],
+    asset: projectToolReleases.uv[cloudPlatform.architecture],
+    uvDirectory: `uv-${cloudPlatform.pythonPlatform}`,
+    target: {
+      machine: target.pythonPlatform.split('-')[0],
+      pythonPlatform: target.pythonPlatform,
+    },
   };
-  // amd64 output stays byte-identical to already approved resolver scripts.
-  const resolver = pythonResolver.replaceAll(
-    cloudPlatforms.amd64.pythonPlatform,
-    cloudPlatform.pythonPlatform,
-  );
-  return args.manager === 'pnpm'
-    ? `const plan=${JSON.stringify(plan)};\n${nodeResolver}`
-    : `import json\nplan=json.loads(${JSON.stringify(JSON.stringify(plan))})\n${resolver}`;
+  return `import json\nplan=json.loads(${JSON.stringify(JSON.stringify(plan))})\n${pythonResolver}`;
 }
 
 export function projectResolutionCloudArguments(

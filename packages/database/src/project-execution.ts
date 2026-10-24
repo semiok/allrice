@@ -354,33 +354,32 @@ export async function selectProjectExecution(
     // architecture is fixed, so no cloud probe is needed for this; whether the cloud
     // grant and target are usable stays with the normal selection (the tool probes
     // after "cloud_unavailable"), so a revoked grant is not reported as a mismatch.
-    const cloudBlocked =
-      location === 'local' || constraints.localOnly
-        ? ('local_request' as const)
-        : run.local_inputs
-          ? ('local_inputs' as const)
-          : !cloudExecutionEnabled() || !tools.includes('cloud.process.execute')
-            ? ('disabled' as const)
-            : null;
+    const facts = {
+      lockArchitectures,
+      serverArchitecture: cloudPlatform.architecture,
+      userLocalOnly: constraints.localOnly || constraints.location === 'local',
+      localInputs: run.local_inputs,
+      toolLocal: constraints.location === 'auto' && args.location === 'local',
+      cloudOnly: constraints.location === 'cloud',
+      cloudUsable:
+        cloudExecutionEnabled() && tools.includes('cloud.process.execute'),
+    };
+    const cloudOption =
+      facts.cloudUsable &&
+      !facts.userLocalOnly &&
+      !facts.localInputs &&
+      !facts.toolLocal;
     // A request for the cloud only leaves the Bridges out of this call.
-    const bridgeArchitectures =
-      location === 'cloud'
-        ? []
-        : classified.flatMap((c) =>
-            c.profile ? [c.profile.architecture] : [],
-          );
+    const bridgeArchitectures = facts.cloudOnly
+      ? []
+      : classified.flatMap((c) => (c.profile ? [c.profile.architecture] : []));
     if (
       !prior &&
-      !(cloudBlocked === null && cloudFits) &&
+      !(cloudOption && cloudFits) &&
       !bridgeArchitectures.some((a) => lockArchitectures.includes(a)) &&
-      ((cloudBlocked === null && !cloudFits) || bridgeArchitectures.length > 0)
+      ((cloudOption && !cloudFits) || bridgeArchitectures.length > 0)
     )
-      throw new ProjectLockPlatformError(
-        lockArchitectures,
-        bridgeArchitectures,
-        cloudPlatform.architecture,
-        cloudBlocked,
-      );
+      throw new ProjectLockPlatformError({ ...facts, bridgeArchitectures });
     const bound = prior?.metadata.choice.location;
     const choice = resolveExecutionChoice({
       location,

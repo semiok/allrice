@@ -106,7 +106,9 @@ export const bridgeProjectPackageLimit = 128;
  * backend whose architecture is in this list, so an Intel Bridge never receives an
  * aarch64-only lock (or an Apple-silicon Bridge an x86_64-only one). */
 export function projectLockArchitectures(
-  spec: RuntimeProjectPreparation,
+  spec:
+    | { manager: 'pnpm' }
+    | { manager: 'uv'; packages: readonly { fileName: string }[] },
 ): ('amd64' | 'arm64')[] {
   const all = ['amd64', 'arm64'] as const;
   if (spec.manager !== 'uv') return [...all];

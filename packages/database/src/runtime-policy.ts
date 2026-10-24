@@ -49,17 +49,30 @@ export class RuntimePolicyError extends Error {
   }
 }
 
+/** What decided where a project may run, recorded as separate facts so the message to
+ * the model can name every obstacle (one combined reason loses some). */
+export interface ProjectLockPlatformFacts {
+  lockArchitectures: readonly string[];
+  bridgeArchitectures: readonly string[];
+  /** The cloud's CPU, and what a resolve without `architecture` produces. */
+  serverArchitecture: 'amd64' | 'arm64';
+  /** The user asked to keep the task on the local machine; resolving (which runs
+   * in the cloud) is refused too. */
+  userLocalOnly: boolean;
+  /** The task carries local files, so it can only execute locally. */
+  localInputs: boolean;
+  /** Only this tool call asked for local execution. */
+  toolLocal: boolean;
+  /** The user asked for cloud execution only. */
+  cloudOnly: boolean;
+  /** Cloud execution is on and granted to this employee (undefined: not known here). */
+  cloudUsable: boolean | undefined;
+}
+
 /** A uv lock pins wheels for one CPU architecture and no backend this call may use
- * has that architecture. `cloudBlocked` says why the cloud is not an option for this
- * call (null: it is, and its architecture does not fit); the server's architecture is
- * what a new resolution would produce. */
+ * has that architecture. */
 export class ProjectLockPlatformError extends RuntimePolicyError {
-  constructor(
-    readonly lockArchitectures: readonly string[],
-    readonly bridgeArchitectures: readonly string[],
-    readonly serverArchitecture: 'amd64' | 'arm64',
-    readonly cloudBlocked: 'local_request' | 'local_inputs' | 'disabled' | null,
-  ) {
+  constructor(readonly facts: ProjectLockPlatformFacts) {
     super('project_lock_platform_mismatch');
   }
 }

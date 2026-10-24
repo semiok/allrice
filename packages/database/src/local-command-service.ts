@@ -362,12 +362,16 @@ async function createLocalBridgeToolOperation(
       profile.architecture,
     )
   )
-    throw new ProjectLockPlatformError(
-      projectLockArchitectures(args.projectPreparation),
-      [profile.architecture],
-      cloudPlatform.architecture,
-      'local_request',
-    );
+    throw new ProjectLockPlatformError({
+      lockArchitectures: projectLockArchitectures(args.projectPreparation),
+      bridgeArchitectures: [profile.architecture],
+      serverArchitecture: cloudPlatform.architecture,
+      userLocalOnly: false,
+      localInputs: false,
+      toolLocal: true,
+      cloudOnly: false,
+      cloudUsable: undefined,
+    });
   if (
     args?.projectPreparation &&
     (!profile?.features?.includes('project_preparation') ||
