@@ -1797,6 +1797,13 @@ suite(
         ).toMatchObject({ location: 'local', status: 'execute' });
       }
       const f = await setup();
+      // The tool selects first without a cloud probe: an unsuitable Bridge must then
+      // lead to the probe ("cloud_unavailable"), not to an early mismatch error.
+      expect((await f.select(false, withLock(f, arm))).choice).toMatchObject({
+        location: 'none',
+        status: 'unavailable',
+        reason: 'cloud_unavailable',
+      });
       if (cloudPlatform.architecture === 'arm64')
         expect((await f.select(true, withLock(f, arm))).choice).toMatchObject({
           location: 'cloud',

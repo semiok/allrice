@@ -57,45 +57,53 @@ export function selectCloudArchitecture(
   return hostArchitecture === 'arm64' ? 'arm64' : 'amd64';
 }
 
-/** `sysctl.proc_translated` is 1 for a process translated by Rosetta; Intel Macs do
- * not have the key (the command fails), which also means nothing is translated. */
-function rosettaTranslated(): boolean {
+type RosettaTranslation = 'translated' | 'native' | { unknown: string };
+
+/** `sysctl.proc_translated` is 1 for a process translated by Rosetta and 0 for a native
+ * one. Intel Macs do not have the key ("unknown oid"): nothing runs translated there.
+ * Any other failure means the answer is unknown, never "native". */
+function rosettaTranslation(): RosettaTranslation {
   const childProcess = globalThis.process?.getBuiltinModule?.(
     'node:child_process',
   ) as typeof ChildProcess | undefined;
-  try {
-    return (
-      childProcess
-        ?.execFileSync('/usr/sbin/sysctl', ['-n', 'sysctl.proc_translated'], {
-          encoding: 'utf8',
-          stdio: ['ignore', 'pipe', 'ignore'],
-        })
-        .trim() === '1'
-    );
-  } catch {
-    return false;
-  }
+  if (!childProcess) return { unknown: 'node:child_process is unavailable' };
+  const result = childProcess.spawnSync(
+    '/usr/sbin/sysctl',
+    ['-n', 'sysctl.proc_translated'],
+    { encoding: 'utf8' },
+  );
+  if (result.status === 0)
+    return result.stdout.trim() === '1' ? 'translated' : 'native';
+  if (/unknown oid/i.test(result.stderr ?? '')) return 'native';
+  return {
+    unknown:
+      (result.error?.message ?? result.stderr ?? '').trim().slice(0, 200) ||
+      `sysctl exited with ${result.status}`,
+  };
 }
 
 /** process.arch is the architecture Node was built for. An x64 Node translated by
  * Rosetta on an Apple-silicon Mac reports x64, so the default below would pick the
  * amd64 toolchain: a native arm64 VM then fails its checks and an emulated amd64 VM
  * would pass them. Web and Worker call this at startup when cloud execution is on and
- * refuse to start; an explicit ALLRICE_CLOUD_ARCHITECTURE is taken as intended. */
+ * refuse to start, also when translation cannot be ruled out; an explicit
+ * ALLRICE_CLOUD_ARCHITECTURE is taken as intended. */
 export function cloudArchitectureTranslationProblem(
   host: {
     platform?: string;
     override?: string;
-    translated?: () => boolean;
+    translation?: () => RosettaTranslation;
   } = {
     platform: globalThis.process?.platform,
     override: globalThis.process?.env?.ALLRICE_CLOUD_ARCHITECTURE,
   },
 ): string | null {
   if (host.platform !== 'darwin' || host.override) return null;
-  return (host.translated ?? rosettaTranslated)()
+  const translation = (host.translation ?? rosettaTranslation)();
+  if (translation === 'native') return null;
+  return translation === 'translated'
     ? 'Node is running under Rosetta (x64 on an Apple-silicon Mac), so cloud execution would default to the amd64 toolchain. Start Web and Worker with a native arm64 Node, or set ALLRICE_CLOUD_ARCHITECTURE explicitly.'
-    : null;
+    : `Cannot tell whether Node runs under Rosetta (${translation.unknown}). Set ALLRICE_CLOUD_ARCHITECTURE explicitly to start with cloud execution.`;
 }
 
 /** Browser bundles have no process; they never select a cloud toolchain. */

@@ -350,8 +350,16 @@ export async function selectProjectExecution(
       : [];
     // When neither the cloud nor any Bridge can install the lock, say why instead of
     // reporting a generic unavailable backend: the dependencies need resolving again.
+    // Only once the cloud has really been checked: the tool first selects without a
+    // cloud probe and probes only after "cloud_unavailable"; throwing earlier would
+    // skip that probe and refuse a healthy cloud.
+    const cloudChecked =
+      input.cloudReady ||
+      !cloudExecutionEnabled() ||
+      !tools.includes('cloud.process.execute');
     if (
       !prior &&
+      cloudChecked &&
       lockArchitectures.length < 2 &&
       !(cloud && cloudFits) &&
       !classified.some(
