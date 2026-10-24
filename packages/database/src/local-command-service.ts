@@ -39,6 +39,7 @@ import {
   type StoragePort,
   resolveExecutionChoice,
   bridgeProjectPackageLimit,
+  projectLockArchitectures,
 } from '@allrice/contracts';
 import {
   assertSavedProjectAuthority,
@@ -350,6 +351,16 @@ async function createLocalBridgeToolOperation(
     args.projectPreparation.packages.length > bridgeProjectPackageLimit
   )
     throw new RuntimePolicyError('local_runner_upgrade_required');
+  // Same rule as project selection: this Bridge cannot install a lock pinned to
+  // the other CPU architecture.
+  if (
+    args?.projectPreparation &&
+    profile &&
+    !projectLockArchitectures(args.projectPreparation).includes(
+      profile.architecture,
+    )
+  )
+    throw new RuntimePolicyError('project_lock_platform_mismatch');
   if (
     args?.projectPreparation &&
     (!profile?.features?.includes('project_preparation') ||

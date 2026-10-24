@@ -9,6 +9,8 @@ import {
   ProjectRunnableInputSchema,
   projectWorkflowBudget,
   bridgeProjectPackageLimit,
+  projectLockArchitectures,
+  cloudPlatform,
   ExecutionChoiceSchema,
   isLocalCommandProfileForPlatform,
   resolveExecutionChoice,
@@ -223,6 +225,10 @@ export async function selectProjectExecution(
           ? 'local'
           : 'auto';
     const localOnly = constraints.localOnly || run.local_inputs;
+    // A uv lock pins wheels for the CPU architecture it was resolved for; only a
+    // backend of a listed architecture can install it.
+    const lockArchitectures = projectLockArchitectures(args.projectPreparation);
+    const cloudFits = lockArchitectures.includes(cloudPlatform.architecture);
     const [cloud] =
       input.cloudReady &&
       cloudExecutionEnabled() &&
@@ -290,6 +296,11 @@ export async function selectProjectExecution(
       )
         state = 'unsupported';
       else if (
+        parsed.success &&
+        !lockArchitectures.includes(parsed.data.architecture)
+      )
+        state = 'unsupported';
+      else if (
         state !== 'preparing' &&
         state !== 'busy' &&
         (!parsed.success ||
@@ -337,11 +348,22 @@ export async function selectProjectExecution(
       select snapshot from allrice_runtime_operations where id=${prior.metadata.operationId} and organization_id=${ctx.organizationId}
         and workspace_id=${ctx.workspaceId} and snapshot->'binding'->'requestedBy'->>'id'=${owner} and run_id=${ctx.runId}`
       : [];
+    // When neither the cloud nor any Bridge can install the lock, say why instead of
+    // reporting a generic unavailable backend: the dependencies need resolving again.
+    if (
+      !prior &&
+      lockArchitectures.length < 2 &&
+      !(cloud && cloudFits) &&
+      !classified.some(
+        (c) => c.profile && lockArchitectures.includes(c.profile.architecture),
+      )
+    )
+      throw new RuntimePolicyError('project_lock_platform_mismatch');
     const bound = prior?.metadata.choice.location;
     const choice = resolveExecutionChoice({
       location,
       local: device?.state ?? null,
-      cloudAvailable: !!cloud,
+      cloudAvailable: !!cloud && cloudFits,
       localInputs: localOnly,
       ...(bound === 'local' || bound === 'cloud'
         ? { boundLocation: bound }

@@ -367,6 +367,15 @@ export const runProjectWorkspace: RiceToolHandler = async ({
       );
     if (
       error instanceof RuntimePolicyError &&
+      error.code === 'project_lock_platform_mismatch'
+    )
+      throw new HandlerError(
+        'PROJECT_LOCK_PLATFORM_MISMATCH',
+        '这个项目的依赖锁里有只适用于另一种 CPU 架构的安装包，云端和当前可用的本机环境都装不上，本次没有执行。请用 resolve 重新解析依赖（会生成新的项目版本），再用新版本执行。',
+        false,
+      );
+    if (
+      error instanceof RuntimePolicyError &&
       error.code === 'project_workflow_budget_exhausted'
     )
       throw new HandlerError(

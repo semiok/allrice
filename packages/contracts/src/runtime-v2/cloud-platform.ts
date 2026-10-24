@@ -1,3 +1,4 @@
+import type * as ChildProcess from 'node:child_process';
 /** Fixed server-side sandbox toolchains, one per VM architecture. Exactly one
  * is selected at process start; tenants and models never choose. gVisor cannot
  * run foreign binaries through Rosetta/binfmt, so the VM daemon, every image and
@@ -54,6 +55,47 @@ export function selectCloudArchitecture(
   if (value !== undefined && value !== '')
     throw new Error('ALLRICE_CLOUD_ARCHITECTURE must be amd64 or arm64');
   return hostArchitecture === 'arm64' ? 'arm64' : 'amd64';
+}
+
+/** `sysctl.proc_translated` is 1 for a process translated by Rosetta; Intel Macs do
+ * not have the key (the command fails), which also means nothing is translated. */
+function rosettaTranslated(): boolean {
+  const childProcess = globalThis.process?.getBuiltinModule?.(
+    'node:child_process',
+  ) as typeof ChildProcess | undefined;
+  try {
+    return (
+      childProcess
+        ?.execFileSync('/usr/sbin/sysctl', ['-n', 'sysctl.proc_translated'], {
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+        })
+        .trim() === '1'
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** process.arch is the architecture Node was built for. An x64 Node translated by
+ * Rosetta on an Apple-silicon Mac reports x64, so the default below would pick the
+ * amd64 toolchain: a native arm64 VM then fails its checks and an emulated amd64 VM
+ * would pass them. Web and Worker call this at startup when cloud execution is on and
+ * refuse to start; an explicit ALLRICE_CLOUD_ARCHITECTURE is taken as intended. */
+export function cloudArchitectureTranslationProblem(
+  host: {
+    platform?: string;
+    override?: string;
+    translated?: () => boolean;
+  } = {
+    platform: globalThis.process?.platform,
+    override: globalThis.process?.env?.ALLRICE_CLOUD_ARCHITECTURE,
+  },
+): string | null {
+  if (host.platform !== 'darwin' || host.override) return null;
+  return (host.translated ?? rosettaTranslated)()
+    ? 'Node is running under Rosetta (x64 on an Apple-silicon Mac), so cloud execution would default to the amd64 toolchain. Start Web and Worker with a native arm64 Node, or set ALLRICE_CLOUD_ARCHITECTURE explicitly.'
+    : null;
 }
 
 /** Browser bundles have no process; they never select a cloud toolchain. */
