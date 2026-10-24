@@ -56,8 +56,7 @@ describe('portal hosts', () => {
     expect(tenantTrialPortal('acme', 'https://example.test')).toBe(
       'https://rice.example.com:8443/chatflow',
     );
-    for (const value of ['[2001:db8::1]:8443', 'A.b:443', '[::1]', '::1'])
-      expect(normalizeHost(normalizeHost(value))).toBe(normalizeHost(value));
+    expect(normalizeHost('[2001:DB8:0::1]:8443')).toBe('2001:db8::1');
     // Equivalent spellings of one address are one host.
     vi.stubEnv(
       'ALLRICE_EMPLOYEE_PORTAL_HOSTS',
@@ -72,8 +71,8 @@ describe('portal hosts', () => {
       expect(portalAccountKind(host)).toBe('employee');
     expect(portalAccountKind('a.bplabs.xyz/x')).toBeUndefined();
   });
-  it('compares any other Host spelling literally, as before', () => {
-    vi.stubEnv('ALLRICE_EMPLOYEE_PORTAL_HOSTS', '');
+  it('matches no entry for a Host that is not strictly host[:port]', () => {
+    vi.stubEnv('ALLRICE_EMPLOYEE_PORTAL_HOSTS', 'rice.example.com');
     vi.stubEnv('ALLRICE_ADMIN_PORTAL_HOSTS', '');
     for (const host of [
       '@allrice-admin.bplabs.xyz',
@@ -86,6 +85,31 @@ describe('portal hosts', () => {
     // Other IPv4 spellings are not the loopback entry.
     for (const host of ['0x7f.1', '127.1', '2130706433'])
       expect(isUnifiedPortalHost(host)).toBe(false);
+    // Whitespace before the port and bare IPv6 are not a Host; every check agrees.
+    for (const host of [
+      'allrice.bplabs.xyz :443',
+      'allrice.bplabs.xyz\t:443',
+      'rice.example.com :443',
+      'allrice.bplabs.xyz:',
+      '::1',
+      '2001:db8::1',
+    ]) {
+      expect(normalizeHost(host)).toBe('');
+      expect(isUnifiedPortalHost(host)).toBe(false);
+      expect(resolvePortal(host)).toBeNull();
+      expect(portalAccountKind(host)).toBeUndefined();
+    }
+    // Wherever a Host opens the shared entry, it is held to employee accounts.
+    for (const host of [
+      'allrice.bplabs.xyz',
+      'ALLRICE.bplabs.xyz:443',
+      ' rice.example.com:8443 ',
+      'rice.example.com,evil.test',
+      'allrice-admin.bplabs.xyz',
+      'allrice-snow.bplabs.xyz',
+    ])
+      if (isUnifiedPortalHost(host))
+        expect(portalAccountKind(host)).toBe('employee');
   });
   it('refuses malformed and conflicting entries', () => {
     for (const bad of [
