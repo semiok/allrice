@@ -592,6 +592,15 @@ it('keeps the admin login on its own host and removes the console from the emplo
     expect(tenant.headers.get('location')).toBe(
       'https://allrice.bplabs.xyz/chatflow',
     );
+    // A deployment's own employee entry removes the console the same way.
+    vi.stubEnv('ALLRICE_EMPLOYEE_PORTAL_HOSTS', 'a.bplabs.xyz');
+    expect(
+      proxy(
+        new NextRequest('https://a.bplabs.xyz/runtime-console', {
+          headers: { host: 'a.bplabs.xyz' },
+        }),
+      ).headers.get('location'),
+    ).toBe('https://a.bplabs.xyz/chatflow');
   } finally {
     vi.unstubAllEnvs();
   }

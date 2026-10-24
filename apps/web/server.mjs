@@ -1,4 +1,5 @@
 import { createCloudProjectPreviewTransport } from './server/cloud-project-preview.mjs';
+import { portalEntries } from './server/portal-hosts.mjs';
 import {
   cloudArchitectureTranslationProblem,
   runtimeFeatureEnabled,
@@ -87,6 +88,9 @@ export async function startAllRiceWeb({
     httpServer: server,
   });
   await app.prepare();
+  // After prepare, so Next's .env files count: a malformed or conflicting portal
+  // host list stops startup here (requests refuse it too, in any start mode).
+  portalEntries();
   const handle = createDevRequestHandler(lifecycle, app.getRequestHandler());
   server.on('request', (req, res) => {
     void handle(req, res).catch(() => {
