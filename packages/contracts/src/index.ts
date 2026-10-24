@@ -181,3 +181,5 @@ export * from './brand-content-templates.ts';
 
 export * from './automation-catalog.ts';
 export * from './workbench-files.ts';
+
+export * from './brand-content-feedback.ts';

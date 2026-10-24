@@ -1,3 +1,4 @@
+import { assertBrandFeedbackInput } from './feedback.ts';
 import type postgres from 'postgres';
 import {
   EmployeeExecutionSnapshotSchema,
@@ -59,6 +60,17 @@ export async function authorizeBrandContentTool(
       const invocation = live.snapshot.workflowInvocation;
       if (!invocation || invocation.instanceId !== instanceId)
         throw new DataAccessError('authorization_denied');
+      await assertBrandFeedbackInput(
+        tx,
+        context,
+        {
+          organizationId: scope.organizationId,
+          workspaceId: scope.workspaceId,
+          ownerId: scope.actor.id,
+          instanceId,
+        },
+        invocation.input,
+      );
       const selected = await assertWorkflowPackageExecution(
         scope,
         {

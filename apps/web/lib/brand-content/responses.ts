@@ -1,8 +1,23 @@
-import { BrandContentError, WorkflowPackageError } from '@allrice/database';
+import {
+  BrandContentError,
+  WorkflowPackageError,
+  ExperienceError,
+} from '@allrice/database';
 import { apiProblem } from '../api-error-response';
 import { employeeHubErrorResponse } from '../employeehub/responses';
 
 export function brandContentErrorResponse(error: unknown) {
+  if (error instanceof ExperienceError)
+    return apiProblem({
+      status: error.code === 'identity_denied' ? 403 : 409,
+      code:
+        error.code === 'identity_denied' ? 'AUTHORIZATION_DENIED' : 'CONFLICT',
+      message:
+        error.code === 'disabled'
+          ? '当前环境未启用经验能力，复盘记录已保留。'
+          : '经验或来源状态已变化，请刷新后核对；本次没有覆盖原记录。',
+      retryable: false,
+    });
   if (error instanceof BrandContentError) {
     if (error.code === 'reminder_unavailable')
       return apiProblem({

@@ -29,7 +29,7 @@ describe('Brand content native workflow templates', () => {
       new Set(
         brandContentWorkflowTemplates.map((template) => template.templateKey),
       ).size,
-    ).toBe(4);
+    ).toBe(5);
   });
 
   it('passes dependency outputs to the deterministic adapter rather than static arguments', () => {

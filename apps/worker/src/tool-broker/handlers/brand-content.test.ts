@@ -352,4 +352,79 @@ describe('brand Workflow output publication', () => {
     ).rejects.toMatchObject({ code: 'BRAND_CONTENT_PUBLICATION_UNCONFIRMED' });
     expect(ports.mutate).not.toHaveBeenCalled();
   });
+
+  it('refuses invented experience citations before publishing an article', async () => {
+    const { input, args } = fixture();
+    args.dependencies.compose.answer = JSON.stringify({
+      title: 'A5 纸张',
+      markdown: 'A5。',
+      factIds: ['size'],
+      verificationNotes: [],
+      experienceUses: [{ id: randomUUID(), reason: 'Not loaded for this Run' }],
+    });
+    await expect(
+      executeBrandContentStep({ input, arguments: args }),
+    ).rejects.toMatchObject({
+      code: 'BRAND_CONTENT_EXPERIENCE_REFERENCE_INVALID',
+    });
+    expect(ports.export).not.toHaveBeenCalled();
+    expect(ports.atomicMutate).not.toHaveBeenCalled();
+  });
+
+  it('binds a retrospective to the selected evidence and exposes the exact persisted source for human experience review', async () => {
+    const { input, args, authority } = fixture();
+    const feedbackId = randomUUID();
+    Object.assign(authority.invocation.input, {
+      stage: 'retrospective',
+      platform: 'Bilibili',
+      feedback: [{ id: feedbackId }],
+    });
+    args.configured.action = 'save_retrospective';
+    const output = {
+      summary: 'Observed likes are zero; views unknown.',
+      rule: 'Keep unknown metrics explicit.',
+      applicability: 'Same brand campaign on Bilibili.',
+      limitations: 'One observation is not causal evidence.',
+      feedbackIds: [feedbackId],
+    };
+    args.dependencies.compose.answer = JSON.stringify(output);
+    const report = {
+      id: randomUUID(),
+      sourceText: 'Exact persisted source for human review.',
+    };
+    ports.mutate.mockResolvedValue({ result: { entityId: report.id } });
+    ports.board.mockResolvedValue({
+      contexts: [
+        {
+          id: authority.invocation.input.contextRevisionId,
+          digest: authority.invocation.input.contextDigest,
+        },
+      ],
+      retrospectives: [report],
+    });
+    const result = await executeBrandContentStep({ input, arguments: args });
+    expect(result.summary).toContain(report.sourceText);
+    expect(JSON.parse(result.modelContent).retrospective).toEqual(report);
+    expect(ports.mutate).toHaveBeenCalledWith(
+      authority.context,
+      expect.objectContaining({
+        operation: 'retrospective.save',
+        runId: input.context.runId,
+        sessionId: input.sessionId,
+        output,
+      }),
+      { authority: 'workflow', beforeCommit: ports.fence },
+    );
+    ports.mutate.mockClear();
+    args.dependencies.compose.answer = JSON.stringify({
+      ...output,
+      feedbackIds: [randomUUID()],
+    });
+    await expect(
+      executeBrandContentStep({ input, arguments: args }),
+    ).rejects.toMatchObject({
+      code: 'BRAND_CONTENT_FEEDBACK_REFERENCE_INVALID',
+    });
+    expect(ports.mutate).not.toHaveBeenCalled();
+  });
 });

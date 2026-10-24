@@ -2,6 +2,9 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import {
   BrandContentDraftOutputSchema,
+  BrandRetrospectiveOutputSchema,
+  summarizeBrandFeedback,
+  type BrandContentStageInput,
   BrandContentTopicsOutputSchema,
   BrandContentToolReadSchema,
   type BrandContentMutationReceipt,
@@ -25,7 +28,13 @@ const EnvelopeSchema = z
     workflowInput: z.record(z.string(), z.unknown()),
     configured: z
       .object({
-        action: z.enum(['load', 'save_topics', 'save_article', 'handoff']),
+        action: z.enum([
+          'load',
+          'save_topics',
+          'save_article',
+          'handoff',
+          'save_retrospective',
+        ]),
         toolName: z.literal('workspace.brand_content.step'),
         requiredCapability: z.literal('storage:write'),
       })
@@ -102,6 +111,22 @@ function composeOutput(dependencies: Record<string, unknown>) {
       false,
     );
   }
+}
+
+export function validateBrandExperienceUses(
+  uses: Array<{ id: string; reason: string }> | undefined,
+  input: BrandContentStageInput,
+) {
+  if (
+    (uses ?? []).some(
+      (use) => !(input.experiences ?? []).some((pin) => pin.id === use.id),
+    )
+  )
+    throw new HandlerError(
+      'BRAND_CONTENT_EXPERIENCE_REFERENCE_INVALID',
+      '结果引用了本次未加载的经验，未保存。',
+      false,
+    );
 }
 
 export function renderBrandContentArticleMarkdown(
@@ -190,6 +215,9 @@ export const executeBrandContentStep: RiceToolHandler = async (context) => {
     return {
       modelContent: JSON.stringify({
         ...value,
+        ...(value.feedback
+          ? { metricSummary: summarizeBrandFeedback(value.feedback) }
+          : {}),
         ...(originalMarkdown !== undefined ? { originalMarkdown } : {}),
         existingTopics: board.topics
           .filter((row) => row.platform === value.platform)
@@ -203,10 +231,59 @@ export const executeBrandContentStep: RiceToolHandler = async (context) => {
     packageDigest: invocation.packageDigest,
   };
   const requestId = context.input.call.id;
+  if (action === 'save_retrospective' && value.stage === 'retrospective') {
+    const output = BrandRetrospectiveOutputSchema.parse(
+      composeOutput(envelope.dependencies),
+    );
+    if (
+      JSON.stringify(output.feedbackIds) !==
+      JSON.stringify(value.feedback?.map((sample) => sample.id))
+    )
+      throw new HandlerError(
+        'BRAND_CONTENT_FEEDBACK_REFERENCE_INVALID',
+        '复盘来源必须准确对应本次选定样本。',
+        false,
+      );
+    const receipt = await mutateBrandContent(
+      authority.context,
+      {
+        ...scope,
+        operation: 'retrospective.save',
+        requestId,
+        workflow,
+        contextRevisionId: value.contextRevisionId,
+        platform: value.platform,
+        runId: context.input.context.runId,
+        sessionId: context.input.sessionId!,
+        output,
+      },
+      options,
+    );
+    const updated = await getBrandContentBoard(
+      authority.context,
+      scope,
+      options,
+    );
+    const report = updated.retrospectives?.find(
+      (row) => row.id === receipt.result.entityId,
+    );
+    if (!report)
+      throw new HandlerError(
+        'BRAND_CONTENT_PUBLICATION_UNCONFIRMED',
+        '复盘保存结果未确认。',
+        false,
+      );
+    return {
+      modelContent: JSON.stringify({ ...receipt, retrospective: report }),
+      summary: `${output.summary}\n\n${report.sourceText}\n\n复盘已保存。可在内容工作台提交经验候选，确认后仅供相同品牌、活动和平台的后续任务使用。`,
+      itemCount: 1,
+    };
+  }
   if (action === 'save_topics' && value.stage === 'topics') {
     const output = BrandContentTopicsOutputSchema.parse(
       composeOutput(envelope.dependencies),
     );
+    validateBrandExperienceUses(output.experienceUses, value);
     const facts = new Set(value.context.facts.map((fact) => fact.id));
     if (
       output.candidates.some((candidate) =>
@@ -228,6 +305,9 @@ export const executeBrandContentStep: RiceToolHandler = async (context) => {
         contextRevisionId: value.contextRevisionId,
         platform: value.platform,
         candidates: output.candidates,
+        ...(output.experienceUses
+          ? { experienceUses: output.experienceUses }
+          : {}),
       },
       options,
     );
@@ -245,6 +325,7 @@ export const executeBrandContentStep: RiceToolHandler = async (context) => {
     const draft = BrandContentDraftOutputSchema.parse(
       composeOutput(envelope.dependencies),
     );
+    validateBrandExperienceUses(draft.experienceUses, value);
     const facts = new Set(value.context.facts.map((fact) => fact.id));
     if (
       new Set(draft.factIds).size !== draft.factIds.length ||
@@ -293,6 +374,9 @@ export const executeBrandContentStep: RiceToolHandler = async (context) => {
           content,
           images: value.article?.images ?? [],
           changeSummary,
+          ...(draft.experienceUses
+            ? { experienceUses: draft.experienceUses }
+            : {}),
         },
         tx,
         options,

@@ -862,6 +862,109 @@ suite(
       }
     }, 30_000);
 
+    it('keeps real-source metric snapshots immutable, unknown distinct from zero, and imports scoped', async () => {
+      const brand = await prepareBrand(a, 'feedback snapshots');
+      const input = {
+        ...a.scope,
+        brandId: brand.brandId,
+        operation: 'feedback.record',
+        requestId: freshKey('feedback'),
+        contextRevisionId: brand.contextRevisionId,
+        publicationKind: 'imported_publication',
+        title: 'Synthetic public publication',
+        platform: 'Bilibili',
+        publishedUrl: 'https://www.bilibili.com/video/BV1synthetic/',
+        publishedAt: '2026-01-01T00:00:00.000Z',
+        sampledAt: '2026-01-02T00:00:00.000Z',
+        sourceType: 'public_page',
+        sourceUrl:
+          'https://api.bilibili.com/x/web-interface/view?bvid=synthetic',
+        evidence: 'Synthetic fixture, not actual public data.',
+        limitations: 'Fixture only; views unknown.',
+        metrics: {
+          views: null,
+          likes: 0,
+          comments: null,
+          shares: null,
+          saves: 2,
+        },
+        evidenceFiles: [],
+      };
+      const saved = await mutateBrandContent(a.context, input, {
+        db: fixture.db,
+      });
+      const repeated = await mutateBrandContent(a.context, input, {
+        db: fixture.db,
+      });
+      expect(repeated.replayed).toBe(true);
+      expect(repeated.result.entityId).toBe(saved.result.entityId);
+      const equivalent = await mutateBrandContent(
+        a.context,
+        { ...input, requestId: freshKey('same-sample') },
+        { db: fixture.db },
+      );
+      expect(equivalent.result.entityId).toBe(saved.result.entityId);
+      await expect(
+        mutateBrandContent(
+          a.context,
+          {
+            ...input,
+            requestId: freshKey('changed-sample'),
+            metrics: { ...input.metrics, likes: 8 },
+          },
+          { db: fixture.db },
+        ),
+      ).rejects.toMatchObject({ code: 'request_conflict' });
+      const read = await board(brand);
+      expect(read.feedback).toHaveLength(1);
+      expect(read.feedback![0]!.metrics).toEqual(input.metrics);
+      expect(read.receipts).toEqual([]);
+      expect(read.feedback![0]!.publicationKind).toBe('imported_publication');
+      await expect(
+        fixture.db`update allrice_brand_content_feedback set content=content where id=${saved.result.entityId}`,
+      ).rejects.toThrow('brand_content_record_immutable');
+      await expect(
+        mutateBrandContent(
+          b.context,
+          { ...input, ...b.scope, requestId: freshKey('cross-company') },
+          { db: fixture.db },
+        ),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await expect(
+        mutateBrandContent(
+          a.context,
+          {
+            ...input,
+            instanceId: alternate.instance.id,
+            requestId: freshKey('cross-instance'),
+          },
+          { db: fixture.db },
+        ),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      const future = {
+        ...input,
+        requestId: freshKey('future'),
+        sampledAt: '2999-01-01T00:00:00.000Z',
+      };
+      await expect(
+        mutateBrandContent(a.context, future, { db: fixture.db }),
+      ).rejects.toMatchObject({ code: 'receipt_invalid' });
+      await expect(
+        mutateBrandContent(
+          a.context,
+          {
+            ...input,
+            requestId: freshKey('fake-receipt'),
+            sampledAt: '2026-01-03T00:00:00.000Z',
+            publicationKind: 'receipt',
+            receiptId: randomUUID(),
+          },
+          { db: fixture.db },
+        ),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      expect((await board(brand)).feedback).toHaveLength(1);
+    });
+
     it('validates an uncommitted authenticated start and user message on the caller transaction, rejects another owner, and leaves no rows after rollback', async () => {
       const brand = await prepareBrand(a, 'caller-transaction-start');
       const request = {

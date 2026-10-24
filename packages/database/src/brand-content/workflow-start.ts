@@ -1,6 +1,8 @@
+import { assertBrandFeedbackInput } from './feedback.ts';
 import { randomUUID } from 'node:crypto';
 import {
   BrandContentStageInputSchema,
+  BrandExperiencePinSchema,
   BrandContentWorkflowInvocationSchema,
   StartBrandContentWorkflowSchema,
   brandContentTemplateKeys,
@@ -32,14 +34,38 @@ export function brandContentStageInput(
   const topic = board.topics.find(
     (row) => row.id === (article?.topicId ?? request.topicId),
   );
-  if (request.stage !== 'topics' && (!topic || topic.state !== 'accepted'))
+  if (
+    !['topics', 'retrospective'].includes(request.stage) &&
+    (!topic || topic.state !== 'accepted')
+  )
     fail('invalid_state');
   const bundle = article
     ? board.bundles.find((row) => row.id === article.currentBundleId)
     : undefined;
+  const feedback =
+    request.stage === 'retrospective'
+      ? (request.feedbackIds ?? []).map((id) => {
+          const sample = board.feedback?.find((row) => row.id === id);
+          if (!sample) fail('source_unavailable');
+          return sample;
+        })
+      : [];
+  if (
+    request.stage === 'retrospective' &&
+    (!feedback.length ||
+      feedback.some(
+        (sample) =>
+          sample.platform !== feedback[0]!.platform ||
+          sample.contextRevisionId !== feedback[0]!.contextRevisionId,
+      ))
+  )
+    fail('source_reference_invalid');
   const context = board.contexts.find(
     (row) =>
-      row.id === (topic?.contextRevisionId ?? board.brand.contextRevisionId),
+      row.id ===
+      (feedback[0]?.contextRevisionId ??
+        topic?.contextRevisionId ??
+        board.brand.contextRevisionId),
   );
   if (!context) fail('source_unavailable');
   if (
@@ -67,14 +93,44 @@ export function brandContentStageInput(
       review.bundleDigest !== bundle?.digest)
   )
     fail('invalid_state');
+  const platform =
+    request.stage === 'topics'
+      ? request.platform
+      : request.stage === 'retrospective'
+        ? feedback[0]?.platform
+        : topic?.platform;
+  const experiences = ['topics', 'article', 'revision'].includes(request.stage)
+    ? (board.experiences ?? [])
+        .filter(
+          (row) =>
+            row.status === 'approved' &&
+            !row.archived &&
+            row.platform === platform &&
+            row.campaignKey === (context.content.campaign?.key ?? null),
+        )
+        .slice(0, 20)
+        .map((row) =>
+          BrandExperiencePinSchema.parse({
+            id: row.id,
+            revision: row.revision,
+            digest: row.digest,
+            content: row.content,
+            retrospectiveId: row.retrospectiveId,
+            platform: row.platform,
+            campaignKey: row.campaignKey,
+          }),
+        )
+    : [];
   return BrandContentStageInputSchema.parse({
+    ...(feedback.length ? { feedback } : {}),
+    ...(experiences.length ? { experiences } : {}),
     stage: request.stage,
     brandId: board.brand.id,
     brandName: context.brandName,
     contextRevisionId: context.id,
     contextDigest: context.digest,
     context: context.content,
-    platform: request.stage === 'topics' ? request.platform : topic?.platform,
+    platform,
     ...(request.stage === 'topics' ? { count: request.count ?? 3 } : {}),
     ...(topic ? { topic: { id: topic.id, candidate: topic.candidate } } : {}),
     ...(article && bundle
@@ -189,6 +245,7 @@ export async function startBrandContentWorkflow(
         tx,
         true,
       );
+      await assertBrandFeedbackInput(tx, context, current, value);
       const [saved] = await tx<
         StartRow[]
       >`insert into allrice_brand_content_workflow_starts
@@ -220,6 +277,7 @@ export async function startBrandContentWorkflow(
           article: '稿件制作',
           revision: '稿件修订',
           handoff: '发布交接',
+          retrospective: '发布复盘',
         }[request.stage]
       }`,
     },

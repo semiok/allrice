@@ -1,4 +1,9 @@
 import { z } from 'zod';
+import {
+  BrandFeedbackSchema,
+  BrandExperiencePinSchema,
+  BrandExperienceUsesSchema,
+} from './brand-content-feedback.ts';
 import { UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
 import {
@@ -17,6 +22,7 @@ export const BrandContentWorkflowStageSchema = z.enum([
   'article',
   'revision',
   'handoff',
+  'retrospective',
 ]);
 export type BrandContentWorkflowStage = z.infer<
   typeof BrandContentWorkflowStageSchema
@@ -27,6 +33,7 @@ export const brandContentTemplateKeys = {
   article: 'brand-content-operations.article',
   revision: 'brand-content-operations.revision',
   handoff: 'brand-content-operations.handoff',
+  retrospective: 'brand-content-operations.retrospective',
 } as const;
 
 /** A human starts a bounded business stage. The server resolves the executable
@@ -42,9 +49,16 @@ export const StartBrandContentWorkflowSchema = z
     articleId: UuidSchema.optional(),
     platform: z.string().trim().min(1).max(80).optional(),
     count: z.number().int().positive().max(40).optional(),
+    feedbackIds: z.array(UuidSchema).min(1).max(20).optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
+    if (
+      value.stage === 'retrospective' &&
+      (!value.feedbackIds?.length ||
+        new Set(value.feedbackIds).size !== value.feedbackIds.length)
+    )
+      ctx.addIssue({ code: 'custom', message: '请选择不重复的真实反馈样本。' });
     if (value.stage === 'topics' && !value.platform)
       ctx.addIssue({ code: 'custom', message: '请选择本次选题的平台。' });
     if (value.stage === 'article' && !value.topicId)
@@ -67,6 +81,8 @@ export const BrandContentStageInputSchema = z
     contextRevisionId: UuidSchema,
     contextDigest: ChecksumSchema,
     context: BrandContextContentSchema,
+    feedback: z.array(BrandFeedbackSchema).max(20).optional(),
+    experiences: z.array(BrandExperiencePinSchema).max(20).optional(),
     platform: z.string().trim().min(1).max(80),
     count: z.number().int().positive().max(40).optional(),
     topic: z
@@ -116,11 +132,15 @@ export type BrandContentWorkflowInvocation = z.infer<
 >;
 
 export const BrandContentTopicsOutputSchema = z
-  .object({ candidates: z.array(BrandContentCandidateSchema).min(1).max(40) })
+  .object({
+    candidates: z.array(BrandContentCandidateSchema).min(1).max(40),
+    experienceUses: BrandExperienceUsesSchema.optional(),
+  })
   .strict();
 
 export const BrandContentDraftOutputSchema = z
   .object({
+    experienceUses: BrandExperienceUsesSchema.optional(),
     title: z.string().trim().min(1).max(240),
     markdown: z.string().trim().min(1).max(180_000),
     factIds: z.array(z.string().min(1)),

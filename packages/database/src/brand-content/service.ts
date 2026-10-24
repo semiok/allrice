@@ -1,3 +1,9 @@
+import {
+  applyBrandFeedback,
+  readBrandFeedback,
+  readBrandRetrospective,
+  recordBrandExperienceUses,
+} from './feedback.ts';
 import { randomUUID } from 'node:crypto';
 import {
   BrandContentActionSchema,
@@ -176,6 +182,13 @@ async function applyAction(
   }
   if (!brand) fail('not_found');
   const brandId = brand.id;
+  if (
+    action.operation === 'feedback.record' ||
+    action.operation === 'retrospective.save' ||
+    action.operation === 'experience.propose' ||
+    action.operation === 'experience.review'
+  )
+    return applyBrandFeedback(tx, context, scope, action);
   if (action.operation === 'topics.propose') {
     const frozen = await readBrandContext(
       tx,
@@ -605,6 +618,30 @@ async function recheckReceipt(
   response: BrandContentMutationReceipt,
 ) {
   const brandId = response.result.brandId;
+  if (action.operation === 'feedback.record')
+    await readBrandFeedback(
+      tx,
+      context,
+      scope,
+      brandId,
+      response.result.entityId,
+    );
+  if (action.operation === 'retrospective.save')
+    await readBrandRetrospective(
+      tx,
+      context,
+      scope,
+      brandId,
+      response.result.entityId,
+    );
+  if (action.operation === 'experience.propose')
+    await readBrandRetrospective(
+      tx,
+      context,
+      scope,
+      brandId,
+      action.retrospectiveId,
+    );
   await readBrand(tx, scope, brandId);
   if (response.result.contextRevisionId)
     await readBrandContext(
@@ -738,6 +775,7 @@ async function applyMutationInTransaction(
   const brandId = 'brandId' in action ? action.brandId : undefined;
   const brand = brandId ? await readBrand(tx, scope, brandId, true) : null;
   const applied = await applyAction(tx, context, scope, action, brand);
+  await recordBrandExperienceUses(tx, context, scope, action, applied.entityId);
   const response = BrandContentMutationReceiptSchema.parse({
     operation: action.operation,
     requestId: action.requestId,

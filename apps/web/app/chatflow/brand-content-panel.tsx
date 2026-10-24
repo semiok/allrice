@@ -28,6 +28,7 @@ import {
 } from '@allrice/contracts';
 import { DshDialog } from './dsh-upstream/Dialog';
 import css from './brand-content-panel.module.css';
+import { BrandFeedbackPanel } from './brand-feedback-panel';
 
 const FileSchema = BrandContentFileRefSchema.extend({
   fileName: z.string(),
@@ -47,8 +48,8 @@ type Topic = BrandContentBoard['topics'][number];
 type Article = BrandContentBoard['articles'][number];
 type Bundle = BrandContentBoard['bundles'][number];
 type Plan = BrandContentBoard['plans'][number];
-type Stage = 'topics' | 'article' | 'revision' | 'handoff';
-type Tab = 'context' | 'topics' | 'articles' | 'plans';
+type Stage = 'topics' | 'article' | 'revision' | 'handoff' | 'retrospective';
+type Tab = 'context' | 'topics' | 'articles' | 'plans' | 'feedback';
 type Mutate = (
   input: Record<string, unknown>,
   success: string,
@@ -62,6 +63,7 @@ type Start = (
     sessionId?: string;
     count?: number;
     platform?: string;
+    feedbackIds?: string[];
   },
 ) => Promise<void>;
 
@@ -96,12 +98,14 @@ const stageNames: Record<Stage, string> = {
   article: '起草',
   revision: '按意见修订',
   handoff: '整理交接清单',
+  retrospective: '复盘发布数据',
 };
 const tabs: Array<{ key: Tab; label: string }> = [
   { key: 'context', label: '品牌资料' },
   { key: 'topics', label: '选题' },
   { key: 'articles', label: '稿件' },
   { key: 'plans', label: '排期与回执' },
+  { key: 'feedback', label: '反馈与经验' },
 ];
 
 export function brandContentStageAvailable(
@@ -398,6 +402,33 @@ function BrandContentReader(props: BrandContentPanelProps) {
       setBusy(false);
     }
   };
+  const forgetExperience = async (id: string) => {
+    if (
+      inFlight.current ||
+      !data?.board?.experiences?.some((e) => e.id === id && !e.archived)
+    )
+      return;
+    inFlight.current = true;
+    setBusy(true);
+    setError('');
+    try {
+      const response = await fetch(
+        `/api/v1/memories/${encodeURIComponent(id)}?workspaceId=${encodeURIComponent(props.workspaceId)}`,
+        { method: 'DELETE', headers: headersRef.current },
+      );
+      if (!response.ok) throw Error('撤回结果未确认，请刷新后核对。');
+      if (mounted.current) {
+        await read(data.board.brand.id);
+        setNotice('经验已撤回，历史复盘和引用记录保留。');
+      }
+    } catch (cause) {
+      if (mounted.current)
+        setError(errorText(cause, '撤回结果未确认，请刷新后核对。'));
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+    }
+  };
   const registerReminder: RegisterReminder = async (plan) => {
     if (inFlight.current || !data?.board) return;
     inFlight.current = true;
@@ -609,6 +640,24 @@ function BrandContentReader(props: BrandContentPanelProps) {
                 onOpenSession={props.onOpenSession}
                 onPlans={() => setTab('plans')}
                 headers={props.headers}
+              />
+            )}
+            {board && tab === 'feedback' && (
+              <BrandFeedbackPanel
+                key={board.brand.id}
+                board={board}
+                disabled={disabled}
+                available={brandContentStageAvailable(
+                  data.packages,
+                  'retrospective',
+                )}
+                draftKey={`${scope}.feedback.${board.brand.id}`}
+                onMutate={mutate}
+                onForget={forgetExperience}
+                onStart={(feedbackIds) =>
+                  start('retrospective', { feedbackIds })
+                }
+                onOpenSession={props.onOpenSession}
               />
             )}
             {board && tab === 'plans' && (

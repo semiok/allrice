@@ -1240,6 +1240,7 @@ async function loadWorkspaceMemoryRecallCandidates(
       and not exists(select 1 from allrice_experience_reviews er
         where er.memory_id=m.id and (er.origin_kind in ('incremental','derived') or er.status<>'approved'
           or exists(select 1 from allrice_employee_runs origin where origin.run_id=er.run_id and origin.method_authoring)))
+      and not exists(select 1 from allrice_brand_content_experiences brand where brand.memory_id=m.id)
       and not exists(select 1 from allrice_employee_runs er
         where er.organization_id=m.organization_id and er.workspace_id=m.workspace_id and er.method_authoring
           and ((m.source_type='message' and m.source_id in (er.user_message_id,er.assistant_message_id))

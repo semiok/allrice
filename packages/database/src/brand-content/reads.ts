@@ -1,3 +1,4 @@
+import { readBrandFeedbackBoard } from './feedback.ts';
 import {
   BrandContentScopeSchema,
   BrandContentReadSchema,
@@ -137,7 +138,9 @@ export async function getBrandContentBoard(
     for (const receipt of receipts.slice(0, 200))
       for (const file of receipt.evidence_files)
         await assertBrandContentFile(tx, context, scope, file);
+    const feedback = await readBrandFeedbackBoard(tx, context, scope, brand.id);
     const board = BrandContentBoardSchema.parse({
+      ...feedback,
       brand: mapBrand(brand),
       contexts: contexts.slice(0, 200).map((r) => ({
         id: r.id,
@@ -240,16 +243,17 @@ export async function getBrandContentBoard(
         verificationState: 'provided',
         createdAt: r.created_at.toISOString(),
       })),
-      truncated: [
-        contexts,
-        batches,
-        topics,
-        articles,
-        bundles,
-        reviews,
-        plans,
-        receipts,
-      ].some((r) => r.length > 200),
+      truncated:
+        [
+          contexts,
+          batches,
+          topics,
+          articles,
+          bundles,
+          reviews,
+          plans,
+          receipts,
+        ].some((r) => r.length > 200) || feedback.truncated,
     });
     if (options.authority === 'workflow' && !options.beforeCommit)
       fail('authority_denied');

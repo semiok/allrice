@@ -1467,8 +1467,11 @@ export async function executeEmployeeRun({
             const checkWorkflowContent = async () => {
               await contentGuard?.check();
               if (invocation) {
-                const { assertWorkflowPackageExecution } =
-                  await import('@allrice/database');
+                const {
+                  assertWorkflowPackageExecution,
+                  assertEmployeeBrandWorkflowContext,
+                } = await import('@allrice/database');
+                await assertEmployeeBrandWorkflowContext(contentScope);
                 await assertWorkflowPackageExecution(
                   {
                     actor: execution.context.delegatedBy,

@@ -369,3 +369,85 @@ describe('MET194 frozen brand-content stage input', () => {
     },
   );
 });
+
+describe('feedback and scoped experience stage input', () => {
+  const feedback = (n: number, platform = 'Bilibili') => ({
+    id: id(n),
+    contextRevisionId: id(3),
+    publicationKind: 'imported_publication' as const,
+    title: 'Fixture publication',
+    platform,
+    publishedUrl: 'https://www.bilibili.com/video/fixture/',
+    publishedAt: now,
+    sampledAt: now,
+    sourceType: 'public_page' as const,
+    sourceUrl: 'https://www.bilibili.com/video/fixture/',
+    evidence: 'Synthetic test',
+    limitations: 'Unknown metrics',
+    metrics: {
+      views: null,
+      likes: 0,
+      comments: null,
+      shares: null,
+      saves: null,
+    },
+    evidenceFiles: [],
+    digest: checksum('c'),
+    createdAt: now,
+  });
+  it('freezes selected feedback order and rejects mixed platforms or contexts', () => {
+    const b = fixture();
+    b.feedback = [feedback(50), feedback(51)];
+    const req = StartBrandContentWorkflowSchema.parse({
+      workspaceId: id(90),
+      brandId: b.brand.id,
+      requestId: id(91),
+      stage: 'retrospective',
+      feedbackIds: [id(51), id(50)],
+    });
+    expect(brandContentStageInput(b, req).feedback?.map((x) => x.id)).toEqual([
+      id(51),
+      id(50),
+    ]);
+    b.feedback[0]!.platform = 'other';
+    expect(() => brandContentStageInput(b, req)).toThrow(
+      'source_reference_invalid',
+    );
+    b.feedback[0] = feedback(50);
+    b.feedback[0]!.contextRevisionId = id(2);
+    expect(() => brandContentStageInput(b, req)).toThrow(
+      'source_reference_invalid',
+    );
+  });
+  it('includes only approved live experiences for the precise platform and campaign', () => {
+    const b = fixture();
+    const e = {
+      id: id(70),
+      revision: 2,
+      digest: checksum('d'),
+      content: 'Scoped advice',
+      retrospectiveId: id(71),
+      platform: 'Bilibili',
+      campaignKey: null,
+      status: 'approved' as const,
+      archived: false,
+    };
+    b.experiences = [
+      e,
+      { ...e, id: id(72), platform: 'other' },
+      { ...e, id: id(73), campaignKey: 'other' },
+      { ...e, id: id(74), archived: true },
+      { ...e, id: id(75), status: 'pending' },
+    ];
+    const req = StartBrandContentWorkflowSchema.parse({
+      workspaceId: id(90),
+      brandId: b.brand.id,
+      requestId: id(91),
+      stage: 'topics',
+      platform: 'Bilibili',
+    });
+    expect(
+      brandContentStageInput(b, req).experiences?.map((x) => x.id),
+    ).toEqual([e.id]);
+  });
+});
