@@ -36,10 +36,9 @@ const parsedHost = (host) => {
 };
 
 /** A hostname as the portal compares it: IPv6 compressed without brackets, so
- * equivalent spellings compare equal. Anything else that is not strictly a host
- * (userinfo, paths, other IPv4 spellings) is returned unchanged and matches only
- * itself, as before. */
-export const canonicalHost = (host) => parsedHost(host) ?? host;
+ * equivalent spellings compare equal; '' (matching no entry) for anything that is
+ * not strictly a host: whitespace, userinfo, paths, other IPv4 spellings. */
+export const canonicalHost = (host) => parsedHost(host) ?? '';
 
 /** Portal entries a deployment adds for its own domain: comma separated
  * `host[:port]` (a DNS name, or an IPv6 address bare or in brackets). `host` is

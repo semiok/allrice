@@ -103,18 +103,14 @@ export function portalAuthEnabled() {
   return process.env.ALLRICE_PORTAL_AUTH_ENABLED === '1';
 }
 
-/** Canonical hostname without brackets or port, compared the same way as the
- * configured entries; idempotent, so a normalized value normalizes to itself. */
+/** A request's Host as the portal compares it: the canonical hostname without
+ * port or brackets, or '' (matching no entry) unless it is strictly host[:port]
+ * with IPv6 in brackets. Every exported check reads the raw Host through this
+ * exactly once, so the checks always agree. */
 export function normalizeHost(value: string | null | undefined) {
-  if (!value) return '';
-  const first = value.split(',')[0]?.trim().toLowerCase() ?? '';
-  // [IPv6]:port; a bare IPv6 address (more than one colon, no port); name:port.
-  const host = first.startsWith('[')
-    ? first.slice(0, first.indexOf(']') + 1 || undefined)
-    : first.indexOf(':') !== first.lastIndexOf(':')
-      ? `[${first}]`
-      : (first.split(':')[0] ?? '');
-  return canonicalHost(host);
+  const first = (value ?? '').split(',')[0]?.trim().toLowerCase() ?? '';
+  const match = /^(\[[^\]]*\]|[^:[\]]*)(?::[0-9]{1,5})?$/.exec(first);
+  return match?.[1] === undefined ? '' : canonicalHost(match[1]);
 }
 
 const employeeHosts = () => [
@@ -132,10 +128,17 @@ export const employeePortalAuthority = () =>
 export const adminPortalAuthority = () =>
   portalEntries().admin[0]?.authority ?? 'allrice-admin.bplabs.xyz';
 
+// These take a normalized host; the exported checks below normalize once.
+const isEmployeeHost = (host: string) => employeeHosts().includes(host);
+const isUnifiedHost = (host: string) =>
+  isEmployeeHost(host) ||
+  (loopbackHosts.includes(host) &&
+    (process.env.ALLRICE_LOCAL_PORTAL ?? 'unified') === 'unified');
+
 /** The shared employee entry: allrice.bplabs.xyz, plus the hosts a deployment lists
  * in ALLRICE_EMPLOYEE_PORTAL_HOSTS (its own domain; comma separated). */
 export function isEmployeePortalHost(host: string | null | undefined) {
-  return employeeHosts().includes(normalizeHost(host));
+  return isEmployeeHost(normalizeHost(host));
 }
 
 /** A portal's hostnames; the admin portal also takes ALLRICE_ADMIN_PORTAL_HOSTS. */
@@ -146,17 +149,15 @@ const portalHosts = (portal: PortalDefinition) =>
 
 /** The shared entry never selects a person or organization from its hostname. */
 export function isUnifiedPortalHost(host: string | null | undefined) {
-  const value = normalizeHost(host);
-  return (
-    isEmployeePortalHost(value) ||
-    (loopbackHosts.includes(value) &&
-      (process.env.ALLRICE_LOCAL_PORTAL ?? 'unified') === 'unified')
-  );
+  return isUnifiedHost(normalizeHost(host));
 }
 
 export function resolvePortal(host: string | null | undefined) {
-  if (isUnifiedPortalHost(host)) return null;
-  const normalized = normalizeHost(host);
+  return portalForHost(normalizeHost(host));
+}
+
+function portalForHost(normalized: string) {
+  if (isUnifiedHost(normalized)) return null;
   if (loopbackHosts.includes(normalized)) {
     const localKey = process.env.ALLRICE_LOCAL_PORTAL ?? 'snow';
     return (
@@ -174,8 +175,9 @@ export function resolvePortal(host: string | null | undefined) {
  * Unconfigured localhost keeps the development harness usable with either role.
  */
 export function portalAccountKind(host: string | null | undefined) {
-  if (isEmployeePortalHost(host)) return 'employee' as const;
-  const portal = resolvePortal(host);
+  const value = normalizeHost(host);
+  if (isEmployeeHost(value)) return 'employee' as const;
+  const portal = portalForHost(value);
   return portal?.kind === 'platform_admin'
     ? ('platform_admin' as const)
     : portal?.kind === 'tenant'
@@ -228,7 +230,7 @@ export function legacyPortalNavigation(request: {
 }) {
   if (!['GET', 'HEAD'].includes(request.method)) return null;
   const host = normalizeHost(request.headers.get('host')),
-    portal = resolvePortal(host);
+    portal = portalForHost(host);
   if (!portal || !portal.hosts.includes(host)) return null;
   // The admin entry itself, and an alias this deployment lists as one of its own
   // entries, are served here rather than moved.
