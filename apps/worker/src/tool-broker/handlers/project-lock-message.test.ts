@@ -13,7 +13,7 @@ const facts = (
   toolLocal: false,
   cloudOnly: false,
   cloudUsable: true,
-  bridgeNeedsUpgrade: false,
+  currentBridgeArchitectures: ['amd64'],
   ...over,
 });
 
@@ -30,10 +30,21 @@ describe('project lock platform message', () => {
   });
   it('does not present a new lock as enough for a Bridge that needs upgrading', () => {
     const text = projectLockPlatformMessage(
-      facts({ localInputs: true, bridgeNeedsUpgrade: true }),
+      facts({ localInputs: true, currentBridgeArchitectures: [] }),
     );
     expect(text).toMatch(/先升级 Bridge/);
     expect(text).not.toMatch(/architecture: amd64/);
+  });
+  it('still offers the Bridges that support the request when another needs upgrading', () => {
+    const text = projectLockPlatformMessage(
+      facts({
+        localInputs: true,
+        bridgeArchitectures: ['amd64', 'amd64'],
+        currentBridgeArchitectures: ['amd64'],
+      }),
+    );
+    expect(text).toMatch(/architecture: amd64.*在本机执行/);
+    expect(text).not.toMatch(/先升级 Bridge/);
   });
   it('names every obstacle together', () => {
     const text = projectLockPlatformMessage(

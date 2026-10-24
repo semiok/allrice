@@ -371,7 +371,7 @@ async function createLocalBridgeToolOperation(
       toolLocal: true,
       cloudOnly: false,
       cloudUsable: undefined,
-      bridgeNeedsUpgrade: false,
+      currentBridgeArchitectures: [profile.architecture],
     });
   if (
     args?.projectPreparation &&

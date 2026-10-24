@@ -201,6 +201,71 @@ describe('cloud platform selection', () => {
       ),
     ).toMatchObject({ target: { machine: 'aarch64' } });
   });
+  it('selects wheels with exactly the tags packaging gives the target CPU', async () => {
+    // Runs the script's own tag lines beside packaging's tags on a simulated CPython
+    // Linux with glibc 2.36 (the shared base image), for each target CPU.
+    const { spawnSync } = await import('node:child_process');
+    const harness = [
+      'import json,os,platform,sys,sysconfig',
+      'from importlib import import_module',
+      'try:import packaging as P',
+      // Hosts without packaging still have the copy pip vendors.
+      'except ImportError:from pip._vendor import packaging as P',
+      "T=import_module(P.__name__+'.tags');M=import_module(P.__name__+'._manylinux')",
+      'machine,code=sys.argv[1],sys.argv[2]',
+      'M._get_glibc_version=lambda:(2,36)',
+      'M._have_compatible_abi=lambda *a:True',
+      "platform.system=lambda:'Linux'",
+      "sysconfig.get_platform=lambda:'linux-'+machine",
+      "os.confstr=lambda name:'glibc 2.36'",
+      "scope=dict(os=os,plan={'target':{'machine':machine}},cpython_tags=T.cpython_tags,compatible_tags=T.compatible_tags,interpreter_version=T.interpreter_version)",
+      'exec(code,scope)',
+      // sys_tags() of packaging 25.0, pinned in the images; older host copies omit
+      // the interpreter's none-any tag, so compare with theirs only when present.
+      "interp='cp'+T.interpreter_version()",
+      'expected=[*T.cpython_tags(),*T.compatible_tags(interpreter=interp)]',
+      'host=list(T.sys_tags())',
+      "assert interp+'-none-any' not in map(str,host) or host==expected",
+      "print(json.dumps(dict(expected={str(t):i for i,t in enumerate(expected)},actual={str(t):i for t,i in scope['tags'].items()})))",
+    ].join('\n');
+    const arm = await load('arm64');
+    for (const [architecture, machine, legacy] of [
+      ['amd64', 'x86_64', 'py3-none-manylinux1_x86_64'],
+      ['arm64', 'aarch64', 'py3-none-manylinux2014_aarch64'],
+    ] as const) {
+      const lines = arm.resolution
+        .projectResolutionScript({
+          action: 'resolve',
+          manager: 'uv',
+          packages: [{ name: 'six', version: '1.17.0' }],
+          architecture,
+        })
+        .split('\n');
+      const start = lines.findIndex((l) =>
+        l.startsWith("    arch=plan['target']"),
+      );
+      const end = lines.findIndex((l) => l.includes('target_platform='));
+      const code = [
+        ...lines.slice(start, end + 1),
+        lines.find((l) => l.startsWith('    tags='))!,
+      ]
+        .map((l) => l.slice(4))
+        .join('\n');
+      const run = spawnSync('python3', ['-I', '-c', harness, machine, code], {
+        encoding: 'utf8',
+      });
+      expect(run.stderr).toBe('');
+      const { expected, actual } = JSON.parse(run.stdout) as Record<
+        string,
+        Record<string, number>
+      >;
+      expect(actual).toEqual(expected);
+      expect(Object.keys(actual!)).toContain(legacy);
+      expect(
+        Object.keys(actual!).some((tag) => /^cp3\d+-none-any$/.test(tag)),
+      ).toBe(true);
+    }
+  });
   it('accepts a target CPU for uv resolutions only', async () => {
     const { ProjectDependencyResolveInputSchema } =
       await import('../project-dependency-resolution.ts');

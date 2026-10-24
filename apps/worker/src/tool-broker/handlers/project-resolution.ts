@@ -21,18 +21,14 @@ export const runProjectResolution: RiceToolHandler = async ({
   input,
   arguments: args,
 }) => {
-  const parsed = ProjectDependencyResolveInputSchema.parse(args);
-  // New uv resolutions always name their target CPU, so they use the targeted
-  // controller; a request without one is kept for records made before targets.
-  const request =
-    parsed.manager === 'uv' && !parsed.architecture
-      ? { ...parsed, architecture: cloudPlatform.architecture }
-      : parsed;
+  const request = ProjectDependencyResolveInputSchema.parse(args);
   const storage = new LocalStorageAdapter(input.storageRoot);
   const created = await createCloudProjectResolutionOperation({
     context: input.context,
     callId: input.call.id,
-    arguments: request,
+    arguments: args,
+    // A uv call that names no CPU resolves for this cloud's.
+    architecture: cloudPlatform.architecture,
   });
   const result = await runCloudCommandOperation(created, {
     storage,
