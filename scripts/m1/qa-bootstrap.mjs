@@ -5,7 +5,7 @@
 // portal Host/Origin so the normal portal authentication and same-origin checks apply.
 //
 //   node qa-bootstrap.mjs --port <webPort> --company <name> --username <user> --creds <file>
-//                         [--env ~/allrice-dev/.env] [--rice ~/allrice-dev/qa/rice-standard.json]
+//                         [--env ~/allrice-dev/.env] [--rice <file>]  (default: rice-standard.json next to this script)
 //                         [--no-cloud --drop-skills <id,id>]
 // --no-cloud publishes Rice without the cloud-sandbox tools (and the given skills
 // that require them), for instances whose cloud execution is switched off.
@@ -16,7 +16,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
-import { URLSearchParams } from 'node:url';
+import { URLSearchParams, fileURLToPath } from 'node:url';
 
 const args = Object.fromEntries(
   process.argv
@@ -35,7 +35,9 @@ const company = args.company;
 const username = args.username;
 const credsPath = args.creds;
 const envPath = args.env ?? `${home}/allrice-dev/.env`;
-const ricePath = args.rice ?? `${home}/allrice-dev/qa/rice-standard.json`;
+// The standard definition ships next to this script, so it matches the installed tools.
+const ricePath =
+  args.rice ?? fileURLToPath(new URL('./rice-standard.json', import.meta.url));
 if (!port || !company || !username || !credsPath) {
   console.error(
     'usage: qa-bootstrap.mjs --port <webPort> --company <name> --username <user> --creds <file>',
@@ -166,12 +168,25 @@ if ('no-cloud' in args) {
 let detail = await call('GET', `/api/v1/admin/platform-employees/${rice.id}`);
 const published =
   detail.employee.publishedRevision ?? detail.employee.currentPublished ?? null;
+// Every top-level field of the standard definition is managed here and must match
+// exactly (key order ignored); fields the standard does not list are left alone.
+const canonical = (v) =>
+  Array.isArray(v)
+    ? v.map(canonical)
+    : v && typeof v === 'object'
+      ? Object.fromEntries(
+          Object.keys(v)
+            .sort()
+            .map((k) => [k, canonical(v[k])]),
+        )
+      : v;
 const sameAsStandard = (rev) =>
-  rev &&
-  JSON.stringify(rev.definition?.capabilities?.toolNames ?? []) ===
-    JSON.stringify(standard.capabilities.toolNames) &&
-  rev.definition?.securityPolicy?.bridgeAccess ===
-    standard.securityPolicy.bridgeAccess;
+  Boolean(rev?.definition) &&
+  Object.keys(standard).every(
+    (k) =>
+      JSON.stringify(canonical(rev.definition[k] ?? null)) ===
+      JSON.stringify(canonical(standard[k])),
+  );
 let publishedRevisionId = published?.id ?? null;
 if (!sameAsStandard(published) || !publishedRevisionId) {
   const saved = await call(
@@ -234,7 +249,8 @@ if (!workspaceId)
       JSON.stringify(orgDetail).slice(0, 300),
   );
 
-// 4. Employee account (create, or reset password when our creds file is missing).
+// 4. Employee account: create (reusing the password in --creds when present), or reset
+// the password when our creds file is missing.
 let creds = fs.existsSync(credsPath)
   ? JSON.parse(fs.readFileSync(credsPath, 'utf8'))
   : null;
@@ -246,10 +262,14 @@ const person = (people.people ?? people.items ?? []).find(
   (p) => p.username === username,
 );
 if (!person) {
-  creds = {
-    username,
-    password: 'Qa-' + crypto.randomBytes(12).toString('base64url'),
-  };
+  // A fresh database with an existing creds file (e.g. after a Dev rebuild): keep the
+  // password people already have instead of issuing a new one.
+  if (!creds || creds.username !== username) {
+    creds = {
+      username,
+      password: 'Qa-' + crypto.randomBytes(12).toString('base64url'),
+    };
+  }
   await call('POST', `/api/v1/admin/organizations/${org.id}/people`, {
     people: [
       {

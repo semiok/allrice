@@ -3,7 +3,8 @@
 // (headless Chrome): chat, office (.docx), csv (Python chart), browser (cloud
 // browser), reminder (fires within ~2 minutes). Real model calls — not a unit test.
 //
-//   node smoke-test.mjs --url http://127.0.0.1:3011 --creds <file> [--only chat,reminder] [--out <dir>]
+//   node smoke-test.mjs --url http://127.0.0.1:3011 [--worker-url http://127.0.0.1:3012] --creds <file>
+//                       [--only chat,reminder] [--out <dir>] [--expect-sha <sha>]
 //
 // Writes <out>/result.json and one screenshot per check; exit code 1 if any check fails.
 import { createRequire } from 'node:module';
@@ -34,7 +35,7 @@ for (const c of only)
   }
 if (!args.url || !args.creds) {
   console.error(
-    'usage: smoke-test.mjs --url <base> --creds <file> [--only a,b] [--out dir]',
+    'usage: smoke-test.mjs --url <base> [--worker-url <base>] --creds <file> [--only a,b] [--out dir] [--expect-sha <sha>]',
   );
   process.exit(2);
 }
@@ -84,17 +85,25 @@ const ctx = await browser.newContext({
 });
 const page = await ctx.newPage();
 const results = [];
-// The version actually serving the run, read at start and end: a deploy or rollback in
-// between makes the results unreliable, and the summary says so.
-const runningSha = async () => {
+// The version actually serving the run: Web and Worker are read at the start and at the
+// end. Unknown, different between the two, changed during the run, or not the expected
+// version (--expect-sha) all fail the run, so a pass always belongs to one known version.
+const readySha = async (url) => {
   try {
-    const j = await (await fetch(`${base}/api/health/ready`)).json();
+    const j = await (await fetch(url)).json();
     return j.status === 'ready' ? (j.identity?.sourceSha ?? '') : '';
   } catch {
     return '';
   }
 };
-const sourceShaStart = await runningSha();
+const workerBase = (args['worker-url'] ?? '').replace(/\/$/, '');
+const versions = async () => ({
+  web: await readySha(`${base}/api/health/ready`),
+  worker: workerBase
+    ? await readySha(`${workerBase}/health/ready`)
+    : '(not checked)',
+});
+const versionStart = await versions();
 
 async function login() {
   await page.goto(`${base}/login`, { waitUntil: 'networkidle' });
@@ -277,20 +286,28 @@ try {
 } finally {
   await browser.close();
 }
-const sourceShaEnd = await runningSha();
-if (sourceShaStart !== sourceShaEnd)
+const versionEnd = await versions();
+{
+  const seen = [versionStart.web, versionEnd.web];
+  if (workerBase) seen.push(versionStart.worker, versionEnd.worker);
+  const expected = args['expect-sha'] || versionStart.web;
+  const pass = Boolean(expected) && seen.every((v) => v === expected);
   results.push({
     check: 'version',
-    pass: false,
-    detail: `version changed during the run: ${sourceShaStart || '?'} -> ${sourceShaEnd || '?'}`,
+    pass,
+    detail: pass
+      ? expected
+      : `expected ${expected || '?'}; web ${versionStart.web || '?'} -> ${versionEnd.web || '?'}, worker ${versionStart.worker || '?'} -> ${versionEnd.worker || '?'}`,
   });
+}
 const failed = results.filter((r) => !r.pass);
 const summary = {
   url: base,
   account: creds.username,
   at: new Date().toISOString(),
-  sourceShaStart,
-  sourceShaEnd,
+  expectedSha: args['expect-sha'] ?? null,
+  versionStart,
+  versionEnd,
   passed: results.length - failed.length,
   failed: failed.length,
   results,
