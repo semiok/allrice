@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectDependencyResolveInput } from '../project-dependency-resolution.ts';
-import { cloudPlatforms, selectCloudArchitecture } from './cloud-platform.ts';
+import {
+  cloudArchitectureTranslationProblem,
+  cloudPlatforms,
+  selectCloudArchitecture,
+} from './cloud-platform.ts';
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -32,6 +36,29 @@ const profile = (p: (typeof cloudPlatforms)[keyof typeof cloudPlatforms]) => ({
 });
 
 describe('cloud platform selection', () => {
+  it('refuses a Rosetta-translated Node unless the architecture is explicit', () => {
+    const translated = () => true,
+      native = () => false;
+    expect(
+      cloudArchitectureTranslationProblem({ platform: 'darwin', translated }),
+    ).toMatch(/Rosetta/);
+    expect(
+      cloudArchitectureTranslationProblem({
+        platform: 'darwin',
+        translated: native,
+      }),
+    ).toBeNull();
+    expect(
+      cloudArchitectureTranslationProblem({
+        platform: 'darwin',
+        override: 'arm64',
+        translated,
+      }),
+    ).toBeNull();
+    expect(
+      cloudArchitectureTranslationProblem({ platform: 'linux', translated }),
+    ).toBeNull();
+  });
   it('follows the host CPU unless explicitly overridden', () => {
     expect(selectCloudArchitecture(undefined, 'x64')).toBe('amd64');
     expect(selectCloudArchitecture('', 'arm64')).toBe('arm64');

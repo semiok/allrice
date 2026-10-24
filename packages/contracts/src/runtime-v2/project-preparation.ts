@@ -99,6 +99,33 @@ export type RuntimeProjectPreparation = z.infer<
  * envelope. Larger cloud profiles must not be dispatched to those clients. */
 export const bridgeProjectPackageLimit = 128;
 
+/** CPU architectures a project's dependency lock can be installed on. A pnpm lock
+ * is platform independent (each host fetches its own optional packages). A uv lock
+ * pins one wheel per package, resolved on the server, and the wheel's platform tag
+ * says where it installs ("any" fits both). The server only routes a project to a
+ * backend whose architecture is in this list, so an Intel Bridge never receives an
+ * aarch64-only lock (or an Apple-silicon Bridge an x86_64-only one). */
+export function projectLockArchitectures(
+  spec: RuntimeProjectPreparation,
+): ('amd64' | 'arm64')[] {
+  const all = ['amd64', 'arm64'] as const;
+  if (spec.manager !== 'uv') return [...all];
+  return all.filter((architecture) =>
+    spec.packages.every((p) =>
+      p.fileName
+        .slice(0, -'.whl'.length)
+        .split('-')
+        .at(-1)!
+        .split('.')
+        .some(
+          (tag) =>
+            tag === 'any' ||
+            tag.endsWith(architecture === 'amd64' ? '_x86_64' : '_aarch64'),
+        ),
+    ),
+  );
+}
+
 /** Explicit bounded project profiles; the existing small-task limits stay intact. */
 export function projectPreparationLimits(spec: RuntimeProjectPreparation) {
   return spec.manager === 'pnpm' && spec.resourceProfile === 'web-development'

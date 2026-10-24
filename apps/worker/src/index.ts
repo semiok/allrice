@@ -2,7 +2,10 @@ import { installDshCloseObservationIdentity } from './harness/dsh-close-observer
 import { observeDshWorkerCloseIdentity } from './harness/dsh-worker-close-identity.js';
 import { processNextReference } from './reference-processing.js';
 import { startCloudProjectPreviewTransport } from './cloud-runner/project-preview-transport.js';
-import { runtimeFeatureEnabled } from '@allrice/contracts';
+import {
+  cloudArchitectureTranslationProblem,
+  runtimeFeatureEnabled,
+} from '@allrice/contracts';
 import { startExecutionPressureLog } from './execution-pressure.js';
 import { detectWorkerCapacity } from './worker-capacity.js';
 import { randomUUID } from 'node:crypto';
@@ -87,6 +90,12 @@ import {
   createNativeOnceWorkerService,
 } from './native-schedule-once-loader.js';
 
+// An x64 Node translated by Rosetta would select the amd64 cloud toolchain on an
+// Apple-silicon host (MET-216): refuse to start instead of running emulated.
+if (runtimeFeatureEnabled('ALLRICE_CLOUD_RUNNER_ENABLED')) {
+  const problem = cloudArchitectureTranslationProblem();
+  if (problem) throw new Error(problem);
+}
 const startup = createWorkerStartupObservation();
 const port = Number(process.env.ALLRICE_WORKER_PORT ?? 3101);
 function integerSetting(

@@ -1759,6 +1759,76 @@ suite(
       ).rejects.toThrow('local_runner_upgrade_required');
       expect(await f.countCloud()).toBe(0);
     });
+    it('routes a uv lock only to a backend of its CPU architecture', async () => {
+      // The fixture Bridge is amd64; the cloud follows this host (arm64 on Apple
+      // silicon, amd64 on the Linux CI).
+      const withLock = (
+        f: Awaited<ReturnType<typeof setup>>,
+        fileName: string,
+      ) => ({
+        ...f.args,
+        executable: '/workspace/.venv/bin/python',
+        projectPreparation: {
+          ...f.args.projectPreparation,
+          manager: 'uv',
+          managerVersion: '0.8.22',
+          lockPath: 'requirements.lock',
+          scripts: 'disabled',
+          packages: [
+            {
+              name: fileName.split('-')[0],
+              version: fileName.split('-')[1],
+              fileName,
+              url: `https://files.pythonhosted.org/packages/00/00/${fileName}`,
+              sha256: 'sha256:' + '3'.repeat(64),
+            },
+          ],
+        },
+      });
+      const pure = 'six-1.17.0-py2.py3-none-any.whl',
+        x86 =
+          'numpy-2.2.6-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl',
+        arm =
+          'numpy-2.2.6-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl';
+      for (const fileName of [pure, x86]) {
+        const f = await setup();
+        expect(
+          (await f.select(true, withLock(f, fileName))).choice,
+        ).toMatchObject({ location: 'local', status: 'execute' });
+      }
+      const f = await setup();
+      if (cloudPlatform.architecture === 'arm64')
+        expect((await f.select(true, withLock(f, arm))).choice).toMatchObject({
+          location: 'cloud',
+          status: 'execute',
+        });
+      else
+        await expect(f.select(true, withLock(f, arm))).rejects.toThrow(
+          'project_lock_platform_mismatch',
+        );
+      // A direct local command cannot send the lock to this Bridge either.
+      const {
+        action: _action,
+        project: _project,
+        ...arguments_
+      } = withLock(f, arm);
+      void [_action, _project];
+      await expect(
+        createLocalCommandOperation(
+          {
+            context: f.context,
+            callId: randomUUID(),
+            arguments: {
+              ...arguments_,
+              files: [{ path: 'main.cjs', sha256: 'sha256:' + '1'.repeat(64) }],
+            },
+            worker: f.worker,
+            storage: f.storage,
+          },
+          f.db,
+        ),
+      ).rejects.toThrow('project_lock_platform_mismatch');
+    });
     it('allows offline supplementation, binds exact private transfer, and preserves one canonical operation', async () => {
       const f = await setup();
       await f.setState('offline');

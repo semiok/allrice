@@ -7,8 +7,10 @@ PR5b1a 是控制面引导切片，并未实现独立发布监督或自动发布�
 人工操作者在干净、准确版本的可信 Dev 目录构建后运行：
 
 ```sh
-node scripts/dev-release/prepare-identity.mjs --root=/Users/a123/allrice-dev-releases/<release> --release-sha=<merged-main-sha>
+node scripts/dev-release/prepare-identity.mjs --root="$HOME/allrice-dev-releases/<release>" --release-sha=<merged-main-sha>
 ```
+
+发布目录必须直接位于执行发布的账号主目录下的 `allrice-dev-releases/` 或 `allrice-worktrees/` 中（按 `os.homedir()` 判断，不写死用户名）；其他位置会被拒绝（`DEV_BUILD_ROOT_NOT_ALLOWED`）。
 
 准备器核对实际 Git HEAD/tree、Web BUILD_ID 与运行产物、Worker 编译产物及传递工作区运行依赖的实际解析目标与入口，再写入 `.local/dev-build-identity.json`。服务从自己的真实入口路径定位此文件，首次测量实际字节并验证每条工作区依赖链接仍指向本发布目录；Next 原生外部包别名须解析到本发布的 pnpm 目录，别名与 package.json 摘要也封存；开发模式不返回生产身份；ready 响应附加源码/tree、manifest/产物/依赖摘要及本进程 boot、PID、Node 版本。原健康字段和 SHA header 保留。未登记的旧服务没有 verified identity；存在但损坏、字节不符或 SHA 不一致时不能返回 ready。该文件是受信操作者登记的构建描述，并非平台用户提交的发布授权，也不是 CI、维护屏障或产品 QA 凭据。
 
