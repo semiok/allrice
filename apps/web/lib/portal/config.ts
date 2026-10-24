@@ -3,6 +3,7 @@ import {
   builtInAdminHosts,
   builtInEmployeeHosts,
   canonicalHost,
+  loopbackHosts,
   portalEntries,
 } from '../../server/portal-hosts.mjs';
 export type PortalKind = 'platform_admin' | 'tenant';
@@ -148,7 +149,7 @@ export function isUnifiedPortalHost(host: string | null | undefined) {
   const value = normalizeHost(host);
   return (
     isEmployeePortalHost(value) ||
-    (['localhost', '127.0.0.1', '::1'].includes(value) &&
+    (loopbackHosts.includes(value) &&
       (process.env.ALLRICE_LOCAL_PORTAL ?? 'unified') === 'unified')
   );
 }
@@ -156,11 +157,7 @@ export function isUnifiedPortalHost(host: string | null | undefined) {
 export function resolvePortal(host: string | null | undefined) {
   if (isUnifiedPortalHost(host)) return null;
   const normalized = normalizeHost(host);
-  if (
-    normalized === 'localhost' ||
-    normalized === '127.0.0.1' ||
-    normalized === '::1'
-  ) {
+  if (loopbackHosts.includes(normalized)) {
     const localKey = process.env.ALLRICE_LOCAL_PORTAL ?? 'snow';
     return (
       definitions.find((definition) => definition.key === localKey) ?? null
