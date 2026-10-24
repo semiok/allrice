@@ -5,12 +5,14 @@ import type { RiceToolExecutionInput } from '../types.js';
 
 const ports = vi.hoisted(() => ({
   create: vi.fn(),
+  describe: vi.fn(),
   execute: vi.fn(),
   audit: vi.fn(),
 }));
 vi.mock('@allrice/database', async (original) => ({
   ...(await original<typeof Database>()),
   createMcpRuntimeOperation: ports.create,
+  describeMcpRuntimeTool: ports.describe,
   recordToolBrokerAudit: ports.audit,
 }));
 vi.mock('../../mcp/executor.js', () => ({
@@ -163,4 +165,25 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
   } finally {
     await client.close();
   }
+});
+
+it('returns one exact authorized schema without dispatching or creating an operation', async () => {
+  const args = {
+    action: 'describe',
+    connectionId: '00000000-0000-4000-8000-000000000001',
+    tool: 'records.list',
+  };
+  const tool = {
+    name: 'records.list',
+    inputSchema: { type: 'object', required: ['query'] },
+  };
+  ports.describe.mockResolvedValueOnce(tool);
+  const response = await executeMcpTool({ input, arguments: args });
+  expect(JSON.parse(response.modelContent).tool).toEqual(tool);
+  expect(ports.describe).toHaveBeenCalledExactlyOnceWith({
+    context: input.context,
+    arguments: args,
+  });
+  expect(ports.create).not.toHaveBeenCalled();
+  expect(ports.execute).not.toHaveBeenCalled();
 });

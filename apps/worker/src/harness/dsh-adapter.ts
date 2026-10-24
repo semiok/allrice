@@ -1,3 +1,4 @@
+import type { BootstrapReceipt } from '@allrice/contracts';
 import { readDshToolResult } from '@allrice/contracts';
 import type { SessionReferenceSnapshot } from '@allrice/contracts';
 import { randomUUID, createHash } from 'node:crypto';
@@ -801,17 +802,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
     const skillEventsPersistenceMs = skillEventCount
       ? performance.now() - skillEventsStarted
       : 0;
-    const initialPrompt = [
-      dshToolBridgeInstructions(input, new Set(runtime.nativeTools)),
-      fresh && input.kernel.bootstrapConversation
-        ? `Conversation context:\n${input.kernel.bootstrapConversation}`
-        : '',
-      input.kernel.authorizedMemoryContext,
-      input.kernel.userRequest,
-    ]
-      .filter(Boolean)
-      .join('\n\n');
-    let prompt = initialPrompt;
+    let prompt = '';
+    let bootstrapReceipt: BootstrapReceipt | undefined;
     let answer = '';
     let assistantFinished = false;
     let interruptedUsage: AssistantFailureUsage | undefined;
@@ -892,6 +884,66 @@ export class DshHarnessAdapter implements HarnessAdapter {
           throw nativeSessionRecoveryFailure(error);
         }
       }
+      let bootstrap = fresh ? input.kernel.bootstrapConversation : '';
+      if (
+        runtime.bootstrapCoverage &&
+        input.kernel.bootstrapContext &&
+        !input.questionWait?.resume
+      ) {
+        const context = input.kernel.bootstrapContext;
+        const scope = `sha256:${createHash('sha256')
+          .update(
+            JSON.stringify([
+              input.kernel.sessionId,
+              threadId,
+              input.contentGuard?.nativeContextKey ??
+                input.contentGuard?.generationId ??
+                null,
+            ]),
+          )
+          .digest('hex')}`;
+        const candidates = context.segments.map(({ key, digest }) => ({
+          key,
+          digest,
+        }));
+        const coverage = await runtime.client.bootstrapCoverage(threadId, {
+          scope,
+          candidates,
+        });
+        const covered = new Set(
+          coverage.covered.map(({ key, digest }) => `${key}:${digest}`),
+        );
+        const remaining = context.segments.filter(
+          ({ key, digest }) => !covered.has(`${key}:${digest}`),
+        );
+        bootstrap = remaining.map((segment) => segment.text).join('\n');
+        // Synthetic step/repair prompts cannot claim the SQL user's input or
+        // final assistant message merely by inheriting a kernel object.
+        const directMessage =
+          context.userMessage?.digest ===
+          `sha256:${createHash('sha256')
+            .update(
+              JSON.stringify({ role: 'user', text: input.kernel.userRequest }),
+            )
+            .digest('hex')}`;
+        bootstrapReceipt = {
+          version: 1,
+          scope,
+          imported: remaining.map(({ key, digest }) => ({ key, digest })),
+          ...(directMessage ? { userMessage: context.userMessage } : {}),
+          ...(directMessage && context.assistantMessageId
+            ? { assistantMessageId: context.assistantMessageId }
+            : {}),
+        };
+      }
+      prompt = [
+        dshToolBridgeInstructions(input, new Set(runtime.nativeTools)),
+        bootstrap ? `Conversation context:\n${bootstrap}` : '',
+        input.kernel.authorizedMemoryContext,
+        input.kernel.userRequest,
+      ]
+        .filter(Boolean)
+        .join('\n\n');
       // Same-authority cold final reconciliation is a read, never a new
       // prompt. The reader/journal must prove the completed current-Run turn.
       // Ordinary question waits and explicit legacy paths keep their lifecycle.
@@ -974,6 +1026,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
               runtime,
               onTimingPoint: (point) => timing.mark(point),
               prompt,
+              bootstrapReceipt: callIndex === 0 ? bootstrapReceipt : undefined,
               images: callIndex === 0 ? (input.images ?? []) : [],
               sessionReferences:
                 callIndex === 0 ? input.kernel.sessionReferences : undefined,
@@ -1713,6 +1766,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
   private async runOnce(input: {
     onTimingPoint(point: DshRunTimingPoint): void;
     sessionReferences?: SessionReferenceSnapshot[];
+    bootstrapReceipt?: BootstrapReceipt;
     runtime: DshRuntime;
     prompt: string;
     images: HarnessExecutionInput['images'];
@@ -2336,6 +2390,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
               input.prompt,
               input.images,
               input.sessionReferences,
+              input.bootstrapReceipt,
             )
       ).catch(async (error: unknown) => {
         await eventChain;

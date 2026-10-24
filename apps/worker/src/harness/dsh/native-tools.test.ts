@@ -5,6 +5,9 @@ import { afterEach, expect, it } from 'vitest';
 import {
   nativeSessionRecoveryFailure,
   selectDshNativeTools,
+  supportsMcpSchemaLookup,
+  mcpCatalogInstructions,
+  mcpCatalogAdmissionInstructions,
 } from './native-tools.js';
 
 const roots: string[] = [];
@@ -97,4 +100,76 @@ it('distinguishes a native vocabulary mismatch from unavailable storage without 
   expect(nativeSessionRecoveryFailure(Error('opaque failure')).code).toBe(
     'DSH_NATIVE_SESSION_STORAGE_UNAVAILABLE',
   );
+});
+
+it('enables deferred schemas only when the exact carrier both validates and advertises describe', async () => {
+  expect(await supportsMcpSchemaLookup()).toBe(false);
+  const absent = await artifact([]);
+  expect(await supportsMcpSchemaLookup(absent)).toBe(false);
+  for (const [valid, advertised, expected] of [
+    [false, true, false],
+    [true, false, false],
+    [true, true, true],
+  ]) {
+    const entry = await artifact(['cloud.mcp.call']);
+    await writeFile(
+      join(entry, '..', 'allrice-mcp-native-tools.mjs'),
+      `export const McpNativeArgumentsSchema={safeParse:()=>({success:${valid}})};
+      export const mcpNativeTools=[{canonicalName:'cloud.mcp.call',parameters:{action:{enum:${JSON.stringify(advertised ? ['describe'] : ['status'])}}}}];`,
+    );
+    expect(await supportsMcpSchemaLookup(entry)).toBe(expected);
+  }
+});
+it('keeps the entire stable directory while loading schemas only on supported carriers', () => {
+  const tools = ['z_read', 'a_write'].map((name) => ({
+    connectionId: '00000000-0000-4000-8000-000000000001',
+    name,
+    description: 'Untrusted description',
+    risk: 'read_only' as const,
+    inputSchema: {
+      type: 'object',
+      properties: { value: { const: 'EXACT_SCHEMA_SENTINEL' } },
+    },
+  }));
+  const deferred = mcpCatalogInstructions(tools, true);
+  expect(deferred).toContain('action="describe"');
+  expect(deferred).toContain('a_write');
+  expect(deferred).toContain('z_read');
+  expect(deferred).not.toContain('EXACT_SCHEMA_SENTINEL');
+  expect(deferred).toBe(mcpCatalogInstructions([...tools].reverse(), true));
+  expect(deferred).not.toBe(
+    mcpCatalogInstructions(
+      tools.map((t) => ({ ...t, inputSchema: { type: 'string' } })),
+      true,
+    ),
+  );
+  expect(mcpCatalogInstructions(tools, false)).toContain(
+    'EXACT_SCHEMA_SENTINEL',
+  );
+});
+
+it('bounds admission for both small-schema discovery rules and large legacy inline schemas', () => {
+  const tool = {
+    connectionId: '00000000-0000-4000-8000-000000000001',
+    name: 'read',
+    description: 'Read a public resource',
+    risk: 'read_only' as const,
+    inputSchema: { type: 'object' },
+  };
+  expect(mcpCatalogAdmissionInstructions(undefined)).toBe('');
+  expect(mcpCatalogAdmissionInstructions([])).toBe('');
+  expect(mcpCatalogAdmissionInstructions([tool])).toContain(
+    'action="describe"',
+  );
+  expect(
+    mcpCatalogAdmissionInstructions([
+      {
+        ...tool,
+        inputSchema: {
+          type: 'object',
+          description: '完整参数约束'.repeat(1_000),
+        },
+      },
+    ]),
+  ).toContain('完整参数约束');
 });

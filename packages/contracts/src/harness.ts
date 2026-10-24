@@ -1,3 +1,5 @@
+import { BootstrapContextSchema } from './bootstrap-context.ts';
+import { FrozenMcpToolSchema } from './mcp.ts';
 import { SessionReferenceSnapshotsSchema } from './session-reference.ts';
 import { z } from 'zod';
 
@@ -173,8 +175,23 @@ export const EmployeeKernelRequestSchema = z
     userMessageId: UuidSchema,
     assistantMessageId: UuidSchema,
     systemInstructions: z.string().min(1),
+    // Materialized by the selected native adapter, after its schema-lookup
+    // capability is verified. Credentials and grant tokens never enter prompts.
+    mcpToolCatalog: z
+      .array(
+        FrozenMcpToolSchema.pick({
+          connectionId: true,
+          name: true,
+          description: true,
+          inputSchema: true,
+          risk: true,
+        }),
+      )
+      .max(128)
+      .optional(),
     userRequest: z.string(),
     bootstrapConversation: z.string(),
+    bootstrapContext: BootstrapContextSchema.optional(),
     authorizedMemoryContext: z.string(),
     grantedCapabilities: z.array(SkillCapabilitySchema),
     skillVersionIds: z.array(UuidSchema),

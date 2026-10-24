@@ -1,4 +1,5 @@
 export * from './image-generation.ts';
+export * from './native-run-diagnostics.ts';
 export * from './static-browser.ts';
 export type ServiceName = 'web' | 'worker';
 export * from './message-feedback.ts';
@@ -181,3 +182,5 @@ export * from './brand-content-templates.ts';
 
 export * from './automation-catalog.ts';
 export * from './workbench-files.ts';
+
+export * from './bootstrap-context.ts';

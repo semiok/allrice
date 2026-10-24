@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createMcpExecutionFixture } from './mcp-execution.fixture.ts';
 import {
   createMcpRuntimeOperation,
+  describeMcpRuntimeTool,
   createMcpOperationLedger,
 } from './mcp-execution.ts';
 import { createAssistantRuntime } from './assistant-runtime.ts';
@@ -115,6 +116,91 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
     await admin?.end({ timeout: 5 });
     vi.unstubAllEnvs();
   });
+  it('describes exactly one frozen tool without creating an operation or calling the remote service', async () => {
+    const f = await fixture();
+    const before = JSON.stringify(f.service.state);
+    const [count] =
+      await db`select count(*)::int as n from allrice_runtime_operations`;
+    const tool = await describeMcpRuntimeTool(
+      {
+        context: f.execution,
+        arguments: {
+          action: 'describe',
+          connectionId: f.connection.id,
+          tool: 'records.list',
+        },
+      },
+      db,
+    );
+    expect(tool.inputSchema).toEqual(
+      f.mcpTools.find((t) => t.name === 'records.list')!.inputSchema,
+    );
+    expect(Object.keys(tool).sort()).toEqual([
+      'connectionId',
+      'description',
+      'inputSchema',
+      'name',
+      'risk',
+      'schemaDigest',
+    ]);
+    expect(tool.schemaDigest).toBe(digest(tool.inputSchema));
+    expect(JSON.stringify(f.service.state)).toBe(before);
+    const [after] =
+      await db`select count(*)::int as n from allrice_runtime_operations`;
+    expect(after!.n).toBe(count!.n);
+    await f.store.revoke(f.context, {
+      workspaceId: f.workspace,
+      connectionId: f.connection.id,
+    });
+    await expect(
+      describeMcpRuntimeTool(
+        {
+          context: f.execution,
+          arguments: {
+            action: 'describe',
+            connectionId: f.connection.id,
+            tool: 'records.list',
+          },
+        },
+        db,
+      ),
+    ).rejects.toThrow('MCP_DENIED');
+  });
+  it.each(['cancel', 'lease', 'owner', 'disabled'] as const)(
+    'denies metadata lookup after %s authority loss',
+    async (kind) => {
+      const f = await fixture();
+      if (kind === 'cancel')
+        await db`update allrice_jobs set cancel_requested_at=clock_timestamp() where id=${f.job}`;
+      if (kind === 'lease')
+        await db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${f.job}`;
+      if (kind === 'disabled')
+        await db`update allrice_users set status='disabled' where id=${f.user}`;
+      const context =
+        kind === 'owner'
+          ? {
+              ...f.execution,
+              policySnapshot: {
+                ...f.execution.policySnapshot,
+                subjectId: randomUUID(),
+              },
+            }
+          : f.execution;
+      await expect(
+        describeMcpRuntimeTool(
+          {
+            context,
+            arguments: {
+              action: 'describe',
+              connectionId: f.connection.id,
+              tool: 'records.list',
+            },
+          },
+          db,
+        ),
+      ).rejects.toThrow('MCP_DENIED');
+    },
+  );
   it('an ordinary member connects an app during a running task, supplies credentials privately and executes through DSH without republishing', async () => {
     const f = await fixture();
     await db`update allrice_memberships set role='member' where user_id=${f.user}`;
@@ -1334,6 +1420,19 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
           }),
         ).rejects.toMatchObject({ code: 'ASSISTANT_MCP_DENIED' });
         expect(f.service.state.calls).toBe(0);
+        await expect(
+          bridge.handle('tool', {
+            nativeSessionId: child.nativeSessionId,
+            callId: 'child-describe',
+            name: 'cloud.mcp.call',
+            arguments: {
+              action: 'describe',
+              connectionId: f.connection.id,
+              tool: 'records.list',
+            },
+          }),
+        ).rejects.toMatchObject({ code: 'ASSISTANT_MCP_DENIED' });
+        expect(f.service.state.reads).toBe(1);
         const pending = await createMcpRuntimeOperation(
           {
             context: f.execution,

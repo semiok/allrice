@@ -2,6 +2,7 @@
 export * from './automation.ts';
 export * from './p1-runtime.ts';
 export * from './queue.ts';
+export * from './native-run-diagnostics.ts';
 export * from './route-decision.ts';
 export * from './tool-broker.ts';
 export * from './workflow-runtime.ts';

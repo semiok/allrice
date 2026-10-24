@@ -203,7 +203,7 @@ export const riceToolDefinitions = [
   {
     name: 'cloud.mcp.call',
     description:
-      '代办应用连接与调用。action=connect 传 name、endpoint 自动连接并发现工具；action=list 查看已连接应用；action=status 传 connectionId 查看状态。公共服务无需凭据，登录只在专用表单完成，禁止在聊天或工具参数中传密钥。调用时用返回的 connectionId、tool、arguments；当前任务立即可用。具体操作按成员工作方式自动执行或请求确认，未知结果不得重发。',
+      '代办应用连接与调用。action=connect 传 name、endpoint 自动连接并发现工具；action=list 查看已连接应用；action=status 传 connectionId 查看状态；action=describe 传 connectionId、tool 只读获取单个已授权工具的精确参数 schema，不执行远端调用。describe 仅限主员工；委派 MCP 读取时提供精确 schema，子助手只能执行已冻结只读工具，不可 describe 或管理连接。公共服务无需凭据，登录只在专用表单完成，禁止在聊天或工具参数中传密钥。调用时用返回的 connectionId、tool、arguments；当前任务立即可用。具体操作按成员工作方式自动执行或请求确认，未知结果不得重发。',
     inputSchema: z.toJSONSchema(McpAgentInputSchema),
   },
   {

@@ -57,7 +57,11 @@ import {
   assertDshFrozenCompatibility,
 } from '../dsh-native-retention.js';
 import { dshHostCapabilityInstructions } from './tool-bridge.js';
-import { selectDshNativeTools } from './native-tools.js';
+import {
+  selectDshNativeTools,
+  supportsMcpSchemaLookup,
+  mcpCatalogInstructions,
+} from './native-tools.js';
 
 export interface DshRuntime {
   client: DshProtocolClient;
@@ -74,6 +78,7 @@ export interface DshRuntime {
   model: string;
   reasoningEffort: string;
   nativeTools: string[];
+  bootstrapCoverage?: boolean;
   startedAt: string;
   lastActivityAt: string;
   nativeArtifactId?: string;
@@ -680,6 +685,19 @@ export class DshRuntimePool {
       input.input.tools.map((tool) => tool.name),
       nativeIdentity?.args[0],
     );
+    const deferredMcpSchemas =
+      !!input.input.kernel.mcpToolCatalog?.length &&
+      nativeTools.includes('cloud.mcp.call') &&
+      (await supportsMcpSchemaLookup(nativeIdentity?.args[0]));
+    const systemInstructions = [
+      input.systemInstructions,
+      mcpCatalogInstructions(
+        input.input.kernel.mcpToolCatalog,
+        deferredMcpSchemas,
+      ),
+    ]
+      .filter(Boolean)
+      .join('\n\n');
     // Store only per-field hashes in memory so diagnostics can name changed
     // configuration without recording its values.
     const fingerprintInput = {
@@ -694,7 +712,7 @@ export class DshRuntimePool {
               input.input.baseSkillCatalog.snapshotChecksum,
           }
         : {}),
-      systemInstructions: input.systemInstructions,
+      systemInstructions,
       taskProgress: !!input.input.progress,
       contentGuard: !!input.input.contentGuard,
       ...(input.input.contentGuard?.nativeContextKey &&
@@ -818,7 +836,7 @@ export class DshRuntimePool {
             : input.snapshot.reasoningEffort
           : 'high',
       DSH_SYSTEM_PROMPT: [
-        input.systemInstructions,
+        systemInstructions,
         dshHostCapabilityInstructions(input.input.tools),
       ].join('\n\n'),
       DSH_DISTRIBUTION_VERSION:
@@ -945,6 +963,7 @@ export class DshRuntimePool {
         requireDurableQuestions: !!input.input.questionWait,
         requireContentGuard: !!input.input.contentGuard,
       });
+      runtime.bootstrapCoverage = initialized.bootstrapCoverage;
       preparation.initializeMs = performance.now() - initializeStarted;
       preparation.skillRegistrationMs = initialized.skillRegistrationMs;
       preparation.acquireMs = performance.now() - acquireStarted;
