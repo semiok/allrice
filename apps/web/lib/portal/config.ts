@@ -1,4 +1,5 @@
 import { safeNavigationQuery } from './navigation-query';
+import { configuredPortalEntries } from '../../server/portal-hosts.mjs';
 export type PortalKind = 'platform_admin' | 'tenant';
 
 export interface PortalDefinition {
@@ -101,6 +102,8 @@ export function portalAuthEnabled() {
   return process.env.ALLRICE_PORTAL_AUTH_ENABLED === '1';
 }
 
+/** Hostname without brackets or port; idempotent, so a normalized value (a bare
+ * IPv6 address included) normalizes to itself. */
 export function normalizeHost(value: string | null | undefined) {
   if (!value) return '';
   const first = value.split(',')[0]?.trim().toLowerCase() ?? '';
@@ -108,14 +111,24 @@ export function normalizeHost(value: string | null | undefined) {
     const end = first.indexOf(']');
     return end >= 0 ? first.slice(1, end) : first;
   }
+  // More than one colon: a bare IPv6 address, which carries no port.
+  if (first.indexOf(':') !== first.lastIndexOf(':')) return first;
   return first.split(':')[0] ?? '';
 }
 
 const configuredHosts = (variable: string) =>
-  (process.env[variable] ?? '')
-    .split(',')
-    .map((host) => normalizeHost(host))
-    .filter(Boolean);
+  configuredPortalEntries(variable).map((entry) => entry.host);
+
+/** Where this deployment's employees sign in: its first configured entry (with its
+ * port), else the shared allrice.bplabs.xyz. */
+export const employeePortalAuthority = () =>
+  configuredPortalEntries('ALLRICE_EMPLOYEE_PORTAL_HOSTS')[0]?.authority ??
+  'allrice.bplabs.xyz';
+
+/** Where this deployment's platform admins sign in. */
+export const adminPortalAuthority = () =>
+  configuredPortalEntries('ALLRICE_ADMIN_PORTAL_HOSTS')[0]?.authority ??
+  'allrice-admin.bplabs.xyz';
 
 /** The shared employee entry: allrice.bplabs.xyz, plus the hosts a deployment lists
  * in ALLRICE_EMPLOYEE_PORTAL_HOSTS (its own domain; comma separated). */
@@ -193,8 +206,7 @@ export function tenantTrialPortal(_organizationSlug: string, origin: string) {
   const source = new URL(origin);
   if (['localhost', '127.0.0.1', '[::1]'].includes(source.hostname))
     return `${source.origin}/chatflow`;
-  const own = configuredHosts('ALLRICE_EMPLOYEE_PORTAL_HOSTS')[0];
-  return `https://${own ?? 'allrice.bplabs.xyz'}/chatflow`;
+  return `https://${employeePortalAuthority()}/chatflow`;
 }
 
 /** Deployment bootstrap only. Never expose these values through publicPortal. */
@@ -221,10 +233,17 @@ export function legacyPortalNavigation(request: {
   headers: Headers;
 }) {
   if (!['GET', 'HEAD'].includes(request.method)) return null;
-  const host = request.headers.get('host'),
+  const host = normalizeHost(request.headers.get('host')),
     portal = resolvePortal(host);
-  if (!portal || !portal.hosts.includes(normalizeHost(host))) return null;
-  if (normalizeHost(host) === 'allrice-admin.bplabs.xyz') return null;
+  if (!portal || !portal.hosts.includes(host)) return null;
+  // The admin entry itself, and an alias this deployment lists as one of its own
+  // entries, are served here rather than moved.
+  if (
+    host === 'allrice-admin.bplabs.xyz' ||
+    configuredHosts('ALLRICE_EMPLOYEE_PORTAL_HOSTS').includes(host) ||
+    configuredHosts('ALLRICE_ADMIN_PORTAL_HOSTS').includes(host)
+  )
+    return null;
   const url = new URL(request.url);
   if (
     url.pathname !== '/' &&
@@ -233,10 +252,9 @@ export function legacyPortalNavigation(request: {
     )
   )
     return null;
+  // This deployment's own entries, else the shared public ones.
   const destination = new URL(
-    portal.kind === 'platform_admin'
-      ? 'https://allrice-admin.bplabs.xyz'
-      : 'https://allrice.bplabs.xyz',
+    `https://${portal.kind === 'platform_admin' ? adminPortalAuthority() : employeePortalAuthority()}`,
   );
   destination.pathname = url.pathname;
   destination.search = safeNavigationQuery(url);

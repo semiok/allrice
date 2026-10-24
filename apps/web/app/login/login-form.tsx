@@ -3,9 +3,16 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { loginDestination } from '../../lib/portal/login-destination';
 
+/** Without `entry` the form acts as an employee entry of the shared deployment. */
 export function LoginForm(props: {
   bootstrap?: { username: string; homePath: string };
+  entry?: { employee: boolean; employeeHost: string; adminHost: string };
 }) {
+  const entry = props.entry ?? {
+    employee: true,
+    employeeHost: 'allrice.bplabs.xyz',
+    adminHost: 'allrice-admin.bplabs.xyz',
+  };
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
@@ -38,6 +45,7 @@ export function LoginForm(props: {
             new URLSearchParams(window.location.search).get('next'),
             result.homePath ?? props.bootstrap?.homePath ?? '/chatflow',
             window.location.origin,
+            entry.employee,
           ),
         );
       } else {
@@ -45,7 +53,7 @@ export function LoginForm(props: {
         setError(
           response.status === 403 &&
             body?.error?.code === 'AUTHORIZATION_DENIED'
-            ? '此账号无法登录这个入口。管理员请从 allrice-admin.bplabs.xyz 登录；员工请从 allrice.bplabs.xyz 登录。'
+            ? `此账号无法登录这个入口。管理员请从 ${entry.adminHost} 登录；员工请从 ${entry.employeeHost} 登录。`
             : '登录失败，请检查账号和密码。',
         );
         setPending(false);

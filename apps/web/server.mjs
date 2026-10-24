@@ -1,4 +1,5 @@
 import { createCloudProjectPreviewTransport } from './server/cloud-project-preview.mjs';
+import { checkPortalHostConfiguration } from './server/portal-hosts.mjs';
 import {
   cloudArchitectureTranslationProblem,
   runtimeFeatureEnabled,
@@ -160,6 +161,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const i = args.indexOf(name);
     return i < 0 ? fallback : args[i + 1];
   };
+  // A malformed or conflicting portal host list stops startup, not a request.
+  checkPortalHostConfiguration();
   // Same check as the Worker: Web also derives cloud profiles from the host CPU.
   if (runtimeFeatureEnabled('ALLRICE_CLOUD_RUNNER_ENABLED')) {
     const problem = cloudArchitectureTranslationProblem();

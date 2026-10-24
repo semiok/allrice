@@ -10,7 +10,7 @@ import {
   legacyPortalNavigation,
   portalAuthEnabled,
   resolvePortal,
-  normalizeHost,
+  isEmployeePortalHost,
 } from './lib/portal/config';
 import {
   portalSessionCookieName,
@@ -84,7 +84,7 @@ export function proxy(request: NextRequest) {
   }
   const unified = isUnifiedPortalHost(request.headers.get('host'));
   if (
-    normalizeHost(request.headers.get('host')) === 'allrice.bplabs.xyz' &&
+    isEmployeePortalHost(request.headers.get('host')) &&
     /^\/runtime-console(\/|$)/.test(request.nextUrl.pathname)
   )
     return NextResponse.redirect(new URL('/chatflow', request.url));
