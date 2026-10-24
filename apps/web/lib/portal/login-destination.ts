@@ -1,3 +1,4 @@
+import { isEmployeePortalHost } from './config';
 import { safeNavigationQuery } from './navigation-query';
 /** Preserve employee trial navigation after tenant login, never redirect off-site. */
 export function loginDestination(
@@ -11,7 +12,7 @@ export function loginDestination(
     if (
       target.origin === origin &&
       !(
-        new URL(origin).hostname === 'allrice.bplabs.xyz' &&
+        isEmployeePortalHost(new URL(origin).hostname) &&
         /^\/runtime-console(\/|$)/.test(target.pathname)
       ) &&
       /^\/(chatflow|runtime-console|workspace|employees|automation)(\/|$)/.test(

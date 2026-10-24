@@ -111,11 +111,33 @@ export function normalizeHost(value: string | null | undefined) {
   return first.split(':')[0] ?? '';
 }
 
+const configuredHosts = (variable: string) =>
+  (process.env[variable] ?? '')
+    .split(',')
+    .map((host) => normalizeHost(host))
+    .filter(Boolean);
+
+/** The shared employee entry: allrice.bplabs.xyz, plus the hosts a deployment lists
+ * in ALLRICE_EMPLOYEE_PORTAL_HOSTS (its own domain; comma separated). */
+export function isEmployeePortalHost(host: string | null | undefined) {
+  const value = normalizeHost(host);
+  return (
+    value === 'allrice.bplabs.xyz' ||
+    configuredHosts('ALLRICE_EMPLOYEE_PORTAL_HOSTS').includes(value)
+  );
+}
+
+/** A portal's hostnames; the admin portal also takes ALLRICE_ADMIN_PORTAL_HOSTS. */
+const portalHosts = (portal: PortalDefinition) =>
+  portal.kind === 'platform_admin'
+    ? [...portal.hosts, ...configuredHosts('ALLRICE_ADMIN_PORTAL_HOSTS')]
+    : portal.hosts;
+
 /** The shared entry never selects a person or organization from its hostname. */
 export function isUnifiedPortalHost(host: string | null | undefined) {
   const value = normalizeHost(host);
   return (
-    value === 'allrice.bplabs.xyz' ||
+    isEmployeePortalHost(value) ||
     (['localhost', '127.0.0.1', '::1'].includes(value) &&
       (process.env.ALLRICE_LOCAL_PORTAL ?? 'unified') === 'unified')
   );
@@ -135,8 +157,9 @@ export function resolvePortal(host: string | null | undefined) {
     );
   }
   return (
-    definitions.find((definition) => definition.hosts.includes(normalized)) ??
-    null
+    definitions.find((definition) =>
+      portalHosts(definition).includes(normalized),
+    ) ?? null
   );
 }
 
@@ -144,7 +167,7 @@ export function resolvePortal(host: string | null | undefined) {
  * Unconfigured localhost keeps the development harness usable with either role.
  */
 export function portalAccountKind(host: string | null | undefined) {
-  if (normalizeHost(host) === 'allrice.bplabs.xyz') return 'employee' as const;
+  if (isEmployeePortalHost(host)) return 'employee' as const;
   const portal = resolvePortal(host);
   return portal?.kind === 'platform_admin'
     ? ('platform_admin' as const)
@@ -164,12 +187,14 @@ export function portalPublicView(portal: PortalDefinition) {
   };
 }
 
-/** All companies share the same account portal; the login selects membership. */
+/** All companies share the same account portal; the login selects membership. A
+ * deployment with its own employee domain links there instead of allrice.bplabs.xyz. */
 export function tenantTrialPortal(_organizationSlug: string, origin: string) {
   const source = new URL(origin);
-  return ['localhost', '127.0.0.1', '[::1]'].includes(source.hostname)
-    ? `${source.origin}/chatflow`
-    : 'https://allrice.bplabs.xyz/chatflow';
+  if (['localhost', '127.0.0.1', '[::1]'].includes(source.hostname))
+    return `${source.origin}/chatflow`;
+  const own = configuredHosts('ALLRICE_EMPLOYEE_PORTAL_HOSTS')[0];
+  return `https://${own ?? 'allrice.bplabs.xyz'}/chatflow`;
 }
 
 /** Deployment bootstrap only. Never expose these values through publicPortal. */
