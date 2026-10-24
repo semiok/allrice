@@ -54,10 +54,52 @@ export interface DshRuntimeProcessState {
   signal: NodeJS.Signals | null;
 }
 
+/** A spawned transport closed before any SDK/root initialization. This is not
+ * a public SDK shutdown/dispose receipt and must never confirm a durable owner. */
+export interface DshNeverCreatedCloseReceipt {
+  version: 2;
+  kind: 'never_created';
+  initializeStarted: false;
+  moduleLoadStarted: false;
+  sdkCreated: false;
+  rootCreated: false;
+  priorFramesFlushed: true;
+}
+
+function neverCreatedCloseReceipt(
+  value: Record<string, unknown> | null,
+): DshNeverCreatedCloseReceipt | null {
+  if (
+    !value ||
+    Object.keys(value).sort().join(',') !==
+      'initializeStarted,kind,moduleLoadStarted,priorFramesFlushed,rootCreated,sdkCreated,version' ||
+    value.version !== 2 ||
+    value.kind !== 'never_created' ||
+    value.initializeStarted !== false ||
+    value.moduleLoadStarted !== false ||
+    value.sdkCreated !== false ||
+    value.rootCreated !== false ||
+    value.priorFramesFlushed !== true
+  )
+    return null;
+  return Object.freeze({
+    version: 2,
+    kind: 'never_created',
+    initializeStarted: false,
+    moduleLoadStarted: false,
+    sdkCreated: false,
+    rootCreated: false,
+    priorFramesFlushed: true,
+  });
+}
+
 export interface DshRuntimeCloseEvidence {
   process: DshRuntimeProcessState;
   shutdownAcknowledged: boolean;
   wrapperCleanupConfirmed: boolean;
+  /** Transport-only success; never an SDK/root public-close confirmation. */
+  emptyTransportClosed?: boolean;
+  emptyCloseReceipt?: DshNeverCreatedCloseReceipt | null;
   terminationAttempted: 'SIGTERM' | 'SIGKILL' | null;
 }
 
@@ -81,6 +123,7 @@ export class DshProtocolClient {
   private inboundRequestHandler: DshInboundRequestHandler | null = null;
   private requestId = 0;
   private closing = false;
+  private initializeStarted = false;
   private closeTask: Promise<void> | undefined;
   private processExit: {
     code: number | null;
@@ -505,6 +548,7 @@ export class DshProtocolClient {
       DshCloseObservationDetails,
       { kind: 'close_request' }
     >['wrapper'] = null;
+    let emptyCloseReceipt: DshNeverCreatedCloseReceipt | null = null;
     let shutdownAcknowledged = false;
     let wrapperCleanupConfirmed = false;
     let terminationAttempted: 'SIGTERM' | 'SIGKILL' | null = null;
@@ -512,6 +556,10 @@ export class DshProtocolClient {
       const result = await this.request('shutdown', undefined, 2_000);
       shutdownAcknowledged = true;
       const proof = record(result.allriceClose);
+      // A local initialize attempt can never be undone by a child claiming
+      // it was empty. Keep the original v1 durable observation shape below.
+      if (!this.initializeStarted)
+        emptyCloseReceipt = neverCreatedCloseReceipt(proof);
       if (
         proof?.version === 1 &&
         typeof proof.sdkShutdown === 'boolean' &&
@@ -553,10 +601,23 @@ export class DshProtocolClient {
     }
     await this.closed;
     this.lines.close();
+    const process = this.processState();
+    const emptyTransportClosed = !!(
+      emptyCloseReceipt &&
+      shutdownAcknowledged &&
+      !this.initializeStarted &&
+      process.state === 'exited' &&
+      process.stdioClosed &&
+      process.exitCode === 0 &&
+      process.signal === null &&
+      terminationAttempted === null
+    );
     const evidence: DshRuntimeCloseEvidence = Object.freeze({
       process: Object.freeze(this.processState()),
       shutdownAcknowledged,
       wrapperCleanupConfirmed,
+      emptyTransportClosed,
+      emptyCloseReceipt,
       terminationAttempted,
     });
     this.closeEvidence = evidence;
@@ -573,7 +634,8 @@ export class DshProtocolClient {
     await Promise.all(observations);
     const failure =
       !shutdownAcknowledged ||
-      !wrapperCleanupConfirmed ||
+      (!wrapperCleanupConfirmed &&
+        !(emptyTransportClosed && !this.launch.observeClose)) ||
       evidence.process.exitCode !== 0 ||
       evidence.process.signal !== null ||
       terminationAttempted !== null
@@ -601,6 +663,9 @@ export class DshProtocolClient {
           false,
         ),
       );
+    // Fence before writing the first initialize frame, including failed or
+    // concurrent attempts; absence of an initialize response is not emptiness.
+    if (method === 'initialize') this.initializeStarted = true;
     const id = ++this.requestId;
     return new Promise((resolve, reject) => {
       const timer =
