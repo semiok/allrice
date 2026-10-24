@@ -1,0 +1,48 @@
+#!/bin/bash
+# Shared-Dev deploy lock on M1 (rules: AGENTS.md §5 at the repository root). Held only
+# while deploying, restarting or installing tools, never while waiting or validating.
+# Never poll: if busy, stop and say so.
+#
+#   deploy-lock status                                  who holds it; exit 0 free / 3 held
+#   deploy-lock run <task> [--wait <s>] -- <command…>   run <command> while holding the lock
+#
+# It is a kernel lock (flock) on ~/allrice-dev/.local/deploy.lock that <command> and all
+# its children inherit: it is released when the last of them exits, also when they are
+# killed, and never while any of them is still working. There is no expiry or takeover:
+# a holder that hangs has to be looked at and stopped by a person.
+# deploy-dev and scripts/m1/install take the same lock themselves.
+set -euo pipefail
+BIN=$(cd "$(dirname "$0")" && pwd -P); . "$BIN/lib.sh"
+LOCK="$HOME/allrice-dev/.local/deploy.lock"; OWNER="$LOCK.owner"
+die() { echo "deploy-lock: $1" >&2; exit "${2:-1}"; }
+describe() {
+  "$M1_PY" -c 'import json,sys,time
+try: d=json.load(open(sys.argv[1]))
+except Exception: print("deploy lock is held (owner unknown)"); sys.exit()
+print("deploy lock held by %s (pid %s) since %s: %s"%(d.get("task"),d.get("pid"),time.strftime("%H:%M",time.localtime(d.get("startedAt",0))),d.get("command","")))' "$OWNER"
+}
+# write_owner <task> <pid> <command…>: what `status` shows while the lock is held.
+write_owner() {
+  "$M1_PY" -c 'import json,os,sys,time
+p,task,pid,*cmd=sys.argv[1:]
+json.dump({"task":task,"pid":int(pid),"startedAt":int(time.time()),"command":" ".join(cmd)[:200]},open(p+".tmp","w"))
+os.replace(p+".tmp",p)' "$OWNER" "$@"
+}
+
+mkdir -p "$(dirname "$LOCK")"
+case "${1:-}" in
+  status)
+    if lock_held "$LOCK"; then describe; exit 3; fi
+    echo "deploy lock is free" ;;
+  run)
+    shift; task=${1:-}; shift || true
+    [[ "$task" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] || die "usage: deploy-lock run <task> [--wait <s>] -- <command…>" 2
+    wait=0; if [ "${1:-}" = --wait ]; then wait=${2:?}; shift 2; fi
+    [ "${1:-}" = -- ] || die "usage: deploy-lock run <task> [--wait <s>] -- <command…>" 2
+    shift; [ $# -ge 1 ] || die "no command given" 2
+    exec 9>>"$LOCK"
+    flock_fd 9 "$wait" || { describe >&2; exit 3; }
+    write_owner "$task" $$ "$@"
+    exec "$@" ;;
+  *) sed -n 2,13p "$0"; exit 2 ;;
+esac

@@ -1,0 +1,32 @@
+#!/bin/bash
+# Five real end-to-end smoke checks (rules: AGENTS.md §5 at the repository root): chat, office, csv,
+# browser, reminder. Uses real model calls; takes ~5-8 minutes for all five.
+#
+#   smoke-test --dev [--only a,b] [--expect-sha <sha>] [--out <dir>]               shared Dev, smoke account
+#   smoke-test --instance <task> [--only a,b] [--expect-sha <sha>] [--out <dir>]   a QA instance (default:
+#                                       chat,browser,reminder — cloud execution is off there)
+#
+# Web and Worker must report the same version at the start and the end of the run (and
+# --expect-sha, when given); otherwise the run fails. Results: <out>/result.json.
+set -euo pipefail
+NODE="$HOME/.local/opt/node-22.23.2/bin/node"; BIN=$(cd "$(dirname "$0")" && pwd -P)
+ts=$(date +%Y%m%d-%H%M%S)
+json() { /usr/bin/python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$1" "$2"; }
+penv() { /usr/bin/python3 -c 'import plistlib,os,sys;print(plistlib.load(open(os.path.expanduser(sys.argv[1]),"rb"))["EnvironmentVariables"][sys.argv[2]])' "$1" "$2"; }
+case "${1:-}" in
+  --dev)
+    shift
+    web=$(penv ~/Library/LaunchAgents/ai.bplabs.allrice-dev-web.plist ALLRICE_WEB_PORT)
+    worker=$(penv ~/Library/LaunchAgents/ai.bplabs.allrice-dev-worker.plist ALLRICE_WORKER_PORT)
+    creds="$HOME/allrice-dev/qa/smoke-cred.json"; out="$HOME/allrice-dev/qa/smoke/$ts"; extra=() ;;
+  --instance)
+    task=${2:?task}; shift 2
+    f="$HOME/allrice-qa/$task/instance.json"; [ -f "$f" ] || { echo "no QA instance: $task" >&2; exit 2; }
+    web=$(json "$f" webPort); worker=$(json "$f" workerPort)
+    creds="$HOME/allrice-qa/$task/creds.json"; out="$HOME/allrice-qa/$task/smoke/$ts"
+    extra=(); [[ " $* " == *" --only "* ]] || extra=(--only chat,browser,reminder) ;;
+  *) sed -n 2,10p "$0"; exit 2 ;;
+esac
+# A caller-given --out comes later on the command line and wins.
+exec "$NODE" "$BIN/smoke-test.mjs" --url "http://127.0.0.1:$web" --worker-url "http://127.0.0.1:$worker" \
+  --creds "$creds" --out "$out" ${extra[@]+"${extra[@]}"} "$@"
