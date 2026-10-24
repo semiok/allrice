@@ -1481,7 +1481,7 @@ async function persistChatMessageInTransaction(
   const employeeRows = await transaction<
     { employee_id: string; employee_version_id: string }[]
   >`
-    select a.employee_id, case when allrice_native_session_version_compatible(s.native_root_origin,v.manifest)
+    select a.employee_id, case when allrice_native_session_version_compatible(allrice_native_chat_effective_origin(s.id),v.manifest)
       then a.employee_version_id else s.employee_version_id end employee_version_id
     from allrice_employee_assignments a
     join allrice_employee_versions v on v.id=a.employee_version_id

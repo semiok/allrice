@@ -1,9 +1,12 @@
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
+import { readFile, realpath } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import type { EmployeeKernelRequest } from '@allrice/contracts';
 import { runtimePolicyDigest } from '@allrice/database';
 import { HandlerError } from '../../errors.js';
+import { approvedDshNativeToolCatalog } from '../dsh-native-artifact.js';
 import { isDshNativeTool, privateDshNativeToolNames } from './tool-bridge.js';
 
 export function nativeSessionRecoveryFailure(error: unknown) {
@@ -38,10 +41,27 @@ export async function selectDshNativeTools(
     (name) => isDshNativeTool(name) && name !== 'automation.create',
   );
   if (!verifiedEntrypoint) return requested; // offline protocol fixtures
-  const require = createRequire(verifiedEntrypoint);
-  const module = await import(
-    pathToFileURL(require.resolve('@allrice/contracts')).href
-  );
+  const catalog = approvedDshNativeToolCatalog(verifiedEntrypoint);
+  let catalogPath: string;
+  if (catalog) {
+    const bytes = await readFile(catalog.path);
+    if (
+      (await realpath(catalog.path)) !== catalog.path ||
+      bytes.length !== catalog.bytes ||
+      'sha256:' + createHash('sha256').update(bytes).digest('hex') !==
+        catalog.checksum
+    )
+      throw new HandlerError(
+        'DSH_NATIVE_TOOL_CATALOG_UNAVAILABLE',
+        '原会话执行包的工具目录暂不可用，已保留原记录。',
+        false,
+      );
+    catalogPath = catalog.path;
+  } else {
+    catalogPath =
+      createRequire(verifiedEntrypoint).resolve('@allrice/contracts');
+  }
+  const module = await import(pathToFileURL(catalogPath).href);
   const manifest: unknown = module.allRiceToolManifest;
   if (!Array.isArray(manifest))
     throw new HandlerError(

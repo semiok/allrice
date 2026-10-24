@@ -44,6 +44,7 @@ import { nativeContextExecutionRetired } from './native-context-retirement.ts';
 
 import {
   readChatTransitionRef,
+  readEffectiveChatExecutorOrigin,
   assertChatTransitionPin,
 } from './native-executor-transition.ts';
 import { assertTransitionDescriptor } from './native-executor-transition-contract.ts';
@@ -155,10 +156,10 @@ export async function readChatNativeRootOrigin(
   if (await nativeContextExecutionRetired(tx, 'chat', input.sessionId))
     return deny();
   const [row] =
-    await tx`select c.native_root_origin,v.manifest,v.id source_id,v.config_checksum
+    await tx`select c.native_root_origin,allrice_native_chat_effective_origin(c.id) effective_origin,v.manifest,v.id source_id,v.config_checksum
     from allrice_chat_sessions c
-    left join allrice_employee_versions v on v.id::text=case when c.native_root_origin->>'schemaVersion'='2'
-      then c.native_root_origin#>>'{birthSource,employeeVersionId}' else c.native_root_origin#>>'{frozenIdentity,sourceId}' end
+    left join allrice_employee_versions v on v.id::text=case when allrice_native_chat_effective_origin(c.id)->>'schemaVersion'='2'
+      then allrice_native_chat_effective_origin(c.id)#>>'{birthSource,employeeVersionId}' else c.native_root_origin#>>'{frozenIdentity,sourceId}' end
       and v.organization_id=c.organization_id and v.workspace_id=c.workspace_id
       and v.employee_id=(select employee_id from allrice_employee_assignments where id=c.employee_assignment_id)
     where c.id=${input.sessionId} and c.organization_id=${input.organizationId}
@@ -167,9 +168,14 @@ export async function readChatNativeRootOrigin(
         where e.run_id=${input.runId ?? null}::uuid and e.session_id=c.id
           and e.organization_id=c.organization_id and e.workspace_id=c.workspace_id and e.owner_id=c.owner_id))`;
   if (!row) return deny();
-  if (row.native_root_origin == null) return null;
-  if (row.native_root_origin.schemaVersion === 2)
-    return assertCurrentEmployeeChatOrigin(row.native_root_origin, {
+  const effective = await readEffectiveChatExecutorOrigin(
+    tx,
+    input,
+    row.native_root_origin,
+  );
+  if (effective == null) return null;
+  if (effective.schemaVersion === 2)
+    return assertCurrentEmployeeChatOrigin(effective, {
       ...input,
       source: {
         employeeVersionId: row.source_id,

@@ -924,7 +924,7 @@ export async function manageEmployeeAssignments(
         and assignment.employee_id = ${employee.id}
         and assignment.active
         and version.id=assignment.employee_version_id
-        and allrice_native_session_version_compatible(session.native_root_origin,version.manifest)
+        and allrice_native_session_version_compatible(allrice_native_chat_effective_origin(session.id),version.manifest)
         and session.organization_id = assignment.organization_id
         and session.workspace_id = assignment.workspace_id
         and session.employee_version_id <> assignment.employee_version_id
@@ -1100,7 +1100,7 @@ export async function assignEmployeeVersion(
       and session.employee_assignment_id = ${assignmentId}
       and session.employee_version_id <> ${update.employeeVersionId}
       and version.id=${update.employeeVersionId}
-      and allrice_native_session_version_compatible(session.native_root_origin,version.manifest)
+      and allrice_native_session_version_compatible(allrice_native_chat_effective_origin(session.id),version.manifest)
   `;
   await sql`
     insert into allrice_audit_events (

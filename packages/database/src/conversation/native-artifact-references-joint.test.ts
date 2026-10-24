@@ -85,7 +85,7 @@ function nullChat() {
     owner_id: scope.ownerId,
   };
 }
-function transition(schemaVersion: 1) {
+function transition(schemaVersion: 1 | 2) {
   // A preverified reader result, not a forged approval/receipt API input.
   return {
     schemaVersion,
@@ -124,12 +124,13 @@ beforeEach(() => {
   vi.stubEnv('ALLRICE_DSH_RETAINED_1_ARTIFACT_ID', legacy);
 });
 afterEach(() => vi.unstubAllEnvs());
-describe('pre-U2 U1 transition and terminal cutoff reference boundary', () => {
-  it.each([1] as const)(
+describe('joint chat transition/adoption and terminal cutoff reference boundary', () => {
+  it.each([1, 2] as const)(
     'keeps verified schema%s on the same resolver and snapshot while carrying terminal scopes separately',
     async (version) => {
       ports.transitions.push(transition(version));
       ports.terminal.push({ ...scope, contextKind: 'platform_employee_test' });
+      if (version === 2) ports.nullChats.push(nullChat());
       const result = await verify(approvals);
       expect(result.verified).toBe(true);
       expect(ports.resolverCalls).toBe(1);
@@ -169,8 +170,16 @@ describe('pre-U2 U1 transition and terminal cutoff reference boundary', () => {
     ports.chat.push({ ...scope });
     await expect(verify(approvals)).resolves.toMatchObject({ verified: true });
   });
-  it('a verified U1 transition still requires its exact target in current approval', async () => {
-    const receipt = transition(1);
+  it('an adoption for another owner cannot cover a NULL chat', async () => {
+    ports.nullChats.push(nullChat());
+    ports.transitions.push({
+      ...transition(2),
+      scope: { ...scope, ownerId: '88888888-8888-4888-8888-888888888888' },
+    });
+    await expect(verify(approvals)).rejects.toThrow('REFERENCES_UNCOVERED');
+  });
+  it('a verified adoption still requires its exact target in current approval', async () => {
+    const receipt = transition(2);
     receipt.target.artifactId = legacy;
     ports.transitions.push(receipt);
     await expect(verify(approvals)).rejects.toThrow(

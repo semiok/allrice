@@ -55,14 +55,16 @@ export const ExecutorTransitionRefSchema = z
 export type ExecutorTransitionRef = z.infer<typeof ExecutorTransitionRefSchema>;
 export const ExecutorTransitionReceiptSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.union([z.literal(1), z.literal(2)]),
     kind: z.literal('chat-executor-transition'),
     requestId: UuidSchema,
     sequence: integer.refine((x) => x > 0),
     previousDigest: digest.nullable(),
     scope: ExecutorTransitionScopeSchema,
     originDigest: digest,
-    from: tuple,
+    from: tuple.extend({
+      generation: z.enum(['dsh-0.2.1-rc.2-687f282', 'dsh-0.1.5-rc.3-a4c74a9']),
+    }),
     target: tuple,
     storageNamespace: namespace,
     factsDigest: digest,
@@ -71,6 +73,25 @@ export const ExecutorTransitionReceiptSchema = z
     historyEvidenceDigest: digest,
     closeEvidenceDigest: digest,
     appliedAt: z.iso.datetime(),
+    // Only first transition may explicitly adopt a NULL-origin, unpinned legacy
+    // root. The original origin/Run/pin remains unchanged. This is execution
+    // identity, not a claim that the original chat was born on the new code.
+    adoption: z
+      .object({
+        kind: z.literal('null-origin-legacy-v1'),
+        originalOrigin: z.null(),
+        effectiveOrigin: z.record(z.string(), z.unknown()),
+        sourceVersionId: UuidSchema,
+        sourceManifestDigest: digest,
+        sourceNamespace: namespace,
+        sourceByteFactsDigest: digest,
+        conversionEvidenceDigest: digest,
+        nativeSessionIds: z
+          .array(z.string().regex(/^dsh-[a-zA-Z0-9._:-]+$/))
+          .min(1),
+      })
+      .strict()
+      .optional(),
     digest,
   })
   .strict()
@@ -86,6 +107,27 @@ export const ExecutorTransitionReceiptSchema = z
         code: 'custom',
         message: 'EXECUTOR_TRANSITION_RECEIPT_INVALID',
       });
+    if (
+      r.schemaVersion === 2
+        ? !r.adoption ||
+          r.sequence !== 1 ||
+          r.previousDigest !== null ||
+          r.from.generation !== 'dsh-0.1.5-rc.3-a4c74a9' ||
+          r.facts.origin !== null ||
+          !Array.isArray(r.facts.bindings) ||
+          r.facts.bindings.length !== 0 ||
+          nativeRootDigest(r.adoption.effectiveOrigin) !== r.originDigest ||
+          r.adoption.sourceNamespace === r.storageNamespace ||
+          r.adoption.sourceVersionId !== r.facts.sourceVersionId ||
+          new Set(r.adoption.nativeSessionIds).size !==
+            r.adoption.nativeSessionIds.length
+        : r.adoption !== undefined || r.from.generation !== r.target.generation
+    ) {
+      c.addIssue({
+        code: 'custom',
+        message: 'EXECUTOR_ADOPTION_SHAPE_INVALID',
+      });
+    }
     const checked = ExecutorTransitionRefSchema.safeParse({
       requestId: r.requestId,
       sequence: r.sequence,

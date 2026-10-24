@@ -1464,6 +1464,44 @@ export function approvedDshNativeControlArtifact(
     },
   });
 }
+
+/** A v2 copy contains only the measured contracts runtime closure, not its
+ * unrelated root barrel. Select its catalog through the exact installed
+ * entrypoint; a missing catalog never falls back to the current Worker. */
+export function approvedDshNativeToolCatalog(verifiedEntrypoint: string) {
+  if (!approvedArtifact) {
+    if (process.env.ALLRICE_SERVICE_ROLE === 'worker') fail('NOT_INSTALLED');
+    return null; // Standalone, unapproved protocol fixtures keep their resolver.
+  }
+  assertNativeLoader();
+  const artifact = [approvedArtifact, ...retainedArtifacts.values()].find(
+    (item) =>
+      isAbsolute(verifiedEntrypoint) &&
+      resolve(verifiedEntrypoint) === join(item.root, item.content.entrypoint),
+  );
+  if (!artifact) fail('TOOL_CATALOG_NOT_APPROVED');
+  if (artifact.content.schemaVersion === 1) return null;
+  const runtime = artifact.content.contractsRuntime;
+  const packages = artifact.content.packages.filter(
+    (item) => item.name === '@allrice/contracts',
+  );
+  const catalogs = runtime?.files.filter(
+    (file) => file.path === 'dist/tool-manifest.js',
+  );
+  if (
+    !runtime ||
+    packages.length !== 1 ||
+    packages[0]!.path !== runtime.packagePath ||
+    catalogs?.length !== 1
+  )
+    fail('TOOL_CATALOG_UNMEASURED');
+  const catalog = catalogs[0]!;
+  return {
+    path: join(artifact.root, runtime.packagePath, catalog.path),
+    bytes: catalog.bytes,
+    checksum: catalog.checksum,
+  };
+}
 let installing = false;
 function assertNativeLoader() {
   const options = [...process.execArgv, process.env.NODE_OPTIONS ?? ''].join(
