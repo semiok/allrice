@@ -30,8 +30,11 @@ const ports = vi.hoisted(() => ({
 }));
 vi.mock('@allrice/database', async (importOriginal) => {
   // Share public error identities without exposing live DB/execution functions.
-  const { ProjectWorkspaceError, RuntimePolicyError } =
-    await importOriginal<typeof DatabaseModule>();
+  const {
+    ProjectWorkspaceError,
+    RuntimePolicyError,
+    ProjectLockPlatformError,
+  } = await importOriginal<typeof DatabaseModule>();
   const canonical = (v: unknown): string =>
     v && typeof v === 'object' && !Array.isArray(v)
       ? '{' +
@@ -51,6 +54,7 @@ vi.mock('@allrice/database', async (importOriginal) => {
   return {
     ProjectWorkspaceError,
     RuntimePolicyError,
+    ProjectLockPlatformError,
     selectProjectExecution: ports.select,
     createCloudProjectOperation: ports.create,
     readProjectWorkflowBudget: ports.budget,

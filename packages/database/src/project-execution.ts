@@ -354,28 +354,32 @@ export async function selectProjectExecution(
     // architecture is fixed, so no cloud probe is needed for this; whether the cloud
     // grant and target are usable stays with the normal selection (the tool probes
     // after "cloud_unavailable"), so a revoked grant is not reported as a mismatch.
-    const localRequired = location === 'local' || localOnly;
-    const cloudOption =
-      !localRequired &&
-      cloudExecutionEnabled() &&
-      tools.includes('cloud.process.execute');
-    const bridgeArchitectures = classified.flatMap((c) =>
-      c.profile ? [c.profile.architecture] : [],
-    );
+    const cloudBlocked =
+      location === 'local' || constraints.localOnly
+        ? ('local_request' as const)
+        : run.local_inputs
+          ? ('local_inputs' as const)
+          : !cloudExecutionEnabled() || !tools.includes('cloud.process.execute')
+            ? ('disabled' as const)
+            : null;
+    // A request for the cloud only leaves the Bridges out of this call.
+    const bridgeArchitectures =
+      location === 'cloud'
+        ? []
+        : classified.flatMap((c) =>
+            c.profile ? [c.profile.architecture] : [],
+          );
     if (
       !prior &&
-      !(cloudOption && cloudFits) &&
+      !(cloudBlocked === null && cloudFits) &&
       !bridgeArchitectures.some((a) => lockArchitectures.includes(a)) &&
-      ((cloudOption && !cloudFits) || bridgeArchitectures.length > 0)
+      ((cloudBlocked === null && !cloudFits) || bridgeArchitectures.length > 0)
     )
       throw new ProjectLockPlatformError(
         lockArchitectures,
         bridgeArchitectures,
-        cloudOption
-          ? cloudPlatform.architecture
-          : localRequired
-            ? 'local_required'
-            : 'disabled',
+        cloudPlatform.architecture,
+        cloudBlocked,
       );
     const bound = prior?.metadata.choice.location;
     const choice = resolveExecutionChoice({
