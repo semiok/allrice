@@ -381,9 +381,11 @@ export async function selectProjectExecution(
       throw new ProjectLockPlatformError({
         ...facts,
         bridgeArchitectures,
-        bridgeNeedsUpgrade:
-          !facts.cloudOnly &&
-          classified.some((c) => c.profile && c.needsUpgrade),
+        currentBridgeArchitectures: facts.cloudOnly
+          ? []
+          : classified.flatMap((c) =>
+              c.profile && !c.needsUpgrade ? [c.profile.architecture] : [],
+            ),
       });
     const bound = prior?.metadata.choice.location;
     const choice = resolveExecutionChoice({

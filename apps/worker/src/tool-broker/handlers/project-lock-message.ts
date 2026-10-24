@@ -8,6 +8,7 @@ const cpu = (a: string) =>
  * wheels for the `architecture` it is given (default: the server's CPU). */
 export function projectLockPlatformMessage(f: ProjectLockPlatformFacts) {
   const bridges = [...new Set(f.bridgeArchitectures)];
+  const current = [...new Set(f.currentBridgeArchitectures)];
   const lockFitsServer = f.lockArchitectures.includes(f.serverArchitecture);
   const cloudMayRun =
     f.cloudUsable !== false && !f.userLocalOnly && !f.localInputs;
@@ -21,7 +22,7 @@ export function projectLockPlatformMessage(f: ProjectLockPlatformFacts) {
   ];
   if (bridges.length)
     parts.push(`本机 Bridge 是 ${bridges.map(cpu).join('、')}，装不上。`);
-  if (f.bridgeNeedsUpgrade)
+  if (bridges.length && !current.length)
     parts.push(
       '本机 Bridge 的版本也不支持本次请求用到的功能，换成匹配的锁也要先升级 Bridge。',
     );
@@ -36,8 +37,8 @@ export function projectLockPlatformMessage(f: ProjectLockPlatformFacts) {
   ];
   if (blocked.length) parts.push(`另外：${blocked.join('；')}。`);
   const options: string[] = [];
-  if (canResolve && !f.bridgeNeedsUpgrade)
-    for (const architecture of bridges)
+  if (canResolve)
+    for (const architecture of current)
       options.push(
         `用 resolve 重新解析依赖并指定 architecture: ${architecture}（只上传依赖声明，生成 ${cpu(architecture)} 可用的新项目版本），再用新版本在本机执行`,
       );

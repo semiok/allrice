@@ -122,7 +122,7 @@ const pythonResolverForTarget = (
   [
     [
       'from packaging.tags import sys_tags',
-      'from packaging.tags import compatible_tags,cpython_tags',
+      'from packaging.tags import compatible_tags,cpython_tags,interpreter_version',
     ],
     [
       "    uv=work+'/uv-x86_64-unknown-linux-gnu/uv'",
@@ -142,7 +142,7 @@ const pythonResolverForTarget = (
     ],
     [
       '    tags={tag:i for i,tag in enumerate(sys_tags())};wheels=[];lines=[]',
-      '    tags={tag:i for i,tag in enumerate([*cpython_tags(platforms=platforms),*compatible_tags(platforms=platforms)])};wheels=[];lines=[]',
+      "    tags={tag:i for i,tag in enumerate([*cpython_tags(platforms=platforms),*compatible_tags(interpreter='cp'+interpreter_version(),platforms=platforms)])};wheels=[];lines=[]",
     ],
   ] as const
 ).reduce((text, [from, to]) => replaceOnce(text, from, to), pythonResolverV1);

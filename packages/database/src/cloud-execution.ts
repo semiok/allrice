@@ -16,6 +16,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { linkTaskOperationCall } from './task-clock.ts';
 import {
   cloudPlatform,
+  type CloudArchitecture,
   CloudCommandInputSchema,
   SandboxExecutionPolicySchema,
   sandboxExecutionBudgetSpec,
@@ -344,17 +345,42 @@ export async function createCloudCommandOperation(
 }
 
 /** Canonical managed resolver. No model supplied script/resource profile is
- * accepted; the ordinary scoped cloud grant and frozen tools still authorize it. */
+ * accepted; the ordinary scoped cloud grant and frozen tools still authorize it.
+ * The original arguments and their digest stay the model's own. `architecture` is
+ * the CPU a uv call naming none resolves for; a call stored before targets existed
+ * keeps the request it was stored with, so its replay after a deploy matches. */
 export async function createCloudProjectResolutionOperation(
-  input: { context: ExecutionContext; arguments: unknown; callId: string },
+  input: {
+    context: ExecutionContext;
+    arguments: unknown;
+    callId: string;
+    architecture?: CloudArchitecture;
+  },
   database: Database = getDatabase(),
 ) {
-  const request = ProjectDependencyResolveInputSchema.parse(input.arguments);
+  const parsed = ProjectDependencyResolveInputSchema.parse(input.arguments);
   const originalArguments = JSON.parse(
     JSON.stringify(input.arguments),
   ) as Record<string, unknown>;
+  const target =
+    parsed.manager === 'uv' && !parsed.architecture
+      ? input.architecture
+      : undefined;
+  const [stored] = target
+    ? await database<{ payload: { origin?: { request?: unknown } } }[]>`
+      select payload from allrice_cloud_execution_inputs where operation_id=${cloudStableId(`cloud-project-resolution:${input.context.runId}:${input.callId}`)}
+        and run_id=${input.context.runId} and organization_id=${input.context.organizationId}`
+    : [];
+  const request =
+    target && !runtimeContractEqual(stored?.payload.origin?.request, parsed)
+      ? { ...parsed, architecture: target }
+      : parsed;
   return createCloudOperation(
-    { ...input, arguments: projectResolutionCloudArguments(request) },
+    {
+      context: input.context,
+      callId: input.callId,
+      arguments: projectResolutionCloudArguments(request),
+    },
     database,
     {
       origin: {
