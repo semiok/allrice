@@ -1,0 +1,21 @@
+#!/bin/bash
+# Install the M1 operations tools from this repository into ~/allrice-dev/bin (rules:
+# AGENTS.md at the repository root). Run from a clean checkout at the commit you want:
+#
+#   scripts/m1/install            copy the tools, record the commit in ~/allrice-dev/bin/TOOLS_VERSION
+#
+# Only the release manager installs, because the tools act on the shared Dev.
+set -euo pipefail
+src=$(cd "$(dirname "$0")" && pwd)
+root=$(git -C "$src" rev-parse --show-toplevel)
+[ -z "$(git -C "$root" status --porcelain -- scripts/m1)" ] || { echo "install: scripts/m1 has uncommitted changes; commit first" >&2; exit 2; }
+sha=$(git -C "$root" rev-parse HEAD)
+bin="$HOME/allrice-dev/bin"; qa="$HOME/allrice-dev/qa"
+mkdir -p "$bin" "$qa"
+for f in deploy-dev deploy-lock qa-instance smoke-test with-env backup-daily; do
+  install -m 755 "$src/$f" "$bin/$f"
+done
+for f in qa-bootstrap.mjs smoke-test.mjs; do install -m 644 "$src/$f" "$bin/$f"; done
+install -m 644 "$src/rice-standard.json" "$qa/rice-standard.json"
+printf '%s %s\n' "$sha" "$(date '+%Y-%m-%dT%H:%M:%S%z')" > "$bin/TOOLS_VERSION"
+echo "installed M1 tools from ${sha:0:8} into $bin"

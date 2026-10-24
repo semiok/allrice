@@ -1,0 +1,122 @@
+#!/bin/bash
+# Shared-Dev deploy lock on M1 (rules: AGENTS.md §5 at the repository root). Held only
+# while deploying or restarting the shared Dev, never while waiting or validating.
+# At most 30 minutes. Never poll: if busy, stop and say so.
+#
+#   deploy-lock acquire <task> [minutes] [--pid <pid>]   prints a token; exit 3 = held by someone else
+#   deploy-lock release <task> --token <token>           only the holder that got that token
+#   deploy-lock release --force                          manual override after checking the holder
+#   deploy-lock status                                   prints the holder; exit 0 free / 3 held
+#   deploy-lock run <task> [minutes] -- <command...>     acquire, run, always release
+#
+# Every change to the lock happens under a short kernel lock (lockf), so contenders
+# cannot race each other. An expired lock is only taken over when its holder process
+# is gone; an expired lock whose holder still runs needs a person to decide
+# (release --force), because the old operation may still be changing the Dev.
+set -euo pipefail
+LOCK="$HOME/allrice-dev/.local/deploy.lock.d"
+META="$HOME/allrice-dev/.local/deploy.lock.meta"
+MAX_MINUTES=30
+
+now() { date +%s; }
+die() { echo "deploy-lock: $1" >&2; exit "${2:-1}"; }
+field() { /usr/bin/python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get(sys.argv[2],""))
+except Exception: print("")' "$LOCK/owner.json" "$1"; }
+started_of() { ps -o lstart= -p "$1" 2>/dev/null | sed 's/  */ /g;s/^ //;s/ $//'; }
+holder_alive() { # the recorded pid still runs and is the same process (start time matches)
+  local pid start; pid=$(field pid); start=$(field pidStart)
+  [ -n "$pid" ] && [ -n "$start" ] && [ "$(started_of "$pid")" = "$start" ]
+}
+describe() {
+  local task; task=$(field task)
+  [ -n "$task" ] || { echo "deploy lock: no owner recorded"; return; }
+  echo "deploy lock held by '$task' (pid $(field pid)) since $(date -r "$(field startedAt)" '+%H:%M'), expires $(date -r "$(field expiresAt)" '+%H:%M') $(field note)"
+}
+expired() {
+  local exp; exp=$(field expiresAt)
+  if [ -z "$exp" ]; then # no owner.json: only an orphaned directory older than a minute
+    [ $(( $(now) - $(stat -f %m "$LOCK" 2>/dev/null || now) )) -gt 60 ]; return
+  fi
+  [ "$(now)" -ge "$exp" ]
+}
+valid_task() { [[ "$1" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] || die "invalid task name: $1" 2; }
+locked() { DEPLOY_LOCK_META=1 lockf -k -t 10 "$META" "$0" "$@"; }
+
+# --- operations below run only under the meta lock (see `locked`) ---
+op_acquire() { # task minutes pid
+  local task=$1 minutes=$2 pid=$3
+  if [ -d "$LOCK" ]; then
+    expired || { describe >&2; exit 3; }
+    if [ -n "$(field pid)" ] && holder_alive; then
+      echo "$(describe) — expired, but its process is still running; check it, then 'deploy-lock release --force' if it is safe" >&2
+      exit 3
+    fi
+    echo "taking over expired lock: $(describe)" >&2
+    rm -rf -- "$LOCK"
+  fi
+  mkdir "$LOCK"
+  local start token; start=$(now); token="$(now)-$$-$RANDOM$RANDOM"
+  /usr/bin/python3 - "$LOCK/owner.json" "$task" "$start" "$((start + minutes * 60))" "$pid" "$(started_of "$pid")" "$token" "${DEPLOY_LOCK_NOTE:-}" <<'PY'
+import json,os,socket,sys
+p,task,start,exp,pid,pstart,token,note=sys.argv[1:]
+json.dump({'task':task,'startedAt':int(start),'expiresAt':int(exp),'host':socket.gethostname(),
+           'pid':int(pid),'pidStart':pstart,'token':token,'note':note},open(p+'.tmp','w'))
+os.replace(p+'.tmp',p)
+PY
+  echo "deploy lock acquired by '$task' until $(date -r "$((start + minutes * 60))" '+%H:%M')" >&2
+  echo "$token"
+}
+op_release() { # task token | --force
+  [ -d "$LOCK" ] || { echo "deploy lock is free" >&2; return 0; }
+  if [ "$1" != "--force" ]; then
+    [ "$(field token)" = "$2" ] && [ "$(field task)" = "$1" ] || die "not released, token does not match: $(describe)" 3
+  else
+    echo "force-releasing: $(describe)" >&2
+  fi
+  rm -rf -- "$LOCK"; echo "deploy lock released" >&2
+}
+
+if [ "${DEPLOY_LOCK_META:-}" = 1 ]; then
+  case "${1:-}" in
+    _acquire) shift; op_acquire "$@"; exit ;;
+    _release) shift; op_release "$@"; exit ;;
+  esac
+fi
+
+case "${1:-}" in
+  acquire)
+    shift; [ $# -ge 1 ] || die "usage: deploy-lock acquire <task> [minutes] [--pid <pid>]" 2
+    task=$1; shift; valid_task "$task"; minutes=$MAX_MINUTES; pid=$PPID
+    while [ $# -gt 0 ]; do case "$1" in --pid) pid=${2:?}; shift 2 ;; *) minutes=$1; shift ;; esac; done
+    [[ "$minutes" =~ ^[0-9]+$ ]] && [ "$minutes" -ge 1 ] || die "minutes must be a positive integer" 2
+    [ "$minutes" -le "$MAX_MINUTES" ] || minutes=$MAX_MINUTES
+    mkdir -p "$(dirname "$LOCK")"
+    locked _acquire "$task" "$minutes" "$pid" ;;
+  release)
+    shift
+    if [ "${1:-}" = --force ]; then locked _release --force
+    else
+      [ $# -eq 3 ] && [ "$2" = --token ] || die "usage: deploy-lock release <task> --token <token> | release --force" 2
+      locked _release "$1" "$3"
+    fi ;;
+  status)
+    if [ -d "$LOCK" ]; then
+      if expired; then
+        if [ -n "$(field pid)" ] && holder_alive; then echo "deploy lock EXPIRED but its process still runs: $(describe)"; exit 3; fi
+        echo "deploy lock is EXPIRED and its holder is gone (can be taken over): $(describe)"; exit 0
+      fi
+      describe; exit 3
+    fi
+    echo "deploy lock is free" ;;
+  run)
+    shift; task=${1:?task}; shift
+    minutes=$MAX_MINUTES
+    if [ "${1:-}" != "--" ]; then minutes=$1; shift; fi
+    [ "${1:-}" = "--" ] || die "usage: deploy-lock run <task> [minutes] -- <command...>" 2
+    shift
+    token=$("$0" acquire "$task" "$minutes" --pid $$) || exit $?
+    trap '"$0" release "$task" --token "$token" || true' EXIT
+    "$@" ;;
+  *) sed -n 2,10p "$0"; exit 2 ;;
+esac

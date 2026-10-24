@@ -1,0 +1,26 @@
+#!/bin/bash
+# Daily AllRice Dev backup on M1: plain SQL dump (restore: drop the empty
+# search_path set_config line, then psql) + hard-linked file snapshots + the launchd
+# files. Keeps 7 days. The database dump and the file copies are taken one after the
+# other while Dev runs, so they are not one consistent point in time; after a restore
+# the database is the reference (a dev-stage trade-off, not a production backup).
+set -euo pipefail
+export PATH=/opt/homebrew/bin:/usr/bin:/bin
+umask 077
+B="$HOME/allrice-backups"; D=$(date +%Y%m%d); L="$HOME/allrice-dev/.local"
+pg_dump -h 127.0.0.1 -Fp --no-owner --no-privileges allrice_dev | gzip -6 > "$B/db/allrice_dev-$D.sql.gz.tmp"
+mv "$B/db/allrice_dev-$D.sql.gz.tmp" "$B/db/allrice_dev-$D.sql.gz"
+prev=$(ls -1d "$B/files/"2* 2>/dev/null | grep -v "/$D\$" | tail -1 || true)
+mkdir -p "$B/files/$D"
+for d in storage executions dsh-runtime-m1 native-once-control-m1 native-recurring-control-m1 dsh-platform; do
+  [ -e "$L/$d" ] || continue
+  rsync -a --delete ${prev:+--link-dest="$prev/$d"} "$L/$d/" "$B/files/$D/$d/"
+done
+cp -p "$HOME/allrice-dev/.env" "$B/files/$D/env"
+# The launchd files carry the release, native artifact and schedule-control references;
+# without them the data above cannot be brought back under the same identity.
+for role in web worker; do cp -p "$HOME/Library/LaunchAgents/ai.bplabs.allrice-dev-$role.plist" "$B/files/$D/$role.plist"; done
+cp -p "$HOME/allrice-dev/bin/TOOLS_VERSION" "$B/files/$D/tools-version" 2>/dev/null || true
+find "$B/db" -name 'allrice_dev-*.sql.gz' -mtime +7 -delete
+ls -1d "$B/files/"2* | sort -r | tail -n +8 | while read -r old; do rm -rf -- "$old"; done
+echo "$(date '+%F %T') ok db=$(du -h "$B/db/allrice_dev-$D.sql.gz" | cut -f1) files=$(du -sh "$B/files/$D" | cut -f1)"

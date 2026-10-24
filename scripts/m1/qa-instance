@@ -1,0 +1,253 @@
+#!/bin/bash
+# Per-task AllRice QA instance on M1 (rules: AGENTS.md §6 at the repository root). Each instance has its
+# own release build, ports, database, data directories and launchd jobs, so tasks
+# validate in parallel without touching the shared Dev. Cloud execution is off.
+#
+#   qa-instance up <task> [--ref <branch|sha>]   build + start + prepare tenant (default ref: origin/main)
+#   qa-instance down <task>                      stop, drop database, remove release and data
+#   qa-instance list                             instances, ports, versions, health
+#
+# After `up`: open http://localhost:<webPort> on M1 and log in with the account in
+# ~/allrice-qa/<task>/creds.json (also used by: smoke-test --instance <task>).
+set -euo pipefail
+QA="$HOME/allrice-qa"; REPO="$HOME/allrice-repo"; BIN="$HOME/allrice-dev/bin"
+NODE_BIN="$HOME/.local/opt/node-22.23.2/bin"
+export PATH="$NODE_BIN:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+MAX_INSTANCES=3
+UID_=$(id -u)
+
+die() { echo "qa-instance: $*" >&2; exit 1; }
+say() { echo "[qa-instance] $*"; }
+valid_task() { [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]] || die "task name must match [a-z0-9-], max 31 chars: $1"; }
+db_name() { echo "allrice_qa_${1//-/_}"; }
+label() { echo "ai.bplabs.allrice-qa-$1-$2"; }
+instances() { ls -1d "$QA"/*/instance.json 2>/dev/null | xargs -n1 dirname 2>/dev/null | xargs -n1 basename 2>/dev/null || true; }
+port_busy() { lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
+json_get() { /usr/bin/python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$1" "$2"; }
+
+write_instance() {  # uses the caller's dir task ref sha web worker db artifact
+  /usr/bin/python3 - "$dir/instance.json" "$task" "$ref" "$sha" "$web" "$worker" "$db" "${artifact:-}" "$1" <<'PY'
+import json, sys, time
+p, task, ref, sha, web, worker, db, art, state = sys.argv[1:]
+json.dump({'task': task, 'ref': ref, 'sha': sha, 'webPort': int(web), 'workerPort': int(worker), 'database': db,
+           'nativeArtifactId': art or None, 'cloudExecution': False, 'setup': state,
+           'updatedAt': time.strftime('%Y-%m-%dT%H:%M:%S%z')}, open(p, 'w'), indent=1)
+PY
+}
+
+stop_services() { # task -> 0 once both jobs are unloaded (their processes have exited)
+  local task=$1 role i
+  for role in web worker; do launchctl bootout "gui/$UID_/$(label "$task" "$role")" 2>/dev/null || true; done
+  for i in $(seq 1 90); do
+    launchctl print "gui/$UID_/$(label "$task" web)" >/dev/null 2>&1 || launchctl print "gui/$UID_/$(label "$task" worker)" >/dev/null 2>&1 || {
+      for role in web worker; do rm -f "$HOME/Library/LaunchAgents/$(label "$task" "$role").plist"; done
+      return 0; }
+    sleep 1
+  done
+  return 1
+}
+
+cmd_list() {
+  local any=0
+  printf '%-20s %-6s %-6s %-9s %-10s %-26s %s\n' TASK WEB WORKER SHA STATE DATABASE REF
+  for task in $(instances); do
+    any=1
+    local f="$QA/$task/instance.json" web worker sha ref db state
+    web=$(json_get "$f" webPort); worker=$(json_get "$f" workerPort); sha=$(json_get "$f" sha); ref=$(json_get "$f" ref); db=$(json_get "$f" database)
+    if curl -fsS -m 3 -o /dev/null "http://127.0.0.1:$web/api/health/ready" 2>/dev/null && curl -fsS -m 3 -o /dev/null "http://127.0.0.1:$worker/health/ready" 2>/dev/null; then state=ready
+    elif launchctl print "gui/$UID_/$(label "$task" web)" >/dev/null 2>&1; then state=starting
+    else state=stopped; fi
+    printf '%-20s %-6s %-6s %-9s %-10s %-26s %s\n' "$task" "$web" "$worker" "${sha:0:8}" "$state" "$db" "$ref"
+  done
+  [ $any = 1 ] || echo "(no QA instances)"
+}
+
+cmd_down() {
+  local task=$1; valid_task "$task"
+  local dir="$QA/$task" db; db=$(db_name "$task")
+  [ -d "$dir" ] || say "no instance directory for $task (cleaning leftovers anyway)"
+  stop_services "$task" || die "services of $task did not stop within 90s; database and files left in place"
+  if psql -h 127.0.0.1 -d postgres -Atc "select 1 from pg_database where datname='$db'" | grep -q 1; then
+    dropdb -h 127.0.0.1 --force "$db" && say "dropped database $db"
+  fi
+  if [ -d "$dir/release" ]; then
+    git -C "$REPO" worktree remove --force "$dir/release" 2>/dev/null || rm -rf -- "$dir/release"
+    git -C "$REPO" worktree prune
+  fi
+  case "$dir" in "$QA"/?*) rm -rf -- "$dir" ;; esac
+  rm -f "$QA/.task-$task.lock"
+  say "instance $task removed"
+}
+
+# Internal: runs under lockf from cmd_up. Checks the limit, picks the first free port
+# pair 3200+2n / 3201+2n, writes instance.json (setup=building), prints "web worker".
+cmd_alloc() {
+  [ "${QA_ALLOC_LOCKED:-}" = 1 ] || die "_alloc is internal; use: qa-instance up <task>"
+  local task=$1 ref=$2 sha=$3
+  local dir="$QA/$task" db n web worker found=0 claimed=" " t p artifact=""; db=$(db_name "$task")
+  [ ! -e "$dir/instance.json" ] || die "instance $task already exists (qa-instance down $task first)"
+  [ "$(instances | wc -l | tr -d ' ')" -lt "$MAX_INSTANCES" ] || die "already $MAX_INSTANCES instances (memory limit); take one down first"
+  for t in $(instances); do
+    # A concurrent `down` may have just removed this one.
+    p=$(json_get "$QA/$t/instance.json" webPort 2>/dev/null) || continue
+    claimed+="$p $((p + 1)) "
+  done
+  for n in $(seq 0 49); do
+    web=$((3200 + 2 * n)); worker=$((web + 1))
+    [[ "$claimed" == *" $web "* || "$claimed" == *" $worker "* ]] && continue
+    if ! port_busy "$web" && ! port_busy "$worker"; then found=1; break; fi
+  done
+  [ $found = 1 ] || die "no free port pair in 3200-3299"
+  mkdir -p "$dir/.local" "$dir/logs"; chmod 700 "$dir" "$dir/.local"
+  write_instance building
+  echo "$web $worker"
+}
+
+# A branch name may exist locally (task worktrees live in ~/allrice-repo) and on origin.
+# Use whichever is newer; refuse when they have diverged. Anything else: rev-parse.
+resolve_ref() {
+  local ref=$1 l r
+  l=$(git -C "$REPO" rev-parse --verify -q "refs/heads/$ref^{commit}" 2>/dev/null || true)
+  r=$(git -C "$REPO" rev-parse --verify -q "refs/remotes/origin/$ref^{commit}" 2>/dev/null || true)
+  if [ -n "$l" ] && [ -n "$r" ]; then
+    if git -C "$REPO" merge-base --is-ancestor "$r" "$l"; then echo "$l"
+    elif git -C "$REPO" merge-base --is-ancestor "$l" "$r"; then echo "$r"
+    else die "local $ref and origin/$ref have diverged; pass a commit with --ref"; fi
+  elif [ -n "$l$r" ]; then echo "$l$r"
+  else git -C "$REPO" rev-parse --verify -q "$ref^{commit}" || die "unknown ref: $ref"; fi
+}
+
+cmd_up() {
+  local task=$1; shift; valid_task "$task"
+  local ref="origin/main"
+  while [ $# -gt 0 ]; do case "$1" in --ref) ref=${2:?--ref needs a value}; shift 2 ;; *) die "unknown option $1" ;; esac; done
+  local dir="$QA/$task" db; db=$(db_name "$task")
+  [ ! -e "$dir/instance.json" ] || die "instance $task already exists (qa-instance down $task first)"
+
+  # Other sessions may fetch at the same moment; a ref-lock collision just needs a retry.
+  git -C "$REPO" fetch -q origin 2>/dev/null || { sleep 2; git -C "$REPO" fetch -q origin; }
+  local sha
+  sha=$(resolve_ref "$ref")
+
+  # Claim the slot and ports while holding a kernel file lock (lockf), so sessions
+  # starting instances together cannot take the same ports or exceed MAX_INSTANCES.
+  # The lock is released when the holder exits, even if it is killed.
+  mkdir -p "$QA"
+  local web worker artifact="" ports
+  ports=$(QA_ALLOC_LOCKED=1 lockf -k -t 30 "$QA/.alloc.lock" "$0" _alloc "$task" "$ref" "$sha") || exit 1
+  read -r web worker <<<"$ports"
+  trap 'rc=$?; [ $rc = 0 ] || echo "qa-instance: up $task failed; the instance still holds a slot. Clean up: qa-instance down $task" >&2' EXIT
+  say "task=$task ref=$ref sha=${sha:0:8} web=$web worker=$worker db=$db"
+
+  git -C "$REPO" worktree add -q --detach "$dir/release" "$sha"
+
+  say "installing and building (log: $dir/logs/build.log)"
+  ( cd "$dir/release" && pnpm install --frozen-lockfile && \
+    pnpm -r --workspace-concurrency=1 --filter '@allrice/worker...' --filter '@allrice/web...' --if-present run build ) \
+    > "$dir/logs/build.log" 2>&1 || die "build failed, see $dir/logs/build.log"
+  artifact=$(cd "$dir/release" && node apps/worker/scripts/prepare-native-artifact.mjs --root="$PWD" 2>>"$dir/logs/build.log" | tail -1 | /usr/bin/python3 -c 'import json,sys;print(json.load(sys.stdin)["artifactId"])') \
+    || die "native artifact preparation failed, see $dir/logs/build.log"
+  say "native artifact ${artifact:7:12}…"
+
+  psql -h 127.0.0.1 -d postgres -Atc "select 1 from pg_database where datname='$db'" | grep -q 1 && die "database $db already exists"
+  createdb -h 127.0.0.1 "$db"
+
+  /usr/bin/python3 - "$task" "$dir" "$db" "$web" "$worker" "$sha" "$artifact" <<'PY'
+import json, os, plistlib, re, sys, uuid
+task, d, db, web, worker, sha, art = sys.argv[1:]
+home = os.path.expanduser('~'); rel = f'{d}/release'; L = f'{d}/.local'
+for sub in ('storage', 'executions', 'dsh-runtime', 'native-once-control', 'native-recurring-control', 'project-preview'):
+    os.makedirs(f'{L}/{sub}', mode=0o700, exist_ok=True); os.chmod(f'{L}/{sub}', 0o700)
+dburl = f'postgres://{os.environ.get("USER","snow")}@127.0.0.1:5432/{db}'
+# .env: shared Dev values with this instance's database, ports and storage.
+out = []
+for line in open(f'{home}/allrice-dev/.env').read().splitlines():
+    m = re.match(r'^([A-Z0-9_]+)=(.*)$', line)
+    if not m: out.append(line); continue
+    k, v = m.groups()
+    v = {'DATABASE_URL': dburl, 'ALLRICE_WEB_PORT': web, 'ALLRICE_WORKER_PORT': worker,
+         'ALLRICE_STORAGE_ROOT': f'{L}/storage'}.get(k, v)
+    out.append(f'{k}={v}')
+open(f'{d}/.env', 'w').write('\n'.join(out) + '\n'); os.chmod(f'{d}/.env', 0o600)
+once = {'artifactId': art, 'profileId': 'allrice-once-control-v1', 'storageId': f'allrice-qa-{task}-once-{uuid.uuid4().hex[:8]}', 'stateRoot': f'{L}/native-once-control'}
+rec = {'artifactId': art, 'profileId': 'allrice-recurring-control-v1', 'storageId': f'allrice-qa-{task}-recurring-{uuid.uuid4().hex[:8]}', 'stateRoot': f'{L}/native-recurring-control'}
+common = {
+    'DATABASE_URL': dburl, 'ALLRICE_RELEASE_SHA': sha,
+    'ALLRICE_DSH_NATIVE_ARTIFACT_ID': art, 'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID': art,
+    'ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS': json.dumps([art]),
+    'ALLRICE_NATIVE_ONCE_REFERENCE': json.dumps(once, separators=(',', ':')),
+    'ALLRICE_NATIVE_RECURRING_REFERENCE': json.dumps(rec, separators=(',', ':')),
+    'ALLRICE_DSH_CORDIS_CONFIG': f'{rel}/apps/worker/dsh/allrice-restricted.cordis.yml',
+    'ALLRICE_DSH_RUNTIME_ROOT': f'{L}/dsh-runtime', 'ALLRICE_STORAGE_ROOT': f'{L}/storage',
+    'ALLRICE_CLOUD_PREVIEW_SOCKET': f'{L}/project-preview/p.sock',
+    'ALLRICE_TECHNICAL_WEB_HEALTH_URL': f'http://127.0.0.1:{web}/api/health/ready',
+    'ALLRICE_TECHNICAL_WORKER_HEALTH_URL': f'http://127.0.0.1:{worker}/health/ready',
+    # QA instances never use the shared sandbox VM; sandbox work is validated on Dev.
+    'ALLRICE_CLOUD_RUNNER_ENABLED': '0', 'ALLRICE_CLOUD_MCP_ENABLED': '0',
+    # No sealed build identity for throwaway builds.
+    'ALLRICE_DEV_MAINTENANCE_ENABLED': '0',
+}
+for role in ('web', 'worker'):
+    src = plistlib.load(open(f'{home}/Library/LaunchAgents/ai.bplabs.allrice-dev-{role}.plist', 'rb'))
+    env = dict(src['EnvironmentVariables']); env.pop('ALLRICE_LOCAL_PORTAL', None)
+    env.update(common)
+    if role == 'web': env['ALLRICE_WEB_PORT'] = web
+    else:
+        env.update({'ALLRICE_WORKER_PORT': worker, 'ALLRICE_EXECUTION_ROOT': f'{L}/executions', 'ALLRICE_WORKER_CONCURRENCY': '2'})
+    node = src['ProgramArguments'][0]
+    script = f'{rel}/apps/web/server.mjs' if role == 'web' else f'{rel}/apps/worker/dist/index.js'
+    label = f'ai.bplabs.allrice-qa-{task}-{role}'
+    plist = {'Label': label, 'ProgramArguments': [node, f'--env-file={d}/.env', script] + (['--hostname', '127.0.0.1', '--port', web] if role == 'web' else []),
+             'EnvironmentVariables': env, 'KeepAlive': True, 'RunAtLoad': False, 'ExitTimeOut': 60,
+             'WorkingDirectory': f'{rel}/apps/web' if role == 'web' else rel,
+             'StandardOutPath': f'{d}/logs/{role}.log', 'StandardErrorPath': f'{d}/logs/{role}.err.log'}
+    p = f'{home}/Library/LaunchAgents/{label}.plist'
+    plistlib.dump(plist, open(p, 'wb')); os.chmod(p, 0o600)
+    plistlib.dump(plist, open(f'{d}/{role}.plist', 'wb')); os.chmod(f'{d}/{role}.plist', 0o600)
+PY
+
+  say "preparing database"
+  ( cd "$dir/release" && set -a && source "$dir/.env" && set +a && export DATABASE_URL="postgres://$USER@127.0.0.1:5432/$db" && pnpm db:prepare ) \
+    > "$dir/logs/db-prepare.log" 2>&1 || die "db:prepare failed, see $dir/logs/db-prepare.log"
+  # Same Codex subscription slot as the shared Dev (one row may be enabled at a time).
+  local slot; slot=$(psql -h 127.0.0.1 -d allrice_dev -Atc "select slot from allrice_codex_subscriptions where enabled limit 1")
+  psql -h 127.0.0.1 -d "$db" -q -v ON_ERROR_STOP=1 -c "begin; update allrice_codex_subscriptions set enabled=false where enabled; ${slot:+update allrice_codex_subscriptions set enabled=true where slot=$slot;} commit;" >/dev/null
+
+  say "starting services"
+  for role in worker web; do
+    launchctl bootstrap "gui/$UID_" "$HOME/Library/LaunchAgents/$(label "$task" "$role").plist"
+    launchctl kickstart "gui/$UID_/$(label "$task" "$role")"
+  done
+  local ok=0
+  for _ in $(seq 1 60); do
+    if curl -fsS -m 3 -o /dev/null "http://127.0.0.1:$web/api/health/ready" 2>/dev/null && curl -fsS -m 3 -o /dev/null "http://127.0.0.1:$worker/health/ready" 2>/dev/null; then ok=1; break; fi
+    sleep 2
+  done
+  [ $ok = 1 ] || die "services not ready after 120s; see $dir/logs/*.err.log"
+
+  say "preparing tenant (company, account, Rice)"
+  write_instance started
+  local drop
+  drop=$(psql -h 127.0.0.1 -d "$db" -Atc "select string_agg(id::text, ',') from allrice_platform_dsh_skills where required_tool_refs ?| array['cloud.process.execute','cloud.mcp.call','python.execute','workspace.reconciliation.export']")
+  node "$BIN/qa-bootstrap.mjs" --port "$web" --company "QA-$task" --username "qa-$task" --creds "$dir/creds.json" --no-cloud --drop-skills "$drop" > "$dir/logs/bootstrap.log" 2>&1 \
+    || die "tenant bootstrap failed, see $dir/logs/bootstrap.log"
+
+  write_instance ready
+  trap - EXIT
+  say "ready: http://localhost:$web  (account: $dir/creds.json; smoke: $BIN/smoke-test --instance $task)"
+}
+
+case "${1:-}" in
+  _alloc) shift; cmd_alloc "$@" ;;
+  # up and down of the same task never overlap: each holds that task's kernel lock.
+  _up) shift; [ "${QA_TASK_LOCKED:-}" = 1 ] || die "_up is internal"; cmd_up "$@" ;;
+  _down) shift; [ "${QA_TASK_LOCKED:-}" = 1 ] || die "_down is internal"; cmd_down "$1" ;;
+  up|down)
+    op=$1; shift
+    [ $# -ge 1 ] || die "usage: qa-instance up <task> [--ref <branch|sha>] | down <task>"
+    [ "$op" = up ] || [ $# -eq 1 ] || die "usage: qa-instance down <task>"
+    valid_task "$1"; mkdir -p "$QA"
+    QA_TASK_LOCKED=1 lockf -k -t 0 "$QA/.task-$1.lock" "$0" "_$op" "$@" || { rc=$?; [ $rc = 75 ] && die "another up/down of $1 is running"; exit $rc; } ;;
+  list) cmd_list ;;
+  *) sed -n 2,13p "$0"; exit 2 ;;
+esac
