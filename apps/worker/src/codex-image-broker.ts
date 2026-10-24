@@ -6,6 +6,7 @@ import {
 } from '@allrice/contracts';
 import { createCodexProviderClient } from './codex-search-broker.js';
 import { HandlerError } from './errors.js';
+import { withDshClient } from './harness/dsh-client-cleanup.js';
 
 export class CodexImageGenerationFailedError extends HandlerError {
   constructor(readonly receipt: CodexImageFailureReceipt) {
@@ -26,48 +27,57 @@ export async function requestCodexImage(input: {
   if (input.signal?.aborted)
     throw new HandlerError('IMAGE_CANCELED', '图片任务已取消', false);
   const client = await createCodexProviderClient('codex-images');
+  // Cancellation and final cleanup must join the same owned operation. The
+  // event listener observes rejection immediately; the awaited owner below
+  // still propagates it, including when generation also fails.
+  let closeTask: Promise<void> | undefined;
+  const closeOnce = () =>
+    (closeTask ??= Promise.resolve().then(() => client.close()));
   const cancel = () => {
-    void client.close();
+    void closeOnce().catch(() => undefined);
   };
   input.signal?.addEventListener('abort', cancel, { once: true });
-  try {
-    if (input.signal?.aborted)
-      throw new HandlerError('IMAGE_CANCELED', '图片任务已取消', false);
-    const result = await client.generateCodexImage({
-      workModel: input.configuration.workModel,
-      imageModel: input.configuration.imageModel,
-      prompt: input.prompt,
-      ...(input.source ? { source: input.source } : {}),
-    });
-    const failure = CodexImageFailureReceiptSchema.safeParse(result);
-    if (failure.success)
-      throw new CodexImageGenerationFailedError(failure.data);
-    return CodexImageReceiptSchema.parse(result);
-  } catch (error) {
-    if (error instanceof CodexImageGenerationFailedError) throw error;
-    const message = error instanceof Error ? error.message : '';
-    const code =
-      [
-        'IMAGE_AUTH_REQUIRED',
-        'IMAGE_RATE_LIMITED',
-        'IMAGE_MODEL_UNAVAILABLE',
-        'IMAGE_GENERATION_FAILED',
-        'IMAGE_RESULT_INVALID',
-        'IMAGE_CANCELED',
-      ].find((c) => message.includes(c)) ?? 'IMAGE_RESULT_UNKNOWN';
-    const descriptions: Record<string, string> = {
-      IMAGE_AUTH_REQUIRED: '图片授权不可用，请在平台设置中检查 Codex 订阅。',
-      IMAGE_RATE_LIMITED: '图片服务额度或速率受限，请稍后再试。',
-      IMAGE_MODEL_UNAVAILABLE: '当前订阅暂不支持所选图片模型或参数。',
-      IMAGE_GENERATION_FAILED: '图片服务未完成本次请求。',
-      IMAGE_RESULT_INVALID: '图片服务返回的结果无法验证。',
-      IMAGE_CANCELED: '图片任务已取消。',
-      IMAGE_RESULT_UNKNOWN:
-        '未取得完整图片回执，结果待核对，请勿自动重复生成。',
-    };
-    throw new HandlerError(code, descriptions[code]!, false);
-  } finally {
-    input.signal?.removeEventListener('abort', cancel);
-    await client.close();
-  }
+  return withDshClient({ close: closeOnce }, async () => {
+    try {
+      if (input.signal?.aborted)
+        throw new HandlerError('IMAGE_CANCELED', '图片任务已取消', false);
+      const result = await client.generateCodexImage({
+        workModel: input.configuration.workModel,
+        imageModel: input.configuration.imageModel,
+        prompt: input.prompt,
+        ...(input.source ? { source: input.source } : {}),
+      });
+      const failure = CodexImageFailureReceiptSchema.safeParse(result);
+      if (failure.success)
+        throw new CodexImageGenerationFailedError(failure.data);
+      return CodexImageReceiptSchema.parse(result);
+    } catch (error) {
+      if (error instanceof CodexImageGenerationFailedError) throw error;
+      if (error instanceof HandlerError && error.code === 'IMAGE_CANCELED')
+        throw error;
+      const message = error instanceof Error ? error.message : '';
+      const code =
+        [
+          'IMAGE_AUTH_REQUIRED',
+          'IMAGE_RATE_LIMITED',
+          'IMAGE_MODEL_UNAVAILABLE',
+          'IMAGE_GENERATION_FAILED',
+          'IMAGE_RESULT_INVALID',
+          'IMAGE_CANCELED',
+        ].find((c) => message.includes(c)) ?? 'IMAGE_RESULT_UNKNOWN';
+      const descriptions: Record<string, string> = {
+        IMAGE_AUTH_REQUIRED: '图片授权不可用，请在平台设置中检查 Codex 订阅。',
+        IMAGE_RATE_LIMITED: '图片服务额度或速率受限，请稍后再试。',
+        IMAGE_MODEL_UNAVAILABLE: '当前订阅暂不支持所选图片模型或参数。',
+        IMAGE_GENERATION_FAILED: '图片服务未完成本次请求。',
+        IMAGE_RESULT_INVALID: '图片服务返回的结果无法验证。',
+        IMAGE_CANCELED: '图片任务已取消。',
+        IMAGE_RESULT_UNKNOWN:
+          '未取得完整图片回执，结果待核对，请勿自动重复生成。',
+      };
+      throw new HandlerError(code, descriptions[code]!, false);
+    } finally {
+      input.signal?.removeEventListener('abort', cancel);
+    }
+  });
 }

@@ -37,7 +37,8 @@ import {
   DSH_DISTRIBUTION_CURRENT_VERSION,
 } from '../dsh-distribution.js';
 import { dshEgressEnvironment } from '../dsh-egress-environment.js';
-import { DshProtocolClient } from '../dsh-protocol-client.js';
+import type { DshProtocolClient } from '../dsh-protocol-client.js';
+import { createObservedDshClient } from '../dsh-close-observer.js';
 import { assertStoredNativeSession } from '../dsh-native-storage.js';
 import {
   assertVirginNativeNamespace,
@@ -163,6 +164,14 @@ export function configuredDshNativeLaunch(options: DshRuntimePoolOptions = {}) {
 
 export class DshRuntimePool {
   private readonly runtimes = new Map<string, DshRuntime>();
+  // Cache membership is not ownership. Preparing, closing and failed-close
+  // Hosts remain owned until their one close operation confirms completion.
+  private readonly ownedRuntimes = new Set<DshRuntime>();
+  private readonly preparingOwners = new Set<Promise<void>>();
+  private readonly runtimeCloseTasks = new WeakMap<DshRuntime, Promise<void>>();
+  private readonly failedCloses = new WeakSet<DshRuntime>();
+  private closing = false;
+  private closeTask: Promise<void> | undefined;
   private readonly inputSteers = new Map<DshRuntime, Set<Promise<boolean>>>();
   private readonly inputHolds = new Map<
     DshRuntime,
@@ -207,6 +216,27 @@ export class DshRuntimePool {
 
   get(threadId: string) {
     return this.runtimes.get(threadId);
+  }
+
+  private assertAcquisitionOpen(threadId: string) {
+    if (this.closing)
+      throw new HandlerError(
+        'DSH_RUNTIME_POOL_CLOSING',
+        'DSH runtime pool is closing',
+        false,
+      );
+    if (
+      [...this.ownedRuntimes].some(
+        (runtime) =>
+          runtime.sessionId === threadId &&
+          this.runtimes.get(threadId) !== runtime,
+      )
+    )
+      throw new HandlerError(
+        'DSH_RUNTIME_CLOSE_UNCONFIRMED',
+        'The preceding DSH runtime has not confirmed closure',
+        false,
+      );
   }
 
   touch(runtime: DshRuntime) {
@@ -506,6 +536,7 @@ export class DshRuntimePool {
     nativeExecutionBinding?: NativeRunExecutionBinding | null;
     requireRecovery?: boolean;
   }) {
+    this.assertAcquisitionOpen(input.threadId);
     const acquireStarted = performance.now();
     let nativeIdentity: ReturnType<DshRuntimePool['launch']>;
     try {
@@ -709,6 +740,7 @@ export class DshRuntimePool {
           .digest('hex'),
       ]),
     );
+    this.assertAcquisitionOpen(input.threadId);
     const existing = this.runtimes.get(input.threadId);
     const preparation = {
       cache: existing?.fingerprint === fingerprint ? 'hit' : 'miss',
@@ -815,40 +847,88 @@ export class DshRuntimePool {
       environment.OPENAI_COMPATIBLE_API_KEY = credential!.apiKey;
       environment.OPENAI_COMPATIBLE_BASE_URL = input.snapshot.baseUrl!;
     }
+    // A close can arrive while credentials, storage or mkdir are awaiting.
+    // Fence immediately before spawn; registration below has no intervening await.
+    this.assertAcquisitionOpen(input.threadId);
     const startedAt = new Date().toISOString();
-    const runtime: DshRuntime = {
-      ...(input.nativePin ? { nativePin: input.nativePin } : {}),
-      ...(nativeIdentity
-        ? {
-            nativeArtifactId: nativeIdentity.artifactId,
-            nativeProfileId: nativeIdentity.profileId,
-          }
-        : {}),
-      client: new DshProtocolClient({
+    const runtimeId = randomUUID();
+    let runtime!: DshRuntime;
+    const creating = createObservedDshClient({
+      runtimeId,
+      launch: {
         command: nativeIdentity?.command ?? this.runtimeCommand,
         args: nativeIdentity?.args ?? this.runtimeArgs,
         cwd: tenantRoot,
         environment,
         requestTimeoutMs: this.requestTimeoutMs,
-      }),
-      id: randomUUID(),
-      fingerprint,
-      fingerprintParts,
-      sessionId: input.threadId,
-      organizationId,
-      workspaceId,
-      productSessionId: input.input.kernel.sessionId,
-      ...('internalTask' in input.input.kernel
-        ? { internalTask: input.input.kernel.internalTask }
-        : {}),
-      ownerId,
-      providerRoute: input.snapshot.route,
-      model: input.snapshot.model,
-      reasoningEffort: input.snapshot.reasoningEffort,
-      nativeTools,
-      startedAt,
-      lastActivityAt: startedAt,
-    };
+      },
+      context: input.nativePin
+        ? {
+            kind: 'context',
+            contextKind: input.nativePin.contextKind,
+            contextId: input.nativePin.contextId,
+            organizationId,
+            workspaceId,
+            ownerId,
+          }
+        : { kind: 'provider', purpose: 'codex_search' }, // Unapproved standalone fixture only.
+      assertAdmissionOpen: () => this.assertAcquisitionOpen(input.threadId),
+      // Ownership is registered synchronously at construction, before this
+      // async factory returns; global close includes preparing runtimes.
+      ownClient: (client) => {
+        runtime = {
+          ...(input.nativePin ? { nativePin: input.nativePin } : {}),
+          ...(nativeIdentity
+            ? {
+                nativeArtifactId: nativeIdentity.artifactId,
+                nativeProfileId: nativeIdentity.profileId,
+              }
+            : {}),
+          client,
+          id: runtimeId,
+          fingerprint,
+          fingerprintParts,
+          sessionId: input.threadId,
+          organizationId,
+          workspaceId,
+          productSessionId: input.input.kernel.sessionId,
+          ...('internalTask' in input.input.kernel
+            ? { internalTask: input.input.kernel.internalTask }
+            : {}),
+          ownerId,
+          providerRoute: input.snapshot.route,
+          model: input.snapshot.model,
+          reasoningEffort: input.snapshot.reasoningEffort,
+          nativeTools,
+          startedAt,
+          lastActivityAt: startedAt,
+        };
+        this.ownedRuntimes.add(runtime);
+      },
+    });
+    // SQL reservation is an owned preparation too. A concurrent global close
+    // must wait for its never-spawned receipt before database shutdown.
+    const preparingOwner = creating.then(
+      () => undefined,
+      (error: unknown) => {
+        // Only the factory's post-reserve fence emits this exact error; if its
+        // never-spawned receipt failed, the factory throws an AggregateError.
+        if (
+          this.closing &&
+          error instanceof HandlerError &&
+          error.code === 'DSH_RUNTIME_POOL_CLOSING'
+        )
+          return;
+        throw error;
+      },
+    );
+    this.preparingOwners.add(preparingOwner);
+    void preparingOwner.catch(() => undefined);
+    try {
+      await creating;
+    } finally {
+      this.preparingOwners.delete(preparingOwner);
+    }
     try {
       const initializeStarted = performance.now();
       const initialized = await runtime.client.initialize({
@@ -868,10 +948,24 @@ export class DshRuntimePool {
       preparation.initializeMs = performance.now() - initializeStarted;
       preparation.skillRegistrationMs = initialized.skillRegistrationMs;
       preparation.acquireMs = performance.now() - acquireStarted;
+      // Global close also owns a Host whose initialize has not returned yet.
+      if (this.closing || this.runtimeCloseTasks.has(runtime))
+        throw new HandlerError(
+          'DSH_RUNTIME_POOL_CLOSING',
+          'DSH runtime closed during preparation',
+          false,
+        );
       this.runtimes.set(input.threadId, runtime);
       return { runtime, fresh: true, preparation };
     } catch (error) {
-      await runtime.client.close();
+      try {
+        await this.closeOwned(runtime);
+      } catch (closeError) {
+        throw new AggregateError(
+          [error, closeError],
+          'DSH runtime preparation and cleanup failed',
+        );
+      }
       throw error;
     }
   }
@@ -1059,45 +1153,126 @@ export class DshRuntimePool {
   }
 
   inventory(): readonly HarnessRuntimeProcessSnapshot[] {
-    return [...this.runtimes.values()].map((runtime) => ({
-      id: runtime.id,
-      organizationId: runtime.organizationId,
-      workspaceId: runtime.workspaceId,
-      sessionId: runtime.productSessionId,
-      ...(runtime.internalTask ? { internalTask: runtime.internalTask } : {}),
-      ownerId: runtime.ownerId,
-      threadId: runtime.sessionId,
-      providerRoute: runtime.providerRoute,
-      model: runtime.model,
-      reasoningEffort: runtime.reasoningEffort,
-      profileFingerprint: runtime.fingerprint,
-      nativeTools: [...runtime.nativeTools],
-      startedAt: runtime.startedAt,
-      lastActivityAt: runtime.lastActivityAt,
-    }));
+    // This registry describes physical processes. Retained closure failures
+    // with a witnessed exit belong to closureInventory(), never the live table.
+    return [...new Set([...this.runtimes.values(), ...this.ownedRuntimes])]
+      .filter((runtime) => runtime.client.processState?.().state !== 'exited')
+      .map((runtime) => ({
+        id: runtime.id,
+        organizationId: runtime.organizationId,
+        workspaceId: runtime.workspaceId,
+        sessionId: runtime.productSessionId,
+        ...(runtime.internalTask ? { internalTask: runtime.internalTask } : {}),
+        ownerId: runtime.ownerId,
+        threadId: runtime.sessionId,
+        providerRoute: runtime.providerRoute,
+        model: runtime.model,
+        reasoningEffort: runtime.reasoningEffort,
+        profileFingerprint: runtime.fingerprint,
+        nativeTools: [...runtime.nativeTools],
+        startedAt: runtime.startedAt,
+        lastActivityAt: runtime.lastActivityAt,
+      }));
+  }
+
+  closureInventory() {
+    return [...this.ownedRuntimes]
+      .filter((runtime) => this.runtimeCloseTasks.has(runtime))
+      .map((runtime) => {
+        const process = runtime.client.processState?.();
+        const evidence = runtime.client.closureEvidence?.();
+        return {
+          id: runtime.id,
+          threadId: runtime.sessionId,
+          nativeArtifactId: runtime.nativeArtifactId ?? null,
+          state: this.failedCloses.has(runtime)
+            ? ('unconfirmed' as const)
+            : ('closing' as const),
+          processState: process?.state ?? ('unknown' as const),
+          stdioClosed: process?.stdioClosed ?? false,
+          exitCode: process?.exitCode ?? null,
+          signal: process?.signal ?? null,
+          shutdownAcknowledged: evidence?.shutdownAcknowledged ?? null,
+          wrapperCleanupConfirmed: evidence?.wrapperCleanupConfirmed ?? null,
+          terminationAttempted: evidence?.terminationAttempted ?? null,
+        };
+      });
   }
 
   async drop(threadId: string) {
     const runtime = this.runtimes.get(threadId);
-    this.runtimes.delete(threadId);
-    if (runtime) this.clearInputDelivery(runtime);
-    await runtime?.client.close();
+    if (runtime) return this.closeOwned(runtime);
+    // Repeating a failed drop must not become a successful no-op merely
+    // because its reusable cache entry has already been removed.
+    await this.closeAll(
+      [...this.ownedRuntimes].filter((owned) => owned.sessionId === threadId),
+    );
   }
 
-  /** An execution owns this object, even after another caller cleared the
-   * pool or installed a new same-key runtime. Map absence is not a close ACK.
-   * Wait the original client's real close promise and leave replacements alone. */
-  async closeOwned(runtime: DshRuntime) {
+  /** Close the captured object once, independent of cache membership. A failed
+   * close remains owned and visible; it never releases a same-key replacement. */
+  closeOwned(runtime: DshRuntime): Promise<void> {
+    const existing = this.runtimeCloseTasks.get(runtime);
+    if (existing) return existing;
+    this.ownedRuntimes.add(runtime);
     if (this.runtimes.get(runtime.sessionId) === runtime)
       this.runtimes.delete(runtime.sessionId);
-    this.clearInputDelivery(runtime);
-    await runtime.client.close();
+    const task = (async () => {
+      // Try the process close even if an input-hold disposer itself fails.
+      const results = await Promise.allSettled([
+        Promise.resolve().then(() => this.clearInputDelivery(runtime)),
+        Promise.resolve().then(() => runtime.client.close()),
+      ]);
+      const failures = results.flatMap((result) =>
+        result.status === 'rejected' ? [result.reason] : [],
+      );
+      if (failures.length) this.failedCloses.add(runtime);
+      if (failures.length === 1) throw failures[0];
+      if (failures.length)
+        throw new AggregateError(failures, 'DSH owned close failed');
+      this.ownedRuntimes.delete(runtime);
+    })();
+    this.runtimeCloseTasks.set(runtime, task);
+    return task;
   }
 
-  async close() {
-    const runtimes = [...this.runtimes.values()];
-    this.runtimes.clear();
-    for (const runtime of runtimes) this.clearInputDelivery(runtime);
-    await Promise.allSettled(runtimes.map((runtime) => runtime.client.close()));
+  private async closeAll(runtimes: readonly DshRuntime[]) {
+    const results = await Promise.allSettled(
+      runtimes.map((runtime) => this.closeOwned(runtime)),
+    );
+    const failures = results.flatMap((result) =>
+      result.status === 'rejected' ? [result.reason] : [],
+    );
+    if (failures.length)
+      throw new AggregateError(
+        failures,
+        'DSH runtime closure remains unconfirmed',
+      );
+  }
+
+  close(): Promise<void> {
+    if (this.closeTask) return this.closeTask;
+    // Synchronous admission fence; all concurrent shutdown callers observe
+    // the same result, including a previously failed individual close.
+    this.closing = true;
+    const runtimes = [
+      ...new Set([...this.runtimes.values(), ...this.ownedRuntimes]),
+    ];
+    const preparing = [...this.preparingOwners];
+    this.closeTask = (async () => {
+      const outcomes = await Promise.allSettled([
+        this.closeAll(runtimes),
+        ...preparing,
+      ]);
+      const failures = outcomes.flatMap((item) =>
+        item.status === 'rejected' ? [item.reason] : [],
+      );
+      if (failures.length)
+        throw new AggregateError(
+          failures,
+          'DSH closure or pre-spawn observation remains unconfirmed',
+        );
+    })();
+    return this.closeTask;
   }
 }

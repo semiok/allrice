@@ -95,7 +95,7 @@ describe('DSH immutable legacy session replay', () => {
     }
   }, 30000);
 
-  it('keeps one native writer across migration and releases its lease on close', async () => {
+  it('keeps one native writer and releases it after physical exit without confirming legacy semantic close', async () => {
     const fixture = await legacySessionFixture(async () => ({
       text: 'Unexpected',
     }));
@@ -108,12 +108,16 @@ describe('DSH immutable legacy session replay', () => {
       await expect(second.client.recover(old.sessionId)).rejects.toThrow();
       expect(fixture.requests).toHaveLength(0);
       expect(await readFile(path, 'utf8')).toBe(old.text);
-      await first.client.close();
+      expect(await fixture.closeClient(first.client)).toMatchObject({
+        process: { state: 'exited', stdioClosed: true, exitCode: 0 },
+        shutdownAcknowledged: true,
+        wrapperCleanupConfirmed: false,
+      });
       await expect(second.client.recover(old.sessionId)).resolves.toMatchObject(
         { recovered: true },
       );
       expect(fixture.requests).toHaveLength(0);
-      await second.client.close();
+      await fixture.closeClient(second.client);
       await migratedJournal(path, old.text);
     } finally {
       await fixture.close();
@@ -159,7 +163,7 @@ describe('DSH immutable legacy session replay', () => {
       expect(
         messages.filter((message) => message.role === 'tool'),
       ).toHaveLength(1);
-      await client.close();
+      await fixture.closeClient(client);
       await migratedJournal(path, old.text);
     } finally {
       await fixture.close();
@@ -221,7 +225,7 @@ describe('DSH immutable legacy session replay', () => {
           'NATIVE_WAIT_CHANGED',
         );
         expect(fixture.requests).toHaveLength(1);
-        await client.close();
+        await fixture.closeClient(client);
         await migratedJournal(path, old.text);
         const restarted = await fixture.runtime();
         await restarted.client.recover(old.sessionId);
@@ -248,7 +252,7 @@ describe('DSH immutable legacy session replay', () => {
       await expect(
         client.continueWait(questionAnswer(old.text)),
       ).rejects.toThrow('NATIVE_WAIT_CHANGED');
-      await client.close();
+      await fixture.closeClient(client);
       expect(fixture.requests).toHaveLength(0);
     } finally {
       await fixture.close();
@@ -275,7 +279,7 @@ describe('DSH immutable legacy session replay', () => {
         await expect(client.recover(old.sessionId)).rejects.toMatchObject({
           code: 'DSH_REQUEST_FAILED',
         });
-        await client.close();
+        await fixture.closeClient(client);
         expect(fixture.requests).toHaveLength(0);
         expect(await readFile(path, 'utf8')).toBe(text);
       } finally {
@@ -321,7 +325,7 @@ describe('DSH immutable legacy session replay', () => {
         await expect(client.recover(old.sessionId)).rejects.toMatchObject({
           code: 'DSH_REQUEST_FAILED',
         });
-        await client.close();
+        await fixture.closeClient(client);
         expect(fixture.requests).toHaveLength(0);
         expect(await readFile(path, 'utf8')).toBe(text);
         expect(await readdir(dirname(path))).not.toContain('session.v3.jsonl');

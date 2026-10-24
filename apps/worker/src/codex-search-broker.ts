@@ -1,9 +1,13 @@
+import { createObservedDshClient } from './harness/dsh-close-observer.js';
 import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import { DSH_DISTRIBUTION_CURRENT_VERSION } from './harness/dsh-distribution.js';
 import { dshEgressEnvironment } from './harness/dsh-egress-environment.js';
-import { DshProtocolClient } from './harness/dsh-protocol-client.js';
+import {
+  closeDshClientAfterFailure,
+  withDshClient,
+} from './harness/dsh-client-cleanup.js';
 
 import { activeCodexSubscriptionHome } from './codex-subscription-home.js';
 
@@ -38,7 +42,7 @@ function searchEnvironment(root: string, home: string) {
 }
 
 export async function createCodexProviderClient(
-  purpose = 'codex-hosted-search',
+  purpose: 'codex-hosted-search' | 'codex-images' = 'codex-hosted-search',
 ) {
   const executionRoot = resolve(
     process.env.ALLRICE_EXECUTION_ROOT ?? '.local/executions',
@@ -49,12 +53,20 @@ export async function createCodexProviderClient(
     mkdir(executionRoot, { recursive: true, mode: 0o700 }),
     mkdir(home, { recursive: true, mode: 0o700 }),
   ]);
-  const client = new DshProtocolClient({
-    command: process.execPath,
-    args: [resolve(import.meta.dirname, '../dsh/allrice-jsonrpc-runtime.mjs')],
-    cwd: executionRoot,
-    environment: searchEnvironment(executionRoot, home),
-    requestTimeoutMs: 310_000,
+  const client = await createObservedDshClient({
+    context: {
+      kind: 'provider',
+      purpose: purpose === 'codex-images' ? 'codex_image' : 'codex_search',
+    },
+    launch: {
+      command: process.execPath,
+      args: [
+        resolve(import.meta.dirname, '../dsh/allrice-jsonrpc-runtime.mjs'),
+      ],
+      cwd: executionRoot,
+      environment: searchEnvironment(executionRoot, home),
+      requestTimeoutMs: 310_000,
+    },
   });
   try {
     await client.initialize({
@@ -69,16 +81,11 @@ export async function createCodexProviderClient(
     });
     return client;
   } catch (error) {
-    await client.close();
-    throw error;
+    return closeDshClientAfterFailure(client, error);
   }
 }
 
 export async function searchCodexHostedWeb(query: string, maxResults = 5) {
   const client = await createCodexProviderClient();
-  try {
-    return await client.searchCodexWeb(query, maxResults);
-  } finally {
-    await client.close();
-  }
+  return withDshClient(client, () => client.searchCodexWeb(query, maxResults));
 }

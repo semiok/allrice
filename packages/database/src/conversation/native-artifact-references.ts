@@ -1,6 +1,10 @@
 import { posix } from 'node:path';
 import { z } from 'zod';
 import { getDatabase } from '../core/client.ts';
+import {
+  readDshRuntimeCloseCoverage,
+  assertDshCloseArtifactCoverage,
+} from '../providers/dsh-runtime-close-observations.ts';
 import { configuredNativeOriginReaders } from './native-origin-reader.ts';
 import { readVerifiedNativeChatRetirements } from './native-context-retirement.ts';
 
@@ -190,7 +194,22 @@ export async function verifyNativeArtifactReferenceCoverage(
           });
         }
       }
-      return { references, nativeOnceControlReferences, retiredContexts };
+      // Same read-only snapshot as origin/binding/control references. Current
+      // approved live runtimes do not block an ordinary rolling deployment.
+      const closeObservations = await readDshRuntimeCloseCoverage(tx, {
+        outsideApprovedArtifacts: approved.map((a) => a.artifactId),
+      });
+      const closeCoverage = assertDshCloseArtifactCoverage(
+        closeObservations,
+        approved.map((a) => a.artifactId),
+        retiredContexts,
+      );
+      return {
+        references,
+        nativeOnceControlReferences,
+        retiredContexts,
+        closeCoverage,
+      };
     },
   );
   const { references, nativeOnceControlReferences, retiredContexts } = snapshot;
@@ -201,6 +220,7 @@ export async function verifyNativeArtifactReferenceCoverage(
     );
   return {
     verified: true as const,
+    closeCoverage: snapshot.closeCoverage,
     references,
     nativeOnceControlReferences,
     ...(retiredContexts.length ? { retiredContexts } : {}),

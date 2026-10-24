@@ -44,6 +44,8 @@ export class AssistantFixtureCleanupError extends Error {
 
 export async function createAssistantFixtureDatabase(
   options: {
+    // Fault-injection suites must never borrow a relation from CI's public DB.
+    ownSchemaOnly?: true;
     throughMigration?:
       | '0096_assistant_pricing.sql'
       | '0100_tenant_scoped_resource_quotas.sql'
@@ -51,6 +53,8 @@ export async function createAssistantFixtureDatabase(
       | '0210_current_employee_execution_binding.sql';
   } = {},
 ) {
+  if (options.ownSchemaOnly !== undefined && options.ownSchemaOnly !== true)
+    throw Error('Unsupported isolated search path');
   if (
     options.throughMigration !== undefined &&
     ![
@@ -144,7 +148,8 @@ export async function createAssistantFixtureDatabase(
     await admin.unsafe(`create schema "${schema}"`);
     // An incremental checkpoint must not borrow tables introduced by later
     // migrations from a fully migrated public schema (as CI db:setup has).
-    const searchPath = options.throughMigration ? schema : `${schema},public`;
+    const ownSchemaOnly = options.throughMigration || options.ownSchemaOnly;
+    const searchPath = ownSchemaOnly ? schema : `${schema},public`;
     url.searchParams.set('options', `-csearch_path=${searchPath}`);
     db = postgres(url.toString(), {
       max: 10,
@@ -160,7 +165,7 @@ export async function createAssistantFixtureDatabase(
       // Historical bootstrap SQL uses extension types/operators installed in
       // public. This transaction-local path expires before the checkpoint pool
       // is returned; subsequent migration/runtime readers remain own-only.
-      if (options.throughMigration)
+      if (ownSchemaOnly)
         await tx`select set_config('search_path', ${`${schema},public`}, true)`;
       const files = (await readdir(migrations))
         .filter((f) => f.endsWith('.sql'))

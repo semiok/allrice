@@ -1,5 +1,11 @@
 # DSH 复用与替换清单
 
+## MET195：原生运行关闭观察
+
+`allrice-observed-native-close-v1` 继续复用固定 `0.2.1-rc.2` 的公开 SDK shutdown、根 Context dispose 与 JSON-RPC transport flush。AllRice wrapper 逐项记录实际返回结果，最终响应排空失败使自身非零退出；Worker 等待原有子进程的 child close/stdio 关闭，并把原 owner、包、boot 与关闭观察写入不可变持久记录。物理退出、语义关闭确认和持久回执分别判断，缺失或失败保留 unknown/unconfirmed，不把历史补成成功，也不重放业务任务。
+
+这是 AllRice 协议与持久登记的接线，不修改 DSH 核心、依赖或物理补丁；物理补丁仍为 5 项。回归复用现有 protocol、pool、Worker 关闭测试，以及隔离 PostgreSQL 的 owner/FK、幂等回执读回与退休锁序检查。真实 SDK、最终 transport 排空与实际 Worker 退出仍须按同一候选版本验收，离线夹具或退出码为零不能代替语义证明。若上游公开关闭接口提供等价的可核对回执，可用其替换本层协议字段，保留 AllRice 的精确 owner、租户隔离、不可变历史与 unknown 处理。
+
 ## MET194：企业品牌内容业务读取
 
 `allrice-brand-content-read-v1` 通过公开原生工具注册将当前定制员工的品牌业务读取转交现有 Tool Broker。AllRice 负责当前组织、个人实例、来源与任务租约，DSH 保持原模型与 Agent Loop。业务写入复用现有持久 Workflow，采纳、审稿和真实发布回执仍由真人操作；没有 DSH 核心补丁、第二个模型调用器或调度时钟。

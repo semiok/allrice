@@ -40,10 +40,63 @@ vi.mock('@allrice/database', () => {
 });
 const roots: string[] = [],
   pools: DshRuntimePool[] = [];
+// The public-SDK fixture below uses an older test-owned JSON-RPC wrapper.
+// Its legacy ACK cannot prove the new production wrapper's semantic closure.
+const legacyWrappers = new Map<
+  DshRuntimePool,
+  { client: DshProtocolClient; runtime: DshRuntime }
+>();
 const stops: (() => void)[] = [];
 afterEach(async () => {
   for (const stop of stops.splice(0)) stop();
-  await Promise.all(pools.splice(0).map((pool) => pool.close()));
+  for (const pool of pools.splice(0)) {
+    const legacy = legacyWrappers.get(pool);
+    if (!legacy) {
+      await pool.close();
+      continue;
+    }
+    const exited = {
+      state: 'exited',
+      stdioClosed: true,
+      exitCode: 0,
+      signal: null,
+    };
+    await expect(pool.close()).rejects.toMatchObject({
+      errors: [
+        {
+          errors: [
+            {
+              code: 'DSH_RUNTIME_CLOSE_UNCONFIRMED',
+              evidence: {
+                process: exited,
+                shutdownAcknowledged: true,
+                wrapperCleanupConfirmed: false,
+                terminationAttempted: null,
+              },
+            },
+          ],
+        },
+      ],
+    });
+    expect(legacy.client.processState()).toEqual(exited);
+    expect(pool.inventory()).toEqual([]);
+    expect(pool.closureInventory()).toEqual([
+      {
+        id: legacy.runtime.id,
+        threadId: legacy.runtime.sessionId,
+        nativeArtifactId: null,
+        state: 'unconfirmed',
+        processState: 'exited',
+        stdioClosed: true,
+        exitCode: 0,
+        signal: null,
+        shutdownAcknowledged: true,
+        wrapperCleanupConfirmed: false,
+        terminationAttempted: null,
+      },
+    ]);
+    legacyWrappers.delete(pool);
+  }
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
   for (const mock of Object.values(db)) mock.mockReset();
@@ -308,6 +361,7 @@ it('runs one real rc.2 SDK and JSON-RPC window through fixed host repair and sam
   pools.push(pool);
   const state = runtime(client, id);
   attach(pool, state);
+  legacyWrappers.set(pool, { client, runtime: state });
   const abort = new AbortController();
   let polling = true,
     currentTurn = turnId;

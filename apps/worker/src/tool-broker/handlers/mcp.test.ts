@@ -127,7 +127,10 @@ it('delivers the safe admission denial through the DSH inbound protocol', async 
       `let parentId;
 require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
   const frame=JSON.parse(line);
-  if(frame.method==='provider/status') {
+  // Synthetic close receipt only; no Native/SDK is constructed in this child.
+  if(frame.method==='shutdown') {
+    process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:frame.id,result:{allriceClose:{version:1,sdkShutdown:true,rootDisposed:true,priorFramesFlushed:true}}})+'\\n',()=>process.exit(0));
+  } else if(frame.method==='provider/status') {
     parentId=frame.id;
     process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:'tool-call',method:'allrice/tool/execute',params:{}})+'\\n');
   } else if(frame.id==='tool-call') {
