@@ -71,6 +71,7 @@ import {
   localCommandEnabled,
 } from './local-command-profile.ts';
 import {
+  ProjectLockPlatformError,
   RuntimePolicyError,
   requestRuntimeActionApproval,
   runtimePolicyDigest as digest,
@@ -360,7 +361,11 @@ async function createLocalBridgeToolOperation(
       profile.architecture,
     )
   )
-    throw new RuntimePolicyError('project_lock_platform_mismatch');
+    throw new ProjectLockPlatformError(
+      projectLockArchitectures(args.projectPreparation),
+      [profile.architecture],
+      'local_required',
+    );
   if (
     args?.projectPreparation &&
     (!profile?.features?.includes('project_preparation') ||

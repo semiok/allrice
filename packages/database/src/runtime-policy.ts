@@ -49,6 +49,19 @@ export class RuntimePolicyError extends Error {
   }
 }
 
+/** A uv lock pins wheels for one CPU architecture and no backend this call may use
+ * has that architecture. `cloud` is the cloud's architecture when the cloud is an
+ * option for this call, otherwise why it is not. */
+export class ProjectLockPlatformError extends RuntimePolicyError {
+  constructor(
+    readonly lockArchitectures: readonly string[],
+    readonly bridgeArchitectures: readonly string[],
+    readonly cloud: 'amd64' | 'arm64' | 'local_required' | 'disabled',
+  ) {
+    super('project_lock_platform_mismatch');
+  }
+}
+
 /** Canonical JSON only; callers must schema-parse before hashing. No secret values logged. */
 export function runtimePolicyDigest(input: unknown): string {
   function canonical(value: unknown): string {

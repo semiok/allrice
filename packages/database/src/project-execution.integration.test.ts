@@ -1797,22 +1797,39 @@ suite(
         ).toMatchObject({ location: 'local', status: 'execute' });
       }
       const f = await setup();
-      // The tool selects first without a cloud probe: an unsuitable Bridge must then
-      // lead to the probe ("cloud_unavailable"), not to an early mismatch error.
-      expect((await f.select(false, withLock(f, arm))).choice).toMatchObject({
-        location: 'none',
-        status: 'unavailable',
-        reason: 'cloud_unavailable',
-      });
-      if (cloudPlatform.architecture === 'arm64')
+      if (cloudPlatform.architecture === 'arm64') {
+        // The tool selects first without a cloud probe: an unsuitable Bridge must
+        // then lead to the probe ("cloud_unavailable"), not to a mismatch error.
+        expect((await f.select(false, withLock(f, arm))).choice).toMatchObject({
+          location: 'none',
+          status: 'unavailable',
+          reason: 'cloud_unavailable',
+        });
         expect((await f.select(true, withLock(f, arm))).choice).toMatchObject({
           location: 'cloud',
           status: 'execute',
         });
-      else
-        await expect(f.select(true, withLock(f, arm))).rejects.toThrow(
+        // A revoked cloud grant is "cloud unavailable", not a lock mismatch.
+        const revoked = await setup();
+        await revoked.db`update allrice_cloud_execution_grants set enabled=false where id=${revoked.cloudGrant}`;
+        expect(
+          (await revoked.select(true, withLock(revoked, arm))).choice,
+        ).toMatchObject({ status: 'unavailable', reason: 'cloud_unavailable' });
+      } else
+        // The amd64 cloud cannot install it either: known without a probe.
+        await expect(f.select(false, withLock(f, arm))).rejects.toThrow(
           'project_lock_platform_mismatch',
         );
+      // Local-only work on the amd64 Bridge: the mismatch itself is reported.
+      const local = await setup();
+      await local.request('只在本地运行，禁止使用云端。');
+      await expect(
+        local.select(false, withLock(local, arm)),
+      ).rejects.toMatchObject({
+        code: 'project_lock_platform_mismatch',
+        cloud: 'local_required',
+        bridgeArchitectures: ['amd64'],
+      });
       // A direct local command cannot send the lock to this Bridge either.
       const {
         action: _action,
