@@ -1827,9 +1827,21 @@ suite(
         local.select(false, withLock(local, arm)),
       ).rejects.toMatchObject({
         code: 'project_lock_platform_mismatch',
-        cloud: 'local_required',
+        cloudBlocked: 'local_request',
         bridgeArchitectures: ['amd64'],
+        serverArchitecture: cloudPlatform.architecture,
       });
+      // Cloud-only work leaves the Bridge out: an x86_64 lock that only the amd64
+      // Bridge could install is a mismatch for an arm64 cloud.
+      const cloudOnly = await setup();
+      await cloudOnly.request('只在云端运行。');
+      if (cloudPlatform.architecture === 'arm64')
+        await expect(
+          cloudOnly.select(false, withLock(cloudOnly, x86)),
+        ).rejects.toMatchObject({
+          cloudBlocked: null,
+          bridgeArchitectures: [],
+        });
       // A direct local command cannot send the lock to this Bridge either.
       const {
         action: _action,

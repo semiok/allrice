@@ -18,10 +18,10 @@ import {
   projectServiceLimits,
   cloudPythonImageV1,
   cloudToolchainImageV1,
-  cloudPlatform,
 } from '@allrice/contracts';
 import { LocalStorageAdapter } from '@allrice/storage';
 import { HandlerError } from '../../errors.js';
+import { projectLockPlatformMessage } from './project-lock-message.js';
 import type { RiceToolHandler } from '../types.js';
 import { waitForLocalAdmission } from './local-admission.js';
 import { runProjectResolution } from './project-resolution.js';
@@ -32,25 +32,6 @@ import {
   CloudProjectServiceStartError,
 } from '../../cloud-runner/executor.js';
 import { requireSuccessfulCloudCommand } from '../../cloud-runner/tool-result.js';
-
-const cpuName = (a: string) =>
-  a === 'amd64' ? 'Intel（x86_64）' : a === 'arm64' ? 'Apple 芯片（arm64）' : a;
-/** Exactly why nothing could run the project, and the one action that helps. */
-function projectLockPlatformMessage(error: ProjectLockPlatformError) {
-  const lock = error.lockArchitectures.length
-    ? `只能装在 ${error.lockArchitectures.map(cpuName).join('、')} 上`
-    : '在任何一种 CPU 架构上都装不全';
-  const bridge = error.bridgeArchitectures.length
-    ? `本机 Bridge 是 ${[...new Set(error.bridgeArchitectures)].map(cpuName).join('、')}，装不上。`
-    : '';
-  const next =
-    error.cloud === 'local_required'
-      ? `本次要求只在本机执行。依赖解析目前只按服务器的 CPU 架构（${cpuName(cloudPlatform.architecture)}）生成锁，还不能为本机生成可用的锁；如果可以在云端执行，请去掉"只在本机运行"的要求后重试。`
-      : error.cloud === 'disabled'
-        ? '云端执行没有开启，或这个员工不能使用云端执行。'
-        : `云端是 ${cpuName(error.cloud)}，也装不上。这通常是在另一种架构的服务器上解析的旧锁：请用 resolve 重新解析依赖（会按 ${cpuName(error.cloud)} 生成新的项目版本），再用新版本执行。`;
-  return `这个项目的依赖锁里有${lock}的安装包，本次没有执行。${bridge}${next}`;
-}
 
 export const runProjectWorkspace: RiceToolHandler = async ({
   input,

@@ -40,6 +40,7 @@ import {
   resolveExecutionChoice,
   bridgeProjectPackageLimit,
   projectLockArchitectures,
+  cloudPlatform,
 } from '@allrice/contracts';
 import {
   assertSavedProjectAuthority,
@@ -364,7 +365,8 @@ async function createLocalBridgeToolOperation(
     throw new ProjectLockPlatformError(
       projectLockArchitectures(args.projectPreparation),
       [profile.architecture],
-      'local_required',
+      cloudPlatform.architecture,
+      'local_request',
     );
   if (
     args?.projectPreparation &&

@@ -50,13 +50,15 @@ export class RuntimePolicyError extends Error {
 }
 
 /** A uv lock pins wheels for one CPU architecture and no backend this call may use
- * has that architecture. `cloud` is the cloud's architecture when the cloud is an
- * option for this call, otherwise why it is not. */
+ * has that architecture. `cloudBlocked` says why the cloud is not an option for this
+ * call (null: it is, and its architecture does not fit); the server's architecture is
+ * what a new resolution would produce. */
 export class ProjectLockPlatformError extends RuntimePolicyError {
   constructor(
     readonly lockArchitectures: readonly string[],
     readonly bridgeArchitectures: readonly string[],
-    readonly cloud: 'amd64' | 'arm64' | 'local_required' | 'disabled',
+    readonly serverArchitecture: 'amd64' | 'arm64',
+    readonly cloudBlocked: 'local_request' | 'local_inputs' | 'disabled' | null,
   ) {
     super('project_lock_platform_mismatch');
   }
