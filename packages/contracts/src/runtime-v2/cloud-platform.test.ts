@@ -144,24 +144,69 @@ describe('cloud platform selection', () => {
     ).toBe(false);
   });
 
-  it('targets the native uv build and wheel platform', async () => {
+  it('runs the native uv build and resolves wheels for the target CPU', async () => {
     const input: ProjectDependencyResolveInput = {
       action: 'resolve',
       manager: 'uv',
       packages: [{ name: 'six', version: '1.17.0' }],
     };
+    const plan = (script: string) =>
+      JSON.parse(JSON.parse(/plan=json\.loads\((".*")\)/.exec(script)![1]!));
     const amd = await load('amd64');
-    const amdScript = amd.resolution.projectResolutionScript(input);
-    expect(amdScript).toContain('uv-x86_64-unknown-linux-gnu');
-    expect(amdScript).not.toContain('aarch64');
-
+    expect(plan(amd.resolution.projectResolutionScript(input))).toMatchObject({
+      asset: { fileName: 'uv-0.8.22-x86_64.tar.gz' },
+      uvDirectory: 'uv-x86_64-unknown-linux-gnu',
+      target: {
+        machine: 'x86_64',
+        pythonPlatform: 'x86_64-unknown-linux-gnu',
+      },
+    });
     const arm = await load('arm64');
     const armScript = arm.resolution.projectResolutionScript(input);
+    expect(plan(armScript)).toMatchObject({
+      asset: { fileName: 'uv-0.8.22-aarch64.tar.gz' },
+      uvDirectory: 'uv-aarch64-unknown-linux-gnu',
+      target: { machine: 'aarch64' },
+    });
+    // An Intel Bridge's lock on an Apple-silicon server: native uv, x86_64 wheels.
+    expect(
+      plan(
+        arm.resolution.projectResolutionScript({
+          ...input,
+          architecture: 'amd64',
+        }),
+      ),
+    ).toMatchObject({
+      uvDirectory: 'uv-aarch64-unknown-linux-gnu',
+      target: {
+        machine: 'x86_64',
+        pythonPlatform: 'x86_64-unknown-linux-gnu',
+      },
+    });
     expect(armScript).toContain(
-      "'--python-platform','aarch64-unknown-linux-gnu'",
+      'Tag(tag.interpreter,tag.abi,tag.platform.replace(native,target))',
     );
-    expect(armScript).toContain("/uv-aarch64-unknown-linux-gnu/uv'");
-    expect(armScript).toContain('uv-aarch64-unknown-linux-gnu.tar.gz');
-    expect(armScript).not.toContain('x86_64');
+  });
+  it('accepts a target CPU for uv resolutions only', async () => {
+    const { ProjectDependencyResolveInputSchema } =
+      await import('../project-dependency-resolution.ts');
+    const base = {
+      action: 'resolve',
+      packages: [{ name: 'six', version: '1.17.0' }],
+    };
+    expect(
+      ProjectDependencyResolveInputSchema.safeParse({
+        ...base,
+        manager: 'uv',
+        architecture: 'amd64',
+      }).success,
+    ).toBe(true);
+    for (const bad of [
+      { ...base, manager: 'uv', architecture: 'x86_64' },
+      { ...base, manager: 'pnpm', architecture: 'amd64' },
+    ])
+      expect(ProjectDependencyResolveInputSchema.safeParse(bad).success).toBe(
+        false,
+      );
   });
 });

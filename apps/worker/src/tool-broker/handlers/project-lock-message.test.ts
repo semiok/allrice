@@ -1,44 +1,53 @@
 import { describe, expect, it } from 'vitest';
+import type { ProjectLockPlatformFacts } from '@allrice/database';
 import { projectLockPlatformMessage } from './project-lock-message.js';
 
-const message = (
-  bridgeArchitectures: string[],
-  cloudBlocked: 'local_request' | 'local_inputs' | 'disabled' | null,
-  lockArchitectures = ['amd64'],
-  serverArchitecture = 'arm64',
-) =>
-  projectLockPlatformMessage({
-    lockArchitectures,
-    bridgeArchitectures,
-    serverArchitecture,
-    cloudBlocked,
-  });
+const facts = (
+  over: Partial<ProjectLockPlatformFacts>,
+): ProjectLockPlatformFacts => ({
+  lockArchitectures: ['arm64'],
+  bridgeArchitectures: ['amd64'],
+  serverArchitecture: 'arm64',
+  userLocalOnly: false,
+  localInputs: false,
+  toolLocal: false,
+  cloudOnly: false,
+  cloudUsable: true,
+  ...over,
+});
 
 describe('project lock platform message', () => {
-  it('asks for a new resolve when the cloud may run it but is the other CPU', () => {
-    expect(message([], null)).toMatch(/云端是 Apple 芯片.*resolve 重新解析/);
+  it('offers a resolve for the Intel Bridge when local files keep it local', () => {
+    const text = projectLockPlatformMessage(facts({ localInputs: true }));
+    expect(text).toMatch(/architecture: amd64.*在本机执行/);
+    expect(text).not.toMatch(/云端执行$/);
   });
-  it('points a stale lock on a Bridge of the server CPU to a new resolve', () => {
-    expect(message(['arm64'], 'local_inputs')).toMatch(
-      /旧锁.*只上传依赖声明.*在本机执行/,
-    );
-    expect(message(['arm64'], 'local_request')).toMatch(
-      /旧锁.*本次不能重新解析/,
-    );
-    expect(message(['arm64'], 'disabled')).toMatch(/旧锁.*云端执行没有开启/);
+  it('never offers a resolve when the user keeps the task local', () => {
+    const text = projectLockPlatformMessage(facts({ userLocalOnly: true }));
+    expect(text).not.toMatch(/用 resolve/);
+    expect(text).toMatch(/本次任务不允许/);
   });
-  it('does not promise a resolve that cannot produce this Bridge CPU', () => {
-    for (const blocked of [
-      'local_request',
-      'local_inputs',
-      'disabled',
-    ] as const) {
-      const text = message(['amd64'], blocked, ['arm64'], 'arm64');
-      expect(text).toMatch(/还不能为本机生成可用的锁/);
-      expect(text).not.toMatch(/resolve 重新解析/);
-    }
-    expect(message(['amd64'], 'local_inputs', ['arm64'])).toMatch(
-      /只能在本机执行/,
+  it('names every obstacle together', () => {
+    const text = projectLockPlatformMessage(
+      facts({ localInputs: true, cloudUsable: false }),
     );
+    expect(text).toMatch(/本机文件.*云端执行没有开启/);
+    expect(text).not.toMatch(/用 resolve/);
+  });
+  it('offers the cloud only where the current lock fits it', () => {
+    expect(
+      projectLockPlatformMessage(
+        facts({ toolLocal: true, lockArchitectures: ['arm64'] }),
+      ),
+    ).toMatch(/去掉 location: local/);
+    const stale = projectLockPlatformMessage(
+      facts({ lockArchitectures: ['amd64'], bridgeArchitectures: [] }),
+    );
+    expect(stale).toMatch(/云端是 Apple 芯片.*按默认架构/);
+    expect(
+      projectLockPlatformMessage(
+        facts({ lockArchitectures: [], cloudUsable: false }),
+      ),
+    ).not.toMatch(/云端执行$|让它在云端执行/);
   });
 });

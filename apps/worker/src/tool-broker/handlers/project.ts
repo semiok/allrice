@@ -370,7 +370,7 @@ export const runProjectWorkspace: RiceToolHandler = async ({
     if (error instanceof ProjectLockPlatformError)
       throw new HandlerError(
         'PROJECT_LOCK_PLATFORM_MISMATCH',
-        projectLockPlatformMessage(error),
+        projectLockPlatformMessage(error.facts),
         false,
       );
     if (
