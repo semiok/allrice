@@ -226,7 +226,7 @@ export async function syncExperienceValidations() {
   const rows = await db`select a.id from allrice_automation_runs a
     left join allrice_settings org on org.scope_type='organization' and org.scope_id=a.organization_id and org.key='employee_experience_policy'
     left join allrice_settings sys on sys.scope_type='system' and sys.scope_id is null and sys.key='employee_experience_policy'
-    where a.status='succeeded' and a.experience_receipt is not null and (a.experience_validation_plan is null or exists (
+    where a.status='succeeded' and not exists(select 1 from allrice_native_context_retirements retired where retired.context_kind='experience_consolidation' and retired.context_id=a.id) and a.experience_receipt is not null and (a.experience_validation_plan is null or exists (
       select 1 from jsonb_array_elements(case when jsonb_typeof(a.experience_validation_plan)='array' then a.experience_validation_plan else '[]'::jsonb end) p
       where p->>'reason'=${coverageReason} and p->>'draftIndex' ~ '^[0-7]$' and not (p ? 'testId')
         and not exists(select 1 from allrice_platform_employee_test_runs t where t.purpose='experience_validation'
@@ -241,6 +241,13 @@ export async function syncExperienceValidations() {
         await tx`select id,organization_id,experience_validation_plan,experience_adoption_plan,experience_receipt
           from allrice_automation_runs where id=${id} for update skip locked`;
       if (!row) return;
+      // A captured tick must recheck after the source lock, before any consumer write.
+      if (
+        (
+          await tx`select 1 from allrice_native_context_retirements where context_kind='experience_consolidation' and context_id=${id}`
+        ).length
+      )
+        return;
       const reassessing = row.experience_validation_plan !== null;
       const pending = new Set<number>();
       if (reassessing) {

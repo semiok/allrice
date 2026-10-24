@@ -660,3 +660,82 @@ describe('control upgrade operator boundary without a database or services', () 
     expect(api.applyNativeScheduleControlUpgrade).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('exact cloud credential dispatch after the existing source gates', () => {
+  it('passes the source-issued credential only to this plan preparation', async () => {
+    const directory = temp(),
+      credential = { kind: 'synthetic-reviewed-observation' },
+      input = {
+        requestId: '975a5189-c944-462e-9cd6-923ed205a81a',
+        partitionId: 'synthetic-control',
+        beforeReference: { artifactId: digest('before') },
+        afterReference: { artifactId: digest('after') },
+      };
+    const api = {
+      prepareNativeScheduleControlUpgrade: vi.fn(async () => ({
+        acknowledged: true,
+      })),
+    };
+    await nativeControlUpgradeStep({
+      api,
+      db: { synthetic: true },
+      mode: 'prepare',
+      phase: 'prepare',
+      input,
+      approval: null,
+      intentPath: join(directory, 'exact.intent.json'),
+      binding: { planId: input.requestId },
+      artifactEvidence: { synthetic: true },
+      historicalCloudAbsenceCredential: credential,
+    });
+    expect(
+      api.prepareNativeScheduleControlUpgrade,
+    ).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        requestId: input.requestId,
+        historicalCloudAbsenceCredential: credential,
+      }),
+    );
+  });
+  it('retains its durable intent and reads back after unknown credential/plan COMMIT without another write', async () => {
+    const directory = temp(),
+      credential = { kind: 'synthetic-reviewed-observation' },
+      input = {
+        requestId: '775a5189-c944-462e-9cd6-923ed205a81a',
+        partitionId: 'synthetic-control',
+        beforeReference: { artifactId: digest('before') },
+        afterReference: { artifactId: digest('after') },
+      };
+    const api = {
+      prepareNativeScheduleControlUpgrade: vi.fn(async () => {
+        throw Error('synthetic lost COMMIT');
+      }),
+      readNativeScheduleControlUpgrade: vi.fn(async () => ({
+        status: 'not_found',
+      })),
+    };
+    const request = {
+      api,
+      db: { synthetic: true },
+      mode: 'prepare',
+      phase: 'prepare',
+      input,
+      approval: null,
+      intentPath: join(directory, 'exact.intent.json'),
+      binding: { planId: input.requestId },
+      artifactEvidence: { synthetic: true },
+      historicalCloudAbsenceCredential: credential,
+    };
+    await expect(nativeControlUpgradeStep(request)).rejects.toThrow(
+      'synthetic lost COMMIT',
+    );
+    expect((await nativeControlUpgradeStep(request)).mode).toBe('readback');
+    expect(api.prepareNativeScheduleControlUpgrade).toHaveBeenCalledTimes(1);
+    expect(
+      api.readNativeScheduleControlUpgrade,
+    ).toHaveBeenCalledExactlyOnceWith({
+      db: request.db,
+      planId: input.requestId,
+    });
+  });
+});

@@ -9,6 +9,12 @@ import { homedir } from 'node:os';
 import { parseArgs } from 'node:util';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { verifyRetirementBusy } from './retirement-preserved-cloud.mjs';
+import {
+  REVIEWED_TEST_CHAT_REVIEW_KIND,
+  reviewedTestChatPhysicalScope,
+  verifyReviewedTestChatCloudCarry,
+} from './reviewed-test-chat-preserved-cloud.mjs';
+import { collectReviewedTestChatNativeObservation } from './terminal-native-physical-absence.mjs';
 
 if (process.argv.length === 2) {
   console.log(
@@ -127,7 +133,8 @@ try {
     const r = review.value;
     const state = resolve(homedir(), 'allrice-dev', '.local');
     need(
-      r.kind === 'allrice-dev-test-chat-retirement-review' &&
+      (r.kind === 'allrice-dev-test-chat-retirement-review' ||
+        r.kind === REVIEWED_TEST_CHAT_REVIEW_KIND) &&
         r.rootReviewed === true &&
         r.reviewedBy === 'root' &&
         r.developmentTestScopesApproved === true &&
@@ -202,6 +209,7 @@ try {
       Array.isArray(r.healthUrls) && r.healthUrls.length === 2,
       'NATIVE_RETIREMENT_BOTH_SERVICE_HEALTH_REQUIRED',
     );
+    const laterReviewedChat = r.kind === REVIEWED_TEST_CHAT_REVIEW_KIND;
     const readHealths = async (signal) => {
       // Await both read-only requests, including failure. The shared observer
       // supplies its remaining global deadline; no disconnected request lingers.
@@ -223,11 +231,11 @@ try {
       if (failed) throw failed.reason;
       return results.map((r) => r.value);
     };
-    // The reviewed carry path validates both complete identities and strict
+    // The sealed slot5 carry path validates both complete identities and strict
     // lifecycle facts inside its one full observation. Do not fail on an
     // initial transient root before the bounded read-only observer can run.
     if (r.historicalCloudCarry === undefined) {
-      for (const value of await readHealths())
+      for (const value of await readHealths()) {
         need(
           value.identity?.sourceSha === r.releaseSha &&
             value.identity?.sourceTree === r.sourceTree &&
@@ -239,7 +247,21 @@ try {
             ].every((k) => value.producerLifecycle?.[k] === 0),
           'NATIVE_RETIREMENT_SERVICE_BUSY',
         );
+      }
     }
+    const completePhysical = (suffix, readStep) =>
+      collectReviewedTestChatNativeObservation({
+        plan: input.value,
+        scope: reviewedTestChatPhysicalScope(r, input.value),
+        review: r,
+        planDigest: input.value.digest,
+        requestId: input.value.requestId,
+        reviewSha256: hash(review.bytes),
+        readHealths,
+        readStep,
+        evidencePath: a.output + suffix,
+        saveEvidence: save,
+      });
     const readBusy = () =>
       db.getDatabase().begin('read only', async (tx) => {
         await tx`set local statement_timeout='5000'`;
@@ -249,15 +271,32 @@ try {
         (select count(*)::int from allrice_platform_employee_test_runs where status in ('queued','running')) tests,
         (select count(*)::int from allrice_runtime_operations where lease_expires_at>clock_timestamp()) leases,
         (select count(*)::int from allrice_provider_authorization_flows where state in ('pending','running','awaiting_user')) auth`;
+        if (laterReviewedChat) {
+          const [live] =
+            await tx`select count(*)::int runtimes from allrice_dsh_runtime_instances where status='live'`;
+          return { ...row, runtimes: live.runtimes };
+        }
         return row;
       });
-    const busyClassification = await verifyRetirementBusy({
-      review: r,
-      plan: input.value,
-      sql: db.getDatabase(),
-      readBusy,
-      readHealths,
-    });
+    const busyClassification = laterReviewedChat
+      ? await verifyReviewedTestChatCloudCarry({
+          review: r,
+          plan: input.value,
+          collectPhysicalObservation: (suffix, step) =>
+            completePhysical('.before' + suffix, step),
+          evidencePath: a.output + '.cloud-before.json',
+          saveEvidence: save,
+          sql: db.getDatabase(),
+          readBusy,
+          readHealths,
+        })
+      : await verifyRetirementBusy({
+          review: r,
+          plan: input.value,
+          sql: db.getDatabase(),
+          readBusy,
+          readHealths,
+        });
     if (r.historicalCloudCarry !== undefined) {
       // Physical probes may outlive the first owner/active checks. Keep the
       // same private bytes and owner birth before creating any write intent.
@@ -327,7 +366,21 @@ try {
         at: new Date().toISOString(),
       });
       const result = await db.applyNativeTestChatRetirement(input.value);
-      await save(a.output, { ...result, busyClassification });
+      if (laterReviewedChat) {
+        await save(a.output + '.committed.json', result);
+        const busyAfter = await verifyReviewedTestChatCloudCarry({
+          review: r,
+          plan: input.value,
+          sql: db.getDatabase(),
+          readBusy,
+          readHealths,
+          collectPhysicalObservation: (suffix, step) =>
+            completePhysical('.after' + suffix, step),
+          evidencePath: a.output + '.cloud-after.json',
+          saveEvidence: save,
+        });
+        await save(a.output, { ...result, busyClassification, busyAfter });
+      } else await save(a.output, { ...result, busyClassification });
       console.log(
         JSON.stringify({
           mode: 'apply',

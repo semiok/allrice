@@ -1,3 +1,4 @@
+import { posix } from 'node:path';
 import {
   type RequestContext,
   type NativeDiagnosticReason,
@@ -6,8 +7,27 @@ import { getDatabase } from '../core/client.ts';
 import { getRun, QueueError } from './queue.ts';
 import {
   NativeSessionDescriptorSchema,
+  type NativeSessionDescriptor,
   type NativeSessionPin,
 } from '../conversation/native-session-binding.ts';
+import {
+  assertEmployeeRunExecutionBinding,
+  EmployeeRunExecutionBindingSchema,
+  newNativeGeneration,
+} from '../conversation/current-execution-binding.ts';
+import {
+  assertChatTransitionPin,
+  readChatExecutorTransition,
+} from '../conversation/native-executor-transition.ts';
+import {
+  assertTransitionDescriptor,
+  executorTransitionRef,
+  type ExecutorTransitionRef,
+} from '../conversation/native-executor-transition-contract.ts';
+import {
+  nativeRootDigest,
+  NativeRootOriginSchema,
+} from '../conversation/native-root-origin.ts';
 
 export interface NativeDiagnosticSourceReceipt {
   seq: number;
@@ -21,7 +41,10 @@ export interface NativeDiagnosticTargetSlice {
   receipts: NativeDiagnosticSourceReceipt[];
   verifiedTurns: number[];
   reasons: NativeDiagnosticReason[];
+  /** The immutable first writer; never relabeled after an executor transition. */
   binding: NativeSessionPin | null;
+  /** Actual execution for this Run, proven from its frozen binding when present. */
+  execution: NativeSessionDescriptor | null;
 }
 export interface NativeDiagnosticTarget {
   runId: string;
@@ -81,6 +104,7 @@ export function nativeDiagnosticReceiptSlices(
         verifiedTurns: [],
         reasons: [],
         binding: null,
+        execution: null,
       };
       groups.set(key, group);
     }
@@ -133,6 +157,143 @@ export function nativeDiagnosticReceiptSlices(
   }));
 }
 
+interface NativeDiagnosticEmployeeRun {
+  session_id: string;
+  native_execution_binding: unknown;
+  execution_snapshot: unknown;
+  native_root_origin: unknown;
+  version_id: string | null;
+  manifest: unknown;
+  config_checksum: string | null;
+}
+interface NativeDiagnosticRunScope {
+  organizationId: string;
+  workspaceId: string;
+  ownerId: string;
+  sessionId: string;
+  runId: string;
+}
+
+/** No lease/admission call: only immutable Run/source facts and the existing
+ * committed-chain validators. The exact frozen ref is never replaced by latest.
+ * In particular a later NULL-origin adoption cannot supply an older Run's path. */
+async function readNativeDiagnosticExecution(
+  db: ReturnType<typeof getDatabase>,
+  scope: NativeDiagnosticRunScope,
+  employee: NativeDiagnosticEmployeeRun,
+  binding: Record<string, unknown>,
+  descriptor: NativeSessionDescriptor,
+): Promise<NativeSessionDescriptor> {
+  function unavailable(): never {
+    throw Error('NATIVE_DIAGNOSTIC_BINDING_UNAVAILABLE');
+  }
+  if (
+    descriptor.profileId !== 'restricted' ||
+    descriptor.storageContextKey !== scope.sessionId ||
+    descriptor.storageNamespace.includes('\0') ||
+    !posix.isAbsolute(descriptor.storageNamespace) ||
+    posix.normalize(descriptor.storageNamespace) !==
+      descriptor.storageNamespace ||
+    !descriptor.storageNamespace.endsWith(
+      `/${scope.organizationId}/${scope.workspaceId}/${scope.ownerId}/${scope.sessionId}/sessions`,
+    )
+  )
+    unavailable();
+  const original =
+    employee.native_root_origin == null
+      ? null
+      : NativeRootOriginSchema.parse(employee.native_root_origin);
+  if (
+    original &&
+    (original.contextKind !== 'chat' ||
+      original.contextId !== scope.sessionId ||
+      original.rootSeed !== scope.sessionId ||
+      original.profileId !== 'restricted')
+  )
+    unavailable();
+
+  if (employee.native_execution_binding == null) {
+    if (
+      original?.schemaVersion === 2 ||
+      (original
+        ? binding.binding_basis !== 'business_root_origin' ||
+          binding.root_origin_digest !== nativeRootDigest(original) ||
+          descriptor.distributionGeneration !==
+            original.distributionGeneration ||
+          (!descriptor.originReaderApprovalDigest &&
+            descriptor.artifactId !== original.artifactId)
+        : binding.binding_basis !== 'approved_compatibility_reader' ||
+          binding.root_origin_digest != null ||
+          descriptor.originReaderApprovalDigest !== undefined ||
+          descriptor.distributionGeneration === newNativeGeneration)
+    )
+      unavailable();
+    // A first pin created under U1/U2 belongs to a frozen transition Run. It
+    // cannot retroactively prove an earlier unbound Run, even for the same ID.
+    const [first] = await db<{ native_execution_binding: unknown }[]>`
+      select native_execution_binding from allrice_employee_runs
+      where run_id=${binding.first_run_id as string} and session_id=${scope.sessionId}
+        and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
+        and owner_id=${scope.ownerId}`;
+    if (!first || first.native_execution_binding != null) unavailable();
+    return descriptor;
+  }
+
+  const frozen = EmployeeRunExecutionBindingSchema.parse(
+    employee.native_execution_binding,
+  );
+  const origin = original;
+  let transition: ExecutorTransitionRef | undefined;
+  if (frozen.schemaVersion === 2) {
+    const receipt = await readChatExecutorTransition(
+      db,
+      scope,
+      original,
+      frozen.transition,
+    );
+    if (!receipt) unavailable();
+    transition = executorTransitionRef(receipt);
+    // U1 cannot adopt a NULL origin. Only U2 may supply an effective origin,
+    // after this Run's exact committed adoption ref has been proven.
+    if (origin == null) unavailable();
+    await assertChatTransitionPin(db, transition, binding);
+  }
+  if (!employee.version_id || !employee.config_checksum) unavailable();
+  const checked = assertEmployeeRunExecutionBinding(frozen, {
+    origin,
+    ...(transition ? { transition } : {}),
+    scope,
+    source: {
+      employeeVersionId: employee.version_id,
+      configChecksum: employee.config_checksum,
+      manifest: employee.manifest,
+    },
+    executionSnapshot: employee.execution_snapshot,
+  });
+  if (
+    !transition &&
+    (binding.binding_basis !== 'business_root_origin' ||
+      binding.root_origin_digest !== checked.originDigest ||
+      descriptor.artifactId !== checked.execution.artifactId ||
+      descriptor.distributionGeneration !== checked.execution.generation ||
+      descriptor.profileId !== checked.execution.profileId ||
+      descriptor.originReaderApprovalDigest !== undefined)
+  )
+    unavailable();
+  const actual = NativeSessionDescriptorSchema.parse({
+    nativeSessionId: descriptor.nativeSessionId,
+    artifactId: checked.execution.artifactId,
+    artifactManifestDigest: checked.execution.artifactId,
+    distributionGeneration: descriptor.distributionGeneration,
+    profileId: descriptor.profileId,
+    storageContextKey: descriptor.storageContextKey,
+    storageNamespace: descriptor.storageNamespace,
+    ...(transition ? { executorTransitionDigest: transition.digest } : {}),
+  });
+  if (transition) assertTransitionDescriptor(transition, actual);
+  return actual;
+}
+
 /** Same ordinary Run authorization as RunEvents, plus exact owner access to
  * the native diagnostic. SQL alone chooses reader, namespace and source cuts. */
 export async function getRunNativeDiagnosticTarget(
@@ -144,10 +305,16 @@ export async function getRunNativeDiagnosticTarget(
   if (context.actor.type !== 'user' || context.actor.id !== run.ownerId)
     throw new QueueError('not_found');
   const db = getDatabase();
-  const [employee] = await db<{ session_id: string }[]>`
-    select session_id from allrice_employee_runs
-    where run_id=${run.id} and organization_id=${run.organizationId}
-      and workspace_id=${run.workspaceId} and owner_id=${run.ownerId}`;
+  const [employee] = await db<NativeDiagnosticEmployeeRun[]>`
+    select e.session_id,e.native_execution_binding,e.execution_snapshot,c.native_root_origin,
+      v.id as version_id,v.manifest,v.config_checksum
+    from allrice_employee_runs e
+    join allrice_chat_sessions c on c.id=e.session_id and c.organization_id=e.organization_id
+      and c.workspace_id=e.workspace_id and c.owner_id=e.owner_id
+    left join allrice_employee_versions v on v.id=e.employee_version_id
+      and v.organization_id=e.organization_id and v.workspace_id=e.workspace_id
+    where e.run_id=${run.id} and e.organization_id=${run.organizationId}
+      and e.workspace_id=${run.workspaceId} and e.owner_id=${run.ownerId}`;
   const result: NativeDiagnosticTarget = {
     runId: run.id,
     running: !['succeeded', 'failed', 'canceled'].includes(run.status),
@@ -222,6 +389,23 @@ export async function getRunNativeDiagnosticTarget(
       bindingBasis: binding.binding_basis,
       rootOriginDigest: binding.root_origin_digest,
     };
+    try {
+      slice.execution = await readNativeDiagnosticExecution(
+        db,
+        {
+          organizationId: run.organizationId,
+          workspaceId: run.workspaceId,
+          ownerId: run.ownerId,
+          sessionId: employee.session_id,
+          runId: run.id,
+        },
+        employee,
+        binding,
+        descriptor.data,
+      );
+    } catch {
+      slice.reasons.push('binding_unavailable');
+    }
   }
   return result;
 }

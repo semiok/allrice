@@ -3,10 +3,9 @@
 import { createHash } from 'node:crypto';
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import http from 'node:http';
-import { performance } from 'node:perf_hooks';
-import { setTimeout as delay } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { pathToFileURL } from 'node:url';
+import { observeCompleteReadOnlyQuiescence } from './retirement-readonly-observer.mjs';
 
 const PREFIX =
   '/Users/a123/.local/state/allrice-delivery/scheduled-admission-deadlock-20261023/publication-preparation/';
@@ -382,12 +381,33 @@ function assertExitedContainerPreserved({
   inventory,
   observation,
 }) {
-  const p = exitedReview(review, plan),
-    h = HISTORICAL_EXITED_CONTAINER;
+  return assertHistoricalExitedContainerObservation({
+    preservation: exitedReview(review, plan),
+    physical,
+    inventory,
+    observation,
+  });
+}
+/** Physical classification only. Chat/control callers retain independent exact
+ * issuing authority; this shared checker cannot approve or write either plan. */
+export function assertHistoricalExitedContainerObservation({
+  preservation: p,
+  physical,
+  inventory,
+  observation,
+  nowMs = Date.now(),
+}) {
+  const h = HISTORICAL_EXITED_CONTAINER;
+  for (const key of ['historicalPin', 'inspectPin', 'inventoryPin'])
+    same(
+      p?.[key],
+      h[key],
+      'NATIVE_RETIREMENT_EXITED_CONTAINER_EVIDENCE_PIN_CHANGED',
+    );
   need(
     observation &&
-      Date.parse(observation.observedAt) <= Date.now() &&
-      Date.now() - Date.parse(observation.observedAt) <= 120_000,
+      Date.parse(observation.observedAt) <= nowMs &&
+      nowMs - Date.parse(observation.observedAt) <= 120_000,
     'NATIVE_RETIREMENT_EXITED_CONTAINER_FRESH_INSPECT_REQUIRED',
   );
   same(
@@ -504,7 +524,7 @@ function assertExitedContainerPreserved({
     inventoryPin: { ...h.inventoryPin },
   };
 }
-async function readExitedBaseline() {
+export async function readHistoricalExitedContainerBaseline() {
   const result = {};
   for (const [key, pin] of [
     ['historical', HISTORICAL_EXITED_CONTAINER.historicalPin],
@@ -622,100 +642,38 @@ export function classifyRetirementCloudCarry(observation) {
   return classification;
 }
 
-// Only complete, successful read-only observations can be repeated. A hard
-// error is never caught/reclassified as activity. No mutation callback exists.
-export async function observeRetirementQuiescence({
-  review,
-  plan,
-  readObservation,
-  timeoutMs = 30_000,
-  intervalMs = 250,
-  now = () => performance.now(),
-  sleep = (ms) => delay(ms),
-}) {
-  need(
-    Number.isSafeInteger(timeoutMs) &&
-      timeoutMs > 0 &&
-      timeoutMs <= 60_000 &&
-      Number.isSafeInteger(intervalMs) &&
-      intervalMs > 0 &&
-      intervalMs <= 1_000,
-    'NATIVE_RETIREMENT_QUIESCENCE_LIMIT_INVALID',
-  );
-  const started = now(),
-    deadline = started + timeoutMs;
-  let attempts = 0;
-  const activity = [];
-  const check = () => {
-    need(now() < deadline, 'NATIVE_RETIREMENT_QUIESCENCE_TIMEOUT');
-  };
-  const step = async (read) => {
-    check();
-    const signal = globalThis.AbortSignal.timeout(
-      Math.max(1, Math.ceil(deadline - now())),
-    );
-    // Some pinned legacy physical reads have their own finite synchronous
-    // deadline. Await their completion; never abandon them with Promise.race.
-    const value = await read(signal);
-    check();
-    return value;
-  };
-  while (true) {
-    check();
-    attempts++;
-    const observation = await readObservation(step);
-    check();
-    const beforeIdle = healthsIdle(observation.healthBefore, review, true);
-    const afterIdle = healthsIdle(observation.healthAfter, review, true);
-    // All raw/history/container/physical facts are checked even when one of
-    // these roots is active. A new cloud/job or changed old row is not retryable.
-    const { classification } = classifyRetirementCloudFacts({
-      ...observation,
-      review,
-      plan,
-    });
-    check();
-    if (beforeIdle && afterIdle)
+// The original two-chat authority remains in this wrapper and its classifier.
+// Only the bounded read-only loop is shared with independently reviewed plans.
+export function observeRetirementQuiescence({ review, plan, ...options }) {
+  return observeCompleteReadOnlyQuiescence({
+    ...options,
+    classifyObservation: (observation) => {
+      const beforeIdle = healthsIdle(observation.healthBefore, review, true);
+      const afterIdle = healthsIdle(observation.healthAfter, review, true);
+      const { classification } = classifyRetirementCloudFacts({
+        ...observation,
+        review,
+        plan,
+      });
       return {
-        ...classification,
-        quiescenceObservation: {
-          attempts,
-          elapsedMs: Math.max(0, now() - started),
-          completeReadOnlyAttempts: true,
-          mutationRetried: false,
+        idle: beforeIdle && afterIdle,
+        classification,
+        activity: {
+          before: lifecycleActivity(observation.healthBefore),
+          after: lifecycleActivity(observation.healthAfter),
         },
       };
-    if (activity.length < 32)
-      activity.push({
-        attempt: attempts,
-        before: observation.healthBefore.map((h) => ({
-          role: h.identity.service,
-          activeRoots: h.producerLifecycle.activeRoots,
-          pendingRoots: h.producerLifecycle.pendingRoots,
-          retainedChildren: h.producerLifecycle.retainedChildren,
-        })),
-        after: observation.healthAfter.map((h) => ({
-          role: h.identity.service,
-          activeRoots: h.producerLifecycle.activeRoots,
-          pendingRoots: h.producerLifecycle.pendingRoots,
-          retainedChildren: h.producerLifecycle.retainedChildren,
-        })),
-      });
-    try {
-      check();
-      await sleep(Math.min(intervalMs, deadline - now()));
-      check();
-    } catch (error) {
-      // This diagnostic carries only validated counters, never upstream data.
-      if (error.message === 'NATIVE_RETIREMENT_QUIESCENCE_TIMEOUT')
-        error.quiescenceObservation = {
-          attempts,
-          activity,
-          mutationRetried: false,
-        };
-      throw error;
-    }
-  }
+    },
+  });
+}
+export { healthsIdle as reviewedRetirementServicesIdle };
+export function lifecycleActivity(healths) {
+  return healths.map((h) => ({
+    role: h.identity.service,
+    activeRoots: h.producerLifecycle.activeRoots,
+    pendingRoots: h.producerLifecycle.pendingRoots,
+    retainedChildren: h.producerLifecycle.retainedChildren,
+  }));
 }
 
 function readDocker(socketPath, path) {
@@ -766,6 +724,31 @@ export const readHistoricalExitedContainer = (socketPath) =>
     '/v1.45/containers/' + HISTORICAL_EXITED_CONTAINER.id + '/json',
   );
 
+export {
+  stableInventory as nativeCloudInventoryIdentity,
+  readInventory as readCompleteCloudInventory,
+};
+/** Actual fixed GETs only; no plan approval is inferred by this collector. */
+export async function collectHistoricalExitedContainerObservation(
+  physical,
+  readStep = (read) => read(),
+) {
+  const baseline = await readStep(() =>
+      readHistoricalExitedContainerBaseline(),
+    ),
+    observedAt = new Date().toISOString();
+  const inspectBefore = await readStep(() =>
+    readHistoricalExitedContainer(physical.configuredSocket),
+  );
+  const inventoryAfter = await readStep(() =>
+    readInventory(physical.configuredSocket),
+  );
+  const inspectAfter = await readStep(() =>
+    readHistoricalExitedContainer(physical.configuredSocket),
+  );
+  return { observedAt, baseline, inspectBefore, inspectAfter, inventoryAfter };
+}
+
 export async function verifyRetirementBusy({
   review,
   plan,
@@ -790,7 +773,7 @@ export async function verifyRetirementBusy({
   let exitedBaseline;
   if (review.historicalCloudCarry.preservedExitedContainer !== undefined) {
     exitedReview(review, plan);
-    exitedBaseline = await readExitedBaseline();
+    exitedBaseline = await readHistoricalExitedContainerBaseline();
   }
   const pin = HISTORICAL_CLOUD.readerPin;
   need(

@@ -67,12 +67,18 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
   let runtimePackage: EmployeeRuntimePackage;
   let storageRoot: string;
   const artifacts = new Map<string, string>();
+  const legacySeed = {
+    artifactId: digest('synthetic separate legacy seed'),
+    generation: 'dsh-0.1.5-rc.3-a4c74a9' as const,
+    storageRoot: '/synthetic-legacy-seed',
+  };
 
   beforeAll(async () => {
     // Ambient reader policies must never authorize or alter an owned fixture.
     for (const key of Object.keys(process.env))
       if (key.startsWith('ALLRICE_DSH_ORIGIN_READER_'))
         vi.stubEnv(key, undefined);
+    vi.stubEnv('ALLRICE_DSH_RETAINED_1_ARTIFACT_ID', legacySeed.artifactId);
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
     vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
     vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
@@ -276,15 +282,16 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
     return rows.map((r) => r.value);
   }
   const coverageWithout = (artifactId: string) =>
-    verifyNativeArtifactReferenceCoverage(
-      [...artifacts]
+    verifyNativeArtifactReferenceCoverage([
+      legacySeed,
+      ...[...artifacts]
         .filter(([id]) => id !== artifactId)
         .map(([id, root]) => ({
           artifactId: id,
           generation: newNativeGeneration,
           storageRoot: root,
         })),
-    );
+    ]);
 
   async function independentArtifact(f: Subject) {
     const versionId = randomUUID();
@@ -497,6 +504,28 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
     await applyNativeTestChatRetirement(plan);
     const before = await evidence(f);
     const retired = await retirementRows(f);
+    // Its independent fixture seed stays a legacy dependency even if archived;
+    // retiring f.session never implicitly retires another context.
+    const seed =
+      await fixture.db`select id from allrice_chat_sessions c where c.organization_id=${f.org}
+      and c.native_root_origin is null and not exists(select 1 from allrice_native_session_bindings b where b.context_kind='chat' and b.context_id=c.id)`;
+    expect(seed).toHaveLength(1);
+    await fixture.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${seed[0]!.id}`;
+    await expect(
+      verifyNativeArtifactReferenceCoverage(
+        [...artifacts].map(([artifactId, root]) => ({
+          artifactId,
+          generation: newNativeGeneration,
+          storageRoot: root,
+        })),
+      ),
+    ).rejects.toThrow('implicit:legacy-chat');
+    expect(
+      (
+        await fixture.db`select native_root_origin from allrice_chat_sessions where id=${seed[0]!.id}`
+      )[0]!.native_root_origin,
+    ).toBeNull();
+
     const first = Array.from({ length: 21 }, () => randomUUID());
     await fixture.db.begin((tx) => copyRetiredContexts(tx, f, first));
     const batch = await observedRetirementScan();
@@ -674,6 +703,38 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
     });
   }, 30_000);
 
+  it.each(['queued', 'foreign', 'changed'] as const)(
+    'exact later-test cloud authorization never exempts %s chat facts from the original SQL API',
+    async (mode) => {
+      const f = await subject(false);
+      await finish(f);
+      await fixture.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${f.session}`;
+      const plan = await previewNativeTestChatRetirement({
+        ...request([scope(f)]),
+        authorizationEvidenceDigest: digest(
+          'Synthetic exact later-development-test cloud review; no Dev approval',
+        ),
+      });
+      const before = await evidence(f);
+      if (mode === 'queued')
+        await fixture.db`update allrice_jobs set status='retry_wait',completed_at=null where id=${f.worker.jobId}`;
+      if (mode === 'changed')
+        await fixture.db`insert into allrice_messages(organization_id,workspace_id,session_id,owner_id,role,content)
+          values(${f.org},${f.workspace},${f.session},${f.user},'user','{"text":"Synthetic post-review writer","citations":[]}')`;
+      if (mode === 'foreign') {
+        plan.snapshots[0]!.scope.ownerId = randomUUID();
+        const body = Object.fromEntries(
+          Object.entries(plan).filter(([key]) => key !== 'digest'),
+        );
+        plan.digest = nativeRootDigest(body);
+      }
+      await expect(applyNativeTestChatRetirement(plan)).rejects.toThrow(
+        /NATIVE_RETIREMENT_CONTEXT_BUSY|NATIVE_RETIREMENT_PLAN_STALE|NATIVE_RETIREMENT_SCOPE_NOT_FOUND/,
+      );
+      expect(await retirementRows(f)).toEqual([]);
+      expect((await evidence(f)).session).toEqual(before.session);
+    },
+  );
   it('invalidates a reviewed plan after a real new pin and fences further native pins after a fresh retirement', async () => {
     const f = await subject();
     await finish(f);
@@ -1065,6 +1126,43 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
     expect(await evidence(f)).toEqual(after);
     expect(await retirementRows(f)).toEqual(retired);
   }, 30_000);
+  it('an existing terminal technical source still rejects a transplanted chat retirement authority', async () => {
+    const f = await subject();
+    await finish(f);
+    const plan = await previewNativeTestChatRetirement(request([scope(f)]));
+    await applyNativeTestChatRetirement(plan);
+    const before = await evidence(f);
+    const contextId = randomUUID(),
+      runId = randomUUID(),
+      jobId = randomUUID();
+    await expect(
+      fixture.db.begin(async (tx) => {
+        await tx`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,completed_at) values(${runId},${f.org},${f.workspace},${f.user},'succeeded','{}',clock_timestamp())`;
+        await tx`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,timeout_at,payload,completed_at) values(${jobId},${f.org},${f.workspace},${f.user},${runId},'succeeded',${jobId},clock_timestamp()+interval '1 hour','{}',clock_timestamp())`;
+        await tx`insert into allrice_platform_technical_tasks(id,request_id,owner_id,organization_id,workspace_id,run_id,job_id,environment,input_digest,frozen_configuration) values(${contextId},${randomUUID()},${f.user},${f.org},${f.workspace},${runId},${jobId},'test',${digest('Synthetic retained technical source')},'{"question":"SQL authority separation only"}')`;
+        expect(
+          await tx`select id from allrice_platform_technical_tasks where id=${contextId}`,
+        ).toHaveLength(1);
+        await copyRetiredContexts(tx, f, [contextId], {
+          retirement: () => ({ context_kind: 'platform_technical' }),
+        });
+      }),
+    ).rejects.toThrow('NATIVE_TERMINAL_RETIREMENT_PROOF_INVALID');
+    expect(
+      await fixture.db`select context_id from allrice_native_context_retirements where context_id=${contextId}`,
+    ).toEqual([]);
+    expect(
+      await fixture.db`select id from allrice_platform_technical_tasks where id=${contextId}`,
+    ).toEqual([]);
+    expect(
+      await fixture.db`select id from allrice_runs where id=${runId}`,
+    ).toEqual([]);
+    expect(
+      await fixture.db`select id from allrice_jobs where id=${jobId}`,
+    ).toEqual([]);
+    expect(await evidence(f)).toEqual(before);
+  });
+
   it('rejects scope, complete-row, microsecond and late-batch corruption without hiding foreign pins', async () => {
     const f = await subject();
     const foreign = await subject(false);
@@ -1176,9 +1274,9 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
         error: changed,
       },
       {
-        name: 'unsupported retirement lifecycle kind',
+        name: 'nonchat authority with no actual terminal source rejects before chat reader',
         change: { retirement: () => ({ context_kind: 'platform_technical' }) },
-        error: 'NATIVE_RETIREMENT_KIND_UNSUPPORTED',
+        error: 'NATIVE_TERMINAL_SOURCE_NOT_FOUND',
       },
     ];
     for (const c of cases) {
