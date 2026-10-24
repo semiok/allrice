@@ -157,15 +157,21 @@ describe('AllRice worker tool manifest contract', () => {
 
   it('keeps the DSH runtime broker-native registrations aligned', async () => {
     const runtimeSource = await readFile(
-      resolve(import.meta.dirname, '../dsh/allrice-jsonrpc-runtime.mjs'),
+      resolve(import.meta.dirname, '../dsh/allrice-jsonrpc-implementation.mjs'),
       'utf8',
     );
+    const declaration = '  const brokerNativeTools = [\n';
+    const start = runtimeSource.indexOf(declaration);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(runtimeSource.indexOf(declaration, start + declaration.length)).toBe(
+      -1,
+    );
+    const terminator = '\n  ];';
+    const end = runtimeSource.indexOf(terminator, start);
+    expect(end).toBeGreaterThan(start);
     const brokerNativeBlock = runtimeSource.slice(
-      runtimeSource.indexOf('const brokerNativeTools = ['),
-      runtimeSource.indexOf(
-        '\n];',
-        runtimeSource.indexOf('const brokerNativeTools = ['),
-      ) + 3,
+      start,
+      end + terminator.length,
     );
     const runtimePairs = [
       ...brokerNativeBlock.matchAll(

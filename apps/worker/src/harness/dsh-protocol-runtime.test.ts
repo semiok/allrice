@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -128,7 +128,10 @@ describe('AllRice DSH protocol runtime', () => {
   });
   it('treats every managed browser payload as immutable untrusted page data', async () => {
     const runtimeSource = await readFile(
-      resolve(import.meta.dirname, '../../dsh/allrice-jsonrpc-runtime.mjs'),
+      resolve(
+        import.meta.dirname,
+        '../../dsh/allrice-jsonrpc-implementation.mjs',
+      ),
       'utf8',
     );
 
@@ -146,7 +149,10 @@ describe('AllRice DSH protocol runtime', () => {
 
   it('keeps immutable deliverable lineage inputs in the native DSH tool contract', async () => {
     const runtimeSource = await readFile(
-      resolve(import.meta.dirname, '../../dsh/allrice-jsonrpc-runtime.mjs'),
+      resolve(
+        import.meta.dirname,
+        '../../dsh/allrice-jsonrpc-implementation.mjs',
+      ),
       'utf8',
     );
     const { workbenchNativeTools } = await import(
@@ -171,7 +177,10 @@ describe('AllRice DSH protocol runtime', () => {
 
   it('registers governed memory writes with candidate and durable boundaries', async () => {
     const runtimeSource = await readFile(
-      resolve(import.meta.dirname, '../../dsh/allrice-jsonrpc-runtime.mjs'),
+      resolve(
+        import.meta.dirname,
+        '../../dsh/allrice-jsonrpc-implementation.mjs',
+      ),
       'utf8',
     );
     const memoryToolSource = runtimeSource.slice(
@@ -284,4 +293,106 @@ describe('AllRice DSH protocol runtime', () => {
       client.searchCodexWeb('AllRice hosted search contract'),
     ).rejects.toMatchObject({ code: 'DSH_REQUEST_FAILED' });
   }, 20_000);
+});
+
+async function isolatedCloseRegressionLaunch() {
+  const root = await mkdtemp(join(tmpdir(), 'allrice-cold-close-regression-'));
+  roots.push(root);
+  await mkdir(resolve(root, 'sessions'), { mode: 0o700 });
+  return {
+    root,
+    launch: {
+      command: process.execPath,
+      args: [
+        resolve(import.meta.dirname, '../../dsh/allrice-jsonrpc-runtime.mjs'),
+      ],
+      cwd: root,
+      requestTimeoutMs: 15_000,
+      environment: {
+        PATH: '/usr/bin:/bin',
+        LANG: 'C.UTF-8',
+        DSH_CORDIS_CONFIG: resolve(
+          import.meta.dirname,
+          '../../dsh/allrice-restricted.cordis.yml',
+        ),
+        DSH_DISTRIBUTION_VERSION: DSH_DISTRIBUTION_CURRENT_VERSION,
+        DSH_SESSION_ROOT: resolve(root, 'sessions'),
+        DSH_HOME: root,
+        DSH_RUNTIME_HOME: root,
+        DSH_CREDENTIALS_PATH: resolve(root, '.credentials.yaml'),
+        DSH_CWD: root,
+        DSH_MODEL: 'allrice-unused',
+        DSH_CODEX_MODEL: 'gpt-6.1-sol',
+        DSH_OPENAI_COMPATIBLE_MODEL: 'allrice-unused',
+        DSH_SYSTEM_PROMPT:
+          'Cold public initialization and close only; no prompt.',
+        DSH_REASONING_EFFORT: 'off',
+        DSH_CODEX_REASONING_EFFORT: 'off',
+        DSH_MAX_OUTPUT_TOKENS: '128',
+        OPENAI_COMPATIBLE_API_KEY: 'cold-close-not-a-real-credential',
+        OPENAI_COMPATIBLE_BASE_URL: 'http://127.0.0.1:1/v1',
+      },
+    },
+  };
+}
+
+describe('real cold wrapper shutdown without a model', () => {
+  it('immediately closes a never-initialized actual child with an honest empty receipt', async () => {
+    const { launch } = await isolatedCloseRegressionLaunch();
+    const client = new DshProtocolClient(launch);
+    clients.push(client);
+    // No await, readiness RPC, delay or warm-up precedes this close.
+    await expect(client.close()).resolves.toBeUndefined();
+    const evidence = client.closureEvidence();
+    expect(evidence).toMatchObject({
+      process: {
+        state: 'exited',
+        stdioClosed: true,
+        exitCode: 0,
+        signal: null,
+      },
+      shutdownAcknowledged: true,
+      wrapperCleanupConfirmed: false,
+      emptyTransportClosed: true,
+      terminationAttempted: null,
+    });
+    expect(evidence?.emptyCloseReceipt).toEqual({
+      version: 2,
+      kind: 'never_created',
+      initializeStarted: false,
+      moduleLoadStarted: false,
+      sdkCreated: false,
+      rootCreated: false,
+      priorFramesFlushed: true,
+    });
+  }, 30_000);
+
+  it('closes the initialized actual SDK/root with the original public cleanup proof', async () => {
+    const { root, launch } = await isolatedCloseRegressionLaunch();
+    const client = new DshProtocolClient(launch);
+    clients.push(client);
+    await client.initialize({
+      cwd: root,
+      provider: 'openai-compatible',
+      model: 'allrice-unused',
+      nativeTools: [],
+      nativeSkills: [],
+      contentScenes: [],
+      maxTokens: 128,
+      expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
+    });
+    await expect(client.close()).resolves.toBeUndefined();
+    expect(client.closureEvidence()).toMatchObject({
+      process: {
+        state: 'exited',
+        stdioClosed: true,
+        exitCode: 0,
+        signal: null,
+      },
+      shutdownAcknowledged: true,
+      wrapperCleanupConfirmed: true,
+      terminationAttempted: null,
+    });
+    expect(client.closureEvidence()?.emptyTransportClosed).not.toBe(true);
+  }, 30_000);
 });
