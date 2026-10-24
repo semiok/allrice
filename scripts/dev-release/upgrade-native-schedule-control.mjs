@@ -618,6 +618,7 @@ async function main() {
         'applyNativeScheduleControlUpgrade',
         'readNativeScheduleControlUpgrade',
         'nativeOnceDigest',
+        'nativeControlCloudEvidenceDigest',
         'getDatabase',
         'closeDatabase',
       ].every((k) => typeof api[k] === 'function'),
@@ -680,7 +681,7 @@ async function main() {
         reviewSha256: hash(review.bytes),
         input: input.value,
         offline: offline.value,
-        digest: api.nativeOnceDigest,
+        digest: api.nativeControlCloudEvidenceDigest,
         mode,
       });
       historicalCloudAbsenceCredential = verified.credential;

@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import type { Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { nativeControlCloudEvidenceDigest } from './native-control-cloud-evidence.ts';
 import {
   createNativeScheduleControlSqlStore,
   type NativeOnceClosedProof,
@@ -1154,6 +1155,101 @@ run('offline control artifact upgrade in an owned synthetic SQL schema', () => {
       },
     };
   }
+  async function largeInventoryCredential(c: Awaited<ReturnType<typeof seed>>) {
+    const proof = await inventoryCredential(c);
+    const observation = {
+      ...proof.observation,
+      lifecycle: proof.observation.lifecycle.map((health) => ({
+        ...health,
+        // Synthetic complete health details, retained in the original JSON.
+        // This exercises the production-sized document without OS/SDK probes.
+        completeDetails:
+          `${health.identity.service}:` + 'evidence;'.repeat(4000),
+      })),
+    };
+    expect(Buffer.byteLength(JSON.stringify(observation))).toBeGreaterThan(
+      65_536,
+    );
+    return {
+      ...proof,
+      observation,
+      approval: {
+        ...proof.approval,
+        observationDigest: nativeControlCloudEvidenceDigest(observation),
+      },
+    };
+  }
+  it.each(['allrice-once-control-v1', 'allrice-recurring-control-v1'] as const)(
+    'complete large cloud evidence: %s prepare/apply/readback preserves the full credential',
+    async (profile) => {
+      const c = await seed(profile),
+        proof = await largeInventoryCredential(c),
+        before = await cloudSnapshot();
+      expect(() => nativeOnceDigest(proof)).toThrow('native_once_json_limit');
+      const [canonical] = await db`
+        select allrice_native_control_document_digest(${db.json(JSON.parse(JSON.stringify(proof)))}) credential_digest,
+          allrice_native_control_document_digest(${db.json(JSON.parse(JSON.stringify(proof.observation)))}) observation_digest`;
+      expect(canonical!.credential_digest).toBe(
+        nativeControlCloudEvidenceDigest(proof),
+      );
+      expect(canonical!.observation_digest).toBe(
+        proof.approval.observationDigest,
+      );
+      const { p, auth } = await prepareCloud(c, proof);
+      expect(p.planDigest).toBe(nativeOnceDigest(p.plan));
+      expect(p.plan.historicalCloudAbsenceDigest).toBe(
+        canonical!.credential_digest,
+      );
+      const [stored] = await db`
+        select credential,credential_digest,octet_length(credential::text) bytes
+        from allrice_native_control_cloud_absences where plan_id=${p.plan.planId}`;
+      expect(stored!.credential).toEqual(proof);
+      expect(stored!.credential_digest).toBe(canonical!.credential_digest);
+      expect(stored!.bytes).toBeGreaterThan(65_536);
+      expect(stored!.bytes).toBeLessThanOrEqual(1_048_576);
+      expect(
+        await readNativeScheduleControlUpgrade({ db, planId: p.plan.planId }),
+      ).toMatchObject({ status: 'plan_only', planDigest: p.planDigest });
+      await apply(p, auth);
+      expect((await row(c.partitionId)).reference).toEqual(c.after);
+      expect(
+        await readNativeScheduleControlUpgrade({
+          db,
+          planId: p.plan.planId,
+          expected: expected(p, auth),
+        }),
+      ).toMatchObject({ status: 'applied' });
+      expect(
+        (
+          await db`select credential from allrice_native_control_cloud_absences where plan_id=${p.plan.planId}`
+        )[0]!.credential,
+      ).toEqual(proof);
+      expect(await cloudSnapshot()).toEqual(before);
+    },
+  );
+  it.each(['changed final byte', 'over 1 MiB'] as const)(
+    'complete large cloud evidence: %s leaves no plan or credential',
+    async (change) => {
+      const c = await seed(),
+        proof = await largeInventoryCredential(c),
+        before = await cloudSnapshot();
+      proof.observation.lifecycle[1]!.completeDetails +=
+        change === 'over 1 MiB' ? 'x'.repeat(1_048_576) : 'tampered';
+      await expect(prepareCloud(c, proof)).rejects.toThrow(
+        change === 'over 1 MiB'
+          ? 'native_control_cloud_evidence_json_limit'
+          : 'credential rejected',
+      );
+      expect(
+        await db`select plan_id from allrice_native_control_upgrade_plans where plan_id=${proof.observation.planId}`,
+      ).toHaveLength(0);
+      expect(
+        await db`select plan_id from allrice_native_control_cloud_absences where plan_id=${proof.observation.planId}`,
+      ).toHaveLength(0);
+      expect((await row(c.partitionId)).reference).toEqual(c.before);
+      expect(await cloudSnapshot()).toEqual(before);
+    },
+  );
   it.each(['allrice-once-control-v1', 'allrice-recurring-control-v1'] as const)(
     'recorded inventory: exact %s plan/apply keeps all six rows and unknown history',
     async (profile) => {
@@ -1385,13 +1481,15 @@ run('offline control artifact upgrade in an owned synthetic SQL schema', () => {
   });
   it('historical cloud absence: lost actual COMMIT acknowledgement is resolved by independent exact readback', async () => {
     const c = await seed(),
-      { p, auth } = await prepareCloud(c),
+      { p, auth } = await prepareCloud(c, await largeInventoryCredential(c)),
       before = await cloudSnapshot();
+    let writes = 0;
     const lost = {
       begin: async (
         options: string,
         work: (tx: unknown) => Promise<unknown>,
       ) => {
+        writes++;
         await db.begin(options, work as never);
         throw Error('synthetic lost original commit ACK');
       },
@@ -1406,6 +1504,7 @@ run('offline control artifact upgrade in an owned synthetic SQL schema', () => {
         expected: expected(p, auth),
       }),
     ).toMatchObject({ status: 'applied' });
+    expect(writes).toBe(1);
     expect(await cloudSnapshot()).toEqual(before);
     await expect(apply(p, auth)).rejects.toThrow(
       'already_applied_readback_only',
@@ -1438,13 +1537,15 @@ run('offline control artifact upgrade in an owned synthetic SQL schema', () => {
   });
   it('historical cloud absence: prepared credential and plan survive a lost COMMIT receipt together', async () => {
     const c = await seed(),
-      proof = await cloudCredential(c),
+      proof = await largeInventoryCredential(c),
       before = await cloudSnapshot();
+    let writes = 0;
     const lost = {
       begin: async (
         options: string,
         work: (tx: unknown) => Promise<unknown>,
       ) => {
+        writes++;
         await db.begin(options, work as never);
         throw Error('synthetic lost prepare COMMIT receipt');
       },
@@ -1466,13 +1567,16 @@ run('offline control artifact upgrade in an owned synthetic SQL schema', () => {
     });
     expect(read).toMatchObject({
       status: 'plan_only',
-      plan: { historicalCloudAbsenceDigest: nativeOnceDigest(proof) },
+      plan: {
+        historicalCloudAbsenceDigest: nativeControlCloudEvidenceDigest(proof),
+      },
     });
+    expect(writes).toBe(1);
     expect(await cloudSnapshot()).toEqual(before);
     expect(
       (
         await db`select credential_digest from allrice_native_control_cloud_absences where plan_id=${proof.observation.planId}`
       )[0]!.credential_digest,
-    ).toBe(nativeOnceDigest(proof));
+    ).toBe(nativeControlCloudEvidenceDigest(proof));
   });
 });

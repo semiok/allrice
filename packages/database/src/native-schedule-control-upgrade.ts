@@ -2,6 +2,7 @@ import { isAbsolute, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { Sql, TransactionSql } from 'postgres';
 import { z } from 'zod';
+import { nativeControlCloudEvidenceDigest } from './native-control-cloud-evidence.ts';
 import {
   nativeOnceDigest,
   type NativeOnceReference,
@@ -323,14 +324,16 @@ export async function prepareNativeScheduleControlUpgrade(input: {
     const historicalCloudAbsenceDigest =
       cloudCredential === undefined
         ? undefined
-        : nativeOnceDigest(cloudCredential);
+        : nativeControlCloudEvidenceDigest(cloudCredential);
     if (cloudCredential !== undefined) {
       // Same transaction as the original plan; the deferred FK prevents an
       // orphan credential. The local source operator independently probes OS.
+      // The complete credential was validated above with its own bounded
+      // digest. Ordinary plan/reference/approval JSON keeps the 64 KiB guard.
       await tx`insert into allrice_native_control_cloud_absences
         (plan_id,partition_id,credential_digest,before_reference,after_reference,credential)
         values(${request.requestId},${request.partitionId},${historicalCloudAbsenceDigest!},
-          ${json(tx, request.beforeReference)},${json(tx, request.afterReference)},${json(tx, cloudCredential)})`;
+          ${json(tx, request.beforeReference)},${json(tx, request.afterReference)},${tx.json(JSON.parse(JSON.stringify(cloudCredential)))})`;
     }
     await idle(tx, {
       planId: request.requestId,
@@ -575,7 +578,7 @@ export async function readNativeScheduleControlUpgrade(input: {
         if (
           !credential ||
           credential.credential_digest !== plan.historicalCloudAbsenceDigest ||
-          nativeOnceDigest(credential.credential) !==
+          nativeControlCloudEvidenceDigest(credential.credential) !==
             plan.historicalCloudAbsenceDigest
         )
           reject('cloud_absence_readback_conflict');

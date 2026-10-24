@@ -324,6 +324,7 @@ export {
   type NativeOnceClosedProof,
 } from './native-schedule-once-sql.ts';
 export { nativeOnceDigest } from './native-schedule-once-state.ts';
+export { nativeControlCloudEvidenceDigest } from './native-control-cloud-evidence.ts';
 export {
   prepareNativeScheduleControlUpgrade,
   applyNativeScheduleControlUpgrade,
