@@ -71,7 +71,7 @@ export function BrandFeedbackPanel({
   onForget: (id: string) => Promise<void>;
 }) {
   const [draft, setDraft] = useState<Draft>(() => saved(draftKey));
-  const [selected, setSelected] = useState<string[]>([]);
+  const [selection, setSelected] = useState<string[]>([]);
   const [error, setError] = useState('');
   useEffect(() => {
     try {
@@ -82,6 +82,9 @@ export function BrandFeedbackPanel({
   }, [draft, draftKey]);
   const feedback = board.feedback ?? [],
     experiences = board.experiences ?? [];
+  const selected = selection.filter((id) =>
+    feedback.some((row) => row.id === id),
+  );
   const patch = (key: keyof Draft, value: string) =>
     setDraft((old) => ({ ...old, [key]: value }));
   const fields: Array<{ key: keyof Draft; label: string; type?: string }> = [
@@ -149,6 +152,11 @@ export function BrandFeedbackPanel({
         记录已发布内容的实际数据，再复盘可复用的经验。外部样本独立标注；留空表示未知，填
         0 表示明确观测为零。
       </p>
+      {board.unavailableFeedbackSources && (
+        <p role="status" className={css.notice}>
+          部分历史反馈的附件已不可用，相关反馈、复盘和经验已隐藏。仍可使用其他有效资料。
+        </p>
+      )}
       <details className={css.details}>
         <summary>录入发布反馈</summary>
         <form onSubmit={submit} className={css.stack}>
@@ -286,10 +294,10 @@ export function BrandFeedbackPanel({
                 (selected.length >= 20 && !selected.includes(sample.id))
               }
               onChange={(e) =>
-                setSelected((old) =>
+                setSelected(
                   e.target.checked
-                    ? [...old, sample.id]
-                    : old.filter((id) => id !== sample.id),
+                    ? [...selected, sample.id]
+                    : selected.filter((id) => id !== sample.id),
                 )
               }
             />{' '}

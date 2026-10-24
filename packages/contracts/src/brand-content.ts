@@ -605,6 +605,7 @@ export const BrandContentBoardSchema = z
     feedback: z.array(BrandFeedbackSchema).optional(),
     retrospectives: z.array(BrandRetrospectiveSchema).optional(),
     experiences: z.array(BrandExperienceSchema).optional(),
+    unavailableFeedbackSources: z.boolean().optional(),
     experienceUses: z
       .array(
         z

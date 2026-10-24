@@ -21,7 +21,11 @@ import {
   assertBrandContentSession,
 } from './authority.ts';
 import { readBrandContext, scopedRow, assertBrandBundle } from './queries.ts';
-import { brandContentDigest, brandContentFail as fail } from './rules.ts';
+import {
+  BrandContentError,
+  brandContentDigest,
+  brandContentFail as fail,
+} from './rules.ts';
 import type {
   Tx,
   Scope,
@@ -51,6 +55,13 @@ type RetrospectiveRow = {
   session_id: string;
   created_at: Date;
 };
+/** Only feedback-specific attachment loss may hide a historical board entry.
+ * Context, publication, ownership and integrity errors remain strict. */
+class UnavailableFeedbackEvidence extends BrandContentError {
+  constructor() {
+    super('source_unavailable');
+  }
+}
 const scopeSql = (tx: Tx, s: Scope, brandId: string) =>
   tx`organization_id=${s.organizationId} and workspace_id=${s.workspaceId} and owner_id=${s.ownerId} and instance_id=${s.instanceId} and brand_id=${brandId}`;
 export function feedbackView(row: FeedbackRow): BrandFeedback {
@@ -80,8 +91,6 @@ export async function readBrandFeedback(
   if (!row) fail('not_found');
   const value = feedbackView(row);
   await readBrandContext(tx, who, scope, brandId, value.contextRevisionId);
-  for (const file of value.evidenceFiles)
-    await assertBrandContentFile(tx, who, scope, file);
   if (value.receiptId) {
     const receipt = await scopedRow<ReceiptRow>(
       tx,
@@ -123,6 +132,20 @@ export async function readBrandFeedback(
     for (const file of receipt.evidence_files)
       await assertBrandContentFile(tx, who, scope, file);
   }
+  let evidenceUnavailable = false;
+  for (const file of value.evidenceFiles) {
+    try {
+      await assertBrandContentFile(tx, who, scope, file);
+    } catch (error) {
+      if (
+        error instanceof BrandContentError &&
+        error.code === 'source_unavailable'
+      ) {
+        evidenceUnavailable = true;
+      } else throw error;
+    }
+  }
+  if (evidenceUnavailable) throw new UnavailableFeedbackEvidence();
   return value;
 }
 export async function readBrandRetrospective(
@@ -156,8 +179,16 @@ export async function readBrandRetrospective(
     fail('source_changed');
   await assertBrandContentSession(tx, who, scope, row.session_id);
   await readBrandContext(tx, who, scope, brandId, row.context_id);
-  for (const feedbackId of row.feedback_ids)
-    await readBrandFeedback(tx, who, scope, brandId, feedbackId);
+  let evidenceUnavailable = false;
+  for (const feedbackId of row.feedback_ids) {
+    try {
+      await readBrandFeedback(tx, who, scope, brandId, feedbackId);
+    } catch (error) {
+      if (!(error instanceof UnavailableFeedbackEvidence)) throw error;
+      evidenceUnavailable = true;
+    }
+  }
+  if (evidenceUnavailable) throw new UnavailableFeedbackEvidence();
   return result;
 }
 export async function readBrandExperiences(
@@ -255,33 +286,78 @@ export async function readBrandFeedbackBoard(
   const reports = await tx<
     { id: string }[]
   >`select id from allrice_brand_content_retrospectives where ${scopeSql(tx, scope, brandId)} order by created_at desc,id desc limit 201`;
+  let unavailableFeedbackSources = false;
+  async function available<T>(read: () => Promise<T>): Promise<T | undefined> {
+    try {
+      return await read();
+    } catch (error) {
+      if (!(error instanceof UnavailableFeedbackEvidence)) throw error;
+      unavailableFeedbackSources = true;
+      return undefined;
+    }
+  }
+  const checkedReports = new Map<
+    string,
+    Awaited<ReturnType<typeof readBrandRetrospective>> | undefined
+  >();
+  async function availableReport(id: string) {
+    if (!checkedReports.has(id))
+      checkedReports.set(
+        id,
+        await available(() =>
+          readBrandRetrospective(tx, who, scope, brandId, id),
+        ),
+      );
+    return checkedReports.get(id);
+  }
   const feedback = [];
-  for (const sample of samples.slice(0, 200))
-    feedback.push(await readBrandFeedback(tx, who, scope, brandId, sample.id));
-  const retrospectives = [];
-  for (const report of reports.slice(0, 200))
-    retrospectives.push(
-      await readBrandRetrospective(tx, who, scope, brandId, report.id),
+  for (const sample of samples.slice(0, 200)) {
+    const value = await available(() =>
+      readBrandFeedback(tx, who, scope, brandId, sample.id),
     );
-  const experiences = await readBrandExperiences(tx, scope, brandId);
+    if (value) feedback.push(value);
+  }
+  const retrospectives = [];
+  for (const report of reports.slice(0, 200)) {
+    const value = await availableReport(report.id);
+    if (value) retrospectives.push(value);
+  }
+  const experienceRows = await readBrandExperiences(tx, scope, brandId);
+  const experiences = [];
+  for (const experience of experienceRows.slice(0, 200))
+    if (await availableReport(experience.retrospectiveId))
+      experiences.push(experience);
   const uses =
-    await tx`select * from allrice_brand_content_experience_uses where ${scopeSql(tx, scope, brandId)} order by created_at desc,entity_id desc limit 201`;
+    await tx`select u.*,b.retrospective_id from allrice_brand_content_experience_uses u
+      join allrice_brand_content_experiences b on b.memory_id=u.memory_id
+        and b.organization_id=u.organization_id and b.workspace_id=u.workspace_id
+        and b.owner_id=u.owner_id and b.instance_id=u.instance_id and b.brand_id=u.brand_id
+      where u.organization_id=${scope.organizationId} and u.workspace_id=${scope.workspaceId}
+        and u.owner_id=${scope.ownerId} and u.instance_id=${scope.instanceId} and u.brand_id=${brandId}
+      order by u.created_at desc,u.entity_id desc limit 201`;
+  const experienceUses = [];
+  // Uses and experiences have independent windows. Validate every use's report,
+  // including an older memory absent from the visible experience list.
+  for (const r of uses.slice(0, 200))
+    if (await availableReport(r.retrospective_id))
+      experienceUses.push({
+        entityId: r.entity_id,
+        memoryId: r.memory_id,
+        revision: r.revision,
+        digest: r.digest,
+        reason: r.reason,
+        createdAt: r.created_at.toISOString(),
+      });
   return {
     feedback,
     retrospectives,
-    experiences: experiences.slice(0, 200),
-    experienceUses: uses.slice(0, 200).map((r) => ({
-      entityId: r.entity_id,
-      memoryId: r.memory_id,
-      revision: r.revision,
-      digest: r.digest,
-      reason: r.reason,
-      createdAt: r.created_at.toISOString(),
-    })),
+    experiences,
+    experienceUses,
+    unavailableFeedbackSources,
     truncated:
       samples.length > 200 ||
       reports.length > 200 ||
-      experiences.length > 200 ||
+      experienceRows.length > 200 ||
       uses.length > 200,
   };
 }

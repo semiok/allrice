@@ -743,7 +743,10 @@ browserSuite(
     }, 30000);
 
     it('records an external metric snapshot with unknown fields, preserves a draft on refresh and rereads the saved source on mobile', async () => {
-      Object.assign(board, boardFixture(), { feedback: [] });
+      Object.assign(board, boardFixture(), {
+        feedback: [],
+        unavailableFeedbackSources: true,
+      });
       const page = await browser.newPage({
         viewport: { width: 390, height: 844 },
       });
@@ -757,6 +760,12 @@ browserSuite(
           await dialog.getByText('录入发布反馈', { exact: true }).click();
         };
         await openFeedback();
+        await dialog
+          .getByText(
+            '部分历史反馈的附件已不可用，相关反馈、复盘和经验已隐藏。仍可使用其他有效资料。',
+            { exact: true },
+          )
+          .waitFor();
         await dialog
           .getByLabel('发布内容标题', { exact: true })
           .fill('合成 UI 反馈样本');
@@ -834,7 +843,23 @@ browserSuite(
             .getByRole('button', { name: '复盘选中样本（0）', exact: true })
             .isDisabled(),
         ).toBe(true);
+        await dialog
+          .getByLabel('选择复盘样本 合成 UI 反馈样本', { exact: true })
+          .check();
+        board.feedback = [];
+        await dialog.getByRole('button', { name: '刷新', exact: true }).click();
+        await dialog
+          .getByText('还没有发布反馈。先录入真实来源和采样时间。', {
+            exact: true,
+          })
+          .waitFor();
+        expect(
+          await dialog
+            .getByRole('button', { name: '复盘选中样本（0）', exact: true })
+            .isDisabled(),
+        ).toBe(true);
       } finally {
+        delete board.unavailableFeedbackSources;
         await page.close();
       }
     }, 30000);

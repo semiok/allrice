@@ -38,6 +38,15 @@ import {
   prepareEmployeeContentContext,
 } from './employees/employee-runtime-content.ts';
 import { brandContentDigest } from './brand-content/rules.ts';
+import { authenticateSession, createSession } from './identity.ts';
+import { prepareStorageDelete, completeStorageDelete } from './data.ts';
+import { getBrandContentBoard } from './brand-content/reads.ts';
+import { mutateBrandContent } from './brand-content/service.ts';
+import { brandContentStageInput } from './brand-content/workflow-start.ts';
+import {
+  assertBrandFeedbackInput,
+  readBrandFeedback,
+} from './brand-content/feedback.ts';
 let admin: ReturnType<typeof postgres>, db: ReturnType<typeof postgres>;
 vi.mock('./core/client.ts', async (original) => ({
   ...(await original<typeof Client>()),
@@ -54,7 +63,10 @@ async function fixture() {
 }
 /** Synthetic saved report and completed assistant message. No model request or
  * claim of real publication metrics is made by this isolated SQL fixture. */
-async function brandFixture(mismatch?: string) {
+async function brandFixture(
+  mismatch?: string,
+  options: { mutableEvidence?: boolean } = {},
+) {
   const f = await fixture();
   const [assignment] = await db<
     { id: string; employee_id: string; employee_version_id: string }[]
@@ -155,7 +167,7 @@ async function brandFixture(mismatch?: string) {
       values(${contextId},${f.org},${f.workspace},${f.user},${instanceId},${brandId},1,'Synthetic brand',${tx.json(content)},${invocation.input.contextDigest})`;
     await tx`insert into allrice_storage_objects
       (id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,visibility,state,immutable)
-      values(${evidenceId},${f.org},${f.workspace},${f.user},${makeObjectKey({ organizationId: f.org, workspaceId: f.workspace, ownerId: f.user, category: 'uploads', objectId: evidenceId })},'uploads','text/plain',1,${feedback.evidenceFiles[0]!.checksum},'private','ready',true)`;
+      values(${evidenceId},${f.org},${f.workspace},${f.user},${makeObjectKey({ organizationId: f.org, workspaceId: f.workspace, ownerId: f.user, category: 'uploads', objectId: evidenceId })},'uploads','text/plain',1,${feedback.evidenceFiles[0]!.checksum},'private','ready',${!options.mutableEvidence})`;
     await tx`insert into allrice_brand_content_feedback
       (id,organization_id,workspace_id,owner_id,instance_id,brand_id,context_id,content,digest,publication_key)
       values(${feedbackId},${f.org},${f.workspace},${f.user},${instanceId},${brandId},${contextId},${tx.json(feedback)},${brandContentDigest(feedback)},${feedbackId})`;
@@ -275,6 +287,15 @@ async function approvedBrandInvocation(
   ];
   return invocation;
 }
+async function brandBoardOwner(f: Awaited<ReturnType<typeof brandFixture>>) {
+  const login = await createSession(f.user);
+  const owner = await authenticateSession(login.token, {
+    organizationId: f.org,
+    workspaceId: f.workspace,
+  });
+  if (!owner) throw Error('Synthetic brand board login failed');
+  return owner;
+}
 const decision = (
   c: { revision: number; digest: string },
   type = 'approve',
@@ -365,6 +386,128 @@ suite(
       await expect(
         store.create(f.owner, { ...f.input, content: 'Changed rule' }),
       ).rejects.toMatchObject({ code: 'conflict' });
+    });
+    it('hides unavailable feedback attachments and their derived content without blocking valid new inputs', async () => {
+      const f = await brandFixture(undefined, { mutableEvidence: true });
+      const owner = await brandBoardOwner(f);
+      const candidate = await store.create(f.owner, f.input);
+      const approved = await store.review(
+        f.owner,
+        candidate.id,
+        decision(candidate),
+      );
+      const scope = {
+        workspaceId: f.workspace,
+        instanceId: f.instanceId,
+        brandId: f.brandId,
+      };
+      const ownerScope = {
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        ownerId: f.user,
+        instanceId: f.instanceId,
+      };
+      const readBoard = () => getBrandContentBoard(owner, scope, { db });
+      const [sample] =
+        await db`select content from allrice_brand_content_feedback where id=${f.feedbackId}`;
+      const valid = await mutateBrandContent(
+        owner,
+        {
+          ...sample!.content,
+          ...scope,
+          operation: 'feedback.record',
+          requestId: randomUUID(),
+          sampledAt: '2026-01-03T00:00:00.000Z',
+          evidenceFiles: [],
+        },
+        { db },
+      );
+      const entityId = randomUUID();
+      await db`insert into allrice_brand_content_experience_uses
+        (organization_id,workspace_id,owner_id,instance_id,brand_id,entity_id,memory_id,revision,digest,reason)
+        values(${f.org},${f.workspace},${f.user},${f.instanceId},${f.brandId},${entityId},${approved.id},${approved.revision},${approved.digest},'Synthetic historical use with private source details.')`;
+      const request = {
+        workspaceId: f.workspace,
+        brandId: f.brandId,
+        requestId: randomUUID(),
+        stage: 'topics' as const,
+        platform: f.invocation.input.platform!,
+        count: 2,
+      };
+      const before = await readBoard();
+      expect(before.feedback).toHaveLength(2);
+      expect(before.experiences).toHaveLength(1);
+      expect(before.experienceUses).toHaveLength(1);
+      const frozen = brandContentStageInput(before, request);
+      expect(frozen.experiences?.[0]?.id).toBe(approved.id);
+      await prepareStorageDelete(owner, f.evidenceId);
+      await completeStorageDelete(owner, f.evidenceId);
+      const after = await readBoard();
+      expect(after.unavailableFeedbackSources).toBe(true);
+      expect(after.feedback?.map((x) => x.id)).toEqual([valid.result.entityId]);
+      expect(after.retrospectives).toEqual([]);
+      expect(after.experiences).toEqual([]);
+      expect(after.experienceUses).toEqual([]);
+      expect(brandContentStageInput(after, request).experiences ?? []).toEqual(
+        [],
+      );
+      expect(
+        brandContentStageInput(after, {
+          ...request,
+          stage: 'retrospective',
+          feedbackIds: [valid.result.entityId],
+        }).feedback,
+      ).toHaveLength(1);
+      expect(() =>
+        brandContentStageInput(after, {
+          ...request,
+          stage: 'retrospective',
+          feedbackIds: [f.feedbackId],
+        }),
+      ).toThrow('source_unavailable');
+      await expect(
+        db.begin((tx) =>
+          readBrandFeedback(tx, owner, ownerScope, f.brandId, f.feedbackId),
+        ),
+      ).rejects.toMatchObject({ code: 'source_unavailable' });
+      await expect(
+        db.begin((tx) =>
+          assertBrandFeedbackInput(tx, owner, ownerScope, frozen),
+        ),
+      ).rejects.toMatchObject({ code: 'source_unavailable' });
+      // The marker does not turn other integrity errors into partial success.
+      await db`update allrice_storage_objects set state='ready',deleted_at=null,checksum=${`sha256:${'d'.repeat(64)}`} where id=${f.evidenceId}`;
+      await expect(readBoard()).rejects.toMatchObject({
+        code: 'source_changed',
+      });
+    });
+    it('keeps archived-session history and normally withdrawn brand experience readable', async () => {
+      const f = await brandFixture();
+      const owner = await brandBoardOwner(f);
+      const candidate = await store.create(f.owner, f.input);
+      await store.review(f.owner, candidate.id, decision(candidate));
+      const readBoard = () =>
+        getBrandContentBoard(
+          owner,
+          {
+            workspaceId: f.workspace,
+            instanceId: f.instanceId,
+            brandId: f.brandId,
+          },
+          { db },
+        );
+      await db`update allrice_chat_sessions set archived_at=now() where id=${f.reportSessionId}`;
+      const archived = await readBoard();
+      expect(archived.retrospectives?.[0]?.id).toBe(f.reportId);
+      expect(archived.unavailableFeedbackSources).toBe(false);
+      await deleteWorkspaceMemory(f.owner, f.workspace, candidate.id);
+      const withdrawn = await readBoard();
+      expect(withdrawn.experiences?.[0]).toMatchObject({
+        id: candidate.id,
+        status: 'approved',
+        archived: true,
+      });
+      expect(withdrawn.unavailableFeedbackSources).toBe(false);
     });
     it('atomically composes the brand candidate and scope mapping with the caller transaction', async () => {
       const f = await brandFixture();
