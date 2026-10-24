@@ -237,6 +237,40 @@ Web 的原生终端资产须通过 `pnpm dsh-ui:verify`；macOS x64/arm64 SEA/Ap
 行为、复用来源和退出/恢复边界见
 [原生工作台说明](../features/native-workbench/README.md#met-198桌面统一工作台)。
 
+## Persistent native context and Run diagnostics (MET200)
+
+DSH bootstrap 去重只依据已采纳的公开 `user/message` 来源摘要回执，按 SQL
+会话、原生代际、消息 ID 和内容摘要匹配。压缩或进程重启后从原始 journal
+恢复这些覆盖事实；无覆盖证据的历史和变更后的 checkpoint 仍保守导入。
+本轮请求、当前记忆和授权规则照常生效，不用本地进程是否 fresh 代替恢复事实。
+
+云 MCP 的连接、工具全名、描述及风险仍保留在目录中；支持的原生 carrier
+通过 `cloud.mcp.call` 的 `action: "describe"` 按需取得精确 `inputSchema`。
+元数据选择复用执行路径的 frozen/current 工具与权限校验，不创建远端 operation。
+目录和查询结果都携带 `schemaDigest`；schema 变化会改变运行配置指纹并要求重新查询。
+schema 查询由主员工执行；委派 MCP 读取时一并提供精确 schema，子助手仍仅能执行
+本轮已冻结的只读工具，不能自行 describe、管理连接或写入。
+必须同时确认批准 artifact 的验证器和工具声明支持该 action；旧 carrier
+或能力未知时保留完整 schema。真实 token 与延迟改善须以 Dev 实测为准。
+
+后台只读接口 `GET /api/v1/runs/{id}/diagnostics?workspaceId={workspaceId}`
+复用普通 Run 登录与读取权限，并仅允许 Run 本人读取原生诊断，同公司其他成员
+不能读取。Web 将真实会话令牌转发至部署配置 `ALLRICE_WORKER_INTERNAL_URL`
+（未设置时为本机 Worker 端口，Compose 使用 `http://worker:3101`）。Worker
+独立认证并在读取后复核登录和 Run 所有权。请求不能指定磁盘路径、reader、
+artifact 或原生日志切片，绑定全部由可信数据库确定。
+
+读取采用该 Run 固定、已批准 artifact 的公开 persistence read handle 和
+`expandAssistantStream`；不启动 Agent/模型，不迁移 journal，不补造中断结束事件。
+只返回精确 Run/attempt/generation/thread/seq 归属的事件元数据、流块类型/索引/
+数量/时间及原生用量。已证明独占的 Run turn 可展开对应 step、重试及压缩元数据；
+歧义、缺失回执、未批准 reader、需要迁移或大小超限均明确为 partial/unavailable。
+不返回 prompt、输出/推理正文、工具参数/结果、凭证或存储路径。原生时间为墙钟
+毫秒，`providerWire` 始终未知；原生 `inputTokens`、`cacheReadTokens` 与
+`cacheWriteTokens` 为分项事实，不替代产品账本。运行中未持久化部分同样未知。
+该接口不新增 SQL migration、生命周期或前端，固定 native artifact 的发布仍走
+既有测量与批准流程。
+
 ## Troubleshooting
 
 - **`Docker Compose is required`**: install and start Docker Desktop, then confirm `docker compose version` works. Or configure an existing database with `DATABASE_URL`.

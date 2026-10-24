@@ -77,6 +77,7 @@ export * from './local-mcp-view.ts';
 export * from './mcp-employee-bindings.ts';
 export {
   createMcpRuntimeOperation,
+  describeMcpRuntimeTool,
   createMcpOperationLedger,
 } from './mcp-execution.ts';
 export {

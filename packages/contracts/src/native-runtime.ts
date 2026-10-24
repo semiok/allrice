@@ -51,3 +51,8 @@ export {
   StaticBrowserReferenceSchema,
 } from './static-browser.ts';
 export { UserQuestionItemSchema } from './user-questions.ts';
+
+export {
+  BootstrapReceiptSchema,
+  BootstrapCoverageQuerySchema,
+} from './bootstrap-context.ts';

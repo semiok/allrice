@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { it } from 'vitest';
+import { expect, it } from 'vitest';
 import { nativeBrokerRoundtrip } from './dsh-native-broker.fixture.js';
 
 it('P16 MCP uses the pinned native DSH tool channel and rejects invalid connection arguments before Broker', async () => {
@@ -30,5 +30,25 @@ it('continues the same native request after provider errors without replaying th
       arguments: {},
     },
     retryAfterTool: 2,
+  });
+}, 45000);
+
+it('advertises exact schema lookup and transports it through the native broker without accepting call arguments', async () => {
+  await nativeBrokerRoundtrip({
+    canonicalName: 'cloud.mcp.call',
+    wireName: 'cloud_mcp_call',
+    args: {
+      action: 'describe',
+      connectionId: randomUUID(),
+      tool: 'records.list',
+    },
+    invalidArgs: {
+      action: 'describe',
+      connectionId: randomUUID(),
+      tool: 'records.list',
+      arguments: { private: true },
+    },
+    inspectSchema: (schema) =>
+      expect(JSON.stringify(schema)).toContain('describe'),
   });
 }, 45000);
