@@ -1,0 +1,23 @@
+#!/bin/bash
+# with-env web|worker <command...> — run with the exact launchd environment of that
+# shared-Dev service (~/allrice-dev/.env plus the plist's EnvironmentVariables).
+# Refuses to run when the environment cannot be read, so nothing runs half-configured.
+set -euo pipefail
+die() { echo "with-env: $1" >&2; exit 2; }
+role=${1:-}; case "$role" in web|worker) ;; *) die "usage: with-env web|worker <command...>" ;; esac
+shift; [ $# -ge 1 ] || die "no command given"
+plist="$HOME/Library/LaunchAgents/ai.bplabs.allrice-dev-$role.plist"
+[ -f "$plist" ] || die "missing $plist"
+[ -f "$HOME/allrice-dev/.env" ] || die "missing ~/allrice-dev/.env"
+set -a; source "$HOME/allrice-dev/.env"; set +a
+exports=$(/usr/bin/python3 - "$plist" <<'PY'
+import plistlib,shlex,sys
+env=plistlib.load(open(sys.argv[1],'rb'))['EnvironmentVariables']
+if not env.get('DATABASE_URL'): sys.exit('DATABASE_URL missing in plist')
+for k,v in env.items(): print(f'export {k}={shlex.quote(str(v))}')
+PY
+) || die "cannot read the environment from $plist"
+[ -n "$exports" ] || die "empty environment from $plist"
+eval "$exports"
+[ -n "${DATABASE_URL:-}" ] || die "DATABASE_URL is empty"
+exec "$@"
