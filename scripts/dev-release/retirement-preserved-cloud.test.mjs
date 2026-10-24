@@ -1247,7 +1247,7 @@ function actualOperatorHealthBoundary() {
     'utf8',
   );
   const start = source.indexOf('    const readHealths = async (signal) =>');
-  const end = source.indexOf('    const readBusy = () =>', start);
+  const end = source.indexOf('    const completePhysical =', start);
   expect(start).toBeGreaterThan(0);
   expect(end).toBeGreaterThan(start);
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
@@ -1258,44 +1258,50 @@ function actualOperatorHealthBoundary() {
       'need',
       'fetch',
       'AbortSignal',
-      source.slice(start, end) + '\nreturn readHealths;',
+      "const laterReviewedChat = r.kind === 'allrice-dev-reviewed-archived-test-chat-retirement-v1'; const healths = [];\n" +
+        source.slice(start, end) +
+        '\nreturn readHealths;',
     ),
   };
 }
 
 describe('actual retirement operator initial boundary and mutation placement', () => {
-  it('does not reject the carry initial transient before reaching the full observer', async () => {
-    const { source, boundary } = actualOperatorHealthBoundary();
-    const p = quiescenceProof();
-    p.healthBefore[0].producerLifecycle.activeRoots = 1;
-    const fetch = vi.fn(async (url) => ({
-      ok: true,
-      json: async () => clone(p.healthBefore[url === 'web' ? 0 : 1]),
-    }));
-    const need = (ok, code) => {
-      if (!ok) throw Error(code);
-    };
-    const readHealths = await boundary(
-      { ...p.review, healthUrls: ['web', 'worker'] },
-      need,
-      fetch,
-      globalThis.AbortSignal,
-    );
-    expect(fetch).not.toHaveBeenCalled(); // carry waits only inside the complete observer
-    expect((await readHealths())[0].producerLifecycle.activeRoots).toBe(1);
-    expect(source.match(/await verifyRetirementBusy\(/g)).toHaveLength(1);
-    expect(
-      source.match(/await db\.applyNativeTestChatRetirement\(/g),
-    ).toHaveLength(1);
-    expect(source.indexOf('await verifyRetirementBusy(')).toBeLessThan(
-      source.indexOf("const intentPath = a.output + '.intent.json';"),
-    );
-    expect(
-      source.indexOf('NATIVE_RETIREMENT_CLOUD_AUTHORITY_CHANGED'),
-    ).toBeLessThan(
-      source.indexOf("const intentPath = a.output + '.intent.json';"),
-    );
-  });
+  it.each([undefined, 'allrice-dev-reviewed-archived-test-chat-retirement-v1'])(
+    'does not reject carry kind %s initial transient before reaching its full observer',
+    async (kind) => {
+      const { source, boundary } = actualOperatorHealthBoundary();
+      const p = quiescenceProof();
+      if (kind) p.review.kind = kind;
+      p.healthBefore[0].producerLifecycle.activeRoots = 1;
+      const fetch = vi.fn(async (url) => ({
+        ok: true,
+        json: async () => clone(p.healthBefore[url === 'web' ? 0 : 1]),
+      }));
+      const need = (ok, code) => {
+        if (!ok) throw Error(code);
+      };
+      const readHealths = await boundary(
+        { ...p.review, healthUrls: ['web', 'worker'] },
+        need,
+        fetch,
+        globalThis.AbortSignal,
+      );
+      expect(fetch).not.toHaveBeenCalled(); // carry waits only inside the complete observer
+      expect((await readHealths())[0].producerLifecycle.activeRoots).toBe(1);
+      expect(source.match(/await verifyRetirementBusy\(/g)).toHaveLength(1);
+      expect(
+        source.match(/await db\.applyNativeTestChatRetirement\(/g),
+      ).toHaveLength(1);
+      expect(source.indexOf('await verifyRetirementBusy(')).toBeLessThan(
+        source.indexOf("const intentPath = a.output + '.intent.json';"),
+      );
+      expect(
+        source.indexOf('NATIVE_RETIREMENT_CLOUD_AUTHORITY_CHANGED'),
+      ).toBeLessThan(
+        source.indexOf("const intentPath = a.output + '.intent.json';"),
+      );
+    },
+  );
   it('preserves the non-carry initial refusal', async () => {
     const { boundary } = actualOperatorHealthBoundary();
     const p = quiescenceProof();

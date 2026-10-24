@@ -54,6 +54,15 @@ const target: NativeDiagnosticTargetSlice = {
   verifiedTurns: [4],
   reasons: [],
   binding: pin,
+  execution: {
+    nativeSessionId: pin.nativeSessionId,
+    artifactId: pin.artifactId,
+    artifactManifestDigest: pin.artifactManifestDigest,
+    distributionGeneration: pin.distributionGeneration,
+    profileId: pin.profileId,
+    storageContextKey: pin.storageContextKey,
+    storageNamespace: pin.storageNamespace,
+  },
 };
 const secret = 'PRIVATE_PROMPT_REASONING_TOOL_TOKEN';
 const stream = [
@@ -208,7 +217,7 @@ it('keeps unfinished turns and unrecorded streams explicitly incomplete without 
 });
 it('does not consult an unapproved/missing binding and never exposes reader failures', async () => {
   await expect(
-    readApprovedNativeDiagnosticJournal(pin, new AbortController().signal),
+    readApprovedNativeDiagnosticJournal(target, new AbortController().signal),
   ).rejects.toMatchObject({ reason: 'reader_unavailable' });
   const read = vi.fn().mockRejectedValue(Error(`/private/source ${secret}`));
   const report = await readNativeRunDiagnostics(
@@ -231,6 +240,93 @@ it('does not consult an unapproved/missing binding and never exposes reader fail
     read,
   );
   expect(read).not.toHaveBeenCalled();
+});
+it('reports actual Run execution independently of its first writer', () => {
+  const artifactId = 'sha256:' + 'b'.repeat(64);
+  const result = projectNativeDiagnosticSlice(
+    {
+      ...target,
+      execution: {
+        ...target.execution!,
+        artifactId,
+        artifactManifestDigest: artifactId,
+        executorTransitionDigest: 'sha256:' + 'c'.repeat(64),
+      },
+    },
+    { events, expand },
+  );
+  expect(result.artifactId).toBe(artifactId);
+  expect(target.binding!.artifactId).toBe(pin.artifactId);
+});
+it('does not reuse a journal across namespaces, readers or transition authority', async () => {
+  const differentNamespace: NativeDiagnosticTargetSlice = {
+    ...target,
+    binding: { ...pin, storageNamespace: '/private/another-namespace' },
+    execution: {
+      ...target.execution!,
+      storageNamespace: '/private/another-namespace',
+    },
+  };
+  const artifactId = 'sha256:' + 'b'.repeat(64);
+  const differentReader: NativeDiagnosticTargetSlice = {
+    ...target,
+    execution: {
+      ...target.execution!,
+      artifactId,
+      artifactManifestDigest: artifactId,
+      executorTransitionDigest: 'sha256:' + 'c'.repeat(64),
+    },
+  };
+  const differentTransition: NativeDiagnosticTargetSlice = {
+    ...differentReader,
+    execution: {
+      ...differentReader.execution!,
+      executorTransitionDigest: 'sha256:' + 'd'.repeat(64),
+    },
+  };
+  const read = vi.fn().mockResolvedValue({ events, expand });
+  const result = await readNativeRunDiagnostics(
+    {
+      runId: pin.firstRunId,
+      running: false,
+      reasons: [],
+      slices: [
+        target,
+        { ...target, attempt: 2 },
+        differentNamespace,
+        differentReader,
+        differentTransition,
+      ],
+    },
+    new AbortController().signal,
+    read,
+  );
+  expect(read).toHaveBeenCalledTimes(4);
+  expect(result.slices.map((slice) => slice.artifactId)).toEqual([
+    pin.artifactId,
+    pin.artifactId,
+    pin.artifactId,
+    artifactId,
+    artifactId,
+  ]);
+});
+it('keeps missing execution unknown and does not read through the original pin', async () => {
+  const read = vi.fn();
+  const result = await readNativeRunDiagnostics(
+    {
+      runId: pin.firstRunId,
+      running: false,
+      reasons: [],
+      slices: [
+        { ...target, execution: null, reasons: ['binding_unavailable'] },
+      ],
+    },
+    new AbortController().signal,
+    read,
+  );
+  expect(read).not.toHaveBeenCalled();
+  expect(result.slices[0]!.artifactId).toBeNull();
+  expect(result.reasons).toContain('binding_unavailable');
 });
 it('uses a real current public JSONL read handle, preserves bytes/mtime, and does not close an unfinished turn', async () => {
   const root = await mkdtemp(join(tmpdir(), 'allrice-diagnostic-reader-'));

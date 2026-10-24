@@ -1,0 +1,270 @@
+{
+  "status": 200,
+  "body": [
+    {
+      "Id": "484014398e0be706673355bd3921da18209e9f2ebd542b73ed0f7d93f8c98048",
+      "Names": ["/allrice-23afbc92-a15b-4036-a7c4-6fca7a12e4f7"],
+      "Image": "sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5",
+      "ImageID": "sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5",
+      "Command": "/usr/local/bin/node --input-type=module --eval '\nimport { spawn } from 'node:child_process';\nimport { mkdir, writeFile, chown, readFile } from 'node:fs/promises';\nimport { dirname } from 'node:path';\nimport { constants } from 'node:os';\n\nconst chunks = Number(process.env.ALLRICE_INPUT_PARTS);\nif (!Number.isInteger(chunks) || chunks < 1 || chunks > 32) process.exit(125);\nconst text = Array.from({length: chunks}, (_, i) => process.env['ALLRICE_INPUT_' + i] || '').join('');\nconst bundle = JSON.parse(Buffer.from(text, 'base64').toString('utf8'));\nlet finished = false, size = 0, frames = 0;\nconst exitCode = (code, signal) => Number.isInteger(code) ? code : signal && constants.signals[signal] ? 128 + constants.signals[signal] : 125;\nconst emit = (event) => process.stdout.write(JSON.stringify(event) + '\\n');\nconst end = (reason, code) => {\n  if (finished) return;\n  finished = true;\n  emit({type:'exit', reason, code});\n  // Explicit exit also kills detached descendants; do not wait for child pipes.\n  process.stdout.write('', () => process.exit(code));\n  setTimeout(() => process.exit(code), 100).unref();\n};\n\nfunction installSandboxExecutionControl(config) {\n const control=config.executionControl;\n if(!control)return;\n let sequence=0,pending='',deadline=config.deadlineUnixMs,lease=Date.now()+20000;\n const integer=n=>Number.isSafeInteger(n)&&n>=0;\n const fail=()=>end('lease_lost',124);\n if(control.version!==1||typeof control.attemptId!=='string'||!integer(control.hardDeadlineAt)||\n    !integer(deadline)||deadline>Date.now()+3600000||deadline>control.hardDeadlineAt||\n    control.hardDeadlineAt>Date.now()+3600000||deadline<=Date.now())return fail();\n const timer=setInterval(()=>{\n   if(Date.now()>=deadline)end('timeout',124);\n   else if(Date.now()>=lease)fail();\n },50);\n process.stdin.on('data',bytes=>{\n  pending+=bytes.toString('utf8');\n  if(Buffer.byteLength(pending)>16384)return fail();\n  for(let at;(at=pending.indexOf('\\n'))>=0;){\n   const line=pending.slice(0,at);pending=pending.slice(at+1);\n   try {\n    const f=JSON.parse(line),now=Date.now();\n    const networkReady=f.networkReady===true&&config.runtimeNetwork===true;\n    if(now>=Math.min(lease,deadline)||f.type!=='execution_renew'||f.attemptId!==control.attemptId||\n      Object.keys(f).sort().join(',')!==(networkReady?'attemptId,deadlineAt,leaseDeadlineAt,networkReady,sequence,type':'attemptId,deadlineAt,leaseDeadlineAt,sequence,type')||\n      f.sequence!==sequence+1||!integer(f.sequence)||!integer(f.deadlineAt)||!integer(f.leaseDeadlineAt)||\n      f.deadlineAt<deadline||f.deadlineAt>control.hardDeadlineAt||f.leaseDeadlineAt<=now||\n      f.leaseDeadlineAt>now+20500||f.leaseDeadlineAt>f.deadlineAt)throw Error('control');\n    sequence=f.sequence;deadline=f.deadlineAt;lease=f.leaseDeadlineAt;\n    if(networkReady)config.runtimeNetworkReady=true;\n   }catch{return fail();}\n  }\n });\n process.stdin.once('end',fail);process.stdin.once('error',fail);\n process.once('exit',()=>clearInterval(timer));\n}\n\ninstallSandboxExecutionControl(bundle);\nconst timer = setTimeout(() => end('timeout', 124), Math.max(0, Math.min(bundle.executionControl ? Infinity : bundle.command.limits.timeoutMs,\n  bundle.deadlineUnixMs === undefined ? Infinity : (bundle.executionControl?.hardDeadlineAt ?? bundle.deadlineUnixMs) - Date.now())));\ntry {\n  if(bundle.runtimeNetwork===true){while(bundle.runtimeNetworkReady!==true)await new Promise(r=>setTimeout(r,25));}\n  const directories = new Set(['/workspace']);\n  for (const file of bundle.files) {\n    if (!file.path || file.path.startsWith('/') || file.path.split('/').some(p => !p || p === '.' || p === '..')) throw Error('path');\n    const target = '/workspace/' + file.path;\n    await mkdir(dirname(target), {recursive:true, mode:0o755});\n    await writeFile(target, Buffer.from(file.content, 'base64'), {flag:'wx', mode:0o600});\n    await chown(target, 1000, 1000);\n    let dir = dirname(target);\n    while (dir.startsWith('/workspace')) { directories.add(dir); dir = dirname(dir); }\n  }\n  // PID 1 deliberately lacks DAC_OVERRIDE. Transfer directories only AFTER all\n  // inputs were staged, otherwise creating the second file fails with EACCES.\n  for (const dir of directories) await chown(dir,1000,1000);\n  const oomCount = async () => Number((await readFile('/sys/fs/cgroup/memory.events','utf8')).match(/^oom_kill (\\d+)$/m)?.[1] || 0);\n  const beforeOom = await oomCount();\n  for(const name of ['user','global']) await writeFile('/tmp/allrice-npm-'+name+'.conf','',{flag:'wx',mode:0o444});\n  const commands = [];\n  const npmFlags = ['--offline','--cache=/tmp/npm-cache','--userconfig=/tmp/allrice-npm-user.conf','--globalconfig=/tmp/allrice-npm-global.conf','--registry=https://registry.npmjs.org','--no-audit','--no-fund'];\n  if(bundle.command.dependencies) {\n    await mkdir('/tmp/allrice-archives',{mode:0o755});\n    for(let i=0;i<bundle.archives.length;i++) {\n      const path='/tmp/allrice-archives/'+i+'.tgz';\n      await writeFile(path,Buffer.from(bundle.archives[i],'base64'),{flag:'wx',mode:0o444});\n      commands.push(['/usr/local/bin/npm',['cache','add',path,'--ignore-scripts',...npmFlags]]);\n    }\n    commands.push(['/usr/local/bin/npm',['ci','--foreground-scripts',bundle.command.dependencies.scripts==='disabled'?'--ignore-scripts':'--ignore-scripts=false',...npmFlags]]);\n  }\n  const args = bundle.command.diagnostics\n    ? ['--input-type=module','--eval', \"\\nimport {readFile, access} from 'node:fs/promises';\\nconst expected = JSON.parse(process.argv[1]);\\nconst object = x => x && typeof x==='object' && !Array.isArray(x);\\nlet pkg, project='available';\\ntry { pkg=JSON.parse(await readFile('package.json','utf8')); if(!object(pkg)) throw Error(); }\\ncatch(e) { project=e.code==='ENOENT'?'manifest_missing':'manifest_invalid'; }\\nlet npm=null;\\ntry { const p=JSON.parse(await readFile('/usr/local/lib/node_modules/npm/package.json','utf8')); if(/^\\\\d+\\\\.\\\\d+\\\\.\\\\d+$/.test(p.version)) npm=p.version; } catch {}\\nconst locks=[];\\nfor(const name of ['package-lock.json','npm-shrinkwrap.json','pnpm-lock.yaml','yarn.lock']) {\\n  try { await access(name); locks.push(name); } catch {}\\n}\\nlet pm = typeof pkg?.packageManager==='string' ? /^(npm|pnpm|yarn)@/.exec(pkg.packageManager)?.[1] : null;\\npm ??= locks.length===1 ? ({'pnpm-lock.yaml':'pnpm','yarn.lock':'yarn'}[locks[0]] || 'npm') : 'unknown';\\nlet dependencies='unknown';\\nif(project==='available') {\\n  const groups=['dependencies','devDependencies','optionalDependencies'];\\n  if(groups.every(k => pkg[k]===undefined || object(pkg[k]))) dependencies=groups.some(k => Object.keys(pkg[k] || {}).length) ? 'not_prepared':'none_declared';\\n}\\n// An engine expression is a declaration, not proof that it was satisfied.\\nconst rawEngine=pkg?.engines?.node;\\nconst nodeEngine=typeof rawEngine==='string' && rawEngine.length<=100 && /^[v\\\\d\\\\s.*xX<>=|^~+-]+$/.test(rawEngine) ? rawEngine : null;\\nconsole.log(JSON.stringify({version:1,target:'local_linux_isolated_copy',hostToolchain:'not_inspected',\\n  platform:process.platform,architecture:process.arch,directory:process.cwd(),\\n  node:{path:'/usr/local/bin/node',version:process.version,status:expected.expectedNodeMajor && Number(process.versions.node.split('.')[0])!==expected.expectedNodeMajor?'version_mismatch':'available'},\\n  npm:{path:'/usr/local/bin/npm',version:npm,status:!npm?'not_installed':expected.expectedNpmMajor && Number(npm.split('.')[0])!==expected.expectedNpmMajor?'version_mismatch':'available'},\\n  project,packageManager:pm,lockfile:locks.length>1?'multiple':locks[0]||'missing',dependencies,nodeEngine,\\n  engineStatus:rawEngine===undefined?'not_declared':'requires_review',network:'disabled',installedOrRepaired:false}));\\n\", JSON.stringify(bundle.command.diagnostics)]\n    : bundle.command.args;\n  commands.push([bundle.command.executable,args]);\n  const runChild = (executable,args,runtime) => new Promise(resolve => {\n  const child = spawn(executable, args, {\n    cwd: bundle.command.path === '.' ? '/workspace' : '/workspace/' + bundle.command.path,\n    uid:1000, gid:1000, detached:false, stdio:['ignore','pipe','pipe'],\n    env:{...(runtime&&bundle.runtimeNetwork===true?{\"HTTPS_PROXY\":\"http://127.0.0.1:3139\",\"https_proxy\":\"http://127.0.0.1:3139\",\"HTTP_PROXY\":\"http://127.0.0.1:3139\",\"http_proxy\":\"http://127.0.0.1:3139\",\"NO_PROXY\":\"\",\"no_proxy\":\"\",\"NODE_USE_ENV_PROXY\":\"1\"}:{}),PATH:'/usr/local/bin:/usr/bin:/bin',HOME:'/tmp',TMPDIR:'/tmp',LANG:'C.UTF-8',CI:'1',\n      npm_config_cache:'/tmp/npm-cache',npm_config_update_notifier:'false',npm_config_audit:'false',npm_config_fund:'false',npm_config_userconfig:'/tmp/allrice-npm-user.conf',npm_config_globalconfig:'/tmp/allrice-npm-global.conf'},\n  });\n  for (const stream of ['stdout','stderr']) child[stream].on('data', (bytes) => {\n    const available = Math.max(0, bundle.command.limits.outputBytes - size);\n    const kept = bytes.subarray(0, available);\n    size += bytes.length;\n    if (kept.length && frames < 254) { frames++; emit({type:stream,data:kept.toString('base64')}); }\n    if (size > bundle.command.limits.outputBytes || frames >= 254) end('output_limit', 122);\n  });\n  child.once('error', () => end('supervisor_failed',125));\n  let drainTimer;\n  child.once('exit', (code, signal) => {\n    // Normal close drains both pipes. Detached descendants can hold pipes open;\n    // never wait indefinitely for them, and disclose the bounded-drain fallback.\n    drainTimer = setTimeout(() => end('output_limit', exitCode(code,signal)), 250);\n  });\n  child.once('close', async (code, signal) => {\n    clearTimeout(drainTimer);\n    try { resolve({reason:(await oomCount()) > beforeOom ? 'memory_limit' : 'exited',code:exitCode(code,signal)}); }\n    catch { end('supervisor_failed',125); }\n  });\n  });\n  for(let i=0;i<commands.length;i++) {\n    if(finished) break;\n    const result=await runChild(...commands[i],i===commands.length-1);\n    if(result.code!==0 || i===commands.length-1) {clearTimeout(timer);end(result.reason,result.code);break;}\n  }\n} catch {\n  clearTimeout(timer);\n  end('supervisor_failed',125);\n}\n'",
+      "Created": 1792149473,
+      "Ports": [],
+      "Labels": {
+        "xyz.bplabs.allrice.attempt": "23afbc92-a15b-4036-a7c4-6fca7a12e4f7",
+        "xyz.bplabs.allrice.backend": "local-vm-container-v1"
+      },
+      "State": "exited",
+      "Status": "Exited (137) 7 days ago",
+      "HostConfig": {
+        "NetworkMode": "none"
+      },
+      "NetworkSettings": {
+        "Networks": {
+          "none": {
+            "IPAMConfig": null,
+            "Links": null,
+            "Aliases": null,
+            "DriverOpts": null,
+            "GwPriority": 0,
+            "NetworkID": "c4a045b76124f9d2f914e5f02463912d0ccfd375ecb6008e272ee9455f281624",
+            "EndpointID": "",
+            "Gateway": "",
+            "IPAddress": "",
+            "MacAddress": "",
+            "IPPrefixLen": 0,
+            "IPv6Gateway": "",
+            "GlobalIPv6Address": "",
+            "GlobalIPv6PrefixLen": 0,
+            "DNSNames": null
+          }
+        }
+      },
+      "Mounts": []
+    },
+    {
+      "Id": "55366c5b6240104342320d2d8fc63ae41b04a4c49b0cf71c4cf40d9ca09c455e",
+      "Names": ["/allrice-7beda2b5-46a8-4768-a703-e17b4e1d812f"],
+      "Image": "sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5",
+      "ImageID": "sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5",
+      "Command": "/usr/local/bin/node --input-type=module --eval '\nimport { spawn } from 'node:child_process';\nimport { mkdir, writeFile, chown, readFile } from 'node:fs/promises';\nimport { dirname } from 'node:path';\nimport { constants } from 'node:os';\n\nconst chunks = Number(process.env.ALLRICE_INPUT_PARTS);\nif (!Number.isInteger(chunks) || chunks < 1 || chunks > 32) process.exit(125);\nconst text = Array.from({length: chunks}, (_, i) => process.env['ALLRICE_INPUT_' + i] || '').join('');\nconst bundle = JSON.parse(Buffer.from(text, 'base64').toString('utf8'));\nlet finished = false, size = 0, frames = 0;\nconst exitCode = (code, signal) => Number.isInteger(code) ? code : signal && constants.signals[signal] ? 128 + constants.signals[signal] : 125;\nconst emit = (event) => process.stdout.write(JSON.stringify(event) + '\\n');\nconst end = (reason, code) => {\n  if (finished) return;\n  finished = true;\n  emit({type:'exit', reason, code});\n  // Explicit exit also kills detached descendants; do not wait for child pipes.\n  process.stdout.write('', () => process.exit(code));\n  setTimeout(() => process.exit(code), 100).unref();\n};\n\nfunction installSandboxExecutionControl(config) {\n const control=config.executionControl;\n if(!control)return;\n let sequence=0,pending='',deadline=config.deadlineUnixMs,lease=Date.now()+5000;\n const integer=n=>Number.isSafeInteger(n)&&n>=0;\n const fail=()=>end('lease_lost',124);\n if(control.version!==1||typeof control.attemptId!=='string'||!integer(control.hardDeadlineAt)||\n    !integer(deadline)||deadline>Date.now()+3600000||deadline>control.hardDeadlineAt||\n    control.hardDeadlineAt>Date.now()+3600000||deadline<=Date.now())return fail();\n const timer=setInterval(()=>{\n   if(Date.now()>=deadline)end('timeout',124);\n   else if(Date.now()>=lease)fail();\n },50);\n process.stdin.on('data',bytes=>{\n  pending+=bytes.toString('utf8');\n  if(Buffer.byteLength(pending)>16384)return fail();\n  for(let at;(at=pending.indexOf('\\n'))>=0;){\n   const line=pending.slice(0,at);pending=pending.slice(at+1);\n   try {\n    const f=JSON.parse(line),now=Date.now();\n    const networkReady=f.networkReady===true&&config.runtimeNetwork===true;\n    if(now>=Math.min(lease,deadline)||f.type!=='execution_renew'||f.attemptId!==control.attemptId||\n      Object.keys(f).sort().join(',')!==(networkReady?'attemptId,deadlineAt,leaseDeadlineAt,networkReady,sequence,type':'attemptId,deadlineAt,leaseDeadlineAt,sequence,type')||\n      f.sequence!==sequence+1||!integer(f.sequence)||!integer(f.deadlineAt)||!integer(f.leaseDeadlineAt)||\n      f.deadlineAt<deadline||f.deadlineAt>control.hardDeadlineAt||f.leaseDeadlineAt<=now||\n      f.leaseDeadlineAt>now+5500||f.leaseDeadlineAt>f.deadlineAt)throw Error('control');\n    sequence=f.sequence;deadline=f.deadlineAt;lease=f.leaseDeadlineAt;\n    if(networkReady)config.runtimeNetworkReady=true;\n   }catch{return fail();}\n  }\n });\n process.stdin.once('end',fail);process.stdin.once('error',fail);\n process.once('exit',()=>clearInterval(timer));\n}\n\ninstallSandboxExecutionControl(bundle);\nconst timer = setTimeout(() => end('timeout', 124), Math.max(0, Math.min(bundle.executionControl ? Infinity : bundle.command.limits.timeoutMs,\n  bundle.deadlineUnixMs === undefined ? Infinity : (bundle.executionControl?.hardDeadlineAt ?? bundle.deadlineUnixMs) - Date.now())));\ntry {\n  if(bundle.runtimeNetwork===true){while(bundle.runtimeNetworkReady!==true)await new Promise(r=>setTimeout(r,25));}\n  const directories = new Set(['/workspace']);\n  for (const file of bundle.files) {\n    if (!file.path || file.path.startsWith('/') || file.path.split('/').some(p => !p || p === '.' || p === '..')) throw Error('path');\n    const target = '/workspace/' + file.path;\n    await mkdir(dirname(target), {recursive:true, mode:0o755});\n    await writeFile(target, Buffer.from(file.content, 'base64'), {flag:'wx', mode:0o600});\n    await chown(target, 1000, 1000);\n    let dir = dirname(target);\n    while (dir.startsWith('/workspace')) { directories.add(dir); dir = dirname(dir); }\n  }\n  // PID 1 deliberately lacks DAC_OVERRIDE. Transfer directories only AFTER all\n  // inputs were staged, otherwise creating the second file fails with EACCES.\n  for (const dir of directories) await chown(dir,1000,1000);\n  const oomCount = async () => Number((await readFile('/sys/fs/cgroup/memory.events','utf8')).match(/^oom_kill (\\d+)$/m)?.[1] || 0);\n  const beforeOom = await oomCount();\n  for(const name of ['user','global']) await writeFile('/tmp/allrice-npm-'+name+'.conf','',{flag:'wx',mode:0o444});\n  const commands = [];\n  const npmFlags = ['--offline','--cache=/tmp/npm-cache','--userconfig=/tmp/allrice-npm-user.conf','--globalconfig=/tmp/allrice-npm-global.conf','--registry=https://registry.npmjs.org','--no-audit','--no-fund'];\n  if(bundle.command.dependencies) {\n    await mkdir('/tmp/allrice-archives',{mode:0o755});\n    for(let i=0;i<bundle.archives.length;i++) {\n      const path='/tmp/allrice-archives/'+i+'.tgz';\n      await writeFile(path,Buffer.from(bundle.archives[i],'base64'),{flag:'wx',mode:0o444});\n      commands.push(['/usr/local/bin/npm',['cache','add',path,'--ignore-scripts',...npmFlags]]);\n    }\n    commands.push(['/usr/local/bin/npm',['ci','--foreground-scripts',bundle.command.dependencies.scripts==='disabled'?'--ignore-scripts':'--ignore-scripts=false',...npmFlags]]);\n  }\n  const args = bundle.command.diagnostics\n    ? ['--input-type=module','--eval', \"\\nimport {readFile, access} from 'node:fs/promises';\\nconst expected = JSON.parse(process.argv[1]);\\nconst object = x => x && typeof x==='object' && !Array.isArray(x);\\nlet pkg, project='available';\\ntry { pkg=JSON.parse(await readFile('package.json','utf8')); if(!object(pkg)) throw Error(); }\\ncatch(e) { project=e.code==='ENOENT'?'manifest_missing':'manifest_invalid'; }\\nlet npm=null;\\ntry { const p=JSON.parse(await readFile('/usr/local/lib/node_modules/npm/package.json','utf8')); if(/^\\\\d+\\\\.\\\\d+\\\\.\\\\d+$/.test(p.version)) npm=p.version; } catch {}\\nconst locks=[];\\nfor(const name of ['package-lock.json','npm-shrinkwrap.json','pnpm-lock.yaml','yarn.lock']) {\\n  try { await access(name); locks.push(name); } catch {}\\n}\\nlet pm = typeof pkg?.packageManager==='string' ? /^(npm|pnpm|yarn)@/.exec(pkg.packageManager)?.[1] : null;\\npm ??= locks.length===1 ? ({'pnpm-lock.yaml':'pnpm','yarn.lock':'yarn'}[locks[0]] || 'npm') : 'unknown';\\nlet dependencies='unknown';\\nif(project==='available') {\\n  const groups=['dependencies','devDependencies','optionalDependencies'];\\n  if(groups.every(k => pkg[k]===undefined || object(pkg[k]))) dependencies=groups.some(k => Object.keys(pkg[k] || {}).length) ? 'not_prepared':'none_declared';\\n}\\n// An engine expression is a declaration, not proof that it was satisfied.\\nconst rawEngine=pkg?.engines?.node;\\nconst nodeEngine=typeof rawEngine==='string' && rawEngine.length<=100 && /^[v\\\\d\\\\s.*xX<>=|^~+-]+$/.test(rawEngine) ? rawEngine : null;\\nconsole.log(JSON.stringify({version:1,target:'local_linux_isolated_copy',hostToolchain:'not_inspected',\\n  platform:process.platform,architecture:process.arch,directory:process.cwd(),\\n  node:{path:'/usr/local/bin/node',version:process.version,status:expected.expectedNodeMajor && Number(process.versions.node.split('.')[0])!==expected.expectedNodeMajor?'version_mismatch':'available'},\\n  npm:{path:'/usr/local/bin/npm',version:npm,status:!npm?'not_installed':expected.expectedNpmMajor && Number(npm.split('.')[0])!==expected.expectedNpmMajor?'version_mismatch':'available'},\\n  project,packageManager:pm,lockfile:locks.length>1?'multiple':locks[0]||'missing',dependencies,nodeEngine,\\n  engineStatus:rawEngine===undefined?'not_declared':'requires_review',network:'disabled',installedOrRepaired:false}));\\n\", JSON.stringify(bundle.command.diagnostics)]\n    : bundle.command.args;\n  commands.push([bundle.command.executable,args]);\n  const runChild = (executable,args,runtime) => new Promise(resolve => {\n  const child = spawn(executable, args, {\n    cwd: bundle.command.path === '.' ? '/workspace' : '/workspace/' + bundle.command.path,\n    uid:1000, gid:1000, detached:false, stdio:['ignore','pipe','pipe'],\n    env:{...(runtime&&bundle.runtimeNetwork===true?{\"HTTPS_PROXY\":\"http://127.0.0.1:3139\",\"https_proxy\":\"http://127.0.0.1:3139\",\"HTTP_PROXY\":\"http://127.0.0.1:3139\",\"http_proxy\":\"http://127.0.0.1:3139\",\"NO_PROXY\":\"\",\"no_proxy\":\"\",\"NODE_USE_ENV_PROXY\":\"1\"}:{}),PATH:'/usr/local/bin:/usr/bin:/bin',HOME:'/tmp',TMPDIR:'/tmp',LANG:'C.UTF-8',CI:'1',\n      npm_config_cache:'/tmp/npm-cache',npm_config_update_notifier:'false',npm_config_audit:'false',npm_config_fund:'false',npm_config_userconfig:'/tmp/allrice-npm-user.conf',npm_config_globalconfig:'/tmp/allrice-npm-global.conf'},\n  });\n  for (const stream of ['stdout','stderr']) child[stream].on('data', (bytes) => {\n    const available = Math.max(0, bundle.command.limits.outputBytes - size);\n    const kept = bytes.subarray(0, available);\n    size += bytes.length;\n    if (kept.length && frames < 254) { frames++; emit({type:stream,data:kept.toString('base64')}); }\n    if (size > bundle.command.limits.outputBytes || frames >= 254) end('output_limit', 122);\n  });\n  child.once('error', () => end('supervisor_failed',125));\n  let drainTimer;\n  child.once('exit', (code, signal) => {\n    // Normal close drains both pipes. Detached descendants can hold pipes open;\n    // never wait indefinitely for them, and disclose the bounded-drain fallback.\n    drainTimer = setTimeout(() => end('output_limit', exitCode(code,signal)), 250);\n  });\n  child.once('close', async (code, signal) => {\n    clearTimeout(drainTimer);\n    try { resolve({reason:(await oomCount()) > beforeOom ? 'memory_limit' : 'exited',code:exitCode(code,signal)}); }\n    catch { end('supervisor_failed',125); }\n  });\n  });\n  for(let i=0;i<commands.length;i++) {\n    if(finished) break;\n    const result=await runChild(...commands[i],i===commands.length-1);\n    if(result.code!==0 || i===commands.length-1) {clearTimeout(timer);end(result.reason,result.code);break;}\n  }\n} catch {\n  clearTimeout(timer);\n  end('supervisor_failed',125);\n}\n'",
+      "Created": 1792144832,
+      "Ports": [],
+      "Labels": {
+        "xyz.bplabs.allrice.attempt": "7beda2b5-46a8-4768-a703-e17b4e1d812f",
+        "xyz.bplabs.allrice.backend": "local-vm-container-v1"
+      },
+      "State": "exited",
+      "Status": "Exited (137) 7 days ago",
+      "HostConfig": {
+        "NetworkMode": "none"
+      },
+      "NetworkSettings": {
+        "Networks": {
+          "none": {
+            "IPAMConfig": null,
+            "Links": null,
+            "Aliases": null,
+            "DriverOpts": null,
+            "GwPriority": 0,
+            "NetworkID": "c4a045b76124f9d2f914e5f02463912d0ccfd375ecb6008e272ee9455f281624",
+            "EndpointID": "",
+            "Gateway": "",
+            "IPAddress": "",
+            "MacAddress": "",
+            "IPPrefixLen": 0,
+            "IPv6Gateway": "",
+            "GlobalIPv6Address": "",
+            "GlobalIPv6PrefixLen": 0,
+            "DNSNames": null
+          }
+        }
+      },
+      "Mounts": []
+    },
+    {
+      "Id": "c059c14ced1dcd6664c7131382a5ef0975c7c6ce1245932892dd921c45a070be",
+      "Names": ["/allrice-cloud-91e4fa1c-14af-499a-a2dd-d1989ce056b9"],
+      "Image": "sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5",
+      "ImageID": "sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5",
+      "Command": "/usr/local/bin/node --input-type=module --eval '\nimport { spawn } from 'node:child_process';\nimport { readFile,writeFile,mkdir,chown,chmod,readdir,lstat,open,realpath } from 'node:fs/promises';\nimport { constants as fsConstants } from 'node:fs';\nimport { constants } from 'node:os';\nimport { createHash } from 'node:crypto';\nconst root='/tmp/work',bootDeadline=Number(process.argv[1]||0);\n// Cloud's bounded tmpfs work volume is mounted at start. Wait for the final trusted staging marker.\nif(bootDeadline>0)for(;;){try{if(await readFile(root+'/.allrice/staging-ready','utf8')==='ready')break;}catch(e){if(e.code!=='ENOENT')throw e;}if(Date.now()>=bootDeadline)process.exit(124);await new Promise(r=>setTimeout(r,20));}\nconst a=JSON.parse(await readFile(root+'/.allrice/config.json','utf8'));\nlet finished=false,size=0,frames=0,installation='failed';\nconst emit=e=>process.stdout.write(JSON.stringify(e)+'\\n');\nconst end=(reason,code)=>{if(finished)return;finished=true;emit({type:'exit',reason,code,installation});process.stdout.write('',()=>process.exit(code));setTimeout(()=>process.exit(code),100).unref();};\nlet cacheChecking=false;\nasync function checkCache(){let total=0,count=0;const dirs=['/cache'];while(dirs.length){const dir=dirs.pop();for(const e of await readdir(dir,{withFileTypes:true})){if(++count>20000)throw Error('cache limit');const p=dir+'/'+e.name;if(e.isDirectory())dirs.push(p);else if(e.isFile())total+=(await lstat(p)).size;if(total>128000000)throw Error('cache limit');}}}\nconst cacheTimer=setInterval(()=>{if(cacheChecking||finished)return;cacheChecking=true;void checkCache().catch(()=>end('cache_limit',123)).finally(()=>cacheChecking=false);},500);cacheTimer.unref();\nconst timer=setTimeout(()=>end(a.deadlineReason||'timeout',124),Math.max(0,a.deadlineUnixMs-Date.now()));\nconst run=(exe,args,tenant=true)=>new Promise(resolve=>{\n const p=spawn(exe,args,{cwd:root+'/project/'+(a.command.path==='.'?'':a.command.path),uid:tenant?1000:0,gid:tenant?1000:0,stdio:['ignore','pipe','pipe'],\n env:{PATH:root+'/tools/package/bin:/usr/local/bin:/usr/bin:/bin',HOME:root+'/home',TMPDIR:root+'/tmp',LANG:'C.UTF-8',CI:'1',\n npm_config_userconfig:root+'/.allrice/empty.conf',npm_config_globalconfig:root+'/.allrice/empty.conf',npm_config_update_notifier:'false',COREPACK_ENABLE_NETWORK:'0',PNPM_HOME:root+'/home/pnpm'}});\n for(const s of ['stdout','stderr'])p[s].on('data',b=>{const keep=b.subarray(0,Math.max(0,a.command.limits.outputBytes-size));size+=b.length;if(keep.length&&frames++<254)emit({type:s,data:keep.toString('base64')});if(size>a.command.limits.outputBytes||frames>=254)end('output_limit',122);});\n p.once('error',()=>end('supervisor_failed',125));let drain;\n p.once('exit',()=>{drain=setTimeout(()=>end('output_limit',125),250);});\n p.once('close',(c,s)=>{clearTimeout(drain);resolve(Number.isInteger(c)?c:128+(constants.signals[s]||0));});\n});\nasync function ownership(path){await chown(path,1000,1000);await chmod(path,0o700);for(const e of await readdir(path,{withFileTypes:true})){const p=path+'/'+e.name;if(e.isDirectory())await ownership(p);else{await chown(p,1000,1000);await chmod(p,0o600);}}}\nasync function collect(){let total=0;for(const f of a.command.outputs||[]){\n const p=root+'/project/'+f.path;\n if(await realpath(p)!==p)throw Error('PROJECT_OUTPUT_UNSAFE');\n const h=await open(p,fsConstants.O_RDONLY|fsConstants.O_NOFOLLOW|fsConstants.O_NONBLOCK);\n try{const s=await h.stat();if(!s.isFile()||s.nlink!==1||s.size>100000-total)throw Error('PROJECT_OUTPUT_LIMIT');\n const chunks=[];let size=0;for(;;){const part=Buffer.alloc(Math.min(16384,s.size+1-size));if(!part.length)break;const {bytesRead}=await h.read(part,0,part.length,null);if(!bytesRead)break;chunks.push(part.subarray(0,bytesRead));size+=bytesRead;}\n const b=Buffer.concat(chunks);const after=await h.stat();total+=b.length;\n if(total>100000||b.length!==s.size||after.size!==s.size||after.mtimeMs!==s.mtimeMs||await realpath(p)!==p)throw Error('PROJECT_OUTPUT_CHANGED');\n emit({type:'artifact',path:f.path,data:b.toString('base64'),sizeBytes:b.length,checksum:'sha256:'+createHash('sha256').update(b).digest('hex')});\n }finally{await h.close();}\n}}\ntry{\n await checkCache();\n for(const dir of ['project','home','tmp','tools'])await mkdir(root+'/'+dir,{recursive:true,mode:0o755});\n const manifest=[];\n for(const f of a.command.files){const b=await readFile(root+'/project/'+f.path),sha256='sha256:'+createHash('sha256').update(b).digest('hex');if(sha256!==f.sha256)throw Error('project source changed');manifest.push({path:f.path,sha256});}\n const sourceDigest='sha256:'+createHash('sha256').update(JSON.stringify(manifest)).digest('hex');if(sourceDigest!==a.command.projectPreparation.sourceDigest)throw Error('project source changed');\n emit({type:'source_verified',sourceDigest});\n await ownership(root+'/project');await ownership(root+'/home');await ownership(root+'/tmp');\n await mkdir('/cache/pnpm',{recursive:true,mode:0o700});await chown('/cache/pnpm',1000,1000);\n // Extraction is of a fixed release archive, never a source-provided tar.\n if(await run('/bin/tar',['-xzf',root+'/.allrice/manager.tar.gz','-C',root+'/tools'],false))throw Error('manager extraction');\n const pnpm=root+'/tools/package/bin/pnpm.cjs',flags=['--store-dir=/cache/pnpm','--offline','--ignore-pnpmfile','--config.manage-package-manager-versions=false','--config.verify-store-integrity=true'];\n const s=a.command.projectPreparation;\n emit({type:'stage',stage:'preparing'});\n await writeFile(root+'/project/'+s.lockPath,await readFile(root+'/.allrice/pnpm-install-lock'));\n const installed=await run('/usr/local/bin/node',[pnpm,'install','--frozen-lockfile','--package-import-method=copy',s.scripts==='disabled'?'--ignore-scripts':'--ignore-scripts=false',...flags]);\n // Restore with tenant privileges, never as root after lifecycle scripts.\n const restored=await run('/usr/local/bin/node',['-e',\"const fs=require('node:fs'),crypto=require('node:crypto');const b=fs.readFileSync('/tmp/work/.allrice/pnpm-original-lock');const h=fs.openSync('pnpm-lock.yaml',fs.constants.O_WRONLY|fs.constants.O_TRUNC|fs.constants.O_NOFOLLOW);try{fs.writeFileSync(h,b);}finally{fs.closeSync(h);}if('sha256:'+crypto.createHash('sha256').update(fs.readFileSync('pnpm-lock.yaml')).digest('hex')!==\"+JSON.stringify(s.lockChecksum)+\")process.exit(125);\"]);\n if(installed||restored){clearTimeout(timer);end(restored?'supervisor_failed':'exited',restored||installed);}\n if(!finished){await checkCache();installation='succeeded';emit({type:'stage',stage:'running'});const c=await run(a.command.executable,a.command.args);await checkCache();if(c===0&&!finished)await collect();clearTimeout(timer);end('exited',c);}\n}catch(e){emit({type:'stderr',data:Buffer.from(String(e?.message||'project failure').slice(0,200)).toString('base64')});clearTimeout(timer);end(e?.message==='cache limit'?'cache_limit':'supervisor_failed',e?.message==='cache limit'?123:125);}\n' 1791080685209",
+      "Created": 1791080680,
+      "Ports": [],
+      "Labels": {
+        "xyz.bplabs.allrice.backend": "cloud-gvisor-v1",
+        "xyz.bplabs.allrice.cloud.attempt": "91e4fa1c-14af-499a-a2dd-d1989ce056b9",
+        "xyz.bplabs.allrice.cloud.deadline": "1791080685209",
+        "xyz.bplabs.allrice.cloud.kind": "project",
+        "xyz.bplabs.allrice.project.cache": "sha256:4f1d97b0e91b2ef09fe98d54d2776c7c0cfe77f917e2f707c09d3b2cf770ef3c",
+        "xyz.bplabs.allrice.project.evidence": "{\"version\":1,\"projectId\":\"bc27882d-9076-5102-8c8a-24c417234a21\",\"sourceDigest\":\"sha256:01ae6ae8c43e510a59003eb24f26acaabf78e2dd0021eb274cdabfa2530ff323\",\"lockChecksum\":\"sha256:15709a4944e0a189685e0bc13e56d1d0d37a88e24d8b7ecc2415e5d4b1eff1ee\",\"cacheKey\":\"sha256:4f1d97b0e91b2ef09fe98d54d2776c7c0cfe77f917e2f707c09d3b2cf770ef3c\",\"manager\":\"pnpm\",\"managerVersion\":\"10.33.3\",\"platform\":\"linux-amd64\",\"runtimeImage\":\"sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5\",\"packageCount\":0,\"archiveHits\":0,\"downloadedArchives\":0,\"downloadedBytes\":0,\"cacheVolume\":\"allrice-project-cache-4f1d97b0e91b2ef09fe98d54d2776c7c0cfe77f917e2f707c09d3b2cf770ef3c\",\"sourceDirectoryModified\":false,\"hostEnvironmentModified\":false}",
+        "xyz.bplabs.allrice.project.image": "sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5",
+        "xyz.bplabs.allrice.project.payload": "b7065ceb73920a36baa6c9f4511de915f0e1fe8a69690bfc28bf985eab242a44"
+      },
+      "State": "exited",
+      "Status": "Exited (124) 2 weeks ago",
+      "HostConfig": {
+        "NetworkMode": "none"
+      },
+      "NetworkSettings": {
+        "Networks": {
+          "none": {
+            "IPAMConfig": null,
+            "Links": null,
+            "Aliases": null,
+            "DriverOpts": null,
+            "GwPriority": 0,
+            "NetworkID": "c4a045b76124f9d2f914e5f02463912d0ccfd375ecb6008e272ee9455f281624",
+            "EndpointID": "",
+            "Gateway": "",
+            "IPAddress": "",
+            "MacAddress": "",
+            "IPPrefixLen": 0,
+            "IPv6Gateway": "",
+            "GlobalIPv6Address": "",
+            "GlobalIPv6PrefixLen": 0,
+            "DNSNames": null
+          }
+        }
+      },
+      "Mounts": [
+        {
+          "Type": "volume",
+          "Name": "allrice-project-cache-4f1d97b0e91b2ef09fe98d54d2776c7c0cfe77f917e2f707c09d3b2cf770ef3c",
+          "Source": "/var/lib/docker/volumes/allrice-project-cache-4f1d97b0e91b2ef09fe98d54d2776c7c0cfe77f917e2f707c09d3b2cf770ef3c/_data",
+          "Destination": "/cache",
+          "Driver": "local",
+          "Mode": "z",
+          "RW": true,
+          "Propagation": ""
+        },
+        {
+          "Type": "volume",
+          "Name": "allrice-project-work-91e4fa1c-14af-499a-a2dd-d1989ce056b9",
+          "Source": "/var/lib/docker/volumes/allrice-project-work-91e4fa1c-14af-499a-a2dd-d1989ce056b9/_data",
+          "Destination": "/tmp/work",
+          "Driver": "local",
+          "Mode": "z",
+          "RW": true,
+          "Propagation": ""
+        }
+      ]
+    },
+    {
+      "Id": "200c77761c312638dfd55030c0f8ed43855399db79c2a931d3ff453e81df475f",
+      "Names": ["/allrice-office-met157"],
+      "Image": "allrice-office:met157-queue",
+      "ImageID": "sha256:099caaa43f836ff6bcd2690ddaaafe6671b8dc2c44a6cad1fdeac16fb4109b8e",
+      "Command": "docker-entrypoint.sh python3 server.py",
+      "Created": 1790233158,
+      "Ports": [
+        {
+          "IP": "127.0.0.1",
+          "PrivatePort": 3112,
+          "PublicPort": 3112,
+          "Type": "tcp"
+        }
+      ],
+      "Labels": {},
+      "State": "running",
+      "Status": "Up 3 weeks (healthy)",
+      "HostConfig": {
+        "NetworkMode": "bridge"
+      },
+      "NetworkSettings": {
+        "Networks": {
+          "bridge": {
+            "IPAMConfig": null,
+            "Links": null,
+            "Aliases": null,
+            "DriverOpts": null,
+            "GwPriority": 0,
+            "NetworkID": "8aaffbbcd1b66801e9cadde3bae53ebddc542fcbc5e5031f98a0761582c805be",
+            "EndpointID": "7fb02a96fa6b352304ea85cdd77a841c4e113edbd888111bc9c16dd96959eed3",
+            "Gateway": "172.17.0.1",
+            "IPAddress": "172.17.0.2",
+            "MacAddress": "26:82:87:fd:ee:57",
+            "IPPrefixLen": 16,
+            "IPv6Gateway": "",
+            "GlobalIPv6Address": "",
+            "GlobalIPv6PrefixLen": 0,
+            "DNSNames": null
+          }
+        }
+      },
+      "Mounts": []
+    },
+    {
+      "Id": "bec2decf521871a6129ddadad0ca3355a2d60f656b8d9017307d53facb4e0c17",
+      "Names": ["/allrice-office-met157-pre-init"],
+      "Image": "allrice-office:met157-queue",
+      "ImageID": "sha256:099caaa43f836ff6bcd2690ddaaafe6671b8dc2c44a6cad1fdeac16fb4109b8e",
+      "Command": "docker-entrypoint.sh python3 server.py",
+      "Created": 1790226372,
+      "Ports": [],
+      "Labels": {},
+      "State": "exited",
+      "Status": "Exited (137) 4 weeks ago",
+      "HostConfig": {
+        "NetworkMode": "bridge"
+      },
+      "NetworkSettings": {
+        "Networks": {
+          "bridge": {
+            "IPAMConfig": null,
+            "Links": null,
+            "Aliases": null,
+            "DriverOpts": null,
+            "GwPriority": 0,
+            "NetworkID": "7e958c616da36f80b1c5f7488adc90036b9f424171b62c411fe2b4e972e6eb32",
+            "EndpointID": "",
+            "Gateway": "",
+            "IPAddress": "",
+            "MacAddress": "",
+            "IPPrefixLen": 0,
+            "IPv6Gateway": "",
+            "GlobalIPv6Address": "",
+            "GlobalIPv6PrefixLen": 0,
+            "DNSNames": null
+          }
+        }
+      },
+      "Mounts": []
+    },
+    {
+      "Id": "9be8674bef84d8874c3582b4903eefe85a4ec641d77016c1ed8df551c411a146",
+      "Names": ["/allrice-office-met157-pre-queue"],
+      "Image": "allrice-office:met157",
+      "ImageID": "sha256:d8e76ead9e0c8f9067042a08ed3a3bff0d85a504f969098439c4a6e74d12fec8",
+      "Command": "docker-entrypoint.sh python3 server.py",
+      "Created": 1790223805,
+      "Ports": [],
+      "Labels": {},
+      "State": "exited",
+      "Status": "Exited (137) 4 weeks ago",
+      "HostConfig": {
+        "NetworkMode": "bridge"
+      },
+      "NetworkSettings": {
+        "Networks": {
+          "bridge": {
+            "IPAMConfig": null,
+            "Links": null,
+            "Aliases": null,
+            "DriverOpts": null,
+            "GwPriority": 0,
+            "NetworkID": "7e958c616da36f80b1c5f7488adc90036b9f424171b62c411fe2b4e972e6eb32",
+            "EndpointID": "",
+            "Gateway": "",
+            "IPAddress": "",
+            "MacAddress": "",
+            "IPPrefixLen": 0,
+            "IPv6Gateway": "",
+            "GlobalIPv6Address": "",
+            "GlobalIPv6PrefixLen": 0,
+            "DNSNames": null
+          }
+        }
+      },
+      "Mounts": []
+    }
+  ]
+}

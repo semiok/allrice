@@ -107,6 +107,7 @@ const planSchema = z
     expiresAtMs: time,
     facts: factsSchema,
     workspaceDigest: digest.nullable(),
+    historicalCloudAbsenceDigest: digest.optional(),
   })
   .strict();
 export type NativeScheduleControlUpgradePlan = z.infer<typeof planSchema>;
@@ -204,10 +205,14 @@ async function now(tx: TransactionSql) {
   >`select floor(extract(epoch from clock_timestamp())*1000)::float8 now_ms`;
   return r!.now_ms;
 }
-async function idle(tx: TransactionSql) {
+async function idle(
+  tx: TransactionSql,
+  plan: Record<string, unknown>,
+  offline?: NativeControlOfflineStoppedAttestation,
+) {
   const [r] = await tx<
     { counts: Record<string, number> }[]
-  >`select allrice_native_control_upgrade_idle() counts`;
+  >`select allrice_native_control_upgrade_idle_for(${json(tx, plan)},${offline === undefined ? null : json(tx, offline)}) counts`;
   if (!r || Object.values(r.counts).some((v) => v !== 0)) reject('not_idle');
 }
 function compatible(
@@ -272,6 +277,7 @@ export async function prepareNativeScheduleControlUpgrade(input: {
   afterReference: NativeOnceReference;
   artifactEvidence: NativeControlArtifactCompatibilityEvidence;
   ttlMs?: number;
+  historicalCloudAbsenceCredential?: Record<string, unknown>;
 }) {
   const { db, ...rawRequest } = input;
   const request = parse(
@@ -283,6 +289,9 @@ export async function prepareNativeScheduleControlUpgrade(input: {
         afterReference: referenceSchema,
         artifactEvidence: artifactEvidenceSchema,
         ttlMs: z.number().int().min(1).max(900_000),
+        historicalCloudAbsenceCredential: z
+          .record(z.string(), z.unknown())
+          .optional(),
       })
       .strict(),
     { ...rawRequest, ttlMs: input.ttlMs ?? 600_000 },
@@ -306,11 +315,33 @@ export async function prepareNativeScheduleControlUpgrade(input: {
     const [existing] =
       await tx`select plan_id from allrice_native_control_upgrade_plans where plan_id=${request.requestId}`;
     if (existing) reject('plan_exists_readback_only');
-    await idle(tx);
     const [r] = await tx<
       { facts: unknown }[]
     >`select allrice_native_control_upgrade_facts(${request.partitionId}) facts`;
     const facts = parse(factsSchema, r?.facts);
+    const cloudCredential = request.historicalCloudAbsenceCredential;
+    const historicalCloudAbsenceDigest =
+      cloudCredential === undefined
+        ? undefined
+        : nativeOnceDigest(cloudCredential);
+    if (cloudCredential !== undefined) {
+      // Same transaction as the original plan; the deferred FK prevents an
+      // orphan credential. The local source operator independently probes OS.
+      await tx`insert into allrice_native_control_cloud_absences
+        (plan_id,partition_id,credential_digest,before_reference,after_reference,credential)
+        values(${request.requestId},${request.partitionId},${historicalCloudAbsenceDigest!},
+          ${json(tx, request.beforeReference)},${json(tx, request.afterReference)},${json(tx, cloudCredential)})`;
+    }
+    await idle(tx, {
+      planId: request.requestId,
+      partitionId: request.partitionId,
+      beforeReference: request.beforeReference,
+      afterReference: request.afterReference,
+      facts,
+      ...(historicalCloudAbsenceDigest === undefined
+        ? {}
+        : { historicalCloudAbsenceDigest }),
+    });
     let workspaceDigest: string | null = null;
     if (p.workspace_snapshot === null) {
       if (facts.latestWorkspaceJournal !== null)
@@ -358,6 +389,9 @@ export async function prepareNativeScheduleControlUpgrade(input: {
       expiresAtMs: createdAtMs + request.ttlMs,
       facts,
       workspaceDigest,
+      ...(historicalCloudAbsenceDigest === undefined
+        ? {}
+        : { historicalCloudAbsenceDigest }),
     };
     const planDigest = nativeOnceDigest(plan);
     await tx`insert into allrice_native_control_upgrade_plans(plan_id,partition_id,plan_digest,plan)
@@ -455,7 +489,7 @@ export async function applyNativeScheduleControlUpgrade(input: {
         offline,
         await now(tx),
       );
-      await idle(tx);
+      await idle(tx, plan, offline);
       const [current] = await tx<
         { facts: unknown }[]
       >`select allrice_native_control_upgrade_facts(${plan.partitionId}) facts`;
@@ -532,6 +566,20 @@ export async function readNativeScheduleControlUpgrade(input: {
       >`select plan,plan_digest from allrice_native_control_upgrade_plans where plan_id=${planId}`;
       if (!r) return { status: 'not_found' as const };
       const plan = validatePlan(r.plan, r.plan_digest);
+      if (plan.historicalCloudAbsenceDigest !== undefined) {
+        const [credential] = await tx<
+          { credential_digest: string; credential: unknown }[]
+        >`
+          select credential_digest,credential from allrice_native_control_cloud_absences
+          where plan_id=${planId} and partition_id=${plan.partitionId}`;
+        if (
+          !credential ||
+          credential.credential_digest !== plan.historicalCloudAbsenceDigest ||
+          nativeOnceDigest(credential.credential) !==
+            plan.historicalCloudAbsenceDigest
+        )
+          reject('cloud_absence_readback_conflict');
+      }
       if (expected && expected.planDigest !== r.plan_digest)
         reject('readback_conflict');
       if (!expected)

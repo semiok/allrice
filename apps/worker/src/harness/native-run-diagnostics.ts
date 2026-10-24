@@ -11,7 +11,7 @@ import {
 import type {
   NativeDiagnosticTarget,
   NativeDiagnosticTargetSlice,
-  NativeSessionPin,
+  NativeSessionDescriptor,
 } from '@allrice/database';
 import type * as NativeCordis from '@deepseek-ai/cordis';
 import type * as NativePersistence from '@deepseek-ai/dsh-session-persistence-jsonl';
@@ -19,6 +19,7 @@ import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence';
 import type * as NativeSession from '@deepseek-ai/dsh-session';
 import type * as NativeLlm from '@deepseek-ai/dsh-llm';
 import { pinnedDshNativeLaunch } from './dsh-native-retention.js';
+import { nativeArtifactLaunchForPin } from './dsh-native-artifact.js';
 
 type RawEvent = {
   seq: number;
@@ -60,29 +61,61 @@ const identity = (v: unknown) =>
  * only its existing private vocabulary; no SDK, Agent, credentials or writer
  * is constructed. A read needing migration is reported, never migrated here. */
 export async function readApprovedNativeDiagnosticJournal(
-  pin: NativeSessionPin,
+  target: Pick<NativeDiagnosticTargetSlice, 'binding' | 'execution'>,
   signal: AbortSignal,
 ): Promise<NativeDiagnosticJournal> {
+  const { binding: pin, execution } = target;
+  if (!pin || !execution) throw new DiagnosticReadError('binding_unavailable');
   let entrypoint: string;
   try {
-    const launch = pinnedDshNativeLaunch(pin);
     if (
-      launch.generation !== pin.distributionGeneration ||
-      pin.artifactManifestDigest !== pin.artifactId
+      execution.nativeSessionId !== pin.nativeSessionId ||
+      execution.storageContextKey !== pin.storageContextKey ||
+      execution.storageNamespace !== pin.storageNamespace ||
+      execution.profileId !== pin.profileId ||
+      execution.distributionGeneration !== pin.distributionGeneration
+    )
+      throw Error('reader_scope');
+    const transitioned = execution.executorTransitionDigest !== undefined;
+    if (transitioned) {
+      if (
+        pin.contextKind !== 'chat' ||
+        pin.bindingBasis !== 'business_root_origin' ||
+        !pin.rootOriginDigest ||
+        execution.storageContextKey !== pin.contextId ||
+        execution.originReaderApprovalDigest !== undefined
+      )
+        throw Error('reader_transition');
+    } else if (
+      execution.artifactId !== pin.artifactId ||
+      execution.artifactManifestDigest !== pin.artifactManifestDigest ||
+      execution.originReaderApprovalDigest !== pin.originReaderApprovalDigest
+    )
+      throw Error('reader_identity');
+    // SQL already proved the exact Run transition and the original pin. The
+    // registry independently proves this exact artifact is still approved.
+    // No latest/current alias, retired artifact reinstall, or old approval reuse.
+    const launch = transitioned
+      ? nativeArtifactLaunchForPin(execution)
+      : pinnedDshNativeLaunch(pin);
+    if (
+      launch.artifactId !== execution.artifactId ||
+      launch.generation !== execution.distributionGeneration ||
+      execution.artifactManifestDigest !== execution.artifactId
     )
       throw Error('reader_identity');
     entrypoint = launch.args[0]!;
   } catch {
     throw new DiagnosticReadError('reader_unavailable');
   }
-  return readNativeDiagnosticJournalAt(entrypoint, pin, signal);
+  return readNativeDiagnosticJournalAt(entrypoint, execution, signal);
 }
 
 /** Internal seam shared with the real public-persistence fixture. Production
  * callers enter only through readApprovedNativeDiagnosticJournal above. */
 export async function readNativeDiagnosticJournalAt(
   entrypoint: string,
-  pin: NativeSessionPin,
+  pin: NativeSessionDescriptor,
   signal: AbortSignal,
 ): Promise<NativeDiagnosticJournal> {
   signal.throwIfAborted();
@@ -317,8 +350,8 @@ export function projectNativeDiagnosticSlice(
     attempt: target.attempt,
     generation: target.generation,
     nativeSessionId: target.nativeSessionId,
-    artifactId: target.binding?.artifactId ?? null,
-    distributionGeneration: target.binding?.distributionGeneration ?? null,
+    artifactId: target.execution?.artifactId ?? null,
+    distributionGeneration: target.execution?.distributionGeneration ?? null,
     lastPersistedSeq: journal.events.length
       ? count(journal.events.at(-1)!.seq)
       : null,
@@ -404,17 +437,42 @@ export async function readNativeRunDiagnostics(
   const journals = new Map<string, NativeDiagnosticJournal>();
   for (const slice of target.slices) {
     signal.throwIfAborted();
-    if (!slice.binding || slice.reasons.includes('source_ambiguous')) {
+    if (
+      !slice.binding ||
+      !slice.execution ||
+      slice.reasons.includes('source_ambiguous')
+    ) {
       slices.push(
         projectNativeDiagnosticSlice(slice, { events: [], expand: () => [] }),
       );
       continue;
     }
     try {
-      let journal = journals.get(slice.nativeSessionId);
+      // The only supported reader is the exact approved execution artifact.
+      // Include its namespace, profile and authority even when IDs coincide.
+      const key = JSON.stringify([
+        slice.binding.organizationId,
+        slice.binding.workspaceId,
+        slice.binding.ownerId,
+        slice.binding.contextKind,
+        slice.binding.contextId,
+        slice.binding.artifactId,
+        slice.binding.rootOriginDigest ?? null,
+        slice.binding.originReaderApprovalDigest ?? null,
+        slice.execution.nativeSessionId,
+        slice.execution.storageContextKey,
+        slice.execution.storageNamespace,
+        slice.execution.artifactId,
+        slice.execution.artifactManifestDigest,
+        slice.execution.distributionGeneration,
+        slice.execution.profileId,
+        slice.execution.originReaderApprovalDigest ?? null,
+        slice.execution.executorTransitionDigest ?? null,
+      ]);
+      let journal = journals.get(key);
       if (!journal) {
-        journal = await readJournal(slice.binding, signal);
-        journals.set(slice.nativeSessionId, journal);
+        journal = await readJournal(slice, signal);
+        journals.set(key, journal);
       }
       slices.push(projectNativeDiagnosticSlice(slice, journal));
     } catch (error) {

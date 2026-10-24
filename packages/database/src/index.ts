@@ -414,3 +414,20 @@ export {
 } from './automation-manual.ts';
 
 export * from './providers/dsh-runtime-close-observations.ts';
+// Private server/Worker contract. Not exported as a model tool or HTTP API.
+export {
+  ExecutorTransitionRefSchema,
+  executorTransitionRef,
+  assertTransitionDescriptor,
+  type ExecutorTransitionRef,
+} from './conversation/native-executor-transition-contract.ts';
+
+export {
+  previewNativeTerminalTestRetirement,
+  applyNativeTerminalTestRetirement,
+  readNativeTerminalTestRetirement,
+  nativeTerminalTestPhysicalScope,
+  NativeTerminalTestPlanSchema,
+  type NativeTerminalTestScope,
+  type NativeTerminalTestPlan,
+} from './conversation/native-terminal-test-retirement.ts';

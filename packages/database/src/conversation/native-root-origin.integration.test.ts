@@ -64,7 +64,13 @@ suite(
   'MET192 immutable first business INSERT origin: isolated real PostgreSQL',
   () => {
     let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    const legacySeed = {
+      artifactId: 'sha256:' + '0'.repeat(64),
+      generation: 'dsh-0.1.5-rc.3-a4c74a9' as const,
+      storageRoot: '/synthetic-legacy-seed',
+    };
     beforeAll(async () => {
+      vi.stubEnv('ALLRICE_DSH_RETAINED_1_ARTIFACT_ID', legacySeed.artifactId);
       fixture = await createAssistantFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
       vi.stubEnv(
@@ -484,13 +490,6 @@ suite(
         title: 'Sixth historical reader, never bound',
       });
       await fixture.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${sixth.id}`;
-      setArtifact('8');
-      const seventh = await createAssignedChatSession(f.context, {
-        workspaceId: f.workspace,
-        employeeAssignmentId: f.assignment,
-        title: 'Seventh historical reader, never bound',
-      });
-      await fixture.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${seventh.id}`;
       setArtifact('f');
       const preview = await packaged();
       await fixture.db`update allrice_platform_employee_test_runs set status='failed',completed_at=clock_timestamp() where id=${preview.test.id}`;
@@ -536,18 +535,23 @@ suite(
         ['e', 'origin:experience_consolidation'],
         ['f', 'origin:platform_employee_test'],
         ['7', 'origin:chat'],
-        ['8', 'origin:chat'],
       ];
       const all = [
+        legacySeed,
         a,
         ...sources.map(([letter]) => ({
           ...a,
           artifactId: 'sha256:' + letter!.repeat(64),
         })),
       ];
+      await expect(
+        verifyNativeArtifactReferenceCoverage(
+          all.filter((x) => x.artifactId !== legacySeed.artifactId),
+        ),
+      ).rejects.toThrow('implicit:legacy-chat');
       const covered = await verifyNativeArtifactReferenceCoverage(all);
-      // A newly promoted primary must coexist with all seven historical
-      // readers. Adding capacity grants no authority to alter their pins.
+      // The eight-entry limit includes the independent legacy seed dependency:
+      // six current-generation historical readers + one legacy + new primary.
       expect(
         (await verifyNativeArtifactReferenceCoverage([b, ...all])).verified,
       ).toBe(true);
@@ -587,6 +591,7 @@ suite(
         expect(missing).toEqual([
           {
             source,
+            historicalArtifactIds: [id],
             artifactId: id,
             generation: b.generation,
             profileId: letter === 'd' ? 'technical' : 'restricted',
@@ -619,6 +624,10 @@ suite(
         try {
           vi.stubEnv(
             'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
+            'sha256:' + 'a'.repeat(64),
+          );
+          vi.stubEnv(
+            'ALLRICE_DSH_NATIVE_ARTIFACT_ID',
             'sha256:' + 'a'.repeat(64),
           );
           const e = await createEmployeeAdministrationFixture(isolated.db);
@@ -702,7 +711,7 @@ suite(
             descriptor: chat,
           });
           await expect(
-            verifyNativeArtifactReferenceCoverage([a]),
+            verifyNativeArtifactReferenceCoverage([a, legacySeed]),
           ).rejects.toThrow('REFERENCES_UNCOVERED');
           expect(
             (
@@ -755,10 +764,20 @@ suite(
             generation: 'dsh-0.1.5-rc.3-a4c74a9' as const,
             storageRoot: '/isolated-native',
           };
+          vi.stubEnv('ALLRICE_DSH_RETAINED_1_ARTIFACT_ID', a.artifactId);
           const covered = await verifyNativeArtifactReferenceCoverage([a]);
           expect(covered.references).toEqual([
             {
               source: 'binding',
+              historicalArtifactIds: [a.artifactId],
+              artifactId: a.artifactId,
+              generation: a.generation,
+              profileId: 'restricted',
+              records: 1,
+              covered: true,
+            },
+            {
+              source: 'implicit:legacy-chat',
               artifactId: a.artifactId,
               generation: a.generation,
               profileId: 'restricted',

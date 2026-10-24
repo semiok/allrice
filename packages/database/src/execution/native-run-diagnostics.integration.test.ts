@@ -111,6 +111,7 @@ suite(
         receipts: [{ seq: 7, type: 'assistant/message', turn: 1 }],
         verifiedTurns: [1],
         reasons: [],
+        execution: f.descriptor,
         binding: {
           ...f.descriptor,
           contextKind: 'chat',
