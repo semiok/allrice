@@ -1,5 +1,5 @@
-/** Filesystem-only verifier regressions. Never imports an artifact's JS,
- * starts a Host, installs a dependency, connects to a DB or invokes a model. */
+/** Filesystem verifier regressions. Consumer cases import only synthetic tool
+ * catalogs; never start a Host, install dependencies, connect to a DB or model. */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type * as FsPromises from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -42,9 +42,11 @@ vi.mock('node:fs/promises', async () => {
   };
 });
 const owned: string[] = [];
+const testHarnessExecArgv = process.execArgv;
 vi.setConfig({ testTimeout: 30_000 });
 afterEach(async () => {
   io.read = undefined;
+  process.execArgv = testHarnessExecArgv;
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   await Promise.all(
@@ -307,6 +309,158 @@ async function seal(root: string, schemaVersion: 1 | 2 = 2) {
   });
   return result;
 }
+
+async function catalogFixture(names: string[], measured = true) {
+  const root = await fixture();
+  const catalog =
+    'export const allRiceToolManifest=' +
+    JSON.stringify(
+      names.map((canonicalName) => ({
+        canonicalName,
+        transport: 'dsh_broker_native',
+      })),
+    ) +
+    ';';
+  await put(root, contractsPath + '/dist/tool-manifest.js', catalog);
+  if (measured)
+    await put(
+      root,
+      contractsPath + '/dist/native-runtime.js',
+      "export { schema } from './validator.js'; export { allRiceToolManifest } from './tool-manifest.js';",
+    );
+  return { root, catalog };
+}
+
+async function catalogConsumer() {
+  // Registry unit seam only; no artifact runtime or SDK is launched.
+  process.execArgv = [];
+  vi.stubEnv('NODE_OPTIONS', '');
+  vi.resetModules();
+  return {
+    registry: await import('./dsh-native-artifact.js'),
+    consumer: await import('./dsh/native-tools.js'),
+  };
+}
+
+describe('approved artifact tool catalog consumption', () => {
+  it('loads copy-only v2 catalogs by exact primary or retained entrypoint without the excluded root barrel', async () => {
+    const { registry, consumer } = await catalogConsumer();
+    for (const [index, tool] of [
+      'workspace.file.list',
+      'web.search',
+    ].entries()) {
+      const { root } = await catalogFixture([tool]);
+      const manifest = await seal(root);
+      const target = root + '-copy';
+      owned.push(target);
+      await copyDshNativeArtifact({
+        root,
+        target,
+        expectedId: manifest.artifactId,
+        sourceSha: 'a'.repeat(40),
+        sourceTree: 'b'.repeat(40),
+      });
+      await expect(
+        readFile(join(target, contractsPath, 'dist/index.js')),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+      await (
+        index === 0
+          ? registry.installDshNativeArtifact
+          : registry.installRetainedDshNativeArtifact
+      )({
+        root: target,
+        expectedId: manifest.artifactId,
+      });
+      expect(
+        await consumer.selectDshNativeTools(
+          ['workspace.file.list', 'web.search', 'automation.create'],
+          join(target, adapterPath),
+        ),
+      ).toEqual([tool]);
+      expect(
+        await consumer.selectDshNativeTools([], join(target, adapterPath)),
+      ).toEqual([]);
+    }
+  });
+
+  it('preserves the approved v1 root catalog resolver', async () => {
+    const { root, catalog } = await catalogFixture(['web.search']);
+    await put(root, contractsPath + '/dist/index.js', catalog);
+    const manifest = await seal(root, 1);
+    const { registry, consumer } = await catalogConsumer();
+    await registry.installDshNativeArtifact({
+      root,
+      expectedId: manifest.artifactId,
+    });
+    expect(
+      await consumer.selectDshNativeTools(
+        ['web.search', 'workspace.file.list'],
+        join(root, adapterPath),
+      ),
+    ).toEqual(['web.search']);
+  });
+
+  it('rejects an unmeasured v2 catalog and an unapproved entrypoint instead of using a root barrel', async () => {
+    const { root, catalog } = await catalogFixture(['web.search'], false);
+    await put(root, contractsPath + '/dist/index.js', catalog);
+    const manifest = await seal(root);
+    const { registry, consumer } = await catalogConsumer();
+    await registry.installDshNativeArtifact({
+      root,
+      expectedId: manifest.artifactId,
+    });
+    await expect(
+      consumer.selectDshNativeTools([], join(root, adapterPath)),
+    ).rejects.toThrow('TOOL_CATALOG_UNMEASURED');
+    await expect(
+      consumer.selectDshNativeTools([], join(root, 'other-runtime.mjs')),
+    ).rejects.toThrow('TOOL_CATALOG_NOT_APPROVED');
+  });
+
+  it.each(['changed', 'missing', 'linked'] as const)(
+    'rejects a %s measured catalog before import, without falling back',
+    async (change) => {
+      const { root, catalog } = await catalogFixture(['web.search']);
+      await put(root, contractsPath + '/dist/index.js', catalog);
+      const manifest = await seal(root);
+      const { registry, consumer } = await catalogConsumer();
+      await registry.installDshNativeArtifact({
+        root,
+        expectedId: manifest.artifactId,
+      });
+      const file = join(root, contractsPath, 'dist/tool-manifest.js');
+      if (change === 'changed')
+        await writeFile(file, 'throw Error("CHANGED_CATALOG_MUST_NOT_RUN");');
+      else {
+        await rm(file);
+        if (change === 'linked') {
+          const outside = root + '-outside-catalog.mjs';
+          owned.push(outside);
+          await writeFile(outside, catalog);
+          await symlink(outside, file);
+        }
+      }
+      await expect(
+        consumer.selectDshNativeTools([], join(root, adapterPath)),
+      ).rejects.toMatchObject(
+        change === 'missing'
+          ? { code: 'ENOENT' }
+          : { code: 'DSH_NATIVE_TOOL_CATALOG_UNAVAILABLE' },
+      );
+    },
+  );
+
+  it('requires Worker installation while preserving standalone fixture lookup', async () => {
+    const { registry, consumer } = await catalogConsumer();
+    expect(
+      registry.approvedDshNativeToolCatalog('/offline/runtime.mjs'),
+    ).toBeNull();
+    vi.stubEnv('ALLRICE_SERVICE_ROLE', 'worker');
+    await expect(
+      consumer.selectDshNativeTools([], '/offline/runtime.mjs'),
+    ).rejects.toThrow('NOT_INSTALLED');
+  });
+});
 
 describe('native artifact v2: closed runtime boundary', () => {
   it('copies the approved portable JS closure with its resolver links and independently verifies the same content identity', async () => {
