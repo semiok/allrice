@@ -13,7 +13,7 @@
 - **Prod 每次单独请示。** 共享 Dev 只由发布负责人部署（见第 9 节），部署后必须实际验证。
 - **不要 sleep 轮询等资源。** 拿不到资源就把离线准备做完，然后结束本轮并说明在等什么，等待唤醒（见第 9 节）。工具自己对它刚启动的服务做有时限的就绪等待，不算轮询。
 - **分工（用户 10-25 决定）**：**Claude 是主力，写产品代码和单元测试**，负责设计、迁移、发布和集成。**Codex 负责测试、问题诊断和复核，不改产品代码**：`gpt-6.1-sol` 设计测试场景、跑集成和端到端测试、在 Dev 上实测，出了问题先做根因诊断；`gpt-6-astra` 独立复核代码，必要时做第二路诊断。Codex 补写的测试以补丁形式交回，由 Claude 审过后合进 PR（见第 9 节）。
-- **DSH 只用一代（用户 10-25）**：每个 `@deepseek-ai/dsh-*` 包在工作区和锁文件里只能有当前一个版本；升级时所有包一次性换代，不保留旧包、旧补丁或旧版服务，不给 DSH 打物理补丁（`packageExtensions` 只补当前一代的依赖元数据）。`pnpm dsh:verify` 会拦下违规。旧会话靠 DSH 官方迁移器前移，迁不了的只读归档；扩展只走 DSH 公开接缝，不往会话日志写私有事件（MET-221）。
+- **DSH 只用一代（用户 10-25）**：每个 `@deepseek-ai/dsh-*` 包在工作区和锁文件里只能有当前一个版本；升级时所有包一次性换代，不保留旧包、旧补丁或旧版服务，不给 DSH 打物理补丁（`packageExtensions` 只补当前一代的依赖元数据）。`pnpm dsh:verify` 会拦下违规。旧会话靠 DSH 官方迁移器前移；迁不了的、或为了它要保留旧依赖的旧数据（会话、员工都算）是测试数据，直接删除或不导入（用户 10-25：M1 是新的开始）。扩展只走 DSH 公开接缝。**当前仍有的例外**（MET-221 逐项消除，不要新增）：Worker 仍往会话日志写 4 种 AllRice 私有事件并注入 `KNOWN_SESSION_EVENT_TYPES`；Worker 仍有按环境变量配置的旧执行包保留槽（Dev 未配置）；Web 的 `apps/web/app/dsh-upstream/` 是一份 0.1.1 UI 源码拷贝；`allrice-assistant-runtime.mjs` 导入了私有入口 `@deepseek-ai/dsh-subagent/internal`（登记在 `compatibility.json`）。
 - **模型和推理强度**：Codex 用 `gpt-6.1-sol` 或 `gpt-6-astra` 的 `max` 档（用户 10-24 指定）。Codex App 里的会话在 App 里选，`codex exec` 用参数指定（见第 9 节）。Claude 会话按用户在 App 里的设置；Claude 子 agent 用 Opus 或 Fable，effort 设 `xhigh`（用户 10-25 指定）。省 token 靠不轮询、一个任务一个会话、做完就收尾，不靠降档。
 
 ## 1. 资源情况

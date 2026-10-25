@@ -14,12 +14,22 @@ source versions, answer identity and SHA-256 of every file.
 | `answered-question.jsonl`  | Same journal after exact typed answer adoption, before continuation     |
 | `continued-question.jsonl` | Same journal after persisted continuation intent and completed new turn |
 
-AllRice runs one DSH generation (MET-221), so these journals are kept only as
-refusal evidence: `apps/worker/test/p25/dsh-legacy-replay.test.ts` installs each
-file, plus future-format and unknown-required-event mutations of a disposable
-copy, into the installed runtime and requires a refusal that leaves the bytes
-unchanged, writes no migrated copy and dispatches no model. The 0.1.x reader and
-the capture utility that produced them were removed with that generation.
+AllRice runs one DSH generation (MET-221). `apps/worker/test/p25/dsh-legacy-replay.test.ts`
+installs these files into the installed runtime:
+
+- `ordinary-tool.jsonl` has no private AllRice events. DSH's official format
+  migrators move it forward to a V4 generation beside the untouched original, and
+  the next turn sees the historical tool result without dispatching it again.
+  A session keeps its recorded working directory and DSH derives its storage
+  path from it, so the test first points the normalized capture directory at
+  its disposable root (a journal moved to another machine needs the same).
+- The question journals carry `allrice/wait/checkpoint`, unknown to the official
+  migrators, and are refused. So are future-format and unknown-required-event
+  mutations of a disposable copy. A refusal leaves the bytes unchanged, writes no
+  migrated copy and dispatches no model.
+
+The 0.1.x reader and the capture utility that produced these files were removed
+with that generation.
 
 Do not regenerate or edit these files; historical bytes must never be
 overwritten to make a candidate pass.

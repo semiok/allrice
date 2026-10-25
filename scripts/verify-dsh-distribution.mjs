@@ -1,8 +1,11 @@
 import { distributionFacts } from './dsh-distribution-facts.mjs';
-import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { access, readFile, readdir } from 'node:fs/promises';
+import { join, posix, relative, resolve } from 'node:path';
 import { parse } from 'yaml';
-import { verifyDshSingleGeneration } from './verify-dsh-single-generation.mjs';
+import {
+  readImporterManifests,
+  verifyDshSingleGeneration,
+} from './verify-dsh-single-generation.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 
@@ -24,7 +27,7 @@ const [
   compatibility,
   reuseDecisions,
   workspace,
-  lock,
+  lockText,
 ] = await Promise.all([
   json('apps/worker/dsh/upstream.json'),
   json('apps/worker/dsh/distribution.json'),
@@ -47,8 +50,9 @@ const [
     'utf8',
   ),
   readFile(resolve(root, 'pnpm-workspace.yaml'), 'utf8').then(parse),
-  readFile(resolve(root, 'pnpm-lock.yaml'), 'utf8').then(parse),
+  readFile(resolve(root, 'pnpm-lock.yaml'), 'utf8'),
 ]);
+const lock = parse(lockText);
 
 const { installed, promoted, candidate } = distributionFacts(distribution);
 
@@ -90,14 +94,28 @@ const generationInventory = await verifyDshSingleGeneration({
   root,
   workspace,
   lock,
+  lockText,
+  manifests: await readImporterManifests(root, lock),
   version: installed.version,
 });
+const ledgerIds = new Set();
 for (const patch of ledger.patches) {
+  assert(
+    typeof patch.id === 'string' && patch.id && !ledgerIds.has(patch.id),
+    `missing or duplicate ledger ID ${patch.id}`,
+  );
+  ledgerIds.add(patch.id);
+  const path = posix.normalize(String(patch.path ?? ''));
   assert(
     patch.upstreamVersion === installed.version &&
       patch.kind === 'protocol-extension' &&
-      !patch.path.startsWith('patches/'),
-    `ledger entry ${patch.id} must be an extension of the installed DSH`,
+      !path.startsWith('patches/') &&
+      !path.startsWith('../') &&
+      (await access(resolve(root, path)).then(
+        () => true,
+        () => false,
+      )),
+    `ledger entry ${patch.id} must be an extension of the installed DSH in an existing AllRice file`,
   );
   assert(
     reuseDecisions.includes(`\`${patch.id}\``),
@@ -139,10 +157,48 @@ assert(
   'production Skill sources must exclude DSH repository development Skills',
 );
 
+// Private DSH subpaths are exceptions to the public-seam rule. Every one that
+// production code imports is listed with its owner, and nothing listed is stale.
+const privateImport =
+  /['"](@deepseek-ai\/dsh[a-z0-9-]*\/(?:internal|lib|src|dist)(?:\/[^'"]*)?)['"]/g;
+async function* productionSources(directory) {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      if (
+        !['node_modules', 'dist', '.next', 'test', 'fixtures'].includes(
+          entry.name,
+        )
+      )
+        yield* productionSources(path);
+    } else if (
+      /\.(?:[cm]?js|tsx?|mts)$/.test(entry.name) &&
+      !/\.test\./.test(entry.name)
+    )
+      yield path;
+  }
+}
+const importedPrivate = new Map();
+for (const top of ['apps', 'packages', 'scripts'])
+  for await (const file of productionSources(resolve(root, top)))
+    for (const match of (await readFile(file, 'utf8')).matchAll(privateImport))
+      importedPrivate.set(`${match[1]} ${relative(root, file)}`, match[1]);
+const declaredPrivate = new Set(
+  (compatibility.privateInterfaces ?? []).map((entry) => {
+    assert(
+      entry.upstreamVersion === installed.version &&
+        ledgerIds.has(entry.ledgerId),
+      `private DSH interface ${entry.id} must be owned by a ledger entry of the installed DSH`,
+    );
+    return `${entry.upstreamInterface} ${entry.adapter}`;
+  }),
+);
 assert(
-  Array.isArray(compatibility.privateInterfaces) &&
-    compatibility.privateInterfaces.length === 0,
-  'AllRice must not depend on private DSH entrypoints',
+  [...importedPrivate.keys()].every((key) => declaredPrivate.has(key)) &&
+    [...declaredPrivate].every((key) => importedPrivate.has(key)),
+  `private DSH imports must match compatibility.json privateInterfaces: ${[
+    ...importedPrivate.keys(),
+  ].join(', ')}`,
 );
 
 const requiredReplayScenarios = [

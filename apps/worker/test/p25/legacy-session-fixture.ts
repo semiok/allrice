@@ -8,7 +8,8 @@ import {
 import { p24Fixture } from '../p24/fixture.js';
 
 /** Installed stdio adapter, disposable storage, synthetic loopback model only.
- * Historical journals are installed into it to prove they are refused. */
+ * Historical journals are installed into it to prove the installed generation
+ * either migrates them with the official migrators or refuses them. */
 export async function legacySessionFixture(
   model: Parameters<typeof p24Fixture>[0],
 ) {

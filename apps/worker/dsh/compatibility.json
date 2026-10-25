@@ -5,7 +5,15 @@
   "sessionFormat": "dsh-session-jsonl-v4@0.2.1-rc.2",
   "runtimeProfile": "apps/worker/dsh/allrice-restricted.cordis.yml",
   "runtimeAdapter": "apps/worker/dsh/allrice-jsonrpc-runtime.mjs",
-  "privateInterfaces": [],
+  "privateInterfaces": [
+    {
+      "id": "dsh-subagent-host-prompt",
+      "upstreamInterface": "@deepseek-ai/dsh-subagent/internal",
+      "adapter": "apps/worker/dsh/allrice-assistant-runtime.mjs",
+      "upstreamVersion": "0.2.1-rc.2",
+      "ledgerId": "allrice-development-workflow-v1"
+    }
+  ],
   "configurationTree": [
     "credentials",
     "authorization",
@@ -110,7 +118,7 @@
     }
   ],
   "historicalReaderPolicy": {
-    "unpinnedDefault": "approved-retained-0.1.5",
+    "unpinnedDefault": "refused-unless-retained-slot-1-configured",
     "newRoots": "immutable-business-insert-and-independent-artifact-approval",
     "automaticV0V3PrivateMigration": false
   }

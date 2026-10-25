@@ -5,9 +5,10 @@
 2026-10-25 起，AllRice 任何时候只依赖一代 DSH（当前 `0.2.1-rc.2` / `687f282`）。升级时 Worker、Web、Bridge、Office 与维护工具一次性换到新一代，不保留旧包、旧补丁或独立的旧版服务。
 
 - 已删除：`apps/dsh-admin`（独立 DSH 管理控制台，最后版本见 tag `archive/dsh-admin-0.1.5`）、`packages/dsh-web-search-codex`、`packages/dsh-runtime-diff` 的 WebUI 插件、五个 `0.1.5-rc.3` 物理补丁及工作区里旧代的 `packageExtensions`、`overrides`、`patchedDependencies`。锁文件只剩一个版本的 `@deepseek-ai/dsh-*`。
-- `pnpm dsh:verify`（CI 执行）由 `scripts/verify-dsh-single-generation.mjs` 拒绝：锁文件里任何非当前版本的 DSH 包、工作区非精确版本声明、指向其他版本的 `packageExtensions`/`overrides`，以及任何 DSH 物理补丁。`packageExtensions` 只用来补当前一代漏写的依赖元数据。
+- `pnpm dsh:verify`（CI 执行）由 `scripts/verify-dsh-single-generation.mjs` 拒绝：锁文件任何位置（packages、snapshots、importers 的声明与解析结果、overrides）出现非当前版本或非 registry 来源的 DSH 包，`package.json` 里非精确版本或别名声明，指向其他版本的 `packageExtensions`，以及任何 DSH 物理补丁。`packageExtensions` 只用来补当前一代漏写的依赖元数据。代码里导入的 DSH 私有子路径必须逐项登记在 `compatibility.json` 的 `privateInterfaces`。
 - `patch-ledger.json` 改为 schema 2，只登记当前一代经公开接缝实现的协议扩展。
-- 旧会话：不含 AllRice 私有事件的历史日志由当前一代的官方格式迁移器向前迁移（`legacy-official-migration`）；带私有事件的日志被拒绝且不改写（`legacy-format-refusal`）。Worker 中按环境变量配置的旧代执行保留槽仍在代码中（Dev 未配置），在 MET-221 下一步移除并改为“已归档只读”状态。
+- 旧会话：不含 AllRice 私有事件的历史日志由当前一代的官方格式迁移器向前迁移，迁移后可继续对话（`legacy-official-migration`）；带私有事件的日志被拒绝且不改写（`legacy-format-refusal`）。按用户决定（10-25），迁不了的旧数据是测试数据，切换时不导入，不做只读归档。
+- 仍待消除的例外：当前一代仍写 4 种 AllRice 私有事件（下次换代时这些会话同样会被官方迁移器拒绝，MET-221 第 1 阶段处理）；Worker 中按环境变量配置的旧执行包保留槽仍在代码中（Dev 未配置，MET-221 下一步删除）；Web 的 `apps/web/app/dsh-upstream/` 是 0.1.1 UI 源码拷贝（单独排期）。
 
 ## MET195：原生运行关闭观察
 
@@ -414,7 +415,7 @@ MET181 公司组合验收发现固定 `dsh-tool-ask-user@0.1.5-rc.3` 的 Consume
 
 每次升级同时落实默认开放和能力说明更新。运行控制台读取 `apps/web/app/runtime-console/dsh-capabilities.json`，明确标注已集成、上游待接入和仅前瞻版本已有的能力；该清单只负责展示，实际启用还需落实运行配置与数字员工发布。验收要从测试租户入口确认能力确实可用，并记录交付后持续开放的状态。
 
-管理后台的数量与开启状态读取 Worker 实际安装包、运行配置、功能开关及租户员工已发布版本，每 10 秒刷新；上游能力目录仅用于说明。Worker 心跳超过 20 秒或读取失败时显示未知，不用静态目录数量补位。具体数据来源见 [管理员架构](dsh-admin-console.md)。
+管理后台的数量与开启状态读取 Worker 实际安装包、运行配置、功能开关及租户员工已发布版本，每 10 秒刷新；上游能力目录仅用于说明。Worker 心跳超过 20 秒或读取失败时显示未知，不用静态目录数量补位。具体数据来源见 `apps/web/lib/runtime-capabilities.ts`。
 
 1. 每次上游升级、适配新增/删除或源码补丁变更，都在同一 PR 更新有关条目；保留理由也要注明新复核日期与固定 SHA。
 2. `pnpm dsh:verify` 检查每个 ledger ID 在此有入口，并拒绝第二代 DSH 包和任何 DSH 物理补丁；评审仍需核对内容，不能只补一个 ID。
@@ -599,7 +600,7 @@ Managed children use public `startActivation` with parent delivery and `drainDes
 
 `allrice-managed-native-mcp-public-v2` composes official SDK 2.2 transport with the exported DSH tool-definition adapter. Per-request AllRice authorization, DNS-pinned egress, cancellation, frozen names/schema, unknown-effect classification and zero automatic transport reconnect retries remain required. It does not copy the upstream client plugin.
 
-`allrice-private-v4-payload-validation-v2` keeps the four exact AllRice event payloads and chronology in AllRice. Historical private V0/V3 files are served by their exact approved retained 0.1.5 reader, not opened as new V4 roots or rewritten on upgrade. Unsupported migration remains an explicit refusal.
+`allrice-private-v4-payload-validation-v2` keeps the four exact AllRice event payloads and chronology in AllRice. Historical private V0/V3 files are never opened as new V4 roots or rewritten: the installed generation refuses them, and only a Worker that explicitly configures a retained 0.1.5 slot (none on Dev; removed in the next MET-221 step) could still read them. Unsupported migration remains an explicit refusal.
 
 The five physical 0.1.5 patches and the old administrator host were removed with that generation (MET-221, 2026-10-25). The workspace now resolves one DSH generation, so no importer can borrow another generation's Cordis/DSH services; `pnpm dsh:verify` enforces it.
 

@@ -10,7 +10,7 @@ onlyBuiltDependencies:
   - sharp
 
 # Published UI atoms import React but omit its peer declaration. Bind them to
-# the embedding application's React, rather than pnpm's unrelated hoisted 18.x.
+# the embedding application's React.
 # UI conversation declarations import the same-generation nominal-brand helper
 # but omit it from runtime dependencies. Only the installed DSH generation may
 # appear here: `pnpm dsh:verify` rejects any other @deepseek-ai/dsh version.
@@ -29,8 +29,9 @@ packageExtensions:
       node-addon-require-builtin-win32-ia32-msvc: '0.1.9'
       node-addon-require-builtin-win32-x64-msvc: '0.1.9'
   # The terminal controller imports these at runtime and in its declarations
-  # without listing them. Resolve them inside its own generation. The client
-  # store is used only by its browser entry, so hosts without React skip it.
+  # without listing them. Resolve them inside its own generation. Only its
+  # browser entry imports the client store, whose React peer a hard dependency
+  # would demand from every host; it is resolved where a workspace provides it.
   '@deepseek-ai/dsh-api-terminal-controller@0.2.1-rc.2':
     dependencies:
       '@deepseek-ai/dsh-agent': 0.2.1-rc.2
@@ -114,7 +115,7 @@ packageExtensions:
 
 # Pin auto-resolved transitive versions.
 overrides:
-  # Keep the new Office engine independent of the retained legacy provider.
+  # Keep the Office engine on the LibreOffice kit it was verified with.
   '@deepseek-ai/dsh-office-to-pdf@0.2.1-rc.2>@deepseek-ai/libreoffice-kit': 0.1.5
   'zustand@4.4.7>use-sync-external-store': 1.6.0
 patchedDependencies:

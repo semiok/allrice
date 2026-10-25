@@ -19,11 +19,17 @@ async function journal(file: string) {
   return { text, sessionId: entry.sessionId };
 }
 
-async function install(root: string, sessionId: string, text: string) {
+// DSH derives the storage directory from the session's recorded cwd.
+async function install(
+  root: string,
+  sessionId: string,
+  text: string,
+  cwd = manifest.capturedWith.normalizedCwd,
+) {
   const path = join(
     root,
     'sessions',
-    '--allrice-legacy-fixture--',
+    `-${cwd.replaceAll('/', '-')}--`,
     sessionId,
     'session.jsonl',
   );
@@ -32,17 +38,21 @@ async function install(root: string, sessionId: string, text: string) {
   return path;
 }
 
+function rows(text: string) {
+  return text
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+}
+
 function mutate(
   text: string,
   kind: 'future-format' | 'unknown-required-event',
 ) {
-  const rows = text
-    .trim()
-    .split('\n')
-    .map((line) => JSON.parse(line));
-  if (kind === 'future-format') rows[0].version = 999;
-  else rows[1].type = 'allrice/unknown-required-fixture';
-  return rows.map((row) => JSON.stringify(row)).join('\n') + '\n';
+  const events = rows(text);
+  if (kind === 'future-format') events[0].version = 999;
+  else events[1].type = 'allrice/unknown-required-fixture';
+  return events.map((row) => JSON.stringify(row)).join('\n') + '\n';
 }
 
 // AllRice runs one DSH generation. An older journal either moves forward through
@@ -50,24 +60,67 @@ function mutate(
 describe('DSH historical sessions under the installed generation', () => {
   it('forwards an ordinary historical journal with the official migrators and keeps its bytes', async () => {
     const fixture = await legacySessionFixture(async () => ({
-      text: 'Unexpected',
+      text: 'Legacy history retained.',
     }));
     try {
       const old = await journal('ordinary-tool.jsonl');
-      const path = await install(fixture.root, old.sessionId, old.text);
-      const { client } = await fixture.runtime();
+      // The corpus normalized its capture directory; a migrated session keeps
+      // its recorded working directory, so point it at this disposable root.
+      const text = old.text.replaceAll(
+        manifest.capturedWith.normalizedCwd,
+        fixture.root,
+      );
+      const path = await install(
+        fixture.root,
+        old.sessionId,
+        text,
+        fixture.root,
+      );
+      const { client, notices } = await fixture.runtime();
+      const callbacks: string[] = [];
+      client.setRequestHandler(async (method) => {
+        callbacks.push(method);
+        throw new Error('Historical tools must never be dispatched');
+      });
       await expect(client.recover(old.sessionId)).resolves.toMatchObject({
         recovered: true,
       });
       expect(fixture.requests).toHaveLength(0);
-      expect(await readFile(path, 'utf8')).toBe(old.text);
-      const migrated = (
-        await readFile(join(dirname(path), 'session.v4.jsonl'), 'utf8')
-      )
-        .trim()
-        .split('\n')
-        .map((line) => JSON.parse(line));
+      const migrated = rows(
+        await readFile(join(dirname(path), 'session.v4.jsonl'), 'utf8'),
+      );
       expect(migrated[0]).toMatchObject({ type: 'session', version: 4 });
+      const original = rows(text);
+      for (const type of ['user/message', 'tool/call', 'tool/result'])
+        expect(migrated.filter((event) => event.type === type)).toHaveLength(
+          original.filter((event) => event.type === type).length,
+        );
+      // The next turn sees the migrated history, including the completed tool
+      // result, without dispatching the historical tool again.
+      const before = notices.length;
+      await client.prompt(old.sessionId, 'Continue from history.');
+      await expect
+        .poll(() =>
+          notices
+            .slice(before)
+            .some(
+              (n) =>
+                n.method === 'session.status' && n.params.status === 'idle',
+            ),
+        )
+        .toBe(true);
+      expect(fixture.requests).toHaveLength(1);
+      expect(callbacks).toEqual([]);
+      const messages = fixture.requests[0]!.messages;
+      expect(JSON.stringify(messages)).toContain('synthetic-history-result');
+      expect(JSON.stringify(messages)).toContain(
+        'Historical tool result recorded.',
+      );
+      expect(
+        messages.filter((message) => message.role === 'tool'),
+      ).toHaveLength(1);
+      await client.close();
+      expect(await readFile(path, 'utf8')).toBe(text);
     } finally {
       await fixture.close();
     }
@@ -77,12 +130,23 @@ describe('DSH historical sessions under the installed generation', () => {
   it.each([
     ...manifest.files
       .filter((entry) => entry.file !== 'ordinary-tool.jsonl')
-      .map((entry) => [entry.file, entry.file] as const),
-    ['future-format', 'ordinary-tool.jsonl'] as const,
-    ['unknown-required-event', 'ordinary-tool.jsonl'] as const,
+      .map(
+        (entry) =>
+          [
+            entry.file,
+            entry.file,
+            /unknown historical event type "allrice\/wait\/checkpoint"/,
+          ] as const,
+      ),
+    ['future-format', 'ordinary-tool.jsonl', /header identifies v999/] as const,
+    [
+      'unknown-required-event',
+      'ordinary-tool.jsonl',
+      /unknown historical event type "allrice\/unknown-required-fixture"/,
+    ] as const,
   ])(
     'candidate refuses historical %s instead of rewriting it or creating an empty substitute',
-    async (kind, file) => {
+    async (kind, file, reason) => {
       const fixture = await legacySessionFixture(async () => ({
         text: 'Unexpected',
       }));
@@ -94,14 +158,16 @@ describe('DSH historical sessions under the installed generation', () => {
             : old.text;
         const path = await install(fixture.root, old.sessionId, text);
         const { client } = await fixture.runtime();
-        await expect(client.recover(old.sessionId)).rejects.toThrow();
+        const refused = await client.recover(old.sessionId).then(
+          () => null,
+          (error: unknown) => error as { code?: string; message: string },
+        );
+        expect(refused?.code).toBe('DSH_REQUEST_FAILED');
+        expect(refused?.message).toMatch(reason);
+        await client.close();
         expect(fixture.requests).toHaveLength(0);
         expect(await readFile(path, 'utf8')).toBe(text);
-        expect(
-          (await readdir(dirname(path))).filter((name) =>
-            /^session\.v[34]\.jsonl$/.test(name),
-          ),
-        ).toEqual([]);
+        expect(await readdir(dirname(path))).toEqual(['session.jsonl']);
       } finally {
         await fixture.close();
       }

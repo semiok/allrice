@@ -3,7 +3,10 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
-import { verifyDshSingleGeneration } from './verify-dsh-single-generation.mjs';
+import {
+  readImporterManifests,
+  verifyDshSingleGeneration,
+} from './verify-dsh-single-generation.mjs';
 
 const version = '0.2.1-rc.2';
 const folders = [];
@@ -19,6 +22,15 @@ async function fixture() {
   return {
     root,
     version,
+    lockText: `'@deepseek-ai/dsh-session@${version}':\n`,
+    manifests: {
+      'apps/worker': {
+        dependencies: {
+          '@deepseek-ai/dsh-session': version,
+          '@deepseek-ai/cordis': '4.0.5',
+        },
+      },
+    },
     workspace: {
       packageExtensions: {
         [`@deepseek-ai/dsh-client-ui-chat@${version}`]: {
@@ -52,6 +64,14 @@ async function fixture() {
         '@deepseek-ai/cordis@4.0.2': {},
         '@deepseek-ai/libreoffice-kit@0.1.5': {},
       },
+      snapshots: {
+        [`@deepseek-ai/dsh-session@${version}(@deepseek-ai/cordis@4.0.5)`]: {
+          dependencies: {
+            '@deepseek-ai/dsh-brand': `${version}(@deepseek-ai/cordis@4.0.5)`,
+            zod: '4.4.3',
+          },
+        },
+      },
       patchedDependencies: {
         'next@16.2.1': { path: 'patches/next@16.2.1.patch', hash: 'x' },
       },
@@ -65,13 +85,17 @@ describe('DSH single generation', () => {
     const upstream = JSON.parse(
       await readFile(join(root, 'apps/worker/dsh/upstream.json'), 'utf8'),
     );
+    const lockText = await readFile(join(root, 'pnpm-lock.yaml'), 'utf8');
+    const lock = parse(lockText);
     const result = await verifyDshSingleGeneration({
       root,
       version: upstream.version,
       workspace: parse(
         await readFile(join(root, 'pnpm-workspace.yaml'), 'utf8'),
       ),
-      lock: parse(await readFile(join(root, 'pnpm-lock.yaml'), 'utf8')),
+      lock,
+      lockText,
+      manifests: await readImporterManifests(root, lock),
     });
     expect(result.dshVersion).toBe(upstream.version);
     expect(result.dshPackages).toBeGreaterThan(50);
@@ -96,12 +120,73 @@ describe('DSH single generation', () => {
       'lockfile resolves @deepseek-ai/dsh@0.1.5-rc.3',
     ],
     [
+      'a tarball source whose URL contains @',
+      (f) =>
+        (f.lock.packages[
+          '@deepseek-ai/dsh@https://registry.npmjs.org/@deepseek-ai/dsh/-/dsh-0.1.5-rc.3.tgz'
+        ] = {}),
+      'lockfile resolves @deepseek-ai/dsh@https://',
+    ],
+    [
+      'an older generation only in a snapshot key',
+      (f) =>
+        (f.lock.snapshots[
+          '@deepseek-ai/dsh-session@0.1.5-rc.3(@deepseek-ai/cordis@4.0.2)'
+        ] = {}),
+      'lockfile snapshot @deepseek-ai/dsh-session@0.1.5-rc.3',
+    ],
+    [
+      'an older generation only as a snapshot dependency',
+      (f) =>
+        (f.lock.snapshots[
+          `@deepseek-ai/dsh-session@${version}(@deepseek-ai/cordis@4.0.5)`
+        ].dependencies['@deepseek-ai/dsh-brand'] =
+          '0.1.5-rc.3(@deepseek-ai/cordis@4.0.2)'),
+      'resolves @deepseek-ai/dsh-brand to 0.1.5-rc.3',
+    ],
+    [
       'a workspace range instead of the exact version',
       (f) =>
         (f.lock.importers['apps/worker'].dependencies[
           '@deepseek-ai/dsh-session'
         ].specifier = `^${version}`),
       'apps/worker declares @deepseek-ai/dsh-session@^0.2.1-rc.2',
+    ],
+    [
+      'an importer resolved to a local link',
+      (f) =>
+        (f.lock.importers['apps/worker'].dependencies[
+          '@deepseek-ai/dsh-session'
+        ].version = 'link:../../vendor/dsh-session'),
+      'resolves @deepseek-ai/dsh-session to link:',
+    ],
+    [
+      'a DSH package hidden behind an npm alias',
+      (f) =>
+        (f.lock.importers['apps/worker'].dependencies['session-alias'] = {
+          specifier: `npm:@deepseek-ai/dsh-session@${version}`,
+          version: `@deepseek-ai/dsh-session@${version}`,
+        }),
+      'apps/worker declares session-alias@npm:',
+    ],
+    [
+      'a manifest range the lockfile has not caught up with',
+      (f) =>
+        (f.manifests['apps/worker'].dependencies['@deepseek-ai/dsh-session'] =
+          `^${version}`),
+      'apps/worker/package.json dependencies @deepseek-ai/dsh-session@^0.2.1-rc.2',
+    ],
+    [
+      'a manifest alias to a DSH package',
+      (f) =>
+        (f.manifests['apps/worker'].dependencies['session-alias'] =
+          `npm:@deepseek-ai/dsh-session@${version}`),
+      'apps/worker/package.json dependencies session-alias',
+    ],
+    [
+      'an older version written anywhere in the lockfile text',
+      (f) => (f.lockText += "  '@deepseek-ai/dsh-util-crypto@0.1.5-rc.3':\n"),
+      'lockfile mentions @deepseek-ai/dsh-util-crypto@0.1.5-rc.3',
     ],
     [
       'an extension for an older generation',
@@ -132,6 +217,14 @@ describe('DSH single generation', () => {
       'override @deepseek-ai/dsh-fs -> 0.1.5-rc.3',
     ],
     [
+      'a lockfile override linking a local copy',
+      (f) =>
+        (f.lock.overrides = {
+          '@deepseek-ai/dsh-session': 'link:../vendor/dsh-session',
+        }),
+      'lockfile override @deepseek-ai/dsh-session -> link:',
+    ],
+    [
       'a patched DSH package in the workspace',
       (f) =>
         (f.workspace.patchedDependencies[
@@ -152,6 +245,23 @@ describe('DSH single generation', () => {
     const f = await fixture();
     mutate(f);
     await expect(verifyDshSingleGeneration(f)).rejects.toThrow(message);
+  });
+
+  it('reports every violation with the expected version', async () => {
+    const f = await fixture();
+    f.lock.packages['@deepseek-ai/dsh-session@0.1.5-rc.3'] = {};
+    f.workspace.overrides['@deepseek-ai/dsh-fs'] = '0.1.5-rc.3';
+    await expect(verifyDshSingleGeneration(f)).rejects.toThrow(
+      /exactly 0\.2\.1-rc\.2[\s\S]*dsh-session@0\.1\.5-rc\.3[\s\S]*dsh-fs -> 0\.1\.5-rc\.3/,
+    );
+  });
+
+  it('accepts a workspace without a patches directory', async () => {
+    const f = await fixture();
+    await rm(join(f.root, 'patches'), { recursive: true });
+    await expect(verifyDshSingleGeneration(f)).resolves.toMatchObject({
+      dshVersion: version,
+    });
   });
 
   it('rejects a leftover DSH patch file', async () => {

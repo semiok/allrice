@@ -134,7 +134,7 @@
       "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-session-compatibility.mjs",
-      "reason": "AllRice validates its own exact four private payloads and chronology before public V4 resume. Old private V0/V3 histories stay on the independently approved exact retained reader. No unknown required event is ignored and no original journal is rewritten to bypass refusal."
+      "reason": "AllRice validates its own exact four private payloads and chronology before public V4 resume. Old private V0/V3 histories are refused by the installed generation; only an explicitly configured retained slot could still read them. No unknown required event is ignored and no original journal is rewritten to bypass refusal."
     },
     {
       "id": "allrice-final-delivery-v1",
