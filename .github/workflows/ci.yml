@@ -8,6 +8,14 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels that pull request's runs for older commits:
+# only the latest commit is reviewed and merged, and stale runs held the runners for the
+# current ones (10-25). A push to main gets a group of its own (the run id), so no merge
+# is ever cancelled or left pending behind another.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   tenant-workbench-browser:
     runs-on: ubuntu-latest
