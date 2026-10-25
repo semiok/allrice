@@ -42,29 +42,40 @@ RENDERER_URL=$(worker_env ALLRICE_OFFICE_RENDERER_URL 2>/dev/null) || config_mis
 # The same Docker socket the Worker uses for this profile.
 DOCKER_HOST_SOCKET="unix://$HOME/.colima/$PROFILE/docker.sock"
 
-# bounded <seconds> <command...>: run with a time limit and with every descriptor beyond
-# stdin/stdout/stderr closed (colima leaves a long-lived limactl behind, which must not
-# inherit the deploy lock or anything else). Exit 124 on timeout.
+# bounded <seconds> <command...>: run in its own session and process group, with every
+# descriptor beyond stdin/stdout/stderr closed. colima leaves a long-lived limactl behind:
+# it must not inherit the deploy lock, and launchd must not reap it with this job's group.
+# On timeout the whole group is killed, so a pipe it writes to closes. Exit 124 on timeout.
 bounded() {
-  "$M1_PY" -c 'import subprocess,sys
-try: sys.exit(subprocess.run(sys.argv[2:], timeout=float(sys.argv[1]), close_fds=True).returncode)
-except subprocess.TimeoutExpired: sys.exit(124)' "$@"
+  "$M1_PY" -c 'import os,signal,subprocess,sys
+p = subprocess.Popen(sys.argv[2:], close_fds=True, start_new_session=True)
+try:
+    sys.exit(p.wait(timeout=float(sys.argv[1])))
+except subprocess.TimeoutExpired:
+    try: os.killpg(p.pid, signal.SIGKILL)
+    except ProcessLookupError: pass
+    p.wait()
+    sys.exit(124)' "$@"
 }
 vm_running() { bounded 20 "$COLIMA" status "$PROFILE" >/dev/null 2>&1; }
 renderer_healthy() {
   [ "$(bounded 15 docker --host "$DOCKER_HOST_SOCKET" inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' "$CONTAINER" 2>/dev/null)" = "running healthy" ] &&
-    # The container's own check passed; also confirm the published port answers.
-    [ "$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$RENDERER_URL/" || true)" != 000 ]
+    # The container's own check passed; also confirm the port published on the host serves
+    # the renderer's health endpoint.
+    curl -fsS -m 5 "${RENDERER_URL%/}/health" 2>/dev/null |
+      "$M1_PY" -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("ready") is True else 1)' 2>/dev/null
 }
 watchdog_ready() {
   bounded 20 "$COLIMA" ssh --profile "$PROFILE" -- sudo /usr/local/lib/allrice-cloud/watchdog.py --attest 2>/dev/null |
     "$M1_PY" -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("ready") is True else 1)' 2>/dev/null
 }
-# until_deadline <seconds> <check>: retry the check until it passes or the deadline passes.
+# until_deadline <seconds> <check>: retry the check until it passes before the deadline.
+# Each probe is itself bounded; a pass that lands after the deadline does not count.
 until_deadline() {
   local end=$((SECONDS + $1))
   while [ "$SECONDS" -lt "$end" ]; do
-    if "$2"; then return 0; fi
+    if "$2"; then [ "$SECONDS" -le "$end" ] && return 0 || return 1; fi
+    [ $((end - SECONDS)) -gt 2 ] || return 1
     sleep 2
   done
   return 1
@@ -76,9 +87,16 @@ status)
   if vm_running; then echo "vm $PROFILE: running"; else echo "vm $PROFILE: stopped"; ok=1; fi
   if renderer_healthy; then echo "renderer $CONTAINER: healthy"; else echo "renderer $CONTAINER: not healthy"; ok=1; fi
   if watchdog_ready; then echo "cloud watchdog: ready"; else echo "cloud watchdog: not ready"; ok=1; fi
-  # The login agent's last run: launchd keeps its exit code.
-  last=$("$M1_LAUNCHCTL" print "gui/$M1_UID/$LABEL" 2>/dev/null | /usr/bin/awk -F'= ' '/last exit code/ {print $2; exit}' || true)
-  echo "agent $LABEL: $(job_state "$LABEL" || echo unknown)${last:+, last exit code $last}"
+  # The login agent must be loaded, and its last run (launchd keeps the exit code) must
+  # have succeeded or still be running: otherwise the next login will not recover.
+  agent=$("$M1_LAUNCHCTL" print "gui/$M1_UID/$LABEL" 2>/dev/null || true)
+  if [ -z "$agent" ]; then
+    echo "agent $LABEL: not loaded"; ok=1
+  else
+    last=$(printf '%s\n' "$agent" | /usr/bin/awk -F'= ' '/last exit code/ {print $2; exit}')
+    echo "agent $LABEL: loaded${last:+, last exit code $last}"
+    case "$last" in 0 | "" | "(never exited)") ;; *) ok=1 ;; esac
+  fi
   exit $ok
   ;;
 start)
@@ -101,6 +119,13 @@ start)
 install-agent)
   program=${2:-$HOME/allrice-dev/bin/cloud-autostart}
   [ -x "$program" ] || { echo "cloud-autostart: $program is not executable" >&2; exit 2; }
+  # Never reload under a start that is still running: its colima would carry on beside
+  # the new one.
+  if [ "$(job_state "$LABEL" | /usr/bin/cut -d' ' -f1)" = running ] ||
+    /usr/bin/pgrep -f "colima start $PROFILE" >/dev/null 2>&1; then
+    echo "cloud-autostart: a start is in progress; run install-agent again when it has finished" >&2
+    exit 3
+  fi
   plist="$HOME/Library/LaunchAgents/$LABEL.plist"
   "$M1_PY" - "$plist" "$LABEL" "$HOME" "$program" <<'PY'
 import os, plistlib, sys
@@ -109,12 +134,10 @@ spec = {
     'Label': label,
     'ProgramArguments': [program, 'start'],
     'RunAtLoad': True,
-    # Retry a failed start every minute; a successful run is not restarted.
+    # Retry a failed start every minute; a successful run is not restarted. colima runs
+    # in its own session (see bounded), so ending this job never takes the VM down.
     'KeepAlive': {'SuccessfulExit': False},
     'ThrottleInterval': 60,
-    # launchd kills a finished job's process group by default, which would take the
-    # VM's limactl down with it.
-    'AbandonProcessGroup': True,
     'StandardOutPath': f'{home}/Library/Logs/allrice-cloud-autostart.log',
     'StandardErrorPath': f'{home}/Library/Logs/allrice-cloud-autostart.log',
 }
