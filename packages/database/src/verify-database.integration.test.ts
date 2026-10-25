@@ -5,6 +5,7 @@ import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { closeDatabase, getDatabase } from './core/client.ts';
+import { assertRuntimeFixtureDatabase } from './runtime-fixture-database.ts';
 import { loadPlatformContentCatalog } from './platform-content/catalog.ts';
 import { synchronizePlatformContent } from './platform-content/sync.ts';
 import { verifyDatabase } from './verify-database.ts';
@@ -22,11 +23,11 @@ let schemaName = '';
 // data a company produces in normal use and still stop a broken database.
 describeDatabase('db:verify on a prepared database (PostgreSQL)', () => {
   beforeAll(async () => {
-    const baseUrl = new URL(
-      process.env.ALLRICE_TEST_DATABASE_URL ??
-        originalDatabaseUrl ??
-        'postgres://allrice:allrice@localhost:5432/allrice_dev',
-    );
+    // Only the dedicated test database: never fall back to an application database.
+    const value = process.env.ALLRICE_TEST_DATABASE_URL;
+    if (!value) throw Error('Dedicated ALLRICE_TEST_DATABASE_URL required');
+    const baseUrl = new URL(value);
+    assertRuntimeFixtureDatabase(baseUrl);
     baseUrl.search = '';
     schemaName = `verify_${randomUUID().replaceAll('-', '')}`;
     adminSql = postgres(baseUrl.toString(), { max: 1, onnotice: () => {} });
@@ -62,14 +63,28 @@ describeDatabase('db:verify on a prepared database (PostgreSQL)', () => {
     await synchronizePlatformContent(await loadPlatformContentCatalog());
   }, 180_000);
 
+  // Every cleanup step runs even if an earlier one fails; the first failure is kept.
   afterAll(async () => {
-    await closeDatabase();
-    if (adminSql && schemaName) {
-      await adminSql.unsafe(`drop schema if exists "${schemaName}" cascade`);
-      await adminSql.end({ timeout: 5 });
+    const failures: unknown[] = [];
+    const attempt = async (step: () => Promise<unknown>) => {
+      try {
+        await step();
+      } catch (error) {
+        failures.push(error);
+      }
+    };
+    try {
+      await attempt(() => closeDatabase());
+      if (adminSql && schemaName)
+        await attempt(() =>
+          adminSql!.unsafe(`drop schema if exists "${schemaName}" cascade`),
+        );
+      if (adminSql) await attempt(() => adminSql!.end({ timeout: 5 }));
+    } finally {
+      if (originalDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = originalDatabaseUrl;
     }
-    if (originalDatabaseUrl === undefined) delete process.env.DATABASE_URL;
-    else process.env.DATABASE_URL = originalDatabaseUrl;
+    if (failures.length) throw failures[0];
   }, 30_000);
 
   it('passes once a company has an employee besides Rice, as after assigning a platform employee', async () => {
