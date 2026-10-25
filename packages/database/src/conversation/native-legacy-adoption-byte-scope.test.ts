@@ -3,6 +3,7 @@ import {
   mkdtempSync,
   mkdirSync,
   writeFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
 } from 'node:fs';
@@ -16,7 +17,9 @@ const id = 'dsh-68e76b6b-2e75-45b7-b628-951945b12044';
 const data = Buffer.from('owned synthetic attachment; no SDK/DB');
 const sha = createHash('sha256').update(data).digest('hex');
 function setup() {
-  const root = mkdtempSync(join(tmpdir(), 'allrice-adoption-byte-'));
+  const root = realpathSync(
+    mkdtempSync(join(tmpdir(), 'allrice-adoption-byte-')),
+  );
   roots.push(root);
   const scope = 'org/workspace/owner/chat';
   const source = join(root, 'source', scope, 'sessions');

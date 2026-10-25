@@ -1,6 +1,7 @@
 import { distributionFacts } from './dsh-distribution-facts.mjs';
-import { readFile, readdir, stat } from 'node:fs/promises';
-import { isAbsolute, join, posix, relative, resolve } from 'node:path';
+import { readFile, readdir, realpath, stat } from 'node:fs/promises';
+import ts from 'typescript';
+import { isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { parse } from 'yaml';
 import {
   readImporterManifests,
@@ -27,7 +28,7 @@ const [
   compatibility,
   reuseDecisions,
   workspace,
-  lockText,
+  lock,
 ] = await Promise.all([
   json('apps/worker/dsh/upstream.json'),
   json('apps/worker/dsh/distribution.json'),
@@ -50,9 +51,8 @@ const [
     'utf8',
   ),
   readFile(resolve(root, 'pnpm-workspace.yaml'), 'utf8').then(parse),
-  readFile(resolve(root, 'pnpm-lock.yaml'), 'utf8'),
+  readFile(resolve(root, 'pnpm-lock.yaml'), 'utf8').then(parse),
 ]);
-const lock = parse(lockText);
 
 const { installed, promoted, candidate } = distributionFacts(distribution);
 
@@ -94,10 +94,10 @@ const generationInventory = await verifyDshSingleGeneration({
   root,
   workspace,
   lock,
-  lockText,
   manifests: await readImporterManifests(root, lock),
   version: installed.version,
 });
+const realRoot = await realpath(root);
 const ledgerIds = new Set();
 for (const patch of ledger.patches) {
   assert(
@@ -117,8 +117,12 @@ for (const patch of ledger.patches) {
     patch.upstreamVersion === installed.version &&
       patch.kind === 'protocol-extension' &&
       inRepository &&
-      (await stat(resolve(root, path)).then(
-        (entry) => entry.isFile(),
+      // A symlink must not lead outside the repository or into node_modules.
+      (await realpath(resolve(root, path)).then(
+        async (target) =>
+          target.startsWith(realRoot + sep) &&
+          !target.split(sep).includes('node_modules') &&
+          (await stat(target)).isFile(),
         () => false,
       )),
     `ledger entry ${patch.id} must be an extension of the installed DSH in an AllRice source file`,
@@ -165,9 +169,10 @@ assert(
 
 // Private DSH subpaths are exceptions to the public-seam rule. Every one that
 // production code imports is listed with its owner, and nothing listed is stale.
-// Matches static and dynamic imports, re-exports and require/require.resolve.
-const privateImport =
-  /(?:\bfrom|\bimport|\brequire(?:\.resolve)?)\s*\(?\s*(['"`])(@deepseek-ai\/dsh[a-z0-9-]*\/(?:internal|lib|src|dist)(?:\/[^'"`]*)?)\1/g;
+// Module specifiers come from the TypeScript pre-processor, which sees static
+// and dynamic imports, re-exports and require() but not comments or strings.
+const privateSubpath =
+  /^@deepseek-ai\/dsh(?:-[a-z0-9-]+)?\/(?:internal|lib|src|dist)(?:\/|$)/;
 async function* productionSources(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
@@ -179,7 +184,7 @@ async function* productionSources(directory) {
       )
         yield* productionSources(path);
     } else if (
-      /\.(?:[cm]?js|[cm]?ts|tsx)$/.test(entry.name) &&
+      /\.(?:[cm]?js|[cm]?ts|[jt]sx)$/.test(entry.name) &&
       !/\.(?:test|spec)\./.test(entry.name)
     )
       yield path;
@@ -188,8 +193,13 @@ async function* productionSources(directory) {
 const importedPrivate = new Map();
 for (const top of ['apps', 'packages', 'scripts'])
   for await (const file of productionSources(resolve(root, top)))
-    for (const match of (await readFile(file, 'utf8')).matchAll(privateImport))
-      importedPrivate.set(`${match[2]} ${relative(root, file)}`, match[2]);
+    for (const { fileName } of ts.preProcessFile(
+      await readFile(file, 'utf8'),
+      true,
+      true,
+    ).importedFiles)
+      if (privateSubpath.test(fileName))
+        importedPrivate.set(`${fileName} ${relative(root, file)}`, fileName);
 const declaredPrivate = new Set(
   (compatibility.privateInterfaces ?? []).map((entry) => {
     assert(

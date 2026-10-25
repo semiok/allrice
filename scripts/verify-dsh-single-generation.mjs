@@ -1,9 +1,12 @@
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 // AllRice runs exactly one DSH generation. An upgrade replaces every
 // @deepseek-ai/dsh package at once; nothing keeps an older copy alive, and no
 // DSH package is patched in place (extensions go through public seams).
+// The gate catches drift that ordinary dependency work produces: a second
+// version, a range, an alias, a local copy or a patch. It reads the manifests
+// and the parsed lockfile; a deliberately forged lockfile is a review matter.
 const isDsh = (name) =>
   name === '@deepseek-ai/dsh' || name.startsWith('@deepseek-ai/dsh-');
 const sections = [
@@ -44,14 +47,53 @@ function aliasTarget(value) {
   return text.startsWith('npm:') ? reference(text.slice(4)).name : null;
 }
 
+/** Name of the package in a local directory; null for archives or absence. */
 async function packageName(directory) {
   try {
+    if (!(await stat(directory)).isDirectory()) return null;
     return JSON.parse(
       await readFile(resolve(directory, 'package.json'), 'utf8'),
     ).name;
   } catch (error) {
-    if (error.code === 'ENOENT') return null;
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null;
     throw error;
+  }
+}
+
+/** The directory a `link:`, `file:` or path-form `workspace:` value names. */
+function localTarget(root, importer, value) {
+  const text = String(value);
+  const match = /^(?:link|file|workspace):(.+)$/.exec(text);
+  if (!match || (text.startsWith('workspace:') && !/[./]/.test(match[1])))
+    return null;
+  return resolve(root, importer, match[1]);
+}
+
+/** Every string in parsed lockfile data, keys included. */
+function* strings(value) {
+  if (typeof value === 'string') yield value;
+  else if (Array.isArray(value)) for (const item of value) yield* strings(item);
+  else if (value && typeof value === 'object')
+    for (const [key, item] of Object.entries(value)) {
+      yield key;
+      yield* strings(item);
+    }
+}
+
+/** A registry entry: integrity only, or this package's own registry tarball. */
+function registryResolution(name, version, resolution) {
+  if (!resolution || resolution.type !== undefined) return false;
+  if (resolution.tarball === undefined) return true;
+  try {
+    const url = new URL(String(resolution.tarball));
+    const base = name.split('/').pop();
+    return (
+      url.hash === '' &&
+      url.search === '' &&
+      url.pathname.endsWith(`/${name}/-/${base}-${version}.tgz`)
+    );
+  } catch {
+    return false;
   }
 }
 
@@ -70,7 +112,6 @@ export async function verifyDshSingleGeneration({
   root,
   workspace,
   lock,
-  lockText,
   manifests,
   version,
 }) {
@@ -100,26 +141,22 @@ export async function verifyDshSingleGeneration({
     }
   };
 
-  // Any `@deepseek-ai/dsh…@version` written anywhere in the lockfile data.
-  const lockData = String(lockText ?? '')
-    .split('\n')
-    .filter((line) => !line.trimStart().startsWith('#'))
-    .join('\n');
-  for (const match of lockData.matchAll(
-    /@deepseek-ai\/dsh(?:-[a-z0-9-]+)?@([^\s'"():,>]+)/g,
-  ))
-    check(match[1] === version, `lockfile mentions ${match[0]}`);
+  // Any `@deepseek-ai/dsh…@version` anywhere in the parsed lockfile data.
+  for (const text of strings(lock))
+    for (const match of text.matchAll(
+      /@deepseek-ai\/dsh(?:-[a-z0-9-]+)?@([^\s'"():,>]+)/g,
+    ))
+      check(match[1] === version, `lockfile mentions ${match[0]}`);
 
   const packages = new Set();
   for (const [key, info] of Object.entries(lock.packages ?? {})) {
     const entry = reference(key);
     if (!isDsh(entry.name)) continue;
-    // pnpm prefers an entry's own version and tarball over its key.
-    const tarball = info?.resolution?.tarball;
+    // pnpm prefers an entry's own version and resolution over its key.
     check(
       entry.version === version &&
         (info?.version === undefined || info.version === version) &&
-        (tarball === undefined || String(tarball).endsWith(`-${version}.tgz`)),
+        registryResolution(entry.name, version, info?.resolution),
       `lockfile resolves ${key}`,
     );
     packages.add(entry.name);
@@ -140,11 +177,9 @@ export async function verifyDshSingleGeneration({
       for (const [name, info] of Object.entries(data?.[section] ?? {})) {
         const target = resolved(name, info.version);
         // A local directory may hold a DSH package under another name.
-        const local = /^(?:link|file):/.exec(String(info.version));
+        const local = localTarget(root, importer, info.version);
         if (local && !isDsh(name)) {
-          const linked = await packageName(
-            resolve(root, importer, String(info.version).slice(5)),
-          );
+          const linked = await packageName(local);
           check(!isDsh(linked ?? ''), `${importer} links ${name} to ${linked}`);
         }
         if (!isDsh(name) && !isDsh(target.name)) continue;
@@ -163,12 +198,22 @@ export async function verifyDshSingleGeneration({
       `${importer} is a workspace package named ${manifest?.name}`,
     );
     for (const section of sections)
-      for (const [name, value] of Object.entries(manifest?.[section] ?? {}))
+      for (const [name, value] of Object.entries(manifest?.[section] ?? {})) {
         if (isDsh(name) || isDsh(aliasTarget(value) ?? ''))
           check(
             isDsh(name) && value === version,
             `${importer}/package.json ${section} ${name}@${value}`,
           );
+        // Links can be kept out of the lockfile, so follow them here too.
+        const local = localTarget(root, importer, value);
+        if (local && !isDsh(name)) {
+          const linked = await packageName(local);
+          check(
+            !isDsh(linked ?? ''),
+            `${importer}/package.json links ${name} to ${linked}`,
+          );
+        }
+      }
   }
 
   for (const [key, extension] of Object.entries(

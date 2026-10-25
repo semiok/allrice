@@ -205,7 +205,8 @@ initialization before each AllRice prompt, including cached hosts. Other tenant,
 profile or storage identities cannot replace a resident host. Existing model,
 content, assistant and Broker authorization remains mandatory.
 
-The current single approved 0.1.5 reader records
+A retained 0.1.5 reader, where a Worker still configures one (Dev configures
+none; the mechanism is removed in the next MET-221 step), records
 `binding_basis=approved_compatibility_reader`, never an inferred original writer.
 There is no blanket historical backfill or fallback to an empty/new log root.
 Keep the configured runtime root stable and preserve the binding table together
