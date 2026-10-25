@@ -289,7 +289,7 @@ if (!person) {
     password: 'Qa-' + crypto.randomBytes(12).toString('base64url'),
   };
   await call(
-    'PUT',
+    'POST',
     `/api/v1/admin/organizations/${org.id}/people/${person.userId}/password`,
     { password: creds.password },
     [200, 204],
