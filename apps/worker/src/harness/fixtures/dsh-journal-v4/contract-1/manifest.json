@@ -1,0 +1,130 @@
+{
+  "capturedWith": {
+    "allriceCommit": "66aae48a0d1266df33fa6f0fc54a365d7508d17b",
+    "uncommitted": ["?? .KEEP"],
+    "distributionVersion": "0.2.1-rc.2",
+    "sessionFormat": 4,
+    "contract": { "current": 1, "readsFrom": 1 },
+    "nativeArtifactId": "sha256:e8c0d23b0214082e3269f39e3246c30d0c293a0f75847d54ea205a27e9ce20d8",
+    "platform": "darwin-arm64 node v22.23.2",
+    "model": "synthetic loopback HTTP; no provider credentials",
+    "normalizedCwd": "/allrice/journal-fixture"
+  },
+  "scenarios": [
+    {
+      "id": "ordinary-tool",
+      "sessionId": "dsh-00000000-0000-4000-8000-000000000001",
+      "nativeTools": ["workspace.session.search"],
+      "toolResult": "journal-corpus-result",
+      "files": [
+        {
+          "path": "ordinary-tool/--allrice-journal-fixture--/dsh-00000000-0000-4000-8000-000000000001/session.v4.jsonl",
+          "sha256": "a330c3712d2b3c9239d6ea386eaedcbbe77669c387d7d99b99c07b72dc3a9c45"
+        }
+      ]
+    },
+    {
+      "id": "parked-question",
+      "sessionId": "dsh-00000000-0000-4000-8000-000000000002",
+      "nativeTools": [],
+      "answer": {
+        "sessionId": "dsh-00000000-0000-4000-8000-000000000002",
+        "questionId": "question-cf86503c-fd99-48e9-9118-de781b30110a",
+        "turnId": "dsh-00000000-0000-4000-8000-000000000002:turn:1",
+        "inputId": "00000000-0000-4000-8000-000000000003",
+        "text": "allrice:user-question:v1:{\"questionId\":\"question-cf86503c-fd99-48e9-9118-de781b30110a\",\"answers\":[{\"id\":\"choice\",\"selected\":[\"Continue\"]}]}"
+      },
+      "files": [
+        {
+          "path": "parked-question/--allrice-journal-fixture--/dsh-00000000-0000-4000-8000-000000000002/session.v4.jsonl",
+          "sha256": "8bdce90ecbdffac3fb3f079cf5b41df5bf4d0d5f3e6a7822fb3621e562451328"
+        }
+      ]
+    },
+    {
+      "id": "answered-question",
+      "sessionId": "dsh-00000000-0000-4000-8000-000000000002",
+      "nativeTools": [],
+      "answer": {
+        "sessionId": "dsh-00000000-0000-4000-8000-000000000002",
+        "questionId": "question-cf86503c-fd99-48e9-9118-de781b30110a",
+        "turnId": "dsh-00000000-0000-4000-8000-000000000002:turn:1",
+        "inputId": "00000000-0000-4000-8000-000000000003",
+        "text": "allrice:user-question:v1:{\"questionId\":\"question-cf86503c-fd99-48e9-9118-de781b30110a\",\"answers\":[{\"id\":\"choice\",\"selected\":[\"Continue\"]}]}"
+      },
+      "proof": {
+        "status": "adopted",
+        "inputId": "00000000-0000-4000-8000-000000000003",
+        "messageId": "question-cf86503c-fd99-48e9-9118-de781b30110a",
+        "sequence": 18,
+        "turnId": "dsh-00000000-0000-4000-8000-000000000002:turn:1",
+        "checkpoint": "question_resolved"
+      },
+      "files": [
+        {
+          "path": "answered-question/--allrice-journal-fixture--/dsh-00000000-0000-4000-8000-000000000002/session.v4.jsonl",
+          "sha256": "97a7bf546362491047c9013d32d311d5dbfd92d24bbf305b5cd3bf409d21fc83"
+        }
+      ]
+    },
+    {
+      "id": "continued-question",
+      "sessionId": "dsh-00000000-0000-4000-8000-000000000002",
+      "nativeTools": [],
+      "answer": {
+        "sessionId": "dsh-00000000-0000-4000-8000-000000000002",
+        "questionId": "question-cf86503c-fd99-48e9-9118-de781b30110a",
+        "turnId": "dsh-00000000-0000-4000-8000-000000000002:turn:1",
+        "inputId": "00000000-0000-4000-8000-000000000003",
+        "text": "allrice:user-question:v1:{\"questionId\":\"question-cf86503c-fd99-48e9-9118-de781b30110a\",\"answers\":[{\"id\":\"choice\",\"selected\":[\"Continue\"]}]}"
+      },
+      "proof": {
+        "status": "adopted",
+        "inputId": "00000000-0000-4000-8000-000000000003",
+        "messageId": "question-cf86503c-fd99-48e9-9118-de781b30110a",
+        "sequence": 18,
+        "turnId": "dsh-00000000-0000-4000-8000-000000000002:turn:1",
+        "checkpoint": "question_resolved"
+      },
+      "reply": "Journal question continued.",
+      "files": [
+        {
+          "path": "continued-question/--allrice-journal-fixture--/dsh-00000000-0000-4000-8000-000000000002/session.v4.jsonl",
+          "sha256": "be722fad0cbd1d7fba123e7a01c32194b52478e2766d15ccb063e2989cac6fb7"
+        }
+      ]
+    },
+    {
+      "id": "bootstrap-reference",
+      "sessionId": "dsh-00000000-0000-4000-8000-000000000004",
+      "nativeTools": [],
+      "coverage": {
+        "scope": "sha256:ba4e1ba1155957003872a288917b94c77eb55cbda6c52405898c7a558a9d523a",
+        "candidates": [
+          {
+            "key": "checkpoint",
+            "digest": "sha256:9da5e85931342d4f33581cdfcb1cc418911597f68832b02f8f580f5ecb821c88"
+          },
+          {
+            "key": "user:00000000-0000-4000-8000-000000000007",
+            "digest": "sha256:6cdec68ab165433974fb6109467382e621f9a8ff7ce2956cc24e153b9f62d5bf"
+          },
+          {
+            "key": "user:00000000-0000-4000-8000-000000000008",
+            "digest": "sha256:7feedb878eb666a81cbf76e3dd3dc09aec8f39ae05414d976cfedf0f647702f7"
+          },
+          {
+            "key": "assistant:00000000-0000-4000-8000-000000000009",
+            "digest": "sha256:c534be57beb55aeb0bb52cd638d465f4a65674781c872dd9f5b71822c4d9baef"
+          }
+        ]
+      },
+      "files": [
+        {
+          "path": "bootstrap-reference/--allrice-journal-fixture--/dsh-00000000-0000-4000-8000-000000000004/session.v4.jsonl",
+          "sha256": "3b017726f6dc8a69816dcf70502ec76669d2e25c89b0a6abe30a7e8a12a2f0cd"
+        }
+      ]
+    }
+  ]
+}

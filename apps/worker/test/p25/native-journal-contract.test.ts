@@ -325,8 +325,8 @@ function storage(runtimeRoot: string | undefined, show: (p: string) => string) {
     return Object.fromEntries(
       Object.entries({
         employee: { sessionId: 'S' },
-        internal: { internalTask: {}, nativeContextId: 'N' },
-        experience: { internalTask: { occurrenceId: 'O' } },
+        internal: { sessionId: null, internalTask: {}, nativeContextId: 'N' },
+        experience: { sessionId: null, internalTask: { occurrenceId: 'O' } },
       }).map(([kind, kernel]) => {
         const located = pool.storage({ executionEnvironment, kernel });
         return [
