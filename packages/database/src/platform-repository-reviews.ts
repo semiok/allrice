@@ -347,15 +347,19 @@ export const platformRepositoryReviewInstructions = [
 ].join('\n');
 
 /** Trusted Worker HTTP gate, never returned by a route/tool. Reuses the fixed
- * repository credential and canonical root lease before every read. */
+ * repository credential and canonical root lease before every read. The only
+ * lock is the credential fence (identity → login → credential, the order its
+ * writers use): a credential change in flight finishes before the request.
+ * The job row is read, not locked, so a cancel never queues behind that wait;
+ * the lease is read again afterwards against the database clock. */
 export async function repositoryReviewRequestGate(
   lease: RepositoryActionLease,
 ) {
   return getDatabase().begin(async (tx) => {
     const [job] = await tx<
       JobRow[]
-    >`select * from allrice_jobs where id=${lease.jobId} and worker_id=${lease.workerId} and lease_token=${lease.leaseToken} and attempt=${lease.attempt} and status='running' and cancel_requested_at is null and lease_expires_at>clock_timestamp() and timeout_at>clock_timestamp() for share`;
-    if (!job || !(await isRepositoryReviewJobAuthorized(tx, job)))
+    >`select * from allrice_jobs where id=${lease.jobId} and worker_id=${lease.workerId} and lease_token=${lease.leaseToken} and attempt=${lease.attempt} and status='running' and cancel_requested_at is null and lease_expires_at>clock_timestamp() and timeout_at>clock_timestamp()`;
+    if (!job || !(await isRepositoryReviewJobAuthorized(tx, job, false)))
       throw new DataAccessError('authorization_denied');
     const [s] =
       await tx`select * from allrice_platform_repository_review_subjects where job_id=${job.id} and run_id=${job.run_id}`;
@@ -374,7 +378,7 @@ export async function repositoryReviewRequestGate(
       },
       f.credentialRevision,
     );
-    const live = await assertRepositoryReviewLease(tx, job);
+    const live = await assertRepositoryReviewLease(tx, job, false);
     return {
       token: credential,
       remainingMs: Math.min(

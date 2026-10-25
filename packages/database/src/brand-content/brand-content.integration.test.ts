@@ -1548,19 +1548,39 @@ suite(
       });
       await held;
       const reading = board(f);
-      for (let waited = 0; ; waited += 20) {
-        const [parked] = await fixture.db<
-          { n: number }[]
-        >`select count(*)::int n from pg_locks where relation='allrice_brand_content_topics'::regclass and not granted`;
-        if (parked!.n) break;
-        if (waited > 10_000)
-          throw new Error('board never reached the topic read');
-        await new Promise((resolve) => setTimeout(resolve, 20));
+      try {
+        for (let waited = 0; ; waited += 20) {
+          const [parked] = await fixture.db<
+            { n: number }[]
+          >`select count(*)::int n from pg_locks where relation='allrice_brand_content_topics'::regclass and not granted`;
+          if (parked!.n) break;
+          if (waited > 10_000)
+            throw new Error('board never reached the topic read');
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+      } finally {
+        // Never leave the table lock held for later cases, even on failure.
+        release();
+        await Promise.allSettled([decision, reading]);
       }
-      release();
       await decision;
       expect(pair(await reading)).toEqual(before);
       expect(pair(await board(f))).toEqual([2, 'accepted']);
+    });
+
+    it('a file denial inside the board stays authorization_denied (MET-210 #4)', async () => {
+      const source = await seedUpload(a, [10, 20, 30]);
+      const f = await prepareBrand(a, 'board-denial', [source]);
+      // A personal file policy owned by someone else denies the context's
+      // source file at the board's file read, after the board's own checks.
+      // getStoredFile then writes its denial audit inside the board
+      // transaction, which a read-only snapshot would turn into 25006.
+      await fixture.db`insert into allrice_workbench_file_policies
+        (object_id,organization_id,workspace_id,owner_id,file_name,scope)
+        values (${source.objectId},${a.org},${a.workspace},${b.user},'denied.png','personal')`;
+      await expect(board(f)).rejects.toMatchObject({
+        code: 'authorization_denied',
+      });
     });
 
     it('checks actual storage checksums, exact native parents, and cross-instance/tenant file ownership before changing a draft', async () => {

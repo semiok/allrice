@@ -1520,6 +1520,47 @@ suite(
         ),
       ).rejects.toMatchObject({ code: 'authorization_denied' });
     }, 30000);
+    it('MET-210 a cancel never queues behind the request gate while it waits for the credential fence', async () => {
+      const s = await start(await setup());
+      let locked!: () => void, release!: () => void;
+      const acquired = new Promise<void>((r) => {
+          locked = r;
+        }),
+        unblock = new Promise<void>((r) => {
+          release = r;
+        });
+      const holder = f.db.begin(async (tx) => {
+        await tx`select pg_advisory_xact_lock(hashtext(${`platform-repository-credential:${s.admin.actor.id}:1323769790`}))`;
+        locked();
+        await unblock;
+      });
+      await acquired;
+      const gated = repositoryReviewRequestGate(s.lease);
+      void gated.catch(() => undefined);
+      try {
+        await vi.waitFor(
+          async () => {
+            const [waiting] = await f.db<
+              { n: number }[]
+            >`select count(*)::int n from pg_locks where locktype='advisory' and not granted`;
+            expect(waiting!.n).toBeGreaterThan(0);
+          },
+          { timeout: 5000, interval: 20 },
+        );
+        // The job row update a cancellation makes; it would wait for the
+        // gate's row lock (and time out) if the gate held one.
+        await f.db.begin(async (tx) => {
+          await tx`set local lock_timeout = '1s'`;
+          await tx`update allrice_jobs set cancel_requested_at=clock_timestamp() where id=${s.review.jobId}`;
+        });
+      } finally {
+        release();
+        await holder;
+      }
+      await expect(gated).rejects.toMatchObject({
+        code: 'authorization_denied',
+      });
+    }, 30000);
     it('fails closed when the login or persisted source/CI is revoked, retaining history', async () => {
       const s = await start(await setup());
       await f.db`update allrice_sessions set revoked_at=clock_timestamp() where id=${s.admin.sessionId!}`;

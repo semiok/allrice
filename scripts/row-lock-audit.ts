@@ -845,6 +845,21 @@ export function createRowLockAudit(
       );
     };
 
+    /** A span's text when it is a literal, pinned or `const` string. */
+    const stringValue = (expression: ts.Expression): string | null => {
+      const known = evaluate(expression, env);
+      if (known && typeof known.value === 'string') return known.value;
+      const declaration = ts.isIdentifier(expression)
+        ? symbolOf(expression)?.valueDeclaration
+        : undefined;
+      return declaration &&
+        ts.isVariableDeclaration(declaration) &&
+        ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const &&
+        declaration.initializer &&
+        ts.isStringLiteralLike(declaration.initializer)
+        ? declaration.initializer.text
+        : null;
+    };
     const statement = (node: ts.Statement): boolean => {
       // Nested function and class declarations run only when referenced.
       if (boundary(node)) return false;
@@ -880,11 +895,14 @@ export function createRowLockAudit(
           );
           if (start < 0) start = clauses.findIndex(ts.isDefaultClause);
           if (start < 0) return false;
+          // A top-level `break` always leaves the switch; one nested in a
+          // branch only may, so the following clauses still run on fall-through.
+          let mayLeave = false;
           for (const clause of clauses.slice(start)) {
-            const exits = statements(clause.statements);
-            // A `break` anywhere in the clause may leave only the switch.
-            if (leavesSwitch(clause)) return false;
-            if (exits) return true;
+            const flow = clauseFlow(clause.statements);
+            if (flow === 'leave') return false;
+            mayLeave ||= leavesSwitch(clause);
+            if (flow === 'exit') return !mayLeave;
           }
           return false;
         }
@@ -896,6 +914,20 @@ export function createRowLockAudit(
       }
       ts.forEachChild(node, visit);
       return false;
+    };
+    /** One clause in order: a return/throw, an unconditional break, or neither. */
+    const clauseFlow = (
+      list: readonly ts.Statement[],
+    ): 'exit' | 'leave' | 'next' => {
+      for (const node of list) {
+        if (ts.isBreakStatement(node) || ts.isContinueStatement(node))
+          return 'leave';
+        if (ts.isBlock(node)) {
+          const inner = clauseFlow(node.statements);
+          if (inner !== 'next') return inner;
+        } else if (statement(node)) return 'exit';
+      }
+      return 'next';
     };
     const leavesSwitch = (clause: ts.CaseOrDefaultClause) => {
       let found = false;
@@ -960,29 +992,49 @@ export function createRowLockAudit(
         if (ROW_LOCK.test(text)) summary.locks.push(siteKey(node, text));
         if (SQL_WRITE.test(text)) summary.writes = true;
       }
-      // `tx.unsafe('… for update')`: plain-string SQL, checked like a template.
+      // `tx.unsafe('… for update')` or `tx['unsafe'](…)`: string SQL, checked
+      // like a template. Interpolated text is SQL here, so a span that is not
+      // a known string leaves the statement unresolved.
+      const callee = ts.isCallExpression(node) ? node.expression : undefined;
       if (
         ts.isCallExpression(node) &&
-        ts.isPropertyAccessExpression(node.expression) &&
-        node.expression.name.text === 'unsafe' &&
+        callee &&
+        ((ts.isPropertyAccessExpression(callee) &&
+          callee.name.text === 'unsafe') ||
+          (ts.isElementAccessExpression(callee) &&
+            ts.isStringLiteralLike(callee.argumentExpression) &&
+            callee.argumentExpression.text === 'unsafe')) &&
         node.arguments[0] &&
         own(node.getSourceFile())
       ) {
         const argument = node.arguments[0];
+        const spans = ts.isTemplateExpression(argument)
+          ? argument.templateSpans.map((span) => stringValue(span.expression))
+          : [];
         if (
           ts.isStringLiteral(argument) ||
           ts.isNoSubstitutionTemplateLiteral(argument) ||
           ts.isTemplateExpression(argument)
         ) {
           const text = ts.isTemplateExpression(argument)
-            ? [
-                argument.head.text,
-                ...argument.templateSpans.map((span) => span.literal.text),
-              ].join(' $ ')
+            ? argument.head.text +
+              argument.templateSpans
+                .map(
+                  (span, index) => (spans[index] ?? ' $ ') + span.literal.text,
+                )
+                .join('')
             : argument.text;
           if (ROW_LOCK.test(text)) summary.locks.push(siteKey(node, text));
           if (SQL_WRITE.test(text)) summary.writes = true;
-        } else {
+        }
+        if (
+          !(
+            ts.isStringLiteral(argument) ||
+            ts.isNoSubstitutionTemplateLiteral(argument) ||
+            ts.isTemplateExpression(argument)
+          ) ||
+          spans.some((span) => span === null)
+        ) {
           const where = label(node);
           summary.unresolved.push(`${where.file} unsafe(<dynamic SQL>)`);
         }
@@ -1024,6 +1076,11 @@ export function createRowLockAudit(
         else if (members)
           enter(members as readonly ts.Declaration[], node.parent, undefined);
         else if (
+          // A SQL client (`sql[name](…)` may be `unsafe`) or our own function.
+          (!property &&
+            !!checker
+              .getTypeAtLocation(node.expression)
+              .getProperty('unsafe')) ||
           checker
             .getTypeAtLocation(node)
             .getCallSignatures()

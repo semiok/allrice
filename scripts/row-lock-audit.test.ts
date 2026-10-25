@@ -104,6 +104,7 @@ describe('GET route handlers take no row locks', () => {
 describe('row-lock audit follows the call shapes it claims to', () => {
   let project: string;
   let reached: string[];
+  let unresolved: string[];
   const files: Record<string, string> = {
     'apps/web/tsconfig.json': JSON.stringify({
       compilerOptions: {
@@ -118,10 +119,17 @@ describe('row-lock audit follows the call shapes it claims to', () => {
       },
       include: ['../../**/*.ts'],
     }),
-    'lib/db.ts': `type Sql = {
+    // The SQL client is an outside package, like postgres.js.
+    'node_modules/fakepg/package.json': JSON.stringify({
+      name: 'fakepg',
+      version: '1.0.0',
+      types: 'index.d.ts',
+    }),
+    'node_modules/fakepg/index.d.ts': `export type Sql = {
   (strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]>;
   unsafe(text: string): Promise<unknown[]>;
-};
+};`,
+    'lib/db.ts': `import type { Sql } from 'fakepg';
 export declare const sql: Sql;`,
     'lib/reads.ts': `import { sql } from './db.ts';
 export async function readRun(lock = true) {
@@ -206,6 +214,38 @@ export function createStore(): Store {
   await pick[new URL(request.url).searchParams.get('k') as keyof typeof pick]();
 }`,
   );
+  route(
+    'conditional-break',
+    `export async function GET(request: Request) {
+  const skip = new URL(request.url).searchParams.has('skip');
+  switch (request.method) {
+    case 'GET':
+      if (skip) break;
+    // falls through
+    case 'POST':
+      await sql\`select * from runs for share\`;
+      return new Response();
+  }
+  return new Response();
+}`,
+  );
+  route(
+    'unsafe-const',
+    "const tail = 'for update';\nexport async function GET() { await sql.unsafe(`select * from runs ${tail}`); }",
+  );
+  route(
+    'unsafe-element',
+    "export async function GET() { await sql['unsafe']('select * from runs for update'); }",
+  );
+  // Must be unresolved, not silently safe.
+  route(
+    'unsafe-dynamic',
+    'export async function GET(request: Request) { const tail = new URL(request.url).search; await sql.unsafe(`select * from runs ${tail}`); }',
+  );
+  route(
+    'client-dynamic-key',
+    "export async function GET(request: Request) { const name = new URL(request.url).search as 'unsafe'; await sql[name]('select 1'); }",
+  );
   route('alias', 'export async function GET() { await reads.alias(); }');
   route(
     'interface-factory',
@@ -241,23 +281,23 @@ export const POST = () => handle(true);`,
       await mkdir(dirname(join(project, path)), { recursive: true });
       await writeFile(join(project, path), text);
     }
+    const report = createRowLockAudit(project).routeLocks(
+      ['GET'],
+      undefined,
+      ['barrier-and-read', 'barrier-only'].map((name) => ({
+        route: `apps/web/app/api/${name}/route.ts`,
+        file: 'lib/reads.ts',
+        owner: 'renew',
+      })),
+    );
     reached = [
       ...new Set(
-        createRowLockAudit(project)
-          .routeLocks(
-            ['GET'],
-            undefined,
-            ['barrier-and-read', 'barrier-only'].map((name) => ({
-              route: `apps/web/app/api/${name}/route.ts`,
-              file: 'lib/reads.ts',
-              owner: 'renew',
-            })),
-          )
-          .reached.flatMap((site) =>
-            site.routes.map((entry) => entry.split('/')[4]!),
-          ),
+        report.reached.flatMap((site) =>
+          site.routes.map((entry) => entry.split('/')[4]!),
+        ),
       ),
     ].sort();
+    unresolved = report.unresolved;
   }, 60_000);
   afterAll(async () => {
     if (project?.includes('row-lock-audit-'))
@@ -269,6 +309,7 @@ export const POST = () => handle(true);`,
       [
         'alias',
         'barrier-and-read',
+        'conditional-break',
         'direct',
         'dynamic-key',
         'element-access',
@@ -276,8 +317,22 @@ export const POST = () => handle(true);`,
         'reassigned-parameter',
         'switch-break',
         'unknown-object',
+        'unsafe-const',
+        'unsafe-element',
         'unsafe-string',
       ].sort(),
     );
+  });
+
+  it('reports SQL it cannot read as unresolved instead of safe', () => {
+    expect(unresolved).toEqual(
+      expect.arrayContaining([
+        'apps/web/app/api/unsafe-dynamic/route.ts unsafe(<dynamic SQL>)',
+        'apps/web/app/api/client-dynamic-key/route.ts [<dynamic key>]()',
+      ]),
+    );
+    expect(
+      unresolved.filter((entry) => /unsafe-(?:const|element)\//.test(entry)),
+    ).toEqual([]);
   });
 });

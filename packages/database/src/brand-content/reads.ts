@@ -83,16 +83,15 @@ export async function getBrandContentBoard(
     db = options.db ?? getDatabase();
   // The board spans many statements. Without a commit fence (Worker tools pass
   // beforeCommit, which takes its own locks) they share one snapshot, so a
-  // decision committing midway cannot pair an old batch with a new topic.
+  // decision committing midway cannot pair an old batch with a new topic. Not
+  // read only: a denied file read still records its audit row.
   const transaction = (
     run: Parameters<typeof employeeAccessTransaction<BrandContentBoard>>[1],
   ) =>
     employeeAccessTransaction(
       db,
       run,
-      options.beforeCommit
-        ? {}
-        : { mode: 'isolation level repeatable read read only' },
+      options.beforeCommit ? {} : { mode: 'isolation level repeatable read' },
     );
   return transaction(async (tx) => {
     const scope = await requireBrandContentScope(
