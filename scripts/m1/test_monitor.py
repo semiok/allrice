@@ -71,9 +71,25 @@ class AlertStateMachine(unittest.TestCase):
             step(r, [bad('t')], i * 600)
             step(r, [ok('t')], i * 600 + 300)
         self.assertEqual(step(r, [bad('t')], 1800), [('opened', 't', True)])
-        self.assertEqual(step(r, [bad('t')], 2100), [])
-        self.assertEqual(step(r, [bad('t')], 2400), [('reminder', 't', False)])  # bad for 10 minutes: paged
-        self.assertEqual(step(r, [ok('t')], 2700), [('recovered', 't', False)])
+        self.assertEqual(step(r, [bad('t')], 2100), [('reminder', 't', False)])  # still bad on the next round: paged
+        self.assertEqual(step(r, [ok('t')], 2400), [('recovered', 't', False)])
+
+    def test_escalation_inside_a_mute_ends_it(self):
+        r = make_round()
+        for i in range(3):
+            step(r, [bad('t', 'warning')], i * 600)
+            step(r, [ok('t')], i * 600 + 300)
+        self.assertEqual(step(r, [bad('t', 'warning')], 1800), [('opened', 't', True)])
+        self.assertEqual(step(r, [bad('t', 'critical')], 1830), [('escalated', 't', False)])
+        self.assertEqual(step(r, [bad('t', 'critical')], 2100), [])  # no early reminder after the escalation
+        self.assertEqual(step(r, [ok('t')], 2400), [('recovered', 't', False)])  # and its recovery is told
+
+    def test_unknown_neither_opens_nor_closes(self):
+        r = make_round()
+        self.assertEqual(step(r, [monitor.unknown('v')], 0), [])
+        step(r, [bad('vm:a')], 0, {'vm'})
+        self.assertEqual(step(r, [monitor.unknown('vm:a')], 300, {'vm'}), [])  # not "removed from the config"
+        self.assertIn('vm:a', r.state['alerts'])
 
     def test_flapping_is_muted_after_one_notice(self):
         r = make_round()
@@ -300,9 +316,9 @@ class Deploys(unittest.TestCase):
         with self.assertRaises(SystemExit):
             monitor.ingest_incidents(r.cfg, io.StringIO('[{"kind": "kill_switch", "id": "x"}]'))
         row = {'id': '00000000-0000-4000-8000-000000000000', 'kind': 'monitor_alert', 'detailCode': 'monitor.m1_heartbeat', 'metadata': {}}
-        with mock.patch.object(monitor.Round, 'psql', return_value='') as psql:
+        with mock.patch.object(monitor, 'psql', return_value='') as psql:
             monitor.ingest_incidents(r.cfg, io.StringIO(json.dumps([row])))
-        self.assertIn('allrice_operational_incidents', psql.call_args[0][0])
+        self.assertIn('allrice_operational_incidents', psql.call_args[0][1])
 
 
 class Peer(unittest.TestCase):

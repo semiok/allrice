@@ -47,7 +47,7 @@ COMMON = {
     'repeatMinutes': {'critical': 60, 'warning': 360},
     'flapLimit': 3,
     'flapMinutes': 60,
-    'flapBreakMinutes': 10,  # a key that stays bad this long breaks its mute: a real outage
+    'flapBreakMinutes': 4,  # bad again on the next round breaks the mute: a real outage
     'publicProxy': '',  # public probes go direct: a dead local proxy is not an outage
     'confirmSeconds': 20,
     'roundTimeoutSeconds': 240,
@@ -72,7 +72,7 @@ M1 = dict(
     peerHeartbeat='.local/state/allrice-monitor-peer/heartbeat.json',
     peerStaleMinutes=4,  # the peer starts a round every minute and writes its heartbeat then
     peerUnfinishedMinutes=5,
-    peerTelegramStuckMinutes=5,
+    peerTelegramStuckMinutes=3,  # the peer sends every minute: three failed rounds
     incidents=True,
     # Left empty, these come from the shared-Dev launchd files and .env, so the monitor
     # follows a redeploy or a port change without being edited.
@@ -95,7 +95,7 @@ PEER = dict(
     # one peer interval keeps "M1 monitor stopped" under 10 minutes.
     m1StaleMinutes=7,
     m1UnfinishedMinutes=6,
-    m1TelegramStuckMinutes=8,  # two failed rounds in a row
+    m1TelegramStuckMinutes=7,  # two failed M1 rounds in a row
     deployGraceMinutes=45,
     intervalSeconds=60,
     roundTimeoutSeconds=150,
@@ -243,10 +243,18 @@ def finding(key, severity, title, detail='', runbook='', step=''):
     return {'key': key, 'severity': severity, 'title': title, 'detail': detail, 'runbook': runbook, 'step': step}
 
 
-class Round:
-    """One round: its config, the persistent state and what the checks learned."""
+def unknown(key, title=''):
+    """A key the check cannot judge this round (no evidence either way): an open alert
+    stays open and nothing new opens."""
+    return finding(key, 'unknown', title)
 
-    def __init__(self, cfg, peer=False):
+
+class Round:
+    """One round: its config, the persistent state and what the checks learned. Only a
+    real round, holding the lock, moves a corrupt state file aside (recover=True); a dry
+    run or another command reads it as empty and leaves it for that round to report."""
+
+    def __init__(self, cfg, peer=False, recover=False):
         self.cfg, self.peer, self.now = cfg, peer, time.time()
         os.makedirs(cfg['stateDir'], mode=0o700, exist_ok=True)
         self.state_file = os.path.join(cfg['stateDir'], 'state.json')
@@ -256,32 +264,37 @@ class Round:
                 with open(self.state_file) as f:
                     self.state = json.load(f)
             except (OSError, ValueError):
-                # Keep the unreadable file for a person; the round goes on from scratch
-                # and says so, instead of silently dropping the backlog it held.
-                self.state_lost = '%s.corrupt-%d' % (self.state_file, self.now)
-                os.replace(self.state_file, self.state_lost)
+                if recover:  # keep the unreadable file for a person, and say so
+                    self.state_lost = '%s.corrupt-%d' % (self.state_file, self.now)
+                    os.replace(self.state_file, self.state_lost)
+                    self.state = {'stateLost': self.state_lost}
         self.facts, self.progress = {}, None
 
     def save(self):
         write_json(self.state_file, self.state)
 
     def psql(self, sql, url=None, variables=None, timeout=30, readonly=True):
-        if not url:
-            raise CheckError('no database URL configured')
-        parts, env = urllib.parse.urlsplit(url), {}
-        if parts.password:  # keep it out of `ps`
-            env['PGPASSWORD'] = urllib.parse.unquote(parts.password)
-            host = parts.hostname + (':%d' % parts.port if parts.port else '')
-            url = urllib.parse.urlunsplit(parts._replace(netloc='%s@%s' % (parts.username, host) if parts.username else host))
-        cmd = [self.cfg['psql'], url, '-X', '-q', '-A', '-t', '-v', 'ON_ERROR_STOP=1']
-        for k, v in (variables or {}).items():
-            cmd += ['-v', '%s=%s' % (k, v)]
-        opts = '-c statement_timeout=15000' + (' -c default_transaction_read_only=on' if readonly else '')
-        env.update(PGCONNECT_TIMEOUT='5', PGAPPNAME='allrice-monitor', PGOPTIONS=opts)
-        rc, out, err = run(cmd, timeout, env, sql)
-        if rc:
-            raise CheckError(short(err or 'psql exit %d' % rc))
-        return out.strip()
+        return psql(self.cfg, sql, url, variables, timeout, readonly)
+
+
+def psql(cfg, sql, url=None, variables=None, timeout=30, readonly=True):
+    """Run SQL (on stdin, so :'var' variables work) and return its output."""
+    if not url:
+        raise CheckError('no database URL configured')
+    parts, env = urllib.parse.urlsplit(url), {}
+    if parts.password:  # keep it out of `ps`
+        env['PGPASSWORD'] = urllib.parse.unquote(parts.password)
+        host = parts.hostname + (':%d' % parts.port if parts.port else '')
+        url = urllib.parse.urlunsplit(parts._replace(netloc='%s@%s' % (parts.username, host) if parts.username else host))
+    cmd = [cfg['psql'], url, '-X', '-q', '-A', '-t', '-v', 'ON_ERROR_STOP=1']
+    for k, v in (variables or {}).items():
+        cmd += ['-v', '%s=%s' % (k, v)]
+    opts = '-c statement_timeout=15000' + (' -c default_transaction_read_only=on' if readonly else '')
+    env.update(PGCONNECT_TIMEOUT='5', PGAPPNAME='allrice-monitor', PGOPTIONS=opts)
+    rc, out, err = run(cmd, timeout, env, sql)
+    if rc:
+        raise CheckError(short(err or 'psql exit %d' % rc))
+    return out.strip()
 
 
 # ---------- alert state machine ----------
@@ -301,6 +314,8 @@ def evaluate(r, findings, ran=()):
                                  if ':' in k and k.split(':', 1)[0] in ran and k not in reported]
     for f in findings:
         key, sev, cur = f['key'], f['severity'], alerts.get(f['key'])
+        if sev == 'unknown':
+            continue
         if sev == 'ok':
             if cur:
                 del alerts[key]
@@ -332,7 +347,8 @@ def evaluate(r, findings, ran=()):
         since, inc, notified, muted = cur['since'], cur['incidentId'], cur['notifiedAt'], cur.get('mutedUntil', 0)
         cur.update(f, since=since, incidentId=inc)
         if escalated:
-            cur.update(notifiedAt=now, notifiedSeverity=sev)
+            cur.update(notifiedAt=now, notifiedSeverity=sev, silentOpen=False, mutedUntil=0)  # told: no longer muted
+            r.state.get('muted', {}).pop(key, None)
             events.append({'event': 'escalated', 'finding': f, 'alert': cur, 'silent': False})
             incident(r, 'monitor_alert', sev, f, cur, event='escalated')
         elif muted > now and cur.get('silentOpen') and now - since >= cfg['flapBreakMinutes'] * 60:
@@ -424,7 +440,10 @@ on conflict (id) do nothing;
 
 def flush_incidents(r):
     """Write queued incidents; on failure keep them (bounded) for the next round."""
-    box = r.state.get('incidentOutbox', [])[-200:]
+    box = r.state.get('incidentOutbox', [])
+    if len(box) > 200:
+        r.state['incidentDropped'] = r.state.get('incidentDropped', 0) + len(box) - 200
+        box = box[-200:]
     r.state['incidentOutbox'] = box
     if not box:
         return
@@ -432,6 +451,7 @@ def flush_incidents(r):
         r.psql(INSERT_INCIDENTS, r.cfg['incidentDatabaseUrl'], {'rows': json.dumps(box, ensure_ascii=False)}, readonly=False)
         r.state['incidentOutbox'] = []
         r.state['incidentError'] = None
+        r.state.pop('incidentDropped', None)
     except CheckError as err:
         r.state['incidentError'] = {'at': r.now, 'error': str(err)}
         r.state.setdefault('incidentFailingSince', r.now)
@@ -442,19 +462,25 @@ def flush_incidents(r):
 def flush_incidents_remote(r):
     """The huihuimac side has no database: its incidents go to M1's table through the
     monitor installed there (`monitor ingest-incidents`), as soon as M1 answers again."""
-    box = r.state.get('incidentOutbox', [])[-200:]
+    box = r.state.get('incidentOutbox', [])
+    if len(box) > 200:
+        r.state['incidentDropped'] = r.state.get('incidentDropped', 0) + len(box) - 200
+        box = box[-200:]
     r.state['incidentOutbox'] = box
     if not box:
         return
-    cmd = shlex.quote(r.cfg['m1Monitor']) + ' ingest-incidents'
+    cmd = '/usr/bin/python3 %s ingest-incidents' % shlex.quote(r.cfg['m1Monitor'])
     if r.cfg.get('m1MonitorConfig'):
         cmd += ' --config ' + shlex.quote(r.cfg['m1MonitorConfig'])
     rc, _, err = run(['/usr/bin/ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', r.cfg['m1Ssh'], cmd], 60,
                      stdin=json.dumps(box, ensure_ascii=False))
     if rc:
         r.state['incidentError'] = {'at': r.now, 'error': 'ingest on %s failed (exit %d): %s' % (r.cfg['m1Ssh'], rc, short(err, 200))}
+        r.state.setdefault('incidentFailingSince', r.now)
     else:
         r.state['incidentOutbox'], r.state['incidentError'] = [], None
+        r.state.pop('incidentFailingSince', None)
+        r.state.pop('incidentDropped', None)
 
 
 def ingest_incidents(cfg, stream):
@@ -465,7 +491,7 @@ def ingest_incidents(cfg, stream):
         and isinstance(i.get('metadata'), dict) and re.match(r'^[0-9a-f-]{36}$', str(i.get('id', ''))) for i in rows)
     if not ok:
         sys.exit('ingest-incidents: expected a JSON list of monitor incidents')
-    Round(cfg).psql(INSERT_INCIDENTS, cfg['incidentDatabaseUrl'], {'rows': json.dumps(rows, ensure_ascii=False)}, readonly=False)
+    psql(cfg, INSERT_INCIDENTS, cfg['incidentDatabaseUrl'], {'rows': json.dumps(rows, ensure_ascii=False)}, readonly=False)
     print('ingested %d' % len(rows))
 
 
@@ -561,7 +587,7 @@ def lock_holders(path):
     open file means held. Asked with lsof, never by probing the lock: even a brief probe
     could make a deploy that starts at that moment fail as busy."""
     rc, out, _ = run(['/usr/sbin/lsof', '-t', '--', path], 10)
-    return out.split() if rc == 0 else []
+    return out.split() if rc == 0 else []  # 1: nobody; anything else: not known to be held, so judged
 
 
 def in_grace(r, name, held):
@@ -579,10 +605,8 @@ def in_grace(r, name, held):
 def deploying(r):
     """True while a deploy or other planned work holds the deploy lock (AGENTS.md section 5,
     e.g. a manual restart): Web, Worker, the database and the public entry may be down on
-    purpose then, so they are not judged."""
-    if 'deploying' not in r.facts:
-        r.facts['deploying'] = in_grace(r, 'm1', lock_holders(expand(r.cfg['deployLock'])))
-    return r.facts['deploying']
+    purpose then, so they are not judged. Asked again by every check and every re-check."""
+    return in_grace(r, 'm1', lock_holders(expand(r.cfg['deployLock'])))  # asked afresh: a re-check sees a deploy that just started
 
 
 def check_deploy(r):
@@ -699,12 +723,13 @@ def check_peer(r):
 
 def check_monitor(r):
     """The monitor's own delivery: alerts that cannot reach the incidents table."""
-    since = r.state.get('incidentFailingSince')
+    since, dropped = r.state.get('incidentFailingSince'), r.state.get('incidentDropped', 0)
     if not since or r.now - since < 1800:
         return [finding('monitor', 'ok', '告警写不进事件表')]
     err = (r.state.get('incidentError') or {}).get('error', '')
-    return [finding('monitor', 'warning', '告警写不进事件表', '已 %s，积压 %d 条：%s' % (ago(r.now - since), len(r.state.get('incidentOutbox', [])), err),
-                    'm1-monitor.md', '~/allrice-dev/bin/monitor status')]
+    return [finding('monitor', 'warning', '告警写不进事件表', '已 %s，积压 %d 条%s：%s' % (
+        ago(r.now - since), len(r.state.get('incidentOutbox', [])), '（另有 %d 条超出上限已丢弃）' % dropped if dropped else '', err),
+        'm1-monitor.md', 'monitor status')]
 
 
 # name, function, re-run once before alerting, skip unless this earlier check is ok
@@ -822,7 +847,7 @@ def on_alarm(signum, frame):
 
 def do_round(cfg, peer):
     lock = locked(cfg)
-    r = Round(cfg, peer)
+    r = Round(cfg, peer, recover=True)
     start, error = time.time(), None
     heartbeat(r, 0, phase='running')
     signal.signal(signal.SIGALRM, on_alarm)
@@ -837,8 +862,9 @@ def do_round(cfg, peer):
         findings, ran = collect_checks(r) if r.progress else ([], set())
         findings.append(finding('monitor_round', 'critical', '监控本轮超时', '检查 %s 卡住，%s 秒没跑完；其余检查的结果照常报告' % (
             stuck, cfg['roundTimeoutSeconds']), 'm1-monitor.md', 'monitor status'))
-    findings.append(finding('monitor_state', 'warning' if r.state_lost else 'ok', '监控状态文件损坏',
-                            '读不出来，已另存为 %s；之前的待发通知和告警状态丢了，已有的故障会重新报一次' % r.state_lost,
+    lost = r.state.pop('stateLost', None)
+    findings.append(finding('monitor_state', 'warning' if lost else 'ok', '监控状态文件损坏',
+                            '读不出来，已另存为 %s；之前的待发通知和告警状态丢了，已有的故障会重新报一次' % lost,
                             'm1-monitor.md', 'monitor status'))
     signal.alarm(90)  # delivery has its own timeouts; this only bounds a hung write
     try:
@@ -886,12 +912,18 @@ def check_m1(r):
 def check_outside(r):
     if r.facts.get('m1Deploying'):
         return None  # a deploy on M1 stops Web on purpose
-    return probe_public(r, r.cfg['publicUrl'] or r.state.get('m1PublicUrl'), 'public_entry', ' M1 之外（huihuimac）')
+    out = probe_public(r, r.cfg['publicUrl'] or r.state.get('m1PublicUrl'), 'public_entry', ' M1 之外（huihuimac）')
+    if out[0]['severity'] != 'ok':  # a deploy may have started since the M1 check: ask again
+        _, _, reachable, holders = read_remote_heartbeat(r.cfg['m1Ssh'], r.cfg['m1Heartbeat'], r.cfg['m1DeployLock'])
+        if reachable and in_grace(r, 'm1', bool(holders)):
+            return None
+    return out
 
 
 PEER_CHECKS = [
     ('m1', check_m1, True, None),
     ('public_entry', check_outside, True, None),
+    ('monitor', check_monitor, False, None),
 ]
 
 
