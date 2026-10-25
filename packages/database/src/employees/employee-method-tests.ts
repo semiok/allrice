@@ -155,6 +155,7 @@ async function currentBinding(
   b: Binding,
   admission = false,
   lockedCompanyContent?: ActivationContent,
+  lock = true,
 ) {
   const context = contextFor(b);
   if (b.case_id === employeeMethodFileCase.id) {
@@ -177,10 +178,12 @@ async function currentBinding(
   const principal = await readContentPrincipal(
     context,
     tx,
-    admission ? 'update_user' : true,
+    lock ? (admission ? 'update_user' : true) : false,
   );
   if (!principal?.writable) throw new DataAccessError('authorization_denied');
-  await tx`select pg_advisory_xact_lock(hashtextextended(${`employee-content:${b.organization_id}`},0))`;
+  // Read-only DTOs skip the org-wide content mutex; they write nothing.
+  if (lock)
+    await tx`select pg_advisory_xact_lock(hashtextextended(${`employee-content:${b.organization_id}`},0))`;
   const instance = await getEmployeeInstance(context, b.instance_id, tx);
   const old = EmployeeInstanceSchema.parse(b.candidate_snapshot.instance);
   if (
@@ -192,7 +195,7 @@ async function currentBinding(
   // locked in this very transaction. Reuse it per proof, never across requests.
   const current =
     lockedCompanyContent ??
-    (await freezeEmployeeMethodCandidate(context, inputFor(b), tx));
+    (await freezeEmployeeMethodCandidate(context, inputFor(b), tx, lock));
   const oldContent = b.candidate_snapshot.content;
   const view = lockedCompanyContent?.testCoverage?.views?.find(
     (v) =>
@@ -230,6 +233,7 @@ async function dto(
   context: Identity,
   testId: string,
   lockedCompanyContent?: ActivationContent,
+  lock = true,
 ) {
   const b = await readBinding(tx, testId);
   if (
@@ -242,7 +246,7 @@ async function dto(
   await getEmployeeInstance(context, b.instance_id, tx);
   let applicable = true;
   try {
-    await currentBinding(tx, b, false, lockedCompanyContent);
+    await currentBinding(tx, b, false, lockedCompanyContent, lock);
   } catch (error) {
     if (error instanceof EmployeeContentError) applicable = false;
     else throw error;
@@ -589,7 +593,7 @@ export async function readEmployeeMethodActivationTest(
 
 export async function getEmployeeMethodTest(context: Identity, testId: string) {
   return employeeAccessTransaction(getDatabase(), (tx) =>
-    dto(tx, context, UuidSchema.parse(testId)),
+    dto(tx, context, UuidSchema.parse(testId), undefined, false),
   );
 }
 

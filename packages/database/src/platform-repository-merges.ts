@@ -111,14 +111,25 @@ export async function getPlatformRepositoryMergePanel(
       where s.publication_id=${id} and s.owner_id=${context.actor.id} and j.status='succeeded'
       order by s.created_at desc,s.id desc limit 1`;
         if (!s) return;
-        await lockCompletedRepositoryReviewRoot(tx, internal, s.id);
+        await lockCompletedRepositoryReviewRoot(tx, internal, s.id, false);
         await assertRepositoryCredentialAuthority(
           tx,
           internal,
           credentialRevision,
+          false,
         );
-        const material = await readRepositoryReviewMaterial(tx, internal, id);
-        const review = await readCompletedRepositoryReview(tx, internal, s.id);
+        const material = await readRepositoryReviewMaterial(
+          tx,
+          internal,
+          id,
+          false,
+        );
+        const review = await readCompletedRepositoryReview(
+          tx,
+          internal,
+          s.id,
+          false,
+        );
         if (review.material.subjectDigest !== material.subjectDigest)
           throw new QueueError('conflict');
         subjectId = review.subjectId;

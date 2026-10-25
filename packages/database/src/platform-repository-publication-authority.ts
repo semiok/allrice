@@ -64,9 +64,10 @@ export async function assertRepositoryCredentialAuthority(
   tx: Tx,
   context: RequestContext,
   revision: number,
+  lock = true,
 ) {
   const [user] =
-    await tx`select id from allrice_users where id=${context.actor.id} and status='active' for share`;
+    await tx`select id from allrice_users where id=${context.actor.id} and status='active' ${lock ? tx`for share` : tx``}`;
   if (!user) throw new DataAccessError('authorization_denied');
   await requirePlatformAdmin(context, tx);
   if (!context.sessionId || !context.authenticatedAt)
@@ -74,11 +75,12 @@ export async function assertRepositoryCredentialAuthority(
   const [login] =
     await tx`select id from allrice_sessions where id=${context.sessionId}
     and user_id=${context.actor.id} and date_trunc('milliseconds',created_at)=${context.authenticatedAt}::timestamptz
-    and revoked_at is null and expires_at>clock_timestamp() for share`;
+    and revoked_at is null and expires_at>clock_timestamp() ${lock ? tx`for share` : tx``}`;
   if (!login) throw new DataAccessError('authorization_denied');
   // Same lock as replace/remove; no network or model execution under this lock.
-  await tx`select pg_advisory_xact_lock(hashtext(${`platform-repository-credential:${context.actor.id}:${platformRepository.id}`}))`;
-  return readPlatformRepositoryCredential(context, revision, tx);
+  if (lock)
+    await tx`select pg_advisory_xact_lock(hashtext(${`platform-repository-credential:${context.actor.id}:${platformRepository.id}`}))`;
+  return readPlatformRepositoryCredential(context, revision, tx, lock);
 }
 const credential = assertRepositoryCredentialAuthority;
 export async function readAcceptedRepositorySource(

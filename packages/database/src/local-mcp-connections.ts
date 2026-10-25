@@ -83,13 +83,13 @@ function scopeFor(
     actorId: context.actor.id,
   });
 }
-async function member(tx: Database | Tx, scope: McpScope) {
+async function member(tx: Database | Tx, scope: McpScope, lock = true) {
   const [row] =
     await tx`select m.id from allrice_memberships m join allrice_users u on u.id=m.user_id
     join allrice_organizations o on o.id=m.organization_id join allrice_workspaces w on w.id=${scope.workspaceId} and w.organization_id=o.id
     where m.organization_id=${scope.organizationId} and m.user_id=${scope.actorId} and m.active and m.role in ('admin','member')
       and (m.workspace_id is null or m.workspace_id=${scope.workspaceId})
-      and u.status='active' and o.archived_at is null and w.archived_at is null for share of m,u,o,w`;
+      and u.status='active' and o.archived_at is null and w.archived_at is null ${lock ? tx`for share of m,u,o,w` : tx``}`;
   if (!row) throw new McpError('MCP_DENIED');
 }
 async function read(
@@ -190,10 +190,10 @@ export function createLocalMcpStore(
     options.administration
       ? tenantManagementScope(context, workspaceId, options.administration)
       : scopeFor(context, workspaceId);
-  const managementMember = (tx: Database | Tx, scope: McpScope) =>
+  const managementMember = (tx: Database | Tx, scope: McpScope, lock = true) =>
     options.administration
       ? checkTenantManagement(tx, options.administration, scope)
-      : member(tx, scope);
+      : member(tx, scope, lock);
   const ownerId = (scope: McpScope) =>
     options.administration?.subjectId ?? scope.actorId;
   const managementAudit = (
@@ -279,7 +279,7 @@ export function createLocalMcpStore(
     },
     async list(context: RequestContext, workspaceId: string) {
       const scope = managementScope(context, workspaceId);
-      await managementMember(db(), scope);
+      await managementMember(db(), scope, false);
       const rows = await db()<
         { binding_id: string }[]
       >`select binding_id from allrice_local_mcp_config where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and owner_id=${ownerId(scope)} order by binding_id`;
@@ -522,6 +522,7 @@ export async function assertLocalMcpAuthority(
   frozen: FrozenLocalMcpConnection,
   payload: RuntimeLocalMcpPayload,
   employeeVersionId: string,
+  lock = true,
 ) {
   if (!localMcpEnabled()) throw new McpError('MCP_DENIED');
   await assertEmployeeMcpAuthorization(
@@ -533,8 +534,9 @@ export async function assertLocalMcpAuthority(
     },
     employeeVersionId,
     'local_stdio',
+    lock,
   );
-  const row = await read(tx, scope, frozen.connectionId, true);
+  const row = await read(tx, scope, frozen.connectionId, lock);
   if (
     !row.enabled ||
     !runtimeContractEqual(

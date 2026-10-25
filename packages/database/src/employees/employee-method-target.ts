@@ -27,6 +27,7 @@ export async function resolveEmployeeMethodTarget(
   instanceId: string,
   shared: EmployeeMethodSharedTarget | undefined,
   tx: ContentTx,
+  lock = true,
 ) {
   if (!shared) {
     const [row] = await tx<
@@ -54,6 +55,7 @@ export async function resolveEmployeeMethodTarget(
     requested.scope,
     tx,
     requested.scope === 'department' ? requested.departmentId : undefined,
+    lock,
   );
   if (
     Object.keys(requested).some(
@@ -82,9 +84,10 @@ export async function sharedEmployeeMethodTarget(
   scope: 'company' | 'department',
   tx: ContentTx,
   selectedDepartmentId?: string,
+  lock = true,
 ) {
   if (!context.workspaceId) throw new DataAccessError('authorization_denied');
-  const principal = await readContentPrincipal(context, tx, true);
+  const principal = await readContentPrincipal(context, tx, lock);
   const departmentId = selectedDepartmentId ?? principal?.departmentId ?? null;
   if (!principal?.writable || (scope === 'department' && !departmentId))
     throw new DataAccessError('authorization_denied');
@@ -99,7 +102,7 @@ export async function sharedEmployeeMethodTarget(
           organizationId: context.organizationId,
           departmentId: departmentId!,
         };
-  await requireContentMaintenance(context, ownership, tx);
+  await requireContentMaintenance(context, ownership, tx, lock);
   const instance = await getEmployeeInstance(context, instanceId, tx);
   if (instance.kind !== 'custom' || instance.source.kind !== 'platform')
     throw new DataAccessError('authorization_denied');
@@ -111,18 +114,18 @@ export async function sharedEmployeeMethodTarget(
         and p.tenant_employee_version_id=a.employee_version_id
     where a.id=${instance.assignmentId} and a.active and a.organization_id=${context.organizationId}
       and a.workspace_id=${context.workspaceId} and a.employee_version_id=${instance.source.employeeVersionId}
-    for share of a,p nowait`;
+    ${lock ? tx`for share of a,p nowait` : tx``}`;
   if (!assignment) throw new EmployeeContentError('source_changed');
   const [organization] = await tx<
     { name: string }[]
   >`select name from allrice_organizations
-    where id=${context.organizationId} and archived_at is null for share`;
+    where id=${context.organizationId} and archived_at is null ${lock ? tx`for share` : tx``}`;
   if (!organization) throw new DataAccessError('authorization_denied');
   const department =
     scope === 'department'
       ? (
           await tx<{ name: string }[]>`select name from allrice_departments
-    where id=${departmentId} and organization_id=${context.organizationId} and archived_at is null for share`
+    where id=${departmentId} and organization_id=${context.organizationId} and archived_at is null ${lock ? tx`for share` : tx``}`
         )[0]
       : undefined;
   if (scope === 'department' && !department)

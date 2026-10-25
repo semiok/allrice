@@ -1,5 +1,6 @@
 import type { RequestContext } from '@allrice/contracts';
 import type { TransactionSql } from 'postgres';
+import { recordTransactionRetry } from '../core/transaction-retries.ts';
 import { requestRunCancellationTransaction } from '../execution/queue.ts';
 
 export type SessionArchiveActivity = {
@@ -73,13 +74,19 @@ export async function retryArchiveTransaction<T>(
       return await run();
     } catch (error) {
       if (
-        attempt >= 2 ||
         !error ||
         typeof error !== 'object' ||
         !('code' in error) ||
         !['40P01', '40001'].includes(String(error.code))
       )
         throw error;
+      recordTransactionRetry({
+        site: 'session_archive',
+        sqlState: String(error.code),
+        attempt: attempt + 1,
+        outcome: attempt >= 2 ? 'exhausted' : 'retrying',
+      });
+      if (attempt >= 2) throw error;
     }
   }
 }

@@ -85,6 +85,7 @@ async function currentRules(
     'organizationId' | 'workspaceId' | 'ownerId' | 'employeeId'
   >,
   instance: EmployeeInstance,
+  lock = true,
 ) {
   const context = identity(occurrence);
   const index = await freezeEmployeeRuntimeContent(
@@ -128,7 +129,7 @@ async function currentRules(
         sql: tx,
         // Company asset pause/withdrawal does not take the content mutex.
         // Hold the resolved source rows through the receipt transaction too.
-        lock: true,
+        lock,
         allowDraft: false,
       });
       sources.push({
@@ -154,11 +155,12 @@ async function currentRules(
 export async function readExperiencePolicy(
   organizationId: string,
   tx: Tx | ReturnType<typeof getDatabase> = getDatabase(),
+  lock = true,
 ) {
   const rows = await tx<{ scope_type: string; value: unknown }[]>`
     select scope_type,value from allrice_settings where key='employee_experience_policy'
       and ((scope_type='system' and scope_id is null) or (scope_type='organization' and scope_id=${organizationId}))
-    order by scope_type for share`;
+    order by scope_type ${lock ? tx`for share` : tx``}`;
   return ExperienceCollectionPolicySchema.parse(
     rows.find((r) => r.scope_type === 'organization')?.value ??
       rows.find((r) => r.scope_type === 'system')?.value,
@@ -169,7 +171,11 @@ export async function getExperiencePolicy(
   organizationId: string,
 ) {
   await requirePlatformAdmin(context);
-  return readExperiencePolicy(UuidSchema.parse(organizationId));
+  return readExperiencePolicy(
+    UuidSchema.parse(organizationId),
+    undefined,
+    false,
+  );
 }
 const PolicyUpdateSchema = ExperiencePolicySettingsSchema.extend({
   expectedRevision: z.number().int().positive(),
@@ -532,6 +538,8 @@ async function assertCurrent(
   occurrence: ExperienceOccurrence,
   executing = true,
   options: { sourceIds?: string[]; checkSkills?: boolean } = {},
+  /** `false` on read paths: same checks as plain snapshot reads. */
+  lock = true,
 ) {
   if (!experienceReviewEnabled()) throw new ExperienceError('disabled');
   if (executing) {
@@ -545,13 +553,15 @@ async function assertCurrent(
   const who = identity(occurrence);
   // Match personal-Skill mutation order and retain the shared content lock
   // through receipt commit, so a concurrent revocation cannot slip past pins.
-  if (!(await readContentPrincipal(who, tx, true))) return deny();
-  await tx`select pg_advisory_xact_lock_shared(hashtextextended(${`employee-content:${occurrence.organizationId}`},0))`;
+  if (!(await readContentPrincipal(who, tx, lock))) return deny();
+  if (lock)
+    await tx`select pg_advisory_xact_lock_shared(hashtextextended(${`employee-content:${occurrence.organizationId}`},0))`;
   const current = await resolveEmployeeSessionInstance(
     who,
     occurrence.assignmentId,
     occurrence.instanceId,
     tx,
+    lock,
   );
   if (executing && stableInstance(current) !== occurrence.instanceDigest)
     return deny();
@@ -576,7 +586,7 @@ async function assertCurrent(
       where e.memory_id=${source.id} and e.organization_id=${occurrence.organizationId} and e.workspace_id=${occurrence.workspaceId}
         and e.owner_id=${occurrence.ownerId} and e.instance_id=${occurrence.instanceId} and e.status='pending'
         and e.consolidation_occurrence_id=${occurrence.id} and e.run_id=${source.runId} and e.message_id=${source.messageId}
-        and e.session_id=${source.sessionId} for share of e,m,s,msg`;
+        and e.session_id=${source.sessionId} ${lock ? tx`for share of e,m,s,msg` : tx``}`;
     if (
       !row ||
       row.archived_at ||
@@ -614,6 +624,7 @@ export async function readExperienceValidationSource(
   tx: Tx,
   id: string,
   draftIndex?: number,
+  lock = true,
 ) {
   const { row, occurrence } = await loadOccurrence(tx, id);
   if (!row.experience_receipt) return deny();
@@ -628,16 +639,18 @@ export async function readExperienceValidationSource(
     occurrence,
     false,
     draft ? { sourceIds: draft.sourceIds } : { checkSkills: false },
+    lock,
   );
   const current = await resolveEmployeeSessionInstance(
     identity(occurrence),
     occurrence.assignmentId,
     occurrence.instanceId,
     tx,
+    lock,
   );
   if (
     stableInstance(current) !== occurrence.instanceDigest ||
-    runtimePolicyDigest(await currentRules(tx, occurrence, current)) !==
+    runtimePolicyDigest(await currentRules(tx, occurrence, current, lock)) !==
       runtimePolicyDigest(occurrence.currentRules) ||
     row.status !== 'succeeded' ||
     !row.experience_receipt
@@ -903,9 +916,15 @@ export async function listExperienceDrafts(
       await getEmployeeInstanceForHistory(context, occurrence.instanceId, tx);
       let sourceState: 'current' | 'unavailable' = 'current';
       try {
-        await assertCurrent(tx, occurrence, false, {
-          checkSkills: !row.experience_receipt,
-        });
+        await assertCurrent(
+          tx,
+          occurrence,
+          false,
+          {
+            checkSkills: !row.experience_receipt,
+          },
+          false,
+        );
       } catch (error) {
         if (
           error instanceof ExperienceError ||

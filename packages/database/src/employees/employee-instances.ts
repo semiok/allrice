@@ -605,11 +605,12 @@ export async function resolveEmployeeSessionInstance(
   assignmentId: string,
   instanceId: string | undefined,
   tx: Tx,
+  lock = true,
 ) {
-  await authority(context, tx, true);
-  await assignment(context, assignmentId, tx, true);
+  await authority(context, tx, lock);
+  await assignment(context, assignmentId, tx, lock);
   if (!instanceId) await ensureGeneralEmployeeInstance(tx, assignmentId);
-  await tx`select id from allrice_employee_instances where id=${instanceId ?? assignmentId} for share`;
+  await tx`select id from allrice_employee_instances where id=${instanceId ?? assignmentId} ${lock ? tx`for share` : tx``}`;
   const instance = await getEmployeeInstance(
     context,
     instanceId ?? assignmentId,

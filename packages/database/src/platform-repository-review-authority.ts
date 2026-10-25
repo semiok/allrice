@@ -29,13 +29,17 @@ export async function repositoryReviewSchemaAvailable(tx: Tx) {
 }
 /** Re-read the canonical lease with the database clock after all potentially
  * blocking authority locks. A lease observed before waiting is not authority. */
-export async function assertRepositoryReviewLease(tx: Tx, job: JobRow) {
+export async function assertRepositoryReviewLease(
+  tx: Tx,
+  job: JobRow,
+  lock = true,
+) {
   const [live] = await tx<
     { lease_expires_at: Date; timeout_at: Date; now: Date }[]
   >`select lease_expires_at,timeout_at,clock_timestamp() as now from allrice_jobs
     where id=${job.id} and run_id=${job.run_id} and owner_id=${job.owner_id} and organization_id=${job.organization_id} and workspace_id=${job.workspace_id}
       and worker_id=${job.worker_id} and lease_token=${job.lease_token} and attempt=${job.attempt} and status='running' and cancel_requested_at is null
-      and lease_expires_at>clock_timestamp() and timeout_at>clock_timestamp() for share`;
+      and lease_expires_at>clock_timestamp() and timeout_at>clock_timestamp() ${lock ? tx`for share` : tx``}`;
   if (!live) deny();
   return live;
 }
@@ -53,12 +57,18 @@ export async function readRepositoryReviewMaterial(
   tx: Tx,
   context: RequestContext,
   publicationId: string,
+  lock = true,
 ) {
   const [p] =
     await tx`select * from allrice_platform_repository_publications where id=${publicationId} and owner_id=${context.actor.id}
-    and organization_id=${context.organizationId} and workspace_id=${context.workspaceId!} for share`;
+    and organization_id=${context.organizationId} and workspace_id=${context.workspaceId!} ${lock ? tx`for share` : tx``}`;
   if (!p) throw new DataAccessError('not_found');
-  const rows = await readRepositoryReviewRepairs(tx, context, p.source_task_id);
+  const rows = await readRepositoryReviewRepairs(
+    tx,
+    context,
+    p.source_task_id,
+    lock,
+  );
   const [inspection] =
     await tx`select a.mode,a.receipt,j.status from allrice_platform_repository_actions a join allrice_jobs j on j.id=a.job_id and j.run_id=a.run_id and j.owner_id=a.owner_id
     where a.publication_id=${p.id} and a.owner_id=${context.actor.id} and a.mode='inspect' order by a.created_at desc,a.id desc limit 1`;
@@ -84,6 +94,7 @@ export async function admitRepositoryReviewBinding(
   context: RequestContext,
   assignmentId: string,
   raw: RepositoryReviewBinding,
+  lock = true,
 ) {
   const b = RepositoryReviewBindingSchema.parse(raw),
     f = b.frozen;
@@ -106,7 +117,12 @@ export async function admitRepositoryReviewBinding(
     assignmentId !== f.assignmentId
   )
     deny();
-  await assertRepositoryCredentialAuthority(tx, context, f.credentialRevision);
+  await assertRepositoryCredentialAuthority(
+    tx,
+    context,
+    f.credentialRevision,
+    lock,
+  );
   await resolvePlatformPreviewContext(
     tx,
     {
@@ -117,7 +133,7 @@ export async function admitRepositoryReviewBinding(
     context.actor.id,
   );
   const [d] =
-    await tx`select * from allrice_platform_quality_deployments where assignment_id=${assignmentId} for share`;
+    await tx`select * from allrice_platform_quality_deployments where assignment_id=${assignmentId} ${lock ? tx`for share` : tx``}`;
   if (
     !d ||
     d.owner_id !== context.actor.id ||
@@ -131,6 +147,7 @@ export async function admitRepositoryReviewBinding(
     tx,
     context,
     f.publicationId,
+    lock,
   );
   if (material.subjectDigest !== f.material.subjectDigest) deny();
 }
@@ -171,7 +188,11 @@ export async function assertExistingRepositoryReviewBinding(
 }
 /** Additional platform restrictions; canonical Employee/assistant admission is
  * still required. Missing markers cannot turn a registered subject into chat. */
-export async function isRepositoryReviewJobAuthorized(tx: Tx, job: JobRow) {
+export async function isRepositoryReviewJobAuthorized(
+  tx: Tx,
+  job: JobRow,
+  lock = true,
+) {
   if (!(await repositoryReviewSchemaAvailable(tx)))
     return !hasRepositoryReviewMarker(job);
   const [s] =
@@ -212,11 +233,17 @@ export async function isRepositoryReviewJobAuthorized(tx: Tx, job: JobRow) {
     memberships: [],
   };
   try {
-    await admitRepositoryReviewBinding(tx, context, f.assignmentId, {
-      id: s.id,
-      inputDigest: s.input_digest,
-      frozen: f,
-    });
+    await admitRepositoryReviewBinding(
+      tx,
+      context,
+      f.assignmentId,
+      {
+        id: s.id,
+        inputDigest: s.input_digest,
+        frozen: f,
+      },
+      lock,
+    );
     return true;
   } catch {
     return false;
@@ -226,6 +253,7 @@ export async function assertRepositoryReviewAssistantAuthority(
   tx: Tx,
   rootRunId: string,
   tools: string[],
+  lock = true,
 ) {
   if (!(await repositoryReviewSchemaAvailable(tx))) return false;
   const [s] =
@@ -233,10 +261,10 @@ export async function assertRepositoryReviewAssistantAuthority(
   if (!s) return false;
   const [job] = await tx<
     JobRow[]
-  >`select * from allrice_jobs where id=${s.job_id} for share`;
+  >`select * from allrice_jobs where id=${s.job_id} ${lock ? tx`for share` : tx``}`;
   if (
     !job ||
-    !(await isRepositoryReviewJobAuthorized(tx, job)) ||
+    !(await isRepositoryReviewJobAuthorized(tx, job, lock)) ||
     tools.some(
       (t) =>
         !repositoryReviewTools.includes(
@@ -245,7 +273,7 @@ export async function assertRepositoryReviewAssistantAuthority(
     )
   )
     deny();
-  await assertRepositoryReviewLease(tx, job);
+  await assertRepositoryReviewLease(tx, job, lock);
   return true;
 }
 export async function repositoryReviewCompletionAllowed(
@@ -303,6 +331,7 @@ export async function readRepositoryReviewRepairs(
   tx: Tx,
   context: RequestContext,
   sourceTaskId: string,
+  lock = true,
 ) {
   const rows: Parameters<typeof freezeRepositoryReviewMaterial>[1] = [];
   let taskId: string | null = sourceTaskId;
@@ -313,7 +342,7 @@ export async function readRepositoryReviewRepairs(
     const [r]: Parameters<typeof freezeRepositoryReviewMaterial>[1] = await tx<
       Parameters<typeof freezeRepositoryReviewMaterial>[1]
     >`select q.*,j.status from allrice_platform_repair_tasks q join allrice_jobs j on j.id=q.job_id and j.run_id=q.run_id and j.owner_id=q.owner_id
-      where q.id=${taskId} and q.owner_id=${context.actor.id} and q.organization_id=${context.organizationId} and q.workspace_id=${context.workspaceId!} for share of q,j`;
+      where q.id=${taskId} and q.owner_id=${context.actor.id} and q.organization_id=${context.organizationId} and q.workspace_id=${context.workspaceId!} ${lock ? tx`for share of q,j` : tx``}`;
     if (!r) deny();
     rows.push(
       r as Parameters<typeof freezeRepositoryReviewMaterial>[1][number],

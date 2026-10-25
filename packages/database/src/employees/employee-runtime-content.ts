@@ -639,6 +639,8 @@ async function contentGraph(scope: RunScope, sql: ContentSql) {
 async function withContentLocks<T>(
   scope: RunScope,
   operation: (tx: ContentTx) => Promise<T>,
+  /** `false` for a check that writes nothing: the same reads, no locks. */
+  lock = true,
 ): Promise<T> {
   for (let attempt = 0; attempt < 3; attempt++) {
     const result = await getDatabase().begin(async (tx) => {
@@ -647,22 +649,24 @@ async function withContentLocks<T>(
         await readContentPrincipal(
           { ...identity(scope), actor: { type: 'user', id: ownerId } },
           tx,
-          true,
+          lock,
         );
-      await tx`select pg_advisory_xact_lock_shared(hashtextextended(${`employee-content:${scope.organizationId}`},0))`;
-      if (before.assignments.length)
-        await tx`select id from allrice_employee_assignments where id in ${tx(before.assignments)} order by id for share`;
-      if (before.instances.length)
-        await tx`select id from allrice_employee_instances where id in ${tx(before.instances)} order by id for share`;
-      // Visibility writers lock the Session before its messages. Hold the
-      // same order while later source reads may wait, including legacy imports.
-      await tx`select id from allrice_chat_sessions where id in ${tx(before.sessions)} order by id for share`;
-      if (before.messages.length)
-        await tx`select id from allrice_messages where id in ${tx(before.messages)} order by id for share`;
-      // A stable order also handles A→B and B→A imports without lock inversion.
-      if (before.generations.length)
-        await tx`select generation_id from allrice_employee_content_contexts where generation_id in ${tx(before.generations)} order by generation_id for update`;
-      await tx`select pg_advisory_xact_lock(hashtextextended(${`employee-content-context:${scope.sessionId}`},0))`;
+      if (lock) {
+        await tx`select pg_advisory_xact_lock_shared(hashtextextended(${`employee-content:${scope.organizationId}`},0))`;
+        if (before.assignments.length)
+          await tx`select id from allrice_employee_assignments where id in ${tx(before.assignments)} order by id for share`;
+        if (before.instances.length)
+          await tx`select id from allrice_employee_instances where id in ${tx(before.instances)} order by id for share`;
+        // Visibility writers lock the Session before its messages. Hold the
+        // same order while later source reads may wait, including legacy imports.
+        await tx`select id from allrice_chat_sessions where id in ${tx(before.sessions)} order by id for share`;
+        if (before.messages.length)
+          await tx`select id from allrice_messages where id in ${tx(before.messages)} order by id for share`;
+        // A stable order also handles A→B and B→A imports without lock inversion.
+        if (before.generations.length)
+          await tx`select generation_id from allrice_employee_content_contexts where generation_id in ${tx(before.generations)} order by generation_id for update`;
+        await tx`select pg_advisory_xact_lock(hashtextextended(${`employee-content-context:${scope.sessionId}`},0))`;
+      }
       if ((await contentGraph(scope, tx)).checksum !== before.checksum)
         return { retry: true as const };
       return { value: await operation(tx) };
@@ -858,9 +862,17 @@ async function generationBrandScopeMatches(
 /** Frozen workflow inputs are checked even when recovering an already saved
  * load step. Historical snapshots without a brand invocation stay unchanged. */
 export async function assertEmployeeBrandWorkflowContext(scope: RunScope) {
-  await withContentLocks(scope, async (tx) => {
-    await assertBrandProvenance(identity(scope), await ownedRun(scope, tx), tx);
-  });
+  await withContentLocks(
+    scope,
+    async (tx) => {
+      await assertBrandProvenance(
+        identity(scope),
+        await ownedRun(scope, tx),
+        tx,
+      );
+    },
+    false,
+  );
 }
 
 /** Bind once per Run. A content generation outlives native process/config

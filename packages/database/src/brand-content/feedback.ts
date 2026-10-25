@@ -84,13 +84,21 @@ export async function readBrandFeedback(
   scope: Scope,
   brandId: string,
   id: string,
+  lock = true,
 ) {
   const [row] = await tx<
     FeedbackRow[]
-  >`select * from allrice_brand_content_feedback where id=${id} and ${scopeSql(tx, scope, brandId)} for share`;
+  >`select * from allrice_brand_content_feedback where id=${id} and ${scopeSql(tx, scope, brandId)} ${lock ? tx`for share` : tx``}`;
   if (!row) fail('not_found');
   const value = feedbackView(row);
-  await readBrandContext(tx, who, scope, brandId, value.contextRevisionId);
+  await readBrandContext(
+    tx,
+    who,
+    scope,
+    brandId,
+    value.contextRevisionId,
+    lock,
+  );
   if (value.receiptId) {
     const receipt = await scopedRow<ReceiptRow>(
       tx,
@@ -98,6 +106,7 @@ export async function readBrandFeedback(
       'receipts',
       brandId,
       value.receiptId,
+      lock,
     );
     const plan = await scopedRow<PlanRow>(
       tx,
@@ -105,6 +114,7 @@ export async function readBrandFeedback(
       'plans',
       brandId,
       receipt.plan_id,
+      lock,
     );
     const article = await scopedRow<ArticleRow>(
       tx,
@@ -112,6 +122,7 @@ export async function readBrandFeedback(
       'articles',
       brandId,
       plan.article_id,
+      lock,
     );
     const bundle = await scopedRow<BundleRow>(
       tx,
@@ -119,8 +130,9 @@ export async function readBrandFeedback(
       'bundles',
       brandId,
       plan.bundle_id,
+      lock,
     );
-    await assertBrandBundle(tx, who, scope, brandId, article, bundle);
+    await assertBrandBundle(tx, who, scope, brandId, article, bundle, lock);
     if (
       article.context_id !== value.contextRevisionId ||
       receipt.platform !== value.platform ||
@@ -130,12 +142,12 @@ export async function readBrandFeedback(
     )
       fail('source_reference_invalid');
     for (const file of receipt.evidence_files)
-      await assertBrandContentFile(tx, who, scope, file);
+      await assertBrandContentFile(tx, who, scope, file, false, lock);
   }
   let evidenceUnavailable = false;
   for (const file of value.evidenceFiles) {
     try {
-      await assertBrandContentFile(tx, who, scope, file);
+      await assertBrandContentFile(tx, who, scope, file, false, lock);
     } catch (error) {
       if (
         error instanceof BrandContentError &&
@@ -154,10 +166,11 @@ export async function readBrandRetrospective(
   scope: Scope,
   brandId: string,
   id: string,
+  lock = true,
 ) {
   const [row] = await tx<
     RetrospectiveRow[]
-  >`select * from allrice_brand_content_retrospectives where id=${id} and ${scopeSql(tx, scope, brandId)} for share`;
+  >`select * from allrice_brand_content_retrospectives where id=${id} and ${scopeSql(tx, scope, brandId)} ${lock ? tx`for share` : tx``}`;
   if (!row) fail('not_found');
   const result = BrandRetrospectiveSchema.parse({
     id: row.id,
@@ -177,12 +190,12 @@ export async function readBrandRetrospective(
       brandContentDigest(result.feedbackIds)
   )
     fail('source_changed');
-  await assertBrandContentSession(tx, who, scope, row.session_id);
-  await readBrandContext(tx, who, scope, brandId, row.context_id);
+  await assertBrandContentSession(tx, who, scope, row.session_id, false, lock);
+  await readBrandContext(tx, who, scope, brandId, row.context_id, lock);
   let evidenceUnavailable = false;
   for (const feedbackId of row.feedback_ids) {
     try {
-      await readBrandFeedback(tx, who, scope, brandId, feedbackId);
+      await readBrandFeedback(tx, who, scope, brandId, feedbackId, lock);
     } catch (error) {
       if (!(error instanceof UnavailableFeedbackEvidence)) throw error;
       evidenceUnavailable = true;
@@ -195,13 +208,14 @@ export async function readBrandExperiences(
   tx: Tx,
   scope: Scope,
   brandId: string,
+  lock = true,
 ) {
   const rows =
     await tx`select b.*,m.content,m.revision,m.archived_at,m.expires_at,e.status,e.proposed_digest
     from allrice_brand_content_experiences b join allrice_memories m on m.id=b.memory_id and m.organization_id=b.organization_id and m.workspace_id=b.workspace_id and m.owner_id=b.owner_id
     join allrice_experience_reviews e on e.memory_id=m.id and e.organization_id=m.organization_id and e.workspace_id=m.workspace_id and e.owner_id=m.owner_id
     where b.organization_id=${scope.organizationId} and b.workspace_id=${scope.workspaceId} and b.owner_id=${scope.ownerId} and b.instance_id=${scope.instanceId} and b.brand_id=${brandId}
-    order by b.created_at desc,b.memory_id desc limit 201 for share of b,m,e`;
+    order by b.created_at desc,b.memory_id desc limit 201 ${lock ? tx`for share of b,m,e` : tx``}`;
   return rows.map((r) =>
     BrandExperienceSchema.parse({
       id: r.memory_id,
@@ -279,6 +293,7 @@ export async function readBrandFeedbackBoard(
   who: BrandContentIdentity,
   scope: Scope,
   brandId: string,
+  lock = true,
 ) {
   const samples = await tx<
     FeedbackRow[]
@@ -305,7 +320,7 @@ export async function readBrandFeedbackBoard(
       checkedReports.set(
         id,
         await available(() =>
-          readBrandRetrospective(tx, who, scope, brandId, id),
+          readBrandRetrospective(tx, who, scope, brandId, id, lock),
         ),
       );
     return checkedReports.get(id);
@@ -313,7 +328,7 @@ export async function readBrandFeedbackBoard(
   const feedback = [];
   for (const sample of samples.slice(0, 200)) {
     const value = await available(() =>
-      readBrandFeedback(tx, who, scope, brandId, sample.id),
+      readBrandFeedback(tx, who, scope, brandId, sample.id, lock),
     );
     if (value) feedback.push(value);
   }
@@ -322,7 +337,7 @@ export async function readBrandFeedbackBoard(
     const value = await availableReport(report.id);
     if (value) retrospectives.push(value);
   }
-  const experienceRows = await readBrandExperiences(tx, scope, brandId);
+  const experienceRows = await readBrandExperiences(tx, scope, brandId, lock);
   const experiences = [];
   for (const experience of experienceRows.slice(0, 200))
     if (await availableReport(experience.retrospectiveId))

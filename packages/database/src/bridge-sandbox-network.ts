@@ -123,6 +123,7 @@ export async function resolveBridgeSandboxNetworkGrant(
   hasInputs: boolean,
   frozen: EmployeeExecutionSnapshot | undefined,
   expected?: BridgeSandboxNetworkGrantRef,
+  lock = true,
 ) {
   if (
     !runtimeFeatureEnabled('ALLRICE_SANDBOX_NETWORK_ENABLED') ||
@@ -144,7 +145,7 @@ export async function resolveBridgeSandboxNetworkGrant(
         and d.owner_id=${device.ownerId} and d.revoked_at is null
         and exists(select 1 from allrice_memberships m where m.user_id=d.owner_id and m.organization_id=d.organization_id
           and m.active and (m.workspace_id is null or m.workspace_id=d.workspace_id) and m.role in ('admin','member'))
-      for share of d,t`;
+      ${lock ? sql`for share of d,t` : sql``}`;
     if (!target) throw new RuntimePolicyError('sandbox_network_not_authorized');
     const ref = BridgeSandboxNetworkGrantRefSchema.parse({
       id: device.id,
@@ -173,7 +174,7 @@ export async function resolveBridgeSandboxNetworkGrant(
     join allrice_execution_targets t on t.id=g.target_id and t.organization_id=g.organization_id and t.workspace_id=g.workspace_id
       and t.kind='rice_bridge' and t.target_key='bridge.'||d.id::text and t.state='online'
     where g.device_id=${device.id} and g.organization_id=${device.organizationId} and g.workspace_id=${device.workspaceId} and g.owner_id=${device.ownerId}
-    for share of g`;
+    ${lock ? sql`for share of g` : sql``}`;
   const profile = SandboxNetworkGrantSchema.safeParse(row?.profile);
   if (
     !row?.enabled ||
@@ -242,6 +243,7 @@ export async function assertBridgeSandboxNetwork(
   device: BridgeDevice,
   payload: Payload,
   frozen: EmployeeExecutionSnapshot | undefined,
+  lock = true,
 ) {
   if (payload.arguments.network === 'none') return;
   if (!payload.networkGrant)
@@ -253,5 +255,6 @@ export async function assertBridgeSandboxNetwork(
     bridgeSandboxHasInputs(payload),
     frozen,
     payload.networkGrant,
+    lock,
   );
 }

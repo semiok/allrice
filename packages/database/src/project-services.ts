@@ -503,7 +503,7 @@ export async function readProjectService(
       where s.id=${id} and s.organization_id=${p.organizationId} and s.workspace_id=${p.workspaceId!} and s.owner_id=${p.actor.id}`;
     if (!r || p.actor.type !== 'user') denied();
     if (!(await isPlatformQualityServiceAuthorized(tx, r))) denied();
-    await assertWorkbenchSession(tx, p, r.session_id, false, 'share');
+    await assertWorkbenchSession(tx, p, r.session_id, false, false);
     const snap = RuntimeOperationSnapshotSchema.parse(r.snapshot),
       stopped = ['succeeded', 'failed', 'canceled'].includes(snap.status);
     const stopRequested = r.stop_requested || snap.cancelRequestId !== null;

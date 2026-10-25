@@ -560,7 +560,7 @@ export async function readWorkbenchFileCatalog(
   if (!principal) throw new DataAccessError('authorization_denied');
   if (input.sessionId)
     await db.begin((tx) =>
-      assertWorkbenchSession(tx, context, input.sessionId!),
+      assertWorkbenchSession(tx, context, input.sessionId!, false, false),
     );
   const options = await referenceLibraryOptions(context, input.workspaceId);
   const pattern = '%' + (input.query ?? '').slice(0, 200) + '%';

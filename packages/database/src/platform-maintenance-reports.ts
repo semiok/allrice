@@ -29,13 +29,14 @@ export type MaintenanceInstallationIdentity = {
 async function installation<T>(
   input: MaintenanceInstallationIdentity,
   work: (tx: Tx, deployment: Row) => Promise<T>,
+  lock = true,
 ) {
   const id = UuidSchema.safeParse(input.deploymentId);
   if (!id.success || !/^[-_A-Za-z0-9]{43}$/.test(input.installationKey))
     throw new DataAccessError('authentication_required');
   return getDatabase().begin(async (tx) => {
     const [d] =
-      await tx`select * from allrice_platform_maintenance_deployments where id=${id.data} for share`;
+      await tx`select * from allrice_platform_maintenance_deployments where id=${id.data} ${lock ? tx`for share` : tx``}`;
     const digest = createHash('sha256').update(input.installationKey).digest();
     const expected = Buffer.from(d?.credential_digest ?? '0'.repeat(64), 'hex');
     if (
@@ -52,19 +53,23 @@ async function installation<T>(
 export async function getMaintenanceConnection(
   input: MaintenanceInstallationIdentity,
 ) {
-  return installation(input, async (_tx, d) => {
-    const policy = MaintenancePolicySchema.parse(d.policy);
-    return MaintenanceConnectionStateSchema.parse({
-      deploymentId: d.id,
-      credentialRevision: d.credential_revision,
-      policyRevision: d.revision,
-      paused: policy.paused,
-      checkIntervalMinutes: policy.checkIntervalMinutes,
-      mode: policy.mode,
-      automaticMerge: false,
-      automaticDeployment: false,
-    });
-  });
+  return installation(
+    input,
+    async (_tx, d) => {
+      const policy = MaintenancePolicySchema.parse(d.policy);
+      return MaintenanceConnectionStateSchema.parse({
+        deploymentId: d.id,
+        credentialRevision: d.credential_revision,
+        policyRevision: d.revision,
+        paused: policy.paused,
+        checkIntervalMinutes: policy.checkIntervalMinutes,
+        mode: policy.mode,
+        automaticMerge: false,
+        automaticDeployment: false,
+      });
+    },
+    false,
+  );
 }
 function assessment(payload: MaintenanceReportPayload) {
   const synthetic = payload.facts.quality?.variant === 'defect';
@@ -146,12 +151,16 @@ export async function readMaintenanceInstallationReceipt(
   sourceReportId: string,
 ) {
   const id = UuidSchema.parse(sourceReportId);
-  return installation(identity, async (tx, d) => {
-    const [r] =
-      await tx`select * from allrice_platform_maintenance_reports where deployment_id=${d.id as string} and source_report_id=${id}`;
-    if (!r) throw new DataAccessError('not_found');
-    return receipt(r);
-  });
+  return installation(
+    identity,
+    async (tx, d) => {
+      const [r] =
+        await tx`select * from allrice_platform_maintenance_reports where deployment_id=${d.id as string} and source_report_id=${id}`;
+      if (!r) throw new DataAccessError('not_found');
+      return receipt(r);
+    },
+    false,
+  );
 }
 function view(row: Row) {
   return MaintenanceReportViewSchema.parse({
@@ -188,7 +197,7 @@ export async function listMaintenanceReports(
     }
   }
   return getDatabase().begin(async (tx) => {
-    const owner = await currentMaintenanceAdmin(context, tx);
+    const owner = await currentMaintenanceAdmin(context, tx, false);
     if (
       deploymentId &&
       !(
@@ -203,7 +212,7 @@ export async function listMaintenanceReports(
       order by r.received_at desc,r.id desc limit 51`;
     const page = rows.slice(0, 50),
       last = page.at(-1);
-    await currentMaintenanceAdmin(context, tx);
+    await currentMaintenanceAdmin(context, tx, false);
     return MaintenanceReportPageSchema.parse({
       reports: page.map(view),
       nextCursor:
@@ -224,7 +233,7 @@ export async function getMaintenanceReport(
 ) {
   UuidSchema.parse(id);
   return getDatabase().begin(async (tx) => {
-    const owner = await currentMaintenanceAdmin(context, tx);
+    const owner = await currentMaintenanceAdmin(context, tx, false);
     const [row] =
       await tx`select r.*,d.company_name,d.company_slug,d.deployment_name from allrice_platform_maintenance_reports r join allrice_platform_maintenance_deployments d on d.id=r.deployment_id where r.id=${id} and r.owner_id=${owner} and d.owner_id=${owner}`;
     if (!row) throw new DataAccessError('not_found');

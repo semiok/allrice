@@ -42,6 +42,8 @@ export async function currentLocalPreviewService(
     principal: RuntimePolicyPrincipal;
     processId: string;
     context?: ExecutionContext;
+    /** `false` on read paths: the same checks without row locks. */
+    lock?: boolean;
   },
 ) {
   if (!localPreviewEnabled())
@@ -123,7 +125,7 @@ export async function currentLocalPreviewService(
   // device/platform/profile, generation and employee/job validation.
   const current = await createGovernedBridgePolicyOptions(
     device,
-  ).resolveCurrentBinding({ transaction: tx, binding });
+  ).resolveCurrentBinding({ transaction: tx, binding, lock: input.lock });
   if (!runtimeContractEqual(current, binding))
     throw new RuntimePolicyError('local_preview_service_changed');
   const [controlsRow] = await tx<
@@ -199,6 +201,7 @@ export async function currentLocalPreviewAuthority(
   tx: postgres.TransactionSql,
   ctx: RuntimePolicyPrincipal,
   w: BrowserWorkspaceRow,
+  lock = true,
 ) {
   const [endpoint] = await tx<
     { target: unknown; endpoint_lease_id: string }[]
@@ -210,6 +213,7 @@ export async function currentLocalPreviewAuthority(
     principal: ctx,
     processId: target.processId,
     context: w.execution_context,
+    lock,
   });
   const b = current.snapshot.binding;
   const expected: LocalPreviewTarget = {

@@ -14,7 +14,7 @@ export async function getInteractionStatus(
   db = getDatabase(),
 ) {
   return db.begin(async (tx) => {
-    await assertWorkbenchSession(tx, context, sessionId);
+    await assertWorkbenchSession(tx, context, sessionId, false, false);
     const [runtime] = await tx<
       {
         state: string;
@@ -153,7 +153,7 @@ export async function getSessionRunTimings(
   db = getDatabase(),
 ) {
   return db.begin(async (tx) => {
-    await assertWorkbenchSession(tx, context, sessionId);
+    await assertWorkbenchSession(tx, context, sessionId, false, false);
     return { runTimings: await sessionRunTimings(tx, context, sessionId) };
   });
 }

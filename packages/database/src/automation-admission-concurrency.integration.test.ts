@@ -6,6 +6,7 @@ import type { TransactionSql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
 import { listCloudRuntimeOperations } from './cloud-operation-view.ts';
+import { transactionRetryCounts } from './core/transaction-retries.ts';
 import {
   claimNextJob,
   failClaimedJobStart,
@@ -28,6 +29,7 @@ import type {
   NativeRecurringSnapshot,
   NativeRecurringTask,
 } from './native-schedule-recurring-state.ts';
+import { createReadPathProbe } from './read-path-probe.fixture.ts';
 import { createChatSession } from './workspace/service.ts';
 
 const suite =
@@ -238,47 +240,43 @@ suite('automation admission and page polling — isolated PostgreSQL', () => {
   }
 
   it.each(['reuse', 'new_each_run'] as const)(
-    '%s page polling releases its Run SHARE while admission advances the same Run',
+    '%s admission identity locks stay compatible with a reader holding the Run',
     async (conversationMode) => {
       const run = await scheduledRun(conversationMode);
-      const pageLocked = signal<number>(),
+      const readerLocked = signal<number>(),
         admissionLocked = signal<number>();
-      // Pin the observed page Run -> identity order before invoking the unchanged
-      // production query. This avoids depending on the local PostgreSQL join plan.
-      const pageDb = new Proxy(f.db, {
-        get(target, key) {
-          if (key !== 'begin') return Reflect.get(target, key, target);
-          return (work: (tx: TransactionSql) => Promise<unknown>) =>
-            target.begin(async (tx) => {
-              await tx`set local lock_timeout='5s'`;
-              await tx`set local statement_timeout='10s'`;
-              const pid = await backendPid(tx);
-              await tx`select id from allrice_runs where id=${run.run_id} for share`;
-              pageLocked.resolve(pid);
-              await blockedBy(tx, await admissionLocked.promise, pid);
-              return work(tx);
-            });
-        },
-      });
-      const page = listCloudRuntimeOperations(
-        f.context,
-        run.run_id,
-        pageDb,
-      ).catch((error: unknown) => {
-        pageLocked.reject(error);
-        throw error;
-      });
+      // The pre-MET-210 polling order, Run first and identity rows second, as
+      // a raw reader: page polling itself no longer locks (asserted below).
+      const reader = f.db
+        .begin(async (tx) => {
+          await tx`set local lock_timeout='5s'`;
+          await tx`set local statement_timeout='10s'`;
+          const pid = await backendPid(tx);
+          await tx`select id from allrice_runs where id=${run.run_id} for share`;
+          readerLocked.resolve(pid);
+          await blockedBy(tx, await admissionLocked.promise, pid);
+          await tx`select r.id from allrice_runs r join allrice_users u on u.id=r.owner_id
+            join allrice_organizations o on o.id=r.organization_id
+            join allrice_workspaces w on w.id=r.workspace_id and w.organization_id=r.organization_id
+            join allrice_memberships m on m.organization_id=r.organization_id and m.user_id=r.owner_id
+              and (m.workspace_id is null or m.workspace_id=r.workspace_id)
+            where r.id=${run.run_id} for share of r,m,u,o,w`;
+        })
+        .catch((error: unknown) => {
+          readerLocked.reject(error);
+          throw error;
+        });
       const admission = f.db
         .begin(async (tx) => {
-          await pageLocked.promise;
+          await readerLocked.promise;
           expect(await lockNativeOnceJobAdmission(tx, run.job_id)).toEqual({
             scheduled: true,
             runId: run.run_id,
             allowed: true,
           });
           admissionLocked.resolve(await backendPid(tx));
-          // The queue's next non-key Run update must wait for the page, without
-          // making that page wait on an incompatible admission identity lock.
+          // The queue's next non-key Run update must wait for the reader,
+          // without making that reader wait on an incompatible identity lock.
           const updated = await tx`
           update allrice_runs set state='running',started_at=clock_timestamp()
           where id=${run.run_id} and state='queued' returning id`;
@@ -288,11 +286,51 @@ suite('automation admission and page polling — isolated PostgreSQL', () => {
           admissionLocked.reject(error);
           throw error;
         });
-      await completeBoth([page, admission]);
-      expect(await page).toEqual([]);
+      await completeBoth([reader, admission]);
       const [stored] =
         await f.db`select state from allrice_runs where id=${run.run_id}`;
       expect(stored?.state).toBe('running');
+    },
+    15_000,
+  );
+
+  it.each(['reuse', 'new_each_run'] as const)(
+    '%s page polling holds no Run lock while admission starts the same Run',
+    async (conversationMode) => {
+      const run = await scheduledRun(conversationMode);
+      const pageOpen = signal<void>(),
+        admissionDone = signal<void>();
+      let paused = false;
+      const probe = createReadPathProbe(f.db, {
+        beforeCommit: async () => {
+          if (paused) return;
+          paused = true;
+          // Keep the polling transaction open across the whole admission.
+          pageOpen.resolve();
+          await admissionDone.promise;
+        },
+      });
+      const page = listCloudRuntimeOperations(f.context, run.run_id, probe.db);
+      void page.catch((error: unknown) => pageOpen.reject(error));
+      const admission = pageOpen.promise
+        .then(() =>
+          f.db.begin(async (tx) => {
+            await tx`set local lock_timeout='2s'`;
+            expect(await lockNativeOnceJobAdmission(tx, run.job_id)).toEqual({
+              scheduled: true,
+              runId: run.run_id,
+              allowed: true,
+            });
+            const updated = await tx`
+            update allrice_runs set state='running',started_at=clock_timestamp()
+            where id=${run.run_id} and state='queued' returning id`;
+            expect(updated).toHaveLength(1);
+          }),
+        )
+        .finally(() => admissionDone.resolve());
+      await completeBoth([page, admission]);
+      expect(await page).toEqual([]);
+      probe.expectNoRowLocks();
     },
     15_000,
   );
@@ -444,12 +482,17 @@ suite('automation admission and page polling — isolated PostgreSQL', () => {
   it('real scheduled start retries a rolled-back 40P01 with the same claim and one start receipt', async () => {
     const { run, job, worker } = await claimedScheduledRun();
     const attempts = await startDeadlock(run.run_id, false);
+    const retried = transactionRetryCounts()['job_start:40P01:retrying'] ?? 0;
     const execution = await startClaimedJob(
       worker.workerId,
       worker.jobId,
       worker.leaseToken,
     );
     expect(await attempts()).toBe(2);
+    // MET-210 #4 observation: every retried rollback is counted and logged.
+    expect(transactionRetryCounts()['job_start:40P01:retrying']).toBe(
+      retried + 1,
+    );
     expect(execution?.job).toMatchObject({
       id: job.id,
       attempt: job.attempt,
@@ -480,10 +523,15 @@ suite('automation admission and page polling — isolated PostgreSQL', () => {
   it('real scheduled start preserves 40P01 after five rollbacks and settles the original claimed Job', async () => {
     const { run, job, worker } = await claimedScheduledRun();
     const attempts = await startDeadlock(run.run_id, true);
+    const exhausted =
+      transactionRetryCounts()['job_start:40P01:exhausted'] ?? 0;
     await expect(
       startClaimedJob(worker.workerId, worker.jobId, worker.leaseToken),
     ).rejects.toMatchObject({ code: '40P01' });
     expect(await attempts()).toBe(5);
+    expect(transactionRetryCounts()['job_start:40P01:exhausted']).toBe(
+      exhausted + 1,
+    );
     const [before] = await f.db`
       select status,attempt,lease_token from allrice_jobs where id=${job.id}`;
     expect(before).toMatchObject({
@@ -526,4 +574,30 @@ suite('automation admission and page polling — isolated PostgreSQL', () => {
     });
     expect(await attempts()).toBe(5);
   }, 15_000);
+
+  it('page polling and real job starts interleave without deadlock or retries', async () => {
+    const before = transactionRetryCounts();
+    for (let round = 0; round < 6; round++) {
+      const { run, worker } = await claimedScheduledRun();
+      // Polls race the real start transaction: claim check, admission
+      // identity locks, Run/Job updates, task clock and receipts.
+      const polls = Array.from({ length: 4 }, () =>
+        listCloudRuntimeOperations(f.context, run.run_id, f.db),
+      );
+      const start = startClaimedJob(
+        worker.workerId,
+        worker.jobId,
+        worker.leaseToken,
+      );
+      await completeBoth([start, ...polls]);
+      expect((await start)?.job.status).toBe('running');
+      for (const poll of polls) expect(await poll).toEqual([]);
+    }
+    const after = transactionRetryCounts();
+    expect(
+      Object.keys(after).filter(
+        (key) => key.includes(':40P01:') && after[key] !== (before[key] ?? 0),
+      ),
+    ).toEqual([]);
+  }, 60_000);
 });

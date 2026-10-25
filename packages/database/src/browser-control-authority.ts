@@ -43,6 +43,8 @@ export async function lockBrowserBindingOperations(
   tx: postgres.TransactionSql,
   ctx: RuntimePolicyPrincipal,
   raw: unknown,
+  /** `false` on read paths: the same checks as plain snapshot reads. */
+  lock = true,
 ) {
   const binding = RuntimeActionBindingSchema.parse(raw);
   if (
@@ -87,7 +89,7 @@ export async function lockBrowserBindingOperations(
     throw new RuntimePolicyError('browser_input_changed');
   const [root] = await tx`select root_run_id from allrice_runtime_roots
     where root_run_id=${binding.task.rootRunId} and organization_id=${ctx.organizationId}
-      and workspace_id=${ctx.workspaceId} and task->'scope'=${tx.json(binding.task.scope)} for update`;
+      and workspace_id=${ctx.workspaceId} and task->'scope'=${tx.json(binding.task.scope)} ${lock ? tx`for update` : tx``}`;
   if (!root) throw new RuntimePolicyError('browser_authority_unavailable');
   // A newly registered child may not exist yet during ledger.createOperation;
   // its parent must still pass the full running/fence check below admission.
@@ -96,11 +98,12 @@ export async function lockBrowserBindingOperations(
       join allrice_browser_operation_inputs i on i.operation_id=o.id
       where o.id=${command.action.parentOperationId} and i.browser_workspace_id=${stored.browser_workspace_id}
       and o.root_run_id=${binding.task.rootRunId} and o.organization_id=${ctx.organizationId}
-      and o.workspace_id=${ctx.workspaceId} for share of o`;
+      and o.workspace_id=${ctx.workspaceId} ${lock ? tx`for share of o` : tx``}`;
     if (!parent)
       throw new RuntimePolicyError('browser_request_parent_unavailable');
   }
-  await tx`select id from allrice_runtime_operations where id=${binding.attempt.operationId}
+  if (lock)
+    await tx`select id from allrice_runtime_operations where id=${binding.attempt.operationId}
     and root_run_id=${binding.task.rootRunId} and organization_id=${ctx.organizationId}
     and workspace_id=${ctx.workspaceId} for share`;
   const [unchanged] =
@@ -157,6 +160,7 @@ export async function browserIdentity(
   tx: postgres.TransactionSql,
   ctx: RuntimePolicyPrincipal,
   admin = false,
+  lock = true,
 ) {
   if (ctx.actor.type !== 'user' || !ctx.workspaceId)
     throw new RuntimePolicyError('browser_identity_denied');
@@ -167,7 +171,7 @@ export async function browserIdentity(
     join allrice_organizations o on o.id=m.organization_id and o.archived_at is null
     join allrice_workspaces w on w.id=${ctx.workspaceId} and w.organization_id=o.id and w.archived_at is null
     where m.organization_id=${ctx.organizationId} and m.user_id=${ctx.actor.id} and m.active
-    and (m.workspace_id is null or m.workspace_id=${ctx.workspaceId}) for share of m,u,o,w`;
+    and (m.workspace_id is null or m.workspace_id=${ctx.workspaceId}) ${lock ? tx`for share of m,u,o,w` : tx``}`;
   if (
     !rows.some((row) => ['admin', 'member'].includes(row.role)) ||
     (admin && !(await isPlatformAdmin(ctx, tx)))
@@ -179,22 +183,26 @@ export async function currentBrowserWorkspace(
   tx: postgres.TransactionSql,
   ctx: RuntimePolicyPrincipal,
   id: string,
+  /** `false` on read paths: same checks, no row or ordering locks. */
+  lock = true,
 ): Promise<BrowserWorkspaceRow> {
   if (!browserControlEnabled())
     throw new RuntimePolicyError('browser_control_disabled');
-  await browserIdentity(tx, ctx);
-  await lockStaticBrowserWorkspacePolicy(tx, ctx, id);
+  await browserIdentity(tx, ctx, false, lock);
+  if (lock) await lockStaticBrowserWorkspacePolicy(tx, ctx, id);
   // Queue event writers lock Job before Run. A multi-table FOR SHARE below
   // does not guarantee that order (the planner can lock Run first). Pin the
   // same-owner Job first so concurrent event flush/heartbeat cannot deadlock
   // the controller. This is ordering only: the full lease/authority predicate
   // below still rechecks every field after any wait.
-  await tx`select j.id from allrice_jobs j
+  if (lock) {
+    await tx`select j.id from allrice_jobs j
     join allrice_browser_workspaces w on w.job_id=j.id and w.run_id=j.run_id
       and w.organization_id=j.organization_id and w.workspace_id=j.workspace_id and w.owner_id=j.owner_id
     where w.id=${id} and w.organization_id=${ctx.organizationId}
       and w.workspace_id=${ctx.workspaceId} and w.owner_id=${ctx.actor.id} for share of j`;
-  await lockBrowserWorkspaceGrant(tx, ctx, id);
+    await lockBrowserWorkspaceGrant(tx, ctx, id);
+  }
   const [w] = await tx<
     BrowserWorkspaceRow[]
   >`select w.*,g.target_id,t.kind as target_kind,t.state as target_state,t.capabilities as target_capabilities,t.metadata as target_metadata,
@@ -222,7 +230,7 @@ export async function currentBrowserWorkspace(
       case when exists(select 1 from allrice_local_browser_grants lg where lg.grant_id=w.grant_id and lg.purpose='local_preview') then 'local.preview.open'
         when w.transport='local' then 'local.browser.workspace' else 'browser.workspace' end
     and (w.transport<>'local' or e.execution_snapshot->'capabilitySnapshot'->'grantedCapabilities' ? 'network:outbound')
-    for share of w,g,t,r,e,a,pe,c,j,p`;
+    ${lock ? tx`for share of w,g,t,r,e,a,pe,c,j,p` : tx``}`;
   if (!w) throw new RuntimePolicyError('browser_authority_unavailable');
   w.device_id = null;
   if (w.transport === 'local') {
@@ -248,7 +256,7 @@ export async function currentBrowserWorkspace(
         and (${BrowserProfileSchema.parse(w.profile).network === 'public_https'}=false or t.metadata->'environment'->>'version'='1')
         and (${BrowserProfileSchema.parse(w.profile).network === 'local_sites'}=false or t.metadata->'environment'->>'browserLocalSitesVersion'='1')
         and ((l.controller_lease_token is null and ${w.state}='starting') or l.lease_expires_at>clock_timestamp())
-      for share of l,g,d`;
+      ${lock ? tx`for share of l,g,d` : tx``}`;
     if (!local) throw new RuntimePolicyError('browser_authority_unavailable');
     const profile = BrowserProfileSchema.parse(w.profile);
     const environment = w.target_metadata.environment as
@@ -269,7 +277,7 @@ export async function currentBrowserWorkspace(
       )
         throw new RuntimePolicyError('static_browser_authority_lost');
       try {
-        w.staticTarget = await currentStaticBrowserTarget(tx, w);
+        w.staticTarget = await currentStaticBrowserTarget(tx, w, lock);
       } catch (error) {
         if (error instanceof RuntimePolicyError)
           throw new RuntimePolicyError('browser_authority_unavailable');
@@ -280,7 +288,7 @@ export async function currentBrowserWorkspace(
       if (local.persist_login)
         throw new RuntimePolicyError('browser_authority_unavailable');
       try {
-        w.preview = await currentLocalPreviewAuthority(tx, ctx, w);
+        w.preview = await currentLocalPreviewAuthority(tx, ctx, w, lock);
       } catch (error) {
         if (error instanceof RuntimePolicyError)
           throw new RuntimePolicyError('browser_authority_unavailable');
@@ -296,7 +304,7 @@ export async function currentBrowserWorkspace(
       throw new RuntimePolicyError('browser_authority_unavailable');
     const [task] = await tx`select id from allrice_managed_browser_tasks
       where id=${w.task_id} and job_id=${w.job_id} and job_attempt=${w.job_attempt} and run_id=${w.run_id}
-        and status='running' and cancel_requested_at is null for share`;
+        and status='running' and cancel_requested_at is null ${lock ? tx`for share` : tx``}`;
     if (!task) throw new RuntimePolicyError('browser_authority_unavailable');
   }
   w.profile = BrowserProfileSchema.parse(w.profile);
@@ -357,8 +365,9 @@ export async function checkBrowserBindingAuthority(
   tx: postgres.TransactionSql,
   ctx: RuntimePolicyPrincipal,
   binding: RuntimeActionBinding,
+  lock = true,
 ) {
-  await lockBrowserBindingOperations(tx, ctx, binding);
+  await lockBrowserBindingOperations(tx, ctx, binding, lock);
   const [stored] = await tx<
     {
       binding: unknown;
@@ -377,7 +386,12 @@ export async function checkBrowserBindingAuthority(
   )
     throw new RuntimePolicyError('browser_input_changed');
   const payload = BrowserCommandSchema.parse(stored.payload),
-    w = await currentBrowserWorkspace(tx, ctx, stored.browser_workspace_id);
+    w = await currentBrowserWorkspace(
+      tx,
+      ctx,
+      stored.browser_workspace_id,
+      lock,
+    );
   if (
     payload.workspaceId !== w.id ||
     payload.profileId !== w.profile_id ||
@@ -495,14 +509,14 @@ export async function checkBrowserBindingAuthority(
     const [file] =
       await tx`select id from allrice_storage_objects where id=${action.objectId} and organization_id=${w.organization_id}
       and workspace_id=${w.workspace_id} and owner_id=${w.owner_id} and checksum=${action.checksum} and deleted_at is null
-      and size_bytes<=${w.profile.maximumFileBytes} for share`;
+      and size_bytes<=${w.profile.maximumFileBytes} ${lock ? tx`for share` : tx``}`;
     if (!file) throw new RuntimePolicyError('browser_upload_unavailable');
   }
   if (action.type === 'request') {
     const [parent] =
       await tx`select o.id from allrice_runtime_operations o join allrice_browser_operation_inputs i on i.operation_id=o.id
       where o.id=${action.parentOperationId} and i.browser_workspace_id=${w.id} and o.snapshot->>'status'='running'
-      and i.payload->>'actor'=${payload.actor} and (i.payload->>'fence')::integer=${payload.fence} for share of o,i`;
+      and i.payload->>'actor'=${payload.actor} and (i.payload->>'fence')::integer=${payload.fence} ${lock ? tx`for share of o,i` : tx``}`;
     if (!parent)
       throw new RuntimePolicyError('browser_request_parent_unavailable');
   }
@@ -513,5 +527,6 @@ export async function readCurrentBrowserWorkspace(
   id: string,
   database = getDatabase(),
 ) {
-  return database.begin((tx) => currentBrowserWorkspace(tx, ctx, id));
+  // Its own transaction writes nothing, so its locks never protected a write.
+  return database.begin((tx) => currentBrowserWorkspace(tx, ctx, id, false));
 }

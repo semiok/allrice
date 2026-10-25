@@ -39,6 +39,7 @@ export async function assertLocalCommandCandidate(
   command: RuntimeLocalCommand,
   execution: RuntimeExecutionScope,
   assistant?: { rootRunId: string; runId: string },
+  lock = true,
 ) {
   const candidate = command.arguments.candidate;
   if (!candidate) {
@@ -57,7 +58,7 @@ export async function assertLocalCommandCandidate(
     join allrice_storage_objects o on o.id=v.object_id
     where v.id=${candidate.artifactId} and v.organization_id=${principal.organizationId}
       and v.workspace_id=${principal.workspaceId!} and v.owner_id=${principal.actor.id}
-      and v.session_id=${sessionId} for share of v,o`;
+      and v.session_id=${sessionId} ${lock ? tx`for share of v,o` : tx``}`;
   if (!version) throw new RuntimePolicyError('bridge_authority_changed');
   if (assistant) {
     // Persisted exact-version task, not a model-supplied author/copy reference.

@@ -126,6 +126,7 @@ export async function assertRuntimePolicyIdentity(
   transaction: Transaction,
   context: RuntimePolicyPrincipal,
   admin = false,
+  lock = true,
 ) {
   const ctx = context;
   UuidSchema.parse(ctx.organizationId);
@@ -146,7 +147,7 @@ export async function assertRuntimePolicyIdentity(
       and (membership.workspace_id is null or membership.workspace_id = ${ctx.workspaceId})
       and actor.status = 'active' and organization.archived_at is null
       and workspace.archived_at is null
-    for share of membership, actor, organization, workspace
+    ${lock ? transaction`for share of membership, actor, organization, workspace` : transaction``}
   `;
   if (
     !rows.some((row) => ['admin', 'member'].includes(row.role)) ||
@@ -161,11 +162,12 @@ const identity = assertRuntimePolicyIdentity;
 async function controlsFor(
   transaction: Transaction,
   context: RuntimePolicyPrincipal,
+  lock = true,
 ) {
   const [row] = await transaction<{ version: number; controls: unknown }[]>`
     select version, controls from allrice_runtime_policy_controls
     where organization_id = ${context.organizationId} and workspace_id = ${context.workspaceId}
-    for update
+    ${lock ? transaction`for update` : transaction``}
   `;
   const parsed = RuntimePolicyControlsSchema.safeParse(row?.controls);
   if (!parsed.success || parsed.data.version !== row?.version)
@@ -336,11 +338,12 @@ async function readApproval(
   transaction: Transaction,
   context: RequestContext,
   approvalId: string,
+  lock = true,
 ) {
   const [row] = await transaction<ApprovalRow[]>`
     select * from allrice_approval_requests where id = ${UuidSchema.parse(approvalId)}
       and organization_id = ${context.organizationId} and workspace_id = ${context.workspaceId}
-      and resource_type = 'runtime_operation' for update
+      and resource_type = 'runtime_operation' ${lock ? transaction`for update` : transaction``}
   `;
   if (!row) throw new RuntimePolicyError('approval_not_found');
   const request = RuntimeActionApprovalRequestSchema.parse(row.runtime_request);
@@ -581,6 +584,8 @@ export type RuntimePolicyOptions = {
   resolveCurrentBinding: (input: {
     transaction: Transaction;
     binding: RuntimeActionBinding;
+    /** `false` on read paths: the same checks without row locks. */
+    lock?: boolean;
   }) => Promise<RuntimeActionBinding>;
   platformDeniedActions?: readonly string[];
 };
@@ -861,11 +866,12 @@ export async function getRuntimeActionApproval(
   database: Database = getDatabase(),
 ) {
   return database.begin(async (transaction) => {
-    await identity(transaction, context);
+    await identity(transaction, context, false, false);
     const { row, request } = await readApproval(
       transaction,
       context,
       approvalId,
+      false,
     );
     return {
       request,

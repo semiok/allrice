@@ -156,11 +156,14 @@ export async function createBrowserWorkspace(
     { id: string }[]
   >`select id from allrice_browser_workspaces where id=${id}`;
   if (prior) return readCurrentBrowserWorkspace(ctx, id, db);
+  // A pre-check that writes nothing; any lock here ended at its own COMMIT.
+  // The insert below rechecks the Run under lock, and the returned workspace
+  // rechecks identity, grant and target before it is usable.
   const grant = await db.begin(async (tx) => {
-    await browserIdentity(tx, ctx);
+    await browserIdentity(tx, ctx, false, false);
     const [run] =
       await tx`select run_id from allrice_employee_runs where run_id=${input.context.runId} and organization_id=${ctx.organizationId}
-      and workspace_id=${ctx.workspaceId} and owner_id=${ctx.actor.id} and execution_snapshot->'capabilitySnapshot'->'bindings'->'toolNames' ? 'browser.workspace' for share`;
+      and workspace_id=${ctx.workspaceId} and owner_id=${ctx.actor.id} and execution_snapshot->'capabilitySnapshot'->'bindings'->'toolNames' ? 'browser.workspace'`;
     if (!run) throw new RuntimePolicyError('browser_frozen_tool_denied');
     const [count] = await tx<
       { n: number }[]
@@ -179,7 +182,7 @@ export async function createBrowserWorkspace(
       where g.organization_id=${ctx.organizationId} and g.workspace_id=${ctx.workspaceId} and g.owner_id=${ctx.actor.id}
         and g.transport='cloud' and g.enabled and g.revoked_at is null and t.state='online'
         and (t.metadata->>'healthManaged' is distinct from 'true' or t.last_heartbeat_at between clock_timestamp()-interval '120 seconds' and clock_timestamp())
-      order by g.created_at desc limit 1 for share of g,t`;
+      order by g.created_at desc limit 1`;
     if (!g) throw new RuntimePolicyError('browser_grant_unavailable');
     const profile = BrowserProfileSchema.parse(g.profile);
     if (
@@ -634,7 +637,7 @@ export async function listBrowserWorkspaces(
   db = getDatabase(),
 ): Promise<BrowserWorkspaceView[]> {
   const rows = await db.begin(async (tx) => {
-    await browserIdentity(tx, ctx);
+    await browserIdentity(tx, ctx, false, false);
     const [run] =
       await tx`select id from allrice_runs where id=${UuidSchema.parse(runId)} and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId} and owner_id=${ctx.actor.id}`;
     if (!run) throw new RuntimePolicyError('run_not_owned');
@@ -676,7 +679,7 @@ export async function listBrowserWorkspaces(
       let opAvailable = false;
       try {
         await db.begin((tx) =>
-          checkBrowserBindingAuthority(tx, ctx, snapshot.binding),
+          checkBrowserBindingAuthority(tx, ctx, snapshot.binding, false),
         );
         opAvailable = true;
       } catch {

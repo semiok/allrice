@@ -74,8 +74,7 @@ export async function resolveWorkbenchTerminalTarget(
         and exists(select 1 from allrice_memberships m where m.organization_id=d.organization_id and m.user_id=d.owner_id
           and m.active and (m.workspace_id is null or m.workspace_id=d.workspace_id) and m.role in ('member','admin'))
         and exists(select 1 from allrice_chat_sessions chat where chat.id=${sessionId} and chat.organization_id=d.organization_id
-          and chat.workspace_id=d.workspace_id and chat.owner_id=d.owner_id and chat.archived_at is null)
-      for share of d,g`;
+          and chat.workspace_id=d.workspace_id and chat.owner_id=d.owner_id and chat.archived_at is null)`;
     const environment = BridgeEnvironmentSchema.safeParse(
       target?.environment,
     ).data;

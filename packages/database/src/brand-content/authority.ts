@@ -22,6 +22,7 @@ export async function requireBrandContentScope(
   input: BrandContentScope,
   write: boolean,
   authority: BrandContentAuthority = 'user',
+  lock = true,
 ): Promise<Scope> {
   if (
     context.actor.type !== 'user' ||
@@ -34,7 +35,7 @@ export async function requireBrandContentScope(
   // A continuing job does not borrow or require an active browser login token.
   const identity =
     authority === 'user' ? scoped : { ...scoped, sessionId: undefined };
-  const principal = await readContentPrincipal(identity, tx, true);
+  const principal = await readContentPrincipal(identity, tx, lock);
   if (!principal || (write && !principal.writable)) fail('authority_denied');
   const instance = await getEmployeeInstance(identity, input.instanceId, tx);
   const [assignment] = await tx`select a.id from allrice_employee_assignments a
@@ -42,7 +43,7 @@ export async function requireBrandContentScope(
     where a.id=${instance.assignmentId} and i.id=${input.instanceId}
       and a.organization_id=${context.organizationId} and a.workspace_id=${input.workspaceId}
       and a.user_id=${context.actor.id} and i.owner_id=${context.actor.id} and a.active
-      and i.archived_at is null for share of a,i`;
+      and i.archived_at is null ${lock ? tx`for share of a,i` : tx``}`;
   if (!assignment) fail('authority_denied');
   return {
     organizationId: context.organizationId,
@@ -63,13 +64,14 @@ export async function assertBrandContentSession(
   scope: Scope,
   sessionId: string,
   write = false,
+  lock = true,
 ) {
   await assertWorkbenchSession(
     tx,
     brandContentPrincipal(context, scope),
     sessionId,
     write,
-    'share',
+    lock ? 'share' : false,
   );
   const [session] = await tx`select id from allrice_chat_sessions
     where id=${sessionId} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
@@ -84,11 +86,12 @@ export async function assertBrandContentFile(
   scope: Scope,
   file: BrandContentFileRef,
   image = false,
+  lock = true,
 ) {
   const [locked] = await tx`select id from allrice_storage_objects
     where id=${file.objectId} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
       and owner_id=${scope.ownerId} and state='ready' and deleted_at is null
-      and (retention_until is null or retention_until>clock_timestamp()) for share`;
+      and (retention_until is null or retention_until>clock_timestamp()) ${lock ? tx`for share` : tx``}`;
   if (!locked) fail('source_unavailable');
   const stored = await getStoredFile(
     brandContentPrincipal(context, scope),
@@ -115,7 +118,7 @@ export async function assertBrandContentFile(
   >`
     select id,session_id,platform_test_run_id from allrice_deliverable_versions
     where object_id=${file.objectId} and organization_id=${scope.organizationId}
-      and workspace_id=${scope.workspaceId} and owner_id=${scope.ownerId} for share`;
+      and workspace_id=${scope.workspaceId} and owner_id=${scope.ownerId} ${lock ? tx`for share` : tx``}`;
   if (version) {
     if (
       !version.session_id ||
@@ -123,7 +126,14 @@ export async function assertBrandContentFile(
       (file.versionId && version.id !== file.versionId)
     )
       fail('source_unavailable');
-    await assertBrandContentSession(tx, context, scope, version.session_id);
+    await assertBrandContentSession(
+      tx,
+      context,
+      scope,
+      version.session_id,
+      false,
+      lock,
+    );
     const artifact = await readArtifact(
       tx,
       brandContentPrincipal(context, scope),
@@ -148,9 +158,10 @@ export async function assertBrandContentDocument(
   sessionId: string,
   file: BrandContentVersionRef,
   requireLatest = false,
+  lock = true,
 ) {
-  await assertBrandContentSession(tx, context, scope, sessionId);
-  await assertBrandContentFile(tx, context, scope, file);
+  await assertBrandContentSession(tx, context, scope, sessionId, false, lock);
+  await assertBrandContentFile(tx, context, scope, file, false, lock);
   const artifact = await readArtifact(
     tx,
     brandContentPrincipal(context, scope),
@@ -176,18 +187,26 @@ export async function assertBrandContentImages(
   context: BrandContentIdentity,
   scope: Scope,
   images: BrandContentImage[],
+  lock = true,
 ) {
   for (const image of images) {
-    await assertBrandContentFile(tx, context, scope, image.file, true);
+    await assertBrandContentFile(tx, context, scope, image.file, true, lock);
     if (image.sourceKind === 'generated') {
       const [operation] = await tx<
         { result: { modelContent?: string }; session_id: string }[]
       >`
         select result,session_id from allrice_image_operations where id=${image.operationId!}
           and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
-          and owner_id=${scope.ownerId} and status='succeeded' for share`;
+          and owner_id=${scope.ownerId} and status='succeeded' ${lock ? tx`for share` : tx``}`;
       if (!operation) fail('source_unavailable');
-      await assertBrandContentSession(tx, context, scope, operation.session_id);
+      await assertBrandContentSession(
+        tx,
+        context,
+        scope,
+        operation.session_id,
+        false,
+        lock,
+      );
       let receipt: { objectId?: string; checksum?: string };
       try {
         receipt = JSON.parse(operation.result.modelContent ?? 'null');

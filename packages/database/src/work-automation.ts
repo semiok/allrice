@@ -16,7 +16,11 @@ export class WorkAutomationConflict extends Error {}
 
 /** Shared with execution admission. The transaction lock includes absent rows,
  * so a first explicit OFF cannot race an admission using the default ON. */
-export async function readWorkAutomation(tx: TransactionSql, scope: Scope) {
+export async function readWorkAutomation(
+  tx: TransactionSql,
+  scope: Scope,
+  lock = true,
+) {
   const [schema] =
     await tx`select to_regclass(format('%I.allrice_member_work_automation',current_schema())) is not null as available`;
   if (!schema?.available)
@@ -25,7 +29,9 @@ export async function readWorkAutomation(tx: TransactionSql, scope: Scope) {
       revision: 0,
       settings: { cloud: false, computer: false, assistants: true },
     };
-  await tx`select pg_advisory_xact_lock(hashtextextended(${`work-automation:${scope.organizationId}:${scope.workspaceId}:${scope.userId}`},0))`;
+  // Read paths skip it: they only display the current settings.
+  if (lock)
+    await tx`select pg_advisory_xact_lock(hashtextextended(${`work-automation:${scope.organizationId}:${scope.workspaceId}:${scope.userId}`},0))`;
   const [row] = await tx<{ revision: number; settings: unknown }[]>`
     select revision,settings from allrice_member_work_automation where organization_id=${scope.organizationId}
       and workspace_id=${scope.workspaceId} and user_id=${scope.userId}`;
@@ -42,6 +48,7 @@ async function member(
   tx: TransactionSql,
   context: RequestContext,
   workspaceId: string,
+  lock = true,
 ) {
   UuidSchema.parse(workspaceId);
   if (context.actor.type !== 'user')
@@ -52,7 +59,7 @@ async function member(
     join allrice_workspaces w on w.id=${workspaceId} and w.organization_id=m.organization_id and w.archived_at is null
     join allrice_organizations o on o.id=m.organization_id and o.archived_at is null
     where m.organization_id=${context.organizationId} and m.user_id=${context.actor.id} and m.active
-      and (m.workspace_id is null or m.workspace_id=w.id) for share of m,u,w,o`;
+      and (m.workspace_id is null or m.workspace_id=w.id) ${lock ? tx`for share of m,u,w,o` : tx``}`;
   if (!rows.length) throw new DataAccessError('authorization_denied');
   return rows.some((r) => ['admin', 'member'].includes(r.role));
 }
@@ -62,12 +69,16 @@ export async function getWorkAutomation(
   db: Database = getDatabase(),
 ) {
   return db.begin(async (tx) => {
-    const editable = await member(tx, context, workspaceId);
-    const value = await readWorkAutomation(tx, {
-      organizationId: context.organizationId,
-      workspaceId,
-      userId: context.actor.id,
-    });
+    const editable = await member(tx, context, workspaceId, false);
+    const value = await readWorkAutomation(
+      tx,
+      {
+        organizationId: context.organizationId,
+        workspaceId,
+        userId: context.actor.id,
+      },
+      false,
+    );
     return {
       workspaceId,
       revision: value.revision,

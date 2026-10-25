@@ -219,7 +219,7 @@ export async function listLocalBrowserGrants(
   db = getDatabase(),
 ) {
   return db.begin(async (tx) => {
-    await browserIdentity(tx, ctx);
+    await browserIdentity(tx, ctx, false, false);
     const rows =
       await tx`select l.grant_id,l.device_id,l.logical_profile_id,l.persist_login,g.version,g.profile,g.enabled,g.revoked_at,
       l.cleanup_requested_at,l.cleanup_confirmed_at,l.cleanup_error_code,d.name as device_name,d.last_seen_at,d.revoked_at as device_revoked_at

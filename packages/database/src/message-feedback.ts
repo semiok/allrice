@@ -75,7 +75,7 @@ export async function listMessageFeedback(
   sessionId: string,
 ) {
   return getDatabase().begin(async (tx) => {
-    await assertWorkbenchSession(tx, context, sessionId);
+    await assertWorkbenchSession(tx, context, sessionId, false, false);
     const rows = await tx<FeedbackRow[]>`select f.* from allrice_run_feedback f
       join allrice_employee_runs er on er.run_id=f.run_id
       where f.organization_id=${context.organizationId} and f.workspace_id=${context.workspaceId!}

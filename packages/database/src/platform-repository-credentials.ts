@@ -30,11 +30,11 @@ const settingsKey = (owner: string) =>
 const associated = (owner: string, revision: number) =>
   Buffer.from(`${settingsKey(owner)}:private:${revision}`);
 
-async function currentAdmin(context: RequestContext, sql: Sql) {
+async function currentAdmin(context: RequestContext, sql: Sql, lock = true) {
   const owner = await requirePlatformAdmin(context, sql);
   if (!context.sessionId) throw new DataAccessError('authentication_required');
   const [login] =
-    await sql`select id from allrice_sessions where id=${context.sessionId} and user_id=${owner} and revoked_at is null and expires_at>clock_timestamp() for share`;
+    await sql`select id from allrice_sessions where id=${context.sessionId} and user_id=${owner} and revoked_at is null and expires_at>clock_timestamp() ${lock ? sql`for share` : sql``}`;
   if (!login) throw new DataAccessError('authorization_denied');
   return owner;
 }
@@ -62,7 +62,7 @@ export async function getPlatformRepositoryCredential(
   context: RequestContext,
   sql: Sql = getDatabase(),
 ) {
-  const owner = await currentAdmin(context, sql),
+  const owner = await currentAdmin(context, sql, false),
     value = await read(owner, sql),
     configured = !!value?.stored.secret;
   let state: 'not_configured' | 'configured' | 'unavailable' = 'not_configured';
@@ -126,8 +126,9 @@ export async function readPlatformRepositoryCredential(
   context: RequestContext,
   expectedRevision: number,
   sql: Sql = getDatabase(),
+  lock = true,
 ) {
-  const owner = await currentAdmin(context, sql),
+  const owner = await currentAdmin(context, sql, lock),
     value = await read(owner, sql);
   if (!value?.stored.secret || value.stored.revision !== expectedRevision)
     throw new DataAccessError('authorization_denied');

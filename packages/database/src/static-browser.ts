@@ -472,32 +472,40 @@ export async function currentStaticBrowserVerification(
   tx: postgres.TransactionSql,
   context: ExecutionContext,
   id: string,
+  /** `false` on read paths: same checks, no row or ordering locks. */
+  lock = true,
 ) {
   const ctx = browserPrincipal(context);
   if (!browserControlEnabled())
     throw new RuntimePolicyError('browser_control_disabled');
-  await browserIdentity(tx, ctx);
+  await browserIdentity(tx, ctx, false, lock);
   const [intent] = await tx<
     { run_id: string; job_id: string; location: 'local' | 'cloud' }[]
   >`
     select run_id,job_id,location from allrice_static_browser_verifications where id=${id}
       and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId} and owner_id=${ctx.actor.id}`;
   if (!intent) throw new RuntimePolicyError('static_browser_authority_lost');
-  await lockStaticBrowserPolicy(tx, ctx, intent.run_id, intent.job_id);
-  await tx`select j.id from allrice_jobs j join allrice_static_browser_verifications v on v.job_id=j.id
+  if (lock) {
+    await lockStaticBrowserPolicy(tx, ctx, intent.run_id, intent.job_id);
+    await tx`select j.id from allrice_jobs j join allrice_static_browser_verifications v on v.job_id=j.id
     where v.id=${id} and v.organization_id=${ctx.organizationId} and v.workspace_id=${ctx.workspaceId}
       and v.owner_id=${ctx.actor.id} for share of j`;
+  }
   // Preserve the shared controls-before-browser lock order. Local mutations
   // retain their exact ledger approvals; the isolated cloud verifier has no
   // approval port and must require the member's current automation setting.
-  const controls = await readRuntimePolicyControls(tx, ctx);
+  const controls = await readRuntimePolicyControls(tx, ctx, lock);
   const automation =
     intent.location === 'cloud'
-      ? await readWorkAutomation(tx, {
-          organizationId: ctx.organizationId,
-          workspaceId: ctx.workspaceId!,
-          userId: ctx.actor.id,
-        })
+      ? await readWorkAutomation(
+          tx,
+          {
+            organizationId: ctx.organizationId,
+            workspaceId: ctx.workspaceId!,
+            userId: ctx.actor.id,
+          },
+          lock,
+        )
       : undefined;
   // Every plan navigates before observing, including assertion-only plans.
   const actions = [
@@ -548,7 +556,7 @@ export async function currentStaticBrowserVerification(
         and (t.metadata->>'healthManaged' is distinct from 'true' or t.last_heartbeat_at between clock_timestamp()-interval '120 seconds' and clock_timestamp())))
       and e.execution_snapshot->'capabilitySnapshot'->'bindings'->'toolNames' ? 'browser.workspace'
       and e.execution_snapshot->'capabilitySnapshot'->'grantedCapabilities' ?& array['storage:read','storage:write','network:outbound']
-    for share of v,j,r,e,a,pe,p,c,g,t`;
+    ${lock ? tx`for share of v,j,r,e,a,pe,p,c,g,t` : tx``}`;
   if (!row) throw new RuntimePolicyError('static_browser_authority_lost');
   return row;
 }
@@ -723,6 +731,7 @@ export async function admitStaticBrowserVerification(
 export async function currentStaticBrowserTarget(
   tx: postgres.TransactionSql,
   w: BrowserWorkspaceRow,
+  lock = true,
 ) {
   const [r] = await tx<
     { id: string; target: unknown }[]
@@ -731,7 +740,7 @@ export async function currentStaticBrowserTarget(
       and owner_id=${w.owner_id} and run_id=${w.run_id} and location='local' and device_id=${w.device_id}
       and state in ('admitted','running')`;
   if (!r) throw new RuntimePolicyError('static_browser_authority_lost');
-  await currentStaticBrowserVerification(tx, w.execution_context, r.id);
+  await currentStaticBrowserVerification(tx, w.execution_context, r.id, lock);
   return StaticBrowserTargetSchema.parse(r.target);
 }
 

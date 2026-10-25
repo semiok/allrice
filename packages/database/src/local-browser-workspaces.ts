@@ -164,7 +164,7 @@ export async function createLocalBrowserWorkspace(
       values(${id},${ctx.organizationId},${ctx.workspaceId},${ctx.actor.id},${grant.device_id},${grantId},${requestDigest})`;
     await currentBrowserWorkspace(tx, ctx, id);
   });
-  return db.begin((tx) => currentBrowserWorkspace(tx, ctx, id));
+  return db.begin((tx) => currentBrowserWorkspace(tx, ctx, id, false));
 }
 
 /** Common lock order is browser workspace first, local controller second. */

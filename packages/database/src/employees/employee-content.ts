@@ -1478,19 +1478,21 @@ export async function freezeEmployeeMethodActivationCandidate(
     executionView?: EmployeeMethodExecutionView;
   },
   tx: ContentTx,
+  lock = true,
 ) {
   const selection = await resolveEmployeeMethodTarget(
     context,
     input.instanceId,
     input.sharedTarget,
     tx,
+    lock,
   );
-  const target = await resolveTarget(context, selection.target, tx, true);
+  const target = await resolveTarget(context, selection.target, tx, lock);
   const [row] = await tx<
     ContentSetRow[]
   >`select * from allrice_employee_content_sets
     where organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
-      and id=${selection.setId} for share`;
+      and id=${selection.setId} ${lock ? tx`for share` : tx``}`;
   if (!row) throw new DataAccessError('not_found');
   if (
     row.revision !== input.expectedRevision ||
@@ -1506,7 +1508,7 @@ export async function freezeEmployeeMethodActivationCandidate(
     contentOwnership(row),
     tx,
     { row, revision },
-    true,
+    lock,
     Boolean(selection.sharedTarget),
   );
   if (!result.validation.valid)
@@ -1521,7 +1523,7 @@ export async function freezeEmployeeMethodActivationCandidate(
     active,
     result,
     tx,
-    true,
+    lock,
   );
   const testCoverage =
     companyCoverage?.coverage ??
@@ -1582,11 +1584,13 @@ export async function freezeEmployeeMethodCandidate(
     coverageDigest?: string;
   },
   tx: ContentTx,
+  lock = true,
 ) {
   const result = await freezeEmployeeMethodActivationCandidate(
     context,
     input,
     tx,
+    lock,
   );
   const scene = result.scenes.find((s) => s.id === input.sceneId);
   if (

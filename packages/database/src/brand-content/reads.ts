@@ -57,6 +57,7 @@ export async function listBrandContentBrands(
       input,
       false,
       options.authority,
+      false,
     );
     const rows = await tx<BrandRow[]>`select * from allrice_brand_content_brands
       where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
@@ -87,8 +88,9 @@ export async function getBrandContentBoard(
       input,
       false,
       options.authority,
+      false,
     );
-    const brand = await readBrand(tx, scope, input.brandId);
+    const brand = await readBrand(tx, scope, input.brandId, false, false);
     const contexts = await scopedRows<ContextRow>(
       tx,
       scope,
@@ -119,7 +121,7 @@ export async function getBrandContentBoard(
         and owner_id=${scope.ownerId} and instance_id=${scope.instanceId} and brand_id=${brand.id}
         and batch_id in ${tx(batches.slice(0, 200).map((b) => b.id).length ? batches.slice(0, 200).map((b) => b.id) : ['00000000-0000-0000-0000-000000000000'])}`;
     for (const row of contexts.slice(0, 200))
-      await readBrandContext(tx, context, scope, brand.id, row.id);
+      await readBrandContext(tx, context, scope, brand.id, row.id, false);
     // Fetch the referenced article even when the bounded article page omitted
     // it; the history page never bypasses source/instance checks at its edge.
     for (const bundle of bundles.slice(0, 200)) {
@@ -133,12 +135,26 @@ export async function getBrandContentBoard(
           and owner_id=${scope.ownerId} and instance_id=${scope.instanceId} and brand_id=${brand.id}`
         )[0];
       if (!article) fail('source_unavailable');
-      await assertBrandBundle(tx, context, scope, brand.id, article, bundle);
+      await assertBrandBundle(
+        tx,
+        context,
+        scope,
+        brand.id,
+        article,
+        bundle,
+        false,
+      );
     }
     for (const receipt of receipts.slice(0, 200))
       for (const file of receipt.evidence_files)
-        await assertBrandContentFile(tx, context, scope, file);
-    const feedback = await readBrandFeedbackBoard(tx, context, scope, brand.id);
+        await assertBrandContentFile(tx, context, scope, file, false, false);
+    const feedback = await readBrandFeedbackBoard(
+      tx,
+      context,
+      scope,
+      brand.id,
+      false,
+    );
     const board = BrandContentBoardSchema.parse({
       ...feedback,
       brand: mapBrand(brand),

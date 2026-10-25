@@ -101,8 +101,9 @@ export async function requireContentMaintenance(
   context: ContentIdentity,
   ownership: ContentOwnership,
   tx: postgres.TransactionSql,
+  lock = true,
 ) {
-  const decision = await getContentAccess(context, ownership, tx, true);
+  const decision = await getContentAccess(context, ownership, tx, lock);
   if (!decision.canMaintain) throw new DataAccessError('authorization_denied');
   return decision;
 }

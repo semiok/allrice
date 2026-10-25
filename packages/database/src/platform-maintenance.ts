@@ -24,17 +24,18 @@ export class MaintenanceConflict extends Error {
 export async function currentMaintenanceAdmin(
   context: RequestContext,
   sql: postgres.TransactionSql,
+  lock = true,
 ) {
   const owner = await requirePlatformAdmin(context, sql);
   const [user] =
-    await sql`select id from allrice_users where id=${owner} and status='active' for share`;
+    await sql`select id from allrice_users where id=${owner} and status='active' ${lock ? sql`for share` : sql``}`;
   if (!user) throw new DataAccessError('authorization_denied');
   if (!context.sessionId || !context.authenticatedAt)
     throw new DataAccessError('authorization_denied');
   const [session] = await sql`select id from allrice_sessions
     where id=${context.sessionId} and user_id=${owner}
     and date_trunc('milliseconds',created_at)=${context.authenticatedAt}::timestamptz
-    and revoked_at is null and expires_at>clock_timestamp() for share`;
+    and revoked_at is null and expires_at>clock_timestamp() ${lock ? sql`for share` : sql``}`;
   if (!session) throw new DataAccessError('authorization_denied');
   return owner;
 }
@@ -70,7 +71,7 @@ async function repairReady(tx: postgres.TransactionSql) {
 }
 export async function listMaintenanceDeployments(context: RequestContext) {
   const rows = await getDatabase().begin(async (tx) => {
-    const owner = await currentMaintenanceAdmin(context, tx);
+    const owner = await currentMaintenanceAdmin(context, tx, false);
     return {
       deployments:
         await tx`select * from allrice_platform_maintenance_deployments

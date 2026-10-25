@@ -450,6 +450,7 @@ export async function readPrivateExperience(
   sql: Sql,
   who: ContentIdentity,
   id: string,
+  lock = true,
 ) {
   if (
     !experienceReviewEnabled() ||
@@ -474,6 +475,7 @@ export async function readPrivateExperience(
     sql as Tx,
     proof.occurrenceId,
     proof.draftIndex,
+    lock,
   );
   const { occurrence: o, receipt } = source,
     draft = receipt.output.drafts[proof.draftIndex];
@@ -550,7 +552,7 @@ export async function listExperienceAdoptionViews(
       : 'active';
     if (state === 'active') {
       try {
-        await readPrivateExperience(tx, who, row.id);
+        await readPrivateExperience(tx, who, row.id, false);
       } catch (e) {
         if (!experienceUnavailable(e)) throw e;
         state = 'unavailable';
