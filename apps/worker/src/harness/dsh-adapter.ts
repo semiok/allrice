@@ -195,8 +195,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
       },
     });
     let outcome: DshRunTimingOutcome = 'failed';
+    let releaseLease: (() => void) | undefined;
     try {
-      const result = await this.executeObserved(input, timing);
+      const result = await this.executeObserved(input, timing, (threadId) => {
+        releaseLease = this.runtimePool.lease(threadId);
+      });
       outcome = result.assistantStatus === 'partial' ? 'partial' : 'completed';
       return result;
     } catch (error) {
@@ -207,6 +210,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           : 'failed';
       throw error;
     } finally {
+      releaseLease?.();
       timing.finish(outcome);
     }
   }
@@ -214,6 +218,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
   private async executeObserved(
     input: HarnessExecutionInput,
     timing: DshRunTiming,
+    leaseThread: (threadId: string) => void,
   ): Promise<HarnessExecutionResult> {
     const preparationStarted = performance.now();
     assertAssistantProviderOutputBound(
@@ -231,6 +236,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
       (!input.contentGuard || input.threadId === expectedThreadId)
         ? input.threadId
         : expectedThreadId;
+    // Held until execute() returns, including assistant join and cleanup.
+    leaseThread(threadId);
+    // A Host already selected for idle close exits before storage is read.
+    const idleClose = this.runtimePool.pendingIdleClose(threadId);
+    if (idleClose) await idleClose;
     const existing = this.runtimePool.get(threadId);
     const eligibilityStarted = performance.now();
     const callableToolNames = new Set(input.tools.map((tool) => tool.name));

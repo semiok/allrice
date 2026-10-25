@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { HarnessExecutionInput } from '../adapter.js';
 import * as CodexSubscription from '../../codex-subscription-home.js';
 import * as NativeArtifact from '../dsh-native-artifact.js';
@@ -38,6 +38,7 @@ import {
 import {
   DshRuntimePool,
   configuredDshNativeLaunch,
+  dshIdleCloseMs,
   type DshRuntime,
 } from './runtime-pool.js';
 
@@ -95,7 +96,7 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-function pool(native = false, capturePrompt?: string) {
+function pool(native = false, capturePrompt?: string, idleCloseMs?: number) {
   const fixturePath = resolve(
     import.meta.dirname,
     native
@@ -114,6 +115,7 @@ function pool(native = false, capturePrompt?: string) {
       : [fixturePath],
     credentialResolver: { resolve: async () => ({ apiKey: 'synthetic-only' }) },
     requestTimeoutMs: 15_000,
+    idleCloseMs,
   });
   pools.push(instance);
   return instance;
@@ -1173,3 +1175,233 @@ it('the actual DSH host releases the old Run binding and accepts a new Run on th
     nativeSessionId: first.threadId,
   });
 }, 30_000);
+
+describe('idle close (MET-216)', () => {
+  const longAgo = () => new Date(Date.now() - 3_600_000).toISOString();
+  /** Ownership-only pool: residents are synthetic and never spawn a child. */
+  function idlePool(idleCloseMs: number) {
+    return new DshRuntimePool({
+      runtimeRoot: join(root, 'idle'),
+      runtimeCommand: process.execPath,
+      runtimeArgs: ['/synthetic/never-spawned.mjs'],
+      credentialResolver: {
+        resolve: async () => ({ apiKey: 'synthetic-only' }),
+      },
+      idleCloseMs,
+    });
+  }
+  function resident(
+    instance: DshRuntimePool,
+    lastActivityAt = longAgo(),
+    close: () => Promise<void> = async () => {},
+    sessionId?: string,
+  ) {
+    const runtime = Object.assign(ownedClient(close, sessionId), {
+      nativeTools: [],
+      lastActivityAt,
+    });
+    cachedRuntimes(instance).set(runtime.sessionId, runtime);
+    return runtime;
+  }
+  beforeEach(() => {
+    vi.spyOn(console, 'info').mockImplementation(() => {});
+  });
+
+  it('reads ALLRICE_DSH_IDLE_CLOSE_MINUTES: 30 by default, 0 disables, invalid fails loudly', () => {
+    expect(dshIdleCloseMs(undefined)).toBe(1_800_000);
+    expect(dshIdleCloseMs(' ')).toBe(1_800_000);
+    expect(dshIdleCloseMs('0')).toBe(0);
+    expect(dshIdleCloseMs('2')).toBe(120_000);
+    expect(dshIdleCloseMs('0.5')).toBe(30_000);
+    for (const invalid of ['-1', 'thirty', 'Infinity'])
+      expect(() => dshIdleCloseMs(invalid)).toThrow(
+        'ALLRICE_DSH_IDLE_CLOSE_MINUTES',
+      );
+    vi.stubEnv('ALLRICE_DSH_IDLE_CLOSE_MINUTES', 'soon');
+    expect(
+      () =>
+        new DshRuntimePool({
+          runtimeCommand: process.execPath,
+          runtimeArgs: [],
+        }),
+    ).toThrow('ALLRICE_DSH_IDLE_CLOSE_MINUTES');
+  });
+
+  it('closes only Hosts idle past the limit, through the owned close', async () => {
+    const instance = idlePool(60_000);
+    pools.push(instance);
+    const idle = resident(instance),
+      active = resident(instance, new Date().toISOString());
+    const owned = vi.spyOn(instance, 'closeOwned');
+    await instance.reclaimIdle();
+    expect(owned).toHaveBeenCalledOnce();
+    expect(owned).toHaveBeenCalledWith(idle);
+    expect(idle.client.close).toHaveBeenCalledOnce();
+    expect(instance.get(idle.sessionId)).toBeUndefined();
+    expect(instance.get(active.sessionId)).toBe(active);
+    expect(active.client.close).not.toHaveBeenCalled();
+    expect(instance.inventory().map((runtime) => runtime.id)).toEqual([
+      active.id,
+    ]);
+    expect(instance.closureInventory()).toEqual([]);
+  });
+
+  it.each<[string, (pool: DshRuntimePool, runtime: DshRuntime) => void]>([
+    [
+      'an execution lease',
+      (pool, runtime) => void pool.lease(runtime.sessionId),
+    ],
+    [
+      'an unsettled steer',
+      (pool, runtime) => {
+        Object.assign(runtime.client, { steer: () => new Promise(() => {}) });
+        void pool.steer(runtime.sessionId, 'synthetic steer');
+      },
+    ],
+    [
+      'an input-delivery hold',
+      (pool, runtime) => {
+        (Reflect.get(pool, 'inputHolds') as Map<DshRuntime, unknown>).set(
+          runtime,
+          { phase: 'paused', hold: { dispose() {} } },
+        );
+      },
+    ],
+    [
+      'an unreadable activity time',
+      (_pool, runtime) => {
+        runtime.lastActivityAt = 'unknown';
+      },
+    ],
+  ])('never closes an idle Host with %s', async (_reason, arrange) => {
+    const instance = idlePool(60_000);
+    pools.push(instance);
+    const runtime = resident(instance);
+    arrange(instance, runtime);
+    await instance.reclaimIdle(Date.now() + 86_400_000);
+    expect(runtime.client.close).not.toHaveBeenCalled();
+    expect(instance.get(runtime.sessionId)).toBe(runtime);
+  });
+
+  it('closes nothing when disabled', async () => {
+    const instance = idlePool(0);
+    pools.push(instance);
+    const runtime = resident(instance);
+    await instance.reclaimIdle(Date.now() + 86_400_000);
+    expect(runtime.client.close).not.toHaveBeenCalled();
+    expect(Reflect.get(instance, 'idleTimer')).toBeUndefined();
+  });
+
+  it('nested leases keep the Host until the last release, which restarts the idle clock', async () => {
+    const instance = idlePool(60_000);
+    pools.push(instance);
+    const runtime = resident(instance);
+    const first = instance.lease(runtime.sessionId),
+      second = instance.lease(runtime.sessionId);
+    first();
+    first(); // Idempotent: a repeated release never drops another holder.
+    await instance.reclaimIdle();
+    expect(runtime.client.close).not.toHaveBeenCalled();
+    const released = Date.now();
+    second();
+    expect(Date.parse(runtime.lastActivityAt)).toBeGreaterThanOrEqual(released);
+    await instance.reclaimIdle(released + 59_000);
+    expect(runtime.client.close).not.toHaveBeenCalled();
+    await instance.reclaimIdle(Date.parse(runtime.lastActivityAt) + 60_000);
+    expect(runtime.client.close).toHaveBeenCalledOnce();
+  });
+
+  it('an acquisition racing an idle close waits for it and starts a fresh Host', async () => {
+    const runtimes = pool(false, undefined, 60_000),
+      value = request();
+    const first = await runtimes.acquire(value);
+    const held = deferred();
+    const close = first.runtime.client.close.bind(first.runtime.client);
+    vi.spyOn(first.runtime.client, 'close').mockImplementation(async () => {
+      await held.promise;
+      await close();
+    });
+    first.runtime.lastActivityAt = longAgo();
+    const sweep = runtimes.reclaimIdle();
+    // Selection removed the closing Host synchronously; it is never handed out.
+    expect(runtimes.get(value.threadId)).toBeUndefined();
+    let settled = false;
+    const replacement = runtimes.acquire(value).finally(() => {
+      settled = true;
+    });
+    await new Promise((done) => setTimeout(done, 50));
+    expect(settled).toBe(false);
+    held.resolve();
+    const second = await replacement;
+    await sweep;
+    expect(second.fresh).toBe(true);
+    expect(second.runtime).not.toBe(first.runtime);
+    expect(first.runtime.client.close).toHaveBeenCalledOnce();
+    expect(runtimes.inventory().map((runtime) => runtime.id)).toEqual([
+      second.runtime.id,
+    ]);
+  });
+
+  it('a lease or an in-flight acquisition taken before the sweep keeps the Host for reuse', async () => {
+    const runtimes = pool(false, undefined, 60_000),
+      value = request();
+    const first = await runtimes.acquire(value);
+    first.runtime.lastActivityAt = longAgo();
+    const release = runtimes.lease(value.threadId);
+    await runtimes.reclaimIdle();
+    expect(await runtimes.acquire(value)).toMatchObject({
+      fresh: false,
+      runtime: first.runtime,
+    });
+    release();
+    first.runtime.lastActivityAt = longAgo();
+    // acquire() leases synchronously, before its first await.
+    const reuse = runtimes.acquire(value);
+    await runtimes.reclaimIdle();
+    expect(await reuse).toMatchObject({ fresh: false, runtime: first.runtime });
+    expect(first.runtime.client.processState?.().state).not.toBe('exited');
+  });
+
+  it('a failed idle close stays unconfirmed and refuses a same-thread replacement', async () => {
+    const instance = idlePool(60_000),
+      value = request(),
+      failure = Error('idle close unconfirmed');
+    const runtime = resident(
+      instance,
+      longAgo(),
+      () => Promise.reject(failure),
+      value.threadId,
+    );
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await instance.reclaimIdle();
+    expect(logged).toHaveBeenCalledOnce();
+    expect(instance.closureInventory()).toMatchObject([
+      { id: runtime.id, state: 'unconfirmed' },
+    ]);
+    await expect(instance.acquire(value)).rejects.toMatchObject({
+      code: 'DSH_RUNTIME_CLOSE_UNCONFIRMED',
+    });
+    await expect(instance.close()).rejects.toBeInstanceOf(AggregateError);
+  });
+
+  it('the sweep timer closes an idle Host on its own and stops with no residents', async () => {
+    const runtimes = pool(false, undefined, 50);
+    await runtimes.acquire(request());
+    expect(Reflect.get(runtimes, 'idleTimer')).toBeDefined();
+    await vi.waitFor(() => expect(runtimes.inventory()).toEqual([]), {
+      timeout: 5_000,
+    });
+    await vi.waitFor(() =>
+      expect(Reflect.get(runtimes, 'idleTimer')).toBeUndefined(),
+    );
+  });
+
+  it('global close stops the sweep timer', async () => {
+    const runtimes = pool(false, undefined, 60_000);
+    await runtimes.acquire(request());
+    expect(Reflect.get(runtimes, 'idleTimer')).toBeDefined();
+    await runtimes.close();
+    expect(Reflect.get(runtimes, 'idleTimer')).toBeUndefined();
+    await runtimes.reclaimIdle(Date.now() + 86_400_000);
+  });
+});

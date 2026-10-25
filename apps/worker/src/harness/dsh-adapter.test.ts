@@ -3138,3 +3138,87 @@ vi.mock('../codex-subscription-home.js', async (original) => {
     activeCodexSubscriptionHome: async () => actual.codexSubscriptionHome(1),
   };
 });
+
+describe('idle close lease (MET-216)', () => {
+  it('holds the lease from preparation through cleanup, then lets an idle Host close', async () => {
+    vi.spyOn(console, 'info').mockImplementation(() => {});
+    const adapter = createAdapter();
+    const runtimes = Reflect.get(adapter, 'runtimePool') as DshRuntimePool;
+    const leases = Reflect.get(runtimes, 'leases') as Map<string, number>;
+    const input = executionInput({ prompt: 'Synthetic idle lease turn' });
+    let swept = false;
+    input.onEvent = async (event) => {
+      if (event.sourceEventType !== 'allrice/runtime-preparation') return;
+      const threadId = event.threadId!;
+      const live = runtimes.get(threadId)!;
+      expect(leases.get(threadId)).toBe(1);
+      live.lastActivityAt = new Date(0).toISOString();
+      await runtimes.reclaimIdle();
+      expect(runtimes.get(threadId)).toBe(live);
+      swept = true;
+    };
+    const threadId = (await adapter.execute(input)).threadId!;
+    expect(swept).toBe(true);
+    expect(leases.size).toBe(0);
+    const resident = runtimes.get(threadId)!;
+    expect(Date.now() - Date.parse(resident.lastActivityAt)).toBeLessThan(
+      5_000,
+    );
+    resident.lastActivityAt = new Date(0).toISOString();
+    await runtimes.reclaimIdle();
+    expect(runtimes.get(threadId)).toBeUndefined();
+    expect(adapter.runtimeInventory()).toEqual([]);
+
+    const failing = executionInput({
+      prompt: 'Synthetic failing turn',
+      sameSessionAs: input,
+    });
+    failing.onEvent = async (event) => {
+      if (event.sourceEventType === 'allrice/runtime-preparation')
+        throw new HandlerError('SYNTHETIC_FAILURE', 'synthetic', false);
+    };
+    await expect(adapter.execute(failing)).rejects.toMatchObject({
+      code: 'SYNTHETIC_FAILURE',
+    });
+    expect(leases.size).toBe(0);
+  });
+
+  it('a turn arriving during an idle close waits for the old Host to exit, then starts fresh', async () => {
+    vi.spyOn(console, 'info').mockImplementation(() => {});
+    const adapter = createAdapter();
+    const runtimes = Reflect.get(adapter, 'runtimePool') as DshRuntimePool;
+    const first = executionInput({ prompt: 'Synthetic first turn' });
+    const threadId = (await adapter.execute(first)).threadId!;
+    const old = runtimes.get(threadId)!;
+    const order: string[] = [];
+    let release!: () => void;
+    const held = new Promise<void>((done) => {
+      release = done;
+    });
+    const close = old.client.close.bind(old.client);
+    vi.spyOn(old.client, 'close').mockImplementation(async () => {
+      await held;
+      await close();
+      order.push('old-exited');
+    });
+    old.lastActivityAt = new Date(0).toISOString();
+    const sweep = runtimes.reclaimIdle();
+    const second = executionInput({
+      prompt: 'Synthetic second turn',
+      sameSessionAs: first,
+      threadId,
+    });
+    second.onEvent = async (event) => {
+      if (event.sourceEventType === 'allrice/runtime-preparation')
+        order.push(`prepared:${String(event.sourcePayload?.runtimeId)}`);
+    };
+    const turn = adapter.execute(second);
+    await new Promise((done) => setTimeout(done, 50));
+    expect(order).toEqual([]);
+    release();
+    await Promise.all([turn, sweep]);
+    const fresh = runtimes.get(threadId)!;
+    expect(fresh).not.toBe(old);
+    expect(order).toEqual(['old-exited', `prepared:${fresh.id}`]);
+  });
+});
