@@ -12,6 +12,7 @@ import {
   type TerminalNativeFrameSchema,
   type TerminalStreamMode,
 } from '@allrice/contracts';
+import type { WebTerminalId } from '@deepseek-ai/dsh-api-terminal-controller/types';
 import { TerminalCarrier } from './terminal-transport';
 
 const { WebSocket, WebSocketServer } = createRequire(import.meta.url)('ws');
@@ -136,7 +137,7 @@ async function fixture(mode: TerminalStreamMode = 'push') {
     ).length;
     const stream = carrier.remote.attach(
       target.sessionId as never,
-      id,
+      id as WebTerminalId,
     ) as unknown as Stream;
     const first = stream.next();
     await until(
@@ -362,7 +363,10 @@ it('reauthenticates after temporary authority loss without replaying input or an
   const previousGeneration = f.carrier.generation.getSnapshot()!.id;
   stream.send({ type: 'write', sequence: 1, data: 'once' });
   f.native(requestId, { type: 'output', sequence: 1, data: 'stale output' });
-  const closing = f.carrier.remote.close(f.target.sessionId as never, info.id);
+  const closing = f.carrier.remote.close(
+    f.target.sessionId as never,
+    info.id as WebTerminalId,
+  );
   await until(() => f.sent.some((frame) => frame.action === 'close'));
   await f.barrier();
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });

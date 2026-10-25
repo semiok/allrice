@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import capabilityCatalog from '../../../../packages/dsh-runtime-diff/capabilities.json';
+import capabilityCatalog from './dsh-capabilities.json';
 import {
   runtimeCapabilityFacts,
   integratedCapabilityStatus,

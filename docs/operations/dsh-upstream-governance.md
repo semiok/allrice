@@ -4,6 +4,15 @@ AllRice consumes DeepSeek Harness as a thin, isolated runtime distribution. It
 does not use the DSH Web Host as a tenant-facing backend and does not store
 AllRice product customizations in upstream packages.
 
+**One generation (MET-221, 2026-10-25).** The workspace depends on exactly one
+DSH version. An upgrade moves every `@deepseek-ai/dsh-*` package at once; no
+older package, patched package or separately versioned DSH service is kept.
+`pnpm dsh:verify` enforces this in CI. Historical journals either move forward
+through DSH's own format migrators or are not carried over; old data that would
+need an older generation is test data and is deleted (owner decision,
+2026-10-25). Known exceptions still being removed are listed in the repository
+`AGENTS.md`.
+
 ## Distribution facts
 
 - `installedGeneration`: the composition actually pinned by this build.
@@ -17,7 +26,9 @@ AllRice product customizations in upstream packages.
 
 The pointers select unique records in `apps/worker/dsh/distribution.json`.
 `pnpm dsh:generate` derives the committed shared constants; `pnpm dsh:verify`
-rejects drift and checks the installed dependency lock and physical patches.
+rejects drift, a second DSH version anywhere in the manifests or lockfile, any
+DSH source patch, and private DSH subpath imports missing from
+`compatibility.json`.
 The Worker guard and new employee publications consume those constants. The
 native adapter reports actual public package metadata for its loaded boot,
 loop, Session and SDK, rather than echoing `DSH_DISTRIBUTION_VERSION`.
@@ -25,8 +36,9 @@ loop, Session and SDK, rather than echoing `DSH_DISTRIBUTION_VERSION`.
 Live Dev acceptance remains in the verified deployment record and actual
 service build identities. Production promotion is always manual. Frozen
 historical values and checksums are not rewritten by this foundation. The
-immutable native-root/artifact binding and two-generation routing remain a
-separate MET192 gate; the declaration alone does not implement or prove them.
+per-context native artifact binding described below is being replaced by a
+generation binding (MET-221); until then a changed artifact still blocks deploys
+that have pinned contexts.
 
 ## Update procedure
 
@@ -38,26 +50,37 @@ separate MET192 gate; the declaration alone does not implement or prove them.
 2. Verify the exact source commit and source archive SHA-256. Research-only PRs
    leave the current distribution and dependency lock untouched; update
    `upstream.json` with the corresponding implementation and compatibility work.
-3. Pin available `@deepseek-ai/dsh-*` packages to the exact candidate and audit
-   removed packages, replacement compositions and their complete transitive/peer
-   dependency graph. Supporting libraries have independent version numbers.
-   Verify Worker and DSH Admin together, including `pnpm-workspace.yaml` patches.
+3. In one change, move every place that names the DSH version to the exact
+   candidate: each `@deepseek-ai/dsh-*` dependency in every workspace
+   `package.json`; `upstream.json`; the installed generation in
+   `distribution.json` (then `pnpm dsh:generate`); each `packageExtensions` entry
+   and each `overrides` selector keyed by a DSH version in `pnpm-workspace.yaml`
+   (delete an extension once upstream declares the dependency); the
+   `upstreamVersion` of every `patch-ledger.json` entry and of every
+   `compatibility.json` `privateInterfaces` entry; and `compatibility.json`
+   `sessionFormat`. Then run `pnpm install` and `pnpm dsh:verify`: the lockfile
+   must contain the candidate only. Audit removed packages, replacement
+   compositions and their complete transitive/peer dependency graph. Supporting
+   libraries have independent version numbers.
 4. Preserve the restricted profile and tenant-frozen tool allowlist. Existing
    governed subagents, browser and MCP facades still go through AllRice authority;
    installing an upstream bundle never authorizes its shell or other tools.
-5. Record every unavoidable downstream adapter in `patch-ledger.json` and every
-   source patch in `pnpm-workspace.yaml`; link both from the reuse decisions. Prefer an
-   AllRice plugin, profile overlay or adapter change over a source patch.
+5. Re-review every downstream adapter in `patch-ledger.json` against the
+   candidate and keep its entry in the reuse decisions. DSH packages are never
+   patched: use a public seam (plugin, profile overlay, adapter) or wait for
+   upstream. Do not add private DSH subpath imports; the existing ones are listed
+   in `compatibility.json` `privateInterfaces` (the gate fails on an unlisted
+   one) and a new one needs explicit approval and a removal plan.
 6. Run `pnpm dsh:golden-replay`, explicit PostgreSQL/Worker recovery and
    tenant-boundary tests, and the MET-62 evaluation suite. Test old journal copies
-   before migration and preserve original bytes. Unknown private events and
-   missing migration/rollback evidence block promotion; never mark them ignorable
-   to bypass a reader. A format-only probe is not full runtime acceptance.
-7. Canary the candidate by employee and tenant only after native-root binding,
-   artifact identity, permission and journal gates pass. Update the installed
-   and declared-promotion pointers explicitly; retain all still-referenced
-   compatibility artifacts. A failed new reader must not retry an old reader
-   after dispatch, and an old reader must not open new-format data.
+   with the candidate's official migrators and preserve original bytes. Never mark
+   unknown private events ignorable to make a journal migrate; journals the
+   candidate refuses are not carried forward. A format-only probe is not full
+   runtime acceptance.
+7. Deploy the candidate to Dev only after artifact identity, permission and
+   journal gates pass. Do not keep the previous generation running beside it:
+   contexts the candidate cannot read are deleted or not imported. An old reader
+   must never open new-format data.
 
 ## Failure policy
 
@@ -110,6 +133,10 @@ Artifact verification alone does not migrate journals, select another
 generation, or implement automatic release ACK/publishing.
 
 ## Retained approved readers and storage
+
+This mechanism predates the one-generation rule and is being removed in the next
+MET-221 step. It is dormant unless `ALLRICE_DSH_RETAINED_*` is configured (Dev
+configures none); do not configure new slots.
 
 A Worker may verify at most six independently approved historical readers before
 starting producers. This bounded MET184 transition is tracked by MET195; it is
@@ -178,7 +205,8 @@ initialization before each AllRice prompt, including cached hosts. Other tenant,
 profile or storage identities cannot replace a resident host. Existing model,
 content, assistant and Broker authorization remains mandatory.
 
-The current single approved 0.1.5 reader records
+A retained 0.1.5 reader, where a Worker still configures one (Dev configures
+none; the mechanism is removed in the next MET-221 step), records
 `binding_basis=approved_compatibility_reader`, never an inferred original writer.
 There is no blanket historical backfill or fallback to an empty/new log root.
 Keep the configured runtime root stable and preserve the binding table together

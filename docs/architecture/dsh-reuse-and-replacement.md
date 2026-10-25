@@ -1,10 +1,20 @@
 # DSH 复用与替换清单
 
+## MET-221：只用一代 DSH
+
+2026-10-25 起，AllRice 任何时候只依赖一代 DSH（当前 `0.2.1-rc.2` / `687f282`）。升级时 Worker、Web、Bridge、Office 与维护工具一次性换到新一代，不保留旧包、旧补丁或独立的旧版服务。
+
+- 已删除：`apps/dsh-admin`（独立 DSH 管理控制台，最后版本见 tag `archive/dsh-admin-0.1.5`）、`packages/dsh-web-search-codex`、`packages/dsh-runtime-diff` 的 WebUI 插件、五个 `0.1.5-rc.3` 物理补丁及工作区里旧代的 `packageExtensions`、`overrides`、`patchedDependencies`。锁文件只剩一个版本的 `@deepseek-ai/dsh-*`。
+- `pnpm dsh:verify`（CI 执行）由 `scripts/verify-dsh-single-generation.mjs` 拒绝：锁文件任何位置（packages、snapshots、importers 的声明与解析结果、overrides）出现非当前版本或非 registry 来源的 DSH 包，`package.json` 里非精确版本或别名声明，指向其他版本的 `packageExtensions`，以及任何 DSH 物理补丁。`packageExtensions` 只用来补当前一代漏写的依赖元数据。代码里导入的 DSH 私有子路径必须逐项登记在 `compatibility.json` 的 `privateInterfaces`。
+- `patch-ledger.json` 改为 schema 2，只登记当前一代经公开接缝实现的协议扩展。
+- 旧会话：不含 AllRice 私有事件的历史日志由当前一代的官方格式迁移器向前迁移，迁移后可继续对话（`legacy-official-migration`）；带私有事件的日志被拒绝且不改写（`legacy-format-refusal`）。按用户决定（10-25），迁不了的旧数据是测试数据，切换时不导入，不做只读归档。
+- 仍待消除的例外：当前一代仍写 4 种 AllRice 私有事件（官方迁移器不认识它们；V0 日志已实测因此被拒，下次换代很可能同样如此，MET-221 第 1 阶段处理）；Worker 中按环境变量配置的旧执行包保留槽仍在代码中（Dev 未配置，MET-221 下一步删除）；Web 的 `apps/web/app/dsh-upstream/` 是 0.1.1 UI 源码拷贝，Web 还按文件路径读取 DSH 包内的 `lib/client.*.js` 浏览器资源（两者随 Web UI 换代单独排期）。
+
 ## MET195：原生运行关闭观察
 
 `allrice-observed-native-close-v1` 继续复用固定 `0.2.1-rc.2` 的公开 SDK shutdown、根 Context dispose 与 JSON-RPC transport flush。AllRice wrapper 逐项记录实际返回结果，最终响应排空失败使自身非零退出；Worker 等待原有子进程的 child close/stdio 关闭，并把原 owner、包、boot 与关闭观察写入不可变持久记录。物理退出、语义关闭确认和持久回执分别判断，缺失或失败保留 unknown/unconfirmed，不把历史补成成功，也不重放业务任务。
 
-这是 AllRice 协议与持久登记的接线，不修改 DSH 核心、依赖或物理补丁；物理补丁仍为 5 项。回归复用现有 protocol、pool、Worker 关闭测试，以及隔离 PostgreSQL 的 owner/FK、幂等回执读回与退休锁序检查。真实 SDK、最终 transport 排空与实际 Worker 退出仍须按同一候选版本验收，离线夹具或退出码为零不能代替语义证明。若上游公开关闭接口提供等价的可核对回执，可用其替换本层协议字段，保留 AllRice 的精确 owner、租户隔离、不可变历史与 unknown 处理。
+这是 AllRice 协议与持久登记的接线，不修改 DSH 核心、依赖或物理补丁；物理补丁当时仍为 5 项（MET-221 已全部删除）。回归复用现有 protocol、pool、Worker 关闭测试，以及隔离 PostgreSQL 的 owner/FK、幂等回执读回与退休锁序检查。真实 SDK、最终 transport 排空与实际 Worker 退出仍须按同一候选版本验收，离线夹具或退出码为零不能代替语义证明。若上游公开关闭接口提供等价的可核对回执，可用其替换本层协议字段，保留 AllRice 的精确 owner、租户隔离、不可变历史与 unknown 处理。
 
 ## MET194：企业品牌内容业务读取
 
@@ -282,11 +292,11 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 
 默认开放，无额外开关：日常任务不显示空助手壳；回答首字出现后隐藏思考/执行微状态。验收覆盖 9 次行情查询合成一行、键盘展开、真实员工名称、手机布局、服务端等待计时及失败恢复。回退可整体撤销此展示适配，不改变原始事件、任务时钟或执行授权；上游提供同等聚合接口后替换本地分组逻辑。
 
-## 已登记的 15 项适配责任与 5 个物理补丁
+## 已登记的适配责任（无物理补丁）
 
-`patch-ledger.json` 的 `patches` 记录 15 项责任，`physicalPatches` 精确记录五个 DSH 包、版本、文件路径及责任 ID。一项私有会话迁移责任覆盖格式迁移和 JSONL 持久化两个物理补丁；Next 等非 DSH 补丁不混入此清单。
+`patch-ledger.json` 的 `patches` 只记录当前一代 DSH 的协议扩展；每项都必须是 `protocol-extension`、指向 AllRice 自己的文件并在本页有入口。DSH 包本身不打补丁；Next 等非 DSH 补丁另行治理。
 
-`pnpm dsh:verify` 交叉核对 workspace、lock、实际文件 SHA256 与责任映射；缺项、重复/冲突、未知或悬空归属及包/版本/路径/摘要漂移均失败，分别输出 `physicalPatchCount` 和 `ledgerEntryCount`。回放场景列表仅表示已配置，不代表本命令执行过这些测试；真实回放继续由已有 CI/验收入口执行。
+`pnpm dsh:verify` 同时检查单代规则与本清单，并输出 `dshPackages` 和 `dshVersion`。回放场景列表仅表示已配置，不代表本命令执行过这些测试；真实回放继续由已有 CI/验收入口执行。
 
 以下条目的复核日期/版本统一继承“本轮复核”。测试路径以仓库根目录为起点。退役必须在同一 PR 删除相应旧实现、更新机器清单并留下验证结果；一项适配中的少量机制可退役，不代表它承担的整项治理责任可以删除。
 
@@ -368,29 +378,9 @@ MET181 公司组合验收发现固定 `dsh-tool-ask-user@0.1.5-rc.3` 的 Consume
 - 回归：`final-delivery-cold/`、`bounded-final-delivery-repair.test.ts`、`final-delivery-commit.integration.test.ts`、`final-delivery-rollout.integration.test.ts`、`assistant-model-preparation-close.integration.test.ts`、`office-first-quality-publication.integration.test.ts` 及后台预览浏览器测试。合成 provider、真实 PostgreSQL 和实际 Dev 验收分别记录，不互相冒充。
 - 退役条件：上游提供可绑定同一持久 turn/当前租约且可组合 AllRice 事务提交的公开完成边界，并通过输入竞态、冷恢复、取消/未知用量、权限撤回、原字节/旧版本和普通网页交付回归；可替换对应适配，AllRice 成果与权限事实仍由平台负责。
 
-### dsh-admin-webui-private-entrypoint-v1
+### 随 0.1.x 退役的条目（2026-10-25，MET-221）
 
-- ID：`dsh-admin-webui-private-entrypoint-v1`；归属 MET-100；**保留**。
-- Allrice：[dsh-webui-compatibility.mjs](../../apps/dsh-admin/dsh-webui-compatibility.mjs)。隔离私有 `@deepseek-ai/dsh/lib/bin.js`、启动参数与管理员入口。PR-2 新增受信任 Host 插件，经父子进程 IPC 提交原生 `authenticatedUrl`；网关内部交换和定时更新 cookie，浏览器仍只持有 Allrice 管理员会话。HTTP/API 的 Host 与 Origin 必须先通过网关校验。
-- 上游：[rc.3 CLI manifest][cli]仍以 `lib/bin.js` 暴露可执行文件；这不是稳定的 Allrice 管理 API。[client connection][connection]内部已有较大改动，需要连同下一项源码补丁核对。
-- 退役条件：上游有满足同等参数和管理员访问边界的稳定入口，或 Allrice 不再需要原生管理员 WebUI；否则继续集中封装，不能把 Web Host 作为租户后端。
-- 验收：`apps/dsh-admin/dsh-webui-compatibility.test.mjs`、管理员 gateway 授权回归及真实启动。回退使用成套 CLI、UI 资源和补丁，不能只换 Worker。
-
-### allrice-private-session-migration-v1
-
-- ID：`allrice-private-session-migration-v1`；归属 MET-154 PR-2；**保留**。
-- 实现：[私有事实预检](../../apps/worker/dsh/allrice-session-compatibility.mjs)、`patches/@deepseek-ai__dsh-session-format-v0-to-v1@0.1.5-rc.3.patch` 和 JSONL 持久化包的对应补丁。新增四种精确 log-only 事件；主线程与内嵌 verifier 使用相同 payload 校验，Session 运行时使用同一词表。
-- 复用原生 v0→v1→v2→v3 迁移、序号/引用重映射、只读句柄、代际文件及单写入者租约；平台预检会话/turn/答案/续接关系。不丢弃私有事实、不伪造答案采纳证明、不覆盖唯一源文件。
-- 验收：`dsh-legacy-replay.test.ts` 的源字节不变、等待迁移、重复答案/重启续接、未知格式/事件、损坏事实与并发写入拒绝。带私有事实的 seeded/child 日志明确拒绝，不能默认为根会话。
-- 退役条件：上游提供同时覆盖迁移校验器、运行时和独立 worker bundle 的版本化下游事件注册机制；届时先通过同一旧日志测试，再删除两个物理包补丁与运行时词表扩展。候选写入 v3 后禁止旧二进制继续旧历史。
-
-## 管理员网关源码补丁（已纳入机器 ledger）
-
-稳定 ID：`allrice-admin-authenticated-origin-pnpm-v1`；归属 MET-100；**保留，升级时重新验证**。
-
-[pnpm-workspace.yaml](../../pnpm-workspace.yaml) 的 `patchedDependencies` 还登记了 [client-connection 补丁](../../patches/@deepseek-ai__dsh-client-connection@0.1.5-rc.3.patch)：已认证 HTML 的 `allrice-dsh-admin` 标记让管理员 UI 使用受控网关。这是一个实际第三方包源码补丁，已用同一稳定 ID 纳入 ledger 的责任条目及 physicalPatches 映射，与协议适配分别计数。
-
-rc.3 [connection 实现][connection]补丁已按新 transport/ownsHost 实现重新移植；保留服务端原生认证，并用真实原生 WebUI 启动、登录、API、Host 和跨域拒绝测试验证。退役需证明新的正式远程连接入口在既有管理员认证、Host 检查和回环服务限制下工作，并通过未登录/非管理员拒绝测试。HTML 标记本身不是权限凭证。回退需要旧锁文件、旧补丁、网关和 UI 同时兼容。详见 [管理员架构](dsh-admin-console.md)。
+`dsh-admin-webui-private-entrypoint-v1`、`allrice-admin-authenticated-origin-pnpm-v1`（管理员 WebUI 与其 client-connection 补丁）、`allrice-private-session-migration-v1`（0.1.5 格式迁移与 JSONL 持久化补丁）、`allrice-managed-native-mcp-v1`（由 `allrice-managed-native-mcp-public-v2` 取代）和 `dsh-pi-ai-premature-websocket-close-v2` 只服务于 `0.1.5-rc.3` 的独立管理员与保留主机，已与该代一起删除。历史说明见 git 历史和 tag `archive/dsh-admin-0.1.5`。
 
 ## 值得复用的上游能力
 
@@ -423,12 +413,12 @@ rc.3 [connection 实现][connection]补丁已按新 transport/ownsHost 实现重
 
 ## 持续维护规则
 
-每次升级同时落实默认开放和能力说明更新。两个后台共用 `packages/dsh-runtime-diff/capabilities.json`，明确标注已集成、上游待接入和仅前瞻版本已有的能力；该清单只负责展示，实际启用还需落实运行配置与数字员工发布。验收要从测试租户入口确认能力确实可用，并记录交付后持续开放的状态。
+每次升级同时落实默认开放和能力说明更新。运行控制台读取 `apps/web/app/runtime-console/dsh-capabilities.json`，明确标注已集成、上游待接入和仅前瞻版本已有的能力；该清单只负责展示，实际启用还需落实运行配置与数字员工发布。验收要从测试租户入口确认能力确实可用，并记录交付后持续开放的状态。
 
-管理后台的数量与开启状态读取 Worker 实际安装包、运行配置、功能开关及租户员工已发布版本，每 10 秒刷新；上游能力目录仅用于说明。Worker 心跳超过 20 秒或读取失败时显示未知，不用静态目录数量补位。具体数据来源见 [管理员架构](dsh-admin-console.md)。
+管理后台的数量与开启状态读取 Worker 实际安装包、运行配置、功能开关及租户员工已发布版本，每 10 秒刷新；上游能力目录仅用于说明。Worker 心跳超过 20 秒或读取失败时显示未知，不用静态目录数量补位。具体数据来源见 `apps/web/lib/runtime-capabilities.ts`。
 
 1. 每次上游升级、适配新增/删除或源码补丁变更，都在同一 PR 更新有关条目；保留理由也要注明新复核日期与固定 SHA。
-2. `pnpm dsh:verify` 检查每个 ledger ID 在此有入口；评审仍需核对内容，不能只补一个 ID。也必须审查 `patchedDependencies`，一个 ledger 条目可对应多个物理源码补丁，不能用条目数代替补丁清点。
+2. `pnpm dsh:verify` 检查每个 ledger ID 在此有入口，并拒绝第二代 DSH 包和任何 DSH 物理补丁；评审仍需核对内容，不能只补一个 ID。
 3. 每条至少保留稳定 ID、Allrice 路径/原工单、上游包/源码 SHA、存在/启用差异、决策、权威边界、验收、退役条件、回退方式和实现 PR。退役记录保留，不抹掉历史。
 4. 上游新版本的研究快照放在 `dsh-upgrades/`，从本页链接；机器发行文件只随实际兼容实现更新。历史日志夹具保持原字节，不用新版本重新生成来冒充兼容。
 5. 不以“减少多少代码/节省多少 token”替代行为验收；有测量再填写收益。PR-2 已更新候选依赖及发行事实；PR-3 只删除一段重复转换，不减少 ledger 条目或物理补丁数量，不改变工具集合。
@@ -447,8 +437,6 @@ rc.3 [connection 实现][connection]补丁已按新 transport/ownsHost 实现重
 [web]: https://github.com/deepseek-ai/deepseek-harness/blob/a4c74a91e06b00fe0b0937bde982170c526cc842/packages/web/tool-web/README.md
 [sdk]: https://github.com/deepseek-ai/deepseek-harness/blob/a4c74a91e06b00fe0b0937bde982170c526cc842/packages/sdk/server/src/server.ts
 [wire]: https://github.com/deepseek-ai/deepseek-harness/blob/a4c74a91e06b00fe0b0937bde982170c526cc842/packages/sdk/protocol/src/types.ts
-[cli]: https://github.com/deepseek-ai/deepseek-harness/blob/a4c74a91e06b00fe0b0937bde982170c526cc842/apps/cli/package.json
-[connection]: https://github.com/deepseek-ai/deepseek-harness/blob/a4c74a91e06b00fe0b0937bde982170c526cc842/packages/client/connection/src/client/index.ts
 [compaction]: https://github.com/deepseek-ai/deepseek-harness/blob/a4c74a91e06b00fe0b0937bde982170c526cc842/packages/compaction/compaction-basic/README.md
 [plan]: https://github.com/deepseek-ai/deepseek-harness/blob/a4c74a91e06b00fe0b0937bde982170c526cc842/packages/plan/plan-mode/README.md
 [reference]: https://github.com/deepseek-ai/deepseek-harness/blob/a4c74a91e06b00fe0b0937bde982170c526cc842/packages/context/session-reference/README.md
@@ -612,9 +600,9 @@ Managed children use public `startActivation` with parent delivery and `drainDes
 
 `allrice-managed-native-mcp-public-v2` composes official SDK 2.2 transport with the exported DSH tool-definition adapter. Per-request AllRice authorization, DNS-pinned egress, cancellation, frozen names/schema, unknown-effect classification and zero automatic transport reconnect retries remain required. It does not copy the upstream client plugin.
 
-`allrice-private-v4-payload-validation-v2` keeps the four exact AllRice event payloads and chronology in AllRice. Historical private V0/V3 files are served by their exact approved retained 0.1.5 reader, not opened as new V4 roots or rewritten on upgrade. Unsupported migration remains an explicit refusal.
+`allrice-private-v4-payload-validation-v2` keeps the four exact AllRice event payloads and chronology in AllRice. Historical private V0/V3 files are never opened as new V4 roots or rewritten: the installed generation refuses them, and only a Worker that explicitly configures a retained 0.1.5 slot (none on Dev; removed in the next MET-221 step) could still read them. Unsupported migration remains an explicit refusal.
 
-The five physical 0.1.5 patches still exist for the independently versioned old administrator/retained hosts. Their version, owner, file and lock digest are verified separately from the new Worker. Retention is not a claim that new upstream behavior superseded every old patch. Strict peer pins in the respective importers prevent the old administrator and new Worker borrowing one another's Cordis/DSH services; the installed graph is measured independently.
+The five physical 0.1.5 patches and the old administrator host were removed with that generation (MET-221, 2026-10-25). The workspace now resolves one DSH generation, so no importer can borrow another generation's Cordis/DSH services; `pnpm dsh:verify` enforces it.
 
 New 0.2.1 execution additionally requires an immutable business INSERT origin and `ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID` matching the actually approved primary artifact. NULL historical facts are never backfilled, and old queued tests/repeated requests/old packages stay legacy. Content generations and explicit retries inherit their original reader. Removed invariant plugins have no published 0.2.1 exports: native factory ownership/session persistence validation and AllRice lease/pin/deadline/cancel gates are verified by actual SDK and SQL tests, rather than loading unsupported paths.
 

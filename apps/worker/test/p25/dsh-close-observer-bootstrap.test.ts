@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -67,7 +67,9 @@ afterEach(async () => {
     await rm(root, { recursive: true, force: true });
 });
 async function measured() {
-  const root = await mkdtemp(join(tmpdir(), 'allrice-close-bootstrap-'));
+  const root = await realpath(
+    await mkdtemp(join(tmpdir(), 'allrice-close-bootstrap-')),
+  );
   roots.push(root);
   const entrypoint = join(root, 'dist', 'index.js');
   await mkdir(join(root, 'dist'));

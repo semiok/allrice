@@ -1,5 +1,3 @@
-import { retainedReaderFixture } from './retained-reader-fixture.js';
-import { closeLegacyFixtureClient } from './legacy-client-close.js';
 import { join, resolve } from 'node:path';
 
 import { DSH_DISTRIBUTION_CURRENT_VERSION } from '../../src/harness/dsh-distribution.js';
@@ -9,26 +7,24 @@ import {
 } from '../../src/harness/dsh-protocol-client.js';
 import { p24Fixture } from '../p24/fixture.js';
 
-/** Production stdio adapter, disposable storage, synthetic loopback model only. */
+/** Installed stdio adapter, disposable storage, synthetic loopback model only.
+ * Historical journals are installed into it to prove the installed generation
+ * either migrates them with the official migrators or refuses them. */
 export async function legacySessionFixture(
   model: Parameters<typeof p24Fixture>[0],
-  reader: 'retained' | 'candidate' = 'retained',
 ) {
   const fixture = await p24Fixture(model);
-  const legacy =
-    reader === 'retained'
-      ? await retainedReaderFixture(fixture.root)
-      : {
-          entrypoint: resolve(
-            import.meta.dirname,
-            '../../dsh/allrice-jsonrpc-runtime.mjs',
-          ),
-          profile: resolve(
-            import.meta.dirname,
-            '../../dsh/allrice-restricted.cordis.yml',
-          ),
-          version: DSH_DISTRIBUTION_CURRENT_VERSION,
-        };
+  const legacy = {
+    entrypoint: resolve(
+      import.meta.dirname,
+      '../../dsh/allrice-jsonrpc-runtime.mjs',
+    ),
+    profile: resolve(
+      import.meta.dirname,
+      '../../dsh/allrice-restricted.cordis.yml',
+    ),
+    version: DSH_DISTRIBUTION_CURRENT_VERSION,
+  };
   const clients: DshProtocolClient[] = [];
   return {
     ...fixture,
@@ -65,14 +61,9 @@ export async function legacySessionFixture(
       });
       return { client, notices };
     },
-    closeClient(client: DshProtocolClient) {
-      if (!clients.includes(client))
-        throw new Error('Legacy fixture cannot close a foreign client');
-      return closeLegacyFixtureClient(client, reader);
-    },
     async close() {
       const results = await Promise.allSettled(
-        clients.map((client) => closeLegacyFixtureClient(client, reader)),
+        clients.map((client) => client.close()),
       );
       await fixture.close();
       const failures = results.flatMap((result) =>
@@ -85,15 +76,4 @@ export async function legacySessionFixture(
         );
     },
   };
-}
-
-export async function waitForLegacyNotice(
-  predicate: () => boolean,
-  timeoutMs = 15_000,
-) {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error('Legacy fixture timed out');
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
 }

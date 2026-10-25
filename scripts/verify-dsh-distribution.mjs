@@ -1,8 +1,12 @@
 import { distributionFacts } from './dsh-distribution-facts.mjs';
-import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { readFile, readdir, realpath, stat } from 'node:fs/promises';
+import ts from 'typescript';
+import { isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { parse } from 'yaml';
-import { verifyDshPhysicalPatches } from './verify-dsh-physical-patches.mjs';
+import {
+  readImporterManifests,
+  verifyDshSingleGeneration,
+} from './verify-dsh-single-generation.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 
@@ -18,12 +22,10 @@ const [
   upstream,
   distribution,
   ledger,
-  workerPackage,
   profile,
   runtimePin,
   platformEmployeeContract,
   compatibility,
-  adminCompatibilityAdapter,
   reuseDecisions,
   workspace,
   lock,
@@ -31,7 +33,6 @@ const [
   json('apps/worker/dsh/upstream.json'),
   json('apps/worker/dsh/distribution.json'),
   json('apps/worker/dsh/patch-ledger.json'),
-  json('apps/worker/package.json'),
   readFile(
     resolve(root, 'apps/worker/dsh/allrice-restricted.cordis.yml'),
     'utf8',
@@ -45,7 +46,6 @@ const [
     'utf8',
   ),
   json('apps/worker/dsh/compatibility.json'),
-  readFile(resolve(root, 'apps/dsh-admin/dsh-webui-compatibility.mjs'), 'utf8'),
   readFile(
     resolve(root, 'docs/architecture/dsh-reuse-and-replacement.md'),
     'utf8',
@@ -55,8 +55,6 @@ const [
 ]);
 
 const { installed, promoted, candidate } = distributionFacts(distribution);
-const adminUpstreamVersion = (await json('apps/dsh-admin/package.json'))
-  .dependencies['@deepseek-ai/dsh'];
 
 assert(
   installed.version === upstream.version,
@@ -87,25 +85,48 @@ assert(
   'runtime version guard must match the installed distribution',
 );
 assert(
-  ledger.schemaVersion === 1 && Array.isArray(ledger.patches),
+  ledger.schemaVersion === 2 &&
+    Array.isArray(ledger.patches) &&
+    Object.keys(ledger).sort().join(',') === 'patches,schemaVersion',
   'invalid patch ledger',
 );
-const patchInventory = await verifyDshPhysicalPatches({
+const generationInventory = await verifyDshSingleGeneration({
   root,
-  ledger,
   workspace,
   lock,
-  upstreamVersion: installed.version,
-  approvedVersions: [
-    installed.version,
-    ...(ledger.retainedPhysicalVersions ?? []).filter((version) =>
-      distribution.generations.some(
-        (g) => g.version === version && g.frozenProfileAllowed,
-      ),
-    ),
-  ],
+  manifests: await readImporterManifests(root, lock),
+  version: installed.version,
 });
+const realRoot = await realpath(root);
+const ledgerIds = new Set();
 for (const patch of ledger.patches) {
+  assert(
+    typeof patch.id === 'string' && patch.id && !ledgerIds.has(patch.id),
+    `missing or duplicate ledger ID ${patch.id}`,
+  );
+  ledgerIds.add(patch.id);
+  const path = String(patch.path ?? '');
+  const inRepository =
+    path !== '' &&
+    !isAbsolute(path) &&
+    posix.normalize(path) === path &&
+    !path.startsWith('../') &&
+    !path.startsWith('patches/') &&
+    !path.split('/').includes('node_modules');
+  assert(
+    patch.upstreamVersion === installed.version &&
+      patch.kind === 'protocol-extension' &&
+      inRepository &&
+      // A symlink must not lead outside the repository or into node_modules.
+      (await realpath(resolve(root, path)).then(
+        async (target) =>
+          target.startsWith(realRoot + sep) &&
+          !target.split(sep).includes('node_modules') &&
+          (await stat(target)).isFile(),
+        () => false,
+      )),
+    `ledger entry ${patch.id} must be an extension of the installed DSH in an AllRice source file`,
+  );
   assert(
     reuseDecisions.includes(`\`${patch.id}\``),
     `DSH reuse decisions are missing patch ${patch.id}`,
@@ -146,32 +167,55 @@ assert(
   'production Skill sources must exclude DSH repository development Skills',
 );
 
-const adminPrivateInterface = compatibility.privateInterfaces?.find(
-  (entry) => entry.id === 'dsh-admin-webui-entrypoint',
+// Private DSH subpaths are exceptions to the public-seam rule. Every one that
+// production code imports is listed with its owner, and nothing listed is stale.
+// Module specifiers come from the TypeScript pre-processor, which sees static
+// and dynamic imports, re-exports and require() but not comments or strings.
+const privateSubpath =
+  /^@deepseek-ai\/dsh(?:-[a-z0-9-]+)?\/(?:internal|lib|src|dist)(?:\/|$)/;
+async function* productionSources(directory) {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      if (
+        !['node_modules', 'dist', '.next', 'test', 'fixtures'].includes(
+          entry.name,
+        )
+      )
+        yield* productionSources(path);
+    } else if (
+      /\.(?:[cm]?js|[cm]?ts|[jt]sx)$/.test(entry.name) &&
+      !/\.(?:test|spec)\./.test(entry.name)
+    )
+      yield path;
+  }
+}
+const importedPrivate = new Map();
+for (const top of ['apps', 'packages', 'scripts'])
+  for await (const file of productionSources(resolve(root, top)))
+    for (const { fileName } of ts.preProcessFile(
+      await readFile(file, 'utf8'),
+      true,
+      true,
+    ).importedFiles)
+      if (privateSubpath.test(fileName))
+        importedPrivate.set(`${fileName} ${relative(root, file)}`, fileName);
+const declaredPrivate = new Set(
+  (compatibility.privateInterfaces ?? []).map((entry) => {
+    assert(
+      entry.upstreamVersion === installed.version &&
+        ledgerIds.has(entry.ledgerId),
+      `private DSH interface ${entry.id} must be owned by a ledger entry of the installed DSH`,
+    );
+    return `${entry.upstreamInterface} ${entry.adapter}`;
+  }),
 );
 assert(
-  adminPrivateInterface?.upstreamInterface === '@deepseek-ai/dsh/lib/bin.js' &&
-    adminPrivateInterface.adapter ===
-      'apps/dsh-admin/dsh-webui-compatibility.mjs' &&
-    adminPrivateInterface.overrideEnvironmentVariable === 'ALLRICE_DSH_COMMAND',
-  'DSH Admin private WebUI entrypoint must be recorded in the compatibility manifest',
-);
-assert(
-  ledger.patches.some(
-    (patch) =>
-      patch.id === 'dsh-admin-webui-private-entrypoint-v1' &&
-      patch.upstreamVersion === adminPrivateInterface.upstreamVersion &&
-      patch.upstreamVersion === adminUpstreamVersion &&
-      patch.path === adminPrivateInterface.adapter,
-  ),
-  'DSH Admin private WebUI entrypoint must be recorded against the approved upstream',
-);
-assert(
-  adminCompatibilityAdapter.includes('DSH_WEBUI_PRIVATE_ENTRYPOINT') &&
-    adminCompatibilityAdapter.includes(
-      `'${adminPrivateInterface.upstreamInterface}'`,
-    ),
-  'DSH Admin compatibility adapter must own the recorded private entrypoint',
+  [...importedPrivate.keys()].every((key) => declaredPrivate.has(key)) &&
+    [...declaredPrivate].every((key) => importedPrivate.has(key)),
+  `private DSH imports must match compatibility.json privateInterfaces: ${[
+    ...importedPrivate.keys(),
+  ].join(', ')}`,
 );
 
 const requiredReplayScenarios = [
@@ -183,9 +227,7 @@ const requiredReplayScenarios = [
   'cancel',
   'recovery',
   'compaction',
-  'legacy-tool-history',
-  'legacy-question-adoption',
-  'legacy-continuation-no-replay',
+  'legacy-official-migration',
   'legacy-format-refusal',
   'durable-question-restart',
   'native-progress-decision',
@@ -207,16 +249,6 @@ for (const pluginId of compatibility.configurationTree ?? []) {
   assert(
     profile.includes(`- id: ${pluginId}`),
     `recorded DSH configuration is missing ${pluginId}`,
-  );
-}
-
-for (const [name, version] of Object.entries(
-  workerPackage.dependencies ?? {},
-)) {
-  if (!name.startsWith('@deepseek-ai/dsh-')) continue;
-  assert(
-    version === installed.version,
-    `${name} must be pinned to ${installed.version}`,
   );
 }
 
@@ -271,7 +303,7 @@ console.log(
     declaredPromotedGeneration: promoted.generation,
     generation: installed.generation,
     version: installed.version,
-    ...patchInventory,
+    ...generationInventory,
     candidate: candidate?.generation ?? null,
     rollback: null,
     wireProtocol: compatibility.wireProtocol,

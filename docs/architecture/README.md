@@ -19,8 +19,6 @@ The platform-managed Provider, model and employee selection boundary is
 documented in [Platform-managed model pool](platform-model-pool.md).
 The first-class Agent Skill, Workflow and Knowledge model is documented in
 [Agent capability foundation](agent-capability-foundation.md).
-The official, isolated DSH engineering WebUI and its authenticated publication
-boundary are documented in [DSH administrator console](dsh-admin-console.md).
 The Snow Mac local read-only execution boundary is documented in
 [Rice Bridge v0.1](rice-bridge-v01.md).
 DSH version isolation is documented in

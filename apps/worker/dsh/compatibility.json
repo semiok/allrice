@@ -7,11 +7,11 @@
   "runtimeAdapter": "apps/worker/dsh/allrice-jsonrpc-runtime.mjs",
   "privateInterfaces": [
     {
-      "id": "dsh-admin-webui-entrypoint",
-      "upstreamInterface": "@deepseek-ai/dsh/lib/bin.js",
-      "adapter": "apps/dsh-admin/dsh-webui-compatibility.mjs",
-      "overrideEnvironmentVariable": "ALLRICE_DSH_COMMAND",
-      "upstreamVersion": "0.1.5-rc.3"
+      "id": "dsh-subagent-host-prompt",
+      "upstreamInterface": "@deepseek-ai/dsh-subagent/internal",
+      "adapter": "apps/worker/dsh/allrice-assistant-runtime.mjs",
+      "upstreamVersion": "0.2.1-rc.2",
+      "ledgerId": "allrice-development-workflow-v1"
     }
   ],
   "configurationTree": [
@@ -97,24 +97,14 @@
       "testName": "uses DSH native compaction without replacing the live session"
     },
     {
-      "id": "legacy-tool-history",
+      "id": "legacy-official-migration",
       "testFile": "apps/worker/test/p25/dsh-legacy-replay.test.ts",
-      "testName": "resumes historical tool messages without re-executing their callbacks"
-    },
-    {
-      "id": "legacy-question-adoption",
-      "testFile": "apps/worker/test/p25/dsh-legacy-replay.test.ts",
-      "testName": "adopts the exact answer from %s and continues once"
-    },
-    {
-      "id": "legacy-continuation-no-replay",
-      "testFile": "apps/worker/test/p25/dsh-legacy-replay.test.ts",
-      "testName": "does not replay a continuation already dispatched by the historical runtime"
+      "testName": "forwards an ordinary historical journal with the official migrators and keeps its bytes"
     },
     {
       "id": "legacy-format-refusal",
       "testFile": "apps/worker/test/p25/dsh-legacy-replay.test.ts",
-      "testName": "refuses %s without rewriting the journal or dispatching a model"
+      "testName": "candidate refuses historical %s instead of rewriting it or creating an empty substitute"
     },
     {
       "id": "durable-question-restart",
@@ -128,7 +118,7 @@
     }
   ],
   "historicalReaderPolicy": {
-    "unpinnedDefault": "approved-retained-0.1.5",
+    "unpinnedDefault": "refused-unless-retained-slot-1-configured",
     "newRoots": "immutable-business-insert-and-independent-artifact-approval",
     "automaticV0V3PrivateMigration": false
   }

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "patches": [
     {
       "id": "allrice-brand-content-read-v1",
@@ -114,51 +114,11 @@
       "reason": "Single existing Host composes the published public SDK, one business root and SDK-owned AgentHandles. AllRice retains its own exact-Agent/epoch lifecycle fence, public event forwarding through bounded teardown, resume-only recovery, questions, references and authorization. No SDK private access, alternate loop or second Worker."
     },
     {
-      "id": "dsh-admin-webui-private-entrypoint-v1",
-      "issue": "MET-100",
-      "upstreamVersion": "0.1.5-rc.3",
-      "kind": "private-entrypoint-adapter",
-      "path": "apps/dsh-admin/dsh-webui-compatibility.mjs",
-      "reason": "Keep the private WebUI launch contract and native authenticatedUrl IPC exchange behind the authenticated administrator gateway; native cookies stay server-side, with Host and Origin checks before proxying."
-    },
-    {
-      "id": "allrice-private-session-migration-v1",
-      "issue": "MET-154",
-      "upstreamVersion": "0.1.5-rc.3",
-      "kind": "upstream-source-patch",
-      "path": "patches/@deepseek-ai__dsh-session-format-v0-to-v1@0.1.5-rc.3.patch",
-      "reason": "Classify four exact AllRice log-only events across the native v0-to-v3 migration; validate payloads, retain IDs/digests, and preserve native sequence/reference remapping. The JSONL verifier bundle receives the identical vocabulary and validator. Unknown events remain refused."
-    },
-    {
-      "id": "allrice-managed-native-mcp-v1",
-      "issue": "MET-159",
-      "upstreamVersion": "0.1.5-rc.3",
-      "kind": "upstream-source-patch",
-      "path": "patches/@deepseek-ai__dsh-mcp-client@0.1.5-rc.3.patch",
-      "reason": "Inject the Worker-owned pinned HTTP fetch and official MCP SDK OAuth provider into the native published client. Reuse native discovery, tool naming, schemas, registry and execution; disable reconnection so uncertain remote writes are not replayed. Existing SDK connections retain frozen-name compatibility until retired."
-    },
-    {
       "id": "allrice-session-reference-v1",
       "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-session-references.mjs",
       "reason": "Adapt server-authorized frozen Allrice message text to the native SessionReferenceResolver. Use an isolated query port and native pre-step durable context; no runtime journal discovery, new tools or additional model loop. Platform ACL, input idempotency, visibility and queued-start rechecks remain authoritative."
-    },
-    {
-      "id": "dsh-pi-ai-premature-websocket-close-v2",
-      "issue": "Run 917f3a15; Run 4299ba50",
-      "upstreamVersion": "0.1.5-rc.3",
-      "kind": "compatibility-fix",
-      "path": "patches/@deepseek-ai__dsh-llm-pi-ai@0.1.5-rc.3.patch",
-      "reason": "Classify observed premature pi-ai WebSocket closes 1006 and exact 1000 as TRANSPORT, using existing bounded native request retries and saved tool results. Pinned pi-ai ignores normal close after a response terminal event. Auth, policy, unknown codes and 1000 with a reason remain unchanged. No whole-Run replay or new retry loop."
-    },
-    {
-      "id": "allrice-admin-authenticated-origin-pnpm-v1",
-      "issue": "MET-100",
-      "upstreamVersion": "0.1.5-rc.3",
-      "kind": "upstream-source-patch",
-      "path": "patches/@deepseek-ai__dsh-client-connection@0.1.5-rc.3.patch",
-      "reason": "The existing native client recognizes the authenticated administrator gateway HTML marker while preserving native server authentication, Host/Origin checks and loopback restrictions. The marker itself is not an authorization credential. Retirement and rollback conditions remain in the governed administrator architecture."
     },
     {
       "id": "allrice-managed-native-mcp-public-v2",
@@ -174,7 +134,7 @@
       "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-session-compatibility.mjs",
-      "reason": "AllRice validates its own exact four private payloads and chronology before public V4 resume. Old private V0/V3 histories stay on the independently approved exact retained reader. No unknown required event is ignored and no original journal is rewritten to bypass refusal."
+      "reason": "AllRice validates its own exact four private payloads and chronology before public V4 resume. Old private V0/V3 histories are refused by the installed generation; only an explicitly configured retained slot could still read them. No unknown required event is ignored and no original journal is rewritten to bypass refusal."
     },
     {
       "id": "allrice-final-delivery-v1",
@@ -192,38 +152,5 @@
       "path": "apps/worker/dsh/allrice-jsonrpc-runtime.mjs",
       "reason": "AllRice wrapper reports safe results of awaited public shutdown, root disposal and prior transport flush; its own final-response flush controls exit status. Worker records the original close request and exact owned child close with immutable per-boot readback. Nonzero/forced/unknown closure remains distinct from physical exit; no DSH core or dependency change, no historical success backfill."
     }
-  ],
-  "physicalPatches": [
-    {
-      "package": "@deepseek-ai/dsh-llm-pi-ai",
-      "version": "0.1.5-rc.3",
-      "path": "patches/@deepseek-ai__dsh-llm-pi-ai@0.1.5-rc.3.patch",
-      "responsibilityId": "dsh-pi-ai-premature-websocket-close-v2"
-    },
-    {
-      "package": "@deepseek-ai/dsh-client-connection",
-      "version": "0.1.5-rc.3",
-      "path": "patches/@deepseek-ai__dsh-client-connection@0.1.5-rc.3.patch",
-      "responsibilityId": "allrice-admin-authenticated-origin-pnpm-v1"
-    },
-    {
-      "package": "@deepseek-ai/dsh-mcp-client",
-      "version": "0.1.5-rc.3",
-      "path": "patches/@deepseek-ai__dsh-mcp-client@0.1.5-rc.3.patch",
-      "responsibilityId": "allrice-managed-native-mcp-v1"
-    },
-    {
-      "package": "@deepseek-ai/dsh-session-format-v0-to-v1",
-      "version": "0.1.5-rc.3",
-      "path": "patches/@deepseek-ai__dsh-session-format-v0-to-v1@0.1.5-rc.3.patch",
-      "responsibilityId": "allrice-private-session-migration-v1"
-    },
-    {
-      "package": "@deepseek-ai/dsh-session-persistence-jsonl",
-      "version": "0.1.5-rc.3",
-      "path": "patches/@deepseek-ai__dsh-session-persistence-jsonl@0.1.5-rc.3.patch",
-      "responsibilityId": "allrice-private-session-migration-v1"
-    }
-  ],
-  "retainedPhysicalVersions": ["0.1.5-rc.3"]
+  ]
 }

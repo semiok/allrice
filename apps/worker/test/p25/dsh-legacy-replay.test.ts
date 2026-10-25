@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -19,118 +19,82 @@ async function journal(file: string) {
   return { text, sessionId: entry.sessionId };
 }
 
-async function install(root: string, sessionId: string, text: string) {
+// DSH derives the storage directory from the session's recorded cwd.
+async function install(
+  root: string,
+  sessionId: string,
+  text: string,
+  cwd = manifest.capturedWith.normalizedCwd,
+  name = 'session.jsonl',
+) {
   const path = join(
     root,
     'sessions',
-    '--allrice-legacy-fixture--',
+    `-${cwd.replaceAll('/', '-')}--`,
     sessionId,
-    'session.jsonl',
+    name,
   );
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, text);
   return path;
 }
 
-async function migratedJournal(path: string, original: string) {
-  expect(await readFile(path, 'utf8')).toBe(original);
-  const rows = (await readFile(join(dirname(path), 'session.v3.jsonl'), 'utf8'))
+function rows(text: string) {
+  return text
     .trim()
     .split('\n')
     .map((line) => JSON.parse(line));
-  expect(rows[0].version).toBe(3);
-  const oldPrivate = original
-    .trim()
-    .split('\n')
-    .map((line) => JSON.parse(line))
-    .filter((event) => event.type.startsWith('allrice/'));
-  for (const old of oldPrivate) {
-    const migrated = rows.find(
-      (event) => event.type === old.type && event.time === old.time,
-    );
-    expect(migrated?.data).toEqual(old.data);
-  }
-  return rows;
 }
 
-function questionAnswer(text: string) {
-  const checkpoint = text
-    .trim()
-    .split('\n')
-    .map((line) => JSON.parse(line))
-    .find((event) => event.type === 'allrice/wait/checkpoint').data as {
-    sessionId: string;
-    questionId: string;
-    turnId: string;
-  };
-  return {
-    sessionId: checkpoint.sessionId,
-    questionId: checkpoint.questionId,
-    turnId: checkpoint.turnId,
-    inputId: manifest.answerId,
-    text: `allrice:user-question:v1:${JSON.stringify({ questionId: checkpoint.questionId, answers: [{ id: 'choice', selected: ['Continue'] }] })}`,
-  };
+// Every file under the session root, so a substitute written anywhere shows up.
+async function sessionFiles(root: string) {
+  const entries = await readdir(join(root, 'sessions'), {
+    recursive: true,
+    withFileTypes: true,
+  });
+  return entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => relative(root, join(entry.parentPath, entry.name)))
+    .sort();
 }
 
-describe('DSH immutable legacy session replay', () => {
-  it('candidate refuses historical private V0 instead of rewriting it or creating an empty substitute', async () => {
-    const fixture = await legacySessionFixture(
-      async () => ({ text: 'Unexpected' }),
-      'candidate',
-    );
-    try {
-      const old = await journal('parked-question.jsonl');
-      const path = await install(fixture.root, old.sessionId, old.text);
-      const { client } = await fixture.runtime();
-      await expect(client.recover(old.sessionId)).rejects.toThrow();
-      expect(fixture.requests).toHaveLength(0);
-      expect(await readFile(path, 'utf8')).toBe(old.text);
-      expect(
-        (await readdir(dirname(path))).filter((name) =>
-          /^session\.v[34]\.jsonl$/.test(name),
-        ),
-      ).toEqual([]);
-    } finally {
-      await fixture.close();
-    }
-  }, 30000);
+const mutations = {
+  // A v0 file name whose header claims another format: a corrupt log.
+  'mismatched-header': { version: 999, name: 'session.jsonl' },
+  // A generation written by a newer harness.
+  'future-format': { version: 999, name: 'session.v999.jsonl' },
+  'unknown-required-event': { name: 'session.jsonl' },
+} as const;
 
-  it('keeps one native writer and releases it after physical exit without confirming legacy semantic close', async () => {
-    const fixture = await legacySessionFixture(async () => ({
-      text: 'Unexpected',
-    }));
-    try {
-      const old = await journal('parked-question.jsonl');
-      const path = await install(fixture.root, old.sessionId, old.text);
-      const first = await fixture.runtime();
-      const second = await fixture.runtime();
-      await first.client.recover(old.sessionId);
-      await expect(second.client.recover(old.sessionId)).rejects.toThrow();
-      expect(fixture.requests).toHaveLength(0);
-      expect(await readFile(path, 'utf8')).toBe(old.text);
-      expect(await fixture.closeClient(first.client)).toMatchObject({
-        process: { state: 'exited', stdioClosed: true, exitCode: 0 },
-        shutdownAcknowledged: true,
-        wrapperCleanupConfirmed: false,
-      });
-      await expect(second.client.recover(old.sessionId)).resolves.toMatchObject(
-        { recovered: true },
-      );
-      expect(fixture.requests).toHaveLength(0);
-      await fixture.closeClient(second.client);
-      await migratedJournal(path, old.text);
-    } finally {
-      await fixture.close();
-    }
-  }, 30000);
+function mutate(text: string, kind: keyof typeof mutations) {
+  const events = rows(text);
+  if (kind === 'unknown-required-event')
+    events[1].type = 'allrice/unknown-required-fixture';
+  else events[0].version = mutations[kind].version;
+  return events.map((row) => JSON.stringify(row)).join('\n') + '\n';
+}
 
-  it('resumes historical tool messages without re-executing their callbacks', async () => {
+// AllRice runs one DSH generation. An older journal either moves forward through
+// DSH's own format migrators or is refused; nothing reads it with old code.
+describe('DSH historical sessions under the installed generation', () => {
+  it('forwards an ordinary historical journal with the official migrators and keeps its bytes', async () => {
     const fixture = await legacySessionFixture(async () => ({
       text: 'Legacy history retained.',
     }));
     try {
       const old = await journal('ordinary-tool.jsonl');
-      const path = await install(fixture.root, old.sessionId, old.text);
+      // The corpus normalized its capture directory; a migrated session keeps
+      // its recorded working directory, so point it at this disposable root.
+      const text = old.text.replaceAll(
+        manifest.capturedWith.normalizedCwd,
+        fixture.root,
+      );
+      const path = await install(
+        fixture.root,
+        old.sessionId,
+        text,
+        fixture.root,
+      );
       const { client, notices } = await fixture.runtime();
       const callbacks: string[] = [];
       client.setRequestHandler(async (method) => {
@@ -141,18 +105,42 @@ describe('DSH immutable legacy session replay', () => {
         recovered: true,
       });
       expect(fixture.requests).toHaveLength(0);
-      const receipt = await client.prompt(
-        old.sessionId,
-        'Continue from history.',
+      const migrated = rows(
+        await readFile(join(dirname(path), 'session.v4.jsonl'), 'utf8'),
       );
-      expect(receipt).toBeTruthy();
+      expect(migrated[0]).toMatchObject({ type: 'session', version: 4 });
+      const original = rows(text);
+      for (const type of ['user/message', 'tool/call', 'tool/result'])
+        expect(migrated.filter((event) => event.type === type)).toHaveLength(
+          original.filter((event) => event.type === type).length,
+        );
+      // The next turn sees the migrated history, including the completed tool
+      // result, without dispatching the historical tool again.
+      const before = notices.length;
+      await client.prompt(old.sessionId, 'Continue from history.');
       await expect
         .poll(() =>
-          notices.some(
-            (n) => n.method === 'session.status' && n.params.status === 'idle',
-          ),
+          notices
+            .slice(before)
+            .some(
+              (n) =>
+                n.method === 'session.status' && n.params.status === 'idle',
+            ),
         )
         .toBe(true);
+      // idle also follows a failed turn; require the new reply and completion.
+      const turn = notices
+        .slice(before)
+        .filter((n) => n.method === 'session.event')
+        .map((n) => n.params.event as { type: string; data: unknown });
+      expect(
+        turn
+          .filter((event) => event.type === 'assistant/message')
+          .map((event) => JSON.stringify(event.data)),
+      ).toEqual([expect.stringContaining('Legacy history retained.')]);
+      expect(turn.find((event) => event.type === 'turn/end')?.data).toEqual(
+        expect.objectContaining({ reason: { kind: 'completed' } }),
+      );
       expect(fixture.requests).toHaveLength(1);
       expect(callbacks).toEqual([]);
       const messages = fixture.requests[0]!.messages;
@@ -163,172 +151,70 @@ describe('DSH immutable legacy session replay', () => {
       expect(
         messages.filter((message) => message.role === 'tool'),
       ).toHaveLength(1);
-      await fixture.closeClient(client);
-      await migratedJournal(path, old.text);
+      await client.close();
+      expect(await readFile(path, 'utf8')).toBe(text);
     } finally {
       await fixture.close();
     }
   }, 30_000);
 
-  it.each(['parked-question.jsonl', 'answered-question.jsonl'])(
-    'adopts the exact answer from %s and continues once',
-    async (file) => {
+  // Private AllRice events are unknown to the official migrators (MET-221).
+  it.each([
+    ...manifest.files
+      .filter((entry) => entry.file !== 'ordinary-tool.jsonl')
+      .map(
+        (entry) =>
+          [
+            entry.file,
+            entry.file,
+            /unknown historical event type "allrice\/wait\/checkpoint"/,
+          ] as const,
+      ),
+    [
+      'mismatched-header',
+      'ordinary-tool.jsonl',
+      /generation filename identifies v0, but its header identifies v999/,
+    ] as const,
+    [
+      'future-format',
+      'ordinary-tool.jsonl',
+      /uses log format v999, but this harness reads only v4/,
+    ] as const,
+    [
+      'unknown-required-event',
+      'ordinary-tool.jsonl',
+      /unknown historical event type "allrice\/unknown-required-fixture"/,
+    ] as const,
+  ])(
+    'candidate refuses historical %s instead of rewriting it or creating an empty substitute',
+    async (kind, file, reason) => {
       const fixture = await legacySessionFixture(async () => ({
-        text: 'Legacy question continued.',
+        text: 'Unexpected',
       }));
       try {
         const old = await journal(file);
-        const path = await install(fixture.root, old.sessionId, old.text);
-        const { client, notices } = await fixture.runtime();
-        const answer = questionAnswer(old.text);
-        await client.recover(old.sessionId);
-        await expect(
-          client.answerWait({ ...answer, turnId: `${old.sessionId}:turn:999` }),
-        ).rejects.toThrow('NATIVE_WAIT_CHANGED');
-        const receipt = await client.answerWait(answer);
-        expect(receipt.proof).toMatchObject({
-          status: 'adopted',
-          inputId: answer.inputId,
-          turnId: answer.turnId,
-          checkpoint: 'question_resolved',
-        });
-        expect((await client.answerWait(answer)).proof).toEqual(receipt.proof);
-        await expect(
-          client.answerWait({ ...answer, text: `${answer.text} ` }),
-        ).rejects.toThrow('INPUT_ID_CONFLICT');
-        expect(fixture.requests).toHaveLength(0);
-        await client.continueWait(answer);
-        await expect
-          .poll(() =>
-            notices.some(
-              (n) =>
-                n.method === 'session.status' && n.params.status === 'idle',
-            ),
-          )
-          .toBe(true);
-        expect(fixture.requests).toHaveLength(1);
-        const messages = fixture.requests[0]!.messages;
-        expect(JSON.stringify(messages.at(-1))).toContain(
-          'Continue the existing task',
+        const mutation =
+          kind in mutations ? (kind as keyof typeof mutations) : null;
+        const text = mutation ? mutate(old.text, mutation) : old.text;
+        const path = await install(
+          fixture.root,
+          old.sessionId,
+          text,
+          undefined,
+          mutation ? mutations[mutation].name : undefined,
         );
-        expect(JSON.stringify(messages.at(-1))).toContain(
-          'This answer is not action approval',
-        );
-        expect(
-          messages.filter((message) =>
-            JSON.stringify(message).includes(
-              'Ask before continuing the synthetic task.',
-            ),
-          ),
-        ).toHaveLength(1);
-        await expect(client.continueWait(answer)).rejects.toThrow(
-          'NATIVE_WAIT_CHANGED',
-        );
-        expect(fixture.requests).toHaveLength(1);
-        await fixture.closeClient(client);
-        await migratedJournal(path, old.text);
-        const restarted = await fixture.runtime();
-        await restarted.client.recover(old.sessionId);
-        await expect(restarted.client.continueWait(answer)).rejects.toThrow(
-          'NATIVE_WAIT_CHANGED',
-        );
-        expect(fixture.requests).toHaveLength(1);
-      } finally {
-        await fixture.close();
-      }
-    },
-    30_000,
-  );
-
-  it('does not replay a continuation already dispatched by the historical runtime', async () => {
-    const fixture = await legacySessionFixture(async () => ({
-      text: 'Unexpected',
-    }));
-    try {
-      const old = await journal('continued-question.jsonl');
-      await install(fixture.root, old.sessionId, old.text);
-      const { client } = await fixture.runtime();
-      await client.recover(old.sessionId);
-      await expect(
-        client.continueWait(questionAnswer(old.text)),
-      ).rejects.toThrow('NATIVE_WAIT_CHANGED');
-      await fixture.closeClient(client);
-      expect(fixture.requests).toHaveLength(0);
-    } finally {
-      await fixture.close();
-    }
-  }, 30_000);
-
-  it.each(['future-format', 'unknown-required-event'])(
-    'refuses %s without rewriting the journal or dispatching a model',
-    async (kind) => {
-      const fixture = await legacySessionFixture(async () => ({
-        text: 'Unexpected',
-      }));
-      try {
-        const old = await journal('ordinary-tool.jsonl');
-        const rows = old.text
-          .trim()
-          .split('\n')
-          .map((line) => JSON.parse(line));
-        if (kind === 'future-format') rows[0].version = 999;
-        else rows[1].type = 'allrice/unknown-required-fixture';
-        const text = rows.map((row) => JSON.stringify(row)).join('\n') + '\n';
-        const path = await install(fixture.root, old.sessionId, text);
+        const installed = await sessionFiles(fixture.root);
         const { client } = await fixture.runtime();
-        await expect(client.recover(old.sessionId)).rejects.toMatchObject({
-          code: 'DSH_REQUEST_FAILED',
-        });
-        await fixture.closeClient(client);
+        const refused = await client.recover(old.sessionId).then(
+          () => null,
+          (error: unknown) => error as { code?: string; message: string },
+        );
+        expect(refused?.code).toBe('DSH_REQUEST_FAILED');
+        expect(refused?.message).toMatch(reason);
+        await client.close();
         expect(fixture.requests).toHaveLength(0);
         expect(await readFile(path, 'utf8')).toBe(text);
-      } finally {
-        await fixture.close();
-      }
-    },
-    30_000,
-  );
-
-  it.each([
-    'malformed-digest',
-    'foreign-checkpoint',
-    'unbound-answer',
-    'unbound-continuation',
-  ])(
-    'refuses %s before publishing a migrated generation',
-    async (kind) => {
-      const fixture = await legacySessionFixture(async () => ({
-        text: 'Unexpected',
-      }));
-      try {
-        const old = await journal('continued-question.jsonl');
-        const rows = old.text
-          .trim()
-          .split('\n')
-          .map((line) => JSON.parse(line));
-        if (kind === 'malformed-digest')
-          rows.find((e) => e.type === 'allrice/input/request').data.digest =
-            'invalid';
-        if (kind === 'foreign-checkpoint')
-          rows.find(
-            (e) => e.type === 'allrice/wait/checkpoint',
-          ).data.sessionId = 'another-session';
-        if (kind === 'unbound-answer')
-          rows.find((e) => e.type === 'allrice/input/answered').data.inputId =
-            '22222222-2222-4222-8222-222222222222';
-        if (kind === 'unbound-continuation')
-          rows.find((e) => e.type === 'allrice/wait/continued').data.inputId =
-            '22222222-2222-4222-8222-222222222222';
-        const text = rows.map((row) => JSON.stringify(row)).join('\n') + '\n';
-        const path = await install(fixture.root, old.sessionId, text);
-        const { client } = await fixture.runtime();
-        await expect(client.recover(old.sessionId)).rejects.toMatchObject({
-          code: 'DSH_REQUEST_FAILED',
-        });
-        await fixture.closeClient(client);
-        expect(fixture.requests).toHaveLength(0);
-        expect(await readFile(path, 'utf8')).toBe(text);
-        expect(await readdir(dirname(path))).not.toContain('session.v3.jsonl');
+        expect(await sessionFiles(fixture.root)).toEqual(installed);
       } finally {
         await fixture.close();
       }

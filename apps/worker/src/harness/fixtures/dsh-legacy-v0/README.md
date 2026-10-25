@@ -14,30 +14,22 @@ source versions, answer identity and SHA-256 of every file.
 | `answered-question.jsonl`  | Same journal after exact typed answer adoption, before continuation     |
 | `continued-question.jsonl` | Same journal after persisted continuation intent and completed new turn |
 
-Run `pnpm dsh:golden-replay` or
-`pnpm exec vitest run apps/worker/test/p25/dsh-legacy-replay.test.ts`.
-Each test verifies the checksum and copies the historical bytes into a fresh
-temporary root before starting a real native process. It uses the existing P24
-loopback model fixture; PostgreSQL/Worker lease recovery remains covered by the
-separate MET-153 integration suites. Future-format and unknown-required-event
-negative cases mutate only disposable copies and require byte-preserving refusal.
+AllRice runs one DSH generation (MET-221). `apps/worker/test/p25/dsh-legacy-replay.test.ts`
+installs these files into the installed runtime:
 
-Do not regenerate these files during an upgrade. To capture an additional corpus
-from the original runtime, check out the compatible baseline plus the capture
-utility and choose a **new** output directory:
+- `ordinary-tool.jsonl` has no private AllRice events. DSH's official format
+  migrators move it forward to a V4 generation beside the untouched original, and
+  the next turn sees the historical tool result without dispatching it again.
+  A session keeps its recorded working directory and DSH derives its storage
+  path from it, so the test first points the normalized capture directory at
+  its disposable root (a journal moved to another machine needs the same).
+- The question journals carry `allrice/wait/checkpoint`, unknown to the official
+  migrators, and are refused. So are future-format and unknown-required-event
+  mutations of a disposable copy. A refusal leaves the bytes unchanged, writes no
+  migrated copy and dispatches no model.
 
-```bash
-TSX_TSCONFIG_PATH=tsconfig.base.json pnpm exec tsx \
-  scripts/acceptance/runtime/capture-dsh-legacy-fixtures.ts \
-  .local/new-legacy-corpus
-```
+The 0.1.x reader and the capture utility that produced these files were removed
+with that generation.
 
-The utility refuses another DSH version or an existing output directory. Generated
-ids and timestamps vary, so the frozen corpus is retained even after adding new
-samples. Historical bytes must never be overwritten to make a candidate pass.
-
-The isolated candidate format probe is documented in the
-[MET-154 baseline](../../../../../../docs/architecture/dsh-upgrades/met154-rc3-baseline.md).
-It is read-only and returns nonzero on migration refusal. Passing format decoding
-alone is not evidence of successful model execution, tenant authorization or a
-safe production rollback.
+Do not regenerate or edit these files; historical bytes must never be
+overwritten to make a candidate pass.

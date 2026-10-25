@@ -3,6 +3,7 @@ import {
   mkdtemp,
   mkdir,
   readFile,
+  realpath,
   rm,
   symlink,
   writeFile,
@@ -31,7 +32,9 @@ afterEach(async () => {
     await rm(path, { recursive: true, force: true });
 });
 async function tree(mode = 'dist') {
-  const root = await mkdtemp(join(tmpdir(), 'allrice-close-identity-'));
+  const root = await realpath(
+    await mkdtemp(join(tmpdir(), 'allrice-close-identity-')),
+  );
   locations.push(root);
   const directory = join(root, mode);
   await mkdir(join(directory, 'harness'), { recursive: true });

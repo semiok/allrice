@@ -343,13 +343,7 @@ export class HumanTerminalOwner {
   ) {}
 
   list() {
-    // The controller's types import @deepseek-ai/dsh-session without declaring it,
-    // so `create` and `list`/`retain` can resolve different hoisted copies (0.1.5
-    // and 0.2.1) whose branded ids do not overlap; the value is the same session
-    // id, typed by the method that takes it.
-    return this.controller.list(
-      this.agent.id as unknown as Parameters<TerminalController['list']>[0],
-    );
+    return this.controller.list(this.agent.id);
   }
 
   async call(
@@ -407,7 +401,7 @@ export class HumanTerminalOwner {
     signal.throwIfAborted();
     if (action === 'retain')
       return this.controller.retain(
-        this.agent.id as unknown as Parameters<TerminalController['retain']>[0],
+        this.agent.id,
         id as Parameters<TerminalController['retain']>[1],
         signal,
       );
