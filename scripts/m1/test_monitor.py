@@ -290,15 +290,43 @@ class Worker(unittest.TestCase):
                            'nativeOnceControl': {'state': 'blocked', 'lastFault': {'phase': 'shutdown', 'code': 'shutdown_failed'}}}).encode()
         with mock.patch.object(monitor, 'http_get', return_value=(503, body)), mock.patch.object(monitor, 'job_info', return_value=('running', 1, None)), \
                 mock.patch.object(monitor, 'lock_holders', return_value=[]):
-            f = monitor.check_worker(r)[0]
-        self.assertEqual((f['severity'], f['title']), ('critical', 'Worker 定时控制器卡住，要重启 Worker'))
+            got = monitor.check_worker(r)
+        self.assertEqual([(x['key'], x['severity']) for x in got], [('worker', 'critical'), ('worker_stuck', 'critical')])
+        f = got[1]
+        self.assertEqual(f['title'], 'Worker 定时控制器卡住，要重启 Worker')
         self.assertIn('shutdown_failed', f['detail'])
         self.assertIn('kickstart -k', f['step'])
+        step(r, [got[0]], 0)  # "Worker 不可用" already open from the outage that caused it
+        self.assertEqual(step(r, got, 240), [('opened', 'worker_stuck', False)])  # still told
         with mock.patch.object(monitor, 'http_get', return_value=(503, json.dumps({'status': 'not_ready', 'detail': 'database_unavailable'}).encode())), \
                 mock.patch.object(monitor, 'job_info', return_value=('running', 1, None)), mock.patch.object(monitor, 'lock_holders', return_value=[]):
-            f = monitor.check_worker(r)[0]
-        self.assertEqual(f['title'], 'Worker 不可用')
-        self.assertIn('detail=database_unavailable', f['detail'])
+            got = monitor.check_worker(r)
+        self.assertEqual([(x['key'], x['severity']) for x in got], [('worker', 'critical'), ('worker_stuck', 'ok')])
+        self.assertIn('detail=database_unavailable', got[0]['detail'])
+
+    def test_a_large_503_is_read_whole(self):
+        import http.server
+        import threading
+        body = json.dumps({'status': 'not_ready', 'detail': 'native_once_blocked', 'refs': ['x' * 64] * 2000}).encode()
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(503)
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.HTTPServer(('127.0.0.1', 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            doc, why, answer = monitor.ready('http://127.0.0.1:%d/health/ready' % srv.server_address[1])
+        finally:
+            srv.shutdown()
+        self.assertGreater(len(body), 65536)
+        self.assertEqual((doc, answer['detail']), (None, 'native_once_blocked'))
 
 
 class Deploys(unittest.TestCase):

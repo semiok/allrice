@@ -151,7 +151,7 @@ def http_get(url, timeout=10, via=LOCAL):
         with via.open(urllib.request.Request(url, headers={'User-Agent': 'allrice-monitor'}), timeout=timeout) as r:
             return r.status, r.read(4_000_000)
     except urllib.error.HTTPError as err:
-        return err.code, (err.read(65536) if err.fp else b'')
+        return err.code, (err.read(4_000_000) if err.fp else b'')  # a 503 carries the same diagnostics as a 200
     except Exception as err:  # URLError, timeouts, resets: all mean "not reachable"
         return None, str(getattr(err, 'reason', err)).encode()
 
@@ -639,20 +639,25 @@ def check_service(r, role):
     doc, why, answer = ready(base + path)
     if doc:
         r.facts[role] = doc
-        return [finding(role, 'ok', title)]
+        return [finding(role, 'ok', title)] + ([finding('worker_stuck', 'ok', 'Worker 定时控制器卡住，要重启 Worker')] if role == 'worker' else [])
     detail = 'launchd %s（%s）；%s%s 返回 %s' % (label, {'gone': '未加载', 'loaded': '已加载但没有进程', 'running': '进程在'}[state],
                                               base, path, why)
     if last and last != '(never exited)':
         detail += '；上次退出码 %s' % last
-    stuck = (answer or {}).get('detail') or ''
-    if role == 'worker' and re.match(r'native_(once|recurring)_(blocked|restart_required)$', stuck):
-        # A schedule controller that hit an error (e.g. shutdown_failed while the database
-        # was briefly away) stays blocked until the Worker restarts (automatic recovery: MET-210 #3).
-        ctl = (answer or {}).get('nativeOnceControl' if 'once' in stuck else 'nativeRecurringControl') or {}
-        return [finding(role, 'critical', 'Worker 定时控制器卡住，要重启 Worker', detail + '；控制器 %s，lastFault %s' % (
-            ctl.get('state'), short(json.dumps(ctl.get('lastFault'), ensure_ascii=False), 160)), 'm1-worker-crash.md#定时控制器卡住',
-            '发布负责人：~/allrice-dev/bin/deploy-lock run worker-restart -- /bin/launchctl kickstart -k gui/$(id -u)/%s' % label)]
-    return [finding(role, 'critical', title, detail, 'm1-worker-crash.md', step)]
+    out = [finding(role, 'critical', title, detail, 'm1-worker-crash.md', step)]
+    if role == 'worker':
+        stuck = (answer or {}).get('detail') or ''
+        if re.match(r'native_(once|recurring)_(blocked|restart_required)$', stuck):
+            # A schedule controller that hit an error (e.g. shutdown_failed while the database
+            # was briefly away) stays blocked until the Worker restarts (automatic recovery:
+            # MET-210 #3). Its own key, so it is told even if "Worker 不可用" was already open.
+            ctl = (answer or {}).get('nativeOnceControl' if 'once' in stuck else 'nativeRecurringControl') or {}
+            out.append(finding('worker_stuck', 'critical', 'Worker 定时控制器卡住，要重启 Worker', '%s；控制器 %s，lastFault %s' % (
+                stuck, ctl.get('state'), short(json.dumps(ctl.get('lastFault'), ensure_ascii=False), 160)), 'm1-worker-crash.md#定时控制器卡住',
+                '发布负责人：~/allrice-dev/bin/deploy-lock run worker-restart -- /bin/launchctl kickstart -k gui/$(id -u)/%s' % label))
+        elif answer is not None:
+            out.append(finding('worker_stuck', 'ok', 'Worker 定时控制器卡住，要重启 Worker'))
+    return out
 
 
 def check_web(r):
