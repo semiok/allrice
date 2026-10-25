@@ -4,7 +4,7 @@
 
 - **本文件放在仓库根目录**，每个 worktree 都自带：Codex 直接读 `AGENTS.md`，Claude 通过 `CLAUDE.md` 引用读到。M1 主目录的 `~/AGENTS.md` 只是指向这里的指针。（Codex 只从 Git 仓库根目录往下找 `AGENTS.md`，放在主目录它读不到，10-24 实测。）
 - **运维工具的源码在仓库 `scripts/m1/`**，由发布负责人用 `scripts/m1/install` 从一个已提交的版本安装：先完整装进 `~/allrice-dev/tools/<提交号>/` 并检查，再把 `~/allrice-dev/bin` 这个链接一次切过去（持有部署锁，不和部署同时进行）。装的是哪个提交记在 `TOOLS_VERSION`，`deploy-dev --status` 会显示。不要直接改 `~/allrice-dev/bin/` 里的文件。
-- **适用范围**：在 M1 上开发 AllRice 的所有会话，包括从别的机器通过 `ssh m1` 操作 M1 的会话。在其他机器本机上开发时（例如 huihuimac 上收尾的 MET-195），忽略本文件，沿用那台机器自己的规则。
+- **适用范围**：在 M1 上开发 AllRice 的所有会话，包括从别的机器通过 `ssh m1` 操作 M1 的会话。huihuimac 上的旧 Dev 从 10-25 起冻结在 R539（MET-195 已停，剩余工作转 MET-221），不再部署；切换到 M1 之前，真实用户继续用它。
 - 修改本文件或 `scripts/m1/` 要走 PR，同时同步 MET-220 第十章。
 
 ## 0. 必须遵守的底线
@@ -12,7 +12,8 @@
 - **不要碰**：`~/.codex`、codex-runtimes、CodexOpenAIFailover、nvm 里的 Node 18（Codex 自己的环境）；微信、飞书数据，桌面「snow照片备份」；Clash Verge、Tailscale。
 - **Prod 每次单独请示。** 共享 Dev 只由发布负责人部署（见第 9 节），部署后必须实际验证。
 - **不要 sleep 轮询等资源。** 拿不到资源就把离线准备做完，然后结束本轮并说明在等什么，等待唤醒（见第 9 节）。工具自己对它刚启动的服务做有时限的就绪等待，不算轮询。
-- **模型和推理强度**：Codex 默认用 `gpt-6.1-sol` 的 `max` 档，也可以用 `gpt-6-astra` 的 `max` 档（用户 10-24 指定）。Codex App 里的会话在 App 里选；`codex exec` 用参数指定（见第 9 节）。Claude 会话按用户在 App 里的设置，子 agent 用 Opus、high。省 token 靠不轮询、一个任务一个会话、做完就收尾，不靠降档。
+- **分工（用户 10-25 决定）**：**Claude 是主力，写产品代码和单元测试**，负责设计、迁移、发布和集成。**Codex 负责测试、问题诊断和复核，不改产品代码**：`gpt-6.1-sol` 设计测试场景、跑集成和端到端测试、在 Dev 上实测，出了问题先做根因诊断；`gpt-6-astra` 独立复核代码，必要时做第二路诊断。Codex 补写的测试以补丁形式交回，由 Claude 审过后合进 PR（见第 9 节）。
+- **模型和推理强度**：Codex 用 `gpt-6.1-sol` 或 `gpt-6-astra` 的 `max` 档（用户 10-24 指定）。Codex App 里的会话在 App 里选，`codex exec` 用参数指定（见第 9 节）。Claude 会话按用户在 App 里的设置；Claude 子 agent 用 Opus 或 Fable，effort 设 `xhigh`（用户 10-25 指定）。省 token 靠不轮询、一个任务一个会话、做完就收尾，不靠降档。
 
 ## 1. 资源情况
 
@@ -53,8 +54,9 @@
 不再用"构建、部署、验收三个窗口加约定顺序"的交接方式。
 
 1. **流程**：提交 → 开 PR → CI 和独立审查 → 合并 → 发布车部署 → 在共享 Dev 上做最终验收。各任务直接合并，不用排队等别的任务。
-   - **独立审查由没参与开发的一方做，只给需求、范围和代码，不给结论。** 审查针对确切的提交；之后有实质修改，要说明原审查是否还覆盖，必要时重审。Codex 会话开好 PR 后，在 MET 卡上写"请求审查"，由发布负责人（或用户指定的 Claude 会话）审查。Claude 写的，交给 Codex 审查：只派一个，用 `gpt-6-astra` 的 `max` 档（`codex exec -m gpt-6-astra -c model_reasoning_effort=max -s read-only -o <结果文件> "<审查说明>"`），不要同时派两个模型（用户 10-25 决定；10-24 到 25 三轮并行对比，两者发现的问题打平，Astra 更省）。
-   - 用 `codex exec` 派出去的活，由派活的一方安排独立审查并合并。
+   - **每个 PR 的顺序**：Claude 写代码和单元测试 → Codex（Sol）补测和实测，给出测试报告和诊断 → **复核** → Claude 修改 → CI 4/4 → 合并 → 部署 → Codex 在 Dev 上实测。
+   - **复核由没参与写代码的一方做，只给需求、范围和代码，不给结论。** 每个 PR 安排两位：一位 Claude 子 agent（Opus 或 Fable，`xhigh`）加一位 Codex `gpt-6-astra`（`max`，`codex exec -m gpt-6-astra -c model_reasoning_effort=max -s read-only -o <结果文件> "<复核说明>"`）；改动 DSH 运行时、数据迁移这类关键 PR 再加一位。复核针对确切的提交；之后有实质修改，要说明原复核是否还覆盖，必要时重审。
+   - 派出去的测试、诊断和复核，由派活的一方收结果、决定改不改，并负责合并。
    - **Dev 验收在合并之后，不是合并的前提。** 还没在 Dev 上验的，在 MET 卡上标"Dev 验收待做"。已合并、已部署、已验收分开记录。
 2. **部署**：只由**发布负责人**（见第 9 节）用 `deploy-dev` 部署到共享 Dev。目标节奏是每天 12:00 和 18:00（北京时间）各一次，但**目前没有定时自动触发**：由用户唤醒发布负责人，或者发布负责人看到 MET 卡上有部署请求时部署。紧急修复可以随时单独部署。
    - `deploy-dev --release-manager [--ref <分支或提交>] [--force] [--skip-smoke]`（默认 `origin/main`；分支在本地和 origin 上都有时取较新的那个）。不带 `--release-manager` 会直接拒绝（退出码 6）：这是给非负责人的提醒，不是发布负责人就不要加。
@@ -64,7 +66,7 @@
    - `deploy-dev --status`：分别显示配置的版本和两个服务实际在跑的版本、执行包、工具版本、锁状态、是否有没完成的部署、最近的部署记录。
    - **冒烟测试**也可以单独跑：`smoke-test --dev`，聊天、Office 导出、数据分析、云端浏览器、定时提醒五项，用真实模型，约 5 到 8 分钟；结果和截图在 `~/allrice-dev/qa/smoke/<时间>/`。开始和结束时都读 Web 和 Worker 实际运行的版本：读不到、两边不一致、中途变了、或者和预期版本（`--expect-sha`，部署后由 `deploy-dev` 传入）不符，都判不通过，所以一次通过只对应一个确定的版本。**目前的断言偏弱**：Office 和数据分析只看回复里有没有 `.docx`、`.png`，浏览器没有核对真实的工具调用，所以通过只能当参考（加强计划见 MET-220）。冒烟测试失败不会自动回滚，因为模型偶发失败也可能导致不通过。
    - **记录**：日志在 `~/allrice-dev/qa/deploy-logs/`；部署、冒烟、失败、回滚、恢复都记在 `~/allrice-dev/qa/deploys.jsonl`。构建失败或检查不通过时，构建目录会被删除；构建好了但拿不到锁、或者构建期间 Dev 换了版本，会保留构建目录，稍后重跑。
-   - **已知限制一：执行包 ID 变化时，部署会被拦下。** 只要数据库里还有会话或定时任务控制器绑定在旧执行包上，切换前检查就不会通过（`REFERENCES_UNCOVERED`），脚本在停服务之前中止。改动原生适配层或依赖时执行包 ID 会变，例如 10-24 main 合入 #532 后就变了。要等 MET-195 的迁移机制，或者先退休这些上下文。普通的业务代码改动不会改变执行包。
+   - **已知限制一：执行包 ID 变化时，部署会被拦下。** 只要数据库里还有会话或定时任务控制器绑定在旧执行包上，切换前检查就不会通过（`REFERENCES_UNCOVERED`），脚本在停服务之前中止。改动原生适配层（`apps/worker/dsh/` 等）或依赖时执行包 ID 会变；普通的业务代码改动不会。MET-195 已停，根治方案在 MET-221（先让会话能用官方迁移器前移）。在那之前，M1 Dev 上只有测试数据，由发布负责人重建（备份旧库和数据目录后建空库，见 MET-216），不为测试会话写逐个对象的退休工具。
    - **已知限制二：** 候选版本的检查程序如果依赖还没执行的迁移（例如 MET-195 的 #534 新增的表），`deploy-dev` 会停下，提示改走官方的两步流程（`docs/dev-test-execution-retirement.md`）。官方的退休和控制升级工具（`retire-native-test-contexts.mjs`、`upgrade-native-schedule-control.mjs`）还依赖 huihuimac 的旧锁文件和写死的 3001/3102 端口，在 M1 上不能直接用，适配之前不要用。
 3. **验收**：各任务在自己的 MET 卡上写清楚"本票要在 Dev 上验什么"。部署完成后，各任务用自己的测试账号和数据，在共享 Dev 上验收自己的那部分。**验收不独占 Dev，也不重启服务**；需要重启的，告诉发布负责人。验收开始和结束时各看一次 `deploy-dev --status` 的运行版本，中途版本变了，受影响的部分要重验。发布负责人切换版本前，会在正在验收的 MET 卡上说一声。
 4. **部署锁**：`deploy-dev` 和 `scripts/m1/install` 自己会加锁，**不要再套 `deploy-lock run`**（会因为锁已被占用而失败）。`deploy-lock run <任务> [--wait <秒>] -- <命令>` 只给发布负责人做部署以外、需要停服务的操作，例如手工重启共享 Dev；其他会话只用 `deploy-lock status` 看状态。这是内核锁：命令和它启动的所有子进程都持有它，最后一个退出时自动释放，被杀也一样；只要还有子进程在干活就不会释放。**没有过期和接管**：持有者卡住了，要人去看并停掉它。拿不到锁（退出码 3）就停下来说明，不要循环重试。
@@ -116,13 +118,17 @@
 5. **部署请求和发布回执的格式**（写在 MET 卡上，不另建系统）：
    - 请求：MET 和 PR、确切的提交；CI 和独立审查（链接，对应哪个提交）；有没有数据库迁移、平台内容变化、执行包变化；部署后要在 Dev 上验什么（账号或数据范围、动作、通过条件）；等谁，完成后由谁唤醒。
    - 回执（发布负责人写）：实际运行的版本号、执行包、冒烟结果的路径、哪些 MET 可以开始验收、还有什么没做。
-6. **用 `codex exec` 派活必须带 `-m`。** M1 的 `~/.codex/config.toml` 默认模型是 `gpt-5.4`，用 ChatGPT 账号登录时不能用，不带 `-m` 会直接报 `model_not_found`（10-24 在 Codex 0.163.0 上实测）。按第 0 节，默认用 `gpt-6.1-sol` 的 `max` 档：
+6. **用 `codex exec` 派活必须带 `-m`。** M1 的 `~/.codex/config.toml` 默认模型是 `gpt-5.4`，用 ChatGPT 账号登录时不能用，不带 `-m` 会直接报 `model_not_found`（10-24 在 Codex 0.163.0 上实测）。三类活：
 
-   ```bash
-   mkdir -p ~/allrice-dev/qa/codex
-   ~/.local/bin/codex exec -C ~/allrice-worktrees/<任务名> -m gpt-6.1-sol -c model_reasoning_effort=max -s danger-full-access -o ~/allrice-dev/qa/codex/<任务名>.md "<任务说明>" </dev/null
-   ```
+   - **测试和诊断（Sol）**：在 PR 头提交上单独建一个测试 worktree（`git -C ~/allrice-repo worktree add --detach ~/allrice-worktrees/<任务名>-test <提交>`），让 Codex 在里面写测试、跑测试：
 
-   - 也可以把 `-m` 换成 `gpt-6-astra`。
-   - **开发任务要用 `-s danger-full-access`。** 10-24 在本机实测：`workspace-write` 沙箱连不上本机 Postgres、写不了 worktree 的 git 元数据（在 `~/allrice-repo/.git` 里）、也上不了网，所以测试、commit、push 都会失败。M1 是专用开发机，约束靠本文件，不靠沙箱。只做审查的任务用 `-s read-only`，结果用 `-o` 收，审查者自己不写文件。
-   - 任务说明里写清楚：对应的 MET 卡、要改哪里、怎样算完成；做完提交到任务分支、推送并开 PR，**但不要合并，也不要部署**。
+     ```bash
+     mkdir -p ~/allrice-dev/qa/codex
+     ~/.local/bin/codex exec -C ~/allrice-worktrees/<任务名>-test -m gpt-6.1-sol -c model_reasoning_effort=max -s danger-full-access -o ~/allrice-dev/qa/codex/<任务名>-test.md "<测试说明>" </dev/null
+     ```
+
+     测试说明写清：MET 卡和 PR、要验证的行为和边界、可以用的资源（`allrice_b2`、临时验收实例、Dev 上的哪个测试账号）、**只改测试文件、不改产品代码、不 commit、不 push**；交付物是测试报告（跑了什么、结果、失败的根因诊断、复现步骤）和 `git diff` 补丁。Claude 审过补丁后合进 PR，测试 worktree 用完即删。
+
+   - **复核（Astra）**：`-s read-only`，结果用 `-o` 收，复核者不写文件（命令见第 5 节）。
+   - **线上问题诊断（Sol 或 Astra）**：只读排查 Dev 或日志，给出根因、证据和建议修法，不直接改代码和数据。
+   - `-s danger-full-access` 只给需要跑测试的活：10-24 在本机实测，`workspace-write` 沙箱连不上本机 Postgres、写不了 worktree 的 git 元数据、也上不了网。M1 是专用开发机，约束靠本文件，不靠沙箱。
