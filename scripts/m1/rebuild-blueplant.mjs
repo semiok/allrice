@@ -226,7 +226,7 @@ select json_build_object(
                       from allrice_departments d where d.organization_id = o.id and d.archived_at is null),
     'people', (select coalesce(json_agg(json_build_object(
         'username', u.username,
-        'displayName', coalesce(nullif(btrim(p.display_name), ''), nullif(btrim(u.display_name), ''), u.username),
+        'personName', p.display_name, 'accountName', u.display_name,
         'jobTitle', p.job_title, 'responsibilities', p.responsibilities,
         'email', u.email, 'contentMaintenanceLevel', p.content_maintenance_level,
         'active', u.status = 'active',
@@ -249,9 +249,15 @@ const source = sourceSnapshot.org;
 const departed = source.people
   .filter((p) => !skipUsers.has(p.username) && !p.member)
   .map((p) => p.username);
-const people = source.people.filter(
-  (p) => !skipUsers.has(p.username) && p.member,
-);
+const people = source.people
+  .filter((p) => !skipUsers.has(p.username) && p.member)
+  // The admin API needs a non-blank name: the person's, else the account's, else the username.
+  .map((p) => ({
+    ...p,
+    displayName: [p.personName, p.accountName, p.username]
+      .map((s) => s?.trim())
+      .find(Boolean),
+  }));
 if (people.length === 0) throw new Error('source has nobody to carry over');
 if (departed.length)
   step(
@@ -279,20 +285,27 @@ const sourceEmployees = extraAssign.map((name) => {
 });
 
 // 2. Admin login, then prove the API instance (--port) writes to --target-db before any
-//    write: the session this login just created must be in the target database.
-const loginStarted = psql('target', 'select now();').trim();
+//    write: this login's own session (stored as the SHA-256 of its token) must be in the
+//    target database.
 await call('POST', '/api/v1/auth/login', {
   username: env.ALLRICE_PLATFORM_ADMIN_USER,
   password: env.ALLRICE_PLATFORM_ADMIN_PASSWORD,
 });
 
 try {
+  const token = cookie
+    .split('; ')
+    .find((c) => c.startsWith('allrice_session='))
+    ?.slice('allrice_session='.length);
+  if (!token) throw new Error('login returned no session');
   const ownSession = psql(
     'target',
     `select count(*) from allrice_sessions s join allrice_users u on u.id = s.user_id
-     where u.username = ${lit(env.ALLRICE_PLATFORM_ADMIN_USER)} and s.created_at >= ${lit(loginStarted)}::timestamptz;`,
+     where s.token_hash = ${lit(crypto.createHash('sha256').update(token, 'utf8').digest('hex'))}
+       and u.username = ${lit(env.ALLRICE_PLATFORM_ADMIN_USER)} and s.revoked_at is null and s.expires_at > now();`,
+    { quiet: true },
   ).trim();
-  if (ownSession === '0')
+  if (ownSession !== '1')
     throw new Error(`--port ${port} does not serve --target-db ${targetDb}`);
 
   // 3. Company: exactly one by name, created when missing.
@@ -398,19 +411,17 @@ try {
   }
   step(`people: ${missing.length} created, ${updated} updated`);
 
-  // 6. Account state follows the source, settled before any original password is in
-  //    place, so a disabled account never becomes usable even if a later step fails.
-  //    People who left the company in the source lose access to the account an earlier
-  //    run made for them; a target membership that is inactive is reported.
-  current = await listAll(peoplePath, 'people');
-  let switched = 0;
-  const setActive = async (c, active) => {
-    await call('POST', `${peoplePath}/${c.userId}/status`, {
+  // 6. Disable first: accounts the source has disabled, and people who left the company in
+  //    the source (their account from an earlier run), before any original password is
+  //    in place. Accounts to enable wait until the passwords are in and verified (step 7),
+  //    so a failure in between never leaves an account usable with a stale password.
+  const setActive = async (c, active) =>
+    call('POST', `${peoplePath}/${c.userId}/status`, {
       active,
       expectedVersion: c.version,
     });
-    switched += 1;
-  };
+  current = await listAll(peoplePath, 'people');
+  let disabled = 0;
   for (const p of people) {
     const c = current.find((x) => x.username === p.username);
     if (!c) {
@@ -419,13 +430,19 @@ try {
     }
     if (c.membershipActive !== true)
       problems.push(`membership inactive on the target: ${p.username}`);
-    if ((c.status === 'active') !== p.active) await setActive(c, p.active);
+    if (!p.active && c.status === 'active') {
+      await setActive(c, false);
+      disabled += 1;
+    }
   }
   for (const username of departed) {
     const c = current.find((x) => x.username === username);
-    if (c && c.status === 'active') await setActive(c, false);
+    if (c && c.status === 'active') {
+      await setActive(c, false);
+      disabled += 1;
+    }
   }
-  step(`account state: ${switched} changed to match the source`);
+  step(`accounts disabled to match the source: ${disabled}`);
 
   // 7. Password hashes, scoped to this company's people, as COPY data (never SQL text,
   //    so a failing statement cannot write a hash to the server log). Accounts whose hash
@@ -490,6 +507,19 @@ commit;
   );
   if (matched !== people.length)
     problems.push('password hashes do not all match');
+  else {
+    // Enable only now that every password is the source's.
+    current = await listAll(peoplePath, 'people');
+    let enabled = 0;
+    for (const p of people) {
+      const c = current.find((x) => x.username === p.username);
+      if (c && p.active && c.status !== 'active') {
+        await setActive(c, true);
+        enabled += 1;
+      }
+    }
+    step(`accounts enabled to match the source: ${enabled}`);
+  }
 
   // 8. Platform employees by key. Rice ships with the platform; the others are rebuilt
   //    from the source's published definition, resuming a half-finished earlier run.
