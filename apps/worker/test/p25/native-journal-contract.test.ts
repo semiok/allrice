@@ -165,6 +165,45 @@ for (const [file, ...prefixes] of pins) {
       throw new Error(`Journal contract pin not found: ${file}#${prefix}`);
 }
 
+// Parked question ids and option labels that a later build matches by value:
+// the lines of every string, template or regex literal carrying one, per file.
+const durable =
+  /runtime-progress|重新检查后继续|取消任务|app-connect:|已连接，继续任务/;
+const durableQuestions = Object.fromEntries(
+  sources
+    .filter(
+      ([path, text]) =>
+        /^(?:apps\/worker|packages\/database)\/.*\.[cm]?[jt]s$/.test(path) &&
+        durable.test(text),
+    )
+    .map(([path, text]) => {
+      const source = ts.createSourceFile(
+        path,
+        text,
+        ts.ScriptTarget.Latest,
+        true,
+      );
+      const found: string[] = [];
+      const visit = (node: ts.Node): void => {
+        const literal =
+          ts.isStringLiteralLike(node) ||
+          ts.isTemplateExpression(node) ||
+          ts.isRegularExpressionLiteral(node);
+        if (literal && durable.test(node.getText(source)))
+          found.push(
+            ...node
+              .getText(source)
+              .split('\n')
+              .filter((line) => durable.test(line))
+              .map((line) => line.trim()),
+          );
+        else ts.forEachChild(node, visit);
+      };
+      ts.forEachChild(source, visit);
+      return [path, found];
+    }),
+);
+
 /** A behavior vector's outcome: its value, or what it throws. */
 async function outcome(run: () => unknown) {
   try {
@@ -379,11 +418,7 @@ const surfaces = {
       ),
     ),
   },
-  // Parked question ids and labels that a later build matches by value.
-  durableQuestions: literals(
-    /runtime-progress|重新检查后继续|取消任务|app-connect:|已连接，继续任务/g,
-    ['apps/worker/', 'packages/database/'],
-  ),
+  durableQuestions,
   inputDigest: {
     input,
     digest: appended[0]?.data.digest,

@@ -87,19 +87,30 @@
       }
     },
     "durableQuestions": {
-      "values": [
-        "app-connect:",
-        "runtime-progress",
-        "取消任务",
-        "已连接，继续任务",
-        "重新检查后继续"
+      "apps/worker/dsh/allrice-dsh-waits.mjs": [
+        "/^app-connect:[a-f0-9-]{36}$/",
+        "'runtime-progress'",
+        "'runtime-progress'",
+        "'取消任务'",
+        "'重新检查后继续'"
       ],
-      "files": {
-        "apps/worker/dsh/allrice-dsh-waits.mjs": 5,
-        "apps/worker/dsh/allrice-jsonrpc-implementation.mjs": 2,
-        "apps/worker/dsh/allrice-task-progress.mjs": 6,
-        "packages/database/src/mcp-managed-connections.ts": 3
-      }
+      "apps/worker/dsh/allrice-jsonrpc-implementation.mjs": [
+        "`app-connect:${result.requestId}`",
+        "'已连接，继续任务'"
+      ],
+      "apps/worker/dsh/allrice-task-progress.mjs": [
+        "'runtime-progress'",
+        "'重新检查后继续'",
+        "'取消任务'",
+        "'runtime-progress'",
+        "'取消任务'",
+        "'重新检查后继续'"
+      ],
+      "packages/database/src/mcp-managed-connections.ts": [
+        "and e.payload->'nativePayload'->'questions'->0->>'id'='app-connect:'||request.id::text)",
+        "`app-connect:${row.id}`",
+        "'已连接，继续任务'"
+      ]
     },
     "inputDigest": {
       "input": {
