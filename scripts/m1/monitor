@@ -47,7 +47,7 @@ COMMON = {
     'repeatMinutes': {'critical': 60, 'warning': 360},
     'flapLimit': 3,
     'flapMinutes': 60,
-    'flapBreakMinutes': 4,  # bad again on the next round breaks the mute: a real outage
+    'flapBreakMinutes': 2,  # bad again on any later round breaks the mute (well under one interval, whatever the jitter)
     'publicProxy': '',  # public probes go direct: a dead local proxy is not an outage
     'confirmSeconds': 20,
     'roundTimeoutSeconds': 240,

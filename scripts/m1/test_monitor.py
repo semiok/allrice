@@ -71,7 +71,7 @@ class AlertStateMachine(unittest.TestCase):
             step(r, [bad('t')], i * 600)
             step(r, [ok('t')], i * 600 + 300)
         self.assertEqual(step(r, [bad('t')], 1800), [('opened', 't', True)])
-        self.assertEqual(step(r, [bad('t')], 2100), [('reminder', 't', False)])  # still bad on the next round: paged
+        self.assertEqual(step(r, [bad('t')], 1800 + 239), [('reminder', 't', False)])  # still bad on the next round, even a second early: paged
         self.assertEqual(step(r, [ok('t')], 2400), [('recovered', 't', False)])
 
     def test_escalation_inside_a_mute_ends_it(self):
