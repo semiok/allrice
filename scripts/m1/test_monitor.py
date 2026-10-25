@@ -283,6 +283,199 @@ class RunChecks(unittest.TestCase):
         self.assertEqual([f['key'] for f in findings], ['check:b', 'b'])
 
 
+class Checks(unittest.TestCase):
+    def test_scheduler_states_and_stall(self):
+        r = make_round()
+
+        def worker(boot, ticks, faults=0, state='active', **extra):
+            ctl = dict({'state': state, 'tickCount': ticks, 'faultCount': faults}, **extra)
+            r.facts['worker'] = {'identity': {'bootId': boot}, 'nativeOnceControl': ctl, 'nativeRecurringControl': dict(ctl)}
+            return monitor.check_scheduler(r)[0]['severity']
+
+        r.now = 0
+        self.assertEqual(worker('b1', 10), 'ok')
+        r.now = 239
+        self.assertEqual(worker('b1', 10), 'critical')  # ticks stopped, seen on the next round even a second early
+        r.now = 600
+        self.assertEqual(worker('b2', 10), 'ok')  # restarted: a new baseline, not a stall
+        r.now = 700
+        self.assertEqual(worker('b2', 11, faults=2), 'warning')
+        self.assertEqual(worker('b2', 12, faults=2, state='cold'), 'ok')  # idle, not down
+        self.assertEqual(worker('b2', 13, faults=2, state='cold', lastFault={'phase': 'initialization'}), 'critical')
+        self.assertEqual(worker('b2', 14, faults=2, state='quarantined'), 'critical')
+        self.assertEqual(worker('b2', 15, faults=2, state='starting'), 'ok')
+        r.now = 1400
+        self.assertEqual(worker('b2', 16, faults=2, state='starting'), 'warning')  # stuck starting
+        self.assertEqual(worker('b2', 17, faults=2, state='disabled'), 'ok')
+        r.facts['worker'] = {'identity': {'bootId': 'b2'}}
+        self.assertEqual(monitor.check_scheduler(r)[0]['severity'], 'ok')  # not configured at all
+
+    def test_restart_loop_but_not_a_deploy(self):
+        r = make_round(restartCritical=3)
+        runs = iter([1, 2, 4, 1, 1])
+        with mock.patch.object(monitor, 'job_info', side_effect=lambda label: ('running', next(runs) if label == 'worker' else 1, '1')):
+            sev = []
+            for i in range(5):
+                r.now = i * 300
+                sev.append([f['severity'] for f in monitor.check_restarts(r) if f['key'] == 'restarts:worker'][0])
+        self.assertEqual(sev, ['ok', 'ok', 'critical', 'critical', 'critical'])  # one restart is not a loop; the deploy (→1) adds nothing
+        r.now = 4 * 300 + 3600
+        with mock.patch.object(monitor, 'job_info', return_value=('running', 1, '1')):
+            self.assertEqual([f['severity'] for f in monitor.check_restarts(r) if f['key'] == 'restarts:worker'], ['ok'])
+
+    def test_subscription_and_quota(self):
+        r = make_round()
+
+        def judge(*items):
+            with mock.patch.object(monitor.Round, 'psql', return_value=json.dumps(list(items))):
+                return {f['key']: f['severity'] for f in monitor.check_subscription(r)}
+
+        def slot(status='connected', age=60, used=10, reached=False, window='available'):
+            return {'slot': 1, 'label': 'metasnowsky', 'status': status, 'detail': 'x', 'ageSeconds': age,
+                    'quota': {'status': 'available' if window == 'available' else 'error', 'detailCode': 'codex_quota_x',
+                              'buckets': [{'limitReached': reached, 'windows': [{'status': window, 'usedPercent': used}, {'status': 'unknown', 'usedPercent': None}]}]}}
+
+        self.assertEqual(judge(), {'subscription': 'critical'})
+        self.assertEqual(judge(slot()), {'subscription': 'ok', 'quota': 'ok'})
+        self.assertEqual(judge(slot(status='disconnected')), {'subscription': 'critical', 'quota': 'ok'})
+        self.assertEqual(judge(slot(age=7200)), {'subscription': 'warning', 'quota': 'ok'})
+        self.assertEqual(judge(slot(used=85))['quota'], 'warning')
+        self.assertEqual(judge(slot(used=97))['quota'], 'critical')
+        self.assertEqual(judge(slot(reached=True))['quota'], 'critical')
+        r.now = 0
+        self.assertEqual(judge(slot(used=None, window='unknown')), {'subscription': 'ok', 'quota': 'unknown'})  # not judged
+        self.assertEqual(judge(slot(used=40, window='unknown'))['quota'], 'unknown')  # a percentage outside a measured window does not count
+        r.now = 31 * 60
+        self.assertEqual(judge(slot(used=None, window='unknown'))['quota'], 'warning')  # unreadable for long
+        self.assertEqual(judge(slot())['quota'], 'ok')
+        r.now = 32 * 60
+        self.assertEqual(judge(slot(used=None, window='unknown'))['quota'], 'unknown')  # a new gap starts over
+
+    def test_quota_alert_survives_its_window_going_unknown(self):
+        r = make_round()
+
+        def row(primary, secondary):
+            win = lambda name, v: {'slot': name, 'status': 'available' if v is not None else 'unknown', 'usedPercent': v}
+            return {'slot': 1, 'label': 'x', 'status': 'connected', 'detail': '', 'ageSeconds': 1,
+                    'quota': {'status': 'available', 'buckets': [{'limitId': 'codex', 'windows': [win('primary', primary), win('secondary', secondary)]}]}}
+
+        for at, data, want in ((0, row(10, 97), [('opened', 'quota', False)]), (300, row(10, None), []), (600, row(10, 20), [('recovered', 'quota', False)])):
+            with mock.patch.object(monitor.Round, 'psql', return_value=json.dumps([data])):
+                findings, ran = monitor.run_checks(r, [('subscription', monitor.check_subscription, False, None)])
+            self.assertEqual([e for e in step(r, findings, at, ran) if e[1] == 'quota'], want, at)
+
+    def test_quota_limit_alert_needs_the_provider_to_clear_it(self):
+        r = make_round()
+
+        def row(reached):
+            return {'slot': 1, 'label': 'x', 'status': 'connected', 'detail': '', 'ageSeconds': 1,
+                    'quota': {'status': 'available', 'buckets': [{'limitId': 'codex', 'limitReached': reached,
+                                                                  'windows': [{'slot': 'primary', 'status': 'available', 'usedPercent': 10}]}]}}
+
+        for at, reached, want in ((0, True, [('opened', 'quota', False)]), (240, None, []), (480, False, [('recovered', 'quota', False)])):
+            with mock.patch.object(monitor.Round, 'psql', return_value=json.dumps([row(reached)])):
+                findings, ran = monitor.run_checks(r, [('subscription', monitor.check_subscription, False, None)])
+            self.assertEqual([e for e in step(r, findings, at, ran) if e[1] == 'quota'], want, at)
+
+    def test_quota_alert_is_not_recovered_by_an_unreadable_quota(self):
+        r = make_round()
+        high = {'slot': 1, 'label': 'x', 'status': 'connected', 'detail': '', 'ageSeconds': 1,
+                'quota': {'status': 'available', 'buckets': [{'windows': [{'status': 'available', 'usedPercent': 97}]}]}}
+        lost = dict(high, quota={'status': 'error', 'buckets': []})
+        for at, row, want in ((0, high, [('opened', 'quota', False)]), (300, lost, [])):
+            with mock.patch.object(monitor.Round, 'psql', return_value=json.dumps([row])):
+                findings, ran = monitor.run_checks(r, [('subscription', monitor.check_subscription, False, None)])
+            self.assertEqual([e for e in step(r, findings, at, ran) if e[1] == 'quota'], want)
+
+    def test_public_entry_waits_out_a_deploy(self):
+        r = make_round(publicUrl='https://a.example')
+        with mock.patch.object(monitor, 'lock_holders', return_value=['4242']):
+            self.assertIsNone(monitor.check_public_entry(r))
+        r.facts.clear()
+        with mock.patch.object(monitor, 'lock_holders', return_value=[]), mock.patch.object(monitor, 'http_get', return_value=(502, b'bad gateway')):
+            self.assertEqual(monitor.check_public_entry(r)[0]['severity'], 'critical')
+
+    def test_sandbox_vm(self):
+        r = make_round(colimaProfile='cloud', extraColimaProfiles=['drill'])
+
+        attest = {'ready': True}
+
+        def fake_run(cmd, timeout=20, env=None, stdin=None):
+            if cmd[1] == 'status':
+                return (0, '', '') if cmd[-1] == 'cloud' else (1, '', 'not running')
+            if cmd[-1] == '--attest':
+                return (0, json.dumps(attest) + '\n', '')
+            return (0, service[0] + '\n', '')  # colima ssh … systemctl is-active
+
+        service = ['inactive']
+
+        with mock.patch.object(monitor, 'run', side_effect=fake_run), mock.patch.object(monitor.Round, 'docker', return_value=(0, '27.0', '')), \
+                mock.patch.object(monitor, 'lock_holders', return_value=[]):
+            got = {f['key']: f['severity'] for f in monitor.check_sandbox_vm(r)}
+        self.assertEqual(got, {'sandbox_vm:cloud': 'critical', 'sandbox_vm:drill': 'critical'})  # watchdog down; drill VM stopped
+        self.assertTrue(r.facts['vmOk'])  # docker answers: images and Office are still checked
+        r.facts.clear()
+        with mock.patch.object(monitor, 'run', side_effect=fake_run), mock.patch.object(monitor, 'lock_holders', return_value=['9']):
+            got = {f['key']: f['severity'] for f in monitor.check_sandbox_vm(r)}
+        self.assertEqual(got, {'sandbox_vm:cloud': 'unknown', 'sandbox_vm:drill': 'critical'})  # shared VM under planned work: not judged
+        self.assertFalse(r.facts['vmOk'])
+        service[0], attest['ready'] = 'active', False  # the service runs but cannot attest (runsc lost after a VM restart)
+        r.facts.clear()
+        with mock.patch.object(monitor, 'run', side_effect=fake_run), mock.patch.object(monitor.Round, 'docker', return_value=(0, '27.0', '')), \
+                mock.patch.object(monitor, 'lock_holders', return_value=[]):
+            f = [f for f in monitor.check_sandbox_vm(r) if f['key'] == 'sandbox_vm:cloud'][0]
+        self.assertEqual(f['severity'], 'critical')
+        self.assertIn('--attest', f['detail'])
+        attest['ready'] = None
+        r.facts.clear()
+        with mock.patch.object(monitor, 'run', side_effect=fake_run), mock.patch.object(monitor.Round, 'docker', return_value=(0, '27.0', '')), \
+                mock.patch.object(monitor, 'lock_holders', return_value=[]):
+            self.assertEqual([f['severity'] for f in monitor.check_sandbox_vm(r) if f['key'] == 'sandbox_vm:cloud'], ['critical'])
+        attest['ready'] = True
+        with mock.patch.object(monitor, 'run', side_effect=fake_run), mock.patch.object(monitor.Round, 'docker', return_value=(0, '27.0', '')), \
+                mock.patch.object(monitor, 'lock_holders', return_value=[]):
+            self.assertEqual([f['severity'] for f in monitor.check_sandbox_vm(r) if f['key'] == 'sandbox_vm:cloud'], ['ok'])
+
+    def test_authorization_error_must_last(self):
+        r = make_round()
+        row = {'slot': 1, 'label': 'x', 'status': 'error', 'detail': 'probe', 'ageSeconds': 1, 'quota': {}}
+        with mock.patch.object(monitor.Round, 'psql', return_value=json.dumps([row])):
+            r.now = 0
+            self.assertEqual(monitor.check_subscription(r)[0]['severity'], 'unknown')  # not a recovery either
+            r.now = 239  # the next 4-minute round, a second early
+            self.assertEqual(monitor.check_subscription(r)[0]['severity'], 'critical')
+        with mock.patch.object(monitor.Round, 'psql', return_value=json.dumps([dict(row, status='disconnected')])):
+            r.state.clear()
+            self.assertEqual(monitor.check_subscription(r)[0]['severity'], 'critical')  # logged out: at once
+
+    def test_disk_thresholds(self):
+        r = make_round(disks=[{'path': '/', 'warnFreeGiB': 10 ** 9, 'criticalFreeGiB': 0}])
+        self.assertEqual(monitor.check_disk(r)[0]['severity'], 'warning')
+        r.cfg['disks'] = [{'path': '/', 'warnFreeGiB': 10 ** 9, 'criticalFreeGiB': 10 ** 9}]
+        self.assertEqual(monitor.check_disk(r)[0]['severity'], 'critical')
+        r.cfg['disks'] = [{'path': '/', 'warnFreeGiB': 0, 'criticalFreeGiB': 0}]
+        self.assertEqual(monitor.check_disk(r)[0]['severity'], 'ok')
+
+    def test_backup_age(self):
+        r = make_round(backupLabel=None)
+        log = os.path.join(r.cfg['stateDir'], 'backup.log')
+        r.cfg['backupLog'] = log
+        with open(log, 'w') as f:
+            f.write('2026-10-24 04:00:05 ok db=2.8M files=1.9M\nTraceback: later failure\n')
+        when = monitor.time.mktime(monitor.time.strptime('2026-10-24 04:00:05', '%Y-%m-%d %H:%M:%S'))
+        for hours, want in ((2, 'ok'), (30, 'warning'), (60, 'critical')):
+            r.now = when + hours * 3600
+            self.assertEqual(monitor.check_backup(r)[0]['severity'], want, hours)
+        r.now, r.cfg['backupLabel'] = when + 2 * 3600, 'backup'
+        with mock.patch.object(monitor, 'job_info', return_value=('loaded', 3, '1')):
+            self.assertEqual(monitor.check_backup(r)[0]['severity'], 'critical')  # tonight's run failed: now, not in 26 hours
+        with mock.patch.object(monitor, 'job_info', return_value=('gone', None, None)):
+            self.assertEqual(monitor.check_backup(r)[0]['severity'], 'warning')
+        r.cfg['backupLabel'] = None
+        open(log, 'w').close()
+        self.assertEqual(monitor.check_backup(r)[0]['severity'], 'critical')
+
+
 class Worker(unittest.TestCase):
     def test_blocked_schedule_controller_asks_for_a_restart(self):
         r = make_round()
