@@ -1,3 +1,4 @@
+import { assertNativeRunExecutionAvailable } from '../conversation/native-context-retirement.ts';
 import {
   employeeAccessTransaction,
   employeeAccessTransactionMaxAttempts,
@@ -1944,6 +1945,7 @@ export async function claimNextJob(
     `;
     const job = rows[0];
     if (!job) return null;
+    await assertNativeRunExecutionAvailable(transaction, job.run_id);
     if (
       (job.payload as { type?: string }).type === experienceConsolidationJobType
     ) {

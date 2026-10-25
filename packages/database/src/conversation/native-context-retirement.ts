@@ -10,6 +10,12 @@ import {
   nativeRootDigest,
   type NativeRootOrigin,
 } from './native-root-origin.ts';
+import {
+  previewNativeChatTerminalCutoff,
+  applyNativeTerminalTestRetirement,
+  readNativeTerminalTestRetirement,
+  verifyNativeChatTerminalCutoffRow,
+} from './native-terminal-test-retirement.ts';
 
 type Tx = postgres.TransactionSql;
 type Reader = postgres.Sql | Tx;
@@ -78,6 +84,23 @@ const same = (a: unknown, b: unknown) =>
   nativeRootDigest(a) === nativeRootDigest(b);
 function fail(code: string): never {
   throw new Error(code);
+}
+const terminalChatCutoff = (raw: unknown) =>
+  raw !== null &&
+  typeof raw === 'object' &&
+  'schemaVersion' in raw &&
+  raw.schemaVersion === 2;
+
+/** Before any clock, lease or SDK work. Older isolated checkpoints do not have
+ * a v2 cutoff table/function and retain their original execution semantics. */
+export async function assertNativeRunExecutionAvailable(
+  tx: Reader,
+  runId: string,
+) {
+  const [schema] =
+    await tx`select to_regprocedure(format('%I.allrice_terminal_native_chat_run_available(uuid)',current_schema())) is not null available`;
+  if (schema?.available)
+    await tx`select allrice_terminal_native_chat_run_available(${runId}::uuid)`;
 }
 
 /** Terminal execution cutoff; read-only history and artifact reads stay legal.
@@ -250,6 +273,7 @@ async function snapshot(
 /** No mutation. The caller must fix its exact reviewed scope and release/fence
  * separately; this maintenance function is not exposed as an employee tool. */
 export async function previewNativeTestChatRetirement(input: unknown) {
+  if (terminalChatCutoff(input)) return previewNativeChatTerminalCutoff(input);
   const request = requestSchema.parse(input);
   const scopes = [...request.scopes].sort((a, b) =>
     a.contextId.localeCompare(b.contextId),
@@ -279,6 +303,13 @@ export async function previewNativeTestChatRetirement(input: unknown) {
 /** Caller holds the reviewed maintenance window. No transaction retry: an
  * unknown commit must be read back using this same request/plan, never reissued. */
 export async function applyNativeTestChatRetirement(input: unknown) {
+  if (
+    input !== null &&
+    typeof input === 'object' &&
+    'plan' in input &&
+    terminalChatCutoff(input.plan)
+  )
+    return applyNativeTerminalTestRetirement(input);
   const plan = planSchema.parse(input);
   const { digest: expected, ...body } = plan;
   if (nativeRootDigest(body) !== expected)
@@ -357,6 +388,7 @@ export async function applyNativeTestChatRetirement(input: unknown) {
 
 /** Unknown commit recovery is a read, not a second apply or a new request ID. */
 export async function readNativeTestChatRetirement(input: unknown) {
+  if (terminalChatCutoff(input)) return readNativeTerminalTestRetirement(input);
   const plan = planSchema.parse(input);
   const { digest: expected, ...body } = plan;
   if (nativeRootDigest(body) !== expected)
@@ -477,6 +509,11 @@ export async function readVerifiedNativeChatRetirements(tx: Tx) {
         fail('NATIVE_RETIREMENT_BINDING_SCOPE_CONFLICT');
       if (!same(values, r.binding_snapshot))
         fail('NATIVE_RETIREMENT_REFERENCE_SNAPSHOT_CHANGED');
+      if (
+        r.preservation_snapshot?.kind ===
+        'development-test-chat-terminal-cutoff-v2'
+      )
+        await verifyNativeChatTerminalCutoffRow(tx, r);
       result.push(scope);
     }
   }

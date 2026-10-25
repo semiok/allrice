@@ -429,6 +429,7 @@ export {
   readNativeTerminalTestRetirement,
   nativeTerminalTestPhysicalScope,
   NativeTerminalTestPlanSchema,
+  NativeChatTerminalCutoffPlanSchema,
   type NativeTerminalTestScope,
   type NativeTerminalTestPlan,
 } from './conversation/native-terminal-test-retirement.ts';

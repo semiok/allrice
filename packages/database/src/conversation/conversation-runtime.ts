@@ -1,3 +1,4 @@
+import { assertNativeRunExecutionAvailable } from './native-context-retirement.ts';
 import {
   UuidSchema,
   type RuntimeRunUsage,
@@ -747,6 +748,7 @@ export async function acquireConversationRuntime(input: {
   };
   const sql = getDatabase();
   return sql.begin(async (transaction) => {
+    await assertNativeRunExecutionAvailable(transaction, values.runId);
     await transaction`
       insert into allrice_conversation_runtimes (
         organization_id, workspace_id, session_id, owner_id, config_checksum,

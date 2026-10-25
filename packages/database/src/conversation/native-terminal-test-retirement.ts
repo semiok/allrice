@@ -1,5 +1,6 @@
 import type postgres from 'postgres';
 import { z } from 'zod';
+import { posix } from 'node:path';
 import { getDatabase } from '../core/client.ts';
 import {
   NativeRootOriginSchema,
@@ -83,6 +84,50 @@ export const NativeTerminalTestPlanSchema = z
 export type NativeTerminalTestPlan = z.infer<
   typeof NativeTerminalTestPlanSchema
 >;
+const chatScope = z
+  .object({
+    contextKind: z.literal('chat'),
+    contextId: uuid,
+    organizationId: uuid,
+    workspaceId: uuid,
+    ownerId: uuid,
+  })
+  .strict()
+  .refine(
+    (s) => s.contextId !== '68e76b6b-2e75-45b7-b628-951945b12044',
+    'NATIVE_TERMINAL_PROTECTED_CONTEXT',
+  );
+const legacyExecutor = z
+  .object({
+    scope: chatScope,
+    artifactId: digest,
+    storageNamespace: z
+      .string()
+      .refine((p) => posix.isAbsolute(p) && posix.normalize(p) === p),
+  })
+  .strict()
+  .refine(
+    (e) =>
+      e.storageNamespace.endsWith(
+        `/${e.scope.organizationId}/${e.scope.workspaceId}/${e.scope.ownerId}/${e.scope.contextId}/sessions`,
+      ),
+    'NATIVE_CHAT_CUTOFF_NAMESPACE_SCOPE',
+  );
+const chatFactsSchema = factsSchema.extend({ scope: chatScope });
+export const NativeChatTerminalCutoffPlanSchema = z
+  .object({
+    schemaVersion: z.literal(2),
+    kind: z.literal('development-test-chat-terminal-cutoff'),
+    requestId: uuid,
+    authorizationEvidenceDigest: digest,
+    snapshots: z.array(chatFactsSchema).min(1).max(7),
+    legacyExecutors: z.array(legacyExecutor).min(1).max(7),
+    digest,
+  })
+  .strict();
+type ChatPlan = z.infer<typeof NativeChatTerminalCutoffPlanSchema>;
+type TerminalPlan = NativeTerminalTestPlan | ChatPlan;
+type TerminalScope = NativeTerminalTestScope | z.infer<typeof chatScope>;
 const physicalSchema = z
   .object({
     kind: z.literal('terminal-native-physical-absence-v1'),
@@ -129,14 +174,25 @@ const fail = (code: string): never => {
 };
 const same = (a: unknown, b: unknown) =>
   nativeRootDigest(a) === nativeRootDigest(b);
-const key = (s: NativeTerminalTestScope) => s.contextKind + ':' + s.contextId;
+const key = (s: TerminalScope) => s.contextKind + ':' + s.contextId;
 function plan(raw: unknown) {
-  const p = NativeTerminalTestPlanSchema.parse(raw),
+  const p = z
+      .union([NativeTerminalTestPlanSchema, NativeChatTerminalCutoffPlanSchema])
+      .parse(raw),
     { digest: expected, ...body } = p;
   if (nativeRootDigest(body) !== expected) fail('NATIVE_TERMINAL_PLAN_CHANGED');
   const keys = p.snapshots.map((s) => key(s.scope));
   if (new Set(keys).size !== keys.length || !same(keys, [...keys].sort()))
     fail('NATIVE_TERMINAL_PLAN_ORDER');
+  if (
+    p.schemaVersion === 2 &&
+    (!same(
+      p.legacyExecutors.map((e) => key(e.scope)),
+      keys,
+    ) ||
+      p.legacyExecutors.some((e, i) => !same(e.scope, p.snapshots[i]!.scope)))
+  )
+    fail('NATIVE_CHAT_CUTOFF_EXACT_EXECUTORS_REQUIRED');
   return p;
 }
 
@@ -155,6 +211,11 @@ export function nativeTerminalTestPhysicalScope(raw: unknown) {
     for (const item of classifyDshRuntimeCloseObservations(snapshot.closeRows))
       artifactIds.add(item.owner.artifactId);
   }
+  if (p.schemaVersion === 2)
+    for (const e of p.legacyExecutors) {
+      artifactIds.add(e.artifactId);
+      namespaces.add(e.storageNamespace);
+    }
   const value = {
     scopes: p.snapshots.map((s) => s.scope),
     artifactIds: [...artifactIds].sort(),
@@ -162,7 +223,7 @@ export function nativeTerminalTestPhysicalScope(raw: unknown) {
   };
   return { ...value, digest: nativeRootDigest(value) };
 }
-function proofFor(p: NativeTerminalTestPlan, raw: unknown) {
+function proofFor(p: TerminalPlan, raw: unknown) {
   const proof = physicalSchema.parse(raw),
     scope = nativeTerminalTestPhysicalScope(p),
     now = Date.now();
@@ -193,6 +254,14 @@ function proofFor(p: NativeTerminalTestPlan, raw: unknown) {
         ),
       ),
     ) ||
+    (p.schemaVersion === 2 &&
+      !p.legacyExecutors.every((e) =>
+        proof.writerScopes.some(
+          (r) =>
+            r.artifactId === e.artifactId &&
+            e.storageNamespace.startsWith(r.root + '/'),
+        ),
+      )) ||
     new Set(proof.artifactRoots.map((r) => r.artifactId)).size !==
       proof.artifactRoots.length
   )
@@ -216,7 +285,14 @@ function proofFor(p: NativeTerminalTestPlan, raw: unknown) {
     fail('NATIVE_TERMINAL_CURRENT_BOOT_CONTEXT_NOT_DISCARDABLE');
   return proof;
 }
-async function facts(tx: Tx, scope: NativeTerminalTestScope) {
+async function facts(tx: Tx, scope: TerminalScope) {
+  if (scope.contextKind === 'chat') {
+    const [row] =
+      await tx`select allrice_terminal_native_chat_facts(${scope.contextId},${scope.organizationId},${scope.workspaceId},${scope.ownerId}) facts`;
+    const value = chatFactsSchema.parse(row?.facts);
+    assertClosedOwners(value.closeRows, scope);
+    return value;
+  }
   const [row] =
     await tx`select allrice_terminal_native_test_facts(${scope.contextKind},${scope.contextId},${scope.organizationId},${scope.workspaceId},${scope.ownerId}) facts`;
   const value = factsSchema.parse(row?.facts);
@@ -260,7 +336,14 @@ async function facts(tx: Tx, scope: NativeTerminalTestScope) {
       );
     }
   }
-  const coverage = classifyDshRuntimeCloseObservations(value.closeRows);
+  assertClosedOwners(value.closeRows, scope);
+  return value;
+}
+function assertClosedOwners(
+  closeRows: postgres.JSONValue[],
+  scope: TerminalScope,
+) {
+  const coverage = classifyDshRuntimeCloseObservations(closeRows);
   if (
     coverage.some(
       (c) =>
@@ -279,9 +362,8 @@ async function facts(tx: Tx, scope: NativeTerminalTestScope) {
     )
   )
     fail('NATIVE_TERMINAL_REGISTERED_OWNER_UNCONFIRMED');
-  return value;
 }
-async function registeredIdle(tx: Tx, p: NativeTerminalTestPlan) {
+async function registeredIdle(tx: Tx, p: TerminalPlan) {
   const [legacy] =
     await tx`select count(*)::int n from allrice_dsh_runtime_instances where status='live'`;
   if (legacy?.n !== 0) fail('NATIVE_TERMINAL_REGISTERED_RUNTIME_LIVE');
@@ -332,7 +414,46 @@ export async function previewNativeTerminalTestRetirement(raw: unknown) {
     },
   );
 }
-async function receipt(tx: Tx, p: NativeTerminalTestPlan) {
+/** Explicit terminal test cutoff, not completion of any historical callback. */
+export async function previewNativeChatTerminalCutoff(raw: unknown) {
+  const request = z
+    .object({
+      schemaVersion: z.literal(2),
+      kind: z.literal('development-test-chat-terminal-cutoff'),
+      requestId: uuid,
+      authorizationEvidenceDigest: digest,
+      scopes: z.array(chatScope).min(1).max(7),
+      legacyExecutors: z.array(legacyExecutor).min(1).max(7),
+    })
+    .strict()
+    .parse(raw);
+  const scopes = [...request.scopes].sort((a, b) =>
+    key(a).localeCompare(key(b)),
+  );
+  if (new Set(scopes.map(key)).size !== scopes.length)
+    fail('NATIVE_TERMINAL_DUPLICATE_CONTEXT');
+  return getDatabase().begin(
+    'isolation level repeatable read read only',
+    async (tx) => {
+      await tx`set local statement_timeout='5000'`;
+      await tx`set local timezone='UTC'`;
+      const snapshots = [];
+      for (const scope of scopes) snapshots.push(await facts(tx, scope));
+      const body = {
+        schemaVersion: 2 as const,
+        kind: request.kind,
+        requestId: request.requestId,
+        authorizationEvidenceDigest: request.authorizationEvidenceDigest,
+        snapshots,
+        legacyExecutors: [...request.legacyExecutors].sort((a, b) =>
+          key(a.scope).localeCompare(key(b.scope)),
+        ),
+      };
+      return plan({ ...body, digest: nativeRootDigest(body) }) as ChatPlan;
+    },
+  );
+}
+async function receipt(tx: Tx, p: TerminalPlan) {
   const rows =
     await tx`select * from allrice_native_context_retirements where request_id=${p.requestId} order by context_kind,context_id`;
   if (!rows.length) return null;
@@ -415,12 +536,33 @@ export async function applyNativeTerminalTestRetirement(raw: unknown) {
     await registeredIdle(tx, p);
     for (const expected of p.snapshots) {
       const s = expected.scope;
+      if (s.contextKind === 'chat')
+        await tx`update allrice_chat_sessions set archived_at=coalesce(archived_at,clock_timestamp())
+        where id=${s.contextId} and organization_id=${s.organizationId} and workspace_id=${s.workspaceId} and owner_id=${s.ownerId}`;
       await tx`insert into allrice_native_context_retirements
         (context_kind,context_id,organization_id,workspace_id,owner_id,request_id,plan_digest,reason,
           origin_snapshot,binding_snapshot,preservation_snapshot,authorization_evidence_digest)
         values(${s.contextKind},${s.contextId},${s.organizationId},${s.workspaceId},${s.ownerId},${p.requestId},${p.digest},'development_test_discarded',
           ${expected.origin ? tx.json(JSON.parse(JSON.stringify(expected.origin))) : null},${tx.json(expected.bindings)},
-          ${tx.json(JSON.parse(JSON.stringify({ kind: 'development-terminal-test-retirement-v1', facts: expected, physicalProof: proof })))},${p.authorizationEvidenceDigest})`;
+          ${tx.json(
+            JSON.parse(
+              JSON.stringify({
+                kind:
+                  p.schemaVersion === 2
+                    ? 'development-test-chat-terminal-cutoff-v2'
+                    : 'development-terminal-test-retirement-v1',
+                facts: expected,
+                physicalProof: proof,
+                ...(p.schemaVersion === 2
+                  ? {
+                      legacyExecutor: p.legacyExecutors.find(
+                        (e) => key(e.scope) === key(s),
+                      ),
+                    }
+                  : {}),
+              }),
+            ),
+          )},${p.authorizationEvidenceDigest})`;
     }
     return {
       requestId: p.requestId,
@@ -450,6 +592,36 @@ export async function readNativeTerminalTestRetirement(raw: unknown) {
       };
     },
   );
+}
+/** The original chat reader calls this in its existing scanner snapshot. */
+export async function verifyNativeChatTerminalCutoffRow(
+  tx: Tx,
+  row: Record<string, postgres.JSONValue>,
+) {
+  const saved = z
+      .object({
+        kind: z.literal('development-test-chat-terminal-cutoff-v2'),
+        facts: chatFactsSchema,
+        physicalProof: physicalSchema,
+        legacyExecutor,
+      })
+      .strict()
+      .parse(row.preservation_snapshot),
+    s = saved.facts.scope;
+  if (
+    row.context_kind !== 'chat' ||
+    row.context_id !== s.contextId ||
+    row.organization_id !== s.organizationId ||
+    row.workspace_id !== s.workspaceId ||
+    row.owner_id !== s.ownerId ||
+    row.reason !== 'development_test_discarded' ||
+    !same(saved.facts, await facts(tx, s)) ||
+    !same(saved.legacyExecutor.scope, s) ||
+    !same(row.origin_snapshot, saved.facts.origin) ||
+    !same(row.binding_snapshot, saved.facts.bindings)
+  )
+    fail('NATIVE_TERMINAL_PRESERVED_FACTS_CHANGED');
+  return s;
 }
 /** Called in the startup reference scanner's same read-only snapshot. */
 export async function readVerifiedNativeTerminalTestRetirements(tx: Tx) {

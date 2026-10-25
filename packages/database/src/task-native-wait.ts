@@ -9,6 +9,7 @@ import type { TransactionSql } from 'postgres';
 import { getDatabase } from './core/client.ts';
 import { refreshTaskClock } from './task-clock.ts';
 import { cancelUnadoptedSteers } from './conversation/conversation-input.ts';
+import { assertNativeRunExecutionAvailable } from './conversation/native-context-retirement.ts';
 
 function matchesQuestion(checkpoint: NativeQuestionCheckpoint, text: string) {
   const prefix = 'allrice:user-question:v1:';
@@ -84,6 +85,7 @@ export async function readParkedNativeUsage(
 }
 
 async function lockOwner(tx: TransactionSql, { context, worker }: Owner) {
+  await assertNativeRunExecutionAvailable(tx, context.runId);
   await refreshTaskClock(tx, context.runId);
   const [job] =
     await tx`select j.id from allrice_jobs j join allrice_runs r on r.id=j.run_id
@@ -397,6 +399,7 @@ export async function wakeNativeQuestionWaits(
     order by w.created_at limit ${limit}`;
   for (const row of rows)
     await db.begin(async (tx) => {
+      await assertNativeRunExecutionAvailable(tx, row.run_id);
       await refreshTaskClock(tx, row.run_id);
       const [job] =
         await tx`select id,cancel_requested_at from allrice_jobs where run_id=${row.run_id} and status='waiting_approval' for update`;
