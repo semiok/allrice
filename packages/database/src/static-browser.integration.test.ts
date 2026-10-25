@@ -1,3 +1,6 @@
+import { scheduleReadPathQuery } from './read-path-races.fixture.ts';
+import { createReadPathProbe } from './read-path-probe.fixture.ts';
+import { listBrowserWorkspaces } from './browser-control.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -53,29 +56,6 @@ import { runBrowserWorkspace } from '../../../apps/worker/src/tool-broker/handle
 import { nativeBrokerRoundtrip } from '../../../apps/worker/src/harness/dsh-native-broker.fixture.ts';
 import { CloudRunnerBackend } from '../../../apps/worker/src/cloud-runner/backend.ts';
 import { getWorkAutomation, updateWorkAutomation } from './work-automation.ts';
-
-/** Read-path flags write lock clauses as nested ``${lock ? tx`for update` : tx``}``
- * fragments (MET-210 #4). Pass a fragment through untouched and match on the
- * statement text it composes into. */
-function lockFragment(strings: readonly string[]) {
-  return /^\s*(?:for\s|$)/i.test(strings.join('?'));
-}
-function composedSql(args: unknown[]) {
-  const [strings, ...values] = args as [readonly string[], ...unknown[]];
-  return strings
-    .map((part, index) => {
-      const value = values[index];
-      const nested =
-        value &&
-        typeof value === 'object' &&
-        Array.isArray((value as { strings?: unknown }).strings)
-          ? (value as { strings: string[] }).strings.join('?')
-          : '?';
-      return index < values.length ? part + nested : part;
-    })
-    .join('');
-}
-
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -245,6 +225,21 @@ suite(
         database.db,
       );
     }
+    it('MET-210 static verification browser list reads its saved artifact authority without row locks', async () => {
+      const { f, row } = await claimedStatic();
+      await startStaticBrowserVerification(row, database.db);
+      const probe = createReadPathProbe(database.db);
+      vi.spyOn(client, 'getDatabase').mockReturnValue(probe.db);
+      try {
+        const views = await listBrowserWorkspaces(f.context, f.run, probe.db);
+        expect(views).toMatchObject([
+          { id: row.browser_workspace_id, available: true },
+        ]);
+        probe.expectNoRowLocks();
+      } finally {
+        vi.spyOn(client, 'getDatabase').mockReturnValue(database.db);
+      }
+    });
     it('keeps exact failed execution receipts immutable and drain-only after cancellation', async () => {
       const f = await fixture(),
         row = await admit(f),
@@ -662,18 +657,16 @@ suite(
                 new Proxy(tx, {
                   apply(query, thisArg, args: unknown[]) {
                     const fragments = args[0];
-                    if (
-                      !Array.isArray(fragments) ||
-                      !('raw' in fragments) ||
-                      lockFragment(fragments)
-                    )
+                    if (!Array.isArray(fragments) || !('raw' in fragments))
                       return Reflect.apply(query, thisArg, args);
-                    const sql = composedSql(args)
+                    const sql = fragments
+                      .join('?')
                       .replaceAll(/\s+/g, ' ')
                       .toLowerCase();
-                    return hook(
+                    return scheduleReadPathQuery(
+                      Reflect.apply(query, thisArg, args),
                       sql,
-                      async () => await Reflect.apply(query, thisArg, args),
+                      hook,
                     );
                   },
                 }),

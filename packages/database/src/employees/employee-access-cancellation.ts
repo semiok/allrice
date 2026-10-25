@@ -63,10 +63,13 @@ export function employeeAccessTransaction<T>(
     retryDeadlock?: boolean;
     /** Names the caller in `[TransactionRetry]` 40P01 retry records. */
     retrySite?: string;
+    /** Transaction mode, e.g. `isolation level repeatable read read only`. */
+    mode?: string;
   } = {},
 ) {
+  const mode = options.mode;
   return retryEmployeeAccessTransaction(
-    () => sql.begin(run),
+    () => (mode ? sql.begin(mode, run) : sql.begin(run)),
     options.retryLockBusy ?? (() => true),
     options.retryDeadlock ?? false,
     options.retrySite ?? 'employee_access',

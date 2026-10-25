@@ -166,7 +166,7 @@ export function createMcpStore(
       : workspaceAdminScope(context, workspaceId);
   const currentAdmin = (tx: Database | Tx, scope: McpScope, lock = true) =>
     options.administration
-      ? checkTenantManagement(tx, options.administration, scope)
+      ? checkTenantManagement(tx, options.administration, scope, lock)
       : workspaceCurrentAdmin(tx, scope, options.memberManaged, lock);
   const audit = (
     tx: Tx,

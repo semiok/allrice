@@ -259,8 +259,8 @@ jobs:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
         # Polling transactions are probed for a transaction id before COMMIT and
-        # interleaved with identity/Run writers in both orders.
-        run: pnpm exec vitest run --maxWorkers=1 packages/database/src/cloud-operation-view-locks.integration.test.ts
+        # interleaved with writers in both orders; write paths keep their locks.
+        run: pnpm exec vitest run --maxWorkers=1 packages/database/src/cloud-operation-view-locks.integration.test.ts packages/database/src/read-path-locks.integration.test.ts
       - name: Verify frozen Skill bundles and rollback against PostgreSQL
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1

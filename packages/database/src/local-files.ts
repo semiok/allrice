@@ -322,12 +322,19 @@ export async function localFileTransferAuthority(
     if (folderEventId) {
       const { assertFolderTriggerEventAuthority } =
         await import('./folder-triggers.ts');
+      // A check only: this transaction commits before any transfer or
+      // upload, so row locks here would fence nothing (MET-210 #4).
       await db.begin((tx) =>
-        assertFolderTriggerEventAuthority(tx, folderEventId!, {
-          organizationId: device.organizationId,
-          workspaceId: device.workspaceId,
-          ownerId: device.ownerId,
-        }),
+        assertFolderTriggerEventAuthority(
+          tx,
+          folderEventId!,
+          {
+            organizationId: device.organizationId,
+            workspaceId: device.workspaceId,
+            ownerId: device.ownerId,
+          },
+          false,
+        ),
       );
     }
     payload = LocalFilePayloadSchema.parse({

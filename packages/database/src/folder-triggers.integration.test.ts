@@ -1,3 +1,4 @@
+import { createReadPathProbe } from './read-path-probe.fixture.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   mkdtemp,
@@ -365,7 +366,19 @@ suite(
           .events[0],
       ).toMatchObject({ state: 'blocked', runId: null });
     });
-    it('rule renewal reads through a locked grant and a real heartbeat still completes', async () => {
+    it('MET-210 populated folder rule renewal reads authority without a transaction id', async () => {
+      const f = await fixture();
+      const probe = createReadPathProbe(database.db);
+      vi.spyOn(client, 'getDatabase').mockReturnValue(probe.db);
+      try {
+        const value = await readFolderTriggerRules(f.token);
+        expect(value.rules).toMatchObject([{ automationId: f.rule.id }]);
+        probe.expectNoRowLocks();
+      } finally {
+        vi.spyOn(client, 'getDatabase').mockReturnValue(database.db);
+      }
+    });
+    it('rule renewal remains lock-free while a folder grant is held and a real heartbeat completes', async () => {
       const f = await fixture();
       const [target] = await database.db<
         { metadata: { environment: unknown } }[]
@@ -383,26 +396,29 @@ suite(
         await hold;
       });
       await lockReady;
+      const probe = createReadPathProbe(database.db, { lockTimeout: '1500ms' });
+      vi.spyOn(client, 'getDatabase').mockReturnValue(probe.db);
       const renewal = readFolderTriggerRules(f.token);
       try {
-        // MET-210 #4: the Bridge rule poll is a read and takes no row locks,
-        // so it completes while another transaction still holds the grant.
-        const rules = await renewal;
-        expect(rules.rules).toHaveLength(1);
+        const snapshot = await renewal;
+        expect(snapshot.rules).toHaveLength(1);
+        probe.expectNoRowLocks();
+        vi.spyOn(client, 'getDatabase').mockReturnValue(database.db);
         const heartbeat = heartbeatBridgeDevice(f.token, {
           protocolVersion: 2,
           capabilities: [...localFileCapabilities],
           environment: target!.metadata.environment,
         });
         release();
-        await Promise.all([heartbeat, blocking]);
+        const [rules] = await Promise.all([renewal, heartbeat, blocking]);
+        expect(rules.rules).toHaveLength(1);
         expect(
           (await readFolderTriggerRules(f.token)).rules[0]?.automationId,
         ).toBe(f.rule.id);
       } finally {
+        vi.spyOn(client, 'getDatabase').mockReturnValue(database.db);
         release();
-        await blocking;
-        await renewal;
+        await Promise.allSettled([blocking, renewal]);
       }
     });
     it('keeps a claimed import authorized during its own busy heartbeat, and adopts the exact ready upload after a lost ACK', async () => {

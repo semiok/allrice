@@ -192,7 +192,7 @@ export function createLocalMcpStore(
       : scopeFor(context, workspaceId);
   const managementMember = (tx: Database | Tx, scope: McpScope, lock = true) =>
     options.administration
-      ? checkTenantManagement(tx, options.administration, scope)
+      ? checkTenantManagement(tx, options.administration, scope, lock)
       : member(tx, scope, lock);
   const ownerId = (scope: McpScope) =>
     options.administration?.subjectId ?? scope.actorId;

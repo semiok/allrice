@@ -609,7 +609,9 @@ export async function resolveEmployeeSessionInstance(
 ) {
   await authority(context, tx, lock);
   await assignment(context, assignmentId, tx, lock);
-  if (!instanceId) await ensureGeneralEmployeeInstance(tx, assignmentId);
+  // A read never creates the general instance; a missing one is not found.
+  if (!instanceId && lock)
+    await ensureGeneralEmployeeInstance(tx, assignmentId);
   await tx`select id from allrice_employee_instances where id=${instanceId ?? assignmentId} ${lock ? tx`for share` : tx``}`;
   const instance = await getEmployeeInstance(
     context,

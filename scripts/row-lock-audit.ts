@@ -3,7 +3,8 @@
  *
  * `routeLocks` follows the TypeScript call graph from apps/web route handlers
  * into this repository and reports every SQL row-lock clause
- * (`FOR UPDATE / NO KEY UPDATE / SHARE / KEY SHARE`) a handler can reach.
+ * (`FOR UPDATE / NO KEY UPDATE / SHARE / KEY SHARE`) and advisory lock
+ * (`pg_advisory_xact_lock` and variants) a handler can reach.
  * `inventory` classifies every row-lock clause in the repository by the
  * transactions that can reach it: a lock reached only by transactions that
  * never write protects nothing and belongs to a read path.
@@ -18,16 +19,18 @@
  * is reported in `unresolved`, not followed. Callbacks passed as parameters
  * and Worker job registries are outside the walk.
  *
- *   node --import tsx scripts/row-lock-audit.ts GET [--chain] [--route <part>] [--json]
- *   node --import tsx scripts/row-lock-audit.ts --inventory
+ *   node --import tsx scripts/row-lock-audit.ts GET [--chain] [--route <part>] [--json] [--raw]
+ *   node --import tsx scripts/row-lock-audit.ts --inventory [--raw]
  */
 import { readdirSync, statSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import ts from 'typescript';
 
+/** Row-lock clauses and advisory locks: either makes a reader wait for, or
+ * hold up, a writer of the same rows or key. */
 export const ROW_LOCK =
-  /\bfor\s+(?:no\s+key\s+update|key\s+share|update|share)\b/i;
+  /\bfor\s+(?:no\s+key\s+update|key\s+share|update|share)\b|\bpg_(?:try_)?advisory_(?:xact_)?lock(?:_shared)?\s*\(/i;
 const SQL_WRITE =
   /\b(?:insert\s+into|delete\s+from|merge\s+into|truncate\s|update\s+(?:only\s+)?[\w."]+(?:\s+(?:as\s+)?\w+)?\s+set\b)/i;
 const SQL_TAG = /^(?:tx|transaction|trx|sql|db|database|client|t)$/i;
@@ -63,7 +66,13 @@ export type RouteLockReport = {
   reached: ReachedLock[];
   /** Interface-typed call targets on these routes that were not followed. */
   unresolved: string[];
+  /** `<route> <file> <owner>` barriers some handler actually called. */
+  stopped: string[];
 };
+
+/** A function one route calls that runs its own writing transaction; the walk
+ * does not enter it from that route (its locks fence those writes). */
+export type RouteBarrier = { route: string; file: string; owner: string };
 
 export type InventorySite = LockSite & {
   getRoutes: number;
@@ -139,6 +148,8 @@ function sqlText(node: ts.TaggedTemplateExpression) {
 
 function clauseOf(text: string) {
   const match = ROW_LOCK.exec(text)!;
+  if (match[0].startsWith('pg_'))
+    return match[0].replace(/\s*\($/, '').toLowerCase();
   return text
     .slice(match.index)
     .split(/[`$;\n]/)[0]!
@@ -418,7 +429,8 @@ export function createRowLockAudit(
       const literal =
         arg && ts.isObjectLiteralExpression(arg) ? arg : undefined;
       if (literal?.properties.some(ts.isSpreadAssignment)) return;
-      const missing = !arg || known?.value === undefined;
+      // An argument the walk cannot evaluate is unknown, not absent.
+      const missing = !arg || (known !== null && known.value === undefined);
       for (const element of parameter.name.elements) {
         if (!ts.isIdentifier(element.name)) continue;
         const key = (element.propertyName ?? element.name).getText();
@@ -502,8 +514,21 @@ export function createRowLockAudit(
       )
         note(current.left.text, current);
       if (
+        ts.isBinaryExpression(current) &&
+        current.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        current.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+        ts.isPropertyAccessExpression(current.left) &&
+        ts.isIdentifier(current.left.expression)
+      )
+        note(
+          `${current.left.expression.text}.${current.left.name.text}`,
+          current,
+        );
+      if (
         (ts.isPrefixUnaryExpression(current) ||
           ts.isPostfixUnaryExpression(current)) &&
+        (current.operator === ts.SyntaxKind.PlusPlusToken ||
+          current.operator === ts.SyntaxKind.MinusMinusToken) &&
         ts.isIdentifier(current.operand)
       )
         note(current.operand.text, current);
@@ -519,6 +544,11 @@ export function createRowLockAudit(
       ts.forEachChild(current, (child) => collect(child, local && !nested));
     };
     collect(body, true);
+    // A parameter (or its property) assigned anywhere in the body is no longer
+    // the literal the call site passed.
+    for (const name of assigned.keys())
+      for (const key of [...out.keys()])
+        if (key === name || key.startsWith(`${name}.`)) out.delete(key);
     // `const { lock } = options` where the call pinned `options.lock`.
     const destructure = (current: ts.Node) => {
       if (
@@ -648,59 +678,15 @@ export function createRowLockAudit(
     summaries.set(state.key, summary);
     const env = withLocals(state.node, state.env);
 
-    const follow = (identifier: ts.Identifier) => {
-      const named = identifier.parent as ts.Node & { name?: ts.Node };
-      // A SQL tag (`tx\`…\``) is the client, not a function of ours.
-      if (
-        ts.isTaggedTemplateExpression(named) &&
-        (named as ts.TaggedTemplateExpression).tag === identifier
-      )
-        return;
-      // A declaration's own name is not a reference.
-      if (
-        named.name === identifier &&
-        (ts.isBindingElement(named) ||
-          ts.isVariableDeclaration(named) ||
-          ts.isParameter(named) ||
-          ts.isFunctionDeclaration(named) ||
-          ts.isClassDeclaration(named) ||
-          ts.isImportSpecifier(named))
-      )
-        return;
-      let symbol = symbolOf(identifier);
-      if (ts.isShorthandPropertyAssignment(identifier.parent))
-        symbol =
-          checker.getShorthandAssignmentValueSymbol(identifier.parent) ??
-          symbol;
-      if (!symbol?.declarations?.length) return;
-      const parent = identifier.parent;
-      let call: ts.CallExpression | undefined;
-      if (ts.isCallExpression(parent) && parent.expression === identifier)
-        call = parent;
-      else if (
-        ts.isPropertyAccessExpression(parent) &&
-        parent.name === identifier &&
-        ts.isCallExpression(parent.parent) &&
-        parent.parent.expression === parent
-      )
-        call = parent.parent;
-      // A function placed in an object literal runs when that property is
-      // called, which property resolution follows; listing it calls nothing.
-      let value: ts.Node = identifier;
-      while (
-        ts.isPropertyAccessExpression(value.parent) &&
-        value.parent.name === value
-      )
-        value = value.parent;
-      if (
-        !call &&
-        (ts.isShorthandPropertyAssignment(parent) ||
-          (ts.isPropertyAssignment(value.parent) &&
-            value.parent.initializer === value))
-      )
-        return;
+    /** Enter the executable declarations behind one reference. */
+    const enter = (
+      found: readonly ts.Declaration[],
+      call: ts.CallExpression | undefined,
+      receiverExpression: ts.Expression | undefined,
+      self?: ts.Node,
+    ) => {
       const declarations: ts.Declaration[] = [];
-      for (const declaration of symbol.declarations) {
+      for (const declaration of found) {
         // `const { readX } = await import('./x.ts')` or `= helpers`: follow
         // the property of the destructured value's type.
         if (
@@ -717,7 +703,7 @@ export function createRowLockAudit(
         } else declarations.push(declaration);
       }
       for (const declaration of declarations) {
-        if (declaration === parent) continue;
+        if (declaration === self) continue;
         if (
           call &&
           (ts.isMethodSignature(declaration) ||
@@ -726,10 +712,7 @@ export function createRowLockAudit(
         ) {
           // `factory(…).m()` or `const x = factory(…); x.m()`: only the
           // members that factory itself returns.
-          let receiver: ts.Expression | undefined =
-            ts.isPropertyAccessExpression(parent)
-              ? parent.expression
-              : undefined;
+          let receiver = receiverExpression;
           if (receiver && ts.isIdentifier(receiver)) {
             const local = symbolOf(receiver)?.valueDeclaration;
             receiver =
@@ -803,6 +786,65 @@ export function createRowLockAudit(
       }
     };
 
+    const follow = (identifier: ts.Identifier) => {
+      const named = identifier.parent as ts.Node & { name?: ts.Node };
+      // A SQL tag (`tx\`…\``) is the client, not a function of ours.
+      if (
+        ts.isTaggedTemplateExpression(named) &&
+        (named as ts.TaggedTemplateExpression).tag === identifier
+      )
+        return;
+      // A declaration's own name is not a reference.
+      if (
+        named.name === identifier &&
+        (ts.isBindingElement(named) ||
+          ts.isVariableDeclaration(named) ||
+          ts.isParameter(named) ||
+          ts.isFunctionDeclaration(named) ||
+          ts.isClassDeclaration(named) ||
+          ts.isImportSpecifier(named))
+      )
+        return;
+      let symbol = symbolOf(identifier);
+      if (ts.isShorthandPropertyAssignment(identifier.parent))
+        symbol =
+          checker.getShorthandAssignmentValueSymbol(identifier.parent) ??
+          symbol;
+      if (!symbol?.declarations?.length) return;
+      const parent = identifier.parent;
+      let call: ts.CallExpression | undefined;
+      if (ts.isCallExpression(parent) && parent.expression === identifier)
+        call = parent;
+      else if (
+        ts.isPropertyAccessExpression(parent) &&
+        parent.name === identifier &&
+        ts.isCallExpression(parent.parent) &&
+        parent.parent.expression === parent
+      )
+        call = parent.parent;
+      // A function placed in an object literal runs when that property is
+      // called, which property resolution follows; listing it calls nothing.
+      let value: ts.Node = identifier;
+      while (
+        ts.isPropertyAccessExpression(value.parent) &&
+        value.parent.name === value
+      )
+        value = value.parent;
+      if (
+        !call &&
+        (ts.isShorthandPropertyAssignment(parent) ||
+          (ts.isPropertyAssignment(value.parent) &&
+            value.parent.initializer === value))
+      )
+        return;
+      enter(
+        symbol.declarations,
+        call,
+        ts.isPropertyAccessExpression(parent) ? parent.expression : undefined,
+        parent,
+      );
+    };
+
     const statement = (node: ts.Statement): boolean => {
       // Nested function and class declarations run only when referenced.
       if (boundary(node)) return false;
@@ -838,8 +880,12 @@ export function createRowLockAudit(
           );
           if (start < 0) start = clauses.findIndex(ts.isDefaultClause);
           if (start < 0) return false;
-          for (const clause of clauses.slice(start))
-            if (statements(clause.statements)) return true;
+          for (const clause of clauses.slice(start)) {
+            const exits = statements(clause.statements);
+            // A `break` anywhere in the clause may leave only the switch.
+            if (leavesSwitch(clause)) return false;
+            if (exits) return true;
+          }
           return false;
         }
         for (const clause of clauses) {
@@ -850,6 +896,25 @@ export function createRowLockAudit(
       }
       ts.forEachChild(node, visit);
       return false;
+    };
+    const leavesSwitch = (clause: ts.CaseOrDefaultClause) => {
+      let found = false;
+      const search = (current: ts.Node) => {
+        if (found || functionLike(current) || ts.isClassLike(current)) return;
+        if (ts.isBreakStatement(current) || ts.isContinueStatement(current)) {
+          found = true;
+          return;
+        }
+        // An inner loop or switch owns its own unlabeled break.
+        if (
+          ts.isIterationStatement(current, false) ||
+          ts.isSwitchStatement(current)
+        )
+          return;
+        ts.forEachChild(current, search);
+      };
+      clause.statements.forEach(search);
+      return found;
     };
     const statements = (list: readonly ts.Statement[]) => {
       for (const node of list) if (statement(node)) return true;
@@ -895,6 +960,82 @@ export function createRowLockAudit(
         if (ROW_LOCK.test(text)) summary.locks.push(siteKey(node, text));
         if (SQL_WRITE.test(text)) summary.writes = true;
       }
+      // `tx.unsafe('… for update')`: plain-string SQL, checked like a template.
+      if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.name.text === 'unsafe' &&
+        node.arguments[0] &&
+        own(node.getSourceFile())
+      ) {
+        const argument = node.arguments[0];
+        if (
+          ts.isStringLiteral(argument) ||
+          ts.isNoSubstitutionTemplateLiteral(argument) ||
+          ts.isTemplateExpression(argument)
+        ) {
+          const text = ts.isTemplateExpression(argument)
+            ? [
+                argument.head.text,
+                ...argument.templateSpans.map((span) => span.literal.text),
+              ].join(' $ ')
+            : argument.text;
+          if (ROW_LOCK.test(text)) summary.locks.push(siteKey(node, text));
+          if (SQL_WRITE.test(text)) summary.writes = true;
+        } else {
+          const where = label(node);
+          summary.unresolved.push(`${where.file} unsafe(<dynamic SQL>)`);
+        }
+      }
+      // `helpers['read']()`: follow the literal key like a property access.
+      if (
+        ts.isElementAccessExpression(node) &&
+        ts.isCallExpression(node.parent) &&
+        node.parent.expression === node
+      ) {
+        const key = node.argumentExpression;
+        const property = ts.isStringLiteralLike(key)
+          ? checker.getTypeAtLocation(node.expression).getProperty(key.text)
+          : undefined;
+        // `const services = { a: readA, b: () => … }; services[name]()`:
+        // any member may run, so follow every one of them.
+        const local = ts.isIdentifier(node.expression)
+          ? symbolOf(node.expression)?.valueDeclaration
+          : undefined;
+        const members =
+          !property &&
+          local &&
+          ts.isVariableDeclaration(local) &&
+          local.initializer &&
+          ts.isObjectLiteralExpression(local.initializer) &&
+          local.initializer.properties.every(
+            (member) =>
+              ts.isShorthandPropertyAssignment(member) ||
+              ts.isMethodDeclaration(member) ||
+              (ts.isPropertyAssignment(member) &&
+                (ts.isIdentifier(member.initializer) ||
+                  ts.isPropertyAccessExpression(member.initializer) ||
+                  functionLike(member.initializer))),
+          )
+            ? local.initializer.properties
+            : undefined;
+        if (property)
+          enter(property.declarations ?? [], node.parent, node.expression);
+        else if (members)
+          enter(members as readonly ts.Declaration[], node.parent, undefined);
+        else if (
+          checker
+            .getTypeAtLocation(node)
+            .getCallSignatures()
+            .some((signature) => {
+              const source = signature.getDeclaration()?.getSourceFile();
+              return source ? own(source) : false;
+            })
+        ) {
+          const where = label(node);
+          summary.unresolved.push(`${where.file} [<dynamic key>]()`);
+        }
+      }
       if (ts.isIdentifier(node)) follow(node);
       ts.forEachChild(node, visit);
     };
@@ -911,6 +1052,7 @@ export function createRowLockAudit(
   function reach(
     start: State,
     onState: (state: State, summary: Summary, from: State | null) => void,
+    stop: (state: State) => boolean = () => false,
   ) {
     const seen = new Set([start.key]);
     const queue: [State, State | null][] = [[start, null]];
@@ -921,7 +1063,7 @@ export function createRowLockAudit(
       for (const callee of summary.callees)
         if (!seen.has(callee.key)) {
           seen.add(callee.key);
-          queue.push([callee, state]);
+          if (!stop(callee)) queue.push([callee, state]);
         }
     }
   }
@@ -976,30 +1118,47 @@ export function createRowLockAudit(
   function routeLocks(
     methods: readonly RouteMethod[],
     only?: string,
+    barriers: readonly RouteBarrier[] = [],
   ): RouteLockReport {
     const entries = routeEntries(methods, only);
     const reached = new Map<string, { routes: Set<string>; chain: string[] }>();
     const unresolved = new Set<string>();
+    const stopped = new Set<string>();
     for (const { route, state } of entries) {
       const parents = new Map<string, State | null>();
-      reach(state, (current, summary, from) => {
-        parents.set(current.key, from);
-        for (const item of summary.unresolved) unresolved.add(item);
-        for (const key of summary.locks) {
-          let entry = reached.get(key);
-          if (!entry) {
-            const chain: string[] = [];
-            for (
-              let cursor: State | null | undefined = current;
-              cursor;
-              cursor = parents.get(cursor.key)
-            )
-              chain.unshift(describe(cursor));
-            reached.set(key, (entry = { routes: new Set(), chain }));
+      const path = route.slice(0, route.lastIndexOf(' '));
+      const stops = barriers.filter((barrier) => barrier.route === path);
+      const stop = (callee: State) => {
+        const where = label(callee.node);
+        const hit = stops.find(
+          (barrier) =>
+            barrier.file === where.file && barrier.owner === where.name,
+        );
+        if (hit) stopped.add(`${hit.route} ${hit.file} ${hit.owner}`);
+        return Boolean(hit);
+      };
+      reach(
+        state,
+        (current, summary, from) => {
+          parents.set(current.key, from);
+          for (const item of summary.unresolved) unresolved.add(item);
+          for (const key of summary.locks) {
+            let entry = reached.get(key);
+            if (!entry) {
+              const chain: string[] = [];
+              for (
+                let cursor: State | null | undefined = current;
+                cursor;
+                cursor = parents.get(cursor.key)
+              )
+                chain.unshift(describe(cursor));
+              reached.set(key, (entry = { routes: new Set(), chain }));
+            }
+            entry.routes.add(route);
           }
-          entry.routes.add(route);
-        }
-      });
+        },
+        stop,
+      );
     }
     return {
       entries: entries.length,
@@ -1011,13 +1170,15 @@ export function createRowLockAudit(
         }))
         .sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line),
       unresolved: [...unresolved].sort(),
+      stopped: [...stopped].sort(),
     };
   }
 
-  /** Every row-lock clause in the scanned sources, classified by its transactions. */
-  function inventory(): InventorySite[] {
+  /** Every row-lock clause in the scanned sources, classified by its
+   * transactions; `barriers` are the gate's reviewed writing calls. */
+  function inventory(barriers: readonly RouteBarrier[] = []): InventorySite[] {
     const get = new Map(
-      routeLocks(['GET']).reached.map((site) => [
+      routeLocks(['GET'], undefined, barriers).reached.map((site) => [
         `${site.file}:${site.line}:${site.clause}`,
         site.routes.length,
       ]),
@@ -1112,8 +1273,11 @@ if (
   const audit = createRowLockAudit(process.cwd(), {
     inventory: inventoryMode,
   });
+  // Same barriers as the gate unless `--raw` asks for every reachable lock.
+  const { writingGetCalls } = await import('./row-lock-audit.allowlist.ts');
+  const barriers = process.argv.includes('--raw') ? [] : writingGetCalls;
   if (inventoryMode) {
-    console.log(JSON.stringify(audit.inventory(), null, 2));
+    console.log(JSON.stringify(audit.inventory(barriers), null, 2));
   } else {
     const methods = (
       process.argv[2]?.startsWith('--')
@@ -1123,7 +1287,7 @@ if (
     const only = process.argv.includes('--route')
       ? process.argv[process.argv.indexOf('--route') + 1]
       : undefined;
-    const report = audit.routeLocks(methods, only);
+    const report = audit.routeLocks(methods, only, barriers);
     if (process.argv.includes('--json'))
       console.log(JSON.stringify(report, null, 2));
     else {

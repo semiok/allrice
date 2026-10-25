@@ -413,7 +413,7 @@ export async function isPlatformQualityJobAuthorized(
     return true;
   if (hasRepairMarker(job)) return isPlatformRepairJobAuthorized(tx, job, lock);
   if (hasRepositoryReviewMarker(job))
-    return isRepositoryReviewJobAuthorized(tx, job);
+    return isRepositoryReviewJobAuthorized(tx, job, lock);
   if (!(await qualitySchemaAvailable(tx))) return !hasQualityMarker(job);
   // Detect reservation independently of the current identity/authority join.
   // Renaming, archiving or revocation must not turn a reserved assignment into

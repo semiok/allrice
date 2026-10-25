@@ -2133,8 +2133,9 @@ export function createRuntimeOperationLedger(options: {
         // Intention only; no operation or process is declared stopped here.
         return cancelLocked(tx, root, requestId, 'user_request');
       };
-      // Keep current membership authorization and cancellation atomic without
-      // borrowing a second pool connection from a caller's transaction.
+      // Join the caller's transaction when given (its authorization reads and
+      // this cancellation commit together) instead of borrowing a second pool
+      // connection.
       return transaction ? apply(transaction) : db.begin(apply);
     },
 

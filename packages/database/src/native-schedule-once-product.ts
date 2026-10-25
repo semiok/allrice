@@ -461,10 +461,12 @@ export async function listOnceTasks(
     const [partition] = await tx<
       { activation: NativeOnceReadiness }[]
     >`select activation from allrice_native_once_partitions where partition_id='allrice-once-v1'`;
-    const settings = await readWorkAutomation(tx, {
-      ...scope,
-      userId: scope.ownerId,
-    });
+    // Display only; the advisory lock is what job admission waits on.
+    const settings = await readWorkAutomation(
+      tx,
+      { ...scope, userId: scope.ownerId },
+      false,
+    );
     const [ordinary] = await tx`select a.id from allrice_employee_assignments a
       join allrice_employees e on e.id=a.employee_id and e.organization_id=a.organization_id and e.workspace_id=a.workspace_id
       join allrice_employee_instances i on i.assignment_id=a.id and i.id=${target.employee_instance_id} and i.owner_id=a.user_id and i.archived_at is null

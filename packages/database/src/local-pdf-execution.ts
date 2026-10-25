@@ -849,6 +849,9 @@ export async function localPdfTransferAuthority(
     },
     objectId,
     db,
+    // Autocommit reads after the lease renewal: a row lock would end with
+    // its own statement and fence nothing (MET-210 #4).
+    false,
   );
   const context: RequestContext = {
     requestId: randomUUID(),

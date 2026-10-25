@@ -1,3 +1,4 @@
+import { scheduleReadPathQuery } from './read-path-races.fixture.ts';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -61,29 +62,6 @@ vi.mock('./core/client.ts', async (original) => ({
   getDatabase: () => db,
 }));
 const schema = `p22_browser_${randomUUID().replaceAll('-', '')}`;
-
-/** Read-path flags write lock clauses as nested ``${lock ? tx`for update` : tx``}``
- * fragments (MET-210 #4). Pass a fragment through untouched and match on the
- * statement text it composes into. */
-function lockFragment(strings: readonly string[]) {
-  return /^\s*(?:for\s|$)/i.test(strings.join('?'));
-}
-function composedSql(args: unknown[]) {
-  const [strings, ...values] = args as [readonly string[], ...unknown[]];
-  return strings
-    .map((part, index) => {
-      const value = values[index];
-      const nested =
-        value &&
-        typeof value === 'object' &&
-        Array.isArray((value as { strings?: unknown }).strings)
-          ? (value as { strings: string[] }).strings.join('?')
-          : '?';
-      return index < values.length ? part + nested : part;
-    })
-    .join('');
-}
-
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -582,23 +560,29 @@ suite('P22 real PostgreSQL device browser authority', () => {
                 new Proxy(tx, {
                   apply(query, thisArg, args: unknown[]) {
                     const fragments = args[0];
-                    const sql =
-                      Array.isArray(fragments) && !lockFragment(fragments)
-                        ? composedSql(args)
-                        : '';
-                    // Observe real SQL, never replace results. On the old code the
-                    // INSERT takes an implicit operation KEY SHARE after browser;
-                    // on the fixed code the root gate is requested before browser.
-                    if (
-                      (sql.includes('from allrice_runtime_roots') &&
-                        sql.includes('for update')) ||
-                      sql.includes(
-                        'insert into allrice_local_browser_operation_io',
-                      ) ||
-                      sql.includes('insert into allrice_local_browser_captures')
-                    )
-                      blocked();
-                    return Reflect.apply(query, thisArg, args);
+                    const sql = Array.isArray(fragments)
+                      ? fragments.join('?')
+                      : '';
+                    return scheduleReadPathQuery(
+                      Reflect.apply(query, thisArg, args),
+                      sql,
+                      async (statement, execute) => {
+                        // Conditional clauses remain nested SQL fragments. Signal
+                        // the actual root request before it waits on heartbeat.
+                        if (
+                          (statement.includes('from allrice_runtime_roots') &&
+                            statement.includes('for update')) ||
+                          statement.includes(
+                            'insert into allrice_local_browser_operation_io',
+                          ) ||
+                          statement.includes(
+                            'insert into allrice_local_browser_captures',
+                          )
+                        )
+                          blocked();
+                        return execute();
+                      },
+                    );
                   },
                 }),
               ),

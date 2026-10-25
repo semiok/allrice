@@ -1,3 +1,6 @@
+import { createReadPathProbe } from '../../../../packages/database/src/read-path-probe.fixture.ts';
+import { expectReadPathRowLocked } from '../../../../packages/database/src/read-path-races.fixture.ts';
+import { getPlatformRepositoryCredential } from '../../../../packages/database/src/platform-repository-credentials.ts';
 /** Real isolated PostgreSQL/native protocol/storage, with synthetic CI records.
  * No provider, GitHub, physical command, deployment or paid model is called. */
 import { randomUUID } from 'node:crypto';
@@ -60,6 +63,7 @@ import { repositoryMergeRequestGate } from '../../../../packages/database/src/pl
 import { readCompletedRepositoryReview } from '../../../../packages/database/src/platform-repository-completed-review.ts';
 import {
   createPlatformRepositoryMerge,
+  cancelPlatformRepositoryMerge,
   getPlatformRepositoryMerge,
   getPlatformRepositoryMergePanel,
   startRepositoryMergeEffect,
@@ -659,6 +663,89 @@ suite(
         counts: () => ({ mergeWrites, readyWrites }),
       };
     }
+    it('MET-210 populated repository review/merge panels and configured credential take no row locks', async () => {
+      const s = await completedReview();
+      for (const kind of ['review', 'merge', 'credential'] as const) {
+        const probe = createReadPathProbe(f.db);
+        vi.spyOn(client, 'getDatabase').mockReturnValue(probe.db);
+        try {
+          if (kind === 'review') {
+            const panel = await getPlatformRepositoryReviewPanel(
+              s.admin,
+              s.data.publication.id,
+              1,
+            );
+            expect(panel.reviews.some((r) => r.id === s.review.id)).toBe(true);
+            expect(panel.subjectDigest).toBeTypeOf('string');
+          } else if (kind === 'merge') {
+            const panel = await getPlatformRepositoryMergePanel(
+              s.admin,
+              s.data.publication.id,
+              1,
+            );
+            expect(panel.reviewSubjectId).toBe(s.review.id);
+            expect(panel.subjectDigest).toBeTypeOf('string');
+          } else {
+            const credential = await probe.db.begin((tx) =>
+              getPlatformRepositoryCredential(s.admin, tx),
+            );
+            expect(credential).toMatchObject({
+              revision: 1,
+              state: 'configured',
+            });
+          }
+          probe.expectNoRowLocks();
+        } finally {
+          vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
+        }
+      }
+    }, 30_000);
+    it('MET-210 merge creation still locks the current login and publication against revocation', async () => {
+      const s = await completedReview();
+      let checked = false;
+      const probe = createReadPathProbe(f.db, {
+        beforeCommit: async (_tx, index) => {
+          // Context discovery can also open a read transaction. Check the actual
+          // merge write, identified by its assigned PostgreSQL transaction id.
+          const [row] = await _tx<
+            { xid: string | null }[]
+          >`select pg_current_xact_id_if_assigned()::text as xid`;
+          if (!row!.xid || checked) return;
+          await expectReadPathRowLocked(
+            f.db,
+            'allrice_sessions',
+            s.admin.sessionId!,
+          );
+          await expectReadPathRowLocked(
+            f.db,
+            'allrice_platform_repository_publications',
+            s.data.publication.id,
+          );
+          checked = true;
+          expect(index).toBeGreaterThanOrEqual(0);
+        },
+      });
+      let created:
+        Awaited<ReturnType<typeof createPlatformRepositoryMerge>> | undefined;
+      vi.spyOn(client, 'getDatabase').mockReturnValue(probe.db);
+      try {
+        created = await createPlatformRepositoryMerge(s.admin, mergeRequest(s));
+      } finally {
+        vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
+        if (created)
+          await cancelPlatformRepositoryMerge(
+            s.admin,
+            created.id,
+            created.actions[0]!.id,
+          );
+      }
+      expect(checked).toBe(true);
+      // Cancellation is requested here and settled by the Worker; a job with
+      // the request recorded is never claimed by the next case.
+      expect(
+        await f.db`select id from allrice_jobs where run_id=${created!.actions[0]!.runId} and status in ('queued','claimed','running') and cancel_requested_at is null`,
+      ).toHaveLength(0);
+    }, 30_000);
     it('consumes a completed expired review, binds one concurrent request and confirms exact main merge without claiming Dev', async () => {
       const s = await completedReview();
       const proof = await f.db.begin((tx) =>

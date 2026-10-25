@@ -156,11 +156,12 @@ export async function validateFolderTriggerConfiguration(
     authority(sql, scope, folder, UuidSchema.parse(assignmentId));
   return tx ? verify(tx) : getDatabase().begin(verify);
 }
-async function readEvent(tx: TransactionSql, id: string) {
+async function readEvent(tx: TransactionSql, id: string, lock = true) {
   const [row] = await tx<
     EventRow[]
   >`select e.*,a.name,a.prompt,a.employee_assignment_id,a.folder,a.revision as current_revision,a.status,a.deleted_at
-    from allrice_automation_folder_events e join allrice_automations a on a.id=e.automation_id where e.id=${UuidSchema.parse(id)} for share of e,a`;
+    from allrice_automation_folder_events e join allrice_automations a on a.id=e.automation_id where e.id=${UuidSchema.parse(id)}
+    ${lock ? tx`for share of e,a` : tx``}`;
   if (!row) throw new DataAccessError('not_found');
   return row;
 }
@@ -168,8 +169,9 @@ export async function assertFolderTriggerEventAuthority(
   tx: TransactionSql,
   id: string,
   scope?: Scope,
+  lock = true,
 ) {
-  const row = await readEvent(tx, id),
+  const row = await readEvent(tx, id, lock),
     folder = FolderTriggerConfigSchema.parse(row.folder);
   if (
     row.status !== 'enabled' ||
@@ -194,6 +196,7 @@ export async function assertFolderTriggerEventAuthority(
     folder,
     row.employee_assignment_id,
     true,
+    lock,
   );
   return { row, context, folder };
 }

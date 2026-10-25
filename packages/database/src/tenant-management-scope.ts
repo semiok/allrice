@@ -68,6 +68,7 @@ export async function checkTenantManagement(
   sql: ManagementSql,
   options: TenantManagementOptions,
   scope: { organizationId: string; workspaceId: string; actorId: string },
+  lock = true,
 ) {
   if (
     scope.organizationId !== options.organizationId ||
@@ -84,11 +85,11 @@ export async function checkTenantManagement(
     const expected = options.expectedConnection;
     const [row] =
       await sql`select binding_id from allrice_mcp_binding_config where binding_id=${UuidSchema.parse(expected.id)}
-      and organization_id=${target.organizationId} and workspace_id=${target.workspaceId} and revision=${expected.revision} for update`;
+      and organization_id=${target.organizationId} and workspace_id=${target.workspaceId} and revision=${expected.revision} ${lock ? sql`for update` : sql``}`;
     if (!row) throw new McpError('MCP_BINDING_CHANGED');
     if (expected.toolRevisionId) {
       const [tool] =
-        await sql`select revision_id from allrice_mcp_tool_grants where binding_id=${expected.id} and revision_id=${expected.toolRevisionId} and grant_revision=${expected.toolGrantRevision ?? -1} for update`;
+        await sql`select revision_id from allrice_mcp_tool_grants where binding_id=${expected.id} and revision_id=${expected.toolRevisionId} and grant_revision=${expected.toolGrantRevision ?? -1} ${lock ? sql`for update` : sql``}`;
       if (!tool) throw new McpError('MCP_BINDING_CHANGED');
     }
   }

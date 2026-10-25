@@ -1,3 +1,8 @@
+import { createReadPathProbe } from '../read-path-probe.fixture.ts';
+import {
+  expectReadPathRowLocked,
+  readWriteOverlap,
+} from '../read-path-races.fixture.ts';
 /** Actual PostgreSQL and temporary LocalStorage; every person, company, file
  * and publication input is synthetic. No provider, Dev account or real media
  * publishing is involved. Execute only with the existing dedicated DB gate. */
@@ -808,6 +813,99 @@ suite(
       instance: Awaited<ReturnType<typeof createEmployeeInstance>>;
       session: Awaited<ReturnType<typeof createChatSession>>;
     };
+    it('MET-210 populated brand list and board take no row locks, including source files and bundles', async () => {
+      const source = await seedUpload(a, [40, 80, 120]);
+      const { brand } = await prepareDraft(a, 'read-lock probe', [source]);
+      for (const kind of ['brands', 'board'] as const) {
+        const probe = createReadPathProbe(fixture.db);
+        vi.spyOn(client, 'getDatabase').mockReturnValue(probe.db);
+        try {
+          if (kind === 'brands') {
+            const value = await listBrandContentBrands(a.context, a.scope, {
+              db: probe.db,
+            });
+            expect(value.brands.some((b) => b.id === brand.brandId)).toBe(true);
+          } else {
+            const value = await getBrandContentBoard(
+              a.context,
+              { ...a.scope, brandId: brand.brandId },
+              { db: probe.db },
+            );
+            expect(value.contexts[0]!.content.sourceFiles).toHaveLength(1);
+            expect(value.bundles).toHaveLength(1);
+            expect(value.articles).toHaveLength(1);
+          }
+          probe.expectNoRowLocks();
+        } finally {
+          vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
+        }
+      }
+    }, 30_000);
+    it('MET-210 brand mutation retains identity, instance and brand locks', async () => {
+      const brand = await prepareBrand(a, 'write-lock probe');
+      let checked = false;
+      await mutateBrandContent(
+        a.context,
+        {
+          ...a.scope,
+          brandId: brand.brandId,
+          operation: 'topics.propose',
+          requestId: freshKey('write-lock'),
+          contextRevisionId: brand.contextRevisionId,
+          platform: '小红书',
+          candidates: [candidate()],
+        },
+        {
+          db: fixture.db,
+          beforeCommit: async () => {
+            await expectReadPathRowLocked(fixture.db, 'allrice_users', a.user);
+            await expectReadPathRowLocked(
+              fixture.db,
+              'allrice_employee_instances',
+              a.instance.id,
+            );
+            await expectReadPathRowLocked(
+              fixture.db,
+              'allrice_brand_content_brands',
+              brand.brandId,
+            );
+            checked = true;
+          },
+        },
+      );
+      expect(checked).toBe(true);
+    });
+    it.each(['reader first', 'writer first'] as const)(
+      'MET-210 brand board and mutation complete with %s',
+      async (order) => {
+        const brand = await prepareBrand(a, `overlap ${order}`);
+        await readWriteOverlap(
+          fixture.db,
+          order,
+          (db) =>
+            getBrandContentBoard(
+              a.context,
+              { ...a.scope, brandId: brand.brandId },
+              { db },
+            ),
+          (db) =>
+            mutateBrandContent(
+              a.context,
+              {
+                ...a.scope,
+                brandId: brand.brandId,
+                operation: 'topics.propose',
+                requestId: freshKey('overlap'),
+                contextRevisionId: brand.contextRevisionId,
+                platform: '小红书',
+                candidates: [candidate()],
+              },
+              { db },
+            ),
+        );
+      },
+      30_000,
+    );
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
       // Ordinary business fixtures keep once disabled. Native delivery cases below
@@ -1421,6 +1519,48 @@ suite(
         ),
       ).rejects.toMatchObject({ code: 'version_conflict' });
       expect((await board(f)).topics[0]!.state).toBe('accepted');
+    });
+
+    it('reads the board from one snapshot when a decision commits between its batch and topic reads (MET-210 #4)', async () => {
+      const f = await prepareBrand(a, 'board-snapshot'),
+        batch = await propose(f),
+        topicId = batch.result.topicIds![0]!;
+      const pair = (view: BrandContentBoard) => [
+        view.batches.find((x) => x.id === batch.result.entityId)!.revision,
+        view.topics.find((x) => x.id === topicId)!.state,
+      ];
+      const before = pair(await board(f));
+      expect(before[0]).toBe(1);
+      expect(before[1]).not.toBe('accepted');
+      let release!: () => void, holding!: () => void;
+      const released = new Promise<void>((resolve) => (release = resolve));
+      const held = new Promise<void>((resolve) => (holding = resolve));
+      // Stands in for topics.decide: one transaction moves the batch revision
+      // and the topic state together. Its table lock parks the board after it
+      // read batches and before it reads topics; the board holds no row lock
+      // that would keep the decision out of that gap.
+      const decision = fixture.db.begin(async (tx) => {
+        await tx`lock table allrice_brand_content_topics in access exclusive mode`;
+        holding();
+        await released;
+        await tx`update allrice_brand_content_batches set revision=revision+1 where id=${batch.result.entityId}`;
+        await tx`update allrice_brand_content_topics set state='accepted',revision=revision+1 where id=${topicId}`;
+      });
+      await held;
+      const reading = board(f);
+      for (let waited = 0; ; waited += 20) {
+        const [parked] = await fixture.db<
+          { n: number }[]
+        >`select count(*)::int n from pg_locks where relation='allrice_brand_content_topics'::regclass and not granted`;
+        if (parked!.n) break;
+        if (waited > 10_000)
+          throw new Error('board never reached the topic read');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      release();
+      await decision;
+      expect(pair(await reading)).toEqual(before);
+      expect(pair(await board(f))).toEqual([2, 'accepted']);
     });
 
     it('checks actual storage checksums, exact native parents, and cross-instance/tenant file ownership before changing a draft', async () => {

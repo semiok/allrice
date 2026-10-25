@@ -1,3 +1,4 @@
+import { createReadPathProbe } from '../read-path-probe.fixture.ts';
 import { sharedHistoryMethodAcceptancePhrases } from './employee-method-shared-history.fixture.ts';
 import { bindJobNativeSession } from '../execution/queue.ts';
 import { nativeBindingDescriptor } from '../native-session-binding.fixture.ts';
@@ -1154,6 +1155,20 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     await run.finish();
     return { ...base, saved, args, run, test, coverage };
   }
+
+  it('MET-210 populated employee method test GET commits without a transaction id', async () => {
+    const x = await retryFixture();
+    const probe = createReadPathProbe(fixture.db);
+    vi.spyOn(client, 'getDatabase').mockReturnValue(probe.db);
+    try {
+      const result = await getEmployeeMethodTest(x.f.a.context, x.test.id);
+      expect(result.id).toBe(x.test.id);
+      expect(result.status).toBe('queued');
+      probe.expectNoRowLocks();
+    } finally {
+      vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
+    }
+  });
 
   it.each(['passed', 'mismatch', 'execution_failed'] as const)(
     'method test result stays coherent when %s finalization commits during its read',

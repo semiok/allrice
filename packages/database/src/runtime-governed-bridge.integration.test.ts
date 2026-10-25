@@ -1,3 +1,4 @@
+import { createReadPathProbe } from './read-path-probe.fixture.ts';
 import { authorizeFixturePlatformAdministrator } from './platform-authority.fixture.ts';
 import { updateWorkAutomation } from './work-automation.ts';
 import { createHash, randomUUID } from 'node:crypto';
@@ -2065,15 +2066,19 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
           },
           { timeout: 10000, interval: 100 },
         );
+        const readProbe = createReadPathProbe(database);
         const item = (
-          await listChangesetRuns(f.context, f.sessionId, a.id, database)
+          await listChangesetRuns(f.context, f.sessionId, a.id, readProbe.db)
         ).find((x) => x.runId === sent.run.id)!;
+        readProbe.expectNoRowLocks();
         expect(item.approval?.response).toBeNull();
+        const interactionProbe = createReadPathProbe(database);
         const projected = await getInteractionStatus(
           f.context,
           f.sessionId,
-          database,
+          interactionProbe.db,
         );
+        interactionProbe.expectNoRowLocks();
         expect(
           projected.inputs.find((x) => x.runId === sent.run.id),
         ).toMatchObject({ kind: 'changeset_request', artifactId: a.id });

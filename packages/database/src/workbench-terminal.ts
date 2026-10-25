@@ -39,9 +39,11 @@ export async function resolveWorkbenchTerminalTarget(
   )
     throw new DataAccessError('authorization_denied');
   const principal = { ...context, workspaceId };
+  // A check only: the stream re-validates through the device, so nothing in
+  // this transaction needs row locks (MET-210 #4).
   return db.begin(async (tx) => {
     try {
-      await assertWorkbenchSession(tx, principal, sessionId, false, 'share');
+      await assertWorkbenchSession(tx, principal, sessionId, false, false);
     } catch (error) {
       if (
         error instanceof ArtifactReviewError &&

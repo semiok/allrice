@@ -131,11 +131,17 @@ async function manage(
   ownerId: string,
   writable: boolean,
 ) {
-  const settings = await readWorkAutomation(tx, {
-    organizationId: context.organizationId,
-    workspaceId: context.workspaceId!,
-    userId: ownerId,
-  });
+  // Catalog reads only display capabilities; the work-automation advisory
+  // lock is what scheduled-job admission waits on (MET-210 #4).
+  const settings = await readWorkAutomation(
+    tx,
+    {
+      organizationId: context.organizationId,
+      workspaceId: context.workspaceId!,
+      userId: ownerId,
+    },
+    false,
+  );
   const [partition] = await tx<
     { activation: NativeOnceReadiness }[]
   >`select activation from allrice_native_once_partitions where partition_id='allrice-recurring-v1'`;

@@ -81,7 +81,20 @@ export async function getBrandContentBoard(
 ): Promise<BrandContentBoard> {
   const input = BrandContentReadSchema.parse(raw),
     db = options.db ?? getDatabase();
-  return employeeAccessTransaction(db, async (tx) => {
+  // The board spans many statements. Without a commit fence (Worker tools pass
+  // beforeCommit, which takes its own locks) they share one snapshot, so a
+  // decision committing midway cannot pair an old batch with a new topic.
+  const transaction = (
+    run: Parameters<typeof employeeAccessTransaction<BrandContentBoard>>[1],
+  ) =>
+    employeeAccessTransaction(
+      db,
+      run,
+      options.beforeCommit
+        ? {}
+        : { mode: 'isolation level repeatable read read only' },
+    );
+  return transaction(async (tx) => {
     const scope = await requireBrandContentScope(
       tx,
       context,
