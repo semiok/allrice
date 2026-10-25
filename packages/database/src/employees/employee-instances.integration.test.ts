@@ -1167,6 +1167,11 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       probe.expectNoRowLocks();
     } finally {
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
+      // Settle the queued test so the next case claims its own.
+      expect((await claimNextPlatformEmployeeTestRun(randomUUID()))?.id).toBe(
+        x.test.id,
+      );
+      await x.fail(x.test.id);
     }
   });
 
