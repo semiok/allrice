@@ -305,6 +305,9 @@ try {
     throw new Error('DSH native Skill schema metadata is missing or invalid');
   }
 
+  // The baseline records that the catalog started Rice-only. Companies are later given
+  // other employees (platform employees assigned to them, custom employees), so the
+  // current employee count is not part of this check.
   const employeeBaselineRows = await sql<
     { version: string | undefined; migration_mode: string | undefined }[]
   >`
@@ -312,11 +315,6 @@ try {
       value ->> 'migrationMode' as migration_mode
     from allrice_runtime_metadata
     where key = 'employee-catalog-baseline'
-  `;
-  const nonRiceEmployeeRows = await sql<{ count: string }[]>`
-    select count(*)::text as count
-    from allrice_employees
-    where employee_key <> 'default-assistant'
   `;
   const resetSkillRows = await sql<
     { tenant_skills: string; platform_skills: string }[]
@@ -340,7 +338,6 @@ try {
       (resetMigrationApplied ? '0049' : '0047') ||
       employeeBaselineRows[0]?.migration_mode !==
         (resetMigrationApplied ? 'platform-reset' : 'fresh-only') ||
-      nonRiceEmployeeRows[0]?.count !== '0' ||
       (resetMigrationApplied &&
         !foundationalSkillsApplied &&
         (resetSkillRows[0]?.tenant_skills !== '0' ||
