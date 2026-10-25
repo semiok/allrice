@@ -203,6 +203,21 @@ class Delivery(unittest.TestCase):
             monitor.send_telegram(r.cfg, 'hi')
         self.assertEqual(routes, [None, ''])
 
+    def test_every_message_carries_the_prefix(self):
+        r = make_round()
+        with open(r.cfg['telegramEnv'], 'w') as f:
+            f.write('TELEGRAM_BOT_TOKEN=1:t\nTELEGRAM_CHAT_ID=2\n')
+        sent = []
+
+        def via(proxy):
+            resp = mock.MagicMock()
+            resp.__enter__.return_value = io.BytesIO(b'{"ok": true}')
+            return mock.Mock(open=lambda url, data, timeout: sent.append(monitor.urllib.parse.parse_qs(data.decode())) or resp)
+
+        with mock.patch.object(monitor, 'opener', side_effect=via):
+            monitor.send_telegram(r.cfg, '🔴 M1：1 项告警')
+        self.assertEqual(sent[0]['text'], ['【AllRice 告警】🔴 M1：1 项告警'])
+
     def test_psql_keeps_the_password_off_the_command_line(self):
         r = make_round()
         with mock.patch.object(monitor, 'run', return_value=(0, '1', '')) as run:
@@ -266,6 +281,24 @@ class RunChecks(unittest.TestCase):
         r = make_round(checks=['b'], skipChecks=[])
         findings, _ = monitor.run_checks(r, [('a', lambda r: [bad('a')], False, None), ('b', lambda r: [ok('b')], False, None)])
         self.assertEqual([f['key'] for f in findings], ['check:b', 'b'])
+
+
+class Worker(unittest.TestCase):
+    def test_blocked_schedule_controller_asks_for_a_restart(self):
+        r = make_round()
+        body = json.dumps({'status': 'not_ready', 'detail': 'native_once_blocked',
+                           'nativeOnceControl': {'state': 'blocked', 'lastFault': {'phase': 'shutdown', 'code': 'shutdown_failed'}}}).encode()
+        with mock.patch.object(monitor, 'http_get', return_value=(503, body)), mock.patch.object(monitor, 'job_info', return_value=('running', 1, None)), \
+                mock.patch.object(monitor, 'lock_holders', return_value=[]):
+            f = monitor.check_worker(r)[0]
+        self.assertEqual((f['severity'], f['title']), ('critical', 'Worker 定时控制器卡住，要重启 Worker'))
+        self.assertIn('shutdown_failed', f['detail'])
+        self.assertIn('kickstart -k', f['step'])
+        with mock.patch.object(monitor, 'http_get', return_value=(503, json.dumps({'status': 'not_ready', 'detail': 'database_unavailable'}).encode())), \
+                mock.patch.object(monitor, 'job_info', return_value=('running', 1, None)), mock.patch.object(monitor, 'lock_holders', return_value=[]):
+            f = monitor.check_worker(r)[0]
+        self.assertEqual(f['title'], 'Worker 不可用')
+        self.assertIn('detail=database_unavailable', f['detail'])
 
 
 class Deploys(unittest.TestCase):
@@ -384,6 +417,8 @@ class Config(unittest.TestCase):
         self.assertEqual(cfg['repeatMinutes'], {'critical': 60, 'warning': 30})
         self.assertEqual(cfg['telegramEnv'], os.path.join(tmp, 'telegram.env'))
         self.assertEqual(cfg['label'], '演练')
+        peer = monitor.load_config(path, True)
+        self.assertEqual(peer['telegramEnv'], os.path.expanduser('~/.config/allrice-monitor/telegram.env'))
 
 
 if __name__ == '__main__':

@@ -43,6 +43,7 @@ WORD = {'warning': '警告', 'critical': '严重'}
 COMMON = {
     'label': '',  # e.g. "演练": shown in front of every message
     'telegramEnv': None,  # default <stateDir>/telegram.env (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
+    'messagePrefix': '【AllRice 告警】',  # the alert bot also carries a conversation: every message says what it is
     'telegramProxy': None,  # None: system proxy settings; "": direct; or a proxy URL
     'repeatMinutes': {'critical': 60, 'warning': 360},
     'flapLimit': 3,
@@ -89,6 +90,7 @@ PEER = dict(
     COMMON,
     name='AllRice 看门（huihuimac）',
     stateDir='~/.local/state/allrice-monitor-peer',
+    telegramEnv='~/.config/allrice-monitor/telegram.env',
     m1Ssh='m1',
     m1Heartbeat='allrice-dev/monitor/heartbeat.json',
     m1DeployLock='allrice-dev/.local/deploy.lock',
@@ -510,6 +512,7 @@ def send_telegram(cfg, text):
     token, chat = telegram_secrets(cfg)
     if not token or not chat:
         raise CheckError('Telegram is not configured (%s)' % cfg['telegramEnv'])
+    text = (cfg.get('messagePrefix') or '') + text
     data = urllib.parse.urlencode({'chat_id': chat, 'text': text[:4090], 'disable_web_page_preview': 'true'}).encode()
     routes = [cfg['telegramProxy']] + ([''] if cfg['telegramProxy'] is None else [])
     for proxy in routes:
@@ -570,16 +573,22 @@ def job_info(label):
 
 
 def ready(url, timeout=8):
+    """(document when ready, why not, the document anyway when it answered with one)."""
     code, body = http_get(url, timeout)
-    if code != 200:
-        return None, 'HTTP %s %s' % (code, short(body, 120)) if code else short(body, 160)
     try:
-        doc = json.loads(body)
+        doc = json.loads(body) if code else None
     except ValueError:
-        return None, 'not JSON'
-    if doc.get('status') != 'ready':
-        return None, 'status=%s' % doc.get('status')
-    return doc, ''
+        doc = None
+    if not isinstance(doc, dict):
+        doc = None
+    if code != 200 or not doc or doc.get('status') != 'ready':
+        why = 'HTTP %s' % code if code else short(body, 160)
+        if doc and doc.get('detail'):
+            why += ' detail=%s' % doc['detail']
+        elif code and not doc:
+            why += ' ' + short(body, 120)
+        return None, why, doc
+    return doc, '', doc
 
 
 def lock_holders(path):
@@ -627,7 +636,7 @@ def check_service(r, role):
     if not label or not base:
         return [finding(role, 'warning', title + '（读不到配置）', 'launchd 文件 %s 缺失或不完整' % r.cfg[role + 'Plist'], 'm1-worker-crash.md', step)]
     state, _, last = job_info(label)
-    doc, why = ready(base + path)
+    doc, why, answer = ready(base + path)
     if doc:
         r.facts[role] = doc
         return [finding(role, 'ok', title)]
@@ -635,6 +644,14 @@ def check_service(r, role):
                                               base, path, why)
     if last and last != '(never exited)':
         detail += '；上次退出码 %s' % last
+    stuck = (answer or {}).get('detail') or ''
+    if role == 'worker' and re.match(r'native_(once|recurring)_(blocked|restart_required)$', stuck):
+        # A schedule controller that hit an error (e.g. shutdown_failed while the database
+        # was briefly away) stays blocked until the Worker restarts (automatic recovery: MET-210 #3).
+        ctl = (answer or {}).get('nativeOnceControl' if 'once' in stuck else 'nativeRecurringControl') or {}
+        return [finding(role, 'critical', 'Worker 定时控制器卡住，要重启 Worker', detail + '；控制器 %s，lastFault %s' % (
+            ctl.get('state'), short(json.dumps(ctl.get('lastFault'), ensure_ascii=False), 160)), 'm1-worker-crash.md#定时控制器卡住',
+            '发布负责人：~/allrice-dev/bin/deploy-lock run worker-restart -- /bin/launchctl kickstart -k gui/$(id -u)/%s' % label)]
     return [finding(role, 'critical', title, detail, 'm1-worker-crash.md', step)]
 
 
