@@ -1,6 +1,6 @@
 import { distributionFacts } from './dsh-distribution-facts.mjs';
-import { access, readFile, readdir } from 'node:fs/promises';
-import { join, posix, relative, resolve } from 'node:path';
+import { readFile, readdir, stat } from 'node:fs/promises';
+import { isAbsolute, join, posix, relative, resolve } from 'node:path';
 import { parse } from 'yaml';
 import {
   readImporterManifests,
@@ -105,17 +105,23 @@ for (const patch of ledger.patches) {
     `missing or duplicate ledger ID ${patch.id}`,
   );
   ledgerIds.add(patch.id);
-  const path = posix.normalize(String(patch.path ?? ''));
+  const path = String(patch.path ?? '');
+  const inRepository =
+    path !== '' &&
+    !isAbsolute(path) &&
+    posix.normalize(path) === path &&
+    !path.startsWith('../') &&
+    !path.startsWith('patches/') &&
+    !path.split('/').includes('node_modules');
   assert(
     patch.upstreamVersion === installed.version &&
       patch.kind === 'protocol-extension' &&
-      !path.startsWith('patches/') &&
-      !path.startsWith('../') &&
-      (await access(resolve(root, path)).then(
-        () => true,
+      inRepository &&
+      (await stat(resolve(root, path)).then(
+        (entry) => entry.isFile(),
         () => false,
       )),
-    `ledger entry ${patch.id} must be an extension of the installed DSH in an existing AllRice file`,
+    `ledger entry ${patch.id} must be an extension of the installed DSH in an AllRice source file`,
   );
   assert(
     reuseDecisions.includes(`\`${patch.id}\``),
@@ -159,8 +165,9 @@ assert(
 
 // Private DSH subpaths are exceptions to the public-seam rule. Every one that
 // production code imports is listed with its owner, and nothing listed is stale.
+// Matches static and dynamic imports, re-exports and require/require.resolve.
 const privateImport =
-  /['"](@deepseek-ai\/dsh[a-z0-9-]*\/(?:internal|lib|src|dist)(?:\/[^'"]*)?)['"]/g;
+  /(?:\bfrom|\bimport|\brequire(?:\.resolve)?)\s*\(?\s*(['"`])(@deepseek-ai\/dsh[a-z0-9-]*\/(?:internal|lib|src|dist)(?:\/[^'"`]*)?)\1/g;
 async function* productionSources(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
@@ -172,8 +179,8 @@ async function* productionSources(directory) {
       )
         yield* productionSources(path);
     } else if (
-      /\.(?:[cm]?js|tsx?|mts)$/.test(entry.name) &&
-      !/\.test\./.test(entry.name)
+      /\.(?:[cm]?js|[cm]?ts|tsx)$/.test(entry.name) &&
+      !/\.(?:test|spec)\./.test(entry.name)
     )
       yield path;
   }
@@ -182,7 +189,7 @@ const importedPrivate = new Map();
 for (const top of ['apps', 'packages', 'scripts'])
   for await (const file of productionSources(resolve(root, top)))
     for (const match of (await readFile(file, 'utf8')).matchAll(privateImport))
-      importedPrivate.set(`${match[1]} ${relative(root, file)}`, match[1]);
+      importedPrivate.set(`${match[2]} ${relative(root, file)}`, match[2]);
 const declaredPrivate = new Set(
   (compatibility.privateInterfaces ?? []).map((entry) => {
     assert(

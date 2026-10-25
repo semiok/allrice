@@ -128,6 +128,34 @@ describe('DSH single generation', () => {
       'lockfile resolves @deepseek-ai/dsh@https://',
     ],
     [
+      'a package entry whose own version differs from its key',
+      (f) =>
+        (f.lock.packages[`@deepseek-ai/dsh-session@${version}`] = {
+          version: '0.1.5-rc.3',
+        }),
+      `lockfile resolves @deepseek-ai/dsh-session@${version}`,
+    ],
+    [
+      'a package entry fetched from an older tarball',
+      (f) =>
+        (f.lock.packages[`@deepseek-ai/dsh-session@${version}`] = {
+          resolution: {
+            tarball:
+              'https://registry.npmjs.org/@deepseek-ai/dsh-session/-/dsh-session-0.1.5-rc.3.tgz',
+          },
+        }),
+      `lockfile resolves @deepseek-ai/dsh-session@${version}`,
+    ],
+    [
+      'a workspace package published under a DSH name',
+      (f) =>
+        (f.manifests['packages/legacy-session'] = {
+          name: '@deepseek-ai/dsh-session',
+          version: '0.1.5-rc.3',
+        }),
+      'packages/legacy-session is a workspace package named @deepseek-ai/dsh-session',
+    ],
+    [
       'an older generation only in a snapshot key',
       (f) =>
         (f.lock.snapshots[
@@ -245,6 +273,35 @@ describe('DSH single generation', () => {
     const f = await fixture();
     mutate(f);
     await expect(verifyDshSingleGeneration(f)).rejects.toThrow(message);
+  });
+
+  it('accepts a non-DSH alias in the same scope and lockfile comments', async () => {
+    const f = await fixture();
+    f.manifests['apps/worker'].dependencies.shader =
+      'npm:@deepseek-ai/dshader-helper@1.0.0';
+    f.lockText = `# was @deepseek-ai/dsh-session@0.1.5-rc.3\n${f.lockText}`;
+    await expect(verifyDshSingleGeneration(f)).resolves.toMatchObject({
+      dshVersion: version,
+    });
+  });
+
+  it('rejects a local link to a DSH package under another name', async () => {
+    const f = await fixture();
+    await mkdir(join(f.root, 'vendor/old-session'), { recursive: true });
+    await writeFile(
+      join(f.root, 'vendor/old-session/package.json'),
+      JSON.stringify({
+        name: '@deepseek-ai/dsh-session',
+        version: '0.1.5-rc.3',
+      }),
+    );
+    f.lock.importers['apps/worker'].dependencies['old-session'] = {
+      specifier: 'link:../../vendor/old-session',
+      version: 'link:../../vendor/old-session',
+    };
+    await expect(verifyDshSingleGeneration(f)).rejects.toThrow(
+      'apps/worker links old-session to @deepseek-ai/dsh-session',
+    );
   });
 
   it('reports every violation with the expected version', async () => {

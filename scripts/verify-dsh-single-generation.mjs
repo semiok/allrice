@@ -38,6 +38,23 @@ function resolved(name, value) {
     : target;
 }
 
+/** The package an npm alias (`npm:@scope/name@range`) installs, if any. */
+function aliasTarget(value) {
+  const text = String(value);
+  return text.startsWith('npm:') ? reference(text.slice(4)).name : null;
+}
+
+async function packageName(directory) {
+  try {
+    return JSON.parse(
+      await readFile(resolve(directory, 'package.json'), 'utf8'),
+    ).name;
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
 async function patchFiles(root) {
   try {
     return (await readdir(resolve(root, 'patches'))).filter((name) =>
@@ -83,17 +100,28 @@ export async function verifyDshSingleGeneration({
     }
   };
 
-  // Any `@deepseek-ai/dsh…@version` written anywhere in the lockfile.
-  for (const match of String(lockText ?? '').matchAll(
+  // Any `@deepseek-ai/dsh…@version` written anywhere in the lockfile data.
+  const lockData = String(lockText ?? '')
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('#'))
+    .join('\n');
+  for (const match of lockData.matchAll(
     /@deepseek-ai\/dsh(?:-[a-z0-9-]+)?@([^\s'"():,>]+)/g,
   ))
     check(match[1] === version, `lockfile mentions ${match[0]}`);
 
   const packages = new Set();
-  for (const key of Object.keys(lock.packages ?? {})) {
+  for (const [key, info] of Object.entries(lock.packages ?? {})) {
     const entry = reference(key);
     if (!isDsh(entry.name)) continue;
-    check(entry.version === version, `lockfile resolves ${key}`);
+    // pnpm prefers an entry's own version and tarball over its key.
+    const tarball = info?.resolution?.tarball;
+    check(
+      entry.version === version &&
+        (info?.version === undefined || info.version === version) &&
+        (tarball === undefined || String(tarball).endsWith(`-${version}.tgz`)),
+      `lockfile resolves ${key}`,
+    );
     packages.add(entry.name);
   }
   check(packages.size > 0, 'lockfile resolves no DSH package');
@@ -111,6 +139,14 @@ export async function verifyDshSingleGeneration({
     for (const section of sections)
       for (const [name, info] of Object.entries(data?.[section] ?? {})) {
         const target = resolved(name, info.version);
+        // A local directory may hold a DSH package under another name.
+        const local = /^(?:link|file):/.exec(String(info.version));
+        if (local && !isDsh(name)) {
+          const linked = await packageName(
+            resolve(root, importer, String(info.version).slice(5)),
+          );
+          check(!isDsh(linked ?? ''), `${importer} links ${name} to ${linked}`);
+        }
         if (!isDsh(name) && !isDsh(target.name)) continue;
         check(
           info.specifier === version,
@@ -121,14 +157,19 @@ export async function verifyDshSingleGeneration({
 
   // Read the declarations themselves, so the gate does not depend on an
   // earlier frozen install having proved them equal to the lockfile.
-  for (const [importer, manifest] of Object.entries(manifests ?? {}))
+  for (const [importer, manifest] of Object.entries(manifests ?? {})) {
+    check(
+      !isDsh(manifest?.name ?? ''),
+      `${importer} is a workspace package named ${manifest?.name}`,
+    );
     for (const section of sections)
       for (const [name, value] of Object.entries(manifest?.[section] ?? {}))
-        if (isDsh(name) || String(value).includes('@deepseek-ai/dsh'))
+        if (isDsh(name) || isDsh(aliasTarget(value) ?? ''))
           check(
             isDsh(name) && value === version,
             `${importer}/package.json ${section} ${name}@${value}`,
           );
+  }
 
   for (const [key, extension] of Object.entries(
     workspace.packageExtensions ?? {},

@@ -50,22 +50,27 @@ that have pinned contexts.
 2. Verify the exact source commit and source archive SHA-256. Research-only PRs
    leave the current distribution and dependency lock untouched; update
    `upstream.json` with the corresponding implementation and compatibility work.
-3. In one change, set every `@deepseek-ai/dsh-*` dependency in every workspace
-   `package.json` to the exact candidate version, update `upstream.json` and the
-   installed generation in `distribution.json`, run `pnpm dsh:generate`, and move
-   each `packageExtensions` entry to the candidate (or delete it if upstream now
-   declares the dependency). Run `pnpm install` and `pnpm dsh:verify`; the lockfile
+3. In one change, move every place that names the DSH version to the exact
+   candidate: each `@deepseek-ai/dsh-*` dependency in every workspace
+   `package.json`; `upstream.json`; the installed generation in
+   `distribution.json` (then `pnpm dsh:generate`); each `packageExtensions` entry
+   and each `overrides` selector keyed by a DSH version in `pnpm-workspace.yaml`
+   (delete an extension once upstream declares the dependency); the
+   `upstreamVersion` of every `patch-ledger.json` entry and of every
+   `compatibility.json` `privateInterfaces` entry; and `compatibility.json`
+   `sessionFormat`. Then run `pnpm install` and `pnpm dsh:verify`: the lockfile
    must contain the candidate only. Audit removed packages, replacement
    compositions and their complete transitive/peer dependency graph. Supporting
    libraries have independent version numbers.
 4. Preserve the restricted profile and tenant-frozen tool allowlist. Existing
    governed subagents, browser and MCP facades still go through AllRice authority;
    installing an upstream bundle never authorizes its shell or other tools.
-5. Record every downstream adapter in `patch-ledger.json` as a
-   `protocol-extension` of the candidate and link it from the reuse decisions.
-   DSH packages are never patched: use a public seam (plugin, profile overlay,
-   adapter) or wait for upstream. Register any private DSH subpath import in
-   `compatibility.json` `privateInterfaces` and plan its removal.
+5. Re-review every downstream adapter in `patch-ledger.json` against the
+   candidate and keep its entry in the reuse decisions. DSH packages are never
+   patched: use a public seam (plugin, profile overlay, adapter) or wait for
+   upstream. Do not add private DSH subpath imports; the existing ones are listed
+   in `compatibility.json` `privateInterfaces` (the gate fails on an unlisted
+   one) and a new one needs explicit approval and a removal plan.
 6. Run `pnpm dsh:golden-replay`, explicit PostgreSQL/Worker recovery and
    tenant-boundary tests, and the MET-62 evaluation suite. Test old journal copies
    with the candidate's official migrators and preserve original bytes. Never mark

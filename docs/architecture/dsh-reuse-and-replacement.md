@@ -8,7 +8,7 @@
 - `pnpm dsh:verify`（CI 执行）由 `scripts/verify-dsh-single-generation.mjs` 拒绝：锁文件任何位置（packages、snapshots、importers 的声明与解析结果、overrides）出现非当前版本或非 registry 来源的 DSH 包，`package.json` 里非精确版本或别名声明，指向其他版本的 `packageExtensions`，以及任何 DSH 物理补丁。`packageExtensions` 只用来补当前一代漏写的依赖元数据。代码里导入的 DSH 私有子路径必须逐项登记在 `compatibility.json` 的 `privateInterfaces`。
 - `patch-ledger.json` 改为 schema 2，只登记当前一代经公开接缝实现的协议扩展。
 - 旧会话：不含 AllRice 私有事件的历史日志由当前一代的官方格式迁移器向前迁移，迁移后可继续对话（`legacy-official-migration`）；带私有事件的日志被拒绝且不改写（`legacy-format-refusal`）。按用户决定（10-25），迁不了的旧数据是测试数据，切换时不导入，不做只读归档。
-- 仍待消除的例外：当前一代仍写 4 种 AllRice 私有事件（下次换代时这些会话同样会被官方迁移器拒绝，MET-221 第 1 阶段处理）；Worker 中按环境变量配置的旧执行包保留槽仍在代码中（Dev 未配置，MET-221 下一步删除）；Web 的 `apps/web/app/dsh-upstream/` 是 0.1.1 UI 源码拷贝（单独排期）。
+- 仍待消除的例外：当前一代仍写 4 种 AllRice 私有事件（官方迁移器不认识它们；V0 日志已实测因此被拒，下次换代很可能同样如此，MET-221 第 1 阶段处理）；Worker 中按环境变量配置的旧执行包保留槽仍在代码中（Dev 未配置，MET-221 下一步删除）；Web 的 `apps/web/app/dsh-upstream/` 是 0.1.1 UI 源码拷贝，Web 还按文件路径读取 DSH 包内的 `lib/client.*.js` 浏览器资源（两者随 Web UI 换代单独排期）。
 
 ## MET195：原生运行关闭观察
 

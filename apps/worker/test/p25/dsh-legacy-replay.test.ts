@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -25,13 +25,14 @@ async function install(
   sessionId: string,
   text: string,
   cwd = manifest.capturedWith.normalizedCwd,
+  name = 'session.jsonl',
 ) {
   const path = join(
     root,
     'sessions',
     `-${cwd.replaceAll('/', '-')}--`,
     sessionId,
-    'session.jsonl',
+    name,
   );
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, text);
@@ -45,13 +46,31 @@ function rows(text: string) {
     .map((line) => JSON.parse(line));
 }
 
-function mutate(
-  text: string,
-  kind: 'future-format' | 'unknown-required-event',
-) {
+// Every file under the session root, so a substitute written anywhere shows up.
+async function sessionFiles(root: string) {
+  const entries = await readdir(join(root, 'sessions'), {
+    recursive: true,
+    withFileTypes: true,
+  });
+  return entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => relative(root, join(entry.parentPath, entry.name)))
+    .sort();
+}
+
+const mutations = {
+  // A v0 file name whose header claims another format: a corrupt log.
+  'mismatched-header': { version: 999, name: 'session.jsonl' },
+  // A generation written by a newer harness.
+  'future-format': { version: 999, name: 'session.v999.jsonl' },
+  'unknown-required-event': { name: 'session.jsonl' },
+} as const;
+
+function mutate(text: string, kind: keyof typeof mutations) {
   const events = rows(text);
-  if (kind === 'future-format') events[0].version = 999;
-  else events[1].type = 'allrice/unknown-required-fixture';
+  if (kind === 'unknown-required-event')
+    events[1].type = 'allrice/unknown-required-fixture';
+  else events[0].version = mutations[kind].version;
   return events.map((row) => JSON.stringify(row)).join('\n') + '\n';
 }
 
@@ -109,6 +128,19 @@ describe('DSH historical sessions under the installed generation', () => {
             ),
         )
         .toBe(true);
+      // idle also follows a failed turn; require the new reply and completion.
+      const turn = notices
+        .slice(before)
+        .filter((n) => n.method === 'session.event')
+        .map((n) => n.params.event as { type: string; data: unknown });
+      expect(
+        turn
+          .filter((event) => event.type === 'assistant/message')
+          .map((event) => JSON.stringify(event.data)),
+      ).toEqual([expect.stringContaining('Legacy history retained.')]);
+      expect(turn.find((event) => event.type === 'turn/end')?.data).toEqual(
+        expect.objectContaining({ reason: { kind: 'completed' } }),
+      );
       expect(fixture.requests).toHaveLength(1);
       expect(callbacks).toEqual([]);
       const messages = fixture.requests[0]!.messages;
@@ -138,7 +170,16 @@ describe('DSH historical sessions under the installed generation', () => {
             /unknown historical event type "allrice\/wait\/checkpoint"/,
           ] as const,
       ),
-    ['future-format', 'ordinary-tool.jsonl', /header identifies v999/] as const,
+    [
+      'mismatched-header',
+      'ordinary-tool.jsonl',
+      /generation filename identifies v0, but its header identifies v999/,
+    ] as const,
+    [
+      'future-format',
+      'ordinary-tool.jsonl',
+      /uses log format v999, but this harness reads only v4/,
+    ] as const,
     [
       'unknown-required-event',
       'ordinary-tool.jsonl',
@@ -152,11 +193,17 @@ describe('DSH historical sessions under the installed generation', () => {
       }));
       try {
         const old = await journal(file);
-        const text =
-          kind === 'future-format' || kind === 'unknown-required-event'
-            ? mutate(old.text, kind)
-            : old.text;
-        const path = await install(fixture.root, old.sessionId, text);
+        const mutation =
+          kind in mutations ? (kind as keyof typeof mutations) : null;
+        const text = mutation ? mutate(old.text, mutation) : old.text;
+        const path = await install(
+          fixture.root,
+          old.sessionId,
+          text,
+          undefined,
+          mutation ? mutations[mutation].name : undefined,
+        );
+        const installed = await sessionFiles(fixture.root);
         const { client } = await fixture.runtime();
         const refused = await client.recover(old.sessionId).then(
           () => null,
@@ -167,7 +214,7 @@ describe('DSH historical sessions under the installed generation', () => {
         await client.close();
         expect(fixture.requests).toHaveLength(0);
         expect(await readFile(path, 'utf8')).toBe(text);
-        expect(await readdir(dirname(path))).toEqual(['session.jsonl']);
+        expect(await sessionFiles(fixture.root)).toEqual(installed);
       } finally {
         await fixture.close();
       }
