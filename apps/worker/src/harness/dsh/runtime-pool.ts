@@ -98,19 +98,27 @@ export interface DshRuntimePoolOptions {
   idleCloseMs?: number;
 }
 
-/** ALLRICE_DSH_IDLE_CLOSE_MINUTES: unset means 30, 0 disables idle close. */
+function invalidIdleClose(): never {
+  throw new HandlerError(
+    'DSH_RUNTIME_CONFIG_INVALID',
+    'ALLRICE_DSH_IDLE_CLOSE_MINUTES must be 0 (disabled) or a decimal number of minutes, at least 1',
+    false,
+  );
+}
+
+/** ALLRICE_DSH_IDLE_CLOSE_MINUTES: unset means 30, 0 disables idle close.
+ * Under one minute a close could race the steer drain that follows a turn. */
 export function dshIdleCloseMs(
   value = process.env.ALLRICE_DSH_IDLE_CLOSE_MINUTES,
 ) {
   if (value === undefined || value.trim() === '') return 30 * 60_000;
+  if (!/^\d+(\.\d+)?$/.test(value.trim())) invalidIdleClose();
   const minutes = Number(value);
-  if (!Number.isFinite(minutes) || minutes < 0)
-    throw new HandlerError(
-      'DSH_RUNTIME_CONFIG_INVALID',
-      'ALLRICE_DSH_IDLE_CLOSE_MINUTES must be a non-negative number of minutes',
-      false,
-    );
-  return Math.round(minutes * 60_000);
+  const ms = Math.round(minutes * 60_000);
+  // Only a literal zero disables; a tiny positive value is an error, not off.
+  if (minutes !== 0 && !(minutes >= 1 && Number.isSafeInteger(ms)))
+    invalidIdleClose();
+  return ms;
 }
 
 function parseRuntimeArgs(value: string | undefined) {
@@ -220,6 +228,8 @@ export class DshRuntimePool {
   private readonly idleCloses = new Map<string, Promise<void>>();
   private readonly idleCloseMs: number;
   private idleTimer: ReturnType<typeof setInterval> | undefined;
+  private idleSweep: Promise<void> | undefined;
+  private idleCloseGate: () => boolean = () => true;
 
   constructor(options: DshRuntimePoolOptions = {}) {
     this.credentialResolver =
@@ -238,6 +248,8 @@ export class DshRuntimePool {
         Number(process.env.ALLRICE_DSH_REQUEST_TIMEOUT_MS ?? 300_000),
     );
     this.idleCloseMs = options.idleCloseMs ?? dshIdleCloseMs();
+    if (!Number.isSafeInteger(this.idleCloseMs) || this.idleCloseMs < 0)
+      invalidIdleClose();
   }
 
   isConfigured(snapshot: HarnessExecutionInput['providerSnapshot']) {
@@ -289,23 +301,37 @@ export class DshRuntimePool {
     };
   }
 
+  /** The Worker closes this while its database is unready: a close writes
+   * durable receipts, and an unconfirmed one refuses the thread's next Host. */
+  setIdleCloseGate(gate: () => boolean) {
+    this.idleCloseGate = gate;
+  }
+
   /** Close resident Hosts idle past the configured limit through closeOwned.
    * Skips leased threads, input holds and in-flight steers. Selection and
    * cache removal are synchronous, so an acquisition either holds a lease
-   * first or waits for this close and starts a fresh Host. */
-  async reclaimIdle(now = Date.now()) {
-    if (this.closing || this.idleCloseMs <= 0) return;
-    const closes = [...this.runtimes.values()].flatMap((runtime) => {
-      const idleMs = now - Date.parse(runtime.lastActivityAt);
+   * first or waits for this close and starts a fresh Host. One sweep and one
+   * close at a time, so a burst of shutdowns cannot starve their acks. */
+  reclaimIdle(now?: number) {
+    return (this.idleSweep ??= this.sweepIdle(now).finally(() => {
+      this.idleSweep = undefined;
+    }));
+  }
+
+  private async sweepIdle(now?: number) {
+    for (const runtime of [...this.runtimes.values()]) {
+      if (this.closing || this.idleCloseMs <= 0 || !this.idleCloseGate()) break;
+      const threadId = runtime.sessionId;
+      const idleMs = (now ?? Date.now()) - Date.parse(runtime.lastActivityAt);
       if (
+        this.runtimes.get(threadId) !== runtime ||
         !(idleMs >= this.idleCloseMs) ||
-        this.leases.has(runtime.sessionId) ||
+        this.leases.has(threadId) ||
         this.inputHolds.has(runtime) ||
         this.inputSteers.get(runtime)?.size ||
         this.runtimeCloseTasks.has(runtime)
       )
-        return [];
-      const threadId = runtime.sessionId;
+        continue;
       const closing = this.closeOwned(runtime).then(
         () => {
           console.info(
@@ -320,6 +346,7 @@ export class DshRuntimePool {
             JSON.stringify({
               runtimeId: runtime.id,
               threadId,
+              code: (error as { code?: unknown } | null)?.code ?? null,
               error: error instanceof Error ? error.message : String(error),
             }),
           );
@@ -330,20 +357,19 @@ export class DshRuntimePool {
         if (this.idleCloses.get(threadId) === closing)
           this.idleCloses.delete(threadId);
       });
-      return [closing];
-    });
+      await closing;
+    }
     if (!this.runtimes.size && this.idleTimer) {
       clearInterval(this.idleTimer);
       this.idleTimer = undefined;
     }
-    await Promise.all(closes);
   }
 
   private scheduleIdleClose() {
     if (this.idleTimer || this.closing || this.idleCloseMs <= 0) return;
     this.idleTimer = setInterval(
       () => void this.reclaimIdle(),
-      Math.min(this.idleCloseMs, 60_000),
+      Math.max(1_000, Math.min(this.idleCloseMs, 60_000)),
     );
     this.idleTimer.unref();
   }

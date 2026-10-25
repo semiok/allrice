@@ -1779,6 +1779,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
     return this.runtimePool.inventory();
   }
 
+  setIdleCloseGate(gate: () => boolean) {
+    this.runtimePool.setIdleCloseGate(gate);
+  }
+
   private async runOnce(input: {
     onTimingPoint(point: DshRunTimingPoint): void;
     sessionReferences?: SessionReferenceSnapshot[];

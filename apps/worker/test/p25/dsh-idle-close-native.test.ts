@@ -111,8 +111,9 @@ it('an idle-closed conversation resumes its own native history on a fresh Host',
     nativeSkills: [],
   };
 
-  const first = await runtimes.acquire(request);
+  // Each turn holds the lease the adapter holds for a whole execution.
   const release = runtimes.lease(threadId);
+  const first = await runtimes.acquire(request);
   await turn(
     first.runtime,
     threadId,
@@ -127,13 +128,18 @@ it('an idle-closed conversation resumes its own native history on a fresh Host',
   expect(first.runtime.client.processState?.().state).toBe('exited');
 
   // The adapter's cold path: fresh Host, then public recovery before prompt.
-  const second = await runtimes.acquire(request);
-  expect(second.fresh).toBe(true);
-  expect(second.runtime.id).not.toBe(first.runtime.id);
-  await expect(second.runtime.client.recover(threadId)).resolves.toMatchObject({
-    recovered: true,
-  });
-  await turn(second.runtime, threadId, 'What is the project codename?');
+  const releaseSecond = runtimes.lease(threadId);
+  try {
+    const second = await runtimes.acquire(request);
+    expect(second.fresh).toBe(true);
+    expect(second.runtime.id).not.toBe(first.runtime.id);
+    await expect(
+      second.runtime.client.recover(threadId),
+    ).resolves.toMatchObject({ recovered: true });
+    await turn(second.runtime, threadId, 'What is the project codename?');
+  } finally {
+    releaseSecond();
+  }
   expect(model.requests).toHaveLength(2);
   const resumed = JSON.stringify(model.requests[1]!.messages);
   expect(resumed).toContain('Remember the project codename BLUE-WHALE.');

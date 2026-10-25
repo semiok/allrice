@@ -3146,19 +3146,21 @@ describe('idle close lease (MET-216)', () => {
     const runtimes = Reflect.get(adapter, 'runtimePool') as DshRuntimePool;
     const leases = Reflect.get(runtimes, 'leases') as Map<string, number>;
     const input = executionInput({ prompt: 'Synthetic idle lease turn' });
-    let swept = false;
+    const swept: string[] = [];
+    // An overdue sweep at every event of the turn, from preparation through
+    // the final reply, never takes the Host it is using.
     input.onEvent = async (event) => {
-      if (event.sourceEventType !== 'allrice/runtime-preparation') return;
-      const threadId = event.threadId!;
-      const live = runtimes.get(threadId)!;
-      expect(leases.get(threadId)).toBe(1);
+      const live = event.threadId ? runtimes.get(event.threadId) : undefined;
+      if (!live) return;
+      expect(leases.get(live.sessionId)).toBe(1);
       live.lastActivityAt = new Date(0).toISOString();
       await runtimes.reclaimIdle();
-      expect(runtimes.get(threadId)).toBe(live);
-      swept = true;
+      expect(runtimes.get(live.sessionId)).toBe(live);
+      swept.push(event.type);
     };
     const threadId = (await adapter.execute(input)).threadId!;
-    expect(swept).toBe(true);
+    expect(swept).toContain('native.event');
+    expect(swept).toContain('assistant.completed');
     expect(leases.size).toBe(0);
     const resident = runtimes.get(threadId)!;
     expect(Date.now() - Date.parse(resident.lastActivityAt)).toBeLessThan(
@@ -3212,6 +3214,15 @@ describe('idle close lease (MET-216)', () => {
       if (event.sourceEventType === 'allrice/runtime-preparation')
         order.push(`prepared:${String(event.sourcePayload?.runtimeId)}`);
     };
+    // The adapter's first storage step; it reads the native session on disk
+    // when recovery is required, so the old Host must have exited by then.
+    const describeSession = runtimes.describeNativeSession.bind(runtimes);
+    vi.spyOn(runtimes, 'describeNativeSession').mockImplementation(
+      (...args) => {
+        order.push('storage');
+        return describeSession(...args);
+      },
+    );
     const turn = adapter.execute(second);
     await new Promise((done) => setTimeout(done, 50));
     expect(order).toEqual([]);
@@ -3219,6 +3230,8 @@ describe('idle close lease (MET-216)', () => {
     await Promise.all([turn, sweep]);
     const fresh = runtimes.get(threadId)!;
     expect(fresh).not.toBe(old);
-    expect(order).toEqual(['old-exited', `prepared:${fresh.id}`]);
+    expect(order[0]).toBe('old-exited');
+    expect(order[1]).toBe('storage');
+    expect(order.at(-1)).toBe(`prepared:${fresh.id}`);
   });
 });

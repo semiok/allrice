@@ -1207,14 +1207,27 @@ describe('idle close (MET-216)', () => {
     vi.spyOn(console, 'info').mockImplementation(() => {});
   });
 
-  it('reads ALLRICE_DSH_IDLE_CLOSE_MINUTES: 30 by default, 0 disables, invalid fails loudly', () => {
+  it('reads ALLRICE_DSH_IDLE_CLOSE_MINUTES: 30 by default, 0 disables, otherwise at least 1, invalid fails loudly', () => {
     expect(dshIdleCloseMs(undefined)).toBe(1_800_000);
     expect(dshIdleCloseMs(' ')).toBe(1_800_000);
     expect(dshIdleCloseMs('0')).toBe(0);
-    expect(dshIdleCloseMs('2')).toBe(120_000);
-    expect(dshIdleCloseMs('0.5')).toBe(30_000);
-    for (const invalid of ['-1', 'thirty', 'Infinity'])
+    expect(dshIdleCloseMs(' 2 ')).toBe(120_000);
+    expect(dshIdleCloseMs('1.5')).toBe(90_000);
+    for (const invalid of [
+      '-1',
+      'thirty',
+      'Infinity',
+      '0.5',
+      '0.000001',
+      '1e2',
+      '0x10',
+      '9'.repeat(400),
+    ])
       expect(() => dshIdleCloseMs(invalid)).toThrow(
+        'ALLRICE_DSH_IDLE_CLOSE_MINUTES',
+      );
+    for (const idleCloseMs of [Number.NaN, -1, Number.POSITIVE_INFINITY])
+      expect(() => idlePool(idleCloseMs)).toThrow(
         'ALLRICE_DSH_IDLE_CLOSE_MINUTES',
       );
     vi.stubEnv('ALLRICE_DSH_IDLE_CLOSE_MINUTES', 'soon');
@@ -1225,6 +1238,39 @@ describe('idle close (MET-216)', () => {
           runtimeArgs: [],
         }),
     ).toThrow('ALLRICE_DSH_IDLE_CLOSE_MINUTES');
+  });
+
+  it('skips the whole sweep while the Worker gate is closed (database unready)', async () => {
+    const instance = idlePool(60_000);
+    pools.push(instance);
+    const runtime = resident(instance);
+    let ready = false;
+    instance.setIdleCloseGate(() => ready);
+    await instance.reclaimIdle();
+    expect(runtime.client.close).not.toHaveBeenCalled();
+    expect(instance.get(runtime.sessionId)).toBe(runtime);
+    ready = true;
+    await instance.reclaimIdle();
+    expect(runtime.client.close).toHaveBeenCalledOnce();
+  });
+
+  it('closes one Host at a time and shares one sweep among concurrent callers', async () => {
+    const instance = idlePool(60_000);
+    pools.push(instance);
+    const held = deferred();
+    const first = resident(instance, longAgo(), () => held.promise),
+      second = resident(instance);
+    const sweep = instance.reclaimIdle();
+    expect(instance.reclaimIdle()).toBe(sweep);
+    await new Promise((done) => setTimeout(done, 20));
+    expect(first.client.close).toHaveBeenCalledOnce();
+    expect(second.client.close).not.toHaveBeenCalled();
+    // Not yet selected, so a turn arriving now still reuses it.
+    expect(instance.get(second.sessionId)).toBe(second);
+    held.resolve();
+    await sweep;
+    expect(second.client.close).toHaveBeenCalledOnce();
+    expect(instance.reclaimIdle()).not.toBe(sweep);
   });
 
   it('closes only Hosts idle past the limit, through the owned close', async () => {
@@ -1404,4 +1450,112 @@ describe('idle close (MET-216)', () => {
     expect(Reflect.get(runtimes, 'idleTimer')).toBeUndefined();
     await runtimes.reclaimIdle(Date.now() + 86_400_000);
   });
+
+  it('retains input holds through pending pause and release acknowledgements until cleanup', async () => {
+    const instance = idlePool(60_000);
+    pools.push(instance);
+    const runtime = resident(instance);
+    const pause = deferred(),
+      resume = deferred();
+    const hold = {
+      settled: pause.promise,
+      current: () => true,
+      resumeBeforeTurnClose: vi.fn(() => resume.promise),
+      dispose: vi.fn(),
+    };
+    const params = {
+      gateId: randomUUID(),
+      nativeSessionId: runtime.sessionId,
+      runId: randomUUID(),
+      turnId: 'held-turn',
+    };
+    const context = {
+      runId: params.runId,
+      turnId: () => params.turnId,
+      signal: new AbortController().signal,
+      delivery: { pause: () => hold },
+      assertAuthority: async () => {},
+    };
+    const notReclaimed = async () => {
+      await instance.reclaimIdle(Date.now() + 86_400_000);
+      expect(instance.get(runtime.sessionId)).toBe(runtime);
+      expect(runtime.client.close).not.toHaveBeenCalled();
+    };
+    try {
+      const pausing = instance.inputDeliveryControl(
+        runtime,
+        'pause',
+        params,
+        context,
+      );
+      await notReclaimed();
+      pause.resolve();
+      await expect(pausing).resolves.toMatchObject({ paused: true });
+      await notReclaimed();
+      const releasing = instance.inputDeliveryControl(
+        runtime,
+        'release',
+        params,
+        context,
+      );
+      expect(hold.resumeBeforeTurnClose).toHaveBeenCalledOnce();
+      await notReclaimed();
+      resume.resolve();
+      await expect(releasing).resolves.toMatchObject({ released: true });
+      await notReclaimed();
+      instance.clearInputDelivery(runtime);
+      await instance.reclaimIdle(Date.now() + 86_400_000);
+      expect(runtime.client.close).toHaveBeenCalledOnce();
+    } finally {
+      pause.resolve();
+      resume.resolve();
+    }
+  });
+
+  it.each(['idle-first', 'worker-first'] as const)(
+    'coalesces idle reclaim with Worker close and fences new requests (%s)',
+    async (order) => {
+      const runtimes = pool(false, undefined, 60_000),
+        value = request();
+      const { runtime } = await runtimes.acquire(value);
+      runtime.lastActivityAt = longAgo();
+      const entered = deferred(),
+        released = deferred();
+      const close = runtime.client.close.bind(runtime.client);
+      const physicalClose = vi
+        .spyOn(runtime.client, 'close')
+        .mockImplementation(async () => {
+          entered.resolve();
+          await released.promise;
+          await close();
+        });
+      let shutdownSettled = false;
+      const sweep = order === 'idle-first' ? runtimes.reclaimIdle() : undefined;
+      const shutdown = runtimes.close().then(() => {
+        shutdownSettled = true;
+      });
+      try {
+        await entered.promise;
+        if (!sweep) await runtimes.reclaimIdle(Date.now() + 86_400_000);
+        expect(shutdownSettled).toBe(false);
+        expect(physicalClose).toHaveBeenCalledOnce();
+        expect(runtimes.closureInventory()).toMatchObject([
+          { id: runtime.id, state: 'closing' },
+        ]);
+        const acquire = runtimes.acquire(value);
+        const denied = expect(acquire).rejects.toMatchObject({
+          code: 'DSH_RUNTIME_POOL_CLOSING',
+        });
+        released.resolve();
+        await Promise.all([sweep, shutdown, denied]);
+        expect(physicalClose).toHaveBeenCalledOnce();
+        expect(runtime.client.processState().state).toBe('exited');
+        expect(runtimes.inventory()).toEqual([]);
+        expect(runtimes.closureInventory()).toEqual([]);
+      } finally {
+        released.resolve();
+        await Promise.allSettled([sweep, shutdown]);
+      }
+    },
+  );
 });

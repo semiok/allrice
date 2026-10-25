@@ -42,11 +42,17 @@ harness over the same execution boundary.
 | `ALLRICE_DSH_HTTP_PROXY`                           | unset                 | Explicit HTTP egress proxy inherited by DSH children    |
 | `ALLRICE_DSH_HTTPS_PROXY`                          | unset                 | Explicit HTTPS egress proxy inherited by DSH children   |
 | `ALLRICE_DSH_NO_PROXY`                             | unset                 | Optional DSH child proxy bypass list                    |
+| `ALLRICE_DSH_IDLE_CLOSE_MINUTES`                   | `30`                  | Close a conversation's idle DSH process; `0` disables   |
 | `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`              | auto-detected         | Managed-browser Chromium executable                     |
 | `ALLRICE_MANAGED_BROWSER_DISABLE_CHROMIUM_SANDBOX` | unset                 | Local development escape hatch; production refuses `1`  |
 
 The Worker does not invoke Codex CLI. DSH is the only Harness; the Codex
 subscription is authorized and executed as DSH's `openai-codex` Provider.
+
+`ALLRICE_DSH_IDLE_CLOSE_MINUTES` must be `0` or a decimal number of minutes,
+at least `1`; any other value stops the Worker at startup. A process is never
+closed during a turn, and the next turn of a closed conversation recovers its
+persisted native session on a fresh process.
 
 DSH child processes receive no ambient host proxy configuration. Deployments
 that require an egress proxy must set the `ALLRICE_DSH_*_PROXY` variables

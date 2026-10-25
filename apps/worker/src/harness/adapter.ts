@@ -342,6 +342,8 @@ export interface HarnessAdapter {
   recover?(input: { threadId: string }): Promise<void>;
   runtimeInventory?(): readonly HarnessRuntimeProcessSnapshot[];
   runtimeClosureInventory?(): readonly HarnessRuntimeClosureSnapshot[];
+  /** Idle process close runs only while this returns true. */
+  setIdleCloseGate?(gate: () => boolean): void;
   close?(): Promise<void>;
 }
 import type {

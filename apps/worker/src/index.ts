@@ -238,6 +238,8 @@ let databaseReady = false;
 let lastDatabaseError: string | undefined;
 let stopping = false;
 const runProducer = workerProducerRunner(producerLifecycle, () => stopping);
+// Idle DSH close writes durable close receipts; never start one unready.
+getHarnessRouter().setIdleCloseGate(() => databaseReady && !stopping);
 const maintenanceReportingAborter = new AbortController();
 let queueTask: Promise<void> | null = null;
 let automationTask: Promise<void> | null = null;
