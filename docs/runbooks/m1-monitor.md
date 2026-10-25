@@ -4,12 +4,14 @@
 
 ## 组成
 
-| 部分     | 位置                                                                                                            | 频率      |
-| -------- | --------------------------------------------------------------------------------------------------------------- | --------- |
-| 组件健康 | M1 `~/allrice-dev/bin/monitor run`，launchd `ai.bplabs.allrice-dev-monitor`                                     | 每 4 分钟 |
-| 入口拨测 | 同上（从 M1 经 Cloudflare 访问）+ huihuimac 的 `monitor peer`（从 M1 之外访问）                                 | 每 4 分钟 |
-| 互相看门 | huihuimac `monitor peer`，launchd `ai.bplabs.allrice-monitor-peer`；M1 也检查它的心跳                           | 每 1 分钟 |
-| 告警出口 | Telegram（凭证只在两台机器的本地文件里）+ 表 `allrice_operational_incidents`（huihuimac 的经 SSH 写进 M1 的表） | 有变化时  |
+| 部分            | 位置                                                                                                            | 频率      |
+| --------------- | --------------------------------------------------------------------------------------------------------------- | --------- |
+| 组件健康        | M1 `~/allrice-dev/bin/monitor run`，launchd `ai.bplabs.allrice-dev-monitor`                                     | 每 4 分钟 |
+| 业务巡检（SQL） | 同上，只读查询 `allrice_dev`                                                                                    | 每 4 分钟 |
+| 入口拨测        | 同上（从 M1 经 Cloudflare 访问）+ huihuimac 的 `monitor peer`（从 M1 之外访问）                                 | 每 4 分钟 |
+| 互相看门        | huihuimac `monitor peer`，launchd `ai.bplabs.allrice-monitor-peer`；M1 也检查它的心跳                           | 每 1 分钟 |
+| 日报            | M1 每天 09:00 之后的第一轮发出                                                                                  | 每天      |
+| 告警出口        | Telegram（凭证只在两台机器的本地文件里）+ 表 `allrice_operational_incidents`（huihuimac 的经 SSH 写进 M1 的表） | 有变化时  |
 
 源码只有一个文件 `scripts/m1/monitor`（Python 3.9 标准库，`/usr/bin/python3`），M1 和 huihuimac 用同一份：M1 跑 `run`，huihuimac 跑 `peer`。
 
@@ -19,7 +21,7 @@
 - 同一轮里所有变化合成**一条**消息；太长时按告警拆成几条（标 1/2、2/2），不会截掉后面的告警。组件类检查失败后隔 20 秒重查一次，仍失败才告警，避免一次抖动就报警。
 - 1 小时内同一个键反复出现 3 次，发一条“反复”通知后静默 1 小时（仍写事件表）。静默期间坏了且下一轮仍然坏（真故障而不是抖动），立即打破静默照常告警；静默中升级也结束静默；静默期间恢复的，静默结束时补发“已恢复”。
 - 一条告警升级到严重后，在警告和严重之间来回不再重复通知（只在第一次升到严重时发“升级”）。
-- 依赖没过的检查本轮不判断，保持原状：例如数据库不可用时，订阅检查不报，也不会被当成“已恢复”。
+- 依赖没过的检查本轮不判断，保持原状：例如数据库不可用时，业务巡检和订阅检查不报，也不会被当成“已恢复”。
 - 部署锁被持有时（`deploy-dev`、`scripts/m1/install`、`deploy-lock run`，用 `lsof` 看锁文件是否被打开，不去碰锁本身；每项检查和重查都重新看一次），Web、Worker、Postgres、公网入口和卡住/积压类业务巡检不判断，huihuimac 的公网拨测也暂停；最长 45 分钟，超过照常判断。
 - 检查给不出结论时（如持锁期间的共享 VM、确认期内的授权错误、触发告警的额度窗口暂时读不到）记为“未知”：已有告警保持原状，也不新开。
 - 单轮超过时限（M1 240 秒），只有卡住的那项按未知处理，已跑完的检查结果照常报告，另报 `monitor_round`。状态文件读不出来时另存为 `state.json.corrupt-<时间>` 并报 `monitor_state`。
@@ -48,6 +50,7 @@
 | `backup`                                      | 每日备份日志里最后一次 `ok` + launchd `ai.bplabs.allrice-dev-backup` 上次的退出码         | 上次运行失败或超过 50 小时/没有记录：严重；超过 26 小时、定时任务没加载：警告                                                                                            | [数据库](m1-database.md#每日备份)           |
 | `peer` / `peer_telegram`                      | huihuimac 看门的心跳（与 huihuimac 看 M1 的判断相同）                                     | 4 分钟没更新、4 分钟没有一轮跑完、连不上：警告；连续 3 分钟发不出 Telegram：警告                                                                                         | 本页“看门”                                  |
 | `monitor` / `monitor_round` / `monitor_state` | 事件表写入积压、单轮超过 240 秒、状态文件损坏                                             | 积压 30 分钟：警告；超时：严重；损坏：警告                                                                                                                               | 本页                                        |
+| `business.*`                                  | 业务巡检                                                                                  | 见“业务巡检”                                                                                                                                                             | 见“业务巡检”                                |
 
 huihuimac 一侧（`monitor peer`）：
 
@@ -57,6 +60,28 @@ huihuimac 一侧（`monitor peer`）：
 | `m1_heartbeat` | M1 监控心跳超过 6 分钟没更新、6 分钟没有一轮跑完（每轮开始了又出错）或读不到：严重          |
 | `m1_telegram`  | M1 监控没配置 Telegram，或从第一次发送失败起已超过 8 分钟（两轮）：警告                     |
 | `public_entry` | 从 huihuimac 访问 M1 心跳里报告的公网地址，15 秒内拿不到 200：严重；M1 的部署锁被持有时暂停 |
+
+## 业务巡检
+
+每轮对 `allrice_dev` 跑 10 条只读 SQL，另读一次 Postgres 日志（`default_transaction_read_only`、单条 15 秒超时）。SQL 原文在 `scripts/m1/monitor` 的 `SQL_*` 常量里，阈值是 `config.json` 的 `business` 键（psql 变量）。Dev 处于维护窗口（`allrice_dev_maintenance.state` 不是 `open`）时，Worker 故意不领任务，带 `admission` 的几项本轮不判断。
+
+| 键                           | 判断依据（代码）                                                                                                                                                          | 初始阈值                                                                                                                                                                                            |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `business.failed_runs`       | 只算有 job 的根 run（子助手 run 不写 `completed_at`）；排除平台组织 `allrice-platform`、冒烟账号 `smoke`、员工预览/方法测试/经验验证；取消和 `APPROVAL_REJECTED` 不算失败 | 60 分钟里结束 ≥5 个时：失败 ≥3、≥20% 且（≥ 此前 24 小时基线的 2 倍或 ≥30%）为警告；失败 ≥5 且 ≥50% 为严重。不到 5 个时：失败 ≥3 且 ≥50% 为警告                                                      |
+| `business.stuck_runs`        | 心跳和租约在 job 上（租约默认 30 秒，心跳 10 秒），`maintainQueue` 每秒收回过期租约；过期好几分钟还在 = 没有活着的 Worker 在维护；或 run 是 running 而 job 已不在执行     | 超过 5 分钟 ≥1 个：严重                                                                                                                                                                             |
+| `business.silent_runs`       | 心跳定时器和业务处理分开，处理卡死时心跳照跳：看最后一条 run 事件，排除任务时钟暂停和有云端/本机操作在执行的                                                              | 30 分钟没有新事件：警告                                                                                                                                                                             |
+| `business.dead_letters`      | 死信只有三条路：可重试错误用完次数、最后一次租约过期（`LEASE_EXHAUSTED`）、开始时策略拒绝（`POLICY_DENIED`）；按 `completed_at` 统计                                      | 60 分钟内 ≥1：警告；≥3 或出现 `POLICY_DENIED`：严重                                                                                                                                                 |
+| `business.queue`             | 到点（`available_at`）的 queued/retry_wait 没人领；排除平台 Dev 作业、经验整理（只在空闲时领）、待放行的追加消息。正常领取延迟 p95 约 2 秒                                | 等待 >5 分钟：警告；>15 分钟或此时没有任何作业在执行：严重                                                                                                                                          |
+| `business.overdue_schedules` | 一次性任务以当前 revision 的 occurrence 行证明已触发；周期任务的 `next_run_at` 与 occurrence 同事务推进；两者都经 outbox 交给队列；旧版定时（legacy）已下线，永远不会触发 | 晚 4 分钟：警告；晚 30 分钟或定时分区（一次性/周期，只看上面有启用任务的）关闭或租约过期：严重；旧版残留、创建时已过时间而没执行的一次性提醒（`target_not_future`，直到有人改期、暂停或删除）：警告 |
+| `business.waits`             | 只有原生提问和 workflow 审批会让 run 进入 `waiting_approval`，都没有超时；两者都没有的等待永远不会恢复                                                                    | 孤儿等待 >5 分钟：严重。等用户再久也是正常的，只在日报里列出超过 24 小时的个数                                                                                                                      |
+| `business.unknown_ops`       | `snapshot.status = 'unknown'` 经 `operation.uncertain` 事件进入，只能靠迟到回执或人工核对离开，不能换一端重跑                                                             | 还有未解决的（运行操作或 Bridge 文件命令）或进行中但租约过期的：警告（取消只是意图，根任务结束也不算解决）；60 分钟新增 ≥3：严重                                                                    |
+| `business.bridge`            | 产品里的“在线”= `last_seen_at` 在 90 秒内；长连接租约每 5 秒续期。只看最近 24 小时在线过、未撤销、账号有效的设备；合盖的单台不报                                          | 下班合盖人人离线，离线台数只进日报。心跳在但长连接断（服务端问题）、掉线且有仍在执行的任务的操作等了 30 分钟：警告；心跳在但长连接断 ≥2 台：严重                                                    |
+| `business.deadlocks`         | `pg_stat_database.deadlocks` 按库累计（遇到重置重新计）；另数 `JOB_START_DEADLOCK`（死锁重试后仍失败的作业）                                                              | 1 小时内 ≥1：警告；≥5 或有作业因死锁启动失败：严重                                                                                                                                                  |
+| `business.pg_resources`      | Postgres 日志里新增的 `out of shared memory`（锁表满，整个实例共用）、连接数用满；日志每行带库名（`log_line_prefix` 含 `%d`）                                             | 1 小时内 ≥1：警告；≥20：严重                                                                                                                                                                        |
+
+日报里有一行“失败分组”：24 小时的失败按错误码分组，分出新出现（此前 7 天没有）和变多（≥3 且 ≥ 此前日均 2 倍）；`monitor failures --json` 导出同样的数据（每组带样本 run 和错误信息前 200 字），供之后的每日问题报告直接读。
+
+收到业务告警的第一步：按告警里给的样本 ID（完整 UUID，可直接放进 SQL）在后台“租户运行检查”或用 SQL 查对应 run/job；多数业务告警是组件告警的后果（订阅不可用 → 失败突增，Worker 挂了 → 队列积压），先处理同时出现的组件告警。
 
 ## 安装（发布负责人）
 
@@ -99,6 +124,8 @@ huihuimac 的告警通过 `ssh m1 allrice-dev/bin/monitor ingest-incidents` 写�
 ```bash
 ~/allrice-dev/bin/monitor status          # 未恢复的告警、上一轮、Telegram 和事件表积压
 ~/allrice-dev/bin/monitor run --dry-run   # 现在跑一遍，只打印，不发不写
+~/allrice-dev/bin/monitor daily           # 立刻发日报
+~/allrice-dev/bin/monitor failures --json # 24 小时失败按错误码分组（新出现/变多/其余），给每日问题报告读
 tail -50 ~/allrice-dev/monitor/monitor.log
 ```
 

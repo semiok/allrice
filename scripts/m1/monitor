@@ -5,6 +5,8 @@
 #
 #   monitor run [--config <file>]                   one round of checks (launchd: every 5 minutes)
 #   monitor peer [--config <file>]                  huihuimac side: is M1 alive, is it reachable from outside
+#   monitor daily [--config <file>]                 send the daily report now (rounds send it once a day)
+#   monitor failures [--json] [--config <file>]     failed runs of the last 24 hours by error code: new, increased
 #   monitor status [--config <file>]                open alerts, last round, delivery backlog
 #   monitor test-alert [--config <file>]            send one test message
 #   monitor launchd install|remove [--peer] [--config <file>]
@@ -110,6 +112,18 @@ M1 = dict(
     colimaProfile=None,
     officeUrl=None,
     images=None,
+    # business checks and the daily report
+    dailyHour=9,
+    business={
+        'window_minutes': 60, 'baseline_minutes': 1440, 'test_usernames': 'smoke', 'maintenance_env': 'dev',
+        'failed_min_total': 5, 'failed_warn_count': 3, 'failed_warn_pct': 20, 'failed_critical_count': 5, 'failed_critical_pct': 50, 'failed_sustained_pct': 30,
+        'stuck_minutes': 5, 'silent_minutes': 30, 'dead_critical_count': 3, 'queue_warn_minutes': 5, 'queue_critical_minutes': 15,
+        'schedule_late_minutes': 4, 'schedule_critical_minutes': 30, 'wait_minutes': 1440, 'unknown_critical_count': 3,
+        'bridge_active_hours': 24, 'bridge_offline_minutes': 5, 'bridge_work_wait_minutes': 30,
+        'deadlock_critical_per_hour': 5, 'pg_errors_critical_per_hour': 20,
+        'failure_baseline_days': 7, 'failure_increase_min': 3, 'failure_increase_ratio': 2,
+    },
+    pgLog='/opt/homebrew/var/log/postgresql@17.log',  # log_line_prefix '%m [%p] %d ' names the database
 )
 PEER = dict(
     COMMON,
@@ -1112,6 +1126,484 @@ def check_monitor(r):
         'm1-monitor.md', 'monitor status')]
 
 
+# ---------- business checks (SQL, read-only) ----------
+# Each query is one SELECT on allrice_dev; thresholds come from the config key "business"
+# as psql variables. The state semantics behind every query (which column is the
+# heartbeat, how a schedule proves it fired, where "unknown outcome" lives) are written
+# up with code references in docs/runbooks/m1-monitor.md#业务巡检. Queue, stuck and
+# schedule checks are not judged while Dev admission is closed for maintenance: the
+# Worker deliberately claims nothing then.
+
+ADMISSION = "(select state from allrice_dev_maintenance where environment_id = :'maintenance_env')"
+WINDOW = "now() - make_interval(mins => :'window_minutes'::int)"
+
+# Root runs of real users: every root run has its job (assistant child runs have none and
+# never set completed_at); platform runs, smoke/test accounts, previews, method tests,
+# experience checks and the consolidation job are left out. Shared by both failure queries.
+USER_RUNS = """
+  from allrice_runs r
+  join allrice_jobs j on j.run_id = r.id
+  join allrice_organizations o on o.id = r.organization_id
+  join allrice_users u on u.id = r.owner_id
+  where o.slug <> 'allrice-platform'
+    and not (coalesce(u.username, '') = any (string_to_array(:'test_usernames', ',')))
+    and coalesce(r.execution_spec->>'handler', '') <> 'platform_employee_preview'
+    and coalesce(j.payload->>'type', '') <> 'allrice.experience.consolidate'
+    and not exists (select 1 from allrice_employee_method_tests t where t.run_id = r.id)
+    and not exists (select 1 from allrice_platform_employee_test_runs v where v.experience_run_id = r.id)"""
+
+SQL_FAILED_RUNS = """
+with w as (
+  select r.id, r.state, r.error_code, r.completed_at, r.completed_at >= """ + WINDOW + """ as recent,
+         r.state = 'failed' and coalesce(r.error_code, '') <> 'APPROVAL_REJECTED' as bad""" + USER_RUNS + """
+    and r.state in ('succeeded', 'failed', 'canceled')
+    and r.completed_at >= now() - make_interval(mins => :'baseline_minutes'::int))
+select count(*) filter (where recent and bad)::int as count,
+  (array_agg(id order by completed_at desc) filter (where recent and bad))[1:3] as samples,
+  count(*) filter (where recent and state <> 'canceled')::int as total,
+  round(100.0 * count(*) filter (where recent and bad) / nullif(count(*) filter (where recent and state <> 'canceled'), 0), 1) as pct,
+  round(100.0 * count(*) filter (where bad and not recent) / nullif(count(*) filter (where state <> 'canceled' and not recent), 0), 1) as baseline_pct,
+  array_agg(distinct error_code) filter (where recent and bad) as codes
+from w"""
+
+SQL_STUCK_RUNS = """
+with stuck as (
+  select j.run_id, 'lease_expired' as reason, j.lease_expires_at as since from allrice_jobs j
+  where j.status in ('claimed', 'running') and j.lease_expires_at < now() - make_interval(mins => :'stuck_minutes'::int)
+  union all
+  select r.id, 'run_running_job_' || j.status, r.updated_at from allrice_runs r join allrice_jobs j on j.run_id = r.id
+  where r.state = 'running' and j.status not in ('claimed', 'running')
+    and r.updated_at < now() - make_interval(mins => :'stuck_minutes'::int))
+select count(distinct run_id)::int as count, (array_agg(run_id order by since))[1:3] as samples,
+  array_agg(distinct reason) as reasons, """ + ADMISSION + """ as admission
+from stuck"""
+
+# A heartbeat alone does not prove progress: the lease timer runs apart from the handler.
+SQL_SILENT_RUNS = """
+select count(*)::int as count, (array_agg(r.id order by le.last_at))[1:3] as samples,
+  extract(epoch from max(now() - le.last_at))::int as oldest, """ + ADMISSION + """ as admission
+from allrice_jobs j
+join allrice_runs r on r.id = j.run_id
+left join allrice_task_clocks c on c.run_id = r.id
+cross join lateral (select coalesce((select e.occurred_at from allrice_run_events e where e.run_id = r.id
+                                     order by e.sequence desc limit 1), j.claimed_at) as last_at) le
+where j.status = 'running' and r.state = 'running' and j.lease_expires_at > now()
+  and coalesce(c.phase, 'active') = 'active'
+  and le.last_at < now() - make_interval(mins => :'silent_minutes'::int)
+  and not exists (select 1 from allrice_runtime_operations o where o.root_run_id = r.id
+                  and o.snapshot->>'status' in ('dispatched', 'running', 'cancel_requested') and o.lease_expires_at > now())"""
+
+SQL_DEAD_LETTERS = """
+select count(*)::int as count, (array_agg(j.run_id order by j.completed_at desc))[1:3] as samples,
+  array_agg(distinct j.last_error_code) as codes, array_agg(distinct j.payload->>'type') as types
+from allrice_jobs j
+where j.status = 'dead_letter' and j.completed_at >= """ + WINDOW
+
+SQL_QUEUE = """
+select count(*)::int as count, (array_agg(j.run_id order by j.available_at))[1:3] as samples,
+  extract(epoch from max(now() - j.available_at))::int as oldest,
+  (select count(*)::int from allrice_jobs a where a.status in ('claimed', 'running')) as active,
+  """ + ADMISSION + """ as admission
+from allrice_jobs j
+where j.status in ('queued', 'retry_wait')
+  and j.available_at < now() - make_interval(mins => :'queue_warn_minutes'::int)
+  and coalesce(j.payload->>'type', '') not like 'allrice.platform.dev.%'
+  and coalesce(j.payload->>'type', '') <> 'allrice.experience.consolidate'
+  and not exists (select 1 from allrice_conversation_followups f where f.run_id = j.run_id and f.mode = 'steer_only')"""
+
+# native_once proves it fired with an occurrence row for the current revision; native
+# recurring advances next_run_at in the same transaction as its occurrence; both hand the
+# run over through an outbox. Legacy schedule rows can no longer fire at all (retired).
+SQL_SCHEDULES = """
+with late as (
+  select a.id, 'native_once_not_fired' as reason, a.next_run_at as due_at from allrice_automations a
+  where a.clock_owner = 'native_once' and a.status = 'enabled' and a.deleted_at is null and a.native_once_cancelled_at is null
+    and a.next_run_at < now() - make_interval(mins => :'schedule_late_minutes'::int)
+    and not exists (select 1 from allrice_native_once_occurrences o where o.automation_id = a.id and o.revision = a.revision)
+    and not exists (select 1 from allrice_native_once_controls c where c.automation_id = a.id and c.revision = a.revision
+                    and c.snapshot->'control'->'command'->>'status' = 'blocked')
+  union all
+  -- the Worker reached the create only after its time (target_not_future, the one reason
+  -- a command is blocked): the reminder was never executed; it stays until someone
+  -- reschedules, pauses, cancels or deletes it
+  select a.id, 'native_once_missed', a.next_run_at from allrice_automations a
+  where a.clock_owner = 'native_once' and a.status = 'enabled' and a.deleted_at is null and a.native_once_cancelled_at is null
+    and exists (select 1 from allrice_native_once_controls c where c.automation_id = a.id and c.revision = a.revision
+                and c.snapshot->'control'->'command'->>'status' = 'blocked')
+  union all
+  select a.id, 'native_recurring_not_advanced', a.next_run_at from allrice_automations a
+  where a.clock_owner = 'native_recurring' and a.status = 'enabled' and a.deleted_at is null
+    and a.next_run_at < now() - make_interval(mins => :'schedule_late_minutes'::int)
+    and a.next_run_at > coalesce(a.native_recurring_resume_after, '-infinity'::timestamptz)
+  union all
+  select o.automation_id, 'native_once_handover_pending', o.created_at from allrice_native_once_occurrences o
+  where o.outbox_state = 'pending' and o.created_at < now() - make_interval(mins => :'schedule_late_minutes'::int)
+  union all
+  select o.automation_id, 'native_recurring_handover_pending', o.created_at from allrice_native_recurring_occurrences o
+  where o.outbox_state = 'pending' and o.created_at < now() - make_interval(mins => :'schedule_late_minutes'::int)
+  union all
+  select a.id, 'legacy_schedule_retired', a.next_run_at from allrice_automations a
+  where a.clock_owner = 'legacy' and a.trigger_type = 'schedule' and a.status = 'enabled' and a.deleted_at is null
+    and a.next_run_at < now() - make_interval(mins => :'schedule_late_minutes'::int))
+select count(distinct id) filter (where reason <> 'legacy_schedule_retired')::int as count,
+  (array_agg(id order by due_at) filter (where reason <> 'legacy_schedule_retired'))[1:3] as samples,
+  extract(epoch from max(now() - due_at) filter (where reason not in ('legacy_schedule_retired', 'native_once_missed')))::int as oldest,
+  array_agg(distinct reason) as reasons,
+  count(distinct id) filter (where reason = 'legacy_schedule_retired')::int as legacy,
+  (select array_agg(p.partition_id) from allrice_native_once_partitions p
+   where (p.closed or p.expires_at is null or p.expires_at < now() - make_interval(mins => :'schedule_late_minutes'::int))
+     and exists (select 1 from allrice_automations a
+                 where a.status = 'enabled' and a.deleted_at is null
+                   and (exists (select 1 from allrice_native_once_controls c where c.automation_id = a.id and c.partition_id = p.partition_id)
+                        or exists (select 1 from allrice_native_recurring_controls c where c.automation_id = a.id and c.partition_id = p.partition_id)))) as host_down,
+  """ + ADMISSION + """ as admission
+from late"""
+
+# Only two paths park a run in waiting_approval (a native question, a workflow approval)
+# and neither has a timeout; a wait with neither behind it can never resume.
+SQL_WAITS = """
+with w as (
+  select r.id, coalesce(q.created_at, ap.requested_at, j.updated_at) as since,
+    case when q.run_id is not null then 'question' when ap.run_id is not null then 'approval' else 'orphan' end as kind
+  from allrice_runs r
+  join allrice_jobs j on j.run_id = r.id
+  left join lateral (select x.run_id, min(x.created_at) as created_at from allrice_native_question_waits x
+                     where x.run_id = r.id and x.state = 'parked' group by x.run_id) q on true
+  left join lateral (select a.run_id, min(a.requested_at) as requested_at from allrice_approval_requests a
+                     where a.run_id = r.id and a.status = 'pending' group by a.run_id) ap on true
+  where r.state = 'waiting_approval' or j.status = 'waiting_approval')
+select count(*) filter (where kind <> 'orphan' and since < now() - make_interval(mins => :'wait_minutes'::int))::int as count,
+  (array_agg(id order by since) filter (where kind <> 'orphan' and since < now() - make_interval(mins => :'wait_minutes'::int)))[1:3] as samples,
+  count(*) filter (where kind = 'orphan' and since < now() - make_interval(mins => :'stuck_minutes'::int))::int as orphans,
+  (array_agg(id order by since) filter (where kind = 'orphan' and since < now() - make_interval(mins => :'stuck_minutes'::int)))[1:3] as orphan_samples
+from w"""
+
+# "Unknown" is entered through an operation.uncertain event and left only by a late
+# receipt; it cannot be re-run elsewhere, so new ones alert and the backlog is shown.
+SQL_UNKNOWN_OPS = """
+with ops as (
+  select o.id, 'unknown' as kind,
+    (select e.created_at from allrice_runtime_operation_events e where e.operation_id = o.id
+     and e.payload->'signal'->>'type' = 'operation.uncertain' order by e.sequence desc limit 1) as since
+  from allrice_runtime_operations o where o.snapshot->>'status' = 'unknown'
+  union all
+  -- a cancel is only an intent and a finished root proves nothing about the operation:
+  -- these stay until a receipt or a person settles them
+  select o.id, 'inflight_lease_expired', o.lease_expires_at from allrice_runtime_operations o
+  where o.snapshot->>'status' in ('dispatched', 'running', 'cancel_requested')
+    and o.lease_expires_at < now() - make_interval(mins => :'stuck_minutes'::int))
+select count(*) filter (where kind = 'unknown' and since >= """ + WINDOW + """)::int as count,
+  (array_agg(id order by since desc) filter (where kind = 'unknown'))[1:3] as samples,
+  count(*) filter (where kind = 'unknown')::int as backlog,
+  count(*) filter (where kind = 'inflight_lease_expired')::int as expired,
+  (array_agg(id order by since) filter (where kind = 'inflight_lease_expired'))[1:3] as expired_samples,
+  (select count(*)::int from allrice_bridge_commands b where b.status = 'unknown' and b.updated_at >= """ + WINDOW + """) as bridge_unknown,
+  (select count(*)::int from allrice_bridge_commands b where b.status = 'unknown') as bridge_backlog
+from ops"""
+
+# Online in the product means last_seen_at within 90 s; the WSS lease is renewed every 5 s.
+SQL_BRIDGE = """
+with d as (
+  select d.id, d.last_seen_at, coalesce(c.expires_at > now(), false) as wss_live,
+    d.last_seen_at > now() - interval '90 seconds' as present,
+    exists (select 1 from allrice_runtime_operations op where op.device_id = d.id
+            and op.snapshot->>'status' in ('waiting_device', 'ready', 'dispatched', 'running', 'cancel_requested')
+            and op.updated_at < now() - make_interval(mins => :'bridge_work_wait_minutes'::int)
+            and exists (select 1 from allrice_jobs j where j.run_id = op.root_run_id and j.status in ('claimed', 'running'))) as has_work
+  from allrice_bridge_devices d
+  join allrice_organizations o on o.id = d.organization_id and o.archived_at is null
+  join allrice_users u on u.id = d.owner_id and u.status = 'active'
+  left join allrice_bridge_connections c on c.device_id = d.id
+  where d.revoked_at is null and d.last_seen_at > now() - make_interval(hours => :'bridge_active_hours'::int))
+select count(*) filter (where not wss_live and last_seen_at < now() - make_interval(mins => :'bridge_offline_minutes'::int))::int as count,
+  (array_agg(id order by last_seen_at desc) filter (where not wss_live and last_seen_at < now() - make_interval(mins => :'bridge_offline_minutes'::int)))[1:3] as samples,
+  count(*) filter (where not wss_live and not present and has_work)::int as offline_with_work,
+  count(*) filter (where present and not wss_live)::int as heartbeat_only,
+  count(*)::int as expected
+from d"""
+
+SQL_DEADLOCKS = """
+select (select deadlocks from pg_stat_database where datname = current_database())::bigint as total,
+  (select stats_reset from pg_stat_database where datname = current_database())::text as reset,
+  count(*)::int as job_start, (array_agg(j.run_id order by j.completed_at desc))[1:3] as samples
+from allrice_jobs j
+where j.last_error_code = 'JOB_START_DEADLOCK' and j.completed_at >= """ + WINDOW
+
+# Failed runs of the last 24 hours grouped by error code, with the days before as the
+# baseline: what the daily report summarizes and `monitor failures --json` exports.
+SQL_FAILURE_GROUPS = """
+with f as (
+  select coalesce(nullif(r.error_code, ''), '(none)') as code, r.id, r.completed_at,
+         left(coalesce(r.error_message, ''), 200) as message, r.completed_at >= now() - interval '24 hours' as today""" + USER_RUNS + """
+    and r.state = 'failed' and coalesce(r.error_code, '') <> 'APPROVAL_REJECTED'
+    and r.completed_at >= now() - make_interval(days => :'failure_baseline_days'::int + 1))
+select coalesce(json_agg(g order by g.today desc, g.code), '[]') as groups from (
+  select code, count(*) filter (where today)::int as today, count(*) filter (where not today)::int as before,
+    (array_agg(id order by completed_at desc) filter (where today))[1:5] as samples,
+    (array_agg(message order by completed_at desc) filter (where today))[1:3] as messages
+  from f group by code having count(*) filter (where today) > 0) g"""
+
+BUSINESS_RUNBOOK = 'm1-monitor.md#业务巡检'
+SQL_STEP = 'psql 查 allrice_dev（SQL 见 scripts/m1/monitor 的 SQL_%s）'
+
+
+def biz(r, sql):
+    variables = dict(r.cfg['business'])
+    return json.loads(r.psql('select row_to_json(t) from (%s) t;' % sql, r.cfg['databaseUrl'], variables))
+
+
+def ids(row, key='samples'):
+    return '，'.join(str(x) for x in (row.get(key) or []))
+
+
+def closed(row):
+    return row.get('admission') not in (None, 'open')
+
+
+def check_failed_runs(r):
+    """Spike: many failures, a high share and well above the 24 hours before the window.
+    Sustained: a high share whatever the baseline (a long outage raises its own
+    baseline). Low traffic: several failures and at least half of what finished."""
+    b, row = r.cfg['business'], biz(r, SQL_FAILED_RUNS)
+    n, total, pct, base = row['count'], row['total'], row['pct'] or 0, row['baseline_pct'] or 0
+    sev = 'ok'
+    if total >= b['failed_min_total']:
+        if n >= b['failed_critical_count'] and pct >= b['failed_critical_pct']:
+            sev = 'critical'
+        elif n >= b['failed_warn_count'] and pct >= b['failed_warn_pct'] and (pct >= 2 * base or pct >= b['failed_sustained_pct']):
+            sev = 'warning'
+    elif n >= b['failed_warn_count'] and pct >= 50:
+        sev = 'warning'
+    return [finding('business.failed_runs', sev, 'run 失败比例突增',
+                    '近 %s 分钟 %d/%d 失败（%s%%，此前 24 小时 %s%%），错误码 %s；例 %s' % (
+                        b['window_minutes'], n, total, pct, base, '、'.join(c or '?' for c in row['codes'] or []), ids(row)),
+                    BUSINESS_RUNBOOK, SQL_STEP % 'FAILED_RUNS')]
+
+
+def check_stuck_runs(r):
+    row = biz(r, SQL_STUCK_RUNS)
+    if closed(row) or deploying(r):
+        return None
+    return [finding('business.stuck_runs', 'critical' if row['count'] else 'ok', 'run 卡住（租约过期没人收回）',
+                    '%d 个：%s；例 %s' % (row['count'], '、'.join(row['reasons'] or []), ids(row)), 'm1-worker-crash.md', SQL_STEP % 'STUCK_RUNS')]
+
+
+def check_silent_runs(r):
+    row = biz(r, SQL_SILENT_RUNS)
+    if closed(row) or deploying(r):
+        return None
+    return [finding('business.silent_runs', 'warning' if row['count'] else 'ok', 'run 长时间没有进展',
+                    '%d 个在跑但 %s 没有新事件；例 %s' % (row['count'], ago(row['oldest'] or 0), ids(row)), BUSINESS_RUNBOOK, SQL_STEP % 'SILENT_RUNS')]
+
+
+def check_dead_letters(r):
+    b, row = r.cfg['business'], biz(r, SQL_DEAD_LETTERS)
+    n, codes = row['count'], row['codes'] or []
+    sev = 'critical' if n >= b['dead_critical_count'] or 'POLICY_DENIED' in codes else 'warning' if n else 'ok'
+    return [finding('business.dead_letters', sev, '新增死信作业',
+                    '近 %s 分钟 %d 个，错误码 %s，类型 %s；例 %s' % (b['window_minutes'], n, '、'.join(c or '?' for c in codes),
+                                                         '、'.join(t or '?' for t in row['types'] or []), ids(row)),
+                    BUSINESS_RUNBOOK, SQL_STEP % 'DEAD_LETTERS')]
+
+
+def check_queue(r):
+    b, row = r.cfg['business'], biz(r, SQL_QUEUE)
+    if closed(row) or deploying(r):
+        return None
+    oldest = (row['oldest'] or 0) / 60
+    sev = 'ok' if not row['count'] else 'critical' if oldest >= b['queue_critical_minutes'] or not row['active'] else 'warning'
+    return [finding('business.queue', sev, '队列积压', '%d 个作业到点没人领，最久 %s，正在执行 %d 个；例 %s' % (
+        row['count'], ago(row['oldest'] or 0), row['active'], ids(row)), 'm1-worker-crash.md', SQL_STEP % 'QUEUE')]
+
+
+def check_schedules(r):
+    b, row = r.cfg['business'], biz(r, SQL_SCHEDULES)
+    if closed(row) or deploying(r):  # a stopped Worker closes its schedule partitions on purpose
+        return None
+    host_down = row['host_down']
+    late = (row['oldest'] or 0) / 60
+    sev = 'critical' if host_down or (row['count'] and late >= b['schedule_critical_minutes']) else 'warning' if row['count'] or row['legacy'] else 'ok'
+    parts = []
+    if row['count']:
+        parts.append('%d 个到点未触发（最久晚 %s，%s；例 %s）' % (row['count'], ago(row['oldest'] or 0), '、'.join(row['reasons'] or []), ids(row)))
+    if host_down:
+        parts.append('定时分区 %s 已关闭或租约过期' % '、'.join(host_down))
+    if row['legacy']:
+        parts.append('%d 个旧版定时任务仍启用（旧时钟已下线，永远不会触发）' % row['legacy'])
+    return [finding('business.overdue_schedules', sev, '定时任务到点未触发', '；'.join(parts), 'm1-schedule-not-fired.md', SQL_STEP % 'SCHEDULES')]
+
+
+def check_waits(r):
+    """Waiting for a person is normal and has no timeout; a wait with neither a question
+    nor an approval behind it can never resume, and that alerts. Long waits are counted
+    in the daily report."""
+    row = biz(r, SQL_WAITS)
+    r.facts['longWaits'] = row['count']
+    return [finding('business.waits', 'critical' if row['orphans'] else 'ok', 'run 等待永远不会恢复',
+                    '%d 个 run 在等用户，但既没有待回答的提问也没有待审批；例 %s' % (row['orphans'], ids(row, 'orphan_samples')),
+                    BUSINESS_RUNBOOK, SQL_STEP % 'WAITS')]
+
+
+def check_unknown_ops(r):
+    """An unknown outcome is settled only by a late receipt or a person: the alert stays
+    while any is unresolved (a warning), and a burst of new ones is critical."""
+    b, row = r.cfg['business'], biz(r, SQL_UNKNOWN_OPS)
+    n = row['count'] + row['bridge_unknown']
+    sev = 'critical' if n >= b['unknown_critical_count'] else 'warning' if n or row['backlog'] or row['bridge_backlog'] or row['expired'] else 'ok'
+    return [finding('business.unknown_ops', sev, '运行操作结果未知',
+                    '未解决：运行操作 %d 个、Bridge 文件命令 %d 个（近 %s 分钟新增 %d 个）；进行中但租约过期 %d 个；例 %s %s' % (
+                        row['backlog'], row['bridge_backlog'], b['window_minutes'], n, row['expired'], ids(row), ids(row, 'expired_samples')),
+                    BUSINESS_RUNBOOK, SQL_STEP % 'UNKNOWN_OPS')]
+
+
+def check_bridge(r):
+    """Laptops close every evening, so offline devices alone are not an alert (they are in
+    the daily report). Alerts: a device whose HTTP heartbeat arrives while its WebSocket
+    lease is dead (the server side of the connection is broken), and work that has waited
+    for an offline device for bridge_work_wait_minutes."""
+    b, row = r.cfg['business'], biz(r, SQL_BRIDGE)
+    r.facts['bridge'] = row
+    if deploying(r):
+        return None  # Web, which holds the Bridge connections, is stopped on purpose
+    sev = 'critical' if row['heartbeat_only'] >= 2 else 'warning' if row['heartbeat_only'] or row['offline_with_work'] else 'ok'
+    return [finding('business.bridge', sev, 'Bridge 连接异常',
+                    '心跳在但长连接断 %d 台；掉线且有操作等了 %d 分钟以上 %d 台；（最近 %d 小时在线过的 %d 台里 %d 台现在离线，例 %s）' % (
+                        row['heartbeat_only'], b['bridge_work_wait_minutes'], row['offline_with_work'], b['bridge_active_hours'],
+                        row['expected'], row['count'], ids(row)),
+                    BUSINESS_RUNBOOK, SQL_STEP % 'BRIDGE')]
+
+
+def check_deadlocks(r):
+    """pg_stat_database.deadlocks only grows; it restarts from 0 after a crash or a stats
+    reset, which starts a new series instead of counting as negative deadlocks."""
+    b, row = r.cfg['business'], biz(r, SQL_DEADLOCKS)
+    hour = r.now - 3600
+    samples = [s for s in r.state.get('deadlocks', []) if s[0] >= hour]
+    if samples and (row['total'] < samples[-1][1] or row['reset'] != samples[-1][2]):
+        samples = []
+    samples.append([r.now, row['total'], row['reset']])
+    r.state['deadlocks'] = samples
+    grew = samples[-1][1] - samples[0][1]
+    sev = 'critical' if grew >= b['deadlock_critical_per_hour'] or row['job_start'] else 'warning' if grew else 'ok'
+    return [finding('business.deadlocks', sev, '数据库死锁', '近 1 小时 %d 次（累计 %d）；作业因死锁启动失败 %d 个；例 %s' % (
+        grew, row['total'], row['job_start'], ids(row)), BUSINESS_RUNBOOK, 'grep -c "deadlock detected" /opt/homebrew/var/log/postgresql@17.log')]
+
+
+def failure_groups(r):
+    """Failure groups of the last 24 hours: `new` (a code not seen in the baseline days),
+    `increased` (at least failure_increase_min and failure_increase_ratio times its daily
+    baseline average) or `steady`."""
+    b = r.cfg['business']
+    groups = biz(r, SQL_FAILURE_GROUPS)['groups']
+    for g in groups:
+        g['dailyBefore'] = round(g['before'] / b['failure_baseline_days'], 2)
+        g['kind'] = 'new' if not g['before'] else 'increased' if (
+            g['today'] >= b['failure_increase_min'] and g['today'] >= b['failure_increase_ratio'] * max(g['dailyBefore'], 1)) else 'steady'
+    return {'generatedAt': time.strftime('%Y-%m-%dT%H:%M:%S%z', time.localtime(r.now)), 'windowHours': 24,
+            'baselineDays': b['failure_baseline_days'], 'groups': groups}
+
+
+PG_RESOURCE_ERRORS = ('out of shared memory', 'sorry, too many clients already', 'remaining connection slots are reserved')
+
+
+def check_pg_resources(r):
+    """Postgres running out of a shared resource (the lock table: "out of shared memory";
+    connection slots), read from the lines its log gained since the last round and counted
+    per hour; one exhausted lock table fails queries of every database on the server."""
+    path, b = expand(r.cfg['pgLog']), r.cfg['business']
+    try:
+        st = os.stat(path)
+    except OSError as err:
+        raise CheckError('cannot read %s: %s' % (path, err)) from None
+    seen = r.state.get('pgLog')
+    start = seen['offset'] if seen and seen['inode'] == st.st_ino and seen['offset'] <= st.st_size else (0 if seen else st.st_size)
+    end, skipped = st.st_size, max(0, st.st_size - 8 * 2 ** 20 - start)  # a huge burst: the last 8 MiB are enough
+    start += skipped
+    with open(path, 'rb') as f:
+        f.seek(start)
+        chunk = f.read(end - start)
+    complete = chunk[:chunk.rfind(b'\n') + 1]  # a line still being written is read next round
+    found = {}
+    for line in complete.decode('utf-8', 'replace').splitlines():
+        if any(pattern in line for pattern in PG_RESOURCE_ERRORS):
+            m = re.match(r'\S+ \S+ \S+ \[\d+\] (\S+) (?:ERROR|FATAL)', line)
+            db = m.group(1) if m else '?'
+            found[db] = found.get(db, 0) + 1
+    r.state['pgLog'] = {'inode': st.st_ino, 'offset': start + len(complete)}
+    if skipped:
+        found['（跳过未读 %d MiB）' % (skipped // 2 ** 20)] = 0
+    hour = [x for x in r.state.get('pgErrors', []) if r.now - x[0] < 3600]
+    if found:
+        hour.append([r.now, found])
+    r.state['pgErrors'] = hour
+    total, per_db = 0, {}
+    for _, counts in hour:
+        for db, n in counts.items():
+            per_db[db] = per_db.get(db, 0) + n
+            total += n
+    sev = 'critical' if total >= b['pg_errors_critical_per_hour'] else 'warning' if total else 'ok'
+    return [finding('business.pg_resources', sev, '数据库资源耗尽（锁表或连接数）',
+                    '近 1 小时日志里 %d 次 out of shared memory / 连接数用满，按库：%s' % (
+                        total, '、'.join('%s %d' % kv for kv in sorted(per_db.items(), key=lambda kv: -kv[1]))),
+                    'm1-database.md#资源耗尽', 'grep -E "out of shared memory|too many clients" %s | tail -20' % path)]
+
+
+BUSINESS_CHECKS = [
+    ('failed_runs', check_failed_runs, False, 'postgres'),
+    ('stuck_runs', check_stuck_runs, False, 'postgres'),
+    ('silent_runs', check_silent_runs, False, 'postgres'),
+    ('dead_letters', check_dead_letters, False, 'postgres'),
+    ('queue', check_queue, True, 'postgres'),
+    ('schedules', check_schedules, False, 'postgres'),
+    ('waits', check_waits, False, 'postgres'),
+    ('unknown_ops', check_unknown_ops, False, 'postgres'),
+    ('bridge', check_bridge, True, 'postgres'),
+    ('deadlocks', check_deadlocks, False, 'postgres'),
+    ('pg_resources', check_pg_resources, False, None),
+]
+
+SQL_DAILY = """
+select (select count(*) from allrice_runs r join allrice_jobs j on j.run_id = r.id where r.completed_at >= now() - interval '24 hours')::int as finished,
+  (select count(*) from allrice_runs r join allrice_jobs j on j.run_id = r.id where r.completed_at >= now() - interval '24 hours' and r.state = 'failed')::int as failed,
+  (select count(*) from allrice_runs r join allrice_jobs j on j.run_id = r.id where r.completed_at >= now() - interval '24 hours' and r.state = 'canceled')::int as canceled,
+  (select count(*) from allrice_jobs where status = 'dead_letter' and completed_at >= now() - interval '24 hours')::int as dead_letters,
+  (select count(*) from allrice_runs where state = 'running')::int as running,
+  (select count(*) from allrice_runs where state = 'waiting_approval')::int as waiting,
+  (select count(*) from allrice_runtime_operations where snapshot->>'status' = 'unknown')::int as unknown_ops,
+  (select count(*) from allrice_automations where clock_owner in ('native_once', 'native_recurring') and status = 'enabled' and deleted_at is null)::int as schedules"""
+
+
+def daily_business(r):
+    try:
+        d = biz(r, SQL_DAILY)
+    except CheckError as err:
+        return ['运行：查询失败（%s）' % err]
+    lines = ['运行：24 小时结束 %d 个，失败 %d 个，取消 %d 个（含冒烟测试）；新增死信 %d 个' % (d['finished'], d['failed'], d['canceled'], d['dead_letters']),
+             '现在：运行中 %d 个，等用户 %d 个，结果未知的操作 %d 个，启用中的定时任务 %d 个' % (d['running'], d['waiting'], d['unknown_ops'], d['schedules'])]
+    for name, fn in (('longWaits', check_waits), ('bridge', check_bridge)):
+        if name not in r.facts:  # `monitor daily` alone has not run the checks: read them now
+            try:
+                fn(r)
+            except CheckError:
+                pass
+    lines.append('等用户超过 %d 小时：%s 个；Bridge 最近 24 小时在线过 %s 台、现在离线 %s 台' % (
+        r.cfg['business']['wait_minutes'] // 60, r.facts.get('longWaits', '?'), (r.facts.get('bridge') or {}).get('expected', '?'),
+        (r.facts.get('bridge') or {}).get('count', '?')))
+    stuck = r.state.get('alerts', {}).get('business.stuck_runs')
+    if stuck:
+        lines.append('卡住：' + stuck['detail'])
+    try:
+        groups = failure_groups(r)['groups']
+        part = lambda kind: [g for g in groups if g['kind'] == kind]
+        lines.append('失败分组（24 小时，按错误码）：新出现 %d 组%s，变多 %d 组%s，其余 %d 组（明细：monitor failures --json）' % (
+            len(part('new')), '（%s）' % '、'.join(g['code'] for g in part('new')[:5]) if part('new') else '',
+            len(part('increased')), '（%s）' % '、'.join('%s %d' % (g['code'], g['today']) for g in part('increased')[:5]) if part('increased') else '',
+            len(part('steady'))))
+    except CheckError as err:
+        lines.append('失败分组：查询失败（%s）' % err)
+    return lines
+
+
 # name, function, re-run once before alerting, skip unless this earlier check is ok
 M1_CHECKS = [
     ('postgres', check_postgres, True, None),
@@ -1131,7 +1623,7 @@ M1_CHECKS = [
     ('backup', check_backup, False, None),
     ('peer', check_peer, True, None),
     ('monitor', check_monitor, False, None),
-]
+] + BUSINESS_CHECKS
 
 
 def run_checks(r, checks):
@@ -1266,6 +1758,8 @@ def do_round(cfg, peer):
         else:
             flush_incidents(r)
         deliver(r, compose(r, events))
+        if not peer and daily_due(r):
+            send_daily(r)
         r.state['lastRound'] = {'at': r.now, 'seconds': round(time.time() - start, 1), 'error': error}
         r.state['rounds'] = [t for t in r.state.get('rounds', []) if r.now - t < 86400] + [r.now]
         r.save()
@@ -1276,6 +1770,65 @@ def do_round(cfg, peer):
     finally:
         signal.alarm(0)
         lock.close()
+
+
+# ---------- daily report (M1) ----------
+
+
+def daily_due(r):
+    local = time.localtime(r.now)
+    return local.tm_hour >= r.cfg['dailyHour'] and r.state.get('dailySent') != time.strftime('%Y-%m-%d', local)
+
+
+def daily_text(r):
+    now, cfg = r.now, r.cfg
+    lines = ['📋 %s%s 日报 %s' % ('[%s] ' % cfg['label'] if cfg['label'] else '', cfg['name'], time.strftime('%m-%d %H:%M', time.localtime(now))), '']
+    lines += daily_business(r)
+    rows = r.facts.get('subscription')
+    if rows is None:
+        try:
+            rows = json.loads(r.psql(SUBSCRIPTION_SQL, cfg['databaseUrl']) or '[]')
+        except CheckError as err:
+            rows, err_text = [], str(err)
+            lines.append('订阅：查询失败（%s）' % err_text)
+    for row in rows or []:
+        used = [w['usedPercent'] for b in (row.get('quota') or {}).get('buckets', []) for w in b.get('windows', []) if w.get('usedPercent') is not None]
+        lines.append('订阅：槽位 %s %s，%s，额度已用 %s' % (row['slot'], row['label'], row['status'], '%d%%' % max(used) if used else '未知'))
+    for d in cfg['disks']:
+        try:
+            st = os.statvfs(expand(d['path']))
+            free = st.f_bavail * st.f_frsize / 2 ** 30
+            lines.append('磁盘：%s 剩 %s GiB' % (d['path'], '%.0f' % free if free >= 10 else '%.2f' % free))
+        except OSError as err:
+            lines.append('磁盘：%s 查不到（%s）' % (d['path'], err))
+    backup = check_backup(r)[0]
+    lines.append('备份：%s' % (backup['detail'] + ('，' + r.facts['backup']['detail'] if r.facts.get('backup', {}).get('detail') else '')))
+    day = [h for h in r.state.get('history', []) if now - h['at'] < 86400]
+    opened = [h for h in day if h['event'] == 'opened']
+    lines.append('告警：过去 24 小时新开 %d 项、恢复 %d 项' % (len(opened), len([h for h in day if h['event'] == 'recovered'])))
+    still = r.state.get('alerts', {})
+    if still:
+        lines.append('当前未恢复：' + '；'.join('%s（%s）' % (a['title'], ago(now - a['since'])) for a in still.values()))
+    peer, peer_tools = still.get('peer'), (r.facts.get('peer') or {}).get('tools')
+    lines.append('看门：huihuimac %s%s' % ('异常：' + peer['detail'] if peer else '正常',
+                                         '（版本 %s，本机 %s）' % (peer_tools[:8], hb_tools()[:8]) if peer_tools and peer_tools != hb_tools() else ''))
+    rounds = [t for t in r.state.get('rounds', []) if now - t < 86400]
+    tg = r.state.get('telegram', {})
+    lines.append('监控：24 小时跑了 %d 轮；TG 待发 %d 条；事件表待写 %d 条%s' % (
+        len(rounds), len(r.state.get('outbox', [])), len(r.state.get('incidentOutbox', [])),
+        '；事件表积压超上限累计丢弃 %d 条' % r.state['incidentDropped'] if r.state.get('incidentDropped') else ''))
+    if tg.get('failingSince'):
+        lines.append('　TG 从 %s 起发不出去：%s' % (time.strftime('%m-%d %H:%M', time.localtime(tg['failingSince'])), (tg.get('lastError') or {}).get('error', '')))
+    return '\n'.join(lines)
+
+
+def send_daily(r):
+    r.state['dailySent'] = time.strftime('%Y-%m-%d', time.localtime(r.now))
+    try:
+        text = daily_text(r)
+    except Exception as err:  # the report must not break the round that carries it
+        text = '📋 %s 日报生成失败：%s: %s' % (r.cfg['name'], type(err).__name__, short(err, 200))
+    deliver(r, text)
 
 
 # ---------- peer (huihuimac) ----------
@@ -1358,17 +1911,19 @@ def status(cfg):
                       'heartbeatAge': int(time.time() - hb['at']) if hb.get('at') else None,
                       'openAlerts': {k: {'severity': a['severity'], 'title': a['title'], 'detail': a['detail'], 'since': time.strftime('%m-%d %H:%M', time.localtime(a['since']))}
                                      for k, a in state.get('alerts', {}).items()},
-                      'telegram': hb.get('telegram'), 'incidents': hb.get('incidents'), 'incidentsDropped': state.get('incidentDropped', 0)},
+                      'telegram': hb.get('telegram'), 'incidents': hb.get('incidents'), 'incidentsDropped': state.get('incidentDropped', 0),
+                      'dailySent': state.get('dailySent')},
                      ensure_ascii=False, indent=1))
 
 
 def main(argv):
     p = argparse.ArgumentParser(prog='monitor')
-    p.add_argument('command', choices=['run', 'peer', 'status', 'test-alert', 'launchd', 'ingest-incidents'])
+    p.add_argument('command', choices=['run', 'peer', 'daily', 'failures', 'status', 'test-alert', 'launchd', 'ingest-incidents'])
     p.add_argument('action', nargs='?', choices=['install', 'remove'])
     p.add_argument('--config')
     p.add_argument('--peer', action='store_true')
-    p.add_argument('--dry-run', action='store_true', help='run/peer: print what would be sent; send and store nothing')
+    p.add_argument('--dry-run', action='store_true', help='run/peer/daily: print what would be sent; send and store nothing')
+    p.add_argument('--json', action='store_true', help='failures: the groups as JSON')
     a = p.parse_args(argv)
     peer = a.command == 'peer' or a.peer
     cfg = load_config(a.config, peer)
@@ -1383,6 +1938,21 @@ def main(argv):
         print('\n\n'.join(compose(r, evaluate(r, findings, ran))) or '(nothing to send)')
     elif a.command in ('run', 'peer'):
         do_round(cfg, peer)
+    elif a.command == 'failures':
+        out = failure_groups(Round(cfg))
+        if a.json:
+            print(json.dumps(out, ensure_ascii=False, indent=1, default=str))
+        else:
+            for g in out['groups']:
+                print('%-9s %-40s 24h %3d  before %3d (%.2f/day)  e.g. %s' % (g['kind'], g['code'], g['today'], g['before'], g['dailyBefore'], (g['samples'] or [''])[0]))
+    elif a.command == 'daily' and a.dry_run:
+        print(daily_text(Round(cfg)))
+    elif a.command == 'daily':
+        lock = locked(cfg, wait=300)
+        r = Round(cfg, recover=True)
+        send_daily(r)
+        r.save()
+        lock.close()
     elif a.command == 'status':
         status(cfg)
     elif a.command == 'ingest-incidents':
