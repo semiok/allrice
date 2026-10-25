@@ -642,5 +642,129 @@ class Config(unittest.TestCase):
         self.assertEqual(peer['telegramEnv'], os.path.expanduser('~/.config/allrice-monitor/telegram.env'))
 
 
+class Business(unittest.TestCase):
+    def judge(self, fn, row, **cfg):
+        r = make_round()
+        r.cfg['business'] = dict(r.cfg['business'], **cfg)
+        with mock.patch.object(monitor, 'biz', return_value=row), mock.patch.object(monitor, 'deploying', return_value=False):
+            out = fn(r)
+        return None if out is None else out[0]['severity']
+
+    def test_failed_runs_needs_volume_and_a_jump(self):
+        row = lambda n, total, pct, base: {'count': n, 'total': total, 'pct': pct, 'baseline_pct': base, 'codes': ['X'], 'samples': []}
+        self.assertEqual(self.judge(monitor.check_failed_runs, row(2, 2, 100, 0)), 'ok')  # too few runs to judge
+        self.assertEqual(self.judge(monitor.check_failed_runs, row(3, 10, 30, 5)), 'warning')
+        self.assertEqual(self.judge(monitor.check_failed_runs, row(3, 15, 20, 15)), 'ok')  # no jump over the baseline, below the sustained line
+        self.assertEqual(self.judge(monitor.check_failed_runs, row(6, 10, 60, 50)), 'critical')
+        self.assertEqual(self.judge(monitor.check_failed_runs, row(4, 10, 40, 40)), 'warning')  # sustained: its own baseline is high
+        self.assertEqual(self.judge(monitor.check_failed_runs, row(3, 3, 100, 0)), 'warning')  # low traffic, nothing succeeds
+        self.assertEqual(self.judge(monitor.check_failed_runs, row(3, 4, 75, 0)), 'warning')  # low traffic, most fail
+        self.assertEqual(self.judge(monitor.check_failed_runs, row(2, 4, 50, 0)), 'ok')
+        self.assertEqual(self.judge(monitor.check_failed_runs, row(3, 10, 30, 30)), 'warning')  # sustained 30%
+
+    def test_queue_and_stuck_wait_out_maintenance(self):
+        q = {'count': 2, 'samples': [], 'oldest': 400, 'active': 1, 'admission': 'open'}
+        self.assertEqual(self.judge(monitor.check_queue, q), 'warning')
+        self.assertEqual(self.judge(monitor.check_queue, dict(q, oldest=1000)), 'critical')
+        self.assertEqual(self.judge(monitor.check_queue, dict(q, active=0)), 'critical')  # nobody is claiming
+        self.assertIsNone(self.judge(monitor.check_queue, dict(q, admission='closed')))
+        self.assertIsNone(self.judge(monitor.check_stuck_runs, {'count': 1, 'samples': [], 'reasons': [], 'admission': 'draining'}))
+        self.assertEqual(self.judge(monitor.check_stuck_runs, {'count': 1, 'samples': ['abc'], 'reasons': ['lease_expired'], 'admission': 'open'}), 'critical')
+
+    def test_schedules(self):
+        row = {'count': 0, 'samples': [], 'oldest': None, 'reasons': [], 'legacy': 0, 'host_down': None, 'enabled_native': 0, 'admission': 'open'}
+        self.assertEqual(self.judge(monitor.check_schedules, row), 'ok')
+        self.assertEqual(self.judge(monitor.check_schedules, dict(row, count=1, oldest=700, reasons=['native_once_not_fired'])), 'warning')
+        self.assertEqual(self.judge(monitor.check_schedules, dict(row, count=1, oldest=1900)), 'critical')
+        self.assertEqual(self.judge(monitor.check_schedules, dict(row, host_down=['allrice-once-v1'])), 'critical')  # SQL lists only partitions with enabled tasks
+        with mock.patch.object(monitor, 'biz', return_value=dict(row, host_down=['allrice-once-v1'])), mock.patch.object(monitor, 'deploying', return_value=True):
+            self.assertIsNone(monitor.check_schedules(make_round()))  # a deploy stops the Worker and closes partitions on purpose
+        self.assertEqual(self.judge(monitor.check_schedules, dict(row, legacy=1)), 'warning')
+        self.assertEqual(self.judge(monitor.check_schedules, dict(row, count=1, oldest=None, reasons=['native_once_missed'])), 'warning')
+
+    def test_waits_dead_letters_unknown_bridge(self):
+        self.assertEqual(self.judge(monitor.check_waits, {'count': 0, 'orphans': 1, 'samples': [], 'orphan_samples': []}), 'critical')
+        self.assertEqual(self.judge(monitor.check_waits, {'count': 5, 'orphans': 0, 'samples': [], 'orphan_samples': []}), 'ok')  # people take their time
+        dead = {'count': 1, 'codes': ['LEASE_EXHAUSTED'], 'types': ['t'], 'samples': []}
+        self.assertEqual(self.judge(monitor.check_dead_letters, dead), 'warning')
+        self.assertEqual(self.judge(monitor.check_dead_letters, dict(dead, codes=['POLICY_DENIED'])), 'critical')
+        unk = {'count': 0, 'bridge_unknown': 0, 'bridge_backlog': 0, 'backlog': 4, 'expired': 0, 'samples': [], 'expired_samples': []}
+        self.assertEqual(self.judge(monitor.check_unknown_ops, unk), 'warning')  # unresolved: stays until settled
+        self.assertEqual(self.judge(monitor.check_unknown_ops, dict(unk, backlog=0)), 'ok')
+        self.assertEqual(self.judge(monitor.check_unknown_ops, dict(unk, backlog=0, bridge_backlog=1)), 'warning')  # an old Bridge command too
+        self.assertEqual(self.judge(monitor.check_unknown_ops, dict(unk, count=3)), 'critical')
+        br = {'count': 5, 'samples': [], 'offline_with_work': 0, 'heartbeat_only': 0, 'expected': 5}
+        self.assertEqual(self.judge(monitor.check_bridge, br), 'ok')  # everybody closed the laptop for the night
+        self.assertEqual(self.judge(monitor.check_bridge, dict(br, offline_with_work=1)), 'warning')
+        self.assertEqual(self.judge(monitor.check_bridge, dict(br, heartbeat_only=1)), 'warning')
+        self.assertEqual(self.judge(monitor.check_bridge, dict(br, heartbeat_only=2)), 'critical')
+
+    def test_deadlocks_per_hour_and_stats_reset(self):
+        r = make_round()
+
+        def at(t, total, reset=None, job_start=0):
+            r.now = t
+            with mock.patch.object(monitor, 'biz', return_value={'total': total, 'reset': reset, 'job_start': job_start, 'samples': []}):
+                return monitor.check_deadlocks(r)[0]['severity']
+
+        self.assertEqual(at(0, 10), 'ok')
+        self.assertEqual(at(300, 11), 'warning')
+        self.assertEqual(at(600, 16), 'critical')
+        self.assertEqual(at(900, 2, reset='2026-10-25'), 'ok')  # stats reset: a new series, not -14
+        self.assertEqual(at(4600, 2, reset='2026-10-25'), 'ok')
+        self.assertEqual(at(4900, 2, reset='2026-10-25', job_start=1), 'critical')
+
+    def test_pg_resource_errors_from_the_log(self):
+        r = make_round()
+        log = os.path.join(r.cfg['stateDir'], 'pg.log')
+        r.cfg['pgLog'] = log
+        line = lambda db: '2026-10-25 16:14:42.521 CST [12102] %s ERROR:  out of shared memory\n' % db
+        with open(log, 'w') as f:
+            f.write(line('allrice_b2') * 5)  # history before the monitor started is not counted
+        r.now = 0
+        self.assertEqual(monitor.check_pg_resources(r)[0]['severity'], 'ok')
+        with open(log, 'a') as f:
+            f.write(line('allrice_b2') + line('allrice_dev') + '2026-10-25 16:15:00.000 CST [1] allrice_dev LOG:  checkpoint\n')
+        r.now = 240
+        got = monitor.check_pg_resources(r)[0]
+        self.assertEqual(got['severity'], 'warning')
+        self.assertIn('allrice_b2 1', got['detail'])
+        with open(log, 'a') as f:  # a line still being written is counted once it is complete
+            f.write(line('allrice_dev')[:30])
+        r.now = 300
+        self.assertIn('allrice_dev 1', monitor.check_pg_resources(r)[0]['detail'])
+        with open(log, 'a') as f:
+            f.write(line('allrice_dev')[30:])
+        r.now = 360
+        self.assertIn('allrice_dev 2', monitor.check_pg_resources(r)[0]['detail'])
+        with open(log, 'w') as f:  # rotated (or truncated): read from the start
+            f.write(line('allrice_dev') * 25)
+        r.now = 480
+        self.assertEqual(monitor.check_pg_resources(r)[0]['severity'], 'critical')
+        r.now = 480 + 3601
+        self.assertEqual(monitor.check_pg_resources(r)[0]['severity'], 'ok')  # an hour later, nothing new
+
+    def test_failure_groups_new_and_increased(self):
+        r = make_round()
+        rows = {'groups': [{'code': 'CLOUD_WATCHDOG_UNAVAILABLE', 'today': 4, 'before': 0, 'samples': ['a'], 'messages': []},
+                           {'code': 'MODEL_TIMEOUT', 'today': 6, 'before': 7, 'samples': ['b'], 'messages': []},
+                           {'code': 'TOOL_DENIED', 'today': 1, 'before': 14, 'samples': ['c'], 'messages': []}]}
+        with mock.patch.object(monitor, 'biz', return_value=rows):
+            out = monitor.failure_groups(r)
+        self.assertEqual([(g['code'], g['kind']) for g in out['groups']],
+                         [('CLOUD_WATCHDOG_UNAVAILABLE', 'new'), ('MODEL_TIMEOUT', 'increased'), ('TOOL_DENIED', 'steady')])
+        self.assertEqual(out['baselineDays'], 7)
+        json.dumps(out)  # exportable as is
+
+    def test_daily_once_a_day(self):
+        r = make_round()
+        r.now = monitor.time.mktime((2026, 10, 25, 8, 59, 0, 0, 0, -1))
+        self.assertFalse(monitor.daily_due(r))
+        r.now += 60
+        self.assertTrue(monitor.daily_due(r))
+        r.state['dailySent'] = '2026-10-25'
+        self.assertFalse(monitor.daily_due(r))
+
+
 if __name__ == '__main__':
     unittest.main()
