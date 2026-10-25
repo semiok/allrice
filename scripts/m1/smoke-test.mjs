@@ -290,8 +290,17 @@ const versionEnd = await versions();
 {
   const seen = [versionStart.web, versionEnd.web];
   if (workerBase) seen.push(versionStart.worker, versionEnd.worker);
-  const expected = args['expect-sha'] || versionStart.web;
-  const pass = Boolean(expected) && seen.every((v) => v === expected);
+  // `--expect-sha` given without a value fails rather than falling back to Web's version.
+  const expected = (
+    'expect-sha' in args ? (args['expect-sha'] ?? '') : (versionStart.web ?? '')
+  ).toLowerCase();
+  // Every report must be the same full SHA; a short SHA (7+ hex digits) then names it.
+  const sha = seen[0] ?? '';
+  const pass =
+    /^[0-9a-f]{40}$/.test(sha) &&
+    seen.every((v) => v === sha) &&
+    (expected === sha ||
+      (/^[0-9a-f]{7,39}$/.test(expected) && sha.startsWith(expected)));
   results.push({
     check: 'version',
     pass,

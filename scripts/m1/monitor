@@ -97,6 +97,13 @@ M1 = dict(
     extraImages=[],
     extraColimaProfiles=[],
     disks=[{'path': '~', 'warnFreeGiB': 100, 'criticalFreeGiB': 30}],
+    # `memory_pressure -Q` free percentage: 76% idle, 64% with 3 chats + 1 Office export
+    # running (MET-216 capacity rehearsal, 10-25).
+    memoryWarnFreePct=20,
+    memoryCriticalFreePct=10,
+    # The Worker keeps a DSH process per used conversation until it restarts (about
+    # 100-180 MB each), so the count only grows between deploys.
+    dshWarnProcesses=30,
     backupLog='~/allrice-backups/logs/backup.log',
     backupLabel='ai.bplabs.allrice-dev-backup',
     backupWarnHours=26,
@@ -1034,6 +1041,39 @@ def check_disk(r):
     return out
 
 
+DSH_RUNTIME = 'allrice-jsonrpc-runtime.mjs'
+
+
+def check_memory(r):
+    """System memory, and the DSH processes left behind by finished conversations: the
+    Worker has no idle reaping yet, so they stay until it restarts. Counts every DSH
+    process on the machine (QA instances too), since they share the same memory."""
+    cfg, out = r.cfg, []
+    code, text, err = run(['/usr/bin/memory_pressure', '-Q'])
+    m = re.search(r'free percentage:\s*(\d+)%', text)
+    if code != 0 or not m:
+        out.append(unknown('memory', '内存余量查不到'))
+    else:
+        free = r.facts['memoryFreePct'] = int(m.group(1))
+        sev = 'critical' if free < cfg['memoryCriticalFreePct'] else 'warning' if free < cfg['memoryWarnFreePct'] else 'ok'
+        out.append(finding('memory', sev, '内存余量不足',
+                           '系统可用内存 %d%%（警告线 %d%%，严重线 %d%%）' % (free, cfg['memoryWarnFreePct'], cfg['memoryCriticalFreePct']),
+                           'm1-worker-crash.md', 'memory_pressure -Q; ps -axo rss,etime,command | sort -nr | head -15'))
+    code, text, err = run(['/bin/ps', '-axo', 'rss=,command='])
+    if code != 0:
+        out.append(unknown('dsh_processes', 'DSH 进程数查不到'))
+    else:
+        # Only node processes running the runtime: not a `grep` or `ps` that names it.
+        rss = [int(p[0]) for p in (line.split(None, 2) for line in text.splitlines())
+               if len(p) == 3 and os.path.basename(p[1]) == 'node' and DSH_RUNTIME in p[2]]
+        r.facts['dshProcesses'] = {'count': len(rss), 'mb': sum(rss) // 1024}
+        out.append(finding('dsh_processes', 'warning' if len(rss) >= cfg['dshWarnProcesses'] else 'ok', 'DSH 进程越积越多',
+                           '%d 个 DSH 进程常驻，共 %d MB（警告线 %d 个）。对话结束后进程不退出，要等 Worker 重启才释放'
+                           % (len(rss), sum(rss) // 1024, cfg['dshWarnProcesses']),
+                           'm1-worker-crash.md', 'ps -axo rss,etime,command | grep %s | grep -v grep | sort -nr | head' % DSH_RUNTIME))
+    return out
+
+
 def check_backup(r):
     """The last successful run (backup.log) and how the last run ended (launchd's exit
     code), so a failed 04:00 run alerts with the next round, not a day later."""
@@ -1620,6 +1660,7 @@ M1_CHECKS = [
     ('tunnel', check_tunnel, True, None),
     ('public_entry', check_public_entry, True, None),
     ('disk', check_disk, False, None),
+    ('memory', check_memory, False, None),
     ('backup', check_backup, False, None),
     ('peer', check_peer, True, None),
     ('monitor', check_monitor, False, None),
@@ -1801,6 +1842,12 @@ def daily_text(r):
             lines.append('磁盘：%s 剩 %s GiB' % (d['path'], '%.0f' % free if free >= 10 else '%.2f' % free))
         except OSError as err:
             lines.append('磁盘：%s 查不到（%s）' % (d['path'], err))
+    if 'memoryFreePct' not in r.facts:
+        check_memory(r)
+    dsh = r.facts.get('dshProcesses')
+    lines.append('内存：可用 %s，DSH 进程 %s' % (
+        '%d%%' % r.facts['memoryFreePct'] if 'memoryFreePct' in r.facts else '查不到',
+        '%d 个（共 %d MB）' % (dsh['count'], dsh['mb']) if dsh else '查不到'))
     backup = check_backup(r)[0]
     lines.append('备份：%s' % (backup['detail'] + ('，' + r.facts['backup']['detail'] if r.facts.get('backup', {}).get('detail') else '')))
     day = [h for h in r.state.get('history', []) if now - h['at'] < 86400]
