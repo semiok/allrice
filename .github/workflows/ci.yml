@@ -8,6 +8,15 @@ on:
 permissions:
   contents: read
 
+# A pull request's runs share one group, so a newer run replaces its older ones (running
+# or queued): stale runs held the runners the current commits needed (10-25). Re-running an
+# old commit's run therefore replaces the newer one too. A push to main gets a group of its
+# own (the run id), so no merge is cancelled or left pending behind another. The event
+# name keeps a pull request number and a run id from ever naming the same group.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   tenant-workbench-browser:
     runs-on: ubuntu-latest
