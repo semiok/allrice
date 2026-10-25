@@ -1,4 +1,5 @@
 import { expect, it } from 'vitest';
+import { z } from 'zod';
 import { ProjectWorkspaceToolInputSchema } from '@allrice/contracts';
 import { nativeBrokerRoundtrip } from './dsh-native-broker.fixture.js';
 const project = {
@@ -239,3 +240,61 @@ it.each([
   },
   45000,
 );
+
+/** Top-level property names of every branch of a JSON Schema union. */
+function contractFields(schema: unknown): string[] {
+  const node = schema as {
+    properties?: Record<string, unknown>;
+    anyOf?: unknown[];
+    oneOf?: unknown[];
+    allOf?: unknown[];
+  };
+  return [
+    ...Object.keys(node.properties ?? {}),
+    ...[
+      ...(node.anyOf ?? []),
+      ...(node.oneOf ?? []),
+      ...(node.allOf ?? []),
+    ].flatMap(contractFields),
+  ];
+}
+
+it('a uv resolve for another CPU reaches the Broker with its architecture', async () => {
+  const args = {
+    action: 'resolve',
+    manager: 'uv',
+    packages: [{ name: 'numpy', version: '2.2.6' }],
+    architecture: 'amd64',
+  };
+  await nativeBrokerRoundtrip({
+    canonicalName: 'workspace.project',
+    wireName: 'workspace_project',
+    args,
+    invalidArgs: { ...args, architecture: 'x86_64' },
+    // Refused by the DSH parameter enum itself, before the contract parses it.
+    invalidResultIncludes: 'architecture',
+    inspectSchema(schema) {
+      // The model sees this hand-written schema, not the contract: every field of
+      // every workspace.project branch the contract accepts must be offered here.
+      for (const key of contractFields(
+        z.toJSONSchema(ProjectWorkspaceToolInputSchema, {
+          unrepresentable: 'any',
+        }),
+      ))
+        expect(schema.properties).toHaveProperty(key);
+      expect(schema.properties).toHaveProperty('architecture.enum', [
+        'amd64',
+        'arm64',
+      ]);
+    },
+    onToolCall: async (call) => {
+      expect(ProjectWorkspaceToolInputSchema.parse(call.arguments)).toEqual(
+        args,
+      );
+      return {
+        modelContent: 'Synthetic native resolve roundtrip accepted.',
+        summary: '项目依赖解析原生参数往返验证',
+      };
+    },
+  });
+}, 45000);

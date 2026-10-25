@@ -36,7 +36,7 @@ export const ProjectDependencyResolveInputSchema = z
         manager: z.literal('uv'),
         packages: z.array(python).min(1).max(32),
         /** CPU of the Linux environment that will install the lock. Omitted: the
-         * server's. Set only for a Bridge whose CPU differs from the server's. */
+         * server's. Set for a machine whose CPU differs from the server's. */
         architecture: z.enum(['amd64', 'arm64']).optional(),
       })
       .strict(),
