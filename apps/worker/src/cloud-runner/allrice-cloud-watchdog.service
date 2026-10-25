@@ -20,4 +20,6 @@ MemoryMax=64M
 TasksMax=16
 
 [Install]
-WantedBy=multi-user.target
+# Colima stops and starts Docker while the VM boots; Requires= stops the watchdog with
+# Docker, and this makes every Docker start bring it back. Needs `systemctl reenable`.
+WantedBy=multi-user.target docker.service
