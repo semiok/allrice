@@ -231,6 +231,12 @@ const requiredReplayScenarios = [
   'legacy-format-refusal',
   'durable-question-restart',
   'native-progress-decision',
+  'journal-contract-surfaces',
+  'journal-corpus-versions',
+  'journal-replay-tool',
+  'journal-replay-question',
+  'journal-replay-continued',
+  'journal-replay-bootstrap-reference',
 ];
 const replayById = new Map(
   (compatibility.goldenReplay ?? []).map((scenario) => [scenario.id, scenario]),

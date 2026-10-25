@@ -1,0 +1,136 @@
+{
+  "capturedWith": {
+    "allriceCommit": "d59e2ecdd61133f5d19d159554bb32e33e77e902",
+    "distributionVersion": "0.2.1-rc.2",
+    "sessionFormat": 4,
+    "contract": { "current": 1, "readsFrom": 1 },
+    "nativeArtifactId": "sha256:e8c0d23b0214082e3269f39e3246c30d0c293a0f75847d54ea205a27e9ce20d8",
+    "platform": "darwin-arm64 node v22.23.2",
+    "model": "synthetic loopback HTTP; no provider credentials",
+    "normalizedCwd": "/allrice/journal-fixture"
+  },
+  "scenarios": [
+    {
+      "id": "ordinary-tool",
+      "sessionId": "dsh-00000000-0000-4000-8000-000000000001",
+      "toolResult": "journal-corpus-result",
+      "files": [
+        {
+          "path": "ordinary-tool/--allrice-journal-fixture--/dsh-00000000-0000-4000-8000-000000000001/session.lock",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "ordinary-tool/--allrice-journal-fixture--/dsh-00000000-0000-4000-8000-000000000001/session.v4.jsonl",
+          "sha256": "3d7a63df0f1b95d6c0c1215ec495d6929d84daa9dbd53b516f16cdaa0df315e6"
+        }
+      ]
+    },
+    {
+      "id": "parked-question",
+      "sessionId": "dsh-00000000-0000-4000-8000-000000000002",
+      "answer": {
+        "sessionId": "dsh-00000000-0000-4000-8000-000000000002",
+        "questionId": "question-f4389681-f447-414b-9099-f3d2075bfdba",
+        "turnId": "dsh-00000000-0000-4000-8000-000000000002:turn:1",
+        "inputId": "00000000-0000-4000-8000-000000000003",
+        "text": "allrice:user-question:v1:{\"questionId\":\"question-f4389681-f447-414b-9099-f3d2075bfdba\",\"answers\":[{\"id\":\"choice\",\"selected\":[\"Continue\"]}]}"
+      },
+      "files": [
+        {
+          "path": "parked-question/--allrice-journal-fixture--/dsh-00000000-0000-4000-8000-000000000002/session.lock",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "parked-question/--allrice-journal-fixture--/dsh-00000000-0000-4000-8000-000000000002/session.v4.jsonl",
+          "sha256": "dd0be45fe0eceef8e439a13f1468a9b61aa868914e61c4cde3bb96245bc37115"
+        }
+      ]
+    },
+    {
+      "id": "answered-question",
+      "sessionId": "dsh-00000000-0000-4000-8000-000000000002",
+      "answer": {
+        "sessionId": "dsh-00000000-0000-4000-8000-000000000002",
+        "questionId": "question-f4389681-f447-414b-9099-f3d2075bfdba",
+        "turnId": "dsh-00000000-0000-4000-8000-000000000002:turn:1",
+        "inputId": "00000000-0000-4000-8000-000000000003",
+        "text": "allrice:user-question:v1:{\"questionId\":\"question-f4389681-f447-414b-9099-f3d2075bfdba\",\"answers\":[{\"id\":\"choice\",\"selected\":[\"Continue\"]}]}"
+      },
+      "proof": {
+        "status": "adopted",
+        "inputId": "00000000-0000-4000-8000-000000000003",
+        "messageId": "question-f4389681-f447-414b-9099-f3d2075bfdba",
+        "sequence": 18,
+        "turnId": "dsh-00000000-0000-4000-8000-000000000002:turn:1",
+        "checkpoint": "question_resolved"
+      },
+      "files": [
+        {
+          "path": "answered-question/--allrice-journal-fixture--/dsh-00000000-0000-4000-8000-000000000002/session.lock",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "answered-question/--allrice-journal-fixture--/dsh-00000000-0000-4000-8000-000000000002/session.v4.jsonl",
+          "sha256": "81245e092db0ce7b056784ea65e1416431c06a31121feffeb54ce1e165cc3f16"
+        }
+      ]
+    },
+    {
+      "id": "continued-question",
+      "sessionId": "dsh-00000000-0000-4000-8000-000000000002",
+      "answer": {
+        "sessionId": "dsh-00000000-0000-4000-8000-000000000002",
+        "questionId": "question-f4389681-f447-414b-9099-f3d2075bfdba",
+        "turnId": "dsh-00000000-0000-4000-8000-000000000002:turn:1",
+        "inputId": "00000000-0000-4000-8000-000000000003",
+        "text": "allrice:user-question:v1:{\"questionId\":\"question-f4389681-f447-414b-9099-f3d2075bfdba\",\"answers\":[{\"id\":\"choice\",\"selected\":[\"Continue\"]}]}"
+      },
+      "reply": "Journal question continued.",
+      "files": [
+        {
+          "path": "continued-question/--allrice-journal-fixture--/dsh-00000000-0000-4000-8000-000000000002/session.lock",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "continued-question/--allrice-journal-fixture--/dsh-00000000-0000-4000-8000-000000000002/session.v4.jsonl",
+          "sha256": "4716c1597afae1b1fdae766aa77fc849cba5657b25f9b3cbc03e20cd09b8f33d"
+        }
+      ]
+    },
+    {
+      "id": "bootstrap-reference",
+      "sessionId": "dsh-00000000-0000-4000-8000-000000000004",
+      "coverage": {
+        "scope": "sha256:ba4e1ba1155957003872a288917b94c77eb55cbda6c52405898c7a558a9d523a",
+        "candidates": [
+          {
+            "key": "user:00000000-0000-4000-8000-000000000005",
+            "digest": "sha256:2a60446c98c2a99ae49b17f78b97360211b55a8f46564ef1929826f97a70827d"
+          },
+          {
+            "key": "assistant:00000000-0000-4000-8000-000000000006",
+            "digest": "sha256:0a3bc9c7bfa603feccc7bf44a32ec6f5fd78cdf9e4c7d33a1465f18cbb537f3c"
+          },
+          {
+            "key": "user:00000000-0000-4000-8000-000000000007",
+            "digest": "sha256:7feedb878eb666a81cbf76e3dd3dc09aec8f39ae05414d976cfedf0f647702f7"
+          },
+          {
+            "key": "assistant:00000000-0000-4000-8000-000000000008",
+            "digest": "sha256:c534be57beb55aeb0bb52cd638d465f4a65674781c872dd9f5b71822c4d9baef"
+          }
+        ]
+      },
+      "files": [
+        {
+          "path": "bootstrap-reference/--allrice-journal-fixture--/dsh-00000000-0000-4000-8000-000000000004/session.lock",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "bootstrap-reference/--allrice-journal-fixture--/dsh-00000000-0000-4000-8000-000000000004/session.v4.jsonl",
+          "sha256": "dbe6ec65df728af4d29513f039f8a54b15e00ae57b5905a62fb33a9c7d081429"
+        }
+      ]
+    }
+  ]
+}

@@ -115,6 +115,36 @@
       "id": "native-progress-decision",
       "testFile": "apps/worker/test/p25/task-progress-native.integration.test.ts",
       "testName": "pauses after actual repeated tool errors and handles %s"
+    },
+    {
+      "id": "journal-contract-surfaces",
+      "testFile": "apps/worker/src/harness/native-journal-contract.test.ts",
+      "testName": "matches the reviewed descriptor of the current contract version"
+    },
+    {
+      "id": "journal-corpus-versions",
+      "testFile": "apps/worker/test/p25/dsh-journal-replay.test.ts",
+      "testName": "keeps one corpus for every readable contract version"
+    },
+    {
+      "id": "journal-replay-tool",
+      "testFile": "apps/worker/test/p25/dsh-journal-replay.test.ts",
+      "testName": "continues after a recorded tool turn without dispatching the tool again"
+    },
+    {
+      "id": "journal-replay-question",
+      "testFile": "apps/worker/test/p25/dsh-journal-replay.test.ts",
+      "testName": "answers %s with the recorded proof once, then continues it"
+    },
+    {
+      "id": "journal-replay-continued",
+      "testFile": "apps/worker/test/p25/dsh-journal-replay.test.ts",
+      "testName": "starts a new turn after a continued question and never continues it twice"
+    },
+    {
+      "id": "journal-replay-bootstrap-reference",
+      "testFile": "apps/worker/test/p25/dsh-journal-replay.test.ts",
+      "testName": "keeps bootstrap coverage and the session reference without injecting it again"
     }
   ],
   "historicalReaderPolicy": {
