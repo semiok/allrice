@@ -49,6 +49,8 @@ export async function lockExperienceProjectionSource(
   tx: Tx,
   current: Current,
   rebuilding = false,
+  /** `false` on read paths: same check as a plain snapshot read. */
+  lock = true,
 ) {
   const { row, pin, proof } = current;
   const [locked] = await tx`select m.id from allrice_memories m
@@ -59,7 +61,7 @@ export async function lockExperienceProjectionSource(
       and m.content=${row.content} and m.archived_at is null
       and m.visibility='private' and m.lifecycle_state='durable' and m.trust_level='derived'
       and e.status='approved' and e.origin_kind='derived' and e.adoption_proof=${tx.json(proof)}
-    ${rebuilding ? tx`for no key update of m for share of e` : tx`for share of m,e`}`;
+    ${rebuilding ? tx`for no key update of m for share of e` : lock ? tx`for share of m,e` : tx``}`;
   if (!locked) throw new ExperienceError('source_changed');
 }
 

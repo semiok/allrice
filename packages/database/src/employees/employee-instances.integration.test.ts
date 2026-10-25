@@ -1,3 +1,4 @@
+import { createReadPathProbe } from '../read-path-probe.fixture.ts';
 import { sharedHistoryMethodAcceptancePhrases } from './employee-method-shared-history.fixture.ts';
 import { bindJobNativeSession } from '../execution/queue.ts';
 import { nativeBindingDescriptor } from '../native-session-binding.fixture.ts';
@@ -1155,6 +1156,25 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     return { ...base, saved, args, run, test, coverage };
   }
 
+  it('MET-210 populated employee method test GET commits without a transaction id', async () => {
+    const x = await retryFixture();
+    const probe = createReadPathProbe(fixture.db);
+    vi.spyOn(client, 'getDatabase').mockReturnValue(probe.db);
+    try {
+      const result = await getEmployeeMethodTest(x.f.a.context, x.test.id);
+      expect(result.id).toBe(x.test.id);
+      expect(result.status).toBe('queued');
+      probe.expectNoRowLocks();
+    } finally {
+      vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
+      // Settle the queued test so the next case claims its own.
+      expect((await claimNextPlatformEmployeeTestRun(randomUUID()))?.id).toBe(
+        x.test.id,
+      );
+      await x.fail(x.test.id);
+    }
+  });
+
   it.each(['passed', 'mismatch', 'execution_failed'] as const)(
     'method test result stays coherent when %s finalization commits during its read',
     async (outcome) => {
@@ -1171,16 +1191,18 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         release = resolve;
       });
       const gate = fixture.db.begin(async (tx) => {
-        await tx`select pg_advisory_xact_lock(hashtextextended(${`employee-content:${x.f.a.organizationId}`},0))`;
+        // The GET takes no content lock since MET-210 #4. Pause it on its
+        // current-content read instead; finalization never touches this table.
+        await tx`lock table allrice_employee_content_sets in access exclusive mode`;
         const [row] = await tx`select pg_backend_pid() pid`;
         locked(row!.pid);
         await proceed;
       });
       void gate.catch(() => undefined);
       const pid = await ready;
-      // The current-content gate is reached after reading the method binding,
-      // before reading the platform test status. Finalize through the real
-      // atomic writer while this GET is paused between those reads.
+      // The current-content read comes after the method binding and before
+      // the platform test status. Finalize through the real atomic writer
+      // while this GET is paused between those reads.
       const reading = getEmployeeMethodTest(x.f.a.context, x.test.id);
       void reading.catch(() => undefined);
       try {

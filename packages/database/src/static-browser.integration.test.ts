@@ -1,3 +1,6 @@
+import { scheduleReadPathQuery } from './read-path-races.fixture.ts';
+import { createReadPathProbe } from './read-path-probe.fixture.ts';
+import { listBrowserWorkspaces } from './browser-control.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -222,6 +225,21 @@ suite(
         database.db,
       );
     }
+    it('MET-210 static verification browser list reads its saved artifact authority without row locks', async () => {
+      const { f, row } = await claimedStatic();
+      await startStaticBrowserVerification(row, database.db);
+      const probe = createReadPathProbe(database.db);
+      vi.spyOn(client, 'getDatabase').mockReturnValue(probe.db);
+      try {
+        const views = await listBrowserWorkspaces(f.context, f.run, probe.db);
+        expect(views).toMatchObject([
+          { id: row.browser_workspace_id, available: true },
+        ]);
+        probe.expectNoRowLocks();
+      } finally {
+        vi.spyOn(client, 'getDatabase').mockReturnValue(database.db);
+      }
+    });
     it('keeps exact failed execution receipts immutable and drain-only after cancellation', async () => {
       const f = await fixture(),
         row = await admit(f),
@@ -645,9 +663,10 @@ suite(
                       .join('?')
                       .replaceAll(/\s+/g, ' ')
                       .toLowerCase();
-                    return hook(
+                    return scheduleReadPathQuery(
+                      Reflect.apply(query, thisArg, args),
                       sql,
-                      async () => await Reflect.apply(query, thisArg, args),
+                      hook,
                     );
                   },
                 }),

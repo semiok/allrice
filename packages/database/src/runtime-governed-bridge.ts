@@ -305,10 +305,15 @@ export function createGovernedBridgePolicyOptions(
         );
       }
     },
-    async resolveCurrentBinding({ transaction: tx, binding: requested }) {
+    async resolveCurrentBinding({
+      transaction: tx,
+      binding: requested,
+      lock = true,
+    }) {
       await assistantAuthority.assertCurrentBinding({
         transaction: tx,
         binding: requested,
+        lock,
       });
       // Immutable inputs have a DB trigger. Plain SELECT avoids the inverse
       // controls→operation lock order in approval creation/decision transactions.
@@ -409,7 +414,7 @@ export function createGovernedBridgePolicyOptions(
         }[]
       >`select platform,capabilities,last_seen_at,revoked_at from allrice_bridge_devices
         where id=${device.id} and organization_id=${device.organizationId}
-          and workspace_id=${device.workspaceId} and owner_id=${device.ownerId} for share`;
+          and workspace_id=${device.workspaceId} and owner_id=${device.ownerId} ${lock ? tx`for share` : tx``}`;
       const [grant] = pdf
         ? await tx<
             {
@@ -421,7 +426,7 @@ export function createGovernedBridgePolicyOptions(
           >`
           select id,root_fingerprint,runtime_generation,revoked_at from allrice_bridge_pdf_runtime_grants
           where id=${binding.execution.grantId} and device_id=${device.id} and organization_id=${device.organizationId}
-            and workspace_id=${device.workspaceId} and owner_id=${device.ownerId} and profile_version=1 for share`
+            and workspace_id=${device.workspaceId} and owner_id=${device.ownerId} and profile_version=1 ${lock ? tx`for share` : tx``}`
         : python || projectSource
           ? await tx<
               {
@@ -432,7 +437,7 @@ export function createGovernedBridgePolicyOptions(
               }[]
             >`select id,root_fingerprint,runtime_generation,revoked_at from allrice_bridge_managed_runtime_grants
         where id=${binding.execution.grantId} and device_id=${device.id} and organization_id=${device.organizationId}
-          and workspace_id=${device.workspaceId} and owner_id=${device.ownerId} and profile_version=1 for share`
+          and workspace_id=${device.workspaceId} and owner_id=${device.ownerId} and profile_version=1 ${lock ? tx`for share` : tx``}`
           : await tx<
               {
                 id: string;
@@ -443,7 +448,7 @@ export function createGovernedBridgePolicyOptions(
             >`select id,root_fingerprint,runtime_generation,revoked_at from allrice_bridge_folder_grants
         where id=${binding.execution.grantId} and device_id=${device.id}
           and organization_id=${device.organizationId} and workspace_id=${device.workspaceId}
-          and owner_id=${device.ownerId} for share`;
+          and owner_id=${device.ownerId} ${lock ? tx`for share` : tx``}`;
       const targetCapability = payload.capability.startsWith('local.git.')
         ? 'git.read'
         : [
@@ -466,7 +471,7 @@ export function createGovernedBridgePolicyOptions(
         select id,kind,state,capabilities,metadata from allrice_execution_targets
         where id=${binding.execution.targetId} and organization_id=${device.organizationId}
           and workspace_id=${device.workspaceId} and target_key=${`bridge.${device.id}`}
-          and metadata->>'bridgeDeviceId'=${device.id} for share`;
+          and metadata->>'bridgeDeviceId'=${device.id} ${lock ? tx`for share` : tx``}`;
       if (
         !currentDevice ||
         currentDevice.revoked_at ||
@@ -540,7 +545,7 @@ export function createGovernedBridgePolicyOptions(
         }[]
       >`select id,execution_spec,project_id,policy_snapshot_id,state from allrice_runs
         where id=${binding.task.runId} and organization_id=${device.organizationId}
-          and workspace_id=${device.workspaceId} and owner_id=${device.ownerId} for share`;
+          and workspace_id=${device.workspaceId} and owner_id=${device.ownerId} ${lock ? tx`for share` : tx``}`;
       if (
         !run ||
         !['queued', 'running', 'waiting_approval'].includes(run.state)
@@ -551,7 +556,7 @@ export function createGovernedBridgePolicyOptions(
       if (pdf) {
         const [reported] = await tx<{ profile: unknown; reported_at: Date }[]>`
           select profile,reported_at from allrice_bridge_pdf_profiles
-          where device_id=${device.id} and organization_id=${device.organizationId} and workspace_id=${device.workspaceId} for share`;
+          where device_id=${device.id} and organization_id=${device.organizationId} and workspace_id=${device.workspaceId} ${lock ? tx`for share` : tx``}`;
         const profile = RuntimeLocalPdfProfileSchema.safeParse(
             reported?.profile,
           ),
@@ -574,7 +579,7 @@ export function createGovernedBridgePolicyOptions(
         const [reported] = await tx<
           { profile: unknown; reported_at: Date }[]
         >`select profile,reported_at from allrice_bridge_managed_python_profiles
-          where device_id=${device.id} and organization_id=${device.organizationId} and workspace_id=${device.workspaceId} for share`;
+          where device_id=${device.id} and organization_id=${device.organizationId} and workspace_id=${device.workspaceId} ${lock ? tx`for share` : tx``}`;
         const profile = RuntimeLocalPythonProfileSchema.safeParse(
             reported?.profile,
           ),
@@ -603,7 +608,7 @@ export function createGovernedBridgePolicyOptions(
           throw new RuntimePolicyError('bridge_authority_changed');
         const [reported] = await tx<{ profile: unknown; reported_at: Date }[]>`
           select profile,reported_at from allrice_bridge_runtime_profiles
-          where device_id=${device.id} and organization_id=${device.organizationId} and workspace_id=${device.workspaceId} for share`;
+          where device_id=${device.id} and organization_id=${device.organizationId} and workspace_id=${device.workspaceId} ${lock ? tx`for share` : tx``}`;
         const profile = RuntimeLocalCommandProfileSchema.safeParse(
           reported?.profile,
         );
@@ -665,7 +670,7 @@ export function createGovernedBridgePolicyOptions(
         { payload: unknown }[]
       >`select payload from allrice_policy_snapshots
         where id=${run.policy_snapshot_id} and organization_id=${device.organizationId}
-          and subject_id=${device.ownerId} for share`;
+          and subject_id=${device.ownerId} ${lock ? tx`for share` : tx``}`;
       if (!policy) throw new RuntimePolicyError('bridge_authority_changed');
       const [employee] = await tx<
         {
@@ -677,7 +682,7 @@ export function createGovernedBridgePolicyOptions(
       >`
         select employee_version_id,session_id,owner_id,execution_snapshot from allrice_employee_runs
         where run_id=${run.id} and organization_id=${device.organizationId}
-          and workspace_id=${device.workspaceId} for share`;
+          and workspace_id=${device.workspaceId} ${lock ? tx`for share` : tx``}`;
       if (
         (employee && employee.owner_id !== device.ownerId) ||
         (run.execution_spec.employeeVersionId ?? null) !==
@@ -735,6 +740,7 @@ export function createGovernedBridgePolicyOptions(
             device,
             (command ?? python)!,
             frozen.data,
+            lock,
           );
         if (python)
           await assertLocalPythonDelegation(
@@ -743,6 +749,7 @@ export function createGovernedBridgePolicyOptions(
             binding,
             python,
             employee?.execution_snapshot,
+            lock,
           );
         if (pdf)
           await assertLocalPdfDelegation(
@@ -751,6 +758,7 @@ export function createGovernedBridgePolicyOptions(
             binding,
             pdf,
             employee?.execution_snapshot,
+            lock,
           );
         if (mcp) {
           if (frozen.data.schemaVersion !== 2)
@@ -786,6 +794,7 @@ export function createGovernedBridgePolicyOptions(
               frozenConnection,
               mcp,
               employee!.employee_version_id,
+              lock,
             );
           } catch (error) {
             if (error instanceof McpError)
@@ -853,11 +862,11 @@ export function createGovernedBridgePolicyOptions(
           select id,employee_version_id from allrice_chat_sessions where id=${employee.session_id}
             and organization_id=${device.organizationId} and workspace_id=${device.workspaceId}
             and owner_id=${device.ownerId} and archived_at is null
-            and project_id is not distinct from ${(persisted?.agentInstanceId ?? initial?.assistant?.runId) ? run.project_id : null}::uuid for share`;
+            and project_id is not distinct from ${(persisted?.agentInstanceId ?? initial?.assistant?.runId) ? run.project_id : null}::uuid ${lock ? tx`for share` : tx``}`;
         const [runtime] = await tx<{ thread_generation: number }[]>`
           select thread_generation from allrice_conversation_runtimes where session_id=${employee.session_id}
             and organization_id=${device.organizationId} and workspace_id=${device.workspaceId}
-            and owner_id=${device.ownerId} and state='running' and active_run_id=${run.id} for share`;
+            and owner_id=${device.ownerId} and state='running' and active_run_id=${run.id} ${lock ? tx`for share` : tx``}`;
         if (
           !session ||
           session.employee_version_id !== employee.employee_version_id ||
@@ -879,6 +888,7 @@ export function createGovernedBridgePolicyOptions(
                     initial?.assistant?.runId)!,
                 }
               : undefined,
+            lock,
           );
       }
       if (projectSource) {
@@ -888,6 +898,8 @@ export function createGovernedBridgePolicyOptions(
           employee!.session_id,
           projectSource.origin,
           projectSource.project,
+          'local.process.execute',
+          lock,
         ).catch((error: unknown) => {
           if (isProjectSourceAuthorityError(error))
             throw new RuntimePolicyError('bridge_authority_changed');

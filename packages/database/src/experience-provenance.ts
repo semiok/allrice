@@ -26,13 +26,13 @@ export async function getExperienceProvenance(
     throw new ExperienceError('invalid_source');
   return employeeAccessTransaction(getDatabase(), async (tx) => {
     await getEmployeeInstance(context, instanceId, tx);
-    const current = await readPrivateExperience(tx, context, memoryId);
+    const current = await readPrivateExperience(tx, context, memoryId, false);
     if (
       current.pin.instanceId !== instanceId ||
       current.pin.revision !== input.revision
     )
       throw new ExperienceError('source_changed');
-    await lockExperienceProjectionSource(tx, current);
+    await lockExperienceProjectionSource(tx, current, false, false);
     const view = await readExperienceProjection(tx, current);
     return ExperienceProvenanceSchema.parse({
       workspaceId: context.workspaceId,

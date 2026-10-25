@@ -182,7 +182,7 @@ export async function getPlatformTechnicalExecution(lease: TechnicalTaskLease) {
   return sql.begin(async (tx) => {
     const [job] = await tx<
       JobRow[]
-    >`select * from allrice_jobs where id=${UuidSchema.parse(lease.jobId)} for update`;
+    >`select * from allrice_jobs where id=${UuidSchema.parse(lease.jobId)}`;
     if (
       !job ||
       job.status !== 'running' ||

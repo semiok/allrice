@@ -445,6 +445,7 @@ export async function assertLocalPythonDelegation(
   binding: RuntimeActionBinding,
   payload: RuntimeLocalPythonPayload,
   frozenValue: unknown,
+  lock = true,
 ) {
   const a = payload.arguments,
     f = frozenPurpose(
@@ -457,7 +458,7 @@ export async function assertLocalPythonDelegation(
   const origin = await readLocalPythonDelegation(tx, device, binding, payload);
   const [version] = await tx<{ id: string; manifest: unknown }[]>`
     select id,manifest from allrice_employee_versions where id=${f.employee.versionId} and employee_id=${f.employee.id}
-    and organization_id=${device.organizationId} and workspace_id=${device.workspaceId} and config_checksum=${f.employee.definitionChecksum} for share`;
+    and organization_id=${device.organizationId} and workspace_id=${device.workspaceId} and config_checksum=${f.employee.definitionChecksum} ${lock ? tx`for share` : tx``}`;
   const manifest = EmployeeDefinitionSchema.safeParse(version?.manifest);
   if (
     !version ||
@@ -602,6 +603,7 @@ export async function assertLocalPythonDelegation(
       },
       file.objectId,
       tx,
+      lock,
     );
     const [reserved] =
       await tx`select id from allrice_company_asset_revisions where snapshot_object_id=${file.objectId} limit 1`;
@@ -611,7 +613,7 @@ export async function assertLocalPythonDelegation(
     >`select checksum,size_bytes,media_type from allrice_storage_objects
       where id=${file.objectId} and organization_id=${device.organizationId} and workspace_id=${device.workspaceId} and state='ready'
         and deleted_at is null and (retention_until is null or retention_until>clock_timestamp())
-        and (owner_id=${device.ownerId} or visibility<>'private') for share`;
+        and (owner_id=${device.ownerId} or visibility<>'private') ${lock ? tx`for share` : tx``}`;
     if (
       !object ||
       object.checksum !== file.checksum ||
@@ -861,6 +863,9 @@ export async function localPythonTransferAuthority(
         },
         objectId,
         db,
+        // Autocommit reads after the lease renewal: a row lock would end
+        // with its own statement and fence nothing (MET-210 #4).
+        false,
       )
     : null;
   const context: RequestContext = {

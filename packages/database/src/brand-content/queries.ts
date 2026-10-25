@@ -25,11 +25,13 @@ export async function readBrand(
   scope: Scope,
   id: string,
   lock = false,
+  /** `false` on read paths: no row lock at all (MET-210 #4). */
+  share = true,
 ) {
   const [row] = await tx<BrandRow[]>`select * from allrice_brand_content_brands
     where id=${id} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
       and owner_id=${scope.ownerId} and instance_id=${scope.instanceId}
-    ${lock ? tx`for update` : tx`for share`}`;
+    ${lock ? tx`for update` : share ? tx`for share` : tx``}`;
   if (!row) fail('not_found');
   return row;
 }
@@ -39,10 +41,11 @@ export async function scopedRow<T extends object>(
   table: keyof typeof brandContentTables,
   brandId: string,
   id: string,
+  lock = true,
 ) {
   const [row] = await tx<T[]>`select * from ${tx(brandContentTables[table])}
     where id=${id} and brand_id=${brandId} and organization_id=${scope.organizationId}
-      and workspace_id=${scope.workspaceId} and owner_id=${scope.ownerId} and instance_id=${scope.instanceId} for share`;
+      and workspace_id=${scope.workspaceId} and owner_id=${scope.ownerId} and instance_id=${scope.instanceId} ${lock ? tx`for share` : tx``}`;
   if (!row) fail('not_found');
   return row;
 }
@@ -63,8 +66,16 @@ export async function readBrandContext(
   scope: Scope,
   brandId: string,
   id: string,
+  lock = true,
 ) {
-  const row = await scopedRow<ContextRow>(tx, scope, 'contexts', brandId, id);
+  const row = await scopedRow<ContextRow>(
+    tx,
+    scope,
+    'contexts',
+    brandId,
+    id,
+    lock,
+  );
   row.content = BrandContextContentSchema.parse(row.content);
   if (
     brandContentDigest({ name: row.brand_name, content: row.content }) !==
@@ -72,7 +83,7 @@ export async function readBrandContext(
   )
     fail('source_changed');
   for (const file of row.content.sourceFiles)
-    await assertBrandContentFile(tx, context, scope, file);
+    await assertBrandContentFile(tx, context, scope, file, false, lock);
   return row;
 }
 export async function assertBrandBundle(
@@ -82,6 +93,7 @@ export async function assertBrandBundle(
   brandId: string,
   article: ArticleRow,
   bundle: BundleRow,
+  lock = true,
 ) {
   if (bundle.article_id !== article.id) fail('not_found');
   if (
@@ -92,13 +104,15 @@ export async function assertBrandBundle(
     ) !== bundle.digest
   )
     fail('source_changed');
-  await readBrandContext(tx, context, scope, brandId, article.context_id);
+  await readBrandContext(tx, context, scope, brandId, article.context_id, lock);
   await assertBrandContentDocument(
     tx,
     context,
     scope,
     article.session_id,
     bundle.content,
+    false,
+    lock,
   );
-  await assertBrandContentImages(tx, context, scope, bundle.images);
+  await assertBrandContentImages(tx, context, scope, bundle.images, lock);
 }

@@ -1,3 +1,4 @@
+import { createReadPathProbe } from './read-path-probe.fixture.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   mkdtemp,
@@ -365,7 +366,19 @@ suite(
           .events[0],
       ).toMatchObject({ state: 'blocked', runId: null });
     });
-    it('rule renewal and a real heartbeat complete without reversing target/device locks', async () => {
+    it('MET-210 populated folder rule renewal reads authority without a transaction id', async () => {
+      const f = await fixture();
+      const probe = createReadPathProbe(database.db);
+      vi.spyOn(client, 'getDatabase').mockReturnValue(probe.db);
+      try {
+        const value = await readFolderTriggerRules(f.token);
+        expect(value.rules).toMatchObject([{ automationId: f.rule.id }]);
+        probe.expectNoRowLocks();
+      } finally {
+        vi.spyOn(client, 'getDatabase').mockReturnValue(database.db);
+      }
+    });
+    it('rule renewal remains lock-free while a folder grant is held and a real heartbeat completes', async () => {
       const f = await fixture();
       const [target] = await database.db<
         { metadata: { environment: unknown } }[]
@@ -383,17 +396,14 @@ suite(
         await hold;
       });
       await lockReady;
+      const probe = createReadPathProbe(database.db, { lockTimeout: '1500ms' });
+      vi.spyOn(client, 'getDatabase').mockReturnValue(probe.db);
       const renewal = readFolderTriggerRules(f.token);
       try {
-        await vi.waitFor(
-          async () => {
-            const [waiting] = await database.db<
-              { n: number }[]
-            >`select count(*)::int as n from pg_stat_activity where wait_event='transactionid' and query like '%allrice_bridge_folder_grants%'`;
-            expect(waiting!.n).toBeGreaterThan(0);
-          },
-          { timeout: 2000, interval: 10 },
-        );
+        const snapshot = await renewal;
+        expect(snapshot.rules).toHaveLength(1);
+        probe.expectNoRowLocks();
+        vi.spyOn(client, 'getDatabase').mockReturnValue(database.db);
         const heartbeat = heartbeatBridgeDevice(f.token, {
           protocolVersion: 2,
           capabilities: [...localFileCapabilities],
@@ -406,9 +416,9 @@ suite(
           (await readFolderTriggerRules(f.token)).rules[0]?.automationId,
         ).toBe(f.rule.id);
       } finally {
+        vi.spyOn(client, 'getDatabase').mockReturnValue(database.db);
         release();
-        await blocking;
-        await renewal;
+        await Promise.allSettled([blocking, renewal]);
       }
     });
     it('keeps a claimed import authorized during its own busy heartbeat, and adopts the exact ready upload after a lost ACK', async () => {

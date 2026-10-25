@@ -77,6 +77,7 @@ async function currentMember(
   tx: Database | Tx,
   scope: McpScope,
   admin: boolean,
+  lock = true,
 ) {
   const [row] = await tx`select m.id from allrice_memberships m
     join allrice_users u on u.id=m.user_id
@@ -86,7 +87,7 @@ async function currentMember(
       and m.active and m.role in ('admin','member')
       and (m.workspace_id is null or m.workspace_id=${scope.workspaceId})
       and u.status='active' and o.archived_at is null and w.archived_at is null
-    for share of m,u,o,w`;
+    ${lock ? tx`for share of m,u,o,w` : tx``}`;
   if (
     !row ||
     (admin &&
@@ -128,17 +129,17 @@ export function createEmployeeMcpBindingStore(
     options.administration
       ? tenantManagementScope(context, workspaceId, options.administration)
       : scopeFor(context, workspaceId);
-  const managementMember = (tx: Database | Tx, scope: McpScope) =>
+  const managementMember = (tx: Database | Tx, scope: McpScope, lock = true) =>
     options.administration
-      ? checkTenantManagement(tx, options.administration, scope)
-      : currentMember(tx, scope, transport !== 'local_stdio');
+      ? checkTenantManagement(tx, options.administration, scope, lock)
+      : currentMember(tx, scope, transport !== 'local_stdio', lock);
   const ownerId = (scope: McpScope) =>
     options.administration?.subjectId ?? scope.actorId;
   return {
     async list(context: RequestContext, workspaceId: string) {
       const scope = managementScope(context, workspaceId);
       return db().begin(async (tx) => {
-        await managementMember(tx, scope);
+        await managementMember(tx, scope, false);
         const versions = await tx<
           Version[]
         >`select e.id as employee_id,v.id as version_id,v.name,v.version,v.manifest,e.status,
@@ -301,6 +302,7 @@ export async function assertEmployeeMcpAuthorization(
   tool: Pick<FrozenMcpTool, 'connectionId' | 'employeeAuthorization'>,
   employeeVersionId: string,
   transport: 'streamable_http' | 'local_stdio' = 'streamable_http',
+  lock = true,
 ) {
   const auth = tool.employeeAuthorization;
   if (!auth || auth.employeeVersionId !== employeeVersionId)
@@ -312,14 +314,14 @@ export async function assertEmployeeMcpAuthorization(
     join allrice_employee_versions v on v.employee_id=e.id and v.organization_id=e.organization_id and v.workspace_id=e.workspace_id
     where e.id=${auth.employeeId} and v.id=${employeeVersionId}
       and e.organization_id=${scope.organizationId} and e.workspace_id=${scope.workspaceId} and e.status='active'
-    for share of e,v`;
+    ${lock ? tx`for share of e,v` : tx``}`;
   if (!version || mcpEmployeeEligibility(version.manifest, transport).length)
     throw new McpError('MCP_DENIED');
   const [row] = await tx`select b.id from allrice_employee_mcp_bindings b
     where b.id=${auth.id} and b.employee_id=${auth.employeeId} and b.employee_version_id=${employeeVersionId}
       and b.organization_id=${scope.organizationId} and b.workspace_id=${scope.workspaceId}
       and b.connector_binding_id=${tool.connectionId} and b.enabled and b.grant_revision=${auth.revision}
-    for share of b`;
+    ${lock ? tx`for share of b` : tx``}`;
   if (!row) throw new McpError('MCP_DENIED');
   const [connection] =
     await tx`select c.binding_id from allrice_mcp_binding_config c

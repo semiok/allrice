@@ -76,15 +76,15 @@ function principal(context: RequestContext) {
 async function identity(tx: Tx, context: RequestContext, write: boolean) {
   const p = principal(context);
   const users =
-    await tx`select id from allrice_users where id=${p.user} and status='active' for share`;
+    await tx`select id from allrice_users where id=${p.user} and status='active' ${write ? tx`for share` : tx``}`;
   const orgs =
-    await tx`select id from allrice_organizations where id=${p.organization} and archived_at is null for share`;
+    await tx`select id from allrice_organizations where id=${p.organization} and archived_at is null ${write ? tx`for share` : tx``}`;
   const workspaces =
-    await tx`select id from allrice_workspaces where id=${p.workspace} and organization_id=${p.organization} and archived_at is null for share`;
+    await tx`select id from allrice_workspaces where id=${p.workspace} and organization_id=${p.organization} and archived_at is null ${write ? tx`for share` : tx``}`;
   const memberships = await tx<
     { role: string }[]
   >`select role from allrice_memberships where organization_id=${p.organization}
-    and user_id=${p.user} and active and (workspace_id is null or workspace_id=${p.workspace}) for share`;
+    and user_id=${p.user} and active and (workspace_id is null or workspace_id=${p.workspace}) ${write ? tx`for share` : tx``}`;
   if (
     !users.length ||
     !orgs.length ||

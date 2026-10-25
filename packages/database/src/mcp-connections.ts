@@ -91,13 +91,14 @@ async function workspaceCurrentAdmin(
   tx: Database | Tx,
   scope: McpScope,
   member = false,
+  lock = true,
 ) {
   const [row] =
     await tx`select m.id from allrice_memberships m join allrice_users u on u.id=m.user_id
     join allrice_organizations o on o.id=m.organization_id join allrice_workspaces w on w.id=${scope.workspaceId} and w.organization_id=o.id
     where m.organization_id=${scope.organizationId} and m.user_id=${scope.actorId} and m.active and m.role in ('admin','member')
     and (m.workspace_id is null or m.workspace_id=${scope.workspaceId}) and u.status='active' and o.archived_at is null and w.archived_at is null
-    for share of m,u,o,w`;
+    ${lock ? tx`for share of m,u,o,w` : tx``}`;
   if (
     !row ||
     (!member &&
@@ -163,10 +164,10 @@ export function createMcpStore(
     options.administration
       ? tenantManagementScope(context, workspaceId, options.administration)
       : workspaceAdminScope(context, workspaceId);
-  const currentAdmin = (tx: Database | Tx, scope: McpScope) =>
+  const currentAdmin = (tx: Database | Tx, scope: McpScope, lock = true) =>
     options.administration
-      ? checkTenantManagement(tx, options.administration, scope)
-      : workspaceCurrentAdmin(tx, scope, options.memberManaged);
+      ? checkTenantManagement(tx, options.administration, scope, lock)
+      : workspaceCurrentAdmin(tx, scope, options.memberManaged, lock);
   const audit = (
     tx: Tx,
     scope: McpScope,
@@ -321,7 +322,7 @@ export function createMcpStore(
     },
     async list(context: RequestContext, workspaceId: string) {
       const scope = adminScope(context, workspaceId);
-      await currentAdmin(db(), scope);
+      await currentAdmin(db(), scope, false);
       const rows = await db()<
         { binding_id: string }[]
       >`select binding_id from allrice_mcp_binding_config where transport='streamable_http' and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and (managed_by is null or managed_by=${scope.actorId}) order by binding_id`;
@@ -652,7 +653,7 @@ export function createMcpStore(
       connectionId: string,
     ) {
       const scope = workspaceAdminScope(context, workspaceId);
-      await workspaceCurrentAdmin(db(), scope, true);
+      await workspaceCurrentAdmin(db(), scope, true, false);
       const row = await read(scope, connectionId);
       const [live] =
         await db()`select binding_id from allrice_mcp_binding_config where binding_id=${row.id} and oauth_expires_at>clock_timestamp()`;

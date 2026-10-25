@@ -10,7 +10,7 @@ export async function listBrowserControlManagement(
   db = getDatabase(),
 ) {
   return db.begin(async (tx) => {
-    await browserIdentity(tx, ctx, true);
+    await browserIdentity(tx, ctx, true, false);
     const targets = await tx<{ id: string; label: string; state: string }[]>`
       select id,label,state from allrice_execution_targets where organization_id=${ctx.organizationId}
       and workspace_id=${ctx.workspaceId} and kind='cloud_sandbox' and capabilities ? 'browser.navigate' order by label,id`;

@@ -331,7 +331,7 @@ export async function getChangesetRun(
   db: Database = getDatabase(),
 ) {
   return db.begin(async (tx) => {
-    await assertWorkbenchSession(tx, context, sessionId);
+    await assertWorkbenchSession(tx, context, sessionId, false, false);
     const rows =
       await tx`select run_id from allrice_changeset_runs where run_id=${runId} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId!} and actor_id=${context.actor.id} and session_id=${sessionId}`;
     return rows.length > 0;
@@ -345,7 +345,7 @@ export async function listChangesetRuns(
   db: Database = getDatabase(),
 ) {
   return db.begin(async (tx) => {
-    await assertWorkbenchSession(tx, context, sessionId);
+    await assertWorkbenchSession(tx, context, sessionId, false, false);
     await readArtifact(tx, context, sessionId, artifactId);
     const rows = await tx<
       {

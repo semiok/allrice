@@ -116,9 +116,16 @@ async function mcpDisplayAuthorization(
     const version = snapshot.binding.task.frozenConfiguration.employeeVersionId;
     if (!version)
       return { available: false, reason: 'employee_authorization_changed' };
-    // The same bounded SELECT/lock check used by admission, with no state write.
+    // The same bounded SELECT check used by admission, without its row locks.
     await database.begin((tx) =>
-      assertEmployeeMcpAuthorization(tx, scope, payload.tool, version),
+      assertEmployeeMcpAuthorization(
+        tx,
+        scope,
+        payload.tool,
+        version,
+        undefined,
+        false,
+      ),
     );
   } catch (error) {
     return {
@@ -131,6 +138,13 @@ async function mcpDisplayAuthorization(
   }
   return { available: true, reason: 'available' };
 }
+/**
+ * Plain snapshot read, no row locks (MET-210 #4). Locking the Run and then the
+ * identity rows here inverted Worker admission's identity -> Run order and
+ * deadlocked page polling against job start (MET-202 #4). Cancel needs no
+ * lock either: it only narrows the owner's own authority, and access
+ * revocation cancels the owner's runs itself.
+ */
 async function ownedRun(
   tx: postgres.TransactionSql,
   context: RequestContext,
@@ -143,7 +157,7 @@ async function ownedRun(
     join allrice_organizations o on o.id=r.organization_id join allrice_workspaces w on w.id=r.workspace_id and w.organization_id=r.organization_id
     join allrice_memberships m on m.organization_id=r.organization_id and m.user_id=r.owner_id and (m.workspace_id is null or m.workspace_id=r.workspace_id)
     where r.id=${UuidSchema.parse(runId)} and r.organization_id=${context.organizationId} and r.workspace_id=${context.workspaceId} and r.owner_id=${context.actor.id}
-    and m.active and m.role in ('admin','member') and u.status='active' and o.archived_at is null and w.archived_at is null for share of r,m,u,o,w`;
+    and m.active and m.role in ('admin','member') and u.status='active' and o.archived_at is null and w.archived_at is null`;
   if (!row) throw new RuntimePolicyError('run_not_owned');
 }
 
@@ -153,29 +167,32 @@ export async function listCloudRuntimeOperations(
   runId: string,
   database: Database = getDatabase(),
 ): Promise<CloudOperationView[]> {
-  const rows = await database.begin(async (tx) => {
-    await ownedRun(tx, context, runId);
-    return tx<
-      {
-        snapshot: unknown;
-        native_call_id: string | null;
-        created_at: Date;
-        mcp_payload: unknown | null;
-        cloud_payload: unknown | null;
-        mcp_result: {
-          evidence: { output: string; code: string | null };
-        } | null;
-        cloud_outcome: {
-          output: string;
-          reason: string;
-          errorCode?: string;
-          resolution?: unknown;
-        } | null;
-        endpoint: string | null;
-        connection_enabled: boolean | null;
-        approval_id: string | null;
-      }[]
-    >`
+  // Read only: PostgreSQL rejects any row lock added to this polled path.
+  const rows = await database.begin(
+    'isolation level repeatable read read only',
+    async (tx) => {
+      await ownedRun(tx, context, runId);
+      return tx<
+        {
+          snapshot: unknown;
+          native_call_id: string | null;
+          created_at: Date;
+          mcp_payload: unknown | null;
+          cloud_payload: unknown | null;
+          mcp_result: {
+            evidence: { output: string; code: string | null };
+          } | null;
+          cloud_outcome: {
+            output: string;
+            reason: string;
+            errorCode?: string;
+            resolution?: unknown;
+          } | null;
+          endpoint: string | null;
+          connection_enabled: boolean | null;
+          approval_id: string | null;
+        }[]
+      >`
       select o.snapshot,o.created_at,oc.native_call_id,mi.payload as mcp_payload,ci.payload as cloud_payload,ma.result as mcp_result,ca.outcome as cloud_outcome,mc.endpoint,cb.enabled as connection_enabled,a.id as approval_id
       from allrice_runtime_operations o
       left join allrice_task_operation_calls oc on oc.operation_id=o.id
@@ -188,7 +205,8 @@ export async function listCloudRuntimeOperations(
       left join allrice_approval_requests a on a.resource_type='runtime_operation' and a.resource_id=o.id and a.organization_id=o.organization_id and a.workspace_id=o.workspace_id
       where o.run_id=${runId} and o.organization_id=${context.organizationId} and o.workspace_id=${context.workspaceId}
       and o.snapshot->'binding'->>'action' in ('cloud.process.execute','cloud.mcp.call') order by o.created_at,o.id limit 100`;
-  });
+    },
+  );
   // Do not hold a pool connection while the approval service opens its own
   // transaction. It rechecks current membership before returning an approval.
   const views: CloudOperationView[] = [];

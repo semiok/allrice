@@ -198,10 +198,11 @@ export async function resolvePlatformRepositoryExecutionProofTx(
     operationId: string;
   },
   payload: CloudCommand,
+  lock = true,
 ) {
   const [job] = await tx<
     JobRow[]
-  >`select * from allrice_jobs where id=${scope.jobId} and run_id=${scope.runId} for share`;
+  >`select * from allrice_jobs where id=${scope.jobId} and run_id=${scope.runId} ${lock ? tx`for share` : tx``}`;
   if (!job || !hasRepairMarker(job)) return undefined;
   if (
     job.organization_id !== scope.organizationId ||
@@ -210,12 +211,16 @@ export async function resolvePlatformRepositoryExecutionProofTx(
     !(await repairSchemaAvailable(tx))
   )
     throw new DataAccessError('authorization_denied');
-  await assertPlatformRepairLease(tx, {
-    workerId: scope.workerId,
-    jobId: scope.jobId,
-    leaseToken: scope.leaseToken,
-    attempt: job.attempt,
-  });
+  await assertPlatformRepairLease(
+    tx,
+    {
+      workerId: scope.workerId,
+      jobId: scope.jobId,
+      leaseToken: scope.leaseToken,
+      attempt: job.attempt,
+    },
+    lock,
+  );
   const [v] =
     await tx`select v.*,q.frozen,c.candidate,q.candidate head_candidate,q.input_object_id,q.dependency_object_id
     from allrice_platform_repair_tasks q join allrice_platform_repair_verifications v on v.task_id=q.id
@@ -223,7 +228,7 @@ export async function resolvePlatformRepositoryExecutionProofTx(
     where q.run_id=${scope.runId} and q.job_id=${scope.jobId} and q.organization_id=${scope.organizationId}
     and q.workspace_id=${scope.workspaceId!} and q.owner_id=${scope.ownerId}
     and v.operation_id=${scope.operationId} and v.command_digest=${repositoryDigest(JSON.stringify(payload))}
-    for share of q,v,c`;
+    ${lock ? tx`for share of q,v,c` : tx``}`;
   if (!v || !v.input_object_id)
     throw new DataAccessError('authorization_denied');
   const candidate = RepositoryCandidateSchema.parse(v.candidate);
@@ -310,7 +315,7 @@ export async function resolvePlatformRepositoryExecutionProof(
   return db.begin(async (tx) => {
     const [job] = await tx<
       JobRow[]
-    >`select * from allrice_jobs where id=${context.jobId} and run_id=${context.runId} for share`;
+    >`select * from allrice_jobs where id=${context.jobId} and run_id=${context.runId}`;
     if (!job || !hasRepairMarker(job)) return undefined;
     const [i] =
       await tx`select operation_id,job_lease_token::text lease_token from allrice_cloud_execution_inputs
@@ -331,6 +336,7 @@ export async function resolvePlatformRepositoryExecutionProof(
         operationId: i.operation_id,
       },
       payload,
+      false,
     );
   });
 }

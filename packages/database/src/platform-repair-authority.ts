@@ -208,13 +208,14 @@ async function admitMaintenanceRepairGrant(
   owner: string,
   b: RepairBinding,
   existingTaskId?: string,
+  lock = true,
 ) {
   if (b.frozen.version !== 2) throw new DataAccessError('authorization_denied');
   const f = b.frozen,
     m = f.maintenance,
-    authority = await assertMaintenanceGrant(tx, m.grantId, owner);
+    authority = await assertMaintenanceGrant(tx, m.grantId, owner, lock);
   const [attempt] =
-    await tx`select a.*,l.grant_id from allrice_platform_maintenance_attempts a join allrice_platform_maintenance_grant_attempts l on l.attempt_id=a.id where a.id=${m.attemptId} and l.grant_id=${m.grantId} for update of a`;
+    await tx`select a.*,l.grant_id from allrice_platform_maintenance_attempts a join allrice_platform_maintenance_grant_attempts l on l.attempt_id=a.id where a.id=${m.attemptId} and l.grant_id=${m.grantId} ${lock ? tx`for update of a` : tx``}`;
   if (
     !attempt ||
     attempt.primary_grant_id !== m.grantId ||
@@ -372,7 +373,11 @@ export async function assertExistingRepairBinding(
     await admitMaintenanceRepairGrant(tx, context.actor.id, b, b.id);
 }
 /** Called only for the reserved private Employee Run. Public chat cannot add markers. */
-export async function isPlatformRepairJobAuthorized(tx: Tx, job: JobRow) {
+export async function isPlatformRepairJobAuthorized(
+  tx: Tx,
+  job: JobRow,
+  lock = true,
+) {
   if (!hasRepairMarker(job) || !(await repairSchemaAvailable(tx))) return false;
   const [q] =
     await tx`select q.*,d.assignment_id,d.owner_id deployment_owner,e.employee_assignment_id,e.employee_version_id,
@@ -391,7 +396,7 @@ export async function isPlatformRepairJobAuthorized(tx: Tx, job: JobRow) {
     join allrice_chat_sessions s on s.id=q.session_id and s.owner_id=q.owner_id and s.organization_id=q.organization_id and s.workspace_id=q.workspace_id
     join allrice_organizations o on o.id=q.organization_id and o.slug='allrice-platform'
     join allrice_workspaces w on w.id=q.workspace_id and w.organization_id=q.organization_id and w.slug='employee-tests-'||q.owner_id::text
-    where q.run_id=${job.run_id} for share of d,a,emp,pa,o,w`;
+    where q.run_id=${job.run_id} ${lock ? tx`for share of d,a,emp,pa,o,w` : tx``}`;
   if (!q || !repairFrozenValid(q.frozen)) return false;
   const f = RepairFrozenSchema.parse(q.frozen),
     input = (job.payload as { input?: Record<string, unknown> }).input;
@@ -403,13 +408,14 @@ export async function isPlatformRepairJobAuthorized(tx: Tx, job: JobRow) {
       f.version === 1
         ? (
             await tx`select id from allrice_sessions where id=${f.loginSessionId}
-    and user_id=${job.owner_id} and revoked_at is null and expires_at>clock_timestamp() for share`
+    and user_id=${job.owner_id} and revoked_at is null and expires_at>clock_timestamp() ${lock ? tx`for share` : tx``}`
           )[0]
         : await admitMaintenanceRepairGrant(
             tx,
             job.owner_id,
             { id: q.id, inputDigest: q.input_digest, frozen: f },
             q.id,
+            lock,
           );
   } catch (error) {
     if (error instanceof DataAccessError) return false;
@@ -417,7 +423,7 @@ export async function isPlatformRepairJobAuthorized(tx: Tx, job: JobRow) {
   }
   const members =
     await tx`select user_id from allrice_memberships where user_id=${job.owner_id}
-    and organization_id=${job.organization_id} and active and (workspace_id is null or workspace_id=${job.workspace_id}) for share`;
+    and organization_id=${job.organization_id} and active and (workspace_id is null or workspace_id=${job.workspace_id}) ${lock ? tx`for share` : tx``}`;
   return (
     !!login &&
     members.length > 0 &&
@@ -460,10 +466,14 @@ export async function isPlatformRepairJobAuthorized(tx: Tx, job: JobRow) {
     (await isPlatformAdmin({ actor: { type: 'user', id: job.owner_id } }, tx))
   );
 }
-export async function assertPlatformRepairLease(tx: Tx, lease: RepairLease) {
+export async function assertPlatformRepairLease(
+  tx: Tx,
+  lease: RepairLease,
+  lock = true,
+) {
   const [job] = await tx<
     JobRow[]
-  >`select * from allrice_jobs where id=${UuidSchema.parse(lease.jobId)} for share`;
+  >`select * from allrice_jobs where id=${UuidSchema.parse(lease.jobId)} ${lock ? tx`for share` : tx``}`;
   if (
     !job ||
     job.status !== 'running' ||
@@ -474,7 +484,7 @@ export async function assertPlatformRepairLease(tx: Tx, lease: RepairLease) {
     job.lease_expires_at <= new Date() ||
     job.timeout_at <= new Date() ||
     job.cancel_requested_at ||
-    !(await isPlatformRepairJobAuthorized(tx, job))
+    !(await isPlatformRepairJobAuthorized(tx, job, lock))
   )
     throw new DataAccessError('authorization_denied');
   const [live] = await tx`select id from allrice_jobs where id=${job.id}

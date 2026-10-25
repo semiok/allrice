@@ -91,7 +91,7 @@ function publicFacts(r: Awaited<ReturnType<typeof stored>>) {
 }
 export async function getMaintenanceGithubBot(context: RequestContext) {
   return getDatabase().begin(async (tx) => {
-    await currentMaintenanceAdmin(context, tx);
+    await currentMaintenanceAdmin(context, tx, false);
     return publicFacts(await stored(tx));
   });
 }

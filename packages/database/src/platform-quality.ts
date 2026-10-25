@@ -404,12 +404,16 @@ export async function bindPlatformQualityCheck(
 }
 
 /** Additional restrictions only: employee/session/membership/target guards remain. */
-export async function isPlatformQualityJobAuthorized(tx: Tx, job: JobRow) {
+export async function isPlatformQualityJobAuthorized(
+  tx: Tx,
+  job: JobRow,
+  lock = true,
+) {
   if ((job.payload as { type?: unknown })?.type !== 'allrice.employee.run')
     return true;
-  if (hasRepairMarker(job)) return isPlatformRepairJobAuthorized(tx, job);
+  if (hasRepairMarker(job)) return isPlatformRepairJobAuthorized(tx, job, lock);
   if (hasRepositoryReviewMarker(job))
-    return isRepositoryReviewJobAuthorized(tx, job);
+    return isRepositoryReviewJobAuthorized(tx, job, lock);
   if (!(await qualitySchemaAvailable(tx))) return !hasQualityMarker(job);
   // Detect reservation independently of the current identity/authority join.
   // Renaming, archiving or revocation must not turn a reserved assignment into
@@ -586,7 +590,7 @@ export async function getPlatformQualityExecution(lease: QualityLease) {
   return getDatabase().begin(async (tx) => {
     const [job] = await tx<
       JobRow[]
-    >`select * from allrice_jobs where id=${UuidSchema.parse(lease.jobId)} for update`;
+    >`select * from allrice_jobs where id=${UuidSchema.parse(lease.jobId)}`;
     if (
       !job ||
       job.status !== 'running' ||
@@ -597,7 +601,7 @@ export async function getPlatformQualityExecution(lease: QualityLease) {
       job.lease_expires_at <= new Date() ||
       job.timeout_at <= new Date() ||
       job.cancel_requested_at ||
-      !(await isPlatformQualityJobAuthorized(tx, job))
+      !(await isPlatformQualityJobAuthorized(tx, job, false))
     )
       denied();
     const [row] =

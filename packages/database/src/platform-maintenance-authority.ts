@@ -37,11 +37,11 @@ const iso = (v: unknown) => (v instanceof Date ? v.toISOString() : null);
 const denied = () => {
   throw new DataAccessError('authorization_denied');
 };
-async function currentIssuer(tx: Tx, owner: string) {
+async function currentIssuer(tx: Tx, owner: string, lock = true) {
   if (
     !(await isPlatformAdmin({ actor: { type: 'user', id: owner } }, tx)) ||
     !(
-      await tx`select id from allrice_users where id=${owner} and status='active' for share`
+      await tx`select id from allrice_users where id=${owner} and status='active' ${lock ? tx`for share` : tx``}`
     ).length
   )
     denied();
@@ -207,7 +207,7 @@ export async function getMaintenanceReportAuthority(
   reportId: string,
 ) {
   return getDatabase().begin(async (tx) => {
-    const owner = await currentMaintenanceAdmin(context, tx);
+    const owner = await currentMaintenanceAdmin(context, tx, false);
     const [r] =
       await tx`select id from allrice_platform_maintenance_reports where id=${UuidSchema.parse(reportId)} and owner_id=${owner}`;
     if (!r) throw new DataAccessError('not_found');
@@ -383,17 +383,18 @@ export async function assertMaintenanceGrant(
   tx: Tx,
   id: string,
   owner: string,
+  lock = true,
 ) {
   const [lookup] =
     await tx`select deployment_id from allrice_platform_maintenance_grants where id=${UuidSchema.parse(id)} and issuer_id=${owner}`;
   if (!lookup) denied();
   // Match queue admission: issuer -> deployment -> grant -> attempt. A
   // preflight must not hold grant SHARE while waiting for issuer UPDATE.
-  await currentIssuer(tx, owner);
+  await currentIssuer(tx, owner, lock);
   const [d] =
-    await tx`select * from allrice_platform_maintenance_deployments where id=${lookup!.deployment_id} and owner_id=${owner} for share`;
+    await tx`select * from allrice_platform_maintenance_deployments where id=${lookup!.deployment_id} and owner_id=${owner} ${lock ? tx`for share` : tx``}`;
   const [g] =
-    await tx`select * from allrice_platform_maintenance_grants where id=${id} and issuer_id=${owner} for share`;
+    await tx`select * from allrice_platform_maintenance_grants where id=${id} and issuer_id=${owner} ${lock ? tx`for share` : tx``}`;
   const [clock] = await tx<{ now: Date }[]>`select clock_timestamp() now`;
   const now = clock!.now;
   if (!d || !g || g.revoked_at || d.revoked_at || g.expires_at <= now) denied();

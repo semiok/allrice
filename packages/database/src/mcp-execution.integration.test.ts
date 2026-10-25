@@ -24,6 +24,7 @@ import {
   cancelCloudRuntimeRun,
 } from './cloud-operation-view.ts';
 import { mcpStableId } from './mcp-authority.ts';
+import { createReadPathProbe } from './read-path-probe.fixture.ts';
 import type * as Client from './core/client.ts';
 import { nativeBrokerRoundtrip } from '../../../apps/worker/src/harness/dsh-native-broker.fixture.js';
 import { executeRiceTool } from '../../../apps/worker/src/tool-broker.js';
@@ -1119,6 +1120,25 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
     const [retained] = await listCloudRuntimeOperations(f.context, f.run, db);
     expect(retained!.approval).toEqual(originalApproval);
     expect(f.service.state.calls).toBe(0);
+  });
+  it('MET-210 page polling projects MCP authorization and approval without row locks', async () => {
+    const f = await fixture();
+    await f.create();
+    const real = db;
+    const probe = createReadPathProbe(real);
+    // Display helpers open their own connection through getDatabase().
+    db = probe.db;
+    try {
+      const [view] = await listCloudRuntimeOperations(f.context, f.run, db);
+      expect(view!.mcpAuthorization).toEqual({
+        available: true,
+        reason: 'available',
+      });
+      expect(view!.approval).toBeTruthy();
+    } finally {
+      db = real;
+    }
+    probe.expectNoRowLocks();
   });
   it.each(['tool', 'credential', 'employee'] as const)(
     'projects current %s authorization changes and never revives the frozen approval',

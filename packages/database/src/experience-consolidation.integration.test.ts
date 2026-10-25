@@ -1,3 +1,4 @@
+import { createReadPathProbe } from './read-path-probe.fixture.ts';
 import type * as NativeBudget from './run-memory-context.ts';
 import {
   bindJobNativeSession,
@@ -2538,6 +2539,34 @@ suite(
       expect(
         (await listExperienceDrafts(f.owner))[0]!.validationNotes.join(' '),
       ).toContain('技能版本已变化');
+    });
+    it('MET-210 populated drafts and adopted provenance commit every transaction without an xid', async () => {
+      const f = await adoptedFixture();
+      const originalDb = db;
+      for (const kind of ['drafts', 'provenance'] as const) {
+        const probe = createReadPathProbe(originalDb);
+        db = probe.db;
+        try {
+          if (kind === 'drafts') {
+            const rows = await listExperienceDrafts(f.owner, f.instance.id);
+            expect(rows.length).toBeGreaterThan(0);
+            expect(
+              rows[0]!.adoptions.some((a) => a.memoryId === f.memory.id),
+            ).toBe(true);
+          } else {
+            const value = await getExperienceProvenance(f.owner, {
+              memoryId: f.memory.id,
+              instanceId: f.instance.id,
+              revision: 1,
+            });
+            expect(value.indexState).toBe('current');
+            expect(value.sources.length).toBeGreaterThan(0);
+          }
+          probe.expectNoRowLocks();
+        } finally {
+          db = originalDb;
+        }
+      }
     });
     it('adopts the existing independent proof once, without forging human review or rerunning validation', async () => {
       const f = await adoptedFixture();

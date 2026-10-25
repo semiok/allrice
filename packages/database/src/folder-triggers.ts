@@ -73,6 +73,7 @@ async function authority(
   folder: FolderTriggerConfig,
   assignmentId: string,
   allowBusy = false,
+  lock = true,
 ) {
   const members =
     await tx`select m.id,m.user_id as "userId",m.organization_id as "organizationId",m.workspace_id as "workspaceId",m.role,m.active
@@ -80,12 +81,16 @@ async function authority(
     join allrice_organizations o on o.id=m.organization_id and o.archived_at is null
     join allrice_workspaces w on w.id=${scope.workspaceId} and w.organization_id=m.organization_id and w.archived_at is null
     where m.user_id=${scope.ownerId} and m.organization_id=${scope.organizationId} and m.active and m.role in ('admin','member')
-      and (m.workspace_id is null or m.workspace_id=${scope.workspaceId}) for share of m,u,o,w`;
+      and (m.workspace_id is null or m.workspace_id=${scope.workspaceId}) ${lock ? tx`for share of m,u,o,w` : tx``}`;
   if (!members.length) throw new DataAccessError('authorization_denied');
-  const settings = await readWorkAutomation(tx, {
-    ...scope,
-    userId: scope.ownerId,
-  });
+  const settings = await readWorkAutomation(
+    tx,
+    {
+      ...scope,
+      userId: scope.ownerId,
+    },
+    lock,
+  );
   if (!settings.available || !settings.settings.computer)
     throw new DataAccessError('authorization_denied');
   const [assignment] =
@@ -93,7 +98,7 @@ async function authority(
     where a.id=${assignmentId} and a.organization_id=${scope.organizationId} and a.workspace_id=${scope.workspaceId} and a.user_id=${scope.ownerId} and a.active
       and v.provider_snapshot->>'provider' in ('codex','dsh')
       and not exists(select 1 from allrice_platform_employee_tenant_assignments p where p.organization_id=a.organization_id and p.workspace_id=a.workspace_id and p.tenant_employee_id=a.employee_id and not p.active)
-    for share of a,v`;
+    ${lock ? tx`for share of a,v` : tx``}`;
   // Explicit statements fix row-lock order regardless of the join planner.
   // Heartbeat also takes target before device; revocation takes device/grant
   // before commands. Never hold a device while waiting for the target.
@@ -101,16 +106,16 @@ async function authority(
     { metadata: Record<string, unknown>; state: string }[]
   >`select metadata,state from allrice_execution_targets
     where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and target_key=${'bridge.' + folder.deviceId} and kind='rice_bridge'
-      and metadata->'environment'->>'folderTriggerVersion'='1' for share`;
+      and metadata->'environment'->>'folderTriggerVersion'='1' ${lock ? tx`for share` : tx``}`;
   const [device] = await tx<
     { last_seen_at: Date | null }[]
   >`select last_seen_at from allrice_bridge_devices
     where id=${folder.deviceId} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and owner_id=${scope.ownerId}
-      and revoked_at is null and capabilities @> array['local.file.import']::text[] for share`;
+      and revoked_at is null and capabilities @> array['local.file.import']::text[] ${lock ? tx`for share` : tx``}`;
   const [grant] =
     await tx`select id from allrice_bridge_folder_grants where id=${folder.folderGrantId} and device_id=${folder.deviceId}
     and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and owner_id=${scope.ownerId}
-    and revoked_at is null and runtime_generation=${folder.folderGrantVersion} for share`;
+    and revoked_at is null and runtime_generation=${folder.folderGrantVersion} ${lock ? tx`for share` : tx``}`;
   if (!assignment || !target || !device || !grant)
     throw new DataAccessError('authorization_denied');
   if (
@@ -151,11 +156,12 @@ export async function validateFolderTriggerConfiguration(
     authority(sql, scope, folder, UuidSchema.parse(assignmentId));
   return tx ? verify(tx) : getDatabase().begin(verify);
 }
-async function readEvent(tx: TransactionSql, id: string) {
+async function readEvent(tx: TransactionSql, id: string, lock = true) {
   const [row] = await tx<
     EventRow[]
   >`select e.*,a.name,a.prompt,a.employee_assignment_id,a.folder,a.revision as current_revision,a.status,a.deleted_at
-    from allrice_automation_folder_events e join allrice_automations a on a.id=e.automation_id where e.id=${UuidSchema.parse(id)} for share of e,a`;
+    from allrice_automation_folder_events e join allrice_automations a on a.id=e.automation_id where e.id=${UuidSchema.parse(id)}
+    ${lock ? tx`for share of e,a` : tx``}`;
   if (!row) throw new DataAccessError('not_found');
   return row;
 }
@@ -163,8 +169,9 @@ export async function assertFolderTriggerEventAuthority(
   tx: TransactionSql,
   id: string,
   scope?: Scope,
+  lock = true,
 ) {
-  const row = await readEvent(tx, id),
+  const row = await readEvent(tx, id, lock),
     folder = FolderTriggerConfigSchema.parse(row.folder);
   if (
     row.status !== 'enabled' ||
@@ -189,6 +196,7 @@ export async function assertFolderTriggerEventAuthority(
     folder,
     row.employee_assignment_id,
     true,
+    lock,
   );
   return { row, context, folder };
 }
@@ -243,6 +251,7 @@ export async function readFolderTriggerRules(token: string) {
           folder,
           row.employee_assignment_id,
           true,
+          false,
         ),
       );
     } catch (e) {

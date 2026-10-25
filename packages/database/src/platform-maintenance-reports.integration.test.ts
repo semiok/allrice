@@ -1,3 +1,6 @@
+import { createReadPathProbe } from './read-path-probe.fixture.ts';
+import { listMaintenanceDeployments } from './platform-maintenance.ts';
+import { getMaintenanceGithubBot } from './platform-maintenance-github.ts';
 import { randomUUID } from 'node:crypto';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
 import type { RequestContext } from '@allrice/contracts';
@@ -99,6 +102,43 @@ suite(
       value = payload(),
       sentAt = new Date().toISOString(),
     ) => receiveMaintenanceReport(identity, value, sentAt);
+    it('MET-210 maintenance deployment/report list and detail reads take no row locks', async () => {
+      const { identity, deployment } = await install();
+      const receipt = await send(identity);
+      for (const kind of [
+        'deployments',
+        'reports',
+        'report',
+        'github',
+      ] as const) {
+        const probe = createReadPathProbe(fixture.db);
+        vi.spyOn(client, 'getDatabase').mockReturnValue(probe.db);
+        try {
+          if (kind === 'deployments')
+            expect(
+              (await listMaintenanceDeployments(admin)).deployments.some(
+                (d) => d.id === deployment.id,
+              ),
+            ).toBe(true);
+          else if (kind === 'reports')
+            expect(
+              (
+                await listMaintenanceReports(admin, {
+                  deploymentId: deployment.id,
+                })
+              ).reports,
+            ).toMatchObject([{ reportId: receipt.reportId }]);
+          else if (kind === 'report')
+            expect(
+              await getMaintenanceReport(admin, receipt.reportId),
+            ).toMatchObject({ reportId: receipt.reportId });
+          else expect(await getMaintenanceGithubBot(admin)).toBeDefined();
+          probe.expectNoRowLocks();
+        } finally {
+          vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
+        }
+      }
+    });
     it('authenticates only the installation key and immediately fences a rotated or revoked connection', async () => {
       const { identity, deployment } = await install();
       await expect(

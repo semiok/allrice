@@ -116,6 +116,8 @@ export interface AssistantAuthorityInput {
     | 'recover'
     | 'evidence'
     | 'proposal';
+  /** `false` on read paths: the same checks without row locks. */
+  lock?: boolean;
 }
 interface Root {
   observeTokens: boolean;
@@ -236,6 +238,8 @@ export function createAssistantRuntime(
     tx: Tx,
     scope: RuntimeScope,
     rootRunId: string,
+    /** `false` on read paths: no row locks and no task-clock refresh write. */
+    forWrite = true,
   ): Promise<Root> {
     uuid.parse(rootRunId);
     const [root] = await tx<
@@ -243,14 +247,14 @@ export function createAssistantRuntime(
     >`select r.*, a.configuration,a.worker_job_id,a.worker_id,a.worker_lease_digest,a.generation,a.fence,a.revoked_at
       from allrice_runtime_roots r join allrice_assistant_roots a using(root_run_id)
       where r.root_run_id=${rootRunId} and r.organization_id=${scope.organizationId} and r.workspace_id=${scope.workspaceId}
-      for update of r,a`;
+      ${forWrite ? tx`for update of r,a` : tx``}`;
     if (!root || root.task.scope.projectId !== scope.projectId)
       fail('not_found');
     root.task = RuntimeTaskRefSchema.parse(root.task);
     root.configuration = AssistantRunConfigurationSchema.parse(
       root.configuration,
     );
-    const clock = await refreshTaskClock(tx, rootRunId);
+    const clock = forWrite ? await refreshTaskClock(tx, rootRunId) : null;
     if (clock) root.deadline_at = clock.deadlineAt;
     root.observeTokens = observesExecutionUsage();
     root.observeCalls = observesExecutionUsage();
@@ -336,7 +340,12 @@ export function createAssistantRuntime(
   function taskFor(root: Root, row: Instance): RuntimeTaskRef {
     return { ...root.task, runId: row.run_id, parentRunId: row.parent_run_id };
   }
-  async function owner(tx: Tx, context: RequestContext, runId: string) {
+  async function owner(
+    tx: Tx,
+    context: RequestContext,
+    runId: string,
+    forWrite = true,
+  ) {
     uuid.parse(runId);
     if (context.actor.type !== 'user') fail('forbidden');
     const [row] = await tx<{ task: RuntimeTaskRef }[]>`
@@ -345,7 +354,7 @@ export function createAssistantRuntime(
       and u.owner_id=${context.actor.id} and exists(select 1 from allrice_memberships m
         where m.organization_id=r.organization_id and (m.workspace_id is null or m.workspace_id=r.workspace_id) and m.user_id=${context.actor.id} and m.active=true)`;
     if (!row) fail('not_found');
-    return lock(tx, row.task.scope, runId);
+    return lock(tx, row.task.scope, runId, forWrite);
   }
   async function queue(
     tx: Tx,
@@ -1003,7 +1012,7 @@ export function createAssistantRuntime(
     },
     async getTree(context: RequestContext, input: { runId: string }) {
       return db.begin(async (tx) => {
-        const root = await owner(tx, context, input.runId);
+        const root = await owner(tx, context, input.runId, false);
         const instances = await tx<
           Instance[]
         >`select * from allrice_assistant_instances where root_run_id=${root.root_run_id} order by created_at,run_id`;

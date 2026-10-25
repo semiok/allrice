@@ -1,6 +1,7 @@
 import type postgres from 'postgres';
 import type { RequestContext } from '@allrice/contracts';
 import type { getDatabase } from '../core/client.ts';
+import { recordTransactionRetry } from '../core/transaction-retries.ts';
 import { requestEmployeeAccessCancellationTransaction } from '../execution/queue.ts';
 
 export class EmployeeAccessBusyError extends Error {
@@ -18,6 +19,7 @@ async function retryEmployeeAccessTransaction<T>(
   run: () => Promise<T>,
   retryLockBusy: () => boolean,
   retryDeadlock: boolean,
+  site: string,
 ): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
@@ -33,7 +35,15 @@ async function retryEmployeeAccessTransaction<T>(
         )
       )
         throw error;
-      if (attempt + 1 >= employeeAccessTransactionMaxAttempts) {
+      const exhausted = attempt + 1 >= employeeAccessTransactionMaxAttempts;
+      if (error.code === '40P01')
+        recordTransactionRetry({
+          site,
+          sqlState: '40P01',
+          attempt: attempt + 1,
+          outcome: exhausted ? 'exhausted' : 'retrying',
+        });
+      if (exhausted) {
         // Preserve the known rolled-back SQLSTATE for pre-start settlement.
         if (error.code === '40P01') throw error;
         throw new EmployeeAccessBusyError();
@@ -51,12 +61,18 @@ export function employeeAccessTransaction<T>(
     /** Opt in only for SQL-only transactions with no external effects. A 40P01
      * aborts the whole transaction; connection/COMMIT uncertainty is not retried. */
     retryDeadlock?: boolean;
+    /** Names the caller in `[TransactionRetry]` 40P01 retry records. */
+    retrySite?: string;
+    /** Transaction mode, e.g. `isolation level repeatable read read only`. */
+    mode?: string;
   } = {},
 ) {
+  const mode = options.mode;
   return retryEmployeeAccessTransaction(
-    () => sql.begin(run),
+    () => (mode ? sql.begin(mode, run) : sql.begin(run)),
     options.retryLockBusy ?? (() => true),
     options.retryDeadlock ?? false,
+    options.retrySite ?? 'employee_access',
   );
 }
 

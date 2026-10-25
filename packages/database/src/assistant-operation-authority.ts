@@ -19,6 +19,8 @@ export interface AssistantOperationOrigin {
 type Input = {
   transaction: postgres.TransactionSql;
   binding: RuntimeActionBinding;
+  /** `false` on read paths: the same checks without row locks. */
+  lock?: boolean;
 };
 const deny = (): never => {
   throw new RuntimePolicyError('assistant_authority_changed');
@@ -93,7 +95,7 @@ export function createAssistantOperationAuthority(
   async function assertCurrentBinding(input: Input) {
     const origin = await resolve(input);
     if (!origin) return;
-    const { transaction: tx, binding } = input;
+    const { transaction: tx, binding, lock = true } = input;
     const [root] = await tx<
       {
         worker_job_id: string;
@@ -114,7 +116,7 @@ export function createAssistantOperationAuthority(
         and l.organization_id=j.organization_id and l.workspace_id=j.workspace_id
       where a.root_run_id=${binding.task.rootRunId} and a.revoked_at is null and j.worker_id=a.worker_id
         and j.status='running' and j.cancel_requested_at is null and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp()
-      for share of a,j,l`;
+      ${lock ? tx`for share of a,j,l` : tx``}`;
     if (!root || Number(root.generation) !== binding.attempt.generation)
       return deny();
     if (root.worker_lease_digest !== runtimePolicyDigest(root.lease_token))
@@ -176,6 +178,7 @@ export function createAssistantOperationAuthority(
         task,
         tools: [action],
         phase: action === 'local.process.execute' ? 'proposal' : 'tool',
+        lock,
       });
     } catch (error) {
       if (

@@ -230,6 +230,7 @@ async function publishedFile(
   sql: Sql,
   reader: CompanyRunReader,
   reference: CompanyRunSnapshot['templates'][number],
+  lock = true,
 ) {
   const [row] = await sql<{ object: unknown }[]>`
     select jsonb_build_object('id',o.id,'organizationId',o.organization_id,'workspaceId',o.workspace_id,'ownerId',o.owner_id,
@@ -243,7 +244,7 @@ async function publishedFile(
       and o.id=${reference.revision.file!.objectId} and o.checksum=${reference.revision.file!.checksum}
       and o.size_bytes=${reference.revision.file!.sizeBytes} and o.media_type=${reference.revision.file!.mediaType}
       and o.state='ready' and o.deleted_at is null and (o.retention_until is null or o.retention_until>clock_timestamp())
-    for share of a,r,o`;
+    ${lock ? sql`for share of a,r,o` : sql``}`;
   if (!row) throw new CompanyAssetError('asset_unavailable');
   return StorageObjectSchema.parse(row.object);
 }
@@ -406,6 +407,7 @@ export async function getCompanyRunMaterial(
   reader: CompanyRunReader,
   objectId: string,
   sql: Sql = getDatabase(),
+  lock = true,
 ) {
   const [known] = await sql<
     { id: string }[]
@@ -421,7 +423,7 @@ export async function getCompanyRunMaterial(
     (t) => t.assetId === bound?.asset_id && t.revision.id === bound.revision_id,
   );
   if (!reference) throw new DataAccessError('authorization_denied');
-  await publishedFile(sql, reader, reference);
+  await publishedFile(sql, reader, reference, lock);
   const [row] = await sql<{ object: unknown }[]>`
     select jsonb_build_object('id',o.id,'organizationId',o.organization_id,'workspaceId',o.workspace_id,'ownerId',o.owner_id,
       'key',o.object_key,'checksum',o.checksum,'mediaType',o.media_type,'sizeBytes',o.size_bytes,
@@ -470,6 +472,7 @@ export async function getCompanyMaterialForExecution(
   context: ExecutionContext,
   objectId: string,
   sql: Sql = getDatabase(),
+  lock = true,
 ) {
   const [known] = await sql<
     { id: string }[]
@@ -480,6 +483,7 @@ export async function getCompanyMaterialForExecution(
     companyRunReader(context),
     objectId,
     sql,
+    lock,
   );
   if (file) assertCompanyMaterialPolicy(context, file.object);
   return file;

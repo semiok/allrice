@@ -49,6 +49,7 @@ import {
 } from './execution/tool-broker.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
 import { workbenchFileAccess } from './workbench-file-access.ts';
+import { recordTransactionRetry } from './core/transaction-retries.ts';
 import {
   parseOfficeDeliveryReceiptForObject,
   readBoundOfficeDeliveryReceipt,
@@ -106,7 +107,8 @@ export async function assertWorkbenchSession(
   context: WorkbenchPrincipal,
   sessionId: string,
   write = false,
-  lock: 'update' | 'share' = 'update',
+  /** `false` on read paths: same checks as plain snapshot reads (MET-210 #4). */
+  lock: 'update' | 'share' | false = 'update',
 ) {
   UuidSchema.parse(sessionId);
   if (context.actor.type !== 'user' || !context.workspaceId)
@@ -115,23 +117,21 @@ export async function assertWorkbenchSession(
   // writes. Taking Session first can deadlock with an enqueue that has locked
   // the user to allocate its policy version.
   const organizations =
-    await db`select id from allrice_organizations where id=${context.organizationId} and archived_at is null for share`;
+    await db`select id from allrice_organizations where id=${context.organizationId} and archived_at is null ${lock ? db`for share` : db``}`;
   const workspaces =
-    await db`select id from allrice_workspaces where id=${context.workspaceId} and organization_id=${context.organizationId} and archived_at is null for share`;
+    await db`select id from allrice_workspaces where id=${context.workspaceId} and organization_id=${context.organizationId} and archived_at is null ${lock ? db`for share` : db``}`;
   const users =
-    await db`select id from allrice_users where id=${context.actor.id} and status='active' for share`;
+    await db`select id from allrice_users where id=${context.actor.id} and status='active' ${lock ? db`for share` : db``}`;
   const memberships = await db<
     { role: string }[]
   >`select role from allrice_memberships where organization_id=${context.organizationId} and user_id=${context.actor.id}
-    and active and (workspace_id is null or workspace_id=${context.workspaceId}) order by id for share`;
-  const [session] =
-    lock === 'share'
-      ? await db<{ id: string }[]>`select id from allrice_chat_sessions
+    and active and (workspace_id is null or workspace_id=${context.workspaceId}) order by id ${lock ? db`for share` : db``}`;
+  const [session] = await db<
+    { id: string }[]
+  >`select id from allrice_chat_sessions
     where id=${sessionId} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
-      and owner_id=${context.actor.id} and (${!write} or archived_at is null) for share`
-      : await db<{ id: string }[]>`select id from allrice_chat_sessions
-    where id=${sessionId} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
-      and owner_id=${context.actor.id} and (${!write} or archived_at is null) for update`;
+      and owner_id=${context.actor.id} and (${!write} or archived_at is null)
+      ${lock === 'update' ? db`for update` : lock === 'share' ? db`for share` : db``}`;
   if (!session) fail('artifact_not_found');
   if (write && (await nativeContextExecutionRetired(db, 'chat', sessionId)))
     fail('artifact_not_found');
@@ -926,7 +926,7 @@ export async function listWorkbenchArtifacts(
 ) {
   if (before) WorkbenchCursorSchema.parse(before);
   return db.begin(async (tx) => {
-    await assertWorkbenchSession(tx, context, sessionId);
+    await assertWorkbenchSession(tx, context, sessionId, false, false);
     const rows = await artifactRows(
       tx,
       {
@@ -983,7 +983,7 @@ export async function getWorkbenchArtifact(
   db: Database = getDatabase(),
 ) {
   return db.begin(async (tx) => {
-    await assertWorkbenchSession(tx, context, sessionId);
+    await assertWorkbenchSession(tx, context, sessionId, false, false);
     return readArtifact(tx, context, sessionId, id);
   });
 }
@@ -1232,6 +1232,7 @@ export async function assertPublishingRun(
   context: ExecutionContext,
   sessionId: string,
   requiredTool = 'workspace.export.create',
+  lock = true,
 ) {
   const [row] = await tx<
     { execution_snapshot: unknown }[]
@@ -1241,7 +1242,7 @@ export async function assertPublishingRun(
     where r.id=${context.runId} and r.organization_id=${context.organizationId} and r.workspace_id=${context.workspaceId!} and r.owner_id=${context.policySnapshot.subjectId}
       and r.policy_snapshot_id=${context.policySnapshot.id} and e.session_id=${sessionId} and r.state='running'
       and j.status='running' and j.worker_id=${context.worker.id} and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp() and j.cancel_requested_at is null
-      for share of e,r,j`;
+      ${lock ? tx`for share of e,r,j` : tx``}`;
   const parsed = EmployeeExecutionSnapshotSchema.safeParse(
     row?.execution_snapshot,
   );
@@ -1871,13 +1872,20 @@ export async function publishWorkbenchArtifact(
       error instanceof Error
         ? Object.getOwnPropertyDescriptor(error, 'code')?.value
         : undefined;
-    if (cleanupConfirmed && (sqlState === '40P01' || sqlState === '40001'))
+    if (cleanupConfirmed && (sqlState === '40P01' || sqlState === '40001')) {
+      recordTransactionRetry({
+        site: 'artifact_publication',
+        sqlState,
+        attempt: 1,
+        outcome: 'rollback_receipt',
+      });
       throw new ArtifactPublicationRollbackError(
         context.runId,
         input.callId,
         sqlState,
         error,
       );
+    }
     throw error;
   }
 }
@@ -1956,7 +1964,7 @@ export async function listArtifactFeedback(
   db: Database = getDatabase(),
 ) {
   return db.begin(async (tx) => {
-    await assertWorkbenchSession(tx, context, sessionId);
+    await assertWorkbenchSession(tx, context, sessionId, false, false);
     const artifact = await readArtifact(tx, context, sessionId, artifactId);
     const rows = await tx<
       FeedbackRow[]

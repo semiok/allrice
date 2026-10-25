@@ -1,3 +1,5 @@
+import { scheduleReadPathQuery } from './read-path-races.fixture.ts';
+import { createReadPathProbe } from './read-path-probe.fixture.ts';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -67,9 +69,10 @@ function scheduleQueries(
                   .join('?')
                   .replaceAll(/\s+/g, ' ')
                   .toLowerCase();
-                return hook(
+                return scheduleReadPathQuery(
+                  Reflect.apply(query, thisArg, args),
                   sql,
-                  async () => await Reflect.apply(query, thisArg, args),
+                  hook,
                 );
               },
             }),
@@ -186,7 +189,6 @@ suite(
 
     it.each([
       'request_status',
-      'projection',
       'approval_request',
       'approval_decision',
     ] as const)(
@@ -248,8 +250,6 @@ suite(
         const contender = (async () => {
           if (kind === 'request_status')
             return localBrowserEffectStatus(f.device, status, contenderDb);
-          if (kind === 'projection')
-            return listBrowserWorkspaces(f.context, f.run, contenderDb);
           if (kind === 'approval_request')
             return requestRuntimeActionApproval(
               createBrowserOperationLedger(f.context, contenderDb)
@@ -288,19 +288,13 @@ suite(
         );
         try {
           expect(await firstContendedLock.promise).toBe('root');
-          // Projection first checks the workspace in a separate completed read
-          // transaction. The binding transaction itself must begin at root.
-          if (kind !== 'projection') expect(reachedBrowser).toBe(false);
+          expect(reachedBrowser).toBe(false);
           expect(reachedControls).toBe(false);
           expect(contenderFinished).toBe(false);
           releaseHeartbeat.resolve();
           const [, result] = await Promise.all([heartbeat, contender]);
           if (kind === 'request_status')
             expect(result).toMatchObject({ status: 'pending' });
-          if (kind === 'projection')
-            expect(result).toEqual(
-              expect.arrayContaining([expect.objectContaining({ id: b.w.id })]),
-            );
           const [child] =
             await db`select i.started_at,i.lease_token,a.runtime_consumed_at from allrice_browser_operation_inputs i
         join allrice_approval_requests a on a.resource_id=i.operation_id and a.resource_type='runtime_operation' where i.operation_id=${effect.operationId}`;
@@ -324,6 +318,49 @@ suite(
       },
       15000,
     );
+
+    it('MET-210 populated browser projection including approval GET completes while heartbeat holds parent UPDATE', async () => {
+      const { f, b, request } = await pendingSubmission();
+      const parentLocked = deferred<void>(),
+        release = deferred<void>();
+      let paused = false;
+      const heartbeatDb = scheduleQueries(async (sql, execute) => {
+        const result = await execute();
+        if (
+          !paused &&
+          sql.includes(
+            'select * from allrice_runtime_operations where id = ? for update',
+          )
+        ) {
+          paused = true;
+          parentLocked.resolve();
+          await release.promise;
+        }
+        return result;
+      });
+      const heartbeat = renewLocalBrowserOperations(
+        f.device,
+        b.identity!,
+        heartbeatDb,
+      );
+      void heartbeat.catch(() => parentLocked.resolve());
+      try {
+        await parentLocked.promise;
+        const probe = createReadPathProbe(db, { lockTimeout: '1500ms' });
+        const views = await listBrowserWorkspaces(f.context, f.run, probe.db);
+        expect(paused).toBe(true);
+        expect(views).toMatchObject([{ id: b.w.id, available: true }]);
+        expect(
+          views[0]!.operations.some(
+            (op) => op.approval?.request.approvalId === request.approvalId,
+          ),
+        ).toBe(true);
+        probe.expectNoRowLocks();
+      } finally {
+        release.resolve();
+        await heartbeat;
+      }
+    }, 15_000);
 
     it('rejects foreign device, owner, altered root and changed immutable inputs before browser locks', async () => {
       const { f, b, snapshot } = await pendingSubmission();

@@ -31,6 +31,7 @@ export async function readProjectSourceMetadata(
   tx: TransactionSql,
   ctx: ExecutionContext,
   source: RuntimeContentRef,
+  lock = true,
 ) {
   const principal = {
     actor: { type: 'user' as const, id: ctx.policySnapshot.subjectId },
@@ -48,13 +49,19 @@ export async function readProjectSourceMetadata(
   >`
     select id,session_id,object_id,series_id,version from allrice_deliverable_versions
     where organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId!} and owner_id=${ctx.policySnapshot.subjectId}
-      and (${source.kind === 'storage_object'} and object_id=${source.id} or ${source.kind !== 'storage_object'} and id=${source.id}) for share`;
+      and (${source.kind === 'storage_object'} and object_id=${source.id} or ${source.kind !== 'storage_object'} and id=${source.id}) ${lock ? tx`for share` : tx``}`;
   if (!row) fail('snapshot_not_found');
-  await assertWorkbenchSession(tx, principal, row.session_id, false, 'share');
+  await assertWorkbenchSession(
+    tx,
+    principal,
+    row.session_id,
+    false,
+    lock ? 'share' : false,
+  );
   const [live] =
     await tx`select id from allrice_storage_objects where id=${row.object_id} and organization_id=${ctx.organizationId}
     and workspace_id=${ctx.workspaceId!} and owner_id=${ctx.policySnapshot.subjectId} and state='ready' and immutable
-    and deleted_at is null and (retention_until is null or retention_until>clock_timestamp()) for share`;
+    and deleted_at is null and (retention_until is null or retention_until>clock_timestamp()) ${lock ? tx`for share` : tx``}`;
   if (!live) fail('source_unavailable');
   const artifact = await readArtifact(tx, principal, row.session_id, row.id);
   if (
@@ -116,6 +123,7 @@ export async function assertSavedProjectAuthority(
   project: ProjectVersionRef,
   executionTool:
     'local.process.execute' | 'cloud.process.execute' = 'local.process.execute',
+  lock = true,
 ) {
   if (
     ctx.jobId !== origin.jobId ||
@@ -130,7 +138,7 @@ export async function assertSavedProjectAuthority(
     >`select lease_token from allrice_jobs
       where id=${origin.jobId} and run_id=${ctx.runId} and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId!}
         and owner_id=${ctx.policySnapshot.subjectId} and worker_id=${origin.workerId} and attempt=${origin.attempt}
-        and status='running' and cancel_requested_at is null and lease_expires_at>clock_timestamp() and timeout_at>clock_timestamp() for share`;
+        and status='running' and cancel_requested_at is null and lease_expires_at>clock_timestamp() and timeout_at>clock_timestamp() ${lock ? tx`for share` : tx``}`;
     if (
       !lease ||
       createHash('sha256').update(lease.lease_token).digest('hex') !==
@@ -139,15 +147,15 @@ export async function assertSavedProjectAuthority(
       fail('run_unavailable');
   }
   await job();
-  await assertPublishingRun(tx, ctx, sessionId, 'workspace.project');
-  await assertPublishingRun(tx, ctx, sessionId, executionTool);
+  await assertPublishingRun(tx, ctx, sessionId, 'workspace.project', lock);
+  await assertPublishingRun(tx, ctx, sessionId, executionTool, lock);
   const [employee] = await tx`select a.id from allrice_employee_runs r
     join allrice_employee_assignments a on a.id=r.employee_assignment_id and a.organization_id=r.organization_id and a.workspace_id=r.workspace_id and a.user_id=r.owner_id and a.active
     join allrice_employees e on e.id=a.employee_id and e.organization_id=a.organization_id and e.workspace_id=a.workspace_id and e.status='active'
     join allrice_employee_versions v on v.id=r.employee_version_id and v.employee_id=e.id and v.organization_id=e.organization_id and v.workspace_id=e.workspace_id
     where r.run_id=${ctx.runId} and r.session_id=${sessionId} and r.organization_id=${ctx.organizationId} and r.workspace_id=${ctx.workspaceId!} and r.owner_id=${ctx.policySnapshot.subjectId}
       and not exists(select 1 from allrice_platform_employee_tenant_assignments d where d.tenant_employee_id=e.id and d.organization_id=e.organization_id and d.workspace_id=e.workspace_id and not d.active)
-    for share of r,a,e,v`;
+    ${lock ? tx`for share of r,a,e,v` : tx``}`;
   if (!employee) fail('run_unavailable');
   await assertWorkbenchSession(
     tx,
@@ -158,13 +166,18 @@ export async function assertSavedProjectAuthority(
     },
     sessionId,
     true,
-    'share',
+    lock ? 'share' : false,
   );
   const [opened] =
     await tx`select project_id from allrice_project_workspace_heads where root_run_id=${ctx.runId} and project_id=${project.projectId}
-    and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId!} and owner_id=${ctx.policySnapshot.subjectId} for share`;
+    and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId!} and owner_id=${ctx.policySnapshot.subjectId} ${lock ? tx`for share` : tx``}`;
   if (!opened) fail('project_not_open');
-  const artifact = await readProjectSourceMetadata(tx, ctx, project.snapshot);
+  const artifact = await readProjectSourceMetadata(
+    tx,
+    ctx,
+    project.snapshot,
+    lock,
+  );
   // All lock waits precede the final time/lease and object retention checks.
   await job();
   const [live] =

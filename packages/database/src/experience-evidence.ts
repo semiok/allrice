@@ -18,6 +18,7 @@ import {
   resolveEmployeeSessionInstance,
 } from './employees/employee-instances.ts';
 import { classifyExperienceFeedback } from './experience-feedback.ts';
+import { recordTransactionRetry } from './core/transaction-retries.ts';
 
 const hash = (text: string) =>
   `sha256:${createHash('sha256').update(text).digest('hex')}`;
@@ -387,6 +388,13 @@ export async function collectPendingExperienceEvidence(
       const code = record(error).code;
       if (['55P03', '57014', '40P01'].includes(String(code))) counts.busy++;
       else throw error;
+      if (code === '40P01')
+        recordTransactionRetry({
+          site: 'experience_capture',
+          sqlState: '40P01',
+          attempt: 1,
+          outcome: 'retrying',
+        });
     }
   }
   return counts;

@@ -149,11 +149,12 @@ async function assertPdfSource(
   scope: { organizationId: string; workspaceId: string; ownerId: string },
   source: RuntimeLocalPdfSource,
   context?: ExecutionContext,
+  lock = true,
 ) {
   const { getCompanyMaterialForExecution } =
     await import('./company-run-assets.ts');
   const company = context
-    ? await getCompanyMaterialForExecution(context, source.objectId, tx)
+    ? await getCompanyMaterialForExecution(context, source.objectId, tx, lock)
     : null;
   if (company) {
     if (
@@ -190,7 +191,7 @@ async function assertPdfSource(
     ) v on true
     where o.id=${source.objectId} and o.organization_id=${scope.organizationId} and o.workspace_id=${scope.workspaceId}
       and o.state='ready' and o.deleted_at is null and (o.retention_until is null or o.retention_until>clock_timestamp())
-      and (o.owner_id=${scope.ownerId} or o.visibility<>'private') for share of o`;
+      and (o.owner_id=${scope.ownerId} or o.visibility<>'private') ${lock ? tx`for share of o` : tx``}`;
   if (
     !object ||
     (object.media_type !== 'application/pdf' &&
@@ -482,6 +483,7 @@ export async function assertLocalPdfDelegation(
   binding: RuntimeActionBinding,
   payload: RuntimeLocalPdfPayload,
   frozenValue: unknown,
+  lock = true,
 ) {
   const a = payload.arguments,
     f = frozenPdf(frozenValue);
@@ -535,17 +537,17 @@ export async function assertLocalPdfDelegation(
     where j.id=${origin.job_id} and j.run_id=${binding.task.runId} and j.organization_id=${device.organizationId} and j.workspace_id=${device.workspaceId}
       and j.owner_id=${device.ownerId} and j.attempt=${origin.job_attempt} and j.lease_token=${origin.job_lease_token} and j.worker_id=${origin.job_worker_id}
       and j.status='running' and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp() and j.cancel_requested_at is null
-      and r.state='running' and r.policy_snapshot_id=${f.tenantContext.policySnapshotId} for share of j,r`;
+      and r.state='running' and r.policy_snapshot_id=${f.tenantContext.policySnapshotId} ${lock ? tx`for share of j,r` : tx``}`;
   const [version] = await tx<
     { manifest: unknown }[]
   >`select manifest from allrice_employee_versions where id=${f.employee.versionId} and employee_id=${f.employee.id}
-    and organization_id=${device.organizationId} and workspace_id=${device.workspaceId} and config_checksum=${f.employee.definitionChecksum} for share`;
+    and organization_id=${device.organizationId} and workspace_id=${device.workspaceId} and config_checksum=${f.employee.definitionChecksum} ${lock ? tx`for share` : tx``}`;
   const manifest = EmployeeDefinitionSchema.safeParse(version?.manifest);
   const publication = f.capabilitySnapshot.bindings.managedPdf!.publication;
   const [published] = await tx<
     { definition: unknown }[]
   >`select definition from allrice_platform_employee_revisions
-    where id=${publication.revisionId} and checksum=${publication.checksum} and status='published' for share`;
+    where id=${publication.revisionId} and checksum=${publication.checksum} and status='published' ${lock ? tx`for share` : tx``}`;
   const definition = PlatformEmployeeDefinitionSchema.safeParse(
     published?.definition,
   );
@@ -573,7 +575,7 @@ export async function assertLocalPdfDelegation(
     }[]
   >`
     select id,organization_id,subject_id,version,payload,issued_at,expires_at from allrice_policy_snapshots
-    where id=${binding.policy.snapshotId} and organization_id=${device.organizationId} and subject_id=${device.ownerId} for share`;
+    where id=${binding.policy.snapshotId} and organization_id=${device.organizationId} and subject_id=${device.ownerId} ${lock ? tx`for share` : tx``}`;
   if (!policy) throw new RuntimePolicyError('bridge_authority_changed');
   const context = ExecutionContextSchema.parse({
     executionId: binding.attempt.attemptId,
@@ -603,6 +605,7 @@ export async function assertLocalPdfDelegation(
     },
     a.source,
     context,
+    lock,
   );
 }
 
@@ -846,6 +849,9 @@ export async function localPdfTransferAuthority(
     },
     objectId,
     db,
+    // Autocommit reads after the lease renewal: a row lock would end with
+    // its own statement and fence nothing (MET-210 #4).
+    false,
   );
   const context: RequestContext = {
     requestId: randomUUID(),

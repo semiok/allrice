@@ -2528,7 +2528,11 @@ export async function startClaimedJob(
     },
     // Retrying starts from a fresh transaction and rechecks current authority
     // and the exact claim. No handler/model/tool has been started at this point.
-    { retryLockBusy: () => retryOnceLock, retryDeadlock: true },
+    {
+      retryLockBusy: () => retryOnceLock,
+      retryDeadlock: true,
+      retrySite: 'job_start',
+    },
   );
   if (!result) return null;
   if (result.denied) throw new QueueError('policy_denied');
@@ -2664,7 +2668,11 @@ export async function failClaimedJobStart(input: {
       // after all writes so a lock wait past its deadline rolls everything back.
       await assertStartLeaseCurrent(transaction, job);
     },
-    { retryLockBusy: () => false, retryDeadlock: true },
+    {
+      retryLockBusy: () => false,
+      retryDeadlock: true,
+      retrySite: 'job_start_settlement',
+    },
   );
 }
 

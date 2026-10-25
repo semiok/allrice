@@ -240,11 +240,21 @@ async function currentRead(
     tx,
   );
   if (!principal) throw new DataAccessError('authorization_denied');
-  await assertWorkbenchSession(tx, scheduleIdentity(scope), sessionId, false);
-  const settings = await readWorkAutomation(tx, {
-    ...scope,
-    userId: scope.ownerId,
-  });
+  await assertWorkbenchSession(
+    tx,
+    scheduleIdentity(scope),
+    sessionId,
+    false,
+    false,
+  );
+  const settings = await readWorkAutomation(
+    tx,
+    {
+      ...scope,
+      userId: scope.ownerId,
+    },
+    false,
+  );
   const [partition] = await tx<
     { activation: NativeOnceReadiness }[]
   >`select activation from allrice_native_once_partitions where partition_id='allrice-recurring-v1'`;

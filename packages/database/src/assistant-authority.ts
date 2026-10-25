@@ -56,7 +56,8 @@ export async function assertAssistantAuthority(
   requireAuthority(parsedTask.success && parsedTools.success);
   const task = parsedTask.data,
     tools = parsedTools.data,
-    tx = input.transaction;
+    tx = input.transaction,
+    lock = input.lock ?? true;
   requireAuthority(
     new Set(tools).size === tools.length &&
       task.frozenConfiguration.employeeVersionId !== null &&
@@ -79,7 +80,7 @@ export async function assertAssistantAuthority(
   // locked before assignments, matching publication/assignment management.
   const [policyControl] = await tx<{ version: number; controls: unknown }[]>`
     select version,controls from allrice_runtime_policy_controls
-    where organization_id=${task.scope.organizationId} and workspace_id=${task.scope.workspaceId} for share`;
+    where organization_id=${task.scope.organizationId} and workspace_id=${task.scope.workspaceId} ${lock ? tx`for share` : tx``}`;
   const controls = RuntimePolicyControlsSchema.safeParse(
     policyControl?.controls,
   );
@@ -122,13 +123,13 @@ export async function assertAssistantAuthority(
     join allrice_organizations o on o.id=m.organization_id and o.archived_at is null
     join allrice_workspaces w on w.id=${task.scope.workspaceId} and w.organization_id=o.id and w.archived_at is null
     where m.organization_id=${task.scope.organizationId} and m.user_id=${identity.owner_id}
-      and (m.workspace_id is null or m.workspace_id=${task.scope.workspaceId}) and m.active and m.role in ('admin','member') for share of m,u,o,w`;
+      and (m.workspace_id is null or m.workspace_id=${task.scope.workspaceId}) and m.active and m.role in ('admin','member') ${lock ? tx`for share of m,u,o,w` : tx``}`;
   requireAuthority(member);
   const [employee] = await tx`
     select e.id from allrice_employees e where e.id=${identity.employee_id} and e.organization_id=${task.scope.organizationId}
       and e.workspace_id=${task.scope.workspaceId} and e.status='active'
       and not exists(select 1 from allrice_platform_employee_tenant_assignments d where d.tenant_employee_id=e.id
-        and d.organization_id=e.organization_id and d.workspace_id=e.workspace_id and not d.active) for share of e`;
+        and d.organization_id=e.organization_id and d.workspace_id=e.workspace_id and not d.active) ${lock ? tx`for share of e` : tx``}`;
   requireAuthority(employee);
 
   const [root] = await tx<
@@ -184,7 +185,7 @@ export async function assertAssistantAuthority(
       and e.employee_version_id=${task.frozenConfiguration.employeeVersionId} and e.session_id=${task.chatSessionId}
       and s.archived_at is null and s.project_id is not distinct from r.project_id and j.status='running' and j.cancel_requested_at is null
       and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp() and p.expires_at>clock_timestamp()
-    for share of rt,ar,l,r,e,a,v,p,s,c,j`;
+    ${lock ? tx`for share of rt,ar,l,r,e,a,v,p,s,c,j` : tx``}`;
   requireAuthority(root && root.owner_id === identity.owner_id);
   requireAuthority(
     root.worker_lease_digest === runtimePolicyDigest(root.lease_token),
@@ -364,7 +365,7 @@ export async function assertAssistantAuthority(
   if (task.scope.projectId !== null) {
     const [project] =
       await tx`select id from allrice_projects where id=${task.scope.projectId} and organization_id=${task.scope.organizationId}
-      and workspace_id=${task.scope.workspaceId} and archived_at is null and (owner_id=${root.owner_id} or visibility in ('workspace','organization')) for share`;
+      and workspace_id=${task.scope.workspaceId} and archived_at is null and (owner_id=${root.owner_id} or visibility in ('workspace','organization')) ${lock ? tx`for share` : tx``}`;
     requireAuthority(project);
   }
   // Lock/read actual child scope too; possessing a root's capability snapshot
@@ -373,7 +374,7 @@ export async function assertAssistantAuthority(
     const [instance] = await tx<{ allowed_tools: unknown }[]>`
       select allowed_tools from allrice_assistant_instances where run_id=${task.runId} and root_run_id=${task.rootRunId}
         and parent_run_id is not distinct from ${task.parentRunId}::uuid and cancel_requested_at is null
-        and (status in ('provisioning','running','waiting') or (${input.phase === 'evidence'} and status='completed')) for share`;
+        and (status in ('provisioning','running','waiting') or (${input.phase === 'evidence'} and status='completed')) ${lock ? tx`for share` : tx``}`;
     const allowedTools = toolsSchema.safeParse(instance?.allowed_tools);
     requireAuthority(
       allowedTools.success &&
@@ -388,16 +389,21 @@ export async function assertAssistantAuthority(
     tx,
     task.rootRunId,
     tools,
+    lock,
   );
   const [clock] = await tx<{ now: Date }[]>`select clock_timestamp() as now`;
   requireAuthority(
     platformReview ||
       (
-        await readWorkAutomation(tx, {
-          organizationId: task.scope.organizationId,
-          workspaceId: task.scope.workspaceId,
-          userId: root.owner_id,
-        })
+        await readWorkAutomation(
+          tx,
+          {
+            organizationId: task.scope.organizationId,
+            workspaceId: task.scope.workspaceId,
+            userId: root.owner_id,
+          },
+          lock,
+        )
       ).settings.assistants,
   );
   requireAuthority(

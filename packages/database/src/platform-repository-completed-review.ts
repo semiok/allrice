@@ -40,6 +40,7 @@ export async function lockCompletedRepositoryReviewRoot(
   tx: Tx,
   context: RequestContext,
   subjectId: string,
+  lock = true,
 ) {
   const [s] =
     await tx`select * from allrice_platform_repository_review_subjects where id=${subjectId}
@@ -47,14 +48,14 @@ export async function lockCompletedRepositoryReviewRoot(
   if (!s) throw new DataAccessError('not_found');
   const [root] =
     await tx`select * from allrice_runtime_roots where root_run_id=${s.run_id}
-    and organization_id=${s.organization_id} and workspace_id=${s.workspace_id} for share`;
+    and organization_id=${s.organization_id} and workspace_id=${s.workspace_id} ${lock ? tx`for share` : tx``}`;
   const [assistant] =
-    await tx`select * from allrice_assistant_roots where root_run_id=${s.run_id} for share`;
+    await tx`select * from allrice_assistant_roots where root_run_id=${s.run_id} ${lock ? tx`for share` : tx``}`;
   const [job] =
     await tx`select j.*,r.input as run_input,r.state as run_state,r.owner_id as run_owner,
     r.organization_id as run_org,r.workspace_id as run_workspace,ps.subject_id as policy_owner
     from allrice_jobs j join allrice_runs r on r.id=j.run_id join allrice_policy_snapshots ps on ps.id=r.policy_snapshot_id
-    where j.id=${s.job_id} and j.run_id=${s.run_id} for share of j,r`;
+    where j.id=${s.job_id} and j.run_id=${s.run_id} ${lock ? tx`for share of j,r` : tx``}`;
   if (
     !root ||
     root.cancel_request_id ||
@@ -79,11 +80,13 @@ export async function readCompletedRepositoryReview(
   tx: Tx,
   context: RequestContext,
   subjectId: string,
+  lock = true,
 ) {
   const locked = await lockCompletedRepositoryReviewRoot(
       tx,
       context,
       subjectId,
+      lock,
     ),
     j = locked.job;
   if (!repositoryReviewFrozenValid(locked.s.frozen)) deny();
@@ -97,12 +100,13 @@ export async function readCompletedRepositoryReview(
   });
   const [p] =
     await tx`select * from allrice_platform_repository_publications where id=${m.publicationId}
-    and owner_id=${context.actor.id} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId!} for share`;
+    and owner_id=${context.actor.id} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId!} ${lock ? tx`for share` : tx``}`;
   if (!p) deny();
   const repairs = await readRepositoryReviewRepairs(
       tx,
       context,
       p.source_task_id,
+      lock,
     ),
     first = repairs[0];
   if (!first) deny();
@@ -123,7 +127,7 @@ export async function readCompletedRepositoryReview(
     deny();
   const [s] =
     await tx`select * from allrice_platform_repository_review_subjects where id=${subjectId}
-    and owner_id=${context.actor.id} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId!} for share`;
+    and owner_id=${context.actor.id} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId!} ${lock ? tx`for share` : tx``}`;
   if (
     !s ||
     s.run_id !== locked.s.run_id ||
@@ -163,7 +167,7 @@ export async function readCompletedRepositoryReview(
     deny();
   const [employee] =
     await tx`select * from allrice_employee_runs where run_id=${s.run_id}
-    and owner_id=${s.owner_id} and organization_id=${s.organization_id} and workspace_id=${s.workspace_id} for share`;
+    and owner_id=${s.owner_id} and organization_id=${s.organization_id} and workspace_id=${s.workspace_id} ${lock ? tx`for share` : tx``}`;
   const payload = j.payload as {
       type?: unknown;
       input?: Record<string, unknown>;
@@ -190,7 +194,7 @@ export async function readCompletedRepositoryReview(
     deny();
   const instances =
     await tx`select * from allrice_assistant_instances where root_run_id=${s.run_id}
-    and run_id=any(array[${s.run_id}::uuid,${s.reviewer_run_id}::uuid]) order by run_id for share`;
+    and run_id=any(array[${s.run_id}::uuid,${s.reviewer_run_id}::uuid]) order by run_id ${lock ? tx`for share` : tx``}`;
   const root = instances.find((row) => row.run_id === s.run_id),
     child = instances.find((row) => row.run_id === s.reviewer_run_id);
   if (
@@ -211,9 +215,9 @@ export async function readCompletedRepositoryReview(
   )
     deny();
   const [review] =
-    await tx`select * from allrice_platform_repository_reviews where subject_id=${s.id} for share`;
+    await tx`select * from allrice_platform_repository_reviews where subject_id=${s.id} ${lock ? tx`for share` : tx``}`;
   const reports =
-    await tx`select * from allrice_assistant_results where run_id=${child.run_id} order by delivery_id for share`;
+    await tx`select * from allrice_assistant_results where run_id=${child.run_id} order by delivery_id ${lock ? tx`for share` : tx``}`;
   const report = reports[0];
   if (
     !review ||
@@ -263,7 +267,7 @@ export async function readCompletedRepositoryReview(
     where v.id=any(array[${s.seed_artifact_id}::uuid,${review.artifact_id}::uuid,${s.delivery_artifact_id}::uuid])
     and v.owner_id=${s.owner_id} and v.organization_id=${s.organization_id} and v.workspace_id=${s.workspace_id} and v.session_id=${s.session_id}
     and not exists(select 1 from allrice_deliverable_versions n where n.series_id=v.series_id and n.version>v.version)
-    order by v.id for share of v,o,w`;
+    order by v.id ${lock ? tx`for share of v,o,w` : tx``}`;
   if (artifacts.length !== 3 || new Set(artifacts.map((a) => a.id)).size !== 3)
     deny();
   const ref = (id: string, runId: string) => {
@@ -331,11 +335,12 @@ export async function readCompletedRepositoryReview(
     deny();
   const [registered] =
     await tx`select artifact_id from allrice_assistant_artifacts where run_id=${child.run_id}
-    and artifact_id=${opinion.id} and digest=${opinion.checksum} for share`;
+    and artifact_id=${opinion.id} and digest=${opinion.checksum} ${lock ? tx`for share` : tx``}`;
   if (!registered) deny();
   // Shared by the actual verdict insert transaction. Query after acquiring it;
   // never lock another subject/publication in reverse order under this mutex.
-  await lockRepositoryReviewContent(tx, s.owner_id, m.candidateContentDigest);
+  if (lock)
+    await lockRepositoryReviewContent(tx, s.owner_id, m.candidateContentDigest);
   const [rejected] =
     await tx`select r.id from allrice_platform_repository_reviews r join allrice_platform_repository_review_subjects q on q.id=r.subject_id
     where q.owner_id=${s.owner_id} and q.content_digest=${m.candidateContentDigest} and r.verdict='revise' limit 1`;
