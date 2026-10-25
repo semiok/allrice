@@ -35,6 +35,9 @@ export const ProjectDependencyResolveInputSchema = z
         action: z.literal('resolve'),
         manager: z.literal('uv'),
         packages: z.array(python).min(1).max(32),
+        /** CPU of the Linux environment that will install the lock. Omitted: the
+         * server's. Set for a machine whose CPU differs from the server's. */
+        architecture: z.enum(['amd64', 'arm64']).optional(),
       })
       .strict(),
   ])

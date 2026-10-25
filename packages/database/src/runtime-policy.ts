@@ -49,6 +49,37 @@ export class RuntimePolicyError extends Error {
   }
 }
 
+/** What decided where a project may run, recorded as separate facts so the message to
+ * the model can name every obstacle (one combined reason loses some). */
+export interface ProjectLockPlatformFacts {
+  lockArchitectures: readonly string[];
+  bridgeArchitectures: readonly string[];
+  /** The cloud's CPU, and what a resolve without `architecture` produces. */
+  serverArchitecture: 'amd64' | 'arm64';
+  /** The user asked to keep the task on the local machine; resolving (which runs
+   * in the cloud) is refused too. */
+  userLocalOnly: boolean;
+  /** The task carries local files, so it can only execute locally. */
+  localInputs: boolean;
+  /** Only this tool call asked for local execution. */
+  toolLocal: boolean;
+  /** The user asked for cloud execution only. */
+  cloudOnly: boolean;
+  /** Cloud execution is on and granted to this employee (undefined: not known here). */
+  cloudUsable: boolean | undefined;
+  /** CPUs of the Bridges whose version supports this request; a Bridge missing a
+   * feature it needs does not run it with a matching lock either. */
+  currentBridgeArchitectures: readonly string[];
+}
+
+/** A uv lock pins wheels for one CPU architecture and no backend this call may use
+ * has that architecture. */
+export class ProjectLockPlatformError extends RuntimePolicyError {
+  constructor(readonly facts: ProjectLockPlatformFacts) {
+    super('project_lock_platform_mismatch');
+  }
+}
+
 /** Canonical JSON only; callers must schema-parse before hashing. No secret values logged. */
 export function runtimePolicyDigest(input: unknown): string {
   function canonical(value: unknown): string {

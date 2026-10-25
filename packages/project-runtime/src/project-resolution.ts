@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import { parseDocument } from 'yaml';
 import {
+  cloudPlatform,
+  projectLockArchitectures,
   ProjectDependencyResolveInputSchema,
   ProjectDependencyResolutionReceiptSchema,
   RuntimeProjectPreparationSchema,
@@ -136,6 +138,13 @@ export function readResolvedProject(
         )
       )
         fail();
+    // The wheels must install on the CPU the lock was resolved for.
+    if (
+      !projectLockArchitectures({ manager: 'uv', packages: wheels }).includes(
+        args.architecture ?? cloudPlatform.architecture,
+      )
+    )
+      fail();
     preparation = {
       version: 1,
       manager: 'uv',

@@ -1,3 +1,4 @@
+import { cloudPlatform } from '@allrice/contracts';
 import { randomUUID } from 'node:crypto';
 import { afterEach, expect, it, vi } from 'vitest';
 import { cloudProjectFixture } from './project-runtime.fixture.js';
@@ -21,7 +22,7 @@ it('settles explicit project staging revocation before the asynchronous abort he
     cacheKey: f.command.arguments.projectSource.cacheKey,
     manager: spec.manager,
     managerVersion: spec.managerVersion,
-    platform: 'linux-amd64',
+    platform: cloudPlatform.linuxPlatform,
     runtimeImage: f.command.imageDigest,
     packageCount: spec.packages.length,
     archiveHits: 0,
@@ -58,7 +59,7 @@ it('settles explicit project staging revocation before the asynchronous abort he
       return {
         backend: 'cloud-gvisor-v1',
         runtime: 'runsc',
-        architecture: 'amd64',
+        architecture: cloudPlatform.architecture,
         imageDigest: f.command.imageDigest,
       } as const;
     }
@@ -155,7 +156,7 @@ it.each(['unknown', 'deadline', 'canceled'] as const)(
       cacheKey: f.command.arguments.projectSource.cacheKey,
       manager: spec.manager,
       managerVersion: spec.managerVersion,
-      platform: 'linux-amd64',
+      platform: cloudPlatform.linuxPlatform,
       runtimeImage: f.command.imageDigest,
       packageCount: spec.packages.length,
       archiveHits: 0,

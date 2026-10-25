@@ -7,6 +7,7 @@ import {
   type CloudProjectCommandSchema,
   CloudProjectRunResultSchema,
   cloudProjectResultMatchesPayload,
+  cloudPlatform,
 } from '@allrice/contracts';
 import {
   projectSourceDigest,
@@ -155,7 +156,7 @@ suite(
           spec: a.projectPreparation,
           scope: f.scope,
           image: f.command.imageDigest,
-          architecture: 'amd64',
+          architecture: cloudPlatform.architecture,
         });
         a.outputs = [
           {

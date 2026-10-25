@@ -9,6 +9,7 @@ import { isCompiledRepositoryExecution } from './platform-repair-contracts.ts';
 import { createHash } from 'node:crypto';
 import { runtimeFeatureEnabled } from '@allrice/contracts';
 import {
+  cloudPlatform,
   CloudExecutionPayloadSchema,
   projectRuntimeCacheIdentity,
   cloudPythonImageV1,
@@ -25,6 +26,7 @@ import {
   type RuntimeActionBinding,
   projectResolutionCloudArguments,
   ProjectDependencyResolveInputSchema,
+  type CloudProjectResolutionOrigin,
 } from '@allrice/contracts';
 import type postgres from 'postgres';
 import {
@@ -95,7 +97,7 @@ export function cloudCommandBinding(
       toolchainDigest: digest({
         backend: payload.backend,
         imageDigest: payload.imageDigest,
-        architecture: 'amd64',
+        architecture: cloudPlatform.architecture,
       }),
       budgetDigest: digest(
         payload.executionBudget
@@ -170,6 +172,21 @@ export async function checkContinuingCloudProjectAuthority(
   return checkCloudBindingAuthority(tx, context, binding, true);
 }
 
+/** The request a resolution runs: the model's own arguments, plus the cloud's CPU
+ * when a uv call named none (frozen at creation; records from before targets have
+ * none). No other default is accepted. */
+function frozenResolutionRequest(
+  original: unknown,
+  origin: CloudProjectResolutionOrigin,
+) {
+  const request = ProjectDependencyResolveInputSchema.parse(original);
+  return request.manager === 'uv' &&
+    !request.architecture &&
+    origin.request.manager === 'uv' &&
+    origin.request.architecture === cloudPlatform.architecture
+    ? { ...request, architecture: cloudPlatform.architecture }
+    : request;
+}
 export async function checkCloudBindingAuthority(
   tx: postgres.TransactionSql,
   context: RuntimePolicyPrincipal,
@@ -215,9 +232,7 @@ export async function checkCloudBindingAuthority(
       origin.toolName === 'workspace.project'
         ? CloudCommandInputSchema.parse(
             projectResolutionCloudArguments(
-              ProjectDependencyResolveInputSchema.parse(
-                stored.original_arguments,
-              ),
+              frozenResolutionRequest(stored.original_arguments, origin),
             ),
           )
         : normalizeCloudPythonArguments(stored.original_arguments);
@@ -314,7 +329,7 @@ export async function checkCloudBindingAuthority(
         ) ||
         !runtimeContractEqual(
           origin.request,
-          ProjectDependencyResolveInputSchema.parse(stored.original_arguments),
+          frozenResolutionRequest(stored.original_arguments, origin),
         )
       )
         throw new RuntimePolicyError('cloud_frozen_tool_not_allowed');
@@ -424,7 +439,7 @@ export async function checkCloudBindingAuthority(
                     ownerId: binding.requestedBy.id,
                   },
                   image: project.imageDigest,
-                  architecture: 'amd64',
+                  architecture: cloudPlatform.architecture,
                 }),
               ),
             )

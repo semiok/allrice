@@ -245,4 +245,39 @@ describe('managed project resolution', () => {
     ])
       expect(() => read({ ...r, wheels })).toThrow();
   });
+  it('accepts only wheels that install on the requested CPU', () => {
+    const x86 =
+        'numpy-2.2.6-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl',
+      sum = 'c'.repeat(64);
+    const receipt = {
+      version: 1,
+      manager: 'uv',
+      phase: 'lock_validation',
+      status: 'resolved',
+      exitCode: 0,
+      diagnostics: '',
+      lock: `numpy==2.2.6 --hash=sha256:${sum}\n`,
+      wheels: [
+        {
+          name: 'numpy',
+          version: '2.2.6',
+          fileName: x86,
+          url: `https://files.pythonhosted.org/packages/aa/bb/${x86}`,
+          sha256: 'sha256:' + sum,
+        },
+      ],
+    };
+    const read = (architecture: 'amd64' | 'arm64') =>
+      readResolvedProject(
+        ProjectDependencyResolveInputSchema.parse({
+          action: 'resolve',
+          manager: 'uv',
+          packages: [{ name: 'numpy', version: '2.2.6' }],
+          architecture,
+        }),
+        Buffer.from(JSON.stringify(receipt)),
+      );
+    expect(read('amd64').forProject).toBeTypeOf('function');
+    expect(() => read('arm64')).toThrow();
+  });
 });

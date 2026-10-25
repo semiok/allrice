@@ -5,7 +5,10 @@ import { join } from 'node:path';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { RuntimePolicyError } from './runtime-policy.ts';
-import { resolveSandboxExecutionPolicy } from '@allrice/contracts';
+import {
+  cloudPlatform,
+  resolveSandboxExecutionPolicy,
+} from '@allrice/contracts';
 import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
 import { createCloudProjectResolutionOperation } from './cloud-execution.ts';
 import { publishProjectResolutionDiagnostics } from './project-resolution-diagnostics.ts';
@@ -245,6 +248,44 @@ snapshots:
           db,
         ),
       ).rejects.toThrow();
+    });
+    it('keeps the model arguments and replays a call stored before resolution targets', async () => {
+      const f = await fixture({ sandboxNetwork: undefined });
+      const uv = {
+        action: 'resolve',
+        manager: 'uv',
+        packages: [{ name: 'six', version: '1.17.0' }],
+      };
+      const make = (callId: string, architecture?: 'amd64' | 'arm64') =>
+        createCloudProjectResolutionOperation(
+          {
+            context: f.execution,
+            callId,
+            arguments: uv,
+            ...(architecture ? { architecture } : {}),
+          },
+          db,
+        );
+      const operation = (c: Awaited<ReturnType<typeof make>>) =>
+        c.snapshot.binding.attempt.operationId;
+      // Stored by a Worker from before targets; the current Worker replays it.
+      const before = await make('stored-before');
+      const replay = await make('stored-before', cloudPlatform.architecture);
+      expect(operation(replay)).toBe(operation(before));
+      expect(replay.payload.origin).toMatchObject({ request: uv });
+      expect(replay.payload.origin).not.toHaveProperty('request.architecture');
+      // A new call is frozen with the cloud's CPU; its arguments stay as sent.
+      const created = await make('targeted', cloudPlatform.architecture);
+      expect(created.payload.origin).toMatchObject({
+        request: { architecture: cloudPlatform.architecture },
+        argumentsDigest: before.payload.origin!.argumentsDigest,
+      });
+      const [stored] =
+        await db`select original_arguments from allrice_cloud_execution_inputs where operation_id=${operation(created)}`;
+      expect(stored!.original_arguments).toEqual(uv);
+      expect(
+        operation(await make('targeted', cloudPlatform.architecture)),
+      ).toBe(operation(created));
     });
     it('requires both the project tool and cloud/network authority frozen into this Run', async () => {
       for (const options of [

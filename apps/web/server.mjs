@@ -1,5 +1,8 @@
 import { createCloudProjectPreviewTransport } from './server/cloud-project-preview.mjs';
-import { runtimeFeatureEnabled } from '@allrice/contracts';
+import {
+  cloudArchitectureTranslationProblem,
+  runtimeFeatureEnabled,
+} from '@allrice/contracts';
 import console from 'node:console';
 import { Server } from 'node:http';
 import process from 'node:process';
@@ -157,6 +160,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const i = args.indexOf(name);
     return i < 0 ? fallback : args[i + 1];
   };
+  // Same check as the Worker: Web also derives cloud profiles from the host CPU.
+  if (runtimeFeatureEnabled('ALLRICE_CLOUD_RUNNER_ENABLED')) {
+    const problem = cloudArchitectureTranslationProblem();
+    if (problem) throw new Error(problem);
+  }
   const runtime = await startAllRiceWeb({
     port: Number(option('--port', process.env.ALLRICE_WEB_PORT ?? 3000)),
     hostname: option('--hostname', '0.0.0.0'),

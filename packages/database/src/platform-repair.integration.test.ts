@@ -16,6 +16,7 @@ import {
   PlatformEmployeeDefinitionSchema,
   PlatformEmployeeRuntimeProfileSchema,
   type RequestContext,
+  cloudPlatform,
 } from '@allrice/contracts';
 import * as client from './core/client.ts';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
@@ -594,11 +595,10 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
           profile: {
             backend: 'cloud-gvisor-v1',
             imageDigest: cloudToolchainImageV1,
-            architecture: 'amd64',
+            architecture: cloudPlatform.architecture,
             runtime: 'runsc',
             runtimeVersion: 'release-20260831.0',
-            runtimeChecksum:
-              'sha256:1a4995a70b3c8b7d36f55d7d2dc6d15185ebe420de653b1a330b42d36c0e6b4a',
+            runtimeChecksum: cloudPlatform.runtimeChecksum,
             network: 'none',
             maximumConcurrency: 2,
           },
@@ -777,11 +777,10 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
           profile: {
             backend: 'cloud-gvisor-v1',
             imageDigest: cloudToolchainImageV1,
-            architecture: 'amd64',
+            architecture: cloudPlatform.architecture,
             runtime: 'runsc',
             runtimeVersion: 'release-20260831.0',
-            runtimeChecksum:
-              'sha256:1a4995a70b3c8b7d36f55d7d2dc6d15185ebe420de653b1a330b42d36c0e6b4a',
+            runtimeChecksum: cloudPlatform.runtimeChecksum,
             network: 'none',
             maximumConcurrency: 2,
           },
@@ -1044,11 +1043,10 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
             profile: {
               backend: 'cloud-gvisor-v1',
               imageDigest: cloudToolchainImageV1,
-              architecture: 'amd64',
+              architecture: cloudPlatform.architecture,
               runtime: 'runsc',
               runtimeVersion: 'release-20260831.0',
-              runtimeChecksum:
-                'sha256:1a4995a70b3c8b7d36f55d7d2dc6d15185ebe420de653b1a330b42d36c0e6b4a',
+              runtimeChecksum: cloudPlatform.runtimeChecksum,
               network: 'none',
               maximumConcurrency: 2,
             },

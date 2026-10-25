@@ -6,7 +6,7 @@
 
 新项目用 `workspace_project` 的 `open` 保存源码与锁文件。项目在每个 Run 中需要打开一次：新一轮继续已有项目时，先从当前会话和工具回执取得上一版完整 `project` 引用，使用 `open` 的 `source` 传入该引用的 `snapshot`，恢复同一个 projectId；不要通过 `files` 重建另一个项目。以恢复返回的完整版本调用 `list`、`read` 或 `search` 检查，以上一版确切引用保留交付基线。这些读取不会修改项目。记录用户给定的原断言和第一次执行结果。引用包含 projectId、snapshot.kind、snapshot.id 和 snapshot.checksum，不能用源码摘要替换快照引用。
 
-需要安装公开依赖、尚无完整锁文件时，先用 `resolve` 提供 `manager`（pnpm 或 uv）和准确的包名、版本 `packages`。它通过受控云端网络查询依赖，不上传用户文件；用户明确要求只在本地执行时不可使用。不要猜测传递依赖或校验值，也不要改用通用脚本绕过依赖准备。Node 标准配置最多 128 个锁定包；明确需要较大依赖树时可申请 `resourceProfile: web-development`，云端最多 256 个，旧 Bridge 仍最多 128 个。拒绝授权或资源不足时遵守实际拒绝结果。
+需要安装公开依赖、尚无完整锁文件时，先用 `resolve` 提供 `manager`（pnpm 或 uv）和准确的包名、版本 `packages`。它通过受控云端网络查询依赖，不上传用户文件；用户明确要求只在本地执行时不可使用。不要猜测传递依赖或校验值，也不要改用通用脚本绕过依赖准备。Node 标准配置最多 128 个锁定包；明确需要较大依赖树时可申请 `resourceProfile: web-development`，云端最多 256 个，旧 Bridge 仍最多 128 个。uv 的 `resolve` 只在用户指明运行项目的机器（Intel Mac 为 `amd64`，Apple 芯片为 `arm64`），或执行结果指出本机 Bridge 的 CPU 与锁不符并给出该值时，带 `architecture`；其他情况不传，按服务器 CPU 固定安装包。返回的 `architectures` 是这个锁能安装的 CPU。拒绝授权或资源不足时遵守实际拒绝结果。
 
 `resolve` 返回准确的 `project` 和 `projectPreparation`，状态为已解析、尚未安装。用 `apply` 加入验证程序后，将新的 `sourceDigest` 与该锁文件配套，再执行安装和验证。只有执行回执确认安装成功、验证程序也成功，才能说已安装或可用。解析失败时保留返回的诊断成果；不能因诊断文件已生成就声称安装成功。
 

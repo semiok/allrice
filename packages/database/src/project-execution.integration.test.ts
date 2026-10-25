@@ -16,6 +16,7 @@ import {
   type StorageObject,
   type StoragePort,
   type BridgeReadinessState,
+  cloudPlatform,
 } from '@allrice/contracts';
 import {
   createAssistantFixtureDatabase,
@@ -212,7 +213,7 @@ suite(
       const profile = CloudExecutionProfileSchema.parse({
         backend: 'cloud-gvisor-v1',
         runtime: 'runsc',
-        architecture: 'amd64',
+        architecture: cloudPlatform.architecture,
         imageDigest: cloudToolchainImageV1,
         network: 'none',
         ...(sandbox.network
@@ -227,8 +228,7 @@ suite(
           : {}),
         maximumConcurrency: 2,
         runtimeVersion: 'release-20260831.0',
-        runtimeChecksum:
-          'sha256:1a4995a70b3c8b7d36f55d7d2dc6d15185ebe420de653b1a330b42d36c0e6b4a',
+        runtimeChecksum: cloudPlatform.runtimeChecksum,
       });
       await f.db`insert into allrice_execution_targets(id,organization_id,workspace_id,target_key,kind,label,state,capabilities,metadata)
       values(${target},${f.org},${f.workspace},${'project-cloud-' + target},'cloud_sandbox','Synthetic isolated project cloud','online',${f.db.json(['process.execute'])},'{}')`;
@@ -403,7 +403,7 @@ suite(
             cacheKey: source.cacheKey,
             manager: p.manager,
             managerVersion: p.managerVersion,
-            platform: 'linux-amd64' as const,
+            platform: cloudPlatform.linuxPlatform,
             runtimeImage: payload.imageDigest,
             packageCount: p.packages.length,
             archiveHits: 0,
@@ -1759,6 +1759,113 @@ suite(
       ).rejects.toThrow('local_runner_upgrade_required');
       expect(await f.countCloud()).toBe(0);
     });
+    it('routes a uv lock only to a backend of its CPU architecture', async () => {
+      // The fixture Bridge is amd64; the cloud follows this host (arm64 on Apple
+      // silicon, amd64 on the Linux CI).
+      const withLock = (
+        f: Awaited<ReturnType<typeof setup>>,
+        fileName: string,
+      ) => ({
+        ...f.args,
+        executable: '/workspace/.venv/bin/python',
+        projectPreparation: {
+          ...f.args.projectPreparation,
+          manager: 'uv',
+          managerVersion: '0.8.22',
+          lockPath: 'requirements.lock',
+          scripts: 'disabled',
+          packages: [
+            {
+              name: fileName.split('-')[0],
+              version: fileName.split('-')[1],
+              fileName,
+              url: `https://files.pythonhosted.org/packages/00/00/${fileName}`,
+              sha256: 'sha256:' + '3'.repeat(64),
+            },
+          ],
+        },
+      });
+      const pure = 'six-1.17.0-py2.py3-none-any.whl',
+        x86 =
+          'numpy-2.2.6-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl',
+        arm =
+          'numpy-2.2.6-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl';
+      for (const fileName of [pure, x86]) {
+        const f = await setup();
+        expect(
+          (await f.select(true, withLock(f, fileName))).choice,
+        ).toMatchObject({ location: 'local', status: 'execute' });
+      }
+      const f = await setup();
+      if (cloudPlatform.architecture === 'arm64') {
+        // The tool selects first without a cloud probe: an unsuitable Bridge must
+        // then lead to the probe ("cloud_unavailable"), not to a mismatch error.
+        expect((await f.select(false, withLock(f, arm))).choice).toMatchObject({
+          location: 'none',
+          status: 'unavailable',
+          reason: 'cloud_unavailable',
+        });
+        expect((await f.select(true, withLock(f, arm))).choice).toMatchObject({
+          location: 'cloud',
+          status: 'execute',
+        });
+        // A revoked cloud grant is "cloud unavailable", not a lock mismatch.
+        const revoked = await setup();
+        await revoked.db`update allrice_cloud_execution_grants set enabled=false where id=${revoked.cloudGrant}`;
+        expect(
+          (await revoked.select(true, withLock(revoked, arm))).choice,
+        ).toMatchObject({ status: 'unavailable', reason: 'cloud_unavailable' });
+      } else
+        // The amd64 cloud cannot install it either: known without a probe.
+        await expect(f.select(false, withLock(f, arm))).rejects.toThrow(
+          'project_lock_platform_mismatch',
+        );
+      // Local-only work on the amd64 Bridge: the mismatch itself is reported.
+      const local = await setup();
+      await local.request('只在本地运行，禁止使用云端。');
+      await expect(
+        local.select(false, withLock(local, arm)),
+      ).rejects.toMatchObject({
+        code: 'project_lock_platform_mismatch',
+        facts: {
+          userLocalOnly: true,
+          bridgeArchitectures: ['amd64'],
+          serverArchitecture: cloudPlatform.architecture,
+        },
+      });
+      // Cloud-only work leaves the Bridge out: an x86_64 lock that only the amd64
+      // Bridge could install is a mismatch for an arm64 cloud.
+      const cloudOnly = await setup();
+      await cloudOnly.request('只在云端运行。');
+      if (cloudPlatform.architecture === 'arm64')
+        await expect(
+          cloudOnly.select(false, withLock(cloudOnly, x86)),
+        ).rejects.toMatchObject({
+          facts: { cloudOnly: true, bridgeArchitectures: [] },
+        });
+      // A direct local command cannot send the lock to this Bridge either.
+      const {
+        action: _action,
+        project: _project,
+        ...arguments_
+      } = withLock(f, arm);
+      void [_action, _project];
+      await expect(
+        createLocalCommandOperation(
+          {
+            context: f.context,
+            callId: randomUUID(),
+            arguments: {
+              ...arguments_,
+              files: [{ path: 'main.cjs', sha256: 'sha256:' + '1'.repeat(64) }],
+            },
+            worker: f.worker,
+            storage: f.storage,
+          },
+          f.db,
+        ),
+      ).rejects.toThrow('project_lock_platform_mismatch');
+    });
     it('allows offline supplementation, binds exact private transfer, and preserves one canonical operation', async () => {
       const f = await setup();
       await f.setState('offline');
@@ -1994,7 +2101,7 @@ suite(
               cacheKey: s.cacheKey,
               manager: p.manager,
               managerVersion: p.managerVersion,
-              platform: 'linux-amd64' as const,
+              platform: cloudPlatform.linuxPlatform,
               runtimeImage: payload.imageDigest,
               packageCount: p.packages.length,
               archiveHits: 0,
