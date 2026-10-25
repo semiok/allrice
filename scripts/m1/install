@@ -16,16 +16,18 @@ root=$(git -C "$src" rev-parse --show-toplevel)
 sha=$(git -C "$root" rev-parse HEAD)
 base="$HOME/allrice-dev"; tools="$base/tools"; dest="$tools/$sha"; link="$base/bin"
 SCRIPTS="deploy-dev deploy-lock qa-instance smoke-test with-env backup-daily cloud-autostart"
+PYTOOLS="monitor"
 FILES="lib.sh qa-bootstrap.mjs smoke-test.mjs rice-standard.json"
 
 mkdir -p "$tools"
 if [ ! -d "$dest" ]; then
   rm -rf -- "$dest.tmp"; mkdir "$dest.tmp"
-  for f in $SCRIPTS; do install -m 755 "$src/$f" "$dest.tmp/$f"; done
+  for f in $SCRIPTS $PYTOOLS; do install -m 755 "$src/$f" "$dest.tmp/$f"; done
   for f in $FILES; do install -m 644 "$src/$f" "$dest.tmp/$f"; done
   printf '%s %s\n' "$sha" "$(date '+%Y-%m-%dT%H:%M:%S%z')" > "$dest.tmp/TOOLS_VERSION"
   for f in $SCRIPTS lib.sh; do /bin/bash -n "$dest.tmp/$f"; done
   for f in qa-bootstrap.mjs smoke-test.mjs; do "$HOME/.local/opt/node-22.23.2/bin/node" --check "$dest.tmp/$f"; done
+  for f in $PYTOOLS; do "$M1_PY" "$dest.tmp/$f" --help >/dev/null; done # loads every import
   mv "$dest.tmp" "$dest"
 fi
 

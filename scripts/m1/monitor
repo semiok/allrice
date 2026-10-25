@@ -1,0 +1,826 @@
+#!/usr/bin/python3
+# AllRice monitor on M1 and its watchdog on huihuimac (MET-222; rules: AGENTS.md at the
+# repository root; how to run and drill it: docs/runbooks/m1-monitor.md). Python 3.9
+# standard library only: launchd starts it with /usr/bin/python3 and an empty PATH.
+#
+#   monitor run [--config <file>]                   one round of checks (launchd: every 5 minutes)
+#   monitor peer [--config <file>]                  huihuimac side: is M1 alive, is it reachable from outside
+#   monitor status [--config <file>]                open alerts, last round, delivery backlog
+#   monitor test-alert [--config <file>]            send one test message
+#   monitor launchd install|remove [--peer] [--config <file>]
+#
+# Every check returns findings keyed by what it watches. A key that turns bad opens an
+# alert; while it stays bad only an escalation or a reminder (hourly when critical) goes
+# out; when it is good again "已恢复" goes out. A key that keeps flapping is muted for an
+# hour after one notice. All changes of a round go out as one Telegram message and are
+# written to allrice_operational_incidents. A failing component check is re-run once
+# before it alerts, so a blip does not page. Each round ends by writing heartbeat.json,
+# which the other machine reads over SSH: whichever side stops, the other one says so.
+import argparse
+import fcntl
+import json
+import os
+import plistlib
+import re
+import shlex
+import signal
+import socket
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+SYS_PATH = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
+RANK = {'ok': 0, 'warning': 1, 'critical': 2}
+ICON = {'warning': '🟠', 'critical': '🔴', 'ok': '✅'}
+WORD = {'warning': '警告', 'critical': '严重'}
+
+COMMON = {
+    'label': '',  # e.g. "演练": shown in front of every message
+    'telegramEnv': None,  # default <stateDir>/telegram.env (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
+    'telegramProxy': None,  # None: system proxy settings; "": direct; or a proxy URL
+    'repeatMinutes': {'critical': 60, 'warning': 360},
+    'flapLimit': 3,
+    'flapMinutes': 60,
+    'confirmSeconds': 20,
+    'roundTimeoutSeconds': 240,
+    'intervalSeconds': 300,
+    'runbooks': 'https://github.com/semiok/allrice/blob/main/docs/runbooks/',
+    'launchdLabel': None,
+    'checks': None,  # run only these checks (names below); None = all
+    'skipChecks': [],
+}
+M1 = dict(
+    COMMON,
+    name='AllRice M1 Dev',
+    stateDir='~/allrice-dev/monitor',
+    envFile='~/allrice-dev/.env',
+    webPlist='~/Library/LaunchAgents/ai.bplabs.allrice-dev-web.plist',
+    workerPlist='~/Library/LaunchAgents/ai.bplabs.allrice-dev-worker.plist',
+    deployLockOwner='~/allrice-dev/.local/deploy.lock.owner',
+    deployInflight='~/allrice-dev/qa/deploy-inflight',
+    deployGraceMinutes=45,
+    psql='/opt/homebrew/bin/psql',
+    peerSsh='huihuimac',
+    peerHeartbeat='.local/state/allrice-monitor-peer/heartbeat.json',
+    peerStaleMinutes=15,
+    incidents=True,
+    # Left empty, these come from the shared-Dev launchd files and .env, so the monitor
+    # follows a redeploy or a port change without being edited.
+    databaseUrl=None,
+    incidentDatabaseUrl=None,
+    webUrl=None,
+    workerUrl=None,
+    publicUrl=None,
+)
+PEER = dict(
+    COMMON,
+    name='AllRice 看门（huihuimac）',
+    stateDir='~/.local/state/allrice-monitor-peer',
+    m1Ssh='m1',
+    m1Heartbeat='allrice-dev/monitor/heartbeat.json',
+    m1StaleMinutes=7,  # M1 writes a heartbeat at the start and end of every 5-minute round
+    m1UnfinishedMinutes=12,
+    m1TelegramStuckMinutes=20,
+    intervalSeconds=120,
+    publicUrl=None,  # default: the URL M1 reports in its heartbeat
+    incidents=False,
+)
+
+
+class CheckError(Exception):
+    pass
+
+
+class RoundTimeout(BaseException):  # not an Exception: a check must not swallow it
+    pass
+
+
+def expand(path):
+    return os.path.expanduser(path) if isinstance(path, str) else path
+
+
+def run(cmd, timeout=20, env=None, stdin=None):
+    """(exit code, stdout, stderr); 124 on timeout, 127 when it cannot start."""
+    full = dict(os.environ, PATH=SYS_PATH)
+    full.update(env or {})
+    try:
+        p = subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=timeout, env=full)
+        return p.returncode, p.stdout, p.stderr
+    except subprocess.TimeoutExpired:
+        return 124, '', 'timed out after %ss' % timeout
+    except OSError as err:
+        return 127, '', str(err)
+
+
+def opener(proxy):
+    """None: urllib's own choice (macOS system proxy settings); "": direct; else that proxy."""
+    if proxy is None:
+        return urllib.request.build_opener()
+    return urllib.request.build_opener(urllib.request.ProxyHandler({'http': proxy, 'https': proxy} if proxy else {}))
+
+
+LOCAL = opener('')
+
+
+def http_get(url, timeout=10, via=LOCAL):
+    """(status or None, body bytes or error text)."""
+    try:
+        with via.open(urllib.request.Request(url, headers={'User-Agent': 'allrice-monitor'}), timeout=timeout) as r:
+            return r.status, r.read(4_000_000)
+    except urllib.error.HTTPError as err:
+        return err.code, (err.read(65536) if err.fp else b'')
+    except Exception as err:  # URLError, timeouts, resets: all mean "not reachable"
+        return None, str(getattr(err, 'reason', err)).encode()
+
+
+def short(text, limit=300):
+    text = text.decode('utf-8', 'replace') if isinstance(text, bytes) else str(text)
+    text = ' '.join(text.split())
+    return text if len(text) <= limit else text[: limit - 1] + '…'
+
+
+def ago(seconds):
+    seconds = max(0, int(seconds))
+    if seconds < 3600:
+        return '%d 分钟' % max(1, seconds // 60)
+    if seconds < 172800:
+        return '%.1f 小时' % (seconds / 3600)
+    return '%d 天' % (seconds // 86400)
+
+
+def read_json(path, default):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def write_json(path, value):
+    tmp = '%s.%d.tmp' % (path, os.getpid())
+    with open(tmp, 'w') as f:
+        json.dump(value, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, path)
+
+
+def load_config(path, peer):
+    cfg = json.loads(json.dumps(PEER if peer else M1))
+    if path is None:
+        candidate = os.path.join(expand(cfg['stateDir']), 'config.json')
+        path = candidate if os.path.exists(candidate) else None
+    if path:
+        with open(expand(path)) as f:
+            for k, v in json.load(f).items():
+                cfg[k] = dict(cfg[k], **v) if isinstance(cfg.get(k), dict) and isinstance(v, dict) else v
+    cfg['configFile'] = expand(path) if path else None
+    cfg['stateDir'] = expand(cfg['stateDir'])
+    cfg['telegramEnv'] = expand(cfg['telegramEnv'] or os.path.join(cfg['stateDir'], 'telegram.env'))
+    return cfg
+
+
+def plist_of(path):
+    try:
+        with open(expand(path), 'rb') as f:
+            return plistlib.load(f)
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return None
+
+
+def env_file(path):
+    out = {}
+    try:
+        with open(expand(path)) as f:
+            for line in f:
+                m = re.match(r'\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$', line)
+                if m:
+                    out[m.group(1)] = m.group(2).strip().strip('"\'')
+    except OSError:
+        pass
+    return out
+
+
+def derive_m1(cfg):
+    """Fill what was left empty from the shared-Dev launchd files and .env."""
+    web, worker = plist_of(cfg['webPlist']), plist_of(cfg['workerPlist'])
+    wenv = (web or {}).get('EnvironmentVariables', {})
+    kenv = (worker or {}).get('EnvironmentVariables', {})
+    dotenv = env_file(cfg['envFile'])
+    fill = {
+        'webLabel': (web or {}).get('Label'),
+        'workerLabel': (worker or {}).get('Label'),
+        'databaseUrl': kenv.get('DATABASE_URL') or dotenv.get('DATABASE_URL'),
+        'webUrl': 'http://127.0.0.1:%s' % wenv['ALLRICE_WEB_PORT'] if wenv.get('ALLRICE_WEB_PORT') else None,
+        'workerUrl': 'http://127.0.0.1:%s' % kenv['ALLRICE_WORKER_PORT'] if kenv.get('ALLRICE_WORKER_PORT') else None,
+        'publicUrl': wenv.get('ALLRICE_PUBLIC_URL') or dotenv.get('ALLRICE_PUBLIC_URL'),
+    }
+    for k, v in fill.items():
+        if cfg.get(k) is None:
+            cfg[k] = v
+    if cfg.get('incidentDatabaseUrl') is None:
+        cfg['incidentDatabaseUrl'] = cfg['databaseUrl']
+    return cfg
+
+
+def finding(key, severity, title, detail='', runbook='', step=''):
+    return {'key': key, 'severity': severity, 'title': title, 'detail': detail, 'runbook': runbook, 'step': step}
+
+
+class Round:
+    """One round: its config, the persistent state and what the checks learned."""
+
+    def __init__(self, cfg, peer=False):
+        self.cfg, self.peer, self.now = cfg, peer, time.time()
+        os.makedirs(cfg['stateDir'], mode=0o700, exist_ok=True)
+        self.state_file = os.path.join(cfg['stateDir'], 'state.json')
+        self.state = read_json(self.state_file, {})
+        self.facts = {}
+
+    def save(self):
+        write_json(self.state_file, self.state)
+
+    def psql(self, sql, url=None, variables=None, timeout=30, readonly=True):
+        if not url:
+            raise CheckError('no database URL configured')
+        cmd = [self.cfg['psql'], url, '-X', '-q', '-A', '-t', '-v', 'ON_ERROR_STOP=1']
+        for k, v in (variables or {}).items():
+            cmd += ['-v', '%s=%s' % (k, v)]
+        opts = '-c statement_timeout=15000' + (' -c default_transaction_read_only=on' if readonly else '')
+        rc, out, err = run(cmd, timeout, {'PGCONNECT_TIMEOUT': '5', 'PGAPPNAME': 'allrice-monitor', 'PGOPTIONS': opts}, sql)
+        if rc:
+            raise CheckError(short(err or 'psql exit %d' % rc))
+        return out.strip()
+
+
+# ---------- alert state machine ----------
+
+
+def evaluate(r, findings, ran=()):
+    """Apply one round of findings to the open alerts. Returns the events to notify.
+    `ran` names the checks that completed: an open per-item alert of one of them
+    ("disk:<path>") whose item it no longer reports (the item left the config) recovers."""
+    now, cfg = r.now, r.cfg
+    alerts = r.state.setdefault('alerts', {})
+    opens = r.state.setdefault('opens', {})
+    history = r.state.setdefault('history', [])
+    events = []
+    reported = {f['key'] for f in findings}
+    findings = list(findings) + [finding(k, 'ok', a['title']) for k, a in alerts.items()
+                                 if ':' in k and k.split(':', 1)[0] in ran and k not in reported]
+    for f in findings:
+        key, sev, cur = f['key'], f['severity'], alerts.get(f['key'])
+        if sev == 'ok':
+            if cur:
+                del alerts[key]
+                muted = cur.get('mutedUntil', 0) > now
+                events.append({'event': 'recovered', 'finding': f, 'alert': cur, 'silent': muted})
+                history.append({'at': now, 'event': 'recovered', 'key': key, 'title': cur['title']})
+                incident(r, 'monitor_recovered', 'info', f, cur)
+            continue
+        if not cur:
+            recent = [t for t in opens.get(key, []) if now - t < cfg['flapMinutes'] * 60] + [now]
+            opens[key] = recent
+            muted_until = r.state.get('muted', {}).get(key, {}).get('mutedUntil', 0)
+            cur = alerts[key] = dict(f, since=now, notifiedAt=now, notifiedSeverity=sev, incidentId=str(uuid.uuid4()))
+            event = 'opened'
+            if muted_until > now:
+                cur.update(mutedUntil=muted_until, silentOpen=True)
+            elif len(recent) >= cfg['flapLimit']:
+                cur['mutedUntil'] = now + cfg['flapMinutes'] * 60
+                r.state.setdefault('muted', {})[key] = {'mutedUntil': cur['mutedUntil']}
+                event = 'flapping'
+            events.append({'event': event, 'finding': f, 'alert': cur, 'silent': muted_until > now})
+            history.append({'at': now, 'event': 'opened', 'key': key, 'severity': sev, 'title': f['title']})
+            incident(r, 'monitor_alert', sev, f, cur, cur['incidentId'])
+            continue
+        escalated = RANK[sev] > RANK[cur['notifiedSeverity']]
+        since, inc, notified, muted = cur['since'], cur['incidentId'], cur['notifiedAt'], cur.get('mutedUntil', 0)
+        cur.update(f, since=since, incidentId=inc)
+        if escalated:
+            cur.update(notifiedAt=now, notifiedSeverity=sev)
+            events.append({'event': 'escalated', 'finding': f, 'alert': cur, 'silent': False})
+            incident(r, 'monitor_alert', sev, f, cur)
+        elif muted <= now and (cur.get('silentOpen') or now - notified >= cfg['repeatMinutes'][sev] * 60):
+            cur.update(notifiedAt=now, notifiedSeverity=sev, silentOpen=False)  # also: opened while muted, still bad after
+            events.append({'event': 'reminder', 'finding': f, 'alert': cur, 'silent': False})
+        if RANK[sev] < RANK[cur['notifiedSeverity']]:
+            cur['notifiedSeverity'] = sev  # a later rise back up is an escalation again
+    for key in list(r.state.get('muted', {})):
+        if r.state['muted'][key]['mutedUntil'] <= now:
+            del r.state['muted'][key]
+    for key in list(opens):
+        opens[key] = [t for t in opens[key] if now - t < cfg['flapMinutes'] * 60]
+        if not opens[key]:
+            del opens[key]
+    r.state['history'] = [h for h in history if now - h['at'] < 8 * 86400]
+    return events
+
+
+def compose(r, events):
+    cfg, now = r.cfg, r.now
+    shown = [e for e in events if not e['silent']]
+    if not shown:
+        return None
+    bad = [e for e in shown if e['event'] != 'recovered']
+    good = [e for e in shown if e['event'] == 'recovered']
+    worst = max([RANK[e['finding']['severity']] for e in bad] or [0])
+    icon = ICON['critical'] if worst == 2 else ICON['warning'] if worst == 1 else ICON['ok']
+    head = '%s %s%s：' % (icon, '[%s] ' % cfg['label'] if cfg['label'] else '', cfg['name'])
+    parts = []
+    if bad:
+        parts.append('%d 项告警' % len(bad))
+    if good:
+        parts.append('%d 项恢复' % len(good))
+    lines = [head + '，'.join(parts)]
+    for e in sorted(bad, key=lambda e: -RANK[e['finding']['severity']]):
+        f, a = e['finding'], e['alert']
+        tag = {'opened': '', 'escalated': '（升级）', 'reminder': '（仍未恢复，已 %s）' % ago(now - a['since']),
+               'flapping': '（1 小时内反复 %d 次，之后 1 小时不再逐条通知）' % cfg['flapLimit']}[e['event']]
+        lines.append('')
+        lines.append('%s [%s] %s%s' % (ICON[f['severity']], WORD[f['severity']], f['title'], tag))
+        if f['detail']:
+            lines.append('   ' + f['detail'])
+        if f['step']:
+            lines.append('   第一步：' + f['step'])
+        if f['runbook']:
+            lines.append('   手册：' + cfg['runbooks'] + f['runbook'])
+    if good:
+        lines.append('')
+        for e in good:
+            lines.append('✅ 已恢复：%s（持续 %s）' % (e['alert']['title'], ago(now - e['alert']['since'])))
+    lines.append('')
+    lines.append(time.strftime('%m-%d %H:%M', time.localtime(now)) + ' · ' + socket.gethostname().split('.')[0])
+    return '\n'.join(lines)
+
+
+def incident(r, kind, severity, f, alert, incident_id=None):
+    if not r.cfg.get('incidents'):
+        return
+    r.state.setdefault('incidentOutbox', []).append({
+        'id': incident_id or str(uuid.uuid4()), 'kind': kind, 'severity': severity,
+        'detailCode': 'monitor.' + f['key'], 'createdAt': time.strftime('%Y-%m-%dT%H:%M:%S%z', time.localtime(r.now)),
+        'metadata': {'source': 'allrice-monitor', 'monitor': r.cfg['name'], 'label': r.cfg['label'], 'host': socket.gethostname(),
+                     'title': alert['title'], 'detail': f['detail'] or alert.get('detail', ''), 'runbook': alert.get('runbook', ''),
+                     'alertId': alert['incidentId'], 'since': int(alert['since']), 'durationSeconds': int(r.now - alert['since'])},
+    })
+
+
+INSERT_INCIDENTS = """
+insert into allrice_operational_incidents (id, kind, severity, detail_code, metadata, created_at)
+select (i->>'id')::uuid, i->>'kind', i->>'severity', i->>'detailCode', i->'metadata', (i->>'createdAt')::timestamptz
+from jsonb_array_elements(:'rows'::jsonb) i
+on conflict (id) do nothing;
+"""
+
+
+def flush_incidents(r):
+    """Write queued incidents; on failure keep them (bounded) for the next round."""
+    box = r.state.get('incidentOutbox', [])[-200:]
+    r.state['incidentOutbox'] = box
+    if not box:
+        return
+    try:
+        r.psql(INSERT_INCIDENTS, r.cfg['incidentDatabaseUrl'], {'rows': json.dumps(box, ensure_ascii=False)}, readonly=False)
+        r.state['incidentOutbox'] = []
+        r.state['incidentError'] = None
+    except CheckError as err:
+        r.state['incidentError'] = {'at': r.now, 'error': str(err)}
+        r.state.setdefault('incidentFailingSince', r.now)
+    else:
+        r.state.pop('incidentFailingSince', None)
+
+
+# ---------- Telegram ----------
+
+
+def telegram_secrets(cfg):
+    env = env_file(cfg['telegramEnv'])
+    return env.get('TELEGRAM_BOT_TOKEN'), env.get('TELEGRAM_CHAT_ID')
+
+
+def send_telegram(cfg, text):
+    token, chat = telegram_secrets(cfg)
+    if not token or not chat:
+        raise CheckError('Telegram is not configured (%s)' % cfg['telegramEnv'])
+    data = urllib.parse.urlencode({'chat_id': chat, 'text': text[:4000], 'disable_web_page_preview': 'true'}).encode()
+    try:
+        with opener(cfg['telegramProxy']).open('https://api.telegram.org/bot%s/sendMessage' % token, data, timeout=20) as resp:
+            body = json.load(resp)
+    except urllib.error.HTTPError as err:
+        body = {'ok': False, 'description': 'HTTP %s %s' % (err.code, short(err.read(2000) if err.fp else b''))}
+    except Exception as err:
+        body = {'ok': False, 'description': short(getattr(err, 'reason', err))}
+    if not body.get('ok'):
+        raise CheckError(str(body.get('description', 'send failed')).replace(token, '<token>'))
+
+
+def deliver(r, text):
+    """Queue text and send everything queued, oldest first; what fails waits for the next round."""
+    box = r.state.setdefault('outbox', [])
+    tg = r.state.setdefault('telegram', {})
+    if text:
+        box.append(text)
+    if len(box) > 20:
+        tg['dropped'] = tg.get('dropped', 0) + len(box) - 20
+        del box[:-20]
+    while box:
+        note = '（另有 %d 条更早的通知没能发出，已丢弃）\n' % tg['dropped'] if tg.get('dropped') else ''
+        try:
+            send_telegram(r.cfg, note + box[0])
+        except CheckError as err:
+            tg['lastError'] = {'at': r.now, 'error': str(err)}
+            return False
+        box.pop(0)
+        tg['lastOkAt'], tg['dropped'] = time.time(), 0
+    return True
+
+
+# ---------- checks (M1) ----------
+
+
+def job_info(label):
+    """(state, runs, last exit code): state is running/loaded/gone."""
+    rc, out, err = run(['/bin/launchctl', 'print', 'gui/%d/%s' % (os.getuid(), label)], 10)
+    if rc == 113:
+        return 'gone', None, None
+    if rc:
+        raise CheckError('launchctl print %s failed (exit %d): %s' % (label, rc, short(err)))
+    pid = re.search(r'^\s*pid = (\d+)', out, re.M)
+    runs = re.search(r'^\s*runs = (\d+)', out, re.M)
+    last = re.search(r'^\s*last exit code = (.+)$', out, re.M)
+    return ('running' if pid else 'loaded'), int(runs.group(1)) if runs else None, last.group(1).strip() if last else None
+
+
+def ready(url, timeout=8):
+    code, body = http_get(url, timeout)
+    if code != 200:
+        return None, 'HTTP %s %s' % (code, short(body, 120)) if code else short(body, 160)
+    try:
+        doc = json.loads(body)
+    except ValueError:
+        return None, 'not JSON'
+    if doc.get('status') != 'ready':
+        return None, 'status=%s' % doc.get('status')
+    return doc, ''
+
+
+def deploying(r):
+    """True while a deploy or other planned work holds the deploy lock (AGENTS.md section 5,
+    e.g. a manual restart): Web, Worker and the database may be down on purpose then, so
+    they are not judged, for at most deployGraceMinutes. Read
+    from the owner file the holder writes (is its pid alive?) without touching the lock:
+    even a brief probe of it could make a deploy starting at that moment fail as busy."""
+    owner = read_json(expand(r.cfg['deployLockOwner']), {})
+    pid, alive = owner.get('pid'), False
+    if isinstance(pid, int) and pid > 1:
+        try:
+            os.kill(pid, 0)
+            alive = True
+        except PermissionError:
+            alive = True
+        except OSError:
+            alive = False
+    return alive and r.now - owner.get('startedAt', 0) < r.cfg['deployGraceMinutes'] * 60
+
+
+def check_deploy(r):
+    if not os.path.exists(expand(r.cfg['deployInflight'])) or deploying(r):
+        return [finding('deploy', 'ok', '部署中断未恢复')]
+    return [finding('deploy', 'critical', '部署中断未恢复', '%s 还在，但没有部署在进行：上一次部署被强行中止，Dev 可能停在半途' % r.cfg['deployInflight'],
+                    'm1-worker-crash.md', '~/allrice-dev/bin/deploy-dev --status（恢复由发布负责人 deploy-dev --release-manager --recover）')]
+
+
+def check_service(r, role):
+    label, base = r.cfg[role + 'Label'], r.cfg[role + 'Url']
+    if deploying(r):
+        return None
+    path = '/api/health/ready' if role == 'web' else '/health/ready'
+    title = 'Web 不可用' if role == 'web' else 'Worker 不可用'
+    step = '~/allrice-dev/bin/deploy-dev --status; tail -50 ~/Library/Logs/allrice-dev-%s.err.log' % role
+    if not label or not base:
+        return [finding(role, 'warning', title + '（读不到配置）', 'launchd 文件 %s 缺失或不完整' % r.cfg[role + 'Plist'], 'm1-worker-crash.md', step)]
+    state, _, last = job_info(label)
+    doc, why = ready(base + path)
+    if doc:
+        r.facts[role] = doc
+        return [finding(role, 'ok', title)]
+    detail = 'launchd %s（%s）；%s%s 返回 %s' % (label, {'gone': '未加载', 'loaded': '已加载但没有进程', 'running': '进程在'}[state],
+                                              base, path, why)
+    if last and last != '(never exited)':
+        detail += '；上次退出码 %s' % last
+    return [finding(role, 'critical', title, detail, 'm1-worker-crash.md', step)]
+
+
+def check_web(r):
+    return check_service(r, 'web')
+
+
+def check_worker(r):
+    return check_service(r, 'worker')
+
+
+def check_postgres(r):
+    if deploying(r):
+        return None
+    try:
+        r.psql('select 1;', r.cfg['databaseUrl'])
+        return [finding('postgres', 'ok', '数据库不可用')]
+    except CheckError as err:
+        return [finding('postgres', 'critical', '数据库不可用', str(err), 'm1-database.md',
+                        '/opt/homebrew/bin/pg_isready -h 127.0.0.1; /opt/homebrew/bin/brew services list | grep postgres')]
+
+
+def probe_public(r, url, key='public_entry', where='M1 本机'):
+    if not url:
+        return [finding(key, 'warning', '公网入口不可达（未配置地址）', '', 'm1-tunnel.md', '')]
+    start = time.time()
+    code, body = http_get(url, 15, opener(r.cfg.get('publicProxy')))
+    took = time.time() - start
+    ok = code == 200 and took < 15
+    return [finding(key, 'ok' if ok else 'critical', '公网入口不可达', '从%s访问 %s：%s（%.1f 秒）' % (where, url, code or short(body, 120), took),
+                    'm1-tunnel.md', 'curl -sS -o /dev/null -w "%%{http_code}\\n" %s' % url)]
+
+
+def read_remote_heartbeat(target, path):
+    """(heartbeat dict or None, error text, ssh reachable)."""
+    rc, out, err = run(['/usr/bin/ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', target, 'cat ' + shlex.quote(path)], 30)
+    if rc == 255 or rc == 124:
+        return None, 'SSH 连不上 %s：%s' % (target, short(err, 160)), False
+    if rc:
+        return None, '读不到 %s:%s（退出码 %d）：%s' % (target, path, rc, short(err, 120)), True
+    try:
+        return json.loads(out), '', True
+    except ValueError:
+        return None, '%s:%s 不是有效 JSON' % (target, path), True
+
+
+def check_peer(r):
+    hb, err, _ = read_remote_heartbeat(r.cfg['peerSsh'], r.cfg['peerHeartbeat'])
+    stale = r.cfg['peerStaleMinutes'] * 60
+    if hb and r.now - hb.get('at', 0) <= stale:
+        r.facts['peer'] = hb
+        return [finding('peer', 'ok', 'huihuimac 看门失效')]
+    detail = err or '心跳已 %s 没更新（上限 %d 分钟）' % (ago(r.now - hb.get('at', 0)), stale // 60)
+    return [finding('peer', 'warning', 'huihuimac 看门失效', detail + '；M1 整机故障时将没人报警', 'm1-monitor.md',
+                    'ssh %s "launchctl print gui/\\$(id -u)/ai.bplabs.allrice-monitor-peer | head -20"' % r.cfg['peerSsh'])]
+
+
+def check_monitor(r):
+    """The monitor's own delivery: alerts that cannot reach the incidents table."""
+    since = r.state.get('incidentFailingSince')
+    if not since or r.now - since < 1800:
+        return [finding('monitor', 'ok', '告警写不进事件表')]
+    err = (r.state.get('incidentError') or {}).get('error', '')
+    return [finding('monitor', 'warning', '告警写不进事件表', '已 %s，积压 %d 条：%s' % (ago(r.now - since), len(r.state.get('incidentOutbox', [])), err),
+                    'm1-monitor.md', '~/allrice-dev/bin/monitor status')]
+
+
+# name, function, re-run once before alerting, skip unless this earlier check is ok
+M1_CHECKS = [
+    ('postgres', check_postgres, True, None),
+    ('web', check_web, True, None),
+    ('worker', check_worker, True, None),
+    ('deploy', check_deploy, False, None),
+    ('peer', check_peer, True, None),
+    ('monitor', check_monitor, False, None),
+]
+
+
+def run_checks(r, checks):
+    """Run the checks; (findings, names of the checks that judged this round). A check
+    returns None when it cannot judge (what it needs is down): its alerts stay as they
+    are, because unknown is not "recovered". A check that fails itself raises an alert of
+    its own ("check:<name>"), which recovers once it runs cleanly again."""
+    wanted = r.cfg['checks']
+    checks = [c for c in checks if (wanted is None or c[0] in wanted) and c[0] not in r.cfg['skipChecks']]
+    results, errors = {}, {}
+
+    def one(name, fn):
+        try:
+            results[name], errors[name] = fn(r), None
+        except Exception as err:  # a bug in one check must not stop the others or the round
+            results[name] = None
+            text = str(err) if isinstance(err, CheckError) else '%s: %s' % (type(err).__name__, short(err, 200))
+            errors[name] = finding('check:' + name, 'warning', '检查 %s 本身出错' % name, text, 'm1-monitor.md', 'monitor status')
+
+    def bad(name):
+        return errors.get(name) or any(f['severity'] != 'ok' for f in results.get(name) or [])
+
+    for name, fn, _, needs in checks:
+        if needs in results and (results[needs] is None or bad(needs)):
+            continue  # what it needs is down or unknown
+        one(name, fn)
+    again = [c for c in checks if c[2] and c[0] in results and bad(c[0])]
+    if again:
+        time.sleep(r.cfg['confirmSeconds'])
+        for name, fn, _, _ in again:
+            one(name, fn)
+    out = []
+    for name, _, _, _ in checks:
+        if name in results:
+            out.append(errors[name] or finding('check:' + name, 'ok', '检查 %s 本身出错' % name))
+            out += results[name] or []
+    return out, {name for name in results if results[name] is not None}
+
+
+# ---------- rounds ----------
+
+
+def heartbeat(r, took, error=None, phase='done'):
+    """Written when a round starts and when it ends, so its age stays below one interval
+    plus a little even when a round is slow; a round that never ends stops it."""
+    tg = r.state.get('telegram', {})
+    token, chat = telegram_secrets(r.cfg)
+    try:
+        with open(os.path.join(HERE, 'TOOLS_VERSION')) as f:
+            tools = f.read().split()[0]
+    except (OSError, IndexError):
+        tools = 'source'
+    write_json(os.path.join(r.cfg['stateDir'], 'heartbeat.json'), {
+        'at': int(time.time()), 'phase': phase, 'lastDoneAt': (r.state.get('lastRound') or {}).get('at'),
+        'host': socket.gethostname(), 'name': r.cfg['name'], 'label': r.cfg['label'], 'tools': tools,
+        'roundSeconds': round(took, 1), 'roundError': error, 'publicUrl': r.cfg.get('publicUrl'),
+        'openAlerts': {k: a['severity'] for k, a in r.state.get('alerts', {}).items()},
+        'telegram': {'configured': bool(token and chat), 'lastOkAt': tg.get('lastOkAt'), 'pending': len(r.state.get('outbox', [])),
+                     'lastError': tg.get('lastError')},
+        'incidents': {'pending': len(r.state.get('incidentOutbox', [])), 'lastError': r.state.get('incidentError')},
+    })
+
+
+def locked(cfg, wait=0):
+    """One round at a time per state directory; launchd never overlaps a job with itself,
+    this covers a manual run. Exits quietly when busy (after `wait` seconds)."""
+    f = open(os.path.join(cfg['stateDir'], 'monitor.lock'), 'a')
+    end = time.time() + wait
+    while True:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return f
+        except BlockingIOError:
+            if time.time() >= end:
+                print('monitor: a round in %s is still running' % cfg['stateDir'], file=sys.stderr)
+                sys.exit(0)
+            time.sleep(1)
+
+
+def on_alarm(signum, frame):
+    raise RoundTimeout()
+
+
+def do_round(cfg, peer):
+    lock = locked(cfg)
+    r = Round(cfg, peer)
+    start, error = time.time(), None
+    heartbeat(r, 0, phase='running')
+    signal.signal(signal.SIGALRM, on_alarm)
+    signal.alarm(cfg['roundTimeoutSeconds'])
+    try:
+        findings, ran = run_checks(r, PEER_CHECKS if peer else M1_CHECKS)
+        findings.append(finding('monitor_round', 'ok', '监控本轮超时'))
+    except RoundTimeout:
+        error = 'round timed out after %ss' % cfg['roundTimeoutSeconds']
+        findings, ran = [finding('monitor_round', 'critical', '监控本轮超时', error + '：某项检查卡住了', 'm1-monitor.md', 'monitor status')], ()
+    signal.alarm(90)  # delivery has its own timeouts; this only bounds a hung write
+    try:
+        r.now = time.time()
+        events = evaluate(r, findings, ran)
+        if not peer:
+            flush_incidents(r)
+        deliver(r, compose(r, events))
+        r.state['lastRound'] = {'at': r.now, 'seconds': round(time.time() - start, 1), 'error': error}
+        r.state['rounds'] = [t for t in r.state.get('rounds', []) if r.now - t < 86400] + [r.now]
+        r.save()
+        heartbeat(r, time.time() - start, error)
+    except RoundTimeout:
+        r.save()
+        sys.exit('monitor: delivering the round timed out')
+    finally:
+        signal.alarm(0)
+        lock.close()
+
+
+# ---------- peer (huihuimac) ----------
+
+
+def check_m1(r):
+    """M1 answers over SSH, its monitor's heartbeat is fresh, and that monitor can deliver.
+    While M1 cannot be reached, only m1_reachable is judged: the heartbeat is unknown."""
+    cfg = r.cfg
+    hb, err, reachable = read_remote_heartbeat(cfg['m1Ssh'], cfg['m1Heartbeat'])
+    step = 'ssh %s "~/allrice-dev/bin/monitor status"' % cfg['m1Ssh']
+    out = [finding('m1_reachable', 'ok' if reachable else 'critical', 'M1 连不上', err + '（整机宕机、断网或 Tailscale 断开）',
+                   'm1-monitor.md', 'tailscale status; ssh -v %s true' % cfg['m1Ssh'])]
+    if not reachable:
+        return out
+    if not hb:
+        return out + [finding('m1_heartbeat', 'critical', 'M1 监控停了', err, 'm1-monitor.md', step)]
+    age, done = r.now - hb.get('at', 0), r.now - (hb.get('lastDoneAt') or hb.get('at', 0))
+    if age > cfg['m1StaleMinutes'] * 60:
+        detail = '心跳已 %s 没更新（上限 %d 分钟）：监控没在运行或整轮卡住' % (ago(age), cfg['m1StaleMinutes'])
+    elif done > cfg['m1UnfinishedMinutes'] * 60:
+        detail = '每轮都开始了，但已 %s 没有一轮跑完（上限 %d 分钟）：监控每轮都在出错' % (ago(done), cfg['m1UnfinishedMinutes'])
+    else:
+        detail = ''
+    out.append(finding('m1_heartbeat', 'critical' if detail else 'ok', 'M1 监控停了', detail, 'm1-monitor.md', step))
+    tg = hb.get('telegram') or {}
+    stuck = not tg.get('configured') or (tg.get('pending') and r.now - (tg.get('lastOkAt') or 0) > cfg['m1TelegramStuckMinutes'] * 60)
+    out.append(finding('m1_telegram', 'warning' if stuck else 'ok', 'M1 监控发不出 Telegram',
+                       '没有配置 telegram.env' if not tg.get('configured') else
+                       '积压 %s 条：%s' % (tg.get('pending'), (tg.get('lastError') or {}).get('error', '')), 'm1-monitor.md', step))
+    if hb.get('publicUrl'):
+        r.state['m1PublicUrl'] = hb['publicUrl']
+    return out
+
+
+def check_outside(r):
+    return probe_public(r, r.cfg['publicUrl'] or r.state.get('m1PublicUrl'), 'public_entry', ' M1 之外（huihuimac）')
+
+
+PEER_CHECKS = [
+    ('m1', check_m1, True, None),
+    ('public_entry', check_outside, True, None),
+]
+
+
+# ---------- launchd ----------
+
+
+def launchd(cfg, action, peer):
+    label = cfg['launchdLabel'] or ('ai.bplabs.allrice-monitor-peer' if peer else 'ai.bplabs.allrice-dev-monitor')
+    path = expand('~/Library/LaunchAgents/%s.plist' % label)
+    domain = 'gui/%d' % os.getuid()
+    run(['/bin/launchctl', 'bootout', '%s/%s' % (domain, label)], 30)
+    for _ in range(90):  # bootout is asynchronous; bootstrap fails while the old job is still there
+        if run(['/bin/launchctl', 'print', '%s/%s' % (domain, label)], 10)[0] == 113:
+            break
+        time.sleep(1)
+    if action == 'remove':
+        if os.path.exists(path):
+            os.remove(path)
+        print('removed %s' % label)
+        return
+    args = ['/usr/bin/python3', os.path.abspath(sys.argv[0]), 'peer' if peer else 'run']
+    if cfg['configFile']:
+        args += ['--config', cfg['configFile']]
+    log = os.path.join(cfg['stateDir'], 'monitor.log')
+    with open(path + '.tmp', 'wb') as f:
+        plistlib.dump({'Label': label, 'ProgramArguments': args, 'StartInterval': cfg['intervalSeconds'], 'RunAtLoad': True,
+                       'StandardOutPath': log, 'StandardErrorPath': log}, f)
+    os.replace(path + '.tmp', path)
+    for _ in range(5):
+        if run(['/bin/launchctl', 'bootstrap', domain, path], 30)[0] == 0:
+            print('installed %s: every %ss, %s' % (label, cfg['intervalSeconds'], ' '.join(args)))
+            return
+        time.sleep(3)
+    sys.exit('could not load %s' % label)
+
+
+def status(cfg):
+    state = read_json(os.path.join(cfg['stateDir'], 'state.json'), {})
+    hb = read_json(os.path.join(cfg['stateDir'], 'heartbeat.json'), {})
+    print(json.dumps({'name': cfg['name'], 'stateDir': cfg['stateDir'], 'lastRound': state.get('lastRound'),
+                      'heartbeatAge': int(time.time() - hb['at']) if hb.get('at') else None,
+                      'openAlerts': {k: {'severity': a['severity'], 'title': a['title'], 'detail': a['detail'], 'since': time.strftime('%m-%d %H:%M', time.localtime(a['since']))}
+                                     for k, a in state.get('alerts', {}).items()},
+                      'telegram': hb.get('telegram'), 'incidents': hb.get('incidents')},
+                     ensure_ascii=False, indent=1))
+
+
+def main(argv):
+    p = argparse.ArgumentParser(prog='monitor')
+    p.add_argument('command', choices=['run', 'peer', 'status', 'test-alert', 'launchd'])
+    p.add_argument('action', nargs='?', choices=['install', 'remove'])
+    p.add_argument('--config')
+    p.add_argument('--peer', action='store_true')
+    p.add_argument('--dry-run', action='store_true', help='run/peer: print what would be sent; send and store nothing')
+    a = p.parse_args(argv)
+    peer = a.command == 'peer' or a.peer
+    cfg = load_config(a.config, peer)
+    os.makedirs(cfg['stateDir'], mode=0o700, exist_ok=True)
+    if not peer:
+        derive_m1(cfg)
+    if a.command in ('run', 'peer') and a.dry_run:
+        r = Round(cfg, peer)
+        findings, ran = run_checks(r, PEER_CHECKS if peer else M1_CHECKS)
+        for f in findings:
+            print('%-8s %-28s %s %s' % (f['severity'], f['key'], f['title'] if f['severity'] != 'ok' else '', f['detail'] if f['severity'] != 'ok' else ''))
+        print(compose(r, evaluate(r, findings, ran)) or '(nothing to send)')
+    elif a.command in ('run', 'peer'):
+        do_round(cfg, peer)
+    elif a.command == 'status':
+        status(cfg)
+    elif a.command == 'test-alert':
+        send_telegram(cfg, '🔔 %s%s：告警通道测试 %s' % ('[%s] ' % cfg['label'] if cfg['label'] else '', cfg['name'], time.strftime('%m-%d %H:%M')))
+        print('sent')
+    elif a.command == 'launchd':
+        if not a.action:
+            p.error('launchd needs install or remove')
+        launchd(cfg, a.action, peer)
+
+
+if __name__ == '__main__':
+    main(sys.argv[1:])

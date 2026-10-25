@@ -24,16 +24,16 @@
 
 ## 2. 目录与端口
 
-| 用途                | 位置                                             | 说明                                                                                                                                                                                                                 |
-| ------------------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 主仓库              | `~/allrice-repo`                                 | 所有任务的 worktree 都从这里建，保证本地分支能被 `qa-instance --ref` 直接使用。**主仓库本身不切分支、不改文件、不构建**                                                                                              |
-| 任务代码            | `~/allrice-worktrees/<任务名>`                   | 每个任务一个 worktree：`git -C ~/allrice-repo fetch && git -C ~/allrice-repo worktree add ~/allrice-worktrees/<任务名> -b <分支> origin/main`。**可以多个任务并行，各自构建，不需要排队。**                          |
-| 共享 Dev 发布       | `~/allrice-dev-releases/<版本名>`                | 只由 `deploy-dev` 创建；清理时保留当前版本、上一个版本，再加最近 3 个                                                                                                                                                |
-| 共享 Dev 数据和配置 | `~/allrice-dev/.env`、`~/allrice-dev/.local/`    | launchd：`ai.bplabs.allrice-dev-web` / `-worker`。端口：彩排期间 3011/3012，正式切换后改为 3001/3102（MET-216）                                                                                                      |
-| 临时验收实例        | `~/allrice-qa/<任务名>/`                         | 每个任务一套：`release/`（构建目录）、`.env`、`.local/`、`logs/`、`creds.json`（测试账号）、`instance.json`                                                                                                          |
-| 验收实例端口        | 3200–3299                                        | 第 n 个实例：Web 用 3200+2n，Worker 用 3201+2n，由 `qa-instance` 自动分配                                                                                                                                            |
-| 运维工具            | `~/allrice-dev/bin/`（源码在仓库 `scripts/m1/`） | `deploy-dev`、`qa-instance`、`smoke-test`、`deploy-lock`（见下文）；`with-env web\|worker <命令>`：带共享 Dev 的完整环境变量执行命令，读不到环境就拒绝执行；`backup-daily`：每日备份；`qa-bootstrap.mjs`：初始化租户 |
-| 备份                | `~/allrice-backups/`                             | 每天 04:00 自动备份数据库、数据目录和两个 launchd 文件，保留 7 天。数据库和文件不是同一时刻的快照，恢复后以数据库为准                                                                                                |
+| 用途                | 位置                                             | 说明                                                                                                                                                                                                                                                                                                                                          |
+| ------------------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 主仓库              | `~/allrice-repo`                                 | 所有任务的 worktree 都从这里建，保证本地分支能被 `qa-instance --ref` 直接使用。**主仓库本身不切分支、不改文件、不构建**                                                                                                                                                                                                                       |
+| 任务代码            | `~/allrice-worktrees/<任务名>`                   | 每个任务一个 worktree：`git -C ~/allrice-repo fetch && git -C ~/allrice-repo worktree add ~/allrice-worktrees/<任务名> -b <分支> origin/main`。**可以多个任务并行，各自构建，不需要排队。**                                                                                                                                                   |
+| 共享 Dev 发布       | `~/allrice-dev-releases/<版本名>`                | 只由 `deploy-dev` 创建；清理时保留当前版本、上一个版本，再加最近 3 个                                                                                                                                                                                                                                                                         |
+| 共享 Dev 数据和配置 | `~/allrice-dev/.env`、`~/allrice-dev/.local/`    | launchd：`ai.bplabs.allrice-dev-web` / `-worker`。端口：彩排期间 3011/3012，正式切换后改为 3001/3102（MET-216）                                                                                                                                                                                                                               |
+| 临时验收实例        | `~/allrice-qa/<任务名>/`                         | 每个任务一套：`release/`（构建目录）、`.env`、`.local/`、`logs/`、`creds.json`（测试账号）、`instance.json`                                                                                                                                                                                                                                   |
+| 验收实例端口        | 3200–3299                                        | 第 n 个实例：Web 用 3200+2n，Worker 用 3201+2n，由 `qa-instance` 自动分配                                                                                                                                                                                                                                                                     |
+| 运维工具            | `~/allrice-dev/bin/`（源码在仓库 `scripts/m1/`） | `deploy-dev`、`qa-instance`、`smoke-test`、`deploy-lock`（见下文）；`with-env web\|worker <命令>`：带共享 Dev 的完整环境变量执行命令，读不到环境就拒绝执行；`backup-daily`：每日备份；`monitor`：每 5 分钟巡检组件和业务、发 Telegram 告警，huihuimac 上的同一脚本反过来看门（`docs/runbooks/m1-monitor.md`）；`qa-bootstrap.mjs`：初始化租户 |
+| 备份                | `~/allrice-backups/`                             | 每天 04:00 自动备份数据库、数据目录和两个 launchd 文件，保留 7 天。数据库和文件不是同一时刻的快照，恢复后以数据库为准                                                                                                                                                                                                                         |
 
 `cloud-autostart`：登录后把云端沙箱 VM 拉起来，并等到 Office 渲染容器健康、云端看门狗证明就绪；失败时每分钟重试一次。登录项由发布负责人在安装新版工具后用 `cloud-autostart install-agent` 装一次，`cloud-autostart status` 查看状态。M1 开着 FileVault，无人值守重启后要有人登录，这些服务（包括共享 Dev）才会启动。
 
@@ -110,7 +110,7 @@
 
 1. **一个任务对应一个会话、一张 MET 卡、一个 worktree、一个分支。** worktree 和验收实例用任务名命名（建议用 MET 编号，例如 `met-221`）。不碰别的任务的 worktree、验收实例和数据库。
 2. **发布负责人只有一个，由用户明确指定。** 用户没有指定你，你就不是发布负责人：不管你是 Claude 还是 Codex，也不管你是不是负责 AllRice 的主力会话。用户会在那个会话里明确说明，没有被明确告知的会话都不是，不要按自己的运行环境去对号入座。只有发布负责人可以：
-   - 运行 `deploy-dev`（包括 `--rollback`、`--recover`）、`scripts/m1/install`，以及重启共享 Dev；
+   - 运行 `deploy-dev`（包括 `--rollback`、`--recover`）、`scripts/m1/install`、`monitor launchd install|remove`，以及重启共享 Dev；
    - 修改共享 Dev 的 `.env`、launchd plist；
    - 直接改 `allrice_dev` 的数据（SQL、跨任务的数据维护）。
 

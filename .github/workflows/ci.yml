@@ -124,6 +124,8 @@ jobs:
       - run: pnpm format:check
       - run: pnpm lint
       - run: pnpm typecheck
+      - name: Unit-test the M1 monitor (standard-library Python, no services)
+        run: python3 -m unittest discover -s scripts/m1 -p 'test_*.py'
       # Native child processes and fsync journals need bounded contention.
       - name: Capture versioned deterministic regression source
         id: native-capture
