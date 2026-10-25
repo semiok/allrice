@@ -2,12 +2,11 @@
  * read from a session journal. The descriptor is rebuilt from the sources and
  * from real behavior vectors, then compared with the reviewed contracts copy. */
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { relative, resolve } from 'node:path';
 
 import {
   BootstrapReceiptSchema,
-  harnessContextKey,
   SessionReferenceSnapshotsSchema,
   UserQuestionAnswerSubmissionSchema,
 } from '@allrice/contracts';
@@ -18,20 +17,59 @@ import { expect, it } from 'vitest';
 import { parseDocument } from 'yaml';
 import { z } from 'zod';
 
-import {
-  NATIVE_JOURNAL_CONTRACT,
-  NATIVE_JOURNAL_SURFACES,
-} from '../../../../packages/contracts/src/native-journal-contract.ts';
-import { bootstrapContextForCheckpoint } from '../employee-kernel.js';
+import { NATIVE_JOURNAL_CONTRACT } from '../../../../packages/contracts/src/native-journal-contract.ts';
+import { bootstrapContextForCheckpoint } from '../../src/employee-kernel.js';
+import { DshRuntimePool } from '../../src/harness/dsh/runtime-pool.js';
 
 const root = resolve(import.meta.dirname, '../../../..');
 const read = (path: string) => readFileSync(resolve(root, path), 'utf8');
-const contractPath = 'packages/contracts/src/native-journal-contract.ts';
+const surfacesPath = resolve(
+  root,
+  'packages/contracts/src/native-journal-contract.surfaces.json',
+);
+
+// Every committed production source, so a new producer or parser must be
+// acknowledged in review.
+const sources = execFileSync('git', ['ls-files', '-z'], {
+  cwd: root,
+  encoding: 'utf8',
+})
+  .split('\0')
+  .filter(
+    (path) =>
+      /\.(?:[cm]?[jt]sx?|sql)$/.test(path) &&
+      !/(?:^|\/)(?:test|tests|fixtures)\/|\.test\.[cm]?[jt]sx?$/.test(path) &&
+      existsSync(resolve(root, path)),
+  )
+  .map((path) => [path, read(path)] as const);
+const literals = (pattern: RegExp, within = ['']) => {
+  const scoped = sources.filter(([path]) =>
+    within.some((prefix) => path.startsWith(prefix)),
+  );
+  return {
+    values: [
+      ...new Set(scoped.flatMap(([, text]) => text.match(pattern) ?? [])),
+    ].sort(),
+    files: Object.fromEntries(
+      scoped.flatMap(([path, text]) => {
+        const count = text.match(pattern)?.length;
+        return count ? [[path, count]] : [];
+      }),
+    ),
+  };
+};
 
 // Private types are registered by import side effect; this file's fresh module
-// graph shows exactly the ones the adapter modules add.
+// graph shows exactly the ones every registering adapter module adds.
+const registering = sources
+  .filter(
+    ([path, text]) =>
+      path.startsWith('apps/worker/dsh/') &&
+      text.includes('KNOWN_SESSION_EVENT_TYPES'),
+  )
+  .map(([path]) => path);
 const known = new Set(KNOWN_SESSION_EVENT_TYPES);
-const [inputs, , journal, answers, bootstrap, references, schedule] =
+const [inputs, waits, journal, answers, bootstrap, references, schedule] =
   await Promise.all(
     [
       'allrice-dsh-inputs',
@@ -43,35 +81,10 @@ const [inputs, , journal, answers, bootstrap, references, schedule] =
       'native-schedule-host-factory',
     ].map((name) => import(resolve(root, `apps/worker/dsh/${name}.mjs`))),
   );
+await Promise.all(registering.map((path) => import(resolve(root, path))));
 const privateEventTypes = [...KNOWN_SESSION_EVENT_TYPES]
   .filter((type) => !known.has(type))
   .sort();
-
-// Every production source, so a new producer or parser must be acknowledged.
-const sources = execFileSync(
-  'git',
-  ['ls-files', '-z', '--cached', '--others', '--exclude-standard'],
-  { cwd: root, encoding: 'utf8' },
-)
-  .split('\0')
-  .filter(
-    (path) =>
-      /\.(?:[cm]?[jt]sx?|sql)$/.test(path) &&
-      !/(?:^|\/)(?:test|tests|fixtures)\/|\.test\.[cm]?[jt]sx?$/.test(path) &&
-      path !== contractPath,
-  )
-  .map((path) => [path, read(path)] as const);
-const literals = (pattern: RegExp) => ({
-  values: [
-    ...new Set(sources.flatMap(([, text]) => text.match(pattern) ?? [])),
-  ].sort(),
-  files: Object.fromEntries(
-    sources.flatMap(([path, text]) => {
-      const count = text.match(pattern)?.length;
-      return count ? [[path, count]] : [];
-    }),
-  ),
-});
 
 const jsTag = {
   tag: 'tag:yaml.org,2002:js',
@@ -113,13 +126,12 @@ const pins: [file: string, ...prefixes: string[]][] = [
   ],
   [
     'apps/worker/src/harness/dsh/runtime-pool.ts',
-    'const expectedNamespace =',
-    'tenantRoot: dirname(storageNamespace)',
     'DSH_RUNTIME_HOME:',
     'DSH_CWD:',
     'DSH_SESSION_ROOT:',
     'cwd: tenantRoot',
   ],
+  ['apps/worker/src/platform-employee-tests.ts', 'const testDirectory ='],
   [
     'apps/worker/src/harness/dsh-native-retention.ts',
     'export function employeePreviewStorageRoot(',
@@ -244,15 +256,23 @@ const answer = JSON.stringify({
   answers: [{ id: 'choice', selected: ['Go'] }],
 });
 
-// The kernel's segment digest must be the one the runtime covers.
+// Kernel segment digests, checkpoint included, must be the ones the runtime
+// covers; the assistant one is recomputed by the runtime from the journal.
 const assistant = { id: inputId, role: 'assistant', text: 'vector reply' };
-const { key, digest } = bootstrapContextForCheckpoint([assistant] as never)!
-  .segments[0]!;
+const segments = bootstrapContextForCheckpoint(
+  [assistant] as never,
+  {
+    summaryVersion: 'extractive-v1',
+    generation: 2,
+    coveredThroughMessageId: null,
+    summary: 'vector summary',
+  } as never,
+)!.segments.map(({ key, digest }) => ({ key, digest }));
 const scope = `sha256:${'c'.repeat(64)}`;
 const receipt = {
   version: 1,
   scope,
-  imported: [],
+  imported: segments.filter(({ key }) => key === 'checkpoint'),
   assistantMessageId: inputId,
 };
 const assistantText = [{ type: 'text', text: assistant.text }];
@@ -287,11 +307,51 @@ const admitted = (allriceSessionReference: object) =>
     ).messages.map((message) => message.source.kind),
   );
 
+// The storage location itself (DshRuntimePool.storage is pure: no
+// credentials, mkdir or launch), from a configured and a default runtime root.
+function storage(runtimeRoot: string | undefined, show: (p: string) => string) {
+  const saved = process.env.ALLRICE_DSH_RUNTIME_ROOT;
+  if (runtimeRoot) process.env.ALLRICE_DSH_RUNTIME_ROOT = runtimeRoot;
+  else delete process.env.ALLRICE_DSH_RUNTIME_ROOT;
+  try {
+    const pool = new DshRuntimePool() as unknown as {
+      storage(input: object): Record<string, string>;
+    };
+    const executionEnvironment = {
+      ALLRICE_ORGANIZATION_ID: '11111111-1111-4111-8111-111111111111',
+      ALLRICE_WORKSPACE_ID: '22222222-2222-4222-8222-222222222222',
+      ALLRICE_OWNER_ID: inputId,
+    };
+    return Object.fromEntries(
+      Object.entries({
+        employee: { sessionId: 'S' },
+        internal: { internalTask: {}, nativeContextId: 'N' },
+        experience: { internalTask: { occurrenceId: 'O' } },
+      }).map(([kind, kernel]) => {
+        const located = pool.storage({ executionEnvironment, kernel });
+        return [
+          kind,
+          {
+            storageContextKey: located.storageContextKey,
+            tenantRoot: show(located.tenantRoot!),
+            storageNamespace: show(located.storageNamespace!),
+          },
+        ];
+      }),
+    );
+  } finally {
+    if (saved === undefined) delete process.env.ALLRICE_DSH_RUNTIME_ROOT;
+    else process.env.ALLRICE_DSH_RUNTIME_ROOT = saved;
+  }
+}
+
 const jsonSchema = (schema: z.ZodType) =>
   z.toJSONSchema(schema, { unrepresentable: 'any' });
 const surfaces = {
   privateEvents: {
     types: privateEventTypes,
+    registeredBy: registering,
+    appended: literals(/\.append\(\s*'allrice\/[\w/-]+'/g, ['apps/worker/']),
     validJournal: await validate(),
     withExtraField: Object.fromEntries(
       await Promise.all(
@@ -319,6 +379,11 @@ const surfaces = {
       ),
     ),
   },
+  // Parked question ids and labels that a later build matches by value.
+  durableQuestions: literals(
+    /runtime-progress|重新检查后继续|取消任务|app-connect:|已连接，继续任务/g,
+    ['apps/worker/', 'packages/database/'],
+  ),
   inputDigest: {
     input,
     digest: appended[0]?.data.digest,
@@ -327,7 +392,7 @@ const surfaces = {
   },
   bootstrap: {
     receipt: jsonSchema(BootstrapReceiptSchema),
-    assistantSegment: { text: assistant.text, key, digest },
+    kernelSegments: segments,
     covered: bootstrap.readBootstrapCoverage(
       {
         seq: 2,
@@ -342,7 +407,7 @@ const surfaces = {
           },
         ],
       },
-      { scope, candidates: [{ key, digest }] },
+      { scope, candidates: segments },
     ).covered,
   },
   sessionReference: {
@@ -355,15 +420,9 @@ const surfaces = {
       numericId: await admitted({ ...reference, id: 1 }),
     },
   },
-  nativeContextKey: {
-    employee: harnessContextKey({ sessionId: 'S' } as never),
-    internal: harnessContextKey({
-      internalTask: {},
-      nativeContextId: 'N',
-    } as never),
-    experience: harnessContextKey({
-      internalTask: { occurrenceId: 'O' },
-    } as never),
+  storage: {
+    configured: storage('/allrice/runtime-root', (path) => path),
+    default: storage(undefined, (path) => relative(process.cwd(), path)),
   },
   persistence: {
     'allrice-restricted.cordis.yml': persistence(
@@ -374,29 +433,15 @@ const surfaces = {
     controlModules: schedule.nativeScheduleModuleMap,
   },
   sourcePins,
-  invariants: [
-    'A journal lives at <namespace>/-<cwd with / as ->--/<native session id>/session.v4.jsonl; DSH derives the directory from the recorded cwd (the tenant root).',
-    'namespace = <ALLRICE_DSH_RUNTIME_ROOT>/<organization>/<workspace>/<owner>/<context key>/sessions: moving ALLRICE_DSH_RUNTIME_ROOT detaches every session.',
-  ],
 };
-
-const header = `/** Durable DSH session journal contract (MET-221).
- *
- * \`current\` is the contract this build writes; \`readsFrom\` the oldest it
- * still reads. Raise \`current\` only for a breaking change (private payloads are
- * strict, so even a new field breaks) and capture a corpus for it with
- * scripts/acceptance/runtime/capture-dsh-journal-v4.ts.
- *
- * NATIVE_JOURNAL_SURFACES is generated: \`pnpm dsh:journal-contract -u\` rewrites
- * the current descriptor from the sources. Review the diff; a compatible change
- * may update the current version in place. */`;
 
 it('matches the reviewed descriptor of the current contract version', async () => {
   const { current, readsFrom } = NATIVE_JOURNAL_CONTRACT;
   expect(Number.isInteger(readsFrom) && readsFrom >= 1).toBe(true);
   expect(Number.isInteger(current) && current >= readsFrom).toBe(true);
+  const reviewed = JSON.parse(readFileSync(surfacesPath, 'utf8'));
   const kept = Object.fromEntries(
-    Object.entries({ ...NATIVE_JOURNAL_SURFACES, [current]: surfaces })
+    Object.entries({ ...reviewed, [current]: surfaces })
       .filter(([version]) => Number(version) >= readsFrom)
       .sort(([a], [b]) => Number(a) - Number(b)),
   );
@@ -404,10 +449,125 @@ it('matches the reviewed descriptor of the current contract version', async () =
   expect(Object.keys(kept).map(Number)).toEqual(
     Array.from({ length: current - readsFrom + 1 }, (_, i) => readsFrom + i),
   );
-  const path = resolve(root, contractPath);
-  const text = await format(
-    `${header}\nexport const NATIVE_JOURNAL_CONTRACT = ${JSON.stringify({ current, readsFrom })} as const;\n\nexport const NATIVE_JOURNAL_SURFACES = ${JSON.stringify(kept)} as const;\n`,
-    { ...(await resolveConfig(path)), filepath: path },
-  );
-  await expect(text).toMatchFileSnapshot(path);
+  const text = await format(JSON.stringify(kept), {
+    ...(await resolveConfig(surfacesPath)),
+    filepath: surfacesPath,
+  });
+  await expect(text).toMatchFileSnapshot(surfacesPath);
+});
+
+interface WrittenEvent {
+  type: string;
+  seq: number;
+  data: Record<string, unknown>;
+}
+
+function recordingJournal() {
+  const events: WrittenEvent[] = [
+    { type: 'turn/start', seq: 1, data: { turn: 1 } },
+  ];
+  return {
+    events,
+    session: {
+      snapshotEvents: () => events,
+      append(type: string, data: Record<string, unknown>) {
+        events.push({ type, data, seq: events.length + 1 });
+      },
+    },
+  };
+}
+
+// Reader vectors alone do not check what each live producer persists. Keep
+// emitted payloads inside the strict journal contract, including steer_current.
+it.each(['steer_current', 'ask_user'] as const)(
+  'writes %s input events that the journal reader accepts',
+  async (kind) => {
+    const { events, session } = recordingJournal();
+    const inbox = { nextStep: [] as { id: string }[], nextTurn: [] };
+    const result = await inputs.deliverDshInput(
+      {
+        agent: {
+          status: kind === 'ask_user' ? 'idle' : 'running',
+          session,
+          inbox,
+          steer: (message: { id: string }) => inbox.nextStep.push(message),
+        },
+        sessionId,
+        pendingQuestion:
+          kind === 'ask_user'
+            ? { questionId: 'q', questions: [question], resolve() {} }
+            : null,
+        notify() {},
+        flush: async () => {},
+        isCurrent: () => true,
+        suspended: kind === 'ask_user',
+      },
+      {
+        ...input,
+        kind,
+        text:
+          kind === 'ask_user'
+            ? `allrice:user-question:v1:${answer}`
+            : input.text,
+      },
+    );
+    expect(result.status).toBe(kind === 'ask_user' ? 'adopted' : 'pending');
+    expect(events.map((event) => event.type)).toEqual([
+      'turn/start',
+      'allrice/input/request',
+      ...(kind === 'ask_user' ? ['allrice/input/answered'] : []),
+    ]);
+    expect(() =>
+      journal.validateAllriceSessionJournal({ id: sessionId }, events),
+    ).not.toThrow();
+  },
+);
+
+it('writes a checkpoint and continuation that the journal reader accepts', async () => {
+  const { events, session } = recordingJournal();
+  const agent = {
+    status: 'running',
+    session,
+    inbox: { nextStep: [], nextTurn: [] },
+    cancel() {
+      agent.status = 'idle';
+    },
+    whenIdle: async () => {},
+  };
+  const record = { agent };
+  const server = {
+    requireRoot: () => record,
+    ensureRoot: async () => record,
+    assertRoot() {},
+    isRootCurrent: () => true,
+    pendingUserQuestions: new Map([
+      [sessionId, { questionId: 'q', questions: [question] }],
+    ]),
+    ctx: {
+      agents: { list: () => [agent] },
+      sessions: { flush: async () => {} },
+    },
+    userQuestionNotify() {},
+    prompt: async () => ({ accepted: true }),
+  };
+  expect(
+    await waits.checkpointNativeQuestion(server, sessionId, 'q'),
+  ).toMatchObject(facts['allrice/wait/checkpoint']);
+  await waits.continueNativeWait(server, {
+    sessionId,
+    questionId: 'q',
+    turnId,
+    inputId,
+    text: `allrice:user-question:v1:${answer}`,
+  });
+  expect(events.map((event) => event.type)).toEqual([
+    'turn/start',
+    'allrice/wait/checkpoint',
+    'allrice/input/request',
+    'allrice/input/answered',
+    'allrice/wait/continued',
+  ]);
+  expect(() =>
+    journal.validateAllriceSessionJournal({ id: sessionId }, events),
+  ).not.toThrow();
 });

@@ -237,6 +237,8 @@ const requiredReplayScenarios = [
   'journal-replay-question',
   'journal-replay-continued',
   'journal-replay-bootstrap-reference',
+  'journal-contract-writers',
+  'journal-corpus-integrity',
 ];
 const replayById = new Map(
   (compatibility.goldenReplay ?? []).map((scenario) => [scenario.id, scenario]),

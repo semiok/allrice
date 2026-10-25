@@ -118,7 +118,7 @@
     },
     {
       "id": "journal-contract-surfaces",
-      "testFile": "apps/worker/src/harness/native-journal-contract.test.ts",
+      "testFile": "apps/worker/test/p25/native-journal-contract.test.ts",
       "testName": "matches the reviewed descriptor of the current contract version"
     },
     {
@@ -145,6 +145,16 @@
       "id": "journal-replay-bootstrap-reference",
       "testFile": "apps/worker/test/p25/dsh-journal-replay.test.ts",
       "testName": "keeps bootstrap coverage and the session reference without injecting it again"
+    },
+    {
+      "id": "journal-contract-writers",
+      "testFile": "apps/worker/test/p25/native-journal-contract.test.ts",
+      "testName": "writes a checkpoint and continuation that the journal reader accepts"
+    },
+    {
+      "id": "journal-corpus-integrity",
+      "testFile": "apps/worker/test/p25/dsh-journal-replay.test.ts",
+      "testName": "refuses a one-byte edit before installing the changed journal"
     }
   ],
   "historicalReaderPolicy": {
