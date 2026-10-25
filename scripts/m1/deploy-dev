@@ -1,0 +1,357 @@
+#!/bin/bash
+# Release train: deploy a version of AllRice to the shared Dev on M1 (rules: AGENTS.md
+# §5 and §9 at the repository root). Only the release manager deploys or rolls back.
+#
+#   deploy-dev --release-manager [--ref <ref>] [--force] [--skip-smoke]   build, check, switch, restart, smoke
+#   deploy-dev --release-manager --rollback [<release-dir>]               back to the release before the current one
+#   deploy-dev --release-manager --recover                                restore after a deploy that could not finish
+#   deploy-dev --status                                                   configured vs running version, lock, recent deploys
+#
+# deploy-dev takes the deploy lock itself; do not wrap it in `deploy-lock run`.
+#
+# 1. Build in a new release directory (no lock; the running Dev is untouched).
+# 2. Pre-stop check with the candidate: scripts/dev-release/verify-native-retention.mjs.
+#    Anything not covered aborts before anything stops.
+# 3. Under the deploy lock: stop Web and Worker and wait until launchd has dropped both
+#    jobs, their processes have exited and their ports are closed; `pnpm db:prepare`
+#    (migrate, sync platform content, verify); point launchd at the new release; start
+#    Worker then Web and confirm both report the new source SHA.
+#    The previous launchd files are saved in qa/deploy-inflight/ first. However this run
+#    ends before success (a failed step, set -e, INT/TERM/HUP) it puts them back,
+#    restarts both services and checks they are healthy on the previous version. If it is
+#    killed outright, `--recover` does the same. Database migrations are never reverted,
+#    so the previous version can still fail to start: then it says so, keeps the saved
+#    files and leaves the rest to a person.
+# 4. Records written, lock released, then the five-item smoke test against the expected
+#    version. A failed smoke does not roll back by itself; it prints the rollback command.
+set -euo pipefail
+BIN=$(cd "$(dirname "$0")" && pwd -P); . "$BIN/lib.sh"
+REPO="$HOME/allrice-repo"; RELEASES="$HOME/allrice-dev-releases"
+STATE="$HOME/allrice-dev/qa"; LOG="$STATE/deploys.jsonl"; INFLIGHT="$STATE/deploy-inflight"
+LOCK="$HOME/allrice-dev/.local/deploy.lock"
+export PATH="$HOME/.local/opt/node-22.23.2/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+KEEP_RELEASES=3; BLOG=""; FAIL_REASON=""; INFLIGHT_MINE=""; LOCKED=""; BUILD_DIR=""; BUILT=""
+WEB_LABEL=ai.bplabs.allrice-dev-web; WORKER_LABEL=ai.bplabs.allrice-dev-worker
+WEB_PLIST="$HOME/Library/LaunchAgents/$WEB_LABEL.plist"
+WORKER_PLIST="$HOME/Library/LaunchAgents/$WORKER_LABEL.plist"
+
+say() { echo "[deploy-dev $(date +%H:%M:%S)] $*"; }
+die() { FAIL_REASON=$1; echo "[deploy-dev] FAILED: $1" >&2; exit "${2:-1}"; }
+penv() { "$M1_PY" -c 'import plistlib,sys;print(plistlib.load(open(sys.argv[1],"rb"))["EnvironmentVariables"].get(sys.argv[2],""))' "$1" "$2"; }
+release_of() { "$M1_PY" -c 'import plistlib,sys;print(plistlib.load(open(sys.argv[1],"rb"))["WorkingDirectory"])' "$WORKER_PLIST"; }
+web_port() { penv "$WEB_PLIST" ALLRICE_WEB_PORT; }
+worker_port() { penv "$WORKER_PLIST" ALLRICE_WORKER_PORT; }
+ready_sha() { # prints the sourceSha a service reports as ready, or nothing
+  curl -fsS -m 5 "$1" 2>/dev/null | "$M1_PY" -c 'import json,sys
+try:
+  j=json.load(sys.stdin); print(j["identity"]["sourceSha"] if j.get("status")=="ready" else "")
+except Exception: print("")' ; }
+wait_ready() { # url sha seconds
+  local i; for i in $(seq 1 "$3"); do [ "$(ready_sha "$1")" = "$2" ] && return 0; sleep 1; done; return 1; }
+log_deploy() { "$M1_PY" - "$LOG" "$@" <<'PY'
+import json,sys,time
+p,*kv=sys.argv[1:]; d=dict(zip(kv[::2],kv[1::2])); d['at']=time.strftime('%Y-%m-%dT%H:%M:%S%z')
+open(p,'a').write(json.dumps(d,ensure_ascii=False)+'\n')
+PY
+}
+
+# A branch may exist locally (worktrees live in ~/allrice-repo) and on origin: use the
+# newer one, refuse diverged ones. Anything else (origin/main, a SHA): rev-parse.
+resolve_ref() {
+  local ref=$1 l r
+  l=$(git -C "$REPO" rev-parse --verify -q "refs/heads/$ref^{commit}" 2>/dev/null || true)
+  r=$(git -C "$REPO" rev-parse --verify -q "refs/remotes/origin/$ref^{commit}" 2>/dev/null || true)
+  if [ -n "$l" ] && [ -n "$r" ]; then
+    if git -C "$REPO" merge-base --is-ancestor "$r" "$l"; then echo "$l"
+    elif git -C "$REPO" merge-base --is-ancestor "$l" "$r"; then echo "$r"
+    else die "local $ref and origin/$ref have diverged; pass a commit with --ref" 2; fi
+  elif [ -n "$l$r" ]; then echo "$l$r"
+  else git -C "$REPO" rev-parse --verify -q "$ref^{commit}" || die "unknown ref $ref" 2; fi
+}
+
+stop_both() { stop_job "$WEB_LABEL" "$(web_port)" && stop_job "$WORKER_LABEL" "$(worker_port)"; }
+start_both_on() { # sha -> start Worker then Web, both must report sha
+  start_job "$WORKER_LABEL" "$WORKER_PLIST" || return 1
+  wait_ready "http://127.0.0.1:$(worker_port)/health/ready" "$1" 180 || { say "worker did not become ready on ${1:0:8}"; return 1; }
+  start_job "$WEB_LABEL" "$WEB_PLIST" || return 1
+  wait_ready "http://127.0.0.1:$(web_port)/api/health/ready" "$1" 120 || { say "web did not become ready on ${1:0:8}"; return 1; }
+}
+
+# Point both plists at a release: script paths, working dirs, cordis config, SHA, and
+# (only when given) the approved native artifact.
+point_plists() { # release sha artifact|""
+  "$M1_PY" - "$WEB_PLIST" "$WORKER_PLIST" "$1" "$2" "$3" <<'PY'
+import json,os,plistlib,sys
+web,worker,rel,sha,art=sys.argv[1:]
+for p,role in ((web,'web'),(worker,'worker')):
+    d=plistlib.load(open(p,'rb')); e=d['EnvironmentVariables']
+    args=d['ProgramArguments']
+    args[2]=f'{rel}/apps/web/server.mjs' if role=='web' else f'{rel}/apps/worker/dist/index.js'
+    d['WorkingDirectory']=f'{rel}/apps/web' if role=='web' else rel
+    e['ALLRICE_DSH_CORDIS_CONFIG']=f'{rel}/apps/worker/dsh/allrice-restricted.cordis.yml'
+    e['ALLRICE_RELEASE_SHA']=sha
+    if art:
+        e['ALLRICE_DSH_NATIVE_ARTIFACT_ID']=art; e['ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID']=art
+        ids=json.loads(e.get('ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS','[]'))
+        if art not in ids: ids.append(art)
+        e['ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS']=json.dumps(ids)
+    tmp=p+'.tmp'; plistlib.dump(d,open(tmp,'wb')); os.chmod(tmp,0o600); os.replace(tmp,p)
+PY
+}
+
+# --- lock and in-flight state ---
+take_lock() { # -> 0 held, 3 busy
+  mkdir -p "$(dirname "$LOCK")"
+  exec 9>>"$LOCK"
+  if ! flock_fd 9 0; then exec 9>&-; return 3; fi
+  LOCKED=1
+  "$M1_PY" -c 'import json,os,sys,time
+json.dump({"task":"release-train","pid":int(sys.argv[2]),"startedAt":int(time.time()),"command":"deploy-dev "+sys.argv[3]},open(sys.argv[1]+".tmp","w"))
+os.replace(sys.argv[1]+".tmp",sys.argv[1])' "$LOCK.owner" $$ "${MODE:-}"
+}
+release_lock() { if [ -n "$LOCKED" ]; then exec 9>&-; LOCKED=""; fi; return 0; }
+inflight_begin() { # prev_sha
+  [ ! -e "$INFLIGHT" ] || die "an earlier deploy did not finish (qa/deploy-inflight exists); run deploy-dev --release-manager --recover"
+  mkdir -p "$INFLIGHT.tmp"
+  cp -p "$WEB_PLIST" "$INFLIGHT.tmp/web.plist" && cp -p "$WORKER_PLIST" "$INFLIGHT.tmp/worker.plist" || die "could not save the launchd files"
+  printf 'stopping\n%s\n' "$1" > "$INFLIGHT.tmp/state"
+  mv "$INFLIGHT.tmp" "$INFLIGHT"; INFLIGHT_MINE=1
+}
+inflight_phase() { printf '%s\n%s\n' "$1" "$(sed -n 2p "$INFLIGHT/state")" > "$INFLIGHT/state.tmp" && mv "$INFLIGHT/state.tmp" "$INFLIGHT/state"; }
+inflight_end() { rm -rf -- "$INFLIGHT"; INFLIGHT_MINE=""; }
+# Put the saved launchd files back, restart both and check they are healthy on the
+# previous SHA. Every step is checked: on any failure the saved files stay for a person.
+restore() {
+  local prev; prev=$(sed -n 2p "$INFLIGHT/state" 2>/dev/null) && [ -n "$prev" ] || { say "no saved previous version to restore"; return 1; }
+  say "restoring the previous version ${prev:0:8}"
+  stop_both || { say "could not stop the services to restore them"; return 1; }
+  cp -p "$INFLIGHT/web.plist" "$WEB_PLIST" && cp -p "$INFLIGHT/worker.plist" "$WORKER_PLIST" \
+    && cmp -s "$INFLIGHT/web.plist" "$WEB_PLIST" && cmp -s "$INFLIGHT/worker.plist" "$WORKER_PLIST" \
+    || { say "could not put back the saved launchd files from $INFLIGHT"; return 1; }
+  start_both_on "$prev" || { say "previous version ${prev:0:8} did NOT come back healthy (migrations applied by the new version stay)"; return 1; }
+  say "previous version ${prev:0:8} is healthy again"
+}
+# One exit path for every way this run can end before success.
+on_exit() { # rc
+  local rc=$1
+  trap - EXIT INT TERM HUP
+  # A build that did not get past the pre-stop check is removed; a checked one is kept.
+  if [ -n "$BUILD_DIR" ] && [ -z "$BUILT" ]; then discard "$BUILD_DIR" || true; fi
+  if [ -n "$INFLIGHT_MINE" ] && [ -f "$INFLIGHT/state" ]; then
+    local phase; phase=$(sed -n 1p "$INFLIGHT/state")
+    say "did not finish (phase '$phase', exit $rc)"
+    if restore; then
+      log_deploy kind failed phase "$phase" reason "${FAIL_REASON:-exit $rc}" restored yes log "$BLOG" || true
+      inflight_end
+    else
+      log_deploy kind failed phase "$phase" reason "${FAIL_REASON:-exit $rc}" restored no log "$BLOG" || true
+      echo "[deploy-dev] Dev may be down. Saved launchd files: $INFLIGHT. After fixing the cause: deploy-dev --release-manager --recover" >&2
+    fi
+  fi
+  release_lock
+  exit "$rc"
+}
+trap 'on_exit $?' EXIT
+trap 'exit 130' INT TERM HUP
+
+# Pre-stop check: does the candidate cover every chat, origin and schedule control that
+# exists now? Runs the candidate's own verifier against the live database.
+precheck() { # rel sha art log -> prints the reason on failure
+  if ( cd "$1" && "$BIN/with-env" worker env ALLRICE_DSH_NATIVE_ARTIFACT_ID="$3" ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID="$3" \
+         ALLRICE_DSH_CORDIS_CONFIG="$1/apps/worker/dsh/allrice-restricted.cordis.yml" \
+         node scripts/dev-release/verify-native-retention.mjs --root="$1" --release-sha="$2" ) >> "$4" 2>&1; then return 0; fi
+  local reason; reason=$(grep -oE "(DSH_NATIVE_[A-Z_]+|NATIVE_RETENTION_[A-Z_]+)( \[.{0,250})?" "$4" | tail -1 || true)
+  if grep -qE 'relation "[^"]+" does not exist' "$4"; then
+    echo "the candidate's checker needs tables from migrations not yet applied; this release needs the official two-step procedure (docs/dev-test-execution-retirement.md), not deploy-dev"
+  elif [[ "$reason" == *UNCOVERED* ]]; then
+    echo "existing chats or schedules use a native artifact this version does not cover: ${reason:0:300}. Needs the MET-195 transition or retiring those contexts first"
+  else echo "pre-stop native check failed: ${reason:-see $4}"; fi
+  return 1
+}
+
+discard() { git -C "$REPO" worktree remove --force "$1" 2>/dev/null || rm -rf -- "$1"; git -C "$REPO" worktree prune; }
+
+status() {
+  echo "configured release: $(release_of)"
+  echo "configured sha:     $(penv "$WORKER_PLIST" ALLRICE_RELEASE_SHA)"
+  echo "running sha:        web $(ready_sha "http://127.0.0.1:$(web_port)/api/health/ready" | cut -c1-8)  worker $(ready_sha "http://127.0.0.1:$(worker_port)/health/ready" | cut -c1-8)  (empty = not ready)"
+  echo "native artifact:    $(penv "$WORKER_PLIST" ALLRICE_DSH_NATIVE_ARTIFACT_ID) (configured)"
+  echo "tools version:      $(cat "$BIN/TOOLS_VERSION" 2>/dev/null || echo "unknown ($BIN)")"
+  if [ -e "$INFLIGHT" ]; then
+    if lock_held "$LOCK"; then echo "DEPLOY IN PROGRESS (phase '$(sed -n 1p "$INFLIGHT/state" 2>/dev/null)')"
+    else echo "UNFINISHED DEPLOY (phase '$(sed -n 1p "$INFLIGHT/state" 2>/dev/null)'): run deploy-dev --release-manager --recover"; fi
+  fi
+  "$BIN/deploy-lock" status || true
+  [ -f "$LOG" ] && { echo "recent deploys:"; tail -5 "$LOG"; }
+  return 0
+}
+
+recover() {
+  take_lock || die "deploy lock is held; $("$BIN/deploy-lock" status)" 3
+  [ -f "$INFLIGHT/state" ] || die "nothing to recover (no unfinished deploy recorded)"
+  local phase; phase=$(sed -n 1p "$INFLIGHT/state")
+  restore || die "recovery did not bring the previous version back; see above"
+  log_deploy kind recover phase "$phase" restored yes
+  inflight_end
+  say "recovered"
+}
+
+prune_releases() { # keep the current, the previous and the newest KEEP_RELEASES deploy-created ones
+  local current previous; current=$(release_of)
+  previous=$(sed -n 1p "$STATE/.previous-release" 2>/dev/null || true)
+  ls -1dt "$RELEASES"/20[0-9][0-9][0-9][0-9][0-9][0-9]-* 2>/dev/null | tail -n +$((KEEP_RELEASES + 1)) | while read -r old; do
+    [ "$old" = "$current" ] || [ "$old" = "$previous" ] && continue
+    git -C "$REPO" worktree remove --force "$old" 2>/dev/null || rm -rf -- "$old"
+    say "pruned old release $(basename "$old")"
+  done
+  git -C "$REPO" worktree prune
+}
+
+# Recorded facts about a release: "sha artifact", from the newest log entry that has both.
+release_facts() {
+  [ -f "$LOG" ] || return 1
+  "$M1_PY" - "$LOG" "$1" <<'PY'
+import json,sys
+log,rel=sys.argv[1:]
+for line in reversed(open(log).read().splitlines()):
+    try: d=json.loads(line)
+    except Exception: continue
+    for side in ('to','from'):
+        if d.get(side+'Release')==rel and d.get(side+'Sha') and d.get(side+'Artifact'):
+            print(d[side+'Sha'], d[side+'Artifact']); sys.exit(0)
+sys.exit(1)
+PY
+}
+
+# An older binary refuses a database with migrations it does not know (db:verify). Compare
+# what the database has actually applied with what the target release ships.
+check_migrations_known() { # target_release -> prints unknown names, exit 1 if any or unreadable
+  local applied shipped
+  applied=$("$BIN/with-env" worker sh -c 'psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "select name from allrice_schema_migrations order by name"') \
+    || { echo "cannot read allrice_schema_migrations"; return 1; }
+  [ -n "$applied" ] || { echo "allrice_schema_migrations is empty"; return 1; }
+  [ -d "$1/packages/database/migrations" ] || { echo "no migrations directory in $1"; return 1; }
+  shipped=$(ls "$1/packages/database/migrations") || { echo "cannot list $1/packages/database/migrations"; return 1; }
+  local unknown; unknown=$(comm -23 <(printf '%s\n' "$applied" | sort) <(printf '%s\n' "$shipped" | sort))
+  [ -z "$unknown" ] || { echo "$unknown" | head -5 | tr '\n' ' '; return 1; }
+}
+
+rollback() { # [release-dir]
+  local cur_rel cur_sha cur_art target="${1:-}"
+  cur_rel=$(release_of); cur_sha=$(penv "$WORKER_PLIST" ALLRICE_RELEASE_SHA); cur_art=$(penv "$WORKER_PLIST" ALLRICE_DSH_NATIVE_ARTIFACT_ID)
+  if [ -z "$target" ]; then
+    target=$(sed -n 1p "$STATE/.previous-release" 2>/dev/null || true)
+    [ -n "$target" ] && [ "$(sed -n 2p "$STATE/.previous-release")" = "$cur_rel" ] \
+      || die "no recorded previous release for the current one ($cur_rel); pass the target: --rollback <release-dir>"
+  fi
+  [ -d "$target" ] || die "release directory is gone: $target"
+  [ "$target" != "$cur_rel" ] || die "Dev already runs $target"
+  local facts sha art; facts=$(release_facts "$target") || die "no recorded SHA and artifact for $target"
+  read -r sha art <<<"$facts"
+  local unknown; unknown=$(check_migrations_known "$target") \
+    || die "cannot roll back to ${sha:0:8}: the database has migrations it does not know or could not be checked: $unknown"
+  mkdir -p "$STATE/deploy-logs"; BLOG="$STATE/deploy-logs/rollback-$(date +%Y%m%d-%H%M%S).log"
+  say "checking that ${sha:0:8} covers the current native references"
+  local why; why=$(precheck "$target" "$sha" "$art" "$BLOG") || die "$why. Dev untouched."
+  take_lock || die "deploy lock is held; $("$BIN/deploy-lock" status)" 3
+  [ "$(release_of)" = "$cur_rel" ] || die "the current release changed while checking; start again"
+  say "rolling back to $(basename "$target") (${sha:0:8}); database migrations are not reverted"
+  inflight_begin "$cur_sha"
+  stop_both || die "services did not stop"
+  inflight_phase switching
+  point_plists "$target" "$sha" "$([ "$art" != "$cur_art" ] && echo "$art")"
+  start_both_on "$sha" || die "rollback target did not become healthy"
+  # Records first, then clear the in-flight state, then release the lock.
+  log_deploy kind rollback fromRelease "$cur_rel" fromSha "$cur_sha" fromArtifact "$cur_art" toRelease "$target" toSha "$sha" toArtifact "$art"
+  rm -f "$STATE/.previous-release" # a second --rollback must name its target: rolling back is not a stack
+  inflight_end; release_lock
+  say "rolled back; Dev runs ${sha:0:8}"
+}
+
+deploy() {
+  local ref=origin/main force=0 smoke=1
+  while [ $# -gt 0 ]; do case "$1" in
+    --ref) ref=${2:?}; shift 2 ;; --force) force=1; shift ;; --skip-smoke) smoke=0; shift ;;
+    *) die "unknown option $1" 2 ;; esac; done
+  local t0; t0=$(date +%s)
+  ! lock_held "$LOCK" || die "a deploy is in progress ($("$BIN/deploy-lock" status)); stop and retry later" 3
+  [ ! -e "$INFLIGHT" ] || die "an earlier deploy did not finish; run deploy-dev --release-manager --recover first"
+  local avail; avail=$(df -g "$HOME" | awk 'NR==2{print $4}')
+  [ "$avail" -ge 20 ] || die "only ${avail}G free; clean up before building"
+
+  git -C "$REPO" fetch -q origin
+  local sha; sha=$(resolve_ref "$ref")
+  local cur_rel cur_sha cur_art; cur_rel=$(release_of); cur_sha=$(penv "$WORKER_PLIST" ALLRICE_RELEASE_SHA); cur_art=$(penv "$WORKER_PLIST" ALLRICE_DSH_NATIVE_ARTIFACT_ID)
+  if [ "$sha" = "$cur_sha" ] && [ $force = 0 ]; then say "Dev already runs ${sha:0:8}; nothing to deploy (use --force to rebuild)"; return 0; fi
+
+  local rel; rel="$RELEASES/$(date +%Y%m%d-%H%M)-${sha:0:8}"
+  [ -e "$rel" ] && die "release directory exists: $rel"
+  mkdir -p "$STATE/deploy-logs"; BLOG="$STATE/deploy-logs/$(basename "$rel").log"
+  say "building ${sha:0:8} ($ref) in $(basename "$rel"); log: $BLOG"
+  git -C "$REPO" worktree add -q --detach "$rel" "$sha"
+  BUILD_DIR=$rel
+  ( cd "$rel" && pnpm install --frozen-lockfile && \
+    pnpm -r --workspace-concurrency=1 --filter '@allrice/worker...' --filter '@allrice/web...' --if-present run build ) > "$BLOG" 2>&1 \
+    || { log_deploy kind failed phase build sha "$sha" log "$BLOG"; die "build failed; see $BLOG (Dev untouched)"; }
+  local art
+  art=$(cd "$rel" && node apps/worker/scripts/prepare-native-artifact.mjs --root="$PWD" 2>>"$BLOG" | tail -1 | "$M1_PY" -c 'import json,sys;print(json.load(sys.stdin)["artifactId"])') \
+    || { log_deploy kind failed phase artifact sha "$sha" log "$BLOG"; die "native artifact preparation failed; see $BLOG (Dev untouched)"; }
+  ( cd "$rel" && node scripts/dev-release/prepare-identity.mjs --root="$rel" --release-sha="$sha" ) >> "$BLOG" 2>&1 \
+    || { log_deploy kind failed phase identity sha "$sha" log "$BLOG"; die "build identity failed; see $BLOG (Dev untouched). Versions before PR #533 cannot seal identity on M1."; }
+  say "built in $(( $(date +%s) - t0 ))s; native artifact ${art:7:12}… ($([ "$art" = "$cur_art" ] && echo unchanged || echo CHANGED))"
+
+  say "pre-stop check: does ${sha:0:8} cover the current chats and schedule controls?"
+  local why; if ! why=$(precheck "$rel" "$sha" "$art" "$BLOG"); then
+    log_deploy kind failed phase precheck sha "$sha" reason "$why" log "$BLOG"; die "$why. Dev untouched." 4
+  fi
+  BUILT=1 # from here the build is kept, also when the lock is busy
+
+  take_lock || die "another deploy started meanwhile; build kept at $rel (rerun deploy-dev later)" 3
+  [ ! -e "$INFLIGHT" ] || die "an earlier deploy did not finish; build kept at $rel. Run deploy-dev --release-manager --recover first"
+  [ "$(release_of)" = "$cur_rel" ] || die "Dev changed while this version was building; build kept at $rel, start again"
+  local down_at; down_at=$(date +%s)
+  inflight_begin "$cur_sha"
+  say "stopping web and worker"
+  stop_both || die "services did not stop"
+  inflight_phase migrating
+  say "db:prepare (migrate, sync platform content, verify)"
+  ( cd "$rel" && "$BIN/with-env" worker pnpm db:prepare ) >> "$BLOG" 2>&1 || die "db:prepare failed; see $BLOG"
+  inflight_phase switching
+  point_plists "$rel" "$sha" "$([ "$art" != "$cur_art" ] && echo "$art")"
+  start_both_on "$sha" || die "${sha:0:8} did not become healthy"
+  local downtime=$(( $(date +%s) - down_at ))
+  # Records first, then clear the in-flight state, then release the lock.
+  log_deploy kind deploy fromRelease "$cur_rel" fromSha "$cur_sha" fromArtifact "$cur_art" toRelease "$rel" toSha "$sha" toArtifact "$art" ref "$ref" downtimeSeconds "$downtime"
+  printf '%s\n%s\n' "$cur_rel" "$rel" > "$STATE/.previous-release"
+  inflight_end; release_lock
+  say "Dev now runs ${sha:0:8} (downtime ${downtime}s); lock released"
+  prune_releases
+
+  if [ $smoke = 1 ]; then
+    local out; out="$STATE/smoke/$(date +%Y%m%d-%H%M%S)-${sha:0:8}"
+    say "running five-item smoke test against ${sha:0:8}"
+    local ok=0; "$BIN/smoke-test" --dev --expect-sha "$sha" --out "$out" && ok=1
+    log_deploy kind smoke sha "$sha" result "$([ $ok = 1 ] && echo passed || echo failed)" out "$out"
+    [ $ok = 1 ] || die "smoke test failed on ${sha:0:8}. Inspect $out/result.json; to switch back run: deploy-dev --release-manager --rollback" 5
+    say "smoke passed"
+  fi
+  say "done in $(( $(date +%s) - t0 ))s"
+}
+
+# --release-manager is a deliberate speed bump: a session the user did not appoint as
+# release manager stops here and writes its deploy request on its MET card instead.
+RM=0; ARGS=()
+for a in "$@"; do if [ "$a" = --release-manager ]; then RM=1; else ARGS+=("$a"); fi; done
+set -- ${ARGS[@]+"${ARGS[@]}"}
+need_rm() {
+  [ "$RM" = 1 ] || die "only the release manager deploys or rolls back the shared Dev (AGENTS.md §9 at the repository root). If the user appointed you, add --release-manager; otherwise write the deploy request on your MET card and stop." 6
+}
+MODE="${1:-deploy}"
+
+case "${1:-}" in
+  --status) status ;;
+  --rollback) need_rm; shift; rollback "${1:-}" ;;
+  --recover) need_rm; recover ;;
+  -h|--help) sed -n 2,28p "$0" ;;
+  *) need_rm; deploy "$@" ;;
+esac

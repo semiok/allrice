@@ -1,0 +1,41 @@
+#!/bin/bash
+# Install the M1 operations tools from this repository (rules: AGENTS.md at the repository
+# root). Run from a clean checkout at the commit you want; only the release manager does:
+#
+#   scripts/m1/install
+#
+# The tools go into their own directory ~/allrice-dev/tools/<commit>/, are checked there,
+# and only then does ~/allrice-dev/bin (a symlink) switch to them in one rename, while
+# holding the deploy lock so no deploy is running. Every tool resolves its own directory
+# when it starts, so a run that started before the switch keeps using its own version.
+set -euo pipefail
+src=$(cd "$(dirname "$0")" && pwd -P)
+. "$src/lib.sh"
+root=$(git -C "$src" rev-parse --show-toplevel)
+[ -z "$(git -C "$root" status --porcelain -- scripts/m1)" ] || { echo "install: scripts/m1 has uncommitted changes; commit first" >&2; exit 2; }
+sha=$(git -C "$root" rev-parse HEAD)
+base="$HOME/allrice-dev"; tools="$base/tools"; dest="$tools/$sha"; link="$base/bin"
+SCRIPTS="deploy-dev deploy-lock qa-instance smoke-test with-env backup-daily"
+FILES="lib.sh qa-bootstrap.mjs smoke-test.mjs rice-standard.json"
+
+mkdir -p "$tools"
+if [ ! -d "$dest" ]; then
+  rm -rf -- "$dest.tmp"; mkdir "$dest.tmp"
+  for f in $SCRIPTS; do install -m 755 "$src/$f" "$dest.tmp/$f"; done
+  for f in $FILES; do install -m 644 "$src/$f" "$dest.tmp/$f"; done
+  printf '%s %s\n' "$sha" "$(date '+%Y-%m-%dT%H:%M:%S%z')" > "$dest.tmp/TOOLS_VERSION"
+  for f in $SCRIPTS lib.sh; do /bin/bash -n "$dest.tmp/$f"; done
+  for f in qa-bootstrap.mjs smoke-test.mjs; do "$HOME/.local/opt/node-22.23.2/bin/node" --check "$dest.tmp/$f"; done
+  mv "$dest.tmp" "$dest"
+fi
+
+mkdir -p "$base/.local"
+exec 9>>"$base/.local/deploy.lock"
+flock_fd 9 30 || { echo "install: a deploy is running ($("$dest/deploy-lock" status)); try later" >&2; exit 3; }
+if [ -d "$link" ] && [ ! -L "$link" ]; then
+  # First install: the hand-copied tools become a dated directory, kept for reference.
+  mv "$link" "$tools/legacy-$(date +%Y%m%d-%H%M%S)"
+fi
+rm -f "$link.new"; ln -s "$dest" "$link.new"
+"$M1_PY" -c 'import os,sys; os.replace(sys.argv[1], sys.argv[2])' "$link.new" "$link"
+echo "installed M1 tools ${sha:0:8}: $link -> $dest"
