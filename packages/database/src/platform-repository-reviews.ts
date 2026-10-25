@@ -354,8 +354,8 @@ export async function repositoryReviewRequestGate(
   return getDatabase().begin(async (tx) => {
     const [job] = await tx<
       JobRow[]
-    >`select * from allrice_jobs where id=${lease.jobId} and worker_id=${lease.workerId} and lease_token=${lease.leaseToken} and attempt=${lease.attempt} and status='running' and cancel_requested_at is null and lease_expires_at>clock_timestamp() and timeout_at>clock_timestamp()`;
-    if (!job || !(await isRepositoryReviewJobAuthorized(tx, job, false)))
+    >`select * from allrice_jobs where id=${lease.jobId} and worker_id=${lease.workerId} and lease_token=${lease.leaseToken} and attempt=${lease.attempt} and status='running' and cancel_requested_at is null and lease_expires_at>clock_timestamp() and timeout_at>clock_timestamp() for share`;
+    if (!job || !(await isRepositoryReviewJobAuthorized(tx, job)))
       throw new DataAccessError('authorization_denied');
     const [s] =
       await tx`select * from allrice_platform_repository_review_subjects where job_id=${job.id} and run_id=${job.run_id}`;
@@ -373,7 +373,6 @@ export async function repositoryReviewRequestGate(
         memberships: [],
       },
       f.credentialRevision,
-      false,
     );
     const live = await assertRepositoryReviewLease(tx, job);
     return {

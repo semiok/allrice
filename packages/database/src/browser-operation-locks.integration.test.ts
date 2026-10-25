@@ -47,6 +47,28 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+/** Read-path flags write lock clauses as nested ``${lock ? tx`for update` : tx``}``
+ * fragments (MET-210 #4). Pass a fragment through untouched and match on the
+ * statement text it composes into. */
+function lockFragment(strings: readonly string[]) {
+  return /^\s*(?:for\s|$)/i.test(strings.join('?'));
+}
+function composedSql(args: unknown[]) {
+  const [strings, ...values] = args as [readonly string[], ...unknown[]];
+  return strings
+    .map((part, index) => {
+      const value = values[index];
+      const nested =
+        value &&
+        typeof value === 'object' &&
+        Array.isArray((value as { strings?: unknown }).strings)
+          ? (value as { strings: string[] }).strings.join('?')
+          : '?';
+      return index < values.length ? part + nested : part;
+    })
+    .join('');
+}
+
 /** Instrument only the timing of actual PostgreSQL queries. Every production
  * SQL statement, lock, authority check and receipt still executes unchanged. */
 function scheduleQueries(
@@ -61,10 +83,9 @@ function scheduleQueries(
             new Proxy(tx, {
               apply(query, thisArg, args: unknown[]) {
                 const fragments = args[0];
-                if (!Array.isArray(fragments))
+                if (!Array.isArray(fragments) || lockFragment(fragments))
                   return Reflect.apply(query, thisArg, args);
-                const sql = fragments
-                  .join('?')
+                const sql = composedSql(args)
                   .replaceAll(/\s+/g, ' ')
                   .toLowerCase();
                 return hook(
@@ -190,7 +211,7 @@ suite(
       'approval_request',
       'approval_decision',
     ] as const)(
-      '%s enters root before browser/controls while real heartbeat holds parent UPDATE',
+      '%s orders root before browser/controls (a projection takes no lock) while real heartbeat holds parent UPDATE',
       async (kind) => {
         const { f, b, op, effect, snapshot, request, status } =
           await pendingSubmission();
@@ -200,6 +221,7 @@ suite(
         let paused = false,
           reachedBrowser = false,
           reachedControls = false,
+          reachedRoot = false,
           contenderFinished = false;
         const heartbeatDb = scheduleQueries(async (sql, execute) => {
           const result = await execute();
@@ -229,9 +251,10 @@ suite(
           if (
             sql.includes('from allrice_runtime_roots') &&
             sql.includes('for update')
-          )
+          ) {
+            reachedRoot = true;
             firstContendedLock.resolve('root');
-          else if (
+          } else if (
             sql.includes('from allrice_runtime_operations o') &&
             sql.includes('for share of o,i')
           )
@@ -287,12 +310,22 @@ suite(
           },
         );
         try {
-          expect(await firstContendedLock.promise).toBe('root');
-          // Projection first checks the workspace in a separate completed read
-          // transaction. The binding transaction itself must begin at root.
-          if (kind !== 'projection') expect(reachedBrowser).toBe(false);
-          expect(reachedControls).toBe(false);
-          expect(contenderFinished).toBe(false);
+          if (kind === 'projection') {
+            // MET-210 #4: the page projection is a read. It finishes while the
+            // heartbeat still holds the parent, without any root, browser or
+            // controls lock, so it cannot join a lock cycle with writers.
+            await contender;
+            expect({ reachedRoot, reachedBrowser, reachedControls }).toEqual({
+              reachedRoot: false,
+              reachedBrowser: false,
+              reachedControls: false,
+            });
+          } else {
+            expect(await firstContendedLock.promise).toBe('root');
+            expect(reachedBrowser).toBe(false);
+            expect(reachedControls).toBe(false);
+            expect(contenderFinished).toBe(false);
+          }
           releaseHeartbeat.resolve();
           const [, result] = await Promise.all([heartbeat, contender]);
           if (kind === 'request_status')

@@ -365,7 +365,7 @@ suite(
           .events[0],
       ).toMatchObject({ state: 'blocked', runId: null });
     });
-    it('rule renewal and a real heartbeat complete without reversing target/device locks', async () => {
+    it('rule renewal reads through a locked grant and a real heartbeat still completes', async () => {
       const f = await fixture();
       const [target] = await database.db<
         { metadata: { environment: unknown } }[]
@@ -385,23 +385,17 @@ suite(
       await lockReady;
       const renewal = readFolderTriggerRules(f.token);
       try {
-        await vi.waitFor(
-          async () => {
-            const [waiting] = await database.db<
-              { n: number }[]
-            >`select count(*)::int as n from pg_stat_activity where wait_event='transactionid' and query like '%allrice_bridge_folder_grants%'`;
-            expect(waiting!.n).toBeGreaterThan(0);
-          },
-          { timeout: 2000, interval: 10 },
-        );
+        // MET-210 #4: the Bridge rule poll is a read and takes no row locks,
+        // so it completes while another transaction still holds the grant.
+        const rules = await renewal;
+        expect(rules.rules).toHaveLength(1);
         const heartbeat = heartbeatBridgeDevice(f.token, {
           protocolVersion: 2,
           capabilities: [...localFileCapabilities],
           environment: target!.metadata.environment,
         });
         release();
-        const [rules] = await Promise.all([renewal, heartbeat, blocking]);
-        expect(rules.rules).toHaveLength(1);
+        await Promise.all([heartbeat, blocking]);
         expect(
           (await readFolderTriggerRules(f.token)).rules[0]?.automationId,
         ).toBe(f.rule.id);
