@@ -77,7 +77,6 @@ services:
       ALLRICE_STORAGE_SIGNING_SECRET: ${ALLRICE_STORAGE_SIGNING_SECRET:?set ALLRICE_STORAGE_SIGNING_SECRET to at least 32 random bytes}
       ALLRICE_WEB_PORT: 3000
       ALLRICE_WORKER_INTERNAL_URL: http://worker:3101
-      ALLRICE_CAPABILITY_SYNC_TOKEN: ${ALLRICE_CAPABILITY_SYNC_TOKEN:-}
       ALLRICE_BRIDGE_WSS_ENABLED: ${ALLRICE_BRIDGE_WSS_ENABLED:-1}
       ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED: ${ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED:-1}
       ALLRICE_RUNTIME_POLICY_ENABLED: ${ALLRICE_RUNTIME_POLICY_ENABLED:-1}
@@ -110,38 +109,6 @@ services:
     restart: unless-stopped
     volumes:
       - storage-data:/var/lib/allrice/storage
-
-  dsh-admin:
-    build:
-      context: .
-      dockerfile: infra/docker/Dockerfile.dsh-admin
-    environment:
-      ALLRICE_CAPABILITY_SYNC_TOKEN: ${ALLRICE_CAPABILITY_SYNC_TOKEN:-}
-      ALLRICE_CAPABILITY_SYNC_BASE_URL: http://web:3000
-      ALLRICE_DSH_ADMIN_HOST: 0.0.0.0
-      ALLRICE_DSH_ADMIN_PORT: 3081
-      ALLRICE_DSH_WEBUI_PORT: 3080
-      ALLRICE_DSH_ADMIN_USER: ${ALLRICE_DSH_ADMIN_USER:-admin}
-      ALLRICE_DSH_ADMIN_PASSWORD: ${ALLRICE_DSH_ADMIN_PASSWORD:-}
-      ALLRICE_DSH_ADMIN_SESSION_SECRET: ${ALLRICE_DSH_ADMIN_SESSION_SECRET:-}
-      ALLRICE_DSH_ADMIN_SECURE_COOKIE: ${ALLRICE_DSH_ADMIN_SECURE_COOKIE:-1}
-      ALLRICE_DSH_ADMIN_HOME: /var/lib/allrice/dsh-admin
-      ALLRICE_DSH_ADMIN_CREDENTIALS_PATH: /var/lib/allrice/dsh-platform/.credentials.yaml
-    healthcheck:
-      test:
-        [
-          'CMD',
-          'node',
-          '-e',
-          "fetch('http://localhost:3081/health/live',{headers:{host:'dsh.bplabs.xyz'}}).then(r=>{if(!r.ok)process.exit(1)})",
-        ]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-    restart: unless-stopped
-    volumes:
-      - dsh-admin-data:/var/lib/allrice/dsh-admin
-      - dsh-platform-data:/var/lib/allrice/dsh-platform
 
   worker:
     networks: [default, office]
@@ -224,8 +191,6 @@ services:
   proxy:
     image: caddy:2-alpine
     depends_on:
-      dsh-admin:
-        condition: service_healthy
       web:
         condition: service_healthy
     ports:
@@ -238,7 +203,6 @@ volumes:
   postgres-data:
   storage-data:
   codex-data:
-  dsh-admin-data:
   dsh-platform-data:
   dsh-runtime-data:
 

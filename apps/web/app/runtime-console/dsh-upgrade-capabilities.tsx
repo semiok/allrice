@@ -1,7 +1,7 @@
 'use client';
 import { AdminButton } from '../../components/admin/admin-ui';
 
-import catalog from '../../../../packages/dsh-runtime-diff/capabilities.json';
+import catalog from './dsh-capabilities.json';
 import upstream from '../../../worker/dsh/upstream.json';
 import styles from './runtime-console.module.css';
 import {

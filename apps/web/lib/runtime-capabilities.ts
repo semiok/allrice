@@ -4,14 +4,8 @@ import {
   readRuntimeCapabilityInventory,
   workbenchEnabled,
 } from '@allrice/database';
-import { AllriceCapabilitySummarySchema } from '@allrice/contracts';
-import capabilityCatalog from '../../../packages/dsh-runtime-diff/capabilities.json';
 import webUi from '../app/dsh-upstream/upstream.json';
-import {
-  integratedCapabilityStatus,
-  runtimeCapabilityFacts,
-  type RuntimeCapabilityResponse,
-} from '../app/runtime-console/runtime-capability-facts';
+import type { RuntimeCapabilityResponse } from '../app/runtime-console/runtime-capability-facts';
 
 export async function readRuntimeCapabilityResponse(): Promise<RuntimeCapabilityResponse> {
   const [inventory, skills] = await Promise.all([
@@ -33,32 +27,4 @@ export async function readRuntimeCapabilityResponse(): Promise<RuntimeCapability
       enabled: tool.released,
     })),
   };
-}
-
-export function summarizeRuntimeCapabilities(data: RuntimeCapabilityResponse) {
-  const facts = runtimeCapabilityFacts(data);
-  return AllriceCapabilitySummarySchema.parse({
-    schemaVersion: 1,
-    checkedAt: data.checkedAt,
-    webReleaseSha: process.env.ALLRICE_RELEASE_SHA ?? null,
-    workerReleaseShas: [
-      ...new Set(
-        facts.workers.flatMap((w) => (w.releaseSha ? [w.releaseSha] : [])),
-      ),
-    ],
-    versions: facts.versions,
-    onlineWorkers: facts.workers.length,
-    componentCount: facts.componentCount,
-    enhancementCount: facts.enhancementCount,
-    availableSkills: facts.availableSkills.length,
-    publishedSkills: facts.publishedSkillIds.size,
-    publications: data.publications.length,
-    capabilities: capabilityCatalog.groups
-      .filter((group) => group.id === 'integrated' || group.id === 'web-ui')
-      .flatMap((group) => group.items)
-      .map(({ id }) => ({
-        id,
-        status: integratedCapabilityStatus(id, data),
-      })),
-  });
 }

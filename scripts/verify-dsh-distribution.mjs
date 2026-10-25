@@ -2,7 +2,7 @@ import { distributionFacts } from './dsh-distribution-facts.mjs';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { parse } from 'yaml';
-import { verifyDshPhysicalPatches } from './verify-dsh-physical-patches.mjs';
+import { verifyDshSingleGeneration } from './verify-dsh-single-generation.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 
@@ -18,12 +18,10 @@ const [
   upstream,
   distribution,
   ledger,
-  workerPackage,
   profile,
   runtimePin,
   platformEmployeeContract,
   compatibility,
-  adminCompatibilityAdapter,
   reuseDecisions,
   workspace,
   lock,
@@ -31,7 +29,6 @@ const [
   json('apps/worker/dsh/upstream.json'),
   json('apps/worker/dsh/distribution.json'),
   json('apps/worker/dsh/patch-ledger.json'),
-  json('apps/worker/package.json'),
   readFile(
     resolve(root, 'apps/worker/dsh/allrice-restricted.cordis.yml'),
     'utf8',
@@ -45,7 +42,6 @@ const [
     'utf8',
   ),
   json('apps/worker/dsh/compatibility.json'),
-  readFile(resolve(root, 'apps/dsh-admin/dsh-webui-compatibility.mjs'), 'utf8'),
   readFile(
     resolve(root, 'docs/architecture/dsh-reuse-and-replacement.md'),
     'utf8',
@@ -55,8 +51,6 @@ const [
 ]);
 
 const { installed, promoted, candidate } = distributionFacts(distribution);
-const adminUpstreamVersion = (await json('apps/dsh-admin/package.json'))
-  .dependencies['@deepseek-ai/dsh'];
 
 assert(
   installed.version === upstream.version,
@@ -87,25 +81,24 @@ assert(
   'runtime version guard must match the installed distribution',
 );
 assert(
-  ledger.schemaVersion === 1 && Array.isArray(ledger.patches),
+  ledger.schemaVersion === 2 &&
+    Array.isArray(ledger.patches) &&
+    Object.keys(ledger).sort().join(',') === 'patches,schemaVersion',
   'invalid patch ledger',
 );
-const patchInventory = await verifyDshPhysicalPatches({
+const generationInventory = await verifyDshSingleGeneration({
   root,
-  ledger,
   workspace,
   lock,
-  upstreamVersion: installed.version,
-  approvedVersions: [
-    installed.version,
-    ...(ledger.retainedPhysicalVersions ?? []).filter((version) =>
-      distribution.generations.some(
-        (g) => g.version === version && g.frozenProfileAllowed,
-      ),
-    ),
-  ],
+  version: installed.version,
 });
 for (const patch of ledger.patches) {
+  assert(
+    patch.upstreamVersion === installed.version &&
+      patch.kind === 'protocol-extension' &&
+      !patch.path.startsWith('patches/'),
+    `ledger entry ${patch.id} must be an extension of the installed DSH`,
+  );
   assert(
     reuseDecisions.includes(`\`${patch.id}\``),
     `DSH reuse decisions are missing patch ${patch.id}`,
@@ -146,32 +139,10 @@ assert(
   'production Skill sources must exclude DSH repository development Skills',
 );
 
-const adminPrivateInterface = compatibility.privateInterfaces?.find(
-  (entry) => entry.id === 'dsh-admin-webui-entrypoint',
-);
 assert(
-  adminPrivateInterface?.upstreamInterface === '@deepseek-ai/dsh/lib/bin.js' &&
-    adminPrivateInterface.adapter ===
-      'apps/dsh-admin/dsh-webui-compatibility.mjs' &&
-    adminPrivateInterface.overrideEnvironmentVariable === 'ALLRICE_DSH_COMMAND',
-  'DSH Admin private WebUI entrypoint must be recorded in the compatibility manifest',
-);
-assert(
-  ledger.patches.some(
-    (patch) =>
-      patch.id === 'dsh-admin-webui-private-entrypoint-v1' &&
-      patch.upstreamVersion === adminPrivateInterface.upstreamVersion &&
-      patch.upstreamVersion === adminUpstreamVersion &&
-      patch.path === adminPrivateInterface.adapter,
-  ),
-  'DSH Admin private WebUI entrypoint must be recorded against the approved upstream',
-);
-assert(
-  adminCompatibilityAdapter.includes('DSH_WEBUI_PRIVATE_ENTRYPOINT') &&
-    adminCompatibilityAdapter.includes(
-      `'${adminPrivateInterface.upstreamInterface}'`,
-    ),
-  'DSH Admin compatibility adapter must own the recorded private entrypoint',
+  Array.isArray(compatibility.privateInterfaces) &&
+    compatibility.privateInterfaces.length === 0,
+  'AllRice must not depend on private DSH entrypoints',
 );
 
 const requiredReplayScenarios = [
@@ -183,9 +154,7 @@ const requiredReplayScenarios = [
   'cancel',
   'recovery',
   'compaction',
-  'legacy-tool-history',
-  'legacy-question-adoption',
-  'legacy-continuation-no-replay',
+  'legacy-official-migration',
   'legacy-format-refusal',
   'durable-question-restart',
   'native-progress-decision',
@@ -207,16 +176,6 @@ for (const pluginId of compatibility.configurationTree ?? []) {
   assert(
     profile.includes(`- id: ${pluginId}`),
     `recorded DSH configuration is missing ${pluginId}`,
-  );
-}
-
-for (const [name, version] of Object.entries(
-  workerPackage.dependencies ?? {},
-)) {
-  if (!name.startsWith('@deepseek-ai/dsh-')) continue;
-  assert(
-    version === installed.version,
-    `${name} must be pinned to ${installed.version}`,
   );
 }
 
@@ -271,7 +230,7 @@ console.log(
     declaredPromotedGeneration: promoted.generation,
     generation: installed.generation,
     version: installed.version,
-    ...patchInventory,
+    ...generationInventory,
     candidate: candidate?.generation ?? null,
     rollback: null,
     wireProtocol: compatibility.wireProtocol,
