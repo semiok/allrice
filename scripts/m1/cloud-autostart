@@ -1,0 +1,115 @@
+#!/bin/bash
+# Bring the cloud sandbox back after the Mac restarts (rules: AGENTS.md at the repository
+# root). The sandbox is a colima VM; the Office renderer is a container in it with
+# restart=unless-stopped, so it returns on its own once the VM's Docker daemon is up. What
+# never returned on its own was the VM itself. A login agent runs this at login.
+#
+#   cloud-autostart                 start the VM if it is stopped, then wait for the renderer
+#   cloud-autostart status          print the VM and renderer state, change nothing
+#   cloud-autostart install-agent   install and load the login agent (release manager only)
+#
+# The VM profile, the colima binary and the renderer URL come from the shared Dev Worker's
+# launchd plist, so they are configured in one place. launchd login agents need a
+# logged-in user: with FileVault on, nothing here (or the Dev itself) starts after an
+# unattended reboot until someone logs in.
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd -P)
+. "$here/lib.sh"
+export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+LABEL=ai.bplabs.allrice-cloud-autostart
+WORKER_PLIST="$HOME/Library/LaunchAgents/ai.bplabs.allrice-dev-worker.plist"
+CONTAINER=allrice-office-renderer
+say() { echo "[cloud-autostart $(date '+%F %T')] $*"; }
+
+worker_env() {
+  "$M1_PY" -c 'import plistlib,sys
+print(plistlib.load(open(sys.argv[1],"rb"))["EnvironmentVariables"].get(sys.argv[2],""))' "$WORKER_PLIST" "$1"
+}
+PROFILE=$(worker_env ALLRICE_CLOUD_PROFILE)
+COLIMA=$(worker_env ALLRICE_CLOUD_COLIMA)
+RENDERER_URL=$(worker_env ALLRICE_OFFICE_RENDERER_URL)
+[ -n "$PROFILE" ] && [ -x "${COLIMA:-/nonexistent}" ] || {
+  echo "cloud-autostart: ALLRICE_CLOUD_PROFILE / ALLRICE_CLOUD_COLIMA missing from $WORKER_PLIST" >&2
+  exit 2
+}
+CONTEXT="colima-$PROFILE"
+
+vm_running() { "$COLIMA" status "$PROFILE" >/dev/null 2>&1; }
+renderer_state() {
+  docker --context "$CONTEXT" inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$CONTAINER" 2>/dev/null || echo "missing -"
+}
+
+case "${1:-start}" in
+status)
+  if vm_running; then echo "vm $PROFILE: running"; else echo "vm $PROFILE: stopped"; fi
+  echo "renderer $CONTAINER: $(renderer_state)"
+  if vm_running && "$COLIMA" ssh --profile "$PROFILE" -- sudo /usr/local/lib/allrice-cloud/watchdog.py --attest 2>/dev/null |
+    "$M1_PY" -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("ready") is True else 1)' 2>/dev/null; then
+    echo "cloud watchdog: ready"
+  else
+    echo "cloud watchdog: not ready"
+  fi
+  echo "agent $LABEL: $(job_state "$LABEL")"
+  ;;
+start)
+  if vm_running; then
+    say "vm $PROFILE already running"
+  else
+    say "starting vm $PROFILE"
+    # colima leaves a long-lived limactl behind. Close the deploy lock's descriptor (fd 9,
+    # see deploy-lock) so a run under the lock does not keep the lock for as long as the
+    # VM lives.
+    "$COLIMA" start "$PROFILE" 9>&-
+  fi
+  # The renderer comes back with the VM's Docker daemon; wait for it to report healthy.
+  for _ in $(seq 1 90); do
+    read -r status health <<<"$(renderer_state)"
+    if [ "$status" = running ] && { [ "$health" = healthy ] || [ "$health" = none ]; }; then
+      say "renderer $CONTAINER $status ($health) at ${RENDERER_URL:-unknown url}"
+      break
+    fi
+    sleep 2
+  done
+  [ "$status" = running ] || { say "renderer $CONTAINER not healthy after 180s: $(renderer_state)" >&2; exit 1; }
+  # Cloud execution needs the gVisor runtime and the VM watchdog, which the Worker checks
+  # through the same attestation before every run; a running VM alone is not enough.
+  for _ in $(seq 1 30); do
+    if "$COLIMA" ssh --profile "$PROFILE" -- sudo /usr/local/lib/allrice-cloud/watchdog.py --attest 2>/dev/null |
+      "$M1_PY" -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("ready") is True else 1)' 2>/dev/null; then
+      say "cloud watchdog attests ready"
+      exit 0
+    fi
+    sleep 2
+  done
+  say "cloud watchdog does not attest ready after 60s (gVisor runtime or watchdog service missing)" >&2
+  exit 1
+  ;;
+install-agent)
+  plist="$HOME/Library/LaunchAgents/$LABEL.plist"
+  "$M1_PY" - "$plist" "$LABEL" "$HOME" <<'PY'
+import os, plistlib, sys
+path, label, home = sys.argv[1:]
+spec = {
+    'Label': label,
+    'ProgramArguments': [f'{home}/allrice-dev/bin/cloud-autostart', 'start'],
+    'RunAtLoad': True,
+    'StandardOutPath': f'{home}/Library/Logs/allrice-cloud-autostart.log',
+    'StandardErrorPath': f'{home}/Library/Logs/allrice-cloud-autostart.log',
+}
+tmp = path + '.tmp'
+with open(tmp, 'wb') as f:
+    plistlib.dump(spec, f)
+os.chmod(tmp, 0o644)
+os.replace(tmp, path)
+PY
+  "$M1_LAUNCHCTL" bootout "gui/$M1_UID/$LABEL" 2>/dev/null || true
+  # bootout is asynchronous; bootstrap fails with "Input/output error" until it finishes.
+  for _ in $(seq 1 20); do [ "$(job_state "$LABEL")" = gone ] && break; sleep 0.5; done
+  "$M1_LAUNCHCTL" bootstrap "gui/$M1_UID" "$plist"
+  say "agent $LABEL loaded from $plist (runs at login)"
+  ;;
+*)
+  echo "usage: cloud-autostart [start|status|install-agent]" >&2
+  exit 2
+  ;;
+esac

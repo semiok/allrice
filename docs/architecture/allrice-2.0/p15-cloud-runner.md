@@ -104,6 +104,10 @@ colima ssh --profile allrice-cloud-b4 -- sudo /usr/local/lib/allrice-cloud/watch
 - 架构默认取宿主 CPU（Apple silicon 为 arm64，Intel 为 amd64）。Web 与 Worker 在同一宿主上，因此天然一致；`ALLRICE_CLOUD_ARCHITECTURE=amd64|arm64` 只用于显式覆盖，非法值启动即失败。两套固定值集中在 `packages/contracts/src/runtime-v2/cloud-platform.ts`；`watchdog.py` 按 VM 的 `platform.machine()` 选同一套 runsc/sidecar/Python 镜像哈希。租户、模型都不能选择。
 - Node 镜像是多架构 OCI index，两种架构共用同一 ID；Python、Office、静态浏览器镜像在各自架构 VM 本地构建，ID 分别登记。`infra/python-charts/requirements.lock` 同时登记 amd64 与 aarch64 wheel 哈希；`Dockerfile.python-charts` 的基础镜像改为多架构 index 摘要（在 x86_64 上仍解析到原 amd64 manifest `cec9aa7a…`）。
 - Colima 二进制用 `ALLRICE_CLOUD_COLIMA` 固定（Apple silicon Homebrew 为 `/opt/homebrew/bin/colima`，缺省仍是 `/usr/local/bin/colima`），profile 用 `ALLRICE_CLOUD_PROFILE`。
+- **重启后要能自己恢复**（MET-216，10-25 实测）：
+  - Colima 每次启动都会用 profile 配置（`~/.colima/<profile>/colima.yaml` 的 `docker:` 节）重写 VM 里的 `/etc/docker/daemon.json`，只手工装 `daemon.json`，重启后 runsc 运行时就没了。所以 `daemon.json` 的同样内容也要写进 `colima.yaml` 的 `docker:` 节。
+  - 看门狗服务带 `PartOf=docker.service`，Colima 启动过程中重启 Docker 时它会跟着重启，不会停在 inactive。改了服务文件后，要在 VM 里重新安装并执行 `systemctl reenable`。
+  - M1 上由登录项 `cloud-autostart` 在登录后拉起 VM，并等看门狗证明就绪（见仓库根目录 `AGENTS.md`）。
 - 授权（grant）、云命令与项目源码都冻结了创建时的架构与镜像，只在同架构宿主上有效。AllRice 仍在开发阶段，换宿主时**不做旧数据兼容**：切换时用一次性 SQL 把启用中的计算授权改成新平台的工具链值（步骤见 MET-216），旧会话里的云端执行记录可能无法打开或续跑，直接放弃。
 - amd64 一套只为切换前仍在 Intel 宿主上运行的 Dev 保留。切换完成并删除 Intel 宿主上的 AllRice 后，可移除 amd64 固定值（CI 仍在 x86_64 上跑单测，届时需一并调整）。Rice Bridge 是另一套本地执行代码，继续同时支持 Intel 与 Apple silicon Mac，不受本节影响。
 

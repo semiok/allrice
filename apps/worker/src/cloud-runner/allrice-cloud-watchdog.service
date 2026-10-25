@@ -2,6 +2,8 @@
 Description=AllRice dedicated cloud sandbox deadline guard
 After=docker.service
 Requires=docker.service
+# Colima restarts Docker while the VM boots; follow it instead of staying stopped.
+PartOf=docker.service
 
 [Service]
 Type=simple
@@ -20,4 +22,4 @@ MemoryMax=64M
 TasksMax=16
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=multi-user.target docker.service
