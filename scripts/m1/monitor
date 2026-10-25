@@ -60,6 +60,9 @@ COMMON = {
 M1 = dict(
     COMMON,
     name='AllRice M1 Dev',
+    # Every 4 minutes: first look + the 20-second re-check + delivery stays under the
+    # 10-minute target also for alerts that need two looks (a flapping key, the peer).
+    intervalSeconds=240,
     stateDir='~/allrice-dev/monitor',
     envFile='~/allrice-dev/.env',
     webPlist='~/Library/LaunchAgents/ai.bplabs.allrice-dev-web.plist',
@@ -71,7 +74,7 @@ M1 = dict(
     peerSsh='huihuimac',
     peerHeartbeat='.local/state/allrice-monitor-peer/heartbeat.json',
     peerStaleMinutes=4,  # the peer starts a round every minute and writes its heartbeat then
-    peerUnfinishedMinutes=5,
+    peerUnfinishedMinutes=4,
     peerTelegramStuckMinutes=3,  # the peer sends every minute: three failed rounds
     incidents=True,
     # Left empty, these come from the shared-Dev launchd files and .env, so the monitor
@@ -91,9 +94,9 @@ PEER = dict(
     m1DeployLock='allrice-dev/.local/deploy.lock',
     m1Monitor='allrice-dev/bin/monitor',  # writes this side's incidents into M1's table
     m1MonitorConfig=None,
-    # M1 starts a round every 5 minutes and writes its heartbeat then: 7 minutes stale plus
+    # M1 starts a round every 4 minutes and writes its heartbeat then: 6 minutes stale plus
     # one peer interval keeps "M1 monitor stopped" under 10 minutes.
-    m1StaleMinutes=7,
+    m1StaleMinutes=6,
     m1UnfinishedMinutes=6,
     m1TelegramStuckMinutes=7,  # two failed M1 rounds in a row
     deployGraceMinutes=45,
@@ -451,7 +454,6 @@ def flush_incidents(r):
         r.psql(INSERT_INCIDENTS, r.cfg['incidentDatabaseUrl'], {'rows': json.dumps(box, ensure_ascii=False)}, readonly=False)
         r.state['incidentOutbox'] = []
         r.state['incidentError'] = None
-        r.state.pop('incidentDropped', None)
     except CheckError as err:
         r.state['incidentError'] = {'at': r.now, 'error': str(err)}
         r.state.setdefault('incidentFailingSince', r.now)
@@ -480,7 +482,6 @@ def flush_incidents_remote(r):
     else:
         r.state['incidentOutbox'], r.state['incidentError'] = [], None
         r.state.pop('incidentFailingSince', None)
-        r.state.pop('incidentDropped', None)
 
 
 def ingest_incidents(cfg, stream):
@@ -910,13 +911,13 @@ def check_m1(r):
 
 
 def check_outside(r):
-    if r.facts.get('m1Deploying'):
-        return None  # a deploy on M1 stops Web on purpose
+    """From outside M1. A failure is checked against M1's deploy lock asked right then,
+    so a deploy that starts or ends during the round is seen as it is."""
     out = probe_public(r, r.cfg['publicUrl'] or r.state.get('m1PublicUrl'), 'public_entry', ' M1 之外（huihuimac）')
-    if out[0]['severity'] != 'ok':  # a deploy may have started since the M1 check: ask again
+    if out[0]['severity'] != 'ok':
         _, _, reachable, holders = read_remote_heartbeat(r.cfg['m1Ssh'], r.cfg['m1Heartbeat'], r.cfg['m1DeployLock'])
         if reachable and in_grace(r, 'm1', bool(holders)):
-            return None
+            return None  # a deploy on M1 stops Web on purpose
     return out
 
 
@@ -967,7 +968,7 @@ def status(cfg):
                       'heartbeatAge': int(time.time() - hb['at']) if hb.get('at') else None,
                       'openAlerts': {k: {'severity': a['severity'], 'title': a['title'], 'detail': a['detail'], 'since': time.strftime('%m-%d %H:%M', time.localtime(a['since']))}
                                      for k, a in state.get('alerts', {}).items()},
-                      'telegram': hb.get('telegram'), 'incidents': hb.get('incidents')},
+                      'telegram': hb.get('telegram'), 'incidents': hb.get('incidents'), 'incidentsDropped': state.get('incidentDropped', 0)},
                      ensure_ascii=False, indent=1))
 
 

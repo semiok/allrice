@@ -335,7 +335,7 @@ class Peer(unittest.TestCase):
         with self.remote(fresh, holders=[]):
             self.assertEqual(sev(), {'m1_reachable': 'ok', 'm1_heartbeat': 'ok', 'm1_telegram': 'ok'})
         self.assertEqual(r.state['m1PublicUrl'], 'https://a.example')
-        with self.remote(dict(fresh, at=10_000 - 8 * 60)):
+        with self.remote(dict(fresh, at=10_000 - 7 * 60)):
             self.assertEqual(sev()['m1_heartbeat'], 'critical')  # stopped
         with self.remote(dict(fresh, at=9_900, phase='running', unfinishedSince=10_000 - 7 * 60)):
             self.assertEqual(sev()['m1_heartbeat'], 'critical')  # starts every round, finishes none
@@ -352,13 +352,12 @@ class Peer(unittest.TestCase):
         r = make_round(peer=True)
         r.state['m1PublicUrl'] = 'https://a.example'
         fresh = {'at': r.now, 'phase': 'done', 'telegram': {'configured': True}}
-        with self.remote(fresh, holders=['777']):
-            monitor.check_m1(r)
-        self.assertIsNone(monitor.check_outside(r))
-        r.facts.clear()
-        with self.remote(fresh, holders=[]), mock.patch.object(monitor, 'http_get', return_value=(200, b'ok')):
-            monitor.check_m1(r)
-            self.assertEqual(monitor.check_outside(r)[0]['severity'], 'ok')
+        with self.remote(fresh, holders=['777']), mock.patch.object(monitor, 'http_get', return_value=(502, b'bad gateway')):
+            self.assertIsNone(monitor.check_outside(r))  # down while M1 deploys: not judged
+        with self.remote(fresh, holders=[]), mock.patch.object(monitor, 'http_get', return_value=(502, b'bad gateway')):
+            self.assertEqual(monitor.check_outside(r)[0]['severity'], 'critical')
+        with self.remote(fresh, holders=['777']), mock.patch.object(monitor, 'http_get', return_value=(200, b'ok')):
+            self.assertEqual(monitor.check_outside(r)[0]['severity'], 'ok')  # up during a deploy is still up
 
     def test_m1_judges_the_peer_the_same_way(self):
         r = make_round()
