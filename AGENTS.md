@@ -35,7 +35,7 @@
 | 运维工具            | `~/allrice-dev/bin/`（源码在仓库 `scripts/m1/`） | `deploy-dev`、`qa-instance`、`smoke-test`、`deploy-lock`（见下文）；`with-env web\|worker <命令>`：带共享 Dev 的完整环境变量执行命令，读不到环境就拒绝执行；`backup-daily`：每日备份；`qa-bootstrap.mjs`：初始化租户 |
 | 备份                | `~/allrice-backups/`                             | 每天 04:00 自动备份数据库、数据目录和两个 launchd 文件，保留 7 天。数据库和文件不是同一时刻的快照，恢复后以数据库为准                                                                                                |
 
-`cloud-autostart`：登录后把云端沙箱 VM 拉起来，并等到 Office 渲染容器健康、云端看门狗证明就绪。登录项由发布负责人在安装新版工具后用 `cloud-autostart install-agent` 装一次，`cloud-autostart status` 查看状态。M1 开着 FileVault，无人值守重启后要有人登录，这些服务（包括共享 Dev）才会启动。
+`cloud-autostart`：登录后把云端沙箱 VM 拉起来，并等到 Office 渲染容器健康、云端看门狗证明就绪；失败时每分钟重试一次。登录项由发布负责人在安装新版工具后用 `cloud-autostart install-agent` 装一次，`cloud-autostart status` 查看状态。M1 开着 FileVault，无人值守重启后要有人登录，这些服务（包括共享 Dev）才会启动。
 
 ## 3. 工具链（版本固定）
 

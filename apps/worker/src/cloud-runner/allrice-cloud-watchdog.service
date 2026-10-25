@@ -2,8 +2,6 @@
 Description=AllRice dedicated cloud sandbox deadline guard
 After=docker.service
 Requires=docker.service
-# Colima restarts Docker while the VM boots; follow it instead of staying stopped.
-PartOf=docker.service
 
 [Service]
 Type=simple
@@ -22,4 +20,6 @@ MemoryMax=64M
 TasksMax=16
 
 [Install]
+# Colima stops and starts Docker while the VM boots; Requires= stops the watchdog with
+# Docker, and this makes every Docker start bring it back. Needs `systemctl reenable`.
 WantedBy=multi-user.target docker.service
