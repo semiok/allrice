@@ -76,6 +76,7 @@ const env = Object.fromEntries(
 let cookie = '';
 const step = (s) => console.log(`[blueplant] ${s}`);
 const problems = [];
+let summary = {};
 
 function request(method, path, body) {
   return new Promise((resolve, reject) => {
@@ -225,7 +226,7 @@ select json_build_object(
                       from allrice_departments d where d.organization_id = o.id and d.archived_at is null),
     'people', (select coalesce(json_agg(json_build_object(
         'username', u.username,
-        'displayName', coalesce(nullif(p.display_name, ''), u.display_name),
+        'displayName', coalesce(nullif(btrim(p.display_name), ''), nullif(btrim(u.display_name), ''), u.username),
         'jobTitle', p.job_title, 'responsibilities', p.responsibilities,
         'email', u.email, 'contentMaintenanceLevel', p.content_maintenance_level,
         'active', u.status = 'active',
@@ -243,7 +244,8 @@ if (sourceSnapshot.count !== 1)
     `source has ${sourceSnapshot.count} active companies named ${company}`,
   );
 const source = sourceSnapshot.org;
-// People whose membership is no longer active have left the company: not carried over.
+// People whose membership is no longer active have left the company: not carried over,
+// and an account an earlier run carried over for them is disabled.
 const departed = source.people
   .filter((p) => !skipUsers.has(p.username) && !p.member)
   .map((p) => p.username);
@@ -276,15 +278,24 @@ const sourceEmployees = extraAssign.map((name) => {
   return { name, ...JSON.parse(rows[0]) };
 });
 
-// 2. Admin login.
+// 2. Admin login, then prove the API instance (--port) writes to --target-db before any
+//    write: the session this login just created must be in the target database.
+const loginStarted = psql('target', 'select now();').trim();
 await call('POST', '/api/v1/auth/login', {
   username: env.ALLRICE_PLATFORM_ADMIN_USER,
   password: env.ALLRICE_PLATFORM_ADMIN_PASSWORD,
 });
 
 try {
-  // 3. Company: exactly one by name, created when missing; it must be in the target
-  //    database, which ties the API instance (--port) to --target-db.
+  const ownSession = psql(
+    'target',
+    `select count(*) from allrice_sessions s join allrice_users u on u.id = s.user_id
+     where u.username = ${lit(env.ALLRICE_PLATFORM_ADMIN_USER)} and s.created_at >= ${lit(loginStarted)}::timestamptz;`,
+  ).trim();
+  if (ownSession === '0')
+    throw new Error(`--port ${port} does not serve --target-db ${targetDb}`);
+
+  // 3. Company: exactly one by name, created when missing.
   const matches = (
     await listAll('/api/v1/admin/organizations', 'organizations')
   ).filter((o) => o.name === company);
@@ -300,13 +311,6 @@ try {
     ).organizationId;
     step(`company created: ${company}`);
   } else step(`company exists: ${company}`);
-  if (
-    psql(
-      'target',
-      `select count(*) from allrice_organizations where id = ${lit(orgId)};`,
-    ).trim() !== '1'
-  )
-    throw new Error(`--port ${port} does not serve --target-db ${targetDb}`);
   const { organization } = await call(
     'GET',
     `/api/v1/admin/organizations/${orgId}`,
@@ -394,7 +398,36 @@ try {
   }
   step(`people: ${missing.length} created, ${updated} updated`);
 
-  // 6. Password hashes, scoped to this company's people, as COPY data (never SQL text,
+  // 6. Account state follows the source, settled before any original password is in
+  //    place, so a disabled account never becomes usable even if a later step fails.
+  //    People who left the company in the source lose access to the account an earlier
+  //    run made for them; a target membership that is inactive is reported.
+  current = await listAll(peoplePath, 'people');
+  let switched = 0;
+  const setActive = async (c, active) => {
+    await call('POST', `${peoplePath}/${c.userId}/status`, {
+      active,
+      expectedVersion: c.version,
+    });
+    switched += 1;
+  };
+  for (const p of people) {
+    const c = current.find((x) => x.username === p.username);
+    if (!c) {
+      problems.push(`person missing after import: ${p.username}`);
+      continue;
+    }
+    if (c.membershipActive !== true)
+      problems.push(`membership inactive on the target: ${p.username}`);
+    if ((c.status === 'active') !== p.active) await setActive(c, p.active);
+  }
+  for (const username of departed) {
+    const c = current.find((x) => x.username === username);
+    if (c && c.status === 'active') await setActive(c, false);
+  }
+  step(`account state: ${switched} changed to match the source`);
+
+  // 7. Password hashes, scoped to this company's people, as COPY data (never SQL text,
   //    so a failing statement cannot write a hash to the server log). Accounts whose hash
   //    changed lose their open sessions, as a password reset would.
   const hashes = psql(
@@ -457,24 +490,6 @@ commit;
   );
   if (matched !== people.length)
     problems.push('password hashes do not all match');
-
-  // 7. Account state follows the source, so a disabled account stays unable to sign in.
-  current = await listAll(peoplePath, 'people');
-  let switched = 0;
-  for (const p of people) {
-    const c = current.find((x) => x.username === p.username);
-    if (!c) {
-      problems.push(`person missing after import: ${p.username}`);
-      continue;
-    }
-    if ((c.status === 'active') === p.active) continue;
-    await call('POST', `${peoplePath}/${c.userId}/status`, {
-      active: p.active,
-      expectedVersion: c.version,
-    });
-    switched += 1;
-  }
-  step(`account state: ${switched} changed to match the source`);
 
   // 8. Platform employees by key. Rice ships with the platform; the others are rebuilt
   //    from the source's published definition, resuming a half-finished earlier run.
@@ -566,6 +581,10 @@ commit;
       problems.push(`not assignable here: ${want.name}`);
       continue;
     }
+    if (entry.targetExcludedCount > 0)
+      problems.push(
+        `${want.name} is excluded for ${entry.targetExcludedCount} person(s) in ${company}`,
+      );
     if (entry.inheritedByDefault === true) continue;
     await call('POST', assignments, {
       workspaceId,
@@ -579,18 +598,14 @@ commit;
     step(`assigned to everyone: ${want.name}`);
   }
 
-  if (problems.length) {
-    for (const p of problems) step(`PROBLEM: ${p}`);
-    process.exitCode = 1;
-  }
-  console.log(
-    JSON.stringify({
-      ok: problems.length === 0,
-      organizationId: orgId,
-      workspaceId,
-      people: people.length,
-    }),
-  );
+  summary = { organizationId: orgId, workspaceId, people: people.length };
 } finally {
-  await request('POST', '/api/v1/auth/logout').catch(() => undefined);
+  const out = await request('POST', '/api/v1/auth/logout').catch((error) => ({
+    status: error.code ?? 'error',
+  }));
+  if (![200, 204].includes(out.status))
+    problems.push(`admin logout failed (${out.status})`);
 }
+for (const p of problems) step(`PROBLEM: ${p}`);
+if (problems.length) process.exitCode = 1;
+console.log(JSON.stringify({ ok: problems.length === 0, ...summary }));
