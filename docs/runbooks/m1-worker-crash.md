@@ -1,6 +1,6 @@
 # M1 处置手册 7：Worker 反复崩溃（及 Web 不可用）
 
-对应告警：`worker`、`web`（不可用）、`restarts:<label>`（反复重启）、`versions`（版本不一致）。总览见 [m1-monitor.md](m1-monitor.md)。
+对应告警：`worker`、`web`（不可用）、`restarts:<label>`（反复重启）、`versions`（版本不一致）、`memory`（内存余量不足）、`dsh_processes`（DSH 进程越积越多）。总览见 [m1-monitor.md](m1-monitor.md)。
 
 ## 影响
 
@@ -45,6 +45,24 @@ curl -s -m 5 http://127.0.0.1:3012/health/ready | /usr/bin/python3 -c 'import js
 ```
 
 `ready` 且控制器不再是 `blocked` 就好了；重启后仍然 blocked，看 `lastFault`，派 Codex Sol 只读诊断。
+
+## 内存不足、DSH 进程越积越多
+
+告警“内存余量不足”（`memory_pressure -Q` 的可用比例低于 20% 警告、10% 严重）或“DSH 进程越积越多”（本机常驻的 DSH 进程达到 30 个）。
+
+背景：每个用过的对话，Worker 都会留一个 DSH 进程（约 100–180 MB），对话结束后不退出，要等 Worker 重启才释放（空闲回收还没做，记在 MET-216 的切换后清单）。部署会重启 Worker，所以平时不明显；很多天不部署时，进程会随对话数一直增加。参考值：空闲时可用约 76%，3 个对话加 1 个 Office 导出同时跑时最低 64%（10-25 容量摸底）。
+
+```bash
+memory_pressure -Q | tail -1; sysctl -n vm.swapusage
+ps -axo rss,etime,command | grep allrice-jsonrpc-runtime | grep -v grep | sort -nr | head
+ps -axo rss,command | sort -nr | head -15
+```
+
+处理：
+
+1. 先停掉自己不用的验收实例（`qa-instance list` / `qa-instance down <task>`）。
+2. DSH 进程多、内存吃紧时，由发布负责人在没人用的时段重启 Worker（命令同上一节）。重启会中断正在进行的对话和任务，先确认没有进行中的 run。
+3. 进程不多但内存仍然紧张：看第三条命令里谁占得多，按对应手册处理。
 
 ## 确认恢复
 

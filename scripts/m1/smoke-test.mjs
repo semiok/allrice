@@ -291,7 +291,13 @@ const versionEnd = await versions();
   const seen = [versionStart.web, versionEnd.web];
   if (workerBase) seen.push(versionStart.worker, versionEnd.worker);
   const expected = args['expect-sha'] || versionStart.web;
-  const pass = Boolean(expected) && seen.every((v) => v === expected);
+  // A short SHA (7+ hex digits) names the same commit as the full one the services report.
+  const short = /^[0-9a-f]{7,39}$/.test(expected ?? '');
+  const pass =
+    Boolean(expected) &&
+    seen.every(
+      (v) => v === expected || (short && Boolean(v) && v.startsWith(expected)),
+    );
   results.push({
     check: 'version',
     pass,

@@ -456,6 +456,28 @@ class Checks(unittest.TestCase):
         r.cfg['disks'] = [{'path': '/', 'warnFreeGiB': 0, 'criticalFreeGiB': 0}]
         self.assertEqual(monitor.check_disk(r)[0]['severity'], 'ok')
 
+    def test_memory_and_dsh_processes(self):
+        def fake(free, dsh):
+            ps = ''.join('180000 node /r/apps/worker/dsh/allrice-jsonrpc-runtime.mjs\n' for _ in range(dsh))
+            ps += '456000 node /r/apps/worker/dist/index.js\n'
+
+            def run(cmd, **kw):
+                if cmd[0].endswith('memory_pressure'):
+                    return 0, 'System-wide memory free percentage: %d%%\n' % free, ''
+                return 0, ps, ''
+            return run
+
+        r = make_round(memoryWarnFreePct=20, memoryCriticalFreePct=10, dshWarnProcesses=30)
+        cases = [(76, 9, 'ok', 'ok'), (15, 30, 'warning', 'warning'), (9, 29, 'critical', 'ok')]
+        for free, dsh, memory, procs in cases:
+            with mock.patch.object(monitor, 'run', side_effect=fake(free, dsh)):
+                found = {f['key']: f for f in monitor.check_memory(r)}
+            self.assertEqual((found['memory']['severity'], found['dsh_processes']['severity']), (memory, procs))
+        self.assertEqual(r.facts['dshProcesses'], {'count': 29, 'mb': 29 * 180000 // 1024})
+        with mock.patch.object(monitor, 'run', return_value=(1, '', 'boom')):
+            found = {f['key']: f['severity'] for f in monitor.check_memory(r)}
+        self.assertEqual(found, {'memory': 'unknown', 'dsh_processes': 'unknown'})
+
     def test_backup_age(self):
         r = make_round(backupLabel=None)
         log = os.path.join(r.cfg['stateDir'], 'backup.log')
