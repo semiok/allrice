@@ -2,9 +2,19 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from 'vitest';
 import type { TransactionSql } from 'postgres';
+import * as client from './core/client.ts';
 import { getDatabase } from './core/client.ts';
+import { employeeAccessTransactionMaxAttempts } from './employees/employee-access-cancellation.ts';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
 import { createChatSession, sendChatMessage } from './workspace/service.ts';
 import {
@@ -1129,11 +1139,33 @@ suite(
       const held = await f.db.reserve();
       await held`select pg_advisory_lock(hashtextextended(${r.runId},703))`;
       try {
-        const started = performance.now();
-        await expect(
-          heartbeatJob(r.workerId, r.job.id, r.job.lease!.token, 60_000),
-        ).rejects.toThrow('employee_access_busy');
-        expect(performance.now() - started).toBeLessThan(3_000);
+        // Each attempt opens its own transaction; while 703 is busy it rolls
+        // back and backs off before the next. Count attempts instead of timing
+        // them: a slow runner stretches every attempt, but the retries must
+        // still stop at the limit. One past the limit fails at once.
+        const real = getDatabase();
+        let attempts = 0;
+        const counted = new Proxy(real, {
+          get(target, key) {
+            if (key !== 'begin') return Reflect.get(target, key, target);
+            return (...args: unknown[]) => {
+              if (++attempts > employeeAccessTransactionMaxAttempts)
+                throw new Error('heartbeat retried past its limit');
+              return Reflect.apply(target.begin, target, args);
+            };
+          },
+        });
+        const spy = vi.spyOn(client, 'getDatabase').mockReturnValue(counted);
+        // Also restore when a hang ends the test by timeout.
+        onTestFinished(() => spy.mockRestore());
+        try {
+          await expect(
+            heartbeatJob(r.workerId, r.job.id, r.job.lease!.token, 60_000),
+          ).rejects.toThrow('employee_access_busy');
+        } finally {
+          spy.mockRestore();
+        }
+        expect(attempts).toBe(employeeAccessTransactionMaxAttempts);
         // Keep 703 held: these NOWAIT locks prove that every failed attempt
         // rolled back its principal and target locks instead of parking them.
         await f.db.begin(async (tx) => {
