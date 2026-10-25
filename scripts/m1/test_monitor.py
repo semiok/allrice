@@ -457,23 +457,31 @@ class Checks(unittest.TestCase):
         self.assertEqual(monitor.check_disk(r)[0]['severity'], 'ok')
 
     def test_memory_and_dsh_processes(self):
-        def fake(free, dsh):
-            ps = ''.join('180000 node /r/apps/worker/dsh/allrice-jsonrpc-runtime.mjs\n' for _ in range(dsh))
-            ps += '456000 node /r/apps/worker/dist/index.js\n'
+        def fake(free, dsh, memory_fails=False):
+            ps = ''.join('180000 /opt/node/bin/node /r/apps/worker/dsh/allrice-jsonrpc-runtime.mjs\n' for _ in range(dsh))
+            ps += '456000 /opt/node/bin/node /r/apps/worker/dist/index.js\n'
+            ps += '1200 grep allrice-jsonrpc-runtime.mjs\n'  # a diagnostic command naming it is not counted
 
             def run(cmd, **kw):
                 if cmd[0].endswith('memory_pressure'):
+                    if memory_fails:
+                        return 1, '', 'boom'
                     return 0, 'System-wide memory free percentage: %d%%\n' % free, ''
                 return 0, ps, ''
             return run
 
         r = make_round(memoryWarnFreePct=20, memoryCriticalFreePct=10, dshWarnProcesses=30)
-        cases = [(76, 9, 'ok', 'ok'), (15, 30, 'warning', 'warning'), (9, 29, 'critical', 'ok')]
+        cases = [(76, 9, 'ok', 'ok'), (20, 29, 'ok', 'ok'), (19, 30, 'warning', 'warning'),
+                 (10, 0, 'warning', 'ok'), (9, 29, 'critical', 'ok')]
         for free, dsh, memory, procs in cases:
             with mock.patch.object(monitor, 'run', side_effect=fake(free, dsh)):
                 found = {f['key']: f for f in monitor.check_memory(r)}
-            self.assertEqual((found['memory']['severity'], found['dsh_processes']['severity']), (memory, procs))
+            self.assertEqual((found['memory']['severity'], found['dsh_processes']['severity']), (memory, procs), (free, dsh))
         self.assertEqual(r.facts['dshProcesses'], {'count': 29, 'mb': 29 * 180000 // 1024})
+        # One source failing leaves only that key unjudged.
+        with mock.patch.object(monitor, 'run', side_effect=fake(50, 3, memory_fails=True)):
+            found = {f['key']: f['severity'] for f in monitor.check_memory(r)}
+        self.assertEqual(found, {'memory': 'unknown', 'dsh_processes': 'ok'})
         with mock.patch.object(monitor, 'run', return_value=(1, '', 'boom')):
             found = {f['key']: f['severity'] for f in monitor.check_memory(r)}
         self.assertEqual(found, {'memory': 'unknown', 'dsh_processes': 'unknown'})

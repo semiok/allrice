@@ -1063,7 +1063,9 @@ def check_memory(r):
     if code != 0:
         out.append(unknown('dsh_processes', 'DSH 进程数查不到'))
     else:
-        rss = [int(line.split(None, 1)[0]) for line in text.splitlines() if DSH_RUNTIME in line]
+        # Only node processes running the runtime: not a `grep` or `ps` that names it.
+        rss = [int(p[0]) for p in (line.split(None, 2) for line in text.splitlines())
+               if len(p) == 3 and os.path.basename(p[1]) == 'node' and DSH_RUNTIME in p[2]]
         r.facts['dshProcesses'] = {'count': len(rss), 'mb': sum(rss) // 1024}
         out.append(finding('dsh_processes', 'warning' if len(rss) >= cfg['dshWarnProcesses'] else 'ok', 'DSH 进程越积越多',
                            '%d 个 DSH 进程常驻，共 %d MB（警告线 %d 个）。对话结束后进程不退出，要等 Worker 重启才释放'
