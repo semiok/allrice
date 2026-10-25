@@ -2,7 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from 'vitest';
 import type { TransactionSql } from 'postgres';
 import * as client from './core/client.ts';
 import { getDatabase } from './core/client.ts';
@@ -1131,21 +1139,25 @@ suite(
       const held = await f.db.reserve();
       await held`select pg_advisory_lock(hashtextextended(${r.runId},703))`;
       try {
-        // Each attempt opens its own transaction and waits out its own lock
-        // timeout on 703. Count them instead of timing them: a slow machine
-        // stretches the waits, but the retries must still stop at the limit.
+        // Each attempt opens its own transaction; while 703 is busy it rolls
+        // back and backs off before the next. Count attempts instead of timing
+        // them: a slow runner stretches every attempt, but the retries must
+        // still stop at the limit. One past the limit fails at once.
         const real = getDatabase();
         let attempts = 0;
         const counted = new Proxy(real, {
           get(target, key) {
             if (key !== 'begin') return Reflect.get(target, key, target);
             return (...args: unknown[]) => {
-              attempts++;
+              if (++attempts > employeeAccessTransactionMaxAttempts)
+                throw new Error('heartbeat retried past its limit');
               return Reflect.apply(target.begin, target, args);
             };
           },
         });
         const spy = vi.spyOn(client, 'getDatabase').mockReturnValue(counted);
+        // Also restore when a hang ends the test by timeout.
+        onTestFinished(() => spy.mockRestore());
         try {
           await expect(
             heartbeatJob(r.workerId, r.job.id, r.job.lease!.token, 60_000),
