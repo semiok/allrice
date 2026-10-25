@@ -155,3 +155,60 @@ It preserves original pending facts,18 synthetic unknown permits, journal bytes,
 two independent outputs and another unretired scope; tests direct old-writer
 reopen attempts, concurrent cutoff, lost-ack readback and stale-plan rollback.
 These are synthetic fixture results, not a Dev retirement or SDK-close claim.
+
+## Abandoned assistant descendants (schema3)
+
+A separate explicit arm can permanently cut off an old test chat whose actual
+root Runs and root Jobs are terminal with recorded completion times, while
+Jobless assistant descendants still have historical `running` or NULL-completion
+facts. It never changes those facts. The original v1 and v2 gates remain strict.
+This arm is also a private API; the v1 CLI does not support it.
+
+```ts
+const plan = await previewNativeTestChatRetirement({
+  schemaVersion: 3,
+  kind: 'development-test-chat-abandoned-descendant-cutoff',
+  requestId,
+  authorizationEvidenceDigest,
+  scopes, // 1..7 exact authorized chat tuples
+  legacyExecutors, // same exact namespace/artifact contract as v2
+  abandonedScopes: [
+    {
+      scope,
+      rootRunIds,
+      descendants: [{ runId, rootRunId, parentRunId, delegationId }],
+      preservedUnfinishedAdmissionIds, // exact complete set, including root admissions
+    },
+  ],
+});
+const physicalScope = nativeTerminalTestPhysicalScope(plan);
+// Original reviewed normal-stop, cloud and physical guards are mandatory.
+const receipt = await applyNativeTestChatRetirement({ plan, physicalProof });
+const readback = await readNativeTestChatRetirement(plan);
+```
+
+Preview rechecks every source in one repeatable-read transaction. Each child
+must have no Job and must match `Run.input.assistant`, its immutable runtime
+link and assistant instance. Parent/depth relations must reach exactly one
+root without a cycle or foreign scope. The declaration must include every root,
+child and unfinished admission; missing, extra or changed identities fail.
+Every existing Job remains subject to the terminal/completion/lease checks.
+Live runtime/operation authority, an unconfirmed registered owner, uncleaned
+cloud or invalid/expired physical evidence still rejects the request.
+
+An unfinished prepared or dispatched model admission is preserved uncertainty,
+never proof of current execution or financial completion. Full admissions,
+usage, budgets/reservations, routes, model usage and original outputs are
+fingerprinted. No admission is dispatched/finished, reservation released, usage
+settled, or provider/SDK closure invented. The receipt explicitly reports
+`financialClosure`, `providerModelFinished` and `sdkCleanup` as `not_claimed`.
+Any later legitimate financial reconciliation is a separate auditable action;
+changed preservation facts cannot silently pass the frozen reader.
+
+Apply only archives the chat and appends the existing immutable retirement row
+with kind `development-test-chat-abandoned-descendant-cutoff-v1`. The same
+permanent fences and RR/serializable source-row barrier protect both chat arms.
+Saved child IDs stay unavailable even if an old writer tries to detach their
+links, create a Job, resume a wait or dispatch a preserved model call. History,
+unknown values, original completion timestamps and independent outputs remain
+readable. Unknown COMMIT recovery uses only the original request's readback.

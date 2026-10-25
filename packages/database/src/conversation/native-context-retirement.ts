@@ -12,9 +12,11 @@ import {
 } from './native-root-origin.ts';
 import {
   previewNativeChatTerminalCutoff,
+  previewNativeChatAbandonedDescendantCutoff,
   applyNativeTerminalTestRetirement,
   readNativeTerminalTestRetirement,
   verifyNativeChatTerminalCutoffRow,
+  verifyNativeChatAbandonedDescendantCutoffRow,
 } from './native-terminal-test-retirement.ts';
 
 type Tx = postgres.TransactionSql;
@@ -89,7 +91,7 @@ const terminalChatCutoff = (raw: unknown) =>
   raw !== null &&
   typeof raw === 'object' &&
   'schemaVersion' in raw &&
-  raw.schemaVersion === 2;
+  (raw.schemaVersion === 2 || raw.schemaVersion === 3);
 
 /** Before any clock, lease or SDK work. Older isolated checkpoints do not have
  * a v2 cutoff table/function and retain their original execution semantics. */
@@ -273,7 +275,10 @@ async function snapshot(
 /** No mutation. The caller must fix its exact reviewed scope and release/fence
  * separately; this maintenance function is not exposed as an employee tool. */
 export async function previewNativeTestChatRetirement(input: unknown) {
-  if (terminalChatCutoff(input)) return previewNativeChatTerminalCutoff(input);
+  if (terminalChatCutoff(input))
+    return (input as { schemaVersion: number }).schemaVersion === 3
+      ? previewNativeChatAbandonedDescendantCutoff(input)
+      : previewNativeChatTerminalCutoff(input);
   const request = requestSchema.parse(input);
   const scopes = [...request.scopes].sort((a, b) =>
     a.contextId.localeCompare(b.contextId),
@@ -514,6 +519,13 @@ export async function readVerifiedNativeChatRetirements(tx: Tx) {
         'development-test-chat-terminal-cutoff-v2'
       )
         await verifyNativeChatTerminalCutoffRow(tx, r);
+      else if (
+        r.preservation_snapshot?.kind ===
+        'development-test-chat-abandoned-descendant-cutoff-v1'
+      )
+        await verifyNativeChatAbandonedDescendantCutoffRow(tx, r);
+      else if (r.preservation_snapshot?.kind !== undefined)
+        fail('NATIVE_RETIREMENT_PRESERVATION_KIND_UNSUPPORTED');
       result.push(scope);
     }
   }

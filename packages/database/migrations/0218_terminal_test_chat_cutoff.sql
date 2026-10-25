@@ -1,33 +1,70 @@
 -- Explicit historical QA execution cutoff. No historical state is repaired,
 -- settled or reclassified. 0199 chat v1 and 0215 non-chat semantics stay intact.
 -- Reuse the immutable retirement table and the existing admission mutex.
-create function allrice_terminal_native_chat_facts(chat uuid, org uuid, workspace uuid, owner uuid)
+create function allrice_native_chat_cutoff_facts(chat uuid, org uuid, workspace uuid, owner uuid, arm text)
 returns jsonb language plpgsql set timezone='UTC' as $$
 #variable_conflict use_variable
 declare c allrice_chat_sessions%rowtype; subjects uuid[]; run_rows jsonb; job_rows jsonb;
   history jsonb:='{}'; observations jsonb; consumers jsonb; rel text; predicate text; fp jsonb;
+  roots uuid[]; result jsonb; admissions jsonb; declaration jsonb;
 begin
+  if arm not in ('terminal','abandoned_descendant') or arm is null then raise exception 'NATIVE_CHAT_CUTOFF_ARM_UNSUPPORTED'; end if;
   if chat='68e76b6b-2e75-45b7-b628-951945b12044' then raise exception 'NATIVE_TERMINAL_PROTECTED_CONTEXT'; end if;
   select * into c from allrice_chat_sessions s where s.id=chat and s.organization_id=org and s.workspace_id=workspace and s.owner_id=owner;
   if not found then raise exception 'NATIVE_TERMINAL_SCOPE_CONFLICT'; end if;
   if c.native_root_origin is not null or exists(select 1 from allrice_native_session_bindings b where b.context_kind='chat' and b.context_id=chat)
     or exists(select 1 from allrice_native_chat_executor_transitions t where t.context_id=chat)
     then raise exception 'NATIVE_CHAT_CUTOFF_IMPLICIT_ONLY'; end if;
+  select coalesce(array_agg(e.run_id order by e.run_id),'{}'::uuid[]) into roots from allrice_employee_runs e where e.session_id=chat;
   with recursive graph(id) as (
     select e.run_id from allrice_employee_runs e where e.session_id=chat
     union select l.run_id from allrice_runtime_run_links l join graph g on l.root_run_id=g.id
   ) select coalesce(array_agg(id order by id),'{}'::uuid[]) into subjects from graph;
   if cardinality(subjects)=0 or exists(select 1 from unnest(subjects) s(id) left join allrice_runs r on r.id=s.id
     where r.id is null or r.organization_id<>org or r.workspace_id<>workspace or r.owner_id<>owner
-      or r.state not in ('succeeded','failed','canceled') or r.completed_at is null)
+      or ((arm='terminal' or r.id=any(roots)) and (r.state not in ('succeeded','failed','canceled') or r.completed_at is null)))
     or exists(select 1 from allrice_employee_runs e where e.run_id=any(subjects) and
       (e.session_id<>chat or e.organization_id<>org or e.workspace_id<>workspace or e.owner_id<>owner))
     then raise exception 'NATIVE_CHAT_CUTOFF_RUN_SCOPE_OR_STATE'; end if;
+  if arm='abandoned_descendant' and (
+    exists(select 1 from unnest(roots) r(id) where not exists(select 1 from allrice_jobs j where j.run_id=r.id))
+    or exists(select 1 from allrice_jobs j where j.run_id=any(subjects) and not j.run_id=any(roots))
+    or exists(select 1 from allrice_runs r left join allrice_runtime_run_links l on l.run_id=r.id
+      left join allrice_assistant_instances i on i.run_id=r.id
+      left join allrice_assistant_instances p on p.run_id=l.parent_run_id
+      where r.id=any(subjects) and (l.run_id is null or i.run_id is null
+        or l.organization_id<>org or l.workspace_id<>workspace or not l.root_run_id=any(roots)
+        or i.root_run_id is distinct from l.root_run_id or i.parent_run_id is distinct from l.parent_run_id
+        or (r.id=any(roots) and (l.root_run_id<>r.id or l.parent_run_id is not null or i.depth<>0))
+        or (not r.id=any(roots) and (r.state not in ('running','succeeded','failed','canceled')
+          or l.parent_run_id is null or not l.parent_run_id=any(subjects) or p.run_id is null
+          or p.root_run_id<>l.root_run_id or i.depth<>p.depth+1
+          or r.input#>>'{assistant,rootRunId}' is distinct from l.root_run_id::text
+          or r.input#>>'{assistant,parentRunId}' is distinct from l.parent_run_id::text
+          or r.input#>>'{assistant,delegationId}' is distinct from i.delegation_id::text))))
+    ) then raise exception 'NATIVE_CHAT_ABANDONED_GRAPH_NOT_PROVEN'; end if;
+  -- Independent FKs do not prove that a model/usage/operation belongs to the
+  -- declared root. Check both directions; never omit a foreign-root hold whose
+  -- run_id is one of these historical descendants, or silently repair it.
+  if arm='abandoned_descendant' and (
+    exists(select 1 from allrice_assistant_model_admissions a left join allrice_assistant_instances i on i.run_id=a.run_id
+      where (a.root_run_id=any(roots) or a.run_id=any(subjects)) and
+        (not a.root_run_id=any(roots) or not a.run_id=any(subjects) or i.root_run_id is distinct from a.root_run_id))
+    or exists(select 1 from allrice_assistant_usage u left join allrice_assistant_instances i on i.run_id=u.run_id
+      where (u.root_run_id=any(roots) or u.run_id=any(subjects)) and
+        (not u.root_run_id=any(roots) or not u.run_id=any(subjects) or i.root_run_id is distinct from u.root_run_id))
+    or exists(select 1 from allrice_runtime_operations o left join allrice_assistant_instances i on i.run_id=o.run_id
+      where (o.root_run_id=any(roots) or o.run_id=any(subjects)) and
+        (not o.root_run_id=any(roots) or not o.run_id=any(subjects) or i.root_run_id is distinct from o.root_run_id))
+    or exists(select 1 from allrice_runtime_reservations r join allrice_runtime_operations o on o.id=r.operation_id
+      where (r.root_run_id=any(roots) or o.root_run_id=any(roots) or o.run_id=any(subjects)) and
+        (r.root_run_id is distinct from o.root_run_id or not r.root_run_id=any(roots)))
+    ) then raise exception 'NATIVE_CHAT_ABANDONED_FINANCIAL_SCOPE_CONFLICT'; end if;
   if exists(select 1 from allrice_jobs j where j.run_id=any(subjects) and
        (j.status not in ('succeeded','failed','dead_letter','canceled') or j.completed_at is null or j.lease_expires_at>clock_timestamp()
         or j.organization_id<>org or j.workspace_id<>workspace or j.owner_id<>owner))
     or exists(select 1 from allrice_runtime_operations o where o.root_run_id=any(subjects) and o.lease_expires_at>clock_timestamp())
-    or exists(select 1 from allrice_assistant_model_admissions a where a.root_run_id=any(subjects) and a.finished_at is null)
+    or (arm='terminal' and exists(select 1 from allrice_assistant_model_admissions a where a.root_run_id=any(subjects) and a.finished_at is null))
     or exists(select 1 from allrice_dsh_runtime_instances r where r.session_id=chat and r.status='live')
     or exists(select 1 from allrice_cloud_execution_attempts a join allrice_runtime_operations o on o.id=a.operation_id
       where o.root_run_id=any(subjects) and a.cleanup_confirmed_at is null)
@@ -47,13 +84,14 @@ begin
     'allrice_native_question_waits','allrice_native_task_dispatches','allrice_route_decisions','allrice_model_usage_ledger',
     'allrice_conversation_runtimes','allrice_conversation_followups','allrice_conversation_commands','allrice_dsh_runtime_instances',
     'allrice_messages','allrice_deliverable_versions','allrice_file_references','allrice_workbench_artifacts','allrice_storage_objects'
-  ] loop
+  ] || case when arm='abandoned_descendant' then array['allrice_runtime_reservations','allrice_assistant_results','allrice_assistant_artifacts'] else '{}'::text[] end loop
     predicate:=case
       when rel='allrice_runs' then 't.id=any($1)'
       when rel='allrice_employee_runs' then 't.run_id=any($1) or t.session_id=$2'
       when rel='allrice_runtime_run_links' then 't.root_run_id=any($1) or t.run_id=any($1)'
       when rel in ('allrice_runtime_roots','allrice_runtime_budgets','allrice_runtime_operations','allrice_assistant_roots',
-        'allrice_assistant_instances','allrice_assistant_messages','allrice_assistant_model_admissions','allrice_assistant_usage') then 't.root_run_id=any($1)'
+        'allrice_assistant_instances','allrice_assistant_messages','allrice_assistant_model_admissions','allrice_assistant_usage',
+        'allrice_runtime_reservations','allrice_assistant_results') then 't.root_run_id=any($1)'
       when rel in ('allrice_conversation_runtimes','allrice_conversation_followups','allrice_conversation_commands','allrice_dsh_runtime_instances',
         'allrice_messages','allrice_deliverable_versions','allrice_file_references') then 't.session_id=$2'
       when rel='allrice_workbench_artifacts' then 't.version_id in(select id from allrice_deliverable_versions where session_id=$2)'
@@ -103,11 +141,30 @@ begin
     union all select 'assistant',jsonb_build_object('kind','assistant','row',to_jsonb(a)) from allrice_assistant_instances a where a.root_run_id=any(subjects)
     union all select 'task_call',jsonb_build_object('kind','task_call','row',to_jsonb(t)) from allrice_task_calls t where t.run_id=any(subjects) and t.finished_at is null
   ) all_consumers;
-  return jsonb_build_object('scope',jsonb_build_object('contextKind','chat','contextId',chat,'organizationId',org,'workspaceId',workspace,'ownerId',owner),
+  result:=jsonb_build_object('scope',jsonb_build_object('contextKind','chat','contextId',chat,'organizationId',org,'workspaceId',workspace,'ownerId',owner),
     'source',to_jsonb(c)-'archived_at','origin',null,'bindings','[]'::jsonb,'runIds',to_jsonb(subjects),
     'missingRunIds','[]'::jsonb,'missingJobIds','[]'::jsonb,'runs',run_rows,'jobs',job_rows,'closeRows',observations,
     'consumers',consumers,'occurrence',null,'preserved',history);
+  if arm='abandoned_descendant' then
+    select coalesce(jsonb_agg(to_jsonb(a) order by a.call_id),'[]') into admissions
+      from allrice_assistant_model_admissions a where a.root_run_id=any(roots) and a.finished_at is null;
+    declaration:=jsonb_build_object('scope',result->'scope','rootRunIds',to_jsonb(roots),
+      'descendants',(select coalesce(jsonb_agg(jsonb_build_object('runId',l.run_id,'rootRunId',l.root_run_id,
+        'parentRunId',l.parent_run_id,'delegationId',i.delegation_id) order by l.run_id),'[]')
+        from allrice_runtime_run_links l join allrice_assistant_instances i using(run_id)
+        where l.run_id=any(subjects) and not l.run_id=any(roots)),
+      'preservedUnfinishedAdmissionIds',(select coalesce(jsonb_agg(a->'call_id' order by a->>'call_id'),'[]') from jsonb_array_elements(admissions) a));
+    if jsonb_array_length(declaration->'descendants')=0 then raise exception 'NATIVE_CHAT_ABANDONED_DESCENDANT_REQUIRED'; end if;
+    result:=result||jsonb_build_object('abandonment',declaration,'unfinishedAdmissions',admissions);
+  end if;
+  return result;
 end $$;
+
+-- Original v2 remains the strict all-Run/Job-completed arm.
+create function allrice_terminal_native_chat_facts(chat uuid, org uuid, workspace uuid, owner uuid)
+returns jsonb language sql as $$ select allrice_native_chat_cutoff_facts($1,$2,$3,$4,'terminal') $$;
+create function allrice_abandoned_native_chat_facts(chat uuid, org uuid, workspace uuid, owner uuid)
+returns jsonb language sql as $$ select allrice_native_chat_cutoff_facts($1,$2,$3,$4,'abandoned_descendant') $$;
 
 -- A historical Run/Job identity remains reserved even if another writer tries
 -- to remove or transplant its old employee-run relation after retirement.
@@ -122,7 +179,7 @@ begin
     perform 1 from allrice_chat_sessions where id=sid for share nowait;
   end if;
   if exists(select 1 from allrice_native_context_retirements r where r.context_kind='chat' and r.context_id=sid
-    and r.preservation_snapshot->>'kind'='development-test-chat-terminal-cutoff-v2') then raise exception 'NATIVE_CONTEXT_EXECUTION_RETIRED'; end if;
+    and r.preservation_snapshot->>'kind' in ('development-test-chat-terminal-cutoff-v2','development-test-chat-abandoned-descendant-cutoff-v1')) then raise exception 'NATIVE_CONTEXT_EXECUTION_RETIRED'; end if;
 end $$;
 
 create function allrice_terminal_native_chat_run_available(rid uuid) returns void language plpgsql as $$
@@ -133,7 +190,7 @@ begin
   for target in select e.session_id from allrice_employee_runs e where e.run_id=rid
       or e.run_id in(select l.root_run_id from allrice_runtime_run_links l where l.run_id=rid)
     union select r.context_id from allrice_native_context_retirements r
-    where r.context_kind='chat' and r.preservation_snapshot->>'kind'='development-test-chat-terminal-cutoff-v2'
+    where r.context_kind='chat' and r.preservation_snapshot->>'kind' in ('development-test-chat-terminal-cutoff-v2','development-test-chat-abandoned-descendant-cutoff-v1')
       and (r.preservation_snapshot#>'{facts,runIds}' @> jsonb_build_array(rid::text)
         or exists(select 1 from allrice_employee_runs e where e.run_id=rid and e.session_id=r.context_id))
     order by 1 loop
@@ -162,7 +219,7 @@ begin
     end loop;
     if tg_table_name='allrice_jobs' then
       for r in select x.context_id from allrice_native_context_retirements x where x.context_kind='chat'
-        and x.preservation_snapshot->>'kind'='development-test-chat-terminal-cutoff-v2'
+        and x.preservation_snapshot->>'kind' in ('development-test-chat-terminal-cutoff-v2','development-test-chat-abandoned-descendant-cutoff-v1')
         and exists(select 1 from jsonb_array_elements(x.preservation_snapshot#>'{facts,jobs}') j where j->>'id'=v->>'id')
       loop perform allrice_terminal_native_test_available('chat',r.context_id); end loop;
     end if;
@@ -183,7 +240,7 @@ end $$;
 create function allrice_terminal_native_chat_retirement_guard() returns trigger language plpgsql as $$
 declare actual jsonb; saved jsonb; proof jsonb; e jsonb; sid uuid; rid uuid; art text;
 begin
-  if new.context_kind<>'chat' or new.preservation_snapshot->>'kind' is distinct from 'development-test-chat-terminal-cutoff-v2' then return new; end if;
+  if new.context_kind<>'chat' or (new.preservation_snapshot->>'kind' in ('development-test-chat-terminal-cutoff-v2','development-test-chat-abandoned-descendant-cutoff-v1')) is not true then return new; end if;
   sid:=new.context_id;saved:=new.preservation_snapshot->'facts';proof:=new.preservation_snapshot->'physicalProof';e:=new.preservation_snapshot->'legacyExecutor';
   if not pg_try_advisory_xact_lock(hashtextextended('native-terminal-context:chat:'||sid::text,0)) then raise exception 'NATIVE_TERMINAL_CUTOFF_BUSY'; end if;
   if exists(select 1 from allrice_dsh_runtime_instances where status='live') then raise exception 'NATIVE_TERMINAL_REGISTERED_RUNTIME_LIVE'; end if;
@@ -200,7 +257,9 @@ begin
   -- Also stamp direct SQL inserts through this guard. Do not optimize this
   -- into an archived_at IS NULL update: the MVCC version fences old snapshots.
   update allrice_chat_sessions set archived_at=archived_at where id=sid;
-  actual:=allrice_terminal_native_chat_facts(sid,new.organization_id,new.workspace_id,new.owner_id);
+  actual:=allrice_native_chat_cutoff_facts(sid,new.organization_id,new.workspace_id,new.owner_id,case when new.preservation_snapshot->>'kind'='development-test-chat-terminal-cutoff-v2' then 'terminal' else 'abandoned_descendant' end);
+  if new.preservation_snapshot->>'kind'='development-test-chat-abandoned-descendant-cutoff-v1'
+    and new.preservation_snapshot->'abandonedScope' is distinct from actual->'abandonment' then raise exception 'NATIVE_CHAT_ABANDONED_DECLARATION_CHANGED'; end if;
   if saved is distinct from actual or new.origin_snapshot is not null or new.binding_snapshot<>'[]'::jsonb
     or e->'scope' is distinct from actual->'scope'
     or (e->>'artifactId' ~ '^sha256:[a-f0-9]{64}$') is not true
@@ -247,9 +306,9 @@ create function allrice_terminal_native_chat_commit() returns trigger language p
 begin
   -- A v1 fingerprint has no kind. An early return avoids evaluating a
   -- volatile v2 facts call under SQL's NULL AND expression semantics.
-  if new.context_kind<>'chat' or new.preservation_snapshot->>'kind' is distinct from 'development-test-chat-terminal-cutoff-v2' then return new; end if;
+  if new.context_kind<>'chat' or (new.preservation_snapshot->>'kind' in ('development-test-chat-terminal-cutoff-v2','development-test-chat-abandoned-descendant-cutoff-v1')) is not true then return new; end if;
   if (
-    new.preservation_snapshot->'facts' is distinct from allrice_terminal_native_chat_facts(new.context_id,new.organization_id,new.workspace_id,new.owner_id)
+    new.preservation_snapshot->'facts' is distinct from allrice_native_chat_cutoff_facts(new.context_id,new.organization_id,new.workspace_id,new.owner_id,case when new.preservation_snapshot->>'kind'='development-test-chat-terminal-cutoff-v2' then 'terminal' else 'abandoned_descendant' end)
     or (new.preservation_snapshot#>>'{physicalProof,expiresAt}')::timestamptz<=clock_timestamp())
     then raise exception 'NATIVE_TERMINAL_RETIREMENT_COMMIT_CHANGED'; end if;
   return new;

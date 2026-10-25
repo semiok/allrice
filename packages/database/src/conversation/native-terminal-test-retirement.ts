@@ -126,7 +126,46 @@ export const NativeChatTerminalCutoffPlanSchema = z
   })
   .strict();
 type ChatPlan = z.infer<typeof NativeChatTerminalCutoffPlanSchema>;
-type TerminalPlan = NativeTerminalTestPlan | ChatPlan;
+const abandonedScope = z
+  .object({
+    scope: chatScope,
+    rootRunIds: z.array(uuid).min(1).max(1000),
+    descendants: z
+      .array(
+        z
+          .object({
+            runId: uuid,
+            rootRunId: uuid,
+            parentRunId: uuid,
+            delegationId: uuid,
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(1000),
+    preservedUnfinishedAdmissionIds: z.array(uuid).max(1000),
+  })
+  .strict();
+const abandonedFactsSchema = chatFactsSchema.extend({
+  abandonment: abandonedScope,
+  unfinishedAdmissions: z.array(z.record(z.string(), json)),
+});
+export const NativeChatAbandonedDescendantCutoffPlanSchema = z
+  .object({
+    schemaVersion: z.literal(3),
+    kind: z.literal('development-test-chat-abandoned-descendant-cutoff'),
+    requestId: uuid,
+    authorizationEvidenceDigest: digest,
+    snapshots: z.array(abandonedFactsSchema).min(1).max(7),
+    legacyExecutors: z.array(legacyExecutor).min(1).max(7),
+    abandonedScopes: z.array(abandonedScope).min(1).max(7),
+    digest,
+  })
+  .strict();
+type AbandonedPlan = z.infer<
+  typeof NativeChatAbandonedDescendantCutoffPlanSchema
+>;
+type TerminalPlan = NativeTerminalTestPlan | ChatPlan | AbandonedPlan;
 type TerminalScope = NativeTerminalTestScope | z.infer<typeof chatScope>;
 const physicalSchema = z
   .object({
@@ -177,7 +216,11 @@ const same = (a: unknown, b: unknown) =>
 const key = (s: TerminalScope) => s.contextKind + ':' + s.contextId;
 function plan(raw: unknown) {
   const p = z
-      .union([NativeTerminalTestPlanSchema, NativeChatTerminalCutoffPlanSchema])
+      .union([
+        NativeTerminalTestPlanSchema,
+        NativeChatTerminalCutoffPlanSchema,
+        NativeChatAbandonedDescendantCutoffPlanSchema,
+      ])
       .parse(raw),
     { digest: expected, ...body } = p;
   if (nativeRootDigest(body) !== expected) fail('NATIVE_TERMINAL_PLAN_CHANGED');
@@ -185,7 +228,7 @@ function plan(raw: unknown) {
   if (new Set(keys).size !== keys.length || !same(keys, [...keys].sort()))
     fail('NATIVE_TERMINAL_PLAN_ORDER');
   if (
-    p.schemaVersion === 2 &&
+    p.schemaVersion !== 1 &&
     (!same(
       p.legacyExecutors.map((e) => key(e.scope)),
       keys,
@@ -193,8 +236,33 @@ function plan(raw: unknown) {
       p.legacyExecutors.some((e, i) => !same(e.scope, p.snapshots[i]!.scope)))
   )
     fail('NATIVE_CHAT_CUTOFF_EXACT_EXECUTORS_REQUIRED');
+  if (
+    p.schemaVersion === 3 &&
+    (!same(
+      p.abandonedScopes,
+      p.snapshots.map((s) => s.abandonment),
+    ) ||
+      p.snapshots.some(
+        (s) =>
+          !same(s.scope, s.abandonment.scope) ||
+          !same(
+            s.unfinishedAdmissions.map((a) => a.call_id).sort(),
+            s.abandonment.preservedUnfinishedAdmissionIds,
+          ),
+      ))
+  )
+    fail('NATIVE_CHAT_ABANDONED_DECLARATION_CHANGED');
   return p;
 }
+const cutoffMeaning = (p: TerminalPlan) =>
+  p.schemaVersion === 3
+    ? {
+        executionRights: 'permanently_cut_off' as const,
+        financialClosure: 'not_claimed' as const,
+        providerModelFinished: 'not_claimed' as const,
+        sdkCleanup: 'not_claimed' as const,
+      }
+    : {};
 
 /** Process scope is all bindings and their original writers, not one selected
  * PID or one owner used to cover multiple histories. Old unknown stays unknown. */
@@ -211,7 +279,7 @@ export function nativeTerminalTestPhysicalScope(raw: unknown) {
     for (const item of classifyDshRuntimeCloseObservations(snapshot.closeRows))
       artifactIds.add(item.owner.artifactId);
   }
-  if (p.schemaVersion === 2)
+  if (p.schemaVersion !== 1)
     for (const e of p.legacyExecutors) {
       artifactIds.add(e.artifactId);
       namespaces.add(e.storageNamespace);
@@ -254,7 +322,7 @@ function proofFor(p: TerminalPlan, raw: unknown) {
         ),
       ),
     ) ||
-    (p.schemaVersion === 2 &&
+    (p.schemaVersion !== 1 &&
       !p.legacyExecutors.every((e) =>
         proof.writerScopes.some(
           (r) =>
@@ -285,11 +353,14 @@ function proofFor(p: TerminalPlan, raw: unknown) {
     fail('NATIVE_TERMINAL_CURRENT_BOOT_CONTEXT_NOT_DISCARDABLE');
   return proof;
 }
-async function facts(tx: Tx, scope: TerminalScope) {
+async function facts(tx: Tx, scope: TerminalScope, abandoned = false) {
   if (scope.contextKind === 'chat') {
-    const [row] =
-      await tx`select allrice_terminal_native_chat_facts(${scope.contextId},${scope.organizationId},${scope.workspaceId},${scope.ownerId}) facts`;
-    const value = chatFactsSchema.parse(row?.facts);
+    const [row] = abandoned
+      ? await tx`select allrice_abandoned_native_chat_facts(${scope.contextId},${scope.organizationId},${scope.workspaceId},${scope.ownerId}) facts`
+      : await tx`select allrice_terminal_native_chat_facts(${scope.contextId},${scope.organizationId},${scope.workspaceId},${scope.ownerId}) facts`;
+    const value = abandoned
+      ? abandonedFactsSchema.parse(row?.facts)
+      : chatFactsSchema.parse(row?.facts);
     assertClosedOwners(value.closeRows, scope);
     return value;
   }
@@ -453,6 +524,58 @@ export async function previewNativeChatTerminalCutoff(raw: unknown) {
     },
   );
 }
+/** A separate arm; old child/model state remains historical and unclassified. */
+export async function previewNativeChatAbandonedDescendantCutoff(raw: unknown) {
+  const request = z
+    .object({
+      schemaVersion: z.literal(3),
+      kind: z.literal('development-test-chat-abandoned-descendant-cutoff'),
+      requestId: uuid,
+      authorizationEvidenceDigest: digest,
+      scopes: z.array(chatScope).min(1).max(7),
+      legacyExecutors: z.array(legacyExecutor).min(1).max(7),
+      abandonedScopes: z.array(abandonedScope).min(1).max(7),
+    })
+    .strict()
+    .parse(raw);
+  const scopes = [...request.scopes].sort((a, b) =>
+    key(a).localeCompare(key(b)),
+  );
+  if (new Set(scopes.map(key)).size !== scopes.length)
+    fail('NATIVE_TERMINAL_DUPLICATE_CONTEXT');
+  return getDatabase().begin(
+    'isolation level repeatable read read only',
+    async (tx) => {
+      await tx`set local statement_timeout='5000'`;
+      await tx`set local timezone='UTC'`;
+      const snapshots = [];
+      for (const scope of scopes) snapshots.push(await facts(tx, scope, true));
+      const body = {
+        schemaVersion: 3 as const,
+        kind: request.kind,
+        requestId: request.requestId,
+        authorizationEvidenceDigest: request.authorizationEvidenceDigest,
+        snapshots,
+        legacyExecutors: [...request.legacyExecutors].sort((a, b) =>
+          key(a.scope).localeCompare(key(b.scope)),
+        ),
+        abandonedScopes: request.abandonedScopes
+          .map((s) => ({
+            ...s,
+            rootRunIds: [...s.rootRunIds].sort(),
+            descendants: [...s.descendants].sort((a, b) =>
+              a.runId.localeCompare(b.runId),
+            ),
+            preservedUnfinishedAdmissionIds: [
+              ...s.preservedUnfinishedAdmissionIds,
+            ].sort(),
+          }))
+          .sort((a, b) => key(a.scope).localeCompare(key(b.scope))),
+      };
+      return plan({ ...body, digest: nativeRootDigest(body) }) as AbandonedPlan;
+    },
+  );
+}
 async function receipt(tx: Tx, p: TerminalPlan) {
   const rows =
     await tx`select * from allrice_native_context_retirements where request_id=${p.requestId} order by context_kind,context_id`;
@@ -474,7 +597,7 @@ async function receipt(tx: Tx, p: TerminalPlan) {
       expected = p.snapshots[i]!;
     if (
       !same(row.preservation_snapshot?.facts, expected) ||
-      !same(await facts(tx, expected.scope), expected) ||
+      !same(await facts(tx, expected.scope, p.schemaVersion === 3), expected) ||
       !same(row.origin_snapshot, expected.origin) ||
       !same(row.binding_snapshot, expected.bindings)
     )
@@ -511,6 +634,7 @@ export async function applyNativeTerminalTestRetirement(raw: unknown) {
         alreadyApplied: true,
         contexts: previous,
         historicalClosure: 'not_reclassified' as const,
+        ...cutoffMeaning(p),
       };
     const proof = proofFor(p, input.physicalProof);
     await registeredIdle(tx, p);
@@ -530,7 +654,7 @@ export async function applyNativeTerminalTestRetirement(raw: unknown) {
     for (const expected of p.snapshots) {
       const s = expected.scope;
       await tx`select allrice_terminal_native_test_lock(${s.contextKind},${s.contextId})`;
-      if (!same(await facts(tx, s), expected))
+      if (!same(await facts(tx, s, p.schemaVersion === 3), expected))
         fail('NATIVE_TERMINAL_PLAN_STALE');
     }
     await registeredIdle(tx, p);
@@ -548,15 +672,24 @@ export async function applyNativeTerminalTestRetirement(raw: unknown) {
             JSON.parse(
               JSON.stringify({
                 kind:
-                  p.schemaVersion === 2
-                    ? 'development-test-chat-terminal-cutoff-v2'
-                    : 'development-terminal-test-retirement-v1',
+                  p.schemaVersion === 3
+                    ? 'development-test-chat-abandoned-descendant-cutoff-v1'
+                    : p.schemaVersion === 2
+                      ? 'development-test-chat-terminal-cutoff-v2'
+                      : 'development-terminal-test-retirement-v1',
                 facts: expected,
                 physicalProof: proof,
-                ...(p.schemaVersion === 2
+                ...(p.schemaVersion !== 1
                   ? {
                       legacyExecutor: p.legacyExecutors.find(
                         (e) => key(e.scope) === key(s),
+                      ),
+                    }
+                  : {}),
+                ...(p.schemaVersion === 3
+                  ? {
+                      abandonedScope: p.abandonedScopes.find(
+                        (d) => key(d.scope) === key(s),
                       ),
                     }
                   : {}),
@@ -570,6 +703,7 @@ export async function applyNativeTerminalTestRetirement(raw: unknown) {
       alreadyApplied: false,
       contexts: await receipt(tx, p),
       historicalClosure: 'not_reclassified' as const,
+      ...cutoffMeaning(p),
     };
   });
 }
@@ -589,6 +723,7 @@ export async function readNativeTerminalTestRetirement(raw: unknown) {
         status: previous ? ('completed' as const) : ('not-found' as const),
         contexts: previous,
         historicalClosure: 'not_reclassified' as const,
+        ...cutoffMeaning(p),
       };
     },
   );
@@ -616,6 +751,37 @@ export async function verifyNativeChatTerminalCutoffRow(
     row.owner_id !== s.ownerId ||
     row.reason !== 'development_test_discarded' ||
     !same(saved.facts, await facts(tx, s)) ||
+    !same(saved.legacyExecutor.scope, s) ||
+    !same(row.origin_snapshot, saved.facts.origin) ||
+    !same(row.binding_snapshot, saved.facts.bindings)
+  )
+    fail('NATIVE_TERMINAL_PRESERVED_FACTS_CHANGED');
+  return s;
+}
+export async function verifyNativeChatAbandonedDescendantCutoffRow(
+  tx: Tx,
+  row: Record<string, postgres.JSONValue>,
+) {
+  const saved = z
+      .object({
+        kind: z.literal('development-test-chat-abandoned-descendant-cutoff-v1'),
+        facts: abandonedFactsSchema,
+        physicalProof: physicalSchema,
+        legacyExecutor,
+        abandonedScope,
+      })
+      .strict()
+      .parse(row.preservation_snapshot),
+    s = saved.facts.scope;
+  if (
+    row.context_kind !== 'chat' ||
+    row.context_id !== s.contextId ||
+    row.organization_id !== s.organizationId ||
+    row.workspace_id !== s.workspaceId ||
+    row.owner_id !== s.ownerId ||
+    row.reason !== 'development_test_discarded' ||
+    !same(saved.facts, await facts(tx, s, true)) ||
+    !same(saved.abandonedScope, saved.facts.abandonment) ||
     !same(saved.legacyExecutor.scope, s) ||
     !same(row.origin_snapshot, saved.facts.origin) ||
     !same(row.binding_snapshot, saved.facts.bindings)

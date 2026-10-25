@@ -21,6 +21,7 @@ import { acquireConversationRuntime } from './conversation-runtime.ts';
 import { nativeRootDigest } from './native-root-origin.ts';
 import {
   NativeChatTerminalCutoffPlanSchema,
+  NativeChatAbandonedDescendantCutoffPlanSchema,
   nativeTerminalTestPhysicalScope,
 } from './native-terminal-test-retirement.ts';
 import {
@@ -30,12 +31,19 @@ import {
   readVerifiedNativeChatRetirements,
 } from './native-context-retirement.ts';
 import { verifyNativeArtifactReferenceCoverage } from './native-artifact-references.ts';
-import type { DshRuntimeOwnedObservation } from '../providers/dsh-runtime-close-observations.ts';
+import {
+  reserveDshRuntimeOwner,
+  recordDshRuntimeCloseObservation,
+  type DshRuntimeOwnedObservation,
+} from '../providers/dsh-runtime-close-observations.ts';
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
     : describe.skip;
 type Plan = ReturnType<typeof NativeChatTerminalCutoffPlanSchema.parse>;
+type AbandonedPlan = ReturnType<
+  typeof NativeChatAbandonedDescendantCutoffPlanSchema.parse
+>;
 const artifactId = nativeRootDigest('synthetic implicit legacy executor');
 suite(
   'historical terminal test chat cutoff / real isolated SQL, no SDK',
@@ -227,7 +235,7 @@ suite(
         await f.db`select allrice_terminal_native_chat_facts(${x.session},${x.org},${x.workspace},${x.user}) facts`;
       return r!.facts;
     };
-    function proof(p: Plan) {
+    function proof(p: Plan | AbandonedPlan) {
       const physical = nativeTerminalTestPhysicalScope(p);
       return {
         kind: 'terminal-native-physical-absence-v1',
@@ -260,7 +268,8 @@ suite(
         reviewSha256: 'd'.repeat(64),
       };
     }
-    const applyPlan = (p: Plan) => apply({ plan: p, physicalProof: proof(p) });
+    const applyPlan = (p: Plan | AbandonedPlan) =>
+      apply({ plan: p, physicalProof: proof(p) });
     async function artifact(x: Subject, immutable = true) {
       const id = randomUUID(),
         version = randomUUID(),
@@ -303,6 +312,55 @@ suite(
         c.references.find((r) => r.source === 'implicit:legacy-chat')
           ?.records ?? 0
       );
+    };
+    async function abandonedSubject(
+      shape: 'terminal' | 'running' | 'dispatched' | 'prepared' = 'terminal',
+    ) {
+      const x = await subject('unknown-assistants');
+      const [child] =
+        await f.db`select run_id,parent_run_id,delegation_id from allrice_assistant_instances where root_run_id=${x.rootRunId} and run_id<>root_run_id`;
+      const runId = String(child!.run_id),
+        delegationId = String(child!.delegation_id);
+      await f.db`update allrice_runs set state=${shape === 'running' || shape === 'dispatched' ? 'running' : 'failed'},completed_at=null,
+        input=${f.db.json({ assistant: { rootRunId: x.rootRunId, parentRunId: x.rootRunId, delegationId } })} where id=${runId}`;
+      let admissionId: string | null = null;
+      if (shape === 'dispatched' || shape === 'prepared') {
+        admissionId = randomUUID();
+        const target = shape === 'prepared' ? x.rootRunId : runId;
+        await f.db`insert into allrice_assistant_model_admissions(call_id,run_id,root_run_id,requested_output_tokens,granted_output_tokens,input_tokens,request_digest,dispatched_at)
+          values(${admissionId},${target},${x.rootRunId},3,2,${shape === 'dispatched' ? 1 : null},${shape === 'dispatched' ? nativeRootDigest('original uncertain provider dispatch') : null},${shape === 'dispatched' ? new Date() : null})`;
+        await f.db`insert into allrice_assistant_usage(call_id,run_id,root_run_id,metric,amount) values(${admissionId},${target},${x.rootRunId},'output_tokens',2)`;
+        await f.db`update allrice_runtime_budgets set reserved=reserved+2 where root_run_id=${x.rootRunId} and metric='output_tokens'`;
+      }
+      return { ...x, childRunId: runId, delegationId, admissionId };
+    }
+    type AbandonedSubject = Awaited<ReturnType<typeof abandonedSubject>>;
+    const abandonedRequest = (xs: AbandonedSubject[]) => ({
+      ...request(xs),
+      schemaVersion: 3 as const,
+      kind: 'development-test-chat-abandoned-descendant-cutoff' as const,
+      abandonedScopes: xs.map((x) => ({
+        scope: scope(x),
+        rootRunIds: [x.rootRunId],
+        descendants: [
+          {
+            runId: x.childRunId,
+            rootRunId: x.rootRunId,
+            parentRunId: x.rootRunId,
+            delegationId: x.delegationId,
+          },
+        ],
+        preservedUnfinishedAdmissionIds: x.admissionId ? [x.admissionId] : [],
+      })),
+    });
+    const abandonedPlanFor = async (xs: AbandonedSubject[]) =>
+      NativeChatAbandonedDescendantCutoffPlanSchema.parse(
+        await preview(abandonedRequest(xs)),
+      );
+    const abandonedFacts = async (x: Subject) => {
+      const [r] =
+        await f.db`select allrice_abandoned_native_chat_facts(${x.session},${x.org},${x.workspace},${x.user}) facts`;
+      return r!.facts;
     };
     it('cuts off seven exact QA patterns and preserves original pending/runtime/18unknown, journals, outputs and another scope', async () => {
       const xs = [];
@@ -368,6 +426,388 @@ suite(
       ).toBe('ready');
       expect((await readback(p)).status).toBe('completed');
     }, 30000);
+    it('v3 fences exact abandoned descendants while preserving dispatched/prepared holds and all original states', async () => {
+      const xs = [];
+      for (const shape of [
+        'terminal',
+        'running',
+        'dispatched',
+        'dispatched',
+        'prepared',
+      ] as const)
+        xs.push(await abandonedSubject(shape));
+      await f.db`insert into allrice_assistant_usage(call_id,run_id,root_run_id,metric,amount) values(${randomUUID()},${xs[1]!.childRunId},${xs[1]!.rootRunId},'tool_calls',1)`;
+      const outputs = [await artifact(xs[0]!), await artifact(xs[1]!)],
+        before = [];
+      for (const x of xs) {
+        before.push(await abandonedFacts(x));
+        await expect(
+          preview({
+            requestId: randomUUID(),
+            authorizationEvidenceDigest: nativeRootDigest('strict-v1'),
+            scopes: [scope(x)],
+          }),
+        ).rejects.toThrow();
+        await expect(planFor([x])).rejects.toThrow(
+          'NATIVE_CHAT_CUTOFF_RUN_SCOPE_OR_STATE',
+        );
+      }
+      const count = await implicitCount(),
+        p = await abandonedPlanFor(xs);
+      expect(p.snapshots.flatMap((s) => s.unfinishedAdmissions)).toHaveLength(
+        3,
+      );
+      expect(
+        p.snapshots.flatMap((s) => s.abandonment.descendants),
+      ).toHaveLength(5);
+      expect(await applyPlan(p)).toMatchObject({
+        alreadyApplied: false,
+        historicalClosure: 'not_reclassified',
+      });
+      for (let i = 0; i < xs.length; i++)
+        expect(await abandonedFacts(xs[i]!)).toEqual(before[i]);
+      expect(await implicitCount()).toBe(count - xs.length);
+      expect((await readback(p)).status).toBe('completed');
+      for (const o of outputs)
+        expect(
+          await readArtifactBytes(assistantFixtureStorage(f.db), o.object),
+        ).toEqual(Buffer.from(o.body));
+      await expect(
+        f.db`update allrice_runs set state='queued' where id=${xs[1]!.childRunId}`,
+      ).rejects.toThrow('NATIVE_CONTEXT_EXECUTION_RETIRED');
+      await expect(
+        f.db`update allrice_assistant_model_admissions set dispatched_at=clock_timestamp(),input_tokens=1,request_digest=${nativeRootDigest('late replay')} where call_id=${xs[4]!.admissionId}`,
+      ).rejects.toThrow('NATIVE_CONTEXT_EXECUTION_RETIRED');
+    }, 30000);
+    it.each([
+      'root-running',
+      'root-completion-missing',
+      'job-completion-missing',
+      'job-queued',
+    ] as const)(
+      'v3 refuses %s without relaxing the root gate',
+      async (reason) => {
+        const x = await abandonedSubject();
+        if (reason === 'root-running')
+          await f.db`update allrice_runs set state='running' where id=${x.rootRunId}`;
+        if (reason === 'root-completion-missing')
+          await f.db`update allrice_runs set completed_at=null where id=${x.rootRunId}`;
+        if (reason === 'job-completion-missing')
+          await f.db`update allrice_jobs set completed_at=null where id=${x.worker.jobId}`;
+        if (reason === 'job-queued')
+          await f.db`update allrice_jobs set status='queued' where id=${x.worker.jobId}`;
+        await expect(abandonedPlanFor([x])).rejects.toThrow(
+          /NATIVE_CHAT_CUTOFF_(RUN_SCOPE_OR_STATE|LIVE_AUTHORITY)/,
+        );
+      },
+    );
+    it('v3 refuses a descendant Job even when its state is terminal', async () => {
+      const x = await abandonedSubject(),
+        id = randomUUID();
+      await f.db`insert into allrice_jobs select (jsonb_populate_record(null::allrice_jobs,to_jsonb(j)||${f.db.json({ id, run_id: x.childRunId, idempotency_key: id })})).* from allrice_jobs j where id=${x.worker.jobId}`;
+      await expect(abandonedPlanFor([x])).rejects.toThrow(
+        'NATIVE_CHAT_ABANDONED_GRAPH_NOT_PROVEN',
+      );
+    });
+    it.each(['root', 'parent', 'delegation'] as const)(
+      'v3 refuses a mismatched child input %s identity',
+      async (field) => {
+        const x = await abandonedSubject();
+        const input = {
+          assistant: {
+            rootRunId: x.rootRunId,
+            parentRunId: x.rootRunId,
+            delegationId: x.delegationId,
+          },
+        };
+        if (field === 'root') input.assistant.rootRunId = randomUUID();
+        if (field === 'parent') input.assistant.parentRunId = randomUUID();
+        if (field === 'delegation') input.assistant.delegationId = randomUUID();
+        await f.db`update allrice_runs set input=${f.db.json(input)} where id=${x.childRunId}`;
+        await expect(abandonedPlanFor([x])).rejects.toThrow(
+          'NATIVE_CHAT_ABANDONED_GRAPH_NOT_PROVEN',
+        );
+      },
+    );
+    it('v3 refuses a cyclic parent relation and any unreviewed graph/model identities', async () => {
+      const cycle = await abandonedSubject();
+      await f.db`update allrice_runtime_run_links set parent_run_id=${cycle.childRunId} where run_id=${cycle.childRunId}`;
+      await f.db`update allrice_assistant_instances set parent_run_id=${cycle.childRunId} where run_id=${cycle.childRunId}`;
+      await f.db`update allrice_runs set input=${f.db.json({ assistant: { rootRunId: cycle.rootRunId, parentRunId: cycle.childRunId, delegationId: cycle.delegationId } })} where id=${cycle.childRunId}`;
+      await expect(abandonedPlanFor([cycle])).rejects.toThrow(
+        'NATIVE_CHAT_ABANDONED_GRAPH_NOT_PROVEN',
+      );
+      const x = await abandonedSubject('prepared'),
+        raw = abandonedRequest([x]);
+      raw.abandonedScopes[0]!.preservedUnfinishedAdmissionIds = [];
+      await expect(preview(raw)).rejects.toThrow(
+        'NATIVE_CHAT_ABANDONED_DECLARATION_CHANGED',
+      );
+      raw.abandonedScopes[0]!.preservedUnfinishedAdmissionIds = [
+        x.admissionId!,
+      ];
+      raw.abandonedScopes[0]!.descendants[0]!.parentRunId = randomUUID();
+      await expect(preview(raw)).rejects.toThrow(
+        'NATIVE_CHAT_ABANDONED_DECLARATION_CHANGED',
+      );
+    });
+    it('v3 rejects financial drift atomically without releasing or settling the original holds', async () => {
+      const x = await abandonedSubject('dispatched'),
+        p = await abandonedPlanFor([x]);
+      await f.db`update allrice_runtime_budgets set reserved=reserved+1 where root_run_id=${x.rootRunId} and metric='output_tokens'`;
+      const before = await abandonedFacts(x);
+      await expect(applyPlan(p)).rejects.toThrow('NATIVE_TERMINAL_PLAN_STALE');
+      expect((await readback(p)).status).toBe('not-found');
+      expect(await abandonedFacts(x)).toEqual(before);
+      expect(
+        (
+          await f.db`select archived_at from allrice_chat_sessions where id=${x.session}`
+        )[0]!.archived_at,
+      ).toBeNull();
+    });
+    it.each(['admission', 'usage', 'reservation', 'operation'] as const)(
+      'v3 refuses a reverse foreign-root %s without omitting or rewriting it',
+      async (kind) => {
+        const x = await abandonedSubject(),
+          y = await abandonedSubject(),
+          id = randomUUID();
+        let readRow: () => Promise<unknown>;
+        if (kind === 'admission') {
+          await f.db`insert into allrice_assistant_model_admissions(call_id,run_id,root_run_id,requested_output_tokens,granted_output_tokens) values(${id},${x.childRunId},${y.rootRunId},3,2)`;
+          readRow = async () =>
+            Array.from(
+              await f.db`select to_jsonb(t)::text value from allrice_assistant_model_admissions t where call_id=${id}`,
+            );
+        } else if (kind === 'usage') {
+          await f.db`insert into allrice_assistant_usage(call_id,run_id,root_run_id,metric,amount) values(${id},${x.childRunId},${y.rootRunId},'tool_calls',1)`;
+          readRow = async () =>
+            Array.from(
+              await f.db`select to_jsonb(t)::text value from allrice_assistant_usage t where call_id=${id}`,
+            );
+        } else if (kind === 'reservation') {
+          const [op] =
+            await f.db`select id from allrice_runtime_operations where root_run_id=${x.rootRunId} order by id limit 1`;
+          await f.db`insert into allrice_runtime_reservations(operation_id,root_run_id,metric,accounting_id,amount) values(${op!.id},${y.rootRunId},'tool_calls',${id},1)`;
+          readRow = async () =>
+            Array.from(
+              await f.db`select to_jsonb(t)::text value from allrice_runtime_reservations t where accounting_id=${id}`,
+            );
+        } else {
+          const foreign = randomUUID();
+          await f.db`insert into allrice_runs select (jsonb_populate_record(null::allrice_runs,to_jsonb(r)||${f.db.json({ id: foreign })})).* from allrice_runs r where id=${x.rootRunId}`;
+          await f.db`insert into allrice_runtime_roots select (jsonb_populate_record(null::allrice_runtime_roots,to_jsonb(r)||${f.db.json({ root_run_id: foreign })})).* from allrice_runtime_roots r where root_run_id=${x.rootRunId}`;
+          await f.db`insert into allrice_runtime_operations select (jsonb_populate_record(null::allrice_runtime_operations,to_jsonb(o)||${f.db.json({ id, root_run_id: foreign, run_id: x.childRunId, attempt_id: randomUUID(), idempotency_key: randomUUID() })})).* from allrice_runtime_operations o where root_run_id=${x.rootRunId} order by id limit 1`;
+          readRow = async () =>
+            Array.from(
+              await f.db`select to_jsonb(t)::text value from allrice_runtime_operations t where id=${id}`,
+            );
+        }
+        const before = await readRow();
+        await expect(abandonedPlanFor([x])).rejects.toThrow(
+          'NATIVE_CHAT_ABANDONED_FINANCIAL_SCOPE_CONFLICT',
+        );
+        expect(await readRow()).toEqual(before);
+        expect(
+          (
+            await f.db`select archived_at from allrice_chat_sessions where id=${x.session}`
+          )[0]!.archived_at,
+        ).toBeNull();
+      },
+    );
+    it('v3 rejects an active operation lease and expired physical proof', async () => {
+      const x = await abandonedSubject('dispatched');
+      await f.db`update allrice_runtime_operations set lease_owner=${randomUUID()},lease_token_hash=${nativeRootDigest('live')},lease_expires_at=clock_timestamp()+interval '1 minute' where root_run_id=${x.rootRunId}`;
+      await expect(abandonedPlanFor([x])).rejects.toThrow(
+        'NATIVE_CHAT_CUTOFF_LIVE_AUTHORITY',
+      );
+      await f.db`update allrice_runtime_operations set lease_expires_at=clock_timestamp()-interval '1 minute' where root_run_id=${x.rootRunId}`;
+      const p = await abandonedPlanFor([x]),
+        q = proof(p);
+      q.expiresAt = new Date(Date.now() - 1).toISOString();
+      await expect(apply({ plan: p, physicalProof: q })).rejects.toThrow(
+        'NATIVE_TERMINAL_PHYSICAL_PROOF_CHANGED',
+      );
+      expect((await readback(p)).status).toBe('not-found');
+    });
+    it('v3 handles a lost COMMIT acknowledgement only by independent original-request readback', async () => {
+      const x = await abandonedSubject('dispatched'),
+        p = await abandonedPlanFor([x]),
+        before = await abandonedFacts(x);
+      let writes = 0;
+      port = new Proxy(f.db, {
+        get(target, k, receiver) {
+          if (k !== 'begin') return Reflect.get(target, k, receiver);
+          return async (...args: unknown[]) => {
+            writes++;
+            await Reflect.apply(target.begin, target, args);
+            throw Error('synthetic v3 lost COMMIT ACK');
+          };
+        },
+      }) as typeof f.db;
+      try {
+        await expect(applyPlan(p)).rejects.toThrow(
+          'synthetic v3 lost COMMIT ACK',
+        );
+      } finally {
+        port = f.db;
+      }
+      expect(writes).toBe(1);
+      expect(await readback(p)).toMatchObject({
+        status: 'completed',
+        historicalClosure: 'not_reclassified',
+        financialClosure: 'not_claimed',
+      });
+      expect(await abandonedFacts(x)).toEqual(before);
+    });
+    it('v3 fences old RR snapshots of already archived and unarchived chats without changing child state', async () => {
+      for (const archived of [false, true]) {
+        const x = await abandonedSubject('dispatched');
+        if (archived)
+          await f.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${x.session}`;
+        const p = await abandonedPlanFor([x]);
+        await expect(
+          f.db.begin('isolation level repeatable read', async (tx) => {
+            await tx`select id from allrice_runs where id=${x.childRunId}`;
+            await applyPlan(p);
+            await tx`update allrice_runs set state='queued' where id=${x.childRunId}`;
+            throw Error('V3_STALE_RR_WRITE_ACCEPTED');
+          }),
+        ).rejects.toMatchObject({ code: '40001' });
+        expect(
+          (
+            await f.db`select state,completed_at from allrice_runs where id=${x.childRunId}`
+          )[0],
+        ).toEqual({ state: 'running', completed_at: null });
+      }
+    });
+    it('v3 refuses an unconfirmed registered owner rather than treating historical model facts as physical absence', async () => {
+      const x = await abandonedSubject('dispatched'),
+        owner: DshRuntimeOwnedObservation = {
+          version: 1,
+          kind: 'owned',
+          runtimeId: randomUUID(),
+          workerBootId: randomUUID(),
+          workerId: randomUUID(),
+          serviceManifestDigest: nativeRootDigest('synthetic worker'),
+          artifactId,
+          profileId: 'restricted',
+          context: { kind: 'context', ...scope(x) },
+          observedAt: new Date().toISOString(),
+        };
+      const reserved = await reserveDshRuntimeOwner(owner);
+      await expect(abandonedPlanFor([x])).rejects.toThrow(
+        'NATIVE_TERMINAL_REGISTERED_OWNER_UNCONFIRMED',
+      );
+      await recordDshRuntimeCloseObservation(reserved, {
+        version: 1,
+        kind: 'process_closed',
+        runtimeId: owner.runtimeId,
+        workerBootId: owner.workerBootId,
+        ownerDigest: reserved.ownerDigest,
+        observedAt: new Date().toISOString(),
+        fact: {
+          source: 'never_spawned',
+          spawnAttempted: false,
+          reason: 'admission_closed_before_spawn',
+        },
+      });
+      expect((await abandonedPlanFor([x])).schemaVersion).toBe(3);
+    });
+    it('v3 serializes a real pending old dispatch behind cutoff and refuses it after commit', async () => {
+      const x = await abandonedSubject('dispatched'),
+        p = await abandonedPlanFor([x]);
+      let reached!: () => void, release!: () => void;
+      const ready = new Promise<void>((r) => (reached = r)),
+        gate = new Promise<void>((r) => (release = r));
+      port = new Proxy(f.db, {
+        get(target, key, receiver) {
+          if (key !== 'begin') return Reflect.get(target, key, receiver);
+          return async (
+            callback: (tx: postgres.TransactionSql) => Promise<unknown>,
+          ) =>
+            target.begin(async (tx) => {
+              const value = await callback(tx);
+              reached();
+              await gate;
+              return value;
+            });
+        },
+      }) as typeof f.db;
+      const cutoff = applyPlan(p);
+      try {
+        await Promise.race([
+          ready,
+          cutoff.then(() => {
+            throw Error('V3_CUTOFF_DID_NOT_PAUSE');
+          }),
+        ]);
+      } finally {
+        port = f.db;
+      }
+      const tag = 'v3-pending-' + randomUUID();
+      const writer = f.db
+        .begin(async (tx) => {
+          await tx`select set_config('application_name',${tag},true)`;
+          await tx`insert into allrice_native_task_dispatches values(${x.childRunId},99,'started',clock_timestamp())`;
+        })
+        .then(
+          () => ({ passed: true, error: null }),
+          (error) => ({ passed: false, error }),
+        );
+      try {
+        let witness;
+        for (let i = 0; i < 100; i++) {
+          const [row] =
+            await f.db`select pid,wait_event_type,wait_event from pg_stat_activity where application_name=${tag} and datname=current_database()`;
+          if (row?.wait_event_type === 'Lock') {
+            witness = row;
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        expect(witness).toBeDefined();
+        console.info('V3_CUTOFF_PENDING_WRITER', JSON.stringify(witness));
+      } finally {
+        release();
+      }
+      await cutoff;
+      const observed = await writer;
+      expect(observed.passed).toBe(false);
+      expect(String(observed.error)).toContain(
+        'NATIVE_CONTEXT_EXECUTION_RETIRED',
+      );
+      expect((await readback(p)).status).toBe('completed');
+    });
+    it('v3 refuses a real in-flight child writer before cutoff without archiving or changing its request', async () => {
+      const x = await abandonedSubject('dispatched'),
+        p = await abandonedPlanFor([x]);
+      let reached!: () => void, release!: () => void;
+      const ready = new Promise<void>((r) => (reached = r)),
+        gate = new Promise<void>((r) => (release = r));
+      const writer = f.db.begin(async (tx) => {
+        await tx`update allrice_runs set updated_at=clock_timestamp() where id=${x.childRunId}`;
+        reached();
+        await gate;
+      });
+      await ready;
+      try {
+        await expect(applyPlan(p)).rejects.toThrow(
+          'NATIVE_TERMINAL_CUTOFF_BUSY',
+        );
+      } finally {
+        release();
+        await writer;
+      }
+      expect((await readback(p)).status).toBe('not-found');
+      expect(
+        (
+          await f.db`select archived_at from allrice_chat_sessions where id=${x.session}`
+        )[0]!.archived_at,
+      ).toBeNull();
+      const fresh = await abandonedPlanFor([x]);
+      await applyPlan(fresh);
+      expect((await readback(fresh)).status).toBe('completed');
+    });
     it('does not admit live Run/Job or a live operation lease', async () => {
       const x = await subject('unknown-operation');
       await f.db`update allrice_runs set state='running',completed_at=null where id=${x.rootRunId}`;

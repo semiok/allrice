@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { nativeRootDigest } from './native-root-origin.ts';
 import {
   NativeChatTerminalCutoffPlanSchema,
+  NativeChatAbandonedDescendantCutoffPlanSchema,
   NativeTerminalTestPlanSchema,
   nativeTerminalTestPhysicalScope,
 } from './native-terminal-test-retirement.ts';
@@ -56,6 +57,87 @@ const signed = (p: ReturnType<typeof fixture>) => {
   return { ...p, digest: nativeRootDigest(body) };
 };
 describe('explicit historical terminal chat cutoff contract', () => {
+  function abandonedFixture() {
+    const original = fixture(),
+      snapshot = original.snapshots[0]!,
+      root = snapshot.runIds[0]!;
+    const abandonment = {
+      scope: snapshot.scope,
+      rootRunIds: [root],
+      descendants: [
+        {
+          runId: randomUUID(),
+          rootRunId: root,
+          parentRunId: root,
+          delegationId: randomUUID(),
+        },
+      ],
+      preservedUnfinishedAdmissionIds: [] as string[],
+    };
+    const body = {
+      schemaVersion: 3 as const,
+      kind: 'development-test-chat-abandoned-descendant-cutoff' as const,
+      requestId: original.requestId,
+      authorizationEvidenceDigest: original.authorizationEvidenceDigest,
+      snapshots: [
+        {
+          ...snapshot,
+          abandonment,
+          unfinishedAdmissions: [] as Record<string, string>[],
+        },
+      ],
+      abandonedScopes: [abandonment],
+      legacyExecutors: original.legacyExecutors,
+    };
+    return { ...body, digest: nativeRootDigest(body) };
+  }
+  const signAbandoned = (p: ReturnType<typeof abandonedFixture>) => {
+    const body = Object.fromEntries(
+      Object.entries(p).filter(([key]) => key !== 'digest'),
+    );
+    return { ...p, digest: nativeRootDigest(body) };
+  };
+  it('requires a separately named schema3 arm while v1/v2 remain strict', () => {
+    const p = abandonedFixture();
+    expect(NativeChatAbandonedDescendantCutoffPlanSchema.parse(p)).toEqual(p);
+    expect(() => NativeChatTerminalCutoffPlanSchema.parse(p)).toThrow();
+    expect(() => NativeTerminalTestPlanSchema.parse(p)).toThrow();
+    expect(() =>
+      NativeChatAbandonedDescendantCutoffPlanSchema.parse({
+        ...p,
+        schemaVersion: 2,
+      }),
+    ).toThrow();
+    expect(() =>
+      NativeChatAbandonedDescendantCutoffPlanSchema.parse({
+        ...p,
+        kind: 'development-test-chat-terminal-cutoff',
+      }),
+    ).toThrow();
+    expect(nativeTerminalTestPhysicalScope(p).storageNamespaces).toEqual([
+      p.legacyExecutors[0]!.storageNamespace,
+    ]);
+  });
+  it('rejects mismatched declared graph scopes even under a valid new plan digest', () => {
+    const p = abandonedFixture();
+    p.abandonedScopes = structuredClone(p.abandonedScopes);
+    p.abandonedScopes[0]!.descendants[0]!.parentRunId = randomUUID();
+    expect(() => nativeTerminalTestPhysicalScope(signAbandoned(p))).toThrow(
+      'NATIVE_CHAT_ABANDONED_DECLARATION_CHANGED',
+    );
+  });
+  it('requires the exact unfinished admission identities rather than silently omitting financial uncertainty', () => {
+    const p = abandonedFixture();
+    p.snapshots[0]!.unfinishedAdmissions = [{ call_id: randomUUID() }];
+    expect(() => nativeTerminalTestPhysicalScope(signAbandoned(p))).toThrow(
+      'NATIVE_CHAT_ABANDONED_DECLARATION_CHANGED',
+    );
+  });
+  it('cannot replace physical namespace coverage with a schema3 graph declaration', () => {
+    const p = abandonedFixture();
+    p.legacyExecutors = [];
+    expect(() => nativeTerminalTestPhysicalScope(signAbandoned(p))).toThrow();
+  });
   it('keeps chat v1/nonchat plans strict and uses a separate v2 kind', () => {
     const p = fixture();
     expect(NativeChatTerminalCutoffPlanSchema.parse(p)).toEqual(p);
