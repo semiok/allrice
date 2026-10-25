@@ -8,6 +8,7 @@
 #   monitor status [--config <file>]                open alerts, last round, delivery backlog
 #   monitor test-alert [--config <file>]            send one test message
 #   monitor launchd install|remove [--peer] [--config <file>]
+#   monitor ingest-incidents [--config <file>]      write incidents the peer sends on stdin (over SSH)
 #
 # Every check returns findings keyed by what it watches. A key that turns bad opens an
 # alert; while it stays bad only an escalation or a reminder (hourly when critical) goes
@@ -46,6 +47,8 @@ COMMON = {
     'repeatMinutes': {'critical': 60, 'warning': 360},
     'flapLimit': 3,
     'flapMinutes': 60,
+    'flapBreakMinutes': 10,  # a key that stays bad this long breaks its mute: a real outage
+    'publicProxy': '',  # public probes go direct: a dead local proxy is not an outage
     'confirmSeconds': 20,
     'roundTimeoutSeconds': 240,
     'intervalSeconds': 300,
@@ -61,13 +64,15 @@ M1 = dict(
     envFile='~/allrice-dev/.env',
     webPlist='~/Library/LaunchAgents/ai.bplabs.allrice-dev-web.plist',
     workerPlist='~/Library/LaunchAgents/ai.bplabs.allrice-dev-worker.plist',
-    deployLockOwner='~/allrice-dev/.local/deploy.lock.owner',
+    deployLock='~/allrice-dev/.local/deploy.lock',
     deployInflight='~/allrice-dev/qa/deploy-inflight',
     deployGraceMinutes=45,
     psql='/opt/homebrew/bin/psql',
     peerSsh='huihuimac',
     peerHeartbeat='.local/state/allrice-monitor-peer/heartbeat.json',
-    peerStaleMinutes=15,
+    peerStaleMinutes=4,  # the peer starts a round every minute and writes its heartbeat then
+    peerUnfinishedMinutes=5,
+    peerTelegramStuckMinutes=5,
     incidents=True,
     # Left empty, these come from the shared-Dev launchd files and .env, so the monitor
     # follows a redeploy or a port change without being edited.
@@ -83,12 +88,19 @@ PEER = dict(
     stateDir='~/.local/state/allrice-monitor-peer',
     m1Ssh='m1',
     m1Heartbeat='allrice-dev/monitor/heartbeat.json',
-    m1StaleMinutes=7,  # M1 writes a heartbeat at the start and end of every 5-minute round
-    m1UnfinishedMinutes=12,
-    m1TelegramStuckMinutes=20,
-    intervalSeconds=120,
+    m1DeployLock='allrice-dev/.local/deploy.lock',
+    m1Monitor='allrice-dev/bin/monitor',  # writes this side's incidents into M1's table
+    m1MonitorConfig=None,
+    # M1 starts a round every 5 minutes and writes its heartbeat then: 7 minutes stale plus
+    # one peer interval keeps "M1 monitor stopped" under 10 minutes.
+    m1StaleMinutes=7,
+    m1UnfinishedMinutes=6,
+    m1TelegramStuckMinutes=8,  # two failed rounds in a row
+    deployGraceMinutes=45,
+    intervalSeconds=60,
+    roundTimeoutSeconds=150,
     publicUrl=None,  # default: the URL M1 reports in its heartbeat
-    incidents=False,
+    incidents=True,
 )
 
 
@@ -109,7 +121,8 @@ def run(cmd, timeout=20, env=None, stdin=None):
     full = dict(os.environ, PATH=SYS_PATH)
     full.update(env or {})
     try:
-        p = subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=timeout, env=full)
+        kw = {'input': stdin} if stdin is not None else {'stdin': subprocess.DEVNULL}
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=full, **kw)
         return p.returncode, p.stdout, p.stderr
     except subprocess.TimeoutExpired:
         return 124, '', 'timed out after %ss' % timeout
@@ -237,8 +250,17 @@ class Round:
         self.cfg, self.peer, self.now = cfg, peer, time.time()
         os.makedirs(cfg['stateDir'], mode=0o700, exist_ok=True)
         self.state_file = os.path.join(cfg['stateDir'], 'state.json')
-        self.state = read_json(self.state_file, {})
-        self.facts = {}
+        self.state, self.state_lost = {}, None
+        if os.path.exists(self.state_file):
+            try:
+                with open(self.state_file) as f:
+                    self.state = json.load(f)
+            except (OSError, ValueError):
+                # Keep the unreadable file for a person; the round goes on from scratch
+                # and says so, instead of silently dropping the backlog it held.
+                self.state_lost = '%s.corrupt-%d' % (self.state_file, self.now)
+                os.replace(self.state_file, self.state_lost)
+        self.facts, self.progress = {}, None
 
     def save(self):
         write_json(self.state_file, self.state)
@@ -246,11 +268,17 @@ class Round:
     def psql(self, sql, url=None, variables=None, timeout=30, readonly=True):
         if not url:
             raise CheckError('no database URL configured')
+        parts, env = urllib.parse.urlsplit(url), {}
+        if parts.password:  # keep it out of `ps`
+            env['PGPASSWORD'] = urllib.parse.unquote(parts.password)
+            host = parts.hostname + (':%d' % parts.port if parts.port else '')
+            url = urllib.parse.urlunsplit(parts._replace(netloc='%s@%s' % (parts.username, host) if parts.username else host))
         cmd = [self.cfg['psql'], url, '-X', '-q', '-A', '-t', '-v', 'ON_ERROR_STOP=1']
         for k, v in (variables or {}).items():
             cmd += ['-v', '%s=%s' % (k, v)]
         opts = '-c statement_timeout=15000' + (' -c default_transaction_read_only=on' if readonly else '')
-        rc, out, err = run(cmd, timeout, {'PGCONNECT_TIMEOUT': '5', 'PGAPPNAME': 'allrice-monitor', 'PGOPTIONS': opts}, sql)
+        env.update(PGCONNECT_TIMEOUT='5', PGAPPNAME='allrice-monitor', PGOPTIONS=opts)
+        rc, out, err = run(cmd, timeout, env, sql)
         if rc:
             raise CheckError(short(err or 'psql exit %d' % rc))
         return out.strip()
@@ -279,13 +307,16 @@ def evaluate(r, findings, ran=()):
                 muted = cur.get('mutedUntil', 0) > now
                 events.append({'event': 'recovered', 'finding': f, 'alert': cur, 'silent': muted})
                 history.append({'at': now, 'event': 'recovered', 'key': key, 'title': cur['title']})
-                incident(r, 'monitor_recovered', 'info', f, cur)
+                incident(r, 'monitor_recovered', 'info', f, cur, event='recovered')
+                if muted:  # told once the mute ends, if it is still good then
+                    r.state.setdefault('mutedRecoveries', {})[key] = {'title': cur['title'], 'since': cur['since']}
             continue
         if not cur:
             recent = [t for t in opens.get(key, []) if now - t < cfg['flapMinutes'] * 60] + [now]
             opens[key] = recent
             muted_until = r.state.get('muted', {}).get(key, {}).get('mutedUntil', 0)
             cur = alerts[key] = dict(f, since=now, notifiedAt=now, notifiedSeverity=sev, incidentId=str(uuid.uuid4()))
+            r.state.get('mutedRecoveries', {}).pop(key, None)
             event = 'opened'
             if muted_until > now:
                 cur.update(mutedUntil=muted_until, silentOpen=True)
@@ -295,23 +326,31 @@ def evaluate(r, findings, ran=()):
                 event = 'flapping'
             events.append({'event': event, 'finding': f, 'alert': cur, 'silent': muted_until > now})
             history.append({'at': now, 'event': 'opened', 'key': key, 'severity': sev, 'title': f['title']})
-            incident(r, 'monitor_alert', sev, f, cur, cur['incidentId'])
+            incident(r, 'monitor_alert', sev, f, cur, cur['incidentId'], event=event)
             continue
-        escalated = RANK[sev] > RANK[cur['notifiedSeverity']]
+        escalated = RANK[sev] > RANK[cur['notifiedSeverity']]  # only above the highest already sent
         since, inc, notified, muted = cur['since'], cur['incidentId'], cur['notifiedAt'], cur.get('mutedUntil', 0)
         cur.update(f, since=since, incidentId=inc)
         if escalated:
             cur.update(notifiedAt=now, notifiedSeverity=sev)
             events.append({'event': 'escalated', 'finding': f, 'alert': cur, 'silent': False})
-            incident(r, 'monitor_alert', sev, f, cur)
-        elif muted <= now and (cur.get('silentOpen') or now - notified >= cfg['repeatMinutes'][sev] * 60):
-            cur.update(notifiedAt=now, notifiedSeverity=sev, silentOpen=False)  # also: opened while muted, still bad after
+            incident(r, 'monitor_alert', sev, f, cur, event='escalated')
+        elif muted > now and cur.get('silentOpen') and now - since >= cfg['flapBreakMinutes'] * 60:
+            # Opened during a flapping mute and still bad: no longer a flap, an outage.
+            cur.update(notifiedAt=now, notifiedSeverity=max(sev, cur['notifiedSeverity'], key=RANK.get), silentOpen=False, mutedUntil=0)
+            r.state.get('muted', {}).pop(key, None)
             events.append({'event': 'reminder', 'finding': f, 'alert': cur, 'silent': False})
-        if RANK[sev] < RANK[cur['notifiedSeverity']]:
-            cur['notifiedSeverity'] = sev  # a later rise back up is an escalation again
+            incident(r, 'monitor_alert', sev, f, cur, event='reminder')
+        elif muted <= now and (cur.get('silentOpen') or now - notified >= cfg['repeatMinutes'][sev] * 60):
+            cur.update(notifiedAt=now, notifiedSeverity=max(sev, cur['notifiedSeverity'], key=RANK.get), silentOpen=False)
+            events.append({'event': 'reminder', 'finding': f, 'alert': cur, 'silent': False})
+            incident(r, 'monitor_alert', sev, f, cur, event='reminder')
     for key in list(r.state.get('muted', {})):
         if r.state['muted'][key]['mutedUntil'] <= now:
             del r.state['muted'][key]
+            gone = r.state.get('mutedRecoveries', {}).pop(key, None)
+            if gone and key not in alerts:
+                events.append({'event': 'recovered', 'finding': finding(key, 'ok', gone['title']), 'alert': gone, 'silent': False})
     for key in list(opens):
         opens[key] = [t for t in opens[key] if now - t < cfg['flapMinutes'] * 60]
         if not opens[key]:
@@ -320,52 +359,58 @@ def evaluate(r, findings, ran=()):
     return events
 
 
+MESSAGE_LIMIT = 3500  # characters; Telegram allows 4096 UTF-16 units per message
+
+
 def compose(r, events):
+    """The messages for one round: everything that changed, split between alerts, never
+    inside one, so a long round cannot cut the later alerts off."""
     cfg, now = r.cfg, r.now
     shown = [e for e in events if not e['silent']]
     if not shown:
-        return None
-    bad = [e for e in shown if e['event'] != 'recovered']
+        return []
+    bad = sorted([e for e in shown if e['event'] != 'recovered'], key=lambda e: -RANK[e['finding']['severity']])
     good = [e for e in shown if e['event'] == 'recovered']
     worst = max([RANK[e['finding']['severity']] for e in bad] or [0])
     icon = ICON['critical'] if worst == 2 else ICON['warning'] if worst == 1 else ICON['ok']
-    head = '%s %s%s：' % (icon, '[%s] ' % cfg['label'] if cfg['label'] else '', cfg['name'])
-    parts = []
-    if bad:
-        parts.append('%d 项告警' % len(bad))
-    if good:
-        parts.append('%d 项恢复' % len(good))
-    lines = [head + '，'.join(parts)]
-    for e in sorted(bad, key=lambda e: -RANK[e['finding']['severity']]):
+    parts = (['%d 项告警' % len(bad)] if bad else []) + (['%d 项恢复' % len(good)] if good else [])
+    head = '%s %s%s：%s' % (icon, '[%s] ' % cfg['label'] if cfg['label'] else '', cfg['name'], '，'.join(parts))
+    blocks = []
+    for e in bad:
         f, a = e['finding'], e['alert']
         tag = {'opened': '', 'escalated': '（升级）', 'reminder': '（仍未恢复，已 %s）' % ago(now - a['since']),
                'flapping': '（1 小时内反复 %d 次，之后 1 小时不再逐条通知）' % cfg['flapLimit']}[e['event']]
-        lines.append('')
-        lines.append('%s [%s] %s%s' % (ICON[f['severity']], WORD[f['severity']], f['title'], tag))
+        lines = ['%s [%s] %s%s' % (ICON[f['severity']], WORD[f['severity']], f['title'], tag)]
         if f['detail']:
-            lines.append('   ' + f['detail'])
+            lines.append('   ' + short(f['detail'], 800))
         if f['step']:
             lines.append('   第一步：' + f['step'])
         if f['runbook']:
             lines.append('   手册：' + cfg['runbooks'] + f['runbook'])
-    if good:
-        lines.append('')
-        for e in good:
-            lines.append('✅ 已恢复：%s（持续 %s）' % (e['alert']['title'], ago(now - e['alert']['since'])))
-    lines.append('')
-    lines.append(time.strftime('%m-%d %H:%M', time.localtime(now)) + ' · ' + socket.gethostname().split('.')[0])
-    return '\n'.join(lines)
+        blocks.append('\n'.join(lines))
+    blocks += ['✅ 已恢复：%s（持续 %s）' % (e['alert']['title'], ago(now - e['alert']['since'])) for e in good]
+    foot = time.strftime('%m-%d %H:%M', time.localtime(now)) + ' · ' + socket.gethostname().split('.')[0]
+    messages, cur = [], []
+    for b in blocks:
+        if cur and len('\n\n'.join(cur + [b])) > MESSAGE_LIMIT:
+            messages.append(cur)
+            cur = []
+        cur.append(b)
+    messages.append(cur)
+    n = len(messages)
+    return ['\n\n'.join([head + ('（%d/%d）' % (i + 1, n) if n > 1 else '')] + m + [foot]) for i, m in enumerate(messages)]
 
 
-def incident(r, kind, severity, f, alert, incident_id=None):
+def incident(r, kind, severity, f, alert, incident_id=None, event=None):
     if not r.cfg.get('incidents'):
         return
     r.state.setdefault('incidentOutbox', []).append({
         'id': incident_id or str(uuid.uuid4()), 'kind': kind, 'severity': severity,
         'detailCode': 'monitor.' + f['key'], 'createdAt': time.strftime('%Y-%m-%dT%H:%M:%S%z', time.localtime(r.now)),
         'metadata': {'source': 'allrice-monitor', 'monitor': r.cfg['name'], 'label': r.cfg['label'], 'host': socket.gethostname(),
-                     'title': alert['title'], 'detail': f['detail'] or alert.get('detail', ''), 'runbook': alert.get('runbook', ''),
-                     'alertId': alert['incidentId'], 'since': int(alert['since']), 'durationSeconds': int(r.now - alert['since'])},
+                     'event': event, 'title': alert['title'], 'detail': f['detail'] or alert.get('detail', ''),
+                     'runbook': alert.get('runbook', ''), 'alertId': alert['incidentId'], 'since': int(alert['since']),
+                     'durationSeconds': int(r.now - alert['since'])},
     })
 
 
@@ -394,6 +439,36 @@ def flush_incidents(r):
         r.state.pop('incidentFailingSince', None)
 
 
+def flush_incidents_remote(r):
+    """The huihuimac side has no database: its incidents go to M1's table through the
+    monitor installed there (`monitor ingest-incidents`), as soon as M1 answers again."""
+    box = r.state.get('incidentOutbox', [])[-200:]
+    r.state['incidentOutbox'] = box
+    if not box:
+        return
+    cmd = shlex.quote(r.cfg['m1Monitor']) + ' ingest-incidents'
+    if r.cfg.get('m1MonitorConfig'):
+        cmd += ' --config ' + shlex.quote(r.cfg['m1MonitorConfig'])
+    rc, _, err = run(['/usr/bin/ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', r.cfg['m1Ssh'], cmd], 60,
+                     stdin=json.dumps(box, ensure_ascii=False))
+    if rc:
+        r.state['incidentError'] = {'at': r.now, 'error': 'ingest on %s failed (exit %d): %s' % (r.cfg['m1Ssh'], rc, short(err, 200))}
+    else:
+        r.state['incidentOutbox'], r.state['incidentError'] = [], None
+
+
+def ingest_incidents(cfg, stream):
+    """`monitor ingest-incidents`: write incidents another monitor sends on stdin."""
+    rows = json.load(stream)
+    ok = isinstance(rows, list) and all(
+        isinstance(i, dict) and i.get('kind') in ('monitor_alert', 'monitor_recovered') and str(i.get('detailCode', '')).startswith('monitor.')
+        and isinstance(i.get('metadata'), dict) and re.match(r'^[0-9a-f-]{36}$', str(i.get('id', ''))) for i in rows)
+    if not ok:
+        sys.exit('ingest-incidents: expected a JSON list of monitor incidents')
+    Round(cfg).psql(INSERT_INCIDENTS, cfg['incidentDatabaseUrl'], {'rows': json.dumps(rows, ensure_ascii=False)}, readonly=False)
+    print('ingested %d' % len(rows))
+
+
 # ---------- Telegram ----------
 
 
@@ -403,27 +478,36 @@ def telegram_secrets(cfg):
 
 
 def send_telegram(cfg, text):
+    """Send one message. With the default (system proxy settings) a failure is retried
+    once directly, so a dead local proxy does not silence the alerts."""
     token, chat = telegram_secrets(cfg)
     if not token or not chat:
         raise CheckError('Telegram is not configured (%s)' % cfg['telegramEnv'])
-    data = urllib.parse.urlencode({'chat_id': chat, 'text': text[:4000], 'disable_web_page_preview': 'true'}).encode()
-    try:
-        with opener(cfg['telegramProxy']).open('https://api.telegram.org/bot%s/sendMessage' % token, data, timeout=20) as resp:
-            body = json.load(resp)
-    except urllib.error.HTTPError as err:
-        body = {'ok': False, 'description': 'HTTP %s %s' % (err.code, short(err.read(2000) if err.fp else b''))}
-    except Exception as err:
-        body = {'ok': False, 'description': short(getattr(err, 'reason', err))}
+    data = urllib.parse.urlencode({'chat_id': chat, 'text': text[:4090], 'disable_web_page_preview': 'true'}).encode()
+    routes = [cfg['telegramProxy']] + ([''] if cfg['telegramProxy'] is None else [])
+    for proxy in routes:
+        try:
+            with opener(proxy).open('https://api.telegram.org/bot%s/sendMessage' % token, data, timeout=20) as resp:
+                body = json.load(resp)
+        except urllib.error.HTTPError as err:
+            body = {'ok': False, 'description': 'HTTP %s %s' % (err.code, short(err.read(2000) if err.fp else b''))}
+            break  # Telegram answered: another route will not help
+        except Exception as err:
+            body = {'ok': False, 'description': short(getattr(err, 'reason', err))}
+            continue
+        if body.get('ok') or body.get('error_code'):
+            break
     if not body.get('ok'):
         raise CheckError(str(body.get('description', 'send failed')).replace(token, '<token>'))
 
 
-def deliver(r, text):
-    """Queue text and send everything queued, oldest first; what fails waits for the next round."""
+def deliver(r, messages):
+    """Queue the messages and send everything queued, oldest first; what fails waits for
+    the next round. `failingSince` (in the heartbeat) lets the other machine tell a
+    monitor that has stopped being able to deliver."""
     box = r.state.setdefault('outbox', [])
     tg = r.state.setdefault('telegram', {})
-    if text:
-        box.append(text)
+    box.extend(m for m in ([messages] if isinstance(messages, str) else messages or []) if m)
     if len(box) > 20:
         tg['dropped'] = tg.get('dropped', 0) + len(box) - 20
         del box[:-20]
@@ -433,9 +517,12 @@ def deliver(r, text):
             send_telegram(r.cfg, note + box[0])
         except CheckError as err:
             tg['lastError'] = {'at': r.now, 'error': str(err)}
+            tg.setdefault('failingSince', r.now)
             return False
         box.pop(0)
         tg['lastOkAt'], tg['dropped'] = time.time(), 0
+        tg.pop('failingSince', None)
+        r.save()  # sent is sent: a failure later in the round must not send it again
     return True
 
 
@@ -468,23 +555,34 @@ def ready(url, timeout=8):
     return doc, ''
 
 
+def lock_holders(path):
+    """PIDs that have the lock file open. deploy-dev, scripts/m1/install and `deploy-lock
+    run` keep it open exactly while they hold the lock (their children inherit it), so an
+    open file means held. Asked with lsof, never by probing the lock: even a brief probe
+    could make a deploy that starts at that moment fail as busy."""
+    rc, out, _ = run(['/usr/sbin/lsof', '-t', '--', path], 10)
+    return out.split() if rc == 0 else []
+
+
+def in_grace(r, name, held):
+    """True while `held` and for at most deployGraceMinutes from when it was first seen:
+    planned work that runs longer is judged like an outage again."""
+    seen = r.state.setdefault('deploySeen', {})
+    if not held:
+        seen.pop(name, None)
+        return False
+    since = seen.setdefault(name, r.now)
+    r.facts['deployingUntil'] = int(since + r.cfg['deployGraceMinutes'] * 60)
+    return r.now < r.facts['deployingUntil']
+
+
 def deploying(r):
     """True while a deploy or other planned work holds the deploy lock (AGENTS.md section 5,
-    e.g. a manual restart): Web, Worker and the database may be down on purpose then, so
-    they are not judged, for at most deployGraceMinutes. Read
-    from the owner file the holder writes (is its pid alive?) without touching the lock:
-    even a brief probe of it could make a deploy starting at that moment fail as busy."""
-    owner = read_json(expand(r.cfg['deployLockOwner']), {})
-    pid, alive = owner.get('pid'), False
-    if isinstance(pid, int) and pid > 1:
-        try:
-            os.kill(pid, 0)
-            alive = True
-        except PermissionError:
-            alive = True
-        except OSError:
-            alive = False
-    return alive and r.now - owner.get('startedAt', 0) < r.cfg['deployGraceMinutes'] * 60
+    e.g. a manual restart): Web, Worker, the database and the public entry may be down on
+    purpose then, so they are not judged."""
+    if 'deploying' not in r.facts:
+        r.facts['deploying'] = in_grace(r, 'm1', lock_holders(expand(r.cfg['deployLock'])))
+    return r.facts['deploying']
 
 
 def check_deploy(r):
@@ -545,28 +643,58 @@ def probe_public(r, url, key='public_entry', where='M1 本机'):
                     'm1-tunnel.md', 'curl -sS -o /dev/null -w "%%{http_code}\\n" %s' % url)]
 
 
-def read_remote_heartbeat(target, path):
-    """(heartbeat dict or None, error text, ssh reachable)."""
-    rc, out, err = run(['/usr/bin/ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', target, 'cat ' + shlex.quote(path)], 30)
+def read_remote_heartbeat(target, path, lock=None):
+    """(heartbeat dict or None, error text, ssh reachable, lock holders or None)."""
+    cmd = 'cat -- %s' % shlex.quote(path)
+    if lock:
+        cmd = 'printf "%%s\\n" "$(cat -- %s 2>&1)"; echo "@@lock $(/usr/sbin/lsof -t -- %s 2>/dev/null | tr "\\n" " ")"' % (
+            shlex.quote(path), shlex.quote(lock))
+    rc, out, err = run(['/usr/bin/ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', target, cmd], 30)
     if rc == 255 or rc == 124:
-        return None, 'SSH 连不上 %s：%s' % (target, short(err, 160)), False
+        return None, 'SSH 连不上 %s：%s' % (target, short(err, 160)), False, None
+    holders = None
+    if lock:
+        body, _, tail = out.rpartition('@@lock')
+        out, holders = body, tail.split()
     if rc:
-        return None, '读不到 %s:%s（退出码 %d）：%s' % (target, path, rc, short(err, 120)), True
+        return None, '读不到 %s:%s（退出码 %d）：%s' % (target, path, rc, short(err, 120)), True, holders
     try:
-        return json.loads(out), '', True
+        return json.loads(out), '', True, holders
     except ValueError:
-        return None, '%s:%s 不是有效 JSON' % (target, path), True
+        return None, '读不到 %s:%s：%s' % (target, path, short(out, 120)), True, holders
+
+
+def judge_heartbeat(r, hb, keys, titles, stale, unfinished, stuck, severity, runbook, step):
+    """Findings about the other machine's monitor from its heartbeat, the same in both
+    directions: it is being started (`at`), its rounds finish (`unfinishedSince` is kept
+    while rounds start and die), and it can deliver (`telegram.failingSince`)."""
+    age, since = r.now - hb.get('at', 0), hb.get('unfinishedSince') if hb.get('phase') == 'running' else None
+    if age > stale * 60:
+        detail = '心跳已 %s 没更新（上限 %d 分钟）：监控没在运行或卡住了' % (ago(age), stale)
+    elif since and r.now - since > unfinished * 60:
+        detail = '每轮都开始了，但已 %s 没有一轮跑完（上限 %d 分钟）：监控每轮都在出错' % (ago(r.now - since), unfinished)
+    else:
+        detail = ''
+    tg, tg_detail = hb.get('telegram') or {}, ''
+    if not tg.get('configured'):
+        tg_detail = '没有配置 telegram.env'
+    elif tg.get('pending') and tg.get('failingSince') and r.now - tg['failingSince'] > stuck * 60:
+        tg_detail = '已 %s 发不出去，积压 %s 条：%s；它那边未恢复的告警：%s' % (
+            ago(r.now - tg['failingSince']), tg.get('pending'), (tg.get('lastError') or {}).get('error', ''),
+            '、'.join('%s(%s)' % kv for kv in sorted((hb.get('openAlerts') or {}).items())) or '无')
+    return [finding(keys[0], severity if detail else 'ok', titles[0], detail, runbook, step),
+            finding(keys[1], 'warning' if tg_detail else 'ok', titles[1], tg_detail, runbook, step)]
 
 
 def check_peer(r):
-    hb, err, _ = read_remote_heartbeat(r.cfg['peerSsh'], r.cfg['peerHeartbeat'])
-    stale = r.cfg['peerStaleMinutes'] * 60
-    if hb and r.now - hb.get('at', 0) <= stale:
-        r.facts['peer'] = hb
-        return [finding('peer', 'ok', 'huihuimac 看门失效')]
-    detail = err or '心跳已 %s 没更新（上限 %d 分钟）' % (ago(r.now - hb.get('at', 0)), stale // 60)
-    return [finding('peer', 'warning', 'huihuimac 看门失效', detail + '；M1 整机故障时将没人报警', 'm1-monitor.md',
-                    'ssh %s "launchctl print gui/\\$(id -u)/ai.bplabs.allrice-monitor-peer | head -20"' % r.cfg['peerSsh'])]
+    """The huihuimac watchdog: without it nobody would notice M1 itself going down."""
+    hb, err, _, _ = read_remote_heartbeat(r.cfg['peerSsh'], r.cfg['peerHeartbeat'])
+    step = 'ssh %s "launchctl print gui/\\$(id -u)/ai.bplabs.allrice-monitor-peer | head -20"' % r.cfg['peerSsh']
+    if not hb:
+        return [finding('peer', 'warning', 'huihuimac 看门失效', err + '；M1 整机故障时将没人报警', 'm1-monitor.md', step)]
+    r.facts['peer'] = hb
+    return judge_heartbeat(r, hb, ('peer', 'peer_telegram'), ('huihuimac 看门失效', 'huihuimac 看门发不出 Telegram'), r.cfg['peerStaleMinutes'],
+                           r.cfg['peerUnfinishedMinutes'], r.cfg['peerTelegramStuckMinutes'], 'warning', 'm1-monitor.md', step)
 
 
 def check_monitor(r):
@@ -594,18 +722,22 @@ def run_checks(r, checks):
     """Run the checks; (findings, names of the checks that judged this round). A check
     returns None when it cannot judge (what it needs is down): its alerts stay as they
     are, because unknown is not "recovered". A check that fails itself raises an alert of
-    its own ("check:<name>"), which recovers once it runs cleanly again."""
+    its own ("check:<name>"), which recovers once it runs cleanly again. Progress lives on
+    the round, so a round that times out still reports what it found (collect_checks)."""
     wanted = r.cfg['checks']
     checks = [c for c in checks if (wanted is None or c[0] in wanted) and c[0] not in r.cfg['skipChecks']]
-    results, errors = {}, {}
+    p = r.progress = {'checks': checks, 'results': {}, 'errors': {}, 'current': None}
+    results, errors = p['results'], p['errors']
 
     def one(name, fn):
+        p['current'] = name
         try:
             results[name], errors[name] = fn(r), None
         except Exception as err:  # a bug in one check must not stop the others or the round
             results[name] = None
             text = str(err) if isinstance(err, CheckError) else '%s: %s' % (type(err).__name__, short(err, 200))
             errors[name] = finding('check:' + name, 'warning', '检查 %s 本身出错' % name, text, 'm1-monitor.md', 'monitor status')
+        p['current'] = None
 
     def bad(name):
         return errors.get(name) or any(f['severity'] != 'ok' for f in results.get(name) or [])
@@ -619,34 +751,51 @@ def run_checks(r, checks):
         time.sleep(r.cfg['confirmSeconds'])
         for name, fn, _, _ in again:
             one(name, fn)
+    return collect_checks(r)
+
+
+def collect_checks(r):
+    p = r.progress
     out = []
-    for name, _, _, _ in checks:
-        if name in results:
-            out.append(errors[name] or finding('check:' + name, 'ok', '检查 %s 本身出错' % name))
-            out += results[name] or []
-    return out, {name for name in results if results[name] is not None}
+    for name, _, _, _ in p['checks']:
+        if name in p['errors']:
+            out.append(p['errors'][name] or finding('check:' + name, 'ok', '检查 %s 本身出错' % name))
+            out += p['results'][name] or []
+    return out, {name for name, res in p['results'].items() if res is not None}
 
 
 # ---------- rounds ----------
 
 
-def heartbeat(r, took, error=None, phase='done'):
-    """Written when a round starts and when it ends, so its age stays below one interval
-    plus a little even when a round is slow; a round that never ends stops it."""
-    tg = r.state.get('telegram', {})
-    token, chat = telegram_secrets(r.cfg)
+def hb_tools():
+    """The installed commit (TOOLS_VERSION next to this file), 'source' when run from a checkout."""
     try:
         with open(os.path.join(HERE, 'TOOLS_VERSION')) as f:
-            tools = f.read().split()[0]
+            return f.read().split()[0]
     except (OSError, IndexError):
-        tools = 'source'
-    write_json(os.path.join(r.cfg['stateDir'], 'heartbeat.json'), {
-        'at': int(time.time()), 'phase': phase, 'lastDoneAt': (r.state.get('lastRound') or {}).get('at'),
+        return 'source'
+
+
+def heartbeat(r, took, error=None, phase='done'):
+    """Written when a round starts and when it ends. `at` shows the monitor is being
+    started; `unfinishedSince` is carried over from round to round while none of them
+    finishes (a monitor that starts and dies every time); `telegram.failingSince` shows
+    since when it cannot deliver."""
+    path = os.path.join(r.cfg['stateDir'], 'heartbeat.json')
+    prev = read_json(path, {})
+    unfinished = None
+    if phase == 'running':
+        unfinished = (prev.get('unfinishedSince') if prev.get('phase') == 'running' else None) or int(time.time())
+    tg = r.state.get('telegram', {})
+    token, chat = telegram_secrets(r.cfg)
+    tools = hb_tools()
+    write_json(path, {
+        'at': int(time.time()), 'phase': phase, 'unfinishedSince': unfinished, 'lastDoneAt': (r.state.get('lastRound') or {}).get('at'),
         'host': socket.gethostname(), 'name': r.cfg['name'], 'label': r.cfg['label'], 'tools': tools,
         'roundSeconds': round(took, 1), 'roundError': error, 'publicUrl': r.cfg.get('publicUrl'),
         'openAlerts': {k: a['severity'] for k, a in r.state.get('alerts', {}).items()},
-        'telegram': {'configured': bool(token and chat), 'lastOkAt': tg.get('lastOkAt'), 'pending': len(r.state.get('outbox', [])),
-                     'lastError': tg.get('lastError')},
+        'telegram': {'configured': bool(token and chat), 'lastOkAt': tg.get('lastOkAt'), 'failingSince': tg.get('failingSince'),
+                     'pending': len(r.state.get('outbox', [])), 'lastError': tg.get('lastError')},
         'incidents': {'pending': len(r.state.get('incidentOutbox', [])), 'lastError': r.state.get('incidentError')},
     })
 
@@ -682,13 +831,22 @@ def do_round(cfg, peer):
         findings, ran = run_checks(r, PEER_CHECKS if peer else M1_CHECKS)
         findings.append(finding('monitor_round', 'ok', '监控本轮超时'))
     except RoundTimeout:
-        error = 'round timed out after %ss' % cfg['roundTimeoutSeconds']
-        findings, ran = [finding('monitor_round', 'critical', '监控本轮超时', error + '：某项检查卡住了', 'm1-monitor.md', 'monitor status')], ()
+        # Keep what the finished checks found; only the stuck one stays unknown.
+        stuck = (r.progress or {}).get('current') or '?'
+        error = 'round timed out after %ss in check %s' % (cfg['roundTimeoutSeconds'], stuck)
+        findings, ran = collect_checks(r) if r.progress else ([], set())
+        findings.append(finding('monitor_round', 'critical', '监控本轮超时', '检查 %s 卡住，%s 秒没跑完；其余检查的结果照常报告' % (
+            stuck, cfg['roundTimeoutSeconds']), 'm1-monitor.md', 'monitor status'))
+    findings.append(finding('monitor_state', 'warning' if r.state_lost else 'ok', '监控状态文件损坏',
+                            '读不出来，已另存为 %s；之前的待发通知和告警状态丢了，已有的故障会重新报一次' % r.state_lost,
+                            'm1-monitor.md', 'monitor status'))
     signal.alarm(90)  # delivery has its own timeouts; this only bounds a hung write
     try:
         r.now = time.time()
         events = evaluate(r, findings, ran)
-        if not peer:
+        if peer:
+            flush_incidents_remote(r)
+        else:
             flush_incidents(r)
         deliver(r, compose(r, events))
         r.state['lastRound'] = {'at': r.now, 'seconds': round(time.time() - start, 1), 'error': error}
@@ -707,36 +865,27 @@ def do_round(cfg, peer):
 
 
 def check_m1(r):
-    """M1 answers over SSH, its monitor's heartbeat is fresh, and that monitor can deliver.
-    While M1 cannot be reached, only m1_reachable is judged: the heartbeat is unknown."""
+    """M1 answers over SSH, its monitor runs, finishes its rounds and can deliver. While M1
+    cannot be reached only m1_reachable is judged: its heartbeat is unknown, not stale."""
     cfg = r.cfg
-    hb, err, reachable = read_remote_heartbeat(cfg['m1Ssh'], cfg['m1Heartbeat'])
+    hb, err, reachable, holders = read_remote_heartbeat(cfg['m1Ssh'], cfg['m1Heartbeat'], cfg['m1DeployLock'])
     step = 'ssh %s "~/allrice-dev/bin/monitor status"' % cfg['m1Ssh']
     out = [finding('m1_reachable', 'ok' if reachable else 'critical', 'M1 连不上', err + '（整机宕机、断网或 Tailscale 断开）',
                    'm1-monitor.md', 'tailscale status; ssh -v %s true' % cfg['m1Ssh'])]
     if not reachable:
         return out
+    r.facts['m1Deploying'] = in_grace(r, 'm1', bool(holders))
     if not hb:
         return out + [finding('m1_heartbeat', 'critical', 'M1 监控停了', err, 'm1-monitor.md', step)]
-    age, done = r.now - hb.get('at', 0), r.now - (hb.get('lastDoneAt') or hb.get('at', 0))
-    if age > cfg['m1StaleMinutes'] * 60:
-        detail = '心跳已 %s 没更新（上限 %d 分钟）：监控没在运行或整轮卡住' % (ago(age), cfg['m1StaleMinutes'])
-    elif done > cfg['m1UnfinishedMinutes'] * 60:
-        detail = '每轮都开始了，但已 %s 没有一轮跑完（上限 %d 分钟）：监控每轮都在出错' % (ago(done), cfg['m1UnfinishedMinutes'])
-    else:
-        detail = ''
-    out.append(finding('m1_heartbeat', 'critical' if detail else 'ok', 'M1 监控停了', detail, 'm1-monitor.md', step))
-    tg = hb.get('telegram') or {}
-    stuck = not tg.get('configured') or (tg.get('pending') and r.now - (tg.get('lastOkAt') or 0) > cfg['m1TelegramStuckMinutes'] * 60)
-    out.append(finding('m1_telegram', 'warning' if stuck else 'ok', 'M1 监控发不出 Telegram',
-                       '没有配置 telegram.env' if not tg.get('configured') else
-                       '积压 %s 条：%s' % (tg.get('pending'), (tg.get('lastError') or {}).get('error', '')), 'm1-monitor.md', step))
     if hb.get('publicUrl'):
         r.state['m1PublicUrl'] = hb['publicUrl']
-    return out
+    return out + judge_heartbeat(r, hb, ('m1_heartbeat', 'm1_telegram'), ('M1 监控停了', 'M1 监控发不出 Telegram'), cfg['m1StaleMinutes'],
+                                 cfg['m1UnfinishedMinutes'], cfg['m1TelegramStuckMinutes'], 'critical', 'm1-monitor.md', step)
 
 
 def check_outside(r):
+    if r.facts.get('m1Deploying'):
+        return None  # a deploy on M1 stops Web on purpose
     return probe_public(r, r.cfg['publicUrl'] or r.state.get('m1PublicUrl'), 'public_entry', ' M1 之外（huihuimac）')
 
 
@@ -792,7 +941,7 @@ def status(cfg):
 
 def main(argv):
     p = argparse.ArgumentParser(prog='monitor')
-    p.add_argument('command', choices=['run', 'peer', 'status', 'test-alert', 'launchd'])
+    p.add_argument('command', choices=['run', 'peer', 'status', 'test-alert', 'launchd', 'ingest-incidents'])
     p.add_argument('action', nargs='?', choices=['install', 'remove'])
     p.add_argument('--config')
     p.add_argument('--peer', action='store_true')
@@ -808,11 +957,13 @@ def main(argv):
         findings, ran = run_checks(r, PEER_CHECKS if peer else M1_CHECKS)
         for f in findings:
             print('%-8s %-28s %s %s' % (f['severity'], f['key'], f['title'] if f['severity'] != 'ok' else '', f['detail'] if f['severity'] != 'ok' else ''))
-        print(compose(r, evaluate(r, findings, ran)) or '(nothing to send)')
+        print('\n\n'.join(compose(r, evaluate(r, findings, ran))) or '(nothing to send)')
     elif a.command in ('run', 'peer'):
         do_round(cfg, peer)
     elif a.command == 'status':
         status(cfg)
+    elif a.command == 'ingest-incidents':
+        ingest_incidents(cfg, sys.stdin)
     elif a.command == 'test-alert':
         send_telegram(cfg, '🔔 %s%s：告警通道测试 %s' % ('[%s] ' % cfg['label'] if cfg['label'] else '', cfg['name'], time.strftime('%m-%d %H:%M')))
         print('sent')

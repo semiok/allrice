@@ -3,6 +3,7 @@
 #   python3 -m unittest discover -s scripts/m1 -p 'test_*.py'
 import importlib.machinery
 import importlib.util
+import io
 import json
 import os
 import tempfile
@@ -49,15 +50,30 @@ class AlertStateMachine(unittest.TestCase):
         self.assertEqual(step(r, [ok('vm')], 5000), [('recovered', 'vm', False)])
         self.assertEqual(r.state['alerts'], {})
         rows = r.state['incidentOutbox']
-        self.assertEqual([x['kind'] for x in rows], ['monitor_alert', 'monitor_alert', 'monitor_recovered'])
-        self.assertEqual(rows[0]['id'], rows[2]['metadata']['alertId'])  # recovery points at its alert
-        self.assertEqual(rows[2]['metadata']['durationSeconds'], 5000)
+        self.assertEqual([(x['kind'], x['metadata']['event']) for x in rows],
+                         [('monitor_alert', 'opened'), ('monitor_alert', 'escalated'), ('monitor_alert', 'reminder'), ('monitor_recovered', 'recovered')])
+        self.assertEqual(rows[0]['id'], rows[3]['metadata']['alertId'])  # recovery points at its alert
+        self.assertEqual(rows[3]['metadata']['durationSeconds'], 5000)
 
-    def test_lower_then_higher_again_is_an_escalation(self):
+    def test_no_re_escalation_while_hovering_at_a_threshold(self):
         r = make_round()
-        step(r, [bad('q', 'critical')], 0)
-        self.assertEqual(step(r, [bad('q', 'warning')], 300), [])
-        self.assertEqual(step(r, [bad('q', 'critical')], 600), [('escalated', 'q', False)])
+        step(r, [bad('q', 'warning')], 0)
+        self.assertEqual(step(r, [bad('q', 'critical')], 300), [('escalated', 'q', False)])
+        seen = []
+        for i in range(4):  # back and forth across the critical line
+            seen += step(r, [bad('q', 'warning')], 600 + i * 600)
+            seen += step(r, [bad('q', 'critical')], 900 + i * 600)
+        self.assertEqual(seen, [])
+
+    def test_an_outage_breaks_a_flapping_mute(self):
+        r = make_round()
+        for i in range(3):
+            step(r, [bad('t')], i * 600)
+            step(r, [ok('t')], i * 600 + 300)
+        self.assertEqual(step(r, [bad('t')], 1800), [('opened', 't', True)])
+        self.assertEqual(step(r, [bad('t')], 2100), [])
+        self.assertEqual(step(r, [bad('t')], 2400), [('reminder', 't', False)])  # bad for 10 minutes: paged
+        self.assertEqual(step(r, [ok('t')], 2700), [('recovered', 't', False)])
 
     def test_flapping_is_muted_after_one_notice(self):
         r = make_round()
@@ -70,6 +86,23 @@ class AlertStateMachine(unittest.TestCase):
         self.assertTrue(all(silent for _, _, silent in seen[5:]))
         # after the mute window a new failure pages again
         self.assertEqual(step(r, [bad('t')], 3 * 600 + 300 + 3601), [('opened', 't', False)])
+
+    def test_recovery_hidden_by_a_mute_is_sent_when_it_ends(self):
+        r = make_round()
+        for i in range(3):
+            step(r, [bad('t')], i * 600)
+            step(r, [ok('t')], i * 600 + 300)  # third recovery falls into the mute: silent
+        self.assertEqual(step(r, [ok('t')], 1800), [])
+        self.assertEqual(step(r, [ok('t')], 1200 + 3601), [('recovered', 't', False)])  # told once the mute ends
+        self.assertEqual(step(r, [ok('t')], 1200 + 3900), [])
+
+    def test_opened_during_a_mute_is_told_when_it_ends(self):
+        r = make_round()
+        for i in range(3):
+            step(r, [bad('t')], i * 600)
+            step(r, [ok('t')], i * 600 + 300)
+        self.assertEqual(step(r, [bad('t')], 1800), [('opened', 't', True)])
+        self.assertEqual(step(r, [bad('t')], 1200 + 3601), [('reminder', 't', False)])
 
     def test_per_item_alert_recovers_when_item_leaves_the_config(self):
         r = make_round()
@@ -89,7 +122,9 @@ class Messages(unittest.TestCase):
         step(r, [bad('old')], 0)
         r.now = 900
         events = monitor.evaluate(r, [ok('old'), bad('new', 'warning', '磁盘余量不足', '剩 3 GiB')])
-        text = monitor.compose(r, events)
+        texts = monitor.compose(r, events)
+        self.assertEqual(len(texts), 1)
+        text = texts[0]
         self.assertTrue(text.startswith('🟠 [演练] AllRice M1 Dev：1 项告警，1 项恢复'))
         self.assertIn('[警告] 磁盘余量不足', text)
         self.assertIn('   第一步：step', text)
@@ -98,7 +133,18 @@ class Messages(unittest.TestCase):
 
     def test_nothing_to_say(self):
         r = make_round()
-        self.assertIsNone(monitor.compose(r, []))
+        self.assertEqual(monitor.compose(r, []), [])
+
+    def test_a_long_round_is_split_between_alerts(self):
+        r = make_round()
+        r.now = 0
+        events = monitor.evaluate(r, [bad('k%d' % i, 'critical', '告警%d' % i, '很长的详情' * 120) for i in range(12)])
+        texts = monitor.compose(r, events)
+        self.assertGreater(len(texts), 1)
+        self.assertTrue(all(len(t) <= monitor.MESSAGE_LIMIT + 200 for t in texts))
+        self.assertTrue(texts[0].startswith('🔴 AllRice M1 Dev：12 项告警（1/%d）' % len(texts)))
+        joined = '\n'.join(texts)
+        self.assertTrue(all('告警%d' % i in joined for i in range(12)))  # nothing cut off
 
 
 class Delivery(unittest.TestCase):
@@ -116,10 +162,39 @@ class Delivery(unittest.TestCase):
             self.assertFalse(monitor.deliver(r, 'b'))
         self.assertEqual(r.state['outbox'], ['a', 'b'])
         self.assertNotIn('secret', r.state['telegram']['lastError']['error'])
+        self.assertIn('failingSince', r.state['telegram'])
         with mock.patch.object(monitor, 'send_telegram', side_effect=lambda cfg, text: sent.append(text)):
             self.assertTrue(monitor.deliver(r, 'c'))
         self.assertEqual(sent, ['a', 'b', 'c'])
         self.assertEqual(r.state['outbox'], [])
+        self.assertNotIn('failingSince', r.state['telegram'])
+
+    def test_retry_direct_when_the_proxy_is_dead(self):
+        r = make_round()
+        with open(r.cfg['telegramEnv'], 'w') as f:
+            f.write('TELEGRAM_BOT_TOKEN=1:t\nTELEGRAM_CHAT_ID=2\n')
+        routes = []
+
+        def via(proxy):
+            routes.append(proxy)
+            if proxy is None:
+                return mock.Mock(open=mock.Mock(side_effect=monitor.urllib.error.URLError('proxy refused')))
+            resp = mock.MagicMock()
+            resp.__enter__.return_value = io.BytesIO(b'{"ok": true}')
+            return mock.Mock(open=mock.Mock(return_value=resp))
+
+        with mock.patch.object(monitor, 'opener', side_effect=via):
+            monitor.send_telegram(r.cfg, 'hi')
+        self.assertEqual(routes, [None, ''])
+
+    def test_psql_keeps_the_password_off_the_command_line(self):
+        r = make_round()
+        with mock.patch.object(monitor, 'run', return_value=(0, '1', '')) as run:
+            r.psql('select 1;', 'postgres://snow:s3cret@127.0.0.1:5432/allrice_dev')
+        cmd, env = run.call_args[0][0], run.call_args[0][2]
+        self.assertNotIn('s3cret', ' '.join(cmd))
+        self.assertIn('postgres://snow@127.0.0.1:5432/allrice_dev', cmd)
+        self.assertEqual(env['PGPASSWORD'], 's3cret')
 
     def test_backlog_is_bounded(self):
         r = make_round()
@@ -178,50 +253,110 @@ class RunChecks(unittest.TestCase):
 
 
 class Deploys(unittest.TestCase):
-    def test_a_running_deploy_is_not_an_outage(self):
+    def test_planned_work_is_not_an_outage_for_a_bounded_time(self):
         r = make_round()
-        owner = os.path.join(r.cfg['stateDir'], 'owner.json')
         inflight = os.path.join(r.cfg['stateDir'], 'inflight')
-        r.cfg.update(deployLockOwner=owner, deployInflight=inflight)
-        with open(owner, 'w') as f:
-            json.dump({'pid': os.getpid(), 'startedAt': r.now - 60}, f)
-        self.assertIsNone(monitor.check_web(r))  # stopped on purpose: not judged
-        self.assertIsNone(monitor.check_postgres(r))
-        os.mkdir(inflight)
-        self.assertEqual(monitor.check_deploy(r)[0]['severity'], 'ok')
+        r.cfg.update(deployInflight=inflight)
+        with mock.patch.object(monitor, 'lock_holders', return_value=['4242']):
+            self.assertIsNone(monitor.check_web(r))  # stopped on purpose: not judged
+            self.assertIsNone(monitor.check_postgres(r))
+            os.mkdir(inflight)
+            self.assertEqual(monitor.check_deploy(r)[0]['severity'], 'ok')
+            r.facts.clear()
+            r.now += 46 * 60  # held longer than the grace: judged like an outage again
+            self.assertFalse(monitor.deploying(r))
+            self.assertEqual(monitor.check_deploy(r)[0]['severity'], 'critical')
         r.facts.clear()
-        r.now += 46 * 60  # past the grace period the deploy counts as stuck
-        self.assertFalse(monitor.deploying(r))
-        self.assertEqual(monitor.check_deploy(r)[0]['severity'], 'critical')
-        r.facts.clear()
-        with open(owner, 'w') as f:
-            json.dump({'pid': 2 ** 22 + 12345, 'startedAt': r.now}, f)  # holder gone (killed)
-        self.assertFalse(monitor.deploying(r))
+        with mock.patch.object(monitor, 'lock_holders', return_value=[]):
+            self.assertFalse(monitor.deploying(r))  # released: also a later hold starts a new grace
+        self.assertEqual(r.state['deploySeen'], {})
+
+    def test_round_timeout_keeps_what_was_found(self):
+        r = make_round(incidents=False, dailyHour=99)
+
+        def stuck(r):
+            raise monitor.RoundTimeout()
+
+        checks = [('a', lambda r: [bad('a')], False, None), ('slow', stuck, False, None)]
+        with mock.patch.object(monitor, 'M1_CHECKS', checks):
+            monitor.do_round(r.cfg, False)
+        state = json.load(open(os.path.join(r.cfg['stateDir'], 'state.json')))
+        self.assertEqual(set(state['alerts']), {'a', 'monitor_round'})
+        self.assertIn('slow', state['alerts']['monitor_round']['detail'])
+        hb = json.load(open(os.path.join(r.cfg['stateDir'], 'heartbeat.json')))
+        self.assertEqual((hb['phase'], hb['unfinishedSince']), ('done', None))
+
+    def test_corrupt_state_is_kept_and_reported(self):
+        r = make_round(incidents=False, dailyHour=99, checks=[])
+        with open(os.path.join(r.cfg['stateDir'], 'state.json'), 'w') as f:
+            f.write('{"alerts": {')
+        monitor.do_round(r.cfg, False)
+        state = json.load(open(os.path.join(r.cfg['stateDir'], 'state.json')))
+        self.assertIn('monitor_state', state['alerts'])
+        self.assertTrue([n for n in os.listdir(r.cfg['stateDir']) if n.startswith('state.json.corrupt-')])
+
+    def test_ingest_validates_rows(self):
+        r = make_round()
+        with self.assertRaises(SystemExit):
+            monitor.ingest_incidents(r.cfg, io.StringIO('[{"kind": "kill_switch", "id": "x"}]'))
+        row = {'id': '00000000-0000-4000-8000-000000000000', 'kind': 'monitor_alert', 'detailCode': 'monitor.m1_heartbeat', 'metadata': {}}
+        with mock.patch.object(monitor.Round, 'psql', return_value='') as psql:
+            monitor.ingest_incidents(r.cfg, io.StringIO(json.dumps([row])))
+        self.assertIn('allrice_operational_incidents', psql.call_args[0][0])
 
 
 class Peer(unittest.TestCase):
+    def remote(self, hb, err='', reachable=True, holders=None):
+        return mock.patch.object(monitor, 'read_remote_heartbeat', return_value=(hb, err, reachable, holders))
+
     def test_m1_side_judgement(self):
         r = make_round(peer=True)
         r.now = 10_000
-
-        def remote(hb, err='', reachable=True):
-            return mock.patch.object(monitor, 'read_remote_heartbeat', return_value=(hb, err, reachable))
-
-        with remote(None, 'SSH 连不上 m1', False):
-            self.assertEqual([(f['key'], f['severity']) for f in monitor.check_m1(r)], [('m1_reachable', 'critical')])
-        fresh = {'at': 9_800, 'telegram': {'configured': True, 'pending': 0, 'lastOkAt': 9_000}, 'publicUrl': 'https://a.example'}
-        with remote(fresh):
-            self.assertEqual({f['key']: f['severity'] for f in monitor.check_m1(r)},
-                             {'m1_reachable': 'ok', 'm1_heartbeat': 'ok', 'm1_telegram': 'ok'})
+        sev = lambda: {f['key']: f['severity'] for f in monitor.check_m1(r)}
+        with self.remote(None, 'SSH 连不上 m1', False):
+            self.assertEqual(sev(), {'m1_reachable': 'critical'})  # heartbeat unknown, not stale
+        fresh = {'at': 9_800, 'phase': 'done', 'telegram': {'configured': True, 'pending': 0}, 'publicUrl': 'https://a.example'}
+        with self.remote(fresh, holders=[]):
+            self.assertEqual(sev(), {'m1_reachable': 'ok', 'm1_heartbeat': 'ok', 'm1_telegram': 'ok'})
         self.assertEqual(r.state['m1PublicUrl'], 'https://a.example')
-        with remote(dict(fresh, at=10_000 - 8 * 60)):
-            self.assertEqual({f['key']: f['severity'] for f in monitor.check_m1(r)}['m1_heartbeat'], 'critical')
-        with remote(dict(fresh, telegram={'configured': True, 'pending': 3, 'lastOkAt': 10_000 - 21 * 60})):
-            self.assertEqual({f['key']: f['severity'] for f in monitor.check_m1(r)}['m1_telegram'], 'warning')
-        with remote(dict(fresh, at=9_900, lastDoneAt=10_000 - 13 * 60)):  # rounds start but never finish
-            self.assertEqual({f['key']: f['severity'] for f in monitor.check_m1(r)}['m1_heartbeat'], 'critical')
-        with remote(None, '读不到 m1:allrice-dev/monitor/heartbeat.json'):
-            self.assertEqual({f['key']: f['severity'] for f in monitor.check_m1(r)}['m1_heartbeat'], 'critical')
+        with self.remote(dict(fresh, at=10_000 - 8 * 60)):
+            self.assertEqual(sev()['m1_heartbeat'], 'critical')  # stopped
+        with self.remote(dict(fresh, at=9_900, phase='running', unfinishedSince=10_000 - 7 * 60)):
+            self.assertEqual(sev()['m1_heartbeat'], 'critical')  # starts every round, finishes none
+        with self.remote(dict(fresh, at=9_900, phase='running', unfinishedSince=9_900)):
+            self.assertEqual(sev()['m1_heartbeat'], 'ok')  # a round in progress
+        with self.remote(dict(fresh, telegram={'configured': True, 'pending': 3, 'failingSince': 10_000 - 9 * 60})):
+            self.assertEqual(sev()['m1_telegram'], 'warning')
+        with self.remote(dict(fresh, telegram={'configured': True, 'pending': 3, 'failingSince': 10_000 - 60})):
+            self.assertEqual(sev()['m1_telegram'], 'ok')  # one failed round is not stuck yet
+        with self.remote(None, '读不到 m1:allrice-dev/monitor/heartbeat.json'):
+            self.assertEqual(sev()['m1_heartbeat'], 'critical')
+
+    def test_public_probe_waits_out_a_deploy_on_m1(self):
+        r = make_round(peer=True)
+        r.state['m1PublicUrl'] = 'https://a.example'
+        fresh = {'at': r.now, 'phase': 'done', 'telegram': {'configured': True}}
+        with self.remote(fresh, holders=['777']):
+            monitor.check_m1(r)
+        self.assertIsNone(monitor.check_outside(r))
+        r.facts.clear()
+        with self.remote(fresh, holders=[]), mock.patch.object(monitor, 'http_get', return_value=(200, b'ok')):
+            monitor.check_m1(r)
+            self.assertEqual(monitor.check_outside(r)[0]['severity'], 'ok')
+
+    def test_m1_judges_the_peer_the_same_way(self):
+        r = make_round()
+        r.now = 10_000
+        sev = lambda: {f['key']: f['severity'] for f in monitor.check_peer(r)}
+        hb = {'at': 9_990, 'phase': 'done', 'telegram': {'configured': True, 'pending': 0}}
+        with self.remote(hb):
+            self.assertEqual(sev(), {'peer': 'ok', 'peer_telegram': 'ok'})
+        with self.remote(dict(hb, telegram={'configured': True, 'pending': 20, 'failingSince': 10_000 - 3600})):
+            self.assertEqual(sev()['peer_telegram'], 'warning')  # alive but cannot alert anybody
+        with self.remote(dict(hb, at=10_000 - 5 * 60)):
+            self.assertEqual(sev()['peer'], 'warning')
+        with self.remote(None, 'SSH 连不上 huihuimac', False):
+            self.assertEqual(sev(), {'peer': 'warning'})
 
 
 class Config(unittest.TestCase):

@@ -28,6 +28,8 @@ if [ ! -d "$dest" ]; then
   for f in $SCRIPTS lib.sh; do /bin/bash -n "$dest.tmp/$f"; done
   for f in qa-bootstrap.mjs smoke-test.mjs; do "$HOME/.local/opt/node-22.23.2/bin/node" --check "$dest.tmp/$f"; done
   for f in $PYTOOLS; do "$M1_PY" "$dest.tmp/$f" --help >/dev/null; done # loads every import
+  # CI runs these on a newer Python; launchd runs the monitor with this one (3.9).
+  "$M1_PY" -m unittest discover -s "$src" -p 'test_*.py' >/dev/null 2>&1 || { echo "install: monitor unit tests fail under $M1_PY" >&2; exit 2; }
   mv "$dest.tmp" "$dest"
 fi
 
