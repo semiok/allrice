@@ -1,6 +1,9 @@
 import { headers } from 'next/headers';
 import { AllriceMark } from '../../components/allrice-mark';
 import {
+  adminPortalAuthority,
+  employeePortalAuthority,
+  isEmployeePortalHost,
   portalAuthEnabled,
   portalPublicView,
   resolvePortal,
@@ -11,9 +14,8 @@ import { EmployeeShowcase } from './employee-showcase';
 export const dynamic = 'force-dynamic';
 
 export default async function LoginPage() {
-  const portal = portalAuthEnabled()
-    ? resolvePortal((await headers()).get('host'))
-    : null;
+  const host = (await headers()).get('host');
+  const portal = portalAuthEnabled() ? resolvePortal(host) : null;
   const publicPortal = portal ? portalPublicView(portal) : null;
   return (
     <main className="auth-shell auth-workspace">
@@ -57,6 +59,11 @@ export default async function LoginPage() {
                     }
                   : undefined
               }
+              entry={{
+                employee: isEmployeePortalHost(host),
+                employeeHost: employeePortalAuthority(),
+                adminHost: adminPortalAuthority(),
+              }}
             />
             <p className="auth-form-footnote">还没有账号？请联系你的团队。</p>
           </div>
