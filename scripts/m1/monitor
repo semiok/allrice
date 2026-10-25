@@ -85,6 +85,31 @@ M1 = dict(
     webUrl=None,
     workerUrl=None,
     publicUrl=None,
+    # component checks
+    tunnelLabel='ai.bplabs.allrice-m1-tunnel',
+    tunnelMetrics=['http://127.0.0.1:%d/ready' % p for p in range(20241, 20246)],
+    docker='/opt/homebrew/bin/docker',
+    officeContainer='allrice-office-renderer',
+    vmWatchdog='allrice-cloud-watchdog',
+    vmWatchdogAttest='/usr/local/lib/allrice-cloud/watchdog.py',  # `--attest` must say ready, as the Worker requires
+    extraImages=[],
+    extraColimaProfiles=[],
+    disks=[{'path': '~', 'warnFreeGiB': 100, 'criticalFreeGiB': 30}],
+    backupLog='~/allrice-backups/logs/backup.log',
+    backupLabel='ai.bplabs.allrice-dev-backup',
+    backupWarnHours=26,
+    backupCriticalHours=50,
+    subscriptionStaleMinutes=30,
+    authConfirmMinutes=3,  # an authorization error other than "disconnected" must be seen on two rounds (under one interval)
+    quotaWarnPercent=80,
+    quotaCriticalPercent=95,
+    restartWindowMinutes=60,
+    restartWarn=2,
+    restartCritical=3,
+    colima=None,  # these four: from the Worker's launchd file when empty
+    colimaProfile=None,
+    officeUrl=None,
+    images=None,
 )
 PEER = dict(
     COMMON,
@@ -235,6 +260,13 @@ def derive_m1(cfg):
         'webUrl': 'http://127.0.0.1:%s' % wenv['ALLRICE_WEB_PORT'] if wenv.get('ALLRICE_WEB_PORT') else None,
         'workerUrl': 'http://127.0.0.1:%s' % kenv['ALLRICE_WORKER_PORT'] if kenv.get('ALLRICE_WORKER_PORT') else None,
         'publicUrl': wenv.get('ALLRICE_PUBLIC_URL') or dotenv.get('ALLRICE_PUBLIC_URL'),
+        # component checks
+        'colima': kenv.get('ALLRICE_CLOUD_COLIMA'),
+        'colimaProfile': kenv.get('ALLRICE_CLOUD_PROFILE'),
+        'officeUrl': kenv.get('ALLRICE_OFFICE_RENDERER_URL'),
+        'release': (worker or {}).get('WorkingDirectory'),
+        'node': ((worker or {}).get('ProgramArguments') or [None])[0],
+        'cloudArchitecture': kenv.get('ALLRICE_CLOUD_ARCHITECTURE', ''),
     }
     for k, v in fill.items():
         if cfg.get(k) is None:
@@ -280,6 +312,10 @@ class Round:
 
     def psql(self, sql, url=None, variables=None, timeout=30, readonly=True):
         return psql(self.cfg, sql, url, variables, timeout, readonly)
+
+    def docker(self, *args, timeout=20):
+        sock = os.path.join(expand('~/.colima'), self.cfg['colimaProfile'] or '', 'docker.sock')
+        return run([self.cfg['docker']] + list(args), timeout, {'DOCKER_HOST': 'unix://' + sock})
 
 
 def psql(cfg, sql, url=None, variables=None, timeout=30, readonly=True):
@@ -556,7 +592,7 @@ def deliver(r, messages):
     return True
 
 
-# ---------- checks (M1) ----------
+# ---------- component checks (M1) ----------
 
 
 def job_info(label):
@@ -668,6 +704,85 @@ def check_worker(r):
     return check_service(r, 'worker')
 
 
+def check_versions(r):
+    web, worker = r.facts.get('web'), r.facts.get('worker')
+    if not web or not worker:
+        return None
+    a, b = web.get('identity', {}).get('sourceSha'), worker.get('identity', {}).get('sourceSha')
+    if a == b:
+        return [finding('versions', 'ok', 'Web 与 Worker 版本不一致')]
+    return [finding('versions', 'warning', 'Web 与 Worker 版本不一致', 'Web %s，Worker %s' % ((a or '?')[:8], (b or '?')[:8]),
+                    'm1-worker-crash.md', '~/allrice-dev/bin/deploy-dev --status')]
+
+
+def check_scheduler(r):
+    """The native once/recurring controllers live in the Worker (apps/worker/src/index.ts
+    readiness, native-schedule-once-runtime.ts status): blocked, closed or quarantined is
+    down; cold is idle (no schedule needs a generation), unless it failed to initialize;
+    starting/stopping should pass. Ticks must keep growing within one Worker boot, and new
+    faults are reported. Due schedules that did not fire are business.overdue_schedules."""
+    worker = r.facts.get('worker')
+    if not worker:
+        return None
+    boot = worker.get('identity', {}).get('bootId')
+    seen = r.state.setdefault('scheduler', {})
+    problems, sev = [], 'ok'
+    for name in [n for n in ('nativeOnceControl', 'nativeRecurringControl') if n in worker]:
+        ctl = worker[name] or {}
+        state, ticks, faults = ctl.get('state'), ctl.get('tickCount'), ctl.get('faultCount') or 0
+        if state == 'disabled':
+            continue
+        old = seen.get(name) if (seen.get(name) or {}).get('bootId') == boot else None
+        base = seen[name] = {'bootId': boot, 'tickCount': ticks, 'faultCount': faults,
+                             'at': old['at'] if old and old['tickCount'] == ticks else r.now,
+                             'stateSince': old['stateSince'] if old and old.get('state') == state else r.now, 'state': state}
+        if old and faults > old['faultCount']:
+            problems.append('%s faultCount %s → %s' % (name, old['faultCount'], faults))
+            sev = max(sev, 'warning', key=RANK.get)
+        init_fault = state == 'cold' and (ctl.get('lastFault') or {}).get('phase') == 'initialization'
+        if state in ('blocked', 'closed', 'quarantined') or init_fault:
+            problems.append('%s 状态 %s%s' % (name, state, '（初始化失败）' if init_fault else ''))
+            sev = 'critical'
+        elif state in ('starting', 'stopping') and r.now - base['stateSince'] >= 600:
+            problems.append('%s 已 %s 停在 %s' % (name, ago(r.now - base['stateSince']), state))
+            sev = max(sev, 'warning', key=RANK.get)
+        if r.now - base['at'] >= 180:  # ticks come every second; under one 4-minute interval
+            problems.append('%s 已 %s 没有心跳（tickCount 停在 %s）' % (name, ago(r.now - base['at']), ticks))
+            sev = 'critical'
+    return [finding('scheduler', sev, '定时任务控制器异常', '；'.join(problems), 'm1-schedule-not-fired.md',
+                    'curl -s %s/health/ready | python3 -m json.tool | grep -A8 nativeOnceControl' % r.cfg['workerUrl'])]
+
+
+def check_restarts(r):
+    """Count launchd restarts of Web, Worker and the tunnel over a window: a crash loop is
+    a job whose run counter keeps climbing. A deploy reloads the job (counter back to 1),
+    which is not counted."""
+    window = r.cfg['restartWindowMinutes'] * 60
+    samples = r.state.setdefault('restarts', {})
+    if deploying(r):
+        samples.clear()  # restarts under the deploy lock are intended: count from after it
+        return None
+    out = []
+    for label in (r.cfg.get('webLabel'), r.cfg.get('workerLabel'), r.cfg.get('tunnelLabel')):
+        if not label:
+            continue
+        state, runs, last = job_info(label)
+        keep = [s for s in samples.get(label, []) if r.now - s[0] < window]
+        if runs is not None:
+            keep.append([r.now, runs])
+        samples[label] = keep
+        count = sum(max(0, b[1] - a[1]) for a, b in zip(keep, keep[1:]))
+        # One restart is a crash that launchd recovered (or a manual kickstart): the
+        # readiness checks cover any downtime; a second within the window is a loop.
+        sev = 'critical' if count >= r.cfg['restartCritical'] else 'warning' if count >= r.cfg['restartWarn'] else 'ok'
+        log = (plist_of('~/Library/LaunchAgents/%s.plist' % label) or {}).get('StandardErrorPath', '<plist 里的日志>')
+        out.append(finding('restarts:' + label, sev, '%s 反复重启' % label,
+                           '%d 分钟内重启 %d 次，上次退出码 %s' % (window // 60, count, last),
+                           'm1-tunnel.md' if label == r.cfg['tunnelLabel'] else 'm1-worker-crash.md',
+                           'launchctl print gui/$(id -u)/%s | grep -E "runs|exit"; tail -80 %s' % (label, log)))
+    return out
+
+
 def check_postgres(r):
     if deploying(r):
         return None
@@ -679,6 +794,197 @@ def check_postgres(r):
                         '/opt/homebrew/bin/pg_isready -h 127.0.0.1; /opt/homebrew/bin/brew services list | grep postgres')]
 
 
+def check_sandbox_vm(r):
+    """The colima VM, its docker daemon and the sandbox watchdog. Images and the Office
+    container are judged whenever docker answers, also when only the watchdog is down.
+    Not judged under the deploy lock (planned VM maintenance runs under it)."""
+    out, colima = [], r.cfg['colima'] or '/opt/homebrew/bin/colima'
+    main = r.cfg['colimaProfile']
+    r.facts['vmOk'] = False
+    if not main:
+        out.append(finding('sandbox_vm:config', 'warning', '沙箱 VM 读不到配置', 'Worker 的 launchd 文件里没有 ALLRICE_CLOUD_PROFILE', 'm1-sandbox-vm.md', ''))
+    planned = deploying(r)
+    if main and planned:
+        out.append(unknown('sandbox_vm:' + main))
+    for profile in [p for p in [main] + list(r.cfg['extraColimaProfiles']) if p and not (p == main and planned)]:
+        rc, _, err = run([colima, 'status', '-p', profile], 30)
+        detail = '' if rc == 0 else 'VM 没在运行：colima status -p %s 退出码 %d：%s' % (profile, rc, short(err, 160))
+        if rc == 0 and profile == main:
+            drc, _, derr = r.docker('info', '--format', '{{.ServerVersion}}', timeout=20)
+            if drc:
+                detail = 'VM 在运行，但 docker 守护进程无响应：%s' % short(derr, 160)
+            else:
+                r.facts['vmOk'] = True
+                wrc, wout, _ = run([colima, 'ssh', '-p', profile, '--', 'systemctl', 'is-active', r.cfg['vmWatchdog']], 30)
+                arc, aout, aerr = run([colima, 'ssh', '-p', profile, '--', 'sudo', r.cfg['vmWatchdogAttest'], '--attest'], 15)
+                attest = {}
+                for line in aout.splitlines()[::-1]:
+                    try:
+                        attest = json.loads(line)
+                        break
+                    except ValueError:
+                        continue
+                if not isinstance(attest, dict) or arc != 0:
+                    attest = {}
+                if wout.strip() != 'active':
+                    detail = 'VM 和 docker 在运行，但沙箱守护 %s 状态 %s（到点停容器靠它）' % (r.cfg['vmWatchdog'], short(wout, 40) or 'exit %d' % wrc)
+                elif attest.get('ready') is not True:
+                    # The Worker refuses cloud runs (CLOUD_WATCHDOG_UNAVAILABLE) on exactly this,
+                    # also while the service is active (e.g. runsc lost after a VM restart).
+                    detail = 'VM 和 docker 在运行，但沙箱守护证明不是 ready（watchdog.py --attest 退出码 %d）：%s' % (
+                        arc, short(aout or aerr, 160))
+        out.append(finding('sandbox_vm:' + profile, 'critical' if detail else 'ok', '沙箱 VM %s 不可用' % profile, detail,
+                           'm1-sandbox-vm.md', '/opt/homebrew/bin/colima status -p %s; /opt/homebrew/bin/colima ssh -p %s -- systemctl status %s docker' % (
+                               profile, profile, r.cfg['vmWatchdog'])))
+    return out
+
+
+def pinned_images(r):
+    """The images the running release pins (packages/contracts cloud-platform), so a deploy
+    that changes them is followed without editing this file."""
+    if r.cfg['images'] is not None:
+        return dict(r.cfg['images'])
+    if not r.cfg.get('release') or not r.cfg.get('node'):
+        raise CheckError('cannot tell which release runs (worker plist)')
+    js = os.path.join(r.cfg['release'], 'packages/contracts/dist/runtime-v2/cloud-platform.js')
+    code = ('import(require("url").pathToFileURL(process.argv[1]).href)'
+            '.then(m=>process.stdout.write(JSON.stringify(m.cloudPlatform.images)))')
+    rc, out, err = run([r.cfg['node'], '-e', code, js], 20, {'ALLRICE_CLOUD_ARCHITECTURE': r.cfg.get('cloudArchitecture', '')})
+    if rc:
+        raise CheckError('cannot read the pinned images from %s: %s' % (js, short(err, 200)))
+    return json.loads(out)
+
+
+def check_images(r):
+    if not r.facts.get('vmOk'):
+        return None
+    want = pinned_images(r)
+    for i, image in enumerate(r.cfg['extraImages']):
+        want['extra%d' % (i + 1)] = image
+    rc, out, err = r.docker('images', '-q', '--no-trunc', timeout=30)
+    if rc:
+        raise CheckError('docker images failed: %s' % short(err, 200))
+    have = set(out.split())
+    missing = ['%s %s' % (name, image[:19]) for name, image in sorted(want.items()) if image not in have]
+    return [finding('images', 'critical' if missing else 'ok', '钉死的镜像缺失',
+                    '缺 %d 个：%s（VM %s）' % (len(missing), '，'.join(missing), r.cfg['colimaProfile']), 'm1-missing-image.md',
+                    'DOCKER_HOST=unix://$HOME/.colima/%s/docker.sock /opt/homebrew/bin/docker images --no-trunc' % r.cfg['colimaProfile'])]
+
+
+def check_office(r):
+    if not r.facts.get('vmOk'):
+        return None
+    name, problems = r.cfg['officeContainer'], []
+    rc, out, err = r.docker('inspect', '--format', '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}', name)
+    if rc:
+        problems.append('容器 %s 不存在或查不到：%s' % (name, short(err, 120)))
+    elif out.split()[:1] != ['running'] or 'unhealthy' in out:
+        problems.append('容器 %s 状态：%s' % (name, out.strip()))
+    if r.cfg['officeUrl']:
+        code, body = http_get(r.cfg['officeUrl'].rstrip('/') + '/health', 8)
+        try:
+            healthy = code == 200 and json.loads(body).get('ready') is True
+        except (ValueError, AttributeError):
+            healthy = False
+        if not healthy:
+            problems.append('%s/health 返回 %s %s' % (r.cfg['officeUrl'], code, short(body, 100)))
+    return [finding('office', 'critical' if problems else 'ok', 'Office 渲染不可用', '；'.join(problems), 'm1-sandbox-vm.md',
+                    'DOCKER_HOST=unix://$HOME/.colima/%s/docker.sock /opt/homebrew/bin/docker ps -a --filter name=%s' % (r.cfg['colimaProfile'], name))]
+
+
+SUBSCRIPTION_SQL = """
+select coalesce(json_agg(json_build_object(
+  'slot', s.slot, 'label', s.label, 'status', p.status, 'detail', p.detail_code,
+  'ageSeconds', extract(epoch from now() - p.checked_at)::int, 'quota', p.subscription_quota)), '[]')
+from allrice_codex_subscriptions s
+left join allrice_provider_status p on p.provider = 'codex' and p.subscription_slot = s.slot
+where s.enabled;
+"""
+
+
+def check_subscription(r):
+    """Two alerts: `subscription` (a slot is enabled, authorized, its status refreshed) and
+    `quota` (usage of the enabled slot). Only windows the provider reports as measured
+    count; an unreadable quota is unknown, which keeps an open quota alert as it is, and
+    alerts by itself only once it has lasted subscriptionStaleMinutes."""
+    rows = json.loads(r.psql(SUBSCRIPTION_SQL, r.cfg['databaseUrl']) or '[]')
+    step = '后台「模型与订阅」查看授权与额度；psql 查 allrice_provider_status'
+    if not rows:
+        return [finding('subscription', 'critical', '模型订阅不可用', '没有启用的 Codex 订阅槽位', 'm1-model-subscription.md', step)]
+    auth, auth_sev, quota, quota_sev, judged, auth_unsure, quota_unsure = [], 'ok', [], 'ok', False, False, False
+    unreadable = r.state.setdefault('quotaUnreadable', {})
+    high = r.state.setdefault('quotaHigh', {})  # slot -> windows that were at or above the warning line
+    for row in rows:
+        name, slot = '槽位 %s（%s）' % (row['slot'], row['label']), str(row['slot'])
+        bad_since = r.state.setdefault('authBad', {})
+        if row['status'] == 'connected':
+            bad_since.pop(slot, None)
+        if row['status'] == 'disconnected' or (row['status'] != 'connected' and r.now - bad_since.setdefault(slot, r.now) >= r.cfg['authConfirmMinutes'] * 60):
+            auth.append('%s 授权状态 %s（%s）' % (name, row['status'], row['detail']))
+            auth_sev = 'critical'
+        elif row['status'] != 'connected':
+            auth_unsure = True  # a probe error: judged when the next round sees it again
+        elif row['ageSeconds'] is None or row['ageSeconds'] > r.cfg['subscriptionStaleMinutes'] * 60:
+            auth.append('%s 状态 %s 没有更新' % (name, ago(row['ageSeconds'] or 0)))
+            auth_sev = max(auth_sev, 'warning', key=RANK.get)
+        buckets = (row.get('quota') or {}).get('buckets') or []
+        measured = {'%s/%s' % (b.get('limitId'), w.get('slot')): w['usedPercent'] for b in buckets for w in b.get('windows', [])
+                    if w.get('status') == 'available' and w.get('usedPercent') is not None}
+        used = list(measured.values())
+        limits = {'limit:%s' % b.get('limitId'): b.get('limitReached') for b in buckets}
+        seen = dict(measured, **{k: v for k, v in limits.items() if v is not None})  # what this round has evidence for
+        if 'quota' in r.state.get('alerts', {}) and set(high.get(slot, [])) - set(seen):
+            quota_unsure = True  # what alerted (a window, a limit flag) is not reported now: not a recovery
+        high[slot] = sorted(set(k for k, v in measured.items() if v >= r.cfg['quotaWarnPercent']) |
+                            set(k for k, v in limits.items() if v) | (set(high.get(slot, [])) - set(seen)))
+        if any(b.get('limitReached') for b in buckets):
+            quota.append('%s 额度已用完' % name)
+            quota_sev, judged = 'critical', True
+        elif used:
+            judged = True
+            if max(used) >= r.cfg['quotaCriticalPercent']:
+                quota_sev = 'critical'
+            elif max(used) >= r.cfg['quotaWarnPercent']:
+                quota_sev = max(quota_sev, 'warning', key=RANK.get)
+            quota.append('%s 额度已用 %d%%' % (name, max(used)))
+        if any(b.get('limitReached') for b in buckets) or used:
+            unreadable.pop(slot, None)
+            continue
+        since = unreadable.setdefault(slot, r.now)
+        if r.now - since >= r.cfg['subscriptionStaleMinutes'] * 60:
+            quota.append('%s 额度已 %s 读不到（%s）' % (name, ago(r.now - since), (row.get('quota') or {}).get('detailCode')))
+            quota_sev, judged = max(quota_sev, 'warning', key=RANK.get), True
+    r.facts['subscription'] = rows
+    out = [finding('subscription', auth_sev, '模型订阅异常', '；'.join(auth), 'm1-model-subscription.md', step)
+           if auth_sev != 'ok' or not auth_unsure else unknown('subscription')]
+    if judged and not (quota_unsure and quota_sev == 'ok'):
+        out.append(finding('quota', quota_sev, '模型订阅额度', '；'.join(quota), 'm1-model-subscription.md', step))
+    else:
+        out.append(unknown('quota'))
+    return out
+
+
+def check_tunnel(r):
+    label = r.cfg['tunnelLabel']
+    state, _, last = job_info(label)
+    log = (plist_of('~/Library/LaunchAgents/%s.plist' % label) or {}).get('StandardErrorPath', '<plist 里的日志>')
+    step = 'launchctl print gui/$(id -u)/%s | head -30; tail -50 %s' % (label, log)
+    if state != 'running':
+        return [finding('tunnel', 'critical', 'Cloudflare 隧道断开', 'launchd %s %s（上次退出码 %s）' % (label, state, last), 'm1-tunnel.md', step)]
+    for url in r.cfg['tunnelMetrics']:
+        code, body = http_get(url, 3)
+        if code is None:
+            continue
+        try:
+            conns = json.loads(body).get('readyConnections', 0)
+        except ValueError:
+            conns = 0
+        if code == 200 and conns >= 1:
+            return [finding('tunnel', 'ok', 'Cloudflare 隧道断开')]
+        return [finding('tunnel', 'critical', 'Cloudflare 隧道断开', '%s 返回 %s，就绪连接 %s' % (url, code, conns), 'm1-tunnel.md', step)]
+    return [finding('tunnel', 'critical', 'Cloudflare 隧道断开', '进程在，但指标端口都连不上（%s）' % r.cfg['tunnelMetrics'][0], 'm1-tunnel.md', step)]
+
+
 def probe_public(r, url, key='public_entry', where='M1 本机'):
     if not url:
         return [finding(key, 'warning', '公网入口不可达（未配置地址）', '', 'm1-tunnel.md', '')]
@@ -688,6 +994,57 @@ def probe_public(r, url, key='public_entry', where='M1 本机'):
     ok = code == 200 and took < 15
     return [finding(key, 'ok' if ok else 'critical', '公网入口不可达', '从%s访问 %s：%s（%.1f 秒）' % (where, url, code or short(body, 120), took),
                     'm1-tunnel.md', 'curl -sS -o /dev/null -w "%%{http_code}\\n" %s' % url)]
+
+
+def check_public_entry(r):
+    if deploying(r):
+        return None
+    return probe_public(r, r.cfg['publicUrl'])
+
+
+def check_disk(r):
+    out = []
+    for d in r.cfg['disks']:
+        path = expand(d['path'])
+        try:
+            st = os.statvfs(path)
+        except OSError as err:
+            out.append(finding('disk:' + d['path'], 'warning', '磁盘 %s 查不到' % d['path'], str(err), 'm1-disk-space.md', 'df -h'))
+            continue
+        free = st.f_bavail * st.f_frsize / 2 ** 30
+        sev = 'critical' if free < d['criticalFreeGiB'] else 'warning' if free < d['warnFreeGiB'] else 'ok'
+        r.facts.setdefault('disks', {})[d['path']] = free
+        out.append(finding('disk:' + d['path'], sev, '磁盘余量不足（%s）' % d['path'],
+                           '剩 %s GiB（警告线 %s GiB，严重线 %s GiB）' % ('%.1f' % free if free >= 10 else '%.2f' % free, d['warnFreeGiB'], d['criticalFreeGiB']),
+                           'm1-disk-space.md', 'df -h %s; du -sh ~/allrice-* ~/Library/Caches 2>/dev/null | sort -h | tail' % shlex.quote(path)))
+    return out
+
+
+def check_backup(r):
+    """The last successful run (backup.log) and how the last run ended (launchd's exit
+    code), so a failed 04:00 run alerts with the next round, not a day later."""
+    path, last = expand(r.cfg['backupLog']), None
+    step = 'tail -20 ~/allrice-backups/logs/backup.err.log; ls -la ~/allrice-backups/db | tail -3'
+    try:
+        with open(path, errors='replace') as f:
+            for line in f.readlines()[-100:]:
+                m = re.match(r'(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) ok\b(.*)', line)
+                if m:
+                    last = m
+    except OSError as err:
+        return [finding('backup', 'warning', '每日备份异常', '读不到 %s：%s' % (path, err), 'm1-database.md', step)]
+    age = r.now - time.mktime(time.strptime(last.group(1), '%Y-%m-%d %H:%M:%S')) if last else None
+    r.facts['backup'] = {'last': last.group(1) if last else None, 'detail': last.group(2).strip() if last else ''}
+    hours = age / 3600 if age is not None else None
+    sev = 'critical' if hours is None or hours > r.cfg['backupCriticalHours'] else 'warning' if hours > r.cfg['backupWarnHours'] else 'ok'
+    detail = '最近一次成功：%s（%s前）' % (last.group(1), ago(age)) if last else '日志里没有成功记录'
+    if r.cfg.get('backupLabel'):
+        state, _, exit_code = job_info(r.cfg['backupLabel'])
+        if state == 'gone':
+            sev, detail = max(sev, 'warning', key=RANK.get), detail + '；定时任务 %s 没有加载' % r.cfg['backupLabel']
+        elif exit_code not in (None, '0', '(never exited)'):
+            sev, detail = 'critical', detail + '；上一次运行失败（退出码 %s）' % exit_code
+    return [finding('backup', sev, '每日备份异常', detail, 'm1-database.md', step)]
 
 
 def read_remote_heartbeat(target, path, lock=None):
@@ -761,6 +1118,17 @@ M1_CHECKS = [
     ('web', check_web, True, None),
     ('worker', check_worker, True, None),
     ('deploy', check_deploy, False, None),
+    ('versions', check_versions, False, None),
+    ('scheduler', check_scheduler, False, None),
+    ('restarts', check_restarts, False, None),
+    ('sandbox_vm', check_sandbox_vm, True, None),
+    ('images', check_images, True, None),
+    ('office', check_office, True, None),
+    ('subscription', check_subscription, False, 'postgres'),
+    ('tunnel', check_tunnel, True, None),
+    ('public_entry', check_public_entry, True, None),
+    ('disk', check_disk, False, None),
+    ('backup', check_backup, False, None),
     ('peer', check_peer, True, None),
     ('monitor', check_monitor, False, None),
 ]
