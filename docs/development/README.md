@@ -318,7 +318,7 @@ for the admission, installation and diagnostic boundaries.
 - Do not merge your own PR unless explicitly authorized.
 - Do not combine unrelated user changes.
 - `pnpm user-text-regex:verify` blocks new regex or keyword matching of the
-  user's Chinese wording outside its shrinking baseline
+  user's wording outside its shrinking baseline
   ([gate](user-text-regex-gate.md), MET-220 R1).
 
 ## Code extraction

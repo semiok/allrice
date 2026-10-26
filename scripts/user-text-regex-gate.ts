@@ -1,49 +1,56 @@
 /**
- * Gate on matching the user's wording with regexes (MET-210 #2, MET-220 R1).
+ * Gate on matching the user's wording (MET-210 #2, MET-220 R1).
  *
  * R1: understanding the user is the model's job, and authorization comes from
  * the request's source and a confirmation card. A regex may let one clear
  * format through; matching the user's words and refusing, failing or skipping
  * when they do not match is what this gate keeps from growing back.
  *
- * Whether a pattern runs on the user's words, and whether a miss refuses,
- * cannot be decided statically, so `scanUserTextMatches` over-approximates. It
- * reports every place in product code (apps/ and packages/; tests, fixtures
- * and the pinned DSH UI copy excluded) that matches Chinese wording:
+ * Whether a match runs on the user's words, and whether a miss refuses,
+ * cannot be decided statically, so `scanUserTextMatches` over-approximates. In
+ * product code (apps/ and packages/; tests, fixtures and build output
+ * excluded) it reports every place that matches wording: Chinese text, or
+ * English with at least two natural-language words one of which is a function
+ * word (`please`, `don't`, `my`, `the`, ...; see `englishWording`):
  *
- * - a regex literal whose pattern holds a Han character (escapes decoded;
- *   character-class ranges such as `[\u4e00-\u9fa5]` name a script, not
- *   wording, and are skipped);
- * - `RegExp(...)` / `new RegExp(...)` whose pattern resolves to such text
- *   through same-file constants, templates, `+`, `.join()`, `.map()` or
- *   `.source`;
+ * - a regex literal with wording (escapes decoded; character-class ranges such
+ *   as `[\u4e00-\u9fa5]` and `\p{Script=Han}` name a script, not wording);
+ * - `RegExp(...)` / `new RegExp(...)` whose pattern evaluates to wording;
+ * - a wording regex applied (`test`, `exec`, `match`, `replace`, `search`,
+ *   `split`, ...) away from the declaration that writes it, so a new caller of
+ *   an existing pattern is a new site;
  * - a string match (`includes`, `startsWith`, `endsWith`, `indexOf`,
- *   `lastIndexOf`, `match`, `matchAll`, `search`) whose needle resolves to
- *   Han text, the same match on the item of a Han keyword list
- *   (`WORDS.some((word) => text.includes(word))`), and membership in such a
- *   list (`WORDS.includes(text)`, `new Set(WORDS).has(text)`).
+ *   `lastIndexOf`, `match`, `matchAll`, `search`) whose needle evaluates to
+ *   wording, membership or key lookup in a wording list or table
+ *   (`WORDS.includes(text)`, `new Set(WORDS).has(text)`, `TABLE[text]`,
+ *   `text in TABLE`), and equality or `case` with wording.
+ *
+ * Names are resolved by lexical scope, through relative imports, through
+ * iteration (`for...of`, callbacks of `some`/`find`/`map`/..., destructuring,
+ * `Object.keys/values/entries`, `Map` entries, rule tables) and through object
+ * and static class properties.
  *
  * Each site must be in the baseline (`user-text-regex-gate.baseline.ts`: the
  * sites that predate the gate, removed as #2 migrates them) or carry its own
  * exemption: the nearest leading comment of the site, or of the statement,
- * property or class member holding it, reads
+ * property, class member or `case` holding it, reads
  *
  *   // r1-exempt(<category>): <reason, on the marker line>
  *
- * with a category from `EXEMPTIONS` (format, own-text, external-text,
- * display). One exemption covers one site. Not covered: equality
- * (`text === '确认'`), patterns or keyword lists built in another file,
- * English-only wording, and non-JavaScript sources.
+ * with a category from `EXEMPTIONS`. One exemption covers one site. Not
+ * covered: package imports (`@allrice/...`), callers of functions that hold a
+ * site, single English words, and non-JavaScript sources.
  *
- *   node --import tsx scripts/user-text-regex-gate.ts [--base <git ref>] [--list] [--json]
+ *   node --import tsx scripts/user-text-regex-gate.ts [--base <commit>] [--list] [--json]
  *
  * `--base` (default: the merge base with origin/main) also fails when the
- * baseline holds a site the base commit's baseline did not: the list only
- * shrinks. Entries may move between files and owners with their code.
+ * baseline gains a site against the base commit's baseline, and lists for
+ * review what moved, changed in place, was reclassified as not R1, or gained
+ * an exemption (as GitHub annotations in Actions).
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import ts from 'typescript';
 
@@ -65,11 +72,12 @@ export type ExemptionCategory = keyof typeof EXEMPTIONS;
 export const BASELINE_KINDS = {
   reject: '没匹配上就拒绝、报错或不执行（R1 本身）',
   decide:
-    '据此决定怎么做：走哪条路、默认值、算不算证据、错误归哪类；猜错了用户拿不到想要的结果',
-  extract: '从原话里取值（时间、名称、内容），取错或取不到会改变执行结果',
+    '据此决定怎么做：走哪条路、默认值、错误归哪类；猜错了用户拿不到想要的结果',
+  extract: '从原话里取值（时间、名称、内容），取错只影响取到的值，不拒绝',
   ...EXEMPTIONS,
 } as const;
 export type BaselineKind = keyof typeof BASELINE_KINDS;
+const PENDING: readonly BaselineKind[] = ['reject', 'decide', 'extract'];
 
 export type BaselineEntry = {
   file: string;
@@ -94,8 +102,8 @@ export type Site = {
   line: number;
   /** Dotted names of the declarations holding the site (`<module>` at top level). */
   owner: string;
-  kind: 'regex' | 'keyword';
-  /** Identity in the baseline: the regex as written, or the resolved pattern or needle. */
+  kind: 'regex' | 'use' | 'keyword' | 'equality';
+  /** Identity in the baseline: the regex as written, or the evaluated pattern, needle or list. */
   text: string;
   exemption?: Exemption;
 };
@@ -107,6 +115,8 @@ export type ScanReport = { files: number; sites: Site[]; problems: Problem[] };
 const HAN = /\p{Script=Han}/u;
 const MARKER = /r1-exempt\(([^)]*)\)\s*[:：]?\s*(.*)/;
 const MIN_REASON = 10;
+const DEPTH = 12;
+/** String methods whose first argument is matched against the receiver. */
 const STRING_MATCH = new Set([
   'includes',
   'startsWith',
@@ -117,7 +127,22 @@ const STRING_MATCH = new Set([
   'matchAll',
   'search',
 ]);
-const MEMBERSHIP = new Set(['includes', 'indexOf', 'lastIndexOf', 'has']);
+/** Methods that apply a regex given as their argument. */
+const REGEX_ARGUMENT = new Set([
+  'match',
+  'matchAll',
+  'replace',
+  'replaceAll',
+  'search',
+  'split',
+]);
+const MEMBERSHIP = new Set([
+  'includes',
+  'indexOf',
+  'lastIndexOf',
+  'has',
+  'get',
+]);
 const ITERATION = new Set([
   'some',
   'every',
@@ -130,27 +155,67 @@ const ITERATION = new Set([
   'flatMap',
   'forEach',
 ]);
-/** Sources that are not AllRice product code. */
+const EQUALITY = new Set([
+  ts.SyntaxKind.EqualsEqualsEqualsToken,
+  ts.SyntaxKind.ExclamationEqualsEqualsToken,
+  ts.SyntaxKind.EqualsEqualsToken,
+  ts.SyntaxKind.ExclamationEqualsToken,
+]);
+/** Not product code: tests, fixtures and build output. */
 const SKIPPED =
-  /(?:^|\/)(?:node_modules|dist|coverage|test|tests|__tests__|fixtures?)\/|\.(?:test|spec|fixture)\.[cm]?[jt]sx?$|\.d\.[cm]?ts$|^apps\/web\/app\/chatflow\/dsh-upstream\//;
+  /^(?:apps|packages)\/[^/]+\/tests?\/|(?:^|\/)(?:node_modules|dist|coverage|__tests__|fixtures?)\/|\.(?:test|spec|fixture)\.[cm]?[jt]sx?$|\.d\.[cm]?ts$/;
 const SOURCE = /\.[cm]?[jt]sx?$/;
+
+/** English words that read as a request rather than a token or a message. */
+const FUNCTION_WORDS = new Set(
+  "please don't dont do not no never always only just my our your yourself me us I we you this that these those the from now by default want need must should would could".split(
+    ' ',
+  ),
+);
+const REQUEST_WORDS = new Set(
+  'remember forget confirm approve cancel stop save store record retain learn delete remove install update restore revert enable disable activate schedule remind every daily weekly once use bind reference rename call reply respond be keep mind upload discuss show view explain prefer decided send'.split(
+    ' ',
+  ),
+);
+
+/** Two request words, one of them a function word: `please install`, `don't remember`. */
+export function englishWording(words: Iterable<string>) {
+  const found = new Set(
+    [...words].filter(
+      (word) => FUNCTION_WORDS.has(word) || REQUEST_WORDS.has(word),
+    ),
+  );
+  return found.size >= 2 && [...found].some((word) => FUNCTION_WORDS.has(word));
+}
+
+const textWording = (text: string) =>
+  HAN.test(text) || englishWording(text.match(/[A-Za-z']+/g) ?? []);
+
+/** Wording in a regex source: Han text, or English request words. */
+export function patternWording(source: string) {
+  return (
+    patternHasHan(source) ||
+    englishWording(
+      source
+        .replace(/\\[sS][*+?]?|\\[bBdDwW]/g, ' ')
+        .replace(/\\(.)/gs, '$1')
+        .match(/[A-Za-z']+/g) ?? [],
+    )
+  );
+}
 
 /** Product sources under apps/ and packages/: tracked or new, not ignored. */
 export function productFiles(root: string) {
-  return execFileSync(
-    'git',
-    [
-      'ls-files',
-      '--cached',
-      '--others',
-      '--exclude-standard',
-      '-z',
-      '--',
-      'apps',
-      'packages',
-    ],
-    { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
-  )
+  return git(root, [
+    'ls-files',
+    '--cached',
+    '--others',
+    '--exclude-standard',
+    '-z',
+    '--',
+    'apps',
+    'packages',
+  ])
     .split('\0')
     .filter(
       (path) =>
@@ -229,13 +294,14 @@ function nameText(name: ts.Node | undefined) {
     ts.isIdentifier(name) ||
     ts.isPrivateIdentifier(name) ||
     ts.isStringLiteral(name) ||
-    ts.isNumericLiteral(name)
+    ts.isNumericLiteral(name) ||
+    ts.isNoSubstitutionTemplateLiteral(name)
   )
     return name.text;
   return '';
 }
 
-const functionLike = (node: ts.Node) =>
+const functionLike = (node: ts.Node): node is ts.SignatureDeclaration =>
   ts.isFunctionDeclaration(node) ||
   ts.isFunctionExpression(node) ||
   ts.isArrowFunction(node) ||
@@ -279,368 +345,837 @@ function declarationName(node: ts.Node) {
   return '';
 }
 
-/** Statements, class members and object properties own their leading comment. */
+function ownerOf(node: ts.Node) {
+  const names: string[] = [];
+  for (let cursor = node.parent; cursor && !ts.isSourceFile(cursor);) {
+    const name = declarationName(cursor);
+    if (name) names.unshift(name);
+    cursor = cursor.parent;
+  }
+  return names.join('.') || '<module>';
+}
+
+/** Statements, class members, object properties and `case` own their leading comment. */
 function holdsComments(node: ts.Node) {
   return (
     ts.isStatement(node) ||
     ts.isClassElement(node) ||
-    ts.isObjectLiteralElementLike(node)
+    ts.isObjectLiteralElementLike(node) ||
+    ts.isCaseOrDefaultClause(node)
   );
 }
 
-function scanFile(path: string, text: string) {
-  const kind = /x$/.test(path) ? ts.ScriptKind.TSX : undefined;
-  const file = ts.createSourceFile(
-    path,
-    text,
-    ts.ScriptTarget.Latest,
-    true,
-    kind,
-  );
-  const lineOf = (position: number) =>
-    file.getLineAndCharacterOfPosition(position).line + 1;
+type Step = string | number;
+/** What an expression may evaluate to: a node, a synthetic string (an object
+ * key) or a synthetic tuple (an `Object.entries` item). */
+type Value = ts.Node | string | readonly Value[];
+type Binding =
+  | { kind: 'value'; value: ts.Node; path: Step[] }
+  | { kind: 'item'; source: ts.Expression; path: Step[]; iteration: string }
+  | { kind: 'import'; from: string; specifier: string; name: string }
+  | { kind: 'opaque' };
+const OPAQUE: Binding = { kind: 'opaque' };
 
-  // Same-file `const` initializers by name; a name declared twice is unknown.
-  const constants = new Map<string, ts.Expression[]>();
-  const collect = (node: ts.Node) => {
+/** Where `name` sits inside a binding pattern, as property and index steps. */
+function bindingPath(
+  pattern: ts.BindingName,
+  name: string,
+): Step[] | undefined {
+  if (ts.isIdentifier(pattern)) return pattern.text === name ? [] : undefined;
+  if (ts.isObjectBindingPattern(pattern)) {
+    for (const element of pattern.elements) {
+      const path = bindingPath(element.name, name);
+      if (path)
+        return element.dotDotDotToken
+          ? undefined
+          : [nameText(element.propertyName ?? element.name), ...path];
+    }
+    return undefined;
+  }
+  for (const [index, element] of pattern.elements.entries()) {
+    if (ts.isOmittedExpression(element)) continue;
+    const path = bindingPath(element.name, name);
+    if (path) return element.dotDotDotToken ? undefined : [index, ...path];
+  }
+  return undefined;
+}
+
+function createScanner(root: string) {
+  const parsed = new Map<string, ts.SourceFile | null>();
+  /** A repository source by relative path, parsed once. */
+  function parse(path: string, text?: string) {
+    if (parsed.has(path)) return parsed.get(path)!;
+    let file: ts.SourceFile | null = null;
     if (
-      ts.isVariableDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
-      node.initializer &&
-      ts.isVariableDeclarationList(node.parent) &&
-      node.parent.flags & ts.NodeFlags.Const
+      SOURCE.test(path) &&
+      !path.startsWith('..') &&
+      (text !== undefined || existsSync(join(root, path)))
     )
-      constants.set(node.name.text, [
-        ...(constants.get(node.name.text) ?? []),
-        node.initializer,
-      ]);
-    ts.forEachChild(node, collect);
-  };
-  collect(file);
-  const constant = (node: ts.Identifier) => {
-    const found = constants.get(node.text);
-    return found?.length === 1 ? found[0] : undefined;
-  };
+      file = ts.createSourceFile(
+        path,
+        text ?? readFileSync(join(root, path), 'utf8'),
+        ts.ScriptTarget.Latest,
+        true,
+        /x$/.test(path) ? ts.ScriptKind.TSX : undefined,
+      );
+    parsed.set(path, file);
+    return file;
+  }
 
-  function regexBody(node: ts.Expression, depth = 0): string | undefined {
-    node = unwrap(node);
-    if (ts.isRegularExpressionLiteral(node))
-      return node.text.slice(1, node.text.lastIndexOf('/'));
-    if (ts.isIdentifier(node) && depth < 8) {
-      const value = constant(node);
-      return value && regexBody(value, depth + 1);
+  /** The declaration `name` refers to at `id`, by lexical scope. */
+  function bindingOf(id: ts.Identifier): Binding | undefined {
+    const name = id.text;
+    for (let child: ts.Node = id; child.parent; child = child.parent) {
+      const scope = child.parent;
+      if (functionLike(scope)) {
+        for (const [index, parameter] of scope.parameters.entries()) {
+          const path = bindingPath(parameter.name, name);
+          if (!path) continue;
+          const call = scope.parent;
+          return index === 0 &&
+            (ts.isArrowFunction(scope) || ts.isFunctionExpression(scope)) &&
+            ts.isCallExpression(call) &&
+            call.arguments[0] === scope &&
+            ts.isPropertyAccessExpression(call.expression) &&
+            ITERATION.has(call.expression.name.text)
+            ? {
+                kind: 'item',
+                source: call.expression.expression,
+                path,
+                iteration: call.expression.name.text,
+              }
+            : OPAQUE;
+        }
+        if (ts.isFunctionExpression(scope) && scope.name?.text === name)
+          return OPAQUE;
+      }
+      if (
+        ts.isForOfStatement(scope) &&
+        child !== scope.expression &&
+        ts.isVariableDeclarationList(scope.initializer)
+      )
+        for (const declaration of scope.initializer.declarations) {
+          const path = bindingPath(declaration.name, name);
+          if (path)
+            return {
+              kind: 'item',
+              source: scope.expression,
+              path,
+              iteration: 'for-of',
+            };
+        }
+      if (
+        (ts.isForStatement(scope) || ts.isForInStatement(scope)) &&
+        scope.initializer &&
+        ts.isVariableDeclarationList(scope.initializer) &&
+        scope.initializer.declarations.some((declaration) =>
+          bindingPath(declaration.name, name),
+        )
+      )
+        return OPAQUE;
+      if (
+        ts.isCatchClause(scope) &&
+        scope.variableDeclaration &&
+        bindingPath(scope.variableDeclaration.name, name)
+      )
+        return OPAQUE;
+      const statements =
+        ts.isSourceFile(scope) ||
+        ts.isBlock(scope) ||
+        ts.isModuleBlock(scope) ||
+        ts.isCaseOrDefaultClause(scope)
+          ? scope.statements
+          : [];
+      for (const statement of statements) {
+        if (ts.isVariableStatement(statement)) {
+          for (const declaration of statement.declarationList.declarations) {
+            const path = bindingPath(declaration.name, name);
+            if (path)
+              return declaration.initializer
+                ? { kind: 'value', value: declaration.initializer, path }
+                : OPAQUE;
+          }
+        } else if (
+          (ts.isFunctionDeclaration(statement) ||
+            ts.isClassDeclaration(statement) ||
+            ts.isEnumDeclaration(statement)) &&
+          statement.name?.text === name
+        )
+          return { kind: 'value', value: statement, path: [] };
+        else if (
+          ts.isImportDeclaration(statement) &&
+          statement.importClause &&
+          ts.isStringLiteral(statement.moduleSpecifier)
+        ) {
+          const clause = statement.importClause;
+          if (clause.name?.text === name) return OPAQUE;
+          const named = clause.namedBindings;
+          if (named && ts.isNamespaceImport(named))
+            if (named.name.text === name) return OPAQUE;
+          if (named && ts.isNamedImports(named))
+            for (const element of named.elements)
+              if (element.name.text === name)
+                return {
+                  kind: 'import',
+                  from: scope.getSourceFile().fileName,
+                  specifier: statement.moduleSpecifier.text,
+                  name: (element.propertyName ?? element.name).text,
+                };
+        }
+      }
     }
     return undefined;
   }
 
-  /** Unknown parts read `${…}`; Han text in the known parts still counts. */
-  function templateText(node: ts.TemplateLiteral, raw: boolean, depth: number) {
-    const part = (literal: ts.TemplateLiteralLikeNode) =>
-      raw ? (literal.rawText ?? literal.text) : literal.text;
-    if (ts.isNoSubstitutionTemplateLiteral(node)) return part(node);
-    return node.templateSpans.reduce(
-      (text, span) =>
-        text +
-        (stringOf(span.expression, depth + 1) ?? '${…}') +
-        part(span.literal),
-      part(node.head),
+  /** A top-level declaration another repository file exports by name. */
+  function imported(binding: Extract<Binding, { kind: 'import' }>) {
+    if (!binding.specifier.startsWith('.')) return undefined;
+    const base = posix.normalize(
+      posix.join(posix.dirname(binding.from), binding.specifier),
+    );
+    const stem = base.replace(/\.[cm]?[jt]sx?$/, '');
+    for (const path of [
+      base,
+      `${stem}.ts`,
+      `${stem}.tsx`,
+      `${stem}.mts`,
+      `${stem}.mjs`,
+      `${stem}.js`,
+      `${base}/index.ts`,
+    ]) {
+      const file = parse(path);
+      if (!file) continue;
+      for (const statement of file.statements) {
+        if (ts.isVariableStatement(statement))
+          for (const declaration of statement.declarationList.declarations)
+            if (nameText(declaration.name) === binding.name)
+              return declaration.initializer;
+        if (
+          (ts.isFunctionDeclaration(statement) ||
+            ts.isClassDeclaration(statement)) &&
+          statement.name?.text === binding.name
+        )
+          return statement;
+      }
+      return undefined;
+    }
+    return undefined;
+  }
+
+  /** What `node` may evaluate to, following names, properties and items. */
+  function valuesOf(node: ts.Node, depth = 0): Value[] {
+    if (depth > DEPTH || !ts.isExpression(node)) return [node];
+    const expression = unwrap(node);
+    if (ts.isIdentifier(expression)) {
+      const binding = bindingOf(expression);
+      if (!binding || binding.kind === 'opaque') return [expression];
+      if (binding.kind === 'import') {
+        const target = imported(binding);
+        return target ? valuesOf(target, depth + 1) : [expression];
+      }
+      if (binding.kind === 'value')
+        return project(
+          valuesOf(binding.value, depth + 1),
+          binding.path,
+          depth + 1,
+        );
+      return project(
+        valuesOf(binding.source, depth + 1).flatMap((value) =>
+          elementsOf(value, depth + 1),
+        ),
+        binding.path,
+        depth + 1,
+      );
+    }
+    const key = ts.isPropertyAccessExpression(expression)
+      ? expression.name.text
+      : ts.isElementAccessExpression(expression) &&
+          (ts.isStringLiteral(expression.argumentExpression) ||
+            ts.isNumericLiteral(expression.argumentExpression))
+        ? ts.isNumericLiteral(expression.argumentExpression)
+          ? Number(expression.argumentExpression.text)
+          : expression.argumentExpression.text
+        : undefined;
+    if (
+      key !== undefined &&
+      key !== 'source' &&
+      (ts.isPropertyAccessExpression(expression) ||
+        ts.isElementAccessExpression(expression))
+    ) {
+      const found = valuesOf(expression.expression, depth + 1).flatMap(
+        (value) => property(value, key, depth + 1),
+      );
+      return found.length ? found : [expression];
+    }
+    return [expression];
+  }
+
+  function project(values: Value[], path: Step[], depth: number) {
+    return path.reduce<Value[]>(
+      (current, step) =>
+        current.flatMap((value) => property(value, step, depth)),
+      values,
     );
   }
 
-  function stringOf(node: ts.Expression, depth = 0): string | undefined {
-    if (depth > 8) return undefined;
-    node = unwrap(node);
-    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
-      return node.text;
-    if (ts.isTemplateExpression(node)) return templateText(node, false, depth);
-    if (
-      ts.isTaggedTemplateExpression(node) &&
-      node.tag.getText(file) === 'String.raw'
-    )
-      return templateText(node.template, true, depth);
-    if (
-      ts.isBinaryExpression(node) &&
-      node.operatorToken.kind === ts.SyntaxKind.PlusToken
-    ) {
-      const left = stringOf(node.left, depth + 1);
-      const right = stringOf(node.right, depth + 1);
-      return left === undefined && right === undefined
-        ? undefined
-        : (left ?? '${…}') + (right ?? '${…}');
+  function property(value: Value, key: Step, depth: number): Value[] {
+    if (typeof value === 'string') return [];
+    if (Array.isArray(value))
+      return typeof key === 'number' && key < value.length ? [value[key]] : [];
+    const node = value as ts.Node;
+    if (ts.isObjectLiteralExpression(node)) {
+      for (const member of node.properties) {
+        if (ts.isPropertyAssignment(member) && nameText(member.name) === key)
+          return valuesOf(member.initializer, depth + 1);
+        if (
+          ts.isShorthandPropertyAssignment(member) &&
+          member.name.text === key
+        )
+          return valuesOf(member.name, depth + 1);
+      }
+      return [];
     }
-    if (ts.isIdentifier(node)) {
-      const value = constant(node);
-      return value && stringOf(value, depth + 1);
+    if (ts.isArrayLiteralExpression(node) && typeof key === 'number') {
+      const element = node.elements[key];
+      return element && !ts.isSpreadElement(element)
+        ? valuesOf(element, depth + 1)
+        : [];
     }
-    if (ts.isPropertyAccessExpression(node) && node.name.text === 'source')
-      return regexBody(node.expression, depth + 1);
-    if (
-      ts.isCallExpression(node) &&
-      ts.isPropertyAccessExpression(node.expression) &&
-      node.expression.name.text === 'join'
-    ) {
-      const items = listOf(node.expression.expression, depth + 1);
-      const separator = node.arguments[0]
-        ? (stringOf(node.arguments[0], depth + 1) ?? '${…}')
-        : ',';
-      return items?.join(separator);
-    }
-    return undefined;
+    if (ts.isClassDeclaration(node))
+      for (const member of node.members)
+        if (
+          ts.isPropertyDeclaration(member) &&
+          member.initializer &&
+          nameText(member.name) === key &&
+          member.modifiers?.some(
+            (modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword,
+          )
+        )
+          return valuesOf(member.initializer, depth + 1);
+    return [];
   }
 
-  /** Known string items of a list; `.map()` and the like keep their source items. */
-  function listOf(node: ts.Expression, depth = 0): string[] | undefined {
-    if (depth > 8) return undefined;
-    node = unwrap(node);
-    if (ts.isArrayLiteralExpression(node))
-      return node.elements.flatMap((element) =>
-        ts.isSpreadElement(element)
-          ? (listOf(element.expression, depth + 1) ?? [])
-          : (stringOf(element, depth + 1) ?? []),
-      );
-    if (ts.isIdentifier(node)) {
-      const value = constant(node);
-      return value && listOf(value, depth + 1);
-    }
+  /** The keys of an object literal or a `Map`, as strings. */
+  function keysOf(value: Value, depth: number): string[] {
+    if (typeof value === 'string' || Array.isArray(value)) return [];
+    const node = value as ts.Node;
+    if (ts.isObjectLiteralExpression(node))
+      return node.properties.map((member) => nameText(member.name));
     if (
       ts.isNewExpression(node) &&
       ts.isIdentifier(node.expression) &&
-      node.expression.text === 'Set' &&
-      node.arguments?.[0]
+      node.expression.text === 'Map'
     )
-      return listOf(node.arguments[0], depth + 1);
-    if (
-      ts.isCallExpression(node) &&
-      ts.isPropertyAccessExpression(node.expression) &&
-      ['map', 'filter', 'slice', 'concat', 'flat'].includes(
-        node.expression.name.text,
-      )
-    ) {
-      const base = listOf(node.expression.expression, depth + 1);
-      if (!base) return undefined;
-      return node.expression.name.text === 'concat'
-        ? [
-            ...base,
-            ...node.arguments.flatMap(
-              (argument) => listOf(argument, depth + 1) ?? [],
-            ),
-          ]
-        : base;
-    }
-    return undefined;
-  }
-
-  const hanList = (list: string[] | undefined) =>
-    list?.some((item) => HAN.test(item)) ? list : undefined;
-
-  /** A callback parameter iterating a Han keyword list, and that list. */
-  function keywordItem(node: ts.Expression) {
-    node = unwrap(node);
-    if (!ts.isIdentifier(node)) return undefined;
-    for (let cursor = node.parent; cursor; cursor = cursor.parent) {
-      if (!ts.isArrowFunction(cursor) && !ts.isFunctionExpression(cursor))
-        continue;
-      const parameter = cursor.parameters.findIndex(
-        (entry) => nameText(entry.name) === node.text,
+      return elementsOf(node, depth + 1).flatMap((entry) =>
+        property(entry, 0, depth + 1).flatMap((key) =>
+          stringsOf(key, depth + 1),
+        ),
       );
-      if (parameter < 0) continue;
-      const call = cursor.parent;
-      if (
-        parameter !== 0 ||
-        !ts.isCallExpression(call) ||
-        call.arguments[0] !== cursor ||
-        !ts.isPropertyAccessExpression(call.expression) ||
-        !ITERATION.has(call.expression.name.text)
-      )
-        return undefined;
-      const list = hanList(listOf(call.expression.expression));
-      return list && { iteration: call.expression.name.text, list };
+    if (ts.isExpression(node)) {
+      const values = valuesOf(node, depth + 1);
+      if (values.length !== 1 || values[0] !== node)
+        return values.flatMap((resolved) => keysOf(resolved, depth + 1));
     }
-    return undefined;
+    return [];
   }
 
-  const sites: Site[] = [];
-  const nodes = new Map<Site, ts.Node>();
-  const add = (node: ts.Node, kind: Site['kind'], siteText: string) => {
-    const names: string[] = [];
-    for (let cursor = node.parent; cursor && !ts.isSourceFile(cursor);) {
-      const name = declarationName(cursor);
-      if (name) names.unshift(name);
-      cursor = cursor.parent;
-    }
-    const site: Site = {
-      file: path,
-      line: lineOf(node.getStart(file)),
-      owner: names.join('.') || '<module>',
-      kind,
-      text: siteText,
+  /** What `node` returns: its expression body or its `return` statements. */
+  function returnsOf(node: ts.Node, depth: number): Value[] {
+    if (!ts.isArrowFunction(node) && !ts.isFunctionExpression(node)) return [];
+    if (!ts.isBlock(node.body)) return valuesOf(node.body, depth + 1);
+    const found: Value[] = [];
+    const visit = (child: ts.Node) => {
+      if (functionLike(child)) return;
+      if (ts.isReturnStatement(child) && child.expression)
+        found.push(...valuesOf(child.expression, depth + 1));
+      ts.forEachChild(child, visit);
     };
-    sites.push(site);
-    nodes.set(site, node);
-  };
-  const json = (value: unknown) => JSON.stringify(value);
+    ts.forEachChild(node.body, visit);
+    return found;
+  }
 
-  const visit = (node: ts.Node) => {
-    if (ts.isRegularExpressionLiteral(node)) {
-      if (patternHasHan(regexBody(node) ?? '')) add(node, 'regex', node.text);
-    } else if (
+  /** The items a collection value yields when iterated. */
+  function elementsOf(value: Value, depth: number): Value[] {
+    if (depth > DEPTH || typeof value === 'string' || Array.isArray(value))
+      return [];
+    const node = value as ts.Node;
+    if (!ts.isExpression(node)) return [];
+    const expression = unwrap(node);
+    if (ts.isArrayLiteralExpression(expression))
+      return expression.elements.flatMap((element) =>
+        ts.isSpreadElement(element)
+          ? valuesOf(element.expression, depth + 1).flatMap((spread) =>
+              elementsOf(spread, depth + 1),
+            )
+          : valuesOf(element, depth + 1),
+      );
+    if (
+      ts.isNewExpression(expression) &&
+      ts.isIdentifier(expression.expression) &&
+      ['Set', 'Map'].includes(expression.expression.text) &&
+      expression.arguments?.[0]
+    )
+      return valuesOf(expression.arguments[0], depth + 1).flatMap((items) =>
+        elementsOf(items, depth + 1),
+      );
+    if (
+      ts.isCallExpression(expression) &&
+      ts.isPropertyAccessExpression(expression.expression)
+    ) {
+      const method = expression.expression.name.text;
+      const receiver = expression.expression.expression;
+      const argument = expression.arguments[0];
+      if (
+        ts.isIdentifier(receiver) &&
+        ['Object', 'Array'].includes(receiver.text)
+      ) {
+        if (!argument) return [];
+        const targets = valuesOf(argument, depth + 1);
+        if (method === 'keys')
+          return targets.flatMap((target) => keysOf(target, depth + 1));
+        if (method === 'values')
+          return targets.flatMap((target) =>
+            keysOf(target, depth + 1).flatMap((key) =>
+              property(target, key, depth + 1),
+            ),
+          );
+        if (method === 'entries')
+          return targets.flatMap((target) =>
+            keysOf(target, depth + 1).flatMap((key) =>
+              property(target, key, depth + 1).map((item) => [key, item]),
+            ),
+          );
+        if (method === 'from')
+          return targets.flatMap((target) => elementsOf(target, depth + 1));
+        return [];
+      }
+      const items = valuesOf(receiver, depth + 1).flatMap((items) =>
+        elementsOf(items, depth + 1),
+      );
+      if (method === 'map' || method === 'flatMap')
+        // Source items too: `.map(escapeRegExp)` keeps their text.
+        return [...items, ...(argument ? returnsOf(argument, depth) : [])];
+      if (method === 'concat')
+        return [
+          ...items,
+          ...expression.arguments.flatMap((other) =>
+            valuesOf(other, depth + 1).flatMap((more) => [
+              ...elementsOf(more, depth + 1),
+              more,
+            ]),
+          ),
+        ];
+      if (
+        [
+          'filter',
+          'slice',
+          'flat',
+          'toSorted',
+          'toReversed',
+          'sort',
+          'reverse',
+        ].includes(method)
+      )
+        return items;
+      return [];
+    }
+    if (
+      ts.isIdentifier(expression) ||
+      ts.isPropertyAccessExpression(expression) ||
+      ts.isElementAccessExpression(expression)
+    ) {
+      const values = valuesOf(expression, depth + 1);
+      if (values.length !== 1 || values[0] !== expression)
+        return values.flatMap((resolved) => elementsOf(resolved, depth + 1));
+    }
+    return [];
+  }
+
+  /** One string for a template part: its only value, its alternatives, or unknown. */
+  function part(node: ts.Expression, depth: number) {
+    const strings = [
+      ...new Set(
+        valuesOf(node, depth + 1).flatMap((value) =>
+          stringsOf(value, depth + 1),
+        ),
+      ),
+    ];
+    return strings.length === 1
+      ? strings[0]!
+      : strings.length
+        ? `\${${strings.join('|')}}`
+        : '${…}';
+  }
+
+  function templateText(node: ts.TemplateLiteral, raw: boolean, depth: number) {
+    const text = (literal: ts.TemplateLiteralLikeNode) =>
+      raw ? (literal.rawText ?? literal.text) : literal.text;
+    if (ts.isNoSubstitutionTemplateLiteral(node)) return text(node);
+    return node.templateSpans.reduce(
+      (result, span) =>
+        result + part(span.expression, depth) + text(span.literal),
+      text(node.head),
+    );
+  }
+
+  /** The strings a value denotes; a collection denotes its items' strings. */
+  function stringsOf(value: Value, depth = 0): string[] {
+    if (depth > DEPTH) return [];
+    if (typeof value === 'string') return [value];
+    if (Array.isArray(value))
+      return value.flatMap((item) => stringsOf(item, depth + 1));
+    const node = value as ts.Node;
+    if (!ts.isExpression(node)) return [];
+    const expression = unwrap(node);
+    if (
+      ts.isStringLiteral(expression) ||
+      ts.isNoSubstitutionTemplateLiteral(expression)
+    )
+      return [expression.text];
+    if (ts.isTemplateExpression(expression))
+      return [templateText(expression, false, depth)];
+    if (
+      ts.isTaggedTemplateExpression(expression) &&
+      expression.tag.getText() === 'String.raw'
+    )
+      return [templateText(expression.template, true, depth)];
+    if (
+      ts.isBinaryExpression(expression) &&
+      expression.operatorToken.kind === ts.SyntaxKind.PlusToken
+    )
+      return [part(expression.left, depth) + part(expression.right, depth)];
+    if (
+      ts.isPropertyAccessExpression(expression) &&
+      expression.name.text === 'source'
+    )
+      return valuesOf(expression.expression, depth + 1).flatMap((target) => {
+        const regex = regexOf(target, depth + 1);
+        return regex ? [regex.pattern] : [];
+      });
+    if (
+      ts.isCallExpression(expression) &&
+      ts.isPropertyAccessExpression(expression.expression) &&
+      expression.expression.name.text === 'join'
+    ) {
+      const separator = expression.arguments[0]
+        ? part(expression.arguments[0], depth)
+        : ',';
+      return [
+        valuesOf(expression.expression.expression, depth + 1)
+          .flatMap((items) => elementsOf(items, depth + 1))
+          .flatMap((item) => stringsOf(item, depth + 1))
+          .join(separator),
+      ];
+    }
+    const values = valuesOf(expression, depth + 1);
+    if (values.length !== 1 || values[0] !== expression)
+      return values.flatMap((resolved) => stringsOf(resolved, depth + 1));
+    return elementsOf(expression, depth + 1).flatMap((item) =>
+      stringsOf(item, depth + 1),
+    );
+  }
+
+  type Regex = { node: ts.Node; text: string; pattern: string };
+  /** A regex literal or `RegExp(...)`: its text and pattern. */
+  function regexOf(value: Value, depth = 0): Regex | undefined {
+    if (typeof value === 'string' || Array.isArray(value)) return undefined;
+    const node = value as ts.Node;
+    if (ts.isRegularExpressionLiteral(node))
+      return {
+        node,
+        text: node.text,
+        pattern: node.text.slice(1, node.text.lastIndexOf('/')),
+      };
+    if (
       (ts.isNewExpression(node) || ts.isCallExpression(node)) &&
       ts.isIdentifier(node.expression) &&
       node.expression.text === 'RegExp' &&
-      node.arguments?.[0] &&
-      // Copying a regex: the literal is the site.
-      regexBody(node.arguments[0]) === undefined
+      node.arguments?.[0]
     ) {
-      const pattern = stringOf(node.arguments[0]);
-      const flags = node.arguments[1] && stringOf(node.arguments[1]);
-      const item = keywordItem(node.arguments[0]);
-      if (pattern !== undefined && patternHasHan(pattern))
-        add(node, 'regex', `RegExp(/${pattern}/${flags ?? ''})`);
-      else if (item)
-        add(
-          node,
-          'regex',
-          `${item.iteration}(RegExp(item)) over ${json(item.list)}`,
-        );
-    } else if (
-      ts.isCallExpression(node) &&
-      ts.isPropertyAccessExpression(node.expression)
-    ) {
-      const method = node.expression.name.text;
-      const needle = node.arguments[0];
-      const list = MEMBERSHIP.has(method)
-        ? hanList(listOf(node.expression.expression))
+      const copied = valuesOf(node.arguments[0], depth + 1)
+        .map((source) => regexOf(source, depth + 1))
+        .find(Boolean);
+      if (copied) return { ...copied, node };
+      const pattern = part(node.arguments[0], depth);
+      const flags = node.arguments[1] ? part(node.arguments[1], depth) : '';
+      return { node, text: `RegExp(/${pattern}/${flags})`, pattern };
+    }
+    return undefined;
+  }
+
+  /** The iteration an expression's root name walks, if any. */
+  function iterationOf(node: ts.Expression): string | undefined {
+    let expression = unwrap(node);
+    while (
+      ts.isPropertyAccessExpression(expression) ||
+      ts.isElementAccessExpression(expression)
+    )
+      expression = unwrap(expression.expression);
+    if (!ts.isIdentifier(expression)) return undefined;
+    const binding = bindingOf(expression);
+    return binding?.kind === 'item' ? binding.iteration : undefined;
+  }
+
+  const json = (value: unknown) => JSON.stringify(value);
+  const unique = (strings: string[]) => [...new Set(strings)];
+
+  /** The wording sites of one file. */
+  function scanFile(path: string, file: ts.SourceFile) {
+    const text = file.text;
+    const lineOf = (position: number) =>
+      file.getLineAndCharacterOfPosition(position).line + 1;
+    const sites: Site[] = [];
+    const nodes = new Map<Site, ts.Node>();
+    const add = (node: ts.Node, kind: Site['kind'], siteText: string) => {
+      const site: Site = {
+        file: path,
+        line: lineOf(node.getStart(file)),
+        owner: ownerOf(node),
+        kind,
+        text: siteText,
+      };
+      sites.push(site);
+      nodes.set(site, node);
+    };
+    /** A needle, list or side: one string, or the strings of an iteration. */
+    const describe = (node: ts.Expression, form: (item: string) => string) => {
+      const strings = unique(
+        valuesOf(node).flatMap((value) => stringsOf(value)),
+      );
+      if (!strings.some(textWording)) return undefined;
+      const iteration = iterationOf(node);
+      return iteration || strings.length > 1
+        ? `${iteration ?? 'any'}(${form('item')}) over ${json(strings)}`
+        : form(json(strings[0]));
+    };
+    /** Wording regexes an expression evaluates to, written elsewhere. */
+    const appliedRegexes = (node: ts.Expression, owner: string) => {
+      const found = valuesOf(node)
+        .map((value) => regexOf(value))
+        .filter((regex) => regex !== undefined)
+        .filter((regex) => patternWording(regex.pattern));
+      return found.length &&
+        found.every((regex) => regex.node !== unwrap(node)) &&
+        found.some(
+          (regex) =>
+            regex.node.getSourceFile() !== file ||
+            ownerOf(regex.node) !== owner,
+        )
+        ? unique(found.map((regex) => regex.text))
         : undefined;
-      if (list) add(node, 'keyword', `${json(list)}.${method}()`);
-      else if (
-        STRING_MATCH.has(method) &&
-        needle &&
-        regexBody(needle) === undefined
+    };
+
+    const visit = (node: ts.Node) => {
+      if (ts.isRegularExpressionLiteral(node)) {
+        if (patternWording(regexOf(node)!.pattern))
+          add(node, 'regex', node.text);
+      } else if (
+        (ts.isNewExpression(node) || ts.isCallExpression(node)) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === 'RegExp' &&
+        node.arguments?.[0]
       ) {
-        const value = stringOf(needle);
-        const item = keywordItem(needle);
-        if (value !== undefined && HAN.test(value))
-          add(node, 'keyword', `${method}(${json(value)})`);
-        else if (item)
+        const argument = node.arguments[0];
+        const copies = valuesOf(argument).some((value) => regexOf(value));
+        const patterns = unique(
+          valuesOf(argument).flatMap((value) => stringsOf(value)),
+        );
+        if (!copies && patterns.some(patternWording)) {
+          const iteration = iterationOf(argument);
           add(
             node,
-            'keyword',
-            `${item.iteration}(${method}(item)) over ${json(item.list)}`,
+            'regex',
+            iteration || patterns.length > 1
+              ? `${iteration ?? 'any'}(RegExp(item)) over ${json(patterns)}`
+              : regexOf(node)!.text,
           );
+        }
+      } else if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression)
+      ) {
+        const method = node.expression.name.text;
+        const receiver = node.expression.expression;
+        const argument = node.arguments[0];
+        const owner = ownerOf(node);
+        const regexArgument =
+          argument && valuesOf(argument).some((value) => regexOf(value));
+        const applied = ['test', 'exec'].includes(method)
+          ? appliedRegexes(receiver, owner)
+          : REGEX_ARGUMENT.has(method) && argument
+            ? appliedRegexes(argument, owner)
+            : undefined;
+        const iteration =
+          applied &&
+          iterationOf(['test', 'exec'].includes(method) ? receiver : argument!);
+        // Keys of a table or `Map`, items of an array or `Set`.
+        const listed = MEMBERSHIP.has(method)
+          ? unique(
+              valuesOf(receiver).flatMap((value) => [
+                ...keysOf(value, 0),
+                ...elementsOf(value, 0).flatMap((item) => stringsOf(item)),
+              ]),
+            )
+          : [];
+        if (applied)
+          add(
+            node,
+            'use',
+            iteration || applied.length > 1
+              ? `${iteration ?? 'any'}(${method}(item)) over ${json(applied)}`
+              : `${method}(${applied[0]})`,
+          );
+        else if (listed.some(textWording))
+          add(node, 'keyword', `${json(listed)}.${method}()`);
+        else if (STRING_MATCH.has(method) && argument && !regexArgument) {
+          const needle = describe(argument, (item) => `${method}(${item})`);
+          if (needle) add(node, 'keyword', needle);
+        }
+      } else if (
+        ts.isBinaryExpression(node) &&
+        EQUALITY.has(node.operatorToken.kind)
+      ) {
+        const side =
+          describe(node.right, (item) => `=== ${item}`) ??
+          describe(node.left, (item) => `=== ${item}`);
+        if (side) add(node, 'equality', side);
+      } else if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.InKeyword
+      ) {
+        const keys = unique(
+          valuesOf(node.right).flatMap((value) => keysOf(value, 0)),
+        );
+        if (keys.some(textWording)) add(node, 'keyword', `in ${json(keys)}`);
+      } else if (
+        ts.isElementAccessExpression(node) &&
+        !ts.isStringLiteral(node.argumentExpression) &&
+        !ts.isNumericLiteral(node.argumentExpression)
+      ) {
+        const keys = unique(
+          valuesOf(node.expression).flatMap((value) => keysOf(value, 0)),
+        );
+        if (keys.some(textWording))
+          add(node, 'keyword', `[key] of ${json(keys)}`);
+      } else if (ts.isCaseClause(node)) {
+        const label = describe(node.expression, (item) => `case ${item}`);
+        if (label) add(node, 'equality', label);
       }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(file);
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
 
-  // Exemption comments: every marker in the file, then the one nearest each site.
-  const problems: Problem[] = [];
-  type Marker = {
-    line: number;
-    end: number;
-    exemption?: Exemption;
-    covers: number;
-  };
-  const markers = new Map<number, Marker>();
-  const parseMarker = (range: ts.CommentRange) => {
-    const match = MARKER.exec(text.slice(range.pos, range.end));
-    if (!match) return undefined;
-    const at = range.pos + match.index;
-    if (markers.has(at)) return at;
-    const line = lineOf(at);
-    const category = match[1]!.trim();
-    const reason = match[2]!.replace(/\*\/\s*$/, '').trim();
-    const marker: Marker = { line, end: range.end, covers: 0 };
-    if (!(category in EXEMPTIONS))
-      problems.push({
-        file: path,
-        line,
-        problem: `unknown exemption category \`${category}\`; use one of ${Object.keys(EXEMPTIONS).join(', ')}`,
-      });
-    else if ([...reason].length < MIN_REASON)
-      problems.push({
-        file: path,
-        line,
-        problem: `an exemption needs a reason of at least ${MIN_REASON} characters on the marker line: why a miss refuses nothing`,
-      });
-    else
-      marker.exemption = {
-        category: category as ExemptionCategory,
-        reason,
-        line,
-      };
-    markers.set(at, marker);
-    return at;
-  };
-  // Leading comments start after a line break, so a comment trailing the
-  // previous line never exempts the next statement. A block comment on the
-  // site's own line, right before it, exempts that site alone.
-  const leading = (node: ts.Node) =>
-    ts.getLeadingCommentRanges(text, node.pos) ?? [];
-  const inline = (node: ts.Node) =>
-    (ts.getTrailingCommentRanges(text, node.pos) ?? []).filter(
-      (range) =>
-        range.kind === ts.SyntaxKind.MultiLineCommentTrivia &&
-        lineOf(range.end) === lineOf(node.getStart(file)),
-    );
-  const register = (node: ts.Node) => {
-    for (const range of leading(node)) parseMarker(range);
-    for (const range of ts.getTrailingCommentRanges(text, node.end) ?? [])
-      parseMarker(range);
-    ts.forEachChild(node, register);
-  };
-  register(file);
+    // Exemption comments: every marker in the file, then the one nearest each site.
+    const problems: Problem[] = [];
+    type Marker = {
+      line: number;
+      end: number;
+      exemption?: Exemption;
+      covers: number;
+    };
+    const markers = new Map<number, Marker>();
+    const parseMarker = (range: ts.CommentRange) => {
+      const match = MARKER.exec(text.slice(range.pos, range.end));
+      if (!match) return undefined;
+      const at = range.pos + match.index;
+      if (markers.has(at)) return at;
+      const line = lineOf(at);
+      const category = match[1]!.trim();
+      const reason = match[2]!.replace(/\*\/\s*$/, '').trim();
+      const marker: Marker = { line, end: range.end, covers: 0 };
+      if (!Object.hasOwn(EXEMPTIONS, category))
+        problems.push({
+          file: path,
+          line,
+          problem: `unknown exemption category \`${category}\`; use one of ${Object.keys(EXEMPTIONS).join(', ')}`,
+        });
+      else if ([...reason].length < MIN_REASON)
+        problems.push({
+          file: path,
+          line,
+          problem: `an exemption needs a reason of at least ${MIN_REASON} characters on the marker line: why a miss refuses nothing`,
+        });
+      else
+        marker.exemption = {
+          category: category as ExemptionCategory,
+          reason,
+          line,
+        };
+      markers.set(at, marker);
+      return at;
+    };
+    // Leading comments start after a line break, so a comment trailing the
+    // previous line never exempts the next statement. A block comment on the
+    // site's own line, right before it, exempts that site alone.
+    const leading = (node: ts.Node) =>
+      ts.getLeadingCommentRanges(text, node.pos) ?? [];
+    const inline = (node: ts.Node) =>
+      (ts.getTrailingCommentRanges(text, node.pos) ?? []).filter(
+        (range) =>
+          range.kind === ts.SyntaxKind.MultiLineCommentTrivia &&
+          lineOf(range.end) === lineOf(node.getStart(file)),
+      );
+    const register = (node: ts.Node) => {
+      for (const range of leading(node)) parseMarker(range);
+      for (const range of ts.getTrailingCommentRanges(text, node.end) ?? [])
+        parseMarker(range);
+      ts.forEachChild(node, register);
+    };
+    register(file);
 
-  for (const site of sites) {
-    const node = nodes.get(site)!;
-    let found: number | undefined;
-    for (
-      let cursor: ts.Node | undefined = node;
-      cursor && !ts.isSourceFile(cursor) && found === undefined;
-      cursor = cursor.parent
-    ) {
-      const ranges =
-        cursor === node
-          ? [...leading(cursor), ...inline(cursor)]
-          : leading(cursor);
-      for (const range of ranges) found = parseMarker(range) ?? found;
-      if (holdsComments(cursor)) break;
+    for (const site of sites) {
+      const node = nodes.get(site)!;
+      let found: number | undefined;
+      for (
+        let cursor: ts.Node | undefined = node;
+        cursor && !ts.isSourceFile(cursor) && found === undefined;
+        cursor = cursor.parent
+      ) {
+        const ranges =
+          cursor === node
+            ? [...leading(cursor), ...inline(cursor)]
+            : leading(cursor);
+        for (const range of ranges) found = parseMarker(range) ?? found;
+        if (holdsComments(cursor)) break;
+      }
+      if (found === undefined) continue;
+      const marker = markers.get(found)!;
+      marker.covers += 1;
+      if (marker.exemption) site.exemption = marker.exemption;
     }
-    if (found === undefined) continue;
-    const marker = markers.get(found)!;
-    marker.covers += 1;
-    if (marker.exemption) site.exemption = marker.exemption;
-  }
-  for (const marker of markers.values()) {
-    if (marker.covers === 0)
-      problems.push({
-        file: path,
-        line: marker.line,
-        problem:
-          'exemption comment covers no site: put it directly above the regex or keyword match it exempts (or inline as /* ... */ right before it), or delete it',
-      });
-    else if (marker.covers > 1)
-      problems.push({
-        file: path,
-        line: marker.line,
-        problem: `one exemption covers ${marker.covers} sites; give each site its own comment (/* r1-exempt(...): ... */ works inline)`,
-      });
-  }
-  // A marker the walk above cannot see (inside JSX, or in a string) is not
-  // silently ignored.
-  for (const found of text.matchAll(/r1-exempt\(/g))
-    if (
-      ![...markers].some(
-        ([at, marker]) => found.index >= at && found.index < marker.end,
+    for (const marker of markers.values()) {
+      if (marker.covers === 0)
+        problems.push({
+          file: path,
+          line: marker.line,
+          problem:
+            'exemption comment covers no site: put it on its own line directly above the statement holding the match, or inline as /* ... */ right before the match, or delete it',
+        });
+      else if (marker.covers > 1)
+        problems.push({
+          file: path,
+          line: marker.line,
+          problem: `one exemption covers ${marker.covers} sites; give each site its own comment (/* r1-exempt(...): ... */ works inline)`,
+        });
+    }
+    // A marker the walk above cannot see (inside JSX, before a closing brace,
+    // or in a string) is not silently ignored.
+    for (const found of text.matchAll(/r1-exempt\(/g))
+      if (
+        ![...markers].some(
+          ([at, marker]) => found.index >= at && found.index < marker.end,
+        )
       )
-    )
-      problems.push({
-        file: path,
-        line: lineOf(found.index),
-        problem:
-          'r1-exempt marker outside a comment the gate reads: put it in a // or /* */ comment directly above the site',
-      });
-  return { sites, problems };
+        problems.push({
+          file: path,
+          line: lineOf(found.index),
+          problem:
+            'r1-exempt marker the gate cannot attach to code: use a // line directly above the statement holding the match, or /* ... */ right before the match itself (e.g. inside an `else if (...)` condition)',
+        });
+    return { sites, problems };
+  }
+
+  return { parse, scanFile };
 }
 
 /** Every site in `files` (repository-relative), sorted by file and line. */
@@ -648,18 +1183,13 @@ export function scanUserTextMatches(
   root: string,
   files: readonly string[] = productFiles(root),
 ): ScanReport {
+  const scanner = createScanner(root);
   const sites: Site[] = [];
   const problems: Problem[] = [];
   for (const path of files) {
-    const text = readFileSync(join(root, path), 'utf8');
-    if (
-      !HAN.test(text) &&
-      !text.includes('\\u') &&
-      !text.includes('\\x') &&
-      !text.includes('r1-exempt')
-    )
-      continue;
-    const result = scanFile(path, text);
+    const file = scanner.parse(path);
+    if (!file) continue;
+    const result = scanner.scanFile(path, file);
     sites.push(...result.sites);
     problems.push(...result.problems);
   }
@@ -668,6 +1198,9 @@ export function scanUserTextMatches(
 
 const key = (file: string, owner: string, text: string) =>
   `${file}\0${owner}\0${text}`;
+
+/** Where each parsed baseline entry starts in the baseline file. */
+const entryLines = new WeakMap<BaselineEntry, number>();
 
 export type BaselineCheck = {
   /** Sites neither in the baseline nor exempted. */
@@ -685,16 +1218,20 @@ export function checkBaseline(
   const problems = [...report.problems];
   const remaining = new Map<string, number>();
   baseline.forEach((entry, index) => {
-    const where = { file: BASELINE_PATH, line: index + 1 };
-    if (!(entry.kind in BASELINE_KINDS))
-      problems.push({ ...where, problem: `entry ${index + 1}: unknown kind` });
+    const where = {
+      file: BASELINE_PATH,
+      line: entryLines.get(entry) ?? 0,
+    };
+    const name = `entry ${index + 1} (${entry.file} ${entry.owner})`;
+    if (!Object.hasOwn(BASELINE_KINDS, entry.kind))
+      problems.push({ ...where, problem: `${name}: unknown kind` });
     if ([...entry.use.trim()].length < MIN_REASON)
       problems.push({
         ...where,
-        problem: `entry ${index + 1}: \`use\` must say what the match decides`,
+        problem: `${name}: \`use\` must say what the match decides`,
       });
     if (!entry.sites.length)
-      problems.push({ ...where, problem: `entry ${index + 1}: no sites` });
+      problems.push({ ...where, problem: `${name}: no sites` });
     for (const text of entry.sites) {
       const id = key(entry.file, entry.owner, text);
       remaining.set(id, (remaining.get(id) ?? 0) + 1);
@@ -715,49 +1252,89 @@ export function checkBaseline(
   return { added, stale, problems };
 }
 
-type Listed = { file: string; owner: string; text: string };
+type Listed = { file: string; owner: string; kind: BaselineKind; text: string };
+export type BaselineChange = {
+  /** Sites the base did not hold: these fail. */
+  growth: Listed[];
+  /** Matched with a base site for review: moved, edited in place, or relaxed out of #2. */
+  notices: { site: Listed; from: Listed; change: string }[];
+};
 
-/** The sites of `entries` that `other` does not hold, by text, as a multiset. */
-function unmatched(
-  entries: readonly BaselineEntry[],
-  other: readonly BaselineEntry[],
-) {
-  const left = new Map<string, number>();
-  for (const entry of other)
-    for (const text of entry.sites) left.set(text, (left.get(text) ?? 0) + 1);
-  return entries.flatMap((entry) =>
-    entry.sites.flatMap((text): Listed[] => {
-      const count = left.get(text) ?? 0;
-      if (count > 0) {
-        left.set(text, count - 1);
-        return [];
-      }
-      return [{ file: entry.file, owner: entry.owner, text }];
-    }),
+const sitesOf = (entries: readonly BaselineEntry[]) =>
+  entries.flatMap((entry) =>
+    entry.sites.map((text): Listed => ({
+      file: entry.file,
+      owner: entry.owner,
+      kind: entry.kind,
+      text,
+    })),
   );
-}
 
 /**
- * Baseline sites the base baseline did not hold. Texts are counted across the
- * whole list, so an entry may follow its code to another file or owner. A
- * changed text counts as an edit in place when the same file and owner lost
- * one; otherwise it is growth. No owner's count can grow either way.
+ * Compares the baseline with the base commit's as a maximum matching, so the
+ * order of entries never decides the result. A current site matches a base
+ * site with the same file, owner and text; or, of the same kind, with the same
+ * text in the same file or owner (moved); or in the same file and owner
+ * (edited in place). A site with no match is growth. So no owner, and no #2
+ * kind, gains a site, and a not-R1 entry never pays for a new #2 one.
  */
-export function baselineGrowth(
+export function baselineChange(
   current: readonly BaselineEntry[],
   base: readonly BaselineEntry[],
-) {
-  const replaced = new Map<string, number>();
-  for (const site of unmatched(base, current)) {
-    const id = `${site.file}\0${site.owner}`;
-    replaced.set(id, (replaced.get(id) ?? 0) + 1);
-  }
-  return unmatched(current, base).filter((site) => {
-    const id = `${site.file}\0${site.owner}`;
-    const count = replaced.get(id) ?? 0;
-    if (count > 0) replaced.set(id, count - 1);
-    return count === 0;
+): BaselineChange {
+  const now = sitesOf(current);
+  const before = sitesOf(base);
+  const exact = (a: Listed, b: Listed) =>
+    a.file === b.file && a.owner === b.owner && a.text === b.text;
+  const edge = (a: Listed, b: Listed) =>
+    exact(a, b) ||
+    (a.kind === b.kind &&
+      ((a.text === b.text && (a.file === b.file || a.owner === b.owner)) ||
+        (a.file === b.file && a.owner === b.owner)));
+  // Kuhn's augmenting paths; exact pairs are tried first.
+  const adjacent = now.map((site) =>
+    before
+      .map((candidate, index) => ({ candidate, index }))
+      .filter(({ candidate }) => edge(site, candidate))
+      .sort(
+        (a, b) =>
+          Number(exact(site, b.candidate)) - Number(exact(site, a.candidate)),
+      )
+      .map(({ index }) => index),
+  );
+  const owner = new Array<number>(before.length).fill(-1);
+  const augment = (site: number, seen: Set<number>): boolean => {
+    for (const index of adjacent[site]!) {
+      if (seen.has(index)) continue;
+      seen.add(index);
+      if (owner[index] === -1 || augment(owner[index]!, seen)) {
+        owner[index] = site;
+        return true;
+      }
+    }
+    return false;
+  };
+  for (let site = 0; site < now.length; site++) augment(site, new Set());
+  const pair = new Map<number, number>();
+  owner.forEach((site, index) => site >= 0 && pair.set(site, index));
+  const growth: Listed[] = [];
+  const notices: BaselineChange['notices'] = [];
+  now.forEach((site, index) => {
+    const matched = pair.get(index);
+    if (matched === undefined) return void growth.push(site);
+    const from = before[matched]!;
+    const change = [
+      from.text !== site.text ? 'edited in place' : '',
+      from.file !== site.file || from.owner !== site.owner ? 'moved' : '',
+      PENDING.includes(from.kind) && !PENDING.includes(site.kind)
+        ? `reclassified ${from.kind} → ${site.kind} (leaves #2)`
+        : '',
+    ]
+      .filter(Boolean)
+      .join(', ');
+    if (change) notices.push({ site, from, change });
   });
+  return { growth, notices };
 }
 
 /**
@@ -772,9 +1349,10 @@ export function parseBaseline(source: string): BaselineEntry[] {
     ts.ScriptTarget.Latest,
     true,
   );
+  const lineOf = (node: ts.Node) =>
+    file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1;
   const fail = (node: ts.Node, message: string): never => {
-    const { line } = file.getLineAndCharacterOfPosition(node.getStart(file));
-    throw new Error(`${BASELINE_PATH}:${line + 1}: ${message}`);
+    throw new Error(`${BASELINE_PATH}:${lineOf(node)}: ${message}`);
   };
   const literal = (node: ts.Expression): string => {
     node = unwrap(node);
@@ -813,13 +1391,15 @@ export function parseBaseline(source: string): BaselineEntry[] {
         const sites = unwrap(field('sites'));
         if (!ts.isArrayLiteralExpression(sites))
           fail(sites, '`sites` must be an array literal');
-        return {
+        const entry: BaselineEntry = {
           file: literal(field('file')),
           owner: literal(field('owner')),
           kind: literal(field('kind')) as BaselineKind,
           use: literal(field('use')),
           sites: (sites as ts.ArrayLiteralExpression).elements.map(literal),
         };
+        entryLines.set(entry, lineOf(element));
+        return entry;
       });
     }
     ts.forEachChild(node, visit);
@@ -834,7 +1414,7 @@ function git(root: string, args: string[]) {
     cwd: root,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
-    maxBuffer: 64 * 1024 * 1024,
+    maxBuffer: 256 * 1024 * 1024,
   });
 }
 
@@ -848,6 +1428,48 @@ export function baseBaseline(root: string, commit: string) {
   return parseBaseline(git(root, ['show', `${commit}:${BASELINE_PATH}`]));
 }
 
+/** Exemption comments added since the base commit: the diff, and new files. */
+export function addedExemptions(root: string, commit: string) {
+  const added: { file: string; line: number; text: string }[] = [];
+  let file = '';
+  let line = 0;
+  for (const row of git(root, [
+    'diff',
+    '--no-color',
+    '--unified=0',
+    commit,
+    '--',
+    'apps',
+    'packages',
+  ]).split('\n')) {
+    if (row.startsWith('+++ ')) file = row.replace(/^\+\+\+ (?:b\/)?/, '');
+    else if (row.startsWith('@@')) line = Number(/\+(\d+)/.exec(row)?.[1] ?? 0);
+    else if (row.startsWith('+')) {
+      if (row.includes('r1-exempt('))
+        added.push({ file, line, text: row.slice(1).trim() });
+      line += 1;
+    }
+  }
+  for (const path of git(root, [
+    'ls-files',
+    '--others',
+    '--exclude-standard',
+    '-z',
+    '--',
+    'apps',
+    'packages',
+  ]).split('\0')) {
+    if (!SOURCE.test(path)) continue;
+    readFileSync(join(root, path), 'utf8')
+      .split('\n')
+      .forEach((row, index) => {
+        if (row.includes('r1-exempt('))
+          added.push({ file: path, line: index + 1, text: row.trim() });
+      });
+  }
+  return added;
+}
+
 const quote = (text: string) =>
   text.includes('`') || text.includes('${')
     ? JSON.stringify(text)
@@ -855,8 +1477,25 @@ const quote = (text: string) =>
 
 /** The CLI: prints the summary and failures, returns the exit code. */
 export function runGate(root: string, argv: readonly string[]) {
-  const option = (name: string) =>
-    argv.includes(name) ? argv[argv.indexOf(name) + 1] : undefined;
+  let explicitBase: string | undefined;
+  const flags = new Set<string>();
+  for (let index = 0; index < argv.length; index++) {
+    const argument = argv[index]!;
+    if (argument === '--base') {
+      explicitBase = argv[++index];
+      if (!explicitBase || explicitBase.startsWith('-')) {
+        console.error('--base needs a commit');
+        return 2;
+      }
+    } else if (argument === '--list' || argument === '--json')
+      flags.add(argument);
+    else {
+      console.error(
+        `unknown argument ${argument}; usage: [--base <commit>] [--list] [--json]`,
+      );
+      return 2;
+    }
+  }
   const baseline = parseBaseline(
     readFileSync(join(root, BASELINE_PATH), 'utf8'),
   );
@@ -864,15 +1503,12 @@ export function runGate(root: string, argv: readonly string[]) {
   const check = checkBaseline(report, baseline);
 
   // Base commit: explicit, or the merge base with origin/main when there is one.
-  const explicitBase = option('--base');
   let base: string | undefined;
   try {
     base = git(root, [
       'rev-parse',
       '--verify',
-      explicitBase
-        ? `${explicitBase}^{commit}`
-        : git(root, ['merge-base', 'HEAD', 'origin/main']).trim(),
+      `${explicitBase ?? git(root, ['merge-base', 'HEAD', 'origin/main']).trim()}^{commit}`,
     ]).trim();
   } catch (error) {
     if (explicitBase) {
@@ -881,13 +1517,20 @@ export function runGate(root: string, argv: readonly string[]) {
     }
   }
   const before = base ? baseBaseline(root, base) : null;
-  const growth = before ? baselineGrowth(baseline, before) : [];
+  const change = before
+    ? baselineChange(baseline, before)
+    : { growth: [], notices: [] };
+  const exemptions = base ? addedExemptions(root, base) : [];
 
-  if (argv.includes('--json')) {
+  if (flags.has('--json')) {
     console.log(
-      JSON.stringify({ ...check, growth, sites: report.sites }, null, 2),
+      JSON.stringify(
+        { ...check, ...change, exemptions, sites: report.sites },
+        null,
+        2,
+      ),
     );
-  } else if (argv.includes('--list')) {
+  } else if (flags.has('--list')) {
     const remaining = new Map<string, BaselineEntry[]>();
     for (const entry of baseline)
       for (const text of entry.sites) {
@@ -911,21 +1554,22 @@ export function runGate(root: string, argv: readonly string[]) {
 
   const failures = [
     ...check.problems.map(
-      (problem) => `${problem.file}:${problem.line} ${problem.problem}`,
+      (problem) =>
+        `${problem.file}${problem.line ? `:${problem.line}` : ''} ${problem.problem}`,
     ),
   ];
   if (check.added.length)
     failures.push(
       [
-        'Chinese wording matched outside the baseline (MET-220 R1, MET-210 #2):',
+        'Wording matched outside the baseline (MET-220 R1, MET-210 #2):',
         ...check.added.map(
           (site) =>
             `  ${site.file}:${site.line} ${site.owner}\n      ${site.text}`,
         ),
         "  Understanding the user is the model's job; a miss must reach the model or a",
         '  confirmation card, not a refusal. A match that only lets a clear format through,',
-        "  reads the system's own fixed text, or only changes display may carry, directly",
-        '  above it, a reason a reviewer can check:',
+        "  reads the system's own fixed text or another system's, or only changes display",
+        '  may carry, on its own line directly above, a reason a reviewer can check:',
         ...Object.entries(EXEMPTIONS).map(
           ([category, meaning]) =>
             `    // r1-exempt(${category}): <reason>   ${meaning}`,
@@ -942,19 +1586,56 @@ export function runGate(root: string, argv: readonly string[]) {
         ),
       ].join('\n'),
     );
-  if (growth.length)
+  if (change.growth.length)
     failures.push(
       [
-        `The baseline only shrinks; ${base} did not hold:`,
-        ...growth.map(
-          (site) => `  ${site.file} ${site.owner}\n      ${quote(site.text)}`,
+        `The baseline only shrinks; ${base} held no matching site (same text and kind in the same file or owner, or the same file and owner) for:`,
+        ...change.growth.map(
+          (site) =>
+            `  ${site.file} ${site.owner} (${site.kind})\n      ${quote(site.text)}`,
         ),
       ].join('\n'),
     );
 
+  // Allowed, but each one is a reviewer's call under R1.
+  const review = [
+    ...change.notices.map(({ site, from, change: what }) => ({
+      file: BASELINE_PATH,
+      line: entryLines.get(
+        baseline.find(
+          (entry) =>
+            entry.file === site.file &&
+            entry.owner === site.owner &&
+            entry.sites.includes(site.text),
+        )!,
+      ),
+      message: `baseline ${what}: ${site.file} ${site.owner} (${site.kind}) was ${from.file} ${from.owner} (${from.kind}) ${quote(from.text)}`,
+    })),
+    ...exemptions.map((exemption) => ({
+      file: exemption.file,
+      line: exemption.line,
+      message: `new exemption: ${exemption.text}`,
+    })),
+  ];
+  if (review.length) {
+    console.error(
+      `\nReview under MET-220 R1 (allowed by the gate):\n${review
+        .map(
+          (item) =>
+            `  ${item.file}${item.line ? `:${item.line}` : ''} ${item.message}`,
+        )
+        .join('\n')}`,
+    );
+    if (process.env.GITHUB_ACTIONS === 'true')
+      for (const item of review)
+        console.log(
+          `::warning file=${item.file}${item.line ? `,line=${item.line}` : ''},title=R1 review::${item.message.replace(/\r?\n/g, ' ')}`,
+        );
+  }
+
   const exempt = report.sites.filter((site) => site.exemption).length;
   const pending = baseline
-    .filter((entry) => ['reject', 'decide', 'extract'].includes(entry.kind))
+    .filter((entry) => PENDING.includes(entry.kind))
     .reduce((sum, entry) => sum + entry.sites.length, 0);
   console.error(
     `files=${report.files} sites=${report.sites.length} baseline=${baseline.reduce((sum, entry) => sum + entry.sites.length, 0)} (#2 pending ${pending}) exempt=${exempt} ` +

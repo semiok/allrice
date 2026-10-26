@@ -14,13 +14,14 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { baseline } from './user-text-regex-gate.baseline.ts';
 import {
   BASELINE_PATH,
-  baselineGrowth,
+  baselineChange,
   checkBaseline,
   parseBaseline,
   productFiles,
   runGate,
   scanUserTextMatches,
   type BaselineEntry,
+  type BaselineKind,
   type ScanReport,
 } from './user-text-regex-gate.ts';
 
@@ -29,11 +30,11 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const BS = String.fromCharCode(92);
 
 /**
- * MET-210 #2 gate (MET-220 R1): product code may not add a regex or keyword
- * match on Chinese wording outside the baseline, and the baseline lists only
- * what is still in the code.
+ * MET-210 #2 gate (MET-220 R1): product code may not add a match on the
+ * user's wording outside the baseline, and the baseline lists only what is
+ * still in the code.
  */
-describe('Chinese wording matches stay within the baseline', () => {
+describe('wording matches stay within the baseline', () => {
   let report: ScanReport;
   beforeAll(() => {
     report = scanUserTextMatches(root);
@@ -75,7 +76,11 @@ describe('the scan reports the shapes it claims to', () => {
   let project: string;
   let report: ScanReport;
   const files: Record<string, string> = {
-    'apps/demo/sites.ts': `const WORDS = ['记住', '记下'] as const;
+    'apps/demo/words.ts': `export const SHARED = ['批准'];
+export const PATTERN = /^批准$/u;
+`,
+    'apps/demo/sites.ts': `import { PATTERN, SHARED } from './words.ts';
+const WORDS = ['记住', '记下'] as const;
 const PREFIX = '提醒';
 export const literal = /(?:请)?记住/u;
 export const escaped = /${BS}u8bb0${BS}u4f4f/;
@@ -83,6 +88,7 @@ export const singleInClass = /[年月]/;
 export const joined = new RegExp(WORDS.join('|'), 'u');
 export const template = new RegExp(\`^\${PREFIX}我\`);
 export const sourced = RegExp(literal.source + '吧');
+export const english = /^(?:please )?(?:do not|don't) remember/i;
 export function keywords(text: string) {
   return (
     text.includes('不要') ||
@@ -93,14 +99,60 @@ export function keywords(text: string) {
     WORDS.some((word) => new RegExp(word).test(text))
   );
 }
+class Gate {
+  static WORDS = ['同意'];
+}
+export function shapes(text: string) {
+  for (const word of WORDS) if (text.endsWith(word)) return 1;
+  const TABLE = { 每天: 'daily', 每周: 'weekly' };
+  if (Object.keys(TABLE).find((key) => text.includes(key))) return 2;
+  if (Object.entries(TABLE).some(([key]) => text.startsWith(key))) return 3;
+  const RULES = [{ words: ['删除', '移除'] }];
+  if (RULES.find((rule) => rule.words.some((word) => text.includes(word)))) return 4;
+  if (Gate.WORDS.some((word) => text.includes(word))) return 5;
+  if (SHARED.some((word) => text.includes(word))) return 6;
+  if (text in TABLE) return 7;
+  if (TABLE[text as keyof typeof TABLE]) return 8;
+  if (new Map([['确认', 1]]).get(text)) return 9;
+  if (text === '确认' || text === 'please do not') return 10;
+  switch (text) {
+    case '好的':
+      return 11;
+  }
+  const patterns = [1, 2].map((n) => '确认' + n);
+  if (new RegExp(patterns.join('|')).test(text)) return 12;
+  return PATTERN.test(text) || text.replace(literal, '') !== text;
+}
+`,
+    'apps/demo/scope.ts': `export function first(text: string) {
+  const words = ['确认', '好的'];
+  if (!words.some((w) => text.includes(w))) throw new Error('refused');
+}
+export function second(text: string) {
+  const words = ['同意'];
+  if (!words.some((w) => text.includes(w))) throw new Error('refused');
+}
+export function shadowed(label: string, text: string) {
+  return text.includes(label);
+}
+export function other() {
+  const label = '确认';
+  return label;
+}
 `,
     'apps/demo/quiet.ts': `export const script = /[${BS}u4e00-${BS}u9fa5]+/u;
 export const literalRange = /[一-龥]{2,}/u;
 export const property = /${BS}p{Script=Han}{2,}/u;
 export const punctuation = /[，。！？]/u;
-export const english = /${BS}bremember${BS}b/i;
-export function quiet(text: string) {
-  return text === '确认' || text.split('、').length > 1 || text.replace('提醒', '') !== text;
+export const oneWord = /${BS}bremember${BS}b/i;
+export const actions = /^(?:create|update|delete)$/;
+export function quiet(text: string, status: string) {
+  return (
+    text.split('、').length > 1 ||
+    text.replace('提醒', '') !== text ||
+    status === 'not found' ||
+    status === 'ok'
+  );
 }
 export const message = '请稍后重试';
 `,
@@ -134,6 +186,27 @@ export function nested(text: string) {
 }
 
 export const docs = 'r1-exempt(format) 写在字符串里不是标记';
+
+// r1-exempt(constructor): 原型链上的名字不能当成例外类别
+export const inherited = /周/u;
+
+export function pick(text: string) {
+  switch (text) {
+    // r1-exempt(own-text): 系统提问卡给出的固定选项“先不创建”
+    case '先不创建':
+      return 0;
+  }
+  return 1;
+}
+
+export function branch(text: string) {
+  if (text.length > 3) {
+    return 1;
+  } else if (/* r1-exempt(format): 只认“第 N 页”这种写法，不命中照常交给模型 */ /^第${BS}d+页$/u.test(text)) {
+    return 2;
+  }
+  return 0;
+}
 `,
     'apps/demo/owners.ts': `export class Parser {
   field = /甲/u;
@@ -151,6 +224,8 @@ export const handler = (text: string) => {
   };
   const of = (file: string) =>
     report.sites.filter((site) => site.file === `apps/demo/${file}`);
+  const shown = (file: string) =>
+    of(file).map((site) => `${site.owner} ${site.text}`);
 
   beforeAll(async () => {
     project = await realpath(await mkdtemp(join(tmpdir(), 'user-text-regex-')));
@@ -162,24 +237,47 @@ export const handler = (text: string) => {
       await rm(project, { recursive: true, force: true });
   });
 
-  it('reports regexes and keyword matches on Chinese wording', () => {
-    expect(of('sites.ts').map((site) => [site.owner, site.text])).toEqual([
-      ['literal', '/(?:请)?记住/u'],
-      ['escaped', `/${BS}u8bb0${BS}u4f4f/`],
-      ['singleInClass', '/[年月]/'],
-      ['joined', 'RegExp(/记住|记下/u)'],
-      ['template', 'RegExp(/^提醒我/)'],
-      ['sourced', 'RegExp(/(?:请)?记住吧/)'],
-      ['keywords', 'includes("不要")'],
-      ['keywords', 'startsWith("提醒")'],
-      ['keywords', 'some(includes(item)) over ["记住","记下"]'],
-      ['keywords', '["确认","好的"].includes()'],
-      ['keywords', '["记住","记下"].has()'],
-      ['keywords', 'some(RegExp(item)) over ["记住","记下"]'],
+  it('reports regexes, uses, keyword lists, tables and equality on wording', () => {
+    expect(shown('sites.ts')).toEqual([
+      'literal /(?:请)?记住/u',
+      `escaped /${BS}u8bb0${BS}u4f4f/`,
+      'singleInClass /[年月]/',
+      'joined RegExp(/记住|记下/u)',
+      'template RegExp(/^提醒我/)',
+      'sourced RegExp(/(?:请)?记住吧/)',
+      "english /^(?:please )?(?:do not|don't) remember/i",
+      'keywords includes("不要")',
+      'keywords startsWith("提醒")',
+      'keywords some(includes(item)) over ["记住","记下"]',
+      'keywords ["确认","好的"].includes()',
+      'keywords ["记住","记下"].has()',
+      'keywords some(RegExp(item)) over ["记住","记下"]',
+      'shapes for-of(endsWith(item)) over ["记住","记下"]',
+      'shapes find(includes(item)) over ["每天","每周"]',
+      'shapes some(startsWith(item)) over ["每天","每周"]',
+      'shapes some(includes(item)) over ["删除","移除"]',
+      'shapes some(includes(item)) over ["同意"]',
+      'shapes some(includes(item)) over ["批准"]',
+      'shapes in ["每天","每周"]',
+      'shapes [key] of ["每天","每周"]',
+      'shapes ["确认"].get()',
+      'shapes === "确认"',
+      'shapes === "please do not"',
+      'shapes case "好的"',
+      'shapes RegExp(/确认${…}/)',
+      'shapes test(/^批准$/u)',
+      'shapes replace(/(?:请)?记住/u)',
     ]);
   });
 
-  it('leaves script ranges, punctuation, English, equality and plain strings alone', () => {
+  it('resolves names by scope: same-named locals in other functions neither hide nor stand in', () => {
+    expect(shown('scope.ts')).toEqual([
+      'first some(includes(item)) over ["确认","好的"]',
+      'second some(includes(item)) over ["同意"]',
+    ]);
+  });
+
+  it('leaves script ranges, punctuation, single English words, tokens and plain strings alone', () => {
     expect(of('quiet.ts')).toEqual([]);
   });
 
@@ -190,7 +288,7 @@ export const handler = (text: string) => {
         site.exemption?.category ?? 'NEW',
       ]),
     ).toEqual([
-      ['/第(\\d+)页/u', 'format'],
+      [`/第(${BS}d+)页/u`, 'format'],
       ['/资料依据/u', 'own-text'],
       ['/待核实/u', 'NEW'],
       ['/^提醒：/u', 'display'],
@@ -200,6 +298,9 @@ export const handler = (text: string) => {
       ['/时/u', 'NEW'],
       ['/分/u', 'NEW'],
       ['/秒/u', 'NEW'],
+      ['/周/u', 'NEW'],
+      ['case "先不创建"', 'own-text'],
+      [`/^第${BS}d+页$/u`, 'format'],
     ]);
     const problems = report.problems
       .filter((problem) => problem.file === 'apps/demo/exempt.ts')
@@ -210,11 +311,12 @@ export const handler = (text: string) => {
         20,
         'an exemption needs a reason of at least 10 characters on the marker line',
       ],
+      [32, 'unknown exemption category `constructor`'],
       [11, 'one exemption covers 2 sites'],
       [14, 'exemption comment covers no site'],
       [23, 'exemption comment covers no site'],
       [25, 'exemption comment covers no site'],
-      [30, 'r1-exempt marker outside a comment the gate reads'],
+      [30, 'r1-exempt marker the gate cannot attach to code'],
     ]);
   });
 
@@ -240,15 +342,16 @@ describe('baseline bookkeeping', () => {
     file: string,
     owner: string,
     sites: string[],
+    kind: BaselineKind = 'reject',
   ): BaselineEntry => ({
     file,
     owner,
-    kind: 'reject',
+    kind,
     use: '没匹配上就拒绝创建任务',
     sites,
   });
 
-  it('matches sites as a multiset by file, owner and text', () => {
+  it('matches sites as a multiset by file, owner and text and checks entries', () => {
     const check = checkBaseline(
       {
         files: 1,
@@ -270,39 +373,74 @@ describe('baseline bookkeeping', () => {
       [
         entry('a.ts', 'f', ['/记住/']),
         entry('a.ts', 'g', ['/记下/', '/删除/']),
+        { ...entry('b.ts', 'k', []), kind: 'constructor' as BaselineKind },
+        { ...entry('b.ts', 'm', ['/x/']), use: '短' },
       ],
     );
     expect(check.added.map((s) => `${s.owner} ${s.text}`)).toEqual([
       'f /记住/',
     ]);
-    expect(check.stale).toEqual([{ file: 'a.ts', owner: 'g', text: '/删除/' }]);
+    expect(check.stale).toEqual([
+      { file: 'a.ts', owner: 'g', text: '/删除/' },
+      { file: 'b.ts', owner: 'm', text: '/x/' },
+    ]);
+    expect(check.problems.map((problem) => problem.problem)).toEqual([
+      'entry 3 (b.ts k): unknown kind',
+      'entry 3 (b.ts k): no sites',
+      'entry 4 (b.ts m): `use` must say what the match decides',
+    ]);
   });
 
-  it('lets entries move or change in place but never grow against the base', () => {
+  it('lets entries move or change in place and reports them for review', () => {
     const base = [entry('a.ts', 'f', ['/记住/', '/记下/'])];
-    // Moved to another owner; edited in place within the same owner.
+    const change = baselineChange(
+      [entry('a.ts', 'moved', ['/记住/']), entry('a.ts', 'f', ['/记下|记得/'])],
+      base,
+    );
+    expect(change.growth).toEqual([]);
+    expect(change.notices.map((notice) => notice.change).sort()).toEqual([
+      'edited in place',
+      'moved',
+    ]);
     expect(
-      baselineGrowth(
-        [
-          entry('b.ts', 'moved', ['/记住/']),
-          entry('a.ts', 'f', ['/记下|记得/']),
-        ],
-        base,
-      ),
-    ).toEqual([]);
+      baselineChange([entry('a.ts', 'f', ['/记住/'], 'format')], base),
+    ).toMatchObject({
+      growth: [],
+      notices: [{ change: 'reclassified reject → format (leaves #2)' }],
+    });
+  });
+
+  it('fails growth, including a change of kind or a move with a new owner and file', () => {
+    const base = [entry('a.ts', 'f', ['/记住/', '/记下/'])];
     expect(
-      baselineGrowth(
+      baselineChange(
         [entry('a.ts', 'f', ['/记住/', '/记住/', '/记下/', '/新的/'])],
         base,
-      ),
-    ).toEqual([
-      { file: 'a.ts', owner: 'f', text: '/记住/' },
-      { file: 'a.ts', owner: 'f', text: '/新的/' },
-    ]);
-    // A changed text in another owner is not an edit in place.
-    expect(baselineGrowth([entry('a.ts', 'g', ['/记住|记下/'])], base)).toEqual(
-      [{ file: 'a.ts', owner: 'g', text: '/记住|记下/' }],
-    );
+      ).growth,
+    ).toHaveLength(2);
+    expect(
+      baselineChange([entry('b.ts', 'g', ['/记住/'])], base).growth,
+    ).toHaveLength(1);
+    // A reviewed not-R1 entry does not pay for a new #2 site.
+    expect(
+      baselineChange(
+        [entry('a.ts', 'g', ['/确认/'], 'reject')],
+        [entry('a.ts', 'f', ['/确认/'], 'format')],
+      ).growth,
+    ).toHaveLength(1);
+  });
+
+  it('does not depend on the order of entries with the same text', () => {
+    const t = '/^(?:请)?(?:帮我|为我)\\s*/u';
+    const once = entry('once.ts', 'taskClause', [t]);
+    const recurring = entry('recurring.ts', 'normalizedTaskClause', [t]);
+    // Recurring's copy moves to a helper in its file; once's copy is edited.
+    const current = [
+      entry('once.ts', 'taskClause', ['/^(?:请|麻烦你)?(?:帮我|为我)\\s*/u']),
+      entry('recurring.ts', 'prefix', [t]),
+    ];
+    expect(baselineChange(current, [once, recurring]).growth).toEqual([]);
+    expect(baselineChange(current, [recurring, once]).growth).toEqual([]);
   });
 
   it('reads only literal baselines', () => {
@@ -334,32 +472,47 @@ describe('product files and the command line', () => {
           `  { file: '${file}', owner: '${owner}', kind: 'reject', use: '没匹配上就拒绝创建任务', sites: [String.raw\`${text}\`] },`,
       )
       .join('\n')}\n];\n`;
-  const run = (argv: string[]) => {
-    const lines: string[] = [];
+  const run = (argv: string[], actions = false) => {
+    const errors: string[] = [];
+    const logs: string[] = [];
     const error = vi
       .spyOn(console, 'error')
-      .mockImplementation((line: string) => void lines.push(line));
-    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      .mockImplementation((line: string) => void errors.push(line));
+    const log = vi
+      .spyOn(console, 'log')
+      .mockImplementation((line: string) => void logs.push(line));
+    vi.stubEnv('GITHUB_ACTIONS', actions ? 'true' : '');
     try {
-      return { code: runGate(repo, argv), output: lines.join('\n') };
+      return {
+        code: runGate(repo, argv),
+        output: errors.join('\n'),
+        logs,
+        annotations: logs.filter((line) => line.startsWith('::warning')),
+      };
     } finally {
       error.mockRestore();
       log.mockRestore();
+      vi.unstubAllEnvs();
     }
   };
 
   beforeAll(async () => {
     repo = await realpath(await mkdtemp(join(tmpdir(), 'user-text-regex-')));
     git('init', '-q');
+    // A first commit from before the gate, then the gate's base.
+    await writeTree(repo, { '.gitignore': 'apps/a/build/\n' });
+    git('add', '-A');
+    git('commit', '-q', '-m', 'before the gate');
     await writeTree(repo, {
-      '.gitignore': 'apps/a/build/\n',
       'apps/a/src/old.ts': 'export const old = /记住/u;\n',
       'apps/a/src/old.test.ts': 'export const t = /记住/u;\n',
       'apps/a/test/helper.ts': 'export const t = /记住/u;\n',
+      'apps/a/src/fixtures/data.ts': 'export const t = /记住/u;\n',
       'apps/a/dist/out.js': 'export const t = /记住/u;\n',
       'apps/a/build/out.js': 'export const t = /记住/u;\n',
       'packages/p/src/data.fixture.ts': 'export const t = /记住/u;\n',
-      'apps/web/app/chatflow/dsh-upstream/ui.ts': 'export const t = /记住/u;\n',
+      'apps/web/app/api/methods/test/route.ts': 'export const n = 1;\n',
+      'apps/web/app/chatflow/dsh-upstream/ui.ts': 'export const n = 1;\n',
       'scripts/tool.ts': 'export const t = /记住/u;\n',
       [BASELINE_PATH]: baselineFile([['apps/a/src/old.ts', 'old', '/记住/u']]),
     });
@@ -371,25 +524,40 @@ describe('product files and the command line', () => {
       await rm(repo, { recursive: true, force: true });
   });
 
-  it('scans tracked and new product sources, never tests, fixtures, output or the DSH UI copy', async () => {
+  it('scans tracked and new product sources, never tests, fixtures or output', async () => {
     await writeTree(repo, { 'apps/a/src/new.ts': 'export const n = 1;\n' });
     expect(productFiles(repo)).toEqual([
       'apps/a/src/new.ts',
       'apps/a/src/old.ts',
+      'apps/web/app/api/methods/test/route.ts',
+      'apps/web/app/chatflow/dsh-upstream/ui.ts',
     ]);
+  });
+
+  it('rejects malformed arguments with exit code 2', () => {
+    expect(run(['--base']).code).toBe(2);
+    expect(run(['--base', '']).code).toBe(2);
+    expect(run(['--base', '--list']).code).toBe(2);
+    expect(run(['--base=HEAD']).code).toBe(2);
+    expect(run(['--base', 'no-such-ref']).code).toBe(2);
   });
 
   it('passes on the base and fails on a new site, a stale entry and baseline growth', async () => {
     expect(run(['--base', 'HEAD'])).toMatchObject({ code: 0 });
+    expect(run(['--base', 'HEAD~1']).output).toMatch(
+      /base=[0-9a-f]{12} \(no baseline there yet; nothing to compare\)/,
+    );
 
     await writeTree(repo, {
       'apps/a/src/new.ts': 'export const n = /记下/u;\n',
     });
-    const added = run(['--base', 'HEAD']);
+    const added = run(['--base', 'HEAD', '--list']);
     expect(added.code).toBe(1);
-    expect(added.output).toContain(
-      'Chinese wording matched outside the baseline',
-    );
+    expect(added.logs).toEqual([
+      'apps/a/src/new.ts:1\tn\tNEW\t/记下/u',
+      'apps/a/src/old.ts:1\told\tbaseline:reject\t/记住/u',
+    ]);
+    expect(added.output).toContain('Wording matched outside the baseline');
     expect(added.output).toContain('apps/a/src/new.ts:1 n');
 
     // Listing the new site makes the baseline grow; the old one is now stale.
@@ -405,9 +573,29 @@ describe('product files and the command line', () => {
     expect(grown.output).not.toContain('outside the baseline');
     expect(grown.output).toContain('Baseline sites no longer in the code');
     expect(grown.output).toMatch(
-      /The baseline only shrinks; [0-9a-f]{40} did not hold:\n {2}apps\/a\/src\/new\.ts n/,
+      /The baseline only shrinks; [0-9a-f]{40} held no matching site[^\n]*\n {2}apps\/a\/src\/new\.ts n \(reject\)/,
     );
+  });
 
-    expect(run(['--base', 'no-such-ref']).code).toBe(2);
+  it('lets a reasoned exemption through and puts it in front of review', async () => {
+    await writeTree(repo, {
+      'apps/a/src/old.ts': 'export const old = /记住/u;\n',
+      'apps/a/src/new.ts':
+        '// r1-exempt(format): 只认“第 N 页”这一种写法，不命中照常交给模型\nexport const n = /第(\\d+)页/u;\n',
+      [BASELINE_PATH]: baselineFile([['apps/a/src/old.ts', 'old', '/记住/u']]),
+    });
+    const exempted = run(['--base', 'HEAD'], true);
+    expect(exempted.code).toBe(0);
+    expect(exempted.output).toContain(
+      'Review under MET-220 R1 (allowed by the gate)',
+    );
+    expect(exempted.output).toContain(
+      'apps/a/src/new.ts:1 new exemption: // r1-exempt(format)',
+    );
+    expect(exempted.annotations).toEqual([
+      expect.stringMatching(
+        /^::warning file=apps\/a\/src\/new\.ts,line=1,title=R1 review::new exemption: /,
+      ),
+    ]);
   });
 });
