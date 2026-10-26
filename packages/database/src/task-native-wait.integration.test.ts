@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { JobPayloadSchema, UuidSchema } from '@allrice/contracts';
+import {
+  JobPayloadSchema,
+  UuidSchema,
+  type EmployeeRuntimePackage,
+} from '@allrice/contracts';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 import { createAssistantLocalCommandFixture } from './local-command-assistant.fixture.ts';
@@ -24,6 +28,9 @@ import {
   bindJobNativeSession,
 } from './execution/queue.ts';
 import { nativeBindingDescriptor } from './native-session-binding.fixture.ts';
+import { createEmployeeAdministrationFixture } from './employee-administration.fixture.ts';
+import { buildEmployeeRuntimePackage } from './platform-employees/runtime-package.ts';
+import { newNativeGeneration } from './conversation/native-root-origin.ts';
 import { createTaskProgressRuntime } from './task-progress.ts';
 import { acquireConversationRuntime } from './conversation/conversation-runtime.ts';
 import {
@@ -38,6 +45,7 @@ const suite =
     : describe.skip;
 suite('MET153 durable native waits and queue authority', () => {
   let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let runtimePackage: EmployeeRuntimePackage;
   beforeAll(async () => {
     for (const flag of [
       'ALLRICE_ASSISTANTS_ENABLED',
@@ -46,8 +54,23 @@ suite('MET153 durable native waits and queue authority', () => {
       'ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED',
     ])
       vi.stubEnv(flag, '1');
+    // MET-221: only a business origin binds, so a bound segment's chat is born
+    // on the current generation under this synthetic release primary.
+    vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'c'.repeat(64));
     fixture = await createAssistantFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
+    const employee = await createEmployeeAdministrationFixture(fixture.db);
+    runtimePackage = buildEmployeeRuntimePackage({
+      revision: 1,
+      definition: {
+        ...employee.definition,
+        capabilities: {
+          ...employee.definition.capabilities,
+          nativeSkillIds: [],
+        },
+      },
+      skills: [],
+    });
   }, 120000);
   afterAll(async () => {
     vi.restoreAllMocks();
@@ -59,7 +82,13 @@ suite('MET153 durable native waits and queue authority', () => {
       fixture.db,
       'ask',
       false,
-      { skipChild: true, deferRuntimeRoot: true },
+      {
+        skipChild: true,
+        deferRuntimeRoot: true,
+        ...(withStopReceipt
+          ? { runtimePackage, businessCreationOrigin: true }
+          : {}),
+      },
     );
     f.requestContext.memberships = f.context.policySnapshot.memberships;
     if (withStopReceipt) {
@@ -143,6 +172,7 @@ suite('MET153 durable native waits and queue authority', () => {
           workspaceId: f.workspace,
           ownerId: f.user,
           contextKey: f.session,
+          distributionGeneration: newNativeGeneration,
         }),
       });
     const stopReceipt = withStopReceipt

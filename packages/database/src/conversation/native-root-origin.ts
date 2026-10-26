@@ -35,24 +35,10 @@ function issue(
   id: string,
   frozenIdentity: NativeRootOriginV1['frozenIdentity'],
 ): NativeRootOriginV1 {
-  // This independently configured ID is not derived from a local manifest,
-  // current catalog, timestamp, worker version, model or browser input.
-  const artifactId = digest.parse(process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID);
-  if (
-    // Non-legacy keys count even when empty; only the loader can approve them.
-    Object.entries(process.env).some(
-      ([key, value]) =>
-        key.startsWith('ALLRICE_DSH_ORIGIN_READER_') &&
-        (![
-          'ALLRICE_DSH_ORIGIN_READER_APPROVAL_PATH',
-          'ALLRICE_DSH_ORIGIN_READER_APPROVAL_SHA256',
-          'ALLRICE_DSH_ORIGIN_READER_STORAGE_ROOT',
-        ].includes(key) ||
-          Boolean(value)),
-    ) &&
-    artifactId !== process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID
-  )
-    throw Error('DSH_NATIVE_ORIGIN_READER_NEW_BIRTH_MISMATCH');
+  // This release's seal, recorded as provenance only (MET-221). It is not
+  // derived from a local manifest, current catalog, timestamp, worker version,
+  // model or browser input.
+  const artifactId = digest.parse(process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID);
   return NativeRootOriginV1Schema.parse({
     schemaVersion: 1,
     contextKind: kind,
@@ -82,17 +68,6 @@ export function newEmployeeNativeRootOrigin(
     ...(kind === 'chat'
       ? { sourceId: UuidSchema.parse(employeeVersionId) }
       : {}),
-  });
-}
-export function newInternalNativeRootOrigin(
-  kind: 'platform_technical' | 'experience_consolidation',
-  id: string,
-  recipe: unknown,
-): NativeRootOriginV1 | null {
-  if (!process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID) return null;
-  return issue(kind, id, {
-    kind: 'internal_recipe',
-    checksum: nativeRootDigest(recipe),
   });
 }
 /** Strict first-INSERT policy for executable internal work. Historical NULL/v1

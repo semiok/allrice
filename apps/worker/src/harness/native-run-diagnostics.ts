@@ -18,8 +18,7 @@ import type * as NativePersistence from '@deepseek-ai/dsh-session-persistence-js
 import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence';
 import type * as NativeSession from '@deepseek-ai/dsh-session';
 import type * as NativeLlm from '@deepseek-ai/dsh-llm';
-import { pinnedDshNativeLaunch } from './dsh-native-retention.js';
-import { nativeArtifactLaunchForPin } from './dsh-native-artifact.js';
+import { currentDshNativeLaunch } from './dsh-native-artifact.js';
 
 type RawEvent = {
   seq: number;
@@ -57,9 +56,10 @@ const stamp = (v: unknown) =>
 const identity = (v: unknown) =>
   typeof v === 'string' && /^[A-Za-z0-9_.:-]{1,255}$/.test(v) ? v : null;
 
-/** The same independently approved reader as execution. These imports install
- * only its existing private vocabulary; no SDK, Agent, credentials or writer
- * is constructed. A read needing migration is reported, never migrated here. */
+/** The same reader as execution: this release's verified primary (MET-221).
+ * These imports install only its existing private vocabulary; no SDK, Agent,
+ * credentials or writer is constructed. A read needing migration is reported,
+ * never migrated here. */
 export async function readApprovedNativeDiagnosticJournal(
   target: Pick<NativeDiagnosticTargetSlice, 'binding' | 'execution'>,
   signal: AbortSignal,
@@ -76,33 +76,15 @@ export async function readApprovedNativeDiagnosticJournal(
       execution.distributionGeneration !== pin.distributionGeneration
     )
       throw Error('reader_scope');
-    const transitioned = execution.executorTransitionDigest !== undefined;
-    if (transitioned) {
-      if (
-        pin.contextKind !== 'chat' ||
-        pin.bindingBasis !== 'business_root_origin' ||
-        !pin.rootOriginDigest ||
-        execution.storageContextKey !== pin.contextId ||
-        execution.originReaderApprovalDigest !== undefined
-      )
-        throw Error('reader_transition');
-    } else if (
-      execution.artifactId !== pin.artifactId ||
-      execution.artifactManifestDigest !== pin.artifactManifestDigest ||
-      execution.originReaderApprovalDigest !== pin.originReaderApprovalDigest
+    // Archived MET-195 transitions and origin readers never select a reader.
+    if (
+      execution.executorTransitionDigest !== undefined ||
+      execution.originReaderApprovalDigest !== undefined ||
+      pin.originReaderApprovalDigest !== undefined
     )
       throw Error('reader_identity');
-    // SQL already proved the exact Run transition and the original pin. The
-    // registry independently proves this exact artifact is still approved.
-    // No latest/current alias, retired artifact reinstall, or old approval reuse.
-    const launch = transitioned
-      ? nativeArtifactLaunchForPin(execution)
-      : pinnedDshNativeLaunch(pin);
-    if (
-      launch.artifactId !== execution.artifactId ||
-      launch.generation !== execution.distributionGeneration ||
-      execution.artifactManifestDigest !== execution.artifactId
-    )
+    const launch = currentDshNativeLaunch(pin.profileId);
+    if (launch.generation !== pin.distributionGeneration)
       throw Error('reader_identity');
     entrypoint = launch.args[0]!;
   } catch {

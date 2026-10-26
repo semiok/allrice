@@ -29,12 +29,9 @@ import { createDeliveryMarkup } from '../../src/final-delivery/markup.ts';
 import { bindCheckedFinalDeliveryCommitGuard } from '../../src/final-delivery/checked-delivery.ts';
 export const ARTIFACT_ID = 'sha256:' + 'a'.repeat(64);
 export const cleanups = [];
-const originalArtifactIds = process.env.ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS;
 afterEach(async () => {
   vi.restoreAllMocks();
-  if (originalArtifactIds === undefined)
-    delete process.env.ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS;
-  else process.env.ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS = originalArtifactIds;
+  vi.unstubAllEnvs();
   for (const close of cleanups.splice(0).reverse()) await close();
 });
 
@@ -53,9 +50,6 @@ export async function fixture({
   joinUnavailable = false,
   partialOutcome = false,
 } = {}) {
-  process.env.ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS = JSON.stringify([
-    ARTIFACT_ID,
-  ]);
   const path = await mkdtemp(join(tmpdir(), 'allrice-cold-adapter-'));
   cleanups.push(() => rm(path, { recursive: true, force: true }));
   const ctx = new Context(),

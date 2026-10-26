@@ -5,7 +5,6 @@ import { resolve, sep, dirname } from 'node:path';
 import {
   harnessContextKey,
   UuidSchema,
-  DSH_FROZEN_PROFILE_GENERATIONS,
   type DshExecutionSnapshot,
   type InternalKernelRequest,
 } from '@allrice/contracts';
@@ -15,7 +14,6 @@ import type {
   NativeSessionPin,
   NativeRunExecutionBinding,
 } from '@allrice/database';
-import { assertTransitionDescriptor } from '@allrice/database';
 import { currentExecutionForNativeInput } from './current-execution-source.js';
 
 import { HandlerError } from '../../errors.js';
@@ -42,21 +40,10 @@ import type { DshProtocolClient } from '../dsh-protocol-client.js';
 import { createObservedDshClient } from '../dsh-close-observer.js';
 import { assertStoredNativeSession } from '../dsh-native-storage.js';
 import {
-  assertVirginNativeNamespace,
-  NativeOriginStorageError,
-} from '../native-origin-storage.js';
-import {
   checkedDshNativeLaunch,
-  nativeArtifactLaunchForPin,
+  currentDshNativeLaunch,
 } from '../dsh-native-artifact.js';
-import {
-  legacyDshNativeLaunch,
-  originDshNativeLaunch,
-  pinnedDshNativeLaunch,
-  employeePreviewStorageRoot,
-  retainedDshStorageRoot,
-  assertDshFrozenCompatibility,
-} from '../dsh-native-retention.js';
+import { employeePreviewStorageRoot } from '../dsh-native-retention.js';
 import { dshHostCapabilityInstructions } from './tool-bridge.js';
 import {
   selectDshNativeTools,
@@ -127,6 +114,15 @@ export function dshIdleCloseMs(
   return checkedIdleCloseMs(Math.round(Number(text) * 60_000));
 }
 
+/** Not retryable: only a new context (a new chat) runs on this release. */
+function incompatibleNativeContext() {
+  return new HandlerError(
+    'DSH_NATIVE_CONTEXT_INCOMPATIBLE',
+    '这个对话是旧版本创建的，当前版本无法继续，请新建对话。',
+    false,
+  );
+}
+
 function parseRuntimeArgs(value: string | undefined) {
   if (!value) return [];
   let parsed: unknown;
@@ -168,6 +164,15 @@ function deepseekReasoning(
   if (effort === 'medium') return 'high';
   if (effort === 'xhigh') return 'max';
   return effort;
+}
+
+/** Root of every native session namespace; part of the journal contract. */
+export function configuredDshRuntimeRoot(options: DshRuntimePoolOptions = {}) {
+  return resolve(
+    options.runtimeRoot ??
+      process.env.ALLRICE_DSH_RUNTIME_ROOT ??
+      '.local/dsh-runtime',
+  );
 }
 
 /** One interpretation of deployment overrides for startup and pool launches. */
@@ -243,11 +248,7 @@ export class DshRuntimePool {
     const launch = configuredDshNativeLaunch(options);
     this.runtimeCommand = launch.command;
     this.runtimeArgs = launch.args;
-    this.runtimeRoot = resolve(
-      options.runtimeRoot ??
-        process.env.ALLRICE_DSH_RUNTIME_ROOT ??
-        '.local/dsh-runtime',
-    );
+    this.runtimeRoot = configuredDshRuntimeRoot(options);
     this.cordisConfig = launch.profile;
     this.requestTimeoutMs = requestTimeout(
       options.requestTimeoutMs ??
@@ -405,12 +406,7 @@ export class DshRuntimePool {
   }
 
   /** Pure location calculation, before credentials, mkdir or native launch. */
-  private storage(
-    input: HarnessExecutionInput,
-    pin?: NativeSessionPin,
-    artifactId?: string,
-    originStorageNamespace?: string,
-  ) {
+  private storage(input: HarnessExecutionInput, pin?: NativeSessionPin) {
     const organizationId =
       input.executionEnvironment.ALLRICE_ORGANIZATION_ID ?? '';
     const workspaceId = input.executionEnvironment.ALLRICE_WORKSPACE_ID ?? '';
@@ -426,26 +422,18 @@ export class DshRuntimePool {
         false,
       );
     const storageContextKey = harnessContextKey(input.kernel);
-    const storageRoot =
-      (artifactId && retainedDshStorageRoot(artifactId)) || this.runtimeRoot;
-    const expectedNamespace =
-      originStorageNamespace ??
-      resolve(
-        storageRoot,
-        organizationId,
-        workspaceId,
-        ownerId,
-        storageContextKey,
-        'sessions',
-      );
-    if (
-      (originStorageNamespace &&
-        !expectedNamespace.endsWith(
-          `/${organizationId}/${workspaceId}/${ownerId}/${storageContextKey}/sessions`,
-        )) ||
-      (!originStorageNamespace &&
-        !expectedNamespace.startsWith(`${storageRoot}${sep}`))
-    )
+    // One storage root per deployment (part of the journal contract); it is
+    // never selected by an artifact ID.
+    const storageRoot = this.runtimeRoot;
+    const expectedNamespace = resolve(
+      storageRoot,
+      organizationId,
+      workspaceId,
+      ownerId,
+      storageContextKey,
+      'sessions',
+    );
+    if (!expectedNamespace.startsWith(`${storageRoot}${sep}`))
       throw new HandlerError(
         'DSH_TENANT_CONTEXT_INVALID',
         'DSH runtime path escaped its tenant root',
@@ -529,59 +517,38 @@ export class DshRuntimePool {
         '原生会话的执行配置与已登记的范围不一致。',
         false,
       );
-    const fallback = nativeArtifactLaunchForPin({
-      artifactId: identity.artifactId,
-      profileId,
-    });
-    const transition =
-      currentBinding && 'transition' in currentBinding
-        ? currentBinding.transition
-        : undefined;
-    const selected: ReturnType<typeof originDshNativeLaunch> = transition
-      ? {
-          ...nativeArtifactLaunchForPin({
-            artifactId: transition.target.artifactId,
-            profileId,
-          }),
-          originStorageNamespace: transition.storageNamespace,
-        }
-      : pin
-        ? pinnedDshNativeLaunch(pin)
-        : origin
-          ? originDshNativeLaunch(origin, profileId, {
-              organizationId:
-                input.executionEnvironment.ALLRICE_ORGANIZATION_ID ?? '',
-              workspaceId:
-                input.executionEnvironment.ALLRICE_WORKSPACE_ID ?? '',
-              ownerId: input.executionEnvironment.ALLRICE_OWNER_ID ?? '',
-            })
-          : legacyDshNativeLaunch(fallback, profileId);
-    if (origin && origin.rootSeed !== harnessContextKey(input.kernel))
-      throw Error('DSH_NATIVE_ARTIFACT_NEW_ROOT_FROZEN_IDENTITY');
-    // Birth package provenance is checked by SQL against the original immutable
-    // publication. A later same-generation Run may carry an updated package;
-    // its own checksum is verified by the normal frozen Run binding below.
-    checkedDshNativeLaunch(selected);
+    // MET-221: a release has exactly one executor, its verified primary.
+    // Artifact IDs on origins, pins, Run bindings and control references are
+    // provenance; a context binds to the DSH generation and journal contract.
+    // Archived MET-195 transitions/readers and unbound births never select code.
     if (
-      currentBinding &&
-      (selected.artifactId !== currentBinding.execution.artifactId ||
-        selected.generation !== currentBinding.execution.generation ||
-        profileId !== currentBinding.execution.profileId)
+      !origin ||
+      (currentBinding && 'transition' in currentBinding) ||
+      pin?.originReaderApprovalDigest
     )
-      throw Error('DSH_NATIVE_ARTIFACT_EXECUTION_BINDING_MISMATCH');
-    assertDshFrozenCompatibility(
+      throw incompatibleNativeContext();
+    const selected = currentDshNativeLaunch(profileId);
+    if (origin.rootSeed !== harnessContextKey(input.kernel))
+      throw Error('DSH_NATIVE_ARTIFACT_NEW_ROOT_FROZEN_IDENTITY');
+    checkedDshNativeLaunch(selected);
+    const frozenGeneration =
       currentBinding?.execution.generation ??
-        input.kernel.runtimeDistributionGeneration ??
-        (origin?.schemaVersion === 1 &&
-        origin.frozenIdentity.kind === 'internal_recipe'
-          ? origin.distributionGeneration
-          : pin?.bindingBasis === 'business_root_origin' &&
-              ('internalTask' in input.kernel || profileId === 'technical')
-            ? pin.distributionGeneration
-            : undefined),
-      selected,
-      profileId,
-    );
+      input.kernel.runtimeDistributionGeneration ??
+      (origin.schemaVersion === 1 &&
+      origin.frozenIdentity.kind === 'internal_recipe'
+        ? origin.distributionGeneration
+        : pin?.bindingBasis === 'business_root_origin' &&
+            ('internalTask' in input.kernel || profileId === 'technical')
+          ? pin.distributionGeneration
+          : undefined);
+    if (
+      frozenGeneration !== selected.generation ||
+      origin.distributionGeneration !== selected.generation ||
+      (!pin && origin.profileId !== profileId) ||
+      (pin && pin.distributionGeneration !== selected.generation) ||
+      (currentBinding && profileId !== currentBinding.execution.profileId)
+    )
+      throw incompatibleNativeContext();
     return { ...selected, profileId };
   }
 
@@ -594,10 +561,8 @@ export class DshRuntimePool {
   ): NativeSessionDescriptor | null {
     const identity = this.launch(input, pin, origin, executionBinding);
     if (!identity) return null; // Standalone fixture, no approved artifact.
-    const generation = DSH_FROZEN_PROFILE_GENERATIONS.find(
-      (value) => value === identity.generation,
-    );
-    if (!generation)
+    const generation = DSH_DISTRIBUTION_CURRENT_GENERATION;
+    if (identity.generation !== generation)
       throw new HandlerError(
         'DSH_GENERATION_MISMATCH',
         '当前原生会话版本尚未获得执行批准。',
@@ -613,12 +578,7 @@ export class DshRuntimePool {
         '原生会话的版本与绑定不一致。',
         false,
       );
-    const storage = this.storage(
-      input,
-      pin,
-      identity.artifactId,
-      identity.originStorageNamespace,
-    );
+    const storage = this.storage(input, pin);
     return {
       nativeSessionId: threadId,
       artifactId: identity.artifactId,
@@ -627,45 +587,7 @@ export class DshRuntimePool {
       profileId: identity.profileId,
       storageContextKey: storage.storageContextKey,
       storageNamespace: storage.storageNamespace,
-      ...(executionBinding?.kind === 'current_employee_execution' &&
-      executionBinding.schemaVersion === 2
-        ? { executorTransitionDigest: executionBinding.transition.digest }
-        : {}),
-      ...(identity.originReaderApprovalDigest
-        ? { originReaderApprovalDigest: identity.originReaderApprovalDigest }
-        : {}),
     };
-  }
-
-  /** Only for the first writer of a previously unbound, explicitly approved
-   * origin. The caller owns a live Job and the deployment has fenced old
-   * producers. Later adopted writers recover normally through the public SDK. */
-  async assertOriginReaderFirstWriter(
-    input: HarnessExecutionInput,
-    threadId: string,
-    origin: NativeRootOrigin,
-  ) {
-    const descriptor = this.describeNativeSession(
-      input,
-      threadId,
-      undefined,
-      origin,
-    );
-    if (!descriptor?.originReaderApprovalDigest)
-      throw Error('DSH_NATIVE_ORIGIN_READER_APPROVAL_REQUIRED');
-    try {
-      await assertVirginNativeNamespace(
-        descriptor.storageNamespace,
-        input.signal,
-      );
-    } catch (error) {
-      if (!(error instanceof NativeOriginStorageError)) throw error;
-      throw new HandlerError(
-        error.code,
-        '原会话的首次执行条件未确认，已保留原始记录。',
-        false,
-      );
-    }
   }
 
   /** Read-only native metadata check. No SQL locks, credentials, writer or
@@ -760,8 +682,6 @@ export class DshRuntimePool {
     const { organizationId, workspaceId, ownerId, tenantRoot } = this.storage(
       input.input,
       input.nativePin,
-      nativeIdentity?.artifactId,
-      nativeIdentity?.originStorageNamespace,
     );
     const descriptor = this.describeNativeSession(
       input.input,
@@ -777,24 +697,15 @@ export class DshRuntimePool {
           '原生会话尚未获得当前任务授权。',
           false,
         );
-      const transition =
-        input.nativeExecutionBinding?.kind === 'current_employee_execution' &&
-        input.nativeExecutionBinding.schemaVersion === 2
-          ? input.nativeExecutionBinding.transition
-          : undefined;
-      if (transition) assertTransitionDescriptor(transition, descriptor);
+      // The pin keeps its first writer's artifact as provenance; the executor
+      // is always this release's primary, so only those two fields may differ.
       if (
-        (transition
-          ? input.nativePin.nativeSessionId !== descriptor.nativeSessionId ||
-            input.nativePin.storageContextKey !==
-              descriptor.storageContextKey ||
-            input.nativePin.storageNamespace !== descriptor.storageNamespace ||
-            input.nativePin.distributionGeneration !==
-              descriptor.distributionGeneration ||
-            input.nativePin.profileId !== descriptor.profileId
-          : Object.entries(descriptor).some(
-              ([k, v]) => input.nativePin![k as keyof NativeSessionPin] !== v,
-            )) ||
+        Object.entries(descriptor).some(
+          ([k, v]) =>
+            k !== 'artifactId' &&
+            k !== 'artifactManifestDigest' &&
+            input.nativePin![k as keyof NativeSessionPin] !== v,
+        ) ||
         input.nativePin.organizationId !== organizationId ||
         input.nativePin.workspaceId !== workspaceId ||
         input.nativePin.ownerId !== ownerId

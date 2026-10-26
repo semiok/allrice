@@ -1,7 +1,12 @@
 #!/usr/bin/env node
-// Run with the candidate deployment environment BEFORE stopping the old Worker.
-// This read-only check remeasures all approved code and covers durable history;
-// it does not grant release admission, change pins or close unknown permits.
+// Run with the candidate deployment environment BEFORE stopping the old Worker
+// (deploy-dev precheck; rollback runs the target's own copy). The path and the
+// arguments are fixed: installed release tools call this file by path.
+//
+// MET-221: contexts bind to the DSH generation and the journal contract, not to
+// an artifact ID. This read-only wrapper remeasures the candidate primary,
+// checks its launch, then runs checkNativeReleaseCandidate (generation,
+// journal contract, storage roots, control history; tested in the Worker).
 import { realpath } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
@@ -29,8 +34,8 @@ const { installDshNativeArtifact, checkedDshNativeLaunch } = await moduleAt(
 const { configuredDshNativeLaunch } = await moduleAt(
   '/apps/worker/dist/harness/dsh/runtime-pool.js',
 );
-const retention = await moduleAt(
-  '/apps/worker/dist/harness/dsh-native-retention.js',
+const { checkNativeReleaseCandidate } = await moduleAt(
+  '/apps/worker/dist/harness/dsh-native-release-check.js',
 );
 const db = await moduleAt('/packages/database/dist/index.js');
 try {
@@ -41,23 +46,13 @@ try {
     sourceTree: git('rev-parse', 'HEAD^{tree}'),
   });
   checkedDshNativeLaunch(configuredDshNativeLaunch());
-  if (
-    process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID &&
-    primary.artifactId !== process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID
-  )
-    throw Error('DSH_NATIVE_ARTIFACT_NEW_ROOT_APPROVAL');
-  const retained = await retention.installConfiguredDshNativeRetention();
-  const coverage = await retention.verifyConfiguredDshNativeReferences(
-    primary,
-    { requireReaderIdle: true },
-  );
+  const checked = await checkNativeReleaseCandidate(primary);
   console.log(
     JSON.stringify({
       verified: true,
       releaseSha: sha,
       primary,
-      retained,
-      coverage,
+      ...checked,
       releaseAdmission: 'disabled',
       databaseWritten: false,
     }),

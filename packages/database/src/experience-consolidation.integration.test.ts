@@ -543,10 +543,6 @@ suite(
       await synchronizePlatformContent(await loadPlatformContentCatalog());
     }, 120000);
     beforeEach(async () => {
-      vi.stubEnv(
-        'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
-        'sha256:' + 'a'.repeat(64),
-      );
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
       // Prior fixtures must not consume this case's production daily quota.
       // Only this suite's disposable schema is changed; limits stay unchanged.
@@ -670,7 +666,7 @@ suite(
           workspaceId: f.workspace,
           ownerId: f.user,
           contextKey: `experience-${f.occurrence.id}`,
-          distributionGeneration: process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID
+          distributionGeneration: process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID
             ? 'dsh-0.2.1-rc.2-687f282'
             : 'dsh-0.1.5-rc.3-a4c74a9',
         });
@@ -694,7 +690,7 @@ suite(
           workspaceId: f.workspace,
           ownerId: f.user,
           contextKey: `experience-${f.occurrence.id}`,
-          distributionGeneration: process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID
+          distributionGeneration: process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID
             ? 'dsh-0.2.1-rc.2-687f282'
             : 'dsh-0.1.5-rc.3-a4c74a9',
         });
@@ -785,10 +781,6 @@ suite(
         definitionChecksum: published!.checksum,
       });
       // A later deployment approval must not rebind the already queued test.
-      vi.stubEnv(
-        'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
-        'sha256:' + 'b'.repeat(64),
-      );
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'b'.repeat(64));
 
       const validationWorker = randomUUID();
@@ -870,7 +862,8 @@ suite(
     });
     it('B2a missing executor approval leaves experience validation unqueued without a Run or false coverage', async () => {
       const f = await validationFixture();
-      vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', undefined);
+      // MET-221: the release primary is the only executor approval.
+      vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', undefined);
       await expect(syncExperienceValidations()).rejects.toThrow();
       expect(
         await db`select id from allrice_platform_employee_test_runs where experience_binding->>'occurrenceId'=${f.occurrence.id}`,
@@ -3902,7 +3895,9 @@ suite(
           .pendingSources,
       ).toBe(102);
     });
-    it.each(['missing', 'mismatched'] as const)(
+    // MET-221: the release primary is the only executor approval; there is no
+    // separate new-root ID it could mismatch.
+    it.each(['missing', 'malformed'] as const)(
       'rolls back a nonempty occurrence on %s executor approval without consuming its source',
       async (mode) => {
         const f = await source();
@@ -3915,7 +3910,7 @@ suite(
           await db`select * from allrice_experience_reviews where memory_id=${f.candidate.id}`;
         vi.stubEnv(
           'ALLRICE_DSH_NATIVE_ARTIFACT_ID',
-          mode === 'missing' ? undefined : 'sha256:' + 'b'.repeat(64),
+          mode === 'missing' ? undefined : 'sha256:not-a-digest',
         );
         try {
           await expect(reserveOccurrence(f, new Date())).rejects.toThrow();
@@ -3947,7 +3942,6 @@ suite(
         profileId: 'restricted',
         artifactId: 'sha256:' + 'a'.repeat(64),
       });
-      vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', undefined);
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', undefined);
       try {
         expect(await reserveOccurrence(f, scheduledFor)).toEqual({
@@ -3962,10 +3956,6 @@ suite(
         ).toHaveLength(0);
       } finally {
         vi.stubEnv(
-          'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
-          'sha256:' + 'a'.repeat(64),
-        );
-        vi.stubEnv(
           'ALLRICE_DSH_NATIVE_ARTIFACT_ID',
           'sha256:' + 'a'.repeat(64),
         );
@@ -3976,7 +3966,6 @@ suite(
       await deleteWorkspaceMemory(f.owner, f.workspace, f.candidate.id);
       // No executable work exists, so missing deployment approval must not
       // turn this successful no-op into a Run, Job or failed reservation.
-      vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', undefined);
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', undefined);
       const reserved = await reserveOccurrence(f, new Date());
       expect(reserved.outcome).toBe('empty');

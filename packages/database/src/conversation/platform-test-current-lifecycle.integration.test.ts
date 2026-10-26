@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { DSH_MISSING_FROZEN_GENERATION } from '@allrice/contracts';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as client from '../core/client.ts';
 import { createAssistantFixtureDatabase } from '../assistant-runtime.fixture.ts';
@@ -25,8 +26,9 @@ suite(
   () => {
     let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
     const approved = 'sha256:' + 'a'.repeat(64);
+    // MET-221: the release primary is the only birth input; the retired
+    // new-root ID is neither read nor required.
     const restoreApproval = () => {
-      vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', approved);
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', approved);
     };
     beforeAll(async () => {
@@ -143,7 +145,7 @@ suite(
     });
     it('missing current approval rejects first INSERT without a test, Run or Job', async () => {
       const e = await createEmployeeAdministrationFixture(f.db);
-      vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', undefined);
+      vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', undefined);
       await expect(
         queuePlatformEmployeeTestRun(e.employeeId, {
           environment: 'company',
@@ -166,10 +168,6 @@ suite(
     it('claim and cold preparation retain the stored executor across later deployment changes, with exact live lease checks', async () => {
       const q = await queue(),
         original = q.row.native_execution_binding;
-      vi.stubEnv(
-        'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
-        'sha256:' + 'b'.repeat(64),
-      );
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'b'.repeat(64));
       const c = await claim(q);
       const prepared = await prepareJobNativeSession(c.preparation);
@@ -196,13 +194,23 @@ suite(
       expect(cold.executionBinding).toEqual(prepared.executionBinding);
       expect(cold.requiresRecovery).toBe(true);
       expect(cold.binding?.nativeSessionId).toBe(c.descriptor.nativeSessionId);
+      // MET-221: a later same-generation primary continues the pin, which keeps
+      // its first writer's artifact as provenance; another generation cannot.
+      const continued = await bindJobNativeSession({
+        ...c.lease,
+        descriptor: {
+          ...c.descriptor,
+          artifactId: 'sha256:' + 'b'.repeat(64),
+          artifactManifestDigest: 'sha256:' + 'b'.repeat(64),
+        },
+      });
+      expect(continued.binding).toEqual(bound.binding);
       await expect(
         bindJobNativeSession({
           ...c.lease,
           descriptor: {
             ...c.descriptor,
-            artifactId: 'sha256:' + 'b'.repeat(64),
-            artifactManifestDigest: 'sha256:' + 'b'.repeat(64),
+            distributionGeneration: DSH_MISSING_FROZEN_GENERATION,
           },
         }),
       ).rejects.toThrow();
@@ -272,10 +280,6 @@ suite(
       );
       expect(origin?.schemaVersion).toBe(1);
       await replaceOwnedQueued(q, origin, null);
-      vi.stubEnv(
-        'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
-        'sha256:' + 'b'.repeat(64),
-      );
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'b'.repeat(64));
       const c = await claim(q),
         prepared = await prepareJobNativeSession(c.preparation);

@@ -119,7 +119,6 @@ export * from './assistant-runtime.ts';
 export * from './execution-usage-policy.ts';
 export * from './assistant-authority.ts';
 export { readFinalDeliveryReferences } from './final-delivery-references.ts';
-export { checkedFinalDeliveryArtifacts } from './final-delivery-rollout.ts';
 export * from './assistant-output.ts';
 export * from './assistant-pricing.ts';
 export * from './execution/route-subscription.ts';
@@ -279,6 +278,8 @@ export {
   verifyNativeArtifactReferenceCoverage,
   type NativeArtifactReferenceApproval,
 } from './conversation/native-artifact-references.ts';
+export { inspectNativeContextCompatibility } from './conversation/native-context-compatibility.ts';
+export * from './native-journal-contract-store.ts';
 export {
   configuredNativeOriginReaders,
   nativeOriginReaderForOrigin,

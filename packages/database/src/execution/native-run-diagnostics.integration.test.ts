@@ -1,9 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { EmployeeRuntimePackage } from '@allrice/contracts';
 import * as client from '../core/client.ts';
 import { createAssistantFixtureDatabase } from '../assistant-runtime.fixture.ts';
 import { createAssistantAuthorityFixture } from '../assistant-authority.fixture.ts';
 import { nativeBindingDescriptor } from '../native-session-binding.fixture.ts';
+import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
+import { buildEmployeeRuntimePackage } from '../platform-employees/runtime-package.ts';
+import {
+  NativeRootOriginSchema,
+  newNativeGeneration,
+} from '../conversation/native-root-origin.ts';
 import { authenticateSession, createSession } from '../identity.ts';
 import { bindJobNativeSession } from './queue.ts';
 import { getRunNativeDiagnosticTarget } from './native-run-diagnostics.ts';
@@ -16,11 +23,27 @@ suite(
   'MET200 native diagnostic Run authority and immutable reader association',
   () => {
     let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let runtimePackage: EmployeeRuntimePackage;
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
+      // MET-221: only a business origin binds. The chat is born under this
+      // primary and bound by another same-generation one (fixture artifact).
+      vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'c'.repeat(64));
       fixture = await createAssistantFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
+      const employee = await createEmployeeAdministrationFixture(fixture.db);
+      runtimePackage = buildEmployeeRuntimePackage({
+        revision: 1,
+        definition: {
+          ...employee.definition,
+          capabilities: {
+            ...employee.definition.capabilities,
+            nativeSkillIds: [],
+          },
+        },
+        skills: [],
+      });
     }, 120000);
     afterAll(async () => {
       vi.restoreAllMocks();
@@ -31,8 +54,13 @@ suite(
       const f = await createAssistantAuthorityFixture(fixture.db, {
         configure: false,
         memberRole: 'member',
+        runtimePackage,
+        businessCreationOrigin: true,
       });
       await fixture.db`update allrice_jobs set attempt=1 where id=${f.worker.jobId}`;
+      const [birth] =
+        await fixture.db`select native_root_origin from allrice_chat_sessions where id=${f.session}`;
+      const origin = NativeRootOriginSchema.parse(birth!.native_root_origin);
       const [runtime] =
         await fixture.db`select * from allrice_conversation_runtimes where session_id=${f.session}`;
       const descriptor = nativeBindingDescriptor({
@@ -40,6 +68,7 @@ suite(
         workspaceId: f.workspace,
         ownerId: f.user,
         contextKey: f.session,
+        distributionGeneration: newNativeGeneration,
       });
       await bindJobNativeSession({
         workerId: f.worker.workerId,
@@ -61,7 +90,7 @@ suite(
         workspaceId: f.workspace,
       });
       if (!context) throw Error('fixture authentication failed');
-      return { ...f, descriptor, context };
+      return { ...f, origin, descriptor, context };
     }
     async function receipts(
       f: Awaited<ReturnType<typeof chat>>,
@@ -97,6 +126,8 @@ suite(
     }
     it('resolves exact Run/attempt/generation/thread/seq and keeps journal paths inside the trusted target', async () => {
       const f = await chat();
+      // Born and bound by different same-generation primaries (MET-221).
+      expect(f.origin.artifactId).not.toBe(f.descriptor.artifactId);
       await receipts(f);
       const target = await getRunNativeDiagnosticTarget(
         f.context,

@@ -13,5 +13,12 @@
  *
  * A journal lives at <namespace>/<DSH project key of the tenant root>/<native
  * session id>/session.v4.jsonl, and the namespace starts at
- * ALLRICE_DSH_RUNTIME_ROOT: moving that root detaches every session. */
+ * ALLRICE_DSH_RUNTIME_ROOT: moving that root detaches every session.
+ *
+ * Contexts bind to the DSH generation and this contract, not to an artifact ID.
+ * Each Worker records `current` as the database's monotonic high-water at start
+ * and refuses to start below it. Policy within one DSH generation: `readsFrom`
+ * never rises; a new `current` must keep every older journal readable until the
+ * generation changes. Exported from the contracts root only: native adapter
+ * `.mjs` files never import it, so the constant stays outside the artifact. */
 export const NATIVE_JOURNAL_CONTRACT = { current: 1, readsFrom: 1 } as const;

@@ -102,7 +102,7 @@ function loaderFixture() {
       root + '/packages/' + name.split('/')[1] + '/index.js',
   );
   const ports: NativeOnceLoaderTestPorts = {
-    approvedArtifact: vi.fn(() => artifact),
+    currentArtifact: vi.fn(() => artifact),
     resolveModule,
     realpath: vi.fn(
       async (path: string) => path,
@@ -291,7 +291,7 @@ describe('approved native once loader', () => {
     )!;
     expect(source.reference).toEqual(reference);
     expect(await source.loadHostFactory()).toBe(f.open);
-    expect(f.ports.approvedArtifact).toHaveBeenCalledWith(reference.artifactId);
+    expect(f.ports.currentArtifact).toHaveBeenCalledWith();
   });
   it('disabled does not parse settings or query/load an artifact', () => {
     const f = loaderFixture();
@@ -301,7 +301,7 @@ describe('approved native once loader', () => {
         f.ports,
       ),
     ).toBeNull();
-    expect(f.ports.approvedArtifact).not.toHaveBeenCalled();
+    expect(f.ports.currentArtifact).not.toHaveBeenCalled();
     expect(f.imports).not.toHaveBeenCalled();
   });
   it.each(['profile', 'extra', 'relative', 'id'] as const)(
@@ -341,11 +341,18 @@ describe('approved native once loader', () => {
       f.root + '/packages/dsh-api-session-controller/index.js',
       '@deepseek-ai/dsh-commands',
     );
-    expect(f.ports.approvedArtifact).toHaveBeenCalledWith(
-      f.reference.artifactId,
-    );
+    expect(f.ports.currentArtifact).toHaveBeenCalledWith();
     expect(source.reference).toEqual(f.reference);
     expect(Object.isFrozen(source.reference)).toBe(true);
+  });
+  it('loads from the primary when the partition was born under another artifact', async () => {
+    // MET-221: the reference's artifactId is provenance; its bytes stay exact.
+    const f = loaderFixture();
+    f.artifact.artifactId = 'sha256:' + 'c'.repeat(64);
+    expect(f.artifact.artifactId).not.toBe(f.reference.artifactId);
+    const source = createNativeOnceControlSource(f.reference, f.ports);
+    expect(await source.loadHostFactory()).toBe(f.open);
+    expect(source.reference).toEqual(f.reference);
   });
   it.each([
     'generation',

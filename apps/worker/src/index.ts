@@ -13,7 +13,12 @@ import { mkdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createNativeRunDiagnosticsHttpHandler } from './native-run-diagnostics-http.js';
 
-import { UuidSchema, makeHealthResponse } from '@allrice/contracts';
+import {
+  DSH_INSTALLED_DISTRIBUTION,
+  NATIVE_JOURNAL_CONTRACT,
+  UuidSchema,
+  makeHealthResponse,
+} from '@allrice/contracts';
 import {
   runMaintenanceExecutionTick,
   processFolderTriggerEvents,
@@ -39,6 +44,7 @@ import {
   readDevMaintenance,
   installDevProducerLifecycle,
   readDevProducerLifecycle,
+  recordNativeJournalContract,
   type DevProducerContext,
 } from '@allrice/database';
 
@@ -50,12 +56,9 @@ import { executeClaimedJob } from './runtime.js';
 import {
   installDshNativeArtifact,
   checkedDshNativeLaunch,
+  checkRetiredDshNativeSettings,
 } from './harness/dsh-native-artifact.js';
 import { configuredDshNativeLaunch } from './harness/dsh/runtime-pool.js';
-import {
-  installConfiguredDshNativeRetention,
-  verifyConfiguredDshNativeReferences,
-} from './harness/dsh-native-retention.js';
 import { fileURLToPath } from 'node:url';
 import { closeHarnessAdapters, getHarnessRouter } from './harness/router.js';
 import {
@@ -165,37 +168,16 @@ const nativeArtifact = await startup.run('native_primary', (observe) =>
 // reaches the pool. Reject unapproved deployment overrides before producers.
 await startup.run('native_launch_policy', () => {
   checkedDshNativeLaunch(configuredDshNativeLaunch());
-  if (
-    process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID &&
-    (nativeArtifact.artifactId !==
-      process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID ||
-      nativeArtifact.generation !== 'dsh-0.2.1-rc.2-687f282')
-  )
-    throw Error('DSH_NATIVE_ARTIFACT_NEW_ROOT_APPROVAL');
+  if (nativeArtifact.generation !== DSH_INSTALLED_DISTRIBUTION.generation)
+    throw Error('DSH_NATIVE_ARTIFACT_GENERATION');
+  const ignored = checkRetiredDshNativeSettings();
+  if (ignored.length)
+    console.info('[MET-221] ignoring retired native settings', ignored);
 });
-const retainedSpans = new Map<number, ReturnType<typeof startup.start>>();
-const retainedNativeArtifacts = await startup.run('native_retention', () =>
-  installConfiguredDshNativeRetention({
-    observe(event) {
-      if (event.kind === 'started')
-        retainedSpans.set(
-          event.slot,
-          startup.start('native_retained_slot', { slot: event.slot }),
-        );
-      else if (event.kind === 'metric')
-        retainedSpans.get(event.slot)?.observe(event.metric);
-      else {
-        const span = retainedSpans.get(event.slot);
-        if (event.kind === 'failed') span?.fail(event.error);
-        else span?.complete();
-        retainedSpans.delete(event.slot);
-      }
-    },
-  }),
-);
-const nativeArtifactReferenceCoverage = await startup.run(
-  'native_reference_coverage',
-  () => verifyConfiguredDshNativeReferences(nativeArtifact),
+// Before any producer: this build must read every journal already written,
+// and the database then records its contract as the high-water (MET-221).
+const nativeJournalContract = await startup.run('native_journal_contract', () =>
+  recordNativeJournalContract(NATIVE_JOURNAL_CONTRACT),
 );
 const nativeCloseIdentity = await observeDshWorkerCloseIdentity({
   workerId,
@@ -496,8 +478,7 @@ const server = createServer(async (request, response) => {
         ...(serviceBuildIdentity ? { identity: serviceBuildIdentity } : {}),
         nativeCloseIdentity,
         nativeArtifact,
-        retainedNativeArtifacts,
-        nativeArtifactReferenceCoverage,
+        nativeJournalContract,
         ...(nativeOnceControl.enabled
           ? { nativeOnceControl: nativeOnceStatus }
           : {}),

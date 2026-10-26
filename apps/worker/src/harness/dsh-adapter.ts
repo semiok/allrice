@@ -16,10 +16,7 @@ import {
   ModelCallTimingNotificationSchema,
   type HarnessEvent,
 } from '@allrice/contracts';
-import {
-  AssistantRuntimeError,
-  checkedFinalDeliveryArtifacts,
-} from '@allrice/database';
+import { AssistantRuntimeError } from '@allrice/database';
 import type { NativeSessionPin } from '@allrice/database';
 
 import { AgentLoopGuard } from '../agent-loop-guard.js';
@@ -279,17 +276,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
       prepared?.origin,
       prepared?.executionBinding,
     );
-    // The existing pool selected an independently measured/approved artifact.
-    // A newly frozen checked Run must use that exact protocol-tested identity;
-    // an older pin is never promoted by a current same-version primary.
+    // Checked final delivery is this release's protocol on the restricted
+    // profile. The artifact frozen on the Run is provenance only (MET-221).
     if (
       input.assistants?.deliveryMode === 'checked_native_v1' &&
-      (!nativeDescriptor ||
-        nativeDescriptor.profileId !== 'restricted' ||
-        nativeDescriptor.artifactId !== input.assistants.deliveryArtifactId ||
-        nativeDescriptor.artifactManifestDigest !==
-          nativeDescriptor.artifactId ||
-        !checkedFinalDeliveryArtifacts().includes(nativeDescriptor.artifactId))
+      (!nativeDescriptor || nativeDescriptor.profileId !== 'restricted')
     )
       throw new HandlerError(
         'FINAL_DELIVERY_ARTIFACT_MISMATCH',
@@ -304,25 +295,6 @@ export class DshHarnessAdapter implements HarnessAdapter {
           '原生会话尚未获得当前任务授权。',
           false,
         );
-      // A missing pin is not proof that a known history may be recreated.
-      // Read through the selected artifact's public backend before any new pin.
-      if (
-        nativeDescriptor.originReaderApprovalDigest &&
-        !prepared?.binding &&
-        !prepared?.originReaderAdopted
-      ) {
-        if (!prepared?.origin || prepared.requiresRecovery)
-          throw new HandlerError(
-            'DSH_NATIVE_ORIGIN_READER_RECOVERY_UNPROVEN',
-            '原会话的历史执行尚未完成兼容核验，已保留原记录。',
-            false,
-          );
-        await this.runtimePool.assertOriginReaderFirstWriter(
-          input,
-          threadId,
-          prepared.origin,
-        );
-      }
       if (prepared?.requiresRecovery)
         await this.runtimePool.assertStoredSession(
           input,
@@ -338,9 +310,13 @@ export class DshHarnessAdapter implements HarnessAdapter {
             generation: prepared.generation,
           }
         : await input.nativeBinding.bind(nativeDescriptor);
+      // A pin records its first writer's artifact; the executor is always the
+      // primary, so the artifact fields alone may differ (MET-221).
       if (
         Object.entries(nativeDescriptor).some(
           ([key, value]) =>
+            key !== 'artifactId' &&
+            key !== 'artifactManifestDigest' &&
             (bound.effectiveDescriptor ?? bound.binding)[
               key as keyof typeof nativeDescriptor
             ] !== value,

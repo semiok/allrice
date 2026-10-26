@@ -37,7 +37,6 @@ import {
 const artifact = `sha256:${'a'.repeat(64)}`;
 const timestamp = '2026-10-01T00:00:00.000Z';
 beforeEach(() => {
-  vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', artifact);
   vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', artifact);
 });
 afterEach(() => vi.unstubAllEnvs());
@@ -508,19 +507,26 @@ describe('current employee source policy: immutable original identities', () => 
 });
 
 describe('current employee v2 birth and per-Run binding', () => {
-  it.each(['new-missing', 'primary-missing', 'mismatch'] as const)(
-    'requires explicit current approval: %s',
+  it.each(['primary-missing', 'primary-malformed'] as const)(
+    'requires the exact release primary: %s',
     (change) => {
-      if (change === 'new-missing')
-        vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', undefined);
-      if (change === 'primary-missing')
-        vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', undefined);
-      if (change === 'mismatch')
-        vi.stubEnv(
-          'ALLRICE_DSH_NATIVE_ARTIFACT_ID',
-          `sha256:${'b'.repeat(64)}`,
-        );
+      vi.stubEnv(
+        'ALLRICE_DSH_NATIVE_ARTIFACT_ID',
+        change === 'primary-missing' ? undefined : 'sha256:not-a-digest',
+      );
       expect(() => chat()).toThrow();
+    },
+  );
+  // MET-221: the birth records this release's primary as provenance only; the
+  // retired new-root ID is neither read nor required.
+  it.each([undefined, `sha256:${'b'.repeat(64)}`])(
+    'records only the release primary as birth provenance (retired new-root ID %s)',
+    (retired) => {
+      vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', retired);
+      expect(chat().origin.artifactId).toBe(artifact);
+      expect(
+        freezeEmployeeRunExecutionBinding(run()).execution.artifactId,
+      ).toBe(artifact);
     },
   );
   it('keeps a birth source immutable and validates original scope and provenance', () => {
@@ -810,7 +816,6 @@ describe('current employee v2 birth and per-Run binding', () => {
   it('does not silently retarget a persisted origin when deployment approval changes', () => {
     const input = run(),
       binding = freezeEmployeeRunExecutionBinding(input);
-    vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', `sha256:${'b'.repeat(64)}`);
     vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', `sha256:${'b'.repeat(64)}`);
     expect(
       assertEmployeeRunExecutionBinding(binding, input).execution.artifactId,

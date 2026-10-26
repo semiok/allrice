@@ -19,8 +19,10 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllEnvs());
 
+// MET-221: a new birth records this release's primary as provenance. The
+// retired new-root ID and origin-reader settings are neither read nor needed.
 it.each(kinds)(
-  'requires both approvals for new %s work with no reader',
+  'requires the release primary for new %s work, not the retired new-root ID',
   (kind) => {
     expect(() =>
       newCurrentInternalNativeRootOrigin(kind, randomUUID(), { v: 1 }),
@@ -31,22 +33,24 @@ it.each(kinds)(
     ).toThrow();
     vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', undefined);
     vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', current);
-    expect(() =>
-      newCurrentInternalNativeRootOrigin(kind, randomUUID(), { v: 1 }),
-    ).toThrow();
+    expect(
+      newCurrentInternalNativeRootOrigin(kind, randomUUID(), { v: 1 })
+        .artifactId,
+    ).toBe(current);
   },
 );
 
 it.each(kinds)(
-  'rejects mismatched new %s target independently of reader setup',
+  'records only the release primary for new %s work regardless of retired settings',
   (kind) => {
     vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', current);
     vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', other);
     for (const reader of [undefined, '', '/synthetic/reader.json']) {
       vi.stubEnv('ALLRICE_DSH_ORIGIN_READER_APPROVAL_PATH', reader);
-      expect(() =>
-        newCurrentInternalNativeRootOrigin(kind, randomUUID(), { v: 1 }),
-      ).toThrow('CURRENT_EMPLOYEE_EXECUTION_APPROVAL_MISMATCH');
+      expect(
+        newCurrentInternalNativeRootOrigin(kind, randomUUID(), { v: 1 })
+          .artifactId,
+      ).toBe(other);
     }
   },
 );

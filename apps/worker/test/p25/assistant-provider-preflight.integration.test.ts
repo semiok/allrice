@@ -10,6 +10,7 @@ import type * as Router from '../../src/harness/router.js';
 import type * as Controller from '../../src/harness/dsh/assistant-controller.js';
 import type {
   EmployeeExecutionSnapshot,
+  EmployeeRuntimePackage,
   HarnessExecutionSnapshot,
   ResolvedModelTarget,
   RouteDecision,
@@ -51,6 +52,9 @@ import { estimateConversationTokens } from '../../../../packages/database/src/co
 import { HandlerError } from '../../src/errors.js';
 import { acquireConversationRuntime as acquireConversationActual } from '../../../../packages/database/src/conversation/conversation-runtime.ts';
 import { nativeBindingDescriptor } from '../../../../packages/database/src/native-session-binding.fixture.ts';
+import { createEmployeeAdministrationFixture } from '../../../../packages/database/src/employee-administration.fixture.ts';
+import { buildEmployeeRuntimePackage } from '../../../../packages/database/src/platform-employees/runtime-package.ts';
+import { newNativeGeneration } from '../../../../packages/database/src/conversation/native-root-origin.ts';
 import type { DshRuntime } from '../../src/harness/dsh/runtime-pool.js';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.js';
 import { DshRuntimePool } from '../../src/harness/dsh/runtime-pool.js';
@@ -197,12 +201,28 @@ integration(
     let adapter: DshHarnessAdapter;
     let acquire: MockInstance<DshRuntimePool['acquire']>;
     let execute: MockInstance<DshHarnessAdapter['execute']>;
+    let runtimePackage: EmployeeRuntimePackage;
     const rejectionCode = 'ASSISTANT_SUBSCRIPTION_ROUTE_UNVERIFIED';
     const lateError = Error('synthetic_uncertain_adapter_failure');
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
+      // MET-221: only a business origin binds a native pin; such chats are born
+      // on the current generation under this synthetic release primary.
+      vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'c'.repeat(64));
       database = await createAssistantFixtureDatabase();
       state.database = database;
+      const employee = await createEmployeeAdministrationFixture(database.db);
+      runtimePackage = buildEmployeeRuntimePackage({
+        revision: 1,
+        definition: {
+          ...employee.definition,
+          capabilities: {
+            ...employee.definition.capabilities,
+            nativeSkillIds: [],
+          },
+        },
+        skills: [],
+      });
       temporary = await mkdtemp(join(tmpdir(), 'allrice-p25-preflight-'));
       vi.stubEnv('ALLRICE_STORAGE_ROOT', join(temporary, 'storage'));
       adapter = new DshHarnessAdapter({
@@ -257,6 +277,7 @@ integration(
         subscriptionFallback?: boolean;
         subscriptionFallbackModel?: string;
         memoryRead?: boolean;
+        businessOrigin?: boolean;
       } = {},
     ) {
       const connectionId = randomUUID(),
@@ -341,6 +362,9 @@ integration(
       }
       const f = await createAssistantAuthorityFixture(database.db, {
         configure: false,
+        ...(options.businessOrigin
+          ? { runtimePackage, businessCreationOrigin: true }
+          : {}),
         allowedTools: [
           'assistant.delegate',
           'assistant.report',
@@ -720,6 +744,7 @@ integration(
           price: true,
           enabled: false,
           workflow,
+          businessOrigin: true,
         });
         state.runtime.mockImplementation((value) =>
           value
@@ -734,6 +759,7 @@ integration(
               workspaceId: f.workspace,
               ownerId: f.user,
               contextKey: f.session,
+              distributionGeneration: newNativeGeneration,
             }),
             nativeSessionId: threadId,
           }));
@@ -762,6 +788,7 @@ integration(
         compatible: true,
         price: true,
         enabled: false,
+        businessOrigin: true,
       });
       state.runtime.mockImplementation((value) =>
         value
@@ -776,6 +803,7 @@ integration(
             workspaceId: f.workspace,
             ownerId: f.user,
             contextKey: f.session,
+            distributionGeneration: newNativeGeneration,
           }),
           nativeSessionId: threadId,
         }));

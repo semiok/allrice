@@ -12,32 +12,25 @@ import {
   sendChatMessage,
 } from './workspace/service.ts';
 import { nativeRootDigest } from './conversation/native-root-origin.ts';
-import {
-  checkedFinalDeliveryArtifacts,
-  selectCheckedFinalDeliveryArtifact,
-} from './final-delivery-rollout.ts';
+import { selectCheckedFinalDeliveryArtifact } from './final-delivery-rollout.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
     : describe.skip;
+// `earlier` is a previous release of the same DSH generation (MET-221).
 const current = 'sha256:' + 'a'.repeat(64),
-  retained = 'sha256:' + 'b'.repeat(64);
+  earlier = 'sha256:' + 'b'.repeat(64);
 
 suite(
-  'checked delivery rollout uses immutable exact package identity: real isolated PostgreSQL',
+  'checked delivery follows the generation, artifact IDs are provenance: real isolated PostgreSQL',
   () => {
     let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
     let runtimePackage: EmployeeRuntimePackage;
     beforeAll(async () => {
       fixture = await createAssistantFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
-      vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', current);
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', current);
-      vi.stubEnv(
-        'ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS',
-        JSON.stringify([current]),
-      );
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
       vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
@@ -91,14 +84,12 @@ suite(
         workspaceId: f.workspace,
       });
       if (!context) throw Error('isolated login required');
-      vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', artifact);
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', artifact);
       const session = await createAssignedChatSession(context, {
         workspaceId: f.workspace,
         employeeAssignmentId: f.assignment,
         title: 'Synthetic package rollout',
       });
-      vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', current);
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', current);
       return { ...f, context, chat: session.id };
     }
@@ -147,7 +138,7 @@ suite(
         ${artifact},${artifact},${birth!.native_root_origin.distributionGeneration},'restricted',${f.rootRunId},${f.worker.jobId},1,
         ${overrides.basis ?? 'business_root_origin'},${overrides.basis === 'approved_compatibility_reader' ? null : (overrides.digest ?? nativeRootDigest(birth!.native_root_origin))})`;
     }
-    it('freezes both checks only for the exact approved birth; idempotent retry cannot rewrite its queued snapshot', async () => {
+    it('freezes both checks for a current birth; a retry under a later release cannot rewrite its queued snapshot', async () => {
       const f = await subject(),
         id = randomUUID();
       const sent = await send(f, f.chat, id),
@@ -158,33 +149,55 @@ suite(
         artifactId: current,
       });
       expect(before.officeFirstDeliveryPolicy).toBe('xlsx_formula_cache_v1');
-      vi.stubEnv('ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS', '[]');
+      vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', earlier);
       try {
         const replay = await send(f, f.chat, id);
         expect(replay.run!.id).toBe(sent.run!.id);
         expect(await snapshot(sent.run!.id)).toEqual(before);
       } finally {
-        vi.stubEnv(
-          'ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS',
-          JSON.stringify([current]),
-        );
+        vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', current);
       }
     });
-    it('same-generation retained birth stays legacy despite current primary; a matching historical pin does not imply current protocol', async () => {
-      const f = await subject(retained);
+    it('a chat born under an earlier release of the generation keeps checked delivery; its origin artifact is provenance', async () => {
+      const f = await subject(earlier);
       await pin(f);
       expect(
         await fixture.db.begin((tx) =>
           selectCheckedFinalDeliveryArtifact(tx, input(f)),
         ),
-      ).toBeUndefined();
+      ).toBe(earlier);
       const sent = await send(f),
         value = await snapshot(sent.run!.id);
-      expect(value).not.toHaveProperty('finalDeliveryPolicy');
-      expect(value).not.toHaveProperty('officeFirstDeliveryPolicy');
-      const [birth] =
-        await fixture.db`select native_root_origin from allrice_chat_sessions where id=${f.chat}`;
-      expect(birth!.native_root_origin.artifactId).toBe(retained);
+      expect(value.finalDeliveryPolicy).toEqual({
+        version: 1,
+        mode: 'checked_native_v1',
+        artifactId: earlier,
+      });
+      expect(value.officeFirstDeliveryPolicy).toBe('xlsx_formula_cache_v1');
+    });
+    it('a chat created before a release and first executed after it (pin = later release, origin = earlier) still admits messages', async () => {
+      const f = await subject(earlier);
+      await pin(f, { artifact: current });
+      for (let i = 0; i < 2; i++) {
+        const sent = await send(f),
+          value = await snapshot(sent.run!.id);
+        expect(value.finalDeliveryPolicy).toMatchObject({
+          mode: 'checked_native_v1',
+          artifactId: earlier,
+        });
+      }
+    });
+    it('ignores the retired checked-delivery allowlist', async () => {
+      const f = await subject();
+      vi.stubEnv('ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS', 'not-json');
+      try {
+        const sent = await send(f);
+        expect(
+          (await snapshot(sent.run!.id)).finalDeliveryPolicy,
+        ).toMatchObject({ mode: 'checked_native_v1', artifactId: current });
+      } finally {
+        vi.stubEnv('ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS', undefined);
+      }
     });
     it('an exact current pin may point at its historical first Run; current-Run final origin is verified separately', async () => {
       const f = await subject();
@@ -207,20 +220,18 @@ suite(
         expect(value).not.toHaveProperty('officeFirstDeliveryPolicy');
       }
     });
-    it.each(['artifact', 'basis', 'digest', 'owner'] as const)(
+    it.each(['basis', 'digest', 'owner'] as const)(
       'rejects a conflicting %s pin before creating a new Run',
       async (kind) => {
         const f = await subject();
         const other = kind === 'owner' ? await subject() : undefined;
         await pin(
           f,
-          kind === 'artifact'
-            ? { artifact: retained }
-            : kind === 'basis'
-              ? { basis: 'approved_compatibility_reader' }
-              : kind === 'digest'
-                ? { digest: 'sha256:' + 'c'.repeat(64) }
-                : { owner: other!.user },
+          kind === 'basis'
+            ? { basis: 'approved_compatibility_reader' }
+            : kind === 'digest'
+              ? { digest: 'sha256:' + 'c'.repeat(64) }
+              : { owner: other!.user },
         );
         await expect(send(f)).rejects.toThrow(
           'FINAL_DELIVERY_NATIVE_ORIGIN_CONFLICT',
@@ -230,24 +241,5 @@ suite(
         ).toHaveLength(0);
       },
     );
-    it('missing approval stays off; malformed or duplicate deployment approval fails closed', () => {
-      try {
-        vi.stubEnv('ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS', undefined);
-        expect(checkedFinalDeliveryArtifacts()).toEqual([]);
-        for (const raw of [
-          'not-json',
-          '["0.2.1-rc.2"]',
-          JSON.stringify([current, current]),
-        ]) {
-          vi.stubEnv('ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS', raw);
-          expect(checkedFinalDeliveryArtifacts).toThrow();
-        }
-      } finally {
-        vi.stubEnv(
-          'ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS',
-          JSON.stringify([current]),
-        );
-      }
-    });
   },
 );

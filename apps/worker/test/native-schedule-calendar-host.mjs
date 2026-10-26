@@ -72,8 +72,9 @@ async function main() {
   const root = process.env.ALLRICE_NATIVE_CALENDAR_HOST_ARTIFACT_ROOT,
     expectedId = process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID;
   assert.ok(root && isAbsolute(root) && expectedId);
+  // The fixture's partition is born under this primary; any later release of
+  // the generation would run it (MET-221).
   assert.equal(reference.artifactId, expectedId);
-  assert.equal(process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID, expectedId);
   assert.equal((await readdir(reference.stateRoot)).length, 0);
   const db = database.getDatabase();
   const [scope] =

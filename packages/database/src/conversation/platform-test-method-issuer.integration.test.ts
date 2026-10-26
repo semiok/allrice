@@ -66,7 +66,7 @@ suite(
     const currentMethodTools = toolSelection.withEmployeeCustomizationTools;
     const approve = (artifact = artifactA) => {
       // Synthetic SQL authority only; these are not measured runnable artifacts.
-      vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', artifact);
+      // MET-221: the release primary is the only birth input.
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', artifact);
     };
 
@@ -609,7 +609,7 @@ suite(
       expect(before.tests).toBe(0);
       // The authorizing chat Run already exists. Assert no additional execution,
       // rather than incorrectly asserting the tenant has no Runs at all.
-      vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', undefined);
+      vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', undefined);
       await expect(
         startEmployeeMethodTestFromChat({ ...x.testing, arguments: x.args }),
       ).rejects.toThrow();
