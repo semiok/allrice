@@ -21,19 +21,21 @@
 - 内存 16G、10 核，磁盘约 565G 可用。**内存是瓶颈，磁盘很富裕。**
 - 常驻占用：共享 Dev（Web + Worker）约 0.8G，沙箱虚拟机 `allrice-cloud-arm` 约 0.9G（上限 4G），Postgres 约 0.5G。
 - 一个临时验收实例约 1G，**同时最多开 3 个**。内存紧张时，先停自己不用的实例。同时构建的数量目前没有限制，16G 内存下多个构建并行可能吃紧，还没观察到问题。
+- **M5 测试机（用户 10-26）**：用户的 M5（128G、18 核）在线时，数据库集成测试、浏览器测试和 Codex 补测都放到 M5 上跑，用 `m5-test`（第 9 节第 7 条）。M5 会睡眠：`ssh m5` 10 秒内连不上时，`m5-test` 自动改在 M1 上跑，vitest 最多 2 个 worker。这样 M1 只跑共享 Dev、验收实例、部署和冒烟（10-26 晚共享 Dev 两次心跳锁超时，都发生在几个会话同时在 M1 上跑测试的时候）。M5 是用户自己的电脑：**不往 M5 放任何凭证**（模型订阅、GitHub、Linear、Telegram 都不放，代码由 M1 推到 M5 上的裸仓库），不改 M5 上用户原有的 Claude、Codex 配置和 Homebrew 软件，不用 sudo；要在 M5 上装别的软件，先问用户。
 
 ## 2. 目录与端口
 
-| 用途                | 位置                                             | 说明                                                                                                                                                                                                                                                                                                                                          |
-| ------------------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 主仓库              | `~/allrice-repo`                                 | 所有任务的 worktree 都从这里建，保证本地分支能被 `qa-instance --ref` 直接使用。**主仓库本身不切分支、不改文件、不构建**                                                                                                                                                                                                                       |
-| 任务代码            | `~/allrice-worktrees/<任务名>`                   | 每个任务一个 worktree：`git -C ~/allrice-repo fetch && git -C ~/allrice-repo worktree add ~/allrice-worktrees/<任务名> -b <分支> origin/main`。**可以多个任务并行，各自构建，不需要排队。**                                                                                                                                                   |
-| 共享 Dev 发布       | `~/allrice-dev-releases/<版本名>`                | 只由 `deploy-dev` 创建；清理时保留当前版本、上一个版本，再加最近 3 个                                                                                                                                                                                                                                                                         |
-| 共享 Dev 数据和配置 | `~/allrice-dev/.env`、`~/allrice-dev/.local/`    | launchd：`ai.bplabs.allrice-dev-web` / `-worker`。端口：彩排期间 3011/3012，正式切换后改为 3001/3102（MET-216）                                                                                                                                                                                                                               |
-| 临时验收实例        | `~/allrice-qa/<任务名>/`                         | 每个任务一套：`release/`（构建目录）、`.env`、`.local/`、`logs/`、`creds.json`（测试账号）、`instance.json`                                                                                                                                                                                                                                   |
-| 验收实例端口        | 3200–3299                                        | 第 n 个实例：Web 用 3200+2n，Worker 用 3201+2n，由 `qa-instance` 自动分配                                                                                                                                                                                                                                                                     |
-| 运维工具            | `~/allrice-dev/bin/`（源码在仓库 `scripts/m1/`） | `deploy-dev`、`qa-instance`、`smoke-test`、`deploy-lock`（见下文）；`with-env web\|worker <命令>`：带共享 Dev 的完整环境变量执行命令，读不到环境就拒绝执行；`backup-daily`：每日备份；`monitor`：每 4 分钟巡检组件和业务、发 Telegram 告警，huihuimac 上的同一脚本反过来看门（`docs/runbooks/m1-monitor.md`）；`qa-bootstrap.mjs`：初始化租户 |
-| 备份                | `~/allrice-backups/`                             | 每天 04:00 自动备份数据库、数据目录和两个 launchd 文件，保留 7 天。数据库和文件不是同一时刻的快照，恢复后以数据库为准                                                                                                                                                                                                                         |
+| 用途                | 位置                                             | 说明                                                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 主仓库              | `~/allrice-repo`                                 | 所有任务的 worktree 都从这里建，保证本地分支能被 `qa-instance --ref` 直接使用。**主仓库本身不切分支、不改文件、不构建**                                                                                                                                                                                                                                                                          |
+| 任务代码            | `~/allrice-worktrees/<任务名>`                   | 每个任务一个 worktree：`git -C ~/allrice-repo fetch && git -C ~/allrice-repo worktree add ~/allrice-worktrees/<任务名> -b <分支> origin/main`。**可以多个任务并行，各自构建，不需要排队。**                                                                                                                                                                                                      |
+| 共享 Dev 发布       | `~/allrice-dev-releases/<版本名>`                | 只由 `deploy-dev` 创建；清理时保留当前版本、上一个版本，再加最近 3 个                                                                                                                                                                                                                                                                                                                            |
+| 共享 Dev 数据和配置 | `~/allrice-dev/.env`、`~/allrice-dev/.local/`    | launchd：`ai.bplabs.allrice-dev-web` / `-worker`。端口：彩排期间 3011/3012，正式切换后改为 3001/3102（MET-216）                                                                                                                                                                                                                                                                                  |
+| 临时验收实例        | `~/allrice-qa/<任务名>/`                         | 每个任务一套：`release/`（构建目录）、`.env`、`.local/`、`logs/`、`creds.json`（测试账号）、`instance.json`                                                                                                                                                                                                                                                                                      |
+| 验收实例端口        | 3200–3299                                        | 第 n 个实例：Web 用 3200+2n，Worker 用 3201+2n，由 `qa-instance` 自动分配                                                                                                                                                                                                                                                                                                                        |
+| 运维工具            | `~/allrice-dev/bin/`（源码在仓库 `scripts/m1/`） | `deploy-dev`、`qa-instance`、`smoke-test`、`deploy-lock`（见下文）；`with-env web\|worker <命令>`：带共享 Dev 的完整环境变量执行命令，读不到环境就拒绝执行；`backup-daily`：每日备份；`monitor`：每 4 分钟巡检组件和业务、发 Telegram 告警，huihuimac 上的同一脚本反过来看门（`docs/runbooks/m1-monitor.md`）；`qa-bootstrap.mjs`：初始化租户；`m5-test`：把重的测试放到 M5 跑（第 9 节第 7 条） |
+| M5 测试机           | `ssh m5`；M5 上的 `~/allrice-test/`              | 全由 `m5-test` 管理：`repo.git`（M1 推来的提交）、`slots/slot-<n>`（每个名额一个 worktree，下次运行时清理后复用）、`pg17/`（测试库）、`dist/`（源码编译的 PostgreSQL 和 pgvector）、`pnpm-store/`；Node 在 `~/.local/opt/node-22.23.2`。M5 不在线时，M1 上用的名额 worktree 在 `~/allrice-worktrees/.m5-test-m1/`；两边的运行日志都在 M1 的 `~/allrice-dev/qa/m5-test/`                          |
+| 备份                | `~/allrice-backups/`                             | 每天 04:00 自动备份数据库、数据目录和两个 launchd 文件，保留 7 天。数据库和文件不是同一时刻的快照，恢复后以数据库为准                                                                                                                                                                                                                                                                            |
 
 `cloud-autostart`：登录后把云端沙箱 VM 拉起来，并等到 Office 渲染容器健康、云端看门狗证明就绪；失败时每分钟重试一次。登录项由发布负责人在安装新版工具后用 `cloud-autostart install-agent` 装一次，`cloud-autostart status` 查看状态。M1 开着 FileVault，无人值守重启后要有人登录，这些服务（包括共享 Dev）才会启动。
 
@@ -41,16 +43,18 @@
 
 - **Node 必须正好是 22.23.2**：`~/.local/opt/node-22.23.2/bin`。Homebrew 里的 Node 不要用来构建或运行 AllRice。
 - pnpm 10.33.3；Postgres 17 + pgvector；colima + arm64 gVisor；cloudflared 在 `~/.local/bin/cloudflared`。
+- M5 上由 `m5-test setup` 装同样版本的 Node、pnpm（corepack）、PostgreSQL 17.11 + pgvector 0.8.7，全在用户目录，不动 Homebrew（Homebrew 装 `postgresql@17` 会顺带升级用户 `postgresql@16` 依赖的库）。浏览器测试用 M5 上已有的 `/Applications/Google Chrome.app`；Codex 用 ChatGPT App 自带的命令行 `/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`，登录是用户原有的。
 - gh 在 `/opt/homebrew/bin/gh`，已登录，可以直接推送分支、开 PR。非交互的 shell 里它可能不在 PATH 上，用完整路径。
 
 ## 4. 数据库
 
-| 库                              | 用途                                                                                                                                                                                 |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `allrice_dev`                   | 共享 Dev。**不要跑破坏性测试。** 各任务通过产品界面和接口操作自己的测试账号和数据，不受限制；直接改数据库（SQL）、改配置、跨任务的数据维护，只由发布负责人做，改之前先备份并记到 MET |
-| `allrice_qa_<任务名>`           | 每个任务的验收库，`qa-instance down` 时删除                                                                                                                                          |
-| `allrice_b2`（角色 `a123`）     | 只用于数据库集成测试（`ALLRICE_TEST_DATABASE_URL=postgres://a123@127.0.0.1:5432/allrice_b2`）。测试各自建随机 schema，可以并行                                                       |
-| `allrice_dev_snapshot_20261024` | 迁移前 Dev 库的副本，留着测试旧数据迁移。只读                                                                                                                                        |
+| 库                                 | 用途                                                                                                                                                                                                                                                            |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `allrice_dev`                      | 共享 Dev。**不要跑破坏性测试。** 各任务通过产品界面和接口操作自己的测试账号和数据，不受限制；直接改数据库（SQL）、改配置、跨任务的数据维护，只由发布负责人做，改之前先备份并记到 MET                                                                            |
+| `allrice_qa_<任务名>`              | 每个任务的验收库，`qa-instance down` 时删除                                                                                                                                                                                                                     |
+| `allrice_b2`（角色 `a123`）        | 只用于数据库集成测试（`ALLRICE_TEST_DATABASE_URL=postgres://a123@127.0.0.1:5432/allrice_b2`）。测试各自建随机 schema，可以并行                                                                                                                                  |
+| `allrice`（M5，`127.0.0.1:54329`） | M5 上的数据库集成测试库，`m5-test` 自动设 `ALLRICE_TEST_DATABASE_URL=postgres://allrice:allrice@127.0.0.1:54329/allrice`。端口、角色、库名和 CI 相同，因为测试夹具只认 M1 和 CI 这两组（`packages/database/src/runtime-fixture-database.ts`）；只监听 127.0.0.1 |
+| `allrice_dev_snapshot_20261024`    | 迁移前 Dev 库的副本，留着测试旧数据迁移。只读                                                                                                                                                                                                                   |
 
 ## 5. 发布车（共享 Dev 怎么部署）
 
@@ -132,18 +136,31 @@
    - 回执（发布负责人写）：实际运行的版本号、执行包、冒烟结果的路径、哪些 MET 可以开始验收、还有什么没做。
 6. **用 `codex exec` 派活必须带 `-m`。** M1 的 `~/.codex/config.toml` 默认模型是 `gpt-5.4`，用 ChatGPT 账号登录时不能用，不带 `-m` 会直接报 `model_not_found`（10-24 在 Codex 0.163.0 上实测）。三类活（Codex 省额度模式下，测试和诊断按第 11 节换成 Sol，复核仍用 Astra；省额度模式另有写代码一类，见第 11 节第 3 条）：
 
-   - **测试和诊断（Astra）**：在 PR 头提交上单独建一个测试 worktree（`git -C ~/allrice-repo worktree add --detach ~/allrice-worktrees/<任务名>-test <提交>`），让 Codex 在里面写测试、跑测试：
+   - **测试和诊断（Astra）**：用 `m5-test codex` 派。它在 M5（不在线时 M1）上按 PR 头提交建测试 worktree、装依赖、构建，再用 Astra `max` 跑 `codex exec`，让 Codex 在里面写测试、跑测试，结果和补丁带回 M1：
 
      ```bash
-     mkdir -p ~/allrice-dev/qa/codex
-     ~/.local/bin/codex exec -C ~/allrice-worktrees/<任务名>-test -m gpt-6-astra -c model_reasoning_effort=max -s danger-full-access -o ~/allrice-dev/qa/codex/<任务名>-test.md "<测试说明>" </dev/null
+     ~/allrice-dev/bin/m5-test codex <PR 头提交> --db --browser -o ~/allrice-dev/qa/codex/<任务名>-test.md -- "<测试说明>"
      ```
 
-     测试说明写清：MET 卡和 PR、要验证的行为和边界、可以用的资源（`allrice_b2`、临时验收实例、Dev 上的哪个测试账号）、**只改测试文件、不改产品代码、不 commit、不 push**；交付物是测试报告（跑了什么、结果、失败的根因诊断、复现步骤）和 `git diff` 补丁。Claude 审过补丁后合进 PR，测试 worktree 用完即删。
+     测试说明写清：MET 卡和 PR、要验证的行为和边界、可以用的资源（测试库已由 `m5-test` 设好 `ALLRICE_TEST_DATABASE_URL`）、**只改测试文件、不改产品代码、不 commit、不 push**；交付物是测试报告（跑了什么、结果、失败的根因诊断、复现步骤）和补丁（`m5-test` 收成 `<任务名>-test.patch`，新建的文件也在里面）。Claude 审过补丁后合进 PR。说明较长时从标准输入传（`… -o <结果文件> < <说明文件>`）。测试 worktree 由 `m5-test` 管理，不用手工删。要跑浏览器测试的补测加 `--full-access`（Chrome 在 Codex 的沙箱里起不来，10-26 在 M5 上实测），这时 Codex 在 M5 上不受沙箱限制，说明里写清只动测试 worktree。要用临时验收实例或 Dev 测试账号的（实例只在 M1 本机，账号密码不能放到 M5），加 `--on m1` 留在 M1。
 
    - **复核（Astra）**：`-s read-only`，结果用 `-o` 收，复核者不写文件（命令见第 5 节）。和测试分开跑，不把测试报告交给复核者。
    - **线上问题诊断（Astra）**：只读排查 Dev 或日志，给出根因、证据和建议修法，不直接改代码和数据。
-   - `-s danger-full-access` 只给需要跑测试的活：10-24 在本机实测，`workspace-write` 沙箱连不上本机 Postgres、写不了 worktree 的 git 元数据、也上不了网。M1 是专用开发机，约束靠本文件，不靠沙箱。
+   - `-s danger-full-access` 只给需要跑测试的活：10-24 在本机实测，`workspace-write` 沙箱连不上本机 Postgres、写不了 worktree 的 git 元数据、也上不了网。M1 是专用开发机，约束靠本文件，不靠沙箱。M5 是用户的个人电脑，`m5-test` 在 M5 上默认用 `workspace-write` 加网络（`sandbox_workspace_write.network_access=true`）：Codex 只能写测试 worktree 和临时目录，能连 M5 的测试库（10-26 实测）。`m5-test` 还关掉 Codex 的登录 shell（`-c allow_login_shell=false`），否则用户的 shell 配置会把别的 Node 和 psql 排到 PATH 前面。
+
+7. **重的测试放 M5（用户 10-26）**：数据库集成测试、浏览器测试、Codex 补测都用 `m5-test`，不在 M1 上直接 `pnpm exec vitest run` 跑这几类；普通单元测试照常在自己的 worktree 里跑。验收实例（`qa-instance`）、共享 Dev 的部署和冒烟仍在 M1。
+
+   ```bash
+   ~/allrice-dev/bin/m5-test [<提交>] --db -- packages/database/src/<名字>.integration.test.ts
+   ~/allrice-dev/bin/m5-test --browser -- apps/web/app/chatflow/<名字>.browser.test.ts
+   ~/allrice-dev/bin/m5-test status
+   ```
+
+   - 只测已提交的内容：默认当前 worktree 的 HEAD；没提交的改动先 commit，不必 push。`--` 后面原样交给 `vitest run`。`--db`、`--browser` 打开对应的测试开关，`-e ALLRICE_<名字>=<值>` 加别的开关（不能带凭证）。默认先跑 `pnpm --filter @allrice/contracts build`（和 `pnpm test` 一样），`--build "<命令>"` 换成别的，`--no-build` 不构建。
+   - 输出实时打印，退出码就是测试的退出码，日志同时存在 `~/allrice-dev/qa/m5-test/`。M5 不在线或没配好时先打印一句“M5 不在线，改在 M1 跑”之类的说明再跑；`--on m5` 只在 M5 跑（不在线退出码 4），`--on m1` 直接在 M1 跑。
+   - 并发：M5 同时最多 3 个运行，每个最多 6 个 worker；退回 M1 时最多 2 个运行，每个 2 个 worker（`--maxWorkers` 只能往小里改）。名额满了等最多 `--wait` 秒（默认 900），还满就退出码 3：这时结束本轮说明在等，不要循环重试。`m5-test status` 看两台机器的名额、测试库和 Codex 登录状态。
+   - 运行中 M5 断开（睡眠、离线）时退出码 255 并提示；重跑即可，M5 还不在线就自动退回 M1。
+   - M5 上的环境由发布负责人用 `m5-test setup` 准备（可以重复跑，工具里的版本变了会重新安装）；M5 上没配好时 `m5-test` 退回 M1 并提示。
 
 ## 10. 测试与 PR（用户 10-25）
 
@@ -154,7 +171,7 @@
 1. **每个 PR 至少带一条用户视角的行为测试**，由写代码的一方写，Codex 补测时检查：从用户在聊天里会说的原话出发，走真实入口（接口或 Worker 管线，模型可以用桩），断言落库的结构化结果（任务记录、附件类型、定时任务行、回执），不断言模型措辞。纯界面的改动用浏览器测试断言界面状态。纯重构、纯文档、纯运维脚本、只改 CI 配置的 PR 例外，在 PR 描述里说明。
 2. **改 AI 行为的要拿真实结果说话**：评测集还没有建（计划见 MET-208）。建成之前，改提示词、工具描述、技能文档、模型路由的 PR，在描述里列出几条用户原话，以及合并前在验收实例上用真实模型跑出的落库结果；验收实例跑不了的（例如要用云端执行的），写进 MET 卡“Dev 上要验什么”，合并部署后补上结果。评测集建成后，改为跑评测集，命令写进本节。
 3. **环境相关的测试失败当场修，不记成“已知失败”**：总有几条红的测试，大家会习惯性忽略，真正的失败就混进去了。与本 PR 相关的在本 PR 修；无关的另开一个小 PR 马上修。常见的两类：macOS 上 `/var` 是 `/private/var` 的别名，测试的临时目录要先取 `realpath`；Node 不是第 3 节的 22.23.2 时，先换版本再判断是不是环境问题。
-4. **新测试要确认 CI 真的会跑**：集成和浏览器测试靠环境变量开关，`pnpm test` 会收集所有测试，但没有开关变量时会直接跳过；新写的集成和浏览器测试也要按同样的变量加开关，否则在没有数据库的 `pnpm test` 里会失败。新加的数据库集成测试，要加进 `.github/workflows/ci.yml` 里带 `ALLRICE_RUN_DB_INTEGRATION=1` 的 `vitest run` 步骤；浏览器测试要加进带 `ALLRICE_RUN_BROWSER_INTEGRATION=1` 的步骤。`apps/worker/test/p25/` 按目录收集，放在这里的不用单独登记。不进 CI 的（需要真实沙箱、Bridge 的 native 测试），在 PR 描述里写明在哪里跑过。改成按目录自动收集的工作记在 MET-220。
+4. **新测试要确认 CI 真的会跑**：集成和浏览器测试靠环境变量开关，`pnpm test` 会收集所有测试，但没有开关变量时会直接跳过；新写的集成和浏览器测试也要按同样的变量加开关，否则在没有数据库的 `pnpm test` 里会失败。新加的数据库集成测试，要加进 `.github/workflows/ci.yml` 里带 `ALLRICE_RUN_DB_INTEGRATION=1` 的 `vitest run` 步骤；浏览器测试要加进带 `ALLRICE_RUN_BROWSER_INTEGRATION=1` 的步骤。`apps/worker/test/p25/` 按目录收集，放在这里的不用单独登记。不进 CI 的（需要真实沙箱、Bridge 的 native 测试），在 PR 描述里写明在哪里跑过。改成按目录自动收集的工作记在 MET-220。本地跑集成和浏览器测试用 `m5-test`（第 9 节第 7 条）。
 
 **PR**
 

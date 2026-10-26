@@ -1,0 +1,162 @@
+#!/bin/bash
+# Heavy AllRice tests on M5 (rules: AGENTS.md §9 at the repository root): database integration,
+# browser and Codex test passes run on M5, the user's own Mac (128G, 18 cores), while it is
+# online, so the shared Dev on M1 keeps its CPU and memory. M5 sleeps at times: when `ssh m5`
+# does not answer within 10 seconds, the same run happens on M1 with two vitest workers.
+#
+#   m5-test [<commit>] [--db] [--browser] [-e ALLRICE_X=v]… [--build <cmd> | --no-build]
+#           [--wait <s>] [--on auto|m5|m1] -- <vitest arguments…>
+#   m5-test codex [<commit>] -o <result.md> [--full-access] [the options above] [-- <prompt>]
+#   m5-test status | setup
+#
+# <commit> defaults to HEAD of the current worktree; only committed code is tested. It is
+# pushed to a bare repository on M5: no credentials of any kind go to M5. A run takes one of
+# the host's slots (M5: 3, M1: 2), each with its own worktree, waits up to --wait seconds
+# (default 900) for one and exits 3 if none frees up. vitest gets at most 6 workers on M5 and
+# 2 on M1, whatever --maxWorkers says. ALLRICE_TEST_DATABASE_URL is always set; --db and
+# --browser set ALLRICE_RUN_DB_INTEGRATION and ALLRICE_RUN_BROWSER_INTEGRATION. The default
+# build is `pnpm --filter @allrice/contracts build`, as `pnpm test` does. Output is also kept
+# in ~/allrice-dev/qa/m5-test/.
+#
+# codex: Astra (gpt-6-astra, max) runs `codex exec` in that worktree after the install and
+# build. On M5 it may write only there, unless --full-access (needed for browser tests: Chrome
+# does not start in Codex's sandbox); on M1 it always has full access, as AGENTS.md §9 says.
+# The prompt is the text after `--`, or stdin. The result is written to <result.md>,
+# everything it changed to <result>.patch.
+set -euo pipefail
+BIN=$(cd "$(dirname "$0")" && pwd -P)
+export PATH="$HOME/.local/opt/node-22.23.2/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+HOST=${M5_TEST_HOST:-m5} REPO=${M5_TEST_REPO:-$HOME/allrice-repo} LOGS=$HOME/allrice-dev/qa/m5-test
+SSH=(${M5_TEST_SSH:-ssh} -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
+die() { echo "m5-test: $*" >&2; exit 2; }
+quote() { /usr/bin/python3 -c 'import shlex,sys; print(" ".join(map(shlex.quote, sys.argv[1:])))' "$@"; }
+
+# on_host <m5|m1> <M5T_ setting…> [-- <argument…>]: run m5-run there (stdin passes through).
+on_host() {
+  local where=$1 settings=()
+  shift
+  while [ $# -gt 0 ] && [ "$1" != -- ]; do settings+=("$1"); shift; done
+  [ $# = 0 ] || shift
+  if [ "$where" = m5 ]; then
+    "${SSH[@]}" "$HOST" "$(quote env M5T_TARGET=m5 "${settings[@]}" /bin/bash -c "$(cat "$BIN/m5-run")" m5-run "$@")"
+  else
+    env M5T_TARGET=m1 "${settings[@]}" /bin/bash "$BIN/m5-run" "$@"
+  fi
+}
+# probe: sets m5 to ready, stale (reachable, not set up for these tools) or offline, and why.
+probe() {
+  local want got
+  want=$(M5T_ACTION=setup-line M5T_TARGET=m5 /bin/bash "$BIN/m5-run")
+  if ! got=$(/usr/bin/perl -e 'alarm shift; exec @ARGV' 10 "${SSH[@]}" "$HOST" 'cat allrice-test/SETUP 2>/dev/null; true' 2>/dev/null); then
+    m5=offline why="M5 不在线（ssh $HOST 10 秒内连不上）"
+  elif [ "$got" != "$want" ]; then
+    m5=stale why="M5 的测试环境没配好或版本不符（在 M1 上跑 m5-test setup）"
+  else
+    m5=ready why=""
+  fi
+}
+
+cmd=test
+case "${1:-}" in
+  status | setup | codex) cmd=$1; shift ;;
+  "" | -h | --help) sed -n 2,25p "$0"; exit 2 ;;
+esac
+if [ "$cmd" = status ]; then
+  probe
+  if [ "$m5" = offline ]; then echo "M5: $why"; else on_host m5 M5T_ACTION=status M5T_SLOTS="${M5_TEST_SLOTS:-3}" </dev/null || true; fi
+  on_host m1 M5T_ACTION=status M5T_SLOTS="${M5_TEST_M1_SLOTS:-2}" </dev/null
+  exit 0
+fi
+if [ "$cmd" = setup ]; then
+  probe
+  [ "$m5" != offline ] || die "$why"
+  on_host m5 M5T_ACTION=setup M5T_SLOTS="${M5_TEST_SLOTS:-3}" </dev/null
+  exit
+fi
+
+ref="" on=auto wait=900 build="pnpm --filter @allrice/contracts build" out="" full=0 test_env=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --) shift; break ;;
+    --db) test_env+="ALLRICE_RUN_DB_INTEGRATION=1"$'\n' ;;
+    --browser) test_env+="ALLRICE_RUN_BROWSER_INTEGRATION=1"$'\n' ;;
+    -e)
+      [[ "${2:-}" =~ ^ALLRICE_[A-Z0-9_]+= ]] || die "-e takes ALLRICE_<NAME>=<value>"
+      case "${2%%=*}" in *KEY* | *TOKEN* | *SECRET* | *PASSWORD* | *CREDENTIAL*) die "-e must not carry credentials: ${2%%=*}" ;; esac
+      case "$2" in *$'\n'*) die "-e value must be one line" ;; esac
+      test_env+="$2"$'\n'; shift ;;
+    --build) build=${2:?--build takes a command}; shift ;;
+    --no-build) build="" ;;
+    --wait) [[ "${2:-}" =~ ^[0-9]+$ ]] || die "--wait takes seconds"; wait=$2; shift ;;
+    --on) case "${2:-}" in auto | m5 | m1) on=$2 ;; *) die "--on takes auto, m5 or m1" ;; esac; shift ;;
+    -o) [ "$cmd" = codex ] || die "-o is for m5-test codex"; out=${2:?-o takes a file}; shift ;;
+    --full-access) [ "$cmd" = codex ] || die "--full-access is for m5-test codex"; full=1 ;;
+    -*) die "unknown option $1 (vitest arguments go after --)" ;;
+    *) [ -z "$ref" ] || die "one commit only (vitest arguments go after --): $1"; ref=$1 ;;
+  esac
+  shift
+done
+vargs=("$@")
+if [ "$cmd" = codex ]; then
+  [ -n "$out" ] || die "codex needs -o <result.md>"
+  mkdir -p "$(dirname "$out")"
+  prompt=$(mktemp "${TMPDIR:-/tmp}/m5-test-prompt.XXXXXX"); trap 'rm -f "$prompt"' EXIT
+  if [ $# -gt 0 ] && [ "$*" != - ]; then printf '%s\n' "$*" >"$prompt"
+  elif [ -t 0 ]; then die "codex needs a prompt after -- or on stdin"
+  else cat >"$prompt"; fi
+  [ -s "$prompt" ] || die "empty prompt"
+  vargs=()
+fi
+
+# The commit, from the current worktree (or the main repository), must be in $REPO.
+dir=$(git rev-parse --show-toplevel 2>/dev/null) || dir=$REPO
+sha=$(git -C "$dir" rev-parse -q --verify "${ref:-HEAD}^{commit}") || die "not a commit: ${ref:-HEAD}"
+git -C "$REPO" cat-file -e "$sha^{commit}" 2>/dev/null || die "${sha:0:8} is not in $REPO: commit it in a worktree of $REPO"
+if [ "$sha" = "$(git -C "$dir" rev-parse HEAD)" ] && [ -n "$(git -C "$dir" status --porcelain --untracked-files=no)" ]; then
+  echo "m5-test: uncommitted changes in $dir are not part of this run (it tests ${sha:0:8})"
+fi
+
+target=m1
+if [ "$on" != m1 ]; then
+  probe
+  # One ref per commit (M5 keeps the newest 100, so later pushes send only what is new). A
+  # second try covers two runs racing to create the same ref.
+  push() { GIT_SSH_COMMAND=$(quote "${SSH[@]}") git -C "$REPO" push -q "$HOST:allrice-test/repo.git" "$sha:refs/m5-test/$sha"; }
+  if [ "$m5" = ready ] && ! push && ! { sleep 1 && push; }; then
+    m5=offline why="推送提交到 M5 失败"
+  fi
+  if [ "$m5" = ready ]; then target=m5
+  elif [ "$on" = m5 ]; then echo "m5-test: $why" >&2; exit 4
+  else echo "m5-test: ${why}，改在 M1 跑（--maxWorkers=2）"; fi
+fi
+
+mkdir -p "$LOGS"
+find "$LOGS" -type f -mtime +14 -delete 2>/dev/null || true
+run=$(date +%Y%m%d-%H%M%S)-${sha:0:8}-$$
+log=$LOGS/$run.log
+if [ "$target" = m5 ]; then slots=${M5_TEST_SLOTS:-3} workers=${M5_TEST_WORKERS:-6}; else slots=${M5_TEST_M1_SLOTS:-2} workers=2; fi
+set +e
+on_host "$target" M5T_ACTION="$cmd" M5T_SHA="$sha" M5T_RUN="$run" M5T_CALLER="$(basename "$dir")" \
+  M5T_SLOTS="$slots" M5T_WAIT="$wait" M5T_WORKERS="$workers" M5T_BUILD="$build" M5T_ENV="$test_env" M5T_FULL_ACCESS="$full" -- \
+  ${vargs[@]+"${vargs[@]}"} <"${prompt:-/dev/null}" 2>&1 | tee "$log"
+rc=${PIPESTATUS[0]}
+set -e
+if [ "$target" = m5 ] && ! grep -q '^m5-test: done on ' "$log" && [ "$rc" = 255 ]; then
+  echo "m5-test: the connection to M5 broke during the run (asleep or offline?). The run there stops" \
+    "the next time it prints; run m5-test again (it falls back to M1 while M5 stays offline)." | tee -a "$log" >&2
+fi
+
+if [ "$cmd" = codex ]; then
+  patch=${out%.md}.patch
+  for f in "$out:md" "$patch:patch"; do
+    if [ "$target" = m5 ]; then
+      "${SSH[@]}" "$HOST" "cat allrice-test/results/$run.${f##*:}" >"${f%:*}" 2>/dev/null </dev/null || rm -f "${f%:*}"
+    else
+      cp "$HOME/allrice-worktrees/.m5-test-m1/results/$run.${f##*:}" "${f%:*}" 2>/dev/null || true
+    fi
+  done
+  [ -s "$patch" ] || { rm -f "$patch"; patch="(no changes)"; }
+  [ -f "$out" ] && echo "m5-test: result $out, patch $patch" || echo "m5-test: no result from Codex"
+fi
+echo "m5-test: log $log"
+exit "$rc"

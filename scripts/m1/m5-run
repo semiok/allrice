@@ -1,0 +1,280 @@
+# The half of m5-test that runs on the test machine: M5, or M1 when M5 is offline (rules:
+# AGENTS.md §9 at the repository root). m5-test hands this file to `bash -c` over ssh, or
+# locally on M1, so both halves always come from the same installed tools; nothing of it is
+# installed on M5. Settings arrive as M5T_* variables; the arguments are vitest's (test).
+#
+#   M5T_ACTION    test | codex | status | setup | setup-line
+#   M5T_TARGET    m5 | m1
+#   M5T_SHA M5T_RUN M5T_CALLER M5T_SLOTS M5T_WAIT M5T_WORKERS M5T_BUILD M5T_ENV M5T_FULL_ACCESS
+#   M5T_CODEX     only for the unit tests (ssh does not pass it)
+#
+# The last line of a test or codex run is "m5-test: done on <host> …, exit <code>"; m5-test
+# looks for it to tell a finished run from a lost connection.
+set -euo pipefail
+exec 2>&1
+NODE_VERSION=22.23.2 PNPM_VERSION=10.33.3 PG_VERSION=17.11 PGVECTOR_VERSION=0.8.7 PG_PORT=54329
+NODE_SHA256=61130f394c1630d211dd50aecc4353d379480f36d3ac913cd85dbba1aed585c6     # node-v…-darwin-arm64.tar.gz
+PG_SHA256=dd27f2b3c59e73ed14aa3324901242bf69a032a6347805f274e6260322d42979       # same as Homebrew's formula
+PGVECTOR_SHA256=cac0b10c360f05b2d521200105ba3697e773d4cd3731f5a915a7e37ebe0bea85 # same as Homebrew's formula
+SETUP_LINE="node=$NODE_VERSION pnpm=$PNPM_VERSION postgresql=$PG_VERSION pgvector=$PGVECTOR_VERSION port=$PG_PORT"
+action=${M5T_ACTION:?} target=${M5T_TARGET:?}
+NODE_BIN=$HOME/.local/opt/node-$NODE_VERSION/bin
+if [ "$target" = m5 ]; then
+  HOST_NAME=M5 BASE=$HOME/allrice-test; REPO_DIR=$BASE/repo.git
+  PG_DIST=$BASE/dist/postgresql-$PG_VERSION-pgvector-$PGVECTOR_VERSION; PG_BIN=$PG_DIST/bin; PG_DATA=$BASE/pg17
+  # The test fixtures accept only M1's database and CI's; M5 uses CI's (same port, role, database).
+  DB_URL=postgres://allrice:allrice@127.0.0.1:$PG_PORT/allrice
+  CODEX=${M5T_CODEX:-/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex} # the Codex app's CLI
+  STORE=(--store-dir "$BASE/pnpm-store")
+  # Writes stay in the worktree and temp dirs (M5 is the user's own Mac); the network is on
+  # so tests reach the loopback Postgres. Chrome cannot start in this sandbox (10-26), so a
+  # pass that runs browser tests asks for full access.
+  SANDBOX=(-s workspace-write -c sandbox_workspace_write.network_access=true)
+  [ "${M5T_FULL_ACCESS:-}" != 1 ] || SANDBOX=(-s danger-full-access)
+else
+  HOST_NAME=M1 BASE=$HOME/allrice-worktrees/.m5-test-m1; REPO_DIR=$HOME/allrice-repo
+  PG_BIN=/opt/homebrew/opt/postgresql@17/bin; DB_URL=postgres://a123@127.0.0.1:5432/allrice_b2
+  CODEX=$HOME/.local/bin/codex; STORE=()
+  SANDBOX=(-s danger-full-access) # AGENTS.md §9: workspace-write cannot reach Postgres on M1
+fi
+SEARCH_PATH=$NODE_BIN:$PG_BIN:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+# macOS reaches the temp directory through a symlink (/var -> /private/var); CI's has none,
+# and tests that compare realpath() with the path they made fail only here.
+TEMP_DIR=$(cd "${TMPDIR:-/tmp}" && pwd -P)
+TEST_ENV=()
+while IFS= read -r kv; do [ -z "$kv" ] || TEST_ENV+=("$kv"); done <<<"${M5T_ENV:-}"
+
+say() { echo "[m5-test $HOST_NAME] $*"; }
+# clean <command…>: run with only the variables a test needs, never the caller's.
+clean() {
+  env -i HOME="$HOME" USER="$(id -un)" LOGNAME="$(id -un)" TMPDIR="$TEMP_DIR" LANG=en_US.UTF-8 \
+    PATH="$SEARCH_PATH" COREPACK_ENABLE_DOWNLOAD_PROMPT=0 ALLRICE_TEST_DATABASE_URL="$DB_URL" \
+    ${TEST_ENV[@]+"${TEST_ENV[@]}"} nice -n 10 "$@"
+}
+trylock() { # <fd>: exit 0 = this process now holds the flock on the file open at <fd>
+  /usr/bin/python3 -c 'import fcntl,sys
+try: fcntl.flock(int(sys.argv[1]),fcntl.LOCK_EX|fcntl.LOCK_NB)
+except BlockingIOError: sys.exit(1)' "$1"
+}
+held() { # <file>: exit 0 when someone holds its lock
+  /usr/bin/python3 -c 'import fcntl,sys
+f=open(sys.argv[1],"a")
+try: fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)
+except BlockingIOError: sys.exit(0)
+sys.exit(1)' "$1"
+}
+owners() {
+  local n busy=0
+  for n in $(seq 1 "${M5T_SLOTS:-3}"); do
+    if [ -f "$BASE/locks/slot-$n.lock" ] && held "$BASE/locks/slot-$n.lock"; then
+      busy=$((busy + 1)); echo "  slot $n: $(cat "$BASE/locks/slot-$n.owner" 2>/dev/null || echo '(owner unknown)')"
+    fi
+  done
+  echo "  $busy of ${M5T_SLOTS:-3} slots busy"
+}
+
+# take_slot: hold a free slot's lock on fd 9 for the rest of the run, waiting up to
+# M5T_WAIT seconds. Every child inherits fd 9, so the slot stays taken until the last of
+# them exits. The slot's worktree is ours alone while we hold it.
+take_slot() {
+  local deadline=$(($(date +%s) + ${M5T_WAIT:-900})) said=0 n
+  mkdir -p "$BASE/locks"
+  while :; do
+    for n in $(seq 1 "${M5T_SLOTS:-3}"); do
+      exec 9>>"$BASE/locks/slot-$n.lock"
+      if trylock 9; then
+        slot=$n
+        printf '%s %s by %s since %s (%s)\n' "$M5T_RUN" "${M5T_SHA:0:8}" "${M5T_CALLER:-?}" "$(date +%H:%M)" "$action" >"$BASE/locks/slot-$n.owner"
+        return 0
+      fi
+      exec 9>&-
+    done
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      echo "m5-test: every $HOST_NAME test slot is busy; try later or pass a longer --wait:"; owners; exit 3
+    fi
+    [ $said = 1 ] || { say "every test slot is busy; waiting up to ${M5T_WAIT:-900}s:"; owners; said=1; }
+    sleep 2
+  done
+}
+
+# ensure_pg and checkout run as `f || …`, where bash ignores set -e: every step is chained.
+ensure_pg() { # M5 only: start the test cluster when it is down (after a reboot)
+  [ "$target" = m5 ] || return 0
+  "$PG_BIN/pg_ctl" -D "$PG_DATA" status >/dev/null 2>&1 && return 0
+  local ok=0
+  exec 8>>"$BASE/locks/postgres.lock"
+  /usr/bin/python3 -c 'import fcntl; fcntl.flock(8, fcntl.LOCK_EX)' || ok=$?
+  if [ $ok = 0 ] && ! "$PG_BIN/pg_ctl" -D "$PG_DATA" status >/dev/null 2>&1; then
+    say "starting the test Postgres on 127.0.0.1:$PG_PORT"
+    # With every other descriptor closed: the server must not hold a slot or this lock.
+    env -i HOME="$HOME" PATH="$SEARCH_PATH" LANG=en_US.UTF-8 /usr/bin/python3 -c \
+      'import subprocess,sys; sys.exit(subprocess.call(sys.argv[1:], close_fds=True))' \
+      "$PG_BIN/pg_ctl" -D "$PG_DATA" -l "$BASE/postgres.log" -w -t 60 start </dev/null >/dev/null || ok=$?
+  fi
+  exec 8>&-
+  return $ok
+}
+
+checkout() { # the slot's worktree, at M5T_SHA; node_modules stay for a faster install
+  wt=$BASE/slots/slot-$slot
+  mkdir -p "$BASE/slots" || return
+  if git -C "$wt" rev-parse -q --verify HEAD >/dev/null 2>&1 && [ "$(git -C "$wt" rev-parse --git-common-dir 2>/dev/null)" -ef "$REPO_DIR" ]; then
+    git -C "$wt" checkout -q --detach --force "$M5T_SHA" && git -C "$wt" clean -qffdx -e node_modules
+  else
+    rm -rf -- "$wt" && git -C "$REPO_DIR" worktree add -f -q --detach "$wt" "$M5T_SHA" # -f: registered, but deleted
+  fi
+}
+
+times=""
+phase() { # <name> <command…>: run in the worktree, record its duration
+  local name=$1 t0 rc=0; shift
+  t0=$(date +%s); say "$name"
+  (cd "$wt" && clean "$@") || rc=$?
+  times="$times, $name $(($(date +%s) - t0))s"
+  return $rc
+}
+prepare() { # install and build; prints why when one fails
+  phase install pnpm install --frozen-lockfile --prefer-offline ${STORE[@]+"${STORE[@]}"} || { rc=$?; finish "install failed"; }
+  [ -z "${M5T_BUILD:-}" ] || phase build /bin/bash -c "$M5T_BUILD" || { rc=$?; finish "build failed"; }
+}
+finish() { # [why]: the closing line m5-test looks for
+  echo "m5-test: done on $HOST_NAME (${M5T_SHA:0:8}${slot:+, slot $slot}${times}${1:+; $1}), exit $rc"
+  exit "$rc"
+}
+
+vitest_args() { # replace any worker count with one no larger than M5T_WORKERS
+  local want="" cap=${M5T_WORKERS:-2}
+  args=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --maxWorkers=* | --max-workers=*) want=${1#*=} ;;
+      --maxWorkers | --max-workers) want=${2:-}; shift ;;
+      *) args+=("$1") ;;
+    esac
+    shift || true
+  done
+  if [[ "$want" =~ ^[1-9][0-9]*$ ]] && [ "$want" -le "$cap" ]; then cap=$want; fi
+  args+=("--maxWorkers=$cap")
+}
+
+setup() { # M5 only, idempotent: toolchain, test cluster and bare repository under ~/allrice-test
+  [ "$target" = m5 ] || { echo "m5-test: setup is for M5 only"; exit 2; }
+  local n src=$BASE/src ncpu; ncpu=$(sysctl -n hw.ncpu)
+  mkdir -p "$BASE/locks" "$src" "$BASE/run" "$BASE/results" "$HOME/.local/opt"
+  for n in $(seq 1 "${M5T_SLOTS:-3}"); do # no test may run meanwhile; held until setup exits
+    eval "exec $((10 + n))>>\"\$BASE/locks/slot-$n.lock\""
+    trylock $((10 + n)) || { echo "m5-test: tests are running on M5; run setup later:"; owners; exit 3; }
+    echo "m5-test setup since $(date +%H:%M)" >"$BASE/locks/slot-$n.owner"
+  done
+  fetch() { # <url> <sha256> <file>
+    [ -f "$3" ] && [ "$(shasum -a 256 "$3" | cut -d' ' -f1)" = "$2" ] && return 0
+    curl -fsSL --retry 2 -o "$3.part" "$1"
+    [ "$(shasum -a 256 "$3.part" | cut -d' ' -f1)" = "$2" ] || { rm -f "$3.part"; echo "m5-test: checksum mismatch for $1"; exit 4; }
+    mv "$3.part" "$3"
+  }
+  if [ "$("$NODE_BIN/node" -v 2>/dev/null)" != "v$NODE_VERSION" ]; then
+    say "installing Node $NODE_VERSION into ~/.local/opt"
+    fetch "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-darwin-arm64.tar.gz" "$NODE_SHA256" "$src/node.tar.gz"
+    rm -rf "$src/node" && mkdir "$src/node" && tar -xzf "$src/node.tar.gz" -C "$src/node" --strip-components 1
+    rm -rf "${NODE_BIN%/bin}" && mv "$src/node" "${NODE_BIN%/bin}"
+  fi
+  [ -e "$NODE_BIN/pnpm" ] || PATH=$NODE_BIN:$PATH corepack enable pnpm
+  (cd "$BASE" && PATH=$NODE_BIN:$PATH COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack install -g "pnpm@$PNPM_VERSION" >/dev/null)
+  [ "$(cd "$BASE" && PATH=$NODE_BIN:$PATH pnpm -v)" = "$PNPM_VERSION" ] || { echo "m5-test: pnpm is not $PNPM_VERSION"; exit 4; }
+
+  if [ ! -x "$PG_BIN/postgres" ] || [ ! -f "$PG_DIST/share/extension/vector.control" ]; then
+    say "building PostgreSQL $PG_VERSION and pgvector $PGVECTOR_VERSION into $PG_DIST (a few minutes)"
+    fetch "https://ftp.postgresql.org/pub/source/v$PG_VERSION/postgresql-$PG_VERSION.tar.bz2" "$PG_SHA256" "$src/postgresql.tar.bz2"
+    fetch "https://github.com/pgvector/pgvector/archive/refs/tags/v$PGVECTOR_VERSION.tar.gz" "$PGVECTOR_SHA256" "$src/pgvector.tar.gz"
+    rm -rf "$src/postgresql" "$src/pgvector" "$PG_DIST" && mkdir "$src/postgresql" "$src/pgvector"
+    tar -xjf "$src/postgresql.tar.bz2" -C "$src/postgresql" --strip-components 1
+    tar -xzf "$src/pgvector.tar.gz" -C "$src/pgvector" --strip-components 1
+    (cd "$src/postgresql" && ./configure --prefix="$PG_DIST" --without-icu --without-readline >"$src/configure.log" &&
+      make -j"$ncpu" world-bin >"$src/make.log" && make install-world-bin >>"$src/make.log") ||
+      { echo "m5-test: building PostgreSQL failed; see $src/configure.log and $src/make.log"; exit 4; }
+    make -C "$src/pgvector" PG_CONFIG="$PG_BIN/pg_config" >>"$src/make.log" &&
+      make -C "$src/pgvector" PG_CONFIG="$PG_BIN/pg_config" install >>"$src/make.log" ||
+      { echo "m5-test: building pgvector failed; see $src/make.log"; exit 4; }
+  fi
+  if [ -f "$PG_DATA/postmaster.pid" ] && ! grep -qF "$PG_BIN/postgres" "$PG_DATA/postmaster.opts" 2>/dev/null; then
+    say "restarting the test Postgres on the new build"
+    "$(sed -n '1s/ .*//p' "$PG_DATA/postmaster.opts" | sed 's/postgres$/pg_ctl/')" -D "$PG_DATA" -m fast -w stop >/dev/null
+  fi
+  if [ ! -f "$PG_DATA/PG_VERSION" ]; then
+    say "creating the test cluster $PG_DATA (127.0.0.1:$PG_PORT only)"
+    "$PG_BIN/initdb" -D "$PG_DATA" -U allrice -A trust -E UTF8 --locale=en_US.UTF-8 >"$src/initdb.log"
+    cat >>"$PG_DATA/postgresql.conf" <<EOF
+
+# m5-test: AllRice database integration tests only (see scripts/m1/m5-run)
+listen_addresses = '127.0.0.1'
+port = $PG_PORT
+unix_socket_directories = '$BASE/run'
+max_connections = 300
+max_locks_per_transaction = 1024
+shared_buffers = 1GB
+synchronous_commit = off
+EOF
+  fi
+  ensure_pg
+  if ! "$PG_BIN/psql" "postgres://allrice@127.0.0.1:$PG_PORT/postgres" -XAtc "select 1 from pg_database where datname='allrice'" | grep -q 1; then
+    "$PG_BIN/createdb" -h 127.0.0.1 -p "$PG_PORT" -U allrice allrice
+  fi
+  "$PG_BIN/psql" "$DB_URL" -Xq -v ON_ERROR_STOP=1 -c 'create extension if not exists vector' -c 'create extension if not exists pg_trgm'
+  [ -d "$REPO_DIR" ] || git init -q --bare "$REPO_DIR"
+  echo "$SETUP_LINE" >"$BASE/SETUP"
+  say "ready: $SETUP_LINE"
+  status
+}
+
+status() {
+  local line; line=$(cat "$BASE/SETUP" 2>/dev/null || echo "not set up")
+  echo "$HOST_NAME: $([ "$line" = "$SETUP_LINE" ] || [ "$target" = m1 ] && echo ready || echo "needs m5-test setup ($line)")"
+  if "$PG_BIN/pg_isready" -q -d "$DB_URL" 2>/dev/null; then echo "  postgres: up ($DB_URL)"; else echo "  postgres: down ($DB_URL)"; fi
+  [ ! -d "$BASE/locks" ] || owners
+  echo "  load: $(sysctl -n vm.loadavg 2>/dev/null || true) on $(sysctl -n hw.ncpu 2>/dev/null || true) cores"
+  if [ -x "$CODEX" ]; then echo "  codex: $("$CODEX" --version 2>/dev/null | head -1), $("$CODEX" login status 2>&1 | head -1)"; else echo "  codex: not found at $CODEX"; fi
+}
+
+case "$action" in
+  setup-line) echo "$SETUP_LINE"; exit 0 ;;
+  setup) setup; exit 0 ;;
+  status) status; exit 0 ;;
+  test | codex) ;;
+  *) echo "m5-test: unknown action $action"; exit 2 ;;
+esac
+
+rc=0 slot=""
+if [ "$action" = codex ]; then # read the prompt first: nothing after this may take stdin
+  mkdir -p "$BASE/results"; find "$BASE/results" -type f -mtime +7 -delete 2>/dev/null || true
+  prompt=$BASE/results/$M5T_RUN.prompt; cat >"$prompt"
+fi
+if [ "$target" = m5 ] && [ "$(cat "$BASE/SETUP" 2>/dev/null)" != "$SETUP_LINE" ]; then
+  echo "m5-test: M5 is not set up for this version of the tools (run: m5-test setup)"; exit 86
+fi
+exec </dev/null
+take_slot
+ensure_pg || { rc=$?; finish "the test Postgres did not start; see $BASE/postgres.log"; }
+checkout || { rc=$?; finish "could not check out ${M5T_SHA:0:8}"; }
+if [ "$target" = m5 ]; then # keep the newest 100 pushed commits
+  git -C "$REPO_DIR" for-each-ref --sort=-creatordate --format='%(refname)' refs/m5-test | tail -n +101 |
+    while read -r ref; do git -C "$REPO_DIR" update-ref -d "$ref"; done
+fi
+
+if [ "$action" = test ]; then
+  prepare
+  vitest_args "$@"
+  say "vitest gets ${args[$((${#args[@]} - 1))]}"
+  phase vitest pnpm exec vitest run "${args[@]}" || rc=$?
+  finish
+fi
+
+prepare
+# No login shell: the user's profile would put another Node and psql first on PATH.
+phase codex "$CODEX" exec -C "$wt" -m gpt-6-astra -c model_reasoning_effort=max -c allow_login_shell=false \
+  "${SANDBOX[@]}" -o "$BASE/results/$M5T_RUN.md" - <"$prompt" || rc=$?
+# Everything Codex changed since the commit, new files included (as intent-to-add).
+if ! { git -C "$wt" add -N . && git -C "$wt" diff --binary "$M5T_SHA" >"$BASE/results/$M5T_RUN.patch"; }; then
+  [ "$rc" != 0 ] || rc=5
+  finish "could not collect the patch"
+fi
+finish
