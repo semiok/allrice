@@ -269,6 +269,9 @@ try {
       active: true,
     },
   ];
+  // Assistants are off until the member saves them on (MET-210).
+  await db`insert into allrice_member_work_automation(organization_id,workspace_id,user_id,revision,settings)
+    values(${org},${workspace},${user},1,${db.json({ cloud: true, computer: true, assistants: true })})`;
   const employee = await ensureDefaultEmployee(f.context, workspace);
   const [version] =
     await db`select provider_snapshot,employee_id from allrice_employee_versions where id=${employee.employeeVersionId}`;

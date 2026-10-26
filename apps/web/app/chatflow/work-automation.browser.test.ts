@@ -185,6 +185,14 @@ suite('member work settings: real browser, route and PostgreSQL', () => {
           .getByRole('switch', { name: '电脑自动工作' })
           .getAttribute('aria-checked'),
       ).toBe('false');
+      // Turning assistants on is the member's own choice and survives a reload.
+      await assistants.click();
+      await page
+        .getByRole('switch', { name: '自动安排助手', checked: true })
+        .waitFor();
+      await page.reload();
+      await assistants.waitFor();
+      expect(await assistants.getAttribute('aria-checked')).toBe('true');
       const before = gets;
       await page.clock.install();
       await page.clock.fastForward(30000);

@@ -23,11 +23,12 @@ export async function readWorkAutomation(
 ) {
   const [schema] =
     await tx`select to_regclass(format('%I.allrice_member_work_automation',current_schema())) is not null as available`;
+  // Before the table exists, confirm each step; assistants follow the default.
   if (!schema?.available)
     return {
       available: false,
       revision: 0,
-      settings: { cloud: false, computer: false, assistants: false },
+      settings: { ...defaultWorkAutomation, cloud: false, computer: false },
     };
   // Read paths skip it: they only display the current settings.
   if (lock)

@@ -24,6 +24,7 @@ import {
 } from '../../../packages/database/src/employees/employee-config.ts';
 import { runtimePolicyDigest } from '../../../packages/database/src/runtime-policy.ts';
 import { newEmployeeNativeRootOrigin } from '../../../packages/database/src/conversation/native-root-origin.ts';
+import { updateWorkAutomation } from '../../../packages/database/src/work-automation.ts';
 const defaultControls = (): RuntimePolicyControls => ({
   version: 1,
   enabled: true,
@@ -262,6 +263,13 @@ export async function createFinalReferenceAuthorityFixture(
       await tx`insert into allrice_runtime_policy_controls(organization_id,workspace_id,version,controls)
     values(${org},${workspace},${controls.version},${tx.json(controls)})`;
   });
+  // Assistants are off until saved on; this fixture's member turned them on.
+  await updateWorkAutomation(
+    base.context,
+    workspace,
+    { expectedRevision: 0, capability: 'assistants', enabled: true },
+    db,
+  );
   const runtime = createAssistantRuntime({
     database: db,
     authorize: assertAssistantAuthority,
