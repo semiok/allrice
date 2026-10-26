@@ -14,7 +14,8 @@
 # 2. Pre-stop check with the candidate: scripts/dev-release/verify-native-retention.mjs.
 #    Anything not covered aborts before anything stops.
 # 3. Under the deploy lock: refuse a database with migrations the candidate does not know
-#    (or with none at all);
+#    (or with none at all), or with journals above contract 1 for a candidate that
+#    predates the journal contract (a rollback checks both before anything stops);
 #    stop Web and Worker and wait until launchd has dropped both jobs, their processes
 #    have exited and their ports are closed; when the candidate has migrations not yet
 #    applied (or with --force-snapshot), snapshot the database, the state directories,
@@ -172,6 +173,9 @@ restore() {
   cp -p "$INFLIGHT/web.plist" "$WEB_PLIST" && cp -p "$INFLIGHT/worker.plist" "$WORKER_PLIST" \
     && cmp -s "$INFLIGHT/web.plist" "$WEB_PLIST" && cmp -s "$INFLIGHT/worker.plist" "$WORKER_PLIST" \
     || { say "could not put back the saved launchd files from $INFLIGHT"; return 1; }
+  # The new Worker may have raised the journal contract: never start a version that cannot read it.
+  local why rc=0; why=$(check_contract_known "$(release_of)") || rc=$?
+  [ "$rc" != 2 ] || { say "not starting ${prev:0:8}: $why. Deploy a version that knows the contract (move $INFLIGHT aside first)"; return 1; }
   start_both_on "$prev" || { say "previous version ${prev:0:8} did NOT come back healthy (migrations applied by the new version stay)"; return 1; }
   say "previous version ${prev:0:8} is healthy again"
 }
@@ -228,12 +232,16 @@ status() {
   echo "running sha:        web $(ready_sha "http://127.0.0.1:$(web_port)/api/health/ready" | cut -c1-8)  worker $(ready_sha "http://127.0.0.1:$(worker_port)/health/ready" | cut -c1-8)  (empty = not ready)"
   echo "native artifact:    $(penv "$WORKER_PLIST" ALLRICE_DSH_NATIVE_ARTIFACT_ID) (configured)"
   echo "tools version:      $(cat "$BIN/TOOLS_VERSION" 2>/dev/null || echo "unknown ($BIN)")"
-  local hw prev why
-  hw=$(dev_sql "select coalesce(value->>'highWater', value::text) from allrice_runtime_metadata where key='dsh-journal-contract'" 2>/dev/null) || hw="unknown (database not readable)"
-  echo "journal contract:   high water ${hw:-not written yet}"
+  local row hw prev why
+  if ! row=$(contract_row 2>/dev/null); then hw="unknown (database not readable)"
+  elif [ -z "$row" ]; then hw="not written yet"; else hw=${row#row:}; fi
+  echo "journal contract:   high water $hw"
   if ! prev=$(previous_release); then echo "rollback check:     no recorded previous release (roll back with --rollback <release-dir>)"
-  elif why=$(check_migrations_known "$prev"); then echo "rollback check:     $(basename "$prev") knows every applied migration (pre-stop check not run)"
-  else echo "rollback check:     $(basename "$prev") would be REFUSED: $why"; fi
+  elif ! why=$(check_migrations_known "$prev") || ! why=$(check_contract_known "$prev"); then
+    echo "rollback check:     $(basename "$prev") would be REFUSED: $why"
+  elif [ -f "$prev/packages/database/dist/native-journal-contract-store.js" ]; then
+    echo "rollback check:     $(basename "$prev") knows every applied migration and the journal contract (pre-stop check not run)"
+  else echo "rollback check:     $(basename "$prev") knows every applied migration; it predates the journal contract, fine while the journals are at contract 1 (pre-stop check not run)"; fi
   if [ -e "$INFLIGHT" ]; then
     if lock_held "$LOCK"; then echo "DEPLOY IN PROGRESS (phase '$(sed -n 1p "$INFLIGHT/state" 2>/dev/null)')"
     else echo "UNFINISHED DEPLOY (phase '$(sed -n 1p "$INFLIGHT/state" 2>/dev/null)'): run deploy-dev --release-manager --recover"; fi
@@ -296,6 +304,23 @@ check_migrations_known() { # release -> prints the pending names; prints unknown
   [ -z "$unknown" ] || { echo "$unknown" | head -5 | tr '\n' ' '; return 1; }
   printf '%s\n' "$diff" | sed -n 's/^pending //p'
 }
+# Journals written under a contract above 1 need a release that knows the high water
+# (MET-221 PR2b-1). An older one has no contract check of its own, so its pre-stop check
+# would pass while its Worker cannot read them. The marker is the built
+# packages/database/dist/native-journal-contract-store.js: renaming that module needs
+# this check changed in the same PR.
+contract_row() { # "row:<highWater>", "row:invalid <value>" when it is not a JSON number, nothing when there is no row
+  dev_sql "select 'row:' || $CONTRACT_HW from allrice_runtime_metadata where key='dsh-journal-contract'"
+}
+CONTRACT_HW="case when jsonb_typeof(value->'highWater') = 'number' then value->>'highWater' else 'invalid ' || value::text end"
+check_contract_known() { # release -> 0; prints why and exits 2 when it predates the contract reached, 1 when unreadable
+  local row hw
+  row=$(contract_row) || { echo "cannot read the journal contract high water"; return 1; }
+  hw=${row#row:}; [ -n "$row" ] || hw=1 # no row yet: every journal is contract 1
+  [[ "$hw" =~ ^[1-9][0-9]{0,8}$ ]] || { echo "unreadable journal contract row: ${hw:0:120}"; return 1; }
+  [ "$hw" -le 1 ] || [ -f "$1/packages/database/dist/native-journal-contract-store.js" ] \
+    || { echo "the journals reach contract $hw and $(basename "$1") predates the journal contract (no native-journal-contract-store.js)"; return 2; }
+}
 # With both services stopped and before db:prepare: snapshot when migrations are pending
 # (they may be one-way) or when forced.
 pre_migrate_snapshot() { # name pending forced
@@ -311,6 +336,13 @@ previous_release() { # the release deployed before the current one, when recorde
   [ -n "$prev" ] && [ "$(sed -n 2p "$STATE/.previous-release")" = "$(release_of)" ] && echo "$prev"
 }
 
+rollback_gate() { # target sha -> dies, before anything stops, when the target cannot run on this database
+  local why
+  why=$(check_migrations_known "$1") \
+    || die "cannot roll back to ${2:0:8}: the database has migrations it does not know or could not be checked: $why"
+  why=$(check_contract_known "$1") || die "cannot roll back to ${2:0:8}: $why"
+}
+
 rollback() { # [release-dir]
   local cur_rel cur_sha cur_art target="${1:-}"
   cur_rel=$(release_of); cur_sha=$(penv "$WORKER_PLIST" ALLRICE_RELEASE_SHA); cur_art=$(penv "$WORKER_PLIST" ALLRICE_DSH_NATIVE_ARTIFACT_ID)
@@ -322,13 +354,13 @@ rollback() { # [release-dir]
   [ "$target" != "$cur_rel" ] || die "Dev already runs $target"
   local facts sha art; facts=$(release_facts "$target") || die "no recorded SHA and artifact for $target"
   read -r sha art <<<"$facts"
-  local unknown; unknown=$(check_migrations_known "$target") \
-    || die "cannot roll back to ${sha:0:8}: the database has migrations it does not know or could not be checked: $unknown"
+  rollback_gate "$target" "$sha"
   mkdir -p "$STATE/deploy-logs"; BLOG="$STATE/deploy-logs/rollback-$(date +%Y%m%d-%H%M%S).log"
   say "checking that ${sha:0:8} covers the current native references"
   local why; why=$(precheck "$target" "$sha" "$art" "$BLOG") || die "$why. Dev untouched."
   take_lock || die "deploy lock is held; $("$BIN/deploy-lock" status)" 3
   [ "$(release_of)" = "$cur_rel" ] || die "the current release changed while checking; start again"
+  rollback_gate "$target" "$sha" # a deploy that ended meanwhile may have raised either
   say "rolling back to $(basename "$target") (${sha:0:8}); database migrations are not reverted"
   inflight_begin "$cur_sha"
   stop_both || die "services did not stop"
@@ -387,6 +419,8 @@ deploy() {
   local pending; pending=$(check_migrations_known "$rel") || {
     log_deploy kind failed phase migrations sha "$sha" reason "$pending" log "$BLOG"
     die "the database has migrations ${sha:0:8} does not know or could not be checked: $pending; build kept at $rel (Dev untouched)"; }
+  why=$(check_contract_known "$rel") || {
+    log_deploy kind failed phase contract sha "$sha" reason "$why" log "$BLOG"; die "$why; build kept at $rel (Dev untouched)"; }
   local down_at boot; down_at=$(date +%s); boot=$(worker_boot)
   inflight_begin "$cur_sha"
   say "stopping web and worker"
@@ -434,6 +468,6 @@ case "${1:-}" in
   --status) status ;;
   --rollback) need_rm; shift; rollback "${1:-}" ;;
   --recover) need_rm; recover ;;
-  -h|--help) sed -n 2,32p "$0" ;;
+  -h|--help) sed -n 2,33p "$0" ;;
   *) need_rm; deploy "$@" ;;
 esac
