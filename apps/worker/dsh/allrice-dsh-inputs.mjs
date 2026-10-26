@@ -120,13 +120,11 @@ export async function deliverDshInput(
     } catch {
       throw new TypeError('QUESTION_ANSWER_INVALID');
     }
+    // DSH keeps a skipped item as { id, selected: [] } (dsh-user-questions).
+    // It is an answer to the question, not a missing one.
     if (
       !answer ||
-      answer.answers.some(
-        (a) =>
-          (a.selected.length === 0 && !a.custom) ||
-          new Set(a.selected).size !== a.selected.length,
-      )
+      answer.answers.some((a) => new Set(a.selected).size !== a.selected.length)
     )
       throw new TypeError('QUESTION_ANSWER_REQUIRED');
     agent.session.append('allrice/input/request', {

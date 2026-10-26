@@ -23,9 +23,9 @@ function matchesQuestion(checkpoint: NativeQuestionCheckpoint, text: string) {
       new Set(answer.answers.map((a) => a.id)).size === answer.answers.length &&
       checkpoint.questions.every((q) => {
         const a = answer.answers.find((a) => a.id === q.id);
+        // An empty selection is DSH's skipped item, a valid answer.
         return (
           !!a &&
-          (a.selected.length > 0 || !!a.custom?.trim()) &&
           new Set(a.selected).size === a.selected.length &&
           (q.multiSelect ||
             (a.selected.length <= 1 && !(a.selected.length && a.custom))) &&
