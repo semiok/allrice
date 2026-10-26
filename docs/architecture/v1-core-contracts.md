@@ -96,11 +96,11 @@ credentials and runtime directories are forbidden.
 
 ## Implementation ownership
 
-| Issue  | Responsibility against this contract                                                                              |
-| ------ | ----------------------------------------------------------------------------------------------------------------- |
-| MET-41 | users, invitations, sessions, Membership, Settings scope, authorization middleware, PolicySnapshot and AuditEvent |
-| MET-42 | tenant repositories, files, object adapters, signed access, vector isolation, retention, backup/restore           |
-| MET-43 | persistent Job/lease/retry state machine, Run/RunEvent, Worker recovery and SSE replay endpoint                   |
-| MET-44 | Skill catalog/version/artifact/installation persistence, capability enforcement and Worker materialization        |
-| MET-45 | Employee/EmployeeVersion lifecycle mapped to frozen Run versions and audit                                        |
-| MET-47 | rolling-upgrade, recovery, end-to-end authorization and compatibility acceptance                                  |
+| Issue  | Responsibility against this contract                                                                                                   |
+| ------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| MET-41 | users, invitations (retired in MET-214), sessions, Membership, Settings scope, authorization middleware, PolicySnapshot and AuditEvent |
+| MET-42 | tenant repositories, files, object adapters, signed access, vector isolation, retention, backup/restore                                |
+| MET-43 | persistent Job/lease/retry state machine, Run/RunEvent, Worker recovery and SSE replay endpoint                                        |
+| MET-44 | Skill catalog/version/artifact/installation persistence, capability enforcement and Worker materialization                             |
+| MET-45 | Employee/EmployeeVersion lifecycle mapped to frozen Run versions and audit                                                             |
+| MET-47 | rolling-upgrade, recovery, end-to-end authorization and compatibility acceptance                                                       |

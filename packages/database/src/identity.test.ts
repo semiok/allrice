@@ -15,7 +15,7 @@ describe('identity secrets', () => {
     );
   });
 
-  it('hashes invitation and session tokens before persistence', () => {
+  it('hashes session tokens before persistence', () => {
     const token = 'a'.repeat(43);
     expect(hashOpaqueToken(token)).toMatch(/^[a-f0-9]{64}$/);
     expect(hashOpaqueToken(token)).not.toContain(token);

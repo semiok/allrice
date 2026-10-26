@@ -9,8 +9,6 @@ import {
 } from 'node:crypto';
 
 import {
-  AcceptInvitationInputSchema,
-  CreateInvitationInputSchema,
   EmailSchema,
   LoginInputSchema,
   PasswordSchema,
@@ -25,10 +23,7 @@ import {
 } from '@allrice/contracts';
 
 import { getDatabase } from './core/client.ts';
-import {
-  synchronizeTenantMembershipAccess,
-  lockTenantEmployeeWorkspaces,
-} from './tenant-employee-access.ts';
+import { synchronizeTenantMembershipAccess } from './tenant-employee-access.ts';
 
 const passwordParameters = { N: 16_384, r: 8, p: 1 } as const;
 const sessionLifetimeMs = 7 * 24 * 60 * 60 * 1000;
@@ -40,17 +35,6 @@ interface UserRow {
   display_name: string;
   password_hash: string;
   status: 'invited' | 'active' | 'disabled';
-}
-
-interface InvitationRow {
-  id: string;
-  organization_id: string;
-  workspace_id: string | null;
-  email: string;
-  role: Role;
-  expires_at: Date;
-  accepted_at: Date | null;
-  revoked_at: Date | null;
 }
 
 interface SessionRow {
@@ -77,7 +61,6 @@ export class IdentityError extends Error {
       | 'authentication_failed'
       | 'authorization_denied'
       | 'portal_account_mismatch'
-      | 'invitation_invalid'
       | 'tenant_context_invalid',
   ) {
     super(code);
@@ -169,182 +152,6 @@ async function recordAudit(input: {
   `;
 }
 
-export async function bootstrapOrganization(input: {
-  organizationSlug: string;
-  organizationName: string;
-  workspaceSlug: string;
-  workspaceName: string;
-  adminEmail: string;
-  expiresAt: string;
-}) {
-  const email = EmailSchema.parse(input.adminEmail);
-  const expiresAt = new Date(input.expiresAt);
-  if (Number.isNaN(expiresAt.getTime()) || expiresAt <= new Date()) {
-    throw new Error('expiresAt must be a future timestamp');
-  }
-  const token = makeOpaqueToken();
-  const sql = getDatabase();
-  const result = await sql.begin(async (transaction) => {
-    const organizations = await transaction<{ id: string }[]>`
-      insert into allrice_organizations (slug, name)
-      values (${input.organizationSlug}, ${input.organizationName})
-      on conflict (slug) do update set name = excluded.name
-      returning id
-    `;
-    const organization = organizations[0];
-    if (!organization) throw new Error('organization bootstrap failed');
-    const workspaces = await transaction<{ id: string }[]>`
-      insert into allrice_workspaces (organization_id, slug, name)
-      values (${organization.id}, ${input.workspaceSlug}, ${input.workspaceName})
-      on conflict (organization_id, slug) do update set name = excluded.name
-      returning id
-    `;
-    const workspace = workspaces[0];
-    if (!workspace) throw new Error('workspace bootstrap failed');
-    const invitations = await transaction<{ id: string }[]>`
-      insert into allrice_invitations (
-        organization_id, workspace_id, email, role, token_hash, expires_at
-      ) values (
-        ${organization.id}, null, ${email}, 'member',
-        ${hashOpaqueToken(token)}, ${expiresAt}
-      )
-      returning id
-    `;
-    const invitation = invitations[0];
-    if (!invitation) throw new Error('invitation bootstrap failed');
-    return {
-      organizationId: organization.id,
-      workspaceId: workspace.id,
-      invitationId: invitation.id,
-    };
-  });
-  return { ...result, token, expiresAt: expiresAt.toISOString() };
-}
-
-export async function createInvitation(
-  context: RequestContext,
-  input: unknown,
-) {
-  const invitation = CreateInvitationInputSchema.parse(input);
-  const actorId = context.actor.type === 'user' ? context.actor.id : null;
-  const admin = await isPlatformAdmin(context);
-  if (!actorId || !admin) {
-    await recordAudit({
-      organizationId: context.organizationId,
-      workspaceId: invitation.workspaceId,
-      actorId,
-      action: 'invitation.create',
-      resourceType: 'invitation',
-      resourceId: null,
-      decision: 'denied',
-      reason: 'platform_admin_required',
-      requestId: context.requestId,
-    });
-    throw new IdentityError('authorization_denied');
-  }
-  if (Date.parse(invitation.expiresAt) <= Date.now()) {
-    throw new IdentityError('invitation_invalid');
-  }
-  const sql = getDatabase();
-  if (invitation.workspaceId) {
-    const workspaces = await sql<{ id: string }[]>`
-      select id from allrice_workspaces
-      where id = ${invitation.workspaceId}
-        and organization_id = ${context.organizationId}
-        and archived_at is null
-    `;
-    if (!workspaces[0]) throw new IdentityError('tenant_context_invalid');
-  }
-  const token = makeOpaqueToken();
-  const rows = await sql<{ id: string }[]>`
-    insert into allrice_invitations (
-      organization_id, workspace_id, email, role, token_hash,
-      created_by, expires_at
-    ) values (
-      ${context.organizationId}, ${invitation.workspaceId},
-      ${invitation.email}, ${invitation.role === 'admin' ? 'member' : invitation.role}, ${hashOpaqueToken(token)},
-      ${actorId}, ${invitation.expiresAt}
-    )
-    returning id
-  `;
-  const row = rows[0];
-  if (!row) throw new Error('invitation creation failed');
-  await recordAudit({
-    organizationId: context.organizationId,
-    workspaceId: invitation.workspaceId,
-    actorId,
-    action: 'invitation.create',
-    resourceType: 'invitation',
-    resourceId: row.id,
-    decision: 'allowed',
-    reason: 'platform_admin',
-    requestId: context.requestId,
-  });
-  return { id: row.id, token, expiresAt: invitation.expiresAt };
-}
-
-export async function acceptInvitation(input: unknown) {
-  const accepted = AcceptInvitationInputSchema.parse(input);
-  const passwordHash = await hashPassword(accepted.password);
-  const sql = getDatabase();
-  return sql.begin(async (transaction) => {
-    const invitations = await transaction<InvitationRow[]>`
-      select id, organization_id, workspace_id, email, role, expires_at,
-             accepted_at, revoked_at
-      from allrice_invitations
-      where token_hash = ${hashOpaqueToken(accepted.token)}
-      for update
-    `;
-    const invitation = invitations[0];
-    if (
-      !invitation ||
-      invitation.accepted_at ||
-      invitation.revoked_at ||
-      invitation.expires_at <= new Date()
-    ) {
-      throw new IdentityError('invitation_invalid');
-    }
-    const existing = await transaction<UserRow[]>`
-      select id, email, display_name, password_hash, status
-      from allrice_users where email = ${invitation.email}
-    `;
-    let user = existing[0];
-    if (!user) {
-      const users = await transaction<UserRow[]>`
-        insert into allrice_users (email, display_name, password_hash, status)
-        values (${invitation.email}, ${accepted.displayName}, ${passwordHash}, 'active')
-        returning id, email, display_name, password_hash, status
-      `;
-      user = users[0];
-    }
-    if (!user || user.status === 'disabled') {
-      throw new IdentityError('invitation_invalid');
-    }
-    await lockTenantEmployeeWorkspaces(transaction, {
-      organizationId: invitation.organization_id,
-      workspaceId: invitation.workspace_id,
-    });
-    await transaction`
-      insert into allrice_memberships (
-        organization_id, workspace_id, user_id, role, active
-      ) values (
-        ${invitation.organization_id}, ${invitation.workspace_id},
-        ${user.id}, ${invitation.role === 'admin' ? 'member' : invitation.role}, true
-      )
-      on conflict (organization_id, workspace_id, user_id)
-      do update set role = excluded.role, active = true, updated_at = now()
-    `;
-    await synchronizeTenantMembershipAccess(transaction, {
-      organizationId: invitation.organization_id,
-      workspaceId: invitation.workspace_id,
-    });
-    await transaction`
-      update allrice_invitations set accepted_at = now() where id = ${invitation.id}
-    `;
-    return { id: user.id, email: user.email, displayName: user.display_name };
-  });
-}
-
 async function insertSession(sql: postgres.TransactionSql, userId: string) {
   const parsedUserId = UuidSchema.parse(userId);
   const token = makeOpaqueToken();
@@ -377,7 +184,7 @@ export async function createSession(userId: string) {
  *
  * The function is intentionally idempotent so a fresh development deployment
  * can materialize the platform and tenant boundaries from trusted server
- * configuration without invitation links.
+ * configuration. `pnpm identity:bootstrap` uses it for the first account.
  */
 export async function ensureBootstrapPortalPrincipal(
   input: {
@@ -388,12 +195,17 @@ export async function ensureBootstrapPortalPrincipal(
     email: string;
     displayName: string;
     role: Role;
+    /** Login for a newly created account only; an existing account is never changed. */
+    login?: { username: string; password: string };
   },
   sql = getDatabase(),
 ) {
   const email = EmailSchema.parse(input.email);
+  const username = input.login
+    ? UsernameSchema.parse(input.login.username)
+    : null;
   const passwordHash = await hashPassword(
-    randomBytes(32).toString('base64url'),
+    input.login?.password ?? randomBytes(32).toString('base64url'),
   );
   return sql.begin(async (transaction) => {
     await transaction`select pg_advisory_xact_lock(hashtext(${`portal-principal:${email}`}))`;
@@ -426,8 +238,8 @@ export async function ensureBootstrapPortalPrincipal(
     let user = existingUsers[0];
     if (!user) {
       const users = await transaction<UserRow[]>`
-        insert into allrice_users (email, display_name, password_hash, status)
-        values (${email}, ${input.displayName}, ${passwordHash}, 'active')
+        insert into allrice_users (email, username, display_name, password_hash, status)
+        values (${email}, ${username}, ${input.displayName}, ${passwordHash}, 'active')
         returning id, email, display_name, password_hash, status
       `;
       user = users[0];
@@ -468,6 +280,7 @@ export async function ensureBootstrapPortalPrincipal(
       },
       organizationId: organization.id,
       workspaceId: workspace.id,
+      created: existingUsers.length === 0,
     };
   });
 }

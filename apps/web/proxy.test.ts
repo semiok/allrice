@@ -303,20 +303,18 @@ describe('portal authentication response boundary', () => {
       ).status,
     ).toBe(401);
   });
-  it('lets invitation tokens authenticate account activation on the shared entry', () => {
+  it('keeps the retired invitation paths behind sign-in on the shared entry', () => {
     const host = 'allrice.bplabs.xyz';
-    for (const path of [
-      '/accept-invitation?token=invite',
-      '/api/v1/auth/invitations/accept',
-    ]) {
-      expect(
-        proxy(new NextRequest(`https://${host}${path}`, { headers: { host } }))
-          .status,
-      ).toBe(200);
-    }
+    const page = proxy(
+      new NextRequest(`https://${host}/accept-invitation?token=invite`, {
+        headers: { host },
+      }),
+    );
+    expect(new URL(page.headers.get('location')!).pathname).toBe('/login');
     expect(
       proxy(
-        new NextRequest(`https://${host}/api/v1/auth/invitations`, {
+        new NextRequest(`https://${host}/api/v1/auth/invitations/accept`, {
+          method: 'POST',
           headers: { host },
         }),
       ).status,
@@ -489,7 +487,6 @@ describe('legacy navigation compatibility', () => {
           '/chatflow?session=kept&employee=rice',
           '/runtime-console?view=activity',
           '/workspace/mcp?connectionId=kept',
-          '/accept-invitation?token=kept',
         ]) {
           const response = proxy(
             new NextRequest(`https://${host}${path}`, { headers: { host } }),
@@ -532,7 +529,7 @@ describe('legacy navigation compatibility', () => {
   });
 });
 
-it('drops credentials in legacy navigation but preserves invitation activation tokens', () => {
+it('drops credentials in legacy navigation', () => {
   const host = 'allrice-snow.bplabs.xyz';
   const response = proxy(
     new NextRequest(

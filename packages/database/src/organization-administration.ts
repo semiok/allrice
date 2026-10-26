@@ -37,7 +37,7 @@ export class OrganizationAdministrationError extends Error {
     super(code);
   }
 }
-function checkUsername(username: string) {
+export function checkUsername(username: string) {
   if (
     username ===
     (process.env.ALLRICE_PLATFORM_ADMIN_USER ?? 'admin').toLowerCase()

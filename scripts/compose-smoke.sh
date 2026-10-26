@@ -109,13 +109,15 @@ bootstrap_json="$(
     -e ALLRICE_BOOTSTRAP_WORKSPACE_SLUG=default \
     -e ALLRICE_BOOTSTRAP_WORKSPACE_NAME=Default \
     -e ALLRICE_BOOTSTRAP_ADMIN_EMAIL=phase0-smoke@example.com \
+    -e ALLRICE_BOOTSTRAP_ADMIN_NAME='Phase 0 Smoke' \
+    -e ALLRICE_BOOTSTRAP_ADMIN_USERNAME=phase0-smoke \
+    -e ALLRICE_BOOTSTRAP_ADMIN_PASSWORD=allrice-smoke-password \
     worker node packages/database/dist/bootstrap-identity.js
 )"
-bootstrap_token="$(printf '%s' "${bootstrap_json}" | jq -r '.token')"
 bootstrap_organization_id="$(printf '%s' "${bootstrap_json}" | jq -r '.organizationId')"
 bootstrap_workspace_id="$(printf '%s' "${bootstrap_json}" | jq -r '.workspaceId')"
-if [[ -z "${bootstrap_token}" || "${bootstrap_token}" == "null" ]]; then
-  echo "Identity bootstrap did not return a token" >&2
+if [[ "$(printf '%s' "${bootstrap_json}" | jq -r '.accountCreated')" != "true" ]]; then
+  echo "Identity bootstrap did not create the first account" >&2
   exit 1
 fi
 
@@ -129,8 +131,19 @@ if [[ -z "${second_workspace_id}" ]]; then
   exit 1
 fi
 
+# The product no longer creates workspace-scoped memberships, but historical
+# rows remain. Keep one (sharing the admin's password) for the HTTP check.
+scoped_user_id="$({
+  docker compose --project-name "${compose_project}" exec -T postgres \
+    psql -U "${POSTGRES_USER:-allrice}" -d "${POSTGRES_DB:-allrice}" -Atqc \
+    "with u as (insert into allrice_users (email, display_name, password_hash, status) select 'phase0-scoped@example.com', 'Phase 0 Scoped', password_hash, 'active' from allrice_users where email = 'phase0-smoke@example.com' returning id) insert into allrice_memberships (organization_id, workspace_id, user_id, role) select '${bootstrap_organization_id}', '${bootstrap_workspace_id}', id, 'member' from u returning user_id;"
+} | tr -d '\r')"
+if [[ -z "${scoped_user_id}" ]]; then
+  echo "Workspace-scoped member setup failed" >&2
+  exit 1
+fi
+
 identity_output="$(ALLRICE_SMOKE_BASE_URL="http://127.0.0.1:${proxy_port}" \
-ALLRICE_SMOKE_INVITATION_TOKEN="${bootstrap_token}" \
 ALLRICE_SMOKE_ORGANIZATION_ID="${bootstrap_organization_id}" \
 ALLRICE_SMOKE_WORKSPACE_ID="${bootstrap_workspace_id}" \
 ALLRICE_SMOKE_SECOND_WORKSPACE_ID="${second_workspace_id}" \

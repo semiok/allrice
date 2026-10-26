@@ -19,9 +19,9 @@ import {
   ensureBootstrapPortalPrincipal,
   createSession,
   authenticateSession,
-  createInvitation,
-  acceptInvitation,
+  hashPassword,
 } from './identity.ts';
+import { importOrganizationPeople } from './organization-administration.ts';
 import {
   savePlatformEmployeeDraft,
   compilePlatformEmployee,
@@ -37,6 +37,7 @@ import {
 import {
   recordManagedCloudEnvironment,
   synchronizeTenantEmployeeAccess,
+  synchronizeTenantMembershipAccess,
 } from './tenant-employee-access.ts';
 import {
   getEmployeeWorkspace,
@@ -142,22 +143,45 @@ suite(
         });
       }
       await change('assign');
-      async function join(
-        role: 'member' | 'viewer' = 'member',
-        workspaceId: string | null = tenant.workspaceId,
-      ) {
-        await authorizeFixturePlatformAdministrator(fdb.db, tenant.user.id);
-        const invite = await createInvitation(tenant.context, {
-          workspaceId,
-          role,
-          email: randomUUID() + '@example.test',
-          expiresAt: new Date(Date.now() + 3600000).toISOString(),
-        });
-        const user = await acceptInvitation({
-          token: invite.token,
-          displayName: 'New ordinary member',
-          password: randomUUID(),
-        });
+      // New accounts come from the organization people import (company-wide
+      // members). Viewer and workspace-scoped memberships now exist only as
+      // historical rows, so those cases write the row and run the same sync.
+      async function join(historical?: {
+        role: 'member' | 'viewer';
+        workspaceId: string | null;
+      }) {
+        let user: { id: string };
+        if (!historical) {
+          await authorizeFixturePlatformAdministrator(fdb.db, tenant.user.id);
+          const imported = await importOrganizationPeople(
+            tenant.context,
+            tenant.organizationId,
+            {
+              people: [
+                {
+                  username: `member-${randomUUID()}`,
+                  displayName: 'New ordinary member',
+                },
+              ],
+            },
+          );
+          user = { id: imported.created[0]!.userId };
+        } else {
+          const passwordHash = await hashPassword(randomUUID());
+          user = await fdb.db.begin(async (tx) => {
+            const [row] = await tx<{ id: string }[]>`
+              insert into allrice_users (email, display_name, password_hash, status)
+              values (${randomUUID() + '@example.test'}, 'Historical member', ${passwordHash}, 'active')
+              returning id`;
+            await tx`insert into allrice_memberships (organization_id, workspace_id, user_id, role, active)
+              values (${tenant.organizationId}, ${historical.workspaceId}, ${row!.id}, ${historical.role}, true)`;
+            await synchronizeTenantMembershipAccess(tx, {
+              organizationId: tenant.organizationId,
+              workspaceId: historical.workspaceId,
+            });
+            return row!;
+          });
+        }
         const login = await createSession(user.id),
           context = await authenticateSession(login.token, {
             organizationId: tenant.organizationId,
@@ -325,7 +349,7 @@ suite(
       expect((await read()).metadata.profile.maximumConcurrency).toBe(3);
     });
 
-    it('invitation acceptance inherits exact published assignments and default without republishing; reads are idempotent', async () => {
+    it('a newly added member inherits exact published assignments and default without republishing; reads are idempotent', async () => {
       const f = await setup();
       await report();
       const joined = await f.join();
@@ -419,20 +443,26 @@ suite(
       });
       await f.memberChange(joined.user.id, true);
       expect((await workspace(joined.context)).employees[0]!.id).toBe(id);
-      const viewer = await f.join('viewer');
+      const viewer = await f.join({
+        role: 'viewer',
+        workspaceId: f.tenant.workspaceId,
+      });
       expect((await workspace(viewer.context)).employees).toHaveLength(0);
       expect(
         await fdb.db`select id from allrice_cloud_execution_grants where owner_id=${viewer.user.id}`,
       ).toHaveLength(0);
     });
 
-    it('workspace-scoped and organization-scoped invitations inherit only their effective scope', async () => {
+    it('historical workspace-scoped and company-wide members inherit only their effective scope', async () => {
       const f = await setup();
       const second = randomUUID();
       await fdb.db`insert into allrice_workspaces(id,organization_id,slug,name) values(${second},${f.tenant.organizationId},'second','Second workspace')`;
       await f.change('assign', second);
-      const scoped = await f.join(),
-        wide = await f.join('member', null);
+      const scoped = await f.join({
+          role: 'member',
+          workspaceId: f.tenant.workspaceId,
+        }),
+        wide = await f.join();
       await expect(
         getEmployeeWorkspace(scoped.context, second),
       ).rejects.toMatchObject({ code: 'authorization_denied' });

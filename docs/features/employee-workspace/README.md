@@ -72,7 +72,7 @@ The UI must distinguish empty state, loading, offline, timeout, permission denie
 
 ## Acceptance
 
-- invited tenant reaches the Rice work surface without a desktop application;
+- a tenant user added by the platform administrator reaches the Rice work surface without a desktop application;
 - creates, archives, restores and continues a Session;
 - uploads, references, downloads and deletes a private file;
 - receives a durable Rice answer with authorized Memory, published Skills and frozen execution evidence;

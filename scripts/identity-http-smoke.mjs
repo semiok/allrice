@@ -1,17 +1,10 @@
 import { randomUUID } from 'node:crypto';
 
 const baseUrl = process.env.ALLRICE_SMOKE_BASE_URL;
-const invitationToken = process.env.ALLRICE_SMOKE_INVITATION_TOKEN;
 const organizationId = process.env.ALLRICE_SMOKE_ORGANIZATION_ID;
 const workspaceId = process.env.ALLRICE_SMOKE_WORKSPACE_ID;
 const secondWorkspaceId = process.env.ALLRICE_SMOKE_SECOND_WORKSPACE_ID;
-if (
-  !baseUrl ||
-  !invitationToken ||
-  !organizationId ||
-  !workspaceId ||
-  !secondWorkspaceId
-) {
+if (!baseUrl || !organizationId || !workspaceId || !secondWorkspaceId) {
   throw new Error(
     'All identity/workspace smoke environment variables are required',
   );
@@ -41,21 +34,19 @@ function tenantHeaders(cookie, selectedWorkspaceId = workspaceId) {
   };
 }
 
-const accepted = await jsonRequest(
-  '/api/v1/auth/invitations/accept',
-  {
+async function login(loginEmail, loginPassword) {
+  const response = await jsonRequest('/api/v1/auth/login', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      token: invitationToken,
-      displayName: 'Phase 0 Smoke',
-      password,
-    }),
-  },
-  201,
-);
-const acceptedCookie = accepted.headers.get('set-cookie')?.split(';')[0];
-if (!acceptedCookie) throw new Error('accept invitation did not set a session');
+    body: JSON.stringify({ email: loginEmail, password: loginPassword }),
+  });
+  const cookie = response.headers.get('set-cookie')?.split(';')[0];
+  if (!cookie) throw new Error(`login for ${loginEmail} did not set a session`);
+  return cookie;
+}
+
+// The first account comes from the trusted identity:bootstrap command.
+const acceptedCookie = await login(email, password);
 
 await jsonRequest('/api/v1/auth/session', {
   headers: { cookie: acceptedCookie },
@@ -81,48 +72,50 @@ await jsonRequest(
   401,
 );
 
-const loggedIn = await jsonRequest('/api/v1/auth/login', {
-  method: 'POST',
-  headers: { 'content-type': 'application/json' },
-  body: JSON.stringify({ email, password }),
+const loginCookie = await login(email, password);
+
+// The platform administrator adds the second (ordinary member) account the
+// same way the admin console does.
+await jsonRequest(
+  `/api/v1/admin/organizations/${organizationId}/people`,
+  {
+    method: 'POST',
+    headers: {
+      ...tenantHeaders(loginCookie),
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      people: [
+        {
+          username: 'phase0-invitee',
+          displayName: 'Phase 0 Invitee',
+          email: inviteeEmail,
+          password: inviteePassword,
+        },
+      ],
+    }),
+  },
+  201,
+);
+const inviteeCookie = await login(inviteeEmail, inviteePassword);
+
+// Company members reach every workspace of their company and nothing else.
+await jsonRequest('/api/v1/auth/session', {
+  headers: tenantHeaders(inviteeCookie, secondWorkspaceId),
 });
-const loginCookie = loggedIn.headers.get('set-cookie')?.split(';')[0];
-if (!loginCookie) throw new Error('login did not set a session');
-
-const invitationResponse = await jsonRequest(
-  '/api/v1/admin/invitations',
-  {
-    method: 'POST',
-    headers: { cookie: loginCookie, 'content-type': 'application/json' },
-    body: JSON.stringify({
-      email: inviteeEmail,
-      workspaceId,
-      role: 'member',
-      expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-    }),
-  },
-  201,
-);
-const invitation = await invitationResponse.json();
-const inviteeAccepted = await jsonRequest(
-  '/api/v1/auth/invitations/accept',
-  {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      token: invitation.invitation.token,
-      displayName: 'Phase 0 Invitee',
-      password: inviteePassword,
-    }),
-  },
-  201,
-);
-const inviteeCookie = inviteeAccepted.headers.get('set-cookie')?.split(';')[0];
-if (!inviteeCookie) throw new Error('invitee acceptance did not set a session');
-
 await jsonRequest(
   '/api/v1/auth/session',
-  { headers: tenantHeaders(inviteeCookie, secondWorkspaceId) },
+  { headers: tenantHeaders(inviteeCookie, randomUUID()) },
+  403,
+);
+// A historical workspace-scoped member stays inside its own workspace.
+const scopedCookie = await login('phase0-scoped@example.com', password);
+await jsonRequest('/api/v1/auth/session', {
+  headers: tenantHeaders(scopedCookie),
+});
+await jsonRequest(
+  '/api/v1/auth/session',
+  { headers: tenantHeaders(scopedCookie, secondWorkspaceId) },
   403,
 );
 

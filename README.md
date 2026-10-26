@@ -26,7 +26,7 @@ Version 0.1.0 establishes a runnable employee loop, not the completed SaaS produ
 - PostgreSQL + pgvector, mounted storage, and reverse-proxy Compose definitions;
 - lint, typecheck, test, build, and CI commands;
 - detailed feature documentation with implementation status, security boundaries, data ownership, APIs, and acceptance criteria.
-- an invitation-only employee workspace with default versioned AI assignment, persistent Chat/Session, private attachments and explicit Memory.
+- an employee workspace (accounts created by administrators, no public sign-up) with default versioned AI assignment, persistent Chat/Session, private attachments and explicit Memory.
 - a PostgreSQL-backed Queue/Run/Event execution plane with Scheduler, Worker leases, retries, cancellation, timeout, crash recovery and SSE replay.
 - an empty-by-default, platform-managed DSH-native Skill registry with
   employee-level assembly and immutable per-Run snapshots;
@@ -154,8 +154,8 @@ Default endpoints:
 
 The readiness endpoints require a working database. The liveness endpoints only prove that the process is running. Stop the development database with `pnpm db:dev:down`; its named volume is retained for the next run.
 
-Open `http://localhost:3000/chatflow` after accepting the first administrator
-invitation. The platform administrator authorizes the Codex subscription from
+Open `http://localhost:3000/chatflow` after creating the first account with
+`pnpm identity:bootstrap`. The platform administrator authorizes the Codex subscription from
 the model console. DSH stores and refreshes the OAuth grant in its private
 credential store; AllRice stores only public flow state, connection health and
 opaque deployment references.
