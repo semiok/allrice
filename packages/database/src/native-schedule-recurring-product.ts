@@ -730,24 +730,22 @@ export async function createRecurringTaskFromExecutionContext(
         mode,
         clarified.answers,
       );
-    const consumed = clarified?.enrolled.some(
-      (task) =>
-        isDeepStrictEqual(task.rule, rule) &&
-        task.conversationMode === (mode ?? 'reuse'),
+    const confirmedRequest = confirmedRecurringRequest(
+      current.text,
+      input.prompt,
+      rule,
+      mode,
     );
+    const consumed = clarified?.confirmedRequests.includes(confirmedRequest);
     const intent = matches
       ? recognized
       : card === 'confirmed' && !consumed
-        ? {
-            authoritativeRequest: confirmedRecurringRequest(
-              current.text,
-              input.prompt,
-              rule,
-              mode,
-            ),
-          }
+        ? { authoritativeRequest: confirmedRequest }
         : null;
-    const authoritativeRequest = intent?.authoritativeRequest ?? current.text;
+    // Without authority yet, validate what a confirmation would store, so a
+    // card is never offered for a task that could not then be saved.
+    const authoritativeRequest =
+      intent?.authoritativeRequest ?? confirmedRequest;
     const enrollment = CreateRecurringTaskInputSchema.parse({
       clientRequestId: requestId,
       name: input.name,

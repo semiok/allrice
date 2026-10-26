@@ -49,34 +49,42 @@ export async function readScheduleClarification(
         where q.run_id=e.run_id and q.payload->>'sourceEventType'='session/user-question')
     order by c.created_at desc,c.id desc limit 1`;
   if (!row) return null;
-  // An answer authorizes one enrollment. Any task of this session created
-  // after it, other than this call's own replay, consumed it; deleted rows
-  // count too, so a new call cannot silently recreate the confirmed task.
-  const own = ['native-once-call', 'native-recurring-call'].map((kind) =>
+  // An answer authorizes one enrollment; deleted rows count too, so a new
+  // call cannot silently recreate the confirmed task. Tasks enrolled before
+  // the answer did not consume it.
+  const id = (kind: string, callId: string) =>
     employeeChatUuid(
       kind,
       ctx.organizationId,
       ctx.workspaceId!,
       ctx.runId,
-      input.callId,
-    ),
+      callId,
+    );
+  const kinds = ['native-once-call', 'native-recurring-call'];
+  const calls = await tx<{ call_id: string }[]>`
+    select call_id from allrice_task_calls where run_id=${ctx.runId}
+      and kind='tool' and call_id<>${input.callId}`;
+  const others = new Set(
+    calls.flatMap((c) => kinds.map((kind) => id(kind, c.call_id))),
   );
-  const enrolled = await tx<{ rule: unknown; conversation_mode: string }[]>`
-    select schedule->'rule' rule,conversation_mode from allrice_automations
-    where organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId!}
-      and owner_id=${ctx.policySnapshot.subjectId} and session_id=${input.sessionId}
-      and created_at>=${row.answered_at}
-      and coalesce(native_once_request_id,native_recurring_request_id)<>all(${own}::uuid[])`;
+  const enrolled = await tx<{ request_id: string; first_prompt: string }[]>`
+    select coalesce(a.native_once_request_id,a.native_recurring_request_id) request_id,
+      coalesce(v.configuration->>'prompt',a.prompt) first_prompt
+    from allrice_automations a
+    left join allrice_native_recurring_versions v on v.automation_id=a.id and v.revision=1
+    where a.organization_id=${ctx.organizationId} and a.workspace_id=${ctx.workspaceId!}
+      and a.owner_id=${ctx.policySnapshot.subjectId} and a.session_id=${input.sessionId}
+      and a.created_at>=${row.answered_at}
+      and coalesce(a.native_once_request_id,a.native_recurring_request_id)
+        <>all(${kinds.map((kind) => id(kind, input.callId))}::uuid[])`;
   return {
-    // A selected frequency is consumed by any enrollment after it; a card
-    // confirmation only by one with its exact rule and mode.
-    intent: enrolled.length
+    // A selected frequency is consumed by another call of this Run.
+    intent: enrolled.some((task) => others.has(task.request_id))
       ? null
       : clarifiedScheduleIntent(request, row.question, row.answer),
     answers: selectedScheduleAnswers(row.question, row.answer),
-    enrolled: enrolled.map((task) => ({
-      rule: task.rule,
-      conversationMode: task.conversation_mode,
-    })),
+    // A card confirmation is consumed by the task it enrolled, whose
+    // immutable first version stores exactly the confirmed request.
+    confirmedRequests: enrolled.map((task) => task.first_prompt),
   };
 }

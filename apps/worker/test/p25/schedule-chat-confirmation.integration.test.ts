@@ -317,7 +317,7 @@ suite(
           message: 'Stub model; no provider call',
           retryable: false,
         });
-      return { call, answer, tasks, finish };
+      return { call, answer, tasks, finish, sessionId: session.id };
     }
     type Card = {
       questions: ({ options: { label: string }[] } & Record<string, unknown>)[];
@@ -468,6 +468,43 @@ suite(
           evening,
           morning,
         ]);
+      } finally {
+        await c.finish();
+      }
+    });
+
+    it('consumes each confirmation by its own task, even after that task is edited', async () => {
+      const nine = at('09:00:00');
+      const c = await chat('每天九点分别提醒我喝水和写日报');
+      try {
+        const water = read(await createAutomation(c.call(nine, '提醒我喝水')));
+        const report = read(
+          await createAutomation(c.call(nine, '提醒我写日报')),
+        );
+        // Same rule, different work: two cards, both confirmed on one question.
+        await c.answer(
+          {
+            questions: [
+              ...water.askUserQuestion!.questions,
+              ...report.askUserQuestion!.questions,
+            ],
+          },
+          yes(water.askUserQuestion),
+          yes(report.askUserQuestion),
+        );
+        await createAutomation(c.call(nine, '提醒我喝水'));
+        await createAutomation(c.call(nine, '提醒我写日报'));
+        expect((await c.tasks()).map((task) => task.prompt)).toEqual([
+          expect.stringContaining('用户已确认的任务内容：提醒我喝水'),
+          expect.stringContaining('用户已确认的任务内容：提醒我写日报'),
+        ]);
+        // Editing a task later does not free the confirmation it used.
+        await f.db`update allrice_automations set schedule=${f.db.json({ frequency: 'native_recurring', rule: at('10:00:00') })},
+          prompt='改过的任务内容' where session_id=${c.sessionId}`;
+        expect(
+          read(await createAutomation(c.call(nine, '提醒我喝水'))).status,
+        ).toBe('confirmation_required');
+        expect(await c.tasks()).toHaveLength(2);
       } finally {
         await c.finish();
       }

@@ -45,11 +45,14 @@ export function recurringRuleText(
   return `${period}${at}，${conversationMode === 'new_each_run' ? '每次新建聊天执行' : '在本聊天中执行'}`;
 }
 
-/** The model's structured task, shown in full when it fits on the card. A
- * longer one is not shown, and then only the human's own words will run. */
-const shownWork = (prompt: string) => {
+/** The model's structured task, shown in full when it fits on the card and
+ * in the stored request. Otherwise it is not shown, and only the human's own
+ * words will run. */
+const shownWork = (request: string, prompt: string) => {
   const work = prompt.trim();
-  return work.length <= 2_000 ? work : null;
+  return work.length <= 2_000 && request.length + work.length <= 37_000
+    ? work
+    : null;
 };
 
 /** The whole card is a pure function of the call, so a presented card can be
@@ -61,7 +64,7 @@ function card(
   rule: RecurringScheduleRule,
   conversationMode?: AutomationConversationMode,
 ) {
-  const work = shownWork(prompt);
+  const work = shownWork(request, prompt);
   const id = createHash('sha256')
     .update(JSON.stringify([request, work, rule, conversationMode ?? 'reuse']))
     .digest('hex')
@@ -123,7 +126,7 @@ export function confirmedRecurringRequest(
   rule: RecurringScheduleRule,
   conversationMode?: AutomationConversationMode,
 ) {
-  const work = shownWork(prompt);
+  const work = shownWork(request, prompt);
   return [
     request,
     ...(work ? [`用户已确认的任务内容：${work}`] : []),

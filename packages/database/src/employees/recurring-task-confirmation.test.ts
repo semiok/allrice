@@ -141,3 +141,14 @@ it('finds its own card among several on one question', () => {
     'declined',
   );
 });
+
+it('never offers a card whose confirmed request could not be stored', () => {
+  const long = '提'.repeat(38_913);
+  const task = '提醒'.repeat(750);
+  const stored = confirmedRecurringRequest(long, task, rule);
+  expect(stored.length).toBeLessThanOrEqual(40_000);
+  expect(stored).not.toContain(`用户已确认的任务内容`);
+  expect(
+    recurringConfirmationQuestion(long, task, rule).questions[0]!.question,
+  ).not.toContain(task);
+});
