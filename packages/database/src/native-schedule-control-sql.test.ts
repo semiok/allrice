@@ -10,6 +10,7 @@ import {
   createNativeOnceSqlStore,
   NativeOnceSqlError as OnceExportedError,
 } from './native-schedule-once-sql.ts';
+import { createNativeRecurringSqlStore } from './native-schedule-recurring-sql.ts';
 import {
   nativeOnceDigest,
   type NativeOnceWriter,
@@ -216,6 +217,9 @@ function fixture<C extends { controlSessionId: string }>(controls: C[]) {
     unknownError,
     deferredError,
     partition: () => p,
+    dropPartition: () => {
+      p = undefined as unknown as NativeScheduleControlPartition;
+    },
     store: createNativeScheduleControlSqlStore(options),
   };
 }
@@ -268,6 +272,7 @@ describe('shared native control SQL without a DB or scheduler', () => {
         'readExactCommit',
         'releaseClosedWriter',
         'renewWriter',
+        'takeoverRefusal',
       ].sort(),
     );
     expect(f.state.begins).toEqual([]);
@@ -304,13 +309,63 @@ describe('shared native control SQL without a DB or scheduler', () => {
     expect(grant?.reference).toEqual(reference);
     expect(grant?.controls[0]?.recurringRule).toBe('format-owned');
     expect(grant?.writer.epoch).toBe(1);
+    expect(f.store.takeoverRefusal()).toBeNull();
   });
 
   it('does not treat an expired live writer as closed', async () => {
     const f = fixture([]);
-    f.state.now = f.partition().expires_at_ms! + 1;
+    f.partition().expires_at_ms = Date.now() + 60_000;
+    expect(await f.store.acquireWriter()).toBeNull();
+    expect(f.store.takeoverRefusal()).toMatchObject({ code: 'held' });
+    f.partition().expires_at_ms = 31_000;
+    f.state.now = 31_001;
+    f.state.queries.length = 0;
     expect(await f.store.acquireWriter()).toBeNull();
     expect(f.state.loadTransactions).toEqual([]);
+    // Telling why costs no extra statement inside the locked transaction.
+    expect(
+      f.state.queries.filter((q) => q.text.includes('clock_timestamp())*1000')),
+    ).toEqual([]);
+    // MET-210 #3: the Worker can say why it stays cold.
+    expect(f.store.takeoverRefusal()).toEqual({
+      code: 'held_expired_without_close_proof',
+      ownerId: writer.ownerId,
+      epoch: 1,
+      expiresAtMs: 31_000,
+    });
+  });
+
+  it('says which readiness refused the takeover', async () => {
+    const f = fixture([]);
+    Object.assign(f.partition(), { closed: true });
+    f.partition().activation.storageReady = false;
+    expect(await f.store.acquireWriter()).toBeNull();
+    expect(f.store.takeoverRefusal()?.code).toBe('activation_not_ready');
+    f.options.readiness = () => ({ ...ready, enabled: false });
+    expect(await f.store.acquireWriter()).toBeNull();
+    expect(f.store.takeoverRefusal()?.code).toBe('deployment_not_ready');
+    f.options.readiness = () => ({ ...ready });
+    f.partition().close_proof = null;
+    f.partition().activation.storageReady = true;
+    expect(await f.store.acquireWriter()).toBeNull();
+    expect(f.store.takeoverRefusal()?.code).toBe('close_proof_missing');
+    f.dropPartition();
+    expect(await f.store.acquireWriter()).toBeNull();
+    expect(f.store.takeoverRefusal()?.code).toBe('partition_missing');
+  });
+
+  it('the recurring store tells the same refusal', async () => {
+    const f = fixture([]);
+    const recurring = createNativeRecurringSqlStore({
+      ...f.options,
+      partitionId: 'allrice-recurring-v1',
+      reference: { ...reference, profileId: 'allrice-recurring-control-v1' },
+      lockAdmission: async () => new Map(),
+    } as never);
+    expect(await recurring.acquireWriter()).toBeNull();
+    expect(recurring.takeoverRefusal()?.code).toBe(
+      'held_expired_without_close_proof',
+    );
   });
 
   it('requires the immutable persisted audit proof before reacquiring a closed epoch', async () => {
@@ -328,6 +383,7 @@ describe('shared native control SQL without a DB or scheduler', () => {
       },
     });
     expect(await f.store.acquireWriter()).toBeNull();
+    expect(f.store.takeoverRefusal()?.code).toBe('close_proof_invalid');
   });
 
   it('rechecks DB wall time after the format control read', async () => {

@@ -338,6 +338,7 @@ export function createNativeRecurringSqlStore(
   }
   return {
     acquireWriter: base.acquireWriter,
+    takeoverRefusal: base.takeoverRefusal,
     renewWriter: base.renewWriter,
     assertWriter: base.assertWriter,
     loadControls: base.loadControls,

@@ -46,6 +46,22 @@ export interface NativeOnceClosedProof {
    * A timeout, expired TTL, missing heartbeat or runtime loss is not evidence. */
   evidence: Record<string, unknown>;
 }
+/** Why the last acquireWriter returned null. A refused takeover is otherwise silent:
+ * the controller just stays cold (MET-210 #3). */
+export interface NativeScheduleTakeoverRefusal {
+  code:
+    | 'deployment_not_ready'
+    | 'partition_missing'
+    | 'activation_not_ready'
+    | 'held'
+    | 'held_expired_without_close_proof'
+    | 'close_proof_missing'
+    | 'close_proof_invalid'
+    | 'acquire_plan_rejected';
+  ownerId: string | null;
+  epoch: number;
+  expiresAtMs: number | null;
+}
 export interface NativeScheduleControlSqlOptions<
   C extends { controlSessionId: string },
 > {
@@ -159,6 +175,7 @@ export function createNativeScheduleControlSqlStore<
     reject('configuration_invalid');
   const partitionId = options.partitionId;
   const ownerId = options.ownerId;
+  let refusal: NativeScheduleTakeoverRefusal | null = null;
   async function bounded<T>(
     fn: (tx: TransactionSql) => Promise<T>,
     repeatable = false,
@@ -450,12 +467,41 @@ export function createNativeScheduleControlSqlStore<
     asWriterRow,
     loadWorkspaceUnit,
     commitWorkspaceWrite,
+    takeoverRefusal: () => refusal && { ...refusal },
     async acquireWriter() {
-      if (!nativeOnceReady(options.readiness?.())) return null;
+      const refuse = (
+        code: NativeScheduleTakeoverRefusal['code'],
+        p?: Partition,
+      ) => {
+        refusal = {
+          code,
+          ownerId: p?.owner_id ?? null,
+          epoch: Number(p?.epoch ?? 0),
+          expiresAtMs: p?.expires_at_ms ?? null,
+        };
+        return null;
+      };
+      refusal = null;
+      if (!nativeOnceReady(options.readiness?.()))
+        return refuse('deployment_not_ready');
       return bounded(async (tx) => {
         const p = await partition(tx, 'update');
-        if (!p || !nativeOnceReady(readiness(p)) || !(await validClose(tx, p)))
-          return null;
+        if (!p) return refuse('partition_missing');
+        if (!nativeOnceReady(readiness(p)))
+          return refuse('activation_not_ready', p);
+        // Diagnosis only, so no extra statement in this locked transaction: the
+        // Worker clock tells a live lease from an expired one well enough.
+        if (!(await validClose(tx, p)))
+          return refuse(
+            p.closed
+              ? p.close_proof
+                ? 'close_proof_invalid'
+                : 'close_proof_missing'
+              : p.expires_at_ms !== null && p.expires_at_ms <= Date.now()
+                ? 'held_expired_without_close_proof'
+                : 'held',
+            p,
+          );
         const plan = planNativeOnceAcquire({
           readiness: readiness(p),
           row: asWriterRow(p),
@@ -465,7 +511,7 @@ export function createNativeScheduleControlSqlStore<
           dbNowMs: await dbNow(tx),
           ttlMs: ttl,
         });
-        if (!plan) return null;
+        if (!plan) return refuse('acquire_plan_rejected', p); // readiness and closed are checked above
         await tx`update allrice_native_once_partitions set owner_id=${ownerId},epoch=${plan.writer.epoch},
           token_digest=${plan.row.tokenDigest},expires_at=to_timestamp(${plan.row.expiresAtMs!}::double precision/1000),
           closed=false,close_proof='null'::jsonb where partition_id=${partitionId}`;
