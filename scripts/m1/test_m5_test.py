@@ -35,10 +35,10 @@ HOME=$PWD exec /bin/sh -c "$*"
 '''
 PNPM = r'''#!/bin/sh
 # stub pnpm: records the call and the environment it saw
-echo "$*|$ALLRICE_TEST_DATABASE_URL|${ALLRICE_RUN_DB_INTEGRATION:-}|${ALLRICE_RUN_BROWSER_INTEGRATION:-}|${ALLRICE_RUN_X:-}|${LEAK_ME:-}|$PWD|$VITEST_MAX_WORKERS|$PGPORT|$HOME|${ALLRICE_NATIVE_ONCE_PROBE_MODULE_BASE:-}" >>"$HOME/pnpm.calls"
+echo "$*|$ALLRICE_TEST_DATABASE_URL|${ALLRICE_RUN_DB_INTEGRATION:-}|${ALLRICE_RUN_BROWSER_INTEGRATION:-}|${ALLRICE_RUN_X:-}|${LEAK_ME:-}|$PWD|${M5T_VITEST_CAP:-}|$PGPORT|$HOME|${ALLRICE_NATIVE_ONCE_PROBE_MODULE_BASE:-}" >>"$HOME/pnpm.calls"
 case "$1" in
   install) mkdir -p node_modules/.bin; touch node_modules/kept; cp "$(dirname "$0")/vitest" node_modules/.bin/vitest; exit "$(cat "$HOME/install.rc" 2>/dev/null || echo 0)" ;;
-  exec) echo "vitest says hello"; exit "$(cat "$HOME/vitest.rc" 2>/dev/null || echo 0)" ;;
+  exec) [ ! -e "$HOME/hang" ] || sleep 30; echo "vitest says hello"; exit "$(cat "$HOME/vitest.rc" 2>/dev/null || echo 0)" ;;
 esac
 '''
 VITEST = r'''#!/bin/sh
@@ -47,7 +47,8 @@ exec pnpm exec vitest "$@"
 '''
 CODEX = r'''#!/bin/sh
 # stub codex: records its arguments and prompt, writes a result, changes the worktree
-echo "$*" >"$HOME/codex.args"; cat >"$HOME/codex.prompt"; echo "$VITEST_MAX_WORKERS" >"$HOME/codex.workers"
+[ "$1" != login ] || exit 0
+echo "$*" >"$HOME/codex.args"; cat >"$HOME/codex.prompt"; echo "$M5T_VITEST_CAP" >"$HOME/codex.workers"
 out=""; prev=""; for a; do [ "$prev" != -o ] || out=$a; prev=$a; done
 echo "test report" >"$out"; echo changed >>README.md; echo new >new.test.ts
 '''
@@ -113,7 +114,7 @@ class M5Test(unittest.TestCase):
         line = subprocess.run(['/bin/bash', M5_RUN], env=dict(os.environ, M5T_ACTION='setup-line', M5T_TARGET='m5'),
                               capture_output=True, text=True, check=True).stdout
         write(os.path.join(self.base, 'SETUP'), line)
-        write(os.path.join(self.m5, PG, 'pg_ctl'), '#!/bin/sh\nexit 0\n', 0o755)
+        write(os.path.join(self.m5, PG, 'pg_ctl'), '#!/bin/sh\n[ ! -e "$HOME/pg-down" ]\n', 0o755)
         write(os.path.join(self.m5, PG, 'psql'), PSQL, 0o755)
         self.git('init', '-q', '--bare', os.path.join(self.base, 'repo.git'), cwd=self.tmp)
         self.bin = os.path.join(self.tmp, 'bin')
@@ -129,9 +130,10 @@ class M5Test(unittest.TestCase):
         return subprocess.run(['git'] + list(args), cwd=cwd or self.repo, env=dict(os.environ, **GIT_ENV),
                               capture_output=True, text=True, check=True).stdout
 
-    def run_m5(self, *args, stdin=None, **env):
+    def run_m5(self, *args, stdin=None, **extra):
         env = dict(os.environ, HOME=self.m1, M5_FAKE_HOME=self.m5, M5_TEST_SSH=self.ssh, M5T_CODEX=self.codex,
-                   LEAK_ME='caller-secret', **GIT_ENV, **env)
+                   LEAK_ME='caller-secret', **GIT_ENV)
+        env.update(extra)
         return subprocess.run([M5_TEST] + list(args), cwd=self.repo, env=env, input=stdin or '',
                               capture_output=True, text=True, timeout=120)
 
@@ -192,6 +194,13 @@ class M5Test(unittest.TestCase):
         self.assertIn('M5 中断：测试进程被结束（不算测试失败），改在 M1 从头重跑', p.stdout)
         self.assertIn('finished on M1 (M5 dropped out mid-run; the result is from M1), exit 0', p.stdout)
 
+    def test_killed_install_reruns_on_m1(self):
+        write(os.path.join(self.th, 'install.rc'), '143\n')
+        p = self.run_m5('--', 'o.test.ts')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn('m5-test: install on M5 ended by signal 15: interrupted, not a result', p.stdout)
+        self.assertIn('finished on M1 (M5 dropped out mid-run', p.stdout)
+
     def test_failed_install_stops_the_run(self):
         write(os.path.join(self.th, 'install.rc'), '7\n')
         p = self.run_m5('--', 'c.test.ts')
@@ -229,7 +238,7 @@ class M5Test(unittest.TestCase):
         write(os.path.join(self.m5, 'pressure'), '2\n')  # warning: half the workers
         p = self.run_m5('--', 'f.test.ts')
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        self.assertIn('memory pressure warning (level 2): 4 workers', p.stdout)
+        self.assertIn('memory pressure warning (level 2): 4 workers, 8 for all runs', p.stdout)
         self.assertEqual(self.calls(self.th)[-1][0], 'exec vitest run f.test.ts --maxWorkers=4')
         write(os.path.join(self.m5, 'pressure'), '1\n')  # 3G reclaimable at 2G a worker: one
         write(os.path.join(self.m5, 'free_pages'), str(3 * 65536))
@@ -265,6 +274,7 @@ class M5Test(unittest.TestCase):
         lock = os.path.join(self.base, 'locks/slot-1.lock')
         write(lock.replace('.lock', '.owner'), '99990101-000000-deadbeef-1 deadbeef by met-1 since 10:00 (test, 8 workers) pid 1\n')
         self.hold(lock)
+        self.hold(os.path.join(self.leases, '99990101-000000-deadbeef-1.lease'))  # its M1 side is attached
         p = self.run_m5('--wait', '0', '--', 'h.test.ts')
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn('slot 1: 99990101-000000-deadbeef-1 deadbeef by met-1', p.stdout)
@@ -300,13 +310,22 @@ class M5Test(unittest.TestCase):
     def test_processes_left_in_a_slot_are_stopped_first(self):
         self.assertEqual(self.run_m5('--', 'l.test.ts').returncode, 0)
         wt = os.path.join(self.base, 'slots/slot-1')
-        # a test process that outlived its run: no lock descriptor, still working in the worktree
-        stray = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'], cwd=os.path.join(wt, '.'), close_fds=True)
-        self.addCleanup(stray.kill)
+        node = os.path.join(self.m5, '.local/opt/node-22.23.2/bin/node')  # "our" Node, standing in
+        write(node, '#!/bin/sh\nsleep "$1"\n', 0o755)
+        # test processes that outlived their run (no lock descriptor): one working in the worktree,
+        # one elsewhere naming it, and a child of one; a user's process there is left alone
+        strays = [subprocess.Popen([node, '120'], cwd=wt, close_fds=True),
+                  subprocess.Popen([node, '120', wt + '/x'], cwd=self.tmp, close_fds=True)]
+        user = subprocess.Popen([shutil.which('sleep'), '120'], cwd=wt, close_fds=True)
+        for q in strays + [user]:
+            self.addCleanup(q.kill)
+        time.sleep(0.5)
         p = self.run_m5('--', 'l.test.ts')
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        self.assertIn('stopping 1 leftover processes in slot 1', p.stdout)
-        self.assertIsNotNone(stray.wait(timeout=10))
+        self.assertRegex(p.stdout, r'stopping [34] test processes left in slot 1')
+        for q in strays:
+            self.assertIsNotNone(q.wait(timeout=10))
+        self.assertIsNone(user.poll())
 
     def test_codex_report_that_cannot_be_fetched_is_not_a_pass(self):
         out = os.path.join(self.tmp, 'r.md')
@@ -321,6 +340,43 @@ class M5Test(unittest.TestCase):
         p = self.run_m5('codex', '--on', 'm1', '--no-build', '-o', out, '--', 'x')
         self.assertEqual(p.returncode, 5, p.stdout + p.stderr)
         self.assertFalse(os.path.exists(out))
+
+    def test_vitest_is_capped_never_raised(self):
+        self.assertEqual(self.run_m5('--', 'q.test.ts').returncode, 0)
+        vitest = os.path.join(self.base, 'slots/slot-1/node_modules/.bin/vitest')
+        self.assertIn('m5-test: vitest cap', read(vitest))
+        for args, expected in ((['run', '--maxWorkers=1', 'a'], 'exec vitest run a --maxWorkers=1'),  # serial stays serial
+                               (['run', '--maxWorkers', '9', 'a'], 'exec vitest run a --maxWorkers=4'),
+                               (['run', 'a'], 'exec vitest run a --maxWorkers=4')):
+            with self.subTest(args=args):
+                path = os.path.join(self.m5, '.local/opt/node-22.23.2/bin') + ':' + os.environ['PATH']
+                subprocess.run([vitest] + args, env=dict(os.environ, HOME=self.th, PATH=path, M5T_VITEST_CAP='4'), check=True,
+                               capture_output=True, cwd=os.path.dirname(vitest))
+                self.assertEqual(self.calls(self.th)[-1][0], expected)
+
+    def test_what_m5_cannot_do_goes_to_m1(self):
+        write(os.path.join(self.m5, 'pg-down'), '')  # the test Postgres does not start
+        p = self.run_m5('--', 'r.test.ts')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn('M5 环境故障（the test Postgres did not start', p.stdout)
+        self.assertIn('改在 M1 跑', p.stdout)
+        self.assertEqual(self.calls(self.th), [])
+        self.assertEqual(len(self.calls(self.m1)), 3)
+        os.remove(os.path.join(self.m5, 'pg-down'))
+        out = os.path.join(self.tmp, 'c.md')
+        p = self.run_m5('codex', '--no-build', '-o', out, '--', 'x', M5T_CODEX=os.path.join(self.m5, 'no-codex'))
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn('M5 环境故障（Codex is missing or not logged in', p.stdout)
+        self.assertEqual(read(out), 'test report\n')  # from M1
+
+    def test_stuck_run_on_m1_is_stopped(self):
+        write(os.path.join(self.m5, 'offline'), '')
+        write(os.path.join(self.m1, 'hang'), '')
+        t0 = time.time()
+        p = self.run_m5('--no-build', '--', 's.test.ts', M5_TEST_IDLE_SECONDS='2')
+        self.assertLess(time.time() - t0, 25)
+        self.assertEqual(p.returncode, 124, p.stdout + p.stderr)
+        self.assertIn('printed nothing for 2s and was stopped as stuck', p.stderr)
 
     def test_dropped_connection_reruns_on_m1(self):
         write(os.path.join(self.m5, 'drop'), '')
@@ -386,8 +442,9 @@ class M5Test(unittest.TestCase):
         self.assertIn('new.test.ts', patch)
         prompt = read(os.path.join(self.th, 'codex.prompt'))
         self.assertTrue(prompt.startswith('【运行环境，m5-test 附加】你在 M5 测试机上'), prompt)
+        self.assertIn('不要调用 m5-test', prompt)
         self.assertTrue(prompt.endswith('\n\n写测试并运行\n'), prompt)
-        self.assertEqual(read(os.path.join(self.th, 'codex.workers')), '8\n')  # Codex's vitest runs are capped too
+        self.assertEqual(read(os.path.join(self.th, 'codex.workers')), '4\n')  # Codex's vitest runs are capped too
         args = read(os.path.join(self.th, 'codex.args'))
         for part in ('exec --ephemeral -C %s/slots/slot-1 ' % self.base, '-m gpt-6-astra -c model_reasoning_effort=max',
                      '-c allow_login_shell=false -c shell_environment_policy.inherit=all',
@@ -423,6 +480,9 @@ class M5Test(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn('-s danger-full-access', read(os.path.join(self.m1, 'codex.args')))
         self.assertEqual(read(out), 'test report\n')
+        prompt = read(os.path.join(self.m1, 'codex.prompt'))
+        self.assertTrue(prompt.startswith('【运行环境，m5-test 附加】你在 M1 上'), prompt)
+        self.assertIn('不要调用 m5-test', prompt)
 
     def test_rejects_bad_arguments(self):
         for args in (['-e', 'ALLRICE_API_KEY=x', '--', 'a'], ['-e', 'PATH=/x', '--', 'a'], ['nope', '--', 'a'],
