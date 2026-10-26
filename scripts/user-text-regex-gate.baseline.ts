@@ -667,16 +667,6 @@ export const baseline: readonly BaselineEntry[] = [
     ],
   },
   {
-    file: 'apps/web/app/chatflow/chat-transcript.tsx',
-    owner: 'ChatTranscript.ChatTranscript',
-    kind: 'own-text',
-    use: '认出系统自己的兜底失败文案，改用对应的展示',
-    sites: [
-      String.raw`=== "Rice 暂时无法完成这次请求，请稍后重试。"`,
-      String.raw`=== "参考资料已不可用，请检查资料状态和访问权限后重新发起任务。"`,
-    ],
-  },
-  {
     file: 'apps/web/app/chatflow/employee-detail-prompts.ts',
     owner: 'adjustEmployeeContentPrompt',
     kind: 'own-text',
