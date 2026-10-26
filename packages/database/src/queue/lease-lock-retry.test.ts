@@ -34,8 +34,13 @@ function jobRow(remainingMs: number, extra: Record<string, unknown> = {}) {
     ...extra,
   };
 }
+/** The lease read runs in its own bounded transaction: settings, then read. */
 function fakeSql(read: () => Promise<unknown[]>) {
-  return vi.fn(() => read()) as unknown as postgres.Sql;
+  const tx = (strings: TemplateStringsArray) =>
+    strings.join('').includes('set_config') ? Promise.resolve([]) : read();
+  return {
+    begin: (run: (t: typeof tx) => unknown) => run(tx),
+  } as unknown as postgres.Sql;
 }
 
 describe('MET-210 lease-bounded lock-timeout retry', () => {
@@ -177,6 +182,30 @@ describe('MET-210 lease-bounded lock-timeout retry', () => {
       }),
     ).resolves.toBe('stopped by its own transaction');
     expect(calls).toBe(2);
+  });
+
+  it('gives up with the original SQLSTATE when the lease cannot be read', async () => {
+    quiet();
+    let calls = 0;
+    const timeout = lockTimeout();
+    await expect(
+      retryLeaseLockTimeout({
+        sql: fakeSql(async () => {
+          throw Object.assign(new Error('statement timeout'), {
+            code: '57014',
+          });
+        }),
+        site: 'job_heartbeat',
+        lease,
+        mode: 'stop',
+        leaseLost,
+        run: async () => {
+          calls++;
+          throw timeout;
+        },
+      }),
+    ).rejects.toBe(timeout);
+    expect(calls).toBe(1);
   });
 
   it(`stops after ${maxLeaseLockAttempts} attempts with the original SQLSTATE`, async () => {

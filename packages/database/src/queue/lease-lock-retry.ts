@@ -150,20 +150,25 @@ async function nextLeaseLockWait(
   lease: LeaseIdentity,
   mode: 'stop' | 'receipt',
 ) {
-  const [job] = await sql<
-    {
-      status: string;
-      worker_id: string | null;
-      lease_token: string | null;
-      lease_expires_at: Date | null;
-      drain_deadline_at: Date | null;
-      drain_reason: 'cancel' | 'timeout' | null;
-      cancel_requested_at: Date | null;
-      now: Date;
-    }[]
-  >`select status,worker_id,lease_token,lease_expires_at,drain_deadline_at,drain_reason,
-      cancel_requested_at,clock_timestamp() now
-    from allrice_jobs where id=${lease.jobId}`;
+  // Bounded like the attempts it gates: a table lock must not park the heartbeat.
+  const [job] = await sql.begin(async (tx) => {
+    await tx`select set_config('lock_timeout',${`${leaseLockWaitMs}ms`},true),
+      set_config('statement_timeout',${`${leaseLockWaitMs}ms`},true)`;
+    return tx<
+      {
+        status: string;
+        worker_id: string | null;
+        lease_token: string | null;
+        lease_expires_at: Date | null;
+        drain_deadline_at: Date | null;
+        drain_reason: 'cancel' | 'timeout' | null;
+        cancel_requested_at: Date | null;
+        now: Date;
+      }[]
+    >`select status,worker_id,lease_token,lease_expires_at,drain_deadline_at,drain_reason,
+        cancel_requested_at,clock_timestamp() now
+      from allrice_jobs where id=${lease.jobId}`;
+  });
   if (
     !job ||
     job.status !== 'running' ||
@@ -222,16 +227,20 @@ export async function retryLeaseLockTimeout<T>(input: {
         trace.record(error, attempt, 'failed');
         throw error;
       }
-      if (attempt < maxLeaseLockAttempts && !input.signal?.aborted)
+      let next: Awaited<ReturnType<typeof nextLeaseLockWait>> | 'aborted' =
+        'exhausted';
+      if (attempt < maxLeaseLockAttempts && !input.signal?.aborted) {
         await new Promise((resolve) => setTimeout(resolve, 50 * 2 ** attempt));
-      let next =
-        attempt >= maxLeaseLockAttempts
-          ? ('exhausted' as const)
-          : input.signal?.aborted
-            ? ('aborted' as const)
-            : await nextLeaseLockWait(input.sql, input.lease, input.mode);
-      // The runner may have returned while the lease was being read.
-      if (typeof next === 'number' && input.signal?.aborted) next = 'aborted';
+        // A lease that cannot be read cannot be confirmed: no further attempt.
+        if (!input.signal?.aborted)
+          next = await nextLeaseLockWait(
+            input.sql,
+            input.lease,
+            input.mode,
+          ).catch(() => 'exhausted' as const);
+      }
+      // The runner may have returned during the backoff or the lease read.
+      if (input.signal?.aborted) next = 'aborted';
       trace.record(
         error,
         attempt,

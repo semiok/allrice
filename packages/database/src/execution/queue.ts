@@ -2611,6 +2611,28 @@ async function lockedLeasedJob(
 /** Database clock against the lease (and receipt drain window) as locked, i.e.
  * before any renewal: a lock wait or slow statement past it must roll the whole
  * transaction back. */
+/** Settles a leased Job and commits only inside the lease it locked: after the
+ * body's last statement (which may itself have waited on a lock), the original
+ * lease is re-checked on the database clock. */
+function leasedTransaction<T>(
+  sql: ReturnType<typeof getDatabase>,
+  mode: string,
+  lease: { workerId: string; jobId: string; leaseToken: string },
+  body: (transaction: TransactionSql, job: JobRow) => Promise<T>,
+) {
+  return sql.begin(mode, async (transaction) => {
+    const job = await lockedLeasedJob(
+      transaction,
+      lease.workerId,
+      lease.jobId,
+      lease.leaseToken,
+    );
+    const result = await body(transaction, job);
+    await assertLockedLeaseCurrent(transaction, job);
+    return result;
+  });
+}
+
 async function assertLockedLeaseCurrent(
   transaction: TransactionSql,
   job: JobRow,
@@ -3037,8 +3059,8 @@ export async function completeJob(input: {
   const leaseToken = UuidSchema.parse(input.leaseToken);
   const sql = getDatabase();
   const isolation = guard ? 'isolation level read committed' : '';
-  await sql.begin(isolation, async (transaction) => {
-    const job = await lockedLeasedJob(transaction, workerId, jobId, leaseToken);
+  const lease = { workerId, jobId, leaseToken };
+  await leasedTransaction(sql, isolation, lease, async (transaction, job) => {
     const stopped = queueStopCause(job, new Date());
     if (stopped) {
       await transitionStoppedJob(transaction, job, stopped, 'worker_returned');
@@ -3170,8 +3192,8 @@ export async function failJob(input: {
   const jobId = UuidSchema.parse(input.jobId);
   const leaseToken = UuidSchema.parse(input.leaseToken);
   const sql = getDatabase();
-  return sql.begin(async (transaction) => {
-    const job = await lockedLeasedJob(transaction, workerId, jobId, leaseToken);
+  const lease = { workerId, jobId, leaseToken };
+  return leasedTransaction(sql, '', lease, async (transaction, job) => {
     const stopped = queueStopCause(job, new Date());
     if (stopped) {
       await transitionStoppedJob(transaction, job, stopped, 'worker_returned');

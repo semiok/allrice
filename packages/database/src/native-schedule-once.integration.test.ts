@@ -1140,25 +1140,32 @@ suite(
       await held`select pg_advisory_lock(hashtextextended(${r.runId},703))`;
       try {
         // Each attempt opens its own transaction; while 703 is busy it rolls
-        // back, re-reads the lease and backs off before the next (MET-210 #4:
-        // one lease-bounded loop, original SQLSTATE kept). Count attempts
-        // instead of timing them: a slow runner stretches every attempt, but
-        // the retries must still stop at the limit. One past it fails at once.
+        // back, re-reads the lease (its own short transaction) and backs off
+        // before the next (MET-210 #4: one lease-bounded loop, original
+        // SQLSTATE kept). Count attempts instead of timing them: a slow runner
+        // stretches every attempt, but the retries must still stop at the
+        // limit. One transaction past attempts + lease reads fails at once.
         const real = getDatabase();
-        let attempts = 0;
+        let transactions = 0;
         const counted = new Proxy(real, {
           get(target, key) {
             if (key !== 'begin') return Reflect.get(target, key, target);
             return (...args: unknown[]) => {
-              if (++attempts > maxLeaseLockAttempts)
+              if (++transactions > 2 * maxLeaseLockAttempts - 1)
                 throw new Error('heartbeat retried past its limit');
               return Reflect.apply(target.begin, target, args);
             };
           },
         });
         const spy = vi.spyOn(client, 'getDatabase').mockReturnValue(counted);
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const error = vi.spyOn(console, 'error').mockImplementation(() => {});
         // Also restore when a hang ends the test by timeout.
-        onTestFinished(() => spy.mockRestore());
+        onTestFinished(() => {
+          spy.mockRestore();
+          warn.mockRestore();
+          error.mockRestore();
+        });
         try {
           await expect(
             heartbeatJob(r.workerId, r.job.id, r.job.lease!.token, 60_000),
@@ -1166,7 +1173,22 @@ suite(
         } finally {
           spy.mockRestore();
         }
-        expect(attempts).toBe(maxLeaseLockAttempts);
+        // One observed record per attempt: every one rolled back on 55P03.
+        const attempts = [...warn.mock.calls, ...error.mock.calls]
+          .filter(
+            ([tag]) => tag === '[MET-210] Worker lease transaction rolled back',
+          )
+          .map(([, record]) => [record.attempt, record.outcome]);
+        warn.mockRestore();
+        error.mockRestore();
+        expect(attempts).toEqual([
+          ...Array.from({ length: maxLeaseLockAttempts - 1 }, (_, i) => [
+            i + 1,
+            'retrying',
+          ]),
+          [maxLeaseLockAttempts, 'exhausted'],
+        ]);
+        expect(transactions).toBe(2 * maxLeaseLockAttempts - 1);
         // Keep 703 held: these NOWAIT locks prove that every failed attempt
         // rolled back its principal and target locks instead of parking them.
         await f.db.begin(async (tx) => {
