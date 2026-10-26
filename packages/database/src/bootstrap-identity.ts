@@ -1,6 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { loadEnvFile } from 'node:process';
 
+import { UsernameSchema } from '@allrice/contracts';
+
 import { closeDatabase } from './core/client.ts';
 import { ensureBootstrapPortalPrincipal, IdentityError } from './identity.ts';
 import {
@@ -25,7 +27,10 @@ const passwordFile = process.env.ALLRICE_BOOTSTRAP_ADMIN_PASSWORD_FILE;
 // transaction; an account that already exists for this email is left as it is.
 // Platform authority still comes only from ALLRICE_PLATFORM_ADMIN_EMAILS.
 try {
-  const username = required('ALLRICE_BOOTSTRAP_ADMIN_USERNAME');
+  // Normalize first so ` ADMIN ` cannot slip past the reserved-name check.
+  const username = UsernameSchema.parse(
+    required('ALLRICE_BOOTSTRAP_ADMIN_USERNAME'),
+  );
   checkUsername(username);
   const principal = await ensureBootstrapPortalPrincipal({
     organizationSlug: required('ALLRICE_BOOTSTRAP_ORG_SLUG'),
