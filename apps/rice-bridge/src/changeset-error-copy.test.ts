@@ -1,7 +1,14 @@
 // The words employees read for a file the Bridge did not change, checked
 // against codes these write checks really raise. Copy lives in the web
 // presenter (apps/web/lib/chatflow/changeset-presenter.ts).
-import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -16,6 +23,8 @@ describe('changeset file notes for codes the Bridge raises', () => {
     try {
       await writeFile(join(root, 'exists.txt'), 'kept');
       await writeFile(join(root, 'plain.txt'), 'kept');
+      await mkdir(join(root, 'locked'));
+      await writeFile(join(root, 'locked', 'inside.txt'), 'kept');
       const code = async (attempt: Promise<unknown>) => {
         try {
           await attempt;
@@ -33,6 +42,18 @@ describe('changeset file notes for codes the Bridge raises', () => {
         absent: await code(checkChangesetFile(root, 'gone.txt', digest)),
         overwrite: await code(writeTextFile(root, 'exists.txt', 'x', null)),
         noFolder: await code(writeTextFile(root, 'missing/a.txt', 'x', null)),
+        // Any realpath failure of the folder, a permission error included,
+        // is reported as DIRECTORY_NOT_FOUND, so the words cannot say why.
+        noAccess: await (async () => {
+          await chmod(join(root, 'locked'), 0o000);
+          try {
+            return await code(
+              writeTextFile(root, 'locked/inner/a.txt', 'x', null),
+            );
+          } finally {
+            await chmod(join(root, 'locked'), 0o755);
+          }
+        })(),
         // Not a typed Bridge error: changeset-executor.ts reports it as
         // PREFLIGHT_FAILED.
         throughFile: await code(
@@ -45,6 +66,7 @@ describe('changeset file notes for codes the Bridge raises', () => {
         absent: 'WRITE_CONFLICT',
         overwrite: 'WRITE_PRECONDITION_REQUIRED',
         noFolder: 'DIRECTORY_NOT_FOUND',
+        noAccess: 'DIRECTORY_NOT_FOUND',
         throughFile: 'ENOTDIR',
       });
       for (const sample of [samples.planned, samples.edited, samples.absent]) {
@@ -55,9 +77,9 @@ describe('changeset file notes for codes the Bridge raises', () => {
       expect(changesetFileNote('conflict', samples.overwrite)).toContain(
         '同名的文件或文件夹',
       );
-      expect(changesetFileNote('conflict', samples.noFolder)).toContain(
-        '要保存到的文件夹不存在',
-      );
+      const folder = changesetFileNote('conflict', samples.noFolder);
+      expect(folder).toContain('无法访问要保存到的位置');
+      expect(folder).not.toMatch(/不存在，|先建好/);
       expect(changesetFileNote('conflict', 'PREFLIGHT_FAILED')).toContain(
         '保存前的检查没有通过',
       );

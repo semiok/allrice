@@ -61,7 +61,7 @@ const reasons: [codes: string[], text: string][] = [
   ],
   [
     ['DIRECTORY_NOT_FOUND'],
-    '要保存到的文件夹不存在，没有改动。请先建好文件夹，或让 AI 员工换个位置。',
+    '无法访问要保存到的位置，没有改动。请确认这个文件夹存在、电脑端有权限访问，或让 AI 员工换个位置。',
   ],
   [
     ['FILE_DIRECTORY_REQUIRED'],
