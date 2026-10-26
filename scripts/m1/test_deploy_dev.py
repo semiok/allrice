@@ -218,7 +218,7 @@ class DeployDevMigrations(unittest.TestCase):
         for row in ('', 'row:1'):  # no row yet, or the PR2b-1 baseline
             with self.subTest(row=row):
                 self.assertEqual(self.contract(old, row), 'OK')
-        for row in ('row:', 'row:0', 'row:01', 'row:2.5', 'row:{"since": "x"}', 'row:1234567890'):
+        for row in ('row:', 'row:0', 'row:01', 'row:2.5', 'row:1234567890', 'row:invalid 2', 'row:invalid {"highWater": "2"}'):
             with self.subTest(row=row):  # a row that is there but not the store's shape
                 self.assertIn('unreadable journal contract row', self.contract(new, row))
         self.assertIn('cannot read the journal contract', self.contract(new, 'row:2', PSQL_FAIL='1'))
@@ -283,8 +283,8 @@ class DeployDevMigrations(unittest.TestCase):
                     'DATABASE_URL': 'postgres://stub/allrice_dev', 'ALLRICE_WEB_PORT': '1', 'ALLRICE_WORKER_PORT': '2'}}, f)
         write(os.path.join(inflight, 'state'), 'switching\n' + 'a' * 40 + '\n')
         script = 'stop_both() { :; }; start_both_on() { echo STARTED; }; if restore; then echo restore=0; else echo restore=1; fi'
-        cases = (('row:2', {}, False), ('row:1', {}, True), ('row:2', {'PSQL_FAIL': '1'}, True))
-        for row, env, started in cases:  # an unreadable database is left to start_both_on, as before
+        cases = (('row:2', {}, False), ('row:1', {}, True), ('row:2', {'PSQL_FAIL': '1'}, True), ('row:invalid 2', {}, True))
+        for row, env, started in cases:  # an unreadable database or row is left to start_both_on, as before
             with self.subTest(row=row, env=env):
                 p = self.run_dd(script, FILES + ARCHIVED, CONTRACT=row, **env)
                 self.assertEqual('STARTED' in p.stdout, started, p.stdout)

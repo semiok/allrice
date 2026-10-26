@@ -309,9 +309,10 @@ check_migrations_known() { # release -> prints the pending names; prints unknown
 # would pass while its Worker cannot read them. The marker is the built
 # packages/database/dist/native-journal-contract-store.js: renaming that module needs
 # this check changed in the same PR.
-contract_row() { # "row:<highWater, or the whole value without one>", nothing when there is no row
-  dev_sql "select 'row:' || coalesce(value->>'highWater', value::text) from allrice_runtime_metadata where key='dsh-journal-contract'"
+contract_row() { # "row:<highWater>", "row:invalid <value>" when it is not a JSON number, nothing when there is no row
+  dev_sql "select 'row:' || $CONTRACT_HW from allrice_runtime_metadata where key='dsh-journal-contract'"
 }
+CONTRACT_HW="case when jsonb_typeof(value->'highWater') = 'number' then value->>'highWater' else 'invalid ' || value::text end"
 check_contract_known() { # release -> 0; prints why and exits 2 when it predates the contract reached, 1 when unreadable
   local row hw
   row=$(contract_row) || { echo "cannot read the journal contract high water"; return 1; }
