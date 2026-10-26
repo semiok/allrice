@@ -11,6 +11,9 @@
     "./**/*.ts",
     "../../scripts/acceptance/runtime/p27-codex-lifecycle-fixture.ts",
     "../../scripts/acceptance/platform/repository-baseline.ts",
-    "../../scripts/acceptance/platform/repository-ci.test.ts"
+    "../../scripts/acceptance/platform/repository-ci.test.ts",
+    "../../scripts/user-text-regex-gate.ts",
+    "../../scripts/user-text-regex-gate.baseline.ts",
+    "../../scripts/user-text-regex-gate.test.ts"
   ]
 }
