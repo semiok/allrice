@@ -140,6 +140,28 @@ describe('host memory (MET-219)', () => {
 });
 
 describe('claim admission by memory pressure (MET-219)', () => {
+  it('keeps the byte floor at its exact boundary, even when pressure checks are off', () => {
+    const settings = memoryGateSettings({
+      ALLRICE_WORKER_MEMORY_PAUSE_PRESSURE: 'off',
+    });
+    expect(
+      memoryAdmission(memory({ availableBytes: 256 * MiB }), settings).claim,
+    ).toBe('all');
+    expect(
+      memoryAdmission(memory({ availableBytes: 256 * MiB - 1 }), settings),
+    ).toMatchObject({ claim: 'none', reason: 'available_below_minimum' });
+    expect(
+      memoryAdmission(memory({ pressure: 'critical', availableBytes: 0 }), {
+        ...defaults,
+        minAvailableBytes: 0,
+      }),
+    ).toMatchObject({ claim: 'none', reason: 'pressure_critical' });
+    for (const value of ['1048577', 'Infinity', 'NaN'])
+      expect(() =>
+        memoryGateSettings({ ALLRICE_WORKER_MIN_AVAILABLE_MEMORY_MB: value }),
+      ).toThrow();
+  });
+
   it('defaults to a 256 MB floor and pausing only at critical pressure', () => {
     expect(defaults).toEqual({
       minAvailableBytes: 256 * MiB,

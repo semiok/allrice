@@ -23,6 +23,7 @@ import {
   type NativeOnceWriter,
 } from '../../../../packages/database/src/native-schedule-once-state.ts';
 import { claimNextJob } from '../../../../packages/database/src/execution/queue.ts';
+import { experienceConsolidationJobType } from '../../../../packages/database/src/experience-consolidation-contracts.ts';
 import { readHostMemory, type HostMemoryProbe } from '../../src/host-memory.ts';
 import {
   claimUnderMemoryGate,
@@ -210,12 +211,28 @@ suite(
         log: () => undefined,
       });
     }
-    async function workerTick(memoryGate: ReturnType<typeof gate>) {
+    async function queuedChat(text: string) {
+      const session = await createChatSession(f.context, {
+        workspaceId: f.workspaceId,
+        employeeAssignmentId: f.assignmentId,
+        title: text,
+      });
+      const sent = await sendChatMessage(f.context, f.workspaceId, session.id, {
+        clientMessageId: randomUUID(),
+        text,
+        deliveryMode: 'follow_up',
+      });
+      return sent.run.job.id;
+    }
+    async function workerTick(
+      memoryGate: ReturnType<typeof gate>,
+      concurrency = 4,
+    ) {
       const workerId = randomUUID();
       const started: string[] = [];
       await claimUnderMemoryGate({
         gate: memoryGate,
-        concurrency: 4,
+        concurrency,
         active: () => started.length,
         stopping: () => false,
         claim: (options) => claimNextJob(workerId, 30_000, options),
@@ -252,6 +269,69 @@ suite(
           worker_id: resumed.workerId,
         })),
       );
+    });
+
+    it('at warn claims the foreground chat and due reminder within half the slots but leaves consolidation queued until normal', async () => {
+      const foreground = await queuedChatAndReminder();
+      const background = await queuedChat('整理本周已收集的经验');
+      // Queue-boundary fixture: the consolidation producer has its own suite.
+      // No execution is attempted; exercise the real SQL type filter and lease.
+      await f.db`update allrice_jobs set payload=${f.db.json({
+        schemaVersion: 1,
+        type: experienceConsolidationJobType,
+        input: { occurrenceId: randomUUID() },
+      })}, priority=-100 where id=${background}`;
+      const warned = await workerTick(gate('2 3664 1463 185712 1821 16384'));
+      expect(warned.started).toEqual(foreground);
+      expect(await jobRows(foreground)).toEqual(
+        foreground.map((id) => ({
+          id,
+          status: 'claimed',
+          worker_id: warned.workerId,
+        })),
+      );
+      expect(await jobRows([background])).toEqual([
+        { id: background, status: 'queued', worker_id: null },
+      ]);
+      const recovered = await workerTick(gate(normalM1));
+      expect(recovered.started).toEqual([background]);
+      expect(await jobRows([background])).toEqual([
+        { id: background, status: 'claimed', worker_id: recovered.workerId },
+      ]);
+    });
+
+    it('three Workers concurrently lease six foreground jobs exactly once within their capacity', async () => {
+      await f.db`update allrice_jobs set status='canceled' where status='queued'`;
+      const ids: string[] = [];
+      for (let i = 0; i < 6; i++)
+        ids.push(await queuedChat(`把第 ${i + 1} 场会议整理成三条要点`));
+      const ticks = await Promise.all(
+        Array.from({ length: 3 }, () => workerTick(gate(normalM1), 2)),
+      );
+      expect(ticks.map((tick) => tick.started.length)).toEqual([2, 2, 2]);
+      expect(ticks.flatMap((tick) => tick.started).sort()).toEqual(ids.sort());
+      const rows = await f.db<
+        {
+          id: string;
+          worker_id: string;
+          lease_token: string;
+          attempt: number;
+          live: boolean;
+        }[]
+      >`
+        select id,worker_id,lease_token,attempt,lease_expires_at>clock_timestamp() as live
+        from allrice_jobs where id in ${f.db(ids)}`;
+      expect(new Set(rows.map((row) => row.lease_token)).size).toBe(6);
+      for (const tick of ticks)
+        for (const id of tick.started) {
+          expect(rows.find((row) => row.id === id)).toMatchObject({
+            worker_id: tick.workerId,
+            attempt: 1,
+            live: true,
+          });
+        }
+      const empty = await workerTick(gate(normalM1));
+      expect(empty.started).toEqual([]);
     });
   },
 );
