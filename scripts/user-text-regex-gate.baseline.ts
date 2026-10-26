@@ -1,6 +1,6 @@
 /**
  * Baseline for `user-text-regex-gate.ts` (MET-210 #2, MET-220 R1): the places
- * that matched the user's wording when the gate was added (main a30aec4a,
+ * that matched the user's wording when the gate was added (main cc9c206a,
  * 2026-10-26, after #576). The list only shrinks. When #2 migrates a site,
  * delete it here; a site that turns out to only let a clear format through,
  * read the system's own or another system's text, or change display may

@@ -1,0 +1,143 @@
+{
+  "controls": [
+    {
+      "at": "2026-10-26T14:41:30.012Z",
+      "command": {
+        "id": "4ed6d532-2d00-4319-9022-0f5a4575f9c2",
+        "kind": "create",
+        "status": "blocked"
+      },
+      "ownerId": "1f5548dc-3654-4014-8f73-906ca83d3c6d",
+      "dispatch": {
+        "occurrenceId": "f0c82942-e2cc-4e59-8138-68b678cd67ec",
+        "clientMessageId": "adcdce11-28d6-4c1d-acba-7b0917f34505",
+        "businessSessionId": "42450f0c-52a2-4bb8-bfd4-b8755e49e951",
+        "reservationDigest": "sha256:e9fcc162cb0a558a0e102d03a8e179efba9929510a55df33bc6f821b68ce9bc2",
+        "employeeInstanceId": "4ba6b8c1-c832-4be0-aef8-4bd880f40af9",
+        "employeeAssignmentId": "4ba6b8c1-c832-4be0-aef8-4bd880f40af9"
+      },
+      "revision": 1,
+      "controlId": "0ed6058a-6a54-42cc-a8c7-d5ab9dfbba7d",
+      "partitionId": "allrice-once-v1",
+      "taskDeleted": false,
+      "workspaceId": "868c599c-6940-4ac3-b4c2-8f9311c1e47a",
+      "automationId": "e826e2c1-17d1-458b-adcd-c6b6b7f84fea",
+      "nativeTaskId": null,
+      "sessionState": "ready",
+      "organizationId": "0dd9d903-9e71-49b0-b3e4-0cdaff1caeb7",
+      "controlSessionId": "once-335e0941-7250-4d74-9273-a0ac2f790e6f"
+    },
+    {
+      "at": "2026-10-26T14:43:31.069Z",
+      "command": {
+        "id": "bf0ade22-da6f-48b8-b609-fc0ab76f7773",
+        "kind": "create",
+        "status": "confirmed"
+      },
+      "ownerId": "1f5548dc-3654-4014-8f73-906ca83d3c6d",
+      "dispatch": {
+        "occurrenceId": "9b3c97d8-7098-414c-a120-b25552c1b504",
+        "clientMessageId": "1fe91472-b73e-42a7-b558-247c90cd42da",
+        "businessSessionId": "42450f0c-52a2-4bb8-bfd4-b8755e49e951",
+        "reservationDigest": "sha256:0de404c8264334742f6744c1f06c2c94e2efb2b8b6790971ad81ecb425f3d4c1",
+        "employeeInstanceId": "4ba6b8c1-c832-4be0-aef8-4bd880f40af9",
+        "employeeAssignmentId": "4ba6b8c1-c832-4be0-aef8-4bd880f40af9"
+      },
+      "revision": 1,
+      "controlId": "4baf2434-1869-4617-b98d-a81cc0cab147",
+      "partitionId": "allrice-once-v1",
+      "taskDeleted": false,
+      "workspaceId": "868c599c-6940-4ac3-b4c2-8f9311c1e47a",
+      "automationId": "68023369-7f76-4e68-bf96-0098164e9295",
+      "nativeTaskId": "schedule-2d5d1388-5784-4d18-b093-9aeef487ee57",
+      "sessionState": "ready",
+      "organizationId": "0dd9d903-9e71-49b0-b3e4-0cdaff1caeb7",
+      "controlSessionId": "once-af2a191a-24cc-4df6-b2cc-9a8dd2051b67"
+    },
+    {
+      "at": "2026-10-26T14:41:51.050Z",
+      "command": {
+        "id": "57edc03b-bb21-460c-9972-3806b2797ad2",
+        "kind": "create",
+        "status": "confirmed"
+      },
+      "ownerId": "1f5548dc-3654-4014-8f73-906ca83d3c6d",
+      "dispatch": {
+        "occurrenceId": "166e1620-5919-4166-aa74-980867215cc3",
+        "clientMessageId": "882b1976-c1bf-49f2-9f1d-a819c1b25a74",
+        "businessSessionId": "42450f0c-52a2-4bb8-bfd4-b8755e49e951",
+        "reservationDigest": "sha256:09eff07621a708f35c71cc7ff6b1840ce685ac33fe425100860a69ac4ea12f8e",
+        "employeeInstanceId": "4ba6b8c1-c832-4be0-aef8-4bd880f40af9",
+        "employeeAssignmentId": "4ba6b8c1-c832-4be0-aef8-4bd880f40af9"
+      },
+      "revision": 1,
+      "controlId": "6e6af288-9f1c-48fd-bd0d-93227716c799",
+      "partitionId": "allrice-once-v1",
+      "taskDeleted": false,
+      "workspaceId": "868c599c-6940-4ac3-b4c2-8f9311c1e47a",
+      "automationId": "5e67ac70-1f60-4106-a02b-9652b83267ca",
+      "nativeTaskId": "schedule-1fa59ca8-75e7-4100-a9d5-87acdcc1849d",
+      "sessionState": "ready",
+      "organizationId": "0dd9d903-9e71-49b0-b3e4-0cdaff1caeb7",
+      "controlSessionId": "once-9ef336c2-686a-4f1e-a89e-4bf4fcd5885b"
+    }
+  ],
+  "tasks": {
+    "schedule-2d5d1388-5784-4d18-b093-9aeef487ee57": {
+      "record": {
+        "id": "schedule-2d5d1388-5784-4d18-b093-9aeef487ee57",
+        "kind": "at",
+        "title": "AllRice once control",
+        "prompt": "Synthetic schedule control only. Never execute business work.",
+        "scheduledAt": "2026-10-26T14:43:31.069Z"
+      },
+      "status": "active",
+      "sessionId": "once-af2a191a-24cc-4df6-b2cc-9a8dd2051b67",
+      "deliveryHistory": {
+        "records": [],
+        "earlierRecordsUnavailable": false
+      }
+    },
+    "schedule-1fa59ca8-75e7-4100-a9d5-87acdcc1849d": {
+      "record": {
+        "id": "schedule-1fa59ca8-75e7-4100-a9d5-87acdcc1849d",
+        "kind": "at",
+        "title": "AllRice once control",
+        "prompt": "Synthetic schedule control only. Never execute business work.",
+        "scheduledAt": "2026-10-26T14:41:51.050Z"
+      },
+      "status": "inactive",
+      "sessionId": "once-9ef336c2-686a-4f1e-a89e-4bf4fcd5885b",
+      "lastDelivery": {
+        "messageId": "428b00a7-73b8-4d7e-87d1-5e713167ac1f",
+        "deliveredAt": "2026-10-26T14:41:51.085Z",
+        "scheduledAt": "2026-10-26T14:41:51.050Z"
+      },
+      "deliveryHistory": {
+        "records": [
+          {
+            "prompt": "Synthetic schedule control only. Never execute business work.",
+            "messageId": "428b00a7-73b8-4d7e-87d1-5e713167ac1f",
+            "deliveredAt": "2026-10-26T14:41:51.085Z",
+            "scheduledAt": "2026-10-26T14:41:51.050Z"
+          }
+        ],
+        "earlierRecordsPruned": false,
+        "earlierRecordsUnavailable": false
+      }
+    }
+  },
+  "workspace": {
+    "global": {
+      "initialized": true,
+      "workspaceIds": [],
+      "pinnedSessionIds": [],
+      "archivedSessionIds": []
+    },
+    "tables": {
+      "workspaces": {}
+    },
+    "revision": 1,
+    "unitVersion": 2
+  }
+}

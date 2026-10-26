@@ -1,6 +1,13 @@
 /** Isolated synthetic fixture; never imported by a production entrypoint. */
 import { createHash, randomUUID } from 'node:crypto';
-import { readFile, readdir, mkdtemp, rm, lstat } from 'node:fs/promises';
+import {
+  readFile,
+  readdir,
+  mkdtemp,
+  realpath,
+  rm,
+  lstat,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LocalStorageAdapter } from '../../storage/src/index.ts';
@@ -159,6 +166,9 @@ export async function createAssistantFixtureDatabase(
     });
     storageAttempted = true;
     storageRoot = await mkdtemp(join(tmpdir(), 'allrice-p25-artifacts-'));
+    // macOS tmpdir is /var/..., a symlink to /private/var/...: code under test
+    // that requires realpath(path) === path must see the canonical root.
+    storageRoot = await realpath(storageRoot);
     stores.set(db, new LocalStorageAdapter(storageRoot));
     const migrations = new URL('../migrations/', import.meta.url);
     await db.begin(async (tx) => {

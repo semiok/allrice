@@ -1,0 +1,6 @@
+{"type":"session","version":4,"id":"once-335e0941-7250-4d74-9273-a0ac2f790e6f","createdAt":1793025691295,"cwd":"/allrice/journal-fixture","isSeeded":false,"delegationDepth":0}
+{"type":"agent/inbox/spliced","seq":0,"time":1793025691300,"data":{"target":"next-turn","start":0,"inserted":[{"content":[{"type":"text","text":"Initialize isolated once control. No business execution."}],"source":{"kind":"user"},"role":"user","id":"bc96a347-c9d0-4bcc-94cf-cc21b219db1e"}]}}
+{"type":"turn/start","seq":1,"time":1793025691301,"data":{"turn":1}}
+{"type":"agent/inbox/spliced","seq":2,"time":1793025691301,"data":{"target":"next-turn","start":0,"removedCount":1,"inserted":[]}}
+{"type":"turn/end","seq":3,"time":1793025691304,"data":{"turn":1,"reason":{"kind":"blocked"}}}
+{"type":"session/end-seed","seq":4,"time":1793025711297,"data":{}}

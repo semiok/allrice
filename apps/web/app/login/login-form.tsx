@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from 'react';
 import { loginDestination } from '../../lib/portal/login-destination';
+import { loginFailure, loginUnavailable } from './login-failure';
 
 /** Without `entry` the form acts as an employee entry of the shared deployment. */
 export function LoginForm(props: {
@@ -50,16 +51,12 @@ export function LoginForm(props: {
         );
       } else {
         const body = await response.json().catch(() => null);
-        setError(
-          response.status === 403 &&
-            body?.error?.code === 'AUTHORIZATION_DENIED'
-            ? `此账号无法登录这个入口。管理员请从 ${entry.adminHost} 登录；员工请从 ${entry.employeeHost} 登录。`
-            : '登录失败，请检查账号和密码。',
-        );
+        setError(loginFailure(response.status, body?.error?.code, entry));
         setPending(false);
       }
     } catch {
-      setError('暂时无法连接，请稍后重试。');
+      // Offline, or a success the browser could not read.
+      setError(loginUnavailable);
       setPending(false);
     }
   }
