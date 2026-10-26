@@ -3,8 +3,9 @@
 // on their Rice assignment, the standard brand-content method, and the five brand-content
 // workflow packages, bound and enabled. Stopgap until the product has its own entry for
 // this (MET-216, user decision 2026-10-26); it calls the same database functions the
-// MET-194 acceptance used, in the person's own name, through a server session cut to 30
-// minutes and revoked before the script exits (also on INT, TERM and HUP).
+// MET-194 acceptance used, in the person's own name, through a 30-minute server session
+// that is revoked before the script exits. INT, TERM and HUP stop it after the current
+// step and still clean up; a step that does not return within 60 seconds is abandoned.
 //
 // Run it from a checkout of this repository with the environment of the target Web:
 //   with-env web node scripts/m1/install-brand-content.mjs --root <release dir> \
@@ -15,9 +16,10 @@
 // The state file keeps every request id, so a rerun after a failure resumes the same
 // installation instead of creating a second one. Without a state file the script refuses
 // when the person already has a live employee of that name. One installation per person
-// and name runs at a time (a PostgreSQL advisory lock, held until exit).
+// and name runs at a time (a PostgreSQL advisory lock, checked before every write), and a
+// new state file is claimed exclusively.
 import assert from 'node:assert/strict';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -73,28 +75,58 @@ const profile = c.EmployeeInstanceProfileSchema.parse({
 });
 const name = profile.name;
 
-let token, lock, lockKey, cleaning;
-// Revoke the session, drop the lock, close the pool; each step runs even if one fails.
-const cleanup = () =>
-  (cleaning ??= (async () => {
+let token, lock, lockKey, stopping;
+const within = (promise, ms, what) =>
+  Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${what} timed out`)), ms).unref(),
+    ),
+  ]);
+// Runs once, after the main flow has left its last step: revoke the session, drop the
+// lock, close the pool. Each part runs even if an earlier one fails or times out; a
+// session that could not be revoked still expires on its own.
+const cleanup = async () => {
+  try {
+    if (token)
+      await within(db.revokeSession(token), 10_000, 'revoking the session');
+  } finally {
     try {
-      if (token) await db.revokeSession(token);
-    } finally {
-      try {
-        if (lock) {
-          await lock`select pg_advisory_unlock(hashtextextended(${lockKey}, 0))`;
-          lock.release();
-        }
-      } finally {
-        await db.closeDatabase();
+      if (lock) {
+        await within(
+          lock`select pg_advisory_unlock(hashtextextended(${lockKey}, 0))`,
+          5_000,
+          'releasing the lock',
+        );
+        lock.release();
       }
+    } finally {
+      await db.closeDatabase();
     }
-  })());
+  }
+};
+// A signal only asks the main flow to stop at the next checkpoint, so cleanup never runs
+// beside a step that is still writing. A second signal, or a step that hangs, exits now.
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'])
-  process.once(signal, () => {
-    console.error(`[brand-content] ${signal}: revoking the session, stopping`);
-    cleanup().finally(() => process.exit(130));
+  process.on(signal, () => {
+    if (stopping) process.exit(130);
+    stopping = signal;
+    console.error(`[brand-content] ${signal}: stopping after the current step`);
+    setTimeout(() => {
+      console.error('[brand-content] the current step did not return; exiting');
+      process.exit(130);
+    }, 60_000).unref();
   });
+// Before every write: not asked to stop, and the lock is still held on its own connection
+// (it is released if that connection drops, even while the pool keeps working).
+const checkpoint = async () => {
+  if (stopping) throw new Error(`stopped by ${stopping}`);
+  const [{ held }] = await lock`
+    select exists(select 1 from pg_locks where locktype='advisory' and objsubid=1 and granted
+      and pid=pg_backend_pid()
+      and ((classid::bigint << 32) | objid::bigint) = hashtextextended(${lockKey}, 0)) held`;
+  if (!held) throw new Error('lost the installation lock');
+};
 try {
   // 1. Who and where: one active member, one workspace, one active base assignment.
   const [scope] = await sql`
@@ -136,9 +168,10 @@ try {
     );
   }
 
-  const stateFile =
+  const stateFile = path.resolve(
     args.state ??
-    `${os.homedir()}/allrice-dev/qa/brand-content-install/${scope.organization_id}-${username}.json`;
+      `${os.homedir()}/allrice-dev/qa/brand-content-install/${scope.organization_id}-${scope.workspace_id}-${username}-${hash(Buffer.from(name)).slice(7, 19)}.json`,
+  );
   fs.mkdirSync(path.dirname(stateFile), { recursive: true, mode: 0o700 });
   const fresh = !fs.existsSync(stateFile);
   if (fresh) {
@@ -195,6 +228,19 @@ try {
     );
   state.templateDigest = templateDigest;
   state.root = root;
+  // A new installation claims its state file exclusively: two runs given the same file
+  // cannot both start from scratch and overwrite each other's request ids.
+  if (fresh)
+    try {
+      fs.writeFileSync(stateFile, JSON.stringify(state, null, 2) + '\n', {
+        flag: 'wx',
+        mode: 0o600,
+      });
+    } catch (error) {
+      if (error.code === 'EEXIST')
+        throw new Error(`${stateFile} was claimed by another run`);
+      throw error;
+    }
   // Write a temporary file, sync it, then rename over the state: a failed or killed save
   // leaves the previous complete state in place.
   const save = () => {
@@ -211,12 +257,17 @@ try {
   save();
   step(`state ${stateFile}`);
 
-  // 2. Act as the person. createSession issues a 7-day session; cut it to 30 minutes at
-  //    once so a run killed before cleanup leaves nothing usable for long.
-  const login = await db.createSession(scope.user_id);
-  token = login.token;
-  await sql`update allrice_sessions set expires_at=least(expires_at, now() + interval '30 minutes')
-    where id=${login.id}`;
+  // 2. Act as the person. createSession always issues a 7-day session, so this inserts the
+  //    same row with a 30-minute expiry in one statement: a run killed at any point leaves
+  //    nothing usable for long. The token lives only in this process.
+  await checkpoint();
+  token = randomBytes(32).toString('base64url');
+  const [session] = await sql`
+    insert into allrice_sessions (user_id, token_hash, expires_at)
+    select id, ${db.hashOpaqueToken(token)}, now() + interval '30 minutes'
+    from allrice_users where id=${scope.user_id} and status='active'
+    returning id`;
+  assert.ok(session, 'could not open a session for the person');
   const context = await db.authenticateSession(
     token,
     { organizationId: scope.organization_id, workspaceId: scope.workspace_id },
@@ -225,6 +276,7 @@ try {
   assert.ok(context, 'could not open a session for the person');
 
   // 3. The custom employee on the Rice assignment.
+  await checkpoint();
   const instance = await db.createEmployeeInstance(context, {
     workspaceId: scope.workspace_id,
     assignmentId,
@@ -250,6 +302,7 @@ try {
     changeSummary: 'MET-216 迁移后恢复品牌内容运营；按当前版本的内置模板安装',
   };
   const publish = async (label, expectedRevision, textEdits, manifest) => {
+    await checkpoint();
     const draft = await db.mutateEmployeeContent(context, {
       ...common,
       operation: 'save_draft',
@@ -314,6 +367,7 @@ try {
   step('method active');
 
   for (const template of c.brandContentWorkflowTemplates) {
+    await checkpoint();
     const item = (state.packages[template.stage] ??= {
       sourceId: randomUUID(),
       registerRequestId: randomUUID(),
@@ -382,6 +436,7 @@ try {
       ).object;
     }
     save();
+    await checkpoint();
     item.package = await db.registerWorkflowPackage(
       context,
       {
@@ -410,6 +465,7 @@ try {
       { storage },
     );
     save();
+    await checkpoint();
     item.binding = await db.setWorkflowPackageBinding(context, {
       workspaceId: scope.workspace_id,
       instanceId: instance.id,
@@ -488,4 +544,5 @@ try {
   );
 } finally {
   await cleanup();
+  if (stopping) process.exit(130);
 }
