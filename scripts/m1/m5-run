@@ -5,7 +5,7 @@
 #
 #   M5T_ACTION    test | codex | status | setup | setup-line
 #   M5T_TARGET    m5 | m1
-#   M5T_SHA M5T_RUN M5T_CALLER M5T_WAIT M5T_BUILD M5T_ENV M5T_FULL_ACCESS
+#   M5T_SHA M5T_RUN M5T_CALLER M5T_WAIT M5T_BUILD M5T_ENV M5T_FULL_ACCESS M5T_MODEL
 #   M5T_STOP      M5: run ids whose M1 side has let go (m5-test checked their leases); a slot
 #                 still held by one of them is a leftover, stopped before this run starts
 #   M5T_CODEX     only for the unit tests (ssh does not pass it)
@@ -555,7 +555,7 @@ fi
 以下是任务说明。"; cat "$prompt"; } >"$prompt.env" && mv "$prompt.env" "$prompt"
 # No login shell (the user's profile would put another Node and psql first on PATH), every
 # variable passed on, and no session files left in the user's ~/.codex.
-phase codex "$CODEX" exec --ephemeral -C "$wt" -m gpt-6-astra -c model_reasoning_effort=max -c allow_login_shell=false \
+phase codex "$CODEX" exec --ephemeral -C "$wt" -m "${M5T_MODEL:-gpt-6-astra}" -c model_reasoning_effort=max -c allow_login_shell=false \
   -c shell_environment_policy.inherit=all "${SANDBOX[@]}" -o "$BASE/results/$M5T_RUN.md" - <"$prompt" || rc=$?
 interrupted codex
 # Everything Codex changed since the commit, new files included (as intent-to-add).

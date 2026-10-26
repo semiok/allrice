@@ -480,6 +480,11 @@ class M5Test(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn('-s danger-full-access', read(os.path.join(self.m1, 'codex.args')))
         self.assertEqual(read(out), 'test report\n')
+        self.assertIn('-m gpt-6-astra ', read(os.path.join(self.m1, 'codex.args')))
+        p = self.run_m5('codex', '--model', 'gpt-6.1-sol', '--no-build', '-o', out, '--', 'test it')  # Codex-saving mode
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn('-m gpt-6.1-sol ', read(os.path.join(self.m1, 'codex.args')))
+        self.assertEqual(self.run_m5('codex', '--model', 'x; rm', '-o', out, '--', 'y').returncode, 2)
         prompt = read(os.path.join(self.m1, 'codex.prompt'))
         self.assertTrue(prompt.startswith('【运行环境，m5-test 附加】你在 M1 上'), prompt)
         self.assertIn('不要调用 m5-test', prompt)

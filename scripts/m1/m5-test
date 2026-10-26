@@ -6,7 +6,7 @@
 #
 #   m5-test [<commit>] [--db] [--browser] [-e ALLRICE_RUN_X=v]… [--build <cmd> | --no-build]
 #           [--wait <s>] [--on auto|m5|m1] -- <vitest arguments…>
-#   m5-test codex [<commit>] -o <result.md> [--full-access] [the options above] [-- <prompt>]
+#   m5-test codex [<commit>] -o <result.md> [--full-access] [--model <m>] [the options above] [-- <prompt>]
 #   m5-test status | setup
 #
 # <commit> defaults to HEAD of the current worktree; only committed code is tested. It is
@@ -25,7 +25,7 @@
 # default build is `pnpm --filter @allrice/contracts build`, as `pnpm test` does. Output is also
 # kept in ~/allrice-dev/qa/m5-test/; the last line names the machine the run finished on.
 #
-# codex: Astra (gpt-6-astra, max) runs `codex exec` in that worktree after the install and
+# codex: Astra (gpt-6-astra, or --model, at max) runs `codex exec` in that worktree after the install and
 # build. On M5 it may write only there (it can still read, and use the network); a pass that
 # needs more, such as browser tests (Chrome does not start in Codex's sandbox), takes
 # --full-access and runs on M1, where Codex always has full access (AGENTS.md §9); with --on m5
@@ -131,7 +131,7 @@ if [ "$cmd" = setup ]; then
   exit
 fi
 
-ref="" on=auto wait=600 build="pnpm --filter @allrice/contracts build" out="" full=0 test_env=""
+ref="" on=auto wait=600 build="pnpm --filter @allrice/contracts build" out="" full=0 model=gpt-6-astra test_env=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --) shift; break ;;
@@ -146,6 +146,9 @@ while [ $# -gt 0 ]; do
     --on) case "${2:-}" in auto | m5 | m1) on=$2 ;; *) die "--on takes auto, m5 or m1" ;; esac; shift ;;
     -o) [ "$cmd" = codex ] || die "-o is for m5-test codex"; [ -n "${2:-}" ] || die "-o takes a file"; out=$2; shift ;;
     --full-access) [ "$cmd" = codex ] || die "--full-access is for m5-test codex"; full=1 ;;
+    --model) # AGENTS.md §11: Sol in Codex-saving mode
+      [ "$cmd" = codex ] || die "--model is for m5-test codex"
+      [[ "${2:-}" =~ ^gpt-[0-9a-z.-]+$ ]] || die "--model takes a model name such as gpt-6-astra"; model=$2; shift ;;
     -*) die "unknown option $1 (vitest arguments go after --)" ;;
     *) [ -z "$ref" ] || die "one commit only (vitest arguments go after --): $1"; ref=$1 ;;
   esac
@@ -187,7 +190,7 @@ log=$LOGS/$run.log
 attempt() {
   local where=$1 settings
   settings=(M5T_ACTION="$cmd" M5T_SHA="$sha" M5T_RUN="$run" M5T_CALLER="$(basename "$dir")" M5T_WAIT="$wait"
-    M5T_BUILD="$build" M5T_ENV="$test_env" M5T_FULL_ACCESS="$full")
+    M5T_BUILD="$build" M5T_ENV="$test_env" M5T_FULL_ACCESS="$full" M5T_MODEL="$model")
   set +e
   if [ "$where" = m5 ]; then
     # The lease, locked while this side is attached to the run (locked before it gets its name,
