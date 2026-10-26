@@ -289,10 +289,12 @@ export function createNativeOnceWorkerRuntime(
       seen.epoch !== refusal.epoch;
     refusal = {
       ...seen,
-      leaseExpiresAt:
-        seen.expiresAtMs === null
-          ? null
-          : new Date(seen.expiresAtMs).toISOString(),
+      // Formatting must not turn a refusal into a fault (an out-of-range time).
+      leaseExpiresAt: Number.isFinite(
+        new Date(seen.expiresAtMs ?? NaN).getTime(),
+      )
+        ? new Date(seen.expiresAtMs!).toISOString()
+        : null,
       since: refusal?.since ?? at,
       lastSeenAt: at,
     };

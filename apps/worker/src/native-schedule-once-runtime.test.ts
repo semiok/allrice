@@ -464,6 +464,16 @@ describe('native once Worker runtime', () => {
       await f.runtime.tick();
       expect(said(warn)).toHaveLength(2); // still refused an hour later
       expect(f.runtime.status().takeoverRefused?.since).toBe(first?.since);
+      refused = {
+        ...refused!,
+        code: 'close_proof_invalid',
+        expiresAtMs: Infinity,
+      };
+      await f.runtime.tick(); // an unformattable time is no fault
+      expect(f.runtime.status()).toMatchObject({
+        faultCount: 0,
+        takeoverRefused: { code: 'close_proof_invalid', leaseExpiresAt: null },
+      });
       refused = null; // no reason from the store is not a takeover
       await f.runtime.tick();
       expect(f.runtime.status().takeoverRefused).toMatchObject({
