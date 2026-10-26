@@ -234,12 +234,14 @@ if [ "$on" != m1 ]; then
   fi
   if [ "$m5" = ready ]; then
     attempt m5
-    if finished M5; then target=m5
+    # 76: M5 slept during the run (its guard says so after any closing line): no verdict.
+    if [ "$rc" != 76 ] && finished M5; then target=m5
     else
       case $rc in
         3) why="M5 没有空位（等了 ${wait} 秒）" ;;
         86) why="M5 的测试环境没配好或版本不符（在 M1 上跑 m5-test setup）" ;;
         87) why="M5 内存紧张" ;;
+        76) why="M5 中断：运行中 M5 睡过（不算测试失败）" dropped=1 ;;
         88) why="M5 环境故障（$(grep -a '^m5-test: .* on M5$' "$log" | tail -1 | sed 's/^m5-test: //')）" ;;
         75) why="M5 中断：测试进程被结束（不算测试失败）" dropped=1 ;;
         124) why="M5 中断：${idle} 秒没有输出（不算测试失败）" dropped=1 ;;

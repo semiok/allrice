@@ -516,56 +516,92 @@ esac
 # On M5 the whole run, waiting for room included, runs under a guard (user 10-27: the lid gets
 # closed and M5 carried off for an hour). M1 gives up 60-75 s after M5 stops answering (ssh
 # ServerAlive, 4 x 15 s), plus whatever the network takes to come back after waking, and runs
-# the tests itself; when M5 wakes, this run must not carry on with M5's CPU. The guard starts
-# the run in a process group of its own and watches a clock that counts sleep but not clock
-# adjustments; when one tick took 30 s more than it should, well inside what M1 waits, it stops
-# the group and notes it in ~/allrice-test/stopped.log (stopping one M1 still waited for only
-# costs a rerun there). It signals the group only while its leader is still
-# unreaped, so the group id cannot belong to anyone else. A run that ends normally has whatever
-# is left of its group stopped too.
+# the tests itself; when M5 wakes, this run must not carry on with M5's CPU. The guard:
+# - starts the run in a session and process group of its own (the run reports back through a
+#   pipe once it has them) and watches one clock that counts sleep but not clock adjustments;
+# - every tick notes each process of the run (pid and start time), its group and every
+#   descendant, so one that later leaves for a session of its own (a detached Chrome) is still
+#   known; the test Postgres is never one of them;
+# - when a tick took 30 s more than it should, well inside what M1 waits, stops them all (each
+#   checked by its start time; the group while its leader is still unreaped, so the id cannot
+#   be someone else's), notes it in ~/allrice-test/stopped.log and exits 76, which m5-test
+#   takes as "M5 中断" even after the run's closing line: tests that slept are no verdict
+#   (stopping one M1 still waited for only costs a rerun there);
+# - when the run ends normally, stops what is left of it all the same.
 if [ "$target" = m5 ] && [ -z "${M5T_GUARDED:-}" ] && [ -n "${BASH_EXECUTION_STRING:-}" ]; then
   exec /usr/bin/python3 -c 'import os,select,signal,subprocess,sys,time
 gap,log,rid,argv=float(sys.argv[1]),sys.argv[2],sys.argv[3],sys.argv[4:]
-tick,clock=min(5,gap/4),getattr(time,"CLOCK_BOOTTIME",time.CLOCK_MONOTONIC) # both count time asleep
+clock=getattr(time,"CLOCK_BOOTTIME",time.CLOCK_MONOTONIC) # both count time asleep, neither clock changes
+now=lambda: time.clock_gettime(clock)
+tick,start=min(5,gap/4),now()
+r,w=os.pipe()
 pid=os.fork()
 if pid==0:
-    os.setsid(); os.execve(argv[0],argv,dict(os.environ,M5T_GUARDED="1"))
+    os.close(r); os.setsid(); os.write(w,b"."); os.close(w)
+    os.execve(argv[0],argv,dict(os.environ,M5T_GUARDED="1"))
+os.close(w); os.read(r,1); os.close(r) # the run has its own group before anything is watched
 gone=False
-def exited(t): # the leader has exited (still unreaped), waiting at most t seconds
-    end=time.time()+t
-    while True:
-        if gone: return True
-        if hasattr(os,"waitid"):
-            if os.waitid(os.P_PID,pid,os.WEXITED|os.WNOHANG|os.WNOWAIT): return True
-        elif kq.control(None,1,max(0,end-time.time())): return True
-        if time.time()>=end: return False
-        if hasattr(os,"waitid"): time.sleep(min(0.2,max(0,end-time.time())))
-if not hasattr(os,"waitid"): # macOS: be told of the exit without reaping
+if not hasattr(os,"waitid"): # macOS: told of the exit without reaping it
     kq=select.kqueue()
     try: kq.control([select.kevent(pid,select.KQ_FILTER_PROC,select.KQ_EV_ADD|select.KQ_EV_ONESHOT,select.KQ_NOTE_EXIT)],0)
     except OSError: gone=True # it exited already
-def members():
-    out=subprocess.run(["ps","-axo","pid=,pgid=,stat="],capture_output=True,text=True).stdout
-    return [f for f in (l.split() for l in out.splitlines()) if len(f)==3 and f[1]==str(pid) and not f[2].startswith("Z")]
+def exited(t): # the leader has exited (still unreaped), waiting at most t seconds of the clock
+    global gone
+    end=now()+t
+    while not gone:
+        left=end-now()
+        if hasattr(os,"waitid"):
+            gone=bool(os.waitid(os.P_PID,pid,os.WEXITED|os.WNOHANG|os.WNOWAIT))
+            if gone or left<=0: break
+            time.sleep(min(0.2,left))
+        else:
+            gone=bool(kq.control(None,1,max(0,left)))
+            if left<=0: break
+    return gone
+seen={} # pid -> start time of every process of the run seen so far
+def look(): # -> {pid: start time} of the processes alive now; notes those of the run in seen
+    procs={}
+    for l in subprocess.run(["ps","-axo","pid=,ppid=,pgid=,lstart=,comm="],capture_output=True,text=True).stdout.splitlines():
+        f=l.split()
+        if len(f)>=9: procs[int(f[0])]=(int(f[1]),int(f[2])," ".join(f[3:8])," ".join(f[8:]))
+    mine,added={p for p,v in procs.items() if p==pid or v[1]==pid},True
+    while added:
+        added=False
+        for p,v in procs.items():
+            if p not in mine and v[0] in mine: mine.add(p); added=True
+    for p in mine:
+        if not procs[p][3].endswith("postgres"): seen.setdefault(p,procs[p][2])
+    return {p:v[2] for p,v in procs.items()}
 def stop(grace):
     for sig in (signal.SIGTERM,signal.SIGKILL):
-        if not members(): return
-        try: os.killpg(pid,sig)
-        except OSError: return
-        end=time.time()+grace
-        while members() and time.time()<end: time.sleep(0.2)
-slept,last=0,time.clock_gettime(clock)
+        alive=look()
+        left=[p for p,t in seen.items() if alive.get(p)==t and not (p==pid and gone)]
+        if not left: return
+        for p in left:
+            try: os.kill(p,sig)
+            except OSError: pass
+        try: os.killpg(pid,sig) # the leader is unreaped: the id is still the run group
+        except OSError: pass
+        end=now()+grace
+        while now()<end:
+            alive=look()
+            if not [p for p,t in seen.items() if alive.get(p)==t and p!=pid]: break
+            time.sleep(0.2)
+look()
+slept,last=0,start
 while True: # the clock first: the run may have ended on waking, its output pipe gone
     done=exited(tick)
-    now=time.clock_gettime(clock)
-    if now-last>tick+gap: slept=now-last; break
+    t=now()
+    if t-last>tick+gap: slept=t-last; break
     if done: break
-    last=now
+    look(); last=t
 stop(min(5,gap))
 status=os.waitpid(pid,0)[1]
 if slept:
     with open(log,"a") as f:
         f.write("%s %s stopped after M5 was asleep %ds; m5-test on M1 reruns a run it loses\n"%(time.strftime("%Y-%m-%d %H:%M"),rid,slept))
+    try: print("m5-test: M5 was asleep %ds during this run; it is no verdict"%slept,flush=True)
+    except OSError: pass
     sys.exit(76)
 sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 128+os.WTERMSIG(status))' \
     "${M5T_SLEEP_GAP:-30}" "$BASE/stopped.log" "${M5T_RUN:-?}" /bin/bash -c "$BASH_EXECUTION_STRING" m5-run "$@"

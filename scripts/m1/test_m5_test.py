@@ -30,7 +30,8 @@ case "$*" in
   *M5T_ACTION=test*|*M5T_ACTION=codex*)
     [ ! -e hang ] || { echo "starting"; sleep 30; exit 0; }
     [ ! -e drop ] || { HOME=$PWD /bin/sh -c "$*" | grep -v '^m5-test: done on '; exit 255; }
-    [ ! -e late-drop ] || { HOME=$PWD /bin/sh -c "$*"; exit 255; } ;;
+    [ ! -e late-drop ] || { HOME=$PWD /bin/sh -c "$*"; exit 255; }
+    [ ! -e slept ] || { HOME=$PWD /bin/sh -c "$*"; echo "m5-test: M5 was asleep 40s during this run; it is no verdict"; exit 76; } ;;
 esac
 HOME=$PWD exec /bin/sh -c "$*"
 '''
@@ -39,7 +40,8 @@ PNPM = r'''#!/bin/sh
 echo "$*|$ALLRICE_TEST_DATABASE_URL|${ALLRICE_RUN_DB_INTEGRATION:-}|${ALLRICE_RUN_BROWSER_INTEGRATION:-}|${ALLRICE_RUN_X:-}|${LEAK_ME:-}|$PWD|${M5T_VITEST_CAP:-}|$PGPORT|$HOME|${ALLRICE_NATIVE_ONCE_PROBE_MODULE_BASE:-}" >>"$HOME/pnpm.calls"
 case "$1" in
   install) mkdir -p node_modules/.bin; touch node_modules/kept; cp "$(dirname "$0")/vitest" node_modules/.bin/vitest; exit "$(cat "$HOME/install.rc" 2>/dev/null || echo 0)" ;;
-  exec) [ ! -e "$HOME/hang" ] || { trap '' TERM; echo $$ >"$HOME/hang.pid"; sleep "$(cat "$HOME/hang.seconds" 2>/dev/null || echo 30)"; }; echo "vitest says hello"; exit "$(cat "$HOME/vitest.rc" 2>/dev/null || echo 0)" ;;
+  exec) [ ! -e "$HOME/detach" ] || { /usr/bin/python3 -c 'import os,sys,time; os.setsid(); open(sys.argv[1],"w").write(str(os.getpid())); time.sleep(120)' "$HOME/detached.pid" & sleep 2; }
+    [ ! -e "$HOME/hang" ] || { trap '' TERM; echo $$ >"$HOME/hang.pid"; sleep "$(cat "$HOME/hang.seconds" 2>/dev/null || echo 30)"; }; echo "vitest says hello"; exit "$(cat "$HOME/vitest.rc" 2>/dev/null || echo 0)" ;;
 esac
 '''
 VITEST = r'''#!/bin/sh
@@ -532,6 +534,31 @@ class M5Test(unittest.TestCase):
         self.assertEqual(self.calls(self.th), [])  # it never started on M5
         self.assertIsNone(other.poll())  # the other session's run is not ours to stop
         self.assertIn('finished on M1 (M5 dropped out mid-run', out)
+
+    def test_closing_line_then_slept_is_no_verdict(self):
+        write(os.path.join(self.m5, 'slept'), '')  # the guard saw the sleep after the run had printed its result
+        write(os.path.join(self.m1, 'vitest.rc'), '1\n')
+        p = self.run_m5('--', 's.test.ts')
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)  # M1's verdict, not M5's 0
+        self.assertIn('done on M5', p.stdout)
+        self.assertIn('M5 中断：运行中 M5 睡过（不算测试失败），改在 M1 从头重跑', p.stdout)
+        self.assertIn('finished on M1 (M5 dropped out mid-run', p.stdout)
+
+    def test_detached_process_of_a_run_goes_with_it(self):
+        write(os.path.join(self.th, 'detach'), '')  # a test starts something in a session of its own
+        p = self.run_m5('--', 'u.test.ts', M5T_SLEEP_GAP='2')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn('finished on M5, exit 0', p.stdout)
+        pid = int(read(os.path.join(self.th, 'detached.pid')))
+        for _ in range(50):
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                break
+            time.sleep(0.2)
+        else:
+            os.kill(pid, signal.SIGKILL)
+            self.fail('a detached process of the run outlived it')
 
     def test_short_pause_and_normal_end(self):
         env = dict(os.environ, HOME=self.m1, M5_FAKE_HOME=self.m5, M5_TEST_SSH=self.ssh, M5T_SLEEP_GAP='4', **GIT_ENV)
