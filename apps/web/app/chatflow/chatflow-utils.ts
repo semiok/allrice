@@ -6,10 +6,10 @@ import type { Employee, Session, Workspace } from './chatflow-types';
 
 const statusMessages: Record<number, string> = {
   401: '登录已过期，请重新登录',
-  403: '没有权限',
+  403: '没有权限，如需使用请联系管理员',
   404: '内容不存在或已删除',
   409: '内容已被修改，请刷新后再试',
-  413: '内容太大',
+  413: '内容太大，请减少内容或换小一点的文件',
   429: '操作太频繁，请稍后再试',
 };
 
@@ -22,7 +22,9 @@ function requestFailureMessage(status: number, serverMessage?: unknown) {
     return serverMessage;
   return (
     statusMessages[status] ??
-    (status >= 500 ? '服务暂时不可用，请稍后再试' : '暂时没有完成，请稍后再试')
+    (status >= 500
+      ? '服务暂时不可用，请稍后刷新页面再试'
+      : '未完成，请稍后再试')
   );
 }
 
