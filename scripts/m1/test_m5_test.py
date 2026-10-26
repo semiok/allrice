@@ -6,6 +6,7 @@
 #   python3 -m unittest discover -s scripts/m1 -p 'test_*.py'
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -444,6 +445,47 @@ class M5Test(unittest.TestCase):
             time.sleep(0.2)
         else:
             self.fail('the lease is still held after m5-test was killed')
+
+    def test_run_stops_itself_after_m5_slept(self):
+        write(os.path.join(self.th, 'hang'), '')  # the tests on "M5" hang, ignoring TERM
+        env = dict(os.environ, HOME=self.m1, M5_FAKE_HOME=self.m5, M5_TEST_SSH=self.ssh, M5T_SLEEP_GAP='2', **GIT_ENV)
+        m5 = subprocess.Popen([M5_TEST, '--', 'z.test.ts'], cwd=self.repo, env=env, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True)
+        self.addCleanup(m5.kill)
+        pidfile = os.path.join(self.th, 'hang.pid')
+        for _ in range(100):
+            if read(pidfile):
+                break
+            time.sleep(0.1)
+        hung = int(read(pidfile))
+        owner = read(os.path.join(self.base, 'locks/slot-1.owner'))
+        run, runner = owner.split()[0], int(owner.split(' pid ')[1])
+        ps = subprocess.run(['ps', '-axo', 'pid=,ppid='], capture_output=True, text=True).stdout.split()
+        parent = dict(zip(map(int, ps[0::2]), map(int, ps[1::2])))
+        tree, added = {runner}, True
+        while added:
+            added = False
+            for p, pp in parent.items():
+                if p not in tree and pp in tree:
+                    tree.add(p)
+                    added = True
+        for p in tree:  # the lid closes: everything of the run stops, the watcher too ...
+            os.kill(p, signal.SIGSTOP)
+        time.sleep(3)
+        for p in tree:  # ... and M5 wakes up
+            os.kill(p, signal.SIGCONT)
+        out, _ = m5.communicate(timeout=60)
+        for _ in range(50):
+            try:
+                os.kill(hung, 0)
+            except OSError:
+                break
+            time.sleep(0.2)
+        else:
+            self.fail('the hung test process kept running after M5 woke up')
+        self.assertIn('%s stopped: M5 slept' % run, read(os.path.join(self.base, 'stopped.log')))
+        self.assertIn('M5 中断', out)
+        self.assertIn('finished on M1 (M5 dropped out mid-run', out)
 
     def test_silent_run_reruns_on_m1(self):
         write(os.path.join(self.m5, 'hang'), '')

@@ -8,7 +8,7 @@
 #   M5T_SHA M5T_RUN M5T_CALLER M5T_WAIT M5T_BUILD M5T_ENV M5T_FULL_ACCESS M5T_MODEL
 #   M5T_STOP      M5: run ids whose M1 side has let go (m5-test checked their leases); a slot
 #                 still held by one of them is a leftover, stopped before this run starts
-#   M5T_CODEX     only for the unit tests (ssh does not pass it)
+#   M5T_CODEX M5T_SLEEP_GAP   only for the unit tests (ssh does not pass them)
 #
 # The last line of a finished test or codex run is "m5-test: done on <host> …, exit <code>";
 # m5-test looks for it to tell a finished run from an interrupted one. Exit 3: no room within
@@ -303,6 +303,44 @@ clear_database() { # M5, with no other run going: drop what interrupted runs lef
   for n in $dbs; do "$PG_BIN/dropdb" -h 127.0.0.1 -p "$PG_PORT" -U allrice --force "$n" || say "could not drop database $n"; done
 }
 
+# watch_sleep: M5 only. The user closes the lid and goes (user 10-27: often for an hour);
+# M1 notices within a minute (ssh's ServerAlive, 4 x 15 s) and runs the tests itself. On
+# waking, this run must not carry on with M5's CPU: a watcher that sees the wall clock jump by
+# more than that minute between two of its 5-second ticks stops the run's whole process tree
+# and notes it in ~/allrice-test/stopped.log. It holds no lock, and ends with the run.
+watch_sleep() {
+  /usr/bin/python3 -c 'import os,signal,subprocess,sys,time
+os.closerange(3,4096) # not one of the run'"'"'s slot or worker locks
+run,gap,log,rid=int(sys.argv[1]),float(sys.argv[2]),sys.argv[3],sys.argv[4]
+tick=min(5,gap/4)
+last=time.time()
+while True:
+    time.sleep(tick)
+    try: os.kill(run,0)
+    except OSError: sys.exit(0) # the run is over
+    now=time.time()
+    if now-last>gap: break
+    last=now
+par,name={},{}
+for l in subprocess.run(["ps","-axo","pid=,ppid=,comm="],capture_output=True,text=True).stdout.splitlines():
+    f=l.split(None,2)
+    if len(f)==3: par[int(f[0])],name[int(f[0])]=int(f[1]),f[2]
+tree,added={run},True
+while added:
+    added=False
+    for p,pp in par.items():
+        if p not in tree and pp in tree: tree.add(p); added=True
+tree={p for p in tree if p!=os.getpid() and not name.get(p,"").endswith("postgres")}
+for sig in (signal.SIGTERM,signal.SIGKILL):
+    for p in tree:
+        try: os.kill(p,sig)
+        except OSError: pass
+    time.sleep(tick)
+with open(log,"a") as f:
+    f.write("%s %s stopped: M5 slept %ds, M1 had taken the run over\n"%(time.strftime("%Y-%m-%d %H:%M"),rid,now-last))' \
+    "$$" "${M5T_SLEEP_GAP:-60}" "$BASE/stopped.log" "$M5T_RUN" </dev/null >/dev/null 2>&1 &
+}
+
 # ensure_pg and checkout run as `f || …`, where bash ignores set -e: every step is chained.
 ensure_pg() { # M5 only: start the test cluster when it is down (after a reboot)
   [ "$target" = m5 ] || return 0
@@ -499,6 +537,7 @@ status() {
     read -r level gb <<<"$(pressure)"
     echo "  limits: ${MEMORY_GB}G, $WORKERS_TOTAL workers in all ($TOKENS usable), $WORKERS_DEFAULT per run by default, at most $WORKERS_MAX, $RUNS runs"
     echo "  memory: kernel pressure level $level, ${gb}G reclaimable"
+    [ ! -s "$BASE/stopped.log" ] || echo "  last run stopped after M5 slept: $(tail -1 "$BASE/stopped.log")"
   fi
   echo "  load: $(sysctl -n vm.loadavg 2>/dev/null || true) on $(sysctl -n hw.ncpu 2>/dev/null || true) cores"
   if [ -x "$CODEX" ]; then echo "  codex: $("$CODEX" --version 2>/dev/null | head -1), $("$CODEX" login status 2>&1 | head -1)"; else echo "  codex: not found at $CODEX"; fi
@@ -526,6 +565,7 @@ args=() warned=0
 [ "$workers" -le "$WORKERS_MAX" ] || workers=$WORKERS_MAX # Codex's share too
 planned=$workers
 take_room
+[ "$target" != m5 ] || watch_sleep
 # What M5 itself cannot do is no verdict on the code: exit 88 sends the run to M1.
 cannot() { if [ "$target" = m5 ]; then echo "m5-test: $1 on M5"; exit 88; else rc=$2; finish "$1"; fi; }
 ensure_pg || cannot "the test Postgres did not start (see $BASE/postgres.log)" $?
