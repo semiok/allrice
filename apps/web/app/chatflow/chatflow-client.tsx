@@ -73,6 +73,7 @@ import {
   InteractionStatusPanel,
 } from './interaction-status';
 import { inputRetry } from '../../lib/chatflow/input-retry';
+import { isSendReceipt } from './send-receipt';
 import { ChatSidebar } from './chat-sidebar';
 import { EmployeePickerDialog } from './employee-picker-dialog';
 import {
@@ -936,13 +937,7 @@ export function ChatFlowClient({
       if (!action.current()) return;
       clientMessageId = retry.id;
       setSubmission({ ...echo, sessionId, preparing: false });
-      const result = await readJson<{
-        run: { id: string };
-        fallbackRunId: string | null;
-        delivery: 'immediate' | 'steer_pending' | 'follow_up';
-        userMessage: Message;
-        assistantMessage: Message;
-      }>(
+      const result = await readJson<unknown>(
         await fetch(
           `/api/v1/sessions/${sessionId}/messages?workspaceId=${workspace.workspaceId}`,
           {
@@ -955,15 +950,9 @@ export function ChatFlowClient({
           },
         ),
       );
-      // Keep the retry key unless the receipt names the stored turn; resending
-      // after an unreadable answer must not create a second task.
-      if (
-        !result.run?.id ||
-        !result.userMessage?.id ||
-        !result.assistantMessage?.id ||
-        !['immediate', 'steer_pending', 'follow_up'].includes(result.delivery)
-      )
-        throw new Error('结果待确认，请刷新页面查看');
+      // Keep the retry key unless the receipt is usable; resending after an
+      // unreadable answer must not create a second task.
+      if (!isSendReceipt(result)) throw new Error('结果待确认，请刷新页面查看');
       retry.confirmed();
       if (!action.current()) return;
       const retainedPreviews = imageCache.handoff(

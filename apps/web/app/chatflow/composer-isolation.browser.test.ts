@@ -759,7 +759,11 @@ suite(
         },
         async respond(
           index: number,
-          ok: boolean | 'empty receipt' | 'unusable receipt' = true,
+          ok:
+            | boolean
+            | 'empty receipt'
+            | 'unusable receipt'
+            | 'broken receipt' = true,
         ) {
           const p = pending[index]!;
           const received = page.waitForResponse(
@@ -789,6 +793,23 @@ suite(
             }
             if (ok === 'unusable receipt') {
               answer(p.response, {});
+              return;
+            }
+            if (ok === 'broken receipt') {
+              // Every ID is there, but the stored message cannot be shown.
+              answer(p.response, {
+                run: { id: runId },
+                fallbackRunId: runId,
+                delivery: 'follow_up',
+                userMessage: { ...message('user-broken', ''), content: null },
+                assistantMessage: message(
+                  'assistant-broken',
+                  '',
+                  'assistant',
+                  runId,
+                  'pending',
+                ),
+              });
               return;
             }
             if (!ok) {
@@ -1176,8 +1197,8 @@ suite(
       }
     }, 15_000);
 
-    it.each(['empty receipt', 'unusable receipt'] as const)(
-      'keeps the same message number for a resend after an %s',
+    it.each(['empty receipt', 'unusable receipt', 'broken receipt'] as const)(
+      'keeps the same message number for a resend after a reply with %s',
       async (kind) => {
         const f = await fixture();
         try {

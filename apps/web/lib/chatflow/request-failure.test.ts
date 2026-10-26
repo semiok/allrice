@@ -46,7 +46,7 @@ describe('request failures read the API error code before the status', () => {
 
   it.each([
     ['quota_exceeded', '空间已用完，请删除不用的文件或联系管理员'],
-    ['grant_invalid', '链接已过期，请刷新页面后再试'],
+    ['grant_invalid', '链接无效或已失效，请刷新页面后再试'],
     ['not_found', '内容不存在或已删除'],
     ['authorization_denied', '没有权限，如需使用请联系管理员'],
   ] as const)('storage: %s', async (code, text) => {

@@ -57,9 +57,21 @@ export function useSession({ setError }: UseSessionOptions) {
   const [activeId, updateActiveId] = useState<string | null>(null);
   const [selection] = useState(createSessionSelection);
   const [history, setHistory] = useState<History | null>(null);
-  // The one record of a failed History read: set only by the newest read of
-  // that conversation, cleared only when server History is applied.
-  const [staleHistoryId, setStaleHistoryId] = useState<string | null>(null);
+  // The one record of failed History reads, per conversation: set only by the
+  // newest read of that conversation, cleared only when its server History is
+  // applied, and emptied with the tenant scope.
+  const [staleHistoryIds, setStaleHistoryIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const markHistory = useCallback((sessionId: string, stale: boolean) => {
+    setStaleHistoryIds((current) => {
+      if (current.has(sessionId) === stale) return current;
+      const next = new Set(current);
+      if (stale) next.add(sessionId);
+      else next.delete(sessionId);
+      return next;
+    });
+  }, []);
   // Like DSH's retained Session bindings, switch the visible snapshot by ID
   // synchronously. This adapter reads Allrice's tenant-scoped HTTP history.
   // Nothing is persisted to browser storage or shared with another viewer.
@@ -133,7 +145,7 @@ export function useSession({ setError }: UseSessionOptions) {
       historyRequestGeneration.current++;
       historyRequest.current?.abort();
       setHistory(null);
-      setStaleHistoryId(null);
+      setStaleHistoryIds(new Set());
     }
     const authorized = new Set(nextWorkspace.sessions.map((s) => s.id));
     for (const id of historyCache.current.keys())
@@ -275,7 +287,7 @@ export function useSession({ setError }: UseSessionOptions) {
       const applied = (value: History) => {
         rememberHistory(historyCache.current, value);
         setHistory(value);
-        setStaleHistoryId((stale) => (stale === sessionId ? null : stale));
+        markHistory(sessionId, false);
         return 'applied' as const;
       };
       const cached = historyCache.current.get(sessionId);
@@ -317,14 +329,14 @@ export function useSession({ setError }: UseSessionOptions) {
         return value.session.id === sessionId ? applied(value) : 'skipped';
       } catch (cause) {
         if (!current()) return 'superseded';
-        setStaleHistoryId(sessionId);
+        markHistory(sessionId, true);
         throw cause;
       } finally {
         if (historyRequest.current === controller)
           historyRequest.current = null;
       }
     },
-    [employeeScope, selection, tenantHeaders, tenantWorkspaceId],
+    [employeeScope, markHistory, selection, tenantHeaders, tenantWorkspaceId],
   );
 
   const refreshHistory = useCallback(
@@ -536,7 +548,7 @@ export function useSession({ setError }: UseSessionOptions) {
     captureSelection: selection.capture,
     createSession,
     history: history?.session.id === activeId ? history : null,
-    historyStale: activeId !== null && staleHistoryId === activeId,
+    historyStale: activeId !== null && staleHistoryIds.has(activeId),
     loadHistory,
     refreshHistory,
     loadWorkspace,

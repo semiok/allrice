@@ -466,6 +466,43 @@ describe('P26 History selection async control flow (synthetic fetch, explicit ho
       expect(render().history?.session.title).toBe('新的标题');
       expect(render().historyStale).toBe(true);
     });
+    it('keeps the record of each conversation when two fail one after another', async () => {
+      const state = await staleA();
+      state.setActiveId('B');
+      const failedB = render().loadHistory('B');
+      requests[0]!.result.resolve(outage());
+      await expect(failedB).rejects.toThrow();
+      expect(render().historyStale).toBe(true);
+      render().setActiveId('A');
+      expect(render().historyStale).toBe(true);
+      // Returning starts a read; a rename cancels it before anything applies.
+      const back = render().loadHistory('A');
+      render().updateSession({ ...session('A'), title: '改过的标题' });
+      requests[1]!.result.resolve(Response.json({ history: history('A') }));
+      expect(await back).toBe('superseded');
+      expect(render().historyStale).toBe(true);
+      // Applying A's server History clears A only.
+      const applied = render().loadHistory('A');
+      requests[2]!.result.resolve(Response.json({ history: history('A') }));
+      expect(await applied).toBe('applied');
+      expect(render().historyStale).toBe(false);
+      render().setActiveId('B');
+      expect(render().historyStale).toBe(true);
+    });
+    it('forgets every record when the tenant changes', async () => {
+      const state = await staleA();
+      const switched = state.loadWorkspace();
+      requests[0]!.result.resolve(
+        Response.json({
+          workspace: { ...workspace, organizationId: 'other-organization' },
+        }),
+      );
+      await Promise.resolve();
+      requests[1]!.result.resolve(Response.json({ capabilities: {} }));
+      await switched;
+      expect(render().activeId).toBe('A');
+      expect(render().historyStale).toBe(false);
+    });
     it('belongs to its own conversation only', async () => {
       const state = await staleA();
       state.setActiveId('B');

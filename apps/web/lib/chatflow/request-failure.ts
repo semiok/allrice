@@ -19,7 +19,7 @@ const byServerMessage: Readonly<Record<string, string>> = {
 
 const byCode: Readonly<Record<string, string>> = {
   ORIGIN_DENIED: '请刷新页面后再试',
-  SIGNED_ACCESS_DENIED: '链接已过期，请刷新页面后再试',
+  SIGNED_ACCESS_DENIED: '链接无效或已失效，请刷新页面后再试',
   KNOWLEDGE_ACL_DENIED: '没有权限查看这份资料，如需使用请联系管理员',
   CURSOR_INVALID: '内容已更新，请刷新页面后再试',
   CURSOR_EXPIRED: '内容已更新，请刷新页面后再试',
