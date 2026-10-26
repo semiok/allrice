@@ -519,9 +519,10 @@ esac
 # the tests itself; when M5 wakes, this run must not carry on with M5's CPU. The guard:
 # - starts the run in a session and process group of its own (the run reports back through a
 #   pipe once it has them) and watches one clock that counts sleep but not clock adjustments;
-# - every tick notes each process of the run (pid and start time), its group and every
-#   descendant, so one that later leaves for a session of its own (a detached Chrome) is still
-#   known; the test Postgres is never one of them;
+# - every tick notes each process of the run (pid and start time): its group, every descendant,
+#   and the descendants of any noted process that is still the same one, so a detached Chrome
+#   and its children stay known after their parent is gone; the test Postgres (anything run
+#   from its bin directory) and all under it are never one of them;
 # - when a tick took 30 s more than it should, well inside what M1 waits, stops them all (each
 #   checked by its start time; the group while its leader is still unreaped, so the id cannot
 #   be someone else's), notes it in ~/allrice-test/stopped.log and exits 76, which m5-test
@@ -530,7 +531,7 @@ esac
 # - when the run ends normally, stops what is left of it all the same.
 if [ "$target" = m5 ] && [ -z "${M5T_GUARDED:-}" ] && [ -n "${BASH_EXECUTION_STRING:-}" ]; then
   exec /usr/bin/python3 -c 'import os,select,signal,subprocess,sys,time
-gap,log,rid,argv=float(sys.argv[1]),sys.argv[2],sys.argv[3],sys.argv[4:]
+gap,log,rid,pgbin,argv=float(sys.argv[1]),sys.argv[2],sys.argv[3],sys.argv[4].rstrip("/")+"/",sys.argv[5:]
 clock=getattr(time,"CLOCK_BOOTTIME",time.CLOCK_MONOTONIC) # both count time asleep, neither clock changes
 now=lambda: time.clock_gettime(clock)
 tick,start=min(5,gap/4),now()
@@ -558,29 +559,47 @@ def exited(t): # the leader has exited (still unreaped), waiting at most t secon
             gone=bool(kq.control(None,1,max(0,left)))
             if left<=0: break
     return gone
+if hasattr(os,"waitid"): # Linux
+    exe=lambda p: os.readlink("/proc/%d/exe"%p)
+else: # macOS: ps shows argv[0], which Postgres rewrites ("postgres: checkpointer")
+    import ctypes
+    libproc=ctypes.CDLL("/usr/lib/libproc.dylib")
+    def exe(p):
+        buf=ctypes.create_string_buffer(4096)
+        return buf.value.decode("utf-8","replace") if libproc.proc_pidpath(p,buf,4096)>0 else ""
+def ps(fields): # LC_ALL=C: lstart is localised otherwise
+    return subprocess.run(["ps","-axww","-o",fields],capture_output=True,text=True,env=dict(os.environ,LC_ALL="C")).stdout.splitlines()
 seen={} # pid -> start time of every process of the run seen so far
 def look(): # -> {pid: start time} of the processes alive now; notes those of the run in seen
-    procs={}
-    for l in subprocess.run(["ps","-axo","pid=,ppid=,pgid=,lstart=,comm="],capture_output=True,text=True).stdout.splitlines():
+    procs,args,kids={},{},{}
+    for l in ps("pid=,ppid=,pgid=,lstart="):
         f=l.split()
-        if len(f)>=9: procs[int(f[0])]=(int(f[1]),int(f[2])," ".join(f[3:8])," ".join(f[8:]))
-    mine,added={p for p,v in procs.items() if p==pid or v[1]==pid},True
-    while added:
-        added=False
-        for p,v in procs.items():
-            if p not in mine and v[0] in mine: mine.add(p); added=True
-    for p in mine:
-        if not procs[p][3].endswith("postgres"): seen.setdefault(p,procs[p][2])
+        if len(f)==8: procs[int(f[0])]=(int(f[1]),int(f[2])," ".join(f[3:8])); kids.setdefault(int(f[1]),[]).append(int(f[0]))
+    for l in ps("pid=,command="):
+        f=l.split(None,1)
+        if len(f)==2: args[int(f[0])]=f[1]
+    def pg(p): # the test Postgres (and pg_ctl) and all under it belong to no run
+        try: x=exe(p)
+        except OSError: x=""
+        return x.startswith(pgbin) or pgbin in args.get(p,"")
+    # From the run (leader and group) and from every process noted before that is still the
+    # same one: a detached process whose parent is gone keeps its children counted.
+    todo=[p for p,v in procs.items() if p==pid or v[1]==pid]+[p for p,t in seen.items() if p in procs and procs[p][2]==t]
+    done=set()
+    while todo:
+        p=todo.pop()
+        if p in done or p not in procs or pg(p): continue
+        done.add(p); seen.setdefault(p,procs[p][2]); todo+=kids.get(p,[])
     return {p:v[2] for p,v in procs.items()}
 def stop(grace):
     for sig in (signal.SIGTERM,signal.SIGKILL):
         alive=look()
-        left=[p for p,t in seen.items() if alive.get(p)==t and not (p==pid and gone)]
-        if not left: return
+        left=[p for p,t in seen.items() if alive.get(p)==t and p!=pid]
+        if not left and gone: return
         for p in left:
             try: os.kill(p,sig)
             except OSError: pass
-        try: os.killpg(pid,sig) # the leader is unreaped: the id is still the run group
+        try: os.killpg(pid,sig) # the leader is unreaped: the id is still the run group (and it, if alive)
         except OSError: pass
         end=now()+grace
         while now()<end:
@@ -604,7 +623,7 @@ if slept:
     except OSError: pass
     sys.exit(76)
 sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 128+os.WTERMSIG(status))' \
-    "${M5T_SLEEP_GAP:-30}" "$BASE/stopped.log" "${M5T_RUN:-?}" /bin/bash -c "$BASH_EXECUTION_STRING" m5-run "$@"
+    "${M5T_SLEEP_GAP:-30}" "$BASE/stopped.log" "${M5T_RUN:-?}" "$PG_BIN" /bin/bash -c "$BASH_EXECUTION_STRING" m5-run "$@"
 fi
 
 rc=0 slot=""

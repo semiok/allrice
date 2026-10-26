@@ -40,7 +40,12 @@ PNPM = r'''#!/bin/sh
 echo "$*|$ALLRICE_TEST_DATABASE_URL|${ALLRICE_RUN_DB_INTEGRATION:-}|${ALLRICE_RUN_BROWSER_INTEGRATION:-}|${ALLRICE_RUN_X:-}|${LEAK_ME:-}|$PWD|${M5T_VITEST_CAP:-}|$PGPORT|$HOME|${ALLRICE_NATIVE_ONCE_PROBE_MODULE_BASE:-}" >>"$HOME/pnpm.calls"
 case "$1" in
   install) mkdir -p node_modules/.bin; touch node_modules/kept; cp "$(dirname "$0")/vitest" node_modules/.bin/vitest; exit "$(cat "$HOME/install.rc" 2>/dev/null || echo 0)" ;;
-  exec) [ ! -e "$HOME/detach" ] || { /usr/bin/python3 -c 'import os,sys,time; os.setsid(); open(sys.argv[1],"w").write(str(os.getpid())); time.sleep(120)' "$HOME/detached.pid" & sleep 2; }
+  exec) [ ! -e "$HOME/detach" ] || { # a detached process, orphaned at once, that starts a child of its own later
+      ( /usr/bin/python3 -c 'import os,subprocess,sys,time
+os.setsid(); open(sys.argv[1],"w").write(str(os.getpid())); time.sleep(2)
+open(sys.argv[2],"w").write(str(subprocess.Popen(["sleep","120"]).pid)); time.sleep(120)' "$HOME/detached.pid" "$HOME/detached-child.pid" & sleep 1 )
+      [ ! -e "$HOME/postgres-too" ] || { postgres-standin 120 </dev/null >/dev/null 2>&1 & }  # as ensure_pg starts it
+      sleep 3; }
     [ ! -e "$HOME/hang" ] || { trap '' TERM; echo $$ >"$HOME/hang.pid"; sleep "$(cat "$HOME/hang.seconds" 2>/dev/null || echo 30)"; }; echo "vitest says hello"; exit "$(cat "$HOME/vitest.rc" 2>/dev/null || echo 0)" ;;
 esac
 '''
@@ -546,19 +551,28 @@ class M5Test(unittest.TestCase):
 
     def test_detached_process_of_a_run_goes_with_it(self):
         write(os.path.join(self.th, 'detach'), '')  # a test starts something in a session of its own
-        p = self.run_m5('--', 'u.test.ts', M5T_SLEEP_GAP='2')
+        write(os.path.join(self.th, 'postgres-too'), '')
+        standin = os.path.join(self.m5, PG, 'postgres-standin')  # anything from the test Postgres' bin directory
+        write(standin, '#!/usr/bin/python3\nimport os, sys, time\nos.setsid()  # as pg_ctl starts the postmaster\n'
+                       'open(os.environ["HOME"] + "/postgres.pid", "w").write(str(os.getpid()))\ntime.sleep(int(sys.argv[1]))\n', 0o755)
+        # a localised ps (lstart in Chinese) must not hide the run's processes
+        p = self.run_m5('--', 'u.test.ts', M5T_SLEEP_GAP='2', LC_ALL='zh_CN.UTF-8', LANG='zh_CN.UTF-8')
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn('finished on M5, exit 0', p.stdout)
-        pid = int(read(os.path.join(self.th, 'detached.pid')))
-        for _ in range(50):
-            try:
-                os.kill(pid, 0)
-            except OSError:
-                break
-            time.sleep(0.2)
-        else:
-            os.kill(pid, signal.SIGKILL)
-            self.fail('a detached process of the run outlived it')
+        for name in ('detached.pid', 'detached-child.pid'):
+            pid = int(read(os.path.join(self.th, name)))
+            for _ in range(50):
+                try:
+                    os.kill(pid, 0)
+                except OSError:
+                    break
+                time.sleep(0.2)
+            else:
+                os.kill(pid, signal.SIGKILL)
+                self.fail('%s outlived the run' % name)
+        postgres = int(read(os.path.join(self.th, 'postgres.pid')))
+        self.addCleanup(signal_all, [postgres], signal.SIGKILL)
+        os.kill(postgres, 0)  # still there: the test Postgres is no process of the run
 
     def test_short_pause_and_normal_end(self):
         env = dict(os.environ, HOME=self.m1, M5_FAKE_HOME=self.m5, M5_TEST_SSH=self.ssh, M5T_SLEEP_GAP='4', **GIT_ENV)
