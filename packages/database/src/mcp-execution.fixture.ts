@@ -252,6 +252,14 @@ export async function createMcpExecutionFixture(
       { expectedRevision: 1, capability: 'computer', enabled: false },
       db,
     );
+    // Saved rows keep their values; assistants must be turned on explicitly.
+    if (options.assistants)
+      await updateWorkAutomation(
+        context,
+        workspace,
+        { expectedRevision: 2, capability: 'assistants', enabled: true },
+        db,
+      );
     await setRuntimePolicyControls(
       context,
       {

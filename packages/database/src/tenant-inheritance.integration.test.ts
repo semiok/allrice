@@ -46,6 +46,7 @@ import {
   getChatSessionHistory,
 } from './workspace/service.ts';
 import { getWorkspaceReadiness } from './workspace-readiness.ts';
+import { updateWorkAutomation } from './work-automation.ts';
 import { claimNextJob, startClaimedJob } from './execution/queue.ts';
 import { acquireConversationRuntime } from './conversation/conversation-runtime.ts';
 import {
@@ -377,7 +378,30 @@ suite(
       );
       const [run] =
         await fdb.db`select input from allrice_runs where id=${sent.run.id}`;
+      // A new member has not turned assistants on; the grant is still inherited.
       expect(run!.input.assistantConfiguration).toMatchObject({
+        allowAssistants: false,
+        mode: 'daily',
+      });
+      await updateWorkAutomation(joined.context, f.tenant.workspaceId, {
+        expectedRevision: 0,
+        capability: 'assistants',
+        enabled: true,
+      });
+      const enabled = await sendChatMessage(
+        joined.context,
+        f.tenant.workspaceId,
+        session.id,
+        {
+          text: 'Use the assigned employee with assistants',
+          deliveryMode: 'follow_up',
+          clientMessageId: randomUUID(),
+          assistantPreference: { mode: 'daily', allowAssistants: true },
+        },
+      );
+      const [enabledRun] =
+        await fdb.db`select input from allrice_runs where id=${enabled.run.id}`;
+      expect(enabledRun!.input.assistantConfiguration).toMatchObject({
         allowAssistants: true,
         mode: 'daily',
       });

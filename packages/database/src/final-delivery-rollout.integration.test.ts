@@ -13,6 +13,7 @@ import {
 } from './workspace/service.ts';
 import { nativeRootDigest } from './conversation/native-root-origin.ts';
 import { selectCheckedFinalDeliveryArtifact } from './final-delivery-rollout.ts';
+import { updateWorkAutomation } from './work-automation.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -62,9 +63,13 @@ suite(
       vi.unstubAllEnvs();
       await fixture?.close();
     }, 30000);
-    async function subject(artifact = current) {
+    async function subject(
+      artifact = current,
+      memberAssistants?: boolean | null,
+    ) {
       const f = await createAssistantAuthorityFixture(fixture.db, {
         configure: false,
+        memberAssistants,
         runtimePackage,
         allowedTools: runtimePackage.runtimeManifest.toolNames,
         runtimePolicy: {
@@ -219,6 +224,27 @@ suite(
         expect(value).not.toHaveProperty('finalDeliveryPolicy');
         expect(value).not.toHaveProperty('officeFirstDeliveryPolicy');
       }
+    });
+    // MET-210: checked delivery is frozen only when assistants are allowed.
+    // Members who never saved work settings get the legacy delivery path
+    // until delivery checks no longer depend on the assistant switch.
+    it('a member who never saved work settings gets legacy delivery until assistants are turned on', async () => {
+      const f = await subject(current, null);
+      const legacy = await snapshot((await send(f)).run!.id);
+      expect(legacy).not.toHaveProperty('finalDeliveryPolicy');
+      expect(legacy).not.toHaveProperty('officeFirstDeliveryPolicy');
+      await updateWorkAutomation(f.context, f.workspace, {
+        expectedRevision: 0,
+        capability: 'assistants',
+        enabled: true,
+      });
+      const checked = await snapshot((await send(f)).run!.id);
+      expect(checked.finalDeliveryPolicy).toEqual({
+        version: 1,
+        mode: 'checked_native_v1',
+        artifactId: current,
+      });
+      expect(checked.officeFirstDeliveryPolicy).toBe('xlsx_formula_cache_v1');
     });
     it.each(['basis', 'digest', 'owner'] as const)(
       'rejects a conflicting %s pin before creating a new Run',

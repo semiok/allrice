@@ -402,13 +402,28 @@ integration(
       },
     );
 
+    it('MET-210: a member who never saved work settings cannot start assistant work', async () => {
+      const f = await authorityFixture({
+        configure: false,
+        memberAssistants: null,
+      });
+      await expect(f.configure()).rejects.toThrow('assistant_authority_denied');
+      await updateWorkAutomation(
+        f.context,
+        f.workspace,
+        { expectedRevision: 0, capability: 'assistants', enabled: true },
+        fixture.db,
+      );
+      await expect(f.configure()).resolves.toBeDefined();
+    });
+
     it('a member can turn off new assistant work and restore it without changing employee grants', async () => {
       const f = await authorityFixture();
       await expect(f.authorize('configure')).resolves.toBeUndefined();
       await updateWorkAutomation(
         f.context,
         f.workspace,
-        { expectedRevision: 0, capability: 'assistants', enabled: false },
+        { expectedRevision: 1, capability: 'assistants', enabled: false },
         fixture.db,
       );
       await expect(f.authorize('configure')).rejects.toThrow(
@@ -417,7 +432,7 @@ integration(
       await updateWorkAutomation(
         f.context,
         f.workspace,
-        { expectedRevision: 1, capability: 'assistants', enabled: true },
+        { expectedRevision: 2, capability: 'assistants', enabled: true },
         fixture.db,
       );
       await expect(f.authorize('configure')).resolves.toBeUndefined();

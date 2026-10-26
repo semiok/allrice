@@ -180,6 +180,9 @@ export async function createP27AssistantFixture(
     await tx`insert into allrice_organizations(id,slug,name) values(${org},${`p27-${org}`},'P27 synthetic')`;
     await tx`insert into allrice_workspaces(id,organization_id,slug,name) values(${workspace},${org},'synthetic','P27 synthetic')`;
     await tx`insert into allrice_memberships(id,organization_id,workspace_id,user_id,role) values(${membership},${org},${workspace},${user},'admin')`;
+    // Assistants are off until the member saves them on (MET-210).
+    await tx`insert into allrice_member_work_automation(organization_id,workspace_id,user_id,revision,settings)
+      values(${org},${workspace},${user},1,${tx.json({ cloud: true, computer: true, assistants: true })})`;
     await tx`insert into allrice_policy_snapshots(id,organization_id,subject_id,version,payload,expires_at)
       values(${policy},${org},${user},1,${tx.json({ memberships, grants })},clock_timestamp()+interval '1 hour')`;
     await tx`insert into allrice_employees(id,organization_id,workspace_id,employee_key,name) values(${employee},${org},${workspace},'p27-smoke','P27 synthetic')`;

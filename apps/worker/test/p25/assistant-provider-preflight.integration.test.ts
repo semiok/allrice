@@ -278,6 +278,7 @@ integration(
         subscriptionFallbackModel?: string;
         memoryRead?: boolean;
         businessOrigin?: boolean;
+        memberAssistants?: boolean | null;
       } = {},
     ) {
       const connectionId = randomUUID(),
@@ -362,6 +363,7 @@ integration(
       }
       const f = await createAssistantAuthorityFixture(database.db, {
         configure: false,
+        memberAssistants: options.memberAssistants,
         ...(options.businessOrigin
           ? { runtimePackage, businessCreationOrigin: true }
           : {}),
@@ -894,6 +896,47 @@ integration(
       expect(state.spawn).not.toHaveBeenCalled();
       expect(adapter.runtimeInventory()).toEqual([]);
     });
+    // MET-210: assistants follow the native DSH default (off). The Worker
+    // re-reads the member's setting, so a queued opt-in alone builds nothing.
+    it.each([
+      ['never saved work settings', null, 0],
+      ['turned assistants on', true, 1],
+    ] as const)(
+      'a member who %s gets the matching assistant roots for a chat Run',
+      async (_member, memberAssistants, roots) => {
+        const { f, job } = await fixture({
+          compatible: true,
+          price: true,
+          memberAssistants,
+        });
+        await database.db`delete from allrice_runtime_run_links where root_run_id=${f.rootRunId}`;
+        await database.db`delete from allrice_runtime_budgets where root_run_id=${f.rootRunId}`;
+        await database.db`delete from allrice_runtime_roots where root_run_id=${f.rootRunId}`;
+        execute.mockImplementationOnce(async (input) => {
+          // The real DSH adapter binds before prompting whenever it has assistants.
+          await input.assistants?.bind(`dsh-${f.session}`, 1);
+          return {
+            answer: 'Synthetic ordinary report',
+            provider: 'openai-compatible',
+            model: input.providerSnapshot.model,
+            usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 3 },
+            usageComplete: true,
+            cacheUsageKnown: false,
+          };
+        });
+        await expect(executeEmployeeRun(job)).resolves.toMatchObject({
+          usageComplete: true,
+        });
+        expect(execute).toHaveBeenCalledTimes(1);
+        expect(execute.mock.calls[0]![0].assistants === undefined).toBe(
+          roots === 0,
+        );
+        const rows =
+          await database.db`select root_run_id from allrice_assistant_roots where root_run_id=${f.rootRunId}`;
+        expect(rows).toHaveLength(roots);
+        expect(state.spawn).not.toHaveBeenCalled();
+      },
+    );
     it.each([false, true])(
       'refuses unverified Codex assistants before execution (legacy snapshot %s), preserving real known-zero quota',
       async (legacy) => {

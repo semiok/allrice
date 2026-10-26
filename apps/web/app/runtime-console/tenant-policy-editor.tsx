@@ -3,8 +3,8 @@ import { useEffect, useState } from 'react';
 import {
   runtimeGovernedActions,
   runtimePolicyActionDecision,
-  defaultWorkAutomation,
   type RuntimePolicyControls,
+  type WorkAutomation,
 } from '@allrice/contracts';
 import styles from './tenant-administration.module.css';
 type Snapshot = {
@@ -12,6 +12,13 @@ type Snapshot = {
   workspaceId: string;
   version: number | null;
   controls: RuntimePolicyControls | null;
+};
+// The tenant view shows what an allowed action does once a member turns that
+// work setting on; each member's own setting still decides every run.
+const memberSettingsOn: WorkAutomation = {
+  cloud: true,
+  computer: true,
+  assistants: true,
 };
 const empty = (): RuntimePolicyControls => ({
   version: 1,
@@ -118,7 +125,7 @@ export function TenantPolicyEditor({
     <section aria-label="执行策略">
       <h3>执行策略</h3>
       <p>
-        这里保留工作区的明确禁止规则。日常使用请到前台设置的「员工工作方式」，选择自动执行或每次确认；默认在已授权范围内自动执行。
+        这里保留工作区的明确禁止规则。日常使用请到前台设置的「员工工作方式」，选择自动执行或每次确认。云端和电脑操作默认在已授权范围内自动执行；自动安排助手默认关闭，由成员自己打开，已保存的设置保持不变。
       </p>
       <p>
         允许不会增加员工工具、文件夹或账号权限。旧的「每次审批」规则按成员工作方式执行；已有审批继续保留。
@@ -205,7 +212,7 @@ export function TenantPolicyEditor({
                     draft,
                     action,
                     [],
-                    defaultWorkAutomation,
+                    memberSettingsOn,
                   );
                   return (
                     <tr key={action}>

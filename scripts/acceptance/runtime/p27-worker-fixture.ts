@@ -236,6 +236,9 @@ export async function createP27WorkerFixture() {
       await tx`insert into allrice_organizations(id,slug,name) values(${organizationId},${`p27-worker-${organizationId}`},'P27 isolated')`;
       await tx`insert into allrice_workspaces(id,organization_id,slug,name) values(${workspaceId},${organizationId},'synthetic','P27 isolated')`;
       await tx`insert into allrice_memberships(id,organization_id,workspace_id,user_id,role) values(${membershipId},${organizationId},${workspaceId},${ownerId},'admin')`;
+      // Assistants are off until the member saves them on (MET-210).
+      await tx`insert into allrice_member_work_automation(organization_id,workspace_id,user_id,revision,settings)
+        values(${organizationId},${workspaceId},${ownerId},1,${tx.json({ cloud: true, computer: true, assistants: true })})`;
       await tx`insert into allrice_employees(id,organization_id,workspace_id,employee_key,name) values(${employeeId},${organizationId},${workspaceId},'p27-worker','P27 isolated')`;
       await tx`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest,provider_snapshot)
         values(${employeeVersionId},${organizationId},${workspaceId},${employeeId},1,'P27 isolated',${manifest.provider.model},${manifest.systemPrompt},${tx.json(manifest.capabilities)},${checksum},${tx.json(manifest)},${tx.json(manifest.provider)})`;

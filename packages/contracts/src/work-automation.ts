@@ -9,10 +9,12 @@ export const WorkAutomationSchema = z
   })
   .strict();
 export type WorkAutomation = z.infer<typeof WorkAutomationSchema>;
+// Members without a saved row use these values; a saved row is never rewritten.
+// Assistants stay off unless the member turns them on (native DSH default).
 export const defaultWorkAutomation: WorkAutomation = {
   cloud: true,
   computer: true,
-  assistants: true,
+  assistants: false,
 };
 export const WorkAutomationViewSchema = z
   .object({
