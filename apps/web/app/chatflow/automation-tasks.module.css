@@ -197,6 +197,11 @@
 .confirm button + button {
   margin-left: 8px;
 }
+/* DSH's empty state uses tertiary text, below 4.5:1 on light pages. */
+.emptyState.emptyState,
+.emptyState.emptyState h2 {
+  color: var(--dsw-alias-label-secondary);
+}
 .error {
   color: var(--dsw-alias-state-error-primary);
   font-size: 13px;

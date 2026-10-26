@@ -159,9 +159,9 @@ describe('historical transcript capability gating', () => {
           },
         },
       );
-      expect(html).toContain('模型连接中断');
+      expect(html).toContain('连接中断，这次未完成');
       expect(html).not.toContain('Rice 暂时无法完成');
-      expect(html).not.toContain('这次没有完成。');
+      expect(html).not.toContain('可以换个说法再试');
       if (text === '已查到四个 PR。') expect(html).toContain(text);
     },
   );
@@ -175,9 +175,9 @@ describe('historical transcript capability gating', () => {
       },
     ]);
     expect(html).toContain('已查到两项 CI 失败。');
-    expect(html).toContain('模型连接中断');
-    expect(html).toContain('任务没有整轮重跑');
-    expect(html).not.toContain('这次没有完成。');
+    expect(html).toContain('连接中断，这次未完成');
+    expect(html).toContain('已有的内容都保留了');
+    expect(html).not.toContain('可以换个说法再试');
   });
 
   afterEach(() => vi.clearAllMocks());
@@ -373,22 +373,22 @@ describe('historical transcript capability gating', () => {
       },
     };
     const interleaved = show([earlierReply, event(1, 'started', 'start')]);
-    expect(interleaved.match(/>正在整理上下文…</g)).toHaveLength(1);
+    expect(interleaved.match(/>正在整理对话…</g)).toHaveLength(1);
     expect(interleaved).not.toContain('回复中…');
     expect(interleaved).toContain('我先检查项目。');
     expect(interleaved).toContain('整理 · 1 项');
     const events = [event(1, 'started', 'start')];
-    expect(show(events)).toContain('正在整理上下文…');
+    expect(show(events)).toContain('正在整理对话…');
     expect(show(events)).not.toContain('aria-expanded="true"');
     events.push(event(2, 'updated', 'summary'));
-    expect(show(events)).toContain('正在整理上下文…');
+    expect(show(events)).toContain('正在整理对话…');
     for (const status of ['completed', 'failed'] as const) {
       const html = show([...events, event(3, status, 'end')]);
-      expect(html).not.toContain('正在整理上下文…');
+      expect(html).not.toContain('正在整理对话…');
       expect(html).toContain('思考中…');
     }
     expect(show([event(4, 'completed', 'prune')])).not.toContain(
-      '正在整理上下文…',
+      '正在整理对话…',
     );
   });
   it('removes placeholder text and microstatus while streaming, but retains a cursor and actual output', () => {
@@ -578,10 +578,10 @@ describe('historical transcript capability gating', () => {
         expect(html).toContain('答案已保留');
       } else {
         expect(html).not.toContain('答案已保留');
-        expect(html).not.toContain('超过平台内部预期');
-        expect(html).not.toContain('周额度');
+        expect(html).not.toContain('工作量太大');
       }
-      expect(html).not.toContain('这次没有完成');
+      for (const word of ['Token', 'Codex', '这次未完成'])
+        expect(html).not.toContain(word);
     },
   );
 
@@ -597,8 +597,8 @@ describe('historical transcript capability gating', () => {
         },
       ]);
       expect(html).toContain('Normal completed answer');
-      expect(html).not.toContain('超过平台内部预期');
-      expect(html).not.toContain('这次没有完成');
+      expect(html).not.toContain('工作量太大');
+      expect(html).not.toContain('未完成');
     }
   });
 
@@ -612,9 +612,53 @@ describe('historical transcript capability gating', () => {
           errorCode,
         },
       ]);
-      expect(html).toContain('这次没有完成');
+      expect(html).toContain('未完成');
+      for (const word of ['Token', 'Codex', '没有完成'])
+        expect(html).not.toContain(word);
     },
   );
+
+  it.each([
+    ['MODEL_TOTAL_TOKEN_BUDGET_EXCEEDED', '把任务拆小一点'],
+    ['ASSISTANT_EXECUTION_UNRESOLVED', '结果待确认，请刷新查看'],
+    ['RATE_LIMITED', '可以换个说法再试'],
+  ])(
+    'says once what happened and what to do next for %s',
+    (errorCode, next) => {
+      const html = render(false, [
+        {
+          ...messages[0]!,
+          status: 'failed',
+          errorCode,
+          content: { text: 'Rice 暂时无法完成这次请求，请稍后重试。' },
+        },
+      ]);
+      expect(html.split(next)).toHaveLength(2);
+      for (const word of ['Rice 暂时无法', '待核实', 'Token', 'Codex'])
+        expect(html).not.toContain(word);
+    },
+  );
+
+  it('names an unlabeled knowledge source in words, not a code', () => {
+    const html = render(false, [
+      {
+        ...messages[0]!,
+        content: {
+          text: 'An existing answer',
+          citations: [
+            {
+              type: 'knowledge',
+              id: 'k-1',
+              label: '销售手册',
+              reference: { kind: 'knowledge', id: 'k-1' },
+            },
+          ],
+        },
+      } as unknown as Message,
+    ]);
+    expect(html).toContain('参考资料 1');
+    expect(html).not.toContain('[K1]');
+  });
 
   it.each([undefined, false])(
     'never mounts a local request panel while disabled (%s)',

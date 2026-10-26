@@ -273,8 +273,8 @@ export function EmployeeSidebar({
                     leading={
                       scheduledSessions?.has(node.id) ? (
                         <span
-                          title="有启用中的定时任务"
-                          aria-label="有启用中的定时任务"
+                          title="有启用中的自动化任务"
+                          aria-label="有启用中的自动化任务"
                         >
                           <IconClockOutlineRegular size={14} />
                         </span>

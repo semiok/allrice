@@ -3,7 +3,7 @@ import { assistantStreamText } from '../../lib/execution/assistant-stream';
 import type { ChatFlowEventEnvelope } from '@allrice/contracts';
 
 import { requestFailureMessage } from '../../lib/chatflow/request-failure';
-import type { Employee, Session, Workspace } from './chatflow-types';
+import type { Session, Workspace } from './chatflow-types';
 
 type ErrorBody = {
   code?: unknown;
@@ -79,36 +79,6 @@ export async function fileToBase64(file: File) {
 
 export function employeeForSession(workspace: Workspace, session: Session) {
   return employeeChoice(workspace, sessionEmployeeKey(session));
-}
-
-export function providerForEmployee(employee?: Employee) {
-  const manifest = employee?.currentVersion.manifest;
-  const provider = manifest?.runtimePolicy?.provider;
-  if (provider === 'openai-codex' || provider === 'codex') {
-    return 'Codex 订阅 · DSH';
-  }
-  if (provider === 'gemini' || provider === 'google') {
-    return 'Gemini API · DSH';
-  }
-  if (provider === 'deepseek-official') return 'DeepSeek · DSH';
-  if (provider === 'openai-compatible') return 'API 模型 · DSH';
-  return 'DSH';
-}
-
-export function providerForSession(workspace: Workspace, session?: Session) {
-  const frozen = workspace.sessionModels.find(
-    (snapshot) => snapshot.sessionId === session?.id,
-  );
-  if (!frozen) {
-    return providerForEmployee(
-      session ? employeeForSession(workspace, session) : undefined,
-    );
-  }
-  if (frozen.provider === 'openai-codex') return 'Codex 订阅 · DSH';
-  if (frozen.provider === 'gemini') return 'Gemini API · DSH';
-  if (frozen.provider === 'deepseek-official') return 'DeepSeek · DSH';
-  if (/minimax/i.test(frozen.model)) return 'MiniMax · DSH';
-  return `${frozen.model} · DSH`;
 }
 
 export function assistantDelta(events: ChatFlowEventEnvelope[]) {

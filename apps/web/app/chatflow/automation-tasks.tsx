@@ -45,6 +45,15 @@ import card from './dsh-upstream/automation/ScheduleCreateCard.module.css';
 import css from './automation-tasks.module.css';
 import { AutomationManualRun } from './automation-manual-run';
 import { RecurringWeekdays } from './recurring-weekdays';
+import {
+  automationTime as time,
+  requestNotSent,
+  timeZoneLabel,
+} from '../../lib/chatflow/automation-copy';
+import { userFacingMessage } from '../../lib/chatflow/user-facing-error';
+
+const resultUnknown = '结果待确认。';
+const unreadable = '暂时读不到这个任务，请稍后刷新再试。';
 
 type Identity = {
   workspaceId: string;
@@ -65,7 +74,7 @@ export function automationStatus(entry: AutomationCatalogTask) {
     running: '执行中',
     awaiting_input: '待你回复',
     succeeded: '已完成',
-    failed: '执行失败',
+    failed: '未完成',
     canceled: '已取消',
     not_executed: '未执行',
   };
@@ -86,7 +95,7 @@ function active(entry: AutomationCatalogTask) {
 export function automationFrequency(entry: AutomationCatalogTask) {
   const d = entry.definition;
   if (d.kind === 'once')
-    return '一次性 · ' + time(d.task.runAt, d.task.timezone);
+    return `一次性 · ${time(d.task.runAt, d.task.timezone)} · ${timeZoneLabel(d.task.timezone)}`;
   const rule = d.kind === 'recurring' ? d.task.rule : null;
   if (rule?.kind === 'every')
     return rule.seconds % 3600 === 0
@@ -95,38 +104,25 @@ export function automationFrequency(entry: AutomationCatalogTask) {
         ? `每 ${rule.seconds / 60} 分钟`
         : `每 ${rule.seconds} 秒`;
   if (rule?.kind === 'daily')
-    return `每天 ${rule.time.endsWith(':00') ? rule.time.slice(0, 5) : rule.time} · ${rule.timezone}`;
+    return `每天 ${rule.time.endsWith(':00') ? rule.time.slice(0, 5) : rule.time} · ${timeZoneLabel(rule.timezone)}`;
   if (rule?.kind === 'weekly')
-    return `每周${rule.weekdays.map((day) => '一二三四五六日'[day - 1]).join('、')} ${rule.time.endsWith(':00') ? rule.time.slice(0, 5) : rule.time} · ${rule.timezone}`;
+    return `每周${rule.weekdays.map((day) => '一二三四五六日'[day - 1]).join('、')} ${rule.time.endsWith(':00') ? rule.time.slice(0, 5) : rule.time} · ${timeZoneLabel(rule.timezone)}`;
   if (rule?.kind === 'monthly')
-    return `每月 ${rule.monthDay} 日 ${rule.time.endsWith(':00') ? rule.time.slice(0, 5) : rule.time} · ${rule.timezone}`;
+    return `每月 ${rule.monthDay} 日 ${rule.time.endsWith(':00') ? rule.time.slice(0, 5) : rule.time} · ${timeZoneLabel(rule.timezone)}`;
   if (d.kind === 'legacy') {
     const s = d.schedule;
-    if (s.frequency === 'once') return '一次性 · ' + time(s.runAt!, s.timezone);
+    if (s.frequency === 'once')
+      return `一次性 · ${time(s.runAt!, s.timezone)} · ${timeZoneLabel(s.timezone)}`;
     return (
       (s.frequency === 'daily'
         ? '每天'
         : s.frequency === 'weekly'
           ? `每周${'日一二三四五六'[s.weekday!]}`
-          : `每月 ${s.monthDay} 日`) + ` ${s.time} · ${s.timezone}`
+          : `每月 ${s.monthDay} 日`) +
+      ` ${s.time} · ${timeZoneLabel(s.timezone)}`
     );
   }
   return '';
-}
-function time(value: string, timezone?: string) {
-  try {
-    return new Intl.DateTimeFormat('zh-CN', {
-      month: 'numeric',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      hourCycle: 'h23',
-      ...(timezone ? { timeZone: timezone } : {}),
-      timeZoneName: 'short',
-    }).format(new Date(value));
-  } catch {
-    return value;
-  }
 }
 async function read(response: Response) {
   const body: unknown = await response.json();
@@ -210,7 +206,12 @@ export function AutomationTaskList(
         }));
       } catch (cause) {
         if (!controller.signal.aborted && current.current === generation)
-          setError(cause instanceof Error ? cause.message : '加载失败');
+          setError(
+            userFacingMessage(
+              cause,
+              '暂时读不到自动化任务，请稍后点「刷新」再试。',
+            ),
+          );
       } finally {
         if (!controller.signal.aborted && current.current === generation)
           setLoading(false);
@@ -253,13 +254,13 @@ export function AutomationTaskList(
   return (
     <section
       className={`${native.page} ${css.catalog}`}
-      aria-label={props.sessionId ? '当前会话的定时任务' : '自动化任务'}
+      aria-label={props.sessionId ? '当前对话的自动化任务' : '自动化任务'}
     >
       <div className={native.listPane}>
         <div className={native.pageScroll}>
           <div className={native.pageContent}>
             <header className={native.pageHeading}>
-              <h1>{props.sessionId ? '当前会话的定时任务' : '自动化任务'}</h1>
+              <h1>{props.sessionId ? '当前对话的自动化任务' : '自动化任务'}</h1>
               <div className={native.creationActions}>
                 <Button variant="outline" size="sm" onClick={() => void load()}>
                   刷新
@@ -332,14 +333,27 @@ export function AutomationTaskList(
               </p>
             ) : null}
             {!loading && !error && !tasks.length ? (
-              <div className={native.empty}>
+              <div className={`${native.empty} ${css.emptyState}`}>
                 <IconClockOutlineRegular size={24} />
-                <h2>
-                  {result.nextCursor
-                    ? '当前已加载任务中没有匹配项'
-                    : '没有匹配的自动化任务'}
-                </h2>
-                <p>在新的工作中说明时间和工作内容，即可创建任务。</p>
+                {!result.tasks.length &&
+                !result.nextCursor &&
+                !query &&
+                !employeeId &&
+                filter === 'all' ? (
+                  <>
+                    <h2>还没有自动化任务</h2>
+                    <p>在对话里说「每天 9 点提醒我写日报」就能创建。</p>
+                  </>
+                ) : (
+                  <>
+                    <h2>
+                      {result.nextCursor
+                        ? '当前已加载任务中没有匹配项'
+                        : '没有匹配的自动化任务'}
+                    </h2>
+                    <p>换个关键词或筛选条件试试。</p>
+                  </>
+                )}
               </div>
             ) : null}
             <ul className={native.listRows}>
@@ -368,7 +382,7 @@ export function AutomationTaskList(
                         {task.nextRunAt
                           ? '下次运行 ' + time(task.nextRunAt)
                           : automationStatus(task)}
-                        {task.sourceArchived ? ' · 原会话已归档' : ''}
+                        {task.sourceArchived ? ' · 原对话已归档' : ''}
                       </span>
                     </span>
                     <span className={css.status}>{automationStatus(task)}</span>
@@ -518,7 +532,9 @@ function AutomationDetailBody({
       stopRef.current = intent;
       setStopIntent(intent);
       if (intent)
-        setStopNotice('上次停止请求待核实；只会读取原本轮结果，不会再次提交。');
+        setStopNotice(
+          '上次停止本轮的结果待确认，请点「检查本轮停止结果」查看，不会再次提交。',
+        );
       setStopReady(true);
     } catch (cause) {
       setStopError(
@@ -530,7 +546,7 @@ function AutomationDetailBody({
     if (!visible) return;
     let cancelled = false;
     void load(undefined, true).catch((e) => {
-      if (!cancelled) setError(e.message);
+      if (!cancelled) setError(userFacingMessage(e, unreadable));
     });
     return () => {
       cancelled = true;
@@ -550,7 +566,7 @@ function AutomationDetailBody({
         setPending(intent);
         setNotice('上次操作尚待确认，只读取结果，不会重复提交。');
       } else if (intent)
-        throw new Error('该会话有另一项待确认操作，请先在原入口核对。');
+        throw new Error('这个对话还有一项操作结果待确认，请先回到原处查看。');
       setRestored(true);
     } catch (e) {
       setStorageError(e instanceof Error ? e.message : '无法保存操作记录。');
@@ -572,7 +588,9 @@ function AutomationDetailBody({
       )
         return;
       if (result.state === 'unconfirmed') {
-        setNotice('操作结果待核实，请稍后检查；不会再次提交。');
+        setNotice(
+          '操作结果待确认，请稍后点「检查操作结果」查看，不会再次提交。',
+        );
         return;
       }
       if (result.state === 'pending') {
@@ -611,8 +629,7 @@ function AutomationDetailBody({
         }),
       );
     } catch {
-      if (mounted.current)
-        setNotice('暂时无法核实操作结果，待连接恢复后再检查。');
+      if (mounted.current) setNotice('暂时查不到操作结果，连接恢复后会再查。');
     }
   }, [visible, url, headers, settle]);
   useEffect(() => {
@@ -635,6 +652,7 @@ function AutomationDetailBody({
     )
       return;
     setError('');
+    let sent = false;
     try {
       const content =
         action === 'update' ? recurringContent(draft!, nativeTask.rule) : null;
@@ -660,6 +678,7 @@ function AutomationDetailBody({
       setBusy(true);
       setConfirm(null);
       // Exact write acknowledgement is verified by the same receipt checker.
+      sent = true;
       const response = await fetch(url, {
         method: 'PATCH',
         headers: { ...headers, 'content-type': 'application/json' },
@@ -672,13 +691,18 @@ function AutomationDetailBody({
         body: payload,
       });
       if (result.state === 'unconfirmed') {
-        setNotice('操作结果待核实；不会重复提交。');
+        setNotice('操作结果待确认，请刷新查看，不会重复提交。');
         return;
       }
       // Readback includes the exact original operation, including a rejection.
       await check();
     } catch (e) {
-      setError(e instanceof Error ? e.message : '操作结果待核实。');
+      setError(
+        userFacingMessage(
+          e,
+          sent ? '操作结果待确认，请刷新查看。' : requestNotSent,
+        ),
+      );
     } finally {
       if (mounted.current) setBusy(false);
     }
@@ -696,7 +720,7 @@ function AutomationDetailBody({
       });
       const body = await read(response);
       const actual = OnceTaskSchema.parse((body as { task: unknown }).task);
-      if (actual.id !== taskId) throw new Error('任务回执不匹配，请刷新核实。');
+      if (actual.id !== taskId) throw new Error(resultUnknown);
       setNotice(
         actual.status === 'canceled'
           ? '任务已取消。'
@@ -707,8 +731,7 @@ function AutomationDetailBody({
     } catch (e) {
       setLegacyUnknown(true);
       setError(
-        (e instanceof Error ? e.message : '请求结果待核实') +
-          ' 请刷新核实，不会自动重试。',
+        userFacingMessage(e, resultUnknown) + '请刷新查看，不会自动重试。',
       );
     } finally {
       if (mounted.current) setBusy(false);
@@ -736,8 +759,7 @@ function AutomationDetailBody({
     } catch (e) {
       setLegacyUnknown(true);
       setError(
-        (e instanceof Error ? e.message : '请求结果待核实') +
-          ' 请刷新核实，不会自动重试。',
+        userFacingMessage(e, resultUnknown) + '请刷新查看，不会自动重试。',
       );
     } finally {
       if (mounted.current) setBusy(false);
@@ -764,7 +786,7 @@ function AutomationDetailBody({
       setStopNotice(
         result.state === 'stopping'
           ? '已请求停止本轮，等待执行退出。可检查本轮结果；未来计划仍按原设置执行。'
-          : '尚未核实停止结果。只会读取原本轮，不会再次提交。',
+          : '停止结果待确认，可以点「检查本轮停止结果」查看，不会再次提交。',
       );
   };
   const checkStop = async () => {
@@ -783,9 +805,7 @@ function AutomationDetailBody({
       );
     } catch (cause) {
       if (mounted.current)
-        setStopError(
-          cause instanceof Error ? cause.message : '本轮结果待核实。',
-        );
+        setStopError(userFacingMessage(cause, '本轮结果待确认，请稍后再查。'));
     } finally {
       stopWriting.current = false;
       if (mounted.current) setStopBusy(false);
@@ -820,8 +840,10 @@ function AutomationDetailBody({
       if (!saved) setStopReady(false);
       if (mounted.current)
         setStopError(
-          (cause instanceof Error ? cause.message : '停止结果待核实。') +
-            ' 不会自动重试；请检查原本轮结果。',
+          saved
+            ? userFacingMessage(cause, '停止结果待确认。') +
+                '不会自动重试，请点「检查本轮停止结果」查看。'
+            : userFacingMessage(cause, requestNotSent),
         );
     } finally {
       stopWriting.current = false;
@@ -841,7 +863,9 @@ function AutomationDetailBody({
           variant="outline"
           size="sm"
           onClick={() =>
-            void load(undefined, true).catch((e) => setError(e.message))
+            void load(undefined, true).catch((e) =>
+              setError(userFacingMessage(e, unreadable)),
+            )
           }
         >
           重试
@@ -854,7 +878,7 @@ function AutomationDetailBody({
         setLegacyUnknown(false);
         setError('');
       })
-      .catch((e) => setError(e.message));
+      .catch((e) => setError(userFacingMessage(e, unreadable)));
   return (
     <section className={css.detail} aria-label={'自动化任务详情：' + task.name}>
       <div className={native.detailTabsBar}>
@@ -893,7 +917,7 @@ function AutomationDetailBody({
         </header>
         {task.sourceArchived && (
           <p className={native.notice}>
-            原会话已归档。仍可查看或停止任务；恢复执行前请先恢复原会话。
+            原对话已归档。仍可查看或停止任务；要恢复执行，请先恢复原对话。
           </p>
         )}
         {error && (
@@ -979,9 +1003,9 @@ function AutomationDetailBody({
                   />
                 </label>
                 <label>
-                  执行会话
+                  在哪个对话里执行
                   <select
-                    aria-label="执行会话"
+                    aria-label="在哪个对话里执行"
                     value={draft.conversationMode ?? 'reuse'}
                     disabled={!editable || disabled}
                     onChange={(e) =>
@@ -994,12 +1018,12 @@ function AutomationDetailBody({
                       })
                     }
                   >
-                    <option value="reuse">沿用来源聊天</option>
-                    <option value="new_each_run">每次新建聊天</option>
+                    <option value="reuse">沿用原对话</option>
+                    <option value="new_each_run">每次新建对话</option>
                   </select>
                 </label>
                 <p className={css.caption}>
-                  只影响尚未排队的执行，已排队的本轮保持原会话；来源聊天继续用于管理和权限验证。
+                  只影响还没排队的执行，已经排队的这一轮不变。原对话仍用于管理这个任务和检查权限。
                 </p>
                 <h3>运行时间</h3>
                 <div className={css.rules}>
@@ -1140,17 +1164,17 @@ function AutomationDetailBody({
                 <p className={native.readonlyPrompt}>{task.prompt}</p>
                 {definition?.kind === 'once' && (
                   <p>
-                    执行会话：
+                    在哪个对话里执行：
                     {definition.task.conversationMode === 'new_each_run'
-                      ? '每次新建聊天'
-                      : '沿用来源聊天'}
+                      ? '每次新建对话'
+                      : '沿用原对话'}
                     （创建时确定）
                   </p>
                 )}
                 <h3>运行时间</h3>
                 <p>{automationFrequency(task)}</p>
                 <p className={css.caption}>
-                  一次性任务可取消；如需调整时间，请在原会话重新安排。
+                  一次性任务可取消；如需调整时间，请在原对话重新安排。
                 </p>
               </div>
             )}
@@ -1276,7 +1300,7 @@ function AutomationDetailBody({
                         running: '执行中',
                         awaiting_input: '待你回复',
                         succeeded: '已完成',
-                        failed: '执行失败',
+                        failed: '未完成',
                         canceled: '已取消',
                         not_executed: '未执行',
                       }[o.status]
@@ -1358,7 +1382,7 @@ function AutomationDetailBody({
                 size="sm"
                 onClick={() =>
                   void load(detail.nextCursor!).catch((e) =>
-                    setError(e.message),
+                    setError(userFacingMessage(e, unreadable)),
                   )
                 }
               >

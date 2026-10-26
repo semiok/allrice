@@ -104,7 +104,9 @@ export function QueuedMessagesDock({
                     ...(row.referenceSelections ?? []).map(
                       (r) => `${r.fileName} · v${r.revision}`,
                     ),
-                    ...(row.attachments ?? []).map((a) => `📎 ${a.fileName}`),
+                    ...(row.attachments ?? []).map(
+                      (a) => `附件：${a.fileName}`,
+                    ),
                   ].join('　');
               const steerUnavailable = row.companyAssets?.templates.length
                 ? '选用范本的消息会作为下一轮任务处理'

@@ -37,7 +37,6 @@ interface ChatSidebarProps {
   workspace: Workspace;
   monthlyQuota: ReturnType<typeof useMonthlyQuota>;
   preferences: ReturnType<typeof usePersonalPreferences>;
-  providerLabel: string;
   settingsSection: string | null;
   onSettingsSectionChange: (section: string | null) => void;
   onBridge: () => void;
@@ -65,7 +64,6 @@ export function ChatSidebar({
   workspace,
   monthlyQuota,
   preferences,
-  providerLabel,
   settingsSection,
   onSettingsSectionChange,
   onBridge,
@@ -313,7 +311,6 @@ export function ChatSidebar({
             workspaceId={workspace.workspaceId}
             monthlyQuota={monthlyQuota}
             preferences={preferences}
-            providerLabel={providerLabel}
             section={settingsSection}
             onSectionChange={onSettingsSectionChange}
             onBridge={onBridge}

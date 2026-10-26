@@ -33,26 +33,27 @@ describe('account monthly balance', () => {
     );
     expect(html).toContain('账号使用情况');
     expect(html).toContain('2,000,000');
-    expect(html).toContain('不阻断后续聊天');
+    expect(html).toContain('有 1 次任务的用量还在统计');
     expect(html).not.toContain('剩余');
     expect(html).not.toContain('5,000,000');
   });
-  it('labels the human account, internal monthly balance, exact totals and reset', () => {
+  it('shows the monthly allowance in plain words, without Token or provider names', () => {
     const html = renderToStaticMarkup(
       <MonthlyQuota data={data} failed={false} onRefresh={() => {}} />,
     );
     for (const value of [
-      'Snow',
-      '剩余 43%',
-      '5,000,000',
+      '本月已用',
       '2,824,029',
-      '2,175,971',
+      '本月上限',
+      '5,000,000',
+      '2,175,971 · 43%',
       '重置时间',
-      'AllRice 月额度',
-      '不是 Codex 官方订阅余额',
+      '10 月 1 日',
+      '用量如何计算',
     ])
       expect(html).toContain(value);
-    expect(html).not.toContain('用量待核对');
+    for (const word of ['Token', 'Codex', 'DSH', '回执', '还在统计'])
+      expect(html).not.toContain(word);
   });
   it('does not invent zero/full balance on failed or pending reads', () => {
     for (const failed of [true, false]) {
@@ -71,8 +72,8 @@ describe('account monthly balance', () => {
         onRefresh={() => {}}
       />,
     );
-    expect(html).toContain('有 2 笔用量待核对');
-    expect(html).toContain('余额按已入账用量计算');
+    expect(html).toContain('有 2 次任务的用量还在统计');
+    expect(html).toContain('上面是已统计的部分');
   });
   it.each([
     [0, '0%'],

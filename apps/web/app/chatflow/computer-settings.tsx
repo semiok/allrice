@@ -18,7 +18,8 @@ import type {
 } from '@allrice/contracts';
 import styles from './sidebar-settings.module.css';
 import { BrowserLoginSettings } from './browser-login-settings';
-import { projectBridgeView } from './bridge-view';
+import { bridgeDeviceName, projectBridgeView } from './bridge-view';
+import { userFacingMessage } from '../../lib/chatflow/user-facing-error';
 import type { useBridge } from './use-bridge';
 
 type Computer = {
@@ -45,16 +46,18 @@ const choices = [
   {
     key: 'development',
     title: '受控开发协作',
-    description: '允许助手修改、测试和审查项目，需沙箱和授权文件夹。',
+    description:
+      '允许助手修改、测试和检查项目，需要先开启本地沙箱命令并授权文件夹。',
     state: 'development',
   },
 ] as const;
 async function read<T>(response: Response): Promise<T> {
   const value = await response.json();
   if (!response.ok)
-    throw Error(value.error?.message ?? '电脑设置更新失败，请重试');
+    throw Error(value.error?.message ?? '电脑设置没有保存，请稍后再试。');
   return value as T;
 }
+const unreadable = '暂时读不到电脑设置，请稍后刷新。';
 export function ComputerSettings({
   workspaceId,
   active,
@@ -135,7 +138,8 @@ export function ComputerSettings({
     if (!active) return;
     const controller = new AbortController();
     void refresh(controller.signal).catch((e) => {
-      if (!controller.signal.aborted) setError(e.message);
+      if (!controller.signal.aborted)
+        setError(userFacingMessage(e, unreadable));
     });
     return () => controller.abort();
   }, [active, refresh]);
@@ -155,7 +159,8 @@ export function ComputerSettings({
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       void refresh(controller.signal).catch((e) => {
-        if (!controller.signal.aborted) setError(e.message);
+        if (!controller.signal.aborted)
+          setError(userFacingMessage(e, unreadable));
       });
     }, 1500);
     return () => {
@@ -190,7 +195,7 @@ export function ComputerSettings({
           ],
       );
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '设置未保存，请重试');
+      setError(userFacingMessage(cause, '设置结果待确认，请刷新查看。'));
     } finally {
       setBusy(null);
     }
@@ -214,13 +219,13 @@ export function ComputerSettings({
         </span>
         <span className={styles.computerStatuses} aria-live="polite">
           <span>
-            <span>Bridge</span>
+            <span>电脑</span>
             <span data-ready={view.bridgeConnectionState === 'online'}>
               {view.bridgeConnectionState === 'unknown'
                 ? '待确认'
                 : view.bridgeConnectionState === 'online'
-                  ? '在线'
-                  : '离线'}
+                  ? '已连接'
+                  : '未连接'}
             </span>
           </span>
           <span>
@@ -240,17 +245,20 @@ export function ComputerSettings({
       {!computers && !error && <p role="status">正在读取电脑状态…</p>}
       {computers?.length === 0 && (
         <p className={styles.preferenceRow}>
-          还没有连接电脑。安装并配对 Bridge 后，可在这里管理 Bridge 能力。
+          还没有连接电脑。安装 AllRice
+          电脑端并完成配对后，可以在这里管理电脑上的能力。
         </p>
       )}
       {computers?.map((computer) => (
         <section
           key={computer.device.id}
           className={styles.computerPermissions}
-          aria-label={computer.device.name}
+          aria-label={bridgeDeviceName(computer.device.name)}
         >
           <h3>
-            {computers.length > 1 ? computer.device.name : '员工使用权限'}
+            {computers.length > 1
+              ? bridgeDeviceName(computer.device.name)
+              : '员工使用权限'}
           </h3>
           {computer.pending && (
             <p role="status">
@@ -259,9 +267,9 @@ export function ComputerSettings({
                 : '设置已保存，电脑上线后自动同步。'}
             </p>
           )}
-          {!computer.supported && <p>请更新 Bridge 后使用这些开关。</p>}
+          {!computer.supported && <p>请更新 AllRice 电脑端后使用这些开关。</p>}
           {!computer.pending && computer.environment?.paused && (
-            <p>Bridge 已整体暂停，请在本机恢复连接。</p>
+            <p>电脑端已暂停，请在电脑上的 AllRice 电脑端里恢复。</p>
           )}
           {choices.map((choice) => {
             const state = computer.environment?.[choice.state];
@@ -269,9 +277,9 @@ export function ComputerSettings({
               !computer.settings[choice.key] || computer.pending
                 ? null
                 : computer.device.status !== 'online'
-                  ? '电脑离线'
+                  ? '电脑未连接'
                   : computer.environment?.paused
-                    ? 'Bridge 已暂停'
+                    ? '电脑端已暂停'
                     : choice.key === 'development' &&
                         !computer.settings.localCommand
                       ? '需要开启本地沙箱命令'
@@ -305,7 +313,7 @@ export function ComputerSettings({
         <div key={computer.device.id}>
           {computers.length > 1 && (
             <h3 className={styles.browserDeviceHeading}>
-              {computer.device.name}的浏览器登录
+              {bridgeDeviceName(computer.device.name)}的浏览器登录
             </h3>
           )}
           {computer.environment?.browserDefaultsVersion === 1 ? (
@@ -315,10 +323,7 @@ export function ComputerSettings({
               active={active}
             />
           ) : (
-            <p>
-              更新 Bridge
-              后，浏览器将默认保留登录，文件和运行时长使用平台统一规则。
-            </p>
+            <p>更新 AllRice 电脑端后，浏览器会默认保留登录状态。</p>
           )}
         </div>
       ))}

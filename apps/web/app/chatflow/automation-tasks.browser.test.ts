@@ -733,7 +733,7 @@ suite(
             sourceSession = f.task.sessionId;
           await f.open();
           await f.page
-            .getByRole('combobox', { name: '执行会话', exact: true })
+            .getByRole('combobox', { name: '在哪个对话里执行', exact: true })
             .selectOption('new_each_run');
           await f.page
             .getByRole('button', { name: '保存修改', exact: true })
@@ -758,7 +758,7 @@ suite(
           await f.open();
           expect(
             await f.page
-              .getByRole('combobox', { name: '执行会话', exact: true })
+              .getByRole('combobox', { name: '在哪个对话里执行', exact: true })
               .inputValue(),
           ).toBe('new_each_run');
           expect(f.requests.filter((r) => r.method === 'PATCH')).toHaveLength(
@@ -1049,9 +1049,7 @@ suite(
           .click();
         await f.page.getByText('设置已更新。', { exact: true }).waitFor();
         await f.page.getByRole('button', { name: '显示或隐藏右栏' }).click();
-        await f.page
-          .getByText('没有匹配的自动化任务', { exact: true })
-          .waitFor();
+        await f.page.getByText('还没有自动化任务', { exact: true }).waitFor();
         expect(f.requests.filter((r) => r.method === 'PATCH')).toHaveLength(1);
       } finally {
         await f.close();
@@ -1062,7 +1060,7 @@ suite(
       try {
         await f.history();
         await f.submitStop();
-        await f.page.getByText(/fixture storage unavailable/).waitFor();
+        await f.page.getByText(/浏览器没能记下这次请求/).waitFor();
         expect(f.stopRequests('POST')).toEqual([]);
         expect(f.requests.filter((r) => r.method === 'PATCH')).toEqual([]);
         expect(
@@ -1207,7 +1205,7 @@ suite(
         await f.page
           .getByRole('button', { name: '立即执行', exact: true })
           .click();
-        await f.page.getByText(/fixture storage unavailable/).waitFor();
+        await f.page.getByText(/浏览器没能记下这次请求/).waitFor();
         expect(f.manualRequests()).toHaveLength(0);
         expect(f.errors).toEqual([]);
       } finally {

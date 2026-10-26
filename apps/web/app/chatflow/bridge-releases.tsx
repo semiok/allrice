@@ -109,7 +109,7 @@ export function BridgeReleaseDownloads({
   onDownload: (label: string) => void;
 }) {
   return (
-    <section className={styles.bridgeReleaseSection} aria-label="Bridge 下载">
+    <section className={styles.bridgeReleaseSection} aria-label="电脑端下载">
       <div className={styles.bridgeDownloads}>
         {(['macos-arm64', 'macos-x64'] as const).map((platform) => {
           const release = releases?.find((item) => item.platform === platform);

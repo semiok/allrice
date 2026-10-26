@@ -58,6 +58,12 @@ import { presentAssistantTree } from '../../lib/chatflow/assistant-tree-presente
 import { isMessageRunActive } from './run-view';
 import { HistoryRefreshNotice } from './history-refresh-notice';
 import { workProcessPresentation } from '../../lib/chatflow/work-process-presentation';
+import {
+  plainFailureText,
+  replyBudgetKept,
+  replyFailureCopy,
+  savedGenericFailure,
+} from '../../lib/chatflow/reply-failure-copy';
 
 interface ChatTranscriptProps {
   onOpenReference?: (reference: ReferenceDraft) => void;
@@ -256,33 +262,45 @@ export const ChatTranscript = memo(function ChatTranscript({
               );
               const nativeFailure =
                 message.status === 'failed'
-                  ? ((message.errorCode === 'REFERENCE_UNAVAILABLE'
-                      ? '参考资料已不可用，请检查资料状态和访问权限后重新发起任务。'
-                      : null) ??
-                    nativeExecutionFailureText(message.errorCode) ??
-                    nativeExecutionDiagnosticFailureText(
-                      message.errorCode,
-                      traceEvents.findLast(
-                        (event) => event.type === 'turn.failed',
-                      )?.payload,
-                      traceEvents.findLast(
-                        (event) => event.type === 'run.failed',
-                      )?.payload.message,
-                    ))
+                  ? message.errorCode === 'REFERENCE_UNAVAILABLE'
+                    ? replyFailureCopy(message.errorCode)
+                    : plainFailureText(
+                        nativeExecutionFailureText(message.errorCode) ??
+                          nativeExecutionDiagnosticFailureText(
+                            message.errorCode,
+                            traceEvents.findLast(
+                              (event) => event.type === 'turn.failed',
+                            )?.payload,
+                            traceEvents.findLast(
+                              (event) => event.type === 'run.failed',
+                            )?.payload.message,
+                          ),
+                        message.errorCode,
+                      )
                   : null;
+              // What happened and what to do next, shown under a failed reply.
+              const failureNotice =
+                nativeFailure ?? replyFailureCopy(message.errorCode);
               const fallbackText =
                 (message.status === 'failed' &&
                 !message.content.budgetWarning &&
                 !nativeFailure
-                  ? modelGovernanceFailureText(message.errorCode)
+                  ? plainFailureText(
+                      modelGovernanceFailureText(message.errorCode),
+                      message.errorCode,
+                    )
                   : null) ??
                 (message.status === 'pending'
                   ? ''
-                  : nativeFailure &&
-                      message.content.text ===
-                        'Rice 暂时无法完成这次请求，请稍后重试。'
-                    ? nativeFailure
-                    : message.content.text);
+                  : message.status !== 'failed'
+                    ? message.content.text
+                    : nativeFailure &&
+                        message.content.text === savedGenericFailure
+                      ? nativeFailure
+                      : plainFailureText(
+                          message.content.text,
+                          message.errorCode,
+                        ));
               const progress = projectWorkProgress(
                 traceEvents,
                 fallbackText,
@@ -475,7 +493,7 @@ export const ChatTranscript = memo(function ChatTranscript({
                                           >
                                             [
                                             {c.referenceLabel ??
-                                              `K${index + 1}`}
+                                              `参考资料 ${index + 1}`}
                                             ] {c.label}
                                           </button>
                                         ) : null,
@@ -559,19 +577,12 @@ export const ChatTranscript = memo(function ChatTranscript({
                                 ) : null}
                                 {message.content.budgetWarning &&
                                 message.status === 'failed' ? (
-                                  <small role="status">
-                                    答案已保留。本次任务超过平台内部预期 Token
-                                    预算；真实用量已记录，这不代表 Codex
-                                    周额度耗尽。
-                                  </small>
+                                  <small role="status">{replyBudgetKept}</small>
                                 ) : message.status === 'failed' &&
                                   !applicationFailure &&
-                                  responseText !== nativeFailure ? (
+                                  responseText !== failureNotice ? (
                                   <small className={styles.failedMessage}>
-                                    {message.errorCode ===
-                                    'ASSISTANT_EXECUTION_UNRESOLVED'
-                                      ? '本轮已结束，部分操作的结果仍待核实；不会自动重试。'
-                                      : (nativeFailure ?? '这次没有完成。')}
+                                    {failureNotice}
                                   </small>
                                 ) : null}
                                 {onOpenArtifact && message.runId ? (

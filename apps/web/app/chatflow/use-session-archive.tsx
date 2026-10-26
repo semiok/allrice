@@ -545,7 +545,7 @@ export function useSessionArchive({
             void copySessionId(session.id);
           }}
         >
-          复制 Session ID
+          复制对话编号
         </MenuItemButton>
       </>
     );
@@ -588,7 +588,7 @@ export function useSessionArchive({
         ) : null}
         {copied ? (
           <Toast
-            text="已复制 Session ID"
+            text="已复制对话编号"
             tone="success"
             onDone={() => setCopied(false)}
           />

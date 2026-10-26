@@ -152,7 +152,7 @@ export function WorkProcess({
         : process.active === '等待模型响应'
           ? '等待模型响应…'
           : process.active === '正在整理上下文'
-            ? '正在整理上下文…'
+            ? '正在整理对话…'
             : process.active
               ? '执行中…'
               : streaming
