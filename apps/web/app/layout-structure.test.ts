@@ -17,7 +17,9 @@ const chatFlowStyles = readFileSync(
 
 describe('root layout structure', () => {
   it('mounts the active page directly without the retired AppShell', () => {
-    expect(layoutSource).toContain('<body>{children}</body>');
+    expect(layoutSource).toMatch(
+      /<body suppressHydrationWarning>\s*<script dangerouslySetInnerHTML=\{\{ __html: themeScript \}\} \/>\s*<ThemeController \/>\s*\{children\}\s*<\/body>/,
+    );
     expect(layoutSource).not.toMatch(/AppShell|app-shell/);
   });
 

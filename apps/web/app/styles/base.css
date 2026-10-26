@@ -12,6 +12,10 @@
     sans-serif;
 }
 
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}
+
 * {
   box-sizing: border-box;
 }
