@@ -19,10 +19,12 @@
 // and name runs at a time (a PostgreSQL advisory lock, checked before every write), and a
 // new state file is claimed exclusively.
 import assert from 'node:assert/strict';
+import { Blob } from 'node:buffer';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { setTimeout } from 'node:timers';
 import { pathToFileURL } from 'node:url';
 
 const args = {};
@@ -412,9 +414,9 @@ try {
         await storage.put(object, new Blob([bytes]).stream());
         item.source = (await db.markStorageReady(context, object.id)).object;
       } else {
-        const actual = Buffer.from(
-          await new Response(await storage.get(object)).arrayBuffer(),
-        );
+        const chunks = [];
+        for await (const chunk of await storage.get(object)) chunks.push(chunk);
+        const actual = Buffer.concat(chunks);
         assert.equal(hash(actual), hash(bytes));
         item.source = object;
       }
