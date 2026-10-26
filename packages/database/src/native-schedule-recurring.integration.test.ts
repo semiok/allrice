@@ -2381,7 +2381,7 @@ suite(
             ...r.input,
             conversationMode: 'reuse',
           }),
-        ).rejects.toThrow('intent_required');
+        ).rejects.toThrow('confirmation_required');
         expect(await enrollmentCounts()).toEqual(before);
         const created = await createRecurringTaskFromExecutionContext(r.input);
         expect(created).toMatchObject({
@@ -2417,7 +2417,7 @@ suite(
         const before = await enrollmentCounts();
         await expect(
           createRecurringTaskFromExecutionContext(denied.input),
-        ).rejects.toThrow('intent_required');
+        ).rejects.toThrow('confirmation_required');
         expect(await enrollmentCounts()).toEqual(before);
       } finally {
         await denied.finish();
@@ -2540,7 +2540,7 @@ suite(
         const before = await enrollmentCounts();
         await expect(
           createRecurringTaskFromExecutionContext(r.input),
-        ).rejects.toMatchObject({ code: 'intent_required' });
+        ).rejects.toMatchObject({ code: 'confirmation_required' });
         expect(await enrollmentCounts()).toEqual(before);
         const choice = await confirmedFrequency(r);
         for (const patch of [
@@ -2554,7 +2554,7 @@ suite(
           await f.db`update allrice_conversation_commands set ${f.db(patch)} where id=${choice.commandId}`;
           await expect(
             createRecurringTaskFromExecutionContext(r.input),
-          ).rejects.toMatchObject({ code: 'intent_required' });
+          ).rejects.toMatchObject({ code: 'confirmation_required' });
           await f.db`update allrice_conversation_commands set state=${original!.state},expected_generation=${original!.expected_generation},
             expected_turn_id=${original!.expected_turn_id},native_proof=${f.db.json(original!.native_proof)} where id=${choice.commandId}`;
           expect(await enrollmentCounts()).toEqual(before);
@@ -2564,7 +2564,7 @@ suite(
             ...r.input,
             rule: { kind: 'every', seconds: 120 },
           }),
-        ).rejects.toMatchObject({ code: 'rule_mismatch' });
+        ).rejects.toMatchObject({ code: 'confirmation_required' });
         const created = await createRecurringTaskFromExecutionContext(r.input);
         expect(created).toMatchObject({
           rule: { kind: 'every', seconds: 60 },
@@ -2581,7 +2581,7 @@ suite(
             ...r.input,
             callId: randomUUID(),
           }),
-        ).rejects.toMatchObject({ code: 'intent_required' });
+        ).rejects.toMatchObject({ code: 'confirmation_required' });
         expect((await enrollmentCounts()).plans).toBe(before.plans + 1);
       } finally {
         await r.finish();
@@ -2597,7 +2597,7 @@ suite(
         await confirmedFrequency(r, '1 分钟后提醒一次');
         await expect(
           createRecurringTaskFromExecutionContext(r.input),
-        ).rejects.toMatchObject({ code: 'intent_required' });
+        ).rejects.toMatchObject({ code: 'confirmation_required' });
         expect(await enrollmentCounts()).toEqual(before);
       } finally {
         await r.finish();
@@ -2624,7 +2624,7 @@ suite(
               ...r.input,
               rule: wrong,
             }),
-          ).rejects.toMatchObject({ code: 'rule_mismatch' });
+          ).rejects.toMatchObject({ code: 'confirmation_required' });
           expect(await enrollmentCounts()).toEqual(before);
         }
         expect(
@@ -2643,14 +2643,14 @@ suite(
       '好，按照上面的安排。',
       '请在十五分钟后回复校验词。',
     ])(
-      'rejects unsupported/quoted/conditional/history-only current wording with zero enrollment: %s',
+      'asks for confirmation, with zero enrollment, on unsupported/quoted/conditional/history-only wording: %s',
       async (text) => {
         const r = await leasedChat(text);
         try {
           const before = await enrollmentCounts();
           await expect(
             createRecurringTaskFromExecutionContext(r.input),
-          ).rejects.toMatchObject({ code: 'intent_required' });
+          ).rejects.toMatchObject({ code: 'confirmation_required' });
           expect(await enrollmentCounts()).toEqual(before);
         } finally {
           await r.finish();
@@ -2680,7 +2680,7 @@ suite(
               ...c.input,
               rule: changed,
             }),
-          ).rejects.toMatchObject({ code: 'rule_mismatch' });
+          ).rejects.toMatchObject({ code: 'confirmation_required' });
           expect(await enrollmentCounts()).toEqual(before);
         }
         const saved = await createRecurringTaskFromExecutionContext(c.input);

@@ -94,6 +94,12 @@ import { employeeAccessTransaction } from './employees/employee-access-cancellat
 import { explicitRecurringTaskIntent } from './employees/recurring-task-intent.ts';
 import { readScheduleClarification } from './employees/schedule-clarification-authority.ts';
 import {
+  confirmationLabel,
+  recurringConfirmationQuestion,
+  recurringRuleText,
+  sameConfirmationLabel,
+} from './employees/recurring-task-confirmation.ts';
+import {
   assertEmployeeChatExecution,
   assertEmployeeChatHumanSource,
   employeeChatIdentity,
@@ -172,8 +178,9 @@ export class NativeRecurringProductError extends Error {
       | 'binding_conflict'
       | 'lease_lost'
       | 'limit'
-      | 'intent_required'
-      | 'rule_mismatch',
+      | 'confirmation_required',
+    /** Server-rendered card for ask_user_question; it is not authority. */
+    readonly askUserQuestion?: ReturnType<typeof recurringConfirmationQuestion>,
   ) {
     super(`native_recurring_${code}`);
   }
@@ -692,12 +699,29 @@ export async function createRecurringTaskFromExecutionContext(
     await assertEmployeeChatHumanSource(tx, input, current);
     if (!nativeRecurringProductEnabled())
       throw new NativeRecurringProductError('disabled');
+    // Wording only grants: a recognized request (or a selected frequency, the
+    // latest human word) that matches the structured call needs no card.
+    // Anything else waits for the human to select the server's rendering of
+    // this exact rule on a card; unrecognized wording is never a refusal.
     const clarified = await readScheduleClarification(tx, input, current.text);
-    const intent = clarified
-      ? clarified.intent?.kind === 'recurring'
+    const recognized = clarified?.intent
+      ? clarified.intent.kind === 'recurring'
         ? clarified.intent
         : null
       : explicitRecurringTaskIntent(current.text);
+    const period = recurringRuleText(rule, input.conversationMode);
+    const intent =
+      recognized &&
+      isDeepStrictEqual(rule, recognized.rule) &&
+      (input.conversationMode ?? 'reuse') ===
+        (recognized.conversationMode ?? 'reuse')
+        ? recognized
+        : clarified?.label &&
+            sameConfirmationLabel(clarified.label, confirmationLabel(period))
+          ? {
+              authoritativeRequest: `${current.text}\n用户已确认的频率：${period}`,
+            }
+          : null;
     const authoritativeRequest = intent?.authoritativeRequest ?? current.text;
     const enrollment = CreateRecurringTaskInputSchema.parse({
       clientRequestId: requestId,
@@ -717,14 +741,15 @@ export async function createRecurringTaskFromExecutionContext(
       { ...enrollment, prompt: authoritativeRequest },
       digest,
       () => {
-        if (!intent) throw new NativeRecurringProductError('intent_required');
-        if (!isDeepStrictEqual(rule, intent.rule))
-          throw new NativeRecurringProductError('rule_mismatch');
-        if (
-          (input.conversationMode ?? 'reuse') !==
-          (intent.conversationMode ?? 'reuse')
-        )
-          throw new NativeRecurringProductError('intent_required');
+        if (!intent)
+          throw new NativeRecurringProductError(
+            'confirmation_required',
+            recurringConfirmationQuestion(
+              current.text,
+              rule,
+              input.conversationMode,
+            ),
+          );
       },
     );
   });

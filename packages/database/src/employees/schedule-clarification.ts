@@ -17,12 +17,9 @@ const frequency = new RegExp(
   'u',
 );
 
-/** Only an authenticated answer can disambiguate a shorthand timed request.
- * Question descriptions and model-generated work never become authority. The
- * original work must pass the existing instruction checks; the chosen label
- * supplies the frequency, not a replacement task. */
-export function clarifiedScheduleIntent(
-  request: string,
+/** The one listed option a human selected on a single-question card, or null.
+ * Free text, multiple selections and unlisted labels select nothing. */
+export function selectedScheduleLabel(
   rawQuestion: unknown,
   rawAnswer: unknown,
 ) {
@@ -38,14 +35,26 @@ export function clarifiedScheduleIntent(
     return null;
   const item = question.data.questions[0]!;
   const choice = answer.data.answers[0]!;
-  if (
-    item.id !== choice.id ||
-    item.multiSelect ||
-    choice.selected.length !== 1 ||
-    choice.custom ||
-    !item.options?.some((o) => o.label === choice.selected[0])
-  )
-    return null;
+  return item.id === choice.id &&
+    !item.multiSelect &&
+    choice.selected.length === 1 &&
+    !choice.custom &&
+    item.options?.some((o) => o.label === choice.selected[0])
+    ? choice.selected[0]!
+    : null;
+}
+
+/** Only an authenticated answer can disambiguate a shorthand timed request.
+ * Question descriptions and model-generated work never become authority. The
+ * original work must pass the existing instruction checks; the chosen label
+ * supplies the frequency, not a replacement task. */
+export function clarifiedScheduleIntent(
+  request: string,
+  rawQuestion: unknown,
+  rawAnswer: unknown,
+) {
+  const label = selectedScheduleLabel(rawQuestion, rawAnswer);
+  if (!label) return null;
   const requestedConversation = scheduleConversationIntent(request);
   const work = requestedConversation.request.trim().match(timedWork);
   if (!work) return null;
@@ -54,7 +63,6 @@ export function clarifiedScheduleIntent(
   const body = work[3]!.replace(/一次$/u, '').trim();
   if (!body || !explicitOnceTaskIntent(`${work[1]}${work[2]}后执行${body}`))
     return null;
-  const label = choice.selected[0]!;
   const selectedConversation = scheduleConversationIntent(label);
   if (
     requestedConversation.conversationMode &&

@@ -1,5 +1,8 @@
 import type { TransactionSql } from 'postgres';
-import { clarifiedScheduleIntent } from './schedule-clarification.ts';
+import {
+  clarifiedScheduleIntent,
+  selectedScheduleLabel,
+} from './schedule-clarification.ts';
 import {
   employeeChatUuid,
   type EmployeeChatCall,
@@ -14,8 +17,11 @@ export async function readScheduleClarification(
   request: string,
 ) {
   const ctx = input.context;
-  const [row] = await tx<{ question: unknown; answer: unknown }[]>`
-    select e.payload->'nativePayload' question,m.content->'interaction'->'answer' answer
+  const [row] = await tx<
+    { question: unknown; answer: unknown; answered_at: Date }[]
+  >`
+    select e.payload->'nativePayload' question,m.content->'interaction'->'answer' answer,
+      m.created_at answered_at
     from allrice_run_events e
     join allrice_conversation_commands c on c.organization_id=e.organization_id
       and c.workspace_id=e.workspace_id and c.session_id=${input.sessionId}
@@ -41,10 +47,12 @@ export async function readScheduleClarification(
         where q.run_id=e.run_id and q.payload->>'sourceEventType'='session/user-question')
     order by c.created_at desc,c.id desc limit 1`;
   if (!row) return null;
-  const intent = clarifiedScheduleIntent(request, row.question, row.answer);
-  if (!intent) return { intent: null };
+  const none = { intent: null, label: null };
+  const label = selectedScheduleLabel(row.question, row.answer);
+  if (!label) return none;
   // A clarification authorizes one enrollment. Preserve canceled/deleted rows
   // as well, so a new tool call cannot silently recreate the confirmed task.
+  // Tasks enrolled before this answer did not consume it.
   const calls = await tx<{ call_id: string }[]>`
     select call_id from allrice_task_calls where run_id=${ctx.runId}
       and kind='tool' and call_id<>${input.callId}`;
@@ -63,8 +71,12 @@ export async function readScheduleClarification(
     const [existing] = await tx`select id from allrice_automations
       where organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId!}
         and owner_id=${ctx.policySnapshot.subjectId} and session_id=${input.sessionId}
-        and (native_once_request_id=any(${ids}::uuid[]) or native_recurring_request_id=any(${ids}::uuid[])) limit 1`;
-    if (existing) return { intent: null };
+        and (native_once_request_id=any(${ids}::uuid[]) or native_recurring_request_id=any(${ids}::uuid[]))
+        and created_at>=${row.answered_at} limit 1`;
+    if (existing) return none;
   }
-  return { intent };
+  return {
+    intent: clarifiedScheduleIntent(request, row.question, row.answer),
+    label,
+  };
 }

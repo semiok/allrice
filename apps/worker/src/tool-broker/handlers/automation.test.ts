@@ -151,28 +151,37 @@ function recurringCall(): RiceToolHandlerContext {
   return c;
 }
 
-it.each([
-  ['intent_required', 'AUTOMATION_REQUEST_UNCLEAR'],
-  ['rule_mismatch', 'AUTOMATION_RULE_MISMATCH'],
-] as const)(
-  'explains a confirmed recurring no-write rejection: %s',
-  async (reason, code) => {
-    const c = recurringCall();
-    createRecurring.mockRejectedValueOnce(
-      new NativeRecurringProductError(reason),
-    );
-    const error = await createAutomation(c).catch((e: unknown) => e);
-    expect(error).toMatchObject({ code, retryable: false });
-    expect(
-      isConfirmedToolFailure(error, {
-        runId: c.input.context.runId,
-        callId: c.input.call.id,
-        toolName: c.input.call.name,
-      }),
-    ).toBe(true);
-    expect(create).not.toHaveBeenCalled();
-  },
-);
+it('hands an unrecognized recurring request to a confirmation card, not a failure', async () => {
+  const c = recurringCall();
+  const askUserQuestion = {
+    questions: [
+      {
+        id: 'schedule-confirm',
+        question: '要按下面的频率创建定时任务吗？',
+        options: [{ label: '确认：每隔 2 分钟' }, { label: '先不创建' }],
+        multi_select: false,
+      },
+    ],
+  };
+  createRecurring.mockRejectedValueOnce(
+    new NativeRecurringProductError('confirmation_required', askUserQuestion),
+  );
+  const result = await createAutomation(c);
+  expect(JSON.parse(result.modelContent)).toMatchObject({
+    created: false,
+    status: 'confirmation_required',
+    askUserQuestion,
+  });
+  expect(result.itemCount).toBe(0);
+  expect(create).not.toHaveBeenCalled();
+});
+
+it('keeps other recurring errors as errors', async () => {
+  const c = recurringCall();
+  const conflict = new NativeRecurringProductError('request_conflict');
+  createRecurring.mockRejectedValueOnce(conflict);
+  await expect(createAutomation(c)).rejects.toBe(conflict);
+});
 
 it.each([
   {
