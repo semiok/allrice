@@ -369,6 +369,37 @@ describe
           proofAttempt: 1,
         });
       });
+      it('a child the user stopped does not block the checked commit once its stop receipt commits', async () => {
+        const f = await fixture();
+        const child = (await f.delegate({ tools: ['assistant.report'] }))
+          .instance;
+        await f.runtime.cancelChild(
+          {
+            actor: { type: 'user', id: f.user },
+            organizationId: f.org,
+            workspaceId: f.workspace,
+            requestId: randomUUID(),
+            sessionId: randomUUID(),
+            authenticatedAt: new Date().toISOString(),
+            memberships: [],
+          },
+          {
+            runId: f.rootRunId,
+            childRunId: child.runId,
+            requestId: randomUUID(),
+          },
+        );
+        await f.runtime.confirmStopped({ ...f.input, runId: child.runId });
+        await f.publish();
+        const p = await f.proof();
+        expect(await f.finalize(p)).toMatchObject({ status: 'completed' });
+        await f.complete(p);
+        expect(await f.state()).toMatchObject({
+          status: 'succeeded',
+          state: 'succeeded',
+          successes: 1,
+        });
+      });
       it('checked mode rejects absent/null proof; legacy finalize remains unchanged', async () => {
         const f = await fixture();
         await expect(f.runtime.finalizeRoot(f.input)).rejects.toThrow(

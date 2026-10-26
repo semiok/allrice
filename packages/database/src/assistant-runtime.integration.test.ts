@@ -506,6 +506,39 @@ integration('P25 governed assistant ledger — isolated real PostgreSQL', () => 
       'canceled',
     );
   });
+  it.each([
+    ['unconfirmed', 'unknown'],
+    ['stopped', 'completed'],
+    ['settlement-then-stopped', 'completed'],
+  ] as const)(
+    'a child stopped on request no longer holds the root open once its stop receipt commits: %s',
+    async (order, status) => {
+      const f = await assistantFixture(fixture.db),
+        child = (await f.delegate()).instance;
+      await f.runtime.cancelChild(f.context, {
+        runId: f.task.runId,
+        childRunId: child.runId,
+        requestId: randomUUID(),
+      });
+      if (order === 'settlement-then-stopped')
+        await f.runtime.recordResult({
+          ...f.base,
+          runId: child.runId,
+          result: {
+            deliveryId: randomUUID(),
+            status: 'partial',
+            summary: 'Native assistant settled without a verified delivery.',
+            evidence: [],
+            incomplete: ['Native stop reason: native_settled'],
+            usageComplete: false,
+          },
+          settlement: true,
+        });
+      if (order !== 'unconfirmed')
+        await f.runtime.confirmStopped({ ...f.base, runId: child.runId });
+      expect(await f.runtime.finalizeRoot(f.base)).toMatchObject({ status });
+    },
+  );
   it('records evidence-backed delivery independently from parent adoption', async () => {
     const f = await assistantFixture(fixture.db),
       child = (await f.delegate()).instance;
