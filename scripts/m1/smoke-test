@@ -64,6 +64,7 @@ def pick(smoke, out, creds):  # prints "<session> <result.json>": the newest ear
     for p in glob.glob(os.path.join(smoke, '*', 'result.json')):
         r = load(p)
         if not r or r.get('account') != account or os.path.realpath(os.path.dirname(p)) == os.path.realpath(out): continue
+        if r.get('versionStart') != r.get('versionEnd'): continue  # switched mid-run: the session's seal is unknown
         seeds += [(r.get('at', ''), x['check'] == 'chat', x['sessionId'], p) for x in r.get('results', [])
                   if x.get('check') in ('chat', 'continue') and x.get('pass') and x.get('sessionId') and x.get('originDigest')]
     seeds = sorted(seeds, reverse=True)[:20]  # newest run first, its chat session before its continue one

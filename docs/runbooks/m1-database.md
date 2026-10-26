@@ -37,15 +37,23 @@ df -h ~                       # 磁盘满是最常见的原因之一
 1. 先恢复到一个新库核对，不动 Dev。导出文件第 16 行清空了 `search_path`，不删掉它，CHECK 里调用的函数恢复时会找不到：
 
    ```bash
+   export S=<快照目录> T=<时间>   # 下面持锁的新 shell 也要用这两个变量，所以要 export
    createdb -h 127.0.0.1 "allrice_dev_restore_$T"
    gunzip -c "$S/allrice_dev.sql.gz" | sed "/^SELECT pg_catalog.set_config('search_path', '', false);$/d" \
      | psql -h 127.0.0.1 -X -q -v ON_ERROR_STOP=1 "allrice_dev_restore_$T"
    psql -h 127.0.0.1 -X "allrice_dev_restore_$T" -c 'select count(*), max(name) from allrice_schema_migrations'
    ```
 
-2. 决定切换后，在持部署锁的 shell 里做（`~/allrice-dev/bin/deploy-lock run restore -- /bin/bash`）：
-   1. 停 Web 和 Worker（`launchctl bootout gui/$(id -u)/ai.bplabs.allrice-dev-web`，Worker 同理），Worker 要等进程退完（做法见下面“重启或停库”第 1 步）。
-   2. 改名换库，原库保留下来查原因、不删。巡检每 4 分钟连一次库，所以先断开连接再改名；改名报 `is being accessed by other users` 就把这两句重跑一次：
+2. 决定切换后，在持部署锁的 shell 里做（在第 1 步那个 shell 里运行 `~/allrice-dev/bin/deploy-lock run restore -- /bin/bash`，`S`、`T` 才会带进去）：
+   1. 先确认变量和恢复库都在，没打出 `ok` 就停下，什么都别动（否则下面的改名会把 `allrice_dev` 改走却换不回来）：
+
+      ```bash
+      [ -n "${S:-}" ] && [ -n "${T:-}" ] && [ -d "$S" ] \
+        && [ "$(psql -h 127.0.0.1 -X -Atc "select count(*) from pg_database where datname = 'allrice_dev_restore_$T'" postgres)" = 1 ] && echo ok
+      ```
+
+   2. 停 Web 和 Worker（`launchctl bootout gui/$(id -u)/ai.bplabs.allrice-dev-web`，Worker 同理），Worker 要等进程退完（做法见下面“重启或停库”第 1 步）。
+   3. 改名换库，原库保留下来查原因、不删。巡检每 4 分钟连一次库，所以先断开连接再改名；改名报 `is being accessed by other users` 就把这两句重跑一次：
 
       ```bash
       psql -h 127.0.0.1 -X postgres -c "select pg_terminate_backend(pid) from pg_stat_activity where datname = 'allrice_dev' and pid <> pg_backend_pid()"
@@ -53,8 +61,8 @@ df -h ~                       # 磁盘满是最常见的原因之一
       psql -h 127.0.0.1 -X postgres -c "alter database allrice_dev_restore_$T rename to allrice_dev"
       ```
 
-   3. 状态目录：`~/allrice-dev/.local/` 里和 `$S` 同名的目录先改名保留（`mv storage storage.failed-$T`），再从 `$S` 拷回（快照用 `cp -c -pR`，每日备份用 `rsync -a`）。**`dsh-platform` 默认不拷回**：它是模型订阅凭证，验收实例也在用，Dev 停着时它们可能刷新过 token，拷回旧的会让订阅失效；只有凭证本身坏了才恢复它。`bridge`、`project-preview`、`quality-evidence`、`repository-baselines` 不在快照和备份里，不动（它们会比恢复后的数据库新）。`env` 只在 `.env` 被改过时才拷回。
-   4. 起服务：`~/allrice-dev/qa/deploy-inflight/` 还在（部署没走完）时，退出这个 shell，运行 `deploy-dev --release-manager --recover`，它会放回保存的 launchd 文件、起旧版本并核对。否则把 `$S` 里的 `web.plist`、`worker.plist` 拷回 `~/Library/LaunchAgents/`（文件名 `ai.bplabs.allrice-dev-web.plist`、`-worker.plist`），先起 Worker 再起 Web（`launchctl bootstrap gui/$(id -u) <plist>`），等两个就绪接口都报 ready。快照按新版本命名，里面的 plist 却指向部署之前的发布目录：拷回前先确认 plist 里的 `WorkingDirectory` 还在（可能已被清理），不在就用 `deploy-dev` 重新部署那个版本，不要手工拼目录。
+   4. 状态目录：`~/allrice-dev/.local/` 里和 `$S` 同名的目录先改名保留（`mv storage storage.failed-$T`），再从 `$S` 拷回（快照用 `cp -c -pR`，每日备份用 `rsync -a`）。**`dsh-platform` 默认不拷回**：它是模型订阅凭证，验收实例也在用，Dev 停着时它们可能刷新过 token，拷回旧的会让订阅失效；只有凭证本身坏了才恢复它。`bridge`、`project-preview`、`quality-evidence`、`repository-baselines` 不在快照和备份里，不动（它们会比恢复后的数据库新）。`env` 只在 `.env` 被改过时才拷回。
+   5. 起服务：`~/allrice-dev/qa/deploy-inflight/` 还在（部署没走完）时，退出这个 shell，运行 `deploy-dev --release-manager --recover`，它会放回保存的 launchd 文件、起旧版本并核对。否则把 `$S` 里的 `web.plist`、`worker.plist` 拷回 `~/Library/LaunchAgents/`（文件名 `ai.bplabs.allrice-dev-web.plist`、`-worker.plist`），先起 Worker 再起 Web（`launchctl bootstrap gui/$(id -u) <plist>`），等两个就绪接口都报 ready。快照按新版本命名，里面的 plist 却指向部署之前的发布目录：拷回前先确认 plist 里的 `WorkingDirectory` 还在（可能已被清理），不在就用 `deploy-dev` 重新部署那个版本，不要手工拼目录。
 
 3. `deploy-dev --status` 看两个服务的版本，跑 `~/allrice-dev/bin/smoke-test --dev`；在 MET 卡上记下恢复到了哪个时刻、丢了哪段时间的数据。手工恢复后 `~/allrice-dev/qa/.previous-release` 和 `deploys.jsonl` 不会自动更新：下一次回滚要用 `--rollback <发布目录>` 指定目标。
 

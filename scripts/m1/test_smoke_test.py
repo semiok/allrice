@@ -139,6 +139,7 @@ class SmokeContinue(unittest.TestCase):
         self.result('1-old', [entry('chat', C)], '2026-10-25T00:00:00Z')
         self.result('2-new', [entry('continue', B), entry('chat', A)], '2026-10-26T00:00:00Z')
         self.result('3-other', [entry('chat', B)], '2026-10-27T00:00:00Z', account='someone-else')
+        self.result('3-switched', [entry('chat', B)], '2026-10-27T00:00:00Z', versionStart={'web': 'x'}, versionEnd={'web': 'y'})
         out = os.path.join(self.smoke, '4-now')
         live = [(s, '{}', SEAL1, 'f') for s in (A, B, C)]
         p = self.run_py(['pick', self.smoke, out, self.creds], sessions=live)
