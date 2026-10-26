@@ -38,7 +38,7 @@ PNPM = r'''#!/bin/sh
 echo "$*|$ALLRICE_TEST_DATABASE_URL|${ALLRICE_RUN_DB_INTEGRATION:-}|${ALLRICE_RUN_BROWSER_INTEGRATION:-}|${ALLRICE_RUN_X:-}|${LEAK_ME:-}|$PWD|${M5T_VITEST_CAP:-}|$PGPORT|$HOME|${ALLRICE_NATIVE_ONCE_PROBE_MODULE_BASE:-}" >>"$HOME/pnpm.calls"
 case "$1" in
   install) mkdir -p node_modules/.bin; touch node_modules/kept; cp "$(dirname "$0")/vitest" node_modules/.bin/vitest; exit "$(cat "$HOME/install.rc" 2>/dev/null || echo 0)" ;;
-  exec) [ ! -e "$HOME/hang" ] || sleep 30; echo "vitest says hello"; exit "$(cat "$HOME/vitest.rc" 2>/dev/null || echo 0)" ;;
+  exec) [ ! -e "$HOME/hang" ] || { trap '' TERM; echo $$ >"$HOME/hang.pid"; sleep 30; }; echo "vitest says hello"; exit "$(cat "$HOME/vitest.rc" 2>/dev/null || echo 0)" ;;
 esac
 '''
 VITEST = r'''#!/bin/sh
@@ -269,6 +269,17 @@ class M5Test(unittest.TestCase):
         self.assertIn('M5 没有空位（等了 0 秒），改在 M1 跑', p.stdout)
         self.assertEqual(len(self.calls(self.m1)), 3)
 
+    def test_warning_halves_all_runs_together(self):
+        self.limits(WORKERS_TOTAL=8, WORKERS_MAX=8)
+        for i in (5, 6, 7, 8):  # another run took the upper half before the warning
+            self.hold(os.path.join(self.base, 'locks/worker-%d.lock' % i))
+        write(os.path.join(self.m5, 'pressure'), '2\n')
+        p = self.run_m5('--wait', '0', '--', '--maxWorkers=8', 'w.test.ts')  # 4 for all runs, 4 taken: none left
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn('memory pressure warning (level 2): 4 workers, 4 for all runs', p.stdout)
+        self.assertIn('M5 没有空位', p.stdout)
+        self.assertEqual(self.calls(self.th), [])
+
     def test_no_free_run_on_m5_goes_to_m1(self):
         self.limits(RUNS=1)
         lock = os.path.join(self.base, 'locks/slot-1.lock')
@@ -327,6 +338,22 @@ class M5Test(unittest.TestCase):
             self.assertIsNotNone(q.wait(timeout=10))
         self.assertIsNone(user.poll())
 
+    @unittest.skipUnless(shutil.which('node'), 'node is not installed')
+    def test_left_node_started_by_name_is_found(self):
+        self.assertEqual(self.run_m5('--', 'l.test.ts').returncode, 0)
+        wt = os.path.join(self.base, 'slots/slot-1')
+        node = os.path.join(self.m5, '.local/opt/node-22.23.2/bin/node')
+        os.symlink(os.path.realpath(shutil.which('node')), node)
+        # "exec node …" from a pnpm shim: argv[0] is just "node", the command line names no path of ours
+        stray = subprocess.Popen(['node', '-e', 'setTimeout(() => {}, 120000)'], cwd=wt, close_fds=True,
+                                 env=dict(os.environ, PATH=os.path.dirname(node) + ':' + os.environ['PATH']))
+        self.addCleanup(stray.kill)
+        time.sleep(0.5)
+        p = self.run_m5('--', 'l.test.ts')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn('stopping 1 test processes left in slot 1', p.stdout)
+        self.assertIsNotNone(stray.wait(timeout=10))
+
     def test_codex_report_that_cannot_be_fetched_is_not_a_pass(self):
         out = os.path.join(self.tmp, 'r.md')
         write(out, 'an old report\n')
@@ -377,6 +404,15 @@ class M5Test(unittest.TestCase):
         self.assertLess(time.time() - t0, 25)
         self.assertEqual(p.returncode, 124, p.stdout + p.stderr)
         self.assertIn('printed nothing for 2s and was stopped as stuck', p.stderr)
+        pid = int(read(os.path.join(self.m1, 'hang.pid')))  # it ignored TERM: the group got KILL
+        for _ in range(20):
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                break
+            time.sleep(0.2)
+        else:
+            self.fail('the stuck test process is still running')
 
     def test_dropped_connection_reruns_on_m1(self):
         write(os.path.join(self.m5, 'drop'), '')

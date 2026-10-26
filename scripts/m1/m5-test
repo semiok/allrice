@@ -84,8 +84,13 @@ def kill(sig):
     except OSError: pass
 def end(code): # the command and everything it started (on M1: the whole test run)
     kill(signal.SIGTERM)
-    try: p.wait(5)
-    except subprocess.TimeoutExpired: kill(signal.SIGKILL)
+    deadline=time.time()+5
+    while time.time()<deadline: # until the whole group is gone, not just its leader
+        try: p.wait(0.2)
+        except subprocess.TimeoutExpired: pass
+        try: os.killpg(p.pid,0)
+        except OSError: sys.exit(code)
+    kill(signal.SIGKILL)
     sys.exit(code)
 def out(b): sys.stdout.buffer.write(b); sys.stdout.flush(); log.write(b); log.flush()
 fd,last=p.stdout.fileno(),time.time()
