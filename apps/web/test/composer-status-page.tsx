@@ -1,4 +1,4 @@
-import type { ComponentProps } from 'react';
+import type { ComponentProps, CSSProperties } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ChatComposer } from '../app/chatflow/chat-composer';
 import '../app/dsh-upstream/design-platform.css';
@@ -32,6 +32,10 @@ const base: ComponentProps<typeof ChatComposer> = {
 const cases: [string, Partial<ComponentProps<typeof ChatComposer>>][] = [
   ['offline', {}],
   [
+    'connected',
+    { bridgeConnectionState: 'online', localWorkspaceOnline: false },
+  ],
+  [
     'folder',
     {
       bridgeConnectionState: 'online',
@@ -45,9 +49,22 @@ const cases: [string, Partial<ComponentProps<typeof ChatComposer>>][] = [
 if (new URLSearchParams(location.search).get('theme') === 'dark')
   document.body.setAttribute('data-ds-dark-theme', '');
 createRoot(document.getElementById('root')!).render(
-  <main style={{ display: 'grid', gap: 24, padding: 16 }}>
+  // The chat column the composer sits in: its page background and width.
+  <main
+    style={
+      {
+        display: 'grid',
+        gap: 24,
+        padding: 16,
+        minHeight: '100vh',
+        background: 'var(--dsw-alias-bg-base)',
+        '--dsh-composer-card-max-width': '760px',
+        '--dsh-chat-content-width': '760px',
+      } as CSSProperties
+    }
+  >
     {cases.map(([name, props]) => (
-      <section key={name} data-case={name}>
+      <section key={name} data-case={name} style={{ minWidth: 0 }}>
         <ChatComposer {...base} {...props} />
       </section>
     ))}

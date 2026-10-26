@@ -433,7 +433,6 @@ export function ChatComposer({
         <div className={styles.composerStatusLeft}>
           <button
             aria-label={bridgeStatus.ariaLabel}
-            data-online={bridgeStatus.online || undefined}
             className={`${styles.localWorkspaceStatus} ${
               bridgeStatus.online
                 ? styles.localWorkspaceOnline
@@ -446,13 +445,16 @@ export function ChatComposer({
             <span aria-hidden="true" />
             {bridgeStatus.label}
           </button>
-          {contextCompacting ? (
-            // Usage numbers live in 账号与用量; here only say why a reply pauses.
-            <span role="status" className={styles.contextCompacting}>
-              <IconRefreshOutlineRegular aria-hidden="true" />
-              正在整理对话，完成后继续
-            </span>
-          ) : null}
+          {/* Usage numbers live in 账号与用量; here only say why a reply
+              pauses. The live region stays mounted so the notice is read. */}
+          <span role="status" className={styles.contextCompacting}>
+            {contextCompacting ? (
+              <>
+                <IconRefreshOutlineRegular aria-hidden="true" />
+                正在整理对话，完成后继续
+              </>
+            ) : null}
+          </span>
         </div>
       </div>
     </div>

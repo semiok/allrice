@@ -1967,9 +1967,15 @@ div.composerAttachmentMenu,
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  /* Lines up with the status button's text inset. */
+  padding-left: 7px;
   color: var(--dsw-alias-label-secondary);
   font-size: 12px;
   line-height: 22px;
+}
+/* Empty but still in the accessibility tree, so the notice is announced. */
+.contextCompacting:empty {
+  padding-left: 0;
 }
 .contextCompacting svg {
   width: 14px;

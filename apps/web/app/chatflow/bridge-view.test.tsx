@@ -167,7 +167,7 @@ describe('Bridge connection and local workspace presentation', () => {
   });
   it('does not mistake request failure or initial loading for confirmed offline', () => {
     const html = render([device('online', true)], false);
-    expect(html).toContain('正在确认电脑连接');
+    expect(html).toContain('电脑连接状态待确认');
     expect(html).not.toContain('Synthetic Folder');
     expect(html).not.toContain('电脑未连接');
   });
