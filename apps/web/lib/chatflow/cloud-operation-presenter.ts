@@ -31,22 +31,50 @@ export function cloudOperationStatusLabel(status: string) {
 }
 
 /** A waiting step that can no longer be answered says why. */
+/**
+ * Whether a step waiting on approval can still go on, as a short word and a
+ * full sentence from one decision. The employee's earlier answer is history;
+ * what counts is what admission would check now: until the Worker consumes an
+ * approval, the server still rejects it once expired, revoked, paused or no
+ * longer authorized (runtime-policy.ts). Null when the step is not waiting.
+ */
+export function approvalState(op: CloudOperationView, now = Date.now()) {
+  if (op.snapshot.status !== 'waiting_user') return null;
+  const approval = op.approval;
+  const allowed = approval?.response?.decision === 'approved';
+  const blocked = (short: string, reason: string) => ({
+    short,
+    full: allowed ? `你已允许，但${reason}` : reason,
+  });
+  if (approval?.revokedAt) return blocked('已撤回', '授权已撤回，没有执行');
+  if (approval?.response?.decision === 'rejected')
+    return { short: '你已拒绝', full: '你已拒绝，没有执行' };
+  if (allowed && approval?.consumedAt)
+    return { short: '你已允许', full: '你已允许，正在准备' };
+  if (approval && Date.parse(approval.request.expiresAt) <= now)
+    return blocked(
+      '已过期',
+      allowed ? '开始前授权已过期，没有执行' : '已过期，没有执行',
+    );
+  if (op.proposal.kind === 'mcp' && op.mcpAuthorization?.available !== true)
+    return blocked(
+      '无法确认权限',
+      `${mcpAuthorizationLabel(op.mcpAuthorization?.reason)}，不能执行这一步`,
+    );
+  if (!op.enabled) return blocked('已暂停', '这类操作已暂停使用，暂时不能执行');
+  if (allowed) return { short: '你已允许', full: '你已允许，正在准备' };
+  return { short: '等你确认', full: '等你确认' };
+}
+
+/** A waiting step that can no longer be answered says why. */
 export function cloudOperationCompactLabel(
   op: CloudOperationView,
   now = Date.now(),
 ) {
-  const approval = op.approval;
-  if (op.snapshot.status === 'waiting_user') {
-    if (approval?.revokedAt) return '已撤回';
-    if (approval?.response?.decision === 'rejected') return '你已拒绝';
-    if (approval?.response?.decision === 'approved') return '你已允许';
-    if (approval && Date.parse(approval.request.expiresAt) <= now)
-      return '已过期';
-    if (op.proposal.kind === 'mcp' && op.mcpAuthorization?.available !== true)
-      return '无法确认权限';
-    if (!op.enabled) return '已暂停';
-  }
-  return cloudOperationStatusLabel(op.snapshot.status);
+  return (
+    approvalState(op, now)?.short ??
+    cloudOperationStatusLabel(op.snapshot.status)
+  );
 }
 
 // What happened to an app call and what to do next. The shared contract copy
@@ -113,29 +141,51 @@ export function serviceHost(endpoint: string) {
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value);
-/** A parameter value as a short phrase: never JSON, nested values summarized. */
-function valueText(value: unknown, nested = false): string {
-  if (value === null || value === undefined || value === '') return '空';
-  if (typeof value === 'boolean') return value ? '是' : '否';
-  if (typeof value !== 'object') return String(value);
-  if (Array.isArray(value))
-    return value.every((item) => item === null || typeof item !== 'object')
-      ? value.map((item) => valueText(item)).join('、') || '空'
-      : `${value.length} 项`;
-  const entries = Object.entries(value);
-  if (nested || entries.some(([, item]) => item && typeof item === 'object'))
-    return `${entries.length} 个字段`;
-  return (
-    entries
-      .map(([key, item]) => `${key} ${valueText(item, true)}`)
-      .join('，') || '空'
-  );
-}
+const scalarText = (value: unknown) =>
+  value === null || value === undefined
+    ? '（空）'
+    : value === ''
+      ? '（空文字）'
+      : typeof value === 'boolean'
+        ? value
+          ? '是'
+          : '否'
+        : String(value);
 export const VALUE_LIMIT = 80;
-const clip = (text: string, limit = VALUE_LIMIT) =>
-  text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+const LINE_LIMIT = 4;
+/** A long value cut to its first lines and characters; newlines stay. */
+function clip(text: string, limit = VALUE_LIMIT) {
+  const lines = text.split('\n');
+  const head = lines.slice(0, LINE_LIMIT).join('\n');
+  if (head.length <= limit && lines.length <= LINE_LIMIT) return text;
+  return `${head.slice(0, limit - 1)}…`;
+}
+export type ApprovalField = { path: string; text: string; full: string };
+/** Every leaf value with its path: 「recipients 第 1 项 · email」. */
+function collect(value: unknown, path: string[], out: ApprovalField[]) {
+  if (Array.isArray(value)) {
+    if (!value.length) out.push(leaf(path, '（空列表）'));
+    value.forEach((item, index) => {
+      const at = [...path];
+      const position = `第 ${index + 1} 项`;
+      if (at.length) at[at.length - 1] = `${at.at(-1)} ${position}`;
+      else at.push(position);
+      collect(item, at, out);
+    });
+  } else if (isRecord(value)) {
+    const entries = Object.entries(value);
+    if (!entries.length) out.push(leaf(path, '（空）'));
+    for (const [key, item] of entries) collect(item, [...path, key], out);
+  } else out.push(leaf(path, scalarText(value)));
+}
+const leaf = (path: string[], full: string): ApprovalField => ({
+  path: path.join(' · ') || '内容',
+  text: clip(full),
+  full,
+});
+export const FIELD_LIMIT = 50;
 // Argument names that say who or what the call acts on.
-const targets: [RegExp, string][] = [
+const targetNames: [RegExp, string][] = [
   [/^(channel|channel_?id|chat_?id|conversation_?id|room)$/i, '渠道'],
   [/^(to|recipients?|receivers?|emails?|cc)$/i, '收件人'],
   [/^(repo|repository|repository_?name)$/i, '仓库'],
@@ -143,31 +193,47 @@ const targets: [RegExp, string][] = [
   [/^(path|file_?path|file_?name)$/i, '文件'],
 ];
 
+const identityNames = /^(email|address|id|login|name|user_?name|handle)$/i;
+
 /** What a pending app call will do, on whom, and with which parameters. */
 export function mcpApprovalDetails(proposal: McpProposal) {
-  const args = isRecord(proposal.arguments)
-    ? proposal.arguments
-    : { 内容: proposal.arguments };
-  const target = [serviceHost(proposal.endpoint)];
+  const all: ApprovalField[] = [];
+  collect(proposal.arguments, [], all);
+  const args = isRecord(proposal.arguments) ? proposal.arguments : {};
+  const targets: { label: string; value: string }[] = [];
   const ownerRepo =
     typeof args.owner === 'string' && typeof args.repo === 'string';
-  if (ownerRepo) target.push(`仓库 ${clip(`${args.owner}/${args.repo}`, 40)}`);
-  for (const [key, value] of Object.entries(args)) {
-    const label = targets.find(([pattern]) => pattern.test(key))?.[1];
-    if (label && !(ownerRepo && key === 'repo'))
-      target.push(`${label} ${clip(valueText(value), 40)}`);
+  if (ownerRepo)
+    targets.push({
+      label: '仓库',
+      value: clip(`${args.owner}/${args.repo}`, 40),
+    });
+  for (const field of all) {
+    const keys = field.path
+      .split(' · ')
+      .map((key) => key.replace(/ 第 \d+ 项$/, ''));
+    if (ownerRepo && keys[0] === 'repo') continue;
+    // The value of a target name itself, or an identity field inside it
+    // (recipients 第 1 项 · email), not every value nested under it.
+    const named = (key: string) =>
+      targetNames.find(([pattern]) => pattern.test(key))?.[1];
+    const last = keys.at(-1) ?? '';
+    const label =
+      named(last) ??
+      (identityNames.test(last) ? keys.map(named).find(Boolean) : undefined);
+    const value = clip(field.full.replace(/\s+/g, ' '), 40);
+    if (label && !targets.some((t) => t.label === label && t.value === value))
+      targets.push({ label, value });
   }
-  // Only a name is frozen with the call; DSH prefixes it with mcp__<server>__.
-  const tool = proposal.tool.startsWith('mcp__')
-    ? proposal.tool.split('__').at(-1)!
-    : proposal.tool;
   return {
-    action: `${tool}（${riskAction(proposal.risk)}）`,
-    target: target.join(' · '),
-    fields: Object.entries(args).map(([key, value]) => {
-      const full = valueText(value);
-      return { key, text: clip(full), full };
-    }),
+    // DSH names a connected app's tool mcp__app__<tool> (native-transport.ts);
+    // only that exact prefix goes, the tool's own name stays whole.
+    action: `${proposal.tool.replace(/^mcp__app__/, '')}（${riskAction(proposal.risk)}）`,
+    host: serviceHost(proposal.endpoint),
+    targets: targets.slice(0, 4),
+    moreTargets: Math.max(0, targets.length - 4),
+    fields: all.slice(0, FIELD_LIMIT),
+    moreFields: Math.max(0, all.length - FIELD_LIMIT),
   };
 }
 

@@ -40,46 +40,51 @@ export const changesetFileLabel = (status: string) =>
 
 // Codes reported by apps/rice-bridge: changeset-executor.ts, executor.ts
 // (LocalExecutionError), file-organization.ts and native/FileGuardian.swift.
+// Only codes with a single cause name it. WRITE_CONFLICT, FILE_CHANGED and
+// the other *_CHANGED codes cover a changed file, a missing or already
+// existing file, a payload mismatch or lost authority alike, so they get the
+// neutral words below.
 const reasons: [codes: string[], text: string][] = [
   [
-    ['FILE_DESTINATION_EXISTS', 'PATH_ALREADY_EXISTS'],
-    '目标位置已经有同名文件，没有覆盖它。请换个名字或先移走那个文件，再让 AI 员工重新安排。',
-  ],
-  [
+    // FileGuardian EEXIST; a directory to create exists; a file to overwrite
+    // without a reviewed checksum (writeTextFile).
     [
-      'WRITE_CONFLICT',
+      'FILE_DESTINATION_EXISTS',
+      'PATH_ALREADY_EXISTS',
       'WRITE_PRECONDITION_REQUIRED',
-      'FILE_CHANGED',
-      'FILE_SOURCE_CHANGED',
-      'FILE_PARENT_CHANGED',
-      'FILE_DESTINATION_CHANGED',
-      'FOLDER_CHANGED',
-      'SOURCE_CHANGED_AFTER_COMMIT',
     ],
-    '这个文件在确认之后又被改动过，没有覆盖。请让 AI 员工按现在的内容重新生成修改。',
+    '目标位置已经有同名的文件或文件夹，没有覆盖它。请换个名字或先移走它，再让 AI 员工重新安排。',
   ],
   [
-    [
-      'FILE_NOT_FOUND',
-      'DIRECTORY_NOT_FOUND',
-      'FOLDER_NOT_FOUND',
-      'FILE_DIRECTORY_REQUIRED',
-    ],
-    '找不到这个文件或文件夹，可能已被移动或删除。请确认位置后让 AI 员工重新安排。',
+    ['FILE_NOT_FOUND'],
+    '找不到这个文件或它所在的文件夹，没有改动。请确认位置后让 AI 员工重新安排。',
+  ],
+  [
+    ['DIRECTORY_NOT_FOUND'],
+    '要保存到的文件夹不存在，没有改动。请先建好文件夹，或让 AI 员工换个位置。',
+  ],
+  [
+    ['FILE_DIRECTORY_REQUIRED'],
+    '路径里有一段不是文件夹，没有改动。请确认保存位置后让 AI 员工重新安排。',
+  ],
+  [
+    ['GRANT_NOT_FOUND', 'FOLDER_NOT_FOUND'],
+    '允许改动的文件夹找不到了，没有改动。可以在「我的电脑」里检查允许的文件夹。',
   ],
   [
     [
       'PATH_OUTSIDE_GRANT',
       'SENSITIVE_PATH',
-      'GRANT_NOT_FOUND',
-      'FILE_ACCESS_DENIED',
       'FILE_PATH_DENIED',
       'FILE_ROOT_INVALID',
-      'FILE_OWNER_LOST',
       'FILE_SYMLINK',
       'FILE_HARD_LINK_UNSUPPORTED',
     ],
     '这个位置不在允许改动的文件夹里，或不能安全地改动，没有改动。可以在「我的电脑」里检查允许的文件夹。',
+  ],
+  [
+    ['FILE_ACCESS_DENIED'],
+    '电脑没有权限改动这个位置，没有改动。请检查这个文件或文件夹的权限。',
   ],
   [
     [
@@ -97,8 +102,8 @@ const reasons: [codes: string[], text: string][] = [
     '这个文件太大，或文件名、类型暂不支持，没有改动。',
   ],
   [
-    ['AUTHORITY_LOST', 'FILE_CANCELED'],
-    '处理已停止或授权已失效，这个文件没有改动。',
+    ['AUTHORITY_LOST', 'FILE_CANCELED', 'FILE_OWNER_LOST'],
+    '处理中途停止了，或授权已失效，这个文件没有改动。',
   ],
 ];
 
@@ -109,9 +114,12 @@ export function changesetFileNote(status: string, code?: string) {
     return '没有收到这个文件的处理结果，请打开文件确认有没有改动。';
   const reason = code && reasons.find(([codes]) => codes.includes(code))?.[1];
   if (reason) return reason;
-  return status === 'canceled'
-    ? '处理已停止，这个文件没有改动。'
-    : '这个文件没有处理完。请打开文件看一下现在的内容，再让 AI 员工重新安排。';
+  // A conflict is a check that failed before any write; a failure may not be.
+  return status === 'conflict'
+    ? '保存前的检查没有通过，这个文件没有改动。请看一下文件现在的内容，再让 AI 员工重新安排。'
+    : status === 'canceled'
+      ? '处理已停止，这个文件没有改动。'
+      : '这个文件没有处理完。请打开文件看一下现在的内容，再让 AI 员工重新安排。';
 }
 
 export function changesetTitle(restore: boolean, organization: boolean) {

@@ -475,14 +475,35 @@
 .approvalReview > .fields {
   margin-top: 8px;
 }
-.approvalFields {
-  display: grid;
-  gap: 2px;
+.approvalTargets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
-.approvalFields button {
+/* Parameter names and values are separate blocks: a value's own colons or
+   line breaks stay inside its tinted box and cannot pose as another field. */
+.approvalFields {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+.approvalFields dd {
+  justify-self: start;
+  max-width: 100%;
+}
+.approvalValue {
+  box-sizing: border-box;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-label-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.approvalValue button {
   margin-left: 4px;
 }
 @container (max-width: 650px) {

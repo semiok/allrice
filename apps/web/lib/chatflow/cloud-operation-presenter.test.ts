@@ -3,6 +3,7 @@ import type { CloudOperationView } from '@allrice/database';
 import {
   approvalSummary,
   approveLabel,
+  approvalState,
   cloudOperationCompactLabel,
   cloudOperationStatusLabel,
   durationText,
@@ -86,7 +87,7 @@ describe('cloud operation wording for ordinary employees', () => {
     );
   });
 
-  it('names a waiting step that can no longer be answered', () => {
+  it('names a waiting step by what admission would check now', () => {
     const op = (approval: Record<string, unknown> | null, extra = {}) =>
       ({
         snapshot: { status: 'waiting_user' },
@@ -96,6 +97,7 @@ describe('cloud operation wording for ordinary employees', () => {
         approval: approval && {
           request: { expiresAt: '2026-10-26T10:00:00.000Z' },
           response: null,
+          consumedAt: null,
           revokedAt: null,
           ...approval,
         },
@@ -103,57 +105,87 @@ describe('cloud operation wording for ordinary employees', () => {
       }) as unknown as CloudOperationView;
     const before = Date.parse('2026-10-26T09:00:00.000Z');
     const after = Date.parse('2026-10-26T11:00:00.000Z');
-    expect(cloudOperationCompactLabel(op({}), before)).toBe('等你确认');
-    expect(cloudOperationCompactLabel(op({}), after)).toBe('已过期');
-    expect(
-      cloudOperationCompactLabel(
-        op({ response: { decision: 'rejected' } }),
-        before,
-      ),
-    ).toBe('你已拒绝');
-    // An answer given before expiry stays the answer while the Worker catches up.
-    expect(
-      cloudOperationCompactLabel(
-        op({ response: { decision: 'approved' } }),
+    const allowed = { response: { decision: 'approved' } };
+    const lost = {
+      mcpAuthorization: { available: false, reason: 'connection_revoked' },
+    };
+    const cases: [CloudOperationView, number, string, string][] = [
+      [op({}), before, '等你确认', '等你确认'],
+      [op({}), after, '已过期', '已过期，没有执行'],
+      [op(allowed), before, '你已允许', '你已允许，正在准备'],
+      // An unconsumed approval still expires: the server re-checks it.
+      [op(allowed), after, '已过期', '你已允许，但开始前授权已过期，没有执行'],
+      [
+        op({ ...allowed, consumedAt: '2026-10-26T09:10:00Z' }),
         after,
-      ),
-    ).toBe('你已允许');
-    expect(
-      cloudOperationCompactLabel(op({ revokedAt: '2026-10-26T09:30:00Z' })),
-    ).toBe('已撤回');
-    expect(
-      cloudOperationCompactLabel(
-        op(
-          {},
-          {
-            mcpAuthorization: {
-              available: false,
-              reason: 'connection_revoked',
-            },
-          },
-        ),
+        '你已允许',
+        '你已允许，正在准备',
+      ],
+      [
+        op(allowed, lost),
         before,
-      ),
-    ).toBe('无法确认权限');
+        '无法确认权限',
+        '你已允许，但应用连接已断开，不能执行这一步',
+      ],
+      [op({}, lost), before, '无法确认权限', '应用连接已断开，不能执行这一步'],
+      [
+        op(allowed, { enabled: false }),
+        before,
+        '已暂停',
+        '你已允许，但这类操作已暂停使用，暂时不能执行',
+      ],
+      [
+        op({ response: { decision: 'rejected' } }),
+        after,
+        '你已拒绝',
+        '你已拒绝，没有执行',
+      ],
+      [
+        op({ ...allowed, revokedAt: '2026-10-26T09:30:00Z' }),
+        before,
+        '已撤回',
+        '你已允许，但授权已撤回，没有执行',
+      ],
+    ];
+    for (const [item, now, short, full] of cases) {
+      // Short word and full sentence come from one decision.
+      expect(approvalState(item, now)).toEqual({ short, full });
+      expect(cloudOperationCompactLabel(item, now)).toBe(short);
+    }
+    const running = op(allowed);
+    running.snapshot.status = 'running';
+    expect(approvalState(running)).toBeNull();
+    expect(cloudOperationCompactLabel(running)).toBe('进行中');
   });
 
-  it('shows what a pending app call does, to whom and with which values', () => {
-    const sales = mcpApprovalDetails(
-      mcp('external_send', { channel: 'sales', text: '本周报价已更新' }),
-    );
-    const outside = mcpApprovalDetails(
-      mcp('external_send', { channel: 'partner-ext', text: '报价单在附件' }),
-    );
-    expect(sales.action).toBe('send_message（对外发送内容）');
-    expect(sales.target).toBe('api.example.com · 渠道 sales');
-    expect(outside.target).toBe('api.example.com · 渠道 partner-ext');
-    expect(sales.fields).toEqual([
-      { key: 'channel', text: 'sales', full: 'sales' },
-      { key: 'text', text: '本周报价已更新', full: '本周报价已更新' },
+  it('shows every parameter value with its path, so different calls differ', () => {
+    const external = (email: string) =>
+      mcpApprovalDetails(
+        mcp('external_send', {
+          subject: '报价',
+          recipients: [{ email, name: { first: '张' } }],
+        }),
+      );
+    const own = external('sales@example.com');
+    const outside = external('buyer@partner.example');
+    // Only a deeply nested value differs, and the details differ with it.
+    expect(own.fields).toEqual([
+      { path: 'subject', text: '报价', full: '报价' },
+      {
+        path: 'recipients 第 1 项 · email',
+        text: 'sales@example.com',
+        full: 'sales@example.com',
+      },
+      { path: 'recipients 第 1 项 · name · first', text: '张', full: '张' },
     ]);
-    expect(JSON.stringify(outside.fields)).not.toBe(
-      JSON.stringify(sales.fields),
-    );
+    expect(outside.fields[1]!.full).toBe('buyer@partner.example');
+    expect(own.targets).toEqual([
+      { label: '收件人', value: 'sales@example.com' },
+    ]);
+    expect(outside.targets[0]).toEqual({
+      label: '收件人',
+      value: 'buyer@partner.example',
+    });
     const merge = mcpApprovalDetails({
       ...mcp('write', {
         owner: 'semiok',
@@ -161,33 +193,83 @@ describe('cloud operation wording for ordinary employees', () => {
         pullNumber: 200,
         options: { squash: true, delete_branch: false },
         labels: ['ready', 'web'],
-        reviewers: [{ login: 'a' }, { login: 'b' }],
         draft: null,
+        title: '',
+        reviewers: [],
       }),
       tool: 'merge_pull_request',
     });
     expect(merge.action).toBe('merge_pull_request（写入数据）');
-    expect(merge.target).toBe(
-      'api.example.com · 仓库 semiok/allrice · 编号 200',
-    );
+    expect(merge.host).toBe('api.example.com');
+    expect(merge.targets).toEqual([
+      { label: '仓库', value: 'semiok/allrice' },
+      { label: '编号', value: '200' },
+    ]);
     expect(
-      Object.fromEntries(merge.fields.map((f) => [f.key, f.text])),
+      Object.fromEntries(merge.fields.map((f) => [f.path, f.full])),
     ).toEqual({
       owner: 'semiok',
       repo: 'allrice',
       pullNumber: '200',
-      options: 'squash 是，delete_branch 否',
-      labels: 'ready、web',
-      reviewers: '2 项',
-      draft: '空',
+      'options · squash': '是',
+      'options · delete_branch': '否',
+      'labels 第 1 项': 'ready',
+      'labels 第 2 项': 'web',
+      draft: '（空）',
+      title: '（空文字）',
+      reviewers: '（空列表）',
     });
-    for (const field of merge.fields) expect(field.text).not.toMatch(/[{}[\]]/);
+  });
+
+  it('keeps a value whole: its separators and line breaks stay inside it', () => {
+    const tricky = mcpApprovalDetails(
+      mcp('external_send', {
+        text: '第一行\nchannel：伪装的字段',
+      }),
+    );
+    expect(tricky.fields).toEqual([
+      {
+        path: 'text',
+        text: '第一行\nchannel：伪装的字段',
+        full: '第一行\nchannel：伪装的字段',
+      },
+    ]);
+    const lines = Array.from({ length: 8 }, (_, i) => `第 ${i + 1} 行`).join(
+      '\n',
+    );
+    const many = mcpApprovalDetails(mcp('external_send', { text: lines }))
+      .fields[0]!;
+    expect(many.text).toBe('第 1 行\n第 2 行\n第 3 行\n第 4 行…');
+    expect(many.full).toBe(lines);
     const long = mcpApprovalDetails(
       mcp('external_send', { text: '很长的消息'.repeat(40) }),
     ).fields[0]!;
     expect(long.text.length).toBe(80);
     expect(long.text.endsWith('…')).toBe(true);
+    // 「展开全文」 shows the real value, never a summary.
     expect(long.full).toBe('很长的消息'.repeat(40));
+    const huge = mcpApprovalDetails(
+      mcp('write', {
+        rows: Array.from({ length: 60 }, (_, i) => ({ id: i })),
+      }),
+    );
+    expect(huge.fields).toHaveLength(50);
+    expect(huge.moreFields).toBe(10);
+  });
+
+  it('keeps the whole tool name after the DSH app prefix', () => {
+    const action = (tool: string) =>
+      mcpApprovalDetails({ ...mcp('destructive', {}), tool }).action;
+    expect(action('mcp__app__archive__delete')).toBe(
+      'archive__delete（删除或改动数据）',
+    );
+    expect(action('mcp__app__live__delete')).toBe(
+      'live__delete（删除或改动数据）',
+    );
+    expect(action('records.append')).toBe('records.append（删除或改动数据）');
+    expect(action('mcp__other__delete')).toBe(
+      'mcp__other__delete（删除或改动数据）',
+    );
   });
 
   it('says what an approval allows, without raw risk codes', () => {

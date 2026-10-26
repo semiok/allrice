@@ -247,7 +247,10 @@ describe('Cloud/MCP approval presentation', () => {
     expect(html).toContain('允许写入数据');
     // The pending call's action and values are shown, escaped, without JSON.
     expect(html).toContain('records.append（写入数据）');
-    expect(html).toContain('value：&lt;script&gt;alert(1)&lt;/script&gt;');
+    // The name and the escaped value are separate elements.
+    expect(html).toMatch(
+      /<dt>value<\/dt><dd class="[^"]+">&lt;script&gt;alert\(1\)&lt;\/script&gt;<\/dd>/,
+    );
     expect(html).not.toContain('<script>');
     expect(html).not.toContain('&quot;value&quot;');
   });
@@ -298,6 +301,31 @@ describe('Cloud/MCP approval presentation', () => {
     expect(html).toContain('这类操作已暂停使用');
     expect(html).toContain('请求停止本轮全部操作');
     expect(html).not.toContain('允许写入数据');
+    // Header word, its full sentence and the expanded 状态 agree.
+    expect(cloudOperationCompactStatus(op)).toBe('已暂停');
+    expect(cloudOperationDisplayStatus(op)).toBe(
+      '这类操作已暂停使用，暂时不能执行',
+    );
+    expect(html).toContain('aria-label="已暂停">已暂停</span>');
+    expect(html).toContain(
+      '<dt>状态</dt><dd>这类操作已暂停使用，暂时不能执行</dd>',
+    );
+    expect(html).not.toContain('等你确认');
+  });
+  it('does not promise progress for an approval that expired before use', () => {
+    const op = view();
+    op.approval!.response = { decision: 'approved' } as NonNullable<
+      CloudOperationView['approval']
+    >['response'];
+    op.approval!.request.expiresAt = '2000-01-01T00:00:00.000Z';
+    const html = render(op);
+    expect(cloudOperationCompactStatus(op)).toBe('已过期');
+    expect(cloudOperationDisplayStatus(op)).toBe(
+      '你已允许，但开始前授权已过期，没有执行',
+    );
+    expect(html).not.toContain('正在准备');
+    // The answer itself stays on record.
+    expect(html).toContain('你已允许这一步');
   });
   it.each([
     ['connection_revoked', '应用连接已断开'],
@@ -311,7 +339,7 @@ describe('Cloud/MCP approval presentation', () => {
       const approval = structuredClone(op.approval);
       op.mcpAuthorization = { available: false, reason };
       const html = render(op);
-      expect(cloudOperationDisplayStatus(op)).toBe(label);
+      expect(cloudOperationDisplayStatus(op)).toBe(`${label}，不能执行这一步`);
       expect(html).toContain(label);
       expect(html).not.toContain('允许写入数据');
       expect(html).toContain('请求停止本轮全部操作');

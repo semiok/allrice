@@ -17,12 +17,14 @@ import type { CloudOperationView } from '@allrice/database';
 import styles from './cloud-operation-panel.module.css';
 import { TechnicalDetails } from './technical-details';
 import {
+  approvalState,
   approvalSummary,
   approveLabel,
   cloudOperationCompactLabel,
   cloudOperationStatusLabel,
   durationText,
   mcpApprovalDetails,
+  type ApprovalField as ApprovalFieldView,
   mcpAuthorizationLabel,
   mcpFailureNotice,
   mcpRiskLabel,
@@ -70,17 +72,9 @@ export function cloudOperationDisplayStatus(
   op: CloudOperationView,
   now = Date.now(),
 ) {
-  if (op.snapshot.status === 'waiting_user' && op.approval) {
-    if (op.approval.revokedAt) return '已撤回，没有执行';
-    if (op.approval.response?.decision === 'rejected')
-      return '你已拒绝，没有执行';
-    if (op.approval.response?.decision === 'approved')
-      return '你已允许，正在准备';
-    if (Date.parse(op.approval.request.expiresAt) <= now)
-      return '已过期，没有执行';
-    if (op.proposal.kind === 'mcp' && op.mcpAuthorization?.available !== true)
-      return mcpAuthorizationLabel(op.mcpAuthorization?.reason);
-  }
+  // The same decision as the compact header word (approvalState).
+  const waiting = approvalState(op, now);
+  if (waiting) return waiting.full;
   const failure = operationFailure(op);
   if (failure) return mcpFailureNotice(failure).title;
   return cloudOperationStatusLabel(op.snapshot.status);
@@ -94,32 +88,27 @@ export function cloudOperationCompactStatus(
   return cloudOperationCompactLabel(op, now);
 }
 
-/** One pending parameter; a long value can be read in full on request. */
-function ApprovalField({
-  name,
-  text,
-  full,
-}: {
-  name: string;
-  text: string;
-  full: string;
-}) {
+/** One parameter: its path as a label, its real value kept apart below. */
+function ApprovalField({ field }: { field: ApprovalFieldView }) {
   const [open, setOpen] = useState(false);
   return (
-    <li>
-      {name}：{open ? full : text}
-      {full !== text && (
-        <Button
-          className={styles.decision}
-          size="sm"
-          variant="ghost"
-          aria-expanded={open}
-          onClick={() => setOpen((value) => !value)}
-        >
-          {open ? '收起' : '展开全文'}
-        </Button>
-      )}
-    </li>
+    <div>
+      <dt>{field.path}</dt>
+      <dd className={styles.approvalValue}>
+        {open ? field.full : field.text}
+        {field.full !== field.text && (
+          <Button
+            className={styles.decision}
+            size="sm"
+            variant="ghost"
+            aria-expanded={open}
+            onClick={() => setOpen((value) => !value)}
+          >
+            {open ? '收起' : '展开全文'}
+          </Button>
+        )}
+      </dd>
+    </div>
   );
 }
 
@@ -138,24 +127,33 @@ function McpApprovalDetails({
       </div>
       <div>
         <dt>对象</dt>
-        <dd>{details.target}</dd>
+        <dd>
+          <ul className={styles.approvalTargets}>
+            <li>{details.host}</li>
+            {details.targets.map((target) => (
+              <li key={`${target.label}\0${target.value}`}>
+                {target.label}{' '}
+                <span className={styles.approvalValue}>{target.value}</span>
+              </li>
+            ))}
+            {details.moreTargets > 0 && <li>等 {details.moreTargets} 个</li>}
+          </ul>
+        </dd>
       </div>
       <div>
         <dt>内容</dt>
         <dd>
           {details.fields.length ? (
-            <ul className={styles.approvalFields}>
+            <dl className={styles.approvalFields} aria-label="参数">
               {details.fields.map((field) => (
-                <ApprovalField
-                  key={field.key}
-                  name={field.key}
-                  text={field.text}
-                  full={field.full}
-                />
+                <ApprovalField key={field.path} field={field} />
               ))}
-            </ul>
+            </dl>
           ) : (
             '没有参数'
+          )}
+          {details.moreFields > 0 && (
+            <p>另有 {details.moreFields} 项，可在「技术详情」查看全部。</p>
           )}
         </dd>
       </div>
@@ -483,21 +481,18 @@ export function CloudOperationCard({
       proposal.arguments && typeof proposal.arguments === 'object'
         ? Object.keys(proposal.arguments).length
         : 0;
-    const authorization = mcpUnavailable
-      ? mcpAuthorizationLabel(op.mcpAuthorization?.reason)
-      : op.approval?.revokedAt
+    // While waiting, the same state as the header; afterwards, the answer.
+    const authorization =
+      approvalState(op)?.full ??
+      (op.approval?.revokedAt
         ? '已撤回'
         : op.approval?.response?.decision === 'rejected'
           ? '你已拒绝'
-          : request &&
-              Date.parse(request.expiresAt) <= Date.now() &&
-              !op.approval?.response
-            ? '已过期'
-            : op.approval?.response?.decision === 'approved'
-              ? '你已允许'
-              : pending
-                ? '等你确认'
-                : '按已有授权';
+          : op.approval?.response?.decision === 'approved'
+            ? '你已允许'
+            : mcpUnavailable
+              ? mcpAuthorizationLabel(op.mcpAuthorization?.reason)
+              : '按已有授权');
     sections = [
       {
         key: 'app',

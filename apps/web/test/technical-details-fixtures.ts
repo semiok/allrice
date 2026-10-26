@@ -61,6 +61,8 @@ const request = (
   approvalId,
   binding,
 });
+/** A value that tries to look like a second field on its own line. */
+export const forgedNote = '第一行\nchannel：伪装的字段';
 export const longText = `报价单已更新，请合作方在周五前确认。${'包括折扣、交付日期和付款方式的说明。'.repeat(8)}`;
 
 const limits = {
@@ -96,7 +98,7 @@ function appCall(
     proposal: {
       kind: 'mcp',
       endpoint: 'https://api.example-crm.com/mcp',
-      tool: 'mcp__crm__send_message',
+      tool: 'mcp__app__send_message',
       arguments: args,
       risk: 'external_send',
     },
@@ -117,13 +119,23 @@ export function cloudOperations(answered: string[]) {
     appCall(
       ids.mcpOperation,
       ids.mcpApproval,
-      { channel: 'sales', text: '本周报价已更新' },
+      {
+        channel: 'sales',
+        text: '本周报价已更新',
+        recipients: [{ email: 'sales@example.com' }],
+      },
       decided(ids.mcpApproval),
     ),
     appCall(
       ids.partnerOperation,
       ids.partnerApproval,
-      { channel: 'partner-ext', text: longText, notify: true },
+      {
+        channel: 'partner-ext',
+        text: longText,
+        notify: true,
+        recipients: [{ email: 'buyer@partner.example' }],
+        note: forgedNote,
+      },
       decided(ids.partnerApproval),
     ),
     appCall(
@@ -150,7 +162,7 @@ export function cloudOperations(answered: string[]) {
       proposal: {
         kind: 'mcp',
         endpoint: 'https://api.example-crm.com/mcp',
-        tool: 'mcp__crm__send_message',
+        tool: 'mcp__app__send_message',
         arguments: { channel: 'sales', text: '周报' },
         risk: 'external_send',
       },
@@ -256,7 +268,7 @@ export const runningOperations = () => [
     proposal: {
       kind: 'mcp',
       endpoint: 'https://api.example-crm.com/mcp',
-      tool: 'mcp__crm__list_messages',
+      tool: 'mcp__app__list_messages',
       arguments: { channel: 'sales' },
       risk: 'read',
     },

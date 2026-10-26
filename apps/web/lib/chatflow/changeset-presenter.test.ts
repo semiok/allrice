@@ -64,44 +64,34 @@ describe('file change wording for ordinary employees', () => {
     expect(changesetFileLabel('unknown')).toBe('结果待确认');
   });
 
-  it('explains why a file did not finish and what to do next', () => {
+  it('names a cause only for codes with a single cause', () => {
+    // FileGuardian.swift: EEXIST at the destination.
     expect(changesetFileNote('conflict', 'FILE_DESTINATION_EXISTS')).toContain(
-      '目标位置已经有同名文件',
+      '目标位置已经有同名的文件或文件夹',
     );
-    expect(changesetFileNote('conflict', 'PATH_ALREADY_EXISTS')).toContain(
-      '同名文件',
-    );
-    expect(changesetFileNote('conflict', 'WRITE_CONFLICT')).toContain(
-      '在确认之后又被改动过',
-    );
-    expect(changesetFileNote('conflict', 'FILE_NOT_FOUND')).toContain(
-      '找不到这个文件',
-    );
-    expect(changesetFileNote('conflict', 'PATH_OUTSIDE_GRANT')).toContain(
-      '不在允许改动的文件夹里',
+    // FileGuardian.swift: a path component is not a directory.
+    const notFolder = changesetFileNote('conflict', 'FILE_DIRECTORY_REQUIRED');
+    expect(notFolder).toContain('路径里有一段不是文件夹');
+    expect(notFolder).not.toMatch(/移动|删除/);
+    expect(changesetFileNote('conflict', 'FILE_ACCESS_DENIED')).toContain(
+      '没有权限',
     );
     expect(changesetFileNote('canceled', 'AUTHORITY_LOST')).toContain(
       '没有改动',
     );
-    // An unrecognized code gets neutral words, never a wrong reason.
-    const neutral = changesetFileNote('conflict', 'PREFLIGHT_FAILED');
-    expect(neutral).toContain('没有处理完');
-    expect(neutral).not.toContain('改动过');
+    // FileGuardian FILE_CHANGED also covers copy verification and hard
+    // links; file-organization.ts raises it for any preflight mismatch.
+    for (const code of ['FILE_CHANGED', 'FILE_PARENT_CHANGED', 'SOMETHING_NEW'])
+      expect(changesetFileNote('conflict', code)).toBe(
+        '保存前的检查没有通过，这个文件没有改动。请看一下文件现在的内容，再让 AI 员工重新安排。',
+      );
     // An unconfirmed file always asks to check it, whatever the code.
     for (const status of ['unknown', 'prepared'])
-      expect(changesetFileNote(status, 'FILE_TIMEOUT')).toBe(
+      expect(changesetFileNote(status, 'FILE_DESTINATION_EXISTS')).toBe(
         '没有收到这个文件的处理结果，请打开文件确认有没有改动。',
       );
+    expect(changesetFileNote('failed')).toContain('没有处理完');
     expect(changesetFileNote('applied')).toBeNull();
-    for (const code of [
-      'FILE_DESTINATION_EXISTS',
-      'WRITE_CONFLICT',
-      'FILE_SYMLINK',
-      'FILE_TOO_LARGE',
-      'SOMETHING_NEW',
-      undefined,
-    ])
-      expect(changesetFileNote('conflict', code)).not.toMatch(engineering);
   });
 
   it('names what is being allowed and what each file change does', () => {

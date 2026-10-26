@@ -6,7 +6,11 @@ import type {
   Browser,
   Page,
 } from '../../../worker/node_modules/playwright-core/index.js';
-import { ids, longText } from '../../test/technical-details-fixtures';
+import {
+  forgedNote,
+  ids,
+  longText,
+} from '../../test/technical-details-fixtures';
 
 const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
@@ -95,11 +99,15 @@ suite('technical details stay behind a collapsed row', () => {
           : chromium.executablePath()),
     });
   });
+  // Panels keep polling until their page closes; drop any socket left open.
+  // Closing Chrome alone took over 30s on a loaded M1 (load average 100+).
   afterAll(async () => {
     await browser?.close();
-    if (server)
+    if (server) {
+      server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
-  });
+    }
+  }, 60_000);
 
   const cards = (page: Page) => page.locator('[data-case="cloud"] article');
   const card = (page: Page, operationId: string) =>
@@ -162,10 +170,13 @@ suite('technical details stay behind a collapsed row', () => {
             '允许对外发送内容',
             '会按下面的内容调用 api.example-crm.com',
             'send_message（对外发送内容）',
-            'api.example-crm.com · 渠道 sales',
-            'api.example-crm.com · 渠道 partner-ext',
-            'text：本周报价已更新',
-            'notify：是',
+            'api.example-crm.com',
+            '渠道 sales',
+            '收件人 sales@example.com',
+            '渠道 partner-ext',
+            '收件人 buyer@partner.example',
+            'recipients 第 1 项 · email',
+            '本周报价已更新',
             '展开全文',
             '没有收到完整的结果，不确定这一步有没有生效。',
             '不会自动重新执行',
@@ -174,7 +185,8 @@ suite('technical details stay behind a collapsed row', () => {
             '保存修改 · 已完成',
             '已保存到你的电脑',
             '没有收到这个文件的处理结果，请打开文件确认有没有改动。',
-            '这个文件在确认之后又被改动过，没有覆盖。',
+            // WRITE_CONFLICT has several causes: neutral words only.
+            '保存前的检查没有通过，这个文件没有改动。',
           ])
             expect(collapsed).toContain(line);
           // A step nobody can answer any more never says 等你确认.
@@ -229,37 +241,68 @@ suite('technical details stay behind a collapsed row', () => {
             .poll(() => stop.evaluate((node) => getComputedStyle(node).color))
             .toBe(ink);
           const weak = await page.evaluate(lowContrastText);
+          await cdp.detach();
           expect(weak).toEqual([]);
         } finally {
           await page.close();
         }
       });
 
-  it('shows what each pending app call will send, long values in full on request', async () => {
+  /** Each parameter as [name, value], read from separate elements. */
+  const parameters = (page: Page, operationId: string) =>
+    card(page, operationId)
+      .getByLabel('参数', { exact: true })
+      .evaluate((list) =>
+        [...list.children].map((row) => [
+          (row.querySelector('dt') as HTMLElement).innerText,
+          (row.querySelector('dd') as HTMLElement).innerText,
+        ]),
+      );
+
+  it('shows each pending parameter by path, kept apart from its value', async () => {
     const page = await open(390, 'light');
     try {
-      const sales = card(page, ids.mcpOperation).getByLabel('这次要做的事');
-      const partner = card(page, ids.partnerOperation).getByLabel(
-        '这次要做的事',
+      const sales = Object.fromEntries(
+        await parameters(page, ids.mcpOperation),
       );
-      const [salesText, partnerText] = [
-        await sales.innerText(),
-        await partner.innerText(),
-      ];
-      // Same tool, different recipient and message: the cards differ.
-      expect(salesText).not.toBe(partnerText);
-      expect(salesText).toContain('渠道 sales');
-      expect(salesText).toContain('本周报价已更新');
-      expect(partnerText).toContain('渠道 partner-ext');
-      for (const each of [salesText, partnerText])
-        expect(each).not.toMatch(/[{}]/);
-      expect(partnerText).not.toContain(longText);
-      expect(partnerText).toContain(longText.slice(0, 20));
-      expect(partnerText).toContain('…');
-      await partner.getByRole('button', { name: '展开全文' }).click();
-      expect(await partner.innerText()).toContain(longText);
-      await partner.getByRole('button', { name: '收起' }).click();
-      expect(await partner.innerText()).not.toContain(longText);
+      expect(sales).toEqual({
+        channel: 'sales',
+        text: '本周报价已更新',
+        'recipients 第 1 项 · email': 'sales@example.com',
+      });
+      const partner = await parameters(page, ids.partnerOperation);
+      // A nested recipient alone tells the two calls apart.
+      expect(Object.fromEntries(partner)['recipients 第 1 项 · email']).toBe(
+        'buyer@partner.example',
+      );
+      // A value's colon and line break stay inside that value.
+      expect(partner.map(([name]) => name)).toEqual([
+        'channel',
+        'text',
+        'notify',
+        'recipients 第 1 项 · email',
+        'note',
+      ]);
+      expect(Object.fromEntries(partner).note).toBe(forgedNote);
+      for (const id of [ids.mcpOperation, ids.partnerOperation])
+        expect(
+          await card(page, id).getByLabel('这次要做的事').innerText(),
+        ).not.toMatch(/[{}]/);
+      // A long value is clipped, and 展开全文 shows the real text.
+      const text = () =>
+        parameters(page, ids.partnerOperation).then(
+          (rows) => Object.fromEntries(rows).text as string,
+        );
+      expect(await text()).not.toContain(longText);
+      expect(await text()).toContain(`${longText.slice(0, 20)}`);
+      expect(await text()).toContain('…');
+      const details = card(page, ids.partnerOperation).getByLabel('参数', {
+        exact: true,
+      });
+      await details.getByRole('button', { name: '展开全文' }).click();
+      expect(await text()).toContain(longText);
+      await details.getByRole('button', { name: '收起' }).click();
+      expect(await text()).not.toContain(longText);
       expect(await overflow(page)).toBe(false);
     } finally {
       await page.close();
