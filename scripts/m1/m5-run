@@ -1,0 +1,574 @@
+# The half of m5-test that runs on the test machine: M5, or M1 when M5 is offline (rules:
+# AGENTS.md §9 at the repository root). m5-test hands this file to `bash -c` over ssh, or
+# locally on M1, so both halves always come from the same installed tools; nothing of it is
+# installed on M5. Settings arrive as M5T_* variables; the arguments are vitest's (test).
+#
+#   M5T_ACTION    test | codex | status | setup | setup-line
+#   M5T_TARGET    m5 | m1
+#   M5T_SHA M5T_RUN M5T_CALLER M5T_WAIT M5T_BUILD M5T_ENV M5T_FULL_ACCESS M5T_MODEL
+#   M5T_STOP      M5: run ids whose M1 side has let go (m5-test checked their leases); a slot
+#                 still held by one of them is a leftover, stopped before this run starts
+#   M5T_CODEX     only for the unit tests (ssh does not pass it)
+#
+# The last line of a finished test or codex run is "m5-test: done on <host> …, exit <code>";
+# m5-test looks for it to tell a finished run from an interrupted one. Exit 3: no room within
+# M5T_WAIT; 75: the tests or Codex were ended by a signal (killed, not failed); 86: M5 not set
+# up; 87: M5 short of memory; 88: M5 cannot run it (test Postgres, checkout or Codex). m5-test
+# then runs it on M1.
+set -euo pipefail
+exec 2>&1
+NODE_VERSION=22.23.2 PNPM_VERSION=10.33.3 PG_VERSION=17.11 PGVECTOR_VERSION=0.8.7 PG_PORT=54329
+NODE_SHA256=61130f394c1630d211dd50aecc4353d379480f36d3ac913cd85dbba1aed585c6     # node-v…-darwin-arm64.tar.gz
+PG_SHA256=dd27f2b3c59e73ed14aa3324901242bf69a032a6347805f274e6260322d42979       # same as Homebrew's formula
+PGVECTOR_SHA256=cac0b10c360f05b2d521200105ba3697e773d4cd3731f5a915a7e37ebe0bea85 # same as Homebrew's formula
+SETUP_LINE="node=$NODE_VERSION pnpm=$PNPM_VERSION postgresql=$PG_VERSION pgvector=$PGVECTOR_VERSION port=$PG_PORT"
+action=${M5T_ACTION:?} target=${M5T_TARGET:?}
+NODE_BIN=$HOME/.local/opt/node-$NODE_VERSION/bin
+if [ "$target" = m5 ]; then
+  HOST_NAME=M5 BASE=$HOME/allrice-test; REPO_DIR=$BASE/repo.git
+  PG_DIST=$BASE/dist/postgresql-$PG_VERSION-pgvector-$PGVECTOR_VERSION; PG_BIN=$PG_DIST/bin; PG_DATA=$BASE/pg17
+  # The test fixtures accept only M1's database and CI's; M5 uses CI's (same port, role, database).
+  DB_URL=postgres://allrice:allrice@127.0.0.1:$PG_PORT/allrice
+  PG_ENV=(PGHOST=127.0.0.1 PGPORT=$PG_PORT PGUSER=allrice PGDATABASE=allrice)
+  # Nothing of the user's: installs, builds and tests get a home of their own (Codex keeps
+  # its login through CODEX_HOME), corepack and npm config live under ~/allrice-test too.
+  TEST_HOME=$BASE/home
+  HOME_ENV=(COREPACK_HOME="$BASE/corepack" npm_config_userconfig="$BASE/npmrc")
+  CODEX=${M5T_CODEX:-/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex} # the Codex app's CLI
+  STORE=(--store-dir "$BASE/pnpm-store")
+  # Writes stay in the worktree and temp dirs (M5 is the user's own Mac); the network is on
+  # so tests reach the loopback Postgres. Chrome cannot start in this sandbox (10-26), so a
+  # pass that runs browser tests asks for full access.
+  SANDBOX=(-s workspace-write -c sandbox_workspace_write.network_access=true)
+  [ "${M5T_FULL_ACCESS:-}" != 1 ] || SANDBOX=(-s danger-full-access)
+  # What all runs on M5 together may use (user 10-26): CPU is the real limit, memory a
+  # ceiling. KEY=value lines in ~/allrice-test/limits override these defaults.
+  MEMORY_GB=48 PG_GB=6 GB_PER_WORKER=2 WORKERS_TOTAL=16 WORKERS_DEFAULT=8 WORKERS_MAX=12 RUNS=4 CODEX_WORKERS=4
+  if [ -f "$BASE/limits" ]; then
+    while IFS='=' read -r key value; do
+      case "$key" in MEMORY_GB | PG_GB | GB_PER_WORKER | WORKERS_TOTAL | WORKERS_DEFAULT | WORKERS_MAX | RUNS | CODEX_WORKERS)
+        [[ ! "$value" =~ ^[1-9][0-9]*$ ]] || printf -v "$key" '%s' "$value" ;;
+      esac
+    done <"$BASE/limits"
+  fi
+  TOKENS=$(((MEMORY_GB - PG_GB) / GB_PER_WORKER)) # one per vitest worker, for all runs together
+  [ "$TOKENS" -le "$WORKERS_TOTAL" ] || TOKENS=$WORKERS_TOTAL
+  [ "$TOKENS" -ge 1 ] || TOKENS=1
+else
+  HOST_NAME=M1 BASE=$HOME/allrice-worktrees/.m5-test-m1; REPO_DIR=$HOME/allrice-repo
+  PG_BIN=/opt/homebrew/opt/postgresql@17/bin; DB_URL=postgres://a123@127.0.0.1:5432/allrice_b2
+  PG_ENV=(PGHOST=127.0.0.1 PGPORT=5432 PGUSER=a123 PGDATABASE=allrice_b2)
+  TEST_HOME=$HOME HOME_ENV=()
+  CODEX=$HOME/.local/bin/codex; STORE=()
+  SANDBOX=(-s danger-full-access) # AGENTS.md §9: workspace-write cannot reach Postgres on M1
+  RUNS=2 WORKERS_DEFAULT=2 WORKERS_MAX=2 CODEX_WORKERS=2 TOKENS=0
+fi
+SEARCH_PATH=$NODE_BIN:$PG_BIN:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+# macOS reaches the temp directory through a symlink (/var -> /private/var); CI's has none,
+# and tests that compare realpath() with the path they made fail only here.
+TEMP_DIR=$(cd "${TMPDIR:-/tmp}" && pwd -P)
+TEST_ENV=()
+while IFS= read -r kv; do [ -z "$kv" ] || TEST_ENV+=("$kv"); done <<<"${M5T_ENV:-}"
+workers=$WORKERS_DEFAULT
+[ "$action" != codex ] || workers=$CODEX_WORKERS # Codex mostly thinks; its tests get a smaller share
+
+say() { echo "[m5-test $HOST_NAME] $*"; }
+# clean <command…>: run with only the variables a test needs, never the caller's; the switches
+# (M5T_ENV) come first, so they cannot replace the others. M5T_VITEST_CAP is the run's worker
+# share, which cap_vitest enforces; a bare psql reaches the test database only.
+clean() {
+  env -i ${TEST_ENV[@]+"${TEST_ENV[@]}"} HOME="$TEST_HOME" CODEX_HOME="$HOME/.codex" USER="$(id -un)" \
+    LOGNAME="$(id -un)" TMPDIR="$TEMP_DIR" LANG=en_US.UTF-8 PATH="$SEARCH_PATH" COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
+    ${HOME_ENV[@]+"${HOME_ENV[@]}"} "${PG_ENV[@]}" ${CI_ENV[@]+"${CI_ENV[@]}"} ALLRICE_TEST_DATABASE_URL="$DB_URL" \
+    M5T_VITEST_CAP="$workers" M5T_VITEST_LOCK="$TEMP_DIR/m5-test-vitest-${M5T_RUN:-run}.lock" nice -n 10 "$@"
+}
+lock() { # <fd> [seconds]: exit 0 = this process now holds the flock on the file open at <fd>
+  /usr/bin/python3 -c 'import fcntl,sys,time
+fd,end=int(sys.argv[1]),time.time()+float(sys.argv[2])
+while True:
+    try: fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB); sys.exit(0)
+    except BlockingIOError:
+        if time.time()>=end: sys.exit(1)
+        time.sleep(0.2)' "$1" "${2:-0}"
+}
+held() { # <file>: exit 0 when someone holds its lock
+  /usr/bin/python3 -c 'import fcntl,sys
+f=open(sys.argv[1],"a")
+try: fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)
+except BlockingIOError: sys.exit(0)
+sys.exit(1)' "$1"
+}
+port_taken() { /usr/bin/python3 -c 'import socket,sys
+try: socket.create_connection(("127.0.0.1",int(sys.argv[1])),0.5).close()
+except OSError: sys.exit(1)' "$PG_PORT"; }
+owners() {
+  local n busy=0 used=0 i
+  for n in $(seq 1 "$RUNS"); do
+    if [ -f "$BASE/locks/slot-$n.lock" ] && held "$BASE/locks/slot-$n.lock"; then
+      busy=$((busy + 1)); echo "  slot $n: $(cat "$BASE/locks/slot-$n.owner" 2>/dev/null || echo '(owner unknown)')"
+    fi
+  done
+  for i in $(seq 1 "$TOKENS"); do [ ! -f "$BASE/locks/worker-$i.lock" ] || ! held "$BASE/locks/worker-$i.lock" || used=$((used + 1)); done
+  if [ "$TOKENS" -gt 0 ]; then echo "  $busy of $RUNS runs, $used of $TOKENS workers busy"; else echo "  $busy of $RUNS runs busy"; fi
+}
+
+# pressure: "<kernel level> <reclaimable GB>" (level 1 normal, 2 warning, 4 critical; GB -1 when
+# unknown). Reclaimable counts free, speculative, inactive and purgeable pages, not what
+# Activity Monitor calls used.
+pressure() {
+  local level gb
+  level=$(sysctl -n kern.memorystatus_vm_pressure_level 2>/dev/null) || level=1
+  gb=$(vm_stat 2>/dev/null | awk '/page size of/ {size = $8} /^Pages (free|speculative|inactive|purgeable):/ {sub(/\./, "", $NF); pages += $NF}
+    END {if (size) printf "%d", pages * size / 1073741824}') || gb=""
+  echo "${level:-1} ${gb:--1}"
+}
+# admit: M5, under the start lock, every time a run tries for room. Level 4 starts nothing
+# here; level 2 halves the run and lets all runs together use half the workers; a run never
+# plans more workers than reclaimable memory holds. Never closes or nudges the user's apps.
+admit() {
+  usable=$TOKENS
+  [ "$target" = m5 ] || return 0
+  local level gb fit
+  read -r level gb <<<"$(pressure)"
+  if [ "$level" -ge 4 ]; then
+    echo "m5-test: M5 memory pressure is critical (kernel level $level); not starting here"; exit 87
+  fi
+  if [ "$level" -ge 2 ]; then
+    workers=$(((planned + 1) / 2)) usable=$(((TOKENS + 1) / 2))
+    [ "$warned" = 1 ] || { say "memory pressure warning (level $level): $workers workers, $usable for all runs"; warned=1; }
+  fi
+  [ "$gb" -ge 0 ] || return 0
+  fit=$((gb / GB_PER_WORKER))
+  if [ "$fit" -lt 1 ]; then echo "m5-test: M5 has ${gb}G of reclaimable memory; not starting here"; exit 87; fi
+  if [ "$workers" -gt "$fit" ]; then workers=$fit; say "${gb}G reclaimable: $workers workers"; fi
+}
+
+# take_room: a slot (fd 9, with its worktree) and, on M5, between half and all of the planned
+# workers as tokens (fds 20…), waiting up to M5T_WAIT seconds. Every child inherits these
+# descriptors, so they stay taken until the last process of the run exits. Leftover runs
+# (older, M1 side gone) are stopped first; with no other run on M5, the test database is
+# cleared of what interrupted runs left. The start lock (fd 7) lets one run at a time do this.
+take_room() {
+  local deadline=$(($(date +%s) + ${M5T_WAIT:-600})) said=0 n
+  mkdir -p "$BASE/locks"
+  while :; do
+    exec 7>>"$BASE/locks/start.lock"
+    lock 7 60 || { echo "m5-test: the start lock on $HOST_NAME stayed busy for 60s"; exit 3; }
+    workers=$planned
+    admit
+    [ "$target" != m5 ] || stop_leftovers
+    slot=""
+    for n in $(seq 1 "$RUNS"); do
+      exec 9>>"$BASE/locks/slot-$n.lock"
+      if lock 9; then slot=$n; break; fi
+      exec 9>&-
+    done
+    if [ -n "$slot" ] && take_tokens; then
+      stop_ours "$BASE/slots/slot-$slot" "left in slot $slot"
+      printf '%s %s by %s since %s (%s, %s workers) pid %s\n' "$M5T_RUN" "${M5T_SHA:0:8}" "${M5T_CALLER:-?}" \
+        "$(date +%H:%M)" "$action" "$workers" "$$" >"$BASE/locks/slot-$slot.owner"
+      [ "$target" != m5 ] || clear_database
+      exec 7>&-
+      return 0
+    fi
+    [ -z "$slot" ] || exec 9>&-
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      echo "m5-test: no room on $HOST_NAME within ${M5T_WAIT:-600}s:"; owners; exit 3
+    fi
+    [ $said = 1 ] || { say "waiting up to ${M5T_WAIT:-600}s for room ($workers workers):"; owners; said=1; }
+    exec 7>&-
+    sleep 2
+  done
+}
+take_tokens() { # M5: lock between ceil(workers/2) and workers tokens, all runs together within $usable
+  [ "$TOKENS" -gt 0 ] || return 0
+  local i got fd keep
+  [ "$workers" -le "$usable" ] || workers=$usable
+  for i in $(seq 1 "$TOKENS"); do eval "exec $((19 + i))>>\"\$BASE/locks/worker-$i.lock\""; done
+  # Take every free token, count the ones other runs hold, keep what the limit leaves.
+  got=$(/usr/bin/python3 -c 'import fcntl,sys
+want,need,usable=int(sys.argv[1]),int(sys.argv[2]),int(sys.argv[3]); free=[]
+for fd in map(int,sys.argv[4:]):
+    try: fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB); free.append(fd)
+    except BlockingIOError: pass
+held=len(sys.argv[4:])-len(free)
+keep=free[:max(0,min(want,usable-held))]
+for fd in free[len(keep):]: fcntl.flock(fd,fcntl.LOCK_UN)
+if len(keep)<need:
+    for fd in keep: fcntl.flock(fd,fcntl.LOCK_UN)
+    sys.exit(1)
+print(" ".join(map(str,keep)))' "$workers" $(((workers + 1) / 2)) "$usable" $(seq 20 $((19 + TOKENS)))) || got=""
+  for i in $(seq 20 $((19 + TOKENS))); do
+    keep=0; for fd in $got; do [ "$fd" != "$i" ] || keep=1; done
+    [ $keep = 1 ] || eval "exec $i>&-"
+  done
+  [ -n "$got" ] || return 1
+  set -- $got
+  [ $# = "$workers" ] || say "$# of $workers workers free; starting with $#"
+  workers=$#
+}
+# stop_leftovers: M5, under the start lock. A run whose M1 side has let go (lid closed mid-run,
+# so M1 gave up and reran it there) may wake up later and keep going. m5-test lists such runs
+# in M5T_STOP, from their leases on M1; one of them still holding its slot is stopped: the
+# processes holding the slot lock, their children, and whatever works in its worktree.
+stop_leftovers() {
+  local f n owner run pids
+  for f in "$BASE"/locks/slot-*.lock; do # every slot, also above a lowered RUNS
+    n=${f##*/slot-} n=${n%.lock}
+    held "$f" || continue
+    owner=$(cat "$BASE/locks/slot-$n.owner" 2>/dev/null) || continue
+    run=${owner%% *}
+    [[ " ${M5T_STOP:-} " == *" $run "* ]] || continue
+    if command -v lsof >/dev/null; then pids=$(lsof -t "$BASE/locks/slot-$n.lock" 2>/dev/null || true)
+    else pids=${owner##* pid }; ps -ww -o command= -p "$pids" 2>/dev/null | grep -q m5-run || pids=""; fi
+    pids=$(descendants $pids)
+    say "stopping leftover run $run in slot $n (its M1 side is gone): $(echo $pids | wc -w | tr -d ' ') processes"
+    [ -z "$pids" ] || kill -TERM $pids 2>/dev/null || true
+    for _ in 1 2 3 4 5; do held "$BASE/locks/slot-$n.lock" || break; sleep 1; done
+    [ -z "$pids" ] || kill -KILL $pids 2>/dev/null || true
+    stop_ours "$BASE/slots/slot-$n" "of run $run"
+  done
+}
+# stop_ours <dir> <what>: stop test processes of an earlier run that outlived it: Node does
+# not hand our lock descriptors to its children. Ours means: run by the Node that m5-test
+# installed, or naming its directory (pnpm runs as "node …/bin/pnpm"; nothing of the user's
+# does either), and working in <dir> or naming it; and their children. A terminal or editor
+# the user opened there is left alone. (On M1 that Node also runs the Dev, never in a slot.)
+stop_ours() {
+  local pids
+  pids=$(/usr/bin/python3 -c 'import os,subprocess,sys
+node,d,me=sys.argv[1],sys.argv[2].rstrip("/")+"/",int(sys.argv[3])
+procs={}  # pid -> [ppid, executable, arguments, cwd]
+if os.path.isdir("/proc/self"):
+    for p in filter(str.isdigit, os.listdir("/proc")):
+        try:
+            ppid=int(open("/proc/%s/stat"%p).read().rsplit(")",1)[1].split()[1])
+            args=open("/proc/%s/cmdline"%p,"rb").read().replace(b"\0",b" ").decode("utf-8","replace")
+            procs[int(p)]=[ppid,os.readlink("/proc/%s/exe"%p),args,os.readlink("/proc/%s/cwd"%p)+"/"]
+        except OSError: pass
+else: # macOS: ps shows argv[0] ("node" when pnpm runs vitest), so the executable comes from proc_pidpath
+    import ctypes
+    libproc=ctypes.CDLL("/usr/lib/libproc.dylib")
+    def exe(pid):
+        buf=ctypes.create_string_buffer(4096)
+        return buf.value.decode("utf-8","replace") if libproc.proc_pidpath(pid,buf,4096)>0 else ""
+    ps=lambda o: subprocess.run(["ps","-axww","-o",o],capture_output=True,text=True).stdout.splitlines()
+    for l in ps("pid=,ppid="):
+        f=l.split()
+        if len(f)==2: procs[int(f[0])]=[int(f[1]),exe(int(f[0])),"",""]
+    for l in ps("pid=,command="):
+        f=l.split(None,1)
+        if len(f)==2 and int(f[0]) in procs: procs[int(f[0])][2]=f[1]
+    pid=None
+    for l in subprocess.run(["lsof","-d","cwd","-Fpn"],capture_output=True,text=True).stdout.splitlines():
+        if l[:1]=="p": pid=int(l[1:])
+        elif l[:1]=="n" and pid in procs: procs[pid][3]=l[1:]+"/"
+bindir,node=os.path.dirname(node)+"/",os.path.realpath(node)
+keep={p for p,(pp,x,args,cwd) in procs.items() if (os.path.realpath(x or "/")==node or bindir in args) and (cwd.startswith(d) or d in args)}
+added=True
+while added:
+    added=False
+    for p,v in procs.items():
+        if p not in keep and v[0] in keep: keep.add(p); added=True
+keep.discard(me)
+print(" ".join(map(str,sorted(keep))))' "$NODE_BIN/node" "$1" $$)
+  [ -n "$pids" ] || return 0
+  say "stopping $(echo $pids | wc -w | tr -d ' ') test processes $2"
+  kill -TERM $pids 2>/dev/null || true
+  for _ in 1 2 3 4 5; do kill -0 $pids 2>/dev/null || return 0; sleep 1; done
+  kill -KILL $pids 2>/dev/null || true
+}
+descendants() { # <pid…>: them and their descendants, never postgres or this run
+  [ $# -gt 0 ] || return 0
+  ps -axo pid=,ppid=,comm= | awk -v roots="$*" -v self=$$ '
+    { parent[$1] = $2; name[$1] = $3 }
+    END {
+      n = split(roots, r, " "); for (i = 1; i <= n; i++) keep[r[i]] = 1
+      do { added = 0; for (p in parent) if (!(p in keep) && (parent[p] in keep)) { keep[p] = 1; added = 1 } } while (added)
+      for (p in keep) if ((p in name) && p != self && name[p] !~ /postgres$/) print p
+    }'
+}
+clear_database() { # M5, with no other run going: drop what interrupted runs left behind
+  local n psql=("$PG_BIN/psql" -XAtq -v ON_ERROR_STOP=1) drops dbs
+  for n in "$BASE"/locks/slot-*.lock; do # every slot, also above a lowered RUNS
+    [ "$n" = "$BASE/locks/slot-$slot.lock" ] || ! held "$n" || return 0
+  done
+  ensure_pg || return 0
+  drops=$("${psql[@]}" "$DB_URL" -c "select format('drop schema if exists %I cascade;', nspname) from pg_namespace
+    where nspname not in ('public', 'information_schema') and nspname !~ '^pg_'") || return 0
+  dbs=$("${psql[@]}" "${DB_URL%/*}/postgres" -c "select datname from pg_database where datname not in ('postgres', 'allrice', 'template0', 'template1')") || return 0
+  [ -n "$drops$dbs" ] || return 0
+  say "clearing what earlier runs left: $(echo "$drops" | grep -c . || true) schemas, $(echo "$dbs" | grep -c . || true) databases"
+  [ -z "$drops" ] || printf "set lock_timeout = '10s';\n%s\n" "$drops" | "${psql[@]}" "$DB_URL" || say "could not drop every leftover schema"
+  for n in $dbs; do "$PG_BIN/dropdb" -h 127.0.0.1 -p "$PG_PORT" -U allrice --force "$n" || say "could not drop database $n"; done
+}
+
+# ensure_pg and checkout run as `f || …`, where bash ignores set -e: every step is chained.
+ensure_pg() { # M5 only: start the test cluster when it is down (after a reboot)
+  [ "$target" = m5 ] || return 0
+  "$PG_BIN/pg_ctl" -D "$PG_DATA" status >/dev/null 2>&1 && return 0
+  local ok=0
+  exec 8>>"$BASE/locks/postgres.lock"
+  lock 8 120 || ok=$?
+  if [ $ok = 0 ] && ! "$PG_BIN/pg_ctl" -D "$PG_DATA" status >/dev/null 2>&1; then
+    say "starting the test Postgres on 127.0.0.1:$PG_PORT"
+    pg_ctl_detached start || ok=$?
+  fi
+  exec 8>&-
+  return $ok
+}
+pg_ctl_detached() { # <pg_ctl command…>, every other descriptor closed: the server must not hold our locks
+  env -i HOME="$HOME" PATH="$SEARCH_PATH" LANG=en_US.UTF-8 /usr/bin/python3 -c \
+    'import subprocess,sys; sys.exit(subprocess.call(sys.argv[1:], close_fds=True))' \
+    "$PG_BIN/pg_ctl" -D "$PG_DATA" -l "$BASE/postgres.log" -w -t 60 "$@" </dev/null >/dev/null
+}
+
+checkout() { # the slot's worktree, at M5T_SHA; node_modules stay for a faster install
+  wt=$BASE/slots/slot-$slot
+  mkdir -p "$BASE/slots" "$TEST_HOME" || return
+  local common; common=$(cd "$REPO_DIR" && cd "$(git rev-parse --git-common-dir)" && pwd -P) || return
+  if git -C "$wt" rev-parse -q --verify HEAD >/dev/null 2>&1 && [ "$(git -C "$wt" rev-parse --git-common-dir 2>/dev/null)" -ef "$common" ]; then
+    # The slot is ours alone: a lock left by a killed git is stale.
+    rm -f "$(git -C "$wt" rev-parse --absolute-git-dir)/index.lock"
+    git -C "$wt" checkout -q --detach --force "$M5T_SHA" && git -C "$wt" clean -qffdx -e node_modules && return 0
+    say "slot $slot cannot be reused; checking it out afresh"
+  fi
+  chmod -R u+w "$wt" 2>/dev/null; rm -rf -- "$wt" && git -C "$REPO_DIR" worktree add -f -q --detach "$wt" "$M5T_SHA" # -f: registered, but deleted
+}
+
+times=""
+phase() { # <name> <command…>: run in the worktree, record its duration
+  local name=$1 t0 rc=0; shift
+  t0=$(date +%s); say "$name"
+  (cd "$wt" && clean "$@") || rc=$?
+  times="$times, $name $(($(date +%s) - t0))s"
+  return $rc
+}
+prepare() { # install and build; prints why when one fails
+  phase install pnpm install --frozen-lockfile --prefer-offline ${STORE[@]+"${STORE[@]}"} || { rc=$?; interrupted install; finish "install failed"; }
+  cap_vitest
+  [ -z "${M5T_BUILD:-}" ] || phase build /bin/bash -c "$M5T_BUILD" || { rc=$?; interrupted build; finish "build failed"; }
+}
+interrupted() { # a test or Codex process ended by a signal (128+n) is no verdict on the code
+  [ "$rc" -gt 128 ] && [ "$rc" -lt 160 ] || return 0
+  echo "m5-test: $1 on $HOST_NAME ended by signal $((rc - 128)): interrupted, not a result"; exit 75
+}
+# cap_vitest: every node_modules/.bin/vitest of the worktree becomes one that runs the real
+# one with at most M5T_VITEST_CAP workers, one at a time within the run (Codex may start
+# several). Lower values pass through (--maxWorkers=1 stays serial), unlike VITEST_MAX_WORKERS,
+# which vitest applies over everything.
+cap_vitest() {
+  local bin
+  for bin in "$wt"/node_modules/.bin/vitest "$wt"/apps/*/node_modules/.bin/vitest "$wt"/packages/*/node_modules/.bin/vitest; do
+    [ -e "$bin" ] || continue
+    grep -q '^# m5-test: vitest cap' "$bin" || mv "$bin" "$bin.m5-real"
+    cat >"$bin" <<'SH'
+#!/bin/bash
+# m5-test: vitest cap. The real vitest, with at most M5T_VITEST_CAP workers (the run's share).
+cap=${M5T_VITEST_CAP:-2} want="" args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --maxWorkers=* | --max-workers=*) want=${1#*=} ;;
+    --maxWorkers | --max-workers) want=${2:-}; [ $# -lt 2 ] || shift ;;
+    *) args+=("$1") ;;
+  esac
+  shift
+done
+if [[ "$want" =~ ^[1-9][0-9]*$ ]] && [ "$want" -lt "$cap" ]; then cap=$want; fi
+if [ -n "${M5T_VITEST_LOCK:-}" ]; then # one vitest at a time within the run, so its share holds
+  exec 19>>"$M5T_VITEST_LOCK"
+  /usr/bin/python3 -c 'import fcntl; fcntl.flock(19, fcntl.LOCK_EX)'
+fi
+exec "$0.m5-real" ${args[@]+"${args[@]}"} "--maxWorkers=$cap"
+SH
+    chmod 755 "$bin"
+  done
+}
+finish() { # [why]: the closing line m5-test looks for
+  echo "m5-test: done on $HOST_NAME (${M5T_SHA:0:8}${slot:+, slot $slot}, $workers workers${times}${1:+; $1}), exit $rc"
+  exit "$rc"
+}
+
+vitest_args() { # the requested worker count, capped at WORKERS_MAX, taken out of the arguments
+  local want=""
+  args=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --maxWorkers=* | --max-workers=*) want=${1#*=} ;;
+      --maxWorkers | --max-workers) want=${2:-}; shift ;;
+      *) args+=("$1") ;;
+    esac
+    shift || true
+  done
+  if [[ "$want" =~ ^[1-9][0-9]*$ ]]; then workers=$want; fi
+  [ "$workers" -le "$WORKERS_MAX" ] || workers=$WORKERS_MAX
+}
+
+setup() { # M5 only, idempotent: toolchain, test cluster and bare repository under ~/allrice-test
+  [ "$target" = m5 ] || { echo "m5-test: setup is for M5 only"; exit 2; }
+  local n src=$BASE/src ncpu conf; ncpu=$(sysctl -n hw.ncpu)
+  mkdir -p "$BASE/locks" "$src" "$BASE/run" "$BASE/results" "$TEST_HOME" "$HOME/.local/opt"
+  touch "$BASE/npmrc"
+  for n in $(seq 1 "$RUNS"); do # no test may run meanwhile; held until setup exits
+    eval "exec $((10 + n))>>\"\$BASE/locks/slot-$n.lock\""
+    lock $((10 + n)) || { echo "m5-test: tests are running on M5; run setup later:"; owners; exit 3; }
+    echo "setup since $(date +%H:%M)" >"$BASE/locks/slot-$n.owner"
+  done
+  fetch() { # <url> <sha256> <file>
+    [ -f "$3" ] && [ "$(shasum -a 256 "$3" | cut -d' ' -f1)" = "$2" ] && return 0
+    curl -fsSL --retry 2 -o "$3.part" "$1"
+    [ "$(shasum -a 256 "$3.part" | cut -d' ' -f1)" = "$2" ] || { rm -f "$3.part"; echo "m5-test: checksum mismatch for $1"; exit 4; }
+    mv "$3.part" "$3"
+  }
+  if [ "$("$NODE_BIN/node" -v 2>/dev/null)" != "v$NODE_VERSION" ]; then
+    say "installing Node $NODE_VERSION into ~/.local/opt"
+    fetch "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-darwin-arm64.tar.gz" "$NODE_SHA256" "$src/node.tar.gz"
+    rm -rf "$src/node" && mkdir "$src/node" && tar -xzf "$src/node.tar.gz" -C "$src/node" --strip-components 1
+    rm -rf "${NODE_BIN%/bin}" && mv "$src/node" "${NODE_BIN%/bin}"
+  fi
+  [ -e "$NODE_BIN/pnpm" ] || PATH=$NODE_BIN:$PATH corepack enable pnpm
+  (cd "$BASE" && export PATH=$NODE_BIN:$PATH COREPACK_ENABLE_DOWNLOAD_PROMPT=0 "${HOME_ENV[@]}" &&
+    corepack install -g "pnpm@$PNPM_VERSION" >/dev/null && [ "$(pnpm -v)" = "$PNPM_VERSION" ]) ||
+    { echo "m5-test: pnpm is not $PNPM_VERSION"; exit 4; }
+
+  if [ ! -x "$PG_BIN/postgres" ] || [ ! -f "$PG_DIST/share/extension/vector.control" ]; then
+    say "building PostgreSQL $PG_VERSION and pgvector $PGVECTOR_VERSION into $PG_DIST (a few minutes)"
+    fetch "https://ftp.postgresql.org/pub/source/v$PG_VERSION/postgresql-$PG_VERSION.tar.bz2" "$PG_SHA256" "$src/postgresql.tar.bz2"
+    fetch "https://github.com/pgvector/pgvector/archive/refs/tags/v$PGVECTOR_VERSION.tar.gz" "$PGVECTOR_SHA256" "$src/pgvector.tar.gz"
+    rm -rf "$src/postgresql" "$src/pgvector" "$PG_DIST" && mkdir "$src/postgresql" "$src/pgvector"
+    tar -xjf "$src/postgresql.tar.bz2" -C "$src/postgresql" --strip-components 1
+    tar -xzf "$src/pgvector.tar.gz" -C "$src/pgvector" --strip-components 1
+    (cd "$src/postgresql" && ./configure --prefix="$PG_DIST" --without-icu --without-readline >"$src/configure.log" &&
+      nice -n 10 make -j"$ncpu" world-bin >"$src/make.log" && make install-world-bin >>"$src/make.log") ||
+      { echo "m5-test: building PostgreSQL failed; see $src/configure.log and $src/make.log"; exit 4; }
+    make -C "$src/pgvector" PG_CONFIG="$PG_BIN/pg_config" >>"$src/make.log" &&
+      make -C "$src/pgvector" PG_CONFIG="$PG_BIN/pg_config" install >>"$src/make.log" ||
+      { echo "m5-test: building pgvector failed; see $src/make.log"; exit 4; }
+  fi
+  if [ -f "$PG_DATA/postmaster.pid" ] && ! grep -qF "$PG_BIN/postgres" "$PG_DATA/postmaster.opts" 2>/dev/null; then
+    say "stopping the test Postgres of an older build"
+    "$(sed -n '1s/ .*//p' "$PG_DATA/postmaster.opts" | sed 's/postgres$/pg_ctl/')" -D "$PG_DATA" -m fast -w stop >/dev/null
+  fi
+  if [ ! -f "$PG_DATA/PG_VERSION" ]; then
+    say "creating the test cluster $PG_DATA (127.0.0.1:$PG_PORT only)"
+    "$PG_BIN/initdb" -D "$PG_DATA" -U allrice -A trust -E UTF8 --locale=en_US.UTF-8 >"$src/initdb.log"
+  fi
+  grep -qxF "include_if_exists = 'm5-test.conf'" "$PG_DATA/postgresql.conf" ||
+    printf "\ninclude_if_exists = 'm5-test.conf'\n" >>"$PG_DATA/postgresql.conf"
+  # 4G of buffers, and connections for several runs of 12 workers with their own pools (10-26).
+  conf="# Written by m5-test setup (scripts/m1/m5-run): AllRice integration tests only
+listen_addresses = '127.0.0.1'
+port = $PG_PORT
+unix_socket_directories = '$BASE/run'
+max_connections = 400
+max_locks_per_transaction = 1024
+shared_buffers = 4GB
+synchronous_commit = off"
+  if [ "$(cat "$PG_DATA/m5-test.conf" 2>/dev/null)" != "$conf" ]; then
+    printf '%s\n' "$conf" >"$PG_DATA/m5-test.conf"
+    if "$PG_BIN/pg_ctl" -D "$PG_DATA" status >/dev/null 2>&1; then
+      say "restarting the test Postgres for its new settings"; pg_ctl_detached -m fast restart
+    fi
+  fi
+  if ! "$PG_BIN/pg_ctl" -D "$PG_DATA" status >/dev/null 2>&1 && port_taken; then
+    echo "m5-test: port $PG_PORT is taken by something else (AllRice's compose database?); the test Postgres cannot start"; exit 4
+  fi
+  ensure_pg
+  if ! "$PG_BIN/psql" "${DB_URL%/*}/postgres" -XAtc "select 1 from pg_database where datname='allrice'" | grep -q 1; then
+    "$PG_BIN/createdb" -h 127.0.0.1 -p "$PG_PORT" -U allrice allrice
+  fi
+  PGOPTIONS='-c client_min_messages=warning' "$PG_BIN/psql" "$DB_URL" -Xq -v ON_ERROR_STOP=1 \
+    -c 'create extension if not exists vector' -c 'create extension if not exists pg_trgm'
+  [ -d "$REPO_DIR" ] || git init -q --bare "$REPO_DIR"
+  echo "$SETUP_LINE" >"$BASE/SETUP"
+  say "ready: $SETUP_LINE"
+}
+
+status() {
+  local line level gb; line=$(cat "$BASE/SETUP" 2>/dev/null || echo "not set up")
+  echo "$HOST_NAME: $([ "$line" = "$SETUP_LINE" ] || [ "$target" = m1 ] && echo ready || echo "needs m5-test setup ($line)")"
+  if { [ "$target" = m1 ] || "$PG_BIN/pg_ctl" -D "$PG_DATA" status >/dev/null 2>&1; } && "$PG_BIN/pg_isready" -q -d "$DB_URL" 2>/dev/null; then
+    echo "  postgres: up ($DB_URL)"
+  else echo "  postgres: down ($DB_URL)$([ "$target" = m1 ] || ! port_taken || echo "; port $PG_PORT is taken by something else")"; fi
+  if [ -d "$BASE/locks" ]; then # under the start lock: stop_leftovers must not see this as a holder
+    exec 7>>"$BASE/locks/start.lock"
+    if lock 7 10; then owners; else echo "  (a run is starting; try again)"; fi
+    exec 7>&-
+  fi
+  if [ "$target" = m5 ]; then
+    read -r level gb <<<"$(pressure)"
+    echo "  limits: ${MEMORY_GB}G, $WORKERS_TOTAL workers in all ($TOKENS usable), $WORKERS_DEFAULT per run by default, at most $WORKERS_MAX, $RUNS runs"
+    echo "  memory: kernel pressure level $level, ${gb}G reclaimable"
+  fi
+  echo "  load: $(sysctl -n vm.loadavg 2>/dev/null || true) on $(sysctl -n hw.ncpu 2>/dev/null || true) cores"
+  if [ -x "$CODEX" ]; then echo "  codex: $("$CODEX" --version 2>/dev/null | head -1), $("$CODEX" login status 2>&1 | head -1)"; else echo "  codex: not found at $CODEX"; fi
+}
+
+case "$action" in
+  setup-line) echo "$SETUP_LINE"; exit 0 ;;
+  setup) setup; status; exit 0 ;;
+  status) status; exit 0 ;;
+  test | codex) ;;
+  *) echo "m5-test: unknown action $action"; exit 2 ;;
+esac
+
+rc=0 slot=""
+if [ "$action" = codex ]; then # read the prompt first: nothing after this may take stdin
+  mkdir -p "$BASE/results"; find "$BASE/results" -type f -mtime +7 -delete 2>/dev/null || true
+  prompt=$BASE/results/$M5T_RUN.prompt; cat >"$prompt"
+fi
+if [ "$target" = m5 ] && [ "$(cat "$BASE/SETUP" 2>/dev/null)" != "$SETUP_LINE" ]; then
+  echo "m5-test: M5 is not set up for this version of the tools (run: m5-test setup)"; exit 86
+fi
+exec </dev/null
+args=() warned=0
+[ "$action" != test ] || vitest_args "$@"
+[ "$workers" -le "$WORKERS_MAX" ] || workers=$WORKERS_MAX # Codex's share too
+planned=$workers
+take_room
+# What M5 itself cannot do is no verdict on the code: exit 88 sends the run to M1.
+cannot() { if [ "$target" = m5 ]; then echo "m5-test: $1 on M5"; exit 88; else rc=$2; finish "$1"; fi; }
+ensure_pg || cannot "the test Postgres did not start (see $BASE/postgres.log)" $?
+checkout || cannot "could not check out ${M5T_SHA:0:8}" $?
+if [ "$action" = codex ] && ! { [ -x "$CODEX" ] && "$CODEX" login status >/dev/null 2>&1; }; then
+  cannot "Codex is missing or not logged in ($CODEX)" 4
+fi
+# What .github/workflows/ci.yml gives its database steps that points into the checkout.
+CI_ENV=(ALLRICE_NATIVE_ONCE_PROBE_MODULE_BASE="$wt/apps/worker/package.json" TSX_TSCONFIG_PATH="$wt/tsconfig.base.json")
+if [ "$target" = m5 ]; then # keep the newest 100 pushed commits
+  git -C "$REPO_DIR" for-each-ref --sort=-creatordate --format='%(refname)' refs/m5-test | tail -n +101 |
+    while read -r ref; do git -C "$REPO_DIR" update-ref -d "$ref"; done
+fi
+
+if [ "$action" = test ]; then
+  prepare
+  # vitest itself, not through pnpm: pnpm would report a signal as exit 1.
+  phase vitest ./node_modules/.bin/vitest run ${args[@]+"${args[@]}"} "--maxWorkers=$workers" || rc=$?
+  interrupted vitest
+  finish
+fi
+
+prepare
+# Codex reads AGENTS.md, which sends heavy tests through m5-test; inside this pass that would
+# test the commit without Codex's changes. Say where it is and how to run tests here.
+if [ "$target" = m5 ]; then
+  where="你在 M5 测试机上：用户自己的电脑，不是 M1。M1 的工具（deploy-dev、qa-instance、smoke-test、with-env）这里没有；\
+不要 ssh 到别的机器，不要装软件，不要改这个 worktree 以外的文件。"
+else
+  where="你在 M1 上，共享 Dev 也在这台机器上：不要部署、不要重启服务，不要改这个 worktree 以外的文件。"
+fi
+{ printf '%s\n\n' "【运行环境，m5-test 附加】${where}工作目录是这次提交的测试 worktree，测试库已设好\
+（ALLRICE_TEST_DATABASE_URL，以及 PGHOST/PGPORT/PGUSER/PGDATABASE）。在这里直接用 pnpm exec vitest run 跑测试，\
+不要调用 m5-test（它只测已提交的代码，看不到你的改动）。vitest 最多 $workers 个 worker，要串行就加 --maxWorkers=1。\
+以下是任务说明。"; cat "$prompt"; } >"$prompt.env" && mv "$prompt.env" "$prompt"
+# No login shell (the user's profile would put another Node and psql first on PATH), every
+# variable passed on, and no session files left in the user's ~/.codex.
+phase codex "$CODEX" exec --ephemeral -C "$wt" -m "${M5T_MODEL:-gpt-6-astra}" -c model_reasoning_effort=max -c allow_login_shell=false \
+  -c shell_environment_policy.inherit=all "${SANDBOX[@]}" -o "$BASE/results/$M5T_RUN.md" - <"$prompt" || rc=$?
+interrupted codex
+# Everything Codex changed since the commit, new files included (as intent-to-add).
+if ! { git -C "$wt" add -N . && git -C "$wt" diff --binary "$M5T_SHA" >"$BASE/results/$M5T_RUN.patch"; }; then
+  [ "$rc" != 0 ] || rc=5
+  finish "could not collect the patch"
+fi
+finish
