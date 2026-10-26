@@ -115,6 +115,7 @@ M1 = dict(
     restartWindowMinutes=60,
     restartWarn=2,
     restartCritical=3,
+    schedulerColdMinutes=3,  # cold on two rounds in a row: a takeover that keeps being refused
     colima=None,  # these four: from the Worker's launchd file when empty
     colimaProfile=None,
     officeUrl=None,
@@ -739,8 +740,8 @@ def check_versions(r):
 def check_scheduler(r):
     """The native once/recurring controllers live in the Worker (apps/worker/src/index.ts
     readiness, native-schedule-once-runtime.ts status): blocked, closed or quarantined is
-    down; cold is idle (no schedule needs a generation), unless it failed to initialize;
-    starting/stopping should pass. Ticks must keep growing within one Worker boot, and new
+    down; cold is between two generations, unless it failed to initialize (a cold that
+    lasts is check_scheduler_takeover); starting/stopping should pass. Ticks must keep growing within one Worker boot, and new
     faults are reported. Due schedules that did not fire are business.overdue_schedules."""
     worker = r.facts.get('worker')
     if not worker:
@@ -772,6 +773,65 @@ def check_scheduler(r):
             sev = 'critical'
     return [finding('scheduler', sev, '定时任务控制器异常', '；'.join(problems), 'm1-schedule-not-fired.md',
                     'curl -s %s/health/ready | python3 -m json.tool | grep -A8 nativeOnceControl' % r.cfg['workerUrl'])]
+
+
+# Each controller drives one partition (PARTITION in packages/database/src/native-schedule-*.ts).
+SCHEDULER_PARTITIONS = {'nativeOnceControl': 'allrice-once-v1', 'nativeRecurringControl': 'allrice-recurring-v1'}
+# Taken over only when closed with the proof its audit row holds (validClose in
+# native-schedule-control-sql.ts); an open partition is held, live or expired.
+SQL_SCHEDULER_PARTITIONS = """
+select coalesce(json_agg(json_build_object(
+    'partition', p.partition_id, 'epoch', p.epoch, 'owner', left(p.owner_id, 8), 'open', not p.closed,
+    'expired', extract(epoch from now() - p.expires_at)::int,
+    'proof', p.epoch = 0 or exists (select 1 from allrice_native_once_close_proofs f
+                                    where f.partition_id = p.partition_id and f.epoch = p.epoch and f.proof = p.close_proof),
+    'pending', (select count(*) from allrice_native_once_controls c
+                where c.partition_id = p.partition_id and c.snapshot->'control'->'command'->>'status' = 'pending')
+             + (select count(*) from allrice_native_recurring_controls c
+                where c.partition_id = p.partition_id and c.snapshot->'control'->'command'->>'status' = 'pending'))), '[]') as partitions
+from allrice_native_once_partitions p"""
+
+
+def check_scheduler_takeover(r):
+    """An enabled controller is `cold` only between two generations: the next tick takes
+    its partition over again (native-schedule-once.ts start). Cold on two rounds means the
+    takeover is refused, silently and with the Worker still ready. Critical when nothing
+    can fire until a person acts: the partition left held by a Worker that died without
+    closing it (database stopped under it, kill -9), a proof that is not the audited one,
+    or commands waiting (scripts/m1/schedule-recover, MET-210 #3). Otherwise a warning:
+    another Worker holds it, or it is closed properly and still not taken."""
+    worker, seen = r.facts.get('worker'), r.state.get('scheduler', {})
+    if not worker:
+        return None
+    boot, grace = worker.get('identity', {}).get('bootId'), r.cfg['schedulerColdMinutes'] * 60
+    cold = {}
+    for name, part in SCHEDULER_PARTITIONS.items():
+        s = seen.get(name) or {}
+        if (worker.get(name) or {}).get('state') == 'cold' and s.get('state') == 'cold' and s.get('bootId') == boot \
+                and r.now - s['stateSince'] >= grace:
+            cold[part] = (name, r.now - s['stateSince'])
+    problems, sev = [], 'ok'
+    if cold:
+        rows = {p['partition']: p for p in biz(r, SQL_SCHEDULER_PARTITIONS)['partitions']}
+        for part, (name, since) in sorted(cold.items()):
+            p, why, bad = rows.get(part) or {}, [], 'warning'
+            if p.get('open') and (p['expired'] or 0) > 0:
+                why.append('仍被已停的 owner %s（epoch %s）持有：租约已过期 %s，没有关闭证明' % (p['owner'], p['epoch'], ago(p['expired'])))
+                bad = 'critical'
+            elif p.get('open'):
+                why.append('被另一个 owner %s（epoch %s）持有，租约还有效：另一个 Worker 在用同一个库？' % (p['owner'], p['epoch']))
+            elif p and not p['proof']:
+                why.append('已关闭，但关闭证明和审计表对不上（epoch %s）' % p['epoch'])
+                bad = 'critical'
+            if p.get('pending'):
+                why.append('%d 条命令等着交给原生时钟' % p['pending'])
+                bad = 'critical'
+            if not why:
+                why.append('已正常关闭也没人接手（activation 或部署设置不让接手？）')
+            problems.append('%s 已 cold %s，分区 %s %s%s' % (name, ago(since), part, '，'.join(why), '，定时任务不会触发' if bad == 'critical' else ''))
+            sev = max(sev, bad, key=RANK.get)
+    return [finding('scheduler_takeover', sev, '定时控制器接管不了分区', '；'.join(problems), 'm1-schedule-not-fired.md#接管被拒',
+                    '~/allrice-dev/bin/schedule-recover --dev（只读演示；由发布负责人加 --release-manager --execute 恢复）')]
 
 
 def check_restarts(r):
@@ -1652,6 +1712,7 @@ M1_CHECKS = [
     ('deploy', check_deploy, False, None),
     ('versions', check_versions, False, None),
     ('scheduler', check_scheduler, False, None),
+    ('scheduler_takeover', check_scheduler_takeover, False, 'postgres'),
     ('restarts', check_restarts, False, None),
     ('sandbox_vm', check_sandbox_vm, True, None),
     ('images', check_images, True, None),
