@@ -23,6 +23,12 @@ const ContractSchema = z
 
 type Sql = postgres.Sql | postgres.TransactionSql;
 
+function parseRow(value: unknown) {
+  const row = NativeJournalContractRowSchema.safeParse(value);
+  if (!row.success) throw Error('DSH_NATIVE_JOURNAL_CONTRACT_INVALID');
+  return row.data;
+}
+
 /** Before 0218 the row may be absent: every journal written then is contract 1. */
 export async function readNativeJournalContractHighWater(
   sql: Sql = getDatabase(),
@@ -31,9 +37,7 @@ export async function readNativeJournalContractHighWater(
     select value from allrice_runtime_metadata
     where key=${NATIVE_JOURNAL_CONTRACT_KEY}`;
   return {
-    highWater: row
-      ? NativeJournalContractRowSchema.parse(row.value).highWater
-      : 1,
+    highWater: row ? parseRow(row.value).highWater : 1,
     recorded: Boolean(row),
   };
 }
@@ -70,6 +74,6 @@ export async function recordNativeJournalContract(
           greatest((allrice_runtime_metadata.value->>'highWater')::int, ${c.current}::int)),
         updated_at=excluded.updated_at
       returning value`;
-    return NativeJournalContractRowSchema.parse(row!.value);
+    return parseRow(row!.value);
   });
 }

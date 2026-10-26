@@ -334,16 +334,18 @@ export function configuredNativeRecurringControlSource(
   return createNativeOnceControlSource(reference, testPorts);
 }
 
-/** Retirement/readback only: metadata through this exact artifact's public
- * JSONL reader. This opens no Host, Agent, model, business pin, or writer. */
+/** Pre-stop release check: every initialized control session's history is
+ * readable through this release's public JSONL reader (MET-221). This opens no
+ * Host, Agent, model, business pin, or writer. */
 export async function verifyNativeOnceControlHistory(
   reference: NativeScheduleControlReference,
   controls: readonly {
     controlSessionId: string;
     sessionState: 'reserved' | 'initializing' | 'ready';
   }[],
+  testPorts: NativeOnceLoaderTestPorts = {},
 ) {
-  const source = createNativeOnceControlSource(reference);
+  const source = createNativeOnceControlSource(reference, testPorts);
   const m = await source.loadModules();
   const ctx = new m.cordis.Context();
   const reader = ctx.plugin(m.jsonl, {

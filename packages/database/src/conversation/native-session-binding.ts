@@ -36,10 +36,6 @@ import {
 import { getExperienceExecutionInTransaction } from '../experience-consolidation.ts';
 import { experienceConsolidationJobType } from '../experience-consolidation-contracts.ts';
 import { bindConversationThreadInTransaction } from './conversation-runtime.ts';
-import {
-  checkNativeOriginReaderBindings,
-  nativeOriginReaderForOrigin,
-} from './native-origin-reader.ts';
 import { nativeContextExecutionRetired } from './native-context-retirement.ts';
 
 import {
@@ -462,17 +458,8 @@ export async function prepareLeasedNativeSession(
     executionBinding.schemaVersion === 2
       ? executionBinding.transition
       : undefined;
-  const reader =
-    origin && !transition
-      ? nativeOriginReaderForOrigin(origin, {
-          organizationId: job.organization_id,
-          workspaceId: job.workspace_id,
-          ownerId: job.owner_id,
-        })
-      : undefined;
-  const originReaderAdopted = reader
-    ? await checkNativeOriginReaderBindings(tx, reader)
-    : false;
+  // MET-221: origin readers never select an executor, so their deployment
+  // settings are not read here; the Worker refuses non-empty ones at start.
   const [pin] = await tx`select * from allrice_native_session_bindings
     where native_session_id=${input.nativeSessionId}`;
   if (!pin) {
@@ -488,7 +475,6 @@ export async function prepareLeasedNativeSession(
       binding: null,
       origin,
       executionBinding,
-      ...(reader ? { originReaderAdopted } : {}),
       conversation: undefined,
       requiresRecovery:
         job.attempt > 1 ||
@@ -525,7 +511,6 @@ export async function prepareLeasedNativeSession(
     ...admitted,
     origin,
     executionBinding,
-    ...(reader ? { originReaderAdopted } : {}),
     requiresRecovery: true,
   };
 }
@@ -591,15 +576,6 @@ export async function bindLeasedNativeSession(
       s.id,
       input.workerId,
     );
-  const reader =
-    origin && !transition
-      ? nativeOriginReaderForOrigin(origin, {
-          organizationId: job.organization_id,
-          workspaceId: job.workspace_id,
-          ownerId: job.owner_id,
-        })
-      : undefined;
-  if (reader) await checkNativeOriginReaderBindings(tx, reader);
   if (transition) {
     assertTransitionDescriptor(transition, d);
     if (
@@ -613,7 +589,6 @@ export async function bindLeasedNativeSession(
     // descriptor's artifact is the release primary; the origin's is provenance.
     // A context without a business origin has no executor on this release.
     !origin ||
-    reader ||
     d.executorTransitionDigest !== undefined ||
     d.originReaderApprovalDigest !== undefined ||
     d.distributionGeneration !== origin.distributionGeneration ||

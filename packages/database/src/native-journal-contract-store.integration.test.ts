@@ -76,20 +76,23 @@ suite('DSH journal contract high-water and context compatibility', () => {
 
   it('counts chats the installed generation cannot continue, except archived ones', async () => {
     const before = await inspectNativeContextCompatibility(
-      generation,
+      { generation, storageRoots: ['/'] },
       fixture.db,
     );
     // The fixture chat has no business origin, so no release can execute it.
     const { task } = await assistantFixture(fixture.db);
     const sessionId = task.chatSessionId;
     const after = await inspectNativeContextCompatibility(
-      generation,
+      { generation, storageRoots: ['/'] },
       fixture.db,
     );
     expect(after.incompatibleChats).toBe(before.incompatibleChats + 1);
     await fixture.db`update allrice_chat_sessions set archived_at=now() where id=${sessionId}`;
     expect(
-      await inspectNativeContextCompatibility(generation, fixture.db),
+      await inspectNativeContextCompatibility(
+        { generation, storageRoots: ['/'] },
+        fixture.db,
+      ),
     ).toEqual(before);
   });
 });

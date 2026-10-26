@@ -167,6 +167,15 @@ function deepseekReasoning(
 }
 
 /** One interpretation of deployment overrides for startup and pool launches. */
+/** Root of every native session namespace; part of the journal contract. */
+export function configuredDshRuntimeRoot(options: DshRuntimePoolOptions = {}) {
+  return resolve(
+    options.runtimeRoot ??
+      process.env.ALLRICE_DSH_RUNTIME_ROOT ??
+      '.local/dsh-runtime',
+  );
+}
+
 export function configuredDshNativeLaunch(options: DshRuntimePoolOptions = {}) {
   const configuredCommand =
     options.runtimeCommand ?? process.env.ALLRICE_DSH_RUNTIME_COMMAND;
@@ -239,11 +248,7 @@ export class DshRuntimePool {
     const launch = configuredDshNativeLaunch(options);
     this.runtimeCommand = launch.command;
     this.runtimeArgs = launch.args;
-    this.runtimeRoot = resolve(
-      options.runtimeRoot ??
-        process.env.ALLRICE_DSH_RUNTIME_ROOT ??
-        '.local/dsh-runtime',
-    );
+    this.runtimeRoot = configuredDshRuntimeRoot(options);
     this.cordisConfig = launch.profile;
     this.requestTimeoutMs = requestTimeout(
       options.requestTimeoutMs ??

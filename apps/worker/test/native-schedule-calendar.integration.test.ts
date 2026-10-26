@@ -54,11 +54,6 @@ suite(
       expect(reference.artifactId).toBe(
         process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID,
       );
-      // Actual Host acceptance requires root's independently approved tuple;
-      // do not fall back to the SQL-only fixture's synthetic default.
-      expect(process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID).toBe(
-        reference.artifactId,
-      );
       expect(
         isAbsolute(
           process.env.ALLRICE_NATIVE_CALENDAR_HOST_ARTIFACT_ROOT ?? '',
@@ -197,8 +192,6 @@ suite(
         ALLRICE_NATIVE_RECURRING_REFERENCE: reference,
         ALLRICE_DSH_NATIVE_ARTIFACT_ID:
           process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID,
-        ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID:
-          process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID,
         ALLRICE_NATIVE_CALENDAR_HOST_ARTIFACT_ROOT:
           process.env.ALLRICE_NATIVE_CALENDAR_HOST_ARTIFACT_ROOT,
       };

@@ -195,7 +195,7 @@ suite(
                 : [{ ...runtime, sessionId: runtime.sessionId }],
             ),
         });
-      async function turn(text: string) {
+      async function turn(text: string, beforeClaim?: () => void) {
         const sent = await sendChatMessage(context!, f.workspace, chat.id, {
           text,
           clientMessageId: randomUUID(),
@@ -203,6 +203,7 @@ suite(
           assistantPreference: { mode: 'daily', allowAssistants: false },
         });
         if (!sent.run) throw Error('fixture_run_not_enqueued');
+        beforeClaim?.();
         const job = await claimNextJob(workerId, 30_000);
         if (!job?.lease) throw Error('fixture_job_not_claimed');
         const [claimed] =
@@ -359,15 +360,17 @@ suite(
         await pool.reclaimIdle();
         expect(adapter.runtimeInventory()).toHaveLength(0);
         await syncInventory();
-        // The next release: same generation and code, another artifact ID.
+        // The message is queued under this release; the next release (same
+        // generation and code, another artifact ID) claims and executes it.
         const current = NativeArtifact.currentDshNativeLaunch;
-        release = vi
-          .spyOn(NativeArtifact, 'currentDshNativeLaunch')
-          .mockImplementation((profileId) => ({
-            ...current(profileId),
-            artifactId: next,
-          }));
-        const second = await turn(secondRequest);
+        const second = await turn(secondRequest, () => {
+          release = vi
+            .spyOn(NativeArtifact, 'currentDshNativeLaunch')
+            .mockImplementation((profileId) => ({
+              ...current(profileId),
+              artifactId: next,
+            }));
+        });
         expect(second.threadId).toBe(first.threadId);
         expect(recover).toHaveBeenCalledExactlyOnceWith(first.threadId);
         const [after] =
