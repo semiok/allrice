@@ -348,8 +348,11 @@ try {
   await card
     .getByRole('button', { name: '允许运行脚本', exact: true })
     .waitFor({ timeout: 25_000 });
-  // Checksums sit in the collapsed technical details; the card names the file.
-  assert.ok((await card.textContent())?.includes(inputs[0]!.path));
+  // The exact checksum is kept, behind the collapsed technical details.
+  assert.ok(!(await card.textContent())?.includes(inputs[0]!.checksum));
+  await card.getByRole('button', { name: '输入文件', exact: true }).click();
+  await card.getByRole('button', { name: '技术详情', exact: true }).click();
+  assert.ok((await card.textContent())?.includes(inputs[0]!.checksum));
   await page.screenshot({
     path: join(evidenceRoot, '01-pending-wide.png'),
     fullPage: true,
@@ -367,9 +370,10 @@ try {
   await card.getByRole('button', { name: '允许运行脚本', exact: true }).click();
   const approvedHttp = await approveResponse;
   assert.equal(approvedHttp.status(), 200);
+  // The header status names the answer until the Worker moves the step on.
   await card
-    .getByRole('status')
-    .filter({ hasText: '你已允许，正在准备' })
+    .locator('header')
+    .getByRole('status', { name: /^(你已允许|准备中|进行中|已完成)$/ })
     .waitFor();
   const submittedDecision = approvedHttp.request().postDataJSON();
   // Retry the exact already-submitted response over HTTP, without a second permission.

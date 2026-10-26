@@ -254,8 +254,11 @@
   display: inline;
 }
 .card .stopButton:hover:not(:disabled) {
-  color: var(--dsw-alias-state-error-primary);
+  color: var(--dsw-alias-label-primary);
   background: var(--dsw-alias-interactive-bg-hover-danger);
+}
+.card .stopButton:hover:not(:disabled) .stopIcon {
+  background: var(--dsw-alias-state-error-primary);
 }
 
 @keyframes statusSpin {
@@ -265,6 +268,20 @@
 }
 .notice {
   color: var(--dsw-alias-label-primary);
+}
+/* The state color marks the notice; its words keep full contrast. */
+.notice[data-tone]::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  vertical-align: 1px;
+  background: var(--dsw-alias-state-warn-primary);
+}
+.notice[data-tone='error']::before {
+  background: var(--dsw-alias-state-error-primary);
 }
 .card > .notice {
   margin: 0;
@@ -454,6 +471,19 @@
 }
 .approvalReview > p {
   margin: 0;
+}
+.approvalReview > .fields {
+  margin-top: 8px;
+}
+.approvalFields {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.approvalFields button {
+  margin-left: 4px;
 }
 @container (max-width: 650px) {
   .card .cloudHeader {

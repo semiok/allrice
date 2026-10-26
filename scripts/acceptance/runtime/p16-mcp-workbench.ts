@@ -301,9 +301,17 @@ try {
   await page.reload();
   await card.getByRole('button', { name: /^允许/ }).waitFor();
   assert.equal(f.service.state.calls, 0);
-  assert.match(await card.innerText(), /第三方 MCP 工具/);
-  // The tool name is technical detail, kept behind the collapsed row.
-  assert.doesNotMatch(await card.innerText(), /records.append/);
+  assert.match(await card.innerText(), /应用工具/);
+  // Before approval the card shows the action and every parameter value.
+  const pending = await card.innerText();
+  assert.match(pending, /records\.append（写入数据）/);
+  assert.match(pending, /value：synthetic-owned-record/);
+  assert.doesNotMatch(pending, /[{}]/);
+  // The raw call stays exact behind the collapsed technical details.
+  await card.getByRole('button', { name: '应用与工具', exact: true }).click();
+  await card.getByRole('button', { name: '技术详情', exact: true }).click();
+  assert.match(await card.innerText(), /工具名\s+records\.append/);
+  assert.match(await card.innerText(), /连接地址\s+https?:\/\//);
   assert.doesNotMatch(
     await card.innerText(),
     new RegExp(f.service.state.token),

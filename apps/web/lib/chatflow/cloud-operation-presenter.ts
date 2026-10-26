@@ -1,12 +1,14 @@
 import type { CloudOperationView } from '@allrice/database';
 import { fileSizeText } from '@deepseek-ai/dsh-client-ui-primitives';
-import { mcpFailureCopy, type McpFailureKind } from '@allrice/contracts';
+import type { McpFailureKind } from '@allrice/contracts';
 
 // Plain-language wording for cloud and app operations shown to ordinary
-// employees. Tool names, raw parameters, digests, file IDs and return codes
-// stay in the collapsed technical details; nothing here may echo them.
+// employees. Raw JSON, digests, file IDs and return codes stay in the
+// collapsed technical details. A pending app call is the exception: its
+// action, target and parameters are what the employee decides on.
 
 type Proposal = CloudOperationView['proposal'];
+type McpProposal = Extract<Proposal, { kind: 'mcp' }>;
 type Limits = Exclude<Proposal, { kind: 'mcp' }>['limits'];
 
 const statusLabels: Record<CloudOperationView['snapshot']['status'], string> = {
@@ -28,9 +30,52 @@ export function cloudOperationStatusLabel(status: string) {
   return (statusLabels as Record<string, string>)[status] ?? '结果待确认';
 }
 
-/** The app-failure headline; an unconfirmed outcome keeps the site-wide name. */
-export function mcpFailureTitle(kind: McpFailureKind) {
-  return kind === 'result_unknown' ? '结果待确认' : mcpFailureCopy[kind].title;
+/** A waiting step that can no longer be answered says why. */
+export function cloudOperationCompactLabel(
+  op: CloudOperationView,
+  now = Date.now(),
+) {
+  const approval = op.approval;
+  if (op.snapshot.status === 'waiting_user') {
+    if (approval?.revokedAt) return '已撤回';
+    if (approval?.response?.decision === 'rejected') return '你已拒绝';
+    if (approval?.response?.decision === 'approved') return '你已允许';
+    if (approval && Date.parse(approval.request.expiresAt) <= now)
+      return '已过期';
+    if (op.proposal.kind === 'mcp' && op.mcpAuthorization?.available !== true)
+      return '无法确认权限';
+    if (!op.enabled) return '已暂停';
+  }
+  return cloudOperationStatusLabel(op.snapshot.status);
+}
+
+// What happened to an app call and what to do next. The shared contract copy
+// names HTTP codes and asks people to 核实; these words are for employees.
+const mcpFailures: Record<McpFailureKind, [title: string, detail: string]> = {
+  github_merge_permission: [
+    'GitHub 权限不足',
+    '这次合并被 GitHub 拒绝：使用的访问令牌没有这个仓库的写入权限。请让管理员给令牌加上这个仓库的 Contents 读写权限，再让 AI 员工重新发起；这次不会自动重试。',
+  ],
+  authentication: [
+    '应用授权需要更新',
+    '这个应用的登录授权不可用了。请到「设置 → 已链接应用」更新授权，再让 AI 员工重新发起。',
+  ],
+  remote_error: [
+    '应用返回错误',
+    '应用回复了错误，这一步可能没有做完，也可能只做了一部分。请先到应用里看一下结果，再决定下一步；这次不会自动重试。',
+  ],
+  unavailable: [
+    '应用连接暂时不可用',
+    '连接应用时出了问题，这一步没有发出。请稍后让 AI 员工重新发起。',
+  ],
+  result_unknown: [
+    '结果待确认',
+    '没有收到应用的完整结果，不确定这一步有没有生效。请先到应用里看一下；这次不会自动重试。',
+  ],
+};
+export function mcpFailureNotice(kind: McpFailureKind) {
+  const [title, detail] = mcpFailures[kind];
+  return { title, detail };
 }
 
 export function mcpAuthorizationLabel(reason: string | undefined) {
@@ -66,6 +111,66 @@ export function serviceHost(endpoint: string) {
   }
 }
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  !!value && typeof value === 'object' && !Array.isArray(value);
+/** A parameter value as a short phrase: never JSON, nested values summarized. */
+function valueText(value: unknown, nested = false): string {
+  if (value === null || value === undefined || value === '') return '空';
+  if (typeof value === 'boolean') return value ? '是' : '否';
+  if (typeof value !== 'object') return String(value);
+  if (Array.isArray(value))
+    return value.every((item) => item === null || typeof item !== 'object')
+      ? value.map((item) => valueText(item)).join('、') || '空'
+      : `${value.length} 项`;
+  const entries = Object.entries(value);
+  if (nested || entries.some(([, item]) => item && typeof item === 'object'))
+    return `${entries.length} 个字段`;
+  return (
+    entries
+      .map(([key, item]) => `${key} ${valueText(item, true)}`)
+      .join('，') || '空'
+  );
+}
+export const VALUE_LIMIT = 80;
+const clip = (text: string, limit = VALUE_LIMIT) =>
+  text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+// Argument names that say who or what the call acts on.
+const targets: [RegExp, string][] = [
+  [/^(channel|channel_?id|chat_?id|conversation_?id|room)$/i, '渠道'],
+  [/^(to|recipients?|receivers?|emails?|cc)$/i, '收件人'],
+  [/^(repo|repository|repository_?name)$/i, '仓库'],
+  [/^(pull_?number|pull_?request_?number|pr_?number|issue_?number)$/i, '编号'],
+  [/^(path|file_?path|file_?name)$/i, '文件'],
+];
+
+/** What a pending app call will do, on whom, and with which parameters. */
+export function mcpApprovalDetails(proposal: McpProposal) {
+  const args = isRecord(proposal.arguments)
+    ? proposal.arguments
+    : { 内容: proposal.arguments };
+  const target = [serviceHost(proposal.endpoint)];
+  const ownerRepo =
+    typeof args.owner === 'string' && typeof args.repo === 'string';
+  if (ownerRepo) target.push(`仓库 ${clip(`${args.owner}/${args.repo}`, 40)}`);
+  for (const [key, value] of Object.entries(args)) {
+    const label = targets.find(([pattern]) => pattern.test(key))?.[1];
+    if (label && !(ownerRepo && key === 'repo'))
+      target.push(`${label} ${clip(valueText(value), 40)}`);
+  }
+  // Only a name is frozen with the call; DSH prefixes it with mcp__<server>__.
+  const tool = proposal.tool.startsWith('mcp__')
+    ? proposal.tool.split('__').at(-1)!
+    : proposal.tool;
+  return {
+    action: `${tool}（${riskAction(proposal.risk)}）`,
+    target: target.join(' · '),
+    fields: Object.entries(args).map(([key, value]) => {
+      const full = valueText(value);
+      return { key, text: clip(full), full };
+    }),
+  };
+}
+
 /** The approve button names what is being allowed. */
 export function approveLabel(proposal: Proposal) {
   if (proposal.kind === 'mcp') return `允许${riskAction(proposal.risk)}`;
@@ -76,7 +181,7 @@ export function approveLabel(proposal: Proposal) {
 /** What happens after approval, shown beside the approve button. */
 export function approvalSummary(proposal: Proposal) {
   if (proposal.kind === 'mcp')
-    return `允许后，会把这次的内容发送给 ${serviceHost(proposal.endpoint)}，用来${riskAction(proposal.risk)}。这个应用在 AllRice 之外运行，可能读取或修改你在其中的数据。只允许这一次；要看具体发送的内容，可以展开上面的「技术详情」。`;
+    return `允许后，会按下面的内容调用 ${serviceHost(proposal.endpoint)}。这个应用在 AllRice 之外运行，可能读取或修改你在其中的数据。只允许这一次。`;
   const network = proposal.network ? '可以访问上面列出的网站' : '不联网';
   if (proposal.kind === 'project')
     return `允许后，会在云端运行你保存的项目副本，${network}，不会访问你的电脑。`;

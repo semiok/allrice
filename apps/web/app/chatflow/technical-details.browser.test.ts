@@ -6,7 +6,7 @@ import type {
   Browser,
   Page,
 } from '../../../worker/node_modules/playwright-core/index.js';
-import { ids } from '../../test/technical-details-fixtures';
+import { ids, longText } from '../../test/technical-details-fixtures';
 
 const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
@@ -18,6 +18,7 @@ const engineering = [
   '{',
   '}',
   '待核实',
+  '核实',
   '回执',
   '落盘',
   'Bridge',
@@ -101,10 +102,17 @@ suite('technical details stay behind a collapsed row', () => {
   });
 
   const cards = (page: Page) => page.locator('[data-case="cloud"] article');
+  const card = (page: Page, operationId: string) =>
+    page.locator(`#operation-${operationId}`);
+  const stopButton = (page: Page) =>
+    card(page, ids.runningOperation).getByRole('button', {
+      name: '请求停止本轮全部操作',
+    });
   async function open(width: number, theme: 'light' | 'dark') {
     const page = await browser.newPage({ viewport: { width, height: 900 } });
     await page.goto(`${origin}/?theme=${theme}`);
-    await expect.poll(() => cards(page).count()).toBe(4);
+    await expect.poll(() => cards(page).count()).toBe(8);
+    await stopButton(page).waitFor();
     await page.getByRole('button', { name: '允许保存这些修改' }).waitFor();
     await page
       .getByRole('button', { name: '查看并确认', exact: true })
@@ -121,16 +129,16 @@ suite('technical details stay behind a collapsed row', () => {
   /** Opens every user-facing view: card details, each summary, file diffs. */
   async function readEverything(page: Page) {
     let text = await page.locator('main').innerText();
-    for (const card of await cards(page).all()) {
-      const toggle = card.getByRole('button', { name: '查看详情' });
+    for (const each of await cards(page).all()) {
+      const toggle = each.getByRole('button', { name: '查看详情' });
       if (await toggle.count()) await toggle.click();
-      for (const choice of await card
+      for (const choice of await each
         .getByLabel('执行摘要')
         .getByRole('button')
         .all()) {
         if ((await choice.getAttribute('aria-expanded')) !== 'true')
           await choice.click();
-        text += await card.innerText();
+        text += await each.innerText();
       }
     }
     for (const summary of await page.locator('main summary').all()) {
@@ -151,33 +159,75 @@ suite('technical details stay behind a collapsed row', () => {
             '已完成',
             '未完成',
             '结果待确认',
-            '等你确认',
             '允许对外发送内容',
-            '会把这次的内容发送给 api.example-crm.com',
+            '会按下面的内容调用 api.example-crm.com',
+            'send_message（对外发送内容）',
+            'api.example-crm.com · 渠道 sales',
+            'api.example-crm.com · 渠道 partner-ext',
+            'text：本周报价已更新',
+            'notify：是',
+            '展开全文',
             '没有收到完整的结果，不确定这一步有没有生效。',
             '不会自动重新执行',
             '把修改保存到你的电脑',
             '保存修改 · 等你确认',
             '保存修改 · 已完成',
             '已保存到你的电脑',
+            '没有收到这个文件的处理结果，请打开文件确认有没有改动。',
+            '这个文件在确认之后又被改动过，没有覆盖。',
           ])
             expect(collapsed).toContain(line);
+          // A step nobody can answer any more never says 等你确认.
+          for (const [operation, label] of [
+            [ids.mcpOperation, '等你确认'],
+            [ids.rejectedOperation, '你已拒绝'],
+            [ids.expiredOperation, '已过期'],
+            [ids.appFailedOperation, '未完成'],
+          ] as const)
+            expect(
+              await card(page, operation)
+                .locator('header')
+                .getByRole('status')
+                .innerText(),
+            ).toBe(label);
           const text = await readEverything(page);
           for (const word of engineering) expect(text).not.toContain(word);
           expect(text).not.toMatch(uuid);
           expect(text).toContain('还没有收到电脑的处理结果');
           expect(text).toContain('修改文件');
+          expect(text).toContain('应用回复了错误');
           expect(text).toContain(
             '这一步未完成。可以在对话里让 AI 员工换个方式再试',
           );
-          expect(text).toContain('2 项');
           // Technical details exist everywhere but none opened by itself.
           const rows = page.getByRole('button', { name: '技术详情' });
           expect(await rows.count()).toBeGreaterThan(4);
           for (const row of await rows.all())
             expect(await row.getAttribute('aria-expanded')).toBe('false');
           expect(await overflow(page)).toBe(false);
-          // Every piece of text reads at 4.5:1 or better on its background.
+          // Every piece of text reads at 4.5:1 or better on its background,
+          // including the stop control of a running task while hovered.
+          const stop = stopButton(page);
+          const ink = await stop.evaluate(
+            (node) => getComputedStyle(node.closest('article')!).color,
+          );
+          // Headless Chrome keeps no real pointer, so force :hover on the
+          // stop control, then wait out its 160ms color transition.
+          const cdp = await page.context().newCDPSession(page);
+          await cdp.send('DOM.enable');
+          await cdp.send('CSS.enable');
+          const { root } = await cdp.send('DOM.getDocument');
+          const { nodeId } = await cdp.send('DOM.querySelector', {
+            nodeId: root.nodeId,
+            selector: `[id="operation-${ids.runningOperation}"] button[aria-label="请求停止本轮全部操作"]`,
+          });
+          await cdp.send('CSS.forcePseudoState', {
+            nodeId,
+            forcedPseudoClasses: ['hover'],
+          });
+          await expect
+            .poll(() => stop.evaluate((node) => getComputedStyle(node).color))
+            .toBe(ink);
           const weak = await page.evaluate(lowContrastText);
           expect(weak).toEqual([]);
         } finally {
@@ -185,23 +235,64 @@ suite('technical details stay behind a collapsed row', () => {
         }
       });
 
+  it('shows what each pending app call will send, long values in full on request', async () => {
+    const page = await open(390, 'light');
+    try {
+      const sales = card(page, ids.mcpOperation).getByLabel('这次要做的事');
+      const partner = card(page, ids.partnerOperation).getByLabel(
+        '这次要做的事',
+      );
+      const [salesText, partnerText] = [
+        await sales.innerText(),
+        await partner.innerText(),
+      ];
+      // Same tool, different recipient and message: the cards differ.
+      expect(salesText).not.toBe(partnerText);
+      expect(salesText).toContain('渠道 sales');
+      expect(salesText).toContain('本周报价已更新');
+      expect(partnerText).toContain('渠道 partner-ext');
+      for (const each of [salesText, partnerText])
+        expect(each).not.toMatch(/[{}]/);
+      expect(partnerText).not.toContain(longText);
+      expect(partnerText).toContain(longText.slice(0, 20));
+      expect(partnerText).toContain('…');
+      await partner.getByRole('button', { name: '展开全文' }).click();
+      expect(await partner.innerText()).toContain(longText);
+      await partner.getByRole('button', { name: '收起' }).click();
+      expect(await partner.innerText()).not.toContain(longText);
+      expect(await overflow(page)).toBe(false);
+    } finally {
+      await page.close();
+    }
+  });
+
   it('keeps raw records in the technical details', async () => {
     const page = await open(390, 'light');
     try {
-      const pending = cards(page).first();
+      const pending = card(page, ids.mcpOperation);
+      expect(await pending.innerText()).not.toContain('"channel"');
       await pending.getByRole('button', { name: '技术详情' }).click();
       expect(await pending.innerText()).toContain('"channel": "sales"');
-      const failed = cards(page).nth(2);
-      await failed.getByRole('button', { name: '查看详情' }).click();
-      await failed.getByRole('button', { name: '执行结果' }).click();
-      await failed.getByRole('button', { name: '技术详情' }).click();
-      const failedText = await failed.innerText();
-      expect(failedText).toContain('EXECUTION_FAILED');
-      expect(failedText).toContain('Cannot find module');
+      for (const [operation, raw] of [
+        [ids.projectOperation, 'EXECUTION_FAILED'],
+        [ids.appFailedOperation, 'MCP_REMOTE_ERROR_EFFECTS_UNKNOWN'],
+      ] as const) {
+        const each = card(page, operation);
+        await each.getByRole('button', { name: '查看详情' }).click();
+        await each.getByRole('button', { name: '执行结果' }).click();
+        expect(await each.innerText()).not.toContain(raw);
+        await each.getByRole('button', { name: '技术详情' }).click();
+        expect(await each.innerText()).toContain(raw);
+      }
+      expect(await card(page, ids.projectOperation).innerText()).toContain(
+        'Cannot find module',
+      );
       const done = page.locator('[data-case="changeset-done"]');
+      expect(await done.innerText()).not.toContain('WRITE_CONFLICT');
       await done.getByRole('button', { name: '技术详情' }).click();
       const doneText = await done.innerText();
       expect(doneText).toContain('BRIDGE_RESULT_TIMEOUT');
+      expect(doneText).toContain('WRITE_CONFLICT');
       expect(doneText).toContain('sha256:');
       for (const row of await page
         .getByRole('button', { name: '技术详情' })
@@ -214,17 +305,47 @@ suite('technical details stay behind a collapsed row', () => {
     }
   });
 
+  it('explains a lost answer in plain words and resends only the same answer', async () => {
+    const page = await open(390, 'light');
+    try {
+      await page.evaluate(() => {
+        window.detailsFailNextApproval = true;
+      });
+      const allow = card(page, ids.partnerOperation).getByRole('button', {
+        name: '允许对外发送内容',
+      });
+      await allow.click();
+      const alert = page.locator('[data-case="cloud"]').getByRole('alert');
+      await expect
+        .poll(() => alert.innerText())
+        .toContain('你的选择可能没有送达');
+      expect(await alert.innerText()).not.toMatch(/409|approval_|Failed/);
+      await allow.click();
+      await expect
+        .poll(() => page.evaluate(() => window.detailsApprovals.length))
+        .toBe(2);
+      const [first, second] = await page.evaluate(
+        () => window.detailsApprovals,
+      );
+      expect(second!.body.responseId).toBe(first!.body.responseId);
+      expect(second!.body.decision).toBe('approved');
+    } finally {
+      await page.close();
+    }
+  });
+
   it('sends the same approval requests and offers a refresh', async () => {
     const page = await open(390, 'light');
     try {
-      await page.getByRole('button', { name: '允许对外发送内容' }).click();
+      const sales = card(page, ids.mcpOperation);
+      await sales.getByRole('button', { name: '允许对外发送内容' }).click();
       await expect
         .poll(() => page.evaluate(() => window.detailsApprovals.length))
         .toBe(1);
       // Once approved, the card stops offering the decision.
       await expect
         .poll(() =>
-          page.getByRole('button', { name: '允许对外发送内容' }).count(),
+          sales.getByRole('button', { name: '允许对外发送内容' }).count(),
         )
         .toBe(0);
       await page.getByRole('button', { name: '允许保存这些修改' }).click();
@@ -272,6 +393,37 @@ suite('technical details stay behind a collapsed row', () => {
 /** Visible text below 4.5:1 against its composited background. */
 function lowContrastText() {
   const parse = (value: string) => {
+    // Chrome serializes some color-mix() results in Oklab.
+    const oklab = value.match(
+      /oklab\(([-\d.e]+) ([-\d.e]+) ([-\d.e]+)(?: \/ ([\d.]+))?/,
+    );
+    if (oklab) {
+      const [L, a, b] = oklab.slice(1, 4).map(Number) as [
+        number,
+        number,
+        number,
+      ];
+      const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3;
+      const m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3;
+      const s = (L - 0.0894841775 * a - 1.291485548 * b) ** 3;
+      const encode = (c: number) =>
+        255 *
+        Math.min(
+          1,
+          Math.max(
+            0,
+            c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055,
+          ),
+        );
+      return [
+        encode(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s),
+        encode(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s),
+        encode(-0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s),
+        oklab[4] === undefined ? 1 : Number(oklab[4]),
+      ];
+    }
+    if (!/^(rgba?|color\(srgb)/.test(value))
+      throw Error(`unparsed color ${value}`);
     const srgb = value.match(
       /color\(srgb ([\d.]+) ([\d.]+) ([\d.]+)(?: \/ ([\d.]+))?/,
     );

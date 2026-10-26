@@ -2175,7 +2175,7 @@ export function ChatFlowClient({
                         const card = document.getElementById(`operation-${id}`);
                         if (!card) {
                           setError(
-                            '动作卡片尚未就绪，请稍候重试；不会代替你批准或重放操作。',
+                            '这张卡片还没加载出来，请稍后再点一次「查看并确认」。',
                           );
                           return;
                         }

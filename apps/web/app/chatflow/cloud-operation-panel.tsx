@@ -10,7 +10,6 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import {
   classifyMcpFailure,
-  mcpFailureCopy,
   sandboxNetworkErrorMessage,
   projectResolutionErrorMessage,
 } from '@allrice/contracts';
@@ -20,10 +19,12 @@ import { TechnicalDetails } from './technical-details';
 import {
   approvalSummary,
   approveLabel,
+  cloudOperationCompactLabel,
   cloudOperationStatusLabel,
   durationText,
+  mcpApprovalDetails,
   mcpAuthorizationLabel,
-  mcpFailureTitle,
+  mcpFailureNotice,
   mcpRiskLabel,
   resourceLimitRows,
   resultNote,
@@ -73,21 +74,93 @@ export function cloudOperationDisplayStatus(
     if (op.approval.revokedAt) return '已撤回，没有执行';
     if (op.approval.response?.decision === 'rejected')
       return '你已拒绝，没有执行';
+    if (op.approval.response?.decision === 'approved')
+      return '你已允许，正在准备';
     if (Date.parse(op.approval.request.expiresAt) <= now)
       return '已过期，没有执行';
     if (op.proposal.kind === 'mcp' && op.mcpAuthorization?.available !== true)
       return mcpAuthorizationLabel(op.mcpAuthorization?.reason);
-    if (op.approval.response?.decision === 'approved')
-      return '你已允许，正在准备';
   }
   const failure = operationFailure(op);
-  if (failure) return mcpFailureTitle(failure);
+  if (failure) return mcpFailureNotice(failure).title;
   return cloudOperationStatusLabel(op.snapshot.status);
 }
 
 /** Compact receipts never turn an unconfirmed outcome into success or failure. */
-export function cloudOperationCompactStatus(op: CloudOperationView) {
-  return cloudOperationStatusLabel(op.snapshot.status);
+export function cloudOperationCompactStatus(
+  op: CloudOperationView,
+  now = Date.now(),
+) {
+  return cloudOperationCompactLabel(op, now);
+}
+
+/** One pending parameter; a long value can be read in full on request. */
+function ApprovalField({
+  name,
+  text,
+  full,
+}: {
+  name: string;
+  text: string;
+  full: string;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <li>
+      {name}：{open ? full : text}
+      {full !== text && (
+        <Button
+          className={styles.decision}
+          size="sm"
+          variant="ghost"
+          aria-expanded={open}
+          onClick={() => setOpen((value) => !value)}
+        >
+          {open ? '收起' : '展开全文'}
+        </Button>
+      )}
+    </li>
+  );
+}
+
+/** What a pending app call will do: decision material, not technical detail. */
+function McpApprovalDetails({
+  proposal,
+}: {
+  proposal: Extract<CloudOperationView['proposal'], { kind: 'mcp' }>;
+}) {
+  const details = mcpApprovalDetails(proposal);
+  return (
+    <dl className={styles.fields} aria-label="这次要做的事">
+      <div>
+        <dt>动作</dt>
+        <dd>{details.action}</dd>
+      </div>
+      <div>
+        <dt>对象</dt>
+        <dd>{details.target}</dd>
+      </div>
+      <div>
+        <dt>内容</dt>
+        <dd>
+          {details.fields.length ? (
+            <ul className={styles.approvalFields}>
+              {details.fields.map((field) => (
+                <ApprovalField
+                  key={field.key}
+                  name={field.key}
+                  text={field.text}
+                  full={field.full}
+                />
+              ))}
+            </ul>
+          ) : (
+            '没有参数'
+          )}
+        </dd>
+      </div>
+    </dl>
+  );
 }
 
 type Decision = 'approved' | 'rejected' | 'cancel';
@@ -299,7 +372,7 @@ export function CloudOperationCard({
   const notices = (
     <>
       {resolutionFailure && (
-        <p role="status" className={styles.notice}>
+        <p role="status" className={styles.notice} data-tone="error">
           {resolutionFailure}
         </p>
       )}
@@ -316,20 +389,30 @@ export function CloudOperationCard({
         </p>
       )}
       {mcpUnavailable && (
-        <p role="status" className={styles.notice}>
+        <p role="status" className={styles.notice} data-tone="warn">
           {mcpAuthorizationLabel(op.mcpAuthorization?.reason)}
-          ，不能再允许这一步。还没开始的不会执行；已经开始的可能还在进行，请刷新查看结果。
+          {terminal
+            ? '，不能再允许新的调用；这次调用已经结束，结果仍保留。'
+            : '，不能再允许这一步。还没开始的不会执行；已经开始的可能还在进行，请刷新查看结果。'}
           {!terminal && runActive && '仍可停止本轮。'}
         </p>
       )}
       {failure && (
-        <p role="status" className={styles.notice}>
+        <p
+          role="status"
+          className={styles.notice}
+          data-tone={failure === 'result_unknown' ? 'warn' : 'error'}
+        >
           {!runActive && '本轮已结束。'}
-          {mcpFailureCopy[failure].detail}
+          {mcpFailureNotice(failure).detail}
         </p>
       )}
       {networkFailure && (
-        <p role="status" className={styles.notice}>
+        <p
+          role="status"
+          className={styles.notice}
+          data-tone={op.snapshot.status === 'failed' ? 'error' : 'warn'}
+        >
           {networkFailure}
         </p>
       )}
@@ -345,7 +428,7 @@ export function CloudOperationCard({
   );
   const receiptNotes = (op.snapshot.status === 'cancel_requested' ||
     (op.snapshot.status === 'unknown' && !failure)) && (
-    <p role="status" className={styles.notice}>
+    <p role="status" className={styles.notice} data-tone="warn">
       {unconfirmedNote(proposal, op.snapshot.status)}
     </p>
   );
@@ -792,6 +875,9 @@ export function CloudOperationCard({
       {pending && (
         <div className={styles.approvalReview}>
           <p>{approvalSummary(proposal)}</p>
+          {proposal.kind === 'mcp' && (
+            <McpApprovalDetails proposal={proposal} />
+          )}
           {plannedOutputs}
           <div className={styles.actions}>
             <Button

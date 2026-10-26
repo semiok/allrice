@@ -12,6 +12,7 @@ import {
   cloudOperations,
   ids,
   pendingActions,
+  runningOperations,
 } from './technical-details-fixtures';
 import '../app/dsh-upstream/design-platform.css';
 import '../app/dsh-upstream/base.css';
@@ -19,27 +20,42 @@ import '../app/dsh-upstream/base.css';
 declare global {
   interface Window {
     detailsApprovals: { url: string; body: Record<string, unknown> }[];
+    detailsAnswered: string[];
+    detailsFailNextApproval: boolean;
     detailsStatusReads: number;
     detailsOpened: string[];
   }
 }
 window.detailsApprovals = [];
+window.detailsAnswered = [];
+window.detailsFailNextApproval = false;
 window.detailsStatusReads = 0;
 window.detailsOpened = [];
 const OFFLINE_SESSION = '20000000-0000-4000-8000-000000000001';
 const realFetch = window.fetch.bind(window);
 window.fetch = async (input, init) => {
   const url = String(input);
-  if (url.startsWith('/api/v1/runtime/cloud-operations'))
+  if (url.startsWith('/api/v1/runtime/cloud-operations')) {
+    const runId = new URL(url, location.origin).searchParams.get('runId');
     return Response.json({
-      operations: cloudOperations(
-        window.detailsApprovals.some((post) =>
-          post.url.endsWith(ids.mcpApproval),
-        ),
-      ),
+      operations:
+        runId === ids.runningRun
+          ? runningOperations()
+          : cloudOperations(window.detailsAnswered),
     });
+  }
   if (url.startsWith('/api/v1/runtime/approvals/')) {
-    window.detailsApprovals.push({ url, body: JSON.parse(String(init?.body)) });
+    const body = JSON.parse(String(init?.body));
+    window.detailsApprovals.push({ url, body });
+    // What the server answers once the request expired before it was read.
+    if (window.detailsFailNextApproval) {
+      window.detailsFailNextApproval = false;
+      return Response.json(
+        { code: 'approval_invalid_or_stale' },
+        { status: 409 },
+      );
+    }
+    window.detailsAnswered.push(String(body.approvalId));
     return Response.json({});
   }
   const artifact = url.match(/\/artifacts\/([^/]+)\/executions/)?.[1];
@@ -100,6 +116,14 @@ createRoot(document.getElementById('root')!).render(
         workspaceId={ids.workspace}
         tenantHeaders={headers}
         runActive={false}
+      />
+    </section>
+    <section data-case="cloud-running">
+      <CloudOperationPanel
+        runId={ids.runningRun}
+        workspaceId={ids.workspace}
+        tenantHeaders={headers}
+        runActive
       />
     </section>
     <section data-case="changeset">

@@ -35,6 +35,7 @@ import type { ReferenceRevision } from '@allrice/contracts';
 import reader from './document-reader.module.css';
 import { isToolResultExport } from '../../lib/chatflow/document-reader-model';
 import { ChangesetPanel } from './changeset-panel';
+import { TechnicalDetails } from './technical-details';
 import {
   memo,
   lazy,
@@ -1381,6 +1382,18 @@ function ArtifactReview({
                   已记录 {browserVerification.outcome.report.steps.length}{' '}
                   个步骤。验证期间未重新构建项目。
                 </p>
+                <TechnicalDetails
+                  rows={[
+                    [
+                      '版本',
+                      browserVerification.outcome.report.target.versionId,
+                    ],
+                    [
+                      '内容校验',
+                      browserVerification.outcome.report.target.checksum,
+                    ],
+                  ]}
+                />
               </details>
             </section>
           ) : null}

@@ -9,7 +9,9 @@ import { fileSizeText } from '@deepseek-ai/dsh-client-ui-primitives';
 import { inputRetry } from '../../lib/chatflow/input-retry';
 import {
   changesetApproveLabel,
-  changesetStatusLabel,
+  changesetFileLabel,
+  changesetFileNote,
+  changesetTaskLabel,
   changesetTitle,
   fileChangeLabel,
 } from '../../lib/chatflow/changeset-presenter';
@@ -238,7 +240,7 @@ export function ChangesetPanel({
           >
             <strong>
               {changesetTitle(!!item.restoreOf, organizationPlan)} ·{' '}
-              {changesetStatusLabel(item.snapshot?.status ?? item.runState)}
+              {changesetTaskLabel(item.snapshot?.status ?? item.runState)}
             </strong>
             {item.payload ? (
               <details>
@@ -313,7 +315,10 @@ export function ChangesetPanel({
               <ul aria-label="逐文件执行结果">
                 {item.evidence.result.files.map((f) => (
                   <li key={f.path}>
-                    <code>{f.path}</code> · {changesetStatusLabel(f.status)}
+                    <code>{f.path}</code> · {changesetFileLabel(f.status)}
+                    {changesetFileNote(f.status, f.errorCode) ? (
+                      <small>{changesetFileNote(f.status, f.errorCode)}</small>
+                    ) : null}
                     {f.organization ? (
                       <small>
                         目标：<code>{f.organization.target}</code>

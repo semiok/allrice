@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import type { ReactNode } from 'react';
+import { describe, expect, it, vi } from 'vitest';
 import type { CloudOperationView } from '@allrice/database';
 import {
   CloudOperationCard,
@@ -242,11 +243,35 @@ describe('Cloud/MCP approval presentation', () => {
   it('distinguishes a third-party send from chat/local execution and escapes parameters', () => {
     const html = render(view());
     expect(html).toContain('应用工具');
-    expect(html).toContain('会把这次的内容发送给 owned.example.test');
+    expect(html).toContain('会按下面的内容调用 owned.example.test');
     expect(html).toContain('允许写入数据');
-    // Raw parameters stay collapsed in the technical details.
-    expect(html).not.toContain('&lt;script&gt;');
+    // The pending call's action and values are shown, escaped, without JSON.
+    expect(html).toContain('records.append（写入数据）');
+    expect(html).toContain('value：&lt;script&gt;alert(1)&lt;/script&gt;');
     expect(html).not.toContain('<script>');
+    expect(html).not.toContain('&quot;value&quot;');
+  });
+  it('escapes the raw parameters once the technical details are open', async () => {
+    vi.resetModules();
+    vi.doMock('./technical-details', () => ({
+      TechnicalDetails: ({ children }: { children?: ReactNode }) => (
+        <div data-technical-open="">{children}</div>
+      ),
+    }));
+    try {
+      const { CloudOperationCard: Open } =
+        await import('./cloud-operation-panel');
+      const html = renderToStaticMarkup(
+        <Open op={view()} busy={false} onAct={() => {}} />,
+      );
+      expect(html).toContain(
+        '&quot;value&quot;: &quot;&lt;script&gt;alert(1)&lt;/script&gt;&quot;',
+      );
+      expect(html).not.toContain('<script>');
+    } finally {
+      vi.doUnmock('./technical-details');
+      vi.resetModules();
+    }
   });
   it.each(['rejected', 'expired', 'revoked'] as const)(
     'shows %s and removes approval actions',

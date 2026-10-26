@@ -9344,13 +9344,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect((await second.boundingBox())!.y).toBeLessThan(
         (await final.boundingBox())!.y,
       );
-      // Only the running receipt itself says it is in progress.
+      // Only the running receipt's own status says it is in progress.
+      const inProgress = f.page
+        .getByRole('region', { name: '工作过程', exact: true })
+        .getByText('进行中', { exact: true })
+        .filter({ visible: true });
+      expect(await inProgress.count()).toBe(1);
       expect(
-        await f.page
-          .getByRole('region', { name: '工作过程', exact: true })
-          .getByText('进行中', { exact: true })
-          .count(),
-      ).toBe(await second.getByText('进行中', { exact: true }).count());
+        await second.locator('header').getByRole('status').innerText(),
+      ).toBe('进行中');
       const groups = f.page.locator('section[aria-label="工作步骤"]');
       expect(await groups.count()).toBe(2);
       for (const group of await groups.all()) {

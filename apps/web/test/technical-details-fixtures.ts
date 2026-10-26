@@ -17,6 +17,16 @@ export const ids = {
   doneArtifact: id(6),
   mcpApproval: id(30),
   mcpOperation: id(31),
+  partnerApproval: id(35),
+  partnerOperation: id(36),
+  rejectedOperation: id(37),
+  expiredOperation: id(38),
+  appFailedOperation: id(39),
+  runningRun: id(7),
+  runningOperation: id(43),
+  succeededOperation: id(32),
+  projectOperation: id(33),
+  unknownOperation: id(34),
   changesetApproval: id(40),
   changesetOperation: id(41),
 };
@@ -33,7 +43,11 @@ const task = {
   parentRunId: null,
   frozenConfiguration: { employeeVersionId: id(11), digest: digest('a') },
 };
-const request = (approvalId: string, binding: unknown) => ({
+const request = (
+  approvalId: string,
+  binding: unknown,
+  expires = expiresAt,
+) => ({
   contractVersion: 1,
   direction: 'request',
   kind: 'action_approval',
@@ -43,10 +57,11 @@ const request = (approvalId: string, binding: unknown) => ({
   task,
   respondentId: ids.user,
   createdAt,
-  expiresAt,
+  expiresAt: expires,
   approvalId,
   binding,
 });
+export const longText = `报价单已更新，请合作方在周五前确认。${'包括折扣、交付日期和付款方式的说明。'.repeat(8)}`;
 
 const limits = {
   timeoutMs: 30_000,
@@ -56,19 +71,79 @@ const limits = {
   cpuMillis: 500,
   pids: 64,
 };
+const evidence = { id: id(67), recordedAt: createdAt, digest: digest('f') };
 const cloudBinding = (operationId: string) => ({
   attempt: { operationId },
   execution: { targetId: id(12) },
   task: { runId: ids.run },
 });
-/** Pending, finished, not finished and unconfirmed: one card each. */
-export function cloudOperations(approved: boolean) {
+/** An app call waiting for an answer, or answered with `decision`. */
+function appCall(
+  operationId: string,
+  approvalId: string,
+  args: Record<string, unknown>,
+  decision?: 'approved' | 'rejected',
+  expires = expiresAt,
+) {
+  return {
+    snapshot: {
+      status: decision === 'approved' ? 'dispatched' : 'waiting_user',
+      binding: cloudBinding(operationId),
+      result: null,
+    },
+    enabled: true,
+    mcpAuthorization: { available: true, reason: 'available' },
+    proposal: {
+      kind: 'mcp',
+      endpoint: 'https://api.example-crm.com/mcp',
+      tool: 'mcp__crm__send_message',
+      arguments: args,
+      risk: 'external_send',
+    },
+    approval: {
+      request: request(approvalId, {}, expires),
+      response: decision ? { decision } : null,
+      consumedAt: null,
+      revokedAt: null,
+    },
+    result: null,
+  };
+}
+/** Same tool, different recipients: the cards must differ before approval. */
+export function cloudOperations(answered: string[]) {
+  const decided = (approvalId: string) =>
+    answered.includes(approvalId) ? ('approved' as const) : undefined;
   return [
+    appCall(
+      ids.mcpOperation,
+      ids.mcpApproval,
+      { channel: 'sales', text: '本周报价已更新' },
+      decided(ids.mcpApproval),
+    ),
+    appCall(
+      ids.partnerOperation,
+      ids.partnerApproval,
+      { channel: 'partner-ext', text: longText, notify: true },
+      decided(ids.partnerApproval),
+    ),
+    appCall(
+      ids.rejectedOperation,
+      id(44),
+      { channel: 'sales', text: '周报' },
+      'rejected',
+    ),
+    appCall(
+      ids.expiredOperation,
+      id(45),
+      { channel: 'sales', text: '周报' },
+      undefined,
+      new Date(now - 60_000).toISOString(),
+    ),
     {
       snapshot: {
-        status: approved ? 'dispatched' : 'waiting_user',
-        binding: cloudBinding(ids.mcpOperation),
-        result: null,
+        status: 'failed',
+        binding: cloudBinding(ids.appFailedOperation),
+        result: { status: 'failed', effects: 'none', evidence },
       },
       enabled: true,
       mcpAuthorization: { available: true, reason: 'available' },
@@ -76,22 +151,21 @@ export function cloudOperations(approved: boolean) {
         kind: 'mcp',
         endpoint: 'https://api.example-crm.com/mcp',
         tool: 'mcp__crm__send_message',
-        arguments: { channel: 'sales', text: '本周报价已更新' },
+        arguments: { channel: 'sales', text: '周报' },
         risk: 'external_send',
       },
-      approval: {
-        request: request(ids.mcpApproval, {}),
-        response: approved ? { decision: 'approved' } : null,
-        consumedAt: null,
-        revokedAt: null,
+      approval: null,
+      result: {
+        code: 'MCP_REMOTE_ERROR_EFFECTS_UNKNOWN',
+        output: '{"isError":true,"error":{"message":"channel archived"}}',
+        trusted: false,
       },
-      result: null,
     },
     {
       snapshot: {
         status: 'succeeded',
-        binding: cloudBinding(id(32)),
-        result: { status: 'succeeded', effects: 'applied' },
+        binding: cloudBinding(ids.succeededOperation),
+        result: { status: 'succeeded', effects: 'applied', evidence },
       },
       enabled: true,
       mcpAuthorization: null,
@@ -113,8 +187,8 @@ export function cloudOperations(approved: boolean) {
     {
       snapshot: {
         status: 'failed',
-        binding: cloudBinding(id(33)),
-        result: { status: 'failed', effects: 'none' },
+        binding: cloudBinding(ids.projectOperation),
+        result: { status: 'failed', effects: 'none', evidence },
       },
       enabled: true,
       mcpAuthorization: null,
@@ -143,7 +217,7 @@ export function cloudOperations(approved: boolean) {
     {
       snapshot: {
         status: 'unknown',
-        binding: cloudBinding(id(34)),
+        binding: cloudBinding(ids.unknownOperation),
         result: null,
       },
       enabled: true,
@@ -166,6 +240,30 @@ export function cloudOperations(approved: boolean) {
     },
   ];
 }
+/** A call still running, so its card offers to stop the run. */
+export const runningOperations = () => [
+  {
+    snapshot: {
+      status: 'running',
+      binding: {
+        ...cloudBinding(ids.runningOperation),
+        task: { runId: ids.runningRun },
+      },
+      result: null,
+    },
+    enabled: true,
+    mcpAuthorization: { available: true, reason: 'available' },
+    proposal: {
+      kind: 'mcp',
+      endpoint: 'https://api.example-crm.com/mcp',
+      tool: 'mcp__crm__list_messages',
+      arguments: { channel: 'sales' },
+      risk: 'read',
+    },
+    approval: null,
+    result: null,
+  },
+];
 
 const binding = {
   task,
@@ -229,6 +327,11 @@ const payload = (artifactId: string) => ({
         before: null,
         after: { text: '- 整理报价', checksum: digest('3') },
       },
+      {
+        path: 'docs/plan.md',
+        before: { text: '旧计划', checksum: digest('4') },
+        after: { text: '新计划', checksum: digest('5') },
+      },
     ],
   },
 });
@@ -278,6 +381,13 @@ export function changesetRuns(artifactId: string) {
               beforeChecksum: null,
               afterChecksum: null,
               errorCode: 'BRIDGE_RESULT_TIMEOUT',
+            },
+            {
+              path: 'docs/plan.md',
+              status: 'conflict',
+              beforeChecksum: digest('4'),
+              afterChecksum: null,
+              errorCode: 'WRITE_CONFLICT',
             },
           ],
         },
