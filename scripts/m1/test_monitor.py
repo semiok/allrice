@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -440,20 +441,31 @@ class Checks(unittest.TestCase):
             self.assertEqual([(f['key'], f['severity']) for f in monitor.check_public_entry(r)],
                              [('public_entry', 'ok'), ('public_entry:b.example', 'ok'), ('public_entry:c.example', 'ok')])
 
-    def hung(self, release):
-        """c.example never answers (a DNS lookup that hangs); the others answer at once."""
+    def scripted(self, replies):
+        """Each hostname gives its next reply in turn; None never answers (a DNS lookup that hangs)."""
+        release, lock = threading.Event(), threading.Lock()
+        self.addCleanup(release.set)
+
         def get(url, *a):
-            if 'c.example' in url:
+            with lock:
+                code = replies[urllib.parse.urlsplit(url).hostname].pop(0)
+            if code is None:
                 release.wait()
-            return (502, b'bad gateway') if 'b.example' in url else (200, b'login')
+            return code, b'reply'
         return mock.patch.object(monitor, 'http_get', side_effect=get)
+
+    def round_limit(self, seconds):
+        """The round's time limit strikes after `seconds`, as do_round's alarm does."""
+        old = signal.signal(signal.SIGALRM, monitor.on_alarm)
+        self.addCleanup(signal.signal, signal.SIGALRM, old)
+        self.addCleanup(signal.setitimer, signal.ITIMER_REAL, 0)
+        signal.setitimer(signal.ITIMER_REAL, seconds)
 
     def test_a_hung_hostname_has_a_deadline(self):
         r = make_round(publicUrl='https://a.example', extraPublicUrls=['https://b.example', 'https://c.example'])
-        release = threading.Event()
-        self.addCleanup(release.set)
         start = time.time()
-        with mock.patch.object(monitor, 'PUBLIC_PROBE_SECONDS', 0.2), mock.patch.object(monitor, 'lock_holders', return_value=[]), self.hung(release):
+        with mock.patch.object(monitor, 'PUBLIC_PROBE_SECONDS', 0.2), mock.patch.object(monitor, 'lock_holders', return_value=[]), \
+                self.scripted({'a.example': [200], 'b.example': [502], 'c.example': [None]}):
             out = monitor.check_public_entry(r)
         self.assertLess(time.time() - start, 0.2 + 2 + 1)  # the probe's timeout plus 2 seconds, not "forever"
         self.assertEqual([(f['key'], f['severity']) for f in out],
@@ -463,17 +475,27 @@ class Checks(unittest.TestCase):
     def test_round_timeout_keeps_the_hostnames_already_probed(self):
         r = make_round(publicUrl='https://a.example', extraPublicUrls=['https://b.example', 'https://c.example'])
         step(r, [bad('public_entry'), bad('public_entry:c.example')], 0, {'public_entry'})
-        release = threading.Event()
-        self.addCleanup(release.set)
-        old = signal.signal(signal.SIGALRM, monitor.on_alarm)
-        self.addCleanup(signal.signal, signal.SIGALRM, old)
-        signal.setitimer(signal.ITIMER_REAL, 0.5)  # the round's limit strikes while c.example hangs
-        with mock.patch.object(monitor, 'lock_holders', return_value=[]), self.hung(release), self.assertRaises(monitor.RoundTimeout):
+        self.round_limit(0.5)  # strikes on the first look, while c.example hangs
+        with mock.patch.object(monitor, 'lock_holders', return_value=[]), self.assertRaises(monitor.RoundTimeout), \
+                self.scripted({'a.example': [200], 'b.example': [502], 'c.example': [None]}):
             monitor.run_checks(r, [('public_entry', monitor.check_public_entry, True, None)])
         findings, ran = monitor.collect_checks(r)
-        self.assertEqual([(f['key'], f['severity']) for f in findings], [('public_entry', 'ok'), ('public_entry:b.example', 'unknown')])
+        self.assertEqual(sorted((f['key'], f['severity']) for f in findings), [('public_entry', 'ok'), ('public_entry:b.example', 'unknown')])
         self.assertEqual(ran, set())  # not judged: c.example's open alert must not recover
         self.assertEqual(step(r, findings, 240, ran), [('recovered', 'public_entry', False)])
+
+    def test_round_timeout_during_the_re_check(self):
+        r = make_round(publicUrl='https://a.example', extraPublicUrls=['https://b.example', 'https://c.example'])
+        step(r, [bad('public_entry:b.example')], 0, {'public_entry'})
+        self.round_limit(0.5)  # strikes on the re-check, while a.example hangs
+        with mock.patch.object(monitor, 'lock_holders', return_value=[]), self.assertRaises(monitor.RoundTimeout), \
+                self.scripted({'a.example': [502, None], 'b.example': [200, 502], 'c.example': [200, 200]}):
+            monitor.run_checks(r, [('public_entry', monitor.check_public_entry, True, None)])
+        findings, ran = monitor.collect_checks(r)
+        self.assertEqual([(f['key'], f['severity']) for f in findings],
+                         [('check:public_entry', 'ok'), ('public_entry', 'unknown'),  # failed once, never looked at again
+                          ('public_entry:b.example', 'unknown'), ('public_entry:c.example', 'ok')])  # b: fine, then failed
+        self.assertEqual(step(r, findings, 240, ran), [])  # neither opens a nor recovers b
 
     def test_a_hung_probe_does_not_keep_the_process_alive(self):
         code = '''

@@ -24,7 +24,7 @@
 - 依赖没过的检查本轮不判断，保持原状：例如数据库不可用时，业务巡检和订阅检查不报，也不会被当成“已恢复”。
 - 部署锁被持有时（`deploy-dev`、`scripts/m1/install`、`deploy-lock run`，用 `lsof` 看锁文件是否被打开，不去碰锁本身；每项检查和重查都重新看一次），Web、Worker、Postgres、公网入口和卡住/积压类业务巡检不判断，huihuimac 的公网拨测也暂停；最长 45 分钟，超过照常判断。
 - 检查给不出结论时（如持锁期间的共享 VM、确认期内的授权错误、触发告警的额度窗口暂时读不到）记为“未知”：已有告警保持原状，也不新开。
-- 单轮超过时限（M1 240 秒），只有卡住的那项按未知处理，已跑完的检查结果照常报告，另报 `monitor_round`。公网入口按域名算：几个域名同时拨测，每个最多等 17 秒，卡住的判不可达；超时那一轮已拨完的域名中，正常的照常计入，失败的（只看了一次）记为未知。状态文件读不出来时另存为 `state.json.corrupt-<时间>` 并报 `monitor_state`。
+- 单轮超过时限（M1 240 秒），只有卡住的那项按未知处理，已跑完的检查结果照常报告，另报 `monitor_round`。公网入口按域名算：几个域名同时拨测，每个最多等 17 秒，卡住的判不可达；超时那一轮已拨完的域名中，正常的照常计入，只看到一次失败的记为未知；重查时超时的，已重查完的域名按两次结果判断。状态文件读不出来时另存为 `state.json.corrupt-<时间>` 并报 `monitor_state`。
 - 每条告警、升级、提醒和恢复都写进 `allrice_operational_incidents`（`kind` 为 `monitor_alert` / `monitor_recovered`，`detail_code` 为 `monitor.<键>`，`metadata.event` 是 opened/escalated/reminder/flapping/recovered，`metadata.alertId` 把它们连到同一条告警）。写不进去（如数据库正好挂了）先存在本地，下一轮再写；积压超过 30 分钟会报 `monitor` 告警。huihuimac 的告警在 M1 连得上时经 SSH 交给 M1 上的 `monitor ingest-incidents` 写入，连不上时存在 huihuimac 本地等下次。后台接口 `/api/v1/admin/model-governance` 的 `incidents` 能看到最近 25 条。
 - Telegram 先按系统代理设置发，失败再直连重试一次（本地代理挂了不至于发不出告警）；公网拨测直连。发不出去时消息留在本地队列（最多 20 条），下一轮补发，每发出一条就落盘（只有发出到落盘之间的瞬间崩溃才可能重发一条）；心跳里记着从什么时候开始发不出去，对面那台看到连续失败超过 7 分钟（M1，两轮）/ 3 分钟（huihuimac，三轮）会替它报警。M1 每 4 分钟一轮，是为了让需要看两次才能下结论的告警（反复的键、对面的看门）也能在 10 分钟内发出。
 

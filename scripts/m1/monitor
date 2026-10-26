@@ -1705,11 +1705,12 @@ def run_checks(r, checks):
     the round, so a round that times out still reports what it found (collect_checks)."""
     wanted = r.cfg['checks']
     checks = [c for c in checks if (wanted is None or c[0] in wanted) and c[0] not in r.cfg['skipChecks']]
-    p = r.progress = {'checks': checks, 'results': {}, 'errors': {}, 'current': None, 'partial': []}
+    p = r.progress = {'checks': checks, 'results': {}, 'errors': {}, 'current': None, 'partial': None}
     results, errors = p['results'], p['errors']
 
     def one(name, fn):
-        p['current'], p['partial'] = name, []  # a check may put what it already found in 'partial'
+        p['partial'] = None  # a check may publish here what it has found so far, item by item
+        p['current'] = name
         try:
             results[name], errors[name] = fn(r), None
         except Exception as err:  # a bug in one check must not stop the others or the round
@@ -1727,29 +1728,41 @@ def run_checks(r, checks):
         one(name, fn)
     again = [c for c in checks if c[2] and c[0] in results and bad(c[0])]
     if again:
-        first = {c[0]: {f['key']: f['severity'] for f in results[c[0]] or []} for c in again}
         time.sleep(r.cfg['confirmSeconds'])
         for name, fn, _, _ in again:
+            first = {f['key']: f['severity'] for f in results[name] or []}
             one(name, fn)
-            if results[name]:  # an item of it that was fine on the first look has failed only once: unknown this round
-                results[name] = [unknown(f['key'], f['title']) if f['severity'] != 'ok' and first[name].get(f['key']) == 'ok' else f
-                                 for f in results[name]]
+            if results[name]:
+                results[name] = [confirmed(first.get(f['key']), f) for f in results[name]]
     return collect_checks(r)
+
+
+def confirmed(first, again):
+    """An item after its re-check, given its first-look severity: bad only when it failed
+    on both looks. Bad only on the re-check is unknown this round; the next round looks twice again."""
+    return unknown(again['key'], again['title']) if again['severity'] != 'ok' and first == 'ok' else again
 
 
 def collect_checks(r):
     p = r.progress
+    cur, partial, results = p['current'], p['partial'], dict(p['results'])
+    if cur and partial is not None and results.get(cur):
+        # The round ran out of time during this check's re-check (it publishes per item):
+        # what it re-checked is judged on both looks; a failure not looked at again is unknown.
+        again = {f['key']: f for f in partial}
+        results[cur] = [confirmed(f['severity'], again[f['key']]) if f['key'] in again else f if f['severity'] == 'ok'
+                        else unknown(f['key'], f['title']) for f in results[cur]]
     out = []
     for name, _, _, _ in p['checks']:
         if name in p['errors']:
             out.append(p['errors'][name] or finding('check:' + name, 'ok', '检查 %s 本身出错' % name))
-            out += p['results'][name] or []
-    if p['current'] and p['current'] not in p['results']:
+            out += results[name] or []
+    if cur and cur not in results:
         # The round ran out of time during this check's first look. What it already found
         # counts where it is good; a failure seen once is not confirmed, so it is unknown.
         # The check is not counted as having judged, so nothing it did not reach recovers.
-        out += [f if f['severity'] == 'ok' else unknown(f['key'], f['title']) for f in p['partial']]
-    return out, {name for name, res in p['results'].items() if res is not None}
+        out += [f if f['severity'] == 'ok' else unknown(f['key'], f['title']) for f in partial or []]
+    return out, {name for name, res in results.items() if res is not None}
 
 
 # ---------- rounds ----------
