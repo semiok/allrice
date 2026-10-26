@@ -215,7 +215,7 @@ export const artifactKindLabel = (a: WorkbenchArtifact) =>
         plan: '计划',
         changeset: '修改提案',
         command_output: '命令输出',
-        browser_capture: '浏览器截图',
+        browser_capture: '网页记录',
         file: '文件',
       }[a.kind];
 export function boundedRichDiff(before: string | null, after: string | null) {
