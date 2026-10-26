@@ -441,6 +441,45 @@ integration('P25 governed assistant ledger — isolated real PostgreSQL', () => 
       }),
     ).rejects.toThrow('canceled');
   });
+  it('a native settlement after the confirmed stop records nothing, while a late report still conflicts', async () => {
+    const f = await assistantFixture(fixture.db),
+      child = (await f.delegate()).instance;
+    await f.runtime.cancelRoot(f.context, {
+      runId: f.task.runId,
+      requestId: randomUUID(),
+    });
+    await f.runtime.confirmStopped({ ...f.base, runId: child.runId });
+    const result = {
+      deliveryId: randomUUID(),
+      status: 'partial' as const,
+      summary: 'Native assistant settled without a verified delivery.',
+      evidence: [],
+      incomplete: ['Native stop reason: native_settled'],
+      usageComplete: false,
+    };
+    await expect(
+      f.runtime.recordResult({ ...f.base, runId: child.runId, result }),
+    ).rejects.toThrow('conflict');
+    expect(
+      await f.runtime.recordResult({
+        ...f.base,
+        runId: child.runId,
+        result,
+        settlement: true,
+      }),
+    ).toEqual({
+      wakeParent: false,
+      duplicate: false,
+      status: 'canceled',
+      recorded: false,
+    });
+    const tree = await f.runtime.getTree(f.context, { runId: f.task.runId });
+    expect(tree.results).toHaveLength(0);
+    expect(tree.instances.find((i) => i.runId === child.runId)).toMatchObject({
+      status: 'canceled',
+      stoppedAt: expect.any(String),
+    });
+  });
   it('records evidence-backed delivery independently from parent adoption', async () => {
     const f = await assistantFixture(fixture.db),
       child = (await f.delegate()).instance;

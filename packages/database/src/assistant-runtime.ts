@@ -1761,6 +1761,8 @@ export function createAssistantRuntime(
       runId: string;
       worker: AssistantWorkerLease;
       result: AssistantResult;
+      /** Native settlement fallback receipt, never an explicit report. */
+      settlement?: boolean;
     }) {
       const result = AssistantResultSchema.parse(input.result),
         digest = runtimeLedgerInputDigest(result);
@@ -1782,6 +1784,17 @@ export function createAssistantRuntime(
         }
         const [prior] =
           await tx`select 1 from allrice_assistant_results where run_id=${row.run_id} limit 1`;
+        // Draining a canceled child makes native settle it. Once its stop
+        // receipt is committed, that settlement is the cancellation's own echo:
+        // record nothing and wake nobody. A conflict here would reach native
+        // writes that its parent's next model call and join await.
+        if (input.settlement && !prior && row.stopped_at)
+          return {
+            wakeParent: false,
+            duplicate: false,
+            status: row.status,
+            recorded: false,
+          };
         if (prior || terminal.has(row.status)) fail('conflict');
         // An explicit completion must cite platform-registered immutable evidence;
         // idle or arbitrary final text is never a successful delivery.

@@ -199,7 +199,7 @@ export async function createAssistantFixtureDatabase(
 export async function assistantFixture(
   db: ReturnType<typeof postgres>,
   capacity = 12,
-  options: { nativeSessionId?: string } = {},
+  options: { nativeSessionId?: string; allowedTools?: string[] } = {},
 ) {
   const org = randomUUID(),
     workspace = randomUUID(),
@@ -311,7 +311,7 @@ export async function assistantFixture(
     configuration: config,
     nativeSessionId,
     worker,
-    allowedTools: [
+    allowedTools: options.allowedTools ?? [
       'read',
       'proposal',
       'assistant.delegate',
