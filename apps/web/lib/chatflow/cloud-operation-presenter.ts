@@ -209,6 +209,7 @@ export function mcpApprovalDetails(proposal: McpProposal) {
       value: clip(`${args.owner}/${args.repo}`, 40),
     });
   for (const field of all) {
+    // r1-exempt(display): 去掉 collect() 给数组参数拼的“第 N 项”后缀来认出目标参数名；参数名来自工具调用，只影响审批卡上标哪些参数为目标
     const keys = field.path
       .split(' · ')
       .map((key) => key.replace(/ 第 \d+ 项$/, ''));

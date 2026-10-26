@@ -128,9 +128,15 @@ export function presentReplyFailure(input: {
   budgetWarning: boolean;
 }): { body: string; notice: string | null } {
   const stored =
-    input.text === savedGenericFailure || savedCodes.has(input.text);
+    // r1-exempt(display): 失败消息里存的是服务端兜底文案或保留下来的模型回复，比较只决定显示哪句失败说明
+    input.text === savedGenericFailure ||
+    // r1-exempt(display): 失败消息里存的是服务端固定文案或保留下来的模型回复，查表只决定显示哪句失败说明
+    savedCodes.has(input.text);
   const kind =
-    (input.nativeText && savedCodes.get(input.nativeText)) ||
+    (input.nativeText &&
+      // r1-exempt(own-text): 把 contracts 给出的固定失败文案换回错误码，不是用户原话
+      savedCodes.get(input.nativeText)) ||
+    // r1-exempt(display): 失败消息里存的是服务端固定文案或保留下来的模型回复，换回错误码只决定显示哪句失败说明
     savedCodes.get(input.text) ||
     input.code ||
     null;
