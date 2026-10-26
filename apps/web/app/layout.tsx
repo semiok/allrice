@@ -11,7 +11,7 @@ import '@allrice/ui/styles.css';
 
 import { ThemeController } from '../components/theme/theme-controller';
 import { readFrameworkRolloutPolicy } from '../lib/framework/rollout';
-import { themeScript } from '../lib/theme/theme';
+import { themeScript } from '../lib/theme/theme-script';
 
 const thirdPartyErrorGuard = `
 (() => {

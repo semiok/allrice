@@ -7,7 +7,7 @@ import type {
   BrowserContext,
   Page,
 } from '../../../worker/node_modules/playwright-core/index.js';
-import { themeScript } from '../../lib/theme/theme';
+import { themeScript } from '../../lib/theme/theme-script';
 
 const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
@@ -152,6 +152,51 @@ suite('theme runtime', () => {
       }
     });
   }
+
+  for (const path of ['/chatflow', '/runtime-console'])
+    it(`keeps a DSH dialog readable on ${path}`, async () => {
+      const page = await open(path);
+      try {
+        await page.locator('#dialog-text').waitFor();
+        const colors = await page.evaluate(() => {
+          const text = document.getElementById('dialog-text')!;
+          const title = [...document.querySelectorAll('h2')].find(
+            (node) => node.textContent === '员工详情',
+          )!;
+          let node: Element | null = text;
+          let background = 'rgba(0, 0, 0, 0)';
+          while (node && background === 'rgba(0, 0, 0, 0)') {
+            background = getComputedStyle(node).backgroundColor;
+            node = node.parentElement;
+          }
+          return {
+            text: getComputedStyle(text).color,
+            title: getComputedStyle(title).color,
+            background,
+          };
+        });
+        const rgb = (value: string) =>
+          value
+            .match(/[\d.]+/g)!
+            .slice(0, 3)
+            .map(Number);
+        const luminance = (value: string) => {
+          const [r, g, b] = rgb(value).map((v) => {
+            const s = v / 255;
+            return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+          });
+          return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
+        };
+        const contrast = (a: string, b: string) => {
+          const [x, y] = [luminance(a), luminance(b)].sort((m, n) => n - m);
+          return (x! + 0.05) / (y! + 0.05);
+        };
+        expect(contrast(colors.text, colors.background)).toBeGreaterThan(4.5);
+        expect(contrast(colors.title, colors.background)).toBeGreaterThan(4.5);
+      } finally {
+        await page.context().close();
+      }
+    });
 
   it('applies a stored choice per surface, and follows the system only when asked', async () => {
     const cases: [string, Record<string, string>, 'light' | 'dark', boolean][] =

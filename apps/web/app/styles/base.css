@@ -14,6 +14,14 @@
 
 :root[data-theme='dark'] {
   color-scheme: dark;
+  /* Let the dark body paint the canvas, including overscroll. */
+  background: transparent;
+}
+
+/* Text DSH dialogs portaled to <body> inherit; light keeps the :root text. */
+body[data-ds-dark-theme] {
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
 }
 
 * {

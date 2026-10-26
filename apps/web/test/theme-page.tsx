@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { useThemeSync } from '../components/theme/theme-controller';
+import { DshDialog } from '../app/chatflow/dsh-upstream/Dialog';
 
 function Fixture() {
   const [pathname, setPathname] = useState(location.pathname);
@@ -18,6 +19,10 @@ function Fixture() {
       <button type="button" onClick={() => go('/chatflow')}>
         去前台
       </button>
+      {/* A DSH dialog portals to <body>, outside any page theme wrapper. */}
+      <DshDialog ariaLabel="员工详情" title="员工详情" onClose={() => {}}>
+        <p id="dialog-text">负责整理每周的销售数据。</p>
+      </DshDialog>
     </main>
   );
 }
