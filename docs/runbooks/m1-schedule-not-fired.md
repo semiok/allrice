@@ -28,7 +28,7 @@ grep -iE "schedule|recurring|once" ~/Library/Logs/allrice-dev-worker.err.log | t
 
 ## 处理
 
-1. **`blocked`/`closed`/`quarantined`、`cold` 且 `lastFault.phase` 是 `initialization`，或 `tickCount` 不涨**：整个 Worker 的定时部分停了。由发布负责人**重启 Worker**，命令见 [m1-worker-crash.md](m1-worker-crash.md#定时控制器卡住)（数据库断开过之后常见：`native_once_blocked`，不会自己恢复）。重启后仍不对，回滚到上一个版本，并派 Codex Sol 只读诊断。`disabled`、短暂的 `cold` 和 `starting` 不需要处理；一直 `cold` 见“接管被拒”。
+1. **`blocked`/`closed`/`quarantined`、`cold` 且 `lastFault.phase` 是 `initialization`，或 `tickCount` 不涨**：整个 Worker 的定时部分停了。由发布负责人**重启 Worker**，命令见 [m1-worker-crash.md](m1-worker-crash.md#定时控制器卡住)（数据库断开过之后常见：`native_once_blocked`，不会自己恢复）。重启后仍不对，回滚到上一个版本，并派 Codex Astra 只读诊断。`disabled`、短暂的 `cold` 和 `starting` 不需要处理；一直 `cold` 见“接管被拒”。
 2. **`faultCount` 在涨**：控制器在跑但处理任务出错，看 Worker 日志里对应的错误码，按出错的任务处理。
 3. **控制器正常，个别任务没触发**：业务巡检告警里给了任务 ID。查任务状态和最近一次运行：
 
