@@ -31,6 +31,8 @@ import {
 } from '../../src/memory-gate.ts';
 
 const MiB = 1024 ** 2;
+/** M1 Dev 10-26: normal pressure, about 2.9 GiB reclaimable. */
+const normalM1 = '1\n3664\n1463\n185712\n1821\n16384\n';
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -117,7 +119,9 @@ suite(
         clientRequestId: randomUUID(),
         name: '回电提醒',
         prompt,
-        runAt: new Date(Date.now() + 6_500).toISOString(),
+        // The product requires > 5 s after the database clock; leave room
+        // for the setup statements on a slow CI runner.
+        runAt: new Date(Date.now() + 8_000).toISOString(),
         timezone: 'Asia/Shanghai',
       });
       const [row] = await f.db<
@@ -190,11 +194,12 @@ suite(
       );
       return [sent.run.job.id, reminder].sort();
     }
-    /** The macOS sysctl answer injected; free pages stay at 120 MB. */
+    /** The macOS sysctl answer injected (pressure level, then free,
+     * speculative, file-backed, purgeable pages and the page size); libuv's
+     * free pages stay at 120 MB throughout. */
     function gate(memorystatus: string) {
       const probe: HostMemoryProbe = {
         platform: 'darwin',
-        totalBytes: 16 * 1024 * MiB,
         availableMemory: () => 120 * MiB,
         memorystatus: async () => memorystatus,
         memorystatusSync: () => memorystatus,
@@ -224,7 +229,7 @@ suite(
 
     it('claims both in one tick when only free pages are low and the kernel reports normal pressure', async () => {
       const ids = await queuedChatAndReminder();
-      const tick = await workerTick(gate('1\n76\n'));
+      const tick = await workerTick(gate(normalM1));
       expect(tick.started).toEqual(ids);
       expect(await jobRows(ids)).toEqual(
         ids.map((id) => ({ id, status: 'claimed', worker_id: tick.workerId })),
@@ -233,12 +238,12 @@ suite(
 
     it('keeps both queued under critical pressure and claims them once it passes', async () => {
       const ids = await queuedChatAndReminder();
-      const paused = await workerTick(gate('4\n9\n'));
+      const paused = await workerTick(gate('4 900 100 2000 0 16384'));
       expect(paused.started).toEqual([]);
       expect(await jobRows(ids)).toEqual(
         ids.map((id) => ({ id, status: 'queued', worker_id: null })),
       );
-      const resumed = await workerTick(gate('1\n70\n'));
+      const resumed = await workerTick(gate(normalM1));
       expect(resumed.started).toEqual(ids);
       expect(await jobRows(ids)).toEqual(
         ids.map((id) => ({

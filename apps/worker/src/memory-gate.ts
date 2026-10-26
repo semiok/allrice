@@ -5,9 +5,11 @@ import {
 } from './host-memory.js';
 
 const MiB = 1024 ** 2;
-/** sysctl runs at most this often however short the poll interval is. */
-const sampleMs = 2_000;
-const pausedLogMs = 60_000;
+/** macOS: sysctl runs at most this often however short the poll interval is.
+ * libuv's figure costs no process, so elsewhere it is read before every
+ * claim, as it always was: a job that just started may have used the room. */
+const darwinSampleMs = 2_000;
+const gateLogMs = 60_000;
 const unreadableLogMs = 600_000;
 const pressureRank = { normal: 0, warn: 1, critical: 2 } as const;
 
@@ -16,24 +18,26 @@ export type MemoryGateSettings = {
   pausePressure: Exclude<MemoryPressure, 'normal'> | 'off';
 };
 export type MemoryAdmission = {
-  /** foreground: memory is under warning pressure, background work waits. */
-  claim: 'all' | 'foreground' | 'none';
+  /** reduced: warning pressure; background work waits and foreground work
+   * may fill only half the slots. */
+  claim: 'all' | 'reduced' | 'none';
   reason: 'available_below_minimum' | `pressure_${MemoryPressure}` | null;
   memory: HostMemory;
 };
 
 /** ALLRICE_WORKER_MIN_AVAILABLE_MEMORY_MB (default 256, 0 disables) and
  * ALLRICE_WORKER_MEMORY_PAUSE_PRESSURE (warn | critical | off, default
- * critical). Invalid values stop startup, like the other Worker settings. */
+ * critical). Empty means default; invalid values stop startup. */
 export function memoryGateSettings(
   env: NodeJS.ProcessEnv = process.env,
 ): MemoryGateSettings {
-  const mb = Number(env.ALLRICE_WORKER_MIN_AVAILABLE_MEMORY_MB ?? 256);
+  const mb = Number(env.ALLRICE_WORKER_MIN_AVAILABLE_MEMORY_MB?.trim() || 256);
   if (!Number.isInteger(mb) || mb < 0 || mb > 1_048_576)
     throw Error(
       'ALLRICE_WORKER_MIN_AVAILABLE_MEMORY_MB must be an integer between 0 and 1048576',
     );
-  const pausePressure = env.ALLRICE_WORKER_MEMORY_PAUSE_PRESSURE ?? 'critical';
+  const pausePressure =
+    env.ALLRICE_WORKER_MEMORY_PAUSE_PRESSURE?.trim() || 'critical';
   if (
     pausePressure !== 'warn' &&
     pausePressure !== 'critical' &&
@@ -56,21 +60,29 @@ export function memoryAdmission(
     if (pressureRank[memory.pressure] >= pressureRank[settings.pausePressure])
       return { claim: 'none', reason, memory };
     if (memory.pressure !== 'normal')
-      return { claim: 'foreground', reason, memory };
+      return { claim: 'reduced', reason, memory };
   }
   return { claim: 'all', reason: null, memory };
 }
 
-/** Claim admission by real memory pressure. Reads are cached for two seconds,
- * and a pause is logged when it starts, once a minute while it lasts, and when
- * it ends, with the figures that caused it. */
+const gateMessages = {
+  none: ['paused claims', 'still pausing claims'],
+  reduced: ['reduced claims', 'still reducing claims'],
+} as const;
+
+/** Claim admission by real memory pressure. Logs say when claims pause, are reduced or resume, with the figures that
+ * caused it, at most once a minute; changes in between are counted into the
+ * next line, so a reading that hovers at a threshold cannot flood the log. */
 export function createMemoryGate(input: {
   settings: MemoryGateSettings;
   read?: () => Promise<HostMemory>;
+  sampleMs?: number;
   now?: () => number;
   log?: (message: string, details: Record<string, unknown>) => void;
 }) {
   const read = input.read ?? (() => readHostMemory());
+  const sampleMs =
+    input.sampleMs ?? (process.platform === 'darwin' ? darwinSampleMs : 0);
   const now = input.now ?? Date.now;
   const log =
     input.log ??
@@ -78,23 +90,13 @@ export function createMemoryGate(input: {
       console.warn(message, details));
   let cached: { at: number; memory: HostMemory } | null = null;
   let reading: Promise<HostMemory> | null = null;
-  let paused: {
-    since: number;
-    loggedAt: number;
-    key: string;
-    checks: number;
-  } | null = null;
+  let state = { key: 'all', since: now() };
+  let loggedKey = 'all';
+  let loggedAt = -Infinity;
+  let changes = 0;
+  let restrictedSince: number | null = null;
   let unreadableLoggedAt = -Infinity;
 
-  const details = (admission: MemoryAdmission) => ({
-    claim: admission.claim,
-    reason: admission.reason,
-    source: admission.memory.source,
-    pressure: admission.memory.pressure,
-    availableMiB: Math.floor(admission.memory.availableBytes / MiB),
-    minAvailableMiB: Math.floor(input.settings.minAvailableBytes / MiB),
-    pausePressure: input.settings.pausePressure,
-  });
   function observe(admission: MemoryAdmission) {
     const at = now();
     if (admission.memory.error && at - unreadableLoggedAt >= unreadableLogMs) {
@@ -103,30 +105,44 @@ export function createMemoryGate(input: {
         error: admission.memory.error,
       });
     }
+    const key =
+      admission.claim === 'all'
+        ? 'all'
+        : `${admission.claim}:${admission.reason}`;
+    if (key !== state.key) {
+      state = { key, since: at };
+      changes += 1;
+      if (key !== 'all') restrictedSince ??= at;
+    }
+    if (at - loggedAt < gateLogMs) return;
+    if (key === loggedKey && key === 'all') return;
+    const details = {
+      claim: admission.claim,
+      reason: admission.reason,
+      source: admission.memory.source,
+      pressure: admission.memory.pressure,
+      availableMiB: Math.floor(admission.memory.availableBytes / MiB),
+      minAvailableMiB: Math.floor(input.settings.minAvailableBytes / MiB),
+      pausePressure: input.settings.pausePressure,
+      stateMs: at - state.since,
+      changes,
+    };
     if (admission.claim === 'all') {
-      if (paused)
-        log('[MET-219] memory gate resumed claims', {
-          ...details(admission),
-          pausedMs: at - paused.since,
-          checks: paused.checks,
-        });
-      paused = null;
-      return;
-    }
-    const key = `${admission.claim}:${admission.reason}`;
-    if (paused?.key === key) {
-      paused.checks += 1;
-      if (at - paused.loggedAt < pausedLogMs) return;
-      paused.loggedAt = at;
-      log('[MET-219] memory gate still pausing claims', {
-        ...details(admission),
-        pausedMs: at - paused.since,
-        checks: paused.checks,
+      log('[MET-219] memory gate resumed claims', {
+        ...details,
+        restrictedMs: state.since - (restrictedSince ?? state.since),
       });
-      return;
+      restrictedSince = null;
+    } else {
+      const [started, ongoing] = gateMessages[admission.claim];
+      log(
+        `[MET-219] memory gate ${key === loggedKey ? ongoing : started}`,
+        details,
+      );
     }
-    paused = { since: paused?.since ?? at, loggedAt: at, key, checks: 1 };
-    log('[MET-219] memory gate paused claims', details(admission));
+    loggedKey = key;
+    loggedAt = at;
+    changes = 0;
   }
 
   return {
@@ -161,7 +177,12 @@ export async function claimUnderMemoryGate<
 }) {
   while (!input.stopping() && input.active() < input.concurrency) {
     const admission = await input.gate.admission();
-    if (admission.claim === 'none') return;
+    if (input.stopping() || admission.claim === 'none') return;
+    if (
+      admission.claim === 'reduced' &&
+      input.active() >= Math.max(1, Math.floor(input.concurrency / 2))
+    )
+      return;
     const job = await input.claim({
       allowBackground:
         admission.claim === 'all' &&

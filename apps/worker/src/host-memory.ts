@@ -1,5 +1,5 @@
 import { execFile, execFileSync } from 'node:child_process';
-import { freemem, totalmem } from 'node:os';
+import { freemem } from 'node:os';
 import { promisify } from 'node:util';
 
 /** How much memory the host can still give new jobs, plus the kernel's own
@@ -7,12 +7,14 @@ import { promisify } from 'node:util';
  *
  * On macOS libuv's availableMemory() and os.freemem() count only free pages.
  * They routinely sit below 256 MB on a healthy machine whose file cache is
- * reclaimable, which held due reminders back for up to 52 s. There we read the
- * kernel memorystatus figures instead: the pressure level (1 normal, 2 warn,
+ * reclaimable, which held due reminders back for up to 52 s. There we read,
+ * with one unprivileged sysctl, the kernel pressure level (1 normal, 2 warn,
  * 4 critical; the signal behind DISPATCH_SOURCE_TYPE_MEMORYPRESSURE) and the
- * system-wide free percentage that `memory_pressure` prints. Both are plain
- * sysctl reads and need no privilege. Elsewhere libuv already reports
- * MemAvailable or the cgroup headroom, which stays the figure we use. */
+ * pages jetsam counts as available: free, speculative, pageable file-backed
+ * and purgeable. That is the closest match to Linux MemAvailable; the
+ * `memory_pressure` free percentage would also count app memory as free.
+ * Elsewhere libuv already reports MemAvailable or the cgroup headroom, which
+ * stays the figure we use. */
 export type MemoryPressure = 'normal' | 'warn' | 'critical';
 export type HostMemory = {
   source: 'memorystatus' | 'available_memory';
@@ -24,7 +26,6 @@ export type HostMemory = {
 };
 export type HostMemoryProbe = {
   platform: NodeJS.Platform;
-  totalBytes: number;
   availableMemory: () => number;
   memorystatus: () => Promise<string>;
   memorystatusSync: () => string;
@@ -34,7 +35,11 @@ const sysctl = '/usr/sbin/sysctl';
 const sysctlArgs = [
   '-n',
   'kern.memorystatus_vm_pressure_level',
-  'kern.memorystatus_level',
+  'vm.page_free_count',
+  'vm.page_speculative_count',
+  'vm.page_pageable_external_count',
+  'vm.page_purgeable_count',
+  'hw.pagesize',
 ];
 const sysctlTimeoutMs = 2_000;
 const pressureLevels: Record<string, MemoryPressure> = {
@@ -45,7 +50,6 @@ const pressureLevels: Record<string, MemoryPressure> = {
 
 export const systemMemoryProbe: HostMemoryProbe = {
   platform: process.platform,
-  totalBytes: totalmem(),
   availableMemory: () => process.availableMemory?.() ?? freemem(),
   memorystatus: async () =>
     (
@@ -62,24 +66,27 @@ export const systemMemoryProbe: HostMemoryProbe = {
     }),
 };
 
-export function parseMemorystatus(
-  output: string,
-  totalBytes: number,
-): HostMemory {
+export function parseMemorystatus(output: string): HostMemory {
   const fields = output.trim().split(/\s+/);
-  const pressure = pressureLevels[fields[0] ?? ''];
-  const freePercent = Number(fields[1]);
+  const [level, ...counts] = fields;
+  const pressure = pressureLevels[level ?? ''];
+  const numbers = counts.map(Number);
   if (
-    fields.length !== 2 ||
+    fields.length !== sysctlArgs.length - 1 ||
     !pressure ||
-    !Number.isInteger(freePercent) ||
-    freePercent < 0 ||
-    freePercent > 100
+    !numbers.every((n) => Number.isSafeInteger(n) && n >= 0)
   )
     throw Error(`MEMORYSTATUS_UNREADABLE: ${JSON.stringify(output)}`);
+  const [free, speculative, fileBacked, purgeable, pageSize] = numbers as [
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
   return {
     source: 'memorystatus',
-    availableBytes: Math.floor((totalBytes * freePercent) / 100),
+    availableBytes: (free + speculative + fileBacked + purgeable) * pageSize,
     pressure,
   };
 }
@@ -101,7 +108,7 @@ export async function readHostMemory(
 ): Promise<HostMemory> {
   if (probe.platform !== 'darwin') return libuvMemory(probe);
   try {
-    return parseMemorystatus(await probe.memorystatus(), probe.totalBytes);
+    return parseMemorystatus(await probe.memorystatus());
   } catch (error) {
     return libuvMemory(probe, error);
   }
@@ -113,7 +120,7 @@ export function readHostMemorySync(
 ): HostMemory {
   if (probe.platform !== 'darwin') return libuvMemory(probe);
   try {
-    return parseMemorystatus(probe.memorystatusSync(), probe.totalBytes);
+    return parseMemorystatus(probe.memorystatusSync());
   } catch (error) {
     return libuvMemory(probe, error);
   }
