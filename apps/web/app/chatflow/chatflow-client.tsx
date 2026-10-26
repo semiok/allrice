@@ -39,7 +39,6 @@ import { isMessageRunActive } from './run-view';
 
 import { isConversationAtBottom } from '../../lib/chatflow/conversation-scroll';
 import { projectPendingUserQuestion } from '../../lib/chatflow/user-question-state';
-import { projectNativeContext } from '../../lib/chatflow/native-context';
 import { projectNativeExperience } from '../../lib/chatflow/native-experience';
 
 import { type ReferenceDraft } from './reference-chips';
@@ -1365,10 +1364,6 @@ export function ChatFlowClient({
       message.runId && isMessageRunActive(message, runViews[message.runId]),
   );
   const isRunning = activeRunMessages.length > 0;
-  const nativeContextStatus = projectNativeContext(
-    history?.nativeContextStatus ?? null,
-    Object.values(runViews).flatMap((view) => view.events),
-  );
   const contextCompacting = Object.values(runViews).some(
     (view) =>
       (view.status === 'running' || view.status === 'connecting') &&
@@ -1674,7 +1669,6 @@ export function ChatFlowClient({
       localWorkspaceLabel={localWorkspaceLabel}
       localWorkspaceOnline={localWorkspaceOnline}
       bridgeConnectionState={bridgeConnectionState}
-      nativeContextStatus={nativeContextStatus}
       contextCompacting={contextCompacting}
       onAttachmentMenuOpenChange={setAttachmentMenuOpen}
       onCancelRun={cancelRun}

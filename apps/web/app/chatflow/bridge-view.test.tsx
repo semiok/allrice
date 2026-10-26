@@ -41,7 +41,6 @@ function render(
     error: '',
     fileInput: { current: null },
     isRunning: false,
-    nativeContextStatus: null,
     pendingAttachments: [],
     onAttachmentMenuOpenChange: noop,
     onCancelRun: noop,
@@ -138,49 +137,39 @@ describe('Bridge connection and local workspace presentation', () => {
       },
     ]);
   });
-  it('distinguishes occupancy from active compression even below 100 percent', () => {
-    const nativeContextStatus = {
-      source: 'dsh' as const,
-      usedTokens: 152000,
-      contextWindowTokens: 200000,
-      percentage: 76,
-      asOfSeq: 42,
-      observedAt: null,
-    };
-    const html = render([], true, {
-      nativeContextStatus,
-      contextCompacting: true,
-    });
-    expect(html).toContain('上下文占用 76%');
-    expect(html).toContain('aria-label="正在整理上下文"');
-    expect(html).not.toContain('正在整理…');
-    expect(html).toContain('不是压缩进度');
-    expect(html).not.toContain('100%');
-    expect(
-      render([], true, { nativeContextStatus, contextCompacting: false }),
-    ).not.toContain('aria-label="正在整理上下文"');
+  it('says only that the conversation is being tidied, without usage figures', () => {
+    const html = render([], true, { contextCompacting: true });
+    expect(html).toContain('正在整理对话，完成后继续');
+    for (const word of ['上下文占用', 'DSH', 'tokens', '%'])
+      expect(html).not.toContain(word);
+    expect(render([], true, { contextCompacting: false })).not.toContain(
+      '正在整理对话',
+    );
   });
   it('keeps an online device green without claiming it has a workspace', () => {
     const html = render([device('online')]);
-    expect(html).toContain('aria-label="Bridge 在线 · 未选择工作区"');
+    expect(html).toContain('电脑已连接 · 未选文件夹');
     expect(html).toMatch(/class="[^"]*localWorkspaceOnline[^"]*"/);
     expect(html).not.toContain('本地工作区离线');
   });
   it('shows a connected authorized folder', () => {
     const html = render([device('online', true)]);
-    expect(html).toContain('aria-label="本地工作区 Synthetic Folder"');
-    expect(html).toContain('Rice Bridge 在线，本地工作区已连接');
+    expect(html).toContain('aria-label="电脑已连接，文件夹 Synthetic Folder"');
+    expect(html).toContain('可以处理文件夹「Synthetic Folder」里的文件');
   });
   it('does not show remembered workspace names when offline', () => {
     const html = render([device('offline', true)]);
-    expect(html).toContain('aria-label="Bridge 离线"');
+    // Not connected is a normal state: neutral wording, no red, no Bridge.
+    expect(html).toContain('>电脑未连接<');
+    expect(html).toMatch(/class="[^"]*localWorkspaceOffline[^"]*"/);
+    expect(html).not.toContain('Bridge');
     expect(html).not.toContain('Synthetic Folder');
   });
   it('does not mistake request failure or initial loading for confirmed offline', () => {
     const html = render([device('online', true)], false);
-    expect(html).toContain('aria-label="Bridge 状态待确认"');
+    expect(html).toContain('正在确认电脑连接');
     expect(html).not.toContain('Synthetic Folder');
-    expect(html).not.toContain('aria-label="Bridge 离线"');
+    expect(html).not.toContain('电脑未连接');
   });
   it('ignores revoked devices and prefers an online grant over old offline grants', () => {
     expect(

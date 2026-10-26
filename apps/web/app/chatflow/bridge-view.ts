@@ -143,6 +143,8 @@ export function projectBridgeView(devices: BridgeDevice[], statusKnown = true) {
   };
 }
 
+/** The composer's computer status. Not connected is a normal state: neutral,
+ * never red, and worded for people who never heard of Bridge. */
 export function bridgeComposerStatus(
   connection: BridgeConnectionState,
   localWorkspaceOnline: boolean,
@@ -150,32 +152,32 @@ export function bridgeComposerStatus(
 ) {
   if (connection === 'unknown') {
     return {
-      label: 'Bridge 状态待确认',
-      ariaLabel: 'Bridge 状态待确认',
-      title: '尚未取得最新状态，请刷新确认；上次状态不代表当前连接',
+      label: '正在确认电脑连接',
+      ariaLabel: '正在确认电脑连接，点击查看电脑',
+      title: '还没有拿到最新的连接状态，点击查看或刷新。',
       online: false,
     };
   }
   if (connection === 'offline') {
     return {
-      label: 'Bridge 离线',
-      ariaLabel: 'Bridge 离线',
-      title: '服务器未收到近期 Bridge 心跳，请确认本地 Bridge 正在运行',
+      label: '电脑未连接',
+      ariaLabel: '电脑未连接，点击查看如何连接',
+      title: '需要处理你电脑上的文件时，点击这里连接电脑。',
       online: false,
     };
   }
   if (localWorkspaceOnline && localWorkspaceLabel) {
     return {
       label: localWorkspaceLabel,
-      ariaLabel: `本地工作区 ${localWorkspaceLabel}`,
-      title: `Rice Bridge 在线，本地工作区已连接：${localWorkspaceLabel}`,
+      ariaLabel: `电脑已连接，文件夹 ${localWorkspaceLabel}`,
+      title: `电脑已连接，可以处理文件夹「${localWorkspaceLabel}」里的文件。`,
       online: true,
     };
   }
   return {
-    label: 'Bridge 在线 · 未选择工作区',
-    ariaLabel: 'Bridge 在线 · 未选择工作区',
-    title: 'Rice Bridge 在线；选择并授权本地文件夹后，才能连接本地工作区',
+    label: '电脑已连接 · 未选文件夹',
+    ariaLabel: '电脑已连接，还没有选择文件夹',
+    title: '电脑已连接。选择并允许一个文件夹后，就能处理里面的文件。',
     online: true,
   };
 }

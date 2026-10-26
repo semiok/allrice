@@ -5239,7 +5239,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           },
         ];
         await f.page
-          .getByRole('button', { name: 'Bridge 离线', exact: true })
+          .getByRole('button', {
+            name: '电脑未连接，点击查看如何连接',
+            exact: true,
+          })
           .click();
         const settings = f.page.getByRole('dialog', {
           name: '设置',

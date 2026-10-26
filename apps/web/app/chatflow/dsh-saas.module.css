@@ -1026,22 +1026,20 @@ div.composerAttachmentMenu,
   border-radius: 50%;
 }
 
-.composerStatus .localWorkspaceOnline {
-  background: #edf9f2;
-  color: #168a50;
+/* The dot carries the state; the words stay readable secondary text. Not
+ * connected is a normal state, so it is neutral grey, never red. */
+.composerStatus .localWorkspaceOnline,
+.composerStatus .localWorkspaceOffline {
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
 }
 
 .localWorkspaceOnline > span {
-  background: #20b26b;
-}
-
-.composerStatus .localWorkspaceOffline {
-  background: #fff0ed;
-  color: #c94f45;
+  background: var(--dsw-alias-state-success-primary);
 }
 
 .localWorkspaceOffline > span {
-  background: #e4564d;
+  background: var(--dsw-alias-state-idle-primary);
 }
 
 .composerStatus button {
@@ -1967,8 +1965,11 @@ div.composerAttachmentMenu,
 
 .contextCompacting {
   display: inline-flex;
-  margin-left: 6px;
-  vertical-align: middle;
+  align-items: center;
+  gap: 4px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 22px;
 }
 .contextCompacting svg {
   width: 14px;
