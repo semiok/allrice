@@ -408,7 +408,7 @@ integration(
       await updateWorkAutomation(
         f.context,
         f.workspace,
-        { expectedRevision: 0, capability: 'assistants', enabled: false },
+        { expectedRevision: 1, capability: 'assistants', enabled: false },
         fixture.db,
       );
       await expect(f.authorize('configure')).rejects.toThrow(
@@ -417,7 +417,7 @@ integration(
       await updateWorkAutomation(
         f.context,
         f.workspace,
-        { expectedRevision: 1, capability: 'assistants', enabled: true },
+        { expectedRevision: 2, capability: 'assistants', enabled: true },
         fixture.db,
       );
       await expect(f.authorize('configure')).resolves.toBeUndefined();

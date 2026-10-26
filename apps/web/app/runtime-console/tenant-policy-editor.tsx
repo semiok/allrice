@@ -3,8 +3,8 @@ import { useEffect, useState } from 'react';
 import {
   runtimeGovernedActions,
   runtimePolicyActionDecision,
-  defaultWorkAutomation,
   type RuntimePolicyControls,
+  type WorkAutomation,
 } from '@allrice/contracts';
 import styles from './tenant-administration.module.css';
 type Snapshot = {
@@ -12,6 +12,13 @@ type Snapshot = {
   workspaceId: string;
   version: number | null;
   controls: RuntimePolicyControls | null;
+};
+// The tenant view shows what an allowed action does once a member turns that
+// work setting on; each member's own setting still decides every run.
+const memberSettingsOn: WorkAutomation = {
+  cloud: true,
+  computer: true,
+  assistants: true,
 };
 const empty = (): RuntimePolicyControls => ({
   version: 1,
@@ -205,7 +212,7 @@ export function TenantPolicyEditor({
                     draft,
                     action,
                     [],
-                    defaultWorkAutomation,
+                    memberSettingsOn,
                   );
                   return (
                     <tr key={action}>

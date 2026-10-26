@@ -377,8 +377,9 @@ suite(
       );
       const [run] =
         await fdb.db`select input from allrice_runs where id=${sent.run.id}`;
+      // A new member has not turned assistants on; the grant is still inherited.
       expect(run!.input.assistantConfiguration).toMatchObject({
-        allowAssistants: true,
+        allowAssistants: false,
         mode: 'daily',
       });
       const [frozen] =

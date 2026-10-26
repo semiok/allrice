@@ -15,7 +15,7 @@ type Database = ReturnType<typeof getDatabase>;
 export class WorkAutomationConflict extends Error {}
 
 /** Shared with execution admission. The transaction lock includes absent rows,
- * so a first explicit OFF cannot race an admission using the default ON. */
+ * so a member's first saved change cannot race an admission using the default. */
 export async function readWorkAutomation(
   tx: TransactionSql,
   scope: Scope,
@@ -27,7 +27,7 @@ export async function readWorkAutomation(
     return {
       available: false,
       revision: 0,
-      settings: { cloud: false, computer: false, assistants: true },
+      settings: { cloud: false, computer: false, assistants: false },
     };
   // Read paths skip it: they only display the current settings.
   if (lock)

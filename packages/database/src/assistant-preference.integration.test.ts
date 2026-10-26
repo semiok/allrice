@@ -1,4 +1,4 @@
-import { updateWorkAutomation } from './work-automation.ts';
+import { getWorkAutomation, updateWorkAutomation } from './work-automation.ts';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type * as Client from './core/client.ts';
@@ -25,6 +25,16 @@ const input = (allowAssistants?: boolean) => ({
     ? {}
     : { assistantPreference: { mode: 'daily', allowAssistants } }),
 });
+// Assistants are off until the member turns them on in work settings.
+const enableAssistants = (
+  f: Awaited<ReturnType<typeof createExperienceFixture>>,
+) =>
+  updateWorkAutomation(
+    f.owner,
+    f.workspace,
+    { expectedRevision: 0, capability: 'assistants', enabled: true },
+    isolated.db,
+  );
 async function grantFixtureAssistant(
   f: Awaited<ReturnType<typeof createExperienceFixture>>,
 ) {
@@ -65,9 +75,64 @@ suite(
       const [row] =
         await isolated.db`select input from allrice_runs where id=${sent.run.id}`;
       expect(row!.input).not.toHaveProperty('assistantConfiguration');
+      await enableAssistants(f);
       await expect(
         sendChatMessage(f.owner, f.workspace, f.session.id, input(true)),
       ).rejects.toMatchObject({ code: 'forbidden' });
+    });
+
+    it('MET-210: a member who never saved work settings chats without assistants; saved choices stay as saved', async () => {
+      vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
+      // The chat page sends this opt-in whenever the employee can delegate.
+      const ask = () => ({
+        ...input(true),
+        text: '帮我把这三家供应商的报价对比一下，列出差异',
+      });
+      const frozen = async (
+        f: Awaited<ReturnType<typeof createExperienceFixture>>,
+      ) => {
+        const sent = await sendChatMessage(
+          f.owner,
+          f.workspace,
+          f.session.id,
+          ask(),
+        );
+        const [row] =
+          await isolated.db`select input from allrice_runs where id=${sent.run.id}`;
+        return row!.input.assistantConfiguration.allowAssistants;
+      };
+      const unsaved = await createExperienceFixture(isolated.db);
+      await grantFixtureAssistant(unsaved);
+      expect(
+        await getWorkAutomation(unsaved.owner, unsaved.workspace, isolated.db),
+      ).toMatchObject({
+        revision: 0,
+        settings: { cloud: true, computer: true, assistants: false },
+      });
+      expect(await frozen(unsaved)).toBe(false);
+
+      const enabled = await createExperienceFixture(isolated.db);
+      await grantFixtureAssistant(enabled);
+      await enableAssistants(enabled);
+      expect(
+        (await getWorkAutomation(enabled.owner, enabled.workspace, isolated.db))
+          .settings.assistants,
+      ).toBe(true);
+      expect(await frozen(enabled)).toBe(true);
+
+      // Saving any switch stores all three. A row saved under the old default
+      // keeps assistants on; no migration rewrites it.
+      const saved = await createExperienceFixture(isolated.db);
+      await grantFixtureAssistant(saved);
+      await isolated.db`insert into allrice_member_work_automation(organization_id,workspace_id,user_id,revision,settings)
+        values(${saved.owner.organizationId},${saved.workspace},${saved.owner.actor.id},1,${isolated.db.json({ cloud: false, computer: true, assistants: true })})`;
+      expect(
+        await getWorkAutomation(saved.owner, saved.workspace, isolated.db),
+      ).toMatchObject({
+        revision: 1,
+        settings: { cloud: false, computer: true, assistants: true },
+      });
+      expect(await frozen(saved)).toBe(true);
     });
 
     it('global assistant OFF takes precedence over a task opt-in without blocking the main task', async () => {
@@ -128,6 +193,7 @@ suite(
     it('requires both enabled feature and explicit frozen employee grant; subsequent runs cannot modify earlier configuration', async () => {
       const f = await createExperienceFixture(isolated.db);
       const version = await grantFixtureAssistant(f);
+      await enableAssistants(f);
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
       await expect(
         sendChatMessage(f.owner, f.workspace, f.session.id, input(true)),

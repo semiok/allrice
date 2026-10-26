@@ -150,6 +150,9 @@ suite('member work settings: real browser, route and PostgreSQL', () => {
       await cloud.waitFor();
       expect(await cloud.getAttribute('aria-checked')).toBe('true');
       expect(await page.getByRole('switch').count()).toBe(3);
+      // MET-210: assistants stay off until this member turns them on.
+      const assistants = page.getByRole('switch', { name: '自动安排助手' });
+      expect(await assistants.getAttribute('aria-checked')).toBe('false');
       await cloud.click();
       await page.waitForFunction(
         () =>
@@ -160,6 +163,8 @@ suite('member work settings: real browser, route and PostgreSQL', () => {
       await page.reload();
       await cloud.waitFor();
       expect(await cloud.getAttribute('aria-checked')).toBe('false');
+      // Saving one switch stores all three; the unsaved default stays off.
+      expect(await assistants.getAttribute('aria-checked')).toBe('false');
       const { updateWorkAutomation } =
         await import('../../../../packages/database/src/work-automation');
       await updateWorkAutomation(

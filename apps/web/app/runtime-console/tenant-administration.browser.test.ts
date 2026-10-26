@@ -1033,6 +1033,18 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
           .nth(2)
           .textContent(),
       ).toContain('按成员工作方式执行');
+      // Assistants are off by default for members, but the tenant result shows
+      // the allowed rule, not one member's setting.
+      expect(
+        await page
+          .getByRole('row')
+          .filter({
+            has: page.getByText('assistant.delegate', { exact: true }),
+          })
+          .locator('td')
+          .nth(2)
+          .textContent(),
+      ).toContain('按成员工作方式执行');
       const [stored] =
         await fixture.db`select controls from allrice_runtime_policy_controls where workspace_id=${snow.workspaceId}`;
       expect(stored!.controls).toMatchObject({
