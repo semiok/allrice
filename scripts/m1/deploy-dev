@@ -2,33 +2,39 @@
 # Release train: deploy a version of AllRice to the shared Dev on M1 (rules: AGENTS.md
 # §5 and §9 at the repository root). Only the release manager deploys or rolls back.
 #
-#   deploy-dev --release-manager [--ref <ref>] [--force] [--skip-smoke]   build, check, switch, restart, smoke
-#   deploy-dev --release-manager --rollback [<release-dir>]               back to the release before the current one
-#   deploy-dev --release-manager --recover                                restore after a deploy that could not finish
-#   deploy-dev --status                                                   configured vs running version, lock, recent deploys
+#   deploy-dev --release-manager [--ref <ref>] [--force] [--skip-smoke] [--force-snapshot]
+#                                                        build, check, switch, restart, smoke
+#   deploy-dev --release-manager --rollback [<release-dir>]   back to the release before the current one
+#   deploy-dev --release-manager --recover                    restore after a deploy that could not finish
+#   deploy-dev --status        configured vs running version, journal contract, rollback check, lock, recent deploys
 #
 # deploy-dev takes the deploy lock itself; do not wrap it in `deploy-lock run`.
 #
 # 1. Build in a new release directory (no lock; the running Dev is untouched).
 # 2. Pre-stop check with the candidate: scripts/dev-release/verify-native-retention.mjs.
 #    Anything not covered aborts before anything stops.
-# 3. Under the deploy lock: stop Web and Worker and wait until launchd has dropped both
-#    jobs, their processes have exited and their ports are closed; `pnpm db:prepare`
-#    (migrate, sync platform content, verify); point launchd at the new release; start
-#    Worker then Web and confirm both report the new source SHA.
+# 3. Under the deploy lock: refuse a database with migrations the candidate does not know
+#    (or with none at all);
+#    stop Web and Worker and wait until launchd has dropped both jobs, their processes
+#    have exited and their ports are closed; when the candidate has migrations not yet
+#    applied (or with --force-snapshot), snapshot the database, the state directories,
+#    .env and both launchd files into qa/pre-migrate/<release>/ (newest two kept; restore:
+#    docs/runbooks/m1-database.md); `pnpm db:prepare` (migrate, sync platform content,
+#    verify); point launchd at the new release; start Worker then Web and confirm both
+#    report the new source SHA.
 #    The previous launchd files are saved in qa/deploy-inflight/ first. However this run
 #    ends before success (a failed step, set -e, INT/TERM/HUP) it puts them back,
 #    restarts both services and checks they are healthy on the previous version. If it is
 #    killed outright, `--recover` does the same. Database migrations are never reverted,
 #    so the previous version can still fail to start: then it says so, keeps the saved
 #    files and leaves the rest to a person.
-# 4. Records written, lock released, then the five-item smoke test against the expected
+# 4. Records written, lock released, then the smoke test against the expected
 #    version. A failed smoke does not roll back by itself; it prints the rollback command.
 set -euo pipefail
-BIN=$(cd "$(dirname "$0")" && pwd -P); . "$BIN/lib.sh"
+BIN=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P); . "$BIN/lib.sh"
 REPO="$HOME/allrice-repo"; RELEASES="$HOME/allrice-dev-releases"
 STATE="$HOME/allrice-dev/qa"; LOG="$STATE/deploys.jsonl"; INFLIGHT="$STATE/deploy-inflight"
-LOCK="$HOME/allrice-dev/.local/deploy.lock"
+LOCK="$HOME/allrice-dev/.local/deploy.lock"; SNAPSHOTS="$STATE/pre-migrate"; KEEP_SNAPSHOTS=2
 export PATH="$HOME/.local/opt/node-22.23.2/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 KEEP_RELEASES=3; BLOG=""; FAIL_REASON=""; INFLIGHT_MINE=""; LOCKED=""; BUILD_DIR=""; BUILT=""
 WEB_LABEL=ai.bplabs.allrice-dev-web; WORKER_LABEL=ai.bplabs.allrice-dev-worker
@@ -46,8 +52,14 @@ ready_sha() { # prints the sourceSha a service reports as ready, or nothing
 try:
   j=json.load(sys.stdin); print(j["identity"]["sourceSha"] if j.get("status")=="ready" else "")
 except Exception: print("")' ; }
+worker_boot() { # prints the bootId the ready Worker reports, or nothing; never fails
+  { curl -fsS -m 5 "http://127.0.0.1:$(worker_port)/health/ready" 2>/dev/null || true; } | "$M1_PY" -c 'import json,re,sys
+try: b=str(json.load(sys.stdin)["identity"]["bootId"])
+except Exception: b=""
+print(b if re.fullmatch("[0-9a-f-]{36}",b) else "")' ; }
 wait_ready() { # url sha seconds
   local i; for i in $(seq 1 "$3"); do [ "$(ready_sha "$1")" = "$2" ] && return 0; sleep 1; done; return 1; }
+dev_sql() { "$BIN/with-env" worker sh -c 'psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -At -F " " -c "$1"' sh "$1"; }
 log_deploy() { "$M1_PY" - "$LOG" "$@" <<'PY'
 import json,sys,time
 p,*kv=sys.argv[1:]; d=dict(zip(kv[::2],kv[1::2])); d['at']=time.strftime('%Y-%m-%dT%H:%M:%S%z')
@@ -70,6 +82,38 @@ resolve_ref() {
 }
 
 stop_both() { stop_job "$WEB_LABEL" "$(web_port)" && stop_job "$WORKER_LABEL" "$(worker_port)"; }
+# Diagnostic only, never a gate (MET-221 D13): what the stopped Worker boot left behind.
+report_after_stop() { # boot of the stopped Worker, or ""
+  local open="" live
+  if [ -n "$1" ]; then
+    open=$(dev_sql "select count(*) from allrice_dsh_runtime_close_observations o where o.worker_boot_id='$1'
+      and o.observation_kind='owned' and not exists (select 1 from allrice_dsh_runtime_close_observations c
+      where c.runtime_id=o.runtime_id and c.worker_boot_id=o.worker_boot_id and c.observation_kind='process_closed')" 2>&1) || open="? (${open:0:120})"
+  fi
+  live=$(dev_sql "select count(*) from allrice_dsh_runtime_instances where status='live'" 2>&1) || live="? (${live:0:120})"
+  say "after stop (diagnostic, not a gate): stopped boot ${1:-unknown}: ${open:-?} runtimes owned without process_closed; $live live rows in allrice_dsh_runtime_instances"
+}
+
+# Pre-migration snapshot. Both services are stopped, so the database and the state
+# directories are one point in time: the dump format and directories of backup-daily
+# (restore: docs/runbooks/m1-database.md) as APFS clones, plus .env and both launchd files.
+SNAPSHOT_DIRS="storage executions dsh-runtime-m1 native-once-control-m1 native-recurring-control-m1 dsh-platform"
+snapshot() ( # name -> 0 when $SNAPSHOTS/<name> is complete
+  umask 077
+  dir="$SNAPSHOTS/$1" L="$HOME/allrice-dev/.local"
+  [ ! -e "$dir" ] || { echo "$dir already exists" >&2; exit 1; }
+  trap 'rm -rf -- "$dir.tmp"' EXIT # a partial snapshot is never left behind
+  # Under the deploy lock no other snapshot runs: any *.tmp is left over from a killed run.
+  mkdir -p "$SNAPSHOTS" && rm -rf -- "$SNAPSHOTS"/*.tmp && mkdir "$dir.tmp" || exit 1
+  "$BIN/with-env" worker sh -c 'pg_dump -Fp --no-owner --no-privileges "$DATABASE_URL"' | gzip -6 > "$dir.tmp/allrice_dev.sql.gz" || exit 1
+  for d in $SNAPSHOT_DIRS; do [ ! -e "$L/$d" ] || cp -c -pR "$L/$d" "$dir.tmp/$d" || exit 1; done
+  cp -p "$HOME/allrice-dev/.env" "$dir.tmp/env" && cp -p "$WEB_PLIST" "$dir.tmp/web.plist" && cp -p "$WORKER_PLIST" "$dir.tmp/worker.plist" || exit 1
+  mv "$dir.tmp" "$dir" || exit 1
+  # Pruning is best effort: the new snapshot is complete either way.
+  ls -1d "$SNAPSHOTS"/2*/ | grep -v '\.tmp/$' | sort -r | tail -n +$((KEEP_SNAPSHOTS + 1)) \
+    | while read -r old; do rm -rf -- "$old" || echo "could not prune $old" >&2; done
+  exit 0
+)
 start_both_on() { # sha -> start Worker then Web, both must report sha
   start_job "$WORKER_LABEL" "$WORKER_PLIST" || return 1
   wait_ready "http://127.0.0.1:$(worker_port)/health/ready" "$1" 180 || { say "worker did not become ready on ${1:0:8}"; return 1; }
@@ -157,13 +201,20 @@ trap 'exit 130' INT TERM HUP
 # Pre-stop check: does the candidate cover every chat, origin and schedule control that
 # exists now? Runs the candidate's own verifier against the live database.
 precheck() { # rel sha art log -> prints the reason on failure
+  local from; from=$(( $([ -f "$4" ] && wc -l < "$4" || echo 0) + 1 )) # read only this check's output
   if ( cd "$1" && "$BIN/with-env" worker env ALLRICE_DSH_NATIVE_ARTIFACT_ID="$3" ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID="$3" \
          ALLRICE_DSH_CORDIS_CONFIG="$1/apps/worker/dsh/allrice-restricted.cordis.yml" \
          node scripts/dev-release/verify-native-retention.mjs --root="$1" --release-sha="$2" ) >> "$4" 2>&1; then return 0; fi
-  local reason; reason=$(grep -oE "(DSH_NATIVE_[A-Z_]+|NATIVE_RETENTION_[A-Z_]+)( \[.{0,250})?" "$4" | tail -1 || true)
-  if grep -qE 'relation "[^"]+" does not exist' "$4"; then
-    echo "the candidate's checker needs tables from migrations not yet applied; this release needs the official two-step procedure (docs/dev-test-execution-retirement.md), not deploy-dev"
-  elif [[ "$reason" == *UNCOVERED* ]]; then
+  local out reason code; out=$(tail -n "+$from" "$4")
+  reason=$(grep -oE "(DSH_NATIVE_[A-Z_]+|NATIVE_RETENTION_[A-Z_]+)( \[.{0,250})?" <<<"$out" | tail -1 || true); code=${reason%% *}
+  # The UNCOVERED and two-step hints stay while a rollback can still reach a MET-195-era release.
+  if grep -qE 'relation "[^"]+" does not exist' <<<"$out"; then
+    echo "the candidate's checker needs tables from migrations not yet applied: a defect, the checker must run on the schema before its migrations (MET-195-era releases instead needed the official two-step procedure, docs/dev-test-execution-retirement.md)"
+  elif [[ "$code" == *INCOMPATIBLE* ]]; then
+    echo "existing contexts are incompatible with this version: ${reason:0:300}. Archive them or confirm first"
+  elif [[ "$code" == *JOURNAL_CONTRACT* ]]; then
+    echo "this version's journal contract range does not cover the journals in the database: ${reason:0:300}"
+  elif [[ "$code" == *UNCOVERED* ]]; then
     echo "existing chats or schedules use a native artifact this version does not cover: ${reason:0:300}. Needs the MET-195 transition or retiring those contexts first"
   else echo "pre-stop native check failed: ${reason:-see $4}"; fi
   return 1
@@ -177,6 +228,12 @@ status() {
   echo "running sha:        web $(ready_sha "http://127.0.0.1:$(web_port)/api/health/ready" | cut -c1-8)  worker $(ready_sha "http://127.0.0.1:$(worker_port)/health/ready" | cut -c1-8)  (empty = not ready)"
   echo "native artifact:    $(penv "$WORKER_PLIST" ALLRICE_DSH_NATIVE_ARTIFACT_ID) (configured)"
   echo "tools version:      $(cat "$BIN/TOOLS_VERSION" 2>/dev/null || echo "unknown ($BIN)")"
+  local hw prev why
+  hw=$(dev_sql "select coalesce(value->>'highWater', value::text) from allrice_runtime_metadata where key='dsh-journal-contract'" 2>/dev/null) || hw="unknown (database not readable)"
+  echo "journal contract:   high water ${hw:-not written yet}"
+  if ! prev=$(previous_release); then echo "rollback check:     no recorded previous release (roll back with --rollback <release-dir>)"
+  elif why=$(check_migrations_known "$prev"); then echo "rollback check:     $(basename "$prev") knows every applied migration (pre-stop check not run)"
+  else echo "rollback check:     $(basename "$prev") would be REFUSED: $why"; fi
   if [ -e "$INFLIGHT" ]; then
     if lock_held "$LOCK"; then echo "DEPLOY IN PROGRESS (phase '$(sed -n 1p "$INFLIGHT/state" 2>/dev/null)')"
     else echo "UNFINISHED DEPLOY (phase '$(sed -n 1p "$INFLIGHT/state" 2>/dev/null)'): run deploy-dev --release-manager --recover"; fi
@@ -223,25 +280,42 @@ sys.exit(1)
 PY
 }
 
-# An older binary refuses a database with migrations it does not know (db:verify). Compare
-# what the database has actually applied with what the target release ships.
-check_migrations_known() { # target_release -> prints unknown names, exit 1 if any or unreadable
-  local applied shipped
-  applied=$("$BIN/with-env" worker sh -c 'psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "select name from allrice_schema_migrations order by name"') \
-    || { echo "cannot read allrice_schema_migrations"; return 1; }
+# What the database has applied against what a release knows: migration_diff (lib.sh).
+migrations_vs() { # release -> "unknown|pending <name>" lines; on failure prints the reason, exit 1
+  local applied
+  applied=$(dev_sql "select name from allrice_schema_migrations order by name") || { echo "cannot read allrice_schema_migrations"; return 1; }
   [ -n "$applied" ] || { echo "allrice_schema_migrations is empty"; return 1; }
-  [ -d "$1/packages/database/migrations" ] || { echo "no migrations directory in $1"; return 1; }
-  shipped=$(ls "$1/packages/database/migrations") || { echo "cannot list $1/packages/database/migrations"; return 1; }
-  local unknown; unknown=$(comm -23 <(printf '%s\n' "$applied" | sort) <(printf '%s\n' "$shipped" | sort))
+  printf '%s\n' "$applied" | migration_diff "$1"
+}
+# An older binary refuses a database with migrations it does not know (db:verify): the
+# rollback gate. A deploy uses the same diff to learn what db:prepare is going to run.
+check_migrations_known() { # release -> prints the pending names; prints unknown names or the reason and exits 1
+  local diff unknown
+  diff=$(migrations_vs "$1") || { echo "$diff"; return 1; }
+  unknown=$(printf '%s\n' "$diff" | sed -n 's/^unknown //p')
   [ -z "$unknown" ] || { echo "$unknown" | head -5 | tr '\n' ' '; return 1; }
+  printf '%s\n' "$diff" | sed -n 's/^pending //p'
+}
+# With both services stopped and before db:prepare: snapshot when migrations are pending
+# (they may be one-way) or when forced.
+pre_migrate_snapshot() { # name pending forced
+  if [ -z "$2" ] && [ "$3" != 1 ]; then say "no migrations to apply; no snapshot"; return 0; fi
+  inflight_phase snapshot
+  say "snapshot before migrating ($([ -n "$2" ] && echo "to apply:" $2 || echo "forced; no migrations to apply")) into $SNAPSHOTS/$1"
+  local t; t=$(date +%s)
+  snapshot "$1" || die "pre-migration snapshot failed"
+  say "snapshot taken in $(( $(date +%s) - t ))s ($(du -sh "$SNAPSHOTS/$1" | cut -f1))"
+}
+previous_release() { # the release deployed before the current one, when recorded
+  local prev; prev=$(sed -n 1p "$STATE/.previous-release" 2>/dev/null || true)
+  [ -n "$prev" ] && [ "$(sed -n 2p "$STATE/.previous-release")" = "$(release_of)" ] && echo "$prev"
 }
 
 rollback() { # [release-dir]
   local cur_rel cur_sha cur_art target="${1:-}"
   cur_rel=$(release_of); cur_sha=$(penv "$WORKER_PLIST" ALLRICE_RELEASE_SHA); cur_art=$(penv "$WORKER_PLIST" ALLRICE_DSH_NATIVE_ARTIFACT_ID)
   if [ -z "$target" ]; then
-    target=$(sed -n 1p "$STATE/.previous-release" 2>/dev/null || true)
-    [ -n "$target" ] && [ "$(sed -n 2p "$STATE/.previous-release")" = "$cur_rel" ] \
+    target=$(previous_release) \
       || die "no recorded previous release for the current one ($cur_rel); pass the target: --rollback <release-dir>"
   fi
   [ -d "$target" ] || die "release directory is gone: $target"
@@ -269,9 +343,10 @@ rollback() { # [release-dir]
 }
 
 deploy() {
-  local ref=origin/main force=0 smoke=1
+  local ref=origin/main force=0 smoke=1 snap=0
   while [ $# -gt 0 ]; do case "$1" in
     --ref) ref=${2:?}; shift 2 ;; --force) force=1; shift ;; --skip-smoke) smoke=0; shift ;;
+    --force-snapshot) snap=1; shift ;;
     *) die "unknown option $1" 2 ;; esac; done
   local t0; t0=$(date +%s)
   ! lock_held "$LOCK" || die "a deploy is in progress ($("$BIN/deploy-lock" status)); stop and retry later" 3
@@ -309,10 +384,15 @@ deploy() {
   take_lock || die "another deploy started meanwhile; build kept at $rel (rerun deploy-dev later)" 3
   [ ! -e "$INFLIGHT" ] || die "an earlier deploy did not finish; build kept at $rel. Run deploy-dev --release-manager --recover first"
   [ "$(release_of)" = "$cur_rel" ] || die "Dev changed while this version was building; build kept at $rel, start again"
-  local down_at; down_at=$(date +%s)
+  local pending; pending=$(check_migrations_known "$rel") || {
+    log_deploy kind failed phase migrations sha "$sha" reason "$pending" log "$BLOG"
+    die "the database has migrations ${sha:0:8} does not know or could not be checked: $pending; build kept at $rel (Dev untouched)"; }
+  local down_at boot; down_at=$(date +%s); boot=$(worker_boot)
   inflight_begin "$cur_sha"
   say "stopping web and worker"
   stop_both || die "services did not stop"
+  report_after_stop "$boot"
+  pre_migrate_snapshot "$(basename "$rel")" "$pending" "$snap"
   inflight_phase migrating
   say "db:prepare (migrate, sync platform content, verify)"
   ( cd "$rel" && "$BIN/with-env" worker pnpm db:prepare ) >> "$BLOG" 2>&1 || die "db:prepare failed; see $BLOG"
@@ -329,7 +409,7 @@ deploy() {
 
   if [ $smoke = 1 ]; then
     local out; out="$STATE/smoke/$(date +%Y%m%d-%H%M%S)-${sha:0:8}"
-    say "running five-item smoke test against ${sha:0:8}"
+    say "running the smoke test against ${sha:0:8}"
     local ok=0; "$BIN/smoke-test" --dev --expect-sha "$sha" --out "$out" && ok=1
     log_deploy kind smoke sha "$sha" result "$([ $ok = 1 ] && echo passed || echo failed)" out "$out"
     [ $ok = 1 ] || die "smoke test failed on ${sha:0:8}. Inspect $out/result.json; to switch back run: deploy-dev --release-manager --rollback" 5
@@ -337,6 +417,8 @@ deploy() {
   fi
   say "done in $(( $(date +%s) - t0 ))s"
 }
+
+[ "${BASH_SOURCE[0]}" = "$0" ] || return 0 # sourced for its functions (test_deploy_dev.py)
 
 # --release-manager is a deliberate speed bump: a session the user did not appoint as
 # release manager stops here and writes its deploy request on its MET card instead.
@@ -352,6 +434,6 @@ case "${1:-}" in
   --status) status ;;
   --rollback) need_rm; shift; rollback "${1:-}" ;;
   --recover) need_rm; recover ;;
-  -h|--help) sed -n 2,28p "$0" ;;
+  -h|--help) sed -n 2,32p "$0" ;;
   *) need_rm; deploy "$@" ;;
 esac
