@@ -55,7 +55,9 @@ export interface NativeScheduleTakeoverRefusal {
     | 'activation_not_ready'
     | 'held'
     | 'held_expired_without_close_proof'
-    | 'close_proof_invalid';
+    | 'close_proof_missing'
+    | 'close_proof_invalid'
+    | 'acquire_plan_rejected';
   ownerId: string | null;
   epoch: number;
   expiresAtMs: number | null;
@@ -487,11 +489,15 @@ export function createNativeScheduleControlSqlStore<
         if (!p) return refuse('partition_missing');
         if (!nativeOnceReady(readiness(p)))
           return refuse('activation_not_ready', p);
+        // Diagnosis only, so no extra statement in this locked transaction: the
+        // Worker clock tells a live lease from an expired one well enough.
         if (!(await validClose(tx, p)))
           return refuse(
             p.closed
-              ? 'close_proof_invalid'
-              : p.expires_at_ms !== null && p.expires_at_ms <= (await dbNow(tx))
+              ? p.close_proof
+                ? 'close_proof_invalid'
+                : 'close_proof_missing'
+              : p.expires_at_ms !== null && p.expires_at_ms <= Date.now()
                 ? 'held_expired_without_close_proof'
                 : 'held',
             p,
@@ -505,7 +511,7 @@ export function createNativeScheduleControlSqlStore<
           dbNowMs: await dbNow(tx),
           ttlMs: ttl,
         });
-        if (!plan) return refuse('activation_not_ready', p);
+        if (!plan) return refuse('acquire_plan_rejected', p); // readiness and closed are checked above
         await tx`update allrice_native_once_partitions set owner_id=${ownerId},epoch=${plan.writer.epoch},
           token_digest=${plan.row.tokenDigest},expires_at=to_timestamp(${plan.row.expiresAtMs!}::double precision/1000),
           closed=false,close_proof='null'::jsonb where partition_id=${partitionId}`;

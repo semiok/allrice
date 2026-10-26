@@ -422,13 +422,18 @@ describe('native once Worker runtime', () => {
     expect(f.proofs).toEqual([]);
   });
 
-  it('says why a takeover is refused, once per reason and then hourly', async () => {
+  it('says why a takeover is refused, when the reason changes and then hourly', async () => {
     // MET-210 #3: the controller stayed cold for 12 hours without a word.
     let clock = 0;
     const overrides = { noGrant: true, testPorts: { now: () => clock } };
     const f = fixture(overrides);
-    const refused = {
-      code: 'held_expired_without_close_proof',
+    let refused: {
+      code: string;
+      ownerId: string | null;
+      epoch: number;
+      expiresAtMs: number | null;
+    } | null = {
+      code: 'held',
       ownerId: 'dead-worker',
       epoch: 10,
       expiresAtMs: 1_000,
@@ -436,28 +441,56 @@ describe('native once Worker runtime', () => {
     f.store.takeoverRefusal = vi.fn(() => refused);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const said = (spy: typeof warn) =>
+      spy.mock.calls.filter(
+        ([m]) => m === '[MET-210] native schedule takeover refused',
+      );
     try {
       await f.runtime.tick();
+      expect(said(info)).toHaveLength(1); // a live lease is waiting, not an alarm
+      refused = { ...refused!, code: 'held_expired_without_close_proof' };
       await f.runtime.tick();
-      expect(f.runtime.status()).toMatchObject({
-        state: 'cold',
-        takeoverRefused: { ...refused, since: expect.any(String) },
+      await f.runtime.tick();
+      const first = f.runtime.status().takeoverRefused;
+      expect(first).toMatchObject({
+        code: 'held_expired_without_close_proof',
+        ownerId: 'dead-worker',
+        epoch: 10,
+        leaseExpiresAt: new Date(1_000).toISOString(),
+        since: expect.any(String),
       });
-      expect(warn.mock.calls).toEqual([
-        [
-          '[MET-210] native schedule takeover refused',
-          expect.objectContaining({ code: refused.code, epoch: 10 }),
-        ],
-      ]);
+      expect(said(warn)).toHaveLength(1); // the new reason at once, not every tick
       clock = 3_600_000;
       await f.runtime.tick();
-      expect(warn).toHaveBeenCalledTimes(2); // still refused an hour later
+      expect(said(warn)).toHaveLength(2); // still refused an hour later
+      expect(f.runtime.status().takeoverRefused?.since).toBe(first?.since);
+      refused = null; // no reason from the store is not a takeover
+      await f.runtime.tick();
+      expect(f.runtime.status().takeoverRefused).toMatchObject({
+        code: 'unknown',
+      });
       overrides.noGrant = false;
       await f.runtime.tick();
       expect(f.runtime.status()).not.toHaveProperty('takeoverRefused');
       expect(info).toHaveBeenCalledWith(
         '[MET-210] native schedule takeover accepted',
-        expect.objectContaining({ refusedSince: expect.any(String) }),
+        expect.objectContaining({ refusedSince: first?.since }),
+      );
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+    }
+  });
+
+  it('a store that cannot tell a refusal logs nothing', async () => {
+    const f = fixture({ noGrant: true });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      await f.runtime.tick();
+      expect(f.runtime.status()).not.toHaveProperty('takeoverRefused');
+      expect([...warn.mock.calls, ...info.mock.calls].flat()).not.toContain(
+        '[MET-210] native schedule takeover refused',
       );
     } finally {
       warn.mockRestore();

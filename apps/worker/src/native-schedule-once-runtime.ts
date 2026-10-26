@@ -248,14 +248,25 @@ export function createNativeOnceWorkerRuntime(
     processedCount = 0;
   let lastFault: NativeOnceWorkerRuntimeFault | undefined;
   // MET-210 #3: a refused takeover leaves the controller cold without an error.
-  // Kept for status() and logged once per reason, then hourly while it lasts.
+  // Kept for status() and logged when the reason or holder changes, then hourly
+  // while it lasts; `held` (a live lease) is waiting, the rest needs a person.
   type Refusal = NonNullable<
     ReturnType<NonNullable<NativeScheduleOnceStore['takeoverRefusal']>>
   >;
-  let refusal: (Refusal & { since: string }) | undefined;
+  let refusal:
+    | (Refusal & {
+        leaseExpiresAt: string | null;
+        since: string;
+        lastSeenAt: string;
+      })
+    | undefined;
   let refusalLoggedAt = 0;
-  function observeTakeover(partitionId: string, next: Refusal | null) {
-    if (!next) {
+  function observeTakeover(
+    partitionId: string,
+    granted: boolean,
+    next: Refusal | null,
+  ) {
+    if (granted) {
       if (refusal)
         console.info('[MET-210] native schedule takeover accepted', {
           partitionId,
@@ -264,17 +275,33 @@ export function createNativeOnceWorkerRuntime(
       refusal = undefined;
       return;
     }
-    const changed = next.code !== refusal?.code;
+    const seen = next ?? {
+      code: 'unknown',
+      ownerId: null,
+      epoch: 0,
+      expiresAtMs: null,
+    };
+    const at = new Date().toISOString();
+    const changed =
+      !refusal ||
+      seen.code !== refusal.code ||
+      seen.ownerId !== refusal.ownerId ||
+      seen.epoch !== refusal.epoch;
     refusal = {
-      ...next,
-      since: changed || !refusal ? new Date().toISOString() : refusal.since,
+      ...seen,
+      leaseExpiresAt:
+        seen.expiresAtMs === null
+          ? null
+          : new Date(seen.expiresAtMs).toISOString(),
+      since: refusal?.since ?? at,
+      lastSeenAt: at,
     };
     if (changed || now() - refusalLoggedAt >= 3_600_000) {
       refusalLoggedAt = now();
-      console.warn('[MET-210] native schedule takeover refused', {
-        partitionId,
-        ...refusal,
-      });
+      (seen.code === 'held' ? console.info : console.warn)(
+        '[MET-210] native schedule takeover refused',
+        { partitionId, ...refusal },
+      );
     }
   }
   type TickResult = { processed: number; limitReached: boolean };
@@ -422,6 +449,7 @@ export function createNativeOnceWorkerRuntime(
           if (grant || sqlStore.takeoverRefusal)
             observeTakeover(
               partitionId,
+              !!grant,
               grant ? null : (sqlStore.takeoverRefusal?.() ?? null),
             );
           return grant;
