@@ -231,8 +231,10 @@ integration(
         expect((await s.bound.tree()).cancelRequested).toBe(false);
         expect((await s.client.snapshot(s.f.nativeSessionId)).live).toBe(true);
         const outcome = await s.finish();
+        // MET-210: the stopped child is settled by the user's stop, so the
+        // root completes; A's aborted stream leaves its usage unknown.
         expect(outcome).toMatchObject({
-          status: 'unknown',
+          status: 'completed',
           usageComplete: false,
           billingMode: 'subscription',
         });
