@@ -36,8 +36,12 @@ function jobRow(remainingMs: number, extra: Record<string, unknown> = {}) {
 }
 /** The lease read runs in its own bounded transaction: settings, then read. */
 function fakeSql(read: () => Promise<unknown[]>) {
-  const tx = (strings: TemplateStringsArray) =>
-    strings.join('').includes('set_config') ? Promise.resolve([]) : read();
+  const tx = (strings: TemplateStringsArray) => {
+    const text = strings.join('');
+    if (text.includes('pg_backend_pid'))
+      return Promise.resolve([{ pid: 4242, run_id: null }]);
+    return text.includes('set_config') ? Promise.resolve([]) : read();
+  };
   return {
     begin: (run: (t: typeof tx) => unknown) => run(tx),
   } as unknown as postgres.Sql;
@@ -206,6 +210,19 @@ describe('MET-210 lease-bounded lock-timeout retry', () => {
       }),
     ).rejects.toBe(timeout);
     expect(calls).toBe(1);
+    // The failed read is recorded on its own, with its own backend.
+    expect(
+      vi
+        .mocked(console.error)
+        .mock.calls.map(([, record]) => [
+          record.site,
+          record.sqlState,
+          record.outcome,
+        ]),
+    ).toEqual([
+      ['lease_read', '57014', 'failed'],
+      ['job_heartbeat', '55P03', 'exhausted'],
+    ]);
   });
 
   it(`stops after ${maxLeaseLockAttempts} attempts with the original SQLSTATE`, async () => {

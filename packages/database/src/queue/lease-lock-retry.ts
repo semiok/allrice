@@ -12,7 +12,11 @@ type TransactionSql = postgres.TransactionSql;
  * database itself still shows as current.
  */
 export type LeaseTransactionSite =
-  'job_heartbeat' | 'job_event' | 'usage_settlement';
+  | 'job_heartbeat'
+  | 'job_event'
+  | 'usage_settlement'
+  /** The bounded lease read between two attempts of one of the above. */
+  | 'lease_read';
 
 type LeaseTransactionOutcome =
   /** Rolled back (55P03); the whole transaction runs again from a fresh start. */
@@ -149,9 +153,11 @@ async function nextLeaseLockWait(
   sql: Sql,
   lease: LeaseIdentity,
   mode: 'stop' | 'receipt',
+  trace: LeaseTransactionTrace,
 ) {
   // Bounded like the attempts it gates: a table lock must not park the heartbeat.
   const [job] = await sql.begin(async (tx) => {
+    await trace.begin(tx);
     await tx`select set_config('lock_timeout',${`${leaseLockWaitMs}ms`},true),
       set_config('statement_timeout',${`${leaseLockWaitMs}ms`},true)`;
     return tx<
@@ -232,12 +238,21 @@ export async function retryLeaseLockTimeout<T>(input: {
       if (attempt < maxLeaseLockAttempts && !input.signal?.aborted) {
         await new Promise((resolve) => setTimeout(resolve, 50 * 2 ** attempt));
         // A lease that cannot be read cannot be confirmed: no further attempt.
-        if (!input.signal?.aborted)
+        if (!input.signal?.aborted) {
+          const read = new LeaseTransactionTrace(
+            'lease_read',
+            input.lease.jobId,
+          );
           next = await nextLeaseLockWait(
             input.sql,
             input.lease,
             input.mode,
-          ).catch(() => 'exhausted' as const);
+            read,
+          ).catch((readError: unknown) => {
+            read.record(readError, attempt, 'failed');
+            return 'exhausted' as const;
+          });
+        }
       }
       // The runner may have returned during the backoff or the lease read.
       if (input.signal?.aborted) next = 'aborted';

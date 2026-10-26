@@ -2847,8 +2847,12 @@ export async function heartbeatJob(
         sql,
         async (transaction) => {
           await trace.begin(transaction);
-          const once = await lockNativeOnceJobAdmission(transaction, jobId);
-          let job = await lockedLeasedJob(
+          const once = await lockNativeOnceJobAdmission(
+            transaction,
+            jobId,
+            lockWaitMs,
+          );
+          const locked = await lockedLeasedJob(
             transaction,
             workerId,
             jobId,
@@ -2857,7 +2861,8 @@ export async function heartbeatJob(
             'running',
             lockWaitMs,
           );
-          await assertLockedLeaseCurrent(transaction, job);
+          let job = locked;
+          await assertLockedLeaseCurrent(transaction, locked);
           if (!once.allowed && !job.cancel_requested_at) {
             await requestEmployeeAccessCancellationTransaction(
               transaction,
@@ -2874,10 +2879,23 @@ export async function heartbeatJob(
             >`select * from allrice_jobs where id=${jobId}`;
             job = canceled!;
           }
+          // Every branch, stops and drains included, commits only inside the
+          // lease as locked: a later lock wait must not leave a newer lease.
           const cause = queueStopCause(job, new Date());
-          if (cause) return stopJobOrDrain(transaction, job, cause, leaseMs);
-          if (await stopUnauthorizedTechnicalJob(transaction, job))
+          if (cause) {
+            const stopped = await stopJobOrDrain(
+              transaction,
+              job,
+              cause,
+              leaseMs,
+            );
+            await assertLockedLeaseCurrent(transaction, locked);
+            return stopped;
+          }
+          if (await stopUnauthorizedTechnicalJob(transaction, job)) {
+            await assertLockedLeaseCurrent(transaction, locked);
             return { active: false, canceled: false };
+          }
           const now = new Date();
           const expiresAt = leaseDeadline(leaseMs, now);
           await transaction`
@@ -2895,7 +2913,7 @@ export async function heartbeatJob(
             and w.organization_id=${job.organization_id} and w.workspace_id=${job.workspace_id}
             and w.owner_id=${job.owner_id} and s.status='running' and s.lease_token=${leaseToken}`;
           // Renewal commits only inside the lease it found, never revives it.
-          await assertLockedLeaseCurrent(transaction, job);
+          await assertLockedLeaseCurrent(transaction, locked);
           return { active: true, canceled: false };
         },
         { retryLockBusy: () => false },

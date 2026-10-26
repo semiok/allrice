@@ -255,6 +255,10 @@ suite('MET-210 supplemental lease boundaries', () => {
         ).rejects.toMatchObject({ code: 'lease_lost' });
         await expect(fail(f)).rejects.toMatchObject({ code: 'lease_lost' });
         expect(await events(f)).toHaveLength(0);
+        // The suite shares one schema: earlier cases may leave live Jobs that
+        // maintenance or the unscoped claim below could pick up instead.
+        await f.db`update allrice_jobs set status='canceled'
+          where id<>${f.worker.jobId} and status in ('queued','claimed','running','retry_wait')`;
         await maintainQueue();
         const workerId = randomUUID();
         const claimed = await claimNextJob(workerId, 30_000);

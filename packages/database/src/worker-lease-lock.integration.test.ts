@@ -81,7 +81,10 @@ suite('MET-210 Worker lease transactions under a held root lock', () => {
   /** The competing transaction. `commit(work)` runs `work` inside it first. */
   /** `both` takes 703 then the root, as the queue does; `run` is the Run row
    * an event write locks only after it already holds its Job. */
-  async function hold(kind: 'root' | '703' | 'both' | 'run', runId: string) {
+  async function hold(
+    kind: 'root' | '703' | 'both' | 'run' | 'instances',
+    runId: string,
+  ) {
     let finish!: (
       work?: (tx: postgres.TransactionSql) => Promise<unknown>,
     ) => void;
@@ -102,6 +105,8 @@ suite('MET-210 Worker lease transactions under a held root lock', () => {
         await tx`select root_run_id from allrice_runtime_roots where root_run_id=${runId} for update`;
       if (kind === 'run')
         await tx`select id from allrice_runs where id=${runId} for update`;
+      if (kind === 'instances')
+        await tx`select run_id from allrice_assistant_instances where root_run_id=${runId} for update`;
       ready(row!.pid);
       const work = await gate;
       await work?.(tx);
@@ -354,6 +359,26 @@ suite('MET-210 Worker lease transactions under a held root lock', () => {
     await held.commit();
     await expect(write).rejects.toMatchObject({ code: 'lease_lost' });
     expect((await s.events()).some((e) => e.label === 'late')).toBe(false);
+  }, 30_000);
+
+  it('a heartbeat that freezes a drain but waits past its lease does not commit the drain', async () => {
+    watchFailures();
+    const s = await setup(3);
+    await s.f
+      .db`update allrice_jobs set cancel_requested_at=clock_timestamp(),cancel_reason='user_requested' where id=${s.f.worker.jobId}`;
+    const before = await s.job();
+    // The stop branch freezes the receipt drain, then cancels the assistant
+    // tree: that write queues on these rows until after the 3 s lease.
+    const held = await hold('instances', s.f.task.runId);
+    const beat = s.heartbeat();
+    beat.catch(() => {});
+    await held.waiters();
+    await sleep(3_600);
+    await held.commit();
+    await expect(beat).rejects.toMatchObject({ code: 'lease_lost' });
+    const after = await s.job();
+    expect(after.drain_deadline_at).toBeNull();
+    expect(after.lease_expires_at).toEqual(before.lease_expires_at);
   }, 30_000);
 
   it('an access revocation committed with the lock release is honored by the retried heartbeat', async () => {

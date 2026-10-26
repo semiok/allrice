@@ -1132,6 +1132,21 @@ suite(
         }
       },
     );
+    it('a lease-bounded heartbeat retry passes its lock budget into once admission', async () => {
+      const r = await runningOnce();
+      const effective = (lockWaitMs?: number) =>
+        getDatabase().begin(async (tx) => {
+          await lockNativeOnceJobAdmission(tx, r.job.id, lockWaitMs);
+          const [row] = await tx<
+            { value: string }[]
+          >`select current_setting('lock_timeout') value`;
+          return row!.value;
+        });
+      // The admission's own lock waits use what the retry has left of its
+      // lease (MET-210 #4); the default stays the queue's 5 s.
+      await expect(effective()).resolves.toBe('5s');
+      await expect(effective(120)).resolves.toBe('120ms');
+    });
     it('bounds once heartbeat retries on held 703 and releases authority locks before giving up with 55P03', async () => {
       const r = await runningOnce();
       const [before] =
