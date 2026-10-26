@@ -21,7 +21,6 @@
 # writing heartbeat.json, which the other machine reads over SSH: whichever side stops,
 # the other one says so.
 import argparse
-import concurrent.futures
 import fcntl
 import json
 import os
@@ -32,6 +31,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -1011,13 +1011,16 @@ def check_tunnel(r):
     return [finding('tunnel', 'critical', 'Cloudflare 隧道断开', '进程在，但指标端口都连不上（%s）' % r.cfg['tunnelMetrics'][0], 'm1-tunnel.md', step)]
 
 
+PUBLIC_PROBE_SECONDS = 15
+
+
 def probe_public(r, url, key='public_entry', where='M1 本机', title='公网入口不可达'):
     if not url:
         return [finding(key, 'warning', title + '（未配置地址）', '', 'm1-tunnel.md', '')]
     start = time.time()
-    code, body = http_get(url, 15, opener(r.cfg.get('publicProxy')))
+    code, body = http_get(url, PUBLIC_PROBE_SECONDS, opener(r.cfg.get('publicProxy')))
     took = time.time() - start
-    ok = code == 200 and took < 15
+    ok = code == 200 and took < PUBLIC_PROBE_SECONDS
     return [finding(key, 'ok' if ok else 'critical', title, '从%s访问 %s：%s（%.1f 秒）' % (where, url, code or short(body, 120), took),
                     'm1-tunnel.md', 'curl -sS -o /dev/null -w "%%{http_code}\\n" %s' % url)]
 
@@ -1032,13 +1035,22 @@ def check_public_entry(r):
         if host not in seen:  # publicUrl may be moved to one of them
             seen.add(host)
             targets.append((url, 'public_entry:' + host, '公网入口不可达（%s）' % host))
-    # All at once: a slow hostname neither holds up publicUrl nor stretches the round
-    # (a round that times out loses the check in progress).
-    pool = concurrent.futures.ThreadPoolExecutor(len(targets))
-    try:
-        return [f for out in pool.map(lambda t: probe_public(r, t[0], t[1], title=t[2]), targets) for f in out]
-    finally:
-        pool.shutdown(wait=False)  # a round timeout does not wait for the probes still running
+    # All at once, with a hard deadline: a slow or hung hostname (a DNS lookup has no
+    # timeout) holds up neither the others nor the round, and the thread left behind is a
+    # daemon, so it cannot keep the process from exiting. Each result goes straight into
+    # the round's progress, so a round that times out here still has the finished ones.
+    found = []
+    if r.progress:
+        r.progress['partial'] = found
+    threads = [threading.Thread(target=lambda t=t: found.extend(probe_public(r, t[0], t[1], title=t[2])), daemon=True) for t in targets]
+    for t in threads:
+        t.start()
+    end = time.time() + PUBLIC_PROBE_SECONDS + 2
+    for t in threads:
+        t.join(max(0, end - time.time()))
+    got = {f['key']: f for f in found}
+    return [got.get(key) or finding(key, 'critical', title, '从M1 本机访问 %s：%d 秒内没有结果（卡在 DNS 或连接上）' % (url, PUBLIC_PROBE_SECONDS + 2),
+                                    'm1-tunnel.md', 'curl -sS -o /dev/null -w "%%{http_code}\\n" %s' % url) for url, key, title in targets]
 
 
 def check_disk(r):
@@ -1693,11 +1705,11 @@ def run_checks(r, checks):
     the round, so a round that times out still reports what it found (collect_checks)."""
     wanted = r.cfg['checks']
     checks = [c for c in checks if (wanted is None or c[0] in wanted) and c[0] not in r.cfg['skipChecks']]
-    p = r.progress = {'checks': checks, 'results': {}, 'errors': {}, 'current': None}
+    p = r.progress = {'checks': checks, 'results': {}, 'errors': {}, 'current': None, 'partial': []}
     results, errors = p['results'], p['errors']
 
     def one(name, fn):
-        p['current'] = name
+        p['current'], p['partial'] = name, []  # a check may put what it already found in 'partial'
         try:
             results[name], errors[name] = fn(r), None
         except Exception as err:  # a bug in one check must not stop the others or the round
@@ -1732,6 +1744,11 @@ def collect_checks(r):
         if name in p['errors']:
             out.append(p['errors'][name] or finding('check:' + name, 'ok', '检查 %s 本身出错' % name))
             out += p['results'][name] or []
+    if p['current'] and p['current'] not in p['results']:
+        # The round ran out of time during this check's first look. What it already found
+        # counts where it is good; a failure seen once is not confirmed, so it is unknown.
+        # The check is not counted as having judged, so nothing it did not reach recovers.
+        out += [f if f['severity'] == 'ok' else unknown(f['key'], f['title']) for f in p['partial']]
     return out, {name for name, res in p['results'].items() if res is not None}
 
 

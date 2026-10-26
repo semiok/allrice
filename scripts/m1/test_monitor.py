@@ -6,8 +6,12 @@ import importlib.util
 import io
 import json
 import os
+import signal
+import subprocess
+import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -435,6 +439,58 @@ class Checks(unittest.TestCase):
         with mock.patch.object(monitor, 'lock_holders', return_value=[]), mock.patch.object(monitor, 'http_get', side_effect=get):
             self.assertEqual([(f['key'], f['severity']) for f in monitor.check_public_entry(r)],
                              [('public_entry', 'ok'), ('public_entry:b.example', 'ok'), ('public_entry:c.example', 'ok')])
+
+    def hung(self, release):
+        """c.example never answers (a DNS lookup that hangs); the others answer at once."""
+        def get(url, *a):
+            if 'c.example' in url:
+                release.wait()
+            return (502, b'bad gateway') if 'b.example' in url else (200, b'login')
+        return mock.patch.object(monitor, 'http_get', side_effect=get)
+
+    def test_a_hung_hostname_has_a_deadline(self):
+        r = make_round(publicUrl='https://a.example', extraPublicUrls=['https://b.example', 'https://c.example'])
+        release = threading.Event()
+        self.addCleanup(release.set)
+        start = time.time()
+        with mock.patch.object(monitor, 'PUBLIC_PROBE_SECONDS', 0.2), mock.patch.object(monitor, 'lock_holders', return_value=[]), self.hung(release):
+            out = monitor.check_public_entry(r)
+        self.assertLess(time.time() - start, 0.2 + 2 + 1)  # the probe's timeout plus 2 seconds, not "forever"
+        self.assertEqual([(f['key'], f['severity']) for f in out],
+                         [('public_entry', 'ok'), ('public_entry:b.example', 'critical'), ('public_entry:c.example', 'critical')])
+        self.assertIn('没有结果', out[2]['detail'])
+
+    def test_round_timeout_keeps_the_hostnames_already_probed(self):
+        r = make_round(publicUrl='https://a.example', extraPublicUrls=['https://b.example', 'https://c.example'])
+        step(r, [bad('public_entry'), bad('public_entry:c.example')], 0, {'public_entry'})
+        release = threading.Event()
+        self.addCleanup(release.set)
+        old = signal.signal(signal.SIGALRM, monitor.on_alarm)
+        self.addCleanup(signal.signal, signal.SIGALRM, old)
+        signal.setitimer(signal.ITIMER_REAL, 0.5)  # the round's limit strikes while c.example hangs
+        with mock.patch.object(monitor, 'lock_holders', return_value=[]), self.hung(release), self.assertRaises(monitor.RoundTimeout):
+            monitor.run_checks(r, [('public_entry', monitor.check_public_entry, True, None)])
+        findings, ran = monitor.collect_checks(r)
+        self.assertEqual([(f['key'], f['severity']) for f in findings], [('public_entry', 'ok'), ('public_entry:b.example', 'unknown')])
+        self.assertEqual(ran, set())  # not judged: c.example's open alert must not recover
+        self.assertEqual(step(r, findings, 240, ran), [('recovered', 'public_entry', False)])
+
+    def test_a_hung_probe_does_not_keep_the_process_alive(self):
+        code = '''
+import importlib.machinery, importlib.util, json, sys, tempfile, threading
+loader = importlib.machinery.SourceFileLoader('monitor', sys.argv[1])
+spec = importlib.util.spec_from_loader('monitor', loader)
+monitor = importlib.util.module_from_spec(spec)
+loader.exec_module(monitor)
+monitor.PUBLIC_PROBE_SECONDS = 0.2
+monitor.lock_holders = lambda path: []
+monitor.http_get = lambda url, *a: threading.Event().wait() or (200, b'')
+cfg = json.loads(json.dumps(monitor.M1))
+cfg.update(stateDir=tempfile.mkdtemp(), publicUrl='https://a.example')
+print(len(monitor.check_public_entry(monitor.Round(cfg))))
+'''
+        p = subprocess.run([sys.executable, '-c', code, os.path.join(HERE, 'monitor')], capture_output=True, text=True, timeout=20)
+        self.assertEqual((p.returncode, p.stdout.strip()), (0, '3'), p.stderr)  # exited, with every probe still hanging
 
     def test_sandbox_vm(self):
         r = make_round(colimaProfile='cloud', extraColimaProfiles=['drill'])
