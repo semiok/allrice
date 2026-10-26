@@ -133,12 +133,14 @@ integration(
       expect(output.reserved + output.spent).toBeGreaterThanOrEqual(
         output.capacity,
       );
+      const heldBefore =
+        await database.db`select * from allrice_assistant_usage where call_id=${callId} order by metric`;
       // Rice's last reply is empty, so native asks to repair the delivery.
       const [provider] = await database.db<
         { route: string; model: string }[]
       >`select provider_snapshot->>'route' route,provider_snapshot->>'model' model from allrice_employee_runs where run_id=${f.task.runId}`;
       const text = '';
-      const authority = await bound.deliveryRepair!.authorize({
+      const request = {
         phase: 'propose',
         candidate: {
           nativeSessionId: rootSession,
@@ -150,7 +152,8 @@ integration(
           provider: provider!.route,
           model: provider!.model,
         },
-      });
+      };
+      const authority = await bound.deliveryRepair!.authorize(request);
       expect(authority).toMatchObject({
         allowed: true,
         runId: f.task.runId,
@@ -158,9 +161,16 @@ integration(
         remainingOutputTokens: outputBound,
       });
       expect(authority.remainingModelCalls).toBeGreaterThanOrEqual(1);
+      for (const phase of ['prepared', 'consume', 'dispatch'])
+        await expect(
+          bound.deliveryRepair!.authorize({ ...request, phase }),
+        ).resolves.toEqual(authority);
       // Nothing was released or invented: A's tokens stay unknown and reserved.
       const after = (await tree()).budgets;
       expect(after).toEqual(before);
+      expect(
+        await database.db`select * from allrice_assistant_usage where call_id=${callId} order by metric`,
+      ).toEqual(heldBefore);
       const held = await database.db<
         { metric: string; amount: string; settled_amount: string | null }[]
       >`select metric,amount,settled_amount from allrice_assistant_usage where call_id=${callId} order by metric`;

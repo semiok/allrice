@@ -208,14 +208,15 @@ export function createBoundedDeliveryRepair(input: {
       const budgets = await input.budgets();
       const remaining = (metric: string) => {
         const matches = budgets.filter((budget) => budget.metric === metric);
+        const budget = matches[0]!;
+        // Every ledger field must be present and exact, observed or not.
         if (
           matches.length !== 1 ||
-          !Object.values(matches[0]!)
-            .filter((value) => typeof value === 'number')
-            .every((value) => Number.isSafeInteger(value) && value >= 0)
+          ![budget.capacity, budget.reserved, budget.spent].every(
+            (value) => Number.isSafeInteger(value) && value >= 0,
+          )
         )
           throw Error('FINAL_DELIVERY_REPAIR_BUDGET_UNAVAILABLE');
-        const budget = matches[0]!;
         // An observed metric is telemetry, not a spending gate; model admission
         // does not stop on it either. Report its capacity so native may propose
         // the one repair; spend and unknown-usage reservations stay as they are.
