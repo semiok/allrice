@@ -4,25 +4,30 @@ import { listenForReadyJobs } from './queue-ready.ts';
 
 /** A PostgreSQL that completes the startup handshake and then never answers,
  * the case `connect_timeout` no longer covers (MET-223 review). */
-function silentPostgres() {
+function silentPostgres(options: { neverClose?: boolean } = {}) {
   const sockets = new Set<Socket>();
   let closed = 0;
-  const server: Server = createServer((socket) => {
-    sockets.add(socket);
-    socket.on('close', () => {
-      sockets.delete(socket);
-      closed++;
-    });
-    socket.once('data', () => {
-      const ok = Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0]);
-      const key = Buffer.alloc(13);
-      key.write('K', 0);
-      key.writeInt32BE(12, 1);
-      key.writeInt32BE(4242, 5);
-      const ready = Buffer.from([0x5a, 0, 0, 0, 5, 0x49]);
-      socket.write(Buffer.concat([ok, key, ready]));
-    });
-  });
+  // neverClose: a peer that does not answer our FIN either, so only destroying
+  // our end releases it.
+  const server: Server = createServer(
+    { allowHalfOpen: !!options.neverClose },
+    (socket) => {
+      sockets.add(socket);
+      socket.on('close', () => {
+        sockets.delete(socket);
+        closed++;
+      });
+      socket.once('data', () => {
+        const ok = Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0]);
+        const key = Buffer.alloc(13);
+        key.write('K', 0);
+        key.writeInt32BE(12, 1);
+        key.writeInt32BE(4242, 5);
+        const ready = Buffer.from([0x5a, 0, 0, 0, 5, 0x49]);
+        socket.write(Buffer.concat([ok, key, ready]));
+      });
+    },
+  );
   return {
     async start() {
       await new Promise<void>((resolve) =>
@@ -33,6 +38,7 @@ function silentPostgres() {
       return `postgres://wakeup@127.0.0.1:${address.port}/silent`;
     },
     closed: () => closed,
+    open: () => sockets.size,
     async stop() {
       for (const socket of sockets) socket.destroy();
       await new Promise((resolve) => server.close(resolve));
@@ -58,6 +64,23 @@ describe('wakeup LISTEN subscription (MET-223)', () => {
     ).rejects.toThrow('LISTEN timed out');
     expect(onListen).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(database.closed()).toBeGreaterThan(0));
+  });
+
+  it('destroys its own socket even when the peer never closes the connection', async () => {
+    await database.stop();
+    database = silentPostgres({ neverClose: true });
+    vi.stubEnv('DATABASE_URL', await database.start());
+    const tcpSockets = () =>
+      process
+        .getActiveResourcesInfo()
+        .filter((resource) => resource === 'TCPSocketWrap').length;
+    const before = tcpSockets();
+    await expect(
+      listenForReadyJobs(() => {}, vi.fn(), { timeoutMs: 200 }),
+    ).rejects.toThrow('LISTEN timed out');
+    // Only the silent server's own half-open end may remain.
+    expect(database.open()).toBe(1);
+    await vi.waitFor(() => expect(tcpSockets()).toBe(before + 1));
   });
 
   it('gives up at once when the Worker stops while LISTEN is pending', async () => {

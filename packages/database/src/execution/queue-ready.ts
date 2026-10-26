@@ -1,3 +1,4 @@
+import { connect, type Socket } from 'node:net';
 import postgres from 'postgres';
 
 import { getDatabase } from '../core/client.ts';
@@ -32,13 +33,29 @@ export async function listenForReadyJobs(
 ) {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) throw new Error('DATABASE_URL is required');
-  const subscriber = postgres(databaseUrl, {
+  // Own the socket (postgres.js's documented `socket` option, untyped in
+  // 3.4.9): end() only half-closes it, so a peer that never answers would keep
+  // it open and every recycle would leak one.
+  const sockets = new Set<Socket>();
+  const subscriberOptions = {
     max: 1,
     connect_timeout: 5,
     fetch_types: false,
     connection: { application_name: 'allrice-worker-wakeup' },
-  });
-  const close = () => subscriber.end({ timeout: 0 });
+    socket: (parsed: { host: string[]; port: number[]; path?: string }) => {
+      const socket = parsed.path
+        ? connect(parsed.path)
+        : connect(parsed.port[0]!, parsed.host[0]);
+      sockets.add(socket);
+      socket.once('close', () => sockets.delete(socket));
+      return socket;
+    },
+  };
+  const subscriber = postgres(databaseUrl, subscriberOptions);
+  const close = async () => {
+    await subscriber.end({ timeout: 0 });
+    for (const socket of sockets) socket.destroy();
+  };
   let abandoned: string | undefined;
   const abandon = (reason: string) => {
     abandoned ??= reason;
