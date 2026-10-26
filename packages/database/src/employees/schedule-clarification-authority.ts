@@ -48,7 +48,15 @@ export async function readScheduleClarification(
       and e.sequence=(select max(q.sequence) from allrice_run_events q
         where q.run_id=e.run_id and q.payload->>'sourceEventType'='session/user-question')
     order by c.created_at desc,c.id desc limit 1`;
-  if (!row) return null;
+  if (!row) {
+    // A question still open (or skipped) in this Run is not "never asked":
+    // an earlier decline or consumed answer must not fall back to wording.
+    const [asked] = await tx`select 1 from allrice_run_events
+      where run_id=${ctx.runId} and payload->>'sourceEventType'='session/user-question' limit 1`;
+    return asked
+      ? { intent: null, answers: [], confirmedRequests: [] as string[] }
+      : null;
+  }
   // An answer authorizes one enrollment; deleted rows count too, so a new
   // call cannot silently recreate the confirmed task. Tasks enrolled before
   // the answer did not consume it.
@@ -69,7 +77,7 @@ export async function readScheduleClarification(
   );
   const enrolled = await tx<{ request_id: string; first_prompt: string }[]>`
     select coalesce(a.native_once_request_id,a.native_recurring_request_id) request_id,
-      coalesce(v.configuration->>'prompt',a.prompt) first_prompt
+      coalesce(v.configuration->>'prompt',v.business_content->>'prompt',a.prompt) first_prompt
     from allrice_automations a
     left join allrice_native_recurring_versions v on v.automation_id=a.id and v.revision=1
     where a.organization_id=${ctx.organizationId} and a.workspace_id=${ctx.workspaceId!}
@@ -84,7 +92,8 @@ export async function readScheduleClarification(
       : clarifiedScheduleIntent(request, row.question, row.answer),
     answers: selectedScheduleAnswers(row.question, row.answer),
     // A card confirmation is consumed by the task it enrolled, whose
-    // immutable first version stores exactly the confirmed request.
+    // immutable first version (fixed rules in configuration, monthly in
+    // business_content) stores exactly the confirmed request.
     confirmedRequests: enrolled.map((task) => task.first_prompt),
   };
 }

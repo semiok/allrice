@@ -152,3 +152,80 @@ it('never offers a card whose confirmed request could not be stored', () => {
     recurringConfirmationQuestion(long, task, rule).questions[0]!.question,
   ).not.toContain(task);
 });
+
+it('includes new_each_run in the selectable label and requires the exact mode and punctuation', () => {
+  const [fresh] = presented(
+    recurringConfirmationQuestion(request, prompt, rule, 'new_each_run'),
+  );
+  const label = '确认：每隔 2 分钟，每次新建聊天执行';
+  expect(fresh!.options![0]!.label).toBe(label);
+  expect(
+    recurringConfirmation(
+      request,
+      prompt,
+      rule,
+      'new_each_run',
+      answer(fresh!, label),
+    ),
+  ).toBe('confirmed');
+  expect(
+    recurringConfirmation(
+      request,
+      prompt,
+      rule,
+      'reuse',
+      answer(fresh!, label),
+    ),
+  ).toBeNull();
+  expect(
+    recurringConfirmation(
+      request,
+      prompt,
+      rule,
+      'new_each_run',
+      answer(fresh!, '确认:每隔2分钟,每次新建聊天执行'),
+    ),
+  ).toBeNull();
+});
+
+it.each([1_999, 2_000, 2_001])(
+  'stores only the work actually shown at the %i-character boundary',
+  (length) => {
+    const work = '水'.repeat(length);
+    const [item] = presented(
+      recurringConfirmationQuestion(request, `  ${work}\n`, rule),
+    );
+    const saved = confirmedRecurringRequest(request, `  ${work}\n`, rule);
+    expect(item!.id).toMatch(/^schedule-confirm:[0-9a-f]{24}$/);
+    if (length <= 2_000) {
+      expect(item!.question).toContain(`每次到点执行：「${work}」`);
+      expect(saved).toBe(
+        `${request}\n用户已确认的任务内容：${work}\n用户已确认的频率：每隔 2 分钟，在本聊天中执行`,
+      );
+    } else {
+      expect(item!.question).not.toContain(work);
+      expect(saved).toBe(
+        `${request}\n用户已确认的频率：每隔 2 分钟，在本聊天中执行`,
+      );
+    }
+  },
+);
+
+it('binds the full human request even when its displayed excerpt is truncated', () => {
+  const long = '请提醒我'.repeat(160);
+  const [item] = presented(recurringConfirmationQuestion(long, prompt, rule));
+  const label = item!.options![0]!.label;
+  expect(item!.question).toContain(`${long.slice(0, 600)}…`);
+  expect(
+    confirmedRecurringRequest(long, prompt, rule).startsWith(`${long}\n`),
+  ).toBe(true);
+  expect(
+    recurringConfirmation(
+      `${long}不同内容`,
+      prompt,
+      rule,
+      undefined,
+      answer(item!, label),
+    ),
+  ).toBeNull();
+});
