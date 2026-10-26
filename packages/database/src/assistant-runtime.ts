@@ -43,7 +43,12 @@ import {
 } from './runtime-ledger/ledger.ts';
 import type { RuntimeLedgerTransaction } from './runtime-ledger/types.ts';
 import { createDevelopmentCooperation } from './development-cooperation.ts';
-import { refreshTaskClock, readTaskClock } from './task-clock.ts';
+import {
+  projectCurrentTaskClock,
+  refreshTaskClock,
+  readTaskClock,
+} from './task-clock.ts';
+import { tracedLeaseTransaction } from './queue/lease-lock-retry.ts';
 import { continuingProjectServiceIds } from './project-services.ts';
 import {
   observesExecutionUsage,
@@ -233,6 +238,9 @@ export function createAssistantRuntime(
   } = {},
 ) {
   const db = options.database ?? getDatabase();
+  /** Usage settlement failures name their backend and timings (MET-210 #4). */
+  const settlement = <T>(jobId: string, run: (tx: Tx) => Promise<T>) =>
+    tracedLeaseTransaction(db, 'usage_settlement', jobId, run);
   const authorize = options.authorize ?? (async () => fail('forbidden'));
   async function lock(
     tx: Tx,
@@ -287,8 +295,12 @@ export function createAssistantRuntime(
     root: Root,
     lease: AssistantWorkerLease,
     admitting = true,
+    /** `false` when lock() already refreshed the clock in this transaction. */
+    refreshClock = true,
   ) {
-    const clock = await refreshTaskClock(tx, root.root_run_id);
+    const clock = refreshClock
+      ? await refreshTaskClock(tx, root.root_run_id)
+      : undefined;
     if (clock) root.deadline_at = clock.deadlineAt;
     const [job] =
       await tx`select j.id from allrice_jobs j join allrice_runs r on r.id=j.run_id
@@ -355,6 +367,61 @@ export function createAssistantRuntime(
       fail('canceled');
     if (ancestors.some((a) => a.status === 'unknown')) fail('unknown');
     return row;
+  }
+  /** assertCurrentAuthority's "keep going", from one lock-free, write-free
+   * snapshot: lease identity and clock, stops, the projected task deadline and
+   * current grants. `false` only means "not clear here"; the locked transaction
+   * then decides exactly as before. */
+  async function currentAuthorityClear(input: {
+    scope: RuntimeScope;
+    rootRunId: string;
+    worker: AssistantWorkerLease;
+  }) {
+    return db.begin('isolation level repeatable read read only', async (tx) => {
+      const root = await lock(tx, input.scope, input.rootRunId, false);
+      const lease = input.worker;
+      if (
+        !assistantRuntimeEnabled() ||
+        !root.configuration.allowAssistants ||
+        root.cancel_request_id ||
+        root.revoked_at ||
+        root.worker_job_id !== lease.jobId ||
+        root.worker_id !== lease.workerId ||
+        root.worker_lease_digest !==
+          runtimeLedgerInputDigest(lease.leaseToken) ||
+        Number(root.generation) !== lease.generation ||
+        Number(root.fence) !== (lease.fence ?? 1)
+      )
+        return false;
+      const [job] = await tx<(JobRow & { run_state: string })[]>`
+        select j.*,r.state run_state from allrice_jobs j join allrice_runs r on r.id=j.run_id
+        where j.id=${lease.jobId} and j.run_id=${root.root_run_id}`;
+      const clock = await projectCurrentTaskClock(tx, root.root_run_id);
+      const deadline = clock?.deadlineAt ?? root.deadline_at;
+      const [at] = await tx<{ now: Date }[]>`select clock_timestamp() as now`;
+      if (
+        !job ||
+        job.status !== 'running' ||
+        job.worker_id !== lease.workerId ||
+        job.lease_token !== lease.leaseToken ||
+        !['running', 'queued', 'waiting_approval'].includes(job.run_state) ||
+        !job.lease_expires_at ||
+        job.lease_expires_at <= at!.now ||
+        job.drain_deadline_at ||
+        queueStopCause(job, at!.now) ||
+        deadline <= at!.now
+      )
+        return false;
+      await authorize({
+        transaction: tx,
+        task: root.task,
+        tools: [],
+        phase: 'recover',
+        lock: false,
+      });
+      const [end] = await tx<{ now: Date }[]>`select clock_timestamp() as now`;
+      return job.lease_expires_at > end!.now && deadline > end!.now;
+    });
   }
   function taskFor(root: Root, row: Instance): RuntimeTaskRef {
     return { ...root.task, runId: row.run_id, parentRunId: row.parent_run_id };
@@ -977,9 +1044,19 @@ export function createAssistantRuntime(
       rootRunId: string;
       worker: AssistantWorkerLease;
     }) {
+      // MET-210 #4: polled every 250 ms beside the Worker heartbeat and event
+      // writes, so the common "nothing to stop" answer takes no row lock and
+      // writes nothing. Anything else (or any snapshot error) falls through.
+      if (await currentAuthorityClear(input).catch(() => false))
+        return {
+          cancelRequested: false,
+          stopReason: undefined as 'cancel' | 'timeout' | undefined,
+          drainDeadlineAt: undefined as string | undefined,
+        };
       return db.begin(async (tx) => {
+        // lock() refreshes the task clock under the root lock: once per poll.
         const root = await lock(tx, input.scope, input.rootRunId);
-        await assertLease(tx, root, input.worker, false);
+        await assertLease(tx, root, input.worker, false, false);
         const [job] = await tx<
           JobRow[]
         >`select * from allrice_jobs where id=${input.worker.jobId} for update`;
@@ -1014,14 +1091,14 @@ export function createAssistantRuntime(
               string | undefined,
           };
         }
-        await assertLease(tx, root, input.worker);
+        await assertLease(tx, root, input.worker, true, false);
         await authorize({
           transaction: tx,
           task: root.task,
           tools: [],
           phase: 'recover',
         });
-        await assertLease(tx, root, input.worker);
+        await assertLease(tx, root, input.worker, true, false);
         return {
           cancelRequested: false,
           stopReason: undefined as 'cancel' | 'timeout' | undefined,
@@ -1728,7 +1805,7 @@ export function createAssistantRuntime(
         z.string()
           .regex(/^sha256:[0-9a-f]{64}$/)
           .parse(input.resultDigest);
-      return db.begin(async (tx) => {
+      return settlement(input.worker.jobId, async (tx) => {
         const root = await lock(tx, input.scope, input.rootRunId);
         await assertLease(tx, root, input.worker, false);
         const [admission] =

@@ -51,6 +51,10 @@ import {
   repositoryMergeCompletionAllowed,
 } from '../platform-repository-merge-authority.ts';
 import { randomUUID } from 'node:crypto';
+import {
+  leaseLockWaitMs,
+  retryLeaseLockTimeout,
+} from '../queue/lease-lock-retry.ts';
 import { isDevReleaseControlType } from '../dev-release-control.ts';
 import {
   RepositoryActionBindingSchema,
@@ -2516,7 +2520,7 @@ export async function startClaimedJob(
       }
       const clock = await refreshTaskClock(transaction, job.run_id);
       if (clock) running.timeout_at = clock.deadlineAt;
-      await assertStartLeaseCurrent(transaction, job);
+      await assertLockedLeaseCurrent(transaction, job);
       return {
         execution: {
           context,
@@ -2570,11 +2574,13 @@ async function lockedLeasedJob(
   leaseToken: string,
   once?: NativeOnceJobAdmission,
   expectedStatus: 'running' | 'claimed' = 'running',
+  lockWaitMs = leaseLockWaitMs,
 ) {
   // These transactions contain only queue control/receipt SQL, never model,
   // tool or human waits. A blocked heartbeat/event write must roll back rather
-  // than hold root locks forever after its handler/host has stopped.
-  await transaction`set local lock_timeout='5s'`;
+  // than hold root locks forever after its handler/host has stopped. A retry
+  // passes a shorter wait so it can never outwait its original lease.
+  await transaction`select set_config('lock_timeout',${`${lockWaitMs}ms`},true)`;
   await transaction`set local statement_timeout='10s'`;
   const [scope] = await transaction<
     { run_id: string }[]
@@ -2602,7 +2608,9 @@ async function lockedLeasedJob(
   return job;
 }
 
-async function assertStartLeaseCurrent(
+/** Database clock against the lease as locked, i.e. before any renewal: a lock
+ * wait or slow statement past it must roll the whole transaction back. */
+async function assertLockedLeaseCurrent(
   transaction: TransactionSql,
   job: JobRow,
 ) {
@@ -2638,7 +2646,7 @@ export async function failClaimedJobStart(input: {
       const [clock] = await transaction<
         { now: Date }[]
       >`select clock_timestamp() as now`;
-      await assertStartLeaseCurrent(transaction, job);
+      await assertLockedLeaseCurrent(transaction, job);
       const stopped = queueStopCause(job, clock!.now);
       if (stopped) {
         await transitionStoppedJob(
@@ -2666,7 +2674,7 @@ export async function failClaimedJobStart(input: {
       }
       // Terminal transition clears the lease. Check the original locked claim
       // after all writes so a lock wait past its deadline rolls everything back.
-      await assertStartLeaseCurrent(transaction, job);
+      await assertLockedLeaseCurrent(transaction, job);
     },
     {
       retryLockBusy: () => false,
@@ -2791,64 +2799,82 @@ export async function heartbeatJob(
   jobIdInput: string,
   leaseTokenInput: string,
   leaseMs: number,
+  /** Aborting stops further lock-timeout retries (the runner has returned). */
+  options: { signal?: AbortSignal } = {},
 ) {
   const workerId = UuidSchema.parse(workerIdInput);
   const jobId = UuidSchema.parse(jobIdInput);
   const leaseToken = UuidSchema.parse(leaseTokenInput);
   const sql = getDatabase();
-  let retryOnceLock = false;
-  return employeeAccessTransaction(
+  return retryLeaseLockTimeout({
     sql,
-    async (transaction) => {
-      const once = await lockNativeOnceJobAdmission(transaction, jobId);
-      retryOnceLock = once.scheduled;
-      let job = await lockedLeasedJob(
-        transaction,
-        workerId,
-        jobId,
-        leaseToken,
-        once,
+    site: 'job_heartbeat',
+    lease: { workerId, jobId, leaseToken },
+    mode: 'stop',
+    signal: options.signal,
+    leaseLost: () => new QueueError('lease_lost'),
+    run: (trace, lockWaitMs) => {
+      let retryOnceLock = false;
+      return employeeAccessTransaction(
+        sql,
+        async (transaction) => {
+          await trace.begin(transaction);
+          const once = await lockNativeOnceJobAdmission(transaction, jobId);
+          retryOnceLock = once.scheduled;
+          let job = await lockedLeasedJob(
+            transaction,
+            workerId,
+            jobId,
+            leaseToken,
+            once,
+            'running',
+            lockWaitMs,
+          );
+          await assertLockedLeaseCurrent(transaction, job);
+          if (!once.allowed && !job.cancel_requested_at) {
+            await requestEmployeeAccessCancellationTransaction(
+              transaction,
+              job.run_id,
+              'native_schedule_authority_revoked',
+              {
+                actorId: null,
+                requestId: null,
+                actorLabel: 'native_schedule_current_authority',
+              },
+            );
+            const [canceled] = await transaction<
+              JobRow[]
+            >`select * from allrice_jobs where id=${jobId}`;
+            job = canceled!;
+          }
+          const cause = queueStopCause(job, new Date());
+          if (cause) return stopJobOrDrain(transaction, job, cause, leaseMs);
+          if (await stopUnauthorizedTechnicalJob(transaction, job))
+            return { active: false, canceled: false };
+          const now = new Date();
+          const expiresAt = leaseDeadline(leaseMs, now);
+          await transaction`
+          update allrice_jobs
+          set heartbeat_at = ${now}, lease_expires_at = ${expiresAt},
+              updated_at = ${now}
+          where id = ${job.id}
+        `;
+          // Renew only steps owned by this same live job incarnation. The job/root
+          // locks above serialize takeover, cancellation and an absolute deadline.
+          await transaction`update allrice_workflow_step_runs s
+          set lease_expires_at=least(${expiresAt}::timestamptz,${job.timeout_at}::timestamptz),updated_at=${now}
+          from allrice_workflow_runs w
+          where w.id=s.workflow_run_id and w.run_id=${job.run_id}
+            and w.organization_id=${job.organization_id} and w.workspace_id=${job.workspace_id}
+            and w.owner_id=${job.owner_id} and s.status='running' and s.lease_token=${leaseToken}`;
+          // Renewal commits only inside the lease it found, never revives it.
+          await assertLockedLeaseCurrent(transaction, job);
+          return { active: true, canceled: false };
+        },
+        { retryLockBusy: () => retryOnceLock },
       );
-      if (!once.allowed && !job.cancel_requested_at) {
-        await requestEmployeeAccessCancellationTransaction(
-          transaction,
-          job.run_id,
-          'native_schedule_authority_revoked',
-          {
-            actorId: null,
-            requestId: null,
-            actorLabel: 'native_schedule_current_authority',
-          },
-        );
-        const [canceled] = await transaction<
-          JobRow[]
-        >`select * from allrice_jobs where id=${jobId}`;
-        job = canceled!;
-      }
-      const cause = queueStopCause(job, new Date());
-      if (cause) return stopJobOrDrain(transaction, job, cause, leaseMs);
-      if (await stopUnauthorizedTechnicalJob(transaction, job))
-        return { active: false, canceled: false };
-      const now = new Date();
-      const expiresAt = leaseDeadline(leaseMs, now);
-      await transaction`
-      update allrice_jobs
-      set heartbeat_at = ${now}, lease_expires_at = ${expiresAt},
-          updated_at = ${now}
-      where id = ${job.id}
-    `;
-      // Renew only steps owned by this same live job incarnation. The job/root
-      // locks above serialize takeover, cancellation and an absolute deadline.
-      await transaction`update allrice_workflow_step_runs s
-      set lease_expires_at=least(${expiresAt}::timestamptz,${job.timeout_at}::timestamptz),updated_at=${now}
-      from allrice_workflow_runs w
-      where w.id=s.workflow_run_id and w.run_id=${job.run_id}
-        and w.organization_id=${job.organization_id} and w.workspace_id=${job.workspace_id}
-        and w.owner_id=${job.owner_id} and s.status='running' and s.lease_token=${leaseToken}`;
-      return { active: true, canceled: false };
     },
-    { retryLockBusy: () => retryOnceLock },
-  );
+  });
 }
 
 export async function appendJobEvent(input: {
@@ -2863,25 +2889,43 @@ export async function appendJobEvent(input: {
   const jobId = UuidSchema.parse(input.jobId);
   const leaseToken = UuidSchema.parse(input.leaseToken);
   const sql = getDatabase();
-  return sql.begin(async (transaction) => {
-    const job = await lockedLeasedJob(transaction, workerId, jobId, leaseToken);
-    if (input.type === 'harness.native') {
-      const { recordEmployeeMethodActivationQuestion } =
-        await import('../employees/employee-method-activation-question.ts');
-      await recordEmployeeMethodActivationQuestion(
-        transaction,
-        job,
-        input.payload,
-      );
-      await recordTaskQuestion(transaction, job.run_id, input.payload);
-    }
-    return appendEvent(transaction, {
-      organizationId: job.organization_id,
-      workspaceId: job.workspace_id,
-      runId: job.run_id,
-      type: input.type,
-      payload: input.payload,
-    });
+  // A confirmed rollback committed nothing, so the same event is written once.
+  return retryLeaseLockTimeout({
+    sql,
+    site: 'job_event',
+    lease: { workerId, jobId, leaseToken },
+    mode: 'receipt',
+    leaseLost: () => new QueueError('lease_lost'),
+    run: (trace, lockWaitMs) =>
+      sql.begin(async (transaction) => {
+        await trace.begin(transaction);
+        const job = await lockedLeasedJob(
+          transaction,
+          workerId,
+          jobId,
+          leaseToken,
+          undefined,
+          'running',
+          lockWaitMs,
+        );
+        if (input.type === 'harness.native') {
+          const { recordEmployeeMethodActivationQuestion } =
+            await import('../employees/employee-method-activation-question.ts');
+          await recordEmployeeMethodActivationQuestion(
+            transaction,
+            job,
+            input.payload,
+          );
+          await recordTaskQuestion(transaction, job.run_id, input.payload);
+        }
+        return appendEvent(transaction, {
+          organizationId: job.organization_id,
+          workspaceId: job.workspace_id,
+          runId: job.run_id,
+          type: input.type,
+          payload: input.payload,
+        });
+      }),
   });
 }
 
