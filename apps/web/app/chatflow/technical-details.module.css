@@ -1,0 +1,43 @@
+/* Takes the text color of the card it sits in, so it stays readable on both
+   DSH cards and the older light panels in either theme. */
+.disclosure {
+  min-width: 0;
+  margin-top: 8px;
+}
+.disclosure [data-disclosure-row],
+.disclosure [data-disclosure-row]:hover {
+  color: inherit;
+}
+.body {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 0 4px 22px;
+  font-size: 12px;
+  line-height: 18px;
+}
+.body dl {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+.body dt {
+  font-weight: 500;
+}
+.body dd {
+  margin: 0 0 4px;
+  overflow-wrap: anywhere;
+}
+.body pre {
+  max-height: 240px;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  border-radius: 8px;
+  background: color-mix(in srgb, currentColor 6%, transparent);
+  font-family: var(--ds-font-family-code);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

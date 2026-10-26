@@ -5,25 +5,39 @@ import {
   type ChangesetRunView,
   type WorkbenchArtifact,
 } from '@allrice/contracts';
+import { fileSizeText } from '@deepseek-ai/dsh-client-ui-primitives';
 import { inputRetry } from '../../lib/chatflow/input-retry';
+import {
+  changesetApproveLabel,
+  changesetStatusLabel,
+  changesetTitle,
+  fileChangeLabel,
+} from '../../lib/chatflow/changeset-presenter';
+import { TechnicalDetails } from './technical-details';
 import styles from './local-command-panel.module.css';
-const labels: Record<string, string> = {
-  pending: '未执行',
-  prepared: '待核实',
-  applied: '已确认落盘',
-  conflict: '冲突 · 未覆盖',
-  canceled: '未执行 · 已停止',
-  failed: '失败',
-  unknown: '结果未知 · 不自动重做',
-  waiting_user: '等待精确授权',
-  ready: '等待兼容 Bridge',
-  dispatched: '已派发',
-  running: '执行中',
-  succeeded: '已完成',
-  partial: '部分完成',
-  cancel_requested: '正在停止',
-  queued: '排队中',
-};
+
+/** Identities, checksums and codes kept for troubleshooting only. */
+function technicalRows(item: ChangesetRunView): [string, string][] {
+  return [
+    ['任务编号', item.runId],
+    ['状态记录', item.snapshot?.status ?? item.runState],
+    ...(item.payload
+      ? [['成果校验值', item.payload.arguments.checksum] as [string, string]]
+      : []),
+    ...(item.payload?.arguments.files ?? []).map((f): [string, string] => [
+      f.path,
+      'organization' in f
+        ? f.organization.source.checksum
+        : `${f.before?.checksum ?? '新建'} → ${f.after?.checksum ?? '删除'}`,
+    ]),
+    ...(item.evidence.result?.files ?? []).map((f): [string, string] => [
+      `${f.path} 的结果`,
+      [f.status, f.organization?.stage, f.errorCode]
+        .filter(Boolean)
+        .join(' · '),
+    ]),
+  ];
+}
 export function ChangesetPanel({
   artifact,
   organizationPlan = false,
@@ -57,14 +71,15 @@ export function ChangesetPanel({
           if (!signal?.aborted && g === generation.current) setRecords(null);
           return;
         }
-        if (!r.ok) throw Error('文件任务状态暂不可用');
+        if (!r.ok) throw Error('changeset_status_unavailable');
         const parsed = ChangesetRunsResponseSchema.parse(await r.json());
         if (!signal?.aborted && g === generation.current)
           setRecords(parsed.executions);
-      } catch {
+      } catch (e) {
         if (!signal?.aborted && g === generation.current) {
+          console.error('changeset status read failed', e);
           setRecords(null);
-          setError('文件状态读取失败，请刷新工作台。');
+          setError('暂时读不到文件的处理状态，请稍后刷新查看。');
         }
       }
     },
@@ -107,15 +122,14 @@ export function ChangesetPanel({
           body: JSON.stringify({ ...body, clientMessageId }),
         },
       );
-      if (!r.ok)
-        throw Error(
-          '任务未确认：请检查版本是否变化、该请求是否已经提交，然后刷新记录。',
-        );
+      if (!r.ok) throw Error('changeset_request_unconfirmed');
       const data = await r.json();
       onContinued?.(data.run.id);
       await reload();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : '提交失败');
+    } catch {
+      setError(
+        '申请可能没有送达。请刷新查看是否已经提交，再决定是否重新申请。',
+      );
     } finally {
       setBusy(false);
     }
@@ -164,10 +178,12 @@ export function ChangesetPanel({
           body: JSON.stringify(body),
         },
       );
-      if (!r.ok) throw Error('操作未确认：授权可能过期或已在另一个页面处理。');
+      if (!r.ok) throw Error('changeset_decision_unconfirmed');
       await reload();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : '操作失败');
+    } catch {
+      setError(
+        '你的选择可能没有送达：授权可能已过期，或已在别的页面处理。请刷新查看当前状态。',
+      );
     } finally {
       setBusy(false);
     }
@@ -175,19 +191,21 @@ export function ChangesetPanel({
   if (proposalCopy)
     return (
       <section className={styles.root} aria-label="子助手开发提案">
-        <h4>子助手提案 · 未写入本地</h4>
+        <h4>子助手的修改提案 · 还没保存到电脑</h4>
         <p>
-          此版本属于助手的独立候选副本，不能直接应用到原目录。请由主 Rice
-          合成候选版，完成同版本测试和独立审查后，再单独申请落盘审批。
+          这是子助手单独做的一份修改，不能直接保存到原来的文件夹。需要先由主
+          Rice 合并，完成同版本测试和独立审查后，再单独申请保存。
         </p>
       </section>
     );
   if (records === null && !error) return null;
   return (
-    <section className={styles.root} aria-label="文件变更审批与执行">
-      <h4>审查后应用／恢复</h4>
+    <section className={styles.root} aria-label="把修改保存到电脑">
+      <h4>
+        {organizationPlan ? '整理你电脑上的文件' : '把修改保存到你的电脑'}
+      </h4>
       <p>
-        仅作用于上述设备、授权目录和文件版本。不运行代码；批准后逐文件校验并应用，不承诺跨文件原子性。操作期间请暂停其他编辑器或程序修改这些文件。
+        只会改动这份提案里的文件，不会运行任何程序。允许后会逐个文件检查并保存；如果中途停下，可能只改了一部分。处理期间请先别用其他程序修改这些文件。
       </p>
       {error ? <p role="alert">{error}</p> : null}
       {records && !records.some((r) => !r.restoreOf) ? (
@@ -196,7 +214,7 @@ export function ChangesetPanel({
           disabled={busy || disabled || artifact.stale}
           onClick={() => void requestExecution(null)}
         >
-          {organizationPlan ? '请求整理这些文件' : '请求应用本版变更'}
+          {organizationPlan ? '申请整理这些文件' : '申请保存到电脑'}
         </button>
       ) : null}
       {records?.map((item) => {
@@ -219,19 +237,15 @@ export function ChangesetPanel({
             }
           >
             <strong>
-              {item.restoreOf ? '恢复任务' : '应用任务'} ·{' '}
-              {labels[item.snapshot?.status ?? item.runState] ?? item.runState}
+              {changesetTitle(!!item.restoreOf, organizationPlan)} ·{' '}
+              {changesetStatusLabel(item.snapshot?.status ?? item.runState)}
             </strong>
             {item.payload ? (
               <details>
                 <summary>
-                  本次将处理 {item.payload.arguments.files.length} 个文件 ·
-                  精确授权范围
+                  本次会处理 {item.payload.arguments.files.length} 个文件
                 </summary>
-                <small>
-                  成果 {item.payload.arguments.checksum}
-                  。以下前后内容是本次实际动作，恢复任务使用反向变更。
-                </small>
+                <small>下面是每个文件的改动；恢复时会反过来操作。</small>
                 <ul>
                   {item.payload.arguments.files.map((f) => (
                     <li key={f.path}>
@@ -245,20 +259,17 @@ export function ChangesetPanel({
                           }{' '}
                           → <code>{f.organization.target}</code>
                           <br />
-                          内容 {f.organization.source.checksum} ·{' '}
-                          {f.organization.source.sizeBytes} 字节；目标须为空
+                          {fileSizeText(f.organization.source.sizeBytes)}
+                          ，目标位置必须是空的
                         </small>
                       ) : (
                         <>
-                          <small>
-                            {f.before?.checksum ?? '不存在'} →{' '}
-                            {f.after?.checksum ?? '删除文件'}
-                          </small>
+                          <small>{fileChangeLabel(f)}</small>
                           <details>
-                            <summary>审查 {f.path} 的本次前后内容</summary>
-                            <strong>执行前</strong>
+                            <summary>查看 {f.path} 改动前后的内容</summary>
+                            <strong>改动前</strong>
                             <pre>{f.before?.text ?? '文件不存在'}</pre>
-                            <strong>执行后</strong>
+                            <strong>改动后</strong>
                             <pre>{f.after?.text ?? '删除这个文件'}</pre>
                           </details>
                         </>
@@ -275,7 +286,7 @@ export function ChangesetPanel({
                   disabled={busy || disabled}
                   onClick={() => void act(item, 'approved')}
                 >
-                  批准这一次文件操作
+                  {changesetApproveLabel(!!item.restoreOf, organizationPlan)}
                 </button>
                 <button
                   type="button"
@@ -285,7 +296,7 @@ export function ChangesetPanel({
                   拒绝
                 </button>
                 <small>
-                  仅批准已审查的精确版本；版本、目录或授权变化后须重新审查。
+                  只允许这一版修改；文件、文件夹或授权有变化时需要重新确认。
                 </small>
               </div>
             ) : null}
@@ -302,11 +313,10 @@ export function ChangesetPanel({
               <ul aria-label="逐文件执行结果">
                 {item.evidence.result.files.map((f) => (
                   <li key={f.path}>
-                    <code>{f.path}</code> · {labels[f.status]}
+                    <code>{f.path}</code> · {changesetStatusLabel(f.status)}
                     {f.organization ? (
                       <small>
-                        目标：<code>{f.organization.target}</code> · 阶段：
-                        {f.organization.stage}
+                        目标：<code>{f.organization.target}</code>
                         {f.organization.recovery ? (
                           <>
                             <br />
@@ -323,12 +333,11 @@ export function ChangesetPanel({
                         ) : null}
                       </small>
                     ) : null}
-                    {f.errorCode ? <small>{f.errorCode}</small> : null}
                   </li>
                 ))}
               </ul>
             ) : (
-              <p>尚无设备落盘证据；不能据此推断文件已修改。</p>
+              <p>还没有收到电脑的处理结果，文件可能还没有改动。</p>
             )}
             {stopped &&
             !item.restoreOf &&
@@ -346,19 +355,21 @@ export function ChangesetPanel({
                 disabled={busy || disabled}
                 onClick={() => void requestExecution(item.runId)}
               >
-                请求恢复已确认落盘的文件
+                恢复成改动前的样子
               </button>
             ) : null}
+            <TechnicalDetails rows={technicalRows(item)} />
           </article>
         );
       })}
-      <small>
+      {/* A paragraph, not the shared panel's fixed-gray small text, so it
+          stays readable on the dark page. */}
+      <p>
         {organizationPlan
-          ? '恢复仅处理已确认移动或重命名的文件，复制成果继续保留。'
-          : '恢复仅反转有回执的文件。'}
-        再检查现状
-        SHA；用户后续修改不会按旧版本覆盖。结果未知的文件需人工核对，不包含在恢复动作中。
-      </small>
+          ? '恢复只处理确认已移动或重命名的文件，复制出的文件会保留。'
+          : '恢复只处理确认已保存到电脑的文件。'}
+        恢复前会先检查文件现在的内容，你之后做的修改不会被旧版本覆盖。结果待确认的文件不会恢复，需要你自己检查。
+      </p>
     </section>
   );
 }

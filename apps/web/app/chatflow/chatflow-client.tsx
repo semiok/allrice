@@ -2166,6 +2166,7 @@ export function ChatFlowClient({
                     <InteractionStatusPanel
                       data={interactions.data}
                       error={interactions.error}
+                      onRetry={() => void reloadInteractions()}
                       sessionId={activeId}
                       onArtifact={(id) => {
                         workbench.show(id);

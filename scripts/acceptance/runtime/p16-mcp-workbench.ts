@@ -297,12 +297,13 @@ try {
   assert.equal(stolen.status(), 403);
   await page.goto(`${origin}/chatflow?session=${f.session}`);
   const card = page.locator(`#operation-${operationId}`);
-  await card.getByRole('button', { name: '批准这一次执行' }).waitFor();
+  await card.getByRole('button', { name: /^允许/ }).waitFor();
   await page.reload();
-  await card.getByRole('button', { name: '批准这一次执行' }).waitFor();
+  await card.getByRole('button', { name: /^允许/ }).waitFor();
   assert.equal(f.service.state.calls, 0);
   assert.match(await card.innerText(), /第三方 MCP 工具/);
-  assert.match(await card.innerText(), /records.append/);
+  // The tool name is technical detail, kept behind the collapsed row.
+  assert.doesNotMatch(await card.innerText(), /records.append/);
   assert.doesNotMatch(
     await card.innerText(),
     new RegExp(f.service.state.token),
@@ -317,9 +318,7 @@ try {
     (await card.boundingBox())!.width >= 250,
     'narrow approval remains readable',
   );
-  await card
-    .getByRole('button', { name: '批准这一次执行' })
-    .scrollIntoViewIfNeeded();
+  await card.getByRole('button', { name: /^允许/ }).scrollIntoViewIfNeeded();
   await page.screenshot({
     path: join(evidenceRoot, '02-narrow-approval.png'),
     fullPage: true,
@@ -329,7 +328,7 @@ try {
       r.url().includes('/runtime/approvals/') &&
       r.request().method() === 'POST',
   );
-  await card.getByRole('button', { name: '批准这一次执行' }).click();
+  await card.getByRole('button', { name: /^允许/ }).click();
   assert.equal((await allow).status(), 200);
   const result = await f.execute(created);
   assert.equal(result.status, 'succeeded');
@@ -337,12 +336,12 @@ try {
   await card.getByText('执行已返回成功', { exact: true }).waitFor();
   const rejectedCard = page.locator(`#operation-${rejectedId}`);
   await rejectedCard.getByRole('button', { name: '拒绝', exact: true }).click();
-  await rejectedCard.getByText('已拒绝本次操作', { exact: true }).waitFor();
+  await rejectedCard.getByText('你已拒绝这一步', { exact: true }).waitFor();
   assert.equal((await f.execute(second)).code, 'MCP_APPROVAL_REJECTED');
   assert.equal(f.service.state.calls, 1);
   await page.reload();
   await card.getByText('执行已返回成功', { exact: true }).waitFor();
-  await rejectedCard.getByText('已拒绝本次操作', { exact: true }).waitFor();
+  await rejectedCard.getByText('你已拒绝这一步', { exact: true }).waitFor();
   await page.screenshot({
     path: join(evidenceRoot, '03-approval-results.png'),
     fullPage: true,

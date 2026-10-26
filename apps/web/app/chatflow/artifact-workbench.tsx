@@ -98,7 +98,9 @@ class DiffBoundary extends Component<
   }
   override render() {
     return this.state.failed ? (
-      <p role="status">Diff 组件加载失败，可使用前后文本视图或下载此版本。</p>
+      <p role="status">
+        修改对比没有加载出来，可以刷新页面再试，或下载这个版本查看。
+      </p>
     ) : (
       this.props.children
     );
@@ -872,7 +874,7 @@ export function ReadOnlyArtifactPreview({
           <section key={file.path}>
             <h5>{file.path}</h5>
             <DiffBoundary>
-              <Suspense fallback={<p>正在加载 Diff…</p>}>
+              <Suspense fallback={<p>正在加载修改对比…</p>}>
                 <RichDiff
                   path={file.path}
                   before={file.before?.text ?? null}
@@ -1374,12 +1376,6 @@ function ArtifactReview({
                 <p>
                   来源：{browserVerification.outcome.report.target.fileName}
                 </p>
-                <p>
-                  版本：{browserVerification.outcome.report.target.versionId}
-                </p>
-                <p>
-                  内容校验：{browserVerification.outcome.report.target.checksum}
-                </p>
                 <p>浏览器：{browserVerification.outcome.browserVersion}</p>
                 <p>
                   已记录 {browserVerification.outcome.report.steps.length}{' '}
@@ -1440,9 +1436,9 @@ function ArtifactReview({
               <>
                 <div className={styles.row}>
                   <label>
-                    Diff 布局
+                    对比方式
                     <select
-                      aria-label="Diff 布局"
+                      aria-label="对比方式"
                       value={mode}
                       onChange={(e) =>
                         setMode(e.target.value as 'split' | 'unified')
@@ -1455,7 +1451,7 @@ function ArtifactReview({
                 </div>
                 <div className={styles.preview}>
                   <DiffBoundary key={`${artifact.id}/${path}`}>
-                    <Suspense fallback={<p>正在加载 Diff…</p>}>
+                    <Suspense fallback={<p>正在加载修改对比…</p>}>
                       <RichDiff
                         key={`${artifact.id}/${path}/${previous?.artifact.id ?? ''}`}
                         path={file?.path ?? artifact.version.fileName}
@@ -1472,10 +1468,9 @@ function ArtifactReview({
                     </Suspense>
                   </DiffBoundary>
                 </div>
-                {file ? (
+                {file && (!file.before || !file.after) ? (
                   <p className={styles.muted}>
-                    修改前 {file.before?.checksum.slice(0, 19) ?? '新文件'} →
-                    修改后 {file.after?.checksum.slice(0, 19) ?? '删除提案'}
+                    {file.before ? '这一版会删除这个文件。' : '这是新文件。'}
                   </p>
                 ) : null}
               </>

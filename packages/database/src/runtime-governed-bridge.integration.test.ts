@@ -1839,6 +1839,12 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
           platform: 'browser',
           format: 'iife',
           jsx: 'automatic',
+          // DSH primitives bring KaTeX fonts, as in the other Chrome pages.
+          loader: {
+            '.woff2': 'dataurl',
+            '.woff': 'dataurl',
+            '.ttf': 'dataurl',
+          },
           define: { 'process.env.NODE_ENV': '"production"' },
         });
         js = assets.outputFiles.find((x: { path: string }) =>
@@ -2140,7 +2146,7 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
         if (page) {
           await page.goto(origin);
           await page
-            .getByRole('button', { name: '批准这一次文件操作', exact: true })
+            .getByRole('button', { name: '允许保存这些修改', exact: true })
             .click();
           // A completed click is not a committed HTTP decision. In particular,
           // cross-host PG can still be processing the request at this point.
@@ -2198,10 +2204,10 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
               : ['applied', 'applied'],
         );
         if (page) {
-          await page.getByText('应用任务 · 已完成', { exact: true }).waitFor();
+          await page.getByText('保存修改 · 已完成', { exact: true }).waitFor();
           await page.reload();
           await page
-            .getByRole('button', { name: '请求恢复已确认落盘的文件' })
+            .getByRole('button', { name: '恢复成改动前的样子' })
             .waitFor();
         }
         await expect(
@@ -2228,16 +2234,16 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
         if (page) {
           await page.reload();
           await page
-            .getByText('本次将处理 2 个文件 · 精确授权范围', { exact: true })
+            .getByText('本次会处理 2 个文件', { exact: true })
             .last()
             .click();
           await page
-            .getByText('审查 test.mjs 的本次前后内容', { exact: true })
+            .getByText('查看 test.mjs 改动前后的内容', { exact: true })
             .last()
             .click();
           await page.getByText('删除这个文件', { exact: true }).waitFor();
           await page
-            .getByRole('button', { name: '批准这一次文件操作', exact: true })
+            .getByRole('button', { name: '允许恢复这些文件', exact: true })
             .click();
         } else await approve(restore);
         expect(await client.pollOnce()).toBe(true);
@@ -2262,7 +2268,7 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
             ?.runState,
         ).toBe(scenario === 'restore_conflict' ? 'failed' : 'succeeded');
         if (page) {
-          await page.getByText('恢复任务 · 已完成', { exact: true }).waitFor();
+          await page.getByText('恢复文件 · 已完成', { exact: true }).waitFor();
           await page.setViewportSize({ width: 390, height: 844 });
           expect(
             await page.evaluate(

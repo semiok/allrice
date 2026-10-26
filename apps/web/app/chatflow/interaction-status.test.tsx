@@ -25,9 +25,9 @@ describe('P26 pending approvals remain visible without the retired history panel
         }}
       />,
     );
-    expect(html).toContain('aria-label="待批准动作"');
+    expect(html).toContain('aria-label="等你确认的操作"');
     expect(html).toContain(`#operation-${operationId}`);
-    expect(html).toContain('不会通过聊天或计划认可代替授权');
+    expect(html).toContain('在对话里回复或认可计划，不等于允许这些操作');
     expect(html).not.toContain('<details');
     expect(html).not.toContain('交互与任务记录');
   });
@@ -52,10 +52,10 @@ describe('P26 pending approvals remain visible without the retired history panel
         }}
       />,
     );
-    expect(html).toContain(
-      '<button type="button">查看精确动作与批准／拒绝</button>',
+    expect(html).toMatch(
+      /<button type="button" class="[^"]+">查看并确认<\/button>/,
     );
     expect(html).not.toContain('href="?session=');
-    expect(html).toContain('不会通过聊天或计划认可代替授权');
+    expect(html).toContain('在对话里回复或认可计划，不等于允许这些操作');
   });
 });

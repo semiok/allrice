@@ -1,10 +1,12 @@
 'use client';
 import { useCallback, useEffect, useState, useRef } from 'react';
+import { Button } from '@deepseek-ai/dsh-client-ui-primitives';
 import {
   InteractionStatusSchema as schema,
   SessionRunTimingsSchema,
   type InteractionStatus,
 } from '@allrice/contracts';
+import { shortDateTime } from '../../lib/chatflow/browser-workspace-presenter';
 
 export function useInteractionStatus(
   workbenchEnabled: boolean,
@@ -45,7 +47,11 @@ export function useInteractionStatus(
       } catch {
         if (!signal?.aborted && requestGeneration === generation.current) {
           setValue(null);
-          setError(workbenchEnabled ? '交互状态暂不可用' : '运行时间暂不可用');
+          setError(
+            workbenchEnabled
+              ? '暂时读不到需要你确认的操作，会自动重试。'
+              : '运行时间暂不可用',
+          );
         }
       }
     },
@@ -69,50 +75,63 @@ export function InteractionStatusPanel({
   sessionId,
   onArtifact,
   onOperation,
+  onRetry,
 }: {
   data: InteractionStatus | null;
   error: string;
   sessionId: string;
   onArtifact: (id: string) => void;
   onOperation?: (id: string) => void;
+  /** Reads the state again at once; polling keeps retrying regardless. */
+  onRetry?: () => void;
 }) {
   if (!error && !data?.pendingActions.length) return null;
   return (
     <section>
-      {error ? <p role="status">{error}</p> : null}
+      {error ? (
+        <p role="status">
+          <span>{error}</span>{' '}
+          {onRetry && (
+            <Button size="sm" variant="outline" onClick={onRetry}>
+              刷新
+            </Button>
+          )}
+        </p>
+      ) : null}
       {data?.pendingActions.length ? (
-        <section aria-label="待批准动作">
-          <strong>待批准动作</strong>
+        <section aria-label="等你确认的操作">
+          <strong>等你确认的操作</strong>
           <ul>
             {data.pendingActions.map((a) => (
               <li key={a.approvalId}>
                 {a.artifactId ? (
-                  <button
-                    type="button"
+                  <Button
+                    size="sm"
+                    variant="outline"
                     onClick={() => onArtifact(a.artifactId!)}
                   >
-                    审查文件操作与批准／拒绝
-                  </button>
+                    查看并确认文件修改
+                  </Button>
                 ) : onOperation ? (
-                  <button
-                    type="button"
+                  <Button
+                    size="sm"
+                    variant="outline"
                     onClick={() => onOperation(a.operationId)}
                   >
-                    查看精确动作与批准／拒绝
-                  </button>
+                    查看并确认
+                  </Button>
                 ) : (
                   <a href={`?session=${sessionId}#operation-${a.operationId}`}>
-                    查看精确动作与批准／拒绝
+                    查看并确认
                   </a>
                 )}
-                <small>
-                  {' '}
-                  · {new Date(a.expiresAt).toLocaleTimeString()} 前有效
-                </small>
+                <small> · {shortDateTime(a.expiresAt)} 前有效</small>
               </li>
             ))}
           </ul>
-          <p>只在对应动作卡片批准，不会通过聊天或计划认可代替授权。</p>
+          <p>
+            请在对应的卡片里确认。在对话里回复或认可计划，不等于允许这些操作。
+          </p>
         </section>
       ) : null}
     </section>
