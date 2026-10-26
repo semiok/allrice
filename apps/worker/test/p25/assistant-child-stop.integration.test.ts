@@ -32,11 +32,15 @@ integration(
       await database?.close();
       vi.unstubAllEnvs();
     });
-    it('the root run ends completed with B adopted and A stopped', async () => {
+    const runStopCase = async (stopPath: 'user' | 'assistant_stop') => {
       const f = await createAssistantAuthorityFixture(database.db, {
         configure: false,
         memberRole: 'member',
-        allowedTools: ['assistant.delegate', 'assistant.report'],
+        allowedTools: [
+          'assistant.delegate',
+          'assistant.report',
+          'assistant.stop',
+        ],
       });
       const nativeSessionId = `dsh-${f.session}`;
       // The production controller creates the frozen root and budgets itself.
@@ -48,7 +52,8 @@ integration(
       const holdA = gate(),
         rootWorking = gate(),
         rootRelease = gate();
-      let rootHeld = false;
+      let rootHeld = false,
+        stopIssued = false;
       const model = await p24Fixture(async (request) => {
         const serialized = JSON.stringify(request.messages);
         if (!serialized.includes('ROOT_PRIVATE')) {
@@ -101,6 +106,19 @@ integration(
           rootWorking.release();
           await rootRelease.promise;
         }
+        if (stopPath === 'assistant_stop' && !stopIssued) {
+          stopIssued = true;
+          const tree = await f.runtime.getTree(f.context, {
+            runId: f.task.runId,
+          });
+          const a = tree.instances.find((i) => i.label === 'A');
+          return {
+            nativeTool: {
+              name: 'assistant_stop',
+              arguments: { childRunId: a!.runId },
+            },
+          };
+        }
         return {
           text: 'Summary: Longjing tea is from Hangzhou; A was stopped.',
         };
@@ -121,7 +139,11 @@ integration(
         wireNames: {},
         readOnlyTools: new Set(),
       });
-      const tools = ['assistant.delegate', 'assistant.report'];
+      const tools = [
+        'assistant.delegate',
+        'assistant.report',
+        'assistant.stop',
+      ];
       const assistants = productionAssistantController({
         deliveryMode: 'legacy',
         configuration: f.config,
@@ -230,12 +252,17 @@ integration(
           .toBe(true);
         const [a, b] = await children();
         expect(a!.label).toBe('A');
-        // The user presses "停止这个助手" on A.
-        await f.runtime.cancelChild(f.context, {
-          runId: f.task.runId,
-          childRunId: a!.runId,
-          requestId: randomUUID(),
-        });
+        if (stopPath === 'user') {
+          // The user presses "停止这个助手" on A.
+          await f.runtime.cancelChild(f.context, {
+            runId: f.task.runId,
+            childRunId: a!.runId,
+            requestId: randomUUID(),
+          });
+        } else {
+          // The parent's next real native tool call stops exactly A.
+          rootRelease.release();
+        }
         await expect
           .poll(
             async () =>
@@ -251,7 +278,10 @@ integration(
         expect(tree.cancelRequested).toBe(false);
         expect(
           tree.instances.find((i) => i.parentRunId === null),
-        ).toMatchObject({ status: 'completed', stoppedAt: expect.any(String) });
+        ).toMatchObject({
+          status: 'completed',
+          stoppedAt: expect.any(String),
+        });
         expect(tree.instances.find((i) => i.runId === a!.runId)).toMatchObject({
           status: 'canceled',
           cancelRequestedAt: expect.any(String),
@@ -283,6 +313,16 @@ integration(
         await adapter.close();
         await model.close();
       }
-    }, 90000);
+    };
+    it(
+      'the user stops A; the root completes with B adopted',
+      () => runStopCase('user'),
+      90000,
+    );
+    it(
+      'assistant_stop stops A; the root completes with B adopted',
+      () => runStopCase('assistant_stop'),
+      90000,
+    );
   },
 );
