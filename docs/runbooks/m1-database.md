@@ -43,13 +43,13 @@ df -h ~                       # 磁盘满是最常见的原因之一
    for i in $(seq 90); do pgrep -qf 'allrice-dev/.env .*apps/worker' || break; sleep 1; done; pgrep -fl 'allrice-dev/.env .*apps/worker'
    ```
 
-2. 确认关闭证明已经落库，两行都应是 `t|public_host_backend_drained`：
+2. 确认两个分区都已凭关闭证明关好：只读检查，两行都应是 `closed, ok`（Worker 刚停完时可能显示租约还没到期、退出码 4：等到提示的时间再看）：
 
    ```bash
-   /opt/homebrew/bin/psql -h 127.0.0.1 -At allrice_dev -c "select partition_id, closed, close_proof->>'kind' from allrice_native_once_partitions"
+   ~/allrice-dev/bin/schedule-recover --dev
    ```
 
-   不是的话先别动数据库：`exit` 退出这个 shell，按[手册 8“接管被拒”](m1-schedule-not-fired.md#接管被拒)处理（Worker 停着时 `schedule-recover` 不会替你启动它），再从头开始。
+   有 `ORPHAN` 就先别动数据库：`exit` 退出这个 shell，按[手册 8“接管被拒”](m1-schedule-not-fired.md#接管被拒)恢复（Worker 停着时它不会替你启动 Worker），再从第 1 步重来，这时第 2 步会显示 `closed, ok`。
 
 3. 按下面的做法重启或停库，等 `pg_isready -h 127.0.0.1` 返回 accepting connections。
 4. 再起 Worker，等两个控制器变成 `active`（旧进程没退完时 `bootstrap` 会报 `5: Input/output error`）：
