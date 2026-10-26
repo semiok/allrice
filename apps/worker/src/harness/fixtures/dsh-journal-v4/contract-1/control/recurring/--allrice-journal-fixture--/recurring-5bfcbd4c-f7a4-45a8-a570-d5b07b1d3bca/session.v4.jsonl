@@ -1,0 +1,10 @@
+{"type":"session","version":4,"id":"recurring-5bfcbd4c-f7a4-45a8-a570-d5b07b1d3bca","createdAt":1793025713037,"cwd":"/allrice/journal-fixture","isSeeded":false,"delegationDepth":0}
+{"type":"agent/inbox/spliced","seq":0,"time":1793025713039,"data":{"target":"next-turn","start":0,"inserted":[{"content":[{"type":"text","text":"Initialize isolated once control. No business execution."}],"source":{"kind":"user"},"role":"user","id":"ad7ae84f-a46f-423f-8dc9-d2f085828526"}]}}
+{"type":"turn/start","seq":1,"time":1793025713039,"data":{"turn":1}}
+{"type":"agent/inbox/spliced","seq":2,"time":1793025713039,"data":{"target":"next-turn","start":0,"removedCount":1,"inserted":[]}}
+{"type":"turn/end","seq":3,"time":1793025713040,"data":{"turn":1,"reason":{"kind":"blocked"}}}
+{"type":"agent/inbox/spliced","seq":4,"time":1793025773128,"data":{"target":"next-turn","start":0,"inserted":[{"content":[{"type":"text","text":"[SCHEDULE REMINDER BATCH]\nThis is a scheduled message from the user\nreminders_json: [{\"schedule_id\":\"schedule-68de403f-13cd-420a-be4a-8676d396c716\",\"occurrence_at\":\"2026-10-26T14:42:53.123Z\",\"reminder_prompt\":\"Synthetic schedule control only. Never execute business work.\"}]"}],"source":{"kind":"schedule"},"role":"user","id":"40a3cb75-8ac2-4a68-be3b-bd540bd61df1"}]}}
+{"type":"turn/start","seq":5,"time":1793025773129,"data":{"turn":2}}
+{"type":"agent/inbox/spliced","seq":6,"time":1793025773129,"data":{"target":"next-turn","start":0,"removedCount":1,"inserted":[]}}
+{"type":"turn/end","seq":7,"time":1793025773132,"data":{"turn":2,"reason":{"kind":"blocked"}}}
+{"type":"session/end-seed","seq":8,"time":1793025782244,"data":{}}

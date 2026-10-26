@@ -1,0 +1,175 @@
+{
+  "controls": [
+    {
+      "kind": "recurring",
+      "partitionId": "allrice-recurring-v1",
+      "controlId": "41043386-c158-4a1e-bed8-fd0f0ee09d64",
+      "organizationId": "0dd9d903-9e71-49b0-b3e4-0cdaff1caeb7",
+      "workspaceId": "868c599c-6940-4ac3-b4c2-8f9311c1e47a",
+      "ownerId": "1f5548dc-3654-4014-8f73-906ca83d3c6d",
+      "automationId": "a2285654-96c1-4faf-b96c-4da2322ef471",
+      "revision": 1,
+      "controlSessionId": "recurring-0eb5ef3b-bcc3-4b37-b787-73e02b8e6cdd",
+      "rule": {
+        "kind": "daily",
+        "time": "22:43:02",
+        "timezone": "Asia/Shanghai"
+      },
+      "appliedRevision": 1,
+      "appliedRule": {
+        "kind": "daily",
+        "time": "22:43:02",
+        "timezone": "Asia/Shanghai"
+      },
+      "sessionState": "ready",
+      "nativeTaskId": "schedule-bff882aa-daf1-4a44-b189-5154eef171b9",
+      "taskDeleted": false,
+      "command": {
+        "id": "61f2f8f3-7eaf-4dcb-85bc-e47b90077390",
+        "kind": "create",
+        "status": "confirmed"
+      },
+      "dispatch": {
+        "employeeAssignmentId": "4ba6b8c1-c832-4be0-aef8-4bd880f40af9",
+        "employeeInstanceId": "4ba6b8c1-c832-4be0-aef8-4bd880f40af9",
+        "businessSessionId": "572470f9-9ee1-4ece-a982-e00c500d2aa4"
+      }
+    },
+    {
+      "kind": "recurring",
+      "partitionId": "allrice-recurring-v1",
+      "controlId": "91175d91-6121-4b5e-8982-130a01d6f083",
+      "organizationId": "0dd9d903-9e71-49b0-b3e4-0cdaff1caeb7",
+      "workspaceId": "868c599c-6940-4ac3-b4c2-8f9311c1e47a",
+      "ownerId": "1f5548dc-3654-4014-8f73-906ca83d3c6d",
+      "automationId": "681ec037-b205-41d0-9170-170ae7c548be",
+      "revision": 1,
+      "controlSessionId": "recurring-5bfcbd4c-f7a4-45a8-a570-d5b07b1d3bca",
+      "rule": {
+        "kind": "every",
+        "seconds": 60
+      },
+      "appliedRevision": 1,
+      "appliedRule": {
+        "kind": "every",
+        "seconds": 60
+      },
+      "sessionState": "ready",
+      "nativeTaskId": "schedule-68de403f-13cd-420a-be4a-8676d396c716",
+      "taskDeleted": false,
+      "command": {
+        "id": "8e9b5466-ee23-4040-a6b6-16cfa9fb8f99",
+        "kind": "create",
+        "status": "confirmed"
+      },
+      "dispatch": {
+        "employeeAssignmentId": "4ba6b8c1-c832-4be0-aef8-4bd880f40af9",
+        "employeeInstanceId": "4ba6b8c1-c832-4be0-aef8-4bd880f40af9",
+        "businessSessionId": "572470f9-9ee1-4ece-a982-e00c500d2aa4"
+      }
+    }
+  ],
+  "tasks": {
+    "schedule-bff882aa-daf1-4a44-b189-5154eef171b9": {
+      "sessionId": "recurring-0eb5ef3b-bcc3-4b37-b787-73e02b8e6cdd",
+      "record": {
+        "id": "schedule-bff882aa-daf1-4a44-b189-5154eef171b9",
+        "kind": "daily",
+        "title": "AllRice once control",
+        "prompt": "Synthetic schedule control only. Never execute business work.",
+        "time": "22:43:02.000",
+        "timeZone": "Asia/Shanghai",
+        "scheduledAt": "2026-10-27T14:43:02.000Z"
+      },
+      "status": "active",
+      "lastDelivery": {
+        "scheduledAt": "2026-10-26T14:43:02.000Z",
+        "deliveredAt": "2026-10-26T14:43:02.050Z",
+        "messageId": "8960e860-78be-4b5f-9813-013e2e277e1f"
+      },
+      "deliveryHistory": {
+        "records": [
+          {
+            "scheduledAt": "2026-10-26T14:43:02.000Z",
+            "deliveredAt": "2026-10-26T14:43:02.050Z",
+            "messageId": "8960e860-78be-4b5f-9813-013e2e277e1f",
+            "prompt": "Synthetic schedule control only. Never execute business work."
+          }
+        ],
+        "earlierRecordsUnavailable": false,
+        "earlierRecordsPruned": false
+      }
+    },
+    "schedule-68de403f-13cd-420a-be4a-8676d396c716": {
+      "sessionId": "recurring-5bfcbd4c-f7a4-45a8-a570-d5b07b1d3bca",
+      "record": {
+        "id": "schedule-68de403f-13cd-420a-be4a-8676d396c716",
+        "kind": "every",
+        "title": "AllRice once control",
+        "prompt": "Synthetic schedule control only. Never execute business work.",
+        "everySeconds": 60,
+        "scheduledAt": "2026-10-26T14:43:53.123Z"
+      },
+      "status": "active",
+      "lastDelivery": {
+        "scheduledAt": "2026-10-26T14:42:53.123Z",
+        "deliveredAt": "2026-10-26T14:42:53.176Z",
+        "messageId": "40a3cb75-8ac2-4a68-be3b-bd540bd61df1"
+      },
+      "deliveryHistory": {
+        "records": [
+          {
+            "scheduledAt": "2026-10-26T14:42:53.123Z",
+            "deliveredAt": "2026-10-26T14:42:53.176Z",
+            "messageId": "40a3cb75-8ac2-4a68-be3b-bd540bd61df1",
+            "prompt": "Synthetic schedule control only. Never execute business work."
+          }
+        ],
+        "earlierRecordsUnavailable": false,
+        "earlierRecordsPruned": false
+      }
+    }
+  },
+  "workspace": {
+    "global": {
+      "initialized": true,
+      "workspaceIds": [],
+      "pinnedSessionIds": [],
+      "archivedSessionIds": []
+    },
+    "tables": {
+      "workspaces": {}
+    },
+    "revision": 1,
+    "unitVersion": 2
+  },
+  "revisions": {
+    "681ec037-b205-41d0-9170-170ae7c548be": [
+      {
+        "name": "every minute",
+        "rule": {
+          "kind": "every",
+          "seconds": 60
+        },
+        "prompt": "Control corpus every minute; no model runs.",
+        "revision": 1,
+        "acceptedAt": "2026-10-26T14:41:52.846Z",
+        "reservationDigest": "sha256:cc7eab64c0146d32eb5cc7a3db55e2587185ff1546864766af33611cd2d51588"
+      }
+    ],
+    "a2285654-96c1-4faf-b96c-4da2322ef471": [
+      {
+        "name": "daily",
+        "rule": {
+          "kind": "daily",
+          "time": "22:43:02",
+          "timezone": "Asia/Shanghai"
+        },
+        "prompt": "Control corpus daily; no model runs.",
+        "revision": 1,
+        "acceptedAt": "2026-10-26T14:41:52.889Z",
+        "reservationDigest": "sha256:32d14b2f080fd7a6e8c3991f08c98489aa6dc606c5162e42ef3c30a28604a470"
+      }
+    ]
+  }
+}

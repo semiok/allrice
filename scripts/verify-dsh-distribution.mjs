@@ -239,6 +239,13 @@ const requiredReplayScenarios = [
   'journal-replay-bootstrap-reference',
   'journal-contract-writers',
   'journal-corpus-integrity',
+  'journal-control-corpus-versions',
+  'journal-control-corpus-integrity',
+  'journal-replay-control-once',
+  'journal-replay-control-recurring',
+  'journal-replay-control-once-cancel',
+  'journal-replay-control-recurring-update',
+  'journal-replay-control-recurring-delete',
 ];
 const replayById = new Map(
   (compatibility.goldenReplay ?? []).map((scenario) => [scenario.id, scenario]),

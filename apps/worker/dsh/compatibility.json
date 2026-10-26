@@ -155,6 +155,41 @@
       "id": "journal-corpus-integrity",
       "testFile": "apps/worker/test/p25/dsh-journal-replay.test.ts",
       "testName": "refuses a one-byte edit before installing the changed journal"
+    },
+    {
+      "id": "journal-control-corpus-versions",
+      "testFile": "apps/worker/test/p25/dsh-control-journal-replay.test.ts",
+      "testName": "keeps one control corpus for every readable contract version"
+    },
+    {
+      "id": "journal-control-corpus-integrity",
+      "testFile": "apps/worker/test/p25/dsh-control-journal-replay.test.ts",
+      "testName": "refuses a one-byte edit of a control %s before installing it"
+    },
+    {
+      "id": "journal-replay-control-once",
+      "testFile": "apps/worker/test/p25/dsh-control-journal-replay.test.ts",
+      "testName": "restores the once controller on its frozen journals and delivers the due task once"
+    },
+    {
+      "id": "journal-replay-control-recurring",
+      "testFile": "apps/worker/test/p25/dsh-control-journal-replay.test.ts",
+      "testName": "restores the recurring controller on its frozen journal and delivers each missed occurrence once"
+    },
+    {
+      "id": "journal-replay-control-once-cancel",
+      "testFile": "apps/worker/test/p25/dsh-control-journal-replay.test.ts",
+      "testName": "cancels a pending once task on its frozen journal so it never fires"
+    },
+    {
+      "id": "journal-replay-control-recurring-update",
+      "testFile": "apps/worker/test/p25/dsh-control-journal-replay.test.ts",
+      "testName": "applies a pending recurring rule change on its frozen journal"
+    },
+    {
+      "id": "journal-replay-control-recurring-delete",
+      "testFile": "apps/worker/test/p25/dsh-control-journal-replay.test.ts",
+      "testName": "deletes a recurring task on its frozen journal so it never fires again"
     }
   ],
   "historicalReaderPolicy": {
