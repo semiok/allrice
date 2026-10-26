@@ -430,6 +430,20 @@ class Checks(unittest.TestCase):
         findings, ran = probe()
         self.assertEqual(step(r, findings, 300, ran), [('recovered', 'public_entry:c.example', False)])  # left the config
 
+    def test_m1_probes_every_entry_the_tunnel_serves(self):
+        r = make_round(publicUrl='https://a.bplabs.xyz')  # the shipped extraPublicUrls
+        probed = []
+
+        def get(url, *a):
+            probed.append(url)
+            return 200, b'ok'
+        with mock.patch.object(monitor, 'lock_holders', return_value=[]), mock.patch.object(monitor, 'http_get', side_effect=get):
+            keys = [f['key'] for f in monitor.check_public_entry(r)]
+        self.assertEqual(keys, ['public_entry', 'public_entry:allrice.bplabs.xyz', 'public_entry:allrice-admin.bplabs.xyz',
+                                'public_entry:allrice-dsh.bplabs.xyz'])
+        # Rice Bridge pairs with allrice-dsh; its root redirects to allrice-admin, so it is probed on a path of its own
+        self.assertIn('https://allrice-dsh.bplabs.xyz/api/health/ready', probed)
+
     def test_public_entry_probes_hostnames_at_once(self):
         r = make_round(publicUrl='https://a.example', extraPublicUrls=['https://b.example', 'https://c.example'])
         together = threading.Barrier(3, timeout=5)  # one at a time would break it
@@ -508,7 +522,7 @@ monitor.PUBLIC_PROBE_SECONDS = 0.2
 monitor.lock_holders = lambda path: []
 monitor.http_get = lambda url, *a: threading.Event().wait() or (200, b'')
 cfg = json.loads(json.dumps(monitor.M1))
-cfg.update(stateDir=tempfile.mkdtemp(), publicUrl='https://a.example')
+cfg.update(stateDir=tempfile.mkdtemp(), publicUrl='https://a.example', extraPublicUrls=['https://b.example', 'https://c.example'])
 print(len(monitor.check_public_entry(monitor.Round(cfg))))
 '''
         p = subprocess.run([sys.executable, '-c', code, os.path.join(HERE, 'monitor')], capture_output=True, text=True, timeout=20)

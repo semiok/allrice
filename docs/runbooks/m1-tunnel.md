@@ -6,7 +6,7 @@
 
 用户都通过公网地址（`ALLRICE_PUBLIC_URL`，现在是 a.bplabs.xyz）访问，隧道 `allrice-m1` 断了就谁都打不开，但 M1 上的服务本身可能是好的。只有 huihuimac 报 `public_entry`、M1 本机不报：多半是 DNS 或 Cloudflare 那一侧的问题，或 huihuimac 自己的网络。
 
-隧道还承接员工入口 allrice.bplabs.xyz 和管理后台 allrice-admin.bplabs.xyz（10-26 切换时从 huihuimac 迁来，MET-216），M1 本机每轮按同样标准各拨测一次（默认配置 `extraPublicUrls`）。只有某个域名报 `public_entry:<域名>`、`public_entry` 正常：隧道和 Web 都好，问题在这个域名自己的 DNS 记录或 ingress 规则。
+隧道还承接员工入口 allrice.bplabs.xyz、管理后台 allrice-admin.bplabs.xyz 和 Rice Bridge 的配对服务器 allrice-dsh.bplabs.xyz（10-26 切换时从 huihuimac 迁来，MET-216），M1 本机每轮按同样标准各拨测一次（默认配置 `extraPublicUrls`）。allrice-dsh 是 Bridge 写死的地址（`apps/rice-bridge/macos/Info.plist` 的 `AllRicePairingServerURL`），它断了所有 Bridge 都连不上；它的根路径会跳到管理后台，所以拨测它自己的 `/api/health/ready`。只有某个域名报 `public_entry:<域名>`、`public_entry` 正常：隧道和 Web 都好，问题在这个域名自己的 DNS 记录或 ingress 规则。
 
 ## 第一步
 
@@ -17,6 +17,7 @@ for p in 20241 20242 20243 20244 20245; do curl -s -m 2 http://127.0.0.1:$p/read
 ~/.local/bin/cloudflared tunnel info allrice-m1
 curl -sS -o /dev/null -w '%{http_code}\n' https://a.bplabs.xyz/      # 应为 200 或跳转到 /login
 for h in allrice allrice-admin; do curl -sS -o /dev/null -w "$h %{http_code} %{redirect_url}\n" https://$h.bplabs.xyz/; done  # 同上，跳转到本域名的 /login
+curl -sS -o /dev/null -w '%{http_code}\n' https://allrice-dsh.bplabs.xyz/api/health/ready  # Bridge 配对服务器，应为 200
 curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3011/login  # 本机 Web 是否正常
 ```
 

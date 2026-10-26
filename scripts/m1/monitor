@@ -94,7 +94,10 @@ M1 = dict(
     tunnelMetrics=['http://127.0.0.1:%d/ready' % p for p in range(20241, 20246)],
     # The other hostnames the tunnel serves for the same Web (~/.cloudflared/allrice-m1.yml,
     # moved over at the 10-26 cutover, MET-216): probed like publicUrl, each its own alert.
-    extraPublicUrls=['https://allrice.bplabs.xyz', 'https://allrice-admin.bplabs.xyz'],
+    # allrice-dsh is the server Rice Bridge pairs with (AllRicePairingServerURL); its root
+    # redirects to allrice-admin, so a path it serves itself is probed.
+    extraPublicUrls=['https://allrice.bplabs.xyz', 'https://allrice-admin.bplabs.xyz',
+                     'https://allrice-dsh.bplabs.xyz/api/health/ready'],
     docker='/opt/homebrew/bin/docker',
     officeContainer='allrice-office-renderer',
     vmWatchdog='allrice-cloud-watchdog',
