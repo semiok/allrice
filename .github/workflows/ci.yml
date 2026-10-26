@@ -133,6 +133,14 @@ jobs:
       - run: pnpm format:check
       - run: pnpm lint
       - run: pnpm typecheck
+      # MET-220 R1: no new regex or keyword match on the user's Chinese wording outside
+      # the baseline, and the baseline holds nothing its base commit's did not.
+      - name: Block new regex matching of user wording (MET-210 #2)
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE"
+          pnpm user-text-regex:verify --base "$BASE"
       - name: Unit-test the M1 monitor (standard-library Python, no services)
         run: python3 -m unittest discover -s scripts/m1 -p 'test_*.py'
       # Native child processes and fsync journals need bounded contention.
