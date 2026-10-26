@@ -219,7 +219,7 @@ export async function startMcpAcceptanceService(
     transports.add(transport);
     response.on('close', () => {
       transports.delete(transport);
-      void mcp.close();
+      void mcp.close().catch(() => {});
     });
     try {
       await mcp.connect(transport);

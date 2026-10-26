@@ -683,6 +683,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
         .finally(() => {
           cancellationTask = undefined;
         });
+      // A close failure above rejects after the variable is cleared, when no
+      // later stop may await it; unobserved, Node would end the Worker. The
+      // failure path still records the same close through ownedDrop.
+      void cancellationTask.catch(() => {});
     };
     const cancellationTimer = assistant
       ? setInterval(pollCancellation, 250)

@@ -116,7 +116,7 @@ export function createNativeMcpTransport(
     };
     const stop = () => {
       void client.close().catch(() => {});
-      void ctx.fiber.dispose();
+      void ctx.fiber.dispose().catch(() => {});
     };
     input.signal.addEventListener('abort', stop, { once: true });
     try {
