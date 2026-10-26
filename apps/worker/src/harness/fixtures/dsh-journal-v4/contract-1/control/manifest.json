@@ -1,0 +1,63 @@
+{
+  "capturedWith": {
+    "allriceCommit": "d567419550a9540fdfc57db5250a5e94c69bed7f",
+    "uncommitted": [],
+    "distributionVersion": "0.2.1-rc.2",
+    "sessionFormat": 4,
+    "contract": { "current": 1, "readsFrom": 1 },
+    "nativeArtifactId": "sha256:e8c0d23b0214082e3269f39e3246c30d0c293a0f75847d54ea205a27e9ce20d8",
+    "platform": "darwin-arm64 node v22.23.2",
+    "store": "production SQL store in an isolated PostgreSQL schema",
+    "normalizedCwd": "/allrice/journal-fixture"
+  },
+  "scenarios": [
+    {
+      "id": "once",
+      "reference": {
+        "artifactId": "sha256:e8c0d23b0214082e3269f39e3246c30d0c293a0f75847d54ea205a27e9ce20d8",
+        "profileId": "allrice-once-control-v1",
+        "storageId": "journal-corpus-once"
+      },
+      "files": [
+        {
+          "path": "once/--allrice-journal-fixture--/once-335e0941-7250-4d74-9273-a0ac2f790e6f/session.v4.jsonl",
+          "sha256": "19d3de2f9dbe8a646aa0264578fc391ccfd8dc5ff0c5fea9fd0e1553ba5349c1"
+        },
+        {
+          "path": "once/--allrice-journal-fixture--/once-9ef336c2-686a-4f1e-a89e-4bf4fcd5885b/session.v4.jsonl",
+          "sha256": "1a392e8bd236a4b4290eadd9f4fdf7a9126059df1f30e88fa85217477f802472"
+        },
+        {
+          "path": "once/--allrice-journal-fixture--/once-af2a191a-24cc-4df6-b2cc-9a8dd2051b67/session.v4.jsonl",
+          "sha256": "2e35dd276abca48fe87b01f5056d32071d4cb42a056f3ed39c2d731df15e47da"
+        }
+      ],
+      "store": {
+        "path": "once/store.json",
+        "sha256": "72e45d66549c32f9f921befaf090d100d61b6cf2d04f8509252c41f139ac82dd"
+      }
+    },
+    {
+      "id": "recurring",
+      "reference": {
+        "artifactId": "sha256:e8c0d23b0214082e3269f39e3246c30d0c293a0f75847d54ea205a27e9ce20d8",
+        "profileId": "allrice-recurring-control-v1",
+        "storageId": "journal-corpus-recurring"
+      },
+      "files": [
+        {
+          "path": "recurring/--allrice-journal-fixture--/recurring-0eb5ef3b-bcc3-4b37-b787-73e02b8e6cdd/session.v4.jsonl",
+          "sha256": "d60e1837b5d7be959d78d9fc56c58371e9a4176dcadb916a2ba36409d55977ca"
+        },
+        {
+          "path": "recurring/--allrice-journal-fixture--/recurring-5bfcbd4c-f7a4-45a8-a570-d5b07b1d3bca/session.v4.jsonl",
+          "sha256": "a0d979f9894837634457b0088a575d81f64f5c2040129e4ec30c41baf58ae167"
+        }
+      ],
+      "store": {
+        "path": "recurring/store.json",
+        "sha256": "f3057c9b94dd555440d722ead26e15a036acb53c37d06d73712a74e2ad009dc1"
+      }
+    }
+  ]
+}
