@@ -216,6 +216,26 @@ describe('private final delivery repair proposal', () => {
       await expect(f.port.authorize(raw)).rejects.toThrow();
     expect(f.budgets[0]!.capacity).toBe(10);
   });
+  it('an observed budget bounds the repair call by capacity, not by spend or unknown reservations', async () => {
+    const f = fixture();
+    // A stopped child's aborted call keeps its full reservation, and the
+    // tree has already spent past one response's output bound.
+    Object.assign(f.budgets[0]!, { spent: 12, reserved: 1, enforced: false });
+    Object.assign(f.budgets[1]!, {
+      spent: 9000,
+      reserved: 10000,
+      enforced: false,
+    });
+    expect(
+      await f.port.authorize({ candidate: invalid, phase: 'propose' }),
+    ).toMatchObject({ remainingModelCalls: 10, remainingOutputTokens: 10000 });
+    expect(f.budgets[1]).toMatchObject({ spent: 9000, reserved: 10000 });
+    // An enforced budget still counts every spent and reserved unit.
+    delete (f.budgets[1] as { enforced?: boolean }).enforced;
+    expect(
+      await f.port.authorize({ candidate: invalid, phase: 'propose' }),
+    ).toMatchObject({ remainingModelCalls: 10, remainingOutputTokens: 0 });
+  });
   it('does not infer unused preparation closure from missing usage or a native assertion', async () => {
     const f = fixture();
     f.close.mockRejectedValueOnce(Error('model_already_dispatched'));

@@ -175,6 +175,8 @@ export function createBoundedDeliveryRepair(input: {
       capacity: number;
       reserved: number;
       spent: number;
+      /** `false` when the runtime only observes this metric (see getTree). */
+      enforced?: boolean;
     }[]
   >;
   close(callId: string): ReturnType<BoundDeliveryRepair['closePreparation']>;
@@ -211,6 +213,10 @@ export function createBoundedDeliveryRepair(input: {
         )
           throw Error('FINAL_DELIVERY_REPAIR_BUDGET_UNAVAILABLE');
         const budget = matches[0]!;
+        // An observed metric is telemetry, not a spending gate (model admission
+        // does not stop on it either). Its capacity bounds this one repair call;
+        // cumulative spend and unknown-usage reservations stay as they are.
+        if (budget.enforced === false) return budget.capacity;
         return Math.max(0, budget.capacity - budget.reserved - budget.spent);
       };
       const remainingModelCalls = remaining('model_calls');
