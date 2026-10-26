@@ -248,7 +248,12 @@ export function createAssistantWorkerBridge(
         ...base,
         runId: instance.runId,
         result,
+        settlement: true,
       });
+      if (!recorded.recorded)
+        return recorded.result
+          ? { ...recorded.result, wakeParent: recorded.wakeParent }
+          : { status: recorded.status, wakeParent: false };
       return {
         ...result,
         status: recorded.status,

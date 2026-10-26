@@ -441,6 +441,71 @@ integration('P25 governed assistant ledger — isolated real PostgreSQL', () => 
       }),
     ).rejects.toThrow('canceled');
   });
+  it('a native settlement after the confirmed stop records nothing, while a late report still conflicts', async () => {
+    const f = await assistantFixture(fixture.db),
+      child = (await f.delegate()).instance;
+    await f.runtime.cancelRoot(f.context, {
+      runId: f.task.runId,
+      requestId: randomUUID(),
+    });
+    await f.runtime.confirmStopped({ ...f.base, runId: child.runId });
+    const result = {
+      deliveryId: randomUUID(),
+      status: 'partial' as const,
+      summary: 'Native assistant settled without a verified delivery.',
+      evidence: [],
+      incomplete: ['Native stop reason: native_settled'],
+      usageComplete: false,
+    };
+    await expect(
+      f.runtime.recordResult({ ...f.base, runId: child.runId, result }),
+    ).rejects.toThrow('conflict');
+    for (const deliveryId of [result.deliveryId, randomUUID()])
+      expect(
+        await f.runtime.recordResult({
+          ...f.base,
+          runId: child.runId,
+          result: { ...result, deliveryId },
+          settlement: true,
+        }),
+      ).toMatchObject({ result: null, wakeParent: false, recorded: false });
+    const tree = await f.runtime.getTree(f.context, { runId: f.task.runId });
+    expect(tree.results).toHaveLength(0);
+    expect(tree.instances.find((i) => i.runId === child.runId)).toMatchObject({
+      status: 'canceled',
+      stoppedAt: expect.any(String),
+    });
+  });
+  it('a native settlement before the stop receipt still records the partial stop receipt', async () => {
+    const f = await assistantFixture(fixture.db),
+      child = (await f.delegate()).instance;
+    await f.runtime.cancelRoot(f.context, {
+      runId: f.task.runId,
+      requestId: randomUUID(),
+    });
+    const result = {
+      deliveryId: randomUUID(),
+      status: 'partial' as const,
+      summary: 'Native assistant settled without a verified delivery.',
+      evidence: [],
+      incomplete: ['Native stop reason: native_settled'],
+      usageComplete: false,
+    };
+    const recorded = await f.runtime.recordResult({
+      ...f.base,
+      runId: child.runId,
+      result,
+      settlement: true,
+    });
+    expect(recorded).toMatchObject({ wakeParent: false, duplicate: false });
+    expect(recorded.recorded).toBe(true);
+    await f.runtime.confirmStopped({ ...f.base, runId: child.runId });
+    const tree = await f.runtime.getTree(f.context, { runId: f.task.runId });
+    expect(tree.results.map((r) => r.runId)).toEqual([child.runId]);
+    expect(tree.instances.find((i) => i.runId === child.runId)?.status).toBe(
+      'canceled',
+    );
+  });
   it('records evidence-backed delivery independently from parent adoption', async () => {
     const f = await assistantFixture(fixture.db),
       child = (await f.delegate()).instance;

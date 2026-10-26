@@ -323,6 +323,25 @@ export function createAssistantRuntime(
     if (!row) fail('not_found');
     return row;
   }
+  async function currentDelivery(tx: Tx, root: Root, child: Instance) {
+    if (!child.parent_run_id) fail('forbidden');
+    const parent = await instance(tx, root, child.parent_run_id);
+    const [delivery] = await tx<
+      { payload: AssistantResult }[]
+    >`select payload from allrice_assistant_results where run_id=${child.run_id} order by created_at desc limit 1`;
+    return {
+      result: delivery?.payload ?? null,
+      wakeParent:
+        !!delivery &&
+        !root.cancel_request_id &&
+        !child.cancel_requested_at &&
+        !parent.cancel_requested_at &&
+        !root.revoked_at &&
+        child.status !== 'unknown' &&
+        !terminal.has(parent.status) &&
+        parent.status !== 'unknown',
+    };
+  }
   async function active(tx: Tx, root: Root, runId: string) {
     const row = await instance(tx, root, runId);
     const ancestors = await tx<
@@ -1761,6 +1780,8 @@ export function createAssistantRuntime(
       runId: string;
       worker: AssistantWorkerLease;
       result: AssistantResult;
+      /** Native settlement fallback receipt, never an explicit report. */
+      settlement?: boolean;
     }) {
       const result = AssistantResultSchema.parse(input.result),
         digest = runtimeLedgerInputDigest(result);
@@ -1777,11 +1798,28 @@ export function createAssistantRuntime(
           return {
             wakeParent: false,
             duplicate: true,
+            recorded: true as const,
             status: AssistantResultSchema.parse(old.payload).status,
           };
         }
         const [prior] =
           await tx`select 1 from allrice_assistant_results where run_id=${row.run_id} limit 1`;
+        // A native settlement only stands in for a missing delivery. A report
+        // that landed after the caller found none is delivered instead. Once
+        // the stop receipt is committed, the settlement is the cancellation's
+        // own echo and records nothing (before it, a partial stop receipt is
+        // still recorded). A conflict here would fail the native writes that
+        // the parent's next model call, join and flush await.
+        if (
+          input.settlement &&
+          (prior || (row.cancel_requested_at && row.stopped_at))
+        )
+          return {
+            ...(await currentDelivery(tx, root, row)),
+            duplicate: false,
+            status: row.status,
+            recorded: false as const,
+          };
         if (prior || terminal.has(row.status)) fail('conflict');
         // An explicit completion must cite platform-registered immutable evidence;
         // idle or arbitrary final text is never a successful delivery.
@@ -1835,6 +1873,7 @@ export function createAssistantRuntime(
             !terminal.has(parent.status) &&
             parent.status !== 'unknown',
           duplicate: false,
+          recorded: true as const,
           status,
         };
       });
@@ -1879,24 +1918,7 @@ export function createAssistantRuntime(
       return db.begin(async (tx) => {
         const root = await lock(tx, input.scope, input.rootRunId);
         await assertLease(tx, root, input.worker, false);
-        const child = await instance(tx, root, input.runId);
-        if (!child.parent_run_id) fail('forbidden');
-        const parent = await instance(tx, root, child.parent_run_id);
-        const [delivery] = await tx<
-          { payload: AssistantResult }[]
-        >`select payload from allrice_assistant_results where run_id=${child.run_id} order by created_at desc limit 1`;
-        return {
-          result: delivery?.payload ?? null,
-          wakeParent:
-            !!delivery &&
-            !root.cancel_request_id &&
-            !child.cancel_requested_at &&
-            !parent.cancel_requested_at &&
-            !root.revoked_at &&
-            child.status !== 'unknown' &&
-            !terminal.has(parent.status) &&
-            parent.status !== 'unknown',
-        };
+        return currentDelivery(tx, root, await instance(tx, root, input.runId));
       });
     },
     async registerArtifact(input: {
