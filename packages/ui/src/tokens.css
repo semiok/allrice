@@ -1,0 +1,83 @@
+/* Generated from tokens.json by `pnpm design-tokens`. Do not edit. */
+
+body {
+  --ar-surface: var(--dsw-alias-bg-base);
+  --ar-surface-raised: var(--dsw-alias-bg-layer-1);
+  --ar-surface-floating: var(--dsw-alias-bg-layer-2);
+  --ar-surface-subtle: var(--dsw-alias-bg-module-platform);
+  --ar-surface-hover: var(--dsw-alias-interactive-bg-hover);
+  --ar-surface-active: var(--dsw-alias-interactive-bg-active);
+  --ar-scrim: var(--dsw-alias-bg-mask-1);
+  --ar-border-subtle: var(--dsw-alias-border-l1);
+  --ar-border: var(--dsw-alias-border-l2);
+  --ar-border-strong: var(--dsw-alias-border-l4);
+  --ar-text: var(--dsw-alias-label-primary);
+  --ar-text-secondary: var(--dsw-alias-label-secondary);
+  --ar-text-tertiary: var(--dsw-alias-label-tertiary);
+  --ar-text-placeholder: var(--dsw-alias-label-caption);
+  --ar-text-on-primary: var(--dsw-alias-label-primary-foreground);
+  --ar-action-primary: var(--dsw-alias-button-primary-fill);
+  --ar-action-primary-hover: var(--dsw-alias-button-primary-hover);
+  --ar-action-secondary: var(--dsw-alias-button-primary-dimmed);
+  --ar-link: var(--dsw-alias-link);
+  --ar-focus-ring: var(--ar-link);
+  --ar-success: var(--dsw-alias-state-success-primary);
+  --ar-success-text: rgb(21, 128, 61);
+  --ar-success-soft: var(--dsw-alias-state-success-tertiary);
+  --ar-warning: var(--dsw-alias-state-warn-primary);
+  --ar-warning-text: rgb(180, 83, 9);
+  --ar-warning-soft: var(--dsw-alias-state-warn-tertiary);
+  --ar-danger: var(--dsw-alias-state-error-primary);
+  --ar-danger-soft: var(--dsw-static-red-600-a08);
+  --ar-text-on-danger: rgb(255, 255, 255);
+  --ar-knob: var(--dsw-alias-switch-thumb);
+  --ar-info-soft: var(--dsw-alias-state-business-tertiary);
+  --ar-idle: var(--dsw-alias-state-idle-primary);
+  --ar-brand-ink: #24251f;
+  --ar-brand-paper: #f8f6ef;
+  --ar-brand-gold: #f2bd16;
+  --ar-font-family-ui: var(--dsw-font-family);
+  --ar-font-family-mono: var(--ds-font-family-code);
+  --ar-font-weight-regular: 400;
+  --ar-font-weight-medium: 500;
+  --ar-font-weight-strong: 600;
+  --ar-font-display: 600 24px/32px var(--ar-font-family-ui);
+  --ar-font-title: 600 20px/28px var(--ar-font-family-ui);
+  --ar-font-heading: 600 16px/24px var(--ar-font-family-ui);
+  --ar-font-reading: 400 15px/26px var(--ar-font-family-ui);
+  --ar-font-body: 400 14px/22px var(--ar-font-family-ui);
+  --ar-font-label: 500 14px/20px var(--ar-font-family-ui);
+  --ar-font-caption: 400 12px/18px var(--ar-font-family-ui);
+  --ar-font-code: 400 13px/20px var(--ar-font-family-mono);
+  --ar-space-1: 4px;
+  --ar-space-2: 8px;
+  --ar-space-3: 12px;
+  --ar-space-4: 16px;
+  --ar-space-5: 20px;
+  --ar-space-6: 24px;
+  --ar-space-8: 32px;
+  --ar-space-10: 40px;
+  --ar-radius-xs: var(--dsw-radius-xs);
+  --ar-radius-sm: var(--dsw-radius-sm);
+  --ar-radius-md: var(--dsw-radius-md);
+  --ar-radius-lg: var(--dsw-radius-lg);
+  --ar-radius-xl: var(--dsw-radius-xl);
+  --ar-radius-panel: var(--dsw-radius-panel);
+  --ar-radius-pill: 999px;
+  --ar-shadow-1: var(--dsw-shadow-lv1);
+  --ar-shadow-2: var(--dsw-shadow-lv2);
+  --ar-shadow-3: var(--dsw-shadow-lv3);
+  --ar-duration-fast: var(--ds-transition-duration-fast);
+  --ar-duration: var(--ds-transition-duration);
+  --ar-duration-slow: var(--ds-transition-duration-slow);
+  --ar-ease: var(--ds-ease-in-out);
+}
+
+body[data-ds-dark-theme] {
+  --ar-success-text: var(--dsw-alias-state-success-secondary);
+  --ar-warning-text: var(--dsw-alias-state-warn-secondary);
+  --ar-danger-soft: var(--dsw-alias-interactive-bg-hover-danger);
+  --ar-text-on-danger: rgb(15, 17, 21);
+  --ar-brand-ink: #f8f6ef;
+  --ar-brand-paper: #24251f;
+}
