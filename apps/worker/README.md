@@ -33,7 +33,9 @@ harness over the same execution boundary.
 | `ALLRICE_WORKER_POLL_INTERVAL_MS`                  | `1000`                | Scheduler/claim cadence                                 |
 | `ALLRICE_WORKER_LEASE_MS`                          | `30000`               | Claim lease duration                                    |
 | `ALLRICE_WORKER_HEARTBEAT_MS`                      | about one-third lease | Lease heartbeat cadence                                 |
-| `ALLRICE_WORKER_CONCURRENCY`                       | `1`                   | Maximum in-process executions                           |
+| `ALLRICE_WORKER_CONCURRENCY`                       | `auto`                | Maximum in-process executions (`auto` or 1..32)         |
+| `ALLRICE_WORKER_MIN_AVAILABLE_MEMORY_MB`           | `256`                 | Pause claims below this available memory; `0` disables  |
+| `ALLRICE_WORKER_MEMORY_PAUSE_PRESSURE`             | `critical`            | Pause at macOS pressure `warn`/`critical`; or `off`     |
 | `ALLRICE_EXECUTION_ROOT`                           | `.local/executions`   | Tenant/run/attempt scratch root                         |
 | `ALLRICE_STORAGE_ROOT`                             | `.local/storage`      | Immutable Skill artifact storage                        |
 | `ALLRICE_DSH_CODEX_MODEL`                          | `gpt-5.6-luna`        | Model used by DSH's Codex subscription Provider         |
@@ -45,6 +47,18 @@ harness over the same execution boundary.
 | `ALLRICE_DSH_IDLE_CLOSE_MINUTES`                   | `30`                  | Close a conversation's idle DSH process; `0` disables   |
 | `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`              | auto-detected         | Managed-browser Chromium executable                     |
 | `ALLRICE_MANAGED_BROWSER_DISABLE_CHROMIUM_SANDBOX` | unset                 | Local development escape hatch; production refuses `1`  |
+
+The claim gate (MET-219) checks memory before each claim. On macOS it reads,
+without privilege, the kernel pressure level and the pages jetsam counts as
+available (free, pageable file-backed and purgeable), at most every two
+seconds; elsewhere it reads libuv's `availableMemory()` (MemAvailable or the
+cgroup headroom) every time. Claims pause below
+`ALLRICE_WORKER_MIN_AVAILABLE_MEMORY_MB` or at
+`ALLRICE_WORKER_MEMORY_PAUSE_PRESSURE`. At `warn` pressure below that level,
+background work waits and foreground work fills at most half the slots; `off`
+ignores the pressure level but keeps the floor. Automatic concurrency uses the
+same estimate. Changes are logged as `[MET-219] memory gate …`, at most once a
+minute.
 
 The Worker does not invoke Codex CLI. DSH is the only Harness; the Codex
 subscription is authorized and executed as DSH's `openai-codex` Provider.

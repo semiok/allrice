@@ -8,6 +8,11 @@ import {
 } from '@allrice/contracts';
 import { startExecutionPressureLog } from './execution-pressure.js';
 import { detectWorkerCapacity } from './worker-capacity.js';
+import {
+  claimUnderMemoryGate,
+  createMemoryGate,
+  memoryGateSettings,
+} from './memory-gate.js';
 import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -138,6 +143,7 @@ const heartbeatMs = integerSetting(
 process.env.ALLRICE_SERVICE_ROLE = 'worker';
 const capacity = detectWorkerCapacity();
 const concurrency = capacity.concurrency;
+const memoryGate = createMemoryGate({ settings: memoryGateSettings() });
 const workerId = UuidSchema.parse(
   process.env.ALLRICE_WORKER_ID ?? randomUUID(),
 );
@@ -535,27 +541,26 @@ async function runQueueTick() {
       async (scope: DevProducerContext) => {
         startup.mark('ordinary_consumer_entered');
         await maintainQueue();
-        while (!stopping && activeExecutions.size < concurrency) {
-          if ((process.availableMemory?.() ?? Infinity) < 256 * 1024 ** 2)
-            break;
-          const job = await claimNextJob(workerId, leaseMs, {
-            allowBackground:
-              concurrency > 1 && activeExecutions.size < concurrency - 1,
-          });
-          const leaseToken = job?.lease?.token;
-          if (!job || !leaseToken) break;
-          const execution = scope
-            .child(async () => runClaimed(job.id, leaseToken))
-            .catch((error: unknown) => {
-              console.error('[M5] Worker execution failed', {
-                jobId: job.id,
-                message:
-                  error instanceof Error ? error.message : 'unknown error',
-              });
-            })
-            .finally(() => activeExecutions.delete(execution));
-          activeExecutions.add(execution);
-        }
+        await claimUnderMemoryGate({
+          gate: memoryGate,
+          concurrency,
+          active: () => activeExecutions.size,
+          stopping: () => stopping,
+          claim: (options) => claimNextJob(workerId, leaseMs, options),
+          start(job, leaseToken) {
+            const execution = scope
+              .child(async () => runClaimed(job.id, leaseToken))
+              .catch((error: unknown) => {
+                console.error('[M5] Worker execution failed', {
+                  jobId: job.id,
+                  message:
+                    error instanceof Error ? error.message : 'unknown error',
+                });
+              })
+              .finally(() => activeExecutions.delete(execution));
+            activeExecutions.add(execution);
+          },
+        });
       },
     );
   } catch (error) {
