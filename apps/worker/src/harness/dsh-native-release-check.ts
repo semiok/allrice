@@ -50,7 +50,15 @@ export async function checkNativeReleaseCandidate(
     );
   const verify = options.verifyControlHistory ?? verifyNativeOnceControlHistory;
   let controlSessionsVerified = 0;
+  let controlSessionsInitializing = 0;
   for (const partition of contexts.controlPartitions) {
+    // A session still initializing reaches disk on its first flush, and the
+    // candidate prepares it exactly as the current release does: checking it
+    // would only block a deploy racing a new reminder.
+    const ready = partition.controls.filter((c) => c.sessionState === 'ready');
+    controlSessionsInitializing += partition.controls.filter(
+      (c) => c.sessionState === 'initializing',
+    ).length;
     try {
       const reference = parseNativeScheduleControlReference(
         partition.reference,
@@ -62,7 +70,7 @@ export async function checkNativeReleaseCandidate(
         (await realpath(reference.stateRoot)) !== reference.stateRoot
       )
         throw Error('state root is not a real directory');
-      controlSessionsVerified += await verify(reference, partition.controls);
+      controlSessionsVerified += await verify(reference, ready);
     } catch (error) {
       const detail =
         error instanceof Error
@@ -80,6 +88,7 @@ export async function checkNativeReleaseCandidate(
       incompatiblePins: contexts.incompatiblePins,
       controlPartitions: contexts.controlPartitions.length,
       controlSessionsVerified,
+      controlSessionsInitializing,
     },
     ignoredSettings,
   };

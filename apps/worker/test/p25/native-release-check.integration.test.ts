@@ -43,6 +43,7 @@ suite('release candidate pre-stop check on the pre-0218 schema', () => {
       await mkdtemp(join(tmpdir(), 'allrice-release-check-runtime-')),
     );
     vi.stubEnv('ALLRICE_DSH_RUNTIME_ROOT', runtimeRoot);
+    vi.stubEnv('ALLRICE_EXECUTION_ROOT', join(runtimeRoot, 'executions'));
     // The release tools still pass these; they are reported, never required.
     vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', 'sha256:' + 'b'.repeat(64));
     vi.stubEnv('ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS', '["not-read"]');
@@ -76,6 +77,7 @@ suite('release candidate pre-stop check on the pre-0218 schema', () => {
         incompatiblePins: 0,
         controlPartitions: 0,
         controlSessionsVerified: 0,
+        controlSessionsInitializing: 0,
       },
       ignoredSettings: [
         'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
@@ -117,6 +119,26 @@ suite('release candidate pre-stop check on the pre-0218 schema', () => {
       );
     } finally {
       await fixture.db`delete from allrice_runtime_metadata where key=${NATIVE_JOURNAL_CONTRACT_KEY}`;
+    }
+  });
+
+  it('passes pins under the runtime and employee-preview roots', async () => {
+    for (const root of [
+      runtimeRoot,
+      join(process.env.ALLRICE_EXECUTION_ROOT!, 'platform-employee-tests'),
+    ]) {
+      const f = await assistantFixture(fixture.db);
+      const chat = f.task.chatSessionId;
+      await fixture.db`insert into allrice_native_session_bindings
+        (native_session_id,organization_id,workspace_id,owner_id,context_kind,context_id,storage_context_key,storage_namespace,
+         artifact_id,artifact_manifest_digest,distribution_generation,profile_id,first_run_id,first_job_id,first_attempt,binding_basis,root_origin_digest)
+        select ${'dsh-' + chat},organization_id,workspace_id,owner_id,'chat',id,id::text,${join(root, chat, 'sessions')},
+          ${primary.artifactId},${primary.artifactId},${primary.generation},'restricted',${f.task.runId},${f.worker.jobId},1,
+          'approved_compatibility_reader',null
+        from allrice_chat_sessions where id=${chat}`;
+      // Born without a business origin: counted, never a release failure.
+      expect((await check()).contexts.incompatibleChats).toBeGreaterThan(0);
+      await fixture.db`update allrice_chat_sessions set archived_at=now() where id=${chat}`;
     }
   });
 

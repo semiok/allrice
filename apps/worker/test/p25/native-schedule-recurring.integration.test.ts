@@ -20,7 +20,12 @@ import type {
 import { nativeOnceDigest } from '../../../../packages/database/src/native-schedule-once-state.ts';
 import type { NativeOnceClosedProof } from '../../../../packages/database/src/native-schedule-control-sql.ts';
 import { measureDshNativeArtifact } from '../../src/harness/dsh-native-artifact.ts';
-import { createNativeOnceControlSource } from '../../src/native-schedule-once-loader.ts';
+import {
+  createNativeOnceControlSource,
+  verifyNativeOnceControlHistory,
+  type NativeOnceLoaderTestPorts,
+} from '../../src/native-schedule-once-loader.ts';
+import { checkNativeReleaseCandidate } from '../../src/harness/dsh-native-release-check.ts';
 import { createNativeOnceWorkerRuntime } from '../../src/native-schedule-once-runtime.ts';
 
 // This additional public-Host check follows the existing DB integration opt-in,
@@ -40,6 +45,8 @@ suite(
   () => {
     let fixture: Awaited<ReturnType<typeof createP27CodexWorkerFixture>>;
     let stateRoot: string;
+    let controlPorts: NativeOnceLoaderTestPorts;
+    let primary: { artifactId: string; generation: string };
     let source: ReturnType<typeof createNativeOnceControlSource>;
     const runtimes: ReturnType<typeof createNativeOnceWorkerRuntime>[] = [];
 
@@ -76,14 +83,19 @@ suite(
         'ALLRICE_NATIVE_RECURRING_REFERENCE',
         JSON.stringify(reference),
       );
-      source = createNativeOnceControlSource(reference, {
+      controlPorts = {
         currentArtifact: () => ({
           artifactId: measured.artifactId,
           generation: measured.content.generation,
           root,
           content: measured.content,
         }),
-      });
+      };
+      primary = {
+        artifactId: measured.artifactId,
+        generation: measured.content.generation,
+      };
+      source = createNativeOnceControlSource(reference, controlPorts);
       await initializeNativeRecurringPartition(reference);
     }, 120_000);
 
@@ -345,6 +357,17 @@ suite(
       where partition_id='allrice-recurring-v1' and epoch=${Number(closed.epoch)}`;
       expect(proofRows).toHaveLength(1);
       expect(proofRows[0]!.proof).toEqual(closed.close_proof);
+      // With the Worker stopped, deploy-dev's pre-stop check reads this
+      // control's history through the current primary (MET-221 PR2b-1).
+      const released = await checkNativeReleaseCandidate(primary, {
+        sql: fixture.db,
+        verifyControlHistory: (ref, controls) =>
+          verifyNativeOnceControlHistory(ref, controls, controlPorts),
+      });
+      expect(released.contexts.controlPartitions).toBe(1);
+      expect(released.contexts.controlSessionsVerified).toBeGreaterThanOrEqual(
+        1,
+      );
 
       const second = runtime();
       await tick(second);

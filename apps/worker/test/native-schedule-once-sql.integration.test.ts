@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,7 +12,12 @@ import {
   listOnceTasks,
 } from '../../../packages/database/src/native-schedule-once-product.ts';
 import { measureDshNativeArtifact } from '../src/harness/dsh-native-artifact.ts';
-import { createNativeOnceControlSource } from '../src/native-schedule-once-loader.ts';
+import {
+  createNativeOnceControlSource,
+  verifyNativeOnceControlHistory,
+  type NativeOnceLoaderTestPorts,
+} from '../src/native-schedule-once-loader.ts';
+import { checkNativeReleaseCandidate } from '../src/harness/dsh-native-release-check.ts';
 import { createNativeOnceWorkerRuntime } from '../src/native-schedule-once-runtime.ts';
 
 const suite =
@@ -28,6 +33,8 @@ suite(
   () => {
     let fixture: Awaited<ReturnType<typeof createP27CodexWorkerFixture>>;
     let stateRoot: string;
+    let controlPorts: NativeOnceLoaderTestPorts;
+    let primary: { artifactId: string; generation: string };
     let source: ReturnType<typeof createNativeOnceControlSource>;
     const runtimes: ReturnType<typeof createNativeOnceWorkerRuntime>[] = [];
     beforeAll(async () => {
@@ -54,14 +61,19 @@ suite(
         stateRoot,
       };
       vi.stubEnv('ALLRICE_NATIVE_ONCE_REFERENCE', JSON.stringify(reference));
-      source = createNativeOnceControlSource(reference, {
+      controlPorts = {
         currentArtifact: () => ({
           artifactId: measured.artifactId,
           generation: measured.content.generation,
           root,
           content: measured.content,
         }),
-      });
+      };
+      primary = {
+        artifactId: measured.artifactId,
+        generation: measured.content.generation,
+      };
+      source = createNativeOnceControlSource(reference, controlPorts);
       await initializeNativeOncePartition(reference);
     }, 120_000);
     afterAll(async () => {
@@ -221,6 +233,27 @@ suite(
       ).toHaveLength(1);
       expect(second.status().controller?.stats.adapterCalls).toBe(0);
       await second.stop();
+    });
+    it('the pre-stop release check reads every control history through the current primary and refuses a missing one', async () => {
+      const check = () =>
+        checkNativeReleaseCandidate(primary, {
+          sql: fixture.db,
+          verifyControlHistory: (ref, controls) =>
+            verifyNativeOnceControlHistory(ref, controls, controlPorts),
+        });
+      const [ready] =
+        await fixture.db`select count(*)::int n from allrice_native_once_controls where snapshot->'control'->>'sessionState'='ready'`;
+      expect(ready!.n).toBeGreaterThanOrEqual(1);
+      expect((await check()).contexts.controlSessionsVerified).toBe(ready!.n);
+      const sessions = join(stateRoot, 'sessions');
+      await rename(sessions, sessions + '.moved');
+      try {
+        await expect(check()).rejects.toThrow(
+          'DSH_NATIVE_CONTROL_HISTORY_UNREADABLE allrice-once-v1',
+        );
+      } finally {
+        await rename(sessions + '.moved', sessions);
+      }
     });
   },
 );

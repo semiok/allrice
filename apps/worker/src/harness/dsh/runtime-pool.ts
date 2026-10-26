@@ -166,7 +166,6 @@ function deepseekReasoning(
   return effort;
 }
 
-/** One interpretation of deployment overrides for startup and pool launches. */
 /** Root of every native session namespace; part of the journal contract. */
 export function configuredDshRuntimeRoot(options: DshRuntimePoolOptions = {}) {
   return resolve(
@@ -176,6 +175,7 @@ export function configuredDshRuntimeRoot(options: DshRuntimePoolOptions = {}) {
   );
 }
 
+/** One interpretation of deployment overrides for startup and pool launches. */
 export function configuredDshNativeLaunch(options: DshRuntimePoolOptions = {}) {
   const configuredCommand =
     options.runtimeCommand ?? process.env.ALLRICE_DSH_RUNTIME_COMMAND;
