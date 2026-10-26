@@ -1,3 +1,4 @@
+import { leaseLockWaitMs } from './queue/lease-lock-retry.ts';
 import { isDeepStrictEqual } from 'node:util';
 import type { TransactionSql } from 'postgres';
 import type { JobRow } from './queue/row-mappers.ts';
@@ -98,9 +99,11 @@ export async function proveNativeOrdinaryJobBinding(
 export async function lockNativeOnceJobAdmission(
   tx: TransactionSql,
   jobId: string,
+  /** A lease-bounded retry passes what is left of its lease (MET-210 #4). */
+  lockWaitMs = leaseLockWaitMs,
 ): Promise<NativeOnceJobAdmission> {
   // Even the metadata read must be bounded before the existing receipt locks.
-  await tx`set local lock_timeout='5s'`;
+  await tx`select set_config('lock_timeout',${`${lockWaitMs}ms`},true)`;
   await tx`set local statement_timeout='10s'`;
   // Historical migration fixtures and older schemas have no once enrollment.
   // Do not gate ordinary jobs there, or skip existing once jobs when disabled.
@@ -192,7 +195,7 @@ export async function lockNativeOnceJobAdmission(
         )),
     };
   }
-  await tx`set local lock_timeout='500ms'`;
+  await tx`select set_config('lock_timeout',${`${Math.min(500, lockWaitMs)}ms`},true)`;
   await tx`set local statement_timeout='10000ms'`;
   const deny = (): NativeOnceJobAdmission => ({
     scheduled: true,

@@ -14,7 +14,7 @@ import {
 import type { TransactionSql } from 'postgres';
 import * as client from './core/client.ts';
 import { getDatabase } from './core/client.ts';
-import { employeeAccessTransactionMaxAttempts } from './employees/employee-access-cancellation.ts';
+import { maxLeaseLockAttempts } from './queue/lease-lock-retry.ts';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
 import { createChatSession, sendChatMessage } from './workspace/service.ts';
 import {
@@ -1132,7 +1132,22 @@ suite(
         }
       },
     );
-    it('bounds once heartbeat retries on held 703 and releases authority locks before returning busy', async () => {
+    it('a lease-bounded heartbeat retry passes its lock budget into once admission', async () => {
+      const r = await runningOnce();
+      const effective = (lockWaitMs?: number) =>
+        getDatabase().begin(async (tx) => {
+          await lockNativeOnceJobAdmission(tx, r.job.id, lockWaitMs);
+          const [row] = await tx<
+            { value: string }[]
+          >`select current_setting('lock_timeout') value`;
+          return row!.value;
+        });
+      // The admission's own lock waits use what the retry has left of its
+      // lease (MET-210 #4); the default stays the queue's 5 s.
+      await expect(effective()).resolves.toBe('5s');
+      await expect(effective(120)).resolves.toBe('120ms');
+    });
+    it('bounds once heartbeat retries on held 703 and releases authority locks before giving up with 55P03', async () => {
       const r = await runningOnce();
       const [before] =
         await f.db`select heartbeat_at,lease_expires_at,cancel_requested_at from allrice_jobs where id=${r.job.id}`;
@@ -1140,32 +1155,57 @@ suite(
       await held`select pg_advisory_lock(hashtextextended(${r.runId},703))`;
       try {
         // Each attempt opens its own transaction; while 703 is busy it rolls
-        // back and backs off before the next. Count attempts instead of timing
-        // them: a slow runner stretches every attempt, but the retries must
-        // still stop at the limit. One past the limit fails at once.
+        // back, re-reads the lease (its own short transaction) and backs off
+        // before the next (MET-210 #4: one lease-bounded loop, original
+        // SQLSTATE kept). Count attempts instead of timing them: a slow runner
+        // stretches every attempt, but the retries must still stop at the
+        // limit. One transaction past attempts + lease reads fails at once.
         const real = getDatabase();
-        let attempts = 0;
+        let transactions = 0;
         const counted = new Proxy(real, {
           get(target, key) {
             if (key !== 'begin') return Reflect.get(target, key, target);
             return (...args: unknown[]) => {
-              if (++attempts > employeeAccessTransactionMaxAttempts)
+              if (++transactions > 2 * maxLeaseLockAttempts - 1)
                 throw new Error('heartbeat retried past its limit');
               return Reflect.apply(target.begin, target, args);
             };
           },
         });
         const spy = vi.spyOn(client, 'getDatabase').mockReturnValue(counted);
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const error = vi.spyOn(console, 'error').mockImplementation(() => {});
         // Also restore when a hang ends the test by timeout.
-        onTestFinished(() => spy.mockRestore());
+        onTestFinished(() => {
+          spy.mockRestore();
+          warn.mockRestore();
+          error.mockRestore();
+        });
         try {
           await expect(
             heartbeatJob(r.workerId, r.job.id, r.job.lease!.token, 60_000),
-          ).rejects.toThrow('employee_access_busy');
+          ).rejects.toMatchObject({ code: '55P03' });
         } finally {
           spy.mockRestore();
         }
-        expect(attempts).toBe(employeeAccessTransactionMaxAttempts);
+        // One observed record per attempt: every one rolled back on 55P03.
+        const attempts = [...warn.mock.calls, ...error.mock.calls]
+          .filter(
+            ([tag, record]) =>
+              tag === '[MET-210] Worker lease transaction rolled back' &&
+              record.site === 'job_heartbeat',
+          )
+          .map(([, record]) => [record.attempt, record.outcome]);
+        warn.mockRestore();
+        error.mockRestore();
+        expect(attempts).toEqual([
+          ...Array.from({ length: maxLeaseLockAttempts - 1 }, (_, i) => [
+            i + 1,
+            'retrying',
+          ]),
+          [maxLeaseLockAttempts, 'exhausted'],
+        ]);
+        expect(transactions).toBe(2 * maxLeaseLockAttempts - 1);
         // Keep 703 held: these NOWAIT locks prove that every failed attempt
         // rolled back its principal and target locks instead of parking them.
         await f.db.begin(async (tx) => {

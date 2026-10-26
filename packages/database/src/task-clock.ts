@@ -96,16 +96,17 @@ export function taskClockPhase(input: {
     : 'active';
 }
 
-/** Caller owns root -> clock -> job order. Read clock events, never infer historic
- * waiting from a mutable operation.updated_at value. */
-export async function refreshTaskClock(tx: Tx, runId: string) {
+/** Every phase input of one clock. `forUpdate` takes root -> clock row locks;
+ * without it nothing is locked or written (a snapshot projection). */
+async function observeTaskClock(tx: Tx, runId: string, forUpdate: boolean) {
   const [table] =
     await tx`select to_regclass(format('%I.allrice_task_clocks',current_schema())) is not null as available`;
   if (!table?.available) return;
-  await tx`select root_run_id from allrice_runtime_roots where root_run_id=${runId} for update`;
+  if (forUpdate)
+    await tx`select root_run_id from allrice_runtime_roots where root_run_id=${runId} for update`;
   const [row] = await tx<
     TaskClockRow[]
-  >`select * from allrice_task_clocks where run_id=${runId} for update`;
+  >`select * from allrice_task_clocks where run_id=${runId} ${forUpdate ? tx`for update` : tx``}`;
   if (!row) return;
   const [at] = await tx<{ now: Date }[]>`select clock_timestamp() as now`;
   const now = at!.now;
@@ -198,6 +199,18 @@ export async function refreshTaskClock(tx: Tx, runId: string) {
     started_at: startedAt,
     completed_at: completedAt,
   };
+  return { row, next, now };
+}
+
+/** Caller owns root -> clock -> job order. Read clock events, never infer historic
+ * waiting from a mutable operation.updated_at value. */
+export async function refreshTaskClock(tx: Tx, runId: string) {
+  const observed = await observeTaskClock(tx, runId, true);
+  if (!observed) return;
+  const { row, next, now } = observed;
+  const phase = next.phase;
+  const startedAt = next.started_at;
+  const completedAt = next.completed_at;
   await tx`update allrice_task_clocks set active_ms=${next.active_ms},waiting_ms=${next.waiting_ms},phase=${phase},
     changed_at=${now},started_at=${startedAt},completed_at=${completedAt} where run_id=${runId}`;
   if (phase !== row.phase)
@@ -210,6 +223,12 @@ export async function refreshTaskClock(tx: Tx, runId: string) {
       and status in ('queued','claimed','running','retry_wait','waiting_approval')`;
   }
   return projection;
+}
+
+/** What refreshTaskClock would store now, read without locks or writes. */
+export async function projectCurrentTaskClock(tx: Tx, runId: string) {
+  const observed = await observeTaskClock(tx, runId, false);
+  return observed ? projectTaskClock(observed.next, observed.now) : null;
 }
 
 export async function refreshTaskClockForJob(tx: Tx, jobId: string) {

@@ -3,6 +3,7 @@ import {
   QueueError,
   appendJobEvent,
   completeJob,
+  databaseErrorCode,
   failClaimedJobStart,
   failJob,
   finishJobDrain,
@@ -161,6 +162,9 @@ export async function runClaimedJob(
     return;
   }
   let heartbeatTask: Promise<void> | undefined;
+  // A heartbeat that lost a lock wait (55P03) retries inside its original lease
+  // (MET-210 #4); once this runner returns, no further retry may start.
+  const heartbeatRetries = new AbortController();
   const heartbeat = setInterval(() => {
     if (heartbeatTask) return;
     heartbeatTask = heartbeatJob(
@@ -168,14 +172,19 @@ export async function runClaimedJob(
       input.jobId,
       input.leaseToken,
       input.leaseMs,
+      { signal: heartbeatRetries.signal },
     )
       .then((state) => {
         if (!state.active) controller.abort();
       })
       .catch((error: unknown) => {
+        // The runner already returned; its cleanup owns what happens next.
+        if (heartbeatRetries.signal.aborted) return;
+        // Retries are exhausted or the lease is gone: the run cannot continue.
         if (!isLeaseLoss(error)) {
           console.error('[M5] Worker heartbeat failed', {
             jobId: input.jobId,
+            sqlState: databaseErrorCode(error),
             message: error instanceof Error ? error.message : 'unknown error',
           });
         }
@@ -275,6 +284,7 @@ export async function runClaimedJob(
     }
   } finally {
     clearInterval(heartbeat);
+    heartbeatRetries.abort();
     // Join the one in-flight heartbeat before releasing its receipt lease.
     const heartbeatJoined = await joinHeartbeatForCleanup(heartbeatTask);
     if (!heartbeatJoined)
