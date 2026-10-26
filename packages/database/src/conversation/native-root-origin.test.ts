@@ -11,7 +11,7 @@ import {
 import {
   newEmployeeNativeRootOrigin,
   newCurrentEmployeeChatOrigin,
-  newInternalNativeRootOrigin,
+  newCurrentInternalNativeRootOrigin,
   retryNativeRootOrigin,
   assertNativeRootOrigin,
   nativeRootDigest,
@@ -72,12 +72,16 @@ function packaged() {
   });
   return buildEmployeeRuntimePackage({ revision: 1, definition, skills: [] });
 }
-it('new candidate package requires independent exact deployment approval', () => {
-  vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', undefined);
+// MET-221: a new birth records this release's primary as provenance. The
+// retired new-root ID is neither read nor required.
+it('new candidate package records the release primary, not the retired new-root ID', () => {
+  vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', artifact);
+  vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', undefined);
   expect(() =>
     newEmployeeNativeRootOrigin('chat', randomUUID(), packaged(), randomUUID()),
   ).toThrow();
-  vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', artifact);
+  vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', undefined);
+  vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', artifact);
   const id = randomUUID(),
     p = packaged(),
     origin = newEmployeeNativeRootOrigin('chat', id, p, randomUUID())!;
@@ -98,18 +102,20 @@ it('new business identity with an old frozen package remains legacy even after c
   expect(newEmployeeNativeRootOrigin('chat', randomUUID(), p)).toBeNull();
 });
 it('internal recipe authority freezes exact recipe, business seed and profile', () => {
-  vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', undefined);
-  expect(
-    newInternalNativeRootOrigin('platform_technical', randomUUID(), { v: 1 }),
-  ).toBeNull();
-  vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', artifact);
+  vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', undefined);
+  expect(() =>
+    newCurrentInternalNativeRootOrigin('platform_technical', randomUUID(), {
+      v: 1,
+    }),
+  ).toThrow();
+  vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', artifact);
   const id = randomUUID(),
     recipe = { v: 1, instructions: 'fixed' },
-    origin = newInternalNativeRootOrigin(
+    origin = newCurrentInternalNativeRootOrigin(
       'experience_consolidation',
       id,
       recipe,
-    )!;
+    );
   expect(origin.rootSeed).toBe('experience-' + id);
   expect(
     assertNativeRootOrigin(origin, 'experience_consolidation', id, {
@@ -125,13 +131,13 @@ it('internal recipe authority freezes exact recipe, business seed and profile', 
   ).toThrow();
 });
 it('explicit retry inherits original engine/artifact including NULL, never the new deployment choice', () => {
-  vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', artifact);
+  vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', artifact);
   const source = newEmployeeNativeRootOrigin(
     'platform_employee_test',
     randomUUID(),
     packaged(),
   )!;
-  vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', 'sha256:' + 'b'.repeat(64));
+  vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'b'.repeat(64));
   const id = randomUUID(),
     retry = retryNativeRootOrigin(source, id)!;
   expect(retry).toEqual({ ...source, contextId: id, rootSeed: id });
@@ -186,74 +192,34 @@ const readerConfigurationCases = [
     'synthetic-present-reader-input',
   ],
 ] as const;
-it.each(readerConfigurationCases)(
-  'blocks a different new birth for reader input %s = %j',
-  (key, value) => {
-    vi.stubEnv('ALLRICE_DSH_ORIGIN_READER_APPROVAL_PATH', '');
+// MET-221 retired origin readers: the Worker refuses to start with a non-empty
+// reader setting, and a birth neither reads nor is blocked by any of them.
+it('ignores retired origin-reader settings at birth and records the release primary', () => {
+  const primary = 'sha256:' + 'b'.repeat(64);
+  vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', artifact);
+  vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', primary);
+  for (const [key, value] of readerConfigurationCases) {
     vi.stubEnv(key, value);
-    vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', artifact);
-    vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'b'.repeat(64));
-    expect(() =>
+    expect(
       newEmployeeNativeRootOrigin(
         'chat',
         randomUUID(),
         packaged(),
         randomUUID(),
-      ),
-    ).toThrow('DSH_NATIVE_ORIGIN_READER_NEW_BIRTH_MISMATCH');
-    expect(() =>
-      newInternalNativeRootOrigin('platform_technical', randomUUID(), { v: 1 }),
-    ).toThrow('DSH_NATIVE_ORIGIN_READER_NEW_BIRTH_MISMATCH');
-  },
-);
-it('does not treat an entirely empty second group as unconfigured', () => {
-  vi.stubEnv('ALLRICE_DSH_ORIGIN_READER_APPROVAL_PATH', '');
-  for (const key of [
-    'ALLRICE_DSH_ORIGIN_READER_2_APPROVAL_PATH',
-    'ALLRICE_DSH_ORIGIN_READER_2_APPROVAL_SHA256',
-    'ALLRICE_DSH_ORIGIN_READER_2_STORAGE_ROOT',
-  ])
-    vi.stubEnv(key, '');
-  vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', artifact);
-  vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'b'.repeat(64));
-  expect(() =>
-    newEmployeeNativeRootOrigin('chat', randomUUID(), packaged(), randomUUID()),
-  ).toThrow('DSH_NATIVE_ORIGIN_READER_NEW_BIRTH_MISMATCH');
-  expect(() =>
-    newInternalNativeRootOrigin('platform_technical', randomUUID(), { v: 1 }),
-  ).toThrow('DSH_NATIVE_ORIGIN_READER_NEW_BIRTH_MISMATCH');
-});
-it('requires an exact primary even when only an empty second reader hash is present', () => {
-  vi.stubEnv('ALLRICE_DSH_ORIGIN_READER_2_APPROVAL_SHA256', '');
-  vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', artifact);
+      )?.artifactId,
+    ).toBe(primary);
+    expect(
+      newCurrentInternalNativeRootOrigin('platform_technical', randomUUID(), {
+        v: 1,
+      }).artifactId,
+    ).toBe(primary);
+  }
   vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', undefined);
   expect(() =>
     newEmployeeNativeRootOrigin('chat', randomUUID(), packaged(), randomUUID()),
-  ).toThrow('DSH_NATIVE_ORIGIN_READER_NEW_BIRTH_MISMATCH');
-  expect(() =>
-    newInternalNativeRootOrigin('platform_technical', randomUUID(), { v: 1 }),
-  ).toThrow('DSH_NATIVE_ORIGIN_READER_NEW_BIRTH_MISMATCH');
-});
-it('preserves legacy-empty birth behavior without any second or unknown reader key', () => {
-  for (const key of [
-    'ALLRICE_DSH_ORIGIN_READER_APPROVAL_PATH',
-    'ALLRICE_DSH_ORIGIN_READER_APPROVAL_SHA256',
-    'ALLRICE_DSH_ORIGIN_READER_STORAGE_ROOT',
-  ])
-    vi.stubEnv(key, '');
-  vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', artifact);
-  vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', undefined);
-  expect(
-    newEmployeeNativeRootOrigin('chat', randomUUID(), packaged(), randomUUID())
-      ?.artifactId,
-  ).toBe(artifact);
-  expect(
-    newInternalNativeRootOrigin('platform_technical', randomUUID(), { v: 1 })
-      ?.artifactId,
-  ).toBe(artifact);
+  ).toThrow();
 });
 it('keeps birth identity on the independently selected primary rather than any reader metadata', () => {
-  vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', artifact);
   vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', artifact);
   // This pure birth guard never reads or approves policy files. Their separate
   // strict-loader tests remain responsible for file/group validity.
@@ -280,21 +246,21 @@ it('keeps birth identity on the independently selected primary rather than any r
   );
   const id = randomUUID(),
     recipe = { v: 1 };
-  expect(newInternalNativeRootOrigin('platform_technical', id, recipe)).toEqual(
-    {
-      schemaVersion: 1,
-      contextKind: 'platform_technical',
-      contextId: id,
-      rootSeed: id,
-      distributionGeneration: 'dsh-0.2.1-rc.2-687f282',
-      profileId: 'technical',
-      artifactId: artifact,
-      frozenIdentity: {
-        kind: 'internal_recipe',
-        checksum: nativeRootDigest(recipe),
-      },
+  expect(
+    newCurrentInternalNativeRootOrigin('platform_technical', id, recipe),
+  ).toEqual({
+    schemaVersion: 1,
+    contextKind: 'platform_technical',
+    contextId: id,
+    rootSeed: id,
+    distributionGeneration: 'dsh-0.2.1-rc.2-687f282',
+    profileId: 'technical',
+    artifactId: artifact,
+    frozenIdentity: {
+      kind: 'internal_recipe',
+      checksum: nativeRootDigest(recipe),
     },
-  );
+  });
 });
 
 it('preserves the canonical v1 checksum after sharing the digest implementation', () => {

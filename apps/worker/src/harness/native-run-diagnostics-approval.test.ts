@@ -1,6 +1,7 @@
-// Prepared regression file; apply only after actual U1/U2 APIs and C follow-up.
-// The registry boundary is mocked here; its measurement/approval contract has
-// independent tests. The positive case uses the real public JSONL read API.
+// MET-221: diagnostics read a journal with this release's primary, whichever
+// release wrote it. The registry boundary is mocked here; its measurement and
+// approval contract has independent tests. The positive case uses the real
+// public JSONL read API.
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { mkdtemp, readdir, readFile, stat, rm, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -19,20 +20,20 @@ import type {
   NativeSessionPin,
 } from '@allrice/database';
 
-const readers = vi.hoisted(() => ({ exact: vi.fn(), original: vi.fn() }));
+const readers = vi.hoisted(() => ({ current: vi.fn() }));
 vi.mock('./dsh-native-artifact.js', () => ({
-  nativeArtifactLaunchForPin: readers.exact,
-}));
-vi.mock('./dsh-native-retention.js', () => ({
-  pinnedDshNativeLaunch: readers.original,
+  currentDshNativeLaunch: readers.current,
 }));
 import {
   readApprovedNativeDiagnosticJournal,
   readNativeRunDiagnostics,
 } from './native-run-diagnostics.js';
 
+// The pin's first writer, the Run's recorded provenance and this release's
+// primary are three releases of one generation.
 const originalArtifact = 'sha256:' + 'a'.repeat(64);
 const actualArtifact = 'sha256:' + 'b'.repeat(64);
+const primaryArtifact = 'sha256:' + 'f'.repeat(64);
 const pin: NativeSessionPin = {
   nativeSessionId: 'dsh-11111111-1111-4111-8111-111111111111',
   artifactId: originalArtifact,
@@ -52,7 +53,6 @@ const pin: NativeSessionPin = {
   boundAt: '2026-10-24T00:00:00Z',
   bindingBasis: 'business_root_origin',
   rootOriginDigest: 'sha256:' + 'c'.repeat(64),
-  originReaderApprovalDigest: 'sha256:' + 'd'.repeat(64),
 };
 const target: NativeDiagnosticTargetSlice = {
   attempt: 1,
@@ -70,7 +70,6 @@ const target: NativeDiagnosticTargetSlice = {
     profileId: pin.profileId,
     storageContextKey: pin.storageContextKey,
     storageNamespace: pin.storageNamespace,
-    executorTransitionDigest: 'sha256:' + 'e'.repeat(64),
   },
 };
 const entrypoint = fileURLToPath(
@@ -78,11 +77,10 @@ const entrypoint = fileURLToPath(
 );
 const roots: string[] = [];
 beforeEach(() => {
-  readers.exact.mockReset().mockImplementation(() => {
-    throw Error('PIN_NOT_APPROVED');
-  });
-  readers.original.mockReset().mockImplementation(() => {
-    throw Error('ORIGINAL_READER_RETIRED');
+  readers.current.mockReset().mockReturnValue({
+    artifactId: primaryArtifact,
+    generation: pin.distributionGeneration,
+    args: [entrypoint],
   });
 });
 afterEach(async () => {
@@ -112,8 +110,10 @@ function report(slice: NativeDiagnosticTargetSlice) {
   );
 }
 
-it('reads the exact transitioned artifact through public persistence when the original pin reader has retired', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'allrice-transition-diagnostic-'));
+it('reads a journal written by earlier releases with the current primary through public persistence', async () => {
+  const root = await mkdtemp(
+    join(tmpdir(), 'allrice-cross-release-diagnostic-'),
+  );
   roots.push(root);
   const namespace = join(
     root,
@@ -156,59 +156,47 @@ it('reads the exact transitioned artifact through public persistence when the or
       binding: { ...pin, storageNamespace: namespace },
       execution: { ...target.execution!, storageNamespace: namespace },
     };
-    readers.exact.mockReturnValue({
-      artifactId: actualArtifact,
-      generation: pin.distributionGeneration,
-      args: [entrypoint],
-    });
     const result = await report(slice);
     expect(result.status, JSON.stringify(result)).toBe('available');
+    // The slice still reports the Run's recorded provenance.
     expect(result.slices[0]!.artifactId).toBe(actualArtifact);
     expect(result.slices[0]!.events.map((e) => e.type)).toEqual([
       'turn/start',
       'turn/end',
     ]);
-    expect(readers.exact).toHaveBeenCalledExactlyOnceWith(slice.execution);
-    expect(readers.original).not.toHaveBeenCalled();
+    expect(readers.current).toHaveBeenCalledExactlyOnceWith('restricted');
     expect(await files(namespace)).toEqual(before);
     expect(JSON.stringify(result)).not.toContain(namespace);
-    expect(pin.artifactId).toBe(originalArtifact);
   } finally {
     await plugin.dispose();
   }
 });
 
-it('keeps the actual artifact visible when its reader is retired without falling back to a current or original reader', async () => {
+it.each([
+  { executorTransitionDigest: 'sha256:' + 'e'.repeat(64) },
+  { originReaderApprovalDigest: 'sha256:' + 'd'.repeat(64) },
+])(
+  'never selects a reader for an archived transition or origin reader: %j',
+  async (change) => {
+    const result = await report({
+      ...target,
+      execution: { ...target.execution!, ...change },
+    });
+    expect(result.status).toBe('unavailable');
+    expect(result.reasons).toContain('reader_unavailable');
+    expect(readers.current).not.toHaveBeenCalled();
+  },
+);
+
+it('refuses a primary of another generation', async () => {
+  readers.current.mockReturnValue({
+    artifactId: primaryArtifact,
+    generation: 'dsh-0.1.5-rc.3-a4c74a9',
+    args: [entrypoint],
+  });
   const result = await report(target);
   expect(result.status).toBe('unavailable');
   expect(result.reasons).toContain('reader_unavailable');
-  expect(result.slices[0]!.artifactId).toBe(actualArtifact);
-  expect(readers.exact).toHaveBeenCalledExactlyOnceWith(target.execution);
-  expect(readers.original).not.toHaveBeenCalled();
-});
-
-it('preserves an older untransitioned Run and its original approval requirement after a newer artifact is approved', async () => {
-  readers.exact.mockReturnValue({
-    artifactId: actualArtifact,
-    generation: pin.distributionGeneration,
-    args: [entrypoint],
-  });
-  const old = {
-    ...target,
-    execution: {
-      ...target.execution!,
-      artifactId: originalArtifact,
-      artifactManifestDigest: originalArtifact,
-      originReaderApprovalDigest: pin.originReaderApprovalDigest,
-      executorTransitionDigest: undefined,
-    },
-  };
-  const result = await report(old);
-  expect(result.status).toBe('unavailable');
-  expect(result.reasons).toContain('reader_unavailable');
-  expect(result.slices[0]!.artifactId).toBe(originalArtifact);
-  expect(readers.original).toHaveBeenCalledExactlyOnceWith(pin);
-  expect(readers.exact).not.toHaveBeenCalled();
 });
 
 it.each([
@@ -216,9 +204,8 @@ it.each([
   { storageContextKey: 'another-context' },
   { profileId: 'technical' as const },
   { nativeSessionId: 'dsh-99999999-9999-4999-8999-999999999999' },
-  { originReaderApprovalDigest: pin.originReaderApprovalDigest },
 ])(
-  'rejects changed execution scope or inherited reader authority before reader selection: %j',
+  'rejects changed execution scope before reader selection: %j',
   async (change) => {
     await expect(
       readApprovedNativeDiagnosticJournal(
@@ -226,7 +213,6 @@ it.each([
         new AbortController().signal,
       ),
     ).rejects.toMatchObject({ reason: 'reader_unavailable' });
-    expect(readers.exact).not.toHaveBeenCalled();
-    expect(readers.original).not.toHaveBeenCalled();
+    expect(readers.current).not.toHaveBeenCalled();
   },
 );

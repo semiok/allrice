@@ -1586,6 +1586,43 @@ export function nativeArtifactLaunchForPin(input: {
   };
 }
 
+/** MET-221 retired retained artifact slots and origin readers. A configured
+ * value would otherwise be ignored silently, so it refuses the start. Release
+ * tools still pass the unused new-root and checked-delivery IDs until they stop
+ * writing them; those are only reported. */
+export function checkRetiredDshNativeSettings(env = process.env) {
+  const retired = Object.keys(env)
+    .filter(
+      (key) =>
+        env[key] &&
+        (key.startsWith('ALLRICE_DSH_RETAINED_') ||
+          key.startsWith('ALLRICE_DSH_ORIGIN_READER_')),
+    )
+    .sort();
+  if (retired.length)
+    throw Error(`DSH_NATIVE_ARTIFACT_RETIRED_SETTING ${retired.join(',')}`);
+  return [
+    'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
+    'ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS',
+  ].filter((key) => env[key]);
+}
+
+/** The only executor of a release: its verified primary. Artifact IDs recorded
+ * on origins, pins, Run bindings and control references are provenance only;
+ * contexts bind to the DSH generation and the journal contract (MET-221). */
+export function currentDshNativeLaunch(profileId: 'restricted' | 'technical') {
+  if (!approvedArtifact) fail('NOT_INSTALLED');
+  return nativeArtifactLaunchForPin({
+    artifactId: approvedArtifact.artifactId,
+    profileId,
+  });
+}
+
+export function currentDshNativeControlArtifact() {
+  if (!approvedArtifact) fail('NOT_INSTALLED');
+  return approvedDshNativeControlArtifact(approvedArtifact.artifactId);
+}
+
 export function checkedDshNativeLaunch(input: {
   command: string;
   args: readonly string[];

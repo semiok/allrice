@@ -65,7 +65,7 @@ it('correlates entrypoint, measured phases and process-window CPU with one boot/
 
 it('leaves unmeasured I/O and cache data unknown instead of reporting fabricated zeroes', async () => {
   const f = fixture();
-  await f.observer.run('native_reference_coverage', async () => undefined);
+  await f.observer.run('native_journal_contract', async () => undefined);
   expect(f.events.at(-1)?.counters).toEqual({
     releaseReadOperations: null,
     releaseReadBytes: null,
@@ -173,7 +173,7 @@ it('keeps the last started phase for a stalled operation without inventing a dea
 
 it('retained slot spans finish once, ignore late metrics and never expose an invalid slot', () => {
   const f = fixture();
-  const slot = f.observer.start('native_retained_slot', { slot: 6 });
+  const slot = f.observer.start('native_journal_contract', { slot: 6 });
   slot.observe({ kind: 'read', bytes: 4 });
   slot.complete();
   slot.observe({ kind: 'read', bytes: 8 });
@@ -185,7 +185,7 @@ it('retained slot spans finish once, ignore late metrics and never expose an inv
   });
   expect(f.events.filter((e) => e.state === 'completed')).toHaveLength(1);
   for (const invalidSlot of [0, 7, 6.5]) {
-    f.observer.start('native_retained_slot', { slot: invalidSlot }).fail();
+    f.observer.start('native_journal_contract', { slot: invalidSlot }).fail();
     expect(f.events.at(-1)).not.toHaveProperty('slot');
   }
 });

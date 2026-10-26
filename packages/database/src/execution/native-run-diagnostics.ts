@@ -221,8 +221,7 @@ async function readNativeDiagnosticExecution(
           binding.root_origin_digest !== nativeRootDigest(original) ||
           descriptor.distributionGeneration !==
             original.distributionGeneration ||
-          (!descriptor.originReaderApprovalDigest &&
-            descriptor.artifactId !== original.artifactId)
+          descriptor.originReaderApprovalDigest !== undefined
         : binding.binding_basis !== 'approved_compatibility_reader' ||
           binding.root_origin_digest != null ||
           descriptor.originReaderApprovalDigest !== undefined ||
@@ -286,7 +285,7 @@ async function readNativeDiagnosticExecution(
     !transition &&
     (binding.binding_basis !== 'business_root_origin' ||
       binding.root_origin_digest !== checked.originDigest ||
-      descriptor.artifactId !== checked.execution.artifactId ||
+      // The pin's artifact is its first writer; the Run's is provenance.
       descriptor.distributionGeneration !== checked.execution.generation ||
       descriptor.profileId !== checked.execution.profileId ||
       descriptor.originReaderApprovalDigest !== undefined)

@@ -64,8 +64,10 @@ suite(
         await mkdtemp(join(tmpdir(), 'allrice-recurring-host-sql-')),
       );
       const measured = await measureDshNativeArtifact(root);
+      // MET-221: the partition was born under an earlier release of the same
+      // generation; the primary below runs it and the reference stays exact.
       const reference = {
-        artifactId: measured.artifactId,
+        artifactId: 'sha256:' + 'e'.repeat(64),
         profileId: 'allrice-recurring-control-v1',
         storageId: 'isolated-real-recurring-host-sql',
         stateRoot,
@@ -75,7 +77,7 @@ suite(
         JSON.stringify(reference),
       );
       source = createNativeOnceControlSource(reference, {
-        approvedArtifact: () => ({
+        currentArtifact: () => ({
           artifactId: measured.artifactId,
           generation: measured.content.generation,
           root,

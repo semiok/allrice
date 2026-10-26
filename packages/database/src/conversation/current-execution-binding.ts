@@ -345,10 +345,10 @@ export const CurrentEmployeeChatOriginSchema = z
 export type CurrentEmployeeChatOrigin = z.infer<
   typeof CurrentEmployeeChatOriginSchema
 >;
+/** New births record this release's seal as provenance (MET-221); Web and
+ * Worker read the same deployment value. */
 export function readApprovedCurrentEmployeeExecution(): CurrentEmployeeExecutionTuple {
-  const artifactId = digest.parse(process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID);
-  const primary = digest.parse(process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID);
-  need(artifactId === primary, 'CURRENT_EMPLOYEE_EXECUTION_APPROVAL_MISMATCH');
+  const artifactId = digest.parse(process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID);
   return {
     artifactId,
     generation: newNativeGeneration,

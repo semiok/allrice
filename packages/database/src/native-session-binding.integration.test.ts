@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
+import {
+  DSH_MISSING_FROZEN_GENERATION,
+  type EmployeeRuntimePackage,
+} from '@allrice/contracts';
 import * as client from './core/client.ts';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 import { createAssistantAuthorityFixture } from './assistant-authority.fixture.ts';
@@ -12,6 +16,12 @@ import {
 import { acquireConversationRuntime } from './conversation/conversation-runtime.ts';
 import type { NativeSessionLeaseInput } from './conversation/native-session-binding.ts';
 import { nativeBindingDescriptor } from './native-session-binding.fixture.ts';
+import {
+  NativeRootOriginSchema,
+  nativeRootDigest,
+  newNativeGeneration,
+} from './conversation/native-root-origin.ts';
+import { buildEmployeeRuntimePackage } from './platform-employees/runtime-package.ts';
 import {
   queuePlatformEmployeeTestRun,
   claimNextPlatformEmployeeTestRun,
@@ -26,11 +36,30 @@ suite(
   'MET192 immutable native reader binding: real Job leases, CAS and finalizers',
   () => {
     let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let runtimePackage: EmployeeRuntimePackage;
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
+      // MET-221: only a business origin binds, so chats are born on the
+      // current generation under this synthetic release primary.
+      vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'c'.repeat(64));
       fixture = await createAssistantFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
+      const employee = await createEmployeeAdministrationFixture(fixture.db);
+      runtimePackage = buildEmployeeRuntimePackage({
+        revision: 1,
+        definition: {
+          ...employee.definition,
+          capabilities: {
+            ...employee.definition.capabilities,
+            nativeSkillIds: [],
+          },
+        },
+        skills: [],
+      });
+      expect(runtimePackage.runtimeManifest.distributionGeneration).toBe(
+        newNativeGeneration,
+      );
       // A test-only advisory barrier at the real INSERT, after Job/conversation
       // locks and the initial deadline check. No replacement product algorithm.
       await fixture.db
@@ -47,8 +76,13 @@ suite(
     async function chat() {
       const f = await createAssistantAuthorityFixture(fixture.db, {
         configure: false,
+        runtimePackage,
+        businessCreationOrigin: true,
       });
       await fixture.db`update allrice_jobs set attempt=1 where id=${f.worker.jobId}`;
+      const [birth] =
+        await fixture.db`select native_root_origin from allrice_chat_sessions where id=${f.session}`;
+      const origin = NativeRootOriginSchema.parse(birth!.native_root_origin);
       const [r] =
         await fixture.db`select * from allrice_conversation_runtimes where session_id=${f.session}`;
       const input: NativeSessionLeaseInput = {
@@ -68,9 +102,10 @@ suite(
           workspaceId: f.workspace,
           ownerId: f.user,
           contextKey: f.session,
+          distributionGeneration: newNativeGeneration,
         }),
       };
-      return { ...f, input };
+      return { ...f, origin, input };
     }
     async function heldGate(id: string) {
       const connection = await fixture.db.reserve();
@@ -109,7 +144,7 @@ suite(
       const prepared = await prepareJobNativeSession(request);
       expect(prepared).toEqual({
         ...bound,
-        origin: null,
+        origin: f.origin,
         executionBinding: null,
         requiresRecovery: true,
       });
@@ -301,7 +336,7 @@ suite(
       await expect(bindJobNativeSession(f.input)).rejects.toBeDefined();
     });
 
-    it('rolls back pointer changes on an immutable artifact conflict, including after configuration cleared the thread', async () => {
+    it('continues a pin under a same-generation primary and rolls back pointer changes on a storage or generation conflict, including after configuration cleared the thread', async () => {
       const f = await chat(),
         first = await bindJobNativeSession(f.input);
       await fixture.db`update allrice_conversation_runtimes set thread_id=null,thread_generation=thread_generation+1 where session_id=${f.session}`;
@@ -314,28 +349,49 @@ suite(
           generation: before!.thread_generation,
           expectedThreadId: null,
         },
-        descriptor: {
-          ...f.input.descriptor,
-          artifactId: 'sha256:' + 'b'.repeat(64),
-          artifactManifestDigest: 'sha256:' + 'b'.repeat(64),
-        },
       };
-      await expect(bindJobNativeSession(changed)).rejects.toMatchObject({
-        code: 'NATIVE_SESSION_BINDING_CONFLICT',
-      });
-      expect(
+      const pointer = async () =>
         (
           await fixture.db`select * from allrice_conversation_runtimes where session_id=${f.session}`
-        )[0],
-      ).toEqual(before);
+        )[0];
+      await expect(
+        bindJobNativeSession({
+          ...changed,
+          descriptor: {
+            ...f.input.descriptor,
+            storageNamespace: f.input.descriptor.storageNamespace.replace(
+              '/isolated-native/',
+              '/moved-native/',
+            ),
+          },
+        }),
+      ).rejects.toMatchObject({ code: 'NATIVE_SESSION_BINDING_CONFLICT' });
+      expect(await pointer()).toEqual(before);
+      await expect(
+        bindJobNativeSession({
+          ...changed,
+          descriptor: {
+            ...f.input.descriptor,
+            distributionGeneration: DSH_MISSING_FROZEN_GENERATION,
+          },
+        }),
+      ).rejects.toMatchObject({ code: 'NATIVE_SESSION_ADMISSION_DENIED' });
+      expect(await pointer()).toEqual(before);
+      // MET-221: the pin keeps its first writer's artifact as provenance; a
+      // later release's primary of the same generation continues it.
       expect(
         (
           await bindJobNativeSession({
             ...changed,
-            descriptor: f.input.descriptor,
+            descriptor: {
+              ...f.input.descriptor,
+              artifactId: 'sha256:' + 'b'.repeat(64),
+              artifactManifestDigest: 'sha256:' + 'b'.repeat(64),
+            },
           })
         ).binding,
       ).toEqual(first.binding);
+      expect(first.binding.artifactId).toBe(f.input.descriptor.artifactId);
     });
 
     it.each([
@@ -431,9 +487,9 @@ suite(
         // An uncommitted isolated pin supplies the real PostgreSQL unique-index
         // barrier. It is fixture arrangement, not a claimed production binding.
         await connection`insert into allrice_native_session_bindings(native_session_id,organization_id,workspace_id,owner_id,context_kind,context_id,
-        storage_context_key,storage_namespace,artifact_id,artifact_manifest_digest,distribution_generation,profile_id,first_run_id,first_job_id,first_attempt,binding_basis)
+        storage_context_key,storage_namespace,artifact_id,artifact_manifest_digest,distribution_generation,profile_id,first_run_id,first_job_id,first_attempt,binding_basis,root_origin_digest)
         values(${d.nativeSessionId},${f.org},${f.workspace},${f.user},'chat',${f.session},${d.storageContextKey},${d.storageNamespace},
-          ${d.artifactId},${d.artifactManifestDigest},${d.distributionGeneration},${d.profileId},${f.rootRunId},${f.worker.jobId},1,'approved_compatibility_reader')`;
+          ${d.artifactId},${d.artifactManifestDigest},${d.distributionGeneration},${d.profileId},${f.rootRunId},${f.worker.jobId},1,'business_root_origin',${nativeRootDigest(f.origin)})`;
         await fixture.db`update allrice_jobs set lease_expires_at=clock_timestamp()+interval '1200 milliseconds' where id=${f.input.jobId}`;
         operation = bindJobNativeSession(f.input).then(
           (value) => ({ value }),

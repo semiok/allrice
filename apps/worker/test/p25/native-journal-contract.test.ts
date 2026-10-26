@@ -484,6 +484,14 @@ it('matches the reviewed descriptor of the current contract version', async () =
   expect(Object.keys(kept).map(Number)).toEqual(
     Array.from({ length: current - readsFrom + 1 }, (_, i) => readsFrom + i),
   );
+  // A version is raised only for a changed surface. The constant is outside the
+  // native artifact, so a bare bump would keep the artifact ID yet raise the
+  // database high-water and make every rollback refuse (MET-221).
+  if (current > readsFrom)
+    expect(
+      kept[current],
+      'current raised without a surface change',
+    ).not.toEqual(kept[current - 1]);
   const text = await format(JSON.stringify(kept), {
     ...(await resolveConfig(surfacesPath)),
     filepath: surfacesPath,

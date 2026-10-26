@@ -104,16 +104,15 @@ For a native local installation, install PostgreSQL 17 and the matching pgvector
 
 ## Environment variables
 
-`ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS` is an operator-reviewed JSON array of
-exact native artifact IDs supporting final-delivery validation. Supply the same
-list to Web (Run admission) and Worker (execution). New eligible Runs freeze the
-mode and artifact ID; old Runs, null origins, and nonmatching historical readers
-keep their original protocol. This list neither approves execution packages nor
-rebinds history. Empty or missing means legacy behavior; malformed or duplicate
-IDs are rejected. Use the measured and independently reviewed candidate ID,
-never a DSH version or filename. No database migration or history backfill is
-required. See [native retention](../architecture/dsh-native-retention.md) and
-[DSH reuse decisions](../architecture/dsh-reuse-and-replacement.md).
+Native contexts bind to the DSH generation and the journal contract, not to an
+artifact ID (MET-221). `ALLRICE_DSH_NATIVE_ARTIFACT_ID` is the reviewed seal of a
+release: Web records it on new births and the Worker remeasures it at startup.
+Every same-generation context runs on that primary; the artifact IDs recorded on
+origins, pins, Runs and control references are provenance only. Checked final
+delivery applies to every eligible Run. `ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID` and
+`ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS` are retired and ignored; non-empty
+`ALLRICE_DSH_RETAINED_*` or `ALLRICE_DSH_ORIGIN_READER_*` settings refuse the
+Worker start. See [DSH reuse decisions](../architecture/dsh-reuse-and-replacement.md).
 
 Worker startup emits bounded `[MET-195] worker startup` JSON records with the
 same service boot ID, PID, ordered stages, elapsed/CPU time and instrumented read

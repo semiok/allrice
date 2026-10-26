@@ -34,7 +34,6 @@ import {
 
 const artifact = `sha256:${'a'.repeat(64)}`;
 beforeEach(() => {
-  vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', artifact);
   vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', artifact);
 });
 afterEach(() => vi.unstubAllEnvs());
@@ -483,19 +482,23 @@ describe('platform test source compatibility through the actual package builder'
 });
 
 describe('independent test birth and immutable readback', () => {
-  it.each([
-    'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
-    'ALLRICE_DSH_NATIVE_ARTIFACT_ID',
-  ])('refuses missing %s independently of reader configuration', (key) => {
-    vi.stubEnv(key, undefined);
+  it('refuses a birth without the release primary', () => {
+    vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', undefined);
     expect(() => frozen()).toThrow();
   });
-  it('rejects mismatched approved artifacts without an origin-reader exemption', () => {
-    vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', `sha256:${'b'.repeat(64)}`);
-    expect(() => frozen()).toThrow(
-      'CURRENT_EMPLOYEE_EXECUTION_APPROVAL_MISMATCH',
-    );
-  });
+  // MET-221: the birth records the release primary as provenance; the retired
+  // new-root ID is neither read nor required.
+  it.each([undefined, `sha256:${'b'.repeat(64)}`])(
+    'records only the release primary (retired new-root ID %s)',
+    (retired) => {
+      vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', retired);
+      const input = frozen();
+      expect(input.origin).toMatchObject({ artifactId: artifact });
+      expect(
+        freezePlatformTestExecutionBinding(input).execution.artifactId,
+      ).toBe(artifact);
+    },
+  );
   it('new test IDs use the new approved artifact while the old test keeps its frozen executor', () => {
     const s = source(
       DSH_MISSING_FROZEN_GENERATION,
@@ -505,7 +508,6 @@ describe('independent test birth and immutable readback', () => {
     const old = frozen(s),
       before = freezePlatformTestExecutionBinding(old);
     const nextArtifact = `sha256:${'c'.repeat(64)}`;
-    vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', nextArtifact);
     vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', nextArtifact);
     const next = frozen(s, { ...old.scope, testId: randomUUID() });
     expect(freezePlatformTestExecutionBinding(next).execution.artifactId).toBe(

@@ -38,8 +38,6 @@ import {
   snapshotDiagnosticSql,
 } from '../execution/native-run-diagnostics-transition.fixture.ts';
 import { acquireConversationRuntime } from './conversation-runtime.ts';
-import { selectCheckedFinalDeliveryArtifact } from '../final-delivery-rollout.ts';
-import { resolveEmployeeExecution } from '../employees/employeehub.ts';
 import {
   nativeRootDigest,
   newNativeGeneration,
@@ -421,114 +419,6 @@ suite('U1 exact-chat transition, actual isolated SQL only', () => {
     // This ceiling is independent of the six contexts and all earlier test data.
     // It fails the original scanner's repeated per-chat/per-pin round trips.
     expect(statements.length).toBeLessThanOrEqual(5);
-  });
-  it('new Run freezes target while original source/origin/pin/old Run remain exact; prepare and bind expose actual effective descriptor', async () => {
-    const { f, runId: oldRun, input: oldInput } = await ready();
-    const origin = await raw(f);
-    const [oldRow] =
-      await fixture.db`select to_jsonb(r) value from allrice_employee_runs r where run_id=${oldRun}`;
-    const [oldPin] =
-      await fixture.db`select to_jsonb(b) value from allrice_native_session_bindings b where native_session_id=${oldInput.descriptor.nativeSessionId}`;
-    const reviewed = await review(f);
-    const receipt = await apply(reviewed);
-    expect(receipt.target.artifactId).toBe(b);
-    vi.stubEnv('ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS', JSON.stringify([b]));
-    expect(
-      await fixture.db.begin((tx) =>
-        selectCheckedFinalDeliveryArtifact(tx, {
-          organizationId: f.org,
-          workspaceId: f.workspace,
-          ownerId: f.user,
-          sessionId: f.chat,
-        }),
-      ),
-    ).toBe(b);
-    vi.stubEnv('ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS', '[]');
-    const legacy = 'sha256:' + 'd'.repeat(64);
-    vi.stubEnv('ALLRICE_DSH_RETAINED_1_ARTIFACT_ID', legacy);
-    const coverage = await verifyNativeArtifactReferenceCoverage([
-      {
-        artifactId: b,
-        generation: newNativeGeneration,
-        storageRoot: '/isolated-native',
-      },
-      {
-        artifactId: legacy,
-        generation: 'dsh-0.1.5-rc.3-a4c74a9',
-        storageRoot: '/isolated-native',
-      },
-    ]);
-    expect(coverage.verified).toBe(true);
-    expect(coverage.references.filter((x) => x.source === 'binding')).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          artifactId: b,
-          covered: true,
-          historicalArtifactIds: [a],
-        }),
-      ]),
-    );
-    // No A approval was needed: its old identity is still retained for audit.
-
-    expect(
-      await readAppliedChatExecutorTransition({
-        db: fixture.db,
-        scope: scope(f),
-        requestId: receipt.requestId,
-        approvalDigest: receipt.approvalDigest,
-      }),
-    ).toEqual(receipt);
-    await expect(apply(reviewed)).rejects.toThrow(
-      'ALREADY_APPLIED_READBACK_ONLY',
-    );
-    const runId = await send(f);
-    const [next] =
-      await fixture.db`select native_execution_binding,execution_snapshot from allrice_employee_runs where run_id=${runId}`;
-    expect(next!.native_execution_binding).toMatchObject({
-      schemaVersion: 2,
-      originDigest: nativeRootDigest(origin),
-      execution: tuple(b),
-      transition: { digest: receipt.digest },
-    });
-    expect(next!.native_execution_binding.source.employeeVersionId).toBe(
-      oldRow!.value.employee_version_id,
-    );
-    const input = await lease(f, runId),
-      prepared = await prepare(input);
-    if (!('effectiveDescriptor' in prepared) || !prepared.effectiveDescriptor)
-      throw Error('SQL transition must supply effective descriptor');
-    expect(prepared.binding!.artifactId).toBe(a);
-    expect(prepared.effectiveDescriptor!.artifactId).toBe(b);
-    const bound = await bindJobNativeSession({
-      ...input,
-      descriptor: prepared.effectiveDescriptor!,
-    });
-    expect(bound.binding.artifactId).toBe(a);
-    expect(bound.effectiveDescriptor!.artifactId).toBe(b);
-    const resolved = await resolveEmployeeExecution({
-      organizationId: f.org,
-      workspaceId: f.workspace,
-      ownerId: f.user,
-      runId,
-    });
-    expect(resolved).toBeTruthy();
-    expect(await raw(f)).toEqual(origin);
-    expect(
-      (
-        await fixture.db`select to_jsonb(r) value from allrice_employee_runs r where run_id=${oldRun}`
-      )[0]!.value,
-    ).toEqual(oldRow!.value);
-    expect(
-      (
-        await fixture.db`select to_jsonb(b) value from allrice_native_session_bindings b where native_session_id=${oldInput.descriptor.nativeSessionId}`
-      )[0]!.value,
-    ).toEqual(oldPin!.value);
-    await expect(
-      fixture.db`update allrice_native_chat_executor_transitions set approval=approval where request_id=${receipt.requestId}`,
-    ).rejects.toThrow();
-    await expect(
-      fixture.db`delete from allrice_native_chat_executor_transitions where request_id=${receipt.requestId}`,
-    ).rejects.toThrow();
   });
   it('A→B→C stays append-only and diagnostics retain exact frozen Runs in read-only SQL', async () => {
     const { f, runId: oldRun, input: oldInput } = await ready();

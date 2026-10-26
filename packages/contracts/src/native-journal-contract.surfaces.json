@@ -358,6 +358,7 @@
           "packages/database/migrations/0207_ordinary_monthly_native.sql": 2,
           "packages/database/migrations/0214_native_control_cloud_absence.sql": 2,
           "packages/database/src/conversation/native-artifact-references.ts": 3,
+          "packages/database/src/conversation/native-context-compatibility.ts": 2,
           "packages/database/src/native-schedule-calendar-sql.ts": 1,
           "packages/database/src/native-schedule-calendar-state.ts": 1,
           "packages/database/src/native-schedule-control-upgrade.ts": 2,

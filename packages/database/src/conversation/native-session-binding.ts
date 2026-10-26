@@ -609,16 +609,16 @@ export async function bindLeasedNativeSession(
     )
       deny();
   } else if (
+    // MET-221: a context binds to its generation, profile and root seed. The
+    // descriptor's artifact is the release primary; the origin's is provenance.
+    // A context without a business origin has no executor on this release.
+    !origin ||
+    reader ||
     d.executorTransitionDigest !== undefined ||
-    (origin
-      ? d.artifactId !== (reader?.targetArtifactId ?? origin.artifactId) ||
-        d.distributionGeneration !== origin.distributionGeneration ||
-        d.profileId !== origin.profileId ||
-        key !== origin.rootSeed ||
-        d.originReaderApprovalDigest !== reader?.approvalDigest ||
-        (reader && d.storageNamespace !== reader.storageNamespace)
-      : d.distributionGeneration === newNativeGeneration ||
-        d.originReaderApprovalDigest !== undefined)
+    d.originReaderApprovalDigest !== undefined ||
+    d.distributionGeneration !== origin.distributionGeneration ||
+    d.profileId !== origin.profileId ||
+    key !== origin.rootSeed
   )
     deny();
   const bindingBasis = origin
@@ -741,9 +741,8 @@ export async function bindLeasedNativeSession(
     pin.context_id === s.id &&
     pin.storage_context_key === key &&
     pin.storage_namespace === d.storageNamespace &&
-    (transition ||
-      (pin.artifact_id === d.artifactId &&
-        pin.artifact_manifest_digest === d.artifactManifestDigest)) &&
+    // artifact_id stays the first writer (provenance); any later release's
+    // primary of the same generation continues the context.
     pin.distribution_generation === d.distributionGeneration &&
     pin.profile_id === d.profileId &&
     pin.binding_basis === bindingBasis &&

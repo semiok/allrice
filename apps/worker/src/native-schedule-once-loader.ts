@@ -4,8 +4,9 @@ import { lstat, readFile, realpath } from 'node:fs/promises';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence';
+import { DSH_INSTALLED_DISTRIBUTION } from '@allrice/contracts';
 import {
-  approvedDshNativeControlArtifact,
+  currentDshNativeControlArtifact,
   type ApprovedDshNativeControlArtifact,
 } from './harness/dsh-native-artifact.js';
 import {
@@ -16,7 +17,6 @@ import {
 } from './native-schedule-once.js';
 import { createNativeOnceWorkerRuntime } from './native-schedule-once-runtime.js';
 
-const GENERATION = 'dsh-0.2.1-rc.2-687f282';
 const FACTORY = 'apps/worker/dsh/native-schedule-host-factory.mjs';
 const moduleNames = {
   cordis: 'cordis',
@@ -101,7 +101,7 @@ export function parseNativeOnceControlReference(
 
 /** Private test seams only; deployment settings cannot supply functions/URLs. */
 export interface NativeOnceLoaderTestPorts {
-  approvedArtifact?: (id: string) => ApprovedDshNativeControlArtifact;
+  currentArtifact?: () => ApprovedDshNativeControlArtifact;
   resolveModule?: (from: string, specifier: string) => string;
   realpath?: typeof realpath;
   lstat?: typeof lstat;
@@ -109,19 +109,20 @@ export interface NativeOnceLoaderTestPorts {
   importModule?: (path: string) => Promise<Record<string, unknown>>;
 }
 
-/** Every public package and the private carrier come from the same already
- * verified registry root. There is no current-directory or alternate-root retry. */
+/** Every public package and the private carrier come from this release's
+ * verified primary root. The reference's artifactId records where the partition
+ * was born and never selects code (MET-221); its bytes stay unchanged. There is
+ * no current-directory or alternate-root retry. */
 export function createNativeOnceControlSource(
   reference: NativeScheduleControlReference,
   testPorts: NativeOnceLoaderTestPorts = {},
 ): NativeScheduleControlSource {
   const ref = parseNativeScheduleControlReference(reference);
   const artifact = (
-    testPorts.approvedArtifact ?? approvedDshNativeControlArtifact
-  )(ref.artifactId);
+    testPorts.currentArtifact ?? currentDshNativeControlArtifact
+  )();
   if (
-    artifact.artifactId !== ref.artifactId ||
-    artifact.generation !== GENERATION ||
+    artifact.generation !== DSH_INSTALLED_DISTRIBUTION.generation ||
     !isAbsolute(artifact.root) ||
     resolve(artifact.root) !== artifact.root
   )

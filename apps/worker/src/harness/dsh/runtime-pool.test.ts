@@ -16,7 +16,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { HarnessExecutionInput } from '../adapter.js';
 import * as CodexSubscription from '../../codex-subscription-home.js';
 import * as NativeArtifact from '../dsh-native-artifact.js';
-import * as NativeRetention from '../dsh-native-retention.js';
 import * as NativeStorage from '../dsh-native-storage.js';
 import * as CloseObserver from '../dsh-close-observer.js';
 import {
@@ -450,13 +449,20 @@ function request(): Parameters<DshRuntimePool['acquire']>[0] {
 }
 
 /** The verified artifact/SQL ports are seams here. The child is the existing
- * protocol fixture: this tests Worker binding/reuse, not production approval. */
-function currentExecutionRequest(variant: 'definition' | 'legacy' | 'current') {
+ * protocol fixture: this tests Worker binding/reuse, not production approval.
+ * `recordedArtifactId` is the artifact an earlier same-generation release
+ * recorded on the origin, Run binding and pin; it is provenance only and the
+ * release primary (`artifactId`) always executes (MET-221). */
+function currentExecutionRequest(
+  variant: 'definition' | 'legacy' | 'current',
+  { recordedArtifactId }: { recordedArtifactId?: string } = {},
+) {
   const runtimes = pool(),
     value = request();
   const artifactId = 'sha256:' + 'c'.repeat(64);
-  vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', artifactId);
-  vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', artifactId);
+  const recorded = recordedArtifactId ?? artifactId;
+  // The origin is born under the release that recorded it.
+  vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', recorded);
   const manifest = employeeManifest({
     key: 'current-pool',
     name: 'Synthetic current pool',
@@ -587,6 +593,7 @@ function currentExecutionRequest(variant: 'definition' | 'legacy' | 'current') {
     ...scope,
     source: sourceInput,
   });
+  vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', artifactId);
   const payload = {
     schemaVersion: 1 as const,
     kind: 'current_employee_execution' as const,
@@ -594,7 +601,7 @@ function currentExecutionRequest(variant: 'definition' | 'legacy' | 'current') {
     originDigest: nativeRootDigest(origin),
     ...validateEmployeeExecutionSource(sourceInput),
     execution: {
-      artifactId,
+      artifactId: recorded,
       generation: origin.distributionGeneration,
       profileId: origin.profileId,
     },
@@ -616,15 +623,13 @@ function currentExecutionRequest(variant: 'definition' | 'legacy' | 'current') {
     artifactId,
     profileId: 'restricted',
   });
-  vi.spyOn(NativeArtifact, 'nativeArtifactLaunchForPin').mockImplementation(
-    (input) => {
-      if (input.artifactId !== artifactId || input.profileId !== 'restricted')
-        throw Error('unapproved fixture executor');
+  // The only executor port: this release's primary, never a recorded ID.
+  const primary = vi
+    .spyOn(NativeArtifact, 'currentDshNativeLaunch')
+    .mockImplementation((profileId) => {
+      if (profileId !== 'restricted') throw Error('unapproved fixture profile');
       return launch;
-    },
-  );
-  vi.spyOn(NativeRetention, 'originDshNativeLaunch').mockReturnValue(launch);
-  vi.spyOn(NativeRetention, 'pinnedDshNativeLaunch').mockReturnValue(launch);
+    });
   const descriptor = runtimes.describeNativeSession(
     value.input,
     value.threadId,
@@ -634,6 +639,9 @@ function currentExecutionRequest(variant: 'definition' | 'legacy' | 'current') {
   )!;
   const pin = {
     ...descriptor,
+    // The first writer may have been an earlier same-generation release.
+    artifactId: recorded,
+    artifactManifestDigest: recorded,
     organizationId: scope.organizationId,
     workspaceId: scope.workspaceId,
     ownerId: scope.ownerId,
@@ -656,6 +664,7 @@ function currentExecutionRequest(variant: 'definition' | 'legacy' | 'current') {
     },
     payload,
     launch,
+    primary,
   };
 }
 
@@ -799,6 +808,147 @@ it('reuses one current executor across Run bindings while rechecking the new Run
     'nativeExecutionBinding',
   );
   expect(second.runtime.fingerprintParts).not.toHaveProperty('runId');
+});
+
+const earlierReleaseArtifactId = 'sha256:' + 'd'.repeat(64);
+
+it.each(['definition', 'legacy', 'current'] as const)(
+  'runs a same-generation %s context recorded under another artifact ID on the release primary',
+  async (variant) => {
+    const { runtimes, value, launch, primary } = currentExecutionRequest(
+      variant,
+      { recordedArtifactId: earlierReleaseArtifactId },
+    );
+    // Origin, Run binding and pin all keep the earlier release's ID.
+    expect(value.nativeOrigin.artifactId).toBe(earlierReleaseArtifactId);
+    expect(value.nativeExecutionBinding.execution.artifactId).toBe(
+      earlierReleaseArtifactId,
+    );
+    expect(value.nativePin.artifactId).toBe(earlierReleaseArtifactId);
+    expect(
+      runtimes.describeNativeSession(
+        value.input,
+        value.threadId,
+        value.nativePin,
+        value.nativeOrigin,
+        value.nativeExecutionBinding,
+      ),
+    ).toMatchObject({
+      artifactId: launch.artifactId,
+      artifactManifestDigest: launch.artifactId,
+      distributionGeneration: launch.generation,
+      profileId: 'restricted',
+    });
+    const started = await runtimes.acquire(value);
+    expect(started.fresh).toBe(true);
+    expect(runtimes.get(value.threadId)).toBe(started.runtime);
+    expect(primary).toHaveBeenCalled();
+    expect(primary.mock.calls.every(([p]) => p === 'restricted')).toBe(true);
+  },
+);
+
+it('checks recovery storage of an earlier same-generation release through the primary', async () => {
+  const { runtimes, value, launch } = currentExecutionRequest('current', {
+    recordedArtifactId: earlierReleaseArtifactId,
+  });
+  const storageUnavailable = new Error('synthetic storage unavailable');
+  const reader = vi
+    .spyOn(NativeStorage, 'assertStoredNativeSession')
+    .mockRejectedValue(storageUnavailable);
+  await expect(
+    runtimes.acquire({ ...value, requireRecovery: true }),
+  ).rejects.toBe(storageUnavailable);
+  expect(reader).toHaveBeenCalledTimes(1);
+  expect(reader.mock.calls[0]![0]).toBe(launch.args[0]);
+  expect(reader.mock.calls[0]![1]).toMatchObject({
+    nativeSessionId: value.nativePin.nativeSessionId,
+    artifactId: launch.artifactId,
+    storageNamespace: value.nativePin.storageNamespace,
+  });
+});
+
+it.each([
+  'primary-generation',
+  'pin-generation',
+  'pin-origin-reader',
+  'unbound-birth',
+  'transition',
+] as const)(
+  'refuses an incompatible %s context as not retryable before starting a native child',
+  async (changed) => {
+    const { runtimes, value, launch, primary, payload } =
+      currentExecutionRequest('current', {
+        recordedArtifactId: earlierReleaseArtifactId,
+      });
+    const next: Parameters<DshRuntimePool['acquire']>[0] = { ...value };
+    // An older frozen generation: never continued by this release's primary.
+    const otherGeneration = DSH_MISSING_FROZEN_GENERATION;
+    if (changed === 'primary-generation')
+      primary.mockReturnValue({ ...launch, generation: otherGeneration });
+    if (changed === 'pin-generation')
+      next.nativePin = {
+        ...value.nativePin,
+        distributionGeneration: otherGeneration,
+      };
+    if (changed === 'pin-origin-reader')
+      next.nativePin = {
+        ...value.nativePin,
+        originReaderApprovalDigest: 'sha256:' + 'e'.repeat(64),
+      };
+    if (changed === 'unbound-birth') {
+      next.nativeOrigin = null;
+      next.nativeExecutionBinding = null;
+    }
+    if (changed === 'transition') {
+      const target = {
+        artifactId: 'sha256:' + 'f'.repeat(64),
+        generation: launch.generation,
+        profileId: 'restricted' as const,
+      };
+      const transitionPayload = {
+        ...payload,
+        schemaVersion: 2 as const,
+        execution: target,
+        transition: {
+          requestId: randomUUID(),
+          sequence: 1,
+          digest: 'sha256:' + 'b'.repeat(64),
+          scope: {
+            contextKind: 'chat' as const,
+            contextId: payload.scope.sessionId,
+            organizationId: payload.scope.organizationId,
+            workspaceId: payload.scope.workspaceId,
+            ownerId: payload.scope.ownerId,
+          },
+          originDigest: payload.originDigest,
+          target,
+          storageNamespace: value.nativePin.storageNamespace,
+        },
+      };
+      next.nativeExecutionBinding = EmployeeRunExecutionBindingSchema.parse({
+        ...transitionPayload,
+        digest: nativeRootDigest(transitionPayload),
+      });
+    }
+    await expect(runtimes.acquire(next)).rejects.toMatchObject({
+      code: 'DSH_NATIVE_CONTEXT_INCOMPATIBLE',
+      retryable: false,
+    });
+    expect(runtimes.get(value.threadId)).toBeUndefined();
+  },
+);
+
+it('still refuses a pin of another profile even when only artifact IDs are provenance', async () => {
+  const { runtimes, value } = currentExecutionRequest('current', {
+    recordedArtifactId: earlierReleaseArtifactId,
+  });
+  await expect(
+    runtimes.acquire({
+      ...value,
+      nativePin: { ...value.nativePin, profileId: 'technical' },
+    }),
+  ).rejects.toMatchObject({ code: 'DSH_NATIVE_SESSION_BINDING_CONFLICT' });
+  expect(runtimes.get(value.threadId)).toBeUndefined();
 });
 
 async function codexRequest() {

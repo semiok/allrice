@@ -102,9 +102,9 @@ integration(
       for (const key of Object.keys(process.env))
         if (key.startsWith('ALLRICE_DSH_ORIGIN_READER_'))
           vi.stubEnv(key, undefined);
-      vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', currentArtifact);
+      // MET-221: the release primary is the only birth input; the retired
+      // new-root ID and checked-delivery allowlist are not read.
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', currentArtifact);
-      vi.stubEnv('ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS', '[]');
       for (const flag of [
         'ALLRICE_ASSISTANTS_ENABLED',
         'ALLRICE_WORKBENCH_ENABLED',
@@ -179,9 +179,8 @@ integration(
         await cancelRun(f.context, f.workspace, runId, {
           reason: 'Owned SQL fixture cleanup; no model executed',
         });
-      vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', currentArtifact);
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', currentArtifact);
-      vi.stubEnv('ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS', '[]');
+      vi.stubEnv('ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS', undefined);
       vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', undefined);
     });
 
@@ -617,7 +616,6 @@ integration(
         before = await stored(id);
       const input = await lease(f, id);
       await bindJobNativeSession(input);
-      vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', otherArtifact);
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', otherArtifact);
       expect(await send(f, clientMessageId)).toBe(id);
       expect(
@@ -697,13 +695,19 @@ integration(
             : newNativeGeneration,
         );
         expect((await prepare(execution)).executionBinding).toBeNull();
-        expect(
-          (await bindJobNativeSession(execution)).binding.bindingBasis,
-        ).toBe(
-          kind === 'legacy-package2'
-            ? 'approved_compatibility_reader'
-            : 'business_root_origin',
-        );
+        // MET-221: a chat without a business origin has no executor on this
+        // release; it is refused and stays unbound rather than adopted.
+        if (kind === 'legacy-package2') {
+          await expect(bindJobNativeSession(execution)).rejects.toMatchObject({
+            code: 'NATIVE_SESSION_ADMISSION_DENIED',
+          });
+          expect(
+            await fixture.db`select 1 from allrice_native_session_bindings where context_id=${f.chat}`,
+          ).toHaveLength(0);
+        } else
+          expect(
+            (await bindJobNativeSession(execution)).binding.bindingBasis,
+          ).toBe('business_root_origin');
         expect(await stored(f.rootRunId)).toEqual(before);
       },
       30_000,
@@ -809,25 +813,12 @@ integration(
       30_000,
     );
 
-    it('keeps final-delivery admission on the exact approved tuple and retains assistant opt-out', async () => {
+    // MET-221: checked final delivery is every release's protocol on the
+    // restricted profile. The retired allowlist is ignored and the frozen
+    // artifact is the origin's (provenance), even under a later primary.
+    it('admits checked final delivery for a business-origin chat with its origin artifact and retains assistant opt-out', async () => {
       const f = await subject('legacy-package2');
-      vi.stubEnv(
-        'ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS',
-        JSON.stringify([otherArtifact]),
-      );
-      expect(
-        await fixture.db.begin((tx) =>
-          selectCheckedFinalDeliveryArtifact(tx, scope(f)),
-        ),
-      ).toBeUndefined();
-      const excluded = await send(f, randomUUID(), true);
-      expect((await stored(excluded)).execution_snapshot).not.toHaveProperty(
-        'finalDeliveryPolicy',
-      );
-      vi.stubEnv(
-        'ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS',
-        JSON.stringify([currentArtifact]),
-      );
+      vi.stubEnv('ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS', '[]');
       expect(
         await fixture.db.begin((tx) =>
           selectCheckedFinalDeliveryArtifact(tx, scope(f)),
@@ -844,6 +835,20 @@ integration(
       expect(
         (await stored(included)).execution_snapshot.officeFirstDeliveryPolicy,
       ).toBe('xlsx_formula_cache_v1');
+      vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', otherArtifact);
+      expect(
+        await fixture.db.begin((tx) =>
+          selectCheckedFinalDeliveryArtifact(tx, scope(f)),
+        ),
+      ).toBe(currentArtifact);
+      const later = await send(f, randomUUID(), true);
+      expect(
+        (await stored(later)).execution_snapshot.finalDeliveryPolicy,
+      ).toEqual({
+        version: 1,
+        mode: 'checked_native_v1',
+        artifactId: currentArtifact,
+      });
       const optedOut = await send(f, randomUUID(), false);
       expect((await stored(optedOut)).execution_snapshot).not.toHaveProperty(
         'finalDeliveryPolicy',

@@ -75,10 +75,6 @@ suite(
       vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', adminEmail);
       vi.stubEnv('ALLRICE_ENV', 'test');
       // SQL-only birth identity; this does not approve a real native Host.
-      vi.stubEnv(
-        'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
-        'sha256:' + 'a'.repeat(64),
-      );
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
       await fixture.db`update allrice_model_connections set status='ready' where id='52000000-0000-4000-8000-000000000001'`;
       await fixture.db`update allrice_model_providers set enabled=true where provider_key='codex'`;
@@ -185,7 +181,9 @@ suite(
         (await getPlatformTechnicalTask(admin, a.task.id)).task.status,
       ).toBe('canceled');
     });
-    it.each(['missing', 'mismatched'] as const)(
+    // MET-221: the release primary is the only execution approval; there is no
+    // separate new-root ID it could mismatch.
+    it.each(['missing', 'malformed'] as const)(
       'rejects %s execution approval without leaving a technical task, Run or Job',
       async (mode) => {
         const counts = () => fixture.db`
@@ -195,7 +193,7 @@ suite(
         const before = await counts();
         vi.stubEnv(
           'ALLRICE_DSH_NATIVE_ARTIFACT_ID',
-          mode === 'missing' ? undefined : 'sha256:' + 'b'.repeat(64),
+          mode === 'missing' ? undefined : 'sha256:not-a-digest',
         );
         try {
           await expect(submit()).rejects.toThrow();
@@ -221,7 +219,6 @@ suite(
         profileId: 'technical',
         artifactId: 'sha256:' + 'a'.repeat(64),
       });
-      vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', undefined);
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', undefined);
       try {
         expect(
@@ -233,10 +230,6 @@ suite(
           from allrice_platform_technical_tasks where id=${detail.task.id}`,
         ).toEqual(original);
       } finally {
-        vi.stubEnv(
-          'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
-          'sha256:' + 'a'.repeat(64),
-        );
         vi.stubEnv(
           'ALLRICE_DSH_NATIVE_ARTIFACT_ID',
           'sha256:' + 'a'.repeat(64),

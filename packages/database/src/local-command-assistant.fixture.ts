@@ -30,10 +30,18 @@ export async function createAssistantLocalCommandFixture(
     snapshot?: NonNullable<
       Parameters<typeof createAssistantAuthorityFixture>[1]
     >['snapshot'];
+    /** A current-generation package with a first-INSERT business origin; only
+     * such a chat can bind a native session (MET-221). */
+    runtimePackage?: NonNullable<
+      Parameters<typeof createAssistantAuthorityFixture>[1]
+    >['runtimePackage'];
+    businessCreationOrigin?: boolean;
   } = {},
 ) {
   const f = await createAssistantAuthorityFixture(database, {
     snapshot: options.snapshot,
+    runtimePackage: options.runtimePackage,
+    businessCreationOrigin: options.businessCreationOrigin,
     project,
     ...(options.projectWorkspace ? { memberRole: 'member' as const } : {}),
     nativeSessionId: options.nativeSessionId,

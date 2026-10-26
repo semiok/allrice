@@ -85,7 +85,7 @@ suite(
       // Approve only this actually measured tree at the existing registry seam.
       // Modules, exact source verification, Host and database ports stay real.
       source = createNativeOnceControlSource(reference, {
-        approvedArtifact: () => ({
+        currentArtifact: () => ({
           artifactId: measured.artifactId,
           generation: measured.content.generation,
           root,

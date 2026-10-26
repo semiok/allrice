@@ -163,6 +163,7 @@ export * from './experience-provenance.ts';
 export * from './memory-context.ts';
 
 export * from './dsh-distribution.generated.ts';
+export * from './native-journal-contract.ts';
 
 export { readDshToolResult } from './dsh-tool-results.ts';
 
