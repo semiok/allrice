@@ -2,36 +2,39 @@
 import { ProjectServiceCard } from './project-service-card';
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import {
+  Button,
   IconChevronDownOutlineRegular,
-  IconChevronRightOutlineRegular,
   IconLoadingOutlineRegular,
   IconRefreshOutlineRegular,
   Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import {
   classifyMcpFailure,
-  mcpFailureCopy,
   sandboxNetworkErrorMessage,
   projectResolutionErrorMessage,
 } from '@allrice/contracts';
 import type { CloudOperationView } from '@allrice/database';
 import styles from './cloud-operation-panel.module.css';
+import { TechnicalDetails } from './technical-details';
+import {
+  approvalState,
+  approvalSummary,
+  approveLabel,
+  cloudOperationCompactLabel,
+  cloudOperationStatusLabel,
+  durationText,
+  mcpApprovalDetails,
+  type ApprovalField as ApprovalFieldView,
+  mcpAuthorizationLabel,
+  mcpFailureNotice,
+  mcpRiskLabel,
+  resourceLimitRows,
+  resultNote,
+  serviceHost,
+  unconfirmedNote,
+} from '../../lib/chatflow/cloud-operation-presenter';
+import { shortDateTime } from '../../lib/chatflow/browser-workspace-presenter';
 
-const labels: Record<CloudOperationView['snapshot']['status'], string> = {
-  planned: '准备中',
-  waiting_user: '等待授权',
-  waiting_device: '等待设备',
-  waiting_dependency: '等待依赖',
-  ready: '等待执行',
-  dispatched: '已派发',
-  running: '执行中',
-  cancel_requested: '已请求停止',
-  unknown: '待核实',
-  succeeded: '执行成功',
-  failed: '执行失败',
-  canceled: '已取消',
-  partial: '部分完成',
-};
 function operationFailure(op: CloudOperationView) {
   return op.proposal.kind === 'mcp' &&
     ['failed', 'unknown'].includes(op.snapshot.status)
@@ -69,24 +72,93 @@ export function cloudOperationDisplayStatus(
   op: CloudOperationView,
   now = Date.now(),
 ) {
-  if (op.snapshot.status === 'waiting_user' && op.approval) {
-    if (op.approval.revokedAt) return '授权已撤销';
-    if (op.approval.response?.decision === 'rejected') return '已拒绝本次操作';
-    if (Date.parse(op.approval.request.expiresAt) <= now)
-      return '本次授权已过期';
-    if (op.proposal.kind === 'mcp' && op.mcpAuthorization?.available !== true)
-      return mcpAuthorizationLabel(op);
-    if (op.approval.response?.decision === 'approved')
-      return '已批准，等待派发';
-  }
+  // The same decision as the compact header word (approvalState).
+  const waiting = approvalState(op, now);
+  if (waiting) return waiting.full;
   const failure = operationFailure(op);
-  if (failure) return mcpFailureCopy[failure].title;
-  return labels[op.snapshot.status] ?? op.snapshot.status;
+  if (failure) return mcpFailureNotice(failure).title;
+  return cloudOperationStatusLabel(op.snapshot.status);
 }
 
 /** Compact receipts never turn an unconfirmed outcome into success or failure. */
-export function cloudOperationCompactStatus(op: CloudOperationView) {
-  return labels[op.snapshot.status];
+export function cloudOperationCompactStatus(
+  op: CloudOperationView,
+  now = Date.now(),
+) {
+  return cloudOperationCompactLabel(op, now);
+}
+
+/** One parameter: its path as a label, its real value kept apart below. */
+function ApprovalField({ field }: { field: ApprovalFieldView }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <dt>{field.path}</dt>
+      <dd className={styles.approvalValue}>
+        {open ? field.full : field.text}
+        {field.full !== field.text && (
+          <Button
+            className={styles.decision}
+            size="sm"
+            variant="ghost"
+            aria-expanded={open}
+            onClick={() => setOpen((value) => !value)}
+          >
+            {open ? '收起' : '展开全文'}
+          </Button>
+        )}
+      </dd>
+    </div>
+  );
+}
+
+/** What a pending app call will do: decision material, not technical detail. */
+function McpApprovalDetails({
+  proposal,
+}: {
+  proposal: Extract<CloudOperationView['proposal'], { kind: 'mcp' }>;
+}) {
+  const details = mcpApprovalDetails(proposal);
+  return (
+    <dl className={styles.fields} aria-label="这次要做的事">
+      <div>
+        <dt>动作</dt>
+        <dd>{details.action}</dd>
+      </div>
+      <div>
+        <dt>对象</dt>
+        <dd>
+          <ul className={styles.approvalTargets}>
+            <li>{details.host}</li>
+            {details.targets.map((target) => (
+              <li key={`${target.label}\0${target.value}`}>
+                {target.label}{' '}
+                <span className={styles.approvalValue}>{target.value}</span>
+              </li>
+            ))}
+            {details.moreTargets > 0 && <li>等 {details.moreTargets} 个</li>}
+          </ul>
+        </dd>
+      </div>
+      <div>
+        <dt>内容</dt>
+        <dd>
+          {details.fields.length ? (
+            <dl className={styles.approvalFields} aria-label="参数">
+              {details.fields.map((field) => (
+                <ApprovalField key={field.path} field={field} />
+              ))}
+            </dl>
+          ) : (
+            '没有参数'
+          )}
+          {details.moreFields > 0 && (
+            <p>另有 {details.moreFields} 项，可在「技术详情」查看全部。</p>
+          )}
+        </dd>
+      </div>
+    </dl>
+  );
 }
 
 type Decision = 'approved' | 'rejected' | 'cancel';
@@ -199,60 +271,6 @@ function DetailFields({ rows }: { rows: [string, ReactNode][] }) {
   );
 }
 
-function RawDetail({
-  title,
-  children,
-  open = false,
-}: {
-  title: string;
-  children: ReactNode;
-  open?: boolean;
-}) {
-  return (
-    <details className={styles.rawDetail} open={open}>
-      <summary>
-        <IconChevronRightOutlineRegular size={12} />
-        {title}
-      </summary>
-      {children}
-    </details>
-  );
-}
-
-function serviceHost(endpoint: string) {
-  try {
-    return new URL(endpoint).hostname;
-  } catch {
-    return '第三方应用';
-  }
-}
-
-function mcpRiskLabel(risk: string) {
-  return (
-    (
-      {
-        read: '读取',
-        read_only: '读取',
-        external_send: '对外发送',
-        high_risk_data: '敏感数据',
-        write: '写入',
-        destructive: '删除或破坏性操作',
-      } as Record<string, string>
-    )[risk] ?? risk
-  );
-}
-function mcpAuthorizationLabel(op: CloudOperationView) {
-  switch (op.mcpAuthorization?.reason) {
-    case 'connection_revoked':
-      return '连接授权已撤销';
-    case 'connection_or_tool_changed':
-      return '连接或工具授权已变化';
-    case 'employee_authorization_changed':
-      return '员工授权已失效';
-    default:
-      return '当前授权暂时无法核实';
-  }
-}
 export function CloudOperationCard({
   op,
   busy,
@@ -310,11 +328,11 @@ export function CloudOperationCard({
   }, [pending, op.snapshot.binding.attempt.operationId]);
   const isMcp = proposal.kind === 'mcp';
   const fullStatus = laterSuccessId
-    ? '本次未成功 · 后续调用已成功'
+    ? '这次未完成，之后再试已完成'
     : proposal.kind === 'cloud' &&
         proposal.dependencyResolution &&
         op.snapshot.status === 'succeeded'
-      ? '已解析 · 尚未安装'
+      ? '已查到可用版本，还没安装'
       : cloudOperationDisplayStatus(op);
   const detailsToggle = (
     <button
@@ -352,36 +370,47 @@ export function CloudOperationCard({
   const notices = (
     <>
       {resolutionFailure && (
-        <p role="status" className={styles.notice}>
+        <p role="status" className={styles.notice} data-tone="error">
           {resolutionFailure}
         </p>
       )}
       {laterSuccessId && (
         <p className={styles.notice}>
-          同一应用工具的后续调用已成功，本次失败记录仍保留。
-          <a href={`#operation-${laterSuccessId}`}>查看成功结果</a>
+          之后再试的一次已经完成，这次的记录仍保留。
+          <a href={`#operation-${laterSuccessId}`}>查看完成的那次</a>
         </p>
       )}
       {!op.enabled && (
         <p className={styles.notice}>
-          新执行已停用；保留已有记录与授权状态，仍可请求停止本轮。
+          这类操作已暂停使用，不会再开始新的执行，已有记录会保留。
+          {!terminal && runActive && '仍可停止本轮。'}
         </p>
       )}
       {mcpUnavailable && (
-        <p role="status" className={styles.notice}>
-          {mcpAuthorizationLabel(op)}。不能再批准此操作；未派发的操作不会执行。
-          已派发的操作不等于已经停止，请核实返回记录。历史结果仍保留。
-          {!terminal && runActive && '仍可请求停止本轮。'}
+        <p role="status" className={styles.notice} data-tone="warn">
+          {mcpAuthorizationLabel(op.mcpAuthorization?.reason)}
+          {terminal
+            ? '，不能再允许新的调用；这次调用已经结束，结果仍保留。'
+            : '，不能再允许这一步。还没开始的不会执行；已经开始的可能还在进行，请刷新查看结果。'}
+          {!terminal && runActive && '仍可停止本轮。'}
         </p>
       )}
       {failure && (
-        <p role="status" className={styles.notice}>
+        <p
+          role="status"
+          className={styles.notice}
+          data-tone={failure === 'result_unknown' ? 'warn' : 'error'}
+        >
           {!runActive && '本轮已结束。'}
-          {mcpFailureCopy[failure].detail}
+          {mcpFailureNotice(failure).detail}
         </p>
       )}
       {networkFailure && (
-        <p role="status" className={styles.notice}>
+        <p
+          role="status"
+          className={styles.notice}
+          data-tone={op.snapshot.status === 'failed' ? 'error' : 'warn'}
+        >
           {networkFailure}
         </p>
       )}
@@ -389,42 +418,36 @@ export function CloudOperationCard({
   );
   const decisionReceipt = op.approval?.response && (
     <p>
-      你的决定：
       {op.approval.response.decision === 'approved'
-        ? '已批准本次操作'
-        : '已拒绝本次操作'}
-      {op.approval.revokedAt ? ' · 后续已撤销' : ''}
+        ? '你已允许这一步'
+        : '你已拒绝这一步'}
+      {op.approval.revokedAt ? '，之后已撤回' : ''}
     </p>
   );
-  const receiptNotes = (
-    <>
-      {(op.snapshot.status === 'cancel_requested' ||
-        (op.snapshot.status === 'unknown' && !failure)) && (
-        <p role="status" className={styles.notice}>
-          {op.snapshot.status === 'cancel_requested'
-            ? '已记录的停止指令不等于远端已经停止。'
-            : '未收到完整的执行回执。'}
-          {proposal.kind === 'mcp'
-            ? '第三方服务可能已经产生影响，请先核实服务记录；不会自动重放此调用。'
-            : proposal.network
-              ? '已发出的外部请求可能已经生效，请先核实原操作和外部服务记录；不会自动重跑任务。'
-              : '云端需等待实际停止和结果回执；不会自动重跑任务。'}
-        </p>
-      )}
-    </>
+  const receiptNotes = (op.snapshot.status === 'cancel_requested' ||
+    (op.snapshot.status === 'unknown' && !failure)) && (
+    <p role="status" className={styles.notice} data-tone="warn">
+      {unconfirmedNote(proposal, op.snapshot.status)}
+    </p>
   );
   const plannedOutputs = proposal.kind !== 'mcp' && (
     <p className={styles.plannedOutputs}>
-      <span>计划输出：</span>
-      {proposal.outputs?.length
-        ? proposal.outputs.map((output) => (
-            <code key={output.path}>
-              {output.fileName} ({output.format})
-            </code>
-          ))
-        : '无'}
+      {proposal.outputs?.length ? (
+        <>
+          <span>会生成：</span>
+          {proposal.outputs.map((output) => (
+            <code key={output.path}>{output.fileName}</code>
+          ))}
+        </>
+      ) : (
+        '不会生成文件。'
+      )}
     </p>
   );
+  const nextStep =
+    !failure && !networkFailure && !resolutionFailure && !laterSuccessId
+      ? resultNote(op.snapshot.status)
+      : null;
   const resultSection: OperationSection = {
     key: 'result',
     label: '结果',
@@ -432,24 +455,23 @@ export function CloudOperationCard({
     value: cloudOperationCompactStatus(op),
     content: (
       <>
-        <DetailFields
-          rows={[
-            ['状态', fullStatus],
-            ['返回代码', op.result?.code ?? '尚无'],
-          ]}
-        />
-        {op.result ? (
-          <>
-            <RawDetail title="查看原始返回内容">
-              <pre>{op.result.output || '没有可展示的输出。'}</pre>
-              <small>工具原始返回内容（不可信数据），仅作执行记录。</small>
-            </RawDetail>
-          </>
-        ) : (
-          <p>尚未收到执行返回内容。</p>
-        )}
+        <DetailFields rows={[['状态', fullStatus]]} />
+        {nextStep && <p>{nextStep}</p>}
         {decisionReceipt}
         {plannedOutputs}
+        <TechnicalDetails
+          rows={[
+            ['操作编号', op.snapshot.binding.attempt.operationId],
+            ['状态记录', op.snapshot.status],
+            ['返回代码', op.result?.code ?? '无'],
+          ]}
+        >
+          <pre>
+            {op.result
+              ? op.result.output || '没有返回内容。'
+              : '还没有返回内容。'}
+          </pre>
+        </TechnicalDetails>
       </>
     ),
   };
@@ -459,21 +481,18 @@ export function CloudOperationCard({
       proposal.arguments && typeof proposal.arguments === 'object'
         ? Object.keys(proposal.arguments).length
         : 0;
-    const authorization = mcpUnavailable
-      ? mcpAuthorizationLabel(op)
-      : op.approval?.revokedAt
-        ? '授权已撤销'
+    // While waiting, the same state as the header; afterwards, the answer.
+    const authorization =
+      approvalState(op)?.full ??
+      (op.approval?.revokedAt
+        ? '已撤回'
         : op.approval?.response?.decision === 'rejected'
-          ? '本次拒绝'
-          : request &&
-              Date.parse(request.expiresAt) <= Date.now() &&
-              !op.approval?.response
-            ? '本次授权已过期'
-            : op.approval?.response?.decision === 'approved'
-              ? '本次批准'
-              : pending
-                ? '等待批准'
-                : '按现有授权';
+          ? '你已拒绝'
+          : op.approval?.response?.decision === 'approved'
+            ? '你已允许'
+            : mcpUnavailable
+              ? mcpAuthorizationLabel(op.mcpAuthorization?.reason)
+              : '按已有授权');
     sections = [
       {
         key: 'app',
@@ -481,33 +500,40 @@ export function CloudOperationCard({
         title: '应用与工具',
         value: serviceHost(proposal.endpoint),
         content: (
-          <DetailFields
-            rows={[
-              ['服务', serviceHost(proposal.endpoint)],
-              ['连接', proposal.endpoint],
-              ['工具名', <code key="tool">{proposal.tool}</code>],
-            ]}
-          />
+          <>
+            <DetailFields
+              rows={[
+                ['应用', serviceHost(proposal.endpoint)],
+                ['操作类别', mcpRiskLabel(proposal.risk)],
+              ]}
+            />
+            <TechnicalDetails
+              rows={[
+                ['连接地址', proposal.endpoint],
+                ['工具名', <code key="tool">{proposal.tool}</code>],
+              ]}
+            />
+          </>
         ),
       },
       {
         key: 'arguments',
         label: '操作',
-        title: '发送参数',
+        title: '发送内容',
         value: `${mcpRiskLabel(proposal.risk)} · ${argumentCount} 项`,
         content: (
           <>
             <DetailFields
               rows={[
                 ['操作类别', mcpRiskLabel(proposal.risk)],
-                ['参数数量', `${argumentCount} 项（已脱敏）`],
+                ['发送内容', `${argumentCount} 项`],
               ]}
             />
-            <RawDetail title="查看完整参数" open={!!pending}>
-              <pre aria-label="MCP 发送参数">
+            <TechnicalDetails>
+              <pre aria-label="发送的原始参数">
                 {JSON.stringify(proposal.arguments, null, 2)}
               </pre>
-            </RawDetail>
+            </TechnicalDetails>
           </>
         ),
       },
@@ -520,17 +546,20 @@ export function CloudOperationCard({
           <DetailFields
             rows={[
               ['授权', authorization],
-              ['适用范围', '仅授权这一次调用、当前工具 schema 和连接版本。'],
               [
-                '操作影响',
-                '服务在 AllRice 沙箱之外运行，可能读取或修改其账号内的数据。',
+                '适用范围',
+                '只允许这一次调用；应用或权限有变化时需要重新确认。',
+              ],
+              [
+                '可能的影响',
+                '这个应用在 AllRice 之外运行，可能读取或修改你在其中的数据。',
               ],
               ...(request
                 ? [
-                    [
-                      '有效期',
-                      new Date(request.expiresAt).toLocaleString(),
-                    ] as [string, ReactNode],
+                    ['有效期', `${shortDateTime(request.expiresAt)} 前`] as [
+                      string,
+                      ReactNode,
+                    ],
                   ]
                 : []),
             ]}
@@ -582,13 +611,16 @@ export function CloudOperationCard({
                       '执行位置',
                       proposal.network ? '云端 · 按授权联网' : '云端 · 不联网',
                     ],
+                  ]}
+                />
+                <p>运行你保存的项目副本，不会访问你的电脑。</p>
+                {networkScope}
+                <TechnicalDetails
+                  rows={[
                     ['执行程序', proposal.executable],
                     ['工作目录', proposal.path],
                   ]}
-                />
-                <p>执行本次保存的项目副本，不访问你的电脑。</p>
-                {networkScope}
-                <RawDetail title="查看完整命令" open={!!pending}>
+                >
                   <pre aria-label="云端项目命令">
                     {JSON.stringify(
                       {
@@ -600,7 +632,7 @@ export function CloudOperationCard({
                       2,
                     )}
                   </pre>
-                </RawDetail>
+                </TechnicalDetails>
               </>
             ),
           }
@@ -638,12 +670,9 @@ export function CloudOperationCard({
                     ))}
                   </ul>
                 )}
-                <RawDetail
-                  title="查看完整脚本"
-                  open={!!pending && !proposal.dependencyResolution}
-                >
+                <TechnicalDetails>
                   <pre aria-label="云端待执行脚本">{proposal.script}</pre>
-                </RawDetail>
+                </TechnicalDetails>
               </>
             ),
           },
@@ -656,15 +685,16 @@ export function CloudOperationCard({
             content: (
               <>
                 <DetailFields
+                  rows={[['文件数量', `${proposal.files.length} 个`]]}
+                />
+                <TechnicalDetails
                   rows={[
-                    ['文件数量', `${proposal.files.length} 个`],
                     [
                       '版本摘要',
                       <code key="digest">{proposal.sourceDigest}</code>,
                     ],
                   ]}
-                />
-                <RawDetail title="查看项目与文件记录">
+                >
                   <pre>
                     {JSON.stringify(
                       {
@@ -677,7 +707,7 @@ export function CloudOperationCard({
                       2,
                     )}
                   </pre>
-                </RawDetail>
+                </TechnicalDetails>
               </>
             ),
           }
@@ -687,66 +717,56 @@ export function CloudOperationCard({
             title: '输入文件',
             value: `${proposal.inputs.length} 个文件`,
             content: proposal.inputs.length ? (
-              <ul className={styles.inputFiles}>
-                {proposal.inputs.map((file) => (
-                  <li key={file.objectId}>
-                    <DetailFields
-                      rows={[
-                        ['文件路径', file.path],
-                        ['文件 ID', file.objectId],
-                        ['校验值', <code key="checksum">{file.checksum}</code>],
-                      ]}
-                    />
-                  </li>
-                ))}
-              </ul>
+              <>
+                <ul className={styles.inputFiles}>
+                  {proposal.inputs.map((file) => (
+                    <li key={file.objectId}>{file.path}</li>
+                  ))}
+                </ul>
+                <TechnicalDetails
+                  rows={proposal.inputs.map((file) => [
+                    file.path,
+                    `文件编号 ${file.objectId}；校验值 ${file.checksum}`,
+                  ])}
+                />
+              </>
             ) : (
-              <p>无输入文件。</p>
+              <p>没有输入文件。</p>
             ),
           },
       {
         key: 'limits',
         label: '限制',
         title: '运行限制',
-        value: `${proposal.executionBudget ? `最多 ${proposal.executionBudget.policy.maxExecutionMs / 60000} 分钟` : `${limits.timeoutMs / 1000} 秒`} · ${limits.memoryMiB} MiB`,
+        value: proposal.executionBudget
+          ? `最多 ${durationText(proposal.executionBudget.policy.maxExecutionMs)}`
+          : durationText(limits.timeoutMs),
         content: (
           <>
             <DetailFields
-              rows={[
-                ...(proposal.executionBudget
-                  ? ([
+              rows={
+                proposal.executionBudget
+                  ? [
                       [
                         '起始时限',
-                        `${proposal.executionBudget.initialBudgetMs / 1000} 秒`,
+                        durationText(proposal.executionBudget.initialBudgetMs),
                       ],
                       [
                         '累计上限',
-                        `${proposal.executionBudget.policy.maxExecutionMs / 60000} 分钟`,
-                      ],
-                    ] as [string, ReactNode][])
-                  : ([['时限', `${limits.timeoutMs / 1000} 秒`]] as [
-                      string,
-                      ReactNode,
-                    ][])),
-                ['内存', `${limits.memoryMiB} MiB`],
-                ['CPU', `${limits.cpuMillis} 毫核`],
-                ['进程数上限', limits.pids],
-                ['输出上限', `${limits.outputBytes} 字节`],
-                ...('artifactBytes' in limits
-                  ? [
-                      ['成果上限', `${limits.artifactBytes} 字节`] as [
-                        string,
-                        ReactNode,
+                        durationText(
+                          proposal.executionBudget.policy.maxExecutionMs,
+                        ),
                       ],
                     ]
-                  : []),
-              ]}
+                  : [['时限', durationText(limits.timeoutMs)]]
+              }
             />
             {proposal.executionBudget && (
               <p>
-                准备、安装和执行共用同一时限；有实际进展时可自动续时，任务剩余时间不足时会提前停止。
+                准备、安装和运行共用同一个时限；有进展时会自动延长，任务剩余时间不够时会提前停止。
               </p>
             )}
+            <TechnicalDetails rows={resourceLimitRows(limits)} />
           </>
         ),
       },
@@ -849,32 +869,33 @@ export function CloudOperationCard({
       </div>
       {pending && (
         <div className={styles.approvalReview}>
-          {isMcp && (
-            <p className={styles.notice}>
-              批准后，会将列出的参数发送给此第三方服务；服务在 AllRice
-              沙箱之外运行，可能读取或修改其账号内的数据。仅授权这一次调用、当前工具
-              schema 和连接版本；管理员保存的服务密钥不会展示在页面上。
-            </p>
+          <p>{approvalSummary(proposal)}</p>
+          {proposal.kind === 'mcp' && (
+            <McpApprovalDetails proposal={proposal} />
           )}
           {plannedOutputs}
           <div className={styles.actions}>
-            <button
-              type="button"
+            <Button
+              className={styles.decision}
+              size="sm"
+              variant="primary"
               disabled={busy}
               onClick={() => onAct(op, 'approved')}
             >
-              批准这一次执行
-            </button>
-            <button
-              type="button"
+              {approveLabel(proposal)}
+            </Button>
+            <Button
+              className={styles.decision}
+              size="sm"
+              variant="outline"
               disabled={busy}
               onClick={() => onAct(op, 'rejected')}
             >
               拒绝
-            </button>
+            </Button>
             <small>
-              授权有效期至 {new Date(request.expiresAt).toLocaleString()}
-              。批准不代表已经完成。
+              {shortDateTime(request.expiresAt)}{' '}
+              前有效。允许后才会开始，结果会显示在这里。
             </small>
           </div>
         </div>
@@ -935,7 +956,7 @@ export function CloudOperationPanel({
           if (manualRetry.current) setReadUpdated(true);
         }
       } catch {
-        if (!controller.signal.aborted) setLoadError('操作状态读取失败');
+        if (!controller.signal.aborted) setLoadError('暂时读不到操作状态');
       } finally {
         if (!controller.signal.aborted && manualRetry.current) {
           manualRetry.current = false;
@@ -992,15 +1013,15 @@ export function CloudOperationPanel({
           body: JSON.stringify(body),
         },
       );
-      if (!response.ok)
-        throw Error(
-          '操作未确认：授权可能过期、被撤销或已在其他页面处理。请刷新状态核实，勿重复执行。',
-        );
+      if (!response.ok) throw Error('operation_decision_unconfirmed');
       if (decision === 'cancel') setCancellationRunId(runId);
       setRevision((value) => value + 1);
-    } catch (error) {
+    } catch {
+      // A network error's own text is English; the outcome is what matters.
       setActionError(
-        error instanceof Error ? error.message : '提交失败，请核实当前状态。',
+        decision === 'cancel'
+          ? '停止请求可能没有送达。请看一下当前状态，再决定是否重新停止。'
+          : '你的选择可能没有送达：授权可能已过期、被撤回，或已在别的页面处理。请看一下当前状态，不要重复操作。',
       );
       setRevision((value) => value + 1);
     } finally {
@@ -1010,7 +1031,7 @@ export function CloudOperationPanel({
   }
   const readFeedback = readUpdated
     ? operations.some((op) => op.snapshot.status === 'unknown')
-      ? '已读取最新状态，结果仍待确认。'
+      ? '已刷新，结果仍待确认。'
       : '操作状态已更新。'
     : '';
   const feedback = (
@@ -1082,7 +1103,7 @@ export function CloudOperationPanel({
   if (!operations.length && !loadError && !actionError && !readFeedback)
     return null;
   return (
-    <section className={styles.root} aria-label="云端计算与 MCP 操作审批">
+    <section className={styles.root} aria-label="云端与应用操作">
       {feedback}
       {operations.map((op) =>
         renderOperation(op.snapshot.binding.attempt.operationId),

@@ -3306,23 +3306,31 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             );
           });
         expect(bottomGap).toBe(12);
-        if (mcp)
+        // Tool names, scripts and return codes wait behind 技术详情.
+        const technical = first.getByRole('button', {
+          name: '技术详情',
+          exact: true,
+        });
+        if (mcp) {
+          expect(
+            await first
+              .getByText('mcp__app__list_pull_requests', { exact: true })
+              .count(),
+          ).toBe(0);
+          await technical.click();
           expect(
             await first
               .getByText('mcp__app__list_pull_requests', { exact: true })
               .isVisible(),
           ).toBe(true);
-        else {
+        } else {
           await first
             .getByRole('button', {
               name: project ? '执行命令' : '执行脚本',
               exact: true,
             })
             .click();
-          await first
-            .locator('summary')
-            .filter({ hasText: project ? '查看完整命令' : '查看完整脚本' })
-            .click();
+          await technical.click();
           expect(
             await first
               .getByLabel(project ? '云端项目命令' : '云端待执行脚本')
@@ -3333,20 +3341,25 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('button', { name: '执行结果', exact: true })
           .click();
         expect(
+          await first.getByText('EXECUTION_FAILED', { exact: true }).count(),
+        ).toBe(0);
+        await technical.click();
+        expect(
           await first
             .getByText('EXECUTION_FAILED', { exact: true })
             .isVisible(),
         ).toBe(true);
         expect(
           await first
-            .getByText('你的决定：已批准本次操作', { exact: true })
+            .getByText('你已允许这一步', { exact: true })
             .first()
             .isVisible(),
         ).toBe(true);
         if (!mcp)
           expect(
             await first
-              .getByText('result.json (json)', { exact: true })
+              .getByText('result.json', { exact: true })
+              .first()
               .isVisible(),
           ).toBe(true);
         expect(
@@ -3433,7 +3446,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const labelBox = (await label.boundingBox())!;
         expect(
           await card.locator('header').getByRole('status').innerText(),
-        ).toBe('执行中');
+        ).toBe('进行中');
         expect(
           await card
             .locator('header')
@@ -3498,13 +3511,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(await collapse.getAttribute('aria-expanded')).toBe('true');
         expect(await content.isVisible()).toBe(true);
         await content
-          .getByRole('button', { name: '发送参数', exact: true })
+          .getByRole('button', { name: '发送内容', exact: true })
           .click();
         await content
-          .locator('summary')
-          .filter({ hasText: '查看完整参数' })
+          .getByRole('button', { name: '技术详情', exact: true })
           .click();
-        expect(await content.getByLabel('MCP 发送参数').isVisible()).toBe(true);
+        expect(await content.getByLabel('发送的原始参数').isVisible()).toBe(
+          true,
+        );
         await collapse.focus();
         await f.page.keyboard.press('Space');
         expect(await detail.getAttribute('aria-expanded')).toBe('false');
@@ -3530,12 +3544,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(await stopping.isDisabled()).toBe(true);
         expect(
           await card.locator('header').getByRole('status').innerText(),
-        ).toBe('执行中');
+        ).toBe('进行中');
         operation.snapshot.status = 'cancel_requested';
         await card
           .locator('header')
           .getByRole('status', {
-            name: '已请求停止',
+            name: '正在停止',
             exact: true,
           })
           .waitFor();
@@ -3549,7 +3563,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         };
         await card
           .locator('header')
-          .getByText('执行成功', { exact: true })
+          .getByText('已完成', { exact: true })
           .waitFor();
         expect(await stopping.count()).toBe(0);
         await collapse.click();
@@ -3562,12 +3576,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         };
         await card
           .locator('header')
-          .getByText('执行失败', { exact: true })
+          .getByText('未完成', { exact: true })
           .waitFor();
         expect((await card.boundingBox())!.height).toBe(runningHeight);
         await detail.click();
         await content
           .getByRole('button', { name: '应用与工具', exact: true })
+          .click();
+        await content
+          .getByRole('button', { name: '技术详情', exact: true })
           .click();
         expect(
           await content
@@ -3578,12 +3595,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         operation.snapshot.status = 'unknown';
         await card
           .locator('header')
-          .getByText('待核实', { exact: true })
+          .getByText('结果待确认', { exact: true })
           .waitFor();
         expect(
           await card
             .locator('header')
-            .getByText('执行失败', { exact: true })
+            .getByText('未完成', { exact: true })
             .count(),
         ).toBe(0);
         expect(requests).toHaveLength(2);
@@ -9309,7 +9326,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         second = f.page.locator(`#operation-${id(8991)}`);
       await second
         .locator('header')
-        .getByRole('status', { name: '执行中', exact: true })
+        .getByRole('status', { name: '进行中', exact: true })
         .waitFor();
       await push('assistant.text.delta', {
         replyId: 'final',
@@ -9327,12 +9344,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect((await second.boundingBox())!.y).toBeLessThan(
         (await final.boundingBox())!.y,
       );
+      // Only the running receipt's own status says it is in progress.
+      const inProgress = f.page
+        .getByRole('region', { name: '工作过程', exact: true })
+        .getByText('进行中', { exact: true })
+        .filter({ visible: true });
+      expect(await inProgress.count()).toBe(1);
       expect(
-        await f.page
-          .getByRole('region', { name: '工作过程', exact: true })
-          .getByText('进行中', { exact: true })
-          .count(),
-      ).toBe(0);
+        await second.locator('header').getByRole('status').innerText(),
+      ).toBe('进行中');
       const groups = f.page.locator('section[aria-label="工作步骤"]');
       expect(await groups.count()).toBe(2);
       for (const group of await groups.all()) {
@@ -9351,7 +9371,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .click();
       expect(
         await second
-          .getByRole('button', { name: '发送参数', exact: true })
+          .getByRole('button', { name: '发送内容', exact: true })
           .isVisible(),
       ).toBe(true);
       operations[1]!.snapshot.status = 'succeeded';
@@ -9859,7 +9879,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await expect.poll(() => reads).toBe(firstReads + 1);
       await expect.poll(() => retry.isEnabled()).toBe(true);
       expect(
-        await f.page.getByText('操作状态读取失败', { exact: true }).isVisible(),
+        await f.page
+          .getByText('暂时读不到操作状态', { exact: true })
+          .isVisible(),
       ).toBe(true);
       failing = false;
       hold = true;
@@ -9869,7 +9891,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(await retry.innerText()).toBe('读取中…');
       await finishRead!();
       await f.page
-        .getByText('已读取最新状态，结果仍待确认。', { exact: true })
+        .getByText('已刷新，结果仍待确认。', { exact: true })
         .waitFor();
       expect(await retry.count()).toBe(0);
       expect(
@@ -10011,9 +10033,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         f.state.timingError = true;
         await expect.poll(() => timing.count(), { timeout: 5000 }).toBe(0);
         await f.page
-          .getByText(disabled ? '运行时间暂不可用' : '交互状态暂不可用', {
-            exact: true,
-          })
+          .getByText(
+            disabled
+              ? '运行时间暂不可用'
+              : '暂时读不到需要你确认的操作，会自动重试。',
+            {
+              exact: true,
+            },
+          )
           .waitFor();
         f.state.timingError = false;
         await timing.waitFor();

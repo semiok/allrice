@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import type { ReactNode } from 'react';
+import { describe, expect, it, vi } from 'vitest';
 import type { CloudOperationView } from '@allrice/database';
 import {
   CloudOperationCard,
@@ -72,7 +73,7 @@ describe('Cloud/MCP approval presentation', () => {
     const html = render(op);
     expect(html).toContain('依赖准备');
     expect(html).toContain('1 个依赖包');
-    expect(html).toContain('已解析 · 尚未安装');
+    expect(html).toContain('已查到可用版本，还没安装');
     expect(html).not.toContain('安装成功');
     expect(html).toContain('is-number@7.0.0');
     op.snapshot.status = 'failed';
@@ -83,7 +84,7 @@ describe('Cloud/MCP approval presentation', () => {
     };
     const failed = render(op);
     expect(failed).toContain('依赖规模超过当前环境的上限，未开始安装。');
-    expect(failed).not.toContain('已解析 · 尚未安装');
+    expect(failed).not.toContain('已查到可用版本，还没安装');
     expect(failed).not.toContain('安装成功');
   });
   it('shows saved-project commands and versions without presenting them as scripts or third-party calls', () => {
@@ -132,9 +133,10 @@ describe('Cloud/MCP approval presentation', () => {
     } as CloudOperationView['proposal'];
     const html = render(op);
     expect(html).toContain('云端项目');
-    expect(html).toContain('云端项目命令');
+    expect(html).toContain('执行命令');
     expect(html).toContain('项目版本');
-    expect(html).toContain('verify.cjs');
+    // The exact command is technical detail, rendered only once expanded.
+    expect(html).not.toContain('verify.cjs');
     expect(html).toContain('result.html');
     expect(html).not.toContain('云端待执行脚本');
     expect(html).not.toContain('第三方服务');
@@ -155,8 +157,8 @@ describe('Cloud/MCP approval presentation', () => {
     expect(networkHtml).toContain('https://api.example.com');
     expect(networkHtml).toContain('本次项目副本中的源码和文件可发送至以上服务');
     expect(networkHtml).toContain('最多 10 分钟');
-    expect(networkHtml).toContain('120 秒');
-    expect(networkHtml).toContain('准备、安装和执行共用同一时限');
+    expect(networkHtml).toContain('2 分钟');
+    expect(networkHtml).toContain('准备、安装和运行共用同一个时限');
     expect(networkHtml).not.toContain('不联网');
     op.snapshot.status = 'unknown';
     op.result = {
@@ -165,19 +167,19 @@ describe('Cloud/MCP approval presentation', () => {
       trusted: false,
     };
     const interrupted = render(op);
-    expect(interrupted).toContain('外部请求可能已经生效');
-    expect(interrupted).toContain('不会自动重跑任务');
+    expect(interrupted).toContain('已经发出的网络请求可能已经生效');
+    expect(interrupted).toContain('不会自动重新执行');
     expect(interrupted).toContain('与已授权服务的连接中断或建立失败');
   });
   it('keeps compact statuses distinct from unconfirmed remote outcomes', () => {
     const op = view();
     for (const [status, label] of [
-      ['running', '执行中'],
-      ['succeeded', '执行成功'],
-      ['failed', '执行失败'],
-      ['unknown', '待核实'],
-      ['cancel_requested', '已请求停止'],
-      ['dispatched', '已派发'],
+      ['running', '进行中'],
+      ['succeeded', '已完成'],
+      ['failed', '未完成'],
+      ['unknown', '结果待确认'],
+      ['cancel_requested', '正在停止'],
+      ['dispatched', '进行中'],
     ] as const) {
       op.snapshot.status = status;
       expect(cloudOperationCompactStatus(op)).toBe(label);
@@ -225,7 +227,7 @@ describe('Cloud/MCP approval presentation', () => {
           onAct={() => {}}
         />,
       );
-      expect(html).toContain('后续调用已成功');
+      expect(html).toContain('之后再试的一次已经完成');
       expect(html).toContain('href="#operation-later-success"');
       expect(failed.snapshot.status).toBe('failed');
       const other = structuredClone(succeeded);
@@ -241,10 +243,38 @@ describe('Cloud/MCP approval presentation', () => {
   it('distinguishes a third-party send from chat/local execution and escapes parameters', () => {
     const html = render(view());
     expect(html).toContain('应用工具');
-    expect(html).toContain('发送给此第三方服务');
-    expect(html).toContain('批准这一次执行');
+    expect(html).toContain('会按下面的内容调用 owned.example.test');
+    expect(html).toContain('允许写入数据');
+    // The pending call's action and values are shown, escaped, without JSON.
+    expect(html).toContain('records.append（写入数据）');
+    // The name and the escaped value are separate elements.
+    expect(html).toMatch(
+      /<dt>value<\/dt><dd class="[^"]+">&lt;script&gt;alert\(1\)&lt;\/script&gt;<\/dd>/,
+    );
     expect(html).not.toContain('<script>');
-    expect(html).toContain('&lt;script&gt;');
+    expect(html).not.toContain('&quot;value&quot;');
+  });
+  it('escapes the raw parameters once the technical details are open', async () => {
+    vi.resetModules();
+    vi.doMock('./technical-details', () => ({
+      TechnicalDetails: ({ children }: { children?: ReactNode }) => (
+        <div data-technical-open="">{children}</div>
+      ),
+    }));
+    try {
+      const { CloudOperationCard: Open } =
+        await import('./cloud-operation-panel');
+      const html = renderToStaticMarkup(
+        <Open op={view()} busy={false} onAct={() => {}} />,
+      );
+      expect(html).toContain(
+        '&quot;value&quot;: &quot;&lt;script&gt;alert(1)&lt;/script&gt;&quot;',
+      );
+      expect(html).not.toContain('<script>');
+    } finally {
+      vi.doUnmock('./technical-details');
+      vi.resetModules();
+    }
   });
   it.each(['rejected', 'expired', 'revoked'] as const)(
     'shows %s and removes approval actions',
@@ -258,9 +288,9 @@ describe('Cloud/MCP approval presentation', () => {
         op.approval!.request.expiresAt = '2000-01-01T00:00:00.000Z';
       if (state === 'revoked')
         op.approval!.revokedAt = new Date().toISOString();
-      expect(render(op)).not.toContain('批准这一次执行');
+      expect(render(op)).not.toContain('允许写入数据');
       expect(cloudOperationDisplayStatus(op)).toContain(
-        state === 'rejected' ? '拒绝' : state === 'expired' ? '过期' : '撤销',
+        state === 'rejected' ? '拒绝' : state === 'expired' ? '过期' : '撤回',
       );
     },
   );
@@ -268,15 +298,40 @@ describe('Cloud/MCP approval presentation', () => {
     const op = view();
     op.enabled = false;
     const html = render(op);
-    expect(html).toContain('新执行已停用');
+    expect(html).toContain('这类操作已暂停使用');
     expect(html).toContain('请求停止本轮全部操作');
-    expect(html).not.toContain('批准这一次执行');
+    expect(html).not.toContain('允许写入数据');
+    // Header word, its full sentence and the expanded 状态 agree.
+    expect(cloudOperationCompactStatus(op)).toBe('已暂停');
+    expect(cloudOperationDisplayStatus(op)).toBe(
+      '这类操作已暂停使用，暂时不能执行',
+    );
+    expect(html).toContain('aria-label="已暂停">已暂停</span>');
+    expect(html).toContain(
+      '<dt>状态</dt><dd>这类操作已暂停使用，暂时不能执行</dd>',
+    );
+    expect(html).not.toContain('等你确认');
+  });
+  it('does not promise progress for an approval that expired before use', () => {
+    const op = view();
+    op.approval!.response = { decision: 'approved' } as NonNullable<
+      CloudOperationView['approval']
+    >['response'];
+    op.approval!.request.expiresAt = '2000-01-01T00:00:00.000Z';
+    const html = render(op);
+    expect(cloudOperationCompactStatus(op)).toBe('已过期');
+    expect(cloudOperationDisplayStatus(op)).toBe(
+      '你已允许，但开始前授权已过期，没有执行',
+    );
+    expect(html).not.toContain('正在准备');
+    // The answer itself stays on record.
+    expect(html).toContain('你已允许这一步');
   });
   it.each([
-    ['connection_revoked', '连接授权已撤销'],
-    ['connection_or_tool_changed', '连接或工具授权已变化'],
-    ['employee_authorization_changed', '员工授权已失效'],
-    ['unavailable', '当前授权暂时无法核实'],
+    ['connection_revoked', '应用连接已断开'],
+    ['connection_or_tool_changed', '应用连接或权限有变化'],
+    ['employee_authorization_changed', 'AI 员工的应用权限有变化'],
+    ['unavailable', '暂时无法确认应用权限'],
   ] as const)(
     'removes approval for current %s without rewriting its historical request',
     (reason, label) => {
@@ -284,11 +339,11 @@ describe('Cloud/MCP approval presentation', () => {
       const approval = structuredClone(op.approval);
       op.mcpAuthorization = { available: false, reason };
       const html = render(op);
-      expect(cloudOperationDisplayStatus(op)).toBe(label);
+      expect(cloudOperationDisplayStatus(op)).toBe(`${label}，不能执行这一步`);
       expect(html).toContain(label);
-      expect(html).not.toContain('批准这一次执行');
+      expect(html).not.toContain('允许写入数据');
       expect(html).toContain('请求停止本轮全部操作');
-      expect(html).toContain('已派发的操作不等于已经停止');
+      expect(html).toContain('已经开始的可能还在进行');
       expect(op.approval).toEqual(approval);
       expect(op.approval!.revokedAt).toBeNull();
     },
@@ -296,7 +351,7 @@ describe('Cloud/MCP approval presentation', () => {
   it('fails closed for missing MCP authority, but preserves a terminal result', () => {
     const op = view();
     op.mcpAuthorization = null;
-    expect(render(op)).not.toContain('批准这一次执行');
+    expect(render(op)).not.toContain('允许写入数据');
     op.snapshot.status = 'succeeded';
     op.result = {
       output: 'saved:synthetic;call-count:1',
@@ -304,8 +359,10 @@ describe('Cloud/MCP approval presentation', () => {
       trusted: false,
     };
     const html = render(op);
-    expect(cloudOperationDisplayStatus(op)).toBe('执行成功');
-    expect(html).toContain('saved:synthetic;call-count:1');
+    expect(cloudOperationDisplayStatus(op)).toBe('已完成');
+    expect(html).toContain('已完成');
+    // The raw output is kept, but only behind the technical details.
+    expect(html).not.toContain('saved:synthetic;call-count:1');
     expect(html).not.toContain('请求停止本轮全部操作');
     expect(op.result.trusted).toBe(false);
   });
@@ -313,9 +370,11 @@ describe('Cloud/MCP approval presentation', () => {
     const op = view();
     op.snapshot.status = 'unknown';
     const html = render(op);
-    expect(html).toContain('未收到应用执行结果');
+    expect(cloudOperationDisplayStatus(op)).toBe('结果待确认');
+    expect(html).toContain('结果待确认');
     expect(html).toContain('不会自动重试');
-    expect(html).not.toContain('批准这一次执行');
+    expect(html).not.toContain('待核实');
+    expect(html).not.toContain('允许写入数据');
   });
   it('renders exact cloud script, inputs and limits independently of MCP/local wording', () => {
     const op = view();
@@ -345,15 +404,18 @@ describe('Cloud/MCP approval presentation', () => {
     expect(html).toContain('云端计算');
     expect(html).toContain('不联网');
     expect(html).toContain('input.json');
-    expect(html).toContain('计划输出：');
+    expect(html).toContain('会生成：');
+    expect(html).not.toContain('11111111-1111-4111-8111-111111111111');
+    expect(html).not.toContain('sha256:');
     expect(html).toMatch(/<button[^>]*aria-expanded="true"[^>]*>/);
     expect(html).toContain('收起详情');
     op.snapshot.status = 'succeeded';
     expect(render(op)).toMatch(/<button[^>]*aria-expanded="false"[^>]*>/);
     expect(render(op)).toContain('查看详情');
-    expect(html).toContain('256');
+    expect(html).toContain('30 秒');
+    expect(html).not.toContain('毫核');
     expect(html).toContain('disabled=""');
-    expect(html).toContain('批准这一次执行');
+    expect(html).toContain('允许运行脚本');
     expect(html).not.toContain('<script>');
     expect(html).not.toContain('第三方 MCP');
     op.snapshot.status = 'waiting_user';
@@ -373,10 +435,10 @@ describe('Cloud/MCP approval presentation', () => {
     };
     const failedHtml = render(op);
     expect(failedHtml).toContain('与已授权服务的连接中断或建立失败');
-    expect(failedHtml).toContain('外部请求可能已经生效');
-    expect(failedHtml).not.toContain('批准这一次执行');
-    // The compact notices stay readable; the collapsed diagnostic result keeps
-    // the exact code so support can identify this failure after expanding it.
+    expect(failedHtml).toContain('网络请求可能已经生效');
+    expect(failedHtml).not.toContain('允许运行脚本');
+    // The compact notices stay readable; the exact code is kept for support
+    // in the collapsed technical details, not in the summary.
     const notices = [
       ...failedHtml.matchAll(/<p[^>]*role="status"[^>]*>(.*?)<\/p>/gs),
     ]
@@ -384,9 +446,7 @@ describe('Cloud/MCP approval presentation', () => {
       .join(' ');
     expect(notices).toContain('与已授权服务的连接中断或建立失败');
     expect(notices).not.toContain('SANDBOX_NETWORK_CONNECT_FAILED');
-    expect(failedHtml).toContain(
-      '<dt>返回代码</dt><dd>SANDBOX_NETWORK_CONNECT_FAILED</dd>',
-    );
+    expect(failedHtml).not.toContain('SANDBOX_NETWORK_CONNECT_FAILED');
     expect(failedHtml).toMatch(/<button[^>]*aria-expanded="false"[^>]*>/);
   });
 });
@@ -427,7 +487,7 @@ describe('reported MCP failures remain visible without replay controls', () => {
     expect(html).toContain('本轮已结束');
     expect(html).toContain('Contents');
     expect(html).not.toContain('请求停止本轮全部操作');
-    expect(html).not.toContain('远端结果待核实');
+    expect(html).not.toContain('待核实');
     expect(op.snapshot.status).toBe('unknown');
     expect(cloudOperationsNeedPolling(false, [op])).toBe(false);
     expect(cloudOperationsNeedPolling(true, [op])).toBe(true);
