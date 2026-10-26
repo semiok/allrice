@@ -515,6 +515,33 @@ export function createAssistantRuntime(
     );
     return { developmentIncomplete, repositoryIncomplete };
   }
+  /** One child completion rule for finalizeRoot and the checked commit guard.
+   * Every child must deliver a completed result its parent adopted, and every
+   * message to it must be consumed. A child stopped on request (the user's
+   * stop, or its parent's assistant_stop) is settled by that decision once its
+   * stop receipt commits, unless the whole root was canceled. The stop never
+   * rewrites a partial or failed outcome reported to a parent that is still
+   * live; outcomes inside a stopped subtree are settled with it. */
+  async function openChildren(tx: Tx, root: Root) {
+    const [open] = await tx<{ unresolved: boolean; incomplete: boolean }[]>`
+      with stopped as (
+        select run_id,parent_run_id,status from allrice_assistant_instances
+        where root_run_id=${root.root_run_id} and depth>0 and ${!root.cancel_request_id}
+          and cancel_requested_at is not null and stopped_at is not null),
+      owed as (
+        select i.run_id,i.status from allrice_assistant_instances i
+        where i.root_run_id=${root.root_run_id} and i.depth>0
+          and not exists(select 1 from stopped s where s.run_id=i.run_id))
+      select exists(select 1 from owed o left join allrice_assistant_results r on r.run_id=o.run_id
+          where r.delivery_id is null or r.parent_adopted_seq is null)
+        or exists(select 1 from allrice_assistant_messages m
+          where m.root_run_id=${root.root_run_id} and m.status not in ('adopted','canceled')
+            and not exists(select 1 from stopped s where s.run_id=m.recipient_run_id)) as unresolved,
+        exists(select 1 from owed where status<>'completed')
+          or exists(select 1 from stopped s where s.status in ('partial','failed')
+            and not exists(select 1 from stopped p where p.run_id=s.parent_run_id)) as incomplete`;
+    return open!;
+  }
   async function checkedFacts(
     tx: Tx,
     input: DeliveryInput,
@@ -867,16 +894,15 @@ export function createAssistantRuntime(
         const unresolved = await unsettledUsage(tx, root, undefined, services);
         const [pending] =
           await tx`select 1 from allrice_runtime_operations where root_run_id=${captured.rootRunId}
-          and not (id=any(${services}::uuid[])) and snapshot->>'status' not in ('succeeded','failed','partial','canceled')
-          union all select 1 from allrice_assistant_instances i left join allrice_assistant_results r on r.run_id=i.run_id
-            where i.root_run_id=${captured.rootRunId} and i.depth>0 and
-              (i.status<>'completed' or r.delivery_id is null or r.parent_adopted_seq is null)
-          union all select 1 from allrice_assistant_messages where root_run_id=${captured.rootRunId} and status not in ('adopted','canceled') limit 1`;
+          and not (id=any(${services}::uuid[])) and snapshot->>'status' not in ('succeeded','failed','partial','canceled') limit 1`;
+        const open = await openChildren(tx, root);
         const { developmentIncomplete, repositoryIncomplete } =
           await currentDevelopmentCompletion(tx, root);
         if (
           unresolved.blocking ||
           pending ||
+          open.unresolved ||
+          open.incomplete ||
           developmentIncomplete ||
           repositoryIncomplete
         )
@@ -1171,10 +1197,7 @@ export function createAssistantRuntime(
           await tx`select 1 from allrice_runtime_operations where root_run_id=${root.root_run_id}
             and not (id=any(${continuingServices}::uuid[]))
             and snapshot->>'status' not in ('succeeded','failed','partial','canceled') limit 1`;
-        const [unadopted] =
-          await tx`select 1 from allrice_assistant_instances i left join allrice_assistant_results r on r.run_id=i.run_id where i.root_run_id=${root.root_run_id} and i.depth>0 and (r.delivery_id is null or r.parent_adopted_seq is null) limit 1`;
-        const [undelivered] =
-          await tx`select 1 from allrice_assistant_messages where root_run_id=${root.root_run_id} and status not in ('adopted','canceled') limit 1`;
+        const open = await openChildren(tx, root);
         // Generic assistant.report is not the development completion gate.
         // Only a current, tested/reviewed delivery may complete an initialized
         // development task; a later head/version or rejection invalidates it.
@@ -1183,13 +1206,10 @@ export function createAssistantRuntime(
         const status =
           unsettled.blocking ||
           pending ||
-          unadopted ||
-          undelivered ||
+          open.unresolved ||
           children.some((child) => !terminal.has(child.status))
             ? 'unknown'
-            : developmentIncomplete ||
-                repositoryIncomplete ||
-                children.some((child) => child.status !== 'completed')
+            : developmentIncomplete || repositoryIncomplete || open.incomplete
               ? 'partial'
               : 'completed';
         await assertLease(tx, root, input.worker);

@@ -369,6 +369,115 @@ describe
           proofAttempt: 1,
         });
       });
+      it('a child the user stopped does not block the checked commit once its stop receipt commits', async () => {
+        const f = await fixture();
+        const child = (await f.delegate({ tools: ['assistant.report'] }))
+          .instance;
+        await f.runtime.cancelChild(
+          {
+            actor: { type: 'user', id: f.user },
+            organizationId: f.org,
+            workspaceId: f.workspace,
+            requestId: randomUUID(),
+            sessionId: randomUUID(),
+            authenticatedAt: new Date().toISOString(),
+            memberships: [],
+          },
+          {
+            runId: f.rootRunId,
+            childRunId: child.runId,
+            requestId: randomUUID(),
+          },
+        );
+        await f.runtime.confirmStopped({ ...f.input, runId: child.runId });
+        await f.publish();
+        const p = await f.proof();
+        expect(await f.finalize(p)).toMatchObject({ status: 'completed' });
+        await f.complete(p);
+        expect(await f.state()).toMatchObject({
+          status: 'succeeded',
+          state: 'succeeded',
+          successes: 1,
+        });
+      });
+      const owner = (f: Awaited<ReturnType<typeof fixture>>) => ({
+        actor: { type: 'user' as const, id: f.user },
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        requestId: randomUUID(),
+        sessionId: randomUUID(),
+        authenticatedAt: new Date().toISOString(),
+        memberships: [],
+      });
+      it.each(['before-finalize', 'after-finalize'] as const)(
+        'stopping A then canceling its root refuses checked success: %s',
+        async (order) => {
+          const f = await fixture(),
+            a = (await f.delegate({ tools: ['assistant.report'] })).instance;
+          await f.runtime.cancelChild(owner(f), {
+            runId: f.rootRunId,
+            childRunId: a.runId,
+            requestId: randomUUID(),
+          });
+          await f.runtime.confirmStopped({ ...f.input, runId: a.runId });
+          const p = await f.proof();
+          if (order === 'after-finalize') {
+            expect(await f.finalize(p)).toMatchObject({ status: 'completed' });
+            expect(() => f.guard(p)).not.toThrow();
+          }
+          await f.runtime.cancelRoot(owner(f), {
+            runId: f.rootRunId,
+            requestId: randomUUID(),
+          });
+          await expect(f.finalize(p)).rejects.toThrow('canceled');
+          if (order === 'after-finalize')
+            await expect(f.complete(p)).rejects.toThrow('canceled');
+          else
+            expect(() => f.guard(p)).toThrow(
+              'final_delivery_evidence_unavailable',
+            );
+          expect(await f.state()).toMatchObject({
+            status: 'running',
+            state: 'running',
+            successes: 0,
+          });
+        },
+      );
+      it('a durable but unconsumed message to stopped A permits the checked job commit', async () => {
+        const f = await fixture(),
+          a = (await f.delegate({ tools: ['assistant.report'] })).instance;
+        const inputId = randomUUID();
+        await f.runtime.requestMessage(owner(f), {
+          runId: f.rootRunId,
+          childRunId: a.runId,
+          inputId,
+          text: '请给小说换一个结尾。',
+        });
+        await f.runtime.claimMessage({ ...f.input, inputId });
+        await f.runtime.checkpointMessage({
+          ...f.input,
+          inputId,
+          nativeMessageId: randomUUID(),
+          durableSeq: 7,
+        });
+        await f.runtime.cancelChild(owner(f), {
+          runId: f.rootRunId,
+          childRunId: a.runId,
+          requestId: randomUUID(),
+        });
+        await f.runtime.confirmStopped({ ...f.input, runId: a.runId });
+        const p = await f.proof();
+        expect(await f.finalize(p)).toMatchObject({ status: 'completed' });
+        await f.complete(p);
+        expect(await f.state()).toMatchObject({
+          status: 'succeeded',
+          state: 'succeeded',
+          successes: 1,
+        });
+        const [message] =
+          await db()`select status,adopted_seq from allrice_assistant_messages where input_id=${inputId}`;
+        expect(message).toEqual({ status: 'durable', adopted_seq: null });
+      });
       it('checked mode rejects absent/null proof; legacy finalize remains unchanged', async () => {
         const f = await fixture();
         await expect(f.runtime.finalizeRoot(f.input)).rejects.toThrow(
