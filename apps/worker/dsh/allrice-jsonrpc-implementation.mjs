@@ -908,13 +908,15 @@ export async function createAllRiceRuntime(
         // Only an explicit "已连接" continues with this connection. A skipped
         // item ({ selected: [] }) or free text confirms nothing.
         const selected = answer.answers.flatMap((item) => item.selected);
+        // r1-exempt(own-text): 提问卡上系统给的“已连接，继续任务”选项，不是用户原话
+        const connected = selected.includes(connectedLabel);
         return {
           content: JSON.stringify({
             connectionId: result.connection.id,
             answer,
             instruction: selected.includes('取消连接')
               ? '用户取消本次连接。停止等待和重试此连接，继续处理不依赖它的工作。'
-              : selected.includes(connectedLabel)
+              : connected
                 ? '先使用 action=status 检查连接状态；只有发现完成后才能调用工具。这不是远程操作批准。'
                 : '用户没有确认已完成连接（跳过或另有说明，见 answer）。不要假定连接可用，停止等待此连接，继续处理不依赖它的工作；需要时再请用户连接。',
           }),
