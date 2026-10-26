@@ -16,10 +16,12 @@
 # alert; while it stays bad only an escalation or a reminder (hourly when critical) goes
 # out; when it is good again "已恢复" goes out. A key that keeps flapping is muted for an
 # hour after one notice. All changes of a round go out as one Telegram message and are
-# written to allrice_operational_incidents. A failing component check is re-run once
-# before it alerts, so a blip does not page. Each round ends by writing heartbeat.json,
-# which the other machine reads over SSH: whichever side stops, the other one says so.
+# written to allrice_operational_incidents. A failing component check is re-run once and
+# only what fails on both looks alerts, so a blip does not page. Each round ends by
+# writing heartbeat.json, which the other machine reads over SSH: whichever side stops,
+# the other one says so.
 import argparse
+import concurrent.futures
 import fcntl
 import json
 import os
@@ -90,6 +92,9 @@ M1 = dict(
     # component checks
     tunnelLabel='ai.bplabs.allrice-m1-tunnel',
     tunnelMetrics=['http://127.0.0.1:%d/ready' % p for p in range(20241, 20246)],
+    # The other hostnames the tunnel serves for the same Web (~/.cloudflared/allrice-m1.yml,
+    # moved over at the 10-26 cutover, MET-216): probed like publicUrl, each its own alert.
+    extraPublicUrls=['https://allrice.bplabs.xyz', 'https://allrice-admin.bplabs.xyz'],
     docker='/opt/homebrew/bin/docker',
     officeContainer='allrice-office-renderer',
     vmWatchdog='allrice-cloud-watchdog',
@@ -1006,21 +1011,34 @@ def check_tunnel(r):
     return [finding('tunnel', 'critical', 'Cloudflare 隧道断开', '进程在，但指标端口都连不上（%s）' % r.cfg['tunnelMetrics'][0], 'm1-tunnel.md', step)]
 
 
-def probe_public(r, url, key='public_entry', where='M1 本机'):
+def probe_public(r, url, key='public_entry', where='M1 本机', title='公网入口不可达'):
     if not url:
-        return [finding(key, 'warning', '公网入口不可达（未配置地址）', '', 'm1-tunnel.md', '')]
+        return [finding(key, 'warning', title + '（未配置地址）', '', 'm1-tunnel.md', '')]
     start = time.time()
     code, body = http_get(url, 15, opener(r.cfg.get('publicProxy')))
     took = time.time() - start
     ok = code == 200 and took < 15
-    return [finding(key, 'ok' if ok else 'critical', '公网入口不可达', '从%s访问 %s：%s（%.1f 秒）' % (where, url, code or short(body, 120), took),
+    return [finding(key, 'ok' if ok else 'critical', title, '从%s访问 %s：%s（%.1f 秒）' % (where, url, code or short(body, 120), took),
                     'm1-tunnel.md', 'curl -sS -o /dev/null -w "%%{http_code}\\n" %s' % url)]
 
 
 def check_public_entry(r):
     if deploying(r):
         return None
-    return probe_public(r, r.cfg['publicUrl'])
+    targets = [(r.cfg['publicUrl'], 'public_entry', '公网入口不可达')]
+    seen = {urllib.parse.urlsplit(r.cfg['publicUrl'] or '').hostname}
+    for url in r.cfg['extraPublicUrls']:
+        host = urllib.parse.urlsplit(url).hostname or url
+        if host not in seen:  # publicUrl may be moved to one of them
+            seen.add(host)
+            targets.append((url, 'public_entry:' + host, '公网入口不可达（%s）' % host))
+    # All at once: a slow hostname neither holds up publicUrl nor stretches the round
+    # (a round that times out loses the check in progress).
+    pool = concurrent.futures.ThreadPoolExecutor(len(targets))
+    try:
+        return [f for out in pool.map(lambda t: probe_public(r, t[0], t[1], title=t[2]), targets) for f in out]
+    finally:
+        pool.shutdown(wait=False)  # a round timeout does not wait for the probes still running
 
 
 def check_disk(r):
@@ -1697,9 +1715,13 @@ def run_checks(r, checks):
         one(name, fn)
     again = [c for c in checks if c[2] and c[0] in results and bad(c[0])]
     if again:
+        first = {c[0]: {f['key']: f['severity'] for f in results[c[0]] or []} for c in again}
         time.sleep(r.cfg['confirmSeconds'])
         for name, fn, _, _ in again:
             one(name, fn)
+            if results[name]:  # an item of it that was fine on the first look has failed only once: unknown this round
+                results[name] = [unknown(f['key'], f['title']) if f['severity'] != 'ok' and first[name].get(f['key']) == 'ok' else f
+                                 for f in results[name]]
     return collect_checks(r)
 
 

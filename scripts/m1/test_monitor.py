@@ -7,6 +7,7 @@ import io
 import json
 import os
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -262,6 +263,18 @@ class RunChecks(unittest.TestCase):
         self.assertEqual(calls, ['flaky', 'flaky'])  # failed once, confirmed ok on the re-run
         self.assertEqual(ran, {'flaky'})  # an erroring or undecided check judged nothing
 
+    def test_an_item_must_fail_on_both_looks(self):
+        r = make_round()
+        looks = iter([[bad('vm:a'), ok('vm:b')], [ok('vm:a'), bad('vm:b')], [bad('vm:a'), ok('vm:b')], [ok('vm:a'), bad('vm:b')],
+                      [ok('vm:a'), bad('vm:b')], [ok('vm:a'), bad('vm:b')]])
+        seen = []
+        for at in (0, 240, 480):
+            findings, ran = monitor.run_checks(r, [('vm', lambda r: next(looks), True, None)])
+            seen.append(([(f['key'], f['severity']) for f in findings], step(r, findings, at, ran)))
+        self.assertEqual(seen[0], ([('check:vm', 'ok'), ('vm:a', 'ok'), ('vm:b', 'unknown')], []))  # a blipped, b failed once
+        self.assertEqual(seen[1][1], [])
+        self.assertEqual(seen[2], ([('check:vm', 'ok'), ('vm:a', 'ok'), ('vm:b', 'critical')], [('opened', 'vm:b', False)]))  # both looks
+
     def test_check_error_alert_recovers(self):
         r = make_round()
         state = {'fail': True}
@@ -394,6 +407,34 @@ class Checks(unittest.TestCase):
         r.facts.clear()
         with mock.patch.object(monitor, 'lock_holders', return_value=[]), mock.patch.object(monitor, 'http_get', return_value=(502, b'bad gateway')):
             self.assertEqual(monitor.check_public_entry(r)[0]['severity'], 'critical')
+
+    def test_public_entry_probes_every_hostname(self):
+        r = make_round(publicUrl='https://a.example', extraPublicUrls=['https://b.example', 'https://A.example/login', 'https://c.example'])
+        answers = {'https://a.example': (200, b'login'), 'https://b.example': (200, b'login'), 'https://c.example': (530, b'error 1033')}
+
+        def probe():
+            with mock.patch.object(monitor, 'lock_holders', return_value=[]), \
+                    mock.patch.object(monitor, 'http_get', side_effect=lambda url, *a: answers[url]):  # a.example again: KeyError, check:public_entry
+                return monitor.run_checks(r, [('public_entry', monitor.check_public_entry, True, None)])
+        findings, ran = probe()
+        self.assertEqual({f['key']: f['severity'] for f in findings},
+                         {'check:public_entry': 'ok', 'public_entry': 'ok', 'public_entry:b.example': 'ok', 'public_entry:c.example': 'critical'})
+        self.assertEqual(step(r, findings, 0, ran), [('opened', 'public_entry:c.example', False)])
+        self.assertEqual(r.state['alerts']['public_entry:c.example']['title'], '公网入口不可达（c.example）')
+        r.cfg['extraPublicUrls'] = ['https://b.example']
+        findings, ran = probe()
+        self.assertEqual(step(r, findings, 300, ran), [('recovered', 'public_entry:c.example', False)])  # left the config
+
+    def test_public_entry_probes_hostnames_at_once(self):
+        r = make_round(publicUrl='https://a.example', extraPublicUrls=['https://b.example', 'https://c.example'])
+        together = threading.Barrier(3, timeout=5)  # one at a time would break it
+
+        def get(url, *a):
+            together.wait()
+            return 200, b'login'
+        with mock.patch.object(monitor, 'lock_holders', return_value=[]), mock.patch.object(monitor, 'http_get', side_effect=get):
+            self.assertEqual([(f['key'], f['severity']) for f in monitor.check_public_entry(r)],
+                             [('public_entry', 'ok'), ('public_entry:b.example', 'ok'), ('public_entry:c.example', 'ok')])
 
     def test_sandbox_vm(self):
         r = make_round(colimaProfile='cloud', extraColimaProfiles=['drill'])
