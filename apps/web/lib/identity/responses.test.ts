@@ -11,7 +11,6 @@ describe('identity error responses', () => {
     ['authorization_denied', 403, 'AUTHORIZATION_DENIED'],
     ['portal_account_mismatch', 403, 'AUTHORIZATION_DENIED'],
     ['tenant_context_invalid', 403, 'AUTHORIZATION_DENIED'],
-    ['invitation_invalid', 400, 'VALIDATION_FAILED'],
   ] as const)(
     'maps %s to a canonical problem',
     async (source, status, code) => {

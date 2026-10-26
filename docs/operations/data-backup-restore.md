@@ -18,7 +18,7 @@ PostgreSQL and object storage form one authoritative backup set. A database dump
 4. Snapshot `ALLRICE_STORAGE_ROOT` without following external symlinks.
 5. Hash both artifacts, write the manifest, copy all three to encrypted off-host storage, then resume writes.
 
-Never place credentials, signed URLs or invitation/session tokens in a manifest.
+Never place credentials, signed URLs or session tokens in a manifest.
 
 ## Restore and verification
 

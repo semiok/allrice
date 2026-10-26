@@ -109,13 +109,15 @@ bootstrap_json="$(
     -e ALLRICE_BOOTSTRAP_WORKSPACE_SLUG=default \
     -e ALLRICE_BOOTSTRAP_WORKSPACE_NAME=Default \
     -e ALLRICE_BOOTSTRAP_ADMIN_EMAIL=phase0-smoke@example.com \
+    -e ALLRICE_BOOTSTRAP_ADMIN_NAME='Phase 0 Smoke' \
+    -e ALLRICE_BOOTSTRAP_ADMIN_USERNAME=phase0-smoke \
+    -e ALLRICE_BOOTSTRAP_ADMIN_PASSWORD=allrice-smoke-password \
     worker node packages/database/dist/bootstrap-identity.js
 )"
-bootstrap_token="$(printf '%s' "${bootstrap_json}" | jq -r '.token')"
 bootstrap_organization_id="$(printf '%s' "${bootstrap_json}" | jq -r '.organizationId')"
 bootstrap_workspace_id="$(printf '%s' "${bootstrap_json}" | jq -r '.workspaceId')"
-if [[ -z "${bootstrap_token}" || "${bootstrap_token}" == "null" ]]; then
-  echo "Identity bootstrap did not return a token" >&2
+if [[ "$(printf '%s' "${bootstrap_json}" | jq -r '.initialized')" != "true" ]]; then
+  echo "Identity bootstrap did not initialize the first account" >&2
   exit 1
 fi
 
@@ -130,7 +132,6 @@ if [[ -z "${second_workspace_id}" ]]; then
 fi
 
 identity_output="$(ALLRICE_SMOKE_BASE_URL="http://127.0.0.1:${proxy_port}" \
-ALLRICE_SMOKE_INVITATION_TOKEN="${bootstrap_token}" \
 ALLRICE_SMOKE_ORGANIZATION_ID="${bootstrap_organization_id}" \
 ALLRICE_SMOKE_WORKSPACE_ID="${bootstrap_workspace_id}" \
 ALLRICE_SMOKE_SECOND_WORKSPACE_ID="${second_workspace_id}" \

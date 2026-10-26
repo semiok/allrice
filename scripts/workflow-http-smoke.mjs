@@ -138,10 +138,11 @@ if ((await rejected.json()).workflowRun.status !== 'failed') {
   throw new Error('rejected workflow did not stop');
 }
 
+// The member may open the other workspace, but this Run does not belong there.
 await jsonRequest(
   `/api/v1/workflow-runs/${started.runId}?workspaceId=${secondWorkspaceId}`,
   { headers: tenantHeaders(cookie, secondWorkspaceId) },
-  403,
+  404,
 );
 
 console.info('AllRice durable Workflow HTTP smoke passed');

@@ -3,7 +3,6 @@
 export function safeNavigationQuery(url: URL) {
   const query = new URLSearchParams(url.search);
   for (const key of [...query.keys()]) {
-    if (key === 'token' && url.pathname === '/accept-invitation') continue;
     if (
       /^(?:password|pass|pwd|token|session_?token|access_?token|refresh_?token|id_?token|authorization|cookie|allrice_session|api_?key|secret)$/i.test(
         key,

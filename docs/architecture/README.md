@@ -58,7 +58,7 @@ consists of PostgreSQL, mounted storage, and a reverse proxy.
 
 ## Authority
 
-AllRice V1 is the sole authority for its local invitation, Organization,
+AllRice V1 is the sole authority for its local account, Organization,
 Workspace, Membership, Policy, employee and Skill publishing and assignment,
 Session, Memory, SkillInstallation and Run records.
 

@@ -1,5 +1,5 @@
 import { canAdministerEmployees } from './employees/employeehub.ts';
-import { createInvitation } from './identity.ts';
+import { importOrganizationPeople } from './organization-administration.ts';
 import { readFile } from 'node:fs/promises';
 import { decideConnectorApproval } from './capabilities/connector-broker.ts';
 import { randomUUID } from 'node:crypto';
@@ -194,10 +194,8 @@ integration('MET-151 tenant administration (isolated PostgreSQL)', () => {
         false,
       );
       await expect(
-        createInvitation(context, {
-          email: 'new-tenant-user@example.test',
-          workspaceId: t.tenant.workspaceId,
-          expiresAt: new Date(Date.now() + 86400000).toISOString(),
+        importOrganizationPeople(context, t.tenant.organizationId, {
+          people: [{ username: 'new-tenant-user', displayName: 'New user' }],
         }),
       ).rejects.toMatchObject({ code: 'authorization_denied' });
     }
@@ -258,20 +256,22 @@ integration('MET-151 tenant administration (isolated PostgreSQL)', () => {
       peer = await principal();
     await fixture.db`update allrice_memberships set role='admin',active=false where id=${t.row.id}`;
     await fixture.db`insert into allrice_memberships(organization_id,workspace_id,user_id,role) values(${t.tenant.organizationId},${t.tenant.workspaceId},${peer.user.id},'viewer')`;
-    const policyId = randomUUID(),
-      invitationId = randomUUID();
+    const policyId = randomUUID();
     const payload = {
       memberships: [{ role: 'admin', userId: t.tenant.user.id }],
       grants: [],
     };
     await fixture.db`insert into allrice_policy_snapshots(id,organization_id,subject_id,version,payload,expires_at) values(${policyId},${t.tenant.organizationId},${t.tenant.user.id},1,${fixture.db.json(payload)},clock_timestamp()+interval '1 hour')`;
-    await fixture.db`insert into allrice_invitations(id,organization_id,workspace_id,email,role,token_hash,expires_at) values(${invitationId},${t.tenant.organizationId},${t.tenant.workspaceId},'pending@example.test','admin',${'b'.repeat(64)},clock_timestamp()+interval '1 hour')`;
     const before =
       await fixture.db`select id,user_id,organization_id,workspace_id,active from allrice_memberships order by id`;
-    const migration = await readFile(
-      new URL('../migrations/0111_unified_tenant_users.sql', import.meta.url),
-      'utf8',
-    );
+    // 0221 dropped allrice_invitations; only the membership statement of 0111
+    // still applies to the current schema.
+    const migration = (
+      await readFile(
+        new URL('../migrations/0111_unified_tenant_users.sql', import.meta.url),
+        'utf8',
+      )
+    ).split('-- Invitations issued')[0]!;
     await fixture.db.unsafe(migration);
     await fixture.db.unsafe(migration);
     expect(
@@ -279,11 +279,6 @@ integration('MET-151 tenant administration (isolated PostgreSQL)', () => {
         await fixture.db`select payload from allrice_policy_snapshots where id=${policyId}`
       )[0]!.payload,
     ).toEqual(payload);
-    expect(
-      (
-        await fixture.db`select role from allrice_invitations where id=${invitationId}`
-      )[0]!.role,
-    ).toBe('member');
     expect(
       await fixture.db`select id,user_id,organization_id,workspace_id,active from allrice_memberships order by id`,
     ).toEqual(before);

@@ -174,15 +174,15 @@ Do not commit `.env`; it is ignored because it may contain credentials.
 
 ## Bootstrap the first administrator
 
-AllRice has no production Auto Guest or default password. After `pnpm db:setup`, set the five `ALLRICE_BOOTSTRAP_*` values shown in `.env.example`, then run:
+AllRice has no production Auto Guest, default password or invitation links. After `pnpm db:setup`, set the `ALLRICE_BOOTSTRAP_*` values shown in `.env.example` (the password only in your local `.env`), add the same email to `ALLRICE_PLATFORM_ADMIN_EMAILS`, then run:
 
 ```bash
 pnpm identity:bootstrap
 ```
 
-The command creates or reuses the Organization and default Workspace, then prints a one-time administrator invitation token. Open `/accept-invitation?token=...` and activate the account within 24 hours. Only the token hash is stored. Subsequent invitations are created through `POST /api/v1/admin/invitations` by an authenticated administrator.
+The command creates or reuses the Organization and default Workspace and sets the first account's username and password. It prints only IDs and never resets an account that already has a login. Sign in with that username or email; further accounts are added by the platform administrator under the company's people in the admin console (`POST /api/v1/admin/organizations/{id}/people`).
 
-Never put the printed token in source control, issue comments or logs retained by shared CI.
+Deployments with the portal login enabled (`ALLRICE_PORTAL_AUTH_ENABLED=1`) do not need this command: the platform administrator signs in on the admin entry with `ALLRICE_PLATFORM_ADMIN_USER` / `ALLRICE_PLATFORM_ADMIN_PASSWORD`.
 
 ## What startup verifies
 
@@ -196,24 +196,24 @@ This prevents the misleading state where liveness passes but a teammate is devel
 
 ## Commands
 
-| Command                   | Purpose                                             |
-| ------------------------- | --------------------------------------------------- |
-| `pnpm doctor`             | Check Node, pnpm, Codex login, and database path    |
-| `pnpm doctor:ci`          | Check non-secret core bootstrap prerequisites       |
-| `pnpm dev`                | Prepare the database, then run Web and Worker       |
-| `pnpm db:setup`           | Start/default or use/external DB, migrate, verify   |
-| `pnpm db:verify`          | Verify migrations, baseline metadata, and pgvector  |
-| `pnpm db:dev:up`          | Start only the isolated development database        |
-| `pnpm db:dev:down`        | Stop it while retaining its named data volume       |
-| `pnpm db:migrate`         | Apply ordered SQL migrations under an advisory lock |
-| `pnpm content:sync`       | Idempotently sync reviewed platform Skill content   |
-| `pnpm db:prepare`         | Migrate, sync platform content, then verify         |
-| `pnpm identity:bootstrap` | Create the first one-time admin invitation          |
-| `pnpm format:check`       | Verify formatting                                   |
-| `pnpm lint`               | Run static rules                                    |
-| `pnpm typecheck`          | Typecheck every workspace package                   |
-| `pnpm test`               | Run unit/contract tests                             |
-| `pnpm build`              | Build packages and applications                     |
+| Command                   | Purpose                                               |
+| ------------------------- | ----------------------------------------------------- |
+| `pnpm doctor`             | Check Node, pnpm, Codex login, and database path      |
+| `pnpm doctor:ci`          | Check non-secret core bootstrap prerequisites         |
+| `pnpm dev`                | Prepare the database, then run Web and Worker         |
+| `pnpm db:setup`           | Start/default or use/external DB, migrate, verify     |
+| `pnpm db:verify`          | Verify migrations, baseline metadata, and pgvector    |
+| `pnpm db:dev:up`          | Start only the isolated development database          |
+| `pnpm db:dev:down`        | Stop it while retaining its named data volume         |
+| `pnpm db:migrate`         | Apply ordered SQL migrations under an advisory lock   |
+| `pnpm content:sync`       | Idempotently sync reviewed platform Skill content     |
+| `pnpm db:prepare`         | Migrate, sync platform content, then verify           |
+| `pnpm identity:bootstrap` | Create the first account with a username and password |
+| `pnpm format:check`       | Verify formatting                                     |
+| `pnpm lint`               | Run static rules                                      |
+| `pnpm typecheck`          | Typecheck every workspace package                     |
+| `pnpm test`               | Run unit/contract tests                               |
+| `pnpm build`              | Build packages and applications                       |
 
 ## Unified desktop workbench schema (MET198)
 

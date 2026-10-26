@@ -47,8 +47,8 @@ never automatically retried or counted as zero. See the
 ## Identity security
 
 - Passwords use versioned Node `scrypt` hashes with random salts.
-- Invitation and Session bearer tokens are random and only SHA-256 hashes are persisted.
-- Session creation, tenant selection and invitations are server-side operations.
+- Session bearer tokens are random and only SHA-256 hashes are persisted.
+- Account creation, Session creation and tenant selection are server-side operations.
 - CredentialBinding stores only a vault key and non-secret metadata; Secret values belong behind the `SecretVault` interface.
 - Composite tenant foreign keys prevent a child record from naming a Workspace in another Organization.
 

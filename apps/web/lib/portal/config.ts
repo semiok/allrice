@@ -248,7 +248,7 @@ export function legacyPortalNavigation(request: {
   const url = new URL(request.url);
   if (
     url.pathname !== '/' &&
-    !/^\/(login|accept-invitation|chatflow|runtime-console|workspace|employees|automation)(\/|$)/.test(
+    !/^\/(login|chatflow|runtime-console|workspace|employees|automation)(\/|$)/.test(
       url.pathname,
     )
   )

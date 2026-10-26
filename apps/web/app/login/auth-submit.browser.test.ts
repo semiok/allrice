@@ -6,7 +6,6 @@ import { renderToString } from 'react-dom/server';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
 import { LoginForm } from './login-form';
-import { AcceptInvitationForm } from '../accept-invitation/accept-form';
 
 const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
@@ -23,7 +22,7 @@ suite('auth submission before and after hydration', () => {
     const built = await build({
       absWorkingDir: process.cwd(),
       stdin: {
-        contents: `import {createElement} from 'react'; import {hydrateRoot} from 'react-dom/client'; import {LoginForm} from './app/login/login-form'; import {AcceptInvitationForm} from './app/accept-invitation/accept-form'; hydrateRoot(document.getElementById('root'),location.pathname==='/login'?createElement(LoginForm):createElement(AcceptInvitationForm,{token:'synthetic-token'}));`,
+        contents: `import {createElement} from 'react'; import {hydrateRoot} from 'react-dom/client'; import {LoginForm} from './app/login/login-form'; hydrateRoot(document.getElementById('root'),createElement(LoginForm));`,
         resolveDir: resolve('apps/web'),
         loader: 'tsx',
       },
@@ -49,9 +48,7 @@ suite('auth submission before and after hydration', () => {
         response.end(built.outputFiles[0].contents);
         return;
       }
-      const form = url.startsWith('/login')
-        ? createElement(LoginForm)
-        : createElement(AcceptInvitationForm, { token: 'synthetic-token' });
+      const form = createElement(LoginForm);
       response.writeHead(200, { 'content-type': 'text/html' });
       response.end(
         url === '/chatflow'
@@ -81,7 +78,7 @@ suite('auth submission before and after hydration', () => {
     if (server) await new Promise<void>((done) => server.close(() => done()));
   });
 
-  it.each(['/login', '/accept-invitation?token=synthetic-token'])(
+  it.each(['/login'])(
     'protects unhydrated %s including native submission',
     async (path) => {
       const context = await browser.newContext({ javaScriptEnabled: false });
@@ -112,32 +109,29 @@ suite('auth submission before and after hydration', () => {
     },
   );
 
-  it.each([
-    ['/login', '/api/v1/auth/login'],
-    [
-      '/accept-invitation?token=synthetic-token',
-      '/api/v1/auth/invitations/accept',
-    ],
-  ])('submits hydrated %s through the JSON API', async (path, endpoint) => {
-    const context = await browser.newContext();
-    try {
-      const page = await context.newPage();
-      await page.goto(origin + path);
-      const form = page.locator('form');
-      await expect
-        .poll(() => form.locator('[type="submit"]').isEnabled())
-        .toBe(true);
-      await form.locator('input').first().fill('synthetic-user');
-      await form.locator('[name="password"]').fill(password);
-      await form.locator('[type="submit"]').click();
-      await page.waitForURL(origin + '/chatflow');
-      const request = submitted.at(-1)!;
-      expect(request.method).toBe('POST');
-      expect(request.url).toBe(endpoint);
-      expect(JSON.parse(request.body).password).toBe(password);
-      expect(page.url()).not.toContain(password);
-    } finally {
-      await context.close();
-    }
-  });
+  it.each([['/login', '/api/v1/auth/login']])(
+    'submits hydrated %s through the JSON API',
+    async (path, endpoint) => {
+      const context = await browser.newContext();
+      try {
+        const page = await context.newPage();
+        await page.goto(origin + path);
+        const form = page.locator('form');
+        await expect
+          .poll(() => form.locator('[type="submit"]').isEnabled())
+          .toBe(true);
+        await form.locator('input').first().fill('synthetic-user');
+        await form.locator('[name="password"]').fill(password);
+        await form.locator('[type="submit"]').click();
+        await page.waitForURL(origin + '/chatflow');
+        const request = submitted.at(-1)!;
+        expect(request.method).toBe('POST');
+        expect(request.url).toBe(endpoint);
+        expect(JSON.parse(request.body).password).toBe(password);
+        expect(page.url()).not.toContain(password);
+      } finally {
+        await context.close();
+      }
+    },
+  );
 });
