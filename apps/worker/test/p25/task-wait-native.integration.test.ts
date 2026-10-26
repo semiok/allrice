@@ -101,11 +101,15 @@ describe('MET153 native durable question boundary', () => {
             },
           };
         const history = JSON.stringify(request.messages);
-        if (live) {
+        // Live and parked answers get the same app-connect instruction.
+        if (skipped) {
           expect(history).toContain('用户没有确认已完成连接');
           expect(history).not.toContain('action=status');
-        } else if (skipped) expect(history).toMatch(/\\"selected\\":\[\]/);
-        else expect(history).toContain(answerLabel);
+        } else expect(history).toContain(answerLabel);
+        if (!live && applicationLogin)
+          expect(history).toContain(
+            skipped ? '用户没有确认已完成连接' : 'action=status',
+          );
         if (kind === 'company')
           expect(JSON.stringify(request.messages)).toContain(
             preparedQuestion.detail,

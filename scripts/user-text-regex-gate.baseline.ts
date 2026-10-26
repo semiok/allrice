@@ -720,14 +720,6 @@ export const baseline: readonly BaselineEntry[] = [
     ],
   },
   {
-    file: 'apps/worker/dsh/allrice-jsonrpc-implementation.mjs',
-    owner:
-      'createAllRiceRuntime.AllRiceHarnessSdkJsonRpcServer.waitForApplicationConnection',
-    kind: 'own-text',
-    use: '读用户在连接应用提问卡里是否选了系统给出的“取消连接”选项',
-    sites: [String.raw`includes("取消连接")`],
-  },
-  {
     file: 'apps/worker/dsh/allrice-task-progress.mjs',
     owner: 'installTaskProgress.check',
     kind: 'own-text',

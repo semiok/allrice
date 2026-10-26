@@ -8,6 +8,25 @@ import { deliverDshInput } from './allrice-dsh-inputs.mjs';
 for (const type of ['allrice/wait/checkpoint', 'allrice/wait/continued'])
   KNOWN_SESSION_EVENT_TYPES.add(type);
 
+export const applicationConnectedLabel = '已连接，继续任务';
+export const applicationCancelLabel = '取消连接';
+
+/** One reading of the app-connect card, for the live tool result and a parked
+ * resume alike. Only an explicit "已连接" continues with the connection; a
+ * skipped item ({ selected: [] }) or free text confirms nothing (MET-210). */
+export function applicationConnectionInstruction(answer) {
+  const selected = answer.answers.flatMap((item) => item.selected);
+  // r1-exempt(own-text): 提问卡上系统给的“取消连接”选项，不是用户原话
+  const canceled = selected.includes(applicationCancelLabel);
+  // r1-exempt(own-text): 提问卡上系统给的“已连接，继续任务”选项，不是用户原话
+  const connected = selected.includes(applicationConnectedLabel);
+  return canceled
+    ? '用户取消本次连接。停止等待和重试此连接，继续处理不依赖它的工作。'
+    : connected
+      ? '先使用 action=status 检查连接状态；只有发现完成后才能调用工具。这不是远程操作批准。'
+      : '用户没有确认已完成连接（跳过或另有说明，见 answer）。不要假定连接可用，停止等待此连接，继续处理不依赖它的工作；需要时再请用户连接。';
+}
+
 export function pendingNativeWait(agent) {
   const checkpoint = agent.session
     .snapshotEvents()
@@ -137,7 +156,7 @@ export async function answerNativeWait(server, params) {
     proof,
     // A new native turn continues its persisted conversation, never the task's
     // original prompt. No pending side-effect callback is reconstructed.
-    prompt: `Continue the existing task after this persisted user question. Prior completed operations remain completed. This answer is not action approval.\nQuestion: ${JSON.stringify(wait.questions)}\nAnswer: ${JSON.stringify(resolved ?? answer)}`,
+    prompt: `Continue the existing task after this persisted user question. Prior completed operations remain completed. This answer is not action approval.\nQuestion: ${JSON.stringify(wait.questions)}\nAnswer: ${JSON.stringify(resolved ?? answer)}${wait.questions.some((q) => q.id.startsWith('app-connect:')) ? `\nInstruction: ${applicationConnectionInstruction(resolved ?? answer)}` : ''}`,
   };
 }
 
