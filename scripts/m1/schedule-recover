@@ -116,19 +116,40 @@ mine,p=set(),str(os.getpid())
 while p in args and p not in mine: mine.add(p); p=args[p][0]
 roots,target=os.environ["ROOTS"].split("|"),os.path.realpath(os.environ["ENVFILE"])
 def ours(url):
-    q=u.urlsplit(url.strip().strip("\"\x27")); return q.hostname in (None,"127.0.0.1","localhost") and q.path.lstrip("/")==os.environ["DBNAME"]
-def envfile(path):
+    q=u.urlsplit(url); return q.hostname in (None,"127.0.0.1","localhost") and q.path.lstrip("/")==os.environ["DBNAME"]
+def dotenv_url(line): # the DATABASE_URL a line sets, as Node 22 reads it (export, spaces, quotes, # comments)
+    k,eq,v=line.strip().removeprefix("export ").partition("=")
+    if not eq or k.strip()!="DATABASE_URL": return None
+    v=v.strip()
+    if v[:1] in ("\"","\x27","`") and v.find(v[0],1)>0: return v[1:v.find(v[0],1)]
+    return v.split("#",1)[0].strip()
+def envfile(opt,path):
     if os.path.realpath(path)==target: return True
-    try: return any(ours(l.split("=",1)[1]) for l in open(path) if l.strip().startswith("DATABASE_URL="))
-    except OSError: return True
+    try: return any(ours(x) for x in map(dotenv_url,open(path)) if x)
+    except OSError: return opt=="--env-file" # unreadable: cannot clear it (a missing if-exists file loads nothing)
+def env_files(toks): # node options up to the script, -e/-p or "-" (the rest belongs to the program): env files and those tokens
+    out,i=[],1
+    while i<len(toks) and toks[i].startswith("-") and toks[i] not in ("-","-e","--eval","-p","--print","--"):
+        t=toks[i]
+        for o in ("--env-file","--env-file-if-exists"):
+            if t.startswith(o+"="): out.append((o,t[len(o)+1:]))
+            elif t==o and i+1<len(toks): out.append((o,toks[i+1]))
+        i+=2 if t in ("--env-file","--env-file-if-exists","-r","--require","--import","--loader","--experimental-loader","-C","--conditions","--input-type","--title") else 1
+    return out,toks[:i+1]
+def alive(pid):
+    try: os.kill(int(pid),0); return True
+    except ProcessLookupError: return False
+    except PermissionError: return True
 for pid,(_,cmd) in args.items():
     if pid in mine or "/apps/web/" in cmd: continue
     toks=cmd.split(); env=full.get(pid,("",""))[1][len(cmd):].split()
     hit=any(e.startswith("DATABASE_URL=") and ours(e[13:]) for e in env)
     if not hit and toks and os.path.basename(toks[0])=="node":
         here=cwd.get(pid)
-        files=[t[11:] for t in toks if t.startswith("--env-file=")]+[toks[i+1] for i,t in enumerate(toks[:-1]) if t=="--env-file"]
-        hit=here is None or any(envfile(os.path.join(here,f)) for f in files) or any(r in cmd or (here+"/").startswith(r) for r in roots)
+        if here is None: hit=alive(pid) # no working directory: only a process that is gone is cleared
+        else:
+            files,head=env_files(toks)
+            hit=any(envfile(o,os.path.join(here,f)) for o,f in files) or any(r in " ".join(head) or (here+"/").startswith(r) for r in roots)
     if hit: print(pid,cmd[:160])'; }
 worker_sessions() { RO=1 sql -c "select count(*) from pg_stat_activity where datname = current_database() and application_name = 'allrice-worker'"; }
 boot_at() { "$M1_PY" -c 'import re,subprocess,time
