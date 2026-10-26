@@ -53,7 +53,10 @@ suite('browser panel for ordinary employees', () => {
     server = createServer((req, res) => {
       const path = new URL(req.url!, origin).pathname;
       const asset = assets.get(path);
-      if (asset) {
+      if (path.startsWith('/api/v1/files/')) {
+        res.setHeader('Content-Type', 'application/octet-stream');
+        res.end('synthetic download');
+      } else if (asset) {
         res.setHeader(
           'Content-Type',
           path.endsWith('.css') ? 'text/css' : 'text/javascript',
@@ -257,6 +260,145 @@ suite('browser panel for ordinary employees', () => {
       await expect
         .poll(() => alert.innerText())
         .toBe('暂时读不到浏览器状态，请检查网络后刷新。\n刷新状态');
+    } finally {
+      await page.close();
+    }
+  });
+  const card = (page: Page, title: string) =>
+    page.locator('article').filter({ hasText: title });
+
+  for (const narrow of [false, true])
+    it(`sends exactly what the employee does by hand${narrow ? ' in the 253px phone column' : ''}`, async () => {
+      const page = await open(narrow ? 390 : 1440, 'dark');
+      try {
+        // The real 390px transcript leaves 253px after sidebar and gutters.
+        if (narrow)
+          await page.locator('main').evaluate((el) => {
+            el.style.width = '253px';
+            el.style.padding = '0';
+          });
+        const human = card(page, '下载中心');
+        await human.getByRole('button', { name: '手动操作页面' }).click();
+        const field = (label: string) =>
+          human.locator('form').filter({ hasText: label });
+        await field('搜索').locator('input').fill('季度报告');
+        await field('搜索').getByRole('button', { name: '填写' }).click();
+        await expect
+          .poll(() => page.evaluate(() => window.browserPosts.length))
+          .toBe(1);
+        await field('密码').locator('input').fill('synthetic-secret');
+        await field('密码')
+          .getByRole('button', { name: '安全输入（不发给 Rice）' })
+          .click();
+        await expect
+          .poll(() => page.evaluate(() => window.browserPosts.length))
+          .toBe(3);
+        await field('附件')
+          .locator('input')
+          .setInputFiles({
+            name: 'fixture.txt',
+            mimeType: 'text/plain',
+            buffer: Buffer.from('synthetic upload'),
+          });
+        await field('附件')
+          .getByRole('button', { name: '上传到这个网站（需确认）' })
+          .click();
+        await expect
+          .poll(() => page.evaluate(() => window.browserPosts.length))
+          .toBe(4);
+        await field('季度报告.pdf')
+          .getByRole('button', { name: '保存为成果' })
+          .click();
+        await expect
+          .poll(() => page.evaluate(() => window.browserPosts.length))
+          .toBe(5);
+        const posts = await page.evaluate(() => window.browserPosts);
+        expect(
+          posts.map((post) =>
+            post.kind === 'act'
+              ? (post.command as { action: unknown }).action
+              : post,
+          ),
+        ).toEqual([
+          { type: 'fill', elementId: 'e3', value: '季度报告' },
+          expect.objectContaining({
+            kind: 'input',
+            elementId: 'e5',
+            value: 'synthetic-secret',
+            fence: 3,
+          }),
+          {
+            type: 'sensitive_fill',
+            elementId: 'e5',
+            inputId: '77777777-7777-4777-8777-777777777777',
+          },
+          {
+            type: 'upload',
+            elementId: 'e6',
+            objectId: '77777777-7777-4777-8777-777777777777',
+            checksum: `sha256:${'c'.repeat(64)}`,
+            fileName: 'fixture.txt',
+          },
+          { type: 'download', elementId: 'e4' },
+        ]);
+        expect(await page.evaluate(() => window.filePosts)).toEqual([
+          expect.objectContaining({
+            mediaType: 'text/plain',
+            contentBase64: Buffer.from('synthetic upload').toString('base64'),
+            visibility: 'private',
+          }),
+        ]);
+        // Typed secrets never stay on screen.
+        expect(await visibleText(page)).not.toContain('synthetic-secret');
+        const download = page.waitForEvent('download');
+        await human.getByRole('button', { name: '保存下载的文件' }).click();
+        const file = await download;
+        const bytes: Buffer[] = [];
+        for await (const chunk of (await file.createReadStream())!)
+          bytes.push(Buffer.from(chunk));
+        expect(Buffer.concat(bytes).toString()).toBe('synthetic download');
+        const box = await panel(page).evaluate((el) => ({
+          width: el.clientWidth,
+          content: el.scrollWidth,
+        }));
+        expect(box.content).toBeLessThanOrEqual(box.width);
+      } finally {
+        await page.close();
+      }
+    });
+
+  it('sends fenced control requests from the buttons', async () => {
+    const page = await open(390, 'light');
+    try {
+      await card(page, '提交订单')
+        .getByRole('button', { name: '我来操作' })
+        .click();
+      const human = card(page, '下载中心');
+      for (const name of ['交还 Rice', '暂停', '关闭浏览器']) {
+        const count = await page.evaluate(() => window.browserPosts.length);
+        await human.getByRole('button', { name }).click();
+        await expect
+          .poll(() => page.evaluate(() => window.browserPosts.length))
+          .toBe(count + 1);
+      }
+      const posts = (await page.evaluate(() => window.browserPosts)) as {
+        kind: string;
+        id: string;
+        request: { control: string; expectedFence: number };
+      }[];
+      expect(
+        posts.map((post) => [
+          post.kind,
+          post.id.slice(0, 8),
+          post.request.control,
+          post.request.expectedFence,
+        ]),
+      ).toEqual([
+        ['control', '22222222', 'human', 2],
+        ['control', '33333333', 'agent', 3],
+        ['control', '33333333', 'paused', 3],
+        ['control', '33333333', 'closed', 3],
+      ]);
     } finally {
       await page.close();
     }

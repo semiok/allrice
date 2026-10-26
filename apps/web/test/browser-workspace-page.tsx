@@ -205,11 +205,37 @@ const workspaces = [
           inputType: '',
           sensitive: false,
         },
+        {
+          id: 'e5',
+          tag: 'input',
+          label: '密码',
+          inputType: 'password',
+          sensitive: true,
+        },
+        {
+          id: 'e6',
+          tag: 'input',
+          label: '附件',
+          inputType: 'file',
+          sensitive: false,
+        },
       ],
     }),
-    profile,
+    profile: { ...profile, allowUploads: true, allowHumanCredentials: true },
     available: true,
-    operations: [],
+    operations: [
+      operation(
+        'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+        3,
+        'human',
+        null,
+        { type: 'download', elementId: 'e4' },
+        'succeeded',
+        {
+          result: { downloadObjectId: '99999999-0000-4000-8000-000000000002' },
+        },
+      ),
+    ],
   },
   {
     transport: 'local',
@@ -254,12 +280,16 @@ const workspaces = [
 declare global {
   interface Window {
     approvalPosts: { responseId: string; decision: string }[];
+    browserPosts: Record<string, unknown>[];
+    filePosts: Record<string, unknown>[];
     signPosts: string[];
     approvalMode: 'ok' | 'network' | 'stale';
     failLoad: boolean;
   }
 }
 window.approvalPosts = [];
+window.browserPosts = [];
+window.filePosts = [];
 window.signPosts = [];
 window.approvalMode = 'ok';
 window.failLoad = false;
@@ -267,8 +297,28 @@ const realFetch = window.fetch.bind(window);
 window.fetch = async (input, init) => {
   const url = String(input);
   if (url.startsWith('/api/v1/runtime/browser-workspaces')) {
+    if (init?.method === 'POST') {
+      const body = JSON.parse(String(init.body));
+      window.browserPosts.push(body);
+      return Response.json(
+        body.kind === 'input'
+          ? { inputId: '77777777-7777-4777-8777-777777777777' }
+          : {},
+      );
+    }
     if (window.failLoad) throw new TypeError('Failed to fetch');
     return Response.json({ workspaces });
+  }
+  if (url === '/api/v1/files') {
+    window.filePosts.push(JSON.parse(String(init?.body)));
+    return Response.json({
+      file: {
+        object: {
+          id: '77777777-7777-4777-8777-777777777777',
+          checksum: `sha256:${'c'.repeat(64)}`,
+        },
+      },
+    });
   }
   if (url.startsWith('/api/v1/runtime/approvals/')) {
     window.approvalPosts.push(JSON.parse(String(init?.body)));

@@ -7,6 +7,7 @@ import {
 } from '@allrice/contracts';
 import {
   artifactKindLabel,
+  opensAutomatically,
   artifactExecutionLabels,
   boundedRichDiff,
   mergeArtifactPage,
@@ -69,6 +70,22 @@ const artifact = WorkbenchArtifactSchema.parse({
 });
 afterEach(() => vi.unstubAllGlobals());
 describe('workbench UI boundary', () => {
+  it('names a browser record and keeps it from opening unasked', () => {
+    const record = {
+      ...artifact,
+      kind: 'browser_capture' as const,
+      object: { ...artifact.object, mediaType: 'application/json' },
+    };
+    expect(artifactKindLabel(record)).toBe('网页记录');
+    expect(opensAutomatically(record)).toBe(false);
+    expect(opensAutomatically(artifact)).toBe(true);
+    expect(
+      opensAutomatically({
+        ...record,
+        object: { ...record.object, mediaType: 'image/png' },
+      }),
+    ).toBe(true);
+  });
   it('distinguishes historical cloud, MCP and Bridge execution provenance', () => {
     const scope: RuntimeExecutionScope = {
       targetId: randomUUID(),

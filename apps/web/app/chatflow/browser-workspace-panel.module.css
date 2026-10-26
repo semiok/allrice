@@ -131,6 +131,11 @@
   color: var(--dsw-alias-label-primary);
   font: inherit;
 }
+.element input[type='file'] {
+  /* A file input's intrinsic width overflows the 390px transcript column. */
+  min-width: 0;
+  max-width: 100%;
+}
 .element input:disabled {
   opacity: 0.4;
   cursor: not-allowed;

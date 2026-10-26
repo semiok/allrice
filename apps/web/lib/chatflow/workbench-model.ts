@@ -207,6 +207,9 @@ export function parseArtifactPreview(input: unknown): ArtifactPreview {
     return { kind: 'download_only', reason: v.reason };
   throw Error('预览格式无效');
 }
+/** Browser observation records are kept for reference, not shown unasked. */
+export const opensAutomatically = (a: WorkbenchArtifact) =>
+  !(a.kind === 'browser_capture' && !a.object.mediaType.startsWith('image/'));
 export const artifactKindLabel = (a: WorkbenchArtifact) =>
   a.object.mediaType.startsWith('image/')
     ? '图片'

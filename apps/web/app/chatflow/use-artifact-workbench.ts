@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { WorkbenchArtifact } from '@allrice/contracts';
 import {
   mergeArtifactPage,
+  opensAutomatically,
   parseArtifactList,
   workbenchJson,
   type ArtifactCursor,
@@ -112,7 +113,8 @@ export function useArtifactWorkbench({
             page.artifacts,
           );
           const newest = !before
-            ? (artifacts.find((a) => !a.stale) ?? artifacts[0])
+            ? (artifacts.find((a) => !a.stale && opensAutomatically(a)) ??
+              artifacts.find(opensAutomatically))
             : undefined;
           const arrived =
             newest && !current.artifacts.some((a) => a.id === newest.id);
