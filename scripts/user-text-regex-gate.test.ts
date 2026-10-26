@@ -124,6 +124,52 @@ export function shapes(text: string) {
   return PATTERN.test(text) || text.replace(literal, '') !== text;
 }
 `,
+    'apps/demo/reexport.ts': `export { PATTERN as RENAMED } from './words.ts';
+export * from './words.ts';
+`,
+    'apps/demo/round2.ts': `import * as words from './words.ts';
+import { RENAMED, SHARED } from './reexport.ts';
+export function copied(text: string) {
+  const re = new RegExp(words.PATTERN, 'i');
+  if (!re.test(text)) throw new Error('refused');
+}
+export function twice(text: string) {
+  const p = /确认/u;
+  if (!p.test(text)) throw new Error('refused');
+  return text.replace(p, '');
+}
+export function reexported(text: string) {
+  return RENAMED.test(text) || SHARED.includes(text);
+}
+export function bilingual(text: string, locale: string) {
+  const re = new RegExp(locale === 'zh' ? '^确认$' : '^please confirm$');
+  return re.test(text);
+}
+export function mapKeys(text: string) {
+  const words = new Map([['同意', true]]);
+  for (const word of words.keys()) if (text.includes(word)) return true;
+  return [...words.keys()].some((word) => text.startsWith(word));
+}
+export function english(text: string, code: string) {
+  return (
+    /Please confirm/i.test(text) ||
+    /DO NOT FORGET/i.test(text) ||
+    code === 'STOP_NOT_CONFIRMED'
+  );
+}
+export function inline(text: string) {
+  return /^好的$/u.test(text);
+}
+const HOISTED = /^好的$/u;
+export function hoisted(text: string) {
+  return HOISTED.test(text);
+}
+// r1-exempt(format): 只认“好的”这一种写法，不命中照常交给模型处理
+const MARKED = /^好的吧$/u;
+export function marked(text: string) {
+  return MARKED.test(text);
+}
+`,
     'apps/demo/scope.ts': `export function first(text: string) {
   const words = ['确认', '好的'];
   if (!words.some((w) => text.includes(w))) throw new Error('refused');
@@ -238,8 +284,8 @@ export const handler = (text: string) => {
   });
 
   it('reports regexes, uses, keyword lists, tables and equality on wording', () => {
+    // `literal` is applied by name in `shapes`: that application is its site.
     expect(shown('sites.ts')).toEqual([
-      'literal /(?:请)?记住/u',
       `escaped /${BS}u8bb0${BS}u4f4f/`,
       'singleInClass /[年月]/',
       'joined RegExp(/记住|记下/u)',
@@ -268,6 +314,36 @@ export const handler = (text: string) => {
       'shapes test(/^批准$/u)',
       'shapes replace(/(?:请)?记住/u)',
     ]);
+  });
+
+  it('counts applications of a regex by name, through copies, namespaces and re-exports', () => {
+    expect(shown('round2.ts')).toEqual([
+      'copied test(/^批准$/u)',
+      'twice test(/确认/u)',
+      'twice replace(/确认/u)',
+      'reexported test(/^批准$/u)',
+      'reexported ["批准"].includes()',
+      'bilingual test(RegExp(/${^确认$|^please confirm$}/))',
+      'mapKeys for-of(includes(item)) over ["同意"]',
+      'mapKeys some(startsWith(item)) over ["同意"]',
+      'english /Please confirm/i',
+      'english /DO NOT FORGET/i',
+      'inline /^好的$/u',
+      'hoisted test(/^好的$/u)',
+      'marked test(/^好的吧$/u)',
+    ]);
+    // Moving a regex into a constant keeps one site in the same owner.
+    expect(
+      of('round2.ts').filter((site) => site.owner === 'inline'),
+    ).toHaveLength(1);
+    expect(
+      of('round2.ts').filter((site) => site.owner === 'hoisted'),
+    ).toHaveLength(1);
+    expect(
+      report.problems
+        .filter((problem) => problem.file === 'apps/demo/round2.ts')
+        .map((problem) => problem.problem.split(':')[0]),
+    ).toEqual(['exemption on a regex that is applied by name']);
   });
 
   it('resolves names by scope: same-named locals in other functions neither hide nor stand in', () => {
@@ -420,6 +496,13 @@ describe('baseline bookkeeping', () => {
     ).toHaveLength(2);
     expect(
       baselineChange([entry('b.ts', 'g', ['/记住/'])], base).growth,
+    ).toHaveLength(1);
+    // Reclassifying a not-R1 site into #2 says the code now refuses.
+    expect(
+      baselineChange(
+        [entry('a.ts', 'f', ['/确认/'], 'reject')],
+        [entry('a.ts', 'f', ['/确认/'], 'format')],
+      ).growth,
     ).toHaveLength(1);
     // A reviewed not-R1 entry does not pay for a new #2 site.
     expect(

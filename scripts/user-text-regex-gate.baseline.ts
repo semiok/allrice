@@ -1,6 +1,6 @@
 /**
  * Baseline for `user-text-regex-gate.ts` (MET-210 #2, MET-220 R1): the places
- * that matched the user's wording when the gate was added (main 2af7e5df,
+ * that matched the user's wording when the gate was added (main a30aec4a,
  * 2026-10-26, after #576). The list only shrinks. When #2 migrates a site,
  * delete it here; a site that turns out to only let a clear format through,
  * read the system's own or another system's text, or change display may
@@ -16,33 +16,6 @@
 import type { BaselineEntry } from './user-text-regex-gate.ts';
 
 export const baseline: readonly BaselineEntry[] = [
-  {
-    file: 'apps/worker/src/memory-lifecycle.ts',
-    owner: 'candidateSignalPattern',
-    kind: 'reject',
-    use: '写候选记忆前要求原话里有偏好、决定、项目事实等信号词，没有就拒绝（MEMORY_STABLE_USER_STATEMENT_REQUIRED）；上下文压缩前也据此挑候选记忆',
-    sites: [
-      String.raw`/记住|记下|我的?偏好|我喜欢|我习惯|以后(?:请|要|都)|(?:我|我们)(?:已经)?决定|项目(?:要求|目标|约束|背景)|必须|不要|remember|I prefer|my preference|we decided|project (?:goal|constraint|requirement|context)|must|always|never/i`,
-    ],
-  },
-  {
-    file: 'apps/worker/src/memory-lifecycle.ts',
-    owner: 'explicitForgetPattern',
-    kind: 'reject',
-    use: '原话里有“不要记住”等说法时，长期记忆和候选记忆都拒绝写入',
-    sites: [
-      String.raw`/(?:不要|不用|别)(?:记住|记下|保存)|\b(?:do not|don't) remember\b|\bforget (?:this|that)\b/i`,
-    ],
-  },
-  {
-    file: 'apps/worker/src/memory-lifecycle.ts',
-    owner: 'explicitRememberPattern',
-    kind: 'reject',
-    use: '写长期记忆前要求原话里有“记住/记下”等说法，没有就拒绝写入（MEMORY_EXPLICIT_CONFIRMATION_REQUIRED）',
-    sites: [
-      String.raw`/(?:请|帮我|以后|今后|之后|你)?(?:记住|记下|记得|保存(?:为|成)?(?:长期)?记忆)|(?:以后|今后)(?:按此|照此|按这个|照这个|按照这个)|\bremember\b|\bkeep (?:this|that) in mind\b/i`,
-    ],
-  },
   {
     file: 'apps/worker/src/memory-lifecycle.ts',
     owner: 'hasExplicitRememberIntent',
@@ -81,12 +54,12 @@ export const baseline: readonly BaselineEntry[] = [
     kind: 'reject',
     use: '模型整理的“到场统计”经验草稿必须逐句等于固定句式，否则不能采纳（MET-210 #1 第 4 步）',
     sites: [
-      String.raw`/^(?:统计到场情况时[，,]?)?(?:依据|根据)原始(?:名单|名册)(?:和明确的(?:人员)?到场状态)?[，,]?分别(?:(?:核对|统计)到场(?:和|与|、)(?:未到|缺席)人数[，,]?(?:并)?(?:在结果中)?分项列出|统计并列出到场(?:和|与|、)(?:未到|缺席)人数)$/u`,
-      String.raw`/^缺少(?:名单|名册)或状态不明时[，,]?不推算人数$/u`,
-      String.raw`/^(?:统计到场情况时[，,]?)?(?:依据|根据)原始(?:名单|名册)(?:和明确的(?:人员)?到场状态)?[，,]?分别(?:核对|统计)到场(?:和|与|、)(?:未到|缺席)人数$/u`,
-      String.raw`/^(?:并)?(?:在结果中)?分项列出$/u`,
-      String.raw`/^(?:适用于)?有原始(?:名单|名册)且(?:人员)?到场状态明确的人员统计任务$/u`,
-      String.raw`/^不适用于缺少(?:名单|名册)或状态不明时推算人数$/u`,
+      String.raw`test(/^(?:统计到场情况时[，,]?)?(?:依据|根据)原始(?:名单|名册)(?:和明确的(?:人员)?到场状态)?[，,]?分别(?:核对|统计)到场(?:和|与|、)(?:未到|缺席)人数$/u)`,
+      String.raw`test(/^(?:并)?(?:在结果中)?分项列出$/u)`,
+      String.raw`test(/^缺少(?:名单|名册)或状态不明时[，,]?不推算人数$/u)`,
+      String.raw`test(/^(?:统计到场情况时[，,]?)?(?:依据|根据)原始(?:名单|名册)(?:和明确的(?:人员)?到场状态)?[，,]?分别(?:(?:核对|统计)到场(?:和|与|、)(?:未到|缺席)人数[，,]?(?:并)?(?:在结果中)?分项列出|统计并列出到场(?:和|与|、)(?:未到|缺席)人数)$/u)`,
+      String.raw`test(/^(?:适用于)?有原始(?:名单|名册)且(?:人员)?到场状态明确的人员统计任务$/u)`,
+      String.raw`test(/^不适用于缺少(?:名单|名册)或状态不明时推算人数$/u)`,
     ],
   },
   {
@@ -95,12 +68,12 @@ export const baseline: readonly BaselineEntry[] = [
     kind: 'reject',
     use: '模型整理的“报告风格”经验草稿必须等于固定句式，否则不能采纳（MET-210 #1 第 4 步）',
     sites: [
-      String.raw`/^(?:仅|只)适用于报告的表达方式[，,。.;；：:]?不改变业务规则[、，,]?计算口径[、，,]?或执行步骤$/u`,
-      String.raw`RegExp(/^(?:(?:仅|只)?适用于(?:包含|含有)?(?:多个(?:可区分|独立)?要点|多要点)[、，,]?(?:且|并且)无指定格式要求的(?:同类)?报告[，,。.;；]不(?:推及|推广到|扩展到)(?:所有|其他)文体|(?:仅|只)?适用于(?:同类)?(?:包含|含有)?(?:多个(?:可区分|独立)?要点|多要点)(?:的)?报告[，,。.;；]有(?:明确|指定)格式要求时(?:遵循|按)(?:该(?:格式)?)?要求[，,。.;；]不(?:推及|推广到|扩展到)(?:所有|其他)文体)$/u)`,
       String.raw`RegExp(/^(?:仅|只)?适用于同类报告的措辞与篇幅选择[，,。.;；]不(?:推及|推广到|扩展到)(?:所有|其他)文体[，,。.;；](?:也)?不覆盖明确的详细说明要求$/u)`,
       String.raw`RegExp(/^(?:撰写|编写|输出|交付)同类报告时[，,]?在保留必要信息的前提下优先(?:采用|使用|保持)(?:简洁|简短)[、，,]清晰的(?:表达|说明)$/u)`,
       String.raw`RegExp(/^面向该用户[、，,](?:包含|含有)(?:多个(?:可区分|独立)?要点|多要点)的同类报告[，,。.;；]有(?:明确|指定)格式要求时(?:遵循|按)(?:该(?:格式)?)?要求$/u)`,
       String.raw`RegExp(/^(?:(?:撰写|编写|输出|交付)(?:(?:包含|含有)?(?:多个(?:可区分|独立)?要点|多要点)的)?报告时|(?:当)?报告(?:包含|含有)(?:多个(?:可区分|独立)?要点|多要点)时)[，,]?(?:优先)?(?:(?:采用|使用|保持)(?:(?:分点|分项|分条)(?:方式|结构|(?:表达|说明)(?:的结构)?)|条理清晰的(?:方式|表达|说明|结构))|(?:按要点)?(?:分点|分项|分条)(?:说明|表达))[，,。.;；](?:便于|方便)逐项阅读$/u)`,
+      String.raw`test(/^(?:仅|只)适用于报告的表达方式[，,。.;；：:]?不改变业务规则[、，,]?计算口径[、，,]?或执行步骤$/u)`,
+      String.raw`test(RegExp(/^(?:(?:仅|只)?适用于(?:包含|含有)?(?:多个(?:可区分|独立)?要点|多要点)[、，,]?(?:且|并且)无指定格式要求的(?:同类)?报告[，,。.;；]不(?:推及|推广到|扩展到)(?:所有|其他)文体|(?:仅|只)?适用于(?:同类)?(?:包含|含有)?(?:多个(?:可区分|独立)?要点|多要点)(?:的)?报告[，,。.;；]有(?:明确|指定)格式要求时(?:遵循|按)(?:该(?:格式)?)?要求[，,。.;；]不(?:推及|推广到|扩展到)(?:所有|其他)文体)$/u))`,
       String.raw`RegExp(/^(?:(?:撰写|编写|输出|交付)(?:(?:包含|含有)?(?:多个(?:可区分|独立)?要点|多要点)的)?报告时|(?:当)?报告(?:包含|含有)(?:多个(?:可区分|独立)?要点|多要点)时)[，,]?(?:优先)?(?:(?:采用|使用|保持)(?:(?:分点|分项|分条)(?:方式|结构|(?:表达|说明)(?:的结构)?)|条理清晰的(?:方式|表达|说明|结构))|(?:按要点)?(?:分点|分项|分条)(?:说明|表达))$/u)`,
       String.raw`RegExp(/^(?:(?:撰写|编写|输出|交付)(?:(?:包含|含有)?(?:多个(?:可区分|独立)?要点|多要点)的)?报告时|(?:当)?报告(?:包含|含有)(?:多个(?:可区分|独立)?要点|多要点)时)[，,]?(?:优先)?(?:采用|使用|保持)(?:简洁|简短)(?:的)?(?:方式|表达|说明)$/u)`,
     ],
@@ -120,7 +93,7 @@ export const baseline: readonly BaselineEntry[] = [
     kind: 'reject',
     use: '用户反馈必须是“这份报告分点说明很清晰”这类固定说法，才算报告风格的偏好证据，否则不采纳',
     sites: [
-      'RegExp(/^(?:反馈|我已核对)?(?:这份|本次的|这个)?报告${…}(?:说明|表达)?(?:很)?(?:清晰|方便|合适)(?:阅读起来很方便)?$/u)',
+      'RegExp(/^(?:反馈|我已核对)?(?:这份|本次的|这个)?报告${(?:分点|分项|条理清晰)|(?:简洁|简短)}(?:说明|表达)?(?:很)?(?:清晰|方便|合适)(?:阅读起来很方便)?$/u)',
     ],
   },
   {
@@ -191,8 +164,7 @@ export const baseline: readonly BaselineEntry[] = [
     kind: 'reject',
     use: '移除工作场景或资料引用，要求原话是固定说法，否则拒绝',
     sites: [
-      String.raw`/场景|\bscene\b/iu`,
-      String.raw`/资料|引用|绑定|\breference\b|\bbinding\b/iu`,
+      String.raw`any(test(item)) over ["/场景|\\bscene\\b/iu","/资料|引用|绑定|\\breference\\b|\\bbinding\\b/iu"]`,
       String.raw`/^(?:请)?(?:不要|无需|不必|勿|不能|不允许).*(?:移除|删除|停用|解除|取消|替换)|^(?:please )?(?:do not|don't|never)\b.*\b(?:remove|delete|disable|unlink|replace)\b/iu`,
       String.raw`/^(?:请)?(?:(?:从|在)(?:当前|我的|这个|该)?(?:候选|草稿)(?:中)?[，, ]*)?(?:移除|删除|停用|解除|取消|替换)\s*(.{1,120})$/u`,
       String.raw`/中的|内的|里的|下的|里面|内部|步骤|空行|段落|内容|文字|文本|保留|保持|检查|核对|然后|之后|再|并|[：:,，、]/u`,
@@ -308,7 +280,7 @@ export const baseline: readonly BaselineEntry[] = [
     kind: 'reject',
     use: '改员工名字或回答风格，要求原话是固定句式，否则拒绝（explicit_profile_request_required）',
     sites: [
-      String.raw`/^(?:请)?(?:保存为|设为|设置为)(?:我(?:自己)?的)?(?:长期(?:默认)?|默认)(?:表达|回答|回复)(?:偏好|方式|风格)[。.]?$/u`,
+      String.raw`test(/^(?:请)?(?:保存为|设为|设置为)(?:我(?:自己)?的)?(?:长期(?:默认)?|默认)(?:表达|回答|回复)(?:偏好|方式|风格)[。.]?$/u)`,
       String.raw`/^(?:请)?(?:(?:以后|今后|从现在起)[，,\s]*)?(?:把你的(?:名字|名称)改(?:为|成)|将你的(?:名字|名称)改(?:为|成)|(?:给你|把你|将你)?改名(?:为|叫)|(?:以后|今后)叫你|你(?:以后|今后)叫)[：:\s]*(.+?)[。.]?$/u`,
       String.raw`/^(?:please )?(?:rename yourself to|from now on (?:your name is|call yourself))\s+(.+?)\.?$/i`,
       String.raw`/^(?:请)?(?:以后|今后|从现在起|长期|默认)[，,\s]*(?:(?:你的|你)?(?:回答|回复|表达)(?:方式|风格)?[，,\s]*)?(?:默认)?(?:都)?(?:保持|采用|用|请用|要|应当|设为|设置为)?[：:\s]*(.+?)(?:的(?:方式|风格))?(?:回答|回复|表达)?[。.]?$/u`,
@@ -363,24 +335,6 @@ export const baseline: readonly BaselineEntry[] = [
   },
   {
     file: 'packages/database/src/employees/once-task-intent.ts',
-    owner: 'relativeRequest',
-    kind: 'reject',
-    use: '一次性提醒的主句式（“N 分钟后提醒我…”），不命中就不建',
-    sites: [
-      String.raw`RegExp(/^(?:(?:请\s*|麻烦(?:你)?\s*)?(?:(?:帮我|为我)\s*)?(?:给我\s*)?(?:搞|建|创建|设置|设|安排|添加|定)(?:一)?(?:个|条)?(?:定时任务|一次性任务|定时提醒|提醒|任务)\s*[，,:：。]?\s*)?(?:请\s*|麻烦(?:你)?\s*)?(?:(?:帮我|为我)\s*)?(?:(?:从现在(?:起|开始)?|现在开始)\s*)?(?:在\s*|再?过\s*)?([0-9零〇一二两三四五六七八九十百千万]+)\s*(分钟|小时|天)(?:之后|以后|后)?\s*[，,:：]?\s*(.+)$/su)`,
-    ],
-  },
-  {
-    file: 'packages/database/src/employees/once-task-intent.ts',
-    owner: 'reminderRequest',
-    kind: 'reject',
-    use: '一次性提醒的主句式（“提醒我…”），不命中就不建',
-    sites: [
-      String.raw`RegExp(/^(?:请\s*|麻烦(?:你)?\s*)?(?:(?:帮我|为我)\s*)?(提醒(?:我|我们)|告诉(?:我|我们)|通知(?:我|我们))\s*(?:在\s*|再?过\s*)?([0-9零〇一二两三四五六七八九十百千万]+)\s*(分钟|小时|天)(?:之后|以后|后)\s*[，,:：]?\s*(.+)$/su)`,
-    ],
-  },
-  {
-    file: 'packages/database/src/employees/once-task-intent.ts',
     owner: 'taskClause',
     kind: 'reject',
     use: '从原话里取出要提醒或执行的内容；取不到就不建',
@@ -408,12 +362,11 @@ export const baseline: readonly BaselineEntry[] = [
     use: '从 GitHub 安装个人技能：先把各种说法改写成标准句式，再按安装句式判断，否则拒绝',
     sites: [
       String.raw`/(?:上传|附件|\b(?:attached|uploaded)\b|SKILL\.md|\.zip\b)/iu`,
-      String.raw`/(?:这个|该)?\s*(?:公开\s*)?GitHub\s*(?:链接|仓库|目录)(?:(?:里|中)的?)?(?:技能|Skill)?\s*[:：]?\s*(?:SKILL\.md)?/giu`,
+      String.raw`replace(/(?:这个|该)?\s*(?:公开\s*)?GitHub\s*(?:链接|仓库|目录)(?:(?:里|中)的?)?(?:技能|Skill)?\s*[:：]?\s*(?:SKILL\.md)?/giu)`,
       String.raw`/SKILL\.md\s*(?:里面|里|中)的?\s*(?:技能|Skill)/giu`,
       String.raw`/(?:这个|该)\s*技能\s*[:：]\s*SKILL\.md/gu`,
       String.raw`/((?:这个|该))技能(?=\s*(?:[:：。；;！!\n]|$))/gu`,
       String.raw`/((?:SKILL\.md|技能文件))[:：](?=\s*(?:\n|$))/gu`,
-      String.raw`/(?:the\s+)?(?:public\s+)?GitHub\s+(?:skill|repository|directory)\s+(?:at|from)\s+SKILL\.md/giu`,
       String.raw`/SKILL\.md\s*装上/gu`,
     ],
   },
@@ -497,24 +450,6 @@ export const baseline: readonly BaselineEntry[] = [
     ],
   },
   {
-    file: 'packages/database/src/employees/schedule-clarification.ts',
-    owner: 'frequency',
-    kind: 'reject',
-    use: '用户在频率提问卡上作答后，按原话和答案重新解析提醒；一次性提醒解析不出就不建',
-    sites: [
-      String.raw`RegExp(/^(?:请\s*|麻烦(?:你)?\s*)?(?:(?:帮我|为我)\s*)?(每(?:隔)?\s*)?([0-9零〇一二两三四五六七八九十百千万]+)\s*(分钟|小时|天)(之后|以后|后)?\s*(?:提醒(?:我|我们)?(?:一次|一下)?|(?:循环|重复)(?:提醒)?)?[。！!]*$/u)`,
-    ],
-  },
-  {
-    file: 'packages/database/src/employees/schedule-clarification.ts',
-    owner: 'timedWork',
-    kind: 'reject',
-    use: '用户在频率提问卡上作答后，按原话和答案重新解析提醒；一次性提醒解析不出就不建',
-    sites: [
-      String.raw`RegExp(/^(?:请\s*|麻烦(?:你)?\s*)?(?:(?:帮我|为我)\s*)?(?:每(?:隔)?\s*)?([0-9零〇一二两三四五六七八九十百千万]+)\s*(分钟|小时|天)(?:之后|以后|后)?\s*[，,:：]?\s*(.+?)[。！!]*$/su)`,
-    ],
-  },
-  {
     file: 'packages/database/src/experience-feedback.ts',
     owner: 'classifyExperienceFeedback',
     kind: 'reject',
@@ -525,11 +460,10 @@ export const baseline: readonly BaselineEntry[] = [
       String.raw`/(?:不要|不需要|不用|不必|无需|请勿|别|不再)[^。！？；\n]{0,80}(?:记录|学习|记忆|沉淀|记下|保存|留存|存储)|不(?:记录|学习|记忆|沉淀|记下|保存|留存|存储)/u`,
       String.raw`/(?:这次|本次|这一次|当前)[^。！？；\n]{0,20}(?:只|仅)|(?:只|仅)[^。！？；\n]{0,20}(?:这次|本次|这一次|这一单|这一份)/u`,
       String.raw`/\b(?:do not|don't|never|no need to)\s+(?:need to\s+)?(?:save|store|record|retain|learn|remember)\b|\b(?:only|just)\s+(?:this|the current)\b|\b(?:this|the current)\s+(?:time|task|report)\s+only\b/iu`,
-      String.raw`/^(?:反馈[：:，,\s]*)?(?:(?:你)?(?:刚才|上次|刚刚|上一轮)|这(?:份|个|次)(?:报告|表格|结果|分析|交付|计算)|上一(?:份|个|次)(?:报告|表格|结果|分析|交付|计算))/u`,
-      String.raw`/(?:不对|有误|错误|漏[了掉算列]?|算错|重复(?:计算|统计|记录)|口径不(?:对|一致)|应当|应该|需要改|少[了算]|多算)/u`,
+      String.raw`test(/^(?:反馈[：:，,\s]*)?(?:(?:你)?(?:刚才|上次|刚刚|上一轮)|这(?:份|个|次)(?:报告|表格|结果|分析|交付|计算)|上一(?:份|个|次)(?:报告|表格|结果|分析|交付|计算))/u)`,
+      String.raw`test(/(?:不对|有误|错误|漏[了掉算列]?|算错|重复(?:计算|统计|记录)|口径不(?:对|一致)|应当|应该|需要改|少[了算]|多算)/u)`,
       String.raw`/^(?:反馈[：:，,\s]*|(?:我)?(?:已|已经)(?:核对|复核|验证|检查)[，,：:\s]*)/u`,
       String.raw`/(?:正确|有误|不对|一致|不一致|漏|算错|通过|保留|清晰|方便|难以)/u`,
-      String.raw`/^(?:your (?:last|previous) (?:report|result|calculation)|the (?:last|previous) (?:report|result|calculation))\b/iu`,
     ],
   },
   {
@@ -603,7 +537,7 @@ export const baseline: readonly BaselineEntry[] = [
     kind: 'decide',
     use: '上下文压缩时按“目标/决定/偏好”等关键词挑出要保留的消息',
     sites: [
-      String.raw`/目标|决定|决策|文件|结果|待办|偏好|风险|约束|goal|decision|file|result|todo|preference|risk|constraint/i`,
+      String.raw`test(/目标|决定|决策|文件|结果|待办|偏好|风险|约束|goal|decision|file|result|todo|preference|risk|constraint/i)`,
     ],
   },
   {
@@ -652,51 +586,6 @@ export const baseline: readonly BaselineEntry[] = [
   },
   {
     file: 'packages/database/src/employees/recurring-task-intent.ts',
-    owner: 'conditionalInstruction',
-    kind: 'format',
-    use: '周期提醒的快速通道：原话命中这些句式、且和模型参数一致就直接建；没命中由服务端出确认卡，不拒绝（#576）',
-    sites: [
-      String.raw`RegExp(/如果|假如|除非|倘若|只要|只有|一旦|即使|(?:假设|若)(?:我|你|有|无|已|未|不|没|需|要|能|可)|(?:才|就)(?:再)?(?:回复|回答|提醒|告诉|检查|整理|生成|汇总|查询|查找|总结|读取|列出|编写|执行|完成|发送|翻译|给出|附上|使用|保持|创建|安排|预约|设置|登记|启用|开启|运行|调度|通知|发消息)|视情况|看情况|有空|有需要|必要时|(?:确认|同意|批准)(?:之后|以后|后)|(?:等|待)我/u)`,
-    ],
-  },
-  {
-    file: 'packages/database/src/employees/recurring-task-intent.ts',
-    owner: 'dailyRequest',
-    kind: 'format',
-    use: '周期提醒的快速通道：原话命中这些句式、且和模型参数一致就直接建；没命中由服务端出确认卡，不拒绝（#576）',
-    sites: [
-      String.raw`RegExp(/^(?:请\s*|麻烦(?:你)?\s*)?(?:(?:帮我|为我)\s*)?(?:每天|每日)\s*((?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?)\s*[，,]?\s*(?:时区\s*[:：]?\s*)?((?:[A-Za-z_+-]+(?:/[A-Za-z0-9_+-]+)+|UTC))\s*[，,:：]?\s*(.+)$/su)`,
-    ],
-  },
-  {
-    file: 'packages/database/src/employees/recurring-task-intent.ts',
-    owner: 'deniedInstruction',
-    kind: 'format',
-    use: '周期提醒的快速通道：原话命中这些句式、且和模型参数一致就直接建；没命中由服务端出确认卡，不拒绝（#576）',
-    sites: [
-      String.raw`RegExp(/(?:不要|不用|不必|无需|不能|不允许|不准|不得|暂不|不|别|勿|禁止)\s*(?:(?:再|现在|立即|马上|实际|擅自|给我|帮我|为我|自动|继续|你)\s*){0,6}(?:回复|回答|提醒|告诉|检查|整理|生成|汇总|查询|查找|总结|读取|列出|编写|执行|完成|发送|翻译|给出|附上|使用|保持|创建|安排|预约|设置|登记|启用|开启|运行|调度|通知|发消息)|(?:不想|不希望|不需要|没有要求|未授权)\s*(?:(?:被|再|现在|立即|实际|你|他|她|它|继续|自动|周期|定时|重复)\s*)*(?:回复|回答|提醒|告诉|检查|整理|生成|汇总|查询|查找|总结|读取|列出|编写|执行|完成|发送|翻译|给出|附上|使用|保持|创建|安排|预约|设置|登记|启用|开启|运行|调度|通知|发消息)|(?:^|请|并|然后|同时|另外|再|且)\s*(?:取消|停止|暂停|撤销)(?:任务|计划|提醒|运行|执行|调度|创建|发送|$)/u)`,
-    ],
-  },
-  {
-    file: 'packages/database/src/employees/recurring-task-intent.ts',
-    owner: 'everyRequest',
-    kind: 'format',
-    use: '周期提醒的快速通道：原话命中这些句式、且和模型参数一致就直接建；没命中由服务端出确认卡，不拒绝（#576）',
-    sites: [
-      String.raw`RegExp(/^(?:请\s*|麻烦(?:你)?\s*)?(?:(?:帮我|为我)\s*)?(?:(?:从现在(?:起|开始)?|现在开始)\s*)?每(?:隔)?\s*([0-9零〇一二两三四五六七八九十百千万]+)\s*(分钟|小时|天)\s*[，,:：]?\s*(.+)$/su)`,
-    ],
-  },
-  {
-    file: 'packages/database/src/employees/recurring-task-intent.ts',
-    owner: 'exampleScaffolding',
-    kind: 'format',
-    use: '周期提醒的快速通道：原话命中这些句式、且和模型参数一致就直接建；没命中由服务端出确认卡，不拒绝（#576）',
-    sites: [
-      String.raw`/(?:这是|此为|只是|仅是|仅作|仅为|仅供|只作|只供|作为)(?:一(?:个|段|条))?(?:示例|例子|范例|文档|教程|参考|演示)|是(?:一(?:个|段|条))?(?:示例|例子|范例)|(?:文档|教程|示例)(?:中)?(?:说|写道|提到|规定|要求)[:：]/u`,
-    ],
-  },
-  {
-    file: 'packages/database/src/employees/recurring-task-intent.ts',
     owner: 'explicitRecurringTaskIntent',
     kind: 'format',
     use: '周期提醒的快速通道：原话命中这些句式、且和模型参数一致就直接建；没命中由服务端出确认卡，不拒绝（#576）',
@@ -725,24 +614,6 @@ export const baseline: readonly BaselineEntry[] = [
   },
   {
     file: 'packages/database/src/employees/recurring-task-intent.ts',
-    owner: 'monthlyRequest',
-    kind: 'format',
-    use: '周期提醒的快速通道：原话命中这些句式、且和模型参数一致就直接建；没命中由服务端出确认卡，不拒绝（#576）',
-    sites: [
-      String.raw`RegExp(/^(?:请\s*|麻烦(?:你)?\s*)?(?:(?:帮我|为我)\s*)?每月\s*(?:([0-9零〇一二两三四五六七八九十百千万]+)\s*(?:日|号)|(?:末|最后一天))\s*[，,]?\s*((?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?)\s*[，,]?\s*(?:时区\s*[:：]?\s*)?((?:[A-Za-z_+-]+(?:/[A-Za-z0-9_+-]+)+|UTC))\s*[，,:：]?\s*(.+)$/su)`,
-    ],
-  },
-  {
-    file: 'packages/database/src/employees/recurring-task-intent.ts',
-    owner: 'nestedSchedule',
-    kind: 'format',
-    use: '周期提醒的快速通道：原话命中这些句式、且和模型参数一致就直接建；没命中由服务端出确认卡，不拒绝（#576）',
-    sites: [
-      String.raw`RegExp(/(?:并且|并|而且|同时|另外|然后|再|以及|但|不过)\s*(?:也|还|再|请)?\s*(?:每隔|每天|每日|每晚|每早|每周|每月)|(?:每天|每日)\s*(?:早上|早晨|上午|中午|下午|傍晚|晚上|夜间)(?!\s*的)|每(?:隔)?\s*[0-9零〇一二两三四五六七八九十百千万]+\s*(?:分钟|小时|天|周|个月|月|年)(?!\s*的)|每(?:隔)?\s*(?:分钟|小时)\s*(?:请)?(?:只|仅)?(?:回复|回答|提醒|告诉|检查|整理|生成|汇总|查询|查找|总结|读取|列出|编写|执行|完成|发送|翻译|给出|附上|使用|保持|创建|安排|预约|设置|登记|启用|开启|运行|调度|通知|发消息)|(?:每天|每日|每晚|每早|每周[一二三四五六日天]?|每月(?:[0-9零〇一二两三四五六七八九十百千万]+日)?)\s*(?:(?:[0-9]{1,2}[:：][0-9]{2}(?::[0-9]{2})?|[零一二两三四五六七八九十]+点(?:整|钟)?)\s*)?(?:请)?(?:只|仅)?(?:回复|回答|提醒|告诉|检查|整理|生成|汇总|查询|查找|总结|读取|列出|编写|执行|完成|发送|翻译|给出|附上|使用|保持|创建|安排|预约|设置|登记|启用|开启|运行|调度|通知|发消息)|(?:定期|循环|反复|重复)\s*(?:回复|回答|提醒|告诉|检查|整理|生成|汇总|查询|查找|总结|读取|列出|编写|执行|完成|发送|翻译|给出|附上|使用|保持|创建|安排|预约|设置|登记|启用|开启|运行|调度|通知|发消息)|(?:创建|安排|设置|登记)(?:一个)?(?:周期|定时|重复|循环)任务/u)`,
-    ],
-  },
-  {
-    file: 'packages/database/src/employees/recurring-task-intent.ts',
     owner: 'normalizedTaskClause',
     kind: 'format',
     use: '周期提醒的快速通道：原话命中这些句式、且和模型参数一致就直接建；没命中由服务端出确认卡，不拒绝（#576）',
@@ -751,15 +622,6 @@ export const baseline: readonly BaselineEntry[] = [
       String.raw`/^(?:请)?(?:帮我|为我)\s*/u`,
       String.raw`/^(?:请)?(?:在(?:这个|当前)(?:对话|会话)(?:中|里)?|在此(?:对话|会话))\s*/u`,
       String.raw`RegExp(/^((?:请)?)(?:(?:只|仅|分别|逐项|逐一|依次)\s*){1,3}(?=(?:回复|回答|提醒|告诉|检查|整理|生成|汇总|查询|查找|总结|读取|列出|编写|执行|完成|发送|翻译|给出|附上|使用|保持|创建|安排|预约|设置|登记|启用|开启|运行|调度|通知|发消息))/u)`,
-    ],
-  },
-  {
-    file: 'packages/database/src/employees/recurring-task-intent.ts',
-    owner: 'otherTime',
-    kind: 'format',
-    use: '周期提醒的快速通道：原话命中这些句式、且和模型参数一致就直接建；没命中由服务端出确认卡，不拒绝（#576）',
-    sites: [
-      String.raw`RegExp(/[0-9零〇一二两三四五六七八九十百千万]+\s*(?:秒|分(?:钟)?|小时|天|周|个月|月|年)(?:之后|以后|后|内|前)|[0-9零〇一二两三四五六七八九十百千万]+\s*次|[0-9]{1,2}[:：][0-9]{2}|[0-9零一二两三四五六七八九十]+\s*[点时](?:整|钟|回复|提醒|执行|发送|$)|[0-9]{4}[-/年][0-9]{1,2}/u)`,
     ],
   },
   {
@@ -803,20 +665,14 @@ export const baseline: readonly BaselineEntry[] = [
     ],
   },
   {
-    file: 'packages/database/src/employees/recurring-task-intent.ts',
-    owner: 'weeklyRequest',
-    kind: 'format',
-    use: '周期提醒的快速通道：原话命中这些句式、且和模型参数一致就直接建；没命中由服务端出确认卡，不拒绝（#576）',
-    sites: [
-      String.raw`RegExp(/^(?:请\s*|麻烦(?:你)?\s*)?(?:(?:帮我|为我)\s*)?每(?:周|星期)\s*([一二三四五六日天](?:\s*[、,，和及]\s*(?:周|星期)?[一二三四五六日天])*)\s*[，,]?\s*((?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?)\s*[，,]?\s*(?:时区\s*[:：]?\s*)?((?:[A-Za-z_+-]+(?:/[A-Za-z0-9_+-]+)+|UTC))\s*[，,:：]?\s*(.+)$/su)`,
-    ],
-  },
-  {
     file: 'apps/web/app/chatflow/chat-transcript.tsx',
     owner: 'ChatTranscript.ChatTranscript',
     kind: 'own-text',
     use: '认出系统自己的兜底失败文案，改用对应的展示',
-    sites: [String.raw`=== "Rice 暂时无法完成这次请求，请稍后重试。"`],
+    sites: [
+      String.raw`=== "Rice 暂时无法完成这次请求，请稍后重试。"`,
+      String.raw`=== "参考资料已不可用，请检查资料状态和访问权限后重新发起任务。"`,
+    ],
   },
   {
     file: 'apps/web/app/chatflow/employee-detail-prompts.ts',
@@ -839,6 +695,13 @@ export const baseline: readonly BaselineEntry[] = [
       String.raw`=== "/工作区文件"`,
       String.raw`[key] of ["上传文件","交付文件","过程资料"]`,
     ],
+  },
+  {
+    file: 'apps/web/app/runtime-console/governance-console.tsx',
+    owner: 'GovernanceConsole',
+    kind: 'own-text',
+    use: '认出系统自己的“授权方式未支持”提示，改用对应的展示',
+    sites: [String.raw`=== "授权方式未支持"`, String.raw`=== "授权方式未支持"`],
   },
   {
     file: 'apps/web/app/runtime-console/organization-administration.tsx',
@@ -929,8 +792,8 @@ export const baseline: readonly BaselineEntry[] = [
     kind: 'own-text',
     use: '判断品牌文章末尾是否已带系统生成的“资料依据”段，避免重复追加',
     sites: [
-      '=== "---\\n\\n资料依据：${…}。${…}"',
-      'endsWith("\\n\\n---\\n\\n资料依据：${…}。${…}")',
+      '=== "---\\n\\n资料依据：本次品牌资料中的文字要求。${\\n\\n待核实：\\n- ${…}|}"',
+      'endsWith("\\n\\n---\\n\\n资料依据：本次品牌资料中的文字要求。${\\n\\n待核实：\\n- ${…}|}")',
     ],
   },
   {
@@ -1020,15 +883,6 @@ export const baseline: readonly BaselineEntry[] = [
     ],
   },
   {
-    file: 'packages/contracts/src/mcp-failure.ts',
-    owner: 'classifyMcpFailure',
-    kind: 'external-text',
-    use: '认出 GitHub 合并接口“令牌无权访问”的报错文案，归到对应的失败类别',
-    sites: [
-      String.raw`/^failed to merge pull request: PUT https:\/\/api\.github\.com\/repos\/[^/\s]+\/[^/\s]+\/pulls\/\d+\/merge: 403 Resource not accessible by personal access token(?: \[\])?$/`,
-    ],
-  },
-  {
     file: 'apps/web/app/chatflow/bridge-dialog.tsx',
     owner: 'BridgeSettings',
     kind: 'display',
@@ -1055,7 +909,8 @@ export const baseline: readonly BaselineEntry[] = [
     kind: 'display',
     use: '提问卡选项末尾的“（推荐）”改成推荐样式，只影响展示',
     sites: [
-      String.raw`/\s*(?:\((?:recommended|推荐)\)|（(?:recommended|推荐)）)\s*$/i`,
+      String.raw`replace(/\s*(?:\((?:recommended|推荐)\)|（(?:recommended|推荐)）)\s*$/i)`,
+      String.raw`test(/\s*(?:\((?:recommended|推荐)\)|（(?:recommended|推荐)）)\s*$/i)`,
     ],
   },
   {
@@ -1064,7 +919,8 @@ export const baseline: readonly BaselineEntry[] = [
     kind: 'display',
     use: '提问回执里选项末尾的“（推荐）”改成推荐样式，只影响展示',
     sites: [
-      String.raw`/\s*(?:\((?:recommended|推荐)\)|（(?:recommended|推荐)）)\s*$/i`,
+      String.raw`replace(/\s*(?:\((?:recommended|推荐)\)|（(?:recommended|推荐)）)\s*$/i)`,
+      String.raw`test(/\s*(?:\((?:recommended|推荐)\)|（(?:recommended|推荐)）)\s*$/i)`,
     ],
   },
   {
