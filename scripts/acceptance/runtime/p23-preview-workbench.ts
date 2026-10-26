@@ -242,10 +242,10 @@ try {
     );
     await request.click();
     assert.equal((await response).status(), 200);
-    const panel = page.getByRole('region', { name: '受控浏览器工作台' });
+    const panel = page.getByRole('region', { name: '浏览器' });
     await panel.getByRole('heading', { name: /本地项目预览/ }).waitFor();
-    await panel.getByText(/不开放本机端口或公共网址/).waitFor();
-    await panel.getByText('正在启动', { exact: true }).waitFor();
+    await panel.getByText(/预览你电脑上正在运行的项目/).waitFor();
+    await panel.getByText('正在打开浏览器', { exact: true }).waitFor();
     assert.equal(
       (await db`select id from allrice_browser_workspaces`).length,
       1,

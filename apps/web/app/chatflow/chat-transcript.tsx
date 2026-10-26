@@ -503,6 +503,7 @@ export const ChatTranscript = memo(function ChatTranscript({
                                       workspaceId={workspaceId}
                                       tenantHeaders={tenantHeaders}
                                       runActive={messageIsRunning}
+                                      employeeName={employeeName}
                                     />
                                   )}
 
