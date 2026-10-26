@@ -553,6 +553,7 @@ integration('P25 governed assistant ledger — isolated real PostgreSQL', () => 
     ['descendant-unconfirmed', 'unknown'],
     ['descendant-reported-partial', 'completed'],
     ['sibling-unadopted', 'unknown'],
+    ['sibling-adopted', 'partial'],
     ['root-canceled', 'canceled'],
   ] as const)(
     'stopping one child never relaxes the rest of the tree: %s',
@@ -562,16 +563,17 @@ integration('P25 governed assistant ledger — isolated real PostgreSQL', () => 
       const nested = mode.startsWith('descendant')
         ? (await f.delegate({ parentRunId: a.runId })).instance
         : undefined;
-      const sibling =
-        mode === 'sibling-unadopted'
-          ? (await f.delegate()).instance
-          : undefined;
-      const report = (runId: string) =>
-        f.runtime.recordResult({
+      const siblingDelegation = randomUUID();
+      const sibling = mode.startsWith('sibling')
+        ? (await f.delegate({ delegationId: siblingDelegation })).instance
+        : undefined;
+      const report = async (runId: string) => {
+        const deliveryId = randomUUID();
+        await f.runtime.recordResult({
           ...f.base,
           runId,
           result: {
-            deliveryId: randomUUID(),
+            deliveryId,
             status: 'partial',
             summary: 'Half of the synthetic input checked',
             evidence: [],
@@ -579,8 +581,35 @@ integration('P25 governed assistant ledger — isolated real PostgreSQL', () => 
             usageComplete: false,
           },
         });
+        return deliveryId;
+      };
       if (mode === 'descendant-reported-partial') await report(nested!.runId);
-      if (sibling) await report(sibling.runId);
+      if (sibling) {
+        // Leave the sibling's unadopted result as its only open item: its
+        // delegation message is consumed and its launch hold is settled.
+        await f.runtime.claimMessage({ ...f.base, inputId: siblingDelegation });
+        await f.runtime.checkpointMessage({
+          ...f.base,
+          inputId: siblingDelegation,
+          nativeMessageId: randomUUID(),
+          durableSeq: 1,
+          adoptedSeq: 2,
+        });
+        await f.runtime.settleUsage({
+          ...f.base,
+          callId: siblingDelegation,
+          amounts: { model_calls: 0 },
+        });
+        const deliveryId = await report(sibling.runId);
+        if (mode === 'sibling-adopted')
+          await f.runtime.adoptResult({
+            ...f.base,
+            parentRunId: f.task.runId,
+            deliveryId,
+            nativeMessageId: randomUUID(),
+            adoptedSeq: 3,
+          });
+      }
       await f.runtime.cancelChild(f.context, {
         runId: f.task.runId,
         childRunId: a.runId,
