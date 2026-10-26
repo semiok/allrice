@@ -889,6 +889,7 @@ export async function createAllRiceRuntime(
       if (!session) throw Error('connection_wait_session_missing');
       const [sessionId] = session;
       const questionId = `app-connect:${result.requestId}`;
+      const connectedLabel = '已连接，继续任务';
       this.managedConnectionWaits.add(sessionId);
       try {
         const answer = await this.ctx.userQuestions.ask({
@@ -900,19 +901,22 @@ export async function createAllRiceRuntime(
               header: '连接应用',
               question: '完成应用登录后，我会继续当前任务。',
               detail: `[打开连接页面](${result.loginPath})\n请勿在聊天中填写密码或令牌。连接编号：${result.connection.id}`,
-              options: [{ label: '已连接，继续任务' }, { label: '取消连接' }],
+              options: [{ label: connectedLabel }, { label: '取消连接' }],
             },
           ],
         });
+        // Only an explicit "已连接" continues with this connection. A skipped
+        // item ({ selected: [] }) or free text confirms nothing.
+        const selected = answer.answers.flatMap((item) => item.selected);
         return {
           content: JSON.stringify({
             connectionId: result.connection.id,
             answer,
-            instruction: answer.answers.some((item) =>
-              item.selected.includes('取消连接'),
-            )
+            instruction: selected.includes('取消连接')
               ? '用户取消本次连接。停止等待和重试此连接，继续处理不依赖它的工作。'
-              : '先使用 action=status 检查连接状态；只有发现完成后才能调用工具。这不是远程操作批准。',
+              : selected.includes(connectedLabel)
+                ? '先使用 action=status 检查连接状态；只有发现完成后才能调用工具。这不是远程操作批准。'
+                : '用户没有确认已完成连接（跳过或另有说明，见 answer）。不要假定连接可用，停止等待此连接，继续处理不依赖它的工作；需要时再请用户连接。',
           }),
         };
       } finally {

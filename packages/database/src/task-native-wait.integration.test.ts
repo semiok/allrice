@@ -39,6 +39,10 @@ import {
 } from './employees/employee-instances.ts';
 import { authenticateSession, createSession } from './identity.ts';
 import { sendChatMessage } from './workspace/service.ts';
+import {
+  claimConversationSteer,
+  consumeConversationSteer,
+} from './conversation/conversation-input.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -593,10 +597,80 @@ suite('MET153 durable native waits and queue authority', () => {
     await maintainQueue();
     await maintainQueue();
     expect(
-      await f.db`select error_code from allrice_conversation_commands where session_id=${f.session} and state='rejected'`,
-    ).toEqual([]);
-    const claimed = await claimNextJob(randomUUID(), 30000);
+      await f.db`select state,input_kind from allrice_conversation_commands where session_id=${f.session}`,
+    ).toEqual([{ state: 'pending', input_kind: 'ask_user' }]);
+    const replacement = randomUUID(),
+      claimed = await claimNextJob(replacement, 30000);
     expect(claimed?.id).toBe(f.worker.jobId);
+    // The same steps the employee Worker takes to resume this Run. The native
+    // adoption of the skipped item itself is covered by the p25 native tests.
+    const execution = await startClaimedJob(
+      replacement,
+      claimed!.id,
+      claimed!.lease!.token,
+    );
+    const next = {
+      context: execution!.context,
+      worker: {
+        ...owner.worker,
+        workerId: replacement,
+        leaseToken: claimed!.lease!.token,
+      },
+      configChecksum: owner.configChecksum,
+      generation: owner.generation,
+    };
+    await acquireConversationRuntime({
+      organizationId: f.org,
+      workspaceId: f.workspace,
+      sessionId: f.session,
+      runId: f.rootRunId,
+      workerId: replacement,
+      ownerId: f.user,
+      configChecksum: owner.configChecksum,
+      compactThresholdTokens: 40000,
+    });
+    expect(await readNativeQuestionWait(next)).toEqual(checkpoint);
+    const command = await claimConversationSteer({
+      organizationId: f.org,
+      workspaceId: f.workspace,
+      sessionId: f.session,
+      workerId: replacement,
+      generation: owner.generation,
+      turnId: checkpoint.turnId,
+    });
+    expect(command).toMatchObject({ inputKind: 'ask_user' });
+    expect(JSON.parse(command!.message.split(':v1:')[1]!)).toEqual({
+      questionId: checkpoint.questionId,
+      answers: [{ id: 'choice', selected: [] }],
+    });
+    expect(await beginNativeTask({ ...next, attempt: claimed!.attempt })).toBe(
+      true,
+    );
+    await consumeConversationSteer({
+      commandId: command!.id,
+      workerId: replacement,
+      proof: {
+        status: 'adopted',
+        inputId: command!.clientUserMessageId,
+        messageId: checkpoint.questionId,
+        sequence: checkpoint.sequence + 1,
+        turnId: checkpoint.turnId,
+        checkpoint: 'question_resolved',
+      },
+    });
+    await continueNativeQuestion({
+      ...next,
+      questionId: checkpoint.questionId,
+    });
+    expect(
+      await f.db`select state from allrice_conversation_commands where session_id=${f.session}`,
+    ).toEqual([{ state: 'consumed' }]);
+    expect(
+      await f.db`select pending from allrice_task_questions where run_id=${f.rootRunId} and question_id=${checkpoint.questionId}`,
+    ).toEqual([{ pending: false }]);
+    expect(
+      await f.db`select state,error_code from allrice_runs where id=${command!.followupRunId}`,
+    ).toEqual([{ state: 'canceled', error_code: 'STEER_CONSUMED' }]);
     await cancelRun(f.requestContext, f.workspace, f.rootRunId, {
       reason: 'synthetic cleanup',
     });

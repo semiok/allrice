@@ -162,7 +162,10 @@ export async function continueNativeWait(server, params) {
     const chosen = structuredUserQuestionAnswer(wait, params.text).answers.find(
       (a) => a.id === 'runtime-progress',
     );
-    const cancel = chosen?.selected?.includes('取消任务');
+    // A skipped item ({ selected: [] }) does not agree to continue.
+    const cancel =
+      (!chosen?.selected?.length && !chosen?.custom?.trim()) ||
+      chosen?.selected?.includes('取消任务');
     if (
       !cancel &&
       !chosen?.selected?.includes('重新检查后继续') &&

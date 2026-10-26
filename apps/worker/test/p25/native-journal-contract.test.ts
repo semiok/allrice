@@ -566,6 +566,161 @@ it.each(['steer_current', 'ask_user'] as const)(
   },
 );
 
+// MET-210: skipped items ({ selected: [] }) are answers, partly or wholly;
+// a batch missing, repeating or inventing an item is still rejected.
+it.each([
+  [
+    'partly skipped',
+    'q',
+    [
+      ['choice', ['Go']],
+      ['scope', []],
+    ],
+    'adopted',
+  ],
+  [
+    'wholly skipped',
+    'q',
+    [
+      ['choice', []],
+      ['scope', []],
+    ],
+    'adopted',
+  ],
+  ['missing an item', 'q', [['choice', []]], 'QUESTION_ANSWER_INVALID'],
+  [
+    'repeating an item',
+    'q',
+    [
+      ['choice', []],
+      ['choice', []],
+    ],
+    'QUESTION_ANSWER_INVALID',
+  ],
+  [
+    'for another question',
+    'other',
+    [
+      ['choice', []],
+      ['scope', []],
+    ],
+    'QUESTION_ANSWER_INVALID',
+  ],
+  [
+    'with an unknown option',
+    'q',
+    [
+      ['choice', []],
+      ['scope', ['None']],
+    ],
+    'QUESTION_ANSWER_INVALID',
+  ],
+  [
+    'repeating a selection',
+    'q',
+    [
+      ['choice', []],
+      ['many', ['A', 'A']],
+    ],
+    'QUESTION_ANSWER_REQUIRED',
+  ],
+] as const)(
+  'a question batch %s is checked like any other answer',
+  async (_case, questionId, items, outcome) => {
+    const { session } = recordingJournal();
+    const second = items.some(([id]) => id === 'many')
+      ? {
+          id: 'many',
+          question: 'Which?',
+          multiSelect: true,
+          options: [{ label: 'A' }, { label: 'B' }],
+        }
+      : {
+          id: 'scope',
+          question: 'Scope?',
+          options: [{ label: 'All' }, { label: 'Some' }],
+        };
+    const delivery = inputs.deliverDshInput(
+      {
+        agent: {
+          status: 'idle',
+          session,
+          inbox: { nextStep: [], nextTurn: [] },
+        },
+        sessionId,
+        pendingQuestion: {
+          questionId: 'q',
+          questions: [question, second],
+          resolve() {},
+        },
+        notify() {},
+        flush: async () => {},
+        isCurrent: () => true,
+        suspended: true,
+      },
+      {
+        ...input,
+        kind: 'ask_user',
+        text: `allrice:user-question:v1:${JSON.stringify({ questionId, answers: items.map(([id, selected]) => ({ id, selected })) })}`,
+      },
+    );
+    if (outcome === 'adopted') expect((await delivery).status).toBe('adopted');
+    else await expect(delivery).rejects.toThrow(outcome);
+  },
+);
+
+// MET-210: a skipped item ({ selected: [] }) on the parked "运行进度暂停"
+// card resumes as a cancellation, never as agreement to continue.
+it('resumes a skipped parked runtime-progress card as a cancellation', async () => {
+  const { session } = recordingJournal();
+  const agent = {
+    status: 'running',
+    session,
+    inbox: { nextStep: [], nextTurn: [] },
+    cancel() {
+      agent.status = 'idle';
+    },
+    whenIdle: async () => {},
+  };
+  const record = { agent };
+  const progress = {
+    id: 'runtime-progress',
+    question: '是否调整后继续？',
+    options: [{ label: '重新检查后继续' }, { label: '取消任务' }],
+  };
+  const decisions: unknown[] = [];
+  const server = {
+    requireRoot: () => record,
+    ensureRoot: async () => record,
+    assertRoot() {},
+    isRootCurrent: () => true,
+    pendingUserQuestions: new Map([
+      [sessionId, { questionId: 'q', questions: [progress] }],
+    ]),
+    ctx: {
+      agents: { list: () => [agent] },
+      sessions: { flush: async () => {} },
+    },
+    userQuestionNotify() {},
+    prompt: async () => ({ accepted: true }),
+    progressBridge: async (p: { action: string; decision?: string }) => {
+      if (p.action === 'decide') decisions.push(p.decision);
+      return { paused: true, pauseId: 'one' };
+    },
+  };
+  await waits.checkpointNativeQuestion(server, sessionId, 'q');
+  await expect(
+    waits.continueNativeWait(server, {
+      sessionId,
+      questionId: 'q',
+      turnId,
+      inputId,
+      text: `allrice:user-question:v1:${JSON.stringify({ questionId: 'q', answers: [{ id: 'runtime-progress', selected: [] }] })}`,
+    }),
+  ).rejects.toThrow('task_progress_canceled');
+  expect(decisions).toEqual(['cancel']);
+});
+
 it('writes a checkpoint and continuation that the journal reader accepts', async () => {
   const { events, session } = recordingJournal();
   const agent = {

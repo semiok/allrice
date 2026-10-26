@@ -14,11 +14,13 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-// MET-210: "跳过本题" is DSH's skipped item { id, selected: [] }. A live
-// question is the path for members with assistants on (they never park).
+// MET-210: "跳过本题" is DSH's skipped item { id, selected: [] }.
+// live: no question wait, the path for members with assistants on (they never
+// park); armed: no assistants, answered before the park timer; parked: resumed.
 it.each([
   ['live', 'chosen'],
   ['live', 'skipped'],
+  ['armed', 'skipped'],
   ['parked', 'chosen'],
   ['parked', 'skipped'],
 ] as const)(
@@ -112,7 +114,7 @@ it.each([
           questionSeen.release();
         }
       },
-      ...(phase === 'parked'
+      ...(phase !== 'live'
         ? {
             questionWait: {
               adopted,
@@ -211,6 +213,8 @@ it.each([
         expect(pool.get(threadId)?.id).not.toBe(original.id);
       } else {
         expect(pool.get(threadId)).toBe(original);
+        // An answer before the park timer leaves nothing parked.
+        expect(checkpoint).toBeUndefined();
       }
     } finally {
       persisted.release();

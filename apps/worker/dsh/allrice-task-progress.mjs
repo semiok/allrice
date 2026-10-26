@@ -185,7 +185,10 @@ export function installTaskProgress(ctx, bridge, configuration = {}) {
           ],
         });
         const chosen = answer.answers.find((a) => a.id === 'runtime-progress');
-        const cancel = chosen?.selected?.includes('取消任务');
+        // A skipped item ({ selected: [] }) does not agree to continue.
+        const cancel =
+          (!chosen?.selected?.length && !chosen?.custom?.trim()) ||
+          chosen?.selected?.includes('取消任务');
         if (
           !cancel &&
           !chosen?.selected?.includes('重新检查后继续') &&

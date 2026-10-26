@@ -174,22 +174,26 @@ describe('native progress middleware', () => {
       undefined,
     );
   });
-  it('cancel never dispatches the next model and leaves a cancellation decision', async () => {
-    const f = fixture();
-    f.pause();
-    f.ctx.userQuestions.ask.mockResolvedValue({
-      answers: [{ id: 'runtime-progress', selected: ['取消任务'] }],
-    });
-    const next = vi.fn();
-    await expect(
-      f.hooks.get('agent/request')({ agent: f.root }, next),
-    ).rejects.toThrow('task_progress_canceled');
-    expect(next).not.toHaveBeenCalled();
-    expect(f.bridge).toHaveBeenCalledWith(
-      expect.objectContaining({ decision: 'cancel' }),
-      undefined,
-    );
-  });
+  // MET-210: a skipped item ({ selected: [] }) does not agree to continue.
+  it.each([[['取消任务']], [[]]])(
+    'cancel (selected %j) never dispatches the next model and leaves a cancellation decision',
+    async (selected) => {
+      const f = fixture();
+      f.pause();
+      f.ctx.userQuestions.ask.mockResolvedValue({
+        answers: [{ id: 'runtime-progress', selected }],
+      });
+      const next = vi.fn();
+      await expect(
+        f.hooks.get('agent/request')({ agent: f.root }, next),
+      ).rejects.toThrow('task_progress_canceled');
+      expect(next).not.toHaveBeenCalled();
+      expect(f.bridge).toHaveBeenCalledWith(
+        expect.objectContaining({ decision: 'cancel' }),
+        undefined,
+      );
+    },
+  );
   it('flushes hashed tool receipts before the next request without forwarding raw content', async () => {
     const f = fixture(),
       emit = f.hooks.get('session/event');

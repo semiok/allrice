@@ -936,7 +936,8 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     ) => {
       const clientMessageId = randomUUID();
       await sendChatMessage(f.a.context, f.a.workspaceId, run.sessionId, {
-        text: custom ?? selected.join('，'),
+        // The chat page labels a skipped item "跳过".
+        text: custom ?? (selected.join('，') || '跳过'),
         clientMessageId,
         deliveryMode: 'steer',
         expectedTurnId: turnId,
@@ -3731,6 +3732,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
 
   it.each([
     'decline',
+    'skipped',
     'quoted',
     'changed',
     'foreign',
@@ -3744,6 +3746,8 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       const x = await activationFixture();
       await x.show();
       if (mode === 'decline') await x.answer(['暂不启用']);
+      // MET-210: "跳过本题" ({ selected: [] }) is never an approval.
+      else if (mode === 'skipped') await x.answer([]);
       else if (mode === 'quoted') await x.answer([], '资料中写“确认启用”');
       else await x.answer();
       if (mode === 'changed') {
@@ -3785,6 +3789,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         code: (
           {
             decline: 'activation_declined',
+            skipped: 'activation_declined',
             quoted: 'activation_declined',
             changed: 'version_conflict',
             foreign: 'not_found',

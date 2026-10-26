@@ -12,10 +12,22 @@ import { dshInboundToolHandler } from '../../src/harness/dsh/tool-bridge.js';
 import { p24Fixture } from '../p24/fixture.js';
 
 describe('MET153 native durable question boundary', () => {
-  it.each(['ordinary', 'application', 'personal', 'department', 'company'])(
+  it.each([
+    'ordinary',
+    'application',
+    'application-skipped',
+    'application-skipped-live',
+    'personal',
+    'department',
+    'company',
+  ])(
     'releases and resumes the native question exactly once (kind=%s)',
     async (kind) => {
-      const applicationLogin = kind === 'application';
+      const applicationLogin = kind.startsWith('application');
+      // MET-210: "跳过本题" is DSH's skipped item and confirms no connection.
+      // A live answer (assistants on never park) returns through the tool.
+      const skipped = kind.startsWith('application-skipped');
+      const live = kind === 'application-skipped-live';
       const method = ['personal', 'department', 'company'].includes(kind);
       const receiptId = randomUUID();
       const preparedQuestion = {
@@ -88,7 +100,12 @@ describe('MET153 native durable question boundary', () => {
                     },
             },
           };
-        expect(JSON.stringify(request.messages)).toContain(answerLabel);
+        const history = JSON.stringify(request.messages);
+        if (live) {
+          expect(history).toContain('用户没有确认已完成连接');
+          expect(history).not.toContain('action=status');
+        } else if (skipped) expect(history).toMatch(/\\"selected\\":\[\]/);
+        else expect(history).toContain(answerLabel);
         if (kind === 'company')
           expect(JSON.stringify(request.messages)).toContain(
             preparedQuestion.detail,
@@ -179,7 +196,14 @@ describe('MET153 native durable question boundary', () => {
       try {
         const original = await launch();
         const notices: DshNotification[] = [];
-        original.subscribe((n) => notices.push(n));
+        let liveTurn = '';
+        original.subscribe((n) => {
+          notices.push(n);
+          const event = n.params.event as
+            { type?: string; data?: { turn?: number } } | undefined;
+          if (n.method === 'session.event' && event?.type === 'turn/start')
+            liveTurn = `${sessionId}:turn:${event.data?.turn}`;
+        });
         const sessionId = `native-wait-${randomUUID()}`;
         await original.prompt(
           sessionId,
@@ -211,6 +235,32 @@ describe('MET153 native durable question boundary', () => {
           notices.find((n) => n.method === 'session.user-question')!.params
             .questionId,
         );
+        if (live) {
+          const typed = {
+            inputId: randomUUID(),
+            turnId: liveTurn,
+            kind: 'ask_user' as const,
+          };
+          await expect(
+            original.steer(
+              sessionId,
+              `allrice:user-question:v1:${JSON.stringify({ questionId, answers: [{ id: itemId, selected: [] }] })}`,
+              typed,
+            ),
+          ).resolves.toMatchObject({
+            status: 'adopted',
+            checkpoint: 'question_resolved',
+          });
+          await expect
+            .poll(
+              () =>
+                JSON.stringify(notices).includes('Recovered native answer.'),
+              { timeout: 15000 },
+            )
+            .toBe(true);
+          expect(model.requests).toHaveLength(asksAt + 1);
+          return;
+        }
         const parked = await original.parkQuestion(sessionId, questionId);
         expect(parked.checkpoint).toMatchObject({ sessionId, questionId });
         if (method)
@@ -228,7 +278,7 @@ describe('MET153 native durable question boundary', () => {
           questionId,
           turnId,
           inputId: randomUUID(),
-          text: `allrice:user-question:v1:${JSON.stringify({ questionId, answers: [{ id: itemId, selected: [answerLabel] }] })}`,
+          text: `allrice:user-question:v1:${JSON.stringify({ questionId, answers: [{ id: itemId, selected: skipped ? [] : [answerLabel] }] })}`,
         };
         const receipt = await recovered.answerWait(answer);
         expect(receipt.proof).toMatchObject({
