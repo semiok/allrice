@@ -48,6 +48,10 @@
   line-height: 18px;
 }
 .page {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 4px;
   overflow-wrap: anywhere;
 }
 .page span {
@@ -81,6 +85,10 @@
 }
 .disclosure {
   min-width: 0;
+}
+.disclosureTitle {
+  /* DSH's process rows use tertiary text, below 4.5:1 on light cards. */
+  color: var(--dsw-alias-label-secondary);
 }
 .disclosureBody {
   display: grid;
@@ -122,6 +130,10 @@
   background: var(--dsw-alias-bg-base);
   color: var(--dsw-alias-label-primary);
   font: inherit;
+}
+.element input:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 .technical {
   display: grid;

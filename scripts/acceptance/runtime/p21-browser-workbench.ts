@@ -334,20 +334,18 @@ try {
   await other.context.close();
   checks.ownerIsolation = true;
   await page.goto(`${origin}/chatflow?session=${f.session}`);
-  const panel = page.getByRole('region', { name: '受控浏览器工作台' });
+  const panel = page.getByRole('region', { name: '浏览器' });
   async function approve(id: string) {
     const card = page.locator(`#browser-operation-${id}`);
     await card
-      .getByRole('button', { name: '批准本次操作', exact: true })
+      .getByRole('button', { name: '允许这一步', exact: true })
       .waitFor();
     const response = page.waitForResponse(
       (r) =>
         r.request().method() === 'POST' &&
         r.url().includes('/api/v1/runtime/approvals/'),
     );
-    await card
-      .getByRole('button', { name: '批准本次操作', exact: true })
-      .click();
+    await card.getByRole('button', { name: '允许这一步', exact: true }).click();
     const r = await response;
     assert.equal(r.status(), 200);
     await r.body();
@@ -364,9 +362,9 @@ try {
     'LOGIN_OBSERVATION',
   );
   checks.navigateApprovalSurvivesRefresh = true;
-  await panel.getByRole('button', { name: '人工接管', exact: true }).click();
-  await panel.getByText('人工独占控制', { exact: true }).waitFor();
-  await panel.getByText('页面观察与控件', { exact: true }).click();
+  await panel.getByRole('button', { name: '我来操作', exact: true }).click();
+  await panel.getByText('由你操作中', { exact: true }).waitFor();
+  await panel.getByText('手动操作页面', { exact: true }).click();
   async function submitField(label: string, value: string, sensitive = false) {
     const before = new Set(
       (await views())[0]!.operations.map(
@@ -379,7 +377,7 @@ try {
     await form.locator('input[name=value]').fill(value);
     await form
       .getByRole('button', {
-        name: sensitive ? '安全输入（不发送给模型）' : '填写',
+        name: sensitive ? '安全输入（不发给 Rice）' : '填写',
         exact: true,
       })
       .click();
@@ -460,7 +458,7 @@ try {
   );
   assert.equal((await fixtureState()).logins, start.logins + 1);
   checks.realLoginViaExactPost = { sensitiveId, clickId, requestId };
-  await panel.getByText('页面观察与控件', { exact: true }).click();
+  await panel.getByText('手动操作页面', { exact: true }).click();
   async function propose(type: string, submit: () => Promise<void>) {
     const prior = new Set(
       (await views())[0]!.operations.map(
@@ -532,7 +530,7 @@ try {
     panel
       .locator('form')
       .filter({ hasText: 'Download synthetic file' })
-      .getByRole('button', { name: '下载到工件', exact: true })
+      .getByRole('button', { name: '保存为成果', exact: true })
       .click(),
   );
   assert.equal((await fixtureState()).downloads, start.downloads);
@@ -555,7 +553,7 @@ try {
     downloadId,
   };
   await panel.getByRole('button', { name: '暂停', exact: true }).click();
-  await panel.getByText('已暂停输入', { exact: true }).waitFor();
+  await panel.getByText('已暂停', { exact: true }).waitFor();
   assert.equal(
     await panel
       .getByRole('button', { name: '交还 Rice', exact: true })
@@ -563,7 +561,7 @@ try {
     true,
   );
   await panel.getByRole('button', { name: '交还 Rice', exact: true }).click();
-  await panel.getByText('Rice 控制中', { exact: true }).waitFor();
+  await panel.getByText('Rice 正在使用浏览器', { exact: true }).waitFor();
   checks.pausedResume = true;
   const current = (await views())[0]!;
   const deniedOp = await createBrowserOperation(
@@ -616,14 +614,14 @@ try {
   await rejected.body();
   await controller.closed;
   await page.goto(`${origin}/chatflow?session=${f.session}`);
-  await panel.getByText('浏览器已确认关闭', { exact: true }).waitFor();
+  await panel.getByText('浏览器已关闭', { exact: true }).waitFor();
   const final = (await views())[0]!;
   assert.equal(final.state, 'closed');
   assert(final.stoppedAt);
   assert.equal(final.available, false);
   assert.equal(
     await panel
-      .getByRole('button', { name: '批准本次操作', exact: true })
+      .getByRole('button', { name: '允许这一步', exact: true })
       .count(),
     0,
   );

@@ -91,49 +91,97 @@ suite('browser panel for ordinary employees', () => {
   async function open(width: number, theme: 'light' | 'dark') {
     const page = await browser.newPage({ viewport: { width, height: 900 } });
     await page.goto(`${origin}/?theme=${theme}`);
-    await page.getByRole('heading', { name: '本地浏览器' }).waitFor();
+    await page.getByRole('heading', { name: '本地项目预览' }).waitFor();
     return page;
   }
-  const visibleText = (page: Page) =>
-    page.locator('section[aria-label="浏览器"]').innerText();
+  const panel = (page: Page) => page.locator('section[aria-label="浏览器"]');
+  const visibleText = (page: Page) => panel(page).innerText();
+  async function expand(page: Page, title: string) {
+    for (const row of await page.getByRole('button', { name: title }).all())
+      await row.click();
+  }
 
   for (const width of [1440, 390])
     for (const theme of ['light', 'dark'] as const)
       it(`shows a plain summary at ${width}px in the ${theme} theme`, async () => {
         const page = await open(width, theme);
         try {
-          const text = await visibleText(page);
+          await expand(page, '页面文字');
+          await expand(page, '手动操作页面');
+          // Flex rows render as separate lines; read them as sentences.
+          const text = (await visibleText(page)).replace(/\s*\n\s*/g, '');
           for (const word of engineering) expect(text).not.toContain(word);
-          expect(text).toContain('云端浏览器');
-          expect(text).toContain('浏览器已关闭');
-          expect(text).toContain('打开 example.com');
-          expect(text).toContain('已完成');
-          expect(text).toContain('由你操作中');
-          expect(text).toContain('当前页面：报名表');
-          expect(text).toContain('点击页面上的按钮或链接');
-          expect(text).toContain('等你确认');
-          // A closed browser keeps its history but offers no controls.
-          await expect(
-            page.getByRole('button', { name: '我来操作' }).count(),
-          ).resolves.toBe(1);
-          const layout = await page.evaluate(() => ({
-            overflow:
-              document.documentElement.scrollWidth >
-              document.documentElement.clientWidth,
-            card: getComputedStyle(
-              document.querySelector('section[aria-label="浏览器"] article')!,
-            ).backgroundColor,
-            text: getComputedStyle(
-              document.querySelector('section[aria-label="浏览器"]')!,
-            ).color,
-          }));
-          expect(layout.overflow).toBe(false);
-          expect(layout.card).toBe(
-            theme === 'dark' ? 'rgb(35, 35, 36)' : 'rgb(255, 255, 255)',
+          expect(text).not.toContain('preview.allrice.invalid');
+          for (const line of [
+            '浏览器已关闭',
+            '当前页面：飞书智能伙伴',
+            '飞书智能伙伴可以帮你整理会议纪要。',
+            '打开 www.feishu.cn/product/ai',
+            '删除 www.feishu.cn/account 上的内容',
+            '未完成，可以让 Rice 再试一次',
+            'Rice 正在使用浏览器',
+            '点击「提交订单」按钮',
+            '等你确认',
+            '在「姓名」输入框填写「张三」',
+            '你已拒绝，没有执行',
+            '由你操作中',
+            '打开 你的项目预览',
+          ])
+            expect(text).toContain(line);
+          // A closed browser keeps its history but offers no controls; the
+          // screenshot of its last page stays available.
+          expect(
+            await page.getByRole('button', { name: '我来操作' }).count(),
+          ).toBe(3);
+          expect(
+            await page.getByRole('button', { name: '查看页面截图' }).count(),
+          ).toBe(1);
+          // Exactly the pending click can be answered, by name.
+          const allow = page.getByRole('button', { name: '允许这一步' });
+          expect(await allow.count()).toBe(1);
+          expect(await allow.getAttribute('aria-describedby')).toBeTruthy();
+          const layout = await page.evaluate(() => {
+            const root = document.querySelector(
+              'section[aria-label="浏览器"]',
+            )!;
+            const title = [...root.querySelectorAll('*')].find(
+              (node) =>
+                node.childElementCount === 0 && node.textContent === '技术详情',
+            )!;
+            return {
+              overflow:
+                document.documentElement.scrollWidth >
+                document.documentElement.clientWidth,
+              card: getComputedStyle(root.querySelector('article')!)
+                .backgroundColor,
+              text: getComputedStyle(root).color,
+              disclosure: getComputedStyle(title).color,
+            };
+          });
+          expect(layout).toEqual(
+            theme === 'dark'
+              ? {
+                  overflow: false,
+                  card: 'rgb(35, 35, 36)',
+                  text: 'rgb(249, 250, 251)',
+                  disclosure: 'rgb(207, 211, 214)',
+                }
+              : {
+                  overflow: false,
+                  card: 'rgb(255, 255, 255)',
+                  text: 'rgb(15, 17, 21)',
+                  disclosure: 'rgb(97, 102, 107)',
+                },
           );
-          expect(layout.text).toBe(
-            theme === 'dark' ? 'rgb(249, 250, 251)' : 'rgb(15, 17, 21)',
-          );
+          // Technical detail, once opened, must not widen the page either.
+          await expand(page, '技术详情');
+          expect(
+            await page.evaluate(
+              () =>
+                document.documentElement.scrollWidth >
+                document.documentElement.clientWidth,
+            ),
+          ).toBe(false);
         } finally {
           await page.close();
         }
@@ -142,9 +190,8 @@ suite('browser panel for ordinary employees', () => {
   it('keeps raw actions and receipts in the collapsed technical section', async () => {
     const page = await open(1440, 'light');
     try {
-      const details = page.getByRole('button', { name: '技术详情' }).first();
       expect(await visibleText(page)).not.toContain('"navigate"');
-      await details.click();
+      await page.getByRole('button', { name: '技术详情' }).first().click();
       const text = await visibleText(page);
       expect(text).toContain('"navigate"');
       expect(text).toContain('"receipt"');
@@ -155,27 +202,61 @@ suite('browser panel for ordinary employees', () => {
     }
   });
 
-  it('lets the employee retry an approval that failed, resending the same answer', async () => {
+  it('keeps the last screenshot of a closed browser viewable', async () => {
+    const page = await open(1440, 'light');
+    try {
+      await page.getByRole('button', { name: '查看页面截图' }).click();
+      await expect
+        .poll(() => page.evaluate(() => window.signPosts))
+        .toEqual(['99999999-0000-4000-8000-000000000001']);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('after a lost answer only resends the same answer, in plain words', async () => {
     const page = await open(1440, 'light');
     try {
       await page.evaluate(() => {
-        window.failNextApproval = true;
+        window.approvalMode = 'network';
       });
       await page.getByRole('button', { name: '允许这一步' }).click();
-      await page.getByRole('alert').waitFor();
-      expect(await page.getByRole('alert').innerText()).toContain(
-        '操作结果待确认',
-      );
-      // Before the fix the buttons vanished until a full page reload.
-      await page.getByRole('button', { name: '允许这一步' }).click();
+      const alert = page.getByRole('alert');
+      await alert.waitFor();
+      expect(await alert.innerText()).toContain('答复可能没有送达');
+      expect(await alert.innerText()).not.toContain('Failed to fetch');
+      // The other answer is withheld: it would conflict if the first landed.
+      expect(await page.getByRole('button', { name: '拒绝' }).count()).toBe(0);
+      await page.getByRole('button', { name: '再次发送「允许」' }).click();
       await expect
         .poll(() => page.evaluate(() => window.approvalPosts.length))
         .toBe(2);
-      const [first, second] = (await page.evaluate(
-        () => window.approvalPosts,
-      )) as { responseId: string; decision: string }[];
+      const [first, second] = await page.evaluate(() => window.approvalPosts);
       expect(second!.responseId).toBe(first!.responseId);
       expect(second!.decision).toBe('approved');
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('explains an expired approval and an unreadable state', async () => {
+    const page = await open(390, 'light');
+    try {
+      await page.evaluate(() => {
+        window.approvalMode = 'stale';
+      });
+      await page.getByRole('button', { name: '拒绝' }).click();
+      const alert = page.getByRole('alert');
+      await expect
+        .poll(() => alert.innerText())
+        .toContain('这一步已过期，没有执行');
+      await page.evaluate(() => {
+        window.failLoad = true;
+      });
+      await page.getByRole('button', { name: '刷新状态' }).click();
+      await expect
+        .poll(() => alert.innerText())
+        .toBe('暂时读不到浏览器状态，请检查网络后刷新。\n刷新状态');
     } finally {
       await page.close();
     }
