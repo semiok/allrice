@@ -56,6 +56,7 @@ import { AutomationRunTaskCards } from './automation-run-task-cards';
 import { AssistantMessageActions } from './message-feedback';
 import { presentAssistantTree } from '../../lib/chatflow/assistant-tree-presenter';
 import { isMessageRunActive } from './run-view';
+import { HistoryRefreshNotice } from './history-refresh-notice';
 import { workProcessPresentation } from '../../lib/chatflow/work-process-presentation';
 
 interface ChatTranscriptProps {
@@ -74,9 +75,9 @@ interface ChatTranscriptProps {
   onAssistantChanged?: () => void;
   messages: Message[];
   recoverableRunView?: RunView;
-  /** The refresh after a Run failed; offer to load the conversation again. */
+  /** The newest read of this conversation failed; offer to read it again. */
   historyStale?: boolean;
-  onRefreshHistory?: () => void | Promise<void>;
+  onRefreshHistory?: () => Promise<unknown>;
   runTraces: Record<string, RunTrace>;
   runViews: Record<string, RunView>;
   tenantHeaders: Record<string, string>;
@@ -607,24 +608,18 @@ export const ChatTranscript = memo(function ChatTranscript({
               );
             })}
 
-          {recoverableRunView || (historyStale && onRefreshHistory) ? (
+          {recoverableRunView ? (
             <div className={styles.connectionRetry} role="status">
-              <span>
-                {recoverableRunView
-                  ? '实时连接暂时中断'
-                  : '对话内容可能不是最新的'}
-              </span>
+              <span>实时连接暂时中断</span>
               <button
-                onClick={() =>
-                  void (recoverableRunView
-                    ? onRecoverRun(recoverableRunView.runId)
-                    : onRefreshHistory?.())
-                }
+                onClick={() => void onRecoverRun(recoverableRunView.runId)}
                 type="button"
               >
-                {recoverableRunView ? '重试' : '刷新'}
+                重试
               </button>
             </div>
+          ) : historyStale && onRefreshHistory ? (
+            <HistoryRefreshNotice onRefresh={onRefreshHistory} />
           ) : null}
         </div>
         {!atBottom ? (

@@ -254,10 +254,12 @@ export function ChatFlowClient({
     newSessionEmployee,
     setPendingEmployeeAssignmentId,
     history,
+    historyStale,
     loadHistory,
     loadWorkspace,
     prefetchHistory,
     manifest,
+    refreshHistory,
     setActiveId,
     setHistory,
     tenantHeaders,
@@ -607,10 +609,8 @@ export function ChatFlowClient({
   }, [workbenchEnabled, artifactRevision, workbench.reload, workbench.scope]);
 
   const {
-    historyStale,
     loadRunTrace,
     recoverRun,
-    refreshHistory,
     resetRunState,
     runTraces,
     runViews,
@@ -955,6 +955,15 @@ export function ChatFlowClient({
           },
         ),
       );
+      // Keep the retry key unless the receipt names the stored turn; resending
+      // after an unreadable answer must not create a second task.
+      if (
+        !result.run?.id ||
+        !result.userMessage?.id ||
+        !result.assistantMessage?.id ||
+        !['immediate', 'steer_pending', 'follow_up'].includes(result.delivery)
+      )
+        throw new Error('结果待确认，请刷新页面查看');
       retry.confirmed();
       if (!action.current()) return;
       const retainedPreviews = imageCache.handoff(

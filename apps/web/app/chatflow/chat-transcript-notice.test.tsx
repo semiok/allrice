@@ -31,7 +31,10 @@ const render = (overrides: Partial<ComponentProps<typeof ChatTranscript>>) =>
 
 describe('conversation refresh notice', () => {
   it('says the conversation may be behind and offers a refresh', () => {
-    const html = render({ historyStale: true, onRefreshHistory: () => {} });
+    const html = render({
+      historyStale: true,
+      onRefreshHistory: async () => {},
+    });
     expect(html).toContain('对话内容可能不是最新的');
     expect(html).toMatch(/<button[^>]*>刷新<\/button>/);
     expect(html).toContain('本周销售已整理好');
@@ -55,7 +58,7 @@ describe('conversation refresh notice', () => {
     };
     const html = render({
       historyStale: true,
-      onRefreshHistory: () => {},
+      onRefreshHistory: async () => {},
       recoverableRunView: view,
     });
     expect(html).toContain('实时连接暂时中断');

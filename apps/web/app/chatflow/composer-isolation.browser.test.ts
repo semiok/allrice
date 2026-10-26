@@ -757,7 +757,10 @@ suite(
             .poll(() => pending.length, { timeout: 5000 })
             .toBe(count);
         },
-        async respond(index: number, ok = true) {
+        async respond(
+          index: number,
+          ok: boolean | 'empty receipt' | 'unusable receipt' = true,
+        ) {
           const p = pending[index]!;
           const received = page.waitForResponse(
             (response) =>
@@ -778,6 +781,16 @@ suite(
               ),
           );
           function reply() {
+            // Stored on the server, but the browser cannot read the receipt.
+            if (ok === 'empty receipt') {
+              p.response.writeHead(200);
+              p.response.end();
+              return;
+            }
+            if (ok === 'unusable receipt') {
+              answer(p.response, {});
+              return;
+            }
             if (!ok) {
               answer(
                 p.response,
@@ -1162,6 +1175,37 @@ suite(
         await f.close();
       }
     }, 15_000);
+
+    it.each(['empty receipt', 'unusable receipt'] as const)(
+      'keeps the same message number for a resend after an %s',
+      async (kind) => {
+        const f = await fixture();
+        try {
+          const draft = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+          await f.send('收据读不出来时再发一次');
+          await f.waitPending(1);
+          expect(f.pending[0]!.path).toContain('/messages');
+          const clientId = f.pending[0]!.body.clientMessageId;
+          await f.respond(0, kind);
+          await f.page
+            .getByText('结果待确认，请刷新页面查看', { exact: true })
+            .waitFor();
+          expect(await draft.inputValue()).toBe('收据读不出来时再发一次');
+          expect(await f.page.getByText(/TypeError|Cannot read/).count()).toBe(
+            0,
+          );
+          await f.send('收据读不出来时再发一次');
+          await f.waitPending(2);
+          expect(f.pending[1]!.body.clientMessageId).toBe(clientId);
+          await f.respond(1);
+          await expect.poll(() => draft.inputValue()).toBe('');
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+      15_000,
+    );
 
     it('never displays the previous conversation while loading and switches retained histories without HTTP', async () => {
       const f = await fixture({ delayHistoryB: true });

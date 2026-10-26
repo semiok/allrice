@@ -547,6 +547,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       archiveError: false,
       sessionListError: false,
       sessionListDelay: null as Promise<void> | null,
+      historyError: false,
+      historyDelay: null as Promise<void> | null,
       sessionListRequests: 0,
       sessionPageError: false,
       sessionPageDelay: null as Promise<void> | null,
@@ -1920,6 +1922,19 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             state.detailStatus,
           );
         return answer({ artifact: a, feedback: [] });
+      }
+      if (
+        path === `/api/v1/sessions/${A}` &&
+        route.request().method() === 'GET'
+      ) {
+        if (state.historyDelay) await state.historyDelay;
+        if (state.historyError)
+          return answer(
+            {
+              error: { code: 'INTERNAL_ERROR', message: 'Session read failed' },
+            },
+            503,
+          );
       }
       if (path === `/api/v1/sessions/${A}` && state.deepLinkDenied)
         return answer({ error: { message: 'Not accessible' } }, 403);
@@ -13535,4 +13550,118 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.context.close();
     }
   }, 30_000);
+  for (const width of [1440, 390])
+    for (const theme of ['light', 'dark'] as const)
+      it(`MET-214 says the conversation may be behind after a failed refresh at ${width}px in the ${theme} theme`, async () => {
+        const f = await fixture({
+          running: true,
+          controlledStream: true,
+          width,
+        });
+        try {
+          if (theme === 'dark')
+            await f.page.evaluate(() =>
+              document.body.setAttribute('data-ds-dark-theme', ''),
+            );
+          await f.page.waitForFunction(
+            () => document.documentElement.dataset.streamReady === 'true',
+          );
+          // The run finishes, but every read of the conversation fails.
+          f.state.historyError = true;
+          f.state.messageStatus = 'completed';
+          const finished: ChatFlowEventEnvelope = {
+            schemaVersion: 3,
+            eventId: id(9950),
+            organizationId: org,
+            workspaceId: workspace,
+            conversationId: A,
+            runId: run,
+            generation: 1,
+            cursor: `${run}:1`,
+            sequence: 1,
+            harness: 'dsh',
+            occurredAt: now,
+            type: 'run.succeeded',
+            sourceEvent: null,
+            payload: {},
+          };
+          await f.page.evaluate(
+            (body) =>
+              window.dispatchEvent(
+                new CustomEvent('allrice-test-stream', { detail: body }),
+              ),
+            `data: ${JSON.stringify(finished)}\n\n`,
+          );
+          const notice = f.page
+            .getByRole('status')
+            .filter({ hasText: /对话内容可能不是最新的|刷新未完成/ });
+          await notice.getByText('对话内容可能不是最新的').waitFor();
+          const look = await notice.evaluate((node) => {
+            const text = node.querySelector('span')!;
+            let element: Element | null = node;
+            let ground = 'rgba(0, 0, 0, 0)';
+            while (element && /rgba\(0, 0, 0, 0\)/.test(ground)) {
+              ground = getComputedStyle(element).backgroundColor;
+              element = element.parentElement;
+            }
+            const channel = (value: string) =>
+              value
+                .match(/[\d.]+/g)!
+                .slice(0, 3)
+                .map((v) => {
+                  const c = Number(v) / 255;
+                  return c <= 0.04045
+                    ? c / 12.92
+                    : ((c + 0.055) / 1.055) ** 2.4;
+                })
+                .reduce(
+                  (sum, c, i) => sum + c * [0.2126, 0.7152, 0.0722][i]!,
+                  0,
+                );
+            const [light, dark] = [
+              channel(getComputedStyle(text).color),
+              channel(ground),
+            ].sort((a, b) => b - a);
+            const box = node.getBoundingClientRect();
+            return {
+              contrast: (light! + 0.05) / (dark! + 0.05),
+              inside: box.left >= 0 && box.right <= window.innerWidth,
+              overflow:
+                document.documentElement.scrollWidth >
+                document.documentElement.clientWidth,
+            };
+          });
+          expect(look.contrast).toBeGreaterThanOrEqual(4.5);
+          expect(look.inside).toBe(true);
+          expect(look.overflow).toBe(false);
+          const text = await notice.innerText();
+          for (const word of ['History', 'Session', '503', 'failed'])
+            expect(text).not.toContain(word);
+          // A refresh that fails again says so and stays available.
+          await notice
+            .getByRole('button', { name: '刷新', exact: true })
+            .click();
+          await notice.getByText('刷新未完成，请检查网络后再试').waitFor();
+          // While the next refresh is on its way the button cannot be pressed twice.
+          let release!: () => void;
+          f.state.historyDelay = new Promise<void>((done) => (release = done));
+          f.state.historyError = false;
+          await notice
+            .getByRole('button', { name: '刷新', exact: true })
+            .click();
+          const busy = notice.getByRole('button', {
+            name: '正在刷新…',
+            exact: true,
+          });
+          await busy.waitFor();
+          expect(await busy.isDisabled()).toBe(true);
+          f.state.historyDelay = null;
+          release();
+          await notice.waitFor({ state: 'detached' });
+          // The answer the server stored is on screen now.
+          await f.page.getByText('多步研究结果与引用说明').first().waitFor();
+        } finally {
+          await f.close();
+        }
+      }, 30_000);
 });

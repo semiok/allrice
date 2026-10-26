@@ -264,16 +264,27 @@ describe('P26 selected Session transport lifetime (synthetic HTTP, no provider)'
   it('old JSON trace/finally cannot overwrite or unlock the newer trace', async () => {
     const active = select('active');
     const old = active.loadRunTrace('same');
-    const oldJson = deferred<{ events: ChatFlowEventEnvelope[] }>();
-    requests[0]!.result.resolve({
-      ok: true,
-      status: 200,
-      json: () => oldJson.promise,
-    } as Response);
+    let oldSettled = false;
+    void old.finally(() => (oldSettled = true));
+    // A real body that is still arriving when the selection resets.
+    let finishOld!: (text: string) => void;
+    requests[0]!.result.resolve(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            finishOld = (text) => {
+              controller.enqueue(new TextEncoder().encode(text));
+              controller.close();
+            };
+          },
+        }),
+      ),
+    );
     await flush();
+    expect(oldSettled).toBe(false);
     active.resetRunState();
     const newer = active.loadRunTrace('same');
-    oldJson.resolve({ events: [event('same', 99)] });
+    finishOld(JSON.stringify({ events: [event('same', 99)] }));
     await old;
     await active.loadRunTrace('same');
     expect(requests).toHaveLength(2);
@@ -422,7 +433,7 @@ describe('P26 selected Session transport lifetime (synthetic HTTP, no provider)'
     expect(requests).toHaveLength(8);
     expect(active.getSnapshot().runViews.live?.status).toBe('canceled');
   });
-  it('flags a failed History refresh after the run until a newer History arrives', async () => {
+  it('logs a failed History refresh after the run and still refreshes the workspace', async () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     loadHistory.mockRejectedValueOnce(new Error('offline'));
     const active = select('active');
@@ -436,50 +447,35 @@ describe('P26 selected Session transport lifetime (synthetic HTTP, no provider)'
       'Chat history refresh after the run failed',
       expect.any(Error),
     );
-    expect(active.getSnapshot().historyStale).toBe(true);
-    // The finished output stays on screen; only the notice is added.
+    // The finished output stays; the notice itself belongs to useSession.
     expect(active.getSnapshot().runViews.run?.status).toBe('completed');
     expect(loadWorkspace).toHaveBeenCalledTimes(1);
-    active.restoreHistory(history('active', 'run', 'completed'));
-    expect(active.getSnapshot().historyStale).toBeUndefined();
   });
-  it('refresh keeps the notice while History still fails and clears it once loaded', async () => {
-    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
-    loadHistory
-      .mockRejectedValueOnce(new Error('offline'))
-      .mockRejectedValueOnce(new Error('still offline'));
-    const active = select('active');
-    const running = active.streamRun('run');
-    const body = open(0);
-    await flush();
-    body.send(event('run', 1, 'run.failed'));
-    body.close();
-    await running;
-    await active.refreshHistory();
-    expect(log).toHaveBeenLastCalledWith(
-      'Chat history refresh failed',
-      expect.any(Error),
-    );
-    expect(active.getSnapshot().historyStale).toBe(true);
-    await active.refreshHistory();
-    expect(loadHistory).toHaveBeenLastCalledWith('active');
-    expect(active.getSnapshot().historyStale).toBeUndefined();
-  });
-  it('does not flag another conversation when the old refresh fails late', async () => {
+  it('a late History failure of the previous conversation leaves the next one alone', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const late = deferred<void>();
     loadHistory.mockImplementationOnce(() => late.promise);
-    const active = select('active');
-    const running = active.streamRun('run');
+    const first = select('first');
+    const running = first.streamRun('run');
     const body = open(0);
     await flush();
     body.send(event('run', 1, 'run.succeeded'));
     body.close();
     await flush();
-    active.deactivate();
+    expect(loadHistory).toHaveBeenCalledWith('first');
+    first.deactivate();
+    const next = select('next');
+    next.restoreHistory(history('next', 'other', 'pending'));
+    const other = open(1);
+    await flush();
     late.reject(new Error('offline'));
     await running;
-    expect(active.getSnapshot().historyStale).toBeUndefined();
     expect(loadWorkspace).not.toHaveBeenCalled();
+    expect(Object.keys(next.getSnapshot().runViews)).toEqual(['other']);
+    expect(next.getSnapshot().runViews.other?.status).toBe('running');
+    other.send(event('other', 1, 'run.succeeded'));
+    other.close();
+    await flush();
+    expect(loadHistory).toHaveBeenLastCalledWith('next');
   });
 });

@@ -2,26 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from 'react';
 import { loginDestination } from '../../lib/portal/login-destination';
-
-const unavailable = '暂时登录不了，请稍后再试。';
-
-/** What went wrong in plain words; the login API's status and code, never shown. */
-function loginFailure(
-  status: number,
-  code: unknown,
-  entry: { adminHost: string; employeeHost: string },
-) {
-  if (status === 403 && code === 'AUTHORIZATION_DENIED')
-    return `此账号无法登录这个入口。管理员请从 ${entry.adminHost} 登录；员工请从 ${entry.employeeHost} 登录。`;
-  // A wrong password is 401; an account that cannot exist fails validation.
-  if (
-    (status === 401 && code === 'AUTHENTICATION_REQUIRED') ||
-    (status === 400 && code === 'VALIDATION_FAILED')
-  )
-    return '账号或密码不对，请检查后重新输入。';
-  if (status === 429) return '尝试次数太多，请稍后再试。';
-  return unavailable;
-}
+import { loginFailure, loginUnavailable } from './login-failure';
 
 /** Without `entry` the form acts as an employee entry of the shared deployment. */
 export function LoginForm(props: {
@@ -75,7 +56,7 @@ export function LoginForm(props: {
       }
     } catch {
       // Offline, or a success the browser could not read.
-      setError(unavailable);
+      setError(loginUnavailable);
       setPending(false);
     }
   }

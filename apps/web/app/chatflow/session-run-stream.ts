@@ -8,7 +8,8 @@ import { readJson } from './chatflow-utils';
 interface SessionRunStreamOptions {
   sessionId: string | null;
   workspaceId: string | undefined;
-  loadHistory: (sessionId: string) => Promise<void>;
+  /** Records a failed read for the transcript notice; here it is only logged. */
+  loadHistory: (sessionId: string) => Promise<unknown>;
   loadWorkspace: () => Promise<void>;
   setError: (message: string) => void;
   tenantHeaders: Record<string, string>;
@@ -17,8 +18,6 @@ interface SessionRunStreamOptions {
 interface Snapshot {
   runViews: Record<string, RunView>;
   runTraces: Record<string, RunTrace>;
-  /** The History refresh after a Run failed; the transcript may be behind. */
-  historyStale?: true;
 }
 
 function reconnectDelay(signal: AbortSignal, reconnects: number) {
@@ -63,10 +62,6 @@ export function createSessionRunStream({
       ...snapshot,
       runTraces: { ...snapshot.runTraces, [runId]: trace },
     });
-  const markHistoryStale = (stale: boolean) => {
-    if (Boolean(snapshot.historyStale) !== stale)
-      publish({ ...snapshot, historyStale: stale || undefined });
-  };
   const resetRunState = () => {
     generation += 1;
     for (const controller of activeStreams.values()) controller.abort();
@@ -235,10 +230,9 @@ export function createSessionRunStream({
           ),
         });
       }
-      await loadHistory(sessionId).catch((cause: unknown) => {
-        console.error('Chat history refresh after the run failed', cause);
-        if (current()) markHistoryStale(true);
-      });
+      await loadHistory(sessionId).catch((cause: unknown) =>
+        console.error('Chat history refresh after the run failed', cause),
+      );
       if (current())
         await loadWorkspace().catch((cause: unknown) =>
           console.error('Workspace refresh after the run failed', cause),
@@ -312,18 +306,6 @@ export function createSessionRunStream({
     resetRunState,
     streamRun,
     loadRunTrace,
-    refreshHistory: async () => {
-      if (!active || !sessionId) return;
-      const startedGeneration = generation;
-      const current = () => active && generation === startedGeneration;
-      try {
-        await loadHistory(sessionId);
-        if (current()) markHistoryStale(false);
-      } catch (cause) {
-        console.error('Chat history refresh failed', cause);
-        if (current()) markHistoryStale(true);
-      }
-    },
     recoverRun: (runId: string) => {
       if (!active || !pendingRunIds.has(runId) || terminalRunIds.has(runId))
         return Promise.resolve();
@@ -336,8 +318,6 @@ export function createSessionRunStream({
     restoreHistory: (history: History | null) => {
       // A render can hold previous History until the new request resolves.
       if (!active || !sessionId || history?.session.id !== sessionId) return;
-      // A History that arrived after the failed refresh is the newer one.
-      markHistoryStale(false);
       for (const message of history.messages) {
         if (!message.runId || message.role !== 'assistant') continue;
         const runId = message.runId;

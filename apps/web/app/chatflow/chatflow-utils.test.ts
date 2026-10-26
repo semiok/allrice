@@ -10,8 +10,19 @@ const failure = (status: number, body: unknown = null) =>
         : JSON.stringify(body),
     { status },
   );
-const thrown = (response: Response) =>
-  readJson<never>(response).catch((e: unknown) => e as Error);
+const thrown = (response: Response, options?: { read?: boolean }) =>
+  readJson<never>(response, options).catch((e: unknown) => e as Error);
+/** A 200 whose body stops halfway with `reason`. */
+function brokenBody(reason: unknown) {
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"history":'));
+        queueMicrotask(() => controller.error(reason));
+      },
+    }),
+  );
+}
 
 describe('readJson failures in plain words', () => {
   const assign = vi.fn();
@@ -23,6 +34,8 @@ describe('readJson failures in plain words', () => {
     assign.mockClear();
   });
 
+  const notFinished =
+    '这次操作未完成。请刷新页面后重新操作；仍不行请联系管理员。';
   it.each([
     [403, '没有权限，如需使用请联系管理员'],
     [404, '内容不存在或已删除'],
@@ -33,8 +46,8 @@ describe('readJson failures in plain words', () => {
     [502, '服务暂时不可用，请稍后刷新页面再试'],
     [503, '服务暂时不可用，请稍后刷新页面再试'],
     [504, '服务暂时不可用，请稍后刷新页面再试'],
-    [400, '未完成，请稍后再试'],
-    [422, '未完成，请稍后再试'],
+    [400, notFinished],
+    [422, notFinished],
   ])(
     'says what happened for %i without the status code',
     async (status, text) => {
@@ -71,20 +84,37 @@ describe('readJson failures in plain words', () => {
     expect(assign).toHaveBeenCalledWith('/login?next=/chatflow');
   });
 
-  it('returns JSON and keeps an empty success as null', async () => {
+  it('returns JSON, and null only for a response without content', async () => {
     await expect(readJson(Response.json({ ok: 1 }))).resolves.toEqual({
       ok: 1,
     });
-    await expect(
-      readJson(new Response(null, { status: 204 })),
-    ).resolves.toBeNull();
+    for (const status of [204, 205])
+      await expect(
+        readJson(new Response(null, { status })),
+      ).resolves.toBeNull();
   });
 
-  it('never hands an unreadable success to the caller as data', async () => {
-    const error = await thrown(
-      new Response('<html>Gateway</html>', { status: 200 }),
-    );
-    expect(error).toBeInstanceOf(Error);
+  it.each([
+    ['an empty body', ''],
+    ['JSON null', 'null'],
+    ['a gateway page', '<html>Gateway</html>'],
+  ])('never hands %s of a success to the caller as data', async (_, body) => {
+    const write = await thrown(new Response(body, { status: 200 }));
+    expect(write.message).toBe('结果待确认，请刷新页面查看');
+    const read = await thrown(new Response(body, { status: 200 }), {
+      read: true,
+    });
+    expect(read.message).toBe('暂时读不到内容，请刷新页面');
+  });
+
+  it('keeps a cancellation halfway through the body a cancellation', async () => {
+    const abort = new DOMException('The operation was aborted.', 'AbortError');
+    const error = await thrown(brokenBody(abort));
+    expect(error.name).toBe('AbortError');
+  });
+
+  it('treats a body cut off by the network as an unknown result', async () => {
+    const error = await thrown(brokenBody(new TypeError('network error')));
     expect(error.message).toBe('结果待确认，请刷新页面查看');
   });
 });

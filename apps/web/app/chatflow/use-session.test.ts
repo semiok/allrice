@@ -410,4 +410,68 @@ describe('P26 History selection async control flow (synthetic fetch, explicit ho
     requests[0]!.result.reject(new Error('real failure'));
     await expect(pending).rejects.toThrow('real failure');
   });
+  describe('one record of a stale conversation', () => {
+    const outage = () =>
+      Response.json(
+        {
+          error: { code: 'INTERNAL_ERROR', message: 'Storage request failed' },
+        },
+        { status: 503 },
+      );
+    async function staleA() {
+      const state = await ready();
+      const loaded = state.loadHistory('A');
+      requests[0]!.result.resolve(Response.json({ history: history('A') }));
+      expect(await loaded).toBe('applied');
+      const failed = render().loadHistory('A');
+      requests[1]!.result.resolve(outage());
+      await expect(failed).rejects.toThrow('服务暂时不可用');
+      expect(render().historyStale).toBe(true);
+      requests = [];
+      return render();
+    }
+    it('a superseded read stays quiet and the newer failure is recorded', async () => {
+      const state = await ready();
+      const older = state.loadHistory('A');
+      const newer = state.loadHistory('A');
+      requests[0]!.result.resolve(Response.json({ history: history('A') }));
+      expect(await older).toBe('superseded');
+      expect(render().historyStale).toBe(false);
+      requests[1]!.result.resolve(outage());
+      await expect(newer).rejects.toThrow('服务暂时不可用');
+      expect(render().historyStale).toBe(true);
+    });
+    it('a manual refresh overtaken by a background read does not clear it', async () => {
+      const state = await staleA();
+      const manual = state.refreshHistory();
+      const background = state.loadHistory('A');
+      requests[0]!.result.resolve(Response.json({ history: history('A') }));
+      expect(await manual).toBe('superseded');
+      expect(render().historyStale).toBe(true);
+      requests[1]!.result.resolve(outage());
+      await expect(background).rejects.toThrow();
+      expect(render().historyStale).toBe(true);
+      const last = render().refreshHistory();
+      requests[2]!.result.resolve(Response.json({ history: history('A') }));
+      expect(await last).toBe('applied');
+      expect(render().historyStale).toBe(false);
+    });
+    it('a renamed or pinned conversation is not a refreshed one', async () => {
+      const state = await staleA();
+      state.updateSession({
+        ...session('A'),
+        title: '新的标题',
+        pinnedAt: '2026-10-26T10:00:00Z',
+      });
+      expect(render().history?.session.title).toBe('新的标题');
+      expect(render().historyStale).toBe(true);
+    });
+    it('belongs to its own conversation only', async () => {
+      const state = await staleA();
+      state.setActiveId('B');
+      expect(render().historyStale).toBe(false);
+      render().setActiveId('A');
+      expect(render().historyStale).toBe(true);
+    });
+  });
 });

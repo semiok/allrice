@@ -24,6 +24,9 @@ type UseSessionOptions = {
   setError: (message: string) => void;
 };
 
+/** applied: server History is on screen; superseded: a newer read owns it. */
+export type HistoryLoad = 'applied' | 'superseded' | 'skipped';
+
 type CachedHistory = { value: History; prefetched: boolean; loadedAt: number };
 function rememberHistory(
   cache: Map<string, CachedHistory>,
@@ -54,6 +57,9 @@ export function useSession({ setError }: UseSessionOptions) {
   const [activeId, updateActiveId] = useState<string | null>(null);
   const [selection] = useState(createSessionSelection);
   const [history, setHistory] = useState<History | null>(null);
+  // The one record of a failed History read: set only by the newest read of
+  // that conversation, cleared only when server History is applied.
+  const [staleHistoryId, setStaleHistoryId] = useState<string | null>(null);
   // Like DSH's retained Session bindings, switch the visible snapshot by ID
   // synchronously. This adapter reads Allrice's tenant-scoped HTTP history.
   // Nothing is persisted to browser storage or shared with another viewer.
@@ -127,6 +133,7 @@ export function useSession({ setError }: UseSessionOptions) {
       historyRequestGeneration.current++;
       historyRequest.current?.abort();
       setHistory(null);
+      setStaleHistoryId(null);
     }
     const authorized = new Set(nextWorkspace.sessions.map((s) => s.id));
     for (const id of historyCache.current.keys())
@@ -254,7 +261,7 @@ export function useSession({ setError }: UseSessionOptions) {
   );
 
   const loadHistory = useCallback(
-    async (sessionId: string) => {
+    async (sessionId: string): Promise<HistoryLoad> => {
       const scope = selection.capture();
       // An old POST callback must not become the newest history request.
       if (
@@ -262,14 +269,19 @@ export function useSession({ setError }: UseSessionOptions) {
         scope.sessionId !== sessionId ||
         historyScope.current !== employeeScope
       )
-        return;
+        return 'skipped';
       const requestGeneration = ++historyRequestGeneration.current;
       historyRequest.current?.abort();
+      const applied = (value: History) => {
+        rememberHistory(historyCache.current, value);
+        setHistory(value);
+        setStaleHistoryId((stale) => (stale === sessionId ? null : stale));
+        return 'applied' as const;
+      };
       const cached = historyCache.current.get(sessionId);
       if (cached?.prefetched && Date.now() - cached.loadedAt < 3000) {
         cached.prefetched = false;
-        setHistory(cached.value);
-        return;
+        return applied(cached.value);
       }
       const queued = prefetches.current.get(sessionId);
       const pending = queued?.controller.signal.aborted ? undefined : queued;
@@ -282,7 +294,7 @@ export function useSession({ setError }: UseSessionOptions) {
         !controller.signal.aborted;
       try {
         let value = pending ? await pending.promise : null;
-        if (!current()) return;
+        if (!current()) return 'superseded';
         if (!value) {
           const response = await fetch(
             `/api/v1/sessions/${sessionId}?workspaceId=${tenantWorkspaceId}`,
@@ -292,25 +304,33 @@ export function useSession({ setError }: UseSessionOptions) {
               signal: controller.signal,
             },
           );
-          if (!current()) return;
+          if (!current()) return 'superseded';
           if ([401, 403, 404].includes(response.status)) {
             historyCache.current.delete(sessionId);
             setHistory(null);
           }
-          value = (await readJson<{ history: History }>(response)).history;
+          value = (
+            await readJson<{ history: History }>(response, { read: true })
+          ).history;
         }
-        if (current() && value.session.id === sessionId) {
-          rememberHistory(historyCache.current, value);
-          setHistory(value);
-        }
+        if (!current()) return 'superseded';
+        return value.session.id === sessionId ? applied(value) : 'skipped';
       } catch (cause) {
-        if (current()) throw cause;
+        if (!current()) return 'superseded';
+        setStaleHistoryId(sessionId);
+        throw cause;
       } finally {
         if (historyRequest.current === controller)
           historyRequest.current = null;
       }
     },
     [employeeScope, selection, tenantHeaders, tenantWorkspaceId],
+  );
+
+  const refreshHistory = useCallback(
+    (): Promise<HistoryLoad> =>
+      activeId ? loadHistory(activeId) : Promise.resolve('skipped'),
+    [activeId, loadHistory],
   );
 
   const updateLocalHistory = useCallback(
@@ -516,7 +536,9 @@ export function useSession({ setError }: UseSessionOptions) {
     captureSelection: selection.capture,
     createSession,
     history: history?.session.id === activeId ? history : null,
+    historyStale: activeId !== null && staleHistoryId === activeId,
     loadHistory,
+    refreshHistory,
     loadWorkspace,
     prefetchHistory,
     manifest,
