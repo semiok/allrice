@@ -250,8 +250,10 @@ export function createAssistantWorkerBridge(
         result,
         settlement: true,
       });
-      if (recorded.recorded === false)
-        return { status: recorded.status, wakeParent: false };
+      if (!recorded.recorded)
+        return recorded.result
+          ? { ...recorded.result, wakeParent: recorded.wakeParent }
+          : { status: recorded.status, wakeParent: false };
       return {
         ...result,
         status: recorded.status,

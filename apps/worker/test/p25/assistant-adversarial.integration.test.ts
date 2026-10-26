@@ -304,6 +304,52 @@ integration(
       ).toMatchObject({ wakeParent: false });
     });
 
+    it('a settlement racing a canceled child report delivers that report instead of a conflict', async () => {
+      const f = await assistantFixture(database.db),
+        child = (await f.delegate()).instance,
+        report = partial();
+      await f.runtime.cancelChild(f.context, {
+        runId: f.task.runId,
+        childRunId: child.runId,
+        requestId: randomUUID(),
+      });
+      const bridge = createAssistantWorkerBridge({
+        runtime: {
+          ...f.runtime,
+          // Cancellation released the native wait for the child's report, but
+          // the Worker still commits it, and then the stop receipt, between
+          // the settlement's read and its fallback write.
+          async resultDelivery(input) {
+            const delivery = await f.runtime.resultDelivery(input);
+            await f.runtime.recordResult({
+              ...f.base,
+              runId: child.runId,
+              result: report,
+            });
+            await f.runtime.confirmStopped({ ...f.base, runId: child.runId });
+            return delivery;
+          },
+        },
+        task: f.task,
+        context: f.context,
+        worker: f.worker,
+        wireNames: {},
+        readOnlyTools: new Set(),
+      });
+      await expect(
+        bridge.handle('settled', {
+          nativeSessionId: child.nativeSessionId,
+          stopReason: 'native_settled',
+        }),
+      ).resolves.toMatchObject({
+        deliveryId: report.deliveryId,
+        wakeParent: false,
+      });
+      const rows =
+        await database.db`select delivery_id from allrice_assistant_results where run_id=${child.runId}`;
+      expect(rows.map((row) => row.delivery_id)).toEqual([report.deliveryId]);
+    });
+
     it('does not rewrite a terminal child Run via a fresh delivery ID', async () => {
       const f = await assistantFixture(database.db),
         child = (await f.delegate()).instance;
@@ -330,6 +376,303 @@ integration(
         ).instances.find((row) => row.runId === child.runId)?.status,
       ).toBe('failed');
     });
+
+    it.each(
+      (
+        [
+          'cancelRoot',
+          'cancelChild',
+          'assistant_stop',
+          'budget_exhausted',
+        ] as const
+      ).flatMap((trigger) =>
+        (['settlement-first', 'stopped-first'] as const).map((order) => ({
+          trigger,
+          order,
+        })),
+      ),
+    )(
+      'reconciles canceled child settlement and Run state: $trigger, $order',
+      async ({ trigger, order }) => {
+        const f = await assistantFixture(database.db, 12, {
+          allowedTools: [
+            'read',
+            'assistant.delegate',
+            'assistant.report',
+            'assistant.stop',
+          ],
+        });
+        const child = (
+          await f.delegate({ label: 'A', tools: ['read', 'assistant.report'] })
+        ).instance;
+        const sibling = (await f.delegate({ label: 'B' })).instance;
+        const bridge = createAssistantWorkerBridge({
+          runtime: f.runtime,
+          task: f.task,
+          context: f.context,
+          worker: f.worker,
+          wireNames: {},
+          readOnlyTools: new Set(),
+        });
+        const state = async () =>
+          database.db`select i.status,i.stopped_at,r.state from allrice_assistant_instances i join allrice_runs r on r.id=i.run_id where i.run_id=${child.runId}`;
+        const settle = () =>
+          bridge.handle('settled', {
+            nativeSessionId: child.nativeSessionId,
+            stopReason: 'native_settled',
+          });
+        if (trigger === 'cancelRoot')
+          await f.runtime.cancelRoot(f.context, {
+            runId: f.task.runId,
+            requestId: randomUUID(),
+          });
+        else if (trigger === 'cancelChild')
+          await f.runtime.cancelChild(f.context, {
+            runId: f.task.runId,
+            childRunId: child.runId,
+            requestId: randomUUID(),
+          });
+        else if (trigger === 'assistant_stop')
+          await bridge.handle('stop', {
+            nativeSessionId: f.nativeSessionId,
+            callId: randomUUID(),
+            arguments: { childRunId: child.runId },
+          });
+        else {
+          // Calls/tokens are observational. Exhaust the real time budget so
+          // authority polling commits the production budget_exhausted cutoff.
+          await database.db`update allrice_jobs set created_at=clock_timestamp()-interval '2 seconds',timeout_at=clock_timestamp()-interval '1 second' where id=${f.worker.jobId}`;
+          await expect(
+            f.runtime.assertCurrentAuthority(f.base),
+          ).resolves.toMatchObject({
+            cancelRequested: true,
+            stopReason: 'timeout',
+          });
+          const [root] =
+            await database.db`select cancel_reason from allrice_runtime_roots where root_run_id=${f.task.runId}`;
+          expect(root!.cancel_reason).toBe('budget_exhausted');
+        }
+        const pending = [
+          { status: 'cancel_requested', stopped_at: null, state: 'running' },
+        ];
+        expect(await state()).toEqual(pending);
+        let deliveryId: unknown;
+        if (order === 'settlement-first') {
+          const receipt = await settle();
+          expect(receipt).toMatchObject({
+            deliveryId: expect.any(String),
+            status: 'partial',
+            wakeParent: false,
+          });
+          deliveryId = receipt.deliveryId;
+          // Settlement is evidence, not confirmation that the process stopped.
+          expect(await state()).toEqual(pending);
+        }
+        await expect(
+          bridge.handle('stopped', { nativeSessionId: child.nativeSessionId }),
+        ).resolves.toEqual({ stopped: true });
+        const stopped = await state();
+        expect(stopped).toEqual([
+          {
+            status: 'canceled',
+            stopped_at: expect.any(Date),
+            state: 'canceled',
+          },
+        ]);
+        // Transport duplicates neither fabricate receipts nor mutate stop proof.
+        for (let duplicate = 0; duplicate < 2; duplicate++) {
+          const receipt = await settle();
+          if (order === 'stopped-first')
+            expect(receipt).toEqual({ status: 'canceled', wakeParent: false });
+          else
+            expect(receipt).toMatchObject({
+              deliveryId,
+              status: 'partial',
+              wakeParent: false,
+            });
+        }
+        expect(await state()).toEqual(stopped);
+        const results =
+          await database.db`select delivery_id,payload,parent_adopted_seq from allrice_assistant_results where root_run_id=${f.task.runId}`;
+        expect(results).toHaveLength(order === 'settlement-first' ? 1 : 0);
+        if (results.length) {
+          expect(results[0]).toMatchObject({
+            delivery_id: deliveryId,
+            payload: { status: 'partial', usageComplete: false },
+            parent_adopted_seq: null,
+          });
+          await expect(
+            bridge.handle('adopt-result', {
+              nativeSessionId: f.nativeSessionId,
+              deliveryId,
+              nativeMessageId: randomUUID(),
+              adoptedSeq: 1,
+            }),
+          ).rejects.toThrow(
+            trigger === 'budget_exhausted'
+              ? 'lease_lost'
+              : trigger === 'cancelRoot'
+                ? 'canceled'
+                : 'not_found',
+          );
+        }
+        await expect(
+          f.runtime.recordResult({
+            ...f.base,
+            runId: child.runId,
+            result: partial(),
+          }),
+        ).rejects.toThrow('conflict');
+        if (trigger === 'cancelChild' || trigger === 'assistant_stop') {
+          const tree = await bridge.tree();
+          for (const runId of [f.task.runId, sibling.runId]) {
+            expect(
+              tree.instances.find((row) => row.runId === runId),
+            ).toMatchObject({
+              cancelRequestedAt: null,
+              stoppedAt: null,
+            });
+            const [run] =
+              await database.db`select state from allrice_runs where id=${runId}`;
+            expect(run!.state).toBe('running');
+          }
+        }
+      },
+    );
+
+    it('keeps an existing settlement idempotent across stop without hiding conflicting deliveries', async () => {
+      const f = await assistantFixture(database.db),
+        child = (await f.delegate({ tools: ['read', 'assistant.report'] }))
+          .instance,
+        result = partial();
+      const bridge = createAssistantWorkerBridge({
+        runtime: f.runtime,
+        task: f.task,
+        context: f.context,
+        worker: f.worker,
+        wireNames: {},
+        readOnlyTools: new Set(),
+      });
+      const report = () =>
+        bridge.handle('report', {
+          nativeSessionId: child.nativeSessionId,
+          callId: randomUUID(),
+          arguments: {
+            status: 'partial',
+            summary: 'Late report',
+            evidence: [],
+            incomplete: ['Unfinished'],
+          },
+        });
+      const record = (delivery = result) =>
+        f.runtime.recordResult({
+          ...f.base,
+          runId: child.runId,
+          result: delivery,
+          settlement: true,
+        });
+      await expect(record()).resolves.toMatchObject({
+        duplicate: false,
+        status: 'partial',
+        wakeParent: true,
+      });
+      const duplicate = {
+        duplicate: true,
+        recorded: true,
+        status: 'partial',
+        wakeParent: false,
+      };
+      await expect(record()).resolves.toEqual(duplicate);
+      // The real tool is refused at admission; direct ledger reports still
+      // reach the stricter terminal/delivery conflict check.
+      await expect(report()).rejects.toThrow('canceled');
+      await expect(
+        f.runtime.recordResult({
+          ...f.base,
+          runId: child.runId,
+          result: partial(),
+        }),
+      ).rejects.toThrow('conflict');
+      await f.runtime.cancelChild(f.context, {
+        runId: f.task.runId,
+        childRunId: child.runId,
+        requestId: randomUUID(),
+      });
+      await f.runtime.confirmStopped({ ...f.base, runId: child.runId });
+      await expect(record()).resolves.toEqual(duplicate);
+      await expect(report()).rejects.toThrow('canceled');
+      await expect(
+        record({ ...result, summary: 'Changed payload' }),
+      ).rejects.toThrow('conflict');
+      // Under another delivery ID a settlement only finds the existing one.
+      await expect(
+        record({ ...result, deliveryId: randomUUID() }),
+      ).resolves.toMatchObject({
+        recorded: false,
+        result: { deliveryId: result.deliveryId },
+        wakeParent: false,
+      });
+      const tree = await f.runtime.getTree(f.context, { runId: f.task.runId });
+      expect(tree.results).toMatchObject([{ deliveryId: result.deliveryId }]);
+      expect(tree.results).toHaveLength(1);
+      expect(
+        tree.instances.find((row) => row.runId === child.runId),
+      ).toMatchObject({
+        status: 'partial',
+        stoppedAt: expect.any(String),
+      });
+      const [run] =
+        await database.db`select state from allrice_runs where id=${child.runId}`;
+      expect(run!.state).toBe('failed');
+    });
+
+    it.each(['expired', 'replaced', 'quarantined'] as const)(
+      'does not acknowledge a stopped-child settlement under a %s lease',
+      async (loss) => {
+        const f = await assistantFixture(database.db),
+          child = (await f.delegate()).instance;
+        const bridge = createAssistantWorkerBridge({
+          runtime: f.runtime,
+          task: f.task,
+          context: f.context,
+          worker: f.worker,
+          wireNames: {},
+          readOnlyTools: new Set(),
+        });
+        await f.runtime.cancelRoot(f.context, {
+          runId: f.task.runId,
+          requestId: randomUUID(),
+        });
+        await f.runtime.confirmStopped({ ...f.base, runId: child.runId });
+        if (loss === 'replaced')
+          await database.db`update allrice_jobs set lease_token=${randomUUID()} where id=${f.worker.jobId}`;
+        else {
+          await database.db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${f.worker.jobId}`;
+          if (loss === 'quarantined') await f.runtime.quarantineExpired(f.base);
+        }
+        await expect(
+          bridge.handle('settled', { nativeSessionId: child.nativeSessionId }),
+        ).rejects.toThrow('lease_lost');
+        await expect(
+          f.runtime.recordResult({
+            ...f.base,
+            runId: child.runId,
+            result: partial(),
+            settlement: true,
+          }),
+        ).rejects.toThrow('lease_lost');
+        const results =
+          await database.db`select 1 from allrice_assistant_results where root_run_id=${f.task.runId}`;
+        expect(results).toHaveLength(0);
+        const [row] =
+          await database.db`select i.status,i.stopped_at,r.state from allrice_assistant_instances i join allrice_runs r on r.id=i.run_id where i.run_id=${child.runId}`;
+        expect(row).toEqual({
+          status: 'canceled',
+          stopped_at: expect.any(Date),
+          state: 'canceled',
+        });
+      },
+    );
 
     it('cannot omit an exhausted token dimension to admit a model call', async () => {
       const f = await assistantFixture(database.db),
