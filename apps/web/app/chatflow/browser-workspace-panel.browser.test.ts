@@ -53,7 +53,12 @@ suite('browser panel for ordinary employees', () => {
     server = createServer((req, res) => {
       const path = new URL(req.url!, origin).pathname;
       const asset = assets.get(path);
-      if (path.startsWith('/api/v1/files/')) {
+      if (path === '/api/v1/files/99999999-0000-4000-8000-000000000001') {
+        res.setHeader('Content-Type', 'image/svg+xml');
+        res.end(
+          '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="120" height="60" fill="green"/></svg>',
+        );
+      } else if (path.startsWith('/api/v1/files/')) {
         res.setHeader('Content-Type', 'application/octet-stream');
         res.end('synthetic download');
       } else if (asset) {
@@ -209,9 +214,33 @@ suite('browser panel for ordinary employees', () => {
     const page = await open(1440, 'light');
     try {
       await page.getByRole('button', { name: '查看页面截图' }).click();
+      const image = page.getByRole('img', {
+        name: '当前页面截图（已隐去敏感内容）',
+      });
       await expect
-        .poll(() => page.evaluate(() => window.signPosts))
-        .toEqual(['99999999-0000-4000-8000-000000000001']);
+        .poll(() =>
+          image.evaluate((node) => (node as HTMLImageElement).naturalWidth),
+        )
+        .toBe(120);
+      expect(await page.evaluate(() => window.signPosts)).toEqual([
+        '99999999-0000-4000-8000-000000000001',
+      ]);
+      await page.getByRole('button', { name: '关闭截图' }).click();
+      expect(await image.count()).toBe(0);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('offers a refresh when a step result is unconfirmed', async () => {
+    const page = await open(390, 'light');
+    try {
+      const closed = page
+        .locator('article')
+        .filter({ hasText: '飞书智能伙伴' });
+      expect(await closed.innerText()).toContain('有一步的结果还没有确认');
+      await closed.getByRole('button', { name: '刷新状态' }).click();
+      expect(await closed.innerText()).toContain('结果待确认，请刷新状态查看');
     } finally {
       await page.close();
     }
@@ -246,17 +275,18 @@ suite('browser panel for ordinary employees', () => {
     const page = await open(390, 'light');
     try {
       await page.evaluate(() => {
-        window.approvalMode = 'stale';
+        window.approvalMode = 'expired';
       });
       await page.getByRole('button', { name: '拒绝' }).click();
       const alert = page.getByRole('alert');
       await expect
         .poll(() => alert.innerText())
-        .toContain('这一步已过期，没有执行');
+        .toContain('这一步的答复没有被接受，可能已经过期');
+      expect(await alert.innerText()).not.toContain('再点一次');
       await page.evaluate(() => {
         window.failLoad = true;
       });
-      await page.getByRole('button', { name: '刷新状态' }).click();
+      await alert.getByRole('button', { name: '刷新状态' }).click();
       await expect
         .poll(() => alert.innerText())
         .toBe('暂时读不到浏览器状态，请检查网络后刷新。\n刷新状态');

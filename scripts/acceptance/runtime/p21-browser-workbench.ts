@@ -377,8 +377,8 @@ try {
     await form.locator('input[name=value]').fill(value);
     await form
       .getByRole('button', {
-        name: sensitive ? '安全输入（不发给 Rice）' : '填写',
-        exact: true,
+        name: sensitive ? /^安全输入（不发给.+）$/ : '填写',
+        exact: !sensitive,
       })
       .click();
     let id = '';
@@ -498,7 +498,7 @@ try {
       buffer: Buffer.from('P21-synthetic-upload'),
     });
     await uploadForm
-      .getByRole('button', { name: '上传到此站点（需审批）', exact: true })
+      .getByRole('button', { name: '上传到这个网站（需确认）', exact: true })
       .click();
   });
   assert.equal((await fixtureState()).uploads, start.uploads);
@@ -540,7 +540,7 @@ try {
   const download = page.waitForEvent('download');
   await page
     .locator(`#browser-operation-${downloadId}`)
-    .getByRole('button', { name: '保存已交付文件', exact: true })
+    .getByRole('button', { name: '保存下载的文件', exact: true })
     .click();
   const delivered = await download,
     deliveredPath = await delivered.path();
@@ -555,13 +555,11 @@ try {
   await panel.getByRole('button', { name: '暂停', exact: true }).click();
   await panel.getByText('已暂停', { exact: true }).waitFor();
   assert.equal(
-    await panel
-      .getByRole('button', { name: '交还 Rice', exact: true })
-      .isEnabled(),
+    await panel.getByRole('button', { name: /^交还/ }).isEnabled(),
     true,
   );
-  await panel.getByRole('button', { name: '交还 Rice', exact: true }).click();
-  await panel.getByText('Rice 正在使用浏览器', { exact: true }).waitFor();
+  await panel.getByRole('button', { name: /^交还/ }).click();
+  await panel.getByText(/正在使用浏览器$/).waitFor();
   checks.pausedResume = true;
   const current = (await views())[0]!;
   const deniedOp = await createBrowserOperation(

@@ -134,6 +134,15 @@ const workspaces = [
         'failed',
         { available: false },
       ),
+      operation(
+        'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaac',
+        1,
+        'agent',
+        null,
+        { type: 'navigate', url: 'https://www.feishu.cn/pricing' },
+        'unknown',
+        { available: false },
+      ),
     ],
   },
   {
@@ -283,7 +292,7 @@ declare global {
     browserPosts: Record<string, unknown>[];
     filePosts: Record<string, unknown>[];
     signPosts: string[];
-    approvalMode: 'ok' | 'network' | 'stale';
+    approvalMode: 'ok' | 'network' | 'expired';
     failLoad: boolean;
   }
 }
@@ -326,10 +335,11 @@ window.fetch = async (input, init) => {
       window.approvalMode = 'ok';
       throw new TypeError('Failed to fetch');
     }
-    if (window.approvalMode === 'stale') {
+    // What the server answers once the request expired before it was read.
+    if (window.approvalMode === 'expired') {
       window.approvalMode = 'ok';
       return Response.json(
-        { code: 'approval_invalid_or_stale' },
+        { code: 'approval_response_mismatch' },
         { status: 403 },
       );
     }

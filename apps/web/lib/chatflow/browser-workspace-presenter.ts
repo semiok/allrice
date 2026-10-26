@@ -146,7 +146,11 @@ export function approvalErrorMessage(code: unknown, employee: string) {
   const messages: Record<string, string> = {
     approval_not_found: '这一步已经不在了，请刷新状态查看。',
     approval_not_pending: '这一步已经处理过了，请刷新状态查看。',
-    approval_invalid_or_stale: `这一步已过期，没有执行。需要的话请让${employeeInText(employee)}重新发起。`,
+    // The server checks validity before an earlier identical answer, so a
+    // stale answer may still have run: never claim it did not.
+    approval_invalid_or_stale: `这一步的授权已失效。请刷新状态，看这一步有没有完成，再决定是否让${employeeInText(employee)}重新发起。`,
+    approval_response_mismatch:
+      '这一步的答复没有被接受，可能已经过期。请刷新状态查看。',
     approval_response_conflict: '这一步已经有了别的答复，请刷新状态查看。',
     policy_denied: '公司的安全设置不允许这一步，没有执行。',
     ORIGIN_DENIED: '请刷新页面后再试。',

@@ -141,8 +141,12 @@ describe('browser panel wording', () => {
     expect(browserStateLabel('something-new', 'Rice')).toBe(
       '状态待确认，请刷新状态查看',
     );
-    expect(approvalErrorMessage('approval_invalid_or_stale', 'Rice')).toBe(
-      '这一步已过期，没有执行。需要的话请让 Rice 重新发起。',
+    // A stale answer may have run before the response was lost.
+    expect(
+      approvalErrorMessage('approval_invalid_or_stale', 'Rice'),
+    ).not.toContain('没有执行');
+    expect(approvalErrorMessage('approval_response_mismatch', 'Rice')).toBe(
+      '这一步的答复没有被接受，可能已经过期。请刷新状态查看。',
     );
     expect(approvalErrorMessage(undefined, 'Rice')).toBe(
       '答复可能没有送达。可以再点一次，不会重复执行。',

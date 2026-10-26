@@ -302,6 +302,20 @@ export function BrowserWorkspacePanel({
               </h3>
               <p role="status">{browserStateLabel(w.state, employeeName)}</p>
             </header>
+            {(w.state === 'unknown' ||
+              w.operations.some((op) => op.snapshot.status === 'unknown')) && (
+              <p className={styles.note}>
+                有一步的结果还没有确认，刷新后再决定下一步。
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={busy}
+                  onClick={() => setRevision((v) => v + 1)}
+                >
+                  刷新状态
+                </Button>
+              </p>
+            )}
             {!w.available && browserControlsVisible(w.state) && (
               <p className={styles.note}>
                 这个浏览器的授权已失效，不能继续操作，可以关闭它。
