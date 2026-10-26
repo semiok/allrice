@@ -3,8 +3,8 @@ import { artifactForDownloadLink } from '../../lib/chatflow/artifact-download-li
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { WorkbenchArtifact } from '@allrice/contracts';
 import {
+  artifactArrival,
   mergeArtifactPage,
-  opensAutomatically,
   parseArtifactList,
   workbenchJson,
   type ArtifactCursor,
@@ -112,25 +112,19 @@ export function useArtifactWorkbench({
             current.artifacts,
             page.artifacts,
           );
-          const newest = !before
-            ? (artifacts.find((a) => !a.stale && opensAutomatically(a)) ??
-              artifacts.find(opensAutomatically))
-            : undefined;
-          const arrived =
-            newest && !current.artifacts.some((a) => a.id === newest.id);
-          const automatic = arrived && !current.selection.explicit;
           return {
             scope,
             artifacts,
             nextCursor: page.nextCursor,
-            selection: automatic
-              ? { id: newest.id, explicit: false }
-              : current.selection,
-            noticeId: arrived
-              ? automatic && visibleRef.current
-                ? null
-                : newest.id
-              : current.noticeId,
+            ...(before
+              ? { selection: current.selection, noticeId: current.noticeId }
+              : artifactArrival(
+                  current.artifacts,
+                  artifacts,
+                  current.selection,
+                  current.noticeId,
+                  visibleRef.current,
+                )),
           };
         });
         setStatus({ scope, error: '', loading: false });

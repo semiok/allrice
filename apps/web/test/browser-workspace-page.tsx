@@ -289,6 +289,7 @@ const workspaces = [
 declare global {
   interface Window {
     approvalPosts: { responseId: string; decision: string }[];
+    loads: number;
     browserPosts: Record<string, unknown>[];
     filePosts: Record<string, unknown>[];
     signPosts: string[];
@@ -297,6 +298,7 @@ declare global {
   }
 }
 window.approvalPosts = [];
+window.loads = 0;
 window.browserPosts = [];
 window.filePosts = [];
 window.signPosts = [];
@@ -316,6 +318,7 @@ window.fetch = async (input, init) => {
       );
     }
     if (window.failLoad) throw new TypeError('Failed to fetch');
+    window.loads += 1;
     return Response.json({ workspaces });
   }
   if (url === '/api/v1/files') {

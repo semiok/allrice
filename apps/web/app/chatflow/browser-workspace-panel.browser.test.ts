@@ -239,8 +239,16 @@ suite('browser panel for ordinary employees', () => {
         .locator('article')
         .filter({ hasText: '飞书智能伙伴' });
       expect(await closed.innerText()).toContain('有一步的结果还没有确认');
+      const before = await page.evaluate(() => window.loads);
+      const writes = await page.evaluate(() => window.browserPosts.length);
       await closed.getByRole('button', { name: '刷新状态' }).click();
-      expect(await closed.innerText()).toContain('结果待确认，请刷新状态查看');
+      // It reads the state again and writes nothing.
+      await expect
+        .poll(() => page.evaluate(() => window.loads))
+        .toBeGreaterThan(before);
+      expect(await page.evaluate(() => window.browserPosts.length)).toBe(
+        writes,
+      );
     } finally {
       await page.close();
     }

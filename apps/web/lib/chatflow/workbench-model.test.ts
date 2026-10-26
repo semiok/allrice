@@ -6,6 +6,7 @@ import {
   type RuntimeExecutionScope,
 } from '@allrice/contracts';
 import {
+  artifactArrival,
   artifactKindLabel,
   opensAutomatically,
   artifactExecutionLabels,
@@ -70,6 +71,31 @@ const artifact = WorkbenchArtifactSchema.parse({
 });
 afterEach(() => vi.unstubAllGlobals());
 describe('workbench UI boundary', () => {
+  it('announces every new deliverable but opens browser records only on request', () => {
+    const document = { ...artifact, id: randomUUID() };
+    const record = {
+      ...artifact,
+      id: randomUUID(),
+      kind: 'browser_capture' as const,
+      object: { ...artifact.object, mediaType: 'application/json' },
+    };
+    const none = { id: null, explicit: false };
+    // A new document opens by itself and needs no notice while visible.
+    expect(artifactArrival([], [document], none, null, true)).toEqual({
+      selection: { id: document.id, explicit: false },
+      noticeId: null,
+    });
+    // A browser record does not open by itself, but is still announced.
+    expect(artifactArrival([], [record], none, null, true)).toEqual({
+      selection: none,
+      noticeId: record.id,
+    });
+    // An employee's own pick stays, and the new record is still announced.
+    const picked = { id: document.id, explicit: true };
+    expect(
+      artifactArrival([document], [record, document], picked, null, true),
+    ).toEqual({ selection: picked, noticeId: record.id });
+  });
   it('names a browser record and keeps it from opening unasked', () => {
     const record = {
       ...artifact,
