@@ -65,7 +65,7 @@ export function saveManualRunIntent(
   const raw = JSON.stringify(intent);
   parseManualRunIntent(raw, intent.storageKey);
   if (storage.getItem(intent.storageKey) !== null)
-    throw new Error('已有立即执行请求待核实。');
+    throw new Error('上一次立即执行的结果待确认。');
   storage.setItem(intent.storageKey, raw);
   if (storage.getItem(intent.storageKey) !== raw)
     throw new Error('未能保存原请求，未发送立即执行。');
@@ -124,7 +124,7 @@ export function resolveManualRunReceipt(
       ].includes(String(rejection.code)) ||
       typeof rejection.message !== 'string'
     )
-      throw new Error('拒绝回执与原请求不匹配。');
+      throw new Error('立即执行的结果待确认。');
     return { kind: 'rejected' as const, message: rejection.message };
   }
   const receipt = ManualAutomationRunReceiptSchema.parse(body),
@@ -140,6 +140,6 @@ export function resolveManualRunReceipt(
     receipt.run.job.workspaceId !== intent.workspaceId ||
     receipt.run.job.ownerId !== parts[2]
   )
-    throw new Error('立即执行回执与原请求不匹配。');
+    throw new Error('立即执行的结果待确认。');
   return { kind: 'accepted' as const, receipt };
 }

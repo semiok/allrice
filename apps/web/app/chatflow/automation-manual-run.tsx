@@ -10,6 +10,8 @@ import {
   saveManualRunIntent,
   type ManualRunIntent,
 } from './manual-run-intent';
+import { requestNotSent } from '../../lib/chatflow/automation-copy';
+import { userFacingMessage } from '../../lib/chatflow/user-facing-error';
 
 /** Explicit one-off action on the existing plan; restoring state grants GET only. */
 export function AutomationManualRun(props: {
@@ -44,9 +46,11 @@ export function AutomationManualRun(props: {
       setPending(intent);
       setReady(true);
       if (intent)
-        setNotice('上次立即执行结果待核实；只会读取原请求，不会再次创建。');
+        setNotice(
+          '上次立即执行的结果待确认，请点「检查立即执行结果」查看，不会重复执行。',
+        );
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : '无法读取原请求。');
+      setNotice(userFacingMessage(error, '暂时读不到上次立即执行的记录。'));
     }
     return () => {
       live.current = false;
@@ -95,7 +99,7 @@ export function AutomationManualRun(props: {
       );
       const body: unknown = await response.json();
       if (!response.ok && ![403, 409].includes(response.status))
-        throw new Error('暂时无法核实立即执行结果。');
+        throw new Error('立即执行的结果待确认。');
       const result = resolveManualRunReceipt(intent, body);
       if (
         !live.current ||
@@ -105,18 +109,25 @@ export function AutomationManualRun(props: {
       clearManualRunIntent(sessionStorage, intent);
       current.current = null;
       setPending(null);
-      setNotice(
+      const confirmed =
         result.kind === 'rejected'
           ? result.message
-          : '已创建本次立即执行，可在运行记录查看结果。原定计划保持不变。',
-      );
-      await props.onChanged();
+          : '已创建本次立即执行，可在运行记录查看结果。原定计划保持不变。';
+      setNotice(confirmed);
+      // The result above is settled; a failed detail read must not replace it.
+      await props.onChanged().catch((cause: unknown) => {
+        console.error(cause);
+        if (live.current)
+          setNotice(confirmed + '任务详情暂时没有刷新，请稍后点「刷新状态」。');
+      });
     } catch (error) {
       if (live.current) {
         if (!saved) setReady(false);
         setNotice(
-          (error instanceof Error ? error.message : '执行结果待核实。') +
-            ' 不会自动重试。',
+          saved
+            ? userFacingMessage(error, '立即执行的结果待确认。') +
+                '可以点「检查立即执行结果」查看，不会自动重试。'
+            : userFacingMessage(error, requestNotSent),
         );
       }
     } finally {

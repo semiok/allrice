@@ -309,7 +309,7 @@ try {
       artifact.id,
     );
     await page
-      .getByText('答案已保留。本次任务超过平台内部预期 Token 预算', {
+      .getByText('答案已保留。这次工作量超出了预期', {
         exact: false,
       })
       .waitFor({ state: 'hidden' });

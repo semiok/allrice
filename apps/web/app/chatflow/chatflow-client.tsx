@@ -108,8 +108,6 @@ import { AttachmentPreviewDialog } from './attachment-preview-dialog';
 import type { Attachment, Message, QueuedMessage } from './chatflow-types';
 import {
   employeeForSession,
-  providerForEmployee,
-  providerForSession,
   readJson,
   resizeComposerTextarea,
 } from './chatflow-utils';
@@ -528,7 +526,7 @@ export function ChatFlowClient({
       setAutomationRequest((previous) => ({
         scope: settingsScope,
         id: activeId,
-        title: '定时任务',
+        title: '当前对话的自动化任务',
         kind: 'sessionSchedules',
         sourceSessionId: activeId,
         revision: (previous?.revision ?? 0) + 1,
@@ -1338,9 +1336,6 @@ export function ChatFlowClient({
     activeEmployeeProfile?.name ??
     activeSession?.employeeName ??
     'AI 员工';
-  const activeProviderLabel = activeSession
-    ? providerForSession(workspace, activeSession)
-    : providerForEmployee(activeEmployee);
   const activeEmployeeColor =
     activeEmployee?.currentVersion.manifest.appearance?.accentColor ??
     activeEmployeeProfile?.appearance?.accentColor;
@@ -1856,7 +1851,6 @@ export function ChatFlowClient({
         bridgeReleases={bridgeReleases}
         monthlyQuota={monthlyQuota}
         preferences={preferences}
-        providerLabel={activeProviderLabel}
         activeId={activeId}
         collapsed={sidebarCollapsed}
         overlay={layout.compact && !sidebarCollapsed}
@@ -2101,8 +2095,7 @@ export function ChatFlowClient({
                     {automationCreate && (
                       <p>
                         说明什么时候、由谁做什么，例如“每 2
-                        分钟提醒我喝水”或“每天 09:00，Asia/Shanghai
-                        时区，整理当天工作”。
+                        分钟提醒我喝水”或“每天北京时间 09:00，整理当天工作”。
                       </p>
                     )}
                     <div className={styles.heroHeadline}>

@@ -2355,16 +2355,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await expect.poll(() => f.state.scheduledReads.length).toBeGreaterThan(0);
       expect(
         await header
-          .getByRole('button', { name: '当前会话的定时任务', exact: true })
+          .getByRole('button', { name: '当前对话的自动化任务', exact: true })
           .count(),
       ).toBe(0);
       const scheduledRow = f.page.locator(`[data-row-key="session:${B}"]`);
       await scheduledRow
-        .getByLabel('有启用中的定时任务', { exact: true })
+        .getByLabel('有启用中的自动化任务', { exact: true })
         .waitFor();
       await scheduledRow.click();
       const clock = header.getByRole('button', {
-        name: '当前会话的定时任务',
+        name: '当前对话的自动化任务',
         exact: true,
       });
       await clock.waitFor();
@@ -2441,10 +2441,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     try {
       const clock = f.page
         .locator('main > section header')
-        .getByRole('button', { name: '当前会话的定时任务', exact: true });
+        .getByRole('button', { name: '当前对话的自动化任务', exact: true });
       await clock.click();
       const tasks = f.panel.getByRole('region', {
-        name: '当前会话的定时任务',
+        name: '当前对话的自动化任务',
         exact: true,
       });
       await tasks.getByRole('button', { name: /定时工作 9820/ }).waitFor();
@@ -2470,7 +2470,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(f.state.scheduledReads.some((r) => r.sessionId === A)).toBe(true);
       await clock.click();
       expect(
-        await f.panel.getByRole('tab', { name: /^定时任务/ }).count(),
+        await f.panel
+          .getByRole('tab', { name: /^当前对话的自动化任务/ })
+          .count(),
       ).toBe(1);
       await tasks.getByRole('button', { name: /定时工作 9821/ }).click();
       await f.panel
@@ -2502,12 +2504,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await expect.poll(() => f.state.scheduledReads.length).toBeGreaterThan(0);
       await row.waitFor();
       expect(
-        await row.getByLabel('有启用中的定时任务', { exact: true }).count(),
+        await row.getByLabel('有启用中的自动化任务', { exact: true }).count(),
       ).toBe(0);
       expect(await row.innerText()).toContain('进行中');
       f.state.historyRunning = false;
       await f.page.reload();
-      await row.getByLabel('有启用中的定时任务', { exact: true }).waitFor();
+      await row.getByLabel('有启用中的自动化任务', { exact: true }).waitFor();
       expect(await row.innerText()).not.toContain('进行中');
     } finally {
       await f.close();
@@ -4141,13 +4143,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           path: process.env.ALLRICE_FEEDBACK_SCREENSHOT + '-dialog.png',
         });
       f.state.feedbackError = true;
-      await dialog.getByRole('button', { name: '提交', exact: true }).click();
+      await dialog
+        .getByRole('button', { name: '提交反馈', exact: true })
+        .click();
       await f.page.getByText('反馈保存失败', { exact: true }).waitFor();
       expect(
         await dialog.getByRole('textbox', { name: '反馈详情' }).inputValue(),
       ).toBe('请补充数据来源');
       f.state.feedbackError = false;
-      await dialog.getByRole('button', { name: '提交', exact: true }).click();
+      await dialog
+        .getByRole('button', { name: '提交反馈', exact: true })
+        .click();
       await dialog.waitFor({ state: 'hidden' });
       expect(f.state.messageFeedback[0]).toMatchObject({
         rating: 'negative',
@@ -4163,7 +4169,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await row.getByRole('button', { name: '取消标记', exact: true }).click();
       await expect.poll(() => f.state.messageFeedback.length).toBe(0);
       await row.getByRole('button', { name: '好的回答', exact: true }).click();
-      await dialog.getByRole('button', { name: '提交', exact: true }).click();
+      await dialog
+        .getByRole('button', { name: '提交反馈', exact: true })
+        .click();
       await dialog.waitFor({ state: 'hidden' });
       await f.page.goto(`${origin}/?feedback-inbox=1`);
       await f.page.getByRole('button', { name: /测试租户 · 测试用户/ }).click();
@@ -5311,7 +5319,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           exact: true,
         });
         await management.waitFor();
-        expect(await management.innerText()).toContain('Bridge\n在线');
+        expect(await management.innerText()).toContain('电脑\n已连接');
         expect(await management.innerText()).toContain('文件夹\n未连接');
         expect(
           await management
@@ -5469,7 +5477,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .click();
         await computer
           .locator('[data-bridge-connection]')
-          .getByText('离线', { exact: true })
+          .getByText('未连接', { exact: true })
           .waitFor();
         expect(
           await computer.getByText('已是最新版', { exact: true }).count(),
@@ -5486,7 +5494,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await settings
           .getByRole('button', { name: '返回我的电脑', exact: true })
           .click();
-        expect(await management.innerText()).toContain('Bridge\n离线');
+        expect(await management.innerText()).toContain('电脑\n未连接');
         expect(await management.innerText()).toContain('文件夹\n未连接');
         await f.page.keyboard.press('Escape');
         expect(await computer.count()).toBe(0);
@@ -6664,7 +6672,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           exact: true,
         });
         const executableWorkflows = dialog.getByRole('region', {
-          name: '可执行 Workflow',
+          name: '可执行的工作流',
           exact: true,
         });
         expect(await textProcedures.innerText()).toContain('对账流程正文');
@@ -6686,7 +6694,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .getAttribute('aria-selected'),
         ).toBe('true');
         await executableWorkflows
-          .getByText('暂无已绑定的可执行 Workflow。', { exact: true })
+          .getByText('暂无已绑定的可执行工作流。', { exact: true })
           .waitFor();
         expect(await textProcedures.innerText()).toContain('对账流程正文');
         await scene('每月审计').click();
@@ -7809,7 +7817,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await browserSwitch.waitFor();
         await dialog
           .getByRole('button', { name: '连接与管理电脑', exact: true })
-          .getByText('在线', { exact: true })
+          .getByText('已连接', { exact: true })
           .waitFor();
         expect(
           await dialog
@@ -7978,9 +7986,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(
         await f.page.locator('summary[aria-label="账号月额度"]').count(),
       ).toBe(0);
-      expect(
-        await f.page.getByText('Codex 订阅 · DSH', { exact: true }).count(),
-      ).toBe(0);
       await settings.click();
       await selectSettings(
         f.page.getByRole('dialog', { name: '设置', exact: true }),
@@ -7988,8 +7993,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       );
       const quota = f.page.getByRole('region', { name: '账号月额度' });
       await f.page.getByText('Synthetic member', { exact: true }).waitFor();
-      await quota.getByText('Codex 订阅 · DSH', { exact: true }).waitFor();
       await quota.getByText(/43%/).waitFor();
+      for (const word of ['Token', 'Codex', 'DSH', '模型服务'])
+        expect(await quota.innerText()).not.toContain(word);
       await quota.getByText('2,824,029', { exact: false }).waitFor();
       expect(await quota.innerText()).toContain('5,000,000');
       await f.page
@@ -8927,9 +8933,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         }),
       );
       await f.page.reload();
-      await process.getByText('正在整理上下文…', { exact: true }).waitFor();
+      await process.getByText('正在整理对话…', { exact: true }).waitFor();
       expect(
-        await f.page.getByText('正在整理上下文…', { exact: true }).count(),
+        await f.page.getByText('正在整理对话…', { exact: true }).count(),
       ).toBe(1);
       expect(await process.getByText('回复中…', { exact: true }).count()).toBe(
         0,
@@ -11298,9 +11304,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('button', { name: '准备报告与文件交付任务' })
           .click();
         expect(await composer.inputValue()).toContain('保留我的原始问题');
+        // The prompt keeps the delivery intent in words, not a tool name.
         expect(await composer.inputValue()).toContain(
-          'workspace.export.create',
+          '保存为正式交付的 Markdown 文件',
         );
+        expect(await composer.inputValue()).not.toContain('workspace.export');
         await expect
           .poll(() => composer.evaluate((e) => e === document.activeElement))
           .toBe(true);
@@ -13034,7 +13042,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       ).toBe(0);
       f.state.messageStatus = 'failed';
       await f.page.reload();
-      await f.page.getByText('这次没有完成。', { exact: true }).waitFor();
+      await f.page
+        .getByText(
+          '这次未完成。已有的内容都保留了，请稍后再试；一直这样请联系管理员。',
+          {
+            exact: true,
+          },
+        )
+        .waitFor();
       expect(
         await f.page
           .getByRole('button', { name: '在工作台预览回复（非工件）' })
@@ -13080,13 +13095,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         ).toBe(0);
         await row.getByRole('button', { name: /^会话.*的操作$/ }).click();
         expect(await f.page.getByRole('menuitem').allTextContents()).toEqual([
-          '置顶会话',
+          '置顶对话',
           '重命名',
           '归档会话',
-          '复制 Session ID',
+          '复制对话编号',
         ]);
         await f.page
-          .getByRole('menuitem', { name: '置顶会话', exact: true })
+          .getByRole('menuitem', { name: '置顶对话', exact: true })
           .click();
         await expect
           .poll(() => f.state.sessionEdits.get(B)?.pinnedAt)
@@ -13105,7 +13120,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .fill('新的会话名称');
         await rename.getByRole('button', { name: '保存', exact: true }).click();
         await expect.poll(() => rename.count()).toBe(0);
-        await selectSessionAction(f.page, row, '复制 Session ID');
+        await selectSessionAction(f.page, row, '复制对话编号');
         expect(
           await f.page.evaluate(() => sessionStorage.getItem('copied-session')),
         ).toBe(B);

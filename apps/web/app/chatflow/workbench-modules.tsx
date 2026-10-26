@@ -129,8 +129,8 @@ export function WorkbenchEntries(props: {
         <button
           type="button"
           className={`${css.entry} ${css.schedule}`}
-          aria-label="当前会话的定时任务"
-          title="当前会话的定时任务"
+          aria-label="当前对话的自动化任务"
+          title="当前对话的自动化任务"
           aria-pressed={props.open && props.selected === 'schedule'}
           onClick={props.onSchedule}
         >

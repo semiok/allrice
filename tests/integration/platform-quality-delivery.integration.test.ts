@@ -36,6 +36,17 @@ import * as officePreview from '../../packages/office-runtime/src/preview.ts';
 import { artifactHttp } from '../../apps/web/lib/runtime/artifact-http.ts';
 import { GET as downloadFile } from '../../apps/web/app/api/v1/files/[id]/download/route.ts';
 import { verifyDeliveryBrowser } from './delivery-facts-browser.fixture.ts';
+import { presentReplyFailure } from '../../apps/web/lib/chatflow/reply-failure-copy.ts';
+
+const shownFailure = (text: string | undefined) =>
+  text === undefined
+    ? undefined
+    : presentReplyFailure({
+        code: null,
+        text,
+        nativeText: null,
+        budgetWarning: false,
+      }).body;
 
 const ports = vi.hoisted(() => ({
   context: null as RequestContext | null,
@@ -427,9 +438,12 @@ suite('MET167 joined delivery facts (isolated ordinary employee)', () => {
           organizationId: f.organizationId,
           artifact: current[0]!,
           failed: sample.state === 'failed',
-          failureText: history.messages.find(
-            (m) => m.runId === runId && m.role === 'assistant',
-          )?.content.text,
+          // The transcript shows the plain copy for stored platform wording.
+          failureText: shownFailure(
+            history.messages.find(
+              (m) => m.runId === runId && m.role === 'assistant',
+            )?.content.text,
+          ),
           releasePreview,
           http: async (request) => {
             const url = new URL(request.url);

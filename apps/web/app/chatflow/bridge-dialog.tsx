@@ -25,6 +25,7 @@ import type { useBridge } from './use-bridge';
 import css from './bridge-dialog.module.css';
 import {
   bridgeCapabilityRows,
+  bridgeDeviceName,
   bridgeWorkspaceIssue,
   bridgePreparationLabel,
 } from './bridge-view';
@@ -68,7 +69,7 @@ export function BridgeSettings({
       disabled={bridge.bridgeBusy}
       aria-label="刷新状态"
       aria-busy={bridge.bridgeBusy}
-      title="刷新 Bridge 状态"
+      title="刷新电脑连接状态"
       onClick={() => {
         void bridge.loadBridgeDevices();
         void releases.reload();
@@ -85,7 +86,7 @@ export function BridgeSettings({
         <div className={css.emptyState}>
           <span role="status">
             {bridge.bridgeStatusKnown
-              ? '尚未连接电脑'
+              ? '还没有连接电脑'
               : bridge.bridgeRefreshError || '正在确认连接状态…'}
           </span>
           {refreshControl}
@@ -111,9 +112,7 @@ export function BridgeSettings({
                     <IconFollowsystemOutlineRegular size={20} />
                   </span>
                   <div className={css.deviceCopy}>
-                    <strong>
-                      {device.name.replace(/ · Rice Bridge$/, '')}
-                    </strong>
+                    <strong>{bridgeDeviceName(device.name)}</strong>
                     <div className={css.deviceMeta}>
                       <span>
                         {device.platform === 'macos-arm64'
@@ -121,7 +120,7 @@ export function BridgeSettings({
                           : 'Intel 芯片'}
                       </span>
                       <span aria-hidden="true">·</span>
-                      <span>Rice Bridge</span>
+                      <span>AllRice 电脑端</span>
                       {bridge.bridgeStatusKnown &&
                         bridge.bridgeLastRefreshedAt && (
                           <span
@@ -151,7 +150,7 @@ export function BridgeSettings({
                         ? '待确认'
                         : online
                           ? '已连接'
-                          : '离线'}
+                          : '未连接'}
                     </span>
                     {refreshControl}
                   </div>
@@ -248,7 +247,7 @@ export function BridgeSettings({
                         <strong>授权文件夹</strong>
                         <span>
                           {bridge.bridgeStatusKnown
-                            ? 'Bridge 离线，重新连接后可管理文件夹。'
+                            ? '电脑未连接，连接后可以管理文件夹。'
                             : '连接状态待确认，请刷新后管理文件夹。'}
                         </span>
                       </div>
@@ -277,8 +276,8 @@ export function BridgeSettings({
                         <span>{bridgePreparationLabel(item)}</span>
                         {item.stage === 'failed' && (
                           <small>
-                            在 Rice Bridge
-                            菜单中选择“重新检查并准备环境”继续，将复用有效下载进度。
+                            在 AllRice
+                            电脑端的菜单里选择“重新检查并准备环境”继续，已下载的部分不用重新下载。
                           </small>
                         )}
                       </div>
@@ -328,13 +327,15 @@ export function BridgeSettings({
                           </strong>
                           {!ready && (
                             <small>
-                              {online ? row.reason : '请打开本机 Bridge。'}
+                              {online
+                                ? row.reason
+                                : '请打开电脑上的 AllRice 电脑端。'}
                             </small>
                           )}
                         </div>
                         <span className={css.capabilityState}>
                           {ready && <IconCheckOutlineRegular size={14} />}
-                          {online ? row.stateLabel : '离线'}
+                          {online ? row.stateLabel : '未连接'}
                         </span>
                       </div>
                     );
@@ -365,8 +366,8 @@ export function BridgeSettings({
       ) : !onlineDevices.length ? (
         <p className={css.notice}>
           {devices.length
-            ? '打开这台电脑上的 Rice Bridge 即可重新连接。'
-            : '尚未连接电脑。安装 Bridge 后，输入配对码即可连接。'}
+            ? '打开这台电脑上的 AllRice 电脑端，就能重新连接。'
+            : '还没有连接电脑。安装 AllRice 电脑端后，输入配对码就能连接。'}
         </p>
       ) : null}
       {bridge.bridgeRecoveryActive && onlineDevices.length ? (
@@ -393,8 +394,8 @@ export function BridgeSettings({
             <p key={device.id} className={css.installedVersion}>
               <span>
                 {devices.length > 1
-                  ? device.name.replace(/ · Rice Bridge$/, '')
-                  : 'Rice Bridge'}{' '}
+                  ? bridgeDeviceName(device.name)
+                  : 'AllRice 电脑端'}{' '}
                 ·{' '}
               </span>
               <BridgeVersionStatus
@@ -413,9 +414,13 @@ export function BridgeSettings({
             onDownload={bridge.noteBridgeDownload}
           />
           <p>
-            解压后打开 Rice Bridge.app。升级前先退出旧版，原有配对和设置会保留。
+            解压后双击打开里面的应用。升级前先退出旧版，原有配对和设置会保留。
           </p>
-          <p>当前为开发版，尚未通过 Apple 公证。</p>
+          <p>
+            这是测试版。第一次打开时，macOS
+            可能提示“无法验证开发者”，请到“系统设置 →
+            隐私与安全性”里点“仍要打开”。
+          </p>
           <button
             data-computer-control
             className={css.secondaryButton}
@@ -447,7 +452,9 @@ export function BridgeSettings({
                   <IconCopyOutlineRegular size={18} />
                 </button>
               </div>
-              <p>10 分钟内在 Bridge 中输入，之后会自动连接。</p>
+              <p>
+                请在 10 分钟内把配对码输入到 AllRice 电脑端，之后会自动连接。
+              </p>
             </div>
           ) : null}
         </div>

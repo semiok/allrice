@@ -7,6 +7,7 @@ import { bridgeWorkspaceIssue } from './bridge-view';
 import type { BridgeDevice, Workspace } from './chatflow-types';
 import { readJson } from './chatflow-utils';
 import { reauthorizeNativeTerminalConnections } from './terminal-native';
+import { userFacingMessage } from '../../lib/chatflow/user-facing-error';
 
 type UseBridgeOptions = {
   setError: (message: string) => void;
@@ -122,10 +123,8 @@ export function useBridge({
       } catch (cause) {
         if (!refresh.current.isCurrent(request)) return;
         const message = request.controller.signal.aborted
-          ? 'Bridge 状态刷新超时，请重试'
-          : cause instanceof Error
-            ? cause.message
-            : '本地电脑状态加载失败';
+          ? '刷新电脑连接状态超时，请稍后再试。'
+          : userFacingMessage(cause, '暂时读不到电脑连接状态，请稍后刷新。');
         setBridgeSnapshot((previous) => ({
           scope,
           devices: previous?.scope === scope ? previous.devices : [],
@@ -169,7 +168,7 @@ export function useBridge({
         await loadBridgeDevices();
       } catch (cause) {
         if (!inScope()) return;
-        setError(cause instanceof Error ? cause.message : '工作区断开失败');
+        setError(userFacingMessage(cause, '断开结果待确认，请刷新查看。'));
       } finally {
         if (inScope()) setBridgeBusy(false);
       }
@@ -195,7 +194,10 @@ export function useBridge({
         if (!inScope()) return;
         setBridgeRecoveryActive(false);
         setError(
-          cause instanceof Error ? cause.message : '无法打开本地文件夹选择器',
+          userFacingMessage(
+            cause,
+            '没能打开电脑上的文件夹选择窗口，请确认 AllRice 电脑端已打开。',
+          ),
         );
       } finally {
         if (inScope()) setBridgeBusy(false);
@@ -209,7 +211,7 @@ export function useBridge({
     const inScope = refresh.current.capture(scope);
     if (!inScope) return;
     setBridgePairingBusy(true);
-    setBridgeFeedback({ kind: 'info', message: '正在生成租户专属配对码…' });
+    setBridgeFeedback({ kind: 'info', message: '正在生成配对码…' });
     try {
       const result = await readJson<{ pairing: BridgePairing }>(
         await fetch('/api/v1/bridge/pairings', {
@@ -229,7 +231,7 @@ export function useBridge({
       });
     } catch (cause) {
       if (!inScope()) return;
-      const message = cause instanceof Error ? cause.message : '配对码生成失败';
+      const message = userFacingMessage(cause, '配对码没有生成，请稍后再试。');
       setBridgeFeedback({ kind: 'error', message });
       setError(message);
     } finally {
@@ -267,7 +269,7 @@ export function useBridge({
           setBridgeFeedback({ kind: 'info', message: '配对码已复制。' });
       } catch {
         if (!inScope()) return;
-        const message = '复制失败，请手动选择配对码';
+        const message = '没能复制，请手动选中配对码复制。';
         setBridgeFeedback({ kind: 'error', message });
         setError(message);
       }

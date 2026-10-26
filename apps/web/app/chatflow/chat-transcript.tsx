@@ -8,7 +8,6 @@ import {
   type CSSProperties,
 } from 'react';
 import {
-  modelGovernanceFailureText,
   nativeExecutionFailureText,
   nativeExecutionDiagnosticFailureText,
   mcpFailureCopy,
@@ -58,6 +57,10 @@ import { presentAssistantTree } from '../../lib/chatflow/assistant-tree-presente
 import { isMessageRunActive } from './run-view';
 import { HistoryRefreshNotice } from './history-refresh-notice';
 import { workProcessPresentation } from '../../lib/chatflow/work-process-presentation';
+import {
+  presentReplyFailure,
+  replyBudgetKept,
+} from '../../lib/chatflow/reply-failure-copy';
 
 interface ChatTranscriptProps {
   onOpenReference?: (reference: ReferenceDraft) => void;
@@ -254,35 +257,30 @@ export const ChatTranscript = memo(function ChatTranscript({
               const linkedArtifacts = artifacts.filter(
                 (a) => a.provenance.runId === message.runId,
               );
-              const nativeFailure =
+              // One reading of a failure, shared by the reply body and the note under it.
+              const failure =
                 message.status === 'failed'
-                  ? ((message.errorCode === 'REFERENCE_UNAVAILABLE'
-                      ? '参考资料已不可用，请检查资料状态和访问权限后重新发起任务。'
-                      : null) ??
-                    nativeExecutionFailureText(message.errorCode) ??
-                    nativeExecutionDiagnosticFailureText(
-                      message.errorCode,
-                      traceEvents.findLast(
-                        (event) => event.type === 'turn.failed',
-                      )?.payload,
-                      traceEvents.findLast(
-                        (event) => event.type === 'run.failed',
-                      )?.payload.message,
-                    ))
+                  ? presentReplyFailure({
+                      code: message.errorCode,
+                      text: message.content.text,
+                      nativeText:
+                        nativeExecutionFailureText(message.errorCode) ??
+                        nativeExecutionDiagnosticFailureText(
+                          message.errorCode,
+                          traceEvents.findLast(
+                            (event) => event.type === 'turn.failed',
+                          )?.payload,
+                          traceEvents.findLast(
+                            (event) => event.type === 'run.failed',
+                          )?.payload.message,
+                        ),
+                      budgetWarning: !!message.content.budgetWarning,
+                    })
                   : null;
               const fallbackText =
-                (message.status === 'failed' &&
-                !message.content.budgetWarning &&
-                !nativeFailure
-                  ? modelGovernanceFailureText(message.errorCode)
-                  : null) ??
-                (message.status === 'pending'
+                message.status === 'pending'
                   ? ''
-                  : nativeFailure &&
-                      message.content.text ===
-                        'Rice 暂时无法完成这次请求，请稍后重试。'
-                    ? nativeFailure
-                    : message.content.text);
+                  : (failure?.body ?? message.content.text);
               const progress = projectWorkProgress(
                 traceEvents,
                 fallbackText,
@@ -559,19 +557,12 @@ export const ChatTranscript = memo(function ChatTranscript({
                                 ) : null}
                                 {message.content.budgetWarning &&
                                 message.status === 'failed' ? (
-                                  <small role="status">
-                                    答案已保留。本次任务超过平台内部预期 Token
-                                    预算；真实用量已记录，这不代表 Codex
-                                    周额度耗尽。
-                                  </small>
-                                ) : message.status === 'failed' &&
+                                  <small role="status">{replyBudgetKept}</small>
+                                ) : failure?.notice &&
                                   !applicationFailure &&
-                                  responseText !== nativeFailure ? (
+                                  responseText !== failure.notice ? (
                                   <small className={styles.failedMessage}>
-                                    {message.errorCode ===
-                                    'ASSISTANT_EXECUTION_UNRESOLVED'
-                                      ? '本轮已结束，部分操作的结果仍待核实；不会自动重试。'
-                                      : (nativeFailure ?? '这次没有完成。')}
+                                    {failure.notice}
                                   </small>
                                 ) : null}
                                 {onOpenArtifact && message.runId ? (

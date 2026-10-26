@@ -82,7 +82,7 @@ export function saveStopOccurrenceIntent(
   const raw = JSON.stringify(intent);
   parseStopOccurrenceIntent(raw, intent.storageKey);
   if (storage.getItem(intent.storageKey) !== null)
-    throw new Error('已有本轮停止请求待核实，请先读取原结果。');
+    throw new Error('上一次停止本轮的结果待确认，请先查看。');
   storage.setItem(intent.storageKey, raw);
   if (storage.getItem(intent.storageKey) !== raw)
     throw new Error('无法保存停止记录，未发送请求。');
@@ -130,7 +130,7 @@ export function resolveStopOccurrenceReceipt(
   body: unknown,
 ) {
   parseStopOccurrenceIntent(JSON.stringify(intent), intent.storageKey);
-  if (!body || typeof body !== 'object') throw new Error('停止回执不完整。');
+  if (!body || typeof body !== 'object') throw new Error('停止结果待确认。');
   const receipt = body as Record<string, unknown>;
   const run = RunSnapshotSchema.parse(receipt.run);
   const scope = JSON.parse(intent.storageKey.slice(prefix.length)) as string[];
@@ -147,7 +147,7 @@ export function resolveStopOccurrenceReceipt(
     run.job.ownerId !== run.ownerId ||
     typeof receipt.canStop !== 'boolean'
   )
-    throw new Error('停止回执与原本轮身份不匹配。');
+    throw new Error('停止结果待确认。');
   const terminal =
     ['succeeded', 'failed', 'canceled'].includes(run.status) ||
     ['succeeded', 'failed', 'dead_letter', 'canceled'].includes(run.job.status);

@@ -156,13 +156,17 @@
   border: 1px solid var(--dsw-alias-border-primary);
   border-radius: 13px;
   margin: 16px 0;
-  padding: 0 16px;
+  padding: 10px 16px;
+  min-width: 0;
 }
-.settingsFold > summary {
-  cursor: pointer;
-  padding: 14px 0;
+.settingsFoldTitle {
+  /* DSH process rows use tertiary text, below 4.5:1 on light cards. */
+  color: var(--dsw-alias-label-primary);
   font-size: 13px;
   font-weight: 500;
+}
+.settingsFoldBody {
+  padding-top: 10px;
 }
 .passwordForm {
   display: grid;

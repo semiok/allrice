@@ -473,7 +473,7 @@ describe('scope-bound durable recurring intents', () => {
         ...original,
         body: { ...original.body, clientRequestId: OTHER },
       }),
-    ).toThrow('already saved');
+    ).toThrow('结果待确认');
     expect(parseRecurringIntent(storage.getItem(KEY)!, KEY)).toEqual(original);
     clearRecurringIntent(storage, original);
     const second = {
@@ -493,7 +493,7 @@ describe('scope-bound durable recurring intents', () => {
     const discarded = new MemoryStorage();
     discarded.setItem = () => {};
     expect(() => saveRecurringIntent(discarded, createIntent())).toThrow(
-      'persistence unconfirmed',
+      '没有发出',
     );
   });
 
@@ -505,9 +505,7 @@ describe('scope-bound durable recurring intents', () => {
       body: { ...original.body, clientRequestId: OTHER },
     };
     saveRecurringIntent(storage, newer);
-    expect(() => clearRecurringIntent(storage, original)).toThrow(
-      'another request',
-    );
+    expect(() => clearRecurringIntent(storage, original)).toThrow('另一项操作');
     expect(parseRecurringIntent(storage.getItem(KEY)!, KEY)).toEqual(newer);
   });
 });

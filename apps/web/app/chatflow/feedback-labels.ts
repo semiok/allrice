@@ -6,8 +6,8 @@ const copy: Record<string, string> = {
   copy: '复制',
   copied: '已复制',
   close: '关闭',
-  submit: '提交',
-  submitting: '提交中…',
+  submit: '提交反馈',
+  submitting: '正在提交…',
   'clock.md': '{m}月{d}日',
   'clock.ymd': '{y}年{m}月{d}日',
   'dialog.hint':

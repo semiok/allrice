@@ -159,9 +159,9 @@ describe('historical transcript capability gating', () => {
           },
         },
       );
-      expect(html).toContain('模型连接中断');
+      expect(html.split('连接中断，这次未完成')).toHaveLength(2);
       expect(html).not.toContain('Rice 暂时无法完成');
-      expect(html).not.toContain('这次没有完成。');
+      expect(html).not.toContain('请稍后再试');
       if (text === '已查到四个 PR。') expect(html).toContain(text);
     },
   );
@@ -175,9 +175,9 @@ describe('historical transcript capability gating', () => {
       },
     ]);
     expect(html).toContain('已查到两项 CI 失败。');
-    expect(html).toContain('模型连接中断');
-    expect(html).toContain('任务没有整轮重跑');
-    expect(html).not.toContain('这次没有完成。');
+    expect(html).toContain('连接中断，这次未完成');
+    expect(html).toContain('已有的内容都保留了');
+    expect(html).not.toContain('请稍后再试');
   });
 
   afterEach(() => vi.clearAllMocks());
@@ -373,22 +373,22 @@ describe('historical transcript capability gating', () => {
       },
     };
     const interleaved = show([earlierReply, event(1, 'started', 'start')]);
-    expect(interleaved.match(/>正在整理上下文…</g)).toHaveLength(1);
+    expect(interleaved.match(/>正在整理对话…</g)).toHaveLength(1);
     expect(interleaved).not.toContain('回复中…');
     expect(interleaved).toContain('我先检查项目。');
     expect(interleaved).toContain('整理 · 1 项');
     const events = [event(1, 'started', 'start')];
-    expect(show(events)).toContain('正在整理上下文…');
+    expect(show(events)).toContain('正在整理对话…');
     expect(show(events)).not.toContain('aria-expanded="true"');
     events.push(event(2, 'updated', 'summary'));
-    expect(show(events)).toContain('正在整理上下文…');
+    expect(show(events)).toContain('正在整理对话…');
     for (const status of ['completed', 'failed'] as const) {
       const html = show([...events, event(3, status, 'end')]);
-      expect(html).not.toContain('正在整理上下文…');
+      expect(html).not.toContain('正在整理对话…');
       expect(html).toContain('思考中…');
     }
     expect(show([event(4, 'completed', 'prune')])).not.toContain(
-      '正在整理上下文…',
+      '正在整理对话…',
     );
   });
   it('removes placeholder text and microstatus while streaming, but retains a cursor and actual output', () => {
@@ -578,10 +578,10 @@ describe('historical transcript capability gating', () => {
         expect(html).toContain('答案已保留');
       } else {
         expect(html).not.toContain('答案已保留');
-        expect(html).not.toContain('超过平台内部预期');
-        expect(html).not.toContain('周额度');
+        expect(html).not.toContain('工作量太大');
       }
-      expect(html).not.toContain('这次没有完成');
+      for (const word of ['Token', 'Codex', '这次未完成'])
+        expect(html).not.toContain(word);
     },
   );
 
@@ -597,8 +597,8 @@ describe('historical transcript capability gating', () => {
         },
       ]);
       expect(html).toContain('Normal completed answer');
-      expect(html).not.toContain('超过平台内部预期');
-      expect(html).not.toContain('这次没有完成');
+      expect(html).not.toContain('工作量太大');
+      expect(html).not.toContain('未完成');
     }
   });
 
@@ -612,9 +612,147 @@ describe('historical transcript capability gating', () => {
           errorCode,
         },
       ]);
-      expect(html).toContain('这次没有完成');
+      expect(html).toContain('未完成');
+      for (const word of ['Token', 'Codex', '没有完成'])
+        expect(html).not.toContain(word);
     },
   );
+
+  it.each([
+    ['MODEL_TOTAL_TOKEN_BUDGET_EXCEEDED', '把任务拆小一点'],
+    ['ASSISTANT_EXECUTION_UNRESOLVED', '结果待确认，请刷新查看'],
+    ['DSH_UNKNOWN', '部分操作结果待确认'],
+    ['MODEL_RESOURCE_CONCURRENCY_EXCEEDED', '同时进行的任务太多'],
+    ['PROVIDER_CIRCUIT_OPEN', 'AI 服务暂时不可用'],
+    ['MODEL_RUNTIME_LIMIT_EXCEEDED', '运行时间超过上限'],
+    ['RATE_LIMITED', '请稍后再试；一直这样请联系管理员'],
+  ])(
+    'says once what happened and what to do next for %s',
+    (errorCode, next) => {
+      const html = render(false, [
+        {
+          ...messages[0]!,
+          status: 'failed',
+          errorCode,
+          content: { text: 'Rice 暂时无法完成这次请求，请稍后重试。' },
+        },
+      ]);
+      expect(html.split(next)).toHaveLength(2);
+      for (const word of ['Rice 暂时无法', '待核实', 'Token', 'Codex'])
+        expect(html).not.toContain(word);
+    },
+  );
+
+  it('a stored disconnect under DSH_UNKNOWN reads the same in body and note before diagnostics load', () => {
+    // The server may store the diagnosed wording; the trace is not loaded yet.
+    const html = render(false, [
+      {
+        ...messages[0]!,
+        status: 'failed',
+        errorCode: 'DSH_UNKNOWN',
+        content: {
+          text: '模型连接中断，本轮未完成。已产生的内容和工具结果已保留，可展开“工作过程”查看；任务没有整轮重跑。',
+        },
+      },
+    ]);
+    expect(html.split('连接中断，这次未完成')).toHaveLength(2);
+    expect(html).not.toContain('请稍后再试');
+    expect(html).not.toContain('部分操作结果待确认');
+  });
+
+  it.each([
+    [
+      'NATIVE_WAIT_RECOVERY_REJECTED',
+      '等待中的任务没能恢复，部分操作结果待确认',
+    ],
+    ['DSH_EXECUTION_OUTCOME_UNKNOWN', '部分操作结果待确认'],
+  ])("keeps the %s note once the run's full reply loads", (errorCode, note) => {
+    const reply = '已检查两个文件，改动已写入第一个。';
+    const completed: ChatFlowEventEnvelope = {
+      schemaVersion: 3,
+      eventId: 'reply-completed',
+      organizationId: 'org',
+      workspaceId: 'workspace',
+      conversationId: 'session',
+      runId: 'run-0',
+      generation: 1,
+      cursor: 'run-0:1',
+      harness: 'dsh',
+      occurredAt: messages[0]!.createdAt,
+      sequence: 1,
+      sourceEvent: null,
+      type: 'assistant.text.completed',
+      payload: { replyId: 'reply-1', text: reply },
+    };
+    // The server kept the reply, then the run ended with an unknown outcome.
+    for (const text of [reply, 'Rice 暂时无法完成这次请求，请稍后重试。']) {
+      const html = render(
+        false,
+        [
+          {
+            ...messages[0]!,
+            status: 'failed',
+            errorCode,
+            content: { text },
+          },
+        ],
+        [],
+        {
+          runTraces: {
+            'run-0': { status: 'loaded', events: [completed] },
+          },
+        },
+      );
+      expect(html.split(reply)).toHaveLength(2);
+      expect(html.split(note)).toHaveLength(2);
+      expect(html).toContain('结果待确认');
+    }
+  });
+
+  it.each([
+    [null, 'Rice 的这次执行已取消。', '这次任务已停止。'],
+    [
+      'APPROVAL_REJECTED',
+      '你已拒绝这一步操作，Rice 已停止该工作流。',
+      '你已拒绝这一步操作，Rice 已停止该工作流。',
+    ],
+    [
+      'INPUT_NOT_ADOPTED',
+      '本次输入未确认在原回合生效，不会自动作为下一轮任务执行。',
+      '本次输入未确认在原回合生效，不会自动作为下一轮任务执行。',
+    ],
+  ])(
+    'adds no failure note when the person stopped or declined (%s)',
+    (errorCode, text, shown) => {
+      const html = render(false, [
+        { ...messages[0]!, status: 'failed', errorCode, content: { text } },
+      ]);
+      expect(html).toContain(shown);
+      for (const word of ['未完成', '请稍后再试', 'Rice 的这次执行'])
+        expect(html).not.toContain(word);
+    },
+  );
+
+  it('keeps the knowledge source number the reply cites', () => {
+    const html = render(false, [
+      {
+        ...messages[0]!,
+        content: {
+          text: 'An existing answer',
+          citations: [
+            {
+              type: 'knowledge',
+              id: 'k-1',
+              label: '销售手册',
+              reference: { kind: 'knowledge', id: 'k-1' },
+            },
+          ],
+        },
+      } as unknown as Message,
+    ]);
+    // The model writes [K1] in the reply, so the button must say the same.
+    expect(html).toContain('[K1] 销售手册');
+  });
 
   it.each([undefined, false])(
     'never mounts a local request panel while disabled (%s)',

@@ -244,6 +244,7 @@ suite(
         newerHistory: false,
         dropManualAck: false,
         holdManual: null as 'POST' | 'GET' | null,
+        failDetailRead: false,
       };
       const heldStops: Array<{ method: string; respond: () => Promise<void> }> =
         [];
@@ -461,6 +462,16 @@ suite(
                       request: { ...operation.request, expectedRevision: 999 },
                     }
                   : (operation ?? null),
+            },
+          });
+          return;
+        }
+        if (state.failDetailRead && url.pathname.endsWith(TASK)) {
+          state.failDetailRead = false;
+          await route.fulfill({
+            status: 500,
+            json: {
+              error: { code: 'INTERNAL_ERROR', message: 'Internal error' },
             },
           });
           return;
@@ -733,7 +744,7 @@ suite(
             sourceSession = f.task.sessionId;
           await f.open();
           await f.page
-            .getByRole('combobox', { name: '执行会话', exact: true })
+            .getByRole('combobox', { name: '在哪个对话里执行', exact: true })
             .selectOption('new_each_run');
           await f.page
             .getByRole('button', { name: '保存修改', exact: true })
@@ -758,7 +769,7 @@ suite(
           await f.open();
           expect(
             await f.page
-              .getByRole('combobox', { name: '执行会话', exact: true })
+              .getByRole('combobox', { name: '在哪个对话里执行', exact: true })
               .inputValue(),
           ).toBe('new_each_run');
           expect(f.requests.filter((r) => r.method === 'PATCH')).toHaveLength(
@@ -790,7 +801,7 @@ suite(
           // Refresh the list too: the initial fixture loads before this rule is set.
           await f.page.reload();
           await f.page
-            .getByText('每月 31 日 02:30:17 · America/New_York', {
+            .getByText('每月 31 日 02:30:17 · 纽约时间', {
               exact: true,
             })
             .waitFor();
@@ -840,9 +851,17 @@ suite(
           expect(
             await detail.getByLabel('执行时间', { exact: true }).inputValue(),
           ).toBe('02:30');
+          const zone = detail.getByLabel('时区', { exact: true });
+          expect(await zone.inputValue()).toBe('America/New_York');
+          // A choice of named zones; the IANA name is only the stored value.
           expect(
-            await detail.getByLabel('时区', { exact: true }).inputValue(),
-          ).toBe('America/New_York');
+            await zone.evaluate((select) =>
+              select instanceof HTMLSelectElement
+                ? select.selectedOptions[0]?.textContent
+                : null,
+            ),
+          ).toBe('纽约时间');
+          expect(await detail.innerText()).not.toContain('America/New_York');
           await detail
             .getByText(
               /不存在的日期按当月最后一天；夏令时缺失时间顺延，重复时间只执行一次；停机后只处理最近一期。原时间含秒，未修改分钟时保留原秒数。/,
@@ -902,7 +921,7 @@ suite(
           expect(after.occurrences).toEqual(before.occurrences);
           await f.page.reload();
           await f.page
-            .getByText('每月 30 日 02:30:17 · America/New_York', {
+            .getByText('每月 30 日 02:30:17 · 纽约时间', {
               exact: true,
             })
             .waitFor();
@@ -1049,9 +1068,7 @@ suite(
           .click();
         await f.page.getByText('设置已更新。', { exact: true }).waitFor();
         await f.page.getByRole('button', { name: '显示或隐藏右栏' }).click();
-        await f.page
-          .getByText('没有匹配的自动化任务', { exact: true })
-          .waitFor();
+        await f.page.getByText('还没有自动化任务', { exact: true }).waitFor();
         expect(f.requests.filter((r) => r.method === 'PATCH')).toHaveLength(1);
       } finally {
         await f.close();
@@ -1062,7 +1079,7 @@ suite(
       try {
         await f.history();
         await f.submitStop();
-        await f.page.getByText(/fixture storage unavailable/).waitFor();
+        await f.page.getByText(/浏览器没能记下这次请求/).waitFor();
         expect(f.stopRequests('POST')).toEqual([]);
         expect(f.requests.filter((r) => r.method === 'PATCH')).toEqual([]);
         expect(
@@ -1200,6 +1217,67 @@ suite(
         await f.close();
       }
     });
+    it('offers every time zone and keeps the saved one after choosing another', async () => {
+      const f = await fixture(1280);
+      try {
+        if (f.task.definition.kind !== 'recurring') throw Error('fixture kind');
+        f.task.definition.task.rule = {
+          kind: 'daily',
+          time: '09:00:00',
+          timezone: 'Europe/Berlin',
+        };
+        await f.open();
+        const zone = f.page.getByRole('combobox', {
+          name: '时区',
+          exact: true,
+        });
+        const options = () =>
+          zone.evaluate((select) =>
+            select instanceof HTMLSelectElement
+              ? [...select.options].map((option) => option.value)
+              : [],
+          );
+        expect(await zone.inputValue()).toBe('Europe/Berlin');
+        const before = await options();
+        expect(before.slice(0, 2)).toEqual(['Asia/Shanghai', 'Asia/Hong_Kong']);
+        expect(before).toContain('Pacific/Auckland');
+        expect(before.length).toBeGreaterThan(300);
+        await zone.selectOption('Europe/London');
+        expect(await options()).toContain('Europe/Berlin');
+        await zone.selectOption('Europe/Berlin');
+        expect(await zone.inputValue()).toBe('Europe/Berlin');
+        expect(f.requests.filter((r) => r.method === 'PATCH')).toEqual([]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
+    it('keeps a confirmed manual Run when the follow-up detail read fails', async () => {
+      const f = await fixture(1280, { manual: true });
+      try {
+        await f.open();
+        f.state.failDetailRead = true;
+        await f.page
+          .getByRole('button', { name: '立即执行', exact: true })
+          .click();
+        await f.page
+          .getByText(
+            '已创建本次立即执行，可在运行记录查看结果。原定计划保持不变。任务详情暂时没有刷新，请稍后点「刷新状态」。',
+            { exact: true },
+          )
+          .waitFor();
+        expect(f.manualRequests('POST')).toHaveLength(1);
+        expect(
+          await f.page
+            .getByRole('button', { name: '检查立即执行结果', exact: true })
+            .count(),
+        ).toBe(0);
+        expect(await f.page.getByText(/结果待确认/).count()).toBe(0);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
     it('sends zero manual POST when session storage cannot persist the request', async () => {
       const f = await fixture(1280, { manual: true, storageFailure: true });
       try {
@@ -1207,7 +1285,7 @@ suite(
         await f.page
           .getByRole('button', { name: '立即执行', exact: true })
           .click();
-        await f.page.getByText(/fixture storage unavailable/).waitFor();
+        await f.page.getByText(/浏览器没能记下这次请求/).waitFor();
         expect(f.manualRequests()).toHaveLength(0);
         expect(f.errors).toEqual([]);
       } finally {

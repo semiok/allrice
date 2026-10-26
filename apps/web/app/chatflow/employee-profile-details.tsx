@@ -76,9 +76,9 @@ const procedureGroups = [
   },
   {
     kind: 'workflow',
-    title: '可执行 Workflow',
+    title: '可执行的工作流',
     description: '将固定业务流程写成程序，由系统按预设规则执行。',
-    empty: '暂无已绑定的可执行 Workflow。',
+    empty: '暂无已绑定的可执行工作流。',
   },
 ] as const;
 

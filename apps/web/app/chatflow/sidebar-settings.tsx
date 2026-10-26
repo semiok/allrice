@@ -273,7 +273,6 @@ export function SidebarSettings({
   workspaceId,
   monthlyQuota,
   preferences,
-  providerLabel,
   section,
   onSectionChange,
   onBridge,
@@ -288,7 +287,6 @@ export function SidebarSettings({
   workspaceId: string;
   monthlyQuota: ReturnType<typeof useMonthlyQuota>;
   preferences: ReturnType<typeof usePersonalPreferences>;
-  providerLabel: string;
   section: string | null;
   onSectionChange: (section: string | null) => void;
   onBridge: () => void;
@@ -449,8 +447,6 @@ export function SidebarSettings({
                       </div>
                       {logoutError && <p role="alert">{logoutError}</p>}
                       <MonthlyQuota
-                        expanded
-                        providerLabel={providerLabel}
                         data={monthlyQuota.data}
                         failed={monthlyQuota.failed}
                         onRefresh={() => void monthlyQuota.reload()}

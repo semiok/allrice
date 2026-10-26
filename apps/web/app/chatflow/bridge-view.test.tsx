@@ -5,6 +5,7 @@ import { ChatComposer } from './chat-composer';
 import {
   projectBridgeView,
   bridgeCapabilityRows,
+  bridgeDeviceName,
   bridgeWorkspaceIssue,
   bridgePreparationLabel,
 } from './bridge-view';
@@ -133,7 +134,7 @@ describe('Bridge connection and local workspace presentation', () => {
       {
         capability: 'local.office',
         stateLabel: '尚未就绪',
-        reason: '本地 Office 执行尚未交付；现有云端 Office 可用。',
+        reason: '暂不支持在电脑上处理 Office 文件，可以先用云端处理。',
       },
     ]);
   });
@@ -187,5 +188,26 @@ describe('Bridge connection and local workspace presentation', () => {
       localWorkspaceOnline: false,
       localWorkspaceLabel: undefined,
     });
+  });
+  it('keeps raw readiness codes and the client name out of capability details', () => {
+    const current = device('online');
+    current.readiness = [
+      {
+        capability: 'local.git.status',
+        state: 'unsupported',
+        reason: 'synthetic_new_reason',
+        missing: [],
+        versions: { bridge: '0.6.0', node: '22.23.2' },
+        observedAt: current.lastSeenAt,
+      },
+    ];
+    const [row] = bridgeCapabilityRows(current);
+    expect(row).toMatchObject({
+      label: '查看项目改动',
+      reason: '环境检查没有通过，请刷新状态，或重新打开 AllRice 电脑端。',
+      version: '电脑端 0.6.0 · node 22.23.2',
+    });
+    expect(bridgeDeviceName('M5-Max.local · Rice Bridge')).toBe('M5-Max.local');
+    expect(bridgeDeviceName('Rice Bridge')).toBe('这台电脑');
   });
 });
