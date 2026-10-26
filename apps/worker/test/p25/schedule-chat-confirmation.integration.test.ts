@@ -232,8 +232,11 @@ suite(
         job!.lease!.token,
       );
       // The stub model's tool call through the production handler.
-      const call = (rule: Rule): RiceToolHandlerContext => {
-        const args = { name: '提醒', prompt: '模型改写不会被执行', rule };
+      const call = (
+        rule: Rule,
+        prompt = '到点提醒我原话里的事',
+      ): RiceToolHandlerContext => {
+        const args = { name: '提醒', prompt, rule };
         return {
           arguments: args,
           input: {
@@ -253,8 +256,9 @@ suite(
         };
       };
       let turn = 1;
-      /** The native card as DSH records it, then the human's typed choice. */
-      const answer = async (askUserQuestion: unknown, label: string) => {
+      /** The native card as DSH records it, then the human's typed choice
+       * (one label per question on the card). */
+      const answer = async (askUserQuestion: unknown, ...labels: string[]) => {
         const { questions } = askUserQuestion as {
           questions: ({ multi_select: boolean } & Record<string, unknown>)[];
         };
@@ -269,7 +273,10 @@ suite(
         };
         const reply = {
           questionId,
-          answers: [{ id: String(questions[0]!.id), selected: [label] }],
+          answers: labels.map((label, index) => ({
+            id: String(questions[index]!.id),
+            selected: [label],
+          })),
         };
         const followup = await sendChatMessage(
           f.context,
@@ -286,7 +293,7 @@ suite(
           select ${f.organizationId},${f.workspaceId},${execution!.context.runId},coalesce(max(sequence),0)+1,'harness.native',
             ${f.db.json({ sourceEventType: 'session/user-question', turnId, generation: 1, nativePayload })}
           from allrice_run_events where run_id=${execution!.context.runId}`;
-        await f.db`update allrice_messages set content=${f.db.json({ text: label, citations: [], interaction: { type: 'user_question_answer', answer: reply } })}
+        await f.db`update allrice_messages set content=${f.db.json({ text: labels.join('；'), citations: [], interaction: { type: 'user_question_answer', answer: reply } })}
           where id=${followup.userMessage.id}`;
         await f.db`insert into allrice_conversation_followups(run_id,organization_id,workspace_id,session_id,owner_id,user_message_id,assistant_message_id,client_user_message_id,mode,state)
           values(${followup.run.id},${f.organizationId},${f.workspaceId},${session.id},${f.ownerId},
@@ -312,13 +319,16 @@ suite(
         });
       return { call, answer, tasks, finish };
     }
+    type Card = {
+      questions: ({ options: { label: string }[] } & Record<string, unknown>)[];
+    };
     const read = (result: { modelContent: string }) =>
       JSON.parse(result.modelContent) as {
         status: string;
-        askUserQuestion?: {
-          questions: { options: { label: string }[] }[];
-        };
+        askUserQuestion?: Card;
       };
+    const yes = (card: Card | undefined) =>
+      card!.questions[0]!.options[0]!.label;
 
     it.each(corpus)(
       'creates the reminder for “$text” ($source), directly or after one confirmation',
@@ -329,17 +339,20 @@ suite(
             const first = read(await createAutomation(c.call(rule)));
             if (first.status === 'confirmation_required') {
               expect(await c.tasks()).toHaveLength(index);
-              const card = first.askUserQuestion!;
-              await c.answer(card, card.questions[0]!.options[0]!.label);
+              await c.answer(first.askUserQuestion, yes(first.askUserQuestion));
               expect(read(await createAutomation(c.call(rule)))).toMatchObject({
-                status: expect.not.stringMatching('confirmation'),
+                status: expect.not.stringMatching('confirmation|declined'),
               });
             }
             const saved = await c.tasks();
             expect(saved).toHaveLength(index + 1);
             expect(saved[index]!.rule).toEqual(rule);
-            // What runs later is the human's own words, never the model's.
+            // What runs is the human's words, plus only what the card showed.
             expect(saved[index]!.prompt.startsWith(text)).toBe(true);
+            if (first.status === 'confirmation_required')
+              expect(saved[index]!.prompt).toContain(
+                '用户已确认的任务内容：到点提醒我原话里的事',
+              );
           }
         } finally {
           await c.finish();
@@ -349,6 +362,7 @@ suite(
 
     it('creates the weekly report reminder after the timezone question (MET-202 #3)', async () => {
       const rule = at('09:00:00', 'Asia/Shanghai', [1]);
+      const label = '确认：每周一 09:00（Asia/Shanghai），在本聊天中执行';
       const c = await chat('每周一早上 9 点提醒我写周报');
       try {
         // The model's own question: only the timezone, as seen on 10-23.
@@ -370,43 +384,114 @@ suite(
         );
         const asked = read(await createAutomation(c.call(rule)));
         expect(asked.status).toBe('confirmation_required');
-        expect(asked.askUserQuestion!.questions[0]!.options[0]!.label).toBe(
-          '确认：每周一 09:00（Asia/Shanghai）',
-        );
+        expect(yes(asked.askUserQuestion)).toBe(label);
         expect(await c.tasks()).toHaveLength(0);
-        await c.answer(
-          asked.askUserQuestion,
-          '确认：每周一 09:00（Asia/Shanghai）',
-        );
+        await c.answer(asked.askUserQuestion, label);
         await createAutomation(c.call(rule));
         expect(await c.tasks()).toMatchObject([{ rule }]);
+        // One answer, one task: a repeated call needs a new confirmation.
+        expect(read(await createAutomation(c.call(rule))).status).toBe(
+          'confirmation_required',
+        );
+        expect(await c.tasks()).toHaveLength(1);
       } finally {
         await c.finish();
       }
-      // A timezone question whose options already state the full rule needs
-      // only that one click.
-      const once = await chat('每周一早上 9 点提醒我写周报');
+      // Without a separate timezone question the model's likely zone is shown
+      // on the server card: one click.
+      const direct = await chat('每周一早上 9 点提醒我写周报');
       try {
-        await once.answer(
+        const asked = read(await createAutomation(direct.call(rule)));
+        await direct.answer(asked.askUserQuestion, label);
+        await createAutomation(direct.call(rule));
+        expect(await direct.tasks()).toMatchObject([{ rule }]);
+      } finally {
+        await direct.finish();
+      }
+    });
+
+    it('accepts only the server card, never a model-written question with the same words', async () => {
+      const rule = at('09:00:00', 'Asia/Shanghai', [1]);
+      const c = await chat('帮我翻译一下这个按钮的文案');
+      try {
+        const server = read(await createAutomation(c.call(rule)));
+        await c.answer(
           {
             questions: [
               {
-                id: 'tz',
-                question: '按哪个时区？',
-                options: [
-                  { label: '确认：每周一 09:00（Asia/Shanghai）' },
-                  { label: '确认：每周一 09:00（UTC）' },
-                ],
-                multi_select: false,
+                ...server.askUserQuestion!.questions[0]!,
+                question: '哪个按钮需要翻译？',
               },
             ],
           },
-          '确认：每周一 09:00（Asia/Shanghai）',
+          yes(server.askUserQuestion),
         );
-        await createAutomation(once.call(rule));
-        expect(await once.tasks()).toMatchObject([{ rule }]);
+        expect(read(await createAutomation(c.call(rule))).status).toBe(
+          'confirmation_required',
+        );
+        expect(await c.tasks()).toHaveLength(0);
       } finally {
-        await once.finish();
+        await c.finish();
+      }
+    });
+
+    it('creates both rules confirmed on one card and keeps a decline final', async () => {
+      const morning = at('09:00:00'),
+        evening = at('21:00:00'),
+        late = at('23:00:00');
+      const c = await chat(
+        '12 个小时监控一次，如果出现信号就推送，每天 早上九点和晚上九点',
+      );
+      try {
+        const a = read(await createAutomation(c.call(morning)));
+        const b = read(await createAutomation(c.call(evening)));
+        const d = read(await createAutomation(c.call(late)));
+        // The model merges three server cards into one question.
+        await c.answer(
+          {
+            questions: [
+              ...a.askUserQuestion!.questions,
+              ...b.askUserQuestion!.questions,
+              ...d.askUserQuestion!.questions,
+            ],
+          },
+          yes(a.askUserQuestion),
+          yes(b.askUserQuestion),
+          '先不创建',
+        );
+        await createAutomation(c.call(evening));
+        await createAutomation(c.call(morning));
+        expect(read(await createAutomation(c.call(late))).status).toBe(
+          'declined',
+        );
+        expect((await c.tasks()).map((task) => task.rule)).toEqual([
+          evening,
+          morning,
+        ]);
+      } finally {
+        await c.finish();
+      }
+    });
+
+    it('lets a later answer win over wording the server recognizes', async () => {
+      const c = await chat('每 2 分钟提醒我去吃饭');
+      try {
+        const wrong = read(await createAutomation(c.call(every(180))));
+        expect(wrong).toMatchObject({
+          status: 'confirmation_required',
+          recognizedFromUserWords: '每隔 2 分钟，在本聊天中执行',
+        });
+        await c.answer(wrong.askUserQuestion, '先不创建');
+        expect(read(await createAutomation(c.call(every(180)))).status).toBe(
+          'declined',
+        );
+        // The human's decline came after the words: no silent fast path.
+        expect(read(await createAutomation(c.call(every(120)))).status).toBe(
+          'confirmation_required',
+        );
+        expect(await c.tasks()).toHaveLength(0);
+      } finally {
+        await c.finish();
       }
     });
 
@@ -419,10 +504,10 @@ suite(
           expect(first.status).toBe('confirmation_required');
           await c.answer(first.askUserQuestion, '先不创建');
           expect(read(await createAutomation(c.call(every(120)))).status).toBe(
-            'confirmation_required',
+            'declined',
           );
           // A card for a different rule confirms nothing for this one.
-          await c.answer(first.askUserQuestion, '确认：每隔 2 分钟');
+          await c.answer(first.askUserQuestion, yes(first.askUserQuestion));
           expect(read(await createAutomation(c.call(every(180)))).status).toBe(
             'confirmation_required',
           );

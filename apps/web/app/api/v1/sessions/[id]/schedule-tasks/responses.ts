@@ -11,6 +11,7 @@ export function recurringErrorResponse(error: unknown) {
       limit: '周期任务数量已达到上限，请先整理已有任务。',
       // Only the chat tool asks for confirmation; this keeps the map total.
       confirmation_required: '请先在对话中确认这个周期任务。',
+      declined: '已选择先不创建这个周期任务。',
     };
     return Response.json(
       { error: error.code, message: messages[error.code] },

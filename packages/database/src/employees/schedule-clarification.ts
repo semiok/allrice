@@ -17,9 +17,10 @@ const frequency = new RegExp(
   'u',
 );
 
-/** The one listed option a human selected on a single-question card, or null.
- * Free text, multiple selections and unlisted labels select nothing. */
-export function selectedScheduleLabel(
+/** Each listed option a human selected on a single-select item of the card,
+ * with that item. Free text, multiple selections and unlisted labels select
+ * nothing. */
+export function selectedScheduleAnswers(
   rawQuestion: unknown,
   rawAnswer: unknown,
 ) {
@@ -28,20 +29,19 @@ export function selectedScheduleLabel(
   if (
     !question.success ||
     !answer.success ||
-    answer.data.questionId !== question.data.questionId ||
-    question.data.questions.length !== 1 ||
-    answer.data.answers.length !== 1
+    answer.data.questionId !== question.data.questionId
   )
-    return null;
-  const item = question.data.questions[0]!;
-  const choice = answer.data.answers[0]!;
-  return item.id === choice.id &&
-    !item.multiSelect &&
-    choice.selected.length === 1 &&
-    !choice.custom &&
-    item.options?.some((o) => o.label === choice.selected[0])
-    ? choice.selected[0]!
-    : null;
+    return [];
+  return answer.data.answers.flatMap((choice) => {
+    const item = question.data.questions.find((q) => q.id === choice.id);
+    return item &&
+      !item.multiSelect &&
+      choice.selected.length === 1 &&
+      !choice.custom &&
+      item.options?.some((o) => o.label === choice.selected[0])
+      ? [{ item, label: choice.selected[0]! }]
+      : [];
+  });
 }
 
 /** Only an authenticated answer can disambiguate a shorthand timed request.
@@ -53,8 +53,16 @@ export function clarifiedScheduleIntent(
   rawQuestion: unknown,
   rawAnswer: unknown,
 ) {
-  const label = selectedScheduleLabel(rawQuestion, rawAnswer);
-  if (!label) return null;
+  const question = UserQuestionRequestSchema.safeParse(rawQuestion);
+  const answer = UserQuestionAnswerSubmissionSchema.safeParse(rawAnswer);
+  const chosen = selectedScheduleAnswers(rawQuestion, rawAnswer);
+  if (
+    question.data?.questions.length !== 1 ||
+    answer.data?.answers.length !== 1 ||
+    chosen.length !== 1
+  )
+    return null;
+  const { label } = chosen[0]!;
   const requestedConversation = scheduleConversationIntent(request);
   const work = requestedConversation.request.trim().match(timedWork);
   if (!work) return null;

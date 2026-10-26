@@ -1,7 +1,7 @@
 import type { TransactionSql } from 'postgres';
 import {
   clarifiedScheduleIntent,
-  selectedScheduleLabel,
+  selectedScheduleAnswers,
 } from './schedule-clarification.ts';
 import {
   employeeChatUuid,
@@ -17,6 +17,8 @@ export async function readScheduleClarification(
   request: string,
 ) {
   const ctx = input.context;
+  // Parallel calls of one Run read and consume its answers one at a time.
+  await tx`select pg_advisory_xact_lock(hashtextextended(${`schedule-answer:${ctx.runId}`},0))`;
   const [row] = await tx<
     { question: unknown; answer: unknown; answered_at: Date }[]
   >`
@@ -47,36 +49,34 @@ export async function readScheduleClarification(
         where q.run_id=e.run_id and q.payload->>'sourceEventType'='session/user-question')
     order by c.created_at desc,c.id desc limit 1`;
   if (!row) return null;
-  const none = { intent: null, label: null };
-  const label = selectedScheduleLabel(row.question, row.answer);
-  if (!label) return none;
-  // A clarification authorizes one enrollment. Preserve canceled/deleted rows
-  // as well, so a new tool call cannot silently recreate the confirmed task.
-  // Tasks enrolled before this answer did not consume it.
-  const calls = await tx<{ call_id: string }[]>`
-    select call_id from allrice_task_calls where run_id=${ctx.runId}
-      and kind='tool' and call_id<>${input.callId}`;
-  const ids = calls.flatMap((c) =>
-    ['native-once-call', 'native-recurring-call'].map((kind) =>
-      employeeChatUuid(
-        kind,
-        ctx.organizationId,
-        ctx.workspaceId!,
-        ctx.runId,
-        c.call_id,
-      ),
+  // An answer authorizes one enrollment. Any task of this session created
+  // after it, other than this call's own replay, consumed it; deleted rows
+  // count too, so a new call cannot silently recreate the confirmed task.
+  const own = ['native-once-call', 'native-recurring-call'].map((kind) =>
+    employeeChatUuid(
+      kind,
+      ctx.organizationId,
+      ctx.workspaceId!,
+      ctx.runId,
+      input.callId,
     ),
   );
-  if (ids.length) {
-    const [existing] = await tx`select id from allrice_automations
-      where organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId!}
-        and owner_id=${ctx.policySnapshot.subjectId} and session_id=${input.sessionId}
-        and (native_once_request_id=any(${ids}::uuid[]) or native_recurring_request_id=any(${ids}::uuid[]))
-        and created_at>=${row.answered_at} limit 1`;
-    if (existing) return none;
-  }
+  const enrolled = await tx<{ rule: unknown; conversation_mode: string }[]>`
+    select schedule->'rule' rule,conversation_mode from allrice_automations
+    where organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId!}
+      and owner_id=${ctx.policySnapshot.subjectId} and session_id=${input.sessionId}
+      and created_at>=${row.answered_at}
+      and coalesce(native_once_request_id,native_recurring_request_id)<>all(${own}::uuid[])`;
   return {
-    intent: clarifiedScheduleIntent(request, row.question, row.answer),
-    label,
+    // A selected frequency is consumed by any enrollment after it; a card
+    // confirmation only by one with its exact rule and mode.
+    intent: enrolled.length
+      ? null
+      : clarifiedScheduleIntent(request, row.question, row.answer),
+    answers: selectedScheduleAnswers(row.question, row.answer),
+    enrolled: enrolled.map((task) => ({
+      rule: task.rule,
+      conversationMode: task.conversation_mode,
+    })),
   };
 }

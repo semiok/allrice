@@ -94,10 +94,10 @@ import { employeeAccessTransaction } from './employees/employee-access-cancellat
 import { explicitRecurringTaskIntent } from './employees/recurring-task-intent.ts';
 import { readScheduleClarification } from './employees/schedule-clarification-authority.ts';
 import {
-  confirmationLabel,
+  confirmedRecurringRequest,
+  recurringConfirmation,
   recurringConfirmationQuestion,
   recurringRuleText,
-  sameConfirmationLabel,
 } from './employees/recurring-task-confirmation.ts';
 import {
   assertEmployeeChatExecution,
@@ -178,9 +178,14 @@ export class NativeRecurringProductError extends Error {
       | 'binding_conflict'
       | 'lease_lost'
       | 'limit'
-      | 'confirmation_required',
-    /** Server-rendered card for ask_user_question; it is not authority. */
-    readonly askUserQuestion?: ReturnType<typeof recurringConfirmationQuestion>,
+      | 'confirmation_required'
+      | 'declined',
+    /** For the model only: the server's card and, when the wording was
+     * recognized as another rule, that rule. Neither is authority. */
+    readonly confirmation?: {
+      askUserQuestion: ReturnType<typeof recurringConfirmationQuestion>;
+      recognized?: string;
+    },
   ) {
     super(`native_recurring_${code}`);
   }
@@ -557,7 +562,6 @@ async function enrollRecurringTask(
       throw new NativeRecurringProductError('request_conflict');
     return readRecurringTaskProjection(tx, existing, true);
   }
-  validateNew?.();
   const [partition] = await tx<
     {
       partition_id: string;
@@ -573,9 +577,11 @@ async function enrollRecurringTask(
   >`select count(*)::int count from allrice_automations where organization_id=${scope.organizationId}
       and owner_id=${scope.ownerId} and clock_owner='native_recurring' and deleted_at is null`;
   if (count!.count >= 1000) throw new NativeRecurringProductError('limit');
+  if (input.rule.kind === 'monthly' && !ordinaryMonthlyEnabled())
+    throw new NativeRecurringProductError('disabled');
+  // Only a task that can actually be enrolled is offered for confirmation.
+  validateNew?.();
   if (input.rule.kind === 'monthly') {
-    if (!ordinaryMonthlyEnabled())
-      throw new NativeRecurringProductError('disabled');
     const p = await enrollOrdinaryMonthlyTaskInTransaction(
       tx,
       scope,
@@ -699,29 +705,48 @@ export async function createRecurringTaskFromExecutionContext(
     await assertEmployeeChatHumanSource(tx, input, current);
     if (!nativeRecurringProductEnabled())
       throw new NativeRecurringProductError('disabled');
-    // Wording only grants: a recognized request (or a selected frequency, the
-    // latest human word) that matches the structured call needs no card.
-    // Anything else waits for the human to select the server's rendering of
-    // this exact rule on a card; unrecognized wording is never a refusal.
+    // Wording only grants. Without any answered question in this Run, a
+    // recognized request that matches the structured call needs no card.
+    // Once the human has answered, only that answer counts: a selected
+    // frequency, or the server's own card for exactly this call. Anything
+    // else gets that card; unrecognized wording is never a refusal.
     const clarified = await readScheduleClarification(tx, input, current.text);
-    const recognized = clarified?.intent
-      ? clarified.intent.kind === 'recurring'
+    const mode = input.conversationMode;
+    const recognized = clarified
+      ? clarified.intent?.kind === 'recurring'
         ? clarified.intent
         : null
       : explicitRecurringTaskIntent(current.text);
-    const period = recurringRuleText(rule, input.conversationMode);
-    const intent =
+    const matches =
       recognized &&
       isDeepStrictEqual(rule, recognized.rule) &&
-      (input.conversationMode ?? 'reuse') ===
-        (recognized.conversationMode ?? 'reuse')
-        ? recognized
-        : clarified?.label &&
-            sameConfirmationLabel(clarified.label, confirmationLabel(period))
-          ? {
-              authoritativeRequest: `${current.text}\n用户已确认的频率：${period}`,
-            }
-          : null;
+      (mode ?? 'reuse') === (recognized.conversationMode ?? 'reuse');
+    const card =
+      clarified &&
+      recurringConfirmation(
+        current.text,
+        input.prompt,
+        rule,
+        mode,
+        clarified.answers,
+      );
+    const consumed = clarified?.enrolled.some(
+      (task) =>
+        isDeepStrictEqual(task.rule, rule) &&
+        task.conversationMode === (mode ?? 'reuse'),
+    );
+    const intent = matches
+      ? recognized
+      : card === 'confirmed' && !consumed
+        ? {
+            authoritativeRequest: confirmedRecurringRequest(
+              current.text,
+              input.prompt,
+              rule,
+              mode,
+            ),
+          }
+        : null;
     const authoritativeRequest = intent?.authoritativeRequest ?? current.text;
     const enrollment = CreateRecurringTaskInputSchema.parse({
       clientRequestId: requestId,
@@ -741,15 +766,25 @@ export async function createRecurringTaskFromExecutionContext(
       { ...enrollment, prompt: authoritativeRequest },
       digest,
       () => {
-        if (!intent)
-          throw new NativeRecurringProductError(
-            'confirmation_required',
-            recurringConfirmationQuestion(
-              current.text,
-              rule,
-              input.conversationMode,
-            ),
-          );
+        if (intent) return;
+        if (card === 'declined')
+          throw new NativeRecurringProductError('declined');
+        throw new NativeRecurringProductError('confirmation_required', {
+          askUserQuestion: recurringConfirmationQuestion(
+            current.text,
+            input.prompt,
+            rule,
+            mode,
+          ),
+          ...(recognized
+            ? {
+                recognized: recurringRuleText(
+                  recognized.rule,
+                  recognized.conversationMode,
+                ),
+              }
+            : {}),
+        });
       },
     );
   });

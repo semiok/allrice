@@ -164,16 +164,31 @@ it('hands an unrecognized recurring request to a confirmation card, not a failur
     ],
   };
   createRecurring.mockRejectedValueOnce(
-    new NativeRecurringProductError('confirmation_required', askUserQuestion),
+    new NativeRecurringProductError('confirmation_required', {
+      askUserQuestion,
+      recognized: '每隔 3 分钟，在本聊天中执行',
+    }),
   );
   const result = await createAutomation(c);
   expect(JSON.parse(result.modelContent)).toMatchObject({
     created: false,
     status: 'confirmation_required',
     askUserQuestion,
+    recognizedFromUserWords: '每隔 3 分钟，在本聊天中执行',
   });
   expect(result.itemCount).toBe(0);
   expect(create).not.toHaveBeenCalled();
+});
+
+it('reports a declined card as a normal result that asks for nothing more', async () => {
+  const c = recurringCall();
+  createRecurring.mockRejectedValueOnce(
+    new NativeRecurringProductError('declined'),
+  );
+  const result = await createAutomation(c);
+  const content = JSON.parse(result.modelContent);
+  expect(content).toMatchObject({ created: false, status: 'declined' });
+  expect(content.askUserQuestion).toBeUndefined();
 });
 
 it('keeps other recurring errors as errors', async () => {

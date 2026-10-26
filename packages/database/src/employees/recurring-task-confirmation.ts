@@ -1,11 +1,13 @@
+import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import {
   UserQuestionItemSchema,
   type AutomationConversationMode,
   type RecurringScheduleRule,
+  type UserQuestionItem,
 } from '@allrice/contracts';
 import { askUserQuestionArguments } from './ask-user-question.ts';
 
-export const recurringConfirmationQuestionId = 'schedule-confirm';
 const decline = '先不创建';
 const weekdayNames = '一二三四五六日';
 
@@ -23,8 +25,10 @@ function interval(seconds: number) {
   return `${seconds} 秒`;
 }
 
-/** Server rendering of the exact structured rule. It is shown as the option a
- * human must select, so the selected words always describe what is enrolled. */
+const quote = (text: string, max: number) =>
+  text.length > max ? `${text.slice(0, max)}…` : text;
+
+/** Server rendering of the exact structured rule and conversation mode. */
 export function recurringRuleText(
   rule: RecurringScheduleRule,
   conversationMode?: AutomationConversationMode,
@@ -38,39 +42,91 @@ export function recurringRuleText(
         : rule.kind === 'weekly'
           ? `每周${rule.weekdays.map((day) => weekdayNames[day - 1]).join('、')}`
           : `每月 ${rule.monthDay} 日`;
-  return `${period}${at}${conversationMode === 'new_each_run' ? '，每次新建聊天' : ''}`;
+  return `${period}${at}，${conversationMode === 'new_each_run' ? '每次新建聊天执行' : '在本聊天中执行'}`;
 }
 
-export const confirmationLabel = (period: string) => `确认：${period}`;
+/** The model's structured task, shown in full when it fits on the card. A
+ * longer one is not shown, and then only the human's own words will run. */
+const shownWork = (prompt: string) => {
+  const work = prompt.trim();
+  return work.length <= 2_000 ? work : null;
+};
 
-/** Labels differ only in spacing or full/half-width punctuation the model may
- * normalize when it copies them. Wording itself is never interpreted. */
-export function sameConfirmationLabel(a: string, b: string) {
-  const normalize = (value: string) =>
-    value
-      .normalize('NFKC')
-      .replace(/\s+/gu, '')
-      .replaceAll('，', ',')
-      .replaceAll('、', ',');
-  return normalize(a) === normalize(b);
+/** The whole card is a pure function of the call, so a presented card can be
+ * compared with it exactly; nothing is stored. Its id names this exact call
+ * content, so several cards can share one question. */
+function card(
+  request: string,
+  prompt: string,
+  rule: RecurringScheduleRule,
+  conversationMode?: AutomationConversationMode,
+) {
+  const work = shownWork(prompt);
+  const id = createHash('sha256')
+    .update(JSON.stringify([request, work, rule, conversationMode ?? 'reuse']))
+    .digest('hex')
+    .slice(0, 24);
+  return UserQuestionItemSchema.parse({
+    id: `schedule-confirm:${id}`,
+    header: '确认定时任务',
+    question: [
+      '要创建这个定时任务吗？',
+      work
+        ? `每次到点执行：「${work}」\n你的原话：「${quote(request, 600)}」`
+        : `每次到点按你的原话执行：「${quote(request, 600)}」`,
+      '创建后可在左侧“自动化任务”里暂停或删除。',
+    ].join('\n'),
+    multiSelect: false,
+    options: [
+      { label: `确认：${recurringRuleText(rule, conversationMode)}` },
+      { label: decline },
+    ],
+  });
 }
 
 export function recurringConfirmationQuestion(
   request: string,
+  prompt: string,
   rule: RecurringScheduleRule,
   conversationMode?: AutomationConversationMode,
 ) {
-  const work = request.length > 600 ? `${request.slice(0, 600)}…` : request;
   return askUserQuestionArguments(
-    UserQuestionItemSchema.parse({
-      id: recurringConfirmationQuestionId,
-      header: '确认定时任务',
-      question: `要按下面的频率创建定时任务吗？每次到点都会按你的原话执行：\n「${work}」\n创建后可在左侧“自动化任务”里暂停或删除。`,
-      multiSelect: false,
-      options: [
-        { label: confirmationLabel(recurringRuleText(rule, conversationMode)) },
-        { label: decline },
-      ],
-    }),
+    card(request, prompt, rule, conversationMode),
   );
+}
+
+/** A model-written question never confirms, even with the same option words:
+ * only the server's own card for exactly this call counts. Declining that
+ * card is final for this call content. */
+export function recurringConfirmation(
+  request: string,
+  prompt: string,
+  rule: RecurringScheduleRule,
+  conversationMode: AutomationConversationMode | undefined,
+  answers: readonly { item: UserQuestionItem; label: string }[],
+) {
+  const expected = card(request, prompt, rule, conversationMode);
+  const answer = answers.find(({ item }) => item.id === expected.id);
+  if (answer?.label === decline) return 'declined' as const;
+  return answer &&
+    isDeepStrictEqual(answer.item, expected) &&
+    answer.label === expected.options![0]!.label
+    ? ('confirmed' as const)
+    : null;
+}
+
+/** What is stored and runs each time after a confirmation: the human's
+ * message plus exactly what the card showed. */
+export function confirmedRecurringRequest(
+  request: string,
+  prompt: string,
+  rule: RecurringScheduleRule,
+  conversationMode?: AutomationConversationMode,
+) {
+  const work = shownWork(prompt);
+  return [
+    request,
+    ...(work ? [`用户已确认的任务内容：${work}`] : []),
+    `用户已确认的频率：${recurringRuleText(rule, conversationMode)}`,
+  ].join('\n');
 }
