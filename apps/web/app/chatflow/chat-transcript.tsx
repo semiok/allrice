@@ -56,6 +56,7 @@ import { AutomationRunTaskCards } from './automation-run-task-cards';
 import { AssistantMessageActions } from './message-feedback';
 import { presentAssistantTree } from '../../lib/chatflow/assistant-tree-presenter';
 import { isMessageRunActive } from './run-view';
+import { HistoryRefreshNotice } from './history-refresh-notice';
 import { workProcessPresentation } from '../../lib/chatflow/work-process-presentation';
 
 interface ChatTranscriptProps {
@@ -74,6 +75,9 @@ interface ChatTranscriptProps {
   onAssistantChanged?: () => void;
   messages: Message[];
   recoverableRunView?: RunView;
+  /** The newest read of this conversation failed; offer to read it again. */
+  historyStale?: boolean;
+  onRefreshHistory?: () => Promise<unknown>;
   runTraces: Record<string, RunTrace>;
   runViews: Record<string, RunView>;
   tenantHeaders: Record<string, string>;
@@ -104,6 +108,8 @@ export const ChatTranscript = memo(function ChatTranscript({
   onAssistantChanged,
   messages,
   recoverableRunView,
+  historyStale = false,
+  onRefreshHistory,
   runTraces,
   runViews,
   tenantHeaders,
@@ -612,6 +618,8 @@ export const ChatTranscript = memo(function ChatTranscript({
                 重试
               </button>
             </div>
+          ) : historyStale && onRefreshHistory ? (
+            <HistoryRefreshNotice onRefresh={onRefreshHistory} />
           ) : null}
         </div>
         {!atBottom ? (

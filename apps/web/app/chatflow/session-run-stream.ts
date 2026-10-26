@@ -8,7 +8,8 @@ import { readJson } from './chatflow-utils';
 interface SessionRunStreamOptions {
   sessionId: string | null;
   workspaceId: string | undefined;
-  loadHistory: (sessionId: string) => Promise<void>;
+  /** Records a failed read for the transcript notice; here it is only logged. */
+  loadHistory: (sessionId: string) => Promise<unknown>;
   loadWorkspace: () => Promise<void>;
   setError: (message: string) => void;
   tenantHeaders: Record<string, string>;
@@ -229,8 +230,13 @@ export function createSessionRunStream({
           ),
         });
       }
-      await loadHistory(sessionId).catch(() => undefined);
-      if (current()) await loadWorkspace().catch(() => undefined);
+      await loadHistory(sessionId).catch((cause: unknown) =>
+        console.error('Chat history refresh after the run failed', cause),
+      );
+      if (current())
+        await loadWorkspace().catch((cause: unknown) =>
+          console.error('Workspace refresh after the run failed', cause),
+        );
     } finally {
       // An older generation can finish after this Run already has a new stream.
       if (activeStreams.get(runId) === controller) activeStreams.delete(runId);

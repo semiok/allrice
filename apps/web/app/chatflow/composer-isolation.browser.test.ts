@@ -757,7 +757,14 @@ suite(
             .poll(() => pending.length, { timeout: 5000 })
             .toBe(count);
         },
-        async respond(index: number, ok = true) {
+        async respond(
+          index: number,
+          ok:
+            | boolean
+            | 'empty receipt'
+            | 'unusable receipt'
+            | 'broken receipt' = true,
+        ) {
           const p = pending[index]!;
           const received = page.waitForResponse(
             (response) =>
@@ -778,10 +785,37 @@ suite(
               ),
           );
           function reply() {
+            // Stored on the server, but the browser cannot read the receipt.
+            if (ok === 'empty receipt') {
+              p.response.writeHead(200);
+              p.response.end();
+              return;
+            }
+            if (ok === 'unusable receipt') {
+              answer(p.response, {});
+              return;
+            }
+            if (ok === 'broken receipt') {
+              // Every ID is there, but the stored message cannot be shown.
+              answer(p.response, {
+                run: { id: runId },
+                fallbackRunId: runId,
+                delivery: 'follow_up',
+                userMessage: { ...message('user-broken', ''), content: null },
+                assistantMessage: message(
+                  'assistant-broken',
+                  '',
+                  'assistant',
+                  runId,
+                  'pending',
+                ),
+              });
+              return;
+            }
             if (!ok) {
               answer(
                 p.response,
-                { error: { message: 'Synthetic old request failed' } },
+                { error: { message: '合成的旧请求未完成' } },
                 503,
               );
               return;
@@ -1163,6 +1197,37 @@ suite(
       }
     }, 15_000);
 
+    it.each(['empty receipt', 'unusable receipt', 'broken receipt'] as const)(
+      'keeps the same message number for a resend after a reply with %s',
+      async (kind) => {
+        const f = await fixture();
+        try {
+          const draft = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+          await f.send('收据读不出来时再发一次');
+          await f.waitPending(1);
+          expect(f.pending[0]!.path).toContain('/messages');
+          const clientId = f.pending[0]!.body.clientMessageId;
+          await f.respond(0, kind);
+          await f.page
+            .getByText('结果待确认，请刷新页面查看', { exact: true })
+            .waitFor();
+          expect(await draft.inputValue()).toBe('收据读不出来时再发一次');
+          expect(await f.page.getByText(/TypeError|Cannot read/).count()).toBe(
+            0,
+          );
+          await f.send('收据读不出来时再发一次');
+          await f.waitPending(2);
+          expect(f.pending[1]!.body.clientMessageId).toBe(clientId);
+          await f.respond(1);
+          await expect.poll(() => draft.inputValue()).toBe('');
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+      15_000,
+    );
+
     it('never displays the previous conversation while loading and switches retained histories without HTTP', async () => {
       const f = await fixture({ delayHistoryB: true });
       try {
@@ -1306,9 +1371,7 @@ suite(
             .getByRole('textbox', { name: '给 Rice 的消息' })
             .inputValue(),
         ).toBe('');
-        expect(
-          await f.page.getByText('Synthetic old request failed').count(),
-        ).toBe(0);
+        expect(await f.page.getByText('合成的旧请求未完成').count()).toBe(0);
         await f.page.getByText('B.txt', { exact: true }).waitFor();
         await f.respond(1, false);
         await expect
@@ -1345,9 +1408,7 @@ suite(
               .inputValue(),
           )
           .toBe('New A draft');
-        expect(
-          await f.page.getByText('Synthetic old request failed').count(),
-        ).toBe(0);
+        expect(await f.page.getByText('合成的旧请求未完成').count()).toBe(0);
       } finally {
         await f.close();
       }
@@ -2899,7 +2960,7 @@ suite(
         await f.waitPending(2);
         await f.respond(1, false);
         expect(await dialog.getByRole('alert').textContent()).toContain(
-          'Synthetic old request failed',
+          '合成的旧请求未完成',
         );
         expect(await dialog.getByRole('checkbox').nth(0).isDisabled()).toBe(
           true,
@@ -3019,9 +3080,7 @@ suite(
         await f.page
           .getByRole('textbox', { name: '给 Rice 的消息' })
           .fill('B unchanged');
-        expect(
-          await f.page.getByText('Synthetic old request failed').count(),
-        ).toBe(0);
+        expect(await f.page.getByText('合成的旧请求未完成').count()).toBe(0);
         expect(
           await f.page
             .getByRole('button', { name: '停止生成', exact: true })
@@ -3238,9 +3297,7 @@ suite(
             .getByRole('textbox', { name: '给 Rice 的消息' })
             .inputValue(),
         ).toBe('B question-independent draft');
-        expect(
-          await f.page.getByText('Synthetic old request failed').count(),
-        ).toBe(0);
+        expect(await f.page.getByText('合成的旧请求未完成').count()).toBe(0);
         expect(
           await f.page
             .getByRole('textbox', { name: '给 Rice 的消息' })

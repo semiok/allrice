@@ -13,7 +13,7 @@ import { createSessionRunStream } from './session-run-stream';
 interface UseRunStreamOptions {
   activeId: string | null;
   history: History | null;
-  loadHistory: (sessionId: string) => Promise<void>;
+  loadHistory: (sessionId: string) => Promise<unknown>;
   loadWorkspace: () => Promise<void>;
   setError: (message: string) => void;
   tenantHeaders: Record<string, string>;
@@ -68,7 +68,10 @@ export function useRunStream({
   useEffect(() => {
     if (!activeId) return;
     const reconnect = () => {
-      void loadHistory(activeId).catch(() => {});
+      // A failure is recorded by loadHistory and shown with a refresh action.
+      void loadHistory(activeId).catch((cause: unknown) =>
+        console.error('Chat history refresh after reconnecting failed', cause),
+      );
       stream.recoverConnections();
     };
     window.addEventListener('online', reconnect);

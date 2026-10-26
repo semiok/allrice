@@ -1,6 +1,6 @@
 import { IdentityError } from '@allrice/database';
 
-import { apiProblem } from '../api-error-response';
+import { apiProblem, isRequestValidationError } from '../api-error-response';
 
 export function identityErrorResponse(error: unknown) {
   if (error instanceof IdentityError) {
@@ -17,10 +17,22 @@ export function identityErrorResponse(error: unknown) {
       retryable: false,
     });
   }
+  if (isRequestValidationError(error))
+    return apiProblem({
+      status: 400,
+      code: 'VALIDATION_FAILED',
+      message: 'Request validation failed',
+      retryable: false,
+    });
+  // A database or runtime failure is not the person's input; say so.
+  console.error('Unhandled identity request error', {
+    name: error instanceof Error ? error.name : 'UnknownError',
+    message: error instanceof Error ? error.message : 'Unknown failure',
+  });
   return apiProblem({
-    status: 400,
-    code: 'VALIDATION_FAILED',
-    message: 'Request validation failed',
-    retryable: false,
+    status: 503,
+    code: 'DEPENDENCY_UNAVAILABLE',
+    message: 'Identity service is temporarily unavailable',
+    retryable: true,
   });
 }
