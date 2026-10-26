@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Browser } from '../../../apps/worker/node_modules/playwright-core/index.js';
 import {
   customProperties,
+  parseColor,
   resolveValue,
   tokenDeclarations,
   type DesignTokens,
@@ -21,7 +22,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const tokens = JSON.parse(
   readFileSync(resolve(here, 'tokens.json'), 'utf8'),
 ) as DesignTokens;
-const names = tokenDeclarations(tokens).light.map(([name]) => name);
+const names = [...tokenDeclarations(tokens).get('body')!].map(([n]) => n);
 function stylesheet(path: string): string {
   return readFileSync(path, 'utf8').replace(
     /@import\s+['"](.+?)['"];/g,
@@ -29,14 +30,18 @@ function stylesheet(path: string): string {
   );
 }
 const upstream = resolve(here, '../../../apps/web/app/dsh-upstream');
-const scopes = [
-  customProperties(stylesheet(resolve(upstream, 'design-platform.css'))),
-  customProperties(stylesheet(resolve(upstream, 'base.css'))),
-  customProperties(readFileSync(resolve(here, 'tokens.css'), 'utf8')),
-];
+const properties = customProperties(
+  readFileSync(resolve(here, 'tokens.css'), 'utf8'),
+  [
+    stylesheet(resolve(upstream, 'design-platform.css')),
+    stylesheet(resolve(upstream, 'base.css')),
+  ].reduce((into, css) => customProperties(css, into), new Map()),
+);
 // esbuild re-serializes quotes; spacing is not significant either.
 const compact = (value: string) =>
   value.replace(/\s+/g, '').replaceAll("'", '"');
+const close = (a: number[], b: number[]) =>
+  a.every((v, i) => Math.abs(v - b[i]!) <= (i === 3 ? 0.01 : 1));
 
 suite('design tokens in Chrome', () => {
   let browser: Browser, server: Server, origin: string;
@@ -97,12 +102,16 @@ suite('design tokens in Chrome', () => {
       try {
         await page.goto(origin);
         await page.locator('#probe').waitFor();
-        for (const theme of ['light', 'dark'] as const) {
+        for (const theme of tokens.themes) {
           const actual = await page.evaluate(
-            ({ dark, names }) => {
+            ({ dark, names, colors, fonts }) => {
               document.body.toggleAttribute('data-ds-dark-theme', dark);
               const body = getComputedStyle(document.body);
-              const probe = getComputedStyle(document.getElementById('probe')!);
+              const probe = document.getElementById('probe')!;
+              const used = (style: string) => {
+                probe.style.cssText = style;
+                return getComputedStyle(probe);
+              };
               return {
                 tokens: Object.fromEntries(
                   names.map((name) => [
@@ -110,36 +119,56 @@ suite('design tokens in Chrome', () => {
                     body.getPropertyValue(`--ar-${name}`),
                   ]),
                 ),
-                probe: {
-                  background: probe.backgroundColor,
-                  color: probe.color,
-                  fontSize: probe.fontSize,
-                  radius: probe.borderTopLeftRadius,
-                },
+                // Each color applied to a real property, as components will.
+                colors: Object.fromEntries(
+                  colors.map((name) => [
+                    name,
+                    used(`color: var(--ar-${name})`).color,
+                  ]),
+                ),
+                fonts: Object.fromEntries(
+                  fonts.map((name) => {
+                    const style = used(`font: var(--ar-font-${name})`);
+                    return [
+                      name,
+                      [style.fontSize, style.lineHeight, style.fontWeight],
+                    ];
+                  }),
+                ),
+                radius: used('border-radius: var(--ar-radius-md)')
+                  .borderTopLeftRadius,
               };
             },
-            { dark: theme === 'dark', names },
+            {
+              dark: theme.dsh === 'dark',
+              names,
+              colors: tokens.color.map((t) => t.name),
+              fonts: tokens.font.styles.map((s) => s.name),
+            },
           );
           for (const name of names)
             expect(
               compact(actual.tokens[name]!),
-              `--ar-${name} (${theme})`,
-            ).toBe(compact(resolveValue(`var(--ar-${name})`, scopes, theme)));
-          expect(actual.probe).toEqual(
-            theme === 'dark'
-              ? {
-                  background: 'rgb(35, 35, 36)',
-                  color: 'rgb(249, 250, 251)',
-                  fontSize: '14px',
-                  radius: '12px',
-                }
-              : {
-                  background: 'rgb(255, 255, 255)',
-                  color: 'rgb(15, 17, 21)',
-                  fontSize: '14px',
-                  radius: '12px',
-                },
-          );
+              `--ar-${name} (${theme.id})`,
+            ).toBe(
+              compact(resolveValue(`var(--ar-${name})`, properties, theme)),
+            );
+          for (const { name } of tokens.color) {
+            const expected = parseColor(
+              resolveValue(`var(--ar-${name})`, properties, theme),
+            );
+            expect(
+              close(parseColor(actual.colors[name]!), expected),
+              `${name} (${theme.id}): ${actual.colors[name]} vs ${expected}`,
+            ).toBe(true);
+          }
+          for (const style of tokens.font.styles)
+            expect(actual.fonts[style.name], style.name).toEqual([
+              style.size,
+              style.lineHeight,
+              String(style.weight),
+            ]);
+          expect(actual.radius).toBe('12px');
         }
       } finally {
         await page.close();

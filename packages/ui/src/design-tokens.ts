@@ -1,13 +1,26 @@
 // AllRice design tokens (MET-214): tokens.json is the only source. A value
 // starting with `--` names a DSH variable, `{name}` names another token, and
 // anything else is an AllRice literal. Everything is declared on `body`,
-// where DSH declares its theme aliases, so each var() resolves per theme.
+// where DSH declares its theme aliases, so each var() resolves per theme and
+// descendants inherit the resolved value: override --ar-*, not --dsw-*.
 
-type ThemeValue = string | { light: string; dark: string };
 type Named = { name: string; value: string; usage: string };
 
+export interface ThemeDefinition {
+  id: string;
+  name: string;
+  selector: string;
+  /** The DSH mode whose aliases this theme sits on. */
+  dsh: 'light' | 'dark';
+}
+
 export interface DesignTokens {
-  color: { name: string; value: ThemeValue; usage: string }[];
+  themes: ThemeDefinition[];
+  color: {
+    name: string;
+    value: string | Record<string, string>;
+    usage: string;
+  }[];
   font: {
     families: Record<string, string>;
     weights: Record<string, number>;
@@ -24,9 +37,10 @@ export interface DesignTokens {
   radius: Named[];
   shadow: Named[];
   motion: Named[];
+  line: Named[];
 }
 
-export const darkSelector = 'body[data-ds-dark-theme]';
+const dshSelectors = { light: 'body', dark: 'body[data-ds-dark-theme]' };
 
 function cssValue(value: string) {
   if (value.startsWith('--')) return `var(${value})`;
@@ -34,82 +48,90 @@ function cssValue(value: string) {
   return alias ? `var(--ar-${alias[1]})` : value;
 }
 
+/** Declarations per theme selector; the first theme carries every token. */
 export function tokenDeclarations(tokens: DesignTokens) {
-  const light: [string, string][] = [];
-  const dark: [string, string][] = [];
+  const [base, ...others] = tokens.themes;
+  if (!base || base.selector !== 'body')
+    throw Error('the first theme must be declared on body');
+  const blocks = new Map<string, [string, string][]>(
+    tokens.themes.map((theme) => [theme.selector, []]),
+  );
+  const add = (selector: string, name: string, value: string) =>
+    blocks.get(selector)!.push([name, cssValue(value)]);
   for (const { name, value } of tokens.color) {
-    if (typeof value === 'string') light.push([name, cssValue(value)]);
+    if (typeof value === 'string') add(base.selector, name, value);
     else {
-      light.push([name, cssValue(value.light)]);
-      dark.push([name, cssValue(value.dark)]);
+      const ids = Object.keys(value).sort().join();
+      const expected = tokens.themes
+        .map((theme) => theme.id)
+        .sort()
+        .join();
+      if (ids !== expected)
+        throw Error(`${name} needs a value for each theme: ${expected}`);
+      add(base.selector, name, value[base.id]!);
+      for (const theme of others) add(theme.selector, name, value[theme.id]!);
     }
   }
   const { families, weights, styles } = tokens.font;
   for (const [name, value] of Object.entries(families))
-    light.push([`font-family-${name}`, cssValue(value)]);
+    add(base.selector, `font-family-${name}`, value);
   for (const [name, value] of Object.entries(weights))
-    light.push([`font-weight-${name}`, String(value)]);
+    add(base.selector, `font-weight-${name}`, String(value));
   for (const s of styles)
-    light.push([
+    add(
+      base.selector,
       `font-${s.name}`,
       `${s.weight} ${s.size}/${s.lineHeight} var(--ar-font-family-${s.family})`,
-    ]);
+    );
   for (const group of [
     tokens.space,
     tokens.radius,
     tokens.shadow,
     tokens.motion,
+    tokens.line,
   ])
-    for (const { name, value } of group) light.push([name, cssValue(value)]);
-  return { light, dark };
+    for (const { name, value } of group) add(base.selector, name, value);
+  return blocks;
 }
 
 export function tokensCss(tokens: DesignTokens) {
-  const { light, dark } = tokenDeclarations(tokens);
-  const block = (selector: string, entries: [string, string][]) =>
-    `${selector} {\n${entries.map(([name, value]) => `  --ar-${name}: ${value};\n`).join('')}}\n`;
+  const blocks = [...tokenDeclarations(tokens)].map(
+    ([selector, entries]) =>
+      `${selector} {\n${entries.map(([name, value]) => `  --ar-${name}: ${value};\n`).join('')}}\n`,
+  );
   return [
     '/* Generated from tokens.json by `pnpm design-tokens`. Do not edit. */\n',
-    block('body', light),
-    block(darkSelector, dark),
+    ...blocks,
   ].join('\n');
 }
 
-/** Custom properties a stylesheet declares on :root, body and dark body. */
-export function customProperties(css: string) {
-  const scopes = {
-    root: new Map<string, string>(),
-    light: new Map<string, string>(),
-    dark: new Map<string, string>(),
-  };
+export type CustomProperties = Map<string, Map<string, string>>;
+
+/** Custom properties per selector, for the simple selectors tokens rely on. */
+export function customProperties(
+  css: string,
+  into: CustomProperties = new Map(),
+) {
   const source = css.replace(/\/\*[\s\S]*?\*\//g, '');
-  for (const [, selectors, body] of source.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-    const targets = selectors!
-      .split(',')
-      .map((selector) => selector.trim())
-      .map((selector) =>
-        selector === ':root'
-          ? scopes.root
-          : selector === 'body'
-            ? scopes.light
-            : selector === darkSelector
-              ? scopes.dark
-              : null,
-      );
-    for (const declaration of body!.split(';')) {
-      const match = /^\s*(--[\w-]+)\s*:\s*([\s\S]+?)\s*$/.exec(declaration);
-      if (match)
-        for (const target of targets) target?.set(match[1]!, match[2]!);
-    }
-  }
-  return scopes;
+  if (/@media|@supports|@layer/.test(source))
+    throw Error('conditional rules are not modelled by the token resolver');
+  for (const [, selectors, body] of source.matchAll(/([^{}]+)\{([^{}]*)\}/g))
+    for (const selector of selectors!.split(',').map((s) => s.trim()))
+      for (const declaration of body!.split(';')) {
+        const match = /^\s*(--[\w-]+)\s*:\s*([\s\S]+?)\s*$/.exec(declaration);
+        if (!match) continue;
+        // Later stylesheets win between equal selectors, as in the cascade.
+        if (!into.has(selector)) into.set(selector, new Map());
+        into.get(selector)!.set(match[1]!, match[2]!);
+      }
+  return into;
 }
 
-/** Substitutes var() the way a browser does on body for one theme. */
+/** Substitutes var() as a browser computes it on <body> for one theme. */
 export function resolveValue(
   value: string,
-  scopes: ReturnType<typeof customProperties>[],
-  theme: 'light' | 'dark',
+  properties: CustomProperties,
+  theme: Pick<ThemeDefinition, 'selector' | 'dsh'>,
   depth = 0,
 ): string {
   const start = value.indexOf('var(');
@@ -124,19 +146,25 @@ export function resolveValue(
   const inner = value.slice(start + 4, end - 1);
   const comma = inner.indexOf(',');
   const name = (comma < 0 ? inner : inner.slice(0, comma)).trim();
-  const lookup = (scope: ReturnType<typeof customProperties>) =>
-    (theme === 'dark' ? scope.dark.get(name) : undefined) ??
-    scope.light.get(name) ??
-    scope.root.get(name);
-  const found = scopes.map(lookup).findLast((v) => v !== undefined);
+  // A body declaration beats one inherited from :root, and the more specific
+  // theme selector beats plain body.
+  const order = [
+    theme.selector,
+    dshSelectors[theme.dsh],
+    dshSelectors.light,
+    ':root',
+  ];
+  const found = order
+    .map((selector) => properties.get(selector)?.get(name))
+    .find((v) => v !== undefined);
   const replacement =
     found ?? (comma < 0 ? undefined : inner.slice(comma + 1).trim());
   if (replacement === undefined) throw Error(`${name} is not defined`);
   return resolveValue(
     value.slice(0, start) +
-      resolveValue(replacement, scopes, theme, depth + 1) +
+      resolveValue(replacement, properties, theme, depth + 1) +
       value.slice(end),
-    scopes,
+    properties,
     theme,
     depth + 1,
   );
@@ -144,21 +172,36 @@ export function resolveValue(
 
 type Rgba = [number, number, number, number];
 
+/** Opaque or translucent sRGB in the notations the tokens use; anything else throws. */
 export function parseColor(value: string): Rgba {
-  const hex = /^#([0-9a-f]{6})$/i.exec(value.trim());
-  if (hex)
-    return [0, 2, 4]
-      .map((i) => parseInt(hex[1]!.slice(i, i + 2), 16))
-      .concat(1) as Rgba;
-  const rgb = /^rgba?\(([^)]+)\)$/.exec(value.trim());
+  const text = value.trim();
+  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(text);
+  if (hex) {
+    const digits =
+      hex[1]!.length === 3
+        ? [...hex[1]!].map((c) => c + c)
+        : hex[1]!.match(/../g)!;
+    return [...digits.map((pair) => parseInt(pair, 16)), 1] as Rgba;
+  }
+  const rgb = /^rgba?\(([^()]+)\)$/.exec(text);
   if (!rgb) throw Error(`not an sRGB color: ${value}`);
-  const parts = rgb[1]!.split(/[\s,/]+/).filter(Boolean);
-  const alpha = parts[3]
-    ? parts[3].endsWith('%')
-      ? parseFloat(parts[3]) / 100
-      : parseFloat(parts[3])
-    : 1;
-  return [...parts.slice(0, 3).map(Number), alpha] as Rgba;
+  const parts = rgb[1]!.trim().split(/\s*[,/]\s*|\s+/);
+  if (parts.length < 3 || parts.length > 4)
+    throw Error(`not an sRGB color: ${value}`);
+  const number = (part: string, max: number) => {
+    const n = part.endsWith('%')
+      ? (parseFloat(part) / 100) * max
+      : Number(part);
+    if (!/^-?[\d.]+%?$/.test(part) || !Number.isFinite(n) || n < 0 || n > max)
+      throw Error(`out of range in ${value}`);
+    return n;
+  };
+  return [
+    number(parts[0]!, 255),
+    number(parts[1]!, 255),
+    number(parts[2]!, 255),
+    parts[3] === undefined ? 1 : number(parts[3], 1),
+  ];
 }
 
 function over([r, g, b, a]: Rgba, [br, bg, bb]: Rgba): Rgba {

@@ -19,8 +19,8 @@ body {
   --ar-action-primary: var(--dsw-alias-button-primary-fill);
   --ar-action-primary-hover: var(--dsw-alias-button-primary-hover);
   --ar-action-secondary: var(--dsw-alias-button-primary-dimmed);
-  --ar-link: var(--dsw-alias-link);
-  --ar-focus-ring: var(--ar-link);
+  --ar-link: var(--dsw-static-blue-600);
+  --ar-focus-ring: var(--dsw-alias-state-business-primary);
   --ar-success: var(--dsw-alias-state-success-primary);
   --ar-success-text: rgb(21, 128, 61);
   --ar-success-soft: var(--dsw-alias-state-success-tertiary);
@@ -28,8 +28,10 @@ body {
   --ar-warning-text: rgb(180, 83, 9);
   --ar-warning-soft: var(--dsw-alias-state-warn-tertiary);
   --ar-danger: var(--dsw-alias-state-error-primary);
+  --ar-danger-text: rgb(185, 28, 28);
+  --ar-action-danger: var(--ar-danger-text);
   --ar-danger-soft: var(--dsw-static-red-600-a08);
-  --ar-text-on-danger: rgb(255, 255, 255);
+  --ar-text-on-danger: var(--dsw-alias-label-primary-foreground);
   --ar-knob: var(--dsw-alias-switch-thumb);
   --ar-info-soft: var(--dsw-alias-state-business-tertiary);
   --ar-idle: var(--dsw-alias-state-idle-primary);
@@ -71,13 +73,15 @@ body {
   --ar-duration: var(--ds-transition-duration);
   --ar-duration-slow: var(--ds-transition-duration-slow);
   --ar-ease: var(--ds-ease-in-out);
+  --ar-focus-ring-width: var(--dsw-focus-ring-width);
 }
 
 body[data-ds-dark-theme] {
+  --ar-link: var(--dsw-alias-link);
   --ar-success-text: var(--dsw-alias-state-success-secondary);
   --ar-warning-text: var(--dsw-alias-state-warn-secondary);
+  --ar-danger-text: var(--dsw-alias-state-error-primary);
   --ar-danger-soft: var(--dsw-alias-interactive-bg-hover-danger);
-  --ar-text-on-danger: rgb(15, 17, 21);
   --ar-brand-ink: #f8f6ef;
   --ar-brand-paper: #24251f;
 }

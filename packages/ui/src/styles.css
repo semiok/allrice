@@ -1,58 +1,60 @@
+/* Retired palette (MET-214): renamed --ar-legacy-* so it cannot collide with
+ * the design tokens in tokens.css; removed once nothing reads it. */
 :root {
-  --ar-canvas: #f5f6f2;
-  --ar-surface: #ffffff;
-  --ar-surface-subtle: #f8faf7;
-  --ar-surface-muted: #edf0eb;
-  --ar-text: #152018;
-  --ar-text-muted: #6f7c72;
-  --ar-text-soft: #8a968c;
-  --ar-border: #d9dfd7;
-  --ar-border-strong: #bdc9bf;
-  --ar-accent: #1f7048;
-  --ar-accent-strong: #173d2a;
-  --ar-accent-soft: #e4f1e7;
-  --ar-warning: #9a6518;
-  --ar-warning-soft: #fff5da;
-  --ar-danger: #a23a3a;
-  --ar-danger-soft: #fff0ef;
-  --ar-radius-sm: 10px;
-  --ar-radius-md: 16px;
-  --ar-radius-lg: 24px;
-  --ar-shadow-sm: 0 1px 2px rgb(20 42 28 / 5%);
-  --ar-shadow-md: 0 16px 44px rgb(20 42 28 / 8%);
-  --ar-space-1: 4px;
-  --ar-space-2: 8px;
-  --ar-space-3: 12px;
-  --ar-space-4: 16px;
-  --ar-space-5: 24px;
-  --ar-space-6: 32px;
+  --ar-legacy-canvas: #f5f6f2;
+  --ar-legacy-surface: #ffffff;
+  --ar-legacy-surface-subtle: #f8faf7;
+  --ar-legacy-surface-muted: #edf0eb;
+  --ar-legacy-text: #152018;
+  --ar-legacy-text-muted: #6f7c72;
+  --ar-legacy-text-soft: #8a968c;
+  --ar-legacy-border: #d9dfd7;
+  --ar-legacy-border-strong: #bdc9bf;
+  --ar-legacy-accent: #1f7048;
+  --ar-legacy-accent-strong: #173d2a;
+  --ar-legacy-accent-soft: #e4f1e7;
+  --ar-legacy-warning: #9a6518;
+  --ar-legacy-warning-soft: #fff5da;
+  --ar-legacy-danger: #a23a3a;
+  --ar-legacy-danger-soft: #fff0ef;
+  --ar-legacy-radius-sm: 10px;
+  --ar-legacy-radius-md: 16px;
+  --ar-legacy-radius-lg: 24px;
+  --ar-legacy-shadow-sm: 0 1px 2px rgb(20 42 28 / 5%);
+  --ar-legacy-shadow-md: 0 16px 44px rgb(20 42 28 / 8%);
+  --ar-legacy-space-1: 4px;
+  --ar-legacy-space-2: 8px;
+  --ar-legacy-space-3: 12px;
+  --ar-legacy-space-4: 16px;
+  --ar-legacy-space-5: 24px;
+  --ar-legacy-space-6: 32px;
 }
 
 [data-allrice-framework='v2'] {
-  background: var(--ar-canvas);
-  color: var(--ar-text);
-  --rice-ink: var(--ar-text);
-  --rice-deep: var(--ar-accent-strong);
-  --rice-green: var(--ar-accent);
-  --rice-paper: var(--ar-canvas);
-  --rice-card: var(--ar-surface);
-  --rice-line: var(--ar-border);
-  --rice-muted: var(--ar-text-muted);
-  --rice-shadow: var(--ar-shadow-md);
+  background: var(--ar-legacy-canvas);
+  color: var(--ar-legacy-text);
+  --rice-ink: var(--ar-legacy-text);
+  --rice-deep: var(--ar-legacy-accent-strong);
+  --rice-green: var(--ar-legacy-accent);
+  --rice-paper: var(--ar-legacy-canvas);
+  --rice-card: var(--ar-legacy-surface);
+  --rice-line: var(--ar-legacy-border);
+  --rice-muted: var(--ar-legacy-text-muted);
+  --rice-shadow: var(--ar-legacy-shadow-md);
 }
 
 .ar-surface {
-  background: var(--ar-surface);
-  border: 1px solid var(--ar-border);
-  border-radius: var(--ar-radius-md);
-  box-shadow: var(--ar-shadow-sm);
+  background: var(--ar-legacy-surface);
+  border: 1px solid var(--ar-legacy-border);
+  border-radius: var(--ar-legacy-radius-md);
+  box-shadow: var(--ar-legacy-shadow-sm);
 }
 
 .ar-badge {
   align-items: center;
-  background: var(--ar-surface-muted);
+  background: var(--ar-legacy-surface-muted);
   border-radius: 999px;
-  color: var(--ar-text-muted);
+  color: var(--ar-legacy-text-muted);
   display: inline-flex;
   font-size: 0.72rem;
   font-weight: 700;
@@ -62,35 +64,35 @@
 
 .ar-badge-success,
 .ar-badge-accent {
-  background: var(--ar-accent-soft);
-  color: var(--ar-accent-strong);
+  background: var(--ar-legacy-accent-soft);
+  color: var(--ar-legacy-accent-strong);
 }
 
 .ar-badge-warning {
-  background: var(--ar-warning-soft);
-  color: var(--ar-warning);
+  background: var(--ar-legacy-warning-soft);
+  color: var(--ar-legacy-warning);
 }
 
 .ar-badge-danger {
-  background: var(--ar-danger-soft);
-  color: var(--ar-danger);
+  background: var(--ar-legacy-danger-soft);
+  color: var(--ar-legacy-danger);
 }
 
 .ar-context-pressure {
   align-items: center;
-  color: var(--ar-text-muted);
+  color: var(--ar-legacy-text-muted);
   display: inline-flex;
   font-size: 0.76rem;
   font-weight: 700;
-  gap: var(--ar-space-2);
+  gap: var(--ar-legacy-space-2);
 }
 
 .ar-context-pressure-warning {
-  color: var(--ar-warning);
+  color: var(--ar-legacy-warning);
 }
 
 .ar-meter {
-  background: var(--ar-surface-muted);
+  background: var(--ar-legacy-surface-muted);
   border-radius: 999px;
   display: inline-flex;
   height: 5px;
@@ -99,25 +101,25 @@
 }
 
 .ar-meter > span {
-  background: var(--ar-accent);
+  background: var(--ar-legacy-accent);
   border-radius: inherit;
   transition: width 180ms ease;
 }
 
 .ar-context-pressure-warning .ar-meter > span {
-  background: var(--ar-warning);
+  background: var(--ar-legacy-warning);
 }
 
 .ar-runtime-trace {
-  background: var(--ar-surface-subtle);
-  border: 1px solid var(--ar-border);
-  border-radius: var(--ar-radius-sm);
-  margin-top: var(--ar-space-4);
+  background: var(--ar-legacy-surface-subtle);
+  border: 1px solid var(--ar-legacy-border);
+  border-radius: var(--ar-legacy-radius-sm);
+  margin-top: var(--ar-legacy-space-4);
   overflow: hidden;
 }
 
 .ar-runtime-trace > summary {
-  color: var(--ar-text-muted);
+  color: var(--ar-legacy-text-muted);
   cursor: pointer;
   font-size: 0.82rem;
   font-weight: 700;
@@ -141,47 +143,47 @@
 }
 
 .ar-runtime-list {
-  border-top: 1px solid var(--ar-border);
+  border-top: 1px solid var(--ar-legacy-border);
   display: grid;
-  gap: var(--ar-space-3);
-  padding: var(--ar-space-4);
+  gap: var(--ar-legacy-space-3);
+  padding: var(--ar-legacy-space-4);
 }
 
 .ar-runtime-row {
   align-items: start;
   display: grid;
-  gap: var(--ar-space-3);
+  gap: var(--ar-legacy-space-3);
   grid-template-columns: 10px minmax(0, 1fr);
 }
 
 .ar-runtime-row div {
   display: grid;
-  gap: var(--ar-space-1);
+  gap: var(--ar-legacy-space-1);
 }
 
 .ar-runtime-row strong {
-  color: var(--ar-text);
+  color: var(--ar-legacy-text);
   font-size: 0.86rem;
 }
 
 .ar-runtime-row small {
-  color: var(--ar-text-muted);
+  color: var(--ar-legacy-text-muted);
   font-size: 0.78rem;
 }
 
 .ar-runtime-state {
-  background: var(--ar-border-strong);
+  background: var(--ar-legacy-border-strong);
   border-radius: 999px;
-  box-shadow: 0 0 0 4px var(--ar-surface-muted);
+  box-shadow: 0 0 0 4px var(--ar-legacy-surface-muted);
   height: 8px;
   margin-top: 0.3rem;
   width: 8px;
 }
 
 .ar-runtime-state-completed {
-  background: var(--ar-accent);
+  background: var(--ar-legacy-accent);
 }
 
 .ar-runtime-state-failed {
-  background: var(--ar-danger);
+  background: var(--ar-legacy-danger);
 }

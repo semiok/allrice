@@ -1,11 +1,14 @@
-// The stylesheets that define the theme on every page, in root-layout order.
+// Every stylesheet the root layout loads, in its order, so a conflicting
+// declaration anywhere would show up here.
 import '../app/dsh-upstream/design-platform.css';
 import '../app/dsh-upstream/base.css';
+import '../app/dsh-upstream/scrollbar.css';
 import '@allrice/ui/tokens.css';
+import '../app/styles/base.css';
+import '../app/styles/auth.css';
+import '@allrice/ui/styles.css';
 
 const probe = document.createElement('p');
 probe.id = 'probe';
 probe.textContent = '与 Rice 工作';
-probe.style.cssText =
-  'background: var(--ar-surface-raised); color: var(--ar-text); font: var(--ar-font-body); border-radius: var(--ar-radius-md); box-shadow: var(--ar-shadow-1); padding: var(--ar-space-4)';
 document.body.append(probe);
