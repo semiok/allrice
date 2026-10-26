@@ -6,6 +6,8 @@ import {
   type RuntimeOperationStatus,
 } from '@allrice/contracts';
 
+export { shortDateTime } from './short-date-time';
+
 // Plain-language wording for the browser panel shown to ordinary employees.
 // Engineering detail (ids, raw actions, receipts) stays in the panel's
 // collapsed technical section; nothing here may echo internal codes.
@@ -162,12 +164,3 @@ export function approvalErrorMessage(code: unknown, employee: string) {
 }
 
 /** 「11 月 1 日 09:00」; the year is shown only when it is not this year. */
-export function shortDateTime(iso: string, now = new Date()) {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return '';
-  const pad = (value: number) => String(value).padStart(2, '0');
-  const day = `${date.getMonth() + 1} 月 ${date.getDate()} 日 ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-  return date.getFullYear() === now.getFullYear()
-    ? day
-    : `${date.getFullYear()} 年 ${day}`;
-}

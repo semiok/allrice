@@ -159,9 +159,9 @@ describe('historical transcript capability gating', () => {
           },
         },
       );
-      expect(html).toContain('连接中断，这次未完成');
+      expect(html.split('连接中断，这次未完成')).toHaveLength(2);
       expect(html).not.toContain('Rice 暂时无法完成');
-      expect(html).not.toContain('可以换个说法再试');
+      expect(html).not.toContain('请稍后再试');
       if (text === '已查到四个 PR。') expect(html).toContain(text);
     },
   );
@@ -177,7 +177,7 @@ describe('historical transcript capability gating', () => {
     expect(html).toContain('已查到两项 CI 失败。');
     expect(html).toContain('连接中断，这次未完成');
     expect(html).toContain('已有的内容都保留了');
-    expect(html).not.toContain('可以换个说法再试');
+    expect(html).not.toContain('请稍后再试');
   });
 
   afterEach(() => vi.clearAllMocks());
@@ -621,7 +621,11 @@ describe('historical transcript capability gating', () => {
   it.each([
     ['MODEL_TOTAL_TOKEN_BUDGET_EXCEEDED', '把任务拆小一点'],
     ['ASSISTANT_EXECUTION_UNRESOLVED', '结果待确认，请刷新查看'],
-    ['RATE_LIMITED', '可以换个说法再试'],
+    ['DSH_UNKNOWN', '部分操作结果待确认'],
+    ['MODEL_RESOURCE_CONCURRENCY_EXCEEDED', '同时进行的任务太多'],
+    ['PROVIDER_CIRCUIT_OPEN', 'AI 服务暂时不可用'],
+    ['MODEL_RUNTIME_LIMIT_EXCEEDED', '运行时间超过上限'],
+    ['RATE_LIMITED', '请稍后再试；一直这样请联系管理员'],
   ])(
     'says once what happened and what to do next for %s',
     (errorCode, next) => {
@@ -639,7 +643,48 @@ describe('historical transcript capability gating', () => {
     },
   );
 
-  it('names an unlabeled knowledge source in words, not a code', () => {
+  it('a stored disconnect under DSH_UNKNOWN reads the same in body and note before diagnostics load', () => {
+    // The server may store the diagnosed wording; the trace is not loaded yet.
+    const html = render(false, [
+      {
+        ...messages[0]!,
+        status: 'failed',
+        errorCode: 'DSH_UNKNOWN',
+        content: {
+          text: '模型连接中断，本轮未完成。已产生的内容和工具结果已保留，可展开“工作过程”查看；任务没有整轮重跑。',
+        },
+      },
+    ]);
+    expect(html.split('连接中断，这次未完成')).toHaveLength(2);
+    expect(html).not.toContain('请稍后再试');
+    expect(html).not.toContain('部分操作结果待确认');
+  });
+
+  it.each([
+    [null, 'Rice 的这次执行已取消。', '这次任务已停止。'],
+    [
+      'APPROVAL_REJECTED',
+      '你已拒绝这一步操作，Rice 已停止该工作流。',
+      '你已拒绝这一步操作，Rice 已停止该工作流。',
+    ],
+    [
+      'INPUT_NOT_ADOPTED',
+      '本次输入未确认在原回合生效，不会自动作为下一轮任务执行。',
+      '本次输入未确认在原回合生效，不会自动作为下一轮任务执行。',
+    ],
+  ])(
+    'adds no failure note when the person stopped or declined (%s)',
+    (errorCode, text, shown) => {
+      const html = render(false, [
+        { ...messages[0]!, status: 'failed', errorCode, content: { text } },
+      ]);
+      expect(html).toContain(shown);
+      for (const word of ['未完成', '请稍后再试', 'Rice 的这次执行'])
+        expect(html).not.toContain(word);
+    },
+  );
+
+  it('keeps the knowledge source number the reply cites', () => {
     const html = render(false, [
       {
         ...messages[0]!,
@@ -656,8 +701,8 @@ describe('historical transcript capability gating', () => {
         },
       } as unknown as Message,
     ]);
-    expect(html).toContain('参考资料 1');
-    expect(html).not.toContain('[K1]');
+    // The model writes [K1] in the reply, so the button must say the same.
+    expect(html).toContain('[K1] 销售手册');
   });
 
   it.each([undefined, false])(

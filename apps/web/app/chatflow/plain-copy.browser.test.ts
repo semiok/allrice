@@ -128,15 +128,45 @@ suite('plain words in settings and automation for ordinary employees', () => {
   for (const width of [1440, 390])
     for (const theme of ['light', 'dark'] as const)
       it(`speaks plainly at ${width}px in the ${theme} theme`, async () => {
+        // A viewer far from the tasks' Beijing time zone.
         const page = await browser.newPage({
           viewport: { width, height: 900 },
+          timezoneId: 'America/New_York',
         });
         try {
           await page.goto(`${origin}/?theme=${theme}`);
           // Open every fold so its words are checked too.
           for (const row of await page.getByText('用量如何计算').all())
             await row.click();
-          await page.getByText('修改登录密码', { exact: true }).click();
+          // The password fold works from the keyboard and keeps what was typed.
+          const fold = page.getByRole('button', {
+            name: '修改登录密码',
+            exact: true,
+          });
+          expect(await fold.getAttribute('aria-expanded')).toBe('false');
+          await fold.focus();
+          await page.keyboard.press('Enter');
+          expect(await fold.getAttribute('aria-expanded')).toBe('true');
+          const password = caseOf(page, 'account').locator('form');
+          await password.getByLabel('当前密码').fill('synthetic-old-1');
+          await password
+            .getByLabel('新密码', { exact: true })
+            .fill('synthetic-new-1');
+          await password.getByLabel('确认新密码').fill('synthetic-new-1');
+          await fold.focus();
+          await page.keyboard.press(' ');
+          expect(await fold.getAttribute('aria-expanded')).toBe('false');
+          await page.keyboard.press('Enter');
+          expect(await password.getByLabel('当前密码').inputValue()).toBe(
+            'synthetic-old-1',
+          );
+          // The reply is lost: the change may or may not have happened.
+          await password
+            .getByRole('button', { name: '修改密码并重新登录' })
+            .click();
+          expect(await password.getByRole('alert').innerText()).toBe(
+            '修改结果待确认，请重新登录，确认新密码是否生效。',
+          );
           for (const summary of await page
             .locator(
               '[data-case="computer"] summary, [data-case="work"] summary',
@@ -144,6 +174,9 @@ suite('plain words in settings and automation for ordinary employees', () => {
             .all())
             if (await summary.isVisible()) await summary.click();
           await page.getByText('还没有自动化任务', { exact: true }).waitFor();
+          await page
+            .getByText('这个对话没有进行中的自动化任务', { exact: true })
+            .waitFor();
           await caseOf(page, 'automation-tasks')
             .getByText(/每日工作提醒 40/)
             .waitFor();
@@ -166,7 +199,7 @@ suite('plain words in settings and automation for ordinary employees', () => {
             '2,175,971 · 43%',
             '11 月 1 日',
             '有 2 次任务的用量还在统计',
-            '只做记录，不限制使用',
+            '没有月度上限',
             '用量暂时读不到',
             '修改密码并重新登录',
           ])
@@ -202,10 +235,21 @@ suite('plain words in settings and automation for ordinary employees', () => {
           for (const words of [
             '每天 09:00 · 北京时间',
             '每周一、三 18:30 · 北京时间',
-            '11 月 1 日',
+            '下次运行 11 月 1 日 09:00',
             '原对话已归档',
           ])
             expect(tasks).toContain(words);
+          // Read in the task's zone, not the viewer's (10 月 31 日 21:00).
+          expect(tasks).not.toContain('10 月 31 日');
+          const conversation = await caseOf(
+            page,
+            'automation-conversation',
+          ).innerText();
+          expect(conversation).toContain('这个对话没有进行中的自动化任务');
+          expect(conversation).toContain(
+            '已暂停或已结束的任务，可以在「自动化任务」页查看。',
+          );
+          expect(conversation).not.toContain('没有匹配');
           for (const name of ['automation-unreadable', 'automation-invalid'])
             expect(
               await caseOf(page, name).getByRole('alert').innerText(),
@@ -224,6 +268,9 @@ suite('plain words in settings and automation for ordinary employees', () => {
             account.getByText('本月已用').first(),
             caseOf(page, 'automation-unreadable').getByRole('alert'),
             caseOf(page, 'automation-empty').getByText('没有匹配的自动化任务'),
+            caseOf(page, 'automation-conversation').getByText(
+              '这个对话没有进行中的自动化任务',
+            ),
           ]) {
             const look = await colours(node);
             expect(contrast(look.text, look.ground)).toBeGreaterThanOrEqual(

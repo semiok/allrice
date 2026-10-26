@@ -109,12 +109,17 @@ export function AutomationManualRun(props: {
       clearManualRunIntent(sessionStorage, intent);
       current.current = null;
       setPending(null);
-      setNotice(
+      const confirmed =
         result.kind === 'rejected'
           ? result.message
-          : '已创建本次立即执行，可在运行记录查看结果。原定计划保持不变。',
-      );
-      await props.onChanged();
+          : '已创建本次立即执行，可在运行记录查看结果。原定计划保持不变。';
+      setNotice(confirmed);
+      // The result above is settled; a failed detail read must not replace it.
+      await props.onChanged().catch((cause: unknown) => {
+        console.error(cause);
+        if (live.current)
+          setNotice(confirmed + '任务详情暂时没有刷新，请稍后点「刷新状态」。');
+      });
     } catch (error) {
       if (live.current) {
         if (!saved) setReady(false);

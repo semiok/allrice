@@ -1,6 +1,6 @@
 import { assistantStreamText } from '../../lib/execution/assistant-stream';
 import { modelGovernanceFailureText } from '@allrice/contracts';
-import { plainFailureText } from '../../lib/chatflow/reply-failure-copy';
+import { presentReplyFailure } from '../../lib/chatflow/reply-failure-copy';
 import type { Message, RunView } from './chatflow-types';
 import { preview } from './dsh-upstream/turn-navigation/preview';
 
@@ -77,21 +77,27 @@ export function conversationTurns(
     const running = streamed
       ? ['running', 'connecting'].includes(streamed.status)
       : message.status === 'pending';
+    const failure =
+      message.status === 'failed'
+        ? presentReplyFailure({
+            code: message.errorCode,
+            text: message.content.text,
+            nativeText: null,
+            budgetWarning: !!message.content.budgetWarning,
+          }).body
+        : null;
     const text =
       !streamingOutput && running
         ? ''
-        : ((message.status === 'failed' && !message.content.budgetWarning
-            ? plainFailureText(
-                modelGovernanceFailureText(message.errorCode),
-                message.errorCode,
-              )
+        : ((failure !== null &&
+          !message.content.budgetWarning &&
+          modelGovernanceFailureText(message.errorCode)
+            ? failure
             : null) ??
           ((streamed && streamedPreview(streamed)) ||
             (message.status === 'pending'
               ? ''
-              : message.status === 'failed'
-                ? plainFailureText(message.content.text, message.errorCode)
-                : message.content.text)));
+              : (failure ?? message.content.text))));
     let index = known;
     // Older records may have no run ID on the prompt.
     if (index === undefined && latest !== undefined && !message.runId)

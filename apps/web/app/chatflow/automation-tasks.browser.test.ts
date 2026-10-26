@@ -244,6 +244,7 @@ suite(
         newerHistory: false,
         dropManualAck: false,
         holdManual: null as 'POST' | 'GET' | null,
+        failDetailRead: false,
       };
       const heldStops: Array<{ method: string; respond: () => Promise<void> }> =
         [];
@@ -461,6 +462,16 @@ suite(
                       request: { ...operation.request, expectedRevision: 999 },
                     }
                   : (operation ?? null),
+            },
+          });
+          return;
+        }
+        if (state.failDetailRead && url.pathname.endsWith(TASK)) {
+          state.failDetailRead = false;
+          await route.fulfill({
+            status: 500,
+            json: {
+              error: { code: 'INTERNAL_ERROR', message: 'Internal error' },
             },
           });
           return;
@@ -790,7 +801,7 @@ suite(
           // Refresh the list too: the initial fixture loads before this rule is set.
           await f.page.reload();
           await f.page
-            .getByText('每月 31 日 02:30:17 · America/New_York', {
+            .getByText('每月 31 日 02:30:17 · 纽约时间', {
               exact: true,
             })
             .waitFor();
@@ -840,9 +851,17 @@ suite(
           expect(
             await detail.getByLabel('执行时间', { exact: true }).inputValue(),
           ).toBe('02:30');
+          const zone = detail.getByLabel('时区', { exact: true });
+          expect(await zone.inputValue()).toBe('America/New_York');
+          // A choice of named zones; the IANA name is only the stored value.
           expect(
-            await detail.getByLabel('时区', { exact: true }).inputValue(),
-          ).toBe('America/New_York');
+            await zone.evaluate((select) =>
+              select instanceof HTMLSelectElement
+                ? select.selectedOptions[0]?.textContent
+                : null,
+            ),
+          ).toBe('纽约时间');
+          expect(await detail.innerText()).not.toContain('America/New_York');
           await detail
             .getByText(
               /不存在的日期按当月最后一天；夏令时缺失时间顺延，重复时间只执行一次；停机后只处理最近一期。原时间含秒，未修改分钟时保留原秒数。/,
@@ -902,7 +921,7 @@ suite(
           expect(after.occurrences).toEqual(before.occurrences);
           await f.page.reload();
           await f.page
-            .getByText('每月 30 日 02:30:17 · America/New_York', {
+            .getByText('每月 30 日 02:30:17 · 纽约时间', {
               exact: true,
             })
             .waitFor();
@@ -1193,6 +1212,32 @@ suite(
         });
         expect(f.requests.filter((r) => r.method === 'PATCH')).toEqual([]);
         expect(f.task).toEqual(before);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
+    it('keeps a confirmed manual Run when the follow-up detail read fails', async () => {
+      const f = await fixture(1280, { manual: true });
+      try {
+        await f.open();
+        f.state.failDetailRead = true;
+        await f.page
+          .getByRole('button', { name: '立即执行', exact: true })
+          .click();
+        await f.page
+          .getByText(
+            '已创建本次立即执行，可在运行记录查看结果。原定计划保持不变。任务详情暂时没有刷新，请稍后点「刷新状态」。',
+            { exact: true },
+          )
+          .waitFor();
+        expect(f.manualRequests('POST')).toHaveLength(1);
+        expect(
+          await f.page
+            .getByRole('button', { name: '检查立即执行结果', exact: true })
+            .count(),
+        ).toBe(0);
+        expect(await f.page.getByText(/结果待确认/).count()).toBe(0);
         expect(f.errors).toEqual([]);
       } finally {
         await f.close();

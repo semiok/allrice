@@ -6,7 +6,7 @@ import {
   DisclosureRow,
   IconInfoOutlineRegular,
 } from '@deepseek-ai/dsh-client-ui-primitives';
-import { shortDateTime } from '../../lib/chatflow/browser-workspace-presenter';
+import { shortDateTime } from '../../lib/chatflow/short-date-time';
 import styles from './monthly-quota.module.css';
 
 export function monthlyQuotaPercent(percent: number) {
@@ -99,7 +99,7 @@ export function MonthlyQuota({
           {explained && (
             <p>
               {observing
-                ? '这里统计你在这个工作区本月的用量，只做记录，不限制使用。单个任务仍有时长限制，长时间没有进展会自动停止。'
+                ? '这里统计你在这个工作区本月的用量，没有月度上限。同时进行的任务数和单个任务的时长仍有限制，长时间没有进展的任务会自动停止。'
                 : '这是你在这个工作区每月可用的额度，剩余按已统计的用量计算，到重置时间恢复。单个任务另有时长限制。'}
             </p>
           )}

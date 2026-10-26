@@ -19,7 +19,10 @@ import type {
 import styles from './sidebar-settings.module.css';
 import { BrowserLoginSettings } from './browser-login-settings';
 import { bridgeDeviceName, projectBridgeView } from './bridge-view';
-import { userFacingMessage } from '../../lib/chatflow/user-facing-error';
+import {
+  responseError,
+  userFacingMessage,
+} from '../../lib/chatflow/user-facing-error';
 import type { useBridge } from './use-bridge';
 
 type Computer = {
@@ -52,9 +55,8 @@ const choices = [
   },
 ] as const;
 async function read<T>(response: Response): Promise<T> {
-  const value = await response.json();
-  if (!response.ok)
-    throw Error(value.error?.message ?? '电脑设置没有保存，请稍后再试。');
+  const value: unknown = await response.json();
+  if (!response.ok) throw responseError(response.status, value);
   return value as T;
 }
 const unreadable = '暂时读不到电脑设置，请稍后刷新。';

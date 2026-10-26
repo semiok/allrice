@@ -8,7 +8,6 @@ import {
   type CSSProperties,
 } from 'react';
 import {
-  modelGovernanceFailureText,
   nativeExecutionFailureText,
   nativeExecutionDiagnosticFailureText,
   mcpFailureCopy,
@@ -59,10 +58,8 @@ import { isMessageRunActive } from './run-view';
 import { HistoryRefreshNotice } from './history-refresh-notice';
 import { workProcessPresentation } from '../../lib/chatflow/work-process-presentation';
 import {
-  plainFailureText,
+  presentReplyFailure,
   replyBudgetKept,
-  replyFailureCopy,
-  savedGenericFailure,
 } from '../../lib/chatflow/reply-failure-copy';
 
 interface ChatTranscriptProps {
@@ -260,47 +257,30 @@ export const ChatTranscript = memo(function ChatTranscript({
               const linkedArtifacts = artifacts.filter(
                 (a) => a.provenance.runId === message.runId,
               );
-              const nativeFailure =
+              // One reading of a failure, shared by the reply body and the note under it.
+              const failure =
                 message.status === 'failed'
-                  ? message.errorCode === 'REFERENCE_UNAVAILABLE'
-                    ? replyFailureCopy(message.errorCode)
-                    : plainFailureText(
+                  ? presentReplyFailure({
+                      code: message.errorCode,
+                      text: message.content.text,
+                      nativeText:
                         nativeExecutionFailureText(message.errorCode) ??
-                          nativeExecutionDiagnosticFailureText(
-                            message.errorCode,
-                            traceEvents.findLast(
-                              (event) => event.type === 'turn.failed',
-                            )?.payload,
-                            traceEvents.findLast(
-                              (event) => event.type === 'run.failed',
-                            )?.payload.message,
-                          ),
-                        message.errorCode,
-                      )
-                  : null;
-              // What happened and what to do next, shown under a failed reply.
-              const failureNotice =
-                nativeFailure ?? replyFailureCopy(message.errorCode);
-              const fallbackText =
-                (message.status === 'failed' &&
-                !message.content.budgetWarning &&
-                !nativeFailure
-                  ? plainFailureText(
-                      modelGovernanceFailureText(message.errorCode),
-                      message.errorCode,
-                    )
-                  : null) ??
-                (message.status === 'pending'
-                  ? ''
-                  : message.status !== 'failed'
-                    ? message.content.text
-                    : nativeFailure &&
-                        message.content.text === savedGenericFailure
-                      ? nativeFailure
-                      : plainFailureText(
-                          message.content.text,
+                        nativeExecutionDiagnosticFailureText(
                           message.errorCode,
-                        ));
+                          traceEvents.findLast(
+                            (event) => event.type === 'turn.failed',
+                          )?.payload,
+                          traceEvents.findLast(
+                            (event) => event.type === 'run.failed',
+                          )?.payload.message,
+                        ),
+                      budgetWarning: !!message.content.budgetWarning,
+                    })
+                  : null;
+              const fallbackText =
+                message.status === 'pending'
+                  ? ''
+                  : (failure?.body ?? message.content.text);
               const progress = projectWorkProgress(
                 traceEvents,
                 fallbackText,
@@ -493,7 +473,7 @@ export const ChatTranscript = memo(function ChatTranscript({
                                           >
                                             [
                                             {c.referenceLabel ??
-                                              `参考资料 ${index + 1}`}
+                                              `K${index + 1}`}
                                             ] {c.label}
                                           </button>
                                         ) : null,
@@ -578,11 +558,11 @@ export const ChatTranscript = memo(function ChatTranscript({
                                 {message.content.budgetWarning &&
                                 message.status === 'failed' ? (
                                   <small role="status">{replyBudgetKept}</small>
-                                ) : message.status === 'failed' &&
+                                ) : failure?.notice &&
                                   !applicationFailure &&
-                                  responseText !== failureNotice ? (
+                                  responseText !== failure.notice ? (
                                   <small className={styles.failedMessage}>
-                                    {failureNotice}
+                                    {failure.notice}
                                   </small>
                                 ) : null}
                                 {onOpenArtifact && message.runId ? (

@@ -35,7 +35,7 @@ const quota: UserMonthlyQuota = {
   remainingPercent: 43.5,
   unknownUsageRuns: 2,
   periodStart: '2026-10-01T00:00:00Z',
-  resetsAt: '2026-11-01T00:00:00Z',
+  resetsAt: '2026-11-01T12:00:00Z',
   observedAt: now,
 };
 
@@ -223,19 +223,35 @@ const catalogs: Record<string, () => Response> = {
       headers: { 'content-type': 'text/html' },
     }),
   [id(34)]: () => Response.json({ tasks: [{ unexpected: true }] }),
+  // A conversation whose only task is paused.
+  [id(35)]: () =>
+    Response.json({
+      tasks: [
+        task(
+          42,
+          { kind: 'daily', time: '09:00:00', timezone: 'Asia/Shanghai' },
+          'paused',
+        ),
+      ],
+      nextCursor: null,
+    }),
 };
 const realFetch = window.fetch.bind(window);
 window.fetch = async (input, init) => {
   const url = new URL(String(input), location.href);
   const catalog = catalogs[url.searchParams.get('workspaceId') ?? ''];
+  // The password may have changed before the reply was lost.
+  if (url.pathname === '/api/v1/auth/password')
+    throw new TypeError('Failed to fetch');
   return url.pathname === '/api/v1/scheduled-tasks' && catalog
     ? catalog()
     : realFetch(input, init);
 };
 
-const automation = (workspaceId: string) => (
+const automation = (workspaceId: string, sessionId?: string) => (
   <AutomationTaskList
     workspaceId={workspaceId}
+    sessionId={sessionId}
     scope="synthetic"
     headers={{}}
     employees={[{ id: id(4), name: 'Rice' }]}
@@ -284,6 +300,7 @@ const cases: [string, ReactNode][] = [
   ['automation-tasks', automation(id(32))],
   ['automation-unreadable', automation(id(33))],
   ['automation-invalid', automation(id(34))],
+  ['automation-conversation', automation(id(35), id(5))],
 ];
 
 if (new URLSearchParams(location.search).get('theme') === 'dark')

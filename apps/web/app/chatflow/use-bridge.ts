@@ -7,6 +7,7 @@ import { bridgeWorkspaceIssue } from './bridge-view';
 import type { BridgeDevice, Workspace } from './chatflow-types';
 import { readJson } from './chatflow-utils';
 import { reauthorizeNativeTerminalConnections } from './terminal-native';
+import { userFacingMessage } from '../../lib/chatflow/user-facing-error';
 
 type UseBridgeOptions = {
   setError: (message: string) => void;
@@ -123,9 +124,7 @@ export function useBridge({
         if (!refresh.current.isCurrent(request)) return;
         const message = request.controller.signal.aborted
           ? '刷新电脑连接状态超时，请稍后再试。'
-          : cause instanceof Error
-            ? cause.message
-            : '暂时读不到电脑连接状态，请稍后刷新。';
+          : userFacingMessage(cause, '暂时读不到电脑连接状态，请稍后刷新。');
         setBridgeSnapshot((previous) => ({
           scope,
           devices: previous?.scope === scope ? previous.devices : [],
@@ -169,11 +168,7 @@ export function useBridge({
         await loadBridgeDevices();
       } catch (cause) {
         if (!inScope()) return;
-        setError(
-          cause instanceof Error
-            ? cause.message
-            : '文件夹没有断开，请稍后再试。',
-        );
+        setError(userFacingMessage(cause, '断开结果待确认，请刷新查看。'));
       } finally {
         if (inScope()) setBridgeBusy(false);
       }
@@ -199,9 +194,10 @@ export function useBridge({
         if (!inScope()) return;
         setBridgeRecoveryActive(false);
         setError(
-          cause instanceof Error
-            ? cause.message
-            : '没能打开电脑上的文件夹选择窗口，请确认 AllRice 电脑端已打开。',
+          userFacingMessage(
+            cause,
+            '没能打开电脑上的文件夹选择窗口，请确认 AllRice 电脑端已打开。',
+          ),
         );
       } finally {
         if (inScope()) setBridgeBusy(false);
@@ -235,8 +231,7 @@ export function useBridge({
       });
     } catch (cause) {
       if (!inScope()) return;
-      const message =
-        cause instanceof Error ? cause.message : '配对码没有生成，请稍后再试。';
+      const message = userFacingMessage(cause, '配对码没有生成，请稍后再试。');
       setBridgeFeedback({ kind: 'error', message });
       setError(message);
     } finally {

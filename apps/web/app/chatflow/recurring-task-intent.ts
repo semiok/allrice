@@ -9,6 +9,7 @@ import {
   type RecurringScheduleRule,
   type RecurringTask,
 } from '@allrice/contracts';
+import { requestNotSent } from '../../lib/chatflow/automation-copy';
 
 export type RecurringTaskDraft = {
   name: string;
@@ -176,7 +177,7 @@ export function recurringContent(
     try {
       new Intl.DateTimeFormat('en', { timeZone: rule.timezone });
     } catch {
-      throw new Error('请填写有效的IANA时区，例如 Asia/Shanghai。');
+      throw new Error('请选择有效的时区。');
     }
   }
   const parsed = CreateRecurringTaskInputSchema.safeParse({
@@ -225,7 +226,8 @@ export function parseRecurringIntent(
   raw: string,
   storageKey: string,
 ): RecurringTaskIntent {
-  if (raw.length > 250_000) throw new Error('saved request too large');
+  if (raw.length > 250_000)
+    throw new Error('保存的操作记录无法读取，请刷新页面。');
   const entry = object(JSON.parse(raw));
   const keys = ['version', 'storageKey', 'sessionId', 'kind', 'body'];
   if (entry?.kind === 'change') keys.push('taskId');
@@ -236,7 +238,7 @@ export function parseRecurringIntent(
     Object.keys(entry).length !== keys.length ||
     keys.some((key) => !Object.hasOwn(entry, key))
   )
-    throw new Error('saved request scope or shape changed');
+    throw new Error('保存的操作记录和当前任务对不上，请刷新页面。');
   const sessionId = RecurringTaskSchema.shape.sessionId.parse(entry.sessionId);
   const prefix = 'allrice:recurring-pending:v1:';
   const scope: unknown = storageKey.startsWith(prefix)
@@ -249,17 +251,18 @@ export function parseRecurringIntent(
     scope[4] !== sessionId ||
     recurringStorageKey(scope.slice(0, 4).join('/'), sessionId) !== storageKey
   )
-    throw new Error('saved request session changed');
+    throw new Error('保存的操作记录不属于这个对话，请刷新页面。');
   if (entry.kind === 'create') {
     const body = CreateRecurringTaskInputSchema.parse(entry.body);
     if (stable(body) !== stable(entry.body))
-      throw new Error('saved body changed');
+      throw new Error('保存的操作记录已被改动，请刷新页面。');
     return { version: 1, storageKey, sessionId, kind: 'create', body };
   }
-  if (entry.kind !== 'change') throw new Error('saved request kind changed');
+  if (entry.kind !== 'change')
+    throw new Error('保存的操作记录和当前任务对不上，请刷新页面。');
   const body = ChangeRecurringTaskInputSchema.parse(entry.body);
   if (stable(body) !== stable(entry.body))
-    throw new Error('saved body changed');
+    throw new Error('保存的操作记录已被改动，请刷新页面。');
   return {
     version: 1,
     storageKey,
@@ -277,10 +280,10 @@ export function saveRecurringIntent(
   const serialized = JSON.stringify(intent);
   parseRecurringIntent(serialized, intent.storageKey);
   if (storage.getItem(intent.storageKey) !== null)
-    throw new Error('unconfirmed request already saved');
+    throw new Error('还有一项操作结果待确认，请先点「检查操作结果」查看。');
   storage.setItem(intent.storageKey, serialized);
   if (storage.getItem(intent.storageKey) !== serialized)
-    throw new Error('request persistence unconfirmed');
+    throw new Error(requestNotSent);
 }
 
 export function clearRecurringIntent(
@@ -292,10 +295,10 @@ export function clearRecurringIntent(
     saved !== null &&
     stable(parseRecurringIntent(saved, intent.storageKey)) !== stable(intent)
   )
-    throw new Error('another request owns this saved state');
+    throw new Error('另一项操作正在使用这条记录，请刷新页面。');
   storage.removeItem(intent.storageKey);
   if (storage.getItem(intent.storageKey) !== null)
-    throw new Error('request confirmation persistence unconfirmed');
+    throw new Error('浏览器没能清除已确认的操作记录，请刷新页面。');
 }
 
 export function recurringIntentURL(intent: RecurringTaskIntent): string {

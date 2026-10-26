@@ -11306,7 +11306,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(await composer.inputValue()).toContain('保留我的原始问题');
         // The prompt keeps the delivery intent in words, not a tool name.
         expect(await composer.inputValue()).toContain(
-          '导出为可下载的 Markdown 文件',
+          '保存为正式交付的 Markdown 文件',
         );
         expect(await composer.inputValue()).not.toContain('workspace.export');
         await expect
@@ -13043,9 +13043,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       f.state.messageStatus = 'failed';
       await f.page.reload();
       await f.page
-        .getByText('这次未完成。可以换个说法再试，或者把任务拆小一点。', {
-          exact: true,
-        })
+        .getByText(
+          '这次未完成。已有的内容都保留了，请稍后再试；一直这样请联系管理员。',
+          {
+            exact: true,
+          },
+        )
         .waitFor();
       expect(
         await f.page
@@ -13092,13 +13095,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         ).toBe(0);
         await row.getByRole('button', { name: /^会话.*的操作$/ }).click();
         expect(await f.page.getByRole('menuitem').allTextContents()).toEqual([
-          '置顶会话',
+          '置顶对话',
           '重命名',
           '归档会话',
           '复制对话编号',
         ]);
         await f.page
-          .getByRole('menuitem', { name: '置顶会话', exact: true })
+          .getByRole('menuitem', { name: '置顶对话', exact: true })
           .click();
         await expect
           .poll(() => f.state.sessionEdits.get(B)?.pinnedAt)

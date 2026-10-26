@@ -6,7 +6,9 @@ import {
   useMemo,
   useRef,
   useState,
+  type Dispatch,
   type FormEvent,
+  type SetStateAction,
 } from 'react';
 import {
   Button,
@@ -46,14 +48,30 @@ import css from './automation-tasks.module.css';
 import { AutomationManualRun } from './automation-manual-run';
 import { RecurringWeekdays } from './recurring-weekdays';
 import {
-  automationTime as time,
+  commonTimeZones,
   requestNotSent,
   timeZoneLabel,
 } from '../../lib/chatflow/automation-copy';
-import { userFacingMessage } from '../../lib/chatflow/user-facing-error';
+import { shortDateTime } from '../../lib/chatflow/short-date-time';
+import {
+  responseError,
+  userFacingMessage,
+} from '../../lib/chatflow/user-facing-error';
 
 const resultUnknown = '结果待确认。';
 const unreadable = '暂时读不到这个任务，请稍后刷新再试。';
+const changeUnknown =
+  '操作结果待确认，请点「检查操作结果」查看，不会重复提交。';
+const detailStale = '任务详情暂时没有刷新，请稍后点「刷新状态」。';
+const time = (value: string, timeZone?: string) =>
+  shortDateTime(value, { timeZone });
+/** The zone a task's own times are read in; interval tasks have none. */
+function taskZone(entry: AutomationCatalogTask) {
+  const d = entry.definition;
+  if (d.kind === 'once') return d.task.timezone;
+  if (d.kind === 'legacy') return d.schedule.timezone;
+  return d.task.rule.kind === 'every' ? undefined : d.task.rule.timezone;
+}
 
 type Identity = {
   workspaceId: string;
@@ -126,12 +144,7 @@ export function automationFrequency(entry: AutomationCatalogTask) {
 }
 async function read(response: Response) {
   const body: unknown = await response.json();
-  if (!response.ok)
-    throw new Error(
-      typeof body === 'object' && body !== null && 'message' in body
-        ? String(body.message)
-        : '读取失败，请稍后重试。',
-    );
+  if (!response.ok) throw responseError(response.status, body);
   return body;
 }
 function useHeaders(headers: Record<string, string>) {
@@ -335,11 +348,16 @@ export function AutomationTaskList(
             {!loading && !error && !tasks.length ? (
               <div className={`${native.empty} ${css.emptyState}`}>
                 <IconClockOutlineRegular size={24} />
-                {!result.tasks.length &&
-                !result.nextCursor &&
-                !query &&
-                !employeeId &&
-                filter === 'all' ? (
+                {props.sessionId ? (
+                  <>
+                    <h2>这个对话没有进行中的自动化任务</h2>
+                    <p>已暂停或已结束的任务，可以在「自动化任务」页查看。</p>
+                  </>
+                ) : !result.tasks.length &&
+                  !result.nextCursor &&
+                  !query &&
+                  !employeeId &&
+                  filter === 'all' ? (
                   <>
                     <h2>还没有自动化任务</h2>
                     <p>在对话里说「每天 9 点提醒我写日报」就能创建。</p>
@@ -380,7 +398,7 @@ export function AutomationTaskList(
                       </span>
                       <span className={native.rowSummary}>
                         {task.nextRunAt
-                          ? '下次运行 ' + time(task.nextRunAt)
+                          ? '下次运行 ' + time(task.nextRunAt, taskZone(task))
                           : automationStatus(task)}
                         {task.sourceArchived ? ' · 原对话已归档' : ''}
                       </span>
@@ -470,6 +488,7 @@ function AutomationDetailBody({
   const task = detail?.task,
     definition = task?.definition;
   const nativeTask = definition?.kind === 'recurring' ? definition.task : null;
+  const zone = task ? taskZone(task) : undefined;
   const storageKey =
     task?.employeeId && task.sessionId
       ? recurringStorageKey(scope + '/' + task.employeeId, task.sessionId)
@@ -516,6 +535,18 @@ function AutomationDetailBody({
     },
     [url, headers],
   );
+  // A confirmed result stays on screen even when the follow-up read fails.
+  const refreshAfter = useCallback(
+    (note: Dispatch<SetStateAction<string>>, replaceDraft = false) =>
+      load(undefined, replaceDraft).then(
+        () => {},
+        (cause: unknown) => {
+          console.error(cause);
+          if (mounted.current) note((current) => current + detailStale);
+        },
+      ),
+    [load],
+  );
   // headers belongs to the keyed parent and is stable for this mount.
   useEffect(() => {
     mounted.current = true;
@@ -537,9 +568,7 @@ function AutomationDetailBody({
         );
       setStopReady(true);
     } catch (cause) {
-      setStopError(
-        cause instanceof Error ? cause.message : '无法读取停止记录。',
-      );
+      setStopError(userFacingMessage(cause, '暂时读不到上次的停止记录。'));
     }
   }, [scope, workspaceId, taskId]);
   useEffect(() => {
@@ -569,7 +598,9 @@ function AutomationDetailBody({
         throw new Error('这个对话还有一项操作结果待确认，请先回到原处查看。');
       setRestored(true);
     } catch (e) {
-      setStorageError(e instanceof Error ? e.message : '无法保存操作记录。');
+      setStorageError(
+        userFacingMessage(e, '保存的操作记录无法读取，请刷新页面。'),
+      );
     }
   }, [task, definition, restored, storageKey, taskId]);
   const settle = useCallback(
@@ -588,14 +619,12 @@ function AutomationDetailBody({
       )
         return;
       if (result.state === 'unconfirmed') {
-        setNotice(
-          '操作结果待确认，请稍后点「检查操作结果」查看，不会再次提交。',
-        );
+        setNotice(changeUnknown);
         return;
       }
       if (result.state === 'pending') {
         setNotice('已保存，等待调度确认。');
-        await load();
+        await refreshAfter(setNotice);
         return;
       }
       clearRecurringIntent(sessionStorage, intent);
@@ -606,10 +635,10 @@ function AutomationDetailBody({
           ? (result.errorMessage ?? '任务已变化，请核对最新规则。')
           : '设置已更新。',
       );
-      await load(undefined, true);
+      await refreshAfter(setNotice, true);
       window.dispatchEvent(new Event('allrice:automation-changed'));
     },
-    [load],
+    [refreshAfter],
   );
   const check = useCallback(async () => {
     const intent = pendingRef.current;
@@ -691,7 +720,7 @@ function AutomationDetailBody({
         body: payload,
       });
       if (result.state === 'unconfirmed') {
-        setNotice('操作结果待确认，请刷新查看，不会重复提交。');
+        setNotice(changeUnknown);
         return;
       }
       // Readback includes the exact original operation, including a rejection.
@@ -726,7 +755,7 @@ function AutomationDetailBody({
           ? '任务已取消。'
           : '任务已经派发，取消没有撤回本轮执行。',
       );
-      await load();
+      await refreshAfter(setNotice);
       window.dispatchEvent(new Event('allrice:automation-changed'));
     } catch (e) {
       setLegacyUnknown(true);
@@ -753,8 +782,8 @@ function AutomationDetailBody({
           }),
         }),
       );
-      await load(undefined, true);
       setNotice('设置已更新。');
+      await refreshAfter(setNotice, true);
       window.dispatchEvent(new Event('allrice:automation-changed'));
     } catch (e) {
       setLegacyUnknown(true);
@@ -781,7 +810,7 @@ function AutomationDetailBody({
           ? '本轮已取消。未来计划仍按原设置执行。'
           : '本轮已经结束，保留原结果。未来计划仍按原设置执行。',
       );
-      await load();
+      await refreshAfter(setStopNotice);
     } else
       setStopNotice(
         result.state === 'stopping'
@@ -912,7 +941,9 @@ function AutomationDetailBody({
           </div>
           <p className={css.caption}>
             {task.employeeName}
-            {task.nextRunAt ? ' · 下次运行 ' + time(task.nextRunAt) : ''}
+            {task.nextRunAt
+              ? ` · 下次运行 ${time(task.nextRunAt, zone)}${zone ? `（${timeZoneLabel(zone)}）` : ''}`
+              : ''}
           </p>
         </header>
         {task.sourceArchived && (
@@ -1100,14 +1131,22 @@ function AutomationDetailBody({
                       </label>
                       <label>
                         时区
-                        <input
+                        <select
                           aria-label="时区"
                           disabled={!editable || disabled}
                           value={draft.timezone}
                           onChange={(e) =>
                             setDraft({ ...draft, timezone: e.target.value })
                           }
-                        />
+                        >
+                          {[
+                            ...new Set([...commonTimeZones, draft.timezone]),
+                          ].map((name) => (
+                            <option key={name} value={name}>
+                              {timeZoneLabel(name)}
+                            </option>
+                          ))}
+                        </select>
                       </label>
                     </>
                   )}
@@ -1276,11 +1315,13 @@ function AutomationDetailBody({
           </>
         ) : (
           <div className={native.detailRecords}>
-            {!detail.occurrences.length && (
+            {!detail.occurrences.length ? (
               <p className={css.caption}>
                 暂无运行记录。创建成功不代表已执行。
               </p>
-            )}
+            ) : zone ? (
+              <p className={css.caption}>以下时间为{timeZoneLabel(zone)}。</p>
+            ) : null}
             {detail.occurrences.map((o) => (
               <article key={o.id} className={native.delivery}>
                 <IconClockOutlineRegular
@@ -1290,7 +1331,7 @@ function AutomationDetailBody({
                 <div className={native.deliveryBody}>
                   <time className={native.deliveryTime}>
                     {o.source?.kind === 'manual' ? '立即执行 · ' : ''}
-                    {time(o.scheduledAt)}
+                    {time(o.scheduledAt, zone)}
                   </time>
                   <p className={css.caption}>
                     {
@@ -1343,7 +1384,7 @@ function AutomationDetailBody({
                       className={css.confirm}
                     >
                       <p>
-                        仅停止 {time(o.scheduledAt)}{' '}
+                        仅停止 {time(o.scheduledAt, zone)}{' '}
                         这一轮。未来计划仍按原设置执行。
                       </p>
                       <Button

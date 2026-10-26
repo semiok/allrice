@@ -374,7 +374,7 @@ export function useSessionArchive({
           setRequest({
             sessionId,
             displayTitle:
-              sessions.find((s) => s.id === sessionId)?.title ?? '当前会话',
+              sessions.find((s) => s.id === sessionId)?.title ?? '当前对话',
             activity: body.error.activity,
           });
           return;
@@ -460,7 +460,9 @@ export function useSessionArchive({
     } catch (cause) {
       if (currentScope.current === scope)
         setError(
-          cause instanceof Error ? cause.message : '会话修改失败，请重试',
+          cause instanceof Error
+            ? cause.message
+            : '对话没有修改成功，请稍后再试',
         );
       return false;
     } finally {
@@ -520,7 +522,7 @@ export function useSessionArchive({
               void editSession(session.id, { pinned: !session.pinnedAt });
             }}
           >
-            {session.pinnedAt ? '取消置顶' : '置顶会话'}
+            {session.pinnedAt ? '取消置顶' : '置顶对话'}
           </MenuItemButton>
         ) : null}
         <MenuItemButton
