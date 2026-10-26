@@ -1,5 +1,4 @@
 import type postgres from 'postgres';
-import { queueStopCause } from './policy.ts';
 
 type Sql = postgres.Sql;
 type TransactionSql = postgres.TransactionSql;
@@ -22,18 +21,26 @@ type LeaseTransactionOutcome =
   | 'exhausted'
   /** Rolled back; the database shows the lease expired or replaced. */
   | 'lease_lost'
-  /** Rolled back; a stop (cancel/timeout/drain) is due, so no retry. */
+  /** Rolled back; a committed cancel (or revocation) or drain ends the retries. */
   | 'stopped'
+  /** Rolled back after the caller (the Worker runner) had already returned. */
+  | 'aborted'
   /** Any other database or driver failure; never retried here. */
   | 'failed';
 
 /** The lock wait every lease transaction allows before PostgreSQL rolls it back. */
 export const leaseLockWaitMs = 5_000;
-/** A retry's lock deadline stays this far ahead of the lease end, leaving time
- * for its remaining statements and, if it still fails, the Worker's abort. */
+/** Retry budget kept ahead of the lease end for the remaining statements and,
+ * if the retry still fails, the Worker's abort. Fixed values; listed in MET-219. */
 const leaseRetryReserveMs = 1_500;
+/** lock_timeout bounds each lock wait separately. An attempt can queue on the
+ * Run's 703 lock, then its runtime root, then (event writes) its Run row; the
+ * clock and Job rows are locked only by root holders. A retry splits its
+ * remaining lease across those three waits so it normally ends inside the
+ * lease; only the caller's commit fence guarantees that it never commits after. */
+const contendedLockWaits = 3;
 const minimumRetryLockWaitMs = 500;
-const maxLeaseLockAttempts = 4;
+export const maxLeaseLockAttempts = 4;
 
 const counts = new Map<string, number>();
 
@@ -55,7 +62,9 @@ function recordLeaseTransactionFailure(event: {
   runId: string | null;
   jobId: string;
   backendPid: number | null;
-  connectionMs: number | null;
+  /** Pool wait + BEGIN + the first statement, i.e. before any lock wait. */
+  firstStatementMs: number | null;
+  /** The whole attempt, including the pool wait. */
   durationMs: number;
   attempt: number;
   outcome: LeaseTransactionOutcome;
@@ -63,10 +72,12 @@ function recordLeaseTransactionFailure(event: {
   const key = `${event.site}:${event.sqlState}:${event.outcome}`;
   const count = (counts.get(key) ?? 0) + 1;
   counts.set(key, count);
-  (event.outcome === 'retrying' ? console.warn : console.error)(
-    '[MET-210] Worker lease transaction rolled back',
-    { ...event, processCount: count },
-  );
+  (event.outcome === 'retrying' || event.outcome === 'aborted'
+    ? console.warn
+    : console.error)('[MET-210] Worker lease transaction rolled back', {
+    ...event,
+    processCount: count,
+  });
 }
 
 /** One transaction attempt: which backend ran it and how long it lasted. */
@@ -74,7 +85,7 @@ export class LeaseTransactionTrace {
   private readonly started = performance.now();
   private backendPid: number | null = null;
   private runId: string | null = null;
-  private connectionMs: number | null = null;
+  private firstStatementMs: number | null = null;
 
   constructor(
     private readonly site: LeaseTransactionSite,
@@ -87,7 +98,7 @@ export class LeaseTransactionTrace {
       select pg_backend_pid() pid,(select run_id from allrice_jobs where id=${this.jobId}) run_id`;
     this.backendPid = row?.pid ?? null;
     this.runId = row?.run_id ?? null;
-    this.connectionMs = Math.round(performance.now() - this.started);
+    this.firstStatementMs = Math.round(performance.now() - this.started);
   }
 
   record(error: unknown, attempt: number, outcome: LeaseTransactionOutcome) {
@@ -99,7 +110,7 @@ export class LeaseTransactionTrace {
       runId: this.runId,
       jobId: this.jobId,
       backendPid: this.backendPid,
-      connectionMs: this.connectionMs,
+      firstStatementMs: this.firstStatementMs,
       durationMs: Math.round(performance.now() - this.started),
       attempt,
       outcome,
@@ -148,11 +159,10 @@ async function nextLeaseLockWait(
       drain_deadline_at: Date | null;
       drain_reason: 'cancel' | 'timeout' | null;
       cancel_requested_at: Date | null;
-      timeout_at: Date;
       now: Date;
     }[]
   >`select status,worker_id,lease_token,lease_expires_at,drain_deadline_at,drain_reason,
-      cancel_requested_at,timeout_at,clock_timestamp() now
+      cancel_requested_at,clock_timestamp() now
     from allrice_jobs where id=${lease.jobId}`;
   if (
     !job ||
@@ -164,7 +174,10 @@ async function nextLeaseLockWait(
     (job.drain_deadline_at && job.drain_deadline_at <= job.now)
   )
     return 'lease_lost' as const;
-  if (mode === 'stop' && queueStopCause(job, job.now))
+  // A committed cancel or revocation stops at once. The task deadline is not
+  // judged from the stored timeout_at, which may predate the current clock
+  // phase: the retried transaction refreshes the clock and takes its own stop.
+  if (mode === 'stop' && (job.cancel_requested_at || job.drain_reason))
     return 'stopped' as const;
   const end = Math.min(
     job.lease_expires_at.getTime(),
@@ -172,21 +185,25 @@ async function nextLeaseLockWait(
   );
   const wait = Math.min(
     leaseLockWaitMs,
-    end - job.now.getTime() - leaseRetryReserveMs,
+    Math.floor(
+      (end - job.now.getTime() - leaseRetryReserveMs) / contendedLockWaits,
+    ),
   );
   return wait >= minimumRetryLockWaitMs ? wait : ('exhausted' as const);
 }
 
 /** Runs `run` once, and again only after a 55P03 rollback while the database
- * still shows this incarnation's unexpired lease (and, for `stop`, no requested
- * stop). Each attempt is a whole fresh transaction, so every queue, cancel and
- * authority check runs again; the handler itself is never re-entered. */
+ * still shows this incarnation's unexpired lease (and, for `stop`, no committed
+ * cancel or drain). Each attempt is a whole fresh transaction, so every queue,
+ * deadline, cancel and authority check runs again; the handler itself is never
+ * re-entered. `run` must re-check the locked lease on the database clock
+ * before it commits. */
 export async function retryLeaseLockTimeout<T>(input: {
   sql: Sql;
   site: LeaseTransactionSite;
   lease: LeaseIdentity;
-  /** `stop`: any requested stop ends the retries (heartbeat). `receipt`: writes
-   * keep the drain window that lockedLeasedJob itself still accepts. */
+  /** `stop`: a committed cancel or drain ends the retries (heartbeat). `receipt`:
+   * writes keep the drain window that lockedLeasedJob itself still accepts. */
   mode: 'stop' | 'receipt';
   leaseLost: () => Error;
   signal?: AbortSignal;
@@ -207,10 +224,14 @@ export async function retryLeaseLockTimeout<T>(input: {
       }
       if (attempt < maxLeaseLockAttempts && !input.signal?.aborted)
         await new Promise((resolve) => setTimeout(resolve, 50 * 2 ** attempt));
-      const next =
-        attempt >= maxLeaseLockAttempts || input.signal?.aborted
+      let next =
+        attempt >= maxLeaseLockAttempts
           ? ('exhausted' as const)
-          : await nextLeaseLockWait(input.sql, input.lease, input.mode);
+          : input.signal?.aborted
+            ? ('aborted' as const)
+            : await nextLeaseLockWait(input.sql, input.lease, input.mode);
+      // The runner may have returned while the lease was being read.
+      if (typeof next === 'number' && input.signal?.aborted) next = 'aborted';
       trace.record(
         error,
         attempt,

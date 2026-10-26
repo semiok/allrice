@@ -178,6 +178,8 @@ export async function runClaimedJob(
         if (!state.active) controller.abort();
       })
       .catch((error: unknown) => {
+        // The runner already returned; its cleanup owns what happens next.
+        if (heartbeatRetries.signal.aborted) return;
         // Retries are exhausted or the lease is gone: the run cannot continue.
         if (!isLeaseLoss(error)) {
           console.error('[M5] Worker heartbeat failed', {

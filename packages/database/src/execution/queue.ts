@@ -2579,7 +2579,7 @@ async function lockedLeasedJob(
   // These transactions contain only queue control/receipt SQL, never model,
   // tool or human waits. A blocked heartbeat/event write must roll back rather
   // than hold root locks forever after its handler/host has stopped. A retry
-  // passes a shorter wait so it can never outwait its original lease.
+  // passes a shorter wait; its commit fence keeps it inside the original lease.
   await transaction`select set_config('lock_timeout',${`${lockWaitMs}ms`},true)`;
   await transaction`set local statement_timeout='10s'`;
   const [scope] = await transaction<
@@ -2608,8 +2608,9 @@ async function lockedLeasedJob(
   return job;
 }
 
-/** Database clock against the lease as locked, i.e. before any renewal: a lock
- * wait or slow statement past it must roll the whole transaction back. */
+/** Database clock against the lease (and receipt drain window) as locked, i.e.
+ * before any renewal: a lock wait or slow statement past it must roll the whole
+ * transaction back. */
 async function assertLockedLeaseCurrent(
   transaction: TransactionSql,
   job: JobRow,
@@ -2617,7 +2618,11 @@ async function assertLockedLeaseCurrent(
   const [clock] = await transaction<
     { now: Date }[]
   >`select clock_timestamp() as now`;
-  if (!job.lease_expires_at || job.lease_expires_at <= clock!.now)
+  if (
+    !job.lease_expires_at ||
+    job.lease_expires_at <= clock!.now ||
+    (job.drain_deadline_at && job.drain_deadline_at <= clock!.now)
+  )
     throw new QueueError('lease_lost');
 }
 
@@ -2813,14 +2818,14 @@ export async function heartbeatJob(
     mode: 'stop',
     signal: options.signal,
     leaseLost: () => new QueueError('lease_lost'),
-    run: (trace, lockWaitMs) => {
-      let retryOnceLock = false;
-      return employeeAccessTransaction(
+    // A once/recurring Job's NOWAIT busy (55P03) is retried by this same
+    // lease-bounded loop, never by an inner retry that hides its SQLSTATE.
+    run: (trace, lockWaitMs) =>
+      employeeAccessTransaction(
         sql,
         async (transaction) => {
           await trace.begin(transaction);
           const once = await lockNativeOnceJobAdmission(transaction, jobId);
-          retryOnceLock = once.scheduled;
           let job = await lockedLeasedJob(
             transaction,
             workerId,
@@ -2871,9 +2876,8 @@ export async function heartbeatJob(
           await assertLockedLeaseCurrent(transaction, job);
           return { active: true, canceled: false };
         },
-        { retryLockBusy: () => retryOnceLock },
-      );
-    },
+        { retryLockBusy: () => false },
+      ),
   });
 }
 
@@ -2918,13 +2922,16 @@ export async function appendJobEvent(input: {
           );
           await recordTaskQuestion(transaction, job.run_id, input.payload);
         }
-        return appendEvent(transaction, {
+        const event = await appendEvent(transaction, {
           organizationId: job.organization_id,
           workspaceId: job.workspace_id,
           runId: job.run_id,
           type: input.type,
           payload: input.payload,
         });
+        // A lock wait past the lease or drain window must not still commit.
+        await assertLockedLeaseCurrent(transaction, job);
+        return event;
       }),
   });
 }

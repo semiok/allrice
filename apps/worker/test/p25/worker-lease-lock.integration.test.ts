@@ -124,6 +124,7 @@ suite('MET-210 a chat Run survives a 703 lock held past lock_timeout', () => {
         baseUrl: model.baseUrl,
       }));
     const warn = vi.spyOn(console, 'warn');
+    const error = vi.spyOn(console, 'error');
     vi.stubEnv('ALLRICE_DSH_PLATFORM_HOME', join(model.root, 'platform'));
     const adapter = new DshHarnessAdapter({
       runtimeRoot: join(model.root, 'native'),
@@ -332,9 +333,14 @@ suite('MET-210 a chat Run survives a 703 lock held past lock_timeout', () => {
           runId,
           jobId: job.id,
         });
+      // No lease write gave up (those are logged as errors).
+      expect(error.mock.calls.filter(([tag]) => tag === failureTag)).toEqual(
+        [],
+      );
     } finally {
       await adapter.close();
       warn.mockRestore();
+      error.mockRestore();
       selection.mockRestore();
       await model.close();
     }

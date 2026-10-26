@@ -79,7 +79,9 @@ suite('MET-210 Worker lease transactions under a held root lock', () => {
   }
 
   /** The competing transaction. `commit(work)` runs `work` inside it first. */
-  async function hold(kind: 'root' | '703', runId: string) {
+  /** `both` takes 703 then the root, as the queue does; `run` is the Run row
+   * an event write locks only after it already holds its Job. */
+  async function hold(kind: 'root' | '703' | 'both' | 'run', runId: string) {
     let finish!: (
       work?: (tx: postgres.TransactionSql) => Promise<unknown>,
     ) => void;
@@ -94,10 +96,12 @@ suite('MET-210 Worker lease transactions under a held root lock', () => {
     });
     const done = database.db.begin(async (tx) => {
       const [row] = await tx<{ pid: number }[]>`select pg_backend_pid() pid`;
-      if (kind === 'root')
-        await tx`select root_run_id from allrice_runtime_roots where root_run_id=${runId} for update`;
-      else
+      if (kind === '703' || kind === 'both')
         await tx`select pg_advisory_xact_lock(hashtextextended(${runId},703))`;
+      if (kind === 'root' || kind === 'both')
+        await tx`select root_run_id from allrice_runtime_roots where root_run_id=${runId} for update`;
+      if (kind === 'run')
+        await tx`select id from allrice_runs where id=${runId} for update`;
       ready(row!.pid);
       const work = await gate;
       await work?.(tx);
@@ -144,8 +148,8 @@ suite('MET-210 Worker lease transactions under a held root lock', () => {
   const recordKeys = [
     'attempt',
     'backendPid',
-    'connectionMs',
     'durationMs',
+    'firstStatementMs',
     'jobId',
     'outcome',
     'processCount',
@@ -263,7 +267,7 @@ suite('MET-210 Worker lease transactions under a held root lock', () => {
 
   it('retries never outwait the lease they found', async () => {
     watchFailures();
-    const s = await setup(8);
+    const s = await setup(10);
     const before = await s.job();
     const held = await hold('703', s.f.task.runId);
     const started = Date.now();
@@ -272,21 +276,40 @@ suite('MET-210 Worker lease transactions under a held root lock', () => {
     await held.waiters();
     try {
       await expect(beat).rejects.toMatchObject({ code: '55P03' });
-      // Lease end minus the 1.5 s reserve; the lease itself ends at 8 s.
-      expect(Date.now() - started).toBeLessThan(7_500);
+      // Gives up before the lease end minus the 1.5 s reserve (lease: 10 s).
+      expect(Date.now() - started).toBeLessThan(8_500);
     } finally {
       await held.commit();
     }
     expect((await s.job()).lease_expires_at).toEqual(before.lease_expires_at);
-    expect(
-      failures('job_heartbeat').map((r) => [r.attempt, r.outcome]),
-    ).toEqual([
-      [1, 'retrying'],
-      [2, 'exhausted'],
+    const outcomes = failures('job_heartbeat').map((r) => r.outcome);
+    expect(outcomes.length).toBeGreaterThanOrEqual(2);
+    expect(outcomes.slice(0, -1).every((o) => o === 'retrying')).toBe(true);
+    expect(outcomes.at(-1)).toBe('exhausted');
+  }, 30_000);
+
+  it('a cancel committed during the wait ends the retries without renewing', async () => {
+    watchFailures();
+    const s = await setup();
+    const before = await s.job();
+    const held = await hold('703', s.f.task.runId);
+    const beat = s.heartbeat();
+    beat.catch(() => {});
+    await held.waiters();
+    // The stop is already committed when the retry reads the lease. (A real
+    // cancelRun would itself queue on 703; this is the database state it leaves.)
+    await s.f
+      .db`update allrice_jobs set cancel_requested_at=clock_timestamp(),cancel_reason='user_requested' where id=${s.f.worker.jobId}`;
+    await sleep(6_000);
+    await held.commit();
+    await expect(beat).rejects.toMatchObject({ code: '55P03' });
+    expect((await s.job()).lease_expires_at).toEqual(before.lease_expires_at);
+    expect(failures('job_heartbeat')).toMatchObject([
+      { attempt: 1, outcome: 'stopped' },
     ]);
   }, 30_000);
 
-  it('a task deadline reached during the wait ends the retries without renewing', async () => {
+  it('a task deadline reached during the wait is enforced by the retried heartbeat, not renewed', async () => {
     watchFailures();
     const s = await setup();
     // Active time leaves 3 s; the stored job/root deadline follow the clock.
@@ -300,11 +323,37 @@ suite('MET-210 Worker lease transactions under a held root lock', () => {
     await held.waiters();
     await sleep(6_000);
     await held.commit();
-    await expect(beat).rejects.toMatchObject({ code: '55P03' });
-    expect((await s.job()).lease_expires_at).toEqual(before.lease_expires_at);
+    await expect(beat).resolves.toMatchObject({
+      active: false,
+      canceled: false,
+      draining: true,
+    });
+    const job = await s.job();
+    expect(job.drain_reason).toBe('timeout');
+    // Only the receipt window anchored at the deadline, never a renewal.
+    expect(job.drain_deadline_at.getTime()).toBe(
+      before.timeout_at.getTime() + 30_000,
+    );
+    expect(job.lease_expires_at.getTime()).toBeLessThanOrEqual(
+      job.drain_deadline_at.getTime(),
+    );
     expect(failures('job_heartbeat')).toMatchObject([
-      { attempt: 1, outcome: 'stopped' },
+      { attempt: 1, outcome: 'retrying' },
     ]);
+  }, 30_000);
+
+  it('an event write that holds its Job but then waits past the lease does not commit', async () => {
+    watchFailures();
+    const s = await setup(4);
+    const held = await hold('run', s.f.task.runId);
+    const write = s.event('late');
+    write.catch(() => {});
+    await held.waiters();
+    // Release after the 4 s lease, before the 5 s lock_timeout.
+    await sleep(4_600);
+    await held.commit();
+    await expect(write).rejects.toMatchObject({ code: 'lease_lost' });
+    expect((await s.events()).some((e) => e.label === 'late')).toBe(false);
   }, 30_000);
 
   it('an access revocation committed with the lock release is honored by the retried heartbeat', async () => {
@@ -314,7 +363,7 @@ suite('MET-210 Worker lease transactions under a held root lock', () => {
     const beat = s.heartbeat();
     beat.catch(() => {});
     await held.waiters();
-    await sleep(5_600);
+    await sleep(6_500);
     // The first attempt has rolled back; its retry is waiting on 703 again.
     expect(failures('job_heartbeat')).toMatchObject([
       { attempt: 1, outcome: 'retrying' },
@@ -472,7 +521,7 @@ suite('MET-210 Worker lease transactions under a held root lock', () => {
     expect(Object.keys(record!).sort()).toEqual(recordKeys);
   }, 30_000);
 
-  it('polls, progress, heartbeats, events and a duplicated settlement share one root through a 6 s hold', async () => {
+  it('polls, progress, heartbeats, events and a duplicated settlement share one root through a 7 s hold', async () => {
     watchFailures();
     const s = await setup();
     const { f } = s;
@@ -560,7 +609,9 @@ suite('MET-210 Worker lease transactions under a held root lock', () => {
     let settlements: PromiseSettledResult<unknown>[] = [];
     try {
       await sleep(1_000);
-      const held = await hold('root', f.task.runId);
+      // 703 and the root, as the queue takes them: every heartbeat and event
+      // write that starts during the hold queues on 703 first.
+      const held = await hold('both', f.task.runId);
       const settle = () =>
         f.runtime.settleUsage({
           ...f.base,
@@ -573,7 +624,8 @@ suite('MET-210 Worker lease transactions under a held root lock', () => {
           },
         });
       const settling = Promise.allSettled([settle(), settle()]);
-      await sleep(6_000);
+      // Longer than one heartbeat period plus lock_timeout.
+      await sleep(7_000);
       await held.commit();
       settlements = await settling;
       await sleep(1_500);
@@ -602,7 +654,7 @@ suite('MET-210 Worker lease transactions under a held root lock', () => {
     // Budget settled exactly once despite the duplicated settlement.
     const [after] =
       await f.db`select spent from allrice_runtime_budgets where root_run_id=${f.task.runId} and metric='model_calls'`;
-    expect(Number(after!.spent) - Number(budget!.spent)).toBeLessThanOrEqual(1);
+    expect(Number(after!.spent) - Number(budget!.spent)).toBe(1);
     const usage =
       await f.db`select metric,settled_amount from allrice_assistant_usage where call_id=${callId} order by metric`;
     expect(

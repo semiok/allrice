@@ -14,7 +14,7 @@ import {
 import type { TransactionSql } from 'postgres';
 import * as client from './core/client.ts';
 import { getDatabase } from './core/client.ts';
-import { employeeAccessTransactionMaxAttempts } from './employees/employee-access-cancellation.ts';
+import { maxLeaseLockAttempts } from './queue/lease-lock-retry.ts';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
 import { createChatSession, sendChatMessage } from './workspace/service.ts';
 import {
@@ -1132,7 +1132,7 @@ suite(
         }
       },
     );
-    it('bounds once heartbeat retries on held 703 and releases authority locks before returning busy', async () => {
+    it('bounds once heartbeat retries on held 703 and releases authority locks before giving up with 55P03', async () => {
       const r = await runningOnce();
       const [before] =
         await f.db`select heartbeat_at,lease_expires_at,cancel_requested_at from allrice_jobs where id=${r.job.id}`;
@@ -1140,16 +1140,17 @@ suite(
       await held`select pg_advisory_lock(hashtextextended(${r.runId},703))`;
       try {
         // Each attempt opens its own transaction; while 703 is busy it rolls
-        // back and backs off before the next. Count attempts instead of timing
-        // them: a slow runner stretches every attempt, but the retries must
-        // still stop at the limit. One past the limit fails at once.
+        // back, re-reads the lease and backs off before the next (MET-210 #4:
+        // one lease-bounded loop, original SQLSTATE kept). Count attempts
+        // instead of timing them: a slow runner stretches every attempt, but
+        // the retries must still stop at the limit. One past it fails at once.
         const real = getDatabase();
         let attempts = 0;
         const counted = new Proxy(real, {
           get(target, key) {
             if (key !== 'begin') return Reflect.get(target, key, target);
             return (...args: unknown[]) => {
-              if (++attempts > employeeAccessTransactionMaxAttempts)
+              if (++attempts > maxLeaseLockAttempts)
                 throw new Error('heartbeat retried past its limit');
               return Reflect.apply(target.begin, target, args);
             };
@@ -1161,11 +1162,11 @@ suite(
         try {
           await expect(
             heartbeatJob(r.workerId, r.job.id, r.job.lease!.token, 60_000),
-          ).rejects.toThrow('employee_access_busy');
+          ).rejects.toMatchObject({ code: '55P03' });
         } finally {
           spy.mockRestore();
         }
-        expect(attempts).toBe(employeeAccessTransactionMaxAttempts);
+        expect(attempts).toBe(maxLeaseLockAttempts);
         // Keep 703 held: these NOWAIT locks prove that every failed attempt
         // rolled back its principal and target locks instead of parking them.
         await f.db.begin(async (tx) => {

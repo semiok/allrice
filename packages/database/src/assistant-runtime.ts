@@ -48,7 +48,10 @@ import {
   refreshTaskClock,
   readTaskClock,
 } from './task-clock.ts';
-import { tracedLeaseTransaction } from './queue/lease-lock-retry.ts';
+import {
+  databaseErrorCode,
+  tracedLeaseTransaction,
+} from './queue/lease-lock-retry.ts';
 import { continuingProjectServiceIds } from './project-services.ts';
 import {
   observesExecutionUsage,
@@ -217,6 +220,8 @@ export async function cancelAssistantRootTransaction(
   await tx`update allrice_assistant_messages set status='canceled' where root_run_id=${rootRunId} and status='pending'`;
   await cancelRuntimeAgentOperationsTransaction(tx, rootRunId, requestId);
 }
+
+let authoritySnapshotFallbacks = 0;
 
 /** Mandatory trusted authority hook resolves current grants; IDs/tools from a
  * model never establish authority. Browser methods additionally verify owner and
@@ -1047,7 +1052,22 @@ export function createAssistantRuntime(
       // MET-210 #4: polled every 250 ms beside the Worker heartbeat and event
       // writes, so the common "nothing to stop" answer takes no row lock and
       // writes nothing. Anything else (or any snapshot error) falls through.
-      if (await currentAuthorityClear(input).catch(() => false))
+      if (
+        await currentAuthorityClear(input).catch((error: unknown) => {
+          // Grant denials end here too; anything else means the lock-free
+          // path broke and every poll is back on the contended locks.
+          if (++authoritySnapshotFallbacks % 100 === 1)
+            console.warn(
+              '[MET-210] Authority snapshot fell back to the locked poll',
+              {
+                sqlState: databaseErrorCode(error),
+                error: error instanceof Error ? error.name : typeof error,
+                processCount: authoritySnapshotFallbacks,
+              },
+            );
+          return false;
+        })
+      )
         return {
           cancelRequested: false,
           stopReason: undefined as 'cancel' | 'timeout' | undefined,
