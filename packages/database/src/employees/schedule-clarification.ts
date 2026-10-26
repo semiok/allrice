@@ -17,6 +17,33 @@ const frequency = new RegExp(
   'u',
 );
 
+/** Each listed option a human selected on a single-select item of the card,
+ * with that item. Free text, multiple selections and unlisted labels select
+ * nothing. */
+export function selectedScheduleAnswers(
+  rawQuestion: unknown,
+  rawAnswer: unknown,
+) {
+  const question = UserQuestionRequestSchema.safeParse(rawQuestion);
+  const answer = UserQuestionAnswerSubmissionSchema.safeParse(rawAnswer);
+  if (
+    !question.success ||
+    !answer.success ||
+    answer.data.questionId !== question.data.questionId
+  )
+    return [];
+  return answer.data.answers.flatMap((choice) => {
+    const item = question.data.questions.find((q) => q.id === choice.id);
+    return item &&
+      !item.multiSelect &&
+      choice.selected.length === 1 &&
+      !choice.custom &&
+      item.options?.some((o) => o.label === choice.selected[0])
+      ? [{ item, label: choice.selected[0]! }]
+      : [];
+  });
+}
+
 /** Only an authenticated answer can disambiguate a shorthand timed request.
  * Question descriptions and model-generated work never become authority. The
  * original work must pass the existing instruction checks; the chosen label
@@ -28,24 +55,14 @@ export function clarifiedScheduleIntent(
 ) {
   const question = UserQuestionRequestSchema.safeParse(rawQuestion);
   const answer = UserQuestionAnswerSubmissionSchema.safeParse(rawAnswer);
+  const chosen = selectedScheduleAnswers(rawQuestion, rawAnswer);
   if (
-    !question.success ||
-    !answer.success ||
-    answer.data.questionId !== question.data.questionId ||
-    question.data.questions.length !== 1 ||
-    answer.data.answers.length !== 1
+    question.data?.questions.length !== 1 ||
+    answer.data?.answers.length !== 1 ||
+    chosen.length !== 1
   )
     return null;
-  const item = question.data.questions[0]!;
-  const choice = answer.data.answers[0]!;
-  if (
-    item.id !== choice.id ||
-    item.multiSelect ||
-    choice.selected.length !== 1 ||
-    choice.custom ||
-    !item.options?.some((o) => o.label === choice.selected[0])
-  )
-    return null;
+  const { label } = chosen[0]!;
   const requestedConversation = scheduleConversationIntent(request);
   const work = requestedConversation.request.trim().match(timedWork);
   if (!work) return null;
@@ -54,7 +71,6 @@ export function clarifiedScheduleIntent(
   const body = work[3]!.replace(/一次$/u, '').trim();
   if (!body || !explicitOnceTaskIntent(`${work[1]}${work[2]}后执行${body}`))
     return null;
-  const label = choice.selected[0]!;
   const selectedConversation = scheduleConversationIntent(label);
   if (
     requestedConversation.conversationMode &&

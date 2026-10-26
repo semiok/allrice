@@ -94,6 +94,12 @@ import { employeeAccessTransaction } from './employees/employee-access-cancellat
 import { explicitRecurringTaskIntent } from './employees/recurring-task-intent.ts';
 import { readScheduleClarification } from './employees/schedule-clarification-authority.ts';
 import {
+  confirmedRecurringRequest,
+  recurringConfirmation,
+  recurringConfirmationQuestion,
+  recurringRuleText,
+} from './employees/recurring-task-confirmation.ts';
+import {
   assertEmployeeChatExecution,
   assertEmployeeChatHumanSource,
   employeeChatIdentity,
@@ -172,8 +178,14 @@ export class NativeRecurringProductError extends Error {
       | 'binding_conflict'
       | 'lease_lost'
       | 'limit'
-      | 'intent_required'
-      | 'rule_mismatch',
+      | 'confirmation_required'
+      | 'declined',
+    /** For the model only: the server's card and, when the wording was
+     * recognized as another rule, that rule. Neither is authority. */
+    readonly confirmation?: {
+      askUserQuestion: ReturnType<typeof recurringConfirmationQuestion>;
+      recognized?: string;
+    },
   ) {
     super(`native_recurring_${code}`);
   }
@@ -550,7 +562,6 @@ async function enrollRecurringTask(
       throw new NativeRecurringProductError('request_conflict');
     return readRecurringTaskProjection(tx, existing, true);
   }
-  validateNew?.();
   const [partition] = await tx<
     {
       partition_id: string;
@@ -566,9 +577,11 @@ async function enrollRecurringTask(
   >`select count(*)::int count from allrice_automations where organization_id=${scope.organizationId}
       and owner_id=${scope.ownerId} and clock_owner='native_recurring' and deleted_at is null`;
   if (count!.count >= 1000) throw new NativeRecurringProductError('limit');
+  if (input.rule.kind === 'monthly' && !ordinaryMonthlyEnabled())
+    throw new NativeRecurringProductError('disabled');
+  // Only a task that can actually be enrolled is offered for confirmation.
+  validateNew?.();
   if (input.rule.kind === 'monthly') {
-    if (!ordinaryMonthlyEnabled())
-      throw new NativeRecurringProductError('disabled');
     const p = await enrollOrdinaryMonthlyTaskInTransaction(
       tx,
       scope,
@@ -692,13 +705,47 @@ export async function createRecurringTaskFromExecutionContext(
     await assertEmployeeChatHumanSource(tx, input, current);
     if (!nativeRecurringProductEnabled())
       throw new NativeRecurringProductError('disabled');
+    // Wording only grants. Without any answered question in this Run, a
+    // recognized request that matches the structured call needs no card.
+    // Once the human has answered, only that answer counts: a selected
+    // frequency, or the server's own card for exactly this call. Anything
+    // else gets that card; unrecognized wording is never a refusal.
     const clarified = await readScheduleClarification(tx, input, current.text);
-    const intent = clarified
+    const mode = input.conversationMode;
+    const recognized = clarified
       ? clarified.intent?.kind === 'recurring'
         ? clarified.intent
         : null
       : explicitRecurringTaskIntent(current.text);
-    const authoritativeRequest = intent?.authoritativeRequest ?? current.text;
+    const matches =
+      recognized &&
+      isDeepStrictEqual(rule, recognized.rule) &&
+      (mode ?? 'reuse') === (recognized.conversationMode ?? 'reuse');
+    const card =
+      clarified &&
+      recurringConfirmation(
+        current.text,
+        input.prompt,
+        rule,
+        mode,
+        clarified.answers,
+      );
+    const confirmedRequest = confirmedRecurringRequest(
+      current.text,
+      input.prompt,
+      rule,
+      mode,
+    );
+    const consumed = clarified?.confirmedRequests.includes(confirmedRequest);
+    const intent = matches
+      ? recognized
+      : card === 'confirmed' && !consumed
+        ? { authoritativeRequest: confirmedRequest }
+        : null;
+    // Without authority yet, validate what a confirmation would store, so a
+    // card is never offered for a task that could not then be saved.
+    const authoritativeRequest =
+      intent?.authoritativeRequest ?? confirmedRequest;
     const enrollment = CreateRecurringTaskInputSchema.parse({
       clientRequestId: requestId,
       name: input.name,
@@ -717,14 +764,25 @@ export async function createRecurringTaskFromExecutionContext(
       { ...enrollment, prompt: authoritativeRequest },
       digest,
       () => {
-        if (!intent) throw new NativeRecurringProductError('intent_required');
-        if (!isDeepStrictEqual(rule, intent.rule))
-          throw new NativeRecurringProductError('rule_mismatch');
-        if (
-          (input.conversationMode ?? 'reuse') !==
-          (intent.conversationMode ?? 'reuse')
-        )
-          throw new NativeRecurringProductError('intent_required');
+        if (intent) return;
+        if (card === 'declined')
+          throw new NativeRecurringProductError('declined');
+        throw new NativeRecurringProductError('confirmation_required', {
+          askUserQuestion: recurringConfirmationQuestion(
+            current.text,
+            input.prompt,
+            rule,
+            mode,
+          ),
+          ...(recognized
+            ? {
+                recognized: recurringRuleText(
+                  recognized.rule,
+                  recognized.conversationMode,
+                ),
+              }
+            : {}),
+        });
       },
     );
   });

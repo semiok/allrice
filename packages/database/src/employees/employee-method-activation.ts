@@ -29,6 +29,7 @@ import {
   type ContentTx,
 } from './employee-content-model.ts';
 import { readEmployeeMethodActivationTest } from './employee-method-tests.ts';
+import { askUserQuestionArguments } from './ask-user-question.ts';
 import {
   EmployeeMethodActivationError,
   requireEmployeeMethodActivationAnswer,
@@ -236,13 +237,6 @@ function confirmationQuestion(id: string, name: string, s: Snapshot) {
       { label: methodActivationDecline },
     ],
   });
-}
-
-function askUserQuestionArguments(
-  question: ReturnType<typeof UserQuestionItemSchema.parse>,
-) {
-  const { multiSelect, ...item } = question;
-  return { questions: [{ ...item, multi_select: multiSelect }] };
 }
 
 /** Prepares a review only; even a successful call does not activate content. */
