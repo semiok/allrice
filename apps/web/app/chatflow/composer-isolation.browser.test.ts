@@ -781,7 +781,7 @@ suite(
             if (!ok) {
               answer(
                 p.response,
-                { error: { message: 'Synthetic old request failed' } },
+                { error: { message: '合成的旧请求未完成' } },
                 503,
               );
               return;
@@ -1306,9 +1306,7 @@ suite(
             .getByRole('textbox', { name: '给 Rice 的消息' })
             .inputValue(),
         ).toBe('');
-        expect(
-          await f.page.getByText('Synthetic old request failed').count(),
-        ).toBe(0);
+        expect(await f.page.getByText('合成的旧请求未完成').count()).toBe(0);
         await f.page.getByText('B.txt', { exact: true }).waitFor();
         await f.respond(1, false);
         await expect
@@ -1345,9 +1343,7 @@ suite(
               .inputValue(),
           )
           .toBe('New A draft');
-        expect(
-          await f.page.getByText('Synthetic old request failed').count(),
-        ).toBe(0);
+        expect(await f.page.getByText('合成的旧请求未完成').count()).toBe(0);
       } finally {
         await f.close();
       }
@@ -2899,7 +2895,7 @@ suite(
         await f.waitPending(2);
         await f.respond(1, false);
         expect(await dialog.getByRole('alert').textContent()).toContain(
-          'Synthetic old request failed',
+          '合成的旧请求未完成',
         );
         expect(await dialog.getByRole('checkbox').nth(0).isDisabled()).toBe(
           true,
@@ -3019,9 +3015,7 @@ suite(
         await f.page
           .getByRole('textbox', { name: '给 Rice 的消息' })
           .fill('B unchanged');
-        expect(
-          await f.page.getByText('Synthetic old request failed').count(),
-        ).toBe(0);
+        expect(await f.page.getByText('合成的旧请求未完成').count()).toBe(0);
         expect(
           await f.page
             .getByRole('button', { name: '停止生成', exact: true })
@@ -3238,9 +3232,7 @@ suite(
             .getByRole('textbox', { name: '给 Rice 的消息' })
             .inputValue(),
         ).toBe('B question-independent draft');
-        expect(
-          await f.page.getByText('Synthetic old request failed').count(),
-        ).toBe(0);
+        expect(await f.page.getByText('合成的旧请求未完成').count()).toBe(0);
         expect(
           await f.page
             .getByRole('textbox', { name: '给 Rice 的消息' })

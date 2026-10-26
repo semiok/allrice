@@ -4,19 +4,52 @@ import type { ChatFlowEventEnvelope } from '@allrice/contracts';
 
 import type { Employee, Session, Workspace } from './chatflow-types';
 
+const statusMessages: Record<number, string> = {
+  401: '登录已过期，请重新登录',
+  403: '没有权限',
+  404: '内容不存在或已删除',
+  409: '内容已被修改，请刷新后再试',
+  413: '内容太大',
+  429: '操作太频繁，请稍后再试',
+};
+
+/** Plain words for a failed request: Chinese server copy, never a status code. */
+function requestFailureMessage(status: number, serverMessage?: unknown) {
+  if (
+    typeof serverMessage === 'string' &&
+    /[\u3400-\u9fff]/.test(serverMessage)
+  )
+    return serverMessage;
+  return (
+    statusMessages[status] ??
+    (status >= 500 ? '服务暂时不可用，请稍后再试' : '暂时没有完成，请稍后再试')
+  );
+}
+
 export async function readJson<T>(response: Response): Promise<T> {
   if (response.status === 401) {
     window.location.assign('/login?next=/chatflow');
-    throw new Error('登录状态已失效');
+    throw new Error(statusMessages[401]);
   }
-  const body = (await response.json().catch(() => null)) as
-    T | { error?: { message?: string } } | null;
+  let body: unknown = null;
+  let readable = true;
+  try {
+    const text = await response.text();
+    // An empty success (204) stays null, as before.
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    readable = false;
+  }
   if (!response.ok) {
     throw new Error(
-      (body as { error?: { message?: string } } | null)?.error?.message ??
-        `请求失败（${response.status}）`,
+      requestFailureMessage(
+        response.status,
+        (body as { error?: { message?: unknown } } | null)?.error?.message,
+      ),
     );
   }
+  // A success whose body cannot be read may still have changed something.
+  if (!readable) throw new Error('结果待确认，请刷新页面查看');
   return body as T;
 }
 

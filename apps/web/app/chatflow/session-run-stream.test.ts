@@ -150,6 +150,7 @@ describe('P26 selected Session transport lifetime (synthetic HTTP, no provider)'
     await flush();
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
   it('never rebuilds queued Codex from stale History while Gemini History is still loading', async () => {
     const codexHistory = history('codex', 'queued', 'pending');
@@ -420,5 +421,65 @@ describe('P26 selected Session transport lifetime (synthetic HTTP, no provider)'
     await active.recoverRun('live');
     expect(requests).toHaveLength(8);
     expect(active.getSnapshot().runViews.live?.status).toBe('canceled');
+  });
+  it('flags a failed History refresh after the run until a newer History arrives', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    loadHistory.mockRejectedValueOnce(new Error('offline'));
+    const active = select('active');
+    const running = active.streamRun('run');
+    const body = open(0);
+    await flush();
+    body.send(event('run', 1, 'run.succeeded'));
+    body.close();
+    await running;
+    expect(log).toHaveBeenCalledWith(
+      'Chat history refresh after the run failed',
+      expect.any(Error),
+    );
+    expect(active.getSnapshot().historyStale).toBe(true);
+    // The finished output stays on screen; only the notice is added.
+    expect(active.getSnapshot().runViews.run?.status).toBe('completed');
+    expect(loadWorkspace).toHaveBeenCalledTimes(1);
+    active.restoreHistory(history('active', 'run', 'completed'));
+    expect(active.getSnapshot().historyStale).toBeUndefined();
+  });
+  it('refresh keeps the notice while History still fails and clears it once loaded', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    loadHistory
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockRejectedValueOnce(new Error('still offline'));
+    const active = select('active');
+    const running = active.streamRun('run');
+    const body = open(0);
+    await flush();
+    body.send(event('run', 1, 'run.failed'));
+    body.close();
+    await running;
+    await active.refreshHistory();
+    expect(log).toHaveBeenLastCalledWith(
+      'Chat history refresh failed',
+      expect.any(Error),
+    );
+    expect(active.getSnapshot().historyStale).toBe(true);
+    await active.refreshHistory();
+    expect(loadHistory).toHaveBeenLastCalledWith('active');
+    expect(active.getSnapshot().historyStale).toBeUndefined();
+  });
+  it('does not flag another conversation when the old refresh fails late', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const late = deferred<void>();
+    loadHistory.mockImplementationOnce(() => late.promise);
+    const active = select('active');
+    const running = active.streamRun('run');
+    const body = open(0);
+    await flush();
+    body.send(event('run', 1, 'run.succeeded'));
+    body.close();
+    await flush();
+    active.deactivate();
+    late.reject(new Error('offline'));
+    await running;
+    expect(active.getSnapshot().historyStale).toBeUndefined();
+    expect(loadWorkspace).not.toHaveBeenCalled();
   });
 });

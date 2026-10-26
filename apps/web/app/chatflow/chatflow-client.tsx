@@ -607,8 +607,10 @@ export function ChatFlowClient({
   }, [workbenchEnabled, artifactRevision, workbench.reload, workbench.scope]);
 
   const {
+    historyStale,
     loadRunTrace,
     recoverRun,
+    refreshHistory,
     resetRunState,
     runTraces,
     runViews,
@@ -2232,6 +2234,8 @@ export function ChatFlowClient({
                       onRecoverRun={recoverRun}
                       onScrollToBottom={scrollToTranscriptBottom}
                       recoverableRunView={recoverableRunView}
+                      historyStale={historyStale}
+                      onRefreshHistory={refreshHistory}
                       runTraces={runTraces}
                       runViews={runViews}
                       tenantHeaders={tenantHeaders}

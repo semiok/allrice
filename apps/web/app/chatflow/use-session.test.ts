@@ -233,7 +233,7 @@ describe('P26 History selection async control flow (synthetic fetch, explicit ho
           { status: 403 },
         ),
       );
-      await expect(load).rejects.toThrow('Access removed');
+      await expect(load).rejects.toThrow('没有权限');
       expect(render().history).toBeNull();
       state.setActiveId('A');
       state.setActiveId('B');

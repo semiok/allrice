@@ -74,6 +74,9 @@ interface ChatTranscriptProps {
   onAssistantChanged?: () => void;
   messages: Message[];
   recoverableRunView?: RunView;
+  /** The refresh after a Run failed; offer to load the conversation again. */
+  historyStale?: boolean;
+  onRefreshHistory?: () => void | Promise<void>;
   runTraces: Record<string, RunTrace>;
   runViews: Record<string, RunView>;
   tenantHeaders: Record<string, string>;
@@ -104,6 +107,8 @@ export const ChatTranscript = memo(function ChatTranscript({
   onAssistantChanged,
   messages,
   recoverableRunView,
+  historyStale = false,
+  onRefreshHistory,
   runTraces,
   runViews,
   tenantHeaders,
@@ -602,14 +607,22 @@ export const ChatTranscript = memo(function ChatTranscript({
               );
             })}
 
-          {recoverableRunView ? (
+          {recoverableRunView || (historyStale && onRefreshHistory) ? (
             <div className={styles.connectionRetry} role="status">
-              <span>实时连接暂时中断</span>
+              <span>
+                {recoverableRunView
+                  ? '实时连接暂时中断'
+                  : '对话内容可能不是最新的'}
+              </span>
               <button
-                onClick={() => void onRecoverRun(recoverableRunView.runId)}
+                onClick={() =>
+                  void (recoverableRunView
+                    ? onRecoverRun(recoverableRunView.runId)
+                    : onRefreshHistory?.())
+                }
                 type="button"
               >
-                重试
+                {recoverableRunView ? '重试' : '刷新'}
               </button>
             </div>
           ) : null}
