@@ -94,7 +94,7 @@ export function createMemoryGate(input: {
   let loggedKey = 'all';
   let loggedAt = -Infinity;
   let changes = 0;
-  let restrictedSince: number | null = null;
+  let restriction: { since: number; reason: string | null } | null = null;
   let unreadableLoggedAt = -Infinity;
 
   function observe(admission: MemoryAdmission) {
@@ -112,10 +112,16 @@ export function createMemoryGate(input: {
     if (key !== state.key) {
       state = { key, since: at };
       changes += 1;
-      if (key !== 'all') restrictedSince ??= at;
+      if (key !== 'all')
+        restriction = {
+          since: restriction?.since ?? at,
+          reason: admission.reason,
+        };
     }
     if (at - loggedAt < gateLogMs) return;
-    if (key === loggedKey && key === 'all') return;
+    // Quiet only if nothing happened since the last line; a pause that came
+    // and went inside the minute still gets reported.
+    if (key === loggedKey && key === 'all' && changes === 0) return;
     const details = {
       claim: admission.claim,
       reason: admission.reason,
@@ -130,9 +136,10 @@ export function createMemoryGate(input: {
     if (admission.claim === 'all') {
       log('[MET-219] memory gate resumed claims', {
         ...details,
-        restrictedMs: state.since - (restrictedSince ?? state.since),
+        restrictedBy: restriction?.reason ?? null,
+        restrictedMs: state.since - (restriction?.since ?? state.since),
       });
-      restrictedSince = null;
+      restriction = null;
     } else {
       const [started, ongoing] = gateMessages[admission.claim];
       log(

@@ -21,9 +21,9 @@ const GiB = 1024 ** 3;
 const defaults = memoryGateSettings({});
 /** M1 Dev, 16 GiB, 10-26: libuv said 80 MB free while the kernel reported
  * normal pressure, 59% free in `memory_pressure`, and these jetsam pages:
- * free, speculative, pageable file-backed, purgeable, page size. */
-const m1 = '1\n3664\n1463\n185712\n1821\n16384\n';
-const m1AvailableBytes = (3664 + 1463 + 185712 + 1821) * 16384;
+ * free, pageable file-backed, purgeable, page size. */
+const m1 = '1\n3664\n185712\n1821\n16384\n';
+const m1AvailableBytes = (3664 + 185712 + 1821) * 16384;
 
 function probe(overrides: Partial<HostMemoryProbe>): HostMemoryProbe {
   return {
@@ -50,14 +50,19 @@ describe('host memory (MET-219)', () => {
     });
     expect(
       readHostMemorySync(
-        probe({ memorystatusSync: () => '4 100 0 2000 0 16384' }),
+        probe({ memorystatusSync: () => '4 100 2000 0 16384' }),
       ),
     ).toEqual({
       source: 'memorystatus',
       pressure: 'critical',
       availableBytes: 2100 * 16384,
     });
-    expect(parseMemorystatus('2 1 1 1 1 4096').pressure).toBe('warn');
+    expect(parseMemorystatus('2 1 1 1 4096').pressure).toBe('warn');
+    // Speculative pages are already inside the file-backed count: adding them
+    // again would have read 352 MiB here and let claims through.
+    const tight = parseMemorystatus('1 2048 12288 0 16384');
+    expect(tight.availableBytes).toBe(224 * MiB);
+    expect(memoryAdmission(tight, defaults).claim).toBe('none');
   });
 
   it('keeps libuv semantics on Linux and falls back to them when sysctl fails', async () => {
@@ -73,12 +78,12 @@ describe('host memory (MET-219)', () => {
     });
     for (const output of [
       '',
-      '1 1 1 1 1',
-      '3 1 1 1 1 16384',
-      '1 1 1 1 1 16384 9',
-      '1 -1 1 1 1 16384',
-      '1 1.5 1 1 1 16384',
-      '1 x 1 1 1 16384',
+      '1 1 1 1',
+      '3 1 1 1 16384',
+      '1 1 1 1 16384 9',
+      '1 -1 1 1 16384',
+      '1 1.5 1 1 16384',
+      '1 x 1 1 16384',
     ])
       expect(() => parseMemorystatus(output)).toThrow(
         'MEMORYSTATUS_UNREADABLE',
@@ -296,12 +301,34 @@ describe('claim admission by memory pressure (MET-219)', () => {
         claim: 'all',
         stateMs: 54_000,
         changes: 3,
+        restrictedBy: 'pressure_critical',
         restrictedMs: 66_000,
       }),
     );
-    for (clock = 122_000; clock < 300_000; clock += 2_000)
+    // A pause that starts and ends inside the minute after that line.
+    for (const [at, pressure] of [
+      [130_000, 'critical'],
+      [160_000, 'normal'],
+    ] as const) {
+      clock = at;
+      current = memory({ pressure });
       await gate.admission();
+    }
     expect(log).toHaveBeenCalledTimes(3);
+    clock = 180_000;
+    await gate.admission();
+    expect(log).toHaveBeenLastCalledWith(
+      '[MET-219] memory gate resumed claims',
+      expect.objectContaining({
+        changes: 2,
+        restrictedBy: 'pressure_critical',
+        restrictedMs: 30_000,
+        stateMs: 20_000,
+      }),
+    );
+    for (clock = 182_000; clock < 300_000; clock += 2_000)
+      await gate.admission();
+    expect(log).toHaveBeenCalledTimes(4);
     current = memory({ pressure: 'warn' });
     await gate.admission();
     expect(log).toHaveBeenLastCalledWith(

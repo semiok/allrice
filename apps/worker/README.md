@@ -50,7 +50,7 @@ harness over the same execution boundary.
 
 The claim gate (MET-219) checks memory before each claim. On macOS it reads,
 without privilege, the kernel pressure level and the pages jetsam counts as
-available (free, speculative, file-backed and purgeable), at most every two
+available (free, pageable file-backed and purgeable), at most every two
 seconds; elsewhere it reads libuv's `availableMemory()` (MemAvailable or the
 cgroup headroom) every time. Claims pause below
 `ALLRICE_WORKER_MIN_AVAILABLE_MEMORY_MB` or at

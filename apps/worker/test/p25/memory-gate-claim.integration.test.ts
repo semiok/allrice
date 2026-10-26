@@ -33,7 +33,7 @@ import {
 
 const MiB = 1024 ** 2;
 /** M1 Dev 10-26: normal pressure, about 2.9 GiB reclaimable. */
-const normalM1 = '1\n3664\n1463\n185712\n1821\n16384\n';
+const normalM1 = '1\n3664\n185712\n1821\n16384\n';
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -112,26 +112,29 @@ suite(
       };
       expect(await store.commitMutation(writer, write)).toBe('committed');
     }
+    const databaseNow = async () =>
+      (
+        await f.db<{ now: Date }[]>`select clock_timestamp() as now`
+      )[0]!.now.getTime();
     /** "提醒我…": the once task via the product API, then the native timer's
      * delivery receipt (a component-boundary value, as in the database once
      * suite), then the real dispatch that queues the reminder's Run. */
     async function dueReminder(sessionId: string, prompt: string) {
+      // The product requires > 5 s after the database clock, so count from
+      // that clock rather than this process's.
       const task = await createOnceTask(f.context, sessionId, {
         clientRequestId: randomUUID(),
         name: '回电提醒',
         prompt,
-        // The product requires > 5 s after the database clock; leave room
-        // for the setup statements on a slow CI runner.
-        runAt: new Date(Date.now() + 8_000).toISOString(),
+        runAt: new Date((await databaseNow()) + 7_000).toISOString(),
         timezone: 'Asia/Shanghai',
       });
       const [row] = await f.db<
         { snapshot: { control: NativeOnceControl } }[]
       >`select snapshot from allrice_native_once_controls where automation_id=${task.id}`;
       const c = row!.snapshot.control;
-      await new Promise((resolve) =>
-        setTimeout(resolve, Math.max(0, Date.parse(c.at) - Date.now() + 20)),
-      );
+      const dueInMs = Date.parse(c.at) - (await databaseNow()) + 20;
+      await new Promise((resolve) => setTimeout(resolve, Math.max(0, dueInMs)));
       await mutate({ kind: 'session_initializing', controlId: c.controlId });
       await mutate({ kind: 'session_ready', controlId: c.controlId });
       const delivery = {
@@ -196,7 +199,7 @@ suite(
       return [sent.run.job.id, reminder].sort();
     }
     /** The macOS sysctl answer injected (pressure level, then free,
-     * speculative, file-backed, purgeable pages and the page size); libuv's
+     * file-backed, purgeable pages and the page size); libuv's
      * free pages stay at 120 MB throughout. */
     function gate(memorystatus: string) {
       const probe: HostMemoryProbe = {
@@ -255,7 +258,7 @@ suite(
 
     it('keeps both queued under critical pressure and claims them once it passes', async () => {
       const ids = await queuedChatAndReminder();
-      const paused = await workerTick(gate('4 900 100 2000 0 16384'));
+      const paused = await workerTick(gate('4 3664 185712 1821 16384'));
       expect(paused.started).toEqual([]);
       expect(await jobRows(ids)).toEqual(
         ids.map((id) => ({ id, status: 'queued', worker_id: null })),
@@ -281,7 +284,7 @@ suite(
         type: experienceConsolidationJobType,
         input: { occurrenceId: randomUUID() },
       })}, priority=-100 where id=${background}`;
-      const warned = await workerTick(gate('2 3664 1463 185712 1821 16384'));
+      const warned = await workerTick(gate('2 3664 185712 1821 16384'));
       expect(warned.started).toEqual(foreground);
       expect(await jobRows(foreground)).toEqual(
         foreground.map((id) => ({

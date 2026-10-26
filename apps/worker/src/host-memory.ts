@@ -10,9 +10,10 @@ import { promisify } from 'node:util';
  * reclaimable, which held due reminders back for up to 52 s. There we read,
  * with one unprivileged sysctl, the kernel pressure level (1 normal, 2 warn,
  * 4 critical; the signal behind DISPATCH_SOURCE_TYPE_MEMORYPRESSURE) and the
- * pages jetsam counts as available: free, speculative, pageable file-backed
- * and purgeable. That is the closest match to Linux MemAvailable; the
- * `memory_pressure` free percentage would also count app memory as free.
+ * pages jetsam counts as available: free, pageable file-backed (which
+ * already includes speculative read-ahead) and purgeable. That is the closest
+ * match to Linux MemAvailable; the `memory_pressure` free percentage would
+ * also count app memory as free.
  * Elsewhere libuv already reports MemAvailable or the cgroup headroom, which
  * stays the figure we use. */
 export type MemoryPressure = 'normal' | 'warn' | 'critical';
@@ -36,7 +37,6 @@ const sysctlArgs = [
   '-n',
   'kern.memorystatus_vm_pressure_level',
   'vm.page_free_count',
-  'vm.page_speculative_count',
   'vm.page_pageable_external_count',
   'vm.page_purgeable_count',
   'hw.pagesize',
@@ -77,8 +77,7 @@ export function parseMemorystatus(output: string): HostMemory {
     !numbers.every((n) => Number.isSafeInteger(n) && n >= 0)
   )
     throw Error(`MEMORYSTATUS_UNREADABLE: ${JSON.stringify(output)}`);
-  const [free, speculative, fileBacked, purgeable, pageSize] = numbers as [
-    number,
+  const [free, fileBacked, purgeable, pageSize] = numbers as [
     number,
     number,
     number,
@@ -86,7 +85,7 @@ export function parseMemorystatus(output: string): HostMemory {
   ];
   return {
     source: 'memorystatus',
-    availableBytes: (free + speculative + fileBacked + purgeable) * pageSize,
+    availableBytes: (free + fileBacked + purgeable) * pageSize,
     pressure,
   };
 }

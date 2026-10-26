@@ -18,8 +18,8 @@ vi.mock('node:child_process', () => {
 
 const MiB = 1024 ** 2;
 const darwin = { ...systemMemoryProbe, platform: 'darwin' as const };
-const normal = '1\n3664\n1463\n185712\n1821\n16384\n';
-const normalBytes = (3664 + 1463 + 185712 + 1821) * 16384;
+const normal = '1\n3664\n185712\n1821\n16384\n';
+const normalBytes = (3664 + 185712 + 1821) * 16384;
 
 beforeEach(() => {
   child.async.mockReset();
@@ -43,7 +43,6 @@ describe('system memory adapter and failure recovery (MET-219)', () => {
       '-n',
       'kern.memorystatus_vm_pressure_level',
       'vm.page_free_count',
-      'vm.page_speculative_count',
       'vm.page_pageable_external_count',
       'vm.page_purgeable_count',
       'hw.pagesize',
@@ -100,8 +99,8 @@ describe('system memory adapter and failure recovery (MET-219)', () => {
   );
 
   it('treats truncated sysctl output as unreadable rather than an admission signal', async () => {
-    child.async.mockResolvedValue({ stdout: '1\n3664\n1463\n', stderr: '' });
-    child.sync.mockReturnValue('1\n3664\n1463\n');
+    child.async.mockResolvedValue({ stdout: '1\n3664\n185712\n', stderr: '' });
+    child.sync.mockReturnValue('1\n3664\n185712\n');
     const expected = {
       source: 'available_memory',
       pressure: null,
