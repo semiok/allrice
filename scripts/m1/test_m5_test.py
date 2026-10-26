@@ -316,6 +316,11 @@ class M5Test(unittest.TestCase):
         self.assertEqual(p.returncode, 5, p.stdout + p.stderr)
         self.assertIn('could not fetch', p.stderr)
         self.assertFalse(os.path.exists(out))
+        write(out, 'an old report\n')  # the same on M1
+        write(os.path.join(self.m1, '.local/bin/codex'), '#!/bin/sh\ncat >/dev/null\n', 0o755)
+        p = self.run_m5('codex', '--on', 'm1', '--no-build', '-o', out, '--', 'x')
+        self.assertEqual(p.returncode, 5, p.stdout + p.stderr)
+        self.assertFalse(os.path.exists(out))
 
     def test_dropped_connection_reruns_on_m1(self):
         write(os.path.join(self.m5, 'drop'), '')

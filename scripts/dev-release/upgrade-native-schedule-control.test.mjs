@@ -56,7 +56,14 @@ const run = (args, override = {}) =>
   spawnSync(process.execPath, [operator, ...args], {
     encoding: 'utf8',
     timeout: 10_000,
-    env: { PATH: process.env.PATH, DATABASE_URL: url, ...override },
+    // The operator finds its state under homedir(), as these tests do: same HOME on both
+    // sides, also when it is not the account's home (m5-test gives tests one of their own).
+    env: {
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      DATABASE_URL: url,
+      ...override,
+    },
   });
 afterEach(() => {
   for (const path of paths.splice(0))
