@@ -18,16 +18,20 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { NATIVE_JOURNAL_CONTRACT } from '../../../../packages/contracts/src/native-journal-contract.ts';
 import {
   nativeOnceDigest,
+  nativeOnceWriterRemaining,
   prepareNativeOnceMutation,
   type NativeOnceOccurrence,
   type NativeOnceSnapshot,
+  type NativeOnceWriterRow,
 } from '../../../../packages/database/src/native-schedule-once-state.ts';
 import {
   NativeRecurringRevisionSchema,
   prepareNativeRecurringMutation,
   type NativeRecurringOccurrence,
+  type NativeRecurringRevision,
   type NativeRecurringSnapshot,
 } from '../../../../packages/database/src/native-schedule-recurring-state.ts';
+import { runtimePolicyDigest } from '../../../../packages/database/src/runtime-policy.ts';
 import { applyNativeOnceWorkspaceWrite } from '../../../../packages/database/src/native-schedule-workspace-state.ts';
 import { measureDshNativeArtifact } from '../../src/harness/dsh-native-artifact.js';
 import {
@@ -130,9 +134,20 @@ function memoryStore(
   const occurrences: (NativeOnceOccurrence | NativeRecurringOccurrence)[] = [];
   const rejections: unknown[] = [];
   const released: number[] = [];
-  let epoch = 0;
+  // The partition's writer row, kept apart from what callers present: an
+  // acquire replaces it, a renew extends it, a release closes it.
+  const TTL = 60_000;
+  let row: NativeOnceWriterRow = {
+    partitionId,
+    ownerId: null,
+    epoch: 0,
+    tokenDigest: null,
+    expiresAtMs: null,
+    closed: true,
+    reference,
+  };
   const live = (writer: NativeScheduleWriter) =>
-    writer.epoch === epoch && !released.includes(epoch);
+    nativeOnceWriterRemaining(row, writer, Date.now()) > 0;
   const controls = () =>
     [...snapshots.values()].map(({ control }) => structuredClone(control));
   const readiness = {
@@ -150,23 +165,32 @@ function memoryStore(
     );
   const store: NativeScheduleOnceStore = {
     async acquireWriter() {
-      epoch++;
+      const writer = {
+        partitionId,
+        ownerId: 'journal-corpus-replay',
+        epoch: row.epoch + 1,
+        token: randomUUID(),
+      };
+      row = {
+        partitionId,
+        ownerId: writer.ownerId,
+        epoch: writer.epoch,
+        tokenDigest: nativeOnceDigest(writer.token),
+        expiresAtMs: Date.now() + TTL,
+        closed: false,
+        reference,
+      };
       return {
-        writer: {
-          partitionId,
-          ownerId: 'journal-corpus-replay',
-          epoch,
-          token: `lease-${epoch}`,
-        },
-        remainingMs: 60_000,
+        writer,
+        remainingMs: TTL,
         reference,
         controls: controls() as never,
       };
     },
     async renewWriter(writer) {
-      return live(writer)
-        ? { writer: { ...writer }, remainingMs: 60_000 }
-        : null;
+      if (!live(writer)) return null;
+      row.expiresAtMs = Date.now() + TTL;
+      return { writer: { ...writer }, remainingMs: TTL };
     },
     async assertWriter(writer) {
       return live(writer);
@@ -192,15 +216,7 @@ function memoryStore(
       try {
         const input = {
           readiness,
-          writerRow: {
-            partitionId: writer.partitionId,
-            ownerId: writer.ownerId,
-            epoch: writer.epoch,
-            tokenDigest: nativeOnceDigest(writer.token),
-            expiresAtMs: Date.now() + 60_000,
-            closed: false,
-            reference,
-          },
+          writerRow: structuredClone(row),
           writer,
           dbNowMs: Date.now(),
           write: write as never,
@@ -247,6 +263,8 @@ function memoryStore(
       return { revision: workspace.revision };
     },
     async releaseClosedWriter(writer) {
+      if (!live(writer)) throw new Error('release by a stale writer');
+      row.closed = true;
       released.push(writer.epoch);
     },
   };
@@ -369,12 +387,34 @@ async function replay(
           fault: undefined,
         });
       },
-      // This build appends to the frozen journals, never rewrites them.
-      async appended(sessionId: string) {
-        const before = frozen.get(sessionId)!;
-        const after = await journal(sessionId);
-        expect(after.startsWith(before)).toBe(true);
-        return after.slice(before.length);
+      /** The schedule reminders this build appended to each control
+       * Session: the user messages DSH splices into its inbox when a task
+       * fires, by message ID (a receipt's messageId) and occurrence. This build
+       * appends to the frozen journals and never rewrites them. */
+      async reminders() {
+        const found: Record<string, { id: string; at: string[] }[]> = {};
+        for (const c of image.controls) {
+          const before = frozen.get(c.controlSessionId)!;
+          const after = await journal(c.controlSessionId);
+          expect(after.startsWith(before)).toBe(true);
+          found[c.controlId] = after
+            .slice(before.length)
+            .split('\n')
+            .filter(Boolean)
+            .map((line) => JSON.parse(line))
+            .filter((event) => event.type === 'agent/inbox/spliced')
+            .flatMap((event) => event.data.inserted ?? [])
+            .filter((message) => message.source?.kind === 'schedule')
+            .map((message) => ({
+              id: message.id,
+              at: [
+                ...JSON.stringify(message.content).matchAll(
+                  /occurrence_at\\?"?:\s*\\?"?([0-9T:.-]+Z)/g,
+                ),
+              ].map((match) => match[1]!),
+            }));
+        }
+        return found;
       },
       async close() {
         try {
@@ -419,17 +459,33 @@ async function tickUntil(
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
 }
-/** A later process reads back what this build appended and changes nothing. */
+/** A later process reads back what this build appended and changes
+ * nothing: no write, no reminder. */
 async function reopen(run: Run) {
   const writes = run.memory.writes.length;
+  const reminders = await run.reminders();
   const controller = run.open();
   let ticks = 0;
   await tickUntil(controller, run.memory, () => ++ticks > 5);
   await run.stop(controller);
   expect(run.memory.writes).toHaveLength(writes);
   expect(run.memory.released).toEqual([1, 2]);
-  for (const c of run.image.controls) await run.appended(c.controlSessionId);
+  expect(await run.reminders()).toEqual(reminders);
 }
+/** Exactly one reminder per receipt, in the Session of its control. */
+const remindedOnly = (
+  run: Run,
+  receipts: Record<string, { messageId: string; scheduledAt: string }>,
+) =>
+  Object.fromEntries(
+    run.image.controls.map((c) => {
+      const receipt = receipts[c.controlId];
+      return [
+        c.controlId,
+        receipt ? [{ id: receipt.messageId, at: [receipt.scheduledAt] }] : [],
+      ];
+    }),
+  );
 const kinds = (run: Run) =>
   run.memory.writes.map(({ mutation }) => [
     mutation.kind,
@@ -472,6 +528,31 @@ function recurringControls(image: ControlStoreImage) {
   };
   expect(controls).toHaveLength(2);
   return { task, every: only('every'), daily: only('daily') };
+}
+/** `reservation()` of native-schedule-recurring-product.ts, as
+ * changeRecurringTask signs a new revision: the automation's scope and
+ * dispatch plus the revision. */
+function reservation(
+  c: NativeScheduleRecurringControl,
+  revision: Omit<NativeRecurringRevision, 'reservationDigest'>,
+) {
+  const { dispatch } = c as unknown as {
+    dispatch: {
+      employeeAssignmentId: string;
+      employeeInstanceId: string;
+      businessSessionId: string;
+    };
+  };
+  return runtimePolicyDigest({
+    organizationId: c.organizationId,
+    workspaceId: c.workspaceId,
+    ownerId: c.ownerId,
+    automationId: c.automationId,
+    assignmentId: dispatch.employeeAssignmentId,
+    instanceId: dispatch.employeeInstanceId,
+    sessionId: dispatch.businessSessionId,
+    ...revision,
+  });
 }
 /** The one delivery a release starting at `at` owes: the latest missed
  * occurrence on the rule's grid (Asia/Shanghai has no DST), then the next. */
@@ -526,6 +607,7 @@ function expectDelivery(
       },
     },
   ]);
+  return receipt;
 }
 
 // One frozen control corpus per readable journal contract version (MET-221),
@@ -624,7 +706,9 @@ describe('DSH schedule control corpus', () => {
               task: task(c),
             });
           expect(run.memory.released).toEqual([1]);
-          expect(await run.appended(due.controlSessionId)).not.toBe('');
+          expect(await run.reminders()).toEqual(
+            remindedOnly(run, { [due.controlId]: put!.task.lastDelivery! }),
+          );
 
           await reopen(run);
           expect(await run.history()).toBe(3);
@@ -663,6 +747,8 @@ describe('DSH schedule control corpus', () => {
             },
             task: null,
           });
+
+          expect(await run.reminders()).toEqual(remindedOnly(run, {}));
 
           // Restarting after its time delivers nothing.
           run.restartAt(Date.parse(due.at) + 90_000);
@@ -706,11 +792,27 @@ describe('DSH schedule control corpus', () => {
             );
             await run.stop(first);
             expect(run.memory.puts()).toHaveLength(owed.length);
-            expectDelivery(run, every, task(every), at, MINUTE);
-            if (owed.includes(daily))
-              expectDelivery(run, daily, task(daily), at, DAY);
-            for (const c of owed)
-              expect(await run.appended(c.controlSessionId)).not.toBe('');
+            const receipts = {
+              [every.controlId]: expectDelivery(
+                run,
+                every,
+                task(every),
+                at,
+                MINUTE,
+              ),
+              ...(owed.includes(daily)
+                ? {
+                    [daily.controlId]: expectDelivery(
+                      run,
+                      daily,
+                      task(daily),
+                      at,
+                      DAY,
+                    ),
+                  }
+                : {}),
+            };
+            expect(await run.reminders()).toEqual(remindedOnly(run, receipts));
 
             await reopen(run);
             expect(await run.history()).toBe(2);
@@ -727,6 +829,22 @@ describe('DSH schedule control corpus', () => {
         const run = await replay(corpus, 'recurring', (image) => {
           const { task, every } = recurringControls(image);
           const versions = image.revisions![every.automationId]!;
+          const { reservationDigest, ...first } =
+            NativeRecurringRevisionSchema.parse(versions[0]);
+          // The product's reservation digest, checked on the frozen row.
+          expect(reservation(every, first)).toBe(reservationDigest);
+          const next = {
+            ...first,
+            revision: 2,
+            rule,
+            acceptedAt: new Date(
+              Date.parse(task(every).record.scheduledAt) - 40_000,
+            ).toISOString(),
+          };
+          versions.push({
+            ...next,
+            reservationDigest: reservation(every, next),
+          });
           every.revision = 2;
           every.rule = rule;
           every.command = {
@@ -734,14 +852,6 @@ describe('DSH schedule control corpus', () => {
             kind: 'update',
             status: 'pending',
           };
-          versions.push({
-            ...(versions[0] as object),
-            revision: 2,
-            rule,
-            acceptedAt: new Date(
-              Date.parse(task(every).record.scheduledAt) - 40_000,
-            ).toISOString(),
-          });
         });
         try {
           const { task, every, daily } = recurringControls(run.frozenImage);
@@ -781,6 +891,7 @@ describe('DSH schedule control corpus', () => {
             control: daily,
             task: task(daily),
           });
+          expect(await run.reminders()).toEqual(remindedOnly(run, {}));
 
           await reopen(run);
         } finally {
@@ -818,6 +929,8 @@ describe('DSH schedule control corpus', () => {
             },
             task: null,
           });
+
+          expect(await run.reminders()).toEqual(remindedOnly(run, {}));
 
           // Restarting after its next target delivers nothing.
           run.restartAt(target + 90_000);
