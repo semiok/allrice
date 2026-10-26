@@ -43,6 +43,8 @@ function fixture(options: {
   admissionMethod?: string;
   authorityFailure?: Error;
   rootTimeout?: boolean;
+  cancelHang?: boolean;
+  closeFailure?: boolean;
   streamDiagnostic?: unknown;
   modelTimings?: Record<string, unknown>[];
   joinTimings?: Record<string, unknown>[];
@@ -56,6 +58,7 @@ function fixture(options: {
     for (const listener of [...notificationListeners]) listener(value);
   };
   let cleared = false;
+  const abort = new AbortController();
   let rejectPrompt: ((error: Error) => void) | undefined;
   let rejectRecover: ((error: Error) => void) | undefined;
   let handler:
@@ -84,6 +87,7 @@ function fixture(options: {
       order.push('drop');
       rejectRecover?.(Error('owned recovery host closed'));
       rejectPrompt?.(new Error('native runtime closed'));
+      if (options.closeFailure) throw Error('native shutdown unconfirmed');
     }),
     interrupt: vi.fn(async () => ({})),
     recover: vi.fn(async () => {
@@ -116,7 +120,7 @@ function fixture(options: {
             diagnostic: options.streamDiagnostic,
           },
         });
-      if (options.authorityFailure || options.rootTimeout)
+      if (options.authorityFailure || options.rootTimeout || options.cancelHang)
         return new Promise((_, reject) => {
           rejectPrompt = reject;
         });
@@ -246,7 +250,7 @@ function fixture(options: {
     storageObjects: [],
     workDirectory: '/synthetic',
     executionEnvironment: {},
-    signal: new AbortController().signal,
+    signal: abort.signal,
     attempt: 1,
     generation: 1,
     threadId,
@@ -284,6 +288,7 @@ function fixture(options: {
             },
             cancel: async () => {
               order.push('cancel');
+              if (options.cancelHang) await new Promise(() => {});
             },
             failureUsage:
               options.failureUsage || options.failureUsageError
@@ -364,6 +369,7 @@ function fixture(options: {
     notify,
     order,
     diagnostics,
+    abort: () => abort.abort(),
     adapter: new DshHarnessAdapter(),
   };
 }
@@ -644,6 +650,58 @@ describe('bounded assistant diagnostic consumption', () => {
       message: expect.stringContaining('执行时限'),
     });
     expect(f.order).toContain('drop');
+  });
+  it('a stop that outlives its drain window fails the Run, never the Worker process', async () => {
+    // Node's EventTarget rethrows a rejected listener result as an uncaught
+    // exception; on Dev this ended the Worker and orphaned the schedule
+    // partitions (MET-210, 10-26 18:19).
+    vi.useFakeTimers();
+    const uncaught = vi.fn();
+    process.prependListener('uncaughtException', uncaught);
+    try {
+      const f = fixture({ cancelHang: true });
+      const outcome = f.adapter
+        .execute(f.input)
+        .catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(300);
+      f.abort();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(f.order).toContain('cancel');
+      expect(await outcome).toMatchObject({ code: 'EXECUTION_ABORTED' });
+      // The drain window's cutoff closed the owned Host: no orphaned child.
+      expect(f.order).toContain('drop');
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(uncaught).not.toHaveBeenCalled();
+    } finally {
+      process.removeListener('uncaughtException', uncaught);
+    }
+  });
+  it('a failed Host close after a failed authority poll stays inside the Run', async () => {
+    // The poll's close failure rejects after cancellationTask is cleared; with
+    // no observer Node's default unhandled-rejection mode ends the Worker.
+    vi.useFakeTimers();
+    const unhandled = vi.fn();
+    const uncaught = vi.fn();
+    process.prependListener('unhandledRejection', unhandled);
+    process.prependListener('uncaughtException', uncaught);
+    try {
+      const f = fixture({
+        authorityFailure: Error('lease lost'),
+        closeFailure: true,
+      });
+      const outcome = f.adapter
+        .execute(f.input)
+        .catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(await outcome).toBeInstanceOf(Error);
+      expect(f.order).toContain('drop');
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(unhandled).not.toHaveBeenCalled();
+      expect(uncaught).not.toHaveBeenCalled();
+    } finally {
+      process.removeListener('unhandledRejection', unhandled);
+      process.removeListener('uncaughtException', uncaught);
+    }
   });
   it('authority-first timeout drains and reads genuine usage before closing the owned host', async () => {
     vi.useFakeTimers();

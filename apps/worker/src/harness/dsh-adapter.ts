@@ -683,6 +683,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
         .finally(() => {
           cancellationTask = undefined;
         });
+      // A close failure above rejects after the variable is cleared, when no
+      // later stop may await it; unobserved, Node would end the Worker. The
+      // failure path still records the same close through ownedDrop.
+      void cancellationTask.catch(() => {});
     };
     const cancellationTimer = assistant
       ? setInterval(pollCancellation, 250)
@@ -694,13 +698,19 @@ export class DshHarnessAdapter implements HarnessAdapter {
           .within(() => assistant.cancel())
           .then(() => stopWindow.within(() => assistant.cancellation()))
           .then(drainRequest);
-        // Abort listeners cannot surface an unhandled rejection. The failure
-        // path still observes this same promise before reading durable usage.
+        // The failure path still observes this same promise before reading
+        // durable usage.
         void rootStopTask.catch(() => {});
       }
       return rootStopTask ?? Promise.resolve();
     };
-    input.signal.addEventListener('abort', stopAssistants, { once: true });
+    // The listener must not return the promise: Node's EventTarget rethrows a
+    // rejected listener result as an uncaught exception, so one stop that
+    // outlives its drain window (DSH_DRAIN_TIMEOUT) would end the Worker.
+    const onAbort = () => {
+      void stopAssistants();
+    };
+    input.signal.addEventListener('abort', onAbort, { once: true });
     if (input.signal.aborted) void stopAssistants();
     let order = 0;
     const usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
@@ -1643,7 +1653,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     } finally {
       try {
         if (cancellationTimer) clearInterval(cancellationTimer);
-        input.signal.removeEventListener('abort', stopAssistants);
+        input.signal.removeEventListener('abort', onAbort);
         if (stopWindow.started) {
           await stopWindow
             .within(() => rootStopTask ?? cancellationTask ?? Promise.resolve())
