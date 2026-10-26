@@ -247,6 +247,65 @@ export function createNativeOnceWorkerRuntime(
     faultCount = 0,
     processedCount = 0;
   let lastFault: NativeOnceWorkerRuntimeFault | undefined;
+  // MET-210 #3: a refused takeover leaves the controller cold without an error.
+  // Kept for status() and logged when the reason or holder changes, then hourly
+  // while it lasts; `held` (a live lease) is waiting, the rest needs a person.
+  type Refusal = NonNullable<
+    ReturnType<NonNullable<NativeScheduleOnceStore['takeoverRefusal']>>
+  >;
+  let refusal:
+    | (Refusal & {
+        leaseExpiresAt: string | null;
+        since: string;
+        lastSeenAt: string;
+      })
+    | undefined;
+  let refusalLoggedAt = 0;
+  function observeTakeover(
+    partitionId: string,
+    granted: boolean,
+    next: Refusal | null,
+  ) {
+    if (granted) {
+      if (refusal)
+        console.info('[MET-210] native schedule takeover accepted', {
+          partitionId,
+          refusedSince: refusal.since,
+        });
+      refusal = undefined;
+      return;
+    }
+    const seen = next ?? {
+      code: 'unknown',
+      ownerId: null,
+      epoch: 0,
+      expiresAtMs: null,
+    };
+    const at = new Date().toISOString();
+    const changed =
+      !refusal ||
+      seen.code !== refusal.code ||
+      seen.ownerId !== refusal.ownerId ||
+      seen.epoch !== refusal.epoch;
+    refusal = {
+      ...seen,
+      // Formatting must not turn a refusal into a fault (an out-of-range time).
+      leaseExpiresAt: Number.isFinite(
+        new Date(seen.expiresAtMs ?? NaN).getTime(),
+      )
+        ? new Date(seen.expiresAtMs!).toISOString()
+        : null,
+      since: refusal?.since ?? at,
+      lastSeenAt: at,
+    };
+    if (changed || now() - refusalLoggedAt >= 3_600_000) {
+      refusalLoggedAt = now();
+      (seen.code === 'held' ? console.info : console.warn)(
+        '[MET-210] native schedule takeover refused',
+        { partitionId, ...refusal },
+      );
+    }
+  }
   type TickResult = { processed: number; limitReached: boolean };
   let inFlight: Promise<TickResult> | undefined;
   let stopping: Promise<void> | undefined;
@@ -389,6 +448,12 @@ export function createNativeOnceWorkerRuntime(
         async acquireWriter() {
           const grant = await sqlStore.acquireWriter();
           if (grant) generation = { key: writerKey(grant.writer) };
+          if (grant || sqlStore.takeoverRefusal)
+            observeTakeover(
+              partitionId,
+              !!grant,
+              grant ? null : (sqlStore.takeoverRefusal?.() ?? null),
+            );
           return grant;
         },
         async releaseClosedWriter(writer) {
@@ -535,6 +600,7 @@ export function createNativeOnceWorkerRuntime(
         processedCount,
         faultCount,
         lastFault: lastFault ? { ...lastFault } : undefined,
+        ...(refusal ? { takeoverRefused: { ...refusal } } : {}),
         controller: host,
       };
     },

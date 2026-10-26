@@ -40,7 +40,7 @@ import {
   bridgeComposerStatus,
   type BridgeConnectionState,
 } from './bridge-view';
-import type { History, PendingAttachment } from './chatflow-types';
+import type { PendingAttachment } from './chatflow-types';
 import inputUi from './dsh-upstream/InputBar.module.css';
 import styles from './dsh-saas.module.css';
 import composerUi from './chat-composer.module.css';
@@ -81,7 +81,6 @@ interface ChatComposerProps {
   localWorkspaceLabel?: string;
   localWorkspaceOnline: boolean;
   bridgeConnectionState: BridgeConnectionState;
-  nativeContextStatus: History['nativeContextStatus'];
   contextCompacting?: boolean;
   pendingAttachments: PendingAttachment[];
   onAttachmentMenuOpenChange: (open: boolean) => void;
@@ -147,7 +146,6 @@ export function ChatComposer({
   localWorkspaceLabel,
   localWorkspaceOnline,
   bridgeConnectionState,
-  nativeContextStatus,
   contextCompacting = false,
   pendingAttachments,
   onAttachmentMenuOpenChange,
@@ -435,7 +433,6 @@ export function ChatComposer({
         <div className={styles.composerStatusLeft}>
           <button
             aria-label={bridgeStatus.ariaLabel}
-            data-online={bridgeStatus.online || undefined}
             className={`${styles.localWorkspaceStatus} ${
               bridgeStatus.online
                 ? styles.localWorkspaceOnline
@@ -448,29 +445,16 @@ export function ChatComposer({
             <span aria-hidden="true" />
             {bridgeStatus.label}
           </button>
-          {nativeContextStatus || contextCompacting ? (
-            <span
-              role="status"
-              title={
-                nativeContextStatus
-                  ? `${contextCompacting ? '正在整理上下文，完成后继续工作。' : ''}DSH 最近估算：约 ${nativeContextStatus.usedTokens.toLocaleString()} / ${nativeContextStatus.contextWindowTokens.toLocaleString()} tokens。自动整理会在窗口用满前触发；此百分比是占用量，不是压缩进度。`
-                  : 'DSH 正在整理上下文，完成后继续工作。'
-              }
-            >
-              {nativeContextStatus
-                ? `上下文占用 ${nativeContextStatus.percentage}%`
-                : ''}
-              {contextCompacting ? (
-                <span
-                  role="img"
-                  aria-label="正在整理上下文"
-                  className={styles.contextCompacting}
-                >
-                  <IconRefreshOutlineRegular />
-                </span>
-              ) : null}
-            </span>
-          ) : null}
+          {/* Usage numbers live in 账号与用量; here only say why a reply
+              pauses. The live region stays mounted so the notice is read. */}
+          <span role="status" className={styles.contextCompacting}>
+            {contextCompacting ? (
+              <>
+                <IconRefreshOutlineRegular aria-hidden="true" />
+                正在整理对话，完成后继续
+              </>
+            ) : null}
+          </span>
         </div>
       </div>
     </div>

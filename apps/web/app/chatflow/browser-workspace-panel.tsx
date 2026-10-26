@@ -1,36 +1,77 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  Button,
+  DisclosureRow,
+  fileSizeText,
+  IconChevronRightOutlineRegular,
+  IconInfoOutlineRegular,
+} from '@deepseek-ai/dsh-client-ui-primitives';
 import type { BrowserWorkspaceView } from '@allrice/database';
 import type { BrowserAction } from '@allrice/contracts';
-import styles from './cloud-operation-panel.module.css';
+import styles from './browser-workspace-panel.module.css';
 import {
   browserControlAvailability,
   browserWorkspacePollingRequired,
 } from '../../lib/chatflow/browser-control-state';
-const labels: Record<string, string> = {
-  starting: '正在启动',
-  agent: 'Rice 控制中',
-  takeover_pending: '等待 Rice 实际停止，再交给你',
-  human: '人工独占控制',
-  resume_pending: '等待新观察后交还 Rice',
-  pause_pending: '暂停请求已记录，等待停止确认',
-  paused: '已暂停输入',
-  close_pending: '关闭请求已记录，等待实际关闭',
-  closed: '浏览器已确认关闭',
-  unknown: '停止或效果尚未确认，禁止重放',
-};
+import {
+  approvalErrorMessage,
+  browserActionSummary,
+  browserControlsVisible,
+  browserOperationStatusLabel,
+  browserStateLabel,
+  elementLabel,
+  employeeInText,
+  shortDateTime,
+  siteLabel,
+} from '../../lib/chatflow/browser-workspace-presenter';
+
+type Operation = BrowserWorkspaceView['operations'][number];
+type Decision = 'approved' | 'rejected';
+
+/** An error whose message is written for the employee; anything else is not shown. */
+class PanelError extends Error {}
+const writeUnknown = '操作结果待确认，请刷新状态查看，确认后再操作。';
+
+function Collapsible({
+  icon,
+  title,
+  children,
+}: {
+  icon: ReactNode;
+  title: string;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <DisclosureRow
+      icon={icon}
+      title={title}
+      open={open}
+      expandable
+      expandOnRowClick
+      onToggle={() => setOpen((value) => !value)}
+      className={styles.disclosure}
+      titleClassName={styles.disclosureTitle}
+    >
+      {open && <div className={styles.disclosureBody}>{children}</div>}
+    </DisclosureRow>
+  );
+}
 export function BrowserWorkspacePanel({
   runId,
   workspaceId,
   tenantHeaders,
   runActive,
   refreshKey = 0,
+  employeeName = 'AI 员工',
 }: {
   runId: string;
   workspaceId: string;
   tenantHeaders: Record<string, string>;
   runActive: boolean;
   refreshKey?: number;
+  employeeName?: string;
 }) {
   const [workspaces, setWorkspaces] = useState<BrowserWorkspaceView[]>([]),
     [error, setError] = useState(''),
@@ -41,6 +82,8 @@ export function BrowserWorkspacePanel({
   const headersKey = JSON.stringify(tenantHeaders),
     api = `/api/v1/runtime/browser-workspaces?workspaceId=${workspaceId}&runId=${runId}`;
   const submitted = useRef(new Set<string>());
+  // Approval answers whose delivery is unknown; only the same one may be resent.
+  const responses = useRef(new Map<string, { decision: Decision }>());
   useEffect(() => {
     let live = true,
       pending = runActive,
@@ -63,7 +106,7 @@ export function BrowserWorkspacePanel({
           }
           return;
         }
-        if (!response.ok) throw Error('浏览器状态暂不可用');
+        if (!response.ok) throw new PanelError('暂时读不到浏览器状态。');
         const result = await response.json();
         pending = browserWorkspacePollingRequired(runActive, result.workspaces);
         if (live) {
@@ -72,7 +115,11 @@ export function BrowserWorkspacePanel({
         }
       } catch (e) {
         if (live && !abort.signal.aborted)
-          setLoadError(e instanceof Error ? e.message : '读取失败');
+          setLoadError(
+            e instanceof PanelError
+              ? e.message
+              : '暂时读不到浏览器状态，请检查网络后刷新。',
+          );
       } finally {
         if (live && pending) timer = setTimeout(() => void load(), 1000);
       }
@@ -84,27 +131,43 @@ export function BrowserWorkspacePanel({
       clearTimeout(timer);
     };
   }, [api, headersKey, runActive, revision, refreshKey]);
-  async function post(body: unknown, path = api) {
-    const response = await fetch(path, {
-      method: 'POST',
-      headers: {
-        ...tenantHeaders,
-        'x-allrice-workspace-id': workspaceId,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify(body),
+  async function post(
+    body: unknown,
+    path = api,
+    failure: (code: unknown) => string = () => writeUnknown,
+  ) {
+    let response: Response;
+    try {
+      response = await fetch(path, {
+        method: 'POST',
+        headers: {
+          ...tenantHeaders,
+          'x-allrice-workspace-id': workspaceId,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+    } catch {
+      throw new PanelError(failure(null));
+    }
+    if (!response.ok) {
+      const problem = await response.json().catch(() => null);
+      throw new PanelError(failure(problem?.code));
+    }
+    return response.json().catch(() => {
+      throw new PanelError(failure(null));
     });
-    if (!response.ok) throw Error('操作未确认，请刷新核实；不要重复提交。');
-    return response.json();
   }
   async function guarded(action: () => Promise<unknown>) {
-    if (busy) return;
+    if (busy) return false;
     setBusy(true);
     setError('');
     try {
       await action();
+      return true;
     } catch (e) {
-      setError(e instanceof Error ? e.message : '操作未确认');
+      setError(e instanceof PanelError ? e.message : writeUnknown);
+      return false;
     } finally {
       setBusy(false);
       setRevision((v) => v + 1);
@@ -144,12 +207,13 @@ export function BrowserWorkspacePanel({
     const signed = await post(
       { lifetimeSeconds: 60 },
       `/api/v1/files/${objectId}/sign`,
+      () => '文件暂时打不开，请稍后重试。',
     );
     if (
       typeof signed.url !== 'string' ||
       !signed.url.startsWith(`/api/v1/files/${objectId}?`)
     )
-      throw Error('文件链接未确认');
+      throw new PanelError('文件暂时打不开，请稍后重试。');
     if (view) setPreview(signed.url);
     else {
       const a = document.createElement('a');
@@ -159,159 +223,209 @@ export function BrowserWorkspacePanel({
       a.click();
     }
   }
-  async function decide(
-    op: BrowserWorkspaceView['operations'][number],
-    decision: 'approved' | 'rejected',
-  ) {
+  async function decide(op: Operation, decision: Decision) {
     const r = op.approval?.request;
     if (!r || submitted.current.has(r.approvalId)) return;
+    const previous = responses.current.get(r.approvalId);
+    // After an unknown outcome only the identical answer may be resent: the
+    // server acknowledges it at most once, a different one would conflict.
+    if (previous && previous.decision !== decision) return;
     submitted.current.add(r.approvalId);
-    await guarded(() =>
-      post(
-        {
-          contractVersion: 1,
-          direction: 'response',
-          kind: 'action_approval',
-          requestId: r.requestId,
-          version: r.version,
-          requestDigest: r.requestDigest,
-          task: r.task,
-          responseId: crypto.randomUUID(),
-          respondedBy: r.respondentId,
-          respondedAt: new Date().toISOString(),
-          approvalId: r.approvalId,
-          decision,
-        },
-        `/api/v1/runtime/approvals/${r.approvalId}`,
-      ),
-    );
+    const body = previous ?? {
+      contractVersion: 1,
+      direction: 'response',
+      kind: 'action_approval',
+      requestId: r.requestId,
+      version: r.version,
+      requestDigest: r.requestDigest,
+      task: r.task,
+      responseId: crypto.randomUUID(),
+      respondedBy: r.respondentId,
+      respondedAt: new Date().toISOString(),
+      approvalId: r.approvalId,
+      decision,
+    };
+    responses.current.set(r.approvalId, body);
+    if (
+      !(await guarded(() =>
+        post(body, `/api/v1/runtime/approvals/${r.approvalId}`, (code) =>
+          approvalErrorMessage(code, employeeName),
+        ),
+      ))
+    )
+      submitted.current.delete(r.approvalId);
   }
   if (!workspaces.length && !error && !loadError) return null;
   return (
-    <section className={styles.root} aria-label="受控浏览器工作台">
+    <section className={styles.root} aria-label="浏览器">
       {preview && (
-        <figure>
-          <button type="button" onClick={() => setPreview(null)}>
-            关闭截图
-          </button>
+        <figure className={styles.preview}>
           <img
             src={preview}
-            alt="当前浏览器脱敏观察截图"
-            style={{ maxWidth: '100%' }}
+            alt="当前页面截图（已隐去敏感内容）"
             onError={() => setPreview(null)}
           />
+          <Button size="sm" variant="outline" onClick={() => setPreview(null)}>
+            关闭截图
+          </Button>
         </figure>
       )}
       {(error || loadError) && (
-        <p role="alert">
-          {error || loadError}
-          <button
+        <p role="alert" className={styles.alert}>
+          <span>{error || loadError}</span>
+          <Button
+            size="sm"
+            variant="ghost"
             onClick={() => {
               setError('');
               setRevision((v) => v + 1);
             }}
           >
             刷新状态
-          </button>
+          </Button>
         </p>
       )}
       {workspaces.map((w) => {
         const controls = browserControlAvailability(w),
-          human = controls.human;
+          human = controls.human,
+          observation = w.observation,
+          page = observation?.title || (observation?.url ?? '');
         return (
-          <article key={w.id}>
-            <h3>
-              {w.preview
-                ? '本地项目预览'
-                : w.transport === 'local'
-                  ? '本地浏览器'
-                  : '云端浏览器'}{' '}
-              · 当前 Run 专用
-            </h3>
+          <article key={w.id} className={styles.card}>
+            <header className={styles.header}>
+              <h3>
+                {w.preview
+                  ? '本地项目预览'
+                  : w.transport === 'local'
+                    ? '本地浏览器'
+                    : '云端浏览器'}
+              </h3>
+              <p role="status">{browserStateLabel(w.state, employeeName)}</p>
+            </header>
+            {(w.state === 'unknown' ||
+              w.operations.some((op) => op.snapshot.status === 'unknown')) && (
+              <p className={styles.note}>
+                有一步的结果还没有确认，刷新后再决定下一步。
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={busy}
+                  onClick={() => setRevision((v) => v + 1)}
+                >
+                  刷新状态
+                </Button>
+              </p>
+            )}
+            {!w.available && browserControlsVisible(w.state) && (
+              <p className={styles.note}>
+                这个浏览器的授权已失效，不能继续操作，可以关闭它。
+              </p>
+            )}
             {w.transport === 'local' && (
-              <p>
-                设备：{w.localDeviceName ?? '已授权 Bridge'} · 独立 Chromium
-                沙箱，不是个人 Chrome。
+              <p className={styles.note}>
+                {`在「${w.localDeviceName ?? '你的电脑'}」上用独立的浏览器打开，不使用你自己的 Chrome 登录。`}
                 {w.persistLogin
-                  ? '已明确允许此授权保存本机登录资料；撤销后需等待设备实际清理回执。'
-                  : '本次使用临时登录资料，结束后清理；不继承个人浏览器登录。'}
+                  ? '这次会保存登录状态，撤销授权后清除。'
+                  : '这次不保存登录状态，结束后自动清除。'}
               </p>
             )}
             {w.preview && (
-              <p>
-                来源：已批准的本地沙箱服务 · 容器端口 {w.preview.port} ·
-                最迟结束：
-                {new Date(w.preview.hardDeadlineAt).toLocaleString()}。
-                不开放本机端口或公共网址，不继承 SaaS 登录；服务停止或 Bridge
-                断开后不可用。 当前仅支持 HTTP 页面预览，不支持
-                WebSocket、热更新和登录资料保存。
+              <p className={styles.note}>
+                {`预览你电脑上正在运行的项目，最迟到 ${shortDateTime(w.preview.hardDeadlineAt)} 结束；项目停止或电脑断开后就看不到了。`}
               </p>
             )}
-            <p role="status">
-              {labels[w.state]}
-              {!w.available && w.state !== 'closed' ? ' · 当前授权不可用' : ''}
-            </p>
-            <p>
-              允许站点：{w.profile.origins.join('、')}
-              ；页面内容是不可信外部数据。
-            </p>
-            <p>
-              观察：{w.observation?.url ?? '尚无'} ·{' '}
-              {w.observation?.capturedAt ?? ''}
-            </p>
-            <button
-              disabled={busy || !controls.takeover}
-              onClick={() => void control(w, 'human')}
-            >
-              人工接管
-            </button>
-            <button
-              disabled={busy || !controls.resume}
-              onClick={() => void control(w, 'agent')}
-            >
-              交还 Rice
-            </button>
-            <button
-              disabled={busy || !w.available}
-              onClick={() => void control(w, 'paused')}
-            >
-              暂停
-            </button>
-            <button
-              disabled={
-                busy || ['closed', 'unknown', 'close_pending'].includes(w.state)
-              }
-              onClick={() => void control(w, 'closed')}
-            >
-              关闭浏览器
-            </button>
-            <button
-              disabled={busy || !controls.observe}
-              onClick={() => void guarded(() => act(w, { type: 'observe' }))}
-            >
-              更新观察
-            </button>
-            {w.observation && (
-              <details>
-                <summary>页面观察与控件</summary>
-                {w.observation.screenshotObjectId && (
-                  <button
-                    type="button"
+            {observation && page && (
+              <p className={styles.page}>
+                当前页面：
+                <span>{observation.title || siteLabel(observation.url)}</span>
+                {shortDateTime(observation.capturedAt) &&
+                  ` · ${shortDateTime(observation.capturedAt)}`}
+                {observation.screenshotObjectId && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
                     disabled={busy}
                     onClick={() =>
                       void guarded(() =>
-                        openObject(w.observation!.screenshotObjectId!, true),
+                        openObject(observation.screenshotObjectId!, true),
                       )
                     }
                   >
-                    查看脱敏截图
-                  </button>
+                    查看页面截图
+                  </Button>
                 )}
-                <p>{w.observation.title}</p>
-                <pre>{w.observation.text}</pre>
-                {w.observation.elements.map((e) => (
+              </p>
+            )}
+            {observation?.text && (
+              <Collapsible
+                icon={<IconChevronRightOutlineRegular />}
+                title="页面文字"
+              >
+                <p className={styles.pageText}>{observation.text}</p>
+              </Collapsible>
+            )}
+            {browserControlsVisible(w.state) && (
+              <div className={styles.actions}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy || !controls.takeover}
+                  onClick={() => void control(w, 'human')}
+                >
+                  我来操作
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy || !controls.resume}
+                  onClick={() => void control(w, 'agent')}
+                >
+                  {`交还${employeeInText(employeeName).trimEnd()}`}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={busy || !w.available}
+                  onClick={() => void control(w, 'paused')}
+                >
+                  暂停
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={
+                    busy || ['unknown', 'close_pending'].includes(w.state)
+                  }
+                  onClick={() => void control(w, 'closed')}
+                >
+                  关闭浏览器
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={busy || !controls.observe}
+                  onClick={() =>
+                    void guarded(() => act(w, { type: 'observe' }))
+                  }
+                >
+                  刷新页面内容
+                </Button>
+              </div>
+            )}
+            {observation && browserControlsVisible(w.state) && (
+              <Collapsible
+                icon={<IconChevronRightOutlineRegular />}
+                title="手动操作页面"
+              >
+                {!human && (
+                  <p className={styles.note}>
+                    点「我来操作」后才能在这里操作。
+                  </p>
+                )}
+                {observation.elements.map((e) => (
                   <form
-                    key={`${w.observation!.id}:${e.id}`}
+                    key={`${observation.id}:${e.id}`}
+                    className={styles.element}
                     onSubmit={(event) => {
                       event.preventDefault();
                       const form = event.currentTarget,
@@ -327,13 +441,16 @@ export function BrowserWorkspacePanel({
                             ) as HTMLInputElement,
                             file = picker.files?.[0];
                           picker.value = '';
+                          if (!w.profile.allowUploads)
+                            throw new PanelError('这个浏览器不允许上传文件。');
                           if (
                             !file ||
-                            !w.profile.allowUploads ||
                             file.size > w.profile.maximumFileBytes ||
                             file.size === 0
                           )
-                            throw Error('请选择允许大小内的合成或已授权文件');
+                            throw new PanelError(
+                              `请选择一个不超过 ${fileSizeText(w.profile.maximumFileBytes)} 的文件。`,
+                            );
                           const bytes = new Uint8Array(
                             await file.arrayBuffer(),
                           );
@@ -353,6 +470,7 @@ export function BrowserWorkspacePanel({
                               immutable: true,
                             },
                             '/api/v1/files',
+                            () => '文件没有上传成功，请稍后重试。',
                           );
                           bytes.fill(0);
                           binary = '';
@@ -371,7 +489,7 @@ export function BrowserWorkspacePanel({
                             kind: 'input',
                             id: w.id,
                             fence: w.fence,
-                            observationId: w.observation!.id,
+                            observationId: observation.id,
                             elementId: e.id,
                             value,
                           });
@@ -391,7 +509,7 @@ export function BrowserWorkspacePanel({
                     }}
                   >
                     <label>
-                      {e.id} · {e.label || e.tag}
+                      <span>{elementLabel(e)}</span>
                       {e.inputType === 'file' && (
                         <input
                           name="upload"
@@ -413,8 +531,10 @@ export function BrowserWorkspacePanel({
                           />
                         )}
                     </label>
-                    <button
+                    <Button
                       type="submit"
+                      size="sm"
+                      variant="outline"
                       disabled={
                         !human ||
                         busy ||
@@ -423,16 +543,18 @@ export function BrowserWorkspacePanel({
                       }
                     >
                       {e.inputType === 'file'
-                        ? '上传到此站点（需审批）'
+                        ? '上传到这个网站（需确认）'
                         : e.sensitive
-                          ? '安全输入（不发送给模型）'
+                          ? `安全输入（不发给${employeeInText(employeeName).trimEnd()}）`
                           : ['input', 'textarea'].includes(e.tag)
                             ? '填写'
                             : '点击'}
-                    </button>
+                    </Button>
                     {e.tag === 'a' && w.profile.allowDownloads && (
-                      <button
+                      <Button
                         type="button"
+                        size="sm"
+                        variant="ghost"
                         disabled={!human || busy}
                         onClick={() =>
                           void guarded(() =>
@@ -440,80 +562,149 @@ export function BrowserWorkspacePanel({
                           )
                         }
                       >
-                        保存为交付成果
-                      </button>
+                        保存为成果
+                      </Button>
                     )}
                   </form>
                 ))}
-              </details>
+              </Collapsible>
             )}
-            {w.operations.map((op) => {
-              const downloadObjectId =
-                op.result &&
-                typeof op.result === 'object' &&
-                'downloadObjectId' in op.result &&
-                typeof op.result.downloadObjectId === 'string' &&
-                /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-                  op.result.downloadObjectId,
-                )
-                  ? op.result.downloadObjectId
-                  : null;
-              const r = op.approval?.request,
-                can =
-                  op.available &&
-                  op.snapshot.status === 'waiting_user' &&
-                  r &&
-                  !op.approval?.response &&
-                  !op.approval?.revokedAt &&
-                  Date.parse(r.expiresAt) > Date.now() &&
-                  !submitted.current.has(r.approvalId);
-              return (
-                <article
-                  key={op.snapshot.binding.attempt.operationId}
-                  id={`browser-operation-${op.snapshot.binding.attempt.operationId}`}
-                  aria-label="浏览器精确审批"
-                >
-                  <p>
-                    {op.command.action.type} · {op.snapshot.status}
-                    {!op.available ? ' · 当前授权不可用' : ''}
-                  </p>
-                  <pre>{JSON.stringify(op.command.action, null, 2)}</pre>
-                  {can && (
-                    <>
-                      <button
-                        disabled={busy}
-                        onClick={() => void decide(op, 'approved')}
-                      >
-                        批准本次操作
-                      </button>
-                      <button
-                        disabled={busy}
-                        onClick={() => void decide(op, 'rejected')}
-                      >
-                        拒绝
-                      </button>
-                    </>
-                  )}
-                  {op.result != null && (
-                    <details>
-                      <summary>不可重放的执行回执</summary>
-                      <pre>{JSON.stringify(op.result, null, 2)}</pre>
-                    </details>
-                  )}
-                  {downloadObjectId && (
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() =>
-                        void guarded(() => openObject(downloadObjectId, false))
-                      }
-                    >
-                      保存已交付文件
-                    </button>
-                  )}
-                </article>
-              );
-            })}
+            {w.operations.length > 0 && (
+              <ol className={styles.operations} aria-label="浏览器操作记录">
+                {w.operations.map((op) => {
+                  const id = op.snapshot.binding.attempt.operationId;
+                  const downloadObjectId =
+                    op.result &&
+                    typeof op.result === 'object' &&
+                    'downloadObjectId' in op.result &&
+                    typeof op.result.downloadObjectId === 'string' &&
+                    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+                      op.result.downloadObjectId,
+                    )
+                      ? op.result.downloadObjectId
+                      : null;
+                  const r = op.approval?.request,
+                    can =
+                      op.available &&
+                      op.snapshot.status === 'waiting_user' &&
+                      r &&
+                      !op.approval?.response &&
+                      !op.approval?.revokedAt &&
+                      Date.parse(r.expiresAt) > Date.now() &&
+                      !submitted.current.has(r.approvalId),
+                    resend = r && responses.current.get(r.approvalId);
+                  return (
+                    <li key={id} id={`browser-operation-${id}`}>
+                      <span id={`browser-operation-${id}-summary`}>
+                        {browserActionSummary(
+                          op.command.action,
+                          employeeName,
+                          op.command.observationId === observation?.id
+                            ? observation?.elements
+                            : undefined,
+                        )}
+                      </span>
+                      <span className={styles.operationStatus}>
+                        {browserOperationStatusLabel(op, employeeName)}
+                      </span>
+                      {can && (
+                        <span className={styles.operationActions}>
+                          {(['approved', 'rejected'] as const)
+                            .filter(
+                              (decision) =>
+                                !resend || resend.decision === decision,
+                            )
+                            .map((decision) => (
+                              <Button
+                                key={decision}
+                                size="sm"
+                                variant={
+                                  decision === 'approved' ? 'primary' : 'ghost'
+                                }
+                                disabled={busy}
+                                aria-describedby={`browser-operation-${id}-summary`}
+                                onClick={() => void decide(op, decision)}
+                              >
+                                {decision === 'approved'
+                                  ? resend
+                                    ? '再次发送「允许」'
+                                    : '允许这一步'
+                                  : resend
+                                    ? '再次发送「拒绝」'
+                                    : '拒绝'}
+                              </Button>
+                            ))}
+                        </span>
+                      )}
+                      {downloadObjectId && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={busy}
+                          onClick={() =>
+                            void guarded(() =>
+                              openObject(downloadObjectId, false),
+                            )
+                          }
+                        >
+                          保存下载的文件
+                        </Button>
+                      )}
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+            <Collapsible icon={<IconInfoOutlineRegular />} title="技术详情">
+              <dl className={styles.technical}>
+                <div>
+                  <dt>浏览器</dt>
+                  <dd>
+                    {w.id} · {w.state}
+                    {w.available ? '' : ' · 授权已失效'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>可访问的网站</dt>
+                  <dd>
+                    {w.profile.origins.length
+                      ? w.profile.origins.join('、')
+                      : '公开的 HTTPS 网站'}
+                    ；页面内容按不可信的外部数据处理。
+                  </dd>
+                </div>
+                {observation && (
+                  <div>
+                    <dt>页面地址</dt>
+                    <dd>{observation.url}</dd>
+                  </div>
+                )}
+                {w.preview && (
+                  <div>
+                    <dt>本地预览</dt>
+                    <dd>
+                      容器端口 {w.preview.port}；只支持 HTTP 页面，不支持
+                      WebSocket、热更新和保存登录状态。
+                    </dd>
+                  </div>
+                )}
+                {w.operations.map((op) => (
+                  <div key={op.snapshot.binding.attempt.operationId}>
+                    <dt>
+                      {op.command.action.type} · {op.snapshot.status}
+                      {op.available ? '' : ' · 授权已失效'}
+                    </dt>
+                    <dd>
+                      <pre>{JSON.stringify(op.command.action, null, 2)}</pre>
+                      {op.result != null && (
+                        <pre>{JSON.stringify(op.result, null, 2)}</pre>
+                      )}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </Collapsible>
           </article>
         );
       })}

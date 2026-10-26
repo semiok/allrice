@@ -6,8 +6,14 @@ import importlib.util
 import io
 import json
 import os
+import signal
+import subprocess
+import sys
 import tempfile
+import threading
+import time
 import unittest
+import urllib.parse
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -262,6 +268,18 @@ class RunChecks(unittest.TestCase):
         self.assertEqual(calls, ['flaky', 'flaky'])  # failed once, confirmed ok on the re-run
         self.assertEqual(ran, {'flaky'})  # an erroring or undecided check judged nothing
 
+    def test_an_item_must_fail_on_both_looks(self):
+        r = make_round()
+        looks = iter([[bad('vm:a'), ok('vm:b')], [ok('vm:a'), bad('vm:b')], [bad('vm:a'), ok('vm:b')], [ok('vm:a'), bad('vm:b')],
+                      [ok('vm:a'), bad('vm:b')], [ok('vm:a'), bad('vm:b')]])
+        seen = []
+        for at in (0, 240, 480):
+            findings, ran = monitor.run_checks(r, [('vm', lambda r: next(looks), True, None)])
+            seen.append(([(f['key'], f['severity']) for f in findings], step(r, findings, at, ran)))
+        self.assertEqual(seen[0], ([('check:vm', 'ok'), ('vm:a', 'ok'), ('vm:b', 'unknown')], []))  # a blipped, b failed once
+        self.assertEqual(seen[1][1], [])
+        self.assertEqual(seen[2], ([('check:vm', 'ok'), ('vm:a', 'ok'), ('vm:b', 'critical')], [('opened', 'vm:b', False)]))  # both looks
+
     def test_check_error_alert_recovers(self):
         r = make_round()
         state = {'fail': True}
@@ -309,6 +327,39 @@ class Checks(unittest.TestCase):
         self.assertEqual(worker('b2', 17, faults=2, state='disabled'), 'ok')
         r.facts['worker'] = {'identity': {'bootId': 'b2'}}
         self.assertEqual(monitor.check_scheduler(r)[0]['severity'], 'ok')  # not configured at all
+
+    def test_a_refused_takeover_pages(self):
+        # MET-210 #3 (10-25 23:25): the database stopped under the Worker, the partitions
+        # stayed held without a close proof and every later Worker stayed cold and ready.
+        r = make_round()
+        held = {'partition': 'allrice-once-v1', 'epoch': 10, 'owner': 'f4423f7e', 'open': True, 'expired': 43000, 'proof': False, 'pending': 0}
+        closed = dict(held, open=False, proof=True)
+
+        def judge(at, once='cold', rows=(), boot='b1'):
+            r.now = at
+            r.facts['worker'] = {'identity': {'bootId': boot}, 'nativeOnceControl': {'state': once, 'tickCount': at},
+                                 'nativeRecurringControl': {'state': 'active', 'tickCount': at}}
+            monitor.check_scheduler(r)
+            with mock.patch.object(monitor, 'biz', return_value={'partitions': list(rows)}) as q:
+                f = monitor.check_scheduler_takeover(r)[0]
+            return f['severity'], q.called, f['detail']
+
+        self.assertEqual(judge(0, rows=[held])[:2], ('ok', False))  # first sight of cold: not even asked
+        sev, asked, detail = judge(239, rows=[held])  # still cold on the next round, even a second early
+        self.assertEqual((sev, asked), ('critical', True))
+        self.assertIn('f4423f7e', detail)
+        self.assertIn('已过期', detail)
+        self.assertEqual(judge(240, rows=[closed])[0], 'warning')  # closed with its proof and still not taken
+        self.assertEqual(judge(241, rows=[dict(closed, pending=1)])[0], 'critical')  # a reminder waits for the clock
+        self.assertEqual(judge(242, rows=[dict(closed, proof=False)])[0], 'critical')  # closed, proof not the audited one
+        sev, _, detail = judge(243, rows=[dict(held, expired=-20)])  # held and renewed by someone else: schedules still run there
+        self.assertEqual(sev, 'warning')
+        self.assertIn('另一个 Worker', detail)
+        self.assertEqual(judge(243, rows=[dict(held, expired=-20, pending=2)])[0], 'critical')
+        self.assertEqual(judge(244, once='active', rows=[held])[:2], ('ok', False))
+        self.assertEqual(judge(500, rows=[held], boot='b2')[:2], ('ok', False))  # a new Worker gets the grace again
+        r.facts.pop('worker')
+        self.assertIsNone(monitor.check_scheduler_takeover(r))  # Worker not ready: the worker alert says it
 
     def test_restart_loop_but_not_a_deploy(self):
         r = make_round(restartCritical=3)
@@ -394,6 +445,121 @@ class Checks(unittest.TestCase):
         r.facts.clear()
         with mock.patch.object(monitor, 'lock_holders', return_value=[]), mock.patch.object(monitor, 'http_get', return_value=(502, b'bad gateway')):
             self.assertEqual(monitor.check_public_entry(r)[0]['severity'], 'critical')
+
+    def test_public_entry_probes_every_hostname(self):
+        r = make_round(publicUrl='https://a.example', extraPublicUrls=['https://b.example', 'https://A.example/login', 'https://c.example'])
+        answers = {'https://a.example': (200, b'login'), 'https://b.example': (200, b'login'), 'https://c.example': (530, b'error 1033')}
+
+        def probe():
+            with mock.patch.object(monitor, 'lock_holders', return_value=[]), \
+                    mock.patch.object(monitor, 'http_get', side_effect=lambda url, *a: answers[url]):  # a.example again: KeyError, check:public_entry
+                return monitor.run_checks(r, [('public_entry', monitor.check_public_entry, True, None)])
+        findings, ran = probe()
+        self.assertEqual({f['key']: f['severity'] for f in findings},
+                         {'check:public_entry': 'ok', 'public_entry': 'ok', 'public_entry:b.example': 'ok', 'public_entry:c.example': 'critical'})
+        self.assertEqual(step(r, findings, 0, ran), [('opened', 'public_entry:c.example', False)])
+        self.assertEqual(r.state['alerts']['public_entry:c.example']['title'], '公网入口不可达（c.example）')
+        r.cfg['extraPublicUrls'] = ['https://b.example']
+        findings, ran = probe()
+        self.assertEqual(step(r, findings, 300, ran), [('recovered', 'public_entry:c.example', False)])  # left the config
+
+    def test_m1_probes_every_entry_the_tunnel_serves(self):
+        r = make_round(publicUrl='https://a.bplabs.xyz')  # the shipped extraPublicUrls
+        probed = []
+
+        def get(url, *a):
+            probed.append(url)
+            return 200, b'ok'
+        with mock.patch.object(monitor, 'lock_holders', return_value=[]), mock.patch.object(monitor, 'http_get', side_effect=get):
+            keys = [f['key'] for f in monitor.check_public_entry(r)]
+        self.assertEqual(keys, ['public_entry', 'public_entry:allrice.bplabs.xyz', 'public_entry:allrice-admin.bplabs.xyz',
+                                'public_entry:allrice-dsh.bplabs.xyz'])
+        # Rice Bridge pairs with allrice-dsh; its root redirects to allrice-admin, so it is probed on a path of its own
+        self.assertIn('https://allrice-dsh.bplabs.xyz/api/health/ready', probed)
+
+    def test_public_entry_probes_hostnames_at_once(self):
+        r = make_round(publicUrl='https://a.example', extraPublicUrls=['https://b.example', 'https://c.example'])
+        together = threading.Barrier(3, timeout=5)  # one at a time would break it
+
+        def get(url, *a):
+            together.wait()
+            return 200, b'login'
+        with mock.patch.object(monitor, 'lock_holders', return_value=[]), mock.patch.object(monitor, 'http_get', side_effect=get):
+            self.assertEqual([(f['key'], f['severity']) for f in monitor.check_public_entry(r)],
+                             [('public_entry', 'ok'), ('public_entry:b.example', 'ok'), ('public_entry:c.example', 'ok')])
+
+    def scripted(self, replies):
+        """Each hostname gives its next reply in turn; None never answers (a DNS lookup that hangs)."""
+        release, lock = threading.Event(), threading.Lock()
+        self.addCleanup(release.set)
+
+        def get(url, *a):
+            with lock:
+                code = replies[urllib.parse.urlsplit(url).hostname].pop(0)
+            if code is None:
+                release.wait()
+            return code, b'reply'
+        return mock.patch.object(monitor, 'http_get', side_effect=get)
+
+    def round_limit(self, seconds):
+        """The round's time limit strikes after `seconds`, as do_round's alarm does."""
+        old = signal.signal(signal.SIGALRM, monitor.on_alarm)
+        self.addCleanup(signal.signal, signal.SIGALRM, old)
+        self.addCleanup(signal.setitimer, signal.ITIMER_REAL, 0)
+        signal.setitimer(signal.ITIMER_REAL, seconds)
+
+    def test_a_hung_hostname_has_a_deadline(self):
+        r = make_round(publicUrl='https://a.example', extraPublicUrls=['https://b.example', 'https://c.example'])
+        start = time.time()
+        with mock.patch.object(monitor, 'PUBLIC_PROBE_SECONDS', 0.2), mock.patch.object(monitor, 'lock_holders', return_value=[]), \
+                self.scripted({'a.example': [200], 'b.example': [502], 'c.example': [None]}):
+            out = monitor.check_public_entry(r)
+        self.assertLess(time.time() - start, 0.2 + 2 + 1)  # the probe's timeout plus 2 seconds, not "forever"
+        self.assertEqual([(f['key'], f['severity']) for f in out],
+                         [('public_entry', 'ok'), ('public_entry:b.example', 'critical'), ('public_entry:c.example', 'critical')])
+        self.assertIn('没有结果', out[2]['detail'])
+
+    def test_round_timeout_keeps_the_hostnames_already_probed(self):
+        r = make_round(publicUrl='https://a.example', extraPublicUrls=['https://b.example', 'https://c.example'])
+        step(r, [bad('public_entry'), bad('public_entry:c.example')], 0, {'public_entry'})
+        self.round_limit(0.5)  # strikes on the first look, while c.example hangs
+        with mock.patch.object(monitor, 'lock_holders', return_value=[]), self.assertRaises(monitor.RoundTimeout), \
+                self.scripted({'a.example': [200], 'b.example': [502], 'c.example': [None]}):
+            monitor.run_checks(r, [('public_entry', monitor.check_public_entry, True, None)])
+        findings, ran = monitor.collect_checks(r)
+        self.assertEqual(sorted((f['key'], f['severity']) for f in findings), [('public_entry', 'ok'), ('public_entry:b.example', 'unknown')])
+        self.assertEqual(ran, set())  # not judged: c.example's open alert must not recover
+        self.assertEqual(step(r, findings, 240, ran), [('recovered', 'public_entry', False)])
+
+    def test_round_timeout_during_the_re_check(self):
+        r = make_round(publicUrl='https://a.example', extraPublicUrls=['https://b.example', 'https://c.example'])
+        step(r, [bad('public_entry:b.example')], 0, {'public_entry'})
+        self.round_limit(0.5)  # strikes on the re-check, while a.example hangs
+        with mock.patch.object(monitor, 'lock_holders', return_value=[]), self.assertRaises(monitor.RoundTimeout), \
+                self.scripted({'a.example': [502, None], 'b.example': [200, 502], 'c.example': [200, 200]}):
+            monitor.run_checks(r, [('public_entry', monitor.check_public_entry, True, None)])
+        findings, ran = monitor.collect_checks(r)
+        self.assertEqual([(f['key'], f['severity']) for f in findings],
+                         [('check:public_entry', 'ok'), ('public_entry', 'unknown'),  # failed once, never looked at again
+                          ('public_entry:b.example', 'unknown'), ('public_entry:c.example', 'ok')])  # b: fine, then failed
+        self.assertEqual(step(r, findings, 240, ran), [])  # neither opens a nor recovers b
+
+    def test_a_hung_probe_does_not_keep_the_process_alive(self):
+        code = '''
+import importlib.machinery, importlib.util, json, sys, tempfile, threading
+loader = importlib.machinery.SourceFileLoader('monitor', sys.argv[1])
+spec = importlib.util.spec_from_loader('monitor', loader)
+monitor = importlib.util.module_from_spec(spec)
+loader.exec_module(monitor)
+monitor.PUBLIC_PROBE_SECONDS = 0.2
+monitor.lock_holders = lambda path: []
+monitor.http_get = lambda url, *a: threading.Event().wait() or (200, b'')
+cfg = json.loads(json.dumps(monitor.M1))
+cfg.update(stateDir=tempfile.mkdtemp(), publicUrl='https://a.example', extraPublicUrls=['https://b.example', 'https://c.example'])
+print(len(monitor.check_public_entry(monitor.Round(cfg))))
+'''
+        p = subprocess.run([sys.executable, '-c', code, os.path.join(HERE, 'monitor')], capture_output=True, text=True, timeout=20)
+        self.assertEqual((p.returncode, p.stdout.strip()), (0, '3'), p.stderr)  # exited, with every probe still hanging
 
     def test_sandbox_vm(self):
         r = make_round(colimaProfile='cloud', extraColimaProfiles=['drill'])

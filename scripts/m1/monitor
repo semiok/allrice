@@ -16,9 +16,10 @@
 # alert; while it stays bad only an escalation or a reminder (hourly when critical) goes
 # out; when it is good again "已恢复" goes out. A key that keeps flapping is muted for an
 # hour after one notice. All changes of a round go out as one Telegram message and are
-# written to allrice_operational_incidents. A failing component check is re-run once
-# before it alerts, so a blip does not page. Each round ends by writing heartbeat.json,
-# which the other machine reads over SSH: whichever side stops, the other one says so.
+# written to allrice_operational_incidents. A failing component check is re-run once and
+# only what fails on both looks alerts, so a blip does not page. Each round ends by
+# writing heartbeat.json, which the other machine reads over SSH: whichever side stops,
+# the other one says so.
 import argparse
 import fcntl
 import json
@@ -30,6 +31,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -90,6 +92,12 @@ M1 = dict(
     # component checks
     tunnelLabel='ai.bplabs.allrice-m1-tunnel',
     tunnelMetrics=['http://127.0.0.1:%d/ready' % p for p in range(20241, 20246)],
+    # The other hostnames the tunnel serves for the same Web (~/.cloudflared/allrice-m1.yml,
+    # moved over at the 10-26 cutover, MET-216): probed like publicUrl, each its own alert.
+    # allrice-dsh is the server Rice Bridge pairs with (AllRicePairingServerURL); its root
+    # redirects to allrice-admin, so a path it serves itself is probed.
+    extraPublicUrls=['https://allrice.bplabs.xyz', 'https://allrice-admin.bplabs.xyz',
+                     'https://allrice-dsh.bplabs.xyz/api/health/ready'],
     docker='/opt/homebrew/bin/docker',
     officeContainer='allrice-office-renderer',
     vmWatchdog='allrice-cloud-watchdog',
@@ -115,6 +123,7 @@ M1 = dict(
     restartWindowMinutes=60,
     restartWarn=2,
     restartCritical=3,
+    schedulerColdMinutes=3,  # cold on two rounds in a row: a takeover that keeps being refused
     colima=None,  # these four: from the Worker's launchd file when empty
     colimaProfile=None,
     officeUrl=None,
@@ -739,8 +748,8 @@ def check_versions(r):
 def check_scheduler(r):
     """The native once/recurring controllers live in the Worker (apps/worker/src/index.ts
     readiness, native-schedule-once-runtime.ts status): blocked, closed or quarantined is
-    down; cold is idle (no schedule needs a generation), unless it failed to initialize;
-    starting/stopping should pass. Ticks must keep growing within one Worker boot, and new
+    down; cold is between two generations, unless it failed to initialize (a cold that
+    lasts is check_scheduler_takeover); starting/stopping should pass. Ticks must keep growing within one Worker boot, and new
     faults are reported. Due schedules that did not fire are business.overdue_schedules."""
     worker = r.facts.get('worker')
     if not worker:
@@ -772,6 +781,65 @@ def check_scheduler(r):
             sev = 'critical'
     return [finding('scheduler', sev, '定时任务控制器异常', '；'.join(problems), 'm1-schedule-not-fired.md',
                     'curl -s %s/health/ready | python3 -m json.tool | grep -A8 nativeOnceControl' % r.cfg['workerUrl'])]
+
+
+# Each controller drives one partition (PARTITION in packages/database/src/native-schedule-*.ts).
+SCHEDULER_PARTITIONS = {'nativeOnceControl': 'allrice-once-v1', 'nativeRecurringControl': 'allrice-recurring-v1'}
+# Taken over only when closed with the proof its audit row holds (validClose in
+# native-schedule-control-sql.ts); an open partition is held, live or expired.
+SQL_SCHEDULER_PARTITIONS = """
+select coalesce(json_agg(json_build_object(
+    'partition', p.partition_id, 'epoch', p.epoch, 'owner', left(p.owner_id, 8), 'open', not p.closed,
+    'expired', extract(epoch from now() - p.expires_at)::int,
+    'proof', p.epoch = 0 or exists (select 1 from allrice_native_once_close_proofs f
+                                    where f.partition_id = p.partition_id and f.epoch = p.epoch and f.proof = p.close_proof),
+    'pending', (select count(*) from allrice_native_once_controls c
+                where c.partition_id = p.partition_id and c.snapshot->'control'->'command'->>'status' = 'pending')
+             + (select count(*) from allrice_native_recurring_controls c
+                where c.partition_id = p.partition_id and c.snapshot->'control'->'command'->>'status' = 'pending'))), '[]') as partitions
+from allrice_native_once_partitions p"""
+
+
+def check_scheduler_takeover(r):
+    """An enabled controller is `cold` only between two generations: the next tick takes
+    its partition over again (native-schedule-once.ts start). Cold on two rounds means the
+    takeover is refused, silently and with the Worker still ready. Critical when nothing
+    can fire until a person acts: the partition left held by a Worker that died without
+    closing it (database stopped under it, kill -9), a proof that is not the audited one,
+    or commands waiting (scripts/m1/schedule-recover, MET-210 #3). Otherwise a warning:
+    another Worker holds it, or it is closed properly and still not taken."""
+    worker, seen = r.facts.get('worker'), r.state.get('scheduler', {})
+    if not worker:
+        return None
+    boot, grace = worker.get('identity', {}).get('bootId'), r.cfg['schedulerColdMinutes'] * 60
+    cold = {}
+    for name, part in SCHEDULER_PARTITIONS.items():
+        s = seen.get(name) or {}
+        if (worker.get(name) or {}).get('state') == 'cold' and s.get('state') == 'cold' and s.get('bootId') == boot \
+                and r.now - s['stateSince'] >= grace:
+            cold[part] = (name, r.now - s['stateSince'])
+    problems, sev = [], 'ok'
+    if cold:
+        rows = {p['partition']: p for p in biz(r, SQL_SCHEDULER_PARTITIONS)['partitions']}
+        for part, (name, since) in sorted(cold.items()):
+            p, why, bad = rows.get(part) or {}, [], 'warning'
+            if p.get('open') and (p['expired'] or 0) > 0:
+                why.append('仍被已停的 owner %s（epoch %s）持有：租约已过期 %s，没有关闭证明' % (p['owner'], p['epoch'], ago(p['expired'])))
+                bad = 'critical'
+            elif p.get('open'):
+                why.append('被另一个 owner %s（epoch %s）持有，租约还有效：另一个 Worker 在用同一个库？' % (p['owner'], p['epoch']))
+            elif p and not p['proof']:
+                why.append('已关闭，但关闭证明和审计表对不上（epoch %s）' % p['epoch'])
+                bad = 'critical'
+            if p.get('pending'):
+                why.append('%d 条命令等着交给原生时钟' % p['pending'])
+                bad = 'critical'
+            if not why:
+                why.append('已正常关闭也没人接手（activation 或部署设置不让接手？）')
+            problems.append('%s 已 cold %s，分区 %s %s%s' % (name, ago(since), part, '，'.join(why), '，定时任务不会触发' if bad == 'critical' else ''))
+            sev = max(sev, bad, key=RANK.get)
+    return [finding('scheduler_takeover', sev, '定时控制器接管不了分区', '；'.join(problems), 'm1-schedule-not-fired.md#接管被拒',
+                    '~/allrice-dev/bin/schedule-recover --dev（只读演示；由发布负责人加 --release-manager --execute 恢复）')]
 
 
 def check_restarts(r):
@@ -1006,21 +1074,46 @@ def check_tunnel(r):
     return [finding('tunnel', 'critical', 'Cloudflare 隧道断开', '进程在，但指标端口都连不上（%s）' % r.cfg['tunnelMetrics'][0], 'm1-tunnel.md', step)]
 
 
-def probe_public(r, url, key='public_entry', where='M1 本机'):
+PUBLIC_PROBE_SECONDS = 15
+
+
+def probe_public(r, url, key='public_entry', where='M1 本机', title='公网入口不可达'):
     if not url:
-        return [finding(key, 'warning', '公网入口不可达（未配置地址）', '', 'm1-tunnel.md', '')]
+        return [finding(key, 'warning', title + '（未配置地址）', '', 'm1-tunnel.md', '')]
     start = time.time()
-    code, body = http_get(url, 15, opener(r.cfg.get('publicProxy')))
+    code, body = http_get(url, PUBLIC_PROBE_SECONDS, opener(r.cfg.get('publicProxy')))
     took = time.time() - start
-    ok = code == 200 and took < 15
-    return [finding(key, 'ok' if ok else 'critical', '公网入口不可达', '从%s访问 %s：%s（%.1f 秒）' % (where, url, code or short(body, 120), took),
+    ok = code == 200 and took < PUBLIC_PROBE_SECONDS
+    return [finding(key, 'ok' if ok else 'critical', title, '从%s访问 %s：%s（%.1f 秒）' % (where, url, code or short(body, 120), took),
                     'm1-tunnel.md', 'curl -sS -o /dev/null -w "%%{http_code}\\n" %s' % url)]
 
 
 def check_public_entry(r):
     if deploying(r):
         return None
-    return probe_public(r, r.cfg['publicUrl'])
+    targets = [(r.cfg['publicUrl'], 'public_entry', '公网入口不可达')]
+    seen = {urllib.parse.urlsplit(r.cfg['publicUrl'] or '').hostname}
+    for url in r.cfg['extraPublicUrls']:
+        host = urllib.parse.urlsplit(url).hostname or url
+        if host not in seen:  # publicUrl may be moved to one of them
+            seen.add(host)
+            targets.append((url, 'public_entry:' + host, '公网入口不可达（%s）' % host))
+    # All at once, with a hard deadline: a slow or hung hostname (a DNS lookup has no
+    # timeout) holds up neither the others nor the round, and the thread left behind is a
+    # daemon, so it cannot keep the process from exiting. Each result goes straight into
+    # the round's progress, so a round that times out here still has the finished ones.
+    found = []
+    if r.progress:
+        r.progress['partial'] = found
+    threads = [threading.Thread(target=lambda t=t: found.extend(probe_public(r, t[0], t[1], title=t[2])), daemon=True) for t in targets]
+    for t in threads:
+        t.start()
+    end = time.time() + PUBLIC_PROBE_SECONDS + 2
+    for t in threads:
+        t.join(max(0, end - time.time()))
+    got = {f['key']: f for f in found}
+    return [got.get(key) or finding(key, 'critical', title, '从M1 本机访问 %s：%d 秒内没有结果（卡在 DNS 或连接上）' % (url, PUBLIC_PROBE_SECONDS + 2),
+                                    'm1-tunnel.md', 'curl -sS -o /dev/null -w "%%{http_code}\\n" %s' % url) for url, key, title in targets]
 
 
 def check_disk(r):
@@ -1652,6 +1745,7 @@ M1_CHECKS = [
     ('deploy', check_deploy, False, None),
     ('versions', check_versions, False, None),
     ('scheduler', check_scheduler, False, None),
+    ('scheduler_takeover', check_scheduler_takeover, False, 'postgres'),
     ('restarts', check_restarts, False, None),
     ('sandbox_vm', check_sandbox_vm, True, None),
     ('images', check_images, True, None),
@@ -1675,10 +1769,11 @@ def run_checks(r, checks):
     the round, so a round that times out still reports what it found (collect_checks)."""
     wanted = r.cfg['checks']
     checks = [c for c in checks if (wanted is None or c[0] in wanted) and c[0] not in r.cfg['skipChecks']]
-    p = r.progress = {'checks': checks, 'results': {}, 'errors': {}, 'current': None}
+    p = r.progress = {'checks': checks, 'results': {}, 'errors': {}, 'current': None, 'partial': None}
     results, errors = p['results'], p['errors']
 
     def one(name, fn):
+        p['partial'] = None  # a check may publish here what it has found so far, item by item
         p['current'] = name
         try:
             results[name], errors[name] = fn(r), None
@@ -1699,18 +1794,39 @@ def run_checks(r, checks):
     if again:
         time.sleep(r.cfg['confirmSeconds'])
         for name, fn, _, _ in again:
+            first = {f['key']: f['severity'] for f in results[name] or []}
             one(name, fn)
+            if results[name]:
+                results[name] = [confirmed(first.get(f['key']), f) for f in results[name]]
     return collect_checks(r)
+
+
+def confirmed(first, again):
+    """An item after its re-check, given its first-look severity: bad only when it failed
+    on both looks. Bad only on the re-check is unknown this round; the next round looks twice again."""
+    return unknown(again['key'], again['title']) if again['severity'] != 'ok' and first == 'ok' else again
 
 
 def collect_checks(r):
     p = r.progress
+    cur, partial, results = p['current'], p['partial'], dict(p['results'])
+    if cur and partial is not None and results.get(cur):
+        # The round ran out of time during this check's re-check (it publishes per item):
+        # what it re-checked is judged on both looks; a failure not looked at again is unknown.
+        again = {f['key']: f for f in partial}
+        results[cur] = [confirmed(f['severity'], again[f['key']]) if f['key'] in again else f if f['severity'] == 'ok'
+                        else unknown(f['key'], f['title']) for f in results[cur]]
     out = []
     for name, _, _, _ in p['checks']:
         if name in p['errors']:
             out.append(p['errors'][name] or finding('check:' + name, 'ok', '检查 %s 本身出错' % name))
-            out += p['results'][name] or []
-    return out, {name for name, res in p['results'].items() if res is not None}
+            out += results[name] or []
+    if cur and cur not in results:
+        # The round ran out of time during this check's first look. What it already found
+        # counts where it is good; a failure seen once is not confirmed, so it is unknown.
+        # The check is not counted as having judged, so nothing it did not reach recovers.
+        out += [f if f['severity'] == 'ok' else unknown(f['key'], f['title']) for f in partial or []]
+    return out, {name for name, res in results.items() if res is not None}
 
 
 # ---------- rounds ----------

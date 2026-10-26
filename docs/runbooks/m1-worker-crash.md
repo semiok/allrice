@@ -31,7 +31,7 @@ curl -s -m 5 http://127.0.0.1:3012/health/ready | head -c 600; echo
 1. **部署后出现**：发布负责人回滚 `deploy-dev --release-manager --rollback`（会先检查迁移和执行包兼容性，不兼容会拒绝），再在 MET 卡上记录。
 2. **部署中断留下半成品**（`--status` 提示未完成的部署）：发布负责人 `deploy-dev --release-manager --recover`。
 3. **依赖问题**（数据库、磁盘、沙箱）：先按对应手册处理依赖，Worker 一般会自己恢复。
-4. **原因不明**：保留日志，派 Codex Sol 只读诊断（命令见 [m1-monitor.md](m1-monitor.md#诊断交给-codex)）。不要反复手动重启掩盖问题。
+4. **原因不明**：保留日志，派 Codex Astra 只读诊断（命令见 [m1-monitor.md](m1-monitor.md#诊断交给-codex)）。不要反复手动重启掩盖问题。
 
 ## 定时控制器卡住
 
@@ -44,7 +44,7 @@ curl -s -m 5 http://127.0.0.1:3012/health/ready | head -c 600; echo
 curl -s -m 5 http://127.0.0.1:3012/health/ready | /usr/bin/python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["status"], d.get("detail"), (d.get("nativeOnceControl") or {}).get("state"))'
 ```
 
-`ready` 且控制器不再是 `blocked` 就好了；重启后仍然 blocked，看 `lastFault`，派 Codex Sol 只读诊断。
+`ready` 且控制器变成 `active` 就好了，再跑 `~/allrice-dev/bin/smoke-test --dev --only reminder`（每次重启 Worker 之后都跑）。重启后仍然 blocked，看 `lastFault`，派 Codex Astra 只读诊断；一直 `cold`（Worker 被 `kill -9`、崩溃或数据库在它运行时停掉后常见），见[手册 8“接管被拒”](m1-schedule-not-fired.md#接管被拒)。
 
 ## 内存不足、DSH 进程越积越多
 

@@ -198,6 +198,13 @@ export interface NativeScheduleOnceStore {
     reference: NativeScheduleControlReference;
     controls: readonly NativeScheduleAnyControl[];
   }>;
+  /** Why the last acquireWriter returned null, if it did. */
+  takeoverRefusal?(): {
+    code: string;
+    ownerId: string | null;
+    epoch: number;
+    expiresAtMs: number | null;
+  } | null;
   renewWriter(
     writer: NativeScheduleWriter,
   ): Promise<{ writer: NativeScheduleWriter; remainingMs: number } | null>;

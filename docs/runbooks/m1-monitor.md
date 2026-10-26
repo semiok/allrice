@@ -18,13 +18,13 @@
 ## 告警规则
 
 - 每项检查有固定的键（如 `worker`、`disk:~`、`sandbox_vm:allrice-cloud-arm`）。一个键变坏时开一条告警；一直坏着不重复发，只在升级（警告→严重）或提醒（严重每 60 分钟、警告每 6 小时）时再发；变好时发“已恢复”和持续时长。
-- 同一轮里所有变化合成**一条**消息；太长时按告警拆成几条（标 1/2、2/2），不会截掉后面的告警。组件类检查失败后隔 20 秒重查一次，仍失败才告警，避免一次抖动就报警。
+- 同一轮里所有变化合成**一条**消息；太长时按告警拆成几条（标 1/2、2/2），不会截掉后面的告警。组件类检查失败后隔 20 秒重查一次，仍失败才告警，避免一次抖动就报警；按项判断，同一检查里首查正常、只在重查时失败的项（如另一个域名、另一个 VM）本轮记为未知，下一轮再看两次。
 - 1 小时内同一个键反复出现 3 次，发一条“反复”通知后静默 1 小时（仍写事件表）。静默期间坏了且下一轮仍然坏（真故障而不是抖动），立即打破静默照常告警；静默中升级也结束静默；静默期间恢复的，静默结束时补发“已恢复”。
 - 一条告警升级到严重后，在警告和严重之间来回不再重复通知（只在第一次升到严重时发“升级”）。
 - 依赖没过的检查本轮不判断，保持原状：例如数据库不可用时，业务巡检和订阅检查不报，也不会被当成“已恢复”。
 - 部署锁被持有时（`deploy-dev`、`scripts/m1/install`、`deploy-lock run`，用 `lsof` 看锁文件是否被打开，不去碰锁本身；每项检查和重查都重新看一次），Web、Worker、Postgres、公网入口和卡住/积压类业务巡检不判断，huihuimac 的公网拨测也暂停；最长 45 分钟，超过照常判断。
 - 检查给不出结论时（如持锁期间的共享 VM、确认期内的授权错误、触发告警的额度窗口暂时读不到）记为“未知”：已有告警保持原状，也不新开。
-- 单轮超过时限（M1 240 秒），只有卡住的那项按未知处理，已跑完的检查结果照常报告，另报 `monitor_round`。状态文件读不出来时另存为 `state.json.corrupt-<时间>` 并报 `monitor_state`。
+- 单轮超过时限（M1 240 秒），只有卡住的那项按未知处理，已跑完的检查结果照常报告，另报 `monitor_round`。公网入口按域名算：几个域名同时拨测，每个最多等 17 秒，卡住的判不可达；超时那一轮已拨完的域名中，正常的照常计入，只看到一次失败的记为未知；重查时超时的，已重查完的域名按两次结果判断。状态文件读不出来时另存为 `state.json.corrupt-<时间>` 并报 `monitor_state`。
 - 每条告警、升级、提醒和恢复都写进 `allrice_operational_incidents`（`kind` 为 `monitor_alert` / `monitor_recovered`，`detail_code` 为 `monitor.<键>`，`metadata.event` 是 opened/escalated/reminder/flapping/recovered，`metadata.alertId` 把它们连到同一条告警）。写不进去（如数据库正好挂了）先存在本地，下一轮再写；积压超过 30 分钟会报 `monitor` 告警。huihuimac 的告警在 M1 连得上时经 SSH 交给 M1 上的 `monitor ingest-incidents` 写入，连不上时存在 huihuimac 本地等下次。后台接口 `/api/v1/admin/model-governance` 的 `incidents` 能看到最近 25 条。
 - Telegram 先按系统代理设置发，失败再直连重试一次（本地代理挂了不至于发不出告警）；公网拨测直连。发不出去时消息留在本地队列（最多 20 条），下一轮补发，每发出一条就落盘（只有发出到落盘之间的瞬间崩溃才可能重发一条）；心跳里记着从什么时候开始发不出去，对面那台看到连续失败超过 7 分钟（M1，两轮）/ 3 分钟（huihuimac，三轮）会替它报警。M1 每 4 分钟一轮，是为了让需要看两次才能下结论的告警（反复的键、对面的看门）也能在 10 分钟内发出。
 
@@ -38,14 +38,15 @@
 | `web` / `worker`                              | launchd 状态 + `/api/health/ready`、`/health/ready`（不 ready 时带上 `detail`）           | 不是 `ready`：严重；`native_once_blocked` 等定时控制器卡住另开一条 `worker_stuck`（带重启 Worker 的命令；Worker 已经报着不可用时也会单独通知）                           | [Worker 崩溃](m1-worker-crash.md)           |
 | `versions`                                    | 两个服务上报的 `sourceSha`                                                                | 不一致：警告                                                                                                                                                             | [Worker 崩溃](m1-worker-crash.md)           |
 | `restarts:<label>`                            | launchd 的 `runs` 计数（Web、Worker、隧道）                                               | 60 分钟内重启 2 次：警告；3 次：严重（1 次是 launchd 拉起来了或手工 kickstart，停机由就绪检查管）                                                                        | [Worker 崩溃](m1-worker-crash.md)           |
-| `scheduler`                                   | Worker 就绪接口里的原生一次性/周期控制器                                                  | `blocked`/`closed`/`quarantined`、初始化失败或 3 分钟 `tickCount` 不涨：严重；`starting`/`stopping` 超 10 分钟、`faultCount` 增加：警告。`cold`（空闲）、`disabled` 不报 | [定时任务没触发](m1-schedule-not-fired.md)  |
+| `scheduler`                                   | Worker 就绪接口里的原生一次性/周期控制器                                                  | `blocked`/`closed`/`quarantined`、初始化失败或 3 分钟 `tickCount` 不涨：严重；`starting`/`stopping` 超 10 分钟、`faultCount` 增加：警告。`cold`（短暂）、`disabled` 不报 | [定时任务没触发](m1-schedule-not-fired.md)  |
+| `scheduler_takeover`                          | 一直 `cold` 的控制器，只读查它的分区                                                      | 连续两轮（3 分钟以上）`cold`：分区仍被已停的 owner 持有（租约过期、没有关闭证明）、证明和审计表对不上，或有命令等着交给原生时钟：严重；其余情况：警告                    | [手册 8](m1-schedule-not-fired.md#接管被拒) |
 | `sandbox_vm:<profile>`                        | `colima status`、VM 内 docker、`allrice-cloud-watchdog` 服务、`watchdog.py --attest` 证明 | 任一不正常（证明不是 `ready: true` 也算）：严重。只有守护停时镜像和 Office 照常检查                                                                                      | [沙箱 VM](m1-sandbox-vm.md)                 |
 | `images`                                      | 运行中版本钉死的镜像（从发布目录的 `cloud-platform.js` 读，部署后自动跟上）是否都在 VM 里 | 缺任何一个：严重                                                                                                                                                         | [镜像丢失](m1-missing-image.md)             |
 | `office`                                      | 容器 `allrice-office-renderer` 在运行且健康，`/health` 返回 `ready: true`                 | 任一不正常：严重                                                                                                                                                         | [沙箱 VM](m1-sandbox-vm.md#office-渲染容器) |
 | `subscription`                                | 启用的 Codex 订阅槽位：授权状态、状态更新时间                                             | 无启用槽位/`disconnected`：严重；其他授权错误连续两轮（3 分钟以上）：严重；30 分钟没更新：警告。确认期间不判断                                                           | [模型订阅](m1-model-subscription.md)        |
 | `quota`                                       | 启用槽位的额度（只算供应商标为已测量的窗口）                                              | 用完/≥95%：严重；≥80%、连续 30 分钟读不到：警告。读不到时不判断，已有的额度告警保持原状                                                                                  | [模型订阅](m1-model-subscription.md)        |
 | `tunnel`                                      | launchd 隧道进程 + cloudflared 指标端口 `/ready` 的就绪连接数                             | 进程不在或就绪连接为 0：严重                                                                                                                                             | [隧道断开](m1-tunnel.md)                    |
-| `public_entry`                                | 访问 `ALLRICE_PUBLIC_URL`（跟随跳转，应得 200）                                           | 15 秒内拿不到 200：严重                                                                                                                                                  | [隧道断开](m1-tunnel.md)                    |
+| `public_entry` / `public_entry:<域名>`        | `ALLRICE_PUBLIC_URL` 和 `extraPublicUrls`（员工入口、管理后台、Bridge），跟随跳转应得 200 | 15 秒内拿不到 200：严重                                                                                                                                                  | [隧道断开](m1-tunnel.md)                    |
 | `disk:<路径>`                                 | 可用空间                                                                                  | 低于 100 GiB：警告；低于 30 GiB：严重                                                                                                                                    | [磁盘快满](m1-disk-space.md)                |
 | `backup`                                      | 每日备份日志里最后一次 `ok` + launchd `ai.bplabs.allrice-dev-backup` 上次的退出码         | 上次运行失败或超过 50 小时/没有记录：严重；超过 26 小时、定时任务没加载：警告                                                                                            | [数据库](m1-database.md#每日备份)           |
 | `peer` / `peer_telegram`                      | huihuimac 看门的心跳（与 huihuimac 看 M1 的判断相同）                                     | 4 分钟没更新、4 分钟没有一轮跑完、连不上：警告；连续 3 分钟发不出 Telegram：警告                                                                                         | 本页“看门”                                  |
@@ -140,10 +141,10 @@ tail -50 ~/allrice-dev/monitor/monitor.log
 
 ## 诊断交给 Codex
 
-需要定位根因时，派 Codex Sol 做只读诊断（AGENTS.md 第 9 节“线上问题诊断”），结论回报用户：
+需要定位根因时，派 Codex Astra 做只读诊断（AGENTS.md 第 9 节“线上问题诊断”），结论回报用户：
 
 ```bash
-~/.local/bin/codex exec -C ~/allrice-repo -m gpt-6.1-sol -c model_reasoning_effort=max -s read-only \
+~/.local/bin/codex exec -C ~/allrice-repo -m gpt-6-astra -c model_reasoning_effort=max -s read-only \
   -o ~/allrice-dev/qa/codex/diagnose-$(date +%m%d-%H%M).md \
   "只读诊断 M1 Dev 告警：<粘贴告警原文>。查 deploy-dev --status、相关日志和只读 SQL，给出根因、证据和建议修法，不改代码、数据和配置。" </dev/null
 ```

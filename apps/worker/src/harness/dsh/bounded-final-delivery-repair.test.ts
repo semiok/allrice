@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { DshProtocolClient } from '../dsh-protocol-client.js';
 import { DshHarnessAdapter, controlDshInputDelivery } from '../dsh-adapter.js';
 import type { DshRuntimePool, DshRuntime } from './runtime-pool.js';
+import { createBoundedDeliveryRepair } from '../../final-delivery/repair.js';
 import {
   createConversationInputDelivery,
   pollEmployeeConversationSteers,
@@ -122,7 +123,10 @@ const text = (event: NativeEvent) =>
     ?.filter((block) => block.type === 'text')
     .map((block) => block.text)
     .join('');
-async function fixture(mode: string) {
+async function fixture(
+  mode: string,
+  options: { budgetMode?: 'observed' | 'legacy'; repairedText?: string } = {},
+) {
   const prepared = process.env.MET184_BOUNDED_REPAIR_PREPARED;
   const root = await mkdtemp(join(tmpdir(), 'allrice-bounded-repair-sdk-'));
   const id = `repair-${randomUUID()}`,
@@ -145,9 +149,10 @@ async function fixture(mode: string) {
         ? '原复杂运营尾部：[metrics.json](／api) no incorrect need actual.'
         : '[下载](／api) Original answer remains immutable.';
   const validText =
-    mode === 'operations-tail'
+    options.repairedText ??
+    (mode === 'operations-tail'
       ? invalidText.replace('／api', reference.downloadUrl)
-      : `[下载](${reference.downloadUrl})`;
+      : `[下载](${reference.downloadUrl})`);
   const client = new DshProtocolClient({
     command: process.execPath,
     args: [
@@ -199,6 +204,61 @@ async function fixture(mode: string) {
     runtime,
   );
   const abort = new AbortController();
+  // MET-219: use the actual Worker inspection/authorization at the private RPC
+  // boundary, while keeping the existing offline SDK/provider/ledger fixture.
+  const repairBudgets = [
+    { metric: 'model_calls', capacity: 8, reserved: 1, spent: 10 },
+    { metric: 'output_tokens', capacity: 128, reserved: 128, spent: 512 },
+  ].map((budget) => ({
+    ...budget,
+    ...(options.budgetMode === 'observed' ? { enforced: false } : {}),
+  }));
+  const scope = {
+    organizationId: runtime.organizationId,
+    workspaceId: runtime.workspaceId,
+    ownerId: runtime.ownerId!,
+    sessionId: runtime.productSessionId!,
+    runId,
+  };
+  const workerRepair = options.budgetMode
+    ? createBoundedDeliveryRepair({
+        nativeSessionId: id,
+        scope,
+        generation: 7,
+        attempt: 1,
+        leaseToken: 'original fixture lease',
+        deadlineAt: originalDeadlineAt,
+        provider: runtime.providerRoute!,
+        model: runtime.model!,
+        assertAuthority: async () => abort.signal.throwIfAborted(),
+        budgets: async () => repairBudgets,
+        read: async () => ({
+          scope,
+          complete: true,
+          authorization: 'current',
+          now: runtime.startedAt,
+          ownedRunIds: [runId],
+          explicitReferenceVersionIds: [],
+          artifacts: [
+            {
+              ...reference,
+              scope,
+              originRunId: runId,
+              fileName: reference.displayName,
+              state: 'ready',
+              immutable: true,
+              deletedAt: null,
+              retentionUntil: null,
+            },
+          ],
+          checks: [],
+          requirements: [],
+        }),
+        close: async () => {
+          throw Error('USE_EXISTING_FIXTURE_CLOSE_PORT');
+        },
+      })
+    : undefined;
   let polling = true,
     currentTurn = turnId,
     pending = false,
@@ -331,33 +391,40 @@ async function fixture(mode: string) {
         inspectCount++;
         const conflict = mode === 'pre-notice-conflict' && inspectCount === 2;
         if (conflict) pending = true;
-        result = {
-          candidateDigest: candidate.candidateDigest,
-          factSetDigest: digest(
-            conflict ? 'changed fixture facts' : 'stable fixture facts',
-          ),
-          decision: candidate.text === invalidText ? 'repair' : 'pass',
-          issues: [
-            mode === 'empty-response'
-              ? 'empty_response'
-              : 'invalid_delivery_link',
-          ],
-          references: [reference],
-        };
+        result = workerRepair
+          ? { ...(await workerRepair.inspect(params.candidate)) }
+          : {
+              candidateDigest: candidate.candidateDigest,
+              factSetDigest: digest(
+                conflict ? 'changed fixture facts' : 'stable fixture facts',
+              ),
+              decision: candidate.text === invalidText ? 'repair' : 'pass',
+              issues: [
+                mode === 'empty-response'
+                  ? 'empty_response'
+                  : 'invalid_delivery_link',
+              ],
+              references: [reference],
+            };
       } else if (method === 'allrice/assistant/delivery-repair-authorize') {
-        const authority = {
-          allowed: true,
-          runId,
-          generation: 7,
-          attempt: 1,
-          workerLeaseDigest: digest('original fixture lease'),
-          originalDeadlineAt,
-          provider: 'offline-bounded-repair',
-          model: 'static-only',
-          remainingModelCalls: 8 - calls.length,
-          remainingOutputTokens:
-            1024 - calls.reduce((sum, call) => sum + call.outputTokens, 0),
-        };
+        const authority = workerRepair
+          ? await workerRepair.authorize({
+              phase: params.phase,
+              candidate: params.candidate,
+            })
+          : {
+              allowed: true,
+              runId,
+              generation: 7,
+              attempt: 1,
+              workerLeaseDigest: digest('original fixture lease'),
+              originalDeadlineAt,
+              provider: 'offline-bounded-repair',
+              model: 'static-only',
+              remainingModelCalls: 8 - calls.length,
+              remainingOutputTokens:
+                1024 - calls.reduce((sum, call) => sum + call.outputTokens, 0),
+            };
         authorities.push({ phase: params.phase, ...authority });
         result = authority;
       } else if (
@@ -458,6 +525,7 @@ async function fixture(mode: string) {
     calls,
     actions,
     authorities,
+    repairBudgets,
     command,
     delivery,
     streaming,
@@ -795,6 +863,66 @@ it.each(['operations-tail', 'empty-response'])(
     ).toEqual([h.reference]);
   },
 );
+
+it.each([false, true])(
+  'observed budgets keep the real SDK repair bounded when its reply stays empty=%s',
+  async (stillEmpty) => {
+    const h = await fixture('empty-response', {
+      budgetMode: 'observed',
+      ...(stillEmpty ? { repairedText: '' } : {}),
+    });
+    const before = structuredClone(h.repairBudgets);
+    const snapshot = await h.snapshot();
+    expect(snapshot.steps).toBe(2);
+    expect(h.calls).toHaveLength(2);
+    expect(h.calls.every((call) => call.dispatchCommitted)).toBe(true);
+    expect(h.authorities.map((authority) => authority.phase)).toEqual([
+      'propose',
+      'prepared',
+      'consume',
+      'dispatch',
+    ]);
+    for (const authority of h.authorities)
+      expect(authority).toMatchObject({
+        remainingModelCalls: 8,
+        remainingOutputTokens: 128,
+        originalDeadlineAt: h.originalDeadlineAt,
+      });
+    expect(notices(snapshot)).toHaveLength(1);
+    expect(h.repairBudgets).toEqual(before);
+    expect(h.delivery.paused()).toBe(false);
+    const messages = snapshot.events.filter(
+      (event) => event.type === 'assistant/message',
+    );
+    expect(messages.map(text)).toEqual(['', h.validText]);
+    if (stillEmpty) {
+      expect(snapshot.errors).toContain('FINAL_DELIVERY_REPAIR_FAILED');
+    } else {
+      expect(snapshot.errors).toEqual([]);
+      expect(snapshot.flushError).toBeUndefined();
+      const inspections = method(h.actions, 'delivery-repair-inspect');
+      expect(inspections.at(-1)?.result).toMatchObject({ decision: 'pass' });
+      expect(snapshot.events).toContainEqual(
+        expect.objectContaining({ type: 'turn/end' }),
+      );
+    }
+  },
+);
+
+it('the same exhausted budget without enforced=false refuses repair before another model call', async () => {
+  const h = await fixture('empty-response', { budgetMode: 'legacy' });
+  const snapshot = await h.snapshot();
+  expect(snapshot.steps).toBe(1);
+  expect(h.calls).toHaveLength(1);
+  expect(h.authorities).toHaveLength(1);
+  expect(h.authorities[0]).toMatchObject({
+    remainingModelCalls: 0,
+    remainingOutputTokens: 0,
+  });
+  expect(snapshot.errors).toContain('FINAL_DELIVERY_REPAIR_BUDGET_UNAVAILABLE');
+  expect(notices(snapshot)).toEqual([]);
+  expect(h.delivery.paused()).toBe(false);
+});
 
 it('the actual shared repair ingress guard and binding guard refuse recovery/rebind before another Agent can replace the held one', async () => {
   const h = await fixture('recover');

@@ -421,6 +421,182 @@ integration('P25 actual native DSH + PostgreSQL governed adapter', () => {
       await native.close();
     }
   }, 60000);
+  it.each(['settlement-first', 'stopped-first'] as const)(
+    'a parent that stops one child keeps working across native callback order: %s',
+    async (order) => {
+      const f = await assistantFixture(database.db, 12, {
+          allowedTools: [
+            'read',
+            'assistant.delegate',
+            'assistant.report',
+            'assistant.stop',
+          ],
+        }),
+        holdA = gate(),
+        holdB = gate(),
+        settleA = gate();
+      let stoppedA = false;
+      const children: AssistantInstanceView[] = [];
+      const settled = new Map<string, string>();
+      const stopCallbacks: string[] = [];
+      let childReceipt: Record<string, unknown> | undefined;
+      const bridge = createAssistantWorkerBridge({
+        runtime: f.runtime,
+        task: f.task,
+        context: f.context,
+        worker: f.worker,
+        wireNames: { read: 'p24_proposal' },
+        readOnlyTools: new Set(),
+      });
+      const native = await p24Fixture(
+        async (request) => {
+          const payload = JSON.stringify(request.messages),
+            last = JSON.stringify(latestTaskMessage(request));
+          if (!payload.includes('ROOT_PRIVATE')) {
+            await (payload.includes('CHILD_A') ? holdA : holdB).promise;
+            return { text: 'Synthetic child result' };
+          }
+          if (last.includes('先停掉 A，B 继续'))
+            return {
+              nativeTool: {
+                name: 'assistant_stop',
+                arguments: { childRunId: children[0]!.runId },
+              },
+            };
+          return { text: 'A 已停止，B 继续。' };
+        },
+        undefined,
+        {
+          p25: true,
+          callback: async (method, p) => {
+            const childA = p.nativeSessionId === children[0]?.nativeSessionId;
+            // Gate the host callbacks themselves, proving both receipt orders
+            // through real native assistant_stop and the parent's next model call.
+            if (
+              childA &&
+              (order === 'stopped-first'
+                ? method === 'settled'
+                : method === 'stopped')
+            )
+              await settleA.promise;
+            if (method === 'settled' && !childA && order === 'stopped-first')
+              settleA.release();
+            try {
+              const result = await bridge.handle(method, p);
+              if (childA && (method === 'settled' || method === 'stopped')) {
+                stopCallbacks.push(method);
+                if (method === 'settled') {
+                  childReceipt = result;
+                  if (order === 'settlement-first') settleA.release();
+                }
+              }
+              if (method === 'settled')
+                settled.set(String(p.nativeSessionId), 'resolved');
+              return result;
+            } catch (error) {
+              if (method === 'settled')
+                settled.set(
+                  String(p.nativeSessionId),
+                  `rejected: ${(error as Error).message}`,
+                );
+              throw error;
+            } finally {
+              if (method === 'stopped' && childA) stoppedA = true;
+            }
+          },
+        },
+      );
+      const client = native.launch();
+      try {
+        await client.call('ready');
+        await client.call('create', { id: f.nativeSessionId });
+        await client.call('p25/bind', { nativeSessionId: f.nativeSessionId });
+        await client.call('prompt', {
+          id: f.nativeSessionId,
+          text: 'ROOT_PRIVATE',
+        });
+        await client.call('idle', { id: f.nativeSessionId });
+        for (const label of ['A', 'B']) {
+          const delegationId = randomUUID();
+          const child = await f.delegate({
+            delegationId,
+            text: `CHILD_${label}`,
+          });
+          children.push(child.instance);
+          await client.call(
+            'p25/start',
+            await bridge.messageDispatch(delegationId),
+          );
+        }
+        await expect.poll(() => native.requests.length).toBe(3);
+        await client.call('prompt', {
+          id: f.nativeSessionId,
+          text: '先停掉 A，B 继续',
+        });
+        await expect.poll(() => stoppedA, { timeout: 15000 }).toBe(true);
+        await expect
+          .poll(async () =>
+            (await client.snapshot(f.nativeSessionId)).events.some(
+              (e) => e.type === 'tool/result',
+            ),
+          )
+          .toBe(true);
+        holdB.release();
+        await expect
+          .poll(
+            async () =>
+              (await bridge.tree()).results.some(
+                (r) =>
+                  r.runId === children[1]!.runId && r.parentAdoptedSeq !== null,
+              ),
+            { timeout: 15000 },
+          )
+          .toBe(true);
+        await client.call('idle', { id: f.nativeSessionId });
+        expect(settled.get(children[0]!.nativeSessionId)).toBe('resolved');
+        expect(stopCallbacks).toEqual(
+          order === 'settlement-first'
+            ? ['settled', 'stopped']
+            : ['stopped', 'settled'],
+        );
+        expect(childReceipt).toMatchObject({ wakeParent: false });
+        const parent = await client.snapshot(f.nativeSessionId);
+        const turns = parent.events.filter((e) => e.type === 'turn/end');
+        expect(turns.length).toBeGreaterThanOrEqual(2);
+        expect(
+          turns.map((e) => (e.data.reason as { kind?: string })?.kind),
+        ).toEqual(turns.map(() => 'completed'));
+        const tree = await bridge.tree();
+        expect(
+          tree.instances.find((i) => i.runId === children[0]!.runId),
+        ).toMatchObject({ status: 'canceled', stoppedAt: expect.any(String) });
+        expect(tree.results.map((r) => r.runId).sort()).toEqual(
+          (order === 'settlement-first'
+            ? children.map((child) => child.runId)
+            : [children[1]!.runId]
+          ).sort(),
+        );
+        if (order === 'settlement-first')
+          expect(
+            tree.results.find((r) => r.runId === children[0]!.runId),
+          ).toMatchObject({ status: 'partial', parentAdoptedSeq: null });
+        else
+          expect(childReceipt).toEqual({
+            status: 'canceled',
+            wakeParent: false,
+          });
+        const [run] =
+          await database.db`select state from allrice_runs where id=${children[0]!.runId}`;
+        expect(run!.state).toBe('canceled');
+      } finally {
+        holdA.release();
+        holdB.release();
+        settleA.release();
+        await native.close();
+      }
+    },
+    60000,
+  );
   it('SIGKILL cold recovery reads actual JSONL and adopts only known receipts without replaying uncertain work', async () => {
     const f = await assistantFixture(database.db),
       hold = gate();

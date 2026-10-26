@@ -323,6 +323,25 @@ export function createAssistantRuntime(
     if (!row) fail('not_found');
     return row;
   }
+  async function currentDelivery(tx: Tx, root: Root, child: Instance) {
+    if (!child.parent_run_id) fail('forbidden');
+    const parent = await instance(tx, root, child.parent_run_id);
+    const [delivery] = await tx<
+      { payload: AssistantResult }[]
+    >`select payload from allrice_assistant_results where run_id=${child.run_id} order by created_at desc limit 1`;
+    return {
+      result: delivery?.payload ?? null,
+      wakeParent:
+        !!delivery &&
+        !root.cancel_request_id &&
+        !child.cancel_requested_at &&
+        !parent.cancel_requested_at &&
+        !root.revoked_at &&
+        child.status !== 'unknown' &&
+        !terminal.has(parent.status) &&
+        parent.status !== 'unknown',
+    };
+  }
   async function active(tx: Tx, root: Root, runId: string) {
     const row = await instance(tx, root, runId);
     const ancestors = await tx<
@@ -495,6 +514,33 @@ export function createAssistantRuntime(
       root.root_run_id,
     );
     return { developmentIncomplete, repositoryIncomplete };
+  }
+  /** One child completion rule for finalizeRoot and the checked commit guard.
+   * Every child must deliver a completed result its parent adopted, and every
+   * message to it must be consumed. A child stopped on request (the user's
+   * stop, or its parent's assistant_stop) is settled by that decision once its
+   * stop receipt commits, unless the whole root was canceled. The stop never
+   * rewrites a partial or failed outcome reported to a parent that is still
+   * live; outcomes inside a stopped subtree are settled with it. */
+  async function openChildren(tx: Tx, root: Root) {
+    const [open] = await tx<{ unresolved: boolean; incomplete: boolean }[]>`
+      with stopped as (
+        select run_id,parent_run_id,status from allrice_assistant_instances
+        where root_run_id=${root.root_run_id} and depth>0 and ${!root.cancel_request_id}
+          and cancel_requested_at is not null and stopped_at is not null),
+      owed as (
+        select i.run_id,i.status from allrice_assistant_instances i
+        where i.root_run_id=${root.root_run_id} and i.depth>0
+          and not exists(select 1 from stopped s where s.run_id=i.run_id))
+      select exists(select 1 from owed o left join allrice_assistant_results r on r.run_id=o.run_id
+          where r.delivery_id is null or r.parent_adopted_seq is null)
+        or exists(select 1 from allrice_assistant_messages m
+          where m.root_run_id=${root.root_run_id} and m.status not in ('adopted','canceled')
+            and not exists(select 1 from stopped s where s.run_id=m.recipient_run_id)) as unresolved,
+        exists(select 1 from owed where status<>'completed')
+          or exists(select 1 from stopped s where s.status in ('partial','failed')
+            and not exists(select 1 from stopped p where p.run_id=s.parent_run_id)) as incomplete`;
+    return open!;
   }
   async function checkedFacts(
     tx: Tx,
@@ -848,16 +894,15 @@ export function createAssistantRuntime(
         const unresolved = await unsettledUsage(tx, root, undefined, services);
         const [pending] =
           await tx`select 1 from allrice_runtime_operations where root_run_id=${captured.rootRunId}
-          and not (id=any(${services}::uuid[])) and snapshot->>'status' not in ('succeeded','failed','partial','canceled')
-          union all select 1 from allrice_assistant_instances i left join allrice_assistant_results r on r.run_id=i.run_id
-            where i.root_run_id=${captured.rootRunId} and i.depth>0 and
-              (i.status<>'completed' or r.delivery_id is null or r.parent_adopted_seq is null)
-          union all select 1 from allrice_assistant_messages where root_run_id=${captured.rootRunId} and status not in ('adopted','canceled') limit 1`;
+          and not (id=any(${services}::uuid[])) and snapshot->>'status' not in ('succeeded','failed','partial','canceled') limit 1`;
+        const open = await openChildren(tx, root);
         const { developmentIncomplete, repositoryIncomplete } =
           await currentDevelopmentCompletion(tx, root);
         if (
           unresolved.blocking ||
           pending ||
+          open.unresolved ||
+          open.incomplete ||
           developmentIncomplete ||
           repositoryIncomplete
         )
@@ -1152,10 +1197,7 @@ export function createAssistantRuntime(
           await tx`select 1 from allrice_runtime_operations where root_run_id=${root.root_run_id}
             and not (id=any(${continuingServices}::uuid[]))
             and snapshot->>'status' not in ('succeeded','failed','partial','canceled') limit 1`;
-        const [unadopted] =
-          await tx`select 1 from allrice_assistant_instances i left join allrice_assistant_results r on r.run_id=i.run_id where i.root_run_id=${root.root_run_id} and i.depth>0 and (r.delivery_id is null or r.parent_adopted_seq is null) limit 1`;
-        const [undelivered] =
-          await tx`select 1 from allrice_assistant_messages where root_run_id=${root.root_run_id} and status not in ('adopted','canceled') limit 1`;
+        const open = await openChildren(tx, root);
         // Generic assistant.report is not the development completion gate.
         // Only a current, tested/reviewed delivery may complete an initialized
         // development task; a later head/version or rejection invalidates it.
@@ -1164,13 +1206,10 @@ export function createAssistantRuntime(
         const status =
           unsettled.blocking ||
           pending ||
-          unadopted ||
-          undelivered ||
+          open.unresolved ||
           children.some((child) => !terminal.has(child.status))
             ? 'unknown'
-            : developmentIncomplete ||
-                repositoryIncomplete ||
-                children.some((child) => child.status !== 'completed')
+            : developmentIncomplete || repositoryIncomplete || open.incomplete
               ? 'partial'
               : 'completed';
         await assertLease(tx, root, input.worker);
@@ -1761,6 +1800,8 @@ export function createAssistantRuntime(
       runId: string;
       worker: AssistantWorkerLease;
       result: AssistantResult;
+      /** Native settlement fallback receipt, never an explicit report. */
+      settlement?: boolean;
     }) {
       const result = AssistantResultSchema.parse(input.result),
         digest = runtimeLedgerInputDigest(result);
@@ -1777,11 +1818,28 @@ export function createAssistantRuntime(
           return {
             wakeParent: false,
             duplicate: true,
+            recorded: true as const,
             status: AssistantResultSchema.parse(old.payload).status,
           };
         }
         const [prior] =
           await tx`select 1 from allrice_assistant_results where run_id=${row.run_id} limit 1`;
+        // A native settlement only stands in for a missing delivery. A report
+        // that landed after the caller found none is delivered instead. Once
+        // the stop receipt is committed, the settlement is the cancellation's
+        // own echo and records nothing (before it, a partial stop receipt is
+        // still recorded). A conflict here would fail the native writes that
+        // the parent's next model call, join and flush await.
+        if (
+          input.settlement &&
+          (prior || (row.cancel_requested_at && row.stopped_at))
+        )
+          return {
+            ...(await currentDelivery(tx, root, row)),
+            duplicate: false,
+            status: row.status,
+            recorded: false as const,
+          };
         if (prior || terminal.has(row.status)) fail('conflict');
         // An explicit completion must cite platform-registered immutable evidence;
         // idle or arbitrary final text is never a successful delivery.
@@ -1835,6 +1893,7 @@ export function createAssistantRuntime(
             !terminal.has(parent.status) &&
             parent.status !== 'unknown',
           duplicate: false,
+          recorded: true as const,
           status,
         };
       });
@@ -1879,24 +1938,7 @@ export function createAssistantRuntime(
       return db.begin(async (tx) => {
         const root = await lock(tx, input.scope, input.rootRunId);
         await assertLease(tx, root, input.worker, false);
-        const child = await instance(tx, root, input.runId);
-        if (!child.parent_run_id) fail('forbidden');
-        const parent = await instance(tx, root, child.parent_run_id);
-        const [delivery] = await tx<
-          { payload: AssistantResult }[]
-        >`select payload from allrice_assistant_results where run_id=${child.run_id} order by created_at desc limit 1`;
-        return {
-          result: delivery?.payload ?? null,
-          wakeParent:
-            !!delivery &&
-            !root.cancel_request_id &&
-            !child.cancel_requested_at &&
-            !parent.cancel_requested_at &&
-            !root.revoked_at &&
-            child.status !== 'unknown' &&
-            !terminal.has(parent.status) &&
-            parent.status !== 'unknown',
-        };
+        return currentDelivery(tx, root, await instance(tx, root, input.runId));
       });
     },
     async registerArtifact(input: {

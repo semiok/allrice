@@ -436,9 +436,12 @@ try {
   };
   await assertDeviceApi('online', 0);
   await page
-    .getByRole('button', { name: 'Bridge 在线 · 未选择工作区', exact: true })
+    .getByRole('button', {
+      name: '电脑已连接 · 未选文件夹，点击选择文件夹',
+      exact: true,
+    })
     .waitFor();
-  let dialog = await openBridge('Bridge 在线 · 未选择工作区');
+  let dialog = await openBridge('电脑已连接 · 未选文件夹，点击选择文件夹');
   await dialog.getByText('尚未选择文件夹', { exact: true }).waitFor();
   await page.screenshot({
     path: join(evidenceRoot, '01-online-without-workspace.png'),
@@ -450,14 +453,17 @@ try {
   await dialog.getByText(workspaceLabel, { exact: true }).waitFor();
   await dialog.getByRole('button', { name: '关闭', exact: true }).click();
   await page
-    .getByRole('button', { name: `本地工作区 ${workspaceLabel}`, exact: true })
+    .getByRole('button', {
+      name: `电脑已连接，文件夹 ${workspaceLabel}`,
+      exact: true,
+    })
     .waitFor();
   await assertDeviceApi('online', 1);
   await page.screenshot({
     path: join(evidenceRoot, '02-online-workspace.png'),
     fullPage: true,
   });
-  dialog = await openBridge(`本地工作区 ${workspaceLabel}`);
+  dialog = await openBridge(`电脑已连接，文件夹 ${workspaceLabel}`);
   await db`update allrice_bridge_devices set last_seen_at=clock_timestamp()-interval '5 minutes' where id=${device}`;
   await assertDeviceApi('offline', 1); // The old grant is retained, only hidden by the UI.
   await refreshBridge(dialog);
@@ -465,7 +471,7 @@ try {
   assert.equal(await dialog.getByText(new RegExp(workspaceLabel)).count(), 0);
   await dialog.getByRole('button', { name: '关闭', exact: true }).click();
   await page
-    .getByRole('button', { name: 'Bridge 离线', exact: true })
+    .getByRole('button', { name: '电脑未连接，点击查看如何连接', exact: true })
     .waitFor();
   assert.equal(
     await page.getByText(workspaceLabel, { exact: true }).count(),
@@ -475,13 +481,16 @@ try {
     path: join(evidenceRoot, '03-expired-offline.png'),
     fullPage: true,
   });
-  dialog = await openBridge('Bridge 离线');
+  dialog = await openBridge('电脑未连接，点击查看如何连接');
   await db`update allrice_bridge_devices set last_seen_at=clock_timestamp() where id=${device}`;
   await refreshBridge(dialog);
   await dialog.getByText(workspaceLabel, { exact: true }).waitFor();
   await dialog.getByRole('button', { name: '关闭', exact: true }).click();
   await page
-    .getByRole('button', { name: `本地工作区 ${workspaceLabel}`, exact: true })
+    .getByRole('button', {
+      name: `电脑已连接，文件夹 ${workspaceLabel}`,
+      exact: true,
+    })
     .waitFor();
   await assertDeviceApi('online', 1);
   checks.bridge = {
@@ -505,7 +514,7 @@ try {
   checks.normalConsoleErrors = [];
   // Separate explicitly injected network failure: do not invent a successful
   // API response or mistake the previous online response for current authority.
-  dialog = await openBridge(`本地工作区 ${workspaceLabel}`);
+  dialog = await openBridge(`电脑已连接，文件夹 ${workspaceLabel}`);
   failNextDeviceFetch = true;
   await dialog.getByRole('button', { name: '刷新状态', exact: true }).click();
   await dialog.getByText('待确认', { exact: true }).waitFor();
@@ -516,7 +525,7 @@ try {
   assert.equal(await dialog.getByText(new RegExp(workspaceLabel)).count(), 0);
   await page
     .getByRole('button', {
-      name: 'Bridge 状态待确认',
+      name: '电脑连接状态待确认，点击查看电脑',
       exact: true,
       includeHidden: true,
     })
@@ -534,7 +543,10 @@ try {
   assert.equal(await dialog.getByText('待确认', { exact: true }).count(), 0);
   await dialog.getByRole('button', { name: '关闭', exact: true }).click();
   await page
-    .getByRole('button', { name: `本地工作区 ${workspaceLabel}`, exact: true })
+    .getByRole('button', {
+      name: `电脑已连接，文件夹 ${workspaceLabel}`,
+      exact: true,
+    })
     .waitFor();
   assert.deepEqual(injectedNetworkFailures, ['/api/v1/bridge/devices']);
   assert.equal(

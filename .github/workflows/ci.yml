@@ -67,7 +67,7 @@ jobs:
         env:
           ALLRICE_RUN_BROWSER_INTEGRATION: 1
           ALLRICE_RUN_BRAND_CONTENT_BROWSER: 1
-        run: pnpm exec vitest run --maxWorkers=1 --testTimeout=30000 apps/web/components/admin/admin-shell.browser.test.ts apps/web/app/login/auth-submit.browser.test.ts apps/web/app/chatflow/workbench-layout.browser.test.ts apps/web/app/chatflow/native-document-preview.browser.test.ts apps/web/app/chatflow/terminal-workbench.browser.test.ts apps/web/app/chatflow/once-tasks.browser.test.ts apps/web/app/chatflow/recurring-tasks.browser.test.ts apps/web/app/chatflow/automation-tasks.browser.test.ts apps/web/app/chatflow/composer-isolation.browser.test.ts apps/web/app/chatflow/brand-content-panel.test.tsx apps/web/app/workspace/mcp/connected-apps.browser.test.ts apps/web/app/runtime-console/platform-model-settings.browser.test.ts apps/web/app/runtime-console/codex-subscriptions.browser.test.ts apps/web/app/runtime-console/codex-authorization.browser.test.ts apps/web/app/runtime-console/platform-mcp-settings.browser.test.ts apps/web/app/runtime-console/technical-tasks.browser.test.ts apps/web/app/runtime-console/platform-quality.browser.test.ts apps/web/app/runtime-console/platform-quality-evidence.browser.test.ts apps/web/app/runtime-console/platform-repository-repair.browser.test.ts apps/web/app/runtime-console/platform-repository-publications.browser.test.ts apps/web/app/runtime-console/platform-repository-reviews.browser.test.ts apps/web/app/runtime-console/platform-repository-merges.browser.test.ts apps/web/server/project-preview.test.mjs
+        run: pnpm exec vitest run --maxWorkers=1 --testTimeout=30000 apps/web/components/admin/admin-shell.browser.test.ts apps/web/app/login/auth-submit.browser.test.ts apps/web/app/chatflow/workbench-layout.browser.test.ts apps/web/app/chatflow/native-document-preview.browser.test.ts apps/web/app/chatflow/terminal-workbench.browser.test.ts apps/web/app/chatflow/once-tasks.browser.test.ts apps/web/app/chatflow/recurring-tasks.browser.test.ts apps/web/app/chatflow/automation-tasks.browser.test.ts apps/web/app/chatflow/composer-isolation.browser.test.ts apps/web/app/chatflow/composer-status.browser.test.ts apps/web/app/chatflow/browser-workspace-panel.browser.test.ts apps/web/app/chatflow/brand-content-panel.test.tsx apps/web/app/workspace/mcp/connected-apps.browser.test.ts apps/web/app/runtime-console/platform-model-settings.browser.test.ts apps/web/app/runtime-console/codex-subscriptions.browser.test.ts apps/web/app/runtime-console/codex-authorization.browser.test.ts apps/web/app/runtime-console/platform-mcp-settings.browser.test.ts apps/web/app/runtime-console/technical-tasks.browser.test.ts apps/web/app/runtime-console/platform-quality.browser.test.ts apps/web/app/runtime-console/platform-quality-evidence.browser.test.ts apps/web/app/runtime-console/platform-repository-repair.browser.test.ts apps/web/app/runtime-console/platform-repository-publications.browser.test.ts apps/web/app/runtime-console/platform-repository-reviews.browser.test.ts apps/web/app/runtime-console/platform-repository-merges.browser.test.ts apps/web/server/project-preview.test.mjs
       - name: Verify private repository credential write reconciliation
         env:
           ALLRICE_RUN_BROWSER_INTEGRATION: 1
@@ -170,8 +170,9 @@ jobs:
   developer-bootstrap:
     runs-on: ubuntu-latest
     # The complete PostgreSQL migration suite and final real Next/Bridge startup
-    # reached 30m after all tests passed; retain their individual test deadlines.
-    timeout-minutes: 35
+    # now take about 34m on a busy day (10-26: three runs cut off at 35m); retain
+    # their individual test deadlines. Making the job faster is tracked in MET-216.
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
       - name: Capture actual checked-out repository identity
@@ -264,7 +265,7 @@ jobs:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
         # Real public Host timers and disposable SQL schemas, without model calls.
-        run: ALLRICE_NATIVE_ONCE_PROBE_MODULE_BASE="$PWD/apps/worker/package.json" pnpm exec vitest run --maxWorkers=1 packages/database/src/native-schedule-once.integration.test.ts packages/database/src/native-schedule-recurring.integration.test.ts packages/database/src/native-schedule-control-upgrade.integration.test.ts packages/database/src/automation-admission-concurrency.integration.test.ts packages/database/src/platform-quality-native.integration.test.ts packages/database/src/platform-quality-native-locks.integration.test.ts apps/worker/test/native-schedule-once-sql.integration.test.ts apps/worker/test/p25/native-schedule-recurring.integration.test.ts apps/worker/test/p25/platform-quality-recurring.integration.test.ts
+        run: ALLRICE_NATIVE_ONCE_PROBE_MODULE_BASE="$PWD/apps/worker/package.json" pnpm exec vitest run --maxWorkers=1 packages/database/src/native-schedule-once.integration.test.ts packages/database/src/native-schedule-recurring.integration.test.ts packages/database/src/native-schedule-control-upgrade.integration.test.ts packages/database/src/native-schedule-recover.integration.test.ts packages/database/src/automation-admission-concurrency.integration.test.ts packages/database/src/platform-quality-native.integration.test.ts packages/database/src/platform-quality-native-locks.integration.test.ts apps/worker/test/native-schedule-once-sql.integration.test.ts apps/worker/test/p25/native-schedule-recurring.integration.test.ts apps/worker/test/p25/platform-quality-recurring.integration.test.ts
       - name: Verify read paths take no row locks (MET-210 #4)
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1

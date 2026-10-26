@@ -89,25 +89,48 @@ export const createAutomation: RiceToolHandler = async ({
           '未创建任务。delayMinutes 与当前用户明确指定的时间不一致，请按用户原话换算，不能自行延长或缩短。',
         );
     }
-    if (error instanceof NativeRecurringProductError) {
-      if (error.code === 'intent_required')
-        rejected(
-          'AUTOMATION_REQUEST_UNCLEAR',
-          '未创建任务。需要明确的周期和具体工作，或当前任务提问卡中用户已选定的完整提醒频率。支持每隔整数分钟、小时或天数，或每日、每周 HH:mm[:ss] 与 IANA 时区；每周还需明确执行日。请结合当前对话澄清缺失信息，不要要求用户重发已知工作；引用、条件、否定、无关历史、多种周期及每月规则不代表创建授权。',
-        );
-      if (error.code === 'rule_mismatch')
-        rejected(
-          'AUTOMATION_RULE_MISMATCH',
-          '未创建任务。周期、执行日、时间或时区与当前用户原话不一致，请按明确原话传参，不要自行猜测或修改。',
-        );
-    }
     throw error;
   };
   if ('rule' in parsed.data) {
     const task = await createRecurringTaskFromExecutionContext({
       ...common,
       rule: parsed.data.rule,
-    }).catch(reject);
+    }).catch((error: unknown) => {
+      if (
+        error instanceof NativeRecurringProductError &&
+        (error.code === 'confirmation_required' || error.code === 'declined')
+      )
+        return error;
+      return reject(error);
+    });
+    // Neither outcome is a failure: the human decides on a card, or did.
+    if (task instanceof NativeRecurringProductError)
+      return task.code === 'declined'
+        ? {
+            modelContent: JSON.stringify({
+              created: false,
+              status: 'declined',
+              next: '用户在确认卡上选择了先不创建。本轮不要再创建或再询问，告诉用户没有创建即可。',
+            }),
+            summary: '你选择了先不创建，没有创建定时任务。',
+            itemCount: 0,
+          }
+        : {
+            modelContent: JSON.stringify({
+              created: false,
+              status: 'confirmation_required',
+              askUserQuestion: task.confirmation?.askUserQuestion,
+              ...(task.confirmation?.recognized
+                ? {
+                    recognizedFromUserWords: task.confirmation.recognized,
+                    hint: '用户原话可直接识别为上面的频率，与本次参数不同。若是参数写错，按原话改参数重新调用即可，不必让用户确认。',
+                  }
+                : {}),
+              next: '尚未创建。把 askUserQuestion 原样交给 ask_user_question，不要改写任何文字。用户选择“确认：…”后，用完全相同的参数再调用一次 automation_create。',
+            }),
+            summary: '等你确认后再创建这个定时任务。',
+            itemCount: 0,
+          };
     return {
       modelContent: JSON.stringify({
         automationId: task.id,

@@ -58,8 +58,21 @@ beforeEach(() => {
   ports.authority.mockResolvedValue({ cancelRequested: false });
   ports.tree.mockResolvedValue({
     budgets: [
-      { metric: 'model_calls', capacity: 12, reserved: 1, spent: 2 },
-      { metric: 'output_tokens', capacity: 4096, reserved: 100, spent: 200 },
+      // Same shape as getTree under the observed-usage policy.
+      {
+        metric: 'model_calls',
+        capacity: 12,
+        reserved: 1,
+        spent: 2,
+        enforced: false,
+      },
+      {
+        metric: 'output_tokens',
+        capacity: 4096,
+        reserved: 100,
+        spent: 200,
+        enforced: false,
+      },
     ],
   });
   ports.closePreparation.mockImplementation(async ({ callId }) => ({
@@ -506,8 +519,8 @@ it('checked repair uses the real frozen provider and calls current authority and
     workerLeaseDigest: hash(h.worker.leaseToken),
     provider: 'openai-compatible',
     model: 'fixture',
-    remainingModelCalls: 9,
-    remainingOutputTokens: 3796,
+    remainingModelCalls: 12,
+    remainingOutputTokens: 4096,
   });
   expect(ports.authority).toHaveBeenCalledTimes(4);
   expect(ports.authority).toHaveBeenCalledWith({

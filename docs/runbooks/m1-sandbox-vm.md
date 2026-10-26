@@ -25,7 +25,7 @@ colima ssh -p allrice-cloud-arm -- sudo /usr/local/lib/allrice-cloud/watchdog.py
 2. **VM 在运行但 docker 无响应**：`colima ssh -p allrice-cloud-arm -- sudo systemctl restart docker`，再看 `docker info`。
 3. **守护 `allrice-cloud-watchdog` 不是 active**：`colima ssh -p allrice-cloud-arm -- sudo systemctl restart allrice-cloud-watchdog`，再看 `journalctl -u allrice-cloud-watchdog -n 50`。守护负责到点停容器，没有它不能放行新的云端执行。
 4. **证明不是 ready，但服务和 docker 都在**：多半是 VM 重启后 runsc 没了。#557 起 `daemon.json` 写进了 `~/.colima/allrice-cloud-arm/colima.yaml` 的 `docker:` 节，VM 重启后 runsc 会保留；之前的 VM 要按 #557 的说明补上并重启一次 VM。
-5. VM 起不来（磁盘、vz 报错）：保留现场，派 Codex Sol 只读诊断（命令见 [m1-monitor.md](m1-monitor.md#诊断交给-codex)），把结论告诉用户。不要删 profile、不要 `colima delete`：VM 里有钉死的镜像，重建要重新构建镜像（见 [m1-missing-image.md](m1-missing-image.md)）。
+5. VM 起不来（磁盘、vz 报错）：保留现场，派 Codex Astra 只读诊断（命令见 [m1-monitor.md](m1-monitor.md#诊断交给-codex)），把结论告诉用户。不要删 profile、不要 `colima delete`：VM 里有钉死的镜像，重建要重新构建镜像（见 [m1-missing-image.md](m1-missing-image.md)）。
 
 ## 自动拉起与登录
 
