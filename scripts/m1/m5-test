@@ -75,8 +75,8 @@ probe() {
 # $STOPPED when this side is told to stop, or m5-test itself is gone (killed by its caller).
 relay() {
   /usr/bin/python3 -c 'import os,select,signal,subprocess,sys,time
-idle,log,stopped=float(sys.argv[1]),open(sys.argv[2],"ab"),int(sys.argv[3])
-p=subprocess.Popen(sys.argv[4:],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,start_new_session=True)
+idle,log,stopped,parent=float(sys.argv[1]),open(sys.argv[2],"ab"),int(sys.argv[3]),int(sys.argv[4])
+p=subprocess.Popen(sys.argv[5:],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,start_new_session=True)
 stop=[]
 for s in (signal.SIGINT,signal.SIGTERM,signal.SIGHUP): signal.signal(s,lambda n,f: stop.append(n))
 def kill(sig):
@@ -89,8 +89,7 @@ def end(code): # the command and everything it started (on M1: the whole test ru
     sys.exit(code)
 def out(b): sys.stdout.buffer.write(b); sys.stdout.flush(); log.write(b); log.flush()
 fd,last=p.stdout.fileno(),time.time()
-parent=os.getppid()
-while not stop and os.getppid()==parent:
+while not stop and os.getppid()==parent: # given, not read: m5-test may be gone already
     if select.select([fd],[],[],1)[0]:
         b=os.read(fd,65536)
         if not b: break
@@ -99,7 +98,7 @@ while not stop and os.getppid()==parent:
         out(b"m5-test: no output for %ds; stopping this run\n" % idle); end(124)
 if stop or os.getppid()!=parent: end(stopped)
 rc=p.wait()
-sys.exit(rc if rc>=0 else 255)' "$1" "$2" "$STOPPED" "${@:3}"
+sys.exit(rc if rc>=0 else 255)' "$1" "$2" "$STOPPED" $$ "${@:3}"
 }
 # leftovers: of the runs that last held a slot on M5 ($owners), those whose M1 side has let go.
 # A run takes its lease before it reaches M5 and lets go only when it is done with M5, so an
