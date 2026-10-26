@@ -510,33 +510,99 @@ integration('P25 governed assistant ledger — isolated real PostgreSQL', () => 
     ['unconfirmed', 'unknown'],
     ['stopped', 'completed'],
     ['settlement-then-stopped', 'completed'],
+    // The stop settles unfinished work; it never rewrites what the child said.
+    ['reported-partial-then-stopped', 'partial'],
   ] as const)(
     'a child stopped on request no longer holds the root open once its stop receipt commits: %s',
     async (order, status) => {
       const f = await assistantFixture(fixture.db),
         child = (await f.delegate()).instance;
-      await f.runtime.cancelChild(f.context, {
-        runId: f.task.runId,
-        childRunId: child.runId,
-        requestId: randomUUID(),
-      });
-      if (order === 'settlement-then-stopped')
-        await f.runtime.recordResult({
+      const partial = (settlement: boolean) =>
+        f.runtime.recordResult({
           ...f.base,
           runId: child.runId,
           result: {
             deliveryId: randomUUID(),
             status: 'partial',
-            summary: 'Native assistant settled without a verified delivery.',
+            summary: settlement
+              ? 'Native assistant settled without a verified delivery.'
+              : 'Half of the synthetic input checked',
             evidence: [],
-            incomplete: ['Native stop reason: native_settled'],
+            incomplete: [
+              settlement
+                ? 'Native stop reason: native_settled'
+                : 'second half unchecked',
+            ],
             usageComplete: false,
           },
-          settlement: true,
+          settlement,
         });
+      if (order === 'reported-partial-then-stopped') await partial(false);
+      await f.runtime.cancelChild(f.context, {
+        runId: f.task.runId,
+        childRunId: child.runId,
+        requestId: randomUUID(),
+      });
+      if (order === 'settlement-then-stopped') await partial(true);
       if (order !== 'unconfirmed')
         await f.runtime.confirmStopped({ ...f.base, runId: child.runId });
       expect(await f.runtime.finalizeRoot(f.base)).toMatchObject({ status });
+    },
+  );
+  it.each([
+    ['descendant-unconfirmed', 'unknown'],
+    ['descendant-reported-partial', 'completed'],
+    ['sibling-unadopted', 'unknown'],
+    ['root-canceled', 'canceled'],
+  ] as const)(
+    'stopping one child never relaxes the rest of the tree: %s',
+    async (mode, outcome) => {
+      const f = await assistantFixture(fixture.db),
+        a = (await f.delegate()).instance;
+      const nested = mode.startsWith('descendant')
+        ? (await f.delegate({ parentRunId: a.runId })).instance
+        : undefined;
+      const sibling =
+        mode === 'sibling-unadopted'
+          ? (await f.delegate()).instance
+          : undefined;
+      const report = (runId: string) =>
+        f.runtime.recordResult({
+          ...f.base,
+          runId,
+          result: {
+            deliveryId: randomUUID(),
+            status: 'partial',
+            summary: 'Half of the synthetic input checked',
+            evidence: [],
+            incomplete: ['second half unchecked'],
+            usageComplete: false,
+          },
+        });
+      if (mode === 'descendant-reported-partial') await report(nested!.runId);
+      if (sibling) await report(sibling.runId);
+      await f.runtime.cancelChild(f.context, {
+        runId: f.task.runId,
+        childRunId: a.runId,
+        requestId: randomUUID(),
+      });
+      // The stop covers A's subtree; a nested stop receipt lands first.
+      if (mode === 'descendant-reported-partial')
+        await f.runtime.confirmStopped({ ...f.base, runId: nested!.runId });
+      await f.runtime.confirmStopped({ ...f.base, runId: a.runId });
+      if (mode === 'root-canceled') {
+        await f.runtime.cancelRoot(f.context, {
+          runId: f.task.runId,
+          requestId: randomUUID(),
+        });
+        await expect(f.runtime.finalizeRoot(f.base)).rejects.toThrow(
+          'canceled',
+        );
+        return;
+      }
+      expect(await f.runtime.finalizeRoot(f.base)).toMatchObject({
+        status: outcome,
+      });
     },
   );
   it('records evidence-backed delivery independently from parent adoption', async () => {

@@ -257,12 +257,20 @@ integration(
           cancelRequestedAt: expect.any(String),
           stoppedAt: expect.any(String),
         });
-        expect(tree.results).toHaveLength(1);
-        expect(tree.results[0]).toMatchObject({
-          runId: b!.runId,
+        expect(tree.results.find((r) => r.runId === b!.runId)).toMatchObject({
           status: 'completed',
           parentAdoptedSeq: expect.any(Number),
         });
+        // Native settles A on its own schedule: before the stop receipt it
+        // leaves a partial stop receipt, after it nothing. Neither is adopted.
+        const stopReceipt = tree.results.filter((r) => r.runId === a!.runId);
+        expect(stopReceipt.length).toBeLessThanOrEqual(1);
+        for (const receipt of stopReceipt)
+          expect(receipt).toMatchObject({
+            status: 'partial',
+            parentAdoptedSeq: null,
+          });
+        expect(tree.results).toHaveLength(1 + stopReceipt.length);
         const runs =
           await database.db`select id,state from allrice_runs where id in ${database.db([a!.runId, b!.runId])}`;
         expect(Object.fromEntries(runs.map((r) => [r.id, r.state]))).toEqual({

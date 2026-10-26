@@ -519,11 +519,13 @@ export function createAssistantRuntime(
    * Every child must deliver a completed result its parent adopted, and every
    * message to it must be consumed. A child stopped on request (the user's
    * stop, or its parent's assistant_stop) is settled by that decision once its
-   * stop receipt commits, unless the whole root was canceled. */
+   * stop receipt commits, unless the whole root was canceled. The stop never
+   * rewrites a partial or failed outcome reported to a parent that is still
+   * live; outcomes inside a stopped subtree are settled with it. */
   async function openChildren(tx: Tx, root: Root) {
     const [open] = await tx<{ unresolved: boolean; incomplete: boolean }[]>`
       with stopped as (
-        select run_id from allrice_assistant_instances
+        select run_id,parent_run_id,status from allrice_assistant_instances
         where root_run_id=${root.root_run_id} and depth>0 and ${!root.cancel_request_id}
           and cancel_requested_at is not null and stopped_at is not null),
       owed as (
@@ -535,7 +537,9 @@ export function createAssistantRuntime(
         or exists(select 1 from allrice_assistant_messages m
           where m.root_run_id=${root.root_run_id} and m.status not in ('adopted','canceled')
             and not exists(select 1 from stopped s where s.run_id=m.recipient_run_id)) as unresolved,
-        exists(select 1 from owed where status<>'completed') as incomplete`;
+        exists(select 1 from owed where status<>'completed')
+          or exists(select 1 from stopped s where s.status in ('partial','failed')
+            and not exists(select 1 from stopped p where p.run_id=s.parent_run_id)) as incomplete`;
     return open!;
   }
   async function checkedFacts(
