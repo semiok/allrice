@@ -145,6 +145,9 @@ export interface BoundDeliveryRepair {
     originalDeadlineAt: number;
     provider: string;
     model: string;
+    /** Native only checks these are at least 1 before proposing a repair; the
+     * repair call's real output bound comes from native model admission. For
+     * an observed metric they are its capacity, not a ledger balance. */
     remainingModelCalls: number;
     remainingOutputTokens: number;
   }>;
@@ -175,6 +178,8 @@ export function createBoundedDeliveryRepair(input: {
       capacity: number;
       reserved: number;
       spent: number;
+      /** `false` when the runtime only observes this metric (see getTree). */
+      enforced?: boolean;
     }[]
   >;
   close(callId: string): ReturnType<BoundDeliveryRepair['closePreparation']>;
@@ -203,14 +208,19 @@ export function createBoundedDeliveryRepair(input: {
       const budgets = await input.budgets();
       const remaining = (metric: string) => {
         const matches = budgets.filter((budget) => budget.metric === metric);
+        const budget = matches[0]!;
+        // Every ledger field must be present and exact, observed or not.
         if (
           matches.length !== 1 ||
-          !Object.values(matches[0]!)
-            .filter((value) => typeof value === 'number')
-            .every((value) => Number.isSafeInteger(value) && value >= 0)
+          ![budget.capacity, budget.reserved, budget.spent].every(
+            (value) => Number.isSafeInteger(value) && value >= 0,
+          )
         )
           throw Error('FINAL_DELIVERY_REPAIR_BUDGET_UNAVAILABLE');
-        const budget = matches[0]!;
+        // An observed metric is telemetry, not a spending gate; model admission
+        // does not stop on it either. Report its capacity so native may propose
+        // the one repair; spend and unknown-usage reservations stay as they are.
+        if (budget.enforced === false) return budget.capacity;
         return Math.max(0, budget.capacity - budget.reserved - budget.spent);
       };
       const remainingModelCalls = remaining('model_calls');
