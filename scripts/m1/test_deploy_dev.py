@@ -1,0 +1,221 @@
+# Unit tests for scripts/m1/deploy-dev (MET-221 PR2b-0): the migration gate that knows a
+# release's archived migrations, and the pre-migration snapshot. deploy-dev is sourced for
+# its functions in a fake HOME with psql and pg_dump stubbed; a release's
+# migration-compatibility.js is imported by the real node.
+#   python3 -m unittest discover -s scripts/m1 -p 'test_*.py'
+import gzip
+import json
+import os
+import plistlib
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+DEPLOY_DEV = os.path.join(HERE, 'deploy-dev')
+_pinned = os.path.expanduser('~/.local/opt/node-22.23.2/bin/node')
+NODE = _pinned if os.path.exists(_pinned) else shutil.which('node')
+ARCHIVED = [
+    '0073_gemini_model_provider.sql',
+    '0213_native_chat_executor_transitions.sql',
+    '0214_native_control_cloud_absence.sql',
+    '0215_terminal_native_test_retirements.sql',
+    '0216_native_legacy_chat_adoption.sql',
+]
+FILES = ['0001_baseline.sql', '0073_runtime_operation_ledger.sql', '0212_dsh_runtime_close_observations.sql',
+         '0217_brand_content_feedback.sql', '0218_native_generation_binding.sql']
+
+
+def write(path, text, mode=0o644):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w') as f:
+        f.write(text)
+    os.chmod(path, mode)
+
+
+@unittest.skipUnless(NODE, 'node is not installed')
+class DeployDevMigrations(unittest.TestCase):
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix='deploy-dev-test-'))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.home = os.path.join(self.tmp, 'home')
+        for role in ('web', 'worker'):
+            path = os.path.join(self.home, 'Library/LaunchAgents/ai.bplabs.allrice-dev-%s.plist' % role)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'wb') as f:
+                plistlib.dump({'Label': role, 'WorkingDirectory': '/nowhere', 'EnvironmentVariables': {
+                    'DATABASE_URL': 'postgres://stub/allrice_dev', 'ALLRICE_WEB_PORT': '1', 'ALLRICE_WORKER_PORT': '2'}}, f)
+        write(os.path.join(self.home, 'allrice-dev/.env'), 'ALLRICE_TEST=1\n', 0o600)
+        local = os.path.join(self.home, 'allrice-dev/.local')
+        write(os.path.join(local, 'storage/org/file.txt'), 'stored')
+        write(os.path.join(local, 'dsh-runtime-m1/rt/journal.jsonl'), '{"v":1}\n')
+        write(os.path.join(local, 'bridge/big.bin'), 'not snapshotted')
+        self.stubs = os.path.join(self.tmp, 'stubs')
+        self.applied = os.path.join(self.tmp, 'applied.txt')
+        write(os.path.join(self.stubs, 'psql'), '#!/bin/sh\n[ -z "$PSQL_FAIL" ] || exit 2\ncat "$APPLIED"\n', 0o755)
+        write(os.path.join(self.stubs, 'pg_dump'), '#!/bin/sh\n[ -z "$PG_DUMP_FAIL" ] || exit 1\necho "-- dump of $*"\n', 0o755)
+        if sys.platform != 'darwin':  # GNU cp has no clonefile flag
+            write(os.path.join(self.stubs, 'cp'), '#!/bin/sh\n[ "$1" != -c ] || shift\nexec /bin/cp "$@"\n', 0o755)
+        self.snapshots = os.path.join(self.home, 'allrice-dev/qa/pre-migrate')
+
+    def release(self, files=FILES, archived=ARCHIVED, module=None):
+        rel = tempfile.mkdtemp(prefix='rel-', dir=self.tmp)
+        db = os.path.join(rel, 'packages/database')
+        for name in files:
+            write(os.path.join(db, 'migrations', name), '-- %s\n' % name)
+        write(os.path.join(db, 'migrations/README.md'), 'not a migration')
+        write(os.path.join(db, 'package.json'), '{"type":"module"}\n')
+        if module is None:
+            module = 'export const archivedMigrationNames = %s;\nexport function migrationsMatch() {}\n' % archived
+        if module is not False:
+            write(os.path.join(db, 'dist/migration-compatibility.js'), module)
+        # Importing anything else would be a bug: migrate.js runs migrations when it loads.
+        write(os.path.join(db, 'dist/migrate.js'), 'throw new Error("migrate.js was imported");\n')
+        return rel
+
+    def run_dd(self, script, applied, **env):
+        write(self.applied, ''.join(n + '\n' for n in applied))
+        path = ':'.join([self.stubs, os.path.dirname(NODE), '/usr/bin', '/bin', '/usr/sbin', '/sbin'])
+        env = dict(HOME=self.home, PATH=path, TEST_PATH=path, APPLIED=self.applied, **env)
+        return subprocess.run(['/bin/bash', '-c', 'source "$1"; PATH=$TEST_PATH; inflight_phase() { :; }; ' + script,
+                               'test', DEPLOY_DEV], env=env, capture_output=True, text=True, timeout=60)
+
+    def check(self, rel, applied):  # -> (known, printed)
+        p = self.run_dd('if out=$(check_migrations_known "$REL"); then echo "OK $out"; else echo "REFUSED $out"; fi',
+                        applied, REL=rel)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        verdict, _, printed = p.stdout.strip().partition(' ')
+        return verdict == 'OK', printed
+
+    def test_archived_names_are_known(self):
+        known, pending = self.check(self.release(), FILES + ARCHIVED)
+        self.assertTrue(known)
+        self.assertEqual(pending, '')
+
+    def test_names_that_differ_slightly_are_refused(self):
+        rel = self.release()
+        for near in ('0213_x.sql', '0213_native_chat_executor_transition.sql', '0214_native_control_cloud_absence.sq',
+                     '0215_Terminal_native_test_retirements.sql', ' 0216_native_legacy_chat_adoption.sql', 'README.md'):
+            with self.subTest(near=near):
+                known, printed = self.check(rel, FILES + ARCHIVED[:1] + [near])
+                self.assertFalse(known)
+                self.assertIn(near.strip(), printed)
+
+    def test_unarchived_deleted_migration_is_refused(self):
+        known, printed = self.check(self.release(archived=ARCHIVED[:1]), FILES + ARCHIVED)
+        self.assertFalse(known)
+        self.assertIn('0213_native_chat_executor_transitions.sql', printed)
+
+    def test_unreadable_archive_list_refuses(self):
+        for module in (False, 'export const somethingElse = [];\n', 'export const archivedMigrationNames = ["../x"];\n',
+                       'import "./migrate.js";\nexport const archivedMigrationNames = [];\n'):
+            with self.subTest(module=module):
+                known, printed = self.check(self.release(module=module), FILES)
+                self.assertFalse(known)
+                self.assertIn('cannot read archivedMigrationNames', printed)
+
+    def test_unreadable_database_refuses(self):
+        p = self.run_dd('check_migrations_known "$REL" || echo "REFUSED"', FILES, REL=self.release(), PSQL_FAIL='1')
+        self.assertIn('cannot read allrice_schema_migrations', p.stdout)
+        self.assertIn('REFUSED', p.stdout)
+
+    def test_pending_migrations_are_listed(self):
+        known, pending = self.check(self.release(), FILES[:-1] + ARCHIVED)
+        self.assertTrue(known)
+        self.assertEqual(pending, '0218_native_generation_binding.sql')
+
+    def snapshot(self, applied, forced='0', name='20261026-1800-abcdef12', **env):
+        return self.run_dd('pending=$(check_migrations_known "$REL"); pre_migrate_snapshot "$NAME" "$pending" "$FORCED"',
+                           applied, REL=self.release(), NAME=name, FORCED=forced, **env)
+
+    def test_no_snapshot_without_migrations(self):
+        p = self.snapshot(FILES + ARCHIVED)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn('no migrations to apply; no snapshot', p.stdout)
+        self.assertFalse(os.path.exists(self.snapshots))
+
+    def assert_snapshot(self, name):
+        d = os.path.join(self.snapshots, name)
+        self.assertEqual(sorted(os.listdir(d)), ['allrice_dev.sql.gz', 'dsh-runtime-m1', 'env', 'storage', 'web.plist', 'worker.plist'])
+        with gzip.open(os.path.join(d, 'allrice_dev.sql.gz'), 'rt') as f:
+            self.assertEqual(f.read(), '-- dump of -Fp --no-owner --no-privileges postgres://stub/allrice_dev\n')
+        with open(os.path.join(d, 'storage/org/file.txt')) as f:
+            self.assertEqual(f.read(), 'stored')
+        self.assertEqual(os.stat(os.path.join(d, 'env')).st_mode & 0o777, 0o600)
+        self.assertEqual(os.stat(d).st_mode & 0o777, 0o700)
+
+    def test_snapshot_before_pending_migrations(self):
+        p = self.snapshot(FILES[:-1] + ARCHIVED)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn('to apply: 0218_native_generation_binding.sql', p.stdout)
+        self.assert_snapshot('20261026-1800-abcdef12')
+
+    def test_forced_snapshot_without_migrations(self):
+        p = self.snapshot(FILES + ARCHIVED, forced='1')
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn('forced; no migrations to apply', p.stdout)
+        self.assert_snapshot('20261026-1800-abcdef12')
+
+    def test_keeps_the_newest_two_snapshots(self):
+        for name in ('20261026-1000-aaaaaaaa', '20261026-1200-cccccccc', '20261026-1100-bbbbbbbb'):
+            self.assertEqual(self.snapshot(FILES + ARCHIVED, forced='1', name=name).returncode, 0)
+        self.assertEqual(sorted(os.listdir(self.snapshots)), ['20261026-1100-bbbbbbbb', '20261026-1200-cccccccc'])
+
+    def test_pruning_is_best_effort_and_clears_leftovers(self):
+        for name in ('20261026-1000-aaaaaaaa/ro', '20261026-1100-bbbbbbbb', '20261026-0900-killed.tmp'):
+            os.makedirs(os.path.join(self.snapshots, name))
+        locked = os.path.join(self.snapshots, '20261026-1000-aaaaaaaa/ro')
+        write(os.path.join(locked, 'f'), 'x')
+        os.chmod(locked, 0o555)  # rm -rf cannot empty it
+        self.addCleanup(os.chmod, locked, 0o755)
+        p = self.snapshot(FILES + ARCHIVED, forced='1', name='20261026-1200-cccccccc')
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn('could not prune', p.stderr)
+        self.assertEqual(sorted(os.listdir(self.snapshots)), ['20261026-1000-aaaaaaaa', '20261026-1100-bbbbbbbb', '20261026-1200-cccccccc'])
+
+    def precheck(self, output, earlier=''):
+        rel = self.release()
+        write(os.path.join(rel, 'scripts/dev-release/verify-native-retention.mjs'),
+              'console.error(%s); process.exit(1);\n' % json.dumps(output))
+        log = os.path.join(self.tmp, 'deploy.log')
+        write(log, earlier)
+        p = self.run_dd('precheck "$REL" sha art "$PLOG" || echo "REFUSED"', [], REL=rel, PLOG=log)
+        self.assertIn('REFUSED', p.stdout, p.stderr)
+        return p.stdout
+
+    def test_precheck_names_the_failure(self):
+        cases = [
+            ('Error: DSH_NATIVE_CONTEXT_INCOMPATIBLE [chat 1 generation]', 'incompatible with this version'),
+            ('Error: DSH_NATIVE_JOURNAL_CONTRACT_AHEAD [2 > 1]', 'journal contract range does not cover'),
+            ('error: relation "allrice_new_table" does not exist', 'a defect, the checker must run on the schema before'),
+            ('Error: DSH_NATIVE_ARTIFACT_REFERENCES_UNCOVERED [INCOMPATIBLE-looking detail]', 'does not cover'),
+        ]
+        for output, expected in cases:
+            with self.subTest(output=output):
+                self.assertIn(expected, self.precheck(output))
+        # Text from earlier in the deploy log (the build) is not this check's failure.
+        out = self.precheck('Error: DSH_NATIVE_SOMETHING_ELSE', earlier='relation "x" does not exist\n')
+        self.assertIn('pre-stop native check failed: DSH_NATIVE_SOMETHING_ELSE', out)
+
+    def test_failed_snapshot_stops_the_deploy(self):
+        p = self.snapshot(FILES[:-1] + ARCHIVED, PG_DUMP_FAIL='1')
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn('FAILED: pre-migration snapshot failed', p.stderr)
+        self.assertEqual(os.listdir(self.snapshots), [])
+
+    def test_unready_worker_does_not_stop_the_deploy(self):
+        # Nothing listens on the plist's Worker port: no boot id, and set -e must not abort.
+        p = self.run_dd('boot=$(worker_boot); echo "boot=[$boot]"', [])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn('boot=[]', p.stdout)
+
+    def test_after_stop_report_never_fails(self):
+        p = self.run_dd('report_after_stop 11111111-2222-3333-4444-555555555555; echo "rc=$?"', [], PSQL_FAIL='1')
+        self.assertIn('after stop (diagnostic, not a gate)', p.stdout)
+        self.assertIn('rc=0', p.stdout)
+
+
+if __name__ == '__main__':
+    unittest.main()

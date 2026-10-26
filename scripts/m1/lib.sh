@@ -65,6 +65,26 @@ stop_job() {
   return 1
 }
 
+# migration_diff <release>: compare the migration names on stdin (what a database has
+# applied) with the names <release> knows: its migrations/*.sql plus the archived names
+# its built dist/migration-compatibility.js exports (as its db:verify does). Only that file is
+# imported; dist/migrate.js would run the migrations as soon as it loads. Prints
+# "unknown <name>" for each applied name the release does not know (its db:verify refuses
+# such a database) and "pending <name>" for each file not applied yet (its db:prepare
+# runs it). Exit 1, printing the reason, when the release's names cannot be read.
+migration_diff() {
+  local db="$1/packages/database" files archived applied
+  files=$(ls "$db/migrations" 2>/dev/null | grep '\.sql$' | LC_ALL=C sort) || { echo "no migrations in $db/migrations"; return 1; }
+  archived=$(node --input-type=module -e 'import { pathToFileURL } from "node:url";
+const names = (await import(pathToFileURL(process.argv[1]).href)).archivedMigrationNames;
+if (!Array.isArray(names) || !names.every((n) => /^[\w.-]+\.sql$/.test(n))) throw Error("no archivedMigrationNames list");
+for (const n of names) console.log(n);' "$db/dist/migration-compatibility.js" 2>/dev/null) \
+    || { echo "cannot read archivedMigrationNames from $db/dist/migration-compatibility.js"; return 1; }
+  applied=$(LC_ALL=C sort -u)
+  LC_ALL=C comm -23 <(printf '%s\n' "$applied") <(printf '%s\n%s\n' "$files" "$archived" | LC_ALL=C sort -u) | sed '/^$/d; s/^/unknown /'
+  LC_ALL=C comm -13 <(printf '%s\n' "$applied") <(printf '%s\n' "$files") | sed '/^$/d; s/^/pending /'
+}
+
 # start_job <label> <plist>: load and start the job (bootstrap can briefly fail while a
 # previous instance is still being torn down).
 start_job() {

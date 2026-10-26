@@ -1,32 +1,130 @@
 #!/bin/bash
-# Five real end-to-end smoke checks (rules: AGENTS.md §5 at the repository root): chat, office, csv,
-# browser, reminder. Uses real model calls; takes ~5-8 minutes for all five.
+# Six real end-to-end smoke checks (rules: AGENTS.md §5 at the repository root): chat,
+# continue, office, csv, browser, reminder. Uses real model calls; takes ~6-9 minutes for all six.
 #
 #   smoke-test --dev [--only a,b] [--expect-sha <sha>] [--out <dir>]               shared Dev, smoke account
 #   smoke-test --instance <task> [--only a,b] [--expect-sha <sha>] [--out <dir>]   a QA instance (default:
-#                                       chat,browser,reminder — cloud execution is off there)
+#                                       chat,continue,browser,reminder — cloud execution is off there)
 #
 # Web and Worker must report the same version at the start and the end of the run (and
 # --expect-sha, when given); otherwise the run fails. Results: <out>/result.json.
+#
+# continue: a follow-up in the session the newest earlier run in the same smoke directory
+# left (same account). The database must then show the follow-up's run succeeded and the
+# session's native_root_origin bytes as that run recorded them; when the native artifact
+# is no longer the one the session began under, the origin must not name the current one
+# (the session was continued across artifacts). With no earlier session it starts one for
+# next time: skipped, not failed.
 set -euo pipefail
 NODE="$HOME/.local/opt/node-22.23.2/bin/node"; BIN=$(cd "$(dirname "$0")" && pwd -P)
 ts=$(date +%Y%m%d-%H%M%S)
-json() { /usr/bin/python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$1" "$2"; }
+json() { /usr/bin/python3 -c 'import json,sys;v=json.load(open(sys.argv[1]))[sys.argv[2]];print("" if v is None else v)' "$1" "$2"; }
 penv() { /usr/bin/python3 -c 'import plistlib,os,sys;print(plistlib.load(open(os.path.expanduser(sys.argv[1]),"rb"))["EnvironmentVariables"][sys.argv[2]])' "$1" "$2"; }
 case "${1:-}" in
   --dev)
     shift
     web=$(penv ~/Library/LaunchAgents/ai.bplabs.allrice-dev-web.plist ALLRICE_WEB_PORT)
     worker=$(penv ~/Library/LaunchAgents/ai.bplabs.allrice-dev-worker.plist ALLRICE_WORKER_PORT)
-    creds="$HOME/allrice-dev/qa/smoke-cred.json"; out="$HOME/allrice-dev/qa/smoke/$ts"; extra=() ;;
+    creds="$HOME/allrice-dev/qa/smoke-cred.json"; out="$HOME/allrice-dev/qa/smoke/$ts"; extra=()
+    dbenv=$("$BIN/with-env" worker sh -c 'printf "%s\n%s" "$DATABASE_URL" "${ALLRICE_DSH_NATIVE_ARTIFACT_ID:-}"') || dbenv="" ;;
   --instance)
     task=${2:?task}; shift 2
     f="$HOME/allrice-qa/$task/instance.json"; [ -f "$f" ] || { echo "no QA instance: $task" >&2; exit 2; }
     web=$(json "$f" webPort); worker=$(json "$f" workerPort)
     creds="$HOME/allrice-qa/$task/creds.json"; out="$HOME/allrice-qa/$task/smoke/$ts"
-    extra=(); [[ " $* " == *" --only "* ]] || extra=(--only chat,browser,reminder) ;;
-  *) sed -n 2,10p "$0"; exit 2 ;;
+    dbenv=$(set -a; . "$HOME/allrice-qa/$task/.env"; printf '%s\n%s' "$DATABASE_URL" "$(json "$f" nativeArtifactId)") || dbenv=""
+    extra=(); [[ " $* " == *" --only "* ]] || extra=(--only chat,continue,browser,reminder) ;;
+  *) sed -n 2,17p "$0"; exit 2 ;;
 esac
-# A caller-given --out comes later on the command line and wins.
-exec "$NODE" "$BIN/smoke-test.mjs" --url "http://127.0.0.1:$web" --worker-url "http://127.0.0.1:$worker" \
-  --creds "$creds" --out "$out" ${extra[@]+"${extra[@]}"} "$@"
+export SMOKE_DATABASE_URL; SMOKE_DATABASE_URL=$(printf '%s\n' "$dbenv" | sed -n 1p); seal=$(printf '%s\n' "$dbenv" | sed -n 2p)
+# A caller-given --out or --only comes later on the command line and wins.
+only=all prev=""
+for a in ${extra[@]+"${extra[@]}"} "$@"; do case "$prev" in --out) out=$a ;; --only) only=$a ;; esac; prev=$a; done
+
+SMOKE_PY=$(cat <<'PY'
+import glob, hashlib, json, os, re, shutil, subprocess, sys
+UUID = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
+def sql(q):
+    url, psql = os.environ.get('SMOKE_DATABASE_URL'), shutil.which('psql', path=os.environ.get('PATH', '') + ':/opt/homebrew/bin')
+    if not url or not psql: raise RuntimeError('database not readable (no DATABASE_URL or psql)')
+    p = subprocess.run([psql, url, '-X', '-v', 'ON_ERROR_STOP=1', '-At', '-F', '\t', '-c', q], capture_output=True, text=True, timeout=30)
+    if p.returncode: raise RuntimeError('psql: ' + p.stderr.strip()[:200])
+    return [line.split('\t') for line in p.stdout.splitlines()]
+def origins(ids):  # session id -> (sha256 of native_root_origin::text, its artifactId, archived)
+    ids = sorted({i for i in ids if UUID.fullmatch(i or '')})
+    if not ids: return {}
+    rows = sql("select id, coalesce(native_root_origin::text, ''), coalesce(native_root_origin->>'artifactId', ''), archived_at is not null"
+               " from allrice_chat_sessions where id in (%s)" % ','.join("'%s'" % i for i in ids))
+    return {r[0]: ('sha256:' + hashlib.sha256(r[1].encode()).hexdigest() if r[1] else '', r[2], r[3] == 't') for r in rows}
+def load(p):
+    try: return json.load(open(p))
+    except Exception: return None
+def pick(smoke, out, creds):  # prints "<session> <result.json>": the newest earlier run's usable session
+    account, seeds = json.load(open(creds))['username'], []
+    for p in glob.glob(os.path.join(smoke, '*', 'result.json')):
+        r = load(p)
+        if not r or r.get('account') != account or os.path.realpath(os.path.dirname(p)) == os.path.realpath(out): continue
+        if r.get('versionStart') != r.get('versionEnd'): continue  # switched mid-run: the session's seal is unknown
+        seeds += [(r.get('at', ''), x['check'] == 'chat', x['sessionId'], p) for x in r.get('results', [])
+                  if x.get('check') in ('chat', 'continue') and x.get('pass') and x.get('sessionId') and x.get('originDigest')]
+    seeds = sorted(seeds, reverse=True)[:20]  # newest run first, its chat session before its continue one
+    try: found = origins(s[2] for s in seeds)
+    except Exception: found = None  # verify reports the database error
+    for _, _, sid, p in seeds:
+        if found is None or (sid in found and not found[sid][2]): print(sid, p); return
+        print('[smoke-test] earlier session %s is gone or archived' % sid, file=sys.stderr)
+def verify(out, seal, seed_path, started, rc):
+    path = os.path.join(out, 'result.json')
+    if not os.path.exists(path) or os.path.getmtime(path) < float(started):
+        print('[smoke-test] this run wrote no result.json in ' + out, file=sys.stderr); return int(rc) or 1
+    r, seed_r = json.load(open(path)), load(seed_path) or {}
+    r['nativeArtifactId'] = seal or None
+    try: found, error = origins(x.get('sessionId') for x in r['results']), None
+    except Exception as e: found, error = {}, str(e)
+    for x in r['results']:
+        sid, problems = x.get('sessionId'), []
+        if sid in found: x['originDigest'], x['originArtifactId'] = found[sid][:2]
+        if sid and not x.get('continued'): x['sessionSeal'] = seal or None  # the seal the session began under
+        if x.get('check') != 'continue': continue
+        if not x.get('continued'):
+            if sid and not x.get('originDigest'): problems.append('could not record the new session origin: ' + (error or 'session not found'))
+        else:
+            seed = next((e for e in seed_r.get('results', []) if e.get('sessionId') == sid and e.get('originDigest')), None)
+            base = x['sessionSeal'] = (seed or {}).get('sessionSeal') or seed_r.get('nativeArtifactId')
+            now, runs, across = found.get(sid), [], False
+            try:  # the run of this follow-up: its user message is this run's unique prompt
+                if error: raise RuntimeError(error)
+                if not UUID.fullmatch(sid or ''): raise RuntimeError('no session id')
+                runs = sql("select r.status, coalesce(r.native_execution_binding->'execution'->>'artifactId', '') from allrice_employee_runs r"
+                           " join allrice_messages m on m.id = r.user_message_id where r.session_id = '%s' and m.content->>'text' = '%s'"
+                           % (sid, x.get('prompt', '').replace("'", "''")))
+            except Exception as e: problems.append(str(e))
+            if not problems:
+                if len(runs) != 1: problems.append('expected one run for the follow-up, found %d' % len(runs))
+                elif runs[0][0] != 'succeeded': problems.append('the follow-up run is ' + runs[0][0])
+                if not seed: problems.append('no recorded origin for the session in ' + seed_path)
+                elif not now or now[0] != seed['originDigest']: problems.append('native_root_origin changed since ' + seed_path)
+                # Across artifacts the origin keeps naming the one the session began on (D3).
+                across = bool(base and seal and base != seal)
+                if across and now and now[1] == seal: problems.append('the artifact changed since the session began, yet its origin names the current one')
+            x['database'] = {'runStatus': runs[0][0] if len(runs) == 1 else None, 'runArtifactId': runs[0][1] if len(runs) == 1 else None,
+                             'originArtifactId': now[1] if now else None, 'acrossArtifacts': across, 'continuedFrom': seed_path}
+            print('[smoke-test] continue (database): %s' % ('; '.join(problems) or 'run succeeded, origin unchanged, across artifacts: %s' % across))
+        if problems: x['pass'], x['detail'] = False, '; '.join(filter(None, [x.get('detail')] + problems))
+    failed = [x for x in r['results'] if not x.get('pass')]
+    r['passed'], r['failed'] = len(r['results']) - len(failed), len(failed)
+    json.dump(r, open(path + '.tmp', 'w'), indent=1); os.replace(path + '.tmp', path)
+    return 1 if failed else 0
+if __name__ == '__main__':
+    sys.exit(pick(*sys.argv[2:]) if sys.argv[1] == 'pick' else verify(*sys.argv[2:]))
+PY
+)
+seed="" cont=()
+if [ "$only" = all ] || [[ ",$only," == *,continue,* ]]; then
+  seed=$(/usr/bin/python3 -c "$SMOKE_PY" pick "$(dirname "$out")" "$out" "$creds") || seed=""
+  [ -z "$seed" ] || cont=(--continue-session "${seed%% *}")
+fi
+rc=0 started=$(date +%s)
+"$NODE" "$BIN/smoke-test.mjs" --url "http://127.0.0.1:$web" --worker-url "http://127.0.0.1:$worker" \
+  --creds "$creds" --out "$out" ${cont[@]+"${cont[@]}"} ${extra[@]+"${extra[@]}"} "$@" || rc=$?
+exec /usr/bin/python3 -c "$SMOKE_PY" verify "$out" "$seal" "${seed#* }" "$started" "$rc"

@@ -1,12 +1,15 @@
 #!/usr/bin/env node
-// Five real end-to-end checks as an ordinary employee, through the actual web UI
-// (headless Chrome): chat, office (.docx), csv (Python chart), browser (cloud
-// browser), reminder (fires within ~2 minutes). Real model calls — not a unit test.
+// Six real end-to-end checks as an ordinary employee, through the actual web UI
+// (headless Chrome): chat, continue (a follow-up in --continue-session, an earlier
+// run's session), office (.docx), csv (Python chart), browser (cloud browser),
+// reminder (fires within ~2 minutes). Real model calls — not a unit test.
 //
 //   node smoke-test.mjs --url http://127.0.0.1:3011 [--worker-url http://127.0.0.1:3012] --creds <file>
-//                       [--only chat,reminder] [--out <dir>] [--expect-sha <sha>]
+//                       [--only chat,reminder] [--out <dir>] [--expect-sha <sha>] [--continue-session <id>]
 //
-// Writes <out>/result.json and one screenshot per check; exit code 1 if any check fails.
+// Writes <out>/result.json (with the session each check used) and one screenshot per
+// check; exit code 1 if any check fails. The bash wrapper (smoke-test) picks the session
+// to continue and checks the database afterwards.
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -21,7 +24,7 @@ const args = Object.fromEntries(
       [],
     ),
 );
-const ALL = ['chat', 'office', 'csv', 'browser', 'reminder'];
+const ALL = ['chat', 'continue', 'office', 'csv', 'browser', 'reminder'];
 const only = args.only
   ? args.only
       .split(',')
@@ -35,7 +38,7 @@ for (const c of only)
   }
 if (!args.url || !args.creds) {
   console.error(
-    'usage: smoke-test.mjs --url <base> [--worker-url <base>] --creds <file> [--only a,b] [--out dir] [--expect-sha <sha>]',
+    'usage: smoke-test.mjs --url <base> [--worker-url <base>] --creds <file> [--only a,b] [--out dir] [--expect-sha <sha>] [--continue-session <id>]',
   );
   process.exit(2);
 }
@@ -161,6 +164,13 @@ async function ask(text, timeoutMs) {
     finished: seen && gone > 0,
   };
 }
+const sessionOf = () => {
+  try {
+    return new URL(page.url()).searchParams.get('session');
+  } catch {
+    return null;
+  }
+};
 const replyAfter = async (prompt) => {
   const t = await page.innerText('main');
   const i = t.lastIndexOf(prompt);
@@ -169,6 +179,7 @@ const replyAfter = async (prompt) => {
 async function check(name, fn) {
   if (!only.includes(name)) return;
   const started = Date.now();
+  const before = sessionOf();
   log(`${name} …`);
   let r;
   try {
@@ -176,12 +187,19 @@ async function check(name, fn) {
   } catch (e) {
     r = { pass: false, detail: e.message.split('\n')[0] };
   }
+  // The session the check worked in; the wrapper records its origin from the database.
+  if (!('sessionId' in r)) {
+    const after = sessionOf();
+    r.sessionId = after && after !== before ? after : null;
+  }
   r.seconds = Math.round((Date.now() - started) / 1000);
   await page
     .screenshot({ path: path.join(out, `${name}.png`), fullPage: true })
     .catch(() => {});
   results.push({ check: name, ...r });
-  log(`${name} ${r.pass ? 'PASS' : 'FAIL'} (${r.seconds}s) ${r.detail ?? ''}`);
+  log(
+    `${name} ${r.skipped ? 'SKIP' : r.pass ? 'PASS' : 'FAIL'} (${r.seconds}s) ${r.detail ?? ''}`,
+  );
 }
 
 try {
@@ -198,6 +216,50 @@ try {
       reply.replace(/\s+/g, '').length > 20;
     return {
       pass,
+      detail: pass
+        ? ''
+        : `finished=${run.finished} reply=${reply.slice(0, 120).replace(/\s+/g, ' ')}`,
+    };
+  });
+  await check('continue', async () => {
+    const earlier = args['continue-session'];
+    if (!earlier) {
+      // Nothing to continue yet: leave a session for the next run.
+      await newWork();
+      const run = await ask(`冒烟测试 ${tag}：请用一句话介绍你自己。`, 180_000);
+      return {
+        pass: run.finished,
+        skipped: true,
+        sessionId: run.finished ? sessionOf() : null,
+        detail: run.finished
+          ? 'no earlier smoke session; started one for the next run'
+          : 'no earlier smoke session, and starting one did not finish',
+      };
+    }
+    await page
+      .goto(`${base}/chatflow?session=${encodeURIComponent(earlier)}`, {
+        waitUntil: 'networkidle',
+      })
+      .catch(() => {});
+    await page.waitForTimeout(1500);
+    if (sessionOf() !== earlier)
+      return {
+        pass: false,
+        sessionId: earlier,
+        detail: `could not open session ${earlier}`,
+      };
+    const q = `冒烟测试 ${tag}：接着上面的对话，用一句话说说你上一条回复讲了什么。`;
+    const run = await ask(q, 180_000);
+    const reply = await replyAfter(q);
+    const pass =
+      run.finished &&
+      /用时/.test(reply) &&
+      reply.replace(/\s+/g, '').length > 20;
+    return {
+      pass,
+      sessionId: earlier,
+      continued: true,
+      prompt: q,
       detail: pass
         ? ''
         : `finished=${run.finished} reply=${reply.slice(0, 120).replace(/\s+/g, ' ')}`,

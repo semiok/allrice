@@ -21,7 +21,50 @@ df -h ~                       # 磁盘满是最常见的原因之一
 2. **起不来**：看日志里的 `FATAL`/`PANIC`。磁盘满先按 [m1-disk-space.md](m1-disk-space.md) 腾空间；有 `postmaster.pid` 残留且确认没有 postgres 进程（`pgrep -l postgres`）时才删它。不要删数据目录里的任何别的文件，不要 `pg_resetwal`。
 3. **连接数用满**（日志 `too many clients`）：`select application_name, state, count(*) from pg_stat_activity group by 1,2 order by 3 desc` 看是谁，通常是卡住的测试；只停自己的。
 4. 数据库恢复后，Web 和 Worker 通常自己重连；就绪接口仍不 ready 时，由发布负责人重启（`deploy-lock run`）。**数据库断开过之后，单次定时控制器可能停在 `blocked`**（就绪接口 503、`detail: native_once_blocked`），它不会自己恢复，要重启 Worker，见 [m1-worker-crash.md](m1-worker-crash.md#定时控制器卡住)。Worker 运行中数据库被停掉时，它多半来不及写下定时分区的关闭证明：重启后的 Worker 一直 `cold`、照样 ready，监控报 `scheduler_takeover`，按 [手册 8“接管被拒”](m1-schedule-not-fired.md#接管被拒)恢复。重启 Worker 之后一律跑 `~/allrice-dev/bin/smoke-test --dev --only reminder`。
-5. 数据坏了需要恢复备份：只由发布负责人做，先问用户。备份是纯 SQL（`~/allrice-backups/db/allrice_dev-<日期>.sql.gz`），恢复到一个新库：删掉文件里清空 `search_path` 的那一行 `set_config` 再用 `psql` 导入，核对后再决定是否切换。数据库和文件不是同一时刻的快照，恢复后以数据库为准。
+5. 数据坏了需要恢复备份，或者迁移之后要退回迁移前：见下面的[恢复备份或迁移前快照](#恢复备份或迁移前快照)。
+
+## 恢复备份或迁移前快照
+
+只由发布负责人做，先问用户：备份或快照之后写进 Dev 的数据都会丢。两种来源格式相同，恢复步骤只有这一套：
+
+| 来源                                                                                              | 位置                                                                                                                                                      | 说明                                                                                                       |
+| ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| 每日备份（04:00，保留 7 天）                                                                      | `~/allrice-backups/db/allrice_dev-<日期>.sql.gz`、`~/allrice-backups/files/<日期>/`                                                                       | Dev 运行时做的，数据库和文件不是同一时刻，恢复后以数据库为准                                               |
+| 迁移前快照（`deploy-dev` 在候选版本带未执行的迁移、或加了 `--force-snapshot` 时做，保留最近两份） | `~/allrice-dev/qa/pre-migrate/<发布名>/`：`allrice_dev.sql.gz`、状态目录（`storage`、`dsh-runtime-m1` 等）、`env`、迁移前的 `web.plist` 和 `worker.plist` | 两个服务都停着时做的，数据库和文件是同一时刻。数据库和状态目录要一起恢复，否则日志和库里的契约高水位对不上 |
+
+下面 `$S` 是快照目录，`$T` 是当前时间，只用数字和下划线（它会成为库名的一部分），例如 `20261027_0930`。用每日备份时，导出文件换成 `~/allrice-backups/db/allrice_dev-<日期>.sql.gz`，状态目录和 launchd 文件在 `~/allrice-backups/files/<日期>/`。
+
+1. 先恢复到一个新库核对，不动 Dev。导出文件第 16 行清空了 `search_path`，不删掉它，CHECK 里调用的函数恢复时会找不到：
+
+   ```bash
+   export S=<快照目录> T=<时间>   # 下面持锁的新 shell 也要用这两个变量，所以要 export
+   createdb -h 127.0.0.1 "allrice_dev_restore_$T"
+   gunzip -c "$S/allrice_dev.sql.gz" | sed "/^SELECT pg_catalog.set_config('search_path', '', false);$/d" \
+     | psql -h 127.0.0.1 -X -q -v ON_ERROR_STOP=1 "allrice_dev_restore_$T"
+   psql -h 127.0.0.1 -X "allrice_dev_restore_$T" -c 'select count(*), max(name) from allrice_schema_migrations'
+   ```
+
+2. 决定切换后，在持部署锁的 shell 里做（在第 1 步那个 shell 里运行 `~/allrice-dev/bin/deploy-lock run restore -- /bin/bash`，`S`、`T` 才会带进去）：
+   1. 先确认变量和恢复库都在，没打出 `ok` 就停下，什么都别动（否则下面的改名会把 `allrice_dev` 改走却换不回来）：
+
+      ```bash
+      [ -n "${S:-}" ] && [ -n "${T:-}" ] && [ -d "$S" ] \
+        && [ "$(psql -h 127.0.0.1 -X -Atc "select count(*) from pg_database where datname = 'allrice_dev_restore_$T'" postgres)" = 1 ] && echo ok
+      ```
+
+   2. 停 Web 和 Worker（`launchctl bootout gui/$(id -u)/ai.bplabs.allrice-dev-web`，Worker 同理），Worker 要等进程退完（做法见下面“重启或停库”第 1 步）。
+   3. 改名换库，原库保留下来查原因、不删。巡检每 4 分钟连一次库，所以先断开连接再改名；改名报 `is being accessed by other users` 就把这两句重跑一次：
+
+      ```bash
+      psql -h 127.0.0.1 -X postgres -c "select pg_terminate_backend(pid) from pg_stat_activity where datname = 'allrice_dev' and pid <> pg_backend_pid()"
+      psql -h 127.0.0.1 -X postgres -c "alter database allrice_dev rename to allrice_dev_failed_$T"
+      psql -h 127.0.0.1 -X postgres -c "alter database allrice_dev_restore_$T rename to allrice_dev"
+      ```
+
+   4. 状态目录：`~/allrice-dev/.local/` 里和 `$S` 同名的目录先改名保留（`mv storage storage.failed-$T`），再从 `$S` 拷回（快照用 `cp -c -pR`，每日备份用 `rsync -a`）。**`dsh-platform` 默认不拷回**：它是模型订阅凭证，验收实例也在用，Dev 停着时它们可能刷新过 token，拷回旧的会让订阅失效；只有凭证本身坏了才恢复它。`bridge`、`project-preview`、`quality-evidence`、`repository-baselines` 不在快照和备份里，不动（它们会比恢复后的数据库新）。`env` 只在 `.env` 被改过时才拷回。
+   5. 起服务：`~/allrice-dev/qa/deploy-inflight/` 还在（部署没走完）时，退出这个 shell，运行 `deploy-dev --release-manager --recover`，它会放回保存的 launchd 文件、起旧版本并核对。否则把 `$S` 里的 `web.plist`、`worker.plist` 拷回 `~/Library/LaunchAgents/`（文件名 `ai.bplabs.allrice-dev-web.plist`、`-worker.plist`），先起 Worker 再起 Web（`launchctl bootstrap gui/$(id -u) <plist>`），等两个就绪接口都报 ready。快照按新版本命名，里面的 plist 却指向部署之前的发布目录：拷回前先确认 plist 里的 `WorkingDirectory` 还在（可能已被清理），不在就用 `deploy-dev` 重新部署那个版本，不要手工拼目录。
+
+3. `deploy-dev --status` 看两个服务的版本，跑 `~/allrice-dev/bin/smoke-test --dev`；在 MET 卡上记下恢复到了哪个时刻、丢了哪段时间的数据。手工恢复后 `~/allrice-dev/qa/.previous-release` 和 `deploys.jsonl` 不会自动更新：下一次回滚要用 `--rollback <发布目录>` 指定目标。
 
 ## 重启或停库
 
