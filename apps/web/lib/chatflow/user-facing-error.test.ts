@@ -1,15 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import {
-  requestFailureMessage,
-  responseError,
-  userFacingMessage,
-} from './user-facing-error';
+import { requestNotFinished } from './request-failure';
+import { responseError, userFacingMessage } from './user-facing-error';
 
 afterEach(() => vi.restoreAllMocks());
 
 describe('errors shown to people', () => {
-  it('reads the real API error shapes: Chinese copy as is, English by status', () => {
+  it('reads the real API error shapes through the shared rule (request-failure.ts)', () => {
     // apps/web/lib/bridge/responses.ts and api-error-response.ts
     expect(
       responseError(500, {
@@ -43,10 +40,20 @@ describe('errors shown to people', () => {
         message: '任务状态已变化，请重新读取。',
       }).message,
     ).toBe('任务状态已变化，请重新读取。');
-    expect(responseError(400, null).message).toBe('未完成，请稍后再试');
-    expect(requestFailureMessage(429, 'Too many requests')).toBe(
-      '操作太频繁，请稍后再试',
-    );
+    // The computer settings' usual failure: the paired computer is asleep.
+    expect(
+      responseError(503, {
+        error: {
+          code: 'DEPENDENCY_UNAVAILABLE',
+          message: 'Bridge device is offline',
+          retryable: true,
+        },
+      }).message,
+    ).toBe('电脑未连接，请打开 AllRice 电脑端后再试');
+    expect(responseError(400, null).message).toBe(requestNotFinished);
+    expect(
+      responseError(429, { error: { message: 'Too many requests' } }).message,
+    ).toBe('操作太频繁，请稍后再试');
   });
 
   it('shows only Chinese words and sends everything else to the console', () => {

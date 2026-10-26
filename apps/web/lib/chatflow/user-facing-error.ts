@@ -1,36 +1,26 @@
-// Same rule as readJson in chatflow-utils: a server message is shown only when
-// it is written in Chinese for people; anything else gets words for its status.
-const statusMessages: Record<number, string> = {
-  401: '登录已过期，请重新登录',
-  403: '没有权限，如需使用请联系管理员',
-  404: '内容不存在或已删除',
-  409: '内容已被修改，请刷新后再试',
-  413: '内容太大，请减少内容或换小一点的文件',
-  429: '操作太频繁，请稍后再试',
-};
+import { requestFailureMessage } from './request-failure';
+
+// One rule for every request failure (request-failure.ts): Chinese server
+// copy for people first, then the error code, then the status.
 const writtenForPeople = (value: unknown): value is string =>
   typeof value === 'string' && /[\u3400-\u9fff]/.test(value);
-
-/** Plain words for a failed request: Chinese server copy, never a code or status. */
-export function requestFailureMessage(status: number, serverMessage?: unknown) {
-  if (writtenForPeople(serverMessage)) return serverMessage;
-  return (
-    statusMessages[status] ??
-    (status >= 500
-      ? '服务暂时不可用，请稍后刷新页面再试'
-      : '未完成，请稍后再试')
-  );
-}
 
 /** An Error for a rejected response, from `{error:{code,message}}` or `{message}`. */
 export function responseError(status: number, body: unknown) {
   const value = body as {
-    error?: { message?: unknown } | string;
+    code?: unknown;
+    error?: { code?: unknown; message?: unknown } | string;
     message?: unknown;
   } | null;
   const nested =
-    value && typeof value.error === 'object' ? value.error.message : undefined;
-  return new Error(requestFailureMessage(status, nested ?? value?.message));
+    value && typeof value.error === 'object' ? value.error : undefined;
+  return new Error(
+    requestFailureMessage({
+      status,
+      code: nested?.code ?? value?.code,
+      message: nested?.message ?? value?.message,
+    }),
+  );
 }
 
 /**
