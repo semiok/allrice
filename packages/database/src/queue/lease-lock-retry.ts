@@ -157,9 +157,9 @@ async function nextLeaseLockWait(
 ) {
   // Bounded like the attempts it gates: a table lock must not park the heartbeat.
   const [job] = await sql.begin(async (tx) => {
-    await trace.begin(tx);
     await tx`select set_config('lock_timeout',${`${leaseLockWaitMs}ms`},true),
       set_config('statement_timeout',${`${leaseLockWaitMs}ms`},true)`;
+    await trace.begin(tx);
     return tx<
       {
         status: string;
