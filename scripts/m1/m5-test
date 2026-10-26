@@ -1,35 +1,44 @@
 #!/bin/bash
 # Heavy AllRice tests on M5 (rules: AGENTS.md §9 at the repository root): database integration,
 # browser and Codex test passes run on M5, the user's own Mac (128G, 18 cores), while it is
-# online, so the shared Dev on M1 keeps its CPU and memory. M5 sleeps at times: when `ssh m5`
-# does not answer within 10 seconds, the same run happens on M1 with two vitest workers.
+# online, so the shared Dev on M1 keeps its CPU and memory. M5 is online only when it suits the
+# user and may sleep mid-run; nothing depends on it: whatever M5 cannot do, M1 does.
 #
-#   m5-test [<commit>] [--db] [--browser] [-e ALLRICE_X=v]… [--build <cmd> | --no-build]
+#   m5-test [<commit>] [--db] [--browser] [-e ALLRICE_RUN_X=v]… [--build <cmd> | --no-build]
 #           [--wait <s>] [--on auto|m5|m1] -- <vitest arguments…>
 #   m5-test codex [<commit>] -o <result.md> [--full-access] [the options above] [-- <prompt>]
 #   m5-test status | setup
 #
 # <commit> defaults to HEAD of the current worktree; only committed code is tested. It is
-# pushed to a bare repository on M5: no credentials of any kind go to M5. A run takes one of
-# the host's slots (M5: 3, M1: 2), each with its own worktree, waits up to --wait seconds
-# (default 900) for one and exits 3 if none frees up. vitest gets at most 6 workers on M5 and
-# 2 on M1, whatever --maxWorkers says. ALLRICE_TEST_DATABASE_URL is always set; --db and
-# --browser set ALLRICE_RUN_DB_INTEGRATION and ALLRICE_RUN_BROWSER_INTEGRATION. The default
-# build is `pnpm --filter @allrice/contracts build`, as `pnpm test` does. Output is also kept
-# in ~/allrice-dev/qa/m5-test/.
+# pushed to a bare repository on M5: no credentials of any kind go to M5. Where it runs:
+#   - M5 does not answer ssh within 5 seconds, or the push fails: on M1 at once.
+#   - M5's kernel reports critical memory pressure, or no room frees up within --wait seconds
+#     (default 600): on M1. Warning pressure halves the run's workers.
+#   - The connection breaks, or there is no output for M5_TEST_IDLE_SECONDS (default 1200;
+#     codex 3600): "M5 中断", not a test failure; the run starts again from scratch on M1.
+# --on m5 never falls back (exit 4 instead); --on m1 goes straight to M1.
+# Limits on M5 (all runs together, ~/allrice-test/limits): 48G, 16 vitest workers, 8 per run by
+# default and at most 12. On M1: 2 runs of 2 workers. ALLRICE_TEST_DATABASE_URL is always set;
+# --db and --browser set ALLRICE_RUN_DB_INTEGRATION and ALLRICE_RUN_BROWSER_INTEGRATION. The
+# default build is `pnpm --filter @allrice/contracts build`, as `pnpm test` does. Output is also
+# kept in ~/allrice-dev/qa/m5-test/; the last line names the machine the run finished on.
 #
 # codex: Astra (gpt-6-astra, max) runs `codex exec` in that worktree after the install and
-# build. On M5 it may write only there, unless --full-access (needed for browser tests: Chrome
-# does not start in Codex's sandbox); on M1 it always has full access, as AGENTS.md §9 says.
-# The prompt is the text after `--`, or stdin. The result is written to <result.md>,
+# build. On M5 it may write only there (it can still read, and use the network); a pass that
+# needs more, such as browser tests (Chrome does not start in Codex's sandbox), takes
+# --full-access and runs on M1, where Codex always has full access (AGENTS.md §9), unless
+# --on m5. The prompt is the text after `--`, or stdin. The result is written to <result.md>,
 # everything it changed to <result>.patch.
 set -euo pipefail
-BIN=$(cd "$(dirname "$0")" && pwd -P)
+BIN=$(cd "$(dirname "$0")" && pwd -P); . "$BIN/lib.sh"
 export PATH="$HOME/.local/opt/node-22.23.2/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 HOST=${M5_TEST_HOST:-m5} REPO=${M5_TEST_REPO:-$HOME/allrice-repo} LOGS=$HOME/allrice-dev/qa/m5-test
+# ServerAlive: a sleeping M5 is noticed within a minute.
 SSH=(${M5_TEST_SSH:-ssh} -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
+STOPPED=199 # relay: this side was stopped (Ctrl-C), as opposed to the run there ending
 die() { echo "m5-test: $*" >&2; exit 2; }
 quote() { /usr/bin/python3 -c 'import shlex,sys; print(" ".join(map(shlex.quote, sys.argv[1:])))' "$@"; }
+within() { /usr/bin/perl -e 'alarm shift; exec @ARGV' "$@"; } # <seconds> <command…>
 
 # on_host <m5|m1> <M5T_ setting…> [-- <argument…>]: run m5-run there (stdin passes through).
 on_host() {
@@ -47,49 +56,84 @@ on_host() {
 probe() {
   local want got
   want=$(M5T_ACTION=setup-line M5T_TARGET=m5 /bin/bash "$BIN/m5-run")
-  if ! got=$(/usr/bin/perl -e 'alarm shift; exec @ARGV' 10 "${SSH[@]}" "$HOST" 'cat allrice-test/SETUP 2>/dev/null; true' 2>/dev/null); then
-    m5=offline why="M5 不在线（ssh $HOST 10 秒内连不上）"
-  elif [ "$got" != "$want" ]; then
+  # The marker keeps anything the login shell prints from looking like a different setup.
+  if ! got=$(within 10 "${SSH[@]}" "$HOST" 'echo "m5-setup: $(cat allrice-test/SETUP 2>/dev/null)"' 2>/dev/null); then
+    m5=offline why="M5 不在线（ssh $HOST 5 秒内连不上）"
+  elif [ "$(printf '%s\n' "$got" | sed -n 's/^m5-setup: //p' | tail -1)" != "$want" ]; then
     m5=stale why="M5 的测试环境没配好或版本不符（在 M1 上跑 m5-test setup）"
   else
     m5=ready why=""
   fi
 }
+# relay <idle seconds> <log> <command…>: copy its output to stdout and <log>. Exit 124 after
+# <idle seconds> without output (0: never), having stopped it; 255 when it dies of a signal;
+# $STOPPED when this side is told to stop, or m5-test itself is gone (killed by its caller).
+relay() {
+  /usr/bin/python3 -c 'import os,select,signal,subprocess,sys,time
+idle,log,stopped=float(sys.argv[1]),open(sys.argv[2],"ab"),int(sys.argv[3])
+p=subprocess.Popen(sys.argv[4:],stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+stop=[]
+for s in (signal.SIGINT,signal.SIGTERM,signal.SIGHUP): signal.signal(s,lambda n,f: stop.append(n))
+def end(code):
+    p.terminate()
+    try: p.wait(5)
+    except subprocess.TimeoutExpired: p.kill()
+    sys.exit(code)
+def out(b): sys.stdout.buffer.write(b); sys.stdout.flush(); log.write(b); log.flush()
+fd,last=p.stdout.fileno(),time.time()
+parent=os.getppid()
+while not stop and os.getppid()==parent:
+    if select.select([fd],[],[],1)[0]:
+        b=os.read(fd,65536)
+        if not b: break
+        out(b); last=time.time()
+    elif idle and time.time()-last>idle:
+        out(b"m5-test: no output for %ds; stopping this run\n" % idle); end(124)
+if stop or os.getppid()!=parent: end(stopped)
+rc=p.wait()
+sys.exit(rc if rc>=0 else 255)' "$1" "$2" "$STOPPED" "${@:3}"
+}
+# live_runs: run ids of M5 runs whose M1 side is still attached (their lease is locked).
+live_runs() {
+  local f
+  for f in "$LOGS"/leases/*.lease; do
+    [ -e "$f" ] || continue
+    if lock_held "$f"; then basename "$f" .lease; else rm -f "$f"; fi
+  done | tr '\n' ' '
+}
 
 cmd=test
 case "${1:-}" in
   status | setup | codex) cmd=$1; shift ;;
-  "" | -h | --help) sed -n 2,25p "$0"; exit 2 ;;
+  "" | -h | --help) sed -n 2,31p "$0"; exit 2 ;;
 esac
 if [ "$cmd" = status ]; then
   probe
-  if [ "$m5" = offline ]; then echo "M5: $why"; else on_host m5 M5T_ACTION=status M5T_SLOTS="${M5_TEST_SLOTS:-3}" </dev/null || true; fi
-  on_host m1 M5T_ACTION=status M5T_SLOTS="${M5_TEST_M1_SLOTS:-2}" </dev/null
+  if [ "$m5" = offline ]; then echo "M5: $why"; else on_host m5 M5T_ACTION=status </dev/null || true; fi
+  on_host m1 M5T_ACTION=status </dev/null
   exit 0
 fi
 if [ "$cmd" = setup ]; then
   probe
   [ "$m5" != offline ] || die "$why"
-  on_host m5 M5T_ACTION=setup M5T_SLOTS="${M5_TEST_SLOTS:-3}" </dev/null
+  on_host m5 M5T_ACTION=setup </dev/null
   exit
 fi
 
-ref="" on=auto wait=900 build="pnpm --filter @allrice/contracts build" out="" full=0 test_env=""
+ref="" on=auto wait=600 build="pnpm --filter @allrice/contracts build" out="" full=0 test_env=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --) shift; break ;;
     --db) test_env+="ALLRICE_RUN_DB_INTEGRATION=1"$'\n' ;;
     --browser) test_env+="ALLRICE_RUN_BROWSER_INTEGRATION=1"$'\n' ;;
-    -e)
-      [[ "${2:-}" =~ ^ALLRICE_[A-Z0-9_]+= ]] || die "-e takes ALLRICE_<NAME>=<value>"
-      case "${2%%=*}" in *KEY* | *TOKEN* | *SECRET* | *PASSWORD* | *CREDENTIAL*) die "-e must not carry credentials: ${2%%=*}" ;; esac
-      case "$2" in *$'\n'*) die "-e value must be one line" ;; esac
+    -e) # test switches only: nothing that could point a test elsewhere or carry a credential
+      [[ "${2:-}" =~ ^ALLRICE_RUN_[A-Z0-9_]+=[A-Za-z0-9._,:-]*$ ]] || die "-e takes ALLRICE_RUN_<NAME>=<value> (letters, digits, . _ , : -)"
       test_env+="$2"$'\n'; shift ;;
-    --build) build=${2:?--build takes a command}; shift ;;
+    --build) [ -n "${2:-}" ] || die "--build takes a command"; build=$2; shift ;;
     --no-build) build="" ;;
-    --wait) [[ "${2:-}" =~ ^[0-9]+$ ]] || die "--wait takes seconds"; wait=$2; shift ;;
+    --wait) [[ "${2:-}" =~ ^(0|[1-9][0-9]*)$ ]] || die "--wait takes seconds"; wait=$2; shift ;;
     --on) case "${2:-}" in auto | m5 | m1) on=$2 ;; *) die "--on takes auto, m5 or m1" ;; esac; shift ;;
-    -o) [ "$cmd" = codex ] || die "-o is for m5-test codex"; out=${2:?-o takes a file}; shift ;;
+    -o) [ "$cmd" = codex ] || die "-o is for m5-test codex"; [ -n "${2:-}" ] || die "-o takes a file"; out=$2; shift ;;
     --full-access) [ "$cmd" = codex ] || die "--full-access is for m5-test codex"; full=1 ;;
     -*) die "unknown option $1 (vitest arguments go after --)" ;;
     *) [ -z "$ref" ] || die "one commit only (vitest arguments go after --): $1"; ref=$1 ;;
@@ -105,8 +149,16 @@ if [ "$cmd" = codex ]; then
   elif [ -t 0 ]; then die "codex needs a prompt after -- or on stdin"
   else cat >"$prompt"; fi
   [ -s "$prompt" ] || die "empty prompt"
+  if [ $full = 1 ] && [ "$on" = auto ]; then
+    on=m1; echo "m5-test: codex --full-access 在 M1 跑（M5 是用户自己的电脑）；确需在 M5 上跑，加 --on m5"
+  elif [ $full = 0 ] && [ "$on" != m1 ] && [[ "$test_env" == *ALLRICE_RUN_BROWSER_INTEGRATION* ]]; then
+    die "browser tests do not start in Codex's sandbox on M5: add --full-access (runs on M1)"
+  fi
+  rm -f "$out" "${out%.md}.patch" # this run's outputs: a stale one must never pass for them
   vargs=()
 fi
+idle=${M5_TEST_IDLE_SECONDS:-$([ "$cmd" = codex ] && echo 3600 || echo 1200)}
+[[ "$idle" =~ ^(0|[1-9][0-9]*)$ ]] || die "M5_TEST_IDLE_SECONDS takes seconds"
 
 # The commit, from the current worktree (or the main repository), must be in $REPO.
 dir=$(git rev-parse --show-toplevel 2>/dev/null) || dir=$REPO
@@ -115,48 +167,90 @@ git -C "$REPO" cat-file -e "$sha^{commit}" 2>/dev/null || die "${sha:0:8} is not
 if [ "$sha" = "$(git -C "$dir" rev-parse HEAD)" ] && [ -n "$(git -C "$dir" status --porcelain --untracked-files=no)" ]; then
   echo "m5-test: uncommitted changes in $dir are not part of this run (it tests ${sha:0:8})"
 fi
-
-target=m1
-if [ "$on" != m1 ]; then
-  probe
-  # One ref per commit (M5 keeps the newest 100, so later pushes send only what is new). A
-  # second try covers two runs racing to create the same ref.
-  push() { GIT_SSH_COMMAND=$(quote "${SSH[@]}") git -C "$REPO" push -q "$HOST:allrice-test/repo.git" "$sha:refs/m5-test/$sha"; }
-  if [ "$m5" = ready ] && ! push && ! { sleep 1 && push; }; then
-    m5=offline why="推送提交到 M5 失败"
-  fi
-  if [ "$m5" = ready ]; then target=m5
-  elif [ "$on" = m5 ]; then echo "m5-test: $why" >&2; exit 4
-  else echo "m5-test: ${why}，改在 M1 跑（--maxWorkers=2）"; fi
-fi
-
-mkdir -p "$LOGS"
-find "$LOGS" -type f -mtime +14 -delete 2>/dev/null || true
+mkdir -p "$LOGS/leases"
+find "$LOGS" -maxdepth 1 -type f -mtime +14 -delete 2>/dev/null || true
 run=$(date +%Y%m%d-%H%M%S)-${sha:0:8}-$$
 log=$LOGS/$run.log
-if [ "$target" = m5 ]; then slots=${M5_TEST_SLOTS:-3} workers=${M5_TEST_WORKERS:-6}; else slots=${M5_TEST_M1_SLOTS:-2} workers=2; fi
-set +e
-on_host "$target" M5T_ACTION="$cmd" M5T_SHA="$sha" M5T_RUN="$run" M5T_CALLER="$(basename "$dir")" \
-  M5T_SLOTS="$slots" M5T_WAIT="$wait" M5T_WORKERS="$workers" M5T_BUILD="$build" M5T_ENV="$test_env" M5T_FULL_ACCESS="$full" -- \
-  ${vargs[@]+"${vargs[@]}"} <"${prompt:-/dev/null}" 2>&1 | tee "$log"
-rc=${PIPESTATUS[0]}
-set -e
-if [ "$target" = m5 ] && ! grep -q '^m5-test: done on ' "$log" && [ "$rc" = 255 ]; then
-  echo "m5-test: the connection to M5 broke during the run (asleep or offline?). The run there stops" \
-    "the next time it prints; run m5-test again (it falls back to M1 while M5 stays offline)." | tee -a "$log" >&2
-fi
 
-if [ "$cmd" = codex ]; then
-  patch=${out%.md}.patch
+# attempt <m5|m1>: one run there; sets rc.
+attempt() {
+  local where=$1 settings
+  settings=(M5T_ACTION="$cmd" M5T_SHA="$sha" M5T_RUN="$run" M5T_CALLER="$(basename "$dir")" M5T_WAIT="$wait"
+    M5T_BUILD="$build" M5T_ENV="$test_env" M5T_FULL_ACCESS="$full")
+  set +e
+  if [ "$where" = m5 ]; then
+    # The lease, locked while this side is attached to the run (locked before it gets its name,
+    # so live_runs never takes it for a stale one). A later run on M5 stops this one if it is
+    # still going once the lease is gone: M5 slept, M1 gave up, then M5 woke.
+    exec 8>"$LOGS/leases/$run.new"
+    flock_fd 8 && mv "$LOGS/leases/$run.new" "$LOGS/leases/$run.lease"
+    relay "$idle" "$log" "${SSH[@]}" "$HOST" "$(quote env M5T_TARGET=m5 "${settings[@]}" M5T_LIVE="$(live_runs)" \
+      /bin/bash -c "$(cat "$BIN/m5-run")" m5-run ${vargs[@]+"${vargs[@]}"})" <"${prompt:-/dev/null}"
+    rc=$?
+    exec 8>&-
+    rm -f "$LOGS/leases/$run.lease"
+  else
+    relay 0 "$log" env M5T_TARGET=m1 "${settings[@]}" /bin/bash "$BIN/m5-run" ${vargs[@]+"${vargs[@]}"} <"${prompt:-/dev/null}"
+    rc=$?
+  fi
+  set -e
+  [ "$rc" != "$STOPPED" ] || { echo "m5-test: stopped; log $log" >&2; exit 130; }
+}
+# finished <host>: the run there printed its closing line; rc becomes the exit code it reports
+# (the connection may still have broken after it).
+finished() {
+  local code; code=$(tail -n 3 "$log" | sed -n "s/^m5-test: done on $1 .*, exit \([0-9]*\)\$/\1/p" | tail -1)
+  [ -n "$code" ] && rc=$code
+}
+
+target=m1 dropped=""
+if [ "$on" != m1 ]; then
+  probe
+  # The commit goes to a ref of its own (M5 keeps the newest 100), so later pushes send only
+  # what is new; a push that hangs (M5 fell asleep) gives up after two minutes.
+  if [ "$m5" = ready ] && ! GIT_SSH_COMMAND=$(quote "${SSH[@]}") within 120 git -C "$REPO" push -q \
+    "$HOST:allrice-test/repo.git" "$sha:refs/m5-test/$run"; then
+    m5=offline why="推送提交到 M5 失败"
+  fi
+  if [ "$m5" = ready ]; then
+    attempt m5
+    if finished M5; then target=m5
+    else
+      case $rc in
+        3) why="M5 没有空位（等了 ${wait} 秒）" ;;
+        86) why="M5 的测试环境没配好或版本不符（在 M1 上跑 m5-test setup）" ;;
+        87) why="M5 内存紧张" ;;
+        75) why="M5 中断：测试进程被结束（不算测试失败）" dropped=1 ;;
+        124) why="M5 中断：${idle} 秒没有输出（不算测试失败）" dropped=1 ;;
+        *) why="M5 中断：连接断开或运行没有跑完（exit ${rc}，不算测试失败）" dropped=1 ;;
+      esac
+    fi
+  fi
+  if [ "$target" != m5 ]; then
+    [ "$on" != m5 ] || { echo "m5-test: $why" | tee -a "$log" >&2; exit 4; }
+    echo "m5-test: ${why}，改在 M1 ${dropped:+从头重}跑（--maxWorkers=2）" | tee -a "$log"
+  fi
+fi
+[ "$target" = m5 ] || attempt m1
+
+if [ "$cmd" = codex ]; then # fetch the report and the patch; failing that is not a pass
+  patch=${out%.md}.patch fetched=1
   for f in "$out:md" "$patch:patch"; do
     if [ "$target" = m5 ]; then
-      "${SSH[@]}" "$HOST" "cat allrice-test/results/$run.${f##*:}" >"${f%:*}" 2>/dev/null </dev/null || rm -f "${f%:*}"
+      within 60 "${SSH[@]}" "$HOST" "cat allrice-test/results/$run.${f##*:}" >"${f%:*}.part" 2>/dev/null </dev/null
     else
-      cp "$HOME/allrice-worktrees/.m5-test-m1/results/$run.${f##*:}" "${f%:*}" 2>/dev/null || true
-    fi
+      cp "$HOME/allrice-worktrees/.m5-test-m1/results/$run.${f##*:}" "${f%:*}.part" 2>/dev/null
+    fi && mv "${f%:*}.part" "${f%:*}" || { rm -f "${f%:*}.part"; fetched=0; }
   done
-  [ -s "$patch" ] || { rm -f "$patch"; patch="(no changes)"; }
-  [ -f "$out" ] && echo "m5-test: result $out, patch $patch" || echo "m5-test: no result from Codex"
+  if [ $fetched = 0 ] || [ ! -s "$out" ]; then
+    rm -f "$out" "$patch"
+    echo "m5-test: could not fetch Codex's report and patch from $target" | tee -a "$log" >&2
+    [ "$rc" != 0 ] || rc=5
+  else
+    [ -s "$patch" ] || { rm -f "$patch"; patch="(no changes)"; }
+    echo "m5-test: result $out, patch $patch"
+  fi
 fi
-echo "m5-test: log $log"
+host=M1; [ "$target" != m5 ] || host=M5
+echo "m5-test: finished on $host${dropped:+ (M5 dropped out mid-run; the result is from M1)}, exit $rc; log $log" | tee -a "$log"
 exit "$rc"
