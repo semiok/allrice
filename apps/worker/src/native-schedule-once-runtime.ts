@@ -247,6 +247,36 @@ export function createNativeOnceWorkerRuntime(
     faultCount = 0,
     processedCount = 0;
   let lastFault: NativeOnceWorkerRuntimeFault | undefined;
+  // MET-210 #3: a refused takeover leaves the controller cold without an error.
+  // Kept for status() and logged once per reason, then hourly while it lasts.
+  type Refusal = NonNullable<
+    ReturnType<NonNullable<NativeScheduleOnceStore['takeoverRefusal']>>
+  >;
+  let refusal: (Refusal & { since: string }) | undefined;
+  let refusalLoggedAt = 0;
+  function observeTakeover(partitionId: string, next: Refusal | null) {
+    if (!next) {
+      if (refusal)
+        console.info('[MET-210] native schedule takeover accepted', {
+          partitionId,
+          refusedSince: refusal.since,
+        });
+      refusal = undefined;
+      return;
+    }
+    const changed = next.code !== refusal?.code;
+    refusal = {
+      ...next,
+      since: changed || !refusal ? new Date().toISOString() : refusal.since,
+    };
+    if (changed || now() - refusalLoggedAt >= 3_600_000) {
+      refusalLoggedAt = now();
+      console.warn('[MET-210] native schedule takeover refused', {
+        partitionId,
+        ...refusal,
+      });
+    }
+  }
   type TickResult = { processed: number; limitReached: boolean };
   let inFlight: Promise<TickResult> | undefined;
   let stopping: Promise<void> | undefined;
@@ -389,6 +419,11 @@ export function createNativeOnceWorkerRuntime(
         async acquireWriter() {
           const grant = await sqlStore.acquireWriter();
           if (grant) generation = { key: writerKey(grant.writer) };
+          if (grant || sqlStore.takeoverRefusal)
+            observeTakeover(
+              partitionId,
+              grant ? null : (sqlStore.takeoverRefusal?.() ?? null),
+            );
           return grant;
         },
         async releaseClosedWriter(writer) {
@@ -535,6 +570,7 @@ export function createNativeOnceWorkerRuntime(
         processedCount,
         faultCount,
         lastFault: lastFault ? { ...lastFault } : undefined,
+        ...(refusal ? { takeoverRefused: { ...refusal } } : {}),
         controller: host,
       };
     },

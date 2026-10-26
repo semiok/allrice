@@ -384,6 +384,7 @@ export function createNativeOnceSqlStore(options: NativeOnceSqlOptions) {
     loadWorkspaceUnit: common.loadWorkspaceUnit,
     commitWorkspaceWrite: common.commitWorkspaceWrite,
     acquireWriter: common.acquireWriter,
+    takeoverRefusal: common.takeoverRefusal,
     renewWriter: common.renewWriter,
     assertWriter: common.assertWriter,
     loadControls: common.loadControls,
