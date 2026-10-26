@@ -34,6 +34,8 @@ harness over the same execution boundary.
 | `ALLRICE_WORKER_LEASE_MS`                          | `30000`               | Claim lease duration                                    |
 | `ALLRICE_WORKER_HEARTBEAT_MS`                      | about one-third lease | Lease heartbeat cadence                                 |
 | `ALLRICE_WORKER_CONCURRENCY`                       | `1`                   | Maximum in-process executions                           |
+| `ALLRICE_WORKER_MIN_AVAILABLE_MEMORY_MB`           | `256`                 | Pause claims below this available memory; `0` disables  |
+| `ALLRICE_WORKER_MEMORY_PAUSE_PRESSURE`             | `critical`            | Pause at macOS pressure `warn`/`critical`; or `off`     |
 | `ALLRICE_EXECUTION_ROOT`                           | `.local/executions`   | Tenant/run/attempt scratch root                         |
 | `ALLRICE_STORAGE_ROOT`                             | `.local/storage`      | Immutable Skill artifact storage                        |
 | `ALLRICE_DSH_CODEX_MODEL`                          | `gpt-5.6-luna`        | Model used by DSH's Codex subscription Provider         |

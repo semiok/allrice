@@ -1,4 +1,5 @@
-import { availableParallelism, freemem, totalmem } from 'node:os';
+import { availableParallelism, totalmem } from 'node:os';
+import { readHostMemorySync, type HostMemory } from './host-memory.js';
 
 /** Main jobs mostly wait on model/network I/O. This is independent of the
  * much smaller pool of CPU-bound Office containers. Explicit limits remain
@@ -30,13 +31,14 @@ export function workerCapacity(input: {
   } as const;
 }
 
-export function detectWorkerCapacity() {
+/** Same memory estimate as the claim gate (MET-219): on macOS free pages
+ * alone made auto concurrency swing with whatever was cached at startup. */
+export function detectWorkerCapacity(
+  memory: HostMemory = readHostMemorySync(),
+) {
   const constrained = process.constrainedMemory?.() ?? 0;
   const memoryBytes = Math.min(totalmem(), constrained || Infinity);
-  const availableBytes = Math.min(
-    process.availableMemory?.() ?? freemem(),
-    memoryBytes,
-  );
+  const availableBytes = Math.min(memory.availableBytes, memoryBytes);
   return {
     ...workerCapacity({
       cpus: availableParallelism(),
@@ -47,5 +49,6 @@ export function detectWorkerCapacity() {
     cpus: availableParallelism(),
     memoryBytes,
     availableBytes,
+    memorySource: memory.source,
   };
 }
