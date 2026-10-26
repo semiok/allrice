@@ -57,7 +57,7 @@ it('an idle-closed conversation resumes its own native history on a fresh Host',
     ],
     credentialResolver: { resolve: async () => ({ apiKey: 'synthetic-only' }) },
     requestTimeoutMs: 15_000,
-    idleCloseMs: 200,
+    idleCloseMs: 60_000,
   });
   cleanups.push(() => runtimes.close());
   const sessionId = randomUUID();
@@ -121,10 +121,11 @@ it('an idle-closed conversation resumes its own native history on a fresh Host',
   );
   release();
   expect(runtimes.inventory()).toHaveLength(1);
-  // The sweep timer, not a direct call, closes the idle Host process.
-  await expect
-    .poll(() => runtimes.inventory().length, { timeout: 10_000 })
-    .toBe(0);
+  // An overdue sweep closes the idle Host process (the interval itself is
+  // covered in runtime-pool.test.ts).
+  first.runtime.lastActivityAt = new Date(0).toISOString();
+  await runtimes.reclaimIdle();
+  expect(runtimes.inventory()).toHaveLength(0);
   expect(first.runtime.client.processState?.().state).toBe('exited');
 
   // The adapter's cold path: fresh Host, then public recovery before prompt.

@@ -106,19 +106,25 @@ function invalidIdleClose(): never {
   );
 }
 
-/** ALLRICE_DSH_IDLE_CLOSE_MINUTES: unset means 30, 0 disables idle close.
- * Under one minute a close could race the steer drain that follows a turn. */
+/** 0 disables; otherwise at least one minute, which a close could otherwise
+ * race the steer drain that follows a turn. */
+function checkedIdleCloseMs(ms: number) {
+  if (ms !== 0 && !(Number.isSafeInteger(ms) && ms >= 60_000))
+    invalidIdleClose();
+  return ms;
+}
+
+/** ALLRICE_DSH_IDLE_CLOSE_MINUTES: unset means 30, 0 disables idle close. */
 export function dshIdleCloseMs(
   value = process.env.ALLRICE_DSH_IDLE_CLOSE_MINUTES,
 ) {
   if (value === undefined || value.trim() === '') return 30 * 60_000;
-  if (!/^\d+(\.\d+)?$/.test(value.trim())) invalidIdleClose();
-  const minutes = Number(value);
-  const ms = Math.round(minutes * 60_000);
-  // Only a literal zero disables; a tiny positive value is an error, not off.
-  if (minutes !== 0 && !(minutes >= 1 && Number.isSafeInteger(ms)))
-    invalidIdleClose();
-  return ms;
+  const text = value.trim();
+  // Zero and "under a minute" come from the text, so a tiny value can neither
+  // underflow to 0 (off) nor round up to one minute.
+  if (/^0+(\.0+)?$/.test(text)) return 0;
+  if (!/^\d+(\.\d+)?$/.test(text) || /^0+\.\d+$/.test(text)) invalidIdleClose();
+  return checkedIdleCloseMs(Math.round(Number(text) * 60_000));
 }
 
 function parseRuntimeArgs(value: string | undefined) {
@@ -247,9 +253,9 @@ export class DshRuntimePool {
       options.requestTimeoutMs ??
         Number(process.env.ALLRICE_DSH_REQUEST_TIMEOUT_MS ?? 300_000),
     );
-    this.idleCloseMs = options.idleCloseMs ?? dshIdleCloseMs();
-    if (!Number.isSafeInteger(this.idleCloseMs) || this.idleCloseMs < 0)
-      invalidIdleClose();
+    this.idleCloseMs = checkedIdleCloseMs(
+      options.idleCloseMs ?? dshIdleCloseMs(),
+    );
   }
 
   isConfigured(snapshot: HarnessExecutionInput['providerSnapshot']) {
@@ -346,7 +352,18 @@ export class DshRuntimePool {
             JSON.stringify({
               runtimeId: runtime.id,
               threadId,
-              code: (error as { code?: unknown } | null)?.code ?? null,
+              // Classification codes only, e.g. SQLSTATE of a failed receipt.
+              codes: [
+                ...new Set(
+                  [
+                    error,
+                    ...(error instanceof AggregateError ? error.errors : []),
+                  ].flatMap((item) => {
+                    const code = (item as { code?: unknown } | null)?.code;
+                    return typeof code === 'string' ? [code] : [];
+                  }),
+                ),
+              ].slice(0, 5),
               error: error instanceof Error ? error.message : String(error),
             }),
           );
@@ -367,10 +384,8 @@ export class DshRuntimePool {
 
   private scheduleIdleClose() {
     if (this.idleTimer || this.closing || this.idleCloseMs <= 0) return;
-    this.idleTimer = setInterval(
-      () => void this.reclaimIdle(),
-      Math.max(1_000, Math.min(this.idleCloseMs, 60_000)),
-    );
+    // The shortest allowed idle time, so a close lags it by at most as much.
+    this.idleTimer = setInterval(() => void this.reclaimIdle(), 60_000);
     this.idleTimer.unref();
   }
 

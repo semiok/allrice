@@ -1222,11 +1222,22 @@ describe('idle close (MET-216)', () => {
       '1e2',
       '0x10',
       '9'.repeat(400),
+      `0.${'0'.repeat(400)}1`,
+      '0.99999999999999999',
     ])
       expect(() => dshIdleCloseMs(invalid)).toThrow(
         'ALLRICE_DSH_IDLE_CLOSE_MINUTES',
       );
-    for (const idleCloseMs of [Number.NaN, -1, Number.POSITIVE_INFINITY])
+    expect(dshIdleCloseMs('000')).toBe(0);
+    expect(dshIdleCloseMs('01')).toBe(60_000);
+    for (const idleCloseMs of [
+      Number.NaN,
+      -1,
+      Number.POSITIVE_INFINITY,
+      1,
+      100,
+      59_999,
+    ])
       expect(() => idlePool(idleCloseMs)).toThrow(
         'ALLRICE_DSH_IDLE_CLOSE_MINUTES',
       );
@@ -1411,7 +1422,10 @@ describe('idle close (MET-216)', () => {
   it('a failed idle close stays unconfirmed and refuses a same-thread replacement', async () => {
     const instance = idlePool(60_000),
       value = request(),
-      failure = Error('idle close unconfirmed');
+      failure = new AggregateError(
+        [Object.assign(Error('receipt write failed'), { code: '08006' })],
+        'DSH runtime close observation remains unconfirmed',
+      );
     const runtime = resident(
       instance,
       longAgo(),
@@ -1421,6 +1435,10 @@ describe('idle close (MET-216)', () => {
     const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
     await instance.reclaimIdle();
     expect(logged).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(logged.mock.calls[0]![1]))).toMatchObject({
+      runtimeId: runtime.id,
+      codes: ['08006'],
+    });
     expect(instance.closureInventory()).toMatchObject([
       { id: runtime.id, state: 'unconfirmed' },
     ]);
@@ -1431,15 +1449,26 @@ describe('idle close (MET-216)', () => {
   });
 
   it('the sweep timer closes an idle Host on its own and stops with no residents', async () => {
-    const runtimes = pool(false, undefined, 50);
-    await runtimes.acquire(request());
-    expect(Reflect.get(runtimes, 'idleTimer')).toBeDefined();
-    await vi.waitFor(() => expect(runtimes.inventory()).toEqual([]), {
-      timeout: 5_000,
-    });
-    await vi.waitFor(() =>
-      expect(Reflect.get(runtimes, 'idleTimer')).toBeUndefined(),
-    );
+    // Only the sweep interval is virtual; the child and its I/O stay real.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      const runtimes = pool(false, undefined, 60_000);
+      const { runtime } = await runtimes.acquire(request());
+      expect(Reflect.get(runtimes, 'idleTimer')).toBeDefined();
+      vi.advanceTimersByTime(60_000);
+      await runtimes.reclaimIdle();
+      expect(runtimes.get(runtime.sessionId)).toBe(runtime);
+      runtime.lastActivityAt = longAgo();
+      vi.advanceTimersByTime(60_000);
+      await vi.waitFor(() => expect(runtimes.inventory()).toEqual([]), {
+        timeout: 5_000,
+      });
+      await vi.waitFor(() =>
+        expect(Reflect.get(runtimes, 'idleTimer')).toBeUndefined(),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('global close stops the sweep timer', async () => {

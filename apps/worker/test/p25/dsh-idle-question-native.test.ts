@@ -38,7 +38,7 @@ it.each(['live', 'parked'] as const)(
     vi.stubEnv('ALLRICE_DSH_PLATFORM_HOME', join(model.root, 'platform'));
     const adapter = new DshHarnessAdapter({
       runtimeRoot: join(model.root, 'runtime'),
-      idleCloseMs: 100,
+      idleCloseMs: 60_000,
       credentialResolver: {
         resolve: async () => ({ apiKey: 'synthetic-only' }),
       },

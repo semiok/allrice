@@ -106,7 +106,7 @@ suite(
       }
     }, 30_000);
 
-    it('recovers the same conversation on a new Host after timer-driven idle reclaim', async () => {
+    it('recovers the same conversation on a new Host after an idle reclaim', async () => {
       const firstRequest = '记住我的项目代号是蓝鲸';
       const secondRequest = '我的项目代号是什么？';
       const firstModel = gate();
@@ -140,7 +140,7 @@ suite(
         credentialResolver: {
           resolve: async () => ({ apiKey: 'synthetic-only' }),
         },
-        idleCloseMs: 100,
+        idleCloseMs: 60_000,
         requestTimeoutMs: 15_000,
       });
       const pool = Reflect.get(adapter, 'runtimePool') as DshRuntimePool;
@@ -342,9 +342,12 @@ suite(
           context_id: chat.id,
           binding_basis: 'business_root_origin',
         });
-        await expect
-          .poll(() => adapter.runtimeInventory().length, { timeout: 10_000 })
-          .toBe(0);
+        // The first turn ended an hour ago; the Worker's sweep closes it.
+        firstRuntime!.lastActivityAt = new Date(
+          Date.now() - 3_600_000,
+        ).toISOString();
+        await pool.reclaimIdle();
+        expect(adapter.runtimeInventory()).toHaveLength(0);
         expect(firstRuntime!.client.processState?.().state).toBe('exited');
         await syncInventory();
         const [offline] =
