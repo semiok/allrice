@@ -9,8 +9,8 @@ export function recurringErrorResponse(error: unknown) {
       binding_conflict: '任务状态已变化，请重新读取。',
       lease_lost: '任务状态正在更新，请稍后查看。',
       limit: '周期任务数量已达到上限，请先整理已有任务。',
-      intent_required: '请明确说明执行周期或每日时间、时区以及具体工作。',
-      rule_mismatch: '周期参数与当前用户要求不一致，请核对后重新提交。',
+      // Only the chat tool asks for confirmation; this keeps the map total.
+      confirmation_required: '请先在对话中确认这个周期任务。',
     };
     return Response.json(
       { error: error.code, message: messages[error.code] },
