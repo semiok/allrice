@@ -1217,6 +1217,41 @@ suite(
         await f.close();
       }
     });
+    it('offers every time zone and keeps the saved one after choosing another', async () => {
+      const f = await fixture(1280);
+      try {
+        if (f.task.definition.kind !== 'recurring') throw Error('fixture kind');
+        f.task.definition.task.rule = {
+          kind: 'daily',
+          time: '09:00:00',
+          timezone: 'Europe/Berlin',
+        };
+        await f.open();
+        const zone = f.page.getByRole('combobox', {
+          name: '时区',
+          exact: true,
+        });
+        const options = () =>
+          zone.evaluate((select) =>
+            select instanceof HTMLSelectElement
+              ? [...select.options].map((option) => option.value)
+              : [],
+          );
+        expect(await zone.inputValue()).toBe('Europe/Berlin');
+        const before = await options();
+        expect(before.slice(0, 2)).toEqual(['Asia/Shanghai', 'Asia/Hong_Kong']);
+        expect(before).toContain('Pacific/Auckland');
+        expect(before.length).toBeGreaterThan(300);
+        await zone.selectOption('Europe/London');
+        expect(await options()).toContain('Europe/Berlin');
+        await zone.selectOption('Europe/Berlin');
+        expect(await zone.inputValue()).toBe('Europe/Berlin');
+        expect(f.requests.filter((r) => r.method === 'PATCH')).toEqual([]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
     it('keeps a confirmed manual Run when the follow-up detail read fails', async () => {
       const f = await fixture(1280, { manual: true });
       try {

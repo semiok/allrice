@@ -48,9 +48,9 @@ import css from './automation-tasks.module.css';
 import { AutomationManualRun } from './automation-manual-run';
 import { RecurringWeekdays } from './recurring-weekdays';
 import {
-  commonTimeZones,
   requestNotSent,
   timeZoneLabel,
+  timeZoneOptions,
 } from '../../lib/chatflow/automation-copy';
 import { shortDateTime } from '../../lib/chatflow/short-date-time';
 import {
@@ -489,6 +489,11 @@ function AutomationDetailBody({
     definition = task?.definition;
   const nativeTask = definition?.kind === 'recurring' ? definition.task : null;
   const zone = task ? taskZone(task) : undefined;
+  // The saved zone stays on offer after picking another one.
+  const zones = useMemo(
+    () => timeZoneOptions([zone ?? '', draft?.timezone ?? '']),
+    [zone, draft?.timezone],
+  );
   const storageKey =
     task?.employeeId && task.sessionId
       ? recurringStorageKey(scope + '/' + task.employeeId, task.sessionId)
@@ -1139,13 +1144,20 @@ function AutomationDetailBody({
                             setDraft({ ...draft, timezone: e.target.value })
                           }
                         >
-                          {[
-                            ...new Set([...commonTimeZones, draft.timezone]),
-                          ].map((name) => (
-                            <option key={name} value={name}>
-                              {timeZoneLabel(name)}
-                            </option>
-                          ))}
+                          <optgroup label="常用时区">
+                            {zones.common.map((name) => (
+                              <option key={name} value={name}>
+                                {timeZoneLabel(name)}
+                              </option>
+                            ))}
+                          </optgroup>
+                          <optgroup label="其他时区">
+                            {zones.others.map((name) => (
+                              <option key={name} value={name}>
+                                {name}
+                              </option>
+                            ))}
+                          </optgroup>
                         </select>
                       </label>
                     </>

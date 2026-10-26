@@ -661,6 +661,55 @@ describe('historical transcript capability gating', () => {
   });
 
   it.each([
+    [
+      'NATIVE_WAIT_RECOVERY_REJECTED',
+      '等待中的任务没能恢复，部分操作结果待确认',
+    ],
+    ['DSH_EXECUTION_OUTCOME_UNKNOWN', '部分操作结果待确认'],
+  ])("keeps the %s note once the run's full reply loads", (errorCode, note) => {
+    const reply = '已检查两个文件，改动已写入第一个。';
+    const completed: ChatFlowEventEnvelope = {
+      schemaVersion: 3,
+      eventId: 'reply-completed',
+      organizationId: 'org',
+      workspaceId: 'workspace',
+      conversationId: 'session',
+      runId: 'run-0',
+      generation: 1,
+      cursor: 'run-0:1',
+      harness: 'dsh',
+      occurredAt: messages[0]!.createdAt,
+      sequence: 1,
+      sourceEvent: null,
+      type: 'assistant.text.completed',
+      payload: { replyId: 'reply-1', text: reply },
+    };
+    // The server kept the reply, then the run ended with an unknown outcome.
+    for (const text of [reply, 'Rice 暂时无法完成这次请求，请稍后重试。']) {
+      const html = render(
+        false,
+        [
+          {
+            ...messages[0]!,
+            status: 'failed',
+            errorCode,
+            content: { text },
+          },
+        ],
+        [],
+        {
+          runTraces: {
+            'run-0': { status: 'loaded', events: [completed] },
+          },
+        },
+      );
+      expect(html.split(reply)).toHaveLength(2);
+      expect(html.split(note)).toHaveLength(2);
+      expect(html).toContain('结果待确认');
+    }
+  });
+
+  it.each([
     [null, 'Rice 的这次执行已取消。', '这次任务已停止。'],
     [
       'APPROVAL_REJECTED',

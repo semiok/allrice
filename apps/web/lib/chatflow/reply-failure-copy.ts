@@ -118,6 +118,8 @@ const savedCodes = new Map<string, string>([
  * One reading of a failed reply, shared by its body and the notice under it.
  * `nativeText` is the contracts wording for this code or its diagnostics; it
  * may name a more specific failure than the stored code (a masked disconnect).
+ * `body` only stands in until the run's own reply loads, so the notice is
+ * always kept here; the caller drops it when the shown reply already says it.
  */
 export function presentReplyFailure(input: {
   code: string | null | undefined;
@@ -141,6 +143,6 @@ export function presentReplyFailure(input: {
   const body = stored || governs ? copy : input.text;
   return {
     body,
-    notice: kind && quiet.has(kind) ? null : copy === body ? null : copy,
+    notice: kind && quiet.has(kind) ? null : copy,
   };
 }

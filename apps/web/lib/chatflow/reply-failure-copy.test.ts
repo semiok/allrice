@@ -59,7 +59,8 @@ describe('plain copy for a reply that did not finish', () => {
     expect(body).toBe(replyFailureCopy(code));
     expect(body).not.toBe(replyFailureFallback);
     expect(body).toMatch(/未完成|待确认/);
-    expect(notice).toBeNull();
+    // Kept for the reply that may load later; the transcript drops duplicates.
+    expect(notice).toBe(body);
     for (const word of banned) expect(body).not.toContain(word);
   });
 
@@ -71,7 +72,7 @@ describe('plain copy for a reply that did not finish', () => {
     ])
       expect(failure).toEqual({
         body: replyFailureCopy('DSH_TRANSPORT'),
-        notice: null,
+        notice: replyFailureCopy('DSH_TRANSPORT'),
       });
     // A kept reply stays; the note names the same failure.
     expect(present('DSH_UNKNOWN', '已查到四个 PR。', transport)).toEqual({
@@ -107,7 +108,7 @@ describe('plain copy for a reply that did not finish', () => {
     const { body, notice } = present(code, savedGenericFailure);
     expect(body).toContain(words);
     expect(body).toMatch(/再试/);
-    expect(notice).toBeNull();
+    expect(notice).toBe(body);
   });
 
   it('gives an unknown failure a neutral next step', () => {

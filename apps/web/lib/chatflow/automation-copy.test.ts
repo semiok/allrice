@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { commonTimeZones, timeZoneLabel } from './automation-copy';
+import {
+  commonTimeZones,
+  timeZoneLabel,
+  timeZoneOptions,
+} from './automation-copy';
 import { shortDateTime } from './short-date-time';
 
 describe('automation wording', () => {
@@ -8,6 +12,18 @@ describe('automation wording', () => {
     expect(timeZoneLabel('Europe/Berlin')).toBe('Europe/Berlin');
     for (const zone of commonTimeZones)
       expect(timeZoneLabel(zone)).not.toContain('/');
+  });
+
+  it('offers every known zone after the common ones and keeps unusual saved zones', () => {
+    const { common, others } = timeZoneOptions(['Europe/Berlin', 'Etc/GMT-14']);
+    expect(common).toEqual(commonTimeZones);
+    expect(others).toContain('Europe/Berlin');
+    expect(others).toContain('Pacific/Auckland');
+    // Kept even if the browser's own list does not name it.
+    expect(others).toContain('Etc/GMT-14');
+    for (const zone of common) expect(others).not.toContain(zone);
+    expect(new Set(others).size).toBe(others.length);
+    expect(timeZoneOptions(['']).others).not.toContain('');
   });
 
   it('reads a task time in the task zone, whatever the viewer zone is', () => {
