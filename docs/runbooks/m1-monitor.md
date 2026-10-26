@@ -140,10 +140,10 @@ tail -50 ~/allrice-dev/monitor/monitor.log
 
 ## 诊断交给 Codex
 
-需要定位根因时，派 Codex Sol 做只读诊断（AGENTS.md 第 9 节“线上问题诊断”），结论回报用户：
+需要定位根因时，派 Codex Astra 做只读诊断（AGENTS.md 第 9 节“线上问题诊断”），结论回报用户：
 
 ```bash
-~/.local/bin/codex exec -C ~/allrice-repo -m gpt-6.1-sol -c model_reasoning_effort=max -s read-only \
+~/.local/bin/codex exec -C ~/allrice-repo -m gpt-6-astra -c model_reasoning_effort=max -s read-only \
   -o ~/allrice-dev/qa/codex/diagnose-$(date +%m%d-%H%M).md \
   "只读诊断 M1 Dev 告警：<粘贴告警原文>。查 deploy-dev --status、相关日志和只读 SQL，给出根因、证据和建议修法，不改代码、数据和配置。" </dev/null
 ```
