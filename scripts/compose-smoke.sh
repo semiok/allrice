@@ -116,8 +116,8 @@ bootstrap_json="$(
 )"
 bootstrap_organization_id="$(printf '%s' "${bootstrap_json}" | jq -r '.organizationId')"
 bootstrap_workspace_id="$(printf '%s' "${bootstrap_json}" | jq -r '.workspaceId')"
-if [[ "$(printf '%s' "${bootstrap_json}" | jq -r '.initialized')" != "true" ]]; then
-  echo "Identity bootstrap did not initialize the first account" >&2
+if [[ "$(printf '%s' "${bootstrap_json}" | jq -r '.accountCreated')" != "true" ]]; then
+  echo "Identity bootstrap did not create the first account" >&2
   exit 1
 fi
 
@@ -128,6 +128,18 @@ second_workspace_id="$({
 } | tr -d '\r')"
 if [[ -z "${second_workspace_id}" ]]; then
   echo "Second workspace setup failed" >&2
+  exit 1
+fi
+
+# The product no longer creates workspace-scoped memberships, but historical
+# rows remain. Keep one (sharing the admin's password) for the HTTP check.
+scoped_user_id="$({
+  docker compose --project-name "${compose_project}" exec -T postgres \
+    psql -U "${POSTGRES_USER:-allrice}" -d "${POSTGRES_DB:-allrice}" -Atqc \
+    "with u as (insert into allrice_users (email, display_name, password_hash, status) select 'phase0-scoped@example.com', 'Phase 0 Scoped', password_hash, 'active' from allrice_users where email = 'phase0-smoke@example.com' returning id) insert into allrice_memberships (organization_id, workspace_id, user_id, role) select '${bootstrap_organization_id}', '${bootstrap_workspace_id}', id, 'member' from u returning user_id;"
+} | tr -d '\r')"
+if [[ -z "${scoped_user_id}" ]]; then
+  echo "Workspace-scoped member setup failed" >&2
   exit 1
 fi
 

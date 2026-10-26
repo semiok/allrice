@@ -174,15 +174,15 @@ Do not commit `.env`; it is ignored because it may contain credentials.
 
 ## Bootstrap the first administrator
 
-AllRice has no production Auto Guest, default password or invitation links. After `pnpm db:setup`, set the `ALLRICE_BOOTSTRAP_*` values shown in `.env.example` (the password only in your local `.env`), add the same email to `ALLRICE_PLATFORM_ADMIN_EMAILS`, then run:
+AllRice has no production Auto Guest, default password or invitation links. After `pnpm db:setup`, set the non-secret `ALLRICE_BOOTSTRAP_*` values shown in `.env.example` in your local `.env` (the command reads it, like `pnpm dev`; variables already set in the shell win) and add the same email to `ALLRICE_PLATFORM_ADMIN_EMAILS`. Keep the password out of `.env`: write it to a file only you can read and pass its path, then run:
 
 ```bash
-pnpm identity:bootstrap
+ALLRICE_BOOTSTRAP_ADMIN_PASSWORD_FILE=~/.allrice-first-password pnpm identity:bootstrap
 ```
 
-The command creates or reuses the Organization and default Workspace and sets the first account's username and password. It prints only IDs and never resets an account that already has a login. Sign in with that username or email; further accounts are added by the platform administrator under the company's people in the admin console (`POST /api/v1/admin/organizations/{id}/people`).
+The command checks every value first, then in one transaction creates or reuses the Organization and default Workspace and creates the account with that username and password (at least 8 characters; the platform administrator's portal username is reserved). If an account with that email already exists, it is left unchanged. The output has only IDs, `accountCreated` and `platformAdmin`. Sign in with the username or email; further accounts are added by the platform administrator under the company's people in the admin console (`POST /api/v1/admin/organizations/{id}/people`).
 
-Deployments with the portal login enabled (`ALLRICE_PORTAL_AUTH_ENABLED=1`) do not need this command: the platform administrator signs in on the admin entry with `ALLRICE_PLATFORM_ADMIN_USER` / `ALLRICE_PLATFORM_ADMIN_PASSWORD`.
+Deployments with the portal login enabled (`ALLRICE_PORTAL_AUTH_ENABLED=1`) do not need this command: the platform administrator signs in on the admin entry (`allrice-admin.bplabs.xyz`, a host in `ALLRICE_ADMIN_PORTAL_HOSTS`, or locally with `ALLRICE_LOCAL_PORTAL=runtime-console`) with `ALLRICE_PLATFORM_ADMIN_USER` / `ALLRICE_PLATFORM_ADMIN_PASSWORD`, and `ALLRICE_PLATFORM_BOOTSTRAP_EMAIL` must be listed in `ALLRICE_PLATFORM_ADMIN_EMAILS`.
 
 ## What startup verifies
 

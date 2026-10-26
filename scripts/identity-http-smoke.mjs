@@ -108,6 +108,16 @@ await jsonRequest(
   { headers: tenantHeaders(inviteeCookie, randomUUID()) },
   403,
 );
+// A historical workspace-scoped member stays inside its own workspace.
+const scopedCookie = await login('phase0-scoped@example.com', password);
+await jsonRequest('/api/v1/auth/session', {
+  headers: tenantHeaders(scopedCookie),
+});
+await jsonRequest(
+  '/api/v1/auth/session',
+  { headers: tenantHeaders(scopedCookie, secondWorkspaceId) },
+  403,
+);
 
 const workspaceResponse = await jsonRequest('/api/v1/workspace', {
   headers: tenantHeaders(inviteeCookie),

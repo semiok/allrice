@@ -48,6 +48,70 @@ integration('MET-161 unified account login (isolated PostgreSQL)', () => {
     return { ...principal, username, input };
   }
 
+  it('bootstraps a first login in one transaction and never changes an existing account', async () => {
+    const name = `first-${randomUUID()}`;
+    const input = {
+      organizationSlug: name,
+      organizationName: 'First company',
+      workspaceSlug: 'default',
+      workspaceName: 'Default',
+      email: `${name}@example.test`,
+      displayName: 'Administrator',
+      role: 'member' as const,
+    };
+    const first = await ensureBootstrapPortalPrincipal({
+      ...input,
+      login: { username: name, password: 'first-password' },
+    });
+    expect(first.created).toBe(true);
+    expect(
+      (await login({ username: name, password: 'first-password' })).user.id,
+    ).toBe(first.user.id);
+    const again = await ensureBootstrapPortalPrincipal({
+      ...input,
+      login: { username: `${name}-other`, password: 'second-password' },
+    });
+    expect(again).toMatchObject({
+      created: false,
+      user: { id: first.user.id },
+    });
+    await expect(
+      login({ email: input.email, password: 'second-password' }),
+    ).rejects.toMatchObject({ code: 'authentication_failed' });
+    expect(
+      (await login({ email: input.email, password: 'first-password' })).user
+        .username,
+    ).toBe(name);
+
+    // A taken username rolls back the company, workspace and account together.
+    const clash = `clash-${randomUUID()}`;
+    await expect(
+      ensureBootstrapPortalPrincipal({
+        ...input,
+        organizationSlug: clash,
+        email: `${clash}@example.test`,
+        login: { username: name, password: 'clash-password' },
+      }),
+    ).rejects.toMatchObject({ code: '23505' });
+    expect(
+      await fixture.db`select id from allrice_organizations where slug=${clash}`,
+    ).toHaveLength(0);
+    expect(
+      await fixture.db`select id from allrice_users where email=${`${clash}@example.test`}`,
+    ).toHaveLength(0);
+    await expect(
+      ensureBootstrapPortalPrincipal({
+        ...input,
+        organizationSlug: `${clash}-short`,
+        email: `${clash}-short@example.test`,
+        login: { username: `${clash}-short`, password: 'short' },
+      }),
+    ).rejects.toThrow();
+    expect(
+      await fixture.db`select id from allrice_organizations where slug=${`${clash}-short`}`,
+    ).toHaveLength(0);
+  });
+
   it('logs two employees into their own companies on the same entry; tenant admin is not platform admin', async () => {
     const a = await account(),
       b = await account();

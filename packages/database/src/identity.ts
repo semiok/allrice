@@ -195,12 +195,17 @@ export async function ensureBootstrapPortalPrincipal(
     email: string;
     displayName: string;
     role: Role;
+    /** Login for a newly created account only; an existing account is never changed. */
+    login?: { username: string; password: string };
   },
   sql = getDatabase(),
 ) {
   const email = EmailSchema.parse(input.email);
+  const username = input.login
+    ? UsernameSchema.parse(input.login.username)
+    : null;
   const passwordHash = await hashPassword(
-    randomBytes(32).toString('base64url'),
+    input.login?.password ?? randomBytes(32).toString('base64url'),
   );
   return sql.begin(async (transaction) => {
     await transaction`select pg_advisory_xact_lock(hashtext(${`portal-principal:${email}`}))`;
@@ -233,8 +238,8 @@ export async function ensureBootstrapPortalPrincipal(
     let user = existingUsers[0];
     if (!user) {
       const users = await transaction<UserRow[]>`
-        insert into allrice_users (email, display_name, password_hash, status)
-        values (${email}, ${input.displayName}, ${passwordHash}, 'active')
+        insert into allrice_users (email, username, display_name, password_hash, status)
+        values (${email}, ${username}, ${input.displayName}, ${passwordHash}, 'active')
         returning id, email, display_name, password_hash, status
       `;
       user = users[0];
@@ -275,6 +280,7 @@ export async function ensureBootstrapPortalPrincipal(
       },
       organizationId: organization.id,
       workspaceId: workspace.id,
+      created: existingUsers.length === 0,
     };
   });
 }

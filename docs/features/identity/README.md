@@ -67,7 +67,7 @@ Implemented routes:
 - `GET /api/v1/auth/session`;
 - `POST /api/v1/admin/organizations/{id}/people`.
 
-The first account is created only through the trusted `pnpm identity:bootstrap` command, or, with the portal login enabled, by the platform administrator's first sign-in with the deployment's configured credentials. There is no Auto Guest or committed default password. Invitation links were retired in MET-214 (migration `0221` drops their table).
+The first account is created only through the trusted `pnpm identity:bootstrap` command, or, with the portal login enabled, on the first sign-in with a deployment-configured portal credential (the platform administrator, and the legacy single-company portals such as Snow and Drink). There is no Auto Guest or committed default password. Invitation links were retired in MET-214 (migration `0221` drops their table).
 
 ## Security
 
