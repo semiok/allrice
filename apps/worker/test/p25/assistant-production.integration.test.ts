@@ -70,6 +70,10 @@ integration(
         const overlap = gate();
         const completionReached = gate(),
           completionReleased = gate();
+        const joinReached = gate();
+        let joinSettled = false;
+        let restoreJoin = () => {};
+        let observingJoin = false;
         let activeChildren = 0,
           maximumActiveChildren = 0,
           triedMissingReport = false;
@@ -342,6 +346,29 @@ integration(
             }),
           };
           if (outcome === 'completed') {
+            executionInput.onEvent = async (event) => {
+              if (event.sourceEventType !== 'allrice/runtime-preparation')
+                return;
+              if (observingJoin) return;
+              observingJoin = true;
+              const pool = Reflect.get(
+                adapter,
+                'runtimePool',
+              ) as DshRuntimePool;
+              const owned = pool.get(nativeSessionId)!;
+              const original = owned.client.assistant.bind(owned.client);
+              const observed = vi
+                .spyOn(owned.client, 'assistant')
+                .mockImplementation((action, params) => {
+                  const result = original(action, params);
+                  if (action !== 'join') return result;
+                  joinReached.release();
+                  return result.finally(() => {
+                    joinSettled = true;
+                  });
+                });
+              restoreJoin = () => observed.mockRestore();
+            };
             const original = executionInput.assistants!;
             executionInput.assistants = {
               ...original,
@@ -363,6 +390,25 @@ integration(
           execution.catch(() => {});
           await expect.poll(() => activeChildren, { timeout: 15000 }).toBe(2);
           expect(maximumActiveChildren).toBe(2);
+          if (outcome === 'completed') {
+            await joinReached.promise;
+            expect(joinSettled).toBe(false);
+            const pool = Reflect.get(adapter, 'runtimePool') as DshRuntimePool;
+            const owned = pool.get(nativeSessionId)!;
+            const children = (await bridge.tree()).instances.filter(
+              (i) => i.parentRunId !== null,
+            );
+            expect(children).toHaveLength(2);
+            expect(children.every((i) => i.status === 'running')).toBe(true);
+            // Native parent is joining real held children after its own turn.
+            // Even an overdue sweep must preserve their shared Host.
+            await pool.reclaimIdle(Date.now() + 86_400_000);
+            expect(pool.get(nativeSessionId)).toBe(owned);
+            expect(adapter.runtimeInventory().map((r) => r.id)).toContain(
+              owned.id,
+            );
+            expect(joinSettled).toBe(false);
+          }
           if (outcome.startsWith('revoked')) {
             // Wait until the parent's final text model call has settled. Only
             // the two held child requests remain; a later parent admission
@@ -447,6 +493,9 @@ integration(
               .runtimePool;
             const owned = pool.get(nativeSessionId);
             expect(owned).toBeDefined();
+            // The lease also covers the post-join database finish barrier.
+            await pool.reclaimIdle(Date.now() + 86_400_000);
+            expect(pool.get(nativeSessionId)).toBe(owned);
             // Keep the completed DB root exposed across three former polling
             // intervals, before execute's finally. It must not be treated as a
             // new revocation or silently lose its already-owned native host.
@@ -690,6 +739,7 @@ integration(
         } finally {
           overlap.release();
           completionReleased.release();
+          restoreJoin();
           await adapter.close();
           await model.close();
           vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');

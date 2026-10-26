@@ -94,6 +94,37 @@ export interface DshRuntimePoolOptions {
   runtimeRoot?: string;
   cordisConfig?: string;
   requestTimeoutMs?: number;
+  /** Close an unleased idle Host after this long; 0 disables. */
+  idleCloseMs?: number;
+}
+
+function invalidIdleClose(): never {
+  throw new HandlerError(
+    'DSH_RUNTIME_CONFIG_INVALID',
+    'ALLRICE_DSH_IDLE_CLOSE_MINUTES must be 0 (disabled) or a decimal number of minutes, at least 1',
+    false,
+  );
+}
+
+/** 0 disables; otherwise at least one minute, which a close could otherwise
+ * race the steer drain that follows a turn. */
+function checkedIdleCloseMs(ms: number) {
+  if (ms !== 0 && !(Number.isSafeInteger(ms) && ms >= 60_000))
+    invalidIdleClose();
+  return ms;
+}
+
+/** ALLRICE_DSH_IDLE_CLOSE_MINUTES: unset means 30, 0 disables idle close. */
+export function dshIdleCloseMs(
+  value = process.env.ALLRICE_DSH_IDLE_CLOSE_MINUTES,
+) {
+  if (value === undefined || value.trim() === '') return 30 * 60_000;
+  const text = value.trim();
+  // Zero and "under a minute" come from the text, so a tiny value can neither
+  // underflow to 0 (off) nor round up to one minute.
+  if (/^0+(\.0+)?$/.test(text)) return 0;
+  if (!/^\d+(\.\d+)?$/.test(text) || /^0+\.\d+$/.test(text)) invalidIdleClose();
+  return checkedIdleCloseMs(Math.round(Number(text) * 60_000));
 }
 
 function parseRuntimeArgs(value: string | undefined) {
@@ -197,6 +228,14 @@ export class DshRuntimePool {
   private readonly runtimeRoot: string;
   private readonly cordisConfig: string;
   private readonly requestTimeoutMs: number;
+  // Executions in progress per thread, from before preparation to after
+  // cleanup. Idle close never selects a leased thread.
+  private readonly leases = new Map<string, number>();
+  private readonly idleCloses = new Map<string, Promise<void>>();
+  private readonly idleCloseMs: number;
+  private idleTimer: ReturnType<typeof setInterval> | undefined;
+  private idleSweep: Promise<void> | undefined;
+  private idleCloseGate: () => boolean = () => true;
 
   constructor(options: DshRuntimePoolOptions = {}) {
     this.credentialResolver =
@@ -213,6 +252,9 @@ export class DshRuntimePool {
     this.requestTimeoutMs = requestTimeout(
       options.requestTimeoutMs ??
         Number(process.env.ALLRICE_DSH_REQUEST_TIMEOUT_MS ?? 300_000),
+    );
+    this.idleCloseMs = checkedIdleCloseMs(
+      options.idleCloseMs ?? dshIdleCloseMs(),
     );
   }
 
@@ -247,6 +289,109 @@ export class DshRuntimePool {
 
   touch(runtime: DshRuntime) {
     runtime.lastActivityAt = new Date().toISOString();
+  }
+
+  /** Synchronous claim before any await; the returned release is idempotent. */
+  lease(threadId: string) {
+    this.leases.set(threadId, (this.leases.get(threadId) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const remaining = (this.leases.get(threadId) ?? 1) - 1;
+      if (remaining > 0) return void this.leases.set(threadId, remaining);
+      this.leases.delete(threadId);
+      // Idle time starts when the last execution leaves, not when it began.
+      const runtime = this.runtimes.get(threadId);
+      if (runtime) this.touch(runtime);
+    };
+  }
+
+  /** The Worker closes this while its database is unready: a close writes
+   * durable receipts, and an unconfirmed one refuses the thread's next Host. */
+  setIdleCloseGate(gate: () => boolean) {
+    this.idleCloseGate = gate;
+  }
+
+  /** Close resident Hosts idle past the configured limit through closeOwned.
+   * Skips leased threads, input holds and in-flight steers. Selection and
+   * cache removal are synchronous, so an acquisition either holds a lease
+   * first or waits for this close and starts a fresh Host. One sweep and one
+   * close at a time, so a burst of shutdowns cannot starve their acks. */
+  reclaimIdle(now?: number) {
+    return (this.idleSweep ??= this.sweepIdle(now).finally(() => {
+      this.idleSweep = undefined;
+    }));
+  }
+
+  private async sweepIdle(now?: number) {
+    for (const runtime of [...this.runtimes.values()]) {
+      if (this.closing || this.idleCloseMs <= 0 || !this.idleCloseGate()) break;
+      const threadId = runtime.sessionId;
+      const idleMs = (now ?? Date.now()) - Date.parse(runtime.lastActivityAt);
+      if (
+        this.runtimes.get(threadId) !== runtime ||
+        !(idleMs >= this.idleCloseMs) ||
+        this.leases.has(threadId) ||
+        this.inputHolds.has(runtime) ||
+        this.inputSteers.get(runtime)?.size ||
+        this.runtimeCloseTasks.has(runtime)
+      )
+        continue;
+      const closing = this.closeOwned(runtime).then(
+        () => {
+          console.info(
+            '[AllRice:dsh-idle-close]',
+            JSON.stringify({ runtimeId: runtime.id, threadId, idleMs }),
+          );
+        },
+        (error: unknown) => {
+          // A failed close stays owned and unconfirmed, as for any drop.
+          console.error(
+            '[AllRice:dsh-idle-close] close unconfirmed',
+            JSON.stringify({
+              runtimeId: runtime.id,
+              threadId,
+              // Classification codes only, e.g. SQLSTATE of a failed receipt.
+              codes: [
+                ...new Set(
+                  [
+                    error,
+                    ...(error instanceof AggregateError ? error.errors : []),
+                  ].flatMap((item) => {
+                    const code = (item as { code?: unknown } | null)?.code;
+                    return typeof code === 'string' ? [code] : [];
+                  }),
+                ),
+              ].slice(0, 5),
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          );
+        },
+      );
+      this.idleCloses.set(threadId, closing);
+      void closing.finally(() => {
+        if (this.idleCloses.get(threadId) === closing)
+          this.idleCloses.delete(threadId);
+      });
+      await closing;
+    }
+    if (!this.runtimes.size && this.idleTimer) {
+      clearInterval(this.idleTimer);
+      this.idleTimer = undefined;
+    }
+  }
+
+  private scheduleIdleClose() {
+    if (this.idleTimer || this.closing || this.idleCloseMs <= 0) return;
+    // The shortest allowed idle time, so a close lags it by at most as much.
+    this.idleTimer = setInterval(() => void this.reclaimIdle(), 60_000);
+    this.idleTimer.unref();
+  }
+
+  /** An idle close already selected for this thread; it never rejects. */
+  pendingIdleClose(threadId: string) {
+    return this.idleCloses.get(threadId);
   }
 
   /** Offline protocol fixtures have no approved artifact or SQL authority.
@@ -548,7 +693,18 @@ export class DshRuntimePool {
       );
   }
 
-  async acquire(input: {
+  async acquire(input: Parameters<DshRuntimePool['acquireLeased']>[0]) {
+    // Callers hold their own lease for the use that follows; this one only
+    // covers preparation for callers that do not.
+    const release = this.lease(input.threadId);
+    try {
+      return await this.acquireLeased(input);
+    } finally {
+      release();
+    }
+  }
+
+  private async acquireLeased(input: {
     input: HarnessExecutionInput;
     snapshot: DshExecutionSnapshot;
     threadId: string;
@@ -559,6 +715,10 @@ export class DshRuntimePool {
     nativeExecutionBinding?: NativeRunExecutionBinding | null;
     requireRecovery?: boolean;
   }) {
+    // An idle close that won the race completes before its replacement; a
+    // failed one stays owned and the check below refuses the replacement.
+    const idleClose = this.pendingIdleClose(input.threadId);
+    if (idleClose) await idleClose;
     this.assertAcquisitionOpen(input.threadId);
     const acquireStarted = performance.now();
     let nativeIdentity: ReturnType<DshRuntimePool['launch']>;
@@ -1007,6 +1167,7 @@ export class DshRuntimePool {
           false,
         );
       this.runtimes.set(input.threadId, runtime);
+      this.scheduleIdleClose();
       return { runtime, fresh: true, preparation };
     } catch (error) {
       try {
@@ -1306,6 +1467,8 @@ export class DshRuntimePool {
     // Synchronous admission fence; all concurrent shutdown callers observe
     // the same result, including a previously failed individual close.
     this.closing = true;
+    clearInterval(this.idleTimer);
+    this.idleTimer = undefined;
     const runtimes = [
       ...new Set([...this.runtimes.values(), ...this.ownedRuntimes]),
     ];

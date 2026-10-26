@@ -41,6 +41,7 @@ and execute only through `HarnessExecutionInput.onToolCall`.
 | Capability         | DSH 0.1.1-rc.2 behavior                                                            |
 | ------------------ | ---------------------------------------------------------------------------------- |
 | Multi-turn session | One JSON-RPC runtime and stable session id per AllRice conversation                |
+| Idle runtime       | Idle one closes after `ALLRICE_DSH_IDLE_CLOSE_MINUTES`; next turn recovers it      |
 | Streaming          | `assistant/chunk` text deltas map to `HarnessEvent`                                |
 | Usage              | `assistant/message.data.usage` maps to `usage.updated`                             |
 | Tools              | AllRice Tool Broker bridge only; no DSH host tools                                 |

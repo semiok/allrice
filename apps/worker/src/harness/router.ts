@@ -172,6 +172,11 @@ export class HarnessRouter {
       adapter.runtimeInventory ? [...adapter.runtimeInventory()] : [],
     );
   }
+
+  setIdleCloseGate(gate: () => boolean) {
+    for (const adapter of this.adapters.values())
+      adapter.setIdleCloseGate?.(gate);
+  }
 }
 
 export function harnessRouteKey(snapshot: HarnessExecutionSnapshot) {

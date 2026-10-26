@@ -166,6 +166,7 @@ Copy `.env.example` to `.env` only when changing defaults. The bootstrap script 
 | `ALLRICE_DSH_HTTP_PROXY`             | unset                 | Explicit HTTP egress proxy for DSH child processes              |
 | `ALLRICE_DSH_HTTPS_PROXY`            | unset                 | Explicit HTTPS egress proxy for DSH child processes             |
 | `ALLRICE_DSH_NO_PROXY`               | unset                 | Optional proxy bypass list for DSH child processes              |
+| `ALLRICE_DSH_IDLE_CLOSE_MINUTES`     | `30`                  | Close a conversation's idle DSH process; `0` disables           |
 | `ALLRICE_STORAGE_SIGNING_SECRET`     | dev-only fallback     | HMAC secret; required in production, minimum 32 bytes           |
 | `ALLRICE_PROXY_PORT`                 | `8080`                | Host port for the full Compose deployment                       |
 
