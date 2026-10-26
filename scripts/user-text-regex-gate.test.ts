@@ -127,6 +127,20 @@ export function shapes(text: string) {
     'apps/demo/reexport.ts': `export { PATTERN as RENAMED } from './words.ts';
 export * from './words.ts';
 `,
+    'apps/demo/barrel.ts': `import { PATTERN } from './words.ts';
+import * as all from './words.ts';
+export { PATTERN, all };
+`,
+    'apps/demo/round3.ts': `import { PATTERN, all } from './barrel.ts';
+export function approve(text: string) {
+  if (!/^(?:please do|go ahead)$/i.test(text)) return false;
+  return PATTERN.test(text) || all.SHARED.includes(text);
+}
+export function page(text: string, spaced: boolean) {
+  // r1-exempt(format): 只认“第 N 页”两种写法，不命中照常交给模型处理
+  return (spaced ? /^第 [0-9]+ 页$/u : /^第[0-9]+页$/u).exec(text);
+}
+`,
     'apps/demo/round2.ts': `import * as words from './words.ts';
 import { RENAMED, SHARED } from './reexport.ts';
 export function copied(text: string) {
@@ -344,6 +358,30 @@ export const handler = (text: string) => {
         .filter((problem) => problem.file === 'apps/demo/round2.ts')
         .map((problem) => problem.problem.split(':')[0]),
     ).toEqual(['exemption on a regex that is applied by name']);
+  });
+
+  it('follows barrels that re-export imports, and exempts an application of a conditional regex', () => {
+    expect(
+      of('round3.ts').map((site) => [
+        site.owner,
+        site.text,
+        site.exemption?.category ?? 'NEW',
+      ]),
+    ).toEqual([
+      ['approve', '/^(?:please do|go ahead)$/i', 'NEW'],
+      ['approve', 'test(/^批准$/u)', 'NEW'],
+      ['approve', '["批准"].includes()', 'NEW'],
+      [
+        'page',
+        'any(exec(item)) over ["/^第 [0-9]+ 页$/u","/^第[0-9]+页$/u"]',
+        'format',
+      ],
+    ]);
+    expect(
+      report.problems.filter(
+        (problem) => problem.file === 'apps/demo/round3.ts',
+      ),
+    ).toEqual([]);
   });
 
   it('resolves names by scope: same-named locals in other functions neither hide nor stand in', () => {

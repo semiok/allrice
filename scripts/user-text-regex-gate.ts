@@ -10,8 +10,8 @@
  * cannot be decided statically, so `scanUserTextMatches` over-approximates. In
  * product code (apps/ and packages/; tests, fixtures and build output
  * excluded) it reports every place that matches wording: Chinese text, or
- * English with a function word and a request word, or three function words
- * (`please install`, `don't remember`, `please do not`; see `englishWording`):
+ * two English request words one of which is a function word (`please do`,
+ * `please install`, `don't remember`; see `englishWording`):
  *
  * - a regex literal with wording (escapes decoded; character-class ranges such
  *   as `[\u4e00-\u9fa5]` and `\p{Script=Han}` name a script, not wording);
@@ -176,27 +176,24 @@ const FUNCTION_WORDS = new Set(
   ),
 );
 const REQUEST_WORDS = new Set(
-  'remember forget confirm approve cancel stop save store record retain learn delete remove install update restore revert enable disable activate schedule remind every daily weekly once use bind reference rename call reply respond be keep mind upload discuss show view explain prefer decided send'.split(
+  'remember forget confirm approve allow accept proceed continue go ahead yes cancel stop save store record retain learn delete remove install update restore revert enable disable activate schedule remind every daily weekly once use bind reference rename call reply respond be keep mind upload discuss show view explain prefer decided send'.split(
     ' ',
   ),
 );
 
 /**
- * A function word with a request word (`please install`, `don't remember`),
- * or three function words (`please do not`). Identifiers and codes such as
+ * Two of these words, one of them a function word: `please do`, `please
+ * install`, `don't remember`. Identifiers and codes such as
  * `STOP_NOT_CONFIRMED` are one token, not words.
  */
 export function englishWording(text: string) {
   const words = new Set(
     (text.match(/[A-Za-z0-9_']+/g) ?? [])
       .filter((token) => !/[\d_]/.test(token))
-      .map((token) => token.toLowerCase()),
+      .map((token) => token.toLowerCase())
+      .filter((word) => FUNCTION_WORDS.has(word) || REQUEST_WORDS.has(word)),
   );
-  const functions = [...words].filter((word) => FUNCTION_WORDS.has(word));
-  const requests = [...words].filter((word) => REQUEST_WORDS.has(word));
-  return (
-    (functions.length >= 1 && requests.length >= 1) || functions.length >= 3
-  );
+  return words.size >= 2 && [...words].some((word) => FUNCTION_WORDS.has(word));
 }
 
 const textWording = (text: string) => HAN.test(text) || englishWording(text);
@@ -570,8 +567,29 @@ function createScanner(root: string) {
     depth = 0,
   ): ts.Node | undefined {
     if (depth > DEPTH) return undefined;
-    const local = (target: string) => {
+    const local = (target: string): ts.Node | undefined => {
       for (const statement of file.statements) {
+        // `import { P } from '...'; export { P };` re-exports the import.
+        const clause = ts.isImportDeclaration(statement)
+          ? statement.importClause
+          : undefined;
+        const module =
+          clause &&
+          ts.isImportDeclaration(statement) &&
+          ts.isStringLiteral(statement.moduleSpecifier)
+            ? moduleOf(file.fileName, statement.moduleSpecifier.text)
+            : undefined;
+        const named = clause?.namedBindings;
+        if (module && named && ts.isNamespaceImport(named))
+          if (named.name.text === target) return module;
+        if (module && named && ts.isNamedImports(named))
+          for (const element of named.elements)
+            if (element.name.text === target)
+              return exportOf(
+                module,
+                (element.propertyName ?? element.name).text,
+                depth + 1,
+              );
         if (ts.isVariableStatement(statement))
           for (const declaration of statement.declarationList.declarations)
             if (nameText(declaration.name) === target)
@@ -1176,7 +1194,9 @@ function createScanner(root: string) {
       line: number;
       end: number;
       exemption?: Exemption;
-      covers: Candidate[];
+      /** Sites it exempts, and declarations applied by name it sits on. */
+      covers: Site[];
+      declarations: number;
     };
     const markers = new Map<number, Marker>();
     const parseMarker = (range: ts.CommentRange) => {
@@ -1187,7 +1207,12 @@ function createScanner(root: string) {
       const line = lineOf(at);
       const category = match[1]!.trim();
       const reason = match[2]!.replace(/\*\/\s*$/, '').trim();
-      const marker: Marker = { line, end: range.end, covers: [] };
+      const marker: Marker = {
+        line,
+        end: range.end,
+        covers: [],
+        declarations: 0,
+      };
       if (!Object.hasOwn(EXEMPTIONS, category))
         problems.push({
           file: path,
@@ -1248,14 +1273,22 @@ function createScanner(root: string) {
       }
       if (found === undefined) continue;
       const marker = markers.get(found)!;
-      marker.covers.push(candidate);
-      if (marker.exemption && counted) site.exemption = marker.exemption;
+      if (!counted) {
+        marker.declarations += 1;
+        continue;
+      }
+      marker.covers.push(site);
+      if (marker.exemption) site.exemption = marker.exemption;
     }
     for (const marker of markers.values()) {
-      const elsewhere = marker.covers.every(
-        (candidate) => candidate.definition && applied.has(candidate.node),
-      );
-      if (marker.covers.length === 0)
+      if (marker.covers.length === 0 && marker.declarations > 0)
+        problems.push({
+          file: path,
+          line: marker.line,
+          problem:
+            'exemption on a regex that is applied by name: each application (test, match, replace, ...) is the site and needs its own exemption',
+        });
+      else if (marker.covers.length === 0)
         problems.push({
           file: path,
           line: marker.line,
@@ -1267,13 +1300,6 @@ function createScanner(root: string) {
           file: path,
           line: marker.line,
           problem: `one exemption covers ${marker.covers.length} sites; give each site its own comment (/* r1-exempt(...): ... */ works inline)`,
-        });
-      else if (elsewhere)
-        problems.push({
-          file: path,
-          line: marker.line,
-          problem:
-            'exemption on a regex that is applied by name: each application (test, match, replace, ...) is the site and needs its own exemption',
         });
     }
     // A marker the walk above cannot see (inside JSX, before a closing brace,

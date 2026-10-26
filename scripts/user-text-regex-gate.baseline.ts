@@ -367,6 +367,7 @@ export const baseline: readonly BaselineEntry[] = [
       String.raw`/(?:这个|该)\s*技能\s*[:：]\s*SKILL\.md/gu`,
       String.raw`/((?:这个|该))技能(?=\s*(?:[:：。；;！!\n]|$))/gu`,
       String.raw`/((?:SKILL\.md|技能文件))[:：](?=\s*(?:\n|$))/gu`,
+      String.raw`/(?:the\s+)?(?:public\s+)?GitHub\s+(?:skill|repository|directory)\s+(?:at|from)\s+SKILL\.md/giu`,
       String.raw`/SKILL\.md\s*装上/gu`,
     ],
   },
@@ -464,6 +465,7 @@ export const baseline: readonly BaselineEntry[] = [
       String.raw`test(/(?:不对|有误|错误|漏[了掉算列]?|算错|重复(?:计算|统计|记录)|口径不(?:对|一致)|应当|应该|需要改|少[了算]|多算)/u)`,
       String.raw`/^(?:反馈[：:，,\s]*|(?:我)?(?:已|已经)(?:核对|复核|验证|检查)[，,：:\s]*)/u`,
       String.raw`/(?:正确|有误|不对|一致|不一致|漏|算错|通过|保留|清晰|方便|难以)/u`,
+      String.raw`/^(?:your (?:last|previous) (?:report|result|calculation)|the (?:last|previous) (?:report|result|calculation))\b/iu`,
     ],
   },
   {
@@ -865,6 +867,15 @@ export const baseline: readonly BaselineEntry[] = [
     ],
   },
   {
+    file: 'packages/database/src/platform-repair-compiled-profile.ts',
+    owner: 'compiledRepositoryHarness',
+    kind: 'own-text',
+    use: '在编译后的修复工具源码里找系统自己写下的固定注释，定位插入点',
+    sites: [
+      String.raw`indexOf("// Only traversal to the single immutable product file")`,
+    ],
+  },
+  {
     file: 'apps/rice-bridge/src/keychain.ts',
     owner: 'unavailableReason',
     kind: 'external-text',
@@ -874,12 +885,30 @@ export const baseline: readonly BaselineEntry[] = [
     ],
   },
   {
+    file: 'apps/worker/dsh/allrice-model-errors.mjs',
+    owner: 'normalizeModelFailure',
+    kind: 'external-text',
+    use: '认出 Codex“服务器过载”的报错原文，归为可重试的模型错误',
+    sites: [
+      String.raw`=== "Codex error: Our servers are currently overloaded. Please try again later."`,
+    ],
+  },
+  {
     file: 'apps/worker/src/wechat-articles.ts',
     owner: 'blockedPage',
     kind: 'external-text',
     use: '认出微信公众号的验证码、限流拦截页，命中就报错',
     sites: [
       String.raw`/请输入验证码|访问过于频繁|环境异常|异常访问|antispider|verify_page/i`,
+    ],
+  },
+  {
+    file: 'packages/contracts/src/mcp-failure.ts',
+    owner: 'classifyMcpFailure',
+    kind: 'external-text',
+    use: '认出 GitHub 合并接口“令牌无权访问”的报错文案，归到对应的失败类别',
+    sites: [
+      String.raw`/^failed to merge pull request: PUT https:\/\/api\.github\.com\/repos\/[^/\s]+\/[^/\s]+\/pulls\/\d+\/merge: 403 Resource not accessible by personal access token(?: \[\])?$/`,
     ],
   },
   {

@@ -6,7 +6,7 @@ MET-210 #2，规则见 MET-220 R1。2026-10-26 加入，是 MET-210 三道“只
 
 R1：理解用户交给模型；授权靠来源（真人消息）和确认卡；正则只用来放行明确的格式，不能用来拒绝用户。对用户原话做匹配、匹配不上就拒绝、报错或不执行，是要逐步去掉的做法（MET-210 #2），新代码不能再加。
 
-“输入是不是用户原话、匹配不上会不会拒绝”没法静态判断，所以门禁宁多勿少。范围是 `apps/`、`packages/` 的产品代码（不含测试、夹具和构建产物）。“措辞”指中文，或者英文里同时有虚词和请求用词（`please install`、`don't remember`），或者有三个虚词（`please do not`）；大小写不论，`STOP_NOT_CONFIRMED` 这类带下划线或数字的代码不算（见脚本里的 `englishWording`）。下面这些都算一处：
+“输入是不是用户原话、匹配不上会不会拒绝”没法静态判断，所以门禁宁多勿少。范围是 `apps/`、`packages/` 的产品代码（不含测试、夹具和构建产物）。“措辞”指中文，或者至少两个英文请求用词、其中一个是虚词（`please do`、`please install`、`don't remember`）；大小写不论，`STOP_NOT_CONFIRMED` 这类带下划线或数字的代码不算（见脚本里的 `englishWording`）。下面这些都算一处：
 
 - 含措辞的正则字面量（转义也解开）；`[\u4e00-\u9fa5]` 这类字符范围、`\p{Script=Han}` 表示“任何汉字”，不算措辞；
 - `RegExp(...)` / `new RegExp(...)`，模式算出来含措辞；
@@ -15,7 +15,7 @@ R1：理解用户交给模型；授权靠来源（真人消息）和确认卡；
 
 名字按作用域解析：同一文件里的常量、相对路径 `import` 进来的常量（具名、`import * as`、经 `export … from` 转出的都算）、迭代出来的元素（`for...of`、`some`/`find`/`map` 等回调的参数、解构、`Object.keys/values/entries`、`Map`/`Set` 的 `keys/values/entries`、规则表里的字段）、对象属性和类的静态属性，以及 `?:`、`??`、`||` 的两边。
 
-现存的 259 处（53 个文件）写在基线 `scripts/user-text-regex-gate.baseline.ts` 里，按“文件 + 所在函数 + 匹配文本”登记，每组写明分类和用途。CI 只拦基线之外新出现的。
+现存的 264 处（56 个文件）写在基线 `scripts/user-text-regex-gate.baseline.ts` 里，按“文件 + 所在函数 + 匹配文本”登记，每组写明分类和用途。CI 只拦基线之外新出现的。
 
 ## 怎么跑
 
@@ -60,14 +60,14 @@ CI 在 `validate` 任务的 `pnpm typecheck` 之后跑这一步，`--base` 是 P
 ## 基线怎么减
 
 - #2 迁移一处后，删掉代码里的匹配，也删掉基线里对应的那一行；门禁会报“基线里有、代码里已经没有”的条目，提醒你删。
-- 分类 `reject`、`decide`、`extract` 是 #2 要迁的（10-26 共 167 处）；`format`、`own-text`、`external-text`、`display` 是核对过不算 R1、只因为第一个 PR 不改产品代码才放在基线里的（92 处），以后改到那个文件时可以顺手换成代码里的例外注释。
+- 分类 `reject`、`decide`、`extract` 是 #2 要迁的（10-26 共 169 处）；`format`、`own-text`、`external-text`、`display` 是核对过不算 R1、只因为第一个 PR 不改产品代码才放在基线里的（95 处），以后改到那个文件时可以顺手换成代码里的例外注释。
 - 基线里周期提醒（`recurring-task-intent.ts`）记为 `format`：#576 之后，命中句式只是免确认的快速通道，没命中出确认卡，不再拒绝。
 
 ## 不覆盖的
 
 - 从包名导入的（`@allrice/...`），只追相对路径的 `import`；
 - 调用一个内部含匹配的函数（例如在新的地方调用现有的 `explicit*Intent`）：门禁只看匹配本身，不跟调用链；
-- 只有一个英文词的匹配（`/\bremember\b/i`），以及只有一两个虚词、没有请求用词的英文词组；
+- 只有一个英文词的匹配（`/\bremember\b/i`），以及不含虚词的英文词组（`go ahead`）；
 - 回调参数以外的命名函数、`reduce`、运行时拼出来的属性名；
 - Swift、Python 等非 JavaScript/TypeScript 源码。
 
