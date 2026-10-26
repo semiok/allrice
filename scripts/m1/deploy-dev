@@ -173,10 +173,11 @@ restore() {
   cp -p "$INFLIGHT/web.plist" "$WEB_PLIST" && cp -p "$INFLIGHT/worker.plist" "$WORKER_PLIST" \
     && cmp -s "$INFLIGHT/web.plist" "$WEB_PLIST" && cmp -s "$INFLIGHT/worker.plist" "$WORKER_PLIST" \
     || { say "could not put back the saved launchd files from $INFLIGHT"; return 1; }
+  # The new Worker may have raised the journal contract: never start a version that cannot read it.
+  local why rc=0; why=$(check_contract_known "$(release_of)") || rc=$?
+  [ "$rc" != 2 ] || { say "not starting ${prev:0:8}: $why. Deploy a version that knows the contract (move $INFLIGHT aside first)"; return 1; }
   start_both_on "$prev" || { say "previous version ${prev:0:8} did NOT come back healthy (migrations applied by the new version stay)"; return 1; }
   say "previous version ${prev:0:8} is healthy again"
-  local why; why=$(check_contract_known "$(release_of)") \
-    || say "WARNING: $why. Chats written under that contract cannot continue on ${prev:0:8}; deploy a newer version"
 }
 # One exit path for every way this run can end before success.
 on_exit() { # rc
@@ -231,15 +232,16 @@ status() {
   echo "running sha:        web $(ready_sha "http://127.0.0.1:$(web_port)/api/health/ready" | cut -c1-8)  worker $(ready_sha "http://127.0.0.1:$(worker_port)/health/ready" | cut -c1-8)  (empty = not ready)"
   echo "native artifact:    $(penv "$WORKER_PLIST" ALLRICE_DSH_NATIVE_ARTIFACT_ID) (configured)"
   echo "tools version:      $(cat "$BIN/TOOLS_VERSION" 2>/dev/null || echo "unknown ($BIN)")"
-  local hw prev why
-  hw=$(dev_sql "select coalesce(value->>'highWater', value::text) from allrice_runtime_metadata where key='dsh-journal-contract'" 2>/dev/null) || hw="unknown (database not readable)"
-  echo "journal contract:   high water ${hw:-not written yet}"
+  local row hw prev why
+  if ! row=$(contract_row 2>/dev/null); then hw="unknown (database not readable)"
+  elif [ -z "$row" ]; then hw="not written yet"; else hw=${row#row:}; fi
+  echo "journal contract:   high water $hw"
   if ! prev=$(previous_release); then echo "rollback check:     no recorded previous release (roll back with --rollback <release-dir>)"
   elif ! why=$(check_migrations_known "$prev") || ! why=$(check_contract_known "$prev"); then
     echo "rollback check:     $(basename "$prev") would be REFUSED: $why"
   elif [ -f "$prev/packages/database/dist/native-journal-contract-store.js" ]; then
     echo "rollback check:     $(basename "$prev") knows every applied migration and the journal contract (pre-stop check not run)"
-  else echo "rollback check:     $(basename "$prev") knows every applied migration; it predates the journal contract, fine at high water ${hw:-1} (pre-stop check not run)"; fi
+  else echo "rollback check:     $(basename "$prev") knows every applied migration; it predates the journal contract, fine while the journals are at contract 1 (pre-stop check not run)"; fi
   if [ -e "$INFLIGHT" ]; then
     if lock_held "$LOCK"; then echo "DEPLOY IN PROGRESS (phase '$(sed -n 1p "$INFLIGHT/state" 2>/dev/null)')"
     else echo "UNFINISHED DEPLOY (phase '$(sed -n 1p "$INFLIGHT/state" 2>/dev/null)'): run deploy-dev --release-manager --recover"; fi
@@ -307,13 +309,16 @@ check_migrations_known() { # release -> prints the pending names; prints unknown
 # would pass while its Worker cannot read them. The marker is the built
 # packages/database/dist/native-journal-contract-store.js: renaming that module needs
 # this check changed in the same PR.
-check_contract_known() { # release -> 0, or prints the reason and exits 1
-  local hw
-  hw=$(dev_sql "select coalesce(value->>'highWater', value::text) from allrice_runtime_metadata where key='dsh-journal-contract'") \
-    || { echo "cannot read the journal contract high water"; return 1; }
-  [[ "${hw:=1}" =~ ^[0-9]+$ ]] || { echo "unreadable journal contract row: ${hw:0:120}"; return 1; }
+contract_row() { # "row:<highWater, or the whole value without one>", nothing when there is no row
+  dev_sql "select 'row:' || coalesce(value->>'highWater', value::text) from allrice_runtime_metadata where key='dsh-journal-contract'"
+}
+check_contract_known() { # release -> 0; prints why and exits 2 when it predates the contract reached, 1 when unreadable
+  local row hw
+  row=$(contract_row) || { echo "cannot read the journal contract high water"; return 1; }
+  hw=${row#row:}; [ -n "$row" ] || hw=1 # no row yet: every journal is contract 1
+  [[ "$hw" =~ ^[1-9][0-9]{0,8}$ ]] || { echo "unreadable journal contract row: ${hw:0:120}"; return 1; }
   [ "$hw" -le 1 ] || [ -f "$1/packages/database/dist/native-journal-contract-store.js" ] \
-    || { echo "the journals reach contract $hw and $(basename "$1") predates the journal contract (no native-journal-contract-store.js)"; return 1; }
+    || { echo "the journals reach contract $hw and $(basename "$1") predates the journal contract (no native-journal-contract-store.js)"; return 2; }
 }
 # With both services stopped and before db:prepare: snapshot when migrations are pending
 # (they may be one-way) or when forced.

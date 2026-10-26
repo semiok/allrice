@@ -54,7 +54,7 @@ class DeployDevMigrations(unittest.TestCase):
         write(os.path.join(local, 'bridge/big.bin'), 'not snapshotted')
         self.stubs = os.path.join(self.tmp, 'stubs')
         self.applied = os.path.join(self.tmp, 'applied.txt')
-        # The journal contract row comes from $CONTRACT_FILE (absent or empty: no row), migrations from $APPLIED.
+        # $CONTRACT_FILE holds psql's answer for the journal contract row ('row:<highWater>', empty: no row).
         write(os.path.join(self.stubs, 'psql'), '#!/bin/sh\n[ -z "$PSQL_FAIL" ] || exit 2\nfor a; do q=$a; done\n'
               'case "$q" in *allrice_runtime_metadata*) cat "$CONTRACT_FILE" 2>/dev/null ;; *) cat "$APPLIED" ;; esac\n', 0o755)
         write(os.path.join(self.stubs, 'pg_dump'), '#!/bin/sh\n[ -z "$PG_DUMP_FAIL" ] || exit 1\necho "-- dump of $*"\n', 0o755)
@@ -213,21 +213,23 @@ class DeployDevMigrations(unittest.TestCase):
 
     def test_journals_above_contract_1_need_a_release_that_knows_the_contract(self):
         old, new = self.release(store=False), self.release()
-        self.assertIn('predates the journal contract', self.contract(old, '2'))
-        self.assertEqual(self.contract(new, '2'), 'OK')
-        for high_water in ('', '1'):  # no row yet, or the PR2b-1 baseline
-            with self.subTest(high_water=high_water):
-                self.assertEqual(self.contract(old, high_water), 'OK')
-        self.assertIn('unreadable journal contract row', self.contract(new, '{"since": "x"}'))
-        self.assertIn('cannot read the journal contract', self.contract(new, '2', PSQL_FAIL='1'))
+        self.assertIn('predates the journal contract', self.contract(old, 'row:2'))
+        self.assertEqual(self.contract(new, 'row:2'), 'OK')
+        for row in ('', 'row:1'):  # no row yet, or the PR2b-1 baseline
+            with self.subTest(row=row):
+                self.assertEqual(self.contract(old, row), 'OK')
+        for row in ('row:', 'row:0', 'row:01', 'row:2.5', 'row:{"since": "x"}', 'row:1234567890'):
+            with self.subTest(row=row):  # a row that is there but not the store's shape
+                self.assertIn('unreadable journal contract row', self.contract(new, row))
+        self.assertIn('cannot read the journal contract', self.contract(new, 'row:2', PSQL_FAIL='1'))
 
     def test_status_shows_whether_a_rollback_would_pass(self):
         old = self.release(store=False)
         write(os.path.join(self.home, 'allrice-dev/qa/.previous-release'), old + '\n/nowhere\n')
-        for high_water, expected in (('1', 'it predates the journal contract, fine at high water 1'),
+        for high_water, expected in (('1', 'it predates the journal contract, fine while the journals are at contract 1'),
                                      ('2', 'would be REFUSED: the journals reach contract 2')):
             with self.subTest(high_water=high_water):
-                p = self.run_dd('status', FILES + ARCHIVED, CONTRACT=high_water)
+                p = self.run_dd('status', FILES + ARCHIVED, CONTRACT='row:' + high_water)
                 self.assertEqual(p.returncode, 0, p.stderr)
                 self.assertIn('journal contract:   high water %s' % high_water, p.stdout)
                 self.assertIn(expected, p.stdout)
@@ -243,15 +245,15 @@ class DeployDevMigrations(unittest.TestCase):
         write(os.path.join(self.home, 'allrice-dev/qa/deploys.jsonl'),
               json.dumps({'kind': 'deploy', 'toRelease': old, 'toSha': 'a' * 40, 'toArtifact': 'sha256:' + 'a' * 64}) + '\n')
         run = lambda **env: self.run_dd(self.FLOW_STUBS + 'rollback "$OLD"', FILES + ARCHIVED, OLD=old, **env)
-        p = run(CONTRACT='2')
+        p = run(CONTRACT='row:2')
         self.assertNotEqual(p.returncode, 0)
         self.assertIn('predates the journal contract', p.stderr)
         self.assertNotIn('PRECHECK', p.stderr)
-        p = run(CONTRACT='1', RAISE='2')  # a deploy raised it while the pre-stop check ran
+        p = run(CONTRACT='row:1', RAISE='row:2')  # a deploy raised it while the pre-stop check ran
         self.assertIn('LOCKED', p.stdout)
         self.assertIn('predates the journal contract', p.stderr)
         self.assertNotIn('STOPPED', p.stdout)
-        self.assertIn('STOPPED', run(CONTRACT='1').stdout)
+        self.assertIn('STOPPED', run(CONTRACT='row:1').stdout)
 
     def test_deploy_refuses_an_old_candidate_before_stopping(self):
         old = self.release(store=False)
@@ -262,7 +264,7 @@ class DeployDevMigrations(unittest.TestCase):
             % ('c' * 64))
         for high_water, stopped in (('2', False), ('1', True)):
             with self.subTest(high_water=high_water):
-                p = self.run_dd(stubs + 'deploy --skip-smoke', FILES + ARCHIVED, OLD=old, CONTRACT=high_water)
+                p = self.run_dd(stubs + 'deploy --skip-smoke', FILES + ARCHIVED, OLD=old, CONTRACT='row:' + high_water)
                 self.assertIn('PRECHECK', p.stderr)
                 self.assertEqual('STOPPED' in p.stdout, stopped, p.stderr)
                 if not stopped:
@@ -270,6 +272,25 @@ class DeployDevMigrations(unittest.TestCase):
                     with open(os.path.join(self.home, 'allrice-dev/qa/deploys.jsonl')) as f:
                         self.assertIn('"phase": "contract"', f.read())
                 shutil.rmtree(os.path.join(self.home, 'allrice-dev-releases'), True)
+
+    def test_failed_deploy_does_not_restore_a_version_that_cannot_read_the_journals(self):
+        old = self.release(store=False)
+        inflight = os.path.join(self.home, 'allrice-dev/qa/deploy-inflight')
+        for role in ('web', 'worker'):  # the launchd files saved before the deploy point at the old release
+            os.makedirs(inflight, exist_ok=True)
+            with open(os.path.join(inflight, role + '.plist'), 'wb') as f:
+                plistlib.dump({'Label': role, 'WorkingDirectory': old, 'EnvironmentVariables': {
+                    'DATABASE_URL': 'postgres://stub/allrice_dev', 'ALLRICE_WEB_PORT': '1', 'ALLRICE_WORKER_PORT': '2'}}, f)
+        write(os.path.join(inflight, 'state'), 'switching\n' + 'a' * 40 + '\n')
+        script = 'stop_both() { :; }; start_both_on() { echo STARTED; }; if restore; then echo restore=0; else echo restore=1; fi'
+        cases = (('row:2', {}, False), ('row:1', {}, True), ('row:2', {'PSQL_FAIL': '1'}, True))
+        for row, env, started in cases:  # an unreadable database is left to start_both_on, as before
+            with self.subTest(row=row, env=env):
+                p = self.run_dd(script, FILES + ARCHIVED, CONTRACT=row, **env)
+                self.assertEqual('STARTED' in p.stdout, started, p.stdout)
+                self.assertIn('restore=%d' % (0 if started else 1), p.stdout)
+                if not started:
+                    self.assertIn('not starting aaaaaaaa: the journals reach contract 2', p.stdout)
 
     def test_failed_snapshot_stops_the_deploy(self):
         p = self.snapshot(FILES[:-1] + ARCHIVED, PG_DUMP_FAIL='1')
