@@ -145,6 +145,9 @@ export interface BoundDeliveryRepair {
     originalDeadlineAt: number;
     provider: string;
     model: string;
+    /** Native only checks these are at least 1 before proposing a repair; the
+     * repair call's real output bound comes from native model admission. For
+     * an observed metric they are its capacity, not a ledger balance. */
     remainingModelCalls: number;
     remainingOutputTokens: number;
   }>;
@@ -213,9 +216,9 @@ export function createBoundedDeliveryRepair(input: {
         )
           throw Error('FINAL_DELIVERY_REPAIR_BUDGET_UNAVAILABLE');
         const budget = matches[0]!;
-        // An observed metric is telemetry, not a spending gate (model admission
-        // does not stop on it either). Its capacity bounds this one repair call;
-        // cumulative spend and unknown-usage reservations stay as they are.
+        // An observed metric is telemetry, not a spending gate; model admission
+        // does not stop on it either. Report its capacity so native may propose
+        // the one repair; spend and unknown-usage reservations stay as they are.
         if (budget.enforced === false) return budget.capacity;
         return Math.max(0, budget.capacity - budget.reserved - budget.spent);
       };

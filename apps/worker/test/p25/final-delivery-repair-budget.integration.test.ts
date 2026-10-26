@@ -115,11 +115,16 @@ integration(
         outputTokens: outputBound,
         requestDigest: sha('chapter one'),
       });
-      // The user presses "停止这个助手"; the drained stream reports no usage.
+      // The user presses "停止这个助手". The drained stream settles the call
+      // without token counts, then native confirms the stop.
       await f.runtime.cancelChild(f.context, {
         runId: f.task.runId,
         childRunId: child.runId,
         requestId: randomUUID(),
+      });
+      await bound.handle('model-settle', {
+        nativeSessionId: child.nativeSessionId,
+        callId,
       });
       await bound.handle('stopped', { nativeSessionId: child.nativeSessionId });
       const before = (await tree()).budgets;
@@ -153,13 +158,20 @@ integration(
         remainingOutputTokens: outputBound,
       });
       expect(authority.remainingModelCalls).toBeGreaterThanOrEqual(1);
-      // Nothing was released or invented: A's usage stays unknown and reserved.
+      // Nothing was released or invented: A's tokens stay unknown and reserved.
       const after = (await tree()).budgets;
       expect(after).toEqual(before);
-      const held =
-        await database.db`select metric,amount,settled_amount from allrice_assistant_usage where call_id=${callId} order by metric`;
-      expect(held).toHaveLength(4);
-      expect(held.every((h) => h.settled_amount === null)).toBe(true);
+      const held = await database.db<
+        { metric: string; amount: string; settled_amount: string | null }[]
+      >`select metric,amount,settled_amount from allrice_assistant_usage where call_id=${callId} order by metric`;
+      expect(
+        Object.fromEntries(held.map((h) => [h.metric, h.settled_amount])),
+      ).toEqual({
+        input_tokens: null,
+        model_calls: '1',
+        output_tokens: null,
+        tool_calls: '0',
+      });
       expect(
         Number(held.find((h) => h.metric === 'output_tokens')!.amount),
       ).toBe(outputBound);
