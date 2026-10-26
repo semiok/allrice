@@ -15,9 +15,9 @@ root=$(git -C "$src" rev-parse --show-toplevel)
 [ -z "$(git -C "$root" status --porcelain -- scripts/m1)" ] || { echo "install: scripts/m1 has uncommitted changes; commit first" >&2; exit 2; }
 sha=$(git -C "$root" rev-parse HEAD)
 base="$HOME/allrice-dev"; tools="$base/tools"; dest="$tools/$sha"; link="$base/bin"
-SCRIPTS="deploy-dev deploy-lock qa-instance smoke-test with-env backup-daily cloud-autostart"
+SCRIPTS="deploy-dev deploy-lock qa-instance smoke-test with-env backup-daily cloud-autostart schedule-recover"
 PYTOOLS="monitor"
-FILES="lib.sh qa-bootstrap.mjs smoke-test.mjs rice-standard.json"
+FILES="lib.sh qa-bootstrap.mjs smoke-test.mjs rice-standard.json schedule-recover.sql"
 
 mkdir -p "$tools"
 if [ ! -d "$dest" ]; then

@@ -1,0 +1,242 @@
+#!/bin/bash
+# Recover the schedule controllers after a Worker died holding their partitions (MET-210 #3;
+# runbook: docs/runbooks/m1-schedule-not-fired.md#接管被拒). A Worker that ends without a
+# clean shutdown (the database stopped under it, kill -9, power loss) leaves its once and
+# recurring partitions open: closed=false, close_proof null, lease expired. No later Worker
+# takes such a partition over (an expired lease does not prove the old Host stopped), so
+# the controllers stay `cold`, the Worker stays ready and no schedule fires.
+#
+#   schedule-recover --dev | --instance <task>          dry run: reads only, says what it would do
+#   schedule-recover --dev --release-manager --execute  recover the shared Dev (the release manager only)
+#   schedule-recover --instance <task> --execute        recover a QA instance
+#
+# --execute holds the deploy lock (Dev) or the instance's up/down lock, backs the database
+# up, stops the Worker and checks that no process is left that could own the partitions
+# (worker_procs below) and no Worker session is on the database. It reads the
+# partitions again and, in one transaction (schedule-recover.sql), registers a
+# `verified_process_exit` close proof for each one found open with an expired lease; the
+# transaction rolls back as a whole unless owner, epoch, token, still open, lease expired
+# and no proof yet are all exactly as read. Task ledgers are not touched. A Worker that
+# was loaded is started again however the run ends (but not after kill -9: then start it
+# by hand) and must report its controllers active; one that was not is left stopped.
+# Exit: 0 done or nothing to do, 1 failed, 2 usage, 3 lock busy, 4 a lease is still live:
+# rerun after it, 6 --dev --execute without --release-manager.
+set -euo pipefail
+umask 077
+BIN=$(cd "$(dirname "$0")" && pwd -P); . "$BIN/lib.sh"
+PG=/opt/homebrew/opt/postgresql@17/bin
+say() { echo "[schedule-recover $(date +%T)] $*"; }
+die() { echo "schedule-recover: $1" >&2; exit "${2:-1}"; }
+usage() { sed -n 9,11p "$0" | cut -c3- >&2; exit 2; }
+penv() { "$M1_PY" -c 'import plistlib,sys;print(plistlib.load(open(sys.argv[1],"rb"))["EnvironmentVariables"].get(sys.argv[2],""))' "$1" "$2"; }
+
+mode="" task="" execute="" manager=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dev) [ -z "$mode" ] || usage; mode=dev; shift ;;
+    --instance) [ -z "$mode" ] && [ $# -ge 2 ] || usage; mode=instance task=$2; shift 2 ;;
+    --execute) execute=1; shift ;;
+    --release-manager) manager=1; shift ;;
+    *) usage ;;
+  esac
+done
+ts=$(date +%Y%m%d-%H%M%S)
+case "$mode" in
+  dev)
+    [ -z "$execute" ] || [ -n "$manager" ] || die "only the release manager changes the shared Dev (AGENTS.md §9): add --release-manager" 6
+    LABEL=ai.bplabs.allrice-dev-worker; LOCK="$HOME/allrice-dev/.local/deploy.lock"
+    ROOTS="$HOME/allrice-dev-releases/"; ENVFILE="$HOME/allrice-dev/.env"
+    OUT="$HOME/allrice-backups/schedule-recover-$ts"; SMOKE="$BIN/smoke-test --dev --only reminder" ;;
+  instance)
+    [[ "$task" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]] && [ -f "$HOME/allrice-qa/$task/instance.json" ] || die "no QA instance: $task" 2
+    LABEL=ai.bplabs.allrice-qa-$task-worker; LOCK="$HOME/allrice-qa/.task-$task.lock"
+    ROOTS="$HOME/allrice-qa/$task/"; ENVFILE="$HOME/allrice-qa/$task/.env"
+    OUT="$HOME/allrice-qa/$task/schedule-recover-$ts"; SMOKE="$BIN/smoke-test --instance $task --only reminder" ;;
+  *) usage ;;
+esac
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+[ -f "$PLIST" ] || die "missing $PLIST" 2
+DB=$(penv "$PLIST" DATABASE_URL); PORT=$(penv "$PLIST" ALLRICE_WORKER_PORT)
+[ -n "$DB" ] && [ -n "$PORT" ] || die "no DATABASE_URL or ALLRICE_WORKER_PORT in $PLIST" 2
+# Only processes on this machine can be checked, so only a database on it is accepted.
+DBNAME=$("$M1_PY" -c 'import sys,urllib.parse as u; p=u.urlsplit(sys.argv[1])
+if p.hostname not in (None,"127.0.0.1","localhost"): sys.exit(1)
+print(p.path.lstrip("/"))' "$DB") || die "the database is not on this machine: a Worker elsewhere could still own its partitions" 2
+
+sql() { PGCONNECT_TIMEOUT=5 PGOPTIONS="-c statement_timeout=15000 ${RO:+-c default_transaction_read_only=on}" \
+  "$PG/psql" "$DB" -X -q -A -t -v ON_ERROR_STOP=1 "$@"; }
+# Every partition, as the store reads it. Read only: a locking read here could make the
+# running Worker miss its 500 ms lock timeout and lose a healthy lease.
+partitions() { RO=1 sql -c "select coalesce(json_agg(json_build_object(
+  'partitionId', p.partition_id, 'ownerId', p.owner_id, 'epoch', p.epoch, 'tokenDigest', p.token_digest,
+  'expiresAt', p.expires_at, 'closed', p.closed, 'expired', p.expires_at < clock_timestamp(),
+  'proofNull', p.close_proof = 'null'::jsonb,
+  'audit', (select f.proof = p.close_proof from allrice_native_once_close_proofs f
+            where f.partition_id = p.partition_id and f.epoch = p.epoch)) order by p.partition_id), '[]')
+  from allrice_native_once_partitions p"; }
+# show <partitions json> <running worker id>: one line each; writes the orphans (what this
+# tool recovers) to $ORPHANS and the latest live lease of anyone else to $OTHERS.
+show() { ORPHANS=$OUT_ORPHANS OTHERS=$OUT_OTHERS "$M1_PY" -c 'import json,os,sys
+rows=json.loads(sys.argv[1]); orphans=[]; others=[]
+for p in rows:
+    if p["closed"]: what="closed, ok" if p["epoch"]==0 or p["audit"] else "closed, but its proof is not the audited one: not handled here, diagnose"
+    elif not p["expired"]:
+        what="held, lease live until %s" % p["expiresAt"]
+        if p["ownerId"]!=sys.argv[2]: what+=" (not the running Worker)"; others.append(p["expiresAt"])
+    elif p["proofNull"] and p["audit"] is None: what="ORPHAN: open, lease expired %s, no close proof" % p["expiresAt"]; orphans.append(p)
+    else: what="open with an audit row: not handled here, diagnose"
+    print("  %-22s epoch %-4s owner %-8s  %s" % (p["partitionId"], p["epoch"], (p["ownerId"] or "-")[:8], what))
+json.dump([{k: p[k] for k in ("partitionId","ownerId","epoch","tokenDigest")} for p in orphans], open(os.environ["ORPHANS"],"w"))
+open(os.environ["OTHERS"],"w").write(max(others,default=""))' "$1" "$2"; }
+worker_ready() { curl -s -m 5 "http://127.0.0.1:$PORT/health/ready" 2>/dev/null | "$M1_PY" -c 'import json,sys
+try: d=json.load(sys.stdin)
+except ValueError: print("unreachable - - -"); sys.exit()
+st=lambda k: (d.get(k) or {}).get("state","-")
+print(d.get("status"), st("nativeOnceControl"), st("nativeRecurringControl"), ((d.get("nativeCloseIdentity") or {}).get("identity") or {}).get("workerId","-"))'; }
+# This user's processes that could still own the partitions: any whose environment points
+# DATABASE_URL at the target database (the Worker, its DSH children, one started through
+# with-env; macOS shows the environment of node, not of system binaries), and any node
+# process that loads an --env-file with that database or the target's own, or runs from
+# the target's release (by path or working directory; unknown working directory counts).
+# Web never runs the controllers; this tool and its parents are not counted.
+worker_procs() { DBNAME=$DBNAME ROOTS=$ROOTS ENVFILE=$ENVFILE "$M1_PY" -c 'import os,subprocess,urllib.parse as u
+def ps(*o):
+    out={}
+    for l in subprocess.run(["/bin/ps",*o,"-xww","-U",str(os.getuid()),"-o","pid=,ppid=,command="],capture_output=True,text=True,check=True).stdout.splitlines():
+        pid,ppid,cmd=(l.strip().split(None,2)+["",""])[:3]; out[pid]=(ppid,cmd)
+    return out
+args,full=ps(),ps("-E")
+lsof=subprocess.run(["/usr/sbin/lsof","-a","-u",str(os.getuid()),"-d","cwd","-c","node","-Fpn"],capture_output=True,text=True)
+if lsof.returncode not in (0,1): raise SystemExit("lsof failed")
+cwd,p={},None
+for l in lsof.stdout.splitlines():
+    if l[:1]=="p": p=l[1:]
+    elif l[:1]=="n" and p: cwd[p]=l[1:]
+mine,p=set(),str(os.getpid())
+while p in args and p not in mine: mine.add(p); p=args[p][0]
+roots,target=os.environ["ROOTS"].split("|"),os.path.realpath(os.environ["ENVFILE"])
+def ours(url):
+    q=u.urlsplit(url); return q.hostname in (None,"127.0.0.1","localhost") and q.path.lstrip("/")==os.environ["DBNAME"]
+def dotenv_url(line): # the DATABASE_URL a line sets, as Node 22 reads it (export, spaces, quotes, # comments)
+    k,eq,v=line.strip().removeprefix("export ").partition("=")
+    if not eq or k.strip()!="DATABASE_URL": return None
+    v=v.strip()
+    if v[:1] in ("\"","\x27","`") and v.find(v[0],1)>0: return v[1:v.find(v[0],1)]
+    return v.split("#",1)[0].strip()
+def envfile(opt,path):
+    if os.path.realpath(path)==target: return True
+    try: return any(ours(x) for x in map(dotenv_url,open(path)) if x)
+    except OSError: return opt=="--env-file" # unreadable: cannot clear it (a missing if-exists file loads nothing)
+def env_files(toks): # node options up to the script, -e/-p or "-" (the rest belongs to the program): env files and those tokens
+    out,i=[],1
+    while i<len(toks) and toks[i].startswith("-") and toks[i] not in ("-","-e","--eval","-p","--print","--"):
+        t=toks[i]
+        for o in ("--env-file","--env-file-if-exists"):
+            if t.startswith(o+"="): out.append((o,t[len(o)+1:]))
+            elif t==o and i+1<len(toks): out.append((o,toks[i+1]))
+        i+=2 if t in ("--env-file","--env-file-if-exists","-r","--require","--import","--loader","--experimental-loader","-C","--conditions","--input-type","--title") else 1
+    return out,toks[:i+1]
+def alive(pid):
+    try: os.kill(int(pid),0); return True
+    except ProcessLookupError: return False
+    except PermissionError: return True
+for pid,(_,cmd) in args.items():
+    if pid in mine or "/apps/web/" in cmd: continue
+    toks=cmd.split(); env=full.get(pid,("",""))[1][len(cmd):].split()
+    hit=any(e.startswith("DATABASE_URL=") and ours(e[13:]) for e in env)
+    if not hit and toks and os.path.basename(toks[0])=="node":
+        here=cwd.get(pid)
+        if here is None: hit=alive(pid) # no working directory: only a process that is gone is cleared
+        else:
+            files,head=env_files(toks)
+            hit=any(envfile(o,os.path.join(here,f)) for o,f in files) or any(r in " ".join(head) or (here+"/").startswith(r) for r in roots)
+    if hit: print(pid,cmd[:160])'; }
+worker_sessions() { RO=1 sql -c "select count(*) from pg_stat_activity where datname = current_database() and application_name = 'allrice-worker'"; }
+boot_at() { "$M1_PY" -c 'import re,subprocess,time
+s=int(re.search(r"sec = (\d+)",subprocess.run(["/usr/sbin/sysctl","-n","kern.boottime"],capture_output=True,text=True).stdout).group(1))
+print(time.strftime("%Y-%m-%dT%H:%M:%S%z",time.localtime(s)))'; }
+
+read -r status once recurring worker_id <<<"$(worker_ready)"
+was=$(job_state "$LABEL") || die "cannot read the launchd state of $LABEL"
+say "target $mode${task:+ $task}: Worker $LABEL ${was%% *} and $status, controllers once=$once recurring=$recurring, worker $worker_id; host booted $(boot_at)"
+OUT_ORPHANS=$(mktemp); OUT_OTHERS=$(mktemp); trap 'rm -f "$OUT_ORPHANS" "$OUT_OTHERS"' EXIT
+before=$(partitions) || die "cannot read the partitions"
+show "$before" "$worker_id"
+if [ -s "$OUT_OTHERS" ]; then
+  say "a lease is live but not held by the running Worker: if its Worker has stopped, rerun after $(cat "$OUT_OTHERS")"; exit 4
+fi
+if [ "$(cat "$OUT_ORPHANS")" = "[]" ]; then say "no orphaned partition: nothing to recover"; exit 0; fi
+if [ -z "$execute" ]; then
+  say "dry run, nothing changed. --execute would: back up the database to $OUT, stop $LABEL, check no process is left"
+  say "  that could own the partitions, close each ORPHAN with a verified_process_exit proof, start the Worker again if it was loaded."
+  exit 0
+fi
+
+mkdir -p "$(dirname "$LOCK")"; exec 9>>"$LOCK"
+flock_fd 9 0 || die "$LOCK is held (a deploy, a restart or an up/down of the instance); try later" 3
+# What decides restarting must be read under the lock, not before it.
+read -r status once recurring worker_id <<<"$(worker_ready)"
+was=$(job_state "$LABEL") || die "cannot read the launchd state of $LABEL"
+if [ "$mode" = dev ]; then # what `deploy-lock status` shows meanwhile
+  "$M1_PY" -c 'import json,os,sys,time
+json.dump({"task":"schedule-recover","pid":int(sys.argv[2]),"startedAt":int(time.time()),"command":"schedule-recover --dev --execute"},open(sys.argv[1]+".tmp","w")); os.replace(sys.argv[1]+".tmp",sys.argv[1])' "$LOCK.owner" $$
+fi
+mkdir -p "$OUT"; printf '%s\n' "$before" > "$OUT/partitions-before.json"
+say "backup: $OUT (kept until removed by hand)"
+"$PG/pg_dump" -Fc -f "$OUT/database.dump" "$DB" || die "backup failed; nothing changed"
+STOPPED=""
+restore() { # however the run ends after the stop, a Worker that was loaded runs again
+  local rc=$? i state=""; trap '' INT TERM HUP PIPE; set +e
+  rm -f "$OUT_ORPHANS" "$OUT_OTHERS"
+  if [ -n "$STOPPED" ]; then # an interrupted stop may still be unloading it
+    for i in $(seq 1 90); do state=$(job_state "$LABEL" 2>/dev/null) && [ "$state" = gone ] && break; sleep 1; done
+    if [ "$state" = gone ]; then
+      start_job "$LABEL" "$PLIST" 2>/dev/null || echo "schedule-recover: could not start $LABEL: start it by hand" >&2
+    else
+      echo "schedule-recover: $LABEL is '${state:-unknown}', not started again: check it by hand" >&2
+    fi
+  fi
+  exit "$rc"
+}
+trap restore EXIT; trap 'exit 130' INT TERM HUP
+[ "$was" = gone ] || STOPPED=1
+say "stopping $LABEL"
+stop_job "$LABEL" "$PORT" || die "the Worker did not stop; nothing written"
+for i in $(seq 1 10); do
+  left=$(worker_procs) || die "cannot list processes; nothing written"
+  sessions=$(worker_sessions) || die "cannot read the database sessions; nothing written"
+  [ -z "$left" ] && [ "$sessions" = 0 ] && break; sleep 1
+done
+[ -z "$left" ] || die "processes that could own the partitions are still running (a Worker, its DSH children, something started with with-env, or a deploy's checks), nothing written:
+$left"
+[ "$sessions" = 0 ] || die "$sessions Worker session(s) still on the database, nothing written"
+checked=$(date +%Y-%m-%dT%H:%M:%S%z)
+say "no process left that could own the partitions, no Worker session on the database"
+expect=$(cat "$OUT_ORPHANS"); after=$(partitions) || die "cannot read the partitions; nothing written"
+show "$after" "-" >/dev/null
+[ "$(cat "$OUT_ORPHANS")" = "$expect" ] || die "the partitions changed since they were read; nothing written"
+[ ! -s "$OUT_OTHERS" ] || die "a lease is still live (did the Worker just stop without closing it?): rerun after $(cat "$OUT_OTHERS"); nothing written" 4
+evidence=$("$M1_PY" -c 'import json,sys
+k=("target","workerLabel","workerJobBefore","runningWorkerBeforeStop","hostBootAt","checkedAt","toolsVersion")
+d=dict(zip(k,sys.argv[1:]),basis="worker_stopped",tool="scripts/m1/schedule-recover",
+       ownerExit="Worker job stopped; no process with DATABASE_URL on this database or from its release or env file; no allrice-worker session")
+print(json.dumps(dict(d,runningWorkerBeforeStop=None if d["runningWorkerBeforeStop"]=="-" else d["runningWorkerBeforeStop"])))' \
+  "$mode${task:+:$task}" "$LABEL" "${was%% *}" "$worker_id" "$(boot_at)" "$checked" "$(cut -c1-12 "$BIN/TOOLS_VERSION" 2>/dev/null || echo source)")
+sql -1 -f "$BIN/schedule-recover.sql" -v targets="$expect" -v evidence="$evidence" >/dev/null ||
+  die "the guarded transaction refused (see above); nothing written"
+say "registered verified_process_exit proofs:"
+partitions > "$OUT/partitions-after.json" || die "the proofs are committed, but reading them back failed"
+show "$(cat "$OUT/partitions-after.json")" "-"
+if [ "$was" = gone ]; then
+  say "the Worker was not loaded when this started: left stopped. Start it, wait for both controllers active, then: $SMOKE"; exit 0
+fi
+start_job "$LABEL" "$PLIST" || die "could not start $LABEL; the proofs are in place"
+STOPPED=""
+active() { read -r status once recurring worker_id <<<"$(worker_ready)"
+  [ "$status" = ready ] && [[ "$once" =~ ^(active|disabled)$ ]] && [[ "$recurring" =~ ^(active|disabled)$ ]]; }
+up="" end=$((SECONDS + 180)); until { active && up=1; } || [ $SECONDS -ge $end ]; do sleep 2; done
+say "Worker $status, controllers once=$once recurring=$recurring, worker $worker_id"
+[ -n "$up" ] || die "the controllers did not become active within 180 s: see docs/runbooks/m1-schedule-not-fired.md"
+final=$(partitions) || die "the Worker is active, but reading the partitions failed"
+show "$final" "$worker_id"
+say "done. Next: $SMOKE   (reminders already past their time stay missed: reschedule them in the product)"

@@ -328,6 +328,39 @@ class Checks(unittest.TestCase):
         r.facts['worker'] = {'identity': {'bootId': 'b2'}}
         self.assertEqual(monitor.check_scheduler(r)[0]['severity'], 'ok')  # not configured at all
 
+    def test_a_refused_takeover_pages(self):
+        # MET-210 #3 (10-25 23:25): the database stopped under the Worker, the partitions
+        # stayed held without a close proof and every later Worker stayed cold and ready.
+        r = make_round()
+        held = {'partition': 'allrice-once-v1', 'epoch': 10, 'owner': 'f4423f7e', 'open': True, 'expired': 43000, 'proof': False, 'pending': 0}
+        closed = dict(held, open=False, proof=True)
+
+        def judge(at, once='cold', rows=(), boot='b1'):
+            r.now = at
+            r.facts['worker'] = {'identity': {'bootId': boot}, 'nativeOnceControl': {'state': once, 'tickCount': at},
+                                 'nativeRecurringControl': {'state': 'active', 'tickCount': at}}
+            monitor.check_scheduler(r)
+            with mock.patch.object(monitor, 'biz', return_value={'partitions': list(rows)}) as q:
+                f = monitor.check_scheduler_takeover(r)[0]
+            return f['severity'], q.called, f['detail']
+
+        self.assertEqual(judge(0, rows=[held])[:2], ('ok', False))  # first sight of cold: not even asked
+        sev, asked, detail = judge(239, rows=[held])  # still cold on the next round, even a second early
+        self.assertEqual((sev, asked), ('critical', True))
+        self.assertIn('f4423f7e', detail)
+        self.assertIn('已过期', detail)
+        self.assertEqual(judge(240, rows=[closed])[0], 'warning')  # closed with its proof and still not taken
+        self.assertEqual(judge(241, rows=[dict(closed, pending=1)])[0], 'critical')  # a reminder waits for the clock
+        self.assertEqual(judge(242, rows=[dict(closed, proof=False)])[0], 'critical')  # closed, proof not the audited one
+        sev, _, detail = judge(243, rows=[dict(held, expired=-20)])  # held and renewed by someone else: schedules still run there
+        self.assertEqual(sev, 'warning')
+        self.assertIn('另一个 Worker', detail)
+        self.assertEqual(judge(243, rows=[dict(held, expired=-20, pending=2)])[0], 'critical')
+        self.assertEqual(judge(244, once='active', rows=[held])[:2], ('ok', False))
+        self.assertEqual(judge(500, rows=[held], boot='b2')[:2], ('ok', False))  # a new Worker gets the grace again
+        r.facts.pop('worker')
+        self.assertIsNone(monitor.check_scheduler_takeover(r))  # Worker not ready: the worker alert says it
+
     def test_restart_loop_but_not_a_deploy(self):
         r = make_round(restartCritical=3)
         runs = iter([1, 2, 4, 1, 1])
