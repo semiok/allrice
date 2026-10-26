@@ -5239,7 +5239,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           },
         ];
         await f.page
-          .getByRole('button', { name: 'Bridge 离线', exact: true })
+          .getByRole('button', {
+            name: '电脑未连接，点击查看如何连接',
+            exact: true,
+          })
           .click();
         const settings = f.page.getByRole('dialog', {
           name: '设置',
@@ -8941,6 +8944,120 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.close();
     }
   }, 30000);
+
+  it('composer status follows native compaction without exposing context usage', async () => {
+    const f = await fixture({
+      running: true,
+      controlledStream: true,
+      width: 390,
+      touch: true,
+    });
+    try {
+      await f.page.evaluate(() =>
+        document.body.setAttribute('data-ds-dark-theme', ''),
+      );
+      await f.page.waitForFunction(
+        () => document.documentElement.dataset.streamReady === 'true',
+      );
+      const computer = f.page.getByRole('button', {
+        name: '电脑未连接，点击查看如何连接',
+        exact: true,
+      });
+      const status = computer.locator('xpath=../..');
+      const tidying = status.getByRole('status');
+      const draft = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+      await draft.fill('整理完后，请继续刚才的工作');
+      const emit = async (
+        sourceType: string,
+        payload: ChatFlowEventEnvelope['payload'],
+        sourcePayload: Record<string, unknown>,
+        type: ChatFlowEventEnvelope['type'] = 'harness.native',
+      ) => {
+        const sequence = f.state.events.length + 1;
+        const event: ChatFlowEventEnvelope = {
+          schemaVersion: 3,
+          eventId: id(9900 + sequence),
+          organizationId: org,
+          workspaceId: workspace,
+          conversationId: A,
+          runId: run,
+          generation: 1,
+          cursor: `${run}:${sequence}`,
+          sequence,
+          harness: 'dsh',
+          occurredAt: now,
+          type,
+          sourceEvent: {
+            id: `dsh:${sequence}`,
+            type: sourceType,
+            occurredAt: now,
+            payload: sourcePayload,
+          },
+          payload,
+        };
+        f.state.events.push(event);
+        await f.page.evaluate(
+          (body) =>
+            window.dispatchEvent(
+              new CustomEvent('allrice-test-stream', { detail: body }),
+            ),
+          `data: ${JSON.stringify(event)}\n\n`,
+        );
+      };
+      await emit(
+        'session/projection',
+        { presentation: 'context', status: 'info', label: '上下文占用' },
+        { projectedTokens: 164000, contextWindow: 200000, asOfSeq: 1 },
+      );
+      for (const terminal of ['completed', 'failed'] as const) {
+        const compactionId = `compact-${terminal}`;
+        await emit(
+          'compaction/start',
+          {
+            presentation: 'compaction',
+            status: 'started',
+            label: '正在整理上下文',
+          },
+          { compactionId },
+        );
+        await expect
+          .poll(() => tidying.innerText())
+          .toBe('正在整理对话，完成后继续');
+        expect(await tidying.locator('svg').getAttribute('aria-hidden')).toBe(
+          'true',
+        );
+        expect(await status.innerText()).not.toMatch(
+          /Bridge|上下文占用|DSH|tokens|%/i,
+        );
+        expect(await draft.inputValue()).toBe('整理完后，请继续刚才的工作');
+        expect(await computer.isEnabled()).toBe(true);
+        expect(
+          await f.page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBe(true);
+        await emit(
+          'compaction/end',
+          {
+            presentation: 'compaction',
+            status: terminal,
+            label: '上下文整理结束',
+          },
+          { compactionId },
+        );
+        // The live region stays mounted and empties, so the next notice is read.
+        await expect.poll(() => tidying.textContent()).toBe('');
+      }
+      f.state.messageStatus = 'completed';
+      await emit('run/succeeded', {}, {}, 'run.succeeded');
+      await f.page.getByRole('button', { name: '发送', exact: true }).waitFor();
+      expect(await status.innerText()).toBe('电脑未连接');
+      expect(await draft.inputValue()).toBe('整理完后，请继续刚才的工作');
+      expect(f.errors).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
 
   it('native task plan streams, restores, clears and stays scoped without animating stopped work', async () => {
     const f = await fixture({ running: true, controlledStream: true });

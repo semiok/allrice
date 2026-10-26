@@ -68,20 +68,6 @@
     justify-content: space-between;
     gap: 6px 14px;
   }
-
-  .status.status button {
-    background: transparent;
-    color: var(--dsw-alias-label-tertiary);
-  }
-
-  .status.status button[data-online] {
-    background: transparent;
-    color: light-dark(#25805b, #91c7ac);
-  }
-
-  .status.status button > span:first-child {
-    background: currentColor;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
