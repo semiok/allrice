@@ -50,7 +50,11 @@ import {
 } from './journal-corpus.js';
 
 interface ControlSnapshot {
-  control: { sessionState: string; at?: string };
+  control: {
+    sessionState: string;
+    at?: string;
+    command?: { status: string };
+  };
   task: {
     lastDelivery?: object;
     deliveryHistory?: { records: object[] };
@@ -71,7 +75,7 @@ capture(
     await access(join(contractDir, 'manifest.json'));
     const output = controlCorpusDir(contractDir);
     const git = (...args: string[]) =>
-      execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+      execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trimEnd();
     const uncommitted = git(
       'status',
       '--porcelain',
@@ -87,6 +91,9 @@ capture(
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
     vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', '1');
     vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '1');
+    // No calendar (monthly, experience) controls in these partitions.
+    vi.stubEnv('ALLRICE_NATIVE_CALENDAR_ENABLED', '0');
+    vi.stubEnv('ALLRICE_EXPERIENCE_REVIEW_ENABLED', '0');
     // Production measures format 2; the partitions are born under it.
     const measured = await measureDshNativeArtifact(root, undefined, {
       schemaVersion: 2,
@@ -225,13 +232,25 @@ capture(
               });
         const grant = await store.acquireWriter();
         assert(grant, JSON.stringify(store.takeoverRefusal?.()));
+        const controls = (await store.loadControls(
+          grant.writer,
+        )) as NativeScheduleAnyControl[];
         const image: ControlStoreImage = {
-          controls: (await store.loadControls(
-            grant.writer,
-          )) as NativeScheduleAnyControl[],
+          controls,
           tasks: await store.loadTaskRecords(grant.writer),
           workspace: await store.loadWorkspaceUnit(grant.writer),
         };
+        // The production recurring state machine reads each revision's
+        // configuration; the replay hands it the same rows.
+        if (id === 'recurring') {
+          const rows = await fixture.db<
+            { automation_id: string; configuration: unknown }[]
+          >`select automation_id,configuration from allrice_native_recurring_versions
+            where automation_id in ${fixture.db(controls.map((c) => c.automationId))} order by automation_id,revision`;
+          image.revisions = {};
+          for (const row of rows)
+            (image.revisions[row.automation_id] ??= []).push(row.configuration);
+        }
         const sessions = image.controls.filter(
           (c) => c.sessionState !== 'reserved',
         );
@@ -263,8 +282,8 @@ capture(
         });
       };
 
-      // once: one task fires under the live Host; the other is due only after
-      // the capture, so a later replay delivers it on the frozen journal.
+      // once: one creation refused, one task fired under the live Host, one
+      // due only after the capture (a replay chooses its own clock).
       const onceChat = await database.createChatSession(fixture.context, {
         workspaceId: fixture.workspaceId,
         employeeAssignmentId: fixture.assignmentId,
@@ -280,14 +299,23 @@ capture(
         });
       let pending: { id: string } | undefined;
       await partition('once', async (tick, snapshot) => {
+        // Already past its time when the Host first sees it: the creation is
+        // refused and the control stays blocked without a task.
+        const expired = await onceTask('expired', 6);
+        await pause(7_000);
         const delivered = await onceTask('delivered', 20);
         pending = await onceTask('pending', 120);
         await tick();
-        for (const automation of [delivered, pending!])
+        for (const automation of [expired, delivered, pending!])
           assert.equal(
             (await snapshot(automation.id)).control.sessionState,
             'ready',
           );
+        const refused = await snapshot(expired.id);
+        assert(
+          !refused.task && refused.control.command?.status === 'blocked',
+          JSON.stringify(refused),
+        );
         const deadline = Date.now() + 40_000;
         while (!(await snapshot(delivered.id)).task?.lastDelivery) {
           assert(Date.now() < deadline, 'the once task did not fire');
@@ -303,32 +331,47 @@ capture(
         'the pending once task fired during the capture',
       );
 
-      // recurring: every 60 seconds, delivered once before the first close.
       const recurringChat = await database.createChatSession(fixture.context, {
         workspaceId: fixture.workspaceId,
         employeeAssignmentId: fixture.assignmentId,
         title: 'Control corpus recurring',
       });
+      // recurring: every 60 seconds and daily in a named zone, each
+      // delivered once before the first close.
       await partition('recurring', async (tick, snapshot) => {
-        const recurring = await database.createRecurringTask(
-          fixture.context,
-          recurringChat.id,
-          {
+        const recurringTask = (name: string, rule: object) =>
+          database.createRecurringTask(fixture.context, recurringChat.id, {
             clientRequestId: randomUUID(),
-            name: 'every minute',
-            prompt: 'Control corpus every minute; no model runs.',
-            rule: { kind: 'every', seconds: 60 },
-          },
-        );
+            name,
+            prompt: `Control corpus ${name}; no model runs.`,
+            rule,
+          });
+        const every = await recurringTask('every minute', {
+          kind: 'every',
+          seconds: 60,
+        });
+        const daily = await recurringTask('daily', {
+          kind: 'daily',
+          time: new Intl.DateTimeFormat('en-GB', {
+            timeZone: 'Asia/Shanghai',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hourCycle: 'h23',
+          }).format(new Date(Date.now() + 70_000)),
+          timezone: 'Asia/Shanghai',
+        });
         await tick();
-        const deadline = Date.now() + 90_000;
-        while (
-          !(await snapshot(recurring.id)).task?.deliveryHistory?.records.length
-        ) {
-          assert(Date.now() < deadline, 'the recurring task did not fire');
-          await tick();
-          await pause(200);
-        }
+        const deadline = Date.now() + 120_000;
+        for (const automation of [every, daily])
+          while (
+            !(await snapshot(automation.id)).task?.deliveryHistory?.records
+              .length
+          ) {
+            assert(Date.now() < deadline, 'a recurring task did not fire');
+            await tick();
+            await pause(200);
+          }
       });
     } finally {
       try {

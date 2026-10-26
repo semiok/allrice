@@ -1,8 +1,6 @@
 import { readFile, realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { format, resolveConfig } from 'prettier';
-
 import type {
   NativeScheduleAnyControl,
   NativeScheduleControlReference,
@@ -38,6 +36,9 @@ export interface ControlStoreImage {
   controls: NativeScheduleAnyControl[];
   tasks: Record<string, unknown>;
   workspace: NativeScheduleWorkspaceSnapshot;
+  /** Recurring only: each automation's revision configurations, the rows the
+   * production recurring state machine reads to plan a receipt. */
+  revisions?: Record<string, unknown[]>;
 }
 export interface ControlScenario {
   id: ControlScenarioId;
@@ -46,8 +47,8 @@ export interface ControlScenario {
   store: CorpusFile;
 }
 
-/** Write the store image as committed bytes: the capture root normalized and
- * formatted as the repository formats JSON, so the recorded digest holds. */
+/** Write the store image as committed bytes, the capture root normalized. It
+ * is excluded from Prettier (.prettierignore) so its digest holds. */
 export async function captureControlStore(
   root: string,
   output: string,
@@ -58,21 +59,17 @@ export async function captureControlStore(
     (a, b) => b.length - a.length,
   );
   const path = join(scenario, 'store.json');
-  const target = join(output, path);
-  const text = await format(
-    forms.reduce(
-      (value, form) => value.replaceAll(form, normalizedCwd),
-      JSON.stringify(image),
-    ),
-    { ...(await resolveConfig(target)), filepath: target },
+  const text = forms.reduce(
+    (value, form) => value.replaceAll(form, normalizedCwd),
+    `${JSON.stringify(image, null, 2)}\n`,
   );
-  await writeFile(target, text, { flag: 'wx' });
+  await writeFile(join(output, path), text, { flag: 'wx' });
   return { path, sha256: sha256(text) };
 }
 
 /** Install one frozen partition under a fresh stateRoot: its journals where
- * DSH derives them from that root, and its store image rebased onto it. Every
- * byte is checked against the manifest before anything is installed. */
+ * DSH derives them from that root, and its store image rebased onto it. Each
+ * file is checked against the manifest before it is used. */
 export async function installControlCorpus(
   dir: string,
   scenario: ControlScenario,

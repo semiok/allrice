@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import {
   mkdir,
@@ -12,17 +13,32 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
 import type { ScheduleTask } from '@deepseek-ai/dsh-schedule';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { NATIVE_JOURNAL_CONTRACT } from '../../../../packages/contracts/src/native-journal-contract.ts';
+import {
+  nativeOnceDigest,
+  prepareNativeOnceMutation,
+  type NativeOnceOccurrence,
+  type NativeOnceSnapshot,
+} from '../../../../packages/database/src/native-schedule-once-state.ts';
+import {
+  NativeRecurringRevisionSchema,
+  prepareNativeRecurringMutation,
+  type NativeRecurringOccurrence,
+  type NativeRecurringSnapshot,
+} from '../../../../packages/database/src/native-schedule-recurring-state.ts';
+import { applyNativeOnceWorkspaceWrite } from '../../../../packages/database/src/native-schedule-workspace-state.ts';
 import { measureDshNativeArtifact } from '../../src/harness/dsh-native-artifact.js';
 import {
   createNativeScheduleOnceController,
+  type NativeScheduleAnyControl,
   type NativeScheduleControl,
   type NativeScheduleControlReference,
   type NativeScheduleOnceStore,
   type NativeScheduleRecurringControl,
   type NativeScheduleWrite,
+  type NativeScheduleWriter,
 } from '../../src/native-schedule-once.js';
 import {
   createNativeOnceControlSource,
@@ -83,39 +99,68 @@ beforeAll(async () => {
   };
 }, 120_000);
 
-/** The SQL store's contract for one partition, in memory: an epoch writer
- * fence, the exact-write readback, the workspace revision CAS, and mutations
- * applied to the control rows as the SQL store applies them. */
+/** The production SQL store of one partition without SQL: its pure state
+ * machine (`prepareNative*Mutation`, `applyNativeOnceWorkspaceWrite`) decides
+ * every write behind an epoch writer fence, and a refusal is `rejected` as the
+ * SQL store reports it. No tenant admission is locked, so a receipt's outbox is
+ * planned as blocked; nothing here dispatches a Run. */
 function memoryStore(
   image: ControlStoreImage,
   reference: NativeScheduleControlReference,
+  decodeTask: (value: unknown) => ScheduleTask,
 ) {
-  const controls = structuredClone(image.controls);
-  const tasks = structuredClone(image.tasks);
+  type Snapshot = NativeOnceSnapshot | NativeRecurringSnapshot;
+  const snapshots = new Map<string, Snapshot>(
+    image.controls.map((control) => [
+      control.controlId,
+      {
+        control: structuredClone(control),
+        task:
+          control.nativeTaskId === null
+            ? null
+            : structuredClone(image.tasks[control.nativeTaskId] ?? null),
+      } as Snapshot,
+    ]),
+  );
+  const { partitionId } = image.controls[0] as unknown as {
+    partitionId: string;
+  };
   let workspace = structuredClone(image.workspace);
   const writes: NativeScheduleWrite[] = [];
+  const occurrences: (NativeOnceOccurrence | NativeRecurringOccurrence)[] = [];
+  const rejections: unknown[] = [];
   const released: number[] = [];
   let epoch = 0;
-  const live = (writer: { epoch: number }) =>
+  const live = (writer: NativeScheduleWriter) =>
     writer.epoch === epoch && !released.includes(epoch);
-  const control = (id: string) => {
-    const row = controls.find((c) => c.controlId === id);
-    if (!row || row.kind === 'calendar') throw new Error('unknown control');
-    return row;
+  const controls = () =>
+    [...snapshots.values()].map(({ control }) => structuredClone(control));
+  const readiness = {
+    enabled: true,
+    storageReady: true,
+    legacyClockExcluded: true,
+    controlArtifactApproved: true,
   };
+  const revisions = (automationId: string) =>
+    new Map(
+      (image.revisions?.[automationId] ?? []).map((value) => {
+        const revision = NativeRecurringRevisionSchema.parse(value);
+        return [revision.revision, revision];
+      }),
+    );
   const store: NativeScheduleOnceStore = {
     async acquireWriter() {
       epoch++;
       return {
         writer: {
-          partitionId: 'journal-corpus',
+          partitionId,
           ownerId: 'journal-corpus-replay',
           epoch,
           token: `lease-${epoch}`,
         },
         remainingMs: 60_000,
         reference,
-        controls: structuredClone(controls),
+        controls: controls() as never,
       };
     },
     async renewWriter(writer) {
@@ -127,36 +172,61 @@ function memoryStore(
       return live(writer);
     },
     async loadControls() {
-      return structuredClone(controls);
+      return controls() as never;
     },
     async loadTaskRecords() {
-      return structuredClone(tasks);
+      return Object.fromEntries(
+        [...snapshots.values()].flatMap(({ task }) =>
+          task === null
+            ? []
+            : [[(task as ScheduleTask).record.id, structuredClone(task)]],
+        ),
+      );
     },
     async commitMutation(writer, write) {
-      if (!live(writer)) return 'rejected';
-      const m = write.mutation;
-      if (m.kind === 'calendar') throw new Error('no calendar controls');
-      const c = control(m.controlId);
-      if (m.kind === 'session_initializing') c.sessionState = 'initializing';
-      if (m.kind === 'session_ready') c.sessionState = 'ready';
-      if (m.kind === 'put_task') {
-        if (c.nativeTaskId && c.nativeTaskId !== m.task.record.id)
-          throw new Error('task rebinding');
-        c.nativeTaskId = m.task.record.id;
-        tasks[m.task.record.id] = structuredClone(m.task);
-      }
-      if (m.kind === 'delete_task') {
-        delete tasks[m.nativeTaskId];
-        c.taskDeleted = true;
-      }
-      if (m.kind === 'confirm_command') {
-        c.command.status = 'confirmed';
-        if (c.kind === 'recurring' && c.command.kind !== 'delete') {
-          c.appliedRevision = c.revision;
-          c.appliedRule = structuredClone(c.rule);
+      const before =
+        write.mutation.kind === 'calendar'
+          ? undefined
+          : snapshots.get(write.mutation.controlId);
+      if (!live(writer) || !before) return 'rejected';
+      try {
+        const input = {
+          readiness,
+          writerRow: {
+            partitionId: writer.partitionId,
+            ownerId: writer.ownerId,
+            epoch: writer.epoch,
+            tokenDigest: nativeOnceDigest(writer.token),
+            expiresAtMs: Date.now() + 60_000,
+            closed: false,
+            reference,
+          },
+          writer,
+          dbNowMs: Date.now(),
+          write: write as never,
+          decodeTask: decodeTask as never,
+        };
+        if ('kind' in before.control && before.control.kind === 'recurring') {
+          const planned = prepareNativeRecurringMutation({
+            ...input,
+            reference,
+            before: before as NativeRecurringSnapshot,
+            revisions: revisions(before.control.automationId),
+          });
+          snapshots.set(before.control.controlId, planned.after);
+          occurrences.push(...planned.occurrences);
+        } else {
+          const planned = prepareNativeOnceMutation({
+            ...input,
+            before: before as NativeOnceSnapshot,
+          });
+          snapshots.set(before.control.controlId, planned.after);
+          if (planned.occurrence) occurrences.push(planned.occurrence);
         }
+      } catch (error) {
+        rejections.push(error);
+        return 'rejected';
       }
-      if (m.kind === 'reject_command') c.command.status = 'blocked';
       writes.push(structuredClone(write));
       return 'committed';
     },
@@ -169,15 +239,11 @@ function memoryStore(
       return structuredClone(workspace);
     },
     async commitWorkspaceWrite(writer, write) {
-      if (!live(writer) || write.expectedRevision !== workspace.revision)
-        throw new Error('workspace fence or revision rejected');
-      const next = structuredClone(workspace);
-      const m = write.mutation;
-      if (m.kind === 'put_record') next.tables.workspaces[m.key] = m.value;
-      else if (m.kind === 'delete_record') delete next.tables.workspaces[m.key];
-      else next.global = m.value;
-      next.revision++;
-      workspace = next;
+      if (!live(writer)) throw new Error('workspace writer fence rejected');
+      workspace = applyNativeOnceWorkspaceWrite(workspace, write, {
+        stateRoot: reference.stateRoot,
+        controlSessionIds: new Set(controls().map((c) => c.controlSessionId)),
+      });
       return { revision: workspace.revision };
     },
     async releaseClosedWriter(writer) {
@@ -188,12 +254,30 @@ function memoryStore(
     writes.flatMap(({ mutation }) =>
       mutation.kind === 'put_task' ? [mutation] : [],
     );
-  return { store, tasks, writes, released, puts };
+  const snapshot = (controlId: string) =>
+    snapshots.get(controlId)! as {
+      control: NativeScheduleAnyControl;
+      task: ScheduleTask | null;
+    };
+  return {
+    store,
+    writes,
+    occurrences,
+    rejections,
+    released,
+    puts,
+    snapshot,
+  };
 }
 
 /** Install one frozen partition under a fresh stateRoot, as the next release
- * finds it after a deploy: journals on disk, rows behind the store. */
-async function replay(corpus: Corpus, id: ControlScenarioId) {
+ * finds it after a deploy: journals on disk, rows behind the store. `edit`
+ * changes the rows first, as a product API would while the Worker is down. */
+async function replay(
+  corpus: Corpus,
+  id: ControlScenarioId,
+  edit?: (image: ControlStoreImage) => void,
+) {
   const scenario = corpus.scenario(id);
   const root = await realpath(
     await mkdtemp(join(tmpdir(), 'allrice-control-replay-')),
@@ -202,6 +286,8 @@ async function replay(corpus: Corpus, id: ControlScenarioId) {
   await mkdir(stateRoot);
   try {
     const image = await installControlCorpus(corpus.dir, scenario, stateRoot);
+    const frozenImage = structuredClone(image);
+    edit?.(image);
     const reference = { ...scenario.reference, stateRoot };
     const journal = (sessionId: string) =>
       readFile(
@@ -222,15 +308,50 @@ async function replay(corpus: Corpus, id: ControlScenarioId) {
         ),
       ),
     );
-    const memory = memoryStore(image, reference);
-    const controllers: ReturnType<typeof createNativeScheduleOnceController>[] =
-      [];
+    // The old release stopped after its last journal event.
+    const stoppedAt = Math.max(
+      ...[...frozen.values()].flatMap((text) =>
+        text
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => {
+            const event = JSON.parse(line) as {
+              time?: number;
+              createdAt?: number;
+            };
+            return event.time ?? event.createdAt ?? 0;
+          }),
+      ),
+    );
+    const { schedule } = await createNativeOnceControlSource(
+      reference,
+      controlPorts,
+    ).loadModules();
+    const memory = memoryStore(image, reference, (value) =>
+      schedule.scheduleDomain.tables.tasks.valueSchema.parse(value),
+    );
+    const controllers: Controller[] = [];
     return {
       image,
-      reference,
+      frozenImage,
       memory,
       history: () =>
         verifyNativeOnceControlHistory(reference, image.controls, controlPorts),
+      /** The next release comes up at `at` (epoch ms), derived from the
+       * frozen targets so every replay sees the same due work. Only Date is
+       * replaced; it moves with real time and every timer stays real. */
+      startAt(at: number) {
+        expect(at).toBeGreaterThan(stoppedAt);
+        vi.useFakeTimers({
+          now: at,
+          toFake: ['Date'],
+          shouldAdvanceTime: true,
+        });
+      },
+      /** A later restart, after the first replay process stopped. */
+      restartAt(at: number) {
+        vi.setSystemTime(at);
+      },
       // A new process: a new controller and Host over the same root and rows.
       open() {
         const controller = createNativeScheduleOnceController({
@@ -240,6 +361,13 @@ async function replay(corpus: Corpus, id: ControlScenarioId) {
         });
         controllers.push(controller);
         return controller;
+      },
+      async stop(controller: Controller) {
+        await controller.stop();
+        expect(controller.status()).toMatchObject({
+          state: 'closed',
+          fault: undefined,
+        });
       },
       // This build appends to the frozen journals, never rewrites them.
       async appended(sessionId: string) {
@@ -253,7 +381,9 @@ async function replay(corpus: Corpus, id: ControlScenarioId) {
           for (const controller of controllers) await controller.stop();
           for (const controller of controllers)
             expect(controller.status().stats.adapterCalls).toBe(0);
+          expect(memory.rejections).toEqual([]);
         } finally {
+          vi.useRealTimers();
           await rm(root, { recursive: true, force: true });
         }
       },
@@ -263,27 +393,140 @@ async function replay(corpus: Corpus, id: ControlScenarioId) {
     throw error;
   }
 }
+type Run = Awaited<ReturnType<typeof replay>>;
 
 type Controller = ReturnType<typeof createNativeScheduleOnceController>;
+type Memory = ReturnType<typeof memoryStore>;
 /** Real Schedule timers fire on their own; ticks renew the lease. */
-async function tickUntil(controller: Controller, done: () => boolean) {
-  const deadline = Date.now() + 20_000;
+async function tickUntil(
+  controller: Controller,
+  memory: Memory,
+  done: () => boolean,
+) {
+  const deadline = performance.now() + 20_000;
   for (;;) {
     await controller.tick();
     expect(
       controller.status(),
-      JSON.stringify(controller.status()),
+      JSON.stringify({
+        status: controller.status(),
+        rejections: memory.rejections.map(String),
+      }),
     ).toMatchObject({ state: 'active', fault: undefined });
     if (done()) return;
-    if (Date.now() > deadline)
+    if (performance.now() > deadline)
       throw new Error('Timed out waiting for the control Host');
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
 }
-const settle = (controller: Controller) => {
+/** A later process reads back what this build appended and changes nothing. */
+async function reopen(run: Run) {
+  const writes = run.memory.writes.length;
+  const controller = run.open();
   let ticks = 0;
-  return tickUntil(controller, () => ++ticks > 5);
+  await tickUntil(controller, run.memory, () => ++ticks > 5);
+  await run.stop(controller);
+  expect(run.memory.writes).toHaveLength(writes);
+  expect(run.memory.released).toEqual([1, 2]);
+  for (const c of run.image.controls) await run.appended(c.controlSessionId);
+}
+const kinds = (run: Run) =>
+  run.memory.writes.map(({ mutation }) => [
+    mutation.kind,
+    'controlId' in mutation ? mutation.controlId : null,
+  ]);
+const MINUTE = 60_000;
+const DAY = 24 * 60 * MINUTE;
+
+type OnceControl = NativeScheduleControl & {
+  dispatch: { occurrenceId: string };
 };
+/** The once partition: a refused creation, a delivered task, a due one. */
+function onceControls(image: ControlStoreImage) {
+  const controls = image.controls as OnceControl[];
+  const task = (c: OnceControl) =>
+    c.nativeTaskId === null
+      ? null
+      : (image.tasks[c.nativeTaskId] as ScheduleTask);
+  const only = (test: (c: OnceControl) => boolean) => {
+    const found = controls.filter(test);
+    expect(found).toHaveLength(1);
+    return found[0]!;
+  };
+  return {
+    task,
+    refused: only((c) => task(c) === null),
+    delivered: only((c) => !!task(c)?.lastDelivery),
+    due: only((c) => !!task(c) && !task(c)!.lastDelivery),
+  };
+}
+/** The recurring partition: every 60 seconds and daily, each delivered once. */
+function recurringControls(image: ControlStoreImage) {
+  const controls = image.controls as NativeScheduleRecurringControl[];
+  const task = (c: NativeScheduleRecurringControl) =>
+    image.tasks[c.nativeTaskId!] as ScheduleTask;
+  const only = (kind: string) => {
+    const found = controls.filter((c) => c.appliedRule?.kind === kind);
+    expect(found).toHaveLength(1);
+    return found[0]!;
+  };
+  expect(controls).toHaveLength(2);
+  return { task, every: only('every'), daily: only('daily') };
+}
+/** The one delivery a release starting at `at` owes: the latest missed
+ * occurrence on the rule's grid (Asia/Shanghai has no DST), then the next. */
+function expectDelivery(
+  run: Run,
+  control: NativeScheduleRecurringControl,
+  frozen: ScheduleTask,
+  at: number,
+  period: number,
+) {
+  const target = Date.parse(frozen.record.scheduledAt);
+  const occurrence = target + Math.floor((at - target) / period) * period;
+  const puts = run.memory
+    .puts()
+    .filter(({ controlId }) => controlId === control.controlId);
+  expect(puts).toHaveLength(1);
+  const [put] = puts;
+  expect(put!.task).toMatchObject({
+    record: {
+      id: control.nativeTaskId,
+      scheduledAt: new Date(occurrence + period).toISOString(),
+    },
+    status: 'active',
+    lastDelivery: { scheduledAt: new Date(occurrence).toISOString() },
+  });
+  const receipt = put!.task.deliveryHistory!.records.at(-1)!;
+  const history = frozen.deliveryHistory!.records;
+  // Earlier receipts stay unless DSH's 30-day retention prunes them.
+  expect(put!.task.deliveryHistory).toEqual(
+    at - Date.parse(history.at(-1)!.deliveredAt) < 30 * DAY
+      ? {
+          records: [...history, receipt],
+          earlierRecordsUnavailable: false,
+          earlierRecordsPruned: false,
+        }
+      : {
+          records: [receipt],
+          earlierRecordsUnavailable: true,
+          earlierRecordsPruned: true,
+        },
+  );
+  // The receipt plans the occurrence the business dispatch consumes.
+  expect(
+    run.memory.occurrences.filter(
+      (o) => o.payload.nativeTaskId === control.nativeTaskId,
+    ),
+  ).toMatchObject([
+    {
+      payload: {
+        revision: { revision: control.revision, rule: control.rule },
+        receipt,
+      },
+    },
+  ]);
+}
 
 // One frozen control corpus per readable journal contract version (MET-221),
 // captured by dsh-control-journal-capture.test.ts beside the chat corpus.
@@ -338,114 +581,251 @@ describe('DSH schedule control corpus', () => {
       it('restores the once controller on its frozen journals and delivers the due task once', async () => {
         const run = await replay(corpus, 'once');
         try {
-          const controls = run.image.controls as NativeScheduleControl[];
-          const task = (c: NativeScheduleControl) =>
-            run.image.tasks[c.nativeTaskId!] as ScheduleTask;
-          const delivered = controls.filter((c) => task(c).lastDelivery);
-          const due = controls.filter((c) => !task(c).lastDelivery);
-          expect([delivered.length, due.length]).toEqual([1, 1]);
-          expect(controls.every((c) => c.sessionState === 'ready')).toBe(true);
-          expect(Date.parse(due[0]!.at)).toBeLessThan(Date.now());
-          expect(await run.history()).toBe(2);
+          const { task, refused, delivered, due } = onceControls(run.image);
+          expect(refused.command.status).toBe('blocked');
+          expect(
+            run.image.controls.every((c) => c.sessionState === 'ready'),
+          ).toBe(true);
+          expect(await run.history()).toBe(3);
 
+          // The release comes up 90 seconds after the pending task was due.
+          const at = Date.parse(due.at) + 90_000;
+          run.startAt(at);
           const first = run.open();
-          await tickUntil(first, () => run.memory.puts().length > 0);
-          const [put, ...more] = run.memory.puts();
-          expect(more).toEqual([]);
-          expect(put).toMatchObject({
-            controlId: due[0]!.controlId,
-            task: {
-              record: { id: due[0]!.nativeTaskId, scheduledAt: due[0]!.at },
-              status: 'inactive',
-              lastDelivery: { scheduledAt: due[0]!.at },
-            },
-          });
-          expect(run.memory.tasks[delivered[0]!.nativeTaskId!]).toEqual(
-            task(delivered[0]!),
+          await tickUntil(
+            first,
+            run.memory,
+            () => run.memory.puts().length > 0,
           );
-          await first.stop();
+          await run.stop(first);
+          expect(kinds(run)).toEqual([['put_task', due.controlId]]);
+          const [put] = run.memory.puts();
+          expect(put!.task).toMatchObject({
+            record: { id: due.nativeTaskId, scheduledAt: due.at },
+            status: 'inactive',
+            lastDelivery: { scheduledAt: due.at },
+          });
+          expect(
+            Date.parse(put!.task.lastDelivery!.deliveredAt),
+          ).toBeGreaterThanOrEqual(at);
+          // The receipt plans the occurrence the business dispatch consumes.
+          expect(run.memory.occurrences).toMatchObject([
+            {
+              id: due.dispatch.occurrenceId,
+              payload: {
+                nativeTaskId: due.nativeTaskId,
+                receipt: put!.task.lastDelivery,
+              },
+            },
+          ]);
+          for (const c of [refused, delivered])
+            expect(run.memory.snapshot(c.controlId)).toEqual({
+              control: c,
+              task: task(c),
+            });
           expect(run.memory.released).toEqual([1]);
-          expect(await run.appended(due[0]!.controlSessionId)).not.toBe('');
+          expect(await run.appended(due.controlSessionId)).not.toBe('');
 
-          // A later process reads back what this build appended and
-          // delivers nothing again.
-          const writes = run.memory.writes.length;
-          const second = run.open();
-          await settle(second);
-          await second.stop();
-          expect(run.memory.writes).toHaveLength(writes);
-          expect(run.memory.released).toEqual([1, 2]);
-          for (const c of controls) await run.appended(c.controlSessionId);
-          expect(await run.history()).toBe(2);
+          await reopen(run);
+          expect(await run.history()).toBe(3);
         } finally {
           await run.close();
         }
       }, 60_000);
 
-      it('restores the recurring controller on its frozen journal and delivers the missed occurrence once', async () => {
-        const run = await replay(corpus, 'recurring');
+      it('cancels a pending once task on its frozen journal so it never fires', async () => {
+        // As the product's cancel leaves the row while the Worker is down.
+        const run = await replay(corpus, 'once', (image) => {
+          onceControls(image).due.command = {
+            id: randomUUID(),
+            kind: 'delete',
+            status: 'pending',
+          };
+        });
         try {
-          const [control, ...others] = run.image
-            .controls as NativeScheduleRecurringControl[];
-          expect(others).toEqual([]);
-          expect(control).toMatchObject({
-            kind: 'recurring',
-            sessionState: 'ready',
-            appliedRule: { kind: 'every', seconds: 60 },
-          });
-          const frozen = run.image.tasks[
-            control!.nativeTaskId!
-          ] as ScheduleTask;
-          const history = frozen.deliveryHistory!.records;
-          expect(history).toHaveLength(1);
-          const target = Date.parse(frozen.record.scheduledAt);
-          expect(target).toBeLessThan(Date.now());
-          expect(await run.history()).toBe(1);
-
-          const before = Date.now();
+          const { due } = onceControls(run.image);
+          run.startAt(Date.parse(due.at) - 30_000);
           const first = run.open();
-          await tickUntil(first, () => run.memory.puts().length > 0);
-          const [put] = run.memory.puts();
-          const records = put!.task.deliveryHistory!.records;
-          const last = Date.parse(records.at(-1)!.scheduledAt);
-          // DSH delivers only the latest missed occurrence on the rule's grid,
-          // then schedules the next one strictly in the future.
-          expect((last - target) % 60_000).toBe(0);
-          expect(last).toBeGreaterThanOrEqual(target);
-          expect(last).toBeLessThanOrEqual(Date.now());
-          expect(put).toMatchObject({
-            controlId: control!.controlId,
-            task: {
-              record: {
-                id: control!.nativeTaskId,
-                kind: 'every',
-                everySeconds: 60,
-              },
-              status: 'active',
-            },
-          });
-          const next = Date.parse(put!.task.record.scheduledAt);
-          expect(next).toBe(last + 60_000);
-          expect(next).toBeGreaterThan(before);
-          // Earlier receipts are kept unless DSH's 30-day retention drops them.
-          expect([...history, records.at(-1)].slice(-records.length)).toEqual(
-            records,
+          await tickUntil(
+            first,
+            run.memory,
+            () => run.memory.writes.length > 1,
           );
-          await first.stop();
-          expect(await run.appended(control!.controlSessionId)).not.toBe('');
+          await run.stop(first);
+          expect(kinds(run)).toEqual([
+            ['delete_task', due.controlId],
+            ['confirm_command', due.controlId],
+          ]);
+          expect(run.memory.snapshot(due.controlId)).toMatchObject({
+            control: {
+              taskDeleted: true,
+              command: { kind: 'delete', status: 'confirmed' },
+            },
+            task: null,
+          });
 
-          const second = run.open();
-          await settle(second);
-          await second.stop();
-          const receipts = run.memory
-            .puts()
-            .map(
-              ({ task }) => task.deliveryHistory!.records.at(-1)!.scheduledAt,
+          // Restarting after its time delivers nothing.
+          run.restartAt(Date.parse(due.at) + 90_000);
+          await reopen(run);
+          expect(run.memory.occurrences).toEqual([]);
+        } finally {
+          await run.close();
+        }
+      }, 60_000);
+
+      it.each([
+        ['keeps the earlier receipts', 90_000],
+        ["prunes them past DSH's 30-day retention", 31 * DAY + 90_000],
+      ])(
+        'restores the recurring controller on its frozen journal and delivers each missed occurrence once: %s',
+        async (_label, delay) => {
+          const run = await replay(corpus, 'recurring');
+          try {
+            const { task, every, daily } = recurringControls(run.image);
+            for (const c of [every, daily]) {
+              expect(c).toMatchObject({ sessionState: 'ready' });
+              expect(task(c).deliveryHistory!.records).toHaveLength(1);
+            }
+            expect(daily.appliedRule).toMatchObject({
+              timezone: 'Asia/Shanghai',
+            });
+            expect(await run.history()).toBe(2);
+
+            // The release comes up `delay` after the minute rule's next target;
+            // the daily one is due only once a day has passed.
+            const at = Date.parse(task(every).record.scheduledAt) + delay;
+            const owed = [every, daily].filter(
+              (c) => Date.parse(task(c).record.scheduledAt) <= at,
             );
-          expect(new Set(receipts).size).toBe(receipts.length);
-          expect(run.memory.released).toEqual([1, 2]);
-          await run.appended(control!.controlSessionId);
-          expect(await run.history()).toBe(1);
+            run.startAt(at);
+            const first = run.open();
+            await tickUntil(
+              first,
+              run.memory,
+              () => run.memory.puts().length >= owed.length,
+            );
+            await run.stop(first);
+            expect(run.memory.puts()).toHaveLength(owed.length);
+            expectDelivery(run, every, task(every), at, MINUTE);
+            if (owed.includes(daily))
+              expectDelivery(run, daily, task(daily), at, DAY);
+            for (const c of owed)
+              expect(await run.appended(c.controlSessionId)).not.toBe('');
+
+            await reopen(run);
+            expect(await run.history()).toBe(2);
+          } finally {
+            await run.close();
+          }
+        },
+        60_000,
+      );
+
+      it('applies a pending recurring rule change on its frozen journal', async () => {
+        const rule = { kind: 'every' as const, seconds: 120 };
+        // As the product's update leaves the rows while the Worker is down.
+        const run = await replay(corpus, 'recurring', (image) => {
+          const { task, every } = recurringControls(image);
+          const versions = image.revisions![every.automationId]!;
+          every.revision = 2;
+          every.rule = rule;
+          every.command = {
+            id: randomUUID(),
+            kind: 'update',
+            status: 'pending',
+          };
+          versions.push({
+            ...(versions[0] as object),
+            revision: 2,
+            rule,
+            acceptedAt: new Date(
+              Date.parse(task(every).record.scheduledAt) - 40_000,
+            ).toISOString(),
+          });
+        });
+        try {
+          const { task, every, daily } = recurringControls(run.frozenImage);
+          const at = Date.parse(task(every).record.scheduledAt) - 30_000;
+          run.startAt(at);
+          const first = run.open();
+          await tickUntil(
+            first,
+            run.memory,
+            () => run.memory.writes.length > 1,
+          );
+          await run.stop(first);
+          expect(kinds(run)).toEqual([
+            ['put_task', every.controlId],
+            ['confirm_command', every.controlId],
+          ]);
+          const { control, task: changed } = run.memory.snapshot(
+            every.controlId,
+          );
+          expect(control).toMatchObject({
+            revision: 2,
+            appliedRevision: 2,
+            appliedRule: rule,
+            command: { kind: 'update', status: 'confirmed' },
+          });
+          expect(changed).toMatchObject({
+            record: {
+              id: every.nativeTaskId,
+              kind: 'every',
+              everySeconds: 120,
+            },
+            status: 'active',
+            deliveryHistory: task(every).deliveryHistory,
+          });
+          expect(Date.parse(changed!.record.scheduledAt)).toBeGreaterThan(at);
+          expect(run.memory.snapshot(daily.controlId)).toEqual({
+            control: daily,
+            task: task(daily),
+          });
+
+          await reopen(run);
+        } finally {
+          await run.close();
+        }
+      }, 60_000);
+
+      it('deletes a recurring task on its frozen journal so it never fires again', async () => {
+        const run = await replay(corpus, 'recurring', (image) => {
+          recurringControls(image).every.command = {
+            id: randomUUID(),
+            kind: 'delete',
+            status: 'pending',
+          };
+        });
+        try {
+          const { task, every, daily } = recurringControls(run.frozenImage);
+          const target = Date.parse(task(every).record.scheduledAt);
+          run.startAt(target - 30_000);
+          const first = run.open();
+          await tickUntil(
+            first,
+            run.memory,
+            () => run.memory.writes.length > 1,
+          );
+          await run.stop(first);
+          expect(kinds(run)).toEqual([
+            ['delete_task', every.controlId],
+            ['confirm_command', every.controlId],
+          ]);
+          expect(run.memory.snapshot(every.controlId)).toMatchObject({
+            control: {
+              taskDeleted: true,
+              command: { kind: 'delete', status: 'confirmed' },
+            },
+            task: null,
+          });
+
+          // Restarting after its next target delivers nothing.
+          run.restartAt(target + 90_000);
+          await reopen(run);
+          expect(run.memory.occurrences).toEqual([]);
+          expect(run.memory.snapshot(daily.controlId).task).toEqual(
+            task(daily),
+          );
         } finally {
           await run.close();
         }
