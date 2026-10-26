@@ -467,7 +467,10 @@ try {
   await db`update allrice_bridge_devices set last_seen_at=clock_timestamp()-interval '5 minutes' where id=${device}`;
   await assertDeviceApi('offline', 1); // The old grant is retained, only hidden by the UI.
   await refreshBridge(dialog);
-  await dialog.getByText('离线', { exact: true }).waitFor();
+  await dialog
+    .locator('[data-bridge-connection]')
+    .getByText('未连接')
+    .waitFor();
   assert.equal(await dialog.getByText(new RegExp(workspaceLabel)).count(), 0);
   await dialog.getByRole('button', { name: '关闭', exact: true }).click();
   await page
@@ -550,12 +553,19 @@ try {
     .waitFor();
   assert.deepEqual(injectedNetworkFailures, ['/api/v1/bridge/devices']);
   assert.equal(
-    await page.getByText(/Failed to fetch|本地电脑状态加载失败/).count(),
+    await page
+      .getByText(
+        /Failed to fetch|本地电脑状态加载失败|暂时无法确认连接状态，请刷新重试。/,
+      )
+      .count(),
     0,
     'Successful refresh must clear the old Bridge error, not leave a chat error banner',
   );
+  // The injected failure is also logged once by useBridge (`Failed to fetch`).
   assert.ok(
-    consoleErrors.every((error) => /net::ERR_FAILED/.test(error)),
+    consoleErrors.every((error) =>
+      /net::ERR_FAILED|TypeError: Failed to fetch/.test(error),
+    ),
     'Only the deliberately injected network error may appear',
   );
   assert.deepEqual(failedResponses, []);
