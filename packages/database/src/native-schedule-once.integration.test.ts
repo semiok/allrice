@@ -1191,7 +1191,9 @@ suite(
         // One observed record per attempt: every one rolled back on 55P03.
         const attempts = [...warn.mock.calls, ...error.mock.calls]
           .filter(
-            ([tag]) => tag === '[MET-210] Worker lease transaction rolled back',
+            ([tag, record]) =>
+              tag === '[MET-210] Worker lease transaction rolled back' &&
+              record.site === 'job_heartbeat',
           )
           .map(([, record]) => [record.attempt, record.outcome]);
         warn.mockRestore();

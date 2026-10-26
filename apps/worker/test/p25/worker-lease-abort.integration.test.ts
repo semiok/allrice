@@ -136,33 +136,51 @@ suite('MET-210 runner closes heartbeat retries', () => {
         stopping = true;
         leave.release();
         await running;
-        // Allow the retry backoff to elapse while the competing lock is STILL held.
-        await new Promise((resolve) => setTimeout(resolve, 350));
-        const [activity] =
-          await f.db`select count(*)::int n from pg_stat_activity where ${pid}=any(pg_blocking_pids(pid))`;
-        expect(activity!.n).toBe(0);
-        // Both gates stay closed until after runClaimedJob has returned.
-        tableUnlock.release();
-        await tableHolder;
-        unlock.release();
-        await holder;
-        await new Promise((resolve) => setTimeout(resolve, 350));
-        const failures = [...warn.mock.calls, ...error.mock.calls]
-          .filter(
-            ([tag]) => tag === '[MET-210] Worker lease transaction rolled back',
-          )
-          .map(([, data]) => data);
-        expect.soft(failures).toMatchObject([
+        // The runner may return by its 5 s heartbeat join before the blocked
+        // attempt or lease read ends. Wait for the retry loop's own decision
+        // instead of for time, with both competing locks STILL held. (During
+        // revalidation the lease read always ends here by its own timeout:
+        // the table lock outlives it.)
+        const records = () =>
+          [...warn.mock.calls, ...error.mock.calls]
+            .filter(
+              ([tag]) =>
+                tag === '[MET-210] Worker lease transaction rolled back',
+            )
+            .map(([, data]) => data as Record<string, unknown>);
+        const heartbeat = () =>
+          records().filter((r) => r.site === 'job_heartbeat');
+        await expect
+          .poll(() => heartbeat().length, { timeout: 15_000, interval: 25 })
+          .toBe(1);
+        expect(heartbeat()).toMatchObject([
           {
             jobId: f.worker.jobId,
-            site: 'job_heartbeat',
             attempt: 1,
             outcome: 'aborted',
           },
         ]);
+        // Decided with the runner gone: no new attempt queues on 703.
+        const [activity] =
+          await f.db`select count(*)::int n from pg_stat_activity where ${pid}=any(pg_blocking_pids(pid))`;
+        expect(activity!.n).toBe(0);
+        tableUnlock.release();
+        await tableHolder;
+        unlock.release();
+        await holder;
+        // A lease read cut off by its own timeout is diagnostics only; it
+        // never turns into a retry.
+        expect(
+          records().every(
+            (r) =>
+              r.site === 'job_heartbeat' ||
+              (r.site === 'lease_read' && r.outcome === 'failed'),
+          ),
+        ).toBe(true);
+        expect(records().some((r) => r.outcome === 'retrying')).toBe(false);
         const [after] =
           await f.db`select status,heartbeat_at,lease_expires_at from allrice_jobs where id=${f.worker.jobId}`;
-        expect.soft(after).toMatchObject({ ...before, status: 'running' });
+        expect(after).toMatchObject({ ...before, status: 'running' });
         expect(handlerCalls).toBe(1);
       } finally {
         stopping = true;
@@ -176,6 +194,6 @@ suite('MET-210 runner closes heartbeat retries', () => {
         error.mockRestore();
       }
     },
-    20_000,
+    30_000,
   );
 });
