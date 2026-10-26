@@ -54,13 +54,15 @@ class DeployDevMigrations(unittest.TestCase):
         write(os.path.join(local, 'bridge/big.bin'), 'not snapshotted')
         self.stubs = os.path.join(self.tmp, 'stubs')
         self.applied = os.path.join(self.tmp, 'applied.txt')
-        write(os.path.join(self.stubs, 'psql'), '#!/bin/sh\n[ -z "$PSQL_FAIL" ] || exit 2\ncat "$APPLIED"\n', 0o755)
+        # The journal contract row comes from $CONTRACT_FILE (absent or empty: no row), migrations from $APPLIED.
+        write(os.path.join(self.stubs, 'psql'), '#!/bin/sh\n[ -z "$PSQL_FAIL" ] || exit 2\nfor a; do q=$a; done\n'
+              'case "$q" in *allrice_runtime_metadata*) cat "$CONTRACT_FILE" 2>/dev/null ;; *) cat "$APPLIED" ;; esac\n', 0o755)
         write(os.path.join(self.stubs, 'pg_dump'), '#!/bin/sh\n[ -z "$PG_DUMP_FAIL" ] || exit 1\necho "-- dump of $*"\n', 0o755)
         if sys.platform != 'darwin':  # GNU cp has no clonefile flag
             write(os.path.join(self.stubs, 'cp'), '#!/bin/sh\n[ "$1" != -c ] || shift\nexec /bin/cp "$@"\n', 0o755)
         self.snapshots = os.path.join(self.home, 'allrice-dev/qa/pre-migrate')
 
-    def release(self, files=FILES, archived=ARCHIVED, module=None):
+    def release(self, files=FILES, archived=ARCHIVED, module=None, store=True):
         rel = tempfile.mkdtemp(prefix='rel-', dir=self.tmp)
         db = os.path.join(rel, 'packages/database')
         for name in files:
@@ -73,10 +75,14 @@ class DeployDevMigrations(unittest.TestCase):
             write(os.path.join(db, 'dist/migration-compatibility.js'), module)
         # Importing anything else would be a bug: migrate.js runs migrations when it loads.
         write(os.path.join(db, 'dist/migrate.js'), 'throw new Error("migrate.js was imported");\n')
+        if store:  # releases from MET-221 PR2b-1 on know the journal contract high water
+            write(os.path.join(db, 'dist/native-journal-contract-store.js'), 'export {};\n')
         return rel
 
-    def run_dd(self, script, applied, **env):
+    def run_dd(self, script, applied, CONTRACT='', **env):
         write(self.applied, ''.join(n + '\n' for n in applied))
+        env['CONTRACT_FILE'] = os.path.join(self.tmp, 'contract.txt')
+        write(env['CONTRACT_FILE'], CONTRACT)
         path = ':'.join([self.stubs, os.path.dirname(NODE), '/usr/bin', '/bin', '/usr/sbin', '/sbin'])
         env = dict(HOME=self.home, PATH=path, TEST_PATH=path, APPLIED=self.applied, **env)
         return subprocess.run(['/bin/bash', '-c', 'source "$1"; PATH=$TEST_PATH; inflight_phase() { :; }; ' + script,
@@ -198,6 +204,72 @@ class DeployDevMigrations(unittest.TestCase):
         # Text from earlier in the deploy log (the build) is not this check's failure.
         out = self.precheck('Error: DSH_NATIVE_SOMETHING_ELSE', earlier='relation "x" does not exist\n')
         self.assertIn('pre-stop native check failed: DSH_NATIVE_SOMETHING_ELSE', out)
+
+    def contract(self, rel, high_water, **env):
+        p = self.run_dd('if out=$(check_contract_known "$REL"); then echo "OK"; else echo "REFUSED $out"; fi',
+                        FILES + ARCHIVED, REL=rel, CONTRACT=high_water, **env)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        return p.stdout.strip()
+
+    def test_journals_above_contract_1_need_a_release_that_knows_the_contract(self):
+        old, new = self.release(store=False), self.release()
+        self.assertIn('predates the journal contract', self.contract(old, '2'))
+        self.assertEqual(self.contract(new, '2'), 'OK')
+        for high_water in ('', '1'):  # no row yet, or the PR2b-1 baseline
+            with self.subTest(high_water=high_water):
+                self.assertEqual(self.contract(old, high_water), 'OK')
+        self.assertIn('unreadable journal contract row', self.contract(new, '{"since": "x"}'))
+        self.assertIn('cannot read the journal contract', self.contract(new, '2', PSQL_FAIL='1'))
+
+    def test_status_shows_whether_a_rollback_would_pass(self):
+        old = self.release(store=False)
+        write(os.path.join(self.home, 'allrice-dev/qa/.previous-release'), old + '\n/nowhere\n')
+        for high_water, expected in (('1', 'it predates the journal contract, fine at high water 1'),
+                                     ('2', 'would be REFUSED: the journals reach contract 2')):
+            with self.subTest(high_water=high_water):
+                p = self.run_dd('status', FILES + ARCHIVED, CONTRACT=high_water)
+                self.assertEqual(p.returncode, 0, p.stderr)
+                self.assertIn('journal contract:   high water %s' % high_water, p.stdout)
+                self.assertIn(expected, p.stdout)
+
+    # Flow tests: everything that would build, lock or touch launchd is stubbed; STOPPED in
+    # the output means the run got as far as stopping Dev.
+    FLOW_STUBS = ('precheck() { echo PRECHECK >&2; [ -z "${RAISE:-}" ] || printf %s "$RAISE" > "$CONTRACT_FILE"; }; '
+                  'take_lock() { echo LOCKED; }; '
+                  'inflight_begin() { :; }; stop_both() { echo STOPPED; return 1; }; ')
+
+    def test_rollback_checks_the_contract_before_stopping_and_again_under_the_lock(self):
+        old = self.release(store=False)
+        write(os.path.join(self.home, 'allrice-dev/qa/deploys.jsonl'),
+              json.dumps({'kind': 'deploy', 'toRelease': old, 'toSha': 'a' * 40, 'toArtifact': 'sha256:' + 'a' * 64}) + '\n')
+        run = lambda **env: self.run_dd(self.FLOW_STUBS + 'rollback "$OLD"', FILES + ARCHIVED, OLD=old, **env)
+        p = run(CONTRACT='2')
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn('predates the journal contract', p.stderr)
+        self.assertNotIn('PRECHECK', p.stderr)
+        p = run(CONTRACT='1', RAISE='2')  # a deploy raised it while the pre-stop check ran
+        self.assertIn('LOCKED', p.stdout)
+        self.assertIn('predates the journal contract', p.stderr)
+        self.assertNotIn('STOPPED', p.stdout)
+        self.assertIn('STOPPED', run(CONTRACT='1').stdout)
+
+    def test_deploy_refuses_an_old_candidate_before_stopping(self):
+        old = self.release(store=False)
+        stubs = self.FLOW_STUBS + (
+            'df() { printf "h\\nx x x 100\\n"; }; resolve_ref() { echo bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; }; '
+            'git() { [ "$3 $4" != "worktree add" ] || { mkdir -p "$(dirname "$7")" && cp -R "$OLD" "$7"; }; }; pnpm() { :; }; '
+            'node() { case "$1" in apps/*) echo \'{"artifactId":"sha256:%s"}\' ;; scripts/*) : ;; *) command node "$@" ;; esac; }; '
+            % ('c' * 64))
+        for high_water, stopped in (('2', False), ('1', True)):
+            with self.subTest(high_water=high_water):
+                p = self.run_dd(stubs + 'deploy --skip-smoke', FILES + ARCHIVED, OLD=old, CONTRACT=high_water)
+                self.assertIn('PRECHECK', p.stderr)
+                self.assertEqual('STOPPED' in p.stdout, stopped, p.stderr)
+                if not stopped:
+                    self.assertIn('predates the journal contract', p.stderr)
+                    with open(os.path.join(self.home, 'allrice-dev/qa/deploys.jsonl')) as f:
+                        self.assertIn('"phase": "contract"', f.read())
+                shutil.rmtree(os.path.join(self.home, 'allrice-dev-releases'), True)
 
     def test_failed_snapshot_stops_the_deploy(self):
         p = self.snapshot(FILES[:-1] + ARCHIVED, PG_DUMP_FAIL='1')
