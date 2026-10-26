@@ -1,0 +1,10 @@
+{"type":"session","version":4,"id":"once-88563890-8c70-4567-927c-86234c2f9157","createdAt":1793023680213,"cwd":"/allrice/journal-fixture","isSeeded":false,"delegationDepth":0}
+{"type":"agent/inbox/spliced","seq":0,"time":1793023680218,"data":{"target":"next-turn","start":0,"inserted":[{"content":[{"type":"text","text":"Initialize isolated once control. No business execution."}],"source":{"kind":"user"},"role":"user","id":"512b334e-2a93-4d56-adb5-7549194371cb"}]}}
+{"type":"turn/start","seq":1,"time":1793023680219,"data":{"turn":1}}
+{"type":"agent/inbox/spliced","seq":2,"time":1793023680219,"data":{"target":"next-turn","start":0,"removedCount":1,"inserted":[]}}
+{"type":"turn/end","seq":3,"time":1793023680220,"data":{"turn":1,"reason":{"kind":"blocked"}}}
+{"type":"agent/inbox/spliced","seq":4,"time":1793023699995,"data":{"target":"next-turn","start":0,"inserted":[{"content":[{"type":"text","text":"[SCHEDULE REMINDER]\nThis is a scheduled message from the user\nschedule_id_json: \"schedule-3cab24be-1f2b-45d4-a349-9f5ffa85ce0a\"\noccurrence_at: 2026-10-26T14:08:19.992Z\nreminder_prompt_json: \"Synthetic schedule control only. Never execute business work.\""}],"source":{"kind":"schedule"},"role":"user","id":"982d9c4f-460f-4371-8f71-44a316d20043"}]}}
+{"type":"turn/start","seq":5,"time":1793023699995,"data":{"turn":2}}
+{"type":"agent/inbox/spliced","seq":6,"time":1793023699995,"data":{"target":"next-turn","start":0,"removedCount":1,"inserted":[]}}
+{"type":"turn/end","seq":7,"time":1793023699997,"data":{"turn":2,"reason":{"kind":"blocked"}}}
+{"type":"session/end-seed","seq":8,"time":1793023700182,"data":{}}

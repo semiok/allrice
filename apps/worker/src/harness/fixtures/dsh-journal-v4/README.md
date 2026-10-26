@@ -25,10 +25,40 @@ installed runtime with the tools it was recorded with, recovers it, continues
 it, and recovers it again in a new process. It requires exactly one corpus per
 readable version (`readsFrom` to `current`).
 
+## Schedule control partitions (`contract-<n>/control/`)
+
+A schedule control partition persists in two places: the DSH journals of its
+control Sessions under the partition's stateRoot, and the SQL rows its
+controller reads through the store. `control/` freezes both, one partition per
+control profile, as a release left them after a cold restore: the journals
+(normalized like the chat corpus) and `<scenario>/store.json`, what the
+production SQL store returned to the next writer (controls, stored Schedule
+task values and the workspace unit; the stateRoot is normalized the same way).
+`control/manifest.json` records the capture, each partition's reference (the
+artifact it was born under) and the SHA-256 of every file.
+
+| Scenario    | Captured state                                                                                                  |
+| ----------- | --------------------------------------------------------------------------------------------------------------- |
+| `once`      | Two ready controls: one task delivered under a live Host, one due only after the capture; closed, cold restored |
+| `recurring` | One `every 60s` task delivered once; closed, cold restored                                                      |
+
+`apps/worker/test/p25/dsh-control-journal-replay.test.ts` installs each
+partition under a fresh stateRoot and reads every control journal
+(`verifyNativeOnceControlHistory`). It then restores the real controller and
+public Schedule Host, loaded from this tree's measured primary, over an
+in-memory copy of the store: the due once task and the missed recurring
+occurrence are delivered exactly once on the frozen journals, and a new process
+reads back what was appended and delivers nothing again. It requires a control
+corpus in every `contract-<n>/`.
+
 - **Raising `current`** (a breaking change): run `pnpm dsh:journal-contract -u`
   to add the new descriptor, commit the runtime, then capture a corpus with
   `TSX_TSCONFIG_PATH=tsconfig.base.json pnpm exec tsx scripts/acceptance/runtime/capture-dsh-journal-v4.ts`.
-  It writes `contract-<current>/` and refuses an existing directory.
+  It writes `contract-<current>/` and refuses an existing directory. Then
+  capture its control partitions against the fixture database with
+  `ALLRICE_CAPTURE_CONTROL_CORPUS=1 ALLRICE_TEST_DATABASE_URL=postgres://a123@127.0.0.1:5432/allrice_b2 pnpm exec vitest run apps/worker/test/p25/dsh-control-journal-capture.test.ts`
+  (about two minutes of real timers). It writes `contract-<current>/control/`
+  and refuses an existing directory.
 - **Raising `readsFrom`**: delete the `contract-<n>/` directories below it and
   run `pnpm dsh:journal-contract -u`, which drops their descriptors.
 

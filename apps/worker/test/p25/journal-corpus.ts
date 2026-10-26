@@ -13,7 +13,8 @@ import type { BootstrapCoverageQuery } from '@allrice/contracts';
 import type { DshNotification } from '../../src/harness/dsh-protocol-client.js';
 
 /** Shared by scripts/acceptance/runtime/capture-dsh-journal-v4.ts and the
- * replay test of the DSH journal contract corpus (MET-221). Captured corpora
+ * replay test of the DSH journal contract corpus (MET-221), and by the schedule
+ * control corpus (control-corpus.ts). Captured corpora
  * are frozen; a replay reads every fact it needs from the manifest. */
 export const corpusRoot = resolve(
   import.meta.dirname,
@@ -102,7 +103,7 @@ export async function captureSessions(
 /** Install frozen files under a disposable root at the cwd DSH will derive. */
 export async function installSessions(
   corpus: string,
-  scenario: CorpusScenario,
+  scenario: Pick<CorpusScenario, 'id' | 'files'>,
   root: string,
 ) {
   for (const file of scenario.files) {
