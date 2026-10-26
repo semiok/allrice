@@ -123,6 +123,7 @@ import type postgres from 'postgres';
 import { DataAccessError } from '../data.ts';
 import { getDatabase } from '../core/client.ts';
 import { wakeNativeQuestionWaits } from '../task-native-wait.ts';
+import { notifyJobReady } from './queue-ready.ts';
 import { resumeManagedMcpConnections } from '../mcp-managed-connections.ts';
 import {
   isTerminalJobStatus,
@@ -1444,6 +1445,7 @@ async function enqueueRunInTransaction(
   `;
   const job = jobs[0];
   if (!job) throw new Error('job creation failed');
+  await notifyJobReady(transaction, availableAt);
   if (admission.kind === 'experience')
     await bindExperienceRun(
       transaction,
@@ -1536,6 +1538,9 @@ async function enqueueRunInTransaction(
       expectedTurnId !== null &&
       expectedGeneration !== null
     ) {
+      const answersQuestion = options.conversationDelivery.message.startsWith(
+        'allrice:user-question:v1:',
+      );
       await transaction`
         insert into allrice_conversation_commands (
           organization_id, workspace_id, session_id, owner_id,
@@ -1547,9 +1552,11 @@ async function enqueueRunInTransaction(
           'steer', ${options.conversationDelivery.clientUserMessageId},
           ${expectedGeneration}, ${expectedTurnId},
           ${options.conversationDelivery.message},
-          ${options.conversationDelivery.message.startsWith('allrice:user-question:v1:') ? 'ask_user' : 'steer_current'}
+          ${answersQuestion ? 'ask_user' : 'steer_current'}
         )
       `;
+      // A parked question resumes from maintainQueue, so tick now.
+      if (answersQuestion) await notifyJobReady(transaction);
     }
   }
   if (options.skillBinding) {
@@ -3257,6 +3264,7 @@ export async function failJob(input: {
             updated_at = now()
         where id = ${job.id}
       `;
+      await notifyJobReady(transaction, availableAt);
       await transaction`
         update allrice_runs set state = 'queued', updated_at = now()
         where id = ${job.run_id}

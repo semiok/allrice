@@ -22,6 +22,7 @@ import { getDatabase } from '../core/client.ts';
 import { lockWorkspaceStorageQuota } from '../core/storage-quota.ts';
 import { refreshTaskClockForJob } from '../task-clock.ts';
 import { enqueueRun } from './queue.ts';
+import { notifyJobReady } from './queue-ready.ts';
 import { resolveWorkspaceId } from '../workspace/service.ts';
 
 type TransactionSql = postgres.TransactionSql;
@@ -912,6 +913,7 @@ export async function decideWorkflowApproval(
         update allrice_jobs set status = 'queued', available_at = now(), updated_at = now()
         where run_id = ${run.run_id} and status = 'waiting_approval'
       `;
+      await notifyJobReady(transaction);
       await transaction`
         update allrice_runs set state = 'queued', updated_at = now() where id = ${run.run_id}
       `;

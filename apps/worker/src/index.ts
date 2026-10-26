@@ -30,6 +30,8 @@ import {
   claimNextJob,
   closeDatabase,
   maintainQueue,
+  listenForReadyJobs,
+  probeReadyJobs,
   collectPendingExperienceEvidence,
   recoverExperienceOccurrences,
   dispatchExperienceOccurrence,
@@ -58,6 +60,7 @@ import {
   probeDshCodexProvider,
 } from './codex-auth-broker.js';
 import { executeClaimedJob } from './runtime.js';
+import { createCoalescedTick, startQueueWakeups } from './queue-wakeup.js';
 import {
   installDshNativeArtifact,
   checkedDshNativeLaunch,
@@ -127,6 +130,23 @@ const pollIntervalMs = integerSetting(
   1000,
   100,
   60_000,
+);
+// MET-223: LISTEN/NOTIFY wakeups only add earlier ticks; '0' falls back to
+// the poll alone. The poll keeps its interval because the same tick also runs
+// maintainQueue (lease expiry, retry release) and covers lost announcements.
+const queueWakeupEnabled =
+  integerSetting('ALLRICE_WORKER_QUEUE_WAKEUP', 1, 0, 1) === 1;
+const queueWakeupProbeMs = integerSetting(
+  'ALLRICE_WORKER_QUEUE_WAKEUP_PROBE_MS',
+  30_000,
+  1_000,
+  600_000,
+);
+const queueWakeupTimeoutMs = integerSetting(
+  'ALLRICE_WORKER_QUEUE_WAKEUP_TIMEOUT_MS',
+  10_000,
+  1_000,
+  120_000,
 );
 const leaseMs = integerSetting(
   'ALLRICE_WORKER_LEASE_MS',
@@ -229,7 +249,6 @@ const runProducer = workerProducerRunner(producerLifecycle, () => stopping);
 // Idle DSH close writes durable close receipts; never start one unready.
 getHarnessRouter().setIdleCloseGate(() => databaseReady && !stopping);
 const maintenanceReportingAborter = new AbortController();
-let queueTask: Promise<void> | null = null;
 let automationTask: Promise<void> | null = null;
 let platformEmployeeTestTask: Promise<void> | null = null;
 const activeExecutions = new Set<Promise<void>>();
@@ -485,6 +504,7 @@ const server = createServer(async (request, response) => {
         nativeCloseIdentity,
         nativeArtifact,
         nativeJournalContract,
+        queueWakeup: queueWakeup?.status() ?? { state: 'disabled' },
         ...(nativeOnceControl.enabled
           ? { nativeOnceControl: nativeOnceStatus }
           : {}),
@@ -527,12 +547,12 @@ async function runClaimed(jobId: string, leaseToken: string) {
   }
 }
 
+const queueTicks = createCoalescedTick(
+  runQueueTick,
+  () => !stopping && databaseReady,
+);
 function tick() {
-  if (queueTask || stopping || !databaseReady) return queueTask;
-  queueTask = runQueueTick().finally(() => {
-    queueTask = null;
-  });
-  return queueTask;
+  return queueTicks.tick();
 }
 async function runQueueTick() {
   try {
@@ -557,7 +577,11 @@ async function runQueueTick() {
                     error instanceof Error ? error.message : 'unknown error',
                 });
               })
-              .finally(() => activeExecutions.delete(execution));
+              .finally(() => {
+                activeExecutions.delete(execution);
+                // A freed slot or a released follow-up need not wait a poll.
+                queueTicks.request();
+              });
             activeExecutions.add(execution);
           },
         });
@@ -722,10 +746,12 @@ try {
   throw error;
 }
 await refreshCodexProviderStatus();
-const readinessTimer = setInterval(
-  () => void refreshReadiness(),
-  readinessIntervalMs,
-);
+const readinessTimer = setInterval(async () => {
+  const wasReady = databaseReady;
+  await refreshReadiness();
+  // MET-223: a resubscription sweep is dropped while the database is unready.
+  if (!wasReady && databaseReady) queueTicks.request();
+}, readinessIntervalMs);
 const codexProviderStatusTimer = setInterval(
   () => void refreshCodexProviderStatus(),
   codexProviderStatusIntervalMs,
@@ -753,6 +779,19 @@ const codexAuthorizationTimer = setInterval(
 );
 void tick();
 void automationTick();
+const queueWakeup = queueWakeupEnabled
+  ? startQueueWakeups({
+      listen: (onReady, onListen, { signal }) =>
+        listenForReadyJobs(onReady, onListen, {
+          signal,
+          timeoutMs: queueWakeupTimeoutMs,
+        }),
+      probe: probeReadyJobs,
+      wake: () => queueTicks.request(),
+      probeIntervalMs: queueWakeupProbeMs,
+      probeTimeoutMs: queueWakeupTimeoutMs,
+    })
+  : null;
 maintenanceReportingTick();
 void platformEmployeeTestTick();
 codexAuthorizationTick();
@@ -795,6 +834,7 @@ function shutdown(signal: string) {
     stopping = true;
     const fenceTasks = [
       { name: 'pressure_log', run: stopPressureLog },
+      { name: 'queue_wakeup', run: () => queueWakeup?.stop() },
       { name: 'mcp_abort', run: () => mcpDiscoveryAborter.abort() },
       {
         name: 'maintenance_abort',
@@ -836,7 +876,7 @@ function shutdown(signal: string) {
             // A claim already awaiting SQL can publish its execution after the
             // first abort snapshot. Drain that tick, then abort/wait the new set.
             const results: PromiseSettledResult<unknown>[] =
-              await Promise.allSettled([queueTask]);
+              await Promise.allSettled([queueTicks.current()]);
             results.push(
               ...(await Promise.allSettled(
                 [...activeAborters].map((abort) =>

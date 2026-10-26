@@ -28,6 +28,7 @@ import {
   bindJobNativeSession,
 } from './execution/queue.ts';
 import { nativeBindingDescriptor } from './native-session-binding.fixture.ts';
+import { JOB_READY_CHANNEL } from './execution/queue-ready.ts';
 import { createEmployeeAdministrationFixture } from './employee-administration.fixture.ts';
 import { buildEmployeeRuntimePackage } from './platform-employees/runtime-package.ts';
 import { newNativeGeneration } from './conversation/native-root-origin.ts';
@@ -496,7 +497,15 @@ suite('MET153 durable native waits and queue authority', () => {
     ).toMatchObject([
       { state: 'rejected', error_code: 'QUESTION_ANSWER_INVALID' },
     ]);
+    // MET-223: the answer itself announces work, so an idle Worker resumes
+    // the parked Run now; the placeholder's own announcement is 24 h out.
+    const announced: string[] = [];
+    const subscription = await f.db.listen(JOB_READY_CHANNEL, (payload) =>
+      announced.push(payload),
+    );
     await submit(checkpoint.questionId);
+    await vi.waitFor(() => expect(announced).toContain(''));
+    await subscription.unlisten();
     await maintainQueue();
     await maintainQueue();
     const replacement = randomUUID(),
