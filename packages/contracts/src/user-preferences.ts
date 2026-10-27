@@ -16,6 +16,33 @@ export const CollapseTimingSchema = z.enum(['completion', 'next-input']);
 export const AppearanceSchema = z.enum(['light', 'dark', 'system']);
 export type Appearance = z.infer<typeof AppearanceSchema>;
 
+// MET-210 PR2 (263c5b0f): reuse these contracts when adding preference writers.
+export const QuestionWaitSchema = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('default') }).strict(),
+  z
+    .object({
+      mode: z.literal('timed'),
+      seconds: z.number().int().min(1).max(2_147_483),
+    })
+    .strict(),
+  z.object({ mode: z.literal('forever') }).strict(),
+]);
+export type QuestionWait = z.infer<typeof QuestionWaitSchema>;
+export const SubagentPreferencesSchema = z
+  .object({
+    maxDepth: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    maxActive: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+  })
+  .strict();
+export type SubagentPreferences = z.infer<typeof SubagentPreferencesSchema>;
+export const NativePreferencesSnapshotSchema = z
+  .object({
+    version: z.literal(1),
+    questionWait: QuestionWaitSchema,
+    subagents: SubagentPreferencesSchema,
+  })
+  .strict();
+
 export const UserPreferencesInputSchema = z
   .object({
     streamingOutput: z.boolean().optional(),
