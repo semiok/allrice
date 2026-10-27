@@ -161,7 +161,11 @@ export async function mainP27CodexAssistants(
     maxAttempts: 1,
     applicationRetries: 0,
     executionLimit: 2,
-    applicationLimits: P27_CODEX_ASSISTANT_LIMITS,
+    applicationLimits: {
+      ...P27_CODEX_ASSISTANT_LIMITS,
+      timeoutMs: null,
+      timeoutNote: '由平台模型配置决定，执行时解析',
+    },
     scope: P27_CODEX_ASSISTANTS_SCOPE,
     monetaryCost: 'not_applicable_subscription_not_free_or_invoice',
     providerAllowance: { status: 'not_queried', meansAvailable: false },

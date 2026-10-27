@@ -130,7 +130,11 @@ export async function mainP27CodexWorker(argsInput = process.argv.slice(2)) {
     maxAttempts: 1,
     applicationRetries: 0,
     executionLimit: 1,
-    applicationLimits: P27_CODEX_ORDINARY_LIMITS,
+    applicationLimits: {
+      ...P27_CODEX_ORDINARY_LIMITS,
+      timeoutMs: null,
+      timeoutNote: '由平台模型配置决定，执行时解析',
+    },
     limitCaveat: P27_CODEX_LIMIT_CAVEAT,
     costCaveat: P27_CODEX_COST_CAVEAT,
     credentialBytesReadByDriver: false,
