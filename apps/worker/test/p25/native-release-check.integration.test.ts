@@ -122,14 +122,14 @@ suite.each(['0217_brand_content_feedback.sql', undefined] as const)(
         values (${NATIVE_JOURNAL_CONTRACT_KEY},${tx.json(value as never)},now())
         on conflict (key) do update set value=excluded.value`;
           await set({ highWater: 2 });
-          await expect(check(tx)).rejects.toThrow(
-            'DSH_NATIVE_JOURNAL_CONTRACT_AHEAD',
-          );
+          await expect(
+            check(tx as unknown as typeof fixture.db),
+          ).rejects.toThrow('DSH_NATIVE_JOURNAL_CONTRACT_AHEAD');
           if (throughMigration) {
             await set({ highWater: 1, extra: true });
-            await expect(check(tx)).rejects.toThrow(
-              'DSH_NATIVE_JOURNAL_CONTRACT_INVALID',
-            );
+            await expect(
+              check(tx as unknown as typeof fixture.db),
+            ).rejects.toThrow('DSH_NATIVE_JOURNAL_CONTRACT_INVALID');
           } else {
             // 0218 rejects malformed values before a release checker can observe them.
             await expect(
