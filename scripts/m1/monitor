@@ -283,6 +283,8 @@ def derive_m1(cfg):
     wenv = (web or {}).get('EnvironmentVariables', {})
     kenv = (worker or {}).get('EnvironmentVariables', {})
     dotenv = env_file(cfg['envFile'])
+    args = (worker or {}).get('ProgramArguments') or [None]
+    if args[0] and os.path.basename(args[0]) == 'with-env': args = args[2:]
     fill = {
         'webLabel': (web or {}).get('Label'),
         'workerLabel': (worker or {}).get('Label'),
@@ -295,7 +297,7 @@ def derive_m1(cfg):
         'colimaProfile': kenv.get('ALLRICE_CLOUD_PROFILE'),
         'officeUrl': kenv.get('ALLRICE_OFFICE_RENDERER_URL'),
         'release': (worker or {}).get('WorkingDirectory'),
-        'node': ((worker or {}).get('ProgramArguments') or [None])[0],
+        'node': args[0],
         'cloudArchitecture': kenv.get('ALLRICE_CLOUD_ARCHITECTURE', ''),
     }
     for k, v in fill.items():

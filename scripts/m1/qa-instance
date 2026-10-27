@@ -149,9 +149,11 @@ cmd_up() {
   psql -h 127.0.0.1 -d postgres -Atc "select 1 from pg_database where datname='$db'" | grep -q 1 && die "database $db already exists"
   createdb -h 127.0.0.1 "$db"
 
-  /usr/bin/python3 - "$task" "$dir" "$db" "$web" "$worker" "$sha" "$artifact" <<'PY'
+  /usr/bin/python3 - "$task" "$dir" "$db" "$web" "$worker" "$sha" "$artifact" "$(dev_plist web)" "$(dev_plist worker)" <<'PY'
 import json, os, plistlib, re, sys, uuid
-task, d, db, web, worker, sha, art = sys.argv[1:]
+task, d, db, web, worker, sha, art, web_src, worker_src = sys.argv[1:]
+def retired_setting(key):
+    return key in ('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', 'ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS') or key.startswith(('ALLRICE_DSH_RETAINED_', 'ALLRICE_DSH_ORIGIN_READER_'))
 home = os.path.expanduser('~'); rel = f'{d}/release'; L = f'{d}/.local'
 for sub in ('storage', 'executions', 'dsh-runtime', 'native-once-control', 'native-recurring-control', 'project-preview'):
     os.makedirs(f'{L}/{sub}', mode=0o700, exist_ok=True); os.chmod(f'{L}/{sub}', 0o700)
@@ -159,6 +161,8 @@ dburl = f'postgres://{os.environ.get("USER","snow")}@127.0.0.1:5432/{db}'
 # .env: shared Dev values with this instance's database, ports and storage.
 out = []
 for line in open(f'{home}/allrice-dev/.env').read().splitlines():
+    key = re.match(r'^\s*(?:export\s+)?([A-Z0-9_]+)\s*=', line)
+    if key and retired_setting(key[1]): continue
     m = re.match(r'^([A-Z0-9_]+)=(.*)$', line)
     if not m: out.append(line); continue
     k, v = m.groups()
@@ -170,8 +174,7 @@ once = {'artifactId': art, 'profileId': 'allrice-once-control-v1', 'storageId': 
 rec = {'artifactId': art, 'profileId': 'allrice-recurring-control-v1', 'storageId': f'allrice-qa-{task}-recurring-{uuid.uuid4().hex[:8]}', 'stateRoot': f'{L}/native-recurring-control'}
 common = {
     'DATABASE_URL': dburl, 'ALLRICE_RELEASE_SHA': sha,
-    'ALLRICE_DSH_NATIVE_ARTIFACT_ID': art, 'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID': art,
-    'ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS': json.dumps([art]),
+    'ALLRICE_DSH_NATIVE_ARTIFACT_ID': art,
     'ALLRICE_NATIVE_ONCE_REFERENCE': json.dumps(once, separators=(',', ':')),
     'ALLRICE_NATIVE_RECURRING_REFERENCE': json.dumps(rec, separators=(',', ':')),
     'ALLRICE_DSH_CORDIS_CONFIG': f'{rel}/apps/worker/dsh/allrice-restricted.cordis.yml',
@@ -184,14 +187,18 @@ common = {
     # No sealed build identity for throwaway builds.
     'ALLRICE_DEV_MAINTENANCE_ENABLED': '0',
 }
-for role in ('web', 'worker'):
-    src = plistlib.load(open(f'{home}/Library/LaunchAgents/ai.bplabs.allrice-dev-{role}.plist', 'rb'))
+for role, source in (('web', web_src), ('worker', worker_src)):
+    src = plistlib.load(open(source, 'rb'))
     env = dict(src['EnvironmentVariables']); env.pop('ALLRICE_LOCAL_PORTAL', None)
+    for key in list(env):
+        if retired_setting(key):
+            del env[key]
     env.update(common)
     if role == 'web': env['ALLRICE_WEB_PORT'] = web
     else:
         env.update({'ALLRICE_WORKER_PORT': worker, 'ALLRICE_EXECUTION_ROOT': f'{L}/executions', 'ALLRICE_WORKER_CONCURRENCY': '2'})
-    node = src['ProgramArguments'][0]
+    args = src['ProgramArguments']
+    node = args[2] if os.path.basename(args[0]) == 'with-env' else args[0]
     script = f'{rel}/apps/web/server.mjs' if role == 'web' else f'{rel}/apps/worker/dist/index.js'
     label = f'ai.bplabs.allrice-qa-{task}-{role}'
     plist = {'Label': label, 'ProgramArguments': [node, f'--env-file={d}/.env', script] + (['--hostname', '127.0.0.1', '--port', web] if role == 'web' else []),

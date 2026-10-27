@@ -55,9 +55,11 @@ case "$mode" in
   *) usage ;;
 esac
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-[ -f "$PLIST" ] || die "missing $PLIST" 2
-DB=$(penv "$PLIST" DATABASE_URL); PORT=$(penv "$PLIST" ALLRICE_WORKER_PORT)
-[ -n "$DB" ] && [ -n "$PORT" ] || die "no DATABASE_URL or ALLRICE_WORKER_PORT in $PLIST" 2
+# Parked plists supply configuration only; restart paths still require a live LaunchAgent.
+CONFIG_PLIST=$PLIST; [ "$mode" != dev ] || CONFIG_PLIST=$(dev_plist worker)
+[ -f "$CONFIG_PLIST" ] || die "missing $CONFIG_PLIST" 2
+DB=$(penv "$CONFIG_PLIST" DATABASE_URL); PORT=$(penv "$CONFIG_PLIST" ALLRICE_WORKER_PORT)
+[ -n "$DB" ] && [ -n "$PORT" ] || die "no DATABASE_URL or ALLRICE_WORKER_PORT in $CONFIG_PLIST" 2
 # Only processes on this machine can be checked, so only a database on it is accepted.
 DBNAME=$("$M1_PY" -c 'import sys,urllib.parse as u; p=u.urlsplit(sys.argv[1])
 if p.hostname not in (None,"127.0.0.1","localhost"): sys.exit(1)

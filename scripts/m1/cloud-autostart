@@ -23,7 +23,7 @@ here=$(cd "$(dirname "$0")" && pwd -P)
 . "$here/lib.sh"
 export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 LABEL=ai.bplabs.allrice-cloud-autostart
-WORKER_PLIST="$HOME/Library/LaunchAgents/ai.bplabs.allrice-dev-worker.plist"
+WORKER_PLIST=$(dev_plist worker)
 CONTAINER=allrice-office-renderer
 say() { echo "[cloud-autostart $(date '+%F %T')] $*"; }
 
