@@ -76,13 +76,6 @@ export async function readApprovedNativeDiagnosticJournal(
       execution.distributionGeneration !== pin.distributionGeneration
     )
       throw Error('reader_scope');
-    // Archived MET-195 transitions and origin readers never select a reader.
-    if (
-      execution.executorTransitionDigest !== undefined ||
-      execution.originReaderApprovalDigest !== undefined ||
-      pin.originReaderApprovalDigest !== undefined
-    )
-      throw Error('reader_identity');
     const launch = currentDshNativeLaunch(pin.profileId);
     if (launch.generation !== pin.distributionGeneration)
       throw Error('reader_identity');
@@ -440,7 +433,6 @@ export async function readNativeRunDiagnostics(
         slice.binding.contextId,
         slice.binding.artifactId,
         slice.binding.rootOriginDigest ?? null,
-        slice.binding.originReaderApprovalDigest ?? null,
         slice.execution.nativeSessionId,
         slice.execution.storageContextKey,
         slice.execution.storageNamespace,
@@ -448,8 +440,6 @@ export async function readNativeRunDiagnostics(
         slice.execution.artifactManifestDigest,
         slice.execution.distributionGeneration,
         slice.execution.profileId,
-        slice.execution.originReaderApprovalDigest ?? null,
-        slice.execution.executorTransitionDigest ?? null,
       ]);
       let journal = journals.get(key);
       if (!journal) {

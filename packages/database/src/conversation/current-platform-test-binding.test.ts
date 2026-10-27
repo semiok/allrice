@@ -1,7 +1,7 @@
+const oldGeneration = 'dsh-0.1.5-rc.3-a4c74a9' as const;
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  DSH_MISSING_FROZEN_GENERATION,
   localCommandToolchainImageV1,
   PlatformEmployeeDefinitionSchema,
   PlatformEmployeeRuntimeProfileSchema,
@@ -121,8 +121,7 @@ function reseal(pkg: EmployeeRuntimePackage) {
 }
 function source(
   generation:
-    | typeof newNativeGeneration
-    | typeof DSH_MISSING_FROZEN_GENERATION = newNativeGeneration,
+    typeof newNativeGeneration | typeof oldGeneration = newNativeGeneration,
   format: 'empty' | 'plain' | 'bundled' = 'plain',
   purpose: PlatformTestPurpose = 'platform_preview',
 ): PlatformTestExecutionSourceInput {
@@ -263,10 +262,7 @@ function reverseObjectKeys(value: unknown): unknown {
 }
 
 describe('platform test source compatibility through the actual package builder', () => {
-  for (const generation of [
-    newNativeGeneration,
-    DSH_MISSING_FROZEN_GENERATION,
-  ] as const)
+  for (const generation of [newNativeGeneration] as const)
     for (const format of ['empty', 'plain', 'bundled'] as const)
       for (const purpose of [
         'platform_preview',
@@ -306,7 +302,7 @@ describe('platform test source compatibility through the actual package builder'
 
   it('restores publisher checksum semantics after JSONB reordering without changing origin or binding', () => {
     const input = frozen(
-      source(DSH_MISSING_FROZEN_GENERATION, 'bundled', 'method_candidate'),
+      source(newNativeGeneration, 'bundled', 'method_candidate'),
     );
     const binding = freezePlatformTestExecutionBinding(input);
     const reordered = reverseObjectKeys(
@@ -318,8 +314,10 @@ describe('platform test source compatibility through the actual package builder'
   });
 
   it('rejects profile/package generation disagreement before translating to current', () => {
-    const s = source(DSH_MISSING_FROZEN_GENERATION);
-    profile(s).distributionGeneration = newNativeGeneration;
+    const s = source(newNativeGeneration);
+    profile(s).runtimePackage!.runtimeManifest.distributionGeneration =
+      oldGeneration;
+    resealSource(s);
     expect(() => validatePlatformTestExecutionSource(s)).toThrow(
       'CURRENT_PLATFORM_TEST_GENERATION_MISMATCH',
     );
@@ -335,13 +333,13 @@ describe('platform test source compatibility through the actual package builder'
 
   it('does not inherit another historical generation merely because its package schema parses', () => {
     const s = source();
-    profile(s).distributionGeneration = 'dsh-0.1.1-rc.2-b150a55';
+    Object.assign(profile(s), {
+      distributionGeneration: 'dsh-0.1.1-rc.2-b150a55',
+    });
     profile(s).runtimePackage!.runtimeManifest.distributionGeneration =
       'dsh-0.1.1-rc.2-b150a55';
     resealSource(s);
-    expect(() => validatePlatformTestExecutionSource(s)).toThrow(
-      'CURRENT_EXECUTION_SOURCE_GENERATION_UNSUPPORTED',
-    );
+    expect(() => validatePlatformTestExecutionSource(s)).toThrow();
   });
 
   it('rejects absent packages rather than making a synthetic package from a platform definition', () => {
@@ -500,11 +498,7 @@ describe('independent test birth and immutable readback', () => {
     },
   );
   it('new test IDs use the new approved artifact while the old test keeps its frozen executor', () => {
-    const s = source(
-      DSH_MISSING_FROZEN_GENERATION,
-      'plain',
-      'method_candidate',
-    );
+    const s = source(newNativeGeneration, 'plain', 'method_candidate');
     const old = frozen(s),
       before = freezePlatformTestExecutionBinding(old);
     const nextArtifact = `sha256:${'c'.repeat(64)}`;

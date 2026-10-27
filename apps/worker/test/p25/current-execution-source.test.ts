@@ -3,7 +3,6 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import {
   EmployeeKernelRequestSchema,
   InternalKernelRequestSchema,
-  DSH_MISSING_FROZEN_GENERATION,
 } from '@allrice/contracts';
 import {
   source,
@@ -25,9 +24,7 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 function fixture(
   purpose: PlatformTestPurpose = 'platform_preview',
-  generation:
-    | typeof newNativeGeneration
-    | typeof DSH_MISSING_FROZEN_GENERATION = DSH_MISSING_FROZEN_GENERATION,
+  generation: typeof newNativeGeneration = newNativeGeneration,
 ) {
   const own = scope(),
     s = source(generation, 'bundled', purpose);
@@ -90,7 +87,7 @@ it.each([
   'method_candidate',
   'experience_validation',
 ] as const)(
-  '%s selects the approved executor while retaining its original legacy package and synthetic version',
+  '%s selects the approved executor while retaining its original current package and synthetic version',
   (purpose) => {
     const f = fixture(purpose),
       original = JSON.stringify(f.input);

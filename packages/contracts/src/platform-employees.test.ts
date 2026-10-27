@@ -1,5 +1,5 @@
+import { DSH_INSTALLED_DISTRIBUTION } from './dsh-distribution.generated.ts';
 import { describe, expect, it } from 'vitest';
-import { DSH_MISSING_FROZEN_GENERATION } from './dsh-distribution.generated.ts';
 import {
   developmentWorkflowToolNames,
   employeeToolConfigurationErrors,
@@ -82,6 +82,7 @@ describe('platform employee production contract', () => {
     const profile = PlatformEmployeeRuntimeProfileSchema.parse({
       schemaVersion: 1,
       harness: 'dsh',
+      distributionGeneration: DSH_INSTALLED_DISTRIBUTION.generation,
       employeeKey: 'rice',
       provider: 'openai-codex',
       model: 'gpt-5.6-luna',
@@ -96,7 +97,9 @@ describe('platform employee production contract', () => {
       securityPolicy: riceDefinition.securityPolicy,
     });
     expect(profile.harness).toBe('dsh');
-    expect(profile.distributionGeneration).toBe(DSH_MISSING_FROZEN_GENERATION);
+    expect(profile.distributionGeneration).toBe(
+      DSH_INSTALLED_DISTRIBUTION.generation,
+    );
     expect(profile.approvedPluginIds).toContain(
       '@deepseek-ai/dsh-repeat-tool-reminder',
     );

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import {
   allRiceToolManifest,
-  DSH_MISSING_FROZEN_GENERATION,
+  DSH_INSTALLED_DISTRIBUTION,
   EmployeeDefinitionSchema,
   EmployeeExecutionSnapshotSchema,
   UuidSchema,
@@ -14,19 +14,13 @@ import {
 } from '../platform-employees/runtime-package.ts';
 import { frozenPackageSkills } from '../skill-bundles.ts';
 
-export const newNativeGeneration = 'dsh-0.2.1-rc.2-687f282' as const;
+export const newNativeGeneration = DSH_INSTALLED_DISTRIBUTION.generation;
 export const employeeExecutionSourceFamily =
   'allrice_declarative_employee_v1' as const;
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 
 import { nativeRootDigest } from './native-identity-digest.ts';
 export { nativeRootDigest } from './native-identity-digest.ts';
-import { NativeRootOriginV1Schema } from './native-origin-v1.ts';
-import {
-  ExecutorTransitionRefSchema,
-  type ExecutorTransitionRef,
-} from './native-executor-transition-contract.ts';
-
 export const CurrentEmployeeExecutionTupleSchema = z
   .object({
     artifactId: digest,
@@ -61,13 +55,6 @@ export const EmployeeExecutionSourceSchema = z
       .extend({
         packageSchema: z.union([z.literal(1), z.literal(2)]),
         packageChecksum: digest,
-        declaredGeneration: z.literal(DSH_MISSING_FROZEN_GENERATION),
-      })
-      .strict(),
-    sourceBase
-      .extend({
-        packageSchema: z.union([z.literal(1), z.literal(2)]),
-        packageChecksum: digest,
         declaredGeneration: z.literal(newNativeGeneration),
       })
       .strict(),
@@ -87,9 +74,7 @@ export type EmployeeExecutionSource = z.infer<
 >;
 const sourceVariant = z.enum([
   'definition_only',
-  'legacy_published_package_v1',
   'current_published_package_v1',
-  'legacy_published_package_v2',
   'current_published_package_v2',
 ]);
 export type EmployeeExecutionSourceVariant = z.infer<typeof sourceVariant>;
@@ -98,13 +83,9 @@ function variantFor(
   source: EmployeeExecutionSource,
 ): EmployeeExecutionSourceVariant {
   if (source.packageSchema === null) return 'definition_only';
-  if (source.packageSchema === 1)
-    return source.declaredGeneration === newNativeGeneration
-      ? 'current_published_package_v1'
-      : 'legacy_published_package_v1';
-  return source.declaredGeneration === newNativeGeneration
-    ? 'current_published_package_v2'
-    : 'legacy_published_package_v2';
+  return source.packageSchema === 1
+    ? 'current_published_package_v1'
+    : 'current_published_package_v2';
 }
 function sourcePolicyDigest(variant: EmployeeExecutionSourceVariant) {
   // Policy identity only; no Run, lease, mutable catalog or business checksum.
@@ -115,11 +96,7 @@ function sourcePolicyDigest(variant: EmployeeExecutionSourceVariant) {
     packageSchema:
       variant === 'definition_only' ? null : variant.endsWith('_v1') ? 1 : 2,
     declaredGeneration:
-      variant === 'definition_only'
-        ? null
-        : variant.startsWith('legacy_')
-          ? DSH_MISSING_FROZEN_GENERATION
-          : newNativeGeneration,
+      variant === 'definition_only' ? null : newNativeGeneration,
     executionGeneration: newNativeGeneration,
     profileId: 'restricted',
     validation: 'original-checksums-known-tools-reviewed-frozen-bundles-v1',
@@ -190,9 +167,7 @@ export function validateCurrentDeclarativeRuntimePackage(input: {
     'CURRENT_EXECUTION_SOURCE_PACKAGE_SCHEMA_UNSUPPORTED',
   );
   need(
-    pkg.runtimeManifest.distributionGeneration ===
-      DSH_MISSING_FROZEN_GENERATION ||
-      pkg.runtimeManifest.distributionGeneration === newNativeGeneration,
+    pkg.runtimeManifest.distributionGeneration === newNativeGeneration,
     'CURRENT_EXECUTION_SOURCE_GENERATION_UNSUPPORTED',
   );
   need(
@@ -416,7 +391,7 @@ const runScope = ownerScope
   .extend({ sessionId: UuidSchema, runId: UuidSchema })
   .strict();
 export type EmployeeRunExecutionScope = z.infer<typeof runScope>;
-const EmployeeRunExecutionBindingV1Schema = z
+export const EmployeeRunExecutionBindingSchema = z
   .object({
     schemaVersion: z.literal(1),
     kind: z.literal('current_employee_execution'),
@@ -440,34 +415,6 @@ const EmployeeRunExecutionBindingV1Schema = z
         message: 'CURRENT_EMPLOYEE_EXECUTION_BINDING_INVALID',
       });
   });
-export const EmployeeRunExecutionBindingSchema = z.union([
-  EmployeeRunExecutionBindingV1Schema,
-  z
-    .object({
-      ...EmployeeRunExecutionBindingV1Schema.shape,
-      schemaVersion: z.literal(2),
-      transition: ExecutorTransitionRefSchema,
-    })
-    .strict()
-    .superRefine((binding, context) => {
-      const { digest: expected, ...payload } = binding;
-      if (
-        nativeRootDigest(payload) !== expected ||
-        !equal(binding.sourcePolicy, policyFor(binding.source)) ||
-        !equal(binding.execution, binding.transition.target) ||
-        binding.originDigest !== binding.transition.originDigest ||
-        binding.scope.sessionId !== binding.transition.scope.contextId ||
-        binding.scope.organizationId !==
-          binding.transition.scope.organizationId ||
-        binding.scope.workspaceId !== binding.transition.scope.workspaceId ||
-        binding.scope.ownerId !== binding.transition.scope.ownerId
-      )
-        context.addIssue({
-          code: 'custom',
-          message: 'CURRENT_EMPLOYEE_EXECUTION_BINDING_INVALID',
-        });
-    }),
-]);
 export type EmployeeRunExecutionBinding = z.infer<
   typeof EmployeeRunExecutionBindingSchema
 >;
@@ -476,42 +423,30 @@ export type EmployeeRunExecutionBindingInput = {
   scope: EmployeeRunExecutionScope;
   source: EmployeeExecutionSourceInput;
   executionSnapshot: unknown;
-  /** Private committed SQL receipt only. Not a new origin or a model field. */
-  transition?: ExecutorTransitionRef;
 };
 /** Freeze once inside admission, alongside the unchanged execution_snapshot. */
 export function freezeEmployeeRunExecutionBinding(
   input: EmployeeRunExecutionBindingInput,
 ): EmployeeRunExecutionBinding {
   const scope = runScope.parse(input.scope);
-  const transition = input.transition
-    ? ExecutorTransitionRefSchema.parse(input.transition)
-    : undefined;
-  const origin = transition
-    ? z
-        .union([NativeRootOriginV1Schema, CurrentEmployeeChatOriginSchema])
-        .parse(input.origin)
-    : CurrentEmployeeChatOriginSchema.parse(input.origin);
+  const origin = CurrentEmployeeChatOriginSchema.parse(input.origin);
   need(
     origin.contextKind === 'chat' &&
       origin.profileId === 'restricted' &&
       origin.rootSeed === scope.sessionId &&
       origin.contextId === scope.sessionId &&
-      (origin.schemaVersion === 1 ||
-        equal(origin.scope, {
-          organizationId: scope.organizationId,
-          workspaceId: scope.workspaceId,
-          ownerId: scope.ownerId,
-        })),
+      equal(origin.scope, {
+        organizationId: scope.organizationId,
+        workspaceId: scope.workspaceId,
+        ownerId: scope.ownerId,
+      }),
     'CURRENT_EMPLOYEE_EXECUTION_SCOPE_MISMATCH',
   );
   const { source, sourcePolicy } = validateEmployeeExecutionSource(
     input.source,
   );
   need(
-    origin.schemaVersion === 2
-      ? sourcePolicy.family === origin.sourcePolicy.family
-      : source.declaredGeneration === newNativeGeneration,
+    sourcePolicy.family === origin.sourcePolicy.family,
     'CURRENT_EMPLOYEE_EXECUTION_FAMILY_MISMATCH',
   );
   const snapshot = EmployeeExecutionSnapshotSchema.parse(
@@ -549,23 +484,13 @@ export function freezeEmployeeRunExecutionBinding(
       ),
     'CURRENT_EMPLOYEE_EXECUTION_CAPABILITIES_MISMATCH',
   );
-  if (transition)
-    need(
-      transition.originDigest === nativeRootDigest(origin) &&
-        transition.scope.contextId === scope.sessionId &&
-        transition.scope.organizationId === scope.organizationId &&
-        transition.scope.workspaceId === scope.workspaceId &&
-        transition.scope.ownerId === scope.ownerId,
-      'CURRENT_EMPLOYEE_TRANSITION_SCOPE_MISMATCH',
-    );
   const payload = {
-    schemaVersion: transition ? (2 as const) : (1 as const),
-    ...(transition ? { transition } : {}),
+    schemaVersion: 1 as const,
     kind: 'current_employee_execution' as const,
     scope,
     originDigest: nativeRootDigest(origin),
     source,
-    execution: transition?.target ?? {
+    execution: {
       artifactId: origin.artifactId,
       generation: origin.distributionGeneration,
       profileId: origin.profileId,

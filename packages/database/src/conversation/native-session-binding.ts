@@ -5,7 +5,7 @@ import {
   EmployeeManifestSchema,
   PlatformEmployeeRuntimeProfileSchema,
   UuidSchema,
-  DSH_FROZEN_PROFILE_GENERATIONS,
+  DSH_INSTALLED_DISTRIBUTION,
 } from '@allrice/contracts';
 import {
   assertNativeRootOrigin,
@@ -38,13 +38,6 @@ import { experienceConsolidationJobType } from '../experience-consolidation-cont
 import { bindConversationThreadInTransaction } from './conversation-runtime.ts';
 import { nativeContextExecutionRetired } from './native-context-retirement.ts';
 
-import {
-  readChatTransitionRef,
-  readEffectiveChatExecutorOrigin,
-  assertChatTransitionPin,
-} from './native-executor-transition.ts';
-import { assertTransitionDescriptor } from './native-executor-transition-contract.ts';
-
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 export const NativeSessionDescriptorSchema = z
   .object({
@@ -55,13 +48,10 @@ export const NativeSessionDescriptorSchema = z
       .regex(/^dsh-[a-zA-Z0-9._:-]+$/),
     artifactId: digest,
     artifactManifestDigest: digest,
-    distributionGeneration: z.enum(DSH_FROZEN_PROFILE_GENERATIONS),
+    distributionGeneration: z.literal(DSH_INSTALLED_DISTRIBUTION.generation),
     profileId: z.enum(['restricted', 'technical']),
     storageContextKey: z.string().min(1).max(100),
     storageNamespace: z.string().min(1).max(4096),
-    originReaderApprovalDigest: digest.optional(),
-    /** Actual leased execution only; never rewrites the first-writer pin. */
-    executorTransitionDigest: digest.optional(),
   })
   .strict();
 export type NativeSessionDescriptor = z.infer<
@@ -121,7 +111,7 @@ export interface NativeSessionPin extends NativeSessionDescriptor {
   firstJobId: string;
   firstAttempt: number;
   boundAt: string;
-  bindingBasis: 'approved_compatibility_reader' | 'business_root_origin';
+  bindingBasis: 'business_root_origin';
   rootOriginDigest?: string | null;
 }
 export class NativeSessionBindingError extends Error {
@@ -152,10 +142,10 @@ export async function readChatNativeRootOrigin(
   if (await nativeContextExecutionRetired(tx, 'chat', input.sessionId))
     return deny();
   const [row] =
-    await tx`select c.native_root_origin,allrice_native_chat_effective_origin(c.id) effective_origin,v.manifest,v.id source_id,v.config_checksum
+    await tx`select c.native_root_origin,v.manifest,v.id source_id,v.config_checksum
     from allrice_chat_sessions c
-    left join allrice_employee_versions v on v.id::text=case when allrice_native_chat_effective_origin(c.id)->>'schemaVersion'='2'
-      then allrice_native_chat_effective_origin(c.id)#>>'{birthSource,employeeVersionId}' else c.native_root_origin#>>'{frozenIdentity,sourceId}' end
+    left join allrice_employee_versions v on v.id::text=case when c.native_root_origin->>'schemaVersion'='2'
+      then c.native_root_origin#>>'{birthSource,employeeVersionId}' else c.native_root_origin#>>'{frozenIdentity,sourceId}' end
       and v.organization_id=c.organization_id and v.workspace_id=c.workspace_id
       and v.employee_id=(select employee_id from allrice_employee_assignments where id=c.employee_assignment_id)
     where c.id=${input.sessionId} and c.organization_id=${input.organizationId}
@@ -164,11 +154,7 @@ export async function readChatNativeRootOrigin(
         where e.run_id=${input.runId ?? null}::uuid and e.session_id=c.id
           and e.organization_id=c.organization_id and e.workspace_id=c.workspace_id and e.owner_id=c.owner_id))`;
   if (!row) return deny();
-  const effective = await readEffectiveChatExecutorOrigin(
-    tx,
-    input,
-    row.native_root_origin,
-  );
+  const effective = row.native_root_origin;
   if (effective == null) return null;
   if (effective.schemaVersion === 2)
     return assertCurrentEmployeeChatOrigin(effective, {
@@ -220,8 +206,7 @@ export async function freezeChatRunExecutionBinding(
     ownerId: input.ownerId,
     sessionId: input.sessionId,
   });
-  const transition = await readChatTransitionRef(tx, input, origin);
-  if (origin?.schemaVersion !== 2 && !transition) return null;
+  if (origin?.schemaVersion !== 2) return null;
   if (origin?.contextKind !== 'chat') return deny();
   const [version] =
     await tx`select v.id,v.manifest,v.config_checksum from allrice_employee_versions v
@@ -232,7 +217,6 @@ export async function freezeChatRunExecutionBinding(
   if (!version) return deny();
   return freezeEmployeeRunExecutionBinding({
     origin,
-    transition,
     scope: {
       organizationId: input.organizationId,
       workspaceId: input.workspaceId,
@@ -265,24 +249,13 @@ async function readLeasedChatExecutionBinding(
     where e.run_id=${job.run_id} and e.session_id=${sessionId} and e.organization_id=${job.organization_id}
       and e.workspace_id=${job.workspace_id} and e.owner_id=${job.owner_id}`;
   if (!run) return deny();
-  const transition = await readChatTransitionRef(
-    tx,
-    {
-      organizationId: job.organization_id,
-      workspaceId: job.workspace_id,
-      ownerId: job.owner_id,
-      sessionId,
-    },
-    origin,
-  );
-  if (origin?.schemaVersion !== 2 && !transition) {
+  if (origin?.schemaVersion !== 2) {
     if (run.native_execution_binding != null) return deny();
     return null;
   }
   if (origin?.contextKind !== 'chat') return deny();
   return assertEmployeeRunExecutionBinding(run.native_execution_binding, {
     origin,
-    transition,
     scope: {
       organizationId: job.organization_id,
       workspaceId: job.workspace_id,
@@ -453,13 +426,6 @@ export async function prepareLeasedNativeSession(
             input.workerId,
           )
         : null;
-  const transition =
-    executionBinding?.kind === 'current_employee_execution' &&
-    executionBinding.schemaVersion === 2
-      ? executionBinding.transition
-      : undefined;
-  // MET-221: origin readers never select an executor, so their deployment
-  // settings are not read here; the Worker refuses non-empty ones at start.
   const [pin] = await tx`select * from allrice_native_session_bindings
     where native_session_id=${input.nativeSessionId}`;
   if (!pin) {
@@ -487,17 +453,12 @@ export async function prepareLeasedNativeSession(
     throw new NativeSessionBindingError('NATIVE_SESSION_BINDING_CONFLICT');
   const descriptor = NativeSessionDescriptorSchema.parse({
     nativeSessionId: pin.native_session_id,
-    artifactId: transition?.target.artifactId ?? pin.artifact_id,
-    artifactManifestDigest:
-      transition?.target.artifactId ?? pin.artifact_manifest_digest,
-    ...(transition ? { executorTransitionDigest: transition.digest } : {}),
+    artifactId: pin.artifact_id,
+    artifactManifestDigest: pin.artifact_manifest_digest,
     distributionGeneration: pin.distribution_generation,
     profileId: pin.profile_id,
     storageContextKey: pin.storage_context_key,
     storageNamespace: pin.storage_namespace,
-    ...(!transition && pin.origin_reader_approval_digest
-      ? { originReaderApprovalDigest: pin.origin_reader_approval_digest }
-      : {}),
   });
   const admitted = await bindLeasedNativeSession(tx, job, {
     workerId: input.workerId,
@@ -560,14 +521,8 @@ export async function bindLeasedNativeSession(
   )
     deny();
   const origin = await readNativeRootOrigin(tx, job, s);
-  const executionBinding =
-    s.kind === 'chat'
-      ? await readLeasedChatExecutionBinding(tx, job, origin, s.id)
-      : null;
-  const transition =
-    executionBinding?.schemaVersion === 2
-      ? executionBinding.transition
-      : undefined;
+  if (s.kind === 'chat')
+    await readLeasedChatExecutionBinding(tx, job, origin, s.id);
   if (s.kind === 'platform_employee_test')
     await readLeasedPlatformTestExecutionBinding(
       tx,
@@ -576,30 +531,18 @@ export async function bindLeasedNativeSession(
       s.id,
       input.workerId,
     );
-  if (transition) {
-    assertTransitionDescriptor(transition, d);
-    if (
-      d.executorTransitionDigest !== transition.digest ||
-      d.originReaderApprovalDigest !== undefined ||
-      s.kind !== 'chat'
-    )
-      deny();
-  } else if (
+  if (
     // MET-221: a context binds to its generation, profile and root seed. The
     // descriptor's artifact is the release primary; the origin's is provenance.
     // A context without a business origin has no executor on this release.
     !origin ||
-    d.executorTransitionDigest !== undefined ||
-    d.originReaderApprovalDigest !== undefined ||
     d.distributionGeneration !== origin.distributionGeneration ||
     d.profileId !== origin.profileId ||
     key !== origin.rootSeed
   )
     deny();
-  const bindingBasis = origin
-    ? 'business_root_origin'
-    : 'approved_compatibility_reader';
-  const rootOriginDigest = origin ? nativeRootDigest(origin) : null;
+  const bindingBasis = 'business_root_origin';
+  const rootOriginDigest = nativeRootDigest(origin);
   let testDeadline: Date | undefined;
   if (s.kind === 'chat') {
     const [chat] = await tx`select e.session_id from allrice_employee_runs e
@@ -700,13 +643,12 @@ export async function bindLeasedNativeSession(
   await tx`insert into allrice_native_session_bindings
     (native_session_id,organization_id,workspace_id,owner_id,context_kind,context_id,
       storage_context_key,storage_namespace,artifact_id,artifact_manifest_digest,distribution_generation,profile_id,
-      first_run_id,first_job_id,first_attempt,binding_basis,root_origin_digest,origin_reader_approval_digest)
+      first_run_id,first_job_id,first_attempt,binding_basis,root_origin_digest)
     values(${d.nativeSessionId},${job.organization_id},${job.workspace_id},${job.owner_id},${s.kind},${s.id},
       ${key},${d.storageNamespace},${d.artifactId},${d.artifactManifestDigest},${d.distributionGeneration},${d.profileId},
-      ${job.run_id},${job.id},${job.attempt},${bindingBasis},${rootOriginDigest},${d.originReaderApprovalDigest ?? null}) on conflict(native_session_id) do nothing`;
+      ${job.run_id},${job.id},${job.attempt},${bindingBasis},${rootOriginDigest}) on conflict(native_session_id) do nothing`;
   const [pin] =
     await tx`select * from allrice_native_session_bindings where native_session_id=${d.nativeSessionId}`;
-  if (transition && pin) await assertChatTransitionPin(tx, transition, pin);
   const equal =
     pin &&
     pin.organization_id === job.organization_id &&
@@ -721,10 +663,7 @@ export async function bindLeasedNativeSession(
     pin.distribution_generation === d.distributionGeneration &&
     pin.profile_id === d.profileId &&
     pin.binding_basis === bindingBasis &&
-    pin.root_origin_digest === rootOriginDigest &&
-    (transition ||
-      pin.origin_reader_approval_digest ===
-        (d.originReaderApprovalDigest ?? null));
+    pin.root_origin_digest === rootOriginDigest;
   if (!equal)
     throw new NativeSessionBindingError('NATIVE_SESSION_BINDING_CONFLICT');
   await checkDeadline();
@@ -736,9 +675,6 @@ export async function bindLeasedNativeSession(
     profileId: pin!.profile_id,
     storageContextKey: pin!.storage_context_key,
     storageNamespace: pin!.storage_namespace,
-    ...(pin!.origin_reader_approval_digest
-      ? { originReaderApprovalDigest: pin!.origin_reader_approval_digest }
-      : {}),
     organizationId: pin!.organization_id,
     workspaceId: pin!.workspace_id,
     ownerId: pin!.owner_id,
@@ -754,6 +690,5 @@ export async function bindLeasedNativeSession(
   return {
     binding,
     conversation,
-    ...(transition ? { effectiveDescriptor: d } : {}),
   };
 }

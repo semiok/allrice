@@ -1,3 +1,4 @@
+const oldGeneration = 'dsh-0.1.5-rc.3-a4c74a9' as const;
 /** Real SQL admission/dispatch only. No native Host, provider, Dev API or live
  * application database is used; the existing fixture owns a UUID schema. */
 import { randomUUID } from 'node:crypto';
@@ -12,7 +13,6 @@ import {
   type MockInstance,
 } from 'vitest';
 import {
-  DSH_MISSING_FROZEN_GENERATION,
   EmployeeDefinitionSchema,
   EmployeeExecutionSnapshotSchema,
   type EmployeeRuntimePackage,
@@ -214,7 +214,7 @@ integration(
             : currentPackage,
       );
       pkg.runtimeManifest.distributionGeneration = kind.startsWith('legacy-')
-        ? DSH_MISSING_FROZEN_GENERATION
+        ? oldGeneration
         : newNativeGeneration;
       const p = pkg.runtimeManifest;
       pkg.capabilityFingerprint = runtimePackageChecksum({
@@ -413,11 +413,11 @@ integration(
 
     it.each([
       'default-rice',
-      'legacy-package2',
+
       'current-package2',
-      'legacy-package1-plain',
+
       'current-package1-plain',
-      'legacy-package1-empty',
+
       'current-package1-empty',
     ] as const)(
       '%s creates v2 at real chat INSERT and carries a current execution binding through send/resolve/leased bind',
@@ -432,7 +432,7 @@ integration(
             kind === 'default-rice'
               ? null
               : kind.startsWith('legacy-')
-                ? DSH_MISSING_FROZEN_GENERATION
+                ? oldGeneration
                 : newNativeGeneration,
         });
         if (kind === 'default-rice') {
@@ -533,9 +533,8 @@ integration(
     );
 
     it.each([
-      ['tenant-inheritance', 'legacy-package2'],
       ['tenant-inheritance', 'current-package2'],
-      ['quality-release', 'legacy-package2'],
+
       ['quality-release', 'current-package2'],
     ] as const)(
       '%s synchronizes v2 while preserving the incompatible historical %s session',
@@ -556,8 +555,7 @@ integration(
         // but both reviewed declarations are allowed within the v2 family.
         const target = EmployeeDefinitionSchema.parse({
           ...f.manifest,
-          runtimePackage:
-            kind === 'legacy-package2' ? packageFor('current-package2') : null,
+          runtimePackage: null,
         });
         const version = randomUUID();
         await fixture.db`insert into allrice_employee_versions
@@ -646,14 +644,12 @@ integration(
       ).rejects.toThrow('employee execution binding is immutable');
     }, 30_000);
 
-    it.each(['legacy-package2', 'current-package2'] as const)(
+    it.each(['current-package2'] as const)(
       'preserves an existing %s NULL/v1 birth and queued snapshot without creating a private binding',
       async (kind) => {
         const f = await subject(kind, true),
           origin = await birth(f);
-        expect(origin?.schemaVersion ?? null).toBe(
-          kind === 'legacy-package2' ? null : 1,
-        );
+        expect(origin?.schemaVersion ?? null).toBe(1);
         const before = await stored(f.rootRunId);
         expect(before.native_execution_binding).toBeNull();
         // Authority fixture roots intentionally have no real prompt. Close that
@@ -687,27 +683,11 @@ integration(
           (await resolveEmployeeExecution({ ...scope(f), runId: id }))
             .executionSnapshot,
         ).not.toBeNull();
-        const execution = await lease(
-          f,
-          id,
-          kind === 'legacy-package2'
-            ? DSH_MISSING_FROZEN_GENERATION
-            : newNativeGeneration,
-        );
+        const execution = await lease(f, id, newNativeGeneration);
         expect((await prepare(execution)).executionBinding).toBeNull();
-        // MET-221: a chat without a business origin has no executor on this
-        // release; it is refused and stays unbound rather than adopted.
-        if (kind === 'legacy-package2') {
-          await expect(bindJobNativeSession(execution)).rejects.toMatchObject({
-            code: 'NATIVE_SESSION_ADMISSION_DENIED',
-          });
-          expect(
-            await fixture.db`select 1 from allrice_native_session_bindings where context_id=${f.chat}`,
-          ).toHaveLength(0);
-        } else
-          expect(
-            (await bindJobNativeSession(execution)).binding.bindingBasis,
-          ).toBe('business_root_origin');
+        expect(
+          (await bindJobNativeSession(execution)).binding.bindingBasis,
+        ).toBe('business_root_origin');
         expect(await stored(f.rootRunId)).toEqual(before);
       },
       30_000,

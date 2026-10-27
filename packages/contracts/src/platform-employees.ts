@@ -7,11 +7,7 @@ import { employeeModelPolicyProblem } from './employee-model-settings.ts';
 import { EmployeeAccentColorSchema } from './employee-colors.ts';
 import { TaskSuggestionsSchema } from './task-suggestions.ts';
 
-import {
-  DSH_INSTALLED_DISTRIBUTION,
-  DSH_MISSING_FROZEN_GENERATION,
-  DSH_FROZEN_PROFILE_GENERATIONS,
-} from './dsh-distribution.generated.ts';
+import { DSH_INSTALLED_DISTRIBUTION } from './dsh-distribution.generated.ts';
 
 export const PLATFORM_EMPLOYEE_DSH_DISTRIBUTION =
   DSH_INSTALLED_DISTRIBUTION.generation;
@@ -134,9 +130,7 @@ export const PlatformEmployeeRuntimeProfileSchema = z
   .object({
     schemaVersion: z.literal(1),
     harness: z.literal('dsh'),
-    distributionGeneration: z
-      .enum(DSH_FROZEN_PROFILE_GENERATIONS)
-      .default(DSH_MISSING_FROZEN_GENERATION),
+    distributionGeneration: z.literal(DSH_INSTALLED_DISTRIBUTION.generation),
     approvedPluginIds: z
       .array(z.enum(PLATFORM_EMPLOYEE_DSH_APPROVED_PLUGINS))
       .default([...PLATFORM_EMPLOYEE_DSH_APPROVED_PLUGINS]),

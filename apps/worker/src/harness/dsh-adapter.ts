@@ -306,7 +306,6 @@ export class DshHarnessAdapter implements HarnessAdapter {
       const bound = prepared?.binding
         ? {
             binding: prepared.binding,
-            effectiveDescriptor: prepared.effectiveDescriptor,
             generation: prepared.generation,
           }
         : await input.nativeBinding.bind(nativeDescriptor);
@@ -317,9 +316,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           ([key, value]) =>
             key !== 'artifactId' &&
             key !== 'artifactManifestDigest' &&
-            (bound.effectiveDescriptor ?? bound.binding)[
-              key as keyof typeof nativeDescriptor
-            ] !== value,
+            bound.binding[key as keyof typeof nativeDescriptor] !== value,
         )
       )
         throw new HandlerError(

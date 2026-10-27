@@ -1,26 +1,8 @@
 {
   "schemaVersion": 2,
   "installedGeneration": "dsh-0.2.1-rc.2-687f282",
-  "declaredPromotedGeneration": "dsh-0.1.1-rc.2-b150a55",
   "upgradeCandidateGeneration": "dsh-0.2.1-rc.2-687f282",
-  "missingFrozenGeneration": "dsh-0.1.5-rc.3-a4c74a9",
   "generations": [
-    {
-      "generation": "dsh-0.1.5-rc.3-a4c74a9",
-      "version": "0.1.5-rc.3",
-      "commit": "a4c74a91e06b00fe0b0937bde982170c526cc842",
-      "sourceArchiveSha256": "857c87442fd522ccdbd8c1091d8e2a516469a9b53c6b94948b3d174162b3370b",
-      "profile": "allrice-restricted.cordis.yml",
-      "frozenProfileAllowed": true
-    },
-    {
-      "generation": "dsh-0.1.1-rc.2-b150a55",
-      "version": "0.1.1-rc.2",
-      "commit": "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e",
-      "sourceArchiveSha256": "8cc8169bc1ba6ef6f3c225ef6779f3b349fb15c437c6fd8f42bca19b31ef0d2b",
-      "profile": "allrice-restricted.cordis.yml",
-      "frozenProfileAllowed": true
-    },
     {
       "generation": "dsh-0.2.1-rc.2-687f282",
       "version": "0.2.1-rc.2",

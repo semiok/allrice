@@ -274,20 +274,8 @@ export {
   NativeRunExecutionBindingSchema,
   type NativeRunExecutionBinding,
 } from './conversation/native-run-execution-binding.ts';
-export {
-  verifyNativeArtifactReferenceCoverage,
-  type NativeArtifactReferenceApproval,
-} from './conversation/native-artifact-references.ts';
 export { inspectNativeContextCompatibility } from './conversation/native-context-compatibility.ts';
 export * from './native-journal-contract-store.ts';
-export {
-  configuredNativeOriginReaders,
-  nativeOriginReaderForOrigin,
-  nativeOriginReaderForBinding,
-  inspectNativeOriginReaderStates,
-  type NativeOriginReaderApproval,
-  type NativeOriginReaderScope,
-} from './conversation/native-origin-reader.ts';
 export {
   previewNativeTestChatRetirement,
   applyNativeTestChatRetirement,
@@ -325,17 +313,6 @@ export {
   type NativeOnceClosedProof,
 } from './native-schedule-once-sql.ts';
 export { nativeOnceDigest } from './native-schedule-once-state.ts';
-export { nativeControlCloudEvidenceDigest } from './native-control-cloud-evidence.ts';
-export {
-  prepareNativeScheduleControlUpgrade,
-  applyNativeScheduleControlUpgrade,
-  readNativeScheduleControlUpgrade,
-  NativeScheduleControlUpgradeError,
-  type NativeScheduleControlUpgradePlan,
-  type NativeControlArtifactCompatibilityEvidence,
-  type NativeControlOfflineStoppedAttestation,
-  type NativeControlUpgradeApproval,
-} from './native-schedule-control-upgrade.ts';
 
 export {
   createRecurringTask,
@@ -417,19 +394,3 @@ export {
 
 export * from './providers/dsh-runtime-close-observations.ts';
 // Private server/Worker contract. Not exported as a model tool or HTTP API.
-export {
-  ExecutorTransitionRefSchema,
-  executorTransitionRef,
-  assertTransitionDescriptor,
-  type ExecutorTransitionRef,
-} from './conversation/native-executor-transition-contract.ts';
-
-export {
-  previewNativeTerminalTestRetirement,
-  applyNativeTerminalTestRetirement,
-  readNativeTerminalTestRetirement,
-  nativeTerminalTestPhysicalScope,
-  NativeTerminalTestPlanSchema,
-  type NativeTerminalTestScope,
-  type NativeTerminalTestPlan,
-} from './conversation/native-terminal-test-retirement.ts';

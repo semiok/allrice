@@ -11,7 +11,6 @@ import {
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { Sql, TransactionSql } from 'postgres';
-import { nativeControlWorkspaceUpgradeAllowed } from './native-schedule-control-upgrade.ts';
 import {
   NativeOnceStateError,
   nativeOnceDigest,
@@ -293,13 +292,7 @@ export function createNativeScheduleControlSqlStore<
     if (
       !latest ||
       p.workspace_snapshot.revision < 1 ||
-      (!isDeepStrictEqual(latest.reference, reference) &&
-        !(await nativeControlWorkspaceUpgradeAllowed(tx, {
-          partitionId,
-          reference,
-          workspaceDigest: nativeOnceWorkspaceDigest(p.workspace_snapshot),
-          latestWriteId: latest.write_id,
-        }))) ||
+      !isDeepStrictEqual(latest.reference, reference) ||
       !isDeepStrictEqual(latest.after_snapshot, p.workspace_snapshot) ||
       latest.after_digest !== nativeOnceWorkspaceDigest(p.workspace_snapshot)
     )

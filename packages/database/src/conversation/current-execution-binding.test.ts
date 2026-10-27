@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  DSH_MISSING_FROZEN_GENERATION,
   EmployeeDefinitionSchema,
   EmployeeExecutionSnapshotSchema,
   localCommandToolchainImageV1,
@@ -283,7 +282,7 @@ function run(
 }
 
 describe('current employee source policy: immutable original identities', () => {
-  it.each([null, DSH_MISSING_FROZEN_GENERATION, newNativeGeneration])(
+  it.each([null, newNativeGeneration])(
     'validates original source %s without rewriting it or fabricating a package',
     (generation) => {
       const input =
@@ -315,8 +314,6 @@ describe('current employee source policy: immutable original identities', () => 
   it.each([
     [newNativeGeneration, 'plain'],
     [newNativeGeneration, 'empty'],
-    [DSH_MISSING_FROZEN_GENERATION, 'plain'],
-    [DSH_MISSING_FROZEN_GENERATION, 'empty'],
   ] as const)(
     'accepts real schema1 builder output for %s / %s with immutable provenance and current execution',
     (generation, format) => {
@@ -367,7 +364,7 @@ describe('current employee source policy: immutable original identities', () => 
     'keeps config/package checksums valid after JSONB object key reorder (packaged %s)',
     (hasPackage) => {
       const input = hasPackage
-        ? packaged(DSH_MISSING_FROZEN_GENERATION)
+        ? packaged(newNativeGeneration)
         : definitionOnly();
       expect(
         validateEmployeeExecutionSource({
@@ -530,7 +527,7 @@ describe('current employee v2 birth and per-Run binding', () => {
     },
   );
   it('keeps a birth source immutable and validates original scope and provenance', () => {
-    const { input, origin } = chat(packaged(DSH_MISSING_FROZEN_GENERATION));
+    const { input, origin } = chat(packaged(newNativeGeneration));
     expect(assertCurrentEmployeeChatOrigin(jsonbOrder(origin), input)).toEqual(
       origin,
     );
@@ -566,16 +563,16 @@ describe('current employee v2 birth and per-Run binding', () => {
     ).toThrow('CHECKSUM_MISMATCH');
   });
   it('allows all reviewed source formats on later Runs without changing the birth tuple/source', () => {
-    const birth = chat(packaged(DSH_MISSING_FROZEN_GENERATION)),
+    const birth = chat(packaged(newNativeGeneration)),
       original = structuredClone(birth.origin);
     for (const source of [
       definitionOnly(),
       packaged(),
-      packaged(DSH_MISSING_FROZEN_GENERATION),
+      packaged(newNativeGeneration),
       packaged(newNativeGeneration, 'plain'),
       packaged(newNativeGeneration, 'empty'),
-      packaged(DSH_MISSING_FROZEN_GENERATION, 'plain'),
-      packaged(DSH_MISSING_FROZEN_GENERATION, 'empty'),
+      packaged(newNativeGeneration, 'plain'),
+      packaged(newNativeGeneration, 'empty'),
     ]) {
       const input = run(source, birth),
         binding = freezeEmployeeRunExecutionBinding(input);
@@ -608,7 +605,7 @@ describe('current employee v2 birth and per-Run binding', () => {
     ).toThrow('BINDING_MISMATCH');
   });
   it('preserves an independently frozen model selection without rewriting the original source model', () => {
-    const input = run(packaged(DSH_MISSING_FROZEN_GENERATION));
+    const input = run(packaged(newNativeGeneration));
     const original = freezeEmployeeRunExecutionBinding(input);
     const snapshot = EmployeeExecutionSnapshotSchema.parse(
       input.executionSnapshot,
@@ -825,128 +822,3 @@ describe('current employee v2 birth and per-Run binding', () => {
 
 // These are synthetic binding-contract checks, not artifact approval or actual
 // native history compatibility. No registry installation or native process.
-describe('same-generation executor transition: immutable source boundary', () => {
-  function ref(input: EmployeeRunExecutionBindingInput) {
-    return {
-      requestId: randomUUID(),
-      sequence: 1,
-      digest: `sha256:${'b'.repeat(64)}`,
-      scope: {
-        contextKind: 'chat' as const,
-        contextId: input.scope.sessionId,
-        organizationId: input.scope.organizationId,
-        workspaceId: input.scope.workspaceId,
-        ownerId: input.scope.ownerId,
-      },
-      originDigest: nativeRootDigest(input.origin),
-      target: {
-        artifactId: `sha256:${'c'.repeat(64)}`,
-        generation: newNativeGeneration,
-        profileId: 'restricted' as const,
-      },
-      storageNamespace: `/synthetic/preserved/${input.scope.organizationId}/${input.scope.workspaceId}/${input.scope.ownerId}/${input.scope.sessionId}/sessions`,
-    };
-  }
-  it('new Run changes only executor/ref while original origin/source/snapshot and old binding stay byte-identical', () => {
-    const input = run(),
-      before = JSON.stringify(input),
-      old = freezeEmployeeRunExecutionBinding(input),
-      oldBytes = JSON.stringify(old);
-    const upgraded = freezeEmployeeRunExecutionBinding({
-      ...input,
-      transition: ref(input),
-    });
-    expect(upgraded.schemaVersion).toBe(2);
-    expect(upgraded.execution.artifactId).not.toBe(old.execution.artifactId);
-    expect(upgraded.source).toEqual(old.source);
-    expect(upgraded.sourcePolicy).toEqual(old.sourcePolicy);
-    expect(upgraded.executionSnapshotDigest).toBe(old.executionSnapshotDigest);
-    expect(JSON.stringify(input)).toBe(before);
-    expect(JSON.stringify(old)).toBe(oldBytes);
-    expect(() => assertEmployeeRunExecutionBinding(upgraded, input)).toThrow();
-    expect(
-      assertEmployeeRunExecutionBinding(upgraded, {
-        ...input,
-        transition: refWith(upgraded),
-      }),
-    ).toEqual(upgraded);
-  });
-  function refWith(b: ReturnType<typeof freezeEmployeeRunExecutionBinding>) {
-    if (b.schemaVersion !== 2) throw Error('expected upgraded');
-    return b.transition;
-  }
-  it('supports a current-generation v1 chat only with an exact committed-ref-shaped input; leaves v1 origin untouched', () => {
-    const source = packaged(newNativeGeneration),
-      input = run(source),
-      before = JSON.stringify(source);
-    input.origin = {
-      schemaVersion: 1,
-      contextKind: 'chat',
-      contextId: input.scope.sessionId,
-      rootSeed: input.scope.sessionId,
-      distributionGeneration: newNativeGeneration,
-      profileId: 'restricted',
-      artifactId: artifact,
-      frozenIdentity: {
-        kind: 'employee_package',
-        sourceId: source.employeeVersionId,
-        checksum: source.configChecksum,
-      },
-    };
-    const original = JSON.stringify(input.origin);
-    expect(() => freezeEmployeeRunExecutionBinding(input)).toThrow();
-    expect(
-      freezeEmployeeRunExecutionBinding({ ...input, transition: ref(input) })
-        .schemaVersion,
-    ).toBe(2);
-    expect(JSON.stringify(input.origin)).toBe(original);
-    expect(JSON.stringify(source)).toBe(before);
-  });
-  it.each(['organizationId', 'workspaceId', 'ownerId'] as const)(
-    'denies forged %s scope even when target artifact is unchanged',
-    (key) => {
-      const input = run(),
-        transition = ref(input);
-      transition.scope[key] = randomUUID();
-      transition.storageNamespace = `/synthetic/${transition.scope.organizationId}/${transition.scope.workspaceId}/${transition.scope.ownerId}/${transition.scope.contextId}/sessions`;
-      expect(() =>
-        freezeEmployeeRunExecutionBinding({ ...input, transition }),
-      ).toThrow('SCOPE');
-    },
-  );
-  it('does not upgrade NULL origin, old generation, changed original checksum or granted capabilities', () => {
-    const input = run(),
-      transition = ref(input);
-    expect(() =>
-      freezeEmployeeRunExecutionBinding({ ...input, origin: null, transition }),
-    ).toThrow();
-    expect(() =>
-      freezeEmployeeRunExecutionBinding({
-        ...input,
-        origin: {
-          ...(input.origin as object),
-          distributionGeneration: DSH_MISSING_FROZEN_GENERATION,
-        },
-        transition,
-      }),
-    ).toThrow();
-    expect(() =>
-      freezeEmployeeRunExecutionBinding({
-        ...input,
-        source: { ...input.source, configChecksum: `sha256:${'d'.repeat(64)}` },
-        transition,
-      }),
-    ).toThrow('CHECKSUM');
-    const snapshot = EmployeeExecutionSnapshotSchema.parse(
-      input.executionSnapshot,
-    );
-    snapshot.capabilitySnapshot.grantedCapabilities.push('undeclared' as never);
-    expect(() =>
-      freezeEmployeeRunExecutionBinding({
-        ...input,
-        executionSnapshot: snapshot,
-        transition,
-      }),
-    ).toThrow();
-  });
-});

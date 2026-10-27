@@ -25,7 +25,9 @@ suite('DSH journal contract high-water and context compatibility', () => {
     )[0]?.value;
   beforeAll(async () => {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-    fixture = await createAssistantFixtureDatabase();
+    fixture = await createAssistantFixtureDatabase({
+      throughMigration: '0217_brand_content_feedback.sql',
+    });
   }, 60_000);
   afterAll(async () => {
     await fixture?.close();

@@ -1,7 +1,6 @@
 /** MET-221 PR2b: deploy-dev's pre-stop check of a release candidate
  * (scripts/dev-release/verify-native-retention.mjs wraps this function).
- * Owned PostgreSQL schema with every migration, including the archived drafts
- * 0213-0216 that M1 Dev applied; no Dev services are used. */
+ * Owned PostgreSQL schema through 0217; no Dev services are used. */
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -50,7 +49,9 @@ suite('release candidate pre-stop check on the pre-0218 schema', () => {
     // Empty retired settings, as older compose files wrote them, are not settings.
     vi.stubEnv('ALLRICE_DSH_RETAINED_1_ROOT', '');
     vi.stubEnv('ALLRICE_DSH_ORIGIN_READER_2_APPROVAL_PATH', '');
-    fixture = await createAssistantFixtureDatabase();
+    fixture = await createAssistantFixtureDatabase({
+      throughMigration: '0217_brand_content_feedback.sql',
+    });
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
   }, 120_000);
   afterAll(async () => {
