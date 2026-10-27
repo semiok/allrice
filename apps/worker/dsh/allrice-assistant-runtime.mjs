@@ -1420,7 +1420,7 @@ export function createGovernedAssistantNativeRuntime(
         presentCall: () => ({
           card: 'generic',
           kind: 'tool',
-          title: `Assistant ${action}`,
+          title: `子智能体 ${action}`,
         }),
       });
       coordinationDefinitions.set(definition.name, definition);

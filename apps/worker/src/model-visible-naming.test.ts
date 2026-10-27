@@ -1,5 +1,5 @@
 import { readdir, readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 
 import { platformRepositoryReviewInstructions } from '@allrice/database';
 import ts from 'typescript';
@@ -14,18 +14,33 @@ import { riceToolDefinitions } from './tool-broker.js';
 // names it reads (a real run said "请检查 Rice Bridge 连接", "两位助手"), so the
 // text it reads must not carry the old ones.
 const oldNames = [
-  /Rice Bridge|子助手|父助手|父智能体/,
+  /Rice Bridge|子助手|子助理|父助手|父智能体/,
   /(?<![A-Za-z_.$])Bridge(?![A-Za-z_])/,
   // 「技术助手」 is the platform technical assistant's own name.
   /(?<!AllRice )(?<!技术)助手/,
 ];
-// English prose calling a child "assistant"; tool identifiers such as
-// assistant.report / assistant_delegate and wire words like assistant/message
-// are not prose. The model's own chat turn ("not assistant inference") is not
-// a child either.
-const englishChild =
-  /(?<![\w./-])assistants?(?![\w./-])(?! (?:inference|responses?|guesses))/i;
-const prose = (text: string) => /[A-Za-z]+ [A-Za-z]+ [A-Za-z]+/.test(text);
+// Tool identifiers such as assistant.report / assistant_delegate and event
+// names such as assistant/message retain their protocol spelling.
+const englishChild = /(?<![\w./-])assistants?(?![\w./-])/i;
+// allrice-bootstrap-coverage hashes the chat role and keys coverage by message
+// ID. Match whole literal values; "Assistant stopped" is never a protocol value.
+const protocolValues: Record<string, readonly string[]> = {
+  'allrice-bootstrap-coverage.mjs': ['assistant', 'assistant:'],
+};
+// These memory provenance rules refer to the model's own output, not delegated
+// children. Exempt only these phrases in their documented source files.
+const modelRoleTerms: Record<string, readonly string[]> = {
+  'skills/governed-memory/SKILL.md': [
+    'assistant response',
+    'assistant guesses',
+  ],
+  'allrice-jsonrpc-implementation.mjs': ['assistant inference'],
+};
+
+interface SourcedText {
+  source: string;
+  text: string;
+}
 
 const dsh = resolve(import.meta.dirname, '../dsh');
 const harness = resolve(import.meta.dirname, 'harness/dsh');
@@ -70,7 +85,7 @@ function literals(file: string, source: string, only?: 'messages') {
       ts.ScriptKind.TS,
     ),
   );
-  return out.map((literal) => `${file}: ${literal}`);
+  return out.map((text) => ({ source: file, text }));
 }
 
 async function sources(dir: string, match: (name: string) => boolean) {
@@ -93,23 +108,32 @@ function strings(value: unknown): string[] {
   return [];
 }
 
-async function markdown(dir: string): Promise<string[]> {
-  const out: string[] = [];
+async function markdown(dir: string): Promise<SourcedText[]> {
+  const out: SourcedText[] = [];
   for (const entry of await readdir(dir, { withFileTypes: true })) {
     const path = join(dir, entry.name);
     if (entry.isDirectory()) out.push(...(await markdown(path)));
     else if (entry.name.endsWith('.md'))
-      out.push(`${path}\n${await readFile(path, 'utf8')}`);
+      out.push({
+        source: relative(repository, path),
+        text: await readFile(path, 'utf8'),
+      });
   }
   return out;
 }
 
-const offenders = (texts: string[], english = true) =>
-  texts.filter(
-    (text) =>
-      oldNames.some((name) => name.test(text)) ||
-      (english && prose(text) && englishChild.test(text)),
-  );
+const offenders = (texts: (string | SourcedText)[]) =>
+  texts.filter((entry) => {
+    const { source, text } =
+      typeof entry === 'string' ? { source: '', text: entry } : entry;
+    if (oldNames.some((name) => name.test(text))) return true;
+    if (protocolValues[source]?.includes(text)) return false;
+    const prose = (modelRoleTerms[source] ?? []).reduce(
+      (value, term) => value.replaceAll(new RegExp(`\\b${term}\\b`, 'g'), ''),
+      text,
+    );
+    return englishChild.test(prose);
+  });
 
 function kernelInstructions() {
   return assembleEmployeeKernel({
@@ -163,18 +187,76 @@ describe('names the model reads (MET-214)', () => {
     ).flatMap(({ name, source }) => literals(name, source));
     expect(native.length).toBeGreaterThan(2000);
     expect(offenders(native)).toEqual([]);
-    expect(native.join('\n')).toContain('子智能体 only: deliver');
+    expect(native.map(({ text }) => text).join('\n')).toContain(
+      '子智能体 only: deliver',
+    );
     const governed = (
       await sources(harness, (name) => /^assistant-.*\.ts$/.test(name))
     ).flatMap(({ name, source }) => literals(name, source, 'messages'));
-    expect(governed.join('\n')).toContain('当前任务没有这个子智能体');
+    expect(governed.map(({ text }) => text).join('\n')).toContain(
+      '当前任务没有这个子智能体',
+    );
     expect(offenders(governed)).toEqual([]);
   });
 
   it('platform Skills carry no old name', async () => {
     const texts = await markdown(join(repository, 'skills'));
     expect(texts.length).toBeGreaterThan(18);
-    // Skills mention the model's own replies ("assistant response"), not children.
-    expect(offenders(texts, false)).toEqual([]);
+    expect(offenders(texts)).toEqual([]);
+  });
+
+  it('rejects 每个 Child assistant in a Skill even alongside model-role wording', async () => {
+    const texts = await markdown(join(repository, 'skills'));
+    const skill = texts.find(
+      ({ source }) => source === 'skills/governed-memory/SKILL.md',
+    )!;
+    expect(skill.text).toContain('assistant response');
+    expect(offenders([skill])).toEqual([]);
+    const regressed = { ...skill, text: `${skill.text}\n每个 Child assistant` };
+    expect(offenders([regressed])).toEqual([regressed]);
+  });
+
+  it('rejects different 子助理 in a tool description', () => {
+    const texts = literals(
+      'allrice-assistant-runtime.mjs',
+      "const tool = { description: 'different 子助理' };",
+    );
+    expect(offenders(texts)).toEqual([
+      { source: 'allrice-assistant-runtime.mjs', text: 'different 子助理' },
+    ]);
+  });
+
+  it.each(['message', 'summary'])(
+    'rejects Assistant stopped in a receipt %s',
+    (property) => {
+      const texts = literals(
+        'assistant-bridge.ts',
+        `const receipt = { ${property}: 'Assistant stopped' };`,
+        'messages',
+      );
+      expect(offenders(texts)).toEqual([
+        { source: 'assistant-bridge.ts', text: 'Assistant stopped' },
+      ]);
+    },
+  );
+
+  it('exempts exact protocol values without exempting nearby prose', () => {
+    const texts = literals(
+      'allrice-bootstrap-coverage.mjs',
+      "const values = ['assistant', `assistant:${messageId}`, 'assistant/message', 'assistant.report', 'assistant_delegate', 'Assistant stopped'];",
+    );
+    expect(offenders(texts)).toEqual([
+      { source: 'allrice-bootstrap-coverage.mjs', text: 'Assistant stopped' },
+    ]);
+    expect(offenders(['assistant', 'Assistant stopped'])).toEqual([
+      'assistant',
+      'Assistant stopped',
+    ]);
+  });
+
+  it('does not exempt model-role terms in unrelated sources', () => {
+    const text = 'assistant response';
+    const entry = { source: 'skills/development-cooperation/SKILL.md', text };
+    expect(offenders([entry])).toEqual([entry]);
   });
 });
