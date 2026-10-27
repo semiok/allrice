@@ -1,5 +1,7 @@
 /** Real Chrome, static props only. No server, DB, device or model. */
+import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { resolve } from 'node:path';
 import { createServer, type Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type {
@@ -37,6 +39,24 @@ suite('sidebar, new-work dialog and workbench badge labels', () => {
         file.contents,
       ]),
     );
+    // The global stylesheets, taken from the root layout in its order, as
+    // theme.browser.test.ts does; the page's component styles load after.
+    const layoutStyles = [
+      ...readFileSync('apps/web/app/layout.tsx', 'utf8').matchAll(
+        /^import '([^']+\.css)';$/gm,
+      ),
+    ].map((match) => `@import '${match[1]}';`);
+    expect(layoutStyles.length).toBeGreaterThanOrEqual(5);
+    const globals = await build({
+      stdin: {
+        contents: layoutStyles.join('\n'),
+        resolveDir: resolve('apps/web/app'),
+        loader: 'css',
+      },
+      bundle: true,
+      write: false,
+    });
+    assets.set('/layout.css', globals.outputFiles[0]!.contents);
     server = createServer((req, res) => {
       const path = new URL(req.url!, origin).pathname;
       const asset = assets.get(path);
@@ -49,7 +69,7 @@ suite('sidebar, new-work dialog and workbench badge labels', () => {
       } else {
         res.setHeader('Content-Type', 'text/html');
         res.end(
-          '<meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/sidebar-labels-page.css"><div id="root"></div><script type="module" src="/sidebar-labels-page.js"></script>',
+          '<!doctype html><html lang="zh-CN"><head><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/layout.css"><link rel="stylesheet" href="/sidebar-labels-page.css"></head><body><div id="root"></div><script type="module" src="/sidebar-labels-page.js"></script></body></html>',
         );
       }
     });

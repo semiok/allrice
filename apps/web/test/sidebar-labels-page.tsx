@@ -11,21 +11,13 @@ import { EmployeePickerDialog } from '../app/chatflow/employee-picker-dialog';
 import { EmployeeSidebar } from '../app/chatflow/employee-sidebar';
 import { SessionReferencePicker } from '../app/chatflow/session-reference-picker';
 import { WorkbenchEntries } from '../app/chatflow/workbench-modules';
-import '../app/dsh-upstream/design-platform.css';
-import '../app/dsh-upstream/base.css';
-import '@allrice/ui/tokens.css';
-import '../app/styles/base.css';
+import { applyTheme } from '../lib/theme/theme';
 
 /** Static props and a synthetic fetch only: no server, database, device or model. */
 const noop = () => {};
 const params = new URLSearchParams(location.search);
-if (params.get('theme') === 'dark') {
-  // What the dark runtime sets: both attributes, and the dark colour scheme
-  // its :root[data-theme='dark'] rule applies (#571).
-  document.documentElement.setAttribute('data-theme', 'dark');
-  document.documentElement.style.colorScheme = 'dark';
-  document.body.setAttribute('data-ds-dark-theme', '');
-}
+// The runtime's own switch; the test serves the root layout's stylesheets.
+applyTheme(params.get('theme') === 'dark' ? 'dark' : 'light');
 // Empty answers for what the dialogs read when they open.
 window.fetch = (async (input: RequestInfo | URL) => {
   const url = new URL(
