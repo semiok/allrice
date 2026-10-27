@@ -83,6 +83,8 @@ export function readTenantTheme(): Theme {
  * through the storage event. Returns false when the browser refuses to store
  * it: the choice then holds in this tab only, until it reloads. */
 export function setTenantTheme(theme: Theme): boolean {
+  // Only the browser holds a choice; on the server this does nothing.
+  if (typeof window === 'undefined') return false;
   let saved = true;
   try {
     localStorage.setItem(themeConfig.storagePrefix + 'tenant', theme);

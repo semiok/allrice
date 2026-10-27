@@ -106,6 +106,7 @@ describe('the workspace theme switch', () => {
   function page(pathname: string, storage: 'ok' | 'throws' = 'ok') {
     const stored = new Map<string, string>();
     const attributes = { html: new Map(), body: new Map() };
+    vi.stubGlobal('window', {});
     vi.stubGlobal('location', { pathname });
     vi.stubGlobal('document', {
       documentElement: element(attributes.html),
@@ -143,6 +144,13 @@ describe('the workspace theme switch', () => {
     const tab = page('/runtime-console');
     expect(setTenantTheme('dark')).toBe(true);
     expect(tab.stored.get('allrice.theme.tenant')).toBe('dark');
+    expect(tab.dark()).toBe(false);
+  });
+
+  it('does nothing when called on the server', () => {
+    expect(setTenantTheme('dark')).toBe(false);
+    const tab = page('/chatflow');
+    expect(readTenantTheme()).toBe('light');
     expect(tab.dark()).toBe(false);
   });
 
