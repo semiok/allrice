@@ -159,19 +159,28 @@ export function capabilitySettingsHref(
 }
 
 /** Intel Macs get no new versions (MET-214): advice that asks the computer to
- * update says instead what the installed version cannot do. */
-const intelCapabilityReasons: Partial<
-  Record<WorkspaceCapability['reason'], string>
+ * update says what an Intel Mac's installed version cannot do instead, and
+ * names the chips when Apple silicon and Intel Macs are both in use. */
+const chipCapabilityReasons: Record<
+  'intel' | 'mixed',
+  Partial<Record<WorkspaceCapability['reason'], string>>
 > = {
-  candidate_runner_missing:
-    'Intel 芯片的电脑不再提供新版本，现有版本不支持在隔离副本里测试修改方案。',
+  intel: {
+    candidate_runner_missing:
+      'Intel 芯片的电脑不再提供新版本，现有版本不支持在隔离副本里测试修改方案。',
+  },
+  mixed: {
+    candidate_runner_missing:
+      '这台电脑还不能测试修改方案。Apple 芯片的电脑请更新 AllRice 助手，更新后会自动检查并准备独立的沙箱；Intel 芯片的电脑不再提供新版本，现有版本不支持在隔离副本里测试修改方案。',
+  },
 };
 export function capabilityReason(
   reason: WorkspaceCapability['reason'],
-  intelComputer = false,
+  chips?: 'apple' | 'intel' | 'mixed' | null,
 ) {
   return (
-    (intelComputer ? intelCapabilityReasons[reason] : undefined) ??
-    capabilityReasons[reason]
+    (chips === 'intel' || chips === 'mixed'
+      ? chipCapabilityReasons[chips][reason]
+      : undefined) ?? capabilityReasons[reason]
   );
 }

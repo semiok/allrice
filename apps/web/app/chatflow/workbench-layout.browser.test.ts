@@ -11583,6 +11583,72 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
   );
 
+  it.each([
+    [
+      'an online Intel Mac and an offline Apple silicon Mac',
+      'offline',
+      'Intel 芯片的电脑不再提供新版本，现有版本不支持在隔离副本里测试修改方案。',
+    ],
+    [
+      'online Intel and Apple silicon Macs',
+      'online',
+      '这台电脑还不能测试修改方案。Apple 芯片的电脑请更新 AllRice 助手，更新后会自动检查并准备独立的沙箱；Intel 芯片的电脑不再提供新版本，现有版本不支持在隔离副本里测试修改方案。',
+    ],
+  ] as const)(
+    'MET-214 names the chips in the development card for %s',
+    async (_, appleStatus, reason) => {
+      const f = await fixture({ width: 1440 });
+      try {
+        f.state.bridgeDevices = [
+          {
+            id: id(903),
+            name: 'iMac-Intel.local · Rice Bridge',
+            platform: 'macos-x64',
+            status: 'online',
+            clientVersion: '0.6.0-dev.40',
+            lastSeenAt: now,
+            folderGrants: [],
+          },
+          {
+            id: id(904),
+            name: 'MacBook-Air.local · AllRice 助手',
+            platform: 'macos-arm64',
+            status: appleStatus,
+            clientVersion: '0.6.0-dev.62',
+            lastSeenAt: now,
+            folderGrants: [],
+          },
+        ];
+        f.state.capabilities = f.state.capabilities.map((c) =>
+          c.id === 'development'
+            ? {
+                ...c,
+                state: 'needs_configuration',
+                reason: 'candidate_runner_missing',
+                action: 'bridge',
+              }
+            : c,
+        );
+        await f.page.reload();
+        await openCapabilities(f, 'computer');
+        const development = f.page
+          .getByRole('dialog', { name: '设置', exact: true })
+          .locator('[data-capability="development"]');
+        await development.getByText(reason, { exact: true }).first().waitFor();
+        // Only an Apple silicon Mac is ever asked to update.
+        expect(
+          (await development.innerText()).replaceAll(
+            'Apple 芯片的电脑请更新 AllRice 助手',
+            '',
+          ),
+        ).not.toMatch(/请更新/);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
   it.each([390, 1280])(
     'shows downloadable and installed Bridge versions at width %i and refreshes after an upgrade',
     async (width) => {

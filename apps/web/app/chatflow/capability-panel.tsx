@@ -10,6 +10,7 @@ import {
   capabilityReason,
   capabilityStateLabels,
 } from './capability-catalog';
+import type { BridgeChips } from './bridge-view';
 import styles from './capability-panel.module.css';
 const groups: Record<
   'work' | 'computer',
@@ -83,7 +84,7 @@ export function CapabilityContent({
   onRefresh,
   onBridge,
   onCompose,
-  intelComputer = false,
+  computerChips = null,
 }: {
   scope: 'work' | 'computer';
   data: WorkspaceReadiness | null;
@@ -93,8 +94,8 @@ export function CapabilityContent({
   onRefresh: () => void;
   onBridge: () => void;
   onCompose: (id: WorkspaceCapabilityId) => void;
-  /** Only Intel Macs are paired: they get no new versions (MET-214). */
-  intelComputer?: boolean;
+  /** Chips of the computers in use; Intel Macs get no new versions (MET-214). */
+  computerChips?: BridgeChips | null;
 }) {
   const group = groups[scope];
   const summary = summarizeCapabilities(group.ids, data, loading, error);
@@ -154,7 +155,7 @@ export function CapabilityContent({
                   <p>{label.description}</p>
                   <p>
                     {capability
-                      ? capabilityReason(capability.reason, intelComputer)
+                      ? capabilityReason(capability.reason, computerChips)
                       : '尚未取得当前状态，请刷新确认。'}
                   </p>
                   {capability?.action === 'compose' &&
@@ -209,7 +210,7 @@ export function CapabilityContent({
                             <li>
                               {capabilityReason(
                                 capability.reason,
-                                intelComputer,
+                                computerChips,
                               )}
                             </li>
                             <li>

@@ -81,13 +81,19 @@ export const intelBridgeNotice =
   'Intel 芯片的电脑不再提供新版本，现有版本可以继续使用。';
 export const isIntelBridge = (device: Pick<BridgeDevice, 'platform'>) =>
   device.platform === 'macos-x64';
-/** Every paired computer is an Intel Mac, so device advice concerns one. */
-export const onlyIntelBridges = (
+export type BridgeChips = 'apple' | 'intel' | 'mixed';
+/** The chips of the computers in use: the online ones, or else every paired
+ * one. Device advice to update must say which chips it is for. */
+export function bridgeChips(
   devices: readonly Pick<BridgeDevice, 'platform' | 'status'>[],
-) => {
+): BridgeChips | null {
   const paired = devices.filter((device) => device.status !== 'revoked');
-  return paired.length > 0 && paired.every(isIntelBridge);
-};
+  const online = paired.filter((device) => device.status === 'online');
+  const inUse = online.length ? online : paired;
+  const intel = inUse.filter(isIntelBridge).length;
+  if (!inUse.length) return null;
+  return intel === inUse.length ? 'intel' : intel ? 'mixed' : 'apple';
+}
 // Reasons whose advice is to update the app.
 const updateReasons = new Set([
   'readiness_not_reported',
