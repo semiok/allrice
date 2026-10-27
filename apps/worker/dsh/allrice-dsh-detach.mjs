@@ -1,20 +1,32 @@
 import { matchUserQuestionAnswer } from '@allrice/contracts/native-runtime';
+import { interruptedTurnClosers } from '@deepseek-ai/dsh-session';
 
 // MET-210 timed questions. AllRice is only the lease here: the question's state
 // stays DSH's own userQuestions projection, and a late answer is DSH's answer().
 
-/** Tool calls of the root's journal that have no recorded result yet. */
-function openToolCalls(agent) {
-  const open = new Map();
-  for (const event of agent.session.snapshotEvents()) {
-    if (event.type === 'tool/call')
-      open.set(event.data.callId, event.data.name);
-    if (event.type === 'tool/result') {
-      const message = event.data.message;
-      open.delete(message?.toolCallId ?? message?.callId);
-    }
-  }
-  return open;
+/** Use DSH's own recovery view, including requested but not started tools. */
+function detachBoundary(server, agent) {
+  if (
+    server.ctx.agents.list().some((a) => a !== agent && a.status === 'running')
+  )
+    return { detached: false, reason: 'AGENTS_RUNNING' };
+  const events = agent.session.snapshotEvents();
+  const results = interruptedTurnClosers(events).filter(
+    (e) => e.type === 'tool/result',
+  );
+  const callId = results[0]?.data.message.toolCallId;
+  if (
+    results.length !== 1 ||
+    results[0].data.error?.code !== 'TOOL_OUTCOME_UNKNOWN' ||
+    !events.some(
+      (e) =>
+        e.type === 'tool/call' &&
+        e.data.callId === callId &&
+        e.data.name === 'ask_user_question',
+    )
+  )
+    return { detached: false, reason: 'TOOL_CALLS_OPEN' };
+  return { detached: true, callId };
 }
 
 /**
@@ -30,27 +42,26 @@ export async function detachNativeQuestion(server, sessionId) {
   const question = server.pendingUserQuestions.get(sessionId);
   if (!record || !question) return { detached: false, reason: 'NO_QUESTION' };
   const agent = record.agent;
-  // A running child still does real work; its result must not become unknown.
-  if (
-    server.ctx.agents.list().some((a) => a !== agent && a.status === 'running')
-  )
-    return { detached: false, reason: 'AGENTS_RUNNING' };
-  const open = openToolCalls(agent);
-  const [callId, name] = open.size === 1 ? [...open][0] : [];
-  if (name !== 'ask_user_question')
-    return { detached: false, reason: 'TOOL_CALLS_OPEN' };
+  const boundary = detachBoundary(server, agent);
+  if (!boundary.detached) return boundary;
   // From here every input is refused; an answer that already won stays won.
   server.detaching = sessionId;
-  await server.taskProgress?.flush();
-  await server.ctx.sessions.flush(agent.session);
-  if (
-    !server.isRootCurrent(record, sessionId) ||
-    server.pendingUserQuestions.get(sessionId) !== question
-  ) {
-    server.detaching = undefined;
-    return { detached: false, reason: 'ANSWERED' };
+  let result;
+  try {
+    await server.taskProgress?.flush();
+    // Idle children can also have just persisted a settlement. Flush their
+    // sessions through DSH before releasing the process lease.
+    for (const active of server.ctx.agents.list())
+      await server.ctx.sessions.flush(active.session);
+    result = !server.isRootCurrent(record, sessionId)
+      ? { detached: false, reason: 'SESSION_CLOSING' }
+      : server.pendingUserQuestions.get(sessionId) !== question
+        ? { detached: false, reason: 'ANSWERED' }
+        : detachBoundary(server, agent);
+    return result;
+  } finally {
+    if (!result?.detached) server.detaching = undefined;
   }
-  return { detached: true, callId, questionId: question.questionId };
 }
 
 /** The root's timed questions as DSH's userQuestions projection reports them. */
@@ -79,9 +90,9 @@ export async function replyNativeQuestion(server, params) {
   const sessionId = params.sessionId;
   const record = await server.ensureRoot(sessionId, { resumeOnly: true });
   server.assertRoot(record, sessionId);
-  const question = server.ctx.userQuestions
-    .continued(record.agent)
-    .find((item) => item.callId === params.callId);
+  const question = nativeUserQuestions(server, sessionId).questions?.find(
+    (item) => item.state === 'continued' && item.callId === params.callId,
+  );
   if (!question) return { queued: false };
   const matched = matchUserQuestionAnswer(
     { questionId: params.callId, questions: question.questions },

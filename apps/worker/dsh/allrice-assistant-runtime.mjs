@@ -190,6 +190,7 @@ export function assertAssistantBusinessInputOpen(runtime, method, params) {
       'session/recover',
       'session/answer-wait',
       'session/continue-wait',
+      'session/question-reply',
     ].includes(method)
   )
     runtime?.assertBusinessInputOpen({

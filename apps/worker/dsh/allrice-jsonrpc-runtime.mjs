@@ -43,6 +43,7 @@ let detached = false;
 let requestedExitCode = 0;
 
 function assertInitializationOpen() {
+  if (detached) throw new Error('QUESTION_DETACHING');
   if (closing) throw new Error('ALLRICE_RUNTIME_CLOSING');
 }
 
@@ -179,6 +180,10 @@ function disposeAndExit(code) {
 
 transport.onRequest(async (method, params) => {
   if (method === 'shutdown') {
+    if (detached) {
+      setImmediate(() => void exitDetached());
+      return { detached: true };
+    }
     try {
       const allriceClose = await prepareShutdown();
       setImmediate(() => void disposeAndExit(0));
@@ -197,7 +202,6 @@ transport.onRequest(async (method, params) => {
   assertInitializationOpen();
   const result = await runtime.server.handleRequest(method, params);
   if (method === 'session/detach' && result?.detached === true) {
-    closing = true;
     detached = true;
     // The reply is queued before setImmediate; exitDetached flushes it.
     setImmediate(() => void exitDetached());

@@ -78,6 +78,7 @@ export async function checkpointNativeQuestion(server, sessionId, questionId) {
   await server.taskProgress?.flush();
   // A user answer can race the preceding flush.
   if (
+    server.detaching !== undefined ||
     !server.isRootCurrent(record, sessionId) ||
     server.pendingUserQuestions.get(sessionId) !== question
   )
@@ -97,6 +98,7 @@ export async function checkpointNativeQuestion(server, sessionId, questionId) {
   // No await between the final identity check and cancel. The only interrupted
   // callback is this non-executing question; its answer is stored on recovery.
   if (
+    server.detaching !== undefined ||
     !server.isRootCurrent(record, sessionId) ||
     server.pendingUserQuestions.get(sessionId) !== question
   )
@@ -137,6 +139,7 @@ export async function answerNativeWait(server, params) {
         },
       },
       isCurrent: () =>
+        server.detaching === undefined &&
         server.isRootCurrent(record, params.sessionId) &&
         pendingNativeWait(agent)?.questionId === wait.questionId &&
         agent.status === 'idle',

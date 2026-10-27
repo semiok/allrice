@@ -1024,12 +1024,23 @@ export async function createAllRiceRuntime(
             images.map((image) => ({ ...image, type: 'image' })),
           )
         : [];
-      const contentBlocks = [...(params.contentBlocks ?? []), ...imageBlocks];
+      const blocks = params.contentBlocks ?? [];
+      const encoded = blocks.filter((b) => b.type === 'image' && 'data' in b);
+      const admitted = encoded.length
+        ? await this.ctx.attachments.admitPromptContent(
+            encoded.map((b) => ({
+              type: 'image',
+              data: b.data,
+              mediaType: b.mimeType,
+            })),
+          )
+        : [];
+      let nextImage = 0;
+      const contentBlocks = [
+        ...blocks.map((b) => (encoded.includes(b) ? admitted[nextImage++] : b)),
+        ...imageBlocks,
+      ];
       const record = await this.ensureRoot(params.sessionId);
-      if (!params.sessionReferences?.length && !params.bootstrapReceipt) {
-        this.assertRoot(record, params.sessionId);
-        return this.sdk.prompt({ ...params, contentBlocks });
-      }
       this.assertRoot(record, params.sessionId);
       const agent = record.agent;
       const context = params.sessionReferences?.length
@@ -1575,6 +1586,7 @@ export async function createAllRiceRuntime(
             pendingQuestion,
             flush: () => this.ctx.sessions.flush(record.agent.session),
             isCurrent: () =>
+              this.detaching === undefined &&
               this.isRootCurrent(record, sessionId) &&
               this.pendingUserQuestions.get(sessionId) === pendingQuestion &&
               params.turnId ===
@@ -1841,7 +1853,12 @@ export async function createAllRiceRuntime(
           return nativeUserQuestions(this, requiredSessionId(params));
         case 'session/question-reply':
           requiredSessionId(params);
-          return replyNativeQuestion(this, params);
+          return runAssistantBusinessInput(
+            this.governedAssistants,
+            method,
+            params,
+            () => replyNativeQuestion(this, params),
+          );
         case 'session/interrupt':
           return this.interrupt(params);
         case 'session/steer':

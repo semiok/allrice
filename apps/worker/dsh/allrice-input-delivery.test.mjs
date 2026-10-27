@@ -77,35 +77,45 @@ test('pause ACK mismatch cannot grant a handle; cleanup takes a real release ACK
   assert.doesNotThrow(h.guard);
 });
 
-test('a still-running native input handler blocks pause even after its caller stops waiting', async () => {
-  const h = fixture();
-  let settle;
-  const work = runAssistantBusinessInput(
-    h.runtime,
-    'session/steer',
-    { sessionId: h.agent.id },
-    () =>
-      new Promise((resolve) => {
-        settle = resolve;
-      }),
-  );
-  await assert.rejects(
-    h.runtime.acquireInputDelivery(h.input),
-    /INPUT_GATE_NOT_QUIESCENT/,
-  );
-  assert.deepEqual(h.calls, []);
-  settle({ genuinelyFinished: true });
-  await work;
-  const held = await h.runtime.acquireInputDelivery(h.input);
-  await held.releaseBeforeTurnClose();
-  assert.doesNotThrow(h.guard);
-});
+test.each(['session/steer', 'session/question-reply'])(
+  'a still-running %s handler blocks pause even after its caller stops waiting',
+  async (method) => {
+    const h = fixture();
+    let settle;
+    const work = runAssistantBusinessInput(
+      h.runtime,
+      method,
+      { sessionId: h.agent.id },
+      () =>
+        new Promise((resolve) => {
+          settle = resolve;
+        }),
+    );
+    await assert.rejects(
+      h.runtime.acquireInputDelivery(h.input),
+      /INPUT_GATE_NOT_QUIESCENT/,
+    );
+    assert.deepEqual(h.calls, []);
+    settle({ genuinelyFinished: true });
+    await work;
+    const held = await h.runtime.acquireInputDelivery(h.input);
+    await held.releaseBeforeTurnClose();
+    assert.doesNotThrow(h.guard);
+  },
+);
 
 test('external boolean cannot bypass the short window; internal preparation and other roots stay open', async () => {
   const h = fixture();
   const held = await h.runtime.acquireInputDelivery(h.input);
   assert.equal(held.stillCurrent(), true);
   assert.throws(h.guard, /ASSISTANT_COMPLETING/);
+  assert.throws(
+    () =>
+      assertAssistantBusinessInputOpen(h.runtime, 'session/question-reply', {
+        sessionId: h.agent.id,
+      }),
+    /ASSISTANT_COMPLETING/,
+  );
   assert.doesNotThrow(() =>
     h.runtime.assertBusinessInputOpen({ nativeSessionId: h.agent.id }),
   );
