@@ -1,4 +1,15 @@
 /* AllRice host styling; pinned DSH input styles and composer behavior stay intact. */
+
+/* A visible focus ring at every width while the message box has focus (MET-214
+   D13): 2px, at least 3:1 against the card and the page in both themes. The
+   card's buttons keep their own focus rings. Drawn inside the border box, over
+   the 1px border, so an ancestor's overflow or the narrow side clearance can
+   never clip it. */
+.card:has(> textarea:focus) {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: -2px;
+}
+
 @media (min-width: 761px) {
   .card {
     gap: 11px;
