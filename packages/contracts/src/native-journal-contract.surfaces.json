@@ -310,8 +310,7 @@
             "maxImagesPerMessage": 20,
             "maxMessageImageBytes": 209715200,
             "maxImagePixels": 64000000,
-            "maxImageDimension": 8192,
-            "normalizedImageMaxDimension": 2048
+            "maxImageDimension": 8192
           }
         },
         "sessions": {
@@ -334,8 +333,7 @@
             "maxImagesPerMessage": 20,
             "maxMessageImageBytes": 209715200,
             "maxImagePixels": 64000000,
-            "maxImageDimension": 8192,
-            "normalizedImageMaxDimension": 2048
+            "maxImageDimension": 8192
           }
         },
         "sessions": {
