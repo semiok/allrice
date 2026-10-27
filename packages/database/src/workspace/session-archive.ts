@@ -39,7 +39,7 @@ export async function archiveSessionActivity(
         id: r.id,
         label: ['queued', 'retry_wait'].includes(r.status)
           ? '排队中的工作'
-          : '正在执行或等待处理的工作（含助手）',
+          : '正在执行或等待处理的工作（含子智能体）',
       })),
     });
   if (schedules.length)
