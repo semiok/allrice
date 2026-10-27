@@ -6,6 +6,7 @@
 #   python3 -m unittest discover -s scripts/m1 -p 'test_*.py'
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -29,7 +30,8 @@ case "$*" in
   *M5T_ACTION=test*|*M5T_ACTION=codex*)
     [ ! -e hang ] || { echo "starting"; sleep 30; exit 0; }
     [ ! -e drop ] || { HOME=$PWD /bin/sh -c "$*" | grep -v '^m5-test: done on '; exit 255; }
-    [ ! -e late-drop ] || { HOME=$PWD /bin/sh -c "$*"; exit 255; } ;;
+    [ ! -e late-drop ] || { HOME=$PWD /bin/sh -c "$*"; exit 255; }
+    [ ! -e slept ] || { HOME=$PWD /bin/sh -c "$*"; echo "m5-test: M5 was asleep 40s during this run; it is no verdict"; exit 76; } ;;
 esac
 HOME=$PWD exec /bin/sh -c "$*"
 '''
@@ -38,7 +40,13 @@ PNPM = r'''#!/bin/sh
 echo "$*|$ALLRICE_TEST_DATABASE_URL|${ALLRICE_RUN_DB_INTEGRATION:-}|${ALLRICE_RUN_BROWSER_INTEGRATION:-}|${ALLRICE_RUN_X:-}|${LEAK_ME:-}|$PWD|${M5T_VITEST_CAP:-}|$PGPORT|$HOME|${ALLRICE_NATIVE_ONCE_PROBE_MODULE_BASE:-}" >>"$HOME/pnpm.calls"
 case "$1" in
   install) mkdir -p node_modules/.bin; touch node_modules/kept; cp "$(dirname "$0")/vitest" node_modules/.bin/vitest; exit "$(cat "$HOME/install.rc" 2>/dev/null || echo 0)" ;;
-  exec) [ ! -e "$HOME/hang" ] || { trap '' TERM; echo $$ >"$HOME/hang.pid"; sleep 30; }; echo "vitest says hello"; exit "$(cat "$HOME/vitest.rc" 2>/dev/null || echo 0)" ;;
+  exec) [ ! -e "$HOME/detach" ] || { # a detached process, orphaned at once, that starts a child of its own later
+      ( /usr/bin/python3 -c 'import os,subprocess,sys,time
+os.setsid(); open(sys.argv[1],"w").write(str(os.getpid())); time.sleep(2)
+open(sys.argv[2],"w").write(str(subprocess.Popen(["sleep","120"]).pid)); time.sleep(120)' "$HOME/detached.pid" "$HOME/detached-child.pid" & sleep 1 )
+      [ ! -e "$HOME/postgres-too" ] || { postgres-standin 120 </dev/null >/dev/null 2>&1 & }  # as ensure_pg starts it
+      sleep 3; }
+    [ ! -e "$HOME/hang" ] || { trap '' TERM; echo $$ >"$HOME/hang.pid"; sleep "$(cat "$HOME/hang.seconds" 2>/dev/null || echo 30)"; }; echo "vitest says hello"; exit "$(cat "$HOME/vitest.rc" 2>/dev/null || echo 0)" ;;
 esac
 '''
 VITEST = r'''#!/bin/sh
@@ -74,6 +82,14 @@ echo "Pages active:                              3579860."
 echo "Pages inactive:                                  0."
 '''
 HOLD = 'import fcntl,sys,time\nf=open(sys.argv[1],"a"); fcntl.flock(f,fcntl.LOCK_EX); print("held",flush=True); time.sleep(120)'
+
+
+def signal_all(pids, sig):  # short-lived helpers of a waiting run may be gone already
+    for p in pids:
+        try:
+            os.kill(p, sig)
+        except ProcessLookupError:
+            pass
 
 
 def write(path, text, mode=0o644):
@@ -444,6 +460,145 @@ class M5Test(unittest.TestCase):
             time.sleep(0.2)
         else:
             self.fail('the lease is still held after m5-test was killed')
+
+    def test_run_stops_itself_after_m5_slept(self):
+        write(os.path.join(self.th, 'hang'), '')  # the tests on "M5" hang, ignoring TERM
+        env = dict(os.environ, HOME=self.m1, M5_FAKE_HOME=self.m5, M5_TEST_SSH=self.ssh, M5T_SLEEP_GAP='2', **GIT_ENV)
+        m5 = subprocess.Popen([M5_TEST, '--', 'z.test.ts'], cwd=self.repo, env=env, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True)
+        self.addCleanup(m5.kill)
+        pidfile = os.path.join(self.th, 'hang.pid')
+        for _ in range(100):
+            if read(pidfile):
+                break
+            time.sleep(0.1)
+        hung = int(read(pidfile))
+        owner = read(os.path.join(self.base, 'locks/slot-1.owner'))
+        run, runner = owner.split()[0], int(owner.split(' pid ')[1])
+        ps = subprocess.run(['ps', '-axo', 'pid=,ppid='], capture_output=True, text=True).stdout.split()
+        parent = dict(zip(map(int, ps[0::2]), map(int, ps[1::2])))
+        tree, added = {runner, parent[runner]}, True  # the guard is the runner's parent
+        while added:
+            added = False
+            for p, pp in parent.items():
+                if p not in tree and pp in tree:
+                    tree.add(p)
+                    added = True
+        signal_all(tree, signal.SIGSTOP)  # the lid closes: everything of the run stops, the guard too ...
+        time.sleep(3)
+        signal_all(tree, signal.SIGCONT)  # ... and M5 wakes up
+        out, _ = m5.communicate(timeout=60)
+        for _ in range(50):
+            try:
+                os.kill(hung, 0)
+            except OSError:
+                break
+            time.sleep(0.2)
+        else:
+            self.fail('the hung test process kept running after M5 woke up')
+        self.assertIn('%s stopped after M5 was asleep' % run, read(os.path.join(self.base, 'stopped.log')) or '')
+        self.assertIn('M5 中断', out)
+        self.assertIn('finished on M1 (M5 dropped out mid-run', out)
+
+    def test_run_waiting_for_room_stops_after_m5_slept(self):
+        self.limits(RUNS=1)
+        lock = os.path.join(self.base, 'locks/slot-1.lock')
+        write(lock.replace('.lock', '.owner'), '20000101-000000-cccccccc-3 cccccccc by other since 01:00 (test, 8 workers) pid 1\n')
+        other = self.hold(lock)
+        self.hold(os.path.join(self.leases, '20000101-000000-cccccccc-3.lease'))  # another session's live run
+        env = dict(os.environ, HOME=self.m1, M5_FAKE_HOME=self.m5, M5_TEST_SSH=self.ssh, M5T_SLEEP_GAP='2', **GIT_ENV)
+        m5 = subprocess.Popen([M5_TEST, '--wait', '120', '--', 'y.test.ts'], cwd=self.repo, env=env,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        self.addCleanup(m5.kill)
+        guard = None
+        for _ in range(100):  # the run is queued on "M5", its guard above it
+            ps = subprocess.run(['ps', '-axww', '-o', 'pid=,command='], capture_output=True, text=True).stdout
+            found = [int(l.split()[0]) for l in ps.splitlines()  # this test's guard, not the runner (whose text holds it too)
+                     if 'import os,select,signal' in l and 'bash -c' not in l.split('import os,select,signal')[0]
+                     and self.base + '/stopped.log' in l]
+            if found:
+                guard = found[0]
+                break
+            time.sleep(0.1)
+        self.assertIsNotNone(guard)
+        time.sleep(1)
+        ps = subprocess.run(['ps', '-axo', 'pid=,ppid='], capture_output=True, text=True).stdout.split()
+        parent = dict(zip(map(int, ps[0::2]), map(int, ps[1::2])))
+        tree, added = {guard}, True
+        while added:
+            added = False
+            for p, pp in parent.items():
+                if p not in tree and pp in tree:
+                    tree.add(p)
+                    added = True
+        signal_all(tree, signal.SIGSTOP)
+        time.sleep(3)
+        signal_all(tree, signal.SIGCONT)
+        out, _ = m5.communicate(timeout=60)
+        self.assertIn('stopped after M5 was asleep', read(os.path.join(self.base, 'stopped.log')) or '')
+        self.assertEqual(self.calls(self.th), [])  # it never started on M5
+        self.assertIsNone(other.poll())  # the other session's run is not ours to stop
+        self.assertIn('finished on M1 (M5 dropped out mid-run', out)
+
+    def test_closing_line_then_slept_is_no_verdict(self):
+        write(os.path.join(self.m5, 'slept'), '')  # the guard saw the sleep after the run had printed its result
+        write(os.path.join(self.m1, 'vitest.rc'), '1\n')
+        p = self.run_m5('--', 's.test.ts')
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)  # M1's verdict, not M5's 0
+        self.assertIn('done on M5', p.stdout)
+        self.assertIn('M5 中断：运行中 M5 睡过（不算测试失败），改在 M1 从头重跑', p.stdout)
+        self.assertIn('finished on M1 (M5 dropped out mid-run', p.stdout)
+
+    def test_detached_process_of_a_run_goes_with_it(self):
+        write(os.path.join(self.th, 'detach'), '')  # a test starts something in a session of its own
+        write(os.path.join(self.th, 'postgres-too'), '')
+        standin = os.path.join(self.m5, PG, 'postgres-standin')  # anything from the test Postgres' bin directory
+        write(standin, '#!/usr/bin/python3\nimport os, sys, time\nos.setsid()  # as pg_ctl starts the postmaster\n'
+                       'open(os.environ["HOME"] + "/postgres.pid", "w").write(str(os.getpid()))\ntime.sleep(int(sys.argv[1]))\n', 0o755)
+        # a localised ps (lstart in Chinese) must not hide the run's processes
+        p = self.run_m5('--', 'u.test.ts', M5T_SLEEP_GAP='2', LC_ALL='zh_CN.UTF-8', LANG='zh_CN.UTF-8')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn('finished on M5, exit 0', p.stdout)
+        for name in ('detached.pid', 'detached-child.pid'):
+            pid = int(read(os.path.join(self.th, name)))
+            for _ in range(50):
+                try:
+                    os.kill(pid, 0)
+                except OSError:
+                    break
+                time.sleep(0.2)
+            else:
+                os.kill(pid, signal.SIGKILL)
+                self.fail('%s outlived the run' % name)
+        postgres = int(read(os.path.join(self.th, 'postgres.pid')))
+        self.addCleanup(signal_all, [postgres], signal.SIGKILL)
+        os.kill(postgres, 0)  # still there: the test Postgres is no process of the run
+
+    def test_short_pause_and_normal_end(self):
+        env = dict(os.environ, HOME=self.m1, M5_FAKE_HOME=self.m5, M5_TEST_SSH=self.ssh, M5T_SLEEP_GAP='4', **GIT_ENV)
+        write(os.path.join(self.th, 'hang'), '')
+        write(os.path.join(self.th, 'hang.seconds'), '3')
+        m5 = subprocess.Popen([M5_TEST, '--', 'v.test.ts'], cwd=self.repo, env=env, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True)
+        self.addCleanup(m5.kill)
+        for _ in range(100):
+            if read(os.path.join(self.th, 'hang.pid')):
+                break
+            time.sleep(0.1)
+        owner = read(os.path.join(self.base, 'locks/slot-1.owner'))
+        runner = int(owner.split(' pid ')[1])
+        ps = subprocess.run(['ps', '-axo', 'pid=,ppid='], capture_output=True, text=True).stdout.split()
+        parent = dict(zip(map(int, ps[0::2]), map(int, ps[1::2])))
+        guard = parent[runner]
+        signal_all([guard, runner], signal.SIGSTOP)  # a pause well under the limit
+        time.sleep(0.5)
+        signal_all([guard, runner], signal.SIGCONT)
+        out, _ = m5.communicate(timeout=60)
+        self.assertIn('finished on M5, exit 0', out)  # not stopped
+        self.assertFalse(os.path.exists(os.path.join(self.base, 'stopped.log')))
+        time.sleep(0.5)
+        with self.assertRaises(ProcessLookupError):  # the guard went with the run
+            os.kill(guard, 0)
 
     def test_silent_run_reruns_on_m1(self):
         write(os.path.join(self.m5, 'hang'), '')
