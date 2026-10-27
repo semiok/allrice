@@ -75,8 +75,9 @@
   place-items: center;
   border: 2px solid var(--dsw-alias-bg-base);
   border-radius: 12px;
-  background: light-dark(#da5269, #f07891);
-  color: white;
+  /* DSH's primary fill and its foreground, a pair readable in both themes. */
+  background: var(--dsw-alias-button-primary-fill);
+  color: var(--dsw-alias-label-primary-foreground);
   font-size: 10px;
   line-height: 1;
   font-weight: 600;

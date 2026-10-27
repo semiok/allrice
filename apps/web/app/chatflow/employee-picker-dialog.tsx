@@ -17,6 +17,7 @@ import {
 } from './employee-navigation';
 import css from './employee-sidebar.module.css';
 import dialog from './compact-dialog.module.css';
+import eyebrow from './dialog-eyebrow.module.css';
 import createCss from './employee-create.module.css';
 import formCss from './employee-profile-form.module.css';
 import {
@@ -101,7 +102,9 @@ export function EmployeePickerDialog({
       ariaLabel={creating ? '创建自己的 AI 员工' : '选择 AI 员工'}
       eyebrow={creating ? undefined : '新的工作'}
       title={creating ? '创建自己的 AI 员工' : '这次和谁一起工作？'}
-      className={creating ? formCss.dialog : dialog.dialog}
+      className={
+        creating ? formCss.dialog : `${dialog.dialog} ${eyebrow.readable}`
+      }
       bodyClassName={creating ? formCss.body : dialog.body}
       onClose={() => {
         if (!active.current) onClose();

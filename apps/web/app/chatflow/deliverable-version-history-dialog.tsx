@@ -5,6 +5,7 @@ import type { DeliverableVersion } from '@allrice/contracts';
 import type { WorkspaceFile } from './chatflow-types';
 import { DshDialog } from './dsh-upstream/Dialog';
 import styles from './dsh-saas.module.css';
+import eyebrow from './dialog-eyebrow.module.css';
 
 interface DeliverableVersionHistoryDialogProps {
   file: WorkspaceFile | null;
@@ -25,6 +26,7 @@ export function DeliverableVersionHistoryDialog({
     <DshDialog
       ariaLabel={`${file.fileName} 的版本历史`}
       eyebrow="Rice 交付物"
+      className={eyebrow.readable}
       onClose={onClose}
       title="版本历史"
     >

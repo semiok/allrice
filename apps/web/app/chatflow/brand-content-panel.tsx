@@ -28,6 +28,7 @@ import {
 } from '@allrice/contracts';
 import { DshDialog } from './dsh-upstream/Dialog';
 import css from './brand-content-panel.module.css';
+import eyebrow from './dialog-eyebrow.module.css';
 import { BrandFeedbackPanel } from './brand-feedback-panel';
 
 const FileSchema = BrandContentFileRefSchema.extend({
@@ -499,7 +500,7 @@ function BrandContentReader(props: BrandContentPanelProps) {
       title="内容工作台"
       eyebrow={props.employeeName}
       onClose={props.onClose}
-      className={css.dialog}
+      className={`${css.dialog} ${eyebrow.readable}`}
       bodyClassName={css.body}
     >
       <div className={css.toolbar}>

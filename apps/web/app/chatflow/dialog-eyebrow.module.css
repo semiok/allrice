@@ -1,0 +1,6 @@
+/* DSH Dialog paints its eyebrow caption grey (2.13:1 light, 3.76:1 dark;
+   MET-214 dark audit D07). A dialog that shows an eyebrow adds this class to
+   its DshDialog; DshDialog itself stays as DSH ships it. */
+.readable > header p {
+  color: var(--dsw-alias-label-secondary);
+}
