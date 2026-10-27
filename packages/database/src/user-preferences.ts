@@ -9,6 +9,10 @@ import {
 import type { Sql, TransactionSql } from 'postgres';
 import { getDatabase } from './core/client.ts';
 import { DataAccessError } from './data.ts';
+import {
+  readRuntimePolicyControls,
+  RuntimePolicyError,
+} from './runtime-policy.ts';
 
 type PreferenceRow = {
   streaming_output: boolean;
@@ -18,8 +22,8 @@ type PreferenceRow = {
   appearance: UserPreferences['appearance'];
   question_wait_mode: QuestionWait['mode'];
   question_wait_seconds: number | null;
-  subagent_max_depth: number;
-  subagent_max_active: number;
+  subagent_max_depth: number | null;
+  subagent_max_active: number | null;
   updated_at: Date;
 };
 
@@ -97,8 +101,10 @@ export async function updateUserPreferences(
       question_wait_seconds=case when ${input.questionWait ? 1 : 0}::integer=1
         then ${input.questionWait?.mode === 'timed' ? input.questionWait.seconds : null}::integer
         else allrice_user_preferences.question_wait_seconds end,
-      subagent_max_depth=coalesce(${input.subagents?.maxDepth ?? null}::bigint, allrice_user_preferences.subagent_max_depth),
-      subagent_max_active=coalesce(${input.subagents?.maxActive ?? null}::bigint, allrice_user_preferences.subagent_max_active),
+      subagent_max_depth=case when ${input.subagents !== undefined}::boolean
+        then excluded.subagent_max_depth else allrice_user_preferences.subagent_max_depth end,
+      subagent_max_active=case when ${input.subagents !== undefined}::boolean
+        then excluded.subagent_max_active else allrice_user_preferences.subagent_max_active end,
       updated_at=clock_timestamp()
     returning ${columns(sql)}
   `;
@@ -107,8 +113,10 @@ export async function updateUserPreferences(
 
 /**
  * MET-210: the agent preferences one Run is frozen with, read for the session
- * owner when the Run is prepared. A denied assistant.delegate decision freezes
+ * owner when the Run is queued. A denied assistant.delegate decision freezes
  * maxDepth to 0; policy evaluation stays with the shared runtime decision.
+ * Only company policy is read: PR3a-2 retires the member assistants switch,
+ * so this is the final semantics. Until PR3a-2 these frozen values are unused.
  */
 export async function freezeNativePreferences(
   sql: Sql | TransactionSql,
@@ -119,12 +127,19 @@ export async function freezeNativePreferences(
     from allrice_user_preferences where user_id=${scope.userId}
   `;
   const preferences = row ? preferenceView(row) : defaultUserPreferences;
-  const [control] = await sql<{ controls: unknown }[]>`
-    select controls from allrice_runtime_policy_controls
-    where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}`;
+  const controls = await readRuntimePolicyControls(sql, scope, false).catch(
+    (error: unknown) => {
+      if (
+        error instanceof RuntimePolicyError &&
+        error.code === 'runtime_policy_missing_or_invalid'
+      )
+        return null;
+      throw error;
+    },
+  );
   const delegationClosed =
-    runtimePolicyActionDecision(control?.controls, 'assistant.delegate')
-      .effect === 'deny';
+    runtimePolicyActionDecision(controls, 'assistant.delegate').effect ===
+    'deny';
   return {
     version: 1 as const,
     questionWait: preferences.questionWait,

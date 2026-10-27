@@ -61,17 +61,17 @@ suite('MET-210 agent preferences frozen into each Run', () => {
     expect(await frozen(f)).toEqual({
       version: 1,
       questionWait: { mode: 'default' },
-      subagents: { maxDepth: 0, maxActive: 8 },
+      subagents: { maxDepth: 0, maxActive: null },
     });
   });
 
-  it('freezes DSH defaults when the tenant allows delegation and the member never chose', async () => {
+  it('freezes null overrides when the tenant allows delegation and the member never chose', async () => {
     const f = await createExperienceFixture(isolated.db);
     await policy(f, controls('allow'));
     expect(await frozen(f)).toEqual({
       version: 1,
       questionWait: { mode: 'default' },
-      subagents: { maxDepth: 1, maxActive: 8 },
+      subagents: { maxDepth: null, maxActive: null },
     });
   });
 
@@ -93,6 +93,16 @@ suite('MET-210 agent preferences frozen into each Run', () => {
     expect(await frozen(f)).toMatchObject({
       questionWait: { mode: 'forever' },
       subagents: { maxDepth: 2, maxActive: 3 },
+    });
+    expect(await snapshotOf(firstRun)).toEqual(first);
+    await updateUserPreferences(f.owner, {
+      questionWait: { mode: 'default' },
+      subagents: { maxDepth: null, maxActive: null },
+    });
+    expect(await frozen(f)).toEqual({
+      version: 1,
+      questionWait: { mode: 'default' },
+      subagents: { maxDepth: null, maxActive: null },
     });
     expect(await snapshotOf(firstRun)).toEqual(first);
   });
@@ -147,7 +157,22 @@ suite('MET-210 agent preferences frozen into each Run', () => {
     const f = await createExperienceFixture(isolated.db);
     await policy(f, { version: 1, rules: 'not a policy' });
     expect(await frozen(f)).toMatchObject({
-      subagents: { maxDepth: 0, maxActive: 8 },
+      subagents: { maxDepth: 0, maxActive: null },
+    });
+  });
+
+  it('closes delegation for a policy version mismatch without overwriting the saved choice', async () => {
+    const f = await createExperienceFixture(isolated.db);
+    await updateUserPreferences(f.owner, {
+      subagents: { maxDepth: 4, maxActive: null },
+    });
+    // The stored row remains version 1; its otherwise valid JSON says 2.
+    await policy(f, { ...controls('allow'), version: 2 });
+    expect(await frozen(f)).toMatchObject({
+      subagents: { maxDepth: 0, maxActive: null },
+    });
+    expect(await getUserPreferences(f.owner)).toMatchObject({
+      subagents: { maxDepth: 4, maxActive: null },
     });
   });
 });

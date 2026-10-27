@@ -193,7 +193,7 @@ suite('account output preferences', () => {
       appearance: 'dark',
       fontSize: 18,
       questionWait: { mode: 'timed', seconds: 300 },
-      subagents: { maxDepth: 1, maxActive: 8 },
+      subagents: { maxDepth: null, maxActive: null },
     });
     await updateUserPreferences(f.owner, {
       subagents: { maxDepth: 0, maxActive: 12 },
@@ -217,6 +217,32 @@ suite('account output preferences', () => {
       fixture.db`update allrice_user_preferences set question_wait_mode='timed' where user_id=${f.owner.actor.id}`,
     ).rejects.toThrow(/check constraint/);
     expect(await getUserPreferences(f.owner)).toEqual(forever);
+  });
+  it('resets either subagent override to null without changing other preferences', async () => {
+    const f = await createExperienceFixture(fixture.db);
+    await updateUserPreferences(f.owner, {
+      appearance: 'dark',
+      questionWait: { mode: 'timed', seconds: 300 },
+      subagents: { maxDepth: 2, maxActive: 3 },
+    });
+    for (const subagents of [
+      { maxDepth: null, maxActive: 3 },
+      { maxDepth: 2, maxActive: null },
+      { maxDepth: null, maxActive: null },
+    ]) {
+      const saved = await updateUserPreferences(f.owner, { subagents });
+      expect(saved).toMatchObject({
+        appearance: 'dark',
+        questionWait: { mode: 'timed', seconds: 300 },
+        subagents,
+      });
+      expect(await getUserPreferences(f.owner)).toEqual(saved);
+    }
+    await updateUserPreferences(f.owner, { streamingOutput: false });
+    expect(await getUserPreferences(f.owner)).toMatchObject({
+      streamingOutput: false,
+      subagents: { maxDepth: null, maxActive: null },
+    });
   });
   // Rebuilds the pre-0222 column set inside this suite's schema.
   it('migration 0222 sets existing rows to light and keeps their other choices', async () => {
@@ -259,7 +285,7 @@ suite('account output preferences', () => {
       appearance: 'light',
       // MET-210 0223 defaults, untouched by re-running 0222.
       questionWait: { mode: 'default' },
-      subagents: { maxDepth: 1, maxActive: 8 },
+      subagents: { maxDepth: null, maxActive: null },
       updatedAt: before!.updated_at.toISOString(),
     });
     // The runner records each file once; a manual second run fails unchanged.
@@ -267,7 +293,7 @@ suite('account output preferences', () => {
     expect((await getUserPreferences(f.owner)).appearance).toBe('light');
   });
 
-  it('migration 0223 adds DSH defaults to existing rows and enforces native ranges', async () => {
+  it('migration 0223 leaves DSH defaults unset on existing and new rows and enforces native ranges', async () => {
     const f = await createExperienceFixture(fixture.db);
     const before = await updateUserPreferences(f.owner, {
       streamingOutput: false,
@@ -293,6 +319,14 @@ suite('account output preferences', () => {
       });
     await migrate();
     expect(await getUserPreferences(f.owner)).toEqual(before);
+    expect(before.subagents).toEqual({ maxDepth: null, maxActive: null });
+    const [inserted] = await fixture.db`
+      insert into allrice_user_preferences(user_id) values (${f.neighbor.actor.id})
+      returning subagent_max_depth, subagent_max_active`;
+    expect(inserted).toEqual({
+      subagent_max_depth: null,
+      subagent_max_active: null,
+    });
     await expect(migrate()).rejects.toThrow(/already exists/);
 
     for (const assignment of [

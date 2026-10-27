@@ -17,12 +17,12 @@ describe('personal display preference compatibility', () => {
 
 // MET-210 (user 10-27): DSH's own ranges and defaults, no AllRice cap.
 describe('agent preferences follow DSH', () => {
-  it('reads an older saved snapshot with DSH defaults', () => {
+  it('reads an older saved snapshot without pinning DSH defaults', () => {
     expect(
       UserPreferencesSchema.parse({ streamingOutput: true, updatedAt: null }),
     ).toMatchObject({
       questionWait: { mode: 'default' },
-      subagents: { maxDepth: 1, maxActive: 8 },
+      subagents: { maxDepth: null, maxActive: null },
     });
   });
   it.each([
@@ -39,11 +39,15 @@ describe('agent preferences follow DSH', () => {
     expect(QuestionWaitSchema.safeParse(value).success).toBe(valid);
   });
   it.each([
+    [{ maxDepth: null, maxActive: null }, true],
+    [{ maxDepth: null, maxActive: 8 }, true],
+    [{ maxDepth: 0, maxActive: null }, true],
     [{ maxDepth: 0, maxActive: 1 }, true],
     [{ maxDepth: Number.MAX_SAFE_INTEGER, maxActive: 100 }, true],
     [{ maxDepth: -1, maxActive: 1 }, false],
     [{ maxDepth: 1, maxActive: 0 }, false],
     [{ maxDepth: 1 }, false],
+    [{ maxDepth: null }, false],
   ])('subagents %j is valid: %s', (value, valid) => {
     expect(SubagentPreferencesSchema.safeParse(value).success).toBe(valid);
   });
