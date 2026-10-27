@@ -21,9 +21,6 @@ integration('MET-210 native Todo defaults through the AllRice host', () => {
   let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
   beforeAll(async () => {
     expect(process.env.DATABASE_URL).toBeUndefined();
-    // Required only to create the shared isolated authority fixture. The host
-    // below receives no assistant controller or assistant tools.
-    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
     database = await createAssistantFixtureDatabase();
     vi.spyOn(databaseClient, 'getDatabase').mockReturnValue(database.db);
   }, 120_000);
@@ -62,9 +59,15 @@ integration('MET-210 native Todo defaults through the AllRice host', () => {
       requestTimeoutMs: 15_000,
     });
     try {
+      // Only fixture creation needs assistants enabled. Restore the caller's
+      // setting before exercising the host without any assistant tools.
+      const assistantsEnabled = process.env.ALLRICE_ASSISTANTS_ENABLED;
+      vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
       const f = await createAssistantAuthorityFixture(database.db, {
         configure: false,
         allowedTools: [],
+      }).finally(() => {
+        vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', assistantsEnabled);
       });
       await adapter.execute({
         kernel: {
@@ -145,6 +148,13 @@ integration('MET-210 native Todo defaults through the AllRice host', () => {
         ),
       ).toHaveLength(1);
       expect(model.requests).toHaveLength(4);
+      expect(
+        JSON.stringify(
+          model.requests[3]!.messages.filter(({ role }) => role === 'user'),
+        ),
+      ).toContain(
+        'You are repeating the exact same tool call with identical arguments.',
+      );
       expect(JSON.stringify(model.requests[0]!.messages)).toContain(request);
     } finally {
       await adapter.close();

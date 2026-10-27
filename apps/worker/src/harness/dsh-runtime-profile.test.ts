@@ -1,8 +1,10 @@
 import { DSH_DISTRIBUTION_CURRENT_VERSION } from './dsh-distribution.js';
-import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
+import { Context } from '@deepseek-ai/cordis';
 import LocalAttachmentStore, {
   DEFAULT_NORMALIZED_IMAGE_MAX_DIMENSION,
 } from '@deepseek-ai/dsh-attachment-local';
@@ -26,6 +28,20 @@ const deniedHostPlugins = [
   '@deepseek-ai/dsh-subagent',
   '@deepseek-ai/dsh-dynamic-plugin',
 ] as const;
+
+async function readProfile(name: string) {
+  return parseDocument(
+    await readFile(
+      resolve(import.meta.dirname, `../../dsh/${name}.cordis.yml`),
+      'utf8',
+    ),
+    {
+      customTags: [
+        { tag: 'tag:yaml.org,2002:js', resolve: (value: string) => value },
+      ],
+    },
+  ).toJS() as { id: string; config?: Record<string, unknown> }[];
+}
 
 describe('AllRice restricted DSH profile', () => {
   it('pins the approved MET-91 first batch without adding host capabilities', async () => {
@@ -57,17 +73,7 @@ describe('AllRice restricted DSH profile', () => {
   it.each(['allrice-restricted', 'allrice-technical'])(
     '%s uses native image and repeat defaults and the standard Todo policy',
     async (name) => {
-      const profile = parseDocument(
-        await readFile(
-          resolve(import.meta.dirname, `../../dsh/${name}.cordis.yml`),
-          'utf8',
-        ),
-        {
-          customTags: [
-            { tag: 'tag:yaml.org,2002:js', resolve: (value: string) => value },
-          ],
-        },
-      ).toJS() as { id: string; config?: Record<string, unknown> }[];
+      const profile = await readProfile(name);
       const attachments = profile.find(({ id }) => id === 'attachments')!;
       expect(attachments.config).not.toHaveProperty(
         'normalizedImageMaxDimension',
@@ -87,6 +93,41 @@ describe('AllRice restricted DSH profile', () => {
       if (name === 'allrice-restricted')
         expect(todo?.config?.allowParallelInProgress).toBe(true);
       else expect(todo).toBeUndefined();
+    },
+  );
+
+  it.each(['allrice-restricted', 'allrice-technical'])(
+    '%s preserves the 4096px long edge of a stored 4096x256 PNG',
+    async (name) => {
+      const profile = await readProfile(name);
+      const attachments = profile.find(({ id }) => id === 'attachments')!;
+      const root = await realpath(
+        await mkdtemp(join(tmpdir(), 'allrice-dsh-image-defaults-')),
+      );
+      const ctx = new Context();
+      try {
+        const store = new LocalAttachmentStore(ctx, {
+          ...LocalAttachmentStore.Config(attachments.config),
+          dshHome: root,
+        });
+        // A valid 4096x256 monochrome PNG, below the native pixel/byte budgets.
+        // The former 2048px override would downscale it to 2048x128.
+        const ref = await store.saveImage({
+          mediaType: 'image/png',
+          data: Buffer.from(
+            'iVBORw0KGgoAAAANSUhEUgAAEAAAAAEAAQAAAAAbcY7AAAAAlUlEQVR42u3BAQ0AAADCoPdP7ewBFAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA3AR4AAY/4QuAAAAAASUVORK5CYII=',
+            'base64',
+          ),
+          name: 'wide.png',
+        });
+        // Native reads decode the persisted bytes and verify their dimensions
+        // against the reference, so this also checks the image on disk.
+        const stored = await store.readImage(ref);
+        expect(stored.ref).toMatchObject({ width: 4096, height: 256 });
+      } finally {
+        await ctx.root.fiber.dispose();
+        await rm(root, { recursive: true, force: true });
+      }
     },
   );
 
