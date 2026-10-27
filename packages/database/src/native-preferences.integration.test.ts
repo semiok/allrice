@@ -4,7 +4,10 @@ import type * as Client from './core/client.ts';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 import { createExperienceFixture } from './experience.fixture.ts';
 import { sendChatMessage } from './workspace/service.ts';
-import { updateUserPreferences } from './user-preferences.ts';
+import {
+  getUserPreferences,
+  updateUserPreferences,
+} from './user-preferences.ts';
 
 let isolated: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
 vi.mock('./core/client.ts', async (original) => ({
@@ -53,8 +56,18 @@ suite('MET-210 agent preferences frozen into each Run', () => {
     await isolated?.close();
   });
 
-  it('freezes DSH defaults for a member who never chose', async () => {
+  it('freezes default preferences with delegation closed when no policy is stored', async () => {
     const f = await createExperienceFixture(isolated.db);
+    expect(await frozen(f)).toEqual({
+      version: 1,
+      questionWait: { mode: 'default' },
+      subagents: { maxDepth: 0, maxActive: 8 },
+    });
+  });
+
+  it('freezes DSH defaults when the tenant allows delegation and the member never chose', async () => {
+    const f = await createExperienceFixture(isolated.db);
+    await policy(f, controls('allow'));
     expect(await frozen(f)).toEqual({
       version: 1,
       questionWait: { mode: 'default' },
@@ -64,6 +77,7 @@ suite('MET-210 agent preferences frozen into each Run', () => {
 
   it('freezes the saved choice at the next message, and an earlier Run keeps its own', async () => {
     const f = await createExperienceFixture(isolated.db);
+    await policy(f, controls('allow'));
     await updateUserPreferences(f.owner, {
       questionWait: { mode: 'timed', seconds: 300 },
       subagents: { maxDepth: 2, maxActive: 3 },
@@ -87,7 +101,7 @@ suite('MET-210 agent preferences frozen into each Run', () => {
     ['deny', 0],
     ['ask', 0],
     ['allow', 4],
-    [undefined, 4],
+    [undefined, 0],
   ] as const)(
     'a tenant assistant.delegate %s rule freezes subagent depth %i',
     async (effect, maxDepth) => {
@@ -99,8 +113,35 @@ suite('MET-210 agent preferences frozen into each Run', () => {
       expect(await frozen(f)).toMatchObject({
         subagents: { maxDepth, maxActive: 2 },
       });
+      expect(await getUserPreferences(f.owner)).toMatchObject({
+        subagents: { maxDepth: 4, maxActive: 2 },
+      });
     },
   );
+
+  it.each([
+    ['disabled', { ...controls('allow'), enabled: false }],
+    ['plan only', { ...controls('allow'), mode: 'plan_only' }],
+    [
+      'explicit deny alongside allow',
+      {
+        ...controls('allow'),
+        rules: [
+          { action: 'assistant.delegate', effect: 'allow' },
+          { action: 'assistant.delegate', effect: 'deny' },
+        ],
+      },
+    ],
+  ])('closes delegation for a %s policy even with allow', async (_, value) => {
+    const f = await createExperienceFixture(isolated.db);
+    await updateUserPreferences(f.owner, {
+      subagents: { maxDepth: 4, maxActive: 2 },
+    });
+    await policy(f, value);
+    expect(await frozen(f)).toMatchObject({
+      subagents: { maxDepth: 0, maxActive: 2 },
+    });
+  });
 
   it('a stored policy that does not parse closes delegation', async () => {
     const f = await createExperienceFixture(isolated.db);

@@ -1,6 +1,6 @@
 import {
   defaultUserPreferences,
-  RuntimePolicyControlsSchema,
+  runtimePolicyActionDecision,
   UserPreferencesInputSchema,
   type QuestionWait,
   type RequestContext,
@@ -107,8 +107,8 @@ export async function updateUserPreferences(
 
 /**
  * MET-210: the agent preferences one Run is frozen with, read for the session
- * owner when the Run is prepared. The tenant's assistant.delegate deny or ask
- * rule (the gate) freezes maxDepth to 0; the policy itself is not changed.
+ * owner when the Run is prepared. A denied assistant.delegate decision freezes
+ * maxDepth to 0; policy evaluation stays with the shared runtime decision.
  */
 export async function freezeNativePreferences(
   sql: Sql | TransactionSql,
@@ -122,19 +122,9 @@ export async function freezeNativePreferences(
   const [control] = await sql<{ controls: unknown }[]>`
     select controls from allrice_runtime_policy_controls
     where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}`;
-  // A stored policy that does not parse closes delegation, as the runtime
-  // policy evaluator treats it; no stored policy leaves the preference.
-  const controls = control
-    ? RuntimePolicyControlsSchema.safeParse(control.controls)
-    : null;
   const delegationClosed =
-    controls !== null &&
-    (!controls.success ||
-      controls.data.rules.some(
-        (rule) =>
-          rule.action === 'assistant.delegate' &&
-          (rule.effect === 'deny' || rule.effect === 'ask'),
-      ));
+    runtimePolicyActionDecision(control?.controls, 'assistant.delegate')
+      .effect === 'deny';
   return {
     version: 1 as const,
     questionWait: preferences.questionWait,

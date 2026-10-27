@@ -218,7 +218,7 @@ suite('account output preferences', () => {
     ).rejects.toThrow(/check constraint/);
     expect(await getUserPreferences(f.owner)).toEqual(forever);
   });
-  // Runs last: it rebuilds the pre-0222 column set inside this suite's schema.
+  // Rebuilds the pre-0222 column set inside this suite's schema.
   it('migration 0222 sets existing rows to light and keeps their other choices', async () => {
     const f = await createExperienceFixture(fixture.db);
     await updateUserPreferences(f.owner, {
@@ -265,5 +265,64 @@ suite('account output preferences', () => {
     // The runner records each file once; a manual second run fails unchanged.
     await expect(migrate()).rejects.toThrow(/already exists/);
     expect((await getUserPreferences(f.owner)).appearance).toBe('light');
+  });
+
+  it('migration 0223 adds DSH defaults to existing rows and enforces native ranges', async () => {
+    const f = await createExperienceFixture(fixture.db);
+    const before = await updateUserPreferences(f.owner, {
+      streamingOutput: false,
+      fontSize: 18,
+      appearance: 'dark',
+    });
+    const [scope] = await fixture.db<
+      { schema: string }[]
+    >`select current_schema() as schema`;
+    const schema = scope!.schema;
+    expect(schema).toMatch(/^p25_[a-f0-9]{32}$/);
+    await fixture.db.unsafe(`alter table "${schema}".allrice_user_preferences
+      drop column question_wait_mode, drop column question_wait_seconds,
+      drop column subagent_max_depth, drop column subagent_max_active`);
+    const migration = await readFile(
+      new URL('../migrations/0223_agent_preferences.sql', import.meta.url),
+      'utf8',
+    );
+    const migrate = () =>
+      fixture.db.begin(async (tx) => {
+        await tx.unsafe(`set local search_path to "${schema}"`);
+        await tx.unsafe(migration);
+      });
+    await migrate();
+    expect(await getUserPreferences(f.owner)).toEqual(before);
+    await expect(migrate()).rejects.toThrow(/already exists/);
+
+    for (const assignment of [
+      "question_wait_mode='invalid'",
+      "question_wait_mode='timed', question_wait_seconds=null",
+      'question_wait_seconds=1',
+      "question_wait_mode='timed', question_wait_seconds=0",
+      "question_wait_mode='timed', question_wait_seconds=2147484",
+      'subagent_max_depth=-1',
+      'subagent_max_depth=9007199254740992',
+      'subagent_max_active=0',
+      'subagent_max_active=9007199254740992',
+    ])
+      await expect(
+        fixture.db.unsafe(
+          `update "${schema}".allrice_user_preferences set ${assignment} where user_id=$1`,
+          [f.owner.actor.id],
+        ),
+      ).rejects.toThrow(/check constraint/);
+    expect(await getUserPreferences(f.owner)).toEqual(before);
+
+    // BIGINT storage must round-trip the entire DSH safe-integer range.
+    const upper = {
+      questionWait: { mode: 'timed', seconds: 2_147_483 },
+      subagents: {
+        maxDepth: Number.MAX_SAFE_INTEGER,
+        maxActive: Number.MAX_SAFE_INTEGER,
+      },
+    };
+    expect(await updateUserPreferences(f.owner, upper)).toMatchObject(upper);
+    expect(await getUserPreferences(f.owner)).toMatchObject(upper);
   });
 });
