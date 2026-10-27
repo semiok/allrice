@@ -114,8 +114,10 @@ jobs:
 
   validate:
     runs-on: ubuntu-latest
-    # Native regressions and production builds reached the 20m cap after tests passed.
-    timeout-minutes: 25
+    # pnpm test alone takes 15-17m, and with typecheck and the production build the
+    # job runs 22-25m; at a 25m cap, runs whose every step passed were cancelled
+    # (10-26: 40372081746, 40376496547). Speeding up or splitting it: MET-220.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - name: Capture actual checked-out repository identity
