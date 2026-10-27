@@ -162,9 +162,12 @@ function PersonalPreferencesSettings({
                 void preferences
                   .setPreferences({ appearance: option.value })
                   .then((saved) => {
-                    if (saved) return;
-                    setAppearance(previous);
-                    void reloadAppearance();
+                    // Saved: also drops any read that started before it.
+                    if (saved) setAppearance(option.value);
+                    else {
+                      setAppearance(previous);
+                      void reloadAppearance();
+                    }
                   });
               }}
             >

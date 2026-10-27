@@ -23,6 +23,20 @@ describe('root layout structure', () => {
     expect(layoutSource).not.toMatch(/AppShell|app-shell/);
   });
 
+  it.each(['chatflow', 'workspace', 'automation'])(
+    'paints the saved appearance before any %s content',
+    (segment) => {
+      const source = readFileSync(
+        new URL(`./${segment}/layout.tsx`, import.meta.url),
+        'utf8',
+      );
+      expect(source).toMatch(
+        /return \(\s*<>\s*<AppearanceScript \/>\s*\{children\}\s*<\/>\s*\);/,
+      );
+      expect(source).not.toMatch(/Suspense|loading/);
+    },
+  );
+
   it('keeps the global stylesheet cascade explicit and stable', () => {
     const expectedImports = [
       "import './dsh-upstream/design-platform.css';",

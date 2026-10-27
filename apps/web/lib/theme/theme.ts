@@ -20,6 +20,11 @@ export interface ThemeConfig {
 
 export const themeConfig: ThemeConfig = {
   adminPaths: ['/runtime-console'],
+  // Signed in, the server sends the saved choice, whose default is the
+  // contract's defaultUserPreferences.appearance. The tenant default here only
+  // covers pages without one (signed out, or the read failed). It cannot
+  // import the contract: themeFor runs in the inline script, and this module
+  // is in every page's bundle. theme.test.ts keeps the two equal.
   defaults: { tenant: 'light', admin: 'dark' },
 };
 

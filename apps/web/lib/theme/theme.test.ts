@@ -1,5 +1,6 @@
 import { runInNewContext } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
+import { defaultUserPreferences } from '@allrice/contracts';
 import { themeConfig, themeFor } from './theme';
 import { appearanceScript, themeScript } from './theme-script';
 
@@ -29,6 +30,10 @@ describe('theme selection', () => {
     expect(themeFor('/runtime-consoles', null, themeConfig).surface).toBe(
       'tenant',
     );
+  });
+
+  it('uses the contract default for workspace pages without a saved choice', () => {
+    expect(themeConfig.defaults.tenant).toBe(defaultUserPreferences.appearance);
   });
 
   it('honours the workspace choice, resolves system and treats anything else as no choice', () => {
@@ -83,6 +88,7 @@ describe('theme selection', () => {
       theme: attributes.html.get('data-theme'),
       dark: attributes.body.has('data-ds-dark-theme'),
       appearance: attributes.html.get('data-appearance'),
+      viewer: attributes.html.get('data-appearance-viewer'),
       system: matchMedia.mock.calls.length > 0,
     };
   }
@@ -93,40 +99,63 @@ describe('theme selection', () => {
       theme: 'light',
       dark: false,
       appearance: undefined,
+      viewer: undefined,
       system: false,
     });
     expect(run('/runtime-console')).toEqual({
       theme: 'dark',
       dark: true,
       appearance: undefined,
+      viewer: undefined,
       system: false,
     });
   });
 
   it('paints the saved choice first and leaves it for the client', () => {
-    expect(run('/chatflow', appearanceScript('dark'))).toEqual({
+    const saved = (choice: 'light' | 'dark' | 'system') =>
+      appearanceScript({ choice, viewer: 'viewer-a' });
+    expect(run('/chatflow', saved('dark'))).toEqual({
       theme: 'dark',
       dark: true,
       appearance: 'dark',
+      viewer: 'viewer-a',
       system: false,
     });
-    expect(run('/chatflow', appearanceScript('light'))).toMatchObject({
+    expect(run('/chatflow', saved('light'))).toMatchObject({
       theme: 'light',
       dark: false,
       appearance: 'light',
     });
     for (const systemDark of [true, false])
-      expect(
-        run('/workspace/mcp', appearanceScript('system'), systemDark),
-      ).toEqual({
+      expect(run('/automation', saved('system'), systemDark)).toEqual({
         theme: systemDark ? 'dark' : 'light',
         dark: systemDark,
         appearance: 'system',
+        viewer: 'viewer-a',
         system: true,
       });
-    expect(run('/runtime-console', appearanceScript('light'))).toMatchObject({
+    expect(run('/runtime-console', saved('light'))).toMatchObject({
       theme: 'dark',
       dark: true,
+    });
+  });
+
+  it('marks a workspace page whose read failed, keeping the default', () => {
+    expect(
+      run('/automation', appearanceScript({ choice: null, viewer: null })),
+    ).toEqual({
+      theme: 'light',
+      dark: false,
+      appearance: undefined,
+      viewer: '',
+      system: false,
+    });
+    expect(
+      run('/chatflow', appearanceScript({ choice: null, viewer: 'viewer-a' })),
+    ).toMatchObject({
+      theme: 'light',
+      appearance: undefined,
+      viewer: 'viewer-a',
     });
   });
 });

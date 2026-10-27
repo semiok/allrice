@@ -2009,7 +2009,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           const firstPaint = `window.firstPaint={theme:document.documentElement.getAttribute('data-theme'),dark:document.body.hasAttribute('data-ds-dark-theme')}`;
           return route.fulfill({
             contentType: 'text/html',
-            body: `<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/app.css"></head><body style="margin:0"><script>${themeScript}</script>${saved ? `<script>${appearanceScript(saved)}</script>` : ''}<script>${firstPaint}</script><div id="root"></div><script src="/app.js"></script></body></html>`,
+            body: `<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/app.css"></head><body style="margin:0"><script>${themeScript}</script><script>${appearanceScript({ choice: saved ?? null, viewer: state.viewer })}</script><script>${firstPaint}</script><div id="root"></div><script src="/app.js"></script></body></html>`,
           });
         },
       );
@@ -8514,16 +8514,30 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .poll(() => themeState(f.page))
         .toMatchObject({ theme: 'dark', dark: true });
 
-      // The save fails: the page goes back to what the server holds.
-      f.state.preferenceError = true;
+      // Another device saved dark; this page's save of light fails. The page
+      // ends on what the server holds, not on the value before the click.
+      f.state.preferences[user]!.appearance = 'dark';
+      await f.page.emulateMedia({ colorScheme: 'light' });
+      await expect
+        .poll(() => themeState(f.page))
+        .toMatchObject({ theme: 'light', dark: false });
+      await f.page.route('**/api/v1/me/preferences', (route) =>
+        route.request().method() === 'PATCH'
+          ? route.fulfill({
+              status: 503,
+              contentType: 'application/json',
+              body: JSON.stringify({ error: { message: '保存失败，请重试' } }),
+            })
+          : route.fallback(),
+      );
       await select.selectOption({ label: '浅色' });
       await dialog.getByRole('alert').getByText('保存失败，请重试').waitFor();
       await expect
         .poll(() => themeState(f.page))
         .toMatchObject({ theme: 'dark', dark: true });
-      expect(await select.inputValue()).toBe('system');
-      expect(f.state.preferences[user]!.appearance).toBe('system');
-      f.state.preferenceError = false;
+      await expect.poll(() => select.inputValue()).toBe('dark');
+      expect(f.state.preferences[user]!.appearance).toBe('dark');
+      await f.page.unroute('**/api/v1/me/preferences');
 
       // Changed on another device; this page re-reads it when it comes back.
       f.state.preferences[user]!.appearance = 'light';
@@ -8535,6 +8549,58 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .poll(() => themeState(f.page))
         .toMatchObject({ theme: 'light', dark: false });
       await expect.poll(() => select.inputValue()).toBe('light');
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('MET214 a slow read from before a save cannot undo the saved choice', async () => {
+    const f = await fixture({ appearance: 'light' });
+    try {
+      const { select } = await appearanceSelect(f);
+      // Coming back to the page reads light, but the answer is slow.
+      let release!: () => void, read!: () => void;
+      const held = new Promise<void>((done) => {
+        release = done;
+      });
+      const readLight = new Promise<void>((done) => {
+        read = done;
+      });
+      await f.page.route('**/api/v1/me/preferences', async (route) => {
+        if (route.request().method() !== 'GET') return route.fallback();
+        const body = JSON.stringify({
+          viewerId: user,
+          preferences: { ...f.state.preferences[user] },
+        });
+        read();
+        await held;
+        return route.fulfill({ contentType: 'application/json', body });
+      });
+      const slowRead = f.page.waitForResponse(
+        (response) =>
+          response.url().endsWith('/api/v1/me/preferences') &&
+          response.request().method() === 'GET',
+      );
+      await f.page.evaluate(() =>
+        document.dispatchEvent(new Event('visibilitychange')),
+      );
+      await readLight;
+      await select.selectOption({ label: '深色' });
+      await expect.poll(() => select.isEnabled()).toBe(true);
+      expect(f.state.preferences[user]!.appearance).toBe('dark');
+      release();
+      await slowRead;
+      await f.page.evaluate(
+        () =>
+          new Promise((done) =>
+            requestAnimationFrame(() => requestAnimationFrame(done)),
+          ),
+      );
+      expect(await themeState(f.page)).toMatchObject({
+        theme: 'dark',
+        dark: true,
+      });
+      expect(await select.inputValue()).toBe('dark');
     } finally {
       await f.close();
     }
