@@ -1,7 +1,9 @@
 /* global process, AbortController */
 import { fork } from 'node:child_process';
 import { once } from 'node:events';
+import { createHash } from 'node:crypto';
 import {
+  mkdir,
   mkdtemp,
   readFile,
   realpath,
@@ -13,6 +15,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
 import { gate, hold, host, text } from './fixture.mjs';
+import { toolResult } from './tool-result.mjs';
+import golden from './golden/manifest.json' with { type: 'json' };
 
 it('T5 excludes a second writer, then cold-resumes after SIGKILL without replay', async () => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'pr0-crash-')));
@@ -117,7 +121,7 @@ it('T11 native tokenUsage stays per session, including a cold child', async () =
   }
 });
 
-it('T16 fork inherits completed history and excludes the current root turn', async () => {
+it('fork inherits completed history and excludes the current root turn (scenario 19)', async () => {
   const entered = gate(),
     finish = gate();
   let rootSteps = 0;
@@ -149,4 +153,112 @@ it('T16 fork inherits completed history and excludes the current root turn', asy
   );
   await h.wait();
   expect(h.calls.filter((r) => r.sessionId === child.childId)).toHaveLength(2);
+});
+
+it('T16 cold-resumes native golden history and a queued notification without replaying tools', async () => {
+  const journals = new Map();
+  const h = await host({
+    prepare: async (directory) => {
+      for (const entry of golden.files) {
+        const raw = await readFile(
+          join(import.meta.dirname, 'golden', entry.file),
+          'utf8',
+        );
+        expect(createHash('sha256').update(raw).digest('hex')).toBe(
+          entry.sha256,
+        );
+        const journal = raw.replaceAll(
+          golden.capturedWith.normalizedCwd,
+          directory,
+        );
+        journals.set(entry.sessionId, journal);
+        const folder = join(
+          directory,
+          'sessions',
+          `-${directory.replaceAll('/', '-')}--`,
+          entry.sessionId,
+        );
+        await mkdir(folder, { recursive: true });
+        await writeFile(join(folder, 'session.v4.jsonl'), journal);
+      }
+    },
+    model: async (r) =>
+      text(
+        r.sessionId === golden.childId ? '新的子级回复' : '继续处理历史结果',
+      ),
+  });
+  const dispatched = [];
+  h.ctx.tools.guard((exec) => {
+    dispatched.push(exec.callId);
+  });
+  expect(h.calls).toHaveLength(0);
+  expect(h.root.id).toBe(golden.rootId);
+  expect(await h.ctx.subagents.listDescendants(h.root.id)).toMatchObject([
+    { id: golden.childId, label: '黄金子任务', activity: 'inactive' },
+  ]);
+  expect(h.ctx.agents.get(golden.childId)).toBeUndefined();
+  const pending = [...h.root.inbox.nextStep, ...h.root.inbox.nextTurn];
+  expect(pending).toMatchObject([
+    { source: { kind: 'subagent-settled', senderSessionId: golden.childId } },
+  ]);
+  expect(JSON.stringify(pending)).toContain('GOLDEN_CHILD_REPLY');
+
+  await h.prompt('继续刚才的子智能体任务，先读已有结果。');
+  await h.wait();
+  const rootMessages = h.calls.find(
+    (r) => r.sessionId === golden.rootId,
+  ).messages;
+  expect(JSON.stringify(rootMessages)).toContain('GOLDEN_ROOT_HISTORY');
+  expect(toolResult(rootMessages, 'golden-spawn')).toMatchObject({
+    isError: false,
+  });
+  expect(
+    rootMessages.filter((m) => m.source?.kind === 'subagent-settled'),
+  ).toHaveLength(1);
+
+  await h.ctx.subagents.sendMessage(
+    h.root,
+    golden.childId,
+    text('请根据上次结果再补一句。'),
+    { signal: new AbortController().signal },
+  );
+  await h.wait();
+  const childRequests = h.calls.filter((r) => r.sessionId === golden.childId);
+  expect(childRequests).toHaveLength(1);
+  expect(JSON.stringify(childRequests[0].messages)).toContain(
+    'GOLDEN_CHILD_HISTORY',
+  );
+  expect(JSON.stringify(childRequests[0].messages)).toContain(
+    'GOLDEN_CHILD_REPLY',
+  );
+  expect(
+    toolResult(childRequests[0].messages, 'golden-child-list'),
+  ).toMatchObject({ isError: false, content: text('(no subagents)') });
+  expect(dispatched).toEqual([]);
+
+  for (const [id, journal] of journals) {
+    const observation = await h.ctx.sessionQuery.observeSession(id);
+    try {
+      const original = journal
+        .trim()
+        .split('\n')
+        .slice(1)
+        .map((line) => JSON.parse(line));
+      expect(observation.events.slice(0, original.length)).toEqual(original);
+      expect(
+        observation.events.filter((e) => e.type === 'tool/call'),
+      ).toHaveLength(1);
+    } finally {
+      observation[Symbol.dispose]();
+    }
+  }
+  const events = h.root.session.snapshotEvents();
+  expect(events.filter((e) => e.type === 'subagent/catalog')).toHaveLength(1);
+  const notices = events.filter(
+    (e) =>
+      e.type === 'user/message' && e.data.source?.kind === 'subagent-settled',
+  );
+  expect(notices).toHaveLength(2);
+  expect(notices[0].data.id).toBe(pending[0].id);
+  expect(JSON.stringify(notices[1].data)).toContain('新的子级回复');
 });

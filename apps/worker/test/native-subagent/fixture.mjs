@@ -49,6 +49,7 @@ export async function host({
   model = async () => text('完成'),
   depth = 1,
   active = 8,
+  prepare = async () => {},
 } = {}) {
   const directory = await realpath(
     await mkdtemp(join(tmpdir(), 'allrice-pr0-')),
@@ -107,6 +108,7 @@ export async function host({
   });
   const notices = [],
     calls = [];
+  await prepare(directory);
   const { ctx, server } = await createAllRiceRuntime(
     {
       notify: (method, params) => notices.push({ method, params }),

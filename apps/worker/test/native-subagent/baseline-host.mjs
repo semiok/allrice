@@ -15,6 +15,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { toolResult } from './tool-result.mjs';
 
 const mode = process.argv[2];
 assert(['native', 'worker'].includes(mode));
@@ -142,6 +143,7 @@ try {
     releaseChildren = done;
   });
   const rootId = 'baseline-root';
+  let listInactive = false;
   const content = (text) => [{ type: 'text', text }];
   const tool = (id, name, args) => ({
     type: 'tool-call',
@@ -159,7 +161,10 @@ try {
       steps.set(request.sessionId, step);
       let blocks;
       if (request.sessionId === rootId) {
-        if (step === 1)
+        if (listInactive) {
+          listInactive = false;
+          blocks = [tool('list-finished', 'list_agents', {})];
+        } else if (step === 1)
           blocks = Array.from({ length: 9 }, (_, i) =>
             tool(`spawn-${i}`, 'subagent', {
               description: `task-${i}`,
@@ -239,6 +244,18 @@ try {
     await server.handleRequest('session/wait', { sessionId: rootId });
   else await server.wait({ sessionId: rootId });
   chronology.push('wait-returned');
+  listInactive = true;
+  const finalPrompt = {
+    sessionId: rootId,
+    contentBlocks: content('再列出刚才完成的子智能体。'),
+  };
+  if (mode === 'worker') {
+    await server.handleRequest('session/prompt', finalPrompt);
+    await server.handleRequest('session/wait', { sessionId: rootId });
+  } else {
+    await server.prompt(finalPrompt);
+    await server.wait({ sessionId: rootId });
+  }
   const root = ctx.agents.get(rootId);
   const events = root.session.snapshotEvents();
   const catalog = events.filter((e) => e.type === 'subagent/catalog');
@@ -280,17 +297,42 @@ try {
       'agent-message',
       'subagent-settled',
     ]);
-  const runningList = requests
-    .filter((r) => r.sessionId === rootId)
-    .some((r) => JSON.stringify(r.messages).includes('running'));
-  assert(runningList);
+  const runningResult = toolResult(
+    requests.filter((r) => r.sessionId === rootId).flatMap((r) => r.messages),
+    'list-running',
+  );
+  assert.equal(runningResult?.isError, false);
+  assert.deepEqual(
+    runningResult.content.map((block) => block.type),
+    ['text'],
+  );
+  const runningList = runningResult.content[0].text.split('\n').sort();
+  assert.deepEqual(
+    runningList,
+    [...names].map(([id, label]) => `${id} [running] — ${label}`).sort(),
+  );
+  const inactiveResult = toolResult(
+    requests.filter((r) => r.sessionId === rootId).flatMap((r) => r.messages),
+    'list-finished',
+  );
+  assert.equal(inactiveResult?.isError, false);
+  assert.deepEqual(
+    inactiveResult.content.map((block) => block.type),
+    ['text'],
+  );
+  const inactiveList = inactiveResult.content[0].text.split('\n').sort();
+  assert.deepEqual(
+    inactiveList,
+    [...names].map(([id, label]) => `${id} [inactive] — ${label}`).sort(),
+  );
   process.stdout.write(
     JSON.stringify({
       version,
       perChild,
       capacity,
       depth,
-      runningList,
+      runningList: runningList.map((line) => normalize(line)).sort(),
+      inactiveList: inactiveList.map((line) => normalize(line)).sort(),
       inactive: rows.length,
       waitAfterAllSettlements: chronology.at(-1) === 'wait-returned',
     }) + '\n',

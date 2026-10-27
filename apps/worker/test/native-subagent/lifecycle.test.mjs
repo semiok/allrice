@@ -1,11 +1,13 @@
 /* global AbortController */
 import { describe, expect, it } from 'vitest';
+import { setImmediate } from 'node:timers/promises';
 import {
   noRunningDescendants,
   treeQuiescent,
 } from '../../dsh/allrice-agent-tree.mjs';
 import { gate, hold, host, text } from './fixture.mjs';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
+import { toolResult } from './tool-result.mjs';
 
 describe('PR0 pinned DSH lifecycle on the Worker host', () => {
   it('T1/T14 waits through child settlement and the parent follow-up turn', async () => {
@@ -86,9 +88,21 @@ describe('PR0 pinned DSH lifecycle on the Worker host', () => {
       const entered = gate(),
         finish = gate();
       let held = true;
+      let listRequested = false;
       const h = await host({
         active: 1,
         model: async (r) => {
+          if (r.sessionId === 'pr0-root' && listRequested) {
+            listRequested = false;
+            return [
+              {
+                type: 'tool-call',
+                id: 'parked-list',
+                name: 'list_agents',
+                arguments: '{}',
+              },
+            ];
+          }
           if (r.sessionId !== 'pr0-root' && held) {
             entered.resolve();
             await hold(r.signal, finish);
@@ -114,6 +128,19 @@ describe('PR0 pinned DSH lifecycle on the Worker host', () => {
         expect(
           (await h.ctx.subagents.listDescendants(h.root.id))[0].activity,
         ).toBe('running');
+        listRequested = true;
+        await h.prompt('列出刚才停下的子智能体。');
+        await h.wait();
+        const result = toolResult(
+          h.calls
+            .filter((r) => r.sessionId === h.root.id)
+            .flatMap((r) => r.messages),
+          'parked-list',
+        );
+        expect(result).toMatchObject({
+          isError: false,
+          content: text(`${child.id} [inactive] — 子任务`),
+        });
         await expect(h.spawn()).rejects.toMatchObject({
           code: 'ACTIVATION_LIMIT_REACHED',
         });
@@ -143,15 +170,43 @@ describe('PR0 pinned DSH lifecycle on the Worker host', () => {
     },
   );
 
-  it('T10 drain fences delegation until session/recover replaces the root', async () => {
-    const h = await host();
+  it('T10 drains running and parked children before recover restores delegation', async () => {
+    let blockChildren = true;
+    const h = await host({
+      model: async (r) => {
+        if (r.sessionId !== 'pr0-root' && blockChildren)
+          await hold(r.signal, gate());
+        return text('完成');
+      },
+    });
+    const running = await h.spawn(h.root, '运行子级');
+    const parked = await h.spawn(h.root, '停放子级');
+    await expect.poll(() => h.calls.length).toBe(2);
+    const parkedAgent = h.ctx.agents.get(parked.childId);
+    h.inject(parkedAgent, '待续消息');
+    await h.ctx.subagents.interruptByParent(
+      parked.childId,
+      h.root.id,
+      'continuable',
+    );
+    await parkedAgent.whenIdle();
     await h.ctx.subagents.drainDescendants([h.root]);
+    await Promise.all([running.result, parked.result]);
+    for (const child of [running, parked])
+      expect(h.ctx.agents.get(child.childId)).toBeUndefined();
     await expect(h.spawn()).rejects.toMatchObject({ code: 'DRAINING' });
     await h.server.handleRequest('session/recover', { sessionId: h.root.id });
     const recovered = h.ctx.agents.get(h.root.id);
     expect(recovered).not.toBe(h.root);
+    await setImmediate();
+    expect(h.calls).toHaveLength(2);
+    expect(recovered.status).toBe('idle');
+    expect([...recovered.inbox.nextStep, ...recovered.inbox.nextTurn]).toEqual(
+      [],
+    );
+    blockChildren = false;
     await (
-      await h.spawn(recovered)
+      await h.spawn(recovered, '恢复后的委派')
     ).result;
     await h.wait();
     expect(treeQuiescent(recovered)).toBe(true);
@@ -243,13 +298,74 @@ describe('PR0 pinned DSH lifecycle on the Worker host', () => {
     const waiting = h.wait().then(() => {
       returned = true;
     });
-    await Promise.resolve();
-    expect(returned).toBe(false);
-    admit.resolve();
-    await (
-      await start
-    ).result;
+    try {
+      await setImmediate(); // The creation gate stays closed across an event-loop turn.
+      expect(returned).toBe(false);
+    } finally {
+      admit.resolve();
+      await (
+        await start
+      ).result;
+      await waiting;
+    }
+  });
+
+  it('T14 idle-before-settlement snapshots can pass while session/wait is pending', async () => {
+    const entered = gate(),
+      finish = gate(),
+      flushing = gate(),
+      releaseFlush = gate();
+    const h = await host({
+      model: async (r) => {
+        if (r.sessionId !== 'pr0-root') {
+          entered.resolve();
+          await hold(r.signal, finish);
+        }
+        return text('子级结果');
+      },
+    });
+    const activation = await h.spawn();
+    await entered.promise;
+    const child = h.ctx.agents.get(activation.childId);
+    h.ctx.on('session/flush', async (session) => {
+      if (session.id === child.id && child.status === 'idle') {
+        flushing.resolve();
+        await releaseFlush.promise;
+      }
+    });
+    let returned = false;
+    const waiting = h.wait().then(() => {
+      returned = true;
+    });
+    finish.resolve();
+    try {
+      await flushing.promise;
+      await setImmediate();
+      expect(child.status).toBe('idle');
+      expect(h.ctx.agents.get(child.id)).toBe(child);
+      expect([...h.root.inbox.nextStep, ...h.root.inbox.nextTurn]).toEqual([]);
+      expect(
+        h.root.session
+          .snapshotEvents()
+          .some((e) => JSON.stringify(e.data).includes('subagent-settled')),
+      ).toBe(false);
+      expect(noRunningDescendants(h.root)).toBe(true);
+      expect(treeQuiescent(h.root)).toBe(true);
+      expect(returned).toBe(false);
+    } finally {
+      releaseFlush.resolve();
+    }
+    await activation.result;
     await waiting;
+    expect(
+      h.root.session
+        .snapshotEvents()
+        .filter(
+          (e) =>
+            e.type === 'user/message' &&
+            e.data.source?.kind === 'subagent-settled',
+        ),
+    ).toHaveLength(1);
   });
 
   it('T14 session/wait can finish before concurrent recover disposes the old root', async () => {
@@ -263,14 +379,41 @@ describe('PR0 pinned DSH lifecycle on the Worker host', () => {
         return text('完成');
       },
     });
-    await h.spawn();
+    const child = await h.spawn();
     await entered.promise;
     const waiting = h.wait().then(
       () => ({ resolved: true }),
       (error) => ({ error: error.message }),
     );
     await h.server.handleRequest('session/recover', { sessionId: h.root.id });
+    // Observed 0.2.1-rc.2 ordering, not a guarantee for future DSH versions.
     expect(await waiting).toEqual({ resolved: true });
-    expect(h.ctx.agents.get(h.root.id)).not.toBe(h.root);
+    const recovered = h.ctx.agents.get(h.root.id);
+    expect(recovered).not.toBe(h.root);
+    expect(h.ctx.agents.get(child.childId)).toBeUndefined();
+    await setImmediate();
+    expect(h.calls).toHaveLength(1);
+    expect(recovered.status).toBe('idle');
+    // keepInbox applies to closeRoot's first cancel. DSH's later handle.dispose
+    // cancels pending inbox again: both insertion and cancellation are durable.
+    const splices = recovered.session
+      .snapshotEvents()
+      .filter((e) => e.type === 'agent/inbox/spliced');
+    expect(splices.map((e) => e.data)).toMatchObject([
+      {
+        inserted: [
+          {
+            source: {
+              kind: 'subagent-settled',
+              senderSessionId: child.childId,
+            },
+          },
+        ],
+      },
+      { inserted: [], removedCount: 1, outcome: 'canceled' },
+    ]);
+    expect([...recovered.inbox.nextStep, ...recovered.inbox.nextTurn]).toEqual(
+      [],
+    );
   });
 });
