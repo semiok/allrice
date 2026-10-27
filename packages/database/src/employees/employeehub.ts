@@ -1463,13 +1463,10 @@ export async function prepareEmployeeRunBinding(
     modelSnapshot.provider === 'codex' ||
     modelSnapshot.provider === 'openai-codex'
       ? 'openai-codex'
-      : modelSnapshot.provider === 'gemini' ||
-          modelSnapshot.provider === 'google'
-        ? 'gemini'
-        : modelSnapshot.provider === 'deepseek' ||
-            modelSnapshot.provider === 'deepseek-official'
-          ? 'deepseek-official'
-          : 'openai-compatible';
+      : modelSnapshot.provider === 'deepseek' ||
+          modelSnapshot.provider === 'deepseek-official'
+        ? 'deepseek-official'
+        : 'openai-compatible';
   const providerSnapshot = HarnessExecutionSnapshotSchema.parse({
     provider: 'dsh',
     authMode:
@@ -1483,14 +1480,8 @@ export async function prepareEmployeeRunBinding(
         ? 'low'
         : modelSnapshot.reasoningEffort,
     credentialReference:
-      modelSnapshot.credentialReference ??
-      (providerRoute === 'gemini'
-        ? 'deployment:gemini-default'
-        : 'deployment:codex-default'),
-    baseUrl:
-      providerRoute === 'openai-codex' || providerRoute === 'gemini'
-        ? null
-        : modelSnapshot.baseUrl,
+      modelSnapshot.credentialReference ?? 'deployment:codex-default',
+    baseUrl: providerRoute === 'openai-codex' ? null : modelSnapshot.baseUrl,
   });
   const taskRuntimePolicy = await freezeTaskRuntimePolicy(
     {
@@ -1511,14 +1502,8 @@ export async function prepareEmployeeRunBinding(
         ? 'low'
         : modelSnapshot.reasoningEffort,
     credentialReference:
-      modelSnapshot.credentialReference ??
-      (providerRoute === 'gemini'
-        ? 'deployment:gemini-default'
-        : 'deployment:codex-default'),
-    baseUrl:
-      providerRoute === 'openai-codex' || providerRoute === 'gemini'
-        ? null
-        : modelSnapshot.baseUrl,
+      modelSnapshot.credentialReference ?? 'deployment:codex-default',
+    baseUrl: providerRoute === 'openai-codex' ? null : modelSnapshot.baseUrl,
     fallbackModels: [],
     timeoutMs:
       taskRuntimePolicy?.timeoutMs ?? modelSnapshot.runLimits.timeoutMs,

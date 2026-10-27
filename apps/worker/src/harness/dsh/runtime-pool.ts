@@ -665,13 +665,6 @@ export class DshRuntimePool {
         false,
       );
     }
-    if (input.snapshot.route === 'gemini') {
-      throw new HandlerError(
-        'GEMINI_API_DISABLED',
-        'Gemini API execution is disabled; historical sessions remain readable',
-        false,
-      );
-    }
     if (!this.runtimeCommand) {
       throw new HandlerError(
         'DSH_RUNTIME_UNAVAILABLE',

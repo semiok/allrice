@@ -20,7 +20,6 @@ export async function createPlatformQualityNativeFixture() {
   vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', `sha256:${'a'.repeat(64)}`);
   vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', `sha256:${'a'.repeat(64)}`);
   vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '1');
-  vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
   vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
   vi.stubEnv('ALLRICE_ENV', 'development');
   vi.stubEnv('ALLRICE_RELEASE_SHA', 'a'.repeat(40));

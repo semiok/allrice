@@ -122,16 +122,6 @@ describe('trusted subscription identity, no price or credential resolution', () 
       }),
     ).toThrow('ASSISTANT_SUBSCRIPTION_ROUTE_UNVERIFIED');
   });
-  it('does not classify legacy Gemini platform_subscription as Codex subscription', () => {
-    const input = fixture();
-    expect(
-      resolveAssistantSubscriptionSnapshot({
-        ...input,
-        decision: { ...input.decision, provider: 'gemini' },
-        providerSnapshot: { ...input.providerSnapshot, route: 'gemini' },
-      }),
-    ).toBeUndefined();
-  });
   it('rejects missing frozen identity for a claimed subscription', () => {
     const input = fixture();
     expect(() =>

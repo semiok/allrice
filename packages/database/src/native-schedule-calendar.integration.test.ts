@@ -83,7 +83,6 @@ suite(
       return r;
     }
     beforeAll(async () => {
-      vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
       f = await createP27CodexWorkerFixture({
         allowCiDatabase: true,

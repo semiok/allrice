@@ -39,7 +39,6 @@ integration(
       assertRuntimeFixtureDatabase(fixtureUrl);
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
       vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
-      vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
       // MET-162: even a stale deployment flag cannot re-enable cumulative
       // token/cost gates. Cancellation and uncertain execution still apply.
       vi.stubEnv('ALLRICE_CODEX_TOKEN_POLICY', 'enforce');

@@ -9,7 +9,7 @@ import { HandlerError } from '../errors.js';
 export function providerSnapshotForModelTarget(
   target: ResolvedModelTarget,
 ): HarnessExecutionSnapshot {
-  if (target.authMode === 'gemini_oauth' || target.authMode === 'oauth')
+  if (target.authMode === 'oauth')
     throw new HandlerError(
       'PROVIDER_AUTH_UNSUPPORTED',
       'The frozen provider authorization mode has no reviewed execution adapter',
@@ -25,19 +25,6 @@ export function providerSnapshotForModelTarget(
         target.reasoningEffort === 'none' ? 'low' : target.reasoningEffort,
       credentialReference:
         target.credentialReference ?? 'deployment:codex-default',
-      baseUrl: null,
-    };
-  }
-  if (target.provider === 'gemini') {
-    return {
-      provider: 'dsh',
-      authMode: 'allrice_credential',
-      route: 'gemini',
-      model: target.model,
-      reasoningEffort:
-        target.reasoningEffort === 'none' ? 'medium' : target.reasoningEffort,
-      credentialReference:
-        target.credentialReference ?? 'deployment:gemini-default',
       baseUrl: null,
     };
   }
@@ -67,9 +54,7 @@ export function replayProviderSnapshot(input: {
       ? 'openai-codex'
       : ['deepseek', 'deepseek-official'].includes(input.decision.provider)
         ? 'deepseek-official'
-        : ['gemini', 'google'].includes(input.decision.provider)
-          ? 'gemini'
-          : 'openai-compatible';
+        : 'openai-compatible';
   const frozen = [input.original, ...(input.fallbacks ?? [])].find(
     (snapshot) =>
       (snapshot.provider === 'codex' ? 'codex' : 'dsh') ===
@@ -78,15 +63,6 @@ export function replayProviderSnapshot(input: {
       (snapshot.provider === 'dsh' ? snapshot.route : 'openai-codex') === route,
   );
   if (frozen) return frozen;
-  if (
-    route === 'gemini' ||
-    (input.original.provider === 'dsh' && input.original.route === 'gemini')
-  )
-    throw new HandlerError(
-      'ROUTE_REPLAY_INVALID',
-      'Gemini replay requires its original frozen provider snapshot',
-      false,
-    );
   if (
     input.decision.harness === 'codex' ||
     input.decision.provider === 'openai-codex' ||

@@ -31,7 +31,7 @@ describe('dedicated subscription two-Worker authorization, no providers', () => 
       ).toThrow();
     },
   );
-  it('never accepts ordinary or Gemini tickets', () => {
+  it('never accepts ordinary or API provider tickets', () => {
     expect(() =>
       authorizeP27CodexAssistants(
         {
@@ -48,7 +48,7 @@ describe('dedicated subscription two-Worker authorization, no providers', () => 
     expect(() => authorizeP27CodexAssistants(auth(), sha)).not.toThrow();
   });
   it('requires explicit Codex even for preflight', () => {
-    for (const provider of [undefined, 'gemini']) {
+    for (const provider of [undefined, 'openai-compatible']) {
       expect(() =>
         parseP27CodexAssistantsArguments([
           '--preflight',

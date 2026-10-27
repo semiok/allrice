@@ -130,7 +130,7 @@ MET-157 前期复用了上游指南，却主要通过 Allrice 自定义结构化
 
 同次巡检：云端浏览器也移除独立 10 分钟限制，平台生成的旧默认配置自动生成后继版本供后续任务使用，已启动任务保留原绑定；旧云端授权页跳转到「员工工作方式」。本地服务预览沿用底层服务截止时间，保留旧 Bridge 的预览协议兼容。经验功能在开发环境默认开放，并进入「记忆与经验」设置；本地应用高级连接从旧独立页面移入「已连接应用」。所有文件交付入口取消缺省 1 GiB 隐式配额，仍遵守明确配置的工作区配额及实际存储容量；「账号与用量」展示真实占用、明确配额和统一文件传输上限。
 
-保留的边界：用户主动关闭的开关、租户和设备归属、真实账号登录、任务 1 小时与无进展保护、物理资源容量、底层文件/协议大小。已退役的 Gemini 执行和旧工作台不因“默认开放”重新启用；尚未实现的 Team/Boost 不冒充可用能力。后续能力不能依赖只有旧地址才能看到的设置。
+保留的边界：用户主动关闭的开关、租户和设备归属、真实账号登录、任务 1 小时与无进展保护、物理资源容量、底层文件/协议大小。旧工作台不因“默认开放”重新启用；尚未实现的 Team/Boost 不冒充可用能力。后续能力不能依赖只有旧地址才能看到的设置。
 
 ## 执行用量原则（2026-09-27）
 
@@ -359,6 +359,8 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 - 验收：`dsh-adapter.test.ts` 中 native search 单 turn/工具事件路径及现有搜索 Broker 测试。回退复用已有操作身份，结果未知不重试副作用。
 
 ### allrice-jsonrpc-lifecycle-v1
+
+MET-226 删除初始化中退役供应商的专用拒绝分支。供应商仍由 `@deepseek-ai/dsh-llm-pi-ai` 的 `providers` 配置声明；恢复由 DSH 原生模型解析处理未配置路线。此次不修改 profile、Codex 设置、助手状态或生命周期。
 
 - ID：`allrice-jsonrpc-lifecycle-v1`；归属 MET-85；**已替换**（图片准入后的有序引用转换）；生命周期扩展保留。
 - Allrice：[allrice-jsonrpc-runtime.mjs](../../apps/worker/dsh/allrice-jsonrpc-runtime.mjs)、[allrice-dsh-runtime-compatibility.mjs](../../apps/worker/dsh/allrice-dsh-runtime-compatibility.mjs)。承担发行身份、Broker、会话恢复、压缩和 typed input 的受控桥接。

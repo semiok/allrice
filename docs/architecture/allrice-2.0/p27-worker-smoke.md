@@ -1,6 +1,6 @@
 # P27 完整 Worker 连续任务验收
 
-> 2026-10-27：本 Gemini 新建任务验收已随 MET-163 / 0117 的能力退役而删除；下文仅保留历史说明，不再是可执行步骤。当前 Codex 验收按平台模型设置运行；仍被调用的 Gemini 计费接口由 `scripts/acceptance/runtime/p27-gemini-history-pricing.test.ts` 的合成历史 Run 回归覆盖，不执行模型。
+> MET-226（2026-10-27）：以下为历史验收原文，保留当时的设计边界与证据，不是当前可执行步骤。Gemini 验收入口和合成历史账务回归均已删除；当前验收使用 `p27-codex-assistants.ts` / `p27-codex-worker.ts` 及平台模型配置。
 
 这是 [priced-native 子集](./p27-basic-assistant-smoke.md) 之外的补充验收，不替代四条业务线、真实 UI、双架构 Bridge 或正式签名门禁。脚本为 `scripts/acceptance/runtime/p27-worker-smoke.ts`；实际执行结果必须另附候选 SHA 与收据，脚本存在不代表验收通过。
 

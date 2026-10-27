@@ -36,10 +36,7 @@ export function assertAssistantProviderOutputBound(
       );
     return;
   }
-  if (
-    provider.provider !== 'dsh' ||
-    !['openai-compatible', 'gemini'].includes(provider.route)
-  )
+  if (provider.provider !== 'dsh' || provider.route !== 'openai-compatible')
     throw new HandlerError(
       'ASSISTANT_PROVIDER_OUTPUT_BOUND_UNSUPPORTED',
       '当前模型协议尚未验证子智能体输出上限；本次未启动模型或原生子智能体。',

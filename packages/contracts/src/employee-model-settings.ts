@@ -12,7 +12,7 @@ export const EMPLOYEE_PROVIDER_OPTIONS = [
  * Sources and adapter limitations: docs/architecture/allrice-2.0/model-settings.md.
  */
 export function employeeReasoningSettings(provider: string, model: string) {
-  const id = model.trim() === '3.8flash' ? 'gemini-3.8-flash' : model.trim();
+  const id = model.trim();
   let efforts: Effort[] = [];
   if (provider === 'openai-codex') {
     // Current Codex IDs plus historical employee model policies.

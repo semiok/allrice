@@ -666,8 +666,6 @@ async function resolveFrozenTarget(
     })
   )
     throw new DataAccessError('grant_invalid');
-  if (selection.provider_key === 'gemini')
-    throw new DataAccessError('grant_invalid');
   if (
     selection.harness === 'dsh' &&
     selection.auth_mode === 'api_key' &&
@@ -686,12 +684,10 @@ async function resolveFrozenTarget(
       selection.provider_key === 'codex' ||
       selection.provider_key === 'openai-codex'
         ? 'openai-codex'
-        : selection.provider_key === 'gemini'
-          ? 'gemini'
-          : selection.provider_key === 'deepseek' ||
-              selection.provider_key === 'deepseek-official'
-            ? 'deepseek-official'
-            : 'openai-compatible',
+        : selection.provider_key === 'deepseek' ||
+            selection.provider_key === 'deepseek-official'
+          ? 'deepseek-official'
+          : 'openai-compatible',
     authMode: selection.auth_mode,
     model: selection.model,
     reasoningEffort: input.reasoningEffort,

@@ -94,7 +94,6 @@ suite('MET162 durable resource waiting', () => {
   }, 120000);
   it('pauses the authoritative hour only when all work is resource-blocked and resumes on admission', async () => {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
-    vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
     const f = await createP27CodexWorkerFixture({ allowCiDatabase: true });
     try {
       const task = await f.prepareOrdinaryTask(

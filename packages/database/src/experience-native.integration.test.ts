@@ -164,7 +164,6 @@ suite(
       vi.stubEnv('ALLRICE_EXPERIENCE_REVIEW_ENABLED', '1');
       vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '1');
       vi.stubEnv('ALLRICE_NATIVE_CALENDAR_ENABLED', '1');
-      vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
       f = await createP27CodexWorkerFixture({
         allowCiDatabase: true,

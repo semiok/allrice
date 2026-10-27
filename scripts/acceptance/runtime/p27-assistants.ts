@@ -30,18 +30,8 @@ import {
   type P27DiagnosticReceipt,
 } from './p27-assistant-diagnostics.ts';
 import {
-  assertP27PriceDate,
-  P27_GEMINI_PRICE_FACTS,
-  P27_GEMINI_PRICE_FACTS_DIGEST,
-  P27_GEMINI_PRICE_EXPIRES_AT,
-  verifyP27PricingReceipts,
-  type P27CostReceipt,
-  type P27PricedAdmission,
-} from './p27-assistant-pricing.ts';
-import {
   assertExecutionAuthorization,
   authorizedPlatformHome,
-  authorizedGeminiCredentialFile,
   FIXTURE_DATABASE_URL,
   fixtureCleanupFlags,
   prepareP27PlatformEnvironment,
@@ -66,7 +56,6 @@ const sourceFiles = [
   'packages/database/src/assistant-output.ts',
   'apps/worker/dsh/distribution.json',
   'apps/worker/dsh/upstream.json',
-  'scripts/acceptance/runtime/p27-assistant-pricing.ts',
   'scripts/acceptance/runtime/p27-assistant-fixture.ts',
   'scripts/acceptance/runtime/p27-assistant-outcome.ts',
   'scripts/acceptance/runtime/p27-assistant-diagnostics.ts',
@@ -80,16 +69,14 @@ Wait for BOTH actual child results. Do not call assistant_report as the parent. 
 
 async function main() {
   const args = parseArguments(process.argv.slice(2));
-  const provider = selectedProvider(args.providerRoute);
-  const runLimits = runLimitsForProvider(args.providerRoute);
+  const provider = selectedProvider();
+  const runLimits = runLimitsForProvider();
   readCandidate(root, args.sha);
   const sources: Record<string, string> = {};
   for (const file of sourceFiles)
     sources[file] = hash(await readFile(join(root, file)));
   const installedRuntime = await collectP27InstalledRuntime(root);
   const providerEligibility = providerExecutionEligibility(provider);
-  if (args.providerRoute === 'gemini')
-    assertP27PriceDate(new Date().toISOString());
   if (args.mode === '--preflight') {
     process.stdout.write(
       `${JSON.stringify({
@@ -99,16 +86,6 @@ async function main() {
         installedRuntime,
         providerEligibility,
         provider,
-        pricing:
-          args.providerRoute === 'gemini'
-            ? {
-                scope: 'isolated_fixture_only',
-                sourceFactsDigest: P27_GEMINI_PRICE_FACTS_DIGEST,
-                expiresAt: P27_GEMINI_PRICE_EXPIRES_AT,
-                maxCostCents: runLimits.maxCostCents,
-                actualBillingNotProven: true,
-              }
-            : null,
         providerNotCalled: true,
         databaseNotOpened: true,
         credentialMetadataNotRead: true,
@@ -133,16 +110,9 @@ async function main() {
     process.exitCode = 1;
     return;
   }
-  const codexPlatformHome =
-    args.providerRoute === 'openai-codex'
-      ? await authorizedPlatformHome(process.env.ALLRICE_DSH_PLATFORM_HOME)
-      : undefined;
-  const credentialFile =
-    args.providerRoute === 'gemini'
-      ? await authorizedGeminiCredentialFile(
-          process.env.ALLRICE_B6_P27_GEMINI_CREDENTIAL_FILE,
-        )
-      : undefined;
+  const codexPlatformHome = await authorizedPlatformHome(
+    process.env.ALLRICE_DSH_PLATFORM_HOME,
+  );
   const evidenceId = randomUUID();
   const evidenceDirectory = join(
     root,
@@ -154,7 +124,6 @@ async function main() {
     await mkdtemp(join(tmpdir(), 'allrice-p27-assistants-')),
   );
   // credentials-local unconditionally loads the configured DSH home at boot.
-  // A Gemini test must NEVER point it at an existing Codex credential store.
   const report: Record<string, unknown> = {
     version: 1,
     evidenceId,
@@ -162,10 +131,7 @@ async function main() {
     sources,
     installedRuntime,
     provider,
-    platformHomeKind:
-      args.providerRoute === 'gemini'
-        ? 'new_empty_private'
-        : 'existing_authorized_codex',
+    platformHomeKind: 'existing_authorized_codex',
     limits: runLimits,
     promptDigest: hash(prompt),
     startedAt: new Date().toISOString(),
@@ -213,7 +179,6 @@ async function main() {
       temporary,
       codexPlatformHome,
       providerRoute: args.providerRoute,
-      credentialFile,
     });
     for (const key of Object.keys(process.env)) delete process.env[key];
     Object.assign(process.env, environment);
@@ -246,11 +211,9 @@ async function main() {
       { DshProtocolClient },
       { productionAssistantController },
       { createAssistantRuntime },
-      { createAssistantPricing },
       { assertAssistantAuthority },
       { riceToolDefinitions },
       { allRiceToolManifest, runtimeContractEqual },
-      { runtimePolicyDigest },
       { LocalStorageAdapter },
       { getWorkbenchArtifact, readArtifactBytes },
     ] = await Promise.all([
@@ -260,11 +223,9 @@ async function main() {
       import('../../../apps/worker/src/harness/dsh-protocol-client.ts'),
       import('../../../apps/worker/src/harness/dsh/assistant-controller.ts'),
       import('../../../packages/database/src/assistant-runtime.ts'),
-      import('../../../packages/database/src/assistant-pricing.ts'),
       import('../../../packages/database/src/assistant-authority.ts'),
       import('../../../apps/worker/src/tool-broker.ts'),
       import('../../../packages/contracts/src/index.ts'),
-      import('../../../packages/database/src/runtime-policy.ts'),
       import('../../../packages/storage/src/index.ts'),
       import('../../../packages/database/src/artifact-review.ts'),
     ]);
@@ -296,16 +257,7 @@ async function main() {
     >`select current_schema() as name`;
     verify(/^p25_[a-f0-9]{32}$/.test(schema!.name), 'random_isolated_schema');
     report.schema = schema!.name;
-    const fixture = await createP27AssistantFixture(db, args.providerRoute);
-    if (fixture.priceBinding)
-      report.pricing = {
-        sourceFacts: P27_GEMINI_PRICE_FACTS,
-        sourceFactsDigest: P27_GEMINI_PRICE_FACTS_DIGEST,
-        fixtureOnly: true,
-        target: fixture.priceBinding.target,
-        snapshotDigest: runtimePolicyDigest(fixture.priceBinding.snapshot),
-        bound: fixture.priceBinding.bound,
-      };
+    const fixture = await createP27AssistantFixture(db);
     snapshotFailure = async () => {
       // Explicit scalar allowlist. Never select message/result payloads,
       // provider errors or lease tokens, including on failed execution.
@@ -343,9 +295,7 @@ async function main() {
           diagnostics: failureNativeDiagnostics,
           admissions,
           receipts,
-          snapshotDigest: fixture.priceBinding
-            ? runtimePolicyDigest(fixture.priceBinding.snapshot)
-            : undefined,
+          snapshotDigest: undefined,
         }),
       };
     };
@@ -406,10 +356,6 @@ async function main() {
       signal: abort.signal,
       authorize: assertAssistantAuthority,
       runLimits,
-      priceSnapshot: fixture.priceBinding?.snapshot,
-      serverPricingProviderSnapshot: fixture.priceBinding
-        ? provider
-        : undefined,
       tools,
     });
     verify(!!controller, 'production_assistant_controller_enabled');
@@ -486,53 +432,7 @@ async function main() {
     const tree = await runtime.getTree(fixture.context, {
       runId: fixture.rootRunId,
     });
-    const pricing = fixture.priceBinding
-      ? createAssistantPricing({ database: db })
-      : undefined;
-    const costSummary = await pricing?.summarize({
-      scope: {
-        organizationId: fixture.org,
-        workspaceId: fixture.workspace,
-        projectId: null,
-      },
-      rootRunId: fixture.rootRunId,
-      worker: fixture.worker,
-    });
-    if (fixture.priceBinding && costSummary) {
-      const [admissions, receipts] = await Promise.all([
-        db<
-          P27PricedAdmission[]
-        >`select call_id,run_id,request_digest,dispatched_at,finished_at
-          from allrice_assistant_model_admissions where root_run_id=${fixture.rootRunId}`,
-        db<
-          P27CostReceipt[]
-        >`select call_id,run_id,snapshot_digest,request_digest,usage,usage_complete,
-          cache_usage_known,cost_basis,actual_cost_known,cost_picounits
-          from allrice_assistant_cost_receipts where root_run_id=${fixture.rootRunId}`,
-      ]);
-      report.pricedLedger = verifyP27PricingReceipts({
-        snapshot: fixture.priceBinding.snapshot,
-        snapshotDigest: runtimePolicyDigest(fixture.priceBinding.snapshot),
-        admissions,
-        receipts,
-        modelCalls:
-          tree.budgets.find((b) => b.metric === 'model_calls')?.spent ?? 0,
-        settledUsage: {
-          inputTokens:
-            tree.budgets.find((b) => b.metric === 'input_tokens')?.spent ?? 0,
-          outputTokens:
-            tree.budgets.find((b) => b.metric === 'output_tokens')?.spent ?? 0,
-        },
-        summary: costSummary,
-      });
-      verify(true, 'priced_call_receipts_and_whole_tree_summary');
-    }
-    report.harnessOutcome = validateP27AssistantOutcome(
-      result,
-      tree.budgets,
-      args.providerRoute,
-      costSummary,
-    );
+    report.harnessOutcome = validateP27AssistantOutcome(result, tree.budgets);
     verify(true, 'adapter_authoritative_whole_tree_outcome');
     const children = tree.instances.filter(
       (child) => child.parentRunId === fixture.rootRunId,

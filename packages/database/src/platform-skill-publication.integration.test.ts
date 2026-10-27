@@ -290,8 +290,8 @@ suite('P18 exact package publication authority with real PostgreSQL', () => {
     expect(original.model).not.toBe(f.definition.modelPolicy.model);
     const legacy = {
       ...original,
-      provider: 'gemini',
-      model: '3.8flash',
+      provider: 'openai-compatible',
+      model: 'synthetic-model',
       authMode: 'chatgpt_subscription',
     };
     await db`update allrice_session_model_snapshots set snapshot=${db.json(legacy)} where session_id=${sessionId}`;
@@ -302,7 +302,10 @@ suite('P18 exact package publication authority with real PostgreSQL', () => {
       authMode: 'chatgpt_subscription',
       reasoningEffort: 'xhigh',
     });
-    expect(legacy).toMatchObject({ provider: 'gemini', model: '3.8flash' });
+    expect(legacy).toMatchObject({
+      provider: 'openai-compatible',
+      model: 'synthetic-model',
+    });
 
     const changed = {
       ...f.definition,
@@ -357,8 +360,8 @@ suite('P18 exact package publication authority with real PostgreSQL', () => {
     const legacyScope = { ...scope, sessionId: legacyId };
     const legacySnapshot = {
       ...(await freezeSessionModelSnapshot(legacyScope)),
-      provider: 'gemini',
-      model: '3.8flash',
+      provider: 'openai-compatible',
+      model: 'synthetic-model',
       authMode: 'chatgpt_subscription',
     };
     await db`update allrice_session_model_snapshots set snapshot=${db.json(legacySnapshot)} where session_id=${legacyId}`;
@@ -367,7 +370,7 @@ suite('P18 exact package publication authority with real PostgreSQL', () => {
       model: original.model,
       reasoningEffort: original.reasoningEffort,
     });
-    expect(legacySnapshot.provider).toBe('gemini');
+    expect(legacySnapshot.provider).toBe('openai-compatible');
   });
   it('does not publish resource B using the successful trial for resource A on the same draft', async () => {
     const f = await fixture(),

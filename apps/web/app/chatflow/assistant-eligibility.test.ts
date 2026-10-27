@@ -43,7 +43,7 @@ const eligibility = (
   });
 
 describe('P26 assistant availability follows the server Session model (display only)', () => {
-  it.each(['gemini', 'unknown'])(
+  it.each(['openai-compatible', 'unknown'])(
     'keeps frozen subscription Codex available after the current default changes to %s',
     (provider) => {
       expect(eligibility(provider, frozen('openai-codex'))).toEqual({
@@ -52,16 +52,20 @@ describe('P26 assistant availability follows the server Session model (display o
       });
     },
   );
-  it('keeps frozen Gemini available even after the current default changes to Codex', () => {
-    expect(eligibility('openai-codex', frozen('gemini')).eligible).toBe(true);
+  it('keeps frozen compatible API available even after the current default changes to Codex', () => {
+    expect(
+      eligibility('openai-codex', frozen('openai-compatible')).eligible,
+    ).toBe(true);
   });
   it('does not replace an unknown frozen provider with a supported default', () => {
-    expect(eligibility('gemini', frozen('unknown')).eligible).toBe(false);
-    expect(eligibility('gemini', frozen('')).eligible).toBe(false);
+    expect(eligibility('openai-compatible', frozen('unknown')).eligible).toBe(
+      false,
+    );
+    expect(eligibility('openai-compatible', frozen('')).eligible).toBe(false);
     expect(eligibility('openai-codex', frozen('codex')).eligible).toBe(false);
     expect(eligibility('openai-codex', frozen('unknown')).eligible).toBe(false);
   });
-  it.each(['gemini', 'google', 'openai-compatible', 'openai-codex'])(
+  it.each(['openai-compatible', 'openai-codex'])(
     'offers only the verified display protocol %s',
     (provider) => {
       expect(eligibility('unknown', frozen(provider)).eligible).toBe(true);
@@ -77,7 +81,6 @@ describe('P26 assistant availability follows the server Session model (display o
     'deepseek-official',
     'unknown',
     '',
-    'Gemini',
     undefined,
   ])(
     'keeps an unfrozen unsupported or unknown default unavailable: %s',
@@ -90,16 +93,18 @@ describe('P26 assistant availability follows the server Session model (display o
   );
   it('uses the employee default only when this Session has no frozen model', () => {
     expect(
-      eligibility('gemini', frozen('openai-codex', 'other')).eligible,
+      eligibility('openai-compatible', frozen('openai-codex', 'other'))
+        .eligible,
     ).toBe(true);
     expect(
-      eligibility('openai-codex', frozen('gemini', 'other')).eligible,
+      eligibility('openai-codex', frozen('openai-compatible', 'other'))
+        .eligible,
     ).toBe(true);
     expect(
       eligibility('unknown', frozen('openai-codex', 'other')).eligible,
     ).toBe(false);
   });
-  it.each(['gemini', 'openai-codex'])(
+  it.each(['openai-compatible', 'openai-codex'])(
     '%s still requires the rollout flag and employee delegation tool',
     (provider) => {
       expect(
@@ -133,7 +138,7 @@ describe('P26 submitted next-task assistant preference', () => {
   it('allows subscription Codex preference without changing the frozen model', () => {
     const snapshot = frozen('openai-codex');
     const before = JSON.stringify(snapshot);
-    const available = eligibility('gemini', snapshot);
+    const available = eligibility('openai-compatible', snapshot);
     const preference = assistantPreferenceForTask({
       enabled: true,
       deliveryMode: 'follow_up',
@@ -144,8 +149,8 @@ describe('P26 submitted next-task assistant preference', () => {
     expect(JSON.stringify(snapshot)).toBe(before);
   });
   it.each([
-    ['gemini', true],
-    ['gemini', false],
+    ['openai-compatible', true],
+    ['openai-compatible', false],
     ['openai-codex', true],
     ['openai-codex', false],
   ] as const)(

@@ -73,12 +73,12 @@ describe('assistant whole-tree price admission preflight', () => {
       Input['serverPricingProviderSnapshot']
     > = {
       provider: 'dsh',
-      route: 'gemini',
+      route: 'openai-compatible',
       authMode: 'allrice_credential',
-      model: '3.8flash',
+      model: 'synthetic-model',
       reasoningEffort: 'low',
       credentialReference: 'synthetic-never-resolved',
-      baseUrl: null,
+      baseUrl: 'https://api.example.test/v1',
     };
     expect(
       productionAssistantController({ ...f, serverPricingProviderSnapshot }),

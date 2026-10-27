@@ -30,7 +30,7 @@ export function parseP27CodexWorkerArguments(args: string[]) {
   return parsed;
 }
 
-/** A separate one-Worker ticket: prior assistant/Gemini opt-ins never apply. */
+/** A separate one-Worker ticket: prior assistant opt-ins never apply. */
 export function authorizeP27CodexWorker(env: NodeJS.ProcessEnv, sha: string) {
   requireCheck(
     /^[a-f0-9]{40}$/.test(sha) &&

@@ -5,7 +5,7 @@ import { createAssistantWorkerBridge } from '../../src/harness/dsh/assistant-bri
 
 type Options = Parameters<typeof createAssistantWorkerBridge>[0];
 /** Protocol-order unit seam; authoritative receipt validation is covered by
- * real PG + native Gemini synthetic-HTTP integration, not these mock objects. */
+ * database pricing integration, not these mock objects. */
 function fixture(onModelUsage?: Options['onModelUsage']) {
   const runId = randomUUID(),
     callId = randomUUID();

@@ -24,12 +24,12 @@ function fixture() {
     connectionId: randomUUID(),
     modelCatalogEntryId: randomUUID(),
     harness: 'dsh',
-    provider: 'gemini',
+    provider: 'openai-compatible',
     authMode: 'api_key',
-    model: '3.8flash',
+    model: 'synthetic-model',
     reasoningEffort: 'low',
     credentialReference: 'deployment:synthetic-only',
-    baseUrl: null,
+    baseUrl: 'https://api.example.test/v1',
     fallbackPolicy: 'disabled',
     fallbackTargets: [],
     resolvedFallbacks: [],
@@ -37,7 +37,7 @@ function fixture() {
   });
   const decision = {
     harness: 'dsh',
-    provider: 'gemini',
+    provider: 'openai-compatible',
     model: modelSnapshot.model,
     employeeId: modelSnapshot.employeeId,
     modelConnectionId: modelSnapshot.connectionId,
@@ -46,21 +46,21 @@ function fixture() {
   } as RouteDecision;
   const providerSnapshot: HarnessExecutionSnapshot = {
     provider: 'dsh',
-    route: 'gemini',
-    model: '3.8flash',
+    route: 'openai-compatible',
+    model: 'synthetic-model',
     reasoningEffort: 'low',
     authMode: 'allrice_credential',
     credentialReference: modelSnapshot.credentialReference!,
-    baseUrl: null,
+    baseUrl: 'https://api.example.test/v1',
   };
   const target = {
     connectionId: modelSnapshot.connectionId,
     catalogId: modelSnapshot.modelCatalogEntryId,
     harness: 'dsh',
-    provider: 'gemini',
+    provider: 'openai-compatible',
     authMode: 'api_key',
-    model: 'gemini-3.8-flash',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+    model: 'synthetic-model',
+    baseUrl: 'https://api.example.test/v1',
     serviceTier: 'default',
     modality: 'text',
   };
@@ -111,6 +111,7 @@ function subscriptionFixture() {
     provider: 'openai-codex',
     authMode: 'chatgpt_subscription',
     model: 'synthetic-codex',
+    baseUrl: null,
   };
   input.decision = {
     ...input.decision,
@@ -123,6 +124,7 @@ function subscriptionFixture() {
     route: 'openai-codex',
     authMode: 'platform_subscription',
     model: 'synthetic-codex',
+    baseUrl: null,
   };
   return input;
 }
@@ -210,7 +212,7 @@ describe('Worker subscription preflight and exact result binding', () => {
   });
 });
 describe('Worker assistant pricing preflight — synthetic configuration only', () => {
-  it('pins frozen route IDs, canonical Gemini model and actual Google endpoint before execution', () => {
+  it('pins frozen route IDs, canonical compatible-provider model and frozen API endpoint before execution', () => {
     const input = fixture(),
       result = preflightAssistantPricing(input)!;
     expect(result.price.target).toEqual(input.catalog.entries[0]!.target);
@@ -270,7 +272,7 @@ describe('Worker assistant pricing preflight — synthetic configuration only', 
     expect(() =>
       preflightAssistantPricing({
         ...input,
-        modelSnapshot: { ...input.modelSnapshot, authMode: 'gemini_oauth' },
+        modelSnapshot: { ...input.modelSnapshot, authMode: 'oauth' },
       }),
     ).toThrow();
     expect(() =>
@@ -359,8 +361,8 @@ describe('Worker assistant pricing preflight — synthetic configuration only', 
     const snapshot = preflightAssistantPricing(fixture())!;
     const result = {
       answer: 'synthetic',
-      provider: 'gemini',
-      model: '3.8flash',
+      provider: 'openai-compatible',
+      model: 'synthetic-model',
       assistantStatus: 'completed' as const,
       usageComplete: true,
       cacheUsageKnown: false,

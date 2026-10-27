@@ -38,7 +38,6 @@ suite(
     let source: ReturnType<typeof createNativeOnceControlSource>;
     const runtimes: ReturnType<typeof createNativeOnceWorkerRuntime>[] = [];
     beforeAll(async () => {
-      vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
       vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', '1');
       fixture = await createP27CodexWorkerFixture({

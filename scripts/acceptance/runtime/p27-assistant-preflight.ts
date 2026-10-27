@@ -5,13 +5,8 @@ import type { AssistantFixtureCleanupProof } from '../../../packages/database/sr
 import { HandlerError } from '../../../apps/worker/src/errors.ts';
 import { assertAssistantProviderOutputBound } from '../../../apps/worker/src/harness/dsh/assistant-provider.ts';
 import type { DshExecutionSnapshot } from '../../../packages/contracts/src/index.ts';
-import { P27_GEMINI_RUN_LIMITS } from './p27-assistant-pricing.ts';
 
 export const AUTHORIZED_DEV_ROOT = '/Users/a123/allrice-dev/.local';
-// Exact existing Dev Worker binding, resolved from its LaunchAgent; never a
-// search for credentials, a Prod path, or permission to copy a secret.
-export const AUTHORIZED_GEMINI_CREDENTIAL_FILE =
-  '/Users/a123/.config/allrice/dsh-credentials.dev.json';
 export const FIXTURE_DATABASE_URL = 'postgres://a123@127.0.0.1:5432/allrice_b2';
 export const PROVIDER = Object.freeze({
   provider: 'dsh' as const,
@@ -22,26 +17,13 @@ export const PROVIDER = Object.freeze({
   credentialReference: 'deployment:codex-default',
   baseUrl: null,
 });
-export const GEMINI_PROVIDER = Object.freeze({
-  provider: 'dsh' as const,
-  authMode: 'allrice_credential' as const,
-  route: 'gemini' as const,
-  model: '3.8flash',
-  reasoningEffort: 'low' as const,
-  credentialReference: 'deployment:gemini-default',
-  baseUrl: null,
-});
-export type P27ProviderRoute = 'openai-codex' | 'gemini';
-export function selectedProvider(
-  route: P27ProviderRoute,
-): DshExecutionSnapshot {
-  return route === 'gemini' ? GEMINI_PROVIDER : PROVIDER;
+export type P27ProviderRoute = 'openai-codex';
+export function selectedProvider(): DshExecutionSnapshot {
+  return PROVIDER;
 }
 /** Uses the same server-owned capability gate as production. A valid source
  * manifest is not proof that this pinned acceptance route may execute. */
-export function providerExecutionEligibility(
-  provider = selectedProvider('openai-codex'),
-) {
+export function providerExecutionEligibility(provider = selectedProvider()) {
   try {
     assertAssistantProviderOutputBound(provider, true);
     return { eligible: true, reason: null } as const;
@@ -64,8 +46,8 @@ export const RUN_LIMITS = Object.freeze({
   maxTotalTokens: 92000,
   maxCostCents: null,
 });
-export function runLimitsForProvider(route: P27ProviderRoute) {
-  return route === 'gemini' ? P27_GEMINI_RUN_LIMITS : RUN_LIMITS;
+export function runLimitsForProvider() {
+  return RUN_LIMITS;
 }
 export function fixtureCleanupFlags(
   attempted: boolean,
@@ -102,8 +84,7 @@ export function parseArguments(args: string[]): {
   const sha = shas[0]!.slice(16);
   const providerRoute = providers[0]?.slice(11) ?? 'openai-codex';
   requireCheck(
-    /^[a-f0-9]{40}$/.test(sha) &&
-      (providerRoute === 'openai-codex' || providerRoute === 'gemini'),
+    /^[a-f0-9]{40}$/.test(sha) && providerRoute === 'openai-codex',
     'arguments',
   );
   return { mode: modes[0]!, sha, providerRoute };
@@ -148,7 +129,6 @@ export function assertExecutionAuthorization(
       env.ALLRICE_B6_P27_AUTHORIZED_SHA === sha,
     'provider_not_authorized',
   );
-  // A prior Codex authorization is never permission to spend against Gemini.
   requireCheck(
     (providerRoute === 'openai-codex' &&
       !env.ALLRICE_B6_P27_AUTHORIZED_PROVIDER) ||
@@ -190,41 +170,10 @@ export async function authorizedPlatformHome(value: string | undefined) {
   );
   return home;
 }
-/** Metadata-only preflight for an explicitly selected existing Dev credential
- * file. Only the production resolver reads its bytes, after execution approval. */
-export async function authorizedGeminiCredentialFile(
-  value: string | undefined,
-) {
-  requireCheck(value, 'gemini_credential_file_required');
-  const root = await realpath(AUTHORIZED_DEV_ROOT);
-  const original = await lstat(value);
-  const file = await realpath(value);
-  const metadata = await lstat(file);
-  requireCheck(
-    !original.isSymbolicLink() &&
-      (strictDescendant(root, file) ||
-        file === AUTHORIZED_GEMINI_CREDENTIAL_FILE) &&
-      metadata.isFile() &&
-      metadata.nlink === 1 &&
-      metadata.uid === process.getuid?.() &&
-      (metadata.mode & 0o077) === 0 &&
-      metadata.size > 0 &&
-      metadata.size <= 65536,
-    'gemini_credential_metadata_denied',
-  );
-  return file;
-}
 export function isolatedEnvironment(
   env: NodeJS.ProcessEnv,
   platformHome: string,
-  selection: { providerRoute: P27ProviderRoute; credentialFile?: string } = {
-    providerRoute: 'openai-codex',
-  },
 ) {
-  requireCheck(
-    selection.providerRoute !== 'gemini' || !!selection.credentialFile,
-    'gemini_credential_file_required',
-  );
   const allowed = [
     'PATH',
     'HOME',
@@ -240,9 +189,6 @@ export function isolatedEnvironment(
       allowed.flatMap((key) => (env[key] ? [[key, env[key]]] : [])),
     ),
     ALLRICE_DSH_PLATFORM_HOME: platformHome,
-    ...(selection.providerRoute === 'gemini'
-      ? { ALLRICE_DSH_CREDENTIALS_FILE: selection.credentialFile! }
-      : {}),
     ALLRICE_TEST_DATABASE_URL: FIXTURE_DATABASE_URL,
     ALLRICE_ASSISTANTS_ENABLED: '1',
     ALLRICE_WORKBENCH_ENABLED: '1',
@@ -251,8 +197,6 @@ export function isolatedEnvironment(
     ALLRICE_MCP_ENABLED: '0',
     ALLRICE_LOCAL_MCP_ENABLED: '0',
     ALLRICE_CLOUD_MCP_ENABLED: '0',
-    ALLRICE_GEMINI_API_ENABLED:
-      selection.providerRoute === 'gemini' ? '1' : '0',
     ALLRICE_CLOUD_RUNNER_ENABLED: '0',
     ALLRICE_BROWSER_ENABLED: '0',
   };
@@ -265,17 +209,9 @@ export async function prepareP27PlatformEnvironment(input: {
   temporary: string;
   codexPlatformHome?: string;
   providerRoute: P27ProviderRoute;
-  credentialFile?: string;
 }) {
-  requireCheck(
-    input.providerRoute !== 'gemini' || !input.codexPlatformHome,
-    'gemini_existing_platform_home_denied',
-  );
   const platformHome =
     input.codexPlatformHome ?? join(input.temporary, 'platform');
   if (!input.codexPlatformHome) await mkdir(platformHome, { mode: 0o700 });
-  return isolatedEnvironment(input.environment, platformHome, {
-    providerRoute: input.providerRoute,
-    credentialFile: input.credentialFile,
-  });
+  return isolatedEnvironment(input.environment, platformHome);
 }

@@ -52,7 +52,6 @@ suite(
   'MET167 same-session production control flow and immutable HTTP delivery',
   () => {
     beforeEach(() => {
-      vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
       vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');

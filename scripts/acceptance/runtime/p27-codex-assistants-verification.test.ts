@@ -75,7 +75,7 @@ describe('synthetic subscription result assertions, no provider', () => {
     { cacheUsageKnown: true },
     { costCurrency: 'USD' },
     { priceSnapshotDigest: digest },
-    { provider: 'gemini' },
+    { provider: 'openai-compatible' },
     { model: 'different-from-frozen-model' },
     { usage: { inputTokens: 19, outputTokens: 7, cachedInputTokens: 0 } },
   ])('rejects changed subscription handoff %j', (change) => {

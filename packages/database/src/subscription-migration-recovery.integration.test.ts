@@ -138,7 +138,6 @@ integration('subscription incremental migration and cold SQL readers', () => {
 
   beforeAll(async () => {
     vi.stubEnv('ALLRICE_CODEX_TOKEN_POLICY', 'enforce'); // Historical migration/rollback coverage.
-    vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
     vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
     expect(process.env.DATABASE_URL).toBeUndefined();

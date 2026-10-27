@@ -248,11 +248,6 @@ jobs:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
         run: pnpm exec vitest run --maxWorkers=1 packages/database/src/bridge-owner-isolation.integration.test.ts packages/database/src/bridge-presence.integration.test.ts packages/database/src/runtime-policy.integration.test.ts packages/database/src/runtime-governed-bridge.integration.test.ts packages/database/src/runtime-ledger/bridge-http.integration.test.ts packages/database/src/local-python-execution.integration.test.ts packages/database/src/python-execution.integration.test.ts
-      - name: Verify Gemini draft compatibility against PostgreSQL
-        env:
-          ALLRICE_RUN_DB_INTEGRATION: 1
-          ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: pnpm exec vitest run --maxWorkers=1 packages/database/src/gemini-compatibility.integration.test.ts
       - name: Verify MCP employee binding, native DSH, per-tool authorization and real HTTP ledger
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
@@ -264,7 +259,7 @@ jobs:
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: pnpm exec vitest run --maxWorkers=1 packages/database/src/platform-model-settings.integration.test.ts apps/worker/test/met163/image-generation.integration.test.ts
+        run: pnpm exec vitest run --maxWorkers=1 packages/database/src/platform-model-settings.integration.test.ts packages/database/src/retired-provider-cleanup.integration.test.ts apps/worker/test/met163/image-generation.integration.test.ts
       - name: Verify employee Run binding in caller transactions
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
@@ -315,7 +310,7 @@ jobs:
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: pnpm exec vitest run --maxWorkers=1 packages/database/src/assistant-authority.integration.test.ts packages/database/src/assistant-current-authority.integration.test.ts packages/database/src/assistant-runtime.integration.test.ts packages/database/src/assistant-failure-usage.integration.test.ts packages/database/src/development-cooperation.integration.test.ts packages/database/src/development-workflow.integration.test.ts packages/database/src/assistant-output.integration.test.ts packages/database/src/assistant-preference.integration.test.ts packages/database/src/local-command-assistant.integration.test.ts packages/database/src/local-command-candidate.integration.test.ts packages/database/src/route-usage-unknown.integration.test.ts packages/database/src/assistant-output-budget.integration.test.ts packages/database/src/assistant-model-admission.integration.test.ts packages/database/src/assistant-model-preparation-close.integration.test.ts packages/database/src/assistant-pricing.integration.test.ts scripts/acceptance/runtime/p27-gemini-history-pricing.test.ts packages/database/src/assistant-quota-admission.integration.test.ts apps/worker/test/p25
+        run: pnpm exec vitest run --maxWorkers=1 packages/database/src/assistant-authority.integration.test.ts packages/database/src/assistant-current-authority.integration.test.ts packages/database/src/assistant-runtime.integration.test.ts packages/database/src/assistant-failure-usage.integration.test.ts packages/database/src/development-cooperation.integration.test.ts packages/database/src/development-workflow.integration.test.ts packages/database/src/assistant-output.integration.test.ts packages/database/src/assistant-preference.integration.test.ts packages/database/src/local-command-assistant.integration.test.ts packages/database/src/local-command-candidate.integration.test.ts packages/database/src/route-usage-unknown.integration.test.ts packages/database/src/assistant-output-budget.integration.test.ts packages/database/src/assistant-model-admission.integration.test.ts packages/database/src/assistant-model-preparation-close.integration.test.ts packages/database/src/assistant-pricing.integration.test.ts packages/database/src/assistant-quota-admission.integration.test.ts apps/worker/test/p25
       - name: Verify private project snapshots and version conflicts against PostgreSQL
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1

@@ -75,7 +75,6 @@ Object.assign(process.env, {
   ALLRICE_LOCAL_PORTAL: 'snow',
   ALLRICE_PORTAL_SESSION_SECRET: randomBytes(32).toString('hex'),
   ALLRICE_PORTAL_SECURE_COOKIE: '0',
-  ALLRICE_GEMINI_API_ENABLED: '0',
   ALLRICE_MCP_CREDENTIAL_KEY: 'af'.repeat(32),
   ALLRICE_STORAGE_ROOT: storageRoot,
   ALLRICE_STORAGE_SIGNING_SECRET: randomBytes(32).toString('hex'),

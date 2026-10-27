@@ -65,19 +65,11 @@ function assertPriceProvider(
   provider: DshExecutionSnapshot,
 ) {
   const target = price.price.target;
-  const model =
-    provider.route === 'gemini' && provider.model === '3.8flash'
-      ? 'gemini-3.8-flash'
-      : provider.model;
-  const baseUrl =
-    provider.route === 'gemini'
-      ? 'https://generativelanguage.googleapis.com/v1beta'
-      : provider.baseUrl;
   if (
     provider.authMode !== 'allrice_credential' ||
     target.provider !== provider.route ||
-    target.model !== model ||
-    target.baseUrl !== baseUrl
+    target.model !== provider.model ||
+    target.baseUrl !== provider.baseUrl
   )
     throw Error('assistant_price_provider_mismatch');
 }
@@ -528,11 +520,7 @@ export function productionAssistantController(input: {
             leaseToken: worker.leaseToken,
             deadlineAt: row.timeout_at.getTime(),
             provider: repairProvider.route,
-            model:
-              repairProvider.route === 'gemini' &&
-              repairProvider.model === '3.8flash'
-                ? 'gemini-3.8-flash'
-                : repairProvider.model,
+            model: repairProvider.model,
             async assertAuthority() {
               input.signal?.throwIfAborted();
               const authority =

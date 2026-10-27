@@ -1070,8 +1070,6 @@ export async function createAllRiceRuntime(
         installSessionReferenceAdmission(this.ctx);
         this.referenceAdmissionInstalled = true;
       }
-      if (['gemini', 'google'].includes(params?.provider))
-        throw new Error('MODEL_PROVIDER_RETIRED');
       const forwardedParams = { ...params };
       const requestedTools = Array.isArray(params?.nativeTools)
         ? params.nativeTools.filter((name) => typeof name === 'string')
