@@ -5,8 +5,8 @@
    document and move the header, sidebar footer, or composer off screen. */
 main.shell {
   /* Native Markdown links use this alias, independently of employee accents.
-     600, not 500: 500 on white is 4.23:1, under the 4.5 text minimum. */
-  --dsw-alias-link: var(--dsw-static-deepseek-600);
+     The design token carries both themes (4.23:1 on white was too light). */
+  --dsw-alias-link: var(--ar-link);
   position: fixed;
   inset: 0;
   width: 100%;
@@ -43,10 +43,6 @@ main.shell {
 .sidebarCollapsed {
   --dsw-specific-sidebar-fill: var(--allrice-sidebar-bg);
   min-width: 0;
-}
-
-:global(body[data-ds-dark-theme]) .shell {
-  --dsw-alias-link: var(--dsw-static-deepseek-400);
 }
 
 .sidebarBackdrop {
@@ -637,8 +633,6 @@ header.conversationHeader::after {
   opacity: 1;
 }
 
-/* Small words sit on an opaque chip, never straight on a thumbnail or on the
-   card's translucent fill, so their contrast holds in both themes. */
 .pendingFileState,
 .pendingFileRetry {
   position: absolute;
@@ -646,17 +640,27 @@ header.conversationHeader::after {
   bottom: 4px;
   padding: 2px 5px;
   border-radius: 999px;
-  background: var(--dsw-alias-bg-base);
+  background: color-mix(in srgb, var(--dsw-alias-bg-base) 86%, transparent);
   color: var(--dsw-alias-label-secondary);
   font-size: 9px;
   line-height: 14px;
 }
 
-/* The red ring says the upload failed; the word itself stays primary text. */
+/* An opaque chip, so the word never sits on the thumbnail; the red ring says
+   the upload failed and the word itself stays primary text. */
 .pendingFileRetry {
   padding: 1px 4px;
   border: 1px solid var(--dsw-alias-state-error-primary);
+  background: var(--dsw-alias-bg-base);
   color: var(--dsw-alias-label-primary);
+}
+
+/* The chip covers the card's bottom-right corner: keep a document's name
+   above it. */
+.pendingFileItem:has(.pendingFileState, .pendingFileRetry) .pendingDocument {
+  justify-content: flex-start;
+  padding-bottom: 22px;
+  line-height: 14px;
 }
 
 .pendingFileArrow {
@@ -748,7 +752,7 @@ header.conversationHeader::after {
 }
 
 .imageDropOverlay span {
-  color: var(--dsw-alias-label-caption);
+  color: var(--dsw-alias-label-secondary);
   font-size: 16px;
 }
 
@@ -1226,7 +1230,7 @@ div.composerAttachmentMenu,
 
 .failedMessage {
   margin-top: 6px;
-  color: var(--dsw-alias-state-danger-label, #d54941);
+  color: var(--ar-danger-text);
   font-size: 12px;
 }
 
@@ -1911,7 +1915,7 @@ div.composerAttachmentMenu,
   line-height: 22px;
 }
 .processSteps [data-failed] .processStepStatus {
-  color: var(--dsw-alias-state-danger-label, #c24747);
+  color: var(--ar-danger-text);
 }
 .processPulse {
   display: inline-flex;

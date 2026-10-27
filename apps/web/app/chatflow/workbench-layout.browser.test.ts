@@ -11195,16 +11195,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         // Native Markdown opens HTTP links without navigating away from the chat.
         expect(await link.getAttribute('target')).toBe('_blank');
         expect(await link.getAttribute('rel')).toBe('noopener noreferrer');
-        // deepseek-600 in light: 500 was 4.23:1 on white (MET-214 L04).
+        // The --ar-link design token (MET-214 L04): 500 was 4.23:1 on white.
         expect(
           await link.evaluate((node) => getComputedStyle(node).color),
-        ).toBe('rgb(72, 104, 178)');
+        ).toBe('rgb(30, 64, 175)');
         await f.page.evaluate(() =>
           document.body.setAttribute('data-ds-dark-theme', ''),
         );
         expect(
           await link.evaluate((node) => getComputedStyle(node).color),
-        ).toBe('rgb(103, 158, 254)');
+        ).toBe('rgb(183, 200, 254)');
         await f.page.evaluate(() =>
           document.body.removeAttribute('data-ds-dark-theme'),
         );
