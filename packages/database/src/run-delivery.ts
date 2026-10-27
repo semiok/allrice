@@ -32,6 +32,7 @@ async function readSnapshot(
       explicitReferences: await readFinalDeliveryReferences({
         transaction: tx,
         task,
+        ownership: 'root_run',
       }),
     };
   });

@@ -231,6 +231,35 @@ suite('PR1a: independent Worker delivery, isolated PostgreSQL', () => {
     expect((await f.port.readSnapshot()).ownedRunIds).toEqual([f.rootRunId]);
   });
 
+  it('checks frozen references without querying any assistant identity or run links', async () => {
+    const f = await subject();
+    const artifact = await f.publish();
+    await fixture.db`insert into allrice_review_continuations(response_id,organization_id,workspace_id,session_id,actor_id,artifact_id,checksum,kind,run_id)
+      values(${randomUUID()},${f.org},${f.workspace},${f.session},${f.user},${artifact.id},${artifact.object.checksum},'plan_review',${f.rootRunId})`;
+    const queries: string[] = [];
+    const debug = fixture.db.options.debug;
+    fixture.db.options.debug = (_connection, query) => {
+      queries.push(query);
+    };
+    try {
+      const snapshot = await f.port.readSnapshot();
+      expect(snapshot.explicitReferenceVersionIds).toEqual([artifact.id]);
+      expect(snapshot.artifacts).toMatchObject([
+        { objectId: artifact.object.id, versionId: artifact.id },
+      ]);
+      expect(queries.length).toBeGreaterThan(0);
+      expect(
+        queries.filter((q) =>
+          /allrice_assistant_|allrice_runtime_run_links|allrice_runtime_roots/.test(
+            q,
+          ),
+        ),
+      ).toEqual([]);
+    } finally {
+      fixture.db.options.debug = debug;
+    }
+  });
+
   it.each([
     [
       'member revoked',
