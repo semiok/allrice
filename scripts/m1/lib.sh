@@ -4,6 +4,14 @@ M1_LAUNCHCTL=/bin/launchctl
 M1_PY=/usr/bin/python3
 M1_UID=$(/usr/bin/id -u)
 
+# A refused recovery parks the plists outside LaunchAgents so login cannot start
+# incompatible code. Keep their environment available for recovery and forward fixes.
+dev_plist() { # web|worker -> active plist, or the parked configuration
+  local p="$HOME/Library/LaunchAgents/ai.bplabs.allrice-dev-$1.plist"
+  [ -f "$p" ] || p="$HOME/allrice-dev/qa/deploy-disabled/$1.plist"
+  printf '%s\n' "$p"
+}
+
 # flock_fd <fd> [seconds]: take an exclusive kernel lock on the file open at <fd>, waiting
 # up to [seconds] (default 0). Exit 0 = held, 1 = still busy. The lock belongs to the open
 # file, so every child that inherits <fd> keeps it: it is released only when the last of

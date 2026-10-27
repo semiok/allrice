@@ -1,5 +1,5 @@
-# Unit tests for scripts/m1/deploy-dev (MET-221 PR2b-0): the migration gate that knows a
-# release's archived migrations, and the pre-migration snapshot. deploy-dev is sourced for
+# Unit tests for scripts/m1/deploy-dev (MET-221): migration/contract gates, plist
+# cleanup and recovery, and the pre-migration snapshot. deploy-dev is sourced for
 # its functions in a fake HOME with psql and pg_dump stubbed; a release's
 # migration-compatibility.js is imported by the real node.
 #   python3 -m unittest discover -s scripts/m1 -p 'test_*.py'
@@ -46,8 +46,7 @@ class DeployDevMigrations(unittest.TestCase):
             path = os.path.join(self.home, 'Library/LaunchAgents/ai.bplabs.allrice-dev-%s.plist' % role)
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, 'wb') as f:
-                plistlib.dump({'Label': role, 'WorkingDirectory': '/nowhere', 'EnvironmentVariables': {
-                    'DATABASE_URL': 'postgres://stub/allrice_dev', 'ALLRICE_WEB_PORT': '1', 'ALLRICE_WORKER_PORT': '2'}}, f)
+                plistlib.dump(self.plist(role), f)
         write(os.path.join(self.home, 'allrice-dev/.env'), 'ALLRICE_TEST=1\n', 0o600)
         local = os.path.join(self.home, 'allrice-dev/.local')
         write(os.path.join(local, 'storage/org/file.txt'), 'stored')
@@ -57,11 +56,40 @@ class DeployDevMigrations(unittest.TestCase):
         self.applied = os.path.join(self.tmp, 'applied.txt')
         # $CONTRACT_FILE holds psql's answer for the journal contract row ('row:<highWater>', empty: no row).
         write(os.path.join(self.stubs, 'psql'), '#!/bin/sh\n[ -z "$PSQL_FAIL" ] || exit 2\nfor a; do q=$a; done\n'
-              'case "$q" in *allrice_runtime_metadata*) cat "$CONTRACT_FILE" 2>/dev/null ;; *) cat "$APPLIED" ;; esac\n', 0o755)
+              'case "$q" in *allrice_runtime_metadata*) [ -z "$CONTRACT_FAIL" ] || exit 2; cat "$CONTRACT_FILE" 2>/dev/null ;; *) cat "$APPLIED" ;; esac\n', 0o755)
         write(os.path.join(self.stubs, 'pg_dump'), '#!/bin/sh\n[ -z "$PG_DUMP_FAIL" ] || exit 1\necho "-- dump of $*"\n', 0o755)
         if sys.platform != 'darwin':  # GNU cp has no clonefile flag
             write(os.path.join(self.stubs, 'cp'), '#!/bin/sh\n[ "$1" != -c ] || shift\nexec /bin/cp "$@"\n', 0o755)
         self.snapshots = os.path.join(self.home, 'allrice-dev/qa/pre-migrate')
+
+    def plist(self, role, release='/nowhere', legacy=False):
+        env = {'DATABASE_URL': 'postgres://stub/allrice_dev', 'ALLRICE_WEB_PORT': '1', 'ALLRICE_WORKER_PORT': '2',
+               'ALLRICE_RELEASE_SHA': 'a' * 40, 'ALLRICE_DSH_NATIVE_ARTIFACT_ID': 'sha256:' + 'a' * 64,
+               'ALLRICE_NATIVE_ONCE_REFERENCE': '{"artifactId":"provenance"}', 'UNRELATED_SETTING': 'keep'}
+        if legacy:
+            env.update({'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID': 'old-root',
+                        'ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS': 'obsolete-not-json',
+                        'ALLRICE_DSH_RETAINED_ARTIFACT_ID': 'old', 'ALLRICE_DSH_RETAINED_ROOT_2': '/old'})
+        return {'Label': role, 'WorkingDirectory': release, 'KeepAlive': True,
+                'ProgramArguments': [NODE, '--env-file=' + self.home + '/allrice-dev/.env', '/old/script'],
+                'EnvironmentVariables': env}
+
+    def live_plist(self, role):
+        return os.path.join(self.home, 'Library/LaunchAgents/ai.bplabs.allrice-dev-%s.plist' % role)
+
+    def read_plist(self, path):
+        with open(path, 'rb') as f:
+            return plistlib.load(f)
+
+    def seed_legacy_plists(self):
+        for role in ('web', 'worker'):
+            with open(self.live_plist(role), 'wb') as f:
+                plistlib.dump(self.plist(role, legacy=True), f)
+
+    def assert_no_legacy_settings(self, env):
+        self.assertNotIn('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', env)
+        self.assertNotIn('ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS', env)
+        self.assertFalse(any(key.startswith('ALLRICE_DSH_RETAINED_') for key in env))
 
     def release(self, files=FILES, archived=ARCHIVED, module=None, store=True):
         rel = tempfile.mkdtemp(prefix='rel-', dir=self.tmp)
@@ -86,7 +114,7 @@ class DeployDevMigrations(unittest.TestCase):
         write(env['CONTRACT_FILE'], CONTRACT)
         path = ':'.join([self.stubs, os.path.dirname(NODE), '/usr/bin', '/bin', '/usr/sbin', '/sbin'])
         env = dict(HOME=self.home, PATH=path, TEST_PATH=path, APPLIED=self.applied, **env)
-        return subprocess.run(['/bin/bash', '-c', 'source "$1"; PATH=$TEST_PATH; inflight_phase() { :; }; ' + script,
+        return subprocess.run(['/bin/bash', '-c', 'source "$1"; PATH=$TEST_PATH; ' + script,
                                'test', DEPLOY_DEV], env=env, capture_output=True, text=True, timeout=60)
 
     def check(self, rel, applied):  # -> (known, printed)
@@ -134,7 +162,7 @@ class DeployDevMigrations(unittest.TestCase):
         self.assertEqual(pending, '0218_native_generation_binding.sql')
 
     def snapshot(self, applied, forced='0', name='20261026-1800-abcdef12', **env):
-        return self.run_dd('pending=$(check_migrations_known "$REL"); pre_migrate_snapshot "$NAME" "$pending" "$FORCED"',
+        return self.run_dd('inflight_phase() { :; }; pending=$(check_migrations_known "$REL"); pre_migrate_snapshot "$NAME" "$pending" "$FORCED"',
                            applied, REL=self.release(), NAME=name, FORCED=forced, **env)
 
     def test_no_snapshot_without_migrations(self):
@@ -197,11 +225,14 @@ class DeployDevMigrations(unittest.TestCase):
             ('Error: DSH_NATIVE_CONTEXT_INCOMPATIBLE [chat 1 generation]', 'incompatible with this version'),
             ('Error: DSH_NATIVE_JOURNAL_CONTRACT_AHEAD [2 > 1]', 'journal contract range does not cover'),
             ('error: relation "allrice_new_table" does not exist', 'a defect, the checker must run on the schema before'),
-            ('Error: DSH_NATIVE_ARTIFACT_REFERENCES_UNCOVERED [INCOMPATIBLE-looking detail]', 'does not cover'),
+            ('Error: DSH_NATIVE_ARTIFACT_REFERENCES_UNCOVERED [INCOMPATIBLE-looking detail]', 'pre-stop native check failed: DSH_NATIVE_ARTIFACT_REFERENCES_UNCOVERED'),
         ]
         for output, expected in cases:
             with self.subTest(output=output):
-                self.assertIn(expected, self.precheck(output))
+                result = self.precheck(output)
+                self.assertIn(expected, result)
+                self.assertNotIn('MET-195', result)
+                self.assertNotIn('two-step', result)
         # Text from earlier in the deploy log (the build) is not this check's failure.
         out = self.precheck('Error: DSH_NATIVE_SOMETHING_ELSE', earlier='relation "x" does not exist\n')
         self.assertIn('pre-stop native check failed: DSH_NATIVE_SOMETHING_ELSE', out)
@@ -277,7 +308,8 @@ class DeployDevMigrations(unittest.TestCase):
                 self.assertEqual('STOPPED' in p.stdout, stopped, p.stderr)
                 if not stopped:
                     self.assertIn('predates the journal contract', p.stderr)
-                    self.assertIn('Do not log out or reboot M1', p.stderr)
+                    self.assertNotIn('Do not log out or reboot M1', p.stderr)
+                    self.assertTrue(os.path.isfile(self.live_plist('worker')))
                     with open(os.path.join(self.home, 'allrice-dev/qa/deploys.jsonl')) as f:
                         self.assertIn('"phase": "contract"', f.read())
                 shutil.rmtree(os.path.join(self.home, 'allrice-dev-releases'), True)
@@ -287,30 +319,34 @@ class DeployDevMigrations(unittest.TestCase):
         for role in ('web', 'worker'):  # the launchd files saved before the deploy point at the old release
             os.makedirs(inflight, exist_ok=True)
             with open(os.path.join(inflight, role + '.plist'), 'wb') as f:
-                plistlib.dump({'Label': role, 'WorkingDirectory': old, 'EnvironmentVariables': {
-                    'DATABASE_URL': 'postgres://stub/allrice_dev', 'ALLRICE_WEB_PORT': '1', 'ALLRICE_WORKER_PORT': '2'}}, f)
+                plistlib.dump(self.plist(role, release=old), f)
         write(os.path.join(inflight, 'state'), 'switching\n' + 'a' * 40 + '\n')
 
     def test_failed_deploy_does_not_restore_a_version_that_cannot_read_the_journals(self):
         self.saved_release(self.release(store=False))
         script = 'stop_both() { :; }; start_both_on() { echo STARTED; }; if restore; then echo restore=0; else echo restore=1; fi'
-        cases = (('row:2', {}, False), ('row:1', {}, True), ('row:2', {'PSQL_FAIL': '1'}, False), ('row:invalid 2', {}, True))
-        for row, env, started in cases:  # migration reads now fail closed; the contract policy is unchanged
+        cases = (('row:2', {}, False), ('row:1', {}, True), ('row:2', {'PSQL_FAIL': '1'}, False), ('row:invalid 2', {}, False))
+        for row, env, started in cases:
             with self.subTest(row=row, env=env):
                 p = self.run_dd(script, FILES + ARCHIVED, CONTRACT=row, **env)
                 self.assertEqual('STARTED' in p.stdout, started, p.stdout)
                 self.assertIn('restore=%d' % (0 if started else 1), p.stdout)
                 if not started and not env:
-                    self.assertIn('not starting aaaaaaaa: the journals reach contract 2', p.stdout)
-                    self.assertIn('Do not log out or reboot M1', p.stdout)
+                    self.assertIn('not starting aaaaaaaa:', p.stdout)
+                    self.assertIn('LaunchAgents plists parked', p.stdout)
 
     def assert_recovery_guidance(self, output):
         self.assertIn('Restore the pre-migration snapshot', output)
         self.assertIn('docs/runbooks/m1-database.md or fix forward', output)
         self.assertIn('move %s aside first' % os.path.join(self.home, 'allrice-dev/qa/deploy-inflight'), output)
-        self.assertIn('Do not log out or reboot M1', output)
-        self.assertIn('launchd KeepAlive', output)
-        self.assertIn('LaunchAgents plists at the next login', output)
+        self.assertIn('keep %s for the next deploy' % os.path.join(self.home, 'allrice-dev/qa/deploy-disabled'), output)
+        self.assertNotIn('Do not log out or reboot M1', output)
+
+    def assert_parked(self):
+        for role in ('web', 'worker'):
+            self.assertFalse(os.path.exists(self.live_plist(role)))
+            parked = os.path.join(self.home, 'allrice-dev/qa/deploy-disabled', role + '.plist')
+            self.assertEqual(self.read_plist(parked), self.plist(role))
 
     def test_automatic_restore_and_recover_refuse_committed_unknown_migrations(self):
         old = self.release(files=FILES[:-1])
@@ -339,6 +375,9 @@ class DeployDevMigrations(unittest.TestCase):
                     self.assert_recovery_guidance(p.stdout)
                     self.assertIn('cannot read allrice_schema_migrations' if unreadable else FILES[-1], p.stdout)
                     self.assertTrue(os.path.isfile(os.path.join(self.home, 'allrice-dev/qa/deploy-inflight/state')))
+                    self.assert_parked()
+                    self.assertEqual(self.read_plist(os.path.join(self.home, 'allrice-dev/qa/deploy-inflight/worker.plist')),
+                                     self.plist('worker', old))
                     with open(log) as f:
                         records = [json.loads(line) for line in f]
                     gate = next(r for r in records if r.get('phase') == 'restore-migrations')
@@ -364,6 +403,175 @@ class DeployDevMigrations(unittest.TestCase):
                     self.assertIn('STARTED', p.stdout)
                     self.assertIn('is healthy again', p.stdout)
                     self.assertFalse(os.path.exists(os.path.join(self.home, 'allrice-dev/qa/deploy-inflight')))
+
+    def test_point_plists_cleans_both_roles_even_when_artifact_is_unchanged(self):
+        rel = self.release()
+        for art in ('', 'sha256:' + 'c' * 64):
+            with self.subTest(art=art):
+                self.seed_legacy_plists()
+                p = self.run_dd('point_plists "$REL" "$SHA" "$ART"', [], REL=rel, SHA='b' * 40, ART=art)
+                self.assertEqual(p.returncode, 0, p.stderr)
+                for role in ('web', 'worker'):
+                    path = self.live_plist(role)
+                    value = self.read_plist(path)
+                    env = value['EnvironmentVariables']
+                    self.assert_no_legacy_settings(env)
+                    self.assertEqual(env['ALLRICE_DSH_NATIVE_ARTIFACT_ID'], art or 'sha256:' + 'a' * 64)
+                    self.assertEqual(env['ALLRICE_RELEASE_SHA'], 'b' * 40)
+                    self.assertEqual(env['ALLRICE_NATIVE_ONCE_REFERENCE'], '{"artifactId":"provenance"}')
+                    self.assertEqual(env['UNRELATED_SETTING'], 'keep')
+                    self.assertEqual(env['ALLRICE_DSH_CORDIS_CONFIG'], rel + '/apps/worker/dsh/allrice-restricted.cordis.yml')
+                    self.assertEqual(value['WorkingDirectory'], rel + '/apps/web' if role == 'web' else rel)
+                    self.assertEqual(value['ProgramArguments'][2], rel + ('/apps/web/server.mjs' if role == 'web' else '/apps/worker/dist/index.js'))
+                    self.assertTrue(value['KeepAlive'])
+                    self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+
+    def test_precheck_only_overrides_the_seal_and_profile(self):
+        rel = self.release()
+        write(os.path.join(rel, 'scripts/dev-release/verify-native-retention.mjs'),
+              'console.log(JSON.stringify(process.env));\n')
+        log = os.path.join(self.tmp, 'precheck.log')
+        p = self.run_dd('precheck "$REL" sha candidate "$PLOG"', [], REL=rel, PLOG=log)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        with open(log) as f:
+            env = json.load(f)
+        self.assertEqual(env['ALLRICE_DSH_NATIVE_ARTIFACT_ID'], 'candidate')
+        self.assertEqual(env['ALLRICE_DSH_CORDIS_CONFIG'], rel + '/apps/worker/dsh/allrice-restricted.cordis.yml')
+        self.assert_no_legacy_settings(env)
+
+    def test_qa_plists_do_not_inherit_retired_settings(self):
+        self.seed_legacy_plists()
+        with open(os.path.join(HERE, 'qa-instance')) as f:
+            script = f.read().split('"$sha" "$artifact" <<\'PY\'\n', 1)[1].split('\nPY\n', 1)[0]
+        directory = os.path.join(self.tmp, 'qa')
+        p = subprocess.run([sys.executable, '-', 'tool-test', directory, 'allrice_qa_tool_test', '3200', '3201', 'b' * 40, 'new-art'],
+                           input=script, env=dict(HOME=self.home, USER='tester'), capture_output=True, text=True, timeout=10)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        for role in ('web', 'worker'):
+            value = self.read_plist(os.path.join(directory, role + '.plist'))
+            live = self.read_plist(os.path.join(self.home, 'Library/LaunchAgents/ai.bplabs.allrice-qa-tool-test-%s.plist' % role))
+            self.assertEqual(live, value)
+            self.assert_no_legacy_settings(value['EnvironmentVariables'])
+            self.assertEqual(value['EnvironmentVariables']['ALLRICE_DSH_NATIVE_ARTIFACT_ID'], 'new-art')
+            self.assertEqual(value['EnvironmentVariables']['DATABASE_URL'], 'postgres://tester@127.0.0.1:5432/allrice_qa_tool_test')
+            self.assertEqual(value['EnvironmentVariables']['UNRELATED_SETTING'], 'keep')
+
+    def test_contract_refusal_is_recorded_for_automatic_restore_and_recover(self):
+        old = self.release(store=False)
+        for entry in ('INFLIGHT_MINE=1; die "candidate did not become healthy"', 'recover'):
+            for row, extra in (('row:2', {}), ('row:invalid 2', {}), ('row:1', {'CONTRACT_FAIL': '1'})):
+                with self.subTest(entry=entry, row=row, extra=extra):
+                    self.saved_release(old)
+                    log = os.path.join(self.home, 'allrice-dev/qa/deploys.jsonl')
+                    write(log, '')
+                    p = self.run_dd('take_lock() { :; }; stop_job() { echo STOPPED:$2; }; '
+                                    'start_both_on() { echo STARTED; }; ' + entry, FILES + ARCHIVED, CONTRACT=row, **extra)
+                    self.assertNotEqual(p.returncode, 0)
+                    self.assertIn('STOPPED:1\nSTOPPED:2', p.stdout)
+                    self.assertNotIn('STARTED', p.stdout)
+                    self.assert_parked()
+                    with open(log) as f:
+                        records = [json.loads(line) for line in f]
+                    self.assertEqual(len(records), 2 if 'INFLIGHT_MINE' in entry else 1)
+                    failure = records[0]
+                    self.assertEqual(failure['kind'], 'failed')
+                    self.assertEqual(failure['phase'], 'restore-contract')
+                    self.assertEqual(failure['restored'], 'no')
+                    self.assertEqual(failure['manualIntervention'], 'required')
+                    self.assertIn(failure['reason'], p.stdout)
+                    self.assertIn('cannot read the journal contract' if extra else
+                                  ('unreadable journal contract row' if 'invalid' in row else 'predates the journal contract'), failure['reason'])
+
+    def test_recover_rechecks_parked_configuration_and_restores_after_snapshot_recovery(self):
+        old = self.release(files=FILES[:-1])
+        self.saved_release(old)
+        script = ('take_lock() { :; }; stop_job() { echo STOPPED:$2; }; '
+                  'start_job() { [ -f "$2" ] && echo STARTED:$1; }; wait_ready() { echo READY:$2; }; recover')
+        for _ in range(2):  # repeated --recover does not recreate unsafe login entries
+            p = self.run_dd(script, FILES + ARCHIVED, CONTRACT='row:1')
+            self.assertNotEqual(p.returncode, 0)
+            self.assertNotIn('STARTED', p.stdout)
+            self.assert_parked()
+        p = self.run_dd(script, FILES[:-1] + ARCHIVED, CONTRACT='row:1')
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn('STOPPED:1\nSTOPPED:2', p.stdout)
+        self.assertIn('READY:' + 'a' * 40, p.stdout)
+        for role in ('web', 'worker'):
+            self.assertEqual(self.read_plist(self.live_plist(role)), self.plist(role, old))
+        self.assertFalse(os.path.exists(os.path.join(self.home, 'allrice-dev/qa/deploy-disabled')))
+
+    def test_partial_park_failure_is_reported_and_does_not_skip_the_other_plist(self):
+        self.saved_release(self.release(files=FILES[:-1]))
+        p = self.run_dd('stop_job() { :; }; start_both_on() { echo STARTED; }; '
+                        'mv() { case "$1" in *-web.plist) return 1 ;; *) command mv "$@" ;; esac; }; '
+                        'if restore; then exit 9; fi', FILES + ARCHIVED, CONTRACT='row:1')
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertNotIn('STARTED', p.stdout)
+        self.assertIn('Could not park all LaunchAgents plists', p.stdout)
+        self.assertNotIn('login will not restart these services', p.stdout)
+        self.assertTrue(os.path.exists(self.live_plist('web')))
+        self.assertFalse(os.path.exists(self.live_plist('worker')))
+        with open(os.path.join(self.home, 'allrice-dev/qa/deploys.jsonl')) as f:
+            failure = json.loads(f.readline())
+        self.assertEqual(failure['phase'], 'restore-migrations')
+        self.assertIn('Could not park all', failure['reason'])
+
+    def test_status_reads_parked_plists_without_restoring_them(self):
+        self.saved_release(self.release(files=FILES[:-1]))
+        p = self.run_dd('stop_job() { :; }; if restore; then exit 9; fi; status', FILES + ARCHIVED, CONTRACT='row:1')
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stderr, '')
+        self.assertIn('configured sha:     ' + 'a' * 40, p.stdout)
+        self.assertIn('journal contract:   high water 1', p.stdout)
+        self.assertIn('UNFINISHED DEPLOY', p.stdout)
+        self.assert_parked()
+
+    def test_successful_deploy_and_forward_fix_rewrite_plists_and_run_smoke(self):
+        write(os.path.join(self.stubs, 'pnpm'), '#!/bin/sh\necho "DB_PREPARE:$*"\n', 0o755)
+        smoke = os.path.join(self.tmp, 'smoke-tools')
+        write(os.path.join(smoke, 'smoke-test'), '#!/bin/sh\necho "SMOKE:$*"\n', 0o755)
+        os.symlink(os.path.join(HERE, 'with-env'), os.path.join(smoke, 'with-env'))
+        os.symlink(os.path.join(HERE, 'lib.sh'), os.path.join(smoke, 'lib.sh'))
+        stubs = (
+            'df() { printf "h\\nx x x 100\\n"; }; resolve_ref() { echo bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; }; '
+            'git() { [ "$3 $4" != "worktree add" ] || { mkdir -p "$(dirname "$7")" && cp -R "$CANDIDATE" "$7"; }; }; pnpm() { :; }; '
+            'node() { case "$1" in apps/*) printf \'{"artifactId":"%s"}\\n\' "$ART" ;; scripts/*) : ;; *) command node "$@" ;; esac; }; '
+            'precheck() { echo PRECHECK; }; take_lock() { :; }; stop_job() { echo STOPPED:$2; }; '
+            'worker_boot() { :; }; report_after_stop() { :; }; prune_releases() { :; }; '
+            'start_job() { [ -f "$2" ] && echo STARTED:$1; }; wait_ready() { echo READY:$2; }; BIN=$SMOKE; deploy')
+        for forward in (False, True):
+            with self.subTest(forward=forward):
+                candidate = self.release(files=FILES + (['0219_tool_fixture.sql'] if forward else []))
+                self.seed_legacy_plists()
+                if forward:
+                    self.saved_release(self.release(files=FILES[:-1]))
+                    p = self.run_dd('stop_job() { :; }; if restore; then exit 9; fi', FILES + ARCHIVED, CONTRACT='row:1')
+                    self.assertEqual(p.returncode, 0, p.stderr)
+                    self.assertFalse(os.path.exists(self.live_plist('worker')))
+                    shutil.move(os.path.join(self.home, 'allrice-dev/qa/deploy-inflight'), os.path.join(self.tmp, 'failed-deploy'))
+                p = self.run_dd(stubs, FILES + ARCHIVED, CONTRACT='row:1', CANDIDATE=candidate,
+                                ART='sha256:' + ('c' if forward else 'a') * 64, SMOKE=smoke)
+                self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+                self.assertIn('SMOKE:--dev --expect-sha ' + 'b' * 40, p.stdout)
+                self.assertLess(p.stdout.index('STARTED:ai.bplabs.allrice-dev-worker'), p.stdout.index('STARTED:ai.bplabs.allrice-dev-web'))
+                for role in ('web', 'worker'):
+                    env = self.read_plist(self.live_plist(role))['EnvironmentVariables']
+                    self.assert_no_legacy_settings(env)
+                    self.assertEqual(env['ALLRICE_DSH_NATIVE_ARTIFACT_ID'], 'sha256:' + ('c' if forward else 'a') * 64)
+                    self.assertEqual(env['ALLRICE_RELEASE_SHA'], 'b' * 40)
+                with open(os.path.join(self.home, 'allrice-dev/qa/deploys.jsonl')) as f:
+                    records = [json.loads(line) for line in f]
+                self.assertEqual([r['kind'] for r in records[-2:]], ['deploy', 'smoke'])
+                self.assertEqual(records[-1]['result'], 'passed')
+                self.assertEqual(records[-2]['toSha'], 'b' * 40)
+                self.assertFalse(os.path.exists(os.path.join(self.home, 'allrice-dev/qa/deploy-inflight')))
+                self.assertFalse(os.path.exists(os.path.join(self.home, 'allrice-dev/qa/deploy-disabled')))
+                if forward:
+                    self.assert_snapshot(os.listdir(self.snapshots)[0])
+                log_path = os.path.join(self.home, 'allrice-dev/qa/deploy-logs')
+                with open(os.path.join(log_path, os.listdir(log_path)[0])) as f:
+                    self.assertIn('DB_PREPARE:db:prepare', f.read())
+                shutil.rmtree(os.path.join(self.home, 'allrice-dev-releases'))
 
     def test_rollback_refuses_unknown_migrations_before_stop_and_rechecks_under_lock(self):
         old = self.release(files=FILES[:-1])

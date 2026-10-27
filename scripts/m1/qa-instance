@@ -170,8 +170,7 @@ once = {'artifactId': art, 'profileId': 'allrice-once-control-v1', 'storageId': 
 rec = {'artifactId': art, 'profileId': 'allrice-recurring-control-v1', 'storageId': f'allrice-qa-{task}-recurring-{uuid.uuid4().hex[:8]}', 'stateRoot': f'{L}/native-recurring-control'}
 common = {
     'DATABASE_URL': dburl, 'ALLRICE_RELEASE_SHA': sha,
-    'ALLRICE_DSH_NATIVE_ARTIFACT_ID': art, 'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID': art,
-    'ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS': json.dumps([art]),
+    'ALLRICE_DSH_NATIVE_ARTIFACT_ID': art,
     'ALLRICE_NATIVE_ONCE_REFERENCE': json.dumps(once, separators=(',', ':')),
     'ALLRICE_NATIVE_RECURRING_REFERENCE': json.dumps(rec, separators=(',', ':')),
     'ALLRICE_DSH_CORDIS_CONFIG': f'{rel}/apps/worker/dsh/allrice-restricted.cordis.yml',
@@ -187,6 +186,9 @@ common = {
 for role in ('web', 'worker'):
     src = plistlib.load(open(f'{home}/Library/LaunchAgents/ai.bplabs.allrice-dev-{role}.plist', 'rb'))
     env = dict(src['EnvironmentVariables']); env.pop('ALLRICE_LOCAL_PORTAL', None)
+    for key in list(env):
+        if key in ('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', 'ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS') or key.startswith('ALLRICE_DSH_RETAINED_'):
+            del env[key]
     env.update(common)
     if role == 'web': env['ALLRICE_WEB_PORT'] = web
     else:

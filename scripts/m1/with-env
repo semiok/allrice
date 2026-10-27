@@ -1,12 +1,14 @@
 #!/bin/bash
 # with-env web|worker <command...> — run with the exact launchd environment of that
-# shared-Dev service (~/allrice-dev/.env plus the plist's EnvironmentVariables).
+# shared-Dev service (~/allrice-dev/.env plus the plist's EnvironmentVariables,
+# including a configuration parked by a refused recovery).
 # Refuses to run when the environment cannot be read, so nothing runs half-configured.
 set -euo pipefail
+BIN=$(cd "$(dirname "$0")" && pwd -P); . "$BIN/lib.sh"
 die() { echo "with-env: $1" >&2; exit 2; }
 role=${1:-}; case "$role" in web|worker) ;; *) die "usage: with-env web|worker <command...>" ;; esac
 shift; [ $# -ge 1 ] || die "no command given"
-plist="$HOME/Library/LaunchAgents/ai.bplabs.allrice-dev-$role.plist"
+plist=$(dev_plist "$role")
 [ -f "$plist" ] || die "missing $plist"
 [ -f "$HOME/allrice-dev/.env" ] || die "missing ~/allrice-dev/.env"
 set -a; source "$HOME/allrice-dev/.env"; set +a
