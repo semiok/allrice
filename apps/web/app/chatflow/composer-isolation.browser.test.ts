@@ -1270,7 +1270,11 @@ suite(
         expect(f.reads.some((url) => url.includes('/interactions'))).toBe(
           false,
         );
-        expect(f.reads.some((url) => url.includes('/timings'))).toBe(true);
+        expect(
+          f.reads.some(
+            (url) => url.includes('/timings') && url.includes('inputs=1'),
+          ),
+        ).toBe(true);
         expect(f.errors).toEqual([]);
       } finally {
         await f.close();

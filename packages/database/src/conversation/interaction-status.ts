@@ -155,18 +155,22 @@ async function sessionInputs(
   });
 }
 
-/** Ordinary ChatFlow timing is independent of the optional artifact workbench;
- * answer receipts read its inputs when the workbench is off (MET-210). */
+/** Ordinary ChatFlow timing is independent of the optional artifact workbench.
+ * Answer receipts ask for its inputs when the workbench is off (MET-210); the
+ * default shape stays unchanged for pages opened before a deploy. */
 export async function getSessionRunTimings(
   context: WorkbenchPrincipal,
   sessionId: string,
   db = getDatabase(),
+  options: { inputs?: boolean } = {},
 ) {
   return db.begin(async (tx) => {
     await assertWorkbenchSession(tx, context, sessionId, false, false);
     return {
       runTimings: await sessionRunTimings(tx, context, sessionId),
-      inputs: await sessionInputs(tx, context, sessionId),
+      ...(options.inputs
+        ? { inputs: await sessionInputs(tx, context, sessionId) }
+        : {}),
     };
   });
 }

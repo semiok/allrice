@@ -10,12 +10,15 @@ export async function GET(
   try {
     const login = await getRequestContext(request);
     if (!login) return new Response(null, { status: 401, headers });
+    const search = new URL(request.url).searchParams;
     const workspaceId = UuidSchema.parse(
-      new URL(request.url).searchParams.get('workspaceId') ?? login.workspaceId,
+      search.get('workspaceId') ?? login.workspaceId,
     );
     const timings = await getSessionRunTimings(
       { ...login, workspaceId },
       UuidSchema.parse((await route.params).id),
+      undefined,
+      { inputs: search.get('inputs') === '1' },
     );
     return Response.json(SessionRunTimingsSchema.parse(timings), { headers });
   } catch (error) {

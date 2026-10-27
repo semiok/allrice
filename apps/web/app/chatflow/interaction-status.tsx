@@ -27,7 +27,7 @@ export function useInteractionStatus(
       const requestGeneration = ++generation.current;
       try {
         const response = await fetch(
-          `/api/v1/sessions/${sessionId}/${workbenchEnabled ? 'interactions' : 'timings'}?workspaceId=${workspaceId}`,
+          `/api/v1/sessions/${sessionId}/${workbenchEnabled ? 'interactions' : 'timings'}?workspaceId=${workspaceId}${workbenchEnabled ? '' : '&inputs=1'}`,
           { headers, cache: 'no-store', signal },
         );
         if (!response.ok) throw new Error('交互状态暂不可用');
