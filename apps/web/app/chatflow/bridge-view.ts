@@ -69,6 +69,20 @@ export function bridgeDeviceName(name: string) {
   return computer.replace(/^(?:Rice Bridge|AllRice 助手)$/, '这台电脑');
 }
 
+/** Only the Apple silicon build is published (MET-214): Intel Macs keep the
+ * version they have and are never asked to update. */
+export const intelBridgeNotice =
+  'Intel 芯片的电脑不再提供新版本，现有版本可以继续使用。';
+export const isIntelBridge = (device: Pick<BridgeDevice, 'platform'>) =>
+  device.platform === 'macos-x64';
+// Reasons whose advice is to update the app.
+const updateReasons = new Set([
+  'readiness_not_reported',
+  'legacy_ready',
+  'legacy_unavailable',
+  'legacy_unreported',
+]);
+
 export function bridgeCapabilityRows(device: BridgeDevice) {
   // Settings presentation only; capability reports and grants stay unchanged.
   const names = [
@@ -93,8 +107,10 @@ export function bridgeCapabilityRows(device: BridgeDevice) {
             state: report.state,
             stateLabel: readinessLabels[report.state],
             reason:
-              readinessReasons[report.reason] ??
-              '环境检查没有通过，请刷新状态，或重新打开 AllRice 助手。',
+              isIntelBridge(device) && updateReasons.has(report.reason)
+                ? intelBridgeNotice
+                : (readinessReasons[report.reason] ??
+                  '环境检查没有通过，请刷新状态，或重新打开 AllRice 助手。'),
             version: Object.entries(report.versions)
               .map(
                 ([name, version]) =>

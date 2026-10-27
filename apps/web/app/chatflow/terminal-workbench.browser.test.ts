@@ -132,7 +132,8 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
             devices: [
               {
                 id: target.deviceId,
-                name: 'Fixture.local',
+                // An old pairing's default name; people see only the computer name.
+                name: 'Fixture.local · Rice Bridge',
                 status: 'online',
                 humanTerminalVersion: 2,
                 folderGrants: [
@@ -265,7 +266,7 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
                     'grantId',
                   ) ?? target.grantId,
               },
-              deviceName: 'Fixture.local',
+              deviceName: 'Fixture.local · Rice Bridge',
               ...(state.streamMode === 'push' ? { streamMode: 'push' } : {}),
             });
           };
@@ -684,6 +685,7 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
       expect(
         await f.page.getByText('Fixture.local', { exact: true }).count(),
       ).toBe(1);
+      expect(await f.page.getByText(/Rice Bridge/).count()).toBe(0);
       expect(
         await f.page.getByText('/fixture/AI-what', { exact: true }).count(),
       ).toBe(1);

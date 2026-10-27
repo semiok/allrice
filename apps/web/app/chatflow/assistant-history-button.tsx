@@ -15,7 +15,7 @@ export function AssistantHistoryButton({
       <button
         type="button"
         className={styles.assistantHistoryButton}
-        aria-label="加载更早的助手任务记录"
+        aria-label="加载更早的子智能体任务记录"
         aria-busy={loading}
         disabled={loading}
         onClick={async () => {

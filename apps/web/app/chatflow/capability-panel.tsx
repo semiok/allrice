@@ -16,7 +16,7 @@ const groups: Record<
   { label: string; description?: string; ids: WorkspaceCapabilityId[] }
 > = {
   work: {
-    label: '云端与助手状态',
+    label: '云端与子智能体状态',
     ids: [
       'report',
       'cloud_command',
@@ -191,8 +191,8 @@ export function CapabilityContent({
                         {capability.reason === 'runner_missing' ? (
                           <>
                             <li>
-                              在菜单栏的 AllRice
-                              菜单里选择“重新检查并准备环境”，已有的独立沙箱会自动恢复。
+                              按住 Option 键点菜单栏的
+                              AllRice，在“开发者工具”里选择“重新检查并准备环境”，已有的独立沙箱会自动恢复。
                             </li>
                             <li>
                               通用计算可以直接让员工使用云端环境；涉及本地文件时，先在当前任务中选择所需文件。

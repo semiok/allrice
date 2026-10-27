@@ -3903,7 +3903,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(f.state.personalSkillWrites).toEqual([]);
 
         await selectSettings(dialog, '工作方式');
-        for (const label of ['云端自动工作', '电脑自动工作', '自动安排助手'])
+        for (const label of ['云端自动工作', '电脑自动工作', '子智能体'])
           await expect
             .poll(() =>
               dialog
@@ -5616,7 +5616,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .inputValue(),
         ).toBe(created.profile.workStyle);
         expect(await nameInput.getAttribute('placeholder')).toBe(
-          '例如： 文案专家、财务助手、商务分析师',
+          '例如： 文案专家、财务专员、商务分析师',
         );
         await nameInput.fill(employeeName);
         await picker.getByRole('radio', { name: '珊瑚红' }).check();
@@ -7653,7 +7653,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ),
         ).toBe('360px');
         expect(
-          await f.page.getByLabel('助手任务', { exact: true }).count(),
+          await f.page.getByLabel('子智能体任务', { exact: true }).count(),
         ).toBe(0);
         expect(
           await f.page.locator('[id^="message-"]').last().innerText(),
@@ -11467,6 +11467,64 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }
     },
   );
+
+  it('MET-214 tells a paired Intel Mac it keeps its version instead of asking for an update', async () => {
+    const f = await fixture({ width: 1440 });
+    try {
+      f.state.bridgeDevices = [
+        {
+          id: id(902),
+          name: 'iMac-Intel.local · Rice Bridge',
+          platform: 'macos-x64',
+          status: 'online',
+          clientVersion: '0.6.0-dev.40',
+          lastSeenAt: now,
+          folderGrants: [],
+          readiness: [
+            {
+              capability: 'local.browser',
+              state: 'unsupported',
+              reason: 'legacy_unavailable',
+              missing: [],
+              versions: { bridge: '0.6.0-dev.40' },
+              observedAt: now,
+            },
+          ],
+        },
+      ];
+      await openCapabilities(f, 'computer');
+      const settings = f.page.getByRole('dialog', {
+        name: '设置',
+        exact: true,
+      });
+      const notice = 'Intel 芯片的电脑不再提供新版本，现有版本可以继续使用。';
+      // 我的电脑: switches and browser login say why, not "please update".
+      const permissions = settings.getByRole('region', {
+        name: 'iMac-Intel.local',
+        exact: true,
+      });
+      await permissions
+        .getByText(`${notice}这台电脑的版本不支持这些开关。`, { exact: true })
+        .waitFor();
+      await settings.getByText(notice, { exact: true }).first().waitFor();
+      await settings
+        .locator('[data-capability="local_files"]')
+        .getByRole('button', { name: '连接与管理电脑' })
+        .click();
+      const computer = settings.locator('[data-bridge-settings]');
+      await computer.getByText('不再提供新版本', { exact: true }).waitFor();
+      await computer.locator('[data-bridge-capabilities] > summary').click();
+      await computer.getByText(notice, { exact: true }).first().waitFor();
+      await computer.locator('[data-bridge-install] > summary').click();
+      await computer.getByText(`· ${notice}`, { exact: true }).waitFor();
+      const text = await settings.innerText();
+      expect(text).not.toMatch(/请更新|可更新至|有新版本|Rice Bridge/);
+      expect(text).toContain('Intel 芯片');
+      expect(f.errors).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
 
   it.each([390, 1280])(
     'shows downloadable and installed Bridge versions at width %i and refreshes after an upgrade',

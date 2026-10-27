@@ -34,8 +34,8 @@ const toolLabels: Record<string, string> = {
   run_code: '运行代码',
   skill: '加载技能',
   ask_user_question: '等待你的回答',
-  'assistant.delegate': '安排助手',
-  'assistant.report': '汇总助手结果',
+  'assistant.delegate': '安排子智能体',
+  'assistant.report': '汇总子智能体结果',
   'assistant.development': '协作开发',
 };
 

@@ -463,7 +463,7 @@ try {
       r.request().method() === 'POST',
   );
   await liveRow
-    .getByRole('button', { name: '停止这个助手', exact: true })
+    .getByRole('button', { name: '停止这个子智能体', exact: true })
     .click();
   assert.equal((await stopResponse).status(), 202);
   await panel
@@ -657,7 +657,7 @@ try {
       r.request().method() === 'POST',
   );
   await panel
-    .getByRole('button', { name: '取消整项任务（含所有助手）' })
+    .getByRole('button', { name: '取消整项任务（含所有子智能体）' })
     .click();
   assert.equal((await rootStop).status(), 202);
   const response = await page.request.get(

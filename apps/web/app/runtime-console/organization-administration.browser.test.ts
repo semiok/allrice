@@ -788,7 +788,9 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
             .getByRole('heading', { name: '乙员工任务', exact: true })
             .count(),
         ).toBe(0);
-        await status.getByText('未配置 Bridge · 可使用云端 Runtime').waitFor();
+        await status
+          .getByText('未配置 AllRice 助手 · 可使用云端 Runtime')
+          .waitFor();
         await companies
           .getByRole('button', { name: otherCompany, exact: true })
           .click();

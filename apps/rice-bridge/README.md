@@ -2,7 +2,7 @@
 
 ## 名称与下载（MET-214）
 
-- 用户看到的名字是「AllRice 助手」：访达、Dock、启动台、显示简介、配对和报错弹窗、网页下载按钮和说明。电脑顶部菜单栏只显示「AllRice」（状态栏文字和 `CFBundleName`）。
+- 用户看到的名字是「AllRice 助手」：访达、启动台、聚焦搜索、显示简介、状态窗口、配对和报错弹窗、网页下载按钮和说明。电脑顶部菜单栏只显示「AllRice」（状态栏文字和 `CFBundleName`）。这是菜单栏应用（`LSUIElement`），运行时不在 Dock 里，也没有「关于」窗口；用户手动拖进 Dock 时显示「AllRice 助手」。
 - 磁盘上的 `Rice Bridge.app`、应用标识 `xyz.bplabs.rice-bridge`、内部程序名（RiceBridgeApp、RiceBridgeCore）、接口路径 `/api/v1/bridge…`、Application Support 和 Keychain 用到的名字、更新安装目录 `~/Applications/AllRice Bridge` 都不变，已配对的设备不用重新配对。新配对设备的默认名是「电脑名 · AllRice 助手」。
 - 显示名靠 `Info.plist` 的 `LSHasLocalizedDisplayName` 加 `macos/zh-Hans.lproj`、`macos/en.lproj` 里的 `InfoPlist.strings` 实现。`Info.plist` 里的 `CFBundleDisplayName` 必须等于文件名 `Rice Bridge`，否则访达改回显示文件名；用户手动改了 `.app` 文件名时也显示文件名。中文和英文系统都显示「AllRice 助手」。
 - 只出 Apple 芯片版：`node scripts/package-rice-bridge-app-macos.mjs NEW_OUTPUT_DIRECTORY` 产出 `AllRice-Assistant.zip` 和 `release.json`（`zip` 字段同名）。Web 用 `ALLRICE_BRIDGE_MACOS_ARM64_PATH` 指向这个 zip，下载文件名是 `AllRice-Assistant.zip`；Intel 下载接口已删除。

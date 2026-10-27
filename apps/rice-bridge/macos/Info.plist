@@ -2,8 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>xyz.bplabs.rice-bridge</string>
-<!-- People see "AllRice 助手" (zh-Hans.lproj and en.lproj InfoPlist.strings) and
-     "AllRice" in the menu bar. CFBundleDisplayName must stay equal to the
+<!-- Finder, Launchpad, Spotlight and Get Info show "AllRice 助手" (zh-Hans.lproj
+     and en.lproj InfoPlist.strings); the menu bar shows "AllRice". LSUIElement:
+     no Dock icon and no About window. CFBundleDisplayName must stay equal to the
      unchanged "Rice Bridge.app" file name, or Finder shows the file name. -->
 <key>CFBundleName</key><string>AllRice</string>
 <key>CFBundleDisplayName</key><string>Rice Bridge</string>

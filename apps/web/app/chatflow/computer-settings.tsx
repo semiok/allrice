@@ -18,7 +18,12 @@ import type {
 } from '@allrice/contracts';
 import styles from './sidebar-settings.module.css';
 import { BrowserLoginSettings } from './browser-login-settings';
-import { bridgeDeviceName, projectBridgeView } from './bridge-view';
+import {
+  bridgeDeviceName,
+  intelBridgeNotice,
+  isIntelBridge,
+  projectBridgeView,
+} from './bridge-view';
 import {
   responseError,
   userFacingMessage,
@@ -50,7 +55,7 @@ const choices = [
     key: 'development',
     title: '受控开发协作',
     description:
-      '允许助手修改、测试和检查项目，需要先开启本地沙箱命令并授权文件夹。',
+      '允许子智能体修改、测试和检查项目，需要先开启本地沙箱命令并授权文件夹。',
     state: 'development',
   },
 ] as const;
@@ -269,7 +274,13 @@ export function ComputerSettings({
                 : '设置已保存，电脑上线后自动同步。'}
             </p>
           )}
-          {!computer.supported && <p>请更新 AllRice 助手后使用这些开关。</p>}
+          {!computer.supported && (
+            <p>
+              {isIntelBridge(computer.device)
+                ? `${intelBridgeNotice}这台电脑的版本不支持这些开关。`
+                : '请更新 AllRice 助手后使用这些开关。'}
+            </p>
+          )}
           {!computer.pending && computer.environment?.paused && (
             <p>AllRice 助手已暂停，请在电脑上的 AllRice 助手里恢复。</p>
           )}
@@ -324,6 +335,8 @@ export function ComputerSettings({
               deviceId={computer.device.id}
               active={active}
             />
+          ) : isIntelBridge(computer.device) ? (
+            <p>{intelBridgeNotice}</p>
           ) : (
             <p>更新 AllRice 助手后，浏览器会默认保留登录状态。</p>
           )}

@@ -17,7 +17,7 @@ describe('development proposal application boundary', () => {
         disabled={false}
       />,
     );
-    expect(html).toContain('子助手的修改提案 · 还没保存到电脑');
+    expect(html).toContain('子智能体的修改提案 · 还没保存到电脑');
     expect(html).toContain('同版本测试和独立审查');
     expect(html).not.toContain('<button');
   });

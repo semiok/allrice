@@ -151,7 +151,7 @@ suite('member work settings: real browser, route and PostgreSQL', () => {
       expect(await cloud.getAttribute('aria-checked')).toBe('true');
       expect(await page.getByRole('switch').count()).toBe(3);
       // MET-210: assistants stay off until this member turns them on.
-      const assistants = page.getByRole('switch', { name: '自动安排助手' });
+      const assistants = page.getByRole('switch', { name: '子智能体' });
       expect(await assistants.getAttribute('aria-checked')).toBe('false');
       await cloud.click();
       await page.waitForFunction(
@@ -188,7 +188,7 @@ suite('member work settings: real browser, route and PostgreSQL', () => {
       // Turning assistants on is the member's own choice and survives a reload.
       await assistants.click();
       await page
-        .getByRole('switch', { name: '自动安排助手', checked: true })
+        .getByRole('switch', { name: '子智能体', checked: true })
         .waitFor();
       await page.reload();
       await assistants.waitFor();

@@ -660,11 +660,11 @@ export async function verifyAssistantLifecycleInChrome(
         );
       const button = childRunId
         ? childRow(childRunId).getByRole('button', {
-            name: '停止这个助手',
+            name: '停止这个子智能体',
             exact: true,
           })
         : panel.getByRole('button', {
-            name: '取消整项任务（含所有助手）',
+            name: '取消整项任务（含所有子智能体）',
             exact: true,
           });
       phase(`${prefix}_click`);

@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { Button, Input, Switch } from '@deepseek-ai/dsh-client-ui-primitives';
 import { AutomationSchema, type Automation } from '@allrice/contracts';
 import { DshDialog } from '../chatflow/dsh-upstream/Dialog';
+import { bridgeDeviceName } from '../chatflow/bridge-view';
 import styles from './folder-rules.module.css';
 type Options = {
   workspaceId: string;
@@ -448,7 +449,7 @@ export function FolderRules({ workspaceId }: { workspaceId?: string }) {
                     <option value="">请选择在线电脑</option>
                     {options?.devices.map((d) => (
                       <option key={d.id} value={d.id} disabled={!d.ready}>
-                        {d.name}
+                        {bridgeDeviceName(d.name)}
                         {d.ready ? '' : ' · 请安装新版 AllRice 助手并保持在线'}
                       </option>
                     ))}

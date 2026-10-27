@@ -26,6 +26,8 @@ import css from './bridge-dialog.module.css';
 import {
   bridgeCapabilityRows,
   bridgeDeviceName,
+  intelBridgeNotice,
+  isIntelBridge,
   bridgeWorkspaceIssue,
   bridgePreparationLabel,
 } from './bridge-view';
@@ -47,7 +49,9 @@ export function BridgeSettings({
   const [disconnectId, setDisconnectId] = useState<string | null>(null);
   const installOpen =
     installExpanded ?? (bridge.bridgeStatusKnown && !onlineDevices.length);
-  const comparisons = onlineDevices.map((device) => {
+  // Intel Macs get no new versions, so they never count towards an update.
+  const updatable = onlineDevices.filter((device) => !isIntelBridge(device));
+  const comparisons = updatable.map((device) => {
     const release = releases.releases?.find(
       (item) => item.platform === device.platform,
     );
@@ -59,9 +63,11 @@ export function BridgeSettings({
     ? '有新版本'
     : comparisons.length && comparisons.every((value) => value === 0)
       ? '已是最新版'
-      : bridge.bridgeBusy || (!releases.releases && !releases.error)
-        ? '检查中'
-        : '待确认';
+      : onlineDevices.length && !updatable.length
+        ? '不再提供新版本'
+        : bridge.bridgeBusy || (!releases.releases && !releases.error)
+          ? '检查中'
+          : '待确认';
   const refreshControl = (
     <button
       data-computer-control
@@ -103,7 +109,7 @@ export function BridgeSettings({
           return (
             <section
               key={device.id}
-              aria-label={device.name}
+              aria-label={bridgeDeviceName(device.name)}
               className={css.device}
             >
               <div className={css.deviceCard}>
@@ -276,8 +282,8 @@ export function BridgeSettings({
                         <span>{bridgePreparationLabel(item)}</span>
                         {item.stage === 'failed' && (
                           <small>
-                            在菜单栏的 AllRice
-                            菜单里选择“重新检查并准备环境”继续，已下载的部分不用重新下载。
+                            按住 Option 键点菜单栏的
+                            AllRice，在“开发者工具”里选择“重新检查并准备环境”继续，已下载的部分不用重新下载。
                           </small>
                         )}
                       </div>
@@ -406,6 +412,7 @@ export function BridgeSettings({
                 online={bridge.bridgeStatusKnown && device.status === 'online'}
                 compact
               />
+              {isIntelBridge(device) && <small> · {intelBridgeNotice}</small>}
             </p>
           ))}
           <BridgeReleaseDownloads
@@ -415,7 +422,8 @@ export function BridgeSettings({
           />
           <p>
             解压后双击打开“AllRice
-            助手”。升级前先退出旧版，原有配对和设置会保留。
+            助手”。如果已经装过，先退出旧版，把解压出的“AllRice
+            助手”拖进“应用程序”直接替换，原有配对和设置会保留。
           </p>
           <p>
             这是测试版。第一次打开时，macOS

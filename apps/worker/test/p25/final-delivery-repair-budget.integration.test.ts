@@ -115,7 +115,7 @@ integration(
         outputTokens: outputBound,
         requestDigest: sha('chapter one'),
       });
-      // The user presses "停止这个助手". The drained stream settles the call
+      // The user presses "停止这个子智能体". The drained stream settles the call
       // without token counts, then native confirms the stop.
       await f.runtime.cancelChild(f.context, {
         runId: f.task.runId,

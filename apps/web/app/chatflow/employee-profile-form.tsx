@@ -178,7 +178,7 @@ export function EmployeeProfileForm({
                 maxLength={120}
                 required
                 autoComplete="off"
-                placeholder="例如： 文案专家、财务助手、商务分析师"
+                placeholder="例如： 文案专家、财务专员、商务分析师"
                 onChange={(event) => update('name', event.target.value)}
               />
             </div>

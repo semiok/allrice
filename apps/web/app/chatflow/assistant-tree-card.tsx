@@ -32,7 +32,7 @@ export function AssistantTreeCard({
   return (
     <section
       className={ui.panel}
-      aria-label="助手任务"
+      aria-label="子智能体任务"
       id={`assistants-${tree.rootRunId}`}
     >
       <div className={ui.header}>
@@ -64,7 +64,7 @@ export function AssistantTreeCard({
           disabled={busy || tree.cancelRequested || !state.hasLiveWork}
           onClick={onCancelRoot}
         >
-          取消整项任务（含所有助手）
+          取消整项任务（含所有子智能体）
         </button>
         <small className={ui.meta}>Run {tree.rootRunId.slice(0, 8)}</small>
       </div>
@@ -109,7 +109,7 @@ export function AssistantTreeCard({
                     }
                     onClick={() => onStopChild(child.runId)}
                   >
-                    停止这个助手
+                    停止这个子智能体
                   </button>
                 </div>
                 <p className={ui.meta}>
@@ -217,7 +217,7 @@ export function AssistantTreeCard({
           ))}
         </div>
         <p className={ui.meta}>
-          所有助手共用根任务预算；独立上下文不代表额外工具授权或操作系统隔离。
+          所有子智能体共用根任务预算；独立上下文不代表额外工具授权或操作系统隔离。
           消息与结果各展示最近 64 条；消息正文为最多 2000
           字符的预览，不是全量审计日志。
         </p>

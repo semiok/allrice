@@ -17,7 +17,7 @@ const integration =
     : describe.skip;
 // MET-210 Dev acceptance, as a user does it: Rice delegates a long child A and
 // a quick child B; while Rice is still working, the user presses
-// "停止这个助手" on A (the web route's stop_child calls cancelChild). The
+// "停止这个子智能体" on A (the web route's stop_child calls cancelChild). The
 // Worker's own cancellation poll drains A through the real native host.
 integration(
   'P25 production adapter: the user stops one of two child assistants',
@@ -253,7 +253,7 @@ integration(
         const [a, b] = await children();
         expect(a!.label).toBe('A');
         if (stopPath === 'user') {
-          // The user presses "停止这个助手" on A.
+          // The user presses "停止这个子智能体" on A.
           await f.runtime.cancelChild(f.context, {
             runId: f.task.runId,
             childRunId: a!.runId,

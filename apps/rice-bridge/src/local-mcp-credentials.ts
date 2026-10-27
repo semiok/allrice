@@ -210,10 +210,10 @@ export function localMcpCredentialHelp() {
   local-mcp credential revoke <connectionId> <sourceDigest> <refId> <revision> --private-file-unencrypted
 
 enable 必须先完成 sandbox enable，不自动安装或开启沙箱；设置绑定设备和配对。
-先正常退出 Bridge；set 只从非交互式 stdin 读取凭证，不接受 argv 或终端直接输入。
+先正常退出 AllRice 助手；set 只从非交互式 stdin 读取凭证，不接受 argv 或终端直接输入。
 同一 ref/revision 不允许轮换；撤销保留无密钥 tombstone，新凭证须使用新 revision。
 本地凭证配置不授权工具执行，本地 revoke 不等于云端连接撤销。
-云端撤销会使运行中的短租约失效；本地配置完成后再启动 Bridge。`);
+云端撤销会使运行中的短租约失效；本地配置完成后再启动 AllRice 助手。`);
 }
 export async function localMcpCredentialCli(args: string[]) {
   try {

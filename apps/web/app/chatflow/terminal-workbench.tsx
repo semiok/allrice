@@ -16,6 +16,11 @@ import {
 import { createPortal } from 'react-dom';
 import type { TerminalView } from '@deepseek-ai/dsh-api-terminal-controller/client';
 import type { BridgeDevice } from './chatflow-types';
+import {
+  bridgeDeviceName,
+  intelBridgeNotice,
+  isIntelBridge,
+} from './bridge-view';
 import { readJson } from './chatflow-utils';
 import {
   nativeTerminalRuntime,
@@ -38,6 +43,7 @@ type Target = TerminalPin & {
   label: string;
   online: boolean;
   supported: boolean;
+  intel: boolean;
 };
 
 export function TerminalCleanupStatus(props: {
@@ -142,10 +148,11 @@ export function TerminalGuide(props: {
       (devices ?? []).flatMap((device) =>
         device.folderGrants.map((grant): Target => ({
           deviceId: device.id,
-          deviceName: device.name,
+          deviceName: bridgeDeviceName(device.name),
           grantId: grant.id,
           label: grant.label,
           online: device.status === 'online',
+          intel: isIntelBridge(device),
           supported:
             device.humanTerminalVersion === 1 ||
             device.humanTerminalVersion === 2,
@@ -179,7 +186,11 @@ export function TerminalGuide(props: {
       return false;
     }
     if (!target.supported) {
-      setNotice('更新 AllRice 助手后可使用终端。');
+      setNotice(
+        target.intel
+          ? `${intelBridgeNotice}这台电脑的版本不支持终端。`
+          : '更新 AllRice 助手后可使用终端。',
+      );
       return false;
     }
     return true;
@@ -420,6 +431,9 @@ function NativeTerminalBody(props: {
     props.model.state.getSnapshot,
     props.model.state.getSnapshot,
   );
+  const carrierDevice = carrier.deviceName
+    ? bridgeDeviceName(carrier.deviceName)
+    : '我的电脑';
   const previousCarrierPhase = useRef(carrier.phase);
   useEffect(() => {
     const recovered =
@@ -492,8 +506,8 @@ function NativeTerminalBody(props: {
       data-terminal-workbench
     >
       <div className={css.metadata}>
-        <span className={css.device} title={carrier.deviceName ?? '我的电脑'}>
-          {carrier.deviceName ?? '我的电脑'}
+        <span className={css.device} title={carrierDevice}>
+          {carrierDevice}
         </span>
         <span
           className={css.folder}

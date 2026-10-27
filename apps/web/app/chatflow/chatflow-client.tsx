@@ -2185,7 +2185,7 @@ export function ChatFlowClient({
                     <p role="status">
                       {assistants.error}{' '}
                       <button type="button" onClick={assistants.reload}>
-                        重试助手记录
+                        重试子智能体记录
                       </button>
                     </p>
                   ) : null}

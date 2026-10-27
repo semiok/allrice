@@ -267,7 +267,7 @@ export function EmployeeTaskSuggestions({
               {(
                 [
                   ['files', '资料文件'],
-                  ['bridge', 'Bridge / 项目目录'],
+                  ['bridge', 'AllRice 助手 / 项目目录'],
                   ['connections', '应用账号'],
                 ] as const
               ).map(([id, label]) => (

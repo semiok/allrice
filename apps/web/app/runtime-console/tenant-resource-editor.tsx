@@ -16,6 +16,7 @@ import {
 import { McpSettings } from './mcp-settings';
 import { LocalMcpSettings } from './local-mcp-settings';
 import { TenantValidation } from './tenant-validation';
+import { bridgeDeviceName } from '../chatflow/bridge-view';
 import styles from './tenant-administration.module.css';
 
 export type TenantResourceProps = {
@@ -820,7 +821,7 @@ function Environments(props: ScopedProps) {
         {!data && !error ? <p role="status">正在读取电脑…</p> : null}
         {data?.devices.map((d) => (
           <article key={d.id}>
-            <strong>{d.name}</strong> ·{' '}
+            <strong>{bridgeDeviceName(d.name)}</strong> ·{' '}
             {d.status === 'online' ? '在线' : '离线'}
             <p>
               已选择文件夹：
@@ -954,7 +955,7 @@ function Environments(props: ScopedProps) {
           </p>
           {data.devices.map((d) => (
             <article key={d.id}>
-              <strong>{d.name}</strong> ·{' '}
+              <strong>{bridgeDeviceName(d.name)}</strong> ·{' '}
               {d.status === 'online' ? '最近心跳在线' : '离线'}
               <p>
                 设备主人：{d.ownerId}；工作区：
@@ -1139,7 +1140,8 @@ function Environments(props: ScopedProps) {
                   {kind === 'local_browser_grant'
                     ? data.devices.map((d) => (
                         <option value={d.id} key={d.id}>
-                          {d.name} · {d.status === 'online' ? '在线' : '离线'}
+                          {bridgeDeviceName(d.name)} ·{' '}
+                          {d.status === 'online' ? '在线' : '离线'}
                         </option>
                       ))
                     : data.targets

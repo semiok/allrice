@@ -44,6 +44,7 @@ import {
   type RuntimeTimelineItem,
   type RuntimeTimelineTurn,
 } from './runtime-timeline';
+import { bridgeDeviceName } from '../chatflow/bridge-view';
 import styles from './runtime-console.module.css';
 import { RuntimeSkillGroup } from './runtime-skill-group';
 
@@ -169,10 +170,10 @@ function tenantBridgeState(tenant: TenantRuntimeItem): TenantBridgeState {
 
 function tenantBridgeStatusLabel(tenant: TenantRuntimeItem) {
   const state = tenantBridgeState(tenant);
-  if (state === 'ready') return 'Bridge 在线';
-  if (state === 'workspace-missing') return 'Bridge 在线';
-  if (state === 'offline') return 'Bridge 离线';
-  return '未配置 Bridge';
+  if (state === 'ready') return 'AllRice 助手在线';
+  if (state === 'workspace-missing') return 'AllRice 助手在线';
+  if (state === 'offline') return 'AllRice 助手离线';
+  return '未配置 AllRice 助手';
 }
 
 export function RuntimeConsole() {
@@ -624,7 +625,7 @@ export function RuntimeConsole() {
               <strong>{running ?? 0}</strong>
             </div>
             <div>
-              <span>在线 Bridge</span>
+              <span>在线 AllRice 助手</span>
               <strong>{onlineBridges ?? 0}</strong>
             </div>
             <OperationsSummary inventory={data?.operations} />
@@ -738,13 +739,14 @@ export function RuntimeConsole() {
                           key={t.workspace.id}
                           data-state={tenantBridgeState(t)}
                         >
-                          {tenantBridgeStatusLabel(t)} · {t.bridge!.name} ·{' '}
+                          {tenantBridgeStatusLabel(t)} ·{' '}
+                          {bridgeDeviceName(t.bridge!.name)} ·{' '}
                           {t.bridge!.workspaceLabel ?? '未选择工作区'}
                           <small>最后心跳 {time(t.bridge!.lastSeenAt)}</small>
                         </span>
                       ))}
                     {!employeeTenants.some((t) => t.bridge) && (
-                      <span>未配置 Bridge · 可使用云端 Runtime</span>
+                      <span>未配置 AllRice 助手 · 可使用云端 Runtime</span>
                     )}
                   </>
                 )}
