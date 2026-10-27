@@ -16,6 +16,7 @@ import {
 import { McpSettings } from './mcp-settings';
 import { LocalMcpSettings } from './local-mcp-settings';
 import { TenantValidation } from './tenant-validation';
+import { bridgeDeviceName } from '../chatflow/bridge-view';
 import styles from './tenant-administration.module.css';
 
 export type TenantResourceProps = {
@@ -820,7 +821,7 @@ function Environments(props: ScopedProps) {
         {!data && !error ? <p role="status">正在读取电脑…</p> : null}
         {data?.devices.map((d) => (
           <article key={d.id}>
-            <strong>{d.name}</strong> ·{' '}
+            <strong>{bridgeDeviceName(d.name)}</strong> ·{' '}
             {d.status === 'online' ? '在线' : '离线'}
             <p>
               已选择文件夹：
@@ -834,7 +835,7 @@ function Environments(props: ScopedProps) {
         {data && !data.devices.length ? (
           <p>
             还没有连接电脑。需要处理本地文件时，在工作台「设置 → 我的电脑」连接
-            Bridge 即可。
+            AllRice 助手即可。
           </p>
         ) : null}
         {data ? (
@@ -861,8 +862,8 @@ function Environments(props: ScopedProps) {
     <div>
       <h3>连接配置（开发者工具）</h3>
       <p>
-        云端可独立使用，不要求安装
-        Bridge。本地离线不会自动转云、上传文件或重放未知结果。
+        云端可独立使用，不要求安装 AllRice
+        助手。本地离线不会自动转云、上传文件或重放未知结果。
       </p>
       <button disabled={busy} onClick={() => void load()}>
         刷新环境状态
@@ -871,16 +872,12 @@ function Environments(props: ScopedProps) {
       {guide ? (
         <aside aria-label="设备确认指引">
           <p>
-            成员在工作台「设置 → 我的电脑」下载并配对
-            Bridge，然后选择要交给员工处理的文件夹。
+            成员在工作台「设置 → 我的电脑」下载并配对 AllRice
+            助手，然后选择要交给员工处理的文件夹。
           </p>
           <p>
             <a href="/api/v1/bridge/client/macos-arm64" download>
-              下载 M 芯片 Bridge
-            </a>{' '}
-            ·{' '}
-            <a href="/api/v1/bridge/client/macos-x64" download>
-              下载 Intel Bridge
+              下载 AllRice 助手（Apple 芯片）
             </a>
           </p>
           <p>
@@ -958,7 +955,7 @@ function Environments(props: ScopedProps) {
           </p>
           {data.devices.map((d) => (
             <article key={d.id}>
-              <strong>{d.name}</strong> ·{' '}
+              <strong>{bridgeDeviceName(d.name)}</strong> ·{' '}
               {d.status === 'online' ? '最近心跳在线' : '离线'}
               <p>
                 设备主人：{d.ownerId}；工作区：
@@ -1143,7 +1140,8 @@ function Environments(props: ScopedProps) {
                   {kind === 'local_browser_grant'
                     ? data.devices.map((d) => (
                         <option value={d.id} key={d.id}>
-                          {d.name} · {d.status === 'online' ? '在线' : '离线'}
+                          {bridgeDeviceName(d.name)} ·{' '}
+                          {d.status === 'online' ? '在线' : '离线'}
                         </option>
                       ))
                     : data.targets

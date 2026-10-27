@@ -54,7 +54,7 @@ export function artifactExecutionLabels(execution: RuntimeExecutionScope) {
       {
         cloud_sandbox: '云端沙箱',
         cloud_mcp: '远程 MCP 服务',
-        rice_bridge: '本地 Bridge',
+        rice_bridge: 'AllRice 助手',
       }[execution.targetKind] ?? '未知执行目标',
     workCopy:
       {

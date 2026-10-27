@@ -43,30 +43,64 @@ const readinessReasons: Record<string, string> = {
   folder_unavailable: '所选文件夹已移动或无法访问。',
   folder_read_only: '所选文件夹不可写。',
   git_missing: '电脑上还没有安装 Git。',
-  device_paused: '电脑端已暂停。',
+  device_paused: 'AllRice 助手已暂停。',
   capability_paused: '此能力已暂停。',
-  bridge_offline: '请打开电脑上的 AllRice 电脑端。',
+  bridge_offline: '请打开电脑上的 AllRice 助手。',
   browser_unavailable: '独立浏览器未通过检查。',
   sandbox_not_installed: '本机计算环境尚未安装。',
   sandbox_unavailable: '本机计算环境未通过检查。',
   local_mcp_disabled: '本机应用运行环境尚未启用。',
   office_not_implemented:
     '暂不支持在电脑上处理 Office 文件，可以先用云端处理。',
-  readiness_not_reported: '电脑端没有提供这项状态，请更新 AllRice 电脑端。',
-  legacy_ready: '可用。更新 AllRice 电脑端后能看到更详细的状态。',
-  legacy_unavailable: '暂不可用，请更新 AllRice 电脑端后再试。',
+  readiness_not_reported: '当前版本没有提供这项状态，请更新 AllRice 助手。',
+  legacy_ready: '可用。更新 AllRice 助手后能看到更详细的状态。',
+  legacy_unavailable: '暂不可用，请更新 AllRice 助手后再试。',
   legacy_preparing: '正在准备环境。',
   legacy_paused: '此能力已暂停。',
   legacy_unreported:
-    '电脑端版本较旧，没有提供这项状态，请更新 AllRice 电脑端。',
+    'AllRice 助手版本较旧，没有提供这项状态，请更新到最新版本。',
 };
 
-/** The pairing name ends in the client's internal name; people see their computer. */
+/** Pairing names end in the app name (old pairings: Rice Bridge); people see
+ * their computer. The patterns are " · " and "AllRice 助手" escaped: bundlers
+ * keep regex literals verbatim, and a script served without a charset would
+ * otherwise never match. */
 export function bridgeDeviceName(name: string) {
-  return name
-    .replace(/ · Rice Bridge$/, '')
-    .replace(/^Rice Bridge$/, '这台电脑');
+  // r1-exempt(display): strips the app suffix the client adds to its default device name; only the shown name changes
+  const computer = name.replace(
+    / \u00b7 (?:Rice Bridge|AllRice \u52a9\u624b)$/,
+    '',
+  );
+  // r1-exempt(display): a name that is only the app name is shown as this computer; nothing else depends on it
+  return computer.replace(/^(?:Rice Bridge|AllRice \u52a9\u624b)$/, '这台电脑');
 }
+
+/** Only the Apple silicon build is published (MET-214): Intel Macs keep the
+ * version they have and are never asked to update. */
+export const intelBridgeNotice =
+  'Intel 芯片的电脑不再提供新版本，现有版本可以继续使用。';
+export const isIntelBridge = (device: Pick<BridgeDevice, 'platform'>) =>
+  device.platform === 'macos-x64';
+export type BridgeChips = 'apple' | 'intel' | 'mixed';
+/** The chips of the computers in use: the online ones, or else every paired
+ * one. Device advice to update must say which chips it is for. */
+export function bridgeChips(
+  devices: readonly Pick<BridgeDevice, 'platform' | 'status'>[],
+): BridgeChips | null {
+  const paired = devices.filter((device) => device.status !== 'revoked');
+  const online = paired.filter((device) => device.status === 'online');
+  const inUse = online.length ? online : paired;
+  const intel = inUse.filter(isIntelBridge).length;
+  if (!inUse.length) return null;
+  return intel === inUse.length ? 'intel' : intel ? 'mixed' : 'apple';
+}
+// Reasons whose advice is to update the app.
+const updateReasons = new Set([
+  'readiness_not_reported',
+  'legacy_ready',
+  'legacy_unavailable',
+  'legacy_unreported',
+]);
 
 export function bridgeCapabilityRows(device: BridgeDevice) {
   // Settings presentation only; capability reports and grants stay unchanged.
@@ -92,12 +126,14 @@ export function bridgeCapabilityRows(device: BridgeDevice) {
             state: report.state,
             stateLabel: readinessLabels[report.state],
             reason:
-              readinessReasons[report.reason] ??
-              '环境检查没有通过，请刷新状态，或重新打开 AllRice 电脑端。',
+              isIntelBridge(device) && updateReasons.has(report.reason)
+                ? intelBridgeNotice
+                : (readinessReasons[report.reason] ??
+                  '环境检查没有通过，请刷新状态，或重新打开 AllRice 助手。'),
             version: Object.entries(report.versions)
               .map(
                 ([name, version]) =>
-                  `${name === 'bridge' ? '电脑端' : name} ${version}`,
+                  `${name === 'bridge' ? 'AllRice 助手' : name} ${version}`,
               )
               .join(' · '),
           },

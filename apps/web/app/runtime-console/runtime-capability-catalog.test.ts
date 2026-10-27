@@ -28,4 +28,12 @@ describe('runtime capability source catalog', () => {
     );
     expect(differences?.items.some((item) => item.id === 'bash')).toBe(true);
   });
+
+  it('names the Mac app AllRice 助手 while keeping its internal id (MET-214)', () => {
+    const items = runtimeCapabilityCatalog.flatMap((group) => group.items);
+    expect(items.find((item) => item.id === 'rice-bridge')?.name).toBe(
+      'AllRice 助手',
+    );
+    expect(JSON.stringify(runtimeCapabilityCatalog)).not.toMatch(/Bridge/);
+  });
 });

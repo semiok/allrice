@@ -8,6 +8,7 @@ import type {
 import { DshDialog } from './dsh-upstream/Dialog';
 import { readJson } from './chatflow-utils';
 import type { BridgeDevice } from './chatflow-types';
+import { bridgeDeviceName } from './bridge-view';
 import styles from './local-file-actions.module.css';
 
 export type LocalFileCommandView = {
@@ -252,7 +253,7 @@ export function LocalArtifactFileDialog({
           >
             {devices.map((d) => (
               <option key={d.id} value={d.id}>
-                {d.name}
+                {bridgeDeviceName(d.name)}
               </option>
             ))}
           </select>
@@ -275,7 +276,9 @@ export function LocalArtifactFileDialog({
             ))}
           </select>
         </label>
-        {!devices.length && <p>请在“我的电脑”连接新版 Bridge 并选择目录。</p>}
+        {!devices.length && (
+          <p>请在“我的电脑”连接新版 AllRice 助手并选择目录。</p>
+        )}
         <label>
           目录内文件名
           <input

@@ -96,9 +96,9 @@ def menu(pid, title):
     # Menu closing/action dispatch and AX publication are asynchronous. Open
     # and observe the requested item before the single action click.
     ui(pid, ['key code 53'])
-    ui(pid, ['click menu bar item "Rice" of last menu bar'])
-    wait(lambda: title in ui(pid, ['get name of menu items of menu 1 of menu bar item "Rice" of last menu bar']))
-    return ui(pid, [f'click menu item "{title}" of menu 1 of menu bar item "Rice" of last menu bar'])
+    ui(pid, ['click menu bar item "AllRice" of last menu bar'])
+    wait(lambda: title in ui(pid, ['get name of menu items of menu 1 of menu bar item "AllRice" of last menu bar']))
+    return ui(pid, [f'click menu item "{title}" of menu 1 of menu bar item "AllRice" of last menu bar'])
 
 
 def recovery_menu_visible(pid):
@@ -106,16 +106,16 @@ def recovery_menu_visible(pid):
     # menu is the recovery entrypoint; observe it first, then explicitly open
     # and verify the real status view without inferring why a window is absent.
     ui(pid, ['key code 53'])
-    ui(pid, ['click menu bar item "Rice" of last menu bar'])
+    ui(pid, ['click menu bar item "AllRice" of last menu bar'])
     try:
-        titles = ui(pid, ['get name of menu items of menu 1 of menu bar item "Rice" of last menu bar'])
+        titles = ui(pid, ['get name of menu items of menu 1 of menu bar item "AllRice" of last menu bar'])
         return "退出未完成" in titles and "退出恢复…" in titles
     finally:
         ui(pid, ['key code 53'])
 
 
 def status(pid):
-    return ui(pid, ['get value of text area 1 of scroll area 1 of window "Rice Bridge · 本地电脑"'])
+    return ui(pid, ['get value of text area 1 of scroll area 1 of window "AllRice 助手"'])
 
 
 def press(pid, title):
@@ -153,7 +153,7 @@ try:
             menu(child.pid, "查看状态…")
             wait(lambda: "尚未配对" in status(child.pid))
             started = time.monotonic()
-            menu(child.pid, "退出 Rice Bridge")
+            menu(child.pid, "退出 AllRice 助手")
             if mode == "clean":
                 wait(lambda: child.poll() is not None)
                 assert child.returncode == 0
@@ -165,7 +165,7 @@ try:
                     assert 59 <= recovery_elapsed < 66
                     row["recoveryMenuObserved"] = True
                     row["recoveryMenuAfterMs"] = round(recovery_elapsed * 1000)
-                    row["statusWindowVisibleAtRecovery"] = "Rice Bridge · 本地电脑" in ui(child.pid, ['get name of windows'])
+                    row["statusWindowVisibleAtRecovery"] = "AllRice 助手" in ui(child.pid, ['get name of windows'])
                     menu(child.pid, "查看状态…")
                     wait(lambda: "退出未完成" in status(child.pid))
                     row["recoveryStatusOpenedAndVerified"] = True
@@ -221,7 +221,7 @@ try:
             row["stopCount"] = (root / "stop-count").read_text() if (root / "stop-count").exists() else "none"
             try:
                 row["windowsOnFailure"] = ui(child.pid, ['get name of windows'])
-                row["menuOnFailure"] = ui(child.pid, ['click menu bar item "Rice" of last menu bar', 'get name of menu items of menu 1 of menu bar item "Rice" of last menu bar'])
+                row["menuOnFailure"] = ui(child.pid, ['click menu bar item "AllRice" of last menu bar', 'get name of menu items of menu 1 of menu bar item "AllRice" of last menu bar'])
                 ui(child.pid, ['key code 53'])
             except subprocess.CalledProcessError as error:
                 row["accessibilityError"] = error.stderr

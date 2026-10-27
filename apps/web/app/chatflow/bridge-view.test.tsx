@@ -2,8 +2,10 @@ import type { ComponentProps } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { ChatComposer } from './chat-composer';
+import { capabilityReason } from './capability-catalog';
 import {
   projectBridgeView,
+  bridgeChips,
   bridgeCapabilityRows,
   bridgeDeviceName,
   bridgeWorkspaceIssue,
@@ -204,10 +206,58 @@ describe('Bridge connection and local workspace presentation', () => {
     const [row] = bridgeCapabilityRows(current);
     expect(row).toMatchObject({
       label: '查看项目改动',
-      reason: '环境检查没有通过，请刷新状态，或重新打开 AllRice 电脑端。',
-      version: '电脑端 0.6.0 · node 22.23.2',
+      reason: '环境检查没有通过，请刷新状态，或重新打开 AllRice 助手。',
+      version: 'AllRice 助手 0.6.0 · node 22.23.2',
     });
     expect(bridgeDeviceName('M5-Max.local · Rice Bridge')).toBe('M5-Max.local');
     expect(bridgeDeviceName('Rice Bridge')).toBe('这台电脑');
+    // New pairings (MET-214) name the app AllRice 助手; old pairings keep Rice Bridge.
+    expect(bridgeDeviceName('M5-Max.local · AllRice 助手')).toBe(
+      'M5-Max.local',
+    );
+    expect(bridgeDeviceName('AllRice 助手')).toBe('这台电脑');
+  });
+});
+
+describe('advice for the chips of the computers in use (MET-214)', () => {
+  const mac = (
+    platform: BridgeDevice['platform'],
+    status: BridgeDevice['status'],
+  ) => ({ platform, status });
+  it('looks at the online computers first, else at every paired one', () => {
+    expect(bridgeChips([])).toBeNull();
+    expect(bridgeChips([mac('macos-x64', 'revoked')])).toBeNull();
+    expect(
+      bridgeChips([mac('macos-x64', 'online'), mac('macos-arm64', 'offline')]),
+    ).toBe('intel');
+    expect(
+      bridgeChips([mac('macos-arm64', 'online'), mac('macos-x64', 'offline')]),
+    ).toBe('apple');
+    expect(
+      bridgeChips([mac('macos-x64', 'online'), mac('macos-arm64', 'online')]),
+    ).toBe('mixed');
+    expect(
+      bridgeChips([mac('macos-x64', 'offline'), mac('macos-arm64', 'offline')]),
+    ).toBe('mixed');
+    expect(
+      bridgeChips([mac('macos-x64', 'offline'), mac('macos-arm64', 'revoked')]),
+    ).toBe('intel');
+  });
+  it('never asks an Intel Mac to update for the missing candidate test environment', () => {
+    const intel = capabilityReason('candidate_runner_missing', 'intel');
+    expect(intel).toBe(
+      'Intel 芯片的电脑不再提供新版本，现有版本不支持在隔离副本里测试修改方案。',
+    );
+    const mixed = capabilityReason('candidate_runner_missing', 'mixed');
+    expect(mixed).toContain('Apple 芯片的电脑请更新 AllRice 助手');
+    expect(mixed).toContain(
+      'Intel 芯片的电脑不再提供新版本，现有版本不支持在隔离副本里测试修改方案。',
+    );
+    expect(capabilityReason('candidate_runner_missing', 'apple')).toBe(
+      capabilityReason('candidate_runner_missing'),
+    );
+    expect(capabilityReason('runner_missing', 'intel')).toBe(
+      capabilityReason('runner_missing'),
+    );
   });
 });

@@ -51,13 +51,14 @@ export function useAssistantSession({
       const response = await fetch(url, { headers, signal, cache: 'no-store' });
       if (!response.ok)
         throw new Error(
-          '助手任务记录暂不可用，请重试。不会据此判断任务已停止。',
+          '子智能体任务记录暂不可用，请重试。不会据此判断任务已停止。',
         );
       const data = (await response.json()) as {
         trees: AssistantTreeView[];
         nextCursor: string | null;
       };
-      if (!Array.isArray(data.trees)) throw new Error('助手任务记录格式异常');
+      if (!Array.isArray(data.trees))
+        throw new Error('子智能体任务记录格式异常');
       if (
         signal.aborted ||
         currentScope.current !== scope ||
@@ -101,7 +102,8 @@ export function useAssistantSession({
         if (!abort.signal.aborted && generation.current === currentGeneration) {
           setFailure({
             scope,
-            text: error instanceof Error ? error.message : '助手记录暂不可用',
+            text:
+              error instanceof Error ? error.message : '子智能体记录暂不可用',
           });
           failures++;
         }
@@ -137,7 +139,7 @@ export function useAssistantSession({
       await load(new AbortController().signal, cursor);
     } catch {
       if (currentScope.current === scope)
-        setFailure({ scope, text: '历史助手任务加载失败，请重试。' });
+        setFailure({ scope, text: '历史子智能体任务加载失败，请重试。' });
     }
   };
   return {

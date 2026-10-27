@@ -904,7 +904,10 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         .waitFor();
       await page.getByRole('button', { name: '设备下载与确认指引' }).click();
       await page
-        .getByRole('link', { name: '下载 M 芯片 Bridge', exact: true })
+        .getByRole('link', {
+          name: '下载 AllRice 助手（Apple 芯片）',
+          exact: true,
+        })
         .waitFor();
       await page.getByLabel('授权执行目标').selectOption(target);
       await page

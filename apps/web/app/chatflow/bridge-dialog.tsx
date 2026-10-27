@@ -26,6 +26,8 @@ import css from './bridge-dialog.module.css';
 import {
   bridgeCapabilityRows,
   bridgeDeviceName,
+  intelBridgeNotice,
+  isIntelBridge,
   bridgeWorkspaceIssue,
   bridgePreparationLabel,
 } from './bridge-view';
@@ -47,7 +49,12 @@ export function BridgeSettings({
   const [disconnectId, setDisconnectId] = useState<string | null>(null);
   const installOpen =
     installExpanded ?? (bridge.bridgeStatusKnown && !onlineDevices.length);
-  const comparisons = onlineDevices.map((device) => {
+  // Intel Macs get no new versions, so they never count towards an update,
+  // and their maintenance flow offers no Apple silicon package to replace them.
+  const updatable = onlineDevices.filter((device) => !isIntelBridge(device));
+  const hasIntel = devices.some(isIntelBridge);
+  const intelOnly = hasIntel && devices.every(isIntelBridge);
+  const comparisons = updatable.map((device) => {
     const release = releases.releases?.find(
       (item) => item.platform === device.platform,
     );
@@ -59,9 +66,33 @@ export function BridgeSettings({
     ? '有新版本'
     : comparisons.length && comparisons.every((value) => value === 0)
       ? '已是最新版'
-      : bridge.bridgeBusy || (!releases.releases && !releases.error)
-        ? '检查中'
-        : '待确认';
+      : intelOnly || (onlineDevices.length && !updatable.length)
+        ? '不再提供新版本'
+        : bridge.bridgeBusy || (!releases.releases && !releases.error)
+          ? '检查中'
+          : '待确认';
+  const installSteps = (
+    <>
+      <BridgeReleaseDownloads
+        releases={releases.releases}
+        error={releases.error}
+        onDownload={bridge.noteBridgeDownload}
+      />
+      <p>
+        解压后双击打开“AllRice 助手”。
+        {intelOnly
+          ? ''
+          : '如果已经装过，先退出旧版，把解压出的“AllRice 助手”拖进“应用程序”直接替换，原有配对和设置会保留。'}
+        {hasIntel && !intelOnly
+          ? 'Intel 芯片的电脑不要替换，继续用现有版本。'
+          : ''}
+      </p>
+      <p>
+        这是测试版。第一次打开时，macOS 可能提示“无法验证开发者”，请到“系统设置
+        → 隐私与安全性”里点“仍要打开”。
+      </p>
+    </>
+  );
   const refreshControl = (
     <button
       data-computer-control
@@ -103,7 +134,7 @@ export function BridgeSettings({
           return (
             <section
               key={device.id}
-              aria-label={device.name}
+              aria-label={bridgeDeviceName(device.name)}
               className={css.device}
             >
               <div className={css.deviceCard}>
@@ -116,11 +147,11 @@ export function BridgeSettings({
                     <div className={css.deviceMeta}>
                       <span>
                         {device.platform === 'macos-arm64'
-                          ? 'M 芯片'
+                          ? 'Apple 芯片'
                           : 'Intel 芯片'}
                       </span>
                       <span aria-hidden="true">·</span>
-                      <span>AllRice 电脑端</span>
+                      <span>AllRice 助手</span>
                       {bridge.bridgeStatusKnown &&
                         bridge.bridgeLastRefreshedAt && (
                           <span
@@ -276,8 +307,8 @@ export function BridgeSettings({
                         <span>{bridgePreparationLabel(item)}</span>
                         {item.stage === 'failed' && (
                           <small>
-                            在 AllRice
-                            电脑端的菜单里选择“重新检查并准备环境”继续，已下载的部分不用重新下载。
+                            按住 Option 键点菜单栏的
+                            AllRice，在“开发者工具”里选择“重新检查并准备环境”继续，已下载的部分不用重新下载。
                           </small>
                         )}
                       </div>
@@ -329,7 +360,7 @@ export function BridgeSettings({
                             <small>
                               {online
                                 ? row.reason
-                                : '请打开电脑上的 AllRice 电脑端。'}
+                                : '请打开电脑上的 AllRice 助手。'}
                             </small>
                           )}
                         </div>
@@ -366,8 +397,8 @@ export function BridgeSettings({
       ) : !onlineDevices.length ? (
         <p className={css.notice}>
           {devices.length
-            ? '打开这台电脑上的 AllRice 电脑端，就能重新连接。'
-            : '还没有连接电脑。安装 AllRice 电脑端后，输入配对码就能连接。'}
+            ? '打开这台电脑上的 AllRice 助手，就能重新连接。'
+            : '还没有连接电脑。安装 AllRice 助手后，输入配对码就能连接。'}
         </p>
       ) : null}
       {bridge.bridgeRecoveryActive && onlineDevices.length ? (
@@ -395,7 +426,7 @@ export function BridgeSettings({
               <span>
                 {devices.length > 1
                   ? bridgeDeviceName(device.name)
-                  : 'AllRice 电脑端'}{' '}
+                  : 'AllRice 助手'}{' '}
                 ·{' '}
               </span>
               <BridgeVersionStatus
@@ -406,21 +437,21 @@ export function BridgeSettings({
                 online={bridge.bridgeStatusKnown && device.status === 'online'}
                 compact
               />
+              {isIntelBridge(device) && <small> · {intelBridgeNotice}</small>}
             </p>
           ))}
-          <BridgeReleaseDownloads
-            releases={releases.releases}
-            error={releases.error}
-            onDownload={bridge.noteBridgeDownload}
-          />
-          <p>
-            解压后双击打开里面的应用。升级前先退出旧版，原有配对和设置会保留。
-          </p>
-          <p>
-            这是测试版。第一次打开时，macOS
-            可能提示“无法验证开发者”，请到“系统设置 →
-            隐私与安全性”里点“仍要打开”。
-          </p>
+          {intelOnly ? (
+            <details data-bridge-other-mac>
+              <summary>给另一台 Apple 芯片的 Mac 安装</summary>
+              <p>
+                只在 Apple 芯片的 Mac 上安装；Intel
+                芯片的电脑继续用现有版本，不要替换。
+              </p>
+              {installSteps}
+            </details>
+          ) : (
+            installSteps
+          )}
           <button
             data-computer-control
             className={css.secondaryButton}
@@ -452,9 +483,7 @@ export function BridgeSettings({
                   <IconCopyOutlineRegular size={18} />
                 </button>
               </div>
-              <p>
-                请在 10 分钟内把配对码输入到 AllRice 电脑端，之后会自动连接。
-              </p>
+              <p>请在 10 分钟内把配对码输入到 AllRice 助手，之后会自动连接。</p>
             </div>
           ) : null}
         </div>

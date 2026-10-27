@@ -100,7 +100,7 @@ export async function POST(
           error: {
             code: error.code,
             message:
-              '当前任务未获准使用助手。请关闭助手选项，或联系管理员检查员工权限。',
+              '当前任务未获准使用子智能体。请关闭子智能体选项，或联系管理员检查员工权限。',
           },
         },
         { status: 403, headers: { 'Cache-Control': 'private, no-store' } },

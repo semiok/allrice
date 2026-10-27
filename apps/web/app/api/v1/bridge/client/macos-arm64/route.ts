@@ -20,7 +20,7 @@ export async function GET(request: Request) {
     return new Response(body, {
       headers: {
         'cache-control': 'private, no-store',
-        'content-disposition': 'attachment; filename="RiceBridge-M.zip"',
+        'content-disposition': 'attachment; filename="AllRice-Assistant.zip"',
         'content-length': String(file.size),
         'content-type': 'application/zip',
       },

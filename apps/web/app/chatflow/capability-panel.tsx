@@ -7,16 +7,17 @@ import type {
 import { IconChevronRightOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives';
 import {
   capabilityLabels,
-  capabilityReasons,
+  capabilityReason,
   capabilityStateLabels,
 } from './capability-catalog';
+import type { BridgeChips } from './bridge-view';
 import styles from './capability-panel.module.css';
 const groups: Record<
   'work' | 'computer',
   { label: string; description?: string; ids: WorkspaceCapabilityId[] }
 > = {
   work: {
-    label: '云端与助手状态',
+    label: '云端与子智能体状态',
     ids: [
       'report',
       'cloud_command',
@@ -83,6 +84,7 @@ export function CapabilityContent({
   onRefresh,
   onBridge,
   onCompose,
+  computerChips = null,
 }: {
   scope: 'work' | 'computer';
   data: WorkspaceReadiness | null;
@@ -92,6 +94,8 @@ export function CapabilityContent({
   onRefresh: () => void;
   onBridge: () => void;
   onCompose: (id: WorkspaceCapabilityId) => void;
+  /** Chips of the computers in use; Intel Macs get no new versions (MET-214). */
+  computerChips?: BridgeChips | null;
 }) {
   const group = groups[scope];
   const summary = summarizeCapabilities(group.ids, data, loading, error);
@@ -151,7 +155,7 @@ export function CapabilityContent({
                   <p>{label.description}</p>
                   <p>
                     {capability
-                      ? capabilityReasons[capability.reason]
+                      ? capabilityReason(capability.reason, computerChips)
                       : '尚未取得当前状态，请刷新确认。'}
                   </p>
                   {capability?.action === 'compose' &&
@@ -191,8 +195,8 @@ export function CapabilityContent({
                         {capability.reason === 'runner_missing' ? (
                           <>
                             <li>
-                              在 AllRice
-                              电脑端的菜单里选择“重新检查并准备环境”，已有的独立沙箱会自动恢复。
+                              按住 Option 键点菜单栏的
+                              AllRice，在“开发者工具”里选择“重新检查并准备环境”，已有的独立沙箱会自动恢复。
                             </li>
                             <li>
                               通用计算可以直接让员工使用云端环境；涉及本地文件时，先在当前任务中选择所需文件。
@@ -203,7 +207,12 @@ export function CapabilityContent({
                           </>
                         ) : (
                           <>
-                            <li>{capabilityReasons[capability.reason]}</li>
+                            <li>
+                              {capabilityReason(
+                                capability.reason,
+                                computerChips,
+                              )}
+                            </li>
                             <li>
                               完成后点击“刷新能力状态”。其他可用能力可以继续使用。
                             </li>

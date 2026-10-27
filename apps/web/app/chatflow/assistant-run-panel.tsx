@@ -60,7 +60,7 @@ export function AssistantRunPanel({
           signal: abort.signal,
         });
         if (!response.ok)
-          throw new Error('助手明细暂不可用，请收起后重新展开。');
+          throw new Error('子智能体明细暂不可用，请收起后重新展开。');
         const data = (await response.json()) as { tree: AssistantTreeView };
         if (abort.signal.aborted || currentScope.current !== scope) return;
         setDetail(data.tree);

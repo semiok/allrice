@@ -9,6 +9,7 @@ import {
   type BridgeFolderGrant,
 } from '@allrice/contracts';
 import type { ManagedConnectorProps } from './tenant-resource-editor';
+import { bridgeDeviceName } from '../chatflow/bridge-view';
 import styles from './mcp-settings.module.css';
 type Device = BridgeDevice & { folderGrants: BridgeFolderGrant[] };
 const legacyEndpoint = '/api/v1/admin/local-mcp';
@@ -223,7 +224,7 @@ export function LocalMcpSettings({
   return (
     <section className={styles.panel} aria-label="本地 MCP 连接">
       <div className={styles.header}>
-        <h3>本地 MCP · Bridge 隔离进程</h3>
+        <h3>本地 MCP · AllRice 助手隔离进程</h3>
         <button disabled={busy} onClick={() => setRefresh((n) => n + 1)}>
           刷新
         </button>
@@ -277,10 +278,11 @@ export function LocalMcpSettings({
               setGrantId('');
             }}
           >
-            <option value="">选择自己的 Bridge</option>
+            <option value="">选择自己的电脑</option>
             {devices.map((d) => (
               <option key={d.id} value={d.id}>
-                {d.name} · {d.status === 'online' ? '在线' : '离线'}
+                {bridgeDeviceName(d.name)} ·{' '}
+                {d.status === 'online' ? '在线' : '离线'}
               </option>
             ))}
           </select>
@@ -366,7 +368,7 @@ export function LocalMcpSettings({
               <span>{c.enabled ? '已登记' : '已撤销'}</span>
             </div>
             <p>
-              {c.deviceName} · {c.configuration.source.name}@
+              {bridgeDeviceName(c.deviceName)} · {c.configuration.source.name}@
               {c.configuration.source.version} · {c.configuration.path}/
               {c.configuration.source.entrypoint}
             </p>
@@ -420,8 +422,8 @@ export function LocalMcpSettings({
               <details>
                 <summary>设备凭证设置 / 撤销命令（不含密钥）</summary>
                 <p>
-                  先退出 Bridge；此显式模式使用 0700/0600 私有文件，未加密、不是
-                  Keychain。set
+                  先退出 AllRice 助手；此显式模式使用 0700/0600
+                  私有文件，未加密、不是 Keychain。set
                   仅从标准输入接收密钥，不把密钥放进命令参数。撤销云连接和删除本地凭证是两个操作。
                 </p>
                 <pre>{`RiceBridge local-mcp credential set ${c.id} ${c.configuration.source.digest} ${c.configuration.credential.id} ${c.configuration.credential.revision} --private-file-unencrypted`}</pre>

@@ -50,7 +50,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         installEditingMenu()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem?.button?.title = "Rice"
+        statusItem?.button?.title = "AllRice"
         refreshMenu()
         do { try startCore() } catch { fail("BRIDGE_START_FAILED"); showError("BRIDGE_START_FAILED") }
         showStatus()
@@ -61,8 +61,8 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func installEditingMenu() {
         let menu = NSMenu()
         let applicationItem = NSMenuItem()
-        let applicationMenu = NSMenu(title: "Rice Bridge")
-        applicationMenu.addItem(NSMenuItem(title: "退出 Rice Bridge", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        let applicationMenu = NSMenu(title: "AllRice")
+        applicationMenu.addItem(NSMenuItem(title: "退出 AllRice 助手", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         applicationItem.submenu = applicationMenu
         menu.addItem(applicationItem)
         let item = NSMenuItem(title: "编辑", action: nil, keyEquivalent: "")
@@ -281,11 +281,11 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private var title: String {
-        if forceClosing { return "正在结束 Bridge · 保留执行记录…" }
+        if forceClosing { return "正在结束 AllRice 助手 · 保留执行记录…" }
         if quitRecovery { return "退出未完成 · 可查看原因并恢复" }
         if pairing { return "正在配对并连接…" }
         if state["pairingRequired"] as? Bool == true { return "配对已失效 · 请重新配对" }
-        if !coreReady && state["mode"] as? String != "error" { return "正在启动 Bridge…" }
+        if !coreReady && state["mode"] as? String != "error" { return "正在启动 AllRice 助手…" }
         switch state["mode"] as? String {
         case "unpaired": return "尚未配对"
         case "paused": return "已暂停 · 本地任务已停止"
@@ -295,8 +295,8 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "error": return "需要检查"
         default:
             switch state["connection"] as? String {
-            case "online": return "Bridge 在线"
-            case "offline": return "Bridge 离线 · 正在重连"
+            case "online": return "AllRice 助手在线"
+            case "offline": return "AllRice 助手离线 · 正在重连"
             default: return "正在连接…"
             }
         }
@@ -367,7 +367,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             add(menu, "退出诊断与日志…", #selector(diagnostics))
             if quitRecovery { add(menu, "退出恢复…", #selector(recoverQuit), enabled: !forceClosing) }
         }
-        add(menu, "退出 Rice Bridge", #selector(quit), enabled: !quitting && !forceClosing)
+        add(menu, "退出 AllRice 助手", #selector(quit), enabled: !quitting && !forceClosing)
     }
 
     private func add(_ menu: NSMenu, _ title: String, _ selector: Selector, enabled: Bool = true) {
@@ -445,7 +445,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func showStatus() {
         if window == nil {
             let next = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 460), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-            next.title = "Rice Bridge · 本地电脑"
+            next.title = "AllRice 助手"
             next.isReleasedWhenClosed = false
             let scroll = NSScrollView(frame: next.contentView!.bounds)
             scroll.autoresizingMask = [.width, .height]
@@ -495,7 +495,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         let alert = NSAlert()
-        alert.messageText = "配对 Rice Bridge"
+        alert.messageText = "配对 AllRice 助手"
         alert.informativeText = "在 AllRice 网页复制配对码，粘贴到这里即可连接。配对会保存在这台 Mac，以后无需重复输入。"
         alert.addButton(withTitle: "配对并连接"); alert.addButton(withTitle: "取消")
         let stack = NSStackView()
@@ -692,7 +692,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func presentDiagnostics(_ data: [String: Any]) {
         guard let bytes = try? JSONSerialization.data(withJSONObject: data, options: [.prettyPrinted, .sortedKeys]) else { self.showError("DIAGNOSTICS_EXPORT_FAILED"); return }
         let alert = NSAlert()
-        alert.messageText = "Bridge 诊断与日志"
+        alert.messageText = "AllRice 助手诊断与日志"
         alert.informativeText = "仅导出版本、状态、聚合计数和有限错误代码，不包含配对码、凭证、文件内容或完整本地路径。"
         alert.addButton(withTitle: "导出诊断…"); alert.addButton(withTitle: "关闭")
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 480, height: 260))
@@ -702,7 +702,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         text.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         scroll.documentView = text; alert.accessoryView = scroll
         if alert.runModal() == .alertFirstButtonReturn {
-            let panel = NSSavePanel(); panel.nameFieldStringValue = "RiceBridge-diagnostics.json"
+            let panel = NSSavePanel(); panel.nameFieldStringValue = "AllRice-Assistant-diagnostics.json"
             panel.begin { result in
                 guard result == .OK, let url = panel.url else { return }
                 do { try bytes.write(to: url, options: .atomic); try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path) }
@@ -727,14 +727,14 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert(); alert.messageText = "操作未完成"
         let explanations = [
-            "BRIDGE_START_FAILED": "Bridge 核心未能启动，暂时无法配对。请退出应用后重新打开，并查看状态中的诊断信息。",
-            "BRIDGE_NOT_RUNNING": "Bridge 核心没有运行，配对请求尚未发出。请退出应用后重新打开；已有配对会保留。",
-            "BRIDGE_STOPPED": "Bridge 核心已经退出，暂时无法连接。请退出应用后重新打开；已有配对会保留。",
-            "BRIDGE_PIPE_UNAVAILABLE": "窗口与 Bridge 核心的连接已中断。请退出应用后重新打开，并在状态窗口核对配对结果。",
-            "DESKTOP_BUSY": "Bridge 正在启动或处理其他操作，请稍后重试。",
+            "BRIDGE_START_FAILED": "AllRice 助手核心未能启动，暂时无法配对。请退出应用后重新打开，并查看状态中的诊断信息。",
+            "BRIDGE_NOT_RUNNING": "AllRice 助手核心没有运行，配对请求尚未发出。请退出应用后重新打开；已有配对会保留。",
+            "BRIDGE_STOPPED": "AllRice 助手核心已经退出，暂时无法连接。请退出应用后重新打开；已有配对会保留。",
+            "BRIDGE_PIPE_UNAVAILABLE": "窗口与 AllRice 助手核心的连接已中断。请退出应用后重新打开，并在状态窗口核对配对结果。",
+            "DESKTOP_BUSY": "AllRice 助手正在启动或处理其他操作，请稍后重试。",
             "DESKTOP_PAIRING_CODE_INVALID": "请输入网页生成的 8 位配对码；中间横杠可带可不带。",
             "BRIDGE_PAIRING_REJECTED": "服务器已确认原配对失效。请在 AllRice 网页生成新的配对码，再选择重新配对设备；原执行记录会保留。",
-            "DESKTOP_SERVER_INVALID": "安装包的服务地址配置无效，请从 AllRice 网页重新下载 Rice Bridge。",
+            "DESKTOP_SERVER_INVALID": "安装包的服务地址配置无效，请从 AllRice 网页重新下载 AllRice 助手。",
             "DESKTOP_CREDENTIAL_UNAVAILABLE": "本机已有配对，但凭证暂不可读。请检查 Keychain，不要重新配对或删除配置。",
             "DESKTOP_REVOKED_CLEANUP_PENDING": "此前解除配对已在服务端生效，但旧凭证或配置尚未完全清理；不代表之后的新配对被撤销。请保留诊断记录，不要使用旧令牌重试撤销。",
             "DESKTOP_CONFIG_INVALID": "本机配置无法安全读取，请保留原文件并检查诊断。",
@@ -748,8 +748,8 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             "UPDATE_APPLE_VERIFICATION_FAILED": "Apple 发布者签名、公证票据或系统检查未通过，候选未获准安装。请向管理员报告诊断代码，不要关闭 Gatekeeper 或移除隔离标记。",
             "UPDATE_STORAGE_REVIEW": "已保留多次更新下载和恢复证据。请让管理员先检查专用安装目录；应用不会自动删除失败包或回退版本。",
             "UPDATE_NATIVE_APP_REQUIRED": "可信更新需要管理员提供的原生签名 App，不能从源码、环境注入凭证或任意命令包启动。现有配对不需要删除。",
-            "BRIDGE_ALREADY_RUNNING": "另一份 Bridge 正在使用当前配置。请先正常退出旧终端版或切回现有菜单栏应用。",
-            "BRIDGE_WORKSPACE_CONTAINS_STATE": "请选择具体项目目录，不要选择包含 Bridge 配对或执行日志的上级目录。",
+            "BRIDGE_ALREADY_RUNNING": "另一份 AllRice 助手正在使用当前配置。请先正常退出旧终端版或切回现有菜单栏应用。",
+            "BRIDGE_WORKSPACE_CONTAINS_STATE": "请选择具体项目目录，不要选择包含 AllRice 助手配对或执行日志的上级目录。",
             "DESKTOP_ALREADY_PAIRED": "这台设备已经配对；如需更换租户，请先正常撤销当前配对。"
         ]
         let fallback = code.hasPrefix("UPDATE_") ? "可信更新未完成或尚不能确认。请保留原应用、配对、失败包与日志，向管理员提供诊断代码；不要重新配对、强制覆盖应用或关闭系统安全保护。" : "请确认网络和配对码有效；服务器未确认的操作不会显示成功。"
@@ -775,7 +775,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if process?.isRunning != true { NSApp.terminate(nil); return }
         let alert = NSAlert()
         alert.messageText = "退出尚未完成"
-        alert.informativeText = "当前阶段：\(stopPhaseLabel)。\n\n可以继续等待同一次安全收尾。强制退出会终止此 Bridge 核心，但不能保证沙箱或工具已经停止，也不会撤销已完成的操作。配对与执行日志会保留；重新打开后需核对未完成的任务。"
+        alert.informativeText = "当前阶段：\(stopPhaseLabel)。\n\n可以继续等待同一次安全收尾。强制退出会终止 AllRice 助手核心，但不能保证沙箱或工具已经停止，也不会撤销已完成的操作。配对与执行日志会保留；重新打开后需核对未完成的任务。"
         alert.addButton(withTitle: "继续等待安全退出")
         alert.addButton(withTitle: "强制退出并保留记录")
         alert.addButton(withTitle: "返回")

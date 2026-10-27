@@ -433,12 +433,12 @@ export async function verifyCodexWorkerSessionsInChrome(input: {
     );
     assert.equal(
       await panel
-        .getByRole('button', { name: '停止这个助手', exact: true })
+        .getByRole('button', { name: '停止这个子智能体', exact: true })
         .count(),
       2,
     );
     for (const button of await panel
-      .getByRole('button', { name: '停止这个助手', exact: true })
+      .getByRole('button', { name: '停止这个子智能体', exact: true })
       .all())
       assert.ok(await button.isDisabled());
     for (const result of tree.results) {

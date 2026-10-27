@@ -310,7 +310,7 @@ describe('historical transcript capability gating', () => {
     expect(html.match(/>思考中…</g)).toHaveLength(1);
     expect(html).toContain('data-shimmer-text="思考中…"');
     expect(html).not.toContain('Rice');
-    expect(html).not.toContain('助手任务');
+    expect(html).not.toContain('子智能体任务');
   });
   it('shows native compaction while history is collapsed and clears it after completion or failure', () => {
     const event = (
@@ -465,7 +465,7 @@ describe('historical transcript capability gating', () => {
     expect(html).not.toContain('aria-expanded');
     expect(html.match(/用时 /g)).toHaveLength(1);
     expect(html).not.toContain('<time>');
-    expect(html).not.toContain('助手任务');
+    expect(html).not.toContain('子智能体任务');
   });
 
   it('shows execution with compact steps and waiting from the authoritative clock', () => {

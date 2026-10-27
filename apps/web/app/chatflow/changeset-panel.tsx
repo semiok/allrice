@@ -192,10 +192,10 @@ export function ChangesetPanel({
   }
   if (proposalCopy)
     return (
-      <section className={styles.root} aria-label="子助手开发提案">
-        <h4>子助手的修改提案 · 还没保存到电脑</h4>
+      <section className={styles.root} aria-label="子智能体开发提案">
+        <h4>子智能体的修改提案 · 还没保存到电脑</h4>
         <p>
-          这是子助手单独做的一份修改，不能直接保存到原来的文件夹。需要先由主
+          这是子智能体单独做的一份修改，不能直接保存到原来的文件夹。需要先由主
           Rice 合并，完成同版本测试和独立审查后，再单独申请保存。
         </p>
       </section>

@@ -59,15 +59,15 @@ export const capabilityLabels: Record<
   local_mcp: {
     title: '电脑上的应用工具',
     description:
-      '通过 AllRice 电脑端使用电脑上配置的应用服务，需要保持电脑连接。',
+      '通过 AllRice 助手使用电脑上配置的应用服务，需要保持电脑连接。',
     prompt:
       '请使用我电脑上已授权的本地应用工具完成【填写业务任务】，全程固定在同一台电脑、同一个授权文件夹和同一版本的工具上，按我的工作方式自动执行或请我确认；不要安装来历不明的服务，也不要改到云端执行。',
   },
   assistants: {
-    title: '助手协作',
-    description: '按任务需要安排助手协作，遵循当前任务的授权与预算。',
+    title: '子智能体协作',
+    description: '按任务需要安排子智能体协作，遵循当前任务的授权与预算。',
     prompt:
-      '请完成【填写可拆分的任务】。如适合并行且我已允许助手，请安排有限助手并在本任务中汇总结果；不可扩大权限或预算。',
+      '请完成【填写可拆分的任务】。如适合并行且我已允许子智能体，请安排有限的子智能体并在本任务中汇总结果；不可扩大权限或预算。',
   },
   boost: {
     title: '深入攻关',
@@ -76,9 +76,9 @@ export const capabilityLabels: Record<
   development: {
     title: '受控开发协作',
     description:
-      '安排助手修改、测试和审查授权项目，按工作方式执行，共用当前任务预算。',
+      '安排子智能体修改、测试和审查授权项目，按工作方式执行，共用当前任务预算。',
     prompt:
-      '请在我已授权的本地工作区完成【填写开发目标及目录范围】：安排少量助手把修改做成候选修改提案（逐个文件的改前改后对比，不是计划文档），在我电脑上的隔离副本里测试这同一个候选版本，再交给没有参与编写的助手独立审查。测试命令和最终的文件修改按我的工作方式执行；最后告诉我这个候选版本的校验值、真实的测试结果和审查结论。电脑未连接时不要转到云端。',
+      '请在我已授权的本地工作区完成【填写开发目标及目录范围】：安排少量子智能体把修改做成候选修改提案（逐个文件的改前改后对比，不是计划文档），在我电脑上的隔离副本里测试这同一个候选版本，再交给没有参与编写的子智能体独立审查。测试命令和最终的文件修改按我的工作方式执行；最后告诉我这个候选版本的校验值、真实的测试结果和审查结论。电脑未连接时不要转到云端。',
   },
   teamwork: {
     title: '团队任务',
@@ -109,25 +109,25 @@ export const capabilityReasons: Record<WorkspaceCapability['reason'], string> =
     policy_missing: '当前员工的工作区配置尚未准备完成，请稍后重试。',
     policy_denied: '此操作已被工作区停用。其他已开启的能力仍可使用。',
     read_only: '当前账号为历史只读授权，请联系平台管理员调整。',
-    provider_unsupported: '当前对话暂不支持助手，可由当前员工继续处理。',
+    provider_unsupported: '当前对话暂不支持子智能体，可由当前员工继续处理。',
     bridge_missing:
-      '连接电脑后就能处理电脑上的任务。点下方按钮下载 AllRice 电脑端并完成配对。',
+      '连接电脑后就能处理电脑上的任务。点下方按钮下载 AllRice 助手并完成配对。',
     bridge_offline:
-      '电脑未连接。请打开 AllRice 电脑端后刷新；不会自动改到云端执行。',
+      '电脑未连接。请打开 AllRice 助手后刷新；不会自动改到云端执行。',
     folder_missing: '电脑已连接。选择需要交给员工处理的文件夹即可。',
     environment_preparing:
-      'AllRice 电脑端正在自动准备环境，稍后刷新就能看到结果；其他已就绪的能力可以继续使用。',
+      'AllRice 助手正在自动准备环境，稍后刷新就能看到结果；其他已就绪的能力可以继续使用。',
     environment_busy: '本机正在处理已有任务，新任务等待本机释放资源。',
     runtime_unsupported:
       '当前电脑缺少此能力所需条件，可在「我的电脑」查看具体缺项。',
     device_paused:
-      '此能力已暂停。请在「设置 → 我的电脑」中开启；如果电脑端整体暂停了，请在电脑上恢复。',
+      '此能力已暂停。请在「设置 → 我的电脑」中开启；如果 AllRice 助手整体暂停了，请在电脑上恢复。',
     browser_unavailable:
-      '独立浏览器还没准备好，请在 AllRice 电脑端的菜单里重新检查。缺少 Chrome 时，按提示安装后再试。',
+      '独立浏览器还没准备好。缺少 Chrome 时，点菜单栏的 AllRice 选择“安装或更新 Chrome…”；装好后按住 Option 键点菜单栏的 AllRice，在“开发者工具”里选择“重新检查并准备环境”。',
     runner_missing:
-      '本地计算环境暂不可用。通用计算可交给员工在云端完成；本地项目服务可在 AllRice 电脑端的菜单里重新检查并准备。',
+      '本地计算环境暂不可用。通用计算可交给员工在云端完成；本地项目服务可按住 Option 键点菜单栏的 AllRice，在“开发者工具”里选择“重新检查并准备环境”。',
     candidate_runner_missing:
-      '这台电脑还不能测试修改方案。请更新 AllRice 电脑端，更新后会自动检查并准备独立的沙箱。',
+      '这台电脑还不能测试修改方案。请更新 AllRice 助手，更新后会自动检查并准备独立的沙箱。',
     target_missing: '尚未配置对应执行环境，请由平台管理员准备隔离运行环境。',
     target_unavailable: '所需执行目标不可用，请恢复对应环境后刷新。',
     grant_missing:
@@ -156,4 +156,31 @@ export function capabilitySettingsHref(
           ? '/workspace/local-browser'
           : null;
   return path ? `${path}?workspaceId=${encodeURIComponent(workspaceId)}` : null;
+}
+
+/** Intel Macs get no new versions (MET-214): advice that asks the computer to
+ * update says what an Intel Mac's installed version cannot do instead, and
+ * names the chips when Apple silicon and Intel Macs are both in use. */
+const chipCapabilityReasons: Record<
+  'intel' | 'mixed',
+  Partial<Record<WorkspaceCapability['reason'], string>>
+> = {
+  intel: {
+    candidate_runner_missing:
+      'Intel 芯片的电脑不再提供新版本，现有版本不支持在隔离副本里测试修改方案。',
+  },
+  mixed: {
+    candidate_runner_missing:
+      '这台电脑还不能测试修改方案。Apple 芯片的电脑请更新 AllRice 助手，更新后会自动检查并准备独立的沙箱；Intel 芯片的电脑不再提供新版本，现有版本不支持在隔离副本里测试修改方案。',
+  },
+};
+export function capabilityReason(
+  reason: WorkspaceCapability['reason'],
+  chips?: 'apple' | 'intel' | 'mixed' | null,
+) {
+  return (
+    (chips === 'intel' || chips === 'mixed'
+      ? chipCapabilityReasons[chips][reason]
+      : undefined) ?? capabilityReasons[reason]
+  );
 }

@@ -1,12 +1,13 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import type { LocalMcpOperationView } from '@allrice/database';
+import { bridgeDeviceName } from './bridge-view';
 import styles from './local-command-panel.module.css';
 const statusReadFailure = '暂时无法更新电脑操作状态，请稍后重试。';
 const labels: Record<string, string> = {
   planned: '准备中',
   waiting_user: '等待这一次操作授权',
-  ready: '等待 Bridge',
+  ready: '等待 AllRice 助手',
   dispatched: '已派发，等待执行确认',
   running: '本地 MCP 执行中',
   cancel_requested: '已请求停止，等待确认',
@@ -158,8 +159,8 @@ export function LocalMcpPanel({
               <span>{labels[op.snapshot.status] ?? op.snapshot.status}</span>
             </header>
             <p>
-              执行设备：{op.deviceName} · 独立 Linux 沙箱 · 无网络 · 最长{' '}
-              {args.limits.timeoutMs / 1000} 秒
+              执行设备：{bridgeDeviceName(op.deviceName)} · 独立 Linux 沙箱 ·
+              无网络 · 最长 {args.limits.timeoutMs / 1000} 秒
             </p>
             <p>
               来源：{args.source.name}@{args.source.version} ·{' '}

@@ -1731,7 +1731,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               available: true,
               version: '0.6.0-dev.7',
             },
-            { platform: 'macos-x64', available: true, version: '0.6.0-dev.7' },
           ],
         });
       if (path === '/api/v1/workspace/monthly-quota') {
@@ -2136,7 +2135,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .click();
       await f.panel
         .getByRole('status')
-        .filter({ hasText: '安装并连接 Bridge，授权文件夹后即可使用终端。' })
+        .filter({
+          hasText: '安装并连接 AllRice 助手，授权文件夹后即可使用终端。',
+        })
         .waitFor();
       await f.panel
         .getByRole('button', { name: '连接电脑', exact: true })
@@ -3902,7 +3903,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(f.state.personalSkillWrites).toEqual([]);
 
         await selectSettings(dialog, '工作方式');
-        for (const label of ['云端自动工作', '电脑自动工作', '自动安排助手'])
+        for (const label of ['云端自动工作', '电脑自动工作', '子智能体'])
           await expect
             .poll(() =>
               dialog
@@ -5242,7 +5243,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         f.state.bridgeDevices = [
           {
             id: id(901),
-            name: 'M5-Max.local · Rice Bridge',
+            name: 'M5-Max.local · AllRice 助手',
             platform: 'macos-arm64',
             status: 'online',
             clientVersion: '0.6.0-dev.7',
@@ -5445,15 +5446,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await computer.getByText('下载与安装', { exact: true }).click();
         await computer
           .getByRole('link', {
-            name: '下载 M 芯片版 · v0.6.0-dev.7',
+            name: '下载 AllRice 助手（Apple 芯片） · v0.6.0-dev.7',
             exact: true,
           })
           .waitFor();
         expect(
-          await computer
-            .getByRole('link', { name: /下载 Intel/ })
-            .getAttribute('href'),
-        ).toBe('/api/v1/bridge/client/macos-x64');
+          await computer.getByRole('link', { name: /Intel/ }).count(),
+        ).toBe(0);
         await computer
           .getByRole('button', { name: '生成配对码', exact: true })
           .click();
@@ -5617,7 +5616,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .inputValue(),
         ).toBe(created.profile.workStyle);
         expect(await nameInput.getAttribute('placeholder')).toBe(
-          '例如： 文案专家、财务助手、商务分析师',
+          '例如： 文案专家、财务专员、商务分析师',
         );
         await nameInput.fill(employeeName);
         await picker.getByRole('radio', { name: '珊瑚红' }).check();
@@ -7654,7 +7653,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ),
         ).toBe('360px');
         expect(
-          await f.page.getByLabel('助手任务', { exact: true }).count(),
+          await f.page.getByLabel('子智能体任务', { exact: true }).count(),
         ).toBe(0);
         expect(
           await f.page.locator('[id^="message-"]').last().innerText(),
@@ -11333,7 +11332,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         })
         .locator('[data-bridge-settings]');
       await bridge.waitFor();
-      await bridge.getByRole('link', { name: /下载 M 芯片版/ }).waitFor();
+      await bridge
+        .getByRole('link', { name: /下载 AllRice 助手（Apple 芯片）/ })
+        .waitFor();
       const calls = f.state.readinessRequests;
       await f.page.keyboard.press('Escape');
       await expect.poll(() => f.state.readinessRequests).toBeGreaterThan(calls);
@@ -11353,6 +11354,300 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.close();
     }
   });
+
+  it.each([
+    [1440, 'light'],
+    [1440, 'dark'],
+    [390, 'light'],
+    [390, 'dark'],
+  ] as const)(
+    'MET-214 offers one Apple silicon AllRice 助手 download in 我的电脑 at width %i in %s theme',
+    async (width, theme) => {
+      const f = await fixture({ width });
+      try {
+        await f.page.emulateMedia({ colorScheme: theme });
+        await f.page.evaluate((theme) => {
+          document.documentElement.style.colorScheme = theme;
+          document.body.toggleAttribute('data-ds-dark-theme', theme === 'dark');
+        }, theme);
+        await openCapabilities(f, 'computer');
+        const settings = f.page.getByRole('dialog', {
+          name: '设置',
+          exact: true,
+        });
+        await settings
+          .locator('[data-capability="local_files"]')
+          .getByRole('button', { name: '连接与管理电脑' })
+          .click();
+        const computer = settings.locator('[data-bridge-settings]');
+        const downloads = computer.getByRole('region', {
+          name: '下载 AllRice 助手',
+          exact: true,
+        });
+        const link = downloads.getByRole('link', {
+          name: '下载 AllRice 助手（Apple 芯片） · v0.6.0-dev.7',
+          exact: true,
+        });
+        await link.waitFor();
+        expect(await downloads.getByRole('link').count()).toBe(1);
+        expect(await link.getAttribute('href')).toBe(
+          '/api/v1/bridge/client/macos-arm64',
+        );
+        expect(await link.getAttribute('download')).toBe(
+          'AllRice-Assistant.zip',
+        );
+        expect(await f.page.locator('a[href*="macos-x64"]').count()).toBe(0);
+        const text = await computer.innerText();
+        expect(text).toContain('安装 AllRice 助手后，输入配对码就能连接。');
+        expect(text).not.toMatch(/Intel|M 芯片|电脑端|Rice Bridge/);
+        expect(
+          await f.page.evaluate(() =>
+            document.body.hasAttribute('data-ds-dark-theme'),
+          ),
+        ).toBe(theme === 'dark');
+        // Readable in both themes: link text against the nearest painted background.
+        const colors = await link.evaluate((element) => {
+          let node: Element | null = element;
+          let background = 'rgba(0, 0, 0, 0)';
+          while (node && /rgba\(.*, 0\)$|transparent/.test(background)) {
+            background = getComputedStyle(node).backgroundColor;
+            node = node.parentElement;
+          }
+          return { foreground: getComputedStyle(element).color, background };
+        });
+        const luminance = (color: string) => {
+          const [r, g, b] = color
+            .match(/[\d.]+/g)!
+            .slice(0, 3)
+            .map((channel) => {
+              const value = Number(channel) / 255;
+              return value <= 0.04045
+                ? value / 12.92
+                : ((value + 0.055) / 1.055) ** 2.4;
+            });
+          return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
+        };
+        const [a, b] = [colors.foreground, colors.background].map(luminance);
+        expect(
+          (Math.max(a!, b!) + 0.05) / (Math.min(a!, b!) + 0.05),
+        ).toBeGreaterThanOrEqual(4.5);
+        // No horizontal overflow: page, dialog, and the download entry.
+        const box = (await link.boundingBox())!;
+        expect(box.x).toBeGreaterThanOrEqual(0);
+        expect(box.x + box.width).toBeLessThanOrEqual(width);
+        expect(
+          await f.page.evaluate(
+            () =>
+              document.documentElement.scrollWidth <=
+              document.documentElement.clientWidth,
+          ),
+        ).toBe(true);
+        expect(
+          await settings.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
+        ).toBe(true);
+        expect(
+          await downloads.evaluate((section) =>
+            [section, ...section.querySelectorAll('*')]
+              .filter(
+                (node) =>
+                  node.checkVisibility() &&
+                  getComputedStyle(node).display !== 'inline' &&
+                  node.scrollWidth > node.clientWidth + 1,
+              )
+              .map((node) => node.tagName),
+          ),
+        ).toEqual([]);
+        if (process.env.ALLRICE_DIALOG_SCREENSHOT)
+          await f.page.screenshot({
+            path: `${process.env.ALLRICE_DIALOG_SCREENSHOT}-met214-${width}-${theme}.png`,
+          });
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
+  it.each(['online', 'offline'] as const)(
+    'MET-214 keeps a paired %s Intel Mac on its version: no update prompt and no Apple silicon package to replace it',
+    async (status) => {
+      const f = await fixture({ width: 1440 });
+      try {
+        f.state.bridgeDevices = [
+          {
+            id: id(902),
+            name: 'iMac-Intel.local · Rice Bridge',
+            platform: 'macos-x64',
+            status,
+            clientVersion: '0.6.0-dev.40',
+            lastSeenAt: now,
+            folderGrants: [],
+            readiness: [
+              {
+                capability: 'local.browser',
+                state: 'unsupported',
+                reason: 'legacy_unavailable',
+                missing: [],
+                versions: { bridge: '0.6.0-dev.40' },
+                observedAt: now,
+              },
+            ],
+          },
+        ];
+        // This Mac's version has no environment for testing a change proposal.
+        f.state.capabilities = f.state.capabilities.map((c) =>
+          c.id === 'development'
+            ? {
+                ...c,
+                state: 'needs_configuration',
+                reason: 'candidate_runner_missing',
+                action: 'bridge',
+              }
+            : c,
+        );
+        await f.page.reload();
+        await openCapabilities(f, 'computer');
+        const settings = f.page.getByRole('dialog', {
+          name: '设置',
+          exact: true,
+        });
+        const notice = 'Intel 芯片的电脑不再提供新版本，现有版本可以继续使用。';
+        const development = settings.locator('[data-capability="development"]');
+        await development
+          .getByText(
+            'Intel 芯片的电脑不再提供新版本，现有版本不支持在隔离副本里测试修改方案。',
+            { exact: true },
+          )
+          .first()
+          .waitFor();
+        expect(await development.innerText()).not.toMatch(/请更新/);
+        // 我的电脑: switches and browser login say why, not "please update".
+        const permissions = settings.getByRole('region', {
+          name: 'iMac-Intel.local',
+          exact: true,
+        });
+        await permissions
+          .getByText(`${notice}这台电脑的版本不支持这些开关。`, {
+            exact: true,
+          })
+          .waitFor();
+        await settings
+          .locator('[data-capability="local_files"]')
+          .getByRole('button', { name: '连接与管理电脑' })
+          .click();
+        const computer = settings.locator('[data-bridge-settings]');
+        await computer.getByText('不再提供新版本', { exact: true }).waitFor();
+        if (status === 'online') {
+          await computer
+            .locator('[data-bridge-capabilities] > summary')
+            .click();
+          await computer.getByText(notice, { exact: true }).first().waitFor();
+        }
+        // Offline, the install section opens by itself; it must not offer the
+        // Apple silicon package as this Mac's update.
+        const install = computer.locator('[data-bridge-install]');
+        if ((await install.getAttribute('open')) === null)
+          await install.locator(':scope > summary').click();
+        await computer.getByText(`· ${notice}`, { exact: true }).waitFor();
+        const download = computer.locator(
+          'a[href="/api/v1/bridge/client/macos-arm64"]',
+        );
+        expect(await download.count()).toBe(1);
+        expect(await download.isVisible()).toBe(false);
+        expect(await computer.getByText(/直接替换/).count()).toBe(0);
+        const text = await settings.innerText();
+        expect(text).not.toMatch(
+          /请更新|可更新至|有新版本|Rice Bridge|下载 AllRice 助手/,
+        );
+        expect(text).toContain('Intel 芯片');
+        // Installing on another, Apple silicon Mac is a separate entry.
+        await computer
+          .locator('[data-bridge-other-mac] > summary')
+          .getByText('给另一台 Apple 芯片的 Mac 安装', { exact: true })
+          .click();
+        await download.waitFor();
+        expect(await download.textContent()).toContain(
+          '下载 AllRice 助手（Apple 芯片）',
+        );
+        await computer
+          .getByText(
+            '只在 Apple 芯片的 Mac 上安装；Intel 芯片的电脑继续用现有版本，不要替换。',
+            { exact: true },
+          )
+          .waitFor();
+        expect(await computer.getByText(/直接替换/).count()).toBe(0);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
+  it.each([
+    [
+      'an online Intel Mac and an offline Apple silicon Mac',
+      'offline',
+      'Intel 芯片的电脑不再提供新版本，现有版本不支持在隔离副本里测试修改方案。',
+    ],
+    [
+      'online Intel and Apple silicon Macs',
+      'online',
+      '这台电脑还不能测试修改方案。Apple 芯片的电脑请更新 AllRice 助手，更新后会自动检查并准备独立的沙箱；Intel 芯片的电脑不再提供新版本，现有版本不支持在隔离副本里测试修改方案。',
+    ],
+  ] as const)(
+    'MET-214 names the chips in the development card for %s',
+    async (_, appleStatus, reason) => {
+      const f = await fixture({ width: 1440 });
+      try {
+        f.state.bridgeDevices = [
+          {
+            id: id(903),
+            name: 'iMac-Intel.local · Rice Bridge',
+            platform: 'macos-x64',
+            status: 'online',
+            clientVersion: '0.6.0-dev.40',
+            lastSeenAt: now,
+            folderGrants: [],
+          },
+          {
+            id: id(904),
+            name: 'MacBook-Air.local · AllRice 助手',
+            platform: 'macos-arm64',
+            status: appleStatus,
+            clientVersion: '0.6.0-dev.62',
+            lastSeenAt: now,
+            folderGrants: [],
+          },
+        ];
+        f.state.capabilities = f.state.capabilities.map((c) =>
+          c.id === 'development'
+            ? {
+                ...c,
+                state: 'needs_configuration',
+                reason: 'candidate_runner_missing',
+                action: 'bridge',
+              }
+            : c,
+        );
+        await f.page.reload();
+        await openCapabilities(f, 'computer');
+        const development = f.page
+          .getByRole('dialog', { name: '设置', exact: true })
+          .locator('[data-capability="development"]');
+        await development.getByText(reason, { exact: true }).first().waitFor();
+        // Only an Apple silicon Mac is ever asked to update.
+        expect(
+          (await development.innerText()).replaceAll(
+            'Apple 芯片的电脑请更新 AllRice 助手',
+            '',
+          ),
+        ).not.toMatch(/请更新/);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
 
   it.each([390, 1280])(
     'shows downloadable and installed Bridge versions at width %i and refreshes after an upgrade',
@@ -11395,7 +11690,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           })
           .locator('[data-bridge-settings]');
         const download = dialog.getByRole('link', {
-          name: '下载 M 芯片版 · v0.6.0-dev.7',
+          name: '下载 AllRice 助手（Apple 芯片） · v0.6.0-dev.7',
           exact: true,
         });
         await dialog.getByText('有新版本', { exact: true }).waitFor();

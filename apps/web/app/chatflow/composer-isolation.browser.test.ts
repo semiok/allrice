@@ -3301,11 +3301,11 @@ suite(
         // Running work is already visible under the native display policy.
         // Wait for the assistant panel without clicking its stop control.
         await f.page
-          .getByRole('region', { name: '助手任务', exact: true })
+          .getByRole('region', { name: '子智能体任务', exact: true })
           .waitFor();
         await f.page
           .getByRole('button', {
-            name: '取消整项任务（含所有助手）',
+            name: '取消整项任务（含所有子智能体）',
             exact: true,
           })
           .click();
@@ -3609,12 +3609,12 @@ suite(
       const f = await fixture({ running: true });
       try {
         await f.page
-          .getByRole('region', { name: '助手任务', exact: true })
+          .getByRole('region', { name: '子智能体任务', exact: true })
           .getByText(/已请求停止不代表进程已退出/)
           .waitFor();
         await f.page.reload();
         await f.page
-          .getByRole('region', { name: '助手任务', exact: true })
+          .getByRole('region', { name: '子智能体任务', exact: true })
           .getByText(/已请求停止不代表进程已退出/)
           .waitFor();
         await f.context.setOffline(true);
@@ -3644,7 +3644,7 @@ suite(
       const f = await fixture({ running: true });
       try {
         await f.page
-          .getByRole('region', { name: '助手任务', exact: true })
+          .getByRole('region', { name: '子智能体任务', exact: true })
           .getByText(/已请求停止不代表进程已退出/)
           .waitFor();
         await f.page.getByText('分工、结果与消耗', { exact: true }).click();

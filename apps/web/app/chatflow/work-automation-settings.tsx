@@ -21,8 +21,9 @@ const choices = [
   },
   {
     key: 'assistants',
-    title: '自动安排助手',
-    description: '允许当前员工按需安排助手协作。关闭后，由当前员工独立处理。',
+    title: '子智能体',
+    description:
+      '允许当前员工按需安排子智能体协作。关闭后，由当前员工独立处理。',
   },
 ] as const;
 type View = z.infer<typeof WorkAutomationViewSchema>;

@@ -445,7 +445,7 @@ try {
     .getByLabel('工件版本', { exact: true })
     .selectOption(exported.artifactId);
   await workbench.getByText(/目标：云端沙箱/).waitFor();
-  assert.equal(await workbench.getByText(/目标：本地 Bridge/).count(), 0);
+  assert.equal(await workbench.getByText(/目标：AllRice 助手/).count(), 0);
   checks.cloudArtifactTargetLabel = true;
   const download = page.waitForEvent('download');
   await workbench

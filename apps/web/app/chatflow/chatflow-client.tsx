@@ -123,7 +123,7 @@ import { nextPaint } from './dsh-upstream/images/next-paint';
 import { useAttachments } from './use-attachments';
 import { useBridge } from './use-bridge';
 import { useBridgeReleases } from './bridge-releases';
-import { projectBridgeView } from './bridge-view';
+import { bridgeChips, projectBridgeView } from './bridge-view';
 import { useRunStream } from './use-run-stream';
 import { useSession } from './use-session';
 import { createSessionActions } from './session-actions';
@@ -1808,6 +1808,7 @@ export function ChatFlowClient({
           <CapabilityContent
             key={`capabilities/${section}/${workspace.viewerId}/${workspace.workspaceId}/${activeId}`}
             scope={section}
+            computerChips={bridgeChips(bridgeDevices)}
             data={readiness.data}
             loading={readiness.loading}
             error={readiness.error}
@@ -2193,7 +2194,7 @@ export function ChatFlowClient({
                     <p role="status">
                       {assistants.error}{' '}
                       <button type="button" onClick={assistants.reload}>
-                        重试助手记录
+                        重试子智能体记录
                       </button>
                     </p>
                   ) : null}

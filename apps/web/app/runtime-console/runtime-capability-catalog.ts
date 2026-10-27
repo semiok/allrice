@@ -27,10 +27,10 @@ export const runtimeCapabilityCatalog: readonly RuntimeCapabilityCatalogGroup[] 
       items: [
         {
           id: 'subagent',
-          name: '并行助手与开发协作',
+          name: '并行子智能体与开发协作',
           packageName: '@deepseek-ai/dsh-subagent',
           detail:
-            '复用原生助手派发与消息，已接通父子任务、共享预算、候选测试和独立审查。',
+            '复用原生子智能体派发与消息，已接通父子任务、共享预算、候选测试和独立审查。',
           policy: '员工配置后按租户试用与发布',
         },
         {
@@ -54,7 +54,7 @@ export const runtimeCapabilityCatalog: readonly RuntimeCapabilityCatalogGroup[] 
         },
         {
           id: 'rice-bridge',
-          name: 'Rice Bridge',
+          name: 'AllRice 助手',
           detail:
             '提供授权目录读写、Git 只读、独立浏览器与沙箱命令；支持在隔离副本测试候选修改。',
           policy: '设备授权目录内受控读写；覆盖需校验 SHA-256',
@@ -78,7 +78,7 @@ export const runtimeCapabilityCatalog: readonly RuntimeCapabilityCatalogGroup[] 
       title: '原生工具与 AllRice 执行方式',
       badge: '按环境选择',
       description:
-        '原生主机工具可在独立 Lab 中探索。租户侧通过已接入的 Bridge、沙箱和连接器执行，以下列出对应方式。',
+        '原生主机工具可在独立 Lab 中探索。租户侧通过已接入的 AllRice 助手、沙箱和连接器执行，以下列出对应方式。',
       items: [
         {
           id: 'bash',
@@ -95,7 +95,7 @@ export const runtimeCapabilityCatalog: readonly RuntimeCapabilityCatalogGroup[] 
           packageName:
             '@deepseek-ai/dsh-tool-fs · @deepseek-ai/dsh-tool-fs-search',
           detail:
-            '直接读取 Worker 文件系统；本地文件必须改走 Rice Bridge 授权目录。',
+            '直接读取 Worker 文件系统；本地文件必须改走 AllRice 助手授权目录。',
           policy: '由 Tool Broker 替代',
         },
         {

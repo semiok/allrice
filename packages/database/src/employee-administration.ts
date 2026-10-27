@@ -193,7 +193,7 @@ export async function reviewEmployeePublication(
         );
         if (!matches.length)
           warnings.push(
-            `${target.organizationName} / ${target.name}：${kind === 'rice_bridge' ? '使用本地能力时，请在设置 → 我的电脑连接 Bridge 并选择所需目录' : '云端执行环境尚未登记，请在能力与环境查看自动准备状态；实际就绪后即可使用'}。`,
+            `${target.organizationName} / ${target.name}：${kind === 'rice_bridge' ? '使用本地能力时，请在设置 → 我的电脑连接 AllRice 助手并选择所需目录' : '云端执行环境尚未登记，请在能力与环境查看自动准备状态；实际就绪后即可使用'}。`,
           );
         else
           warnings.push(

@@ -49,7 +49,7 @@ describe('errors shown to people', () => {
           retryable: true,
         },
       }).message,
-    ).toBe('电脑未连接，请打开 AllRice 电脑端后再试');
+    ).toBe('电脑未连接，请打开 AllRice 助手后再试');
     expect(responseError(400, null).message).toBe(requestNotFinished);
     expect(
       responseError(429, { error: { message: 'Too many requests' } }).message,

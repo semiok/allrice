@@ -2,12 +2,17 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>xyz.bplabs.rice-bridge</string>
-<key>CFBundleName</key><string>Rice Bridge</string>
+<!-- Finder, Launchpad, Spotlight and Get Info show "AllRice 助手" (zh-Hans.lproj
+     and en.lproj InfoPlist.strings); the menu bar shows "AllRice". LSUIElement:
+     no Dock icon and no About window. CFBundleDisplayName must stay equal to the
+     unchanged "Rice Bridge.app" file name, or Finder shows the file name. -->
+<key>CFBundleName</key><string>AllRice</string>
 <key>CFBundleDisplayName</key><string>Rice Bridge</string>
+<key>LSHasLocalizedDisplayName</key><true/>
 <key>CFBundleExecutable</key><string>RiceBridgeApp</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>0.6.0</string>
-  <key>CFBundleVersion</key><string>62</string>
+  <key>CFBundleVersion</key><string>63</string>
 <key>AllRicePairingServerURL</key><string>https://allrice-dsh.bplabs.xyz</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>LSUIElement</key><true/>

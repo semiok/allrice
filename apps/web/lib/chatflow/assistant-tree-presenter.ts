@@ -50,17 +50,19 @@ export function presentAssistantTree(tree: AssistantTreeView) {
     attention,
     unconfirmedStops,
     hasLiveWork,
-    label: children.length ? `已安排 ${children.length} 个助手` : '独立处理',
+    label: children.length
+      ? `已安排 ${children.length} 个子智能体`
+      : '独立处理',
     summary: tree.cancelRequested
       ? unconfirmedStops.length
         ? `已请求取消整项任务，${unconfirmedStops.length} 项尚未确认停止`
         : '整项任务已收到取消请求'
       : attention.length
-        ? `${attention.length} 个助手需要关注`
+        ? `${attention.length} 个子智能体需要关注`
         : unresolved.length
-          ? `${unresolved.length} 个助手仍在处理`
+          ? `${unresolved.length} 个子智能体仍在处理`
           : children.length
-            ? '助手执行已结束，结果采用状态见明细'
+            ? '子智能体执行已结束，结果采用状态见明细'
             : tree.configuration.allowAssistants
               ? '可按需要进行有限委派'
               : '独立处理',

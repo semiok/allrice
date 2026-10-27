@@ -186,11 +186,11 @@ export const developmentWorkflowToolNames = resolveEmployeeToolDependencies([
 
 // Presentation only. Registration, capability and risk come from the Broker manifest.
 const labels: Partial<Record<AllRiceToolName, string>> = {
-  'assistant.delegate': '委派受控助手',
-  'assistant.message': '助手消息',
-  'assistant.report': '助手结果汇报',
+  'assistant.delegate': '委派受控子智能体',
+  'assistant.message': '子智能体消息',
+  'assistant.report': '子智能体结果汇报',
   'assistant.development': '受控开发提案、测试与独立审查',
-  'assistant.stop': '停止助手',
+  'assistant.stop': '停止子智能体',
   'local.process.execute': '本地隔离命令',
   'local.process.status': '本地服务状态',
   'local.process.stop': '停止本地服务',

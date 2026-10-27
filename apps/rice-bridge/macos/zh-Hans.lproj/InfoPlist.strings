@@ -1,0 +1,4 @@
+/* Finder, Launchpad, Spotlight and Get Info. The bundle stays "Rice Bridge.app" on disk. */
+CFBundleDisplayName = "AllRice 助手";
+/* Menu bar: only the short name. */
+CFBundleName = "AllRice";

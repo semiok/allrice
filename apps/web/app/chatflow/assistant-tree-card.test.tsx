@@ -70,7 +70,7 @@ function render(tree: AssistantTreeView, detailed = true) {
 describe('P26 actual-state presentation (fixtures are not execution evidence)', () => {
   it('counts persisted children only, not root or proposed assistant count', () => {
     const tree = fixture();
-    expect(presentAssistantTree(tree).label).toBe('已安排 1 个助手');
+    expect(presentAssistantTree(tree).label).toBe('已安排 1 个子智能体');
     tree.instances = tree.instances.slice(0, 1);
     expect(render(tree)).toBe('');
     tree.configuration.allowAssistants = false;
@@ -94,7 +94,7 @@ describe('P26 actual-state presentation (fixtures are not execution evidence)', 
       const tree = fixture();
       tree.instances[1]!.status = status;
       const html = render(tree);
-      expect(html).toContain('1 个助手需要关注');
+      expect(html).toContain('1 个子智能体需要关注');
       expect(html.indexOf('资料核对：')).toBeLessThan(html.indexOf('<details'));
       expect(html).not.toContain('全部成功');
     }

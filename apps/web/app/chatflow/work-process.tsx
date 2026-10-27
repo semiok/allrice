@@ -205,7 +205,7 @@ export function WorkProcess({
       ? '加载过程…'
       : undefined,
     assistantCount
-      ? `${assistantCount} 个助手${assistantAttention ? `，${assistantAttention} 个需关注` : ''}`
+      ? `${assistantCount} 个子智能体${assistantAttention ? `，${assistantAttention} 个需关注` : ''}`
       : undefined,
   ]
     .filter(Boolean)

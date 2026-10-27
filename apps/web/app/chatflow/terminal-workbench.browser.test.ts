@@ -55,6 +55,8 @@ type FixtureState = {
   errors: string[];
   streamMode: TerminalStreamMode;
   nextCredits: number;
+  /** A paired Intel Mac whose installed version has no terminal (MET-214). */
+  intel?: boolean;
 };
 
 function authorizationGate() {
@@ -126,15 +128,21 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
       }
       const path = new URL(request.url ?? '/', 'http://localhost').pathname;
       if (path === '/api/v1/bridge/devices') {
+        const intel = fixtures.get(
+          /fixture=([\w-]+)/.exec(request.headers.cookie ?? '')?.[1] ?? '',
+        )?.intel;
         response.setHeader('content-type', 'application/json');
         response.end(
           JSON.stringify({
             devices: [
               {
                 id: target.deviceId,
-                name: 'Fixture.local',
+                // An old pairing's default name; people see only the computer name.
+                name: 'Fixture.local · Rice Bridge',
                 status: 'online',
-                humanTerminalVersion: 2,
+                ...(intel
+                  ? { platform: 'macos-x64' }
+                  : { platform: 'macos-arm64', humanTerminalVersion: 2 }),
                 folderGrants: [
                   { id: target.grantId, label: target.label },
                   {
@@ -265,7 +273,7 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
                     'grantId',
                   ) ?? target.grantId,
               },
-              deviceName: 'Fixture.local',
+              deviceName: 'Fixture.local · Rice Bridge',
               ...(state.streamMode === 'push' ? { streamMode: 'push' } : {}),
             });
           };
@@ -493,6 +501,7 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
       guide?: boolean;
       shells?: FixtureState['shells'];
       rememberedShell?: string;
+      intel?: boolean;
     } = {},
   ) {
     const token = randomUUID();
@@ -512,6 +521,7 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
       screenRequests: 0,
       streamMode: options.streamMode ?? 'pull',
       nextCredits: 0,
+      intel: options.intel,
     };
     fixtures.set(token, state);
     const context = await browser.newContext({
@@ -684,6 +694,7 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
       expect(
         await f.page.getByText('Fixture.local', { exact: true }).count(),
       ).toBe(1);
+      expect(await f.page.getByText(/Rice Bridge/).count()).toBe(0);
       expect(
         await f.page.getByText('/fixture/AI-what', { exact: true }).count(),
       ).toBe(1);
@@ -1048,6 +1059,39 @@ suite('official terminal browser adapter', { timeout: 30000 }, () => {
       }
     },
   );
+
+  it('MET-214 says an Intel Mac version has no terminal instead of asking for an update', async () => {
+    const f = await fixture({
+      guide: true,
+      waitForTerminal: false,
+      intel: true,
+    });
+    try {
+      const guide = f.page.locator('[data-terminal-guide]');
+      const picker = guide.getByLabel('终端电脑与文件夹');
+      await picker.waitFor();
+      expect(await picker.locator('option').allInnerTexts()).toEqual([
+        'Fixture.local · AI-what（现有版本不支持终端）',
+        'Fixture.local · Second folder（现有版本不支持终端）',
+      ]);
+      await guide
+        .getByRole('button', { name: '新建终端', exact: true })
+        .click();
+      await f.page
+        .getByRole('status')
+        .filter({
+          hasText:
+            'Intel 芯片的电脑不再提供新版本，现有版本可以继续使用。这台电脑的版本不支持终端。',
+        })
+        .waitFor();
+      expect(await f.page.getByText(/需更新|请更新|更新 AllRice/).count()).toBe(
+        0,
+      );
+      expect(f.state.creates).toBe(0);
+    } finally {
+      await f.close();
+    }
+  });
 
   it.each(['light', 'dark'] as const)(
     'launches the detected default from one native guide card in %s theme',

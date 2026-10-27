@@ -22,6 +22,7 @@ import { RunUsageSummary } from './run-usage';
 import { ExecutionDiagnostics } from './execution-diagnostics';
 import { DevelopmentInspection } from './development-inspection';
 import type { TenantResourceProps } from './tenant-resource-editor';
+import { bridgeDeviceName } from '../chatflow/bridge-view';
 import styles from './tenant-administration.module.css';
 import common from './admin-data.module.css';
 
@@ -207,7 +208,8 @@ export function TenantValidation(
               <option value="">云端 / 不限定设备</option>
               {data.environments.devices.map((d) => (
                 <option key={d.id} value={d.id}>
-                  {d.name} · {d.status === 'online' ? '最近心跳在线' : '离线'}
+                  {bridgeDeviceName(d.name)} ·{' '}
+                  {d.status === 'online' ? '最近心跳在线' : '离线'}
                 </option>
               ))}
             </select>

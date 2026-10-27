@@ -208,14 +208,15 @@ suite('plain words in settings and automation for ordinary employees', () => {
           const computer = caseOf(page, 'computer');
           const computerText = await computer.innerText();
           for (const words of [
-            'AllRice 电脑端',
+            'AllRice 助手',
             '这台电脑',
             'MacBook-Pro.local',
             '未连接',
             '电脑上还没有安装 Git。',
-            '环境检查没有通过，请刷新状态，或重新打开 AllRice 电脑端。',
+            '环境检查没有通过，请刷新状态，或重新打开 AllRice 助手。',
             '“无法验证开发者”',
-            '电脑端 0.6.0',
+            'AllRice 助手 0.6.0',
+            '下载 AllRice 助手（Apple 芯片） · v0.6.1',
           ])
             expect(computerText).toContain(words);
 
