@@ -18,7 +18,7 @@ for (const file of files) {
   if (file === migration || /(?:\.test\.|\.fixture\.|\/fixtures\/)/.test(file))
     continue;
   if (
-    !/\.(?:ts|mjs)$/.test(file) &&
+    !/\.(?:ts|tsx|mts|cts|mjs)$/.test(file) &&
     !/^packages\/database\/migrations\/.*\.sql$/.test(file)
   )
     continue;
