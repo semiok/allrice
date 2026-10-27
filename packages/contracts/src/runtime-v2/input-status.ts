@@ -34,7 +34,11 @@ const InteractionInputSchema = z
     evidence: z
       .object({
         sequence: z.number().int().nonnegative(),
-        checkpoint: z.enum(['question_resolved', 'step_user_message']),
+        checkpoint: z.enum([
+          'question_resolved',
+          'question_replied',
+          'step_user_message',
+        ]),
       })
       .strict()
       .nullable(),

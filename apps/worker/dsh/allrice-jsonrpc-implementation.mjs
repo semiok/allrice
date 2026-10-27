@@ -47,6 +47,11 @@ import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-code
 
 import { steerDshAgent } from './allrice-dsh-runtime-compatibility.mjs';
 import {
+  detachNativeQuestion,
+  nativeUserQuestions,
+  replyNativeQuestion,
+} from './allrice-dsh-detach.mjs';
+import {
   deliverDshInput,
   discardPendingDshInputs,
 } from './allrice-dsh-inputs.mjs';
@@ -1781,6 +1786,8 @@ export async function createAllRiceRuntime(
     }
 
     async handleRequest(method, params) {
+      // A detaching Host only waits to exit; it takes no further input.
+      if (this.detaching !== undefined) throw Error('QUESTION_DETACHING');
       if (method.startsWith('allrice/assistant/')) {
         const action = method.slice('allrice/assistant/'.length);
         if (
@@ -1828,6 +1835,13 @@ export async function createAllRiceRuntime(
             params,
             () => continueNativeWait(this, params),
           );
+        case 'session/detach':
+          return detachNativeQuestion(this, requiredSessionId(params));
+        case 'session/user-questions':
+          return nativeUserQuestions(this, requiredSessionId(params));
+        case 'session/question-reply':
+          requiredSessionId(params);
+          return replyNativeQuestion(this, params);
         case 'session/interrupt':
           return this.interrupt(params);
         case 'session/steer':
