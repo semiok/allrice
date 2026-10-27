@@ -1103,6 +1103,15 @@ div.composerAttachmentMenu,
   font-weight: 800;
 }
 
+.confirmationCard[data-state='rejected'] > header > i {
+  background: var(--dsw-alias-state-error-primary);
+}
+
+.confirmationCard[data-state='unknown'] > header > i,
+.confirmationCard[data-state='submitted'] > header > i {
+  background: var(--dsw-alias-state-idle-primary);
+}
+
 .confirmationCard > header > div {
   display: flex;
   min-width: 0;

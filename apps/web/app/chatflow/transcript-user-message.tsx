@@ -11,7 +11,8 @@ import { feedbackTranslate } from './feedback-labels';
 import { AutomationTrigger } from './automation-trigger';
 import messageUi from './dsh-upstream/MessageItem.module.css';
 import styles from './dsh-saas.module.css';
-/** Durable input status by user message id, from the session interactions. */
+/** Live input status by user message id, from the polled session
+ * interactions; history's answerStatus covers older or unpolled answers. */
 export const InputStatusContext = createContext<
   ReadonlyMap<string, InteractionStatus['inputs'][number]['status']>
 >(new Map());
@@ -38,7 +39,7 @@ export function TranscriptUserMessage({
           answer={message.content.interaction.answer}
           createdAt={message.createdAt}
           text={message.content.text}
-          status={inputStatus.get(message.id)}
+          status={inputStatus.get(message.id) ?? message.answerStatus}
         />
       ) : message.role === 'user' &&
         message.content.interaction?.type === 'changeset_request' ? (

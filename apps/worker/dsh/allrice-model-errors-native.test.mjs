@@ -414,7 +414,7 @@ async function scenario({
         })
         .toBe(true);
       expect(requests).toHaveLength(0);
-      contentCallsAllowed = 0; // Explicit correction while waiting for the user.
+      contentCallsAllowed = 0; // A typed answer while waiting for the user.
       const question = notices.find(
         (n) => n.method === 'session.user-question',
       );

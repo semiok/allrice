@@ -52,14 +52,15 @@ describe('user question receipt', () => {
     ['pending', '已提交'],
     ['queued', '已提交'],
     ['rejected', '未被采纳'],
-    ['unknown', '未被采纳'],
+    ['unknown', '未能确认'],
     ['canceled', '未被采纳'],
   ] as const)('reads %s as %s', (status, title) => {
     expect(userQuestionReceiptState(status).title).toBe(title);
   });
   it('makes no delivery claim without a status', () => {
     expect(userQuestionReceiptState(undefined)).toEqual({
-      mark: '…',
+      state: 'submitted',
+      mark: '•',
       title: '已提交',
       note: '',
     });
