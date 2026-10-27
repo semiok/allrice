@@ -5946,11 +5946,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           if (cdp) {
             // Stay inside the tree even when filters shorten a mobile drawer.
             const startY = down ? y : y - touchDistance;
+            // Chrome does not turn synthetic touch moves into exactly equal
+            // scrolls: the slop is dropped and now and then one move is not
+            // scrolled. The way back swipes half again as far, so the list
+            // has to reach its top whichever moves were lost.
+            const steps = down ? 10 : 15;
             await cdp.send('Input.dispatchTouchEvent', {
               type: 'touchStart',
               touchPoints: [{ x, y: startY }],
             });
-            for (let step = 1; step <= 10; step++) {
+            for (let step = 1; step <= steps; step++) {
               await cdp.send('Input.dispatchTouchEvent', {
                 type: 'touchMove',
                 touchPoints: [

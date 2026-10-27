@@ -2541,11 +2541,18 @@ suite(
           await selectSuggestion(f.page, weeklyTask.title, width);
           const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
           await expect.poll(() => input.inputValue()).toBe(expected);
-          expect(
-            await input.evaluate((element: HTMLTextAreaElement) =>
-              element.value.slice(element.selectionStart, element.selectionEnd),
-            ),
-          ).toBe('7');
+          // The draft renders first; focus and the slot selection follow in
+          // the next animation frame, so wait for that frame's result.
+          await expect
+            .poll(() =>
+              input.evaluate((element: HTMLTextAreaElement) =>
+                element.value.slice(
+                  element.selectionStart,
+                  element.selectionEnd,
+                ),
+              ),
+            )
+            .toBe('7');
           expect(
             await input.evaluate(
               (element) => document.activeElement === element,
