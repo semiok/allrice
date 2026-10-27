@@ -5,12 +5,13 @@
   min-width: 0;
 }
 .root article {
-  border: 1px solid #b6c8ee;
-  border-left: 4px solid #5271c4;
+  border: 1px solid var(--ar-border);
+  /* No design token for an info stroke yet: DSH's business color. */
+  border-left: 4px solid var(--dsw-alias-state-business-primary);
   border-radius: 12px;
   padding: 16px;
-  background: #f5f8ff;
-  color: #23314a;
+  background: var(--ar-surface-raised);
+  color: var(--ar-text);
   min-width: 0;
 }
 .root header {
@@ -28,7 +29,7 @@
 .root small {
   display: block;
   overflow-wrap: anywhere;
-  color: #535d70;
+  color: var(--ar-text-secondary);
 }
 .root pre {
   white-space: pre-wrap;
@@ -37,7 +38,7 @@
   overflow: auto;
   font-size: 12px;
   padding: 10px;
-  background: #eaf0fb;
+  background: var(--dsw-alias-markdown-code-block);
   border-radius: 6px;
 }
 .root summary {
@@ -47,10 +48,10 @@
 }
 .root button {
   cursor: pointer;
-  border: 1px solid #8a9dc6;
+  border: 1px solid var(--ar-border);
   border-radius: 8px;
-  background: white;
-  color: #22395f;
+  background: var(--ar-action-secondary);
+  color: var(--ar-text);
   padding: 8px 12px;
 }
 .root button:disabled {
@@ -59,7 +60,7 @@
 }
 .root button:focus-visible,
 .root summary:focus-visible {
-  outline: 2px solid #315fd3;
+  outline: var(--ar-focus-ring-width) solid var(--ar-focus-ring);
   outline-offset: 3px;
 }
 .actions {
@@ -72,11 +73,11 @@
   flex-basis: 100%;
 }
 .stderr {
-  color: #a62938;
+  color: var(--ar-danger-text);
 }
 .root article[data-status='failed'],
 .root article[data-status='unknown'] {
-  border-color: #bf7e6f;
+  border-color: var(--ar-danger);
 }
 @media (max-width: 640px) {
   .root article {
