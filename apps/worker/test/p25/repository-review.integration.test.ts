@@ -1228,7 +1228,9 @@ suite(
       await vi.waitFor(
         async () => {
           const [wait] =
-            await f.db`select count(*)::int as n from pg_stat_activity where wait_event='advisory' and query like '%pg_advisory_xact_lock(hashtextextended%'`;
+            await f.db`select count(*)::int as n from pg_stat_activity
+              where datname=current_database() and application_name=current_schema()
+                and wait_event='advisory' and query like '%pg_advisory_xact_lock(hashtextextended%'`;
           expect(wait!.n).toBeGreaterThan(0);
         },
         { timeout: 5000, interval: 25 },
