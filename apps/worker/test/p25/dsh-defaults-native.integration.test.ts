@@ -21,6 +21,9 @@ integration('MET-210 native Todo defaults through the AllRice host', () => {
   let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
   beforeAll(async () => {
     expect(process.env.DATABASE_URL).toBeUndefined();
+    // Required only to create the shared isolated authority fixture. The host
+    // below receives no assistant controller or assistant tools.
+    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
     database = await createAssistantFixtureDatabase();
     vi.spyOn(databaseClient, 'getDatabase').mockReturnValue(database.db);
   }, 120_000);
