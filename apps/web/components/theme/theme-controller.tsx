@@ -9,30 +9,16 @@ import {
   themeFor,
 } from '../../lib/theme/theme';
 
-function systemTheme() {
-  try {
-    return matchMedia('(prefers-color-scheme: dark)');
-  } catch {
-    return null;
-  }
-}
-
 /** Keeps the theme right after the first paint: client navigation between
- * surfaces (before the new page paints), another tab changing the stored
- * choice, and the system theme. Any failure leaves the current theme. */
+ * surfaces (before the new page paints) and another tab changing the stored
+ * choice. Any failure leaves the current theme. */
 export function useThemeSync(pathname: string) {
   useLayoutEffect(() => {
-    const media = systemTheme();
     const apply = () => {
       try {
-        const { surface } = themeFor(pathname, null, false, themeConfig);
+        const { surface } = themeFor(pathname, null, themeConfig);
         applyTheme(
-          themeFor(
-            pathname,
-            storedThemePreference(surface),
-            media?.matches ?? false,
-            themeConfig,
-          ).theme,
+          themeFor(pathname, storedThemePreference(surface), themeConfig).theme,
         );
       } catch {
         // Keep whatever theme is showing; never break the page over it.
@@ -43,12 +29,8 @@ export function useThemeSync(pathname: string) {
         apply();
     };
     apply();
-    media?.addEventListener?.('change', apply);
     window.addEventListener('storage', onStorage);
-    return () => {
-      media?.removeEventListener?.('change', apply);
-      window.removeEventListener('storage', onStorage);
-    };
+    return () => window.removeEventListener('storage', onStorage);
   }, [pathname]);
 }
 

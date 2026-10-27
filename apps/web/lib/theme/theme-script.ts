@@ -2,8 +2,8 @@
 // its builder never ship to the browser.
 import { applyTheme, themeConfig, themeFor, type ThemeConfig } from './theme';
 
-// Reads the stored choice and the system theme, both of which may be
-// unavailable, and applies the theme before the first paint.
+// Reads the stored choice, which may be unavailable, and applies the theme
+// before the first paint. The system theme plays no part.
 function bootstrap(
   config: ThemeConfig,
   resolve: typeof themeFor,
@@ -13,18 +13,12 @@ function bootstrap(
   let stored: string | null = null;
   try {
     stored = localStorage.getItem(
-      config.storagePrefix + resolve(path, null, false, config).surface,
+      config.storagePrefix + resolve(path, null, config).surface,
     );
   } catch {
     // Private windows and blocked storage fall back to the surface default.
   }
-  let systemDark = false;
-  try {
-    systemDark = matchMedia('(prefers-color-scheme: dark)').matches;
-  } catch {
-    // Without media queries the system counts as light.
-  }
-  apply(resolve(path, stored, systemDark, config).theme);
+  apply(resolve(path, stored, config).theme);
 }
 
 /** Runs at the top of <body>, before any content paints. Server-only: the
