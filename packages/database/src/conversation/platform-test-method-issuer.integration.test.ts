@@ -73,6 +73,11 @@ suite(
     beforeAll(async () => {
       approve();
       fixture = await createAssistantFixtureDatabase();
+      // The historical SQL bootstrap has no generation field. This SQL-only
+      // fixture publishes current sources without running content:sync.
+      await fixture.db`update allrice_platform_employee_revisions
+        set runtime_profile=runtime_profile || ${fixture.db.json({ distributionGeneration: newNativeGeneration })}
+        where runtime_profile is not null and not runtime_profile ? 'distributionGeneration'`;
       const [where] =
         await fixture.db`select current_database() db,current_schema() schema`;
       expect(where!.db).toBe(

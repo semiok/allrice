@@ -132,6 +132,8 @@ suite(
       });
       const profile = PlatformEmployeeRuntimeProfileSchema.parse({
         ...revision!.runtime_profile,
+        distributionGeneration:
+          runtimePackage.runtimeManifest.distributionGeneration,
         toolNames,
         nativeSkillIds: [],
         nativeSkillChecksums: [],

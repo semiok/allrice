@@ -126,7 +126,7 @@ it.each(['runtimePackageChecksum', 'runtimeDistributionGeneration'] as const)(
     const f = fixture();
     if (key === 'runtimePackageChecksum')
       f.input.kernel.runtimePackageChecksum = 'sha256:' + 'b'.repeat(64);
-    else f.input.kernel.runtimeDistributionGeneration = newNativeGeneration;
+    else f.input.kernel.runtimeDistributionGeneration = 'different-generation';
     expect(() =>
       currentExecutionForNativeInput(f.input, f.origin, f.binding),
     ).toThrow('BINDING_MISMATCH');

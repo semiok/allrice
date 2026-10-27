@@ -488,7 +488,7 @@ integration(
     it.each([null, 'current-package1-plain'] as const)(
       'updates the same-family source to %s for the next message while birth and already queued Run remain immutable',
       async (target) => {
-        const f = await subject('legacy-package2');
+        const f = await subject('current-package2');
         const origin = await birth(f),
           first = await send(f),
           before = await stored(first);
@@ -759,7 +759,7 @@ integration(
     it.each(['snapshot', 'missing-binding'] as const)(
       'fails closed for damaged %s on resolve, leased prepare and final bind',
       async (damage) => {
-        const f = await subject('legacy-package2'),
+        const f = await subject('current-package2'),
           id = await send(f),
           input = await lease(f, id);
         const before = await stored(id);
@@ -797,7 +797,7 @@ integration(
     // restricted profile. The retired allowlist is ignored and the frozen
     // artifact is the origin's (provenance), even under a later primary.
     it('admits checked final delivery for a business-origin chat with its origin artifact and retains assistant opt-out', async () => {
-      const f = await subject('legacy-package2');
+      const f = await subject('current-package2');
       vi.stubEnv('ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS', '[]');
       expect(
         await fixture.db.begin((tx) =>

@@ -84,6 +84,8 @@ export async function createPlatformQualityNativeFixture() {
     });
     const profile = PlatformEmployeeRuntimeProfileSchema.parse({
       ...r!.runtime_profile,
+      distributionGeneration:
+        runtimePackage.runtimeManifest.distributionGeneration,
       toolNames: definition.capabilities.toolNames,
       nativeSkillIds: [],
       nativeSkillChecksums: [],

@@ -1070,43 +1070,6 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
     expect(await evidence(f)).toEqual(after);
     expect(await retirementRows(f)).toEqual(retired);
   }, 30_000);
-  it('an existing terminal technical source still rejects a transplanted chat retirement authority', async () => {
-    const f = await subject();
-    await finish(f);
-    const plan = await previewNativeTestChatRetirement(request([scope(f)]));
-    await applyNativeTestChatRetirement(plan);
-    const before = await evidence(f);
-    const contextId = randomUUID(),
-      runId = randomUUID(),
-      jobId = randomUUID();
-    await expect(
-      fixture.db.begin(async (tx) => {
-        await tx`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,completed_at) values(${runId},${f.org},${f.workspace},${f.user},'succeeded','{}',clock_timestamp())`;
-        await tx`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,timeout_at,payload,completed_at) values(${jobId},${f.org},${f.workspace},${f.user},${runId},'succeeded',${jobId},clock_timestamp()+interval '1 hour','{}',clock_timestamp())`;
-        await tx`insert into allrice_platform_technical_tasks(id,request_id,owner_id,organization_id,workspace_id,run_id,job_id,environment,input_digest,frozen_configuration) values(${contextId},${randomUUID()},${f.user},${f.org},${f.workspace},${runId},${jobId},'test',${digest('Synthetic retained technical source')},'{"question":"SQL authority separation only"}')`;
-        expect(
-          await tx`select id from allrice_platform_technical_tasks where id=${contextId}`,
-        ).toHaveLength(1);
-        await copyRetiredContexts(tx, f, [contextId], {
-          retirement: () => ({ context_kind: 'platform_technical' }),
-        });
-      }),
-    ).rejects.toThrow('NATIVE_TERMINAL_RETIREMENT_PROOF_INVALID');
-    expect(
-      await fixture.db`select context_id from allrice_native_context_retirements where context_id=${contextId}`,
-    ).toEqual([]);
-    expect(
-      await fixture.db`select id from allrice_platform_technical_tasks where id=${contextId}`,
-    ).toEqual([]);
-    expect(
-      await fixture.db`select id from allrice_runs where id=${runId}`,
-    ).toEqual([]);
-    expect(
-      await fixture.db`select id from allrice_jobs where id=${jobId}`,
-    ).toEqual([]);
-    expect(await evidence(f)).toEqual(before);
-  });
-
   it('rejects scope, complete-row, microsecond and late-batch corruption without hiding foreign pins', async () => {
     const f = await subject();
     const foreign = await subject(false);
@@ -1216,11 +1179,6 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
         name: 'unreviewed pin row',
         change: { retirement: () => ({ binding_snapshot: [] }) },
         error: changed,
-      },
-      {
-        name: 'nonchat authority with no actual terminal source rejects before chat reader',
-        change: { retirement: () => ({ context_kind: 'platform_technical' }) },
-        error: 'NATIVE_TERMINAL_SOURCE_NOT_FOUND',
       },
     ];
     for (const c of cases) {

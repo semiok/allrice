@@ -160,7 +160,7 @@ begin
   end if;
   if new.value ? 'since' then
     if jsonb_typeof(new.value->'since') is distinct from 'string'
-      or (select coalesce(sum(case when ascii(c)>65535 then 2 else 1 end),0)
+      or (select coalesce(sum(case when ascii(c)>65535 then 2 else length(c) end),0)
           from regexp_split_to_table(new.value->>'since','') c) not between 1 and 40 then
       raise exception 'DSH_NATIVE_JOURNAL_CONTRACT_REGRESSION';
     end if;
