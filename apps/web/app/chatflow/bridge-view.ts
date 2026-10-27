@@ -61,12 +61,18 @@ const readinessReasons: Record<string, string> = {
     'AllRice 助手版本较旧，没有提供这项状态，请更新到最新版本。',
 };
 
-/** Pairing names end in the app name (old pairings: Rice Bridge); people see their computer. */
+/** Pairing names end in the app name (old pairings: Rice Bridge); people see
+ * their computer. The patterns are " · " and "AllRice 助手" escaped: bundlers
+ * keep regex literals verbatim, and a script served without a charset would
+ * otherwise never match. */
 export function bridgeDeviceName(name: string) {
   // r1-exempt(display): strips the app suffix the client adds to its default device name; only the shown name changes
-  const computer = name.replace(/ · (?:Rice Bridge|AllRice 助手)$/, '');
+  const computer = name.replace(
+    / \u00b7 (?:Rice Bridge|AllRice \u52a9\u624b)$/,
+    '',
+  );
   // r1-exempt(display): a name that is only the app name is shown as this computer; nothing else depends on it
-  return computer.replace(/^(?:Rice Bridge|AllRice 助手)$/, '这台电脑');
+  return computer.replace(/^(?:Rice Bridge|AllRice \u52a9\u624b)$/, '这台电脑');
 }
 
 /** Only the Apple silicon build is published (MET-214): Intel Macs keep the
