@@ -299,6 +299,7 @@ export function createNativeOnceWorkerRuntime(
     processedCount = 0,
     deliveryWakeRequests = 0,
     deliveryWakeFailures = 0;
+  let lastWakeFailureCode: string | undefined;
   let lastFault: NativeOnceWorkerRuntimeFault | undefined;
   // MET-210 #3: a refused takeover leaves the controller cold without an error.
   // Kept for status() and logged when the reason or holder changes, then hourly
@@ -533,12 +534,17 @@ export function createNativeOnceWorkerRuntime(
           options.onDelivery?.();
         } catch (error) {
           deliveryWakeFailures++;
-          console.warn(
-            '[MET-223] dispatch wakeup failed; the poll dispatches',
-            {
-              code: safeCode(error, 'wakeup_failed'),
-            },
-          );
+          // Count every failure; log the first and each change of cause only.
+          const code = safeCode(error, 'wakeup_failed');
+          if (code !== lastWakeFailureCode)
+            console.warn(
+              '[MET-223] dispatch wakeup failed; the poll dispatches',
+              {
+                code,
+                failures: deliveryWakeFailures,
+              },
+            );
+          lastWakeFailureCode = code;
         }
       });
       const hostFactory: NativeScheduleHostFactory = async (input) => {

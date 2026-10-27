@@ -733,20 +733,26 @@ describe('dispatch wakeup on a timer delivery (MET-223)', () => {
     expect(onDelivery).toHaveBeenCalledTimes(1);
   });
 
-  it('counts a failing wakeup and still returns the committed write', async () => {
+  it('counts every failing wakeup, logs the cause once and still returns the committed write', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const f = fixture({
       onDelivery: () => {
         throw new Error('scheduler unavailable');
       },
     });
     await f.runtime.tick();
-    await expect(
-      controllerStore().commitMutation(f.writer, write(delivered)),
-    ).resolves.toBe('committed');
+    for (let i = 0; i < 2; i++)
+      await expect(
+        controllerStore().commitMutation(f.writer, write(delivered)),
+      ).resolves.toBe('committed');
     expect(f.runtime.status()).toMatchObject({
-      deliveryWakeRequests: 1,
-      deliveryWakeFailures: 1,
+      deliveryWakeRequests: 2,
+      deliveryWakeFailures: 2,
     });
+    expect(
+      warn.mock.calls.filter(([m]) => String(m).includes('[MET-223]')),
+    ).toHaveLength(1);
+    warn.mockRestore();
   });
 
   it('dispatches right after a dispatch tick that was running when the delivery committed', async () => {
