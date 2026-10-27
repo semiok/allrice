@@ -120,6 +120,11 @@ suite(
       ];
       const definition = PlatformEmployeeDefinitionSchema.parse({
         ...revision!.definition,
+        // The synthetic review workflow includes local.process.execute.
+        securityPolicy: {
+          ...revision!.definition.securityPolicy,
+          bridgeAccess: 'read_write',
+        },
         capabilities: {
           ...revision!.definition.capabilities,
           nativeSkillIds: [],

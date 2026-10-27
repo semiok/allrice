@@ -404,12 +404,19 @@ suite('immutable report-bound maintenance authority', () => {
         ],
       },
     });
-    await savePlatformEmployeeDraft(r!.employee_id, { definition });
-    const publication = await publishPlatformEmployee(r!.employee_id, {
-      scope: 'assigned',
-    });
-    expect(publication.errors).toEqual([]);
-    expect(publication.valid).toBe(true);
+    // Use the development publication flow only during fixture preparation.
+    const priorEnvironment = process.env.ALLRICE_ENV;
+    vi.stubEnv('ALLRICE_ENV', 'development');
+    try {
+      await savePlatformEmployeeDraft(r!.employee_id, { definition });
+      const publication = await publishPlatformEmployee(r!.employee_id, {
+        scope: 'assigned',
+      });
+      expect(publication.errors).toEqual([]);
+      expect(publication.valid).toBe(true);
+    } finally {
+      vi.stubEnv('ALLRICE_ENV', priorEnvironment);
+    }
     const a = await diagnosed(),
       g = await createMaintenanceGrant(admin, a.request);
     // Force the old issuer/deployment inversion: transaction A already owns
