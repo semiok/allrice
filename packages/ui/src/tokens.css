@@ -12,20 +12,20 @@ body {
   --ar-border: var(--dsw-alias-border-l2);
   --ar-border-strong: var(--dsw-alias-border-l4);
   --ar-text: var(--dsw-alias-label-primary);
-  --ar-text-secondary: var(--dsw-alias-label-secondary);
-  --ar-text-tertiary: var(--dsw-alias-label-tertiary);
+  --ar-text-secondary: rgb(94, 99, 104);
+  --ar-text-tertiary: rgb(120, 124, 131);
   --ar-text-placeholder: var(--dsw-alias-label-caption);
   --ar-text-on-primary: var(--dsw-alias-label-primary-foreground);
   --ar-action-primary: var(--dsw-alias-button-primary-fill);
   --ar-action-primary-hover: var(--dsw-alias-button-primary-hover);
   --ar-action-secondary: var(--dsw-alias-button-primary-dimmed);
-  --ar-link: var(--dsw-static-blue-600);
+  --ar-link: var(--dsw-static-blue-800);
   --ar-focus-ring: var(--dsw-alias-state-business-primary);
   --ar-success: var(--dsw-alias-state-success-primary);
-  --ar-success-text: rgb(21, 128, 61);
+  --ar-success-text: rgb(22, 101, 52);
   --ar-success-soft: var(--dsw-alias-state-success-tertiary);
   --ar-warning: var(--dsw-alias-state-warn-primary);
-  --ar-warning-text: rgb(180, 83, 9);
+  --ar-warning-text: rgb(146, 64, 14);
   --ar-warning-soft: var(--dsw-alias-state-warn-tertiary);
   --ar-danger: var(--dsw-alias-state-error-primary);
   --ar-danger-text: rgb(185, 28, 28);
@@ -77,10 +77,14 @@ body {
 }
 
 body[data-ds-dark-theme] {
-  --ar-link: var(--dsw-alias-link);
-  --ar-success-text: var(--dsw-alias-state-success-secondary);
-  --ar-warning-text: var(--dsw-alias-state-warn-secondary);
-  --ar-danger-text: var(--dsw-alias-state-error-primary);
+  --ar-text-secondary: var(--dsw-alias-label-secondary);
+  --ar-text-tertiary: var(--dsw-alias-label-tertiary);
+  --ar-link: var(--dsw-static-deepseek-300);
+  --ar-success-text: rgb(134, 239, 172);
+  --ar-warning-text: rgb(252, 211, 77);
+  --ar-danger: rgb(252, 165, 165);
+  --ar-danger-text: rgb(254, 202, 202);
+  --ar-action-danger: var(--dsw-alias-state-error-primary);
   --ar-danger-soft: var(--dsw-alias-interactive-bg-hover-danger);
   --ar-brand-ink: #f8f6ef;
   --ar-brand-paper: #24251f;

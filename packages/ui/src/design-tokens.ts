@@ -9,7 +9,8 @@ type Named = { name: string; value: string; usage: string };
 export interface ThemeDefinition {
   id: string;
   name: string;
-  selector: string;
+  /** Attributes set on <body> to turn the theme on ("" = present). */
+  attributes: Record<string, string>;
   /** The DSH mode whose aliases this theme sits on. */
   dsh: 'light' | 'dark';
 }
@@ -40,7 +41,21 @@ export interface DesignTokens {
   line: Named[];
 }
 
-const dshSelectors = { light: 'body', dark: 'body[data-ds-dark-theme]' };
+const dshDark = 'data-ds-dark-theme';
+const dshSelectors = { light: 'body', dark: `body[${dshDark}]` };
+
+/** The selector a theme's tokens are declared on, from its attributes. */
+export function themeSelector({
+  attributes,
+}: Pick<ThemeDefinition, 'attributes'>) {
+  return `body${Object.entries(attributes)
+    .map(([name, value]) => {
+      if (!/^[a-z][a-z0-9-]*$/.test(name) || !/^[\w-]*$/.test(value))
+        throw Error(`unsupported theme attribute ${name}="${value}"`);
+      return value === '' ? `[${name}]` : `[${name}="${value}"]`;
+    })
+    .join('')}`;
+}
 
 function cssValue(value: string) {
   if (value.startsWith('--')) return `var(${value})`;
@@ -51,15 +66,25 @@ function cssValue(value: string) {
 /** Declarations per theme selector; the first theme carries every token. */
 export function tokenDeclarations(tokens: DesignTokens) {
   const [base, ...others] = tokens.themes;
-  if (!base || base.selector !== 'body')
+  if (!base || themeSelector(base) !== 'body')
     throw Error('the first theme must be declared on body');
+  // The attributes must also switch DSH's own aliases to the theme's mode.
+  for (const theme of tokens.themes) {
+    const setsDark = Object.hasOwn(theme.attributes, dshDark);
+    if (setsDark !== (theme.dsh === 'dark'))
+      throw Error(
+        `${theme.id}: ${dshDark} must be set exactly when dsh is dark`,
+      );
+  }
   const blocks = new Map<string, [string, string][]>(
-    tokens.themes.map((theme) => [theme.selector, []]),
+    tokens.themes.map((theme) => [themeSelector(theme), []]),
   );
-  const add = (selector: string, name: string, value: string) =>
-    blocks.get(selector)!.push([name, cssValue(value)]);
+  if (blocks.size !== tokens.themes.length)
+    throw Error('two themes share a selector');
+  const add = (theme: ThemeDefinition, name: string, value: string) =>
+    blocks.get(themeSelector(theme))!.push([name, cssValue(value)]);
   for (const { name, value } of tokens.color) {
-    if (typeof value === 'string') add(base.selector, name, value);
+    if (typeof value === 'string') add(base, name, value);
     else {
       const ids = Object.keys(value).sort().join();
       const expected = tokens.themes
@@ -68,18 +93,18 @@ export function tokenDeclarations(tokens: DesignTokens) {
         .join();
       if (ids !== expected)
         throw Error(`${name} needs a value for each theme: ${expected}`);
-      add(base.selector, name, value[base.id]!);
-      for (const theme of others) add(theme.selector, name, value[theme.id]!);
+      add(base, name, value[base.id]!);
+      for (const theme of others) add(theme, name, value[theme.id]!);
     }
   }
   const { families, weights, styles } = tokens.font;
   for (const [name, value] of Object.entries(families))
-    add(base.selector, `font-family-${name}`, value);
+    add(base, `font-family-${name}`, value);
   for (const [name, value] of Object.entries(weights))
-    add(base.selector, `font-weight-${name}`, String(value));
+    add(base, `font-weight-${name}`, String(value));
   for (const s of styles)
     add(
-      base.selector,
+      base,
       `font-${s.name}`,
       `${s.weight} ${s.size}/${s.lineHeight} var(--ar-font-family-${s.family})`,
     );
@@ -90,7 +115,7 @@ export function tokenDeclarations(tokens: DesignTokens) {
     tokens.motion,
     tokens.line,
   ])
-    for (const { name, value } of group) add(base.selector, name, value);
+    for (const { name, value } of group) add(base, name, value);
   return blocks;
 }
 
@@ -131,7 +156,7 @@ export function customProperties(
 export function resolveValue(
   value: string,
   properties: CustomProperties,
-  theme: Pick<ThemeDefinition, 'selector' | 'dsh'>,
+  theme: Pick<ThemeDefinition, 'attributes' | 'dsh'>,
   depth = 0,
 ): string {
   const start = value.indexOf('var(');
@@ -149,7 +174,7 @@ export function resolveValue(
   // A body declaration beats one inherited from :root, and the more specific
   // theme selector beats plain body.
   const order = [
-    theme.selector,
+    themeSelector(theme),
     dshSelectors[theme.dsh],
     dshSelectors.light,
     ':root',
@@ -172,6 +197,18 @@ export function resolveValue(
 
 type Rgba = [number, number, number, number];
 
+// A strict subset of CSS Color 4 rgb()/rgba(): commas between all values, or
+// spaces with an optional "/ alpha"; the three channels all numbers or all
+// percentages; unsigned plain decimals. `none`, exponents, out-of-range values
+// and other notations throw rather than guess what a browser would do.
+const decimal = String.raw`(?:\d+(?:\.\d+)?|\.\d+)%?`;
+const legacyRgb = new RegExp(
+  String.raw`^rgba?\(\s*(${decimal})\s*,\s*(${decimal})\s*,\s*(${decimal})\s*(?:,\s*(${decimal})\s*)?\)$`,
+);
+const modernRgb = new RegExp(
+  String.raw`^rgba?\(\s*(${decimal})\s+(${decimal})\s+(${decimal})\s*(?:\/\s*(${decimal})\s*)?\)$`,
+);
+
 /** Opaque or translucent sRGB in the notations the tokens use; anything else throws. */
 export function parseColor(value: string): Rgba {
   const text = value.trim();
@@ -183,17 +220,17 @@ export function parseColor(value: string): Rgba {
         : hex[1]!.match(/../g)!;
     return [...digits.map((pair) => parseInt(pair, 16)), 1] as Rgba;
   }
-  const rgb = /^rgba?\(([^()]+)\)$/.exec(text);
-  if (!rgb) throw Error(`not an sRGB color: ${value}`);
-  const parts = rgb[1]!.trim().split(/\s*[,/]\s*|\s+/);
-  if (parts.length < 3 || parts.length > 4)
+  const parts = (legacyRgb.exec(text) ?? modernRgb.exec(text))?.slice(1);
+  if (
+    !parts ||
+    new Set(parts.slice(0, 3).map((p) => p!.endsWith('%'))).size > 1
+  )
     throw Error(`not an sRGB color: ${value}`);
   const number = (part: string, max: number) => {
     const n = part.endsWith('%')
-      ? (parseFloat(part) / 100) * max
+      ? (Number(part.slice(0, -1)) / 100) * max
       : Number(part);
-    if (!/^-?[\d.]+%?$/.test(part) || !Number.isFinite(n) || n < 0 || n > max)
-      throw Error(`out of range in ${value}`);
+    if (n > max) throw Error(`out of range in ${value}`);
     return n;
   };
   return [
@@ -216,9 +253,15 @@ function luminance([r, g, b]: Rgba) {
   return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
 }
 
-/** WCAG contrast of a foreground on a background laid over an opaque base. */
-export function contrast(foreground: Rgba, background: Rgba, base: Rgba) {
-  const ground = over(background, base);
+/**
+ * WCAG contrast of a foreground on stacked backgrounds, listed from the
+ * bottom up: an opaque surface, then any translucent fills on it.
+ */
+export function contrast(foreground: Rgba, ...backgrounds: Rgba[]) {
+  const [base, ...fills] = backgrounds;
+  if (!base || base[3] !== 1)
+    throw Error('the bottom background must be opaque');
+  const ground = fills.reduce((below, fill) => over(fill, below), base);
   const [a, b] = [luminance(over(foreground, ground)), luminance(ground)];
   return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 }
