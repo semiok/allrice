@@ -773,6 +773,37 @@ describe('dispatch wakeup on a timer delivery (MET-223)', () => {
     await vi.waitFor(() => expect(dispatches).toBe(2));
   });
 
+  it('does not wake while the delivery is still awaiting its commit result', async () => {
+    const gate = deferred<'committed'>();
+    const store = {
+      commitMutation: vi.fn(() => gate.promise),
+    } as unknown as NativeScheduleOnceStore;
+    const wake = vi.fn();
+    const committing = wakeOnDelivery(store, wake).commitMutation(
+      {} as never,
+      write(delivered),
+    );
+    await Promise.resolve();
+    expect(wake).not.toHaveBeenCalled();
+    gate.resolve('committed');
+    await expect(committing).resolves.toBe('committed');
+    expect(wake).toHaveBeenCalledOnce();
+  });
+
+  it('rethrows an unknown commit result without reporting a delivery', async () => {
+    const error = new Error('connection closed before COMMIT acknowledgement');
+    const store = {
+      commitMutation: vi.fn(async () => {
+        throw error;
+      }),
+    } as unknown as NativeScheduleOnceStore;
+    const wake = vi.fn();
+    await expect(
+      wakeOnDelivery(store, wake).commitMutation({} as never, write(delivered)),
+    ).rejects.toBe(error);
+    expect(wake).not.toHaveBeenCalled();
+  });
+
   it("wakes for a calendar control's delivery but not for refused writes or writes without a receipt", async () => {
     expect(
       deliversOccurrence({
