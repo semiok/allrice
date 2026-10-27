@@ -13,6 +13,8 @@ import {
 } from './native-schedule-once.js';
 import {
   createNativeOnceWorkerRuntime,
+  deliversOccurrence,
+  wakeOnDelivery,
   NATIVE_ONCE_CONSUMER_LIMIT,
   type NativeOnceWorkerDatabasePorts,
   type NativeOnceWorkerRuntimeTestPorts,
@@ -667,5 +669,69 @@ describe('native once Worker runtime', () => {
     expect(JSON.stringify(f.runtime.status())).not.toContain(
       'private-provider-key',
     );
+  });
+});
+
+describe('dispatch wakeup on a timer delivery (MET-223)', () => {
+  const delivered = {
+    controlId: 'control-1',
+    kind: 'put_task' as const,
+    task: {
+      status: 'inactive',
+      lastDelivery: {
+        scheduledAt: '2026-10-27T08:00:00.000Z',
+        deliveredAt: '2026-10-27T08:00:00.040Z',
+        messageId: 'message-1',
+      },
+    },
+  };
+  const write = (mutation: object) =>
+    ({ writeId: 'write-1', digest: 'sha256:x', mutation }) as never;
+  function storeReturning(result: 'committed' | 'rejected') {
+    const order: string[] = [];
+    const store = {
+      commitMutation: vi.fn(async () => {
+        order.push('commit');
+        return result;
+      }),
+    } as unknown as NativeScheduleOnceStore;
+    return { store, order };
+  }
+
+  it('wakes once a delivery that leaves an occurrence has committed', async () => {
+    const { store, order } = storeReturning('committed');
+    const woken = wakeOnDelivery(store, () => order.push('wake'));
+    await expect(
+      woken.commitMutation({} as never, write(delivered)),
+    ).resolves.toBe('committed');
+    expect(order).toEqual(['commit', 'wake']);
+  });
+
+  it('does not wake for a refused write or for writes that leave no occurrence', async () => {
+    for (const [result, mutation] of [
+      ['rejected', delivered],
+      ['committed', { ...delivered, task: { status: 'active' } }],
+      ['committed', { controlId: 'control-1', kind: 'session_ready' }],
+      ['committed', { controlId: 'control-1', kind: 'delete_task' }],
+    ] as const) {
+      const { store } = storeReturning(result);
+      const wake = vi.fn();
+      await wakeOnDelivery(store, wake).commitMutation(
+        {} as never,
+        write(mutation),
+      );
+      expect(wake).not.toHaveBeenCalled();
+    }
+    expect(deliversOccurrence({ kind: 'put_task', task: null })).toBe(false);
+  });
+
+  it('keeps the committed result when the wakeup itself throws', async () => {
+    const { store } = storeReturning('committed');
+    const woken = wakeOnDelivery(store, () => {
+      throw new Error('scheduler unavailable');
+    });
+    await expect(
+      woken.commitMutation({} as never, write(delivered)),
+    ).resolves.toBe('committed');
   });
 });

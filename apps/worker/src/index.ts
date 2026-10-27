@@ -219,15 +219,19 @@ startup.mark('verification_checks_completed');
 const producerLifecycle = await startup.run('producer_lifecycle', () =>
   installDevProducerLifecycle('worker'),
 );
+// MET-223: a timer delivery dispatches its occurrence now; the automation poll
+// stays the fallback.
 const nativeOnceControl = createNativeOnceWorkerService({
   workerId,
   source: nativeOnceControlSource,
   readMaintenance: readDevMaintenance,
+  onDelivery: () => requestAutomationTick(),
 });
 const nativeRecurringControl = createNativeOnceWorkerService({
   workerId,
   source: configuredNativeRecurringControlSource(),
   readMaintenance: readDevMaintenance,
+  onDelivery: () => requestAutomationTick(),
 });
 const nativeScheduleControls = [nativeOnceControl, nativeRecurringControl];
 const maintenanceDiagnosticRuntime =
@@ -249,7 +253,6 @@ const runProducer = workerProducerRunner(producerLifecycle, () => stopping);
 // Idle DSH close writes durable close receipts; never start one unready.
 getHarnessRouter().setIdleCloseGate(() => databaseReady && !stopping);
 const maintenanceReportingAborter = new AbortController();
-let automationTask: Promise<void> | null = null;
 let platformEmployeeTestTask: Promise<void> | null = null;
 const activeExecutions = new Set<Promise<void>>();
 const activeAborters = new Set<() => void>();
@@ -594,12 +597,15 @@ async function runQueueTick() {
   }
 }
 
+const automationTicks = createCoalescedTick(
+  runAutomationTick,
+  () => !stopping && databaseReady,
+);
 function automationTick() {
-  if (automationTask || stopping || !databaseReady) return automationTask;
-  automationTask = runAutomationTick().finally(() => {
-    automationTask = null;
-  });
-  return automationTask;
+  return automationTicks.tick();
+}
+function requestAutomationTick() {
+  automationTicks.request();
 }
 async function runAutomationTick() {
   let admitted = false;
@@ -911,7 +917,7 @@ function shutdown(signal: string) {
           name: `native_control_${index}`,
           run: () => task,
         })),
-        { name: 'automation', run: () => automationTask },
+        { name: 'automation', run: () => automationTicks.current() },
         { name: 'employee_test', run: () => platformEmployeeTestTask },
       ],
       waitForProducerRoots: () => producerLifecycle.waitForCurrentRoots(),

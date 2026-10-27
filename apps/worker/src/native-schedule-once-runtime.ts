@@ -30,6 +30,39 @@ export interface NativeOnceWorkerRuntimeOptions {
   /** Private exact-artifact AllRice adapter; never an environment URL. */
   loadHostFactory: NativeScheduleControlSource['loadHostFactory'];
   enabled: boolean;
+  /** Called after a committed timer delivery, so the caller can dispatch its
+   * occurrence now instead of on its next poll (MET-223). Never awaited. */
+  onDelivery?: () => void;
+}
+
+/** A committed put_task carrying `lastDelivery` is a timer delivery: it leaves
+ * a pending (or blocked) occurrence for the consumer to dispatch. */
+export function deliversOccurrence(mutation: { kind: string; task?: unknown }) {
+  return (
+    mutation.kind === 'put_task' &&
+    !!(mutation.task as { lastDelivery?: unknown } | null)?.lastDelivery
+  );
+}
+
+/** Report each committed timer delivery. A failing callback never fails the
+ * write: the caller's poll still dispatches the occurrence. */
+export function wakeOnDelivery(
+  store: NativeScheduleOnceStore,
+  onDelivery: () => void,
+): NativeScheduleOnceStore {
+  return {
+    ...store,
+    async commitMutation(writer, write) {
+      const result = await store.commitMutation(writer, write);
+      if (result === 'committed' && deliversOccurrence(write.mutation))
+        try {
+          onDelivery();
+        } catch {
+          // Only a latency hint.
+        }
+      return result;
+    },
+  };
 }
 
 export interface NativeOncePartitionActivation {
@@ -245,7 +278,8 @@ export function createNativeOnceWorkerRuntime(
     initializing = false,
     tickCount = 0,
     faultCount = 0,
-    processedCount = 0;
+    processedCount = 0,
+    deliveryWakeups = 0;
   let lastFault: NativeOnceWorkerRuntimeFault | undefined;
   // MET-210 #3: a refused takeover leaves the controller cold without an error.
   // Kept for status() and logged when the reason or holder changes, then hourly
@@ -443,7 +477,7 @@ export function createNativeOnceWorkerRuntime(
         typeof sqlStore.commitWorkspaceWrite !== 'function'
       )
         throw new Error('database_api_unavailable');
-      const store: NativeScheduleOnceStore = {
+      const ownedStore: NativeScheduleOnceStore = {
         ...sqlStore,
         async acquireWriter() {
           const grant = await sqlStore.acquireWriter();
@@ -473,6 +507,11 @@ export function createNativeOnceWorkerRuntime(
           await sqlStore.releaseClosedWriter(writer);
         },
       };
+      // MET-223: dispatch a timer delivery now, not on the next automation poll.
+      const store = wakeOnDelivery(ownedStore, () => {
+        deliveryWakeups++;
+        options.onDelivery?.();
+      });
       const hostFactory: NativeScheduleHostFactory = async (input) => {
         const g = generation;
         if (!g) throw new Error('close_proof_unavailable');
@@ -598,6 +637,7 @@ export function createNativeOnceWorkerRuntime(
         inFlight: !!inFlight,
         tickCount,
         processedCount,
+        deliveryWakeups,
         faultCount,
         lastFault: lastFault ? { ...lastFault } : undefined,
         ...(refusal ? { takeoverRefused: { ...refusal } } : {}),
