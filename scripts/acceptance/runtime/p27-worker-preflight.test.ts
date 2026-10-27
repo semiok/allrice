@@ -1,78 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  authorizeP27Worker,
   boundedP27Wait,
   maintainP27Lease,
-  parseP27WorkerArguments,
-  P27_ORDINARY_PRICING,
   runP27WorkerSequence,
   workerFixtureCleanupConfirmed,
 } from './p27-worker-preflight.ts';
 
-const sha = 'a'.repeat(40);
-const authorized = () => ({
-  ALLRICE_B6_P27_WORKER_AUTHORIZED: '1',
-  ALLRICE_B6_P27_WORKER_AUTHORIZED_SHA: sha,
-  ALLRICE_B6_P27_WORKER_AUTHORIZED_PROVIDER: 'gemini',
-  ALLRICE_B6_P27_WORKER_MAX_EXECUTIONS: '2',
-  ALLRICE_B6_P27_WORKER_ORDINARY_ESTIMATE_ACK: '1',
-});
 afterEach(() => vi.useRealTimers());
-describe('separate full Worker smoke authorization', () => {
-  it('requires explicit Gemini selection even in preflight', () => {
-    expect(() =>
-      parseP27WorkerArguments(['--preflight', `--candidate-sha=${sha}`]),
-    ).toThrow();
-    expect(() =>
-      parseP27WorkerArguments([
-        '--execute',
-        `--candidate-sha=${sha}`,
-        '--provider=openai-codex',
-      ]),
-    ).toThrow();
-    expect(
-      parseP27WorkerArguments([
-        '--preflight',
-        `--candidate-sha=${sha}`,
-        '--provider=gemini',
-      ]).providerRoute,
-    ).toBe('gemini');
-  });
-  it('old one-execute ticket does not authorize a Worker pair', () => {
-    expect(() =>
-      authorizeP27Worker(
-        {
-          ALLRICE_B6_P27_PROVIDER_AUTHORIZED: '1',
-          ALLRICE_B6_P27_AUTHORIZED_SHA: sha,
-          ALLRICE_B6_P27_AUTHORIZED_PROVIDER: 'gemini',
-        },
-        sha,
-      ),
-    ).toThrow();
-  });
-  it.each(Object.keys(authorized()))(
-    'requires the exact acknowledgement %s',
-    (key) => {
-      const env: NodeJS.ProcessEnv = authorized();
-      env[key] = 'different';
-      expect(() => authorizeP27Worker(env, sha)).toThrow();
-    },
-  );
-  it.each(['DATABASE_URL', 'ALLRICE_TEST_DATABASE_URL'])(
-    'rejects ambient %s even with correct ticket',
-    (key) => {
-      expect(() =>
-        authorizeP27Worker({ ...authorized(), [key]: 'postgres://live' }, sha),
-      ).toThrow();
-    },
-  );
-  it('accepts exact scoped acknowledgement and uses explicit ordinary prices', () => {
-    expect(() => authorizeP27Worker(authorized(), sha)).not.toThrow();
-    expect(
-      P27_ORDINARY_PRICING['gemini:gemini-3.8-flash'].inputCentsPerMillion,
-    ).toBe(75);
-  });
-});
 describe('bounded two-task sequencing and lease lifetime', () => {
   it('missing/partial initialization cleanup proof cannot be marked cleaned', () => {
     expect(workerFixtureCleanupConfirmed()).toBe(false);

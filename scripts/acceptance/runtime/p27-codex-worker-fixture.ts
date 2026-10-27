@@ -60,7 +60,7 @@ export async function createP27CodexWorkerFixture(
     options.syntheticImagesWithAssistants === true ||
     options.imageGenerationAssistants === true ||
     profileAssistants;
-  const runLimits = options.imageGeneration
+  const requestedRunLimits = options.imageGeneration
     ? { ...ordinaryRunLimits, timeoutMs: 600_000 }
     : ordinaryRunLimits;
   requireFixture(
@@ -235,13 +235,31 @@ export async function createP27CodexWorkerFixture(
       employeeId = randomUUID(),
       employeeVersionId = randomUUID();
     const assignmentId = randomUUID(),
-      connectionId = randomUUID(),
       workerId = randomUUID();
+    const { readPlatformModelSettings } =
+      await import('../../../packages/database/src/providers/platform-model-settings.ts');
+    // The pre-0117 migration fixture has no platform settings table. Current
+    // Worker acceptance must consume the migrated settings without overriding them.
+    let platformSettings = options.throughMigration
+      ? undefined
+      : await readPlatformModelSettings(db);
+    const connectionId =
+      platformSettings?.configuration.connectionId ?? randomUUID();
+    const model = platformSettings?.configuration.workModel ?? 'gpt-5.6-luna';
+    const reasoningEffort =
+      platformSettings?.configuration.reasoningEffort ?? 'low';
+    const runLimits = {
+      ...requestedRunLimits,
+      timeoutMs:
+        platformSettings?.configuration.timeoutMs ??
+        requestedRunLimits.timeoutMs,
+    };
     const [catalog] = await db<{ id: string; provider_id: string }[]>`
       select m.id,m.provider_id from allrice_model_catalog_entries m
       join allrice_model_providers p on p.id=m.provider_id
       where p.provider_key='codex' and p.auth_mode='chatgpt_subscription'
-        and m.model='gpt-5.6-luna'`;
+        and m.model=${model}
+        and (${!platformSettings} or m.provider_id=(select provider_id from allrice_model_connections where id=${connectionId}))`;
     requireFixture(catalog, 'P27_CODEX_WORKER_CATALOG_MISSING');
     const catalogId = catalog.id;
     const context: RequestContext = {
@@ -288,8 +306,8 @@ export async function createP27CodexWorkerFixture(
       runtimePolicy: {
         harness: 'dsh',
         provider: 'openai-codex',
-        model: 'gpt-5.6-luna',
-        reasoningEffort: 'low',
+        model,
+        reasoningEffort,
         timeoutMs: runLimits.timeoutMs,
         fallbackModels: [],
         credentialReference: 'deployment:codex-default',
@@ -328,22 +346,21 @@ export async function createP27CodexWorkerFixture(
         values(${employeeVersionId},${organizationId},${workspaceId},${employeeId},1,'P27 isolated',${manifest.provider.model},${manifest.systemPrompt},${tx.json(manifest.capabilities)},${checksum},${tx.json(manifest)},${tx.json(manifest.provider)})`;
       await tx`insert into allrice_employee_assignments(id,organization_id,workspace_id,employee_id,employee_version_id,user_id,is_default)
         values(${assignmentId},${organizationId},${workspaceId},${employeeId},${employeeVersionId},${ownerId},false)`;
-      await tx`update allrice_model_providers set enabled=true where id=${catalog.provider_id}`;
-      await tx`update allrice_model_catalog_entries set enabled=true,input_modalities=${tx.json(options.syntheticImagesWithAssistants ? ['text', 'image'] : ['text'])} where id=${catalogId}`;
-      await tx`insert into allrice_model_connections(id,provider_id,scope,name,credential_reference,base_url,status)
+      if (options.throughMigration) {
+        await tx`update allrice_model_providers set enabled=true where id=${catalog.provider_id}`;
+        await tx`update allrice_model_catalog_entries set enabled=true,input_modalities='["text"]' where id=${catalogId}`;
+        await tx`insert into allrice_model_connections(id,provider_id,scope,name,credential_reference,base_url,status)
         values(${connectionId},${catalog.provider_id},'platform','P27 isolated Codex','deployment:codex-default',null,'ready')`;
-      if (!options.throughMigration)
-        // This historical fixture deliberately runs the pinned P27 model; the
-        // current production default is validated by platform settings tests.
-        await tx`update allrice_platform_model_settings
-        set configuration=jsonb_set(jsonb_set(jsonb_set(jsonb_set(configuration,'{connectionId}',${tx.json(connectionId)}),'{reasoningEffort}','"low"'::jsonb),'{timeoutMs}',${tx.json(runLimits.timeoutMs)}),'{workModel}','"gpt-5.6-luna"'::jsonb) where singleton`;
+        await tx`insert into allrice_provider_release_controls(connection_id,release_stage,allowlisted_organization_ids,production_approved)
+        values(${connectionId},'canary',${[organizationId]},false)`;
+      }
       if (options.imageGeneration)
         await tx`update allrice_platform_model_settings set configuration=jsonb_set(configuration,'{imagesEnabled}','true'::jsonb) where singleton`;
-      await tx`insert into allrice_provider_release_controls(connection_id,release_stage,allowlisted_organization_ids,production_approved)
-        values(${connectionId},'canary',${[organizationId]},false)`;
       await tx`insert into allrice_runtime_policy_controls(organization_id,workspace_id,version,controls)
         values(${organizationId},${workspaceId},1,${tx.json({ version: 1, enabled: true, mode: 'execute', rules: options.imageGenerationAssistants || profileAssistants ? [{ action: 'assistant.delegate', effect: 'allow' }] : [] })})`;
     });
+    if (options.imageGeneration)
+      platformSettings = await readPlatformModelSettings(db);
     await withFixturePlatformAdministrator(ownerId, () =>
       models.upsertEmployeeModelPolicy({
         context,
@@ -352,7 +369,7 @@ export async function createP27CodexWorkerFixture(
         policy: {
           connectionId,
           modelCatalogEntryId: catalogId,
-          reasoningEffort: 'low',
+          reasoningEffort,
           fallbackPolicy: 'disabled',
           fallbackTargets: [],
           fallbackOn: [],
@@ -421,7 +438,15 @@ export async function createP27CodexWorkerFixture(
           binding.executionSnapshot.modelSnapshot?.connectionId ===
             connectionId &&
             binding.executionSnapshot.modelSnapshot.modelCatalogEntryId ===
-              catalogId,
+              catalogId &&
+            binding.executionSnapshot.modelSnapshot.model === model &&
+            binding.executionSnapshot.modelSnapshot.reasoningEffort ===
+              reasoningEffort &&
+            binding.executionSnapshot.modelSnapshot.runLimits.timeoutMs ===
+              runLimits.timeoutMs &&
+            (!platformSettings ||
+              binding.executionSnapshot.modelSnapshot.policyRevision ===
+                platformSettings.revision),
           'P27_CODEX_WORKER_FROZEN_MODEL_MISMATCH',
         );
         // This one migration fixture intentionally seeds a pre-0103 Run. Keep
@@ -555,6 +580,7 @@ export async function createP27CodexWorkerFixture(
       assignmentId,
       connectionId,
       catalogId,
+      platformSettings,
       runLimits,
       async prepareOrdinaryTask(
         prompt: string,

@@ -18,6 +18,7 @@ import {
 const digest = `sha256:${'a'.repeat(64)}`;
 const evidence = {
   snapshotDigest: digest,
+  snapshot: { model: 'synthetic-configured-work-model' },
   row: {
     input_tokens: 18,
     output_tokens: 7,
@@ -28,7 +29,7 @@ const evidence = {
 const result = () =>
   ({
     provider: 'openai-codex',
-    model: 'gpt-5.6-luna',
+    model: evidence.snapshot.model,
     assistantStatus: 'completed',
     usage: { inputTokens: 18, outputTokens: 7, cachedInputTokens: 0 },
     usageComplete: true,
@@ -41,6 +42,18 @@ const result = () =>
     subscriptionSnapshotDigest: digest,
   }) as unknown as HarnessExecutionResult;
 describe('synthetic subscription result assertions, no provider', () => {
+  it.each(['gpt-6.1-sol', 'synthetic-other-configured-model'])(
+    'checks the frozen model identity for %s instead of a fixed model name',
+    (model) => {
+      expect(
+        verifyCodexSubscriptionResult(
+          { ...result(), model },
+          { ...evidence, snapshot: { ...evidence.snapshot, model } },
+          true,
+        ).billingMode,
+      ).toBe('subscription');
+    },
+  );
   it('requires positive real usage and N/A identity, not a zero tariff', () => {
     expect(
       verifyCodexSubscriptionResult(result(), evidence, true),
@@ -63,6 +76,7 @@ describe('synthetic subscription result assertions, no provider', () => {
     { costCurrency: 'USD' },
     { priceSnapshotDigest: digest },
     { provider: 'gemini' },
+    { model: 'different-from-frozen-model' },
     { usage: { inputTokens: 19, outputTokens: 7, cachedInputTokens: 0 } },
   ])('rejects changed subscription handoff %j', (change) => {
     expect(() =>
@@ -118,7 +132,7 @@ function syntheticProof(admissions?: Admission[]) {
     connectionId: randomUUID(),
     modelCatalogEntryId: randomUUID(),
     policyRevision: 1,
-    model: 'gpt-5.6-luna',
+    model: evidence.snapshot.model,
     credentialReference: 'synthetic-no-credential',
     baseUrl: null,
     frozenAt: '2026-09-01T00:00:00.000Z',

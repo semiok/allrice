@@ -120,7 +120,7 @@ export async function readCodexSubscriptionEvidence(
       snapshot.employeeId === fixture.employeeId &&
       snapshot.sessionId === task.sessionId &&
       snapshot.provider === 'openai-codex' &&
-      snapshot.model === 'gpt-5.6-luna',
+      snapshot.model === task.binding.executionSnapshot.modelSnapshot?.model,
     'subscription_identity',
   );
   check(
@@ -171,7 +171,7 @@ export function verifyCodexSubscriptionResult(
   };
   check(
     result.provider === 'openai-codex' &&
-      result.model === 'gpt-5.6-luna' &&
+      result.model === evidence.snapshot.model &&
       billing.billingMode === 'subscription' &&
       billing.costBasis === 'not_applicable' &&
       billing.estimatedCostCents === null &&

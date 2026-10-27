@@ -576,7 +576,7 @@ integration(
                 model:
                   mode === 'mismatched_result'
                     ? 'unverified-model'
-                    : 'gpt-5.6-luna',
+                    : task.binding.executionSnapshot.modelSnapshot!.model,
                 usage: {
                   inputTokens: 10,
                   cachedInputTokens: 2,

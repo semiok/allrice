@@ -1,7 +1,8 @@
-import { parseArguments, requireCheck } from './p27-assistant-preflight.ts';
-import type { P27WorkerFixtureCleanup } from './p27-worker-fixture.ts';
+import type { P27CodexWorkerFixtureCleanup } from './p27-codex-worker-fixture.ts';
 
-export function workerFixtureCleanupConfirmed(proof?: P27WorkerFixtureCleanup) {
+export function workerFixtureCleanupConfirmed(
+  proof?: P27CodexWorkerFixtureCleanup,
+) {
   return (
     proof?.globalDatabaseClosed === true &&
     proof.databaseEnvironmentRestored === true &&
@@ -13,43 +14,6 @@ export function workerFixtureCleanupConfirmed(proof?: P27WorkerFixtureCleanup) {
     proof.fixture.adminClosed === true
   );
 }
-
-/** Separate authorization from the one-adapter-call P27 experiment. These two
- * Worker executions may each make multiple provider calls within frozen limits. */
-export function parseP27WorkerArguments(args: string[]) {
-  const parsed = parseArguments(args);
-  requireCheck(
-    args.includes('--provider=gemini') && parsed.providerRoute === 'gemini',
-    'worker_explicit_gemini_required',
-  );
-  return parsed;
-}
-
-export function authorizeP27Worker(env: NodeJS.ProcessEnv, sha: string) {
-  requireCheck(
-    /^[a-f0-9]{40}$/.test(sha) &&
-      env.ALLRICE_B6_P27_WORKER_AUTHORIZED === '1' &&
-      env.ALLRICE_B6_P27_WORKER_AUTHORIZED_SHA === sha &&
-      env.ALLRICE_B6_P27_WORKER_AUTHORIZED_PROVIDER === 'gemini' &&
-      env.ALLRICE_B6_P27_WORKER_MAX_EXECUTIONS === '2' &&
-      env.ALLRICE_B6_P27_WORKER_ORDINARY_ESTIMATE_ACK === '1',
-    'worker_two_execution_authorization_required',
-  );
-  requireCheck(
-    !env.DATABASE_URL && !env.ALLRICE_TEST_DATABASE_URL,
-    'worker_ambient_database_denied',
-  );
-}
-
-/** Ordinary Worker still uses its existing estimator, not assistant receipts.
- * Explicit prices avoid the legacy missing-price=0 path. Cache discount and
- * provider-internal retry accounting are NOT a conservative invoice bound. */
-export const P27_ORDINARY_PRICING = Object.freeze({
-  'gemini:gemini-3.8-flash': {
-    inputCentsPerMillion: 75,
-    outputCentsPerMillion: 375,
-  },
-});
 
 export async function runP27WorkerSequence<T>(input: {
   assistant: () => Promise<T>;

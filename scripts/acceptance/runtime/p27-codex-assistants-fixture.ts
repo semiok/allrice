@@ -11,7 +11,7 @@ import {
   P27_CODEX_ORDINARY_PROMPT,
 } from './p27-codex-worker-preflight.ts';
 import {
-  P27_CODEX_ASSISTANT_LIMITS as runLimits,
+  P27_CODEX_ASSISTANT_LIMITS as assistantRunLimits,
   P27_CODEX_ASSISTANT_PROMPT,
   checkCodexAssistants,
 } from './p27-codex-assistants-preflight.ts';
@@ -178,13 +178,26 @@ export async function createP27CodexAssistantsFixture() {
       employeeId = randomUUID(),
       employeeVersionId = randomUUID();
     const assignmentId = randomUUID(),
-      connectionId = randomUUID(),
       workerId = randomUUID();
+    const { readPlatformModelSettings } =
+      await import('../../../packages/database/src/providers/platform-model-settings.ts');
+    const platformSettings = await readPlatformModelSettings(db);
+    const { configuration } = platformSettings;
+    const connectionId = configuration.connectionId;
+    const runLimits = {
+      ...assistantRunLimits,
+      timeoutMs: configuration.timeoutMs,
+    };
+    const ordinaryRunLimits = {
+      ...P27_CODEX_ORDINARY_LIMITS,
+      timeoutMs: configuration.timeoutMs,
+    };
     const [catalog] = await db<{ id: string; provider_id: string }[]>`
       select m.id,m.provider_id from allrice_model_catalog_entries m
       join allrice_model_providers p on p.id=m.provider_id
-      where p.provider_key='codex' and p.auth_mode='chatgpt_subscription'
-        and m.model='gpt-5.6-luna'`;
+      join allrice_model_connections c on c.provider_id=p.id
+      where c.id=${connectionId} and p.auth_mode='chatgpt_subscription'
+        and m.model=${configuration.workModel}`;
     requireFixture(catalog, 'P27_CODEX_WORKER_CATALOG_MISSING');
     const catalogId = catalog.id;
     const context: RequestContext = {
@@ -213,8 +226,8 @@ export async function createP27CodexAssistantsFixture() {
       runtimePolicy: {
         harness: 'dsh',
         provider: 'openai-codex',
-        model: 'gpt-5.6-luna',
-        reasoningEffort: 'low',
+        model: configuration.workModel,
+        reasoningEffort: configuration.reasoningEffort,
         timeoutMs: runLimits.timeoutMs,
         fallbackModels: [],
         credentialReference: 'deployment:codex-default',
@@ -247,12 +260,6 @@ export async function createP27CodexAssistantsFixture() {
         values(${employeeVersionId},${organizationId},${workspaceId},${employeeId},1,'P27 isolated',${manifest.provider.model},${manifest.systemPrompt},${tx.json(manifest.capabilities)},${checksum},${tx.json(manifest)},${tx.json(manifest.provider)})`;
       await tx`insert into allrice_employee_assignments(id,organization_id,workspace_id,employee_id,employee_version_id,user_id,is_default)
         values(${assignmentId},${organizationId},${workspaceId},${employeeId},${employeeVersionId},${ownerId},false)`;
-      await tx`update allrice_model_providers set enabled=true where id=${catalog.provider_id}`;
-      await tx`update allrice_model_catalog_entries set enabled=true,input_modalities='["text"]' where id=${catalogId}`;
-      await tx`insert into allrice_model_connections(id,provider_id,scope,name,credential_reference,base_url,status)
-        values(${connectionId},${catalog.provider_id},'platform','P27 isolated Codex','deployment:codex-default',null,'ready')`;
-      await tx`insert into allrice_provider_release_controls(connection_id,release_stage,allowlisted_organization_ids,production_approved)
-        values(${connectionId},'canary',${[organizationId]},false)`;
       await tx`insert into allrice_runtime_policy_controls(organization_id,workspace_id,version,controls)
         values(${organizationId},${workspaceId},1,${tx.json({ version: 1, enabled: true, mode: 'execute', rules: ['assistant.delegate', 'assistant.report'].map((action) => ({ action, effect: 'allow' })) })})`;
     });
@@ -264,7 +271,7 @@ export async function createP27CodexAssistantsFixture() {
         policy: {
           connectionId,
           modelCatalogEntryId: catalogId,
-          reasoningEffort: 'low',
+          reasoningEffort: configuration.reasoningEffort,
           fallbackPolicy: 'disabled',
           fallbackTargets: [],
           fallbackOn: [],
@@ -281,7 +288,7 @@ export async function createP27CodexAssistantsFixture() {
       const prompt = assistants
         ? P27_CODEX_ASSISTANT_PROMPT
         : P27_CODEX_ORDINARY_PROMPT;
-      const taskLimits = assistants ? runLimits : P27_CODEX_ORDINARY_LIMITS;
+      const taskLimits = assistants ? runLimits : ordinaryRunLimits;
       requireFixture(
         !closed && !preparing,
         'P27_CODEX_WORKER_FIXTURE_NOT_IDLE',
@@ -328,7 +335,15 @@ export async function createP27CodexAssistantsFixture() {
           binding.executionSnapshot.modelSnapshot?.connectionId ===
             connectionId &&
             binding.executionSnapshot.modelSnapshot.modelCatalogEntryId ===
-              catalogId,
+              catalogId &&
+            binding.executionSnapshot.modelSnapshot.model ===
+              configuration.workModel &&
+            binding.executionSnapshot.modelSnapshot.reasoningEffort ===
+              configuration.reasoningEffort &&
+            binding.executionSnapshot.modelSnapshot.runLimits.timeoutMs ===
+              configuration.timeoutMs &&
+            binding.executionSnapshot.modelSnapshot.policyRevision ===
+              platformSettings.revision,
           'P27_CODEX_WORKER_FROZEN_MODEL_MISMATCH',
         );
         const submission = await queue.enqueueRun(
@@ -338,7 +353,7 @@ export async function createP27CodexAssistantsFixture() {
             idempotencyKey: randomUUID(),
             type: 'allrice.employee.run',
             maxAttempts: 1,
-            timeoutMs: taskLimits.timeoutMs,
+            timeoutMs: binding.executionSnapshot.runtimePolicy.timeoutMs,
             input: {
               employeeAssignmentId: assignmentId,
               employeeVersionId,
@@ -415,6 +430,7 @@ export async function createP27CodexAssistantsFixture() {
       assignmentId,
       connectionId,
       catalogId,
+      platformSettings,
       runLimits,
       async prepareAssistantTask() {
         checkCodexAssistants(!firstAttempted, 'already_attempted');
@@ -462,11 +478,11 @@ export async function createP27CodexAssistantsFixture() {
               policy: {
                 connectionId,
                 modelCatalogEntryId: catalogId,
-                reasoningEffort: 'low',
+                reasoningEffort: configuration.reasoningEffort,
                 fallbackPolicy: 'disabled',
                 fallbackTargets: [],
                 fallbackOn: [],
-                runLimits: P27_CODEX_ORDINARY_LIMITS,
+                runLimits: ordinaryRunLimits,
               },
             }),
           );

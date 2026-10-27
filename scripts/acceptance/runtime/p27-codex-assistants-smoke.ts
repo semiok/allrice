@@ -147,7 +147,7 @@ export async function mainP27CodexAssistants(
     uiBuildId,
     status: 'preflight_only',
     provider: 'openai-codex',
-    model: 'gpt-5.6-luna',
+    model: null, // Filled from the isolated database's platform settings below.
     authMode: 'chatgpt_subscription',
     allowAssistants: true,
     tools: ['assistant.delegate', 'assistant.report'],
@@ -161,7 +161,11 @@ export async function mainP27CodexAssistants(
     maxAttempts: 1,
     applicationRetries: 0,
     executionLimit: 2,
-    applicationLimits: P27_CODEX_ASSISTANT_LIMITS,
+    applicationLimits: {
+      ...P27_CODEX_ASSISTANT_LIMITS,
+      timeoutMs: null,
+      timeoutNote: '由平台模型配置决定，执行时解析',
+    },
     scope: P27_CODEX_ASSISTANTS_SCOPE,
     monetaryCost: 'not_applicable_subscription_not_free_or_invoice',
     providerAllowance: { status: 'not_queried', meansAvailable: false },
@@ -270,6 +274,12 @@ export async function mainP27CodexAssistants(
     fixtureAttempted = true;
     report.databaseNotOpened = false;
     fixture = await createP27CodexAssistantsFixture();
+    report.model = fixture.platformSettings.configuration.workModel;
+    report.platformSettings = fixture.platformSettings;
+    report.applicationLimits = fixture.runLimits;
+    process.env.ALLRICE_DSH_REQUEST_TIMEOUT_MS = String(
+      fixture.runLimits.timeoutMs,
+    );
     report.schema = fixture.schema;
     report.organizationId = fixture.organizationId;
     const [

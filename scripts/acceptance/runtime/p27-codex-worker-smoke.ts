@@ -121,7 +121,7 @@ export async function mainP27CodexWorker(argsInput = process.argv.slice(2)) {
     installedRuntime,
     status: 'preflight_only',
     provider: 'openai-codex',
-    model: 'gpt-5.6-luna',
+    model: null, // Filled from the isolated database's platform settings below.
     authMode: 'chatgpt_subscription',
     allowAssistants: false,
     scope: 'independent-ordinary-only-not-assistant-followup-or-ui',
@@ -130,7 +130,11 @@ export async function mainP27CodexWorker(argsInput = process.argv.slice(2)) {
     maxAttempts: 1,
     applicationRetries: 0,
     executionLimit: 1,
-    applicationLimits: P27_CODEX_ORDINARY_LIMITS,
+    applicationLimits: {
+      ...P27_CODEX_ORDINARY_LIMITS,
+      timeoutMs: null,
+      timeoutNote: '由平台模型配置决定，执行时解析',
+    },
     limitCaveat: P27_CODEX_LIMIT_CAVEAT,
     costCaveat: P27_CODEX_COST_CAVEAT,
     credentialBytesReadByDriver: false,
@@ -234,6 +238,12 @@ export async function mainP27CodexWorker(argsInput = process.argv.slice(2)) {
     fixtureAttempted = true;
     report.databaseNotOpened = false;
     fixture = await createP27CodexWorkerFixture();
+    report.model = fixture.platformSettings!.configuration.workModel;
+    report.platformSettings = fixture.platformSettings;
+    report.applicationLimits = fixture.runLimits;
+    process.env.ALLRICE_DSH_REQUEST_TIMEOUT_MS = String(
+      fixture.runLimits.timeoutMs,
+    );
     report.schema = fixture.schema;
     report.organizationId = fixture.organizationId;
     const [
@@ -543,7 +553,7 @@ export async function verifyCodexOrdinary(
   check(
     result.assistantStatus === undefined &&
       result.provider === 'openai-codex' &&
-      result.model === 'gpt-5.6-luna' &&
+      result.model === task.binding.executionSnapshot.modelSnapshot?.model &&
       parsed.value.sum === 579,
     'codex_worker_ordinary_result',
   );

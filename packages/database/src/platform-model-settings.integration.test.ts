@@ -43,12 +43,16 @@ integration('platform-wide model inheritance', () => {
         ),
       ).toBe(true);
       const settings = await readPlatformModelSettings();
+      const nextModel =
+        settings.configuration.workModel === 'gpt-6.1-sol'
+          ? 'gpt-6-luna'
+          : 'gpt-6.1-sol';
       await withFixturePlatformAdministrator(f.ownerId, async () => {
         await updatePlatformModelSettings(context, {
           expectedRevision: settings.revision,
           configuration: {
             ...settings.configuration,
-            workModel: 'gpt-6.1-sol',
+            workModel: nextModel,
             reasoningEffort: 'medium',
           },
         });
@@ -58,7 +62,7 @@ integration('platform-wide model inheritance', () => {
         before.employeeProfiles.map(() => ({
           harness: 'dsh',
           provider: 'openai-codex',
-          model: 'gpt-6.1-sol',
+          model: nextModel,
           reasoningEffort: 'medium',
         })),
       );
@@ -185,11 +189,15 @@ integration('platform-wide model inheritance', () => {
       const original = task.binding.executionSnapshot.modelSnapshot!;
       const settings = await readPlatformModelSettings();
       expect(original.platformSettings?.revision).toBe(settings.revision);
+      const nextModel =
+        settings.configuration.workModel === 'gpt-6.1-sol'
+          ? 'gpt-6-luna'
+          : 'gpt-6.1-sol';
       const update = {
         expectedRevision: settings.revision,
         configuration: {
           ...settings.configuration,
-          workModel: 'gpt-6.1-sol',
+          workModel: nextModel,
           imagesEnabled: true,
         },
       };
@@ -218,13 +226,14 @@ integration('platform-wide model inheritance', () => {
         sessionId: task.sessionId,
       });
       expect(next).toMatchObject({
-        model: 'gpt-6.1-sol',
+        model: nextModel,
         provider: 'openai-codex',
         fallbackPolicy: 'disabled',
         resolvedFallbacks: [],
       });
       expect(next.platformSettings?.configuration.imagesEnabled).toBe(true);
-      expect(original.model).toBe('gpt-5.6-luna');
+      expect(original.model).toBe(settings.configuration.workModel);
+      expect(next.model).not.toBe(original.model);
       expect(original.platformSettings?.configuration.imagesEnabled).toBe(
         false,
       );

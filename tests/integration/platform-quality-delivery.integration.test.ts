@@ -284,7 +284,7 @@ suite('MET167 joined delivery facts (isolated ordinary employee)', () => {
           return {
             answer: `Fixed reply ${turn}`,
             provider: 'openai-codex',
-            model: 'gpt-5.6-luna',
+            model: input.providerSnapshot.model,
             usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 3 },
             usageComplete: true,
             cacheUsageKnown: true,
