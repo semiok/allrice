@@ -257,6 +257,9 @@ suite('account output preferences', () => {
       transcriptView: 'compact',
       collapseTiming: 'next-input',
       appearance: 'light',
+      // MET-210 0223 defaults, untouched by re-running 0222.
+      questionWait: { mode: 'default' },
+      subagents: { maxDepth: 1, maxActive: 8 },
       updatedAt: before!.updated_at.toISOString(),
     });
     // The runner records each file once; a manual second run fails unchanged.
