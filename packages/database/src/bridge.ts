@@ -123,7 +123,7 @@ export class BridgeDataError extends Error {
 }
 
 const bridgeCommandFailureSummaries = {
-  GRANT_NOT_FOUND: '此 Mac 缺少目录授权，请在 Bridge 重新选择工作区目录',
+  GRANT_NOT_FOUND: '此 Mac 缺少目录授权，请在 AllRice 助手重新选择工作区目录',
   FOLDER_NOT_FOUND: '已授权目录无法读取，请恢复目录或重新选择工作区',
   FOLDER_CHANGED: '已授权目录位置已变化，请重新确认工作区授权',
   PATH_OUTSIDE_ROOT: '请求路径超出已授权工作区',
@@ -132,9 +132,9 @@ const bridgeCommandFailureSummaries = {
   FILE_RESULT_UNKNOWN: '本地操作结果待核实，不得自动重复执行',
   LOCAL_RESULT_UNKNOWN: '本地操作结果待核实，不得自动重复执行',
   broker_wait_timeout:
-    '未及时收到 Bridge 完成回执，结果待核实，不得自动重复执行',
-  command_timeout: 'Bridge 命令已到期，请核实本地执行状态',
-  LOCAL_EXECUTION_FAILED: '本地操作未完成，请检查 Bridge 诊断信息',
+    '未及时收到 AllRice 助手完成回执，结果待核实，不得自动重复执行',
+  command_timeout: 'AllRice 助手命令已到期，请核实本地执行状态',
+  LOCAL_EXECUTION_FAILED: '本地操作未完成，请检查 AllRice 助手诊断信息',
 } as const;
 
 /** Preserve typed failures at the broker boundary without exposing local paths,

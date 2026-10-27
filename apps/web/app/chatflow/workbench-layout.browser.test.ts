@@ -8887,7 +8887,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await methods.getByText('云端-检索', { exact: true }).count(),
         ).toBe(1);
         expect(
-          await methods.getByText('Bridge-文件', { exact: true }).isVisible(),
+          await methods.getByText('电脑-文件', { exact: true }).isVisible(),
         ).toBe(true);
         expect(
           await methods.getByText('云端-计算', { exact: true }).count(),
@@ -8900,7 +8900,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await more.hover();
           await f.page
             .getByRole('tooltip')
-            .getByText(/Bridge-浏览器/)
+            .getByText(/电脑-浏览器/)
             .waitFor();
         }
         await more.click();
@@ -8908,7 +8908,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await methods.getByText('云端-计算', { exact: true }).isVisible(),
         ).toBe(true);
         expect(
-          await methods.getByText('Bridge-浏览器', { exact: true }).isVisible(),
+          await methods.getByText('电脑-浏览器', { exact: true }).isVisible(),
         ).toBe(true);
         await reply.locator('[data-message-actions]').screenshot({
           path: `/tmp/allrice-work-methods-${width}-${streamingOutput}.png`,
@@ -8935,7 +8935,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await more.focus();
         await more.press('Enter');
         expect(
-          await methods.getByText('Bridge-浏览器', { exact: true }).isVisible(),
+          await methods.getByText('电脑-浏览器', { exact: true }).isVisible(),
         ).toBe(true);
         await f.page.reload();
         await methods.waitFor();

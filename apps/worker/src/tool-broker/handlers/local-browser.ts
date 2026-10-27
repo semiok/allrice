@@ -70,7 +70,7 @@ export const runLocalBrowserWorkspace: RiceToolHandler = async ({
     return {
       summary: stopped
         ? '本地浏览器已确认停止'
-        : '已请求关闭本地浏览器，等待 Bridge 实际停止确认',
+        : '已请求关闭本地浏览器，等待 AllRice 助手实际停止确认',
       modelContent: JSON.stringify({
         requested: true,
         confirmedStopped: stopped,

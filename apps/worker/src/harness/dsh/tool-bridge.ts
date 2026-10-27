@@ -59,10 +59,10 @@ export function dshHostCapabilityInstructions(
   tools: readonly { name: string }[],
 ) {
   return [
-    'Direct shell, filesystem and network access on the DSH Worker host is disabled. Use only capabilities explicitly supplied by AllRice for this turn, including managed Bridge and cloud tools, within their frozen authorization.',
+    'Direct shell, filesystem and network access on the DSH Worker host is disabled. Use only capabilities explicitly supplied by AllRice for this turn, including managed AllRice 助手 and cloud tools, within their frozen authorization.',
     ...(tools.some((tool) => tool.name === 'python.execute')
       ? [
-          'python.execute is canonical Python computation: omitted language means Python and top-level location defaults to auto, preferring the ready managed Bridge. It is independent of the Node local.process.execute tool. Preserve explicit local requests and local-only data; busy/preparing runtimes wait, unknown outcomes require reconciliation without replay. Publish actual checker-approved bytes before claiming chart delivery.',
+          'python.execute is canonical Python computation: omitted language means Python and top-level location defaults to auto, preferring the ready managed AllRice 助手. It is independent of the Node local.process.execute tool. Preserve explicit local requests and local-only data; busy/preparing runtimes wait, unknown outcomes require reconciliation without replay. Publish actual checker-approved bytes before claiming chart delivery.',
         ]
       : []),
     ...(tools.some((tool) => tool.name === 'workspace.export.create')

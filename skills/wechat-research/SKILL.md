@@ -30,5 +30,5 @@ State the title, publishing account and publication date when available, and lin
 - Never invent a title, account, date, quote, URL, or article body.
 - Do not access login-only, private, deleted, paywalled, or captcha-protected content.
 - Do not bypass access controls, simulate user identities, or perform bulk scraping.
-- Do not use Shell, Rice Bridge, arbitrary browser URLs, or private workspace data for this workflow.
+- Do not use Shell, AllRice 助手, arbitrary browser URLs, or private workspace data for this workflow.
 - If the cloud service cannot read an article, state the limitation and keep the public source link when available.

@@ -1,40 +1,40 @@
 {
   "schemaVersion": 1,
-  "version": "1.0.1",
-  "contentChecksum": "sha256:c16815542822e040c3d2b02b1dd19366f77d05fb803716e89265ee7f97c7fb27",
-  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/development-cooperation?content-sha256=c16815542822e040c3d2b02b1dd19366f77d05fb803716e89265ee7f97c7fb27",
+  "version": "1.0.2",
+  "contentChecksum": "sha256:b5b0a1c275fb9ca85db61a3448f8515f1f934e6fa304aebc288c40f8d958b511",
+  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/development-cooperation?content-sha256=b5b0a1c275fb9ca85db61a3448f8515f1f934e6fa304aebc288c40f8d958b511",
   "license": "Apache-2.0",
   "reviewedBy": "MET-155 existing governed Subagents workflow",
   "resources": [
     {
       "path": "references/delivery.md",
       "mediaType": "text/markdown",
-      "byteLength": 912,
-      "checksum": "sha256:951266ae2f23838649dbdf09f7c143d98879fad85dc1ca9d25e8e45f52a4a4d7"
+      "byteLength": 927,
+      "checksum": "sha256:2f719c4931331bd9640919cdb1ccc159b39895f877ac8a96a6c5e7da2e1ccb87"
     },
     {
       "path": "references/edit.md",
       "mediaType": "text/markdown",
-      "byteLength": 722,
-      "checksum": "sha256:6629fe8c789920bd70e2b857f190e13d5975fe8defa7cb229cdac02c9ebc4219"
+      "byteLength": 728,
+      "checksum": "sha256:ac113c824754c76f8a6b60f78934683c7f0a4ec4a2c2c3c4bc705a51a77b3a20"
     },
     {
       "path": "references/review.md",
       "mediaType": "text/markdown",
-      "byteLength": 1191,
-      "checksum": "sha256:efaa7d78a2a0bf751be9bbcf3c6b01cb99d98afc1942e7a308e7680fa6bc3f59"
+      "byteLength": 1197,
+      "checksum": "sha256:4c46e1e2cd644e9a7af23c2212e9d55b357f185d5a19504d423021ddd724db5a"
     },
     {
       "path": "references/test.md",
       "mediaType": "text/markdown",
-      "byteLength": 1200,
-      "checksum": "sha256:4f7177032c126fec412336e8549237e634ea45fb88d1cc4879792b3a7183aeb2"
+      "byteLength": 1206,
+      "checksum": "sha256:1a54dc0a6109236dd2a2ff191b11b647d8fa87569af9482a3017767fc6db6a60"
     },
     {
       "path": "references/workflow.md",
       "mediaType": "text/markdown",
-      "byteLength": 2118,
-      "checksum": "sha256:3ef273a2d71d38484e9b4e03edcae8cd6bd838d416bc13c1d01eb3eca066bfa3"
+      "byteLength": 2146,
+      "checksum": "sha256:4d43123052d46acc8ad2cc94ffa22b6172da1c0e3e3c35c94fd6bc6fb5202b98"
     }
   ],
   "dependencies": [
@@ -47,5 +47,5 @@
       "name": "workspace.skill.read"
     }
   ],
-  "checksum": "sha256:d78ed51b856e20df1a9029fbe24732eee7a34501db098e797cf0237b5c8f61f8"
+  "checksum": "sha256:7ad61be1c4293133a29a7c30ca29f70063f5d86ddd1ad4e629e533af51656aba"
 }

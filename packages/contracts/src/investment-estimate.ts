@@ -102,7 +102,7 @@ export function estimateInvestment(input: {
     const excludedCosts: string[] = [];
     if (modelMinor === null)
       excludedCosts.push(
-        '模型费用缺少明确账单依据和币种；原始账本不改写、不重复累计助手费用',
+        '模型费用缺少明确账单依据和币种；原始账本不改写、不重复累计子智能体费用',
       );
     if (subscriptionMinor === null) excludedCosts.push('订阅分摊未确认');
     if (otherMinor === null) excludedCosts.push('其他投入未确认');

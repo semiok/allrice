@@ -535,7 +535,7 @@ lines.on('line', (line) => {
                   outcome === 'dns'
                     ? 'Error: 域名解析到了非公开网络地址 secret-token'
                     : outcome === 'assistant'
-                      ? 'Error: 当前任务没有这个助手 secret-token'
+                      ? 'Error: 当前任务没有这个子智能体 secret-token'
                       : 'private-tool-result',
               },
             ],

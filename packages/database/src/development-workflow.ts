@@ -486,7 +486,7 @@ export async function executeDevelopmentWorkflow(
         changeSummary:
           args.action === 'merge'
             ? '协作合成候选；尚未完成同版本测试与独立审查。'
-            : '子助手修改提案；尚未采用或写入本地。',
+            : '子智能体修改提案；尚未采用或写入本地。',
       },
       storage,
       o.database,
@@ -616,7 +616,7 @@ export async function executeDevelopmentWorkflow(
       bytes: Buffer.from(JSON.stringify(result, null, 2)),
       changeSummary:
         args.action === 'review'
-          ? '独立助手审查意见；含准确候选与实际测试回执引用。'
+          ? '独立子智能体审查意见；含准确候选与实际测试回执引用。'
           : '主 Rice 同版本测试/审查交付记录；不代表已写入本地目录。',
     },
     storage,

@@ -124,7 +124,7 @@ async function executeManagedChartsAttempt(
         inputBytes > 2_000_000 &&
           selection.profile &&
           selection.profile.inputStreamingVersion !== 1
-          ? '当前 Rice Bridge 尚不支持流式文件输入，请更新 Bridge 后重试；本次未执行，也未改用云端。'
+          ? '当前 AllRice 助手尚不支持流式文件输入，请更新 AllRice 助手后重试；本次未执行，也未改用云端。'
           : `Python 执行环境不可用（${selection.choice.reason}）；本次未执行或换端。`,
         false,
       );

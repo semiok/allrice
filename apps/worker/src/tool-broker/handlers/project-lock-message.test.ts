@@ -32,7 +32,7 @@ describe('project lock platform message', () => {
     const text = projectLockPlatformMessage(
       facts({ localInputs: true, currentBridgeArchitectures: [] }),
     );
-    expect(text).toMatch(/先升级 Bridge/);
+    expect(text).toMatch(/先升级 AllRice 助手/);
     expect(text).not.toMatch(/architecture: amd64/);
   });
   it('still offers the Bridges that support the request when another needs upgrading', () => {
@@ -44,7 +44,7 @@ describe('project lock platform message', () => {
       }),
     );
     expect(text).toMatch(/architecture: amd64.*在本机执行/);
-    expect(text).not.toMatch(/先升级 Bridge/);
+    expect(text).not.toMatch(/先升级 AllRice 助手/);
   });
   it('names every obstacle together', () => {
     const text = projectLockPlatformMessage(

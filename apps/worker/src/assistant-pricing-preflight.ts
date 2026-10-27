@@ -21,7 +21,7 @@ export const assistantCanonicalModel = (provider: string, model: string) =>
 function deny(code: string): never {
   throw new HandlerError(
     code,
-    '助手计费依据不可用；本次未授权新的模型调用。',
+    '子智能体计费依据不可用；本次未授权新的模型调用。',
     false,
   );
 }

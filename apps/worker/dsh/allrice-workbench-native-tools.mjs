@@ -66,7 +66,7 @@ export const workbenchNativeTools = [
     timeoutMs: managedToolWaitTimeoutMs,
     wireName: 'workspace_export_create',
     description:
-      'Create a tenant-private deliverable or reviewable file-change proposal in AllRice managed storage when requested. Native Python Office can use the authorized ready Bridge runtime; select its execution location with the top-level location parameter. Publishing a proposal does not write to the local device.',
+      'Create a tenant-private deliverable or reviewable file-change proposal in AllRice managed storage when requested. Native Python Office can use the authorized ready AllRice 助手 runtime; select its execution location with the top-level location parameter. Publishing a proposal does not write to the local device.',
     presentation: 'tool',
     validateArguments(args) {
       if (
@@ -117,7 +117,7 @@ export const workbenchNativeTools = [
         type: 'string',
         enum: ['document', 'plan', 'changeset'],
         description:
-          'document or plan for deliverables; changeset for a reviewed proposal in the current authorized Bridge folder, always format=json. Text changes use content={"files":[{"path":"relative/path","before":"original text or null for a new file","after":"new full text or null for deletion"}]}, after reading existing text. Original-byte copy/move/rename uses content={"operations":[{"path":"source/path","target":"destination/path","operation":"copy|move|rename","source":{"checksum":"exact survey SHA","version":"exact native survey version","sizeBytes":123},"expectedDestination":null}]}, encoded as JSON. Read source from local_fs_list with survey.hash=true; never substitute the different local_file_inspect version or represent binary files as text. At most 32 files, each <=9000000 bytes, total <=128000000 bytes. Existing destination parents are required; no overwrite, overlapping paths, cycles or permanent deletion. Supply the exact source proof; do not supply device IDs, grants or approvals. Publishing never executes changes; the user separately requests application through the workbench and must approve the exact action when required by their work mode. Plan acceptance is not action authorization. Preserve per-file confirmed, unexecuted and unknown outcomes without replay; recovery only inverses confirmed moves with unchanged destination versions, and copies remain.',
+          'document or plan for deliverables; changeset for a reviewed proposal in the current authorized AllRice 助手 folder, always format=json. Text changes use content={"files":[{"path":"relative/path","before":"original text or null for a new file","after":"new full text or null for deletion"}]}, after reading existing text. Original-byte copy/move/rename uses content={"operations":[{"path":"source/path","target":"destination/path","operation":"copy|move|rename","source":{"checksum":"exact survey SHA","version":"exact native survey version","sizeBytes":123},"expectedDestination":null}]}, encoded as JSON. Read source from local_fs_list with survey.hash=true; never substitute the different local_file_inspect version or represent binary files as text. At most 32 files, each <=9000000 bytes, total <=128000000 bytes. Existing destination parents are required; no overwrite, overlapping paths, cycles or permanent deletion. Supply the exact source proof; do not supply device IDs, grants or approvals. Publishing never executes changes; the user separately requests application through the workbench and must approve the exact action when required by their work mode. Plan acceptance is not action authorization. Preserve per-file confirmed, unexecuted and unknown outcomes without replay; recovery only inverses confirmed moves with unchanged destination versions, and copies remain.',
       },
       fileName: {
         type: 'string',
@@ -197,7 +197,7 @@ export const workbenchNativeTools = [
         type: 'string',
         enum: ['auto', 'local', 'cloud'],
         description:
-          'Optional for python native Office or officePdf. Omit for auto: prefer the ready Bridge capability; when the Office-to-PDF converter is absent locally, only conversion of that authorized Office file uses the server DSH provider. local requires local execution; local-only data must not be sent to cloud. Never supply device IDs or runtime paths.',
+          'Optional for python native Office or officePdf. Omit for auto: prefer the ready AllRice 助手 capability; when the Office-to-PDF converter is absent locally, only conversion of that authorized Office file uses the server DSH provider. local requires local execution; local-only data must not be sent to cloud. Never supply device IDs or runtime paths.',
       },
       officePdf: {
         type: 'object',

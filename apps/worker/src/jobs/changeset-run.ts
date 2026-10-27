@@ -88,7 +88,7 @@ export async function executeChangesetRun({
             false,
           );
         return {
-          answer: `${created.payload.arguments.direction === 'restore' ? '已恢复' : '已应用'} ${evidence.result.files.length} 个文件。结果以 Bridge 逐文件回执为准；没有自动运行项目代码，后续测试仍需单独授权。`,
+          answer: `${created.payload.arguments.direction === 'restore' ? '已恢复' : '已应用'} ${evidence.result.files.length} 个文件。结果以 AllRice 助手逐文件回执为准；没有自动运行项目代码，后续测试仍需单独授权。`,
           citations: [],
           usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
           modelInvoked: false,

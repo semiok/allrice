@@ -1752,7 +1752,7 @@ describe('DshHarnessAdapter', () => {
 
   it.each([
     ['dns', '网页地址解析异常，未能确认公开网络地址。'],
-    ['assistant', '没有可接收消息的助手，当前任务可直接继续。'],
+    ['assistant', '没有可接收消息的子智能体，当前任务可直接继续。'],
   ])(
     'shows a fixed %s failure summary without raw provider contents',
     async (cause, summary) => {

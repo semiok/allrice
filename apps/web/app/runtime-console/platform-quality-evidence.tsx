@@ -77,7 +77,7 @@ export function PlatformQualityEvidence() {
         </AdminButton>
       </div>
       <p className={css.meta}>
-        这些报告证明固定场景的测试结果。当前 Dev 页面验收、Bridge
+        这些报告证明固定场景的测试结果。当前 Dev 页面验收、AllRice 助手
         实机和其他项目仍需各自的交付记录。
       </p>
       {data?.deployedSha && (
@@ -127,10 +127,12 @@ export function PlatformQualityEvidence() {
           )}
           <p className={css.meta}>
             DSH Agent {record.versions.dshAgent ?? '未记录'} · DSH Web{' '}
-            {record.versions.dshWeb ?? '未记录'} · Bridge 包{' '}
+            {record.versions.dshWeb ?? '未记录'} · AllRice 助手{' '}
             {record.versions.actualBridgeVersion ?? '未记录'}
           </p>
-          <p className={css.meta}>模型未调用；本报告未执行 Bridge 实机验收。</p>
+          <p className={css.meta}>
+            模型未调用；本报告未执行 AllRice 助手实机验收。
+          </p>
           {record.scenarios.map((scenario) => (
             <details key={scenario.id}>
               <summary>

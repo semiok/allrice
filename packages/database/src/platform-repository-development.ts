@@ -302,7 +302,7 @@ export async function executeRepositoryDevelopment(
       bytes: Buffer.from(JSON.stringify(result, null, 2)),
       changeSummary:
         args.action === 'review'
-          ? '独立助手的仓库候选审查意见。'
+          ? '独立子智能体的仓库候选审查意见。'
           : '准确候选的审查交付记录；合并与 Dev 验收另行执行。',
     },
     storage,

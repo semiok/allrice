@@ -208,7 +208,7 @@ export async function createAllRiceRuntime(
           type: 'string',
           enum: ['auto', 'local', 'cloud'],
           description:
-            'PDF only: auto prefers a verified ready local Bridge and uses cloud otherwise. local never switches to cloud; cloud explicitly uses the cloud reader. Omit for auto.',
+            'PDF only: auto prefers a verified ready local AllRice 助手 and uses cloud otherwise. local never switches to cloud; cloud explicitly uses the cloud reader. Omit for auto.',
         },
       },
     },
@@ -302,7 +302,7 @@ export async function createAllRiceRuntime(
       canonicalName: 'local.fs.list',
       wireName: 'local_fs_list',
       description:
-        'List files and directories inside the local folder explicitly authorized through Rice Bridge. Read-only; paths are relative to the authorized root.',
+        'List files and directories inside the local folder explicitly authorized through AllRice 助手. Read-only; paths are relative to the authorized root.',
       parameters: {
         path: {
           type: 'string',
@@ -340,7 +340,7 @@ export async function createAllRiceRuntime(
       canonicalName: 'local.fs.search',
       wireName: 'local_fs_search',
       description:
-        'Search text inside files under the local folder explicitly authorized through Rice Bridge. Read-only and confined to the authorized root.',
+        'Search text inside files under the local folder explicitly authorized through AllRice 助手. Read-only and confined to the authorized root.',
       parameters: {
         path: {
           type: 'string',
@@ -361,7 +361,7 @@ export async function createAllRiceRuntime(
       canonicalName: 'local.fs.read',
       wireName: 'local_fs_read',
       description:
-        'Read one text file under the local folder explicitly authorized through Rice Bridge. Sensitive paths and paths outside the grant are rejected.',
+        'Read one text file under the local folder explicitly authorized through AllRice 助手. Sensitive paths and paths outside the grant are rejected.',
       parameters: {
         path: {
           type: 'string',
@@ -378,7 +378,7 @@ export async function createAllRiceRuntime(
       canonicalName: 'local.fs.write',
       wireName: 'local_fs_write',
       description:
-        'Create or atomically update one text file inside the Rice Bridge authorized folder. Existing files require the SHA-256 returned by the latest read. Sensitive, symlinked and out-of-grant paths are rejected.',
+        'Create or atomically update one text file inside the AllRice 助手 authorized folder. Existing files require the SHA-256 returned by the latest read. Sensitive, symlinked and out-of-grant paths are rejected.',
       parameters: {
         path: {
           type: 'string',
@@ -520,7 +520,7 @@ export async function createAllRiceRuntime(
             },
           },
           description:
-            'Finite service, duration1000..300000ms; readiness tcp/http, port1024..65535 and private-container only, timeout500..30000ms. stdin mode none/requests-v1, maxRequests1..16,maxBytes1..4096,requestTimeout500..60000ms. Input requests are fd3 NDJSON {type:input.request,prompt}; no TTY. At most one per Run and two per Bridge. Ends on Run completion, lost authorization or fixed deadline. Never combine with diagnostics/dependencies.',
+            'Finite service, duration1000..300000ms; readiness tcp/http, port1024..65535 and private-container only, timeout500..30000ms. stdin mode none/requests-v1, maxRequests1..16,maxBytes1..4096,requestTimeout500..60000ms. Input requests are fd3 NDJSON {type:input.request,prompt}; no TTY. At most one per Run and two per AllRice 助手. Ends on Run completion, lost authorization or fixed deadline. Never combine with diagnostics/dependencies.',
         },
       },
       validateArguments(args) {
@@ -545,7 +545,7 @@ export async function createAllRiceRuntime(
       canonicalName: 'local.fs.mkdir',
       wireName: 'local_fs_mkdir',
       description:
-        'Create one directory inside the Rice Bridge authorized folder. Its parent must already exist. Sensitive, symlinked and out-of-grant paths are rejected.',
+        'Create one directory inside the AllRice 助手 authorized folder. Its parent must already exist. Sensitive, symlinked and out-of-grant paths are rejected.',
       parameters: {
         path: {
           type: 'string',
@@ -558,7 +558,7 @@ export async function createAllRiceRuntime(
       canonicalName: 'local.git.status',
       wireName: 'local_git_status',
       description:
-        'Read Git working-tree status for a repository inside the Rice Bridge authorized folder. This is a fixed read-only operation, not shell access.',
+        'Read Git working-tree status for a repository inside the AllRice 助手 authorized folder. This is a fixed read-only operation, not shell access.',
       parameters: {
         path: {
           type: 'string',
@@ -570,7 +570,7 @@ export async function createAllRiceRuntime(
       canonicalName: 'local.git.diff',
       wireName: 'local_git_diff',
       description:
-        'Read a Git diff for a repository inside the Rice Bridge authorized folder. This is a fixed read-only operation, not shell access.',
+        'Read a Git diff for a repository inside the AllRice 助手 authorized folder. This is a fixed read-only operation, not shell access.',
       parameters: {
         path: {
           type: 'string',
@@ -1367,7 +1367,7 @@ export async function createAllRiceRuntime(
         this.ctx.systemPrompt.section({
           name: 'tool:allrice_local_bridge',
           order: 111,
-          text: 'Use the local_fs_* and local_git_* tools only for files and repositories in the user-authorized Rice Bridge workspace. Every path must remain relative to the explicit folder grant. Read tools are always non-mutating. local_fs_write and local_fs_mkdir are available only when the published employee has managed-write access: use them only when the user has explicitly requested a local project change, read an existing file before overwriting it, and pass the returned SHA-256 to prevent lost updates. Never access sensitive paths, delete files, run arbitrary shell commands, perform Git writes, or claim local access without a successful tool result.',
+          text: 'Use the local_fs_* and local_git_* tools only for files and repositories in the user-authorized AllRice 助手 workspace. Every path must remain relative to the explicit folder grant. Read tools are always non-mutating. local_fs_write and local_fs_mkdir are available only when the published employee has managed-write access: use them only when the user has explicitly requested a local project change, read an existing file before overwriting it, and pass the returned SHA-256 to prevent lost updates. Never access sensitive paths, delete files, run arbitrary shell commands, perform Git writes, or claim local access without a successful tool result.',
         });
       }
       if (

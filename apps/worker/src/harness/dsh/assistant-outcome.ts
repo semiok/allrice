@@ -58,7 +58,7 @@ export class AssistantExecutionUnresolvedError extends HandlerError {
   ) {
     super(
       'ASSISTANT_EXECUTION_UNRESOLVED',
-      '助手执行结果尚未确认；已保存可用成果，待恢复执行状态。',
+      '子智能体执行结果尚未确认；已保存可用成果，待恢复执行状态。',
       false,
     );
     attachAssistantFailureDiagnostics(this, diagnostics);
@@ -77,7 +77,7 @@ export function assertAssistantTaskComplete(
   if (result.assistantStatus === 'partial') {
     const error = new HandlerError(
       'ASSISTANT_PARTIAL_RESULT',
-      '已保存部分结果；助手仍有未完成事项，整项任务未确认成功。',
+      '已保存部分结果；子智能体仍有未完成事项，整项任务未确认成功。',
       false,
     );
     attachAssistantFailureDiagnostics(error, diagnostics);

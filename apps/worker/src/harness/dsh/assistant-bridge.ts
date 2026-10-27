@@ -237,7 +237,7 @@ export function createAssistantWorkerBridge(
       const result = {
         deliveryId: stableId(`${instance.runId}:settled`),
         status: 'partial' as const,
-        summary: 'Native assistant settled without a verified delivery.',
+        summary: 'Native 子智能体 settled without a verified delivery.',
         evidence: [],
         incomplete: [
           `Native stop reason: ${String(p.stopReason).slice(0, 120)}`,
@@ -555,7 +555,7 @@ export function createAssistantWorkerBridge(
           return {
             error: 'assistant_child_invalid',
             message:
-              '没有可接收消息的助手。childRunId 必须使用已创建助手的真实编号；未安排助手时请直接继续当前任务。',
+              '没有可接收消息的子智能体。childRunId 必须使用已创建子智能体的真实编号；未安排子智能体时请直接继续当前任务。',
           };
         const childRunId = childId.data;
         if (
@@ -566,7 +566,7 @@ export function createAssistantWorkerBridge(
           return {
             error: 'assistant_child_invalid',
             message:
-              '当前任务没有这个助手，请使用本次 assistant.delegate 返回的直属助手编号，或直接继续当前任务。',
+              '当前任务没有这个子智能体，请使用本次 assistant.delegate 返回的直属子智能体编号，或直接继续当前任务。',
           };
         await runtime.requestMessage(context, {
           runId: task.rootRunId,
@@ -581,7 +581,7 @@ export function createAssistantWorkerBridge(
           return {
             error: 'assistant_report_child_only',
             message:
-              '汇报工具只供子助手向主员工交付结果。你是当前主员工，请直接向用户回复；需要继续研究时直接使用相应工具。',
+              '汇报工具只供子智能体向主员工交付结果。你是当前主员工，请直接向用户回复；需要继续研究时直接使用相应工具。',
           };
         const { output, ...report } = args;
         const parsed = AssistantResultSchema.safeParse({

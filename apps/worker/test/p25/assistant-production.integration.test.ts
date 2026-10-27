@@ -268,8 +268,9 @@ integration(
               assistantMessageId: randomUUID(),
               systemInstructions:
                 'Use available native tools for bounded independent tasks.',
+              // A user's own words; ROOT_PRIVATE marks the parent for the fake model.
               userRequest:
-                'ROOT_PRIVATE: delegate independent A and B tasks, then summarize.',
+                'ROOT_PRIVATE: 下面 A、B 两项请分头并行处理：每项单独交给一个去分析，最后由你汇总。',
               bootstrapConversation: '',
               authorizedMemoryContext: '',
               grantedCapabilities: ['model:invoke'],
@@ -466,8 +467,7 @@ integration(
             for (const row of results) {
               expect(row.payload).toMatchObject({
                 status: 'partial',
-                summary:
-                  'Native assistant settled without a verified delivery.',
+                summary: 'Native 子智能体 settled without a verified delivery.',
                 evidence: [],
                 usageComplete: false,
               });
@@ -608,6 +608,14 @@ integration(
           expect(
             tree.messages.every((message) => message.status === 'adopted'),
           ).toBe(true);
+          // MET-214: everything the model was sent (tool declarations,
+          // delegated tasks, governed child results) calls the children
+          // 「子智能体」, never the old names.
+          const sent = JSON.stringify(model.requests);
+          expect(sent).toContain('子智能体 only: deliver');
+          expect(sent).not.toMatch(
+            /Rice Bridge|子助手|Child assistant|Governed assistant|assistant report content/,
+          );
           expect(
             model.requests.some(
               (request) =>

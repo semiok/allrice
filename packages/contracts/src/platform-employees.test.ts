@@ -67,7 +67,7 @@ describe('platform employee production contract', () => {
     ]);
     definition.capabilities.toolNames = [...developmentWorkflowToolNames];
     expect(employeeToolConfigurationErrors(definition)).toContain(
-      'Bridge 为只读，不能配置 local.process.execute',
+      'AllRice 助手为只读，不能配置 local.process.execute',
     );
     definition.securityPolicy.bridgeAccess = 'read_write';
     expect(employeeToolConfigurationErrors(definition)).toEqual([]);

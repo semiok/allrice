@@ -60,7 +60,7 @@ export const executeControlledLocalCommand: RiceToolHandler = async ({
         }),
         executionLocation: 'local',
         nextAction:
-          '当前明确绑定的本机环境不可用，请查看 Bridge 的具体缺项并恢复环境。不得自动上传本地文件或迁移本次调用；用户明确允许云端且输入已获授权时，可在新的工具调用中使用已有云端能力。',
+          '当前明确绑定的本机环境不可用，请查看 AllRice 助手的具体缺项并恢复环境。不得自动上传本地文件或迁移本次调用；用户明确允许云端且输入已获授权时，可在新的工具调用中使用已有云端能力。',
       }),
       summary: '本地计算环境暂不可用，本次调用未执行',
     };

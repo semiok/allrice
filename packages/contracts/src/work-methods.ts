@@ -22,10 +22,10 @@ export const workMethodLabels: Record<WorkMethod, string> = {
   cloud_files: '云端-文件',
   cloud_apps: '云端-应用',
   cloud_automation: '云端-定时任务',
-  bridge_compute: 'Bridge-计算',
-  bridge_browser: 'Bridge-浏览器',
-  bridge_files: 'Bridge-文件',
-  bridge_apps: 'Bridge-应用',
+  bridge_compute: '电脑-计算',
+  bridge_browser: '电脑-浏览器',
+  bridge_files: '电脑-文件',
+  bridge_apps: '电脑-应用',
 };
 
 /** Only synchronous tools whose successful return confirms work. Async tools

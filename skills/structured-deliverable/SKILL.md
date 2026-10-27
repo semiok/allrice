@@ -17,7 +17,7 @@ Create a useful deliverable only when the user explicitly asks for a report, doc
 
 ## Local file organization proposals
 
-When the user explicitly requests copying, moving or renaming files inside their selected Bridge folder, first inspect only the relevant files with `local_fs_list` and `survey: {mode: files, hash: true}`. Publish a `kind: changeset`, `format: json` proposal using `content: {operations: [...]}` encoded as JSON. Each operation contains `path`, `target`, `operation: copy|move|rename`, `source: {checksum, version, sizeBytes}` from that exact survey, and `expectedDestination: null`. Never invent hashes or versions, substitute a `local_file_inspect` version, or represent binary files as empty before/after text.
+When the user explicitly requests copying, moving or renaming files inside their selected AllRice 助手 folder, first inspect only the relevant files with `local_fs_list` and `survey: {mode: files, hash: true}`. Publish a `kind: changeset`, `format: json` proposal using `content: {operations: [...]}` encoded as JSON. Each operation contains `path`, `target`, `operation: copy|move|rename`, `source: {checksum, version, sizeBytes}` from that exact survey, and `expectedDestination: null`. Never invent hashes or versions, substitute a `local_file_inspect` version, or represent binary files as empty before/after text.
 
 Keep sources and destinations inside the same selected root, at most32 operations, each file at most9000000 bytes and total at most128000000 bytes. Destination parents must already exist; request supported directory creation separately if needed. Existing destinations are conflicts, not permission to overwrite. Do not create overlapping paths, cycles, executable commands or permanent deletions.
 
