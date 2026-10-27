@@ -73,6 +73,7 @@ const Request = z.discriminatedUnion('action', [
 export function createTaskProgressRuntime(
   input: {
     context: ExecutionContext;
+    sessionId?: string;
     worker: { jobId: string; workerId: string; leaseToken: string };
   },
   db = getDatabase(),
@@ -117,7 +118,23 @@ export function createTaskProgressRuntime(
       const finishing = p.action === 'finish';
       if (job.cancel_requested_at && !finishing)
         throw Error('task_progress_lease_lost');
-      await tx`insert into allrice_task_progress(run_id) values(${runId}) on conflict do nothing`;
+      const inserted =
+        await tx`insert into allrice_task_progress(run_id) values(${runId}) on conflict do nothing returning run_id`;
+      if (inserted.length && input.sessionId) {
+        const [previous] = await tx<
+          { run_id: string; state: ProgressState; pause_id: string }[]
+        >`
+          select p.run_id,p.state,p.pause_id from allrice_task_progress p
+          join allrice_employee_runs e on e.run_id=p.run_id
+          where e.organization_id=${context.organizationId} and e.workspace_id=${context.workspaceId!}
+            and e.session_id=${input.sessionId} and p.run_id<>${runId}
+            and p.pause_id is not null and not p.canceled
+          order by p.updated_at desc limit 1 for update of p`;
+        if (previous) {
+          await tx`update allrice_task_progress set state=${tx.json(JSON.parse(JSON.stringify(previous.state)))},pause_id=${previous.pause_id} where run_id=${runId}`;
+          await tx`update allrice_task_progress set pause_id=null where run_id=${previous.run_id}`;
+        }
+      }
       const [row] = await tx<
         { state: ProgressState; pause_id: string | null; canceled: boolean }[]
       >`select * from allrice_task_progress where run_id=${runId} for update`;

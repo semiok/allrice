@@ -103,10 +103,12 @@
         "'runtime-progress'",
         "'重新检查后继续'",
         "'取消任务'",
+        "`runtime-progress:${status.pauseId}:${sequence}`",
         "'runtime-progress'",
         "'取消任务'",
         "'重新检查后继续'"
       ],
+      "apps/worker/src/harness/dsh-adapter.ts": ["'runtime-progress'"],
       "packages/database/src/mcp-managed-connections.ts": [
         "and e.payload->'nativePayload'->'questions'->0->>'id'='app-connect:'||request.id::text)",
         "`app-connect:${row.id}`",

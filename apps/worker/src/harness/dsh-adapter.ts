@@ -804,6 +804,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     let prompt = '';
     let bootstrapReceipt: BootstrapReceipt | undefined;
     let answer = '';
+    let waitingForUser: HarnessExecutionResult['waitingForUser'];
     let assistantFinished = false;
     let interruptedUsage: AssistantFailureUsage | undefined;
     let assistantDiagnostics: AssistantFailureDiagnostics | undefined;
@@ -1020,6 +1021,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
               cacheUsageKnown: restoredUsage!.cacheUsageKnown,
               completionSource: undefined,
               usageSource: undefined,
+              waitingForUser: undefined,
             }
           : await this.runOnce({
               runtime,
@@ -1129,6 +1131,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
         usage.outputTokens += result.usage.outputTokens;
         usageComplete &&= result.usageComplete;
         cacheUsageKnown &&= result.cacheUsageKnown;
+        waitingForUser = result.waitingForUser;
+        if (waitingForUser) result.answer = '等你回答后继续。';
         const toolCall = parseDshToolCall(result.answer);
         // This narrow path has no external join/validation/wait between its
         // three adjacent checks. Keep the final current-authority barrier;
@@ -1651,6 +1655,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     }
     const result: HarnessExecutionResult = {
       answer,
+      ...(waitingForUser ? { waitingForUser } : {}),
       usage,
       usageComplete,
       cacheUsageKnown,
@@ -1822,6 +1827,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
     let waitTimer: NodeJS.Timeout | undefined;
     let parking: Promise<unknown> | undefined;
     let parkingQuestion = false;
+    let progressQuestionId: string | undefined;
+    let progressQuestionPending: HarnessExecutionResult['waitingForUser'];
+    let waitingForUser: HarnessExecutionResult['waitingForUser'];
     let settle!: () => void;
     const idlePromise = new Promise<void>((resolveIdle) => {
       settle = resolveIdle;
@@ -1962,6 +1970,13 @@ export class DshHarnessAdapter implements HarnessAdapter {
         const summary = normalized.success
           ? shortText(normalized.data.questions[0]?.question, 1000)
           : shortText(record(questions[0])?.question, 500);
+        progressQuestionId =
+          normalized.success &&
+          normalized.data.questions.some(
+            (question) => question.id === 'runtime-progress',
+          )
+            ? (questionId ?? undefined)
+            : undefined;
         await input.onNative({
           type: 'native.event',
           presentation: 'context',
@@ -1990,6 +2005,13 @@ export class DshHarnessAdapter implements HarnessAdapter {
             });
           }, 30_000);
         }
+        return;
+      }
+      if (notification.method === 'session.user-question-pending') {
+        const questionId = shortText(notification.params.questionId, 240);
+        clearTimeout(waitTimer);
+        if (questionId && questionId === progressQuestionId)
+          progressQuestionPending = { questionId };
         return;
       }
       if (notification.method === 'session.user-question-answered') {
@@ -2312,6 +2334,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
         await input.onDelta('', source, replyId, 'replace');
       }
       if (event.type === 'turn/end') {
+        if (progressQuestionPending) {
+          waitingForUser = progressQuestionPending;
+          return;
+        }
         const reason = record(data.reason);
         if (reason?.kind === 'error') {
           const failure = record(reason.error);
@@ -2444,6 +2470,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       }
       return {
         answer,
+        waitingForUser,
         replyId,
         usage,
         completionSource,

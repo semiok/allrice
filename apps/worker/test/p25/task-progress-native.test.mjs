@@ -159,8 +159,12 @@ describe('native progress middleware', () => {
           answer = resolve;
         }),
     );
-    const next = vi.fn(async () => ({ maxTokens: 10 }));
-    const pending = f.hooks.get('agent/request')({ agent: f.child }, next);
+    const next = vi.fn(async function* () {
+      yield { type: 'text', text: 'ok' };
+    });
+    const pending = Array.fromAsync(
+      f.hooks.get('llm/stream')({ sessionId: f.child.id }, next),
+    );
     await vi.waitFor(() => expect(f.ctx.userQuestions.ask).toHaveBeenCalled());
     expect(next).not.toHaveBeenCalled();
     expect(f.ctx.userQuestions.ask.mock.calls[0][0].agent).toBe(f.root);
@@ -185,7 +189,9 @@ describe('native progress middleware', () => {
       });
       const next = vi.fn();
       await expect(
-        f.hooks.get('agent/request')({ agent: f.root }, next),
+        Array.fromAsync(
+          f.hooks.get('llm/stream')({ sessionId: f.root.id }, next),
+        ),
       ).rejects.toThrow('task_progress_canceled');
       expect(next).not.toHaveBeenCalled();
       expect(f.bridge).toHaveBeenCalledWith(

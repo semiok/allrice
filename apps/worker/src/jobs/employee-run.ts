@@ -1039,6 +1039,11 @@ export async function executeEmployeeRun({
       executionSnapshot.taskRuntimePolicy
         ? createTaskProgressRuntime({
             context: execution.context,
+            // 子智能体方案 PR4a/b/c 删除旧助手包装层时，一并删掉这个分支。
+            sessionId:
+              objectInput(assistantConfiguration).allowAssistants === true
+                ? undefined
+                : input.sessionId,
             worker: workflowLease,
           })
         : undefined;
@@ -1797,6 +1802,10 @@ export async function executeEmployeeRun({
               contentGuard,
               progress: taskProgress,
               questionWait,
+              nativeQuestionWait:
+                executionSnapshot.schemaVersion === 2
+                  ? executionSnapshot.nativePreferences?.questionWait
+                  : undefined,
               assistants,
               ...(assistants
                 ? {
@@ -2008,6 +2017,15 @@ export async function executeEmployeeRun({
                 });
               }
             });
+    if (!assistants && result.waitingForUser) {
+      const progress = await taskProgress?.({
+        action: 'check',
+        nativeSessionId: result.threadId ?? runtime.threadId,
+      });
+      if (!progress?.pauseId || progress.canceled !== false)
+        throw new HandlerError('DSH_TURN_FAILED', 'DSH turn failed', false);
+      result.answer = '等你回答后继续。';
+    }
     if (questionWait)
       await completeNativeTask({
         context: execution.context,

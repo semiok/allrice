@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { resolve, sep, dirname } from 'node:path';
+import { Config as AskUserConfig } from '@deepseek-ai/dsh-tool-ask-user';
 
 import {
   harnessContextKey,
   UuidSchema,
+  QuestionWaitSchema,
   type DshExecutionSnapshot,
   type InternalKernelRequest,
 } from '@allrice/contracts';
@@ -804,7 +806,17 @@ export class DshRuntimePool {
       .join('\n\n');
     // Store only per-field hashes in memory so diagnostics can name changed
     // configuration without recording its values.
+    const questionWait = QuestionWaitSchema.parse(
+      input.input.nativeQuestionWait ?? { mode: 'default' },
+    );
+    const questionTimeout =
+      questionWait.mode === 'default'
+        ? AskUserConfig({}).timeout!
+        : questionWait.mode === 'forever'
+          ? -1
+          : questionWait.seconds;
     const fingerprintInput = {
+      questionWait: questionTimeout,
       ...(nativeIdentity ? { nativeArtifact: nativeIdentity } : {}),
       ...(input.nativePin ? { nativeSessionBinding: input.nativePin } : {}),
       snapshot: input.snapshot,
@@ -946,6 +958,10 @@ export class DshRuntimePool {
       DSH_DISTRIBUTION_VERSION:
         nativeIdentity?.version ?? DSH_DISTRIBUTION_CURRENT_VERSION,
       DSH_MAX_OUTPUT_TOKENS: String(maxTokens ?? 16_000),
+      ALLRICE_QUESTION_RELEASE_MS: String(this.idleCloseMs),
+      ...(questionWait.mode === 'default'
+        ? {}
+        : { ALLRICE_ASK_USER_TIMEOUT: String(questionTimeout) }),
       ...(input.input.assistants ? { ALLRICE_ASSISTANTS_ENABLED: '1' } : {}),
       ...(input.input.progress ? { ALLRICE_PROGRESS_GUARD_ENABLED: '1' } : {}),
       ...(input.input.progress &&

@@ -1,6 +1,8 @@
 import { readDshToolResult } from '@allrice/contracts/native-runtime';
+/* global process */
 /* Native DSH middleware only; no Agent loop, extra model or action authority. */
 import { createHash, randomUUID } from 'node:crypto';
+import { askProgramQuestion } from './allrice-program-questions.mjs';
 import {
   hasModelOutput,
   settledTokenUsage,
@@ -103,6 +105,7 @@ export function installTaskProgress(ctx, bridge, configuration = {}) {
     failure;
   const toolNames = new Map(); // outstanding calls only; cleared at receipt
   let prompting;
+  const pauseQuestions = new Map();
   const admissions = new Map();
   async function prepareModel(agent, requested, signal) {
     if (admissions.has(agent.id))
@@ -161,29 +164,36 @@ export function installTaskProgress(ctx, bridge, configuration = {}) {
     if (!prompting) {
       const root = rootFor(agent);
       prompting = (async () => {
-        const answer = await ctx.userQuestions.ask({
-          agent: root,
-          signal,
-          questions: [
-            {
-              id: 'runtime-progress',
-              header: '需要确认',
-              question:
-                '近期操作反复失败或没有新结果，Rice 已暂停新调用。是否调整后继续？',
-              detail: `原因：${status.reason === 'repeated_failure' ? '重复失败' : '重复无进展'}。最近操作：${(status.recent ?? []).map((f) => `${f.tool}（${f.outcome}）`).join('、')}。已有内容、工件和用量记录会保留；继续不代表批准文件修改或其他操作。`,
-              options: [
-                {
-                  label: '重新检查后继续',
-                  description: '保留统计，重新检查当前权限和任务状态。',
-                },
-                {
-                  label: '取消任务',
-                  description: '停止后续调用，保留已有交付物。',
-                },
-              ],
-            },
-          ],
-        });
+        const sequence = (pauseQuestions.get(status.pauseId) ?? 0) + 1;
+        pauseQuestions.set(status.pauseId, sequence);
+        const answer = await askProgramQuestion(
+          ctx.userQuestions,
+          {
+            agent: root,
+            signal,
+            questions: [
+              {
+                id: 'runtime-progress',
+                header: '需要确认',
+                question:
+                  '近期操作反复失败或没有新结果，Rice 已暂停新调用。是否调整后继续？',
+                detail: `原因：${status.reason === 'repeated_failure' ? '重复失败' : '重复无进展'}。最近操作：${(status.recent ?? []).map((f) => `${f.tool}（${f.outcome}）`).join('、')}。已有内容、工件和用量记录会保留；继续不代表批准文件修改或其他操作。`,
+                options: [
+                  {
+                    label: '重新检查后继续',
+                    description: '保留统计，重新检查当前权限和任务状态。',
+                  },
+                  {
+                    label: '取消任务',
+                    description: '停止后续调用，保留已有交付物。',
+                  },
+                ],
+              },
+            ],
+          },
+          `runtime-progress:${status.pauseId}:${sequence}`,
+        );
+        if (answer.pending === true) throw Error('task_progress_pending');
         const chosen = answer.answers.find((a) => a.id === 'runtime-progress');
         // A skipped item ({ selected: [] }) does not agree to continue.
         const cancel =
@@ -262,8 +272,14 @@ export function installTaskProgress(ctx, bridge, configuration = {}) {
     }
   });
   ctx.on('agent/request', async ({ agent, signal }, next) => {
-    // Check before admission/dispatch, not after losing a completed answer.
-    await check(agent, signal);
+    // Ordinary questions must wait until llm/stream: DSH has claimed inbox
+    // messages here but has not yet appended them to session history.
+    // 子智能体方案 PR4a/b/c 删除旧助手包装层时，一并删掉助手分支。
+    if (
+      configuration.maintenanceOutputTokens ||
+      process.env.ALLRICE_ASSISTANTS_ENABLED === '1'
+    )
+      await check(agent, signal);
     const config = await next();
     if (!configuration.maintenanceOutputTokens) return config;
     return {

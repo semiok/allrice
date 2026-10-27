@@ -242,6 +242,45 @@ lines.on('line', (line) => {
     model: 'fake',
     contextWindow: 128000,
   });
+  if (prompt.includes('progress-proof:')) {
+    const mode = prompt.split('progress-proof:')[1].split(/\s/)[0];
+    if (mode !== 'before-card')
+      notify('session.user-question', {
+        sessionId,
+        questionId: 'progress-proof',
+        questions: [
+          {
+            id: mode === 'connection' ? 'app-connect:test' : 'runtime-progress',
+            question: '等我确认后再继续',
+            options: [{ label: '继续' }],
+          },
+        ],
+      });
+    if (['pending', 'wrong-id', 'connection'].includes(mode))
+      notify('session.user-question-pending', {
+        sessionId,
+        questionId: mode === 'wrong-id' ? 'another-question' : 'progress-proof',
+      });
+    if (mode === 'crash') {
+      setImmediate(() => process.kill(process.pid, 'SIGKILL'));
+      return;
+    }
+    event(sessionId, 'turn/end', {
+      turn,
+      reason: {
+        kind: 'error',
+        error: {
+          code: mode === 'no-provider' ? 'NO_PROVIDER' : 'UNKNOWN',
+          message:
+            mode === 'pending'
+              ? 'opaque error: do not parse'
+              : 'task_progress_pending',
+        },
+      },
+    });
+    notify('session.status', { sessionId, status: 'idle' });
+    return;
+  }
   if (prompt.includes('long-method-confirmation-question')) {
     notify('session.user-question', {
       sessionId,

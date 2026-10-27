@@ -1442,6 +1442,29 @@ describe('DshHarnessAdapter', () => {
     }
   }, 45_000);
 
+  it.each([
+    'pending',
+    'wrong-id',
+    'connection',
+    'no-provider',
+    'before-card',
+    'cancel',
+    'crash',
+  ])(
+    'uses only matched structured progress evidence for %s (scenario 29)',
+    async (mode) => {
+      const execution = createAdapter().execute(
+        executionInput({ prompt: `progress-proof:${mode}` }),
+      );
+      if (mode === 'pending')
+        await expect(execution).resolves.toMatchObject({
+          answer: '等你回答后继续。',
+          waitingForUser: { questionId: 'progress-proof' },
+        });
+      else await expect(execution).rejects.toThrow();
+    },
+  );
+
   it('bounds a long native question event summary while preserving its exact confirmation payload', async () => {
     const events: HarnessEvent[] = [];
     await createAdapter().execute(

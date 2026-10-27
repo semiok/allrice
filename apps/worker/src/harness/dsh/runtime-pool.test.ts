@@ -1029,6 +1029,28 @@ it.each([false, true])(
   },
 );
 
+it('restarts once when the frozen question wait changes and then reuses the Host', async () => {
+  const runtimes = pool();
+  const value = request();
+  value.input.assistants = undefined;
+  const initial = await runtimes.acquire(value);
+  expect((await runtimes.acquire(value)).runtime).toBe(initial.runtime);
+  value.input.nativeQuestionWait = { mode: 'timed', seconds: 120 };
+  expect((await runtimes.acquire(value)).runtime).toBe(initial.runtime);
+  value.input.nativeQuestionWait = { mode: 'timed', seconds: 1 };
+  const changed = await runtimes.acquire(value);
+  expect(changed.runtime).not.toBe(initial.runtime);
+  expect(changed.preparation).toMatchObject({
+    reason: 'configuration_changed',
+    changedFields: ['questionWait'],
+  });
+  expect((await runtimes.acquire(value)).runtime).toBe(changed.runtime);
+  value.input.nativeQuestionWait = { mode: 'forever' };
+  const forever = await runtimes.acquire(value);
+  expect(forever.preparation.changedFields).toEqual(['questionWait']);
+  expect((await runtimes.acquire(value)).runtime).toBe(forever.runtime);
+});
+
 it('reuses the session process across business Runs with assistants enabled', async () => {
   const runtimes = pool();
   const first = request();

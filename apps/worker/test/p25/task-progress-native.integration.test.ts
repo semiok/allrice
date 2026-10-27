@@ -106,7 +106,7 @@ describe('MET153 actual native progress wire', () => {
     }
   }, 45000);
 
-  it.each(['continue', 'cancel'] as const)(
+  it.each(['continue', 'cancel', 'pending'] as const)(
     'pauses after actual repeated tool errors and handles %s',
     async (decision) => {
       const model = await p24Fixture(async (_request, index) =>
@@ -124,6 +124,8 @@ describe('MET153 actual native progress wire', () => {
         environment: {
           PATH: process.env.PATH ?? '/usr/bin:/bin',
           ALLRICE_PROGRESS_GUARD_ENABLED: '1',
+          ALLRICE_QUESTION_RELEASE_MS: '60000',
+          ALLRICE_ASK_USER_TIMEOUT: '1',
           DSH_CORDIS_CONFIG: resolve(
             import.meta.dirname,
             '../../dsh/allrice-restricted.cordis.yml',
@@ -201,6 +203,73 @@ describe('MET153 actual native progress wire', () => {
         )!;
         expect(question.params.sessionId).toBe(session);
         expect(JSON.stringify(question)).toContain('runtime-progress');
+        if (decision === 'pending') {
+          await expect
+            .poll(
+              () =>
+                notices.some(
+                  (n) => n.method === 'session.user-question-pending',
+                ),
+              { timeout: 5000 },
+            )
+            .toBe(true);
+          await expect
+            .poll(
+              () =>
+                notices.filter(
+                  (n) =>
+                    n.method === 'session.event' &&
+                    (n.params.event as { type: string }).type === 'turn/end',
+                ).length,
+            )
+            .toBe(1);
+          expect(model.requests).toHaveLength(3);
+          expect(
+            requests.filter((p) => p.action === 'start' && p.kind === 'model'),
+          ).toHaveLength(3);
+          expect(requests.some((p) => p.action === 'decide')).toBe(false);
+          expect(pauseId).not.toBeNull();
+          // DSH has already persisted this message before the pending error.
+          const messages = notices.filter(
+            (n) =>
+              n.method === 'session.event' &&
+              (n.params.event as { type: string }).type === 'user/message',
+          );
+          expect(JSON.stringify(messages)).toContain(
+            'Synthetic repeated failure then user decision.',
+          );
+          await client.prompt(session, '先保留这条新消息，等我确认再继续。');
+          await expect
+            .poll(
+              () =>
+                notices.filter(
+                  (n) => n.method === 'session.user-question-pending',
+                ).length,
+              { timeout: 5000 },
+            )
+            .toBe(2);
+          await expect
+            .poll(
+              () =>
+                notices.filter(
+                  (n) =>
+                    n.method === 'session.event' &&
+                    (n.params.event as { type: string }).type === 'turn/end',
+                ).length,
+            )
+            .toBe(2);
+          expect(model.requests).toHaveLength(3);
+          expect(
+            JSON.stringify(
+              notices.filter(
+                (n) =>
+                  n.method === 'session.event' &&
+                  (n.params.event as { type: string }).type === 'user/message',
+              ),
+            ),
+          ).toContain('先保留这条新消息，等我确认再继续。');
+          return;
+        }
         // MET-210: plain text never answers a question; only a typed answer.
         await expect(client.steer(session, '重新检查后继续')).rejects.toThrow(
           'QUESTION_PENDING_USE_ANSWER',
@@ -251,13 +320,20 @@ describe('MET153 actual native progress wire', () => {
         const context = notices.filter((n) => n.method === 'session.context');
         expect(context.length).toBeGreaterThan(0);
         expect(context.at(-1)?.params.sessionId).toBe(session);
-        expect(context.at(-1)?.params.contextPressure).toEqual(
-          (await client.sessionProjection(session)).contextPressure,
-        );
-        if (decision === 'continue')
+        if (decision === 'continue') {
+          expect(context.at(-1)?.params.contextPressure).toEqual(
+            (await client.sessionProjection(session)).contextPressure,
+          );
           expect(JSON.stringify(notices)).toContain(
             'Synthetic final answer retained.',
           );
+        } else {
+          // llm/stream cancellation now appends an empty assistant/attempt
+          // after the last announced request boundary; its projection advances.
+          expect(
+            (await client.sessionProjection(session)).asOfSeq,
+          ).toBeGreaterThan(Number(context.at(-1)?.params.asOfSeq));
+        }
       } finally {
         await client.close();
         await model.close();

@@ -21,6 +21,7 @@ import type {
   RuntimeNativeInputProof,
   AssistantSubscriptionSnapshot,
   NativeQuestionCheckpoint,
+  QuestionWait,
 } from '@allrice/contracts';
 
 export interface HarnessToolCall {
@@ -73,6 +74,8 @@ export interface HarnessInputDeliveryPort {
 }
 
 export interface HarnessExecutionInput {
+  /** Owner preference frozen when this Run was enqueued. */
+  nativeQuestionWait?: QuestionWait;
   /** Server-loaded current human message before attachment/template augmentation.
    * Selects an existing tool transport only; database admission grants writes. */
   currentUserRequest?: string;
@@ -250,6 +253,7 @@ export interface HarnessExecutionInput {
 }
 
 export interface HarnessExecutionResult {
+  waitingForUser?: { questionId: string };
   assistantStatus?: 'completed' | 'partial';
   usageComplete?: boolean;
   cacheUsageKnown?: boolean;

@@ -291,7 +291,10 @@ async function scenario({
           if (p.action === 'check') progressChecks++;
           if (p.action === 'decide') progressContinued = true;
           return {
-            paused: progressChecks >= 2 && !progressContinued,
+            // Ordinary Runs check at llm/stream; legacy assistants also check
+            // at agent/request. Hold the actual dispatch boundary in both.
+            paused:
+              progressChecks >= (assistants ? 2 : 1) && !progressContinued,
             pauseId: 'synthetic-pause',
             reason: 'repeated_failure',
             recent: [],
