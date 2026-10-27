@@ -95,29 +95,45 @@ integration('DSH convergence after every migration (PostgreSQL)', () => {
     expect(await runGate(root, ['--tables', '--base', 'HEAD'])).toBe(0);
   });
 
-  it('fails for an actual allrice_native_test_x table and passes again after removal', async () => {
-    vi.stubEnv('DATABASE_URL', scopedUrl);
-    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
-    await sql!.unsafe('create table allrice_native_test_x (id integer)');
-    try {
-      expect(await runGate(root, ['--tables', '--base', 'HEAD'])).toBe(1);
-      expect(errors).toHaveBeenCalledWith(
-        expect.stringContaining('allrice_native_test_x: 新增未登记'),
-      );
-    } finally {
-      await sql!.unsafe('drop table allrice_native_test_x');
-    }
-    expect(await runGate(root, ['--tables', '--base', 'HEAD'])).toBe(0);
-  });
+  it.each([
+    'allrice_native_test_x',
+    'allrice_assistant_test_x',
+    'allrice_dsh_test_x',
+  ])(
+    'fails for an actual %s table and passes again after removal',
+    async (name) => {
+      vi.stubEnv('DATABASE_URL', scopedUrl);
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+      await sql!.unsafe(`create table ${name} (id integer)`);
+      try {
+        expect(await runGate(root, ['--tables', '--base', 'HEAD'])).toBe(1);
+        expect(errors).toHaveBeenCalledWith(
+          expect.stringContaining(`${name}: 新增未登记`),
+        );
+      } finally {
+        await sql!.unsafe(`drop table ${name}`);
+      }
+      expect(await runGate(root, ['--tables', '--base', 'HEAD'])).toBe(0);
+    },
+  );
 
-  it('treats underscores literally and reads only the selected schema', async () => {
-    await sql!.unsafe('create table allriceXnative_test_x (id integer)');
+  it('treats prefixes literally and does not expand exact reminder names to a brand prefix', async () => {
+    const outsideScope = [
+      'allricexnative_test_x',
+      'allricexassistant_test_x',
+      'allricexdsh_test_x',
+      'allrice_brand_content_reminders_test_x',
+      'allrice_brand_native_reminder_targets_test_x',
+      'allrice_brand_other_test_x',
+    ];
+    for (const name of outsideScope)
+      await sql!.unsafe(`create table ${name} (id integer)`);
     try {
       const tables = await readNativeTables(sql!);
-      expect(tables).not.toContain('allricexnative_test_x');
+      for (const name of outsideScope) expect(tables).not.toContain(name);
       expect(checkBaseline({ table: tables }, baseline, baseline)).toEqual([]);
     } finally {
-      await sql!.unsafe('drop table allriceXnative_test_x');
+      for (const name of outsideScope) await sql!.unsafe(`drop table ${name}`);
     }
   });
 });

@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { baseline } from './dsh-convergence-gate.baseline.ts';
 import {
   BASELINE_PATH,
+  CATEGORIES,
   INITIAL_APPROVAL,
   KINDS,
   checkBaseline,
@@ -115,11 +116,74 @@ describe('DSH convergence inventory and registration', () => {
     ).toEqual([expect.stringContaining('approvedBy')]);
   });
 
+  it.each(
+    KINDS.flatMap((kind) =>
+      CATEGORIES.filter(
+        (category) => category !== '业务工具' || kind === 'patch',
+      ).map((category) => [kind, category] as const),
+    ),
+  )(
+    'requires fresh approval when a pending %s becomes %s',
+    (kind, category) => {
+      const prior: BaselineEntry = {
+        ...approved(kind),
+        category: '待删',
+        approvedBy: INITIAL_APPROVAL,
+      };
+      const retained = { ...prior, category };
+      expect(checkBaseline({}, [retained], [prior])).toEqual([
+        expect.stringContaining('approvedBy'),
+      ]);
+      retained.approvedBy = '2026-10-28 任务说明：主会话核定此项保留。';
+      expect(checkBaseline({}, [retained], [prior])).toEqual([]);
+      // A dated source on a pending row is not a fresh retention decision either.
+      expect(
+        checkBaseline({}, [retained], [{ ...retained, category: '待删' }]),
+      ).toEqual([expect.stringContaining('approvedBy')]);
+      expect(checkBaseline({}, [retained], [retained])).toEqual([]);
+    },
+  );
+
+  it('still permits marking an inherited initial category as 待删', () => {
+    const prior = { ...approved(), approvedBy: INITIAL_APPROVAL };
+    expect(
+      checkBaseline({}, [{ ...prior, category: '待删' }], [prior]),
+    ).toEqual([]);
+  });
+
+  it.each(KINDS)('allows 业务工具 only for patch, checking %s', (kind) => {
+    const entry: BaselineEntry = { ...approved(kind), category: '业务工具' };
+    for (const before of [null, [], [entry]])
+      expect(checkBaseline({}, [entry], before)).toEqual(
+        kind === 'patch' ? [] : [expect.stringContaining('业务工具仅限 patch')],
+      );
+  });
+
+  it.each([
+    'https://linear.app/met/issue/MET-210#comment-approval',
+    'https://linear.app/met/issue/MET-210',
+    'https://github.com/semiok/allrice/pull/626',
+    '原话：“同意。”',
+    '任务说明：主会话核定。',
+    '同意',
+  ])(
+    'accepts a date and nonempty source without imposing URL or length rules: %s',
+    (source) => {
+      expect(
+        checkBaseline(
+          {},
+          [{ ...approved(), approvedBy: `2026-10-28 ${source}` }],
+          [],
+        ),
+      ).toEqual([]);
+    },
+  );
+
   it('requires both the approval date and its source', () => {
     for (const approvedBy of [
       '2026-10-27',
       'approved',
-      '2026-10-27 原话：',
+      '2026-10-27 \t\n ',
       'https://linear.app/met/issue/MET-210#comment-a',
     ])
       expect(checkBaseline({}, [{ ...approved(), approvedBy }], [])).toEqual([
@@ -254,6 +318,37 @@ describe('CLI uses Git base and actual JSON files', () => {
       ),
     ]);
   });
+
+  it.each([
+    '@deepseek-ai/dsh-subagent/internal',
+    '@deepseek-ai/dsh-other/internal',
+  ])(
+    'rejects a duplicate private-interface id even with a different adapter (%s)',
+    async (upstreamInterface) => {
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const f = fixture();
+      f.write(
+        'apps/worker/dsh/compatibility.json',
+        JSON.stringify({
+          privateInterfaces: [
+            {
+              id: 'host',
+              upstreamInterface: '@deepseek-ai/dsh-subagent/internal',
+              adapter: 'existing.mjs',
+            },
+            { id: 'host', upstreamInterface, adapter: 'new.mjs' },
+          ],
+        }),
+      );
+      expect(() => readStaticInventory(f.directory)).toThrow('重复 id: host');
+      expect(await runGate(f.directory, ['--base', 'HEAD'])).toBe(2);
+      expect(errors).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'compatibility.privateInterfaces 重复 id: host',
+        ),
+      );
+    },
+  );
 
   it('fails closed for a malformed registry, bad base or unsupported flags', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});

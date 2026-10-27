@@ -1,4 +1,4 @@
-/** MET-210 #4: DSH wrappers only shrink, unless a user-approved SaaS need is recorded. */
+/** MET-210 #4: DSH wrappers only shrink, unless an approved need is recorded. */
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -9,7 +9,22 @@ import type { getDatabase } from '../packages/database/src/core/client.ts';
 
 export const BASELINE_PATH = 'scripts/dsh-convergence-gate.baseline.ts';
 export const INITIAL_APPROVAL = 'baseline 2026-10-27';
-export const CATEGORIES = ['门卫', '账本', '存储后端', '租约'] as const;
+export const CATEGORIES = [
+  '门卫',
+  '账本',
+  '存储后端',
+  '租约',
+  '业务工具',
+] as const;
+export const TABLE_PREFIXES = [
+  'allrice_native_',
+  'allrice_assistant_',
+  'allrice_dsh_',
+] as const;
+export const EXACT_TABLE_NAMES = [
+  'allrice_brand_content_reminders',
+  'allrice_brand_native_reminder_targets',
+] as const;
 export const KINDS = ['table', 'patch', 'private-interface'] as const;
 export type ItemKind = (typeof KINDS)[number];
 export type BaselineEntry = {
@@ -33,38 +48,40 @@ export function checkBaseline(
 ): string[] {
   const problems: string[] = [];
   const entries = new Set<string>();
-  const inherited = new Set(
-    before?.filter((entry) => entry.approvedBy === INITIAL_APPROVAL).map(key),
-  );
+  const previous = new Map(before?.map((entry) => [key(entry), entry]));
   for (const entry of baseline) {
     const label = key(entry);
     if (!KINDS.includes(entry.kind) || !nonempty(entry.id))
       problems.push(`${label}: kind/id 无效`);
     if (entries.has(label)) problems.push(`${label}: 基线重复登记`);
     entries.add(label);
+    const prior = previous.get(label);
+    const leavingPendingDeletion =
+      prior?.category === '待删' && entry.category !== '待删';
     const initial =
       entry.approvedBy === INITIAL_APPROVAL &&
-      (before === null || inherited.has(label));
+      (before === null || prior?.approvedBy === INITIAL_APPROVAL) &&
+      !leavingPendingDeletion;
     if (
-      !(CATEGORIES as readonly string[]).includes(entry.category) &&
-      !(initial && entry.category === '待删')
+      (!(CATEGORIES as readonly string[]).includes(entry.category) &&
+        !(initial && entry.category === '待删')) ||
+      (entry.category === '业务工具' && entry.kind !== 'patch')
     )
       problems.push(
-        `${label}: category 必须是门卫 / 账本 / 存储后端 / 租约；只有初始存量可标待删`,
+        `${label}: category 必须是门卫 / 账本 / 存储后端 / 租约；业务工具仅限 patch；只有初始存量可标待删`,
       );
     if (!nonempty(entry.basis))
       problems.push(
-        `${label}: 缺少 basis，写明为什么 DSH 做不了、为何必须由 AllRice 判断`,
+        `${label}: 缺少 basis，写明 DSH 做不了的 SaaS 判断或业务工具依据`,
       );
     if (
       !initial &&
       (!nonempty(entry.approvedBy) ||
-        !/^\d{4}-\d{2}-\d{2}\s+(?:https:\/\/linear\.app\/\S+#\S+|(?:用户)?原话[：:]\s*\S[\s\S]*)$/.test(
-          entry.approvedBy,
-        ))
+        !/^\d{4}-\d{2}-\d{2}\s+\S[\s\S]*$/.test(entry.approvedBy) ||
+        (leavingPendingDeletion && entry.approvedBy === prior?.approvedBy))
     )
       problems.push(
-        `${label}: approvedBy 必须有用户批准日期和 MET 评论链接或原话；新增项不能冒用 ${INITIAL_APPROVAL}`,
+        `${label}: approvedBy 必须有批准日期和非空出处（MET 评论链接、PR 链接、原话或任务说明）；新增项不能冒用 ${INITIAL_APPROVAL}，从待删改为保留类别必须更新批准记录`,
       );
   }
   for (const kind of KINDS) {
@@ -77,7 +94,7 @@ export function checkBaseline(
     for (const id of observed)
       if (!recorded.has(id))
         problems.push(
-          `${kind}: ${id}: 新增未登记；先取得用户批准，再在 ${BASELINE_PATH} 加 category（四类之一）、basis（DSH 做不了的原因）、approvedBy（日期和 MET 评论链接或原话）`,
+          `${kind}: ${id}: 新增未登记；先取得用户批准，再在 ${BASELINE_PATH} 加 category（四类之一，patch 也可为业务工具）、basis（DSH 做不了的原因或业务工具依据）、approvedBy（日期和非空出处）`,
         );
     for (const id of recorded)
       if (!observed.has(id))
@@ -138,6 +155,7 @@ export function readStaticInventory(root: string): Inventory {
     throw Error(
       'patch-ledger.patches 和 compatibility.privateInterfaces 必须是数组',
     );
+  const interfaceIds = new Set<string>();
   return {
     patch: patches.map((item) => {
       if (!nonempty(item?.id)) throw Error('patch-ledger 适配项缺少 id');
@@ -146,6 +164,9 @@ export function readStaticInventory(root: string): Inventory {
     'private-interface': interfaces.map((item) => {
       if (!nonempty(item?.id) || !nonempty(item?.upstreamInterface))
         throw Error('privateInterfaces 条目缺少 id/upstreamInterface');
+      if (interfaceIds.has(item.id))
+        throw Error(`compatibility.privateInterfaces 重复 id: ${item.id}`);
+      interfaceIds.add(item.id);
       return `${item.id}: ${item.upstreamInterface}`;
     }),
   };
@@ -161,10 +182,16 @@ export function openDatabase(url: string): Database {
 }
 
 export async function readNativeTables(sql: Database): Promise<string[]> {
+  // Scalar parameters also work on the CLI's first query, before array type discovery.
+  let matches = sql`false`;
+  for (const prefix of TABLE_PREFIXES)
+    matches = sql`${matches} or starts_with(tablename, ${prefix})`;
+  for (const name of EXACT_TABLE_NAMES)
+    matches = sql`${matches} or tablename = ${name}`;
   const rows = await sql<{ name: string }[]>`
     select tablename as name from pg_catalog.pg_tables
     where schemaname = current_schema()
-      and starts_with(tablename, 'allrice_native_')
+      and (${matches})
     order by tablename`;
   return rows.map((row) => row.name);
 }

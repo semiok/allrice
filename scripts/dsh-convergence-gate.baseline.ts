@@ -1,5 +1,6 @@
 /**
  * MET-210 #4 initial inventory: main 5edb28d2, 2026-10-27.
+ * Scope completed on 2026-10-28 after the first review (PR #626 task decision).
  * Tables are checked against PostgreSQL after all migrations, not SQL text.
  * 待删 is a conservative handoff, not approval of the existing implementation.
  * Delete entries with the implementation; additions need category/basis/user approval.
@@ -7,6 +8,118 @@
 import type { BaselineEntry } from './dsh-convergence-gate.ts';
 
 export const baseline: readonly BaselineEntry[] = [
+  {
+    kind: 'table',
+    id: 'allrice_assistant_artifacts',
+    category: '待删',
+    basis:
+      '0093：旧助手成果命名空间；子智能体 plan-v3-draft-astra.md §2 PR2b 九表退役，独立交付先上线。',
+    approvedBy: 'baseline 2026-10-27',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_assistant_cost_receipts',
+    category: '待删',
+    basis:
+      '0096：依赖旧助手的计费回执；子智能体 plan-v3-draft-astra.md §2 PR2b 九表退役，保留通用订阅和账本。',
+    approvedBy: 'baseline 2026-10-27',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_assistant_instances',
+    category: '待删',
+    basis:
+      '0093：旧助手实例与自写执行状态；子智能体 plan-v3-draft-astra.md §2 PR2b 九表退役，生命周期回归 DSH。',
+    approvedBy: 'baseline 2026-10-27',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_assistant_messages',
+    category: '待删',
+    basis:
+      '0093：旧助手消息队列与投递状态；子智能体 plan-v3-draft-astra.md §2 PR2b 九表退役，消息由 DSH 管理。',
+    approvedBy: 'baseline 2026-10-27',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_assistant_model_admissions',
+    category: '待删',
+    basis:
+      '0095：旧助手两阶段模型准入；子智能体 plan-v3-draft-astra.md §2 PR2b 九表退役，不删除通用预算设施。',
+    approvedBy: 'baseline 2026-10-27',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_assistant_price_snapshots',
+    category: '待删',
+    basis:
+      '0096：旧助手根计价快照；子智能体 plan-v3-draft-astra.md §2 PR2b 九表退役，保留订阅共用的不可变触发函数。',
+    approvedBy: 'baseline 2026-10-27',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_assistant_results',
+    category: '待删',
+    basis:
+      '0093：旧助手 report 结果协议；子智能体 plan-v3-draft-astra.md §2 PR2b 九表退役，须先完成独立交付链。',
+    approvedBy: 'baseline 2026-10-27',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_assistant_roots',
+    category: '待删',
+    basis:
+      '0093：旧助手根配置与 generation/fence；子智能体 plan-v3-draft-astra.md §2 PR2b 九表退役，保留通用 runtime_roots。',
+    approvedBy: 'baseline 2026-10-27',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_assistant_usage',
+    category: '待删',
+    basis:
+      '0093：依赖旧助手实例的用量预留与结算；子智能体 plan-v3-draft-astra.md §2 PR2b 九表退役，原生用量归通用根账本。',
+    approvedBy: 'baseline 2026-10-27',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_brand_content_reminders',
+    category: '待删',
+    basis:
+      '0193：品牌内容专属提醒注册与派发状态；定时 plan-v2-draft-astra.md §1.2、§3：方案推荐删除，待用户确认。',
+    approvedBy: 'baseline 2026-10-27',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_brand_native_reminder_targets',
+    category: '待删',
+    basis:
+      '0197：品牌专属提醒目标与重试链；定时 plan-v2-draft-astra.md §1.2、§3：方案推荐删除，待用户确认。',
+    approvedBy: 'baseline 2026-10-27',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_dsh_runtime_close_observations',
+    category: '账本',
+    basis:
+      '0212、providers/dsh-runtime-close-observations.ts：单向持久化 Worker 观察到的原生关闭请求和物理退出证据，DSH 不维护 SaaS 发布审计；对应 allrice-observed-native-close-v1。',
+    approvedBy: 'baseline 2026-10-27',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_dsh_runtime_instances',
+    category: '账本',
+    basis:
+      '0044、providers/dsh-runtime-registry.ts：Worker 心跳和物理退出的运行实例投影，供租户控制台与发布核对；live/offline 是观测记录，不决定 DSH 执行生命周期。',
+    approvedBy: 'baseline 2026-10-27',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_dsh_skills',
+    category: '存储后端',
+    basis:
+      '0046/0084、employees/employeehub.ts：持久化租户技能内容、checksum 与 bundle，冻结后提供给 DSH；DSH 不维护 AllRice 租户技能存储和员工绑定，执行仍归 DSH。',
+    approvedBy: 'baseline 2026-10-27',
+  },
   {
     kind: 'table',
     id: 'allrice_native_calendar_arms',
@@ -61,9 +174,9 @@ export const baseline: readonly BaselineEntry[] = [
   {
     kind: 'table',
     id: 'allrice_native_once_close_proofs',
-    category: '租约',
+    category: '待删',
     basis:
-      '0195：持久化 Worker writer epoch 的关闭证明，支撑跨 Worker 租约交接。',
+      '0195：旧 writer 关闭证明；定时 plan-v2-draft-astra.md §1.2 once 退役清单、§4.2：旧表退役，必要租约职责由新 allrice_dsh_leases 薄层承接。',
     approvedBy: 'baseline 2026-10-27',
   },
   {
@@ -77,9 +190,9 @@ export const baseline: readonly BaselineEntry[] = [
   {
     kind: 'table',
     id: 'allrice_native_once_journal',
-    category: '存储后端',
+    category: '待删',
     basis:
-      '0195：持久化 native Task/workspace 写入日志与快照，供原生日志恢复。',
+      '0195：混有自写 mutation/command/control 快照的旧 journal；定时 plan-v2-draft-astra.md §1.2 once 退役清单、§4.2：整表退役，原生存储由新 KV/events 薄层承接。',
     approvedBy: 'baseline 2026-10-27',
   },
   {
@@ -92,9 +205,9 @@ export const baseline: readonly BaselineEntry[] = [
   {
     kind: 'table',
     id: 'allrice_native_once_partitions',
-    category: '租约',
+    category: '待删',
     basis:
-      '0195：跨 Worker writer 的 owner、epoch、token 和过期时间，DSH 不负责 SaaS Worker 领取。',
+      '0195：旧 once writer 的 owner/epoch/token 租约；定时 plan-v2-draft-astra.md §1.2 once 退役清单、§4.2：旧表退役，必要租约职责由新 allrice_dsh_leases 薄层承接。',
     approvedBy: 'baseline 2026-10-27',
   },
   {
@@ -116,8 +229,9 @@ export const baseline: readonly BaselineEntry[] = [
   {
     kind: 'table',
     id: 'allrice_native_recurring_journal',
-    category: '存储后端',
-    basis: '0196：持久化 native recurring 写入日志与快照，供原生日志恢复。',
+    category: '待删',
+    basis:
+      '0196：混有自写 command/control 快照及提交证明的旧 journal；定时 plan-v2-draft-astra.md §1.2 recurring 退役清单、§4.2：整表退役，原生存储由新 KV/events 薄层承接。',
     approvedBy: 'baseline 2026-10-27',
   },
   {
@@ -162,10 +276,11 @@ export const baseline: readonly BaselineEntry[] = [
   {
     kind: 'patch',
     id: 'allrice-brand-content-read-v1',
-    category: '待删',
+    category: '业务工具',
     basis:
-      'MET-194：品牌业务读取工具接缝；能否归入四类或保留为业务工具由主会话核定。',
-    approvedBy: 'baseline 2026-10-27',
+      'MET-194：通过公开工具接缝提供品牌业务内容读取；依据 AGENTS.md §0“界面和业务工具照常做”，不新增 Agent 生命周期。',
+    approvedBy:
+      '2026-10-28 任务说明：主会话决定第 (5) 项，品牌内容读取适配归业务工具。',
   },
   {
     kind: 'patch',
@@ -200,10 +315,11 @@ export const baseline: readonly BaselineEntry[] = [
   {
     kind: 'patch',
     id: 'allrice-office-native-v1',
-    category: '待删',
+    category: '业务工具',
     basis:
-      'MET-157：Office 业务工具参数适配；是否属于四类或业务工具例外由主会话核定。',
-    approvedBy: 'baseline 2026-10-27',
+      'MET-157：Office 业务工具参数适配；依据 AGENTS.md §0“界面和业务工具照常做”，通过工具接缝对接业务参数，不接管 Agent 生命周期。',
+    approvedBy:
+      '2026-10-28 任务说明：主会话决定第 (5) 项，Office 适配归业务工具。',
   },
   {
     kind: 'patch',
@@ -244,10 +360,11 @@ export const baseline: readonly BaselineEntry[] = [
   {
     kind: 'patch',
     id: 'allrice-workbench-native-changeset-v1',
-    category: '待删',
+    category: '业务工具',
     basis:
-      'MET-147：业务 changeset 工具适配；是否归四类或业务工具例外由主会话核定。',
-    approvedBy: 'baseline 2026-10-27',
+      'MET-147：通过公开工具接缝提供 Broker changeset 提案参数，保留业务批准和文件 CAS；依据 AGENTS.md §0“界面和业务工具照常做”。',
+    approvedBy:
+      '2026-10-28 任务说明：主会话决定第 (5) 项，workbench changeset 适配归业务工具。',
   },
   {
     kind: 'patch',
