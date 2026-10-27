@@ -7,7 +7,6 @@ import { LocalStorageAdapter } from '@allrice/storage';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   PlatformEmployeeDefinitionSchema,
-  PlatformEmployeeRuntimeProfileSchema,
   type RequestContext,
 } from '@allrice/contracts';
 import * as client from './core/client.ts';
@@ -18,7 +17,10 @@ import {
 import { createExperienceFixture } from './experience.fixture.ts';
 import { ensureBootstrapPortalPrincipal } from './identity.ts';
 import { executionRequestConstraints } from './browser-execution-choice.ts';
-import { buildEmployeeRuntimePackage } from './platform-employees/runtime-package.ts';
+import {
+  savePlatformEmployeeDraft,
+  publishPlatformEmployee,
+} from './employees/platform-employees.ts';
 import {
   createPlatformQualityCheck,
   getPlatformQualityCheck,
@@ -116,8 +118,7 @@ suite(
         vi.stubEnv(`ALLRICE_${f}_ENABLED`, '1');
       await fixture.db`update allrice_model_connections set status='ready' where id='52000000-0000-4000-8000-000000000001'`;
       await fixture.db`update allrice_model_providers set enabled=true where provider_key='codex'`;
-      // The dedicated schema owns this synthetic published package; production
-      // admission always uses its unmodified current published employee.
+      // Publish a new revision and preserve the original seed.
       const [r] =
         await fixture.db`select r.* from allrice_platform_employee_revisions r join allrice_platform_employees e on e.current_published_revision_id=r.id where e.employee_key='rice'`;
       const definition = PlatformEmployeeDefinitionSchema.parse({
@@ -132,20 +133,12 @@ suite(
           ],
         },
       });
-      const runtimePackage = buildEmployeeRuntimePackage({
-        revision: r!.revision,
-        definition,
-        skills: [],
+      await savePlatformEmployeeDraft(r!.employee_id, { definition });
+      const publication = await publishPlatformEmployee(r!.employee_id, {
+        scope: 'assigned',
       });
-      const profile = PlatformEmployeeRuntimeProfileSchema.parse({
-        ...r!.runtime_profile,
-        toolNames: definition.capabilities.toolNames,
-        nativeSkillIds: [],
-        nativeSkillChecksums: [],
-        runtimePackage,
-      });
-      await fixture.db`update allrice_platform_employee_revisions set definition=${fixture.db.json(definition)},runtime_profile=${fixture.db.json(profile)},checksum=${runtimePackage.checksum},status='published',published_at=now() where id=${r!.id}`;
-      await fixture.db`update allrice_platform_employees set status='published' where id=${r!.employee_id}`;
+      expect(publication.errors).toEqual([]);
+      expect(publication.valid).toBe(true);
       // Configuration uses the real native enrollment boundary; no Host or
       // receipt is needed for the shared business-reservation checks below.
       vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '1');

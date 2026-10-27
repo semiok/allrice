@@ -1,10 +1,7 @@
 /** Disposable PostgreSQL fixture for quality native tests only; no provider,
  * preview executor, shared account, or production entrypoint imports this file. */
 import { randomUUID } from 'node:crypto';
-import {
-  PlatformEmployeeDefinitionSchema,
-  PlatformEmployeeRuntimeProfileSchema,
-} from '@allrice/contracts';
+import { PlatformEmployeeDefinitionSchema } from '@allrice/contracts';
 import { expect, vi } from 'vitest';
 import * as client from './core/client.ts';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
@@ -14,7 +11,10 @@ import {
   createSession,
   ensureBootstrapPortalPrincipal,
 } from './identity.ts';
-import { buildEmployeeRuntimePackage } from './platform-employees/runtime-package.ts';
+import {
+  savePlatformEmployeeDraft,
+  publishPlatformEmployee,
+} from './employees/platform-employees.ts';
 
 export async function createPlatformQualityNativeFixture() {
   vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', `sha256:${'a'.repeat(64)}`);
@@ -59,8 +59,8 @@ export async function createPlatformQualityNativeFixture() {
     ))!;
     expect(admin.actor.id).toBe(principal.user.id);
 
-    // Existing quality integration's SQL-only publication. The ordinary
-    // ensureQualityEmployee path still materializes the current frozen package.
+    // Publish a new current-generation revision through the product path;
+    // leave the original Rice seed intact.
     const [r] = await db`select r.* from allrice_platform_employee_revisions r
       join allrice_platform_employees e on e.current_published_revision_id=r.id
       where e.employee_key='rice'`;
@@ -77,22 +77,12 @@ export async function createPlatformQualityNativeFixture() {
         ],
       },
     });
-    const runtimePackage = buildEmployeeRuntimePackage({
-      revision: r!.revision,
-      definition,
-      skills: [],
+    await savePlatformEmployeeDraft(r!.employee_id, { definition });
+    const publication = await publishPlatformEmployee(r!.employee_id, {
+      scope: 'assigned',
     });
-    const profile = PlatformEmployeeRuntimeProfileSchema.parse({
-      ...r!.runtime_profile,
-      distributionGeneration:
-        runtimePackage.runtimeManifest.distributionGeneration,
-      toolNames: definition.capabilities.toolNames,
-      nativeSkillIds: [],
-      nativeSkillChecksums: [],
-      runtimePackage,
-    });
-    await db`update allrice_platform_employee_revisions set definition=${db.json(definition)},runtime_profile=${db.json(profile)},checksum=${runtimePackage.checksum},status='published',published_at=now() where id=${r!.id}`;
-    await db`update allrice_platform_employees set status='published' where id=${r!.employee_id}`;
+    expect(publication.errors).toEqual([]);
+    expect(publication.valid).toBe(true);
     await db`update allrice_model_connections set status='ready' where id='52000000-0000-4000-8000-000000000001'`;
     await db`update allrice_model_providers set enabled=true where provider_key='codex'`;
     return { ...fixture, company, admin, adminEmail };

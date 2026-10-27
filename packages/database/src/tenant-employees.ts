@@ -31,10 +31,11 @@ export class TenantEmployeeError extends Error {
   }
 }
 function capabilities(profile: unknown) {
-  const runtime = PlatformEmployeeRuntimeProfileSchema.parse(profile);
+  const parsed = PlatformEmployeeRuntimeProfileSchema.safeParse(profile);
+  const runtime = parsed.success ? parsed.data : null;
   return {
-    toolNames: runtime.toolNames,
-    skills: runtime.runtimePackage
+    toolNames: runtime?.toolNames ?? [],
+    skills: runtime?.runtimePackage
       ? frozenPackageSkills(runtime.runtimePackage).map(({ id, name }) => ({
           id,
           name,
@@ -86,7 +87,10 @@ export async function listAdminTenantEmployees(
         revision: row.revision,
         publishedAt: row.published_at?.toISOString() ?? null,
         ...capabilities(row.runtime_profile),
-        canAssign: !['archived', 'disabled'].includes(row.status),
+        canAssign:
+          !['archived', 'disabled'].includes(row.status) &&
+          PlatformEmployeeRuntimeProfileSchema.safeParse(row.runtime_profile)
+            .success,
         deployment: row.deployment_version
           ? {
               active: row.active,

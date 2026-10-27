@@ -4,6 +4,7 @@ import {
   PlatformEmployeeHistorySchema,
   PlatformEmployeeRevisionHistoryQuerySchema,
   PlatformEmployeeRevisionSchema,
+  PlatformEmployeeRuntimeProfileSchema,
   UuidSchema,
   type RequestContext,
 } from '@allrice/contracts';
@@ -86,13 +87,16 @@ export async function readPlatformEmployeeHistoryRevision(
       const [row] =
         await sql`select * from allrice_platform_employee_revisions where id=${revisionId} and employee_id=${employeeId}`;
       if (!row) throw new DataAccessError('not_found');
+      const profile = PlatformEmployeeRuntimeProfileSchema.safeParse(
+        row.runtime_profile,
+      );
       return PlatformEmployeeRevisionSchema.parse({
         id: row.id,
         employeeId: row.employee_id,
         revision: row.revision,
         status: row.status,
         definition: row.definition,
-        runtimeProfile: row.runtime_profile,
+        runtimeProfile: profile.success ? profile.data : null,
         checksum: row.checksum,
         createdAt: (row.created_at as Date).toISOString(),
         publishedAt: (row.published_at as Date | null)?.toISOString() ?? null,

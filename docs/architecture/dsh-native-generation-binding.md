@@ -14,9 +14,9 @@ migrating or retaining old code (MET-221).
   rewritten; nothing selects code by them.
 - Execution compares the DSH generation, profile, root seed and storage scope.
   `launch()` rejects pins from another generation, contexts without a business
-  origin, and archived MET-195 transition/reader bindings with the non-retryable
+  origin with the non-retryable
   `DSH_NATIVE_CONTEXT_INCOMPATIBLE`. In the Worker pipeline, existing pins first
-  pass through DB re-admission: a missing origin, an origin-reader approval, or
+  pass through DB re-admission: a missing origin or
   a generation mismatch between the pin and origin is rejected earlier with the
   non-retryable `NATIVE_SESSION_ADMISSION_DENIED`. Origins of another generation
   also fail earlier when their literal-generation schema is parsed; the Worker

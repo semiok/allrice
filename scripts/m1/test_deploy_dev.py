@@ -273,8 +273,7 @@ class DeployDevMigrations(unittest.TestCase):
                         self.assertIn('"phase": "contract"', f.read())
                 shutil.rmtree(os.path.join(self.home, 'allrice-dev-releases'), True)
 
-    def test_failed_deploy_does_not_restore_a_version_that_cannot_read_the_journals(self):
-        old = self.release(store=False)
+    def saved_release(self, old):
         inflight = os.path.join(self.home, 'allrice-dev/qa/deploy-inflight')
         for role in ('web', 'worker'):  # the launchd files saved before the deploy point at the old release
             os.makedirs(inflight, exist_ok=True)
@@ -282,15 +281,72 @@ class DeployDevMigrations(unittest.TestCase):
                 plistlib.dump({'Label': role, 'WorkingDirectory': old, 'EnvironmentVariables': {
                     'DATABASE_URL': 'postgres://stub/allrice_dev', 'ALLRICE_WEB_PORT': '1', 'ALLRICE_WORKER_PORT': '2'}}, f)
         write(os.path.join(inflight, 'state'), 'switching\n' + 'a' * 40 + '\n')
+
+    def test_failed_deploy_does_not_restore_a_version_that_cannot_read_the_journals(self):
+        self.saved_release(self.release(store=False))
         script = 'stop_both() { :; }; start_both_on() { echo STARTED; }; if restore; then echo restore=0; else echo restore=1; fi'
-        cases = (('row:2', {}, False), ('row:1', {}, True), ('row:2', {'PSQL_FAIL': '1'}, True), ('row:invalid 2', {}, True))
-        for row, env, started in cases:  # an unreadable database or row is left to start_both_on, as before
+        cases = (('row:2', {}, False), ('row:1', {}, True), ('row:2', {'PSQL_FAIL': '1'}, False), ('row:invalid 2', {}, True))
+        for row, env, started in cases:  # migration reads now fail closed; the contract policy is unchanged
             with self.subTest(row=row, env=env):
                 p = self.run_dd(script, FILES + ARCHIVED, CONTRACT=row, **env)
                 self.assertEqual('STARTED' in p.stdout, started, p.stdout)
                 self.assertIn('restore=%d' % (0 if started else 1), p.stdout)
-                if not started:
+                if not started and not env:
                     self.assertIn('not starting aaaaaaaa: the journals reach contract 2', p.stdout)
+
+    def test_automatic_restore_and_recover_refuse_committed_unknown_migrations(self):
+        old = self.release(files=FILES[:-1])
+        for entry in ('INFLIGHT_MINE=1; on_exit 1', 'recover'):
+            for unreadable in (False, True):
+                with self.subTest(entry=entry, unreadable=unreadable):
+                    self.saved_release(old)
+                    log = os.path.join(self.home, 'allrice-dev/qa/deploys.jsonl')
+                    write(log, '')
+                    script = ('take_lock() { :; }; stop_both() { echo STOPPED; }; '
+                              'start_both_on() { echo STARTED; }; ' + entry)
+                    p = self.run_dd(script, FILES + ARCHIVED, CONTRACT='row:1',
+                                    **({'PSQL_FAIL': '1'} if unreadable else {}))
+                    self.assertNotEqual(p.returncode, 0)
+                    self.assertIn('STOPPED', p.stdout)
+                    self.assertNotIn('STARTED', p.stdout)
+                    self.assertNotIn('is healthy again', p.stdout)
+                    self.assertIn('migrations have committed', p.stdout)
+                    self.assertIn('previous version is incompatible', p.stdout)
+                    self.assertIn('Services remain stopped', p.stdout)
+                    self.assertIn('docs/runbooks/m1-database.md or fix forward', p.stdout)
+                    self.assertIn('cannot read allrice_schema_migrations' if unreadable else FILES[-1], p.stdout)
+                    self.assertTrue(os.path.isfile(os.path.join(self.home, 'allrice-dev/qa/deploy-inflight/state')))
+                    with open(log) as f:
+                        records = [json.loads(line) for line in f]
+                    self.assertTrue(any(r.get('kind') == 'failed' and r.get('restored') == 'no'
+                                        and r.get('manualIntervention') == 'required' for r in records))
+
+    def test_restore_and_recover_start_a_known_version_after_a_transaction_rollback_or_snapshot_restore(self):
+        for entry in ('INFLIGHT_MINE=1; on_exit 1', 'recover'):
+            for applied, files in ((FILES[:-1] + ARCHIVED, FILES[:-1]), (FILES + ARCHIVED, FILES)):
+                with self.subTest(entry=entry, files=files):
+                    self.saved_release(self.release(files=files))
+                    p = self.run_dd('take_lock() { :; }; stop_both() { echo STOPPED; }; '
+                                    'start_both_on() { echo STARTED; }; ' + entry, applied, CONTRACT='row:1')
+                    self.assertEqual(p.returncode, 1 if 'on_exit' in entry else 0, p.stderr)
+                    self.assertIn('STARTED', p.stdout)
+                    self.assertIn('is healthy again', p.stdout)
+                    self.assertFalse(os.path.exists(os.path.join(self.home, 'allrice-dev/qa/deploy-inflight')))
+
+    def test_rollback_refuses_unknown_migrations_before_stop_and_rechecks_under_lock(self):
+        old = self.release(files=FILES[:-1])
+        write(os.path.join(self.home, 'allrice-dev/qa/deploys.jsonl'),
+              json.dumps({'kind': 'deploy', 'toRelease': old, 'toSha': 'a' * 40, 'toArtifact': 'sha256:' + 'a' * 64}) + '\n')
+        for applied, race in ((FILES + ARCHIVED, False), (FILES[:-1] + ARCHIVED, True)):
+            with self.subTest(race=race):
+                stubs = self.FLOW_STUBS
+                if race:
+                    stubs += 'precheck() { echo PRECHECK; echo 0218_native_generation_binding.sql >> "$APPLIED"; }; '
+                p = self.run_dd(stubs + 'rollback "$OLD"', applied, OLD=old, CONTRACT='row:1')
+                self.assertNotEqual(p.returncode, 0)
+                self.assertIn(FILES[-1], p.stderr)
+                self.assertNotIn('STOPPED', p.stdout)
+                self.assertEqual('LOCKED' in p.stdout, race)
 
     def test_failed_snapshot_stops_the_deploy(self):
         p = self.snapshot(FILES[:-1] + ARCHIVED, PG_DUMP_FAIL='1')

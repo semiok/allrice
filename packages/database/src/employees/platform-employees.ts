@@ -211,13 +211,16 @@ export async function listPlatformEmployeeAuditEvents(
 
 function revisionSnapshot(row: RevisionRow | undefined) {
   if (!row) return null;
+  const profile = PlatformEmployeeRuntimeProfileSchema.safeParse(
+    row.runtime_profile,
+  );
   return PlatformEmployeeRevisionSchema.parse({
     id: row.id,
     employeeId: row.employee_id,
     revision: row.revision,
     status: row.status,
     definition: row.definition,
-    runtimeProfile: row.runtime_profile,
+    runtimeProfile: profile.success ? profile.data : null,
     checksum: row.checksum,
     createdAt: row.created_at.toISOString(),
     publishedAt: row.published_at?.toISOString() ?? null,

@@ -34,13 +34,19 @@ df -h ~                       # 磁盘满是最常见的原因之一
 
 下面 `$S` 是快照目录，`$T` 是当前时间，只用数字和下划线（它会成为库名的一部分），例如 `20261027_0930`。用每日备份时，导出文件换成 `~/allrice-backups/db/allrice_dev-<日期>.sql.gz`，状态目录和 launchd 文件在 `~/allrice-backups/files/<日期>/`。
 
-1. 先恢复到一个新库核对，不动 Dev。导出文件第 16 行清空了 `search_path`，不删掉它，CHECK 里调用的函数恢复时会找不到：
+1. 先恢复到一个新库核对，不动 Dev。0207 的 `allrice_native_calendar_control_valid` 用未限定名字调用其他函数；`pg_dump` / `pg_restore` 默认把会话 `search_path` 清空，COPY 提醒控制行时 CHECK 会报函数不存在。这是已有的恢复问题，函数修复另行处理。B2 第 13 步已验证：先生成 SQL，**只把** `set_config('search_path', '', false)` 的值改成 `public, pg_catalog`，再用 `psql -X -v ON_ERROR_STOP=1 -f` 执行；不禁用触发器、约束或跳过表。
 
    ```bash
    export S=<快照目录> T=<时间>   # 下面持锁的新 shell 也要用这两个变量，所以要 export
+   umask 077
+   gunzip -c "$S/allrice_dev.sql.gz" > "$S/restore-original.sql"
+   # 若来源是 custom 格式的 dump，用下一行代替 gunzip；恢复到新库，不加 --create / --clean。
+   # pg_restore --no-owner --no-privileges --file="$S/restore-original.sql" <迁移前.dump>
+   sed "s/set_config('search_path', '', false)/set_config('search_path', 'public, pg_catalog', false)/g" \
+     "$S/restore-original.sql" > "$S/restore-public.sql"
+   diff -u "$S/restore-original.sql" "$S/restore-public.sql"   # 差异只能是上述 search_path
    createdb -h 127.0.0.1 "allrice_dev_restore_$T"
-   gunzip -c "$S/allrice_dev.sql.gz" | sed "/^SELECT pg_catalog.set_config('search_path', '', false);$/d" \
-     | psql -h 127.0.0.1 -X -q -v ON_ERROR_STOP=1 "allrice_dev_restore_$T"
+   psql -h 127.0.0.1 -X -q -v ON_ERROR_STOP=1 -d "allrice_dev_restore_$T" -f "$S/restore-public.sql"
    psql -h 127.0.0.1 -X "allrice_dev_restore_$T" -c 'select count(*), max(name) from allrice_schema_migrations'
    ```
 

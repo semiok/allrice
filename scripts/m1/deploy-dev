@@ -25,10 +25,10 @@
 #    report the new source SHA.
 #    The previous launchd files are saved in qa/deploy-inflight/ first. However this run
 #    ends before success (a failed step, set -e, INT/TERM/HUP) it puts them back,
-#    restarts both services and checks they are healthy on the previous version. If it is
-#    killed outright, `--recover` does the same. Database migrations are never reverted,
-#    so the previous version can still fail to start: then it says so, keeps the saved
-#    files and leaves the rest to a person.
+#    checks migration compatibility, then restarts both services and checks the previous
+#    version. If killed outright, `--recover` does the same. Committed migrations are
+#    never reverted: an incompatible previous version stays stopped, with the saved
+#    files retained for snapshot recovery or a forward fix.
 # 4. Records written, lock released, then the smoke test against the expected
 #    version. A failed smoke does not roll back by itself; it prints the rollback command.
 set -euo pipefail
@@ -173,8 +173,15 @@ restore() {
   cp -p "$INFLIGHT/web.plist" "$WEB_PLIST" && cp -p "$INFLIGHT/worker.plist" "$WORKER_PLIST" \
     && cmp -s "$INFLIGHT/web.plist" "$WEB_PLIST" && cmp -s "$INFLIGHT/worker.plist" "$WORKER_PLIST" \
     || { say "could not put back the saved launchd files from $INFLIGHT"; return 1; }
+  local why rc=0
+  if ! why=$(check_migrations_known "$(release_of)"); then
+    FAIL_REASON="not starting ${prev:0:8}: migrations have committed; the previous version is incompatible or migration compatibility could not be checked: $why. Services remain stopped. Restore the pre-migration snapshot according to docs/runbooks/m1-database.md or fix forward; manual intervention required"
+    say "$FAIL_REASON"
+    log_deploy kind failed phase restore-migrations reason "$FAIL_REASON" restored no manualIntervention required log "$BLOG" || true
+    return 1
+  fi
   # The new Worker may have raised the journal contract: never start a version that cannot read it.
-  local why rc=0; why=$(check_contract_known "$(release_of)") || rc=$?
+  why=$(check_contract_known "$(release_of)") || rc=$?
   [ "$rc" != 2 ] || { say "not starting ${prev:0:8}: $why. Deploy a version that knows the contract (move $INFLIGHT aside first)"; return 1; }
   start_both_on "$prev" || { say "previous version ${prev:0:8} did NOT come back healthy (migrations applied by the new version stay)"; return 1; }
   say "previous version ${prev:0:8} is healthy again"
