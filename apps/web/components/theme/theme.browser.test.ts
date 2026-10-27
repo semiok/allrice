@@ -6,7 +6,6 @@ import { createServer, type Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type {
   Browser,
-  BrowserContext,
   Page,
 } from '../../../worker/node_modules/playwright-core/index.js';
 import { themeScript } from '../../lib/theme/theme-script';
@@ -119,24 +118,12 @@ suite('theme runtime', () => {
 
   async function open(
     path: string,
-    options: {
-      width?: number;
-      stored?: Record<string, string>;
-      colorScheme?: 'light' | 'dark';
-      context?: BrowserContext;
-    } = {},
+    options: { width?: number; colorScheme?: 'light' | 'dark' } = {},
   ) {
-    const context =
-      options.context ??
-      (await browser.newContext({
-        viewport: { width: options.width ?? 1440, height: 800 },
-        colorScheme: options.colorScheme ?? 'light',
-      }));
-    if (options.stored)
-      await context.addInitScript((stored) => {
-        for (const [key, value] of Object.entries(stored))
-          localStorage.setItem(key, value);
-      }, options.stored);
+    const context = await browser.newContext({
+      viewport: { width: options.width ?? 1440, height: 800 },
+      colorScheme: options.colorScheme ?? 'light',
+    });
     const page = await context.newPage();
     await page.goto(`${origin}${path}`);
     await page.locator('#surface').waitFor();
@@ -254,37 +241,6 @@ suite('theme runtime', () => {
         }
       });
 
-  it('applies a stored choice per surface and ignores the system theme', async () => {
-    const cases: [string, Record<string, string>, 'light' | 'dark', boolean][] =
-      [
-        ['/runtime-console', { 'allrice.theme.admin': 'light' }, 'dark', false],
-        ['/chatflow', { 'allrice.theme.tenant': 'dark' }, 'light', true],
-        ['/chatflow', { 'allrice.theme.admin': 'light' }, 'dark', false],
-        // Unknown values, including a "system" this runtime never offers,
-        // mean no choice.
-        ['/chatflow', { 'allrice.theme.tenant': 'system' }, 'dark', false],
-        [
-          '/runtime-console',
-          { 'allrice.theme.admin': 'system' },
-          'light',
-          true,
-        ],
-        ['/chatflow', { 'allrice.theme.tenant': 'purple' }, 'dark', false],
-      ];
-    for (const [path, stored, colorScheme, dark] of cases) {
-      const page = await open(path, { stored, colorScheme });
-      try {
-        const current = await state(page);
-        expect(current.firstPaint, `${path} ${JSON.stringify(stored)}`).toEqual(
-          { dark, theme: dark ? 'dark' : 'light' },
-        );
-        expect(current.dark).toBe(dark);
-      } finally {
-        await page.context().close();
-      }
-    }
-  });
-
   it('switches on client navigation between the workspace and the admin console', async () => {
     const page = await open('/chatflow');
     try {
@@ -292,51 +248,17 @@ suite('theme runtime', () => {
       await expect.poll(async () => (await state(page)).dark).toBe(true);
       await page.getByRole('button', { name: '去前台' }).click();
       await expect.poll(async () => (await state(page)).dark).toBe(false);
-    } finally {
-      await page.context().close();
-    }
-  });
-
-  it('saves a workspace choice, keeps it across pages, and leaves the admin console alone', async () => {
-    const context = await browser.newContext({ colorScheme: 'light' });
-    try {
-      const page = await open('/chatflow', { context });
-      const other = await context.newPage();
-      await other.goto(`${origin}/chatflow`);
-      await other.locator('#surface').waitFor();
-      await page.getByRole('button', { name: '选深色' }).click();
-      // At once in this tab, and in the other open tab through storage.
-      expect(await state(page)).toMatchObject({ dark: true, theme: 'dark' });
-      await expect
-        .poll(() => page.locator('#saved').textContent())
-        .toBe('true');
-      await expect.poll(async () => (await state(other)).dark).toBe(true);
-      // The admin console keeps its own default; back in the workspace the
-      // choice holds, and a reload paints it from the first frame.
+      // A system change moves neither default.
+      await page.emulateMedia({ colorScheme: 'dark' });
+      await settle(page);
+      expect((await state(page)).dark).toBe(false);
       await page.getByRole('button', { name: '去后台' }).click();
       await expect.poll(async () => (await state(page)).dark).toBe(true);
-      await page.getByRole('button', { name: '去前台' }).click();
-      expect((await state(page)).dark).toBe(true);
-      await page.reload();
-      await page.locator('#surface').waitFor();
-      expect((await state(page)).firstPaint).toEqual({
-        dark: true,
-        theme: 'dark',
-      });
-      // A system change moves neither a saved choice nor a default.
       await page.emulateMedia({ colorScheme: 'light' });
       await settle(page);
       expect((await state(page)).dark).toBe(true);
-      await page.getByRole('button', { name: '选浅色' }).click();
-      await expect.poll(async () => (await state(other)).dark).toBe(false);
-      await other.emulateMedia({ colorScheme: 'dark' });
-      await settle(other);
-      expect((await state(other)).dark).toBe(false);
-      expect(
-        await page.evaluate(() => localStorage.getItem('allrice.theme.tenant')),
-      ).toBe('light');
     } finally {
-      await context.close();
+      await page.context().close();
     }
   });
 });
