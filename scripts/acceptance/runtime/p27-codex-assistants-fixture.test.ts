@@ -68,7 +68,14 @@ integration(
       });
     });
 
-    it('freezes an two-child subscription task with no tools/fallbacks/retries', async () => {
+    it('freezes the requested two-child task from platform model settings with no fallbacks/retries', async () => {
+      const [settings] =
+        await fixture.db`select revision,configuration from allrice_platform_model_settings where singleton`;
+      const configuration = settings!.configuration;
+      const [catalog] =
+        await fixture.db`select m.id from allrice_model_catalog_entries m
+        join allrice_model_connections c on c.provider_id=m.provider_id
+        where c.id=${configuration.connectionId} and m.model=${configuration.workModel}`;
       const task = await fixture.prepareAssistantTask();
       const api = await import('../../../packages/database/src/index.ts');
       const resolved = await api.resolveEmployeeExecution({
@@ -78,23 +85,33 @@ integration(
         runId: task.runId,
       });
       expect(resolved.executionSnapshot?.schemaVersion).toBe(2);
+      if (resolved.executionSnapshot?.schemaVersion !== 2)
+        throw Error('Expected current execution snapshot');
       expect(task.binding.executionSnapshot.modelSnapshot).toMatchObject({
         provider: 'openai-codex',
         authMode: 'chatgpt_subscription',
-        model: 'gpt-5.6-luna',
-        connectionId: fixture.connectionId,
-        modelCatalogEntryId: fixture.catalogId,
+        model: configuration.workModel,
+        reasoningEffort: configuration.reasoningEffort,
+        policyRevision: settings!.revision,
+        connectionId: configuration.connectionId,
+        modelCatalogEntryId: catalog!.id,
         fallbackPolicy: 'disabled',
         resolvedFallbacks: [],
         fallbackOn: [],
-        runLimits: fixture.runLimits,
+        runLimits: { ...fixture.runLimits, timeoutMs: configuration.timeoutMs },
       });
+      expect(resolved.executionSnapshot?.modelSnapshot).toEqual(
+        task.binding.executionSnapshot.modelSnapshot,
+      );
       expect(resolved.providerSnapshot).toMatchObject({
         provider: 'dsh',
         route: 'openai-codex',
         authMode: 'platform_subscription',
         credentialReference: 'deployment:codex-default',
         baseUrl: null,
+        model: configuration.workModel,
+        reasoningEffort: configuration.reasoningEffort,
+        timeoutMs: configuration.timeoutMs,
       });
       const definition = resolved.executionSnapshot!.employee.definition;
       expect(definition.schemaVersion).toBe(2);
