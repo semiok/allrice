@@ -15,6 +15,7 @@ import postgres from 'postgres';
 import {
   type RequestContext,
   defaultAssistantRunConfiguration,
+  DSH_INSTALLED_DISTRIBUTION,
 } from '@allrice/contracts';
 import { assertRuntimeFixtureDatabase } from './runtime-fixture-database.ts';
 import { createRuntimeOperationLedger } from './runtime-ledger/ledger.ts';
@@ -187,6 +188,14 @@ export async function createAssistantFixtureDatabase(
       for (const file of files) {
         if (options.throughMigration && file > options.throughMigration) break;
         await tx.unsafe(await readFile(new URL(file, migrations), 'utf8'));
+      }
+      if (!options.throughMigration) {
+        // SQL bootstrap seeds predate the required generation field. Current
+        // runtime fixtures skip content:sync, so give those synthetic profiles
+        // the installed generation explicitly; checkpoint fixtures stay raw.
+        await tx`update allrice_platform_employee_revisions
+          set runtime_profile=runtime_profile || ${tx.json({ distributionGeneration: DSH_INSTALLED_DISTRIBUTION.generation })}
+          where runtime_profile is not null and not runtime_profile ? 'distributionGeneration'`;
       }
     });
     return {
