@@ -8,6 +8,7 @@ import json
 import os
 import plistlib
 import re
+import runpy
 import shutil
 import subprocess
 import sys
@@ -70,7 +71,8 @@ class DeployDevMigrations(unittest.TestCase):
         if legacy:
             env.update({'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID': 'old-root',
                         'ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS': 'obsolete-not-json',
-                        'ALLRICE_DSH_RETAINED_ARTIFACT_ID': 'old', 'ALLRICE_DSH_RETAINED_ROOT_2': '/old'})
+                        'ALLRICE_DSH_RETAINED_ARTIFACT_ID': 'old', 'ALLRICE_DSH_RETAINED_ROOT_2': '/old',
+                        'ALLRICE_DSH_ORIGIN_READER_ROOT': '/old-reader'})
         return {'Label': role, 'WorkingDirectory': release, 'KeepAlive': True,
                 'ProgramArguments': [NODE, '--env-file=' + self.home + '/allrice-dev/.env', '/old/script'],
                 'EnvironmentVariables': env}
@@ -91,6 +93,7 @@ class DeployDevMigrations(unittest.TestCase):
         self.assertNotIn('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', env)
         self.assertNotIn('ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS', env)
         self.assertFalse(any(key.startswith('ALLRICE_DSH_RETAINED_') for key in env))
+        self.assertFalse(any(key.startswith('ALLRICE_DSH_ORIGIN_READER_') for key in env))
 
     def release(self, files=FILES, archived=ARCHIVED, module=None, store=True):
         rel = tempfile.mkdtemp(prefix='rel-', dir=self.tmp)
@@ -425,7 +428,8 @@ class DeployDevMigrations(unittest.TestCase):
                     self.assertEqual(env['UNRELATED_SETTING'], 'keep')
                     self.assertEqual(env['ALLRICE_DSH_CORDIS_CONFIG'], rel + '/apps/worker/dsh/allrice-restricted.cordis.yml')
                     self.assertEqual(value['WorkingDirectory'], rel + '/apps/web' if role == 'web' else rel)
-                    self.assertEqual(value['ProgramArguments'][2], rel + ('/apps/web/server.mjs' if role == 'web' else '/apps/worker/dist/index.js'))
+                    self.assertEqual(value['ProgramArguments'], [os.path.join(HERE, 'with-env'), role, NODE,
+                                     rel + ('/apps/web/server.mjs' if role == 'web' else '/apps/worker/dist/index.js')])
                     self.assertTrue(value['KeepAlive'])
                     self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
 
@@ -441,6 +445,80 @@ class DeployDevMigrations(unittest.TestCase):
         self.assertEqual(env['ALLRICE_DSH_NATIVE_ARTIFACT_ID'], 'candidate')
         self.assertEqual(env['ALLRICE_DSH_CORDIS_CONFIG'], rel + '/apps/worker/dsh/allrice-restricted.cordis.yml')
         self.assert_no_legacy_settings(env)
+
+    def test_precheck_and_launch_share_clean_environment_with_real_env_file(self):
+        self.seed_legacy_plists()
+        env_file = os.path.join(self.home, 'allrice-dev/.env')
+        contents = ('DATABASE_URL=postgres://env-file/overridden\n'
+                    'UNRELATED_ENV="space and \'quote\'"\nALLRICE_TEST=1\n'
+                    'ALLRICE_DSH_RETAINED_ENV_ROOT=/old-env\n'
+                    'export ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID=old-env-root\n'
+                    'ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS=old-env-delivery\n'
+                    'ALLRICE_DSH_ORIGIN_READER_ENV_ROOT=/old-reader\n'
+                    'ALLRICE_DSH_RETAINEDNESS=keep-similar-key\n')
+        write(env_file, contents, 0o600)
+        base_env = dict(HOME=self.home, PATH=os.path.dirname(NODE) + ':/usr/bin:/bin')
+        # Use the real Node parser, not an env-file stub: these bytes do reintroduce
+        # retired settings when the original launch command loads the shared file.
+        probe = 'console.log(JSON.stringify(process.env));\n'
+        raw = subprocess.run([NODE, '--env-file=' + env_file, '-e', probe],
+                             env=base_env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(raw.returncode, 0, raw.stderr)
+        self.assertEqual(json.loads(raw.stdout)['ALLRICE_DSH_RETAINED_ENV_ROOT'], '/old-env')
+        rel = self.release()
+        for script in ('scripts/dev-release/verify-native-retention.mjs',
+                       'apps/web/server.mjs', 'apps/worker/dist/index.js'):
+            write(os.path.join(rel, script), probe)
+        log = os.path.join(self.tmp, 'clean-precheck.log')
+        # The deployment identity stays the same, as on a forward retry. Compare
+        # service configuration, excluding shell-only PWD/SHLVL and test inputs.
+        config = lambda env: {k: v for k, v in env.items()
+                              if k.startswith(('ALLRICE_', 'UNRELATED_')) or k == 'DATABASE_URL'}
+        for retry in (False, True):
+            with self.subTest(retry=retry):
+                write(log, '')
+                p = self.run_dd('precheck "$REL" "$SHA" "$ART" "$PLOG"; '
+                                'point_plists "$REL" "$SHA" "$ART"', [],
+                                REL=rel, SHA='a' * 40, ART='sha256:' + 'c' * 64, PLOG=log)
+                self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+                with open(log) as f:
+                    checked = json.load(f)
+                for role in ('web', 'worker'):
+                    launch = self.read_plist(self.live_plist(role))
+                    started = subprocess.run(launch['ProgramArguments'], cwd=launch['WorkingDirectory'],
+                                             env=dict(base_env, **launch['EnvironmentVariables']),
+                                             capture_output=True, text=True, timeout=10)
+                    self.assertEqual(started.returncode, 0, started.stderr)
+                    actual = json.loads(started.stdout)
+                    self.assertEqual(config(actual), config(checked))
+                    for env in (checked, actual):
+                        self.assert_no_legacy_settings(env)
+                        self.assertEqual(env['UNRELATED_ENV'], "space and 'quote'")
+                        self.assertEqual(env['ALLRICE_DSH_RETAINEDNESS'], 'keep-similar-key')
+                        self.assertEqual(env['DATABASE_URL'], 'postgres://stub/allrice_dev')
+                        self.assertEqual(env['ALLRICE_NATIVE_ONCE_REFERENCE'], '{"artifactId":"provenance"}')
+                with open(env_file) as f:
+                    self.assertEqual(f.read(), contents)
+                self.assertEqual(os.stat(env_file).st_mode & 0o777, 0o600)
+
+        # Consumers of the generated launch command must still obtain Node,
+        # including QA's own --env-file command with its isolated database.
+        qa = self.write_qa_plists()
+        for role in ('web', 'worker'):
+            launch = self.read_plist(os.path.join(qa, role + '.plist'))
+            write(os.path.join(qa, 'release/apps/web/server.mjs' if role == 'web'
+                               else 'release/apps/worker/dist/index.js'), probe)
+            started = subprocess.run(launch['ProgramArguments'], cwd=launch['WorkingDirectory'],
+                                     env=dict(base_env, **launch['EnvironmentVariables']),
+                                     capture_output=True, text=True, timeout=10)
+            self.assertEqual(started.returncode, 0, started.stderr)
+            actual = json.loads(started.stdout)
+            self.assertEqual(actual['DATABASE_URL'], 'postgres://tester@127.0.0.1:5432/allrice_qa_tool_test')
+            self.assert_no_legacy_settings(actual)
+        monitor = runpy.run_path(os.path.join(HERE, 'monitor'))
+        cfg = dict(monitor['M1'], webPlist=self.live_plist('web'),
+                   workerPlist=self.live_plist('worker'), envFile=env_file)
+        self.assertEqual(monitor['derive_m1'](cfg)['node'], NODE)
 
     def write_qa_plists(self):
         with open(os.path.join(HERE, 'qa-instance')) as f:
@@ -617,6 +695,7 @@ class DeployDevMigrations(unittest.TestCase):
         self.seed_legacy_plists()
         write(os.path.join(self.home, 'allrice-dev/.env'),
               'ALLRICE_TEST=1\nALLRICE_DSH_RETAINED_ENV_ROOT=/old-env\n'
+              'ALLRICE_DSH_ORIGIN_READER_ENV_ROOT=/old-reader\n'
               'export ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID=old-env-root\n'
               'ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS=old-env-delivery\n', 0o600)
         for parked in (False, True):
@@ -630,13 +709,41 @@ class DeployDevMigrations(unittest.TestCase):
                                     ROLE=role, PROBE_PY=sys.executable,
                                     ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID='old-parent-root',
                                     ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS='old-parent-delivery',
-                                    ALLRICE_DSH_RETAINED_PARENT_ROOT='/old-parent')
+                                    ALLRICE_DSH_RETAINED_PARENT_ROOT='/old-parent',
+                                    ALLRICE_DSH_ORIGIN_READER_PARENT_ROOT='/old-parent-reader')
                     self.assertEqual(p.returncode, 0, p.stderr)
                     env = json.loads(p.stdout)
                     self.assertEqual(env['DATABASE_URL'], 'postgres://stub/allrice_dev')
                     self.assertEqual(env['ALLRICE_DSH_NATIVE_ARTIFACT_ID'], 'sha256:' + 'a' * 64)
                     self.assertEqual(env['UNRELATED_SETTING'], 'keep')
                     self.assert_no_legacy_settings(env)
+
+    def test_failed_smoke_only_offers_default_rollback_when_one_is_recorded(self):
+        stubs, smoke = self.successful_deploy_stubs()
+        write(os.path.join(smoke, 'smoke-test'), '#!/bin/sh\nexit 1\n', 0o755)
+        for forward in (False, True):
+            with self.subTest(forward=forward):
+                self.seed_legacy_plists()
+                if forward:
+                    p = self.run_dd('park_plists', [])
+                    self.assertEqual(p.returncode, 0, p.stderr)
+                p = self.run_dd(stubs + 'deploy', FILES + ARCHIVED, CONTRACT='row:1',
+                                CANDIDATE=self.release(), ART='sha256:' + 'c' * 64, SMOKE=smoke)
+                self.assertEqual(p.returncode, 5, p.stdout + p.stderr)
+                self.assertIn('smoke test failed on bbbbbbbb', p.stderr)
+                default = self.run_dd('previous_release', [])
+                if forward:
+                    self.assertNotEqual(default.returncode, 0)
+                    self.assertIn('no default rollback target', p.stderr)
+                    self.assertIn('deploy-dev --release-manager --rollback <release-dir>', p.stderr)
+                    self.assertNotRegex(p.stderr, r'--rollback\s*$')
+                else:
+                    self.assertEqual(default.returncode, 0, default.stderr)
+                    self.assertIn('to switch back run: deploy-dev --release-manager --rollback', p.stderr)
+                    self.assertNotIn('<release-dir>', p.stderr)
+                with open(os.path.join(self.home, 'allrice-dev/qa/deploys.jsonl')) as f:
+                    self.assertEqual(json.loads(f.readlines()[-1])['result'], 'failed')
+                shutil.rmtree(os.path.join(self.home, 'allrice-dev-releases'))
 
     def test_deploy_with_parked_plists_and_inflight_state_refuses_before_build(self):
         self.saved_release(self.release(files=FILES[:-1]))

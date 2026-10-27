@@ -30,7 +30,8 @@
 #    never reverted: an incompatible previous version stays stopped, with the saved
 #    files retained for snapshot recovery or a forward fix.
 # 4. Records written, lock released, then the smoke test against the expected
-#    version. A failed smoke does not roll back by itself; it prints the rollback command.
+#    version. A failed smoke does not roll back by itself; its guidance reflects whether
+#    a default rollback target is recorded.
 set -euo pipefail
 BIN=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P); . "$BIN/lib.sh"
 REPO="$HOME/allrice-repo"; RELEASES="$HOME/allrice-dev-releases"
@@ -126,19 +127,24 @@ start_both_on() { # sha -> start Worker then Web, both must report sha
 
 # Point both plists at a release: script paths, working dirs, cordis config, SHA, and
 # the approved native artifact, even if only one plist was switched last time.
+# Launch through the same with-env version as precheck: Node must not reload the
+# original --env-file after retired settings have been removed.
 point_plists() { # release sha artifact
-  "$M1_PY" - "$WEB_PLIST" "$WORKER_PLIST" "$1" "$2" "$3" "$(dev_plist web)" "$(dev_plist worker)" <<'PY'
+  "$M1_PY" - "$WEB_PLIST" "$WORKER_PLIST" "$1" "$2" "$3" "$(dev_plist web)" "$(dev_plist worker)" "$BIN/with-env" <<'PY'
 import os,plistlib,sys
-web,worker,rel,sha,art,web_src,worker_src=sys.argv[1:]
+web,worker,rel,sha,art,web_src,worker_src,loader=sys.argv[1:]
 for p,role,src in ((web,'web',web_src),(worker,'worker',worker_src)):
     d=plistlib.load(open(src,'rb')); e=d['EnvironmentVariables']
     args=d['ProgramArguments']
-    args[2]=f'{rel}/apps/web/server.mjs' if role=='web' else f'{rel}/apps/worker/dist/index.js'
+    if os.path.basename(args[0]) == 'with-env': args=args[2:] # a previous deploy, possibly with older tools
+    if args[1].startswith('--env-file='): del args[1]
+    args[1]=f'{rel}/apps/web/server.mjs' if role=='web' else f'{rel}/apps/worker/dist/index.js'
+    d['ProgramArguments']=[loader,role,*args]
     d['WorkingDirectory']=f'{rel}/apps/web' if role=='web' else rel
     e['ALLRICE_DSH_CORDIS_CONFIG']=f'{rel}/apps/worker/dsh/allrice-restricted.cordis.yml'
     e['ALLRICE_RELEASE_SHA']=sha
     for key in list(e):
-        if key in ('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', 'ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS') or key.startswith('ALLRICE_DSH_RETAINED_'):
+        if key in ('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', 'ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS') or key.startswith(('ALLRICE_DSH_RETAINED_', 'ALLRICE_DSH_ORIGIN_READER_')):
             del e[key]
     e['ALLRICE_DSH_NATIVE_ARTIFACT_ID']=art
     tmp=p+'.tmp'; plistlib.dump(d,open(tmp,'wb')); os.chmod(tmp,0o600); os.replace(tmp,p)
@@ -482,7 +488,12 @@ deploy() {
     say "running the smoke test against ${sha:0:8}"
     local ok=0; "$BIN/smoke-test" --dev --expect-sha "$sha" --out "$out" && ok=1
     log_deploy kind smoke sha "$sha" result "$([ $ok = 1 ] && echo passed || echo failed)" out "$out"
-    [ $ok = 1 ] || die "smoke test failed on ${sha:0:8}. Inspect $out/result.json; to switch back run: deploy-dev --release-manager --rollback" 5
+    if [ $ok != 1 ]; then
+      local hint
+      if previous_release >/dev/null; then hint="to switch back run: deploy-dev --release-manager --rollback"
+      else hint="no default rollback target is recorded; fix forward or choose a compatible target: deploy-dev --release-manager --rollback <release-dir>"; fi
+      die "smoke test failed on ${sha:0:8}. Inspect $out/result.json; $hint" 5
+    fi
     say "smoke passed"
   fi
   say "done in $(( $(date +%s) - t0 ))s"
