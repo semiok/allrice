@@ -198,7 +198,9 @@ integration('P27 synthetic historical Gemini Run accounting', () => {
           ...preflight,
           decision: { ...decision, modelConnectionId: randomUUID() },
         }),
-      ).toThrow('ASSISTANT_PRICE_ROUTE_UNVERIFIED');
+      ).toThrow(
+        expect.objectContaining({ code: 'ASSISTANT_PRICE_ROUTE_UNVERIFIED' }),
+      );
       expect(() =>
         selectAssistantPriceSnapshot({
           catalog,

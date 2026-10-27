@@ -220,7 +220,6 @@ integration(
         baseUrl: null,
         model: configuration.workModel,
         reasoningEffort: configuration.reasoningEffort,
-        timeoutMs: configuration.timeoutMs,
       });
       const definition = resolved.executionSnapshot!.employee.definition;
       expect(definition.schemaVersion).toBe(2);
