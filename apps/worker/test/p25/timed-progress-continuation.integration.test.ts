@@ -8,6 +8,8 @@ import {
   claimNextJob,
   completeJob,
   enqueueRun,
+  failJob,
+  requestRunCancellationTransaction,
   startClaimedJob,
 } from '../../../../packages/database/src/execution/queue.ts';
 import { prepareEmployeeRunBinding } from '../../../../packages/database/src/employees/employeehub.ts';
@@ -33,11 +35,16 @@ suite(
       await f?.close();
       vi.unstubAllEnvs();
     });
-    async function setup() {
+    async function setup(legacy = false) {
       vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
-      f = await createP27CodexWorkerFixture({ allowCiDatabase: true });
+      f = await createP27CodexWorkerFixture({
+        allowCiDatabase: true,
+        ...(legacy
+          ? { personalProfile: 'writable_with_assistants' as const }
+          : {}),
+      });
       return f.prepareOrdinaryTask(
         '读取目录；如果连续失败，等我确认后再继续。',
       );
@@ -314,10 +321,16 @@ suite(
       'different-org',
       'already-initialized',
       'legacy-assistants',
+      'stopped',
+      'failed',
+      'timed-out',
+      'previous-running',
+      'previous-leased',
+      'previous-assistants',
     ] as const)(
       'does not transfer a pause for %s',
       async (variant) => {
-        const first = await setup();
+        const first = await setup(variant === 'previous-assistants');
         const pause = await inducePause(first);
         const nativeSessionId = `dsh-${first.sessionId}`;
         if (variant === 'continued' || variant === 'canceled')
@@ -327,7 +340,79 @@ suite(
             pauseId: pause.pauseId,
             decision: variant === 'continued' ? 'continue' : 'cancel',
           });
-        await completeJob({ ...first.workflowLease, result: {} });
+        if (variant === 'stopped')
+          await f.db.begin((tx) =>
+            requestRunCancellationTransaction(
+              tx,
+              f.context,
+              first.runId,
+              'user_stop',
+            ),
+          );
+        if (
+          ['stopped', 'failed', 'timed-out', 'previous-assistants'].includes(
+            variant,
+          )
+        ) {
+          await failJob({
+            ...first.workflowLease,
+            code:
+              variant === 'timed-out' ? 'TASK_TIMEOUT' : 'SYNTHETIC_FAILURE',
+            message: variant,
+            retryable: false,
+          });
+        } else if (variant === 'previous-leased') {
+          // Prove a terminal-looking Run is still excluded when its job owns a lease.
+          await f.db`update allrice_runs set state='succeeded' where id=${first.runId}`;
+        } else if (variant !== 'previous-running') {
+          await completeJob({
+            ...first.workflowLease,
+            result: { waitingForUser: { questionId: 'expired-card' } },
+          });
+        }
+        if (variant === 'different-org' || variant === 'different-workspace') {
+          // Valid current lease in another scope, deliberately bound to the old
+          // session ID: only the transfer query's tenant predicates can reject it.
+          const organizationId =
+            variant === 'different-org' ? randomUUID() : f.organizationId;
+          const workspaceId = randomUUID(),
+            runId = randomUUID(),
+            jobId = randomUUID();
+          const workerId = randomUUID(),
+            leaseToken = randomUUID();
+          if (variant === 'different-org')
+            await f.db`insert into allrice_organizations(id,slug,name) values(${organizationId},${organizationId},'Other org')`;
+          await f.db`insert into allrice_workspaces(id,organization_id,slug,name) values(${workspaceId},${organizationId},${workspaceId},'Other workspace')`;
+          await f.db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input)
+            values(${runId},${organizationId},${workspaceId},${f.ownerId},'running','{}','{}')`;
+          await f.db`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,timeout_at,payload,worker_id,lease_token,claimed_at,heartbeat_at,lease_expires_at)
+            values(${jobId},${organizationId},${workspaceId},${f.ownerId},${runId},'running',${runId},clock_timestamp()+interval '10 minutes','{}',${workerId},${leaseToken},clock_timestamp(),clock_timestamp(),clock_timestamp()+interval '10 minutes')`;
+          await f.db`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy)
+            select ${runId},${organizationId},${workspaceId},policy from allrice_task_clocks where run_id=${first.runId}`;
+          const handle = createTaskProgressRuntime(
+            {
+              context: {
+                ...first.execution.context,
+                runId,
+                organizationId,
+                workspaceId,
+              },
+              worker: { jobId, workerId, leaseToken },
+              sessionId: first.sessionId,
+            },
+            f.db,
+          );
+          expect(
+            await handle({ action: 'check', nativeSessionId }),
+          ).toMatchObject({ paused: false, pauseId: null });
+          const [created] =
+            await f.db`select pause_id from allrice_task_progress where run_id=${runId}`;
+          expect(created).toMatchObject({ pause_id: null });
+          const [old] =
+            await f.db`select pause_id from allrice_task_progress where run_id=${first.runId}`;
+          expect(old!.pause_id).toBe(pause.pauseId);
+          return;
+        }
         let previous = first;
         if (variant === 'different-session') {
           const otherSession = randomUUID();
@@ -335,28 +420,6 @@ suite(
           previous = { ...first, sessionId: otherSession };
         }
         const next = await followUp(previous, '下一轮先等我确认。');
-        if (variant === 'different-org' || variant === 'different-workspace') {
-          const handle = createTaskProgressRuntime(
-            {
-              context: {
-                ...next.execution.context,
-                ...(variant === 'different-org'
-                  ? { organizationId: randomUUID() }
-                  : { workspaceId: randomUUID() }),
-              },
-              worker: next.workflowLease,
-              sessionId: first.sessionId,
-            },
-            f.db,
-          );
-          await expect(
-            handle({ action: 'check', nativeSessionId }),
-          ).rejects.toThrow('task_progress_lease_lost');
-          const old =
-            await f.db`select pause_id from allrice_task_progress where run_id=${first.runId}`;
-          expect(old[0]!.pause_id).toBe(pause.pauseId);
-          return;
-        }
         if (variant === 'already-initialized')
           await createTaskProgressRuntime(
             { context: next.execution.context, worker: next.workflowLease },

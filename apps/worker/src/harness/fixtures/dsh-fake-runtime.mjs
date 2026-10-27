@@ -256,11 +256,37 @@ lines.on('line', (line) => {
           },
         ],
       });
-    if (['pending', 'wrong-id', 'connection'].includes(mode))
+    if (
+      ['pending', 'wrong-id', 'connection', 'new-card', 'answered'].includes(
+        mode,
+      )
+    )
       notify('session.user-question-pending', {
         sessionId,
         questionId: mode === 'wrong-id' ? 'another-question' : 'progress-proof',
       });
+    if (mode === 'new-card')
+      notify('session.user-question', {
+        sessionId,
+        questionId: 'next-progress-proof',
+        questions: [
+          {
+            id: 'runtime-progress',
+            question: '继续吗？',
+            options: [{ label: '继续' }],
+          },
+        ],
+      });
+    if (mode === 'answered')
+      notify('session.user-question-answered', {
+        sessionId,
+        questionId: 'progress-proof',
+      });
+    if (mode === 'new-card' || mode === 'answered') {
+      event(sessionId, 'turn/end', { turn, reason: { kind: 'completed' } });
+      notify('session.status', { sessionId, status: 'idle' });
+      return;
+    }
     if (mode === 'crash') {
       setImmediate(() => process.kill(process.pid, 'SIGKILL'));
       return;

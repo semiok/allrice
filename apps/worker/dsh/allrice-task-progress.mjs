@@ -302,7 +302,14 @@ export function installTaskProgress(ctx, bridge, configuration = {}) {
       yield* next();
       return;
     }
-    await check(agent, options.signal);
+    // Compaction runs before inbox messages enter history and catches errors.
+    // Admission still rejects model calls while paused; only the normal
+    // request boundary presents a card and may end this turn as pending.
+    if (
+      configuration.maintenanceOutputTokens ||
+      options.purpose !== 'compaction'
+    )
+      await check(agent, options.signal);
     if (
       configuration.maintenanceOutputTokens &&
       options.purpose === 'compaction'

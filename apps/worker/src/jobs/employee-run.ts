@@ -1041,6 +1041,7 @@ export async function executeEmployeeRun({
             context: execution.context,
             // 子智能体方案 PR4a/b/c 删除旧助手包装层时，一并删掉这个分支。
             sessionId:
+              repairTask ||
               objectInput(assistantConfiguration).allowAssistants === true
                 ? undefined
                 : input.sessionId,
@@ -1694,6 +1695,10 @@ export async function executeEmployeeRun({
                 const stepResult = await adapter.execute({
                   contentGuard,
                   progress: taskProgress,
+                  nativeQuestionWait:
+                    executionSnapshot.schemaVersion === 2
+                      ? executionSnapshot.nativePreferences?.questionWait
+                      : undefined,
                   kernel: stepKernel,
                   nativeSkills: resolved.nativeSkills,
                   baseSkillCatalog:
@@ -1761,6 +1766,7 @@ export async function executeEmployeeRun({
                 usage.cachedInputTokens += stepResult.usage.cachedInputTokens;
                 usage.outputTokens += stepResult.usage.outputTokens;
                 return {
+                  waitingForUser: stepResult.waitingForUser,
                   output: {
                     answer: stepResult.answer,
                     usage: stepResult.usage,
@@ -1770,6 +1776,16 @@ export async function executeEmployeeRun({
                 };
               },
             });
+            if (durable.waitingForUser)
+              return {
+                answer: '',
+                usage,
+                waitingForUser: durable.waitingForUser,
+                provider: providerName(providerSnapshot),
+                model: providerSnapshot.model,
+                threadId: runtime.threadId,
+                turnId: runtime.activeTurnId,
+              };
             const answers = Object.values(durable.output).flatMap((value) =>
               value &&
               typeof value === 'object' &&
@@ -2017,12 +2033,17 @@ export async function executeEmployeeRun({
                 });
               }
             });
-    if (!assistants && result.waitingForUser) {
+    if (result.waitingForUser) {
       const progress = await taskProgress?.({
         action: 'check',
         nativeSessionId: result.threadId ?? runtime.threadId,
       });
-      if (!progress?.pauseId || progress.canceled !== false)
+      if (
+        assistants ||
+        repairTask ||
+        !progress?.pauseId ||
+        progress.canceled !== false
+      )
         throw new HandlerError('DSH_TURN_FAILED', 'DSH turn failed', false);
       result.answer = '等你回答后继续。';
     }

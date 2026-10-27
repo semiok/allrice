@@ -126,9 +126,13 @@ export function createTaskProgressRuntime(
         >`
           select p.run_id,p.state,p.pause_id from allrice_task_progress p
           join allrice_employee_runs e on e.run_id=p.run_id
+          join allrice_runs r on r.id=p.run_id
+          join allrice_jobs j on j.run_id=r.id
           where e.organization_id=${context.organizationId} and e.workspace_id=${context.workspaceId!}
             and e.session_id=${input.sessionId} and p.run_id<>${runId}
             and p.pause_id is not null and not p.canceled
+            and r.state='succeeded' and j.status='succeeded'
+            and j.lease_token is null and j.cancel_requested_at is null
           order by p.updated_at desc limit 1 for update of p`;
         if (previous) {
           await tx`update allrice_task_progress set state=${tx.json(JSON.parse(JSON.stringify(previous.state)))},pause_id=${previous.pause_id} where run_id=${runId}`;

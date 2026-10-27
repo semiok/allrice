@@ -1,4 +1,6 @@
+/* global AbortController */
 import { describe, it, expect, vi } from 'vitest';
+import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic';
 import {
   installTaskProgress,
   progressDigest,
@@ -23,6 +25,7 @@ function fixture() {
   };
   let paused = false;
   const bridge = vi.fn(async (p) => {
+    if (p.action === 'start' && paused) throw Error('task_progress_paused');
     if (p.action === 'decide') paused = false;
     return {
       paused,
@@ -45,6 +48,42 @@ function fixture() {
   };
 }
 describe('native progress middleware', () => {
+  it('lets upstream automatic compaction fail admission without a card, then asks once and continues', async () => {
+    const f = fixture();
+    f.pause();
+    const next = vi.fn(async function* () {
+      yield { type: 'text', text: 'done' };
+    });
+    // The real upstream hook catches compaction errors before normal streaming.
+    const hooks = new Map();
+    BasicCompactionEngine.prototype._registerAutomaticCompaction.call({
+      ctx: {
+        on: (name, fn) => hooks.set(name, fn),
+        logger: { warn: vi.fn(), info: vi.fn() },
+      },
+      warnedPressureConfigTargets: new Set(),
+      compactIfNeeded: () =>
+        Array.fromAsync(
+          f.hooks.get('llm/stream')(
+            { sessionId: f.root.id, purpose: 'compaction' },
+            next,
+          ),
+        ),
+    });
+    const normal = () =>
+      Array.fromAsync(
+        f.hooks.get('llm/stream')({ sessionId: f.root.id }, next),
+      );
+    await hooks.get('agent/pre-step')(
+      { agent: f.root, signal: new AbortController().signal },
+      normal,
+    );
+    expect(f.ctx.userQuestions.ask).toHaveBeenCalledOnce();
+    expect(next).toHaveBeenCalledOnce();
+    expect(
+      f.bridge.mock.calls.filter(([p]) => p.action === 'decide'),
+    ).toHaveLength(1);
+  });
   it.each(['current', 'historical'])(
     'does not settle a %s tool again when native pruning replaces its history',
     async (scope) => {

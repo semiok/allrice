@@ -1053,7 +1053,13 @@ export async function createAllRiceRuntime(
               })),
             });
             if (waitMs !== undefined) {
-              timer = setTimeout(() => {
+              const pending = this.pendingUserQuestions.get(sessionId);
+              timer = setTimeout(async () => {
+                // Accepted answers own their durable receipt before expiry can
+                // settle the card, just as they do at the detach boundary.
+                await Promise.allSettled(pending.inputDeliveries ?? []);
+                if (this.pendingUserQuestions.get(sessionId) !== pending)
+                  return;
                 this.userQuestionNotify({
                   sessionId,
                   questionId,

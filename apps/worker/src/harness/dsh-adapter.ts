@@ -1132,7 +1132,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
         usageComplete &&= result.usageComplete;
         cacheUsageKnown &&= result.cacheUsageKnown;
         waitingForUser = result.waitingForUser;
-        if (waitingForUser) result.answer = '等你回答后继续。';
+        if (waitingForUser) {
+          executionSignal.throwIfAborted();
+          await checkContent('beforePublication');
+          break; // Worker confirms the ledger before publishing a wait receipt.
+        }
         const toolCall = parseDshToolCall(result.answer);
         // This narrow path has no external join/validation/wait between its
         // three adjacent checks. Keep the final current-authority barrier;
@@ -1970,6 +1974,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         const summary = normalized.success
           ? shortText(normalized.data.questions[0]?.question, 1000)
           : shortText(record(questions[0])?.question, 500);
+        progressQuestionPending = undefined;
         progressQuestionId =
           normalized.success &&
           normalized.data.questions.some(
@@ -2015,6 +2020,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
         return;
       }
       if (notification.method === 'session.user-question-answered') {
+        progressQuestionPending = undefined;
+        progressQuestionId = undefined;
         clearTimeout(waitTimer);
         await input.onNative({
           type: 'native.event',

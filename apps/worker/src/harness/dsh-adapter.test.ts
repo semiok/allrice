@@ -1444,6 +1444,8 @@ describe('DshHarnessAdapter', () => {
 
   it.each([
     'pending',
+    'new-card',
+    'answered',
     'wrong-id',
     'connection',
     'no-provider',
@@ -1458,9 +1460,10 @@ describe('DshHarnessAdapter', () => {
       );
       if (mode === 'pending')
         await expect(execution).resolves.toMatchObject({
-          answer: '等你回答后继续。',
           waitingForUser: { questionId: 'progress-proof' },
         });
+      else if (mode === 'new-card' || mode === 'answered')
+        expect((await execution).waitingForUser).toBeUndefined();
       else await expect(execution).rejects.toThrow();
     },
   );
