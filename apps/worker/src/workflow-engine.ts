@@ -94,11 +94,7 @@ export async function executeDurableWorkflow(input: {
     step: WorkflowDefinition['steps'][number];
     value: ReturnType<typeof workflowStepInput>;
     idempotencyKey: string;
-  }) => Promise<{
-    output: unknown;
-    sideEffectCommitted?: boolean;
-    waitingForUser?: { questionId: string };
-  }>;
+  }) => Promise<{ output: unknown; sideEffectCommitted?: boolean }>;
 }) {
   const startedAt = Date.now();
   while (true) {
@@ -253,14 +249,6 @@ export async function executeDurableWorkflow(input: {
         value,
         idempotencyKey: started.step.idempotencyKey,
       });
-      // Waiting is not a business result. Leave the step incomplete and let
-      // the Worker verify its pause ledger before ending this Run.
-      if (result.waitingForUser)
-        return {
-          workflowRunId: run.id,
-          output: {},
-          waitingForUser: result.waitingForUser,
-        };
       await completeWorkflowStep({
         context: input.execution.context,
         stepId: started.step.id,

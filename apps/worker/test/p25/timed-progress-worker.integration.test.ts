@@ -393,7 +393,7 @@ suite('MET-210 real Worker continuation and Workflow waiting', () => {
     30000,
   );
   it.each(['model', 'agent_skill'] as const)(
-    'a Workflow %s step preserves frozen preference and cannot complete or advance while waiting',
+    'a Workflow %s step keeps blocking like main, then completes without an orphaned running instance',
     async (kind) => {
       const { first, execute, pauseId } = await firstWait();
       await authorizeFixturePlatformAdministrator(f.db, f.ownerId);
@@ -408,10 +408,9 @@ suite('MET-210 real Worker continuation and Workflow waiting', () => {
             { key: 'ask', name: '先确认', kind },
             {
               key: 'after',
-              name: '后继业务工具',
-              kind: 'tool',
+              name: '确认后的步骤',
+              kind: 'model',
               dependsOn: ['ask'],
-              input: { toolName: 'workspace.employee.profile.update' },
             },
           ],
         },
@@ -431,47 +430,151 @@ suite('MET-210 real Worker continuation and Workflow waiting', () => {
       await updateUserPreferences(f.context, {
         questionWait: { mode: 'timed', seconds: 19 },
       });
-      execute.mockImplementation(async (input) => {
-        expect(input.kernel.systemInstructions).toContain(`workflow step ask`);
-        expect(input.nativeQuestionWait).toEqual({ mode: 'timed', seconds: 7 });
-        expect(
-          await input.progress!({
-            action: 'check',
-            nativeSessionId: `dsh-${first.sessionId}`,
+      let answer!: (value: {
+        answers: { id: string; selected: string[] }[];
+      }) => void;
+      let presented!: () => void;
+      const asked = new Promise<void>((resolve) => {
+        presented = resolve;
+      });
+      const ask = vi.fn(
+        () =>
+          new Promise((resolve) => {
+            answer = resolve;
+            presented();
           }),
-        ).toMatchObject({ paused: true, pauseId });
+      );
+      const askTimed = vi.fn(() => {
+        throw Error('TEST_WORKFLOW_TIMED_ASK_FORBIDDEN');
+      });
+      const model = vi.fn(async function* () {
+        yield { type: 'text', text: 'done' };
+      });
+      execute.mockImplementation(async (input) => {
+        expect(input.nativeQuestionWait).toEqual({ mode: 'timed', seconds: 7 });
+        expect(input.executionEnvironment.ALLRICE_QUESTION_RELEASE_MS).toBe(
+          '0',
+        );
+        if (input.kernel.systemInstructions.includes('workflow step after'))
+          return result(next, false);
+        expect(input.kernel.systemInstructions).toContain('workflow step ask');
+        const nativeSessionId = `dsh-${first.sessionId}`;
+        expect(
+          await input.progress!({ action: 'check', nativeSessionId }),
+        ).toMatchObject({ paused: false, pauseId: null });
+        // This Workflow keeps its own blocking pause; it never inherits the
+        // earlier ordinary Run's expired question.
+        for (let i = 0; i < 3; i++) {
+          await input.progress!({
+            action: 'start',
+            kind: 'tool',
+            nativeSessionId,
+            callId: `workflow-failure-${i}`,
+            name: 'read',
+            argumentsDigest: `sha256:${'a'.repeat(64)}`,
+          });
+          await input.progress!({
+            action: 'finish',
+            kind: 'tool',
+            nativeSessionId,
+            callId: `workflow-failure-${i}`,
+            outcome: 'error',
+            resultDigest: `sha256:${'b'.repeat(64)}`,
+          });
+        }
+        const hooks = new Map();
+        const agent = { id: nativeSessionId };
+        vi.stubEnv(
+          'ALLRICE_QUESTION_RELEASE_MS',
+          input.executionEnvironment.ALLRICE_QUESTION_RELEASE_MS,
+        );
+        vi.stubEnv('ALLRICE_ASK_USER_TIMEOUT', '7');
+        installTaskProgress(
+          {
+            on: (name: string, fn: unknown) => hooks.set(name, fn),
+            agents: { get: () => agent, roots: () => [agent] },
+            userQuestions: { ask, askTimed },
+          },
+          input.progress!,
+        );
+        await collect(
+          hooks.get('llm/stream')({ sessionId: nativeSessionId }, model),
+        );
         await input.onThreadBound?.({
           threadId: `dsh-${next.sessionId}`,
           resumed: false,
           replacedThreadId: null,
         });
-        return result(next);
+        return result(next, false);
       });
-      const waiting = await run(next);
-      expect(waiting).toMatchObject({
-        answer: '等你回答后继续。',
-        waitingForUser: { questionId: 'progress-card' },
-      });
-      await completeJob({ ...next.workflowLease, result: waiting });
-      expect(execute).toHaveBeenCalledTimes(2);
+      let settled = false;
+      const running = run(next);
+      void running.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      await Promise.race([
+        asked,
+        running.then(() => {
+          throw Error('TEST_WORKFLOW_ENDED_BEFORE_ANSWER');
+        }),
+      ]);
+      try {
+        expect(settled).toBe(false);
+        expect(ask).toHaveBeenCalledOnce();
+        expect(askTimed).not.toHaveBeenCalled();
+        expect(model).not.toHaveBeenCalled();
+        const [active] =
+          await f.db`select r.state,j.lease_token,w.status as workflow_status
+          from allrice_runs r join allrice_jobs j on j.run_id=r.id
+          join allrice_workflow_runs w on w.run_id=r.id where r.id=${next.runId}`;
+        expect(active).toMatchObject({
+          state: 'running',
+          lease_token: next.workflowLease.leaseToken,
+          workflow_status: 'running',
+        });
+        const pending =
+          await f.db`select s.step_key,s.status from allrice_workflow_step_runs s
+          join allrice_workflow_runs w on w.id=s.workflow_run_id where w.run_id=${next.runId} order by s.step_key`;
+        expect(pending).toMatchObject([
+          { step_key: 'after', status: 'pending' },
+          { step_key: 'ask', status: 'running' },
+        ]);
+      } finally {
+        answer({
+          answers: [{ id: 'runtime-progress', selected: ['重新检查后继续'] }],
+        });
+      }
+      const completed = await running;
+      expect(completed).not.toHaveProperty('waitingForUser');
+      await completeJob({ ...next.workflowLease, result: completed });
+      expect(execute).toHaveBeenCalledTimes(3);
+      expect(model).toHaveBeenCalledOnce();
       const rows =
         await f.db`select s.step_key,s.status,s.output from allrice_workflow_step_runs s
         join allrice_workflow_runs w on w.id=s.workflow_run_id where w.run_id=${next.runId} order by s.step_key`;
       expect(rows).toMatchObject([
-        { step_key: 'after', status: 'pending' },
-        { step_key: 'ask', status: 'running' },
+        { step_key: 'after', status: 'succeeded' },
+        { step_key: 'ask', status: 'succeeded' },
       ]);
-      expect(rows.every((row) => row.output === null)).toBe(true);
+      expect(rows.every((row) => row.output !== null)).toBe(true);
       const [saved] =
-        await f.db`select r.state,j.lease_token,e.experience_capture_state,p.pause_id from allrice_runs r
-        join allrice_jobs j on j.run_id=r.id join allrice_employee_runs e on e.run_id=r.id
+        await f.db`select r.state,j.lease_token,w.status as workflow_status,p.pause_id from allrice_runs r
+        join allrice_jobs j on j.run_id=r.id join allrice_workflow_runs w on w.run_id=r.id
         join allrice_task_progress p on p.run_id=r.id where r.id=${next.runId}`;
       expect(saved).toMatchObject({
         state: 'succeeded',
         lease_token: null,
-        experience_capture_state: null,
-        pause_id: pauseId,
+        workflow_status: 'succeeded',
+        pause_id: null,
       });
+      const [prior] =
+        await f.db`select pause_id from allrice_task_progress where run_id=${first.runId}`;
+      expect(prior!.pause_id).toBe(pauseId);
     },
     30000,
   );

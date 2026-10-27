@@ -1042,6 +1042,7 @@ export async function executeEmployeeRun({
             // 子智能体方案 PR4a/b/c 删除旧助手包装层时，一并删掉这个分支。
             sessionId:
               repairTask ||
+              routeDecision.selectedKind === 'workflow' ||
               objectInput(assistantConfiguration).allowAssistants === true
                 ? undefined
                 : input.sessionId,
@@ -1708,7 +1709,12 @@ export async function executeEmployeeRun({
                   storageObjects: [],
                   images: [],
                   workDirectory: isolation.workDirectory,
-                  executionEnvironment: isolation.environment,
+                  // Workflow steps keep their Run and lease while asking. The
+                  // existing zero release point selects blocking program asks.
+                  executionEnvironment: {
+                    ...isolation.environment,
+                    ALLRICE_QUESTION_RELEASE_MS: '0',
+                  },
                   providerSnapshot,
                   signal,
                   attempt: execution.job.attempt,
@@ -1766,7 +1772,6 @@ export async function executeEmployeeRun({
                 usage.cachedInputTokens += stepResult.usage.cachedInputTokens;
                 usage.outputTokens += stepResult.usage.outputTokens;
                 return {
-                  waitingForUser: stepResult.waitingForUser,
                   output: {
                     answer: stepResult.answer,
                     usage: stepResult.usage,
@@ -1776,16 +1781,6 @@ export async function executeEmployeeRun({
                 };
               },
             });
-            if (durable.waitingForUser)
-              return {
-                answer: '',
-                usage,
-                waitingForUser: durable.waitingForUser,
-                provider: providerName(providerSnapshot),
-                model: providerSnapshot.model,
-                threadId: runtime.threadId,
-                turnId: runtime.activeTurnId,
-              };
             const answers = Object.values(durable.output).flatMap((value) =>
               value &&
               typeof value === 'object' &&

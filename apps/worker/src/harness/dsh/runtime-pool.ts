@@ -815,8 +815,12 @@ export class DshRuntimePool {
         : questionWait.mode === 'forever'
           ? -1
           : questionWait.seconds;
+    const questionReleaseMs =
+      input.input.executionEnvironment.ALLRICE_QUESTION_RELEASE_MS === '0'
+        ? 0
+        : this.idleCloseMs;
     const fingerprintInput = {
-      questionWait: questionTimeout,
+      questionWait: { timeout: questionTimeout, releaseMs: questionReleaseMs },
       ...(nativeIdentity ? { nativeArtifact: nativeIdentity } : {}),
       ...(input.nativePin ? { nativeSessionBinding: input.nativePin } : {}),
       snapshot: input.snapshot,
@@ -958,7 +962,7 @@ export class DshRuntimePool {
       DSH_DISTRIBUTION_VERSION:
         nativeIdentity?.version ?? DSH_DISTRIBUTION_CURRENT_VERSION,
       DSH_MAX_OUTPUT_TOKENS: String(maxTokens ?? 16_000),
-      ALLRICE_QUESTION_RELEASE_MS: String(this.idleCloseMs),
+      ALLRICE_QUESTION_RELEASE_MS: String(questionReleaseMs),
       ...(questionWait.mode === 'default'
         ? {}
         : { ALLRICE_ASK_USER_TIMEOUT: String(questionTimeout) }),

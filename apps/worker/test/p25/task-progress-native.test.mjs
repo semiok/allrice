@@ -2,6 +2,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic';
 import {
+  initialProgressState,
+  observeProgress,
+} from '../../../../packages/database/src/task-progress-policy.ts';
+import {
   installTaskProgress,
   progressDigest,
   progressResult,
@@ -48,6 +52,77 @@ function fixture() {
   };
 }
 describe('native progress middleware', () => {
+  it('flushes the third queued failure before compaction model admission without asking a question', async () => {
+    const f = fixture();
+    let state = initialProgressState();
+    const starts = new Map();
+    let releaseReceipt;
+    const receipt = new Promise((resolve) => {
+      releaseReceipt = resolve;
+    });
+    let receiptStarted;
+    const writing = new Promise((resolve) => {
+      receiptStarted = resolve;
+    });
+    f.bridge.mockImplementation(async (p) => {
+      if (p.action === 'start') {
+        if (state.reason) throw Error('task_progress_paused');
+        starts.set(p.callId, p);
+      }
+      if (p.action === 'finish' && p.kind === 'tool') {
+        if (p.callId === '3') {
+          receiptStarted();
+          await receipt;
+        }
+        state = observeProgress(state, {
+          ...starts.get(p.callId),
+          ...p,
+        });
+      }
+      return { paused: !!state.reason, reason: state.reason };
+    });
+    const emit = f.hooks.get('session/event');
+    for (const callId of ['1', '2', '3']) {
+      emit(f.root, {
+        type: 'tool/call',
+        data: { callId, name: 'read', arguments: { path: 'missing' } },
+      });
+      emit(f.root, {
+        type: 'tool/result',
+        data: {
+          message: {
+            content: [
+              {
+                type: 'tool-result',
+                toolCallId: callId,
+                isError: true,
+                content: [{ type: 'text', text: 'missing file' }],
+              },
+            ],
+          },
+        },
+      });
+    }
+    await writing;
+    expect(state.history).toHaveLength(2);
+    expect(state.reason).toBeNull();
+    const next = vi.fn(async function* () {
+      yield { type: 'text', text: 'must not run' };
+    });
+    const compacting = Array.fromAsync(
+      f.hooks.get('llm/stream')(
+        { sessionId: f.root.id, purpose: 'compaction' },
+        next,
+      ),
+    );
+    const rejected = expect(compacting).rejects.toThrow('task_progress_paused');
+    releaseReceipt();
+    await rejected;
+    expect(state.reason).toBe('repeated_failure');
+    expect(next).not.toHaveBeenCalled();
+    expect(f.ctx.userQuestions.ask).not.toHaveBeenCalled();
+    expect(f.bridge.mock.calls.some(([p]) => p.action === 'check')).toBe(false);
+  });
   it('lets upstream automatic compaction fail admission without a card, then asks once and continues', async () => {
     const f = fixture();
     f.pause();

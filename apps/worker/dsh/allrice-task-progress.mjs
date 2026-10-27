@@ -303,13 +303,15 @@ export function installTaskProgress(ctx, bridge, configuration = {}) {
       return;
     }
     // Compaction runs before inbox messages enter history and catches errors.
-    // Admission still rejects model calls while paused; only the normal
-    // request boundary presents a card and may end this turn as pending.
+    // Flush queued receipts before admission even when skipping the card;
+    // the last tool failure may not have reached the pause ledger yet.
+    // Only the normal request boundary may end this turn as pending.
     if (
       configuration.maintenanceOutputTokens ||
       options.purpose !== 'compaction'
     )
       await check(agent, options.signal);
+    else await flush();
     if (
       configuration.maintenanceOutputTokens &&
       options.purpose === 'compaction'
