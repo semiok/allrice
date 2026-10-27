@@ -50,6 +50,8 @@ export const UserPreferencesInputSchema = z
     transcriptView: TranscriptViewSchema.optional(),
     collapseTiming: CollapseTimingSchema.optional(),
     appearance: AppearanceSchema.optional(),
+    questionWait: QuestionWaitSchema.optional(),
+    subagents: SubagentPreferencesSchema.optional(),
   })
   .strict()
   .refine(
@@ -66,6 +68,8 @@ export const UserPreferencesSchema = z.object({
   transcriptView: TranscriptViewSchema.default('detailed'),
   collapseTiming: CollapseTimingSchema.default('completion'),
   appearance: AppearanceSchema.default('light'),
+  questionWait: QuestionWaitSchema.default({ mode: 'default' }),
+  subagents: SubagentPreferencesSchema.default({ maxDepth: 1, maxActive: 8 }),
   updatedAt: z.string().datetime().nullable(),
 });
 export type UserPreferences = z.infer<typeof UserPreferencesSchema>;
@@ -76,5 +80,7 @@ export const defaultUserPreferences: UserPreferences = {
   transcriptView: 'detailed',
   collapseTiming: 'completion',
   appearance: 'light',
+  questionWait: { mode: 'default' },
+  subagents: { maxDepth: 1, maxActive: 8 },
   updatedAt: null,
 };

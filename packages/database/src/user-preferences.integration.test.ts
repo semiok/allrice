@@ -182,6 +182,42 @@ suite('account output preferences', () => {
     `;
     expect(inserted?.appearance).toBe('light');
   });
+  // MET-210 (user 10-27): DSH's own question wait and subagent settings.
+  it('saves each agent preference group alone and keeps the other choices', async () => {
+    const f = await createExperienceFixture(fixture.db);
+    await updateUserPreferences(f.owner, { appearance: 'dark', fontSize: 18 });
+    const timed = await updateUserPreferences(f.owner, {
+      questionWait: { mode: 'timed', seconds: 300 },
+    });
+    expect(timed).toMatchObject({
+      appearance: 'dark',
+      fontSize: 18,
+      questionWait: { mode: 'timed', seconds: 300 },
+      subagents: { maxDepth: 1, maxActive: 8 },
+    });
+    await updateUserPreferences(f.owner, {
+      subagents: { maxDepth: 0, maxActive: 12 },
+    });
+    const forever = await updateUserPreferences(f.owner, {
+      questionWait: { mode: 'forever' },
+    });
+    expect(forever).toMatchObject({
+      questionWait: { mode: 'forever' },
+      subagents: { maxDepth: 0, maxActive: 12 },
+    });
+    expect(await getUserPreferences(f.owner)).toEqual(forever);
+    for (const update of [
+      { questionWait: { mode: 'timed', seconds: 0 } },
+      { questionWait: { mode: 'timed' } },
+      { subagents: { maxDepth: -1, maxActive: 1 } },
+      { subagents: { maxDepth: 1, maxActive: 0 } },
+    ])
+      await expect(updateUserPreferences(f.owner, update)).rejects.toThrow();
+    await expect(
+      fixture.db`update allrice_user_preferences set question_wait_mode='timed' where user_id=${f.owner.actor.id}`,
+    ).rejects.toThrow(/check constraint/);
+    expect(await getUserPreferences(f.owner)).toEqual(forever);
+  });
   // Runs last: it rebuilds the pre-0222 column set inside this suite's schema.
   it('migration 0222 sets existing rows to light and keeps their other choices', async () => {
     const f = await createExperienceFixture(fixture.db);

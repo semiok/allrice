@@ -85,6 +85,7 @@ import { getDatabase } from '../core/client.ts';
 import { freezeSessionModelSnapshot } from '../providers/model-pool.ts';
 import { freezeTaskRuntimePolicy } from '../task-runtime-policy.ts';
 import { freezeSandboxExecutionPolicy } from '../sandbox-execution-policy.ts';
+import { freezeNativePreferences } from '../user-preferences.ts';
 import {
   ensureDefaultEmployee,
   resolveWorkspaceId,
@@ -1635,6 +1636,12 @@ export async function prepareEmployeeRunBinding(
       },
       runtimePolicy: selectedRuntimePolicy,
       ...(taskRuntimePolicy ? { taskRuntimePolicy } : {}),
+      // The run's owner is the session owner (the assignment's member).
+      nativePreferences: await freezeNativePreferences(sql, {
+        organizationId: input.context.organizationId,
+        workspaceId: input.workspaceId,
+        userId: actorId,
+      }),
       sandboxExecutionPolicy: await freezeSandboxExecutionPolicy(
         {
           organizationId: input.context.organizationId,

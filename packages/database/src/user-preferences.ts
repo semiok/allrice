@@ -1,9 +1,12 @@
 import {
   defaultUserPreferences,
+  RuntimePolicyControlsSchema,
   UserPreferencesInputSchema,
+  type QuestionWait,
   type RequestContext,
   type UserPreferences,
 } from '@allrice/contracts';
+import type { Sql, TransactionSql } from 'postgres';
 import { getDatabase } from './core/client.ts';
 import { DataAccessError } from './data.ts';
 
@@ -13,8 +16,24 @@ type PreferenceRow = {
   transcript_view: UserPreferences['transcriptView'];
   collapse_timing: UserPreferences['collapseTiming'];
   appearance: UserPreferences['appearance'];
+  question_wait_mode: QuestionWait['mode'];
+  question_wait_seconds: number | null;
+  subagent_max_depth: number;
+  subagent_max_active: number;
   updated_at: Date;
 };
+
+const columns = (sql: Sql | TransactionSql) => sql`
+  streaming_output, font_size, transcript_view, collapse_timing, appearance,
+  question_wait_mode, question_wait_seconds,
+  subagent_max_depth::float8 as subagent_max_depth,
+  subagent_max_active::float8 as subagent_max_active, updated_at`;
+
+function questionWait(row: PreferenceRow): QuestionWait {
+  return row.question_wait_mode === 'timed'
+    ? { mode: 'timed', seconds: row.question_wait_seconds! }
+    : { mode: row.question_wait_mode };
+}
 
 function preferenceView(row: PreferenceRow): UserPreferences {
   return {
@@ -23,6 +42,11 @@ function preferenceView(row: PreferenceRow): UserPreferences {
     transcriptView: row.transcript_view,
     collapseTiming: row.collapse_timing,
     appearance: row.appearance,
+    questionWait: questionWait(row),
+    subagents: {
+      maxDepth: row.subagent_max_depth,
+      maxActive: row.subagent_max_active,
+    },
     updatedAt: row.updated_at.toISOString(),
   };
 }
@@ -36,8 +60,9 @@ function userId(context: RequestContext) {
 export async function getUserPreferences(
   context: RequestContext,
 ): Promise<UserPreferences> {
-  const [row] = await getDatabase()<PreferenceRow[]>`
-    select streaming_output, font_size, transcript_view, collapse_timing, appearance, updated_at
+  const sql = getDatabase();
+  const [row] = await sql<PreferenceRow[]>`
+    select ${columns(sql)}
     from allrice_user_preferences where user_id=${userId(context)}
   `;
   return row ? preferenceView(row) : { ...defaultUserPreferences };
@@ -49,21 +74,73 @@ export async function updateUserPreferences(
 ): Promise<UserPreferences> {
   const id = userId(context);
   const input = UserPreferencesInputSchema.parse(value);
-  const [row] = await getDatabase()<PreferenceRow[]>`
-    insert into allrice_user_preferences (user_id, streaming_output, font_size, transcript_view, collapse_timing, appearance)
+  const wait = input.questionWait ?? defaultUserPreferences.questionWait;
+  const subagents = input.subagents ?? defaultUserPreferences.subagents;
+  const sql = getDatabase();
+  const [row] = await sql<PreferenceRow[]>`
+    insert into allrice_user_preferences (user_id, streaming_output, font_size, transcript_view, collapse_timing, appearance,
+      question_wait_mode, question_wait_seconds, subagent_max_depth, subagent_max_active)
     values (${id}, ${input.streamingOutput ?? defaultUserPreferences.streamingOutput},
       ${input.fontSize ?? defaultUserPreferences.fontSize},
       ${input.transcriptView ?? defaultUserPreferences.transcriptView},
       ${input.collapseTiming ?? defaultUserPreferences.collapseTiming},
-      ${input.appearance ?? defaultUserPreferences.appearance})
+      ${input.appearance ?? defaultUserPreferences.appearance},
+      ${wait.mode}, ${wait.mode === 'timed' ? wait.seconds : null},
+      ${subagents.maxDepth}, ${subagents.maxActive})
     on conflict (user_id) do update set
       streaming_output=coalesce(${input.streamingOutput ?? null}::boolean, allrice_user_preferences.streaming_output),
       font_size=coalesce(${input.fontSize ?? null}::integer, allrice_user_preferences.font_size),
       transcript_view=coalesce(${input.transcriptView ?? null}::text, allrice_user_preferences.transcript_view),
       collapse_timing=coalesce(${input.collapseTiming ?? null}::text, allrice_user_preferences.collapse_timing),
       appearance=coalesce(${input.appearance ?? null}::text, allrice_user_preferences.appearance),
+      question_wait_mode=coalesce(${input.questionWait?.mode ?? null}::text, allrice_user_preferences.question_wait_mode),
+      question_wait_seconds=case when ${input.questionWait ? 1 : 0}::integer=1
+        then ${input.questionWait?.mode === 'timed' ? input.questionWait.seconds : null}::integer
+        else allrice_user_preferences.question_wait_seconds end,
+      subagent_max_depth=coalesce(${input.subagents?.maxDepth ?? null}::bigint, allrice_user_preferences.subagent_max_depth),
+      subagent_max_active=coalesce(${input.subagents?.maxActive ?? null}::bigint, allrice_user_preferences.subagent_max_active),
       updated_at=clock_timestamp()
-    returning streaming_output, font_size, transcript_view, collapse_timing, appearance, updated_at
+    returning ${columns(sql)}
   `;
   return preferenceView(row!);
+}
+
+/**
+ * MET-210: the agent preferences one Run is frozen with, read for the session
+ * owner when the Run is prepared. The tenant's assistant.delegate deny or ask
+ * rule (the gate) freezes maxDepth to 0; the policy itself is not changed.
+ */
+export async function freezeNativePreferences(
+  sql: Sql | TransactionSql,
+  scope: { organizationId: string; workspaceId: string; userId: string },
+) {
+  const [row] = await sql<PreferenceRow[]>`
+    select ${columns(sql)}
+    from allrice_user_preferences where user_id=${scope.userId}
+  `;
+  const preferences = row ? preferenceView(row) : defaultUserPreferences;
+  const [control] = await sql<{ controls: unknown }[]>`
+    select controls from allrice_runtime_policy_controls
+    where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}`;
+  // A stored policy that does not parse closes delegation, as the runtime
+  // policy evaluator treats it; no stored policy leaves the preference.
+  const controls = control
+    ? RuntimePolicyControlsSchema.safeParse(control.controls)
+    : null;
+  const delegationClosed =
+    controls !== null &&
+    (!controls.success ||
+      controls.data.rules.some(
+        (rule) =>
+          rule.action === 'assistant.delegate' &&
+          (rule.effect === 'deny' || rule.effect === 'ask'),
+      ));
+  return {
+    version: 1 as const,
+    questionWait: preferences.questionWait,
+    subagents: {
+      ...preferences.subagents,
+      ...(delegationClosed ? { maxDepth: 0 } : {}),
+    },
+  };
 }
