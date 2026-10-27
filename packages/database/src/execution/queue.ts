@@ -2000,6 +2000,7 @@ async function transitionTerminal(
     code?: string;
     message?: string;
     result?: unknown;
+    skipExperienceCapture?: boolean;
     payload: Record<string, unknown>;
   },
 ) {
@@ -2052,7 +2053,8 @@ async function transitionTerminal(
     where run_id = ${job.run_id}
     returning assistant_message_id, prompt_snapshot
   `;
-  await markExperienceCapturePending(transaction, job.run_id);
+  if (!input.skipExperienceCapture)
+    await markExperienceCapturePending(transaction, job.run_id);
   const employeeRun = employeeRuns[0];
   if (employeeRun) {
     const result =
@@ -3186,6 +3188,12 @@ export async function completeJob(input: {
       eventType: 'run.succeeded',
       result,
       payload: { result },
+      skipExperienceCapture: !!(
+        result &&
+        typeof result === 'object' &&
+        'waitingForUser' in result &&
+        result.waitingForUser
+      ),
     });
     if (
       (job.payload as { type?: string }).type === experienceConsolidationJobType

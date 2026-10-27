@@ -309,6 +309,8 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 - 上游：[rc.3 Session 持久化][persistence]提供历史格式迁移和恢复机制，不承担 PostgreSQL 租约/问题授权。[v0 迁移校验][v0-validation]拒绝未知历史事件，单纯向当前词表注册私有事件不能解决这个迁移问题。
 - 退役条件：候选原生机制覆盖静止边界、持久答案幂等及续接意图，且 Worker 权威检查仍在；当前无整项替代。先完成显式私有事件迁移，不删除事件或标记 ignorable 来通关。
 - 验收：`dsh-legacy-replay.test.ts`、`task-wait-native.integration.test.ts`、`task-wait-worker.integration.test.ts`，以及数据库 `task-native-wait.integration.test.ts`。回退需同时保留私有事件读写能力与原格式副本。
+- MET-210 PR3（方案 v4.5）：连接应用、进度暂停这两类程序题复用 `dsh-user-questions` 的 `askTimed` / `attachWait` / `ASK_TIMED_OUT`；从展示时起计时，以 Run 冻结的属主偏好和 Worker 空闲回收释放点为准，释放点 0 保留阻塞 `ask`。模型工具的 timed 配置和旧 30 秒挂起留给后续 PR。
+- 过渡例外：既有 `allowAssistants` / `ALLRICE_ASSISTANTS_ENABLED` 路径的 Run 保留原阻塞程序题。用户 10-26 冻结旧包装层，主会话 10-27 根据场景 30 的模型预留、join 冲突定此边界；子智能体方案 PR4a/b/c 删除旧层时一起删除分支。平台维护修复 Run 按既有 `repairTask` / `ALLRICE_MAINTENANCE_OUTPUT_TOKENS` 同样保留阻塞（主会话 10-27）。到期与 detach 一样先结算已受理回答的写盘。守护：`allrice-program-questions-native.test.mjs`、`assistant-production.integration.test.ts` 的 `progress_legacy`。
 
 ### allrice-durable-progress-guard-v1
 
@@ -317,6 +319,8 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 - 上游：[重复工具提醒][repeat]是模型提示策略，[Goal driver][goal]是目标推进机制，都没有等价的租约、跨进程暂停状态和精确决策账本。
 - 退役条件：上游提供可接入现有权威状态的等价事实回调与暂停机制，并覆盖失败、空进展、取消和重启；PR-2 已适配 `user-questions/request`，保持原策略，不引入固定调用次数上限或第二套 Agent 循环。
 - 验收：`task-progress-native.integration.test.ts`、数据库 `task-progress.integration.test.ts`。回退保留暂停记录和原决策版本，不通过清空状态“恢复”。
+- MET-210 PR3：非旧助手 Run 在 `llm/stream`（消息入历史之后）出卡，到期凭宿主 `session.user-question-pending` 和本 Run 未决暂停账本以 `succeeded + waitingForUser` 收尾，跳过经验抽取；下一普通 Run 首次建行时在同一事务搬移同 org/workspace/session 的最近到期暂停，源 Run/job 必须 succeeded、暂停未决未取消且已释放租约；停止、失败、超时和仍在跑的 Run 不承接（主会话 10-27，Opus/Fable 首次复核）。旧助手和平台维护修复 Run 不承接，保持原检查位置、阻塞 ask，不改助手包装层、控制器或账本。非维护 compaction 先 flush 工具回执，再做模型 admission；只跳过出卡及到期抛错，第三次失败落账后仍拒绝模型调用。新卡或回答清除 adapter 旧到期证据。Workflow 模型/技能步骤保持原阻塞程序题，不 pending、不以 waitingForUser 结束、不跨 Run 承接；已有 Workflow 路由分支通过既有释放点 0 选择阻塞 ask，冻结偏好仍传入宿主。回答前保留 Run/租约，回答后正常完成，不新增 Workflow 状态或字段（主会话 10-27 第二轮复核决定；跨 Run 续接 Workflow 不在 PR3 范围）。
+- 依据与接缝：用户 10-27 要求到期保持暂停；`dsh-user-questions` 0.2.1-rc.2 README 的 Role / Runtime invariant 只覆盖工具题投影，程序题不持久；跨 Run 搬移属现有门卫与账本的作用域修正。守护：`timed-progress-continuation.integration.test.ts`（热/冷宿主、继续/取消/再次到期、隔离反例）、`timed-progress-worker.integration.test.ts`（真实 Worker 的二轮接线、维护/助手边界及 Workflow 阻塞后正常完成）和 `subscription-worker.integration.test.ts`（Worker 账本确认与成功收尾）。回滚保留两端历史及决策行，不反向复制暂停。
 
 ### allrice-durable-task-clock-v1
 

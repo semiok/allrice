@@ -18,6 +18,7 @@ import {
 /* global AbortSignal, Buffer, fetch, process */
 
 import { existsSync } from 'node:fs';
+import { setTimeout, clearTimeout } from 'node:timers';
 import { performance } from 'node:perf_hooks';
 import { URL } from 'node:url';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
@@ -77,6 +78,8 @@ import {
   runAssistantBusinessInput,
 } from './allrice-assistant-runtime.mjs';
 import { installTaskProgress } from './allrice-task-progress.mjs';
+import { askProgramQuestion } from './allrice-program-questions.mjs';
+import { UserQuestionError } from '@deepseek-ai/dsh-user-questions';
 import { installModelErrorNormalization } from './allrice-model-errors.mjs';
 import { installContentGuard } from './allrice-content-guard.mjs';
 import { installSceneProvider } from './allrice-scene-provider.mjs';
@@ -896,27 +899,34 @@ export async function createAllRiceRuntime(
       const questionId = `app-connect:${result.requestId}`;
       this.managedConnectionWaits.add(sessionId);
       try {
-        const answer = await this.ctx.userQuestions.ask({
-          agent,
-          signal,
-          questions: [
-            {
-              id: questionId,
-              header: '连接应用',
-              question: '完成应用登录后，我会继续当前任务。',
-              detail: `[打开连接页面](${result.loginPath})\n请勿在聊天中填写密码或令牌。连接编号：${result.connection.id}`,
-              options: [
-                { label: applicationConnectedLabel },
-                { label: applicationCancelLabel },
-              ],
-            },
-          ],
-        });
+        const answer = await askProgramQuestion(
+          this.ctx.userQuestions,
+          {
+            agent,
+            signal,
+            questions: [
+              {
+                id: questionId,
+                header: '连接应用',
+                question: '完成应用登录后，我会继续当前任务。',
+                detail: `[打开连接页面](${result.loginPath})\n请勿在聊天中填写密码或令牌。连接编号：${result.connection.id}`,
+                options: [
+                  { label: applicationConnectedLabel },
+                  { label: applicationCancelLabel },
+                ],
+              },
+            ],
+          },
+          `${questionId}:${randomUUID()}`,
+        );
         return {
           content: JSON.stringify({
             connectionId: result.connection.id,
             answer,
-            instruction: applicationConnectionInstruction(answer),
+            instruction:
+              answer.pending === true
+                ? '用户还没确认连接，先做不依赖它的事；用户连好会在对话里告诉你，届时先查状态'
+                : applicationConnectionInstruction(answer),
           }),
         };
       } finally {
@@ -936,84 +946,141 @@ export async function createAllRiceRuntime(
           );
         }
         const [sessionId] = session;
-        // A child progress pause may arrive while Rice is asking an ordinary
-        // question. Serialize them; never replace or accidentally answer it.
-        while (this.pendingUserQuestions.has(sessionId)) {
-          request.signal?.throwIfAborted();
-          const pending = this.pendingUserQuestions.get(sessionId);
-          await new Promise((resolveWait, rejectWait) => {
-            const abort = () => rejectWait(request.signal.reason);
-            request.signal?.addEventListener('abort', abort, { once: true });
-            pending.done.then(() => {
-              request.signal?.removeEventListener('abort', abort);
-              resolveWait();
+        // Claim before joining the display queue; DSH's original deadline
+        // otherwise keeps running while another card owns the foreground.
+        const wait = request.wait?.timed
+          ? this.ctx.userQuestions.attachWait(
+              request.agent,
+              request.wait.callId,
+              request.signal,
+            )
+          : undefined;
+        const claim = wait?.[Symbol.asyncIterator]();
+        let timer;
+        try {
+          const remainingMs = (await claim?.next())?.value?.remainingMs;
+          const releaseMs = Number(
+            process.env.ALLRICE_QUESTION_RELEASE_MS ?? 0,
+          );
+          const waitMs =
+            remainingMs === undefined
+              ? undefined
+              : releaseMs > 0
+                ? Math.min(remainingMs, releaseMs)
+                : remainingMs;
+          // A child progress pause may arrive while Rice is asking an ordinary
+          // question. Serialize them; never replace or accidentally answer it.
+          while (this.pendingUserQuestions.has(sessionId)) {
+            request.signal?.throwIfAborted();
+            const pending = this.pendingUserQuestions.get(sessionId);
+            await new Promise((resolveWait, rejectWait) => {
+              const abort = () => rejectWait(request.signal.reason);
+              request.signal?.addEventListener('abort', abort, { once: true });
+              pending.done.then(() => {
+                request.signal?.removeEventListener('abort', abort);
+                resolveWait();
+              });
             });
+          }
+          request.signal?.throwIfAborted();
+          if (this.requireRoot(sessionId).agent !== request.agent)
+            throw Error('INPUT_SESSION_NOT_LIVE');
+          const questions = this.preparedMethodQuestions.take(
+            request.agent,
+            request.questions,
+          );
+          const questionId = `question-${randomUUID()}`;
+          let markDone;
+          const done = new Promise((resolveDone) => {
+            markDone = resolveDone;
           });
-        }
-        request.signal?.throwIfAborted();
-        if (this.requireRoot(sessionId).agent !== request.agent)
-          throw Error('INPUT_SESSION_NOT_LIVE');
-        const questions = this.preparedMethodQuestions.take(
-          request.agent,
-          request.questions,
-        );
-        const questionId = `question-${randomUUID()}`;
-        let markDone;
-        const done = new Promise((resolveDone) => {
-          markDone = resolveDone;
-        });
-        return new Promise((resolveQuestion, rejectQuestion) => {
-          const abort = () => {
-            this.pendingUserQuestions.delete(sessionId);
-            markDone();
-            rejectQuestion(
-              new Error(
-                'ask_user_question was aborted before the user answered',
-              ),
-            );
-          };
-          request.signal?.addEventListener('abort', abort, { once: true });
-          this.pendingUserQuestions.set(sessionId, {
-            done,
-            questionId,
-            questions,
-            resolve: (answer) => {
-              request.signal?.removeEventListener('abort', abort);
+          return await new Promise((resolveQuestion, rejectQuestion) => {
+            const abort = () => {
+              this.pendingUserQuestions.delete(sessionId);
               markDone();
-              resolveQuestion(answer);
-            },
-            reject: (error) => {
-              request.signal?.removeEventListener('abort', abort);
-              markDone();
-              rejectQuestion(error);
-            },
-          });
-          this.userQuestionNotify({
-            sessionId,
-            questionId,
-            questions: questions.map((question) => ({
-              id: question.id,
-              question: question.question,
-              ...(typeof question.detail === 'string'
-                ? { detail: question.detail }
-                : {}),
-              header: question.header ?? null,
-              options: (question.options ?? []).map((option) => ({
-                label: option.label,
-                description: option.description ?? null,
+              rejectQuestion(
+                new Error(
+                  'ask_user_question was aborted before the user answered',
+                ),
+              );
+            };
+            request.signal?.addEventListener('abort', abort, { once: true });
+            this.pendingUserQuestions.set(sessionId, {
+              done,
+              questionId,
+              questions,
+              resolve: (answer) => {
+                request.signal?.removeEventListener('abort', abort);
+                markDone();
+                resolveQuestion(answer);
+              },
+              reject: (error) => {
+                request.signal?.removeEventListener('abort', abort);
+                markDone();
+                rejectQuestion(error);
+              },
+            });
+            this.userQuestionNotify({
+              sessionId,
+              questionId,
+              ...(waitMs === undefined
+                ? {}
+                : {
+                    deadlineAt: new Date(Date.now() + waitMs).toISOString(),
+                    releaseLimited: releaseMs > 0 && remainingMs > releaseMs,
+                    releaseMinutes: releaseMs / 60_000,
+                  }),
+              questions: questions.map((question) => ({
+                id: question.id,
+                question: question.question,
+                ...(typeof question.detail === 'string'
+                  ? { detail: question.detail }
+                  : {}),
+                header: question.header ?? null,
+                options: (question.options ?? []).map((option) => ({
+                  label: option.label,
+                  description: option.description ?? null,
+                })),
+                multiSelect: question.multiSelect === true,
+                ...(question.intent?.kind === 'plan-review'
+                  ? {
+                      intent: {
+                        kind: 'plan-review',
+                        approve: question.intent.approve,
+                      },
+                    }
+                  : {}),
               })),
-              multiSelect: question.multiSelect === true,
-              ...(question.intent?.kind === 'plan-review'
-                ? {
-                    intent: {
-                      kind: 'plan-review',
-                      approve: question.intent.approve,
-                    },
-                  }
-                : {}),
-            })),
+            });
+            if (waitMs !== undefined) {
+              const pending = this.pendingUserQuestions.get(sessionId);
+              timer = setTimeout(async () => {
+                // Accepted answers own their durable receipt before expiry can
+                // settle the card, just as they do at the detach boundary.
+                await Promise.allSettled(pending.inputDeliveries ?? []);
+                if (this.pendingUserQuestions.get(sessionId) !== pending)
+                  return;
+                this.userQuestionNotify({
+                  sessionId,
+                  questionId,
+                  pending: true,
+                });
+                this.pendingUserQuestions.delete(sessionId);
+                request.signal?.removeEventListener('abort', abort);
+                markDone();
+                rejectQuestion(
+                  new UserQuestionError(
+                    'Question wait elapsed',
+                    'ASK_TIMED_OUT',
+                  ),
+                );
+              }, waitMs);
+            }
           });
-        });
+        } finally {
+          clearTimeout(timer);
+          await claim?.return?.();
+        }
       });
     }
 
@@ -2026,7 +2093,9 @@ export async function createAllRiceRuntime(
     transport.notify(
       notice.answered
         ? 'session.user-question-answered'
-        : 'session.user-question',
+        : notice.pending
+          ? 'session.user-question-pending'
+          : 'session.user-question',
       notice,
     );
 

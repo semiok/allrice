@@ -19,6 +19,7 @@ import {
   getOrganizationModelQuota,
   assertQuotaAvailable,
   createTraceableMemory,
+  completeJob,
 } from '@allrice/database';
 import type * as Database from '@allrice/database';
 import {
@@ -89,6 +90,9 @@ integration(
     });
     it.each([
       'complete',
+      'progress_waiting',
+      'progress_missing',
+      'progress_canceled',
       'personal_profile_writable',
       'personal_profile_with_assistants',
       'personal_method_with_assistants',
@@ -190,7 +194,9 @@ integration(
               ? '请保存我的工作场景候选：每周核对数据。'
               : mode.startsWith('personal_profile')
                 ? '请把你的名字改为小禾。以后回答保持简洁。'
-                : 'Synthetic arithmetic.',
+                : mode.startsWith('progress_')
+                  ? '连续失败了，先暂停，等我确认后再继续。'
+                  : 'Synthetic arithmetic.',
             images,
           );
           if (mode === 'complete') {
@@ -569,7 +575,51 @@ integration(
                     : input.attempt,
                 );
               }
+              if (mode.startsWith('progress_')) {
+                const port = input.progress!;
+                const nativeSessionId = `dsh-${task.sessionId}`;
+                if (mode !== 'progress_missing') {
+                  for (let i = 0; i < 3; i++) {
+                    await port({
+                      action: 'start',
+                      kind: 'tool',
+                      nativeSessionId,
+                      callId: `error-${i}`,
+                      name: 'read',
+                      argumentsDigest: `sha256:${'a'.repeat(64)}`,
+                    });
+                    await port({
+                      action: 'finish',
+                      kind: 'tool',
+                      nativeSessionId,
+                      callId: `error-${i}`,
+                      outcome: 'error',
+                      resultDigest: `sha256:${'b'.repeat(64)}`,
+                    });
+                  }
+                  if (mode === 'progress_canceled') {
+                    const paused = await port({
+                      action: 'check',
+                      nativeSessionId,
+                    });
+                    await port({
+                      action: 'decide',
+                      nativeSessionId,
+                      pauseId: paused.pauseId,
+                      decision: 'cancel',
+                    });
+                  }
+                }
+              }
               return {
+                ...(mode.startsWith('progress_')
+                  ? {
+                      waitingForUser: {
+                        questionId: 'structured-progress-question',
+                      },
+                      threadId: `dsh-${task.sessionId}`,
+                    }
+                  : {}),
                 answer: 'Synthetic',
                 provider: 'openai-codex',
                 model:
@@ -612,6 +662,41 @@ integration(
             onHarnessEvent: async () => {},
             workflowLease: task.workflowLease,
           });
+          if (mode.startsWith('progress_')) {
+            if (mode === 'progress_missing') {
+              await expect(pending).rejects.toMatchObject({
+                code: 'DSH_TURN_FAILED',
+              });
+            } else if (mode === 'progress_canceled') {
+              await expect(pending).rejects.toThrow('task_progress_lease_lost');
+            } else {
+              const result = await pending;
+              expect(result).toMatchObject({
+                answer: '等你回答后继续。',
+                waitingForUser: { questionId: 'structured-progress-question' },
+              });
+              await completeJob({ ...task.workflowLease, result });
+              const [run] =
+                await fixture.db`select r.state,j.status,j.lease_token,e.experience_capture_state,p.pause_id,p.canceled from allrice_runs r join allrice_jobs j on j.run_id=r.id join allrice_employee_runs e on e.run_id=r.id join allrice_task_progress p on p.run_id=r.id where r.id=${task.runId}`;
+              expect(run).toMatchObject({
+                state: 'succeeded',
+                status: 'succeeded',
+                lease_token: null,
+                experience_capture_state: null,
+                canceled: false,
+                pause_id: expect.any(String),
+              });
+              const decisions =
+                await fixture.db`select * from allrice_task_progress_decisions where run_id=${task.runId}`;
+              expect(decisions).toHaveLength(0);
+              const [event] =
+                await fixture.db`select payload from allrice_run_events where run_id=${task.runId} and event_type='run.succeeded'`;
+              expect(event!.payload.result.waitingForUser).toEqual({
+                questionId: 'structured-progress-question',
+              });
+            }
+            return;
+          }
           if (mode.startsWith('failed_'))
             await expect(pending).rejects.toMatchObject({
               code: 'ASSISTANT_BUDGET_EXHAUSTED',

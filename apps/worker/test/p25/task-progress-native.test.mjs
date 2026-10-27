@@ -1,4 +1,10 @@
+/* global AbortController */
 import { describe, it, expect, vi } from 'vitest';
+import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic';
+import {
+  initialProgressState,
+  observeProgress,
+} from '../../../../packages/database/src/task-progress-policy.ts';
 import {
   installTaskProgress,
   progressDigest,
@@ -23,6 +29,7 @@ function fixture() {
   };
   let paused = false;
   const bridge = vi.fn(async (p) => {
+    if (p.action === 'start' && paused) throw Error('task_progress_paused');
     if (p.action === 'decide') paused = false;
     return {
       paused,
@@ -45,6 +52,113 @@ function fixture() {
   };
 }
 describe('native progress middleware', () => {
+  it('flushes the third queued failure before compaction model admission without asking a question', async () => {
+    const f = fixture();
+    let state = initialProgressState();
+    const starts = new Map();
+    let releaseReceipt;
+    const receipt = new Promise((resolve) => {
+      releaseReceipt = resolve;
+    });
+    let receiptStarted;
+    const writing = new Promise((resolve) => {
+      receiptStarted = resolve;
+    });
+    f.bridge.mockImplementation(async (p) => {
+      if (p.action === 'start') {
+        if (state.reason) throw Error('task_progress_paused');
+        starts.set(p.callId, p);
+      }
+      if (p.action === 'finish' && p.kind === 'tool') {
+        if (p.callId === '3') {
+          receiptStarted();
+          await receipt;
+        }
+        state = observeProgress(state, {
+          ...starts.get(p.callId),
+          ...p,
+        });
+      }
+      return { paused: !!state.reason, reason: state.reason };
+    });
+    const emit = f.hooks.get('session/event');
+    for (const callId of ['1', '2', '3']) {
+      emit(f.root, {
+        type: 'tool/call',
+        data: { callId, name: 'read', arguments: { path: 'missing' } },
+      });
+      emit(f.root, {
+        type: 'tool/result',
+        data: {
+          message: {
+            content: [
+              {
+                type: 'tool-result',
+                toolCallId: callId,
+                isError: true,
+                content: [{ type: 'text', text: 'missing file' }],
+              },
+            ],
+          },
+        },
+      });
+    }
+    await writing;
+    expect(state.history).toHaveLength(2);
+    expect(state.reason).toBeNull();
+    const next = vi.fn(async function* () {
+      yield { type: 'text', text: 'must not run' };
+    });
+    const compacting = Array.fromAsync(
+      f.hooks.get('llm/stream')(
+        { sessionId: f.root.id, purpose: 'compaction' },
+        next,
+      ),
+    );
+    const rejected = expect(compacting).rejects.toThrow('task_progress_paused');
+    releaseReceipt();
+    await rejected;
+    expect(state.reason).toBe('repeated_failure');
+    expect(next).not.toHaveBeenCalled();
+    expect(f.ctx.userQuestions.ask).not.toHaveBeenCalled();
+    expect(f.bridge.mock.calls.some(([p]) => p.action === 'check')).toBe(false);
+  });
+  it('lets upstream automatic compaction fail admission without a card, then asks once and continues', async () => {
+    const f = fixture();
+    f.pause();
+    const next = vi.fn(async function* () {
+      yield { type: 'text', text: 'done' };
+    });
+    // The real upstream hook catches compaction errors before normal streaming.
+    const hooks = new Map();
+    BasicCompactionEngine.prototype._registerAutomaticCompaction.call({
+      ctx: {
+        on: (name, fn) => hooks.set(name, fn),
+        logger: { warn: vi.fn(), info: vi.fn() },
+      },
+      warnedPressureConfigTargets: new Set(),
+      compactIfNeeded: () =>
+        Array.fromAsync(
+          f.hooks.get('llm/stream')(
+            { sessionId: f.root.id, purpose: 'compaction' },
+            next,
+          ),
+        ),
+    });
+    const normal = () =>
+      Array.fromAsync(
+        f.hooks.get('llm/stream')({ sessionId: f.root.id }, next),
+      );
+    await hooks.get('agent/pre-step')(
+      { agent: f.root, signal: new AbortController().signal },
+      normal,
+    );
+    expect(f.ctx.userQuestions.ask).toHaveBeenCalledOnce();
+    expect(next).toHaveBeenCalledOnce();
+    expect(
+      f.bridge.mock.calls.filter(([p]) => p.action === 'decide'),
+    ).toHaveLength(1);
+  });
   it.each(['current', 'historical'])(
     'does not settle a %s tool again when native pruning replaces its history',
     async (scope) => {
@@ -159,8 +273,12 @@ describe('native progress middleware', () => {
           answer = resolve;
         }),
     );
-    const next = vi.fn(async () => ({ maxTokens: 10 }));
-    const pending = f.hooks.get('agent/request')({ agent: f.child }, next);
+    const next = vi.fn(async function* () {
+      yield { type: 'text', text: 'ok' };
+    });
+    const pending = Array.fromAsync(
+      f.hooks.get('llm/stream')({ sessionId: f.child.id }, next),
+    );
     await vi.waitFor(() => expect(f.ctx.userQuestions.ask).toHaveBeenCalled());
     expect(next).not.toHaveBeenCalled();
     expect(f.ctx.userQuestions.ask.mock.calls[0][0].agent).toBe(f.root);
@@ -185,7 +303,9 @@ describe('native progress middleware', () => {
       });
       const next = vi.fn();
       await expect(
-        f.hooks.get('agent/request')({ agent: f.root }, next),
+        Array.fromAsync(
+          f.hooks.get('llm/stream')({ sessionId: f.root.id }, next),
+        ),
       ).rejects.toThrow('task_progress_canceled');
       expect(next).not.toHaveBeenCalled();
       expect(f.bridge).toHaveBeenCalledWith(

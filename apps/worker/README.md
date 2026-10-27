@@ -71,6 +71,13 @@ at least `1`; any other value stops the Worker at startup. A process is never
 closed during a turn, and the next turn of a closed conversation recovers its
 persisted native session on a fresh process.
 
+Program questions (application connection and progress pause) use the Run's
+frozen owner preference and DSH `askTimed`, counted from display and capped by
+the same idle-close interval; `0` keeps them blocking. A pending progress pause
+completes the Run with `waitingForUser` and transfers to the next Run in that
+session. Runs using the frozen legacy assistant path retain blocking questions
+and do not transfer pauses; remove this exception with subagent PR4a/b/c.
+
 DSH child processes receive no ambient host proxy configuration. Deployments
 that require an egress proxy must set the `ALLRICE_DSH_*_PROXY` variables
 explicitly; production should use deployment-owned egress rather than a desktop

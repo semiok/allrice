@@ -10,8 +10,10 @@ import { createAssistantFixtureDatabase } from '../../../../packages/database/sr
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.js';
 import type { HarnessExecutionInput } from '../../src/harness/adapter.js';
 import type { DshRuntimePool } from '../../src/harness/dsh/runtime-pool.js';
+import type { DshProtocolClient } from '../../src/harness/dsh-protocol-client.js';
 import { createAssistantWorkerBridge } from '../../src/harness/dsh/assistant-bridge.js';
 import { productionAssistantController } from '../../src/harness/dsh/assistant-controller.js';
+import { assertAssistantTaskComplete } from '../../src/harness/dsh/assistant-outcome.js';
 import { createAssistantAuthorityFixture } from '../../../../packages/database/src/assistant-authority.fixture.ts';
 import { assertAssistantAuthority } from '../../../../packages/database/src/assistant-authority.ts';
 import { p24Fixture, gate } from '../p24/fixture.js';
@@ -46,6 +48,7 @@ integration(
       'unknown_usage',
       'unknown_output',
       'unknown_input',
+      'progress_legacy',
     ] as const)(
       'the actual native parent delegates concurrent children: %s',
       async (outcome) => {
@@ -77,6 +80,15 @@ integration(
         let activeChildren = 0,
           maximumActiveChildren = 0,
           triedMissingReport = false;
+        let progressPaused = false;
+        let progressResumed = false;
+        const pauseId = randomUUID();
+        const progressCalls: Record<string, unknown>[] = [];
+        const questionNotices: unknown[] = [];
+        const pendingNotices: unknown[] = [];
+        const nativeNotices: unknown[] = [];
+        const assistantRpcs: { action: string; done: boolean }[] = [];
+        let observedClient: DshProtocolClient | undefined;
         const model = await p24Fixture(async (request) => {
           const serialized = JSON.stringify(request.messages);
           const exposedTools =
@@ -98,6 +110,12 @@ integration(
             );
             await overlap.promise;
             activeChildren--;
+            if (outcome === 'progress_legacy' && !progressResumed) {
+              progressPaused = true;
+              return {
+                nativeTool: { name: 'assistant_report', arguments: {} },
+              };
+            }
             if (
               outcome === 'invalid_report' &&
               !serialized.includes('assistant_report_delivery_required')
@@ -196,6 +214,13 @@ integration(
                 },
               },
             };
+          if (outcome === 'progress_legacy' && !progressResumed) {
+            await overlap.promise;
+            progressPaused = true;
+            return {
+              nativeTool: { name: 'assistant_delegate', arguments: {} },
+            };
+          }
           return { text: 'Root final synthesis of bounded partial evidence.' };
         });
         vi.stubEnv('ALLRICE_DSH_PLATFORM_HOME', join(model.root, 'platform'));
@@ -346,6 +371,56 @@ integration(
               },
             }),
           };
+          if (outcome === 'progress_legacy') {
+            executionInput.nativeQuestionWait = { mode: 'timed', seconds: 1 };
+            executionInput.progress = async (p) => {
+              progressCalls.push(p);
+              if (p.action === 'decide') {
+                expect(p).toMatchObject({ pauseId, decision: 'continue' });
+                progressPaused = false;
+                progressResumed = true;
+              }
+              return {
+                paused: progressPaused,
+                pauseId: progressPaused ? pauseId : null,
+                canceled: false,
+                reason: 'repeated_failure',
+                recent: [],
+              };
+            };
+            executionInput.onEvent = async (e) => {
+              if (e.sourceEventType === 'session/user-question')
+                questionNotices.push(e);
+              if (e.sourceEventType === 'allrice/runtime-preparation') {
+                observedClient = (
+                  Reflect.get(adapter, 'runtimePool') as DshRuntimePool
+                ).get(nativeSessionId)!.client;
+                const originalRpc =
+                  observedClient.assistant.bind(observedClient);
+                vi.spyOn(observedClient, 'assistant').mockImplementation(
+                  (action, params) => {
+                    const call = { action, done: false };
+                    assistantRpcs.push(call);
+                    return originalRpc(action, params).finally(() => {
+                      call.done = true;
+                    });
+                  },
+                );
+                observedClient.subscribe((n) => {
+                  if (n.method === 'session.user-question-pending')
+                    pendingNotices.push(n);
+                  if (
+                    n.method === 'session.status' ||
+                    (n.method === 'session.event' &&
+                      ['turn/start', 'turn/end', 'user/message'].includes(
+                        String((n.params.event as { type: string })?.type),
+                      ))
+                  )
+                    nativeNotices.push(n);
+                });
+              }
+            };
+          }
           if (outcome === 'completed') {
             executionInput.onEvent = async (event) => {
               if (event.sourceEventType !== 'allrice/runtime-preparation')
@@ -487,6 +562,45 @@ integration(
               )
               .toBe(3);
           overlap.release();
+          if (outcome === 'progress_legacy') {
+            await expect
+              .poll(() => questionNotices.length, { timeout: 10000 })
+              .toBe(1);
+            // The frozen one-second preference must not time out a legacy
+            // assistant Run. This is a bounded behavior check, not a product timer.
+            await new Promise((resolve) => setTimeout(resolve, 1100));
+            expect(pendingNotices).toHaveLength(0);
+            expect(progressCalls.some((p) => p.action === 'decide')).toBe(
+              false,
+            );
+            const question = questionNotices[0] as {
+              sourcePayload: { questionId: string };
+            };
+            const turn = nativeNotices.findLast((n) => {
+              const notice = n as {
+                method: string;
+                params: { sessionId: string; event?: { type: string } };
+              };
+              return (
+                notice.params.sessionId === nativeSessionId &&
+                notice.params.event?.type === 'turn/start'
+              );
+            }) as { params: { event: { data: { turn: number } } } };
+            await observedClient!.steer(
+              nativeSessionId,
+              `allrice:user-question:v1:${JSON.stringify({
+                questionId: question.sourcePayload.questionId,
+                answers: [
+                  { id: 'runtime-progress', selected: ['重新检查后继续'] },
+                ],
+              })}`,
+              {
+                inputId: randomUUID(),
+                kind: 'ask_user',
+                turnId: `${nativeSessionId}:turn:${turn.params.event.data.turn}`,
+              },
+            );
+          }
           if (outcome === 'completed') {
             await completionReached.promise;
             const pool = (adapter as unknown as { runtimePool: DshRuntimePool })
@@ -537,6 +651,29 @@ integration(
             return;
           }
           const result = await execution;
+          if (outcome === 'progress_legacy') {
+            expect(result.waitingForUser).toBeUndefined();
+            expect(() => assertAssistantTaskComplete(result)).not.toThrow();
+            expect(pendingNotices).toHaveLength(0);
+            expect(
+              assistantRpcs.some((rpc) => rpc.action === 'join' && rpc.done),
+            ).toBe(true);
+            const admissions =
+              await database.db`select prepared_at,dispatched_at,finished_at from allrice_assistant_model_admissions where root_run_id=${f.rootRunId}`;
+            expect(admissions.length).toBeGreaterThan(0);
+            expect(
+              admissions.every((a) => a.dispatched_at && a.finished_at),
+            ).toBe(true);
+            const deliveries =
+              await database.db`select delivery_id,parent_adopted_seq from allrice_assistant_results where root_run_id=${f.rootRunId}`;
+            expect(deliveries).toHaveLength(2);
+            for (const delivery of deliveries) {
+              expect(delivery.parent_adopted_seq).not.toBeNull();
+              expect(JSON.stringify(nativeNotices)).toContain(
+                delivery.delivery_id,
+              );
+            }
+          }
           expect(result.answer).toContain('Root final synthesis');
           const tree = await bridge.tree();
           expect(tree.instances).toHaveLength(3);
@@ -673,6 +810,8 @@ integration(
               tree.budgets.find((b) => b.metric === 'output_tokens'),
             ).toMatchObject({ capacity: 12000, reserved: 0 });
           }
+
+          if (outcome === 'progress_legacy') return;
 
           // Reuse the native host while the next business Run gets its own
           // lease and budget root. Old child results and usage stay on Run 1.

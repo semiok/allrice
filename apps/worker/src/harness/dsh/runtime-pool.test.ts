@@ -1029,6 +1029,60 @@ it.each([false, true])(
   },
 );
 
+it('restarts once when the frozen question wait changes and then reuses the Host', async () => {
+  const runtimes = pool();
+  const value = request();
+  value.input.assistants = undefined;
+  const initial = await runtimes.acquire(value);
+  expect((await runtimes.acquire(value)).runtime).toBe(initial.runtime);
+  value.input.nativeQuestionWait = { mode: 'timed', seconds: 120 };
+  expect((await runtimes.acquire(value)).runtime).toBe(initial.runtime);
+  value.input.nativeQuestionWait = { mode: 'timed', seconds: 1 };
+  const changed = await runtimes.acquire(value);
+  expect(changed.runtime).not.toBe(initial.runtime);
+  expect(changed.preparation).toMatchObject({
+    reason: 'configuration_changed',
+    changedFields: ['questionWait'],
+  });
+  expect((await runtimes.acquire(value)).runtime).toBe(changed.runtime);
+  value.input.nativeQuestionWait = { mode: 'forever' };
+  const forever = await runtimes.acquire(value);
+  expect(forever.preparation.changedFields).toEqual(['questionWait']);
+  expect((await runtimes.acquire(value)).runtime).toBe(forever.runtime);
+});
+
+it('keeps the frozen timeout but uses blocking program questions for a Workflow step', async () => {
+  const launched = vi.spyOn(CloseObserver, 'createObservedDshClient');
+  const runtimes = pool(false, undefined, 60000);
+  const value = request();
+  value.input.assistants = undefined;
+  value.input.nativeQuestionWait = { mode: 'timed', seconds: 7 };
+  const ordinary = await runtimes.acquire(value);
+  expect(launched.mock.calls.at(-1)![0].launch.environment).toMatchObject({
+    ALLRICE_ASK_USER_TIMEOUT: '7',
+    ALLRICE_QUESTION_RELEASE_MS: '60000',
+  });
+  const ordinaryEnvironment = value.input.executionEnvironment;
+  value.input.executionEnvironment = {
+    ...ordinaryEnvironment,
+    ALLRICE_QUESTION_RELEASE_MS: '0',
+  };
+  const step = await runtimes.acquire(value);
+  expect(step.runtime).not.toBe(ordinary.runtime);
+  expect(step.preparation.changedFields).toEqual(['questionWait']);
+  expect(launched.mock.calls.at(-1)![0].launch.environment).toMatchObject({
+    ALLRICE_ASK_USER_TIMEOUT: '7',
+    ALLRICE_QUESTION_RELEASE_MS: '0',
+  });
+  expect((await runtimes.acquire(value)).runtime).toBe(step.runtime);
+  value.input.executionEnvironment = ordinaryEnvironment;
+  expect((await runtimes.acquire(value)).runtime).not.toBe(step.runtime);
+  expect(launched.mock.calls.at(-1)![0].launch.environment).toHaveProperty(
+    'ALLRICE_QUESTION_RELEASE_MS',
+    '60000',
+  );
+});
+
 it('reuses the session process across business Runs with assistants enabled', async () => {
   const runtimes = pool();
   const first = request();

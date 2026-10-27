@@ -1039,6 +1039,13 @@ export async function executeEmployeeRun({
       executionSnapshot.taskRuntimePolicy
         ? createTaskProgressRuntime({
             context: execution.context,
+            // 子智能体方案 PR4a/b/c 删除旧助手包装层时，一并删掉这个分支。
+            sessionId:
+              repairTask ||
+              routeDecision.selectedKind === 'workflow' ||
+              objectInput(assistantConfiguration).allowAssistants === true
+                ? undefined
+                : input.sessionId,
             worker: workflowLease,
           })
         : undefined;
@@ -1689,6 +1696,10 @@ export async function executeEmployeeRun({
                 const stepResult = await adapter.execute({
                   contentGuard,
                   progress: taskProgress,
+                  nativeQuestionWait:
+                    executionSnapshot.schemaVersion === 2
+                      ? executionSnapshot.nativePreferences?.questionWait
+                      : undefined,
                   kernel: stepKernel,
                   nativeSkills: resolved.nativeSkills,
                   baseSkillCatalog:
@@ -1698,7 +1709,12 @@ export async function executeEmployeeRun({
                   storageObjects: [],
                   images: [],
                   workDirectory: isolation.workDirectory,
-                  executionEnvironment: isolation.environment,
+                  // Workflow steps keep their Run and lease while asking. The
+                  // existing zero release point selects blocking program asks.
+                  executionEnvironment: {
+                    ...isolation.environment,
+                    ALLRICE_QUESTION_RELEASE_MS: '0',
+                  },
                   providerSnapshot,
                   signal,
                   attempt: execution.job.attempt,
@@ -1797,6 +1813,10 @@ export async function executeEmployeeRun({
               contentGuard,
               progress: taskProgress,
               questionWait,
+              nativeQuestionWait:
+                executionSnapshot.schemaVersion === 2
+                  ? executionSnapshot.nativePreferences?.questionWait
+                  : undefined,
               assistants,
               ...(assistants
                 ? {
@@ -2008,6 +2028,20 @@ export async function executeEmployeeRun({
                 });
               }
             });
+    if (result.waitingForUser) {
+      const progress = await taskProgress?.({
+        action: 'check',
+        nativeSessionId: result.threadId ?? runtime.threadId,
+      });
+      if (
+        assistants ||
+        repairTask ||
+        !progress?.pauseId ||
+        progress.canceled !== false
+      )
+        throw new HandlerError('DSH_TURN_FAILED', 'DSH turn failed', false);
+      result.answer = '等你回答后继续。';
+    }
     if (questionWait)
       await completeNativeTask({
         context: execution.context,
