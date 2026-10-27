@@ -1,5 +1,7 @@
 # DSH 复用与替换清单
 
+> 2026-10-27 起，复用 DSH 但和 DSH 默认不同的地方，总览以 Linear MET-225（DSH 定制点清单）为准，规则见 `AGENTS.md` 第 0 节。本文继续保留 `CONTRIBUTING.md` 和 `pnpm dsh:verify` 要求的逐项决策记录（每个 `patch-ledger.json` id）：新增、删除 patch-ledger 项或升级 DSH 时，按 `CONTRIBUTING.md` 更新对应 id 的段落；其余按日期记的流水账不再续写。
+
 ## MET-221：只用一代 DSH
 
 2026-10-25 起，AllRice 任何时候只依赖一代 DSH（当前 `0.2.1-rc.2` / `687f282`）。升级时 Worker、Web、Bridge、Office 与维护工具一次性换到新一代，不保留旧包、旧补丁或独立的旧版服务。
