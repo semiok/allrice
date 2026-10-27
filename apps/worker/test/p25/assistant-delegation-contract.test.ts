@@ -112,7 +112,7 @@ it.each(['none', randomUUID()])(
       }),
     ).resolves.toMatchObject({
       error: 'assistant_child_invalid',
-      message: expect.stringMatching(/没有.*助手/),
+      message: expect.stringMatching(/没有.*子智能体/),
     });
     expect(f.provision).not.toHaveBeenCalled();
     expect(f.settleUsage).toHaveBeenCalledOnce();

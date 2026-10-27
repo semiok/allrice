@@ -10,7 +10,8 @@ import { riceToolDefinitions } from './tool-broker.js';
 // MET-214, user 10-27: the desktop app is 「AllRice 助手」; delegated children
 // are 「子智能体」 as in DSH web (设置 → 插件 → 子智能体). The model repeats the
 // names it reads, so the text it reads must not carry the old ones.
-const oldNames = /Rice Bridge|子助手|(?<![A-Za-z_.$])Bridge(?![A-Za-z_])/;
+const oldNames =
+  /Rice Bridge|子助手|(?<![A-Za-z_.$])Bridge(?![A-Za-z_])|[Cc]hild assistant|Governed assistant|assistant report content/;
 const dsh = resolve(import.meta.dirname, '../dsh');
 const repository = resolve(import.meta.dirname, '../../..');
 

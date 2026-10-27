@@ -135,7 +135,7 @@ export const riceToolDefinitions = [
   ...(['delegate', 'message', 'report', 'stop', 'development'] as const).map(
     (action) => ({
       name: `assistant.${action}` as const,
-      description: `Governed assistant ${action}. Requires explicit employee authorization and this Run's frozen opt-in; native DSH only.`,
+      description: `Governed 子智能体 ${action}. Requires explicit employee authorization and this Run's frozen opt-in; native DSH only.`,
       inputSchema: { type: 'object', additionalProperties: true },
     }),
   ),
