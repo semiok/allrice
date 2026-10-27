@@ -86,9 +86,9 @@ suite(
         await f.db`update allrice_task_clocks set active_ms=12460,changed_at=clock_timestamp()-interval '40 minutes' where run_id=${f.rootRunId}`;
         const before =
           await f.db`select * from allrice_task_clocks where run_id=${f.rootRunId}`;
+        // Both readers return the Session inputs too (MET-210 receipts).
         const status = InteractionStatusSchema.parse({
           runtime: null,
-          inputs: [],
           ...(await read(f.requestContext, f.session, f.db)),
         });
         expect(status.runTimings).toHaveLength(1);

@@ -12,7 +12,7 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     {/* Retain integration coverage for the temporarily hidden task entry. */}
     <ChatFlowClient
-      workbenchEnabled
+      workbenchEnabled={!location.search.includes('workbench=off')}
       assistantsEnabled
       experienceEnabled
       taskSuggestionsEnabled

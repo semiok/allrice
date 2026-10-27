@@ -281,6 +281,8 @@ suite(
         nextSteps?: TaskNextSteps;
         delayNextStepsA?: boolean;
         readiness?: WorkspaceReadiness['capabilities'];
+        /** Render ChatFlow with the artifact workbench switched off. */
+        workbenchOff?: boolean;
         /** Question answers already in session A: live status from the
          * polled interactions, durable status from history. */
         answers?: {
@@ -293,6 +295,26 @@ suite(
       } = {},
     ) {
       const pending: Pending[] = [];
+      // Read on every poll, so a test can change an answer's live status.
+      const liveInputs = () =>
+        (options.answers ?? []).flatMap((item) =>
+          item.live
+            ? [
+                {
+                  inputId: item.inputId,
+                  kind: 'ask_user',
+                  status: item.live,
+                  runId,
+                  messageId: item.id,
+                  artifactId: null,
+                  createdAt: now,
+                  turnId: null,
+                  generation: null,
+                  evidence: null,
+                },
+              ]
+            : [],
+        );
       const reads: string[] = [];
       const writes: string[] = [];
       const streams = new Set<ServerResponse>();
@@ -571,24 +593,7 @@ suite(
           answer(response, {
             runtime: null,
             pendingActions: [],
-            inputs: (options.answers ?? []).flatMap((item) =>
-              item.live
-                ? [
-                    {
-                      inputId: item.inputId,
-                      kind: 'ask_user',
-                      status: item.live,
-                      runId,
-                      messageId: item.id,
-                      artifactId: null,
-                      createdAt: now,
-                      turnId: null,
-                      generation: null,
-                      evidence: null,
-                    },
-                  ]
-                : [],
-            ),
+            inputs: liveInputs(),
             runTimings: showTiming
               ? [
                   {
@@ -610,7 +615,7 @@ suite(
           return;
         }
         if (path.endsWith('/timings')) {
-          answer(response, { runTimings: [] });
+          answer(response, { runTimings: [], inputs: liveInputs() });
           return;
         }
         if (path.endsWith('/events')) {
@@ -710,7 +715,7 @@ suite(
         await page.goto(
           liveOrigin
             ? `${liveOrigin}/chatflow?session=${A}`
-            : `${origin}/?session=${A}`,
+            : `${origin}/?session=${A}${options.workbenchOff ? '&workbench=off' : ''}`,
         );
         if ((options.width ?? 1440) >= 760)
           await page.getByRole('treeitem', { name: /^Session B/ }).waitFor();
@@ -1229,6 +1234,43 @@ suite(
             .getByText('未能确认', { exact: true })
             .count(),
         ).toBe(1);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }, 15_000);
+    // MET-210: without the workbench the receipt still follows the answer's
+    // command, read from the ordinary timings poll, before the Run ends.
+    it('updates an answer receipt with the workbench off', async () => {
+      const answers: {
+        id: string;
+        inputId: string;
+        label: string;
+        live: 'pending' | 'adopted';
+        history: 'pending';
+      }[] = [
+        {
+          id: answerA,
+          inputId: inputA,
+          label: '只读检查',
+          live: 'pending',
+          history: 'pending',
+        },
+      ];
+      const f = await fixture({ answers, workbenchOff: true });
+      try {
+        const receipt = f.page.getByRole('article', { name: '用户确认结果' });
+        await receipt
+          .getByText('等待 Rice 接收这次回答', { exact: true })
+          .waitFor();
+        answers[0]!.live = 'adopted';
+        await receipt
+          .getByText('Rice 已收到你的回答', { exact: true })
+          .waitFor();
+        expect(f.reads.some((url) => url.includes('/interactions'))).toBe(
+          false,
+        );
+        expect(f.reads.some((url) => url.includes('/timings'))).toBe(true);
         expect(f.errors).toEqual([]);
       } finally {
         await f.close();

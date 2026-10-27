@@ -1,6 +1,45 @@
 import { z } from 'zod';
 import { UuidSchema, TimestampSchema } from '../common.ts';
 import { TaskRuntimeTimingSchema } from '../task-runtime-timing.ts';
+const InteractionInputSchema = z
+  .object({
+    inputId: UuidSchema,
+    kind: z.enum([
+      'message',
+      'steer_current',
+      'queue_next',
+      'ask_user',
+      'plan_review',
+      'version_feedback',
+      'changeset_request',
+    ]),
+    status: z.enum([
+      'adopted',
+      'unknown',
+      'rejected',
+      'pending',
+      'received',
+      'queued',
+      'running',
+      'completed',
+      'canceled',
+      'failed',
+    ]),
+    runId: UuidSchema.nullable(),
+    messageId: UuidSchema,
+    artifactId: UuidSchema.nullable(),
+    createdAt: TimestampSchema,
+    turnId: z.string().max(255).nullable(),
+    generation: z.number().int().nonnegative().nullable(),
+    evidence: z
+      .object({
+        sequence: z.number().int().nonnegative(),
+        checkpoint: z.enum(['question_resolved', 'step_user_message']),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict();
 export const SessionRunTimingsSchema = z
   .object({
     runTimings: z
@@ -10,6 +49,8 @@ export const SessionRunTimingsSchema = z
           .strict(),
       )
       .max(30),
+    // Ordinary ChatFlow reads answer receipts here when the workbench is off.
+    inputs: z.array(InteractionInputSchema).max(30).optional(),
   })
   .strict();
 export const InteractionStatusSchema = z
@@ -42,49 +83,7 @@ export const InteractionStatusSchema = z
       })
       .strict()
       .nullable(),
-    inputs: z
-      .array(
-        z
-          .object({
-            inputId: UuidSchema,
-            kind: z.enum([
-              'message',
-              'steer_current',
-              'queue_next',
-              'ask_user',
-              'plan_review',
-              'version_feedback',
-              'changeset_request',
-            ]),
-            status: z.enum([
-              'adopted',
-              'unknown',
-              'rejected',
-              'pending',
-              'received',
-              'queued',
-              'running',
-              'completed',
-              'canceled',
-              'failed',
-            ]),
-            runId: UuidSchema.nullable(),
-            messageId: UuidSchema,
-            artifactId: UuidSchema.nullable(),
-            createdAt: TimestampSchema,
-            turnId: z.string().max(255).nullable(),
-            generation: z.number().int().nonnegative().nullable(),
-            evidence: z
-              .object({
-                sequence: z.number().int().nonnegative(),
-                checkpoint: z.enum(['question_resolved', 'step_user_message']),
-              })
-              .strict()
-              .nullable(),
-          })
-          .strict(),
-      )
-      .max(30),
+    inputs: z.array(InteractionInputSchema).max(30),
   })
   .strict();
 export type InteractionStatus = z.infer<typeof InteractionStatusSchema>;
