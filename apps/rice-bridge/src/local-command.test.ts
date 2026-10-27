@@ -78,7 +78,7 @@ describe('P05 exact inputs and compatibility', () => {
       code: 'INPUT_VERSION_CHANGED',
     });
   });
-  it.each(['.env', '.ssh/id_rsa', '.npmrc', 'key.pem', '.gemini/auth.json'])(
+  it.each(['.env', '.ssh/id_rsa', '.npmrc', 'key.pem'])(
     'rejects sensitive manifest path %s',
     async (path) => {
       const { root, command } = await fixture();

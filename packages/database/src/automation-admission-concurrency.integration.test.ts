@@ -86,7 +86,6 @@ suite('automation admission and page polling — isolated PostgreSQL', () => {
   let writer: NativeOnceWriter;
 
   beforeAll(async () => {
-    vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
     vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '1');
     // The existing fixture requires the dedicated ALLRICE_TEST_DATABASE_URL,

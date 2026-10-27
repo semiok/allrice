@@ -29,7 +29,6 @@ describe.sequential(
     beforeEach(() => {
       vi.stubEnv('DATABASE_URL', undefined);
       vi.stubEnv('ALLRICE_TEST_DATABASE_URL', local);
-      vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
       // A valid URL must stop here, before ownership, pools, schema or imports.
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
     });
@@ -104,7 +103,6 @@ integration(
     let fixture: P27CodexWorkerFixture;
     beforeAll(async () => {
       expect(process.env.DATABASE_URL).toBeUndefined();
-      vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
       // A rejected checkpoint owns no pools/schema and must not poison the

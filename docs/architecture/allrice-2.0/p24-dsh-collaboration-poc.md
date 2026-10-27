@@ -1,9 +1,5 @@
 # P24：固定 DSH 的协作、审批、取消与冷恢复 PoC
 
-MET-121 / MET-108-A / B2 / S6。日期：2026-09-08。
-只验证底层接口并确定 P25/P26 约束，不发布 Subagents、Boost、Teamwork 或 Handoff 产品。
-研发、自审、自测由 Codex 负责，无 Gemini 开发门禁。批次合并与 Dev 证据另行登记。
-
 ## 决策与代码边界
 
 **沿用单一 DSH Harness，采用原生 continuable 子助手服务；平台必须补齐持久授权和调度边界。**

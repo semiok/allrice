@@ -115,7 +115,7 @@ suite('P05 real local VM / cgroup v2 isolation', () => {
       try {process.kill(1,'SIGSTOP'); throw Error('supervisor stopped');} catch(e) {if(e.code!=='EPERM')throw e;}
       try {fs.writeFileSync('/outside','escaped');throw Error('root writable');} catch(e) {if(!['EROFS','EACCES'].includes(e.code))throw e;}
       fs.writeFileSync('/workspace/only-in-copy.txt','allowed');
-      if(process.env.ALLRICE_INPUT_PARTS || process.env.SSH_AUTH_SOCK || process.env.GEMINI_API_KEY) throw Error('env');
+      if(process.env.ALLRICE_INPUT_PARTS || process.env.SSH_AUTH_SOCK) throw Error('env');
       console.log('isolation verified');`);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain('isolation verified');

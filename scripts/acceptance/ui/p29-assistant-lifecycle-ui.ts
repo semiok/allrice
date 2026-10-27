@@ -274,7 +274,6 @@ export async function verifyAssistantLifecycleInChrome(
     };
     for (const name of [
       'RUNTIME_POLICY',
-      'GEMINI_API',
       'CHATFLOW_REALTIME',
       'LOCAL_COMMAND',
       'BRIDGE_OPERATION_LEDGER',

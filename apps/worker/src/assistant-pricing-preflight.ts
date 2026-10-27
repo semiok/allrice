@@ -14,10 +14,6 @@ import {
 import { HandlerError } from './errors.js';
 import type { HarnessExecutionResult } from './harness/adapter.js';
 
-export const assistantGeminiPricingEndpoint =
-  'https://generativelanguage.googleapis.com/v1beta';
-export const assistantCanonicalModel = (provider: string, model: string) =>
-  provider === 'gemini' && model === '3.8flash' ? 'gemini-3.8-flash' : model;
 function deny(code: string): never {
   throw new HandlerError(
     code,
@@ -111,7 +107,7 @@ export function preflightAssistantPricing(input: {
   if (
     target.harness !== 'dsh' ||
     target.authMode !== 'api_key' ||
-    !['gemini', 'openai-compatible'].includes(target.provider) ||
+    target.provider !== 'openai-compatible' ||
     runtime.provider !== 'dsh' ||
     runtime.route !== target.provider ||
     runtime.authMode !== 'allrice_credential' ||
@@ -119,17 +115,8 @@ export function preflightAssistantPricing(input: {
     runtime.credentialReference !== target.credentialReference
   )
     deny('ASSISTANT_PRICE_ROUTE_UNVERIFIED');
-  const baseUrl =
-    target.provider === 'gemini'
-      ? assistantGeminiPricingEndpoint
-      : target.baseUrl;
-  if (
-    !baseUrl ||
-    (target.provider === 'gemini'
-      ? (target.baseUrl !== null && target.baseUrl !== baseUrl) ||
-        (runtime.baseUrl !== null && runtime.baseUrl !== baseUrl)
-      : runtime.baseUrl !== baseUrl)
-  )
+  const baseUrl = target.baseUrl;
+  if (!baseUrl || runtime.baseUrl !== baseUrl)
     deny('ASSISTANT_PRICE_ROUTE_UNVERIFIED');
   // Unsupported/missing prices are unknown telemetry, not execution admission.
   if (input.hasNonTextInput) return undefined;
@@ -156,7 +143,7 @@ export function preflightAssistantPricing(input: {
         harness: 'dsh',
         provider: target.provider,
         authMode: 'api_key',
-        model: assistantCanonicalModel(target.provider, target.model),
+        model: target.model,
         baseUrl,
         serviceTier: 'default',
         modality: 'text',
@@ -211,8 +198,7 @@ export function assistantResultCostCents(
     result.costCurrency !== snapshot.price.currency ||
     result.priceSnapshotDigest !== assistantPriceSnapshotDigest(snapshot) ||
     result.provider !== snapshot.price.target.provider ||
-    assistantCanonicalModel(result.provider, result.model) !==
-      snapshot.price.target.model ||
+    result.model !== snapshot.price.target.model ||
     typeof result.estimatedCostCents !== 'number' ||
     !Number.isFinite(result.estimatedCostCents) ||
     result.estimatedCostCents < 0 ||

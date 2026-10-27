@@ -152,7 +152,7 @@ describe('P26 selected Session transport lifetime (synthetic HTTP, no provider)'
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
-  it('never rebuilds queued Codex from stale History while Gemini History is still loading', async () => {
+  it('never rebuilds queued Codex from stale History while other-session History is still loading', async () => {
     const codexHistory = history('codex', 'queued', 'pending');
     const codex = select('codex');
     codex.restoreHistory(codexHistory);
@@ -160,38 +160,42 @@ describe('P26 selected Session transport lifetime (synthetic HTTP, no provider)'
     await flush();
     expect(codex.getSnapshot().runViews.queued?.status).toBe('running');
     codex.deactivate();
-    const gemini = select('gemini');
-    expect(gemini.getSnapshot().runViews).toEqual({});
-    gemini.restoreHistory(codexHistory);
+    const otherSession = select('otherSession');
+    expect(otherSession.getSnapshot().runViews).toEqual({});
+    otherSession.restoreHistory(codexHistory);
     await codex.streamRun('late-post', 'codex');
-    await gemini.streamRun('queued', 'codex');
+    await otherSession.streamRun('queued', 'codex');
     expect(requests).toHaveLength(1);
     expect(requests[0]!.signal.aborted).toBe(true);
     body.send(event('queued', 1, 'run.succeeded'));
     body.close();
     await flush();
-    expect(gemini.getSnapshot()).toEqual({ runViews: {}, runTraces: {} });
+    expect(otherSession.getSnapshot()).toEqual({ runViews: {}, runTraces: {} });
     expect(loadHistory).not.toHaveBeenCalled();
     expect(loadWorkspace).not.toHaveBeenCalled();
-    gemini.restoreHistory(history('gemini', 'completed', 'completed'));
+    otherSession.restoreHistory(
+      history('otherSession', 'completed', 'completed'),
+    );
     expect(requests[1]!.url).toContain('completed/events');
     expect(requests[1]!.url).toContain('format=json');
     requests[1]!.result.resolve(
       Response.json({ events: [event('completed', 1, 'run.succeeded')] }),
     );
     await flush();
-    expect(gemini.getSnapshot().runTraces.completed?.status).toBe('loaded');
-    expect(gemini.getSnapshot().runViews).toEqual({}); // no stop-this-turn state
+    expect(otherSession.getSnapshot().runTraces.completed?.status).toBe(
+      'loaded',
+    );
+    expect(otherSession.getSnapshot().runViews).toEqual({}); // no stop-this-turn state
   });
   it('A→B→A resumes only the returned pending Run, never callbacks from the old lifetime', async () => {
     const first = select('codex');
     first.restoreHistory(history('codex', 'queued', 'pending'));
     first.deactivate();
-    const middle = select('gemini');
+    const middle = select('otherSession');
     middle.restoreHistory(history('codex', 'queued', 'pending'));
     middle.deactivate();
     const returned = select('codex');
-    returned.restoreHistory(history('gemini', 'done', 'completed'));
+    returned.restoreHistory(history('otherSession', 'done', 'completed'));
     expect(requests).toHaveLength(1);
     returned.restoreHistory(history('codex', 'queued', 'pending'));
     expect(requests).toHaveLength(2);

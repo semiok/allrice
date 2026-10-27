@@ -83,49 +83,6 @@ describe('AllRice DSH protocol runtime', () => {
     });
     expect(await joining).toMatchObject({ code: 'DSH_RUNTIME_CLOSED' });
   });
-  it('rejects the retired Gemini composition without a model call', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'allrice-gemini-protocol-'));
-    roots.push(root);
-    const client = new DshProtocolClient({
-      command: process.execPath,
-      args: [
-        resolve(import.meta.dirname, '../../dsh/allrice-jsonrpc-runtime.mjs'),
-      ],
-      cwd: root,
-      requestTimeoutMs: 15_000,
-      environment: {
-        PATH: process.env.PATH ?? '/usr/bin:/bin',
-        DSH_CORDIS_CONFIG: resolve(
-          import.meta.dirname,
-          '../../dsh/allrice-restricted.cordis.yml',
-        ),
-        DSH_DISTRIBUTION_VERSION: DSH_DISTRIBUTION_CURRENT_VERSION,
-        DSH_SESSION_ROOT: resolve(root, 'sessions'),
-        DSH_HOME: root,
-        DSH_CREDENTIALS_PATH: resolve(root, '.credentials.yaml'),
-        DSH_CWD: root,
-        DSH_MODEL: 'gemini-3.8-flash',
-        DSH_GEMINI_MODEL: 'gemini-3.8-flash',
-        DSH_CODEX_MODEL: 'gpt-5.6-luna',
-        DSH_OPENAI_COMPATIBLE_MODEL: 'contract-model',
-        DSH_SYSTEM_PROMPT: 'Synthetic initialization only; no prompt.',
-        GEMINI_API_KEY: 'synthetic-not-a-live-key',
-        // If initialization unexpectedly tries HTTP, it must not reach a model endpoint.
-        HTTP_PROXY: 'http://127.0.0.1:1',
-        HTTPS_PROXY: 'http://127.0.0.1:1',
-      },
-    });
-    clients.push(client);
-    await expect(
-      client.initialize({
-        cwd: root,
-        provider: 'gemini',
-        model: '3.8flash',
-        nativeTools: ['local.process.execute', 'web.search'],
-        expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
-      }),
-    ).rejects.toThrow();
-  });
   it('treats every managed browser payload as immutable untrusted page data', async () => {
     const runtimeSource = await readFile(
       resolve(

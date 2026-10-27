@@ -39,7 +39,6 @@ suite(
           'postgres://a123@127.0.0.1:5432/allrice_b2'
       )
         throw Error('actual_host_requires_authorized_allrice_b2_fixture');
-      vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
       vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '1');
       vi.stubEnv('ALLRICE_NATIVE_CALENDAR_ENABLED', '1');
@@ -202,7 +201,6 @@ suite(
         ALLRICE_RUN_DB_INTEGRATION: '1',
         ALLRICE_RUN_NATIVE_CALENDAR_HOST: '1',
         ALLRICE_SERVICE_ROLE: 'worker',
-        ALLRICE_GEMINI_API_ENABLED: '0',
         ALLRICE_ASSISTANTS_ENABLED: '0',
         ALLRICE_EXPERIENCE_REVIEW_ENABLED: '0',
         ALLRICE_RUN_NATIVE_MONTHLY_HOST: '1',

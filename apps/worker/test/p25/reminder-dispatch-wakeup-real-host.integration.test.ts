@@ -72,7 +72,6 @@ suite(
     let source: ReturnType<typeof createNativeOnceControlSource>;
     let recurringSource: ReturnType<typeof createNativeOnceControlSource>;
     beforeAll(async () => {
-      vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
       vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', '1');
       vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '1');

@@ -2,14 +2,6 @@
 
 服务端权威见 [p22-local-browser-authority.md](./p22-local-browser-authority.md)。本模块不增加 Agent 循环、Host Shell 或新的审批权威，也不默认读取个人 Chrome。
 
-## 明确启用与隔离
-
-- `RiceBridge browser status|enable|disable` 管理绑定当前 server/device 的持久 opt-in，默认关闭。正常菜单栏 App 读取同一设置；菜单确认由桌面控制协议提供。启用只预检现有 Chrome 和随包 launcher，不安装浏览器、不修改 TCC、Keychain 或 Chrome 权限。
-- 此首版可执行端为 macOS Intel/Apple Silicon、标准安装的 Google Chrome。必须有固定的 `RiceBrowserLauncher`；不存在时拒绝，不能退回无监督的直接 Playwright 启动。CLI helper 同目录；App Core 在 Resources，helper 在同 App 的 MacOS 目录。
-- 隔离使用 Chromium 自身 sandbox、全新专属进程和 CDP pipe，**不是 Linux VM/容器沙箱**。不使用 `--no-sandbox`、远程调试 TCP、任意 executable/argv 或个人 user-data-dir。
-- 每 Run 新建 owned 0700 临时目录和空的外层浏览器 profile，实际工作使用新的隔离 context。HOME/TMPDIR 指向本轮临时目录；不继承用户环境凭证。浏览器密码库使用临时基础存储，不访问系统 Keychain。
-- 原生 helper 固定校验 Google executable 的代码签名身份；因标准安装可含 Finder 元数据而排除资源校验。这**不是整个 Chrome bundle 所有资源都已验证**，不会修改 xattr 或权限来让检查通过。
-
 ## 网络与任务控制
 
 - 复用 P21 的 renderer、控制 fence、观察、审批和操作账本。设备控制租约不超过 5 秒，端侧文件只是该期限的镜像，不能脱离服务端自动延长。
@@ -23,11 +15,6 @@
 ## 真正关闭进程
 
 `native/BrowserLauncher.swift` 使用 `posix_spawn` 创建 Chrome，子进程独立 PGID=childPID。监督程序只掌握自己创建的进程组，不遍历或终止其他 Chrome。
-
-1. 校验固定参数、真实 Google executable、owned root 的 inode/owner/0700、lease 文件的 no-symlink/0600/单链接和 nonce。
-2. 父 PID 消失、配对/授权失效、lease 过期或文件异常，都触发停止；SIGTERM/INT/HUP 同样触发停止请求。
-3. 仅向自己创建的组发 SIGTERM，短暂宽限后必要时 SIGKILL；`waitpid` 回收真实 child，确认整个组不存在，才写私有 `stopped:true` 回执。
-4. Driver 先停止 lease 镜像并等待真实进程回执，再释放 Playwright/CDP，最后只删除本次 inode 匹配的目录。`browser.isConnected() === false` 不能代替进程证明。
 
 无法确认清理时保留目录和 `LOCAL_BROWSER_CLEANUP_PENDING`，不释放服务端 workspace、不再领取新任务。启动失败也必须区分“已确认没有存活进程”与“清理未知”，不能把 rejected startup 当作根本没启动。
 

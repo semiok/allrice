@@ -68,7 +68,7 @@ export const AssistantPriceEntrySchema = z
       ctx.addIssue({ code: 'custom', message: 'invalid price interval' });
     if (
       entry.target.authMode !== 'api_key' ||
-      !['gemini', 'openai-compatible'].includes(entry.target.provider)
+      entry.target.provider !== 'openai-compatible'
     )
       ctx.addIssue({
         code: 'custom',
@@ -141,10 +141,7 @@ export function selectAssistantPriceSnapshot(input: {
   at: string;
 }): AssistantPriceSnapshot {
   const target = AssistantPricingTargetSchema.parse(input.target);
-  if (
-    target.authMode !== 'api_key' ||
-    !['gemini', 'openai-compatible'].includes(target.provider)
-  )
+  if (target.authMode !== 'api_key' || target.provider !== 'openai-compatible')
     throw new AssistantPricingError('ASSISTANT_PRICE_UNSUPPORTED_BILLING');
   const parsed = AssistantPriceCatalogSchema.safeParse(input.catalog);
   if (!parsed.success)

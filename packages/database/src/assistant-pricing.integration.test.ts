@@ -33,7 +33,7 @@ integration(
         connectionId: randomUUID(),
         catalogId: randomUUID(),
         harness: 'dsh' as const,
-        provider: 'gemini',
+        provider: 'openai-compatible',
         authMode: 'api_key' as const,
         model: 'synthetic-only',
         baseUrl: 'https://billing-fixture.example.test/v1',

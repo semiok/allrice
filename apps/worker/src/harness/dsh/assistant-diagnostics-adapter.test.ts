@@ -25,7 +25,7 @@ afterEach(() => {
 });
 
 /** Adapter bookkeeping unit seam only: no native host or provider. Actual
- * native/RPC/PG correlation is covered by the loopback Gemini integration. */
+ * native/RPC/PG correlation is covered by the loopback compatible-provider integration. */
 function fixture(options: {
   originalError?: Error;
   diagnosticFailure?: boolean;
@@ -241,8 +241,8 @@ function fixture(options: {
     providerSnapshot: {
       provider: 'dsh',
       authMode: 'allrice_credential',
-      route: 'gemini',
-      model: '3.8flash',
+      route: 'openai-compatible',
+      model: 'synthetic-model',
       reasoningEffort: 'low',
       credentialReference: 'test:never-read',
       baseUrl: null,

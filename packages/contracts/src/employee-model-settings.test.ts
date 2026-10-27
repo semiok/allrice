@@ -21,7 +21,7 @@ const policy = {
 };
 
 describe('employee provider-specific configuration', () => {
-  it('offers only Codex and keeps Gemini readable but invalid for new selection', () => {
+  it('offers only Codex and keeps compatible API readable but invalid for new selection', () => {
     expect(EMPLOYEE_PROVIDER_OPTIONS.map((item) => item.value)).toEqual([
       'openai-codex',
     ]);
@@ -32,12 +32,12 @@ describe('employee provider-specific configuration', () => {
       employeeModelPolicyProblem({ ...policy, model: 'gpt-6.1-sol' }),
     ).toBeNull();
     expect(
-      employeeReasoningSettings('gemini', 'gemini-3.8-flash').efforts,
+      employeeReasoningSettings('openai-compatible', 'synthetic-model').efforts,
     ).toEqual([]);
     const old = {
       ...policy,
-      provider: 'gemini' as const,
-      model: 'gemini-3.8-flash',
+      provider: 'openai-compatible' as const,
+      model: 'synthetic-model',
     };
     expect(
       PlatformEmployeeDefinitionSchema.shape.modelPolicy.safeParse(old).success,
@@ -83,7 +83,11 @@ describe('employee provider-specific configuration', () => {
         outputLanguage: 'zh-CN',
       },
       systemPrompt: 'Synthetic',
-      modelPolicy: { ...policy, provider: 'gemini', model: 'gemini-3.8-flash' },
+      modelPolicy: {
+        ...policy,
+        provider: 'openai-compatible',
+        model: 'synthetic-model',
+      },
       capabilities: {
         nativeSkillIds: [],
         workflowRevisionIds: [],

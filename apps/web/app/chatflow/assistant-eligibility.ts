@@ -26,13 +26,7 @@ export function assistantEligibility(input: {
   const provider = frozen
     ? frozen.provider
     : input.employee?.currentVersion.manifest.runtimePolicy?.provider;
-  // Legacy google is normalized only for this display; no request route changes.
-  const displayProvider = provider === 'google' ? 'gemini' : provider;
-  if (
-    displayProvider !== 'gemini' &&
-    displayProvider !== 'openai-compatible' &&
-    displayProvider !== 'openai-codex'
-  )
+  if (provider !== 'openai-compatible' && provider !== 'openai-codex')
     return { eligible: false, unavailableReason: 'model_unsupported' };
   if (
     !input.employee?.currentVersion.manifest.capabilityBindings?.toolNames.includes(

@@ -257,7 +257,6 @@ export async function verifyCodexWorkerSessionsInChrome(input: {
     };
     for (const name of [
       'ALLRICE_RUNTIME_POLICY_ENABLED',
-      'ALLRICE_GEMINI_API_ENABLED',
       'ALLRICE_CHATFLOW_REALTIME_ENABLED',
       'ALLRICE_LOCAL_COMMAND_ENABLED',
       'ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED',

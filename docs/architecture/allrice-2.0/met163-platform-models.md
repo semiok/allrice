@@ -60,15 +60,14 @@ authorization or upstream compatibility change.
 
 ## Migration and recovery
 
-Apply migration 0117 before starting the new server/Worker. It creates the platform
-singleton with the existing default Codex connection and disables Gemini catalog
-entries/connections, including legacy Gemini OAuth rows. It preserves identifiers,
-credentials references, historical snapshots and artifacts. New model configuration
-and the runtime reject retired Gemini even if an old enable environment variable
-remains. The old credential endpoint returns 410 after authorization.
+Migration 0117 creates the platform singleton with the existing default Codex
+connection. MET-226 removes the retired provider API and compatibility branches;
+migration 0224 deletes its catalog, credentials audit, snapshots and dependent
+test/accounting records. Existing applied migrations remain unchanged. This is a
+critical migration PR and requires rehearsal A before deployment.
 
 The default image toggle stays off until the image execution/UX PRs are installed.
-Do not replace an active Worker during a Gemini request: drain existing Runs first.
+Do not replace an active Worker during an active request: drain existing Runs first.
 Rollback of a configuration is another audited save of the previous values with
 the current expected revision. Keep the additive table and all new historical
 snapshots; do not attempt a database downgrade. Re-enabling a retired provider is

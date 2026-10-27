@@ -6,6 +6,5 @@ export * from './usage-budget-review.ts';
 export * from './model-pool.ts';
 export * from './provider-auth.ts';
 export * from './status.ts';
-export * from './credential-audit.ts';
 export * from './platform-model-settings.ts';
 export * from './codex-subscriptions.ts';

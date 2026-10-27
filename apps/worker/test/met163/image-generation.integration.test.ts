@@ -36,7 +36,6 @@ suite('image execution — isolated PostgreSQL and real file storage', () => {
   it.each(['confirmed', 'unknown'] as const)(
     'preserves %s image failure evidence without replay or publishing',
     async (mode) => {
-      vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
       vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
       const f = await createP27CodexWorkerFixture({
@@ -130,7 +129,6 @@ suite('image execution — isolated PostgreSQL and real file storage', () => {
     60000,
   );
   it('publishes immutable generated/edited images, rejects foreign sources, and never replays unknown or stale work', async () => {
-    vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
     vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
     const f = await createP27CodexWorkerFixture({

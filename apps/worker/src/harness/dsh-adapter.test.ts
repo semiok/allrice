@@ -2042,7 +2042,7 @@ describe('DshHarnessAdapter', () => {
     expect(() =>
       assertAssistantProviderOutputBound(input.providerSnapshot, false),
     ).not.toThrow();
-    for (const route of ['openai-compatible', 'gemini'] as const)
+    for (const route of ['openai-compatible'] as const)
       expect(() =>
         assertAssistantProviderOutputBound(snapshot(route), true),
       ).not.toThrow();

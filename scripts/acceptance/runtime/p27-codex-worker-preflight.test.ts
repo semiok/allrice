@@ -18,7 +18,7 @@ const authorized = () => ({
 });
 describe('ordinary-only Codex Worker authorization', () => {
   it('requires explicit Codex selection, including in preflight', () => {
-    for (const provider of [undefined, 'gemini'])
+    for (const provider of [undefined, 'openai-compatible'])
       expect(() =>
         parseP27CodexWorkerArguments([
           '--preflight',
@@ -53,7 +53,7 @@ describe('ordinary-only Codex Worker authorization', () => {
       ).toThrow();
     },
   );
-  it('rejects old Gemini and assistant tickets', () => {
+  it('rejects old API provider and assistant tickets', () => {
     expect(() =>
       authorizeP27CodexWorker(
         {
@@ -61,7 +61,7 @@ describe('ordinary-only Codex Worker authorization', () => {
           ALLRICE_B6_P27_AUTHORIZED_SHA: sha,
           ALLRICE_B6_P27_WORKER_AUTHORIZED: '1',
           ALLRICE_B6_P27_WORKER_AUTHORIZED_SHA: sha,
-          ALLRICE_B6_P27_WORKER_AUTHORIZED_PROVIDER: 'gemini',
+          ALLRICE_B6_P27_WORKER_AUTHORIZED_PROVIDER: 'openai-compatible',
           ALLRICE_B6_P27_WORKER_MAX_EXECUTIONS: '2',
         },
         sha,

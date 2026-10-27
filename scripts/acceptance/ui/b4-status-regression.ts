@@ -76,7 +76,6 @@ const executionFlags = Object.fromEntries(
     'ALLRICE_CHANGESET_ENABLED',
     'ALLRICE_LOCAL_SERVICE_ENABLED',
     'ALLRICE_CHATFLOW_REALTIME_ENABLED',
-    'ALLRICE_GEMINI_API_ENABLED',
   ].map((name) => [name, '0']),
 );
 Object.assign(process.env, executionFlags, {

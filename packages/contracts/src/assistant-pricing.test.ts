@@ -14,7 +14,7 @@ const target: AssistantPricingTarget = {
   connectionId: '11111111-1111-4111-8111-111111111111',
   catalogId: '22222222-2222-4222-8222-222222222222',
   harness: 'dsh',
-  provider: 'gemini',
+  provider: 'openai-compatible',
   authMode: 'api_key',
   model: 'synthetic-model',
   baseUrl: 'https://synthetic.example.test/v1',
@@ -107,7 +107,7 @@ describe('assistant price snapshots — synthetic rates only', () => {
       }),
     ).toThrow('ASSISTANT_PRICE_AMBIGUOUS');
   });
-  it.each(['chatgpt_subscription', 'gemini_oauth', 'oauth', 'none'] as const)(
+  it.each(['chatgpt_subscription', 'oauth', 'none'] as const)(
     'never infers API cash prices for %s',
     (authMode) => {
       expect(() => select({ target: { ...target, authMode } })).toThrow(
@@ -119,7 +119,7 @@ describe('assistant price snapshots — synthetic rates only', () => {
     expect(() =>
       select({
         catalog: {
-          'gemini:synthetic-model': {
+          'openai-compatible:synthetic-model': {
             inputCentsPerMillion: 10,
             outputCentsPerMillion: 20,
           },

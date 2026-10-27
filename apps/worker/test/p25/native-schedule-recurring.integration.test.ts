@@ -57,7 +57,6 @@ suite(
       expect(
         await realpath(process.env.ALLRICE_NATIVE_ONCE_PROBE_MODULE_BASE!),
       ).toBe(join(root, 'apps/worker/package.json'));
-      vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
       vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '1');
       fixture = await createP27CodexWorkerFixture({

@@ -15,7 +15,6 @@ export type ModelReasoningEffort = z.infer<typeof ModelReasoningEffortSchema>;
 
 export const ModelProviderAuthModeSchema = z.enum([
   'chatgpt_subscription',
-  'gemini_oauth',
   'oauth',
   'api_key',
   'none',
@@ -45,11 +44,6 @@ export function modelProviderRuntimeSupported(input: {
   key: string;
   authMode: ModelProviderAuthMode;
 }) {
-  if (
-    ['gemini', 'google'].includes(input.key) ||
-    input.authMode === 'gemini_oauth'
-  )
-    return false;
   if (input.key === 'codex' || input.key === 'openai-codex')
     return input.authMode === 'chatgpt_subscription';
   return input.authMode === 'api_key';

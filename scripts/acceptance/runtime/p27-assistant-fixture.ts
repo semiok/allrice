@@ -15,22 +15,13 @@ import {
   selectedProvider,
   type P27ProviderRoute,
 } from './p27-assistant-preflight.ts';
-import { createP27GeminiPriceBinding } from './p27-assistant-pricing.ts';
 
 export async function createP27AssistantFixture(
   db: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>['db'],
   providerRoute: P27ProviderRoute = 'openai-codex',
 ) {
-  const provider = selectedProvider(providerRoute);
-  const runLimits = runLimitsForProvider(providerRoute);
-  const priceBinding =
-    providerRoute === 'gemini'
-      ? createP27GeminiPriceBinding({
-          connectionId: randomUUID(),
-          catalogId: randomUUID(),
-          at: new Date().toISOString(),
-        })
-      : undefined;
+  const provider = selectedProvider();
+  const runLimits = runLimitsForProvider();
   const org = randomUUID(),
     workspace = randomUUID(),
     user = randomUUID(),
@@ -141,9 +132,6 @@ export async function createP27AssistantFixture(
     definitionChecksum: checksum,
     provider,
     runLimits,
-    ...(priceBinding
-      ? { isolatedAssistantPriceSnapshot: priceBinding.snapshot }
-      : {}),
   };
   const context: RequestContext = {
     actor: { type: 'user', id: user },
@@ -223,6 +211,5 @@ export async function createP27AssistantFixture(
     manifest,
     checksum,
     runLimits,
-    priceBinding,
   };
 }

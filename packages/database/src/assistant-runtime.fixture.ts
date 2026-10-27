@@ -59,7 +59,8 @@ export async function createAssistantFixtureDatabase(
       | '0101_development_cooperation.sql'
       | '0201_workbench_file_policies.sql'
       | '0210_current_employee_execution_binding.sql'
-      | '0217_brand_content_feedback.sql';
+      | '0217_brand_content_feedback.sql'
+      | '0223_agent_preferences.sql';
   } = {},
 ) {
   if (options.ownSchemaOnly !== undefined && options.ownSchemaOnly !== true)
@@ -73,6 +74,7 @@ export async function createAssistantFixtureDatabase(
       '0201_workbench_file_policies.sql',
       '0210_current_employee_execution_binding.sql',
       '0217_brand_content_feedback.sql',
+      '0223_agent_preferences.sql',
     ].includes(options.throughMigration)
   )
     throw Error('Unsupported isolated migration checkpoint');

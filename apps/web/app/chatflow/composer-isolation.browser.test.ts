@@ -441,7 +441,7 @@ suite(
               sessionModels: [A, B].map((sessionId) => ({
                 sessionId,
                 harness: 'dsh',
-                provider: 'gemini',
+                provider: 'openai-compatible',
                 model: 'synthetic',
                 reasoningEffort: 'high',
               })),
@@ -461,7 +461,10 @@ suite(
                     taskSuggestions: options.taskSuggestions ?? [],
                     manifest: {
                       name: 'Rice',
-                      runtimePolicy: { harness: 'dsh', provider: 'gemini' },
+                      runtimePolicy: {
+                        harness: 'dsh',
+                        provider: 'openai-compatible',
+                      },
                       capabilityBindings: { toolNames: ['assistant.delegate'] },
                     },
                   },

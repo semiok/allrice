@@ -82,8 +82,6 @@ P07进入适配前须记录：固定源码和依赖版本、LICENSE/NOTICE及文
 
 2026-09-08 P24 实测补充：原生 continuable、直接父身份、never 审批策略、quiet report、child-first drain 和 JSONL 冷恢复可复用；单个 interrupt 不取消孙任务。原生 inbox 事件**可以持久化**，但 admission ACK 不保证已经到达 flush 检查点；SIGKILL 分别验证了已 flush 的 FIFO 恢复和未 flush 窗口丢失。平台仍必须补 durable outbox/result inbox、native ID 映射、根取消/预算及恢复前租约校验。原生策略拒绝不授予高权限；独立平台 proposal 经 P04 精确批准后由 Broker 执行的真实 PG/HTTP/Bridge 联测通过。详见[P24 实测与后续硬门禁](p24-dsh-collaboration-poc.md)；生产 profile 保持受限，未开放助手。
 
-不复制另一套OpenAI/Cline Agent Loop；不直接让助手共享无限权限或把同目录并行写入当协作。完整Boost、Teamwork、正式Handoff与开发协作增强在S8；产品内独立核验能力不受开发期Gemini退出影响。来源：[DSH Harness适配](../dsh-harness-adapter.md)、[C1/C5/C6](contracts.md)。
-
 ## AR2-ADR-008：连接器、Skill与经验复用现有治理
 
 **状态：采纳。责任：106/107/105。**

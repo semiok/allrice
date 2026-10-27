@@ -81,7 +81,7 @@ function claimed() {
     input: { prompt: 'Synthetic fixed case' },
     runtimeProfile: {
       timeoutMs: 300000,
-      provider: 'gemini',
+      provider: 'openai-compatible',
       model: 'different-platform-model',
       systemPrompt: 'Published base',
       toolNames: ['workspace.file.read'],

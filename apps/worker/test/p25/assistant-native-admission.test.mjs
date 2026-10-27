@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { QUOTA_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm';
 import { createGovernedAssistantNativeRuntime } from '../../dsh/allrice-assistant-runtime.mjs';
 
-/** Unit seam only. Actual DSH/Google HTTP/PG rejection is separately covered by
- * assistant-gemini-production.integration.test.ts. No model or database here. */
+/** Unit seam only. Actual DSH/database rejection is separately covered by
+ * assistant-runtime.integration.test.ts. No model or database here. */
 afterEach(() => vi.useRealTimers());
 function fixture(
   settle = async () => ({ settled: true }),
@@ -59,8 +59,8 @@ function fixture(
     const stream = listeners.get('llm/stream')(
       {
         sessionId: agent.id,
-        provider: 'google',
-        model: 'gemini-3.8-flash',
+        provider: 'openai-compatible',
+        model: 'synthetic-model',
         maxTokens: 3754,
         messages: [],
         signal,

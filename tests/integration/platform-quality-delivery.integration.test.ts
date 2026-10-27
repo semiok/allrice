@@ -116,7 +116,6 @@ const suite =
     : describe.skip;
 suite('MET167 joined delivery facts (isolated ordinary employee)', () => {
   beforeEach(() => {
-    vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
     vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
     vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');

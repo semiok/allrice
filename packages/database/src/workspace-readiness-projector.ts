@@ -322,9 +322,7 @@ export function projectWorkspacePrerequisites(
     }
     if (
       (id === 'assistants' || id === 'development') &&
-      !['openai-codex', 'gemini', 'google', 'openai-compatible'].includes(
-        f.provider,
-      )
+      !['openai-codex', 'openai-compatible'].includes(f.provider)
     )
       add('needs_configuration', 'provider_unsupported', 'platform_admin');
     return reasons.length

@@ -97,8 +97,7 @@ export async function createP27CodexWorkerFixture(
     'P27_CODEX_WORKER_DATABASE_NOT_AUTHORIZED',
   );
   requireFixture(
-    process.env.ALLRICE_GEMINI_API_ENABLED === '0' &&
-      process.env.ALLRICE_ASSISTANTS_ENABLED === '0',
+    process.env.ALLRICE_ASSISTANTS_ENABLED === '0',
     'P27_CODEX_WORKER_FIXTURE_FLAGS_REQUIRED',
   );
   owned = true;

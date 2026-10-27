@@ -11,7 +11,7 @@ describe('actual DSH provider reasoning configuration (offline)', () => {
       ['low', 'medium', 'high', 'xhigh'].map((effort) => ({ model, effort })),
     ),
   )(
-    'keeps Codex $model $effort reasoning and rejects retired Gemini',
+    'keeps Codex $model $effort reasoning',
     async ({ model, effort }) => {
       const root = await mkdtemp(join(tmpdir(), 'allrice-reasoning-wire-'));
       try {
@@ -32,11 +32,8 @@ describe('actual DSH provider reasoning configuration (offline)', () => {
                 import.meta.dirname,
                 '../../dsh/allrice-restricted.cordis.yml',
               ),
-              DSH_GEMINI_MODEL: 'gemini-3.8-flash',
-              DSH_GEMINI_REASONING_EFFORT: effort,
               DSH_CODEX_MODEL: model,
               DSH_CODEX_REASONING_EFFORT: effort,
-              GEMINI_API_KEY: 'synthetic-offline-key',
               HTTP_PROXY: 'http://127.0.0.1:1',
               HTTPS_PROXY: 'http://127.0.0.1:1',
             },
@@ -48,7 +45,6 @@ describe('actual DSH provider reasoning configuration (offline)', () => {
         expect(line).toBeDefined();
         const result = JSON.parse(line!.slice('PROBE_RESULT='.length));
         expect(result.codex.defaultEffort).toBe(effort);
-        expect(result.geminiRetired).toBe(true);
         expect(result.networkCalls).toBe(0);
       } finally {
         await rm(root, { recursive: true, force: true });

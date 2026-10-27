@@ -77,7 +77,7 @@
     },
     {
       "id": "assistant-hold-recovery-and-accounting",
-      "reason": "Prepared/dispatched model holds need final-candidate recovery and full Worker quota evidence. API runs require immutable prices/cost receipts; explicit V2 subscription evidence instead requires immutable route proof, complete actual tree tokens and matching NULL/N/A route/result/ledger, never a fake API price. The historical Gemini subset failed; no final subscription/RC/rollback evidence is supplied by this draft. Unknown tokens and historical unknown cost cannot be erased or zeroed; real tenant enablement remains blocked.",
+      "reason": "Prepared/dispatched model holds need final-candidate recovery and full Worker quota evidence. API runs require immutable prices/cost receipts; explicit V2 subscription evidence instead requires immutable route proof, complete actual tree tokens and matching NULL/N/A route/result/ledger, never a fake API price. No final subscription/RC/rollback evidence is supplied by this draft. Unknown tokens and historical unknown cost cannot be erased or zeroed; real tenant enablement remains blocked.",
       "owner": "P25 / P27 integration owner"
     },
     {

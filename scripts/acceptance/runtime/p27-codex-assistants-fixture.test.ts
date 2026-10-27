@@ -17,7 +17,6 @@ integration(
     let fixture: P27CodexAssistantsFixture;
     beforeAll(async () => {
       expect(process.env.DATABASE_URL).toBeUndefined();
-      vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
       vi.stubEnv('DATABASE_URL', 'postgres://forbidden.invalid/prod');

@@ -72,7 +72,6 @@ const disabled = [
   'ALLRICE_CHANGESET_ENABLED',
   'ALLRICE_LOCAL_SERVICE_ENABLED',
   'ALLRICE_CHATFLOW_REALTIME_ENABLED',
-  'ALLRICE_GEMINI_API_ENABLED',
   'ALLRICE_LOCAL_BROWSER_ENABLED',
   'ALLRICE_LOCAL_MCP_ENABLED',
 ];
@@ -284,7 +283,7 @@ try {
   await db`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,title,employee_assignment_id,employee_version_id)
     values(${otherSession},${org},${workspace},${user},'P26 unrelated session',${employee.id},${employee.employeeVersionId})`;
   // Synthetic frozen Session models, not executable model approvals. Keep the
-  // current employee/default untouched: history's Gemini protocol should win,
+  // current employee/default untouched: history's completed-session protocol should win,
   // while the other Session's Codex subscription route also offers assistants.
   // These are display/request checks; Worker subscription admission is separate.
   const models = await db<
@@ -298,9 +297,9 @@ try {
   >`select p.provider_key,p.auth_mode,c.id as connection_id,m.id as catalog_id,m.model
     from allrice_model_providers p join allrice_model_connections c on c.provider_id=p.id
     join allrice_model_catalog_entries m on m.provider_id=p.id
-    where p.provider_key in ('codex','gemini') order by c.id,m.id`;
+    where p.provider_key ='codex' order by c.id,m.id`;
   for (const [sessionId, provider] of [
-    [session, 'gemini'],
+    [session, 'codex'],
     [otherSession, 'codex'],
   ] as const) {
     const selected = models.find((model) => model.provider_key === provider);
@@ -313,7 +312,7 @@ try {
       connectionId: selected.connection_id,
       modelCatalogEntryId: selected.catalog_id,
       harness: 'dsh',
-      provider,
+      provider: 'openai-codex',
       authMode: selected.auth_mode,
       model: selected.model,
       reasoningEffort: 'low',
@@ -436,7 +435,7 @@ try {
   assert.equal(
     await optOut.isDisabled(),
     false,
-    'Synthetic frozen Gemini protocol and employee delegation are both required',
+    'Synthetic frozen completed-session protocol and employee delegation are both required',
   );
   await optOut.check();
   assert.equal(await optOut.isChecked(), true);
@@ -568,7 +567,7 @@ try {
   });
   await stopCurrentRun.waitFor();
   await waitForStreamCount(queued.run.id, 1);
-  phase = 'return-gemini';
+  phase = 'return-completed-session';
   await page.getByRole('button', { name: /P26 assistant history/ }).click();
   await panel.waitFor();
   await stopCurrentRun.waitFor({ state: 'detached' });
@@ -578,26 +577,26 @@ try {
   assert.equal(
     streamRequests.length,
     requestsAfterSwitch,
-    'Completed Gemini history must not restart an old Codex SSE',
+    'Completed completed-session history must not restart an old Codex SSE',
   );
   assert.equal(
     await optOut.isDisabled(),
     false,
-    'Frozen Gemini becomes available again without switching any model',
+    'Frozen completed-session becomes available again without switching any model',
   );
   phase = 'restore-codex-pending';
   await page.getByRole('button', { name: /P26 unrelated session/ }).click();
   await panel.waitFor({ state: 'detached' });
   await stopCurrentRun.waitFor();
   await waitForStreamCount(queued.run.id, 1);
-  phase = 'return-gemini-again';
+  phase = 'return-completed-session-again';
   await page.getByRole('button', { name: /P26 assistant history/ }).click();
   await panel.waitFor();
   await stopCurrentRun.waitFor({ state: 'detached' });
   await waitForStreamCount(queued.run.id, 0);
   checks.streamIsolation = {
     currentCodexPendingStreamVisible: true,
-    completedGeminiDoesNotShowStop: true,
+    completedSessionDoesNotShowStop: true,
     oldCodexStreamAbortedWithoutRestart: true,
     returningCodexRestoresPendingStream: true,
     leavingCodexAgainAbortsStream: true,
@@ -634,7 +633,7 @@ try {
     cancellationRequestNotExit: true,
     refreshRetainsState: true,
     sessionIsolation: true,
-    frozenGeminiProtocolEligible: true,
+    frozenSessionProtocolEligible: true,
     frozenCodexSubscriptionEligible: true,
     narrowRendered: true,
   };

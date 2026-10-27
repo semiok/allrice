@@ -20,7 +20,6 @@ const integration =
 integration('platform-wide model inheritance', () => {
   afterEach(() => vi.unstubAllEnvs());
   it('refreshes tenant employee details after platform changes without rewriting published versions or Run snapshots', async () => {
-    vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
     const f = await createP27CodexWorkerFixture({ allowCiDatabase: true });
     try {
@@ -179,7 +178,6 @@ integration('platform-wide model inheritance', () => {
     }
   }, 40_000);
   it('freezes each Run, updates old sessions for the next Run, rejects stale/non-admin writes', async () => {
-    vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
     const f = await createP27CodexWorkerFixture({ allowCiDatabase: true });
     try {
@@ -215,7 +213,7 @@ integration('platform-wide model inheritance', () => {
             expectedRevision: next.revision,
             configuration: {
               ...next.configuration,
-              workModel: 'gemini-3.8-flash',
+              workModel: 'unsupported-model',
             },
           }),
         ).rejects.toThrow();
@@ -241,10 +239,6 @@ integration('platform-wide model inheritance', () => {
         { execution_snapshot: { modelSnapshot: unknown } }[]
       >`select execution_snapshot from allrice_employee_runs where run_id=${task.runId}`;
       expect(bound?.execution_snapshot.modelSnapshot).toEqual(original);
-      const retired = await f.db<
-        { enabled: boolean }[]
-      >`select enabled from allrice_model_providers where provider_key='gemini' or auth_mode='gemini_oauth'`;
-      expect(retired.every((row) => !row.enabled)).toBe(true);
     } finally {
       await f.close();
     }

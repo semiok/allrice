@@ -10,19 +10,11 @@
 
 主收据 `.local/p27-codex-assistants-3c12900a-ee32-411a-a0c4-2131c53ede20/result.json`，SHA-256 `81f99e32a3c55065aee4e29c2f30af21261df43616754c1755b710d8f86d303c`；同目录 `worker-ui/worker-ui-checks.json`，SHA-256 `8fffb17c3b611e8b6bdb3761c4370a2bd8fee5748121476af4a41ef49501aaaa`。本轮额度 UI 合成边界 8/8，计算对比度最低 4.98；定向 PG 等回归 43/43、全仓常规回归 2441 passed / 0 failed / 868 skipped（早于最后验收 helper 修正），build/typecheck/lint/format/DSH pin 通过。不同 SHA/重叠测试不相加为固定候选全矩阵。首次解析失败及额度页面测试失败均保留，不回写成功。
 
-**本地订阅正向主链完成，不等于所有工单完成。** 139/140 仍需最终候选失败/取消等完整验收与 PR/CI，142 仍需最终联合矩阵和发布验收；143 正式签名是独立外部待办。未调用 Gemini/API、未 push/新 PR/合 main/部署 Dev/Prod，未开放真实租户助手，不开始新三栏。详细边界、测试版本及各收据见 [Codex 订阅验收口径](./p27-codex-first-acceptance.md)。
-
 ## 历史范围校正：仅 Codex 订阅（2026-09-15，开发前）
-
-用户明确当前只考虑 Codex 订阅，Gemini/API 模式以后另行扩展，不作为本批验收前置。不再把 API 单价或订阅端点支持 `max_output_tokens` 作为助手的产品前提；周额度是账号共享的订阅限制，不等于请求输出硬上限。后续改为同账号额度查询与耗尽提示、订阅计量“不适用”货币项、调用/并发/深度/时间和取消控制，再完成真实双助手、下一普通任务及 UI 联验。源码核对确认现有 DSH 只报告凭据配置状态，尚未实现额度读取；本次没有取得绑定账号余量，也没有模型请求。具体来源、实现边界与测试安排见 [Codex 订阅验收口径](./p27-codex-first-acceptance.md)。
 
 本次仅修订范围和记录，不删历史 API 代码/配置/失败证据，不直接移除运行门禁或宣称 139/140/142 已通过；不部署、不改真实租户开关。下文按当时版本保留。
 
-## 历史补验：Codex 订阅优先，Gemini 暂停
-
 2026-09-14 23:44，按用户最新要求在隔离候选 `ba36d9c467bb6757cfea2700dc69136ace30d23d` 完成一次 Codex 普通完整 Worker 实测：模型/Run/job/双账本一致，1157 输入 + 9 输出 Token，无助手/工具，Native 1/1 及临时资源全部清理。另一次独立订阅 cap probe 取得 HTTP 400，明确拒绝 `max_output_tokens`，没有去掉字段重试。这是普通路径成功与助手预算兼容性负例，不是双助手或最终 P27 通过。
-
-新增验收/诊断回归81/81、P27 TypeScript、ESLint/Prettier与DSH pin检查通过；原关键回归113/113、账务保护40/40独立保留，不将重叠测试相加。普通订阅旧账本的零金额不是订阅费用正确性证明，后续需明确“不适用”与“未知”。详见 [Codex 优先验收证据](./p27-codex-first-acceptance.md)。本轮未调用 Gemini、未 push/PR/合 main/部署；139→140→142与独立143正式签名待办保持真实状态。
 
 ## 历史范围：仅合并 main，不发布环境
 
@@ -110,25 +102,17 @@ P14 Draft #62 的首轮 CI 在无构建产物的 checkout 上发现独立子进�
 - 307 文件完整常规测试 **1975 passed / 0 failed / 747 skipped**。报告 `.local/b6-full-tests-8716b77.json`，SHA-256 `5625c3092e5e279597c954644eefd9c20f74a4c48d0815c7e88fd8714896f1ea`。这些计数不含随后 P28 材料修正或前端可用性提示改动，不能当作新候选完整验收。
 - `fefffad` 的 P27 helper / dummy 测试 **46/46**，明确 roots 的脚本 TypeScript 检查为 0 diagnostics。实际 `--preflight` 返回 `eligible:false`；对同 SHA 提供执行授权但不提供 platform 路径，`--execute` 在任何凭据元数据、DB、宿主或 fixture 创建之前返回 `blocked_before_execution` / 退出 1。它验证拒绝路径，**不是第二次真实模型执行，也不是成功验收**。
 
-固定 Codex SDK 的助手输出上限仍未证明，生产只拒绝该助手路径，不关闭普通 Codex。Gemini 仅有原生 SDK 到 loopback HTTP 的输出字段与合成用量证据，不冒称真实 Google 任务或新的动态子任务全链通过。无权威费用/缓存核对的真实租户启用门禁继续保留。
-
 P25 的 CI 新增显式真实 PostgreSQL / native 合成模型步骤，避免只跑常规条件跳过。P28 增加 0095 清单/摘要、prepared 非派发证明、未知 hold 与 NULL 费用的恢复保存要求；检查器不执行迁移或恢复。main 远端与 Dev active-release 已再次核对仍为 B5 `57f3b5fd2acba034e9011231075c3e29b4503733` / `YmBpsav9R6_mfJmIob03N`，没有本批部署或启用。
 
 ## 第六轮：工作台协议提示与会话串流反证
 
 组合 `cf6b7e92bd550885ed0b373943cd198e939b9c25` 新增冻结协议可用性提示，27 项定向测试通过，Web 及依赖生产构建通过，BUILD_ID `I1lGoWoMKvy0B3AEvFCIQ`。页面增加真实普通 Codex 消息入队（无 Worker），确认请求和冻结偏好均禁止助手，模型绑定不变。它仍使用隔离 schema 与合成身份，不是新真实模型调用。
 
-两次页面复验分别保存 `/tmp/allrice-p26-ui-ldKKur/evidence/checks.json`、`/tmp/allrice-p26-ui-0Dfldj/evidence/checks.json`。它们在测试主动重启私有 Web 时报告连接错误，未记为通过。追加请求阶段诊断进一步确认旧 Codex SSE 在切回 Gemini 后仍存在。
-
-新的回归断言在同一构建明确复现真实生命周期缺陷：`/tmp/allrice-p26-ui-sggygq/evidence/checks.json` 中，切回已完成 Gemini 会话后 20 秒仍显示“停止本轮”，且记录了 `return-gemini` 阶段重新请求上一会话 Run 的 SSE。本次 Page/Console 错误均为 0，失败是明确的状态串会话，不能解释成服务重启噪声。源为 `cf6b7e9` 加已记录摘要的验收脚本改动，后续脚本提交 `71e976e`；并未把它写成干净源码验收通过。
-
 修复目标是按会话与切换代次隔离历史、SSE/trace 以及迟到异步结果；离开页面不能被等同于取消服务端任务。最终修复、新构建与真实 UI 复验尚未完成，本节不预先宣称成功。五个 PR 继续保持 Draft，未改变 main/Dev/Prod 或真实租户开关。
 
 ### 第六轮修复后复验
 
 P26 独立修复 `c1b1b9a` 在整合树为 `26eaf6e`。新增19项异步 controller/useSession 回归；后者使用 React primitives harness，不能当真实 React StrictMode 测试。主开发组合源复跑新增与既有协议/控制测试共 **46/46**，Web 及依赖构建、定向格式/ESLint 通过。未改 server 权限、控制台错误处理或模型执行策略。
-
-干净组合 `ef9b2550f54aa531f5ebe0a700cb1ac4bd0b1932`，BUILD_ID `Heb9HDaXDT-jlqs0VtWrD`，真实 Chrome + built Next + 隔离 PostgreSQL 页面复验 **通过**。SSE 请求记录只有 `codex-queue` 和 `restore-codex-pending` 两个阶段，没有切回完成 Gemini 后的旧流重建；旧 SSE 中止、停止按钮清除、回原会话恢复任务均有断言。桌面/390px、刷新、冻结偏好与模型、取消请求真实性、flag-OFF 独立启动后历史/取消路径通过，Page/Console/HTTP 错误为 0。
 
 证据目录 `/tmp/allrice-p26-ui-XR3Whe/evidence`：`checks.json` SHA-256 `ee41007cf4a832bc9e1c66c715c52e897354f2cd0ff71329af8f6db84f982f49`，`desktop.png` `90bf9aca8f28fdf5e4bd665fe472d66e9068d0cd7bd11c3d5b492640390c2d8d`，`narrow.png` `1154e92f119b81da4f66411e9cc4857928c28aa4dfc79c007da8221126243e76`。主开发实际查看窄屏截图；owned Next/Chrome、随机 schema 和存储已清理，未碰既有 Dev/Prod。此前三份失败证据仍保留。
 

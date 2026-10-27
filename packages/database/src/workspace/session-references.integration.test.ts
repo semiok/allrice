@@ -20,7 +20,6 @@ const suite =
 suite('authorized session reference snapshots', () => {
   afterEach(() => vi.unstubAllEnvs());
   it('freezes source text, preserves retries, excludes tools, denies scope changes and rechecks revocation', async () => {
-    vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
     const f = await createP27CodexWorkerFixture({ allowCiDatabase: true });
     try {

@@ -59,7 +59,6 @@ suite(
       controlArtifactApproved: true,
     };
     beforeAll(async () => {
-      vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
       vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', '1');
       f = await createP27CodexWorkerFixture({
