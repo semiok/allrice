@@ -13,12 +13,10 @@ import {
 import {
   runLimitsForProvider,
   selectedProvider,
-  type P27ProviderRoute,
 } from './p27-assistant-preflight.ts';
 
 export async function createP27AssistantFixture(
   db: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>['db'],
-  providerRoute: P27ProviderRoute = 'openai-codex',
 ) {
   const provider = selectedProvider();
   const runLimits = runLimitsForProvider();

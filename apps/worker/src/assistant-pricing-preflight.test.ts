@@ -111,6 +111,7 @@ function subscriptionFixture() {
     provider: 'openai-codex',
     authMode: 'chatgpt_subscription',
     model: 'synthetic-codex',
+    baseUrl: null,
   };
   input.decision = {
     ...input.decision,
@@ -123,6 +124,7 @@ function subscriptionFixture() {
     route: 'openai-codex',
     authMode: 'platform_subscription',
     model: 'synthetic-codex',
+    baseUrl: null,
   };
   return input;
 }

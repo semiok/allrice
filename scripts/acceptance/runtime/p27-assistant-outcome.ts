@@ -1,15 +1,10 @@
 import type { HarnessExecutionResult } from '../../../apps/worker/src/harness/adapter.ts';
-import {
-  selectedProvider,
-  requireCheck,
-  type P27ProviderRoute,
-} from './p27-assistant-preflight.ts';
+import { selectedProvider, requireCheck } from './p27-assistant-preflight.ts';
 
 /** Checks the public adapter handoff, not only its underlying PG ledger. */
 export function validateP27AssistantOutcome(
   result: HarnessExecutionResult,
   budgets: readonly { metric: string; spent: number }[],
-  providerRoute: P27ProviderRoute = 'openai-codex',
 ) {
   const provider = selectedProvider();
   requireCheck(

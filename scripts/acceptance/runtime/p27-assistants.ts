@@ -257,7 +257,7 @@ async function main() {
     >`select current_schema() as name`;
     verify(/^p25_[a-f0-9]{32}$/.test(schema!.name), 'random_isolated_schema');
     report.schema = schema!.name;
-    const fixture = await createP27AssistantFixture(db, args.providerRoute);
+    const fixture = await createP27AssistantFixture(db);
     snapshotFailure = async () => {
       // Explicit scalar allowlist. Never select message/result payloads,
       // provider errors or lease tokens, including on failed execution.
@@ -432,11 +432,7 @@ async function main() {
     const tree = await runtime.getTree(fixture.context, {
       runId: fixture.rootRunId,
     });
-    report.harnessOutcome = validateP27AssistantOutcome(
-      result,
-      tree.budgets,
-      args.providerRoute,
-    );
+    report.harnessOutcome = validateP27AssistantOutcome(result, tree.budgets);
     verify(true, 'adapter_authoritative_whole_tree_outcome');
     const children = tree.instances.filter(
       (child) => child.parentRunId === fixture.rootRunId,
