@@ -14,7 +14,9 @@ MET-210 第四道防回退门禁。用户 2026-10-27 同意加入，原则是“
 
 初始存量使用 `approvedBy: 'baseline 2026-10-27'`，本轮从待删改归业务工具的三项另记 `2026-10-28 任务说明：…`。`待删` 表示已有退役计划或尚待核定的存量，不代表本 PR 删除它，也不把初始盘点当成保留或新增批准。
 
-当前共 34 张表（native 20、assistant 9、dsh 3、品牌提醒 2）、19 个适配项、1 个私有接口。助手九表按子智能体 v3 的 PR2b 标待删；once partitions/close proofs/journal、recurring journal 按定时 v2 的整组退役清单标待删。两张品牌提醒表的依据明确为“方案推荐删除，待用户确认”。现有 DSH 表按实际用途登记：运行实例与关闭观察为账本，技能内容/bundle 为存储后端。
+对照 main `bf7974a3`（已合并 #622、#623），当前共 34 张表（native 20、assistant 9、dsh 3、品牌提醒 2）、19 个适配项、1 个私有接口。助手九表按子智能体 v3 的 PR2b 标待删；once partitions/close proofs/journal、recurring journal 按定时 v2 的整组退役清单标待删。两张品牌提醒表的依据明确为“方案推荐删除，待用户确认”。现有 DSH 表按实际用途登记：运行实例与关闭观察为账本，技能内容/bundle 为存储后端。
+
+#622 的 `0224_retired_provider_cleanup.sql` 清理退役供应商记录，保留受管表；辅助临时表在事务提交时删除。#623 在已有问题等待、进度暂停适配内对齐程序题行为，没有新增迁移。两项 PR 都未改动 `patch-ledger.json` 或 `compatibility.json`，因此本次同步没有新增或删除基线条目，也没有新增批准记录；不能把删除数据行或旧适配内部的分支当成删除整张表或整项适配。
 
 基线引用的方案分别为 `~/allrice-dev/qa/met210-native-subagent/plan-v3-draft-astra.md` §2 和 `~/allrice-dev/qa/met210-schedule-converge/plan-v2-draft-astra.md` §1.2、§3、§4.2。执行删除仍须满足对应方案的前置及批准。
 
