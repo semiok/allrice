@@ -1,0 +1,20 @@
+{
+  "capturedWith": {
+    "dsh": "0.2.1-rc.2",
+    "normalizedCwd": "/native-subagent-golden"
+  },
+  "rootId": "pr0-root",
+  "childId": "golden-child",
+  "files": [
+    {
+      "file": "root.jsonl",
+      "sessionId": "pr0-root",
+      "sha256": "e41b15761a1506165167ede9ffc52cbe11f8746457e2cbd29eff09ddcae438e9"
+    },
+    {
+      "file": "child.jsonl",
+      "sessionId": "golden-child",
+      "sha256": "d649aa194a1ce20bd12a8db8339cb95f6a77d6b8f24008d4eb5fa940903d586c"
+    }
+  ]
+}
