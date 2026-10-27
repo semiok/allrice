@@ -324,6 +324,13 @@ export class DshProtocolClient {
     return this.request('session/interrupt', { sessionId }, 10_000);
   }
 
+  /** DSH owns the tree wait, including follow-up turns and parked children.
+   * Like assistant join, its lifetime belongs to Worker cancellation/lease,
+   * not the short RPC acknowledgement timeout. Preserve native rejections. */
+  async wait(sessionId: string) {
+    return this.request('session/wait', { sessionId }, 0);
+  }
+
   async parkQuestion(sessionId: string, questionId: string) {
     return this.request(
       'session/park-question',

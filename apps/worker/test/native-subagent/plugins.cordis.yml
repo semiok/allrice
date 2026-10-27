@@ -1,0 +1,18 @@
+# Test-only composition; never included by an execution profile.
+- id: subagents
+  name: '@deepseek-ai/dsh-subagent'
+  config:
+    maxDepth: !!js Number(process.env.PR0_MAX_DEPTH ?? 1)
+    maxActiveSubagents: !!js Number(process.env.PR0_MAX_ACTIVE ?? 8)
+- name: '@deepseek-ai/dsh-subagent-spawn-in-process'
+- name: '@deepseek-ai/dsh-subagent-fork-in-process'
+- name: '@deepseek-ai/dsh-user-approval'
+  config: { policy: never }
+- name: '@deepseek-ai/dsh-session-query-sqlite'
+  config: { path: ':memory:', openAt: never }
+- name: '@deepseek-ai/dsh-tool-subagent'
+  config: { provider: spawn, toolName: subagent }
+- name: '@deepseek-ai/dsh-tool-subagent'
+  config: { provider: fork, toolName: subagent_fork }
+- name: '@deepseek-ai/dsh-tool-subagent-control'
+- name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
