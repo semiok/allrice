@@ -47,7 +47,7 @@
   flex-wrap: wrap;
   gap: 10px;
   margin: 22px 0 0;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
   font-size: 12px;
   line-height: 20px;
 }

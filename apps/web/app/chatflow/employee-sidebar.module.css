@@ -94,7 +94,7 @@
   text-overflow: ellipsis;
 }
 .defaultLabel {
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
   font-size: 11px;
   font-weight: 400;
 }
@@ -172,10 +172,13 @@
 }
 .sessions [role='treeitem'][aria-selected='true'] {
   background: var(--allrice-session-selected);
+  /* DSH's tertiary session time reads 2.95:1 on this darker fill (light), so
+     the selected row maps tertiary, its icons included, to secondary. */
+  --dsw-alias-label-tertiary: var(--dsw-alias-label-secondary);
 }
 .empty {
   display: block;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
   font-size: 12px;
   padding: 8px;
 }
@@ -259,6 +262,11 @@
     pointer-events: auto;
   }
 }
+/* The 「新的工作」 eyebrow: DSH Dialog paints it caption grey (2.13:1 light,
+   3.76:1 dark), so this dialog alone lifts it to secondary. */
+.pickerDialog > header p {
+  color: var(--dsw-alias-label-secondary);
+}
 .picker {
   display: grid;
   gap: 10px;
@@ -311,7 +319,7 @@
   gap: 8px;
 }
 .pickerBadge {
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
   font-size: 11px;
   line-height: 18px;
 }
