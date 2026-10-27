@@ -461,6 +461,29 @@ describe('native once Worker maintenance and stop boundary', () => {
     expect(createRuntime.mock.calls[1]![0].reference).toEqual(f.reference);
     await restarted.stop();
   });
+  it('hands its runtime the delivery wakeup and returns the tick result (MET-223)', async () => {
+    const f = loaderFixture(),
+      source = createNativeOnceControlSource(f.reference, f.ports);
+    const onDelivery = vi.fn();
+    const runtime = {
+      tick: vi.fn(async () => ({ processed: 8, limitReached: true })),
+      stop: vi.fn(async () => undefined),
+      status: () => ({ state: 'ready' }),
+    };
+    const createRuntime = vi.fn<
+      (options: NativeOnceWorkerRuntimeOptions) => never
+    >(() => runtime as never);
+    const service = createNativeOnceWorkerService(
+      { source, workerId: 'w', readMaintenance: async () => null, onDelivery },
+      { createRuntime },
+    );
+    expect(createRuntime.mock.calls[0]![0].onDelivery).toBe(onDelivery);
+    await expect(service.tick()).resolves.toEqual({
+      processed: 8,
+      limitReached: true,
+    });
+    await service.stop();
+  });
   it('stops on an unknown maintenance read and prevents subsequent ticks', async () => {
     const f = loaderFixture(),
       source = createNativeOnceControlSource(f.reference, f.ports);

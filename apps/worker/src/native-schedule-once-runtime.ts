@@ -35,31 +35,49 @@ export interface NativeOnceWorkerRuntimeOptions {
   onDelivery?: () => void;
 }
 
-/** A committed put_task carrying `lastDelivery` is a timer delivery: it leaves
- * a pending (or blocked) occurrence for the consumer to dispatch. */
-export function deliversOccurrence(mutation: { kind: string; task?: unknown }) {
+/** A put_task carrying `lastDelivery` (a calendar control's put_task too) is a
+ * timer delivery: it leaves a pending or blocked occurrence to dispatch. An
+ * edit that keeps an old receipt also matches; the extra tick finds nothing. */
+export function deliversOccurrence(mutation: {
+  kind: string;
+  action?: string;
+  task?: unknown;
+}) {
+  const put =
+    mutation.kind === 'put_task' ||
+    (mutation.kind === 'calendar' && mutation.action === 'put_task');
   return (
-    mutation.kind === 'put_task' &&
-    !!(mutation.task as { lastDelivery?: unknown } | null)?.lastDelivery
+    put && !!(mutation.task as { lastDelivery?: unknown } | null)?.lastDelivery
   );
 }
 
-/** Report each committed timer delivery. A failing callback never fails the
- * write: the caller's poll still dispatches the occurrence. */
+/** Report each delivery proven committed, by its COMMIT ACK or, when that ACK
+ * was lost, by exact readback. A failing callback never fails the write: the
+ * caller's poll still dispatches the occurrence. */
 export function wakeOnDelivery(
   store: NativeScheduleOnceStore,
   onDelivery: () => void,
 ): NativeScheduleOnceStore {
+  const wake = (
+    write: Parameters<NativeScheduleOnceStore['commitMutation']>[1],
+  ) => {
+    if (!deliversOccurrence(write.mutation)) return;
+    try {
+      onDelivery();
+    } catch {
+      // Only a latency hint.
+    }
+  };
   return {
     ...store,
     async commitMutation(writer, write) {
       const result = await store.commitMutation(writer, write);
-      if (result === 'committed' && deliversOccurrence(write.mutation))
-        try {
-          onDelivery();
-        } catch {
-          // Only a latency hint.
-        }
+      if (result === 'committed') wake(write);
+      return result;
+    },
+    async readExactCommit(writer, write) {
+      const result = await store.readExactCommit(writer, write);
+      if (result === 'committed') wake(write);
       return result;
     },
   };
@@ -279,7 +297,8 @@ export function createNativeOnceWorkerRuntime(
     tickCount = 0,
     faultCount = 0,
     processedCount = 0,
-    deliveryWakeups = 0;
+    deliveryWakeRequests = 0,
+    deliveryWakeFailures = 0;
   let lastFault: NativeOnceWorkerRuntimeFault | undefined;
   // MET-210 #3: a refused takeover leaves the controller cold without an error.
   // Kept for status() and logged when the reason or holder changes, then hourly
@@ -509,8 +528,18 @@ export function createNativeOnceWorkerRuntime(
       };
       // MET-223: dispatch a timer delivery now, not on the next automation poll.
       const store = wakeOnDelivery(ownedStore, () => {
-        deliveryWakeups++;
-        options.onDelivery?.();
+        deliveryWakeRequests++;
+        try {
+          options.onDelivery?.();
+        } catch (error) {
+          deliveryWakeFailures++;
+          console.warn(
+            '[MET-223] dispatch wakeup failed; the poll dispatches',
+            {
+              code: safeCode(error, 'wakeup_failed'),
+            },
+          );
+        }
       });
       const hostFactory: NativeScheduleHostFactory = async (input) => {
         const g = generation;
@@ -637,7 +666,8 @@ export function createNativeOnceWorkerRuntime(
         inFlight: !!inFlight,
         tickCount,
         processedCount,
-        deliveryWakeups,
+        deliveryWakeRequests,
+        deliveryWakeFailures,
         faultCount,
         lastFault: lastFault ? { ...lastFault } : undefined,
         ...(refusal ? { takeoverRefused: { ...refusal } } : {}),

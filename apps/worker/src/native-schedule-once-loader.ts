@@ -439,7 +439,7 @@ export function createNativeOnceWorkerService(
     admissionOpen,
     stop,
     async tick() {
-      if ((await admissionOpen()) && !stopped) await runtime!.tick();
+      if ((await admissionOpen()) && !stopped) return runtime!.tick();
     },
     status() {
       return runtime?.status() ?? { state: 'disabled' as const };

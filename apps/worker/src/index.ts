@@ -626,11 +626,17 @@ async function runAutomationTick() {
       admitted = true;
       if (stopping) return;
       for (const control of nativeScheduleControls)
-        await control.tick().catch((error: unknown) => {
-          console.error('[M6] native schedule scheduler failed', {
-            message: error instanceof Error ? error.message : 'unknown error',
+        await control
+          .tick()
+          .then((result) => {
+            // MET-223: a capped burst continues at once, not a second later.
+            if (result?.limitReached) requestAutomationTick();
+          })
+          .catch((error: unknown) => {
+            console.error('[M6] native schedule scheduler failed', {
+              message: error instanceof Error ? error.message : 'unknown error',
+            });
           });
-        });
       if (stopping) return;
       await processNextReference(
         process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
