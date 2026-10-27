@@ -367,8 +367,6 @@ export function ChangesetPanel({
           </article>
         );
       })}
-      {/* A paragraph, not the shared panel's fixed-gray small text, so it
-          stays readable on the dark page. */}
       <p>
         {organizationPlan
           ? '恢复只处理确认已移动或重命名的文件，复制出的文件会保留。'

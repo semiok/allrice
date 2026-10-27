@@ -5,12 +5,13 @@
   min-width: 0;
 }
 .root article {
-  border: 1px solid var(--dsw-alias-border-l2);
+  border: 1px solid var(--ar-border);
+  /* No design token for an info stroke yet: DSH's business color. */
   border-left: 4px solid var(--dsw-alias-state-business-primary);
   border-radius: 12px;
   padding: 16px;
-  background: var(--dsw-alias-bg-layer-2);
-  color: var(--dsw-alias-label-primary);
+  background: var(--ar-surface-raised);
+  color: var(--ar-text);
   min-width: 0;
 }
 .root header {
@@ -28,7 +29,7 @@
 .root small {
   display: block;
   overflow-wrap: anywhere;
-  color: var(--dsw-alias-label-secondary);
+  color: var(--ar-text-secondary);
 }
 .root pre {
   white-space: pre-wrap;
@@ -47,10 +48,10 @@
 }
 .root button {
   cursor: pointer;
-  border: 1px solid var(--dsw-alias-border-l3);
+  border: 1px solid var(--ar-border);
   border-radius: 8px;
-  background: transparent;
-  color: var(--dsw-alias-label-primary);
+  background: var(--ar-action-secondary);
+  color: var(--ar-text);
   padding: 8px 12px;
 }
 .root button:disabled {
@@ -59,7 +60,7 @@
 }
 .root button:focus-visible,
 .root summary:focus-visible {
-  outline: 2px solid var(--dsw-alias-button-info-fill);
+  outline: var(--ar-focus-ring-width) solid var(--ar-focus-ring);
   outline-offset: 3px;
 }
 .actions {
@@ -71,17 +72,14 @@
 .actions small {
   flex-basis: 100%;
 }
-/* The error token alone reads 4.3:1 on the light command block. */
 .stderr {
-  color: color-mix(
-    in srgb,
-    var(--dsw-alias-state-error-primary) 75%,
-    var(--dsw-alias-label-primary)
-  );
+  color: var(--ar-danger-text);
 }
-.root article[data-status='failed'],
+.root article[data-status='failed'] {
+  border-color: var(--ar-danger);
+}
 .root article[data-status='unknown'] {
-  border-color: var(--dsw-alias-state-error-primary);
+  border-color: var(--ar-warning);
 }
 @media (max-width: 640px) {
   .root article {

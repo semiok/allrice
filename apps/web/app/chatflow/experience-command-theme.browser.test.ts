@@ -1,23 +1,38 @@
 /** Real Chrome, synthetic HTTP only. No DB, auth, Dev, device or model. */
+import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { createServer, type Server } from 'node:http';
+import { resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type {
   Browser,
   Locator,
   Page,
 } from '../../../worker/node_modules/playwright-core/index.js';
+import { themeScript } from '../../lib/theme/theme-script';
 
 const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
     ? describe.sequential
     : describe.skip;
 
-type View = 'page' | 'cards' | 'employee' | 'commands';
+type View = 'page' | 'workbench' | 'employee' | 'admin' | 'commands' | 'mcp';
+type Theme = 'light' | 'dark';
 type Reading = { text: string; ratio: number; need: number; dark: boolean };
 
+// Where each view lives: the theme runtime picks the default by path.
+const paths: Record<View, string> = {
+  page: '/workspace/experience',
+  workbench: '/chatflow',
+  employee: '/chatflow',
+  admin: '/runtime-console',
+  commands: '/chatflow',
+  mcp: '/chatflow',
+};
+
 // MET-214 dark audit D01, D02 and S01: the experience page, its cards in
-// employee details and the workbench, and the local command card.
+// the workbench, employee details and the admin console, and the local
+// command and local app cards that share one stylesheet.
 suite('experience and local command cards read in both themes', () => {
   let browser: Browser, server: Server, origin: string;
   beforeAll(async () => {
@@ -37,15 +52,36 @@ suite('experience and local command cards read in both themes', () => {
         'process.env': '{}',
       },
     });
-    const assets = new Map<string, Uint8Array>(
-      result.outputFiles.map((file: { path: string; contents: Uint8Array }) => [
-        file.path.slice(file.path.lastIndexOf('/')),
-        file.contents,
-      ]),
-    );
+    type Output = { path: string; contents: Uint8Array };
+    const output = (extension: string) =>
+      (result.outputFiles as Output[]).find((file) =>
+        file.path.endsWith(extension),
+      )!.contents;
+    // The global stylesheets, taken from the root layout in its order (as
+    // the theme runtime's own browser test does).
+    const layoutStyles = [
+      ...readFileSync('apps/web/app/layout.tsx', 'utf8').matchAll(
+        /^import '([^']+\.css)';$/gm,
+      ),
+    ].map((match) => `@import '${match[1]}';`);
+    expect(layoutStyles.length).toBeGreaterThanOrEqual(5);
+    const globals = await build({
+      stdin: {
+        contents: layoutStyles.join('\n'),
+        resolveDir: resolve('apps/web/app'),
+        loader: 'css',
+      },
+      bundle: true,
+      write: false,
+    });
+    const assets: Record<string, Uint8Array> = {
+      '/globals.css': globals.outputFiles[0]!.contents,
+      '/components.css': output('.css'),
+      '/page.js': output('.js'),
+    };
     server = createServer((req, res) => {
       const path = new URL(req.url!, origin).pathname;
-      const asset = assets.get(path);
+      const asset = assets[path];
       if (asset) {
         res.setHeader(
           'Content-Type',
@@ -53,15 +89,14 @@ suite('experience and local command cards read in both themes', () => {
         );
         res.end(asset);
       } else {
+        // As the root layout: theme script first in <body>.
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
         res.end(
-          '<meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/experience-command-theme-page.css"><body><div id="root"></div><script src="/experience-command-theme-page.js"></script></body>',
+          `<!doctype html><html data-allrice-framework="v2" lang="zh-CN"><head><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/globals.css"><link rel="stylesheet" href="/components.css"></head><body><script>${themeScript}</script><div id="root"></div><script src="/page.js"></script></body></html>`,
         );
       }
     });
-    await new Promise<void>((resolve) =>
-      server.listen(0, '127.0.0.1', resolve),
-    );
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
     origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
     const { chromium } = createRequire(
       new URL('../../../worker/package.json', import.meta.url),
@@ -75,22 +110,18 @@ suite('experience and local command cards read in both themes', () => {
           : chromium.executablePath()),
     });
   });
-  // The command card polls while an operation runs; drop open sockets.
+  // The command cards poll while an operation runs; drop open sockets.
   afterAll(async () => {
     await browser?.close();
     if (server) {
       server.closeAllConnections();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await new Promise<void>((done) => server.close(() => done()));
     }
   }, 60_000);
 
-  const openDetails = (page: Page, root: string) =>
-    page
-      .locator(root)
-      .first()
-      .evaluate((node) =>
-        node.querySelectorAll('details').forEach((d) => (d.open = true)),
-      );
+  const read = (target: Locator, disabled = false) =>
+    target.evaluate(readContrast, disabled) as Promise<Reading[]>;
+  const ratio = async (target: Locator) => (await read(target))[0]!.ratio;
   /** Shows the sources of the adopted experience, as a person would. */
   async function showSources(page: Page, root: string) {
     await page
@@ -102,32 +133,48 @@ suite('experience and local command cards read in both themes', () => {
       .getByText('以下是形成这条经验的原始反馈，仅本人可见。')
       .waitFor();
   }
-  const read = (target: Locator) =>
-    target.evaluate(readContrast) as Promise<Reading[]>;
-  const ratio = async (target: Locator) => (await read(target))[0]!.ratio;
 
-  /** Renders a view and returns the element whose text must all pass. */
-  async function open(view: View, width: number, theme: 'light' | 'dark') {
+  /** Renders a view in a theme and returns the element whose text must all
+   * pass. The surface default comes from the pre-paint theme script; the
+   * other theme is applied with the runtime's applyTheme. */
+  async function open(view: View, width: number, theme: Theme) {
     const page = await browser.newPage({ viewport: { width, height: 900 } });
-    await page.goto(`${origin}/?view=${view}&theme=${theme}`);
-    let root = 'main';
+    const surfaceDefault = view === 'admin' ? 'dark' : 'light';
+    await page.goto(
+      `${origin}${paths[view]}?view=${view}${theme === surfaceDefault ? '' : `&theme=${theme}`}`,
+    );
+    let root = '#root';
     if (view === 'page') {
       await page.getByText('暂无反馈与历史记录。').waitFor();
       await page.getByText('读取或撤回未完成，请稍后重试。').waitFor();
       await page.getByText('整理频率', { exact: true }).waitFor();
       await showSources(page, root);
-    } else if (view === 'cards') {
-      await page.getByText('下次整理', { exact: true }).waitFor();
+    } else if (view === 'workbench') {
+      root = 'article[data-experience-batch]';
+      await page.locator(root).waitFor();
       await showSources(page, root);
     } else if (view === 'employee') {
       await page.getByRole('tab', { name: '经验积累' }).click();
       root = '[role="tabpanel"] > section';
       await page.locator(root).getByText('整理频率').waitFor();
       await showSources(page, root);
+    } else if (view === 'admin') {
+      await page.getByRole('button', { name: '查看王芳的 AI 员工' }).click();
+      await page.getByRole('button', { name: '查看共享详情' }).click();
+      await page.getByRole('tab', { name: '经验积累' }).click();
+      root = '[role="tabpanel"] > section';
+      await page.locator(root).getByText('整理频率').waitFor();
     } else {
-      await expect.poll(() => page.locator('main article').count()).toBe(4);
+      await expect
+        .poll(() => page.locator('#root article').count())
+        .toBe(view === 'commands' ? 5 : 3);
     }
-    await openDetails(page, root);
+    await page
+      .locator(root)
+      .first()
+      .evaluate((node) =>
+        node.querySelectorAll('details').forEach((d) => (d.open = true)),
+      );
     return { page, root };
   }
   const overflow = (page: Page) =>
@@ -136,32 +183,52 @@ suite('experience and local command cards read in both themes', () => {
         document.documentElement.scrollWidth >
         document.documentElement.clientWidth,
     );
-  /** Keyboard focus ring against the surface around the control. */
+  /** The keyboard focus ring: drawn at all, its width, and its color against
+   * the surface around the control. The browser's own ring (outline-style
+   * auto) counts as drawn. */
   async function ring(page: Page, control: Locator) {
     await page.keyboard.press('Tab');
     await control.focus();
-    const drawn = await control.evaluate((node) => {
+    const outline = await control.evaluate((node) => {
       const style = getComputedStyle(node);
-      if (
-        !node.matches(':focus-visible') ||
-        style.outlineStyle === 'none' ||
-        parseFloat(style.outlineWidth) < 2
-      )
-        return false;
       // The ring sits on the parent: measure its color as text there.
       const probe = document.createElement('span');
       probe.id = 'ring-probe';
       probe.textContent = '_';
       probe.style.color = style.outlineColor;
       node.parentElement!.append(probe);
-      return true;
+      return {
+        visible: node.matches(':focus-visible'),
+        style: style.outlineStyle,
+        width: parseFloat(style.outlineWidth),
+      };
     });
-    if (!drawn) return 0;
     const probe = page.locator('#ring-probe');
     try {
-      return await ratio(probe);
+      return { ...outline, ratio: await ratio(probe) };
     } finally {
       await probe.evaluate((node) => node.remove());
+    }
+  }
+  /** Reads a control with :hover forced (headless Chrome keeps no pointer). */
+  async function hovered(page: Page, control: Locator) {
+    await control.evaluate((node) => node.setAttribute('data-hover-probe', ''));
+    const cdp = await page.context().newCDPSession(page);
+    try {
+      await cdp.send('DOM.enable');
+      await cdp.send('CSS.enable');
+      const { root } = await cdp.send('DOM.getDocument');
+      const { nodeId } = await cdp.send('DOM.querySelector', {
+        nodeId: root.nodeId,
+        selector: '[data-hover-probe]',
+      });
+      await cdp.send('CSS.forcePseudoState', {
+        nodeId,
+        forcedPseudoClasses: ['hover'],
+      });
+      return (await read(control))[0]!;
+    } finally {
+      await cdp.detach();
     }
   }
 
@@ -175,36 +242,71 @@ suite('experience and local command cards read in both themes', () => {
       ['button', (p) => p.getByRole('button', { name: '重新读取' }).first()],
       ['source', (p) => p.locator('blockquote')],
     ],
-    cards: [
-      ['label', (p) => p.getByText('整理频率', { exact: true })],
+    workbench: [
+      ['title', (p) => p.getByText('私人经验 · 已采用')],
       ['button', (p) => p.getByRole('button', { name: '收起来源与版本' })],
       ['source', (p) => p.locator('blockquote')],
     ],
     employee: [
       ['label', (p) => p.getByText('整理频率', { exact: true })],
       ['button', (p) => p.getByRole('button', { name: '重新读取' })],
+      ['source', (p) => p.locator('blockquote')],
+    ],
+    admin: [
+      ['label', (p) => p.getByText('整理频率', { exact: true })],
+      ['value', (p) => p.getByText('公司设置 · v4')],
+      ['note', (p) => p.getByText('仅显示整理配置和汇总')],
     ],
     commands: [
       ['title', (p) => p.getByText('本地命令 · 操作授权').first()],
       ['note', (p) => p.getByText('此授权仅适用于上面显示的操作')],
       ['command', (p) => p.getByLabel('待执行命令').first()],
       ['stderr', (p) => p.getByText('第 12 行缺少金额，已跳过')],
+      ['unknown', (p) => p.getByText('尚未取得可信完成回执')],
       ['button', (p) => p.getByRole('button', { name: '批准这一次执行' })],
     ],
+    mcp: [
+      ['title', (p) => p.getByText('调用本地 MCP 工具')],
+      ['arguments', (p) => p.getByLabel('本次工具参数')],
+      ['unknown', (p) => p.getByText('此结果不能确定')],
+      ['button', (p) => p.getByRole('button', { name: '拒绝' })],
+    ],
   };
-  const focusTarget: Record<View, (page: Page) => Locator> = {
+  // Buttons for focus and hover; the shared summary has none.
+  const control: Record<View, ((page: Page) => Locator) | null> = {
     page: (p) => p.getByRole('button', { name: '重新读取' }).first(),
-    cards: (p) => p.getByRole('button', { name: '收起来源与版本' }),
+    workbench: (p) => p.getByRole('button', { name: '收起来源与版本' }),
     employee: (p) => p.getByRole('button', { name: '重新读取' }),
-    commands: (p) => p.getByRole('button', { name: '批准这一次执行' }),
+    admin: null,
+    commands: (p) => p.getByRole('button', { name: '拒绝' }),
+    mcp: (p) => p.getByRole('button', { name: '拒绝' }),
+  };
+  // A write left pending shows each card's busy, disabled state.
+  const busy: Partial<Record<View, [string, string]>> = {
+    page: ['忘掉这条反馈', '正在撤回…'],
+    commands: ['批准这一次执行', '批准这一次执行'],
+    mcp: ['批准这一次调用', '批准这一次调用'],
   };
 
-  for (const view of ['page', 'cards', 'employee', 'commands'] as const)
+  const views: View[] = [
+    'page',
+    'workbench',
+    'employee',
+    'admin',
+    'commands',
+    'mcp',
+  ];
+  for (const view of views)
     for (const width of [1440, 390])
       for (const theme of ['light', 'dark'] as const)
         it(`${view} reads at ${width}px in the ${theme} theme`, async () => {
           const { page, root } = await open(view, width, theme);
           try {
+            expect(
+              await page.evaluate(() =>
+                document.body.hasAttribute('data-ds-dark-theme'),
+              ),
+            ).toBe(theme === 'dark');
             const readings = await read(page.locator(root).first());
             expect(readings.length).toBeGreaterThan(10);
             expect(
@@ -220,11 +322,37 @@ suite('experience and local command cards read in both themes', () => {
                 .map((r) => r.text),
             ).toEqual([]);
             expect(await overflow(page)).toBe(false);
-            const measured: Record<string, number> = {};
+            const measured: Record<string, unknown> = {};
             for (const [name, locate] of probes[view])
-              measured[name] = await ratio(locate(page));
-            measured.ring = await ring(page, focusTarget[view](page));
-            expect(measured.ring).toBeGreaterThanOrEqual(3);
+              measured[name] = +(await ratio(locate(page))).toFixed(2);
+            const target = control[view]?.(page);
+            if (target) {
+              const focus = await ring(page, target);
+              expect(focus.visible).toBe(true);
+              expect(focus.style).not.toBe('none');
+              if (focus.style !== 'auto')
+                expect(focus.width).toBeGreaterThanOrEqual(2);
+              expect(focus.ratio).toBeGreaterThanOrEqual(3);
+              measured.ring = `${focus.style} ${focus.width}px ${focus.ratio.toFixed(2)}`;
+              const hover = await hovered(page, target);
+              expect(hover.ratio).toBeGreaterThanOrEqual(hover.need);
+              expect(hover.dark).toBe(theme === 'dark');
+              measured.hover = +hover.ratio.toFixed(2);
+            }
+            const write = busy[view];
+            if (write) {
+              await page.getByRole('button', { name: write[0] }).click();
+              const disabled = page.getByRole('button', { name: write[1] });
+              await expect.poll(() => disabled.isDisabled()).toBe(true);
+              expect(
+                await disabled.evaluate((n) =>
+                  Number(getComputedStyle(n).opacity),
+                ),
+              ).toBeLessThan(1);
+              const [reading] = await read(disabled, true);
+              expect(reading!.dark).toBe(theme === 'dark');
+              measured.disabled = +reading!.ratio.toFixed(2);
+            }
             console.info(
               `[contrast] ${view} ${width} ${theme} ${JSON.stringify(measured)}`,
             );
@@ -236,9 +364,10 @@ suite('experience and local command cards read in both themes', () => {
 
 /** Every element under root (root included) with its own visible text, its
  * contrast against the composited background (needs 4.5, or 3 for large
- * text), and whether that background is the dark one of the pair.
- * Self-contained: it runs in the page. */
-function readContrast(root: Element) {
+ * text), and whether that background is the dark one of the pair. Disabled
+ * controls are left out unless asked for (they need no contrast; the
+ * reading ignores their opacity). Self-contained: it runs in the page. */
+function readContrast(root: Element, disabled = false) {
   const parse = (value: string) => {
     // Chrome serializes some color-mix() results in Oklab.
     const oklab = value.match(
@@ -310,7 +439,7 @@ function readContrast(root: Element) {
       !box.width ||
       !box.height ||
       style.visibility !== 'visible' ||
-      node.closest(':disabled')
+      (!disabled && node.closest(':disabled'))
     )
       continue;
     const layers: number[][] = [];

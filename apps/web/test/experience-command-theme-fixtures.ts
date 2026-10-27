@@ -200,22 +200,21 @@ const operation = (n: number, status: string, extra: object) => ({
   candidateState: null,
   ...extra,
 });
+const approval = (n: number) => ({
+  request: {
+    approvalId: id(n),
+    requestId: id(n + 1),
+    version: 1,
+    requestDigest: digest('6'),
+    task: { runId: id(73) },
+    respondentId: id(74),
+    expiresAt: '2099-01-01T00:00:00.000Z',
+  },
+  response: null,
+  revokedAt: null,
+});
 export const operations = [
-  operation(70, 'waiting_user', {
-    approval: {
-      request: {
-        approvalId: id(71),
-        requestId: id(72),
-        version: 1,
-        requestDigest: digest('6'),
-        task: { runId: id(73) },
-        respondentId: id(74),
-        expiresAt: '2099-01-01T00:00:00.000Z',
-      },
-      response: null,
-      revokedAt: null,
-    },
-  }),
+  operation(70, 'waiting_user', { approval: approval(71) }),
   operation(75, 'running', {
     output: [
       { sequence: 1, stream: 'stdout', content: '读取 data/sales.csv\n' },
@@ -234,4 +233,103 @@ export const operations = [
       output: result(1, '', 'Error: 找不到 data/refunds.csv'),
     },
   }),
+  operation(78, 'unknown', {}),
 ];
+
+// Local app (MCP) operations share the command card's styles.
+const mcpArguments = {
+  limits: { timeoutMs: 30_000 },
+  source: {
+    name: 'crm-tools',
+    version: '1.2.0',
+    entrypoint: 'server.js',
+    files: [{ path: 'server.js', sha256: digest('7') }],
+  },
+  path: 'tools/crm',
+  connectionId: id(90),
+  connectionRevision: 1,
+  deviceId: id(91),
+  credential: null,
+  imageDigest: digest('5'),
+};
+const mcpOperation = (n: number, status: string, extra: object) => ({
+  snapshot: { status, binding: { attempt: { operationId: id(n) } } },
+  deviceName: '王芳的 MacBook',
+  approval: null,
+  evidence: null,
+  ...extra,
+});
+export const mcpOperations = [
+  mcpOperation(92, 'waiting_user', {
+    payload: {
+      capability: 'local.mcp.call',
+      arguments: {
+        ...mcpArguments,
+        tool: { name: 'find_customer' },
+        toolArguments: { name: '上海星河贸易' },
+      },
+    },
+    approval: approval(93),
+  }),
+  mcpOperation(95, 'succeeded', {
+    payload: { capability: 'local.mcp.discover', arguments: mcpArguments },
+    evidence: { tools: ['find_customer'], stopped: true },
+  }),
+  mcpOperation(96, 'unknown', {
+    payload: { capability: 'local.mcp.discover', arguments: mcpArguments },
+  }),
+];
+
+// The admin console's view of one person and their AI employee.
+export const organization = id(100),
+  person = id(101);
+const counts = {
+  general: 1,
+  custom: 0,
+  inactive: 0,
+  archived: 0,
+  pendingAssignments: 0,
+};
+const personRow = {
+  userId: person,
+  username: 'wangfang',
+  displayName: '王芳',
+  jobTitle: '财务专员',
+  departmentId: null,
+  departmentName: null,
+  departmentActive: true,
+  active: true,
+  maintenanceLevel: 'personal' as const,
+  counts,
+};
+export const directory = {
+  organizationId: organization,
+  totals: { ...counts, people: 1 },
+  people: [personRow],
+  nextCursor: null,
+};
+export const personInstances = {
+  organizationId: organization,
+  person: personRow,
+  instances: [
+    {
+      id: instance,
+      employeeId: employee,
+      assignmentId: id(102),
+      workspaceId: workspace,
+      workspaceName: '财务部',
+      kind: 'general' as const,
+      state: 'active' as const,
+      sourceName: 'Rice',
+      source: { kind: 'tenant_version' as const, employeeVersionId: id(103) },
+      revision: 1,
+      updatedAt: at,
+      sharedSummary: {
+        sceneCount: 1,
+        referenceCount: 2,
+        automaticExperience: 'policy_managed' as const,
+      },
+    },
+  ],
+  nextCursor: null,
+};
