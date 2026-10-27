@@ -1,7 +1,6 @@
 'use client';
 import { AdminButton } from '../../components/admin/admin-ui';
 
-import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 
 import type { SaasCapabilityManifest } from '@allrice/contracts';
@@ -405,7 +404,8 @@ export function GovernanceConsole() {
       <div className={styles.embeddedDenied}>
         <h1>平台管理员专用</h1>
         <p>员工配置与平台 Provider 由平台管理员统一管理。</p>
-        <Link href="/chatflow">返回 ChatFlow</Link>
+        {/* A full load paints the employee's saved appearance first. */}
+        <a href="/chatflow">返回 ChatFlow</a>
       </div>
     );
   }

@@ -1,5 +1,4 @@
 'use client';
-import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 import {
   canonicalRuntimeBridgeJson,
@@ -413,7 +412,8 @@ export function LocalMcpSettings({
               >
                 复制发现请求
               </button>
-              <Link href="/chatflow">进入工作台</Link>
+              {/* A full load paints the employee's saved appearance first. */}
+              <a href="/chatflow">进入工作台</a>
             </div>
             <p>
               先为下面的员工版本绑定连接，再进入该员工的聊天发送发现请求并批准一次启动。发现成功后在此刷新并授权工具；下一条新任务才采用新工具，当前任务不扩权。

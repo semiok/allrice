@@ -1,6 +1,13 @@
 'use client';
 
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from 'react';
 import {
   Button,
   IconChevronDownOutlineRegular,
@@ -9,6 +16,12 @@ import {
   Input,
   Switch,
 } from '@deepseek-ai/dsh-client-ui-primitives';
+import {
+  currentAppearance,
+  reloadAppearance,
+  setAppearance,
+  subscribeAppearance,
+} from '../../lib/theme/appearance';
 import { ConnectedApps } from '../workspace/mcp/connected-apps';
 import { SettingsPanel } from './dsh-upstream/settings/SettingsRoot';
 import native from './dsh-upstream/settings/SettingsRoot.module.css';
@@ -25,6 +38,12 @@ import type { usePersonalPreferences } from './use-personal-preferences';
 import styles from './sidebar-settings.module.css';
 import preferenceStyles from './personal-preferences.module.css';
 
+// DSH ui-theme's Appearance row: its three choices and copy.
+const appearanceOptions = [
+  { value: 'light', label: '浅色' },
+  { value: 'dark', label: '深色' },
+  { value: 'system', label: '跟随系统' },
+] as const;
 const transcriptViewOptions = [
   { value: 'compact', label: '简洁' },
   { value: 'standard', label: '标准' },
@@ -64,6 +83,15 @@ function PersonalPreferencesSettings({
   );
   const disabled = preferences.pending || !preferences.available;
   const expanded = preferences.value.transcriptView === 'verbose';
+  // What the page shows: the saved choice, or one just picked and saving.
+  const shown = useSyncExternalStore(
+    subscribeAppearance,
+    currentAppearance,
+    () => null,
+  );
+  const appearance =
+    appearanceOptions.find((option) => option.value === shown)?.value ??
+    preferences.value.appearance;
   useEffect(() => {
     setFontSizeDraft(String(preferences.value.fontSize));
   }, [preferences.value.fontSize, preferences.scope, preferences.pending]);
@@ -110,6 +138,47 @@ function PersonalPreferencesSettings({
                 void preferences.setPreferences({ streamingOutput });
             }}
           />
+        </div>
+        <div className={preferenceStyles.row}>
+          <div className={preferenceStyles.copy}>
+            <h3>
+              <label htmlFor={`${id}-appearance`}>外观</label>
+            </h3>
+          </div>
+          <div className={preferenceStyles.select}>
+            <select
+              id={`${id}-appearance`}
+              value={appearance}
+              disabled={disabled}
+              onChange={(event) => {
+                const option = appearanceOptions.find(
+                  (item) => item.value === event.target.value,
+                );
+                if (!option || option.value === appearance) return;
+                // As DSH: switch this page now; if the save fails, go back to
+                // what the server holds.
+                const previous = appearance;
+                setAppearance(option.value);
+                void preferences
+                  .setPreferences({ appearance: option.value })
+                  .then((saved) => {
+                    // Saved: also drops any read that started before it.
+                    if (saved) setAppearance(option.value);
+                    else {
+                      setAppearance(previous);
+                      void reloadAppearance();
+                    }
+                  });
+              }}
+            >
+              {appearanceOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <IconChevronDownOutlineRegular size={12} />
+          </div>
         </div>
         <div className={preferenceStyles.row}>
           <div className={preferenceStyles.copy}>

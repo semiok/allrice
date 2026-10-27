@@ -231,4 +231,9 @@ ALLRICE_SMOKE_BASE_URL="http://127.0.0.1:${proxy_port}" \
 ALLRICE_SMOKE_STATE="${smoke_state}" \
   node scripts/storage-restart-smoke.mjs
 
+# MET-214: the real Next page paints a signed-in employee's saved appearance
+# before any content.
+ALLRICE_SMOKE_BASE_URL="http://127.0.0.1:${proxy_port}" \
+  node scripts/appearance-http-smoke.mjs
+
 echo "AllRice Compose smoke passed (migration=${migration}, pgvector=${vector_version})"

@@ -53,16 +53,7 @@ export function MonthlyQuota({
         </p>
         {data ? (
           <dl>
-            {observing ? (
-              <>
-                <dt>其中缓存</dt>
-                <dd>
-                  {data.cachedInputTokens == null
-                    ? '还在统计'
-                    : amount(data.cachedInputTokens)}
-                </dd>
-              </>
-            ) : (
+            {!observing && (
               <>
                 <dt>本月上限</dt>
                 <dd>{amount(data.monthlyTokenLimit)}</dd>

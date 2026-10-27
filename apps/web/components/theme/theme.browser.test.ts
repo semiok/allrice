@@ -7,8 +7,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type {
   Browser,
   Page,
+  Route,
 } from '../../../worker/node_modules/playwright-core/index.js';
-import { themeScript } from '../../lib/theme/theme-script';
+import { appearanceScript, themeScript } from '../../lib/theme/theme-script';
 
 const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
@@ -82,7 +83,14 @@ suite('theme runtime', () => {
     });
     const styles = css.outputFiles[0]!.contents;
     server = createServer((req, res) => {
-      const path = new URL(req.url!, origin).pathname;
+      const url = new URL(req.url!, origin);
+      const path = url.pathname;
+      // ?read=failed: a workspace page whose server read of the saved
+      // appearance failed, as AppearanceScript renders it.
+      const workspace =
+        url.searchParams.get('read') === 'failed'
+          ? `<script>${appearanceScript({ choice: null, viewer: 'viewer-a' })}</script>`
+          : '';
       if (path === '/fixture.js') {
         res.setHeader('Content-Type', 'text/javascript');
         res.end(script);
@@ -93,7 +101,7 @@ suite('theme runtime', () => {
         // Same order as the root layout: theme script first in <body>.
         res.setHeader('Content-Type', 'text/html');
         res.end(
-          `<!doctype html><html data-allrice-framework="v2" lang="zh-CN"><head><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/fixture.css"><link rel="stylesheet" href="/components.css"></head><body><script>${themeScript}</script><script>${recordFirstPaint}</script><div id="root"></div><script type="module" src="/fixture.js"></script></body></html>`,
+          `<!doctype html><html data-allrice-framework="v2" lang="zh-CN"><head><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/fixture.css"><link rel="stylesheet" href="/components.css"></head><body><script>${themeScript}</script>${workspace}<script>${recordFirstPaint}</script><div id="root"></div><script type="module" src="/fixture.js"></script></body></html>`,
         );
       }
     });
@@ -240,6 +248,99 @@ suite('theme runtime', () => {
           await page.context().close();
         }
       });
+
+  it('re-reads on return to a workspace page whose first read failed, for its own account only', async () => {
+    const page = await open('/automation?read=failed');
+    try {
+      expect(await state(page)).toMatchObject({
+        firstPaint: { dark: false, theme: 'light' },
+        dark: false,
+      });
+      let answer = {
+        viewerId: 'viewer-b',
+        preferences: { appearance: 'dark' },
+      };
+      await page.route('**/api/v1/me/preferences', (route) =>
+        route.fulfill({
+          contentType: 'application/json',
+          body: JSON.stringify(answer),
+        }),
+      );
+      const comeBack = async () => {
+        const read = page.waitForResponse((response) =>
+          response.url().endsWith('/api/v1/me/preferences'),
+        );
+        await page.evaluate(() =>
+          document.dispatchEvent(new Event('visibilitychange')),
+        );
+        await read;
+        await settle(page);
+      };
+      // Another account signed in from another tab: not this page's choice.
+      await comeBack();
+      expect((await state(page)).dark).toBe(false);
+      answer = { viewerId: 'viewer-a', preferences: { appearance: 'dark' } };
+      await comeBack();
+      expect(await state(page)).toMatchObject({ dark: true, theme: 'dark' });
+    } finally {
+      await page.context().close();
+    }
+  });
+
+  it.each(['older first', 'newer first'])(
+    'uses the latest foreground read when responses finish %s',
+    async (order) => {
+      const page = await open('/automation?read=failed');
+      try {
+        let requested!: (route: Route) => void;
+        await page.route('**/api/v1/me/preferences', (route) =>
+          requested(route),
+        );
+        const comeBack = async () => {
+          const read = new Promise<Route>((done) => {
+            requested = done;
+          });
+          await page.evaluate(() =>
+            document.dispatchEvent(new Event('visibilitychange')),
+          );
+          return read;
+        };
+        const older = await comeBack();
+        const newer = await comeBack();
+        const finish = async (route: Route, appearance: string) => {
+          const response = page.waitForResponse((response) =>
+            response.url().endsWith('/api/v1/me/preferences'),
+          );
+          await route.fulfill({
+            contentType: 'application/json',
+            body: JSON.stringify({
+              viewerId: 'viewer-a',
+              preferences: { appearance },
+            }),
+          });
+          await response;
+          await settle(page);
+        };
+        if (order === 'older first') {
+          await finish(older, 'light');
+          expect(
+            await page.locator('html').getAttribute('data-appearance'),
+          ).toBeNull();
+          await finish(newer, 'dark');
+        } else {
+          await finish(newer, 'dark');
+          expect(await state(page)).toMatchObject({
+            dark: true,
+            theme: 'dark',
+          });
+          await finish(older, 'light');
+        }
+        expect(await state(page)).toMatchObject({ dark: true, theme: 'dark' });
+      } finally {
+        await page.context().close();
+      }
+    },
+  );
 
   it('switches on client navigation between the workspace and the admin console', async () => {
     const page = await open('/chatflow');

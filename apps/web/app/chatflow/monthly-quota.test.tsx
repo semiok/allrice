@@ -32,7 +32,9 @@ describe('account monthly balance', () => {
       />,
     );
     expect(html).toContain('账号使用情况');
-    expect(html).toContain('2,000,000');
+    // The cached share stays in the statistics, not on the employee's page.
+    expect(html).not.toContain('其中缓存');
+    expect(html).not.toContain('2,000,000');
     expect(html).toContain('有 1 次任务的用量还在统计');
     expect(html).not.toContain('剩余');
     expect(html).not.toContain('5,000,000');
