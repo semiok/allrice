@@ -336,21 +336,16 @@ suite('experience and local command cards read in both themes', () => {
             if (hover) measured.hover = +hover.ratio.toFixed(2);
             // Failed and to-be-confirmed command cards: their stroke against
             // the surface around the card (needs 3).
-            const strokes =
-              view === 'commands'
-                ? await Promise.all(
-                    ['failed', 'unknown'].map((status) =>
-                      stroke(
-                        page,
-                        page.locator(`article[data-status="${status}"]`),
-                      ),
-                    ),
-                  )
-                : [];
-            strokes.forEach((value, index) => {
-              measured[index ? 'unknownStroke' : 'failedStroke'] =
-                +value.toFixed(2);
-            });
+            const strokes: number[] = [];
+            if (view === 'commands')
+              for (const status of ['failed', 'unknown']) {
+                const value = await stroke(
+                  page,
+                  page.locator(`article[data-status="${status}"]`),
+                );
+                strokes.push(value);
+                measured[`${status}Stroke`] = +value.toFixed(2);
+              }
             const write = busy[view];
             let disabled: { opacity: number; reading: Reading } | undefined;
             if (write) {
