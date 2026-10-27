@@ -17,14 +17,15 @@
 # next time: skipped, not failed.
 set -euo pipefail
 NODE="$HOME/.local/opt/node-22.23.2/bin/node"; BIN=$(cd "$(dirname "$0")" && pwd -P)
+. "$BIN/lib.sh"
 ts=$(date +%Y%m%d-%H%M%S)
 json() { /usr/bin/python3 -c 'import json,sys;v=json.load(open(sys.argv[1]))[sys.argv[2]];print("" if v is None else v)' "$1" "$2"; }
 penv() { /usr/bin/python3 -c 'import plistlib,os,sys;print(plistlib.load(open(os.path.expanduser(sys.argv[1]),"rb"))["EnvironmentVariables"][sys.argv[2]])' "$1" "$2"; }
 case "${1:-}" in
   --dev)
     shift
-    web=$(penv ~/Library/LaunchAgents/ai.bplabs.allrice-dev-web.plist ALLRICE_WEB_PORT)
-    worker=$(penv ~/Library/LaunchAgents/ai.bplabs.allrice-dev-worker.plist ALLRICE_WORKER_PORT)
+    web=$(penv "$(dev_plist web)" ALLRICE_WEB_PORT)
+    worker=$(penv "$(dev_plist worker)" ALLRICE_WORKER_PORT)
     creds="$HOME/allrice-dev/qa/smoke-cred.json"; out="$HOME/allrice-dev/qa/smoke/$ts"; extra=()
     dbenv=$("$BIN/with-env" worker sh -c 'printf "%s\n%s" "$DATABASE_URL" "${ALLRICE_DSH_NATIVE_ARTIFACT_ID:-}"') || dbenv="" ;;
   --instance)

@@ -35,7 +35,7 @@ set -euo pipefail
 BIN=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P); . "$BIN/lib.sh"
 REPO="$HOME/allrice-repo"; RELEASES="$HOME/allrice-dev-releases"
 STATE="$HOME/allrice-dev/qa"; LOG="$STATE/deploys.jsonl"; INFLIGHT="$STATE/deploy-inflight"
-DISABLED="$STATE/deploy-disabled"
+DISABLED="$M1_DEV_DISABLED"
 LOCK="$HOME/allrice-dev/.local/deploy.lock"; SNAPSHOTS="$STATE/pre-migrate"; KEEP_SNAPSHOTS=2
 export PATH="$HOME/.local/opt/node-22.23.2/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 KEEP_RELEASES=3; BLOG=""; FAIL_REASON=""; INFLIGHT_MINE=""; LOCKED=""; BUILD_DIR=""; BUILT=""
@@ -125,8 +125,8 @@ start_both_on() { # sha -> start Worker then Web, both must report sha
 }
 
 # Point both plists at a release: script paths, working dirs, cordis config, SHA, and
-# (only when given) the approved native artifact.
-point_plists() { # release sha artifact|""
+# the approved native artifact, even if only one plist was switched last time.
+point_plists() { # release sha artifact
   "$M1_PY" - "$WEB_PLIST" "$WORKER_PLIST" "$1" "$2" "$3" "$(dev_plist web)" "$(dev_plist worker)" <<'PY'
 import os,plistlib,sys
 web,worker,rel,sha,art,web_src,worker_src=sys.argv[1:]
@@ -140,7 +140,7 @@ for p,role,src in ((web,'web',web_src),(worker,'worker',worker_src)):
     for key in list(e):
         if key in ('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', 'ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS') or key.startswith('ALLRICE_DSH_RETAINED_'):
             del e[key]
-    if art: e['ALLRICE_DSH_NATIVE_ARTIFACT_ID']=art
+    e['ALLRICE_DSH_NATIVE_ARTIFACT_ID']=art
     tmp=p+'.tmp'; plistlib.dump(d,open(tmp,'wb')); os.chmod(tmp,0o600); os.replace(tmp,p)
 PY
 }
@@ -253,6 +253,9 @@ precheck() { # rel sha art log -> prints the reason on failure
 discard() { git -C "$REPO" worktree remove --force "$1" 2>/dev/null || rm -rf -- "$1"; git -C "$REPO" worktree prune; }
 
 status() {
+  if [ ! -f "$WEB_PLIST" ] || [ ! -f "$WORKER_PLIST" ]; then
+    echo "PARKED configuration in $DISABLED; launchd has no Dev jobs"
+  fi
   echo "configured release: $(release_of)"
   echo "configured sha:     $(penv "$(dev_plist worker)" ALLRICE_RELEASE_SHA)"
   echo "running sha:        web $(ready_sha "http://127.0.0.1:$(web_port)/api/health/ready" | cut -c1-8)  worker $(ready_sha "http://127.0.0.1:$(worker_port)/health/ready" | cut -c1-8)  (empty = not ready)"
@@ -394,7 +397,7 @@ rollback() { # [release-dir]
   inflight_begin "$cur_sha"
   stop_both || die "services did not stop"
   inflight_phase switching
-  point_plists "$target" "$sha" "$([ "$art" != "$cur_art" ] && echo "$art")"
+  point_plists "$target" "$sha" "$art"
   start_both_on "$sha" || die "rollback target did not become healthy"
   # Records first, then clear the in-flight state, then release the lock.
   log_deploy kind rollback fromRelease "$cur_rel" fromSha "$cur_sha" fromArtifact "$cur_art" toRelease "$target" toSha "$sha" toArtifact "$art"
@@ -418,7 +421,9 @@ deploy() {
   git -C "$REPO" fetch -q origin
   local sha; sha=$(resolve_ref "$ref")
   local cur_rel cur_sha cur_art; cur_rel=$(release_of); cur_sha=$(penv "$(dev_plist worker)" ALLRICE_RELEASE_SHA); cur_art=$(penv "$(dev_plist worker)" ALLRICE_DSH_NATIVE_ARTIFACT_ID)
-  if [ "$sha" = "$cur_sha" ] && [ $force = 0 ]; then say "Dev already runs ${sha:0:8}; nothing to deploy (use --force to rebuild)"; return 0; fi
+  local cur_active=0
+  if [ -f "$WEB_PLIST" ] && [ -f "$WORKER_PLIST" ]; then cur_active=1; fi
+  if [ "$cur_active" = 1 ] && [ "$sha" = "$cur_sha" ] && [ $force = 0 ]; then say "Dev already runs ${sha:0:8}; nothing to deploy (use --force to rebuild)"; return 0; fi
 
   local rel; rel="$RELEASES/$(date +%Y%m%d-%H%M)-${sha:0:8}"
   [ -e "$rel" ] && die "release directory exists: $rel"
@@ -447,9 +452,9 @@ deploy() {
   [ "$(release_of)" = "$cur_rel" ] || die "Dev changed while this version was building; build kept at $rel, start again"
   local pending; pending=$(check_migrations_known "$rel") || {
     log_deploy kind failed phase migrations sha "$sha" reason "$pending" log "$BLOG"
-    die "not starting ${sha:0:8}: $pending; build kept at $rel (Dev untouched). $RECOVERY_HINT"; }
+    die "not starting ${sha:0:8}: $pending; build kept at $rel (Dev untouched)."; }
   why=$(check_contract_known "$rel") || {
-    log_deploy kind failed phase contract sha "$sha" reason "$why" log "$BLOG"; die "$why; build kept at $rel (Dev untouched). $RECOVERY_HINT"; }
+    log_deploy kind failed phase contract sha "$sha" reason "$why" log "$BLOG"; die "$why; build kept at $rel (Dev untouched)."; }
   local down_at boot; down_at=$(date +%s); boot=$(worker_boot)
   inflight_begin "$cur_sha"
   say "stopping web and worker"
@@ -460,12 +465,14 @@ deploy() {
   say "db:prepare (migrate, sync platform content, verify)"
   ( cd "$rel" && "$BIN/with-env" worker pnpm db:prepare ) >> "$BLOG" 2>&1 || die "db:prepare failed; see $BLOG"
   inflight_phase switching
-  point_plists "$rel" "$sha" "$([ "$art" != "$cur_art" ] && echo "$art")"
+  point_plists "$rel" "$sha" "$art"
   start_both_on "$sha" || die "${sha:0:8} did not become healthy"
   local downtime=$(( $(date +%s) - down_at ))
   # Records first, then clear the in-flight state, then release the lock.
   log_deploy kind deploy fromRelease "$cur_rel" fromSha "$cur_sha" fromArtifact "$cur_art" toRelease "$rel" toSha "$sha" toArtifact "$art" ref "$ref" downtimeSeconds "$downtime"
-  printf '%s\n%s\n' "$cur_rel" "$rel" > "$STATE/.previous-release"
+  # Parked configuration may never have been healthy: do not offer it as the default rollback.
+  if [ "$cur_active" = 1 ]; then printf '%s\n%s\n' "$cur_rel" "$rel" > "$STATE/.previous-release"
+  else rm -f "$STATE/.previous-release"; fi
   inflight_end; release_lock
   say "Dev now runs ${sha:0:8} (downtime ${downtime}s); lock released"
   prune_releases

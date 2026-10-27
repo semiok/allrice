@@ -149,9 +149,11 @@ cmd_up() {
   psql -h 127.0.0.1 -d postgres -Atc "select 1 from pg_database where datname='$db'" | grep -q 1 && die "database $db already exists"
   createdb -h 127.0.0.1 "$db"
 
-  /usr/bin/python3 - "$task" "$dir" "$db" "$web" "$worker" "$sha" "$artifact" <<'PY'
+  /usr/bin/python3 - "$task" "$dir" "$db" "$web" "$worker" "$sha" "$artifact" "$(dev_plist web)" "$(dev_plist worker)" <<'PY'
 import json, os, plistlib, re, sys, uuid
-task, d, db, web, worker, sha, art = sys.argv[1:]
+task, d, db, web, worker, sha, art, web_src, worker_src = sys.argv[1:]
+def retired_setting(key):
+    return key in ('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', 'ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS') or key.startswith('ALLRICE_DSH_RETAINED_')
 home = os.path.expanduser('~'); rel = f'{d}/release'; L = f'{d}/.local'
 for sub in ('storage', 'executions', 'dsh-runtime', 'native-once-control', 'native-recurring-control', 'project-preview'):
     os.makedirs(f'{L}/{sub}', mode=0o700, exist_ok=True); os.chmod(f'{L}/{sub}', 0o700)
@@ -159,6 +161,8 @@ dburl = f'postgres://{os.environ.get("USER","snow")}@127.0.0.1:5432/{db}'
 # .env: shared Dev values with this instance's database, ports and storage.
 out = []
 for line in open(f'{home}/allrice-dev/.env').read().splitlines():
+    key = re.match(r'^\s*(?:export\s+)?([A-Z0-9_]+)\s*=', line)
+    if key and retired_setting(key[1]): continue
     m = re.match(r'^([A-Z0-9_]+)=(.*)$', line)
     if not m: out.append(line); continue
     k, v = m.groups()
@@ -183,11 +187,11 @@ common = {
     # No sealed build identity for throwaway builds.
     'ALLRICE_DEV_MAINTENANCE_ENABLED': '0',
 }
-for role in ('web', 'worker'):
-    src = plistlib.load(open(f'{home}/Library/LaunchAgents/ai.bplabs.allrice-dev-{role}.plist', 'rb'))
+for role, source in (('web', web_src), ('worker', worker_src)):
+    src = plistlib.load(open(source, 'rb'))
     env = dict(src['EnvironmentVariables']); env.pop('ALLRICE_LOCAL_PORTAL', None)
     for key in list(env):
-        if key in ('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', 'ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS') or key.startswith('ALLRICE_DSH_RETAINED_'):
+        if retired_setting(key):
             del env[key]
     env.update(common)
     if role == 'web': env['ALLRICE_WEB_PORT'] = web

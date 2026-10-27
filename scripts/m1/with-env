@@ -1,7 +1,7 @@
 #!/bin/bash
-# with-env web|worker <command...> — run with the exact launchd environment of that
+# with-env web|worker <command...> — run with the current launchd environment of that
 # shared-Dev service (~/allrice-dev/.env plus the plist's EnvironmentVariables,
-# including a configuration parked by a refused recovery).
+# including a configuration parked by a refused recovery), excluding retired settings.
 # Refuses to run when the environment cannot be read, so nothing runs half-configured.
 set -euo pipefail
 BIN=$(cd "$(dirname "$0")" && pwd -P); . "$BIN/lib.sh"
@@ -13,9 +13,13 @@ plist=$(dev_plist "$role")
 [ -f "$HOME/allrice-dev/.env" ] || die "missing ~/allrice-dev/.env"
 set -a; source "$HOME/allrice-dev/.env"; set +a
 exports=$(/usr/bin/python3 - "$plist" <<'PY'
-import plistlib,shlex,sys
+import os,plistlib,shlex,sys
 env=plistlib.load(open(sys.argv[1],'rb'))['EnvironmentVariables']
 if not env.get('DATABASE_URL'): sys.exit('DATABASE_URL missing in plist')
+for k in set(os.environ) | set(env):
+    if k in ('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', 'ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS') or k.startswith('ALLRICE_DSH_RETAINED_'):
+        print(f'unset {shlex.quote(k)}')
+        env.pop(k, None)
 for k,v in env.items(): print(f'export {k}={shlex.quote(str(v))}')
 PY
 ) || die "cannot read the environment from $plist"
