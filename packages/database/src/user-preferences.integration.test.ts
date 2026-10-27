@@ -57,22 +57,38 @@ suite('account output preferences', () => {
     await Promise.all([
       updateUserPreferences(f.owner, { fontSize: 18 }),
       updateUserPreferences(f.owner, { transcriptView: 'compact' }),
+      updateUserPreferences(f.owner, { appearance: 'dark' }),
     ]);
     expect(await getUserPreferences(f.owner)).toMatchObject({
       streamingOutput: true,
       fontSize: 18,
       transcriptView: 'compact',
       collapseTiming: 'next-input',
+      appearance: 'dark',
     });
-    // An older client's streaming-only PATCH must keep newer display choices.
-    await updateUserPreferences(f.owner, { streamingOutput: false });
-    expect(
-      await getUserPreferences({ ...f.owner, workspaceId: null }),
-    ).toMatchObject({
+    // Appearance and an older field saved together do not overwrite each other.
+    await Promise.all([
+      updateUserPreferences(f.owner, { appearance: 'system' }),
+      updateUserPreferences(f.owner, { collapseTiming: 'completion' }),
+      updateUserPreferences(f.owner, { streamingOutput: false }),
+    ]);
+    expect(await getUserPreferences(f.owner)).toMatchObject({
       streamingOutput: false,
       fontSize: 18,
       transcriptView: 'compact',
-      collapseTiming: 'next-input',
+      collapseTiming: 'completion',
+      appearance: 'system',
+    });
+    // An older client's streaming-only PATCH must keep newer display choices.
+    await updateUserPreferences(f.owner, { streamingOutput: true });
+    expect(
+      await getUserPreferences({ ...f.owner, workspaceId: null }),
+    ).toMatchObject({
+      streamingOutput: true,
+      fontSize: 18,
+      transcriptView: 'compact',
+      collapseTiming: 'completion',
+      appearance: 'system',
     });
     expect(await getUserPreferences(f.neighbor)).toEqual(
       defaultUserPreferences,
@@ -179,12 +195,26 @@ suite('account output preferences', () => {
     const [before] = await fixture.db<{ updated_at: Date }[]>`
       select updated_at from allrice_user_preferences where user_id=${f.owner.actor.id}
     `;
-    await fixture.db`alter table allrice_user_preferences drop column appearance`;
+    // Only this suite's own schema: never a table in public, however the
+    // fixture builds its tables later.
+    const [scope] = await fixture.db<
+      { schema: string }[]
+    >`select current_schema() as schema`;
+    const schema = scope!.schema;
+    expect(schema).toMatch(/^p25_[a-f0-9]{32}$/);
+    await fixture.db.unsafe(
+      `alter table "${schema}".allrice_user_preferences drop column appearance`,
+    );
     const migration = await readFile(
       new URL('../migrations/0222_appearance_preference.sql', import.meta.url),
       'utf8',
     );
-    await fixture.db.begin((tx) => tx.unsafe(migration));
+    const migrate = () =>
+      fixture.db.begin(async (tx) => {
+        await tx.unsafe(`set local search_path to "${schema}"`);
+        await tx.unsafe(migration);
+      });
+    await migrate();
     expect(await getUserPreferences(f.owner)).toEqual({
       streamingOutput: false,
       fontSize: 18,
@@ -194,9 +224,7 @@ suite('account output preferences', () => {
       updatedAt: before!.updated_at.toISOString(),
     });
     // The runner records each file once; a manual second run fails unchanged.
-    await expect(
-      fixture.db.begin((tx) => tx.unsafe(migration)),
-    ).rejects.toThrow(/already exists/);
+    await expect(migrate()).rejects.toThrow(/already exists/);
     expect((await getUserPreferences(f.owner)).appearance).toBe('light');
   });
 });
