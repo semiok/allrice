@@ -47,18 +47,44 @@ async function save(appearance) {
 async function firstPaint(path, sessionHeaders) {
   const html = await (await request(path, { headers: sessionHeaders })).text();
   const scripts = [];
+  let hiddenDepth = 0;
   for (const tag of html
     .slice(html.indexOf('<body'))
-    .matchAll(/<script>([\s\S]*?)<\/script>|<(\/?)([a-z]+)([^>]*)>/g)) {
-    if (tag[1] !== undefined) scripts.push(tag[1]);
-    else if (!tag[2] && tag[3] !== 'body' && !/^\s+hidden/.test(tag[4])) break;
+    .matchAll(
+      /<script\b[^>]*>([\s\S]*?)<\/script>|<(\/?)([a-z][a-z0-9:-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>/gi,
+    )) {
+    if (tag[1] !== undefined) {
+      if (!hiddenDepth) scripts.push(tag[1]);
+    } else if (tag[2]) {
+      if (hiddenDepth) hiddenDepth -= 1;
+    } else if (tag[3].toLowerCase() !== 'body') {
+      // Match attribute names, not prefixes or text inside quoted values.
+      const hidden = [
+        ...tag[4].matchAll(
+          /([^\s=/>]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/g,
+        ),
+      ].some((attribute) => attribute[1].toLowerCase() === 'hidden');
+      if (!hiddenDepth && !hidden) break;
+      // Void elements have no closing tag and must not extend the subtree.
+      if (
+        !/^(area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)$/i.test(
+          tag[3],
+        )
+      )
+        hiddenDepth += 1;
+    }
   }
+  const workspaceScript = /,(\{"choice":[^}]*\})\)$/;
   const workspace = scripts
-    .map((script) => script.match(/,(\{"choice":[^}]*\})\)$/)?.[1])
+    .map((script) => script.match(workspaceScript)?.[1])
     .find(Boolean);
   return {
     defaultFirst: /,null\)$/.test(scripts[0] ?? ''),
     workspace: workspace ? JSON.parse(workspace) : null,
+    // Login must not carry an employee's choice anywhere in the document.
+    hasWorkspaceScript: [
+      ...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi),
+    ].some((script) => workspaceScript.test(script[1])),
   };
 }
 
@@ -75,7 +101,7 @@ try {
       );
   }
   const signedOut = await firstPaint('/login', {});
-  if (!signedOut.defaultFirst || signedOut.workspace !== null)
+  if (!signedOut.defaultFirst || signedOut.hasWorkspaceScript)
     throw new Error(`/login first paint: ${JSON.stringify(signedOut)}`);
 } finally {
   await save(original);

@@ -9,8 +9,8 @@ import { applyTheme, themeConfig, themeFor } from './theme';
 const attribute = 'data-appearance';
 const viewerAttribute = 'data-appearance-viewer';
 const listeners = new Set<() => void>();
-// Bumped by every change, so a read that started earlier cannot undo a newer
-// choice (DSH ui-theme drops stale syncs by revision the same way).
+// Bumped by every read and change, so an earlier read cannot undo a newer
+// read or choice (DSH ui-theme drops stale syncs by revision the same way).
 let version = 0;
 
 export function currentAppearance() {
@@ -44,6 +44,7 @@ export function subscribeAppearance(listener: () => void) {
 export async function reloadAppearance() {
   const viewer = document.documentElement.getAttribute(viewerAttribute);
   if (viewer === null) return;
+  version += 1;
   const started = version;
   try {
     const response = await fetch('/api/v1/me/preferences', {
@@ -52,7 +53,7 @@ export async function reloadAppearance() {
     if (!response.ok) return;
     const body: { viewerId?: unknown; preferences?: { appearance?: unknown } } =
       await response.json();
-    // A newer choice came meanwhile, or another account signed in here.
+    // A newer read or choice came meanwhile, or another account signed in here.
     if (version !== started || (viewer && body.viewerId !== viewer)) return;
     const choice = body.preferences?.appearance;
     if (choice === 'light' || choice === 'dark' || choice === 'system')

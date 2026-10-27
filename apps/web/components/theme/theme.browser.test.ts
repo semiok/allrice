@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type {
   Browser,
   Page,
+  Route,
 } from '../../../worker/node_modules/playwright-core/index.js';
 import { appearanceScript, themeScript } from '../../lib/theme/theme-script';
 
@@ -285,6 +286,61 @@ suite('theme runtime', () => {
       await page.context().close();
     }
   });
+
+  it.each(['older first', 'newer first'])(
+    'uses the latest foreground read when responses finish %s',
+    async (order) => {
+      const page = await open('/automation?read=failed');
+      try {
+        let requested!: (route: Route) => void;
+        await page.route('**/api/v1/me/preferences', (route) =>
+          requested(route),
+        );
+        const comeBack = async () => {
+          const read = new Promise<Route>((done) => {
+            requested = done;
+          });
+          await page.evaluate(() =>
+            document.dispatchEvent(new Event('visibilitychange')),
+          );
+          return read;
+        };
+        const older = await comeBack();
+        const newer = await comeBack();
+        const finish = async (route: Route, appearance: string) => {
+          const response = page.waitForResponse((response) =>
+            response.url().endsWith('/api/v1/me/preferences'),
+          );
+          await route.fulfill({
+            contentType: 'application/json',
+            body: JSON.stringify({
+              viewerId: 'viewer-a',
+              preferences: { appearance },
+            }),
+          });
+          await response;
+          await settle(page);
+        };
+        if (order === 'older first') {
+          await finish(older, 'light');
+          expect(
+            await page.locator('html').getAttribute('data-appearance'),
+          ).toBeNull();
+          await finish(newer, 'dark');
+        } else {
+          await finish(newer, 'dark');
+          expect(await state(page)).toMatchObject({
+            dark: true,
+            theme: 'dark',
+          });
+          await finish(older, 'light');
+        }
+        expect(await state(page)).toMatchObject({ dark: true, theme: 'dark' });
+      } finally {
+        await page.context().close();
+      }
+    },
+  );
 
   it('switches on client navigation between the workspace and the admin console', async () => {
     const page = await open('/chatflow');
