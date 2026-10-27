@@ -3,6 +3,11 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
+import LocalAttachmentStore, {
+  DEFAULT_NORMALIZED_IMAGE_MAX_DIMENSION,
+} from '@deepseek-ai/dsh-attachment-local';
+import { Config as RepeatToolReminderConfig } from '@deepseek-ai/dsh-repeat-tool-reminder';
+import { parseDocument } from 'yaml';
 
 const approvedPlugins = [
   '@deepseek-ai/dsh-llm-retry',
@@ -46,10 +51,44 @@ describe('AllRice restricted DSH profile', () => {
     }
 
     expect(profile).toContain('maxRetries: 2');
-    expect(profile).toContain('exclude: [todo_write]');
-    expect(profile).toContain('allowParallelInProgress: false');
     expect(profile).toContain('thresholdChars: 8192');
   });
+
+  it.each(['allrice-restricted', 'allrice-technical'])(
+    '%s uses native image and repeat defaults and the standard Todo policy',
+    async (name) => {
+      const profile = parseDocument(
+        await readFile(
+          resolve(import.meta.dirname, `../../dsh/${name}.cordis.yml`),
+          'utf8',
+        ),
+        {
+          customTags: [
+            { tag: 'tag:yaml.org,2002:js', resolve: (value: string) => value },
+          ],
+        },
+      ).toJS() as { id: string; config?: Record<string, unknown> }[];
+      const attachments = profile.find(({ id }) => id === 'attachments')!;
+      expect(attachments.config).not.toHaveProperty(
+        'normalizedImageMaxDimension',
+      );
+      expect(
+        LocalAttachmentStore.Config(attachments.config)
+          .normalizedImageMaxDimension,
+      ).toBe(DEFAULT_NORMALIZED_IMAGE_MAX_DIMENSION);
+      expect(DEFAULT_NORMALIZED_IMAGE_MAX_DIMENSION).toBe(8192);
+
+      const reminder = profile.find(({ id }) => id === 'repeat-tool-reminder')!;
+      expect(reminder.config).not.toHaveProperty('exclude');
+      expect(RepeatToolReminderConfig(reminder.config).exclude).toEqual([]);
+
+      const todo = profile.find(({ id }) => id === 'tool-todo');
+      // The technical profile has no Todo tool; do not add one to restore defaults.
+      if (name === 'allrice-restricted')
+        expect(todo?.config?.allowParallelInProgress).toBe(true);
+      else expect(todo).toBeUndefined();
+    },
+  );
 
   it('pins governed P25 services while keeping native delegation absent from the default profile', async () => {
     const pkg = JSON.parse(
