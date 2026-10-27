@@ -181,5 +181,5 @@ Keep the configured runtime root stable and preserve the binding table together
 with its native storage in backups. Short-term Run/Job/test cleanup retains the
 pin. Whole-tenant destruction also requires retirement of its private namespace;
 there is no ordinary product endpoint that deletes and recreates bindings.
-A missing namespace or another generation fails closed; do not solve it with an
-UPDATE to the pin or an automatic retry.
+A missing or different namespace, or another generation, fails closed; do not
+solve it with an UPDATE to the pin or an automatic retry.

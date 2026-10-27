@@ -13,12 +13,16 @@ migrating or retaining old code (MET-221).
   which release created or first wrote them. They are written once and never
   rewritten; nothing selects code by them.
 - Execution compares the DSH generation, profile, root seed and storage scope.
-  A context whose pin is of another generation, without a business origin, or
-  recorded by the archived MET-195 transition/reader paths fails with the
-  non-retryable `DSH_NATIVE_CONTEXT_INCOMPATIBLE`; the user starts a new
-  session. An origin of another generation still fails earlier, when its schema
-  (a literal generation) is parsed; mapping that to the same error is a MET-221
-  follow-up.
+  `launch()` rejects pins from another generation, contexts without a business
+  origin, and archived MET-195 transition/reader bindings with the non-retryable
+  `DSH_NATIVE_CONTEXT_INCOMPATIBLE`. In the Worker pipeline, existing pins first
+  pass through DB re-admission: a missing origin, an origin-reader approval, or
+  a generation mismatch between the pin and origin is rejected earlier with the
+  non-retryable `NATIVE_SESSION_ADMISSION_DENIED`. Origins of another generation
+  also fail earlier when their literal-generation schema is parsed; the Worker
+  maps those parse errors to `NATIVE_SESSION_ADMISSION_DENIED`. Mapping these
+  incompatibility-related DB admission and schema parsing failures to
+  `DSH_NATIVE_CONTEXT_INCOMPATIBLE` remains a MET-221 follow-up.
 - Journals follow the journal contract (`NATIVE_JOURNAL_CONTRACT` in
   `@allrice/contracts`). Each Worker records its `current` as the database's
   monotonic high-water (`allrice_runtime_metadata` key `dsh-journal-contract`)
