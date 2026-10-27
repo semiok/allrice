@@ -50,3 +50,5 @@ DSH 进程 fingerprint 加入 bundle digest，防止正文不变但资源升级�
 - 强化正文 checksum 后，旧 P08 合成 fixture 曾错误地 hash JSON 字符串引号；修正的是 fixture 的实际 bytes digest，不放宽生产校验。
 
 可复跑：显式设置 `ALLRICE_RUN_DB_INTEGRATION=1` 与专用 `ALLRICE_TEST_DATABASE_URL` 后运行上述集成测试；不要使用仓库 `.env` 默认库。CI 使用 `127.0.0.1:54329` 的自有 PostgreSQL，不连接 Dev/Prod、真实租户或模型服务。Golden Skill 的业务算例、下载重开属于 P19，不以资源包单测替代。
+
+2026-09-08 独立分片验收：frozen install、lint、format、typecheck、build 全通过；完整 `pnpm test --maxWorkers=4` 为 159 个文件、1213 项通过（17 个集成文件、308 项默认 gated 跳过）。另外显式启用专用 PostgreSQL 后，发布/冻结资源/同步/文件边界四套件 22 项通过；Bridge、Gemini 与 MCP 五套兼容测试 112 项通过、4 项单独 gated 跳过。共享源码中的 FIFO 修复亦单独跑过 5 项真实文件测试。首轮在与 tsc/eslint 高并发争用时两个既有 DSH 5 秒等待超时，限制 worker 数后两次完整回归均通过；没有扩大超时或放宽断言。

@@ -62,9 +62,12 @@ authorization or upstream compatibility change.
 
 Migration 0117 creates the platform singleton with the existing default Codex
 connection. MET-226 removes the retired provider API and compatibility branches;
-migration 0224 deletes its catalog, credentials audit, snapshots and dependent
-test/accounting records. Existing applied migrations remain unchanged. This is a
-critical migration PR and requires rehearsal A before deployment.
+migration 0224 deletes explicitly identified provider/catalog rows and their
+exclusive authentication/accounting records. Audits, employees, sessions and
+non-Gemini versions survive. References from surviving records abort the migration
+with table names and primary keys; no references are rewritten or cascaded.
+Existing applied migration files remain unchanged. This is a critical migration
+PR and requires rehearsal A on a current Dev copy before deployment.
 
 The default image toggle stays off until the image execution/UX PRs are installed.
 Do not replace an active Worker during an active request: drain existing Runs first.

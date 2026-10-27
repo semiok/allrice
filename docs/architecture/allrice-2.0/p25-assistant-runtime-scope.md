@@ -18,6 +18,9 @@ MET-108 A～D / B6 / S6。最后审阅日期：2026-09-15。
 
 ## 状态与证据边界
 
+P25 把固定 DSH 原生 continuable 服务接入平台持久化身份、当前授权、统一预算、取消与结果账本；
+没有另建 Agent 模型循环。开发、自审和独立对抗审查由 Codex 完成，不设置 Gemini 开发门禁。
+
 本页登记已提交并分项实测的实现，不把分支分项测试汇总成最终联合验收：
 
 - 提案安全链提交：`9480e2212a75c1526015fdf85cb24816bd319f05`。
@@ -115,6 +118,25 @@ parent 请求 4000 只获 3754；满额拒绝、并发不超额、同 call 两�
 production native 用 `maxConcurrent=2` 挂起两个子模型请求，验证 HTTP 中的
 `max_tokens` / `max_completion_tokens` 与每条持久 grant 完全一致，不只是减少账本预留。
 
+协议门禁只看服务端实际冻结 / 重放的 provider snapshot，浏览器偏好不能自报支持。
+该阶段只登记 `dsh + openai-compatible`、`dsh + gemini` 两种有源码及 loopback HTTP 字段证据的协议：
+
+- Compatible 的上述 production native 测试覆盖动态 grant 到实际请求参数。
+- Gemini 独立固定 SDK / `@google/genai` HTTP 测试两项通过：alias 与 canonical flash 路线分别发送
+  `generationConfig.maxOutputTokens=3754 / 1024` 并读取合成 usage。
+  这只是协议字段证据，不证明动态助手全链、真实 Google 执行上限、真实模型任务或 tenant-enable。
+- 当前固定 Codex responses 实现没有把 `maxTokens` 写入响应请求的输出上限字段；
+  因此该历史版本关闭了 Codex 助手；2026-09-15 改为文首的严格订阅适用门禁，不是提高根预算或客户端声明绕过。
+  这不等于证明 Codex 后端永远不支持该字段，也不授权修改上游安装包。
+
+`allowAssistants:true` 的不支持协议在 Worker 标记未知账务之前拒绝；adapter 另在 credentials / host
+获取之前复检，使用非重试 `ASSISTANT_PROVIDER_OUTPUT_BOUND_UNSUPPORTED`。
+这是已知未发生模型调用的失败，记零用量 / 零费用且完整，不制造未知费用锁住组织；
+既有失败 Run 计数仍增加，也不能清除组织此前真实的 unknown。
+已进入助手执行后的普通异常继续保持费用未知和用量不完整，不按错误字符串伪造零账。
+未配置助手或 `allowAssistants:false` 的普通 Codex 路径不受此门禁影响。
+该历史 P27 候选将 Codex 助手请求明确 blocked，未静默替换 Gemini；后续真实订阅成功证据见文首，不改变旧候选结论。
+
 ## 精确命令提案与锁顺序
 
 生产 Worker 内部向 `createLocalCommandOperation` 传入：
@@ -208,6 +230,7 @@ P27 直接 adapter 的隔离 smoke 不等于完整 Worker 路由/费用落账/�
 | `apps/worker/test/p25/assistant-adversarial.integration.test.ts`                                          | 独立攻击式 PG/native 复现：伪工件、重复结果、晚取消、预算/租约、实际 drain     | 完整 MET-108 A～D 验收           |
 | `apps/worker/test/p25/assistant-native.integration.test.ts`                                               | 固定原生服务、独立并发子会话、单 child/整树取消、SIGKILL/JSONL                 | UI 刷新、真实付费 Provider、灾备 |
 | `apps/worker/test/p25/assistant-production.integration.test.ts`                                           | 生产 adapter/受限宿主/controller + 实际原生服务 + 合成 SSE                     | 真实模型/真实设备联合场景        |
+| `apps/worker/test/p25/assistant-gemini-output-bound.integration.test.ts`                                  | 固定 Gemini SDK 实际 loopback HTTP 输出上限与合成 usage                        | 动态助手全链或真实 Google 验收   |
 | `apps/worker/test/p25/assistant-provider-preflight.integration.test.ts`                                   | 实际 Worker 已知零 preflight、真实 PG 双表 / quota、普通兼容与执行后 unknown   | 真实 provider 调用或租户可用性   |
 | `apps/worker/test/p25/assistant-read-native.integration.test.ts`                                          | 五类查询的真实 child dispatch/采用、精确审计、拒绝未支持委派、partial 全树用量 | 真实云端资源/外网查询或租户启用  |
 | `apps/worker/test/p25/assistant-proposal-native.integration.test.ts`                                      | 生产 native child → P04 批准/拒绝 → 合成 receipt 与 Worker partial guard       | 实际 VM/设备命令及签名客户端     |
@@ -247,6 +270,8 @@ P14 签名/公证、两台实际客户端与最终安装包的外部依赖仍按
 108-E 开发协作、108-F Boost、108-G 完整 Teamwork 仍属后续范围；不能关闭整个 MET-108 Epic 来替代承接。
 
 ## 2026-09-14 收尾增补
+
+503/缺少用量的原生 Gemini 助手请求曾被上层重试三次，现保留不可重放 admission，只有两个 Token 维度已知且平台结算 ACK 成功才释放。普通未绑定助手的模型重试策略保持原样；定向真 SDK/PG、合成 HTTP 回归包含修复前反证，不是实际 Google 执行收据。
 
 0096 追加价格快照与逐调用回执，不回填旧 unknown。生产 Worker 仅在助手路径使用显式 `ALLRICE_ASSISTANT_PRICING_JSON` 和 `ALLRICE_ASSISTANT_PRICING_CURRENCY`，精确匹配已冻结路由、connection/catalog、实际模型、API endpoint、服务等级、币种、有效期和纯文本价带；缺价先拒绝，不用普通聊天的缺价=0行为。真实总用量已确认而缓存拆分未知时，费用是最高输入单价计算的保守上界，不是供应商账单。所有父子调用按根汇总，任何未知调用/回执仍保持 unknown。
 

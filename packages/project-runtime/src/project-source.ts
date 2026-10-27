@@ -7,7 +7,7 @@ import {
 import { RuntimeCommandError as LocalCommandError } from './errors.js';
 import type { ProjectRuntimeArguments } from './types.js';
 export const privateProjectPart =
-  /^(?:\.env(?:\..*)?|\.git|\.ssh|\.aws|\.gnupg|\.codex|\.config|\.kube|\.docker|\.azure|\.npmrc|\.netrc|id_rsa|id_ed25519)$|\.(?:pem|key|p12|pfx)$/i;
+  /^(?:\.env(?:\..*)?|\.git|\.ssh|\.aws|\.gnupg|\.codex|\.gemini|\.config|\.kube|\.docker|\.azure|\.npmrc|\.netrc|id_rsa|id_ed25519)$|\.(?:pem|key|p12|pfx)$/i;
 
 const hash = (bytes: string | Buffer) =>
   'sha256:' + createHash('sha256').update(bytes).digest('hex');

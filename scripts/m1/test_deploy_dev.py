@@ -19,6 +19,7 @@ DEPLOY_DEV = os.path.join(HERE, 'deploy-dev')
 _pinned = os.path.expanduser('~/.local/opt/node-22.23.2/bin/node')
 NODE = _pinned if os.path.exists(_pinned) else shutil.which('node')
 ARCHIVED = [
+    '0073_gemini_model_provider.sql',
     '0213_native_chat_executor_transitions.sql',
     '0214_native_control_cloud_absence.sql',
     '0215_terminal_native_test_retirements.sql',
@@ -110,7 +111,7 @@ class DeployDevMigrations(unittest.TestCase):
                 self.assertIn(near.strip(), printed)
 
     def test_unarchived_deleted_migration_is_refused(self):
-        known, printed = self.check(self.release(archived=[]), FILES + ARCHIVED)
+        known, printed = self.check(self.release(archived=ARCHIVED[:1]), FILES + ARCHIVED)
         self.assertFalse(known)
         self.assertIn('0213_native_chat_executor_transitions.sql', printed)
 

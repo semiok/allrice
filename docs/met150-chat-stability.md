@@ -17,6 +17,7 @@ The user explicitly prioritizes product usability before commercialization. This
 - Shared model/tool-call counts, concurrency, deadline/cancellation, lease fencing, external effects/approval and actual provider quota checks remain active. Per-response generation settings and actual model context capacity are not monthly billing quotas.
 - Tenant details show monthly recorded usage/cache/unknown receipts, not an internal remaining percentage. Assistant and administrative views identify Tokens as observational. Historical 5M configuration and past manual reservations are retained, not relabeled as actual usage or official Codex quota.
 - The proposed **24,946 Token manual reservation** for Run `756dfee1` is **withdrawn**, not approved or applied. No new administrator budget exception is required. The failed Run and incomplete receipt stay unchanged; no side-effect replay.
+- Scope: Dev only, MET-150 policy follow-up supporting MET-144. No Prod, main merge, Gemini billing, MET-145/146 or new high-privilege flag enablement.
 
 Implementation covers Worker admission/completion, ordinary and shared assistant accounting, tool operation admission after observed Token overage, and tenant/admin presentation. Verification and deployment evidence are recorded in the issue; implementation alone does not close MET-144.
 

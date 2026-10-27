@@ -40,11 +40,20 @@
 | [P27 基础 smoke 手册](p27-basic-assistant-smoke.md) | 显式 provider/SHA 授权、私有凭据解析、tariff/Token 对账和清理程序 | 全 P27/47 场景或供应商账单                     |
 | [P14 可信更新](p14-trusted-updates.md)              | 实现、隔离/ad-hoc 包证据与实际缺口                                | Developer ID/公证成功及最终双架构升级验收      |
 
+已记录的真实 Gemini 候选 `7161caad6e74ca6410ddc2539fa36ce85a07e782` **失败**：父 unknown、一个子 completed、一个子 partial，保留未知预留；完整时间、计量及脱敏回执摘要见本轮收尾实测。它证明实际执行发生，不是成功收据。不得将隔离有价 PG、synthetic loopback HTTP 或随后诊断改动升级为成功。后续结果由执行者独立补录，不覆盖历史失败。
+
 这些文档是定位入口，不是 checker 接受的 receipt。保留材料必须使用专用脱敏 staging 根、相对路径、实际 SHA-256/字节数、候选身份、原始观察与批准记录，按程序独立核验。
 
 ### 本次只读核对过的原始报告位置
 
 以下四份文件在本次交接审查时实际存在，已重新计算 SHA-256，与收尾记录一致；没有读取或复制凭据。前三个相对路径均相对于 `/Users/a123/allrice-b6-closeout-20260914/`，第四个为绝对临时路径。它们未转成正式 staging 收据，不因记录了路径/hash 就满足最终候选、产物或 7 天时效要求；临时文件消失后不能据索引宣称仍可读。
+
+| 本地报告                                                             | 本次核对 SHA-256                                                   | 使用边界                                                              |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------ | --------------------------------------------------------------------- |
+| `.local/b6-closeout-tests-final.json`                                | `eacb9a7e0d66463600f74d114ea9d34881bcefbd4039159c3301f8421875beb3` | 产品源码停笔后的普通回归；2139 passed、801 条件跳过，不是后续改动全测 |
+| `.local/b6-closeout-pg-final.json`                                   | `bf81eaea37b22ffd4825b921e145bfe36224b4d7b92000fbd86cf47a5e5518dd` | 281 个隔离 PG/native 合成端点测试，不是真实 Google                    |
+| `.local/p27-assistants-a6fc4add-8288-48f1-a0c8-ee1cd08f7a23/03.json` | `d5a1cc8907d0354259e421bd56b11c22bab386df354c6851d081d4e553e9ed68` | `7161caa` 真实 Gemini 失败及确认清理，不能标 passed                   |
+| `/tmp/allrice-p26-ui-Chng8r/evidence/checks.json`                    | `bab54a19b8c5657af2808958b64b5b3d2442fd6e049d917c7c2822da20e03447` | `7161caa` built Next/Chrome/PG 页面复验；无 Worker/模型调用           |
 
 ## 4. 尚需提交的实际输入
 

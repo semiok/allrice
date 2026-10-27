@@ -1,110 +1,145 @@
--- MET-226, user decision 2026-10-27: no Gemini bills need preservation.
--- Delete retired provider records and their dependent test data; do not rewrite
--- any surviving Codex configuration or frozen identity. Rehearsal A is required.
--- Temporary helpers/row identities exist only inside this migration transaction.
+-- MET-226, user decision 2026-10-27: retire Gemini data, not shared history.
+-- Only the explicit model/authentication paths below are inspected. Inbound
+-- references from surviving rows abort the transaction; they never extend the
+-- deletion set. Rehearsal A must use a current Dev copy, with writers stopped.
+set local lock_timeout = '15s';
+
 create temporary table met226_rows (
   relation oid not null, tuple tid not null, primary key (relation, tuple)
 ) on commit drop;
+create temporary table met226_providers on commit drop as
+select id from allrice_model_providers
+where provider_key in ('gemini','google') or auth_mode='gemini_oauth';
+create temporary table met226_connections on commit drop as
+select id, credential_reference from allrice_model_connections
+where provider_id in (select id from met226_providers)
+  or credential_reference='deployment:gemini-default';
+create temporary table met226_catalog on commit drop as
+select id from allrice_model_catalog_entries
+where provider_id in (select id from met226_providers);
 
-create function pg_temp.met226_retired(value jsonb) returns boolean
-language sql immutable as $$
-  select coalesce(value @? 'strict $.** ? (@.type() == "object" && (
-    @.provider == "gemini" || @.provider == "google" || @.route == "gemini" ||
-    @.authMode == "gemini_oauth" || @.model == "3.8flash" ||
-    @.model like_regex "^gemini([:/-]|$)" flag "i" ||
-    @.credentialReference like_regex "^deployment:gemini" ||
-    @.fallbackModels[*] like_regex "^gemini[:/]"
-  ))', false)
+-- A single, already selected model configuration object, never arbitrary JSON.
+-- Model names are deliberately irrelevant: gateways may offer gemini-* models.
+create function pg_temp.met226_target(value jsonb) returns boolean
+language sql stable as $$
+  select coalesce(
+    value->>'provider' in ('gemini','google') or
+    value->>'route' in ('gemini','google') or
+    value->>'authMode'='gemini_oauth' or
+    value->>'providerId' in (select id::text from met226_providers) or
+    value->>'connectionId' in (select id::text from met226_connections) or
+    value->>'modelCatalogEntryId' in (select id::text from met226_catalog) or
+    value->>'catalogId' in (select id::text from met226_catalog) or
+    value->>'credentialReference'='deployment:gemini-default' or
+    value->>'credentialReference' in (
+      select credential_reference from met226_connections
+      where credential_reference is not null
+    ), false)
+$$;
+create function pg_temp.met226_model(value jsonb) returns boolean
+language sql stable as $$
+  select pg_temp.met226_target(value)
+    or pg_temp.met226_target(value #> '{platformSettings,configuration}')
+    or exists (
+      select 1 from (
+        select jsonb_path_query(value,'strict $.fallbackTargets[*]',silent => true) as target
+        union all
+        select jsonb_path_query(value,'strict $.resolvedFallbacks[*]',silent => true)
+      ) f where pg_temp.met226_target(f.target)
+    )
+    -- These are qualified routing strings, not unqualified model names.
+    or coalesce(value @? 'strict $.fallbackModels[*] ? (@ like_regex "^(gemini|google)[:/]")',false)
 $$;
 
--- Seed only routing/configuration fields, never chat text, arbitrary tool output,
--- document bodies, names or descriptions that happen to mention the provider.
-do $$ declare item record; predicate text; begin
-  for item in
-    select c.oid, a.attname, a.atttypid
-    from pg_class c join pg_attribute a on a.attrelid=c.oid
-    where c.relnamespace=current_schema()::regnamespace and c.relkind='r'
-      and c.relname like 'allrice_%' and a.attnum>0 and not a.attisdropped
-      and (
-        a.attname in ('provider_key','provider','provider_route','auth_mode','model','credential_reference')
-        or (c.relname='allrice_audit_events' and a.attname='action')
-        or (c.relname, a.attname) in (
-          ('allrice_employee_versions','manifest'),
-          ('allrice_employee_versions','provider_snapshot'),
-          ('allrice_employee_runs','provider_snapshot'),
-          ('allrice_employee_runs','execution_snapshot'),
-          ('allrice_skill_runs','provider_snapshot'),
-          ('allrice_session_model_snapshots','snapshot'),
-          ('allrice_platform_employee_revisions','definition'),
-          ('allrice_platform_employee_revisions','runtime_profile'),
-          ('allrice_platform_employee_test_runs','frozen_definition'),
-          ('allrice_platform_employee_test_runs','frozen_runtime_profile'),
-          ('allrice_employee_method_tests','model_snapshot'),
-          ('allrice_assistant_price_snapshots','snapshot'),
-          ('allrice_route_subscription_snapshots','snapshot'),
-          ('allrice_runs','execution_spec'),
-          ('allrice_jobs','payload')
-        )
-      )
-  loop
-    predicate := case
-      when item.atttypid='jsonb'::regtype then format('pg_temp.met226_retired(%I)',item.attname)
-      when item.attname in ('provider_key','provider','provider_route') then format('%I in (''gemini'',''google'')',item.attname)
-      when item.attname='auth_mode' then format('%I=''gemini_oauth''',item.attname)
-      when item.attname='model' then format('(%I ~* ''^gemini([:/-]|$)'' or %I=''3.8flash'')',item.attname,item.attname)
-      when item.attname='credential_reference' then format('%I like ''deployment:gemini%%''',item.attname)
-      when item.attname='action' then format('%I like ''provider.gemini_credential.%%''',item.attname)
-    end;
-    execute format('insert into met226_rows select %s,ctid from %s where %s on conflict do nothing',item.oid,item.oid::regclass,predicate);
+-- Each rule names its table and field. "removable" is limited to provider-owned
+-- rows or a row whose own primary model is retired. A Codex definition with a
+-- retired fallback, shared settings, sessions and Run identities must survive.
+create temporary table met226_rules (relation regclass, predicate text, removable boolean) on commit drop;
+insert into met226_rules values
+  ('allrice_model_providers', 'id in (select id from met226_providers)', true),
+  ('allrice_model_connections', 'id in (select id from met226_connections)', true),
+  ('allrice_model_catalog_entries', 'id in (select id from met226_catalog)', true),
+  ('allrice_provider_release_controls', 'connection_id in (select id from met226_connections)', true),
+  ('allrice_provider_circuit_breakers', 'connection_id in (select id from met226_connections)', true),
+  ('allrice_provider_authorization_flows', 'provider_id in (select id from met226_providers) or connection_id in (select id from met226_connections)', true),
+  ('allrice_provider_grants', 'provider_id in (select id from met226_providers) or connection_id in (select id from met226_connections) or auth_mode=''gemini_oauth''', true),
+  ('allrice_credential_bindings', 'provider in (''gemini'',''google'')', true),
+  ('allrice_model_resource_limits', 'scope_type=''provider'' and scope_id in (select id from met226_connections)', true),
+  ('allrice_employee_versions', 'pg_temp.met226_target(provider_snapshot) or pg_temp.met226_target(manifest->''provider'')', true),
+  ('allrice_platform_employee_revisions', 'pg_temp.met226_target(definition->''modelPolicy'') or pg_temp.met226_target(runtime_profile)', true),
+  ('allrice_platform_employee_test_runs', 'pg_temp.met226_target(frozen_definition->''modelPolicy'') or pg_temp.met226_target(frozen_runtime_profile)', true),
+  ('allrice_assistant_price_snapshots', 'pg_temp.met226_target(snapshot #> ''{price,target}'')', true),
+  ('allrice_route_decisions', 'provider in (''gemini'',''google'') or model_connection_id in (select id from met226_connections) or model_catalog_entry_id in (select id from met226_catalog)', true),
+  ('allrice_employee_versions', 'pg_temp.met226_model(manifest->''runtimePolicy'')', false),
+  ('allrice_platform_employee_revisions', 'pg_temp.met226_model(definition->''modelPolicy'') or pg_temp.met226_model(runtime_profile)', false),
+  ('allrice_platform_employee_test_runs', 'pg_temp.met226_model(frozen_definition->''modelPolicy'') or pg_temp.met226_model(frozen_runtime_profile)', false),
+  ('allrice_platform_model_settings', 'pg_temp.met226_target(configuration)', false),
+  ('allrice_employee_model_policies', 'connection_id in (select id from met226_connections) or model_catalog_entry_id in (select id from met226_catalog) or exists (select 1 from jsonb_array_elements(fallback_targets) f where pg_temp.met226_target(f))', false),
+  ('allrice_session_model_snapshots', 'connection_id in (select id from met226_connections) or model_catalog_entry_id in (select id from met226_catalog) or pg_temp.met226_model(snapshot)', false),
+  ('allrice_employee_runs', 'pg_temp.met226_target(provider_snapshot) or pg_temp.met226_target(execution_snapshot->''providerSnapshot'') or pg_temp.met226_target(execution_snapshot #> ''{definition,provider}'') or pg_temp.met226_model(execution_snapshot #> ''{definition,runtimePolicy}'') or pg_temp.met226_target(execution_snapshot #> ''{employee,definition,provider}'') or pg_temp.met226_model(execution_snapshot #> ''{employee,definition,runtimePolicy}'') or pg_temp.met226_model(execution_snapshot->''runtimePolicy'') or pg_temp.met226_model(execution_snapshot->''modelSnapshot'')', false),
+  ('allrice_skill_runs', 'pg_temp.met226_target(provider_snapshot)', false),
+  ('allrice_employee_method_tests', 'pg_temp.met226_model(model_snapshot)', false),
+  ('allrice_route_subscription_snapshots', 'pg_temp.met226_model(snapshot)', false),
+  ('allrice_runs', 'pg_temp.met226_target(execution_spec)', false),
+  ('allrice_runs', 'execution_spec->>''employeeVersionId'' in (select v.id::text from allrice_employee_versions v join met226_rows d on d.relation=v.tableoid and d.tuple=v.ctid) or execution_spec->>''platformEmployeeTestRunId'' in (select t.id::text from allrice_platform_employee_test_runs t join met226_rows d on d.relation=t.tableoid and d.tuple=t.ctid)', false),
+  -- JobPayloadSchema has only schemaVersion/type/input; input is business data.
+  -- There is no routing field in jobs.payload, so it is not inspected at all.
+  ('allrice_dsh_runtime_instances', 'provider_route in (''gemini'',''google'')', false),
+  ('allrice_route_decisions', 'exists (select 1 from jsonb_array_elements(candidates) c where pg_temp.met226_target(c))', false);
+
+do $$ declare item record; begin
+  for item in select * from met226_rules where removable loop
+    execute format('insert into met226_rows select tableoid,ctid from %s where %s on conflict do nothing',item.relation,item.predicate);
   end loop;
 end $$;
 
--- All relational dependents must go too (including composite/self references).
--- Also retire owning Runs whose frozen provider or price is being removed,
--- and policies whose explicit JSON fallback points at the deleted catalog.
-do $$ declare fk record; join_keys text; added bigint; total bigint; begin
-  loop
-    total := 0;
-    insert into met226_rows
-      select r.tableoid,r.ctid from allrice_runs r where r.id in (
-        select e.run_id from allrice_employee_runs e join met226_rows d on d.relation=e.tableoid and d.tuple=e.ctid
-        union select s.run_id from allrice_skill_runs s join met226_rows d on d.relation=s.tableoid and d.tuple=s.ctid
-        union select a.root_run_id from allrice_assistant_price_snapshots a join met226_rows d on d.relation=a.tableoid and d.tuple=a.ctid
-        union select l.run_id from allrice_runtime_run_links l join met226_rows x on x.relation=l.tableoid and x.tuple=l.ctid
-        union select j.run_id from allrice_jobs j join met226_rows x on x.relation=j.tableoid and x.tuple=j.ctid
-        union select d.run_id from allrice_route_decisions d join met226_rows x on x.relation=d.tableoid and x.tuple=d.ctid
-      ) on conflict do nothing;
-    get diagnostics added=row_count; total := total+added;
-    insert into met226_rows
-      select p.tableoid,p.ctid from allrice_employee_model_policies p
-      where exists (
-        select 1 from jsonb_array_elements(p.fallback_targets) f
-        where f->>'connectionId' in (
-          select c.id::text from allrice_model_connections c join met226_rows d on d.relation=c.tableoid and d.tuple=c.ctid
-        ) or f->>'modelCatalogEntryId' in (
-          select m.id::text from allrice_model_catalog_entries m join met226_rows d on d.relation=m.tableoid and d.tuple=m.ctid
-        )
-      ) on conflict do nothing;
-    get diagnostics added=row_count; total := total+added;
-    for fk in select * from pg_constraint where contype='f'
-      and connamespace=current_schema()::regnamespace
-      and confrelid in (select relation from met226_rows)
-    loop
-      select string_agg(format('child.%I=parent.%I',ca.attname,pa.attname),' and ' order by k.n)
-      into join_keys from unnest(fk.conkey,fk.confkey) with ordinality k(child_key,parent_key,n)
-      join pg_attribute ca on ca.attrelid=fk.conrelid and ca.attnum=k.child_key
-      join pg_attribute pa on pa.attrelid=fk.confrelid and pa.attnum=k.parent_key;
-      execute format('insert into met226_rows select %s,child.ctid from %s child join %s parent on %s join met226_rows d on d.relation=%s and d.tuple=parent.ctid on conflict do nothing',
-        fk.conrelid,fk.conrelid::regclass,fk.confrelid::regclass,join_keys,fk.confrelid);
-      get diagnostics added=row_count; total := total+added;
-    end loop;
-    exit when total=0;
+-- Only these two accounting tables are exclusively owned by a selected record.
+-- Do not promote a price/route to its owning Run, employee, session or audit.
+insert into met226_rows
+select r.tableoid,r.ctid from allrice_assistant_cost_receipts r
+join allrice_assistant_price_snapshots p on p.root_run_id=r.root_run_id and p.snapshot_digest=r.snapshot_digest
+join met226_rows d on d.relation=p.tableoid and d.tuple=p.ctid;
+insert into met226_rows
+select l.tableoid,l.ctid from allrice_model_usage_ledger l
+join allrice_route_decisions r on r.id=l.route_decision_id
+join met226_rows d on d.relation=r.tableoid and d.tuple=r.ctid;
+
+create temporary table met226_blockers (relation regclass, identity jsonb, reference text) on commit drop;
+create function pg_temp.met226_identity(relation oid, value jsonb) returns jsonb
+language sql stable as $$
+  select jsonb_object_agg(a.attname,value->a.attname)
+  from pg_constraint c join pg_attribute a on a.attrelid=c.conrelid and a.attnum=any(c.conkey)
+  where c.conrelid=relation and c.contype='p'
+$$;
+
+do $$ declare item record; fk record; join_keys text; failures jsonb; begin
+  for item in select * from met226_rules where not removable loop
+    execute format('insert into met226_blockers select %s,pg_temp.met226_identity(r.tableoid,to_jsonb(r)),%L from %s r where (%s) and not exists (select 1 from met226_rows d where d.relation=r.tableoid and d.tuple=r.ctid)',
+      item.relation::oid,'model/auth configuration',item.relation,item.predicate);
   end loop;
+  -- All inbound FKs are checked, including composite keys, before disabling any
+  -- guards. A reference is not ownership. Report primary keys, never row bodies.
+  for fk in select * from pg_constraint where contype='f'
+    and connamespace=current_schema()::regnamespace
+    and confrelid in (select relation from met226_rows)
+  loop
+    select string_agg(format('child.%I=parent.%I',ca.attname,pa.attname),' and ' order by k.n)
+    into join_keys from unnest(fk.conkey,fk.confkey) with ordinality k(child_key,parent_key,n)
+    join pg_attribute ca on ca.attrelid=fk.conrelid and ca.attnum=k.child_key
+    join pg_attribute pa on pa.attrelid=fk.confrelid and pa.attnum=k.parent_key;
+    execute format('insert into met226_blockers select %s,pg_temp.met226_identity(child.tableoid,to_jsonb(child)),%L from %s child join %s parent on %s join met226_rows d on d.relation=parent.tableoid and d.tuple=parent.ctid where not exists (select 1 from met226_rows x where x.relation=child.tableoid and x.tuple=child.ctid)',
+      fk.conrelid,fk.conname,fk.conrelid::regclass,fk.confrelid::regclass,join_keys);
+  end loop;
+  select jsonb_agg(jsonb_build_object('table',relation::text,'ids',identity,'reference',reference) order by relation::text,identity::text,reference)
+  into failures from met226_blockers;
+  if failures is not null then
+    raise exception using errcode='23503', message='MET226_SHARED_REFERENCE: surviving records reference retired Gemini data',
+      detail=failures::text, hint='No records were changed. Resolve shared references in a separately reviewed change; this migration never rewrites or cascades them.';
+  end if;
 end $$;
 
--- Immutable evidence guards and immediate FKs otherwise prevent deleting the
--- retired graph (including cycles). Save and restore their exact configuration;
--- constraints remain enforced, with deferred checks completed before restoration.
+-- This deletion set uses NO ACTION FKs. No generic cascade template: surviving
+-- children have already been rejected above. Save and restore exact guards.
 create temporary table met226_foreign_keys on commit drop as
 select conrelid,conname,condeferrable,condeferred from pg_constraint
 where contype='f' and connamespace=current_schema()::regnamespace
@@ -123,12 +158,16 @@ do $$ declare item record; begin
   for item in select distinct relation from met226_rows loop
     execute format('delete from %s r using met226_rows d where d.relation=%s and d.tuple=r.ctid',item.relation::regclass,item.relation);
   end loop;
-end $$;
-set constraints all immediate;
-do $$ declare item record; begin
+  -- Do not change unrelated deferred FKs/commit-fence triggers in this transaction.
+  for item in select * from met226_foreign_keys loop
+    execute format('set constraints %I.%I immediate',current_schema(),item.conname);
+  end loop;
   for item in select * from met226_foreign_keys loop
     execute format('alter table %s alter constraint %I %s',item.conrelid::regclass,item.conname,
       case when not item.condeferrable then 'not deferrable' when item.condeferred then 'deferrable initially deferred' else 'deferrable initially immediate' end);
+    if item.condeferrable and item.condeferred then
+      execute format('set constraints %I.%I deferred',current_schema(),item.conname);
+    end if;
   end loop;
   for item in select * from met226_triggers loop
     execute format('alter table %s enable %s trigger %I',item.tgrelid::regclass,
@@ -136,8 +175,8 @@ do $$ declare item record; begin
   end loop;
 end $$;
 
--- The superseded draft is no longer an accepted migration-name exception.
--- Keep the applied 0075 and 0117 history intact.
+-- Keep the archived name accepted by the pre-migration deployment gate.
+-- Remove only its obsolete registration; 0075/0117 history remains intact.
 do $$ begin
   if to_regclass(format('%I.allrice_schema_migrations',current_schema())) is not null then
     delete from allrice_schema_migrations where name='0073_gemini_model_provider.sql';
@@ -146,4 +185,6 @@ end $$;
 alter table allrice_model_providers drop constraint allrice_model_providers_auth_mode_check;
 alter table allrice_model_providers add constraint allrice_model_providers_auth_mode_check
   check (auth_mode in ('chatgpt_subscription','oauth','api_key','none'));
-drop function pg_temp.met226_retired(jsonb);
+drop function pg_temp.met226_identity(oid,jsonb);
+drop function pg_temp.met226_model(jsonb);
+drop function pg_temp.met226_target(jsonb);

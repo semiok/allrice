@@ -1,5 +1,7 @@
 # P27：Codex 订阅优先验收
 
+2026-09-15，按用户最新决定：**当前只开发、验证 Codex 订阅模式；Gemini 和其他 API 模式不作为本批验收前置，以后另行扩展。** 保留历史失败收据、既有 API 代码与配置，不将其删除或改写为成功。
+
 12:22 后续：139/140 的失败、取消、隔离与增量迁移本地验收已补齐，当前进入待交付审查；
 142 完整 RC/发布矩阵仍未完成。见 [本次收尾证据与剩余门禁](b6-subscription-closeout-20260915.md)。
 下文 11:28 真实模型结果的源码、Token 和原始报告保持不变，没有用新脚本倒填旧证明。
@@ -34,6 +36,7 @@
 - 只有第一条任务的双账本、工件、消息与平台内部配额检查全部通过后，才创建下一条普通 Run `d0256811-3e84-4704-ad62-656d86836242`；普通任务正确返回 579，输入 1159、输出 26 Token，无助手树或工具调用，两条 Worker 均 succeeded。普通任务使用同一隔离夹具的另一 Session，不是同会话多轮上下文连续性验收；本报告未再次查询上游订阅余额，真实余额来自前述独立只读收据。
 - 合计真实用量 **8125 Token**，持久配额聚合 `subscriptionRuns=2`、`unknownCostRuns=0`。每条受信订阅 route/ledger 的货币项是 NULL + 不可变订阅证明，对应 **N/A**；聚合 API 计费小计 0 不能解释为订阅免费。缓存拆分仍标记未知，不用 0 伪造已知缓存明细；总 Token 用量已完整投影。
 - 随后的真实 Chrome + 同候选 built Next 读取上述同一 Session、Run、消息及工件字节；仅临时登录身份为测试夹具，没有合成助手结果。桌面/390px 可见两个完成助手，父级采纳、关联工件接口 200 且内容摘要一致；下一普通会话显示 579，不残留上一助手树。完成后停止按钮禁用，业务完成记录未被页面改写，Page/Console/HTTP 错误均为 0。主开发实际查看三张截图。
+- 本次拥有的 Native 2/2 已退出；执行、心跳、Chrome、Next、随机 schema、存储、数据库连接与私有临时目录均确认清理。没有调用 Gemini/API、改真实租户开关、push、新建 PR、合 main 或部署 Dev/Prod。
 
 主收据 `.local/p27-codex-assistants-3c12900a-ee32-411a-a0c4-2131c53ede20/result.json`，SHA-256 `81f99e32a3c55065aee4e29c2f30af21261df43616754c1755b710d8f86d303c`。同目录 `worker-ui/worker-ui-checks.json`，SHA-256 `8fffb17c3b611e8b6bdb3761c4370a2bd8fee5748121476af4a41ef49501aaaa`；截图为 `worker-ui-assistant-desktop.png`、`worker-ui-assistant-narrow.png`、`worker-ui-ordinary-desktop.png`。
 
@@ -84,6 +87,7 @@ MET-139 后续实现按以下口径推进，再进入 MET-140 → MET-142：
 - 普通 Worker 只准备并执行一个短算术任务；冻结 `allowAssistants=false`、空工具列表、禁 fallback、job `maxAttempts=1`。应用超时不等于服务端停止或订阅额度的硬上限。
 - 凭据仅由现有 DSH 订阅服务使用；验收 driver 只验证授权 Dev home 的路径和文件元数据，不复制、打印或自行解析凭据文件。
 - 单独的 cap probe 不注册 Agent，不执行工具；在固定订阅端点测试 `max_output_tokens`，不自动去掉参数重试。不因一次响应或本地 loopback 就打开生产助手门禁。
+- 不增加 Gemini 审核门禁。Bridge 正式签名仍是 MET-143 独立外部待办。
 
 ## 2026-09-14 已确认的实现差异（历史）
 
@@ -127,3 +131,4 @@ OpenAI 官方区分 ChatGPT 订阅认证与按量 API key 认证。因此订阅�
 - 候选新增验收/诊断用例 **81 passed / 0 failed / 0 skipped**（5 文件，含真实隔离 PG、真实固定 SDK loopback、只读 native host）。报告 `.local/b6-codex-new-ba36d9c.json`，SHA-256 `1b0bf4426941f508da1806c7cfd878b1bb35471d5cfdb75a84ce490c10fdfe4d`。这些用例没有调用真实模型。
 - 原关键回归独立复跑 113/113，账务未知/重放/准入保护另 40/40；与新增用例有文件重叠，不相加宣称唯一用例总数。
 - P27 TypeScript 零诊断，新增文件 ESLint/Prettier 和 `dsh:verify` 通过；未重跑最终全仓/双机/真实 UI 矩阵。
+- MET-139 仍缺订阅适用的预算和计量方案及真实双助手成功；MET-140/142 对应联验仍未完成。Gemini 排查暂停，等待用户反馈，不能把它作为继续 Codex 工作的等待理由。

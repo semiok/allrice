@@ -25,6 +25,8 @@ AllRice 2.0 是企业 AI 员工工作台：员工通过网页向 Rice 交付任�
 | [MET-107](https://linear.app/metasnowsky/issue/MET-107) | 政策、审批、隔离、发布、Skill 与经验治理 | 所有高权限能力的前置与持续校验         |
 | [MET-108](https://linear.app/metasnowsky/issue/MET-108) | 基础助手、任务树、结果归集与后续协作模式 | 首版 A～D 纳入 GA；E～G 按总表 S8 推进 |
 
+MET-102～104 是 Gemini 初稿存档，不再作为施工规范。[105 所附开工前审查手册](https://linear.app/metasnowsky/issue/MET-105)用于研究追溯；其旧研发协作安排由总表 v1.1 取代。
+
 P00 只交付本总纲、[基线盘点](architecture/allrice-2.0/baseline.md)、[八项公共契约](architecture/allrice-2.0/contracts.md)、[架构决策](architecture/allrice-2.0/decisions.md)和[验收样例](architecture/allrice-2.0/acceptance.md)。不修改运行代码、Zod schema、数据库、环境变量、Feature Flag 或权限；不会因为写完设计就启用 Shell、WSS、Cloud Runner 或 Subagents。
 
 本轮一个 PR 完成并提交后暂停，等待用户明确“继续”。P01 才把相应公共契约变成兼容的可执行 schema；P02 才验证本地隔离。具体依赖继续查总表，不自行按 MET 编号串行。
@@ -80,6 +82,8 @@ ChatFlow 负责工作台与会话控制表达，Runtime Console 按租户提供�
 转云需要明确的输入版本、数据传输/用途授权、目标能力和预算；本地动作结果未知时先核实，避免重复副作用。若只完成云产物、尚待本地落盘，显示部分完成与下一步，不宣称原地交付成功。关闭网页、设备断联、机器休眠与撤销授权不等价。
 
 ## 6. 实施、测试与交付责任
+
+Codex在已确认范围与授权内独立负责技术选择（含高风险改动）、实现、自审、自测、修复回归和阶段技术验收；不设置 Gemini 或其他外部模型的前置确认。项目完成后由用户另行安排 Gemini 补充测试。
 
 每个 PR 绑定范围、完整 SHA、风险依据、环境、实际结果、未测项和回滚办法。有可审内容即可 Draft，范围完成并通过适用验证后提交 Ready，不等整阶段完成。合并、部署与生产启用按实际授权分开处理。此次只提交 P00，既不合并也不部署。
 

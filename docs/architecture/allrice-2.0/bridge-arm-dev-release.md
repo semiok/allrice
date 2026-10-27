@@ -1,5 +1,8 @@
 # Bridge 0.3.0-dev.1：Apple Silicon 补充适配
 
+2026-09-08；B3 后的 Dev 增量，保留现有 Gemini 密钥格式修复，统一留到后续 PR。
+本文补充 P05/P09 的历史 Intel 验收记录，不把旧记录改写成当时已支持 ARM。
+
 ## 本次交付边界
 
 - 原生 macOS ARM SEA 客户端和本机 ARM Linux VM/container Runner；不是 macOS 宿主 Shell，也不是云端代跑。

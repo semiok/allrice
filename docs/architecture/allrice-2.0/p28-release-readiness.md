@@ -4,6 +4,8 @@
 
 2026-09-14。状态：**可审查的准备切片，不是 B6 / RC / GA 验收通过，不是发布授权。**
 
+依据：[MET-105 §7](https://linear.app/metasnowsky/issue/MET-105)、[MET-106-C](https://linear.app/metasnowsky/issue/MET-106)、[MET-107](https://linear.app/metasnowsky/issue/MET-107)、[MET-108](https://linear.app/metasnowsky/issue/MET-108) 与唯一[执行总表 v1.27 P27/P28](https://linear.app/metasnowsky/document/allrice-20-执行总表阶段依赖pr-与验收门禁-df09b0b1e681)。本页不建立第二份排期；P28 准备先供 P27 / MET-142 联验。Codex 自主设计、自审、自测；Gemini 不作为研发门禁。
+
 代码基线是完整 SHA `57f3b5fd2acba034e9011231075c3e29b4503733`。[B5 集成记录](b5-integration-verification.md)、[验收设计](acceptance.md)及[ADR](decisions.md)是历史与规则，不能替代最终 B6 SHA 的真实证据。B5 BUILD_ID `YmBpsav9R6_mfJmIob03N` 和 `0.5.0-dev.1` ad-hoc 包不是正式签名候选。
 
 ## 1. 本切片交付与仍然受阻的内容
