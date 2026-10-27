@@ -4,11 +4,18 @@ import { MessageImageGallery } from './attachment-components';
 import { ReferenceChips, type ReferenceDraft } from './reference-chips';
 import { SessionReferenceChips } from './session-reference-picker';
 import { UserQuestionReceipt } from './user-question-receipt';
+import { createContext, useContext } from 'react';
+import type { InteractionStatus } from '@allrice/contracts';
 import { MessageIconActions } from './dsh-upstream/feedback/MessageIconActions';
 import { feedbackTranslate } from './feedback-labels';
 import { AutomationTrigger } from './automation-trigger';
 import messageUi from './dsh-upstream/MessageItem.module.css';
 import styles from './dsh-saas.module.css';
+/** Durable input status by user message id, from the session interactions. */
+export const InputStatusContext = createContext<
+  ReadonlyMap<string, InteractionStatus['inputs'][number]['status']>
+>(new Map());
+
 export function TranscriptUserMessage({
   message,
   messageImages,
@@ -20,6 +27,7 @@ export function TranscriptUserMessage({
   messageImages?: MessageImageSource;
   onOpenReference?: (reference: ReferenceDraft) => void;
 }) {
+  const inputStatus = useContext(InputStatusContext);
   if (message.role === 'user' && message.source?.kind === 'schedule')
     return <AutomationTrigger message={message} onOpen={onOpenAutomation} />;
   return (
@@ -30,6 +38,7 @@ export function TranscriptUserMessage({
           answer={message.content.interaction.answer}
           createdAt={message.createdAt}
           text={message.content.text}
+          status={inputStatus.get(message.id)}
         />
       ) : message.role === 'user' &&
         message.content.interaction?.type === 'changeset_request' ? (

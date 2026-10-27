@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { projectUserQuestionReceipt } from './user-question-receipt';
+import {
+  projectUserQuestionReceipt,
+  userQuestionReceiptState,
+} from './user-question-receipt';
 
 describe('user question receipt', () => {
   it('separates recommendation metadata from the selected label', () => {
@@ -39,5 +42,26 @@ describe('user question receipt', () => {
       },
       { title: '范围', values: [], skipped: true },
     ]);
+  });
+
+  // MET-210: only a taken answer reads as confirmed; no status claims nothing.
+  it.each([
+    ['adopted', '已确认'],
+    ['running', '已确认'],
+    ['completed', '已确认'],
+    ['pending', '已提交'],
+    ['queued', '已提交'],
+    ['rejected', '未被采纳'],
+    ['unknown', '未被采纳'],
+    ['canceled', '未被采纳'],
+  ] as const)('reads %s as %s', (status, title) => {
+    expect(userQuestionReceiptState(status).title).toBe(title);
+  });
+  it('makes no delivery claim without a status', () => {
+    expect(userQuestionReceiptState(undefined)).toEqual({
+      mark: '…',
+      title: '已提交',
+      note: '',
+    });
   });
 });

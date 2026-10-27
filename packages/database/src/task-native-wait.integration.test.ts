@@ -709,6 +709,26 @@ suite('MET153 durable native waits and queue authority', () => {
     expect(
       (await f.db.begin((tx) => readTaskClock(tx, f.rootRunId)))!.phase,
     ).toBe('terminal');
+    // MET-210: a stopped Run's question can no longer be answered.
+    expect(
+      await f.db`select pending from allrice_task_questions where run_id=${f.rootRunId}`,
+    ).toEqual([{ pending: false }]);
+  });
+  it('MET-210: stopping a Run that is waiting live on a question clears it', async () => {
+    const { f } = await setup();
+    expect(
+      await f.db`select pending from allrice_task_questions where run_id=${f.rootRunId}`,
+    ).toEqual([{ pending: true }]);
+    await cancelRun(f.requestContext, f.workspace, f.rootRunId, {
+      reason: 'user requested',
+    });
+    await finishJobDrain({ ...f.worker });
+    expect(
+      await f.db`select state from allrice_runs where id=${f.rootRunId}`,
+    ).toEqual([{ state: 'canceled' }]);
+    expect(
+      await f.db`select pending from allrice_task_questions where run_id=${f.rootRunId}`,
+    ).toEqual([{ pending: false }]);
   });
   it('cannot revive a native parked question by restoring its archived employee instance', async () => {
     const { f, checkpoint, owner } = await setup();

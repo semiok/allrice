@@ -26,6 +26,7 @@ const suite =
 const root = resolve(fileURLToPath(new URL('../../../../', import.meta.url)));
 const require = createRequire(import.meta.url);
 const A = '11111111-1111-4111-8111-111111111111';
+const answerMessageId = '77777777-7777-4777-8777-777777777777';
 const B = '22222222-2222-4222-8222-222222222222';
 const C = '33333333-3333-4333-8333-333333333333';
 const runId = '44444444-4444-4444-8444-444444444444';
@@ -274,6 +275,8 @@ suite(
         nextSteps?: TaskNextSteps;
         delayNextStepsA?: boolean;
         readiness?: WorkspaceReadiness['capabilities'];
+        /** A question answer already in session A, with its delivery status. */
+        answerStatus?: 'adopted' | 'pending' | 'rejected';
       } = {},
     ) {
       const pending: Pending[] = [];
@@ -311,6 +314,20 @@ suite(
             message('old-' + i, 'Old paragraph. '.repeat(35), 'assistant'),
           ),
         );
+      if (options.answerStatus)
+        messages[A]!.push({
+          ...message(answerMessageId, '执行范围：只读检查'),
+          content: {
+            text: '执行范围：只读检查',
+            interaction: {
+              type: 'user_question_answer',
+              answer: {
+                questionId: 'question-1',
+                answers: [{ id: 'q1', selected: ['只读检查'] }],
+              },
+            },
+          },
+        } as ReturnType<typeof message>);
       if (options.running || options.settled)
         messages[A]!.push(
           message(
@@ -540,7 +557,22 @@ suite(
           answer(response, {
             runtime: null,
             pendingActions: [],
-            inputs: [],
+            inputs: options.answerStatus
+              ? [
+                  {
+                    inputId: answerMessageId,
+                    kind: 'ask_user',
+                    status: options.answerStatus,
+                    runId,
+                    messageId: answerMessageId,
+                    artifactId: null,
+                    createdAt: now,
+                    turnId: null,
+                    generation: null,
+                    evidence: null,
+                  },
+                ]
+              : [],
             runTimings: showTiming
               ? [
                   {
@@ -1099,6 +1131,34 @@ suite(
       20_000,
     );
 
+    // MET-210: saving an answer is only a submission; the receipt says
+    // "已确认" only once the run took it, and shows a rejected one as such.
+    it.each([
+      ['adopted', '已确认', 'Rice 已收到你的回答'],
+      ['pending', '已提交', '等待 Rice 接收这次回答'],
+      ['rejected', '未被采纳', '这次回答没有被 Rice 接收'],
+    ] as const)(
+      'shows a %s question answer receipt as %s',
+      async (status, title, note) => {
+        const f = await fixture({ answerStatus: status });
+        try {
+          const receipt = f.page.getByRole('article', {
+            name: '用户确认结果',
+          });
+          await receipt.getByText(title, { exact: true }).waitFor();
+          expect(await receipt.getByText(note, { exact: true }).count()).toBe(
+            1,
+          );
+          expect(await receipt.getByText('只读检查').count()).toBe(1);
+          if (status !== 'adopted')
+            expect(await receipt.getByText('已确认').count()).toBe(0);
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+      15_000,
+    );
     it('restores image and text on upload failure, then retries the attachment', async () => {
       const f = await fixture({ uploadPending: true });
       try {

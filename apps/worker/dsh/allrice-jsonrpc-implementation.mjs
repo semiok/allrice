@@ -45,10 +45,7 @@ import { AllRiceSdkRoot } from './allrice-sdk-root.mjs';
 import { createModels } from '@earendil-works/pi-ai';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 
-import {
-  steerDshAgent,
-  structuredUserQuestionAnswer,
-} from './allrice-dsh-runtime-compatibility.mjs';
+import { steerDshAgent } from './allrice-dsh-runtime-compatibility.mjs';
 import {
   deliverDshInput,
   discardPendingDshInputs,
@@ -1589,40 +1586,9 @@ export async function createAllRiceRuntime(
           params,
         );
       }
-      if (pendingQuestion) {
-        this.requireRoot(sessionId);
-        const structured = structuredUserQuestionAnswer(
-          pendingQuestion,
-          params.text,
-        );
-        const answer =
-          structured ??
-          (() => {
-            const answerText = params.text.trim();
-            return {
-              answers: pendingQuestion.questions.map((question, index) => {
-                if (index > 0) return { id: question.id, selected: [] };
-                const selected = (question.options ?? []).find(
-                  (option) => option.label === answerText,
-                );
-                return selected
-                  ? { id: question.id, selected: [selected.label] }
-                  : { id: question.id, selected: [], custom: answerText };
-              }),
-            };
-          })();
-        this.pendingUserQuestions.delete(sessionId);
-        pendingQuestion.resolve(answer);
-        this.userQuestionNotify({
-          sessionId,
-          questionId: pendingQuestion.questionId,
-          answered: true,
-        });
-        return {
-          messageId: pendingQuestion.questionId,
-          answeredQuestion: true,
-        };
-      }
+      // Only the typed ask_user input above answers a question. Like DSH, a
+      // plain message never does; it is rejected like a typed steer (MET-210).
+      if (pendingQuestion) throw new TypeError('QUESTION_PENDING_USE_ANSWER');
       const record = await this.ensureRoot(sessionId);
       this.assertRoot(record, sessionId);
       return {

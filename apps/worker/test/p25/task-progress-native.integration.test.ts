@@ -201,10 +201,36 @@ describe('MET153 actual native progress wire', () => {
         )!;
         expect(question.params.sessionId).toBe(session);
         expect(JSON.stringify(question)).toContain('runtime-progress');
-        await client.steer(
-          session,
-          decision === 'continue' ? '重新检查后继续' : '取消任务',
+        // MET-210: plain text never answers a question; only a typed answer.
+        await expect(client.steer(session, '重新检查后继续')).rejects.toThrow(
+          'QUESTION_PENDING_USE_ANSWER',
         );
+        const turn = notices.findLast(
+          (n) =>
+            n.method === 'session.event' &&
+            (n.params.event as { type?: string }).type === 'turn/start',
+        )!.params.event as { data: { turn: number } };
+        await expect(
+          client.steer(
+            session,
+            `allrice:user-question:v1:${JSON.stringify({
+              questionId: question.params.questionId,
+              answers: [
+                {
+                  id: 'runtime-progress',
+                  selected: [
+                    decision === 'continue' ? '重新检查后继续' : '取消任务',
+                  ],
+                },
+              ],
+            })}`,
+            {
+              inputId: randomUUID(),
+              turnId: `${session}:turn:${turn.data.turn}`,
+              kind: 'ask_user',
+            },
+          ),
+        ).resolves.toMatchObject({ status: 'adopted' });
         await expect
           .poll(() => requests.some((p) => p.action === 'decide'), {
             timeout: 10000,

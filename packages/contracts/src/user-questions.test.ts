@@ -4,6 +4,7 @@ import {
   ChatMessageContentSchema,
   SendChatMessageInputSchema,
   UserQuestionRequestSchema,
+  matchUserQuestionAnswer,
 } from './index.js';
 
 describe('user question contracts', () => {
@@ -76,5 +77,92 @@ describe('user question contracts', () => {
         answer: { questionId: 'question-1' },
       },
     });
+  });
+});
+
+// MET-210: the one answer rule shared by the native input, the parked wait
+// and resume. It follows DSH: each question exactly once, skips are answers.
+describe('matchUserQuestionAnswer', () => {
+  const request = {
+    questionId: 'q',
+    questions: [
+      { id: 'one', options: [{ label: 'A' }, { label: 'B' }] },
+      {
+        id: 'many',
+        multiSelect: true,
+        options: [{ label: 'X' }, { label: 'Y' }],
+      },
+    ],
+  };
+  const answer = (...answers: unknown[]) => ({ questionId: 'q', answers });
+  it.each([
+    [
+      'both skipped',
+      answer({ id: 'one', selected: [] }, { id: 'many', selected: [] }),
+    ],
+    [
+      'partly skipped',
+      answer({ id: 'many', selected: ['X', 'Y'] }, { id: 'one', selected: [] }),
+    ],
+    [
+      'custom text alone',
+      answer(
+        { id: 'one', selected: [], custom: '都行' },
+        { id: 'many', selected: [] },
+      ),
+    ],
+    [
+      'labels plus custom on a multi-select',
+      answer(
+        { id: 'one', selected: ['A'] },
+        { id: 'many', selected: ['X'], custom: '还有 Z' },
+      ),
+    ],
+  ])(
+    'accepts %s and returns the answers in question order',
+    (_case, submission) => {
+      const matched = matchUserQuestionAnswer(request, submission);
+      expect(matched?.answers.map((a) => a.id)).toEqual(['one', 'many']);
+    },
+  );
+  it.each([
+    [
+      'another question',
+      {
+        ...answer({ id: 'one', selected: [] }, { id: 'many', selected: [] }),
+        questionId: 'other',
+      },
+    ],
+    ['a missing item', answer({ id: 'one', selected: [] })],
+    [
+      'a repeated item',
+      answer({ id: 'one', selected: [] }, { id: 'one', selected: [] }),
+    ],
+    [
+      'an unknown item',
+      answer({ id: 'one', selected: [] }, { id: 'other', selected: [] }),
+    ],
+    [
+      'an unknown option',
+      answer({ id: 'one', selected: ['C'] }, { id: 'many', selected: [] }),
+    ],
+    [
+      'a repeated option',
+      answer({ id: 'one', selected: [] }, { id: 'many', selected: ['X', 'X'] }),
+    ],
+    [
+      'two labels on a single-select',
+      answer({ id: 'one', selected: ['A', 'B'] }, { id: 'many', selected: [] }),
+    ],
+    [
+      'a label plus custom on a single-select',
+      answer(
+        { id: 'one', selected: ['A'], custom: 'x' },
+        { id: 'many', selected: [] },
+      ),
+    ],
+    ['a malformed batch', { questionId: 'q', answers: 'A' }],
+  ])('rejects %s', (_case, submission) => {
+    expect(matchUserQuestionAnswer(request, submission)).toBeNull();
   });
 });

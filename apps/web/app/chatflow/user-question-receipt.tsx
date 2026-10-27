@@ -1,4 +1,7 @@
-import type { UserQuestionAnswerSubmission } from '@allrice/contracts';
+import type {
+  InteractionStatus,
+  UserQuestionAnswerSubmission,
+} from '@allrice/contracts';
 
 import { formatTime } from './chatflow-utils';
 import styles from './dsh-saas.module.css';
@@ -50,20 +53,47 @@ export function projectUserQuestionReceipt(
   });
 }
 
+type InputStatus = InteractionStatus['inputs'][number]['status'];
+
+/** Saving the answer is only a submission; "confirmed" needs the run to have
+ * taken it (adopted, or the follow-up run that read it), MET-210. */
+export function userQuestionReceiptState(status: InputStatus | undefined) {
+  if (status === 'adopted' || status === 'running' || status === 'completed')
+    return { mark: '✓', title: '已确认', note: 'Rice 已收到你的回答' };
+  if (
+    status === 'rejected' ||
+    status === 'unknown' ||
+    status === 'canceled' ||
+    status === 'failed'
+  )
+    return {
+      mark: '!',
+      title: '未被采纳',
+      note: '这次回答没有被 Rice 接收',
+    };
+  return {
+    mark: '…',
+    title: '已提交',
+    note: status ? '等待 Rice 接收这次回答' : '',
+  };
+}
+
 export function UserQuestionReceipt(props: {
   answer: UserQuestionAnswerSubmission;
   createdAt: string;
   text: string;
+  status?: InputStatus;
 }) {
   const rows = projectUserQuestionReceipt(props.text, props.answer);
+  const state = userQuestionReceiptState(props.status);
   return (
     <div className={styles.confirmationRow}>
       <article aria-label="用户确认结果" className={styles.confirmationCard}>
         <header>
-          <i aria-hidden="true">✓</i>
+          <i aria-hidden="true">{state.mark}</i>
           <div>
-            <strong>已确认</strong>
-            <span>Rice 已根据你的选择继续本轮工作</span>
+            <strong>{state.title}</strong>
+            {state.note ? <span>{state.note}</span> : null}
           </div>
           <time>{formatTime(props.createdAt)}</time>
         </header>

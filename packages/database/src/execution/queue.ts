@@ -2034,6 +2034,8 @@ async function transitionTerminal(
     }, updated_at = now(), completed_at = now()
     where id = ${job.run_id}
   `;
+  // A finished Run, stopped ones included, can no longer take an answer.
+  await transaction`update allrice_task_questions set pending=false where run_id=${job.run_id} and pending`;
   await refreshTaskClock(transaction, job.run_id);
   await transaction`
     update allrice_conversation_followups
