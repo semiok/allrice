@@ -229,6 +229,19 @@ jobs:
       - name: Capture versioned PostgreSQL regression source
         id: postgres-capture
         run: pnpm exec tsx scripts/acceptance/platform/quality-scenarios.ts capture --group=postgres --output=.local/quality/postgres/capture.json
+      - name: Verify standard PostgreSQL backup restore after function search_path migration
+        env:
+          ALLRICE_RUN_DB_INTEGRATION: 1
+          ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
+        # Use the server image's matching clients; stream archives through the
+        # host test process. No dependency on the runner's pg_dump major version.
+        run: |
+          mkdir -p "$RUNNER_TEMP/allrice-pg-client"
+          for tool in pg_dump pg_restore; do
+            printf '#!/bin/sh\nexec docker compose --project-name allrice-dev --file compose.dev.yaml exec -T -e PGDATABASE -e PGUSER -e PGPASSWORD postgres %s "$@"\n' "$tool" > "$RUNNER_TEMP/allrice-pg-client/$tool"
+            chmod +x "$RUNNER_TEMP/allrice-pg-client/$tool"
+          done
+          PATH="$RUNNER_TEMP/allrice-pg-client:$PATH" pnpm exec vitest run --maxWorkers=1 packages/database/src/function-search-path.integration.test.ts
       - name: Verify platform content synchronization against PostgreSQL
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1

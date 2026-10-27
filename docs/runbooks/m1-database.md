@@ -40,7 +40,23 @@ df -h ~                       # 磁盘满是最常见的原因之一
 
 下面 `$S` 是快照目录，`$T` 是当前时间，只用数字和下划线（它会成为库名的一部分），例如 `20261027_0930`。用每日备份时，导出文件换成 `~/allrice-backups/db/allrice_dev-<日期>.sql.gz`，状态目录和 launchd 文件在 `~/allrice-backups/files/<日期>/`。
 
-1. 先恢复到一个新库核对，不动 Dev。0207 的 `allrice_native_calendar_control_valid` 用未限定名字调用其他函数；`pg_dump` / `pg_restore` 默认把会话 `search_path` 清空，COPY 提醒控制行时 CHECK 会报函数不存在。这是已有的恢复问题，函数修复另行处理。B2 第 13 步已验证恢复时需要 `public, pg_catalog`：先生成 SQL，**只替换 dump 头部完整的一行** `SELECT pg_catalog.set_config('search_path', '', false);`，再用 `psql -X -v ON_ERROR_STOP=1 -f` 执行；不禁用触发器、约束或跳过表。**不能全局替换**：COPY 业务正文和函数体也可能包含相同文字，改写后仍可能是合法 SQL/JSON，`ON_ERROR_STOP` 不会发现数据已被改变。下面只扫描由注释、空行、`SET` 和 `\restrict` 组成的头部，遇到第一个其他语句（包括 CREATE / COPY）就停止；断言头部恰好有一条目标语句后才写文件，其余字节原样复制。
+1. 先恢复到一个新库核对，不动 Dev。根据**备份时数据库是否已经应用 `0225_function_search_path.sql`**选择下面一种方式；当前代码版本不能改变旧备份内的函数定义。
+
+   **0225 之后的备份**：迁移为使用未限定对象名的函数固定了函数级 `search_path = public, pg_catalog`，标准 `pg_restore` 清空会话 search_path 后仍可求值 CHECK。custom 格式直接恢复，不改 dump、不禁用触发器或约束、不跳过表：
+
+   ```bash
+   export S=<快照目录> T=<时间>
+   umask 077
+   createdb -h 127.0.0.1 "allrice_dev_restore_$T"
+   pg_restore -h 127.0.0.1 --exit-on-error --no-owner --no-privileges \
+     --dbname="allrice_dev_restore_$T" <0225之后.dump>
+   # 若来源是每日备份或迁移前快照的 plain SQL，用这两行代替 pg_restore：
+   # gunzip -c "$S/allrice_dev.sql.gz" > "$S/restore-original.sql"
+   # psql -h 127.0.0.1 -X -q -v ON_ERROR_STOP=1 -d "allrice_dev_restore_$T" -f "$S/restore-original.sql"
+   psql -h 127.0.0.1 -X "allrice_dev_restore_$T" -c 'select count(*), max(name) from allrice_schema_migrations'
+   ```
+
+   **0225 之前的旧备份**：仍按下面的头部改写办法恢复。0207 的 `allrice_native_calendar_control_valid` 和 0208 的会话快照校验等函数依赖会话 search_path；标准恢复会在 COPY 的 CHECK 求值时报函数不存在。B2 第 13 步已验证恢复时需要 `public, pg_catalog`：先生成 SQL，**只替换 dump 头部完整的一行** `SELECT pg_catalog.set_config('search_path', '', false);`，再用 `psql -X -v ON_ERROR_STOP=1 -f` 执行；不禁用触发器、约束或跳过表。**不能全局替换**：COPY 业务正文和函数体也可能包含相同文字，改写后仍可能是合法 SQL/JSON，`ON_ERROR_STOP` 不会发现数据已被改变。下面只扫描由注释、空行、`SET` 和 `\restrict` 组成的头部，遇到第一个其他语句（包括 CREATE / COPY）就停止；断言头部恰好有一条目标语句后才写文件，其余字节原样复制。
 
    ```bash
    export S=<快照目录> T=<时间>   # 下面持锁的新 shell 也要用这两个变量，所以要 export
