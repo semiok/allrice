@@ -29,7 +29,7 @@
   margin: 0;
   font-size: 11px;
   line-height: 1.8;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
 }
 .upload {
   display: grid;
@@ -54,9 +54,6 @@
   background: var(--dsw-alias-bg-base);
   font: inherit;
   font-size: 13px;
-}
-.upload input::placeholder {
-  color: var(--dsw-alias-label-tertiary);
 }
 .actions {
   display: flex;

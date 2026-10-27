@@ -94,7 +94,7 @@
 
 .content input::placeholder,
 .content textarea::placeholder {
-  color: var(--dsw-alias-label-caption, #8d929b);
+  color: var(--ar-text-placeholder);
 }
 
 .content textarea {

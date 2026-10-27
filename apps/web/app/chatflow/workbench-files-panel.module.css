@@ -115,7 +115,7 @@
   border: 0 !important;
   border-radius: 0 !important;
   font-size: 12px !important;
-  color: var(--dsw-alias-label-tertiary) !important;
+  color: var(--dsw-alias-label-secondary) !important;
   background: transparent !important;
 }
 .tabs button[aria-pressed='true'] {
@@ -183,7 +183,7 @@
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
   font-size: 11px;
 }
 .range {
@@ -210,7 +210,7 @@
 .empty {
   padding: 45px 14px;
   text-align: center;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
   line-height: 1.8;
 }
 .empty > svg {
@@ -234,7 +234,7 @@
 }
 .hint {
   margin: 0;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
   font-size: 11px;
   line-height: 1.7;
 }
@@ -288,7 +288,7 @@
 }
 .fileIdentity small {
   display: block;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
   font-size: 11px;
   margin-top: 4px;
 }
@@ -308,7 +308,7 @@
   margin: 4px 0 0;
 }
 .dropzone > small {
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
   font-size: 11px;
   text-align: center;
 }
@@ -373,7 +373,7 @@
 .reference small {
   display: block;
   margin-top: 4px;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
   font-size: 11px;
 }
 .reference input {
@@ -400,9 +400,9 @@
   cursor: pointer;
 }
 .formActions button[type='submit'] {
-  background: var(--dsw-alias-state-business-primary);
+  background: var(--ar-action-primary);
   border-color: transparent;
-  color: white;
+  color: var(--ar-text-on-primary);
 }
 .formActions button:disabled {
   opacity: 0.45;

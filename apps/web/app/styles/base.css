@@ -62,3 +62,13 @@ body[data-ds-dark-theme] {
   --allrice-session-selected: #39414c;
   --allrice-session-selected-hover: #444e5c;
 }
+
+/* Placeholders a component does not colour itself: the browser's grey is
+   3.96:1 on the dark bg-base (MET-214, audit D04-D06). :where() keeps this
+   at (0,0,1), so any component rule still wins. Fields inside the admin
+   console's own palette ([data-admin-theme]) keep the browser's; its dialogs
+   portaled to <body> use the DSH palette and get this one. */
+:where(input, textarea):where(:not([data-admin-theme] *))::placeholder {
+  color: var(--ar-text-placeholder);
+  opacity: 1;
+}
