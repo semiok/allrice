@@ -9,13 +9,6 @@
   --ed-profile: var(--allrice-employee-bg, #f5f6f8);
   --ed-button: var(--allrice-employee-bg, #f3f4f6);
   --ed-hover: var(--allrice-sidebar-hover, #eceef1);
-  /* DSH has no link colour that reads on both grounds (MET-214). */
-  --ed-link: var(--dsw-static-deepseek-600);
-}
-:global(body[data-ds-dark-theme]) .dialog,
-:global(body[data-ds-dark-theme]) .details,
-:global(body[data-ds-dark-theme]) .preview {
-  --ed-link: var(--dsw-alias-state-business-primary);
 }
 .dialog[role='dialog'] {
   width: min(1120px, 100%);
@@ -408,7 +401,7 @@
 .retry {
   border: 0;
   background: none;
-  color: var(--ed-link);
+  color: var(--ar-link);
   font: inherit;
   padding: 0;
   cursor: pointer;

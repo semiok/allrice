@@ -10,10 +10,21 @@ import { WorkbenchFilesPanel } from '../app/chatflow/workbench-files-panel';
 import { ReferenceLibrary } from '../app/chatflow/reference-library';
 import { SaveArtifactReference } from '../app/chatflow/save-artifact-reference';
 import { EmployeeDetailsDialog } from '../app/chatflow/employee-details-dialog';
+import {
+  EmployeeProfileForm,
+  defaultEmployeeProfileFormValues,
+} from '../app/chatflow/employee-profile-form';
+import { BrandContentPanel } from '../app/chatflow/brand-content-panel';
+import { PlatformReferenceLibrary } from '../app/runtime-console/platform-reference-library';
+import { AdminShell } from '../components/admin/admin-shell';
+import { LoginForm } from '../app/login/login-form';
 import { employeeDetailsFixture } from './employee-details-fixture';
+// The root layout's global stylesheets, in its order.
 import '../app/dsh-upstream/design-platform.css';
 import '../app/dsh-upstream/base.css';
+import '@allrice/ui/tokens.css';
 import '../app/styles/base.css';
+import '../app/styles/auth.css';
 
 /** Real components on static props and a synthetic fetch only: no server,
  * database, device or model. `?case=` picks one surface, `?theme=dark` the
@@ -82,7 +93,8 @@ const file: WorkbenchFile = {
 };
 const options = {
   workspaceId,
-  platformMaintainer: false,
+  // The admin console opens the library only for a platform maintainer.
+  platformMaintainer: params.get('case') === 'admin',
   maintenanceLevel: 'personal',
   writable: true,
   departmentId: null,
@@ -133,6 +145,9 @@ window.fetch = async (input, init) => {
       : Response.json(options);
   if (path === `/api/v1/employee-instances/${id(7)}/content`)
     return Response.json(employeeDetailsFixture());
+  // No brand yet: the panel opens on the empty brand form.
+  if (path === `/api/v1/employee-instances/${id(7)}/brand-content`)
+    return Response.json({ brands: [], board: null, packages: [], files: [] });
   return Response.json({ error: { message: '未知请求' } }, { status: 404 });
 };
 
@@ -210,13 +225,39 @@ const cases: Record<string, ReactNode> = {
       onClose={noop}
     />
   ),
-  // A field with no placeholder colour of its own, inside and outside the
-  // admin console's palette.
+  forms: (
+    <>
+      <EmployeeProfileForm
+        mode="create"
+        initialValue={defaultEmployeeProfileFormValues}
+        onSubmit={noop}
+        onCancel={noop}
+      />
+      <BrandContentPanel
+        workspaceId={workspaceId}
+        instanceId={id(7)}
+        employeeName="Rice"
+        headers={{}}
+        onClose={noop}
+        onOpenSession={noop}
+      />
+    </>
+  ),
+  // The admin console's own palette, with a field of its own and the platform
+  // reference library, whose dialog is portaled to <body>.
+  admin: (
+    <AdminShell items={[]}>
+      <input aria-label="管理后台输入框" placeholder="管理后台输入框" />
+      <PlatformReferenceLibrary />
+    </AdminShell>
+  ),
+  // A field with no placeholder colour of its own, and the login form, whose
+  // auth.css rule must still win over the shared one.
   shared: (
     <>
       <input aria-label="员工端输入框" placeholder="员工端输入框" />
-      <div data-admin-theme="dark">
-        <input aria-label="管理后台输入框" placeholder="管理后台输入框" />
+      <div className="auth-shell auth-workspace">
+        <LoginForm />
       </div>
     </>
   ),

@@ -103,7 +103,7 @@
   line-height: 20px;
 }
 .nameField input::placeholder {
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--ar-text-placeholder);
 }
 .field textarea {
   min-height: 60px;

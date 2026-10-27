@@ -168,7 +168,11 @@ suite('muted words stay readable in both themes', { timeout: 60_000 }, () => {
           await fits('save');
           await employee(page, open, readable);
           await fits('employee');
+          await forms(page, open, readable);
+          await fits('forms');
+          await admin(page, open, readable);
           await shared(page, open, readable);
+          await fits('shared');
           if (process.env.ALLRICE_RUN_CONTRAST_REPORT)
             console.log(`${width} ${theme}`, JSON.stringify(ratios));
         } finally {
@@ -219,10 +223,10 @@ suite('muted words stay readable in both themes', { timeout: 60_000 }, () => {
       detail.getByText('已完成', { exact: true }),
     );
     await readable('L08 规则标签', detail.getByRole('tab', { name: '规则' }));
-    await readable(
-      'L08 查看任务',
-      page.getByRole('button', { name: '查看任务' }),
-    );
+    const taskLink = page.getByRole('button', { name: '查看任务' });
+    await readable('L08 查看任务', taskLink);
+    await taskLink.hover();
+    await readable('L08 查看任务悬停', taskLink);
   }
 
   async function files(page: Page, open: Open, readable: Readable) {
@@ -332,26 +336,61 @@ suite('muted words stay readable in both themes', { timeout: 60_000 }, () => {
     );
   }
 
-  async function shared(page: Page, open: Open, readable: Readable) {
-    await open('shared');
-    const employeeField = page.getByRole('textbox', { name: '员工端输入框' });
-    await readable('共用占位规则', employeeField, '::placeholder');
-    const secondary = await page.evaluate(() => {
+  /** The colour the shared rule paints, resolved on this page. */
+  const token = (page: Page) =>
+    page.evaluate(() => {
       const probe = document.createElement('span');
-      probe.style.color = 'var(--dsw-alias-label-secondary)';
+      probe.style.color = 'var(--ar-text-placeholder)';
       document.body.append(probe);
       const color = getComputedStyle(probe).color;
       probe.remove();
       return color;
     });
-    const placeholder = (field: Locator) =>
-      field.evaluate(
-        (element) => getComputedStyle(element, '::placeholder').color,
-      );
-    expect(await placeholder(employeeField)).toBe(secondary);
-    // The admin console keeps the browser's placeholder under its own palette.
+  const placeholder = (field: Locator) =>
+    field.evaluate(
+      (element) => getComputedStyle(element, '::placeholder').color,
+    );
+
+  async function forms(page: Page, open: Open, readable: Readable) {
+    await open('forms');
+    await readable(
+      '员工名字占位',
+      page.getByRole('textbox', { name: '员工名字' }),
+      '::placeholder',
+    );
+    await readable(
+      '品牌资料占位',
+      page.getByRole('textbox', { name: '目标受众' }),
+      '::placeholder',
+    );
+  }
+
+  async function admin(page: Page, open: Open, readable: Readable) {
+    await open('admin');
+    // A field inside the admin console's own palette keeps the browser's.
+    const own = page.getByRole('textbox', { name: '管理后台输入框' });
+    await own.waitFor();
+    expect(await placeholder(own)).not.toBe(await token(page));
+    // Its platform reference library is portaled to <body>, outside that
+    // palette, so the shared rule paints it.
+    await page.getByRole('button', { name: '管理平台参考资料' }).click();
+    const field = page.getByRole('textbox', { name: '查找参考资料' });
+    await readable('后台平台参考资料', field, '::placeholder');
     expect(
-      await placeholder(page.getByRole('textbox', { name: '管理后台输入框' })),
-    ).not.toBe(secondary);
+      await field.evaluate((element) => !element.closest('[data-admin-theme]')),
+    ).toBe(true);
+    expect(await placeholder(field)).toBe(await token(page));
+  }
+
+  async function shared(page: Page, open: Open, readable: Readable) {
+    await open('shared');
+    const field = page.getByRole('textbox', { name: '员工端输入框' });
+    await readable('共用占位规则', field, '::placeholder');
+    expect(await placeholder(field)).toBe(await token(page));
+    // A component's own rule still wins: :where() keeps the shared one at
+    // (0,0,1), under auth.css's (0,2,2) login placeholder.
+    expect(await placeholder(page.getByPlaceholder('输入你的账号'))).toBe(
+      'rgb(123, 132, 145)',
+    );
   }
 });

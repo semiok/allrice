@@ -400,9 +400,9 @@
   cursor: pointer;
 }
 .formActions button[type='submit'] {
-  background: var(--dsw-alias-button-primary-fill);
+  background: var(--ar-action-primary);
   border-color: transparent;
-  color: var(--dsw-alias-label-primary-foreground);
+  color: var(--ar-text-on-primary);
 }
 .formActions button:disabled {
   opacity: 0.45;
