@@ -54,6 +54,7 @@
     "typecheck": "pnpm -r --if-present run typecheck && pnpm typecheck:integration",
     "typecheck:integration": "tsc -p tests/integration/tsconfig.json",
     "dsh-ui:verify": "node scripts/dsh-ui.mjs verify",
+    "design-tokens": "tsx packages/ui/scripts/design-tokens.ts",
     "dsh-ui:sync": "node scripts/dsh-ui.mjs sync",
     "dsh:generate": "node scripts/generate-dsh-distribution.mjs"
   },

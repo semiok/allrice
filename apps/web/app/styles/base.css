@@ -1,6 +1,6 @@
 :root {
-  background: var(--ar-canvas, #f5f6f2);
-  color: var(--ar-text, #152018);
+  background: var(--ar-legacy-canvas, #f5f6f2);
+  color: var(--ar-legacy-text, #152018);
   color-scheme: light;
   font-family:
     Inter,
