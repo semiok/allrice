@@ -210,6 +210,22 @@ suite('experience and local command cards read in both themes', () => {
       await probe.evaluate((node) => node.remove());
     }
   }
+  /** A card's left stroke color, measured as text on the card's parent. */
+  async function stroke(page: Page, card: Locator) {
+    await card.evaluate((node) => {
+      const probe = document.createElement('span');
+      probe.id = 'stroke-probe';
+      probe.textContent = '_';
+      probe.style.color = getComputedStyle(node).borderLeftColor;
+      node.parentElement!.append(probe);
+    });
+    const probe = page.locator('#stroke-probe');
+    try {
+      return await ratio(probe);
+    } finally {
+      await probe.evaluate((node) => node.remove());
+    }
+  }
   /** Reads a control with :hover forced (headless Chrome keeps no pointer). */
   async function hovered(page: Page, control: Locator) {
     await control.evaluate((node) => node.setAttribute('data-hover-probe', ''));
@@ -318,6 +334,23 @@ suite('experience and local command cards read in both themes', () => {
             if (focus)
               measured.ring = `${focus.style} ${focus.width}px ${focus.ratio.toFixed(2)}`;
             if (hover) measured.hover = +hover.ratio.toFixed(2);
+            // Failed and to-be-confirmed command cards: their stroke against
+            // the surface around the card (needs 3).
+            const strokes =
+              view === 'commands'
+                ? await Promise.all(
+                    ['failed', 'unknown'].map((status) =>
+                      stroke(
+                        page,
+                        page.locator(`article[data-status="${status}"]`),
+                      ),
+                    ),
+                  )
+                : [];
+            strokes.forEach((value, index) => {
+              measured[index ? 'unknownStroke' : 'failedStroke'] =
+                +value.toFixed(2);
+            });
             const write = busy[view];
             let disabled: { opacity: number; reading: Reading } | undefined;
             if (write) {
@@ -358,6 +391,8 @@ suite('experience and local command cards read in both themes', () => {
                 expect(focus.width).toBeGreaterThanOrEqual(2);
               expect(focus.ratio).toBeGreaterThanOrEqual(3);
             }
+            for (const value of strokes)
+              expect(value).toBeGreaterThanOrEqual(3);
             if (hover) {
               expect(hover.ratio).toBeGreaterThanOrEqual(hover.need);
               expect(hover.dark).toBe(theme === 'dark');

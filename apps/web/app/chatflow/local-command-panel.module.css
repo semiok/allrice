@@ -75,11 +75,9 @@
 .stderr {
   color: var(--ar-danger-text);
 }
-.root article[data-status='failed'] {
-  border-color: var(--ar-danger);
-}
+.root article[data-status='failed'],
 .root article[data-status='unknown'] {
-  border-color: var(--ar-warning);
+  border-color: var(--ar-danger);
 }
 @media (max-width: 640px) {
   .root article {
