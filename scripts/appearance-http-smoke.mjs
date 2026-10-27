@@ -43,14 +43,16 @@ async function save(appearance) {
     throw new Error(`saved ${saved}, not ${appearance}`);
 }
 
-// The theme scripts in <body>, and where the first visible element starts.
+// The scripts in <body> before its first visible element.
 async function firstPaint(path, sessionHeaders) {
   const html = await (await request(path, { headers: sessionHeaders })).text();
-  const body = html.slice(html.indexOf('<body'));
-  const content = body.search(/<(?!script|div hidden|\/|body)[a-z]/);
-  const scripts = [...body.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-    .filter((match) => match.index < content)
-    .map((match) => match[1]);
+  const scripts = [];
+  for (const tag of html
+    .slice(html.indexOf('<body'))
+    .matchAll(/<script>([\s\S]*?)<\/script>|<(\/?)([a-z]+)([^>]*)>/g)) {
+    if (tag[1] !== undefined) scripts.push(tag[1]);
+    else if (!tag[2] && tag[3] !== 'body' && !/^\s+hidden/.test(tag[4])) break;
+  }
   const workspace = scripts
     .map((script) => script.match(/,(\{"choice":[^}]*\})\)$/)?.[1])
     .find(Boolean);
