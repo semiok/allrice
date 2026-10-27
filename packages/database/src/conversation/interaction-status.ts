@@ -33,37 +33,6 @@ export async function getInteractionStatus(
       join allrice_employee_assignments a on a.id=s.employee_assignment_id
       left join allrice_employee_runs er on er.run_id=cr.active_run_id
       where cr.session_id=${sessionId}`;
-    const inputs = await tx<
-      {
-        id: string;
-        kind: string;
-        user_message_id: string;
-        created_at: Date;
-        command_state: string | null;
-        native_proof: unknown;
-        error_code: string | null;
-        run_id: string | null;
-        run_state: string | null;
-        followup_state: string | null;
-        assistant_status: string;
-        expected_turn_id: string | null;
-        expected_generation: number | null;
-        artifact_id: string | null;
-      }[]
-    >`
-      select i.client_message_id as id,i.kind,i.user_message_id,i.created_at,c.state as command_state,c.native_proof,c.error_code,
-      er.run_id,r.state as run_state,f.state as followup_state,m.status as assistant_status,c.expected_turn_id,c.expected_generation,
-      coalesce(rc.artifact_id,cs.artifact_id) as artifact_id from allrice_chat_input_requests i
-      join allrice_messages m on m.reply_to_id=i.user_message_id and m.role='assistant'
-      left join allrice_employee_runs er on er.assistant_message_id=m.id
-      left join allrice_runs r on r.id=er.run_id
-      left join allrice_conversation_followups f on f.run_id=er.run_id
-      left join allrice_conversation_commands c on c.followup_run_id=f.run_id
-      left join allrice_review_continuations rc on rc.run_id=er.run_id
-      left join allrice_changeset_runs cs on cs.run_id=er.run_id
-      where i.organization_id=${context.organizationId} and i.workspace_id=${context.workspaceId!}
-        and i.session_id=${sessionId} and i.owner_id=${context.actor.id}
-      order by i.created_at desc,i.client_message_id desc limit 30`;
     const actions = await tx<
       {
         id: string;
@@ -102,59 +71,107 @@ export async function getInteractionStatus(
             nextVersionId: runtime.next_version_id,
           }
         : null,
-      inputs: inputs.map((i) => {
-        const parsed = RuntimeNativeInputProofSchema.safeParse(i.native_proof);
-        const proof = parsed.success ? parsed.data : null;
-        const status = i.command_state
-          ? i.command_state === 'consumed' && proof?.status === 'adopted'
-            ? 'adopted'
-            : i.command_state === 'rejected'
-              ? i.error_code === 'INPUT_OUTCOME_UNKNOWN'
-                ? 'unknown'
-                : 'rejected'
-              : 'pending'
-          : !i.run_id
-            ? i.assistant_status === 'failed'
-              ? 'rejected'
-              : 'received'
-            : i.run_state === 'queued'
-              ? 'queued'
-              : i.run_state === 'running'
-                ? 'running'
-                : i.run_state === 'succeeded'
-                  ? 'completed'
-                  : i.run_state === 'canceled'
-                    ? 'canceled'
-                    : 'failed';
-        return {
-          inputId: i.id,
-          kind: i.kind,
-          status,
-          runId: i.run_id,
-          messageId: i.user_message_id,
-          artifactId: i.artifact_id,
-          createdAt: i.created_at.toISOString(),
-          turnId: i.expected_turn_id,
-          generation: i.expected_generation,
-          evidence:
-            proof?.status === 'adopted'
-              ? { sequence: proof.sequence, checkpoint: proof.checkpoint }
-              : null,
-        };
-      }),
+      inputs: await sessionInputs(tx, context, sessionId),
     };
   });
 }
 
-/** Ordinary ChatFlow timing is independent of the optional artifact workbench. */
+/** The latest durable inputs of one already-authorized Session. */
+async function sessionInputs(
+  tx: TransactionSql,
+  context: WorkbenchPrincipal,
+  sessionId: string,
+) {
+  const inputs = await tx<
+    {
+      id: string;
+      kind: string;
+      user_message_id: string;
+      created_at: Date;
+      command_state: string | null;
+      native_proof: unknown;
+      error_code: string | null;
+      run_id: string | null;
+      run_state: string | null;
+      followup_state: string | null;
+      assistant_status: string;
+      expected_turn_id: string | null;
+      expected_generation: number | null;
+      artifact_id: string | null;
+    }[]
+  >`
+    select i.client_message_id as id,i.kind,i.user_message_id,i.created_at,c.state as command_state,c.native_proof,c.error_code,
+    er.run_id,r.state as run_state,f.state as followup_state,m.status as assistant_status,c.expected_turn_id,c.expected_generation,
+    coalesce(rc.artifact_id,cs.artifact_id) as artifact_id from allrice_chat_input_requests i
+    join allrice_messages m on m.reply_to_id=i.user_message_id and m.role='assistant'
+    left join allrice_employee_runs er on er.assistant_message_id=m.id
+    left join allrice_runs r on r.id=er.run_id
+    left join allrice_conversation_followups f on f.run_id=er.run_id
+    left join allrice_conversation_commands c on c.followup_run_id=f.run_id
+    left join allrice_review_continuations rc on rc.run_id=er.run_id
+    left join allrice_changeset_runs cs on cs.run_id=er.run_id
+    where i.organization_id=${context.organizationId} and i.workspace_id=${context.workspaceId!}
+      and i.session_id=${sessionId} and i.owner_id=${context.actor.id}
+    order by i.created_at desc,i.client_message_id desc limit 30`;
+  return inputs.map((i) => {
+    const parsed = RuntimeNativeInputProofSchema.safeParse(i.native_proof);
+    const proof = parsed.success ? parsed.data : null;
+    const status = i.command_state
+      ? i.command_state === 'consumed' && proof?.status === 'adopted'
+        ? 'adopted'
+        : i.command_state === 'rejected'
+          ? i.error_code === 'INPUT_OUTCOME_UNKNOWN'
+            ? 'unknown'
+            : 'rejected'
+          : 'pending'
+      : !i.run_id
+        ? i.assistant_status === 'failed'
+          ? 'rejected'
+          : 'received'
+        : i.run_state === 'queued'
+          ? 'queued'
+          : i.run_state === 'running'
+            ? 'running'
+            : i.run_state === 'succeeded'
+              ? 'completed'
+              : i.run_state === 'canceled'
+                ? 'canceled'
+                : 'failed';
+    return {
+      inputId: i.id,
+      kind: i.kind,
+      status,
+      runId: i.run_id,
+      messageId: i.user_message_id,
+      artifactId: i.artifact_id,
+      createdAt: i.created_at.toISOString(),
+      turnId: i.expected_turn_id,
+      generation: i.expected_generation,
+      evidence:
+        proof?.status === 'adopted'
+          ? { sequence: proof.sequence, checkpoint: proof.checkpoint }
+          : null,
+    };
+  });
+}
+
+/** Ordinary ChatFlow timing is independent of the optional artifact workbench.
+ * Answer receipts ask for its inputs when the workbench is off (MET-210); the
+ * default shape stays unchanged for pages opened before a deploy. */
 export async function getSessionRunTimings(
   context: WorkbenchPrincipal,
   sessionId: string,
   db = getDatabase(),
+  options: { inputs?: boolean } = {},
 ) {
   return db.begin(async (tx) => {
     await assertWorkbenchSession(tx, context, sessionId, false, false);
-    return { runTimings: await sessionRunTimings(tx, context, sessionId) };
+    return {
+      runTimings: await sessionRunTimings(tx, context, sessionId),
+      ...(options.inputs
+        ? { inputs: await sessionInputs(tx, context, sessionId) }
+        : {}),
+    };
   });
 }
 async function sessionRunTimings(

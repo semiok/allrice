@@ -622,7 +622,7 @@ it.each([
       ['choice', []],
       ['many', ['A', 'A']],
     ],
-    'QUESTION_ANSWER_REQUIRED',
+    'QUESTION_ANSWER_INVALID',
   ],
 ] as const)(
   'a question batch %s is checked like any other answer',

@@ -362,7 +362,6 @@ describe('Runtime typed interaction contracts', () => {
       ['answer.answers.0.selected', ['unknown-option']],
       ['answer.answers.0.selected', ['CSV', 'JSON']],
       ['answer.answers.0.selected', ['CSV', 'CSV']],
-      ['answer.answers.0.selected', []],
     ] as const)
       expect(
         matchesRuntimeInteractionResponse(
@@ -385,6 +384,22 @@ describe('Runtime typed interaction contracts', () => {
     expect(matchesRuntimeInteractionResponse(item, custom, matchContext)).toBe(
       true,
     );
+    // Like DSH: an empty selection is a skip and still an answer, while one
+    // single-select item cannot carry an option and free text together.
+    expect(
+      matchesRuntimeInteractionResponse(
+        item,
+        changed(reply, 'answer.answers.0.selected', []),
+        matchContext,
+      ),
+    ).toBe(true);
+    expect(
+      matchesRuntimeInteractionResponse(
+        item,
+        changed(reply, 'answer.answers.0.custom', 'Plain text too'),
+        matchContext,
+      ),
+    ).toBe(false);
     const duplicate = {
       ...item,
       question: {

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { TimestampSchema, UuidSchema } from '../common.ts';
 import { ChecksumSchema } from '../runs.ts';
 import {
+  matchUserQuestionAnswer,
   UserQuestionAnswerSubmissionSchema,
   UserQuestionRequestSchema,
 } from '../user-questions.ts';
@@ -214,25 +215,12 @@ export type RuntimeInteractionMatchContext = z.infer<
   typeof interactionMatchContextSchema
 >;
 
+// The one answer rule shared with native delivery and parked waits (MET-210).
 function matchesQuestionAnswer(
   request: z.infer<typeof RuntimeAskUserRequestSchema>,
   response: z.infer<typeof RuntimeAskUserResponseSchema>,
 ): boolean {
-  if (request.question.questionId !== response.answer.questionId) return false;
-  const items = request.question.questions;
-  const answers = response.answer.answers;
-  if (items.length !== answers.length) return false;
-  if (new Set(answers.map((answer) => answer.id)).size !== answers.length)
-    return false;
-  return answers.every((answer) => {
-    const item = items.find((candidate) => candidate.id === answer.id);
-    if (!item) return false;
-    if (new Set(answer.selected).size !== answer.selected.length) return false;
-    if (!item.multiSelect && answer.selected.length > 1) return false;
-    if (answer.selected.length === 0 && !answer.custom) return false;
-    const labels = new Set((item.options ?? []).map((option) => option.label));
-    return answer.selected.every((label) => labels.has(label));
-  });
+  return !!matchUserQuestionAnswer(request.question, response.answer);
 }
 
 /**

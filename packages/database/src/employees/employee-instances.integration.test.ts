@@ -37,6 +37,7 @@ import {
 import {
   claimConversationSteer,
   consumeConversationSteer,
+  rejectConversationSteer,
 } from '../conversation/conversation-input.ts';
 import {
   claimMethodFileExecution,
@@ -1816,6 +1817,40 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       }),
     ).rejects.toThrow('authorization_denied');
     await replay.finish();
+  });
+
+  // MET-210: the receipt lives with the message, so it survives past the
+  // polled interactions window and without the workbench.
+  it('history keeps each question answer receipt from its command', async () => {
+    const x = await activationFixture('selected');
+    await x.show();
+    const { getChatSessionHistory } = await import('../workspace/service.ts');
+    const receipts = async () =>
+      (
+        await getChatSessionHistory(
+          x.f.a.context,
+          x.f.a.workspaceId,
+          x.run.sessionId,
+        )
+      ).messages
+        .filter((m) => m.content.interaction?.type === 'user_question_answer')
+        .map((m) => m.answerStatus);
+    const rejected = await x.answer(['确认启用'], undefined, false);
+    expect(await receipts()).toEqual(['pending']);
+    await rejectConversationSteer({
+      commandId: rejected.command.id,
+      workerId: x.runtime.workerId,
+      errorCode: 'QUESTION_ANSWER_INVALID',
+    });
+    const unknown = await x.answer(['确认启用'], undefined, false);
+    await rejectConversationSteer({
+      commandId: unknown.command.id,
+      workerId: x.runtime.workerId,
+      errorCode: 'INPUT_OUTCOME_UNKNOWN',
+    });
+    await x.answer();
+    expect(await receipts()).toEqual(['rejected', 'unknown', 'adopted']);
+    await x.run.finish();
   });
 
   it('selected department consumed activation cannot replay after company maintainer is downgraded', async () => {

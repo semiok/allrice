@@ -27,7 +27,10 @@ import {
   getInteractionStatus,
   getSessionRunTimings,
 } from './conversation/interaction-status.ts';
-import { InteractionStatusSchema } from '@allrice/contracts';
+import {
+  InteractionStatusSchema,
+  SessionRunTimingsSchema,
+} from '@allrice/contracts';
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -86,10 +89,29 @@ suite(
         await f.db`update allrice_task_clocks set active_ms=12460,changed_at=clock_timestamp()-interval '40 minutes' where run_id=${f.rootRunId}`;
         const before =
           await f.db`select * from allrice_task_clocks where run_id=${f.rootRunId}`;
+        const result = await read(f.requestContext, f.session, f.db);
+        // Pages opened before a deploy keep the old strict timings shape;
+        // only an explicit request adds the inputs (MET-210 receipts).
+        if (read === getSessionRunTimings) {
+          expect(result).not.toHaveProperty('inputs');
+          // The pre-MET-210 strict schema, as an old page still parses it.
+          expect(
+            SessionRunTimingsSchema.omit({ inputs: true })
+              .strict()
+              .parse(result),
+          ).toEqual(result);
+          expect(
+            (
+              await getSessionRunTimings(f.requestContext, f.session, f.db, {
+                inputs: true,
+              })
+            ).inputs,
+          ).toEqual([]);
+        }
         const status = InteractionStatusSchema.parse({
           runtime: null,
           inputs: [],
-          ...(await read(f.requestContext, f.session, f.db)),
+          ...result,
         });
         expect(status.runTimings).toHaveLength(1);
         expect(status.runTimings![0]).toMatchObject({

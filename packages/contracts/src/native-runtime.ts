@@ -50,7 +50,10 @@ export {
   BrowserVerificationPlanSchema,
   StaticBrowserReferenceSchema,
 } from './static-browser.ts';
-export { UserQuestionItemSchema } from './user-questions.ts';
+export {
+  UserQuestionItemSchema,
+  matchUserQuestionAnswer,
+} from './user-questions.ts';
 
 export {
   BootstrapReceiptSchema,

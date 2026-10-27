@@ -414,8 +414,24 @@ async function scenario({
         })
         .toBe(true);
       expect(requests).toHaveLength(0);
-      contentCallsAllowed = 0; // Explicit correction while waiting for the user.
-      await client.steer(sessionId, '重新检查后继续');
+      contentCallsAllowed = 0; // A typed answer while waiting for the user.
+      const question = notices.find(
+        (n) => n.method === 'session.user-question',
+      );
+      const turn = events().findLast((e) => e.type === 'turn/start');
+      // Only a typed answer answers a question (MET-210).
+      await client.steer(
+        sessionId,
+        `allrice:user-question:v1:${JSON.stringify({
+          questionId: question.params.questionId,
+          answers: [{ id: 'runtime-progress', selected: ['重新检查后继续'] }],
+        })}`,
+        {
+          inputId: randomUUID(),
+          turnId: `${sessionId}:turn:${turn.data.turn}`,
+          kind: 'ask_user',
+        },
+      );
     }
     if (cancel) {
       await expect

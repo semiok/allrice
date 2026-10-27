@@ -55,16 +55,38 @@ export async function readSessionSteering(
         runId: row.run_id,
         turnId: row.expected_turn_id,
         generation: row.expected_generation,
-        status: adopted
-          ? ('adopted' as const)
-          : row.error_code === 'INPUT_OUTCOME_UNKNOWN' ||
-              row.state === 'consumed'
-            ? ('unknown' as const)
-            : row.state === 'rejected'
-              ? ('rejected' as const)
-              : ('pending' as const),
+        status: nativeInputStatus(row.state, row.error_code, adopted),
         sequence: adopted ? proof.sequence : null,
       },
     };
   });
+}
+
+/** Receipt of one typed native input command. Only native adoption proof is
+ * "adopted"; a consumed command without it is unknown, never confirmed. */
+export function nativeInputStatus(
+  state: string,
+  errorCode: string | null,
+  adopted: boolean,
+) {
+  return adopted
+    ? ('adopted' as const)
+    : errorCode === 'INPUT_OUTCOME_UNKNOWN' || state === 'consumed'
+      ? ('unknown' as const)
+      : state === 'rejected'
+        ? ('rejected' as const)
+        : ('pending' as const);
+}
+
+export function answerReceiptStatus(
+  state: string,
+  errorCode: string | null,
+  nativeProof: unknown,
+) {
+  const proof = RuntimeNativeInputProofSchema.safeParse(nativeProof);
+  return nativeInputStatus(
+    state,
+    errorCode,
+    state === 'consumed' && proof.success && proof.data.status === 'adopted',
+  );
 }

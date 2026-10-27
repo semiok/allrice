@@ -26,6 +26,13 @@ const suite =
 const root = resolve(fileURLToPath(new URL('../../../../', import.meta.url)));
 const require = createRequire(import.meta.url);
 const A = '11111111-1111-4111-8111-111111111111';
+// Question answers: stored message ids differ from the client input ids.
+const answerA = '7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a7a';
+const answerB = '7b7b7b7b-7b7b-4b7b-8b7b-7b7b7b7b7b7b';
+const answerC = '7c7c7c7c-7c7c-4c7c-8c7c-7c7c7c7c7c7c';
+const inputA = '6a6a6a6a-6a6a-4a6a-8a6a-6a6a6a6a6a6a';
+const inputB = '6b6b6b6b-6b6b-4b6b-8b6b-6b6b6b6b6b6b';
+const inputC = '6c6c6c6c-6c6c-4c6c-8c6c-6c6c6c6c6c6c';
 const B = '22222222-2222-4222-8222-222222222222';
 const C = '33333333-3333-4333-8333-333333333333';
 const runId = '44444444-4444-4444-8444-444444444444';
@@ -274,9 +281,40 @@ suite(
         nextSteps?: TaskNextSteps;
         delayNextStepsA?: boolean;
         readiness?: WorkspaceReadiness['capabilities'];
+        /** Render ChatFlow with the artifact workbench switched off. */
+        workbenchOff?: boolean;
+        /** Question answers already in session A: live status from the
+         * polled interactions, durable status from history. */
+        answers?: {
+          id: string;
+          inputId: string;
+          label: string;
+          live?: 'adopted' | 'pending' | 'rejected';
+          history?: 'adopted' | 'pending' | 'rejected' | 'unknown';
+        }[];
       } = {},
     ) {
       const pending: Pending[] = [];
+      // Read on every poll, so a test can change an answer's live status.
+      const liveInputs = () =>
+        (options.answers ?? []).flatMap((item) =>
+          item.live
+            ? [
+                {
+                  inputId: item.inputId,
+                  kind: 'ask_user',
+                  status: item.live,
+                  runId,
+                  messageId: item.id,
+                  artifactId: null,
+                  createdAt: now,
+                  turnId: null,
+                  generation: null,
+                  evidence: null,
+                },
+              ]
+            : [],
+        );
       const reads: string[] = [];
       const writes: string[] = [];
       const streams = new Set<ServerResponse>();
@@ -311,6 +349,21 @@ suite(
             message('old-' + i, 'Old paragraph. '.repeat(35), 'assistant'),
           ),
         );
+      for (const item of options.answers ?? [])
+        messages[A]!.push({
+          ...message(item.id, `执行范围：${item.label}`),
+          content: {
+            text: `执行范围：${item.label}`,
+            interaction: {
+              type: 'user_question_answer',
+              answer: {
+                questionId: 'question-1',
+                answers: [{ id: 'q1', selected: [item.label] }],
+              },
+            },
+          },
+          ...(item.history ? { answerStatus: item.history } : {}),
+        } as ReturnType<typeof message>);
       if (options.running || options.settled)
         messages[A]!.push(
           message(
@@ -540,7 +593,7 @@ suite(
           answer(response, {
             runtime: null,
             pendingActions: [],
-            inputs: [],
+            inputs: liveInputs(),
             runTimings: showTiming
               ? [
                   {
@@ -562,7 +615,7 @@ suite(
           return;
         }
         if (path.endsWith('/timings')) {
-          answer(response, { runTimings: [] });
+          answer(response, { runTimings: [], inputs: liveInputs() });
           return;
         }
         if (path.endsWith('/events')) {
@@ -662,7 +715,7 @@ suite(
         await page.goto(
           liveOrigin
             ? `${liveOrigin}/chatflow?session=${A}`
-            : `${origin}/?session=${A}`,
+            : `${origin}/?session=${A}${options.workbenchOff ? '&workbench=off' : ''}`,
         );
         if ((options.width ?? 1440) >= 760)
           await page.getByRole('treeitem', { name: /^Session B/ }).waitFor();
@@ -1099,6 +1152,134 @@ suite(
       20_000,
     );
 
+    // MET-210: saving an answer is only a submission; the receipt says
+    // "已确认" only once the run took it, and shows a rejected one as such.
+    it.each([
+      ['adopted', '已确认', 'Rice 已收到你的回答'],
+      ['pending', '已提交', '等待 Rice 接收这次回答'],
+      ['rejected', '未被采纳', '这次回答没有被 Rice 接收'],
+    ] as const)(
+      'shows a %s question answer receipt as %s',
+      async (status, title, note) => {
+        const f = await fixture({
+          answers: [
+            { id: answerA, inputId: inputA, label: '只读检查', live: status },
+          ],
+        });
+        try {
+          const receipt = f.page.getByRole('article', {
+            name: '用户确认结果',
+          });
+          // The note only appears once the polled status arrived.
+          await receipt.getByText(note, { exact: true }).waitFor();
+          expect(await receipt.getByText(title, { exact: true }).count()).toBe(
+            1,
+          );
+          expect(await receipt.getByText('只读检查').count()).toBe(1);
+          if (status !== 'adopted')
+            expect(await receipt.getByText('已确认').count()).toBe(0);
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+      15_000,
+    );
+    // MET-210: answers past the polled window (or with the workbench off) keep
+    // the receipt stored in history; a live status still wins per message.
+    it('keeps each answer receipt from history and live status', async () => {
+      const f = await fixture({
+        answers: [
+          {
+            id: answerA,
+            inputId: inputA,
+            label: '只读检查',
+            history: 'adopted',
+          },
+          {
+            id: answerB,
+            inputId: inputB,
+            label: '全部检查',
+            history: 'pending',
+            live: 'rejected',
+          },
+          {
+            id: answerC,
+            inputId: inputC,
+            label: '抽样检查',
+            history: 'unknown',
+          },
+        ],
+      });
+      try {
+        const receipt = (label: string) =>
+          f.page
+            .getByRole('article', { name: '用户确认结果' })
+            .filter({ hasText: label });
+        await receipt('全部检查')
+          .getByText('这次回答没有被 Rice 接收', { exact: true })
+          .waitFor();
+        expect(
+          await receipt('只读检查')
+            .getByText('已确认', { exact: true })
+            .count(),
+        ).toBe(1);
+        expect(
+          await receipt('全部检查')
+            .getByText('未被采纳', { exact: true })
+            .count(),
+        ).toBe(1);
+        expect(
+          await receipt('抽样检查')
+            .getByText('未能确认', { exact: true })
+            .count(),
+        ).toBe(1);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }, 15_000);
+    // MET-210: without the workbench the receipt still follows the answer's
+    // command, read from the ordinary timings poll, before the Run ends.
+    it('updates an answer receipt with the workbench off', async () => {
+      const answers: {
+        id: string;
+        inputId: string;
+        label: string;
+        live: 'pending' | 'adopted';
+        history: 'pending';
+      }[] = [
+        {
+          id: answerA,
+          inputId: inputA,
+          label: '只读检查',
+          live: 'pending',
+          history: 'pending',
+        },
+      ];
+      const f = await fixture({ answers, workbenchOff: true });
+      try {
+        const receipt = f.page.getByRole('article', { name: '用户确认结果' });
+        await receipt
+          .getByText('等待 Rice 接收这次回答', { exact: true })
+          .waitFor();
+        answers[0]!.live = 'adopted';
+        await receipt
+          .getByText('Rice 已收到你的回答', { exact: true })
+          .waitFor();
+        expect(f.reads.some((url) => url.includes('/interactions'))).toBe(
+          false,
+        );
+        expect(
+          f.reads.some(
+            (url) => url.includes('/timings') && url.includes('inputs=1'),
+          ),
+        ).toBe(true);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }, 15_000);
     it('restores image and text on upload failure, then retries the attachment', async () => {
       const f = await fixture({ uploadPending: true });
       try {

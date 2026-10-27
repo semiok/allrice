@@ -47,6 +47,55 @@ export const UserQuestionAnswerSubmissionSchema = z
   })
   .strict();
 
+type AnsweredQuestions = {
+  questionId: string;
+  questions: readonly {
+    id: string;
+    multiSelect?: boolean;
+    options?: readonly { label: string }[];
+  }[];
+};
+
+/** The one AllRice check of an answer batch against its questions (MET-210),
+ * matching DSH: each question answered exactly once, and a skipped item
+ * ({ id, selected: [] }) is an answer. Labels must be the question's options;
+ * a single-select question takes at most one label and never a label plus
+ * custom text. Returns the answers in question order, or null. */
+export function matchUserQuestionAnswer(
+  request: AnsweredQuestions,
+  submission: unknown,
+): { answers: z.infer<typeof UserQuestionAnswerItemSchema>[] } | null {
+  const parsed = UserQuestionAnswerSubmissionSchema.safeParse(submission);
+  if (
+    !parsed.success ||
+    parsed.data.questionId !== request.questionId ||
+    parsed.data.answers.length !== request.questions.length
+  )
+    return null;
+  const byId = new Map(parsed.data.answers.map((a) => [a.id, a]));
+  if (byId.size !== parsed.data.answers.length) return null;
+  const answers = [];
+  for (const question of request.questions) {
+    const answer = byId.get(question.id);
+    const labels = new Set((question.options ?? []).map((o) => o.label));
+    if (
+      !answer ||
+      new Set(answer.selected).size !== answer.selected.length ||
+      answer.selected.some((label) => !labels.has(label)) ||
+      (!question.multiSelect &&
+        (answer.selected.length > 1 ||
+          (answer.selected.length > 0 && !!answer.custom)))
+    )
+      return null;
+    answers.push({
+      id: question.id,
+      selected: [...answer.selected],
+      ...(answer.custom ? { custom: answer.custom } : {}),
+    });
+  }
+  return { answers };
+}
+
 export type UserQuestionItem = z.infer<typeof UserQuestionItemSchema>;
 export type UserQuestionRequest = z.infer<typeof UserQuestionRequestSchema>;
 export type UserQuestionAnswerSubmission = z.infer<

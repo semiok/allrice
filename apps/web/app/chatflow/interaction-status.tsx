@@ -27,19 +27,23 @@ export function useInteractionStatus(
       const requestGeneration = ++generation.current;
       try {
         const response = await fetch(
-          `/api/v1/sessions/${sessionId}/${workbenchEnabled ? 'interactions' : 'timings'}?workspaceId=${workspaceId}`,
+          `/api/v1/sessions/${sessionId}/${workbenchEnabled ? 'interactions' : 'timings'}?workspaceId=${workspaceId}${workbenchEnabled ? '' : '&inputs=1'}`,
           { headers, cache: 'no-store', signal },
         );
         if (!response.ok) throw new Error('交互状态暂不可用');
         const body = await response.json();
-        const data = workbenchEnabled
-          ? schema.parse(body)
-          : {
-              ...SessionRunTimingsSchema.parse(body),
+        const timings = workbenchEnabled
+          ? null
+          : SessionRunTimingsSchema.parse(body);
+        const data = timings
+          ? {
+              ...timings,
               runtime: null,
-              inputs: [],
+              // Answer receipts still follow their inputs without the workbench.
+              inputs: timings.inputs ?? [],
               pendingActions: [],
-            };
+            }
+          : schema.parse(body);
         if (!signal?.aborted && requestGeneration === generation.current) {
           setValue({ scope, data });
           setError('');

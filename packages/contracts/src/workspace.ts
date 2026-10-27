@@ -141,6 +141,10 @@ export const ChatMessageSchema = z
       })
       .strict()
       .optional(),
+    // Durable receipt of a typed question answer, from its command (MET-210).
+    answerStatus: z
+      .enum(['pending', 'adopted', 'rejected', 'unknown'])
+      .optional(),
     workMethods: z.array(WorkMethodSchema).max(11).optional(),
     applicationFailure: McpFailureKindSchema.optional(),
     id: UuidSchema,

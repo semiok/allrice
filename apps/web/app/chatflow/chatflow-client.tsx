@@ -85,6 +85,7 @@ import { useMonthlyQuota } from './use-monthly-quota';
 import { usePersonalPreferences } from './use-personal-preferences';
 import { MessageFeedbackProvider } from './message-feedback';
 import { ChatTranscript } from './chat-transcript';
+import { InputStatusContext } from './transcript-user-message';
 import { ConversationTurnNavigator } from './conversation-turn-navigator';
 import { ArtifactWorkbench } from './artifact-workbench';
 import { TerminalCleanupStatus } from './terminal-workbench';
@@ -765,6 +766,13 @@ export function ChatFlowClient({
     tenantHeaders,
   );
   const reloadInteractions = interactions.reload;
+  const inputStatus = useMemo(
+    () =>
+      new Map(
+        (interactions.data?.inputs ?? []).map((i) => [i.messageId, i.status]),
+      ),
+    [interactions.data?.inputs],
+  );
   const continueFromWorkbench = useCallback(
     (runId: string) => {
       if (!activeId) return;
@@ -2205,37 +2213,39 @@ export function ChatFlowClient({
                     workspaceId={workspace.workspaceId}
                     headers={tenantHeaders}
                   >
-                    <ChatTranscript
-                      onOpenReference={openReference}
-                      onOpenAutomation={(id) => openAutomationTask({ id })}
-                      streamingOutput={preferences.value.streamingOutput}
-                      fontSize={preferences.value.fontSize}
-                      transcriptView={preferences.value.transcriptView}
-                      collapseTiming={preferences.value.collapseTiming}
-                      employeeName={activeEmployeeName}
-                      atBottom={atTranscriptBottom}
-                      localCommandsEnabled={localCommandsEnabled}
-                      localMcpEnabled={localMcpEnabled}
-                      assistantTrees={assistants.trees}
-                      onResolveArtifactLink={workbench.resolveDownloadLink}
-                      runTimings={interactions.data?.runTimings}
-                      onAssistantChanged={assistants.reload}
-                      messages={transcriptMessages}
-                      messageImages={messageImages}
-                      onLoadRunTrace={loadRunTrace}
-                      onRecoverRun={recoverRun}
-                      onScrollToBottom={scrollToTranscriptBottom}
-                      recoverableRunView={recoverableRunView}
-                      historyStale={historyStale}
-                      onRefreshHistory={refreshHistory}
-                      runTraces={runTraces}
-                      runViews={runViews}
-                      tenantHeaders={tenantHeaders}
-                      transcriptColumn={transcriptColumn}
-                      workspaceId={workspace.workspaceId}
-                      artifacts={workbench.artifacts}
-                      onOpenArtifact={showWorkbench}
-                    />
+                    <InputStatusContext.Provider value={inputStatus}>
+                      <ChatTranscript
+                        onOpenReference={openReference}
+                        onOpenAutomation={(id) => openAutomationTask({ id })}
+                        streamingOutput={preferences.value.streamingOutput}
+                        fontSize={preferences.value.fontSize}
+                        transcriptView={preferences.value.transcriptView}
+                        collapseTiming={preferences.value.collapseTiming}
+                        employeeName={activeEmployeeName}
+                        atBottom={atTranscriptBottom}
+                        localCommandsEnabled={localCommandsEnabled}
+                        localMcpEnabled={localMcpEnabled}
+                        assistantTrees={assistants.trees}
+                        onResolveArtifactLink={workbench.resolveDownloadLink}
+                        runTimings={interactions.data?.runTimings}
+                        onAssistantChanged={assistants.reload}
+                        messages={transcriptMessages}
+                        messageImages={messageImages}
+                        onLoadRunTrace={loadRunTrace}
+                        onRecoverRun={recoverRun}
+                        onScrollToBottom={scrollToTranscriptBottom}
+                        recoverableRunView={recoverableRunView}
+                        historyStale={historyStale}
+                        onRefreshHistory={refreshHistory}
+                        runTraces={runTraces}
+                        runViews={runViews}
+                        tenantHeaders={tenantHeaders}
+                        transcriptColumn={transcriptColumn}
+                        workspaceId={workspace.workspaceId}
+                        artifacts={workbench.artifacts}
+                        onOpenArtifact={showWorkbench}
+                      />
+                    </InputStatusContext.Provider>
                   </MessageFeedbackProvider>
                 </div>
                 <div

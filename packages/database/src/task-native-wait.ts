@@ -1,6 +1,6 @@
 import {
   NativeQuestionCheckpointSchema,
-  UserQuestionAnswerSubmissionSchema,
+  matchUserQuestionAnswer,
   UuidSchema,
   type ExecutionContext,
   type NativeQuestionCheckpoint,
@@ -14,26 +14,9 @@ function matchesQuestion(checkpoint: NativeQuestionCheckpoint, text: string) {
   const prefix = 'allrice:user-question:v1:';
   if (!text.startsWith(prefix)) return false;
   try {
-    const answer = UserQuestionAnswerSubmissionSchema.parse(
+    return !!matchUserQuestionAnswer(
+      checkpoint,
       JSON.parse(text.slice(prefix.length)),
-    );
-    return (
-      answer.questionId === checkpoint.questionId &&
-      answer.answers.length === checkpoint.questions.length &&
-      new Set(answer.answers.map((a) => a.id)).size === answer.answers.length &&
-      checkpoint.questions.every((q) => {
-        const a = answer.answers.find((a) => a.id === q.id);
-        // An empty selection is DSH's skipped item, a valid answer.
-        return (
-          !!a &&
-          new Set(a.selected).size === a.selected.length &&
-          (q.multiSelect ||
-            (a.selected.length <= 1 && !(a.selected.length && a.custom))) &&
-          a.selected.every((label) =>
-            q.options?.some((option) => option.label === label),
-          )
-        );
-      })
     );
   } catch {
     return false;

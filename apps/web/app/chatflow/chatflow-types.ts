@@ -103,6 +103,7 @@ export interface Message {
     status: 'pending' | 'adopted' | 'rejected' | 'unknown';
     sequence: number | null;
   };
+  answerStatus?: 'pending' | 'adopted' | 'rejected' | 'unknown';
   applicationFailure?: McpFailureKind;
   workMethods?: WorkMethod[];
   id: string;

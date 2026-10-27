@@ -16,7 +16,10 @@ import { SessionReferenceSnapshotsSchema } from '@allrice/contracts';
 export { SessionReferenceError } from './session-references.ts';
 import { readWorkAutomation } from '../work-automation.ts';
 import { readSessionWorkMethods } from './work-methods.ts';
-import { readSessionSteering } from './steering-history.ts';
+import {
+  answerReceiptStatus,
+  readSessionSteering,
+} from './steering-history.ts';
 import {
   readScheduleMessageSources,
   readCreatedAutomationIds,
@@ -164,6 +167,9 @@ interface MessageRow {
   completed_at: Date | null;
   run_id?: string | null;
   question_answer_payload?: string | null;
+  question_state?: string | null;
+  question_error_code?: string | null;
+  question_native_proof?: unknown;
   queued_run_id?: string | null;
   queued_created_at?: Date | null;
   hide_from_transcript?: boolean;
@@ -1008,7 +1014,10 @@ export async function getChatSessionHistory(
         then queued.run_id end as queued_run_id,
       (queued_run.error_code in ('QUEUED_MESSAGE_EDITED','QUEUED_MESSAGE_REMOVED')
         or (m.role='assistant' and queued.mode='steer_only' and m.status='pending')) as hide_from_transcript,
-      question_command.message as question_answer_payload
+      question_command.message as question_answer_payload,
+      question_command.state as question_state,
+      question_command.error_code as question_error_code,
+      question_command.native_proof as question_native_proof
     from allrice_messages m
     left join allrice_employee_runs er on er.assistant_message_id = m.id
     left join allrice_conversation_followups queued on queued.user_message_id=coalesce(m.reply_to_id,m.id)
@@ -1179,6 +1188,17 @@ export async function getChatSessionHistory(
             : {}),
           ...(steeringByMessage.has(message.id)
             ? { steering: steeringByMessage.get(message.id)! }
+            : {}),
+          ...(message.role === 'user' &&
+          message.question_state &&
+          mapped.content.interaction?.type === 'user_question_answer'
+            ? {
+                answerStatus: answerReceiptStatus(
+                  message.question_state,
+                  message.question_error_code ?? null,
+                  message.question_native_proof,
+                ),
+              }
             : {}),
           ...(message.role === 'assistant' && message.run_id
             ? {
