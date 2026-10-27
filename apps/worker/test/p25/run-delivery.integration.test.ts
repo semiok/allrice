@@ -212,7 +212,8 @@ suite('PR1a: independent Worker delivery, isolated PostgreSQL', () => {
       await fixture.db`select active_run_id from allrice_conversation_runtimes where session_id=${f.session}`;
     expect(runtime!.active_run_id).toBeNull();
     const [stored] =
-      await fixture.db`select object_id,run_id,format from allrice_deliverable_versions where id=${artifact.version.id}`;
+      await fixture.db`select v.object_id,a.run_id,v.format from allrice_deliverable_versions v
+        join allrice_workbench_artifacts a on a.version_id=v.id where v.id=${artifact.version.id}`;
     expect(stored).toMatchObject({
       object_id: artifact.object.id,
       run_id: f.rootRunId,
@@ -263,7 +264,7 @@ suite('PR1a: independent Worker delivery, isolated PostgreSQL', () => {
     [
       'policy expired',
       async (f: Subject) => {
-        await fixture.db`update allrice_policy_snapshots set expires_at=clock_timestamp()-interval '1 second' where id=${f.policy}`;
+        await fixture.db`update allrice_policy_snapshots set issued_at=clock_timestamp()-interval '1 hour', expires_at=clock_timestamp()-interval '1 second' where id=${f.policy}`;
       },
     ],
     [
@@ -276,6 +277,7 @@ suite('PR1a: independent Worker delivery, isolated PostgreSQL', () => {
       'native pin belongs to another owner/context',
       async (f: Subject) => {
         const other = await subject();
+        await fixture.db`update allrice_conversation_runtimes set thread_id=null where session_id=${other.session}`;
         await fixture.db`update allrice_conversation_runtimes set thread_id=${other.native} where session_id=${f.session}`;
       },
     ],
