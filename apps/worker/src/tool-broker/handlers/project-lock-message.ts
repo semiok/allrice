@@ -21,10 +21,10 @@ export function projectLockPlatformMessage(f: ProjectLockPlatformFacts) {
     }的安装包，本次没有执行。`,
   ];
   if (bridges.length)
-    parts.push(`本机 Bridge 是 ${bridges.map(cpu).join('、')}，装不上。`);
+    parts.push(`这台电脑是 ${bridges.map(cpu).join('、')}，装不上。`);
   if (bridges.length && !current.length)
     parts.push(
-      '本机 Bridge 的版本也不支持本次请求用到的功能，换成匹配的锁也要先升级 Bridge。',
+      '本机 AllRice 助手的版本也不支持本次请求用到的功能，换成匹配的锁也要先升级 AllRice 助手。',
     );
   if (cloudMayRun && !f.toolLocal && !lockFitsServer)
     parts.push(`云端是 ${cpu(f.serverArchitecture)}，也装不上。`);

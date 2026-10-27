@@ -449,7 +449,7 @@ export function productionAssistantController(input: {
             } catch {
               throw new HandlerError(
                 'ASSISTANT_MCP_DENIED',
-                '助手只能调用本轮已授权的只读 MCP 工具；请主员工先用 describe 取得精确参数 schema 并随委派内容提供。describe、连接管理和写入请交由主员工执行。',
+                '子智能体只能调用本轮已授权的只读 MCP 工具；请主员工先用 describe 取得精确参数 schema 并随委派内容提供。describe、连接管理和写入请交由主员工执行。',
                 false,
               );
             }

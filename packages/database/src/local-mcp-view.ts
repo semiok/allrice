@@ -34,7 +34,7 @@ export async function listLocalMcpOperations(
       return {
         snapshot: RuntimeOperationSnapshotSchema.parse(row.snapshot),
         payload: RuntimeLocalMcpPayloadSchema.parse(row.bridge_payload),
-        deviceName: row.name ?? 'Bridge',
+        deviceName: row.name ?? 'AllRice 助手',
         approval: row.approval_id
           ? RuntimeActionApprovalSnapshotSchema.parse(
               await getRuntimeActionApproval(

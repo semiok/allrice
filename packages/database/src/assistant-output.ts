@@ -243,7 +243,7 @@ export async function publishAssistantOutput(
           format: 'json',
           object: created,
           changeSummary:
-            '助手生成内容；仅核验存储与归属，不代表内容或外部动作已独立核实。',
+            '子智能体生成内容；仅核验存储与归属，不代表内容或外部动作已独立核实。',
         },
         tx,
       );

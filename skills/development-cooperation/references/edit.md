@@ -1,4 +1,4 @@
-# 编辑助手
+# 编辑子智能体
 
 inspect 使用平台给出的编辑 `assignmentId`，不要同时传 candidate。读取分工中准确的 before/after，保留真实换行与所有字节。只修改获准文件，不改测试来迎合实现。
 

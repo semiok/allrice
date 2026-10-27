@@ -229,7 +229,7 @@ export async function reviewEmployeePublication(
           (action.action === 'assistant.delegate' && action.effect !== 'allow')
         )
           warnings.push(
-            `${target.organizationName} / ${target.name}：${action.action} 当前${action.effect === 'deny' ? '策略禁止' : '策略不满足执行条件'}（${action.reason}），请检查该租户的执行设置${action.action === 'assistant.delegate' ? '；助手委派需要允许执行' : ''}。`,
+            `${target.organizationName} / ${target.name}：${action.action} 当前${action.effect === 'deny' ? '策略禁止' : '策略不满足执行条件'}（${action.reason}），请检查该租户的执行设置${action.action === 'assistant.delegate' ? '；子智能体委派需要允许执行' : ''}。`,
           );
       return {
         id: target.id,

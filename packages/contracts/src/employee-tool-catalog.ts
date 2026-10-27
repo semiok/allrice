@@ -68,7 +68,7 @@ const requirements: Partial<Record<AllRiceToolName, ToolRequirements>> = {
     services: ['assistants', 'workbench', 'changeset'],
     environment: 'device',
     setupHint:
-      '开发协作使用已连接的电脑和已选项目目录，测试环境由 Bridge 自动准备；可在设置 → 我的电脑查看状态。',
+      '开发协作使用已连接的电脑和已选项目目录，测试环境由 AllRice 助手自动准备；可在设置 → 我的电脑查看状态。',
   },
   'local.mcp.call': {
     requiredTools: ['local.mcp.discover'],
@@ -279,12 +279,12 @@ export function employeeToolConfigurationErrors(
         errors.push(`工具 ${name} 所需能力 ${capability} 已被员工策略禁止`);
     if (tool.target === 'bridge') {
       if (definition.securityPolicy.bridgeAccess === 'none')
-        errors.push(`Bridge 已禁用，但员工仍配置了 ${name}`);
+        errors.push(`AllRice 助手已禁用，但员工仍配置了 ${name}`);
       else if (
         definition.securityPolicy.bridgeAccess === 'read_only' &&
         tool.capability !== 'storage:read'
       )
-        errors.push(`Bridge 为只读，不能配置 ${name}`);
+        errors.push(`AllRice 助手为只读，不能配置 ${name}`);
     }
   }
   if (new Set(names).size !== names.length) errors.push('工具清单包含重复项');

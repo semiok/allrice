@@ -1,6 +1,6 @@
 # 报告与交付
 
-每名助手最终通过 `assistant.report` 返回结果。evidence 只放属于该子助手的已登记成果 `{id,digest}`；根候选、命令 operationId 或 review ID 不能冒充助手的成果引用。没有已登记成果时使用 `evidence=[]` 与 `output={name:"verification-result",content:"说明并引用真实候选、命令或审查记录"}`。仅在没有未完成事项时使用 completed / incomplete=[]。
+每个子智能体最终通过 `assistant.report` 返回结果。evidence 只放属于该子智能体的已登记成果 `{id,digest}`；根候选、命令 operationId 或 review ID 不能冒充子智能体的成果引用。没有已登记成果时使用 `evidence=[]` 与 `output={name:"verification-result",content:"说明并引用真实候选、命令或审查记录"}`。仅在没有未完成事项时使用 completed / incomplete=[]。
 
 建议报告四项：完成了什么、候选 artifactId/digest、实际测试或审查依据、仍未完成什么。主员工必须使用平台 `deliver` 回执作为正式交付证据，回复可下载的真实成果链接，不自行拼接或编造链接。
 

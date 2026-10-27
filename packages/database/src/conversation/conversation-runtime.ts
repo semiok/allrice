@@ -532,7 +532,7 @@ export async function listTenantRuntimeInventory(
     bridge: row.bridge_device_id
       ? {
           deviceId: row.bridge_device_id,
-          name: row.bridge_name ?? 'Rice Bridge',
+          name: row.bridge_name ?? 'AllRice 助手',
           platform: row.bridge_platform ?? 'unknown',
           protocolVersion: row.bridge_protocol_version,
           capabilities: row.bridge_capabilities ?? [],

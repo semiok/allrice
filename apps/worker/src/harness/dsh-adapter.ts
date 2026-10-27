@@ -1323,7 +1323,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
               presentation: 'lifecycle',
               status: 'failed',
               label: '任务尚未完成',
-              summary: '助手已返回可用内容，但仍有未完成事项；已有结果已保留。',
+              summary:
+                '子智能体已返回可用内容，但仍有未完成事项；已有结果已保留。',
               sourceEventType: 'allrice/assistant-partial',
               sourcePayload: { status: 'partial' },
             });
@@ -2492,8 +2493,8 @@ function nativeToolFailureSummary(content: unknown) {
     return '网页地址解析异常，未能确认公开网络地址。';
   if (/无法独立确认域名/.test(value))
     return '网页域名解析暂时失败，请稍后重试。';
-  if (/childRunId|当前任务没有这个助手/.test(value))
-    return '没有可接收消息的助手，当前任务可直接继续。';
+  if (/childRunId|当前任务没有这个子智能体/.test(value))
+    return '没有可接收消息的子智能体，当前任务可直接继续。';
   if (/WEB_TIMEOUT|网页读取超时/.test(value))
     return '网页响应超时，请尝试其他来源。';
   return '工具执行失败';

@@ -1,4 +1,4 @@
-# 独立审查助手
+# 独立审查子智能体
 
 用平台给出的 `candidate={artifactId,digest}` inspect，不传编辑 assignmentId。核对候选差异、原任务范围和同版真实测试回执；不能审查自己编写或测试的候选。
 

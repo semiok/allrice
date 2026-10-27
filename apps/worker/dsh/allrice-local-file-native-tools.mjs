@@ -7,7 +7,7 @@ const path = {
   type: 'string',
   required: true,
   description:
-    'Exact relative filename inside the current authorized Bridge folder. Preserve spaces and Chinese characters; never supply an absolute path.',
+    'Exact relative filename inside the current authorized AllRice 助手 folder. Preserve spaces and Chinese characters; never supply an absolute path.',
 };
 const checksum = {
   type: 'string',
@@ -30,10 +30,10 @@ const expected = {
 };
 const descriptions = {
   inspect:
-    'Inspect one file in the authorized Bridge folder and return its content checksum and physical file version. This does not upload bytes.',
+    'Inspect one file in the authorized AllRice 助手 folder and return its content checksum and physical file version. This does not upload bytes.',
   import:
     'Upload the exact inspected local file as an existing workspace attachment. Pass expected from local_file_inspect; respect requests to keep local inputs off the platform. An uploaded receipt means the server verified the actual bytes.',
-  save: 'Save an existing authorized platform object into the Bridge folder using its objectId and checksum. Create-only: never overwrite an existing name. Report the physical save separately from platform download availability.',
+  save: 'Save an existing authorized platform object into the AllRice 助手 folder using its objectId and checksum. Create-only: never overwrite an existing name. Report the physical save separately from platform download availability.',
   open: 'Ask the Mac default application to open the exact inspected or saved document/image. The system receipt proves the open action was accepted, not that the user read the file. Executables and scripts are refused.',
   reveal:
     'Reveal the exact inspected or saved document/image in Finder. Use its current expected version and relative filename; do not invent a disk path or claim the user read it.',

@@ -41,8 +41,8 @@ type Skill = EmployeeSkillChoice & {
 const basicTools = [
   {
     name: 'assistant.delegate',
-    label: '调用辅助助手',
-    description: '把子任务交给辅助助手处理，再汇总结果。',
+    label: '调用子智能体',
+    description: '把子任务交给子智能体处理，再汇总结果。',
   },
   {
     name: 'web.search',

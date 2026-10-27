@@ -31,7 +31,7 @@ export function assertAssistantProviderOutputBound(
     )
       throw new HandlerError(
         'ASSISTANT_SUBSCRIPTION_ROUTE_UNVERIFIED',
-        '订阅身份与冻结执行路线不一致；本次未启动助手。',
+        '订阅身份与冻结执行路线不一致；本次未启动子智能体。',
         false,
       );
     return;
@@ -42,7 +42,7 @@ export function assertAssistantProviderOutputBound(
   )
     throw new HandlerError(
       'ASSISTANT_PROVIDER_OUTPUT_BOUND_UNSUPPORTED',
-      '当前模型协议尚未验证助手输出上限；本次未启动模型或原生助手。',
+      '当前模型协议尚未验证子智能体输出上限；本次未启动模型或原生子智能体。',
       false,
     );
 }

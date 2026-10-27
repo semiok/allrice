@@ -6,7 +6,7 @@
 
 新项目用 `workspace_project` 的 `open` 保存源码与锁文件。项目在每个 Run 中需要打开一次：新一轮继续已有项目时，先从当前会话和工具回执取得上一版完整 `project` 引用，使用 `open` 的 `source` 传入该引用的 `snapshot`，恢复同一个 projectId；不要通过 `files` 重建另一个项目。以恢复返回的完整版本调用 `list`、`read` 或 `search` 检查，以上一版确切引用保留交付基线。这些读取不会修改项目。记录用户给定的原断言和第一次执行结果。引用包含 projectId、snapshot.kind、snapshot.id 和 snapshot.checksum，不能用源码摘要替换快照引用。
 
-需要安装公开依赖、尚无完整锁文件时，先用 `resolve` 提供 `manager`（pnpm 或 uv）和准确的包名、版本 `packages`。它通过受控云端网络查询依赖，不上传用户文件；用户明确要求只在本地执行时不可使用。不要猜测传递依赖或校验值，也不要改用通用脚本绕过依赖准备。Node 标准配置最多 128 个锁定包；明确需要较大依赖树时可申请 `resourceProfile: web-development`，云端最多 256 个，旧 Bridge 仍最多 128 个。uv 的 `resolve` 只在用户指明运行项目的机器（Intel Mac 为 `amd64`，Apple 芯片为 `arm64`），或执行结果指出本机 Bridge 的 CPU 与锁不符并给出该值时，带 `architecture`；其他情况不传，按服务器 CPU 固定安装包。返回的 `architectures` 是这个锁能安装的 CPU。拒绝授权或资源不足时遵守实际拒绝结果。
+需要安装公开依赖、尚无完整锁文件时，先用 `resolve` 提供 `manager`（pnpm 或 uv）和准确的包名、版本 `packages`。它通过受控云端网络查询依赖，不上传用户文件；用户明确要求只在本地执行时不可使用。不要猜测传递依赖或校验值，也不要改用通用脚本绕过依赖准备。Node 标准配置最多 128 个锁定包；明确需要较大依赖树时可申请 `resourceProfile: web-development`，云端最多 256 个，旧版 AllRice 助手仍最多 128 个。uv 的 `resolve` 只在用户指明运行项目的机器（Intel Mac 为 `amd64`，Apple 芯片为 `arm64`），或执行结果指出这台电脑的 CPU 与锁不符并给出该值时，带 `architecture`；其他情况不传，按服务器 CPU 固定安装包。返回的 `architectures` 是这个锁能安装的 CPU。拒绝授权或资源不足时遵守实际拒绝结果。
 
 `resolve` 返回准确的 `project` 和 `projectPreparation`，状态为已解析、尚未安装。用 `apply` 加入验证程序后，将新的 `sourceDigest` 与该锁文件配套，再执行安装和验证。只有执行回执确认安装成功、验证程序也成功，才能说已安装或可用。解析失败时保留返回的诊断成果；不能因诊断文件已生成就声称安装成功。
 
@@ -16,7 +16,7 @@
 
 每次 `execute` 和 `service_start` 都带对应版本的 `projectPreparation`：实际 projectId、sourceDigest、锁路径和锁 checksum；选择当前支持的固定包管理器版本和实际依赖，不猜包的地址或 SHA。离线、安装脚本及资源选择遵循项目需求和原工具约束。无依赖 Node 小工具可以使用 pnpm 10.33.3、空 packages、禁止安装脚本和离线准备。
 
-执行命令只能在保存项目的受管目录中进行。不使用新执行预算时，普通配置最高 60 秒、512MiB、64个进程；只有明确的 Web 开发配置才使用既有更大资源限制。有限 execute 可声明 execution:{version:1,kind:"compute"|"install"|"build"}，由平台采用本轮冻结的沙箱单次执行上限（默认10分钟，管理员可设30分钟或1小时）；准备、安装和运行共用时钟，有实际进展才续时，仍受任务剩余时间限制。kind 不授予更高上限，不能自行设置预算。旧 Bridge 尚不支持时会明确拒绝本地新契约；不得因已选位置的执行失败而换端重跑。
+执行命令只能在保存项目的受管目录中进行。不使用新执行预算时，普通配置最高 60 秒、512MiB、64个进程；只有明确的 Web 开发配置才使用既有更大资源限制。有限 execute 可声明 execution:{version:1,kind:"compute"|"install"|"build"}，由平台采用本轮冻结的沙箱单次执行上限（默认10分钟，管理员可设30分钟或1小时）；准备、安装和运行共用时钟，有实际进展才续时，仍受任务剩余时间限制。kind 不授予更高上限，不能自行设置预算。旧版 AllRice 助手尚不支持时会明确拒绝本地新契约；不得因已选位置的执行失败而换端重跑。
 
 项目运行默认不联网。确需外部服务时，execute 可另带 network:{mode:"controlled_https",origins:["https://准确服务域名"]}，只允许获准的公网 HTTPS 来源，不可用 IP、通配符、私网或自带凭据。项目副本包含的源码与文件可能发送至这些服务，读取权限不等于外传权限；必须满足平台能力和本次外传授权。依赖安装仍离线且校验锁文件，联网仅在安装成功后供运行命令使用，支持标准 HTTPS_PROXY；不自动上传任何文件。service_start 仍使用原预览服务生命周期，不接受这两个前台执行字段。工具拒绝不代表模型或项目已运行。原工具返回的实际选择决定本地或云端，不另做手工重试调度。
 

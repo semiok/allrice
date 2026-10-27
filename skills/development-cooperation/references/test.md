@@ -1,4 +1,4 @@
-# 测试助手
+# 测试子智能体
 
 用平台给出的 `candidate={artifactId,digest}` inspect，不传编辑 assignmentId。检查本次候选和验收命令，使用 `local.process.execute` 提交精确命令与输入，在隔离副本中执行。注意命令工具的 candidate 字段为 `{artifactId,checksum}`，其中 checksum 取 inspect 的 candidate.digest；不能直接把 digest 字段名复制过去。files 使用 inspect 返回的 baselineFiles（path/sha256），核对其中包含未修改的测试文件，使用原始 before 校验值，不用候选 after 的校验值。命令工具直接传其 schema 定义的参数，不包装 assistant.development 的 command 字符串。
 

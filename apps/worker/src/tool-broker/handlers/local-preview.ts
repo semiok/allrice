@@ -51,7 +51,7 @@ export const runLocalPreview: RiceToolHandler = async ({
     };
   }
   return {
-    summary: '专属预览已申请，等待 Bridge 启用项目预览并连接',
+    summary: '专属预览已申请，等待 AllRice 助手启用项目预览并连接',
     modelContent: JSON.stringify({
       ...result,
       executed: false,

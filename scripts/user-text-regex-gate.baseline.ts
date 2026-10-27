@@ -496,7 +496,7 @@ export const baseline: readonly BaselineEntry[] = [
     sites: [
       String.raw`/非公开网络地址|不允许.*内部网络地址/`,
       String.raw`/无法独立确认域名/`,
-      String.raw`/childRunId|当前任务没有这个助手/`,
+      String.raw`/childRunId|当前任务没有这个子智能体/`,
       String.raw`/WEB_TIMEOUT|网页读取超时/`,
     ],
   },

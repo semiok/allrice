@@ -5,7 +5,7 @@ description: 读取需要 JavaScript 渲染或只读交互的公开网页，或�
 
 # Browser Research
 
-Use the approved `browser_workspace` tool when a public page needs browser rendering or read-only interaction that ordinary search or fetch cannot provide. Its default location uses a ready local Bridge; the platform waits for busy/preparing local resources and allows cloud fallback only within the original authorization. Do not select cloud merely because it is convenient. If this Run only exposes the legacy `browser_run`, it remains a cloud-only read-only tool; do not claim that it used the local device.
+Use the approved `browser_workspace` tool when a public page needs browser rendering or read-only interaction that ordinary search or fetch cannot provide. Its default location uses a ready local AllRice 助手; the platform waits for busy/preparing local resources and allows cloud fallback only within the original authorization. Do not select cloud merely because it is convenient. If this Run only exposes the legacy `browser_run`, it remains a cloud-only read-only tool; do not claim that it used the local device.
 
 ## When To Use
 

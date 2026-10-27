@@ -14,8 +14,8 @@
         },
         {
           "id": "assistants",
-          "name": "并行助手",
-          "detail": "Rice 可分派子助手、交换消息并汇总报告，共享任务时限和用量统计。",
+          "name": "子智能体",
+          "detail": "Rice 可分派子智能体、交换消息并汇总报告，共享任务时限和用量统计。",
           "status": "按租户启用",
           "action": "employees"
         },

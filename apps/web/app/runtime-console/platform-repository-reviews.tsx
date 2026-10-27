@@ -20,7 +20,7 @@ const reasons = {
   repository_authorization_required: '请先配置当前管理员的仓库授权。',
   current_ci_required: '请先核对远端和四项原始 CI，确认当前版本通过。',
   subject_changed: '候选或 CI 身份已变化，旧意见仅供查看。',
-  independent_review_required: '需要全新的独立助手审查这份准确候选。',
+  independent_review_required: '需要全新的独立子智能体审查这份准确候选。',
   revision_required: '同一份代码已有拒绝意见；请修改候选，不能换审查员覆盖。',
   review_not_complete: '审查及成果封存尚未完成。',
   authority_revoked: '本次权限已失效。',
@@ -169,7 +169,7 @@ export function PlatformRepositoryReviews({
       if (mounted.current) {
         remember(null);
         await read();
-        setNotice('已安排一个新的独立审查助手。');
+        setNotice('已安排一个新的独立审查子智能体。');
       }
     } catch {
       if (mounted.current)

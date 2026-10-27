@@ -127,10 +127,12 @@ export function PlatformQualityEvidence() {
           )}
           <p className={css.meta}>
             DSH Agent {record.versions.dshAgent ?? '未记录'} · DSH Web{' '}
-            {record.versions.dshWeb ?? '未记录'} · Bridge 包{' '}
+            {record.versions.dshWeb ?? '未记录'} · AllRice 助手{' '}
             {record.versions.actualBridgeVersion ?? '未记录'}
           </p>
-          <p className={css.meta}>模型未调用；本报告未执行 Bridge 实机验收。</p>
+          <p className={css.meta}>
+            模型未调用；本报告未执行 AllRice 助手实机验收。
+          </p>
           {record.scenarios.map((scenario) => (
             <details key={scenario.id}>
               <summary>

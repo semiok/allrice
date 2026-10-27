@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "version": "1.1.0",
-  "contentChecksum": "sha256:b80c23aa97d511242f318b6065e94ce599a72d24f3379ebe86074c616f14ffdb",
-  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/business-reconciliation?content-sha256=b80c23aa97d511242f318b6065e94ce599a72d24f3379ebe86074c616f14ffdb",
+  "version": "1.1.1",
+  "contentChecksum": "sha256:ff3109450bf8c1e298252cf0b4f5a74adac43bd98e375ca0a3bd39d79335dd13",
+  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/business-reconciliation?content-sha256=ff3109450bf8c1e298252cf0b4f5a74adac43bd98e375ca0a3bd39d79335dd13",
   "license": "Apache-2.0",
   "reviewedBy": "MET-174 finance reconciliation and continuation",
   "resources": [
@@ -55,5 +55,5 @@
       "imageDigest": "sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5"
     }
   ],
-  "checksum": "sha256:915fdf29da52fc14daddec529d5909995b37de843da5ca6a0ae172841b67018c"
+  "checksum": "sha256:af9a9300a05517a0b3d9945003c7996b6c05ea2e7ab574edb3c022789d19af39"
 }
