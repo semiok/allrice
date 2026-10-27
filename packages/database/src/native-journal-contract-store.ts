@@ -1,3 +1,8 @@
+// scripts/m1/deploy-dev recognizes a release that knows the journal contract by
+// its built packages/database/dist/native-journal-contract-store.js (deploy,
+// rollback, restore, --status). Keep this file's name and location, or make that
+// check accept both paths while a release with only this one can still be rolled
+// back to.
 import { z } from 'zod';
 import type postgres from 'postgres';
 import { getDatabase } from './core/client.ts';

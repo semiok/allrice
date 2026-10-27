@@ -171,23 +171,19 @@ it('keeps the last started phase for a stalled operation without inventing a dea
   expect(f.events.at(-1)?.state).toBe('completed');
 });
 
-it('retained slot spans finish once, ignore late metrics and never expose an invalid slot', () => {
+it('spans finish once and ignore late metrics', () => {
   const f = fixture();
-  const slot = f.observer.start('native_journal_contract', { slot: 6 });
-  slot.observe({ kind: 'read', bytes: 4 });
-  slot.complete();
-  slot.observe({ kind: 'read', bytes: 8 });
-  slot.fail(Error('late failure'));
+  const span = f.observer.start('native_journal_contract');
+  span.observe({ kind: 'read', bytes: 4 });
+  span.complete();
+  span.observe({ kind: 'read', bytes: 8 });
+  span.fail(Error('late failure'));
   expect(f.events.at(-1)).toMatchObject({
-    slot: 6,
+    phase: 'native_journal_contract',
     state: 'completed',
     counters: { releaseReadBytes: 4 },
   });
   expect(f.events.filter((e) => e.state === 'completed')).toHaveLength(1);
-  for (const invalidSlot of [0, 7, 6.5]) {
-    f.observer.start('native_journal_contract', { slot: invalidSlot }).fail();
-    expect(f.events.at(-1)).not.toHaveProperty('slot');
-  }
 });
 
 it('keeps verification, consumer admission, listening and ready as independent one-time observations', () => {

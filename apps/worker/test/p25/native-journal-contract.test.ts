@@ -126,16 +126,13 @@ const pins: [file: string, ...prefixes: string[]][] = [
   ],
   [
     'apps/worker/src/harness/dsh/runtime-pool.ts',
+    'export function employeePreviewStorageRoot(',
     'DSH_RUNTIME_HOME:',
     'DSH_CWD:',
     'DSH_SESSION_ROOT:',
     'cwd: tenantRoot',
   ],
   ['apps/worker/src/platform-employee-tests.ts', 'const testDirectory ='],
-  [
-    'apps/worker/src/harness/dsh-native-retention.ts',
-    'export function employeePreviewStorageRoot(',
-  ],
   [
     'apps/worker/dsh/native-schedule-host-factory.mjs',
     'ctx.plugin(m.jsonl,',

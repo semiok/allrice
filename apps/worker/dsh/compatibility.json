@@ -193,7 +193,7 @@
     }
   ],
   "historicalReaderPolicy": {
-    "unpinnedDefault": "refused-unless-retained-slot-1-configured",
+    "unpinnedDefault": "refused",
     "newRoots": "immutable-business-insert-and-independent-artifact-approval",
     "automaticV0V3PrivateMigration": false
   }

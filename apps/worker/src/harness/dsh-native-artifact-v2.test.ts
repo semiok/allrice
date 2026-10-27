@@ -11,7 +11,6 @@ import {
   rm,
   symlink,
   realpath,
-  readdir,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
@@ -22,7 +21,6 @@ import {
   nativeProfiles,
   nativeLoaderPlatformPackage,
 } from './dsh-native-artifact.js';
-import { copyDshNativeArtifact } from './dsh-native-artifact-copy.js';
 
 const io = vi.hoisted(() => ({
   read: undefined as
@@ -343,44 +341,24 @@ async function catalogConsumer() {
 }
 
 describe('approved artifact tool catalog consumption', () => {
-  it('loads copy-only v2 catalogs by exact primary or retained entrypoint without the excluded root barrel', async () => {
+  it('loads the v2 catalog through the primary entrypoint without the excluded root barrel', async () => {
     const { registry, consumer } = await catalogConsumer();
-    for (const [index, tool] of [
-      'workspace.file.list',
-      'web.search',
-    ].entries()) {
-      const { root } = await catalogFixture([tool]);
-      const manifest = await seal(root);
-      const target = root + '-copy';
-      owned.push(target);
-      await copyDshNativeArtifact({
-        root,
-        target,
-        expectedId: manifest.artifactId,
-        sourceSha: 'a'.repeat(40),
-        sourceTree: 'b'.repeat(40),
-      });
-      await expect(
-        readFile(join(target, contractsPath, 'dist/index.js')),
-      ).rejects.toMatchObject({ code: 'ENOENT' });
-      await (
-        index === 0
-          ? registry.installDshNativeArtifact
-          : registry.installRetainedDshNativeArtifact
-      )({
-        root: target,
-        expectedId: manifest.artifactId,
-      });
-      expect(
-        await consumer.selectDshNativeTools(
-          ['workspace.file.list', 'web.search', 'automation.create'],
-          join(target, adapterPath),
-        ),
-      ).toEqual([tool]);
-      expect(
-        await consumer.selectDshNativeTools([], join(target, adapterPath)),
-      ).toEqual([]);
-    }
+    const { root } = await catalogFixture(['web.search']);
+    const manifest = await seal(root);
+    // The fixture's root barrel throws if imported.
+    await registry.installDshNativeArtifact({
+      root,
+      expectedId: manifest.artifactId,
+    });
+    expect(
+      await consumer.selectDshNativeTools(
+        ['workspace.file.list', 'web.search', 'automation.create'],
+        join(root, adapterPath),
+      ),
+    ).toEqual(['web.search']);
+    expect(
+      await consumer.selectDshNativeTools([], join(root, adapterPath)),
+    ).toEqual([]);
   });
 
   it('preserves the approved v1 root catalog resolver', async () => {
@@ -463,39 +441,6 @@ describe('approved artifact tool catalog consumption', () => {
 });
 
 describe('native artifact v2: closed runtime boundary', () => {
-  it('copies the approved portable JS closure with its resolver links and independently verifies the same content identity', async () => {
-    const root = await fixture();
-    const approved = await seal(root);
-    const container = await realpath(
-      await mkdtemp(join(tmpdir(), 'allrice-native-v2-copy-')),
-    );
-    owned.push(container);
-    const target = join(container, 'portable');
-    const result = await copyDshNativeArtifact({
-      root,
-      target,
-      expectedId: approved.artifactId,
-      sourceSha: 'a'.repeat(40),
-      sourceTree: 'b'.repeat(40),
-    });
-    expect(result.artifactId).toBe(approved.artifactId);
-    expect(result.storageCopied).toBe(false);
-    expect(result.deploymentApprovalGranted).toBe(false);
-    expect((await readdir(join(target, contractsPath, 'dist'))).sort()).toEqual(
-      ['native-runtime.js', 'validator.js'],
-    );
-    const copied = await verifyDshNativeArtifact({
-      root: target,
-      expectedId: approved.artifactId,
-      sourceSha: 'a'.repeat(40),
-      sourceTree: 'b'.repeat(40),
-    });
-    expect(copied.content).toEqual(approved.content);
-    expect(copied.source).toEqual({
-      sha: 'a'.repeat(40),
-      tree: 'b'.repeat(40),
-    });
-  });
   it('measures real JS, all public metadata/control/probe roots and their actual resolver modes without executing them', async () => {
     const root = await fixture();
     const result = await seal(root);

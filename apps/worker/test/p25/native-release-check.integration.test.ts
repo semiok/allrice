@@ -47,7 +47,7 @@ suite('release candidate pre-stop check on the pre-0218 schema', () => {
     // The release tools still pass these; they are reported, never required.
     vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', 'sha256:' + 'b'.repeat(64));
     vi.stubEnv('ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS', '["not-read"]');
-    // Empty retired settings, as compose.yaml writes them, are not settings.
+    // Empty retired settings, as older compose files wrote them, are not settings.
     vi.stubEnv('ALLRICE_DSH_RETAINED_1_ROOT', '');
     vi.stubEnv('ALLRICE_DSH_ORIGIN_READER_2_APPROVAL_PATH', '');
     fixture = await createAssistantFixtureDatabase();

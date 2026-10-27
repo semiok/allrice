@@ -60,9 +60,6 @@ ALLRICE_DSH_NATIVE_ARTIFACT_ID="$(
 )"
 [[ "${ALLRICE_DSH_NATIVE_ARTIFACT_ID}" =~ ^sha256:[a-f0-9]{64}$ ]]
 export ALLRICE_DSH_NATIVE_ARTIFACT_ID
-# The isolated smoke deployment approves this verified image for new chats too.
-# Production still requires its separately supplied, reviewed approval.
-export ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID="${ALLRICE_DSH_NATIVE_ARTIFACT_ID}"
 docker compose --project-name "${compose_project}" up --build --wait --wait-timeout 300
 
 wait_for_proxy_ready

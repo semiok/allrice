@@ -132,46 +132,17 @@ test-only script does not approve or change a shared Dev/Prod deployment.
 Artifact verification alone does not migrate journals, select another
 generation, or implement automatic release ACK/publishing.
 
-## Retained approved readers and storage
+## Generation binding and storage
 
-This mechanism predates the one-generation rule and is being removed in the next
-MET-221 step. It is dormant unless `ALLRICE_DSH_RETAINED_*` is configured (Dev
-configures none); do not configure new slots.
-
-A Worker may verify at most six independently approved historical readers before
-starting producers. This bounded MET184 transition is tracked by MET195; it is
-not its single-package completion criterion or permission for automatic growth.
-See [exact retention and exit conditions](../architecture/dsh-native-retention.md).
-Slot `ALLRICE_DSH_RETAINED_1_*` is the default reader for
-unpinned legacy contexts; later slots require slot 1. Each slot requires an
-absolute, existing non-symlink `ROOT`, an independently approved `ARTIFACT_ID`,
-and an existing non-symlink `STORAGE_ROOT`. Slots 2–6 also require the original
-`SOURCE_SHA`/`SOURCE_TREE` and may serve independently approved 0.2.1 readers.
-Only slot 1 accepts the optional legacy `FROZEN_PROFILES` JSON
-array lists exact `{generation, profileId}` pairs for the reviewed 0.1.1 frozen
-packages. It cannot map 0.2.1 or arbitrary generations back to an old reader.
-A missing tuple refuses execution without rewriting the frozen package.
-
-Every retained root is fully remeasured, including its own generation catalog,
-profiles, package graph and ABI. Routing uses the immutable pin's exact content
-ID and namespace. The same generation is insufficient; an unavailable content
-ID is an error, not permission to substitute the primary reader. Unpinned
-contexts remain on the explicit legacy reader; this configuration does not
-issue new-engine roots or open candidate execution.
-
-Keep every configured ROOT and STORAGE_ROOT as explicit absolute values in the
-actual service environment/launchd plist. Do not hide them only in a JSON file:
-the host cleanup audit follows these persistent references, not SQL pins.
-Retained code must remain immutable and readable while Session data remains
-writable at its original location. Container operators must mount both at those
-exact container-visible absolute paths; the default Compose file only forwards
-configuration and cannot mount arbitrary historical releases automatically.
-Before retiring a slot, reconcile all database pins and historical contexts.
-Never remove a release merely because no native host currently runs from it.
+Every same-generation native context runs on the release's verified primary;
+artifact IDs recorded on contexts are provenance only. Retained artifact slots
+and origin readers were removed in MET-221: a non-empty `ALLRICE_DSH_RETAINED_*`
+or `ALLRICE_DSH_ORIGIN_READER_*` setting refuses the Worker start. See
+[native contexts bind to the DSH generation](../architecture/dsh-native-generation-binding.md).
 
 Existing pins, durable legacy thread adoption and retries require the target
 stored Session, not merely a parent directory. Before first binding a known
-history, the selected reader's public persistence `stat` checks its identity
+history, the primary's public persistence `stat` checks its identity
 without a writer, model, credentials or directory creation. Cold acquisition
 then uses the existing native resume-only `session/recover` path so disappearance
 after that check cannot silently create an empty same-ID history. Warm matching
@@ -205,14 +176,10 @@ initialization before each AllRice prompt, including cached hosts. Other tenant,
 profile or storage identities cannot replace a resident host. Existing model,
 content, assistant and Broker authorization remains mandatory.
 
-A retained 0.1.5 reader, where a Worker still configures one (Dev configures
-none; the mechanism is removed in the next MET-221 step), records
-`binding_basis=approved_compatibility_reader`, never an inferred original writer.
 There is no blanket historical backfill or fallback to an empty/new log root.
 Keep the configured runtime root stable and preserve the binding table together
 with its native storage in backups. Short-term Run/Job/test cleanup retains the
 pin. Whole-tenant destruction also requires retirement of its private namespace;
 there is no ordinary product endpoint that deletes and recreates bindings.
-Multi-artifact retention/routing, a different reader and V4 migration remain
-subsequent upgrade work. A missing or different artifact/namespace fails closed;
-do not solve it with an UPDATE to the pin or an automatic current-reader retry.
+A missing or different namespace, or another generation, fails closed; do not
+solve it with an UPDATE to the pin or an automatic retry.
