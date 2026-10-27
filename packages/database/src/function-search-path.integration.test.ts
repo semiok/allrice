@@ -184,8 +184,13 @@ suite('0225 function search_path and standard backup restore', () => {
           JSON.stringify(before[index]!.proconfig),
       );
       expect(changed).toHaveLength(83);
-      for (const row of changed)
-        expect(row.proconfig).toEqual(['search_path=public, pg_catalog']);
+      for (const row of changed) {
+        const prior = before.find((item) => item.oid === row.oid)!;
+        expect(row.proconfig).toEqual([
+          ...(prior.proconfig ?? []),
+          'search_path=public, pg_catalog',
+        ]);
+      }
       // Reapplying changes no definitions/configuration and leaves row values intact.
       await source.db.begin((tx) => tx.unsafe(migration));
 
@@ -246,7 +251,7 @@ suite('0225 function search_path and standard backup restore', () => {
         await f.db`select proconfig from pg_proc where pronamespace=${schema}::regnamespace and proconfig is not null`;
       expect(configs).toHaveLength(83);
       for (const row of configs)
-        expect(row.proconfig).toEqual([`search_path=${schema}, pg_catalog`]);
+        expect(row.proconfig).toContain(`search_path=${schema}, pg_catalog`);
       await f.db.begin(async (tx) => {
         await tx.unsafe("set local search_path = ''");
         const [row] = await tx.unsafe(
