@@ -85,6 +85,10 @@ it.each([
     expect(ports.request.mock.calls[0]?.[0].body.platform).toBe(
       `macos-${arch}`,
     );
+    // New pairings are named after the computer and AllRice 助手 (MET-214).
+    expect(ports.request.mock.calls[0]?.[0].body.name).toBe(
+      'synthetic-host · AllRice 助手',
+    );
     expect(ports.config).toHaveBeenCalledWith(
       expect.objectContaining({
         deviceId,
@@ -127,7 +131,7 @@ it.each([
     ports.arch.mockReturnValue(arch);
     await expect(
       pair(['--server', 'https://tenant.example/', '--code', 'ABCDEF12']),
-    ).rejects.toThrow('supports Apple Silicon and Intel 64-bit macOS only');
+    ).rejects.toThrow('AllRice 助手只支持 Apple 芯片或 Intel 64 位的 macOS');
     expect(ports.request).not.toHaveBeenCalled();
     expect(ports.token).not.toHaveBeenCalled();
     expect(ports.config).not.toHaveBeenCalled();

@@ -129,9 +129,7 @@ export async function pair(args: string[]) {
     platform() !== 'darwin' ||
     (currentArch !== 'arm64' && currentArch !== 'x64')
   ) {
-    throw new Error(
-      'Rice Bridge supports Apple Silicon and Intel 64-bit macOS only',
-    );
+    throw new Error('AllRice 助手只支持 Apple 芯片或 Intel 64 位的 macOS');
   }
   const serverInput = option(args, '--server');
   if (!serverInput) throw new Error('pair requires --server https://...');
@@ -139,7 +137,7 @@ export async function pair(args: string[]) {
   const codeInput = option(args, '--code');
   const code = codeInput ? normalizedPairingCode(codeInput) : undefined;
   if (!code) throw new Error('pair requires --code XXXX-XXXX');
-  const name = option(args, '--name') ?? `${hostname()} · Rice Bridge`;
+  const name = option(args, '--name') ?? `${hostname()} · AllRice 助手`;
   const response = PairBridgeDeviceResponseSchema.parse(
     await bridgeRequest({
       server,
@@ -170,7 +168,7 @@ export async function pair(args: string[]) {
   await (
     await import('./local-preview-settings.js')
   ).saveLocalPreviewOptIn(paired, true);
-  console.info(`Rice Bridge 已连接：${response.device.name}`);
+  console.info(`AllRice 助手已连接：${response.device.name}`);
 }
 
 export async function createFolderGrant(path: string, name?: string) {
@@ -1239,7 +1237,7 @@ async function startSession(
               id: frame.id,
               error: {
                 code: 'terminal/unavailable',
-                message: '请更新或重新连接 Rice Bridge 后使用终端',
+                message: '请更新或重新连接 AllRice 助手后使用终端',
               },
             });
             return;
@@ -1497,7 +1495,7 @@ async function startSession(
       })
     : null;
   publish();
-  console.info(`Rice Bridge ${bridgeVersion} 正在运行：${config.deviceName}`);
+  console.info(`AllRice 助手 ${bridgeVersion} 正在运行：${config.deviceName}`);
   let lastHeartbeatAt = 0;
   let heartbeatInFlight: Promise<void> | null = null;
   const heartbeat = () => {
@@ -2154,7 +2152,7 @@ async function startSession(
   if (folderStopUnconfirmed) throw Error('FOLDER_TRIGGER_STOP_UNCONFIRMED');
   if (preparationStopUnconfirmed) throw Error('STOP_NOT_CONFIRMED');
   if (terminalStopUnconfirmed) throw Error('HUMAN_TERMINAL_CLEANUP_PENDING');
-  console.info('Rice Bridge 已停止');
+  console.info('AllRice 助手已停止');
   return requestedSettings;
 }
 
@@ -2183,14 +2181,14 @@ export async function hasStoredPairing() {
 
 async function promptPairingCode(message: string) {
   if (platform() !== 'darwin') {
-    throw new Error('Rice Bridge 首次配对仅支持 macOS');
+    throw new Error('AllRice 助手首次配对仅支持 macOS');
   }
   try {
     const result = await execFileAsync('/usr/bin/osascript', [
       '-e',
       'on run argv',
       '-e',
-      'set dialogResult to display dialog (item 1 of argv) default answer "" with title "Rice Bridge 首次配对" buttons {"取消", "配对并启动"} default button "配对并启动" cancel button "取消"',
+      'set dialogResult to display dialog (item 1 of argv) default answer "" with title "AllRice 助手首次配对" buttons {"取消", "配对并启动"} default button "配对并启动" cancel button "取消"',
       '-e',
       'return text returned of dialogResult',
       '-e',
@@ -2206,11 +2204,11 @@ async function promptPairingCode(message: string) {
 export async function launch() {
   if (!(await hasStoredPairing())) {
     let message =
-      '这是第一次打开 Rice Bridge。\n\n请在 AllRice 页面生成配对码，并在下方输入。配对成功后，本机会安全保存授权，以后直接打开即可自动连接。';
+      '这是第一次打开 AllRice 助手。\n\n请在 AllRice 页面生成配对码，并在下方输入。配对成功后，本机会安全保存授权，以后直接打开即可自动连接。';
     while (true) {
       const input = await promptPairingCode(message);
       if (input === null) {
-        console.info('已取消 Rice Bridge 配对');
+        console.info('已取消 AllRice 助手配对');
         return;
       }
       try {
@@ -2225,7 +2223,7 @@ export async function launch() {
     }
   }
   if ((await readConfig()).paused) {
-    console.info('Rice Bridge 已暂停，可从菜单恢复连接。');
+    console.info('AllRice 助手已暂停，可从菜单恢复连接。');
     return;
   }
   await start();
@@ -2256,10 +2254,10 @@ export async function revoke() {
   const configDeleted = browserCleanupComplete && (await deleteConfig());
   const cleanupComplete =
     browserCleanupComplete && credentialCleanup.complete && configDeleted;
-  if (cleanupComplete) console.info('Rice Bridge 设备授权已撤销');
+  if (cleanupComplete) console.info('AllRice 助手设备授权已撤销');
   else
     console.warn(
-      'Rice Bridge 服务端授权已撤销，但本机凭证清理未完成。请保留诊断记录；不要使用已失效的令牌重试撤销，也不要把此结果当作所有本机凭证均已删除。',
+      'AllRice 助手服务端授权已撤销，但本机凭证清理未完成。请保留诊断记录；不要使用已失效的令牌重试撤销，也不要把此结果当作所有本机凭证均已删除。',
     );
   return {
     serverRevoked: true as const,
@@ -2271,7 +2269,7 @@ export async function revoke() {
 
 export function help() {
   console.info(
-    `Rice Bridge ${bridgeVersion}\n\n直接打开 RiceBridge：首次输入配对码，之后自动连接。\n\nCommands:\n  pair --server URL --code XXXX-XXXX [--name NAME]\n  grant PATH [--name NAME]\n  start\n  status\n  sandbox status|enable|disable\n  local-mcp status|enable|disable\n  local-mcp --help\n  --version\n  revoke\n\n配对后自动准备已有独立沙箱；通用计算可由云端承接。选择目录后即可使用文件功能，修改与命令在任务内批准。`,
+    `AllRice 助手 ${bridgeVersion}\n\n直接打开 RiceBridge：首次输入配对码，之后自动连接。\n\nCommands:\n  pair --server URL --code XXXX-XXXX [--name NAME]\n  grant PATH [--name NAME]\n  start\n  status\n  sandbox status|enable|disable\n  local-mcp status|enable|disable\n  local-mcp --help\n  --version\n  revoke\n\n配对后自动准备已有独立沙箱；通用计算可由云端承接。选择目录后即可使用文件功能，修改与命令在任务内批准。`,
   );
   console.info(
     '  browser status|enable|disable\n配对后自动准备独立浏览器，不需要再次去网页授权；不读取日常 Chrome 登录资料。敏感动作在任务内确认。',

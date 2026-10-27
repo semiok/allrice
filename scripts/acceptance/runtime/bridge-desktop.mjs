@@ -107,17 +107,17 @@ const ui = (statements) =>
   ).trim();
 const menu = (item) =>
   ui([
-    'click menu bar item "Rice" of last menu bar',
-    `click menu item ${JSON.stringify(item)} of menu 1 of menu bar item "Rice" of last menu bar`,
+    'click menu bar item "AllRice" of last menu bar',
+    `click menu item ${JSON.stringify(item)} of menu 1 of menu bar item "AllRice" of last menu bar`,
   ]);
 const developerMenu = (item) => {
   try {
     ui([
       'key down option',
-      'click menu bar item "Rice" of last menu bar',
+      'click menu bar item "AllRice" of last menu bar',
       'delay 0.2',
-      'click menu item "开发者工具" of menu 1 of menu bar item "Rice" of last menu bar',
-      `click menu item ${JSON.stringify(item)} of menu 1 of menu item "开发者工具" of menu 1 of menu bar item "Rice" of last menu bar`,
+      'click menu item "开发者工具" of menu 1 of menu bar item "AllRice" of last menu bar',
+      `click menu item ${JSON.stringify(item)} of menu 1 of menu item "开发者工具" of menu 1 of menu bar item "AllRice" of last menu bar`,
     ]);
   } finally {
     ui(['key up option']);
@@ -126,7 +126,7 @@ const developerMenu = (item) => {
 const status = () => {
   try {
     return ui([
-      'get value of text area 1 of scroll area 1 of window "Rice Bridge · 本地电脑"',
+      'get value of text area 1 of scroll area 1 of window "AllRice 助手"',
     ]);
   } catch (error) {
     // The core can connect before AppKit has exposed its initial window.
@@ -196,13 +196,13 @@ try {
   }
   await wait(() => polls > 0);
   menu('查看状态…');
-  await wait(() => status().includes('Bridge 在线'));
+  await wait(() => status().includes('AllRice 助手在线'));
   results.onlineWindow = status().includes(
     fresh ? 'P13 fresh synthetic pairing' : 'Synthetic workspace',
   );
   const ordinaryMenu = ui([
-    'click menu bar item "Rice" of last menu bar',
-    'get name of menu items of menu 1 of menu bar item "Rice" of last menu bar',
+    'click menu bar item "AllRice" of last menu bar',
+    'get name of menu items of menu 1 of menu bar item "AllRice" of last menu bar',
   ]);
   ui(['key code 53']);
   assert.ok(
@@ -264,7 +264,7 @@ try {
     results.onlineRevoke = true;
   }
   const exit = once(child, 'exit');
-  menu('退出 Rice Bridge');
+  menu('退出 AllRice 助手');
   const [code] = await exit;
   assert.equal(code, 0);
   results.cleanQuit = true;

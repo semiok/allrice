@@ -204,7 +204,7 @@ async function boundedCredentialStdin(): Promise<string> {
 /** Explicit local operator command. Secret arrives only on stdin, never argv.
  * The outer CLI instance lock excludes a concurrently running Bridge. */
 export function localMcpCredentialHelp() {
-  console.info(`Rice Bridge 本地 MCP 凭证（受保护但未加密，非 Keychain）
+  console.info(`AllRice 助手本地 MCP 凭证（受保护但未加密，非 Keychain）
   local-mcp status|enable|disable
   local-mcp credential set <connectionId> <sourceDigest> <refId> <revision> --private-file-unencrypted
   local-mcp credential revoke <connectionId> <sourceDigest> <refId> <revision> --private-file-unencrypted

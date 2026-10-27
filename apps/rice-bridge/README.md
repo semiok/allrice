@@ -1,4 +1,11 @@
-# Rice Bridge
+# Rice Bridge（AllRice 助手）
+
+## 名称与下载（MET-214）
+
+- 用户看到的名字是「AllRice 助手」：访达、Dock、启动台、显示简介、配对和报错弹窗、网页下载按钮和说明。电脑顶部菜单栏只显示「AllRice」（状态栏文字和 `CFBundleName`）。
+- 磁盘上的 `Rice Bridge.app`、应用标识 `xyz.bplabs.rice-bridge`、内部程序名（RiceBridgeApp、RiceBridgeCore）、接口路径 `/api/v1/bridge…`、Application Support 和 Keychain 用到的名字、更新安装目录 `~/Applications/AllRice Bridge` 都不变，已配对的设备不用重新配对。新配对设备的默认名是「电脑名 · AllRice 助手」。
+- 显示名靠 `Info.plist` 的 `LSHasLocalizedDisplayName` 加 `macos/zh-Hans.lproj`、`macos/en.lproj` 里的 `InfoPlist.strings` 实现。`Info.plist` 里的 `CFBundleDisplayName` 必须等于文件名 `Rice Bridge`，否则访达改回显示文件名；用户手动改了 `.app` 文件名时也显示文件名。中文和英文系统都显示「AllRice 助手」。
+- 只出 Apple 芯片版：`node scripts/package-rice-bridge-app-macos.mjs NEW_OUTPUT_DIRECTORY` 产出 `AllRice-Assistant.zip` 和 `release.json`（`zip` 字段同名）。Web 用 `ALLRICE_BRIDGE_MACOS_ARM64_PATH` 指向这个 zip，下载文件名是 `AllRice-Assistant.zip`；Intel 下载接口已删除。
 
 ## 2.0 B5 候选：独立浏览器与本地项目预览
 
@@ -23,7 +30,7 @@
 
 「退出恢复…」可继续等待，或由用户明确选择「强制退出并保留记录」。后者只终止本宿主持有的 Core，3 秒未退出时才升级为强制终止，并等待实际进程退出；不杀全局同名进程、不撤销配对、不删除 journal、不宣称沙箱或工具已停止。重新启动仍走原有恢复与对账。Core 不回应时，诊断在 2 秒后退回带状态年龄的宿主缓存快照，明确标记不可视为当前停止确认。原生故障注入验收入口为 `python3 scripts/acceptance/runtime/bridge-quit-recovery.py /path/to/Rice\ Bridge.app`，使用隔离 bundle 与合成 Core；真实 Core 退出另由 `bridge-desktop-core.mjs` 验证。
 
-旧命令包打包入口保留。菜单栏 `.app` 采用独立入口 `node scripts/package-rice-bridge-app-macos.mjs NEW_OUTPUT_DIRECTORY`；仍为 ad-hoc Dev 包，**没有 Developer ID、公证或自动更新承诺**。完整边界、原生界面和两架构验收记录见 [P13 说明](../../docs/architecture/allrice-2.0/p13-desktop-bridge.md)。
+旧命令包打包入口保留。菜单栏 `.app` 采用独立入口 `node scripts/package-rice-bridge-app-macos.mjs NEW_OUTPUT_DIRECTORY`（只出 Apple 芯片版）；仍为 ad-hoc Dev 包，**没有 Developer ID、公证或自动更新承诺**。完整边界、原生界面和两架构验收记录见 [P13 说明](../../docs/architecture/allrice-2.0/p13-desktop-bridge.md)。
 
 Rice Bridge 是 AllRice 的轻量本地受控执行端。DSH 仍在 SaaS 端负责理解、规划与工具选择，Bridge 只执行 Tool Broker 已授权的结构化本地命令。
 
@@ -52,11 +59,11 @@ pnpm --filter @allrice/rice-bridge exec rice-bridge
 
 ## 配对 Mac
 
-1. 登录当前租户的 AllRice，在左下角打开“本地电脑”。
+1. 登录当前租户的 AllRice，打开「设置 → 我的电脑」。
 2. 点击“生成配对码”。
-3. 下载对应芯片版本并解压，直接打开 `RiceBridge`。
-4. 首次打开会弹出配对窗口，输入网页显示的 8 位配对码。
-5. 配对成功后保持 Bridge 运行，再回到网页点击“选择工作区”。
+3. 下载 AllRice 助手（Apple 芯片）并解压，打开“AllRice 助手”。
+4. 在菜单栏「AllRice」里选择“配对设备…”，输入网页显示的 8 位配对码。
+5. 配对成功后保持 AllRice 助手运行，再回到网页选择文件夹。
 
 设备令牌优先保存在 macOS Keychain；Keychain 在受限启动环境不可写时，
 会回退到权限为 `0600` 的本地凭证文件。配置保存在当前用户的 Application

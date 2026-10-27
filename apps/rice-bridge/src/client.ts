@@ -81,7 +81,7 @@ export async function bridgeRequest<T>(input: BridgeRequestInput): Promise<T> {
   };
   if (!response.ok) {
     throw new BridgeClientError(
-      body.error?.message ?? `Rice Bridge API returned HTTP ${response.status}`,
+      body.error?.message ?? `AllRice 助手请求失败（HTTP ${response.status}）`,
       response.status,
       body.error?.code,
     );
