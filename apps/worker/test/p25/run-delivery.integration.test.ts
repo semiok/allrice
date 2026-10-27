@@ -96,13 +96,16 @@ suite('PR1a: independent Worker delivery, isolated PostgreSQL', () => {
       worker: { ...f.worker, attempt: 1 },
     };
     const port = createRunDeliveryPort(authority);
-    const publish = (name = '月报.txt') =>
+    const publish = (
+      name = '月报.txt',
+      kind: 'document' | 'plan' = 'document',
+    ) =>
       publishWorkbenchArtifact(
         {
           context,
           sessionId: f.session,
           callId: randomUUID(),
-          kind: 'document',
+          kind,
           fileName: name,
           format: 'text',
           mediaType: 'text/plain',
@@ -233,7 +236,7 @@ suite('PR1a: independent Worker delivery, isolated PostgreSQL', () => {
 
   it('checks frozen references without querying any assistant identity or run links', async () => {
     const f = await subject();
-    const artifact = await f.publish();
+    const artifact = await f.publish('计划.txt', 'plan');
     await fixture.db`insert into allrice_review_continuations(response_id,organization_id,workspace_id,session_id,actor_id,artifact_id,checksum,kind,run_id)
       values(${randomUUID()},${f.org},${f.workspace},${f.session},${f.user},${artifact.id},${artifact.object.checksum},'plan_review',${f.rootRunId})`;
     const queries: string[] = [];
