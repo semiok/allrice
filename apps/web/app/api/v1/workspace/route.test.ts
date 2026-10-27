@@ -19,6 +19,7 @@ describe('workspace viewer identity for layout preferences', () => {
     vi.clearAllMocks();
     mocks.preferences.mockResolvedValue({
       streamingOutput: false,
+      appearance: 'dark',
       updatedAt: null,
     });
     mocks.workspace.mockResolvedValue({
@@ -47,7 +48,12 @@ describe('workspace viewer identity for layout preferences', () => {
         organizationId: 'organization',
         viewerId: 'authenticated-user',
         canAdminister: false,
-        preferences: { streamingOutput: false, updatedAt: null },
+        // The saved appearance reaches the workspace page as stored.
+        preferences: {
+          streamingOutput: false,
+          appearance: 'dark',
+          updatedAt: null,
+        },
       },
     });
     expect(mocks.workspace).toHaveBeenCalledWith(context, undefined);

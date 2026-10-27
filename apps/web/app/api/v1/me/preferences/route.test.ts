@@ -62,6 +62,12 @@ describe('authenticated personal preferences', () => {
     { transcriptView: 'unknown' },
     { collapseTiming: 'every-message' },
     { fontSize: 14, organizationId: 'other' },
+    { appearance: 'auto' },
+    { appearance: 'Dark' },
+    { appearance: '' },
+    { appearance: null },
+    { appearance: true },
+    { appearance: 'dark', userId: 'other' },
   ])('rejects invalid or foreign-target settings %j', async (body) => {
     expect((await PATCH(request(body))).status).toBe(400);
     expect(mocks.update).not.toHaveBeenCalled();
@@ -75,6 +81,22 @@ describe('authenticated personal preferences', () => {
     expect((await PATCH(request(update))).status).toBe(200);
     expect(mocks.update).toHaveBeenCalledExactlyOnceWith(context, update);
   });
+  it.each(['light', 'dark', 'system'])(
+    'saves appearance %s for the current account only',
+    async (appearance) => {
+      mocks.update.mockResolvedValue({
+        streamingOutput: true,
+        appearance,
+        updatedAt: '2026-10-27T00:00:00.000Z',
+      });
+      const response = await PATCH(request({ appearance }));
+      expect(response.status).toBe(200);
+      expect(mocks.update).toHaveBeenCalledExactlyOnceWith(context, {
+        appearance,
+      });
+      expect((await response.json()).preferences.appearance).toBe(appearance);
+    },
+  );
   it('returns failure instead of pretending a failed write was saved', async () => {
     mocks.update.mockRejectedValue(Error('private-sql'));
     const response = await PATCH(request({ streamingOutput: true }));
