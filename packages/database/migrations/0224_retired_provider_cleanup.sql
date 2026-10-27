@@ -12,8 +12,7 @@ select id from allrice_model_providers
 where provider_key in ('gemini','google') or auth_mode='gemini_oauth';
 create temporary table met226_connections on commit drop as
 select id, credential_reference from allrice_model_connections
-where provider_id in (select id from met226_providers)
-  or credential_reference='deployment:gemini-default';
+where provider_id in (select id from met226_providers);
 create temporary table met226_catalog on commit drop as
 select id from allrice_model_catalog_entries
 where provider_id in (select id from met226_providers);
@@ -29,23 +28,27 @@ language sql stable as $$
     value->>'providerId' in (select id::text from met226_providers) or
     value->>'connectionId' in (select id::text from met226_connections) or
     value->>'modelCatalogEntryId' in (select id::text from met226_catalog) or
-    value->>'catalogId' in (select id::text from met226_catalog) or
-    value->>'credentialReference'='deployment:gemini-default' or
-    value->>'credentialReference' in (
-      select credential_reference from met226_connections
-      where credential_reference is not null
-    ), false)
+    value->>'catalogId' in (select id::text from met226_catalog), false)
+$$;
+
+-- Credential references can be shared across providers, including the old
+-- deployment:gemini-default name. They can block deletion, never select it.
+create temporary table met226_credentials (reference text primary key) on commit drop;
+create function pg_temp.met226_reference(value jsonb) returns boolean
+language sql stable as $$
+  select pg_temp.met226_target(value) or coalesce(
+    value->>'credentialReference' in (select reference from met226_credentials), false)
 $$;
 create function pg_temp.met226_model(value jsonb) returns boolean
 language sql stable as $$
-  select pg_temp.met226_target(value)
-    or pg_temp.met226_target(value #> '{platformSettings,configuration}')
+  select pg_temp.met226_reference(value)
+    or pg_temp.met226_reference(value #> '{platformSettings,configuration}')
     or exists (
       select 1 from (
         select jsonb_path_query(value,'strict $.fallbackTargets[*]',silent => true) as target
         union all
         select jsonb_path_query(value,'strict $.resolvedFallbacks[*]',silent => true)
-      ) f where pg_temp.met226_target(f.target)
+      ) f where pg_temp.met226_reference(f.target)
     )
     -- These are qualified routing strings, not unqualified model names.
     or coalesce(value @? 'strict $.fallbackModels[*] ? (@ like_regex "^(gemini|google)[:/]")',false)
@@ -70,22 +73,25 @@ insert into met226_rules values
   ('allrice_platform_employee_test_runs', 'pg_temp.met226_target(frozen_definition->''modelPolicy'') or pg_temp.met226_target(frozen_runtime_profile)', true),
   ('allrice_assistant_price_snapshots', 'pg_temp.met226_target(snapshot #> ''{price,target}'')', true),
   ('allrice_route_decisions', 'provider in (''gemini'',''google'') or model_connection_id in (select id from met226_connections) or model_catalog_entry_id in (select id from met226_catalog)', true),
+  ('allrice_model_connections', 'credential_reference in (select reference from met226_credentials)', false),
+  ('allrice_employee_versions', 'pg_temp.met226_reference(provider_snapshot) or pg_temp.met226_reference(manifest->''provider'')', false),
+  ('allrice_assistant_price_snapshots', 'pg_temp.met226_reference(snapshot #> ''{price,target}'')', false),
   ('allrice_employee_versions', 'pg_temp.met226_model(manifest->''runtimePolicy'')', false),
   ('allrice_platform_employee_revisions', 'pg_temp.met226_model(definition->''modelPolicy'') or pg_temp.met226_model(runtime_profile)', false),
   ('allrice_platform_employee_test_runs', 'pg_temp.met226_model(frozen_definition->''modelPolicy'') or pg_temp.met226_model(frozen_runtime_profile)', false),
-  ('allrice_platform_model_settings', 'pg_temp.met226_target(configuration)', false),
-  ('allrice_employee_model_policies', 'connection_id in (select id from met226_connections) or model_catalog_entry_id in (select id from met226_catalog) or exists (select 1 from jsonb_array_elements(fallback_targets) f where pg_temp.met226_target(f))', false),
+  ('allrice_platform_model_settings', 'pg_temp.met226_reference(configuration)', false),
+  ('allrice_employee_model_policies', 'connection_id in (select id from met226_connections) or model_catalog_entry_id in (select id from met226_catalog) or exists (select 1 from jsonb_array_elements(fallback_targets) f where pg_temp.met226_reference(f))', false),
   ('allrice_session_model_snapshots', 'connection_id in (select id from met226_connections) or model_catalog_entry_id in (select id from met226_catalog) or pg_temp.met226_model(snapshot)', false),
-  ('allrice_employee_runs', 'pg_temp.met226_target(provider_snapshot) or pg_temp.met226_target(execution_snapshot->''providerSnapshot'') or pg_temp.met226_target(execution_snapshot #> ''{definition,provider}'') or pg_temp.met226_model(execution_snapshot #> ''{definition,runtimePolicy}'') or pg_temp.met226_target(execution_snapshot #> ''{employee,definition,provider}'') or pg_temp.met226_model(execution_snapshot #> ''{employee,definition,runtimePolicy}'') or pg_temp.met226_model(execution_snapshot->''runtimePolicy'') or pg_temp.met226_model(execution_snapshot->''modelSnapshot'')', false),
-  ('allrice_skill_runs', 'pg_temp.met226_target(provider_snapshot)', false),
+  ('allrice_employee_runs', 'pg_temp.met226_reference(provider_snapshot) or pg_temp.met226_reference(execution_snapshot->''providerSnapshot'') or pg_temp.met226_reference(execution_snapshot #> ''{definition,provider}'') or pg_temp.met226_model(execution_snapshot #> ''{definition,runtimePolicy}'') or pg_temp.met226_reference(execution_snapshot #> ''{employee,definition,provider}'') or pg_temp.met226_model(execution_snapshot #> ''{employee,definition,runtimePolicy}'') or pg_temp.met226_model(execution_snapshot->''runtimePolicy'') or pg_temp.met226_model(execution_snapshot->''modelSnapshot'')', false),
+  ('allrice_skill_runs', 'pg_temp.met226_reference(provider_snapshot)', false),
   ('allrice_employee_method_tests', 'pg_temp.met226_model(model_snapshot)', false),
   ('allrice_route_subscription_snapshots', 'pg_temp.met226_model(snapshot)', false),
-  ('allrice_runs', 'pg_temp.met226_target(execution_spec)', false),
+  ('allrice_runs', 'pg_temp.met226_reference(execution_spec)', false),
   ('allrice_runs', 'execution_spec->>''employeeVersionId'' in (select v.id::text from allrice_employee_versions v join met226_rows d on d.relation=v.tableoid and d.tuple=v.ctid) or execution_spec->>''platformEmployeeTestRunId'' in (select t.id::text from allrice_platform_employee_test_runs t join met226_rows d on d.relation=t.tableoid and d.tuple=t.ctid)', false),
   -- JobPayloadSchema has only schemaVersion/type/input; input is business data.
   -- There is no routing field in jobs.payload, so it is not inspected at all.
   ('allrice_dsh_runtime_instances', 'provider_route in (''gemini'',''google'')', false),
-  ('allrice_route_decisions', 'exists (select 1 from jsonb_array_elements(candidates) c where pg_temp.met226_target(c))', false);
+  ('allrice_route_decisions', 'exists (select 1 from jsonb_array_elements(candidates) c where pg_temp.met226_reference(c))', false);
 
 do $$ declare item record; begin
   for item in select * from met226_rules where removable loop
@@ -103,6 +109,26 @@ insert into met226_rows
 select l.tableoid,l.ctid from allrice_model_usage_ledger l
 join allrice_route_decisions r on r.id=l.route_decision_id
 join met226_rows d on d.relation=r.tableoid and d.tuple=r.ctid;
+
+-- Collect references only after ownership has determined the deletion set.
+-- Historical versions may carry credentials without a current connection.
+insert into met226_credentials
+select credential_reference from met226_connections where credential_reference is not null
+union
+select c.value->>'credentialReference' from (
+  select v.tableoid as relation,v.ctid as tuple,c.value
+  from allrice_employee_versions v
+  cross join lateral (values (v.provider_snapshot),(v.manifest->'provider')) c(value)
+  union all
+  select v.tableoid,v.ctid,c.value from allrice_platform_employee_revisions v
+  cross join lateral (values (v.definition->'modelPolicy'),(v.runtime_profile)) c(value)
+  union all
+  select v.tableoid,v.ctid,c.value from allrice_platform_employee_test_runs v
+  cross join lateral (values (v.frozen_definition->'modelPolicy'),(v.frozen_runtime_profile)) c(value)
+  union all
+  select p.tableoid,p.ctid,p.snapshot #> '{price,target}' from allrice_assistant_price_snapshots p
+) c join met226_rows d on d.relation=c.relation and d.tuple=c.tuple
+where c.value->>'credentialReference' is not null;
 
 create temporary table met226_blockers (relation regclass, identity jsonb, reference text) on commit drop;
 create function pg_temp.met226_identity(relation oid, value jsonb) returns jsonb
@@ -187,4 +213,5 @@ alter table allrice_model_providers add constraint allrice_model_providers_auth_
   check (auth_mode in ('chatgpt_subscription','oauth','api_key','none'));
 drop function pg_temp.met226_identity(oid,jsonb);
 drop function pg_temp.met226_model(jsonb);
+drop function pg_temp.met226_reference(jsonb);
 drop function pg_temp.met226_target(jsonb);

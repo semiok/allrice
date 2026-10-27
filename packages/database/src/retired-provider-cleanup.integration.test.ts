@@ -99,6 +99,21 @@ async function gateway(db: Database) {
     values(${catalogId},${providerId},'gemini-2.5-pro','Gateway model','[]','none','["text"]','["text"]')`;
   return { providerId, connectionId, catalogId };
 }
+async function historicalRevision(
+  db: Database,
+  provider: string,
+  credentialReference: string,
+) {
+  const employeeId = randomUUID(),
+    revisionId = randomUUID();
+  const model = { provider, credentialReference };
+  await db`insert into allrice_platform_employees(id,employee_key,name,description)
+    values(${employeeId},${`history-${employeeId}`},'History','Synthetic')`;
+  // No published/draft pointer, assignment or test run references this revision.
+  await db`insert into allrice_platform_employee_revisions(id,employee_id,revision,status,definition,runtime_profile,checksum)
+    values(${revisionId},${employeeId},1,'published',${db.json({ modelPolicy: model })},${db.json(model)},${digest})`;
+  return revisionId;
+}
 
 integration('retired provider data deletion', { timeout: 120000 }, () => {
   it('deletes only retired catalog and owned accounting; preserves gateway models, audit, receipts and actual subscription state', async () =>
@@ -310,6 +325,115 @@ integration('retired provider data deletion', { timeout: 120000 }, () => {
       });
       expect(await rows(db, 'allrice_platform_model_settings')).toEqual(
         settings,
+      );
+      expect(
+        await db`select id from allrice_model_providers where id=${geminiProvider}`,
+      ).toHaveLength(1);
+    }));
+
+  it.each(['deployment:shared-gateway', 'deployment:gemini-default'])(
+    'aborts with connection and unreferenced version IDs when providers share %s',
+    async (credentialReference) =>
+      scenario(async (db) => {
+        const other = await gateway(db);
+        await db`update allrice_model_connections set credential_reference=${credentialReference}
+          where id in (${geminiConnection},${other.connectionId})`;
+        const revisionId = await historicalRevision(
+          db,
+          'openai-compatible',
+          credentialReference,
+        );
+        const f = await assistantFixture(db);
+        const versionId = randomUUID();
+        const provider = { provider: 'codex', credentialReference };
+        await db`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest,provider_snapshot)
+          select ${versionId},organization_id,workspace_id,employee_id,2,name,model,system_prompt,capabilities,config_checksum,
+            jsonb_set(manifest,'{provider}',${db.json(provider)}),${db.json(provider)}
+          from allrice_employee_versions where organization_id=${f.task.scope.organizationId}`;
+        const tables = [
+          'allrice_model_connections',
+          'allrice_model_providers',
+          'allrice_model_catalog_entries',
+          'allrice_platform_employee_revisions',
+          'allrice_employee_versions',
+          'allrice_schema_migrations',
+        ];
+        const before = await Promise.all(tables.map((t) => rows(db, t))),
+          beforeGuards = await guards(db);
+        const error = await apply(db).then(
+          () => null,
+          (error: unknown) => error,
+        );
+        expect(error).toMatchObject({
+          code: '23503',
+          message: expect.stringContaining('MET226_SHARED_REFERENCE'),
+        });
+        expect(JSON.parse((error as { detail: string }).detail)).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              table: 'allrice_model_connections',
+              ids: { id: other.connectionId },
+            }),
+            expect.objectContaining({
+              table: 'allrice_platform_employee_revisions',
+              ids: { id: revisionId },
+            }),
+            expect.objectContaining({
+              table: 'allrice_employee_versions',
+              ids: { id: versionId },
+            }),
+          ]),
+        );
+        for (let i = 0; i < tables.length; i++)
+          expect(await rows(db, tables[i]!)).toEqual(before[i]);
+        expect(await guards(db)).toEqual(beforeGuards);
+      }),
+  );
+
+  it('preserves non-Gemini connections and versions using the old credential name without a retired owner', async () =>
+    scenario(async (db) => {
+      const other = await gateway(db);
+      await db`update allrice_model_connections set credential_reference='deployment:retired-only' where id=${geminiConnection}`;
+      await db`update allrice_model_connections set credential_reference='deployment:gemini-default' where id=${other.connectionId}`;
+      await historicalRevision(
+        db,
+        'openai-compatible',
+        'deployment:gemini-default',
+      );
+      const revisions = await rows(db, 'allrice_platform_employee_revisions');
+      const connections =
+        await db`select * from allrice_model_connections where id<>${geminiConnection} order by id`;
+      await apply(db);
+      expect(await rows(db, 'allrice_platform_employee_revisions')).toEqual(
+        revisions,
+      );
+      expect(
+        await db`select * from allrice_model_connections order by id`,
+      ).toEqual(connections);
+      expect(
+        await db`select id from allrice_model_providers where id=${geminiProvider}`,
+      ).toHaveLength(0);
+    }));
+
+  it('aborts when a retired historical version shares credentials with a surviving version without a current connection', async () =>
+    scenario(async (db) => {
+      const credentialReference = 'deployment:historical-shared';
+      await historicalRevision(db, 'gemini', credentialReference);
+      const kept = await historicalRevision(
+        db,
+        'openai-compatible',
+        credentialReference,
+      );
+      const before = await rows(db, 'allrice_platform_employee_revisions');
+      await expect(apply(db)).rejects.toMatchObject({
+        code: '23503',
+        message: expect.stringContaining('MET226_SHARED_REFERENCE'),
+        detail: expect.stringMatching(
+          new RegExp(`(?=.*allrice_platform_employee_revisions)(?=.*${kept})`),
+        ),
+      });
+      expect(await rows(db, 'allrice_platform_employee_revisions')).toEqual(
+        before,
       );
       expect(
         await db`select id from allrice_model_providers where id=${geminiProvider}`,
