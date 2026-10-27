@@ -356,6 +356,8 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 
 ### allrice-jsonrpc-lifecycle-v1
 
+MET-226 删除初始化中退役供应商的专用拒绝分支。供应商仍由 `@deepseek-ai/dsh-llm-pi-ai` 的 `providers` 配置声明；恢复由 DSH 原生模型解析处理未配置路线。此次不修改 profile、Codex 设置、助手状态或生命周期。
+
 - ID：`allrice-jsonrpc-lifecycle-v1`；归属 MET-85；**已替换**（图片准入后的有序引用转换）；生命周期扩展保留。
 - Allrice：[allrice-jsonrpc-runtime.mjs](../../apps/worker/dsh/allrice-jsonrpc-runtime.mjs)、[allrice-dsh-runtime-compatibility.mjs](../../apps/worker/dsh/allrice-dsh-runtime-compatibility.mjs)。承担发行身份、Broker、会话恢复、压缩和 typed input 的受控桥接。
 - 上游：[SDK server][sdk] / [wire types][wire]新增 inline image admission、初始化就绪和 reasoning effort 校验，但 SDK inline image 不传递 `name`，不能直接替代现有有名附件。PR-3 改用 rc.3 新增的 [AttachmentStore.admitPromptContent][attachment-admission]，复用原生准入及有序引用转换，并删除 `admitDshPromptImageBlocks`。上游握手版本仍为 `0.0.1`，不能用它替代 Allrice 发行版本核验。旧 `Session.events` 读取及内容事件格式已有变化。

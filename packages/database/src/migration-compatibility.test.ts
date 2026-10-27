@@ -32,7 +32,7 @@ describe('native generation migration archive', () => {
       expect(migrationsMatch(active, [...active, name, name])).toBe(false);
     }
   });
-  it('never reuses an archived migration number ', () => {
+  it('never reuses an archived migration number', () => {
     const retired = archivedMigrationNames.map((name) => name.slice(0, 4));
     expect(active.filter((name) => retired.includes(name.slice(0, 4)))).toEqual(
       [],

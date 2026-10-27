@@ -110,7 +110,7 @@ class DeployDevMigrations(unittest.TestCase):
                 self.assertIn(near.strip(), printed)
 
     def test_unarchived_deleted_migration_is_refused(self):
-        known, printed = self.check(self.release(archived=ARCHIVED[:1]), FILES + ARCHIVED)
+        known, printed = self.check(self.release(archived=[]), FILES + ARCHIVED)
         self.assertFalse(known)
         self.assertIn('0213_native_chat_executor_transitions.sql', printed)
 
