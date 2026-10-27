@@ -62,3 +62,13 @@ body[data-ds-dark-theme] {
   --allrice-session-selected: #39414c;
   --allrice-session-selected-hover: #444e5c;
 }
+
+/* Placeholders a component does not colour itself use DSH's secondary label,
+   readable on both themes' fields; Chrome's grey is 3.96:1 on the dark canvas
+   (MET-214). :where() keeps this under any component rule, which still wins.
+   The admin console ([data-admin-theme]) has its own palette and keeps the
+   browser's. */
+:where(input, textarea):where(:not([data-admin-theme] *))::placeholder {
+  color: var(--dsw-alias-label-secondary);
+  opacity: 1;
+}
