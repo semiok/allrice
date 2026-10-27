@@ -273,7 +273,7 @@ export function FolderRules({ workspaceId }: { workspaceId?: string }) {
             <div className={styles.empty}>
               <p>还没有文件夹规则。你可以让员工自动读取 PDF、Excel 或 CSV。</p>
               <p>
-                需要新版 Bridge
+                需要新版 AllRice 助手
                 保持在线，并在「我的电脑」选择允许使用的文件夹。添加规则时，已有文件会作为起点；之后的新文件或新版本才会启动工作。
               </p>
             </div>
@@ -449,7 +449,7 @@ export function FolderRules({ workspaceId }: { workspaceId?: string }) {
                     {options?.devices.map((d) => (
                       <option key={d.id} value={d.id} disabled={!d.ready}>
                         {d.name}
-                        {d.ready ? '' : ' · 请安装新版 Bridge 并保持在线'}
+                        {d.ready ? '' : ' · 请安装新版 AllRice 助手并保持在线'}
                       </option>
                     ))}
                   </select>

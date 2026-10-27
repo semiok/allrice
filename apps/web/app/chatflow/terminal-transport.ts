@@ -359,7 +359,7 @@ export class TerminalCarrier {
       const waiter = { resolve: finish, reject: fail };
       const abort = () => fail(Error('终端请求已取消'));
       const timer = setTimeout(
-        () => fail(Error('连接电脑超时，请检查 Bridge')),
+        () => fail(Error('连接电脑超时，请检查 AllRice 助手')),
         20000,
       );
       const cleanup = () => {

@@ -108,43 +108,37 @@ export function BridgeReleaseDownloads({
   error: boolean;
   onDownload: (label: string) => void;
 }) {
+  // Only the Apple silicon build is published (MET-214).
+  const release = releases?.find((item) => item.platform === 'macos-arm64');
+  const label = 'AllRice 助手（Apple 芯片）';
   return (
-    <section className={styles.bridgeReleaseSection} aria-label="电脑端下载">
+    <section
+      className={styles.bridgeReleaseSection}
+      aria-label="下载 AllRice 助手"
+    >
       <div className={styles.bridgeDownloads}>
-        {(['macos-arm64', 'macos-x64'] as const).map((platform) => {
-          const release = releases?.find((item) => item.platform === platform);
-          const label =
-            platform === 'macos-arm64' ? 'M 芯片版' : 'Intel 芯片版';
-          if (release && !release.available)
-            return (
-              <span key={platform} className={styles.bridgeDownloadUnavailable}>
-                {label}暂未提供
-              </span>
-            );
-          return (
-            <a
-              key={platform}
-              className={styles.bridgeClientDownload}
-              href={`/api/v1/bridge/client/${platform}`}
-              download={
-                platform === 'macos-arm64'
-                  ? 'RiceBridge-M.zip'
-                  : 'RiceBridge-Intel.zip'
-              }
-              onClick={() => onDownload(label)}
-            >
-              下载 {label}
-              {release?.version ? ` · v${release.version}` : ''}
-            </a>
-          );
-        })}
+        {release && !release.available ? (
+          <span className={styles.bridgeDownloadUnavailable}>
+            {label}暂未提供下载
+          </span>
+        ) : (
+          <a
+            className={styles.bridgeClientDownload}
+            href="/api/v1/bridge/client/macos-arm64"
+            download="AllRice-Assistant.zip"
+            onClick={() => onDownload(label)}
+          >
+            下载 {label}
+            {release?.version ? ` · v${release.version}` : ''}
+          </a>
+        )}
       </div>
       {error ? (
         <small role="status">版本信息暂不可用，请刷新重试。</small>
       ) : !releases ? (
         <small role="status">正在检查最新版本…</small>
-      ) : releases.some((item) => item.available && !item.version) ? (
-        <small>部分安装包的版本尚未确认。</small>
+      ) : release?.available && !release.version ? (
+        <small>安装包的版本尚未确认。</small>
       ) : null}
     </section>
   );

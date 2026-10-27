@@ -59,7 +59,7 @@ export const capabilityLabels: Record<
   local_mcp: {
     title: '电脑上的应用工具',
     description:
-      '通过 AllRice 电脑端使用电脑上配置的应用服务，需要保持电脑连接。',
+      '通过 AllRice 助手使用电脑上配置的应用服务，需要保持电脑连接。',
     prompt:
       '请使用我电脑上已授权的本地应用工具完成【填写业务任务】，全程固定在同一台电脑、同一个授权文件夹和同一版本的工具上，按我的工作方式自动执行或请我确认；不要安装来历不明的服务，也不要改到云端执行。',
   },
@@ -111,23 +111,23 @@ export const capabilityReasons: Record<WorkspaceCapability['reason'], string> =
     read_only: '当前账号为历史只读授权，请联系平台管理员调整。',
     provider_unsupported: '当前对话暂不支持助手，可由当前员工继续处理。',
     bridge_missing:
-      '连接电脑后就能处理电脑上的任务。点下方按钮下载 AllRice 电脑端并完成配对。',
+      '连接电脑后就能处理电脑上的任务。点下方按钮下载 AllRice 助手并完成配对。',
     bridge_offline:
-      '电脑未连接。请打开 AllRice 电脑端后刷新；不会自动改到云端执行。',
+      '电脑未连接。请打开 AllRice 助手后刷新；不会自动改到云端执行。',
     folder_missing: '电脑已连接。选择需要交给员工处理的文件夹即可。',
     environment_preparing:
-      'AllRice 电脑端正在自动准备环境，稍后刷新就能看到结果；其他已就绪的能力可以继续使用。',
+      'AllRice 助手正在自动准备环境，稍后刷新就能看到结果；其他已就绪的能力可以继续使用。',
     environment_busy: '本机正在处理已有任务，新任务等待本机释放资源。',
     runtime_unsupported:
       '当前电脑缺少此能力所需条件，可在「我的电脑」查看具体缺项。',
     device_paused:
-      '此能力已暂停。请在「设置 → 我的电脑」中开启；如果电脑端整体暂停了，请在电脑上恢复。',
+      '此能力已暂停。请在「设置 → 我的电脑」中开启；如果 AllRice 助手整体暂停了，请在电脑上恢复。',
     browser_unavailable:
-      '独立浏览器还没准备好，请在 AllRice 电脑端的菜单里重新检查。缺少 Chrome 时，按提示安装后再试。',
+      '独立浏览器还没准备好，请在菜单栏的 AllRice 菜单里重新检查。缺少 Chrome 时，按提示安装后再试。',
     runner_missing:
-      '本地计算环境暂不可用。通用计算可交给员工在云端完成；本地项目服务可在 AllRice 电脑端的菜单里重新检查并准备。',
+      '本地计算环境暂不可用。通用计算可交给员工在云端完成；本地项目服务可在菜单栏的 AllRice 菜单里重新检查并准备。',
     candidate_runner_missing:
-      '这台电脑还不能测试修改方案。请更新 AllRice 电脑端，更新后会自动检查并准备独立的沙箱。',
+      '这台电脑还不能测试修改方案。请更新 AllRice 助手，更新后会自动检查并准备独立的沙箱。',
     target_missing: '尚未配置对应执行环境，请由平台管理员准备隔离运行环境。',
     target_unavailable: '所需执行目标不可用，请恢复对应环境后刷新。',
     grant_missing:

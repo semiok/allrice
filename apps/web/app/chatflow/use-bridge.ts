@@ -196,7 +196,7 @@ export function useBridge({
         setError(
           userFacingMessage(
             cause,
-            '没能打开电脑上的文件夹选择窗口，请确认 AllRice 电脑端已打开。',
+            '没能打开电脑上的文件夹选择窗口，请确认 AllRice 助手已打开。',
           ),
         );
       } finally {
@@ -219,7 +219,7 @@ export function useBridge({
           headers: { 'content-type': 'application/json', ...tenantHeaders },
           body: JSON.stringify({
             workspaceId: workspace.workspaceId,
-            deviceName: 'Rice Bridge',
+            deviceName: 'AllRice 助手',
           }),
         }),
       );

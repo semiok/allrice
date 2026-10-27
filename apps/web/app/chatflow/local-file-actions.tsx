@@ -275,7 +275,9 @@ export function LocalArtifactFileDialog({
             ))}
           </select>
         </label>
-        {!devices.length && <p>请在“我的电脑”连接新版 Bridge 并选择目录。</p>}
+        {!devices.length && (
+          <p>请在“我的电脑”连接新版 AllRice 助手并选择目录。</p>
+        )}
         <label>
           目录内文件名
           <input

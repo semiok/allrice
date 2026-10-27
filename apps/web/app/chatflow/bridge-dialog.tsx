@@ -116,11 +116,11 @@ export function BridgeSettings({
                     <div className={css.deviceMeta}>
                       <span>
                         {device.platform === 'macos-arm64'
-                          ? 'M 芯片'
+                          ? 'Apple 芯片'
                           : 'Intel 芯片'}
                       </span>
                       <span aria-hidden="true">·</span>
-                      <span>AllRice 电脑端</span>
+                      <span>AllRice 助手</span>
                       {bridge.bridgeStatusKnown &&
                         bridge.bridgeLastRefreshedAt && (
                           <span
@@ -276,8 +276,8 @@ export function BridgeSettings({
                         <span>{bridgePreparationLabel(item)}</span>
                         {item.stage === 'failed' && (
                           <small>
-                            在 AllRice
-                            电脑端的菜单里选择“重新检查并准备环境”继续，已下载的部分不用重新下载。
+                            在菜单栏的 AllRice
+                            菜单里选择“重新检查并准备环境”继续，已下载的部分不用重新下载。
                           </small>
                         )}
                       </div>
@@ -329,7 +329,7 @@ export function BridgeSettings({
                             <small>
                               {online
                                 ? row.reason
-                                : '请打开电脑上的 AllRice 电脑端。'}
+                                : '请打开电脑上的 AllRice 助手。'}
                             </small>
                           )}
                         </div>
@@ -366,8 +366,8 @@ export function BridgeSettings({
       ) : !onlineDevices.length ? (
         <p className={css.notice}>
           {devices.length
-            ? '打开这台电脑上的 AllRice 电脑端，就能重新连接。'
-            : '还没有连接电脑。安装 AllRice 电脑端后，输入配对码就能连接。'}
+            ? '打开这台电脑上的 AllRice 助手，就能重新连接。'
+            : '还没有连接电脑。安装 AllRice 助手后，输入配对码就能连接。'}
         </p>
       ) : null}
       {bridge.bridgeRecoveryActive && onlineDevices.length ? (
@@ -395,7 +395,7 @@ export function BridgeSettings({
               <span>
                 {devices.length > 1
                   ? bridgeDeviceName(device.name)
-                  : 'AllRice 电脑端'}{' '}
+                  : 'AllRice 助手'}{' '}
                 ·{' '}
               </span>
               <BridgeVersionStatus
@@ -414,7 +414,8 @@ export function BridgeSettings({
             onDownload={bridge.noteBridgeDownload}
           />
           <p>
-            解压后双击打开里面的应用。升级前先退出旧版，原有配对和设置会保留。
+            解压后双击打开“AllRice
+            助手”。升级前先退出旧版，原有配对和设置会保留。
           </p>
           <p>
             这是测试版。第一次打开时，macOS
@@ -452,9 +453,7 @@ export function BridgeSettings({
                   <IconCopyOutlineRegular size={18} />
                 </button>
               </div>
-              <p>
-                请在 10 分钟内把配对码输入到 AllRice 电脑端，之后会自动连接。
-              </p>
+              <p>请在 10 分钟内把配对码输入到 AllRice 助手，之后会自动连接。</p>
             </div>
           ) : null}
         </div>

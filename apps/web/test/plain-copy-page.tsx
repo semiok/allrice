@@ -94,10 +94,7 @@ const bridge = {
   noteBridgeDownload: noop,
 } as unknown as ReturnType<typeof useBridge>;
 const releases = {
-  releases: [
-    { platform: 'macos-arm64', available: true, version: '0.6.1' },
-    { platform: 'macos-x64', available: false, version: null },
-  ],
+  releases: [{ platform: 'macos-arm64', available: true, version: '0.6.1' }],
   error: false,
   reload: async () => {},
 } as unknown as ReturnType<typeof useBridgeReleases>;

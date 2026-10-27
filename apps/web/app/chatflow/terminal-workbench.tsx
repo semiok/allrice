@@ -171,15 +171,15 @@ export function TerminalGuide(props: {
       return false;
     }
     if (!target) {
-      setNotice('安装并连接 Bridge，授权文件夹后即可使用终端。');
+      setNotice('安装并连接 AllRice 助手，授权文件夹后即可使用终端。');
       return false;
     }
     if (!target.online) {
-      setNotice('这台电脑的 Bridge 当前离线，请先连接。');
+      setNotice('这台电脑的 AllRice 助手当前离线，请先连接。');
       return false;
     }
     if (!target.supported) {
-      setNotice('更新 Bridge 后可使用终端。');
+      setNotice('更新 AllRice 助手后可使用终端。');
       return false;
     }
     return true;

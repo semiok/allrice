@@ -191,8 +191,8 @@ export function CapabilityContent({
                         {capability.reason === 'runner_missing' ? (
                           <>
                             <li>
-                              在 AllRice
-                              电脑端的菜单里选择“重新检查并准备环境”，已有的独立沙箱会自动恢复。
+                              在菜单栏的 AllRice
+                              菜单里选择“重新检查并准备环境”，已有的独立沙箱会自动恢复。
                             </li>
                             <li>
                               通用计算可以直接让员工使用云端环境；涉及本地文件时，先在当前任务中选择所需文件。

@@ -2,15 +2,13 @@ import { readFile, stat } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
 export type BridgeClientRelease = {
-  platform: 'macos-arm64' | 'macos-x64';
+  platform: 'macos-arm64';
   available: boolean;
   version: string | null;
 };
 
-const platforms = [
-  ['macos-arm64', 'ALLRICE_BRIDGE_MACOS_ARM64_PATH'],
-  ['macos-x64', 'ALLRICE_BRIDGE_MACOS_X64_PATH'],
-] as const;
+// Only the Apple silicon build of AllRice 助手 is published (MET-214).
+const platforms = [['macos-arm64', 'ALLRICE_BRIDGE_MACOS_ARM64_PATH']] as const;
 
 /** Read the distribution selected for downloads, which may differ from Web's
  * source version. Legacy archives remain downloadable without a version label. */

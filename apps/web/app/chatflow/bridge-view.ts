@@ -43,29 +43,30 @@ const readinessReasons: Record<string, string> = {
   folder_unavailable: '所选文件夹已移动或无法访问。',
   folder_read_only: '所选文件夹不可写。',
   git_missing: '电脑上还没有安装 Git。',
-  device_paused: '电脑端已暂停。',
+  device_paused: 'AllRice 助手已暂停。',
   capability_paused: '此能力已暂停。',
-  bridge_offline: '请打开电脑上的 AllRice 电脑端。',
+  bridge_offline: '请打开电脑上的 AllRice 助手。',
   browser_unavailable: '独立浏览器未通过检查。',
   sandbox_not_installed: '本机计算环境尚未安装。',
   sandbox_unavailable: '本机计算环境未通过检查。',
   local_mcp_disabled: '本机应用运行环境尚未启用。',
   office_not_implemented:
     '暂不支持在电脑上处理 Office 文件，可以先用云端处理。',
-  readiness_not_reported: '电脑端没有提供这项状态，请更新 AllRice 电脑端。',
-  legacy_ready: '可用。更新 AllRice 电脑端后能看到更详细的状态。',
-  legacy_unavailable: '暂不可用，请更新 AllRice 电脑端后再试。',
+  readiness_not_reported: '当前版本没有提供这项状态，请更新 AllRice 助手。',
+  legacy_ready: '可用。更新 AllRice 助手后能看到更详细的状态。',
+  legacy_unavailable: '暂不可用，请更新 AllRice 助手后再试。',
   legacy_preparing: '正在准备环境。',
   legacy_paused: '此能力已暂停。',
   legacy_unreported:
-    '电脑端版本较旧，没有提供这项状态，请更新 AllRice 电脑端。',
+    'AllRice 助手版本较旧，没有提供这项状态，请更新到最新版本。',
 };
 
-/** The pairing name ends in the client's internal name; people see their computer. */
+/** Pairing names end in the app name (old pairings: Rice Bridge); people see their computer. */
 export function bridgeDeviceName(name: string) {
-  return name
-    .replace(/ · Rice Bridge$/, '')
-    .replace(/^Rice Bridge$/, '这台电脑');
+  // r1-exempt(display): strips the app suffix the client adds to its default device name; only the shown name changes
+  const computer = name.replace(/ · (?:Rice Bridge|AllRice 助手)$/, '');
+  // r1-exempt(display): a name that is only the app name is shown as this computer; nothing else depends on it
+  return computer.replace(/^(?:Rice Bridge|AllRice 助手)$/, '这台电脑');
 }
 
 export function bridgeCapabilityRows(device: BridgeDevice) {
@@ -93,11 +94,11 @@ export function bridgeCapabilityRows(device: BridgeDevice) {
             stateLabel: readinessLabels[report.state],
             reason:
               readinessReasons[report.reason] ??
-              '环境检查没有通过，请刷新状态，或重新打开 AllRice 电脑端。',
+              '环境检查没有通过，请刷新状态，或重新打开 AllRice 助手。',
             version: Object.entries(report.versions)
               .map(
                 ([name, version]) =>
-                  `${name === 'bridge' ? '电脑端' : name} ${version}`,
+                  `${name === 'bridge' ? 'AllRice 助手' : name} ${version}`,
               )
               .join(' · '),
           },

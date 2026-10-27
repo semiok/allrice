@@ -26,14 +26,14 @@ describe('request failures read the API error code before the status', () => {
   });
 
   it.each([
-    ['device_offline', '电脑未连接，请打开 AllRice 电脑端后再试'],
+    ['device_offline', '电脑未连接，请打开 AllRice 助手后再试'],
     [
       'command_unavailable',
-      '电脑端暂时做不了这一步。请确认 AllRice 电脑端已打开并更新到最新版本、文件夹已授权，再试一次',
+      'AllRice 助手暂时做不了这一步。请确认它已打开并更新到最新版本、文件夹已授权，再试一次',
     ],
     [
       'grant_missing',
-      '电脑端暂时做不了这一步。请确认 AllRice 电脑端已打开并更新到最新版本、文件夹已授权，再试一次',
+      'AllRice 助手暂时做不了这一步。请确认它已打开并更新到最新版本、文件夹已授权，再试一次',
     ],
     ['result_too_large', '电脑上的文件太大，请换小一点的文件'],
     ['pairing_invalid', '配对码无效或已过期，请重新生成配对码'],

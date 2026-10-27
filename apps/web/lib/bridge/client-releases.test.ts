@@ -14,14 +14,18 @@ afterEach(async () => {
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'bridge-release-'));
   roots.push(root);
-  const archive = join(root, 'RiceBridge-M.zip');
+  // The package currently on Dev, before the AllRice 助手 build replaces it.
+  const archive = join(root, 'RiceBridge-App-M.zip');
   await writeFile(archive, 'synthetic archive');
   vi.stubEnv('ALLRICE_BRIDGE_MACOS_ARM64_PATH', archive);
-  vi.stubEnv('ALLRICE_BRIDGE_MACOS_X64_PATH', '');
+  const intel = join(root, 'RiceBridge-App-Intel.zip');
+  await writeFile(intel, 'synthetic Intel archive');
+  // A leftover Intel setting must not bring the Intel download back (MET-214).
+  vi.stubEnv('ALLRICE_BRIDGE_MACOS_X64_PATH', intel);
   const manifest = {
     platform: 'macos-arm64',
     version: '0.6.0-dev.7',
-    zip: archive,
+    zip: 'RiceBridge-App-M.zip',
   };
   await writeFile(join(root, 'release.json'), JSON.stringify(manifest));
   return { root, archive, manifest };
@@ -30,18 +34,23 @@ it('uses the selected archive manifest instead of an application source version,
   const f = await fixture();
   expect(await bridgeClientReleases()).toEqual([
     { platform: 'macos-arm64', available: true, version: '0.6.0-dev.7' },
-    { platform: 'macos-x64', available: false, version: null },
   ]);
   const next = join(f.root, 'next');
   await mkdir(next);
-  const archive = join(next, 'RiceBridge-M.zip');
+  const archive = join(next, 'AllRice-Assistant.zip');
   await writeFile(archive, 'different archive');
   await writeFile(
     join(next, 'release.json'),
-    JSON.stringify({ ...f.manifest, version: '0.6.0-dev.10', zip: archive }),
+    JSON.stringify({
+      ...f.manifest,
+      version: '0.6.0-dev.10',
+      zip: 'AllRice-Assistant.zip',
+    }),
   );
   vi.stubEnv('ALLRICE_BRIDGE_MACOS_ARM64_PATH', archive);
-  expect((await bridgeClientReleases())[0]?.version).toBe('0.6.0-dev.10');
+  expect(await bridgeClientReleases()).toEqual([
+    { platform: 'macos-arm64', available: true, version: '0.6.0-dev.10' },
+  ]);
 });
 it.each([
   { platform: 'macos-x64' },

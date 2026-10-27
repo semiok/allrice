@@ -204,10 +204,15 @@ describe('Bridge connection and local workspace presentation', () => {
     const [row] = bridgeCapabilityRows(current);
     expect(row).toMatchObject({
       label: '查看项目改动',
-      reason: '环境检查没有通过，请刷新状态，或重新打开 AllRice 电脑端。',
-      version: '电脑端 0.6.0 · node 22.23.2',
+      reason: '环境检查没有通过，请刷新状态，或重新打开 AllRice 助手。',
+      version: 'AllRice 助手 0.6.0 · node 22.23.2',
     });
     expect(bridgeDeviceName('M5-Max.local · Rice Bridge')).toBe('M5-Max.local');
     expect(bridgeDeviceName('Rice Bridge')).toBe('这台电脑');
+    // New pairings (MET-214) name the app AllRice 助手; old pairings keep Rice Bridge.
+    expect(bridgeDeviceName('M5-Max.local · AllRice 助手')).toBe(
+      'M5-Max.local',
+    );
+    expect(bridgeDeviceName('AllRice 助手')).toBe('这台电脑');
   });
 });

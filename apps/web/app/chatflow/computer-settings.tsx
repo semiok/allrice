@@ -248,7 +248,7 @@ export function ComputerSettings({
       {computers?.length === 0 && (
         <p className={styles.preferenceRow}>
           还没有连接电脑。安装 AllRice
-          电脑端并完成配对后，可以在这里管理电脑上的能力。
+          助手并完成配对后，可以在这里管理电脑上的能力。
         </p>
       )}
       {computers?.map((computer) => (
@@ -269,9 +269,9 @@ export function ComputerSettings({
                 : '设置已保存，电脑上线后自动同步。'}
             </p>
           )}
-          {!computer.supported && <p>请更新 AllRice 电脑端后使用这些开关。</p>}
+          {!computer.supported && <p>请更新 AllRice 助手后使用这些开关。</p>}
           {!computer.pending && computer.environment?.paused && (
-            <p>电脑端已暂停，请在电脑上的 AllRice 电脑端里恢复。</p>
+            <p>AllRice 助手已暂停，请在电脑上的 AllRice 助手里恢复。</p>
           )}
           {choices.map((choice) => {
             const state = computer.environment?.[choice.state];
@@ -281,7 +281,7 @@ export function ComputerSettings({
                 : computer.device.status !== 'online'
                   ? '电脑未连接'
                   : computer.environment?.paused
-                    ? '电脑端已暂停'
+                    ? 'AllRice 助手已暂停'
                     : choice.key === 'development' &&
                         !computer.settings.localCommand
                       ? '需要开启本地沙箱命令'
@@ -325,7 +325,7 @@ export function ComputerSettings({
               active={active}
             />
           ) : (
-            <p>更新 AllRice 电脑端后，浏览器会默认保留登录状态。</p>
+            <p>更新 AllRice 助手后，浏览器会默认保留登录状态。</p>
           )}
         </div>
       ))}

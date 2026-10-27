@@ -146,7 +146,7 @@ describe('workbench UI boundary', () => {
         workCopy: { ...scope.workCopy, kind: 'in_place' },
       }),
     ).toEqual({
-      target: '本地 Bridge',
+      target: 'AllRice 助手',
       workCopy: '授权原目录',
       availability: '此处不证明设备当前在线',
     });

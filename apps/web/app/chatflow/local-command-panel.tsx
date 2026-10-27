@@ -36,7 +36,7 @@ interface Operation {
 const statusLabels: Record<string, string> = {
   planned: '正在准备',
   waiting_user: '等待操作授权',
-  ready: '等待 Bridge',
+  ready: '等待 AllRice 助手',
   dispatched: '已派发，尚未确认执行',
   running: '正在本地执行',
   cancel_requested: '正在停止，尚未确认',
@@ -324,7 +324,7 @@ export function LocalCommandPanel({
                           <small>
                             {p.archivePath
                               ? `使用已授权归档：${p.archivePath}`
-                              : '由 Bridge 从 registry.npmjs.org 下载；不传送源码或凭证'}
+                              : '由 AllRice 助手从 registry.npmjs.org 下载；不传送源码或凭证'}
                           </small>
                           <small>{p.integrity}</small>
                         </li>
@@ -353,7 +353,7 @@ export function LocalCommandPanel({
                     <p>
                       {op.command.projectPreparation.offline
                         ? '仅使用已校验的离线缓存，缺包时停止。'
-                        : '优先复用已校验的归档；缺包时由 Bridge 校验并下载公开依赖，依赖安装阶段不联网。'}
+                        : '优先复用已校验的归档；缺包时由 AllRice 助手校验并下载公开依赖，依赖安装阶段不联网。'}
                     </p>
                     <p>
                       安装脚本：
@@ -373,7 +373,7 @@ export function LocalCommandPanel({
                               {pkg.name}@{pkg.version}
                             </code>
                             <small>
-                              {pkg.archivePath ?? '由 Bridge 下载公开归档'}
+                              {pkg.archivePath ?? '由 AllRice 助手下载公开归档'}
                             </small>
                             <small>
                               {'integrity' in pkg ? pkg.integrity : pkg.sha256}
@@ -566,7 +566,8 @@ export function LocalCommandPanel({
             )}
             {op.snapshot.status === 'unknown' && (
               <p role="status">
-                尚未取得可信完成回执，不会自动重跑；请恢复 Bridge 连接后核实。
+                尚未取得可信完成回执，不会自动重跑；请恢复 AllRice
+                助手连接后核实。
               </p>
             )}
           </article>

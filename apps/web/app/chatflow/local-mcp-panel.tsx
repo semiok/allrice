@@ -6,7 +6,7 @@ const statusReadFailure = '暂时无法更新电脑操作状态，请稍后重�
 const labels: Record<string, string> = {
   planned: '准备中',
   waiting_user: '等待这一次操作授权',
-  ready: '等待 Bridge',
+  ready: '等待 AllRice 助手',
   dispatched: '已派发，等待执行确认',
   running: '本地 MCP 执行中',
   cancel_requested: '已请求停止，等待确认',
