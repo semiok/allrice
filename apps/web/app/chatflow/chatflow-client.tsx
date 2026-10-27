@@ -122,7 +122,7 @@ import { nextPaint } from './dsh-upstream/images/next-paint';
 import { useAttachments } from './use-attachments';
 import { useBridge } from './use-bridge';
 import { useBridgeReleases } from './bridge-releases';
-import { projectBridgeView } from './bridge-view';
+import { onlyIntelBridges, projectBridgeView } from './bridge-view';
 import { useRunStream } from './use-run-stream';
 import { useSession } from './use-session';
 import { createSessionActions } from './session-actions';
@@ -1800,6 +1800,7 @@ export function ChatFlowClient({
           <CapabilityContent
             key={`capabilities/${section}/${workspace.viewerId}/${workspace.workspaceId}/${activeId}`}
             scope={section}
+            intelComputer={onlyIntelBridges(bridgeDevices)}
             data={readiness.data}
             loading={readiness.loading}
             error={readiness.error}

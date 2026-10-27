@@ -7,7 +7,7 @@ import type {
 import { IconChevronRightOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives';
 import {
   capabilityLabels,
-  capabilityReasons,
+  capabilityReason,
   capabilityStateLabels,
 } from './capability-catalog';
 import styles from './capability-panel.module.css';
@@ -83,6 +83,7 @@ export function CapabilityContent({
   onRefresh,
   onBridge,
   onCompose,
+  intelComputer = false,
 }: {
   scope: 'work' | 'computer';
   data: WorkspaceReadiness | null;
@@ -92,6 +93,8 @@ export function CapabilityContent({
   onRefresh: () => void;
   onBridge: () => void;
   onCompose: (id: WorkspaceCapabilityId) => void;
+  /** Only Intel Macs are paired: they get no new versions (MET-214). */
+  intelComputer?: boolean;
 }) {
   const group = groups[scope];
   const summary = summarizeCapabilities(group.ids, data, loading, error);
@@ -151,7 +154,7 @@ export function CapabilityContent({
                   <p>{label.description}</p>
                   <p>
                     {capability
-                      ? capabilityReasons[capability.reason]
+                      ? capabilityReason(capability.reason, intelComputer)
                       : '尚未取得当前状态，请刷新确认。'}
                   </p>
                   {capability?.action === 'compose' &&
@@ -203,7 +206,12 @@ export function CapabilityContent({
                           </>
                         ) : (
                           <>
-                            <li>{capabilityReasons[capability.reason]}</li>
+                            <li>
+                              {capabilityReason(
+                                capability.reason,
+                                intelComputer,
+                              )}
+                            </li>
                             <li>
                               完成后点击“刷新能力状态”。其他可用能力可以继续使用。
                             </li>

@@ -288,7 +288,11 @@ export function TerminalGuide(props: {
             >
               {value.deviceName} · {value.label}
               {value.online ? '' : '（离线）'}
-              {value.supported ? '' : '（需更新）'}
+              {value.supported
+                ? ''
+                : value.intel
+                  ? '（现有版本不支持终端）'
+                  : '（需更新）'}
             </option>
           ))}
         </select>

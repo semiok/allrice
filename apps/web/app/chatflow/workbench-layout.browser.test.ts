@@ -11468,63 +11468,120 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
   );
 
-  it('MET-214 tells a paired Intel Mac it keeps its version instead of asking for an update', async () => {
-    const f = await fixture({ width: 1440 });
-    try {
-      f.state.bridgeDevices = [
-        {
-          id: id(902),
-          name: 'iMac-Intel.local · Rice Bridge',
-          platform: 'macos-x64',
-          status: 'online',
-          clientVersion: '0.6.0-dev.40',
-          lastSeenAt: now,
-          folderGrants: [],
-          readiness: [
-            {
-              capability: 'local.browser',
-              state: 'unsupported',
-              reason: 'legacy_unavailable',
-              missing: [],
-              versions: { bridge: '0.6.0-dev.40' },
-              observedAt: now,
-            },
-          ],
-        },
-      ];
-      await openCapabilities(f, 'computer');
-      const settings = f.page.getByRole('dialog', {
-        name: '设置',
-        exact: true,
-      });
-      const notice = 'Intel 芯片的电脑不再提供新版本，现有版本可以继续使用。';
-      // 我的电脑: switches and browser login say why, not "please update".
-      const permissions = settings.getByRole('region', {
-        name: 'iMac-Intel.local',
-        exact: true,
-      });
-      await permissions
-        .getByText(`${notice}这台电脑的版本不支持这些开关。`, { exact: true })
-        .waitFor();
-      await settings.getByText(notice, { exact: true }).first().waitFor();
-      await settings
-        .locator('[data-capability="local_files"]')
-        .getByRole('button', { name: '连接与管理电脑' })
-        .click();
-      const computer = settings.locator('[data-bridge-settings]');
-      await computer.getByText('不再提供新版本', { exact: true }).waitFor();
-      await computer.locator('[data-bridge-capabilities] > summary').click();
-      await computer.getByText(notice, { exact: true }).first().waitFor();
-      await computer.locator('[data-bridge-install] > summary').click();
-      await computer.getByText(`· ${notice}`, { exact: true }).waitFor();
-      const text = await settings.innerText();
-      expect(text).not.toMatch(/请更新|可更新至|有新版本|Rice Bridge/);
-      expect(text).toContain('Intel 芯片');
-      expect(f.errors).toEqual([]);
-    } finally {
-      await f.close();
-    }
-  });
+  it.each(['online', 'offline'] as const)(
+    'MET-214 keeps a paired %s Intel Mac on its version: no update prompt and no Apple silicon package to replace it',
+    async (status) => {
+      const f = await fixture({ width: 1440 });
+      try {
+        f.state.bridgeDevices = [
+          {
+            id: id(902),
+            name: 'iMac-Intel.local · Rice Bridge',
+            platform: 'macos-x64',
+            status,
+            clientVersion: '0.6.0-dev.40',
+            lastSeenAt: now,
+            folderGrants: [],
+            readiness: [
+              {
+                capability: 'local.browser',
+                state: 'unsupported',
+                reason: 'legacy_unavailable',
+                missing: [],
+                versions: { bridge: '0.6.0-dev.40' },
+                observedAt: now,
+              },
+            ],
+          },
+        ];
+        // This Mac's version has no environment for testing a change proposal.
+        f.state.capabilities = f.state.capabilities.map((c) =>
+          c.id === 'development'
+            ? {
+                ...c,
+                state: 'needs_configuration',
+                reason: 'candidate_runner_missing',
+                action: 'bridge',
+              }
+            : c,
+        );
+        await f.page.reload();
+        await openCapabilities(f, 'computer');
+        const settings = f.page.getByRole('dialog', {
+          name: '设置',
+          exact: true,
+        });
+        const notice = 'Intel 芯片的电脑不再提供新版本，现有版本可以继续使用。';
+        const development = settings.locator('[data-capability="development"]');
+        await development
+          .getByText(
+            'Intel 芯片的电脑不再提供新版本，现有版本不支持在隔离副本里测试修改方案。',
+            { exact: true },
+          )
+          .first()
+          .waitFor();
+        expect(await development.innerText()).not.toMatch(/请更新/);
+        // 我的电脑: switches and browser login say why, not "please update".
+        const permissions = settings.getByRole('region', {
+          name: 'iMac-Intel.local',
+          exact: true,
+        });
+        await permissions
+          .getByText(`${notice}这台电脑的版本不支持这些开关。`, {
+            exact: true,
+          })
+          .waitFor();
+        await settings
+          .locator('[data-capability="local_files"]')
+          .getByRole('button', { name: '连接与管理电脑' })
+          .click();
+        const computer = settings.locator('[data-bridge-settings]');
+        await computer.getByText('不再提供新版本', { exact: true }).waitFor();
+        if (status === 'online') {
+          await computer
+            .locator('[data-bridge-capabilities] > summary')
+            .click();
+          await computer.getByText(notice, { exact: true }).first().waitFor();
+        }
+        // Offline, the install section opens by itself; it must not offer the
+        // Apple silicon package as this Mac's update.
+        const install = computer.locator('[data-bridge-install]');
+        if ((await install.getAttribute('open')) === null)
+          await install.locator(':scope > summary').click();
+        await computer.getByText(`· ${notice}`, { exact: true }).waitFor();
+        const download = computer.locator(
+          'a[href="/api/v1/bridge/client/macos-arm64"]',
+        );
+        expect(await download.count()).toBe(1);
+        expect(await download.isVisible()).toBe(false);
+        expect(await computer.getByText(/直接替换/).count()).toBe(0);
+        const text = await settings.innerText();
+        expect(text).not.toMatch(
+          /请更新|可更新至|有新版本|Rice Bridge|下载 AllRice 助手/,
+        );
+        expect(text).toContain('Intel 芯片');
+        // Installing on another, Apple silicon Mac is a separate entry.
+        await computer
+          .locator('[data-bridge-other-mac] > summary')
+          .getByText('给另一台 Apple 芯片的 Mac 安装', { exact: true })
+          .click();
+        await download.waitFor();
+        expect(await download.textContent()).toContain(
+          '下载 AllRice 助手（Apple 芯片）',
+        );
+        await computer
+          .getByText(
+            '只在 Apple 芯片的 Mac 上安装；Intel 芯片的电脑继续用现有版本，不要替换。',
+            { exact: true },
+          )
+          .waitFor();
+        expect(await computer.getByText(/直接替换/).count()).toBe(0);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
 
   it.each([390, 1280])(
     'shows downloadable and installed Bridge versions at width %i and refreshes after an upgrade',

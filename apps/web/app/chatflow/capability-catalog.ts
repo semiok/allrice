@@ -157,3 +157,21 @@ export function capabilitySettingsHref(
           : null;
   return path ? `${path}?workspaceId=${encodeURIComponent(workspaceId)}` : null;
 }
+
+/** Intel Macs get no new versions (MET-214): advice that asks the computer to
+ * update says instead what the installed version cannot do. */
+const intelCapabilityReasons: Partial<
+  Record<WorkspaceCapability['reason'], string>
+> = {
+  candidate_runner_missing:
+    'Intel 芯片的电脑不再提供新版本，现有版本不支持在隔离副本里测试修改方案。',
+};
+export function capabilityReason(
+  reason: WorkspaceCapability['reason'],
+  intelComputer = false,
+) {
+  return (
+    (intelComputer ? intelCapabilityReasons[reason] : undefined) ??
+    capabilityReasons[reason]
+  );
+}

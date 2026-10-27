@@ -49,8 +49,11 @@ export function BridgeSettings({
   const [disconnectId, setDisconnectId] = useState<string | null>(null);
   const installOpen =
     installExpanded ?? (bridge.bridgeStatusKnown && !onlineDevices.length);
-  // Intel Macs get no new versions, so they never count towards an update.
+  // Intel Macs get no new versions, so they never count towards an update,
+  // and their maintenance flow offers no Apple silicon package to replace them.
   const updatable = onlineDevices.filter((device) => !isIntelBridge(device));
+  const hasIntel = devices.some(isIntelBridge);
+  const intelOnly = hasIntel && devices.every(isIntelBridge);
   const comparisons = updatable.map((device) => {
     const release = releases.releases?.find(
       (item) => item.platform === device.platform,
@@ -63,11 +66,33 @@ export function BridgeSettings({
     ? '有新版本'
     : comparisons.length && comparisons.every((value) => value === 0)
       ? '已是最新版'
-      : onlineDevices.length && !updatable.length
+      : intelOnly || (onlineDevices.length && !updatable.length)
         ? '不再提供新版本'
         : bridge.bridgeBusy || (!releases.releases && !releases.error)
           ? '检查中'
           : '待确认';
+  const installSteps = (
+    <>
+      <BridgeReleaseDownloads
+        releases={releases.releases}
+        error={releases.error}
+        onDownload={bridge.noteBridgeDownload}
+      />
+      <p>
+        解压后双击打开“AllRice 助手”。
+        {intelOnly
+          ? ''
+          : '如果已经装过，先退出旧版，把解压出的“AllRice 助手”拖进“应用程序”直接替换，原有配对和设置会保留。'}
+        {hasIntel && !intelOnly
+          ? 'Intel 芯片的电脑不要替换，继续用现有版本。'
+          : ''}
+      </p>
+      <p>
+        这是测试版。第一次打开时，macOS 可能提示“无法验证开发者”，请到“系统设置
+        → 隐私与安全性”里点“仍要打开”。
+      </p>
+    </>
+  );
   const refreshControl = (
     <button
       data-computer-control
@@ -415,21 +440,18 @@ export function BridgeSettings({
               {isIntelBridge(device) && <small> · {intelBridgeNotice}</small>}
             </p>
           ))}
-          <BridgeReleaseDownloads
-            releases={releases.releases}
-            error={releases.error}
-            onDownload={bridge.noteBridgeDownload}
-          />
-          <p>
-            解压后双击打开“AllRice
-            助手”。如果已经装过，先退出旧版，把解压出的“AllRice
-            助手”拖进“应用程序”直接替换，原有配对和设置会保留。
-          </p>
-          <p>
-            这是测试版。第一次打开时，macOS
-            可能提示“无法验证开发者”，请到“系统设置 →
-            隐私与安全性”里点“仍要打开”。
-          </p>
+          {intelOnly ? (
+            <details data-bridge-other-mac>
+              <summary>给另一台 Apple 芯片的 Mac 安装</summary>
+              <p>
+                只在 Apple 芯片的 Mac 上安装；Intel
+                芯片的电脑继续用现有版本，不要替换。
+              </p>
+              {installSteps}
+            </details>
+          ) : (
+            installSteps
+          )}
           <button
             data-computer-control
             className={css.secondaryButton}
