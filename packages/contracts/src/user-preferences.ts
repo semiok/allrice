@@ -10,6 +10,11 @@ export const TranscriptViewSchema = z.enum([
   'verbose',
 ]);
 export const CollapseTimingSchema = z.enum(['completion', 'next-input']);
+// Values follow DSH ui-theme `THEME_PREFERENCES` (`ui-theme.preference`).
+// The employee default is light by the user's 10-27 decision; DSH's own
+// default is `system`. The value applies to the employee app only.
+export const AppearanceSchema = z.enum(['light', 'dark', 'system']);
+export type Appearance = z.infer<typeof AppearanceSchema>;
 
 export const UserPreferencesInputSchema = z
   .object({
@@ -17,6 +22,7 @@ export const UserPreferencesInputSchema = z
     fontSize: FontSizeSchema.optional(),
     transcriptView: TranscriptViewSchema.optional(),
     collapseTiming: CollapseTimingSchema.optional(),
+    appearance: AppearanceSchema.optional(),
   })
   .strict()
   .refine(
@@ -32,6 +38,7 @@ export const UserPreferencesSchema = z.object({
   fontSize: FontSizeSchema.default(14),
   transcriptView: TranscriptViewSchema.default('detailed'),
   collapseTiming: CollapseTimingSchema.default('completion'),
+  appearance: AppearanceSchema.default('light'),
   updatedAt: z.string().datetime().nullable(),
 });
 export type UserPreferences = z.infer<typeof UserPreferencesSchema>;
@@ -41,5 +48,6 @@ export const defaultUserPreferences: UserPreferences = {
   fontSize: 14,
   transcriptView: 'detailed',
   collapseTiming: 'completion',
+  appearance: 'light',
   updatedAt: null,
 };
