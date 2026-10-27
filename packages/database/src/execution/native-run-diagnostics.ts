@@ -13,18 +13,7 @@ import {
 import {
   assertEmployeeRunExecutionBinding,
   EmployeeRunExecutionBindingSchema,
-  newNativeGeneration,
 } from '../conversation/current-execution-binding.ts';
-import {
-  assertChatTransitionPin,
-  readChatExecutorTransition,
-  readEffectiveChatExecutorOrigin,
-} from '../conversation/native-executor-transition.ts';
-import {
-  assertTransitionDescriptor,
-  executorTransitionRef,
-  type ExecutorTransitionRef,
-} from '../conversation/native-executor-transition-contract.ts';
 import {
   nativeRootDigest,
   NativeRootOriginSchema,
@@ -42,7 +31,7 @@ export interface NativeDiagnosticTargetSlice {
   receipts: NativeDiagnosticSourceReceipt[];
   verifiedTurns: number[];
   reasons: NativeDiagnosticReason[];
-  /** The immutable first writer; never relabeled after an executor transition. */
+  /** The immutable first writer; never relabeled by later releases. */
   binding: NativeSessionPin | null;
   /** Actual execution for this Run, proven from its frozen binding when present. */
   execution: NativeSessionDescriptor | null;
@@ -215,64 +204,22 @@ async function readNativeDiagnosticExecution(
 
   if (employee.native_execution_binding == null) {
     if (
-      original?.schemaVersion === 2 ||
-      (original
-        ? binding.binding_basis !== 'business_root_origin' ||
-          binding.root_origin_digest !== nativeRootDigest(original) ||
-          descriptor.distributionGeneration !==
-            original.distributionGeneration ||
-          descriptor.originReaderApprovalDigest !== undefined
-        : binding.binding_basis !== 'approved_compatibility_reader' ||
-          binding.root_origin_digest != null ||
-          descriptor.originReaderApprovalDigest !== undefined ||
-          descriptor.distributionGeneration === newNativeGeneration)
+      !original ||
+      original.schemaVersion === 2 ||
+      binding.binding_basis !== 'business_root_origin' ||
+      binding.root_origin_digest !== nativeRootDigest(original) ||
+      descriptor.distributionGeneration !== original.distributionGeneration
     )
       unavailable();
-    // A first pin created under U1/U2 belongs to a frozen transition Run. It
-    // cannot retroactively prove an earlier unbound Run, even for the same ID.
-    const [first] = await db<{ native_execution_binding: unknown }[]>`
-      select native_execution_binding from allrice_employee_runs
-      where run_id=${binding.first_run_id as string} and session_id=${scope.sessionId}
-        and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
-        and owner_id=${scope.ownerId}`;
-    if (!first || first.native_execution_binding != null) unavailable();
     return descriptor;
   }
 
   const frozen = EmployeeRunExecutionBindingSchema.parse(
     employee.native_execution_binding,
   );
-  let origin = original;
-  let transition: ExecutorTransitionRef | undefined;
-  if (frozen.schemaVersion === 2) {
-    const receipt = await readChatExecutorTransition(
-      db,
-      scope,
-      original,
-      frozen.transition,
-    );
-    if (!receipt) unavailable();
-    transition = executorTransitionRef(receipt);
-    // This lookup is permitted only after this Run's exact committed ref has
-    // been proven. Pre-adoption Runs never enter this branch.
-    if (origin == null) {
-      const effective = await readEffectiveChatExecutorOrigin(db, scope, null);
-      if (
-        !effective ||
-        effective.contextKind !== 'chat' ||
-        effective.contextId !== scope.sessionId ||
-        effective.rootSeed !== scope.sessionId ||
-        effective.profileId !== 'restricted'
-      )
-        unavailable();
-      origin = effective;
-    }
-    await assertChatTransitionPin(db, transition, binding);
-  }
   if (!employee.version_id || !employee.config_checksum) unavailable();
   const checked = assertEmployeeRunExecutionBinding(frozen, {
-    origin,
-    ...(transition ? { transition } : {}),
+    origin: original,
     scope,
     source: {
       employeeVersionId: employee.version_id,
@@ -282,13 +229,11 @@ async function readNativeDiagnosticExecution(
     executionSnapshot: employee.execution_snapshot,
   });
   if (
-    !transition &&
-    (binding.binding_basis !== 'business_root_origin' ||
-      binding.root_origin_digest !== checked.originDigest ||
-      // The pin's artifact is its first writer; the Run's is provenance.
-      descriptor.distributionGeneration !== checked.execution.generation ||
-      descriptor.profileId !== checked.execution.profileId ||
-      descriptor.originReaderApprovalDigest !== undefined)
+    binding.binding_basis !== 'business_root_origin' ||
+    binding.root_origin_digest !== checked.originDigest ||
+    // The pin's artifact is its first writer; the Run's is provenance.
+    descriptor.distributionGeneration !== checked.execution.generation ||
+    descriptor.profileId !== checked.execution.profileId
   )
     unavailable();
   const actual = NativeSessionDescriptorSchema.parse({
@@ -299,9 +244,7 @@ async function readNativeDiagnosticExecution(
     profileId: descriptor.profileId,
     storageContextKey: descriptor.storageContextKey,
     storageNamespace: descriptor.storageNamespace,
-    ...(transition ? { executorTransitionDigest: transition.digest } : {}),
   });
-  if (transition) assertTransitionDescriptor(transition, actual);
   return actual;
 }
 
@@ -375,9 +318,6 @@ export async function getRunNativeDiagnosticTarget(
       profileId: binding.profile_id,
       storageContextKey: binding.storage_context_key,
       storageNamespace: binding.storage_namespace,
-      ...(binding.origin_reader_approval_digest
-        ? { originReaderApprovalDigest: binding.origin_reader_approval_digest }
-        : {}),
     });
     if (
       !descriptor.success ||

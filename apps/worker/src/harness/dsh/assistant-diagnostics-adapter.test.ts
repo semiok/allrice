@@ -341,7 +341,7 @@ function fixture(options: {
             firstJobId: randomUUID(),
             firstAttempt: 1,
             boundAt: new Date().toISOString(),
-            bindingBasis: 'approved_compatibility_reader',
+            bindingBasis: 'business_root_origin',
           },
           generation: 1,
         })
@@ -391,7 +391,7 @@ function syntheticPin(input: HarnessExecutionInput) {
       firstJobId: randomUUID(),
       firstAttempt: 1,
       boundAt: new Date().toISOString(),
-      bindingBasis: 'approved_compatibility_reader' as const,
+      bindingBasis: 'business_root_origin' as const,
     },
     generation: 1,
   };

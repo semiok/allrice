@@ -1,5 +1,5 @@
+const oldGeneration = 'dsh-0.1.5-rc.3-a4c74a9' as const;
 import { randomUUID } from 'node:crypto';
-import { DSH_MISSING_FROZEN_GENERATION } from '@allrice/contracts';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as client from '../core/client.ts';
 import { createAssistantFixtureDatabase } from '../assistant-runtime.fixture.ts';
@@ -210,7 +210,8 @@ suite(
           ...c.lease,
           descriptor: {
             ...c.descriptor,
-            distributionGeneration: DSH_MISSING_FROZEN_GENERATION,
+            distributionGeneration:
+              oldGeneration as typeof c.descriptor.distributionGeneration,
           },
         }),
       ).rejects.toThrow();

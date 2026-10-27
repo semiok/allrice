@@ -74,11 +74,11 @@ import { preparePlatformRepairInput } from './platform-repair.ts';
 import { preparePlatformRepairVerification } from './platform-repair-verification.ts';
 import { startMaintenanceRepairGrant } from './platform-maintenance-repair.ts';
 import { createExperienceFixture } from './experience.fixture.ts';
-import { buildEmployeeRuntimePackage } from './platform-employees/runtime-package.ts';
 import {
-  PlatformEmployeeDefinitionSchema,
-  PlatformEmployeeRuntimeProfileSchema,
-} from '@allrice/contracts';
+  savePlatformEmployeeDraft,
+  publishPlatformEmployee,
+} from './employees/platform-employees.ts';
+import { PlatformEmployeeDefinitionSchema } from '@allrice/contracts';
 import {
   claimNextJob,
   startClaimedJob,
@@ -404,20 +404,19 @@ suite('immutable report-bound maintenance authority', () => {
         ],
       },
     });
-    const runtimePackage = buildEmployeeRuntimePackage({
-      revision: r!.revision,
-      definition,
-      skills: [],
-    });
-    const profile = PlatformEmployeeRuntimeProfileSchema.parse({
-      ...r!.runtime_profile,
-      toolNames: definition.capabilities.toolNames,
-      nativeSkillIds: [],
-      nativeSkillChecksums: [],
-      runtimePackage,
-    });
-    await fixture.db`update allrice_platform_employee_revisions set definition=${fixture.db.json(definition)},runtime_profile=${fixture.db.json(profile)},checksum=${runtimePackage.checksum},status='published',published_at=now() where id=${r!.id}`;
-    await fixture.db`update allrice_platform_employees set status='published' where id=${r!.employee_id}`;
+    // Use the development publication flow only during fixture preparation.
+    const priorEnvironment = process.env.ALLRICE_ENV;
+    vi.stubEnv('ALLRICE_ENV', 'development');
+    try {
+      await savePlatformEmployeeDraft(r!.employee_id, { definition });
+      const publication = await publishPlatformEmployee(r!.employee_id, {
+        scope: 'assigned',
+      });
+      expect(publication.errors).toEqual([]);
+      expect(publication.valid).toBe(true);
+    } finally {
+      vi.stubEnv('ALLRICE_ENV', priorEnvironment);
+    }
     const a = await diagnosed(),
       g = await createMaintenanceGrant(admin, a.request);
     // Force the old issuer/deployment inversion: transaction A already owns

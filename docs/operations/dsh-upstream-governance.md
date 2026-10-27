@@ -16,15 +16,15 @@ need an older generation is test data and is deleted (owner decision,
 ## Distribution facts
 
 - `installedGeneration`: the composition actually pinned by this build.
-- `declaredPromotedGeneration`: the recorded manual promotion decision. This
-  declaration is not proof of the current Dev or Prod process version.
-- `upgradeCandidateGeneration`: a fixed composition under evaluation. It is
-  excluded from frozen employee profiles until explicitly approved and pinned.
-- `missingFrozenGeneration`: the pre-upgrade compatibility meaning of an absent
-  historical profile field. It never follows a new installed default and does
-  not identify an original journal writer.
+- `upgradeCandidateGeneration`: the recorded upgrade candidate; it currently
+  points to the same sole installed composition. It does not keep an older
+  generation available for execution.
+- Frozen employee profiles must explicitly name the installed generation. Missing
+  or historical generations are not executable. Read-only revision views expose
+  an unavailable runtime profile, and tenant catalogs mark it as not assignable;
+  they do not rewrite saved profiles or checksums.
 
-The pointers select unique records in `apps/worker/dsh/distribution.json`.
+The pointers select the sole record in `apps/worker/dsh/distribution.json`.
 `pnpm dsh:generate` derives the committed shared constants; `pnpm dsh:verify`
 rejects drift, a second DSH version anywhere in the manifests or lockfile, any
 DSH source patch, and private DSH subpath imports missing from

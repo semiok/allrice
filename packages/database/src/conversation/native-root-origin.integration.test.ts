@@ -1,3 +1,4 @@
+const oldGeneration = 'dsh-0.1.5-rc.3-a4c74a9' as const;
 import {
   claimNextJob,
   startClaimedJob,
@@ -13,10 +14,7 @@ import * as client from '../core/client.ts';
 import { createAssistantFixtureDatabase } from '../assistant-runtime.fixture.ts';
 import { createAssistantAuthorityFixture } from '../assistant-authority.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
-import {
-  queuePlatformEmployeeTestRun,
-  claimNextPlatformEmployeeTestRun,
-} from '../employees/platform-employees.ts';
+import { queuePlatformEmployeeTestRun } from '../employees/platform-employees.ts';
 import {
   assignEmployeeVersion,
   manageEmployeeAssignments,
@@ -28,35 +26,12 @@ import {
 } from '../workspace/service.ts';
 import { createSession, authenticateSession } from '../identity.ts';
 import { nativeRootDigest } from './native-root-origin.ts';
-import { verifyNativeArtifactReferenceCoverage } from './native-artifact-references.ts';
-import {
-  PlatformEmployeeRuntimeProfileSchema,
-  DSH_MISSING_FROZEN_GENERATION,
-} from '@allrice/contracts';
+import { PlatformEmployeeRuntimeProfileSchema } from '@allrice/contracts';
 import { runtimePackageChecksum } from '../platform-employees/runtime-package.ts';
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
     : describe.skip;
-it('rejects a ninth independent reader approval before database access', async () => {
-  const access = vi.spyOn(client, 'getDatabase').mockImplementation(() => {
-    throw Error('unexpected_database_access');
-  });
-  try {
-    await expect(
-      verifyNativeArtifactReferenceCoverage(
-        ['a', 'b', 'c', 'd', 'e', 'f', '7', '8', '9'].map((letter) => ({
-          artifactId: 'sha256:' + letter.repeat(64),
-          generation: 'dsh-0.2.1-rc.2-687f282' as const,
-          storageRoot: '/synthetic-approved-root',
-        })),
-      ),
-    ).rejects.toThrow();
-    expect(access).not.toHaveBeenCalled();
-  } finally {
-    access.mockRestore();
-  }
-});
 suite(
   'MET192 immutable first business INSERT origin: isolated real PostgreSQL',
   () => {
@@ -172,31 +147,6 @@ suite(
           await fixture.db`select id from allrice_chat_sessions where id=${sameId}`,
         ).toHaveLength(1);
       }
-    });
-    it('a new Session preserves its old source package while selecting current execution; historical NULL cannot be backfilled', async () => {
-      const { runtimePackage } = await packaged();
-      runtimePackage.runtimeManifest.distributionGeneration =
-        DSH_MISSING_FROZEN_GENERATION;
-      resign(runtimePackage);
-      const f = await authority(runtimePackage);
-      const s = await createAssignedChatSession(f.context, {
-        workspaceId: f.workspace,
-        employeeAssignmentId: f.assignment,
-        title: 'New old-package Session',
-      });
-      const [r] =
-        await fixture.db`select native_root_origin from allrice_chat_sessions where id=${s.id}`;
-      expect(r!.native_root_origin).toMatchObject({
-        schemaVersion: 2,
-        distributionGeneration: 'dsh-0.2.1-rc.2-687f282',
-        birthSource: {
-          packageChecksum: runtimePackage.checksum,
-          declaredGeneration: DSH_MISSING_FROZEN_GENERATION,
-        },
-      });
-      await expect(
-        fixture.db`update allrice_chat_sessions set native_root_origin='{}'::jsonb where id=${f.session}`,
-      ).rejects.toThrow('native root origin is immutable');
     });
     it('an old pre-upgrade Session is never retroactively issued a candidate origin', async () => {
       const { runtimePackage } = await packaged(),
@@ -388,8 +338,7 @@ suite(
       async (mode) => {
         const { runtimePackage } = await packaged(),
           oldPackage = structuredClone(runtimePackage);
-        oldPackage.runtimeManifest.distributionGeneration =
-          DSH_MISSING_FROZEN_GENERATION;
+        oldPackage.runtimeManifest.distributionGeneration = oldGeneration;
         resign(oldPackage);
         const f = await authority(oldPackage),
           // A real pre-upgrade first INSERT from the fixture, not a new v2 birth.
@@ -455,114 +404,5 @@ suite(
         await fixture.db`select id from allrice_chat_sessions where id=${id}`,
       ).toHaveLength(0);
     });
-    it(
-      'preserves the exact existing preview directory without granting it to chats or a moved execution root',
-      { timeout: 30000 },
-      async () => {
-        const isolated = await createAssistantFixtureDatabase();
-        vi.mocked(client.getDatabase).mockReturnValue(isolated.db);
-        try {
-          vi.stubEnv(
-            'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
-            'sha256:' + 'a'.repeat(64),
-          );
-          vi.stubEnv(
-            'ALLRICE_DSH_NATIVE_ARTIFACT_ID',
-            'sha256:' + 'a'.repeat(64),
-          );
-          const e = await createEmployeeAdministrationFixture(isolated.db);
-          const queued = await queuePlatformEmployeeTestRun(e.employeeId, {
-            environment: 'company',
-            workspaceId: e.workspaceId,
-            ownerId: e.ownerId,
-            prompt: 'Synthetic retained preview storage only',
-          });
-          const workerId = randomUUID();
-          const test = (await claimNextPlatformEmployeeTestRun(workerId))!;
-          expect(test.id).toBe(queued.testRun!.id);
-          const descriptor = nativeBindingDescriptor({
-            organizationId: test.previewContext.organizationId,
-            workspaceId: test.previewContext.workspaceId,
-            ownerId: test.previewContext.ownerId,
-            contextKey: test.id,
-            distributionGeneration: 'dsh-0.2.1-rc.2-687f282',
-          });
-          descriptor.storageNamespace = descriptor.storageNamespace.replace(
-            '/isolated-native/',
-            `/existing-executions/platform-employee-tests/${test.id}/`,
-          );
-          await bindJobNativeSession({
-            workerId,
-            jobId: test.previewExecution.jobId,
-            leaseToken: test.previewExecution.leaseToken,
-            attempt: test.previewExecution.jobAttempt,
-            subject: { kind: 'platform_employee_test', id: test.id },
-            descriptor,
-          });
-          const a = {
-            artifactId: descriptor.artifactId,
-            generation: 'dsh-0.2.1-rc.2-687f282' as const,
-            storageRoot: '/isolated-native',
-            previewStorageRoot: '/existing-executions/platform-employee-tests',
-          };
-          expect(
-            (await verifyNativeArtifactReferenceCoverage([a])).verified,
-          ).toBe(true);
-          await expect(
-            verifyNativeArtifactReferenceCoverage([
-              {
-                ...a,
-                previewStorageRoot: '/moved-executions/platform-employee-tests',
-              },
-            ]),
-          ).rejects.toThrow('REFERENCES_UNCOVERED');
-          const runtimePackage = test.runtimeProfile.runtimePackage!;
-          const f = await createAssistantAuthorityFixture(isolated.db, {
-            configure: false,
-            runtimePackage,
-            businessCreationOrigin: true,
-          });
-          await isolated.db`update allrice_jobs set attempt=1 where id=${f.worker.jobId}`;
-          const [r] =
-            await isolated.db`select * from allrice_conversation_runtimes where session_id=${f.session}`;
-          const chat = nativeBindingDescriptor({
-            organizationId: f.org,
-            workspaceId: f.workspace,
-            ownerId: f.user,
-            contextKey: f.session,
-            distributionGeneration: a.generation,
-          });
-          chat.storageNamespace = chat.storageNamespace.replace(
-            '/isolated-native/',
-            `/existing-executions/platform-employee-tests/${f.session}/`,
-          );
-          await bindJobNativeSession({
-            workerId: f.worker.workerId,
-            jobId: f.worker.jobId,
-            leaseToken: f.worker.leaseToken,
-            attempt: 1,
-            subject: {
-              kind: 'chat',
-              id: f.session,
-              configChecksum: r!.config_checksum,
-              generation: r!.thread_generation,
-              expectedThreadId: r!.thread_id,
-            },
-            descriptor: chat,
-          });
-          await expect(
-            verifyNativeArtifactReferenceCoverage([a, legacySeed]),
-          ).rejects.toThrow('REFERENCES_UNCOVERED');
-          expect(
-            (
-              await isolated.db`select storage_namespace from allrice_native_session_bindings where native_session_id=${descriptor.nativeSessionId}`
-            )[0]!.storage_namespace,
-          ).toBe(descriptor.storageNamespace);
-        } finally {
-          vi.mocked(client.getDatabase).mockReturnValue(fixture.db);
-          await isolated.close();
-        }
-      },
-    );
   },
 );

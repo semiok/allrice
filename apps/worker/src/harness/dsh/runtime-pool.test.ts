@@ -1,3 +1,4 @@
+const oldGeneration = 'dsh-0.1.5-rc.3-a4c74a9' as const;
 import { randomUUID } from 'node:crypto';
 import {
   mkdir,
@@ -18,15 +19,11 @@ import * as CodexSubscription from '../../codex-subscription-home.js';
 import * as NativeArtifact from '../dsh-native-artifact.js';
 import * as NativeStorage from '../dsh-native-storage.js';
 import * as CloseObserver from '../dsh-close-observer.js';
-import {
-  DSH_MISSING_FROZEN_GENERATION,
-  PlatformEmployeeDefinitionSchema,
-} from '@allrice/contracts';
+import { PlatformEmployeeDefinitionSchema } from '@allrice/contracts';
 import {
   employeeManifest,
   employeeManifestChecksum,
   buildEmployeeRuntimePackage,
-  runtimePackageChecksum,
   EmployeeRunExecutionBindingSchema,
   nativeRootDigest,
   newCurrentEmployeeChatOrigin,
@@ -454,7 +451,7 @@ function request(): Parameters<DshRuntimePool['acquire']>[0] {
  * recorded on the origin, Run binding and pin; it is provenance only and the
  * release primary (`artifactId`) always executes (MET-221). */
 function currentExecutionRequest(
-  variant: 'definition' | 'legacy' | 'current',
+  variant: 'definition' | 'current',
   { recordedArtifactId }: { recordedArtifactId?: string } = {},
 ) {
   const runtimes = pool(),
@@ -541,36 +538,7 @@ function currentExecutionRequest(
         },
       ],
     });
-    if (variant === 'legacy') {
-      pkg.runtimeManifest.distributionGeneration =
-        DSH_MISSING_FROZEN_GENERATION;
-      pkg.capabilityFingerprint = runtimePackageChecksum({
-        distributionGeneration: DSH_MISSING_FROZEN_GENERATION,
-        provider: pkg.runtimeManifest.provider,
-        model: pkg.runtimeManifest.model,
-        tools: [],
-        skills: pkg.skills.map((skill) => ({
-          name: skill.name,
-          checksum: skill.checksum,
-          requiredToolRefs: [],
-          bundleChecksum: skill.bundle!.checksum,
-        })),
-        deniedCapabilities: [...pkg.runtimeManifest.deniedCapabilities].sort(),
-      });
-      pkg.checksum = runtimePackageChecksum({
-        schemaVersion: pkg.schemaVersion,
-        packageVersion: pkg.packageVersion,
-        capabilityFingerprint: pkg.capabilityFingerprint,
-        files: {
-          identityMd: pkg.files.identityMd,
-          soulMd: pkg.files.soulMd,
-          userMd: pkg.files.userMd,
-          agentsMd: pkg.files.agentsMd,
-        },
-        skills: pkg.skills,
-        runtimeManifest: pkg.runtimeManifest,
-      });
-    }
+
     manifest.runtimePackage = pkg;
     value.input.kernel.runtimePackageChecksum = pkg.checksum;
     value.input.kernel.runtimeDistributionGeneration =
@@ -668,7 +636,7 @@ function currentExecutionRequest(
   };
 }
 
-it.each(['definition', 'legacy', 'current'] as const)(
+it.each(['definition', 'current'] as const)(
   'uses the SQL-bound current executor for %s sources without rewriting the kernel',
   (variant) => {
     const { runtimes, value, launch } = currentExecutionRequest(variant);
@@ -688,11 +656,7 @@ it.each(['definition', 'legacy', 'current'] as const)(
     });
     expect(value.input.kernel).toEqual(before);
     expect(value.input.kernel.runtimeDistributionGeneration).toBe(
-      variant === 'definition'
-        ? undefined
-        : variant === 'legacy'
-          ? DSH_MISSING_FROZEN_GENERATION
-          : launch.generation,
+      variant === 'definition' ? undefined : launch.generation,
     );
   },
 );
@@ -711,7 +675,7 @@ it.each([
 ] as const)(
   'refuses a current executor binding with changed %s before starting a native child',
   async (changed) => {
-    const { runtimes, value } = currentExecutionRequest('legacy');
+    const { runtimes, value } = currentExecutionRequest('current');
     const next: Parameters<DshRuntimePool['acquire']>[0] = {
       ...value,
       input: {
@@ -748,7 +712,7 @@ it.each([
   },
 );
 
-it.each(['definition', 'legacy', 'current'] as const)(
+it.each(['definition', 'current'] as const)(
   'checks recovery storage for a %s source using its current SQL execution binding',
   async (variant) => {
     const { runtimes, value } = currentExecutionRequest(variant);
@@ -775,7 +739,7 @@ it.each(['definition', 'legacy', 'current'] as const)(
 );
 
 it('reuses one current executor across Run bindings while rechecking the new Run identity', async () => {
-  const { runtimes, value, payload } = currentExecutionRequest('legacy');
+  const { runtimes, value, payload } = currentExecutionRequest('current');
   const first = await runtimes.acquire(value);
   const nextRun = randomUUID();
   const nextPayload = {
@@ -812,7 +776,7 @@ it('reuses one current executor across Run bindings while rechecking the new Run
 
 const earlierReleaseArtifactId = 'sha256:' + 'd'.repeat(64);
 
-it.each(['definition', 'legacy', 'current'] as const)(
+it.each(['definition', 'current'] as const)(
   'runs a same-generation %s context recorded under another artifact ID on the release primary',
   async (variant) => {
     const { runtimes, value, launch, primary } = currentExecutionRequest(
@@ -867,68 +831,29 @@ it('checks recovery storage of an earlier same-generation release through the pr
   });
 });
 
-it.each([
-  'primary-generation',
-  'pin-generation',
-  'pin-origin-reader',
-  'unbound-birth',
-  'transition',
-] as const)(
+it.each(['primary-generation', 'pin-generation', 'unbound-birth'] as const)(
   'refuses an incompatible %s context as not retryable before starting a native child',
   async (changed) => {
-    const { runtimes, value, launch, primary, payload } =
-      currentExecutionRequest('current', {
+    const { runtimes, value, launch, primary } = currentExecutionRequest(
+      'current',
+      {
         recordedArtifactId: earlierReleaseArtifactId,
-      });
+      },
+    );
     const next: Parameters<DshRuntimePool['acquire']>[0] = { ...value };
     // An older frozen generation: never continued by this release's primary.
-    const otherGeneration = DSH_MISSING_FROZEN_GENERATION;
+    const otherGeneration = oldGeneration;
     if (changed === 'primary-generation')
       primary.mockReturnValue({ ...launch, generation: otherGeneration });
     if (changed === 'pin-generation')
       next.nativePin = {
         ...value.nativePin,
-        distributionGeneration: otherGeneration,
-      };
-    if (changed === 'pin-origin-reader')
-      next.nativePin = {
-        ...value.nativePin,
-        originReaderApprovalDigest: 'sha256:' + 'e'.repeat(64),
+        distributionGeneration:
+          otherGeneration as typeof value.nativePin.distributionGeneration,
       };
     if (changed === 'unbound-birth') {
       next.nativeOrigin = null;
       next.nativeExecutionBinding = null;
-    }
-    if (changed === 'transition') {
-      const target = {
-        artifactId: 'sha256:' + 'f'.repeat(64),
-        generation: launch.generation,
-        profileId: 'restricted' as const,
-      };
-      const transitionPayload = {
-        ...payload,
-        schemaVersion: 2 as const,
-        execution: target,
-        transition: {
-          requestId: randomUUID(),
-          sequence: 1,
-          digest: 'sha256:' + 'b'.repeat(64),
-          scope: {
-            contextKind: 'chat' as const,
-            contextId: payload.scope.sessionId,
-            organizationId: payload.scope.organizationId,
-            workspaceId: payload.scope.workspaceId,
-            ownerId: payload.scope.ownerId,
-          },
-          originDigest: payload.originDigest,
-          target,
-          storageNamespace: value.nativePin.storageNamespace,
-        },
-      };
-      next.nativeExecutionBinding = EmployeeRunExecutionBindingSchema.parse({
-        ...transitionPayload,
-        digest: nativeRootDigest(transitionPayload),
-      });
     }
     await expect(runtimes.acquire(next)).rejects.toMatchObject({
       code: 'DSH_NATIVE_CONTEXT_INCOMPATIBLE',

@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { DSH_MISSING_FROZEN_GENERATION } from '@allrice/contracts';
 import { source, scope } from './platform-test-binding.fixture.ts';
 import {
   freezePlatformTestExecutionBinding,
@@ -19,7 +18,7 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllEnvs());
 function row(purpose: PlatformTestPurpose = 'platform_preview') {
-  const s = source(DSH_MISSING_FROZEN_GENERATION, 'bundled', purpose),
+  const s = source(undefined, 'bundled', purpose),
     own = scope();
   const origin = newCurrentPlatformTestOrigin({ source: s, scope: own });
   const binding = freezePlatformTestExecutionBinding({

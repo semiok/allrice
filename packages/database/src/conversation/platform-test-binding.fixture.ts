@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import {
-  type DSH_MISSING_FROZEN_GENERATION,
   localCommandToolchainImageV1,
   PlatformEmployeeDefinitionSchema,
   PlatformEmployeeRuntimeProfileSchema,
@@ -101,9 +100,7 @@ function reseal(pkg: EmployeeRuntimePackage) {
   });
 }
 export function source(
-  generation:
-    | typeof newNativeGeneration
-    | typeof DSH_MISSING_FROZEN_GENERATION = newNativeGeneration,
+  generation: typeof newNativeGeneration = newNativeGeneration,
   format: 'empty' | 'plain' | 'bundled' = 'plain',
   purpose: PlatformTestPurpose = 'platform_preview',
 ): PlatformTestExecutionSourceInput {

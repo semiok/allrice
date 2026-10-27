@@ -7,7 +7,6 @@ import { randomUUID } from 'node:crypto';
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import {
   PlatformEmployeeDefinitionSchema,
-  PlatformEmployeeRuntimeProfileSchema,
   type RequestContext,
   type DevelopmentArtifactRef,
 } from '@allrice/contracts';
@@ -22,7 +21,10 @@ import {
   createSession,
   authenticatePlatformSession,
 } from '../../../../packages/database/src/identity.ts';
-import { buildEmployeeRuntimePackage } from '../../../../packages/database/src/platform-employees/runtime-package.ts';
+import {
+  savePlatformEmployeeDraft,
+  publishPlatformEmployee,
+} from '../../../../packages/database/src/employees/platform-employees.ts';
 import { ensureQualityEmployee } from '../../../../packages/database/src/platform-quality.ts';
 import { resolvePlatformPreviewContext } from '../../../../packages/database/src/platform-employees/preview-context.ts';
 import { createChatSession } from '../../../../packages/database/src/workspace/service.ts';
@@ -118,6 +120,11 @@ suite(
       ];
       const definition = PlatformEmployeeDefinitionSchema.parse({
         ...revision!.definition,
+        // The synthetic review workflow includes local.process.execute.
+        securityPolicy: {
+          ...revision!.definition.securityPolicy,
+          bridgeAccess: 'read_write',
+        },
         capabilities: {
           ...revision!.definition.capabilities,
           nativeSkillIds: [],
@@ -125,20 +132,12 @@ suite(
           toolNames,
         },
       });
-      const runtimePackage = buildEmployeeRuntimePackage({
-        revision: revision!.revision,
-        definition,
-        skills: [],
+      await savePlatformEmployeeDraft(revision!.employee_id, { definition });
+      const publication = await publishPlatformEmployee(revision!.employee_id, {
+        scope: 'assigned',
       });
-      const profile = PlatformEmployeeRuntimeProfileSchema.parse({
-        ...revision!.runtime_profile,
-        toolNames,
-        nativeSkillIds: [],
-        nativeSkillChecksums: [],
-        runtimePackage,
-      });
-      await f.db`update allrice_platform_employee_revisions set definition=${f.db.json(definition)},runtime_profile=${f.db.json(profile)},checksum=${runtimePackage.checksum},status='published',published_at=now() where id=${revision!.id}`;
-      await f.db`update allrice_platform_employees set status='published' where id=${revision!.employee_id}`;
+      expect(publication.errors).toEqual([]);
+      expect(publication.valid).toBe(true);
     }, 120000);
     afterAll(async () => {
       vi.restoreAllMocks();
@@ -1226,7 +1225,9 @@ suite(
       await vi.waitFor(
         async () => {
           const [wait] =
-            await f.db`select count(*)::int as n from pg_stat_activity where wait_event='advisory' and query like '%pg_advisory_xact_lock(hashtextextended%'`;
+            await f.db`select count(*)::int as n from pg_stat_activity
+              where datname=current_database() and application_name=current_schema()
+                and wait_event='advisory' and query like '%pg_advisory_xact_lock(hashtextextended%'`;
           expect(wait!.n).toBeGreaterThan(0);
         },
         { timeout: 5000, interval: 25 },

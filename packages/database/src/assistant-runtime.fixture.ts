@@ -57,7 +57,9 @@ export async function createAssistantFixtureDatabase(
       | '0096_assistant_pricing.sql'
       | '0100_tenant_scoped_resource_quotas.sql'
       | '0101_development_cooperation.sql'
-      | '0210_current_employee_execution_binding.sql';
+      | '0201_workbench_file_policies.sql'
+      | '0210_current_employee_execution_binding.sql'
+      | '0217_brand_content_feedback.sql';
   } = {},
 ) {
   if (options.ownSchemaOnly !== undefined && options.ownSchemaOnly !== true)
@@ -68,7 +70,9 @@ export async function createAssistantFixtureDatabase(
       '0096_assistant_pricing.sql',
       '0100_tenant_scoped_resource_quotas.sql',
       '0101_development_cooperation.sql',
+      '0201_workbench_file_policies.sql',
       '0210_current_employee_execution_binding.sql',
+      '0217_brand_content_feedback.sql',
     ].includes(options.throughMigration)
   )
     throw Error('Unsupported isolated migration checkpoint');

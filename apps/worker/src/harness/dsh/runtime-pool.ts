@@ -527,13 +527,7 @@ export class DshRuntimePool {
     // MET-221: a release has exactly one executor, its verified primary.
     // Artifact IDs on origins, pins, Run bindings and control references are
     // provenance; a context binds to the DSH generation and journal contract.
-    // Archived MET-195 transitions/readers and unbound births never select code.
-    if (
-      !origin ||
-      (currentBinding && 'transition' in currentBinding) ||
-      pin?.originReaderApprovalDigest
-    )
-      throw incompatibleNativeContext();
+    if (!origin) throw incompatibleNativeContext();
     const selected = currentDshNativeLaunch(profileId);
     if (origin.rootSeed !== harnessContextKey(input.kernel))
       throw Error('DSH_NATIVE_ARTIFACT_NEW_ROOT_FROZEN_IDENTITY');

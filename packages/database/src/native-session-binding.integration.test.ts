@@ -1,9 +1,7 @@
+const oldGeneration = 'dsh-0.1.5-rc.3-a4c74a9' as const;
 import { randomUUID } from 'node:crypto';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
-import {
-  DSH_MISSING_FROZEN_GENERATION,
-  type EmployeeRuntimePackage,
-} from '@allrice/contracts';
+import { type EmployeeRuntimePackage } from '@allrice/contracts';
 import * as client from './core/client.ts';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 import { createAssistantAuthorityFixture } from './assistant-authority.fixture.ts';
@@ -372,10 +370,11 @@ suite(
           ...changed,
           descriptor: {
             ...f.input.descriptor,
-            distributionGeneration: DSH_MISSING_FROZEN_GENERATION,
+            distributionGeneration:
+              oldGeneration as typeof f.input.descriptor.distributionGeneration,
           },
         }),
-      ).rejects.toMatchObject({ code: 'NATIVE_SESSION_ADMISSION_DENIED' });
+      ).rejects.toThrow();
       expect(await pointer()).toEqual(before);
       // MET-221: the pin keeps its first writer's artifact as provenance; a
       // later release's primary of the same generation continues it.

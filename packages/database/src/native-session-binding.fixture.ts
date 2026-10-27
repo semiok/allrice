@@ -1,6 +1,5 @@
 /** Synthetic descriptors for isolated SQL authority tests, not approved
  * production artifact evidence and never used by a consuming Worker. */
-import { DSH_MISSING_FROZEN_GENERATION } from '@allrice/contracts';
 import { randomUUID } from 'node:crypto';
 import type { NativeSessionDescriptor } from './conversation/native-session-binding.ts';
 import type postgres from 'postgres';
@@ -18,7 +17,7 @@ export function nativeBindingDescriptor(input: {
     artifactId: 'sha256:' + 'a'.repeat(64),
     artifactManifestDigest: 'sha256:' + 'a'.repeat(64),
     distributionGeneration:
-      input.distributionGeneration ?? DSH_MISSING_FROZEN_GENERATION,
+      input.distributionGeneration ?? 'dsh-0.2.1-rc.2-687f282',
     profileId: input.profileId ?? 'restricted',
     storageContextKey: key,
     storageNamespace: `/isolated-native/${input.organizationId}/${input.workspaceId}/${input.ownerId}/${key}/sessions`,

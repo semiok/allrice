@@ -1,9 +1,7 @@
+const oldGeneration = 'dsh-0.1.5-rc.3-a4c74a9' as const;
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import {
-  PlatformEmployeeDefinitionSchema,
-  DSH_MISSING_FROZEN_GENERATION,
-} from '@allrice/contracts';
+import { PlatformEmployeeDefinitionSchema } from '@allrice/contracts';
 import {
   buildEmployeeRuntimePackage,
   runtimePackageChecksum,
@@ -95,7 +93,7 @@ it('new candidate package records the release primary, not the retired new-root 
 it('new business identity with an old frozen package remains legacy even after candidate approval', () => {
   vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', artifact);
   const p = packaged();
-  p.runtimeManifest.distributionGeneration = DSH_MISSING_FROZEN_GENERATION;
+  p.runtimeManifest.distributionGeneration = oldGeneration;
   const { checksum, ...value } = p;
   void checksum;
   p.checksum = runtimePackageChecksum(value);

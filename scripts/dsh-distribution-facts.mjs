@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-/** One installed composition; declared promotion is not a live-service receipt. */
+/** One installed composition. */
 export function distributionFacts(distribution) {
   assert.equal(
     distribution.schemaVersion,
@@ -32,15 +32,10 @@ export function distributionFacts(distribution) {
     return byId.get(id);
   };
   const installed = select('installedGeneration');
-  const promoted = select('declaredPromotedGeneration');
   const candidate = select('upgradeCandidateGeneration', false);
-  const historicalDefault = select('missingFrozenGeneration');
   assert.ok(
     installed.frozenProfileAllowed && installed.sourceArchiveSha256,
     'installed generation must be pinned and allowed',
-  );
-  assert.ok(
-    promoted.frozenProfileAllowed && historicalDefault.frozenProfileAllowed,
   );
   assert.equal(
     distribution.promotionPolicy.automaticProductionPromotion,
@@ -48,12 +43,7 @@ export function distributionFacts(distribution) {
   );
   return {
     installed,
-    promoted,
     candidate,
-    historicalDefault,
-    frozenGenerations: generations
-      .filter((g) => g.frozenProfileAllowed)
-      .map((g) => g.generation),
   };
 }
 
@@ -63,12 +53,8 @@ export function renderDistributionFacts(distribution) {
     `export const ${name} = ${JSON.stringify(data, null, 2)} as const;`;
   return [
     '// Generated from apps/worker/dsh/distribution.json; run pnpm dsh:generate.',
-    '// Missing historical fields never follow a later installed-generation change.',
     value('DSH_INSTALLED_DISTRIBUTION', facts.installed),
-    value('DSH_DECLARED_PROMOTED_DISTRIBUTION', facts.promoted),
     value('DSH_UPGRADE_CANDIDATE', facts.candidate),
-    value('DSH_MISSING_FROZEN_GENERATION', facts.historicalDefault.generation),
-    value('DSH_FROZEN_PROFILE_GENERATIONS', facts.frozenGenerations),
     '',
   ].join('\n\n');
 }

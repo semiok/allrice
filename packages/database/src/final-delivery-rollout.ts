@@ -28,7 +28,7 @@ export async function selectCheckedFinalDeliveryArtifact(
       organization_id<>${input.organizationId} or workspace_id<>${input.workspaceId}
       or owner_id<>${input.ownerId} or storage_context_key<>${input.sessionId}
       or distribution_generation<>${origin.distributionGeneration} or profile_id<>'restricted'
-      or binding_basis<>'business_root_origin' or origin_reader_approval_digest is not null
+      or binding_basis<>'business_root_origin'
       or root_origin_digest is distinct from ${nativeRootDigest(origin)}) limit 1`;
   if (conflict) throw Error('FINAL_DELIVERY_NATIVE_ORIGIN_CONFLICT');
   return origin.artifactId;

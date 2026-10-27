@@ -250,7 +250,6 @@ it('reports actual Run execution independently of its first writer', () => {
         ...target.execution!,
         artifactId,
         artifactManifestDigest: artifactId,
-        executorTransitionDigest: 'sha256:' + 'c'.repeat(64),
       },
     },
     { events, expand },
@@ -258,7 +257,7 @@ it('reports actual Run execution independently of its first writer', () => {
   expect(result.artifactId).toBe(artifactId);
   expect(target.binding!.artifactId).toBe(pin.artifactId);
 });
-it('does not reuse a journal across namespaces, readers or transition authority', async () => {
+it('does not reuse a journal across namespaces or recorded artifacts', async () => {
   const differentNamespace: NativeDiagnosticTargetSlice = {
     ...target,
     binding: { ...pin, storageNamespace: '/private/another-namespace' },
@@ -274,14 +273,6 @@ it('does not reuse a journal across namespaces, readers or transition authority'
       ...target.execution!,
       artifactId,
       artifactManifestDigest: artifactId,
-      executorTransitionDigest: 'sha256:' + 'c'.repeat(64),
-    },
-  };
-  const differentTransition: NativeDiagnosticTargetSlice = {
-    ...differentReader,
-    execution: {
-      ...differentReader.execution!,
-      executorTransitionDigest: 'sha256:' + 'd'.repeat(64),
     },
   };
   const read = vi.fn().mockResolvedValue({ events, expand });
@@ -295,18 +286,16 @@ it('does not reuse a journal across namespaces, readers or transition authority'
         { ...target, attempt: 2 },
         differentNamespace,
         differentReader,
-        differentTransition,
       ],
     },
     new AbortController().signal,
     read,
   );
-  expect(read).toHaveBeenCalledTimes(4);
+  expect(read).toHaveBeenCalledTimes(3);
   expect(result.slices.map((slice) => slice.artifactId)).toEqual([
     pin.artifactId,
     pin.artifactId,
     pin.artifactId,
-    artifactId,
     artifactId,
   ]);
 });

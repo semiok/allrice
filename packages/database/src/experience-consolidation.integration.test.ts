@@ -666,9 +666,7 @@ suite(
           workspaceId: f.workspace,
           ownerId: f.user,
           contextKey: `experience-${f.occurrence.id}`,
-          distributionGeneration: process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID
-            ? 'dsh-0.2.1-rc.2-687f282'
-            : 'dsh-0.1.5-rc.3-a4c74a9',
+          distributionGeneration: 'dsh-0.2.1-rc.2-687f282',
         });
         await expect(
           bindJobNativeSession({
@@ -690,9 +688,7 @@ suite(
           workspaceId: f.workspace,
           ownerId: f.user,
           contextKey: `experience-${f.occurrence.id}`,
-          distributionGeneration: process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID
-            ? 'dsh-0.2.1-rc.2-687f282'
-            : 'dsh-0.1.5-rc.3-a4c74a9',
+          distributionGeneration: 'dsh-0.2.1-rc.2-687f282',
         });
       const input = {
         ...f.lease,

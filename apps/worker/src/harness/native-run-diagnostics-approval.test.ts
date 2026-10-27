@@ -172,22 +172,6 @@ it('reads a journal written by earlier releases with the current primary through
   }
 });
 
-it.each([
-  { executorTransitionDigest: 'sha256:' + 'e'.repeat(64) },
-  { originReaderApprovalDigest: 'sha256:' + 'd'.repeat(64) },
-])(
-  'never selects a reader for an archived transition or origin reader: %j',
-  async (change) => {
-    const result = await report({
-      ...target,
-      execution: { ...target.execution!, ...change },
-    });
-    expect(result.status).toBe('unavailable');
-    expect(result.reasons).toContain('reader_unavailable');
-    expect(readers.current).not.toHaveBeenCalled();
-  },
-);
-
 it('refuses a primary of another generation', async () => {
   readers.current.mockReturnValue({
     artifactId: primaryArtifact,

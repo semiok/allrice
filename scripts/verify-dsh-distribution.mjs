@@ -54,7 +54,7 @@ const [
   readFile(resolve(root, 'pnpm-lock.yaml'), 'utf8').then(parse),
 ]);
 
-const { installed, promoted, candidate } = distributionFacts(distribution);
+const { installed, candidate } = distributionFacts(distribution);
 
 assert(
   installed.version === upstream.version,
@@ -76,12 +76,7 @@ assert(
 assert(
   runtimePin.includes('DSH_INSTALLED_DISTRIBUTION.version') &&
     runtimePin.includes('DSH_INSTALLED_DISTRIBUTION.generation') &&
-    platformEmployeeContract.includes(
-      'DSH_INSTALLED_DISTRIBUTION.generation',
-    ) &&
-    platformEmployeeContract.includes(
-      '.default(DSH_MISSING_FROZEN_GENERATION)',
-    ),
+    platformEmployeeContract.includes('DSH_INSTALLED_DISTRIBUTION.generation'),
   'runtime version guard must match the installed distribution',
 );
 assert(
@@ -315,7 +310,6 @@ console.log(
   JSON.stringify({
     status: 'ok',
     installedGeneration: installed.generation,
-    declaredPromotedGeneration: promoted.generation,
     generation: installed.generation,
     version: installed.version,
     ...generationInventory,

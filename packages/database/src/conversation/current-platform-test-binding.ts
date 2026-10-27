@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { DSH_MISSING_FROZEN_GENERATION, UuidSchema } from '@allrice/contracts';
+import { UuidSchema } from '@allrice/contracts';
 import {
   runtimePackageChecksum,
   validatePlatformEmployeeTestExecutionSnapshot,
@@ -50,10 +50,7 @@ export const PlatformTestExecutionSourceSchema = z
     capabilitySnapshotDigest: digest,
     packageSchema: z.union([z.literal(1), z.literal(2)]),
     packageChecksum: digest,
-    declaredGeneration: z.enum([
-      DSH_MISSING_FROZEN_GENERATION,
-      newNativeGeneration,
-    ]),
+    declaredGeneration: z.literal(newNativeGeneration),
   })
   .strict();
 export type PlatformTestExecutionSource = z.infer<
@@ -61,20 +58,14 @@ export type PlatformTestExecutionSource = z.infer<
 >;
 
 const variant = z.enum([
-  'legacy_platform_package_v1',
   'current_platform_package_v1',
-  'legacy_platform_package_v2',
   'current_platform_package_v2',
 ]);
 type Variant = z.infer<typeof variant>;
 function variantFor(source: PlatformTestExecutionSource): Variant {
-  if (source.packageSchema === 1)
-    return source.declaredGeneration === newNativeGeneration
-      ? 'current_platform_package_v1'
-      : 'legacy_platform_package_v1';
-  return source.declaredGeneration === newNativeGeneration
-    ? 'current_platform_package_v2'
-    : 'legacy_platform_package_v2';
+  return source.packageSchema === 1
+    ? 'current_platform_package_v1'
+    : 'current_platform_package_v2';
 }
 function policyDigest(value: Variant) {
   return nativeRootDigest({
@@ -82,9 +73,7 @@ function policyDigest(value: Variant) {
     variant: value,
     definitionSchema: 1,
     packageSchema: value.endsWith('_v1') ? 1 : 2,
-    declaredGeneration: value.startsWith('legacy_')
-      ? DSH_MISSING_FROZEN_GENERATION
-      : newNativeGeneration,
+    declaredGeneration: newNativeGeneration,
     executionGeneration: newNativeGeneration,
     profileId: 'restricted',
     validation:
