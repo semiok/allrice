@@ -101,3 +101,29 @@
     flex-direction: column;
   }
 }
+
+/* Dark theme (the admin console's platform reference library). */
+body[data-ds-dark-theme] .body {
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+}
+body[data-ds-dark-theme] .hint,
+body[data-ds-dark-theme] .item > span {
+  color: var(--dsw-alias-label-secondary);
+}
+body[data-ds-dark-theme] .body input,
+body[data-ds-dark-theme] .body select {
+  border-color: var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-base);
+}
+body[data-ds-dark-theme] .upload,
+body[data-ds-dark-theme] .item,
+body[data-ds-dark-theme] .preview {
+  border-color: var(--dsw-alias-border-l2);
+}
+body[data-ds-dark-theme] .name {
+  color: var(--dsw-alias-link);
+}
+body[data-ds-dark-theme] .error {
+  color: var(--dsw-alias-state-error-primary);
+}

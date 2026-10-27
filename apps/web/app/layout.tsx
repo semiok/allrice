@@ -9,7 +9,9 @@ import './styles/base.css';
 import './styles/auth.css';
 import '@allrice/ui/styles.css';
 
+import { ThemeController } from '../components/theme/theme-controller';
 import { readFrameworkRolloutPolicy } from '../lib/framework/rollout';
+import { themeScript } from '../lib/theme/theme-script';
 
 const thirdPartyErrorGuard = `
 (() => {
@@ -55,11 +57,20 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   const framework =
     policy.emergencyOff || !policy.defaultEnabled ? 'legacy' : 'v2';
   return (
-    <html data-allrice-framework={framework} lang="zh-CN">
+    // The theme script sets data-theme / data-ds-dark-theme before hydration.
+    <html
+      data-allrice-framework={framework}
+      lang="zh-CN"
+      suppressHydrationWarning
+    >
       <head>
         <script dangerouslySetInnerHTML={{ __html: thirdPartyErrorGuard }} />
       </head>
-      <body>{children}</body>
+      <body suppressHydrationWarning>
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+        <ThemeController />
+        {children}
+      </body>
     </html>
   );
 }
