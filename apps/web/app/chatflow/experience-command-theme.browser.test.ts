@@ -302,12 +302,41 @@ suite('experience and local command cards read in both themes', () => {
         it(`${view} reads at ${width}px in the ${theme} theme`, async () => {
           const { page, root } = await open(view, width, theme);
           try {
-            expect(
-              await page.evaluate(() =>
-                document.body.hasAttribute('data-ds-dark-theme'),
-              ),
-            ).toBe(theme === 'dark');
+            // Measure everything first and log it, so a failing run still
+            // records what it saw.
+            const dark = await page.evaluate(() =>
+              document.body.hasAttribute('data-ds-dark-theme'),
+            );
             const readings = await read(page.locator(root).first());
+            const wide = await overflow(page);
+            const measured: Record<string, unknown> = {};
+            for (const [name, locate] of probes[view])
+              measured[name] = +(await ratio(locate(page))).toFixed(2);
+            const target = control[view]?.(page);
+            const focus = target && (await ring(page, target));
+            const hover = target && (await hovered(page, target));
+            if (focus)
+              measured.ring = `${focus.style} ${focus.width}px ${focus.ratio.toFixed(2)}`;
+            if (hover) measured.hover = +hover.ratio.toFixed(2);
+            const write = busy[view];
+            let disabled: { opacity: number; reading: Reading } | undefined;
+            if (write) {
+              await page.getByRole('button', { name: write[0] }).click();
+              const button = page.getByRole('button', { name: write[1] });
+              await expect.poll(() => button.isDisabled()).toBe(true);
+              disabled = {
+                opacity: await button.evaluate((n) =>
+                  Number(getComputedStyle(n).opacity),
+                ),
+                reading: (await read(button, true))[0]!,
+              };
+              measured.disabled = +disabled.reading.ratio.toFixed(2);
+            }
+            console.info(
+              `[contrast] ${view} ${width} ${theme} ${JSON.stringify(measured)}`,
+            );
+
+            expect(dark).toBe(theme === 'dark');
             expect(readings.length).toBeGreaterThan(10);
             expect(
               readings
@@ -321,41 +350,22 @@ suite('experience and local command cards read in both themes', () => {
                 .filter((r) => r.dark !== (theme === 'dark'))
                 .map((r) => r.text),
             ).toEqual([]);
-            expect(await overflow(page)).toBe(false);
-            const measured: Record<string, unknown> = {};
-            for (const [name, locate] of probes[view])
-              measured[name] = +(await ratio(locate(page))).toFixed(2);
-            const target = control[view]?.(page);
-            if (target) {
-              const focus = await ring(page, target);
+            expect(wide).toBe(false);
+            if (focus) {
               expect(focus.visible).toBe(true);
               expect(focus.style).not.toBe('none');
               if (focus.style !== 'auto')
                 expect(focus.width).toBeGreaterThanOrEqual(2);
               expect(focus.ratio).toBeGreaterThanOrEqual(3);
-              measured.ring = `${focus.style} ${focus.width}px ${focus.ratio.toFixed(2)}`;
-              const hover = await hovered(page, target);
+            }
+            if (hover) {
               expect(hover.ratio).toBeGreaterThanOrEqual(hover.need);
               expect(hover.dark).toBe(theme === 'dark');
-              measured.hover = +hover.ratio.toFixed(2);
             }
-            const write = busy[view];
-            if (write) {
-              await page.getByRole('button', { name: write[0] }).click();
-              const disabled = page.getByRole('button', { name: write[1] });
-              await expect.poll(() => disabled.isDisabled()).toBe(true);
-              expect(
-                await disabled.evaluate((n) =>
-                  Number(getComputedStyle(n).opacity),
-                ),
-              ).toBeLessThan(1);
-              const [reading] = await read(disabled, true);
-              expect(reading!.dark).toBe(theme === 'dark');
-              measured.disabled = +reading!.ratio.toFixed(2);
+            if (disabled) {
+              expect(disabled.opacity).toBeLessThan(1);
+              expect(disabled.reading.dark).toBe(theme === 'dark');
             }
-            console.info(
-              `[contrast] ${view} ${width} ${theme} ${JSON.stringify(measured)}`,
-            );
           } finally {
             await page.close();
           }
