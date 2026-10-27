@@ -31,6 +31,9 @@ harness over the same execution boundary.
 | -------------------------------------------------- | --------------------- | ------------------------------------------------------- |
 | `ALLRICE_WORKER_ID`                                | process UUID          | Stable deployment identity when supplied                |
 | `ALLRICE_WORKER_POLL_INTERVAL_MS`                  | `1000`                | Scheduler/claim cadence                                 |
+| `ALLRICE_WORKER_QUEUE_WAKEUP`                      | `1`                   | `0` turns off LISTEN/NOTIFY claim wakeups (MET-223)     |
+| `ALLRICE_WORKER_QUEUE_WAKEUP_PROBE_MS`             | `30000`               | Wakeup connection liveness probe cadence                |
+| `ALLRICE_WORKER_QUEUE_WAKEUP_TIMEOUT_MS`           | `10000`               | Wakeup LISTEN setup and probe round-trip limit          |
 | `ALLRICE_WORKER_LEASE_MS`                          | `30000`               | Claim lease duration                                    |
 | `ALLRICE_WORKER_HEARTBEAT_MS`                      | about one-third lease | Lease heartbeat cadence                                 |
 | `ALLRICE_WORKER_CONCURRENCY`                       | `auto`                | Maximum in-process executions (`auto` or 1..32)         |

@@ -9,6 +9,7 @@ import {
   assertWorkbenchSession,
 } from '../artifact-review.ts';
 import { refreshTaskClock } from '../task-clock.ts';
+import { notifyJobReady } from '../execution/queue-ready.ts';
 import { getDatabase } from '../core/client.ts';
 
 /** Caller holds the conversation runtime lock. Never create a second scheduler. */
@@ -25,6 +26,7 @@ export async function releaseNextConversationFollowup(
   if (!next) return;
   await tx`update allrice_conversation_followups set state='released',released_at=now() where run_id=${next.run_id}`;
   await tx`update allrice_jobs set available_at=now(),timeout_at=now()+interval '5 minutes',updated_at=now() where run_id=${next.run_id}`;
+  await notifyJobReady(tx);
 }
 
 /** Mutates the existing durable input. No second send, copied Run or local-only removal. */
