@@ -273,9 +273,10 @@ suite('PR1a: independent Worker delivery, isolated PostgreSQL', () => {
       },
     ],
     [
-      'native pin wrong owner',
+      'native pin belongs to another owner/context',
       async (f: Subject) => {
-        await fixture.db`update allrice_native_session_bindings set owner_id=${randomUUID()} where native_session_id=${f.native}`;
+        const other = await subject();
+        await fixture.db`update allrice_conversation_runtimes set thread_id=${other.native} where session_id=${f.session}`;
       },
     ],
     [
