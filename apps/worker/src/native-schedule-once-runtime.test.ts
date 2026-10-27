@@ -13,11 +13,31 @@ import {
 } from './native-schedule-once.js';
 import {
   createNativeOnceWorkerRuntime,
+  deliversOccurrence,
+  wakeOnDelivery,
   NATIVE_ONCE_CONSUMER_LIMIT,
   type NativeOnceWorkerDatabasePorts,
   type NativeOnceWorkerRuntimeTestPorts,
   type NativeOncePartitionActivation,
 } from './native-schedule-once-runtime.js';
+import { createCoalescedTick } from './queue-wakeup.js';
+import type * as OnceModule from './native-schedule-once.js';
+
+// Pass-through: lets a test write through the exact store the runtime hands
+// its controller, without changing any controller behavior.
+const controllerOptions = vi.hoisted(() => [] as { store: unknown }[]);
+vi.mock('./native-schedule-once.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof OnceModule>();
+  return {
+    ...actual,
+    createNativeScheduleOnceController: (
+      options: Parameters<typeof actual.createNativeScheduleOnceController>[0],
+    ) => {
+      controllerOptions.push(options);
+      return actual.createNativeScheduleOnceController(options);
+    },
+  };
+});
 
 vi.mock('@allrice/database', () => ({
   getDatabase: undefined,
@@ -52,6 +72,7 @@ function fixture(
     loadModules?: () => Promise<NativeSchedulePublicModules>;
     testPorts?: Partial<NativeOnceWorkerRuntimeTestPorts>;
     profileId?: string;
+    onDelivery?: () => void;
   } = {},
 ) {
   const trace: string[] = [];
@@ -202,6 +223,7 @@ function fixture(
       loadModules,
       loadHostFactory,
       enabled: overrides.enabled ?? true,
+      onDelivery: overrides.onDelivery,
     },
     {
       loadDatabase,
@@ -667,5 +689,151 @@ describe('native once Worker runtime', () => {
     expect(JSON.stringify(f.runtime.status())).not.toContain(
       'private-provider-key',
     );
+  });
+});
+
+describe('dispatch wakeup on a timer delivery (MET-223)', () => {
+  const lastDelivery = {
+    scheduledAt: '2026-10-27T08:00:00.000Z',
+    deliveredAt: '2026-10-27T08:00:00.040Z',
+    messageId: 'message-1',
+  };
+  const delivered = {
+    controlId: 'control-1',
+    kind: 'put_task' as const,
+    task: { status: 'inactive', lastDelivery },
+  };
+  const write = (mutation: object) =>
+    ({ writeId: 'write-1', digest: 'sha256:x', mutation }) as never;
+  const controllerStore = () =>
+    controllerOptions.at(-1)!.store as NativeScheduleOnceStore;
+
+  it("wakes once the runtime's store commits a delivery, and counts it", async () => {
+    const onDelivery = vi.fn();
+    const f = fixture({ onDelivery });
+    await f.runtime.tick();
+    await expect(
+      controllerStore().commitMutation(f.writer, write(delivered)),
+    ).resolves.toBe('committed');
+    expect(onDelivery).toHaveBeenCalledTimes(1);
+    expect(f.runtime.status()).toMatchObject({
+      deliveryWakeRequests: 1,
+      deliveryWakeFailures: 0,
+    });
+  });
+
+  it('wakes too when a lost COMMIT ACK is proven by exact readback', async () => {
+    const onDelivery = vi.fn();
+    const f = fixture({ onDelivery });
+    await f.runtime.tick();
+    vi.mocked(f.store.readExactCommit).mockResolvedValueOnce('committed');
+    await expect(
+      controllerStore().readExactCommit(f.writer, write(delivered)),
+    ).resolves.toBe('committed');
+    expect(onDelivery).toHaveBeenCalledTimes(1);
+  });
+
+  it('counts every failing wakeup, logs the cause once and still returns the committed write', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const f = fixture({
+      onDelivery: () => {
+        throw new Error('scheduler unavailable');
+      },
+    });
+    await f.runtime.tick();
+    for (let i = 0; i < 2; i++)
+      await expect(
+        controllerStore().commitMutation(f.writer, write(delivered)),
+      ).resolves.toBe('committed');
+    expect(f.runtime.status()).toMatchObject({
+      deliveryWakeRequests: 2,
+      deliveryWakeFailures: 2,
+    });
+    expect(
+      warn.mock.calls.filter(([m]) => String(m).includes('[MET-223]')),
+    ).toHaveLength(1);
+    warn.mockRestore();
+  });
+
+  it('dispatches right after a dispatch tick that was running when the delivery committed', async () => {
+    const gate = deferred<void>();
+    let dispatches = 0;
+    const f = fixture({
+      onDelivery: () => ticks.request(),
+      dispatch: async () => {
+        if (++dispatches === 1) await gate.promise;
+        return false;
+      },
+    });
+    const ticks = createCoalescedTick(
+      async () => {
+        await f.runtime.tick();
+      },
+      () => true,
+    );
+    const first = ticks.tick();
+    await vi.waitFor(() => expect(dispatches).toBe(1));
+    await controllerStore().commitMutation(f.writer, write(delivered));
+    gate.resolve();
+    await first;
+    await vi.waitFor(() => expect(dispatches).toBe(2));
+  });
+
+  it('does not wake while the delivery is still awaiting its commit result', async () => {
+    const gate = deferred<'committed'>();
+    const store = {
+      commitMutation: vi.fn(() => gate.promise),
+    } as unknown as NativeScheduleOnceStore;
+    const wake = vi.fn();
+    const committing = wakeOnDelivery(store, wake).commitMutation(
+      {} as never,
+      write(delivered),
+    );
+    await Promise.resolve();
+    expect(wake).not.toHaveBeenCalled();
+    gate.resolve('committed');
+    await expect(committing).resolves.toBe('committed');
+    expect(wake).toHaveBeenCalledOnce();
+  });
+
+  it('rethrows an unknown commit result without reporting a delivery', async () => {
+    const error = new Error('connection closed before COMMIT acknowledgement');
+    const store = {
+      commitMutation: vi.fn(async () => {
+        throw error;
+      }),
+    } as unknown as NativeScheduleOnceStore;
+    const wake = vi.fn();
+    await expect(
+      wakeOnDelivery(store, wake).commitMutation({} as never, write(delivered)),
+    ).rejects.toBe(error);
+    expect(wake).not.toHaveBeenCalled();
+  });
+
+  it("wakes for a calendar control's delivery but not for refused writes or writes without a receipt", async () => {
+    expect(
+      deliversOccurrence({
+        kind: 'calendar',
+        action: 'put_task',
+        task: { lastDelivery },
+      }),
+    ).toBe(true);
+    for (const [result, mutation] of [
+      ['rejected', delivered],
+      ['committed', { ...delivered, task: { status: 'active' } }],
+      ['committed', { controlId: 'control-1', kind: 'session_ready' }],
+      ['committed', { kind: 'calendar', action: 'retire_task', task: {} }],
+    ] as const) {
+      const store = {
+        commitMutation: vi.fn(async () => result),
+      } as unknown as NativeScheduleOnceStore;
+      const wake = vi.fn();
+      await wakeOnDelivery(store, wake).commitMutation(
+        {} as never,
+        write(mutation),
+      );
+      expect(wake).not.toHaveBeenCalled();
+    }
+    expect(deliversOccurrence({ kind: 'put_task', task: null })).toBe(false);
   });
 });

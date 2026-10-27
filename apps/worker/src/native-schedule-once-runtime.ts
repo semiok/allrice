@@ -30,6 +30,57 @@ export interface NativeOnceWorkerRuntimeOptions {
   /** Private exact-artifact AllRice adapter; never an environment URL. */
   loadHostFactory: NativeScheduleControlSource['loadHostFactory'];
   enabled: boolean;
+  /** Called after a committed timer delivery, so the caller can dispatch its
+   * occurrence now instead of on its next poll (MET-223). Never awaited. */
+  onDelivery?: () => void;
+}
+
+/** A put_task carrying `lastDelivery` (a calendar control's put_task too) is a
+ * timer delivery: it leaves a pending or blocked occurrence to dispatch. An
+ * edit that keeps an old receipt also matches; the extra tick finds nothing. */
+export function deliversOccurrence(mutation: {
+  kind: string;
+  action?: string;
+  task?: unknown;
+}) {
+  const put =
+    mutation.kind === 'put_task' ||
+    (mutation.kind === 'calendar' && mutation.action === 'put_task');
+  return (
+    put && !!(mutation.task as { lastDelivery?: unknown } | null)?.lastDelivery
+  );
+}
+
+/** Report each delivery proven committed, by its COMMIT ACK or, when that ACK
+ * was lost, by exact readback. A failing callback never fails the write: the
+ * caller's poll still dispatches the occurrence. */
+export function wakeOnDelivery(
+  store: NativeScheduleOnceStore,
+  onDelivery: () => void,
+): NativeScheduleOnceStore {
+  const wake = (
+    write: Parameters<NativeScheduleOnceStore['commitMutation']>[1],
+  ) => {
+    if (!deliversOccurrence(write.mutation)) return;
+    try {
+      onDelivery();
+    } catch {
+      // Only a latency hint.
+    }
+  };
+  return {
+    ...store,
+    async commitMutation(writer, write) {
+      const result = await store.commitMutation(writer, write);
+      if (result === 'committed') wake(write);
+      return result;
+    },
+    async readExactCommit(writer, write) {
+      const result = await store.readExactCommit(writer, write);
+      if (result === 'committed') wake(write);
+      return result;
+    },
+  };
 }
 
 export interface NativeOncePartitionActivation {
@@ -245,7 +296,10 @@ export function createNativeOnceWorkerRuntime(
     initializing = false,
     tickCount = 0,
     faultCount = 0,
-    processedCount = 0;
+    processedCount = 0,
+    deliveryWakeRequests = 0,
+    deliveryWakeFailures = 0;
+  let lastWakeFailureCode: string | undefined;
   let lastFault: NativeOnceWorkerRuntimeFault | undefined;
   // MET-210 #3: a refused takeover leaves the controller cold without an error.
   // Kept for status() and logged when the reason or holder changes, then hourly
@@ -443,7 +497,7 @@ export function createNativeOnceWorkerRuntime(
         typeof sqlStore.commitWorkspaceWrite !== 'function'
       )
         throw new Error('database_api_unavailable');
-      const store: NativeScheduleOnceStore = {
+      const ownedStore: NativeScheduleOnceStore = {
         ...sqlStore,
         async acquireWriter() {
           const grant = await sqlStore.acquireWriter();
@@ -473,6 +527,26 @@ export function createNativeOnceWorkerRuntime(
           await sqlStore.releaseClosedWriter(writer);
         },
       };
+      // MET-223: dispatch a timer delivery now, not on the next automation poll.
+      const store = wakeOnDelivery(ownedStore, () => {
+        deliveryWakeRequests++;
+        try {
+          options.onDelivery?.();
+        } catch (error) {
+          deliveryWakeFailures++;
+          // Count every failure; log the first and each change of cause only.
+          const code = safeCode(error, 'wakeup_failed');
+          if (code !== lastWakeFailureCode)
+            console.warn(
+              '[MET-223] dispatch wakeup failed; the poll dispatches',
+              {
+                code,
+                failures: deliveryWakeFailures,
+              },
+            );
+          lastWakeFailureCode = code;
+        }
+      });
       const hostFactory: NativeScheduleHostFactory = async (input) => {
         const g = generation;
         if (!g) throw new Error('close_proof_unavailable');
@@ -598,6 +672,8 @@ export function createNativeOnceWorkerRuntime(
         inFlight: !!inFlight,
         tickCount,
         processedCount,
+        deliveryWakeRequests,
+        deliveryWakeFailures,
         faultCount,
         lastFault: lastFault ? { ...lastFault } : undefined,
         ...(refusal ? { takeoverRefused: { ...refusal } } : {}),

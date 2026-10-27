@@ -219,15 +219,19 @@ startup.mark('verification_checks_completed');
 const producerLifecycle = await startup.run('producer_lifecycle', () =>
   installDevProducerLifecycle('worker'),
 );
+// MET-223: a timer delivery dispatches its occurrence now; the automation poll
+// stays the fallback.
 const nativeOnceControl = createNativeOnceWorkerService({
   workerId,
   source: nativeOnceControlSource,
   readMaintenance: readDevMaintenance,
+  onDelivery: () => requestAutomationTick(),
 });
 const nativeRecurringControl = createNativeOnceWorkerService({
   workerId,
   source: configuredNativeRecurringControlSource(),
   readMaintenance: readDevMaintenance,
+  onDelivery: () => requestAutomationTick(),
 });
 const nativeScheduleControls = [nativeOnceControl, nativeRecurringControl];
 const maintenanceDiagnosticRuntime =
@@ -249,7 +253,6 @@ const runProducer = workerProducerRunner(producerLifecycle, () => stopping);
 // Idle DSH close writes durable close receipts; never start one unready.
 getHarnessRouter().setIdleCloseGate(() => databaseReady && !stopping);
 const maintenanceReportingAborter = new AbortController();
-let automationTask: Promise<void> | null = null;
 let platformEmployeeTestTask: Promise<void> | null = null;
 const activeExecutions = new Set<Promise<void>>();
 const activeAborters = new Set<() => void>();
@@ -594,12 +597,15 @@ async function runQueueTick() {
   }
 }
 
+const automationTicks = createCoalescedTick(
+  runAutomationTick,
+  () => !stopping && databaseReady,
+);
 function automationTick() {
-  if (automationTask || stopping || !databaseReady) return automationTask;
-  automationTask = runAutomationTick().finally(() => {
-    automationTask = null;
-  });
-  return automationTask;
+  return automationTicks.tick();
+}
+function requestAutomationTick() {
+  automationTicks.request();
 }
 async function runAutomationTick() {
   let admitted = false;
@@ -620,11 +626,17 @@ async function runAutomationTick() {
       admitted = true;
       if (stopping) return;
       for (const control of nativeScheduleControls)
-        await control.tick().catch((error: unknown) => {
-          console.error('[M6] native schedule scheduler failed', {
-            message: error instanceof Error ? error.message : 'unknown error',
+        await control
+          .tick()
+          .then((result) => {
+            // MET-223: a capped burst continues at once, not a second later.
+            if (result?.limitReached) requestAutomationTick();
+          })
+          .catch((error: unknown) => {
+            console.error('[M6] native schedule scheduler failed', {
+              message: error instanceof Error ? error.message : 'unknown error',
+            });
           });
-        });
       if (stopping) return;
       await processNextReference(
         process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
@@ -911,7 +923,7 @@ function shutdown(signal: string) {
           name: `native_control_${index}`,
           run: () => task,
         })),
-        { name: 'automation', run: () => automationTask },
+        { name: 'automation', run: () => automationTicks.current() },
         { name: 'employee_test', run: () => platformEmployeeTestTask },
       ],
       waitForProducerRoots: () => producerLifecycle.waitForCurrentRoots(),

@@ -391,6 +391,7 @@ export function createNativeOnceWorkerService(
     workerId: string;
     source: NativeScheduleControlSource | null;
     readMaintenance: () => Promise<Maintenance>;
+    onDelivery?: () => void;
   },
   testPorts: {
     createRuntime?: (
@@ -405,6 +406,7 @@ export function createNativeOnceWorkerService(
         loadModules: () => input.source!.loadModules(),
         loadHostFactory: () => input.source!.loadHostFactory(),
         enabled: true,
+        onDelivery: input.onDelivery,
       })
     : null;
   let stopped = false,
@@ -437,7 +439,7 @@ export function createNativeOnceWorkerService(
     admissionOpen,
     stop,
     async tick() {
-      if ((await admissionOpen()) && !stopped) await runtime!.tick();
+      if ((await admissionOpen()) && !stopped) return runtime!.tick();
     },
     status() {
       return runtime?.status() ?? { state: 'disabled' as const };
