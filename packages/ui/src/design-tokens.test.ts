@@ -134,35 +134,51 @@ describe('design tokens', () => {
         );
   });
 
-  // Text 4.5:1; icons and focus rings 3:1; in every theme (spec README, 颜色),
-  // wherever tokens.json says a colour goes. Backgrounds are listed from the
-  // bottom up: an opaque surface, then the fills and hover/active overlays on
-  // it, so translucent ones are measured over every surface they can sit on.
+  // Text 4.5:1 (placeholders included); icons, progress fills and focus
+  // rings 3:1; in every theme (spec README, 颜色), wherever tokens.json says a
+  // colour goes. Backgrounds are listed from the bottom up: an opaque surface,
+  // then a hover or selection overlay if any, then a soft fill if any, so a
+  // status tag inside a selected sidebar row is measured as it is drawn.
+  // text-disabled is the one exemption (disabled controls).
+  type Rule = [string[], string[][], number];
   const surfaces = [
     'surface',
     'surface-raised',
     'surface-floating',
     'surface-subtle',
   ];
-  const on = (...fills: string[]) => surfaces.map((s) => [s, ...fills]);
-  const anyState = [...on(), ...on('surface-hover'), ...on('surface-active')];
+  const on = (...fills: string[]) =>
+    surfaces.flatMap((surface) =>
+      [[], ['surface-hover'], ['surface-active']].map((state) => [
+        surface,
+        ...state,
+        ...fills,
+      ]),
+    );
   const reading = ['text', 'text-secondary', 'link'];
-  const rules: [string[], string[][], number][] = [
+  const marks = ['text-tertiary', 'focus-ring'];
+  const statuses = ['success', 'warning', 'danger'];
+  const rules: Rule[] = [
     [
-      [...reading, 'success-text', 'warning-text', 'danger-text'],
-      anyState,
+      [
+        ...reading,
+        'text-placeholder',
+        ...statuses.map((status) => `${status}-text`),
+      ],
+      on(),
       4.5,
     ],
-    [['text-tertiary', 'danger'], anyState, 3],
-    // The ring is drawn outside the element, on the surface around it.
-    [['focus-ring'], on(), 3],
-    ...['success-soft', 'warning-soft', 'danger-soft', 'info-soft'].map(
-      (soft): [string[], string[][], number] => [reading, on(soft), 4.5],
+    [[...marks, ...statuses, 'idle'], on(), 3],
+    ...['success-soft', 'warning-soft', 'danger-soft', 'info-soft'].flatMap(
+      (soft): Rule[] => [
+        [reading, on(soft), 4.5],
+        [marks, on(soft), 3],
+      ],
     ),
-    [['success-text'], on('success-soft'), 4.5],
-    [['warning-text'], on('warning-soft'), 4.5],
-    [['danger-text'], on('danger-soft'), 4.5],
-    [['danger'], on('danger-soft'), 3],
+    ...statuses.flatMap((status): Rule[] => [
+      [[`${status}-text`], on(`${status}-soft`), 4.5],
+      [[status], on(`${status}-soft`), 3],
+    ]),
     [
       ['text-on-primary'],
       [
