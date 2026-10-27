@@ -8,7 +8,7 @@
 - `pnpm dsh:verify`（CI 执行）由 `scripts/verify-dsh-single-generation.mjs` 拒绝：锁文件任何位置（packages、snapshots、importers 的声明与解析结果、overrides）出现非当前版本或非 registry 来源的 DSH 包，`package.json` 里非精确版本或别名声明，指向其他版本的 `packageExtensions`，以及任何 DSH 物理补丁。`packageExtensions` 只用来补当前一代漏写的依赖元数据。代码里导入的 DSH 私有子路径必须逐项登记在 `compatibility.json` 的 `privateInterfaces`。
 - `patch-ledger.json` 改为 schema 2，只登记当前一代经公开接缝实现的协议扩展。
 - 旧会话：不含 AllRice 私有事件的历史日志由当前一代的官方格式迁移器向前迁移，迁移后可继续对话（`legacy-official-migration`）；带私有事件的日志被拒绝且不改写（`legacy-format-refusal`）。按用户决定（10-25），迁不了的旧数据是测试数据，切换时不导入，不做只读归档。
-- 仍待消除的例外：当前一代仍写 4 种 AllRice 私有事件（官方迁移器不认识它们；V0 日志已实测因此被拒，下次换代很可能同样如此，MET-221 第 1 阶段处理）；Worker 中按环境变量配置的旧执行包保留槽仍在代码中（Dev 未配置，MET-221 下一步删除）；Web 的 `apps/web/app/dsh-upstream/` 是 0.1.1 UI 源码拷贝，Web 还按文件路径读取 DSH 包内的 `lib/client.*.js` 浏览器资源（两者随 Web UI 换代单独排期）。
+- 仍待消除的例外：当前一代仍写 4 种 AllRice 私有事件（官方迁移器不认识它们；V0 日志已实测因此被拒，下次换代很可能同样如此，MET-221 第 1 阶段处理）；Web 的 `apps/web/app/dsh-upstream/` 是 0.1.1 UI 源码拷贝，Web 还按文件路径读取 DSH 包内的 `lib/client.*.js` 浏览器资源（两者随 Web UI 换代单独排期）。
 
 ## MET195：原生运行关闭观察
 
@@ -600,11 +600,11 @@ Managed children use public `startActivation` with parent delivery and `drainDes
 
 `allrice-managed-native-mcp-public-v2` composes official SDK 2.2 transport with the exported DSH tool-definition adapter. Per-request AllRice authorization, DNS-pinned egress, cancellation, frozen names/schema, unknown-effect classification and zero automatic transport reconnect retries remain required. It does not copy the upstream client plugin.
 
-`allrice-private-v4-payload-validation-v2` keeps the four exact AllRice event payloads and chronology in AllRice. Historical private V0/V3 files are never opened as new V4 roots or rewritten: the installed generation refuses them, and only a Worker that explicitly configures a retained 0.1.5 slot (none on Dev; removed in the next MET-221 step) could still read them. Unsupported migration remains an explicit refusal.
+`allrice-private-v4-payload-validation-v2` keeps the four exact AllRice event payloads and chronology in AllRice. Historical private V0/V3 files are never opened as new V4 roots or rewritten: the installed generation refuses them, and no Worker keeps an older reader (retained slots were removed in MET-221). Unsupported migration remains an explicit refusal.
 
 The five physical 0.1.5 patches and the old administrator host were removed with that generation (MET-221, 2026-10-25). The workspace now resolves one DSH generation, so no importer can borrow another generation's Cordis/DSH services; `pnpm dsh:verify` enforces it.
 
-New 0.2.1 execution additionally requires an immutable business INSERT origin and `ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID` matching the actually approved primary artifact. NULL historical facts are never backfilled, and old queued tests/repeated requests/old packages stay legacy. Content generations and explicit retries inherit their original reader. Removed invariant plugins have no published 0.2.1 exports: native factory ownership/session persistence validation and AllRice lease/pin/deadline/cancel gates are verified by actual SDK and SQL tests, rather than loading unsupported paths.
+New 0.2.1 execution additionally requires an immutable business INSERT origin, which records the release seal (`ALLRICE_DSH_NATIVE_ARTIFACT_ID`) as provenance only; a context without one is refused as incompatible and never backfilled (MET-221). Removed invariant plugins have no published 0.2.1 exports: native factory ownership/session persistence validation and AllRice lease/pin/deadline/cancel gates are verified by actual SDK and SQL tests, rather than loading unsupported paths.
 
 ## MET192 固定 UI 0.2.1-rc.2 兼容升级（2026-10-18）
 

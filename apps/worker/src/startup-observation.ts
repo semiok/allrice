@@ -37,7 +37,6 @@ export type StartupObservation = {
   elapsedMs: number;
   phase: StartupPhase | Milestone | 'entrypoint';
   state: 'started' | 'completed' | 'failed' | 'skipped' | 'milestone';
-  slot?: number;
   durationMs?: number;
   processWindowCpuMicros?: { user: number; system: number };
   counters?: Counters;
@@ -92,14 +91,9 @@ export function createWorkerStartupObservation(
     }
   }
   publish({ phase: 'entrypoint', state: 'started' });
-  function start(phase: StartupPhase, detail: { slot?: number } = {}) {
+  function start(phase: StartupPhase) {
     const started = now();
     const startedCpu = cpu();
-    const slot =
-      Number.isInteger(detail.slot) && detail.slot! >= 1 && detail.slot! <= 6
-        ? detail.slot
-        : undefined;
-    const identity = { phase, ...(slot === undefined ? {} : { slot }) };
     const counters: Counters = {
       releaseReadOperations: null,
       releaseReadBytes: null,
@@ -108,7 +102,7 @@ export function createWorkerStartupObservation(
       cacheMisses: null,
     };
     let finished = false;
-    publish({ ...identity, state: 'started' });
+    publish({ phase, state: 'started' });
     function observe(metric: VerificationMetric) {
       if (finished) return;
       if (
@@ -146,7 +140,7 @@ export function createWorkerStartupObservation(
         /* unusual error accessors must not replace the original failure */
       }
       publish({
-        ...identity,
+        phase,
         state,
         durationMs: Math.max(0, now() - started),
         processWindowCpuMicros: {

@@ -1426,10 +1426,6 @@ export function assertDshNativeLaunch(input: {
 
 let approvedArtifact:
   Awaited<ReturnType<typeof verifyDshNativeArtifact>> | undefined;
-const retainedArtifacts = new Map<
-  string,
-  Awaited<ReturnType<typeof verifyDshNativeArtifact>>
->();
 
 export interface ApprovedDshNativeControlArtifact {
   artifactId: string;
@@ -1441,18 +1437,12 @@ export interface ApprovedDshNativeControlArtifact {
   >;
 }
 
-/** Read-only exact lookup for a private control carrier. It registers nothing,
- * grants no business profile, and never substitutes another approved reader. */
-export function approvedDshNativeControlArtifact(
-  artifactId: string,
-): ApprovedDshNativeControlArtifact {
+/** Read-only view of the primary for a private control carrier. It registers
+ * nothing and grants no business profile. */
+export function currentDshNativeControlArtifact(): ApprovedDshNativeControlArtifact {
+  if (!approvedArtifact) fail('NOT_INSTALLED');
   assertNativeLoader();
-  const artifact =
-    retainedArtifacts.get(artifactId) ??
-    (approvedArtifact?.artifactId === artifactId
-      ? approvedArtifact
-      : undefined);
-  if (!artifact) fail('CONTROL_NOT_APPROVED');
+  const artifact = approvedArtifact;
   return structuredClone({
     artifactId: artifact.artifactId,
     generation: artifact.content.generation,
@@ -1465,21 +1455,22 @@ export function approvedDshNativeControlArtifact(
   });
 }
 
-/** A v2 copy contains only the measured contracts runtime closure, not its
- * unrelated root barrel. Select its catalog through the exact installed
- * entrypoint; a missing catalog never falls back to the current Worker. */
+/** The primary's catalog comes from its measured contracts runtime closure,
+ * selected through its exact installed entrypoint; a missing catalog never
+ * falls back to the current Worker's resolver. */
 export function approvedDshNativeToolCatalog(verifiedEntrypoint: string) {
   if (!approvedArtifact) {
     if (process.env.ALLRICE_SERVICE_ROLE === 'worker') fail('NOT_INSTALLED');
     return null; // Standalone, unapproved protocol fixtures keep their resolver.
   }
   assertNativeLoader();
-  const artifact = [approvedArtifact, ...retainedArtifacts.values()].find(
-    (item) =>
-      isAbsolute(verifiedEntrypoint) &&
-      resolve(verifiedEntrypoint) === join(item.root, item.content.entrypoint),
-  );
-  if (!artifact) fail('TOOL_CATALOG_NOT_APPROVED');
+  const artifact = approvedArtifact;
+  if (
+    !isAbsolute(verifiedEntrypoint) ||
+    resolve(verifiedEntrypoint) !==
+      join(artifact.root, artifact.content.entrypoint)
+  )
+    fail('TOOL_CATALOG_NOT_APPROVED');
   if (artifact.content.schemaVersion === 1) return null;
   const runtime = artifact.content.contractsRuntime;
   const packages = artifact.content.packages.filter(
@@ -1534,58 +1525,6 @@ export async function installDshNativeArtifact(
   };
 }
 
-/** Deployment configuration only; Session/model parameters cannot register
- * code. Keep the complete measured layout and dependencies at this root. */
-export async function installRetainedDshNativeArtifact(
-  input: Parameters<typeof verifyDshNativeArtifact>[0],
-) {
-  if (!approvedArtifact || installing) fail('NOT_INSTALLED');
-  if (retainedArtifacts.size >= 7 || retainedArtifacts.has(input.expectedId))
-    fail('RETAINED_DUPLICATE_OR_LIMIT');
-  assertNativeLoader();
-  installing = true;
-  try {
-    if (
-      !isAbsolute(input.root) ||
-      resolve(input.root) !== (await realpath(input.root)) ||
-      !(await lstat(input.root)).isDirectory()
-    )
-      fail('RETAINED_ROOT');
-    const value = await verifyDshNativeArtifact(input);
-    retainedArtifacts.set(value.artifactId, value);
-    return {
-      artifactId: value.artifactId,
-      generation: value.content.generation,
-      version: value.version,
-      root: value.root,
-    };
-  } finally {
-    installing = false;
-  }
-}
-
-/** Exact immutable pin selection. Missing approval never falls back to the
- * primary artifact, including when another artifact has the same generation. */
-export function nativeArtifactLaunchForPin(input: {
-  artifactId: string;
-  profileId: 'restricted' | 'technical';
-}) {
-  const artifact =
-    retainedArtifacts.get(input.artifactId) ??
-    (approvedArtifact?.artifactId === input.artifactId
-      ? approvedArtifact
-      : undefined);
-  if (!artifact) fail('PIN_NOT_APPROVED');
-  return {
-    artifactId: artifact.artifactId,
-    generation: artifact.content.generation,
-    version: artifact.version,
-    command: process.execPath,
-    args: [join(artifact.root, artifact.content.entrypoint)],
-    profile: join(artifact.root, artifact.content.profiles[input.profileId]),
-  };
-}
-
 /** MET-221 retired retained artifact slots and origin readers. A configured
  * value would otherwise be ignored silently, so it refuses the start. Release
  * tools still pass the unused new-root and checked-delivery IDs until they stop
@@ -1612,15 +1551,15 @@ export function checkRetiredDshNativeSettings(env = process.env) {
  * contexts bind to the DSH generation and the journal contract (MET-221). */
 export function currentDshNativeLaunch(profileId: 'restricted' | 'technical') {
   if (!approvedArtifact) fail('NOT_INSTALLED');
-  return nativeArtifactLaunchForPin({
-    artifactId: approvedArtifact.artifactId,
-    profileId,
-  });
-}
-
-export function currentDshNativeControlArtifact() {
-  if (!approvedArtifact) fail('NOT_INSTALLED');
-  return approvedDshNativeControlArtifact(approvedArtifact.artifactId);
+  const artifact = approvedArtifact;
+  return {
+    artifactId: artifact.artifactId,
+    generation: artifact.content.generation,
+    version: artifact.version,
+    command: process.execPath,
+    args: [join(artifact.root, artifact.content.entrypoint)],
+    profile: join(artifact.root, artifact.content.profiles[profileId]),
+  };
 }
 
 export function checkedDshNativeLaunch(input: {
@@ -1634,14 +1573,5 @@ export function checkedDshNativeLaunch(input: {
     if (process.env.ALLRICE_SERVICE_ROLE === 'worker') fail('NOT_INSTALLED');
     return null;
   }
-  const selected = [approvedArtifact, ...retainedArtifacts.values()].find(
-    (item) =>
-      input.args.length === 1 &&
-      isAbsolute(input.args[0]!) &&
-      resolve(input.args[0]!) === join(item.root, item.content.entrypoint),
-  );
-  return assertDshNativeLaunch({
-    ...input,
-    artifact: selected ?? approvedArtifact,
-  });
+  return assertDshNativeLaunch({ ...input, artifact: approvedArtifact });
 }

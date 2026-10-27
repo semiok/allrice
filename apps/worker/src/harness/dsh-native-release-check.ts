@@ -13,8 +13,10 @@ import {
   verifyNativeOnceControlHistory,
 } from '../native-schedule-once-loader.js';
 import { checkRetiredDshNativeSettings } from './dsh-native-artifact.js';
-import { employeePreviewStorageRoot } from './dsh-native-retention.js';
-import { configuredDshRuntimeRoot } from './dsh/runtime-pool.js';
+import {
+  configuredDshRuntimeRoot,
+  employeePreviewStorageRoot,
+} from './dsh/runtime-pool.js';
 
 /** deploy-dev's pre-stop check of a release candidate, after the caller has
  * installed and launch-checked its primary (MET-221). Contexts bind to the DSH

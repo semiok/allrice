@@ -10,8 +10,6 @@ import {
   cp,
   realpath,
   symlink,
-  rename,
-  access,
 } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -24,7 +22,6 @@ import {
   nativeLoaderPlatformPackage,
   checkedDshNativeLaunch,
 } from './dsh-native-artifact.js';
-import { copyDshNativeArtifact } from './dsh-native-artifact-copy.js';
 
 const leafIo = vi.hoisted(() => ({
   read: undefined as
@@ -143,7 +140,7 @@ async function seal(root: string) {
   });
   return measured;
 }
-async function currentCopyFixture() {
+async function currentGenerationFixture() {
   const root = await fixture();
   await put(root, 'apps/worker/dsh/distribution.json', {
     schemaVersion: 2,
@@ -159,7 +156,7 @@ async function currentCopyFixture() {
   return root;
 }
 async function leafFixture(current = false) {
-  const root = current ? await currentCopyFixture() : await fixture();
+  const root = current ? await currentGenerationFixture() : await fixture();
   const folder = 'node_modules/@deepseek-ai/test-root/leaves';
   const name = (index: number) => String(index).padStart(2, '0') + '.txt';
   for (let index = 0; index < 12; index++)
@@ -169,104 +166,6 @@ async function leafFixture(current = false) {
 const isLeaf = (path: string) => /\/leaves\/\d+\.txt$/.test(path);
 const delayLeaf = () => new Promise<void>((resolve) => setTimeout(resolve, 2));
 
-it('copies only the measured closure with original provenance and resolves it after the source disappears', async () => {
-  const root = await currentCopyFixture();
-  // Unrelated Web/data/credential bytes must never enter a retained runtime.
-  await put(root, '.env', 'SYNTHETIC_NOT_A_REAL_SECRET');
-  await put(root, 'apps/web/.next/BUILD_ID', 'do-not-copy');
-  await put(root, '.local/sessions/private.json', 'do-not-copy');
-  const value = await seal(root);
-  const parent = await realpath(
-    await mkdtemp(join(tmpdir(), 'allrice-retained-copy-')),
-  );
-  roots.push(parent);
-  const target = join(parent, 'native');
-  const result = await copyDshNativeArtifact({
-    root,
-    target,
-    expectedId: value.artifactId,
-    sourceSha: 'a'.repeat(40),
-    sourceTree: 'b'.repeat(40),
-  });
-  expect(result.deploymentApprovalGranted).toBe(false);
-  expect(result.storageCopied).toBe(false);
-  for (const absent of ['.env', 'apps/web', '.local/sessions'])
-    await expect(access(join(target, absent))).rejects.toMatchObject({
-      code: 'ENOENT',
-    });
-  const held = root + '-held';
-  await rename(root, held);
-  try {
-    const retained = await verifyDshNativeArtifact({
-      root: target,
-      expectedId: value.artifactId,
-      sourceSha: 'a'.repeat(40),
-      sourceTree: 'b'.repeat(40),
-    });
-    expect(retained.content).toEqual(value.content);
-    expect(retained.source).toEqual({
-      sha: 'a'.repeat(40),
-      tree: 'b'.repeat(40),
-    });
-  } finally {
-    await rename(held, root);
-  }
-  await expect(
-    copyDshNativeArtifact({
-      root,
-      target,
-      expectedId: value.artifactId,
-      sourceSha: 'a'.repeat(40),
-      sourceTree: 'b'.repeat(40),
-    }),
-  ).rejects.toMatchObject({ code: 'EEXIST' });
-});
-it('rejects wrong original source before creating a retained copy and detects later copied-code tampering', async () => {
-  const root = await currentCopyFixture(),
-    value = await seal(root);
-  const parent = await realpath(
-    await mkdtemp(join(tmpdir(), 'allrice-retained-copy-')),
-  );
-  roots.push(parent);
-  const target = join(parent, 'native');
-  const input = {
-    root,
-    target,
-    expectedId: value.artifactId,
-    sourceSha: 'c'.repeat(40),
-    sourceTree: 'b'.repeat(40),
-  };
-  await expect(copyDshNativeArtifact(input)).rejects.toThrow('SOURCE_MISMATCH');
-  await expect(access(target)).rejects.toMatchObject({ code: 'ENOENT' });
-  await copyDshNativeArtifact({ ...input, sourceSha: 'a'.repeat(40) });
-  await put(
-    target,
-    'node_modules/peer-only/index.js',
-    'export const tampered = true',
-  );
-  await expect(
-    verifyDshNativeArtifact({ root: target, expectedId: value.artifactId }),
-  ).rejects.toThrow('CONTENT_MISMATCH');
-});
-it('retains the full legacy reader rather than presenting an incompletely measured dynamic loader copy as portable', async () => {
-  const root = await fixture(),
-    value = await seal(root);
-  const parent = await realpath(
-    await mkdtemp(join(tmpdir(), 'allrice-retained-copy-')),
-  );
-  roots.push(parent);
-  const target = join(parent, 'native');
-  await expect(
-    copyDshNativeArtifact({
-      root,
-      target,
-      expectedId: value.artifactId,
-      sourceSha: 'a'.repeat(40),
-      sourceTree: 'b'.repeat(40),
-    }),
-  ).rejects.toThrow('LEGACY_ORIGINAL_ROOT_REQUIRED');
-  await expect(access(target)).rejects.toMatchObject({ code: 'ENOENT' });
-});
 it('selects the exact mapped Linux libc and refuses ambiguous or absent facts', () => {
   const input = { platform: 'linux', arch: 'x64' };
   const gnu = nativeLoaderPlatformPackage({
@@ -530,153 +429,62 @@ describe('native artifact content and launch boundary', () => {
     // Synthetic package graph only: this does not approve an actual 0.1.1
     // reader or a frozen-profile compatibility relationship.
   });
-  it('routes approved artifacts by exact content identity even within one generation', async () => {
+  it('launches and loads control code only from the installed primary', async () => {
     // This registry unit seam is not an assertion about Worker loaders. The
     // actual compiled startup/loader guard is exercised by deployment probes.
     process.execArgv = [];
     vi.stubEnv('NODE_OPTIONS', '');
     const root = await fixture(),
-      retained = await fixture();
+      other = await fixture();
     await writeFile(
-      join(retained, 'apps/worker/dsh/allrice-jsonrpc-runtime.mjs'),
-      "import '@deepseek-ai/test-root';\n// independently reviewed retained content\n",
+      join(other, 'apps/worker/dsh/allrice-jsonrpc-runtime.mjs'),
+      "import '@deepseek-ai/test-root';\n// another release of the same generation\n",
     );
     const first = await seal(root),
-      second = await seal(retained);
+      second = await seal(other);
     expect(first.content.generation).toBe(second.content.generation);
     expect(first.artifactId).not.toBe(second.artifactId);
     vi.resetModules();
     const registry = await import('./dsh-native-artifact.js');
-    await expect(
-      registry.installRetainedDshNativeArtifact({
-        root: retained,
-        expectedId: second.artifactId,
-      }),
-    ).rejects.toThrow('NOT_INSTALLED');
+    expect(() => registry.currentDshNativeLaunch('restricted')).toThrow(
+      'NOT_INSTALLED',
+    );
+    expect(() => registry.currentDshNativeControlArtifact()).toThrow(
+      'NOT_INSTALLED',
+    );
     await registry.installDshNativeArtifact({
       root,
       expectedId: first.artifactId,
     });
-    await expect(
-      registry.installRetainedDshNativeArtifact({
-        root: retained,
-        expectedId: first.artifactId,
-      }),
-    ).rejects.toThrow('MANIFEST_DIGEST');
-    await registry.installRetainedDshNativeArtifact({
-      root: retained,
-      expectedId: second.artifactId,
-    });
-    const launch = registry.nativeArtifactLaunchForPin({
-      artifactId: second.artifactId,
-      profileId: 'restricted',
-    });
+    const launch = registry.currentDshNativeLaunch('technical');
     expect(launch.args).toEqual([
-      join(retained, 'apps/worker/dsh/allrice-jsonrpc-runtime.mjs'),
+      join(root, 'apps/worker/dsh/allrice-jsonrpc-runtime.mjs'),
     ]);
     expect(registry.checkedDshNativeLaunch(launch)).toEqual({
-      artifactId: second.artifactId,
-      profileId: 'restricted',
+      artifactId: first.artifactId,
+      profileId: 'technical',
     });
-    expect(
-      registry.nativeArtifactLaunchForPin({
-        artifactId: first.artifactId,
-        profileId: 'technical',
-      }).args,
-    ).toEqual([join(root, 'apps/worker/dsh/allrice-jsonrpc-runtime.mjs')]);
     expect(() =>
-      registry.nativeArtifactLaunchForPin({
-        artifactId: 'sha256:' + '0'.repeat(64),
-        profileId: 'restricted',
+      registry.checkedDshNativeLaunch({
+        ...launch,
+        args: [join(other, 'apps/worker/dsh/allrice-jsonrpc-runtime.mjs')],
       }),
-    ).toThrow('PIN_NOT_APPROVED');
-    const control = registry.approvedDshNativeControlArtifact(
-      second.artifactId,
-    );
+    ).toThrow('COMMAND_OVERRIDE');
+    const control = registry.currentDshNativeControlArtifact();
     expect(control).toEqual({
-      artifactId: second.artifactId,
-      generation: second.content.generation,
-      root: retained,
+      artifactId: first.artifactId,
+      generation: first.content.generation,
+      root,
       content: {
         schemaVersion: 1,
-        files: second.content.files,
-        packages: second.content.packages,
+        files: first.content.files,
+        packages: first.content.packages,
       },
     });
     control.content.files.length = 0;
-    expect(
-      registry.approvedDshNativeControlArtifact(second.artifactId).content
-        .files,
-    ).toEqual(second.content.files);
-    expect(
-      registry.approvedDshNativeControlArtifact(first.artifactId).root,
-    ).toBe(root);
-    expect(() =>
-      registry.approvedDshNativeControlArtifact('sha256:' + '0'.repeat(64)),
-    ).toThrow('CONTROL_NOT_APPROVED');
-  });
-  it('keeps seven independently measured readers and rejects an eighth without replacing any pin', async () => {
-    process.execArgv = [];
-    vi.stubEnv('NODE_OPTIONS', '');
-    const candidates = [];
-    for (let index = 0; index < 9; index++) {
-      const root = await fixture();
-      await writeFile(
-        join(root, 'apps/worker/dsh/allrice-jsonrpc-runtime.mjs'),
-        `import '@deepseek-ai/test-root';\n// exact candidate ${index}\n`,
-      );
-      candidates.push({ root, manifest: await seal(root) });
-    }
-    vi.resetModules();
-    const registry = await import('./dsh-native-artifact.js');
-    const first = candidates[0]!;
-    await registry.installDshNativeArtifact({
-      root: first.root,
-      expectedId: first.manifest.artifactId,
-    });
-    for (const candidate of candidates.slice(1, 8)) {
-      if (candidate === candidates[7]) {
-        for (const provenance of [
-          { sourceSha: 'c'.repeat(40), sourceTree: 'b'.repeat(40) },
-          { sourceSha: 'a'.repeat(40), sourceTree: 'c'.repeat(40) },
-        ])
-          await expect(
-            registry.installRetainedDshNativeArtifact({
-              root: candidate.root,
-              expectedId: candidate.manifest.artifactId,
-              ...provenance,
-            }),
-          ).rejects.toThrow('SOURCE_MISMATCH');
-      }
-      await registry.installRetainedDshNativeArtifact({
-        root: candidate.root,
-        expectedId: candidate.manifest.artifactId,
-        sourceSha: 'a'.repeat(40),
-        sourceTree: 'b'.repeat(40),
-      });
-    }
-    const excess = candidates[8]!;
-    await expect(
-      registry.installRetainedDshNativeArtifact({
-        root: excess.root,
-        expectedId: excess.manifest.artifactId,
-      }),
-    ).rejects.toThrow('RETAINED_DUPLICATE_OR_LIMIT');
-    for (const candidate of candidates.slice(0, 8))
-      expect(
-        registry.nativeArtifactLaunchForPin({
-          artifactId: candidate.manifest.artifactId,
-          profileId: 'restricted',
-        }).args,
-      ).toEqual([
-        join(candidate.root, 'apps/worker/dsh/allrice-jsonrpc-runtime.mjs'),
-      ]);
-    expect(() =>
-      registry.nativeArtifactLaunchForPin({
-        artifactId: excess.manifest.artifactId,
-        profileId: 'restricted',
-      }),
-    ).toThrow('PIN_NOT_APPROVED');
+    expect(registry.currentDshNativeControlArtifact().content.files).toEqual(
+      first.content.files,
+    );
   });
   it('refuses production Worker launch before a verified artifact is installed', () => {
     vi.stubEnv('ALLRICE_SERVICE_ROLE', 'worker');

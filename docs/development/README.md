@@ -26,7 +26,7 @@ in a second terminal. Node restarts when compiled files change. Changes to nativ
 modules, profiles, imported contracts JavaScript or resolved dependencies require
 repeating preparation, reviewing the ID, and restarting with that ID. Preparation
 uses the versioned execution boundary described in
-[native artifact retention](../architecture/dsh-native-retention.md#schema-v2-execution-content):
+[generation binding](../architecture/dsh-native-generation-binding.md#schema-v2-execution-content):
 unrelated settings, business data, declarations/maps and unused lock metadata do
 not create a different native ID. The preparation command never
 automatically approves shared Dev or Prod, and neither development nor production

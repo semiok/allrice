@@ -43,7 +43,6 @@ import {
   checkedDshNativeLaunch,
   currentDshNativeLaunch,
 } from '../dsh-native-artifact.js';
-import { employeePreviewStorageRoot } from '../dsh-native-retention.js';
 import { dshHostCapabilityInstructions } from './tool-bridge.js';
 import {
   selectDshNativeTools,
@@ -172,6 +171,14 @@ export function configuredDshRuntimeRoot(options: DshRuntimePoolOptions = {}) {
     options.runtimeRoot ??
       process.env.ALLRICE_DSH_RUNTIME_ROOT ??
       '.local/dsh-runtime',
+  );
+}
+
+/** Same effective execution root as the Worker and its preview executor. */
+export function employeePreviewStorageRoot() {
+  return resolve(
+    process.env.ALLRICE_EXECUTION_ROOT ?? '.local/executions',
+    'platform-employee-tests',
   );
 }
 

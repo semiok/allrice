@@ -693,15 +693,6 @@ importers:
         specifier: 2.10.3
         version: 2.10.3
 
-  packages/native-maintenance:
-    devDependencies:
-      '@deepseek-ai/dsh-session':
-        specifier: 0.2.1-rc.2
-        version: 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-scope@0.2.1-rc.2(@deepseek-ai/cordis@4.0.5))
-      '@deepseek-ai/dsh-session-format-v3-to-v4':
-        specifier: 0.2.1-rc.2
-        version: 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)
-
   packages/office-runtime:
     dependencies:
       '@allrice/contracts':

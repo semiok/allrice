@@ -365,8 +365,7 @@
           "packages/database/src/native-schedule-control-upgrade.ts": 2,
           "packages/database/src/native-schedule-once-product.ts": 1,
           "packages/database/src/native-schedule-recurring-product.ts": 1,
-          "packages/database/src/native-schedule-recurring-sql.ts": 1,
-          "scripts/dev-release/upgrade-native-schedule-control.mjs": 2
+          "packages/database/src/native-schedule-recurring-sql.ts": 1
         }
       },
       "controlModules": {
@@ -611,6 +610,11 @@
         "]))",
         "    .digest('hex')}`;"
       ],
+      "apps/worker/src/harness/dsh/runtime-pool.ts#export function employeePreviewStorageRoot(": [
+        "export function employeePreviewStorageRoot() {",
+        "    return resolve(process.env.ALLRICE_EXECUTION_ROOT ?? '.local/executions', 'platform-employee-tests');",
+        "}"
+      ],
       "apps/worker/src/harness/dsh/runtime-pool.ts#DSH_RUNTIME_HOME:": [
         "DSH_RUNTIME_HOME: tenantRoot"
       ],
@@ -626,11 +630,6 @@
       ],
       "apps/worker/src/platform-employee-tests.ts#const testDirectory =": [
         "const testDirectory = resolve(input.executionRoot, 'platform-employee-tests', test.id);"
-      ],
-      "apps/worker/src/harness/dsh-native-retention.ts#export function employeePreviewStorageRoot(": [
-        "export function employeePreviewStorageRoot() {",
-        "    return resolve(process.env.ALLRICE_EXECUTION_ROOT ?? '.local/executions', 'platform-employee-tests');",
-        "}"
       ],
       "apps/worker/dsh/native-schedule-host-factory.mjs#ctx.plugin(m.jsonl,": [
         "ctx.plugin(m.jsonl, {",
