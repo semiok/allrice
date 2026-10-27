@@ -110,11 +110,12 @@ suite('sidebar, new-work dialog and workbench badge labels', () => {
       return (x! + 0.05) / (y! + 0.05);
     });
   const measured: string[] = [];
-  const readable = async (label: string, node: Locator) => {
+  /** Text needs 4.5:1; an icon that carries meaning (the pin) needs 3:1. */
+  const readable = async (label: string, node: Locator, minimum = 4.5) => {
     await node.waitFor();
     const ratio = await contrast(node);
     measured.push(`${label} ${ratio.toFixed(2)}`);
-    expect.soft(ratio, label).toBeGreaterThanOrEqual(4.5);
+    expect.soft(ratio, label).toBeGreaterThanOrEqual(minimum);
   };
   const noOverflow = async (page: Page) =>
     expect(
@@ -124,31 +125,47 @@ suite('sidebar, new-work dialog and workbench badge labels', () => {
           document.documentElement.clientWidth,
       ),
     ).toBe(false);
+  const measure = async (
+    name: string,
+    width: number,
+    check: (page: Page) => Promise<void>,
+  ) => {
+    measured.length = 0;
+    // Reduced motion drops the 140ms hover fade, so hover reads settled.
+    const page = await browser.newPage({
+      viewport: { width, height: 900 },
+      reducedMotion: 'reduce',
+    });
+    try {
+      await check(page);
+      await noOverflow(page);
+    } finally {
+      console.info(`${name}: ${measured.join(', ')}`);
+      await page.close();
+    }
+  };
+  const tree = (page: Page) => page.getByRole('tree', { name: '员工与工作' });
+  const row = (page: Page, title: string) =>
+    tree(page).locator('[role="treeitem"]').filter({ hasText: title });
+  const time = (row: Locator) => row.getByText(/^\d+分钟$/);
+  // Rows here carry no action menu, like another member's shared session,
+  // so a focused row keeps its last cell (time or pin) on hover too.
+  const hoverFocused = async (row: Locator) => {
+    await row.focus();
+    await row.hover();
+  };
 
   for (const width of [1440, 390])
     for (const theme of ['light', 'dark'] as const) {
-      it(`reads the sidebar and badge at ${width}px in the ${theme} theme`, async () => {
-        measured.length = 0;
-        // Reduced motion drops the 140ms hover fade, so hover reads settled.
-        const page = await browser.newPage({
-          viewport: { width, height: 900 },
-          reducedMotion: 'reduce',
-        });
-        try {
+      const at = `${width}px ${theme}`;
+      it(`reads the sidebar and badge at ${at}`, () =>
+        measure(`${at} sidebar`, width, async (page) => {
           await page.goto(`${origin}/?theme=${theme}`);
-          const tree = page.getByRole('tree', { name: '员工与工作' });
-          const label = tree.getByText('默认', { exact: true });
+          const label = tree(page).getByText('默认', { exact: true });
           await readable('default label', label);
-          const selected = tree.locator(
-            '[role="treeitem"][aria-selected="true"]',
-          );
-          await readable(
-            'selected session time',
-            selected.getByText(/^\d+分钟$/),
-          );
           await readable(
             'empty employee hint',
-            tree.getByText('从顶部「新的工作」开始', { exact: true }),
+            tree(page).getByText('从顶部「新的工作」开始', { exact: true }),
           );
           const files = page.getByRole('button', {
             name: '工作区文件，1 项新增',
@@ -157,24 +174,36 @@ suite('sidebar, new-work dialog and workbench badge labels', () => {
             'new deliverable badge',
             files.getByText('1', { exact: true }),
           );
-          await noOverflow(page);
           // The employee card darkens under the pointer.
-          await tree.getByText('Rice', { exact: true }).hover();
+          await tree(page).getByText('Rice', { exact: true }).hover();
           await readable('default label on hover', label);
-        } finally {
-          console.info(`${width}px ${theme}: ${measured.join(', ')}`);
-          await page.close();
-        }
-      });
+        }));
 
-      it(`reads the new-work dialog at ${width}px in the ${theme} theme`, async () => {
-        measured.length = 0;
-        // Reduced motion drops the 140ms hover fade, so hover reads settled.
-        const page = await browser.newPage({
-          viewport: { width, height: 900 },
-          reducedMotion: 'reduce',
-        });
-        try {
+      it(`reads session times and the pin at ${at}`, () =>
+        measure(`${at} rows`, width, async (page) => {
+          await page.goto(`${origin}/?theme=${theme}&active=budget`);
+          const selected = row(page, '核对十月预算');
+          expect(await selected.getAttribute('aria-selected')).toBe('true');
+          await readable('selected time', time(selected));
+          const other = row(page, '会议纪要');
+          await readable('unselected time', time(other));
+          const pinned = row(page, '整理本周销售周报');
+          const marker = (row: Locator) => row.locator(':scope > [role="img"]');
+          await readable('pin', marker(pinned), 3);
+          await hoverFocused(selected);
+          await readable('selected time, hovered and focused', time(selected));
+          await hoverFocused(other);
+          await readable('unselected time, hovered and focused', time(other));
+          // The pinned session selected: its marker sits on the selected fill.
+          await page.goto(`${origin}/?theme=${theme}&active=weekly`);
+          const pin = marker(row(page, '整理本周销售周报'));
+          await readable('selected pin', pin, 3);
+          await hoverFocused(row(page, '整理本周销售周报'));
+          await readable('selected pin, hovered and focused', pin, 3);
+        }));
+
+      it(`reads the new-work dialog at ${at}`, () =>
+        measure(`${at} new-work`, width, async (page) => {
           await page.goto(`${origin}/?theme=${theme}&dialog=picker`);
           const dialog = page.getByRole('dialog', { name: '选择 AI 员工' });
           await readable(
@@ -187,16 +216,34 @@ suite('sidebar, new-work dialog and workbench badge labels', () => {
             'dialog footer',
             dialog.getByText('选择一位员工，开始新的工作', { exact: true }),
           );
-          // The shortcut hint is desktop-only.
-          if (width > 560)
-            await readable('close shortcut', dialog.locator('kbd'));
-          await noOverflow(page);
-          await dialog.getByText('Rice', { exact: true }).hover();
+          const card = dialog.locator('button').filter({ hasText: 'Rice' });
+          await card.hover();
           await readable('employee default badge on hover', badge);
-        } finally {
-          console.info(`${width}px ${theme}: ${measured.join(', ')}`);
-          await page.close();
-        }
-      });
+          // The shortcut hint and the hover「开始」 are desktop-only.
+          if (width > 560) {
+            await readable('close shortcut', dialog.locator('kbd'));
+            await readable(
+              'start on hover',
+              card.getByText('开始', { exact: true }),
+            );
+          }
+        }));
+
+      for (const [kind, name, eyebrow] of [
+        ['reference', '引用会话', '会话资料'],
+        ['versions', '周报.docx 的版本历史', 'Rice 交付物'],
+        ['brand', '内容工作台', '内容员工'],
+      ] as const)
+        it(`reads the ${kind} dialog eyebrow at ${at}`, () =>
+          measure(`${at} ${kind}`, width, async (page) => {
+            await page.goto(`${origin}/?theme=${theme}&dialog=${kind}`);
+            await readable(
+              `${kind} eyebrow`,
+              page
+                .getByRole('dialog', { name })
+                .locator('header p')
+                .getByText(eyebrow, { exact: true }),
+            );
+          }));
     }
 });

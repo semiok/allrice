@@ -6,6 +6,7 @@ import type { Session } from './chatflow-types';
 import { DshDialog } from './dsh-upstream/Dialog';
 import { readJson } from './chatflow-utils';
 import css from './session-reference.module.css';
+import eyebrow from './dialog-eyebrow.module.css';
 
 export function SessionReferencePicker({
   workspaceId,
@@ -74,6 +75,7 @@ export function SessionReferencePicker({
   return (
     <DshDialog
       ariaLabel="引用会话"
+      className={eyebrow.readable}
       bodyClassName={css.body}
       initialFocusSelector='[aria-label="搜索会话"]'
       title="引用之前的工作"

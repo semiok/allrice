@@ -169,12 +169,19 @@
 }
 .sessions [role='treeitem'] {
   transition: background-color 140ms ease;
+  /* DSH's tertiary session time reads 3.52:1 on the sidebar and 2.95:1 on
+     the selected fill (light); DSH's secondary still drops to 4.32:1 where
+     focus keeps the time on a hovered selected row. Text-secondary holds
+     4.5:1 on every row state, so rows map tertiary, icons included, to it. */
+  --dsw-alias-label-tertiary: var(--ar-text-secondary);
+}
+/* DSH's pinned marker is caption grey (1.70:1 light, 2.79:1 dark on the
+   selected fill); text-tertiary is the icon colour held to 3:1. */
+.sessions [role='treeitem'] > [role='img'] {
+  color: var(--ar-text-tertiary);
 }
 .sessions [role='treeitem'][aria-selected='true'] {
   background: var(--allrice-session-selected);
-  /* DSH's tertiary session time reads 2.95:1 on this darker fill (light), so
-     the selected row maps tertiary, its icons included, to secondary. */
-  --dsw-alias-label-tertiary: var(--dsw-alias-label-secondary);
 }
 .empty {
   display: block;
@@ -262,11 +269,6 @@
     pointer-events: auto;
   }
 }
-/* The 「新的工作」 eyebrow: DSH Dialog paints it caption grey (2.13:1 light,
-   3.76:1 dark), so this dialog alone lifts it to secondary. */
-.pickerDialog > header p {
-  color: var(--dsw-alias-label-secondary);
-}
 .picker {
   display: grid;
   gap: 10px;
@@ -344,7 +346,7 @@
   align-items: center;
   flex: none;
   gap: 4px;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
   font-size: 12px;
 }
 .pickerAction > span {
