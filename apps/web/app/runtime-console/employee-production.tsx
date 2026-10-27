@@ -1322,7 +1322,7 @@ function EmployeeTemplateEditor({
           </p>
           <p>
             成员继承已派驻员工的能力，执行跟随设置中的“员工工作方式”。使用本地项目时，在“我的电脑”连接
-            Bridge
+            AllRice 助手
             并选择项目目录，测试环境会自动准备；缺项可在“能力与环境”查看。
           </p>
         </details>

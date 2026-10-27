@@ -77,7 +77,7 @@ export function PlatformQualityEvidence() {
         </AdminButton>
       </div>
       <p className={css.meta}>
-        这些报告证明固定场景的测试结果。当前 Dev 页面验收、Bridge
+        这些报告证明固定场景的测试结果。当前 Dev 页面验收、AllRice 助手
         实机和其他项目仍需各自的交付记录。
       </p>
       {data?.deployedSha && (

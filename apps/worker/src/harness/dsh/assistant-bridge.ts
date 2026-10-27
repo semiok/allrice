@@ -237,7 +237,7 @@ export function createAssistantWorkerBridge(
       const result = {
         deliveryId: stableId(`${instance.runId}:settled`),
         status: 'partial' as const,
-        summary: 'Native assistant settled without a verified delivery.',
+        summary: 'Native 子智能体 settled without a verified delivery.',
         evidence: [],
         incomplete: [
           `Native stop reason: ${String(p.stopReason).slice(0, 120)}`,

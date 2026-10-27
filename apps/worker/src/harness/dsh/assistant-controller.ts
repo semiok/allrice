@@ -483,7 +483,7 @@ export function productionAssistantController(input: {
           );
           return {
             modelContent: JSON.stringify(result),
-            summary: `Governed assistant command: ${result.status}`,
+            summary: `Governed 子智能体 command: ${result.status}`,
           };
         },
         onPublishOutput: input.storage

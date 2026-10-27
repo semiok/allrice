@@ -1268,7 +1268,7 @@ export async function executeEmployeeRun({
     if (assistants && (adapter.kind !== 'dsh' || selectedWorkflow)) {
       throw new HandlerError(
         'ASSISTANT_ROUTE_UNAVAILABLE',
-        'Governed assistants require an ordinary native DSH task',
+        'Governed 子智能体 require an ordinary native DSH task',
         false,
       );
     }

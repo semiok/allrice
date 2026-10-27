@@ -202,8 +202,8 @@ export function PlatformRepositoryReviews({
     <section aria-label="仓库候选独立审查">
       <h4>独立审查</h4>
       <p className={css.meta}>
-        审查助手只阅读这份候选和准确 CI 证据。意见会保存为交付成果；合并 main 与
-        Dev 验收另行执行。
+        审查子智能体只阅读这份候选和准确 CI 证据。意见会保存为交付成果；合并
+        main 与 Dev 验收另行执行。
       </p>
       <div className={css.controls}>
         <AdminButton
@@ -270,7 +270,7 @@ export function PlatformRepositoryReviews({
                   : ''}
               </summary>
               <p className={css.meta}>
-                Run {review.runId} · 独立助手{' '}
+                Run {review.runId} · 独立子智能体{' '}
                 {review.reviewerRunId ?? '尚未安排'} · {review.status}
                 {review.errorCode ? ' · ' + review.errorCode : ''}
               </p>

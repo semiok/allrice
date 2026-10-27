@@ -336,7 +336,7 @@ suite('MET-151 policy and exact employee publication administration', () => {
       },
     };
     expect(employeeToolConfigurationErrors(base).join()).toContain(
-      'Bridge 已禁用',
+      'AllRice 助手已禁用',
     );
     expect(
       employeeToolConfigurationErrors({
