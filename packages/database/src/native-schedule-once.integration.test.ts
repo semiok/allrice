@@ -48,6 +48,10 @@ import {
 } from './automation-catalog.ts';
 import { updateWorkAutomation } from './work-automation.ts';
 import {
+  getUserPreferences,
+  updateUserPreferences,
+} from './user-preferences.ts';
+import {
   runManualAutomation,
   getManualAutomationRun,
 } from './automation-manual.ts';
@@ -282,6 +286,50 @@ suite(
       });
       return { control, write };
     }
+    it('freezes the session owner preferences when a scheduled occurrence queues its run', async () => {
+      const before = await getUserPreferences(f.context);
+      onTestFinished(async () => {
+        await updateUserPreferences(f.context, {
+          questionWait: before.questionWait,
+          subagents: before.subagents,
+        });
+      });
+      await updateUserPreferences(f.context, {
+        questionWait: { mode: 'default' },
+        subagents: { maxDepth: 2, maxActive: 3 },
+      });
+      const t = await task(undefined, '帮我整理这周的周报，需要的话先问我。');
+      // The preference is read at business-run enqueue, not at task creation.
+      await updateUserPreferences(f.context, {
+        questionWait: { mode: 'timed', seconds: 300 },
+        subagents: { maxDepth: 4, maxActive: null },
+      });
+      await receipt(t.task.id);
+      expect(await dispatchNextNativeOnceOccurrence(randomUUID())).toBe(true);
+      const snapshot = async () => {
+        const [row] = await f.db`
+          select r.owner_id, er.execution_snapshot->'nativePreferences' preferences
+          from allrice_automation_runs ar join allrice_runs r on r.id=ar.run_id
+          join allrice_employee_runs er on er.run_id=ar.run_id
+          where ar.automation_id=${t.task.id}`;
+        return row;
+      };
+      const expected = {
+        owner_id: f.context.actor.id,
+        preferences: {
+          version: 1,
+          questionWait: { mode: 'timed', seconds: 300 },
+          // This fixture's tenant has no assistant.delegate allow rule.
+          subagents: { maxDepth: 0, maxActive: null },
+        },
+      };
+      expect(await snapshot()).toEqual(expected);
+      await updateUserPreferences(f.context, {
+        questionWait: { mode: 'forever' },
+        subagents: { maxDepth: null, maxActive: 8 },
+      });
+      expect(await snapshot()).toEqual(expected);
+    });
     it.each(['reuse', 'new_each_run'] as const)(
       'conversation once parent rejects a pointerless new NULL snapshot at COMMIT (%s)',
       async (conversationMode) => {

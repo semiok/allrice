@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
-// DSH ui-theme / ui-chat @ 0.2.1-rc.2 presentation values. These belong to
-// the signed-in account, never an employee's frozen execution configuration.
+// DSH ui-theme / ui-chat @ 0.2.1-rc.2 presentation values belong to the signed-in
+// account. The agent preferences below are frozen into each Run's configuration.
 const FontSizeSchema = z.number().int().min(10).max(22);
 export const TranscriptViewSchema = z.enum([
   'compact',
@@ -28,10 +28,11 @@ export const QuestionWaitSchema = z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('forever') }).strict(),
 ]);
 export type QuestionWait = z.infer<typeof QuestionWaitSchema>;
+// null means no user override: the execution consumer leaves DSH's default in charge.
 export const SubagentPreferencesSchema = z
   .object({
-    maxDepth: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
-    maxActive: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+    maxDepth: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).nullable(),
+    maxActive: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).nullable(),
   })
   .strict();
 export type SubagentPreferences = z.infer<typeof SubagentPreferencesSchema>;
@@ -50,6 +51,8 @@ export const UserPreferencesInputSchema = z
     transcriptView: TranscriptViewSchema.optional(),
     collapseTiming: CollapseTimingSchema.optional(),
     appearance: AppearanceSchema.optional(),
+    questionWait: QuestionWaitSchema.optional(),
+    subagents: SubagentPreferencesSchema.optional(),
   })
   .strict()
   .refine(
@@ -66,6 +69,11 @@ export const UserPreferencesSchema = z.object({
   transcriptView: TranscriptViewSchema.default('detailed'),
   collapseTiming: CollapseTimingSchema.default('completion'),
   appearance: AppearanceSchema.default('light'),
+  questionWait: QuestionWaitSchema.default({ mode: 'default' }),
+  subagents: SubagentPreferencesSchema.default({
+    maxDepth: null,
+    maxActive: null,
+  }),
   updatedAt: z.string().datetime().nullable(),
 });
 export type UserPreferences = z.infer<typeof UserPreferencesSchema>;
@@ -76,5 +84,7 @@ export const defaultUserPreferences: UserPreferences = {
   transcriptView: 'detailed',
   collapseTiming: 'completion',
   appearance: 'light',
+  questionWait: { mode: 'default' },
+  subagents: { maxDepth: null, maxActive: null },
   updatedAt: null,
 };

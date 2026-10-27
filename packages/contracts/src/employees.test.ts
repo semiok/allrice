@@ -408,6 +408,17 @@ describe('EmployeeHub contracts', () => {
     ]) {
       expect(parse(fields)).toEqual({ ...snapshot, ...fields });
     }
+    for (const subagents of [
+      { maxDepth: null, maxActive: null },
+      { maxDepth: null, maxActive: 8 },
+      { maxDepth: 0, maxActive: null },
+    ]) {
+      const preferences = { ...nativePreferences, subagents };
+      expect(parse({ nativePreferences: preferences })).toEqual({
+        ...snapshot,
+        nativePreferences: preferences,
+      });
+    }
     for (const questionWait of [
       { mode: 'forever' },
       { mode: 'timed', seconds: 1 },

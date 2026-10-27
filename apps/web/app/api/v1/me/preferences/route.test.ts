@@ -68,6 +68,12 @@ describe('authenticated personal preferences', () => {
     { appearance: null },
     { appearance: true },
     { appearance: 'dark', userId: 'other' },
+    { questionWait: { mode: 'timed', seconds: 0 } },
+    { questionWait: { mode: 'timed' } },
+    { subagents: { maxDepth: -1, maxActive: 1 } },
+    { subagents: { maxDepth: null, maxActive: 0 } },
+    { subagents: { maxDepth: null } },
+    { questionWait: { mode: 'default' }, userId: 'other' },
   ])('rejects invalid or foreign-target settings %j', async (body) => {
     expect((await PATCH(request(body))).status).toBe(400);
     expect(mocks.update).not.toHaveBeenCalled();
@@ -102,5 +108,40 @@ describe('authenticated personal preferences', () => {
     const response = await PATCH(request({ streamingOutput: true }));
     expect(response.status).toBe(503);
     expect(JSON.stringify(await response.json())).not.toContain('private-sql');
+  });
+  it.each([
+    { questionWait: { mode: 'default' } },
+    { questionWait: { mode: 'timed', seconds: 300 } },
+    { questionWait: { mode: 'forever' } },
+    { subagents: { maxDepth: 0, maxActive: 8 } },
+    { subagents: { maxDepth: null, maxActive: 8 } },
+    { subagents: { maxDepth: 2, maxActive: null } },
+    { subagents: { maxDepth: null, maxActive: null } },
+  ])('saves an agent preference group alone: %j', async (update) => {
+    mocks.update.mockResolvedValue({
+      streamingOutput: true,
+      ...update,
+      updatedAt: '2026-10-27T00:00:00.000Z',
+    });
+    const response = await PATCH(request(update));
+    expect(response.status).toBe(200);
+    expect(mocks.update).toHaveBeenCalledExactlyOnceWith(context, update);
+    expect((await response.json()).preferences).toMatchObject(update);
+  });
+  it('reads both agent preference groups, including unset DSH overrides', async () => {
+    const preferences = {
+      streamingOutput: true,
+      questionWait: { mode: 'timed', seconds: 300 },
+      subagents: { maxDepth: null, maxActive: null },
+      updatedAt: null,
+    };
+    mocks.get.mockResolvedValue(preferences);
+    const response = await GET(new Request('https://allrice.test/api'));
+    expect(response.status).toBe(200);
+    expect(mocks.get).toHaveBeenCalledExactlyOnceWith(context);
+    expect(await response.json()).toEqual({
+      viewerId: 'current-user',
+      preferences,
+    });
   });
 });

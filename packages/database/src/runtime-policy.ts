@@ -160,8 +160,8 @@ export async function assertRuntimePolicyIdentity(
 const identity = assertRuntimePolicyIdentity;
 
 async function controlsFor(
-  transaction: Transaction,
-  context: RuntimePolicyPrincipal,
+  transaction: Transaction | Database,
+  context: Pick<RuntimePolicyPrincipal, 'organizationId' | 'workspaceId'>,
   lock = true,
 ) {
   const [row] = await transaction<{ version: number; controls: unknown }[]>`

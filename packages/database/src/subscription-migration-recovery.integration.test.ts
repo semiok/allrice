@@ -4,6 +4,7 @@ import * as organizationContext from './employees/organization-context.ts';
 import * as employeeInstances from './employees/employee-instances.ts';
 import * as employeeRuntimeContent from './employees/employee-runtime-content.ts';
 import * as personalSkills from './employees/personal-skills.ts';
+import * as userPreferences from './user-preferences.ts';
 import * as sandboxExecutionPolicy from './sandbox-execution-policy.ts';
 import * as nativeContextRetirement from './conversation/native-context-retirement.ts';
 /** Incremental 0096 -> 0097/0098 on an owned PG schema containing old data.
@@ -187,6 +188,12 @@ integration('subscription incremental migration and cold SQL readers', () => {
         ...base,
         personalSkills: undefined,
       }));
+    // A 0096-era Run predates personal preferences (0109) and their native
+    // snapshot (0223). Omit only this future field while seeding old data;
+    // current admission still requires the fully migrated schema.
+    const legacyPreferences = vi
+      .spyOn(userPreferences, 'freezeNativePreferences')
+      .mockResolvedValueOnce(undefined as never);
     // The 0096 seed also predates the optional sandbox budget snapshot. Keep
     // its schema historical; production must still require migration 0171.
     const legacySandboxPolicy = vi
@@ -246,6 +253,7 @@ integration('subscription incremental migration and cold SQL readers', () => {
       // The incremental subscription journey must still begin at real 0096.
       const [historical] = await fixture.db`
         select to_regclass('allrice_native_context_retirements') is null as no_retirements,
+          to_regclass('allrice_user_preferences') is null as no_preferences,
           not exists (
             select 1 from information_schema.columns
             where table_schema=current_schema() and table_name='allrice_employee_runs'
@@ -254,8 +262,12 @@ integration('subscription incremental migration and cold SQL readers', () => {
           to_jsonb(e) as employee_run
         from allrice_employee_runs e where run_id=${task.runId}`;
       expect(historical!.no_retirements).toBe(true);
+      expect(historical!.no_preferences).toBe(true);
       expect(historical!.no_execution_binding).toBe(true);
       expect(historical!.employee_run.status).toBe('running');
+      expect(historical!.employee_run.execution_snapshot).not.toHaveProperty(
+        'nativePreferences',
+      );
       expect(historical!.employee_run.execution_snapshot.modelSnapshot).toEqual(
         JSON.parse(
           JSON.stringify(task.binding.executionSnapshot.modelSnapshot),
@@ -271,6 +283,7 @@ integration('subscription incremental migration and cold SQL readers', () => {
       expect(legacyCapabilities).toHaveBeenCalledTimes(1);
       expect(legacyContent).toHaveBeenCalledTimes(1);
       expect(legacyPersonalSkills).toHaveBeenCalledTimes(1);
+      expect(legacyPreferences).toHaveBeenCalledTimes(1);
       expect(
         JSON.parse(JSON.stringify(task.binding.executionSnapshot)),
       ).not.toHaveProperty('personalSkills');
@@ -288,6 +301,7 @@ integration('subscription incremental migration and cold SQL readers', () => {
       legacyInstance.mockRestore();
       legacyContent.mockRestore();
       legacyPersonalSkills.mockRestore();
+      legacyPreferences.mockRestore();
       legacySandboxPolicy.mockRestore();
       legacyRetirement.mockRestore();
       legacyPublication.mockRestore();

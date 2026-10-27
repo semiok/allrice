@@ -182,7 +182,69 @@ suite('account output preferences', () => {
     `;
     expect(inserted?.appearance).toBe('light');
   });
-  // Runs last: it rebuilds the pre-0222 column set inside this suite's schema.
+  // MET-210 (user 10-27): DSH's own question wait and subagent settings.
+  it('saves each agent preference group alone and keeps the other choices', async () => {
+    const f = await createExperienceFixture(fixture.db);
+    await updateUserPreferences(f.owner, { appearance: 'dark', fontSize: 18 });
+    const timed = await updateUserPreferences(f.owner, {
+      questionWait: { mode: 'timed', seconds: 300 },
+    });
+    expect(timed).toMatchObject({
+      appearance: 'dark',
+      fontSize: 18,
+      questionWait: { mode: 'timed', seconds: 300 },
+      subagents: { maxDepth: null, maxActive: null },
+    });
+    await updateUserPreferences(f.owner, {
+      subagents: { maxDepth: 0, maxActive: 12 },
+    });
+    const forever = await updateUserPreferences(f.owner, {
+      questionWait: { mode: 'forever' },
+    });
+    expect(forever).toMatchObject({
+      questionWait: { mode: 'forever' },
+      subagents: { maxDepth: 0, maxActive: 12 },
+    });
+    expect(await getUserPreferences(f.owner)).toEqual(forever);
+    for (const update of [
+      { questionWait: { mode: 'timed', seconds: 0 } },
+      { questionWait: { mode: 'timed' } },
+      { subagents: { maxDepth: -1, maxActive: 1 } },
+      { subagents: { maxDepth: 1, maxActive: 0 } },
+    ])
+      await expect(updateUserPreferences(f.owner, update)).rejects.toThrow();
+    await expect(
+      fixture.db`update allrice_user_preferences set question_wait_mode='timed' where user_id=${f.owner.actor.id}`,
+    ).rejects.toThrow(/check constraint/);
+    expect(await getUserPreferences(f.owner)).toEqual(forever);
+  });
+  it('resets either subagent override to null without changing other preferences', async () => {
+    const f = await createExperienceFixture(fixture.db);
+    await updateUserPreferences(f.owner, {
+      appearance: 'dark',
+      questionWait: { mode: 'timed', seconds: 300 },
+      subagents: { maxDepth: 2, maxActive: 3 },
+    });
+    for (const subagents of [
+      { maxDepth: null, maxActive: 3 },
+      { maxDepth: 2, maxActive: null },
+      { maxDepth: null, maxActive: null },
+    ]) {
+      const saved = await updateUserPreferences(f.owner, { subagents });
+      expect(saved).toMatchObject({
+        appearance: 'dark',
+        questionWait: { mode: 'timed', seconds: 300 },
+        subagents,
+      });
+      expect(await getUserPreferences(f.owner)).toEqual(saved);
+    }
+    await updateUserPreferences(f.owner, { streamingOutput: false });
+    expect(await getUserPreferences(f.owner)).toMatchObject({
+      streamingOutput: false,
+      subagents: { maxDepth: null, maxActive: null },
+    });
+  });
+  // Rebuilds the pre-0222 column set inside this suite's schema.
   it('migration 0222 sets existing rows to light and keeps their other choices', async () => {
     const f = await createExperienceFixture(fixture.db);
     await updateUserPreferences(f.owner, {
@@ -221,10 +283,80 @@ suite('account output preferences', () => {
       transcriptView: 'compact',
       collapseTiming: 'next-input',
       appearance: 'light',
+      // MET-210 0223 defaults, untouched by re-running 0222.
+      questionWait: { mode: 'default' },
+      subagents: { maxDepth: null, maxActive: null },
       updatedAt: before!.updated_at.toISOString(),
     });
     // The runner records each file once; a manual second run fails unchanged.
     await expect(migrate()).rejects.toThrow(/already exists/);
     expect((await getUserPreferences(f.owner)).appearance).toBe('light');
+  });
+
+  it('migration 0223 leaves DSH defaults unset on existing and new rows and enforces native ranges', async () => {
+    const f = await createExperienceFixture(fixture.db);
+    const before = await updateUserPreferences(f.owner, {
+      streamingOutput: false,
+      fontSize: 18,
+      appearance: 'dark',
+    });
+    const [scope] = await fixture.db<
+      { schema: string }[]
+    >`select current_schema() as schema`;
+    const schema = scope!.schema;
+    expect(schema).toMatch(/^p25_[a-f0-9]{32}$/);
+    await fixture.db.unsafe(`alter table "${schema}".allrice_user_preferences
+      drop column question_wait_mode, drop column question_wait_seconds,
+      drop column subagent_max_depth, drop column subagent_max_active`);
+    const migration = await readFile(
+      new URL('../migrations/0223_agent_preferences.sql', import.meta.url),
+      'utf8',
+    );
+    const migrate = () =>
+      fixture.db.begin(async (tx) => {
+        await tx.unsafe(`set local search_path to "${schema}"`);
+        await tx.unsafe(migration);
+      });
+    await migrate();
+    expect(await getUserPreferences(f.owner)).toEqual(before);
+    expect(before.subagents).toEqual({ maxDepth: null, maxActive: null });
+    const [inserted] = await fixture.db`
+      insert into allrice_user_preferences(user_id) values (${f.neighbor.actor.id})
+      returning subagent_max_depth, subagent_max_active`;
+    expect(inserted).toEqual({
+      subagent_max_depth: null,
+      subagent_max_active: null,
+    });
+    await expect(migrate()).rejects.toThrow(/already exists/);
+
+    for (const assignment of [
+      "question_wait_mode='invalid'",
+      "question_wait_mode='timed', question_wait_seconds=null",
+      'question_wait_seconds=1',
+      "question_wait_mode='timed', question_wait_seconds=0",
+      "question_wait_mode='timed', question_wait_seconds=2147484",
+      'subagent_max_depth=-1',
+      'subagent_max_depth=9007199254740992',
+      'subagent_max_active=0',
+      'subagent_max_active=9007199254740992',
+    ])
+      await expect(
+        fixture.db.unsafe(
+          `update "${schema}".allrice_user_preferences set ${assignment} where user_id=$1`,
+          [f.owner.actor.id],
+        ),
+      ).rejects.toThrow(/check constraint/);
+    expect(await getUserPreferences(f.owner)).toEqual(before);
+
+    // BIGINT storage must round-trip the entire DSH safe-integer range.
+    const upper = {
+      questionWait: { mode: 'timed', seconds: 2_147_483 },
+      subagents: {
+        maxDepth: Number.MAX_SAFE_INTEGER,
+        maxActive: Number.MAX_SAFE_INTEGER,
+      },
+    };
+    expect(await updateUserPreferences(f.owner, upper)).toMatchObject(upper);
+    expect(await getUserPreferences(f.owner)).toMatchObject(upper);
   });
 });
