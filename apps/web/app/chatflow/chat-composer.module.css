@@ -1,4 +1,14 @@
 /* AllRice host styling; pinned DSH input styles and composer behavior stay intact. */
+
+/* A visible focus ring at every width (MET-214 D13): 2px, at least 3:1 against
+   the card and the page in both themes. Drawn inside the border box, over the
+   1px border, so an ancestor's overflow or the narrow side clearance can never
+   clip it. */
+.card:focus-within {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: -2px;
+}
+
 @media (min-width: 761px) {
   .card {
     gap: 11px;
@@ -19,11 +29,6 @@
   }
 
   .card:focus-within {
-    border-color: color-mix(
-      in srgb,
-      var(--dsw-alias-state-business-primary) 40%,
-      var(--dsw-alias-border-l2-darkmode-thin)
-    );
     box-shadow:
       0 2px 6px light-dark(#20385c08, #00000024),
       0 9px 28px light-dark(#20385c12, #00000030),

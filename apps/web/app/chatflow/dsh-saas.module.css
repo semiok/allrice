@@ -4,8 +4,9 @@
    selector deliberately wins that tie so a long transcript cannot grow the
    document and move the header, sidebar footer, or composer off screen. */
 main.shell {
-  /* Native Markdown links use this alias, independently of employee accents. */
-  --dsw-alias-link: var(--dsw-static-deepseek-500);
+  /* Native Markdown links use this alias, independently of employee accents.
+     600, not 500: 500 on white is 4.23:1, under the 4.5 text minimum. */
+  --dsw-alias-link: var(--dsw-static-deepseek-600);
   position: fixed;
   inset: 0;
   width: 100%;
@@ -505,7 +506,7 @@ header.conversationHeader::after {
 
 .heroHeadline p {
   margin: 0;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
   font-size: 14px;
   line-height: 22px;
 }
@@ -636,6 +637,8 @@ header.conversationHeader::after {
   opacity: 1;
 }
 
+/* Small words sit on an opaque chip, never straight on a thumbnail or on the
+   card's translucent fill, so their contrast holds in both themes. */
 .pendingFileState,
 .pendingFileRetry {
   position: absolute;
@@ -643,15 +646,17 @@ header.conversationHeader::after {
   bottom: 4px;
   padding: 2px 5px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--dsw-alias-bg-base) 86%, transparent);
+  background: var(--dsw-alias-bg-base);
   color: var(--dsw-alias-label-secondary);
   font-size: 9px;
   line-height: 14px;
 }
 
+/* The red ring says the upload failed; the word itself stays primary text. */
 .pendingFileRetry {
-  background: var(--dsw-alias-interactive-bg-hover-danger);
-  color: var(--dsw-alias-state-error-primary);
+  padding: 1px 4px;
+  border: 1px solid var(--dsw-alias-state-error-primary);
+  color: var(--dsw-alias-label-primary);
 }
 
 .pendingFileArrow {
@@ -765,7 +770,7 @@ header.conversationHeader::after {
 }
 
 .composerInput::placeholder {
-  color: var(--dsw-alias-label-caption);
+  color: var(--dsw-alias-label-secondary);
 }
 
 .attachmentMenuAnchor {
@@ -1061,7 +1066,7 @@ div.composerAttachmentMenu,
   justify-content: flex-end;
   gap: 6px;
   margin-top: 4px;
-  color: var(--dsw-alias-label-caption);
+  color: var(--dsw-alias-label-secondary);
   font-size: 10px;
   line-height: 14px;
 }
@@ -1126,7 +1131,7 @@ div.composerAttachmentMenu,
 
 .confirmationCard > header span,
 .confirmationCard > header time {
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
   font-size: 10px;
   line-height: 15px;
 }
@@ -1153,7 +1158,7 @@ div.composerAttachmentMenu,
 }
 
 .confirmationCard dt {
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
   font-size: 11px;
   line-height: 22px;
 }
@@ -1194,7 +1199,7 @@ div.composerAttachmentMenu,
 }
 
 .confirmationSkipped {
-  color: var(--dsw-alias-label-caption);
+  color: var(--dsw-alias-label-secondary);
 }
 
 .assistantIdentity {
@@ -1628,7 +1633,7 @@ div.composerAttachmentMenu,
 }
 
 .userQuestionHeader span {
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
   font-size: 11px;
   line-height: 16px;
 }
@@ -1694,7 +1699,8 @@ div.composerAttachmentMenu,
   margin-top: 1px;
   border-radius: 7px;
   background: var(--dsw-alias-bg-overlay);
-  color: var(--dsw-alias-label-secondary);
+  /* Secondary on the dark overlay chip is only 3.85:1. */
+  color: var(--dsw-alias-label-primary);
   font-size: 12px;
   font-style: normal;
 }
@@ -1731,7 +1737,7 @@ div.composerAttachmentMenu,
 }
 
 .userQuestionOption small {
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
   font-size: 13px;
   line-height: 22px;
 }
@@ -1751,6 +1757,10 @@ div.composerAttachmentMenu,
   font: inherit;
   font-size: 14px;
   line-height: 21px;
+}
+
+.userQuestionCustom::placeholder {
+  color: var(--dsw-alias-label-secondary);
 }
 
 .userQuestionCustom:focus {
@@ -1859,7 +1869,7 @@ div.composerAttachmentMenu,
   flex: none;
   /* Native header accessory has an 8px gap; keep AllRice 12px timing spacing. */
   margin-left: 4px;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
   font-size: 13px;
   line-height: 24px;
 }
@@ -1887,7 +1897,7 @@ div.composerAttachmentMenu,
   line-height: 22px;
 }
 .processStepDescription {
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
   font-size: 13px;
   line-height: 22px;
   min-width: 0;
@@ -1896,7 +1906,7 @@ div.composerAttachmentMenu,
 .processStepStatus {
   display: block;
   padding-left: 22px;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
   font-size: 13px;
   line-height: 22px;
 }
