@@ -18,6 +18,7 @@ import { BrandContentPanel } from '../app/chatflow/brand-content-panel';
 import { PlatformReferenceLibrary } from '../app/runtime-console/platform-reference-library';
 import { AdminShell } from '../components/admin/admin-shell';
 import { LoginForm } from '../app/login/login-form';
+import { applyTheme } from '../lib/theme/theme';
 import { employeeDetailsFixture } from './employee-details-fixture';
 // The root layout's global stylesheets, in its order.
 import '../app/dsh-upstream/design-platform.css';
@@ -263,13 +264,9 @@ const cases: Record<string, ReactNode> = {
   ),
 };
 
-if (params.get('theme') === 'dark') {
-  // The runtime (#571) sets both; its base.css also turns on the dark
-  // color-scheme for :root[data-theme='dark'], mirrored here until it lands.
-  document.documentElement.setAttribute('data-theme', 'dark');
-  document.documentElement.style.colorScheme = 'dark';
-  document.body.setAttribute('data-ds-dark-theme', '');
-}
+// The runtime's own switch; styles/base.css does the rest (color-scheme,
+// the dark canvas), as on a real page.
+applyTheme(params.get('theme') === 'dark' ? 'dark' : 'light');
 createRoot(document.getElementById('root')!).render(
   <main
     data-case={params.get('case')}

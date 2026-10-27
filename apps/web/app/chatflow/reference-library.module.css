@@ -30,8 +30,8 @@
   border: 1px solid #dce0e6;
   border-radius: 8px;
   padding: 9px 12px;
-  background: var(--dsw-alias-bg-base);
-  color: var(--dsw-alias-label-primary);
+  background: #fff;
+  color: inherit;
   max-width: 100%;
   box-sizing: border-box;
   min-width: 0;
