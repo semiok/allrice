@@ -1,8 +1,10 @@
+/* Colors follow the DSH theme. Cards also render without the page, in
+   employee details and the workbench, on light and dark surfaces. */
 .page {
   max-width: 1000px;
   margin: 0 auto;
   padding: 32px 20px;
-  color: #202329;
+  color: var(--dsw-alias-label-primary);
 }
 .page h1 {
   margin: 24px 0 12px;
@@ -13,9 +15,10 @@
 .card {
   margin: 20px 0;
   padding: 24px;
-  border: 1px solid #d8dce3;
+  border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 16px;
-  background: #fff;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
   overflow-wrap: anywhere;
 }
 .summary {
@@ -24,7 +27,7 @@
   gap: 16px 24px;
 }
 .summary dt {
-  color: #667085;
+  color: var(--dsw-alias-label-secondary);
   font-size: 13px;
   margin-bottom: 4px;
 }
@@ -38,40 +41,23 @@
   gap: 16px;
   flex-wrap: wrap;
 }
-.card label {
-  display: grid;
-  gap: 8px;
-  margin: 16px 0;
-}
-.card fieldset {
-  min-width: 0;
-  border: 0;
-  margin: 0;
-  padding: 0;
-}
-.card select,
-.card textarea {
-  width: 100%;
-  box-sizing: border-box;
-  font: inherit;
-  border: 1px solid #ccd1da;
-  border-radius: 8px;
-  padding: 10px;
-}
-.card textarea {
-  min-height: 100px;
-  resize: vertical;
-}
-.page button {
+.page button,
+.card button {
   font: inherit;
   padding: 9px 14px;
-  border: 1px solid #cbd2df;
+  border: 1px solid var(--dsw-alias-border-l3);
   border-radius: 8px;
-  background: #f4f7fd;
-  color: #223b64;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
   cursor: pointer;
 }
-.page button:disabled {
+.page button:focus-visible,
+.card button:focus-visible {
+  outline: 2px solid var(--dsw-alias-button-info-fill);
+  outline-offset: 2px;
+}
+.page button:disabled,
+.card button:disabled {
   opacity: 0.55;
   cursor: not-allowed;
 }
@@ -84,18 +70,17 @@
   max-height: 220px;
   overflow: auto;
   padding: 16px;
-  background: #f5f7fa;
+  background: var(--dsw-alias-bg-module-platform);
   font: inherit;
 }
-.card .consent {
-  display: flex;
-  align-items: flex-start;
-}
-.actions button {
-  margin: 0 10px 10px 0;
-}
-.page [role='alert'] {
-  color: #b22e39;
+/* The error token alone reads 4.1-4.3:1 on the page and card surfaces. */
+.page [role='alert'],
+.card [role='alert'] {
+  color: color-mix(
+    in srgb,
+    var(--dsw-alias-state-error-primary) 75%,
+    var(--dsw-alias-label-primary)
+  );
 }
 @media (max-width: 600px) {
   .summary {
@@ -113,12 +98,4 @@
   max-width: none;
   padding: 0;
   color: inherit;
-}
-.embedded .card {
-  background: var(--dsw-alias-bg-layer-2, #fff);
-  color: inherit;
-}
-
-.embedded .source {
-  background: var(--dsw-alias-bg-layer-1, #f5f7fa);
 }

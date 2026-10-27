@@ -5,12 +5,12 @@
   min-width: 0;
 }
 .root article {
-  border: 1px solid #b6c8ee;
-  border-left: 4px solid #5271c4;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-left: 4px solid var(--dsw-alias-state-business-primary);
   border-radius: 12px;
   padding: 16px;
-  background: #f5f8ff;
-  color: #23314a;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
   min-width: 0;
 }
 .root header {
@@ -28,7 +28,7 @@
 .root small {
   display: block;
   overflow-wrap: anywhere;
-  color: #535d70;
+  color: var(--dsw-alias-label-secondary);
 }
 .root pre {
   white-space: pre-wrap;
@@ -37,7 +37,7 @@
   overflow: auto;
   font-size: 12px;
   padding: 10px;
-  background: #eaf0fb;
+  background: var(--dsw-alias-markdown-code-block);
   border-radius: 6px;
 }
 .root summary {
@@ -47,10 +47,10 @@
 }
 .root button {
   cursor: pointer;
-  border: 1px solid #8a9dc6;
+  border: 1px solid var(--dsw-alias-border-l3);
   border-radius: 8px;
-  background: white;
-  color: #22395f;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
   padding: 8px 12px;
 }
 .root button:disabled {
@@ -59,7 +59,7 @@
 }
 .root button:focus-visible,
 .root summary:focus-visible {
-  outline: 2px solid #315fd3;
+  outline: 2px solid var(--dsw-alias-button-info-fill);
   outline-offset: 3px;
 }
 .actions {
@@ -71,12 +71,17 @@
 .actions small {
   flex-basis: 100%;
 }
+/* The error token alone reads 4.3:1 on the light command block. */
 .stderr {
-  color: #a62938;
+  color: color-mix(
+    in srgb,
+    var(--dsw-alias-state-error-primary) 75%,
+    var(--dsw-alias-label-primary)
+  );
 }
 .root article[data-status='failed'],
 .root article[data-status='unknown'] {
-  border-color: #bf7e6f;
+  border-color: var(--dsw-alias-state-error-primary);
 }
 @media (max-width: 640px) {
   .root article {
