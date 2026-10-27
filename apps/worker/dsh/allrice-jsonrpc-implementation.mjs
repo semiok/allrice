@@ -47,6 +47,11 @@ import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-code
 
 import { steerDshAgent } from './allrice-dsh-runtime-compatibility.mjs';
 import {
+  detachNativeQuestion,
+  nativeUserQuestions,
+  replyNativeQuestion,
+} from './allrice-dsh-detach.mjs';
+import {
   deliverDshInput,
   discardPendingDshInputs,
 } from './allrice-dsh-inputs.mjs';
@@ -1019,12 +1024,23 @@ export async function createAllRiceRuntime(
             images.map((image) => ({ ...image, type: 'image' })),
           )
         : [];
-      const contentBlocks = [...(params.contentBlocks ?? []), ...imageBlocks];
+      const blocks = params.contentBlocks ?? [];
+      const encoded = blocks.filter((b) => b.type === 'image' && 'data' in b);
+      const admitted = encoded.length
+        ? await this.ctx.attachments.admitPromptContent(
+            encoded.map((b) => ({
+              type: 'image',
+              data: b.data,
+              mediaType: b.mimeType,
+            })),
+          )
+        : [];
+      let nextImage = 0;
+      const contentBlocks = [
+        ...blocks.map((b) => (encoded.includes(b) ? admitted[nextImage++] : b)),
+        ...imageBlocks,
+      ];
       const record = await this.ensureRoot(params.sessionId);
-      if (!params.sessionReferences?.length && !params.bootstrapReceipt) {
-        this.assertRoot(record, params.sessionId);
-        return this.sdk.prompt({ ...params, contentBlocks });
-      }
       this.assertRoot(record, params.sessionId);
       const agent = record.agent;
       const context = params.sessionReferences?.length
@@ -1563,13 +1579,14 @@ export async function createAllRiceRuntime(
       const pendingQuestion = this.pendingUserQuestions.get(sessionId);
       if (params.inputId !== undefined) {
         const record = this.requireRoot(sessionId);
-        return deliverDshInput(
+        const delivery = deliverDshInput(
           {
             agent: record.agent,
             sessionId,
             pendingQuestion,
             flush: () => this.ctx.sessions.flush(record.agent.session),
             isCurrent: () =>
+              (params.kind === 'ask_user' || this.detaching === undefined) &&
               this.isRootCurrent(record, sessionId) &&
               this.pendingUserQuestions.get(sessionId) === pendingQuestion &&
               params.turnId ===
@@ -1585,6 +1602,17 @@ export async function createAllRiceRuntime(
           },
           params,
         );
+        if (params.kind !== 'ask_user' || !pendingQuestion) return delivery;
+        // Admission above is synchronous through the request append. Detach
+        // must let these deliveries finish, including their durable ACK, before
+        // deciding whether the question still permits releasing the Host.
+        const deliveries = (pendingQuestion.inputDeliveries ??= new Set());
+        deliveries.add(delivery);
+        try {
+          return await delivery;
+        } finally {
+          deliveries.delete(delivery);
+        }
       }
       // Only the typed ask_user input above answers a question. Like DSH, a
       // plain message never does; it is rejected like a typed steer (MET-210).
@@ -1781,6 +1809,8 @@ export async function createAllRiceRuntime(
     }
 
     async handleRequest(method, params) {
+      // A detaching Host only waits to exit; it takes no further input.
+      if (this.detaching !== undefined) throw Error('QUESTION_DETACHING');
       if (method.startsWith('allrice/assistant/')) {
         const action = method.slice('allrice/assistant/'.length);
         if (
@@ -1827,6 +1857,18 @@ export async function createAllRiceRuntime(
             method,
             params,
             () => continueNativeWait(this, params),
+          );
+        case 'session/detach':
+          return detachNativeQuestion(this, requiredSessionId(params));
+        case 'session/user-questions':
+          return nativeUserQuestions(this, requiredSessionId(params));
+        case 'session/question-reply':
+          requiredSessionId(params);
+          return runAssistantBusinessInput(
+            this.governedAssistants,
+            method,
+            params,
+            () => replyNativeQuestion(this, params),
           );
         case 'session/interrupt':
           return this.interrupt(params);

@@ -352,6 +352,36 @@ export class DshProtocolClient {
     return this.request('session/continue-wait', input, 15_000);
   }
 
+  /** MET-210: release a Host whose root only waits on a user question. */
+  async detachQuestion(sessionId: string) {
+    return this.request('session/detach', { sessionId }) as Promise<
+      { detached: true; callId: string } | { detached: false; reason: string }
+    >;
+  }
+
+  /** Resume a stored root without prompting it (DSH resume repair runs). */
+  async resume(sessionId: string) {
+    return this.request('session/resume', { sessionId });
+  }
+
+  async userQuestions(sessionId: string) {
+    return this.request('session/user-questions', { sessionId }) as Promise<{
+      sequence?: number;
+      questions:
+        { callId: string; state: string; questions: unknown[] }[] | null;
+    }>;
+  }
+
+  async questionReply(input: {
+    sessionId: string;
+    callId: string;
+    answers: { id: string; selected: string[]; custom?: string }[];
+  }) {
+    return this.request('session/question-reply', input) as Promise<{
+      queued: boolean;
+    }>;
+  }
+
   async steer(
     sessionId: string,
     text: string,

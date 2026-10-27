@@ -84,6 +84,7 @@ export class AllRiceSdkRoot {
     );
   }
   requireRoot(sessionId) {
+    if (this.detaching !== undefined) throw Error('QUESTION_DETACHING');
     const record = this.roots.get(sessionId);
     if (!this.isRootCurrent(record, sessionId))
       throw Error('INPUT_SESSION_NOT_LIVE');

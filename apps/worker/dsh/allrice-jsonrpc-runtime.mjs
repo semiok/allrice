@@ -39,9 +39,11 @@ let runtimeTask;
 let shutdownPreparation;
 let exitTask;
 let closing = false;
+let detached = false;
 let requestedExitCode = 0;
 
 function assertInitializationOpen() {
+  if (detached) throw new Error('QUESTION_DETACHING');
   if (closing) throw new Error('ALLRICE_RUNTIME_CLOSING');
 }
 
@@ -137,7 +139,19 @@ function prepareShutdown() {
   return shutdownPreparation;
 }
 
+// MET-210: the root only waits on a user question and its journal is flushed.
+// Exit without shutdown or dispose: both cancel, and DSH would drop the question.
+function exitDetached() {
+  if (exitTask) return exitTask;
+  exitTask = transport
+    .flush()
+    .catch(() => {})
+    .then(() => process.exit(0));
+  return exitTask;
+}
+
 function disposeAndExit(code) {
+  if (detached) return exitDetached();
   if (code !== 0 && requestedExitCode === 0) requestedExitCode = code;
   if (exitTask) return exitTask;
   exitTask = (async () => {
@@ -166,6 +180,10 @@ function disposeAndExit(code) {
 
 transport.onRequest(async (method, params) => {
   if (method === 'shutdown') {
+    if (detached) {
+      setImmediate(() => void exitDetached());
+      return { detached: true };
+    }
     try {
       const allriceClose = await prepareShutdown();
       setImmediate(() => void disposeAndExit(0));
@@ -182,7 +200,13 @@ transport.onRequest(async (method, params) => {
   assertInitializationOpen();
   if (method === 'initialize') await runtime.ctx.get('loader')?.await();
   assertInitializationOpen();
-  return runtime.server.handleRequest(method, params);
+  const result = await runtime.server.handleRequest(method, params);
+  if (method === 'session/detach' && result?.detached === true) {
+    detached = true;
+    // The reply is queued before setImmediate; exitDetached flushes it.
+    setImmediate(() => void exitDetached());
+  }
+  return result;
 });
 process.stdin.on('end', () => void disposeAndExit(0));
 process.on('SIGTERM', () => void disposeAndExit(0));
