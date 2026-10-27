@@ -49,6 +49,15 @@ export async function detachNativeQuestion(server, sessionId) {
   let result;
   try {
     await server.taskProgress?.flush();
+    // A typed answer can already have persisted its request and be awaiting
+    // flush. Drain that admitted work instead of leaving an unreplayable request
+    // or releasing the Host before the answer's final flush. New input is fenced.
+    await Promise.allSettled(question.inputDeliveries ?? []);
+    if (
+      server.isRootCurrent(record, sessionId) &&
+      server.pendingUserQuestions.get(sessionId) !== question
+    )
+      return { detached: false, reason: 'ANSWERED' };
     // Idle children can also have just persisted a settlement. Flush their
     // sessions through DSH before releasing the process lease.
     for (const active of server.ctx.agents.list())

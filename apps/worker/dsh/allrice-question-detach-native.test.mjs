@@ -382,10 +382,10 @@ const replyText = (requests, callId) =>
   );
 
 describe('MET-210 timed questions on the AllRice host', () => {
-  it('detaches a blocked question without an outcome; DSH resumes it as continued and answer() delivers the reply', async () => {
+  it('keeps an answer refused during detach retryable through DSH recovery and answer()', async () => {
     const f = await fixture({ timeout: -1 });
     const sessionId = `synthetic-detach-${randomUUID()}`;
-    let client = await f.launch();
+    let client = await f.launch({ holdExit: true });
     await client.prompt(sessionId, '请先问我要不要继续。');
     await expect
       .poll(() => f.notices.some((n) => n.method === 'session.user-question'), {
@@ -394,11 +394,32 @@ describe('MET-210 timed questions on the AllRice host', () => {
       .toBe(true);
     // A follow-up queued while the root waits sits in DSH's durable inbox.
     await client.prompt(sessionId, 'QUEUED_FOLLOWUP_77');
+    // Keep the caller's original answer while the Host releases its lease.
+    const answers = [{ id: 'go', selected: ['继续'] }];
+    const input = {
+      sessionId,
+      inputId: randomUUID(),
+      turnId: `${sessionId}:turn:1`,
+      kind: 'ask_user',
+      text: `allrice:user-question:v1:${JSON.stringify({ questionId: f.notices.find((n) => n.method === 'session.user-question').params.questionId, answers })}`,
+    };
     const detach = await client.detachQuestion(sessionId);
     expect(detach).toMatchObject({
       detached: true,
       callId: f.askCall().data.callId,
     });
+    await expect(client.request('session/steer', input)).rejects.toThrow(
+      'QUESTION_DETACHING',
+    );
+    // No orphan request can poison this inputId with a permanent unknown ACK.
+    expect(
+      (await f.journal(sessionId)).filter(
+        (e) =>
+          e.type === 'allrice/input/request' &&
+          e.data.inputId === input.inputId,
+      ),
+    ).toEqual([]);
+    client.child.kill('SIGUSR2');
     await expect
       .poll(() => client.processState(), { timeout: 10000 })
       .toMatchObject({ state: 'exited', exitCode: 0 });
@@ -419,7 +440,6 @@ describe('MET-210 timed questions on the AllRice host', () => {
       )?.data.error.code,
     ).toBe('TOOL_OUTCOME_UNKNOWN');
     // Both requests arrive before the next native step can claim the inbox.
-    const answers = [{ id: 'go', selected: ['继续'] }];
     const replies = await Promise.allSettled([
       client.questionReply({ sessionId, callId: detach.callId, answers }),
       client.questionReply({ sessionId, callId: detach.callId, answers }),
@@ -894,58 +914,120 @@ describe('detach failure and ingress interleavings on the real host', () => {
     30000,
   );
 
-  it('rejects input during flush and prevents an already flushing answer from resolving the question', async () => {
-    const h = await blockedHost();
-    const entered = barrier(),
-      gate = barrier();
-    const flush = h.ctx.sessions.flush.bind(h.ctx.sessions);
-    vi.spyOn(h.ctx.sessions, 'flush').mockImplementationOnce(
-      async (session) => {
-        await flush(session);
-        entered.release();
-        await gate.promise;
-      },
-    );
-    const question = h.server.pendingUserQuestions.get(h.sessionId);
-    const input = {
-      sessionId: h.sessionId,
-      inputId: randomUUID(),
-      turnId: `${h.sessionId}:turn:1`,
-      kind: 'ask_user',
-      text: `allrice:user-question:v1:${JSON.stringify({ questionId: question.questionId, answers: [{ id: 'go', selected: ['继续'] }] })}`,
-    };
-    const reply = h.server.handleRequest('session/steer', input);
-    await entered.promise;
-    const progress = barrier(),
-      progressEntered = barrier();
-    h.server.taskProgress = {
-      flush: async () => {
-        progressEntered.release();
-        await progress.promise;
-      },
-    };
-    const detach = h.server.handleRequest('session/detach', {
-      sessionId: h.sessionId,
-    });
-    await progressEntered.promise;
-    for (const method of [
-      'session/steer',
-      'session/question-reply',
-      'session/interrupt',
-      'session/close',
-    ])
-      await expect(h.server.handleRequest(method, input)).rejects.toThrow(
-        'QUESTION_DETACHING',
-      );
-    progress.release();
-    expect((await detach).detached).toBe(true);
-    gate.release();
-    expect((await reply).status).not.toBe('adopted');
-    expect(h.server.pendingUserQuestions.get(h.sessionId)).toBe(question);
-    expect(
-      h.agent.session.snapshotEvents().some((e) => e.type === 'tool/result'),
-    ).toBe(false);
-  }, 30000);
+  it.each(['commit', 'flush-failure'])(
+    'an admitted answer survives detach %s and retries the same inputId as adopted',
+    async (outcome) => {
+      const h = await blockedHost();
+      const entered = barrier(),
+        gate = barrier();
+      const flush = h.ctx.sessions.flush.bind(h.ctx.sessions);
+      const sessionFlush = vi
+        .spyOn(h.ctx.sessions, 'flush')
+        .mockImplementationOnce(async (session) => {
+          await flush(session);
+          entered.release();
+          await gate.promise;
+        });
+      const question = h.server.pendingUserQuestions.get(h.sessionId);
+      const input = {
+        sessionId: h.sessionId,
+        inputId: randomUUID(),
+        turnId: `${h.sessionId}:turn:1`,
+        kind: 'ask_user',
+        text: `allrice:user-question:v1:${JSON.stringify({ questionId: question.questionId, answers: [{ id: 'go', selected: ['继续'] }] })}`,
+      };
+      const reply = h.server.handleRequest('session/steer', input);
+      await entered.promise;
+      const progress = barrier(),
+        progressEntered = barrier();
+      h.server.taskProgress = {
+        flush: vi.fn().mockImplementationOnce(async () => {
+          progressEntered.release();
+          await progress.promise;
+          if (outcome === 'flush-failure') throw Error('detach-flush-failed');
+        }),
+      };
+      const detach = h.server
+        .handleRequest('session/detach', { sessionId: h.sessionId })
+        .catch((error) => error);
+      try {
+        await progressEntered.promise;
+        expect(
+          (await h.journal(h.sessionId)).filter(
+            (e) =>
+              e.type === 'allrice/input/request' &&
+              e.data.inputId === input.inputId,
+          ),
+        ).toHaveLength(1);
+        for (const method of [
+          'session/steer',
+          'session/question-reply',
+          'session/interrupt',
+          'session/close',
+        ])
+          await expect(h.server.handleRequest(method, input)).rejects.toThrow(
+            'QUESTION_DETACHING',
+          );
+        // Let detach reach its commit while the admitted answer is still held.
+        // On the failure path, keep detaching set until the answer has finished,
+        // reproducing the old request -> unknown -> failed detach -> unknown race.
+        if (outcome === 'commit') {
+          progress.release();
+          await h.journal(h.sessionId);
+          // Detach cannot start its final session flush until the admitted
+          // answer has finished. The request flush remains held at this point.
+          expect(sessionFlush).toHaveBeenCalledTimes(1);
+        }
+        gate.release();
+        const adopted = await reply;
+        expect(adopted).toMatchObject({
+          status: 'adopted',
+          inputId: input.inputId,
+          checkpoint: 'question_resolved',
+        });
+        progress.release();
+        if (outcome === 'flush-failure')
+          expect(await detach).toMatchObject({
+            message: 'detach-flush-failed',
+          });
+        else
+          expect(await detach).toEqual({ detached: false, reason: 'ANSWERED' });
+        expect(h.server.detaching).toBeUndefined();
+        expect(await h.server.handleRequest('session/steer', input)).toEqual(
+          adopted,
+        );
+        await h.agent.whenIdle();
+        await flush(h.agent.session);
+        const journal = await h.journal(h.sessionId);
+        for (const type of ['allrice/input/request', 'allrice/input/answered'])
+          expect(
+            journal.filter(
+              (e) => e.type === type && e.data.inputId === input.inputId,
+            ),
+          ).toHaveLength(1);
+        const result = journal.find(
+          (e) =>
+            e.type === 'tool/result' &&
+            e.data.message.toolCallId === h.askCall().data.callId,
+        );
+        expect(result).toBeDefined();
+        expect(result.data.error).toBeUndefined();
+        expect(JSON.stringify(result.data.message.content)).toContain('继续');
+        expect(
+          (
+            await h.server.handleRequest('session/user-questions', {
+              sessionId: h.sessionId,
+            })
+          ).questions,
+        ).toEqual([]);
+      } finally {
+        gate.release();
+        progress.release();
+        await Promise.allSettled([reply, detach]);
+      }
+    },
+    30000,
+  );
 
   it.each(['answered', 'closing', 'running-child', 'extra-tool'])(
     'rechecks %s after flush and reopens admission when detach loses',

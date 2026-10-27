@@ -1579,14 +1579,14 @@ export async function createAllRiceRuntime(
       const pendingQuestion = this.pendingUserQuestions.get(sessionId);
       if (params.inputId !== undefined) {
         const record = this.requireRoot(sessionId);
-        return deliverDshInput(
+        const delivery = deliverDshInput(
           {
             agent: record.agent,
             sessionId,
             pendingQuestion,
             flush: () => this.ctx.sessions.flush(record.agent.session),
             isCurrent: () =>
-              this.detaching === undefined &&
+              (params.kind === 'ask_user' || this.detaching === undefined) &&
               this.isRootCurrent(record, sessionId) &&
               this.pendingUserQuestions.get(sessionId) === pendingQuestion &&
               params.turnId ===
@@ -1602,6 +1602,17 @@ export async function createAllRiceRuntime(
           },
           params,
         );
+        if (params.kind !== 'ask_user' || !pendingQuestion) return delivery;
+        // Admission above is synchronous through the request append. Detach
+        // must let these deliveries finish, including their durable ACK, before
+        // deciding whether the question still permits releasing the Host.
+        const deliveries = (pendingQuestion.inputDeliveries ??= new Set());
+        deliveries.add(delivery);
+        try {
+          return await delivery;
+        } finally {
+          deliveries.delete(delivery);
+        }
       }
       // Only the typed ask_user input above answers a question. Like DSH, a
       // plain message never does; it is rejected like a typed steer (MET-210).
