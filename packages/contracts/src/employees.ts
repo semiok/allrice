@@ -5,6 +5,7 @@ import { EmployeeRuntimeContentSchema } from './employee-content.ts';
 import { BrandContentWorkflowInvocationSchema } from './brand-content-workflow.ts';
 import { z } from 'zod';
 import { PersonalSkillSnapshotSchema } from './personal-skills.ts';
+import { NativePreferencesSnapshotSchema } from './user-preferences.ts';
 import { EmployeeAccentColorSchema } from './employee-colors.ts';
 import {
   TaskSuggestionDisplaySchema,
@@ -716,6 +717,9 @@ export const EmployeeExecutionSnapshotV2Schema =
       .strict()
       .optional(),
     personalSkills: PersonalSkillSnapshotSchema.optional(),
+    // Read compatibility before PR2 / PR3a-2 write these; no defaults on old Runs.
+    nativePreferences: NativePreferencesSnapshotSchema.optional(),
+    subagentMode: z.literal('native').optional(),
     taskRuntimePolicy: z
       .object({
         version: z.literal(1),

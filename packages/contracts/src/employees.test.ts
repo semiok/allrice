@@ -391,5 +391,75 @@ describe('EmployeeHub contracts', () => {
       expect(snapshot.capabilitySnapshot.workflows).toEqual([]);
       expect(snapshot.capabilitySnapshot.knowledge).toEqual([]);
     }
+    expect(snapshot).not.toHaveProperty('nativePreferences');
+    expect(snapshot).not.toHaveProperty('subagentMode');
+    const nativePreferences = {
+      version: 1,
+      questionWait: { mode: 'default' },
+      subagents: { maxDepth: 1, maxActive: 8 },
+    };
+    const parse = (fields: Record<string, unknown>) =>
+      EmployeeExecutionSnapshotSchema.parse({ ...snapshot, ...fields });
+    for (const fields of [
+      {},
+      { nativePreferences },
+      { subagentMode: 'native' },
+      { nativePreferences, subagentMode: 'native' },
+    ]) {
+      expect(parse(fields)).toEqual({ ...snapshot, ...fields });
+    }
+    for (const questionWait of [
+      { mode: 'forever' },
+      { mode: 'timed', seconds: 1 },
+      { mode: 'timed', seconds: 2_147_483 },
+    ]) {
+      for (const limit of [0, Number.MAX_SAFE_INTEGER]) {
+        const preferences = {
+          version: 1,
+          questionWait,
+          subagents: { maxDepth: limit, maxActive: Math.max(1, limit) },
+        };
+        expect(parse({ nativePreferences: preferences })).toEqual({
+          ...snapshot,
+          nativePreferences: preferences,
+        });
+      }
+    }
+    for (const questionWait of [
+      { mode: 'unknown' },
+      { mode: 'timed' },
+      { mode: 'default', seconds: 1 },
+      ...[0, 1.5, 2_147_484, '1'].map((seconds) => ({
+        mode: 'timed',
+        seconds,
+      })),
+    ]) {
+      expect(() =>
+        parse({ nativePreferences: { ...nativePreferences, questionWait } }),
+      ).toThrow();
+    }
+    for (const subagents of [
+      {},
+      { maxDepth: -1, maxActive: 8 },
+      { maxDepth: 1, maxActive: 0 },
+      { maxDepth: 1.5, maxActive: 8 },
+      { maxDepth: 1, maxActive: Number.MAX_SAFE_INTEGER + 1 },
+      { ...nativePreferences.subagents, extra: true },
+    ]) {
+      expect(() =>
+        parse({ nativePreferences: { ...nativePreferences, subagents } }),
+      ).toThrow();
+    }
+    for (const fields of [
+      { nativePreferences: null },
+      { nativePreferences: {} },
+      { nativePreferences: { ...nativePreferences, version: 2 } },
+      { nativePreferences: { ...nativePreferences, extra: true } },
+      { subagentMode: 'legacy' },
+      { subagentMode: null },
+      { unknown: true },
+    ]) {
+      expect(() => parse(fields)).toThrow();
+    }
   });
 });
