@@ -27,6 +27,8 @@ df -h ~                       # 磁盘满是最常见的原因之一
 
 只由发布负责人做，先问用户：备份或快照之后写进 Dev 的数据都会丢。两种来源格式相同，恢复步骤只有这一套：
 
+**恢复或回滚门禁拒绝启动旧版本后，人工处理完之前不要注销或重启 M1**：LaunchAgents 里的旧版本 plist 仍在，launchd 的 `KeepAlive` 会在下次登录时把它拉起。若选择往前修，先把 `~/allrice-dev/qa/deploy-inflight` 移到另一个位置保留现场，再用 `deploy-dev --release-manager --ref <修好的提交>`；否则新部署会要求先 `--recover`，而恢复又会被同一门禁拒绝。
+
 | 来源                                                                                              | 位置                                                                                                                                                      | 说明                                                                                                       |
 | ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | 每日备份（04:00，保留 7 天）                                                                      | `~/allrice-backups/db/allrice_dev-<日期>.sql.gz`、`~/allrice-backups/files/<日期>/`                                                                       | Dev 运行时做的，数据库和文件不是同一时刻，恢复后以数据库为准                                               |
@@ -34,7 +36,7 @@ df -h ~                       # 磁盘满是最常见的原因之一
 
 下面 `$S` 是快照目录，`$T` 是当前时间，只用数字和下划线（它会成为库名的一部分），例如 `20261027_0930`。用每日备份时，导出文件换成 `~/allrice-backups/db/allrice_dev-<日期>.sql.gz`，状态目录和 launchd 文件在 `~/allrice-backups/files/<日期>/`。
 
-1. 先恢复到一个新库核对，不动 Dev。0207 的 `allrice_native_calendar_control_valid` 用未限定名字调用其他函数；`pg_dump` / `pg_restore` 默认把会话 `search_path` 清空，COPY 提醒控制行时 CHECK 会报函数不存在。这是已有的恢复问题，函数修复另行处理。B2 第 13 步已验证：先生成 SQL，**只把** `set_config('search_path', '', false)` 的值改成 `public, pg_catalog`，再用 `psql -X -v ON_ERROR_STOP=1 -f` 执行；不禁用触发器、约束或跳过表。
+1. 先恢复到一个新库核对，不动 Dev。0207 的 `allrice_native_calendar_control_valid` 用未限定名字调用其他函数；`pg_dump` / `pg_restore` 默认把会话 `search_path` 清空，COPY 提醒控制行时 CHECK 会报函数不存在。这是已有的恢复问题，函数修复另行处理。B2 第 13 步已验证恢复时需要 `public, pg_catalog`：先生成 SQL，**只替换 dump 头部完整的一行** `SELECT pg_catalog.set_config('search_path', '', false);`，再用 `psql -X -v ON_ERROR_STOP=1 -f` 执行；不禁用触发器、约束或跳过表。**不能全局替换**：COPY 业务正文和函数体也可能包含相同文字，改写后仍可能是合法 SQL/JSON，`ON_ERROR_STOP` 不会发现数据已被改变。下面只扫描由注释、空行、`SET` 和 `\restrict` 组成的头部，遇到第一个其他语句（包括 CREATE / COPY）就停止；断言头部恰好有一条目标语句后才写文件，其余字节原样复制。
 
    ```bash
    export S=<快照目录> T=<时间>   # 下面持锁的新 shell 也要用这两个变量，所以要 export
@@ -42,8 +44,31 @@ df -h ~                       # 磁盘满是最常见的原因之一
    gunzip -c "$S/allrice_dev.sql.gz" > "$S/restore-original.sql"
    # 若来源是 custom 格式的 dump，用下一行代替 gunzip；恢复到新库，不加 --create / --clean。
    # pg_restore --no-owner --no-privileges --file="$S/restore-original.sql" <迁移前.dump>
-   sed "s/set_config('search_path', '', false)/set_config('search_path', 'public, pg_catalog', false)/g" \
-     "$S/restore-original.sql" > "$S/restore-public.sql"
+   python3 - "$S/restore-original.sql" "$S/restore-public.sql" <<'PY'
+   import re
+   import shutil
+   import sys
+
+   old = b"SELECT pg_catalog.set_config('search_path', '', false);"
+   new = b"SELECT pg_catalog.set_config('search_path', 'public, pg_catalog', false);"
+   with open(sys.argv[1], 'rb') as source:
+       header, matches = [], []
+       for line in source:
+           header.append(line)
+           statement = line.rstrip(b'\r\n')
+           if statement == old:
+               matches.append(len(header) - 1)
+           elif not (not statement.strip() or statement.startswith(b'--') or
+                     re.fullmatch(rb'SET [a-z_]+ = [^;\r\n]+;|\\restrict [A-Za-z0-9]+', statement)):
+               break
+       if len(matches) != 1:
+           raise SystemExit(f'Expected exactly one search_path statement in dump header, found {len(matches)}; stop and inspect')
+       i = matches[0]
+       header[i] = new + header[i][len(old):]
+       with open(sys.argv[2], 'wb') as target:
+           target.writelines(header)
+           shutil.copyfileobj(source, target)
+   PY
    diff -u "$S/restore-original.sql" "$S/restore-public.sql"   # 差异只能是上述 search_path
    createdb -h 127.0.0.1 "allrice_dev_restore_$T"
    psql -h 127.0.0.1 -X -q -v ON_ERROR_STOP=1 -d "allrice_dev_restore_$T" -f "$S/restore-public.sql"

@@ -38,14 +38,26 @@ async function catalog(db: Fixture['db']) {
     order by r.relname,name,definition`;
   const tables = await db`select relname,relkind from pg_class
     where relnamespace=current_schema()::regnamespace and relkind in ('r','p') order by relname`;
+  const columns = await db`select table_name,column_name,ordinal_position,
+    data_type,udt_schema,udt_name,column_default,is_nullable from information_schema.columns
+    where table_schema=current_schema() order by table_name,ordinal_position`;
+  const constraints = await db`select r.relname,c.conname,c.contype,
+    pg_get_constraintdef(c.oid,true) as definition from pg_constraint c
+    left join pg_class r on r.oid=c.conrelid
+    where c.connamespace=current_schema()::regnamespace and c.contype <> 't'
+    order by r.relname,c.conname`;
   const indexes = await db`select tablename,indexname,indexdef from pg_indexes
     where schemaname=current_schema() order by tablename,indexname`;
   // Only generated schema names and internal trigger OIDs differ between databases.
   return JSON.parse(
-    JSON.stringify({ functions, triggers, tables, indexes }).replaceAll(
-      schema!.name,
-      'fixture_schema',
-    ),
+    JSON.stringify({
+      functions,
+      triggers,
+      tables,
+      columns,
+      constraints,
+      indexes,
+    }).replaceAll(schema!.name, 'fixture_schema'),
   );
 }
 
@@ -63,7 +75,7 @@ suite('0218 converges the deployed and fresh migration histories', () => {
     await deployed?.close();
     await fresh?.close();
   });
-  it('removes the real historical FK/trigger chain and leaves identical functions, triggers, tables and indexes', async () => {
+  it('removes the real historical FK/trigger chain and leaves identical functions, triggers, tables, columns, constraints and indexes', async () => {
     const active = (await readdir(migrations)).filter((name) =>
       name.endsWith('.sql'),
     );
@@ -88,6 +100,8 @@ suite('0218 converges the deployed and fresh migration histories', () => {
     expect(expected.functions.length).toBeGreaterThan(0);
     expect(expected.triggers.length).toBeGreaterThan(0);
     expect(expected.tables.length).toBeGreaterThan(0);
+    expect(expected.columns.length).toBeGreaterThan(0);
+    expect(expected.constraints.length).toBeGreaterThan(0);
     expect(expected.indexes.length).toBeGreaterThan(0);
     expect(await catalog(deployed.db)).toEqual(expected);
   }, 60_000);

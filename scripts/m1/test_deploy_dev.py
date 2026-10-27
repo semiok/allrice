@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -242,17 +243,24 @@ class DeployDevMigrations(unittest.TestCase):
 
     def test_rollback_checks_the_contract_before_stopping_and_again_under_the_lock(self):
         old = self.release(store=False)
-        write(os.path.join(self.home, 'allrice-dev/qa/deploys.jsonl'),
-              json.dumps({'kind': 'deploy', 'toRelease': old, 'toSha': 'a' * 40, 'toArtifact': 'sha256:' + 'a' * 64}) + '\n')
+        log = os.path.join(self.home, 'allrice-dev/qa/deploys.jsonl')
+        write(log, json.dumps({'kind': 'deploy', 'toRelease': old, 'toSha': 'a' * 40, 'toArtifact': 'sha256:' + 'a' * 64}) + '\n')
         run = lambda **env: self.run_dd(self.FLOW_STUBS + 'rollback "$OLD"', FILES + ARCHIVED, OLD=old, **env)
-        p = run(CONTRACT='row:2')
-        self.assertNotEqual(p.returncode, 0)
-        self.assertIn('predates the journal contract', p.stderr)
-        self.assertNotIn('PRECHECK', p.stderr)
-        p = run(CONTRACT='row:1', RAISE='row:2')  # a deploy raised it while the pre-stop check ran
-        self.assertIn('LOCKED', p.stdout)
-        self.assertIn('predates the journal contract', p.stderr)
-        self.assertNotIn('STOPPED', p.stdout)
+        for race in (False, True):
+            with self.subTest(race=race):
+                p = run(CONTRACT='row:1', RAISE='row:2') if race else run(CONTRACT='row:2')
+                self.assertNotEqual(p.returncode, 0)
+                self.assertIn('predates the journal contract', p.stderr)
+                self.assertEqual('PRECHECK' in p.stderr, race)
+                self.assertEqual('LOCKED' in p.stdout, race)
+                self.assertNotIn('STOPPED', p.stdout)
+                self.assert_recovery_guidance(p.stderr)
+                with open(log) as f:
+                    records = [json.loads(line) for line in f]
+                self.assertEqual(len(records), 3 if race else 2)
+                self.assertEqual(records[-1]['kind'], 'failed')
+                self.assertEqual(records[-1]['phase'], 'rollback-contract')
+                self.assertIn(records[-1]['reason'], p.stderr)
         self.assertIn('STOPPED', run(CONTRACT='row:1').stdout)
 
     def test_deploy_refuses_an_old_candidate_before_stopping(self):
@@ -269,6 +277,7 @@ class DeployDevMigrations(unittest.TestCase):
                 self.assertEqual('STOPPED' in p.stdout, stopped, p.stderr)
                 if not stopped:
                     self.assertIn('predates the journal contract', p.stderr)
+                    self.assertIn('Do not log out or reboot M1', p.stderr)
                     with open(os.path.join(self.home, 'allrice-dev/qa/deploys.jsonl')) as f:
                         self.assertIn('"phase": "contract"', f.read())
                 shutil.rmtree(os.path.join(self.home, 'allrice-dev-releases'), True)
@@ -293,10 +302,19 @@ class DeployDevMigrations(unittest.TestCase):
                 self.assertIn('restore=%d' % (0 if started else 1), p.stdout)
                 if not started and not env:
                     self.assertIn('not starting aaaaaaaa: the journals reach contract 2', p.stdout)
+                    self.assertIn('Do not log out or reboot M1', p.stdout)
+
+    def assert_recovery_guidance(self, output):
+        self.assertIn('Restore the pre-migration snapshot', output)
+        self.assertIn('docs/runbooks/m1-database.md or fix forward', output)
+        self.assertIn('move %s aside first' % os.path.join(self.home, 'allrice-dev/qa/deploy-inflight'), output)
+        self.assertIn('Do not log out or reboot M1', output)
+        self.assertIn('launchd KeepAlive', output)
+        self.assertIn('LaunchAgents plists at the next login', output)
 
     def test_automatic_restore_and_recover_refuse_committed_unknown_migrations(self):
         old = self.release(files=FILES[:-1])
-        for entry in ('INFLIGHT_MINE=1; on_exit 1', 'recover'):
+        for entry in ('INFLIGHT_MINE=1; die "candidate did not become healthy"', 'recover'):
             for unreadable in (False, True):
                 with self.subTest(entry=entry, unreadable=unreadable):
                     self.saved_release(old)
@@ -310,16 +328,30 @@ class DeployDevMigrations(unittest.TestCase):
                     self.assertIn('STOPPED', p.stdout)
                     self.assertNotIn('STARTED', p.stdout)
                     self.assertNotIn('is healthy again', p.stdout)
-                    self.assertIn('migrations have committed', p.stdout)
-                    self.assertIn('previous version is incompatible', p.stdout)
+                    self.assertNotIn('migrations have committed', p.stdout)
+                    if unreadable:
+                        self.assertIn('migration compatibility could not be checked', p.stdout)
+                        self.assertNotIn('has applied migrations this version does not know', p.stdout)
+                    else:
+                        self.assertIn('has applied migrations this version does not know', p.stdout)
+                        self.assertNotIn('migration compatibility could not be checked', p.stdout)
                     self.assertIn('Services remain stopped', p.stdout)
-                    self.assertIn('docs/runbooks/m1-database.md or fix forward', p.stdout)
+                    self.assert_recovery_guidance(p.stdout)
                     self.assertIn('cannot read allrice_schema_migrations' if unreadable else FILES[-1], p.stdout)
                     self.assertTrue(os.path.isfile(os.path.join(self.home, 'allrice-dev/qa/deploy-inflight/state')))
                     with open(log) as f:
                         records = [json.loads(line) for line in f]
-                    self.assertTrue(any(r.get('kind') == 'failed' and r.get('restored') == 'no'
-                                        and r.get('manualIntervention') == 'required' for r in records))
+                    gate = next(r for r in records if r.get('phase') == 'restore-migrations')
+                    self.assertEqual(gate['kind'], 'failed')
+                    self.assertEqual(gate['restored'], 'no')
+                    self.assertEqual(gate['manualIntervention'], 'required')
+                    self.assertIn(gate['reason'], p.stdout)
+                    if 'INFLIGHT_MINE' in entry:
+                        self.assertEqual(len(records), 2)
+                        self.assertEqual(records[-1]['phase'], 'switching')
+                        self.assertEqual(records[-1]['reason'], 'candidate did not become healthy')
+                    else:
+                        self.assertEqual(len(records), 1)
 
     def test_restore_and_recover_start_a_known_version_after_a_transaction_rollback_or_snapshot_restore(self):
         for entry in ('INFLIGHT_MINE=1; on_exit 1', 'recover'):
@@ -335,18 +367,35 @@ class DeployDevMigrations(unittest.TestCase):
 
     def test_rollback_refuses_unknown_migrations_before_stop_and_rechecks_under_lock(self):
         old = self.release(files=FILES[:-1])
-        write(os.path.join(self.home, 'allrice-dev/qa/deploys.jsonl'),
-              json.dumps({'kind': 'deploy', 'toRelease': old, 'toSha': 'a' * 40, 'toArtifact': 'sha256:' + 'a' * 64}) + '\n')
-        for applied, race in ((FILES + ARCHIVED, False), (FILES[:-1] + ARCHIVED, True)):
-            with self.subTest(race=race):
-                stubs = self.FLOW_STUBS
-                if race:
-                    stubs += 'precheck() { echo PRECHECK; echo 0218_native_generation_binding.sql >> "$APPLIED"; }; '
-                p = self.run_dd(stubs + 'rollback "$OLD"', applied, OLD=old, CONTRACT='row:1')
-                self.assertNotEqual(p.returncode, 0)
-                self.assertIn(FILES[-1], p.stderr)
-                self.assertNotIn('STOPPED', p.stdout)
-                self.assertEqual('LOCKED' in p.stdout, race)
+        log = os.path.join(self.home, 'allrice-dev/qa/deploys.jsonl')
+        for unreadable in (False, True):
+            for applied, race in ((FILES + ARCHIVED, False), (FILES[:-1] + ARCHIVED, True)):
+                with self.subTest(race=race, unreadable=unreadable):
+                    write(log, json.dumps({'kind': 'deploy', 'toRelease': old, 'toSha': 'a' * 40,
+                                           'toArtifact': 'sha256:' + 'a' * 64}) + '\n')
+                    stubs = self.FLOW_STUBS
+                    if race:
+                        # precheck runs in command substitution: mutate the psql fixture, not its subshell environment.
+                        change = 'rm "$APPLIED"' if unreadable else 'echo 0218_native_generation_binding.sql >> "$APPLIED"'
+                        stubs += 'precheck() { echo PRECHECK; %s; }; ' % change
+                    p = self.run_dd(stubs + 'rollback "$OLD"', applied, OLD=old, CONTRACT='row:1',
+                                    **({'PSQL_FAIL': '1'} if unreadable and not race else {}))
+                    self.assertNotEqual(p.returncode, 0)
+                    self.assertIn('migration compatibility could not be checked' if unreadable else FILES[-1], p.stderr)
+                    self.assertEqual('has applied migrations this version does not know' in p.stderr, not unreadable)
+                    self.assertNotIn('STOPPED', p.stdout)
+                    self.assertEqual('LOCKED' in p.stdout, race)
+                    self.assert_recovery_guidance(p.stderr)
+                    with open(log) as f:
+                        records = [json.loads(line) for line in f]
+                    self.assertEqual(len(records), 2)  # exactly one failure, even before inflight_begin
+                    failure = records[-1]
+                    self.assertEqual(failure['kind'], 'failed')
+                    self.assertEqual(failure['phase'], 'rollback-migrations')
+                    self.assertEqual(failure['toRelease'], old)
+                    self.assertEqual(failure['toSha'], 'a' * 40)
+                    self.assertEqual(failure['manualIntervention'], 'required')
+                    self.assertIn(failure['reason'], p.stderr)
 
     def test_failed_snapshot_stops_the_deploy(self):
         p = self.snapshot(FILES[:-1] + ARCHIVED, PG_DUMP_FAIL='1')
@@ -364,6 +413,50 @@ class DeployDevMigrations(unittest.TestCase):
         p = self.run_dd('report_after_stop 11111111-2222-3333-4444-555555555555; echo "rc=$?"', [], PSQL_FAIL='1')
         self.assertIn('after stop (diagnostic, not a gate)', p.stdout)
         self.assertIn('rc=0', p.stdout)
+
+
+class DatabaseRestoreRunbook(unittest.TestCase):
+    def convert(self, original):
+        with open(os.path.join(HERE, '../../docs/runbooks/m1-database.md')) as f:
+            runbook = f.read()
+        script = textwrap.dedent(runbook.split("<<'PY'\n", 1)[1].split('   PY\n', 1)[0])
+        with tempfile.TemporaryDirectory(prefix='restore-dump-test-') as tmp:
+            source, target = os.path.join(tmp, 'original.sql'), os.path.join(tmp, 'public.sql')
+            with open(source, 'wb') as f:
+                f.write(original)
+            p = subprocess.run([sys.executable, '-', source, target], input=script,
+                               capture_output=True, text=True, timeout=10)
+            with open(source, 'rb') as f:
+                self.assertEqual(f.read(), original)
+            if os.path.exists(target):
+                with open(target, 'rb') as f:
+                    return p, f.read()
+            return p, None
+
+    STATEMENT = b"SELECT pg_catalog.set_config('search_path', '', false);\n"
+    BODY = (b"CREATE FUNCTION public.example() RETURNS void LANGUAGE sql AS $$\n" + STATEMENT + b"$$;\n"
+            b"COPY public.messages (body) FROM stdin;\n" + STATEMENT +
+            b'{"text":"set_config(\'search_path\', \'\', false)"}\n\\.\n')
+
+    def test_changes_only_the_complete_header_statement_and_preserves_body_bytes(self):
+        for newline in (b'\n', b'\r\n'):
+            with self.subTest(newline=newline):
+                preamble = b"-- PostgreSQL database dump\n\n\\restrict Abc123\nSET statement_timeout = 0;\n"
+                settings = b"SET check_function_bodies = false;\n\n-- Name: example; Type: FUNCTION\n"
+                original = preamble + self.STATEMENT + settings + self.BODY
+                expected = preamble + b"SELECT pg_catalog.set_config('search_path', 'public, pg_catalog', false);\n" + settings + self.BODY
+                p, converted = self.convert(original.replace(b'\n', newline))
+                self.assertEqual(p.returncode, 0, p.stderr)
+                self.assertEqual(converted, expected.replace(b'\n', newline))
+
+    def test_refuses_missing_or_repeated_header_statement_without_writing(self):
+        for original in (self.BODY, self.STATEMENT * 2 + self.BODY,
+                         b'COPY public.messages (body) FROM stdin;\n' + self.STATEMENT + b'\\.\n'):
+            with self.subTest(original=original):
+                p, converted = self.convert(original)
+                self.assertNotEqual(p.returncode, 0)
+                self.assertIn('Expected exactly one search_path statement in dump header', p.stderr)
+                self.assertIsNone(converted)
 
 
 if __name__ == '__main__':
