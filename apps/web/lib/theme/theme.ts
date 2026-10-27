@@ -3,9 +3,9 @@
 // follow. html[data-theme] mirrors it for color-scheme and for code that
 // watches <html> (terminal-workbench.tsx, tool-file-diff.tsx).
 // Each surface has a fixed default, the tenant workspace light and the admin
-// console dark (MET-214); the system theme is never read. A person's choice
-// will come from their preferences on the server (/api/v1/me/preferences,
-// user 10-27, a separate PR); until then every caller passes null.
+// console dark (MET-214). On the workspace an employee may choose light, dark
+// or system (DSH ui-theme preference values, saved in their preferences on
+// the server, user 10-27); the admin console always stays dark.
 // Login and invitation pages count as tenant on every host: they are brand
 // pages. Surfaces are told apart by path; adding a Next basePath means adding
 // it to adminPaths too (location.pathname keeps it).
@@ -38,8 +38,15 @@ export function themeFor(
     if (pathname === path || pathname.indexOf(path + '/') === 0)
       surface = 'admin';
   }
-  const theme: Theme =
-    choice === 'light' || choice === 'dark' ? choice : config.defaults[surface];
+  let theme: Theme = config.defaults[surface];
+  if (surface === 'tenant') {
+    if (choice === 'light' || choice === 'dark') theme = choice;
+    // As DSH ui-theme resolves `system`: from prefers-color-scheme.
+    else if (choice === 'system' && typeof matchMedia !== 'undefined')
+      theme = matchMedia('(prefers-color-scheme: dark)').matches
+        ? 'dark'
+        : 'light';
+  }
   return { surface, theme };
 }
 

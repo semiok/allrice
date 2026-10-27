@@ -7,6 +7,7 @@ import {
   type UserPreferences,
   type UserPreferencesInput,
 } from '@allrice/contracts';
+import { setAppearance } from '../../lib/theme/appearance';
 import type { Workspace } from './chatflow-types';
 import { readJson } from './chatflow-utils';
 
@@ -28,7 +29,7 @@ export function usePersonalPreferences(
   } | null>(null);
   const execute = useCallback(
     async (update?: UserPreferencesInput) => {
-      if (!viewerId || saving.current) return;
+      if (!viewerId || saving.current) return false;
       request.current?.abort();
       const controller = new AbortController();
       request.current = controller;
@@ -57,8 +58,10 @@ export function usePersonalPreferences(
         if (result.viewerId !== viewerId)
           throw Error('账号已变化，请刷新后重试');
         const preferences = UserPreferencesSchema.parse(result.preferences);
-        if (current() && !controller.signal.aborted)
+        if (current() && !controller.signal.aborted) {
           setSnapshot({ scope, preferences, pending: false });
+          return true;
+        }
       } catch (error) {
         if (current())
           setSnapshot((previous) => ({
@@ -77,6 +80,7 @@ export function usePersonalPreferences(
           saving.current = false;
         }
       }
+      return false;
     },
     [viewerId, scope, headers],
   );
@@ -89,12 +93,18 @@ export function usePersonalPreferences(
     [scope],
   );
   const own = snapshot?.scope === scope ? snapshot : null;
+  const value = own?.preferences ?? {
+    ...defaultUserPreferences,
+    ...workspace?.preferences,
+  };
+  // Each newly read or saved value is what the server holds: the theme follows.
+  const appearance = viewerId ? value.appearance : null;
+  useEffect(() => {
+    if (appearance) setAppearance(appearance);
+  }, [appearance]);
   return {
     scope,
-    value: own?.preferences ?? {
-      ...defaultUserPreferences,
-      ...workspace?.preferences,
-    },
+    value,
     pending: own?.pending ?? false,
     error: own?.error,
     available: !!viewerId,

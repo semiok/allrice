@@ -43,7 +43,9 @@ import {
   type ChatFlowEventEnvelope,
   type EmployeeAccentColor,
   type AutomationCatalogTask,
+  type Appearance,
 } from '@allrice/contracts';
+import { appearanceScript, themeScript } from '../../lib/theme/theme-script';
 import type { ArtifactPreview } from '../../lib/chatflow/workbench-model';
 import type {
   BridgeDevice,
@@ -458,8 +460,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       queue?: boolean;
       brandContent?: { kind: 'general' | 'custom'; registered: boolean };
       scheduledTasks?: AutomationCatalogTask[];
+      // Serve the page as the server does for a signed-in employee: the
+      // theme scripts with the saved appearance, read when the page loads.
+      appearance?: Appearance;
+      // Another browser of the same account shares these saved preferences.
+      preferences?: Record<string, UserPreferences>;
     } = {},
   ) {
+    const serverTheme =
+      options.appearance !== undefined || options.preferences !== undefined;
     const context = await browser.newContext({
       viewport: { width: options.width ?? 1440, height: 950 },
       colorScheme: settingsReviewDir ? 'light' : undefined,
@@ -605,13 +614,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         authorization: 'normal_policy',
       })),
       viewer: user,
-      preferences: {
-        [user]: {
-          ...defaultUserPreferences,
-          streamingOutput:
-            options.streamingOutput ?? defaultUserPreferences.streamingOutput,
-        },
-      } as Record<string, UserPreferences>,
+      preferences:
+        options.preferences ??
+        ({
+          [user]: {
+            ...defaultUserPreferences,
+            streamingOutput:
+              options.streamingOutput ?? defaultUserPreferences.streamingOutput,
+            appearance: options.appearance ?? defaultUserPreferences.appearance,
+          },
+        } as Record<string, UserPreferences>),
       preferenceError: false,
       preferenceDelay: null as Promise<void> | null,
       workspace,
@@ -1987,8 +1999,22 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       unexpected.push(path);
       return answer({}, 404);
     });
+    if (serverTheme)
+      await page.route(
+        (url) => url.origin === origin && url.pathname === '/',
+        (route) => {
+          const saved = state.preferences[state.viewer]?.appearance;
+          // What the page looked like right after the theme scripts, before
+          // the app loads and hydrates.
+          const firstPaint = `window.firstPaint={theme:document.documentElement.getAttribute('data-theme'),dark:document.body.hasAttribute('data-ds-dark-theme')}`;
+          return route.fulfill({
+            contentType: 'text/html',
+            body: `<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/app.css"></head><body style="margin:0"><script>${themeScript}</script>${saved ? `<script>${appearanceScript(saved)}</script>` : ''}<script>${firstPaint}</script><div id="root"></div><script src="/app.js"></script></body></html>`,
+          });
+        },
+      );
     await page.goto(
-      `${origin}/?session=${options.noSession ? '' : A}${options.disabled ? '&disabled=1' : ''}${options.taskSuggestions ? '&task-suggestions=1' : ''}${options.localMcp ? '&local-mcp=1' : ''}${options.settingsEntry ? `&settings=${options.settingsEntry}` : ''}`,
+      `${origin}/?session=${options.noSession ? '' : A}${serverTheme ? '&theme=1' : ''}${options.disabled ? '&disabled=1' : ''}${options.taskSuggestions ? '&task-suggestions=1' : ''}${options.localMcp ? '&local-mcp=1' : ''}${options.settingsEntry ? `&settings=${options.settingsEntry}` : ''}`,
     );
     await (
       options.startup
@@ -8325,6 +8351,194 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }
     },
   );
+
+  // The page's theme right now, and what it was before the app loaded.
+  const themeState = (page: Page) =>
+    page.evaluate(() => ({
+      firstPaint: (window as unknown as { firstPaint?: object }).firstPaint,
+      theme: document.documentElement.getAttribute('data-theme'),
+      dark: document.body.hasAttribute('data-ds-dark-theme'),
+    }));
+  const appearanceSelect = async (f: Awaited<ReturnType<typeof fixture>>) => {
+    const dialog = await openSettings(f);
+    await selectSettings(dialog, '个人偏好');
+    const select = dialog.getByRole('combobox', { name: '外观', exact: true });
+    await expect.poll(() => select.isEnabled()).toBe(true);
+    return { dialog, select };
+  };
+
+  it.each([
+    [1440, 'light'],
+    [1440, 'dark'],
+    [390, 'light'],
+    [390, 'dark'],
+  ] as const)(
+    'MET214 paints the saved appearance from the first frame at %ipx (%s)',
+    async (width, appearance) => {
+      const f = await fixture({ width, touch: width < 760, appearance });
+      try {
+        const dark = appearance === 'dark';
+        expect(await themeState(f.page)).toEqual({
+          firstPaint: { theme: appearance, dark },
+          theme: appearance,
+          dark,
+        });
+        const { dialog, select } = await appearanceSelect(f);
+        expect(await select.inputValue()).toBe(appearance);
+        expect(await select.locator('option').allTextContents()).toEqual([
+          '浅色',
+          '深色',
+          '跟随系统',
+        ]);
+        // The new row reads like its neighbours in either palette.
+        const label = dialog.getByText('外观', { exact: true });
+        const readable = await label.evaluate((node) => {
+          const channel = (value: string) =>
+            value
+              .match(/[\d.]+/g)!
+              .slice(0, 3)
+              .map((v) => {
+                const c = Number(v) / 255;
+                return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+              });
+          const luminance = (value: string) => {
+            const [r, g, b] = channel(value);
+            return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
+          };
+          let painted: Element | null = node;
+          while (
+            painted &&
+            getComputedStyle(painted).backgroundColor === 'rgba(0, 0, 0, 0)'
+          )
+            painted = painted.parentElement;
+          const [x, y] = [
+            luminance(getComputedStyle(node).color),
+            luminance(getComputedStyle(painted!).backgroundColor),
+          ].sort((m, n) => n - m);
+          return {
+            contrast: (x! + 0.05) / (y! + 0.05),
+            overflow:
+              document.documentElement.scrollWidth >
+              document.documentElement.clientWidth,
+          };
+        });
+        expect(readable.contrast).toBeGreaterThanOrEqual(4.5);
+        expect(readable.overflow).toBe(false);
+        await f.page.screenshot({
+          path: `.local/feedback/met214-appearance-${width}-${appearance}.png`,
+        });
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
+  it.each([1440, 390])(
+    'MET214 an employee picks dark in personal preferences and gets it after a reload and in another browser at %ipx',
+    async (width) => {
+      const preferences: Record<string, UserPreferences> = {
+        [user]: { ...defaultUserPreferences },
+      };
+      const f = await fixture({ width, touch: width < 760, preferences });
+      try {
+        expect(await themeState(f.page)).toMatchObject({
+          firstPaint: { theme: 'light', dark: false },
+          dark: false,
+        });
+        const { select } = await appearanceSelect(f);
+        // Hold the save: the page switches at once, and the row waits.
+        let release!: () => void;
+        f.state.preferenceDelay = new Promise<void>((done) => {
+          release = done;
+        });
+        await select.selectOption({ label: '深色' });
+        await expect
+          .poll(() => themeState(f.page))
+          .toMatchObject({ theme: 'dark', dark: true });
+        await expect.poll(() => select.isDisabled()).toBe(true);
+        release();
+        f.state.preferenceDelay = null;
+        await expect.poll(() => select.isEnabled()).toBe(true);
+        expect(preferences[user]!.appearance).toBe('dark');
+        await f.page.reload();
+        await f.page.getByRole('textbox', { name: /^给 .+ 的消息$/ }).waitFor();
+        expect(await themeState(f.page)).toEqual({
+          firstPaint: { theme: 'dark', dark: true },
+          theme: 'dark',
+          dark: true,
+        });
+      } finally {
+        await f.close();
+      }
+      // A fresh browser context: nothing kept in this browser, same account.
+      const g = await fixture({ width, touch: width < 760, preferences });
+      try {
+        expect(await themeState(g.page)).toEqual({
+          firstPaint: { theme: 'dark', dark: true },
+          theme: 'dark',
+          dark: true,
+        });
+        expect(await (await appearanceSelect(g)).select.inputValue()).toBe(
+          'dark',
+        );
+      } finally {
+        await g.close();
+      }
+    },
+  );
+
+  it('MET214 follows the system, restores the saved value when a save fails and re-reads it on return to the page', async () => {
+    const f = await fixture({ appearance: 'light' });
+    try {
+      await f.page.emulateMedia({ colorScheme: 'dark' });
+      // Media query changes are reported before the next animation frame.
+      await f.page.evaluate(
+        () =>
+          new Promise((done) =>
+            requestAnimationFrame(() => requestAnimationFrame(done)),
+          ),
+      );
+      // A light choice ignores a dark system.
+      expect(await themeState(f.page)).toMatchObject({ dark: false });
+      const { dialog, select } = await appearanceSelect(f);
+      await select.selectOption({ label: '跟随系统' });
+      await expect.poll(() => themeState(f.page)).toMatchObject({ dark: true });
+      await expect.poll(() => select.isEnabled()).toBe(true);
+      expect(f.state.preferences[user]!.appearance).toBe('system');
+      await f.page.emulateMedia({ colorScheme: 'light' });
+      await expect
+        .poll(() => themeState(f.page))
+        .toMatchObject({ theme: 'light', dark: false });
+      await f.page.emulateMedia({ colorScheme: 'dark' });
+      await expect
+        .poll(() => themeState(f.page))
+        .toMatchObject({ theme: 'dark', dark: true });
+
+      // The save fails: the page goes back to what the server holds.
+      f.state.preferenceError = true;
+      await select.selectOption({ label: '浅色' });
+      await dialog.getByRole('alert').getByText('保存失败，请重试').waitFor();
+      await expect
+        .poll(() => themeState(f.page))
+        .toMatchObject({ theme: 'dark', dark: true });
+      expect(await select.inputValue()).toBe('system');
+      expect(f.state.preferences[user]!.appearance).toBe('system');
+      f.state.preferenceError = false;
+
+      // Changed on another device; this page re-reads it when it comes back.
+      f.state.preferences[user]!.appearance = 'light';
+      expect(await themeState(f.page)).toMatchObject({ dark: true });
+      await f.page.evaluate(() =>
+        document.dispatchEvent(new Event('visibilitychange')),
+      );
+      await expect
+        .poll(() => themeState(f.page))
+        .toMatchObject({ theme: 'light', dark: false });
+      await expect.poll(() => select.inputValue()).toBe('light');
+    } finally {
+      await f.close();
+    }
+  });
 
   it.each([1440, 390, 320])(
     'MET199 saves the unified personal display list at %ipx, sizes actual body text and keeps code fixed',
