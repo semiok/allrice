@@ -336,6 +336,8 @@ export function assembleEmployeeKernel(input: {
             `Current member work settings (authoritative runtime instruction, supersedes older blanket approval wording): cloud=${input.workAutomation.cloud ? 'automatic within authorized resources' : 'confirm each operation'}; computer=${input.workAutomation.computer ? 'automatic within authorized folders and Bridge' : 'confirm each operation'}; assistants=${input.workAutomation.assistants ? 'allowed if this task has authorized assistants' : 'disabled; handle independently'}. Submit the relevant tool call directly; the platform executes automatically or shows an exact confirmation request according to the setting captured at operation creation. Do not ask for a separate chat approval before submitting. A tool call or a pending request is not completion; report only its terminal receipt. New resource access still needs authorization. Never retry unknown side effects.`,
           ]
         : []),
+      // MET-210: the chat page sends "跳过本题" as DSH's skipped item.
+      'In ask_user_question answers, an item with an empty selected list and no custom text means the user explicitly skipped that question. It chooses no option, including a recommended one, and approves nothing. Continue without that input, or ask again only if the work cannot proceed without it.',
     ].join('\n\n'),
     userRequest: [
       input.resolved.promptSnapshot.userRequest,

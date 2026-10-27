@@ -88,15 +88,16 @@
     },
     "durableQuestions": {
       "apps/worker/dsh/allrice-dsh-waits.mjs": [
+        "'已连接，继续任务'",
         "/^app-connect:[a-f0-9-]{36}$/",
+        "`Continue the existing task after this persisted user question. Prior completed operations remain completed. This answer is not action approval.\\nQuestion: ${JSON.stringify(wait.questions)}\\nAnswer: ${JSON.stringify(resolved ?? answer)}${wait.questions.some((q) => q.id.startsWith('app-connect:')) ? `\\nInstruction: ${applicationConnectionInstruction(resolved ?? answer)}` : ''}`",
         "'runtime-progress'",
         "'runtime-progress'",
         "'取消任务'",
         "'重新检查后继续'"
       ],
       "apps/worker/dsh/allrice-jsonrpc-implementation.mjs": [
-        "`app-connect:${result.requestId}`",
-        "'已连接，继续任务'"
+        "`app-connect:${result.requestId}`"
       ],
       "apps/worker/dsh/allrice-task-progress.mjs": [
         "'runtime-progress'",

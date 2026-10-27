@@ -14,9 +14,22 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-it.each(['live', 'parked'] as const)(
-  'preserves an unanswered %s question across overdue sweeps and adopts the answer once',
-  async (phase) => {
+// MET-210: "跳过本题" is DSH's skipped item { id, selected: [] }.
+// live: no question wait, the path for members with assistants on (they never
+// park); armed: no assistants, answered before the park timer; parked: resumed.
+it.each([
+  ['live', 'chosen'],
+  ['live', 'skipped'],
+  ['armed', 'skipped'],
+  ['parked', 'chosen'],
+  ['parked', 'skipped'],
+] as const)(
+  'preserves an unanswered %s question across overdue sweeps and adopts a %s answer once',
+  async (phase, reply) => {
+    const answerItem =
+      reply === 'skipped'
+        ? { id: 'choice', selected: [] }
+        : { id: 'choice', selected: ['继续'] };
     const model = await p24Fixture(async (_request, index) =>
       index === 1
         ? {
@@ -101,7 +114,7 @@ it.each(['live', 'parked'] as const)(
           questionSeen.release();
         }
       },
-      ...(phase === 'parked'
+      ...(phase !== 'live'
         ? {
             questionWait: {
               adopted,
@@ -165,7 +178,7 @@ it.each(['live', 'parked'] as const)(
               questionId,
               turnId,
               inputId: randomUUID(),
-              text: `allrice:user-question:v1:${JSON.stringify({ questionId, answers: [{ id: 'choice', selected: ['继续'] }] })}`,
+              text: `allrice:user-question:v1:${JSON.stringify({ questionId, answers: [answerItem] })}`,
             },
           },
         });
@@ -177,7 +190,7 @@ it.each(['live', 'parked'] as const)(
             turnId,
             clientUserMessageId: randomUUID(),
             inputKind: 'ask_user',
-            message: `allrice:user-question:v1:${JSON.stringify({ questionId, answers: [{ id: 'choice', selected: ['继续'] }] })}`,
+            message: `allrice:user-question:v1:${JSON.stringify({ questionId, answers: [answerItem] })}`,
           }),
         ).resolves.toMatchObject({
           status: 'adopted',
@@ -189,6 +202,8 @@ it.each(['live', 'parked'] as const)(
       const history = JSON.stringify(model.requests[1]!.messages);
       expect(history).toContain('先问我是否继续这项工作。');
       expect(history).toContain('继续');
+      // The model receives the skipped item as an empty selection.
+      if (reply === 'skipped') expect(history).toMatch(/\\"selected\\":\[\]/);
       expect(history).not.toContain('DO_NOT_REPLAY_THE_ORIGINAL_TASK');
       if (phase === 'parked') {
         expect(adopted).toHaveBeenCalledOnce();
@@ -198,6 +213,8 @@ it.each(['live', 'parked'] as const)(
         expect(pool.get(threadId)?.id).not.toBe(original.id);
       } else {
         expect(pool.get(threadId)).toBe(original);
+        // An answer before the park timer leaves nothing parked.
+        expect(checkpoint).toBeUndefined();
       }
     } finally {
       persisted.release();

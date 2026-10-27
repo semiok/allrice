@@ -79,6 +79,9 @@ import { installModelErrorNormalization } from './allrice-model-errors.mjs';
 import { installContentGuard } from './allrice-content-guard.mjs';
 import { installSceneProvider } from './allrice-scene-provider.mjs';
 import {
+  applicationCancelLabel,
+  applicationConnectedLabel,
+  applicationConnectionInstruction,
   checkpointNativeQuestion,
   answerNativeWait,
   continueNativeWait,
@@ -900,7 +903,10 @@ export async function createAllRiceRuntime(
               header: '连接应用',
               question: '完成应用登录后，我会继续当前任务。',
               detail: `[打开连接页面](${result.loginPath})\n请勿在聊天中填写密码或令牌。连接编号：${result.connection.id}`,
-              options: [{ label: '已连接，继续任务' }, { label: '取消连接' }],
+              options: [
+                { label: applicationConnectedLabel },
+                { label: applicationCancelLabel },
+              ],
             },
           ],
         });
@@ -908,11 +914,7 @@ export async function createAllRiceRuntime(
           content: JSON.stringify({
             connectionId: result.connection.id,
             answer,
-            instruction: answer.answers.some((item) =>
-              item.selected.includes('取消连接'),
-            )
-              ? '用户取消本次连接。停止等待和重试此连接，继续处理不依赖它的工作。'
-              : '先使用 action=status 检查连接状态；只有发现完成后才能调用工具。这不是远程操作批准。',
+            instruction: applicationConnectionInstruction(answer),
           }),
         };
       } finally {
