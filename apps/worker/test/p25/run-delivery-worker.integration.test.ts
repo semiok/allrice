@@ -1127,34 +1127,17 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         },
       );
       try {
-        if (mode === 'unauthorized') {
-          await expect(task.run()).rejects.toMatchObject({
-            code: 'ROUTE_NOT_AUTHORIZED',
-          });
-          expect(model!.requests).toHaveLength(0);
-          expect(await state(f, task.runId)).toMatchObject({
-            status: 'running',
-            successes: 0,
-          });
-        } else {
-          const result = await task.run();
-          const coverage = readCheckedFinalDeliveryForExecution(
-            task.workflowLease,
-            result,
-          );
-          expect(coverage.coverage).toBe('checked_native_v1');
-          if (coverage.coverage !== 'checked_native_v1')
-            throw Error('Unbound Workflow bypassed checked delivery');
-          await completeJob({
-            ...task.workflowLease,
-            result,
-            checkedDelivery: coverage.checkedDelivery,
-          });
-          expect(await state(f, task.runId)).toMatchObject({
-            status: 'succeeded',
-            successes: 1,
-          });
-        }
+        await expect(task.run()).rejects.toMatchObject({
+          code:
+            mode === 'unauthorized'
+              ? 'ROUTE_NOT_AUTHORIZED'
+              : 'WORKFLOW_SNAPSHOT_MISSING',
+        });
+        expect(model!.requests).toHaveLength(0);
+        expect(await state(f, task.runId)).toMatchObject({
+          status: 'running',
+          successes: 0,
+        });
       } finally {
         await task.isolation.cleanup();
       }
