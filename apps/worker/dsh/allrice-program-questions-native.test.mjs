@@ -16,7 +16,7 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
-async function fixture(release = 1000) {
+async function fixture(release = 1000, questionMode = 'legacy') {
   const root = await realpath(
     await mkdtemp(join(tmpdir(), 'program-question-')),
   );
@@ -49,6 +49,7 @@ async function fixture(release = 1000) {
     OPENAI_COMPATIBLE_BASE_URL: 'http://127.0.0.1:1/v1',
     ALLRICE_QUESTION_RELEASE_MS: String(release),
     ALLRICE_ASK_USER_TIMEOUT: '1',
+    ALLRICE_ASK_USER_MODE: questionMode,
     ALLRICE_ASSISTANTS_ENABLED: undefined,
     ALLRICE_MAINTENANCE_OUTPUT_TOKENS: undefined,
     ALLRICE_PROGRESS_GUARD_ENABLED: undefined,
@@ -95,61 +96,119 @@ async function fixture(release = 1000) {
 }
 
 describe('MET-210 actual answerer claims and display timers', () => {
-  it('settles an accepted answer across expiry before releasing its durable receipt', async () => {
-    const f = await fixture(100);
-    vi.spyOn(f.agent, 'status', 'get').mockReturnValue('running');
-    f.agent.session.append('turn/start', { turn: 1 });
-    const waiting = f.ctx.userQuestions.askTimed(
-      f.request('confirm'),
-      'confirm',
-      1000,
-    );
-    await vi.waitFor(() => expect(f.server.pendingUserQuestions.size).toBe(1));
-    const card = f.server.pendingUserQuestions.get(f.sessionId);
-    const flush = f.ctx.sessions.flush.bind(f.ctx.sessions);
-    let release;
-    const gate = new Promise((resolve) => {
-      release = resolve;
-    });
-    vi.spyOn(f.ctx.sessions, 'flush').mockImplementationOnce(
-      async (session) => {
-        await flush(session);
-        await gate;
-      },
-    );
-    const inputId = randomUUID();
-    const reply = f.server.steer({
-      sessionId: f.sessionId,
-      turnId: `${f.sessionId}:turn:1`,
-      inputId,
-      kind: 'ask_user',
-      text: `allrice:user-question:v1:${JSON.stringify({ questionId: card.questionId, answers: [{ id: 'confirm', selected: ['继续'] }] })}`,
-    });
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 150));
-      expect(f.server.pendingUserQuestions.get(f.sessionId)).toBe(card);
+  it.each(['legacy', 'timed'])(
+    'settles a %s program answer across expiry before releasing its durable receipt',
+    async (mode) => {
+      const f = await fixture(100, mode);
+      vi.spyOn(f.agent, 'status', 'get').mockReturnValue('running');
+      f.agent.session.append('turn/start', { turn: 1 });
+      const waiting = f.ctx.userQuestions.askTimed(
+        f.request('confirm'),
+        'confirm',
+        1000,
+      );
+      await vi.waitFor(() =>
+        expect(f.server.pendingUserQuestions.size).toBe(1),
+      );
+      const card = f.server.pendingUserQuestions.get(f.sessionId);
+      const flush = f.ctx.sessions.flush.bind(f.ctx.sessions);
+      let release;
+      const gate = new Promise((resolve) => {
+        release = resolve;
+      });
+      vi.spyOn(f.ctx.sessions, 'flush').mockImplementationOnce(
+        async (session) => {
+          await flush(session);
+          await gate;
+        },
+      );
+      const inputId = randomUUID();
+      const reply = f.server.steer({
+        sessionId: f.sessionId,
+        turnId: `${f.sessionId}:turn:1`,
+        inputId,
+        kind: 'ask_user',
+        text: `allrice:user-question:v1:${JSON.stringify({ questionId: card.questionId, answers: [{ id: 'confirm', selected: ['继续'] }] })}`,
+      });
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        expect(f.server.pendingUserQuestions.get(f.sessionId)).toBe(card);
+        expect(f.notices.map((n) => n.method)).not.toContain(
+          'session.user-question-pending',
+        );
+      } finally {
+        release();
+      }
+      expect(await waiting).toEqual({
+        answers: [{ id: 'confirm', selected: ['继续'] }],
+      });
+      expect(await reply).toMatchObject({ status: 'adopted', inputId });
+      expect(
+        f.agent.session
+          .snapshotEvents()
+          .filter(
+            (e) =>
+              e.type === 'allrice/input/answered' && e.data.inputId === inputId,
+          ),
+      ).toHaveLength(1);
       expect(f.notices.map((n) => n.method)).not.toContain(
         'session.user-question-pending',
       );
-    } finally {
-      release();
-    }
-    expect(await waiting).toEqual({
-      answers: [{ id: 'confirm', selected: ['继续'] }],
-    });
-    expect(await reply).toMatchObject({ status: 'adopted', inputId });
-    expect(
-      f.agent.session
-        .snapshotEvents()
-        .filter(
-          (e) =>
-            e.type === 'allrice/input/answered' && e.data.inputId === inputId,
-        ),
-    ).toHaveLength(1);
-    expect(f.notices.map((n) => n.method)).not.toContain(
-      'session.user-question-pending',
-    );
-  });
+    },
+  );
+  it.each(['legacy', 'timed'])(
+    'answers the actual %s application connection card through the typed program path',
+    async (mode) => {
+      const f = await fixture(1000, mode);
+      vi.spyOn(f.agent, 'status', 'get').mockReturnValue('running');
+      f.agent.session.append('turn/start', { turn: 1 });
+      const requestId = randomUUID();
+      const waiting = f.server.waitForApplicationConnection(
+        'cloud.mcp.call',
+        {
+          modelContent: JSON.stringify({
+            needsLogin: true,
+            requestId,
+            connection: { id: randomUUID() },
+            loginPath: '/connect/test',
+          }),
+        },
+        f.agent,
+        new AbortController().signal,
+      );
+      await vi.waitFor(() =>
+        expect(f.server.pendingUserQuestions.size).toBe(1),
+      );
+      const card = f.server.pendingUserQuestions.get(f.sessionId);
+      const notice = f.notices.find(
+        (n) => n.method === 'session.user-question',
+      ).params;
+      expect(notice.durable).not.toBe(true);
+      const inputId = randomUUID();
+      const selected = notice.questions[0].options[0].label;
+      expect(
+        await f.server.handleRequest('session/steer', {
+          sessionId: f.sessionId,
+          inputId,
+          kind: 'ask_user',
+          turnId: `${f.sessionId}:turn:1`,
+          text:
+            'allrice:user-question:v1:' +
+            JSON.stringify({
+              questionId: card.questionId,
+              answers: [{ id: notice.questions[0].id, selected: [selected] }],
+            }),
+        }),
+      ).toMatchObject({
+        status: 'adopted',
+        inputId,
+        checkpoint: 'question_resolved',
+      });
+      expect(JSON.parse((await waiting).content).answer.answers).toEqual([
+        { id: `app-connect:${requestId}`, selected: [selected] },
+      ]);
+    },
+  );
   it('claims before queueing and gives the second card its full displayed duration', async () => {
     const f = await fixture();
     const first = f.ctx.userQuestions.askTimed(

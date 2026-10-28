@@ -5,6 +5,18 @@ import {
 } from '@allrice/contracts/native-runtime';
 
 const prefix = 'allrice:user-question:v1:';
+export function isNativeQuestionInput(input, sessionId) {
+  try {
+    const id = JSON.parse(input.text.slice(prefix.length)).questionId;
+    return (
+      input.text.startsWith(prefix) &&
+      typeof id === 'string' &&
+      (id.startsWith(`${sessionId}:`) || id.startsWith('dsh-'))
+    );
+  } catch {
+    return false;
+  }
+}
 const hash = (input) =>
   createHash('sha256')
     .update(JSON.stringify([input.inputId, input.kind, input.text]))

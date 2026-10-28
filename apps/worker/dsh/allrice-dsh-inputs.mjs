@@ -5,6 +5,7 @@ import { structuredUserQuestionAnswer } from './allrice-dsh-runtime-compatibilit
 import {
   deliverNativeQuestionInput,
   inspectNativeQuestionInput,
+  isNativeQuestionInput,
 } from './allrice-native-question-inputs.mjs';
 
 // Pinned rc.3 has no downstream event registration API. Extend only
@@ -149,7 +150,12 @@ export async function deliverDshInput(
     input.text.length > 80_000
   )
     throw new TypeError('INVALID_TYPED_INPUT');
-  if (input.kind === 'ask_user' && questionView && answerQuestion)
+  if (
+    input.kind === 'ask_user' &&
+    questionView &&
+    answerQuestion &&
+    isNativeQuestionInput(input, sessionId)
+  )
     return deliverNativeQuestionInput(
       {
         agent,

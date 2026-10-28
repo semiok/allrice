@@ -52,6 +52,7 @@ export {
 } from './static-browser.ts';
 export {
   UserQuestionItemSchema,
+  UserQuestionAnswerSubmissionSchema,
   matchUserQuestionAnswer,
 } from './user-questions.ts';
 

@@ -1,5 +1,6 @@
 import { createRunFinalDelivery } from './allrice-final-delivery.mjs';
 import { readBootstrapCoverage } from './allrice-bootstrap-coverage.mjs';
+import { isNativeQuestionInput } from './allrice-native-question-inputs.mjs';
 import { BootstrapReceiptSchema } from '@allrice/contracts/native-runtime';
 import {
   PersonalSkillPinSchema,
@@ -1673,7 +1674,8 @@ export async function createAllRiceRuntime(
         const record = this.requireRoot(sessionId);
         const nativeQuestion =
           process.env.ALLRICE_ASK_USER_MODE === 'timed' &&
-          params.kind === 'ask_user';
+          params.kind === 'ask_user' &&
+          isNativeQuestionInput(params, sessionId);
         const delivery = deliverDshInput(
           {
             agent: record.agent,
@@ -1692,7 +1694,7 @@ export async function createAllRiceRuntime(
               : {}),
             flush: () => this.ctx.sessions.flush(record.agent.session),
             isCurrent: () =>
-              this.detaching === undefined &&
+              (params.kind === 'ask_user' || this.detaching === undefined) &&
               this.isRootCurrent(record, sessionId) &&
               (nativeQuestion ||
                 (this.pendingUserQuestions.get(sessionId) === pendingQuestion &&
