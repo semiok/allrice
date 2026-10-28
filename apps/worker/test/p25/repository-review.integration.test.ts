@@ -4,7 +4,7 @@ import {
   readPathSignal,
   scheduleReadPathQuery,
 } from '../../../../packages/database/src/read-path-races.fixture.ts';
-import type postgres from 'postgres';
+import type { RuntimeLedgerTransaction } from '../../../../packages/database/src/runtime-ledger/types.ts';
 import { getPlatformRepositoryCredential } from '../../../../packages/database/src/platform-repository-credentials.ts';
 /** Real isolated PostgreSQL/Job/storage. Remote CI is synthetic; Worker cases
  * use the real DSH Host with a synthetic HTTP model and credential. */
@@ -113,7 +113,7 @@ function reviewLockConnection(
   hook: (input: {
     sql: string;
     execute: () => Promise<unknown>;
-    tx: postgres.TransactionSql;
+    tx: RuntimeLedgerTransaction;
     pid: number;
   }) => Promise<unknown>,
 ) {
@@ -122,8 +122,8 @@ function reviewLockConnection(
     get(target, key) {
       if (key !== 'begin') return Reflect.get(target, key, target);
       return (...args: unknown[]) => {
-        const work = args.at(-1) as (tx: postgres.TransactionSql) => unknown;
-        const run = async (tx: postgres.TransactionSql) => {
+        const work = args.at(-1) as (tx: RuntimeLedgerTransaction) => unknown;
+        const run = async (tx: RuntimeLedgerTransaction) => {
           trace.transactions++;
           const [backend] = await tx<
             { pid: number }[]
@@ -133,7 +133,11 @@ function reviewLockConnection(
           return work(
             new Proxy(tx, {
               apply(sqlTarget, self, values: unknown[]) {
-                const query = Reflect.apply(sqlTarget, self, values);
+                const query = Reflect.apply(
+                  sqlTarget,
+                  self,
+                  values,
+                ) as PromiseLike<unknown>;
                 const [strings] = values;
                 if (!Array.isArray(strings) || !('raw' in strings))
                   return query;
@@ -950,9 +954,14 @@ suite(
         const results = await Promise.allSettled([holder, called]);
         expect(results[0]!.status, JSON.stringify(results)).toBe('fulfilled');
         expect(results[1]!.status, JSON.stringify(results)).toBe('rejected');
+        await expect(called).rejects.toMatchObject(
+          change === 'lease'
+            ? { code: 'authorization_denied' }
+            : { message: 'repository_review_forbidden' },
+        );
         expect(tool.trace.transactions).toBe(1);
         expect(
-          await f.db`select id from allrice_workbench_artifacts where run_id=${s.review.runId}`,
+          await f.db`select version_id from allrice_workbench_artifacts where run_id=${s.review.runId}`,
         ).toHaveLength(0);
       },
       30000,

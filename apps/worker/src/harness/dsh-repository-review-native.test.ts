@@ -7,7 +7,6 @@ import {
   dshInboundToolHandler,
   dshToolBridgeInstructions,
 } from './dsh/tool-bridge.js';
-import type { HarnessExecutionInput } from './adapter.js';
 
 const { reviewNativeInputSchema, technicalNativeTools } = (await import(
   new URL('../../dsh/allrice-technical-native-tools.mjs', import.meta.url).href
@@ -94,10 +93,7 @@ it('selects the requested private review function and keeps its inbound authoriz
   expect(native).toEqual(['platform.repository.review']);
   expect(await selectDshNativeTools([])).toEqual([]);
   const tools = [platformRepositoryReviewToolDefinition];
-  const instructions = dshToolBridgeInstructions(
-    { tools } as HarnessExecutionInput,
-    new Set(native),
-  );
+  const instructions = dshToolBridgeInstructions({ tools }, new Set(native));
   expect(instructions).not.toContain('<allrice_tool_call>');
   const params = {
     toolCallId: 'native-call',

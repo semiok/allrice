@@ -358,7 +358,7 @@ export const baseline: readonly BaselineEntry[] = [
     basis:
       'MET-210 PR2a：DSH 公开 defineTool/register 接缝提供独立仓库复核业务工具，权限/租约与不可变意见仍为门卫/账本；不新增 Agent 生命周期。',
     approvedBy:
-      '用户 2026-10-28 PR2a 独立复核修复派工：原生注册、Host allowlist 和真实 function-call；AGENTS.md §0 业务工具。',
+      '2026-10-28 用户 PR2a 独立复核修复任务说明：原生注册、Host allowlist 和真实 function-call；AGENTS.md §0 业务工具。',
   },
   {
     kind: 'patch',

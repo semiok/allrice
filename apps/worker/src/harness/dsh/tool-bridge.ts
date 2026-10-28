@@ -75,7 +75,7 @@ export function dshHostCapabilityInstructions(
 }
 
 export function dshToolBridgeInstructions(
-  input: HarnessExecutionInput,
+  input: Pick<HarnessExecutionInput, 'tools'>,
   runtimeNativeTools?: ReadonlySet<string>,
 ) {
   const availableNative = (name: string) =>
