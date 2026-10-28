@@ -284,7 +284,7 @@ export async function executeNativeReplyJob(
   const [run] =
     await f.db`select r.state,r.result,r.error_code,j.last_error_code,j.last_error_message,j.status,j.lease_token from allrice_runs r
       join allrice_jobs j on j.run_id=r.id where r.id=${runId}`;
-  expect(run).toMatchObject({
+  expect(run, JSON.stringify(run)).toMatchObject({
     state,
     status: state,
     lease_token: crashed ? job.lease!.token : null,

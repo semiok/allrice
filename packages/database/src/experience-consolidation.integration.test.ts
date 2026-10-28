@@ -1918,6 +1918,18 @@ suite(
       'PR5 carries the %s old experience handle through the actual reply Worker and Host',
       async (kind) => {
         const f = await adoptedFixture(false, {}, true);
+        const sourceModule = await import('./run-experience-source.ts');
+        const originalRead = sourceModule.readRunExperienceSource;
+        const reads = vi
+          .spyOn(sourceModule, 'readRunExperienceSource')
+          .mockImplementation(async (...args) => {
+            try {
+              return await originalRead(...args);
+            } catch (error) {
+              console.error('PR5 actual source gate failure', error);
+              throw error;
+            }
+          });
         let oldHandle = '';
         const actual = await setupNativeReplyEmployee(
           async (request, index) => {
@@ -2017,6 +2029,7 @@ suite(
             );
             const response = JSON.stringify(tools.at(-1)?.content);
             if (kind === 'original') {
+              expect(reads).toHaveBeenCalledTimes(1);
               expect(response).toContain(f.candidate.id);
               expect(response).toContain('experience_source');
               expect(run!.memory_context_state.toolReads).toBe(1);
