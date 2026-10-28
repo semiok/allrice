@@ -426,11 +426,13 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
           usage: { inputTokens: 6000, cachedInputTokens: 0, outputTokens: 15 },
           usageComplete: true,
         });
-        const questionId = result.waitingForUser!.questionId;
+        if (!('waitingForUser' in result) || !result.waitingForUser)
+          throw Error('Missing native progress wait');
+        const questionId = result.waitingForUser.questionId;
         const [question] =
           await f.db`select payload from allrice_run_events where run_id=${task.runId}
-          and event_type='native.event' and payload->>'sourceEventType'='session/user-question'`;
-        expect(question!.payload.sourcePayload).toMatchObject({
+          and event_type='harness.native' and payload->>'sourceEventType'='session/user-question'`;
+        expect(question!.payload.nativePayload).toMatchObject({
           questionId,
           questions: [expect.objectContaining({ id: 'runtime-progress' })],
         });
@@ -709,7 +711,7 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
             cached_input_tokens: 0,
             output_tokens: mode === 'interrupt' ? 5 : 10,
             usage_complete: mode !== 'interrupt',
-            cache_usage_known: mode !== 'interrupt',
+            cache_usage_known: false,
           });
           expect(
             await f.db`select route_decision_id id,input_tokens,cached_input_tokens,output_tokens,usage_complete,cache_usage_known from allrice_model_usage_ledger where route_decision_id=${route!.id}`,
@@ -1200,7 +1202,7 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
           }
           const result = await finalDelivery.call(this, action, params);
           return action === 'candidate' && mode === 'missing-candidate'
-            ? {}
+            ? null
             : result;
         });
       }
@@ -1295,7 +1297,9 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
             'invalid-repair',
           ].includes(mode);
           expect(route!.usage_complete).toBe(complete);
-          expect(route!.cache_usage_known).toBe(complete);
+          // Pinned pi-ai omits zero cache counters; the API receipt must
+          // preserve that unknown cache status even when token usage is complete.
+          expect(route!.cache_usage_known).toBe(false);
           const ledger =
             await f.db`select route_decision_id id,status,input_tokens,cached_input_tokens,output_tokens,usage_complete,cache_usage_known,cost_cents
               from allrice_model_usage_ledger where route_decision_id=${route!.id}`;

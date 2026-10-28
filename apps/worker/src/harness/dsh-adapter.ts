@@ -1097,11 +1097,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
               questionWait: !assistant ? input.questionWait : undefined,
               resume: callIndex === 0 ? input.questionWait?.resume : undefined,
               settleDelivery: runDelivery
-                ? async () => {
+                ? async (confirmSettled) => {
                     await deliveryNativeCall(() =>
                       runtime.client.wait(threadId),
                     );
-                    await awaitTurnOrigin!(true);
+                    confirmSettled();
                     executionSignal.throwIfAborted();
                     await input.runDelivery!.pauseInput();
                     // candidate closes native ingress and waits once more.
@@ -1926,7 +1926,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     questionWait?: HarnessExecutionInput['questionWait'];
     resume?: NonNullable<HarnessExecutionInput['questionWait']>['resume'];
     /** Hold event intake through public wait, input pause and final candidate. */
-    settleDelivery?(): Promise<void>;
+    settleDelivery?(confirmSettled: () => void): Promise<void>;
     onFailureUsage(receipt: AssistantFailureUsage): void;
     onTurn(turnId: string): Promise<void>;
     /** Private persistence ACK, never a model-supplied barrier. */
@@ -1962,6 +1962,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
     let turnOriginCommitted = false;
     let usageSettled = false;
     let runtimeClosed = false;
+    const confirmUsageSettled = () => {
+      if (!input.signal.aborted) usageSettled = idle;
+    };
     const flushEvents = async () => {
       let pending;
       do {
@@ -1974,7 +1977,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       await flushEvents();
       // Only public wait or the candidate's post-wait origin request confirms
       // execution settlement. Authorization before a model call does not.
-      if (settled) usageSettled = idle;
+      if (settled) confirmUsageSettled();
       if (!started || !turnOriginCommitted)
         throw new HandlerError(
           'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE',
@@ -2623,7 +2626,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           },
         );
       if (!waitingForUser && !parseDshToolCall(answer)) {
-        await input.settleDelivery?.();
+        await input.settleDelivery?.(confirmUsageSettled);
         await flushEvents();
         input.signal.throwIfAborted();
       }
