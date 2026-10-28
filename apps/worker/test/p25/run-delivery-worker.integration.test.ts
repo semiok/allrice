@@ -40,6 +40,7 @@ import {
 } from '../../../../packages/database/src/capabilities/capability-registry.ts';
 import * as ModelPool from '../../../../packages/database/src/providers/model-pool.ts';
 import * as RouteDecisions from '../../../../packages/database/src/execution/route-decision.ts';
+import { createRuntimeOperationLedger } from '../../../../packages/database/src/runtime-ledger/ledger.ts';
 import {
   claimNextJob,
   startClaimedJob,
@@ -1160,6 +1161,95 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     },
     45000,
   );
+
+  it('旧子 Run 的同会话真实成果不能经 run_links 混入本轮根成果集合', async () => {
+    let answer = '';
+    const f = await setup(async () => ({ text: answer }));
+    const previous = await prepare(f, '整理上轮月报并给我文件。');
+    const artifact = await publishWorkbenchArtifact(
+      {
+        context: previous.execution.context,
+        sessionId: f.chat.id,
+        callId: randomUUID(),
+        kind: 'document',
+        fileName: '旧子月报.txt',
+        format: 'text',
+        mediaType: 'text/plain',
+        bytes: Buffer.from('Old child report'),
+      },
+      runtimeFixtureStorage(fixture!.db),
+      fixture!.db,
+    );
+    answer = `[月报](/api/v1/files/${artifact.object.id}/download)`;
+    try {
+      const result = await previous.run();
+      const coverage = readCheckedFinalDeliveryForExecution(
+        previous.workflowLease,
+        result,
+      );
+      if (coverage.coverage !== 'checked_native_v1')
+        throw Error('Previous Run lost checked proof');
+      await completeJob({
+        ...previous.workflowLease,
+        result,
+        checkedDelivery: coverage.checkedDelivery,
+      });
+    } finally {
+      await previous.isolation.cleanup();
+    }
+    const current = await prepare(f, '整理本轮新月报并给我文件。');
+    const task = {
+      scope: {
+        organizationId: f.identity.org,
+        workspaceId: f.identity.workspace,
+        projectId: null,
+      },
+      runId: current.runId,
+      rootRunId: current.runId,
+      parentRunId: null,
+      chatSessionId: f.chat.id,
+      frozenConfiguration: {
+        employeeVersionId: f.identity.version,
+        digest: current.snapshot.employee.definitionChecksum,
+      },
+    };
+    await createRuntimeOperationLedger({
+      database: f.db,
+      admission: async () => {},
+    }).createRoot({
+      task,
+      deadlineAt: new Date(Date.now() + 300000).toISOString(),
+      budgets: [],
+    });
+    const child = {
+      ...task,
+      runId: previous.runId,
+      parentRunId: current.runId,
+    };
+    // Historical bookkeeping only. Both source Run and artifact were created
+    // by the real chat/publisher/Worker path, in the same tenant and Session.
+    await f.db`insert into allrice_runtime_run_links(run_id,root_run_id,parent_run_id,organization_id,workspace_id,task)
+      values(${previous.runId},${current.runId},${current.runId},${f.identity.org},${f.identity.workspace},${f.db.json(child)})`;
+    try {
+      await expect(current.run()).rejects.toMatchObject({
+        code: 'FINAL_DELIVERY_RESPONSE_INVALID',
+      });
+      expect(await state(f, current.runId)).toMatchObject({
+        status: 'running',
+        successes: 0,
+      });
+      expect(await state(f, previous.runId)).toMatchObject({
+        status: 'succeeded',
+        successes: 1,
+      });
+      expect(model!.requests).toHaveLength(2);
+      expect(
+        await f.db`select version_id from allrice_workbench_artifacts where version_id=${artifact.id} and run_id=${previous.runId}`,
+      ).toHaveLength(1);
+    } finally {
+      await current.isolation.cleanup();
+    }
+  }, 45000);
 
   it.each([null, true] as const)(
     '旧偏好 %s：真实 Worker 不用文字修正掩盖 Excel 缺失公式缓存',
