@@ -309,7 +309,7 @@ export async function pollEmployeeConversationSteers(input: {
       const nativeAnswer =
         command.inputKind === 'ask_user' &&
         isSessionQuestion(command.message, input.ownership.sessionId);
-      let proof: RuntimeNativeInputProof | void;
+      let proof: RuntimeNativeInputProof | void = undefined;
       try {
         proof = await input.adapter.steer({
           threadId: input.threadId,
