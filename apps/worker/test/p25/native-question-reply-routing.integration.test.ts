@@ -291,6 +291,27 @@ suite('PR5 native reply routing through the actual employee handler', () => {
     await execute(f, initial.run.id);
     const [q] =
       await f.db`select * from allrice_native_questions where session_id=${f.chat.id}`;
+    const notices = await f.db`select payload->>'sourceEventType' kind,
+      payload->'nativePayload'->>'sessionId' native_session_id,
+      payload->'nativePayload'->>'sequence' sequence
+      from allrice_run_events where run_id=${initial.run.id}
+        and payload->>'sourceEventType' in ('session/user-questions','session/user-question') order by sequence`;
+    const bindings =
+      await f.db`select native_session_id,context_kind,context_id,first_run_id
+      from allrice_native_session_bindings where context_id=${f.chat.id}`;
+    const runtime =
+      await f.db`select thread_id,thread_generation from allrice_conversation_runtimes where session_id=${f.chat.id}`;
+    console.log(
+      'PR5 actual native identity',
+      JSON.stringify({
+        chat: f.chat.id,
+        sourceRun: initial.run.id,
+        notices,
+        bindings,
+        runtime,
+        projected: !!q,
+      }),
+    );
     expect(q).toMatchObject({
       state: 'continued',
       source_run_id: initial.run.id,
