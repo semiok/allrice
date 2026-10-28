@@ -2618,8 +2618,14 @@ suite(
             await f.db`delete from allrice_native_questions where session_id=${r.input.sessionId}`;
           else if (boundary === 'missing-binding')
             await f.db`delete from allrice_native_session_bindings where context_id=${r.input.sessionId}`;
-          else
-            await f.db`update allrice_native_session_bindings set context_id=${randomUUID()} where context_id=${r.input.sessionId}`;
+          else {
+            // Bindings are immutable. Seed a different context in this isolated
+            // fixture instead of attempting an impossible production UPDATE.
+            const [binding] =
+              await f.db`delete from allrice_native_session_bindings
+              where context_id=${r.input.sessionId} returning *`;
+            await f.db`insert into allrice_native_session_bindings ${f.db({ ...binding!, context_id: randomUUID() })}`;
+          }
           await expect(
             createRecurringTaskFromExecutionContext(r.input),
           ).rejects.toMatchObject({ code: 'confirmation_required' });

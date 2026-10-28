@@ -178,9 +178,9 @@ suite(
       await expect(admit(`${nativeId}:missing`)).rejects.toMatchObject({
         code: 'question_expired',
       });
-      await f.db`update allrice_native_session_bindings set context_id=${randomUUID()} where native_session_id=${nativeId}`;
+      await f.db`delete from allrice_native_session_bindings where native_session_id=${nativeId}`;
       await expect(admit()).rejects.toMatchObject({ code: 'question_expired' });
-      await f.db`update allrice_native_session_bindings set context_id=${f.session} where native_session_id=${nativeId}`;
+      await bindNativeQuestionFixture(f.db, f.rootRunId, nativeId);
       await updateNativeQuestionMode(f.adminContext, 'legacy');
       await expect(admit()).rejects.toMatchObject({ code: 'question_expired' });
       await updateNativeQuestionMode(f.adminContext, 'timed');
