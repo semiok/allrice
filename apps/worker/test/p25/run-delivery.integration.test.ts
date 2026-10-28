@@ -8,6 +8,11 @@ import {
 } from '../../../../packages/database/src/assistant-runtime.fixture.ts';
 import { createAssistantAuthorityFixture } from '../../../../packages/database/src/assistant-authority.fixture.ts';
 import { publishWorkbenchArtifact } from '../../../../packages/database/src/artifact-review.ts';
+import {
+  assertEmployeeInstanceAdmission,
+  lockEmployeeInstanceAdmissionIdentity,
+  prepareEmployeeInstanceSnapshot,
+} from '../../../../packages/database/src/employees/employee-instances.ts';
 import { completeJob } from '../../../../packages/database/src/execution/queue.ts';
 import { finalDeliveryTextDigest } from '../../../../packages/database/src/final-delivery-commit.ts';
 import { createRunDeliveryPort } from '../../src/final-delivery/run-delivery.js';
@@ -174,6 +179,77 @@ suite('PR1a: independent Worker delivery, isolated PostgreSQL', () => {
   }
   type Subject = Awaited<ReturnType<typeof subject>>;
 
+  it.each(['snapshot', 'commit'] as const)(
+    'serializes %s with admission holding the user lock before requesting the Session',
+    async (phase) => {
+      const f = await subject();
+      const identity = {
+        actor: { type: 'user' as const, id: f.user },
+        organizationId: f.org,
+        workspaceId: f.workspace,
+      };
+      const instance = await prepareEmployeeInstanceSnapshot(
+        identity,
+        f.session,
+        f.assignment,
+        f.version,
+        fixture.db,
+      );
+      const answer = '本轮没有导出文件。';
+      const { guard } = await f.validate(answer);
+      const gate = () => {
+        let resolve!: () => void;
+        const promise = new Promise<void>((r) => (resolve = r));
+        return { promise, resolve };
+      };
+      const identityLocked = gate();
+      const deliveryAtUser = gate();
+      const admission = fixture.db.begin(async (tx) => {
+        await tx`set local lock_timeout='5s'`;
+        await lockEmployeeInstanceAdmissionIdentity(tx, identity);
+        identityLocked.resolve();
+        await deliveryAtUser.promise;
+        await assertEmployeeInstanceAdmission(
+          tx,
+          identity,
+          f.session,
+          instance,
+        );
+      });
+      await Promise.race([identityLocked.promise, admission]);
+      let userLockObserved = false;
+      const debug = fixture.db.options.debug;
+      fixture.db.options.debug = (_connection, query) => {
+        if (/from allrice_users\b[\s\S]*for share/.test(query)) {
+          // Admission already owns NO KEY UPDATE. Let it request the Session
+          // only when delivery requests user SHARE. Session-first deadlocks.
+          userLockObserved = true;
+          deliveryAtUser.resolve();
+        }
+      };
+      try {
+        const delivery = (
+          phase === 'snapshot'
+            ? f.port.readSnapshot()
+            : f.complete(guard, answer)
+        ).finally(deliveryAtUser.resolve);
+        expect(await Promise.allSettled([admission, delivery])).toEqual([
+          expect.objectContaining({ status: 'fulfilled' }),
+          expect.objectContaining({ status: 'fulfilled' }),
+        ]);
+        expect(userLockObserved).toBe(true);
+        expect(await f.state()).toMatchObject(
+          phase === 'snapshot'
+            ? { status: 'running', state: 'running', successes: 0 }
+            : { status: 'succeeded', state: 'succeeded', successes: 1 },
+        );
+      } finally {
+        deliveryAtUser.resolve();
+        fixture.db.options.debug = debug;
+      }
+    },
+  );
+
   it('用户要月报下载链接：无助手配置也能经新 Worker 端口检查并原子落库', async () => {
     const f = await subject();
     const artifact = await f.publish();
@@ -203,7 +279,24 @@ suite('PR1a: independent Worker delivery, isolated PostgreSQL', () => {
     expect(coverage.coverage).toBe('checked_native_v1');
     if (coverage.coverage !== 'checked_native_v1')
       throw Error('missing private guard');
-    await f.complete(coverage.checkedDelivery, result.answer);
+    const queries: string[] = [];
+    const debug = fixture.db.options.debug;
+    fixture.db.options.debug = (_connection, query) => {
+      queries.push(query);
+    };
+    try {
+      await f.complete(coverage.checkedDelivery, result.answer);
+      expect(queries.length).toBeGreaterThan(0);
+      expect(
+        queries.filter((q) =>
+          /allrice_assistant_|allrice_runtime_run_links|allrice_runtime_roots/.test(
+            q,
+          ),
+        ),
+      ).toEqual([]);
+    } finally {
+      fixture.db.options.debug = debug;
+    }
     expect(await f.state()).toEqual({
       status: 'succeeded',
       state: 'succeeded',
