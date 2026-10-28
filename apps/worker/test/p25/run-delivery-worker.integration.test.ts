@@ -39,6 +39,7 @@ import {
   manageEmployeeCapabilities,
 } from '../../../../packages/database/src/capabilities/capability-registry.ts';
 import * as ModelPool from '../../../../packages/database/src/providers/model-pool.ts';
+import * as RouteDecisions from '../../../../packages/database/src/execution/route-decision.ts';
 import {
   claimNextJob,
   startClaimedJob,
@@ -670,7 +671,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     }
   }, 45000);
 
-  it('普通聊天选择已发布 Workflow 时保留既有排除范围', async () => {
+  it('普通聊天选择已发布 Workflow 时保留既有排除范围，同员工普通任务仍完整检查', async () => {
     const f = await setup(async () => ({ text: '已完成排序流程。' }));
     const workflow = await createWorkflow(f.context, {
       workspaceId: f.identity.workspace,
@@ -696,6 +697,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     });
     const task = await prepare(f, '按工作流执行排序流程，解释数组排序。');
     expect(task.snapshot.capabilitySnapshot.workflows).toHaveLength(1);
+    expect(task.snapshot.finalDeliveryPolicy?.mode).toBe('checked_native_v1');
     try {
       const result = await task.run();
       expect(
@@ -709,6 +711,34 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       const [route] =
         await f.db`select selected_kind from allrice_route_decisions where run_id=${task.runId}`;
       expect(route!.selected_kind).toBe('workflow');
+      const [stored] =
+        await f.db`select execution_snapshot from allrice_employee_runs where run_id=${task.runId}`;
+      expect(stored!.execution_snapshot).toEqual(task.snapshot);
+      const ordinary = await prepare(f, '解释 JavaScript 的数组比较函数。');
+      try {
+        const ordinaryResult = await ordinary.run();
+        const coverage = readCheckedFinalDeliveryForExecution(
+          ordinary.workflowLease,
+          ordinaryResult,
+        );
+        expect(coverage.coverage).toBe('checked_native_v1');
+        if (coverage.coverage !== 'checked_native_v1')
+          throw Error('Installed Workflow suppressed ordinary delivery');
+        await completeJob({
+          ...ordinary.workflowLease,
+          result: ordinaryResult,
+          checkedDelivery: coverage.checkedDelivery,
+        });
+        expect(await state(f, ordinary.runId)).toMatchObject({
+          status: 'succeeded',
+          successes: 1,
+        });
+        const [direct] =
+          await f.db`select selected_kind from allrice_route_decisions where run_id=${ordinary.runId}`;
+        expect(direct!.selected_kind).toBe('direct');
+      } finally {
+        await ordinary.isolation.cleanup();
+      }
     } finally {
       await task.isolation.cleanup();
     }
@@ -1062,6 +1092,67 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           } finally {
             await next.isolation.cleanup();
           }
+        }
+      } finally {
+        await task.isolation.cleanup();
+      }
+    },
+    45000,
+  );
+
+  it.each(['missing-frozen-revision', 'unauthorized'] as const)(
+    '异常 Workflow 路由 %s 不绕过根交付守卫',
+    async (mode) => {
+      const f = await setup(async () => ({ text: '本轮只解释比较函数。' }));
+      const task = await prepare(f, '解释数组比较函数，不需要文件。');
+      const record = RouteDecisions.recordRouteDecision;
+      vi.spyOn(RouteDecisions, 'recordRouteDecision').mockImplementation(
+        async (input) => {
+          const stored = await record(input);
+          const id = `workflow:${randomUUID()}`;
+          return {
+            ...stored,
+            selectedKind: 'workflow',
+            selectedCandidateId: id,
+            candidates: [
+              {
+                ...stored.candidates[0]!,
+                id,
+                kind: 'workflow',
+                authorized: mode !== 'unauthorized',
+              },
+            ],
+          };
+        },
+      );
+      try {
+        if (mode === 'unauthorized') {
+          await expect(task.run()).rejects.toMatchObject({
+            code: 'ROUTE_NOT_AUTHORIZED',
+          });
+          expect(model!.requests).toHaveLength(0);
+          expect(await state(f, task.runId)).toMatchObject({
+            status: 'running',
+            successes: 0,
+          });
+        } else {
+          const result = await task.run();
+          const coverage = readCheckedFinalDeliveryForExecution(
+            task.workflowLease,
+            result,
+          );
+          expect(coverage.coverage).toBe('checked_native_v1');
+          if (coverage.coverage !== 'checked_native_v1')
+            throw Error('Unbound Workflow bypassed checked delivery');
+          await completeJob({
+            ...task.workflowLease,
+            result,
+            checkedDelivery: coverage.checkedDelivery,
+          });
+          expect(await state(f, task.runId)).toMatchObject({
+            status: 'succeeded',
+            successes: 1,
+          });
         }
       } finally {
         await task.isolation.cleanup();
