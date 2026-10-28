@@ -211,8 +211,10 @@ suite('PR5 native reply routing through the actual employee handler', () => {
       text,
       ...(answer
         ? { userQuestionAnswer: answer }
-        : { deliveryMode: 'follow_up' }),
-      assistantPreference: { mode: 'daily', allowAssistants: false },
+        : {
+            deliveryMode: 'follow_up',
+            assistantPreference: { mode: 'daily', allowAssistants: false },
+          }),
     });
   }
   async function execute(f: Setup, runId: string) {

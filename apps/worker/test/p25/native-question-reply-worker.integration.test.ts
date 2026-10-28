@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createAssistantFixtureDatabase } from '../../../../packages/database/src/assistant-runtime.fixture.ts';
 import { createExperienceFixture } from '../../../../packages/database/src/experience.fixture.ts';
+import { bindNativeQuestionFixture } from '../../../../packages/database/src/native-question-binding.fixture.ts';
 import * as database from '../../../../packages/database/src/core/client.ts';
 import { sendChatMessage } from '../../../../packages/database/src/workspace/service.ts';
 import { updateNativeQuestionMode } from '../../../../packages/database/src/native-questions.ts';
@@ -235,6 +236,11 @@ suite(
                   await onHarnessEvent(event);
                 },
                 onThreadBound: async (bound) => {
+                  await bindNativeQuestionFixture(
+                    fixture.db,
+                    execution.context.runId,
+                    bound.threadId,
+                  );
                   runtime = await bindConversationThread({
                     ...ownership,
                     ...bound,
