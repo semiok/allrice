@@ -1091,10 +1091,9 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
           if (mode === 'cancel-repair' || mode === 'missing-usage-repair')
             expect(route!.cache_usage_known).toBe(false);
           const ledger =
-            await f.db`select status,input_tokens,cached_input_tokens,output_tokens,usage_complete,cache_usage_known,cost_cents
+            await f.db`select route_decision_id id,status,input_tokens,cached_input_tokens,output_tokens,usage_complete,cache_usage_known,cost_cents
               from allrice_model_usage_ledger where route_decision_id=${route!.id}`;
-          const { id: _id, ...receipt } = route!;
-          expect(ledger).toEqual([receipt]);
+          expect(ledger).toEqual([route]);
         }
       } finally {
         release.release();
