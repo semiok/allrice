@@ -51,13 +51,15 @@ export async function executeRepositoryReview(
   )
     fail('forbidden');
   const admit = async (tx: Tx) => {
+    // Match queue/heartbeat: Job before current identity/credential authority.
+    // Keep this row locked, then re-read its lease after authority lock waits.
     const [job] = await tx<JobRow[]>`select * from allrice_jobs
       where id=${input.worker.jobId} and run_id=${input.context.runId}
       and owner_id=${input.context.policySnapshot.subjectId} and organization_id=${input.context.organizationId} and workspace_id=${input.context.workspaceId!}
-      and worker_id=${input.worker.workerId} and lease_token=${input.worker.leaseToken} and attempt=${input.worker.attempt}`;
+      and worker_id=${input.worker.workerId} and lease_token=${input.worker.leaseToken} and attempt=${input.worker.attempt} for share`;
     if (!job || !(await isRepositoryReviewJobAuthorized(tx, job)))
       fail('forbidden');
-    await assertRepositoryReviewLease(tx, job);
+    await assertRepositoryReviewLease(tx, job, false);
   };
   const current = async (tx: Tx) => {
     await admit(tx);

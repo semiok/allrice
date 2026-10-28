@@ -1,5 +1,10 @@
 import { createReadPathProbe } from '../../../../packages/database/src/read-path-probe.fixture.ts';
-import { expectReadPathRowLocked } from '../../../../packages/database/src/read-path-races.fixture.ts';
+import {
+  expectReadPathRowLocked,
+  readPathSignal,
+  scheduleReadPathQuery,
+} from '../../../../packages/database/src/read-path-races.fixture.ts';
+import type postgres from 'postgres';
 import { getPlatformRepositoryCredential } from '../../../../packages/database/src/platform-repository-credentials.ts';
 /** Real isolated PostgreSQL/Job/storage. Remote CI is synthetic; Worker cases
  * use the real DSH Host with a synthetic HTTP model and credential. */
@@ -65,6 +70,7 @@ import {
   claimNextJob,
   startClaimedJob,
   completeJob,
+  heartbeatJob,
 } from '../../../../packages/database/src/execution/queue.ts';
 import { executeRepositoryReview } from '../../../../packages/database/src/platform-repository-development.ts';
 
@@ -99,6 +105,56 @@ const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
     : describe.skip;
+
+// Schedule real SQL on separate pooled connections, preserving SQL fragments.
+// Barriers choose the interleaving; PostgreSQL proves the actual lock wait.
+function reviewLockConnection(
+  db: ReturnType<typeof client.getDatabase>,
+  hook: (input: {
+    sql: string;
+    execute: () => Promise<unknown>;
+    tx: postgres.TransactionSql;
+    pid: number;
+  }) => Promise<unknown>,
+) {
+  const trace = { transactions: 0, pids: new Set<number>() };
+  const wrapped = new Proxy(db, {
+    get(target, key) {
+      if (key !== 'begin') return Reflect.get(target, key, target);
+      return (...args: unknown[]) => {
+        const work = args.at(-1) as (tx: postgres.TransactionSql) => unknown;
+        const run = async (tx: postgres.TransactionSql) => {
+          trace.transactions++;
+          const [backend] = await tx<
+            { pid: number }[]
+          >`select pg_backend_pid() as pid`;
+          const pid = backend!.pid;
+          trace.pids.add(pid);
+          return work(
+            new Proxy(tx, {
+              apply(sqlTarget, self, values: unknown[]) {
+                const query = Reflect.apply(sqlTarget, self, values);
+                const [strings] = values;
+                if (!Array.isArray(strings) || !('raw' in strings))
+                  return query;
+                return scheduleReadPathQuery(
+                  query,
+                  strings.join(' $ '),
+                  (sql, execute) => hook({ sql, execute, tx, pid }),
+                );
+              },
+            }),
+          );
+        };
+        return args.length > 1
+          ? target.begin(args[0] as string, run)
+          : target.begin(run);
+      };
+    },
+  });
+  return { db: wrapped, trace };
+}
+
 suite(
   'platform repository review native workflow and current authority',
   () => {
@@ -442,12 +498,15 @@ suite(
           });
         }
         let review: Awaited<ReturnType<typeof s.create>>;
-        const command = (id: string, args: unknown) => ({
-          text: `<allrice_tool_call>${JSON.stringify({ id, name: 'platform.repository.review', arguments: args })}</allrice_tool_call>`,
+        const command = (args: Record<string, unknown>) => ({
+          nativeTool: { name: 'platform_repository_review', arguments: args },
         });
         let candidate: DevelopmentArtifactRef;
         const model = await p24Fixture(async (request, index) => {
           if (index === 1) {
+            expect(request.tools?.map((t) => t.function.name)).toContain(
+              'platform_repository_review',
+            );
             expect(
               request.tools?.some(
                 (t) => t.function.name === 'assistant_delegate',
@@ -461,32 +520,20 @@ suite(
             if (mode === 'revoked') {
               await f.db`update allrice_employee_assignments set active=false where id=(select employee_assignment_id from allrice_employee_runs where run_id=${review.runId})`;
             }
-            return command('inspect', { action: 'inspect' });
+            return command({ action: 'inspect' });
           }
-          const text = JSON.stringify(request.messages);
-          const messages = request.messages.map((m) =>
-            typeof m.content === 'string'
-              ? m.content
-              : JSON.stringify(m.content),
-          );
-          const envelope = messages
-            .flatMap((t) => [
-              ...t.matchAll(
-                /<allrice_tool_result>(.*?)<\/allrice_tool_result>/gs,
-              ),
-            ])
+          // A native failure is an ordinary DSH tool result. Finish the turn;
+          // the unchanged Job completion authority must reject this review.
+          if (mode === 'revoked') return { text: '权限已撤回。' };
+          const result = request.messages
+            .filter((m) => m.role === 'tool')
             .at(-1);
-          if (!envelope?.[1])
-            throw Error(
-              'Model did not receive real tool result: ' + text.slice(-1000),
-            );
-          const result = JSON.parse(envelope[1]);
-          expect(result.ok).toBe(true);
-          const facts = JSON.parse(result.content);
+          expect(result?.content).toBeTypeOf('string');
+          const facts = JSON.parse(result!.content as string);
           if (index === 2) {
             candidate = facts.candidate;
             expect(facts.material.authorRunIds).not.toContain(review.runId);
-            return command('opinion', {
+            return command({
               action: 'review',
               candidate,
               evidence: facts.evidence,
@@ -496,7 +543,7 @@ suite(
             });
           }
           if (index === 3 && mode !== 'revise')
-            return command('deliver', {
+            return command({
               action: 'deliver',
               candidate,
               reviewId: facts.id,
@@ -569,6 +616,12 @@ suite(
                 : 'failed',
           );
           expect(model.requests.length).toBeGreaterThan(0);
+          expect(JSON.stringify(model.requests)).not.toContain(
+            '<allrice_tool_call>',
+          );
+          expect(JSON.stringify(model.requests)).not.toContain(
+            '<allrice_tool_result>',
+          );
           const artifacts =
             await f.db`select w.run_id,o.state,o.checksum from allrice_workbench_artifacts w join allrice_deliverable_versions v on v.id=w.version_id join allrice_storage_objects o on o.id=v.object_id where w.run_id=${review.runId}`;
           expect(artifacts).toHaveLength(
@@ -593,6 +646,21 @@ suite(
               ),
             ).toBe(true);
             expect(detail.remoteVerifiedAt).not.toBeNull();
+            expect(model.requests).toHaveLength(mode === 'revise' ? 3 : 4);
+            const calls = await f.db`select payload from allrice_run_events
+              where run_id=${review.runId} and event_type='tool.completed'
+                and payload->>'source'='platform_repository_review' order by sequence`;
+            expect(calls.map((c) => c.payload)).toEqual(
+              (mode === 'revise'
+                ? ['inspect', 'review']
+                : ['inspect', 'review', 'deliver']
+              ).map((action, index) => ({
+                name: 'platform.repository.review',
+                toolCallId: `call-${index + 1}`,
+                source: 'platform_repository_review',
+                action,
+              })),
+            );
           }
           for (const table of [
             'allrice_assistant_roots',
@@ -726,6 +794,169 @@ suite(
       })) as { id: string; artifact: DevelopmentArtifactRef };
       return { seed, review };
     }
+
+    it('heartbeat holds Job while the native review tool contends: one transaction, no deadlock or retry', async () => {
+      const s = await start(await setup());
+      const heartbeatAtCredential = readPathSignal();
+      const toolFirstLock = readPathSignal<number>();
+      let interleaved = false;
+      const beat = reviewLockConnection(
+        f.db,
+        async ({ sql, execute, tx, pid }) => {
+          if (!interleaved && sql.includes('pg_advisory_xact_lock(hashtext(')) {
+            heartbeatAtCredential.resolve();
+            const toolPid = await toolFirstLock.promise;
+            expect(toolPid).not.toBe(pid);
+            // This is a bounded test barrier on the two connections just started,
+            // not a resource wait. Prove a real PostgreSQL row-lock conflict.
+            await vi.waitFor(
+              async () => {
+                const [wait] = await tx<{ blockers: number[] }[]>`
+              select pg_blocking_pids(${toolPid}) as blockers`;
+                expect(wait!.blockers).toContain(pid);
+              },
+              { timeout: 2000, interval: 10 },
+            );
+            interleaved = true;
+          }
+          return execute();
+        },
+      );
+      let first = true;
+      const tool = reviewLockConnection(f.db, async ({ sql, execute, pid }) => {
+        // In the correct order this first lock waits for heartbeat's Job.
+        // With the regression, the tool first acquires the credential fence:
+        // heartbeat then asks for that fence while the tool waits for its Job.
+        if (
+          first &&
+          sql.includes('allrice_jobs') &&
+          sql.includes('for share')
+        ) {
+          first = false;
+          toolFirstLock.resolve(pid);
+        } else if (first && sql.includes('pg_advisory_xact_lock(hashtext(')) {
+          const value = await execute();
+          first = false;
+          toolFirstLock.resolve(pid);
+          return value;
+        }
+        return execute();
+      });
+      vi.mocked(client.getDatabase).mockReturnValue(beat.db);
+      const heartbeat = heartbeatJob(
+        s.lease.workerId,
+        s.lease.jobId,
+        s.lease.leaseToken,
+        300000,
+      );
+      void heartbeat.catch((error: unknown) =>
+        heartbeatAtCredential.reject(error),
+      );
+      const called = heartbeatAtCredential.promise.then(() =>
+        executeRepositoryReview(
+          {
+            context: s.execution.context,
+            worker: s.lease,
+            requestId: randomUUID(),
+            arguments: { action: 'inspect' },
+          },
+          assistantFixtureStorage(f.db),
+          tool.db,
+        ),
+      );
+      void called.catch((error: unknown) => toolFirstLock.reject(error));
+      try {
+        const result = await Promise.allSettled([heartbeat, called]);
+        expect(
+          result.map((r) => r.status),
+          JSON.stringify(result),
+        ).toEqual(['fulfilled', 'fulfilled']);
+        expect(await heartbeat).toMatchObject({
+          active: true,
+          canceled: false,
+        });
+        expect(await called).toHaveProperty('candidate.artifactId');
+        expect(interleaved).toBe(true);
+        expect(beat.trace.transactions).toBe(1);
+        const [job] =
+          await f.db`select status,attempt from allrice_jobs where id=${s.review.jobId}`;
+        expect(job).toMatchObject({ status: 'running', attempt: 1 });
+      } finally {
+        vi.mocked(client.getDatabase).mockReturnValue(f.db);
+      }
+    }, 30000);
+
+    it.each(['lease', 'login', 'assignment', 'worker'] as const)(
+      'review tool rechecks %s authority after its Job lock wait',
+      async (change) => {
+        const s = await start(await setup());
+        const held = readPathSignal<number>(),
+          attempted = readPathSignal<number>();
+        let first = true;
+        const tool = reviewLockConnection(
+          f.db,
+          async ({ sql, execute, pid }) => {
+            if (
+              first &&
+              sql.includes('allrice_jobs') &&
+              sql.includes('for share')
+            ) {
+              first = false;
+              attempted.resolve(pid);
+            }
+            return execute();
+          },
+        );
+        const holder = f.db.begin(async (tx) => {
+          await tx`select id from allrice_jobs where id=${s.review.jobId} for update`;
+          const [backend] = await tx<
+            { pid: number }[]
+          >`select pg_backend_pid() as pid`;
+          held.resolve(backend!.pid);
+          const toolPid = await attempted.promise;
+          expect(toolPid).not.toBe(backend!.pid);
+          await vi.waitFor(
+            async () => {
+              const [wait] = await tx<
+                { blockers: number[] }[]
+              >`select pg_blocking_pids(${toolPid}) as blockers`;
+              expect(wait!.blockers).toContain(backend!.pid);
+            },
+            { timeout: 2000, interval: 10 },
+          );
+          if (change === 'lease')
+            await tx`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 millisecond' where id=${s.review.jobId}`;
+          else if (change === 'login')
+            await tx`update allrice_sessions set revoked_at=clock_timestamp() where id=${s.admin.sessionId!}`;
+          else if (change === 'assignment')
+            await tx`update allrice_employee_assignments set active=false where id=(select employee_assignment_id from allrice_employee_runs where run_id=${s.review.runId})`;
+          else
+            await tx`update allrice_jobs set worker_id=${randomUUID()},lease_token=${randomUUID()} where id=${s.review.jobId}`;
+        });
+        void holder.catch((error: unknown) => held.reject(error));
+        const called = held.promise.then(() =>
+          executeRepositoryReview(
+            {
+              context: s.execution.context,
+              worker: s.lease,
+              requestId: randomUUID(),
+              arguments: { action: 'inspect' },
+            },
+            assistantFixtureStorage(f.db),
+            tool.db,
+          ),
+        );
+        void called.catch((error: unknown) => attempted.reject(error));
+        const results = await Promise.allSettled([holder, called]);
+        expect(results[0]!.status, JSON.stringify(results)).toBe('fulfilled');
+        expect(results[1]!.status, JSON.stringify(results)).toBe('rejected');
+        expect(tool.trace.transactions).toBe(1);
+        expect(
+          await f.db`select id from allrice_workbench_artifacts where run_id=${s.review.runId}`,
+        ).toHaveLength(0);
+      },
+      30000,
+    );
 
     async function supersedeArtifact(artifactId: string) {
       // A newer immutable version is a reachable invalidation. Do not mutate
