@@ -334,9 +334,13 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
     }
   }, 45000);
 
-  it.each(['valid', 'repair'] as const)(
-    '合成资格下 %s：月报经根 wait 后落库同一 Run 的来源与精确版本',
-    async (mode) => {
+  it.each([
+    { mode: 'valid', history: false },
+    { mode: 'valid', history: true },
+    { mode: 'repair', history: true },
+  ] as const)(
+    '合成资格下 $mode / 历史 $history：月报经根 wait 后落库同一 Run 的来源与精确版本',
+    async ({ mode, history }) => {
       let answer = '';
       const original = `[月报](/api/v1/files/${randomUUID()}/download)`;
       const f = await setup(true, async (_request, count) => ({
@@ -347,6 +351,13 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
           total_tokens: 2010,
         },
       }));
+      // Admission checkpoints completed history, never the current user input.
+      // Seed ordinary history before admission so its real frozen snapshot
+      // contains a covered message; keep a first-turn case without a checkpoint.
+      if (history)
+        await f.db`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,status,content)
+          values(${randomUUID()},${f.identity.org},${f.identity.workspace},${f.chat.id},${f.identity.user},'user','completed',
+          '{"text":"请继续整理每月记录。","citations":[]}')`;
       const task = await prepare(
         f,
         '帮我完成这项任务：把月报整理成文件，把下载链接给我。',
@@ -373,7 +384,7 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
       vi.spyOn(DshProtocolClient.prototype, 'finalDelivery').mockImplementation(
         async function (this: DshProtocolClient, action, params) {
           const response = await finalDelivery.call(this, action, params);
-          if (action === 'finish')
+          if (action === 'finish' && history)
             await f.db`update allrice_conversation_runtimes set compact_threshold_tokens=1000,usage_baseline_input_tokens=0 where session_id=${f.chat.id}`;
           return response;
         },
@@ -412,7 +423,7 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
         });
         expect(
           await f.db`select id from allrice_context_checkpoints where session_id=${f.chat.id}`,
-        ).toHaveLength(1);
+        ).toHaveLength(history ? 1 : 0);
         expect(
           starts.every(
             (row) => row.payload.threadId === coverage.proof.nativeSessionId,
