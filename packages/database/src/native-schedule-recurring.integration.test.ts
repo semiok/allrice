@@ -65,6 +65,7 @@ import {
   maintainQueue,
 } from './execution/queue.ts';
 import { nativeQuestionAnswerAdopted } from './native-questions.ts';
+import { bindNativeQuestionFixture } from './native-question-binding.fixture.ts';
 import {
   UserQuestionItemSchema,
   type UserQuestionItem,
@@ -2545,6 +2546,7 @@ suite(
           ${clientId},1,${turnId},${'allrice:user-question:v1:' + JSON.stringify(answer)},'ask_user','consumed',
           ${f.db.json({ status: 'adopted', turnId, inputId: clientId, sequence: 18, messageId: questionId, checkpoint: checkpoint ?? 'question_resolved', ...(checkpoint ? { callId, turnId: 'later:turn:2' } : {}) })}) returning id`;
       if (checkpoint) {
+        await bindNativeQuestionFixture(f.db, r.input.context.runId);
         await f.db`update allrice_settings set value='"timed"'::jsonb where scope_type='system' and key='native_question_mode'`;
         await f.db`insert into allrice_native_questions(session_id,native_session_id,call_id,source_run_id,state,questions,answers,sequence)
           values(${r.input.sessionId},${`dsh-${r.input.sessionId}`},${callId},${r.input.context.runId},'settled',

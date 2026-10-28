@@ -2,6 +2,7 @@ import { createReadPathProbe } from '../read-path-probe.fixture.ts';
 import { sharedHistoryMethodAcceptancePhrases } from './employee-method-shared-history.fixture.ts';
 import { bindJobNativeSession } from '../execution/queue.ts';
 import { nativeBindingDescriptor } from '../native-session-binding.fixture.ts';
+import { bindNativeQuestionFixture } from '../native-question-binding.fixture.ts';
 import {
   departmentCommonAcceptancePhrases,
   companyCommonAcceptancePhrases,
@@ -914,6 +915,8 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     const threadId = native ? `dsh-${run.sessionId}` : `native-${randomUUID()}`;
     let turnId = `turn-${randomUUID()}`;
     await bindConversationThread({ ...runtime, threadId });
+    if (native)
+      await bindNativeQuestionFixture(fixture.db, run.context.runId, threadId);
     let binding = await recordConversationTurn({
       ...runtime,
       threadId,
@@ -1322,9 +1325,17 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       x.run.sessionId,
     );
     await x.project(1, undefined, x.preview.question, other);
+    // A different live Job is not this conversation's leased native source.
+    expect(
+      await fixture.db`select * from allrice_native_questions where session_id=${x.run.sessionId}`,
+    ).toEqual([]);
     await other.finish();
     await x.show();
     await x.answer();
+    // Separately corrupt the synthetic ledger's original source to exercise
+    // the business receipt check even behind the stricter projection guard.
+    await fixture.db`update allrice_native_questions set source_run_id=${other.context.runId}
+      where session_id=${x.run.sessionId} and native_session_id=${x.threadId} and call_id=${x.callId}`;
     expect(
       await fixture.db`select source_run_id,state from allrice_native_questions
         where session_id=${x.run.sessionId} and call_id=${x.callId}`,
