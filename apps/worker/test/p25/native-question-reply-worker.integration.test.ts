@@ -407,10 +407,17 @@ suite(
             ).toBe(true);
           }
           expect(
-            model.requests.filter((r) =>
-              JSON.stringify(r.messages).includes('answer_to_pending_question'),
-            ).length,
-          ).toBe(1);
+            model.requests
+              .at(-1)
+              ?.messages.filter(
+                (message) =>
+                  message.role === 'user' &&
+                  JSON.stringify(message.content).includes(
+                    'answer_to_pending_question',
+                  ) &&
+                  JSON.stringify(message.content).includes(q!.call_id),
+              ),
+          ).toHaveLength(1);
         } finally {
           releaseRoot();
           releaseProjection();
