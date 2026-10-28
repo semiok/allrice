@@ -2,9 +2,9 @@
  * recommendations. Only the model and explicitly named fault boundaries are
  * synthetic; no paid models, tenant database or Bridge devices are contacted. */
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as Database from '@allrice/database';
 import { officeMediaTypes, type RequestContext } from '@allrice/contracts';
@@ -26,7 +26,14 @@ import {
   ensureBootstrapPortalPrincipal,
 } from '../../packages/database/src/identity.ts';
 import { DshHarnessAdapter } from '../../apps/worker/src/harness/dsh-adapter.ts';
-import { DshRuntimePool } from '../../apps/worker/src/harness/dsh/runtime-pool.ts';
+import * as Router from '../../apps/worker/src/harness/router.ts';
+import * as NativeArtifact from '../../apps/worker/src/harness/dsh-native-artifact.ts';
+import {
+  DSH_DISTRIBUTION_CURRENT_GENERATION,
+  DSH_DISTRIBUTION_CURRENT_VERSION,
+} from '../../apps/worker/src/harness/dsh-distribution.ts';
+import * as ModelPool from '../../packages/database/src/providers/model-pool.ts';
+import { p24Fixture } from '../../apps/worker/test/p24/fixture.ts';
 import { executeEmployeeRun } from '../../apps/worker/src/jobs/employee-run.ts';
 import { runClaimedJob } from '../../apps/worker/src/job-runner.ts';
 import { generateDeliverable } from '../../apps/worker/src/deliverable-generator.ts';
@@ -119,10 +126,7 @@ suite('MET167 joined delivery facts (isolated ordinary employee)', () => {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
     vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
     vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
-    vi.spyOn(DshRuntimePool.prototype, 'acquire').mockRejectedValue(
-      Error('PAID_OR_NATIVE_MODEL_FORBIDDEN'),
-    );
-    vi.spyOn(DshHarnessAdapter.prototype, 'isConfigured').mockReturnValue(true);
+    vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
   });
   afterEach(() => {
     ports.context = null;
@@ -134,11 +138,15 @@ suite('MET167 joined delivery facts (isolated ordinary employee)', () => {
     it(`delivery.facts.v1: ${sample.title}`, async () => verify(sample), 60000);
 
   async function verify(sample: Case) {
-    const root = await mkdtemp(join(tmpdir(), 'allrice-delivery-facts-'));
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'allrice-delivery-facts-')),
+    );
     const f = await createP27CodexWorkerFixture({
       allowCiDatabase: true,
       imageGeneration: true,
     });
+    let model: Awaited<ReturnType<typeof p24Fixture>> | undefined;
+    let adapter: DshHarnessAdapter | undefined;
     try {
       await f.db`update allrice_memberships set role='member' where user_id=${f.ownerId}`;
       const owner: RequestContext = {
@@ -174,8 +182,8 @@ suite('MET167 joined delivery facts (isolated ordinary employee)', () => {
         title: `Fixed facts: ${sample.id}`,
       });
       let puts = 0,
-        caught = 0,
         turn = 0;
+      let runId: string;
       const originalPut = LocalStorageAdapter.prototype.put;
       vi.spyOn(LocalStorageAdapter.prototype, 'put').mockImplementation(
         async function (this: LocalStorageAdapter, object, stream) {
@@ -223,80 +231,120 @@ suite('MET167 joined delivery facts (isolated ordinary employee)', () => {
           warnings: ['Fixed unavailable renderer'],
         });
       }
-      vi.spyOn(DshHarnessAdapter.prototype, 'execute').mockImplementation(
-        async (input) => {
-          turn++;
-          await input.onThreadBound?.({
-            threadId: 'fixed-delivery-facts',
-            resumed: turn > 1,
-            replacedThreadId: null,
-          });
-          await input.onTurnStarted?.({
-            threadId: 'fixed-delivery-facts',
-            turnId: `facts-${turn}`,
-          });
-          const textCall = (id: string, fileName: string) => ({
-            id,
-            name: 'workspace.export.create',
-            arguments: {
-              fileName,
-              format: 'text',
-              content: `Fixed actual original ${fileName}`,
-            },
-          });
-          const calls =
-            sample.id === 'answer' && turn > 1
-              ? []
-              : sample.id === 'partial'
-                ? [textCall('a', 'a.txt'), textCall('b', 'b.txt')]
-                : sample.id === 'repaired'
-                  ? [
-                      textCall('bad', 'repaired.txt'),
-                      textCall('fixed', 'repaired.txt'),
-                    ]
-                  : sample.id === 'required-quality' || sample.id === 'preview'
-                    ? [
-                        {
-                          id: 'office',
-                          name: 'workspace.export.create',
-                          arguments: {
-                            fileName: 'protocol.docx',
-                            format: 'docx',
-                            location: 'cloud',
-                            python: {
-                              script: '# fixed synthetic generation boundary',
-                              inputs: [],
-                            },
-                          },
+      const callsForTurn = () => {
+        const textCall = (fileName: string) => ({
+          name: 'workspace_export_create',
+          arguments: {
+            fileName,
+            format: 'text',
+            content: `Fixed actual original ${fileName}`,
+          },
+        });
+        return sample.id === 'answer' && turn > 1
+          ? []
+          : sample.id === 'partial'
+            ? [textCall('a.txt'), textCall('b.txt')]
+            : sample.id === 'repaired'
+              ? [textCall('repaired.txt'), textCall('repaired.txt')]
+              : sample.id === 'required-quality' || sample.id === 'preview'
+                ? [
+                    {
+                      name: 'workspace_export_create',
+                      arguments: {
+                        fileName: 'protocol.docx',
+                        format: 'docx',
+                        location: 'cloud',
+                        python: {
+                          script: '# fixed synthetic generation boundary',
+                          inputs: [],
                         },
-                      ]
-                    : [textCall('original', 'original.txt')];
-          for (const call of calls) {
-            expect(input.tools.map((t) => t.name)).toContain(call.name);
-            try {
-              await input.onToolCall!(call);
-            } catch {
-              caught++;
-            }
-          }
-          // An optimistic fixed answer must not override export/quality failures.
+                      },
+                    },
+                  ]
+                : [textCall('original.txt')];
+      };
+      let calls: ReturnType<typeof callsForTurn> = [];
+      model = await p24Fixture(async (request) => {
+        const call = calls.shift();
+        if (call) {
+          expect(request.tools?.map((t) => t.function.name)).toContain(
+            call.name,
+          );
+          return { nativeTool: call };
+        }
+        const { artifacts } = await listWorkbenchArtifacts(owner, session.id);
+        const links = artifacts
+          .filter((artifact) => artifact.provenance.runId === runId)
+          .map(
+            (artifact) =>
+              `[${artifact.version.fileName}](/api/v1/files/${artifact.object.id}/download)`,
+          );
+        // The native candidate cites only this Run's actual publications. An
+        // optimistic answer still cannot override export/quality failures.
+        return { text: [`Fixed reply ${turn}`, ...links].join('\n') };
+      });
+      const artifactId = process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID!;
+      vi.stubEnv('ALLRICE_DSH_PLATFORM_HOME', join(root, 'unused-platform'));
+      vi.spyOn(NativeArtifact, 'checkedDshNativeLaunch').mockReturnValue({
+        artifactId,
+        profileId: 'restricted',
+      });
+      vi.spyOn(NativeArtifact, 'currentDshNativeLaunch').mockImplementation(
+        (profile) => {
+          expect(profile).toBe('restricted');
           return {
-            answer: `Fixed reply ${turn}`,
-            provider: 'openai-codex',
-            model: input.providerSnapshot.model,
-            usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 3 },
-            usageComplete: true,
-            cacheUsageKnown: true,
-            threadId: 'fixed-delivery-facts',
-            turnId: `facts-${turn}`,
+            artifactId,
+            generation: DSH_DISTRIBUTION_CURRENT_GENERATION,
+            version: DSH_DISTRIBUTION_CURRENT_VERSION,
+            command: process.execPath,
+            args: [resolve('apps/worker/dsh/allrice-jsonrpc-runtime.mjs')],
+            profile: resolve('apps/worker/dsh/allrice-restricted.cordis.yml'),
           };
         },
       );
+      adapter = new DshHarnessAdapter({
+        runtimeRoot: join(root, 'native'),
+        idleCloseMs: 0,
+        requestTimeoutMs: 15000,
+        credentialResolver: {
+          resolve: async () => ({ apiKey: 'synthetic-loopback-only' }),
+        },
+      });
+      vi.spyOn(Router, 'getHarnessRouter').mockReturnValue(
+        new Router.HarnessRouter([adapter]),
+      );
+      // Substitute only the model target before admission freezes the Run;
+      // real Host/turn/candidate/proof and completion guards stay intact.
+      const freezeModel = ModelPool.freezeSessionModelSnapshot;
+      vi.spyOn(ModelPool, 'freezeSessionModelSnapshot').mockImplementation(
+        async (input, database) => {
+          const frozen = await freezeModel(input, database);
+          const snapshot = {
+            ...frozen,
+            provider: 'openai-compatible',
+            authMode: 'api_key' as const,
+            credentialReference: 'test:delivery-facts',
+            baseUrl: model!.baseUrl,
+          };
+          const db = database ?? f.db;
+          await db`update allrice_session_model_snapshots set snapshot=${db.json(snapshot)} where session_id=${input.sessionId}`;
+          return snapshot;
+        },
+      );
       async function execute(text: string) {
+        turn++;
+        calls = callsForTurn();
         const sent = await sendChatMessage(owner, f.workspaceId, session.id, {
           clientMessageId: randomUUID(),
           text,
           deliveryMode: 'follow_up',
+        });
+        runId = sent.run.id;
+        const [frozen] =
+          await f.db`select execution_snapshot from allrice_employee_runs where run_id=${runId}`;
+        expect(frozen!.execution_snapshot).toMatchObject({
+          finalDeliveryPolicy: { mode: 'checked_native_v1', artifactId },
+          officeFirstDeliveryPolicy: { version: 'xlsx_formula_cache_v1' },
         });
         const workerId = randomUUID(),
           job = await claimNextJob(workerId, 30000);
@@ -320,14 +368,17 @@ suite('MET167 joined delivery facts (isolated ordinary employee)', () => {
       }
       if (sample.id === 'answer')
         await execute('Create the earlier fixed file');
-      const runId = await execute(
+      runId = await execute(
         sample.id === 'required-quality'
           ? '必须渲染页面预览后才能交付 Word。'
           : sample.id === 'answer'
             ? 'Answer this question without creating files'
             : 'Deliver the fixed requested files',
       );
-      expect(caught).toBe(sample.failures);
+      expect(model.requests.length).toBeGreaterThan(0);
+      const deniedCalls =
+        await f.db`select 1 from allrice_audit_events where action='tool.execute' and decision='denied' and metadata->>'runId'=${runId}`;
+      expect(deniedCalls).toHaveLength(sample.failures);
       const [formal] =
         await f.db`select r.state,j.status job_status,m.status message_status,m.error_code,m.content from allrice_runs r join allrice_jobs j on j.run_id=r.id join allrice_employee_runs e on e.run_id=r.id join allrice_messages m on m.id=e.assistant_message_id where r.id=${runId}`;
       expect(formal).toMatchObject({
@@ -544,9 +595,17 @@ suite('MET167 joined delivery facts (isolated ordinary employee)', () => {
         )[0]?.role,
       ).toBe('member');
     } finally {
-      const proof = await f.close();
-      expect(proof.fixture?.schemaRemoved).toBe(true);
-      await rm(root, { recursive: true, force: true });
+      try {
+        await adapter?.close();
+      } finally {
+        try {
+          await model?.close();
+        } finally {
+          const proof = await f.close();
+          expect(proof.fixture?.schemaRemoved).toBe(true);
+          await rm(root, { recursive: true, force: true });
+        }
+      }
     }
   }
 });
