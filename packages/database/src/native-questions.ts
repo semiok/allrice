@@ -7,6 +7,7 @@ import type {
 } from '@allrice/contracts';
 import {
   matchUserQuestionAnswer,
+  UserQuestionAnswerSubmissionSchema,
   RuntimeNativeInputProofSchema,
 } from '@allrice/contracts';
 import { runtimePolicyDigest } from './runtime-policy-digest.ts';
@@ -248,6 +249,46 @@ export async function rerouteNativeQuestionSteers(
     await tx`update allrice_conversation_commands set state='pending',worker_id=null,claimed_at=null,
       expected_generation=null,expected_turn_id=null,error_code=null,next_attempt_at=now(),updated_at=now()
       where id=any(${ids}::uuid[])`;
+  // A foreground Host can settle the first input before rejecting another
+  // already-admitted digest. Preserve only that exact input's receipt Job.
+  const conflicts =
+    await tx`select c.id,c.message,m.content->'interaction'->'answer' answer
+    from allrice_conversation_commands c
+    join allrice_conversation_followups f on f.run_id=c.followup_run_id and f.session_id=c.session_id
+    join allrice_employee_runs e on e.run_id=f.run_id and e.session_id=f.session_id
+      and e.organization_id=c.organization_id and e.workspace_id=c.workspace_id and e.owner_id=c.owner_id
+    join allrice_messages m on m.id=e.user_message_id and m.id=f.user_message_id
+    join allrice_chat_input_requests i on i.user_message_id=m.id and i.client_message_id=c.client_user_message_id and i.kind='ask_user'
+    join allrice_chat_sessions s on s.id=e.session_id and s.organization_id=e.organization_id
+      and s.workspace_id=e.workspace_id and s.owner_id=e.owner_id
+    where c.session_id=${sessionId} and c.input_kind='ask_user' and c.state='rejected'
+      and c.error_code='STEER_REJECTED' and f.state='queued' for update of c,f`;
+  for (const row of conflicts) {
+    const answer = UserQuestionAnswerSubmissionSchema.safeParse(row.answer);
+    if (
+      !answer.success ||
+      row.message !== `allrice:user-question:v1:${JSON.stringify(answer.data)}`
+    )
+      continue;
+    const q = await readNativeQuestion(tx, sessionId, answer.data.questionId);
+    const matched =
+      q &&
+      matchUserQuestionAnswer(
+        { questionId: answer.data.questionId, questions: q.questions },
+        answer.data,
+      );
+    if (
+      !q ||
+      q.closed_at ||
+      q.state !== 'settled' ||
+      !matched ||
+      runtimePolicyDigest(matched.answers) === runtimePolicyDigest(q.answers)
+    )
+      continue;
+    await tx`update allrice_conversation_commands set error_code='QUESTION_ANSWER_NOT_ADOPTED',updated_at=now() where id=${row.id}`;
+    await tx`update allrice_conversation_followups set mode='follow_up' where run_id=(select followup_run_id from allrice_conversation_commands where id=${row.id})`;
+    ids.push(row.id);
+  }
   return ids;
 }
 

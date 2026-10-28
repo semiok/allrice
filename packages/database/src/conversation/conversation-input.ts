@@ -340,6 +340,7 @@ export async function deferConversationSteer(input: {
 export async function cancelUnadoptedSteers(
   tx: TransactionSql,
   sessionId: string,
+  nativeReceiptIds: string[] = [],
 ) {
   const rows = await tx<
     {
@@ -351,6 +352,7 @@ export async function cancelUnadoptedSteers(
     select f.run_id,f.assistant_message_id,c.error_code from allrice_conversation_followups f
     join allrice_conversation_commands c on c.followup_run_id=f.run_id
     where f.session_id=${sessionId} and f.state='queued' and c.state='rejected'
+      and not (c.id=any(${nativeReceiptIds}::uuid[]))
       and (f.mode='steer_only' or (c.input_kind='ask_user' and exists (
         select 1 from allrice_messages m where m.id=f.user_message_id
           and m.content->'interaction'->'answer'->>'questionId' like 'dsh-%')))

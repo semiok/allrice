@@ -1140,7 +1140,7 @@ export async function releaseConversationRuntimeTransaction(
         and state in ('pending', 'claimed')
         and not (id=any(${replies}::uuid[]))
     `;
-  await cancelUnadoptedSteers(transaction, values.sessionId);
+  await cancelUnadoptedSteers(transaction, values.sessionId, replies);
   await releaseNextConversationFollowup(transaction, values.sessionId);
   return mapBinding(rows[0]!);
 }
