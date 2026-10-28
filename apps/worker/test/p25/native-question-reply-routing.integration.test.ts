@@ -365,7 +365,7 @@ suite('PR5 native reply routing through the actual employee handler', () => {
           workspaceId: f.identity.workspace,
           expectedRevision: instance.revision,
           requestId: randomUUID(),
-          profile: { ...instance.profile, name: 'V2 员工' },
+          profile: { expressionStyle: 'concise' },
         });
         await f.restartHost();
       }
