@@ -142,6 +142,11 @@ export async function assertExperienceWorker(
     await tx`select root_run_id,(cancel_requested_at is null and cancel_request_id is null and deadline_at>clock_timestamp()) live
     from allrice_runtime_roots where root_run_id=${scope.runId} for share nowait`;
   if (roots.some((r) => !r.live)) return deny();
+  // Native event persistence locks Job before Run. A multi-relation locking
+  // SELECT alone lets the planner choose Run first and deadlock with that writer.
+  await tx`select id from allrice_jobs where id=${worker.jobId} and run_id=${scope.runId}
+    and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and owner_id=${scope.ownerId}
+    for share`;
   const [live] =
     await tx`select j.id from allrice_jobs j join allrice_runs r on r.id=j.run_id
     join allrice_employee_runs er on er.run_id=r.id
