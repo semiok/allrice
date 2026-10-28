@@ -25,7 +25,6 @@ import { cloudStableId } from './cloud-execution.ts';
 import {
   RepositoryMergeRequestSchema,
   RepositoryMergeBindingSchema,
-  RepositoryCompletedReviewSchema,
   RepositoryMergeViewSchema,
   RepositoryMergePanelSchema,
   RepositoryMergeReceiptSchema,
