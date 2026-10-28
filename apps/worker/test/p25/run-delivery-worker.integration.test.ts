@@ -32,6 +32,7 @@ import {
   sendChatMessage,
 } from '../../../../packages/database/src/workspace/service.ts';
 import { upsertEmployeeModelPolicy } from '../../../../packages/database/src/providers/model-pool.ts';
+import { updateUserPreferences } from '../../../../packages/database/src/user-preferences.ts';
 import * as ModelPool from '../../../../packages/database/src/providers/model-pool.ts';
 import {
   claimNextJob,
@@ -40,6 +41,7 @@ import {
   cancelRun,
   failJob,
   finishJobDrain,
+  appendJobEvent,
 } from '../../../../packages/database/src/execution/queue.ts';
 import { publishWorkbenchArtifact } from '../../../../packages/database/src/artifact-review.ts';
 import {
@@ -52,6 +54,7 @@ import * as TurnLifecycle from '../../src/conversation/turn-lifecycle.ts';
 import { prepareExecutionIsolation } from '../../src/isolation.ts';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.ts';
 import { DshProtocolClient } from '../../src/harness/dsh-protocol-client.ts';
+import { normalizeHarnessRunEvent } from '../../src/harness/runtime-contract.ts';
 import * as Router from '../../src/harness/router.ts';
 import * as NativeArtifact from '../../src/harness/dsh-native-artifact.ts';
 import {
@@ -91,6 +94,7 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
     checked: boolean,
     reply: Parameters<typeof p24Fixture>[0],
     nativeSubagents = false,
+    progressWait = false,
   ) {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
     vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
@@ -155,7 +159,7 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
     );
     adapter = new DshHarnessAdapter({
       runtimeRoot: join(directory, 'native'),
-      idleCloseMs: 0,
+      idleCloseMs: progressWait ? 60000 : 0,
       requestTimeoutMs: 15000,
       credentialResolver: {
         resolve: async () => ({ apiKey: 'synthetic-loopback-only' }),
@@ -254,7 +258,7 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
     return { db, identity, context, chat, artifactId };
   }
   type Setup = Awaited<ReturnType<typeof setup>>;
-  async function prepare(f: Setup, prompt: string) {
+  async function prepare(f: Setup, prompt: string, persistEvents = false) {
     const sent = await sendChatMessage(
       f.context,
       f.identity.workspace,
@@ -313,7 +317,13 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
           workflowLease,
           isolation,
           signal: controller.signal,
-          onHarnessEvent: async () => {},
+          onHarnessEvent: async (event) => {
+            if (persistEvents)
+              await appendJobEvent({
+                ...workflowLease,
+                ...normalizeHarnessRunEvent(event),
+              });
+          },
         }),
     };
   }
@@ -368,6 +378,143 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
       await task.isolation.cleanup();
     }
   }, 45000);
+
+  it.each([false, true])(
+    'checked 资格下真实原生进度等待沿持久暂停回执返回，checkpoint 阈值达到=%s',
+    async (checkpointDue) => {
+      const f = await setup(
+        true,
+        async (_request, count) => {
+          expect(count).toBeLessThanOrEqual(3);
+          if (count === 1)
+            await fixture!
+              .db`update allrice_conversation_runtimes set compact_threshold_tokens=${checkpointDue ? 1000 : 100000},usage_baseline_input_tokens=0`;
+          return {
+            nativeTool: { name: 'local_fs_list', arguments: { path: 42 } },
+            usage: {
+              prompt_tokens: 2000,
+              completion_tokens: 5,
+              total_tokens: 2005,
+            },
+          };
+        },
+        false,
+        true,
+      );
+      await updateUserPreferences(f.context, {
+        questionWait: { mode: 'timed', seconds: 1 },
+      });
+      const historyId = randomUUID();
+      await f.db`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,status,content)
+        values(${historyId},${f.identity.org},${f.identity.workspace},${f.chat.id},${f.identity.user},'user','completed',
+        '{"text":"保留此前整理记录。","citations":[]}')`;
+      const task = await prepare(f, '检查目录；遇到重复失败时等我确认。', true);
+      expect(task.snapshot.finalDeliveryPolicy?.mode).toBe('checked_native_v1');
+      expect(task.snapshot.nativePreferences.questionWait).toEqual({
+        mode: 'timed',
+        seconds: 1,
+      });
+      const finalDelivery = vi.spyOn(
+        DshProtocolClient.prototype,
+        'finalDelivery',
+      );
+      try {
+        const result = await task.run();
+        expect(result).toMatchObject({
+          answer: '等你回答后继续。',
+          waitingForUser: { questionId: expect.any(String) },
+          usage: { inputTokens: 6000, cachedInputTokens: 0, outputTokens: 15 },
+          usageComplete: true,
+        });
+        const questionId = result.waitingForUser!.questionId;
+        const [question] =
+          await f.db`select payload from allrice_run_events where run_id=${task.runId}
+          and event_type='native.event' and payload->>'sourceEventType'='session/user-question'`;
+        expect(question!.payload.sourcePayload).toMatchObject({
+          questionId,
+          questions: [expect.objectContaining({ id: 'runtime-progress' })],
+        });
+        const [paused] =
+          await f.db`select pause_id,canceled from allrice_task_progress where run_id=${task.runId}`;
+        expect(paused).toEqual({
+          pause_id: expect.any(String),
+          canceled: false,
+        });
+        expect(finalDelivery.mock.calls.map(([action]) => action)).toEqual([
+          'bind',
+        ]);
+        expect(
+          readCheckedFinalDeliveryForExecution(task.workflowLease, result),
+        ).toEqual({ coverage: 'uncovered' });
+        const checkpoints =
+          await f.db`select covered_through_message_id from allrice_context_checkpoints where session_id=${f.chat.id}`;
+        expect(checkpoints).toEqual(
+          checkpointDue ? [{ covered_through_message_id: historyId }] : [],
+        );
+        await completeJob({ ...task.workflowLease, result });
+        expect(await state(f, task.runId)).toMatchObject({
+          status: 'succeeded',
+          state: 'succeeded',
+          text: '等你回答后继续。',
+          result: { waitingForUser: { questionId } },
+        });
+        const [released] =
+          await f.db`select active_turn_id,active_run_id,worker_id from allrice_conversation_runtimes where session_id=${f.chat.id}`;
+        expect(released).toEqual({
+          active_turn_id: null,
+          active_run_id: null,
+          worker_id: null,
+        });
+        const [route] =
+          await f.db`select id,status,input_tokens,output_tokens,usage_complete from allrice_route_decisions where run_id=${task.runId}`;
+        expect(route).toMatchObject({
+          status: 'succeeded',
+          input_tokens: 6000,
+          output_tokens: 15,
+          usage_complete: true,
+        });
+        expect(
+          await f.db`select route_decision_id id,status,input_tokens,output_tokens,usage_complete from allrice_model_usage_ledger where route_decision_id=${route!.id}`,
+        ).toEqual([route]);
+        expect(
+          await f.db`select * from allrice_task_progress_decisions where run_id=${task.runId}`,
+        ).toHaveLength(0);
+        expect(model!.requests).toHaveLength(3);
+      } finally {
+        await task.isolation.cleanup();
+      }
+    },
+    45000,
+  );
+
+  it.each(['missing-proof', 'forged-wait'] as const)(
+    '真实 Worker 拒绝 %s：普通答复不能借缺 proof 或伪造等待绕过完成门禁',
+    async (mode) => {
+      const f = await setup(true, async () => ({ text: '已完成目录说明。' }));
+      const execute = adapter!.execute.bind(adapter);
+      vi.spyOn(adapter!, 'execute').mockImplementation(async (input) => ({
+        ...(await execute(input)),
+        ...(mode === 'forged-wait'
+          ? { waitingForUser: { questionId: 'forged' } }
+          : {}),
+      }));
+      const task = await prepare(f, '说明目录用途。');
+      try {
+        await expect(task.run()).rejects.toMatchObject({
+          code:
+            mode === 'forged-wait'
+              ? 'DSH_TURN_FAILED'
+              : 'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE',
+          retryable: false,
+        });
+        expect(await state(f, task.runId)).toMatchObject({ successes: 0 });
+        expect(model!.requests).toHaveLength(1);
+      } finally {
+        await task.isolation.cleanup();
+      }
+    },
+    45000,
+  );
 
   it('后代晚于根首次 idle 结算并唤醒根：真实 Worker 将后续 turn 写入 PG 后提交', async () => {
     const childEntered = gate(),
@@ -1086,10 +1233,13 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
             output_tokens: 5 * completedCalls,
             cost_cents: null,
           });
-          if (mode === 'invalid-repair' || mode === 'missing-usage-repair')
-            expect(route!.usage_complete).toBe(mode === 'invalid-repair');
-          if (mode === 'cancel-repair' || mode === 'missing-usage-repair')
-            expect(route!.cache_usage_known).toBe(false);
+          const complete = [
+            'missing-origin',
+            'missing-active-turn',
+            'invalid-repair',
+          ].includes(mode);
+          expect(route!.usage_complete).toBe(complete);
+          expect(route!.cache_usage_known).toBe(complete);
           const ledger =
             await f.db`select route_decision_id id,status,input_tokens,cached_input_tokens,output_tokens,usage_complete,cache_usage_known,cost_cents
               from allrice_model_usage_ledger where route_decision_id=${route!.id}`;
