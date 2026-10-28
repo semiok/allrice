@@ -2052,6 +2052,55 @@ describe('DshHarnessAdapter', () => {
       }
     },
   );
+  it.each([
+    ['usage-complete', true],
+    ['multi-receipts-missing-then-complete', false],
+  ] as const)(
+    'preserves trusted subscription usage after delivery failure: %s',
+    async (prompt, complete) => {
+      const adapter = createAdapter();
+      const platform = await mkdtemp(resolve(tmpdir(), 'allrice-fake-codex-'));
+      await writeFile(resolve(platform, '.credentials.yaml'), '{}', {
+        mode: 0o600,
+      });
+      vi.stubEnv('ALLRICE_DSH_PLATFORM_HOME', platform);
+      const input = executionInput({
+        prompt,
+        provider: {
+          ...snapshot('openai-codex'),
+          authMode: 'platform_subscription',
+          credentialReference: 'deployment:codex-default',
+        },
+      });
+      const failure = new HandlerError(
+        'FINAL_DELIVERY_RESPONSE_INVALID',
+        'synthetic delivery failure after completed native calls',
+        false,
+      );
+      input.finalDelivery = {
+        check: async () => {
+          throw failure;
+        },
+      };
+      try {
+        await expect(adapter.execute(input)).rejects.toBe(failure);
+        expect(
+          getAssistantFailureUsage(
+            failure,
+            input.executionEnvironment.ALLRICE_RUN_ID!,
+            input.attempt,
+          ),
+        ).toEqual({
+          usage: { inputTokens: 16, cachedInputTokens: 3, outputTokens: 5 },
+          usageComplete: complete,
+          cacheUsageKnown: complete,
+        });
+      } finally {
+        await adapter.close();
+        await rm(platform, { recursive: true, force: true });
+      }
+    },
+  );
   it('leaves ordinary Codex on its original acquisition path and permits only verified assistant protocols', async () => {
     const adapter = createAdapter();
     const acquire = vi

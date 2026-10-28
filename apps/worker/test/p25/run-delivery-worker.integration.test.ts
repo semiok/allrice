@@ -48,6 +48,7 @@ import {
 } from '../../../../packages/database/src/final-delivery-commit.ts';
 import { readDeliverySnapshot } from '../../../../packages/database/src/run-delivery.ts';
 import { executeEmployeeRun } from '../../src/jobs/employee-run.ts';
+import * as TurnLifecycle from '../../src/conversation/turn-lifecycle.ts';
 import { prepareExecutionIsolation } from '../../src/isolation.ts';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.ts';
 import { DshProtocolClient } from '../../src/harness/dsh-protocol-client.ts';
@@ -370,16 +371,13 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
 
   it('后代晚于根首次 idle 结算并唤醒根：真实 Worker 将后续 turn 写入 PG 后提交', async () => {
     const childEntered = gate(),
-      releaseChild = gate();
+      releaseChild = gate(),
+      releaseOriginWrite = gate();
     let rootCalls = 0;
     const answer = '已汇总子智能体的实际结果。';
     const f = await setup(
       true,
       async (request) => {
-        console.info(
-          'Synthetic child diagnostic',
-          JSON.stringify(request.messages),
-        );
         const userInputs = request.messages.filter((m) => m.role === 'user');
         if (JSON.stringify(userInputs).includes('PR1B_CHILD_TASK')) {
           childEntered.release();
@@ -403,6 +401,47 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
       true,
     );
     const task = await prepare(f, '启动子任务，结束后汇总，不需要文件。');
+    let rootId: unknown;
+    const finalDelivery = DshProtocolClient.prototype.finalDelivery;
+    vi.spyOn(DshProtocolClient.prototype, 'finalDelivery').mockImplementation(
+      function (this: DshProtocolClient, action, params) {
+        if (action === 'bind') rootId = params.sessionId;
+        return finalDelivery.call(this, action, params);
+      },
+    );
+    // PR3 will provide child SaaS admission/accounting. Stub only those two
+    // child seams for this future native composition, never root authority,
+    // origin, notifications, wait, journal or PostgreSQL persistence.
+    const setHandler = DshProtocolClient.prototype.setRequestHandler;
+    vi.spyOn(
+      DshProtocolClient.prototype,
+      'setRequestHandler',
+    ).mockImplementation(function (this: DshProtocolClient, handler) {
+      setHandler.call(
+        this,
+        handler &&
+          (async (method, params) => {
+            if (rootId && params.nativeSessionId !== rootId) {
+              if (method === 'allrice/content-check') return { allowed: true };
+              if (method === 'allrice/progress') return { paused: false };
+            }
+            if (method === 'allrice/final-delivery-origin')
+              releaseOriginWrite.release();
+            return handler(method, params);
+          }),
+      );
+    });
+    let heldOriginWrite = false;
+    const beginTurn = TurnLifecycle.beginEmployeeConversationTurn;
+    vi.spyOn(TurnLifecycle, 'beginEmployeeConversationTurn').mockImplementation(
+      async (input) => {
+        if (input.turnId.endsWith(':turn:2')) {
+          heldOriginWrite = true;
+          await releaseOriginWrite.promise;
+        }
+        return beginTurn(input);
+      },
+    );
     const wait = DshProtocolClient.prototype.wait;
     let waited = false;
     vi.spyOn(DshProtocolClient.prototype, 'wait').mockImplementation(
@@ -439,10 +478,12 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
       expect(result.answer).toBe(answer);
       // Root receipts include the tool call, first idle and woken turn. Child
       // usage归根 is PR3b; never synthesize it from a journal into this Run.
-      expect(result.usage).toEqual({
-        inputTokens: 60,
-        cachedInputTokens: 0,
-        outputTokens: 15,
+      expect(result).toMatchObject({
+        usage: {
+          inputTokens: 60,
+          cachedInputTokens: 0,
+          outputTokens: 15,
+        },
       });
       await completeJob({
         ...task.workflowLease,
@@ -455,24 +496,14 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
         successes: 1,
       });
       expect(rootCalls).toBe(3);
+      expect(heldOriginWrite).toBe(true);
       expect(model!.requests).toHaveLength(4);
       expect(JSON.stringify(model!.requests.at(-1)!.messages)).toContain(
         'PR1B_CHILD_RESULT',
       );
-    } catch (error) {
-      console.info(
-        'Synthetic descendant requests',
-        model!.requests.map((r) => ({
-          messages: r.messages.map((m) => ({
-            role: m.role,
-            content: JSON.stringify(m.content).slice(-1500),
-            tools: m.tool_calls,
-          })),
-        })),
-      );
-      throw error;
     } finally {
       releaseChild.release();
+      releaseOriginWrite.release();
       task.controller.abort();
       await task.isolation.cleanup();
     }
