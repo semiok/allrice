@@ -42,12 +42,18 @@ export async function assertRunDeliveryAuthority(
     finalDeliveryUnavailable();
   // Job precedes run/session, matching queue completion. These locks also
   // exclude publication's SHARE job/run and UPDATE session locks.
-  const [job] = await tx`select id from allrice_jobs where id=${worker.jobId}
+  const [job] =
+    await tx`select id,owner_id from allrice_jobs where id=${worker.jobId}
     and run_id=${rootRunId} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
     and worker_id=${worker.workerId} and lease_token=${worker.leaseToken} and attempt=${worker.attempt}
     and status='running' and cancel_requested_at is null and drain_reason is null
     and lease_expires_at>clock_timestamp() and timeout_at>clock_timestamp() for update`;
   if (!job) finalDeliveryUnavailable();
+  // Admission takes user NO KEY UPDATE before Session UPDATE. Take user SHARE
+  // before the join locks the Session, or each transaction can wait on the other.
+  // The owner comes from the locked job; assertWorkbenchSession still checks
+  // current tenant/member authority below.
+  await tx`select id from allrice_users where id=${job.owner_id} for share`;
   const [policy] =
     await tx`select version,controls from allrice_runtime_policy_controls
     where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} for share`;
