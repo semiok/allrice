@@ -112,10 +112,22 @@ export async function recordNativeQuestions(
   const [scope] = await tx`select s.id from allrice_employee_runs e
     join allrice_chat_sessions s on s.id=e.session_id
       and s.organization_id=e.organization_id and s.workspace_id=e.workspace_id
-    where e.run_id=${runId} and ${view.sessionId}='dsh-'||s.id::text
-      and (s.native_question_sequence is null or s.native_question_sequence<${view.sequence})
+      and s.owner_id=e.owner_id
+    join allrice_native_session_bindings b on b.native_session_id=${view.sessionId}
+      and b.context_kind='chat' and b.context_id=s.id and b.organization_id=s.organization_id
+      and b.workspace_id=s.workspace_id and b.owner_id=s.owner_id
+    join allrice_conversation_runtimes cr on cr.session_id=s.id and cr.thread_id=b.native_session_id
+      and cr.active_run_id=e.run_id and cr.state='running'
+    join allrice_jobs j on j.run_id=e.run_id and j.worker_id=cr.worker_id and j.status='running'
+    where e.run_id=${runId}
+      and (s.native_question_sequences->>${view.sessionId} is null
+        or (s.native_question_sequences->>${view.sessionId})::bigint<${view.sequence})
     for update of s`;
   if (!scope) return;
+  // A new approved native Session cannot inherit or revive a previous call's
+  // authority, even if DSH reuses callId or an old snapshot arrives later.
+  await tx`update allrice_native_questions set closed_at=coalesce(closed_at,clock_timestamp())
+    where session_id=${scope.id} and native_session_id<>${view.sessionId}`;
   // Rollback fences notifications already in flight in an old timed Host.
   const mode = await readNativeQuestionMode(tx);
   const items = [
@@ -132,7 +144,7 @@ export async function recordNativeQuestions(
       values(${scope.id},${view.sessionId},${item.callId},${runId},${item.state},
         ${tx.json(item.questions ?? [])},${item.answers === null ? null : tx.json(item.answers)},${view.sequence},
         ${mode === 'legacy' ? new Date() : null})
-      on conflict(session_id,call_id) do update set state=excluded.state,
+      on conflict(session_id,native_session_id,call_id) do update set state=excluded.state,
         questions=case when allrice_native_questions.questions='[]'::jsonb
           then excluded.questions else allrice_native_questions.questions end,
         answers=excluded.answers,sequence=excluded.sequence,native_present=true,
@@ -141,9 +153,11 @@ export async function recordNativeQuestions(
   // Mirror membership without inventing a native terminal state. Preserve the
   // original question and revocation facts even if DSH later removes the call.
   await tx`update allrice_native_questions set native_present=false,sequence=${view.sequence}
-    where session_id=${scope.id}
+    where session_id=${scope.id} and native_session_id=${view.sessionId}
     and not (call_id=any(${items.map((q) => q.callId)}::text[]))`;
-  await tx`update allrice_chat_sessions set native_question_sequence=${view.sequence} where id=${scope.id}`;
+  await tx`update allrice_chat_sessions set native_question_sequences=
+    jsonb_set(native_question_sequences,${[view.sessionId]}::text[],to_jsonb(${view.sequence}::bigint))
+    where id=${scope.id}`;
 }
 
 /** Product stop revokes only questions first observed in this Run. Archiving
@@ -166,7 +180,8 @@ export async function readNativeQuestion(
   questionId: string,
 ) {
   const [row] = await tx`select * from allrice_native_questions
-    where session_id=${sessionId} and native_present and native_session_id||':'||call_id=${questionId}`;
+    where session_id=${sessionId} and native_present and native_session_id||':'||call_id=${questionId}
+      and native_session_id=(select thread_id from allrice_conversation_runtimes where session_id=${sessionId})`;
   return row ?? null;
 }
 
@@ -181,6 +196,7 @@ export function answerableTaskQuestions(
     return tx`exists(select 1 from allrice_task_questions q where q.run_id=${runId} and q.pending)`;
   return tx`(exists(select 1 from allrice_native_questions q
       join allrice_employee_runs e on e.session_id=q.session_id
+      join allrice_conversation_runtimes cr on cr.session_id=q.session_id and cr.thread_id=q.native_session_id
       where e.run_id=${runId} and q.native_present and q.state in ('open','continued') and q.closed_at is null)
     or exists(select 1 from allrice_task_questions q where q.run_id=${runId} and q.pending))`;
 }

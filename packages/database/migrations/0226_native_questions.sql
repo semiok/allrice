@@ -1,5 +1,7 @@
 -- MET-210 PR4: DSH remains the question authority; this is its SaaS projection.
-alter table allrice_chat_sessions add column native_question_sequence bigint;
+-- Native sequences restart when the approved native Session changes. Retain
+-- each Session's watermark, including empty snapshots and retired identities.
+alter table allrice_chat_sessions add column native_question_sequences jsonb not null default '{}';
 
 create table allrice_native_questions (
   session_id uuid not null references allrice_chat_sessions(id) on delete cascade,
@@ -12,7 +14,7 @@ create table allrice_native_questions (
   sequence bigint not null,
   native_present boolean not null default true,
   closed_at timestamptz,
-  primary key (session_id, call_id)
+  primary key (session_id, native_session_id, call_id)
 );
 
 insert into allrice_settings(scope_type,key,value)

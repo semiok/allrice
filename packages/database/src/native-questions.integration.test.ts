@@ -4,6 +4,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 import { createAssistantLocalCommandFixture } from './local-command-assistant.fixture.ts';
 import * as client from './core/client.ts';
+import { bindNativeQuestionFixture } from './native-question-binding.fixture.ts';
+import { bindConversationThread } from './conversation/conversation-runtime.ts';
 import { createSession, authenticateSession } from './identity.ts';
 import {
   appendJobEvent,
@@ -68,6 +70,7 @@ suite(
         workspaceId: f.workspace,
       }))!;
       const nativeSessionId = `dsh-${f.session}`;
+      await bindNativeQuestionFixture(f.db, f.rootRunId, nativeSessionId);
       const question = {
         callId: 'call:1',
         state: 'open',
@@ -218,6 +221,7 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
     const leaseToken = job!.lease!.token;
     const execution = await startClaimedJob(workerId, job!.id, leaseToken);
     expect(execution).not.toBeNull();
+    await bindNativeQuestionFixture(isolated.db, sent.run.id);
     return {
       runId: sent.run.id,
       sessionId,
@@ -693,7 +697,7 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
     });
     expect(await rows(f.session.id)).toEqual(before);
     expect(
-      await isolated.db`select native_question_sequence::int as sequence from allrice_chat_sessions where id=${f.session.id}`,
+      await isolated.db`select (native_question_sequences->>${turn.nativeSessionId})::int as sequence from allrice_chat_sessions where id=${f.session.id}`,
     ).toEqual([{ sequence: 10 }]);
     expect(await clockRows(turn.runId)).toEqual(clock);
     expect(
@@ -765,6 +769,112 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
     expect(await rows(other.session.id)).toMatchObject([
       { closed_at: expect.any(Date) },
     ]);
+  });
+
+  it('isolates approved native generations, reused call IDs, empty-snapshot watermarks and retired authority', async () => {
+    const f = await createExperienceFixture(isolated.db);
+    await updateNativeQuestionMode(f.reviewer, 'timed');
+    const turn = await startTurn(f, '先问我方案，换一轮后仍按新问题回答。');
+    const q = question('same-call');
+    await sendView(turn, 50, [q]);
+    const nextId = `${turn.nativeSessionId}-${randomUUID()}`;
+    // A familiar prefix is not authorization. Even a runtime thread with no
+    // approved pin cannot write a projection or advance the watermark.
+    await bindConversationThread({
+      organizationId: f.org,
+      workspaceId: f.workspace,
+      sessionId: f.session.id,
+      runId: turn.runId,
+      workerId: turn.workerId,
+      threadId: nextId,
+    });
+    await sendView(turn, 1, [question('unapproved')], [], nextId);
+    expect(await rows(f.session.id)).toHaveLength(1);
+    expect(
+      await isolated.db.begin((tx) =>
+        readNativeQuestion(
+          tx,
+          f.session.id,
+          `${turn.nativeSessionId}:${q.callId}`,
+        ),
+      ),
+    ).toBeNull();
+    await bindNativeQuestionFixture(isolated.db, turn.runId, nextId);
+    await sendView(
+      turn,
+      1,
+      [
+        {
+          ...q,
+          questions: [{ ...q.questions[0]!, question: '新一代的问题？' }],
+        },
+      ],
+      [],
+      nextId,
+    );
+    const projected = await rows(f.session.id);
+    expect(projected).toHaveLength(2);
+    expect(
+      projected.find((r) => r.native_session_id === turn.nativeSessionId),
+    ).toMatchObject({
+      sequence: '50',
+      closed_at: expect.any(Date),
+      source_run_id: turn.runId,
+    });
+    const current = projected.find((r) => r.native_session_id === nextId)!;
+    expect(current).toMatchObject({
+      sequence: '1',
+      closed_at: null,
+      questions: [{ question: '新一代的问题？' }],
+    });
+    // Old notifications from the same leased source cannot write the new pin.
+    await sendView(turn, 100, [question('old-forged')]);
+    expect(await rows(f.session.id)).toHaveLength(2);
+    await sendView(turn, 3, [], [], nextId);
+    await sendView(turn, 2, [q], [], nextId);
+    expect(
+      await isolated.db.begin((tx) =>
+        readNativeQuestion(tx, f.session.id, `${nextId}:${q.callId}`),
+      ),
+    ).toBeNull();
+    await sendView(turn, 4, [q], [], nextId);
+    expect(
+      (
+        await isolated.db.begin((tx) =>
+          readNativeQuestion(tx, f.session.id, `${nextId}:${q.callId}`),
+        )
+      )?.closed_at,
+    ).toBeNull();
+    // Returning to the original pin still cannot reset its watermark or undo
+    // revocation. Native state is mirrored; permission remains closed.
+    await bindNativeQuestionFixture(
+      isolated.db,
+      turn.runId,
+      turn.nativeSessionId,
+    );
+    await sendView(turn, 49, [question('rollback-forged')]);
+    await sendView(turn, 51, [q]);
+    expect(await rows(f.session.id)).toHaveLength(2);
+    const old = await isolated.db.begin((tx) =>
+      readNativeQuestion(
+        tx,
+        f.session.id,
+        `${turn.nativeSessionId}:${q.callId}`,
+      ),
+    );
+    expect(old).toMatchObject({
+      closed_at: expect.any(Date),
+      sequence: '51',
+      source_run_id: turn.runId,
+    });
+    expect(
+      await isolated.db`select native_question_sequences from allrice_chat_sessions where id=${f.session.id}`,
+    ).toEqual([
+      {
+        native_question_sequences: { [turn.nativeSessionId]: 51, [nextId]: 4 },
+      },
+    ]);
+    await completeJob({ ...turn, result: { text: '本轮结束。' } });
   });
 
   it('a removed revoked identity cannot regain authority or acquire a new source Run when it reappears', async () => {
