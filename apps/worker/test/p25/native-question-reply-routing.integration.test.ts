@@ -235,7 +235,7 @@ suite('PR5 native reply routing through the actual employee handler', () => {
       executeEmployeeRun,
     );
     const [run] =
-      await f.db`select r.state,r.error,j.status,j.lease_token from allrice_runs r
+      await f.db`select r.state,r.error_code,j.last_error_code,j.last_error_message,j.status,j.lease_token from allrice_runs r
       join allrice_jobs j on j.run_id=r.id where r.id=${runId}`;
     expect(run).toMatchObject({
       state: 'succeeded',
