@@ -60,7 +60,9 @@ suite('PR5 native reply routing through the actual employee handler', () => {
     vi.unstubAllEnvs();
   }, 30000);
   async function setup(reply: Parameters<typeof p24Fixture>[0]) {
-    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
+    // This historical fixture seeds an unused assistant root. Product chat
+    // admission below runs with the switch off and no assistant preference.
+    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
     vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
     vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
     vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
@@ -127,6 +129,7 @@ suite('PR5 native reply routing through the actual employee handler', () => {
         baseUrl: model.baseUrl,
       },
     });
+    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
     const login = await createSession(identity.user);
     const context = (await authenticateSession(login.token, {
       organizationId: identity.org,
@@ -215,7 +218,9 @@ suite('PR5 native reply routing through the actual employee handler', () => {
   async function execute(f: Setup, runId: string) {
     const workerId = randomUUID();
     const job = (await claimNextJob(workerId, 300000))!;
-    expect(job.runId).toBe(runId);
+    expect(job.id).toBe(
+      (await f.db`select id from allrice_jobs where run_id=${runId}`)[0]!.id,
+    );
     await runClaimedJob(
       {
         workerId,
