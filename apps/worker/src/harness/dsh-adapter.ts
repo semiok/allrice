@@ -3,6 +3,7 @@ import { readDshToolResult } from '@allrice/contracts';
 import type { SessionReferenceSnapshot } from '@allrice/contracts';
 import { randomUUID, createHash } from 'node:crypto';
 
+import { driveNativeQuestionReply } from './dsh/native-question-reply.js';
 import {
   HarnessEventSchema,
   harnessContextKey,
@@ -933,6 +934,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       if (
         runtime.bootstrapCoverage &&
         input.kernel.bootstrapContext &&
+        !input.questionReply &&
         !input.questionWait?.resume
       ) {
         const context = input.kernel.bootstrapContext;
@@ -1095,6 +1097,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
               signal: executionSignal,
               subscription: snapshot.route === 'openai-codex',
               questionWait: !assistant ? input.questionWait : undefined,
+              questionReply: callIndex === 0 ? input.questionReply : undefined,
               resume: callIndex === 0 ? input.questionWait?.resume : undefined,
               settleDelivery: runDelivery
                 ? async (confirmSettled) => {
@@ -1924,6 +1927,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     signal: AbortSignal;
     subscription: boolean;
     questionWait?: HarnessExecutionInput['questionWait'];
+    questionReply?: HarnessExecutionInput['questionReply'];
     resume?: NonNullable<HarnessExecutionInput['questionWait']>['resume'];
     /** Hold event intake through public wait, input pause and final candidate. */
     settleDelivery?(confirmSettled: () => void): Promise<void>;
@@ -1965,6 +1969,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       if (processingError) throw processingError;
     };
     let idle = false;
+    let replyOnly = false;
     let started = false;
     let turnOriginCommitted = false;
     let usageSettled = false;
@@ -2607,6 +2612,23 @@ export class DshHarnessAdapter implements HarnessAdapter {
     input.signal.addEventListener('abort', abort, { once: true });
     if (input.signal.aborted) abort();
     try {
+      if (input.questionReply) {
+        const receipt = await driveNativeQuestionReply({
+          client: input.runtime.client,
+          sessionId: input.runtime.sessionId,
+          reply: input.questionReply,
+          signal: input.signal,
+          flushEvents: async () => {
+            await eventChain;
+            if (processingError) throw processingError;
+          },
+        });
+        replyOnly = !started;
+        if (receipt.rejected)
+          answer = '这道题已经采用了另一份回答，本次回答没有被采用。';
+        else if (!started) answer = '这道题已经回答过。';
+        idle = true;
+      }
       if (input.resume && input.questionWait) {
         const answer = await input.runtime.client.answerWait(input.resume);
         await input.questionWait.adopted(
@@ -2614,9 +2636,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
         );
       }
       await (
-        input.start
-          ? input.start()
-          : input.resume
+        input.questionReply
+          ? Promise.resolve()
+          : input.start
+            ? input.start()
+            : input.resume
             ? input.runtime.client.continueWait(input.resume)
             : input.runtime.client.prompt(
                 input.runtime.sessionId,
@@ -2684,10 +2708,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
         completionSource,
         usageSource,
         usageComplete:
-          messageReceipts > 0 &&
+          (messageReceipts > 0 || replyOnly) &&
           usageComplete &&
           Object.values(usage).every(Number.isSafeInteger),
-        cacheUsageKnown: messageReceipts > 0 && cacheUsageKnown,
+        cacheUsageKnown: (messageReceipts > 0 || replyOnly) && cacheUsageKnown,
       };
     } catch (error) {
       // A failed wait/origin RPC may race the asynchronous event projection.

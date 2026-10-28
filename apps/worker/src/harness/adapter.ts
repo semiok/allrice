@@ -79,6 +79,14 @@ export interface HarnessExecutionInput {
   nativeQuestionMode?: 'legacy' | 'timed';
   /** Owner preference frozen when this Run was enqueued. */
   nativeQuestionWait?: QuestionWait;
+  /** This Job's durable ask_user command, loaded by the Worker, never HTTP/RPC callbacks. */
+  questionReply?: {
+    inputId: string;
+    text: string;
+    assertCurrent(): Promise<unknown>;
+    adopted(proof: RuntimeNativeInputProof): Promise<void>;
+    rejected(): Promise<void>;
+  };
   /** Server-loaded current human message before attachment/template augmentation.
    * Selects an existing tool transport only; database admission grants writes. */
   currentUserRequest?: string;

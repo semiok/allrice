@@ -57,6 +57,7 @@ import {
   continueNativeQuestion,
   claimConversationSteer,
   consumeConversationSteer,
+  prepareNativeQuestionReply,
   beginNativeTaskWithStopReceipt,
   completeNativeTask,
   readParkedNativeUsage,
@@ -1321,6 +1322,11 @@ export async function executeEmployeeRun({
     let steerDelivery:
       ReturnType<typeof createConversationInputDelivery> | undefined;
     let questionWait: HarnessExecutionInput['questionWait'];
+    const questionReply = await prepareNativeQuestionReply({
+      context: execution.context,
+      worker: workflowLease,
+      sessionId: ownership.sessionId,
+    });
     if (
       taskProgress &&
       !repairTask &&
@@ -1826,6 +1832,7 @@ export async function executeEmployeeRun({
         : await adapter
             .execute({
               nativeQuestionMode,
+              questionReply,
               contentGuard,
               progress: taskProgress,
               questionWait,

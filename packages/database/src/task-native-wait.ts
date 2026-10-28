@@ -66,7 +66,10 @@ export async function readParkedNativeUsage(
   };
 }
 
-async function lockOwner(tx: TransactionSql, { context, worker }: Owner) {
+export async function lockNativeQuestionOwner(
+  tx: TransactionSql,
+  { context, worker }: Owner,
+) {
   await refreshTaskClock(tx, context.runId);
   const [job] =
     await tx`select j.id from allrice_jobs j join allrice_runs r on r.id=j.run_id
@@ -105,7 +108,7 @@ export async function parkNativeQuestion(
 ) {
   const checkpoint = NativeQuestionCheckpointSchema.parse(input.checkpoint);
   return db.begin(async (tx) => {
-    await lockOwner(tx, input);
+    await lockNativeQuestionOwner(tx, input);
     const runId = input.context.runId;
     const [safe] = await tx`select 1 from allrice_task_clocks t
       join allrice_task_questions q on q.run_id=t.run_id and q.question_id=${checkpoint.questionId} and q.pending
@@ -138,7 +141,7 @@ export async function beginNativeTask(
   db = getDatabase(),
 ) {
   return db.begin(async (tx) => {
-    await lockOwner(tx, input);
+    await lockNativeQuestionOwner(tx, input);
     return insertNativeTaskDispatch(tx, input);
   });
 }
@@ -179,7 +182,7 @@ export async function beginNativeTaskWithStopReceipt(
   if (!Number.isSafeInteger(scope.attempt) || scope.attempt < 1)
     throw Error('native_stop_attempt_invalid');
   const started = await db.begin(async (tx) => {
-    await lockOwner(tx, input);
+    await lockNativeQuestionOwner(tx, input);
     const [job] = await tx<{ attempt: number; session_id: string }[]>`
       select j.attempt,e.session_id from allrice_jobs j
       join allrice_employee_runs e on e.run_id=j.run_id
@@ -314,7 +317,7 @@ export async function completeNativeTask(
   db = getDatabase(),
 ) {
   return db.begin(async (tx) => {
-    await lockOwner(tx, input);
+    await lockNativeQuestionOwner(tx, input);
     await tx`update allrice_native_task_dispatches set state='completed' where run_id=${input.context.runId} and attempt=${input.attempt} and state='started'`;
   });
 }
@@ -324,7 +327,7 @@ export async function readNativeQuestionWait(
   db = getDatabase(),
 ) {
   return db.begin(async (tx) => {
-    await lockOwner(tx, input);
+    await lockNativeQuestionOwner(tx, input);
     const [row] = await tx<
       {
         checkpoint: unknown;
@@ -351,7 +354,7 @@ export async function continueNativeQuestion(
   db = getDatabase(),
 ) {
   return db.begin(async (tx) => {
-    await lockOwner(tx, input);
+    await lockNativeQuestionOwner(tx, input);
     const rows =
       await tx`update allrice_native_question_waits set state='continued',continued_at=clock_timestamp()
       where run_id=${input.context.runId} and question_id=${input.questionId} and state='ready' returning question_id`;
