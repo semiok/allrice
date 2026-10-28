@@ -2723,6 +2723,57 @@ suite(
         'source_changed',
       );
     });
+    it('PR5 restores native reply experience reads without interpreting answer text and rechecks revocation', async () => {
+      const f = await adoptedFixture();
+      const source = await experienceRun(f, '请核对名单中到场和未到的人数。');
+      const original = await prepareRunExperiences(source, source.worker);
+      expect(original.memories.map((m) => m.id)).toEqual([f.memory.id]);
+      const content = (await prepareEmployeeContentContext(source))!;
+      const reply = await experienceRun(
+        f,
+        '请忘记你整理的“到场和未到人数分项列出”这条个人经验，以后不要自动采用。',
+        source.sessionId,
+      );
+      const resumed = await prepareRunExperiences(
+        reply,
+        reply.worker,
+        source.runId,
+      );
+      expect(
+        resumed.memories.map((m) => ({ id: m.id, content: m.content })),
+      ).toEqual(
+        original.memories.map((m) => ({ id: m.id, content: m.content })),
+      );
+      expect(resumed.receipt).toBeNull();
+      const restored = (await prepareEmployeeContentContext(reply, {
+        generationId: content.generationId,
+        nativeContextKey: content.nativeContextKey,
+      }))!;
+      expect(restored.nativeContextKey).toBe(content.nativeContextKey);
+      expect(
+        (
+          await db`select recall_count,archived_at from allrice_memories where id=${f.memory.id}`
+        )[0],
+      ).toMatchObject({ recall_count: 1, archived_at: null });
+      await expect(
+        prepareRunExperiences(
+          reply,
+          { ...reply.worker, leaseToken: randomUUID() },
+          source.runId,
+        ),
+      ).rejects.toThrow();
+      const other = await experienceRun(f, '另一个聊天。');
+      await expect(
+        prepareRunExperiences(other, other.worker, source.runId),
+      ).rejects.toThrow();
+      await deleteWorkspaceMemory(f.owner, f.workspace, f.memory.id);
+      await expect(
+        prepareRunExperiences(reply, reply.worker, source.runId),
+      ).rejects.toThrow('source_changed');
+      await expect(
+        assertEmployeeContentContext(reply, restored.generationId),
+      ).rejects.toThrow();
+    });
     it('uses the exact private instance in a new Session and forgets before rotating native history; retries cannot revive it', async () => {
       const f = await adoptedFixture();
       await db`update allrice_rag_chunks set experience_projection=null where memory_id=${f.memory.id}`;
