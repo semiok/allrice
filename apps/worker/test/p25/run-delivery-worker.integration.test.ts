@@ -341,6 +341,11 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
       const original = `[月报](/api/v1/files/${randomUUID()}/download)`;
       const f = await setup(true, async (_request, count) => ({
         text: count === 1 && mode === 'repair' ? original : answer,
+        usage: {
+          prompt_tokens: 2000,
+          completion_tokens: 10,
+          total_tokens: 2010,
+        },
       }));
       const task = await prepare(
         f,
@@ -369,7 +374,7 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
         async function (this: DshProtocolClient, action, params) {
           const response = await finalDelivery.call(this, action, params);
           if (action === 'finish')
-            await f.db`update allrice_conversation_runtimes set compact_threshold_tokens=1 where session_id=${f.chat.id}`;
+            await f.db`update allrice_conversation_runtimes set compact_threshold_tokens=1000,usage_baseline_input_tokens=0 where session_id=${f.chat.id}`;
           return response;
         },
       );
