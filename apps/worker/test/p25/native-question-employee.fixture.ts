@@ -46,6 +46,18 @@ export async function setupNativeReplyEmployee(
     };
   },
 ) {
+  const environment = new Map(
+    [
+      'ALLRICE_ASSISTANTS_ENABLED',
+      'ALLRICE_WORKBENCH_ENABLED',
+      'ALLRICE_RUNTIME_POLICY_ENABLED',
+      'ALLRICE_GEMINI_API_ENABLED',
+      'ALLRICE_DSH_NATIVE_ARTIFACT_ID',
+      'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
+      'ALLRICE_STORAGE_ROOT',
+      'ALLRICE_DSH_PLATFORM_HOME',
+    ].map((key) => [key, process.env[key]]),
+  );
   let adapter: DshHarnessAdapter;
   // This historical fixture seeds an unused assistant root. Product chat
   // admission below runs with the switch off and no assistant preference.
@@ -212,6 +224,10 @@ export async function setupNativeReplyEmployee(
       await model.close();
       await fixture?.close();
       await rm(directory, { recursive: true, force: true });
+      for (const [key, value] of environment) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
     },
   };
 }

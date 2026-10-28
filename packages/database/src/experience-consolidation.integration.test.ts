@@ -2058,6 +2058,9 @@ suite(
         } finally {
           await actual.close();
           vi.restoreAllMocks();
+          vi.spyOn(globalThis, 'fetch').mockRejectedValue(
+            Error('No provider/network in SQL-only B2a acceptance'),
+          );
         }
       },
       60000,
