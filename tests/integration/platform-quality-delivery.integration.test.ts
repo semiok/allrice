@@ -281,7 +281,7 @@ suite('MET167 joined delivery facts (isolated ordinary employee)', () => {
           );
         // The native candidate cites only this Run's actual publications. An
         // optimistic answer still cannot override export/quality failures.
-        return { text: [`Fixed reply ${turn}`, ...links].join('\n') };
+        return { text: [`Fixed reply ${turn}`, ...links].join('\n\n') };
       });
       const artifactId = process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID!;
       vi.stubEnv('ALLRICE_DSH_PLATFORM_HOME', join(root, 'unused-platform'));
@@ -385,6 +385,8 @@ suite('MET167 joined delivery facts (isolated ordinary employee)', () => {
         state: sample.state,
         job_status: sample.state,
         message_status: sample.state === 'succeeded' ? 'completed' : 'failed',
+        error_code:
+          sample.state === 'failed' ? 'DOCUMENT_DELIVERY_INCOMPLETE' : null,
       });
       const history = await getChatSessionHistory(
         owner,
@@ -488,12 +490,13 @@ suite('MET167 joined delivery facts (isolated ordinary employee)', () => {
           organizationId: f.organizationId,
           artifact: current[0]!,
           failed: sample.state === 'failed',
-          // The transcript shows the plain copy for stored platform wording.
+          // Match the retained reply paragraph; Markdown file links render in
+          // separate paragraphs and the real file controls are checked below.
           failureText: shownFailure(
             history.messages.find(
               (m) => m.runId === runId && m.role === 'assistant',
             )?.content.text,
-          ),
+          )?.split('\n\n')[0],
           releasePreview,
           http: async (request) => {
             const url = new URL(request.url);
