@@ -40,6 +40,20 @@ export class AllRiceSdkRoot {
     // Keep the public durable event channel alive through the existing drain;
     // per-Session sequence de-duplication prevents double publication while SDK is live.
     this.ownDisposers.push(
+      ctx.on(
+        'agent/inbox/discarded',
+        ({ agent, message }) => {
+          if (
+            String(agent.session.id) === this.rootId &&
+            message.source.kind === 'user-question-reply'
+          )
+            this.transport.notify('session.user-question-discarded', {
+              sessionId: String(agent.session.id),
+              callId: message.source.callId,
+            });
+        },
+        { global: true },
+      ),
       ctx.on('session/event', (session, event) => {
         this.sdkTransport.notify('session.event', {
           sessionId: String(session.id),

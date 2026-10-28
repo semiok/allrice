@@ -1,4 +1,5 @@
 import {
+  RuntimeNativeInputProofSchema,
   BootstrapCoverageResultSchema,
   type BootstrapCoverageQuery,
   type BootstrapReceipt,
@@ -387,6 +388,20 @@ export class DshProtocolClient {
     return this.request('session/question-reply', input) as Promise<{
       queued: boolean;
     }>;
+  }
+
+  /** Typed reply receipt; the Host only uses DSH answer(), never prompt(). */
+  async typedQuestionReply(
+    sessionId: string,
+    input: { inputId: string; text: string },
+  ) {
+    return RuntimeNativeInputProofSchema.parse(
+      await this.request('session/question-reply', {
+        sessionId,
+        inputId: input.inputId,
+        text: input.text,
+      }),
+    );
   }
 
   async steer(

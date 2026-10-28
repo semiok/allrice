@@ -1662,7 +1662,7 @@ export async function createAllRiceRuntime(
       return { interrupted: true };
     }
 
-    async steer(params) {
+    async steer(params, allowIdle = false) {
       this.runFinalDelivery?.assertAccepting(params.sessionId);
       const sessionId = requiredSessionId(params);
       if (typeof params.text !== 'string' || !params.text.trim()) {
@@ -1671,11 +1671,17 @@ export async function createAllRiceRuntime(
       const pendingQuestion = this.pendingUserQuestions.get(sessionId);
       if (params.inputId !== undefined) {
         const record = this.requireRoot(sessionId);
+        const nativeQuestion =
+          process.env.ALLRICE_ASK_USER_MODE === 'timed' &&
+          params.kind === 'ask_user';
         const delivery = deliverDshInput(
           {
             agent: record.agent,
             sessionId,
             pendingQuestion,
+            allowIdle,
+            answerQuestion: (callId, answer) =>
+              this.ctx.userQuestions.answer(record.agent, callId, answer),
             ...(process.env.ALLRICE_ASK_USER_MODE === 'timed'
               ? {
                   questionView: () =>
@@ -1686,14 +1692,15 @@ export async function createAllRiceRuntime(
               : {}),
             flush: () => this.ctx.sessions.flush(record.agent.session),
             isCurrent: () =>
-              (params.kind === 'ask_user' || this.detaching === undefined) &&
+              this.detaching === undefined &&
               this.isRootCurrent(record, sessionId) &&
-              this.pendingUserQuestions.get(sessionId) === pendingQuestion &&
-              params.turnId ===
-                `${sessionId}:turn:${record.agent.session.snapshotEvents().findLast((e) => e.type === 'turn/start')?.data.turn}`,
+              (nativeQuestion ||
+                (this.pendingUserQuestions.get(sessionId) === pendingQuestion &&
+                  params.turnId ===
+                    `${sessionId}:turn:${record.agent.session.snapshotEvents().findLast((e) => e.type === 'turn/start')?.data.turn}`)),
             notify: () => {
               this.pendingUserQuestions.delete(sessionId);
-              if (pendingQuestion.callId) return;
+              if (pendingQuestion?.callId) return;
               this.userQuestionNotify({
                 sessionId,
                 questionId: pendingQuestion.questionId,
@@ -1976,7 +1983,14 @@ export async function createAllRiceRuntime(
             this.governedAssistants,
             method,
             params,
-            () => replyNativeQuestion(this, params),
+            async () => {
+              if (params.inputId === undefined)
+                return replyNativeQuestion(this, params);
+              await this.ensureRoot(requiredSessionId(params), {
+                resumeOnly: true,
+              });
+              return this.steer({ ...params, kind: 'ask_user' }, true);
+            },
           );
         case 'session/interrupt':
           return this.interrupt(params);

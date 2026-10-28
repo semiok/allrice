@@ -66,6 +66,7 @@ async function fixture({
   extraTool = false,
   configuredTimeout,
   modelCallId = 'call_ask_go',
+  secondQuestion = false,
 }) {
   const root = await realpath(
     await mkdtemp(join(tmpdir(), 'allrice-question-detach-')),
@@ -91,13 +92,16 @@ async function fixture({
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       const send = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
       const item =
-        index === 0
+        index === 0 || (secondQuestion && index === 1)
           ? {
               type: 'function_call',
-              id: 'fc_ask',
-              call_id: modelCallId,
+              id: `fc_ask_${index}`,
+              call_id: index === 0 ? modelCallId : `${modelCallId}:2`,
               name: 'ask_user_question',
-              arguments: JSON.stringify({ questions: [question], timeout }),
+              arguments: JSON.stringify({
+                questions: [question],
+                timeout: index === 0 ? timeout : -1,
+              }),
               status: 'completed',
             }
           : {
@@ -389,6 +393,170 @@ const replyText = (requests, callId) =>
   );
 
 describe('MET-210 timed questions on the AllRice host', () => {
+  it.each([{ selected: ['继续'] }, { selected: [] }])(
+    'PR5 late typed answer $selected is adopted once without a new prompt, including replay after cold resume',
+    async ({ selected }) => {
+      const f = await fixture({ timeout: 1 });
+      const sessionId = `dsh-${randomUUID()}`;
+      let client = await f.launch();
+      await client.prompt(
+        sessionId,
+        '需要我决定的地方先问我，其他部分继续做。',
+      );
+      await client.wait(sessionId);
+      const callId = f.askCall().data.callId;
+      const reply = {
+        inputId: randomUUID(),
+        text:
+          'allrice:user-question:v1:' +
+          JSON.stringify({
+            questionId: `${sessionId}:${callId}`,
+            answers: [{ id: 'go', selected }],
+          }),
+      };
+      const before = f.requests.length;
+      expect(await client.typedQuestionReply(sessionId, reply)).toMatchObject({
+        status: expect.stringMatching(/pending|adopted/),
+      });
+      await client.wait(sessionId);
+      const proof = await client.typedQuestionReply(sessionId, reply);
+      expect(proof).toMatchObject({
+        status: 'adopted',
+        inputId: reply.inputId,
+        callId,
+        checkpoint: 'question_replied',
+        turnId: `${sessionId}:turn:2`,
+      });
+      expect(f.requests.length).toBe(before + 1);
+      expect(
+        f
+          .events()
+          .filter(
+            (e) =>
+              e.type === 'user/message' &&
+              e.data.source.kind === 'user-question-reply',
+          ),
+      ).toHaveLength(1);
+      await client.close();
+      client = await f.launch();
+      expect(await client.typedQuestionReply(sessionId, reply)).toEqual(proof);
+      expect(f.requests.length).toBe(before + 1);
+      await expect(
+        client.typedQuestionReply(sessionId, {
+          inputId: randomUUID(),
+          text: reply.text.replace(
+            JSON.stringify(selected),
+            JSON.stringify(selected.length ? [] : ['停止']),
+          ),
+        }),
+      ).rejects.toThrow('QUESTION_ANSWER_NOT_ADOPTED');
+    },
+    30000,
+  );
+
+  it('PR5 dispatches by call ID while another card is open; REPLY_QUEUED and a native discarded reply remain replayable', async () => {
+    const f = await fixture({ timeout: 1, secondQuestion: true });
+    const sessionId = `dsh-${randomUUID()}`;
+    const { server } = await f.launchInProcess();
+    await server.handleRequest('session/prompt', {
+      sessionId,
+      contentBlocks: [{ type: 'text', text: '先问两个不同的问题。' }],
+    });
+    await expect
+      .poll(
+        () =>
+          f
+            .events()
+            .filter(
+              (e) =>
+                e.type === 'tool/call' && e.data.name === 'ask_user_question',
+            ).length,
+        { timeout: 15000 },
+      )
+      .toBe(2);
+    const calls = f
+      .events()
+      .filter(
+        (e) => e.type === 'tool/call' && e.data.name === 'ask_user_question',
+      )
+      .map((e) => e.data.callId);
+    const input = (callId) => ({
+      sessionId,
+      inputId: randomUUID(),
+      kind: 'ask_user',
+      turnId: `${sessionId}:turn:1`,
+      text: prefixAnswer(callId),
+    });
+    const prefixAnswer = (callId) =>
+      'allrice:user-question:v1:' +
+      JSON.stringify({
+        questionId: `${sessionId}:${callId}`,
+        answers: [{ id: 'go', selected: [] }],
+      });
+    const older = input(calls[0]);
+    expect(await server.handleRequest('session/steer', older)).toMatchObject({
+      status: 'pending',
+    });
+    expect(await server.handleRequest('session/steer', older)).toMatchObject({
+      status: 'pending',
+    });
+    const competitor = {
+      ...older,
+      inputId: randomUUID(),
+      text: older.text.replace('"selected":[]', '"selected":["停止"]'),
+    };
+    expect(
+      await server.handleRequest('session/steer', competitor),
+    ).toMatchObject({ status: 'pending' });
+    await expect(
+      server.handleRequest('session/steer', {
+        ...competitor,
+        inputId: older.inputId,
+      }),
+    ).rejects.toThrow('INPUT_ID_CONFLICT');
+    const agent = server.requireRoot(sessionId).agent;
+    const queued = [...agent.inbox.nextStep, ...agent.inbox.nextTurn].find(
+      (m) => m.source.kind === 'user-question-reply',
+    );
+    expect(queued).toBeDefined();
+    agent.inbox.remove(queued.id);
+    expect(
+      f.notices.some(
+        (n) =>
+          n.method === 'session.user-question-discarded' &&
+          n.params.callId === calls[0],
+      ),
+    ).toBe(true);
+    expect(await server.handleRequest('session/steer', older)).toMatchObject({
+      status: 'pending',
+    });
+    const current = input(calls[1]);
+    await server.handleRequest('session/steer', current);
+    await server.handleRequest('session/wait', { sessionId });
+    expect(await server.handleRequest('session/steer', older)).toMatchObject({
+      status: 'adopted',
+      callId: calls[0],
+      checkpoint: 'question_replied',
+    });
+    expect(await server.handleRequest('session/steer', current)).toMatchObject({
+      status: 'adopted',
+      callId: calls[1],
+      checkpoint: 'question_resolved',
+    });
+    await expect(
+      server.handleRequest('session/steer', competitor),
+    ).rejects.toThrow('QUESTION_ANSWER_NOT_ADOPTED');
+    expect(
+      f
+        .events()
+        .filter(
+          (e) =>
+            e.type === 'user/message' &&
+            e.data.source.kind === 'user-question-reply',
+        ),
+    ).toHaveLength(1);
+  }, 30000);
+
   it.each([
     ['default', undefined, 120],
     ['N', '2', 2],

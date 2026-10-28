@@ -9,6 +9,15 @@ import type { BaselineEntry } from './dsh-convergence-gate.ts';
 
 export const baseline: readonly BaselineEntry[] = [
   {
+    kind: 'patch',
+    id: 'allrice-native-question-reply-v1',
+    category: '账本',
+    basis:
+      'MET-210 提问卡 v4.5 §4.3：DSH answer()/userQuestions 投影和原生日志给出采纳事实；AllRice 只把既有 typed 命令 ID 与题 ID、答案批次和持久序号关联，为 SaaS 回执及一次消费提供证据，不折叠原生状态。',
+    approvedBy:
+      '2026-10-28 主会话问题卡线实现任务：按既定 v4.5 接迟到回答，四类归属随关键 Draft 复核确认。',
+  },
+  {
     kind: 'table',
     id: 'allrice_native_questions',
     category: '账本',

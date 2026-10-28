@@ -2,6 +2,10 @@ import { createHash } from 'node:crypto';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { KNOWN_SESSION_EVENT_TYPES } from '@deepseek-ai/dsh-session';
 import { structuredUserQuestionAnswer } from './allrice-dsh-runtime-compatibility.mjs';
+import {
+  deliverNativeQuestionInput,
+  inspectNativeQuestionInput,
+} from './allrice-native-question-inputs.mjs';
 
 // Pinned rc.3 has no downstream event registration API. Extend only
 // this private vocabulary; never suppress the unknown-event recovery guard.
@@ -26,6 +30,8 @@ export function inspectDshInput(agent, input, questionView) {
       e.type === 'allrice/input/request' && e.data.inputId === input.inputId,
   );
   if (!bound) return { status: 'not_found' };
+  if (bound.data.nativeQuestion && questionView)
+    return inspectNativeQuestionInput(agent, input, questionView());
   if (bound.data.digest !== digest(input))
     throw new TypeError('INPUT_ID_CONFLICT');
   const answer = events.findLast(
@@ -130,6 +136,8 @@ export async function deliverDshInput(
     isCurrent,
     suspended = false,
     questionView,
+    answerQuestion,
+    allowIdle = false,
   },
   input,
 ) {
@@ -141,6 +149,21 @@ export async function deliverDshInput(
     input.text.length > 80_000
   )
     throw new TypeError('INVALID_TYPED_INPUT');
+  if (input.kind === 'ask_user' && questionView && answerQuestion)
+    return deliverNativeQuestionInput(
+      {
+        agent,
+        sessionId,
+        pendingQuestion,
+        notify,
+        flush,
+        isCurrent,
+        questionView,
+        answerQuestion,
+        allowIdle,
+      },
+      input,
+    );
   const inspect = () => inspectDshInput(agent, input, questionView);
   const previous = inspect();
   if (previous.status !== 'not_found') {

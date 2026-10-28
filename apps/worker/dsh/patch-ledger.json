@@ -159,6 +159,14 @@
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-jsonrpc-runtime.mjs",
       "reason": "AllRice wrapper reports safe results of awaited public shutdown, root disposal and prior transport flush; its own final-response flush controls exit status. Worker records the original close request and exact owned child close with immutable per-boot readback. Nonzero/forced/unknown closure remains distinct from physical exit; no DSH core or dependency change, no historical success backfill."
+    },
+    {
+      "id": "allrice-native-question-reply-v1",
+      "issue": "MET-210",
+      "upstreamVersion": "0.2.1-rc.2",
+      "kind": "protocol-extension",
+      "path": "apps/worker/dsh/allrice-native-question-inputs.mjs",
+      "reason": "Bind existing typed SaaS command IDs to DSH public userQuestions.answer and settled projection evidence. DSH owns queued-reply deduplication, discarded replies, state and adoption; native proof uses the actual call, answer batch and journal sequence. No prompt fallback, business approval, replacement wait loop or DSH core patch."
     }
   ]
 }
