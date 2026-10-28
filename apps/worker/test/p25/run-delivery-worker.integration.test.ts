@@ -1202,7 +1202,15 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     }).createRoot({
       task,
       deadlineAt: new Date(Date.now() + 300000).toISOString(),
-      budgets: [],
+      budgets: [
+        {
+          metric: 'model_calls',
+          unit: 'calls',
+          currency: null,
+          capacity: 5,
+          source: { kind: 'worker', sourceId: 'historical-link-fixture' },
+        },
+      ],
     });
     const child = {
       ...task,
