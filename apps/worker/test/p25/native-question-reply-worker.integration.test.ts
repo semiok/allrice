@@ -17,6 +17,8 @@ import { getSessionRunTimings } from '../../../../packages/database/src/conversa
 import { runClaimedJob } from '../../src/job-runner.js';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.js';
 import { DshProtocolClient } from '../../src/harness/dsh-protocol-client.js';
+import { pollEmployeeConversationSteers } from '../../src/conversation/turn-lifecycle.js';
+import { HandlerError } from '../../src/errors.js';
 import { p24Fixture } from '../p24/fixture.js';
 
 const suite =
@@ -37,7 +39,16 @@ suite(
       await fixture?.close();
     });
 
-    it.each(['warm', 'cold', 'fifo'] as const)(
+    it.each([
+      'warm',
+      'cold',
+      'fifo',
+      'duplicate',
+      'different',
+      'closing',
+      'delayed-projection',
+      'ack-lost',
+    ] as const)(
       'adopts a late skipped answer in a %s Host without prompting the answer JSON',
       async (phase) => {
         const f = await createExperienceFixture(fixture.db);
@@ -69,7 +80,41 @@ suite(
             },
           });
         let adapter = makeAdapter();
+        let nativeTurns = 0;
+        let holdRoot = phase === 'closing';
+        let holdProjection = false;
+        let rootReturned!: () => void, releaseRoot!: () => void;
+        let projectionHeld!: () => void, releaseProjection!: () => void;
+        const rootReady = new Promise<void>((r) => {
+          rootReturned = r;
+        });
+        const rootGate = new Promise<void>((r) => {
+          releaseRoot = r;
+        });
+        const projectionReady = new Promise<void>((r) => {
+          projectionHeld = r;
+        });
+        const projectionGate = new Promise<void>((r) => {
+          releaseProjection = r;
+        });
         const prompts = vi.spyOn(DshProtocolClient.prototype, 'prompt');
+        const typedReply = DshProtocolClient.prototype.typedQuestionReply;
+        const lostAck =
+          phase === 'ack-lost'
+            ? vi
+                .spyOn(DshProtocolClient.prototype, 'typedQuestionReply')
+                .mockImplementationOnce(async function (
+                  this: DshProtocolClient,
+                  ...args
+                ) {
+                  await typedReply.apply(this, args);
+                  throw new HandlerError(
+                    'DSH_REQUEST_TIMEOUT',
+                    'Synthetic lost ACK',
+                    false,
+                  );
+                })
+            : undefined;
         const send = (
           text: string,
           answer?: {
@@ -128,7 +173,7 @@ suite(
               const [source] =
                 await fixture.db`select e.*,m.content->>'text' as text from allrice_employee_runs e
           join allrice_messages m on m.id=e.user_message_id where e.run_id=${execution.context.runId}`;
-              return adapter.execute({
+              const result = await adapter.execute({
                 nativeQuestionMode: 'timed',
                 questionReply: reply,
                 kernel: {
@@ -165,7 +210,30 @@ suite(
                 attempt: execution.job.attempt,
                 generation: runtime.generation,
                 threadId: runtime.threadId,
-                onEvent: onHarnessEvent,
+                onEvent: async (event) => {
+                  if (
+                    holdProjection &&
+                    event.type === 'native.event' &&
+                    event.sourceEventType === 'session/user-questions' &&
+                    Array.isArray(
+                      (
+                        event.sourcePayload as {
+                          questions?: { settled?: unknown[] };
+                        }
+                      )?.questions?.settled,
+                    ) &&
+                    (
+                      event.sourcePayload as {
+                        questions: { settled: unknown[] };
+                      }
+                    ).questions.settled.length > 0
+                  ) {
+                    holdProjection = false;
+                    projectionHeld();
+                    await projectionGate;
+                  }
+                  await onHarnessEvent(event);
+                },
                 onThreadBound: async (bound) => {
                   runtime = await bindConversationThread({
                     ...ownership,
@@ -174,12 +242,19 @@ suite(
                   return { generation: runtime.generation };
                 },
                 onTurnStarted: async (turn) => {
+                  nativeTurns++;
                   runtime = await recordConversationTurn({
                     ...ownership,
                     ...turn,
                   });
                 },
               });
+              if (holdRoot) {
+                holdRoot = false;
+                rootReturned();
+                await rootGate;
+              }
+              return result;
             },
           );
           const [run] =
@@ -190,13 +265,15 @@ suite(
             status: 'succeeded',
             lease_token: null,
           });
-          return run;
+          return run!;
         };
         try {
           const initial = await send(
             '先问我需要决定的地方，其他内容继续完成。',
           );
-          await executeNext(initial.run.job.id);
+          const initialExecution = executeNext(initial.run.job.id);
+          if (phase === 'closing') await rootReady;
+          else await initialExecution;
           const [q] =
             await fixture.db`select * from allrice_native_questions where session_id=${f.session.id}`;
           expect(q).toMatchObject({
@@ -217,12 +294,66 @@ suite(
             answers: [{ id: 'choice', selected: [] }],
           };
           const sent = await send('跳过本题', answer);
+          const replyRunId = sent.fallbackRunId ?? sent.run.id;
+          const [replyJob] =
+            await fixture.db`select id from allrice_jobs where run_id=${replyRunId}`;
+          if (phase === 'closing') {
+            expect(sent.delivery).toBe('steer_pending');
+            const [runtime] =
+              await fixture.db`select * from allrice_conversation_runtimes where session_id=${f.session.id}`;
+            await pollEmployeeConversationSteers({
+              ownership: {
+                organizationId: f.org,
+                workspaceId: f.workspace,
+                sessionId: f.session.id,
+                runId: initial.run.id,
+                workerId: runtime!.worker_id,
+              },
+              generation: runtime!.thread_generation,
+              threadId: runtime!.thread_id,
+              turnId: runtime!.active_turn_id,
+              signal: new AbortController().signal,
+              adapter,
+              polling: () => false,
+              drain: true,
+            });
+            expect(
+              await fixture.db`select state from allrice_conversation_commands where followup_run_id=${replyRunId}`,
+            ).toEqual([{ state: 'pending' }]);
+            releaseRoot();
+            await initialExecution;
+          }
+          const repeated =
+            phase === 'duplicate' || phase === 'different'
+              ? await send('另一份回答', {
+                  ...answer,
+                  answers: [
+                    {
+                      id: 'choice',
+                      selected: phase === 'different' ? ['B'] : [],
+                    },
+                  ],
+                })
+              : undefined;
           if (ordinary) await executeNext(ordinary.run.job.id);
           const promptCount = prompts.mock.calls.length;
-          await executeNext(sent.run.job.id);
+          holdProjection = phase === 'delayed-projection';
+          const replyExecution = executeNext(replyJob!.id);
+          if (phase === 'delayed-projection') {
+            await projectionReady;
+            expect(
+              await fixture.db`select c.state,c.native_proof,r.state as run_state
+              from allrice_conversation_commands c join allrice_runs r on r.id=c.followup_run_id
+              where c.followup_run_id=${replyRunId}`,
+            ).toEqual([
+              { state: 'claimed', native_proof: null, run_state: 'running' },
+            ]);
+            releaseProjection();
+          }
+          await replyExecution;
           expect(prompts.mock.calls.length).toBe(promptCount);
           const [command] =
-            await fixture.db`select state,native_proof from allrice_conversation_commands where followup_run_id=${sent.run.id}`;
+            await fixture.db`select state,native_proof from allrice_conversation_commands where followup_run_id=${replyRunId}`;
           expect(command).toMatchObject({
             state: 'consumed',
             native_proof: {
@@ -248,18 +379,42 @@ suite(
             { inputs: true },
           );
           expect(
-            status.inputs?.find((i) => i.runId === sent.run.id),
+            status.inputs?.find((i) => i.runId === replyRunId),
           ).toMatchObject({
             status: 'adopted',
             kind: 'ask_user',
             evidence: { checkpoint: 'question_replied' },
           });
+          if (repeated) {
+            const turnsBeforeReceipt = nativeTurns;
+            const receipt = await executeNext(repeated.run.job.id);
+            expect(receipt.result.answer).toContain(
+              phase === 'different' ? '没有被采用' : '已经回答过',
+            );
+            expect(
+              await fixture.db`select state from allrice_conversation_commands where followup_run_id=${repeated.run.id}`,
+            ).toEqual([
+              { state: phase === 'different' ? 'rejected' : 'consumed' },
+            ]);
+            expect(prompts.mock.calls.length).toBe(promptCount);
+            expect(nativeTurns).toBe(turnsBeforeReceipt);
+            expect(receipt.result.usageComplete).toBe(true);
+            expect(Object.values(receipt.result.usage)).toEqual(
+              expect.arrayContaining([0]),
+            );
+            expect(
+              Object.values(receipt.result.usage).every((n) => n === 0),
+            ).toBe(true);
+          }
           expect(
             model.requests.filter((r) =>
               JSON.stringify(r.messages).includes('answer_to_pending_question'),
             ).length,
           ).toBe(1);
         } finally {
+          releaseRoot();
+          releaseProjection();
+          lostAck?.mockRestore();
           prompts.mockRestore();
           await adapter.close();
           await model.close();
