@@ -217,7 +217,7 @@ suite('PR5 native reply routing through the actual employee handler', () => {
           }),
     });
   }
-  async function execute(f: Setup, runId: string) {
+  async function execute(f: Setup, runId: string, state = 'succeeded') {
     const workerId = randomUUID();
     const job = (await claimNextJob(workerId, 300000))!;
     expect(job.id).toBe(
@@ -237,13 +237,14 @@ suite('PR5 native reply routing through the actual employee handler', () => {
       executeEmployeeRun,
     );
     const [run] =
-      await f.db`select r.state,r.error_code,j.last_error_code,j.last_error_message,j.status,j.lease_token from allrice_runs r
+      await f.db`select r.state,r.result,r.error_code,j.last_error_code,j.last_error_message,j.status,j.lease_token from allrice_runs r
       join allrice_jobs j on j.run_id=r.id where r.id=${runId}`;
     expect(run).toMatchObject({
-      state: 'succeeded',
-      status: 'succeeded',
+      state,
+      status: state,
       lease_token: null,
     });
+    return run!;
   }
   it('keeps installed Workflow chat routing while a native answer resumes only its original ordinary DSH question', async () => {
     const f = await setup(async (_r, index) =>
@@ -329,6 +330,11 @@ suite('PR5 native reply routing through the actual employee handler', () => {
     // Deliberately names the installed Workflow: routing the answer text as a
     // new task would select it. The private reply still must call DSH.answer().
     const reply = await send(f, '按工作流执行排序流程，解释数组排序。', answer);
+    const same = await send(f, '另一客户端也跳过本题。', answer);
+    const different = await send(f, '另一客户端选择 B。', {
+      ...answer,
+      answers: [{ id: 'choice', selected: ['B'] }],
+    });
     const [frozen] =
       await f.db`select execution_snapshot from allrice_employee_runs where run_id=${reply.run.id}`;
     expect(
@@ -347,6 +353,26 @@ suite('PR5 native reply routing through the actual employee handler', () => {
         await f.db`select execution_snapshot from allrice_employee_runs where run_id=${reply.run.id}`
       )[0]!.execution_snapshot,
     ).toEqual(frozen!.execution_snapshot);
+    const requestsBeforeReceipts = model!.requests.length;
+    for (const [duplicate, status] of [
+      [same, 'consumed'],
+      [different, 'rejected'],
+    ] as const) {
+      const receipt = await execute(f, duplicate.run.id);
+      expect(receipt.result.usageComplete).toBe(true);
+      expect(Object.values(receipt.result.usage).every((n) => n === 0)).toBe(
+        true,
+      );
+      expect(
+        await f.db`select state from allrice_conversation_commands where followup_run_id=${duplicate.run.id}`,
+      ).toEqual([{ state: status }]);
+      expect(
+        await f.db`select id from allrice_run_events where run_id=${duplicate.run.id}
+        and payload->>'sourceEventType'='turn/start'`,
+      ).toHaveLength(0);
+    }
+    expect(model!.requests.length).toBe(requestsBeforeReceipts);
+    expect(prompts).not.toHaveBeenCalled();
     const normal = await send(f, '按工作流执行排序流程，解释数组排序。');
     await execute(f, normal.run.id);
     const [normalRoute] =
@@ -355,5 +381,52 @@ suite('PR5 native reply routing through the actual employee handler', () => {
     expect(
       await f.db`select id from allrice_workflow_runs where run_id=${normal.run.id}`,
     ).toHaveLength(1);
+  }, 60000);
+  it('rechecks revocation after admission before a real reply Job can reach the native Host', async () => {
+    const f = await setup(async (_r, index) =>
+      index === 1
+        ? {
+            nativeTool: {
+              name: 'ask_user_question',
+              arguments: {
+                questions: [
+                  {
+                    id: 'choice',
+                    question: '继续？',
+                    options: [{ label: 'A' }],
+                  },
+                ],
+                timeout: 1,
+              },
+            },
+          }
+        : { text: '已完成独立工作。' },
+    );
+    const initial = await send(f, '先问我需要决定的地方，其他内容继续完成。');
+    await execute(f, initial.run.id);
+    const [q] =
+      await f.db`select * from allrice_native_questions where session_id=${f.chat.id}`;
+    const answer = {
+      questionId: `${q!.native_session_id}:${q!.call_id}`,
+      answers: [{ id: 'choice', selected: [] }],
+    };
+    const reply = await send(f, '跳过本题。', answer);
+    await updateNativeQuestionMode(f.context, 'legacy');
+    const prompts = vi.spyOn(DshProtocolClient.prototype, 'prompt');
+    const nativeReply = vi.spyOn(
+      DshProtocolClient.prototype,
+      'typedQuestionReply',
+    );
+    const requests = model!.requests.length;
+    await execute(f, reply.run.id, 'failed');
+    expect(prompts).not.toHaveBeenCalled();
+    expect(nativeReply).not.toHaveBeenCalled();
+    expect(model!.requests).toHaveLength(requests);
+    expect(
+      await f.db`select state from allrice_conversation_commands where followup_run_id=${reply.run.id}`,
+    ).toEqual([{ state: 'rejected' }]);
+    expect(
+      await f.db`select closed_at,answers from allrice_native_questions where session_id=${f.chat.id}`,
+    ).toEqual([{ closed_at: expect.any(Date), answers: null }]);
   }, 60000);
 });
