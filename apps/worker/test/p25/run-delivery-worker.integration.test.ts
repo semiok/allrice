@@ -1201,8 +1201,9 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
               await f.db`update allrice_conversation_runtimes set active_turn_id=null where session_id=${f.chat.id}`;
           }
           const result = await finalDelivery.call(this, action, params);
+          // Simulate a missing response at the untyped JSON-RPC boundary.
           return action === 'candidate' && mode === 'missing-candidate'
-            ? null
+            ? (null as unknown as Record<string, unknown>)
             : result;
         });
       }
