@@ -209,6 +209,9 @@ fi
 # Simulate an ungraceful Worker crash. The expired lease must be recovered by
 # the replacement Worker without browser participation.
 docker compose --project-name "${compose_project}" kill -s SIGKILL worker
+# Explicitly restart the same container before Compose observes readiness;
+# up can still see the pre-kill running state and skip starting the Worker.
+docker compose --project-name "${compose_project}" restart --no-deps worker
 # Recover only the crashed process. Its fixture budget covers this bounded
 # cold start and the subsequent 30-second recovery assertion.
 docker compose --project-name "${compose_project}" up --no-deps --detach --wait --wait-timeout 120 worker
