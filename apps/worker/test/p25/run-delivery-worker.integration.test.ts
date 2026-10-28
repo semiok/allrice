@@ -34,6 +34,10 @@ import {
 } from '../../../../packages/database/src/workspace/service.ts';
 import { upsertEmployeeModelPolicy } from '../../../../packages/database/src/providers/model-pool.ts';
 import { updateUserPreferences } from '../../../../packages/database/src/user-preferences.ts';
+import {
+  createWorkflow,
+  manageEmployeeCapabilities,
+} from '../../../../packages/database/src/capabilities/capability-registry.ts';
 import * as ModelPool from '../../../../packages/database/src/providers/model-pool.ts';
 import {
   claimNextJob,
@@ -662,6 +666,50 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       releaseChild.release();
       releaseOriginWrite.release();
       task.controller.abort();
+      await task.isolation.cleanup();
+    }
+  }, 45000);
+
+  it('普通聊天选择已发布 Workflow 时保留既有排除范围', async () => {
+    const f = await setup(async () => ({ text: '已完成排序流程。' }));
+    const workflow = await createWorkflow(f.context, {
+      workspaceId: f.identity.workspace,
+      slug: 'sort-workflow',
+      name: '排序流程',
+      description: '按流程解释数组排序',
+      definition: {
+        schemaVersion: 1,
+        steps: [
+          {
+            key: 'explain',
+            name: '解释排序',
+            kind: 'model',
+            input: { prompt: '解释数组排序，不需要文件。' },
+          },
+        ],
+      },
+    });
+    await manageEmployeeCapabilities(f.context, {
+      workspaceId: f.identity.workspace,
+      employeeId: f.identity.employee,
+      workflowRevisionIds: [workflow.id],
+    });
+    const task = await prepare(f, '按工作流执行排序流程，解释数组排序。');
+    expect(task.snapshot.capabilitySnapshot.workflows).toHaveLength(1);
+    try {
+      const result = await task.run();
+      expect(
+        readCheckedFinalDeliveryForExecution(task.workflowLease, result),
+      ).toEqual({ coverage: 'uncovered' });
+      await completeJob({ ...task.workflowLease, result });
+      expect(await state(f, task.runId)).toMatchObject({
+        status: 'succeeded',
+        successes: 1,
+      });
+      const [route] =
+        await f.db`select selected_kind from allrice_route_decisions where run_id=${task.runId}`;
+      expect(route!.selected_kind).toBe('workflow');
+    } finally {
       await task.isolation.cleanup();
     }
   }, 45000);
