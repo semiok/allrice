@@ -13,6 +13,8 @@ import {
 } from '../../src/harness/dsh-native-artifact.js';
 import JSZip from 'jszip';
 import { repositoryDigest } from '../../../../packages/database/src/platform-repository-source.ts';
+import { updateWorkAutomation } from '../../../../packages/database/src/work-automation.ts';
+import { RepositoryCompletedReviewSchema } from '../../../../packages/database/src/platform-repository-merge-contracts.ts';
 import * as modelPool from '../../../../packages/database/src/providers/model-pool.ts';
 import * as harnessRouter from '../../src/harness/router.js';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.js';
@@ -421,6 +423,7 @@ suite(
 
     it.each([
       'accept',
+      'saved-assistants',
       'revise',
       'missing-review',
       'cancel',
@@ -429,6 +432,15 @@ suite(
       '真实入口 → Worker → DSH → PG，无助手：%s',
       async (mode) => {
         const s = await setup();
+        const assistantsEnabled = process.env.ALLRICE_ASSISTANTS_ENABLED;
+        if (mode === 'saved-assistants') {
+          vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
+          await updateWorkAutomation(s.internal, s.internal.workspaceId!, {
+            expectedRevision: 0,
+            capability: 'assistants',
+            enabled: true,
+          });
+        }
         let review: Awaited<ReturnType<typeof s.create>>;
         const command = (id: string, args: unknown) => ({
           text: `<allrice_tool_call>${JSON.stringify({ id, name: 'platform.repository.review', arguments: args })}</allrice_tool_call>`,
@@ -548,7 +560,9 @@ suite(
           const [diagnostic] =
             await f.db`select last_error_code,last_error_message from allrice_jobs where id=${review.jobId}`;
           expect(detail.status, JSON.stringify(diagnostic)).toBe(
-            mode === 'accept' || mode === 'revise'
+            mode === 'accept' ||
+              mode === 'saved-assistants' ||
+              mode === 'revise'
               ? 'succeeded'
               : mode === 'cancel'
                 ? 'canceled'
@@ -558,10 +572,20 @@ suite(
           const artifacts =
             await f.db`select w.run_id,o.state,o.checksum from allrice_workbench_artifacts w join allrice_deliverable_versions v on v.id=w.version_id join allrice_storage_objects o on o.id=v.object_id where w.run_id=${review.runId}`;
           expect(artifacts).toHaveLength(
-            mode === 'accept' ? 3 : mode === 'revise' ? 2 : 0,
+            mode === 'accept' || mode === 'saved-assistants'
+              ? 3
+              : mode === 'revise'
+                ? 2
+                : 0,
           );
-          if (mode === 'accept' || mode === 'revise') {
-            expect(detail.verdict).toBe(mode);
+          if (
+            mode === 'accept' ||
+            mode === 'saved-assistants' ||
+            mode === 'revise'
+          ) {
+            expect(detail.verdict).toBe(
+              mode === 'revise' ? 'revise' : 'accept',
+            );
             expect(detail.reviewerRunId).toBe(review.runId);
             expect(
               artifacts.every(
@@ -588,6 +612,7 @@ suite(
           freeze.mockRestore();
           router.mockRestore();
           vi.stubEnv('ALLRICE_DSH_PLATFORM_HOME', oldHome);
+          vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', assistantsEnabled);
         }
       },
       60000,
@@ -1024,6 +1049,29 @@ suite(
         await f.db`select id from allrice_jobs where run_id=${created!.actions[0]!.runId} and status in ('queued','claimed','running') and cancel_requested_at is null`,
       ).toHaveLength(0);
     }, 30_000);
+    it('reads historical merge status from the subject ledger without accepting a legacy report proof', async () => {
+      const s = await completedReview();
+      const proof = await f.db.begin((tx) =>
+        readCompletedRepositoryReview(tx, s.internal, s.review.id),
+      );
+      const legacy = {
+        ...proof,
+        version: 1,
+        reportDeliveryId: randomUUID(),
+        adoptedSeq: 2,
+      };
+      expect(RepositoryCompletedReviewSchema.safeParse(legacy).success).toBe(
+        false,
+      );
+      const id = randomUUID();
+      await f.db`insert into allrice_platform_repository_merges(id,publication_id,review_subject_id,owner_id,organization_id,workspace_id,review,review_digest)
+        values(${id},${s.data.publication.id},${s.review.id},${s.admin.actor.id},${s.internal.organizationId},${s.internal.workspaceId!},${f.db.json(legacy)},${technicalDigest(legacy)})`;
+      const view = await getPlatformRepositoryMerge(s.admin, id);
+      expect(view.subjectDigest).toBe(s.o.seed.material.subjectDigest);
+      expect(view.actions).toEqual([]);
+      expect(view.receipt).toBeNull();
+    });
+
     it('consumes a completed expired review, binds one concurrent request and confirms exact main merge without claiming Dev', async () => {
       const s = await completedReview();
       const proof = await f.db.begin((tx) =>

@@ -39,9 +39,11 @@ export async function getPlatformRepositoryMerge(
 ) {
   const owner = await requirePlatformAdmin(context);
   const [m] =
-    await getDatabase()`select * from allrice_platform_repository_merges where id=${UuidSchema.parse(id)} and owner_id=${owner}`;
+    await getDatabase()`select m.*,s.subject_digest from allrice_platform_repository_merges m
+      join allrice_platform_repository_review_subjects s on s.id=m.review_subject_id and s.owner_id=m.owner_id and s.organization_id=m.organization_id and s.workspace_id=m.workspace_id
+      where m.id=${UuidSchema.parse(id)} and m.owner_id=${owner}`;
   if (!m) throw new DataAccessError('not_found');
-  const proof = RepositoryCompletedReviewSchema.parse(m.review);
+  // Display reads the business ledger; execution alone consumes a proof.
   const actions =
     await getDatabase()`select a.*,j.status,j.last_error_code from allrice_platform_repository_merge_actions a
     join allrice_jobs j on j.id=a.job_id and j.run_id=a.run_id and j.owner_id=a.owner_id
@@ -50,7 +52,7 @@ export async function getPlatformRepositoryMerge(
     id: m.id,
     publicationId: m.publication_id,
     reviewSubjectId: m.review_subject_id,
-    subjectDigest: proof.material.subjectDigest,
+    subjectDigest: m.subject_digest,
     readyStarted: !!m.ready_intent,
     mergeStarted: !!m.merge_intent,
     receipt: m.receipt,
