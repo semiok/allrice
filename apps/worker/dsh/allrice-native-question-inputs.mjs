@@ -18,16 +18,19 @@ export function isNativeQuestionInput(input, sessionId) {
   }
 }
 const hash = (input) =>
+  'sha256:' +
   createHash('sha256')
     .update(JSON.stringify([input.inputId, input.kind, input.text]))
     .digest('hex');
 const batch = (answers) =>
   JSON.stringify(
-    answers.map((a) => ({
-      id: a.id,
-      selected: a.selected,
-      ...(a.custom ? { custom: a.custom } : {}),
-    })),
+    answers
+      .map((a) => ({
+        id: a.id,
+        selected: a.selected,
+        ...(a.custom ? { custom: a.custom } : {}),
+      }))
+      .sort((a, b) => a.id.localeCompare(b.id)),
   );
 function submission(input, sessionId) {
   if (!input.text.startsWith(prefix)) throw Error('QUESTION_ANSWER_INVALID');
@@ -48,9 +51,10 @@ export function inspectNativeQuestionInput(agent, input, view) {
       e.type === 'allrice/input/request' && e.data.inputId === input.inputId,
   );
   if (!bound) return { status: 'not_found' };
-  if (!bound.data.nativeQuestion || bound.data.digest !== hash(input))
-    throw Error('INPUT_ID_CONFLICT');
-  const { callId, messageId, answers } = bound.data;
+  if (bound.data.digest !== hash(input)) throw Error('INPUT_ID_CONFLICT');
+  const { messageId } = bound.data;
+  const callId = messageId.slice(agent.session.id.length + 1);
+  const answers = submission(input, agent.session.id).answers;
   const pending = { status: 'pending', inputId: input.inputId, messageId };
   const settled = view.settled.find((q) => q.callId === callId);
   if (!settled) {
@@ -123,10 +127,10 @@ export async function deliverNativeQuestionInput(scope, input) {
     agent.session.append('allrice/input/request', {
       inputId: input.inputId,
       digest: hash(input),
-      nativeQuestion: true,
-      callId,
       messageId: answer.questionId,
-      answers: matched?.answers ?? answer.answers,
+      turnId:
+        input.turnId ??
+        `${sessionId}:turn:${agent.session.snapshotEvents().findLast((e) => e.type === 'turn/start')?.data.turn}`,
     });
     await flush();
   }
@@ -136,6 +140,13 @@ export async function deliverNativeQuestionInput(scope, input) {
     if (pendingQuestion?.questionId !== answer.questionId)
       throw Error('QUESTION_EXPIRED');
     pendingQuestion.resolve(matched);
+    agent.session.append('allrice/input/answered', {
+      inputId: input.inputId,
+      questionId: answer.questionId,
+      turnId:
+        input.turnId ??
+        `${sessionId}:turn:${agent.session.snapshotEvents().findLast((e) => e.type === 'turn/start')?.data.turn}`,
+    });
     notify();
   } else {
     try {

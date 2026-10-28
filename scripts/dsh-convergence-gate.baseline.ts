@@ -15,7 +15,7 @@ export const baseline: readonly BaselineEntry[] = [
     basis:
       'MET-210 提问卡 v4.5 §4.3：DSH answer()/userQuestions 投影和原生日志给出采纳事实；AllRice 只把既有 typed 命令 ID 与题 ID、答案批次和持久序号关联，为 SaaS 回执及一次消费提供证据，不折叠原生状态。',
     approvedBy:
-      '2026-10-28 主会话问题卡线实现任务：按既定 v4.5 接迟到回答，四类归属随关键 Draft 复核确认。',
+      '2026-10-28 本轮主会话明确核定为账本：既有 SaaS 命令 ID 对应 DSH question/call/答案批次/持久序号；依据 v4.5 §4.3 和用户本轮授权，核定不等于合并批准。',
   },
   {
     kind: 'table',

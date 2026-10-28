@@ -682,6 +682,6 @@ SQL 消息 ID 和内容匹配。压缩及冷恢复仍由原生 SDK/persistence �
 
 原生对应：`@deepseek-ai/dsh-user-questions@0.2.1-rc.2` 的 `answer()`、`userQuestions` 投影及 `agent/inbox/discarded` 公开事件。DSH 决定可答性、REPLY_QUEUED、结算和原生 user-question-reply；AllRice 不实现答案折叠或等待状态机。
 
-保留差异属于账本：已有 SaaS typed 命令 ID 需要关联原生 callId、原始答案批次、真实 turn 和持久序号，以生成回执并供权限端口核对一次消费。实现仅发布公开投影/丢弃通知并核对日志，前台 resolve 与迟到 answer 按完整题 ID 分派；不会把答案送进 prompt。依据为用户已定的提问卡 v4.5 §4、§6、§11 和主会话 2026-10-28 实现任务；新增四类归属随关键 Draft 复核确认。
+保留差异属于账本：已有 SaaS typed 命令 ID 需要关联原生 callId、原始答案批次、真实 turn 和持久序号，以生成回执并供权限端口核对一次消费。实现仅发布公开投影/丢弃通知并核对日志，前台 resolve 与迟到 answer 按完整题 ID 分派；不会把答案送进 prompt。依据为用户已定的提问卡 v4.5 §4、§6、§11 和主会话 2026-10-28 实现任务；本轮主会话已明确核定该关联为账本，核定不等于合并批准。保留原有私有输入事件契约的字段，答案不另存一份；答案批次始终向 DSH 结算视图核对。
 
 升级时核对 answer 的队列守卫、discarded 后投影仍可答、前台工具结果和迟到 user/message 的批次/来源/序号。守护测试：allrice-question-detach-native 的 PR5 迟到、跳过、同题不同命令/答案竞争、冷恢复及同一 Session 多题。PR7 删除 ask_user 私有输入事件后同步缩减本适配；默认 rollout 仍 legacy，关键复核与 Dev 验收完成前不能启用。

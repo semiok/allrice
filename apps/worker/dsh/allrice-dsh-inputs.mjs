@@ -31,7 +31,7 @@ export function inspectDshInput(agent, input, questionView) {
       e.type === 'allrice/input/request' && e.data.inputId === input.inputId,
   );
   if (!bound) return { status: 'not_found' };
-  if (bound.data.nativeQuestion && questionView)
+  if (questionView && isNativeQuestionInput(input, agent.session.id))
     return inspectNativeQuestionInput(agent, input, questionView());
   if (bound.data.digest !== digest(input))
     throw new TypeError('INPUT_ID_CONFLICT');
