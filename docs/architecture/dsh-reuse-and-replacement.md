@@ -380,11 +380,11 @@ MET181 公司组合验收发现固定 `dsh-tool-ask-user@0.1.5-rc.3` 的 Consume
 
 - ID：`allrice-final-delivery-v1`；归属 MET-184；**保留平台交付适配**。复用固定 `0.2.1-rc.2` 的公开 Agent、turn、消息日志、steer 和工具 middleware；不修改 DSH 核心、不增加另一套 Agent 循环。DSH 不持有 AllRice 成果对象、当前权限或业务完成事务。
 - MET-210 PR1b 来源端口：不开助手的根 Run 通过通用 job/member/conversation/native binding 权限闭包读取 `turn.started`，不查助手表或 `run_links`。原生持久消息核验后的 proof 与该组来源锚点绑定，`completeJob` 重读并拒绝来源变化；资格仍由后续 PR1c 与旧层删除同窗放开。
-- Worker 将当前 Run 的真实成果版本、授权与 Office 字节检查事实交给独立的 Markdown/GFM 链接检查器。最终回复必须来自当前原生 turn 的持久消息；私有完成凭据贯穿原生停止、assistant 结算和 Job 最后写入，同一事务重验权限、租约、来源与事实摘要。模型正文、工具参数和公开事件不能签发该凭据。
-- 只有既有成果已就绪而答复链接缺失、无效或正文为空时，允许同一 Agent/turn 最多一次仅修正文的原生续做，使用原模型、原截止时间、原权限和剩余预算。修正期间不执行工具、提问或压缩；晚到真人消息仍以原身份排队。已有效答复不增加模型请求。未发送准备可精确撤销预留；发送状态未知继续保留账本，不能伪造结束或重放工具。原失败答复和成果版本不改写。
+- Worker 将当前根 Run 的真实成果版本、授权与 Office 字节检查事实交给独立的 Markdown/GFM 链接检查器。独立路径复用 SDK `session/wait`，停止并等待输入投递，随后以公开 `Agent.runMaintenance` 持有当前日志；私有 proof 绑定原生消息、序号和 Run 来源，直到 Job 同一事务重验权限、租约、来源与事实摘要。模型正文、工具参数和公开事件不能签发该凭据。
+- 既有成果已就绪而答复链接缺失、无效或正文为空时，Worker 在根 `session/wait` 后发起同一 Agent/AllRice Run/模型最多一次文字修正。公开 `steer` 的平台来源 notice 产生一个新原生 turn，不是人工消息或新业务 Run；不能在 `agent/turn-stopping` 内等待当前根。复用原内容授权、任务进度记账和执行取消信号；工具、重试和压缩被拒绝。原答复和成果不改写，已有效答复不增加模型请求，Worker 收尾不再投递迟到输入。旧助手同 turn 修正/独立预留分支保持原行为，待 PR2b 一起删除。
 - 新 Run 的检查协议按独立批准的精确 artifact ID 冻结；旧包/旧 origin 保留原协议。冷恢复只能由当前 Job/lease/turn 持久事实重建完成边界，不能用“最后一条回复”猜测归属或重新发送原任务。
 - Office 首交沿用原 checker、publisher 与版本链：真实保存字节中的公式缓存缺失、错误或不完整不能记完整交付。同系列有效修订可解除旧版义务，常数版本不能消除已观察到的公式义务；旧版仍可下载。此技术检查不证明金额、公式语义、缓存新鲜度、视觉质量或全部业务要求。
-- 回归：`final-delivery-cold/`、`bounded-final-delivery-repair.test.ts`、`final-delivery-commit.integration.test.ts`、`final-delivery-rollout.integration.test.ts`、`assistant-model-preparation-close.integration.test.ts`、`office-first-quality-publication.integration.test.ts` 及后台预览浏览器测试。合成 provider、真实 PostgreSQL 和实际 Dev 验收分别记录，不互相冒充。
+- 回归：独立路径的 `native-subagent/final-delivery.test.mjs`、`p25/run-delivery.integration.test.ts`；旧路径的 `final-delivery-cold/`、`bounded-final-delivery-repair.test.ts`、`final-delivery-commit.integration.test.ts`、`final-delivery-rollout.integration.test.ts`、`assistant-model-preparation-close.integration.test.ts`、`office-first-quality-publication.integration.test.ts`。合成 provider、真实 PostgreSQL 和实际 Dev 验收分别记录，不互相冒充。PR1b 仍是待复核草稿，不能据此宣称未开助手的普通 Run 已取得新资格。
 - 退役条件：上游提供可绑定同一持久 turn/当前租约且可组合 AllRice 事务提交的公开完成边界，并通过输入竞态、冷恢复、取消/未知用量、权限撤回、原字节/旧版本和普通网页交付回归；可替换对应适配，AllRice 成果与权限事实仍由平台负责。
 
 ### 随 0.1.x 退役的条目（2026-10-25，MET-221）

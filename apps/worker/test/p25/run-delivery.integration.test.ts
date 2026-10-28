@@ -1,4 +1,6 @@
 import { createRuntimeOperationLedger } from '../../../../packages/database/src/runtime-ledger/ledger.ts';
+// @ts-expect-error Native test host is JavaScript and runs the production DSH module unchanged.
+import { host, text } from '../native-subagent/fixture.mjs';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ExecutionContextSchema } from '@allrice/contracts';
@@ -277,6 +279,85 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
       }
     },
   );
+
+  it('用户要下载月报：真实 DSH 回复来源经过 Worker 检查和原子提交，旧助手表不参与', async () => {
+    const f = await subject();
+    const artifact = await f.publish();
+    const answer = `[月报](/api/v1/files/${artifact.object.id}/download)`;
+    const native = await host({
+      rootId: f.native,
+      model: async () => text(answer),
+      bridge: async (method: string) => {
+        expect(method).toBe('allrice/final-delivery-origin');
+        return { origin: await f.port.readOrigin() };
+      },
+    });
+    // host fixture changes only its native flags; restore the SaaS workbench gate.
+    vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
+    await native.server.handleRequest('allrice/final-delivery/bind', {
+      sessionId: f.native,
+      rootRunId: f.rootRunId,
+    });
+    await native.prompt('请把这份月报整理成文件，把下载链接给我。');
+    const candidate = await native.server.handleRequest(
+      'allrice/final-delivery/candidate',
+      { sessionId: f.native },
+    );
+    const decision = await f.port.check({
+      nativeText: candidate.answer,
+      projectedText: candidate.answer,
+      nativeSessionId: f.native,
+      publicMessageId: candidate.publicMessageId,
+      durableSeq: candidate.durableSeq,
+      nativeBindingId: candidate.rootBinding.bindingId,
+      rootRunId: f.rootRunId,
+      attempt: 1,
+      generation: 1,
+    });
+    expect(decision.status).toBe('valid');
+    const proof = {
+      nativeSessionId: f.native,
+      publicMessageId: candidate.publicMessageId,
+      durableSeq: candidate.durableSeq,
+      nativeBindingId: candidate.rootBinding.bindingId,
+      nativeCandidateDigest: candidate.textDigest,
+      candidateDigest: decision.candidateDigest,
+      factSetDigest: decision.factSetDigest,
+      attempt: 1,
+      generation: 1,
+    };
+    expect(() =>
+      f.port.finish({ ...proof, publicMessageId: randomUUID() }),
+    ).toThrow();
+    await native.server.handleRequest('allrice/final-delivery/finish', {
+      sessionId: f.native,
+      completionToken: candidate.completionToken,
+      candidateDigest: candidate.textDigest,
+      factSetDigest: decision.factSetDigest,
+    });
+    f.port.finish(proof);
+    const execution = {},
+      result = { answer };
+    beginCheckedFinalDeliveryExecution(execution);
+    requireCheckedFinalDelivery(execution);
+    attachCheckedFinalDelivery(result, proof);
+    transferCheckedFinalDeliveryForExecution(execution, result, result);
+    const coverage = readCheckedFinalDeliveryForExecution(execution, result);
+    if (coverage.coverage !== 'checked_native_v1')
+      throw Error('missing checked proof');
+    await f.complete(coverage.checkedDelivery, answer);
+    expect(await f.state()).toMatchObject({
+      status: 'succeeded',
+      text: answer,
+      successes: 1,
+    });
+    expect(
+      await fixture.db`select root_run_id from allrice_assistant_roots where root_run_id=${f.rootRunId}`,
+    ).toHaveLength(0);
+    expect(
+      await fixture.db`select run_id from allrice_runtime_run_links where root_run_id=${f.rootRunId}`,
+    ).toHaveLength(0);
+  });
 
   it('第二次检查失败后不能消费上一份有效候选 proof', async () => {
     const f = await subject();

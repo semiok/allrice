@@ -1273,6 +1273,28 @@ it.each(['assistant mode', 'assistant output cap', 'ordinary output cap'])(
   },
 );
 
+it('离开独立交付模式时更换宿主，不能把上一 Run 的输入关闭状态带到普通 Run', async () => {
+  const runtimes = pool(),
+    first = request();
+  first.input.assistants = undefined;
+  first.input.runDelivery = {
+    rootRunId: randomUUID(),
+    bind: vi.fn(),
+    pauseInput: async () => {},
+  };
+  const previous = await runtimes.acquire(first);
+  const close = vi.spyOn(previous.runtime.client, 'close');
+  first.input.runDelivery = undefined;
+  const next = await runtimes.acquire(first);
+  expect(next.preparation).toMatchObject({
+    cache: 'miss',
+    reason: 'configuration_changed',
+    changedFields: ['runDeliveryEnabled'],
+  });
+  expect(next.runtime).not.toBe(previous.runtime);
+  expect(close).toHaveBeenCalledOnce();
+});
+
 it('the actual DSH host releases the old Run binding and accepts a new Run on the same warm process', async () => {
   const runtimes = pool(true);
   const first = request();

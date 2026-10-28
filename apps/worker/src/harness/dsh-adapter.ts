@@ -279,7 +279,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
     // Checked final delivery is this release's protocol on the restricted
     // profile. The artifact frozen on the Run is provenance only (MET-221).
     if (
-      input.assistants?.deliveryMode === 'checked_native_v1' &&
+      (input.assistants?.deliveryMode === 'checked_native_v1' ||
+        input.runDelivery) &&
       (!nativeDescriptor || nativeDescriptor.profileId !== 'restricted')
     )
       throw new HandlerError(
@@ -400,7 +401,52 @@ export class DshHarnessAdapter implements HarnessAdapter {
         throw contentAuthorizationFailure;
       }
     };
+    const runDelivery = input.runDelivery?.bind(generation);
+    const deliveryNativeCall = async <T>(
+      call: () => Promise<T>,
+    ): Promise<T> => {
+      const cancel = () => {
+        void runtime.client.interrupt(threadId).catch(() => {});
+      };
+      executionSignal.throwIfAborted();
+      executionSignal.addEventListener('abort', cancel, { once: true });
+      try {
+        const result = await call();
+        executionSignal.throwIfAborted();
+        return result;
+      } catch {
+        executionSignal.throwIfAborted();
+        return finalDeliveryUnavailable();
+      } finally {
+        executionSignal.removeEventListener('abort', cancel);
+      }
+    };
+    const nativeDelivery = (
+      action: 'bind' | 'candidate' | 'repair' | 'finish',
+      params: Record<string, unknown>,
+    ) => deliveryNativeCall(() => runtime.client.finalDelivery(action, params));
     runtime.client.setRequestHandler(async (method, params) => {
+      if (
+        method === 'allrice/final-delivery-origin' ||
+        method === 'allrice/final-delivery-authorize'
+      ) {
+        if (
+          !runDelivery ||
+          assistant ||
+          params.nativeSessionId !== threadId ||
+          params.rootRunId !== runDelivery.rootRunId
+        )
+          finalDeliveryUnavailable();
+        if (method === 'allrice/final-delivery-authorize') {
+          if (!awaitTurnOrigin) finalDeliveryUnavailable();
+          await awaitTurnOrigin!();
+        }
+        executionSignal.throwIfAborted();
+        const origin = await runDelivery!.readOrigin();
+        if (!origin) finalDeliveryUnavailable();
+        executionSignal.throwIfAborted();
+        return { origin };
+      }
       if (
         method === 'allrice/assistant/input-gate-pause' ||
         method === 'allrice/assistant/input-gate-release'
@@ -991,6 +1037,18 @@ export class DshHarnessAdapter implements HarnessAdapter {
           preparationMs,
         },
       });
+      if (runDelivery) {
+        if (input.assistants || !input.runDelivery) finalDeliveryUnavailable();
+        // Existing same-Run turns cannot authorize replay of the business prompt.
+        if (!input.questionWait?.resume && (await runDelivery.readOrigin()))
+          finalDeliveryUnavailable();
+        await nativeDelivery('bind', {
+          sessionId: threadId,
+          rootRunId: runDelivery.rootRunId,
+        });
+      }
+      let deliveryRepair: Record<string, unknown> | undefined;
+      let deliveryRepaired = false;
       for (let callIndex = 0; ; callIndex++) {
         // Initialization, event persistence or a previous tool round may
         // outlive the lease. The pin alone never authorizes another prompt.
@@ -1025,6 +1083,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
             }
           : await this.runOnce({
               runtime,
+              start: deliveryRepair
+                ? () => nativeDelivery('repair', deliveryRepair!)
+                : undefined,
               onTimingPoint: (point) => timing.mark(point),
               prompt,
               bootstrapReceipt: callIndex === 0 ? bootstrapReceipt : undefined,
@@ -1047,7 +1108,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
                   },
                 };
               },
-              ...(checkedAssistant
+              ...(checkedAssistant || runDelivery
                 ? {
                     installTurnOriginBarrier: (
                       barrier: () => Promise<void>,
@@ -1058,7 +1119,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
                 : {}),
               onTurn: async (nextTurnId) => {
                 turnId = nextTurnId;
-                if (checkedAssistant && !input.onTurnStarted)
+                if ((checkedAssistant || runDelivery) && !input.onTurnStarted)
                   finalDeliveryUnavailable();
                 await input.onTurnStarted?.({ threadId, turnId: nextTurnId });
               },
@@ -1126,6 +1187,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
                 await emit(event);
               },
             });
+        deliveryRepair = undefined;
         usage.inputTokens += result.usage.inputTokens;
         usage.cachedInputTokens += result.usage.cachedInputTokens;
         usage.outputTokens += result.usage.outputTokens;
@@ -1138,6 +1200,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           break; // Worker confirms the ledger before publishing a wait receipt.
         }
         const toolCall = parseDshToolCall(result.answer);
+        if (deliveryRepaired && toolCall) finalDeliveryUnavailable();
         // This narrow path has no external join/validation/wait between its
         // three adjacent checks. Keep the final current-authority barrier;
         // do not reuse it across tools, resumed waits or assistant work.
@@ -1146,6 +1209,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           !input.assistants &&
           !assistant &&
           !input.finalDelivery &&
+          !runDelivery &&
           callIndex === 0 &&
           !input.questionWait?.resume &&
           !toolActivityObserved;
@@ -1158,7 +1222,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
             ? checkedAssistant
               ? assistant.finalDelivery
               : undefined
-            : input.finalDelivery;
+            : (runDelivery ?? input.finalDelivery);
           if (checkedAssistant && (!finalDelivery || !assistant?.finish))
             finalDeliveryUnavailable();
           let joined: Record<string, unknown> | null = restoredFinal;
@@ -1176,11 +1240,42 @@ export class DshHarnessAdapter implements HarnessAdapter {
               finalDeliveryUnavailable();
             }
           }
+          if (runDelivery) {
+            await deliveryNativeCall(() => runtime.client.wait(threadId));
+            executionSignal.throwIfAborted();
+            await input.runDelivery!.pauseInput();
+            try {
+              joined = await nativeDelivery('candidate', {
+                sessionId: threadId,
+              });
+            } catch {
+              finalDeliveryUnavailable();
+            }
+            const inspection = await runDelivery.inspect({
+              nativeSessionId: threadId,
+              turn: joined!.turn,
+              publicMessageId: joined!.publicMessageId,
+              durableSeq: joined!.durableSeq,
+              text: joined!.answer,
+              candidateDigest: joined!.textDigest,
+              provider: joined!.provider,
+              model: joined!.model,
+            });
+            if (!deliveryRepaired && inspection.decision === 'repair') {
+              deliveryRepaired = true;
+              deliveryRepair = {
+                sessionId: threadId,
+                completionToken: joined!.completionToken,
+                inspection,
+              };
+              continue;
+            }
+          }
           const rootBinding = record(joined?.rootBinding);
           const privateId =
             /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
           if (
-            checkedAssistant &&
+            (checkedAssistant || runDelivery) &&
             (!joined ||
               typeof joined.answer !== 'string' ||
               !joined.answer.trim() ||
@@ -1195,7 +1290,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
               typeof joined.completionToken !== 'string' ||
               !privateId.test(joined.completionToken) ||
               rootBinding?.nativeSessionId !== threadId ||
-              rootBinding?.runId !== input.assistants!.rootRunId ||
+              rootBinding?.runId !==
+                (runDelivery?.rootRunId ?? input.assistants!.rootRunId) ||
               typeof rootBinding?.bindingId !== 'string' ||
               !privateId.test(rootBinding.bindingId))
           )
@@ -1222,7 +1318,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
                         publicMessageId: joined.publicMessageId as string,
                         durableSeq: joined.durableSeq as number,
                         nativeBindingId: rootBinding!.bindingId as string,
-                        rootRunId: input.assistants!.rootRunId,
+                        rootRunId:
+                          runDelivery?.rootRunId ?? input.assistants!.rootRunId,
                       }
                     : {}),
                   attempt: input.attempt,
@@ -1251,6 +1348,37 @@ export class DshHarnessAdapter implements HarnessAdapter {
           executionSignal.throwIfAborted();
           await checkContent('beforePublication');
           executionSignal.throwIfAborted();
+          if (runDelivery) {
+            if (!joined || !deliveryReceipt || !rootBinding)
+              finalDeliveryUnavailable();
+            const proof: FinalDeliveryProof = Object.freeze({
+              nativeSessionId: threadId,
+              publicMessageId: joined!.publicMessageId as string,
+              durableSeq: joined!.durableSeq as number,
+              nativeBindingId: rootBinding!.bindingId as string,
+              nativeCandidateDigest: deliveryReceipt!.nativeCandidateDigest,
+              candidateDigest: deliveryReceipt!.candidateDigest,
+              factSetDigest: deliveryReceipt!.factSetDigest,
+              attempt: input.attempt,
+              generation,
+            });
+            const released = await nativeDelivery('finish', {
+              sessionId: threadId,
+              completionToken: joined!.completionToken,
+              candidateDigest: proof.nativeCandidateDigest,
+              factSetDigest: proof.factSetDigest,
+            });
+            if (
+              released.released !== true ||
+              released.publicMessageId !== proof.publicMessageId ||
+              released.durableSeq !== proof.durableSeq ||
+              released.textDigest !== proof.nativeCandidateDigest ||
+              released.factSetDigest !== proof.factSetDigest
+            )
+              finalDeliveryUnavailable();
+            runDelivery.finish(proof);
+            checkedDeliveryProof = proof;
+          }
           if (assistant) {
             // The owned native tree stays held through facts/policy and finish.
             // Stop and await the active-run
@@ -1782,6 +1910,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     bootstrapReceipt?: BootstrapReceipt;
     runtime: DshRuntime;
     prompt: string;
+    start?(): Promise<unknown>;
     images: HarnessExecutionInput['images'];
     signal: AbortSignal;
     subscription: boolean;
@@ -2420,15 +2549,17 @@ export class DshHarnessAdapter implements HarnessAdapter {
         );
       }
       await (
-        input.resume
-          ? input.runtime.client.continueWait(input.resume)
-          : input.runtime.client.prompt(
-              input.runtime.sessionId,
-              input.prompt,
-              input.images,
-              input.sessionReferences,
-              input.bootstrapReceipt,
-            )
+        input.start
+          ? input.start()
+          : input.resume
+            ? input.runtime.client.continueWait(input.resume)
+            : input.runtime.client.prompt(
+                input.runtime.sessionId,
+                input.prompt,
+                input.images,
+                input.sessionReferences,
+                input.bootstrapReceipt,
+              )
       ).catch(async (error: unknown) => {
         await eventChain;
         if (
