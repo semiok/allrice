@@ -138,11 +138,11 @@
     },
     {
       "id": "allrice-final-delivery-v1",
-      "issue": "MET-184; MET-192",
+      "issue": "MET-184; MET-192; MET-210",
       "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
-      "path": "apps/worker/dsh/allrice-final-delivery-repair.mjs",
-      "reason": "Frozen new-Run opt-in: certify exact native final reply and immutable artifact/Office evidence before atomic completion. A single same-turn host notice may correct links from existing authorized files, using original identity, input gate, deadline and model admission. No tools or business task replay; preserve original failed replies, legacy frozen behavior and cold journal provenance. No DSH core changes."
+      "path": "apps/worker/dsh/allrice-final-delivery.mjs",
+      "reason": "SaaS authority and persistence gate: root-Run-only reply origin and artifact/Office evidence bind the native message to atomic Job completion. Worker awaits public session/wait, pauses input, and may request one same-Agent/Run/model text repair via public steer with platform source (a new native turn). Public runMaintenance holds the candidate during validation; tools, retries and compaction are denied for repair, with existing content/task-progress accounting and cancellation. No DSH core/private API or eligibility expansion. Legacy assistant same-turn wrapper remains pending deletion with PR2b; PR1c activation shares that window."
     },
     {
       "id": "allrice-observed-native-close-v1",
