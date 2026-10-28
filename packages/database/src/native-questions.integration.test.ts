@@ -6,6 +6,7 @@ import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 import { createAssistantLocalCommandFixture } from './local-command-assistant.fixture.ts';
 import * as client from './core/client.ts';
 import { bindNativeQuestionFixture } from './native-question-binding.fixture.ts';
+import { prepareNativeQuestionReply } from './native-question-replies.ts';
 import { createSession, authenticateSession } from './identity.ts';
 import {
   appendJobEvent,
@@ -1930,7 +1931,8 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
       }
       await completeJob({ ...turn, result: { text: '本轮结束。' } });
       if (boundary === 'proof-reclaim') {
-        const job = await claimNextJob(randomUUID(), 120000);
+        const workerId = randomUUID();
+        const job = await claimNextJob(workerId, 120000);
         expect(job?.id).toBe(
           (
             await db`select id from allrice_jobs where run_id=${sent.fallbackRunId}`
@@ -1948,6 +1950,58 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
             followup_state: 'released',
           },
         ]);
+        const execution = await startClaimedJob(
+          workerId,
+          job!.id,
+          job!.lease!.token,
+        );
+        expect(execution).not.toBeNull();
+        await acquireConversationRuntime({
+          ...ownership,
+          workerId,
+          runId: execution!.context.runId,
+          ownerId: f.user,
+          configChecksum: `sha256:${'a'.repeat(64)}`,
+          compactThresholdTokens: 10000,
+        });
+        const worker = {
+          workerId,
+          jobId: job!.id,
+          leaseToken: job!.lease!.token,
+        };
+        const reply = await prepareNativeQuestionReply({
+          context: execution!.context,
+          worker,
+          sessionId: f.session.id,
+        });
+        expect(reply?.inputId).toBe(inputId);
+        const [persisted] =
+          await db`select native_proof from allrice_conversation_commands where id=${command!.id}`;
+        await reply!.adopted(persisted!.native_proof);
+        await completeJob({
+          ...worker,
+          result: { text: '这道题已经回答过。' },
+        });
+        expect(
+          await db`select c.state,r.state run_state,j.status,j.lease_token,f.state followup_state
+          from allrice_conversation_commands c join allrice_runs r on r.id=c.followup_run_id
+          join allrice_jobs j on j.run_id=r.id join allrice_conversation_followups f on f.run_id=r.id
+          where c.id=${command!.id}`,
+        ).toEqual([
+          {
+            state: 'consumed',
+            run_state: 'succeeded',
+            status: 'succeeded',
+            lease_token: null,
+            followup_state: 'consumed',
+          },
+        ]);
+        const receipt = await getSessionRunTimings(f.owner, f.session.id, db, {
+          inputs: true,
+        });
+        expect(receipt.inputs?.find((r) => r.inputId === inputId)?.status).toBe(
+          'adopted',
+        );
       }
     },
   );
