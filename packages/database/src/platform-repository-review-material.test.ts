@@ -148,6 +148,20 @@ describe('repository review stable source/CI and attributed opinion', () => {
     expect(
       repositoryReviewReadiness(
         material,
+        [{ ...review, cancelRequested: true }],
+        false,
+      ),
+    ).toMatchObject({ state: 'unknown', reasons: ['authority_revoked'] });
+    expect(
+      repositoryReviewReadiness(
+        material,
+        [{ ...review, cancelRequested: true }],
+        true,
+      ).state,
+    ).toBe('revise');
+    expect(
+      repositoryReviewReadiness(
+        material,
         [{ ...review, deliveryArtifactId: null }],
         false,
       ).state,

@@ -47,7 +47,7 @@ import {
   savePlatformEmployeeDraft,
   publishPlatformEmployee,
   disablePlatformEmployee,
-  assignPublishedPlatformEmployeeToWorkspace,
+  materializePlatformEmployeeRevision,
 } from '../../../../packages/database/src/employees/platform-employees.ts';
 import { ensureQualityEmployee } from '../../../../packages/database/src/platform-quality.ts';
 import { resolvePlatformPreviewContext } from '../../../../packages/database/src/platform-employees/preview-context.ts';
@@ -1658,12 +1658,29 @@ suite(
           await republishReviewEmployee();
         }
         if (first === 'proof') {
-          // Reactivate through the real published assignment API. Authority
-          // restored for future work must not resurrect this old result.
-          await assignPublishedPlatformEmployeeToWorkspace(
-            'rice',
-            s.internal.workspaceId!,
+          // Restore the private deployment through the same publisher used by
+          // ensureQualityEmployee; generic tenant assignment enables inheritance.
+          type Revision = Parameters<
+            typeof materializePlatformEmployeeRevision
+          >[1]['revision'];
+          const [revision] = await f.db<Revision[]>`
+            select r.* from allrice_platform_employee_revisions r
+            join allrice_platform_employees e on e.current_published_revision_id=r.id
+            where e.id=${platformEmployeeId}`;
+          await f.db.begin((tx) =>
+            materializePlatformEmployeeRevision(tx, {
+              employeeId: platformEmployeeId,
+              revision: revision!,
+              definition: PlatformEmployeeDefinitionSchema.parse(
+                revision!.definition,
+              ),
+              workspaceIds: [s.internal.workspaceId!],
+              actorLabel: s.admin.actor.id,
+              inheritByDefault: false,
+              preserveCurrentPolicy: true,
+            }),
           );
+          await ensureQualityEmployee(s.admin);
           const [active] = await f.db`
             select a.active,d.active deployment_active,e.status
             from allrice_employee_runs r
@@ -1686,6 +1703,45 @@ suite(
           expect(
             (await getPlatformRepositoryReview(s.admin, s.review.id)).status,
           ).toBe('succeeded');
+          const panel = await getPlatformRepositoryReviewPanel(
+            s.admin,
+            s.data.publication.id,
+            1,
+          );
+          expect(panel).toMatchObject({
+            canStart: true,
+            subjectDigest: s.review.subjectDigest,
+            readiness: { state: 'unknown', reasons: ['authority_revoked'] },
+          });
+          expect(panel.reviews[0]).toMatchObject({
+            id: s.review.id,
+            status: 'succeeded',
+            verdict: 'accept',
+          });
+          const nextRequestId = randomUUID(),
+            next = await s.create(nextRequestId);
+          expect(next.subjectDigest).toBe(s.review.subjectDigest);
+          expect(next.runId).not.toBe(s.review.runId);
+          expect(next.id).not.toBe(s.review.id);
+          expect((await s.create(nextRequestId)).id).toBe(next.id);
+          await expect(s.create()).rejects.toMatchObject({ code: 'conflict' });
+          const completed = await completeReview(await start(s, next));
+          const newProof = await f.db.begin((tx) =>
+            readCompletedRepositoryReview(tx, s.internal, completed.review.id),
+          );
+          expect(newProof.reviewerRunId).toBe(next.runId);
+          await expect(
+            f.db.begin((tx) =>
+              readCompletedRepositoryReview(tx, s.internal, s.review.id),
+            ),
+          ).rejects.toMatchObject({ code: 'authorization_denied' });
+          await expect(
+            getPlatformRepositoryReviewPanel(s.admin, s.data.publication.id, 1),
+          ).resolves.toMatchObject({
+            canStart: false,
+            readiness: { state: 'accepted' },
+          });
+          await expect(s.create()).rejects.toMatchObject({ code: 'conflict' });
         }
       },
       30000,

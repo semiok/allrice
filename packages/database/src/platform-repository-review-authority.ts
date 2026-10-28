@@ -171,7 +171,7 @@ export async function bindRepositoryReview(
   const [blocked] =
     await tx`select s.id from allrice_platform_repository_review_subjects s join allrice_jobs j on j.id=s.job_id
     left join allrice_platform_repository_reviews r on r.subject_id=s.id where s.owner_id=${context.actor.id} and
-    ((s.publication_id=${b.frozen.publicationId} and (j.status in ('queued','claimed','running') or (j.status='succeeded' and s.reviewer_run_id=s.run_id and s.subject_digest=${b.frozen.material.subjectDigest} and r.verdict='accept' and s.delivery_artifact_id is not null)))
+    ((s.publication_id=${b.frozen.publicationId} and (j.status in ('queued','claimed','running') or (j.status='succeeded' and j.cancel_requested_at is null and s.reviewer_run_id=s.run_id and s.subject_digest=${b.frozen.material.subjectDigest} and r.verdict='accept' and s.delivery_artifact_id is not null)))
       or (s.content_digest=${b.frozen.material.candidateContentDigest} and r.verdict='revise')) limit 1`;
   if (blocked) throw new QueueError('conflict');
   await tx`insert into allrice_platform_repository_review_subjects(id,publication_id,owner_id,organization_id,workspace_id,request_id,input_digest,run_id,job_id,session_id,frozen,subject_digest,content_digest,reviewer_run_id)

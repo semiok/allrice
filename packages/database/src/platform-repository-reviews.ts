@@ -85,7 +85,7 @@ export async function getPlatformRepositoryReviewPanel(
     await getDatabase()`select id from allrice_platform_repository_publications where id=${id} and owner_id=${owner}`;
   if (!p) throw new DataAccessError('not_found');
   const rows =
-    await getDatabase()`select s.*,j.status,j.last_error_code,r.verdict,r.summary,r.artifact_id from allrice_platform_repository_review_subjects s
+    await getDatabase()`select s.*,j.status,j.cancel_requested_at,j.last_error_code,r.verdict,r.summary,r.artifact_id from allrice_platform_repository_review_subjects s
     join allrice_jobs j on j.id=s.job_id and j.run_id=s.run_id and j.owner_id=s.owner_id
     left join allrice_platform_repository_reviews r on r.subject_id=s.id where s.publication_id=${id} and s.owner_id=${owner} order by s.created_at desc,s.id desc limit 20`;
   const reviews = rows.map(mapped);
@@ -119,7 +119,10 @@ export async function getPlatformRepositoryReviewPanel(
     : [];
   const readiness = repositoryReviewReadiness(
     material,
-    reviews,
+    reviews.map((review, index) => ({
+      ...review,
+      cancelRequested: !!rows[index]!.cancel_requested_at,
+    })),
     !!rejected,
     reason,
   );
