@@ -333,6 +333,7 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
       expect(run!.execution_snapshot).not.toHaveProperty(
         'officeFirstDeliveryPolicy',
       );
+      await cancelPlatformRepairTask(admin, task.id);
     } finally {
       vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', previous);
     }
