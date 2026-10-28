@@ -656,70 +656,104 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
     }
   }, 45000);
 
-  it('公开 wait 返回后已接收的输入仍经候选的最终 wait，真实第二 turn 不丢来源或用量', async () => {
-    const entered = gate(),
-      release = gate();
-    const f = await setup(true, async (_request, count) => {
-      if (count === 2) {
-        entered.release();
-        await release.promise;
+  it.each(['complete', 'reject-origin', 'interrupt'] as const)(
+    '公开 wait 返回后已接收的输入仍经候选的最终 wait，真实第二 turn 不丢来源或用量（%s）',
+    async (mode) => {
+      const entered = gate(),
+        release = gate();
+      const f = await setup(true, async (_request, count) => {
+        if (count === 2) {
+          entered.release();
+          await release.promise;
+        }
+        return { text: count === 1 ? '首轮回复。' : '已结合补充信息。' };
+      });
+      const task = await prepare(f, '简单说明，不需要文件。');
+      const wait = DshProtocolClient.prototype.wait;
+      vi.spyOn(DshProtocolClient.prototype, 'wait').mockImplementationOnce(
+        async function (this: DshProtocolClient, sessionId) {
+          const result = await wait.call(this, sessionId);
+          // An actual native input accepted before the Worker pauses ingress.
+          await this.prompt(sessionId, '在输入窗口关闭前接收的补充。');
+          await entered.promise;
+          return result;
+        },
+      );
+      const finalDelivery = DshProtocolClient.prototype.finalDelivery;
+      vi.spyOn(DshProtocolClient.prototype, 'finalDelivery').mockImplementation(
+        async function (this: DshProtocolClient, action, params) {
+          if (action === 'candidate' && mode === 'reject-origin')
+            await f.db`delete from allrice_run_events where run_id=${task.runId} and event_type='turn.started'`;
+          const result = finalDelivery.call(this, action, params);
+          if (action === 'candidate') {
+            if (mode === 'interrupt')
+              task.controller.abort(Error('interrupt late input'));
+            release.release();
+          }
+          return result;
+        },
+      );
+      try {
+        if (mode !== 'complete') {
+          await expect(task.run()).rejects.toMatchObject({
+            code:
+              mode === 'interrupt'
+                ? 'EXECUTION_ABORTED'
+                : 'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE',
+            retryable: false,
+          });
+          const [route] =
+            await f.db`select id,input_tokens,cached_input_tokens,output_tokens,usage_complete,cache_usage_known from allrice_route_decisions where run_id=${task.runId}`;
+          expect(route).toMatchObject({
+            input_tokens: mode === 'interrupt' ? 20 : 40,
+            cached_input_tokens: 0,
+            output_tokens: mode === 'interrupt' ? 5 : 10,
+            usage_complete: mode !== 'interrupt',
+            cache_usage_known: mode !== 'interrupt',
+          });
+          expect(
+            await f.db`select route_decision_id id,input_tokens,cached_input_tokens,output_tokens,usage_complete,cache_usage_known from allrice_model_usage_ledger where route_decision_id=${route!.id}`,
+          ).toEqual([route]);
+          expect(await state(f, task.runId)).toMatchObject({ successes: 0 });
+          expect(model!.requests).toHaveLength(2);
+          return;
+        }
+        const result = await task.run();
+        const coverage = readCheckedFinalDeliveryForExecution(
+          task.workflowLease,
+          result,
+        );
+        if (coverage.coverage !== 'checked_native_v1')
+          throw Error('Missing checked native proof');
+        const starts =
+          await f.db`select payload from allrice_run_events where run_id=${task.runId} and event_type='turn.started' order by sequence`;
+        expect(starts).toHaveLength(2);
+        expect(starts[1]!.payload.turnId).toBe(
+          `${coverage.proof.nativeSessionId}:turn:2`,
+        );
+        expect(result).toMatchObject({
+          answer: '已结合补充信息。',
+          usage: { inputTokens: 40, cachedInputTokens: 0, outputTokens: 10 },
+        });
+        await completeJob({
+          ...task.workflowLease,
+          result,
+          checkedDelivery: coverage.checkedDelivery,
+        });
+        expect(await state(f, task.runId)).toMatchObject({
+          status: 'succeeded',
+          text: '已结合补充信息。',
+          successes: 1,
+        });
+        expect(model!.requests).toHaveLength(2);
+      } finally {
+        release.release();
+        task.controller.abort();
+        await task.isolation.cleanup();
       }
-      return { text: count === 1 ? '首轮回复。' : '已结合补充信息。' };
-    });
-    const task = await prepare(f, '简单说明，不需要文件。');
-    const wait = DshProtocolClient.prototype.wait;
-    vi.spyOn(DshProtocolClient.prototype, 'wait').mockImplementationOnce(
-      async function (this: DshProtocolClient, sessionId) {
-        const result = await wait.call(this, sessionId);
-        // An actual native input accepted before the Worker pauses ingress.
-        await this.prompt(sessionId, '在输入窗口关闭前接收的补充。');
-        await entered.promise;
-        return result;
-      },
-    );
-    const finalDelivery = DshProtocolClient.prototype.finalDelivery;
-    vi.spyOn(DshProtocolClient.prototype, 'finalDelivery').mockImplementation(
-      function (this: DshProtocolClient, action, params) {
-        const result = finalDelivery.call(this, action, params);
-        if (action === 'candidate') release.release();
-        return result;
-      },
-    );
-    try {
-      const result = await task.run();
-      const coverage = readCheckedFinalDeliveryForExecution(
-        task.workflowLease,
-        result,
-      );
-      if (coverage.coverage !== 'checked_native_v1')
-        throw Error('Missing checked native proof');
-      const starts =
-        await f.db`select payload from allrice_run_events where run_id=${task.runId} and event_type='turn.started' order by sequence`;
-      expect(starts).toHaveLength(2);
-      expect(starts[1]!.payload.turnId).toBe(
-        `${coverage.proof.nativeSessionId}:turn:2`,
-      );
-      expect(result).toMatchObject({
-        answer: '已结合补充信息。',
-        usage: { inputTokens: 40, cachedInputTokens: 0, outputTokens: 10 },
-      });
-      await completeJob({
-        ...task.workflowLease,
-        result,
-        checkedDelivery: coverage.checkedDelivery,
-      });
-      expect(await state(f, task.runId)).toMatchObject({
-        status: 'succeeded',
-        text: '已结合补充信息。',
-        successes: 1,
-      });
-      expect(model!.requests).toHaveLength(2);
-    } finally {
-      release.release();
-      task.controller.abort();
-      await task.isolation.cleanup();
-    }
-  }, 45000);
+    },
+    45000,
+  );
 
   it.each([
     { mode: 'valid', history: false },
@@ -1083,6 +1117,8 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
     'wait-error',
     'missing-origin',
     'missing-active-turn',
+    'missing-origin-after-repair',
+    'missing-candidate',
     'empty-repair',
     'invalid-repair',
     'missing-usage-repair',
@@ -1104,7 +1140,10 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
             ? { usage: null }
             : {}),
           text:
-            mode === 'missing-origin' || mode === 'missing-active-turn'
+            mode === 'missing-origin' ||
+            mode === 'missing-active-turn' ||
+            mode === 'missing-candidate' ||
+            (mode === 'missing-origin-after-repair' && count === 2)
               ? available
               : count === 2 && mode === 'empty-repair'
                 ? ''
@@ -1134,7 +1173,12 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
           Error('synthetic public wait failure'),
         );
       available = `[月报](/api/v1/files/${artifact.object.id}/download)`;
-      if (mode === 'missing-origin' || mode === 'missing-active-turn') {
+      if (
+        mode === 'missing-origin' ||
+        mode === 'missing-active-turn' ||
+        mode === 'missing-origin-after-repair' ||
+        mode === 'missing-candidate'
+      ) {
         const finalDelivery = DshProtocolClient.prototype.finalDelivery;
         vi.spyOn(
           DshProtocolClient.prototype,
@@ -1145,12 +1189,19 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
           params,
         ) {
           if (action === 'candidate') {
-            if (mode === 'missing-origin')
+            if (
+              mode === 'missing-origin' ||
+              (mode === 'missing-origin-after-repair' &&
+                model!.requests.length === 2)
+            )
               await f.db`delete from allrice_run_events where run_id=${task.runId} and event_type='turn.started'`;
-            else
+            else if (mode === 'missing-active-turn')
               await f.db`update allrice_conversation_runtimes set active_turn_id=null where session_id=${f.chat.id}`;
           }
-          return finalDelivery.call(this, action, params);
+          const result = await finalDelivery.call(this, action, params);
+          return action === 'candidate' && mode === 'missing-candidate'
+            ? {}
+            : result;
         });
       }
       try {
@@ -1159,6 +1210,8 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
           'wait-error': 'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE',
           'missing-origin': 'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE',
           'missing-active-turn': 'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE',
+          'missing-origin-after-repair': 'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE',
+          'missing-candidate': 'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE',
           'empty-repair': 'DSH_EMPTY_RESPONSE',
           'invalid-repair': 'FINAL_DELIVERY_RESPONSE_INVALID',
           'missing-usage-repair': 'FINAL_DELIVERY_RESPONSE_INVALID',
@@ -1189,7 +1242,8 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
         const oneTurn =
           mode === 'wait-error' ||
           mode === 'missing-origin' ||
-          mode === 'missing-active-turn';
+          mode === 'missing-active-turn' ||
+          mode === 'missing-candidate';
         expect(model!.requests).toHaveLength(oneTurn ? 1 : 2);
         expect(
           await f.db`select run_id from allrice_employee_runs where session_id=${f.chat.id}`,
@@ -1236,6 +1290,8 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
           const complete = [
             'missing-origin',
             'missing-active-turn',
+            'missing-origin-after-repair',
+            'missing-candidate',
             'invalid-repair',
           ].includes(mode);
           expect(route!.usage_complete).toBe(complete);

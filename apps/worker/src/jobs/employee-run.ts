@@ -1287,8 +1287,6 @@ export async function executeEmployeeRun({
       !selectedWorkflow &&
       !repositoryReviewTask &&
       !repairTask;
-    if (finalDeliveryMode === 'checked_native_v1')
-      requireCheckedFinalDelivery(workflowLease);
     if (
       (officeFirstDeliveryPolicy ||
         finalDeliveryMode === 'checked_native_v1') &&
@@ -2067,7 +2065,8 @@ export async function executeEmployeeRun({
                 });
               }
             });
-    if (result.waitingForUser) {
+    const waitingForProgress = !!result.waitingForUser;
+    if (waitingForProgress) {
       const progress = await taskProgress?.({
         action: 'check',
         nativeSessionId: result.threadId ?? runtime.threadId,
@@ -2081,6 +2080,11 @@ export async function executeEmployeeRun({
         throw new HandlerError('DSH_TURN_FAILED', 'DSH turn failed', false);
       result.answer = '等你回答后继续。';
     }
+    // The existing native progress wait, verified against the current durable
+    // pause/lease above, is not a final delivery. Every other checked result
+    // still requires the private proof, including a result that lost it.
+    if (!waitingForProgress && finalDeliveryMode === 'checked_native_v1')
+      requireCheckedFinalDelivery(workflowLease);
     if (questionWait)
       await completeNativeTask({
         context: execution.context,
@@ -2164,7 +2168,9 @@ export async function executeEmployeeRun({
     );
     if (officeFirstDeliveryPolicy) delivery.assertComplete();
     runtime = await finalizeEmployeeConversationContext({
-      ...(independentDelivery ? { retainTurnUntilCommit: runtime } : {}),
+      ...(independentDelivery && !waitingForProgress
+        ? { retainTurnUntilCommit: runtime }
+        : {}),
       contentGenerationId: contentRuntime?.generationId,
       allowedMessageIds: contentRuntime?.allowedMessageIds ?? undefined,
       checkContent: contentGuard?.check,

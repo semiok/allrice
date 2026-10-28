@@ -386,7 +386,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       finalDeliveryUnavailable();
     // Installed synchronously by runOnce before prompting. Keep it through
     // child join/retry; a later runOnce replaces it with its own turn barrier.
-    let awaitTurnOrigin: (() => Promise<void>) | undefined;
+    let awaitTurnOrigin: ((settled?: boolean) => Promise<void>) | undefined;
     let restoredOriginTurnId: string | undefined;
     const ordinaryHandler = dshInboundToolHandler(input);
     let turnId: string | null = null;
@@ -438,7 +438,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         )
           finalDeliveryUnavailable();
         if (!awaitTurnOrigin) finalDeliveryUnavailable();
-        await awaitTurnOrigin!();
+        await awaitTurnOrigin!(method === 'allrice/final-delivery-origin');
         executionSignal.throwIfAborted();
         const origin = await runDelivery!.readOrigin();
         if (!origin) finalDeliveryUnavailable();
@@ -1101,6 +1101,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
                     await deliveryNativeCall(() =>
                       runtime.client.wait(threadId),
                     );
+                    await awaitTurnOrigin!(true);
                     executionSignal.throwIfAborted();
                     await input.runDelivery!.pauseInput();
                     // candidate closes native ingress and waits once more.
@@ -1128,7 +1129,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
               ...(checkedAssistant || runDelivery
                 ? {
                     installTurnOriginBarrier: (
-                      barrier: () => Promise<void>,
+                      barrier: (settled?: boolean) => Promise<void>,
                     ) => {
                       awaitTurnOrigin = barrier;
                     },
@@ -1929,7 +1930,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
     onFailureUsage(receipt: AssistantFailureUsage): void;
     onTurn(turnId: string): Promise<void>;
     /** Private persistence ACK, never a model-supplied barrier. */
-    installTurnOriginBarrier?(barrier: () => Promise<void>): void;
+    installTurnOriginBarrier?(
+      barrier: (settled?: boolean) => Promise<void>,
+    ): void;
     onDelta(
       text: string,
       source: DshSourceMetadata,
@@ -1957,6 +1960,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
     let idle = false;
     let started = false;
     let turnOriginCommitted = false;
+    let usageSettled = false;
+    let runtimeClosed = false;
     const flushEvents = async () => {
       let pending;
       do {
@@ -1965,8 +1970,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
       } while (pending !== eventChain);
       if (processingError) throw processingError;
     };
-    input.installTurnOriginBarrier?.(async () => {
+    input.installTurnOriginBarrier?.(async (settled) => {
       await flushEvents();
+      // Only public wait or the candidate's post-wait origin request confirms
+      // execution settlement. Authorization before a model call does not.
+      if (settled) usageSettled = idle;
       if (!started || !turnOriginCommitted)
         throw new HandlerError(
           'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE',
@@ -2330,6 +2338,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       if (event.type === 'turn/start') {
         started = true;
         idle = false;
+        usageSettled = false;
         turnOriginCommitted = false;
         const turn =
           typeof data.turn === 'number' || typeof data.turn === 'string'
@@ -2539,6 +2548,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         });
     });
     const unsubscribeFailure = input.runtime.client.onFailure(() => {
+      runtimeClosed = true;
       // The accepted prompt may have invoked tools before its host vanished.
       // A fresh prompt would replay the task, not recover its native callback.
       eventChain = eventChain.then(() => {
@@ -2649,8 +2659,19 @@ export class DshHarnessAdapter implements HarnessAdapter {
       if (!(error instanceof NativeQuestionParked))
         input.onFailureUsage({
           usage,
-          usageComplete: false,
-          cacheUsageKnown: false,
+          usageComplete:
+            usageSettled &&
+            !runtimeClosed &&
+            !processingError &&
+            messageReceipts > 0 &&
+            usageComplete &&
+            Object.values(usage).every(Number.isSafeInteger),
+          cacheUsageKnown:
+            usageSettled &&
+            !runtimeClosed &&
+            !processingError &&
+            messageReceipts > 0 &&
+            cacheUsageKnown,
         });
       throw error;
     } finally {
