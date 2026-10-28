@@ -11,6 +11,10 @@ Version 0.1 enables pgvector, migration/runtime metadata, the identity foundatio
 - migrations are ordered immutable SQL files;
 - the runner holds a PostgreSQL advisory transaction lock;
 - applied filenames are recorded in `allrice_schema_migrations`;
+- when redefining CHECK functions or their recursive helpers pinned by `0225`
+  with `CREATE OR REPLACE FUNCTION`, restate `SET search_path = pg_catalog, public`
+  (use the migration's `current_schema()` as in `0225` for isolated fixtures);
+  omitting `SET` clears the function configuration and breaks standard restores.
 - Web and Worker use the same package;
 - AllRice has its own database user and migration history;
 - no external product schema, ORM model, or table is imported;
