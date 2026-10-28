@@ -134,16 +134,17 @@ export async function setupNativeReplyEmployee(
   await authorizeFixturePlatformAdministrator(db, identity.user);
   await updateNativeQuestionMode(context, 'timed');
   const connectionId = randomUUID(),
-    catalogId = randomUUID();
+    catalogId = randomUUID(),
+    modelId = `pr1b-synthetic-${connectionId}`;
   await db`insert into allrice_model_providers(id,provider_key,name,harness,auth_mode,enabled)
       values(${randomUUID()},'openai-compatible','Synthetic loopback','dsh','api_key',true)
       on conflict(provider_key) do update set enabled=true`;
   const [provider] =
     await db`select id from allrice_model_providers where provider_key='openai-compatible'`;
   await db`insert into allrice_model_connections(id,provider_id,scope,name,credential_reference,base_url,status)
-      values(${connectionId},${provider!.id},'platform','Synthetic loopback','test:pr1b-synthetic',${model.baseUrl},'ready')`;
+      values(${connectionId},${provider!.id},'platform',${modelId},'test:pr1b-synthetic',${model.baseUrl},'ready')`;
   await db`insert into allrice_model_catalog_entries(id,provider_id,model,display_name,reasoning_efforts,default_reasoning_effort,input_modalities,output_modalities,enabled)
-      values(${catalogId},${provider!.id},'pr1b-synthetic','Synthetic loopback','["low"]','low','["text"]','["text"]',true)`;
+      values(${catalogId},${provider!.id},${modelId},'Synthetic loopback','["low"]','low','["text"]','["text"]',true)`;
   await upsertEmployeeModelPolicy({
     context,
     workspaceId: identity.workspace,

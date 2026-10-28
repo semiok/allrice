@@ -12,7 +12,7 @@ import {
 
 export async function createExperienceFixture(
   db: ReturnType<typeof postgres>,
-  options: { published?: boolean } = {},
+  options: { published?: boolean; memoryRead?: boolean } = {},
 ) {
   const org = randomUUID(),
     workspace = randomUUID(),
@@ -50,7 +50,9 @@ export async function createExperienceFixture(
   await ensureDefaultEmployee(owner, workspace);
   let publishedVersion: string | null = null;
   if (options.published) {
-    const source = await createEmployeeAdministrationFixture(db);
+    const source = await createEmployeeAdministrationFixture(db, {
+      memoryRead: options.memoryRead,
+    });
     await source.preview();
     await source.publish();
     await assignPublishedPlatformEmployeeToWorkspace(

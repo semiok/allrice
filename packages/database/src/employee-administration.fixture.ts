@@ -15,7 +15,7 @@ import { approveSyntheticCurrentEmployeeExecution } from './current-execution.fi
 import type { getDatabase } from './core/client.ts';
 export async function createEmployeeAdministrationFixture(
   db: ReturnType<typeof getDatabase>,
-  options: { name?: string } = {},
+  options: { name?: string; memoryRead?: boolean } = {},
 ) {
   // Synthetic database-only approval, not a measured executable artifact.
   // Real native acceptance supplies its own independently measured exact ID.
@@ -61,7 +61,10 @@ export async function createEmployeeAdministrationFixture(
       nativeSkillIds: [skillId],
       workflowRevisionIds: [],
       knowledgeRevisionIds: [],
-      toolNames: ['workspace.skill.read'],
+      toolNames: [
+        'workspace.skill.read',
+        ...(options.memoryRead ? ['workspace.memory.search'] : []),
+      ],
       connectorRefs: [],
     },
     securityPolicy: {

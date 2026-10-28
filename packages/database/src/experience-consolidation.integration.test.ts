@@ -583,7 +583,18 @@ suite(
       withSkill = false,
       draftOverride: { rule?: string; applicability?: string } = {},
       withSibling = false,
+      memoryRead = false,
     ) {
+      const target = memoryRead
+        ? await createExperienceFixture(db, {
+            published: true,
+            memoryRead: true,
+          })
+        : undefined;
+      if (target)
+        for (const context of [target.owner, target.reviewer, target.neighbor])
+          await db`insert into allrice_sessions(id,user_id,token_hash,expires_at)
+          values(${context.sessionId},${context.actor.id},${(randomUUID() + randomUUID()).replaceAll('-', '')},clock_timestamp()+interval '1 day')`;
       const f = await leased(
           withSkill,
           false,
@@ -591,6 +602,7 @@ suite(
           true,
           undefined,
           withSibling,
+          target,
         ),
         output = await proof(f);
       if (attendance)
@@ -1153,8 +1165,16 @@ suite(
     async function adoptedFixture(
       withSkill = false,
       draftOverride: { rule?: string; applicability?: string } = {},
+      memoryRead = false,
     ) {
-      const f = await validationFixture(true, true, withSkill, draftOverride);
+      const f = await validationFixture(
+        true,
+        true,
+        withSkill,
+        draftOverride,
+        false,
+        memoryRead,
+      );
       await syncExperienceValidations();
       const test = (await claimNextPlatformEmployeeTestRun(randomUUID()))!;
       await completePlatformEmployeeTestRun(
@@ -1897,7 +1917,7 @@ suite(
     it.each(['original', 'forged', 'revoked'] as const)(
       'PR5 carries the %s old experience handle through the actual reply Worker and Host',
       async (kind) => {
-        const f = await adoptedFixture();
+        const f = await adoptedFixture(false, {}, true);
         let oldHandle = '';
         const actual = await setupNativeReplyEmployee(
           async (request, index) => {
