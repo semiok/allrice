@@ -18,7 +18,6 @@ import { employeeManifestChecksum } from './employees/employee-config.ts';
 import { verifiedRuntimePackageChecksum } from './platform-employees/runtime-package.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
 import { readWorkAutomation } from './work-automation.ts';
-import { assertRepositoryReviewAssistantAuthority } from './platform-repository-review-authority.ts';
 
 const phases = new Set([
   'configure',
@@ -383,28 +382,19 @@ export async function assertAssistantAuthority(
     if (input.phase === 'delegate')
       requireAuthority(allowedTools.data.includes('assistant.delegate'));
   }
-  // Extra platform restrictions follow the native assignment locks. The QA
-  // deployment writer locks assignments before its deployment row as well.
-  const platformReview = await assertRepositoryReviewAssistantAuthority(
-    tx,
-    task.rootRunId,
-    tools,
-    lock,
-  );
   const [clock] = await tx<{ now: Date }[]>`select clock_timestamp() as now`;
   requireAuthority(
-    platformReview ||
-      (
-        await readWorkAutomation(
-          tx,
-          {
-            organizationId: task.scope.organizationId,
-            workspaceId: task.scope.workspaceId,
-            userId: root.owner_id,
-          },
-          lock,
-        )
-      ).settings.assistants,
+    (
+      await readWorkAutomation(
+        tx,
+        {
+          organizationId: task.scope.organizationId,
+          workspaceId: task.scope.workspaceId,
+          userId: root.owner_id,
+        },
+        lock,
+      )
+    ).settings.assistants,
   );
   requireAuthority(
     clock &&

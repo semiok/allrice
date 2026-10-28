@@ -70,7 +70,7 @@ export function repositoryReviewReadiness(
     current.reviewerRunId &&
     current.reviewArtifactId &&
     current.deliveryArtifactId &&
-    current.reviewerRunId !== current.runId &&
+    current.reviewerRunId === current.runId &&
     !material.authorRunIds.includes(current.reviewerRunId)
   )
     return { ...common, state: 'accepted' as const, reasons: [] };

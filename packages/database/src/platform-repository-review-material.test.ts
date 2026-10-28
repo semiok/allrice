@@ -141,6 +141,7 @@ describe('repository review stable source/CI and attributed opinion', () => {
       createdAt: new Date().toISOString(),
       remoteVerifiedAt: new Date().toISOString(),
     });
+    review.reviewerRunId = review.runId;
     expect(repositoryReviewReadiness(material, [review], false).state).toBe(
       'accepted',
     );

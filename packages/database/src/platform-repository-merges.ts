@@ -16,7 +16,7 @@ import {
 } from './platform-repository-publication-authority.ts';
 import {
   readCompletedRepositoryReview,
-  lockCompletedRepositoryReviewRoot,
+  lockCompletedRepositoryReviewJob,
 } from './platform-repository-completed-review.ts';
 import { readRepositoryReviewMaterial } from './platform-repository-review-authority.ts';
 import { withRepositoryMerge } from './platform-repository-merge-authority.ts';
@@ -111,7 +111,7 @@ export async function getPlatformRepositoryMergePanel(
       where s.publication_id=${id} and s.owner_id=${context.actor.id} and j.status='succeeded'
       order by s.created_at desc,s.id desc limit 1`;
         if (!s) return;
-        await lockCompletedRepositoryReviewRoot(tx, internal, s.id, false);
+        await lockCompletedRepositoryReviewJob(tx, internal, s.id, false);
         await assertRepositoryCredentialAuthority(
           tx,
           internal,
@@ -197,7 +197,7 @@ export async function createPlatformRepositoryMerge(
         if (!m) throw new DataAccessError('not_found');
         subjectId = m.review_subject_id as string;
       }
-      await lockCompletedRepositoryReviewRoot(tx, internal, subjectId!);
+      await lockCompletedRepositoryReviewJob(tx, internal, subjectId!);
       await assertRepositoryCredentialAuthority(
         tx,
         internal,

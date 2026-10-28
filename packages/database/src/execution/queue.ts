@@ -73,7 +73,6 @@ import {
 import { repositoryPublicationJobType } from '../platform-repository-publication-contracts.ts';
 import {
   RepositoryReviewBindingSchema,
-  repositoryReviewConfiguration,
   type RepositoryReviewBinding,
 } from '../platform-repository-review-contracts.ts';
 import {
@@ -635,8 +634,7 @@ async function prepareEnqueueRun(
         `platform-repository-review:${context.actor.id}:${b.frozen.requestId}` ||
       i.repositoryReviewRequestId !== b.frozen.requestId ||
       i.repositoryReviewInputDigest !== b.inputDigest ||
-      technicalDigest(i.assistantConfiguration) !==
-        technicalDigest(repositoryReviewConfiguration)
+      Object.hasOwn(i, 'assistantConfiguration')
     )
       throw new QueueError('policy_denied');
   } else if (

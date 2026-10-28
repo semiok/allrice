@@ -1,9 +1,24 @@
 import { createReadPathProbe } from '../../../../packages/database/src/read-path-probe.fixture.ts';
 import { expectReadPathRowLocked } from '../../../../packages/database/src/read-path-races.fixture.ts';
 import { getPlatformRepositoryCredential } from '../../../../packages/database/src/platform-repository-credentials.ts';
-/** Real isolated PostgreSQL/native protocol/storage, with synthetic CI records.
- * No provider, GitHub, physical command, deployment or paid model is called. */
+/** Real isolated PostgreSQL/Job/storage. Remote CI is synthetic; Worker cases
+ * use the real DSH Host with a synthetic HTTP model and credential. */
 import { randomUUID } from 'node:crypto';
+import { join, resolve } from 'node:path';
+import { mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import {
+  installDshNativeArtifact,
+  measureDshNativeArtifact,
+  nativeArtifactPath,
+} from '../../src/harness/dsh-native-artifact.js';
+import JSZip from 'jszip';
+import { repositoryDigest } from '../../../../packages/database/src/platform-repository-source.ts';
+import * as modelPool from '../../../../packages/database/src/providers/model-pool.ts';
+import * as harnessRouter from '../../src/harness/router.js';
+import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.js';
+import { executeEmployeeRun } from '../../src/jobs/employee-run.js';
+import { runClaimedJob } from '../../src/job-runner.js';
+import { p24Fixture } from '../p24/fixture.js';
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import {
   PlatformEmployeeDefinitionSchema,
@@ -42,22 +57,15 @@ import {
   repositoryReviewRequestGate,
   recordRepositoryReviewRemote,
 } from '../../../../packages/database/src/platform-repository-reviews.ts';
-import {
-  repositoryReviewConfiguration,
-  repositoryReviewTools,
-  type RepositoryReviewMaterial,
-} from '../../../../packages/database/src/platform-repository-review-contracts.ts';
+import { type RepositoryReviewMaterial } from '../../../../packages/database/src/platform-repository-review-contracts.ts';
 import {
   enqueueRun,
   claimNextJob,
   startClaimedJob,
   completeJob,
 } from '../../../../packages/database/src/execution/queue.ts';
-import { acquireConversationRuntime } from '../../../../packages/database/src/conversation/conversation-runtime.ts';
-import { assertAssistantAuthority } from '../../../../packages/database/src/assistant-authority.ts';
-import { productionAssistantController } from '../../src/harness/dsh/assistant-controller.js';
+import { executeRepositoryReview } from '../../../../packages/database/src/platform-repository-development.ts';
 
-import { runtimeLedgerInputDigest } from '../../../../packages/database/src/runtime-ledger/ledger.ts';
 import { lockRepositoryReviewContent } from '../../../../packages/database/src/platform-repository-review-facts.ts';
 import { repositoryReviewCompletionAllowed } from '../../../../packages/database/src/platform-repository-review-authority.ts';
 import type { JobRow } from '../../../../packages/database/src/queue/row-mappers.ts';
@@ -94,19 +102,37 @@ suite(
   () => {
     let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
     const emails = new Set<string>();
+    let manifestPath: string, previousManifest: Buffer | undefined;
+    const testHarnessExecArgv = process.execArgv;
     beforeAll(async () => {
-      // Explicit SQL-only current-root issuer; no installed artifact approval.
-      vi.stubEnv(
-        'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
-        'sha256:' + 'a'.repeat(64),
+      const root = await realpath(resolve(import.meta.dirname, '../../../..'));
+      const artifact = await measureDshNativeArtifact(root, undefined, {
+        schemaVersion: 2,
+      });
+      manifestPath = join(root, nativeArtifactPath);
+      previousManifest = await readFile(manifestPath).catch(
+        (error: NodeJS.ErrnoException) => {
+          if (error.code !== 'ENOENT') throw error;
+          return undefined;
+        },
       );
-      vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
+      await mkdir(join(root, '.local'), { recursive: true });
+      await writeFile(manifestPath, JSON.stringify(artifact));
+      // Vitest's require shim is not a Worker loader. Exact content verification
+      // and native launch approval remain real, as in dsh-idle-recovery-worker.
+      process.execArgv = [];
+      vi.stubEnv('NODE_OPTIONS', '');
+      await installDshNativeArtifact({ root, expectedId: artifact.artifactId });
+      vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', artifact.artifactId);
+      vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', artifact.artifactId);
       f = await createAssistantFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
       vi.stubEnv('ALLRICE_ENV', 'development');
       vi.stubEnv('ALLRICE_MCP_CREDENTIAL_KEY', 'a'.repeat(64));
       vi.stubEnv('ALLRICE_RELEASE_SHA', 'a'.repeat(40));
-      for (const flag of ['ASSISTANTS', 'WORKBENCH', 'RUNTIME_POLICY'])
+      vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
+      vi.stubEnv('ALLRICE_STORAGE_ROOT', f.storageRoot);
+      for (const flag of ['WORKBENCH', 'RUNTIME_POLICY'])
         vi.stubEnv(`ALLRICE_${flag}_ENABLED`, '1');
       await createExperienceFixture(f.db);
       await f.db`update allrice_model_connections set status='ready' where id='52000000-0000-4000-8000-000000000001'`;
@@ -116,7 +142,7 @@ suite(
       const toolNames = [
         'workspace.project',
         'browser.workspace',
-        ...repositoryReviewTools,
+        'workspace.export.create',
       ];
       const definition = PlatformEmployeeDefinitionSchema.parse({
         ...revision!.definition,
@@ -140,9 +166,17 @@ suite(
       expect(publication.valid).toBe(true);
     }, 120000);
     afterAll(async () => {
-      vi.restoreAllMocks();
-      vi.unstubAllEnvs();
-      await f?.close();
+      try {
+        await f?.close();
+      } finally {
+        if (manifestPath) {
+          if (previousManifest) await writeFile(manifestPath, previousManifest);
+          else await rm(manifestPath, { force: true });
+        }
+        process.execArgv = testHarnessExecArgv;
+        vi.restoreAllMocks();
+        vi.unstubAllEnvs();
+      }
     });
 
     async function setup() {
@@ -187,13 +221,6 @@ suite(
           },
         ],
       };
-      const control = {
-        version: 1,
-        enabled: true,
-        mode: 'execute',
-        rules: [{ action: 'assistant.delegate', effect: 'allow' }],
-      };
-      await f.db`insert into allrice_runtime_policy_controls(organization_id,workspace_id,version,controls) values(${internal.organizationId},${internal.workspaceId!},1,${f.db.json(control)}) on conflict(organization_id,workspace_id) do update set controls=excluded.controls,version=excluded.version`;
       const data = repositoryReviewFixture(
         admin.sessionId!,
         admin.authenticatedAt!,
@@ -230,6 +257,20 @@ suite(
       data.inspection.receipt.sourceDigest = data.publication.source_digest;
       await f.db`insert into allrice_platform_repair_tasks(id,request_id,organization_id,workspace_id,owner_id,run_id,job_id,session_id,input_digest,frozen,candidate,report)
       values(${data.repair.id},${data.repair.frozen.requestId},${internal.organizationId},${internal.workspaceId!},${admin.actor.id},${source.runId},${source.jobId},${session.id},${data.repair.frozen.fingerprint},${f.db.json(data.repair.frozen)},${f.db.json(data.repair.candidate)},${f.db.json(data.repair.report)})`;
+      const archives = new Map<number, Buffer>();
+      for (const e of data.publication.ci_evidence) {
+        const zip = new JSZip();
+        zip.file('receipt.json', JSON.stringify(e.receipt));
+        const bytes = await zip.generateAsync({ type: 'nodebuffer' });
+        archives.set(e.artifactId, bytes);
+        e.archiveDigest = repositoryDigest(bytes);
+      }
+      data.publication.ci.receipts = data.publication.ci_evidence.map((e) => ({
+        name: e.receipt.job,
+        artifactId: e.artifactId,
+        archiveDigest: e.archiveDigest,
+        receiptDigest: technicalDigest(e.receipt),
+      }));
       const pub = data.publication;
       await f.db`insert into allrice_platform_repository_publications(id,owner_id,organization_id,workspace_id,source_task_id,base_sha,after_checksum,source,source_digest,metadata,steps,remote,ci,ci_evidence)
       values(${pub.id},${admin.actor.id},${internal.organizationId},${internal.workspaceId!},${data.repair.id},${pub.source.baseSha},${pub.source.afterChecksum},${f.db.json(pub.source)},${pub.source_digest},${f.db.json(pub.metadata)},${f.db.json(pub.steps)},${f.db.json(pub.remote)},${f.db.json(pub.ci)},${f.db.json(pub.ci_evidence)})`;
@@ -257,8 +298,307 @@ suite(
           expectedSubjectDigest: panel.subjectDigest,
           credentialRevision: 1,
         });
-      return { admin, internal, data, create, panel };
+      return { admin, internal, data, create, panel, archives };
     }
+    function repositoryTransport(s: Awaited<ReturnType<typeof setup>>) {
+      const p = s.data.publication;
+      const run = {
+        id: 100,
+        run_attempt: 1,
+        workflow_id: 10,
+        head_sha: p.metadata.commit,
+        head_branch: p.remote.branch,
+        event: 'pull_request',
+        path: '.github/workflows/ci.yml',
+        repository: { id: platformRepository.id },
+        head_repository: { id: platformRepository.id },
+        status: 'completed',
+        conclusion: 'success',
+      };
+      return vi
+        .spyOn(globalThis, 'fetch')
+        .mockImplementation(async (url, options) => {
+          const u = new URL(String(url)),
+            path = u.pathname;
+          expect(options?.method ?? 'GET').toBe('GET');
+          if (u.hostname === 'fixture.blob.core.windows.net') {
+            const bytes = s.archives.get(Number(path.slice(1)));
+            if (!bytes) throw Error('Unexpected synthetic artifact');
+            return new Response(Uint8Array.from(bytes));
+          }
+          expect(u.hostname).toBe('api.github.com');
+          const archive = /\/actions\/artifacts\/(\d+)\/zip$/.exec(path);
+          if (archive)
+            return new Response(null, {
+              status: 302,
+              headers: {
+                location: `https://fixture.blob.core.windows.net/${archive[1]}`,
+              },
+            });
+          const value = path.endsWith('/actions/workflows/ci.yml')
+            ? { id: 10, path: '.github/workflows/ci.yml', state: 'active' }
+            : path.endsWith('/actions/workflows/ci.yml/runs')
+              ? { total_count: 1, workflow_runs: [run] }
+              : path.endsWith('/actions/runs/100')
+                ? run
+                : path.endsWith('/actions/runs/100/attempts/1/jobs')
+                  ? {
+                      total_count: 4,
+                      jobs: p.ci.checks.map((c) => ({
+                        id: c.id,
+                        name: c.name,
+                        status: 'completed',
+                        conclusion: 'success',
+                        steps: [
+                          {
+                            name: 'Record complete original CI gate',
+                            conclusion: 'success',
+                          },
+                          {
+                            name: 'Build all workspace production packages',
+                            conclusion: 'success',
+                          },
+                        ],
+                      })),
+                    }
+                  : path.endsWith('/actions/runs/100/artifacts')
+                    ? {
+                        total_count: 4,
+                        artifacts: p.ci_evidence.map((e) => ({
+                          id: e.artifactId,
+                          name: `repository-ci-${e.receipt.job}-1`,
+                          expired: false,
+                          size_in_bytes: s.archives.get(e.artifactId)!.length,
+                          digest: e.archiveDigest,
+                          workflow_run: {
+                            id: 100,
+                            repository_id: platformRepository.id,
+                            head_repository_id: platformRepository.id,
+                            head_sha: p.metadata.commit,
+                          },
+                        })),
+                      }
+                    : null;
+          if (!value) throw Error('Unexpected synthetic GitHub read: ' + path);
+          return new Response(JSON.stringify(value));
+        });
+    }
+
+    it.each([
+      'accept',
+      'revise',
+      'missing-review',
+      'cancel',
+      'revoked',
+    ] as const)(
+      '真实入口 → Worker → DSH → PG，无助手：%s',
+      async (mode) => {
+        const s = await setup();
+        let review: Awaited<ReturnType<typeof s.create>>;
+        const command = (id: string, args: unknown) => ({
+          text: `<allrice_tool_call>${JSON.stringify({ id, name: 'platform.repository.review', arguments: args })}</allrice_tool_call>`,
+        });
+        let candidate: DevelopmentArtifactRef;
+        const model = await p24Fixture(async (request, index) => {
+          if (index === 1) {
+            expect(
+              request.tools?.some(
+                (t) => t.function.name === 'assistant_delegate',
+              ),
+            ).not.toBe(true);
+            if (mode === 'missing-review') return { text: '已经审查通过。' };
+            if (mode === 'cancel') {
+              await cancelPlatformRepositoryReview(s.admin, review.id);
+              return { text: '停止。' };
+            }
+            if (mode === 'revoked') {
+              await f.db`update allrice_employee_assignments set active=false where id=(select employee_assignment_id from allrice_employee_runs where run_id=${review.runId})`;
+            }
+            return command('inspect', { action: 'inspect' });
+          }
+          const text = JSON.stringify(request.messages);
+          const messages = request.messages.map((m) =>
+            typeof m.content === 'string'
+              ? m.content
+              : JSON.stringify(m.content),
+          );
+          const envelope = messages
+            .flatMap((t) => [
+              ...t.matchAll(
+                /<allrice_tool_result>(.*?)<\/allrice_tool_result>/gs,
+              ),
+            ])
+            .at(-1);
+          if (!envelope?.[1])
+            throw Error(
+              'Model did not receive real tool result: ' + text.slice(-1000),
+            );
+          const result = JSON.parse(envelope[1]);
+          expect(result.ok).toBe(true);
+          const facts = JSON.parse(result.content);
+          if (index === 2) {
+            candidate = facts.candidate;
+            expect(facts.material.authorRunIds).not.toContain(review.runId);
+            return command('opinion', {
+              action: 'review',
+              candidate,
+              evidence: facts.evidence,
+              verdict: mode === 'revise' ? 'revise' : 'accept',
+              summary:
+                'Synthetic model opinion for the exact persisted candidate',
+            });
+          }
+          if (index === 3 && mode !== 'revise')
+            return command('deliver', {
+              action: 'deliver',
+              candidate,
+              reviewId: facts.id,
+            });
+          return { text: '固定候选审查完成，意见已保存。' };
+        });
+        const adapter = new DshHarnessAdapter({
+          runtimeRoot: join(f.storageRoot, 'review-native-' + randomUUID()),
+          credentialResolver: {
+            resolve: async () => ({ apiKey: 'synthetic-only' }),
+          },
+          requestTimeoutMs: 15000,
+        });
+        const router = vi
+          .spyOn(harnessRouter, 'getHarnessRouter')
+          .mockReturnValue(new harnessRouter.HarnessRouter([adapter]));
+        const originalFreeze = modelPool.freezeSessionModelSnapshot;
+        // Only replace the model target/credential. The complete request,
+        // private deployment, native execution binding and queue stay real.
+        const freeze = vi
+          .spyOn(modelPool, 'freezeSessionModelSnapshot')
+          .mockImplementation(async (...args) => ({
+            ...(await originalFreeze(...args)),
+            provider: 'openai-compatible',
+            authMode: 'api_key',
+            model: 'p24-synthetic',
+            reasoningEffort: 'low',
+            credentialReference: 'test:synthetic',
+            baseUrl: model.baseUrl,
+          }));
+        const remote = repositoryTransport(s);
+        const oldHome = process.env.ALLRICE_DSH_PLATFORM_HOME;
+        vi.stubEnv(
+          'ALLRICE_DSH_PLATFORM_HOME',
+          join(f.storageRoot, 'synthetic-platform-home'),
+        );
+        try {
+          review = await s.create();
+          const [stored] =
+            await f.db`select payload from allrice_jobs where id=${review.jobId}`;
+          expect(stored!.payload.input).not.toHaveProperty(
+            'assistantConfiguration',
+          );
+          const workerId = randomUUID(),
+            job = await claimNextJob(workerId, 60000);
+          expect(job!.id).toBe(review.jobId);
+          await runClaimedJob(
+            {
+              workerId,
+              jobId: job!.id,
+              leaseToken: job!.lease!.token,
+              leaseMs: 60000,
+              heartbeatMs: 1000,
+              executionRoot: join(f.storageRoot, 'executions'),
+              stopping: () => false,
+              onAbortReady: () => {},
+            },
+            executeEmployeeRun,
+          );
+          const detail = await getPlatformRepositoryReview(s.admin, review.id);
+          expect(detail.status).toBe(
+            mode === 'accept' || mode === 'revise'
+              ? 'succeeded'
+              : mode === 'cancel'
+                ? 'canceled'
+                : 'failed',
+          );
+          expect(model.requests.length).toBeGreaterThan(0);
+          const artifacts =
+            await f.db`select w.run_id,o.state,o.checksum from allrice_workbench_artifacts w join allrice_deliverable_versions v on v.id=w.version_id join allrice_storage_objects o on o.id=v.object_id where w.run_id=${review.runId}`;
+          expect(artifacts).toHaveLength(
+            mode === 'accept' ? 3 : mode === 'revise' ? 2 : 0,
+          );
+          if (mode === 'accept' || mode === 'revise') {
+            expect(detail.verdict).toBe(mode);
+            expect(detail.reviewerRunId).toBe(review.runId);
+            expect(
+              artifacts.every(
+                (a) => a.state === 'ready' && /^sha256:/.test(a.checksum),
+              ),
+            ).toBe(true);
+            expect(detail.remoteVerifiedAt).not.toBeNull();
+          }
+          for (const table of [
+            'allrice_assistant_roots',
+            'allrice_assistant_instances',
+            'allrice_assistant_results',
+          ]) {
+            const rows = await f.db.unsafe(
+              `select 1 from ${table} where ${table === 'allrice_assistant_roots' ? 'root_run_id' : 'run_id'}=$1`,
+              [review.runId],
+            );
+            expect(rows).toHaveLength(0);
+          }
+        } finally {
+          await adapter.close();
+          await model.close();
+          remote.mockRestore();
+          freeze.mockRestore();
+          router.mockRestore();
+          vi.stubEnv('ALLRICE_DSH_PLATFORM_HOME', oldHome);
+        }
+      },
+      60000,
+    );
+
+    it('denies a non-admin review request and rejects raw or assistant-configured review Job admission', async () => {
+      const s = await setup();
+      const original = process.env.ALLRICE_PLATFORM_ADMIN_EMAILS;
+      vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', '');
+      try {
+        await expect(s.create()).rejects.toMatchObject({
+          code: 'authorization_denied',
+        });
+      } finally {
+        vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', original);
+      }
+      await expect(
+        enqueueRun(s.internal, {
+          type: 'allrice.employee.run',
+          workspaceId: s.internal.workspaceId,
+          idempotencyKey: randomUUID(),
+          input: {
+            repositoryReviewRequestId: randomUUID(),
+            assistantConfiguration: { allowAssistants: true },
+          },
+        }),
+      ).rejects.toMatchObject({ code: 'policy_denied' });
+      expect(
+        await f.db`select id from allrice_platform_repository_review_subjects where owner_id=${s.admin.actor.id}`,
+      ).toHaveLength(0);
+    });
+
+    it('0228 moves both reviewer FKs to ordinary Runs while keeping the separate 0101/0102 deletion closure intact', async () => {
+      const rows =
+        await f.db`select c.conrelid::regclass::text relation,c.confrelid::regclass::text target
+        from pg_constraint c where c.connamespace=(select oid from pg_namespace where nspname=current_schema()) and c.contype='f' and
+        ((c.conrelid in ('allrice_platform_repository_review_subjects'::regclass,'allrice_platform_repository_reviews'::regclass) and c.conname like '%reviewer_run_id_fkey')
+          or (c.conrelid in ('allrice_development_verifiers'::regclass,'allrice_development_reviews'::regclass) and c.confrelid='allrice_assistant_instances'::regclass))`;
+      const review = rows.filter((r) =>
+        r.relation.includes('platform_repository'),
+      );
+      expect(review).toHaveLength(2);
+      expect(review.every((r) => r.target.endsWith('allrice_runs'))).toBe(true);
+      expect(
+        rows.filter((r) => !r.relation.includes('platform_repository')),
+      ).toHaveLength(2);
+    });
+
     async function start(
       s: Awaited<ReturnType<typeof setup>>,
       existing?: Awaited<ReturnType<typeof createPlatformRepositoryReview>>,
@@ -285,67 +625,25 @@ suite(
         s.data.publication.ci,
         s.data.publication.ci_evidence,
       );
-      const runtime = await acquireConversationRuntime({
-        organizationId: s.internal.organizationId,
-        workspaceId: s.internal.workspaceId!,
-        sessionId: review.sessionId,
-        ownerId: s.admin.actor.id,
-        runId: review.runId,
-        workerId,
-        configChecksum: technicalDigest('isolated review'),
-        compactThresholdTokens: 100000,
-      });
-      const nativeSessionId = randomUUID();
-      const controller = productionAssistantController({
-        deliveryMode: 'legacy',
-        repositoryReview: true,
-        nativeSkills: [],
-        configuration: repositoryReviewConfiguration,
-        context: execution.context,
-        worker: lease,
-        runLimits: {},
-        tools: repositoryReviewTools.map((name) => ({ name })),
-        authorize: assertAssistantAuthority,
-        database: f.db,
-        storage: assistantFixtureStorage(f.db),
-      })!;
-      const bridge = await controller.bind(nativeSessionId, runtime.generation);
-      const call = (
-        method: string,
-        args: unknown,
-        nativeId: string = nativeSessionId,
-        callId: string = randomUUID(),
-      ) =>
-        bridge.handle(method, {
-          nativeSessionId: nativeId,
-          callId,
-          arguments: args,
-        });
-      const development = async (
-        args: unknown,
-        nativeId: string = nativeSessionId,
-      ) => {
-        const result = await call(
-          'development',
-          { command: JSON.stringify(args) },
-          nativeId,
+      const development = (args: unknown, requestId = randomUUID()) =>
+        executeRepositoryReview(
+          {
+            context: execution.context,
+            worker: lease,
+            requestId,
+            arguments: args,
+          },
+          assistantFixtureStorage(f.db),
+          f.db,
         );
-        expect(result).toHaveProperty('development');
-        return result.development;
-      };
-      if (!bridge.finish) throw Error('production finalizer missing');
-      return {
-        ...s,
-        review,
-        lease,
-        execution,
-        bridge,
-        call,
-        development,
-        finish: bridge.finish,
-        nativeSessionId,
-        generation: runtime.generation,
-      };
+      const allowed = () =>
+        f.db.begin(async (tx) => {
+          const [row] = await tx<
+            JobRow[]
+          >`select * from allrice_jobs where id=${lease.jobId}`;
+          return repositoryReviewCompletionAllowed(tx, row!, false);
+        });
+      return { ...s, review, lease, execution, development, allowed };
     }
     async function opinion(
       s: Awaited<ReturnType<typeof start>>,
@@ -356,85 +654,15 @@ suite(
         evidence: unknown;
         material: RepositoryReviewMaterial;
       };
-      const child = (await s.call('delegate', {
-        label: 'independent reviewer',
-        text: 'Review exact saved patch',
-        tools: ['assistant.development', 'assistant.report'],
-        development: JSON.stringify({
-          expectedHead: seed.candidate,
-          role: 'review',
-        }),
-      })) as {
-        instance: { runId: string };
-        nativeSessionId: string;
-        inputId: string;
-        text: string;
-      };
-      expect(seed.material.authorRunIds).not.toContain(child.instance.runId);
-      expect(child.text).toContain(
-        'evidence=[{id:reviewResult.artifact.artifactId',
-      );
-      expect(child.text).not.toContain('use evidence=[]');
-      await s.bridge.handle('checkpoint', {
-        nativeSessionId: child.nativeSessionId,
-        inputId: child.inputId,
-        nativeMessageId: randomUUID(),
-        durableSeq: 1,
-        adoptedSeq: 1,
-      });
-      await s.development(
-        { action: 'inspect', candidate: seed.candidate },
-        child.nativeSessionId,
-      );
-      const review = (await s.development(
-        {
-          action: 'review',
-          candidate: seed.candidate,
-          evidence: seed.evidence,
-          verdict,
-          summary: 'Synthetic test opinion, not real model review',
-        },
-        child.nativeSessionId,
-      )) as { id: string; artifact: DevelopmentArtifactRef };
-      // Settle the launch's non-dispatched reservation through the existing ledger;
-      // this synthetic protocol test does not fabricate provider usage.
-      const [hold] =
-        await f.db`select call_id from allrice_assistant_usage where run_id=${child.instance.runId} and metric='model_calls' and settled_amount is null`;
-      const { createAssistantRuntime } =
-        await import('../../../../packages/database/src/assistant-runtime.ts');
-      const actualRuntime = createAssistantRuntime({
-        database: f.db,
-        authorize: assertAssistantAuthority,
-      });
-      const [root] =
-        await f.db`select task from allrice_runtime_roots where root_run_id=${s.review.runId}`;
-      await actualRuntime.settleUsage({
-        scope: root!.task.scope,
-        rootRunId: s.review.runId,
-        worker: { ...s.lease, generation: s.generation },
-        runId: child.instance.runId,
-        callId: hold!.call_id,
-        amounts: { model_calls: 0 },
-      });
-      const result = (await s.call(
-        'report',
-        {
-          status: 'completed',
-          summary: 'Saved exact independent opinion',
-          evidence: [
-            { id: review.artifact.artifactId, digest: review.artifact.digest },
-          ],
-          incomplete: [],
-        },
-        child.nativeSessionId,
-      )) as { deliveryId: string };
-      await s.bridge.handle('adopt-result', {
-        nativeSessionId: s.nativeSessionId,
-        deliveryId: result.deliveryId,
-        nativeMessageId: randomUUID(),
-        adoptedSeq: 2,
-      });
-      return { seed, child, review };
+      expect(seed.material.authorRunIds).not.toContain(s.review.runId);
+      const review = (await s.development({
+        action: 'review',
+        candidate: seed.candidate,
+        evidence: seed.evidence,
+        verdict,
+        summary: 'Synthetic test opinion, not real model review',
+      })) as { id: string; artifact: DevelopmentArtifactRef };
+      return { seed, review };
     }
 
     async function completedReview() {
@@ -447,7 +675,7 @@ suite(
         candidate: o.seed.candidate,
         reviewId: o.review.id,
       });
-      expect((await s.finish()).status).toBe('completed');
+      expect(await s.allowed()).toBe(true);
       await recordRepositoryReviewRemote(
         s.lease,
         'postflight',
@@ -459,7 +687,6 @@ suite(
         result: { syntheticProtocolOnly: true },
       });
       await f.db`update allrice_jobs set timeout_at=created_at+interval '1 millisecond' where id=${s.lease.jobId}`;
-      await f.db`update allrice_runtime_roots set deadline_at=clock_timestamp()-interval '1 millisecond' where root_run_id=${s.review.runId}`;
       return { ...s, o };
     }
     async function rerunReview(s: Awaited<ReturnType<typeof completedReview>>) {
@@ -750,7 +977,7 @@ suite(
       const proof = await f.db.begin((tx) =>
         readCompletedRepositoryReview(tx, s.internal, s.review.id),
       );
-      expect(proof.reviewerRunId).toBe(s.o.child.instance.runId);
+      expect(proof.reviewerRunId).toBe(s.review.runId);
       const request = mergeRequest(s),
         results = await Promise.all([
           createPlatformRepositoryMerge(s.admin, request),
@@ -874,22 +1101,19 @@ suite(
           idempotencyKey: randomUUID(),
         }),
       ).rejects.toMatchObject({ code: 'policy_denied' });
-      await f.db`update allrice_assistant_instances set cancel_request_id=${randomUUID()},cancel_requested_at=clock_timestamp() where run_id=${s.o.child.instance.runId}`;
+      await f.db`update allrice_jobs set cancel_requested_at=clock_timestamp() where id=${s.review.jobId}`;
       await expect(
         createPlatformRepositoryMerge(s.admin, mergeRequest(s)),
       ).rejects.toMatchObject({ code: 'authorization_denied' });
       const second = await completedReview();
-      await f.db`delete from allrice_assistant_artifacts where run_id=${second.o.child.instance.runId}`;
+      await f.db`update allrice_storage_objects set deleted_at=clock_timestamp() where id=(select object_id from allrice_deliverable_versions where id=${second.o.review.artifact.artifactId})`;
       await expect(
         createPlatformRepositoryMerge(second.admin, mergeRequest(second)),
       ).rejects.toMatchObject({ code: 'authorization_denied' });
     }, 30000);
 
-    it('retains finished review facts across old login/PAT expiry and original/effective report usage differences while requiring new current credentials', async () => {
+    it('retains finished Job review facts across old login/PAT expiry while requiring new current credentials', async () => {
       const s = await completedReview();
-      const [report] =
-        await f.db`select * from allrice_assistant_results where run_id=${s.o.child.instance.runId}`;
-      await f.db`update allrice_assistant_results set payload_digest=${runtimeLedgerInputDigest({ ...report!.payload, usageComplete: !report!.payload.usageComplete })} where delivery_id=${report!.delivery_id}`;
       await f.db`update allrice_sessions set expires_at=created_at+interval '1 millisecond' where id=${s.admin.sessionId!}`;
       const login = await createSession(s.admin.actor.id),
         fresh = (await authenticatePlatformSession(login.token))!;
@@ -902,7 +1126,8 @@ suite(
       const proof = await f.db.begin((tx) =>
         readCompletedRepositoryReview(tx, s.internal, s.review.id),
       );
-      expect(proof.reportInputDigest).not.toBe(proof.reportPayloadDigest);
+      expect(proof.reviewerRunId).toBe(s.review.runId);
+      expect(proof).not.toHaveProperty('reportDeliveryId');
       const [oldJob] = await f.db<
         JobRow[]
       >`select * from allrice_jobs where id=${s.lease.jobId}`;
@@ -929,15 +1154,15 @@ suite(
         retryable: false,
       });
     }, 30000);
-    it('requires actual report adoption and blocks explicit historical root cancellation even when completion status is retained', async () => {
-      for (const fault of ['adoption', 'root-cancel', 'revoke'] as const) {
+    it('requires ordinary Job completion and current artifact facts even when the review opinion is retained', async () => {
+      for (const fault of ['artifact', 'job-cancel', 'run-state'] as const) {
         const s = await completedReview();
-        if (fault === 'adoption')
-          await f.db`update allrice_assistant_results set parent_message_id=null where run_id=${s.o.child.instance.runId}`;
-        else if (fault === 'root-cancel')
-          await f.db`update allrice_runtime_roots set cancel_request_id=${randomUUID()},cancel_requested_at=clock_timestamp(),cancel_reason='user_request' where root_run_id=${s.review.runId}`;
+        if (fault === 'artifact')
+          await f.db`update allrice_storage_objects set deleted_at=clock_timestamp() where id=(select object_id from allrice_deliverable_versions where id=${s.o.review.artifact.artifactId})`;
+        else if (fault === 'job-cancel')
+          await f.db`update allrice_jobs set cancel_requested_at=clock_timestamp() where id=${s.review.jobId}`;
         else
-          await f.db`update allrice_assistant_roots set revoked_at=clock_timestamp() where root_run_id=${s.review.runId}`;
+          await f.db`update allrice_runs set state='failed' where id=${s.review.runId}`;
         await expect(
           createPlatformRepositoryMerge(s.admin, mergeRequest(s)),
         ).rejects.toMatchObject({ code: 'authorization_denied' });
@@ -1270,7 +1495,7 @@ suite(
       }
     }, 30000);
 
-    it('completes native inspect → fresh child → saved opinion → adopted report → delivery → canonical job and private download', async () => {
+    it('completes independent Job inspect → saved opinion → delivery → canonical completion and private download without assistants', async () => {
       const s = await start(await setup()),
         o = await opinion(s);
       await expect(
@@ -1287,7 +1512,7 @@ suite(
         candidate: o.seed.candidate,
         reviewId: o.review.id,
       })) as { artifact: DevelopmentArtifactRef };
-      expect((await s.finish()).status).toBe('completed');
+      expect(await s.allowed()).toBe(true);
       await recordRepositoryReviewRemote(
         s.lease,
         'postflight',
@@ -1300,7 +1525,7 @@ suite(
       });
       const detail = await getPlatformRepositoryReview(s.admin, s.review.id);
       expect(detail.status).toBe('succeeded');
-      expect(detail.reviewerRunId).toBe(o.child.instance.runId);
+      expect(detail.reviewerRunId).toBe(s.review.runId);
       expect(detail.deliveryArtifactId).toBe(delivered.artifact.artifactId);
       expect(
         (
@@ -1337,7 +1562,7 @@ suite(
         ).length,
       ).toBe(0);
     }, 30000);
-    it('cancellation of a completed reviewer invalidates delivery and final completion', async () => {
+    it('cancellation of the review Job invalidates delivery and final completion', async () => {
       const s = await start(await setup()),
         o = await opinion(s);
       await s.development({
@@ -1345,8 +1570,8 @@ suite(
         candidate: o.seed.candidate,
         reviewId: o.review.id,
       });
-      await s.call('stop', { childRunId: o.child.instance.runId });
-      expect((await s.finish()).status).toBe('partial');
+      await cancelPlatformRepositoryReview(s.admin, s.review.id);
+      expect(await s.allowed()).toBe(false);
       await expect(
         recordRepositoryReviewRemote(
           s.lease,
@@ -1358,7 +1583,7 @@ suite(
       await completeJob({ ...s.lease, result: { prose: 'accepted' } });
       expect(
         (await getPlatformRepositoryReview(s.admin, s.review.id)).status,
-      ).toBe('failed');
+      ).toBe('canceled');
     }, 30000);
     it('retains revise for identical code and cannot replace the reviewer or opinion', async () => {
       const s = await start(await setup()),
@@ -1371,18 +1596,15 @@ suite(
         }),
       ).rejects.toThrow();
       await expect(
-        s.development(
-          {
-            action: 'review',
-            candidate: o.seed.candidate,
-            evidence: o.seed.evidence,
-            verdict: 'accept',
-            summary: 'replacement',
-          },
-          o.child.nativeSessionId,
-        ),
+        s.development({
+          action: 'review',
+          candidate: o.seed.candidate,
+          evidence: o.seed.evidence,
+          verdict: 'accept',
+          summary: 'replacement',
+        }),
       ).rejects.toThrow();
-      expect((await s.finish()).status).toBe('completed');
+      expect(await s.allowed()).toBe(true);
       await recordRepositoryReviewRemote(
         s.lease,
         'postflight',
