@@ -9,7 +9,7 @@ import {
   matchUserQuestionAnswer,
   RuntimeNativeInputProofSchema,
 } from '@allrice/contracts';
-import { runtimePolicyDigest } from './runtime-policy.ts';
+import { runtimePolicyDigest } from './runtime-policy-digest.ts';
 import { getDatabase } from './core/client.ts';
 import { requirePlatformAdmin } from './platform-authority.ts';
 
