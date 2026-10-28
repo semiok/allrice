@@ -6,7 +6,6 @@ import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 import { createAssistantLocalCommandFixture } from './local-command-assistant.fixture.ts';
 import * as client from './core/client.ts';
 import { bindNativeQuestionFixture } from './native-question-binding.fixture.ts';
-import { bindConversationThread } from './conversation/conversation-runtime.ts';
 import { createSession, authenticateSession } from './identity.ts';
 import {
   appendJobEvent,
