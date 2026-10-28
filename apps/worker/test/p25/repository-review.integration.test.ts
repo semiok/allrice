@@ -1676,6 +1676,11 @@ suite(
             status: 'active',
           });
           await expect(
+            f.db.begin((tx) =>
+              readCompletedRepositoryReview(tx, s.internal, s.review.id),
+            ),
+          ).rejects.toMatchObject({ code: 'authorization_denied' });
+          await expect(
             createPlatformRepositoryMerge(s.admin, mergeRequest(s)),
           ).rejects.toMatchObject({ code: 'authorization_denied' });
           expect(
