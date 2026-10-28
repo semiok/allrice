@@ -45,6 +45,8 @@ type Pin = {
 export async function readFinalDeliveryReferences(input: {
   transaction: postgres.TransactionSql;
   task: RuntimeTaskRef;
+  /** Independent delivery uses frozen reference ACLs, not legacy assistant identity. */
+  ownership?: 'root_run';
 }): Promise<readonly Identity[]> {
   const tx = input.transaction;
   const task = RuntimeTaskRefSchema.parse(input.task);
@@ -251,7 +253,7 @@ export async function readFinalDeliveryReferences(input: {
         and exists(select 1 from allrice_employee_runs er where er.organization_id=dv.organization_id
           and er.workspace_id=dv.workspace_id and er.owner_id=dv.owner_id and er.session_id=dv.session_id
           and (a.run_id is null or a.run_id=er.run_id)
-          and not exists(select 1 from allrice_assistant_instances ai where ai.run_id=er.run_id and ai.run_id<>ai.root_run_id))
+          ${input.ownership === 'root_run' ? tx`` : tx`and not exists(select 1 from allrice_assistant_instances ai where ai.run_id=er.run_id and ai.run_id<>ai.root_run_id)`})
       for share of dv,o`;
     if (!valid || valid.checksum !== pin.checksum)
       return finalDeliveryUnavailable();

@@ -1,12 +1,9 @@
 import { createHash } from 'node:crypto';
 import { types } from 'node:util';
-import type { createAssistantRuntime } from '@allrice/database';
+import type { JobCompletionGuard } from '@allrice/database';
 import { HandlerError } from '../errors.js';
 import type { FinalDeliveryProof } from './guard.js';
 
-type JobCompletionGuard = ReturnType<
-  ReturnType<typeof createAssistantRuntime>['createFinalDeliveryCommitGuard']
->;
 type CommitBinding = Readonly<{
   proof: FinalDeliveryProof;
   guard: JobCompletionGuard;
@@ -157,8 +154,8 @@ function assertCommit(binding: CommitBinding): void {
     unavailable();
 }
 
-/** Bind only the real runtime factory result, after checked finalizeRoot has
- * committed. The exact adapter proof object is an in-process rendezvous key;
+/** Bind only a real database guard after trusted Worker validation (the old
+ * assistant path also requires checked finalizeRoot). The exact proof object is an in-process rendezvous key;
  * JSON copies, public fields and native RPC outcomes cannot mint this binding. */
 export function bindCheckedFinalDeliveryCommitGuard(
   proof: FinalDeliveryProof,

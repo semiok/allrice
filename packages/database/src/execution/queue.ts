@@ -11,7 +11,7 @@ import {
   type JobCompletionGuard,
 } from '../final-delivery-commit.ts';
 import type { ResourcePrincipal } from '../resource-principal.ts';
-import { selectCheckedFinalDeliveryArtifact } from '../final-delivery-rollout.ts';
+import { freezeDeliveryPolicy } from '../final-delivery-rollout.ts';
 import {
   bindLeasedNativeSession,
   freezeChatRunExecutionBinding,
@@ -460,26 +460,7 @@ type RawEnqueueRunResult = {
   activeRunId: string | null;
 };
 
-/** @internal New-Run server projection. An employee/browser snapshot cannot
- * opt in, opt out or copy this policy from another Run. */
-export function freezeOfficeFirstDeliverySnapshot(
-  snapshot: NonNullable<EnqueueOptions['employeeBinding']>['executionSnapshot'],
-  eligible: boolean,
-  artifactId?: string,
-) {
-  const frozen = { ...snapshot };
-  delete frozen.officeFirstDeliveryPolicy;
-  delete frozen.finalDeliveryPolicy;
-  if (eligible && artifactId) {
-    frozen.officeFirstDeliveryPolicy = 'xlsx_formula_cache_v1';
-    frozen.finalDeliveryPolicy = {
-      version: 1,
-      mode: 'checked_native_v1',
-      artifactId,
-    };
-  }
-  return frozen;
-}
+export { freezeOfficeFirstDeliverySnapshot } from '../final-delivery-rollout.ts';
 export async function enqueueRun(
   context: RequestContext,
   input: unknown,
@@ -1608,18 +1589,16 @@ async function enqueueRunInTransaction(
         'workspace.export.create',
       );
     const executionSnapshot = EmployeeExecutionSnapshotSchema.parse({
-      ...freezeOfficeFirstDeliverySnapshot(
-        options.employeeBinding.executionSnapshot,
-        officePolicyEligible,
-        officePolicyEligible
-          ? await selectCheckedFinalDeliveryArtifact(transaction, {
-              organizationId: context.organizationId,
-              workspaceId,
-              ownerId,
-              sessionId: options.employeeBinding.sessionId,
-            })
-          : undefined,
-      ),
+      ...(await freezeDeliveryPolicy(transaction, {
+        snapshot: options.employeeBinding.executionSnapshot,
+        eligible: officePolicyEligible,
+        scope: {
+          organizationId: context.organizationId,
+          workspaceId,
+          ownerId,
+          sessionId: options.employeeBinding.sessionId,
+        },
+      })),
       tenantContext: {
         organizationId: context.organizationId,
         workspaceId,

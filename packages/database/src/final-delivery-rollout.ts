@@ -1,6 +1,52 @@
 import type postgres from 'postgres';
+import type { EmployeeExecutionSnapshot } from '@allrice/contracts';
 import { readChatNativeRootOrigin } from './conversation/native-session-binding.ts';
 import { nativeRootDigest } from './conversation/native-root-origin.ts';
+type DeliveryAdmissionSnapshot = Omit<
+  Extract<EmployeeExecutionSnapshot, { schemaVersion: 2 }>,
+  'tenantContext' | 'createdAt'
+>;
+
+/** Admission supplies eligibility. PR1a deliberately keeps its existing
+ * assistant gate; PR1c can widen it without changing this frozen projection. */
+export async function freezeDeliveryPolicy(
+  tx: postgres.TransactionSql,
+  input: {
+    snapshot: DeliveryAdmissionSnapshot;
+    eligible: boolean;
+    scope: Parameters<typeof selectCheckedFinalDeliveryArtifact>[1];
+  },
+) {
+  const artifactId = input.eligible
+    ? await selectCheckedFinalDeliveryArtifact(tx, input.scope)
+    : undefined;
+  return freezeOfficeFirstDeliverySnapshot(
+    input.snapshot,
+    input.eligible,
+    artifactId,
+  );
+}
+
+/** @internal New-Run server projection. An employee/browser snapshot cannot
+ * opt in, opt out or copy this policy from another Run. */
+export function freezeOfficeFirstDeliverySnapshot(
+  snapshot: DeliveryAdmissionSnapshot,
+  eligible: boolean,
+  artifactId?: string,
+) {
+  const frozen = { ...snapshot };
+  delete frozen.officeFirstDeliveryPolicy;
+  delete frozen.finalDeliveryPolicy;
+  if (eligible && artifactId) {
+    frozen.officeFirstDeliveryPolicy = 'xlsx_formula_cache_v1';
+    frozen.finalDeliveryPolicy = {
+      version: 1,
+      mode: 'checked_native_v1',
+      artifactId,
+    };
+  }
+  return frozen;
+}
 
 /** Called inside the existing conversation admission transaction, before the
  * new Run snapshot is inserted. Checked final delivery is the protocol of every

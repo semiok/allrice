@@ -281,6 +281,8 @@ export interface WorkerDeliveryIdentity {
 }
 interface WorkerDeliveryAuthority {
   task: RuntimeTaskRef;
+  /** Run-only delivery never discovers ownership from the retired assistant tree. */
+  ownership?: 'root_run';
   /** Bound by the trusted frozen request/method reader, never candidate text. */
   explicitReferences: readonly WorkerDeliveryIdentity[];
 }
@@ -551,16 +553,19 @@ export async function readWorkerFinalDeliveryEvidenceTransaction(
     sessionId: root.session_id,
   };
   // Discover the tree from durable links, never an input list or all Session runs.
-  const children = await tx<
-    {
-      run_id: string;
-      parent_run_id: string | null;
-      task: unknown;
-      organization_id: string;
-      workspace_id: string;
-      owner_id: string;
-    }[]
-  >`select l.run_id,l.parent_run_id,l.task,r.organization_id,r.workspace_id,r.owner_id
+  const children =
+    first.ownership === 'root_run'
+      ? []
+      : await tx<
+          {
+            run_id: string;
+            parent_run_id: string | null;
+            task: unknown;
+            organization_id: string;
+            workspace_id: string;
+            owner_id: string;
+          }[]
+        >`select l.run_id,l.parent_run_id,l.task,r.organization_id,r.workspace_id,r.owner_id
     from allrice_runtime_run_links l join allrice_runs r on r.id=l.run_id
     where l.root_run_id=${task.rootRunId} and l.run_id<>${task.rootRunId}
     order by l.run_id limit 200 for share of l,r`;

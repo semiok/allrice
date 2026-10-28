@@ -23,7 +23,8 @@ const proofSchema = z
   .strict();
 
 /** Private Worker/native completion receipt; not a model/JSON authorization. */
-export type AssistantFinalDeliveryProof = Readonly<z.infer<typeof proofSchema>>;
+export type FinalDeliveryCommitProof = Readonly<z.infer<typeof proofSchema>>;
+export type AssistantFinalDeliveryProof = FinalDeliveryCommitProof;
 export function finalDeliveryUnavailable(): never {
   throw Object.assign(new Error('final_delivery_evidence_unavailable'), {
     code: 'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE',
@@ -32,7 +33,7 @@ export function finalDeliveryUnavailable(): never {
 }
 export function captureFinalDeliveryProof(
   value: unknown,
-): AssistantFinalDeliveryProof {
+): FinalDeliveryCommitProof {
   const parsed = proofSchema.safeParse(value);
   if (!parsed.success) return finalDeliveryUnavailable();
   return Object.freeze(parsed.data);
