@@ -344,7 +344,7 @@ suite('MET167 joined delivery facts (isolated ordinary employee)', () => {
           await f.db`select execution_snapshot from allrice_employee_runs where run_id=${runId}`;
         expect(frozen!.execution_snapshot).toMatchObject({
           finalDeliveryPolicy: { mode: 'checked_native_v1', artifactId },
-          officeFirstDeliveryPolicy: { version: 'xlsx_formula_cache_v1' },
+          officeFirstDeliveryPolicy: 'xlsx_formula_cache_v1',
         });
         const workerId = randomUUID(),
           job = await claimNextJob(workerId, 30000);
