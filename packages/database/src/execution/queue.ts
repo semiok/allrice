@@ -1,4 +1,10 @@
 import {
+  recordNativeQuestions,
+  closeNativeRunQuestions,
+  isNativeQuestionProjection,
+  lockNativeQuestionMode,
+} from '../native-questions.ts';
+import {
   employeeAccessTransaction,
   employeeAccessTransactionMaxAttempts,
 } from '../employees/employee-access-cancellation.ts';
@@ -2016,6 +2022,8 @@ async function transitionTerminal(
   `;
   // A finished Run, stopped ones included, can no longer take an answer.
   await transaction`update allrice_task_questions set pending=false where run_id=${job.run_id} and pending`;
+  if (input.runStatus === 'canceled')
+    await closeNativeRunQuestions(transaction, job.run_id);
   await refreshTaskClock(transaction, job.run_id);
   await transaction`
     update allrice_conversation_followups
@@ -2933,6 +2941,16 @@ export async function appendJobEvent(input: {
     run: (trace, lockWaitMs) =>
       sql.begin(async (transaction) => {
         await trace.begin(transaction);
+        if (
+          input.type === 'harness.native' &&
+          isNativeQuestionProjection(input.payload)
+        ) {
+          // Rollback refreshes clocks while holding the exclusive mode fence.
+          // Take its shared side before 703/root/clock/Job, within lease limits.
+          await transaction`select set_config('lock_timeout',${`${lockWaitMs}ms`},true)`;
+          await transaction`set local statement_timeout='10s'`;
+          await lockNativeQuestionMode(transaction);
+        }
         const job = await lockedLeasedJob(
           transaction,
           workerId,
@@ -2951,6 +2969,8 @@ export async function appendJobEvent(input: {
             input.payload,
           );
           await recordTaskQuestion(transaction, job.run_id, input.payload);
+          await recordNativeQuestions(transaction, job.run_id, input.payload);
+          await refreshTaskClock(transaction, job.run_id);
         }
         const event = await appendEvent(transaction, {
           organizationId: job.organization_id,

@@ -10,6 +10,15 @@ import type { BaselineEntry } from './dsh-convergence-gate.ts';
 export const baseline: readonly BaselineEntry[] = [
   {
     kind: 'table',
+    id: 'allrice_native_questions',
+    category: '账本',
+    basis:
+      'MET-210 v4.5 PR4：DSH userQuestions 公开投影单向镜像；租户会话身份、任务时钟和授权证据需要 PG 查询，native_present 仅镜像集合成员资格；首次题与 closed_at 撤权事实不随原生移除丢弃，closed_at 仅是停止/回拨的 SaaS 撤权门卫。',
+    approvedBy:
+      '2026-10-28 主会话 PR4 草稿实现任务：核定会话账本属单向账本，运行开关为已批准上线策略。',
+  },
+  {
+    kind: 'table',
     id: 'allrice_assistant_artifacts',
     category: '待删',
     basis:
