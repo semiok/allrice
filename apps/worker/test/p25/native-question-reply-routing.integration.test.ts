@@ -1,6 +1,12 @@
 /** Real message admission -> employee handler -> DSH -> PG. Only the model
  * target and installed executable approval use isolated synthetic fixtures. */
 import { randomUUID } from 'node:crypto';
+import { skillBytesChecksum } from '../../../../packages/database/src/skill-bundles.ts';
+import { runtimePolicyDigest } from '../../../../packages/database/src/runtime-policy.ts';
+import {
+  getEmployeeInstance,
+  updateEmployeeInstance,
+} from '../../../../packages/database/src/employees/employee-instances.ts';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -320,7 +326,7 @@ suite('PR5 native reply routing through the actual employee handler', () => {
     });
     return skill;
   }
-  it.each(['warm', 'cold', 'revoked'] as const)(
+  it.each(['warm', 'cold', 'revoked', 'published-v2'] as const)(
     'PR5 preserves a real Run-specific Skill context for a %s native answer',
     async (phase) => {
       const f = await setup(async (_r, index) =>
@@ -337,6 +343,32 @@ suite('PR5 native reply routing through the actual employee handler', () => {
       expect(q!.native_session_id).toBe(
         `dsh-${f.chat.id}-${origin!.content_generation_id}-${source.run.id}`,
       );
+      if (phase === 'published-v2') {
+        const content =
+          skill.definition.content +
+          '\n新版要求：只输出 V2；本次原题续接不应采用。';
+        const definition = {
+          ...skill.definition,
+          content,
+          checksum: skillBytesChecksum(content),
+        };
+        const v2 = randomUUID();
+        await f.db`insert into allrice_personal_skill_versions(id,organization_id,owner_id,installation_id,version,source,original_text,definition,definition_checksum)
+          select ${v2},organization_id,owner_id,installation_id,2,source,${content},${f.db.json(definition)},${runtimePolicyDigest(definition)}
+          from allrice_personal_skill_versions where id=${skill.pin.versionId}`;
+        await f.db`update allrice_personal_skill_installations set current_version_id=${v2} where id=${skill.pin.installationId}`;
+        const instance = await getEmployeeInstance(
+          f.context,
+          skill.pin.instanceId,
+        );
+        await updateEmployeeInstance(f.context, instance.id, {
+          workspaceId: f.identity.workspace,
+          expectedRevision: instance.revision,
+          requestId: randomUUID(),
+          profile: { ...instance.profile, name: 'V2 员工' },
+        });
+        await f.restartHost();
+      }
       const reply = await send(f, '跳过本题', {
         questionId: `${q!.native_session_id}:${q!.call_id}`,
         answers: [{ id: 'choice', selected: [] }],
@@ -483,7 +515,7 @@ suite('PR5 native reply routing through the actual employee handler', () => {
       let firstId: string | undefined;
       vi.spyOn(adapter!, 'steer').mockImplementation(async (input) => {
         await admitted;
-        if (input.clientUserMessageId !== firstId)
+        if (input.clientUserMessageId !== firstId && digest === 'same')
           return {
             status: 'pending',
             inputId: input.clientUserMessageId!,
@@ -491,9 +523,16 @@ suite('PR5 native reply routing through the actual employee handler', () => {
               input.message.slice('allrice:user-question:v1:'.length),
             ).questionId,
           };
-        const proof = await steer(input);
-        finishModel();
-        return proof;
+        try {
+          return await steer(input);
+        } catch (error) {
+          expect(digest).toBe('different');
+          expect(String(error)).toContain('QUESTION_ANSWER_NOT_ADOPTED');
+          throw error;
+        } finally {
+          if (digest === 'same' || input.clientUserMessageId !== firstId)
+            finishModel();
+        }
       });
       const source = await send(f, '阻塞提问，收到我的回答再继续。');
       const running = execute(f, source.run.id, 'succeeded', {
@@ -536,7 +575,7 @@ suite('PR5 native reply routing through the actual employee handler', () => {
             await f.db`select c.state,c.native_proof,f.mode,f.state followup_state from allrice_conversation_commands c join allrice_conversation_followups f on f.run_id=c.followup_run_id where c.followup_run_id=${secondRun}`
           )[0],
         ).toMatchObject({
-          state: 'pending',
+          state: digest === 'same' ? 'pending' : 'rejected',
           mode: 'follow_up',
           followup_state: 'released',
         });
