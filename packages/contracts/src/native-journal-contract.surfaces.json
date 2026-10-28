@@ -49,7 +49,10 @@
         "properties": {
           "questionId": {
             "anyOf": [
-              { "type": "string", "pattern": "^dsh-[0-9a-f-]{36}:.+$" },
+              {
+                "type": "string",
+                "pattern": "^dsh-[0-9a-f-]{36}(?:-[^:\\s]+)?:.+$"
+              },
               { "type": "string", "minLength": 1, "maxLength": 240 }
             ]
           },
