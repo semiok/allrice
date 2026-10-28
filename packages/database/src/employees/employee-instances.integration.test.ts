@@ -19,7 +19,11 @@ import {
   updateOrganizationPerson,
 } from '../organization-administration.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
-import { updateNativeQuestionMode } from '../native-questions.ts';
+import {
+  updateNativeQuestionMode,
+  type NativeQuestionProjection,
+} from '../native-questions.ts';
+import type { RuntimeNativeInputProof } from '@allrice/contracts';
 import {
   CurrentPlatformTestOriginSchema,
   freezePlatformTestExecutionBinding,
@@ -912,8 +916,10 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       configChecksum: `sha256:${'a'.repeat(64)}`,
       compactThresholdTokens: 10000,
     });
-    const threadId = native ? `dsh-${run.sessionId}` : `native-${randomUUID()}`;
-    let turnId = `turn-${randomUUID()}`;
+    const threadId = native
+      ? `dsh-${run.sessionId}-${randomUUID()}`
+      : `native-${randomUUID()}`;
+    let turnId = native ? `${threadId}:turn:1` : `turn-${randomUUID()}`;
     await bindConversationThread({ ...runtime, threadId });
     if (native)
       await bindNativeQuestionFixture(fixture.db, run.context.runId, threadId);
@@ -926,10 +932,16 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     const questionId = native
       ? `${threadId}:${callId}`
       : `question-${randomUUID()}`;
+    const publicQuestion = toolSelection.UserQuestionItemSchema.omit({
+      detail: true,
+      intent: true,
+    })
+      .strip()
+      .parse(preview.question);
     const project = (
       sequence: number,
       answers?: unknown[],
-      projectedQuestion = preview.question,
+      projectedQuestion = publicQuestion,
       source = run,
     ) =>
       queue.appendJobEvent({
@@ -954,7 +966,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       });
     const show = async (
       question = preview.question,
-      projectedQuestion = preview.question,
+      projectedQuestion = publicQuestion,
     ) => {
       if (native) {
         await fixture.db`update allrice_settings set value='"timed"'::jsonb where scope_type='system' and key='native_question_mode'`;
@@ -984,6 +996,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       adopt = true,
       checkpoint:
         'question_resolved' | 'question_replied' = 'question_resolved',
+      nativeAnswer?: (inputId: string) => Promise<RuntimeNativeInputProof>,
     ) => {
       if (native && checkpoint === 'question_replied') {
         turnId = `${threadId}:turn:2`;
@@ -1018,15 +1031,17 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         turnId,
       });
       expect(command).not.toBeNull();
-      const proof = {
-        status: 'adopted' as const,
-        inputId: clientMessageId,
-        messageId: questionId,
-        turnId,
-        sequence: 5,
-        checkpoint,
-        ...(native ? { callId } : {}),
-      };
+      const proof = nativeAnswer
+        ? await nativeAnswer(clientMessageId)
+        : {
+            status: 'adopted' as const,
+            inputId: clientMessageId,
+            messageId: questionId,
+            turnId,
+            sequence: 5,
+            checkpoint,
+            ...(native ? { callId } : {}),
+          };
       if (native && adopt)
         await project(6, [
           { id: preview.question.id, selected, ...(custom ? { custom } : {}) },
@@ -1086,6 +1101,95 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       await x.run.finish();
     },
   );
+
+  it('PR4 company confirmation consumes the real Host public projection without display detail', async () => {
+    const x = await activationFixture('company', false, true, true);
+    expect(x.preview.question.detail).toBeTruthy();
+    await fixture.db`update allrice_settings set value='"timed"'::jsonb where key='native_question_mode'`;
+    const fixtureUrl = new URL(
+      '../../../../apps/worker/test/p25/native-question-public.fixture.mjs',
+      import.meta.url,
+    );
+    const { withQuestionHost } = await import(fixtureUrl.href);
+    await withQuestionHost(
+      { sessionId: x.threadId, callId: x.callId, preview: x.preview },
+      async (h: {
+        server: {
+          pendingUserQuestions: Map<
+            string,
+            { questions: { detail?: string }[] }
+          >;
+          handleRequest(method: string, params: unknown): Promise<unknown>;
+        };
+        ctx: {
+          sessionProjections: {
+            stateOf(
+              session: unknown,
+              key: string,
+            ): {
+              questions: NativeQuestionProjection['questions'];
+            };
+          };
+        };
+        root: { session: { seq: number } };
+        prompt(): Promise<unknown>;
+        wait(): Promise<unknown>;
+      }) => {
+        await h.prompt();
+        await expect
+          .poll(() => h.server.pendingUserQuestions.has(x.threadId))
+          .toBe(true);
+        const projectHost = async () => {
+          const view = h.ctx.sessionProjections.stateOf(
+            h.root.session,
+            'userQuestions',
+          ).questions;
+          await queue.appendJobEvent({
+            workerId: x.run.context.worker.id,
+            jobId: x.run.context.jobId,
+            leaseToken: x.run.worker.leaseToken,
+            type: 'harness.native',
+            payload: {
+              source: 'dsh',
+              sourceEventType: 'session/user-questions',
+              nativePayload: {
+                sessionId: x.threadId,
+                sequence: h.root.session.seq,
+                questions: view,
+              },
+            },
+          });
+          return view;
+        };
+        const view = await projectHost();
+        expect(view.active[0]!.questions[0]).not.toHaveProperty('detail');
+        expect(
+          h.server.pendingUserQuestions.get(x.threadId)!.questions[0]!.detail,
+        ).toBe(x.preview.question.detail);
+        await x.show();
+        await x.answer(
+          ['确认启用'],
+          undefined,
+          true,
+          'question_resolved',
+          async (inputId) => {
+            const proof = await h.server.handleRequest('session/steer', {
+              sessionId: x.threadId,
+              turnId: x.turnId,
+              inputId,
+              kind: 'ask_user',
+              text: `allrice:user-question:v1:${JSON.stringify({ questionId: `${x.threadId}:${x.callId}`, answers: [{ id: x.preview.question.id, selected: ['确认启用'] }] })}`,
+            });
+            await h.wait();
+            await projectHost();
+            return toolSelection.RuntimeNativeInputProofSchema.parse(proof);
+          },
+        );
+        await expect(x.activate()).resolves.toMatchObject({ enabled: true });
+      },
+    );
+    await x.run.finish();
+  }, 60000);
 
   it('PR4 native activation keeps the prepared source while a later Run consumes the answer', async () => {
     const x = await activationFixture(false, false, false, true);

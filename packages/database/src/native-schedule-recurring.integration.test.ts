@@ -2507,8 +2507,9 @@ suite(
         },
       );
       const callId = `ask-${randomUUID()}`;
+      const nativeSessionId = `dsh-${r.input.sessionId}-${randomUUID()}`;
       const questionId = checkpoint
-        ? `dsh-${r.input.sessionId}:${callId}`
+        ? `${nativeSessionId}:${callId}`
         : `question-${randomUUID()}`;
       const turnId = `dsh-${r.input.context.runId}:turn:1`;
       const question = {
@@ -2544,12 +2545,16 @@ suite(
         client_user_message_id,expected_generation,expected_turn_id,message,input_kind,state,native_proof)
         values(${f.organizationId},${f.workspaceId},${r.input.sessionId},${r.input.context.policySnapshot.subjectId},${followup.run.id},'steer',
           ${clientId},1,${turnId},${'allrice:user-question:v1:' + JSON.stringify(answer)},'ask_user','consumed',
-          ${f.db.json({ status: 'adopted', turnId, inputId: clientId, sequence: 18, messageId: questionId, checkpoint: checkpoint ?? 'question_resolved', ...(checkpoint ? { callId, turnId: 'later:turn:2' } : {}) })}) returning id`;
+          ${f.db.json({ status: 'adopted', turnId, inputId: clientId, sequence: 18, messageId: questionId, checkpoint: checkpoint ?? 'question_resolved', ...(checkpoint ? { callId, turnId: checkpoint === 'question_resolved' ? turnId : 'later:turn:2' } : {}) })}) returning id`;
       if (checkpoint) {
-        await bindNativeQuestionFixture(f.db, r.input.context.runId);
+        await bindNativeQuestionFixture(
+          f.db,
+          r.input.context.runId,
+          nativeSessionId,
+        );
         await f.db`update allrice_settings set value='"timed"'::jsonb where scope_type='system' and key='native_question_mode'`;
         await f.db`insert into allrice_native_questions(session_id,native_session_id,call_id,source_run_id,state,questions,answers,sequence)
-          values(${r.input.sessionId},${`dsh-${r.input.sessionId}`},${callId},${r.input.context.runId},'settled',
+          values(${r.input.sessionId},${nativeSessionId},${callId},${r.input.context.runId},'settled',
             ${f.db.json(question.questions)},${f.db.json(answer.answers)},19)`;
       }
       return {
@@ -2585,6 +2590,42 @@ suite(
               callId: randomUUID(),
             }),
           ).rejects.toMatchObject({ code: 'confirmation_required' });
+        } finally {
+          await r.finish();
+        }
+      },
+    );
+    it.each([
+      'rollback',
+      'closed',
+      'missing-binding',
+      'wrong-owner',
+      'missing-question',
+    ] as const)(
+      'PR4 generation foreground consent never falls back to legacy after %s',
+      async (boundary) => {
+        const r = await leasedChat('1 分钟尖叫一次', {
+          kind: 'every',
+          seconds: 60,
+        });
+        try {
+          await confirmedFrequency(r, undefined, 'question_resolved');
+          if (boundary === 'rollback')
+            await f.db`update allrice_settings set value='"legacy"'::jsonb where key='native_question_mode'`;
+          else if (boundary === 'closed')
+            await f.db`update allrice_native_questions set closed_at=clock_timestamp() where session_id=${r.input.sessionId}`;
+          else if (boundary === 'missing-question')
+            await f.db`delete from allrice_native_questions where session_id=${r.input.sessionId}`;
+          else if (boundary === 'missing-binding')
+            await f.db`delete from allrice_native_session_bindings where context_id=${r.input.sessionId}`;
+          else
+            await f.db`update allrice_native_session_bindings set context_id=${randomUUID()} where context_id=${r.input.sessionId}`;
+          await expect(
+            createRecurringTaskFromExecutionContext(r.input),
+          ).rejects.toMatchObject({ code: 'confirmation_required' });
+          expect(
+            await f.db`select id from allrice_automations where session_id=${r.input.sessionId}`,
+          ).toHaveLength(0);
         } finally {
           await r.finish();
         }

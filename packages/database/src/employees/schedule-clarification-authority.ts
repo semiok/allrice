@@ -53,7 +53,7 @@ export async function readScheduleClarification(
       and m.content->'interaction'->>'type'='user_question_answer'
     where e.organization_id=${ctx.organizationId} and e.workspace_id=${ctx.workspaceId!}
       and e.run_id=${ctx.runId} and e.payload->>'sourceEventType'='session/user-question'
-      and not (e.payload->'nativePayload'->>'questionId' like ${`dsh-${input.sessionId}:%`})
+      and not (e.payload->'nativePayload'->>'questionId' like 'dsh-%')
       and e.sequence=(select max(q.sequence) from allrice_run_events q
         where q.run_id=e.run_id and q.payload->>'sourceEventType'='session/user-question')
     order by c.created_at desc,c.id desc limit 1`;
@@ -87,7 +87,7 @@ export async function readScheduleClarification(
     where c.organization_id=${ctx.organizationId} and c.workspace_id=${ctx.workspaceId!}
       and c.session_id=${input.sessionId} and c.owner_id=${ctx.policySnapshot.subjectId}
       and c.input_kind='ask_user' and c.state='consumed'
-      and m.content->'interaction'->'answer'->>'questionId' like ${`dsh-${input.sessionId}:%`}
+      and m.content->'interaction'->'answer'->>'questionId' like 'dsh-%'
       and (q.source_run_id=${ctx.runId} or c.followup_run_id=${ctx.runId}
         or exists(select 1 from allrice_conversation_runtimes r where r.session_id=c.session_id
           and r.active_run_id=${ctx.runId} and r.active_turn_id=c.native_proof->>'turnId'))

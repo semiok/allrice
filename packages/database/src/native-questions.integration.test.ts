@@ -166,6 +166,26 @@ suite(
       ).rejects.toThrow();
       expect((await f.read())?.state).toBe('settled');
     });
+    it('PR4 generation admission rejects revoked and unbound cards without legacy fallback', async () => {
+      const f = await setup();
+      await updateNativeQuestionMode(f.adminContext, 'timed');
+      const nativeId = `dsh-${f.session}-${randomUUID()}`;
+      await bindNativeQuestionFixture(f.db, f.rootRunId, nativeId);
+      await f.send(1, [f.question], [], nativeId);
+      const admit = (id = `${nativeId}:call:1`) =>
+        f.db.begin((tx) => requireNativeQuestionAdmission(tx, f.session, id));
+      await expect(admit()).resolves.toBeUndefined();
+      await expect(admit(`${nativeId}:missing`)).rejects.toMatchObject({
+        code: 'question_expired',
+      });
+      await f.db`update allrice_native_session_bindings set context_id=${randomUUID()} where native_session_id=${nativeId}`;
+      await expect(admit()).rejects.toMatchObject({ code: 'question_expired' });
+      await f.db`update allrice_native_session_bindings set context_id=${f.session} where native_session_id=${nativeId}`;
+      await updateNativeQuestionMode(f.adminContext, 'legacy');
+      await expect(admit()).rejects.toMatchObject({ code: 'question_expired' });
+      await updateNativeQuestionMode(f.adminContext, 'timed');
+      await expect(admit()).rejects.toMatchObject({ code: 'question_expired' });
+    });
     it('rollback revokes active calls across later snapshots and re-enable; stop closes only its source Run', async () => {
       const f = await setup();
       await updateNativeQuestionMode(f.adminContext, 'timed');

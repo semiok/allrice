@@ -139,8 +139,19 @@ export async function requireEmployeeMethodActivationAnswer(
     if (
       native
         ? native.source_run_id !== r.source_run_id ||
-          runtimePolicyDigest(native.questions) !==
-            runtimePolicyDigest([UserQuestionItemSchema.parse(r.question)]) ||
+          runtimePolicyDigest(
+            native.questions.map((q: unknown) =>
+              UserQuestionItemSchema.parse(q),
+            ),
+          ) !==
+            runtimePolicyDigest([
+              // dsh-user-questions projects the model tool's fields, not the
+              // Broker's display detail/intent. Full presentation is checked
+              // when the prepared card is recorded above.
+              UserQuestionItemSchema.omit({ detail: true, intent: true })
+                .strip()
+                .parse(r.question),
+            ]) ||
           !(await nativeQuestionAnswerAdopted(
             tx,
             r.session_id,
@@ -148,7 +159,7 @@ export async function requireEmployeeMethodActivationAnswer(
             proof.data,
             answer,
           ))
-        : r.question_id.startsWith(`dsh-${r.session_id}:`) ||
+        : r.question_id.startsWith('dsh-') ||
           proof.data.checkpoint !== 'question_resolved' ||
           row.expected_turn_id !== r.question_turn_id ||
           row.expected_generation !== r.question_generation ||

@@ -37,7 +37,7 @@ export const UserQuestionAnswerItemSchema = z
 // DSH Session + call ID is not a display label and must never be truncated.
 export const NativeUserQuestionIdSchema = z
   .string()
-  .regex(/^dsh-[0-9a-f-]{36}:.+$/s);
+  .regex(/^dsh-[0-9a-f-]{36}(?:-[^:\s]+)?:.+$/s);
 const questionIdSchema = z.union([
   NativeUserQuestionIdSchema,
   z.string().trim().min(1).max(240),

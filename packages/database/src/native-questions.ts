@@ -184,9 +184,14 @@ export async function readNativeQuestion(
   sessionId: string,
   questionId: string,
 ) {
-  const [row] = await tx`select * from allrice_native_questions
-    where session_id=${sessionId} and native_present and native_session_id||':'||call_id=${questionId}
-      and native_session_id=(select thread_id from allrice_conversation_runtimes where session_id=${sessionId})`;
+  const [row] = await tx`select q.* from allrice_native_questions q
+    join allrice_chat_sessions s on s.id=q.session_id
+    join allrice_conversation_runtimes r on r.session_id=s.id and r.thread_id=q.native_session_id
+    join allrice_native_session_bindings b on b.native_session_id=q.native_session_id
+      and b.context_kind='chat' and b.context_id=s.id and b.organization_id=s.organization_id
+      and b.workspace_id=s.workspace_id and b.owner_id=s.owner_id
+    where q.session_id=${sessionId} and q.native_present
+      and q.native_session_id||':'||q.call_id=${questionId}`;
   return row ?? null;
 }
 
@@ -205,7 +210,9 @@ export async function requireNativeQuestionAdmission(
   sessionId: string,
   questionId: string,
 ) {
-  if (!questionId.startsWith(`dsh-${sessionId}:`)) return;
+  // A reserved native identity must be verified, including a missing or
+  // malformed binding. This prefix classifies; it never grants authority.
+  if (!questionId.startsWith('dsh-')) return;
   await lockNativeQuestionMode(tx);
   const row = await readNativeQuestion(tx, sessionId, questionId);
   if (!row || row.closed_at || (await readNativeQuestionMode(tx)) !== 'timed')

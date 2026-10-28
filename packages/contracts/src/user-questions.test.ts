@@ -34,32 +34,39 @@ describe('user question contracts', () => {
     });
   });
 
-  it('preserves full native identity beyond legacy limits without widening legacy IDs', () => {
-    const questionId = `dsh-00000000-0000-4000-8000-000000000001:${'call:'.repeat(80)}`;
-    expect(
-      UserQuestionRequestSchema.parse({
-        questionId,
-        questions: [{ id: 'q', question: '继续？' }],
-      }).questionId,
-    ).toBe(questionId);
-    expect(
-      UserQuestionRequestSchema.safeParse({
-        questionId: 'x'.repeat(241),
-        questions: [{ id: 'q', question: '继续？' }],
-      }).success,
-    ).toBe(false);
-    expect(
-      RuntimeNativeInputProofSchema.parse({
-        status: 'adopted',
-        inputId: '00000000-0000-4000-8000-000000000001',
-        messageId: questionId,
-        callId: 'call:'.repeat(80),
-        sequence: 10,
-        turnId: 'turn:2',
-        checkpoint: 'question_replied',
-      }).messageId,
-    ).toBe(questionId);
-  });
+  it.each([
+    '',
+    '-00000000-0000-4000-8000-000000000002',
+    '-00000000-0000-4000-8000-000000000002-00000000-0000-4000-8000-000000000003',
+  ])(
+    'preserves full native identity with context %s beyond legacy limits',
+    (context) => {
+      const questionId = `dsh-00000000-0000-4000-8000-000000000001${context}:${'call:'.repeat(80)}`;
+      expect(
+        UserQuestionRequestSchema.parse({
+          questionId,
+          questions: [{ id: 'q', question: '继续？' }],
+        }).questionId,
+      ).toBe(questionId);
+      expect(
+        UserQuestionRequestSchema.safeParse({
+          questionId: 'x'.repeat(241),
+          questions: [{ id: 'q', question: '继续？' }],
+        }).success,
+      ).toBe(false);
+      expect(
+        RuntimeNativeInputProofSchema.parse({
+          status: 'adopted',
+          inputId: '00000000-0000-4000-8000-000000000001',
+          messageId: questionId,
+          callId: 'call:'.repeat(80),
+          sequence: 10,
+          turnId: 'turn:2',
+          checkpoint: 'question_replied',
+        }).messageId,
+      ).toBe(questionId);
+    },
+  );
 
   it('checks the complete Session/call identity without splitting call IDs on colons', () => {
     const request = {
