@@ -509,6 +509,71 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
     }
   }, 45000);
 
+  it('公开 wait 返回后已接收的输入仍经候选的最终 wait，真实第二 turn 不丢来源或用量', async () => {
+    const entered = gate(),
+      release = gate();
+    const f = await setup(true, async (_request, count) => {
+      if (count === 2) {
+        entered.release();
+        await release.promise;
+      }
+      return { text: count === 1 ? '首轮回复。' : '已结合补充信息。' };
+    });
+    const task = await prepare(f, '简单说明，不需要文件。');
+    const wait = DshProtocolClient.prototype.wait;
+    vi.spyOn(DshProtocolClient.prototype, 'wait').mockImplementationOnce(
+      async function (this: DshProtocolClient, sessionId) {
+        const result = await wait.call(this, sessionId);
+        // An actual native input accepted before the Worker pauses ingress.
+        await this.prompt(sessionId, '在输入窗口关闭前接收的补充。');
+        await entered.promise;
+        return result;
+      },
+    );
+    const finalDelivery = DshProtocolClient.prototype.finalDelivery;
+    vi.spyOn(DshProtocolClient.prototype, 'finalDelivery').mockImplementation(
+      function (this: DshProtocolClient, action, params) {
+        const result = finalDelivery.call(this, action, params);
+        if (action === 'candidate') release.release();
+        return result;
+      },
+    );
+    try {
+      const result = await task.run();
+      const coverage = readCheckedFinalDeliveryForExecution(
+        task.workflowLease,
+        result,
+      );
+      if (coverage.coverage !== 'checked_native_v1')
+        throw Error('Missing checked native proof');
+      const starts =
+        await f.db`select payload from allrice_run_events where run_id=${task.runId} and event_type='turn.started' order by sequence`;
+      expect(starts).toHaveLength(2);
+      expect(starts[1]!.payload.turnId).toBe(
+        `${coverage.proof.nativeSessionId}:turn:2`,
+      );
+      expect(result).toMatchObject({
+        answer: '已结合补充信息。',
+        usage: { inputTokens: 40, cachedInputTokens: 0, outputTokens: 10 },
+      });
+      await completeJob({
+        ...task.workflowLease,
+        result,
+        checkedDelivery: coverage.checkedDelivery,
+      });
+      expect(await state(f, task.runId)).toMatchObject({
+        status: 'succeeded',
+        text: '已结合补充信息。',
+        successes: 1,
+      });
+      expect(model!.requests).toHaveLength(2);
+    } finally {
+      release.release();
+      task.controller.abort();
+      await task.isolation.cleanup();
+    }
+  }, 45000);
+
   it.each([
     { mode: 'valid', history: false },
     { mode: 'valid', history: true },
