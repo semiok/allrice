@@ -66,11 +66,7 @@
             "items": {
               "type": "object",
               "properties": {
-                "id": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 240
-                },
+                "id": { "type": "string", "minLength": 1, "maxLength": 240 },
                 "selected": {
                   "maxItems": 20,
                   "type": "array",
@@ -96,12 +92,7 @@
       },
       "decoded": {
         "allrice:user-question:v1:": {
-          "answers": [
-            {
-              "id": "choice",
-              "selected": ["Go"]
-            }
-          ]
+          "answers": [{ "id": "choice", "selected": ["Go"] }]
         },
         "allrice:user-question:v0:": null
       }
@@ -151,25 +142,15 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "version": {
-            "type": "number",
-            "const": 1
-          },
-          "scope": {
-            "type": "string",
-            "pattern": "^sha256:[a-f0-9]{64}$"
-          },
+          "version": { "type": "number", "const": 1 },
+          "scope": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
           "imported": {
             "maxItems": 81,
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
-                "key": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 100
-                },
+                "key": { "type": "string", "minLength": 1, "maxLength": 100 },
                 "digest": {
                   "type": "string",
                   "pattern": "^sha256:[a-f0-9]{64}$"
@@ -182,15 +163,8 @@
           "userMessage": {
             "type": "object",
             "properties": {
-              "key": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 100
-              },
-              "digest": {
-                "type": "string",
-                "pattern": "^sha256:[a-f0-9]{64}$"
-              }
+              "key": { "type": "string", "minLength": 1, "maxLength": 100 },
+              "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
             },
             "required": ["key", "digest"],
             "additionalProperties": false
@@ -238,11 +212,7 @@
               "format": "uuid",
               "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
             },
-            "label": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 240
-            },
+            "label": { "type": "string", "minLength": 1, "maxLength": 240 },
             "visibility": {
               "type": "string",
               "enum": ["private", "workspace", "organization"]
@@ -261,9 +231,7 @@
               "minimum": 0,
               "maximum": 9007199254740991
             },
-            "truncated": {
-              "type": "boolean"
-            },
+            "truncated": { "type": "boolean" },
             "messages": {
               "maxItems": 200,
               "type": "array",
@@ -275,14 +243,8 @@
                     "format": "uuid",
                     "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                   },
-                  "role": {
-                    "type": "string",
-                    "enum": ["user", "assistant"]
-                  },
-                  "text": {
-                    "type": "string",
-                    "maxLength": 100000
-                  },
+                  "role": { "type": "string", "enum": ["user", "assistant"] },
+                  "text": { "type": "string", "maxLength": 100000 },
                   "createdAt": {
                     "type": "string",
                     "format": "date-time",
@@ -414,14 +376,8 @@
         }
       },
       "controlModules": {
-        "cordis": {
-          "specifier": "@deepseek-ai/cordis",
-          "anchor": "factory"
-        },
-        "llm": {
-          "specifier": "@deepseek-ai/dsh-llm",
-          "anchor": "factory"
-        },
+        "cordis": { "specifier": "@deepseek-ai/cordis", "anchor": "factory" },
+        "llm": { "specifier": "@deepseek-ai/dsh-llm", "anchor": "factory" },
         "sessions": {
           "specifier": "@deepseek-ai/dsh-session",
           "anchor": "factory"
@@ -442,10 +398,7 @@
           "specifier": "@deepseek-ai/dsh-working-directory",
           "anchor": "factory"
         },
-        "tools": {
-          "specifier": "@deepseek-ai/dsh-tools",
-          "anchor": "factory"
-        },
+        "tools": { "specifier": "@deepseek-ai/dsh-tools", "anchor": "factory" },
         "agents": {
           "specifier": "@deepseek-ai/dsh-agent",
           "anchor": "factory"

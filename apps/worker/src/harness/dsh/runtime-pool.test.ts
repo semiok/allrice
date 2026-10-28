@@ -1458,6 +1458,38 @@ describe('idle close (MET-216)', () => {
     expect(second.client.close).toHaveBeenCalledOnce();
     expect(instance.reclaimIdle()).not.toBe(sweep);
   });
+  it('withholds the native adopted answer receipt and Host release until its Worker projection write finishes', async () => {
+    const instance = idlePool(60_000);
+    pools.push(instance);
+    const runtime = resident(instance);
+    const write = deferred();
+    const proof = {
+      status: 'adopted',
+      callId: 'native-call',
+      checkpoint: 'question_resolved',
+    };
+    Object.assign(runtime.client, { steer: vi.fn(async () => proof) });
+    runtime.inputProjectionBarrier = vi.fn(() => write.promise);
+    let returned = false;
+    const receipt = instance
+      .steer(runtime.sessionId, 'typed native answer', {
+        inputId: randomUUID(),
+        turnId: 'turn:1',
+        kind: 'ask_user',
+      })
+      .then((result) => {
+        returned = true;
+        return result;
+      });
+    await vi.waitFor(() =>
+      expect(runtime.inputProjectionBarrier).toHaveBeenCalledOnce(),
+    );
+    expect(returned).toBe(false);
+    await instance.reclaimIdle(Date.now() + 86_400_000);
+    expect(runtime.client.close).not.toHaveBeenCalled();
+    write.resolve();
+    expect(await receipt).toEqual(proof);
+  });
 
   it('closes only Hosts idle past the limit, through the owned close', async () => {
     const instance = idlePool(60_000);

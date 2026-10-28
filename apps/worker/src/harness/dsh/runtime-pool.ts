@@ -73,6 +73,8 @@ export interface DshRuntime {
   nativeArtifactId?: string;
   nativeProfileId?: string;
   nativePin?: NativeSessionPin;
+  /** Current Run's existing native-event persistence chain, retained through steer drain. */
+  inputProjectionBarrier?: () => Promise<void>;
 }
 
 export interface DshRuntimePoolOptions {
@@ -1170,7 +1172,17 @@ export class DshRuntimePool {
         'ASSISTANT_COMPLETING',
         false,
       );
-    const work = runtime.client.steer(runtime.sessionId, message, typed);
+    const work = runtime.client
+      .steer(runtime.sessionId, message, typed)
+      .then(async (result) => {
+        if (
+          typed?.kind === 'ask_user' &&
+          result?.status === 'adopted' &&
+          typeof result.callId === 'string'
+        )
+          await runtime.inputProjectionBarrier?.();
+        return result;
+      });
     const outcome = work.then(
       () => false,
       (error: unknown) =>

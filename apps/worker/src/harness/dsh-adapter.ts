@@ -1957,6 +1957,13 @@ export class DshHarnessAdapter implements HarnessAdapter {
     };
     let eventChain = Promise.resolve();
     let processingError: unknown;
+    // IPC notifications precede their RPC reply. An adopted native answer must
+    // await their actual Worker writes before its SQL command can be consumed.
+    // Retain this closure through the handler's existing final steer drain.
+    input.runtime.inputProjectionBarrier = async () => {
+      await eventChain;
+      if (processingError) throw processingError;
+    };
     let idle = false;
     let started = false;
     let turnOriginCommitted = false;

@@ -136,6 +136,8 @@ export async function deliverNativeQuestionInput(scope, input) {
   }
   if (!isCurrent()) return inspect();
   if (!q) return inspect();
+  if (!allowIdle && agent.status !== 'running')
+    throw Error('INPUT_TURN_CHANGED');
   if (q.state === 'open') {
     if (pendingQuestion?.questionId !== answer.questionId)
       throw Error('QUESTION_EXPIRED');
