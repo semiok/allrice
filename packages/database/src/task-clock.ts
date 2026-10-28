@@ -1,4 +1,5 @@
 import type postgres from 'postgres';
+import { answerableTaskQuestions } from './native-questions.ts';
 import {
   unboundedTaskDeadline,
   type TaskRuntimePolicy,
@@ -121,9 +122,15 @@ async function observeTaskClock(tx: Tx, runId: string, forUpdate: boolean) {
   >`
     select id,coalesce(snapshot->>'agentInstanceId',run_id::text) as agent_id,snapshot->>'status' as status
     from allrice_runtime_operations where root_run_id=${runId}`;
-  const questions =
-    await tx`select 1 from allrice_task_questions where run_id=${runId} and pending limit 1`;
-  if (questions.length)
+  const [nativeQuestions] =
+    await tx`select to_regclass(format('%I.allrice_native_questions',current_schema())) is not null available`;
+  const answerable = answerableTaskQuestions(
+    tx,
+    runId,
+    !!nativeQuestions?.available,
+  );
+  const [questions] = await tx`select ${answerable} as pending`;
+  if (questions?.pending)
     operations.push({ agent_id: runId, status: 'waiting_user' });
   const [resourceTable] =
     await tx`select to_regclass(format('%I.allrice_task_resource_waits',current_schema())) is not null as available`;
@@ -175,7 +182,7 @@ async function observeTaskClock(tx: Tx, runId: string, forUpdate: boolean) {
           and (exists(select 1 from allrice_assistant_instances i where i.run_id=b.agent_id and i.native_session_id=c.native_session_id)
             or (b.agent_id=c.run_id and exists(select 1 from allrice_employee_runs e where e.run_id=c.run_id and 'dsh-'||e.session_id::text=c.native_session_id)))
           and o.snapshot->>'status' in ('waiting_user','waiting_device'))
-      and not (c.kind='tool' and c.name='ask_user_question' and exists(select 1 from allrice_task_questions q where q.run_id=c.run_id and q.pending))) as active`;
+      and not (c.kind='tool' and c.name='ask_user_question' and ${answerable})) as active`;
     nativeActive = !!calls?.active;
   }
   const phase = taskClockPhase({
@@ -302,6 +309,7 @@ export async function recordTaskQuestion(
   )
     return;
   const native = event.nativePayload as Record<string, unknown> | undefined;
+  if (native?.durable === true) return;
   const id = native?.questionId;
   if (typeof id !== 'string' || id.length < 1 || id.length > 240) return;
   if (!(await readTaskClock(tx, runId))) return;
