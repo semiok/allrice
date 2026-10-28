@@ -237,7 +237,7 @@ jobs:
         # host test process. No dependency on the runner's pg_dump major version.
         run: |
           mkdir -p "$RUNNER_TEMP/allrice-pg-client"
-          for tool in pg_dump pg_restore; do
+          for tool in pg_dump pg_restore psql; do
             printf '#!/bin/sh\nexec docker compose --project-name allrice-dev --file compose.dev.yaml exec -T -e PGDATABASE -e PGUSER -e PGPASSWORD postgres %s "$@"\n' "$tool" > "$RUNNER_TEMP/allrice-pg-client/$tool"
             chmod +x "$RUNNER_TEMP/allrice-pg-client/$tool"
           done

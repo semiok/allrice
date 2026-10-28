@@ -42,28 +42,31 @@ df -h ~                       # 磁盘满是最常见的原因之一
 
 1. 先恢复到一个新库核对，不动 Dev。根据**备份时数据库是否已经应用 `0225_function_search_path.sql`**选择下面一种方式；当前代码版本不能改变旧备份内的函数定义。
 
-   **0225 之后的备份**：迁移为使用未限定对象名的函数固定了函数级 `search_path = public, pg_catalog`，标准 `pg_restore` 清空会话 search_path 后仍可求值 CHECK。custom 格式直接恢复，不改 dump、不禁用触发器或约束、不跳过表：
+   `backup-daily` 和 `deploy-dev` 的迁移前快照都是 `pg_dump -Fp` 生成的 plain SQL，再用 gzip 压缩。先解压并检查迁移登记行；下面输出 `1` 表示备份包含 0225，输出 `0`（grep 退出码 1）按旧备份处理。**首次部署 0225 时自动生成的迁移前快照还没有应用 0225，必须走“0225 之前”的旧办法。**
 
    ```bash
    export S=<快照目录> T=<时间>
    umask 077
+   gunzip -c "$S/allrice_dev.sql.gz" > "$S/restore-original.sql"
+   # 若来源是 custom 格式，用下一行代替 gunzip 来检查登记记录：
+   # pg_restore --no-owner --no-privileges --file="$S/restore-original.sql" <备份.dump>
+   grep -c '^0225_function_search_path\.sql[[:space:]]' "$S/restore-original.sql"
+   ```
+
+   **0225 之后的备份**：迁移只为 CHECK 恢复求值所需的五个函数固定了函数级 `search_path = pg_catalog, public`；标准恢复清空会话 search_path 后仍可求值 CHECK。plain SQL 直接用 `psql` 恢复，不改 dump、不禁用触发器或约束、不跳过表：
+
+   ```bash
    createdb -h 127.0.0.1 "allrice_dev_restore_$T"
-   pg_restore -h 127.0.0.1 --exit-on-error --no-owner --no-privileges \
-     --dbname="allrice_dev_restore_$T" <0225之后.dump>
-   # 若来源是每日备份或迁移前快照的 plain SQL，用这两行代替 pg_restore：
-   # gunzip -c "$S/allrice_dev.sql.gz" > "$S/restore-original.sql"
-   # psql -h 127.0.0.1 -X -q -v ON_ERROR_STOP=1 -d "allrice_dev_restore_$T" -f "$S/restore-original.sql"
+   psql -h 127.0.0.1 -X -q -v ON_ERROR_STOP=1 -d "allrice_dev_restore_$T" -f "$S/restore-original.sql"
+   # 若来源是 custom 格式，也可用下一行代替 psql，直接恢复原归档：
+   # pg_restore -h 127.0.0.1 --exit-on-error --no-owner --no-privileges --dbname="allrice_dev_restore_$T" <0225之后.dump>
    psql -h 127.0.0.1 -X "allrice_dev_restore_$T" -c 'select count(*), max(name) from allrice_schema_migrations'
    ```
 
    **0225 之前的旧备份**：仍按下面的头部改写办法恢复。0207 的 `allrice_native_calendar_control_valid` 和 0208 的会话快照校验等函数依赖会话 search_path；标准恢复会在 COPY 的 CHECK 求值时报函数不存在。B2 第 13 步已验证恢复时需要 `public, pg_catalog`：先生成 SQL，**只替换 dump 头部完整的一行** `SELECT pg_catalog.set_config('search_path', '', false);`，再用 `psql -X -v ON_ERROR_STOP=1 -f` 执行；不禁用触发器、约束或跳过表。**不能全局替换**：COPY 业务正文和函数体也可能包含相同文字，改写后仍可能是合法 SQL/JSON，`ON_ERROR_STOP` 不会发现数据已被改变。下面只扫描由注释、空行、`SET` 和 `\restrict` 组成的头部，遇到第一个其他语句（包括 CREATE / COPY）就停止；断言头部恰好有一条目标语句后才写文件，其余字节原样复制。
 
    ```bash
-   export S=<快照目录> T=<时间>   # 下面持锁的新 shell 也要用这两个变量，所以要 export
-   umask 077
-   gunzip -c "$S/allrice_dev.sql.gz" > "$S/restore-original.sql"
-   # 若来源是 custom 格式的 dump，用下一行代替 gunzip；恢复到新库，不加 --create / --clean。
-   # pg_restore --no-owner --no-privileges --file="$S/restore-original.sql" <迁移前.dump>
+   # 使用上面已解压的原始 SQL；S、T 已 export，后面的持锁 shell 也会用到。
    python3 - "$S/restore-original.sql" "$S/restore-public.sql" <<'PY'
    import re
    import shutil
