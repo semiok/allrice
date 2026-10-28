@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
-import { mkdir, writeFile, rename, realpath } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { dirname, resolve, join } from 'node:path';
+import { mkdir, writeFile, rename } from 'node:fs/promises';
+import { join } from 'node:path';
+import { resolveServiceBuildRoot } from './prepare-identity-root.mjs';
 import { prepareServiceBuildManifest } from '../../packages/database/dist/service-build-identity.js';
 import {
   measureDshNativeArtifact,
@@ -16,15 +16,8 @@ const option = (key) => {
   return values[0].slice(key.length + 1);
 };
 if (args.length !== 2) throw Error('DEV_BUILD_PREPARATION_ARGUMENT');
-const root = await realpath(resolve(option('--root'))),
+const root = await resolveServiceBuildRoot(option('--root')),
   sourceSha = option('--release-sha');
-// Release roots live directly under the deploying account's home on any host.
-if (
-  !['allrice-dev-releases', 'allrice-worktrees'].some(
-    (parent) => dirname(root) === join(homedir(), parent),
-  )
-)
-  throw Error('DEV_BUILD_ROOT_NOT_ALLOWED');
 const git = (...values) =>
   execFileSync('git', values, { cwd: root, encoding: 'utf8' }).trim();
 if (

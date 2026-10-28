@@ -145,6 +145,8 @@ cmd_up() {
   artifact=$(cd "$dir/release" && node apps/worker/scripts/prepare-native-artifact.mjs --root="$PWD" 2>>"$dir/logs/build.log" | tail -1 | /usr/bin/python3 -c 'import json,sys;print(json.load(sys.stdin)["artifactId"])') \
     || die "native artifact preparation failed, see $dir/logs/build.log"
   say "native artifact ${artifact:7:12}…"
+  ( cd "$dir/release" && node scripts/dev-release/prepare-identity.mjs --root="$dir/release" --release-sha="$sha" ) \
+    >> "$dir/logs/build.log" 2>&1 || die "build identity preparation failed, see $dir/logs/build.log"
 
   psql -h 127.0.0.1 -d postgres -Atc "select 1 from pg_database where datname='$db'" | grep -q 1 && die "database $db already exists"
   createdb -h 127.0.0.1 "$db"
@@ -184,7 +186,7 @@ common = {
     'ALLRICE_TECHNICAL_WORKER_HEALTH_URL': f'http://127.0.0.1:{worker}/health/ready',
     # QA instances never use the shared sandbox VM; sandbox work is validated on Dev.
     'ALLRICE_CLOUD_RUNNER_ENABLED': '0', 'ALLRICE_CLOUD_MCP_ENABLED': '0',
-    # No sealed build identity for throwaway builds.
+    # Version identity is sealed above; QA still cannot run Dev maintenance.
     'ALLRICE_DEV_MAINTENANCE_ENABLED': '0',
 }
 for role, source in (('web', web_src), ('worker', worker_src)):
