@@ -14,7 +14,10 @@ import {
   prepareEmployeeInstanceSnapshot,
 } from '../../../../packages/database/src/employees/employee-instances.ts';
 import { completeJob } from '../../../../packages/database/src/execution/queue.ts';
-import { finalDeliveryTextDigest } from '../../../../packages/database/src/final-delivery-commit.ts';
+import {
+  finalDeliveryTextDigest,
+  registerJobCompletionGuard,
+} from '../../../../packages/database/src/final-delivery-commit.ts';
 import { createRunDeliveryPort } from '../../src/final-delivery/run-delivery.js';
 import { checkFinalDelivery } from '../../src/final-delivery/policy.js';
 import { createDeliveryMarkup } from '../../src/final-delivery/markup.js';
@@ -266,11 +269,30 @@ suite('PR1a: independent Worker delivery, isolated PostgreSQL', () => {
     expect(
       await fixture.db`select run_id from allrice_assistant_instances where root_run_id=${f.rootRunId}`,
     ).toHaveLength(0);
+    const queries: string[] = [];
+    const guardQueries: string[] = [];
+    const captureGuardQueries = async <T>(operation: () => Promise<T>) => {
+      const start = queries.length;
+      try {
+        return await operation();
+      } finally {
+        guardQueries.push(...queries.slice(start));
+      }
+    };
+    const observedGuard = registerJobCompletionGuard(async (...args) => {
+      const check = await captureGuardQueries(() =>
+        guard.assertCurrent(...args),
+      );
+      return {
+        assertCommitted: () =>
+          captureGuardQueries(() => check.assertCommitted()),
+      };
+    });
     // Exercise the same private receipt carrier consumed by Worker completion.
     const scope = {};
     beginCheckedFinalDeliveryExecution(scope);
     requireCheckedFinalDelivery(scope);
-    bindCheckedFinalDeliveryCommitGuard(proof, guard);
+    bindCheckedFinalDeliveryCommitGuard(proof, observedGuard);
     const source = { answer };
     attachCheckedFinalDelivery(source, proof);
     const result = { ...source };
@@ -279,16 +301,22 @@ suite('PR1a: independent Worker delivery, isolated PostgreSQL', () => {
     expect(coverage.coverage).toBe('checked_native_v1');
     if (coverage.coverage !== 'checked_native_v1')
       throw Error('missing private guard');
-    const queries: string[] = [];
     const debug = fixture.db.options.debug;
     fixture.db.options.debug = (_connection, query) => {
       queries.push(query);
     };
     try {
       await f.complete(coverage.checkedDelivery, result.answer);
-      expect(queries.length).toBeGreaterThan(0);
+      expect(guardQueries.length).toBeGreaterThan(0);
       expect(
         queries.filter((q) =>
+          /allrice_assistant_|allrice_runtime_run_links/.test(q),
+        ),
+      ).toEqual([]);
+      // Generic terminal cleanup probes runtime_roots; the independent guard
+      // must not, including the post-write assertCommitted callback.
+      expect(
+        guardQueries.filter((q) =>
           /allrice_assistant_|allrice_runtime_run_links|allrice_runtime_roots/.test(
             q,
           ),
