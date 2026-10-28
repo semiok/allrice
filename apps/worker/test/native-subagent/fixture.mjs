@@ -71,15 +71,7 @@ export async function host({
     resolve(import.meta.dirname, 'plugins.cordis.yml'),
     'utf8',
   );
-  await writeFile(
-    join(directory, 'profile.yml'),
-    profile.replace(
-      "- id: tool-ask-user\n  name: '@deepseek-ai/dsh-tool-ask-user'\n",
-      "- id: tool-ask-user\n  name: '@deepseek-ai/dsh-tool-ask-user'\n  config: { mode: timed }\n",
-    ) +
-      '\n' +
-      plugins,
-  );
+  await writeFile(join(directory, 'profile.yml'), profile + '\n' + plugins);
   await writeFile(
     join(directory, 'credentials.yml'),
     '{"version":1,"records":{}}',
@@ -93,6 +85,8 @@ export async function host({
     DSH_CREDENTIALS_PATH: join(directory, 'credentials.yml'),
     PR0_MAX_DEPTH: String(depth),
     PR0_MAX_ACTIVE: String(active),
+    ALLRICE_ASK_USER_MODE: 'timed',
+    ALLRICE_ASK_USER_TIMEOUT: undefined,
     ALLRICE_ASSISTANTS_ENABLED: undefined,
     ALLRICE_PROGRESS_GUARD_ENABLED: undefined,
     DSH_RUNTIME_HOME: undefined,

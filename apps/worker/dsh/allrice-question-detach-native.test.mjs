@@ -60,7 +60,12 @@ function barrier() {
 
 /** One host per launch() over one session root; the model asks once (with the
  * given timeout argument), then answers every later request with plain text. */
-async function fixture({ timeout, child = false, extraTool = false }) {
+async function fixture({
+  timeout,
+  child = false,
+  extraTool = false,
+  configuredTimeout,
+}) {
   const root = await realpath(
     await mkdtemp(join(tmpdir(), 'allrice-question-detach-')),
   );
@@ -174,13 +179,10 @@ async function fixture({ timeout, child = false, extraTool = false }) {
   expect(source).toContain(askLine);
   await writeFile(
     join(root, 'profile.yml'),
-    source
-      .replace(
-        '      openai-codex:\n',
-        `      openai-codex:\n        baseURL: ${baseURL}\n        transport: sse\n`,
-      )
-      // The timed mode this design turns on (PR4); DSH's own default timeout.
-      .replace(askLine, `${askLine}  config:\n    mode: timed\n`) +
+    source.replace(
+      '      openai-codex:\n',
+      `      openai-codex:\n        baseURL: ${baseURL}\n        transport: sse\n`,
+    ) +
       (child
         ? `
 - name: '@deepseek-ai/dsh-user-approval'
@@ -264,6 +266,10 @@ process.on('SIGUSR2', () => { for (const exit of exits.splice(0)) immediate(exit
     DSH_CWD: root,
     DSH_CODEX_MODEL: 'gpt-5.6-luna',
     DSH_SYSTEM_PROMPT: 'Synthetic question fixture.',
+    ALLRICE_ASK_USER_MODE: 'timed',
+    ...(configuredTimeout === undefined
+      ? {}
+      : { ALLRICE_ASK_USER_TIMEOUT: configuredTimeout }),
   };
   const initialize = {
     cwd: root,
@@ -382,6 +388,89 @@ const replyText = (requests, callId) =>
   );
 
 describe('MET-210 timed questions on the AllRice host', () => {
+  it.each([
+    ['default', undefined, 120],
+    ['N', '2', 2],
+    ['forever', '-1', undefined],
+  ])(
+    'PR4 production profile uses native %s when the model omits timeout',
+    async (_mode, configuredTimeout, seconds) => {
+      const f = await fixture({ configuredTimeout });
+      const sessionId = `dsh-${randomUUID()}`;
+      const client = await f.launch();
+      const started = Date.now();
+      await client.prompt(sessionId, '请按员工的等待设置，先问我要不要继续。');
+      const notice = () =>
+        f.notices.find((n) => n.method === 'session.user-question')?.params;
+      await expect.poll(notice, { timeout: 15000 }).toBeDefined();
+      const callId = f.askCall().data.callId;
+      expect(JSON.parse(f.askCall().data.arguments)).not.toHaveProperty(
+        'timeout',
+      );
+      expect(notice()).toMatchObject({
+        questionId: `${sessionId}:${callId}`,
+        nativeSessionId: sessionId,
+        callId,
+        durable: true,
+      });
+      if (seconds === undefined)
+        expect(notice()).not.toHaveProperty('deadlineAt');
+      else {
+        expect(Date.parse(notice().deadlineAt)).toBeGreaterThanOrEqual(
+          started + seconds * 1000 - 100,
+        );
+        expect(Date.parse(notice().deadlineAt)).toBeLessThanOrEqual(
+          Date.now() + seconds * 1000,
+        );
+      }
+      if (configuredTimeout === '2') {
+        await expect
+          .poll(async () => (await client.userQuestions(sessionId)).questions, {
+            timeout: 15000,
+          })
+          .toEqual([expect.objectContaining({ callId, state: 'continued' })]);
+        expect(
+          f.notices.filter((n) => n.method === 'session.user-questions').at(-1)
+            ?.params.questions.settled,
+        ).toEqual([]);
+      } else {
+        const input = {
+          inputId: randomUUID(),
+          turnId: `${sessionId}:turn:1`,
+          kind: 'ask_user',
+        };
+        const text =
+          'allrice:user-question:v1:' +
+          JSON.stringify({
+            questionId: `${sessionId}:${callId}`,
+            answers: [{ id: 'go', selected: ['继续'] }],
+          });
+        await expect
+          .poll(() => client.steer(sessionId, text, input), { timeout: 15000 })
+          .toMatchObject({
+            status: 'adopted',
+            checkpoint: 'question_resolved',
+          });
+        expect(
+          await client.questionReply({
+            sessionId,
+            callId,
+            answers: [{ id: 'go', selected: ['继续'] }],
+          }),
+        ).toEqual({ queued: false });
+      }
+    },
+    60000,
+  );
+
+  it('refuses to initialize when the configured optional ask tool failed validation', async () => {
+    const f = await fixture({
+      timeout: 1,
+      configuredTimeout: 'not-an-integer',
+    });
+    await expect(f.launch()).rejects.toThrow();
+    expect(f.requests).toEqual([]);
+  }, 30000);
   it('keeps an answer refused during detach retryable through DSH recovery and answer()', async () => {
     const f = await fixture({ timeout: -1 });
     const sessionId = `synthetic-detach-${randomUUID()}`;
@@ -427,8 +516,29 @@ describe('MET-210 timed questions on the AllRice host', () => {
     expect(f.events().some((e) => e.type === 'tool/result')).toBe(false);
 
     client = await f.launch();
+    const beforeRecovery = f.notices.length;
     await client.resume(sessionId);
     const state = await client.userQuestions(sessionId);
+    // DSH repairs the journal without broadcasting the synthetic result.
+    // ensureRoot must publish its public projection even in that case.
+    expect(
+      f.notices
+        .slice(beforeRecovery)
+        .filter(
+          (n) =>
+            n.method === 'session.event' &&
+            n.params.event.type === 'tool/result' &&
+            n.params.event.data.error?.code === 'TOOL_OUTCOME_UNKNOWN',
+        ),
+    ).toEqual([]);
+    expect(
+      f.notices.filter((n) => n.method === 'session.user-questions').at(-1)
+        ?.params.questions.active,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ callId: detach.callId, state: 'continued' }),
+      ]),
+    );
     expect(state.questions).toEqual([
       expect.objectContaining({ callId: detach.callId, state: 'continued' }),
     ]);
@@ -533,6 +643,22 @@ describe('MET-210 timed questions on the AllRice host', () => {
     const callId = f.askCall().data.callId;
     // The model continued after the pending result.
     expect(
+      f.notices.find((n) => n.method === 'session.user-question')?.params,
+    ).toMatchObject({
+      questionId: `${sessionId}:${callId}`,
+      callId,
+      durable: true,
+      nativeSessionId: sessionId,
+    });
+    expect(
+      f.notices.filter((n) => n.method === 'session.user-questions').at(-1)
+        ?.params.questions.active,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ callId, state: 'continued' }),
+      ]),
+    );
+    expect(
       f.requests.some((text) =>
         text.includes('No answer batch arrived before the timeout'),
       ),
@@ -550,6 +676,20 @@ describe('MET-210 timed questions on the AllRice host', () => {
     await expect
       .poll(() => replyText(f.requests, callId).length, { timeout: 15000 })
       .toBeGreaterThan(0);
+    await expect
+      .poll(
+        () =>
+          f.notices.filter((n) => n.method === 'session.user-questions').at(-1)
+            ?.params.questions.settled,
+      )
+      .toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            callId,
+            answers: [{ id: 'go', selected: ['继续'] }],
+          }),
+        ]),
+      );
   }, 60000);
 
   it('refuses to detach without a pending question and rejects an answer outside the options', async () => {

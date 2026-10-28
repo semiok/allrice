@@ -247,6 +247,7 @@ export class DshRuntimePool {
   private readonly leases = new Map<string, number>();
   private readonly idleCloses = new Map<string, Promise<void>>();
   private readonly idleCloseMs: number;
+  private warnedQuestionReleaseDisabled = false;
   private idleTimer: ReturnType<typeof setInterval> | undefined;
   private idleSweep: Promise<void> | undefined;
   private idleCloseGate: () => boolean = () => true;
@@ -812,8 +813,22 @@ export class DshRuntimePool {
       input.input.executionEnvironment.ALLRICE_QUESTION_RELEASE_MS === '0'
         ? 0
         : this.idleCloseMs;
+    if (
+      input.input.nativeQuestionMode === 'timed' &&
+      this.idleCloseMs === 0 &&
+      !this.warnedQuestionReleaseDisabled
+    ) {
+      this.warnedQuestionReleaseDisabled = true;
+      console.warn(
+        '[AllRice:question-release-disabled] timed questions: idle close is disabled; blocking questions keep their Run until answered or stopped',
+      );
+    }
     const fingerprintInput = {
-      questionWait: { timeout: questionTimeout, releaseMs: questionReleaseMs },
+      questionWait: {
+        mode: input.input.nativeQuestionMode ?? 'legacy',
+        timeout: questionTimeout,
+        releaseMs: questionReleaseMs,
+      },
       ...(nativeIdentity ? { nativeArtifact: nativeIdentity } : {}),
       ...(input.nativePin ? { nativeSessionBinding: input.nativePin } : {}),
       snapshot: input.snapshot,
@@ -956,6 +971,7 @@ export class DshRuntimePool {
         nativeIdentity?.version ?? DSH_DISTRIBUTION_CURRENT_VERSION,
       DSH_MAX_OUTPUT_TOKENS: String(maxTokens ?? 16_000),
       ALLRICE_QUESTION_RELEASE_MS: String(questionReleaseMs),
+      ALLRICE_ASK_USER_MODE: input.input.nativeQuestionMode ?? 'legacy',
       ...(questionWait.mode === 'default'
         ? {}
         : { ALLRICE_ASK_USER_TIMEOUT: String(questionTimeout) }),

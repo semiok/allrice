@@ -1926,6 +1926,19 @@ export class DshHarnessAdapter implements HarnessAdapter {
         if (view) await input.onNative(view);
         return;
       }
+      if (notification.method === 'session.user-questions') {
+        await input.onNative({
+          type: 'native.event',
+          presentation: 'context',
+          status: 'completed',
+          label: '问题状态已更新',
+          sourceEventType: 'session/user-questions',
+          sourceEventId: `dsh:questions:${notification.params.sessionId}:${notification.params.sequence}`,
+          sourceOccurredAt: new Date().toISOString(),
+          sourcePayload: notification.params,
+        });
+        return;
+      }
       if (notification.method === 'session.user-question') {
         const questions = Array.isArray(notification.params.questions)
           ? notification.params.questions
@@ -1992,7 +2005,16 @@ export class DshHarnessAdapter implements HarnessAdapter {
           sourceEventType: 'session/user-question',
           sourceOccurredAt: new Date().toISOString(),
           sourcePayload: normalized.success
-            ? normalized.data
+            ? {
+                ...normalized.data,
+                ...(notification.params.durable === true
+                  ? {
+                      durable: true,
+                      callId: notification.params.callId,
+                      nativeSessionId: notification.params.nativeSessionId,
+                    }
+                  : {}),
+              }
             : { questionId, questionCount: questions.length },
         });
         if (input.questionWait && questionId && normalized.success) {

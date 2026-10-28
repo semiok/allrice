@@ -304,6 +304,7 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 
 ### allrice-durable-native-question-wait-v1
 
+- MET-210 PR4（2026-10-28 主会话草稿任务）：平台 settings 中的 `native_question_mode` 默认 legacy；timed 直接配置 `dsh-tool-ask-user` 的 mode/timeout，默认偏好省略 timeout 跟随 DSH。`attachWait` 和 `ASK_TIMED_OUT` 复用 PR3 回答方，题 ID 使用原生 Session + callId。`sessionProjections.stateOf(..., 'userQuestions')` 在原生事件和 ensureRoot 后单向投影到 PG；不写第二份折叠器。DSH settled 只有 callId/answers，题正文保留自先前原生 active 快照；source_run_id 保留首次出现的 Run，停止只撤销该 Run 的题。closed_at 仅是停止/开关回拨的授权门卫，不改原生状态。平台切换和有效偏好进宿主指纹。旧助手/维护/Workflow 程序题沿用 PR3 边界；生产 detach、迟到回答路由仍待 PR5/PR6。迁移 0226 为加法式；部署后旧版本不认识迁移，按部署工具门禁禁止直接回滚，配置回拨只撤权、不回退 schema。守护：native-questions.integration、runtime-pool、allrice-question-detach-native；MET-225 拟修改“问题卡等待时长”和“问题卡旧实现”。
 - ID：`allrice-durable-native-question-wait-v1`；归属 MET-153；**保留**。
 - Allrice：[allrice-dsh-waits.mjs](../../apps/worker/dsh/allrice-dsh-waits.mjs)、[allrice-dsh-inputs.mjs](../../apps/worker/dsh/allrice-dsh-inputs.mjs)。负责静止提问检查点、确切答案采纳、同 Run 续接和派发未知不重放。
 - 上游：[rc.3 Session 持久化][persistence]提供历史格式迁移和恢复机制，不承担 PostgreSQL 租约/问题授权。[v0 迁移校验][v0-validation]拒绝未知历史事件，单纯向当前词表注册私有事件不能解决这个迁移问题。
