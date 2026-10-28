@@ -587,7 +587,7 @@ suite(
       const rows =
         await f.db`select c.conrelid::regclass::text relation,c.confrelid::regclass::text target
         from pg_constraint c where c.connamespace=(select oid from pg_namespace where nspname=current_schema()) and c.contype='f' and
-        ((c.conrelid in ('allrice_platform_repository_review_subjects'::regclass,'allrice_platform_repository_reviews'::regclass) and c.conname like '%reviewer_run_id_fkey')
+        ((c.conrelid in ('allrice_platform_repository_review_subjects'::regclass,'allrice_platform_repository_reviews'::regclass) and c.conkey=array[(select attnum from pg_attribute where attrelid=c.conrelid and attname='reviewer_run_id')])
           or (c.conrelid in ('allrice_development_verifiers'::regclass,'allrice_development_reviews'::regclass) and c.confrelid='allrice_assistant_instances'::regclass))`;
       const review = rows.filter((r) =>
         r.relation.includes('platform_repository'),
