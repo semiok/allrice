@@ -1709,9 +1709,10 @@ suite(
         });
         const consumer = reviewLockConnection(
           f.db,
-          async ({ sql, execute, pid }) => {
-            if (sql.includes('allrice_jobs') && sql.includes('for '))
-              attempted.resolve(pid);
+          async ({ execute, pid }) => {
+            // Completion first meets the existing root-creation fence;
+            // completed proof first meets Job SHARE. Observe either real wait.
+            attempted.resolve(pid);
             return execute();
           },
         );
