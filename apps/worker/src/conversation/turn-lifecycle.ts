@@ -6,6 +6,7 @@ import {
   recordConversationTurn,
   rejectConversationSteer,
 } from '@allrice/database';
+import type { RuntimeNativeInputProof } from '@allrice/contracts';
 
 import type {
   HarnessAdapter,
@@ -30,6 +31,18 @@ function isQuestionDetaching(error: unknown): boolean {
     ((error as Error & { code?: string }).code === 'QUESTION_DETACHING' ||
       error.message === 'QUESTION_DETACHING')
   );
+}
+
+function isSessionQuestion(message: string, sessionId: string) {
+  try {
+    return (
+      JSON.parse(message.slice(message.indexOf('{'))).questionId?.startsWith(
+        `dsh-${sessionId}:`,
+      ) === true
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** One existing poller's operation barrier, not an input queue or a scheduler. */
@@ -293,8 +306,12 @@ export async function pollEmployeeConversationSteers(input: {
         });
         continue;
       }
+      const nativeAnswer =
+        command.inputKind === 'ask_user' &&
+        isSessionQuestion(command.message, input.ownership.sessionId);
+      let proof: RuntimeNativeInputProof | void;
       try {
-        const proof = await input.adapter.steer({
+        proof = await input.adapter.steer({
           threadId: input.threadId,
           turnId: input.turnId,
           message: command.message,
@@ -326,6 +343,18 @@ export async function pollEmployeeConversationSteers(input: {
           ...(proof ? { proof } : {}),
         });
       } catch (error) {
+        if (
+          nativeAnswer &&
+          error instanceof Error &&
+          /INPUT_TURN_CHANGED|QUESTION_ADOPTION_PENDING/.test(error.message)
+        ) {
+          await deferConversationSteer({
+            commandId: command.id,
+            workerId: input.ownership.workerId,
+            ...(proof ? { proof } : {}),
+          });
+          return;
+        }
         // Completion rejected this command before native insertion. Retain both
         // typed and legacy inputs in the existing durable defer/readmission path.
         if (

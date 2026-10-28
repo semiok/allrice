@@ -1591,6 +1591,140 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
     },
   );
 
+  it.each(['turn-ended', 'projection-lag', 'revoked-while-starting'] as const)(
+    'PR5 real input and Worker poller preserve the %s boundary',
+    async (boundary) => {
+      const { pollEmployeeConversationSteers } = await import(
+        new URL(
+          '../../../apps/worker/src/conversation/turn-lifecycle.ts',
+          import.meta.url,
+        ).href
+      );
+      const f = await createExperienceFixture(isolated.db);
+      await updateNativeQuestionMode(f.reviewer, 'timed');
+      const turn = await startTurn(f, '先问我采用哪项，再继续处理。');
+      const q = question('late-boundary');
+      await sendView(turn, 1, [q]);
+      const ownership = {
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        sessionId: f.session.id,
+        runId: turn.runId,
+        workerId: turn.workerId,
+      };
+      await acquireConversationRuntime({
+        ...ownership,
+        ownerId: f.user,
+        configChecksum: `sha256:${'a'.repeat(64)}`,
+        compactThresholdTokens: 10000,
+      });
+      await bindConversationThread({
+        ...ownership,
+        threadId: turn.nativeSessionId,
+      });
+      const binding =
+        boundary !== 'revoked-while-starting'
+          ? await recordConversationTurn({
+              ...ownership,
+              threadId: turn.nativeSessionId,
+              turnId: `${turn.nativeSessionId}:turn:2`,
+            })
+          : null;
+      const inputId = randomUUID();
+      const questionId = `${turn.nativeSessionId}:${q.callId}`;
+      const answers = [{ id: 'priority', selected: [] }];
+      const sent = await sendChatMessage(f.owner, f.workspace, f.session.id, {
+        clientMessageId: inputId,
+        text: '跳过本题',
+        userQuestionAnswer: { questionId, answers },
+      });
+      if (!binding) {
+        const ordinary = await sendChatMessage(
+          f.owner,
+          f.workspace,
+          f.session.id,
+          {
+            clientMessageId: randomUUID(),
+            text: '继续做不依赖它的工作。',
+            deliveryMode: 'follow_up',
+          },
+        );
+        await updateNativeQuestionMode(f.reviewer, 'legacy');
+        await completeJob({ ...turn, result: { text: '本轮结束。' } });
+        expect(
+          await isolated.db`select c.state,r.state as run_state,j.status,f.state as followup_state
+          from allrice_conversation_commands c join allrice_runs r on r.id=c.followup_run_id
+          join allrice_jobs j on j.run_id=r.id join allrice_conversation_followups f on f.run_id=r.id
+          where r.id=${sent.run.id}`,
+        ).toEqual([
+          {
+            state: 'rejected',
+            run_state: 'canceled',
+            status: 'canceled',
+            followup_state: 'canceled',
+          },
+        ]);
+        expect((await claimNextJob(randomUUID(), 120000))?.id).toBe(
+          ordinary.run.job.id,
+        );
+        return;
+      }
+      const proof = {
+        status: 'adopted',
+        inputId,
+        messageId: questionId,
+        callId: q.callId,
+        sequence: 3,
+        turnId: binding.activeTurnId,
+        checkpoint: 'question_resolved',
+      };
+      const poll = () =>
+        pollEmployeeConversationSteers({
+          ownership,
+          generation: binding.generation,
+          threadId: turn.nativeSessionId,
+          turnId: binding.activeTurnId,
+          signal: new AbortController().signal,
+          polling: () => false,
+          drain: true,
+          adapter: {
+            capabilities: { steer: true },
+            steer: async () => {
+              if (boundary === 'turn-ended') throw Error('INPUT_TURN_CHANGED');
+              return proof;
+            },
+          },
+        });
+      await poll();
+      expect(
+        await isolated.db`select state,error_code,native_proof from allrice_conversation_commands where client_user_message_id=${inputId}`,
+      ).toEqual([
+        {
+          state: 'pending',
+          error_code: null,
+          native_proof: boundary === 'projection-lag' ? proof : null,
+        },
+      ]);
+      if (boundary === 'projection-lag') {
+        await sendView(turn, 4, [], [{ callId: q.callId, answers }]);
+        await poll();
+        expect(
+          await isolated.db`select state,native_proof from allrice_conversation_commands where client_user_message_id=${inputId}`,
+        ).toEqual([{ state: 'consumed', native_proof: proof }]);
+      }
+      await completeJob({ ...turn, result: { text: '本轮结束。' } });
+      if (boundary === 'turn-ended') {
+        expect((await claimNextJob(randomUUID(), 120000))?.id).toBe(
+          sent.run.job.id,
+        );
+        expect(
+          await isolated.db`select c.state,f.mode from allrice_conversation_commands c
+          join allrice_conversation_followups f on f.run_id=c.followup_run_id where c.client_user_message_id=${inputId}`,
+        ).toEqual([{ state: 'pending', mode: 'follow_up' }]);
+      }
+    },
+  );
+
   it('PR5 admits a late skipped answer into the durable FIFO and rejects stale native cards before writing messages', async () => {
     const f = await createExperienceFixture(isolated.db);
     await updateNativeQuestionMode(f.reviewer, 'timed');

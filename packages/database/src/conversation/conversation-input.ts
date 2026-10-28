@@ -12,6 +12,8 @@ import { refreshTaskClock } from '../task-clock.ts';
 import {
   lockNativeQuestionMode,
   nativeQuestionAnswerAdopted,
+  readNativeQuestion,
+  readNativeQuestionMode,
 } from '../native-questions.ts';
 
 const TurnIdSchema = z.string().trim().min(1).max(255);
@@ -226,8 +228,21 @@ export async function consumeConversationSteer(input: {
             proof,
             answer,
           ))
-        )
+        ) {
+          const q = await readNativeQuestion(
+            transaction,
+            live[0]!.session_id,
+            answer.questionId,
+          );
+          if (
+            q &&
+            !q.closed_at &&
+            (await readNativeQuestionMode(transaction)) === 'timed' &&
+            (q.state !== 'settled' || proof.sequence > q.sequence)
+          )
+            throw Error('QUESTION_ADOPTION_PENDING');
           throw new Error('QUESTION_ANSWER_NOT_ADOPTED');
+        }
       }
     }
     const captureAdoptedFeedback =
@@ -347,7 +362,10 @@ export async function cancelUnadoptedSteers(
   >`
     select f.run_id,f.assistant_message_id,c.error_code from allrice_conversation_followups f
     join allrice_conversation_commands c on c.followup_run_id=f.run_id
-    where f.session_id=${sessionId} and f.mode='steer_only' and f.state='queued' and c.state='rejected'
+    where f.session_id=${sessionId} and f.state='queued' and c.state='rejected'
+      and (f.mode='steer_only' or (c.input_kind='ask_user' and exists (
+        select 1 from allrice_messages m where m.id=f.user_message_id
+          and m.content->'interaction'->'answer'->>'questionId' like 'dsh-%')))
     for update of f`;
   for (const row of rows) {
     await tx`update allrice_conversation_followups set state='canceled' where run_id=${row.run_id}`;

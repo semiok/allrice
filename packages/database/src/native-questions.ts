@@ -223,8 +223,9 @@ export async function requireNativeQuestionAdmission(
     throw new NativeQuestionError();
 }
 
-/** The runtime lock serializes release and claims. Only still-answerable DSH
- * questions may leave an old steer window; the existing FIFO owns the next Run. */
+/** The runtime lock serializes release and claims. DSH still owns adoption:
+ * retain a proven reply awaiting projection and already-admitted FIFO duplicates
+ * for their Job's idempotent receipt; never reclassify either as an ordinary prompt. */
 export async function rerouteNativeQuestionSteers(
   tx: TransactionSql,
   sessionId: string,
@@ -239,7 +240,9 @@ export async function rerouteNativeQuestionSteers(
       and c.followup_run_id=f.run_id and c.input_kind='ask_user' and c.state in ('pending','claimed')
       and m.id=f.user_message_id and q.session_id=f.session_id and q.native_present
       and q.native_session_id||':'||q.call_id=m.content->'interaction'->'answer'->>'questionId'
-      and q.state in ('open','continued') and q.closed_at is null returning c.id`;
+      and (q.state in ('open','continued') or (q.state='settled' and
+        (f.mode='follow_up' or c.native_proof->>'status'='adopted')))
+      and q.closed_at is null returning c.id`;
   const ids = rows.map((row) => row.id);
   if (ids.length)
     await tx`update allrice_conversation_commands set state='pending',worker_id=null,claimed_at=null,
