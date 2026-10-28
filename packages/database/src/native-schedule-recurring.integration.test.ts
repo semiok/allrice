@@ -59,11 +59,22 @@ import {
 } from './automation-manual.ts';
 import {
   claimNextJob,
+  completeJob,
   startClaimedJob,
   failJob,
   maintainQueue,
 } from './execution/queue.ts';
-import type { FixedRecurringScheduleRule as RecurringScheduleRule } from '@allrice/contracts';
+import { nativeQuestionAnswerAdopted } from './native-questions.ts';
+import {
+  UserQuestionItemSchema,
+  type UserQuestionItem,
+  type FixedRecurringScheduleRule as RecurringScheduleRule,
+} from '@allrice/contracts';
+import { recurringConfirmationQuestion } from './employees/recurring-task-confirmation.ts';
+import {
+  createOnceTaskFromExecutionContext,
+  initializeNativeOncePartition,
+} from './native-schedule-once-product.ts';
 import { employeeChatUuid } from './employees/employee-chat-authority.ts';
 import {
   employeeManifest,
@@ -2482,6 +2493,7 @@ suite(
       r: Awaited<ReturnType<typeof leasedChat>>,
       label = '每隔 1 分钟提醒',
       checkpoint?: 'question_resolved' | 'question_replied',
+      items?: UserQuestionItem[],
     ) {
       const followup = await sendChatMessage(
         f.context,
@@ -2500,7 +2512,7 @@ suite(
       const turnId = `dsh-${r.input.context.runId}:turn:1`;
       const question = {
         questionId,
-        questions: [
+        questions: items ?? [
           {
             id: 'frequency',
             question: '一次还是循环？',
@@ -2514,7 +2526,7 @@ suite(
       };
       const answer = {
         questionId,
-        answers: [{ id: 'frequency', selected: [label] }],
+        answers: [{ id: question.questions[0]!.id, selected: [label] }],
       };
       const clientId = followup.userMessage.clientMessageId;
       await f.db`insert into allrice_run_events(organization_id,workspace_id,run_id,sequence,event_type,payload)
@@ -2576,6 +2588,231 @@ suite(
         }
       },
     );
+    it.each(['once', 'exact-recurring-card'] as const)(
+      'PR4 later consumer preserves the human source and exact authorization for %s',
+      async (kind) => {
+        const original = '1 分钟尖叫一次';
+        const source = await leasedChat(original, {
+          kind: 'every',
+          seconds: 60,
+        });
+        const items =
+          kind === 'exact-recurring-card'
+            ? recurringConfirmationQuestion(
+                original,
+                source.input.prompt,
+                source.input.rule,
+              ).questions.map(({ multi_select, ...item }) =>
+                UserQuestionItemSchema.parse({
+                  ...item,
+                  multiSelect: multi_select,
+                }),
+              )
+            : undefined;
+        const label = items?.[0]?.options?.[0]?.label ?? '1 分钟后提醒一次';
+        const choice = await confirmedFrequency(
+          source,
+          label,
+          'question_replied',
+          items,
+        );
+        await completeJob({
+          workerId: source.input.context.worker.id,
+          jobId: source.input.context.jobId,
+          leaseToken: source.input.worker.leaseToken,
+          result: { text: '等待原题回答' },
+        });
+        const workerId = randomUUID();
+        const job = await claimNextJob(workerId, 30000);
+        expect(job?.id).toBe(choice.followup.run.job.id);
+        const execution = await startClaimedJob(
+          workerId,
+          job!.id,
+          job!.lease!.token,
+        );
+        const input = {
+          ...source.input,
+          context: execution!.context,
+          userMessageId: choice.followup.userMessage.id,
+          callId: randomUUID(),
+          worker: { attempt: job!.attempt, leaseToken: job!.lease!.token },
+          delayMinutes: 1,
+        };
+        const create = (value = input) =>
+          kind === 'once'
+            ? createOnceTaskFromExecutionContext(value)
+            : createRecurringTaskFromExecutionContext(value);
+        const previousOnce = process.env.ALLRICE_NATIVE_ONCE_ENABLED;
+        const previousOnceReference = process.env.ALLRICE_NATIVE_ONCE_REFERENCE;
+        try {
+          if (kind === 'once') {
+            vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', '1');
+            const onceReference = {
+              artifactId: `sha256:${'a'.repeat(64)}`,
+              profileId: 'allrice-once-control-v1',
+              storageId: 'synthetic-sql-only',
+              stateRoot: root,
+            };
+            vi.stubEnv(
+              'ALLRICE_NATIVE_ONCE_REFERENCE',
+              JSON.stringify(onceReference),
+            );
+            await initializeNativeOncePartition(onceReference);
+          }
+          const before = await enrollmentCounts();
+          await expect(
+            create({
+              ...input,
+              worker: { ...input.worker, leaseToken: randomUUID() },
+            }),
+          ).rejects.toMatchObject({ code: 'authorization_denied' });
+
+          // Even a valid adopted card cannot promote a machine-produced source
+          // into a human request through a later, genuinely human consumer Run.
+          const [message] =
+            await f.db`select client_message_id from allrice_messages where id=${source.input.userMessageId}`;
+          const legacyId = randomUUID();
+          await f.db`insert into allrice_automations
+            (id,organization_id,workspace_id,owner_id,name,prompt,trigger_type,schedule,status,
+             conversation_mode,employee_assignment_id,session_id,clock_owner)
+            values(${legacyId},${f.organizationId},${f.workspaceId},${f.ownerId},'Legacy source fixture',
+              'Isolated source only','schedule',${f.db.json({ frequency: 'daily', time: '08:30', timezone: 'Asia/Shanghai' })},
+              'paused','reuse',${f.assignmentId},${input.sessionId},'legacy')`;
+          await f.db`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,status,scheduled_for)
+            values(${message!.client_message_id},${f.organizationId},${f.workspaceId},${legacyId},'queued',clock_timestamp())`;
+          const withInternal = await enrollmentCounts();
+          await expect(create()).rejects.toMatchObject({
+            code: 'authorization_denied',
+          });
+          expect(await enrollmentCounts()).toEqual(withInternal);
+          await f.db`delete from allrice_automation_runs where id=${message!.client_message_id}`;
+          await f.db`delete from allrice_automations where id=${legacyId}`;
+
+          if (kind === 'once') {
+            await expect(
+              create({ ...input, delayMinutes: 2 }),
+            ).rejects.toMatchObject({ code: 'time_mismatch' });
+          } else {
+            await expect(
+              create({ ...input, prompt: '未确认的另一项工作' }),
+            ).rejects.toMatchObject({ code: 'confirmation_required' });
+            await f.db`update allrice_native_questions set questions=${f.db.json([{ ...items![0], question: '被替换的确认正文' }])}
+              where session_id=${input.sessionId} and call_id=${choice.callId}`;
+            await expect(create()).rejects.toMatchObject({
+              code: 'confirmation_required',
+            });
+            await f.db`update allrice_native_questions set questions=${f.db.json(items!)}
+              where session_id=${input.sessionId} and call_id=${choice.callId}`;
+          }
+          expect(await enrollmentCounts()).toEqual(before);
+          const saved = await create();
+          expect(saved.prompt).toBe(
+            kind === 'once'
+              ? `${original}\n用户已确认的提醒频率：${label}`
+              : `${original}\n用户已确认的任务内容：${source.input.prompt}\n用户已确认的频率：每隔 1 分钟，在本聊天中执行`,
+          );
+          expect(await create()).toEqual(saved);
+          const after = await enrollmentCounts();
+          await expect(
+            create({ ...input, callId: randomUUID() }),
+          ).rejects.toMatchObject({
+            code: kind === 'once' ? 'intent_required' : 'confirmation_required',
+          });
+          expect(await enrollmentCounts()).toEqual(after);
+        } finally {
+          vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', previousOnce);
+          vi.stubEnv('ALLRICE_NATIVE_ONCE_REFERENCE', previousOnceReference);
+          await failJob({
+            workerId,
+            jobId: job!.id,
+            leaseToken: job!.lease!.token,
+            code: 'FIXTURE_DONE',
+            message: 'Isolated later native source',
+            retryable: false,
+          });
+        }
+      },
+    );
+    it('PR4 a later leased Run consumes the original native schedule answer only once', async () => {
+      const source = await leasedChat('1 分钟尖叫一次', {
+        kind: 'every',
+        seconds: 60,
+      });
+      const choice = await confirmedFrequency(
+        source,
+        undefined,
+        'question_replied',
+      );
+      await completeJob({
+        workerId: source.input.context.worker.id,
+        jobId: source.input.context.jobId,
+        leaseToken: source.input.worker.leaseToken,
+        result: { text: '已整理，等待原题的频率选择' },
+      });
+      const workerId = randomUUID();
+      const job = await claimNextJob(workerId, 30000);
+      expect(job?.id).toBe(choice.followup.run.job.id);
+      const execution = await startClaimedJob(
+        workerId,
+        job!.id,
+        job!.lease!.token,
+      );
+      expect(execution).not.toBeNull();
+      const input = {
+        ...source.input,
+        context: execution!.context,
+        userMessageId: choice.followup.userMessage.id,
+        callId: randomUUID(),
+        worker: { attempt: job!.attempt, leaseToken: job!.lease!.token },
+      };
+      try {
+        expect(input.context.runId).not.toBe(source.input.context.runId);
+        expect(
+          await f.db`select source_run_id from allrice_native_questions
+          where session_id=${input.sessionId} and call_id=${choice.callId}`,
+        ).toEqual([{ source_run_id: source.input.context.runId }]);
+        const [command] =
+          await f.db`select native_proof from allrice_conversation_commands where id=${choice.commandId} and state='consumed'`;
+        expect(
+          await f.db.begin((tx) =>
+            nativeQuestionAnswerAdopted(
+              tx,
+              input.sessionId,
+              choice.questionId,
+              command!.native_proof,
+              { questionId: choice.questionId, answers: choice.answers },
+            ),
+          ),
+        ).toBe(true);
+        // The consumed answer has the UI's selected-label text, not another
+        // copy of the original task. Both source and consumer use real leases.
+        const before = await enrollmentCounts();
+        const created = await createRecurringTaskFromExecutionContext(
+          input,
+        ).catch(async (error: unknown) => {
+          expect(await enrollmentCounts()).toEqual(before);
+          throw error;
+        });
+        expect(created.rule).toEqual({ kind: 'every', seconds: 60 });
+        const after = await enrollmentCounts();
+        await expect(
+          createRecurringTaskFromExecutionContext({
+            ...input,
+            callId: randomUUID(),
+          }),
+        ).rejects.toMatchObject({ code: 'confirmation_required' });
+        expect(await enrollmentCounts()).toEqual(after);
+      } finally {
+        await failJob({
+          workerId,
+          jobId: job!.id,
+          leaseToken: job!.lease!.token,
+          code: 'FIXTURE_DONE',
+          message: 'Isolated later-Run confirmation',
+          retryable: false,
+        });
+      }
+    });
     it('creates the reported recurring shorthand only after its same-Run typed confirmation, preserves both human sources, and compares the chosen rule', async () => {
       const r = await leasedChat('1 分钟尖叫一次', {
         kind: 'every',
