@@ -376,6 +376,10 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
     const f = await setup(
       true,
       async (request) => {
+        console.info(
+          'Synthetic child diagnostic',
+          JSON.stringify(request.messages),
+        );
         const userInputs = request.messages.filter((m) => m.role === 'user');
         if (JSON.stringify(userInputs).includes('PR1B_CHILD_TASK')) {
           childEntered.release();
