@@ -1,4 +1,7 @@
-import { requireNativeQuestionAdmission } from '../native-questions.ts';
+import {
+  lockNativeQuestionMode,
+  requireNativeQuestionAdmission,
+} from '../native-questions.ts';
 import { archivePrivateExperience } from '../experience-runtime.ts';
 import { nativeContextExecutionRetired } from '../conversation/native-context-retirement.ts';
 import type { ResourcePrincipal } from '../resource-principal.ts';
@@ -1440,12 +1443,8 @@ async function persistChatMessageInTransaction(
 ): Promise<PersistedChatMessage> {
   const { context, workspaceId, session, message, requestDigest, options } =
     input;
-  if (message.userQuestionAnswer)
-    await requireNativeQuestionAdmission(
-      transaction,
-      session.id,
-      message.userQuestionAnswer.questionId,
-    );
+  if (message.userQuestionAnswer?.questionId.startsWith('dsh-'))
+    await lockNativeQuestionMode(transaction);
   if (options.folderEventId) {
     const { assertFolderTriggerMessage } =
       await import('../folder-triggers.ts');
@@ -1573,6 +1572,12 @@ async function persistChatMessageInTransaction(
     message.text = ChatMessageContentSchema.parse(userMessage.content).text;
   }
   if (!userMessage) {
+    if (message.userQuestionAnswer)
+      await requireNativeQuestionAdmission(
+        transaction,
+        session.id,
+        message.userQuestionAnswer.questionId,
+      );
     if (message.changesetAction)
       message.text = (
         await prepareChangesetAction(
@@ -1978,6 +1983,9 @@ async function prepareChatRunInput(
         assistantMessageId: result.assistantMessage.id,
         clientUserMessageId: message.clientMessageId,
         message: conversationMessage,
+        ...(message.userQuestionAnswer?.questionId.startsWith('dsh-')
+          ? { nativeQuestionId: message.userQuestionAnswer.questionId }
+          : {}),
         requestedMode: message.deliveryMode,
         ...(message.expectedTurnId
           ? { expectedTurnId: message.expectedTurnId }

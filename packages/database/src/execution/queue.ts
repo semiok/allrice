@@ -3,6 +3,7 @@ import {
   closeNativeRunQuestions,
   isNativeQuestionProjection,
   lockNativeQuestionMode,
+  requireNativeQuestionAdmission,
 } from '../native-questions.ts';
 import {
   employeeAccessTransaction,
@@ -415,6 +416,7 @@ type EnqueueOptions = {
     assistantMessageId: string;
     clientUserMessageId: string;
     message: string;
+    nativeQuestionId?: string;
     requestedMode: 'auto' | 'steer' | 'follow_up';
     expectedTurnId?: string;
     expectedGeneration?: number;
@@ -994,6 +996,8 @@ async function enqueueRunInTransaction(
     instanceIdentity,
   } = parsed;
   let { availableAt, timeoutAt } = parsed;
+  if (options.conversationDelivery?.nativeQuestionId)
+    await lockNativeQuestionMode(transaction);
   if (
     admission.kind === 'maintenance_repair' ||
     admission.kind === 'maintenance_repository'
@@ -1106,6 +1110,12 @@ async function enqueueRunInTransaction(
     };
   }
 
+  if (options.conversationDelivery?.nativeQuestionId)
+    await requireNativeQuestionAdmission(
+      transaction,
+      options.conversationDelivery.sessionId,
+      options.conversationDelivery.nativeQuestionId,
+    );
   // Folder event authority takes user SHARE. Acquire the final user lock
   // before that branch so concurrent events cannot both upgrade SHARE.
   if (options.employeeBinding?.executionSnapshot.instance) {
@@ -1264,6 +1274,7 @@ async function enqueueRunInTransaction(
     `;
     const runtime = runtimeRows[0];
     if (
+      !options.conversationDelivery.nativeQuestionId &&
       options.conversationDelivery.requestedMode === 'steer' &&
       (runtime?.state !== 'running' ||
         !runtime.active_run_id ||
@@ -1297,12 +1308,13 @@ async function enqueueRunInTransaction(
       const exactTurn =
         runtime?.state === 'running' &&
         !options.conversationDelivery.hasAttachments &&
-        options.conversationDelivery.requestedMode !== 'follow_up' &&
         runtime.active_turn_id !== null &&
-        options.conversationDelivery.expectedTurnId ===
-          runtime.active_turn_id &&
-        options.conversationDelivery.expectedGeneration ===
-          runtime.thread_generation;
+        (options.conversationDelivery.nativeQuestionId ||
+          (options.conversationDelivery.requestedMode !== 'follow_up' &&
+            options.conversationDelivery.expectedTurnId ===
+              runtime.active_turn_id &&
+            options.conversationDelivery.expectedGeneration ===
+              runtime.thread_generation));
       delivery = exactTurn ? 'steer_pending' : 'follow_up';
       expectedTurnId = exactTurn ? runtime!.active_turn_id : null;
       expectedGeneration = exactTurn ? runtime!.thread_generation : null;
@@ -1502,7 +1514,10 @@ async function enqueueRunInTransaction(
         ${options.conversationDelivery.sessionId},${ownerId},${review.artifactId},${review.checksum},${review.kind},
         ${review.kind === 'version_feedback' ? review.feedbackId : null},${run.id})`;
   }
-  if (options.conversationDelivery && delivery !== 'immediate') {
+  if (
+    options.conversationDelivery &&
+    (delivery !== 'immediate' || options.conversationDelivery.nativeQuestionId)
+  ) {
     await transaction`
       insert into allrice_conversation_followups (
         run_id, organization_id, workspace_id, session_id, owner_id,
@@ -1519,9 +1534,10 @@ async function enqueueRunInTransaction(
       )
     `;
     if (
-      delivery === 'steer_pending' &&
-      expectedTurnId !== null &&
-      expectedGeneration !== null
+      options.conversationDelivery.nativeQuestionId ||
+      (delivery === 'steer_pending' &&
+        expectedTurnId !== null &&
+        expectedGeneration !== null)
     ) {
       const answersQuestion = options.conversationDelivery.message.startsWith(
         'allrice:user-question:v1:',

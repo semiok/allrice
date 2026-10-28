@@ -202,9 +202,8 @@ export class NativeQuestionError extends Error {
   }
 }
 
-/** Admission fence only: routing a live/continued answer is PR5. Lock the same
- * setting as rollback before persisting input, so an old card cannot become a
- * normal prompt when the platform has returned to legacy. */
+/** Admission only; DSH owns the question state. An old native card must never
+ * become a normal prompt, including after platform rollback or in another Session. */
 export async function requireNativeQuestionAdmission(
   tx: TransactionSql,
   sessionId: string,
@@ -215,8 +214,38 @@ export async function requireNativeQuestionAdmission(
   if (!questionId.startsWith('dsh-')) return;
   await lockNativeQuestionMode(tx);
   const row = await readNativeQuestion(tx, sessionId, questionId);
-  if (!row || row.closed_at || (await readNativeQuestionMode(tx)) !== 'timed')
+  if (
+    !row ||
+    row.closed_at ||
+    !['open', 'continued'].includes(row.state) ||
+    (await readNativeQuestionMode(tx)) !== 'timed'
+  )
     throw new NativeQuestionError();
+}
+
+/** The runtime lock serializes release and claims. Only still-answerable DSH
+ * questions may leave an old steer window; the existing FIFO owns the next Run. */
+export async function rerouteNativeQuestionSteers(
+  tx: TransactionSql,
+  sessionId: string,
+) {
+  if ((await readNativeQuestionMode(tx)) !== 'timed') return [];
+  const rows = await tx<
+    { id: string }[]
+  >`update allrice_conversation_followups f
+    set mode='follow_up' from allrice_conversation_commands c,
+      allrice_messages m,allrice_native_questions q
+    where f.session_id=${sessionId} and f.mode='steer_only' and f.state='queued'
+      and c.followup_run_id=f.run_id and c.input_kind='ask_user' and c.state in ('pending','claimed')
+      and m.id=f.user_message_id and q.session_id=f.session_id and q.native_present
+      and q.native_session_id||':'||q.call_id=m.content->'interaction'->'answer'->>'questionId'
+      and q.state in ('open','continued') and q.closed_at is null returning c.id`;
+  const ids = rows.map((row) => row.id);
+  if (ids.length)
+    await tx`update allrice_conversation_commands set state='pending',worker_id=null,claimed_at=null,
+      expected_generation=null,expected_turn_id=null,error_code=null,next_attempt_at=now(),updated_at=now()
+      where id=any(${ids}::uuid[])`;
+  return ids;
 }
 
 /** Caller holds the mode fence plus tenant/owner and consumed-command authority. A native

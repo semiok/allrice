@@ -9,6 +9,10 @@ import type { TransactionSql } from 'postgres';
 
 import { getDatabase } from '../core/client.ts';
 import { refreshTaskClock } from '../task-clock.ts';
+import {
+  lockNativeQuestionMode,
+  nativeQuestionAnswerAdopted,
+} from '../native-questions.ts';
 
 const TurnIdSchema = z.string().trim().min(1).max(255);
 
@@ -168,6 +172,7 @@ export async function consumeConversationSteer(input: {
   };
   const sql = getDatabase();
   await sql.begin(async (transaction) => {
+    await lockNativeQuestionMode(transaction);
     const live =
       await transaction`select cr.session_id,cr.active_run_id,j.id as job_id from allrice_conversation_runtimes cr
       join allrice_conversation_commands c on c.session_id=cr.session_id
@@ -208,6 +213,22 @@ export async function consumeConversationSteer(input: {
         proof.turnId !== command.expected_turn_id
       )
         throw new Error('INPUT_ADOPTION_PROOF_REQUIRED');
+      if (command.input_kind === 'ask_user') {
+        const answer = JSON.parse(
+          command.message.slice('allrice:user-question:v1:'.length),
+        );
+        if (
+          answer.questionId?.startsWith('dsh-') &&
+          !(await nativeQuestionAnswerAdopted(
+            transaction,
+            live[0]!.session_id,
+            answer.questionId,
+            proof,
+            answer,
+          ))
+        )
+          throw new Error('QUESTION_ANSWER_NOT_ADOPTED');
+      }
     }
     const captureAdoptedFeedback =
       command.input_kind === 'steer_current' &&

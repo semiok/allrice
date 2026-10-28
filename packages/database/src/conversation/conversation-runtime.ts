@@ -8,6 +8,7 @@ import type postgres from 'postgres';
 import { z } from 'zod';
 import { releaseNextConversationFollowup } from './queued-messages.ts';
 import { cancelUnadoptedSteers } from './conversation-input.ts';
+import { rerouteNativeQuestionSteers } from '../native-questions.ts';
 
 import { getDatabase } from '../core/client.ts';
 import {
@@ -1117,6 +1118,10 @@ export async function releaseConversationRuntimeTransaction(
 ) {
   const values = ownedValues(input);
   await lockedOwnedRuntime(transaction, values);
+  const replies = await rerouteNativeQuestionSteers(
+    transaction,
+    values.sessionId,
+  );
   const rows = await transaction<ConversationRuntimeRow[]>`
       update allrice_conversation_runtimes
       set state = ${input.outcome}, active_run_id = null,
@@ -1133,6 +1138,7 @@ export async function releaseConversationRuntimeTransaction(
         and workspace_id = ${values.workspaceId}
         and session_id = ${values.sessionId}
         and state in ('pending', 'claimed')
+        and not (id=any(${replies}::uuid[]))
     `;
   await cancelUnadoptedSteers(transaction, values.sessionId);
   await releaseNextConversationFollowup(transaction, values.sessionId);

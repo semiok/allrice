@@ -27,6 +27,10 @@ import {
   recordConversationTurn,
 } from './conversation/conversation-runtime.ts';
 import {
+  claimConversationSteer,
+  deferConversationSteer,
+} from './conversation/conversation-input.ts';
+import {
   closeNativeRunQuestions,
   nativeQuestionAnswerAdopted,
   requireNativeQuestionAdmission,
@@ -1471,6 +1475,180 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
       },
     ]);
     await completeJob({ ...turn, result: { text: '本轮结束。' } });
+  });
+
+  it.each(['open', 'continued'] as const)(
+    'PR5 reroutes a deferred %s answer after the real Run releases its lease',
+    async (state) => {
+      const f = await createExperienceFixture(isolated.db);
+      await updateNativeQuestionMode(f.reviewer, 'timed');
+      const turn = await startTurn(f, '需要决定的地方先问我，其他工作照常做。');
+      const current = { ...question('reply-after-release'), state };
+      await sendView(turn, 1, [current]);
+      const ownership = {
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        sessionId: f.session.id,
+        runId: turn.runId,
+        workerId: turn.workerId,
+      };
+      await acquireConversationRuntime({
+        ...ownership,
+        ownerId: f.owner.actor.id,
+        configChecksum: `sha256:${'a'.repeat(64)}`,
+        compactThresholdTokens: 10000,
+      });
+      await bindConversationThread({
+        ...ownership,
+        threadId: turn.nativeSessionId,
+      });
+      const binding = await recordConversationTurn({
+        ...ownership,
+        threadId: turn.nativeSessionId,
+        turnId: `${turn.nativeSessionId}:turn:2`,
+      });
+      const inputId = randomUUID();
+      const answer = {
+        questionId: `${turn.nativeSessionId}:${current.callId}`,
+        answers: [{ id: 'priority', selected: [] }],
+      };
+      const sent = await sendChatMessage(f.owner, f.workspace, f.session.id, {
+        text: '跳过本题',
+        clientMessageId: inputId,
+        deliveryMode: 'steer',
+        expectedTurnId: `${turn.nativeSessionId}:turn:1`,
+        expectedGeneration: 0,
+        userQuestionAnswer: answer,
+      });
+      expect(sent.delivery).toBe('steer_pending');
+      const command = await claimConversationSteer({
+        ...ownership,
+        generation: binding.generation,
+        turnId: binding.activeTurnId!,
+      });
+      expect(command).toMatchObject({
+        inputKind: 'ask_user',
+        clientUserMessageId: inputId,
+      });
+      await deferConversationSteer({
+        commandId: command!.id,
+        workerId: turn.workerId,
+      });
+      await completeJob({ ...turn, result: { text: '等你回答后继续。' } });
+      expect(
+        await isolated.db`select c.state,c.error_code,c.expected_turn_id,f.mode,f.state as followup_state
+      from allrice_conversation_commands c join allrice_conversation_followups f on f.run_id=c.followup_run_id
+      where c.id=${command!.id}`,
+      ).toEqual([
+        {
+          state: 'pending',
+          error_code: null,
+          expected_turn_id: null,
+          mode: 'follow_up',
+          followup_state: 'released',
+        },
+      ]);
+      const next = await claimNextJob(randomUUID(), 120000);
+      expect(next?.id).toBe(
+        (
+          await isolated.db`select id from allrice_jobs where run_id=${sent.fallbackRunId}`
+        )[0]?.id,
+      );
+      expect(await rows(f.session.id)).toMatchObject([
+        { state, closed_at: null },
+      ]);
+      const receipt = await getSessionRunTimings(
+        f.owner,
+        f.session.id,
+        isolated.db,
+        { inputs: true },
+      );
+      expect(receipt.inputs?.find((i) => i.inputId === inputId)).toMatchObject({
+        kind: 'ask_user',
+        status: 'pending',
+      });
+    },
+  );
+
+  it('PR5 admits a late skipped answer into the durable FIFO and rejects stale native cards before writing messages', async () => {
+    const f = await createExperienceFixture(isolated.db);
+    await updateNativeQuestionMode(f.reviewer, 'timed');
+    const first = await startTurn(f);
+    const q = { ...question('late-question'), state: 'continued' as const };
+    await sendView(first, 1, [q]);
+    await completeJob({ ...first, result: { text: '本轮已完成' } });
+    const ordinary = await sendChatMessage(f.owner, f.workspace, f.session.id, {
+      text: '先做其他工作。',
+      clientMessageId: randomUUID(),
+      deliveryMode: 'follow_up',
+    });
+    const inputId = randomUUID();
+    const answer = {
+      questionId: `${first.nativeSessionId}:${q.callId}`,
+      answers: [{ id: 'priority', selected: [] }],
+    };
+    const reply = await sendChatMessage(f.owner, f.workspace, f.session.id, {
+      text: '跳过本题',
+      clientMessageId: inputId,
+      userQuestionAnswer: answer,
+    });
+    expect(reply.delivery).toBe('follow_up');
+    expect(
+      await isolated.db`select c.input_kind,c.expected_turn_id,c.expected_generation,f.mode
+      from allrice_conversation_commands c join allrice_conversation_followups f on f.run_id=c.followup_run_id
+      where c.client_user_message_id=${inputId}`,
+    ).toEqual([
+      {
+        input_kind: 'ask_user',
+        expected_turn_id: null,
+        expected_generation: null,
+        mode: 'follow_up',
+      },
+    ]);
+    expect((await claimNextJob(randomUUID(), 120000))?.id).toBe(
+      ordinary.run.job.id,
+    );
+    const other = await createExperienceFixture(isolated.db);
+    for (const questionId of [
+      answer.questionId,
+      `dsh-${other.session.id}:cross-tenant`,
+      `${first.nativeSessionId}:missing`,
+    ]) {
+      const clientMessageId = randomUUID();
+      await expect(
+        sendChatMessage(
+          questionId === answer.questionId ? other.owner : f.owner,
+          questionId === answer.questionId ? other.workspace : f.workspace,
+          questionId === answer.questionId ? other.session.id : f.session.id,
+          {
+            text: '方案 A',
+            clientMessageId,
+            userQuestionAnswer: { ...answer, questionId },
+          },
+        ),
+      ).rejects.toMatchObject({ code: 'question_expired' });
+      expect(
+        await isolated.db`select id from allrice_messages where client_message_id=${clientMessageId}`,
+      ).toEqual([]);
+    }
+    // A settled card is rejected for a new input; an identical request remains
+    // the same durable receipt after ACK loss, never a second Run.
+    await isolated.db`update allrice_native_questions set state='settled',answers=${isolated.db.json(answer.answers)}
+      where session_id=${f.session.id}`;
+    await expect(
+      sendChatMessage(f.owner, f.workspace, f.session.id, {
+        text: '跳过本题',
+        clientMessageId: randomUUID(),
+        userQuestionAnswer: answer,
+      }),
+    ).rejects.toMatchObject({ code: 'question_expired' });
+    const repeated = await sendChatMessage(f.owner, f.workspace, f.session.id, {
+      text: '跳过本题',
+      clientMessageId: inputId,
+      userQuestionAnswer: answer,
+    });
+    expect(repeated.created).toBe(false);
+    expect(repeated.fallbackRunId).toBe(reply.fallbackRunId);
   });
 
   it('a removed revoked identity cannot regain authority or acquire a new source Run when it reappears', async () => {

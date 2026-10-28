@@ -24,6 +24,14 @@ export function isAssistantCompleting(error: unknown): boolean {
   );
 }
 
+function isQuestionDetaching(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    ((error as Error & { code?: string }).code === 'QUESTION_DETACHING' ||
+      error.message === 'QUESTION_DETACHING')
+  );
+}
+
 /** One existing poller's operation barrier, not an input queue or a scheduler. */
 export function createConversationInputDelivery(input: {
   threadId: string;
@@ -294,7 +302,10 @@ export async function pollEmployeeConversationSteers(input: {
           ...(command.inputKind ? { inputKind: command.inputKind } : {}),
         });
         if (command.inputKind && (!proof || proof.status !== 'adopted')) {
-          if (proof?.status === 'unknown' || (input.drain && !input.handoff))
+          if (
+            proof?.status === 'unknown' ||
+            (input.drain && !input.handoff && command.inputKind !== 'ask_user')
+          )
             await rejectConversationSteer({
               commandId: command.id,
               workerId: input.ownership.workerId,
@@ -317,7 +328,10 @@ export async function pollEmployeeConversationSteers(input: {
       } catch (error) {
         // Completion rejected this command before native insertion. Retain both
         // typed and legacy inputs in the existing durable defer/readmission path.
-        if (isAssistantCompleting(error)) {
+        if (
+          isAssistantCompleting(error) ||
+          (command.inputKind === 'ask_user' && isQuestionDetaching(error))
+        ) {
           await deferConversationSteer({
             commandId: command.id,
             workerId: input.ownership.workerId,
