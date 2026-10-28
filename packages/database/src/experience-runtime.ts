@@ -216,7 +216,7 @@ export async function prepareRunExperiences(
         who,
         pins,
         run.execution_snapshot?.personalSkills,
-        scope.runId,
+        nativeReplySourceRunId ?? scope.runId,
         run.execution_snapshot,
       );
       await assertExperienceWorker(tx, scope, worker);

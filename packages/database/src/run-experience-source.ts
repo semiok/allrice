@@ -1,3 +1,4 @@
+import { nativeQuestionReplySourceRunId } from './native-question-replies.ts';
 import { hasMemorySourceTool } from '@allrice/contracts';
 import {
   ExperienceReadPinsSchema,
@@ -29,10 +30,26 @@ export async function readRunExperienceSource(
       await tx`select experience_reads,execution_snapshot from allrice_employee_runs where run_id=${auth.scope.runId}`;
     if (!hasMemorySourceTool(run?.execution_snapshot))
       throw new ExperienceError('identity_denied');
+    const sourceRunId = await nativeQuestionReplySourceRunId(tx, auth.scope);
+    const [source] = sourceRunId
+      ? await tx`select experience_reads from allrice_employee_runs
+      where run_id=${sourceRunId} and session_id=${auth.scope.sessionId}
+        and organization_id=${auth.scope.organizationId} and workspace_id=${auth.scope.workspaceId}
+        and owner_id=${auth.scope.ownerId}`
+      : [];
+    const sourcePins = ExperienceReadPinsSchema.parse(
+      source?.experience_reads ?? [],
+    );
     const pin = ExperienceReadPinsSchema.parse(run!.experience_reads).find(
       (p) =>
         `experience:${runtimePolicyDigest({ runId: auth.scope.runId, pin: p })}` ===
-        handle,
+          handle ||
+        (sourceRunId &&
+          sourcePins.some(
+            (s) => runtimePolicyDigest(s) === runtimePolicyDigest(p),
+          ) &&
+          `experience:${runtimePolicyDigest({ runId: sourceRunId, pin: p })}` ===
+            handle),
     );
     if (!pin) throw new ExperienceError('identity_denied');
     const current = await readPrivateExperience(

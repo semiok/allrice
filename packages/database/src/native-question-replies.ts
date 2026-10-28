@@ -1,10 +1,23 @@
 import {
+  EmployeeExecutionSnapshotSchema,
+  EmployeePromptSnapshotSchema,
+  HarnessExecutionSnapshotSchema,
+  DshNativeSkillSnapshotSchema,
+  FrozenEmployeeSkillBindingSchema,
   UserQuestionAnswerSubmissionSchema,
   matchUserQuestionAnswer,
   type ExecutionContext,
   type RuntimeNativeInputProof,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
+import type { TransactionSql } from 'postgres';
+import type { EnqueueOptions } from './execution/queue.ts';
+import type { ExperienceRunScope } from './experience-runtime.ts';
+import { readEmployeeRuntimeContent } from './employees/employee-runtime-content.ts';
+import {
+  assertPersonalSkillsReadable,
+  assertFrozenPersonalSkills,
+} from './employees/personal-skills.ts';
 import { runtimePolicyDigest } from './runtime-policy-digest.ts';
 import { lockNativeQuestionOwner } from './task-native-wait.ts';
 import {
@@ -46,6 +59,103 @@ async function currentQuestion(
   if (!q || q.closed_at || (await readNativeQuestionMode(tx)) !== 'timed')
     throw new NativeQuestionError();
   return q;
+}
+
+/** Called only after the ordinary current-configuration admission checks. Copy
+ * immutable execution inputs into the new Run; current ownership/policy, Job
+ * identity, lease and accounting are still issued by the normal queue. */
+export async function restoreNativeQuestionRunBinding(
+  tx: TransactionSql,
+  scope: Omit<ExperienceRunScope, 'runId'>,
+  questionId: string,
+  current: NonNullable<EnqueueOptions['employeeBinding']>,
+) {
+  const q = await readNativeQuestion(tx, scope.sessionId, questionId);
+  if (!q || q.closed_at || (await readNativeQuestionMode(tx)) !== 'timed')
+    throw new NativeQuestionError();
+  const [source] = await tx`select e.* from allrice_employee_runs e
+    where e.run_id=${q.source_run_id} and e.session_id=${scope.sessionId}
+      and e.organization_id=${scope.organizationId} and e.workspace_id=${scope.workspaceId} and e.owner_id=${scope.ownerId}`;
+  const snapshot = EmployeeExecutionSnapshotSchema.parse(
+    source?.execution_snapshot,
+  );
+  if (
+    snapshot.schemaVersion !== 2 ||
+    snapshot.workflowInvocation ||
+    source!.employee_assignment_id !== current.employeeAssignmentId ||
+    snapshot.employee.id !== current.executionSnapshot.employee.id ||
+    snapshot.instance?.id !== current.executionSnapshot.instance?.id
+  )
+    throw new NativeQuestionError();
+  const identity = {
+    actor: { type: 'user' as const, id: scope.ownerId },
+    organizationId: scope.organizationId,
+    workspaceId: scope.workspaceId,
+  };
+  if (snapshot.content)
+    await readEmployeeRuntimeContent(
+      identity,
+      snapshot.content,
+      tx,
+      undefined,
+      true,
+    );
+  const nativeSkills = DshNativeSkillSnapshotSchema.array().parse(
+    source!.native_skills,
+  );
+  if (snapshot.personalSkills) {
+    assertFrozenPersonalSkills(
+      snapshot.personalSkills,
+      nativeSkills,
+      snapshot.instance?.id,
+    );
+    await assertPersonalSkillsReadable(identity, snapshot.personalSkills, tx);
+  }
+  return {
+    ...current,
+    employeeVersionId: source!.employee_version_id as string,
+    providerSnapshot: HarnessExecutionSnapshotSchema.parse(
+      source!.provider_snapshot,
+    ),
+    nativeSkills,
+    skillBindings: FrozenEmployeeSkillBindingSchema.array().parse(
+      source!.skill_bindings,
+    ),
+    skillVersionIds: snapshot.capabilitySnapshot.bindings.skillVersionIds,
+    promptSnapshot: EmployeePromptSnapshotSchema.parse(source!.prompt_snapshot),
+    executionSnapshot: snapshot,
+  };
+}
+
+/** A historical handle is valid only through this admitted typed input's exact
+ * question and native binding. Callers independently hold current Run authority. */
+export async function nativeQuestionReplySourceRunId(
+  tx: TransactionSql,
+  scope: ExperienceRunScope,
+) {
+  const [row] =
+    await tx`select m.content->'interaction'->'answer' answer,c.message
+    from allrice_employee_runs e join allrice_messages m on m.id=e.user_message_id
+    join allrice_chat_input_requests i on i.user_message_id=m.id and i.kind='ask_user'
+    join allrice_conversation_commands c on c.followup_run_id=e.run_id and c.client_user_message_id=i.client_message_id
+      and c.input_kind='ask_user' and c.organization_id=e.organization_id and c.workspace_id=e.workspace_id and c.owner_id=e.owner_id
+    where e.run_id=${scope.runId} and e.session_id=${scope.sessionId} and c.session_id=e.session_id
+      and e.organization_id=${scope.organizationId} and e.workspace_id=${scope.workspaceId} and e.owner_id=${scope.ownerId}`;
+  if (!row?.answer?.questionId?.startsWith('dsh-')) return undefined;
+  const answer = UserQuestionAnswerSubmissionSchema.safeParse(row.answer);
+  if (
+    !answer.success ||
+    row.message !== `allrice:user-question:v1:${JSON.stringify(answer.data)}`
+  )
+    throw new NativeQuestionError();
+  const q = await readNativeQuestion(
+    tx,
+    scope.sessionId,
+    answer.data.questionId,
+  );
+  if (!q || q.closed_at || (await readNativeQuestionMode(tx)) !== 'timed')
+    throw new NativeQuestionError();
+  return q.source_run_id as string;
 }
 
 /** Read-only preparation after Job start, before ordinary content selection.

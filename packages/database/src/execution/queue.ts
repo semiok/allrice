@@ -381,7 +381,7 @@ function authorizeRun(context: RequestContext, row: RunRow) {
   if (!decision.allowed) throw new QueueError('not_found');
 }
 
-type EnqueueOptions = {
+export type EnqueueOptions = {
   repositoryMergeBinding?: RepositoryMergeBinding;
   repositoryBinding?: RepositoryActionBinding;
   repositoryReviewBinding?: RepositoryReviewBinding;
@@ -1218,6 +1218,27 @@ async function enqueueRunInTransaction(
       options.employeeBinding.sessionId,
       true,
     );
+  }
+
+  if (
+    options.conversationDelivery?.nativeQuestionId &&
+    options.employeeBinding
+  ) {
+    const { restoreNativeQuestionRunBinding } =
+      await import('../native-question-replies.ts');
+    options.employeeBinding = await restoreNativeQuestionRunBinding(
+      transaction,
+      {
+        organizationId: context.organizationId,
+        workspaceId,
+        ownerId,
+        sessionId: options.conversationDelivery.sessionId,
+      },
+      options.conversationDelivery.nativeQuestionId,
+      options.employeeBinding,
+    );
+    (submission.input as Record<string, unknown>).employeeVersionId =
+      options.employeeBinding.employeeVersionId;
   }
 
   let delivery: 'immediate' | 'follow_up' | 'steer_pending' = 'immediate';
