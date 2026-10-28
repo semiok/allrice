@@ -1281,7 +1281,6 @@ export async function executeEmployeeRun({
     }
     const independentDelivery =
       finalDeliveryMode === 'checked_native_v1' &&
-      !assistants &&
       adapter.kind === 'dsh' &&
       !selectedWorkflow &&
       !repositoryReviewTask &&
@@ -1290,7 +1289,7 @@ export async function executeEmployeeRun({
       (officeFirstDeliveryPolicy ||
         finalDeliveryMode === 'checked_native_v1') &&
       (finalDeliveryMode !== 'checked_native_v1' ||
-        (!assistants && !independentDelivery) ||
+        !independentDelivery ||
         !workbenchEnabled())
     )
       throw new HandlerError(

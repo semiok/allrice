@@ -1,6 +1,6 @@
 /** Real chat admission -> Worker -> DSH JSON-RPC -> PostgreSQL completion.
- * Only the model target/transport, installed-artifact approval, and (in explicitly
- * marked cases) the future eligibility switch are synthetic. No credentials.
+ * Only the model target/transport and installed-artifact approval are synthetic.
+ * Eligibility, frozen snapshots, native completion and commit guards are real.
  */
 import { randomUUID } from 'node:crypto';
 import {
@@ -14,9 +14,10 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import ExcelJS from 'exceljs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as DatabaseClient from '../../../../packages/database/src/core/client.ts';
-import * as Rollout from '../../../../packages/database/src/final-delivery-rollout.ts';
+import { updateWorkAutomation } from '../../../../packages/database/src/work-automation.ts';
 import {
   createRuntimeFixtureDatabase,
   runtimeFixtureStorage,
@@ -55,6 +56,7 @@ import { prepareExecutionIsolation } from '../../src/isolation.ts';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.ts';
 import { DshProtocolClient } from '../../src/harness/dsh-protocol-client.ts';
 import { normalizeHarnessRunEvent } from '../../src/harness/runtime-contract.ts';
+import { checkOfficeExport } from '../../src/office/quality.ts';
 import * as Router from '../../src/harness/router.ts';
 import * as NativeArtifact from '../../src/harness/dsh-native-artifact.ts';
 import {
@@ -71,7 +73,7 @@ const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
     : describe.skip;
-suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
+suite('MET-210 root Run delivery through real admission and Worker', () => {
   let fixture:
     Awaited<ReturnType<typeof createRuntimeFixtureDatabase>> | undefined;
   let model: Awaited<ReturnType<typeof p24Fixture>> | undefined;
@@ -91,8 +93,8 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
   }, 30000);
 
   async function setup(
-    checked: boolean,
     reply: Parameters<typeof p24Fixture>[0],
+    memberAssistants: true | null = null,
     nativeSubagents = false,
     progressWait = false,
   ) {
@@ -168,14 +170,6 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
     vi.spyOn(Router, 'getHarnessRouter').mockReturnValue(
       new Router.HarnessRouter([adapter]),
     );
-    // PR1c is intentionally NOT implemented: only this explicit test seam
-    // freezes eligibility before INSERT. No immutable snapshot is rewritten.
-    if (checked) {
-      const freeze = Rollout.freezeDeliveryPolicy;
-      vi.spyOn(Rollout, 'freezeDeliveryPolicy').mockImplementation(
-        (tx, input) => freeze(tx, { ...input, eligible: true }),
-      );
-    }
     const db = fixture.db;
     const identity = await createRunAuthorityFixture(db, {
       configure: false,
@@ -196,6 +190,12 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
       organizationId: identity.org,
       workspaceId: identity.workspace,
     }))!;
+    if (memberAssistants)
+      await updateWorkAutomation(context, identity.workspace, {
+        expectedRevision: 0,
+        capability: 'assistants',
+        enabled: true,
+      });
     await authorizeFixturePlatformAdministrator(db, identity.user);
     const connectionId = randomUUID(),
       catalogId = randomUUID();
@@ -351,27 +351,35 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
       .map((line) => JSON.parse(line));
   }
 
-  it('普通聊天程序题保持现有资格：真实 Worker 落库正文，不生成助手或伪造 checked proof', async () => {
+  it('从未开启助手的普通聊天也由根 Run 核对正文并提交真实 proof', async () => {
     const answer = '```js\nconst sum = (a, b) => a + b;\n```';
-    const f = await setup(false, async () => ({ text: answer }));
+    const f = await setup(async () => ({ text: answer }));
     const task = await prepare(
       f,
       '帮我完成这项任务：写一个返回两数之和的 JavaScript 函数。',
     );
-    expect(task.snapshot.finalDeliveryPolicy).toBeUndefined();
+    expect(task.snapshot.finalDeliveryPolicy?.mode).toBe('checked_native_v1');
     try {
       const result = await task.run();
-      expect(
-        readCheckedFinalDeliveryForExecution(task.workflowLease, result),
-      ).toEqual({ coverage: 'uncovered' });
-      await completeJob({ ...task.workflowLease, result });
+      const coverage = readCheckedFinalDeliveryForExecution(
+        task.workflowLease,
+        result,
+      );
+      expect(coverage.coverage).toBe('checked_native_v1');
+      if (coverage.coverage !== 'checked_native_v1')
+        throw Error('Ordinary chat lost checked proof');
+      await completeJob({
+        ...task.workflowLease,
+        result,
+        checkedDelivery: coverage.checkedDelivery,
+      });
       expect(await state(f, task.runId)).toMatchObject({
         status: 'succeeded',
         text: answer,
         successes: 1,
       });
       expect(
-        await f.db`select root_run_id from allrice_assistant_roots where root_run_id=${task.runId}`,
+        await f.db`select run_id from allrice_runtime_run_links where root_run_id=${task.runId}`,
       ).toHaveLength(0);
       expect(model!.requests).toHaveLength(1);
     } finally {
@@ -383,7 +391,6 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
     'checked 资格下真实原生进度等待沿持久暂停回执返回，checkpoint 阈值达到=%s',
     async (checkpointDue) => {
       const f = await setup(
-        true,
         async (_request, count) => {
           expect(count).toBeLessThanOrEqual(3);
           if (count === 1)
@@ -398,6 +405,7 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
             },
           };
         },
+        null,
         false,
         true,
       );
@@ -492,7 +500,7 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
   it.each(['missing-proof', 'forged-wait'] as const)(
     '真实 Worker 拒绝 %s：普通答复不能借缺 proof 或伪造等待绕过完成门禁',
     async (mode) => {
-      const f = await setup(true, async () => ({ text: '已完成目录说明。' }));
+      const f = await setup(async () => ({ text: '已完成目录说明。' }));
       const execute = adapter!.execute.bind(adapter);
       vi.spyOn(adapter!, 'execute').mockImplementation(async (input) => ({
         ...(await execute(input)),
@@ -525,7 +533,6 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
     let rootCalls = 0;
     const answer = '已汇总子智能体的实际结果。';
     const f = await setup(
-      true,
       async (request) => {
         const userInputs = request.messages.filter((m) => m.role === 'user');
         if (JSON.stringify(userInputs).includes('PR1B_CHILD_TASK')) {
@@ -547,6 +554,7 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
         if (rootCalls === 2) return { text: '子任务仍在执行。' };
         return { text: answer };
       },
+      null,
       true,
     );
     const task = await prepare(f, '启动子任务，结束后汇总，不需要文件。');
@@ -663,7 +671,7 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
     async (mode) => {
       const entered = gate(),
         release = gate();
-      const f = await setup(true, async (_request, count) => {
+      const f = await setup(async (_request, count) => {
         if (count === 2) {
           entered.release();
           await release.promise;
@@ -758,22 +766,26 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
   );
 
   it.each([
-    { mode: 'valid', history: false },
-    { mode: 'valid', history: true },
-    { mode: 'repair', history: true },
+    { mode: 'valid', history: false, memberAssistants: null },
+    { mode: 'valid', history: true, memberAssistants: true },
+    { mode: 'repair', history: true, memberAssistants: null },
+    { mode: 'repair', history: true, memberAssistants: true },
   ] as const)(
-    '合成资格下 $mode / 历史 $history：月报经根 wait 后落库同一 Run 的来源与精确版本',
-    async ({ mode, history }) => {
+    '真实资格 $mode / 旧偏好 $memberAssistants / 历史 $history：月报由根 wait 后落库来源与精确版本',
+    async ({ mode, history, memberAssistants }) => {
       let answer = '';
       const original = `[月报](/api/v1/files/${randomUUID()}/download)`;
-      const f = await setup(true, async (_request, count) => ({
-        text: count === 1 && mode === 'repair' ? original : answer,
-        usage: {
-          prompt_tokens: 2000,
-          completion_tokens: 10,
-          total_tokens: 2010,
-        },
-      }));
+      const f = await setup(
+        async (_request, count) => ({
+          text: count === 1 && mode === 'repair' ? original : answer,
+          usage: {
+            prompt_tokens: 2000,
+            completion_tokens: 10,
+            total_tokens: 2010,
+          },
+        }),
+        memberAssistants,
+      );
       // Admission checkpoints completed history, never the current user input.
       // Seed ordinary history before admission so its real frozen snapshot
       // contains a covered message; keep a first-turn case without a checkpoint.
@@ -1010,6 +1022,105 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
     45000,
   );
 
+  it.each([null, true] as const)(
+    '旧偏好 %s：真实 Worker 不用文字修正掩盖 Excel 缺失公式缓存',
+    async (memberAssistants) => {
+      let answer = '';
+      const f = await setup(async () => ({ text: answer }), memberAssistants);
+      const task = await prepare(
+        f,
+        '把 1 加 1 的结果写到 Excel，给我下载链接。',
+      );
+      const workbook = new ExcelJS.Workbook();
+      workbook.addWorksheet('合计').getCell('A1').value = { formula: '1+1' };
+      const bytes = Buffer.from(await workbook.xlsx.writeBuffer());
+      const receipt = await checkOfficeExport(bytes, 'xlsx', {
+        cloudQualityAllowed: false,
+      });
+      expect(receipt.savedValues).toMatchObject({
+        inspection: 'complete',
+        counts: { formulaCount: 1, missingCacheCount: 1 },
+      });
+      const artifact = await publishWorkbenchArtifact(
+        {
+          context: task.execution.context,
+          sessionId: f.chat.id,
+          callId: randomUUID(),
+          kind: 'document',
+          fileName: '合计.xlsx',
+          format: 'xlsx',
+          mediaType:
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          bytes,
+          trustedOfficeExport: true,
+          officeReceipt: receipt,
+        },
+        runtimeFixtureStorage(fixture!.db),
+        fixture!.db,
+      );
+      answer = `[合计](/api/v1/files/${artifact.object.id}/download)`;
+      try {
+        await expect(task.run()).rejects.toMatchObject({
+          code: 'FINAL_DELIVERY_RESPONSE_INVALID',
+          retryable: false,
+        });
+        expect(await state(f, task.runId)).toMatchObject({
+          status: 'running',
+          successes: 0,
+        });
+        expect(model!.requests).toHaveLength(1);
+        expect(
+          await f.db`select id from allrice_audit_events where action='artifact.office-quality' and resource_id=${artifact.id}`,
+        ).toHaveLength(1);
+      } finally {
+        await task.isolation.cleanup();
+      }
+    },
+    45000,
+  );
+
+  it.each([null, true] as const)(
+    '旧偏好 %s：真实 Worker proof 不能越过提交前失效的租约',
+    async (memberAssistants) => {
+      const f = await setup(
+        async () => ({ text: '本轮已解释数组排序。' }),
+        memberAssistants,
+      );
+      const task = await prepare(f, '解释数组排序，不需要文件。');
+      try {
+        const result = await task.run();
+        const coverage = readCheckedFinalDeliveryForExecution(
+          task.workflowLease,
+          result,
+        );
+        if (coverage.coverage !== 'checked_native_v1')
+          throw Error('Worker lost checked proof');
+        const [before] =
+          await f.db`select active_run_id,active_turn_id from allrice_conversation_runtimes where session_id=${f.chat.id}`;
+        expect(before!.active_turn_id).toBeTruthy();
+        await f.db`update allrice_jobs set lease_token=${randomUUID()} where id=${task.workflowLease.jobId}`;
+        await expect(
+          completeJob({
+            ...task.workflowLease,
+            result,
+            checkedDelivery: coverage.checkedDelivery,
+          }),
+        ).rejects.toMatchObject({ code: 'lease_lost' });
+        expect(await state(f, task.runId)).toMatchObject({
+          status: 'running',
+          successes: 0,
+        });
+        const [after] =
+          await f.db`select active_run_id,active_turn_id from allrice_conversation_runtimes where session_id=${f.chat.id}`;
+        expect(after).toEqual(before);
+        expect(model!.requests).toHaveLength(1);
+      } finally {
+        await task.isolation.cleanup();
+      }
+    },
+    45000,
+  );
+
   // Existing cancellation happens inside the repair model. These boundaries
   // instead stop an already-settled model, before proof or before terminal SQL.
   it.each([
@@ -1020,7 +1131,7 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
   ] as const)(
     '真实 Worker 在 %s 时按终态生命周期释放占有，不发布成功',
     async (mode) => {
-      const f = await setup(true, async () => ({
+      const f = await setup(async () => ({
         text: '排序会按比较函数排列数组。',
       }));
       const task = await prepare(f, '解释数组排序，不需要文件。');
@@ -1132,7 +1243,7 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
         release = gate();
       const wrong = `[月报](/api/v1/files/${randomUUID()}/download)`;
       let available = '';
-      const f = await setup(true, async (_request, count) => {
+      const f = await setup(async (_request, count) => {
         if (count === 2 && mode === 'cancel-repair') {
           entered.release();
           await release.promise;
