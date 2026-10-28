@@ -24,7 +24,10 @@ import {
 } from '../../../../packages/database/src/capabilities/capability-registry.ts';
 import * as ModelPool from '../../../../packages/database/src/providers/model-pool.ts';
 import { updateNativeQuestionMode } from '../../../../packages/database/src/native-questions.ts';
-import { claimNextJob } from '../../../../packages/database/src/execution/queue.ts';
+import {
+  claimNextJob,
+  maintainQueue,
+} from '../../../../packages/database/src/execution/queue.ts';
 import { executeEmployeeRun } from '../../src/jobs/employee-run.ts';
 import { runClaimedJob } from '../../src/job-runner.ts';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.ts';
@@ -36,6 +39,9 @@ import {
   DSH_DISTRIBUTION_CURRENT_VERSION,
 } from '../../src/harness/dsh-distribution.ts';
 import { p24Fixture } from '../p24/fixture.ts';
+import { experienceSkillFixture } from '../../../../packages/database/src/experience-skill.fixture.ts';
+import { managePersonalSkill } from '../../../../packages/database/src/employees/personal-skills.ts';
+import type { HarnessEvent } from '@allrice/contracts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -217,12 +223,21 @@ suite('PR5 native reply routing through the actual employee handler', () => {
           }),
     });
   }
-  async function execute(f: Setup, runId: string, state = 'succeeded') {
+  async function execute(
+    f: Setup,
+    runId: string,
+    state = 'succeeded',
+    hooks: {
+      onEvent?(event: HarnessEvent): Promise<void>;
+      crashAfterHandler?: boolean;
+    } = {},
+  ) {
     const workerId = randomUUID();
     const job = (await claimNextJob(workerId, 300000))!;
     expect(job.id).toBe(
       (await f.db`select id from allrice_jobs where run_id=${runId}`)[0]!.id,
     );
+    let crashed = false;
     await runClaimedJob(
       {
         workerId,
@@ -231,10 +246,28 @@ suite('PR5 native reply routing through the actual employee handler', () => {
         leaseMs: 300000,
         heartbeatMs: 1000,
         executionRoot: join(directory!, 'execution'),
-        stopping: () => false,
+        stopping: () => crashed,
         onAbortReady() {},
       },
-      executeEmployeeRun,
+      async (input) => {
+        const result = await executeEmployeeRun({
+          ...input,
+          onHarnessEvent: async (event) => {
+            await input.onHarnessEvent(event);
+            await hooks.onEvent?.(event);
+          },
+        });
+        if (hooks.crashAfterHandler) {
+          // Real command/Host result is committed; simulate process loss before
+          // runClaimedJob can call completeJob. Recover through maintainQueue.
+          await f.db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${job.id}`;
+          crashed = true;
+          throw Error(
+            'Synthetic crash after terminal command, before completeJob',
+          );
+        }
+        return result;
+      },
     );
     const [run] =
       await f.db`select r.state,r.result,r.error_code,j.last_error_code,j.last_error_message,j.status,j.lease_token from allrice_runs r
@@ -242,10 +275,287 @@ suite('PR5 native reply routing through the actual employee handler', () => {
     expect(run).toMatchObject({
       state,
       status: state,
-      lease_token: null,
+      lease_token: crashed ? job.lease!.token : null,
     });
     return run!;
   }
+  const ask = {
+    nativeTool: {
+      name: 'ask_user_question',
+      arguments: {
+        questions: [
+          {
+            id: 'choice',
+            question: '先做哪项？',
+            options: [{ label: 'A' }, { label: 'B' }],
+          },
+        ],
+        timeout: 1,
+      },
+    },
+  };
+  async function seedSkill(f: Setup) {
+    const [chat] =
+      await f.db`select employee_instance_id from allrice_chat_sessions where id=${f.chat.id}`;
+    const skill = experienceSkillFixture({
+      organizationId: f.identity.org,
+      ownerId: f.identity.user,
+      instanceId: chat!.employee_instance_id,
+    });
+    const pin = skill.pin;
+    await f.db.begin(async (tx) => {
+      await tx`insert into allrice_personal_skill_installations(id,organization_id,owner_id,name,state,current_version_id)
+        values(${pin.installationId},${pin.organizationId},${pin.ownerId},${skill.definition.name},'installed',${pin.versionId})`;
+      await tx`insert into allrice_personal_skill_versions(id,organization_id,owner_id,installation_id,version,source,original_text,definition,definition_checksum)
+        values(${pin.versionId},${pin.organizationId},${pin.ownerId},${pin.installationId},1,'{}',${skill.definition.content},${tx.json(skill.definition)},${pin.definitionChecksum})`;
+      await tx`insert into allrice_personal_skill_bindings(id,organization_id,workspace_id,owner_id,instance_id,installation_id,enabled,epoch)
+        values(${pin.bindingId},${pin.organizationId},${f.identity.workspace},${pin.ownerId},${pin.instanceId},${pin.installationId},true,1)`;
+    });
+    return skill;
+  }
+  it.each(['warm', 'cold', 'revoked'] as const)(
+    'PR5 preserves a real Run-specific Skill context for a %s native answer',
+    async (phase) => {
+      const f = await setup(async (_r, index) =>
+        index === 1 ? ask : { text: '已完成。' },
+      );
+      const skill = await seedSkill(f);
+      const source = await send(f, '需要决定的地方先问我，其他工作继续。');
+      await execute(f, source.run.id);
+      const [q] =
+        await f.db`select * from allrice_native_questions where session_id=${f.chat.id}`;
+      const [origin] =
+        await f.db`select content_generation_id,execution_snapshot from allrice_employee_runs where run_id=${source.run.id}`;
+      expect(origin!.execution_snapshot.personalSkills.skills).toHaveLength(1);
+      expect(q!.native_session_id).toBe(
+        `dsh-${f.chat.id}-${origin!.content_generation_id}-${source.run.id}`,
+      );
+      const reply = await send(f, '跳过本题', {
+        questionId: `${q!.native_session_id}:${q!.call_id}`,
+        answers: [{ id: 'choice', selected: [] }],
+      });
+      if (phase === 'cold') await adapter!.close();
+      if (phase === 'revoked')
+        await managePersonalSkill(f.context, {
+          operation: 'disable',
+          workspaceId: f.identity.workspace,
+          expectedRevision: 1,
+          instanceId: skill.pin.instanceId,
+          installationId: skill.pin.installationId,
+          requestId: randomUUID(),
+        });
+      const prompts = vi.spyOn(DshProtocolClient.prototype, 'prompt');
+      const nativeReply = vi.spyOn(
+        DshProtocolClient.prototype,
+        'typedQuestionReply',
+      );
+      const requests = model!.requests.length;
+      await execute(
+        f,
+        reply.run.id,
+        phase === 'revoked' ? 'failed' : 'succeeded',
+      );
+      expect(prompts).not.toHaveBeenCalled();
+      if (phase === 'revoked') {
+        expect(nativeReply).not.toHaveBeenCalled();
+        expect(model!.requests).toHaveLength(requests);
+        expect(
+          (
+            await f.db`select state from allrice_native_questions where session_id=${f.chat.id}`
+          )[0]!.state,
+        ).toBe('continued');
+      } else {
+        expect(nativeReply).toHaveBeenCalled();
+        expect(
+          (
+            await f.db`select thread_id from allrice_conversation_runtimes where session_id=${f.chat.id}`
+          )[0]!.thread_id,
+        ).toBe(q!.native_session_id);
+        expect(
+          (
+            await f.db`select content_generation_id from allrice_employee_runs where run_id=${reply.run.id}`
+          )[0]!.content_generation_id,
+        ).toBe(origin!.content_generation_id);
+        expect(
+          (
+            await f.db`select state,native_proof from allrice_conversation_commands where followup_run_id=${reply.run.id}`
+          )[0],
+        ).toMatchObject({
+          state: 'consumed',
+          native_proof: { messageId: `${q!.native_session_id}:${q!.call_id}` },
+        });
+      }
+    },
+    60000,
+  );
+  it.each(['consumed', 'rejected'] as const)(
+    'PR5 recovers the actual %s receipt Job after a crash before completeJob',
+    async (terminal) => {
+      const f = await setup(async (_r, index) =>
+        index === 1 ? ask : { text: '已完成。' },
+      );
+      const source = await send(f, '先问我需要决定的地方。');
+      await execute(f, source.run.id);
+      const [q] =
+        await f.db`select * from allrice_native_questions where session_id=${f.chat.id}`;
+      const answer = {
+        questionId: `${q!.native_session_id}:${q!.call_id}`,
+        answers: [{ id: 'choice', selected: [] as string[] }],
+      };
+      const first = await send(f, '跳过', answer);
+      const duplicate = await send(f, '另一客户端回答', {
+        ...answer,
+        answers: [
+          { id: 'choice', selected: terminal === 'rejected' ? ['B'] : [] },
+        ],
+      });
+      await execute(f, first.run.id);
+      await execute(f, duplicate.run.id, 'running', {
+        crashAfterHandler: true,
+      });
+      const [committed] =
+        await f.db`select state,native_proof,error_code,delivery_attempts from allrice_conversation_commands where followup_run_id=${duplicate.run.id}`;
+      expect(committed!.state).toBe(terminal);
+      const requests = model!.requests.length;
+      const nativeReply = vi.spyOn(
+        DshProtocolClient.prototype,
+        'typedQuestionReply',
+      );
+      const prompt = vi.spyOn(DshProtocolClient.prototype, 'prompt');
+      await adapter!.close();
+      expect((await maintainQueue()).recover_lease).toBe(1);
+      const receipt = await execute(f, duplicate.run.id);
+      expect(receipt.result.answer).toContain(
+        terminal === 'consumed' ? '已经回答过' : '没有被采用',
+      );
+      expect(Object.values(receipt.result.usage).every((n) => n === 0)).toBe(
+        true,
+      );
+      expect(nativeReply).not.toHaveBeenCalled();
+      expect(prompt).not.toHaveBeenCalled();
+      expect(model!.requests).toHaveLength(requests);
+      expect(
+        await f.db`select state,native_proof,error_code,delivery_attempts from allrice_conversation_commands where followup_run_id=${duplicate.run.id}`,
+      ).toEqual([committed]);
+      expect(
+        await f.db`select id from allrice_run_events where run_id=${duplicate.run.id} and payload->>'sourceEventType'='turn/start'`,
+      ).toHaveLength(0);
+    },
+    60000,
+  );
+  it.each(['same', 'different'] as const)(
+    'PR5 preserves the second %s digest input admitted in the live foreground window',
+    async (digest) => {
+      let questionReady!: () => void,
+        bothAdmitted!: () => void,
+        finishModel!: () => void;
+      const ready = new Promise<void>((r) => {
+        questionReady = r;
+      });
+      const admitted = new Promise<void>((r) => {
+        bothAdmitted = r;
+      });
+      const modelGate = new Promise<void>((r) => {
+        finishModel = r;
+      });
+      const f = await setup(async (_r, index) => {
+        if (index === 1)
+          return {
+            nativeTool: {
+              ...ask.nativeTool,
+              arguments: { ...ask.nativeTool.arguments, timeout: -1 },
+            },
+          };
+        await modelGate;
+        return { text: '已完成。' };
+      });
+      const steer = adapter!.steer.bind(adapter!);
+      let firstId: string | undefined;
+      vi.spyOn(adapter!, 'steer').mockImplementation(async (input) => {
+        await admitted;
+        if (input.clientUserMessageId !== firstId)
+          return {
+            status: 'pending',
+            inputId: input.clientUserMessageId!,
+            messageId: JSON.parse(
+              input.message.slice('allrice:user-question:v1:'.length),
+            ).questionId,
+          };
+        const proof = await steer(input);
+        finishModel();
+        return proof;
+      });
+      const source = await send(f, '阻塞提问，收到我的回答再继续。');
+      const running = execute(f, source.run.id, 'succeeded', {
+        onEvent: async (e) => {
+          if (
+            e.type === 'native.event' &&
+            e.sourceEventType === 'session/user-questions' &&
+            (e.sourcePayload as { questions?: { active?: unknown[] } })
+              ?.questions?.active?.length
+          )
+            questionReady();
+        },
+      });
+      try {
+        await ready;
+        const [q] =
+          await f.db`select * from allrice_native_questions where session_id=${f.chat.id}`;
+        expect(q!.state).toBe('open');
+        const answer = {
+          questionId: `${q!.native_session_id}:${q!.call_id}`,
+          answers: [{ id: 'choice', selected: [] as string[] }],
+        };
+        const first = await send(f, '跳过', answer);
+        const second = await send(f, '另一客户端', {
+          ...answer,
+          answers: [
+            { id: 'choice', selected: digest === 'different' ? ['B'] : [] },
+          ],
+        });
+        expect(first.delivery).toBe('steer_pending');
+        expect(second.delivery).toBe('steer_pending');
+        firstId = (
+          await f.db`select client_user_message_id from allrice_conversation_commands where followup_run_id=${first.fallbackRunId!}`
+        )[0]!.client_user_message_id;
+        bothAdmitted();
+        await running;
+        const secondRun = second.fallbackRunId!;
+        expect(
+          (
+            await f.db`select c.state,c.native_proof,f.mode,f.state followup_state from allrice_conversation_commands c join allrice_conversation_followups f on f.run_id=c.followup_run_id where c.followup_run_id=${secondRun}`
+          )[0],
+        ).toMatchObject({
+          state: 'pending',
+          mode: 'follow_up',
+          followup_state: 'released',
+        });
+        const requests = model!.requests.length;
+        const prompt = vi.spyOn(DshProtocolClient.prototype, 'prompt');
+        const receipt = await execute(f, secondRun);
+        expect(
+          (
+            await f.db`select state from allrice_conversation_commands where followup_run_id=${secondRun}`
+          )[0]!.state,
+        ).toBe(digest === 'same' ? 'consumed' : 'rejected');
+        expect(receipt.result.usageComplete).toBe(true);
+        expect(Object.values(receipt.result.usage).every((n) => n === 0)).toBe(
+          true,
+        );
+        expect(model!.requests).toHaveLength(requests);
+        expect(prompt).not.toHaveBeenCalled();
+        expect(
+          await f.db`select id from allrice_run_events where run_id=${secondRun} and payload->>'sourceEventType'='turn/start'`,
+        ).toHaveLength(0);
+      } finally {
+        bothAdmitted();
+        finishModel();
+        await running;
+      }
+    },
+    60000,
+  );
+
   it('keeps installed Workflow chat routing while a native answer resumes only its original ordinary DSH question', async () => {
     const f = await setup(async (_r, index) =>
       index === 1
