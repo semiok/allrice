@@ -109,17 +109,24 @@ suite('PR5 native reply routing through the actual employee handler', () => {
         return launch;
       },
     );
-    adapter = new DshHarnessAdapter({
-      runtimeRoot: join(directory, 'native'),
-      idleCloseMs: 0,
-      requestTimeoutMs: 15000,
-      credentialResolver: {
-        resolve: async () => ({ apiKey: 'synthetic-loopback-only' }),
-      },
-    });
-    vi.spyOn(Router, 'getHarnessRouter').mockReturnValue(
-      new Router.HarnessRouter([adapter]),
-    );
+    const makeAdapter = () =>
+      new DshHarnessAdapter({
+        runtimeRoot: join(directory!, 'native'),
+        idleCloseMs: 0,
+        requestTimeoutMs: 15000,
+        credentialResolver: {
+          resolve: async () => ({ apiKey: 'synthetic-loopback-only' }),
+        },
+      });
+    adapter = makeAdapter();
+    const router = vi
+      .spyOn(Router, 'getHarnessRouter')
+      .mockReturnValue(new Router.HarnessRouter([adapter]));
+    const restartHost = async () => {
+      await adapter!.close();
+      adapter = makeAdapter();
+      router.mockReturnValue(new Router.HarnessRouter([adapter]));
+    };
     const db = fixture.db;
     const identity = await createAssistantAuthorityFixture(db, {
       configure: false,
@@ -201,7 +208,7 @@ suite('PR5 native reply routing through the actual employee handler', () => {
       employeeAssignmentId: identity.assignment,
       title: 'PR1b synthetic Worker',
     });
-    return { db, identity, context, chat, artifactId };
+    return { db, identity, context, chat, artifactId, restartHost };
   }
   type Setup = Awaited<ReturnType<typeof setup>>;
   async function send(
@@ -334,7 +341,7 @@ suite('PR5 native reply routing through the actual employee handler', () => {
         questionId: `${q!.native_session_id}:${q!.call_id}`,
         answers: [{ id: 'choice', selected: [] }],
       });
-      if (phase === 'cold') await adapter!.close();
+      if (phase === 'cold') await f.restartHost();
       if (phase === 'revoked')
         await managePersonalSkill(f.context, {
           operation: 'disable',
@@ -359,6 +366,9 @@ suite('PR5 native reply routing through the actual employee handler', () => {
       if (phase === 'revoked') {
         expect(nativeReply).not.toHaveBeenCalled();
         expect(model!.requests).toHaveLength(requests);
+        expect(
+          await f.db`select state from allrice_conversation_commands where followup_run_id=${reply.run.id}`,
+        ).toEqual([{ state: 'rejected' }]);
         expect(
           (
             await f.db`select state from allrice_native_questions where session_id=${f.chat.id}`
@@ -422,7 +432,7 @@ suite('PR5 native reply routing through the actual employee handler', () => {
         'typedQuestionReply',
       );
       const prompt = vi.spyOn(DshProtocolClient.prototype, 'prompt');
-      await adapter!.close();
+      await f.restartHost();
       expect((await maintainQueue()).recover_lease).toBe(1);
       const receipt = await execute(f, duplicate.run.id);
       expect(receipt.result.answer).toContain(

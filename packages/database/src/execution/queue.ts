@@ -2049,6 +2049,16 @@ async function transitionTerminal(
   if (input.runStatus === 'canceled')
     await closeNativeRunQuestions(transaction, job.run_id);
   await refreshTaskClock(transaction, job.run_id);
+  // A private answer can fail its current authority checks before acquiring a
+  // runtime. Terminalize its own unadopted command even without runtime release.
+  if (input.runStatus !== 'succeeded')
+    await transaction`update allrice_conversation_commands c
+      set state='rejected',error_code=${input.code ?? 'INPUT_NOT_ADOPTED'},updated_at=now()
+      from allrice_conversation_followups f,allrice_messages m
+      where c.followup_run_id=${job.run_id} and c.input_kind='ask_user' and c.state in ('pending','claimed')
+        and c.organization_id=${job.organization_id} and c.workspace_id=${job.workspace_id} and c.owner_id=${job.owner_id}
+        and f.run_id=c.followup_run_id and m.id=f.user_message_id
+        and m.content->'interaction'->'answer'->>'questionId' like 'dsh-%'`;
   await transaction`
     update allrice_conversation_followups
     set state = ${input.runStatus === 'succeeded' ? 'consumed' : 'canceled'},
