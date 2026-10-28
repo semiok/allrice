@@ -437,10 +437,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
           params.rootRunId !== runDelivery.rootRunId
         )
           finalDeliveryUnavailable();
-        if (method === 'allrice/final-delivery-authorize') {
-          if (!awaitTurnOrigin) finalDeliveryUnavailable();
-          await awaitTurnOrigin!();
-        }
+        if (!awaitTurnOrigin) finalDeliveryUnavailable();
+        await awaitTurnOrigin!();
         executionSignal.throwIfAborted();
         const origin = await runDelivery!.readOrigin();
         if (!origin) finalDeliveryUnavailable();
@@ -852,6 +850,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     let answer = '';
     let waitingForUser: HarnessExecutionResult['waitingForUser'];
     let assistantFinished = false;
+    let completedUsage: AssistantFailureUsage | undefined;
     let interruptedUsage: AssistantFailureUsage | undefined;
     let assistantDiagnostics: AssistantFailureDiagnostics | undefined;
     const captureAssistantDiagnostics = async () => {
@@ -1067,6 +1066,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
             'DSH execution was interrupted',
             false,
           );
+        let joined: Record<string, unknown> | null = restoredFinal;
         const result = restoredFinal
           ? {
               answer: String(restoredFinal.answer ?? ''),
@@ -1096,9 +1096,26 @@ export class DshHarnessAdapter implements HarnessAdapter {
               subscription: snapshot.route === 'openai-codex',
               questionWait: !assistant ? input.questionWait : undefined,
               resume: callIndex === 0 ? input.questionWait?.resume : undefined,
+              settleDelivery: runDelivery
+                ? async () => {
+                    await deliveryNativeCall(() =>
+                      runtime.client.wait(threadId),
+                    );
+                    executionSignal.throwIfAborted();
+                    await input.runDelivery!.pauseInput();
+                    // candidate closes native ingress and waits once more.
+                    // Keep runOnce's real notifications/usage subscribed across
+                    // both waits, including any descendant-woken root turns.
+                    joined = await nativeDelivery('candidate', {
+                      sessionId: threadId,
+                    });
+                  }
+                : undefined,
               onFailureUsage: (receipt) => {
                 interruptedUsage = {
                   ...receipt,
+                  usageComplete: usageComplete && receipt.usageComplete,
+                  cacheUsageKnown: cacheUsageKnown && receipt.cacheUsageKnown,
                   usage: {
                     inputTokens: usage.inputTokens + receipt.usage.inputTokens,
                     cachedInputTokens:
@@ -1193,6 +1210,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         usage.outputTokens += result.usage.outputTokens;
         usageComplete &&= result.usageComplete;
         cacheUsageKnown &&= result.cacheUsageKnown;
+        completedUsage = { usage, usageComplete, cacheUsageKnown };
         waitingForUser = result.waitingForUser;
         if (waitingForUser) {
           executionSignal.throwIfAborted();
@@ -1225,7 +1243,6 @@ export class DshHarnessAdapter implements HarnessAdapter {
             : (runDelivery ?? input.finalDelivery);
           if (checkedAssistant && (!finalDelivery || !assistant?.finish))
             finalDeliveryUnavailable();
-          let joined: Record<string, unknown> | null = restoredFinal;
           if (assistant && !joined) {
             try {
               joined = await runtime.client.assistant(
@@ -1241,16 +1258,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
             }
           }
           if (runDelivery) {
-            await deliveryNativeCall(() => runtime.client.wait(threadId));
-            executionSignal.throwIfAborted();
-            await input.runDelivery!.pauseInput();
-            try {
-              joined = await nativeDelivery('candidate', {
-                sessionId: threadId,
-              });
-            } catch {
-              finalDeliveryUnavailable();
-            }
+            if (!joined) finalDeliveryUnavailable();
             const inspection = await runDelivery.inspect({
               nativeSessionId: threadId,
               turn: joined!.turn,
@@ -1687,7 +1695,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       attachAssistantFailureDiagnostics(error, assistantDiagnostics);
       let failedUsage: AssistantFailureUsage | undefined = assistant
         ? undefined
-        : interruptedUsage;
+        : (interruptedUsage ?? completedUsage);
       if (cancellationTimer) clearInterval(cancellationTimer);
       await stopWindow
         .within(() => cancellationTask ?? Promise.resolve())
@@ -1916,6 +1924,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
     subscription: boolean;
     questionWait?: HarnessExecutionInput['questionWait'];
     resume?: NonNullable<HarnessExecutionInput['questionWait']>['resume'];
+    /** Hold event intake through public wait, input pause and final candidate. */
+    settleDelivery?(): Promise<void>;
     onFailureUsage(receipt: AssistantFailureUsage): void;
     onTurn(turnId: string): Promise<void>;
     /** Private persistence ACK, never a model-supplied barrier. */
@@ -1947,9 +1957,16 @@ export class DshHarnessAdapter implements HarnessAdapter {
     let idle = false;
     let started = false;
     let turnOriginCommitted = false;
-    input.installTurnOriginBarrier?.(async () => {
-      await eventChain;
+    const flushEvents = async () => {
+      let pending;
+      do {
+        pending = eventChain;
+        await pending;
+      } while (pending !== eventChain);
       if (processingError) throw processingError;
+    };
+    input.installTurnOriginBarrier?.(async () => {
+      await flushEvents();
       if (!started || !turnOriginCommitted)
         throw new HandlerError(
           'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE',
@@ -2312,6 +2329,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       if (nativeView) await input.onNative(nativeView);
       if (event.type === 'turn/start') {
         started = true;
+        idle = false;
         turnOriginCommitted = false;
         const turn =
           typeof data.turn === 'number' || typeof data.turn === 'string'
@@ -2594,6 +2612,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
             cacheUsageKnown: messageReceipts > 0 && cacheUsageKnown,
           },
         );
+      if (!waitingForUser && !parseDshToolCall(answer)) {
+        await input.settleDelivery?.();
+        await flushEvents();
+        input.signal.throwIfAborted();
+      }
       if (deltaMode === 'unknown' && deltaBuffer && !parseDshToolCall(answer)) {
         await input.onDelta(
           deltaBuffer,
@@ -2620,6 +2643,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
         cacheUsageKnown: messageReceipts > 0 && cacheUsageKnown,
       };
     } catch (error) {
+      // A failed wait/origin RPC may race the asynchronous event projection.
+      // Preserve all already received usage before releasing the subscription.
+      await flushEvents().catch(() => {});
       if (!(error instanceof NativeQuestionParked))
         input.onFailureUsage({
           usage,
