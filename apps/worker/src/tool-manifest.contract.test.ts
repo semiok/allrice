@@ -229,6 +229,10 @@ describe('AllRice worker tool manifest contract', () => {
         wireName: 'platform_repository_repair',
       },
       {
+        canonicalName: 'platform.repository.review',
+        wireName: 'platform_repository_review',
+      },
+      {
         canonicalName: 'platform.employee.method.step',
         wireName: 'platform_employee_method_step',
       },
