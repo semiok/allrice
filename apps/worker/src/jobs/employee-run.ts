@@ -79,7 +79,7 @@ import {
   pollEmployeeConversationSteers,
 } from '../conversation/turn-lifecycle.js';
 import { assembleEmployeeKernel } from '../employee-kernel.js';
-import { getChangesetRun } from '@allrice/database';
+import { getChangesetRun, readNativeQuestionMode } from '@allrice/database';
 import { executeChangesetRun } from './changeset-run.js';
 import { executePlatformQualityCheck } from './platform-quality.js';
 import {
@@ -705,6 +705,7 @@ export async function executeEmployeeRun({
   };
   try {
     const executionSnapshot = resolved.executionSnapshot;
+    const nativeQuestionMode = await readNativeQuestionMode();
     if (!executionSnapshot) {
       throw new HandlerError(
         'EMPLOYEE_SNAPSHOT_REQUIRED',
@@ -1321,6 +1322,7 @@ export async function executeEmployeeRun({
       !repairTask &&
       !assistants &&
       !selectedWorkflow &&
+      nativeQuestionMode !== 'timed' &&
       adapter.kind === 'dsh'
     ) {
       const waitOwner = { context: execution.context, worker: workflowLease };
@@ -1694,6 +1696,7 @@ export async function executeEmployeeRun({
                   skillVersionIds: skillIds,
                 });
                 const stepResult = await adapter.execute({
+                  nativeQuestionMode,
                   contentGuard,
                   progress: taskProgress,
                   nativeQuestionWait:
@@ -1810,6 +1813,7 @@ export async function executeEmployeeRun({
           })()
         : await adapter
             .execute({
+              nativeQuestionMode,
               contentGuard,
               progress: taskProgress,
               questionWait,

@@ -3,6 +3,10 @@ import { realpath } from 'node:fs/promises';
 import { HarnessSdkJsonRpcServer } from '@deepseek-ai/dsh-sdk-jsonrpc-server';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { readStoredDshSession } from './allrice-session-compatibility.mjs';
+import {
+  publishNativeQuestions,
+  questionProjectionBoundaries,
+} from './allrice-question-projection.mjs';
 
 /** One already-authorized business root per existing process Host. SDK alone
  * owns AgentHandles. These records hold public Agents, never disposal rights,
@@ -36,12 +40,19 @@ export class AllRiceSdkRoot {
     // Keep the public durable event channel alive through the existing drain;
     // per-Session sequence de-duplication prevents double publication while SDK is live.
     this.ownDisposers.push(
-      ctx.on('session/event', (session, event) =>
+      ctx.on('session/event', (session, event) => {
         this.sdkTransport.notify('session.event', {
           sessionId: String(session.id),
           event,
-        }),
-      ),
+        });
+        if (
+          String(session.id) === this.rootId &&
+          questionProjectionBoundaries.has(event.type)
+        )
+          publishNativeQuestions(this.ctx, session, (...args) =>
+            this.transport.notify(...args),
+          );
+      }),
     );
     this.sdk = new HarnessSdkJsonRpcServer(ctx, this.sdkTransport, options);
   }
@@ -104,7 +115,13 @@ export class AllRiceSdkRoot {
       throw Error('SDK_NOT_INITIALIZED');
     if (this.rootId && this.rootId !== sessionId)
       throw Error('HOST_SINGLE_ROOT_REQUIRED');
-    if (this.phase === 'ready') return this.requireRoot(sessionId);
+    if (this.phase === 'ready') {
+      const record = this.requireRoot(sessionId);
+      publishNativeQuestions(this.ctx, record.agent.session, (...args) =>
+        this.transport.notify(...args),
+      );
+      return record;
+    }
     if (!['idle', 'opening'].includes(this.phase))
       throw Error('INPUT_SESSION_NOT_LIVE');
     if (this.opening) return this.opening;
@@ -139,6 +156,10 @@ export class AllRiceSdkRoot {
       const record = { agent, epoch };
       this.roots.set(sessionId, record);
       this.phase = 'ready';
+      // Resume repair seeds TOOL_OUTCOME_UNKNOWN without emitting session/event.
+      publishNativeQuestions(this.ctx, agent.session, (...args) =>
+        this.transport.notify(...args),
+      );
       return record;
     })();
     try {

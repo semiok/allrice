@@ -17,7 +17,7 @@ import {
 } from './allrice-context-projection.mjs';
 /* global AbortSignal, Buffer, fetch, process */
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { setTimeout, clearTimeout } from 'node:timers';
 import { performance } from 'node:perf_hooks';
 import { URL } from 'node:url';
@@ -989,7 +989,18 @@ export async function createAllRiceRuntime(
             request.agent,
             request.questions,
           );
-          const questionId = `question-${randomUUID()}`;
+          const callId =
+            process.env.ALLRICE_ASK_USER_MODE === 'timed'
+              ? request.wait?.callId
+              : undefined;
+          const questionId = callId
+            ? `${sessionId}:${callId}`
+            : `question-${randomUUID()}`;
+          const durable =
+            !!callId &&
+            nativeUserQuestions(this, sessionId).questions?.some(
+              (q) => q.callId === callId,
+            );
           let markDone;
           const done = new Promise((resolveDone) => {
             markDone = resolveDone;
@@ -1009,6 +1020,7 @@ export async function createAllRiceRuntime(
               done,
               questionId,
               questions,
+              ...(durable ? { callId } : {}),
               resolve: (answer) => {
                 request.signal?.removeEventListener('abort', abort);
                 markDone();
@@ -1023,6 +1035,9 @@ export async function createAllRiceRuntime(
             this.userQuestionNotify({
               sessionId,
               questionId,
+              ...(callId
+                ? { callId, durable, nativeSessionId: sessionId }
+                : {}),
               ...(waitMs === undefined
                 ? {}
                 : {
@@ -2024,6 +2039,15 @@ export async function createAllRiceRuntime(
     ownContext,
   );
   await ctx.get('loader')?.await();
+  // Optional-plugin configuration errors otherwise only warn. Check profiles
+  // that actually configure the ask tool, including capability/search probes.
+  if (
+    readFileSync(configPath, 'utf8').includes(
+      '@deepseek-ai/dsh-tool-ask-user',
+    ) &&
+    !ctx.tools.get('ask_user_question')
+  )
+    throw Error('NATIVE_ASK_USER_TOOL_UNAVAILABLE');
   if (process.env.ALLRICE_ASSISTANTS_ENABLED === '1') {
     await ctx.plugin((await import('@deepseek-ai/dsh-user-approval')).default, {
       policy: 'never',

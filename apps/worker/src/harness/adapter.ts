@@ -74,6 +74,8 @@ export interface HarnessInputDeliveryPort {
 }
 
 export interface HarnessExecutionInput {
+  /** Current platform rollout switch, shared with Web through PostgreSQL. */
+  nativeQuestionMode?: 'legacy' | 'timed';
   /** Owner preference frozen when this Run was enqueued. */
   nativeQuestionWait?: QuestionWait;
   /** Server-loaded current human message before attachment/template augmentation.

@@ -1051,6 +1051,30 @@ it('restarts once when the frozen question wait changes and then reuses the Host
   expect((await runtimes.acquire(value)).runtime).toBe(forever.runtime);
 });
 
+it('shares the rollout mode with the Host and restarts once when it changes', async () => {
+  const launched = vi.spyOn(CloseObserver, 'createObservedDshClient');
+  const runtimes = pool();
+  const value = request();
+  value.input.assistants = undefined;
+  const legacy = await runtimes.acquire(value);
+  expect(
+    launched.mock.calls.at(-1)![0].launch.environment.ALLRICE_ASK_USER_MODE,
+  ).toBe('legacy');
+  expect(
+    launched.mock.calls.at(-1)![0].launch.environment.ALLRICE_ASK_USER_TIMEOUT,
+  ).toBeUndefined();
+  value.input.nativeQuestionMode = 'timed';
+  const timed = await runtimes.acquire(value);
+  expect(timed.runtime).not.toBe(legacy.runtime);
+  expect(timed.preparation.changedFields).toEqual(['questionWait']);
+  expect(
+    launched.mock.calls.at(-1)![0].launch.environment.ALLRICE_ASK_USER_MODE,
+  ).toBe('timed');
+  expect((await runtimes.acquire(value)).runtime).toBe(timed.runtime);
+  value.input.nativeQuestionMode = 'legacy';
+  expect((await runtimes.acquire(value)).runtime).not.toBe(timed.runtime);
+});
+
 it('keeps the frozen timeout but uses blocking program questions for a Workflow step', async () => {
   const launched = vi.spyOn(CloseObserver, 'createObservedDshClient');
   const runtimes = pool(false, undefined, 60000);
