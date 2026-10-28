@@ -9,6 +9,12 @@ import {
 import { z } from 'zod';
 
 import { getDatabase } from '../core/client.ts';
+import {
+  assertJobCompletionGuard,
+  finalDeliveryUnavailable,
+  type JobCompletionGuard,
+} from '../final-delivery-commit.ts';
+import type { JobRow } from '../queue/row-mappers.ts';
 
 const ChecksumSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 
@@ -226,7 +232,15 @@ export async function saveContextCheckpoint(input: {
   configChecksum: string;
   estimatedTokens: number;
   messageCount: number;
+  /** Worker-only capability after native wait; never a serialized proof. */
+  checkedDelivery?: {
+    guard: JobCompletionGuard;
+    result: unknown;
+    jobId: string;
+  };
 }) {
+  const checked = input.checkedDelivery;
+  if (checked) assertJobCompletionGuard(checked.guard);
   const values = {
     sessionId: UuidSchema.parse(input.sessionId),
     harness: input.harness,
@@ -241,7 +255,28 @@ export async function saveContextCheckpoint(input: {
   };
   const checksum = contextCheckpointChecksum(values);
   const sql = getDatabase();
-  return sql.begin(async (transaction) => {
+  const isolation = checked ? 'isolation level read committed' : '';
+  return sql.begin(isolation, async (transaction) => {
+    // Match completion's Job -> Run/runtime lock order. Keep the source turn
+    // intact, and recheck the same authority after the checkpoint's last write.
+    const assertChecked = async () => {
+      if (!checked) return;
+      const [job] = await transaction<JobRow[]>`
+        select j.* from allrice_jobs j where j.id=${UuidSchema.parse(checked.jobId)}
+        and exists(select 1 from allrice_employee_runs e where e.run_id=j.run_id and e.session_id=${values.sessionId}) for update`;
+      if (
+        !job ||
+        input.harness !== 'dsh' ||
+        job.organization_id !== input.organizationId ||
+        job.workspace_id !== input.workspaceId ||
+        job.owner_id !== input.ownerId ||
+        job.run_id !== input.runId ||
+        job.worker_id !== input.workerId
+      )
+        finalDeliveryUnavailable();
+      await checked.guard.assertCurrent(transaction, job, checked.result);
+    };
+    await assertChecked();
     const runtimes = await transaction<
       {
         state: string;
@@ -262,7 +297,7 @@ export async function saveContextCheckpoint(input: {
     `;
     if (
       runtimes[0]?.state !== 'running' ||
-      runtimes[0].active_turn_id ||
+      (checked ? !runtimes[0].active_turn_id : runtimes[0].active_turn_id) ||
       runtimes[0].thread_id !== values.threadId ||
       runtimes[0].thread_generation !== values.generation ||
       runtimes[0].config_checksum !== values.configChecksum
@@ -294,6 +329,7 @@ export async function saveContextCheckpoint(input: {
           updated_at = now()
       where session_id = ${values.sessionId}
     `;
+    await assertChecked();
     return mappedCheckpoint(rows[0]!)!;
   });
 }

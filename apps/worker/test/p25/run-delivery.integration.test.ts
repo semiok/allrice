@@ -17,6 +17,7 @@ import {
   prepareEmployeeInstanceSnapshot,
 } from '../../../../packages/database/src/employees/employee-instances.ts';
 import { completeJob } from '../../../../packages/database/src/execution/queue.ts';
+import { saveContextCheckpoint } from '../../../../packages/database/src/conversation/conversation-checkpoint.ts';
 import {
   finalDeliveryTextDigest,
   registerJobCompletionGuard,
@@ -189,6 +190,71 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
     };
   }
   type Subject = Awaited<ReturnType<typeof subject>>;
+
+  it.each(['current', 'replaced-lease', 'expired-during-save'] as const)(
+    '保留 turn 的检查点以完成守卫复核 %s，失租不能写入或清除来源',
+    async (mode) => {
+      const f = await subject();
+      const answer = '本轮没有导出文件。';
+      const { guard } = await f.validate(answer);
+      const db = fixture.db;
+      const [runtime] =
+        await db`select * from allrice_conversation_runtimes where session_id=${f.session}`;
+      const [message] =
+        await db`select id from allrice_messages where session_id=${f.session} and role='user' limit 1`;
+      const input = {
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        sessionId: f.session,
+        ownerId: f.user,
+        runId: f.rootRunId,
+        workerId: f.worker.workerId,
+        harness: 'dsh' as const,
+        threadId: f.native,
+        generation: 1,
+        coveredThroughMessageId: message!.id,
+        summary: 'Synthetic checkpoint',
+        configChecksum: runtime!.config_checksum,
+        estimatedTokens: 100,
+        messageCount: 1,
+        checkedDelivery: { guard, result: { answer }, jobId: f.worker.jobId },
+      };
+      if (mode === 'replaced-lease')
+        await db`update allrice_jobs set lease_token=${randomUUID()} where id=${f.worker.jobId}`;
+      if (mode === 'expired-during-save')
+        await db.unsafe(`create function checkpoint_expire_lease() returns trigger language plpgsql as $$
+          begin update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id='${f.worker.jobId}'::uuid; return new; end $$;
+          create trigger checkpoint_expire_lease before insert on allrice_context_checkpoints for each row execute function checkpoint_expire_lease()`);
+      try {
+        if (mode === 'current') {
+          // Ordinary callers still cannot checkpoint an active turn.
+          await expect(
+            saveContextCheckpoint({ ...input, checkedDelivery: undefined }),
+          ).rejects.toThrow('context_checkpoint_unsafe_boundary');
+          await saveContextCheckpoint(input);
+        } else {
+          await expect(saveContextCheckpoint(input)).rejects.toMatchObject({
+            code: 'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE',
+          });
+        }
+        const [retained] =
+          await db`select active_turn_id,active_run_id,worker_id from allrice_conversation_runtimes where session_id=${f.session}`;
+        expect(retained).toEqual({
+          active_turn_id: runtime!.active_turn_id,
+          active_run_id: f.rootRunId,
+          worker_id: f.worker.workerId,
+        });
+        expect(
+          await db`select id from allrice_context_checkpoints where session_id=${f.session}`,
+        ).toHaveLength(mode === 'current' ? 1 : 0);
+      } finally {
+        if (mode === 'expired-during-save') {
+          await db`drop trigger checkpoint_expire_lease on allrice_context_checkpoints`;
+          await db`drop function checkpoint_expire_lease()`;
+        }
+      }
+    },
+  );
 
   async function withRuntimeRoot(f: Subject) {
     await createRuntimeOperationLedger({
@@ -566,6 +632,18 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
 
   it.each([
     [
+      'worker lease expires after proof creation',
+      async (f: Subject) => {
+        await fixture.db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${f.worker.jobId}`;
+      },
+    ],
+    [
+      'control origin is replaced while text and turn remain unchanged',
+      async (f: Subject) => {
+        await fixture.db`update allrice_run_events set id=${randomUUID()} where run_id=${f.rootRunId} and event_type='turn.started'`;
+      },
+    ],
+    [
       'member revoked',
       async (f: Subject) => {
         await fixture.db`update allrice_memberships set active=false where id=${f.membership}`;
@@ -653,6 +731,40 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
       }).readSnapshot(),
     ).rejects.toThrow();
   });
+
+  it.each(['cancel', 'timeout'] as const)(
+    '%s after proof creation retains queue stop semantics and never publishes success',
+    async (mode) => {
+      const f = await subject();
+      const answer = '本轮没有导出文件。';
+      const { guard } = await f.validate(answer);
+      if (mode === 'cancel')
+        await fixture.db`update allrice_jobs set cancel_requested_at=clock_timestamp() where id=${f.worker.jobId}`;
+      else
+        await fixture.db`update allrice_jobs set created_at=clock_timestamp()-interval '1 hour',timeout_at=clock_timestamp()-interval '1 second' where id=${f.worker.jobId}`;
+      await expect(f.port.readOrigin()).rejects.toMatchObject({
+        code: 'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE',
+      });
+      await f.complete(guard, answer);
+      const terminal = mode === 'cancel' ? 'canceled' : 'failed';
+      expect(await f.state()).toMatchObject({
+        status: terminal,
+        state: terminal,
+        successes: 0,
+      });
+      const [event] =
+        await fixture.db`select payload from allrice_run_events where run_id=${f.rootRunId} and event_type=${mode === 'cancel' ? 'run.canceled' : 'run.failed'}`;
+      expect(event).toBeDefined();
+      if (mode === 'timeout') expect(event!.payload.code).toBe('JOB_TIMEOUT');
+      const [released] =
+        await fixture.db`select active_turn_id,active_run_id,worker_id from allrice_conversation_runtimes where session_id=${f.session}`;
+      expect(released).toEqual({
+        active_turn_id: null,
+        active_run_id: null,
+        worker_id: null,
+      });
+    },
+  );
 
   it('rejects changed facts and changed answer, without writing a terminal result', async () => {
     const f = await subject();

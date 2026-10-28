@@ -2164,6 +2164,7 @@ export async function executeEmployeeRun({
     );
     if (officeFirstDeliveryPolicy) delivery.assertComplete();
     runtime = await finalizeEmployeeConversationContext({
+      ...(independentDelivery ? { retainTurnUntilCommit: runtime } : {}),
       contentGenerationId: contentRuntime?.generationId,
       allowedMessageIds: contentRuntime?.allowedMessageIds ?? undefined,
       checkContent: contentGuard?.check,
