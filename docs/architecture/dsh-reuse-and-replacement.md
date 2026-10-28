@@ -379,6 +379,7 @@ MET181 公司组合验收发现固定 `dsh-tool-ask-user@0.1.5-rc.3` 的 Consume
 ### allrice-final-delivery-v1
 
 - ID：`allrice-final-delivery-v1`；归属 MET-184；**保留平台交付适配**。复用固定 `0.2.1-rc.2` 的公开 Agent、turn、消息日志、steer 和工具 middleware；不修改 DSH 核心、不增加另一套 Agent 循环。DSH 不持有 AllRice 成果对象、当前权限或业务完成事务。
+- MET-210 PR1b 来源端口：不开助手的根 Run 通过通用 job/member/conversation/native binding 权限闭包读取 `turn.started`，不查助手表或 `run_links`。原生持久消息核验后的 proof 与该组来源锚点绑定，`completeJob` 重读并拒绝来源变化；资格仍由后续 PR1c 与旧层删除同窗放开。
 - Worker 将当前 Run 的真实成果版本、授权与 Office 字节检查事实交给独立的 Markdown/GFM 链接检查器。最终回复必须来自当前原生 turn 的持久消息；私有完成凭据贯穿原生停止、assistant 结算和 Job 最后写入，同一事务重验权限、租约、来源与事实摘要。模型正文、工具参数和公开事件不能签发该凭据。
 - 只有既有成果已就绪而答复链接缺失、无效或正文为空时，允许同一 Agent/turn 最多一次仅修正文的原生续做，使用原模型、原截止时间、原权限和剩余预算。修正期间不执行工具、提问或压缩；晚到真人消息仍以原身份排队。已有效答复不增加模型请求。未发送准备可精确撤销预留；发送状态未知继续保留账本，不能伪造结束或重放工具。原失败答复和成果版本不改写。
 - 新 Run 的检查协议按独立批准的精确 artifact ID 冻结；旧包/旧 origin 保留原协议。冷恢复只能由当前 Job/lease/turn 持久事实重建完成边界，不能用“最后一条回复”猜测归属或重新发送原任务。

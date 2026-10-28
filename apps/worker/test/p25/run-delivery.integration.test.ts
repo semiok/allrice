@@ -1,12 +1,13 @@
+import { createRuntimeOperationLedger } from '../../../../packages/database/src/runtime-ledger/ledger.ts';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ExecutionContextSchema } from '@allrice/contracts';
 import * as client from '../../../../packages/database/src/core/client.ts';
 import {
-  createAssistantFixtureDatabase,
-  assistantFixtureStorage,
-} from '../../../../packages/database/src/assistant-runtime.fixture.ts';
-import { createAssistantAuthorityFixture } from '../../../../packages/database/src/assistant-authority.fixture.ts';
+  createRuntimeFixtureDatabase,
+  runtimeFixtureStorage,
+} from '../../../../packages/database/src/runtime.fixture.ts';
+import { createRunAuthorityFixture } from '../../../../packages/database/src/run-authority.fixture.ts';
 import { publishWorkbenchArtifact } from '../../../../packages/database/src/artifact-review.ts';
 import {
   assertEmployeeInstanceAdmission,
@@ -34,12 +35,11 @@ const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
     : describe.skip;
-suite('PR1a: independent Worker delivery, isolated PostgreSQL', () => {
-  let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
+  let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   beforeAll(async () => {
-    fixture = await createAssistantFixtureDatabase();
+    fixture = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
-    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
     vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
   }, 120000);
   afterAll(async () => {
@@ -49,10 +49,11 @@ suite('PR1a: independent Worker delivery, isolated PostgreSQL', () => {
   });
 
   async function subject() {
+    vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
+    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
     const db = fixture.db;
     // Reuse identity setup only; no assistant root/instance is configured.
-    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-    const f = await createAssistantAuthorityFixture(db, {
+    const f = await createRunAuthorityFixture(db, {
       configure: false,
       memberAssistants: null,
       memberRole: 'member',
@@ -64,7 +65,6 @@ suite('PR1a: independent Worker delivery, isolated PostgreSQL', () => {
         rules: [{ action: 'assistant.delegate', effect: 'deny' }],
       },
     });
-    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
     const native = `dsh-${f.session}`;
     const prompt = '请把这份月报整理成文件，把下载链接给我。';
     await db`update allrice_messages set content=${db.json({ text: prompt, citations: [] })} where session_id=${f.session} and role='user'`;
@@ -104,6 +104,11 @@ suite('PR1a: independent Worker delivery, isolated PostgreSQL', () => {
       worker: { ...f.worker, attempt: 1 },
     };
     const port = createRunDeliveryPort(authority);
+    const turnId = `${native}:turn:1`;
+    await db`update allrice_conversation_runtimes set active_turn_id=${turnId} where session_id=${f.session}`;
+    await db`insert into allrice_run_events(run_id,organization_id,workspace_id,sequence,event_type,payload)
+      values(${f.rootRunId},${f.org},${f.workspace},1,'turn.started',${db.json({ source: 'dsh', threadId: native, turnId, generation: 1 })})`;
+    const origin = (await port.readOrigin())!;
     const publish = (
       name = '月报.txt',
       kind: 'document' | 'plan' = 'document',
@@ -119,7 +124,7 @@ suite('PR1a: independent Worker delivery, isolated PostgreSQL', () => {
           mediaType: 'text/plain',
           bytes: Buffer.from(prompt),
         },
-        assistantFixtureStorage(db),
+        runtimeFixtureStorage(db),
         db,
       );
     const validate = async (answer: string) => {
@@ -132,7 +137,7 @@ suite('PR1a: independent Worker delivery, isolated PostgreSQL', () => {
         managedOrigins: [],
       });
       expect(decision.status).toBe('valid');
-      // The future PR1b native boundary supplies these identifiers; no model is called here.
+      // Synthetic identifiers isolate the database commit guard from native execution.
       const proof = {
         nativeSessionId: native,
         publicMessageId: randomUUID(),
@@ -148,7 +153,7 @@ suite('PR1a: independent Worker delivery, isolated PostgreSQL', () => {
         snapshot,
         decision,
         proof,
-        guard: port.createCommitGuard(proof),
+        guard: port.createCommitGuard(proof, origin),
       };
     };
     const complete = (
@@ -173,6 +178,7 @@ suite('PR1a: independent Worker delivery, isolated PostgreSQL', () => {
       ...f,
       native,
       authority,
+      origin,
       port,
       publish,
       validate,
@@ -181,6 +187,25 @@ suite('PR1a: independent Worker delivery, isolated PostgreSQL', () => {
     };
   }
   type Subject = Awaited<ReturnType<typeof subject>>;
+
+  async function withRuntimeRoot(f: Subject) {
+    await createRuntimeOperationLedger({
+      database: fixture.db,
+      admission: async () => {},
+    }).createRoot({
+      task: f.task,
+      deadlineAt: new Date(Date.now() + 600000).toISOString(),
+      budgets: [
+        {
+          metric: 'model_calls',
+          unit: 'calls',
+          currency: null,
+          capacity: 5,
+          source: { kind: 'worker', sourceId: 'delivery-test' },
+        },
+      ],
+    });
+  }
 
   it.each(['snapshot', 'commit'] as const)(
     'serializes %s with admission holding the user lock before requesting the Session',
@@ -252,6 +277,79 @@ suite('PR1a: independent Worker delivery, isolated PostgreSQL', () => {
       }
     },
   );
+
+  it('第二次检查失败后不能消费上一份有效候选 proof', async () => {
+    const f = await subject();
+    const answer = '本轮没有导出文件。';
+    const { proof } = await f.validate(answer);
+    const candidate = {
+      nativeText: answer,
+      projectedText: answer,
+      rootRunId: f.rootRunId,
+      nativeSessionId: f.native,
+      publicMessageId: proof.publicMessageId,
+      durableSeq: proof.durableSeq,
+      nativeBindingId: proof.nativeBindingId,
+      attempt: 1,
+      generation: 1,
+    };
+    expect((await f.port.check(candidate)).status).toBe('valid');
+    await expect(
+      f.port.check({ ...candidate, generation: 2 }),
+    ).rejects.toThrow();
+    expect(() => f.port.finish(proof)).toThrow();
+    expect(await f.state()).toMatchObject({ status: 'running', successes: 0 });
+  });
+
+  it('文字修正检查不能用缺少 Run 来源的候选', async () => {
+    const f = await subject();
+    await fixture.db`delete from allrice_run_events where run_id=${f.rootRunId} and event_type='turn.started'`;
+    expect(await f.port.readOrigin()).toBeNull();
+    await expect(
+      f.port.inspect({
+        nativeSessionId: f.native,
+        turn: 1,
+        publicMessageId: randomUUID(),
+        durableSeq: 55,
+        text: '缺少链接',
+        candidateDigest: finalDeliveryTextDigest('缺少链接'),
+        provider: 'fixture',
+        model: 'fixture',
+      }),
+    ).rejects.toThrow();
+    expect(await f.state()).toMatchObject({ status: 'running', successes: 0 });
+  });
+
+  it('来源只读且绑定当前 Run；新的 turn 起点不能复用此前的提交 proof', async () => {
+    const f = await subject();
+    const answer = '本轮没有导出文件。';
+    const { guard } = await f.validate(answer);
+    const queries: string[] = [],
+      debug = fixture.db.options.debug;
+    fixture.db.options.debug = (_connection, query) => {
+      queries.push(query);
+    };
+    try {
+      expect(await f.port.readOrigin()).toEqual(f.origin);
+    } finally {
+      fixture.db.options.debug = debug;
+    }
+    expect(
+      queries.filter((q) =>
+        /allrice_assistant_|allrice_runtime_run_links/.test(q),
+      ),
+    ).toEqual([]);
+    expect(
+      queries.filter((q) => /^\s*(insert|update|delete)\b/i.test(q)),
+    ).toEqual([]);
+    await fixture.db`update allrice_conversation_runtimes set active_turn_id=${`${f.native}:turn:2`} where session_id=${f.session}`;
+    await fixture.db`insert into allrice_run_events(run_id,organization_id,workspace_id,sequence,event_type,payload)
+      values(${f.rootRunId},${f.org},${f.workspace},2,'turn.started',${fixture.db.json({ source: 'dsh', threadId: f.native, turnId: `${f.native}:turn:2`, generation: 1 })})`;
+    await expect(f.complete(guard, answer)).rejects.toThrow(
+      'final_delivery_evidence_unavailable',
+    );
+    expect(await f.state()).toMatchObject({ status: 'running', successes: 0 });
+  });
 
   it('用户要月报下载链接：无助手配置也能经新 Worker 端口检查并原子落库', async () => {
     const f = await subject();
@@ -347,6 +445,7 @@ suite('PR1a: independent Worker delivery, isolated PostgreSQL', () => {
 
   it('reads no assistant tree, even if a legacy child link is not a valid task', async () => {
     const f = await subject();
+    await withRuntimeRoot(f);
     const child = randomUUID();
     await fixture.db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input)
       values(${child},${f.org},${f.workspace},${f.user},'running','{}','{}')`;
@@ -496,15 +595,12 @@ suite('PR1a: independent Worker delivery, isolated PostgreSQL', () => {
     const f = await subject();
     const answer = '本轮没有导出文件。';
     const { proof } = await f.validate(answer);
-    await expect(
-      f.complete(
-        f.port.createCommitGuard({
-          ...proof,
-          nativeSessionId: 'another-native-session',
-        }),
-        answer,
+    expect(() =>
+      f.port.createCommitGuard(
+        { ...proof, nativeSessionId: 'another-native-session' },
+        f.origin,
       ),
-    ).rejects.toThrow('final_delivery_evidence_unavailable');
+    ).toThrow('final_delivery_evidence_unavailable');
   });
 
   it('does not require a runtime root, budget or run link', async () => {
@@ -523,6 +619,7 @@ suite('PR1a: independent Worker delivery, isolated PostgreSQL', () => {
 
   it('blocks unfinished operations and accepts their terminal receipt', async () => {
     const f = await subject();
+    await withRuntimeRoot(f);
     const target = randomUUID(),
       operation = randomUUID();
     await fixture.db`insert into allrice_execution_targets(id,organization_id,workspace_id,target_key,kind,label,state,capabilities)
