@@ -2037,7 +2037,11 @@ suite(
                 run!.memory_context_state.initial.bytes,
               );
             } else {
-              expect(response).toContain('MEMORY_CONTEXT_UNAVAILABLE');
+              expect(reads).toHaveBeenCalledTimes(1);
+              await expect(reads.mock.results[0]!.value).rejects.toMatchObject({
+                code: 'identity_denied',
+              });
+              expect(response).toContain('Error:');
               expect(response).not.toContain(f.candidate.id);
               expect(run!.memory_context_state.toolReads).toBe(0);
             }
