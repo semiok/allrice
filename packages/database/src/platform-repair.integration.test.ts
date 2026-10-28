@@ -321,6 +321,22 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
     await startClaimedJob(workerId, job!.id, lease.leaseToken);
     return lease;
   }
+  it('maintenance repair stays outside final-delivery eligibility with the Workbench enabled', async () => {
+    const previous = process.env.ALLRICE_WORKBENCH_ENABLED;
+    vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
+    try {
+      const task = await submit();
+      const [run] =
+        await fixture.db`select execution_snapshot from allrice_employee_runs where run_id=${task.runId}`;
+      expect(run).toBeDefined();
+      expect(run!.execution_snapshot).not.toHaveProperty('finalDeliveryPolicy');
+      expect(run!.execution_snapshot).not.toHaveProperty(
+        'officeFirstDeliveryPolicy',
+      );
+    } finally {
+      vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', previous);
+    }
+  });
   it('concurrent identical requests bind one actual private employee Run and retain frozen actual version, source, login and 30-minute budget', async () => {
     const before =
       await fixture.db`select * from allrice_memberships where organization_id=${company.org}`;
