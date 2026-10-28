@@ -335,6 +335,41 @@ suite(
                 location: `https://fixture.blob.core.windows.net/${archive[1]}`,
               },
             });
+          if (path.endsWith('/pulls'))
+            return new Response(
+              JSON.stringify([
+                {
+                  number: p.remote.number,
+                  html_url: p.remote.url,
+                  draft: true,
+                  state: 'open',
+                  head: {
+                    ref: p.remote.branch,
+                    sha: p.metadata.commit,
+                    repo: { id: platformRepository.id },
+                  },
+                  base: {
+                    ref: 'main',
+                    sha: p.source.baseSha,
+                    repo: { id: platformRepository.id },
+                  },
+                },
+              ]),
+            );
+          if (path.endsWith('/git/ref/heads/main'))
+            return new Response(
+              JSON.stringify({
+                ref: 'refs/heads/main',
+                object: { sha: p.source.baseSha },
+              }),
+            );
+          if (path.endsWith('/git/ref/heads/' + p.remote.branch))
+            return new Response(
+              JSON.stringify({
+                ref: 'refs/heads/' + p.remote.branch,
+                object: { sha: p.metadata.commit },
+              }),
+            );
           const value = path.endsWith('/actions/workflows/ci.yml')
             ? { id: 10, path: '.github/workflows/ci.yml', state: 'active' }
             : path.endsWith('/actions/workflows/ci.yml/runs')
@@ -510,7 +545,9 @@ suite(
             executeEmployeeRun,
           );
           const detail = await getPlatformRepositoryReview(s.admin, review.id);
-          expect(detail.status).toBe(
+          const [diagnostic] =
+            await f.db`select last_error_code,last_error_message from allrice_jobs where id=${review.jobId}`;
+          expect(detail.status, JSON.stringify(diagnostic)).toBe(
             mode === 'accept' || mode === 'revise'
               ? 'succeeded'
               : mode === 'cancel'
@@ -663,6 +700,21 @@ suite(
         summary: 'Synthetic test opinion, not real model review',
       })) as { id: string; artifact: DevelopmentArtifactRef };
       return { seed, review };
+    }
+
+    async function supersedeArtifact(artifactId: string) {
+      // A newer immutable version is a reachable invalidation. Do not mutate
+      // ready immutable objects or disable the production provenance triggers.
+      await f.db.begin(async (tx) => {
+        const objectId = randomUUID(),
+          versionId = randomUUID();
+        await tx`insert into allrice_storage_objects
+          select (jsonb_populate_record(null::allrice_storage_objects,to_jsonb(o)||jsonb_build_object('id',${objectId}::text,'object_key',o.object_key||'-superseded'))).*
+          from allrice_storage_objects o join allrice_deliverable_versions v on v.object_id=o.id where v.id=${artifactId}`;
+        await tx`insert into allrice_deliverable_versions
+          select (jsonb_populate_record(null::allrice_deliverable_versions,to_jsonb(v)||jsonb_build_object('id',${versionId}::text,'object_id',${objectId}::text,'version',v.version+1,'parent_version_id',v.id))).*
+          from allrice_deliverable_versions v where v.id=${artifactId}`;
+      });
     }
 
     async function completedReview() {
@@ -1091,7 +1143,7 @@ suite(
         expect(remote.counts().mergeWrites).toBe(opts.unprotected ? 0 : 1);
       }
     }, 30000);
-    it('rejects completed evidence after reviewer cancellation or deleted evidence, and rejects raw merge job admission', async () => {
+    it('rejects completed evidence after Job cancellation or superseded evidence, and rejects raw merge job admission', async () => {
       const s = await completedReview();
       await expect(
         enqueueRun(s.internal, {
@@ -1106,7 +1158,7 @@ suite(
         createPlatformRepositoryMerge(s.admin, mergeRequest(s)),
       ).rejects.toMatchObject({ code: 'authorization_denied' });
       const second = await completedReview();
-      await f.db`update allrice_storage_objects set deleted_at=clock_timestamp() where id=(select object_id from allrice_deliverable_versions where id=${second.o.review.artifact.artifactId})`;
+      await supersedeArtifact(second.o.review.artifact.artifactId);
       await expect(
         createPlatformRepositoryMerge(second.admin, mergeRequest(second)),
       ).rejects.toMatchObject({ code: 'authorization_denied' });
@@ -1158,7 +1210,7 @@ suite(
       for (const fault of ['artifact', 'job-cancel', 'run-state'] as const) {
         const s = await completedReview();
         if (fault === 'artifact')
-          await f.db`update allrice_storage_objects set deleted_at=clock_timestamp() where id=(select object_id from allrice_deliverable_versions where id=${s.o.review.artifact.artifactId})`;
+          await supersedeArtifact(s.o.review.artifact.artifactId);
         else if (fault === 'job-cancel')
           await f.db`update allrice_jobs set cancel_requested_at=clock_timestamp() where id=${s.review.jobId}`;
         else
