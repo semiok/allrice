@@ -1044,6 +1044,15 @@ suite(
       return s;
     }
     async function republishReviewEmployee() {
+      const [revision] = await f.db`
+        select r.definition from allrice_platform_employee_revisions r
+        join allrice_platform_employees e on e.current_published_revision_id=r.id
+        where e.id=${platformEmployeeId}`;
+      await savePlatformEmployeeDraft(platformEmployeeId, {
+        definition: PlatformEmployeeDefinitionSchema.parse(
+          revision!.definition,
+        ),
+      });
       const publication = await publishPlatformEmployee(platformEmployeeId, {
         scope: 'assigned',
       });
