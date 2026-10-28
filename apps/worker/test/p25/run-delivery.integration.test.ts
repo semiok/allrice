@@ -18,6 +18,7 @@ import {
 } from '../../../../packages/database/src/employees/employee-instances.ts';
 import { completeJob } from '../../../../packages/database/src/execution/queue.ts';
 import { saveContextCheckpoint } from '../../../../packages/database/src/conversation/conversation-checkpoint.ts';
+import { releaseConversationRuntime } from '../../../../packages/database/src/conversation/conversation-runtime.ts';
 import {
   finalDeliveryTextDigest,
   registerJobCompletionGuard,
@@ -191,7 +192,12 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
   }
   type Subject = Awaited<ReturnType<typeof subject>>;
 
-  it.each(['current', 'replaced-lease', 'expired-during-save'] as const)(
+  it.each([
+    'current',
+    'replaced-lease',
+    'replaced-worker',
+    'expired-during-save',
+  ] as const)(
     '保留 turn 的检查点以完成守卫复核 %s，失租不能写入或清除来源',
     async (mode) => {
       const f = await subject();
@@ -221,6 +227,14 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
       };
       if (mode === 'replaced-lease')
         await db`update allrice_jobs set lease_token=${randomUUID()} where id=${f.worker.jobId}`;
+      // Token-only replacement does not exercise stale handler cleanup. Give
+      // the same Run a new Worker and turn, then invoke the old lifecycle APIs.
+      const replacementWorker = randomUUID();
+      const replacementTurn = `${f.native}:turn:2`;
+      if (mode === 'replaced-worker') {
+        await db`update allrice_jobs set worker_id=${replacementWorker},lease_token=${randomUUID()} where id=${f.worker.jobId}`;
+        await db`update allrice_conversation_runtimes set worker_id=${replacementWorker},active_turn_id=${replacementTurn} where session_id=${f.session}`;
+      }
       if (mode === 'expired-during-save')
         await db.unsafe(`create function checkpoint_expire_lease() returns trigger language plpgsql as $$
           begin update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id='${f.worker.jobId}'::uuid; return new; end $$;
@@ -237,12 +251,36 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
             code: 'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE',
           });
         }
+        if (mode === 'replaced-worker') {
+          await expect(f.complete(guard, answer)).rejects.toMatchObject({
+            code: 'lease_lost',
+          });
+          await expect(
+            releaseConversationRuntime({
+              organizationId: f.org,
+              workspaceId: f.workspace,
+              sessionId: f.session,
+              runId: f.rootRunId,
+              workerId: f.worker.workerId,
+              outcome: 'error',
+            }),
+          ).rejects.toMatchObject({ code: 'conversation_ownership_lost' });
+          expect(await f.state()).toMatchObject({
+            status: 'running',
+            state: 'running',
+            successes: 0,
+          });
+        }
         const [retained] =
           await db`select active_turn_id,active_run_id,worker_id from allrice_conversation_runtimes where session_id=${f.session}`;
         expect(retained).toEqual({
-          active_turn_id: runtime!.active_turn_id,
+          active_turn_id:
+            mode === 'replaced-worker'
+              ? replacementTurn
+              : runtime!.active_turn_id,
           active_run_id: f.rootRunId,
-          worker_id: f.worker.workerId,
+          worker_id:
+            mode === 'replaced-worker' ? replacementWorker : f.worker.workerId,
         });
         expect(
           await db`select id from allrice_context_checkpoints where session_id=${f.session}`,
@@ -495,6 +533,14 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
     await expect(f.complete(guard, answer)).rejects.toThrow(
       'final_delivery_evidence_unavailable',
     );
+    // Restoring an older pointer must not make a newer durable turn disappear.
+    await fixture.db`update allrice_conversation_runtimes set active_turn_id=${`${f.native}:turn:1`} where session_id=${f.session}`;
+    await expect(f.port.readOrigin()).rejects.toThrow(
+      'final_delivery_evidence_unavailable',
+    );
+    await expect(f.complete(guard, answer)).rejects.toThrow(
+      'final_delivery_evidence_unavailable',
+    );
     expect(await f.state()).toMatchObject({ status: 'running', successes: 0 });
   });
 
@@ -641,6 +687,12 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
       'control origin is replaced while text and turn remain unchanged',
       async (f: Subject) => {
         await fixture.db`update allrice_run_events set id=${randomUUID()} where run_id=${f.rootRunId} and event_type='turn.started'`;
+      },
+    ],
+    [
+      'active turn is cleared after proof creation',
+      async (f: Subject) => {
+        await fixture.db`update allrice_conversation_runtimes set active_turn_id=null where session_id=${f.session}`;
       },
     ],
     [

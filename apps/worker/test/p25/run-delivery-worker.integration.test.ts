@@ -29,6 +29,9 @@ import {
   claimNextJob,
   startClaimedJob,
   completeJob,
+  cancelRun,
+  failJob,
+  finishJobDrain,
 } from '../../../../packages/database/src/execution/queue.ts';
 import { publishWorkbenchArtifact } from '../../../../packages/database/src/artifact-review.ts';
 import {
@@ -354,9 +357,10 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
       // Admission checkpoints completed history, never the current user input.
       // Seed ordinary history before admission so its real frozen snapshot
       // contains a covered message; keep a first-turn case without a checkpoint.
+      const historyMessageId = randomUUID();
       if (history)
         await f.db`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,status,content)
-          values(${randomUUID()},${f.identity.org},${f.identity.workspace},${f.chat.id},${f.identity.user},'user','completed',
+          values(${historyMessageId},${f.identity.org},${f.identity.workspace},${f.chat.id},${f.identity.user},'user','completed',
           '{"text":"请继续整理每月记录。","citations":[]}')`;
       const task = await prepare(
         f,
@@ -421,9 +425,15 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
           active_run_id: task.runId,
           state: 'running',
         });
-        expect(
-          await f.db`select id from allrice_context_checkpoints where session_id=${f.chat.id}`,
-        ).toHaveLength(history ? 1 : 0);
+        const checkpoints =
+          await f.db`select id,summary,covered_through_message_id from allrice_context_checkpoints where session_id=${f.chat.id}`;
+        expect(checkpoints).toHaveLength(history ? 1 : 0);
+        if (history) {
+          expect(checkpoints[0]!.covered_through_message_id).toBe(
+            historyMessageId,
+          );
+          expect(checkpoints[0]!.summary).toContain('请继续整理每月记录。');
+        }
         expect(
           starts.every(
             (row) => row.payload.threadId === coverage.proof.nativeSessionId,
@@ -519,7 +529,166 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
           worker_id: null,
           state: 'idle',
         });
+        // A checkpoint row alone does not prove that the next real Worker can
+        // read it or that the native model still receives the uncovered history.
+        if (history && mode === 'valid') {
+          const previousAnswer = answer;
+          answer = '已继续整理每月记录。';
+          const next = await prepare(f, '下一轮继续回顾上下文，不需要新文件。');
+          const execution = vi.spyOn(adapter!, 'execute');
+          try {
+            const nextResult = await next.run();
+            const nextCoverage = readCheckedFinalDeliveryForExecution(
+              next.workflowLease,
+              nextResult,
+            );
+            expect(nextCoverage.coverage).toBe('checked_native_v1');
+            if (nextCoverage.coverage !== 'checked_native_v1')
+              throw Error('Next Worker lost checked proof');
+            expect(nextCoverage.proof.nativeSessionId).toBe(
+              coverage.proof.nativeSessionId,
+            );
+            expect(nextCoverage.proof.publicMessageId).not.toBe(
+              coverage.proof.publicMessageId,
+            );
+            expect(
+              execution.mock.calls[0]![0].kernel.bootstrapContext?.segments,
+            ).toEqual(
+              expect.arrayContaining([
+                expect.objectContaining({
+                  key: 'checkpoint',
+                  text: expect.stringContaining(checkpoints[0]!.summary),
+                }),
+              ]),
+            );
+            const messages = JSON.stringify(model!.requests.at(-1)!.messages);
+            expect(messages).toContain('请继续整理每月记录。');
+            expect(messages).toContain(previousAnswer);
+            expect(messages).toContain('下一轮继续回顾上下文，不需要新文件。');
+            await completeJob({
+              ...next.workflowLease,
+              result: nextResult,
+              checkedDelivery: nextCoverage.checkedDelivery,
+            });
+            expect(await state(f, next.runId)).toMatchObject({
+              status: 'succeeded',
+              successes: 1,
+            });
+            expect(await state(f, task.runId)).toMatchObject({
+              status: 'succeeded',
+              successes: 1,
+            });
+            expect(model!.requests).toHaveLength(2);
+          } finally {
+            await next.isolation.cleanup();
+          }
+        }
       } finally {
+        await task.isolation.cleanup();
+      }
+    },
+    45000,
+  );
+
+  // Existing cancellation happens inside the repair model. These boundaries
+  // instead stop an already-settled model, before proof or before terminal SQL.
+  it.each([
+    'cancel-before-proof',
+    'cancel-after-proof',
+    'timeout-after-proof',
+    'failure-after-proof',
+  ] as const)(
+    '真实 Worker 在 %s 时按终态生命周期释放占有，不发布成功',
+    async (mode) => {
+      const f = await setup(true, async () => ({
+        text: '排序会按比较函数排列数组。',
+      }));
+      const task = await prepare(f, '解释数组排序，不需要文件。');
+      const cancel = () =>
+        cancelRun(f.context, f.identity.workspace, task.runId, {
+          reason: 'user_requested',
+        });
+      if (mode === 'cancel-before-proof') {
+        const wait = DshProtocolClient.prototype.wait;
+        vi.spyOn(DshProtocolClient.prototype, 'wait').mockImplementation(
+          async function (this: DshProtocolClient, sessionId) {
+            const settled = await wait.call(this, sessionId);
+            expect(model!.requests).toHaveLength(1);
+            await cancel();
+            task.controller.abort(Error('cancel after native wait'));
+            return settled;
+          },
+        );
+      }
+      try {
+        if (mode === 'cancel-before-proof') {
+          await expect(task.run()).rejects.toMatchObject({
+            code: 'EXECUTION_ABORTED',
+            retryable: false,
+          });
+          await finishJobDrain(task.workflowLease);
+        } else {
+          const result = await task.run();
+          const coverage = readCheckedFinalDeliveryForExecution(
+            task.workflowLease,
+            result,
+          );
+          if (coverage.coverage !== 'checked_native_v1')
+            throw Error('Missing settled proof');
+          const [held] =
+            await f.db`select active_run_id,active_turn_id from allrice_conversation_runtimes where session_id=${f.chat.id}`;
+          expect(held!.active_run_id).toBe(task.runId);
+          expect(held!.active_turn_id).toBeTruthy();
+          if (mode === 'cancel-after-proof') await cancel();
+          if (mode === 'timeout-after-proof') {
+            // Real admission enrolls a task clock. timeout_at is only its
+            // projection and lockedLeasedJob refreshes it before completion.
+            const expired = await f.db`update allrice_task_clocks
+              set active_ms=(policy->>'timeoutMs')::double precision+1,
+                  phase='active',changed_at=clock_timestamp()
+              where run_id=${task.runId} returning policy`;
+            expect(expired).toHaveLength(1);
+            expect(expired[0]!.policy.timeoutMs).toBeGreaterThan(0);
+          }
+          if (mode === 'failure-after-proof')
+            await failJob({
+              ...task.workflowLease,
+              code: 'SYNTHETIC_FINAL_FLUSH_FAILED',
+              message: 'Synthetic final event flush failure',
+              retryable: false,
+            });
+          else
+            await completeJob({
+              ...task.workflowLease,
+              result,
+              checkedDelivery: coverage.checkedDelivery,
+            });
+        }
+        const canceled = mode.startsWith('cancel');
+        expect(await state(f, task.runId)).toMatchObject({
+          status: canceled ? 'canceled' : 'failed',
+          state: canceled ? 'canceled' : 'failed',
+          successes: 0,
+        });
+        const [released] =
+          await f.db`select active_run_id,active_turn_id,worker_id,state from allrice_conversation_runtimes where session_id=${f.chat.id}`;
+        expect(released).toEqual({
+          active_run_id: null,
+          active_turn_id: null,
+          worker_id: null,
+          state: canceled ? 'interrupted' : 'error',
+        });
+        const terminal =
+          await f.db`select event_type,payload from allrice_run_events where run_id=${task.runId} and event_type in ('run.succeeded','run.canceled','run.failed')`;
+        expect(terminal).toHaveLength(1);
+        expect(terminal[0]!.event_type).toBe(
+          canceled ? 'run.canceled' : 'run.failed',
+        );
+        if (mode === 'timeout-after-proof')
+          expect(terminal[0]!.payload.code).toBe('JOB_TIMEOUT');
+        expect(model!.requests).toHaveLength(1);
+      } finally {
+        task.controller.abort();
         await task.isolation.cleanup();
       }
     },
@@ -529,6 +698,7 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
   it.each([
     'wait-error',
     'missing-origin',
+    'missing-active-turn',
     'empty-repair',
     'invalid-repair',
     'cancel-repair',
@@ -546,7 +716,7 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
         }
         return {
           text:
-            mode === 'missing-origin'
+            mode === 'missing-origin' || mode === 'missing-active-turn'
               ? available
               : count === 2 && mode === 'empty-repair'
                 ? ''
@@ -576,7 +746,7 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
           Error('synthetic public wait failure'),
         );
       available = `[月报](/api/v1/files/${artifact.object.id}/download)`;
-      if (mode === 'missing-origin') {
+      if (mode === 'missing-origin' || mode === 'missing-active-turn') {
         const finalDelivery = DshProtocolClient.prototype.finalDelivery;
         vi.spyOn(
           DshProtocolClient.prototype,
@@ -586,8 +756,12 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
           action,
           params,
         ) {
-          if (action === 'candidate')
-            await f.db`delete from allrice_run_events where run_id=${task.runId} and event_type='turn.started'`;
+          if (action === 'candidate') {
+            if (mode === 'missing-origin')
+              await f.db`delete from allrice_run_events where run_id=${task.runId} and event_type='turn.started'`;
+            else
+              await f.db`update allrice_conversation_runtimes set active_turn_id=null where session_id=${f.chat.id}`;
+          }
           return finalDelivery.call(this, action, params);
         });
       }
@@ -596,6 +770,7 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
         const codes = {
           'wait-error': 'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE',
           'missing-origin': 'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE',
+          'missing-active-turn': 'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE',
           'empty-repair': 'DSH_EMPTY_RESPONSE',
           'invalid-repair': 'FINAL_DELIVERY_RESPONSE_INVALID',
           'cancel-repair': 'EXECUTION_ABORTED',
@@ -622,7 +797,10 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
           state: 'running',
           successes: 0,
         });
-        const oneTurn = mode === 'wait-error' || mode === 'missing-origin';
+        const oneTurn =
+          mode === 'wait-error' ||
+          mode === 'missing-origin' ||
+          mode === 'missing-active-turn';
         expect(model!.requests).toHaveLength(oneTurn ? 1 : 2);
         expect(
           await f.db`select run_id from allrice_employee_runs where session_id=${f.chat.id}`,
