@@ -1890,7 +1890,7 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
           inputs: true,
         });
         expect(receipt.inputs?.find((r) => r.inputId === inputId)?.status).toBe(
-          'consumed',
+          'adopted',
         );
       } else {
         // A transport failure and weaker ACKs after a real projection-lag defer
