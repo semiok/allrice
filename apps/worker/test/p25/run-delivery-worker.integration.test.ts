@@ -3,7 +3,15 @@
  * marked cases) the future eligibility switch are synthetic. No credentials.
  */
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readdir, readFile, realpath, rm } from 'node:fs/promises';
+import {
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -81,6 +89,7 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
   async function setup(
     checked: boolean,
     reply: Parameters<typeof p24Fixture>[0],
+    nativeSubagents = false,
   ) {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
     vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
@@ -111,6 +120,28 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
         '../../dsh/allrice-restricted.cordis.yml',
       ),
     };
+    if (nativeSubagents) {
+      // Test-only native plugins, with the production Worker/Host and real
+      // model HTTP transport. This does not enable product eligibility.
+      await symlink(
+        resolve(import.meta.dirname, '../../node_modules'),
+        join(directory, 'node_modules'),
+      );
+      const profile = await readFile(launch.profile, 'utf8');
+      launch.profile = join(directory, 'profile.yml');
+      await writeFile(
+        launch.profile,
+        profile +
+          '\n' +
+          (await readFile(
+            resolve(
+              import.meta.dirname,
+              '../native-subagent/plugins.cordis.yml',
+            ),
+            'utf8',
+          )),
+      );
+    }
     vi.spyOn(NativeArtifact, 'checkedDshNativeLaunch').mockReturnValue({
       artifactId,
       profileId: 'restricted',
@@ -333,6 +364,98 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
       ).toHaveLength(0);
       expect(model!.requests).toHaveLength(1);
     } finally {
+      await task.isolation.cleanup();
+    }
+  }, 45000);
+
+  it('后代晚于根首次 idle 结算并唤醒根：真实 Worker 将后续 turn 写入 PG 后提交', async () => {
+    const childEntered = gate(),
+      releaseChild = gate();
+    let rootCalls = 0;
+    const answer = '已汇总子智能体的实际结果。';
+    const f = await setup(
+      true,
+      async (request) => {
+        const firstUser = request.messages.find((m) => m.role === 'user');
+        if (JSON.stringify(firstUser?.content).includes('PR1B_CHILD_TASK')) {
+          childEntered.release();
+          await releaseChild.promise;
+          return { text: 'PR1B_CHILD_RESULT' };
+        }
+        rootCalls++;
+        if (rootCalls === 1)
+          return {
+            nativeTool: {
+              name: 'subagent',
+              arguments: {
+                description: '检查独立子任务',
+                prompt: 'PR1B_CHILD_TASK',
+              },
+            },
+          };
+        if (rootCalls === 2) return { text: '子任务仍在执行。' };
+        expect(JSON.stringify(request.messages)).toContain('PR1B_CHILD_RESULT');
+        return { text: answer };
+      },
+      true,
+    );
+    const task = await prepare(f, '启动子任务，结束后汇总，不需要文件。');
+    const wait = DshProtocolClient.prototype.wait;
+    let waited = false;
+    vi.spyOn(DshProtocolClient.prototype, 'wait').mockImplementation(
+      async function (this: DshProtocolClient, sessionId) {
+        if (!waited) {
+          waited = true;
+          await childEntered.promise;
+          expect(rootCalls).toBe(2);
+          const before =
+            await f.db`select payload from allrice_run_events where run_id=${task.runId} and event_type='turn.started'`;
+          expect(before).toHaveLength(1);
+          releaseChild.release();
+        }
+        return wait.call(this, sessionId);
+      },
+    );
+    try {
+      const result = await task.run();
+      const coverage = readCheckedFinalDeliveryForExecution(
+        task.workflowLease,
+        result,
+      );
+      if (coverage.coverage !== 'checked_native_v1')
+        throw Error('Missing checked native proof');
+      const starts =
+        await f.db`select payload from allrice_run_events where run_id=${task.runId} and event_type='turn.started' order by sequence`;
+      expect(starts.map((row) => row.payload.turnId)).toEqual([
+        `${coverage.proof.nativeSessionId}:turn:1`,
+        `${coverage.proof.nativeSessionId}:turn:2`,
+      ]);
+      const [runtime] =
+        await f.db`select active_turn_id from allrice_conversation_runtimes where session_id=${f.chat.id}`;
+      expect(runtime!.active_turn_id).toBe(starts[1]!.payload.turnId);
+      expect(result.answer).toBe(answer);
+      // Root receipts include the tool call, first idle and woken turn. Child
+      // usage归根 is PR3b; never synthesize it from a journal into this Run.
+      expect(result.usage).toEqual({
+        inputTokens: 60,
+        cachedInputTokens: 0,
+        outputTokens: 15,
+      });
+      await completeJob({
+        ...task.workflowLease,
+        result,
+        checkedDelivery: coverage.checkedDelivery,
+      });
+      expect(await state(f, task.runId)).toMatchObject({
+        status: 'succeeded',
+        text: answer,
+        successes: 1,
+      });
+      expect(rootCalls).toBe(3);
+      expect(model!.requests).toHaveLength(4);
+    } finally {
+      releaseChild.release();
+      task.controller.abort();
       await task.isolation.cleanup();
     }
   }, 45000);
@@ -701,6 +824,7 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
     'missing-active-turn',
     'empty-repair',
     'invalid-repair',
+    'missing-usage-repair',
     'cancel-repair',
   ] as const)(
     '真实 Worker 遇到 %s 不提交完成、不无限重试、不借用维护模型准备权限',
@@ -715,6 +839,9 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
           await release.promise;
         }
         return {
+          ...(mode === 'missing-usage-repair' && count === 2
+            ? { usage: null }
+            : {}),
           text:
             mode === 'missing-origin' || mode === 'missing-active-turn'
               ? available
@@ -773,6 +900,7 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
           'missing-active-turn': 'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE',
           'empty-repair': 'DSH_EMPTY_RESPONSE',
           'invalid-repair': 'FINAL_DELIVERY_RESPONSE_INVALID',
+          'missing-usage-repair': 'FINAL_DELIVERY_RESPONSE_INVALID',
           'cancel-repair': 'EXECUTION_ABORTED',
         };
         const rejected = expect(pending).rejects.toMatchObject({
@@ -812,6 +940,48 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
         expect(events.filter((e) => e.type === 'turn/start')).toHaveLength(
           oneTurn ? 1 : 2,
         );
+        // The real Worker records the route and model ledger even when
+        // delivery fails. Queue terminalization must not erase that receipt.
+        if (mode !== 'cancel-repair') {
+          await failJob({
+            ...task.workflowLease,
+            code: codes[mode],
+            message: 'Delivery failed after native model execution',
+            retryable: false,
+          });
+          expect(await state(f, task.runId)).toMatchObject({
+            status: 'failed',
+            state: 'failed',
+            successes: 0,
+          });
+        }
+        if (mode !== 'empty-repair') {
+          const completedCalls =
+            oneTurn ||
+            mode === 'cancel-repair' ||
+            mode === 'missing-usage-repair'
+              ? 1
+              : 2;
+          const [route] =
+            await f.db`select id,status,input_tokens,cached_input_tokens,output_tokens,usage_complete,cache_usage_known,cost_cents
+              from allrice_route_decisions where run_id=${task.runId}`;
+          expect(route).toMatchObject({
+            status: mode === 'cancel-repair' ? 'canceled' : 'failed',
+            input_tokens: 20 * completedCalls,
+            cached_input_tokens: 0,
+            output_tokens: 5 * completedCalls,
+            cost_cents: null,
+          });
+          if (mode === 'invalid-repair' || mode === 'missing-usage-repair')
+            expect(route!.usage_complete).toBe(mode === 'invalid-repair');
+          if (mode === 'cancel-repair' || mode === 'missing-usage-repair')
+            expect(route!.cache_usage_known).toBe(false);
+          const ledger =
+            await f.db`select status,input_tokens,cached_input_tokens,output_tokens,usage_complete,cache_usage_known,cost_cents
+              from allrice_model_usage_ledger where route_decision_id=${route!.id}`;
+          const { id: _id, ...receipt } = route!;
+          expect(ledger).toEqual([receipt]);
+        }
       } finally {
         release.release();
         task.controller.abort();
