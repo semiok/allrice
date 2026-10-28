@@ -718,6 +718,11 @@ export async function executeEmployeeRun({
         false,
       );
     }
+    const questionReply = await prepareNativeQuestionReply({
+      context: execution.context,
+      worker: workflowLease,
+      sessionId: ownership.sessionId,
+    });
     const officeFirstDeliveryPolicy =
       executionSnapshot.schemaVersion === 2
         ? executionSnapshot.officeFirstDeliveryPolicy
@@ -792,13 +797,18 @@ export async function executeEmployeeRun({
         prompt: kernel.userRequest,
       },
       executionSnapshot:
-        (repairTask || repositoryReviewTask) &&
+        (repairTask || repositoryReviewTask || questionReply) &&
         executionSnapshot.schemaVersion === 2
           ? {
               ...executionSnapshot,
               capabilitySnapshot: {
                 ...executionSnapshot.capabilitySnapshot,
-                knowledge: [],
+                knowledge:
+                  repairTask || repositoryReviewTask
+                    ? []
+                    : executionSnapshot.capabilitySnapshot.knowledge,
+                // This Job delivers an already admitted native answer. Its
+                // answer JSON must never become a Workflow task or step prompt.
                 workflows: [],
               },
             }
@@ -1322,11 +1332,6 @@ export async function executeEmployeeRun({
     let steerDelivery:
       ReturnType<typeof createConversationInputDelivery> | undefined;
     let questionWait: HarnessExecutionInput['questionWait'];
-    const questionReply = await prepareNativeQuestionReply({
-      context: execution.context,
-      worker: workflowLease,
-      sessionId: ownership.sessionId,
-    });
     if (
       taskProgress &&
       !repairTask &&
