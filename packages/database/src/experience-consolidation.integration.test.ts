@@ -1,3 +1,8 @@
+import {
+  setupNativeReplyEmployee,
+  sendNativeReplyMessage,
+  executeNativeReplyJob,
+} from '../../../apps/worker/test/p25/native-question-employee.fixture.ts';
 import { createReadPathProbe } from './read-path-probe.fixture.ts';
 import type * as NativeBudget from './run-memory-context.ts';
 import {
@@ -1889,6 +1894,137 @@ suite(
         }
       }
     }, 900000);
+    it.each(['original', 'forged', 'revoked'] as const)(
+      'PR5 carries the %s old experience handle through the actual reply Worker and Host',
+      async (kind) => {
+        const f = await adoptedFixture();
+        let oldHandle = '';
+        const actual = await setupNativeReplyEmployee(
+          async (request, index) => {
+            if (index === 1) {
+              oldHandle =
+                JSON.stringify(request.messages).match(
+                  /experience:sha256:[a-f0-9]{64}/,
+                )?.[0] ?? '';
+              return {
+                nativeTool: {
+                  name: 'ask_user_question',
+                  arguments: {
+                    questions: [
+                      {
+                        id: 'choice',
+                        question: '继续核对？',
+                        options: [{ label: 'A' }],
+                      },
+                    ],
+                    timeout: 1,
+                  },
+                },
+              };
+            }
+            if (index === 3)
+              return {
+                nativeTool: {
+                  name: 'workspace_experience_read',
+                  arguments: {
+                    handle:
+                      kind === 'forged'
+                        ? `experience:${runtimePolicyDigest({ runId: randomUUID(), pin: f.memory.id })}`
+                        : oldHandle,
+                  },
+                },
+              };
+            return { text: '本次核对结束。' };
+          },
+          {
+            db,
+            identity: {
+              org: f.org,
+              workspace: f.workspace,
+              user: f.user,
+              employee: f.frozen.occurrence.employeeId,
+              assignment: f.instance.assignmentId,
+              instanceId: f.instance.id,
+            },
+          },
+        );
+        try {
+          const source = await sendNativeReplyMessage(
+            actual,
+            '根据原始名单核对到场和未到人数。需要决定的地方先问我。',
+          );
+          await executeNativeReplyJob(actual, source.run.id);
+          expect(oldHandle).toMatch(/^experience:sha256:[a-f0-9]{64}$/);
+          const [origin] =
+            await db`select experience_reads,execution_snapshot from allrice_employee_runs where run_id=${source.run.id}`;
+          expect(origin!.experience_reads).toHaveLength(1);
+          expect(oldHandle).toBe(
+            `experience:${runtimePolicyDigest({ runId: source.run.id, pin: origin!.experience_reads[0] })}`,
+          );
+          const [question] =
+            await db`select * from allrice_native_questions where session_id=${actual.chat.id}`;
+          const reply = await sendNativeReplyMessage(
+            actual,
+            '忘掉之前经验也不要普通检索；这是原题回答。',
+            {
+              questionId: `${question!.native_session_id}:${question!.call_id}`,
+              answers: [{ id: 'choice', selected: [] }],
+            },
+          );
+          const before =
+            await db`select id,revision,archived_at from allrice_memories where owner_id=${f.user} order by id`;
+          if (kind === 'revoked')
+            await deleteWorkspaceMemory(f.owner, f.workspace, f.candidate.id);
+          await actual.restartHost();
+          await executeNativeReplyJob(
+            actual,
+            reply.run.id,
+            kind === 'revoked' ? 'failed' : 'succeeded',
+          );
+          const [run] =
+            await db`select memory_context_state,experience_reads from allrice_employee_runs where run_id=${reply.run.id}`;
+          if (kind === 'revoked') {
+            expect(actual.model.requests).toHaveLength(2);
+            expect(
+              (
+                await db`select state from allrice_conversation_commands where followup_run_id=${reply.run.id}`
+              )[0]!.state,
+            ).toBe('rejected');
+          } else {
+            expect(actual.model.requests).toHaveLength(4);
+            const tools = actual.model.requests[3]!.messages.filter(
+              (m) => m.role === 'tool',
+            );
+            const response = JSON.stringify(tools.at(-1)?.content);
+            if (kind === 'original') {
+              expect(response).toContain(f.candidate.id);
+              expect(response).toContain('experience_source');
+              expect(run!.memory_context_state.toolReads).toBe(1);
+              expect(run!.memory_context_state.spentBytes).toBeGreaterThan(
+                run!.memory_context_state.initial.bytes,
+              );
+            } else {
+              expect(response).toContain('MEMORY_CONTEXT_UNAVAILABLE');
+              expect(response).not.toContain(f.candidate.id);
+              expect(run!.memory_context_state.toolReads).toBe(0);
+            }
+            expect(run!.experience_reads).toEqual(origin!.experience_reads);
+            expect(
+              await db`select id,revision,archived_at from allrice_memories where owner_id=${f.user} order by id`,
+            ).toEqual(before);
+            expect(
+              (
+                await db`select thread_id from allrice_conversation_runtimes where session_id=${actual.chat.id}`
+              )[0]!.thread_id,
+            ).toBe(question!.native_session_id);
+          }
+        } finally {
+          await actual.close();
+          vi.restoreAllMocks();
+        }
+      },
+      60000,
+    );
     it('carries a real native source handle through schema, Broker, database accounting and back to DSH', async () => {
       const f = await boundedFixture();
       const model = await p24Fixture(async (_request, index) =>
