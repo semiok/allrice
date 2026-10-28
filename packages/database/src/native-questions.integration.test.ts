@@ -28,6 +28,7 @@ import {
 } from './conversation/conversation-runtime.ts';
 import {
   claimConversationSteer,
+  consumeConversationSteer,
   deferConversationSteer,
 } from './conversation/conversation-input.ts';
 import {
@@ -1723,6 +1724,218 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
           await isolated.db`select c.state,f.mode from allrice_conversation_commands c
           join allrice_conversation_followups f on f.run_id=c.followup_run_id where c.client_user_message_id=${inputId}`,
         ).toEqual([{ state: 'pending', mode: 'follow_up' }]);
+      }
+    },
+  );
+
+  it.each(['projection-commit', 'proof-reclaim'] as const)(
+    'PR5 keeps real input receipts across %s and continues the live poller',
+    async (boundary) => {
+      const { pollEmployeeConversationSteers } = await import(
+        new URL(
+          '../../../apps/worker/src/conversation/turn-lifecycle.ts',
+          import.meta.url,
+        ).href
+      );
+      const f = await createExperienceFixture(isolated.db);
+      await updateNativeQuestionMode(f.reviewer, 'timed');
+      const turn = await startTurn(f, '先问我方案，再做其他工作。');
+      const q = question('concurrent-reply');
+      await sendView(turn, 1, [q]);
+      const ownership = {
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        sessionId: f.session.id,
+        runId: turn.runId,
+        workerId: turn.workerId,
+      };
+      await acquireConversationRuntime({
+        ...ownership,
+        ownerId: f.user,
+        configChecksum: `sha256:${'a'.repeat(64)}`,
+        compactThresholdTokens: 10000,
+      });
+      await bindConversationThread({
+        ...ownership,
+        threadId: turn.nativeSessionId,
+      });
+      const binding = await recordConversationTurn({
+        ...ownership,
+        threadId: turn.nativeSessionId,
+        turnId: `${turn.nativeSessionId}:turn:1`,
+      });
+      const inputId = randomUUID(),
+        nextId = randomUUID();
+      const answer = {
+        questionId: `${turn.nativeSessionId}:${q.callId}`,
+        answers: [{ id: 'priority', selected: [] }],
+      };
+      const sent = await sendChatMessage(f.owner, f.workspace, f.session.id, {
+        clientMessageId: inputId,
+        text: '跳过本题',
+        userQuestionAnswer: answer,
+      });
+      await sendChatMessage(f.owner, f.workspace, f.session.id, {
+        clientMessageId: nextId,
+        text: '先把其他部分列出来。',
+        deliveryMode: 'steer',
+        expectedTurnId: binding.activeTurnId!,
+        expectedGeneration: binding.generation,
+      });
+      const proof = {
+        status: 'adopted' as const,
+        inputId,
+        messageId: answer.questionId,
+        callId: q.callId,
+        sequence: 3,
+        turnId: binding.activeTurnId!,
+        checkpoint: 'question_resolved' as const,
+      };
+      const scope = {
+        ...ownership,
+        generation: binding.generation,
+        turnId: binding.activeTurnId!,
+      };
+      // Hold the actual first SELECT result while a second PG connection commits
+      // the actual Worker projection. No fabricated query results or sleeps.
+      let armed = boundary === 'projection-commit',
+        interleaved = false;
+      const pids = new Set<number>();
+      const db = isolated.db;
+      const instrumented = new Proxy(db, {
+        get(target, key, receiver) {
+          if (key !== 'begin') return Reflect.get(target, key, receiver);
+          return (fn: (tx: TransactionSql) => Promise<unknown>) =>
+            target.begin(async (tx) => {
+              const [pid] = await tx`select pg_backend_pid() pid`;
+              pids.add(pid!.pid);
+              return fn(
+                new Proxy(tx, {
+                  apply(query, thisArg, args) {
+                    const result = Reflect.apply(query, thisArg, args);
+                    if (
+                      !armed ||
+                      !args[0]
+                        ?.join?.('')
+                        .includes('select * from allrice_native_questions')
+                    )
+                      return result;
+                    armed = false;
+                    return (async () => {
+                      const rows = await result;
+                      expect(rows[0].state).toBe('open');
+                      await sendView(
+                        turn,
+                        4,
+                        [],
+                        [{ callId: q.callId, answers: answer.answers }],
+                      );
+                      interleaved = true;
+                      return rows;
+                    })();
+                  },
+                }),
+              );
+            });
+        },
+      });
+      vi.mocked(client.getDatabase).mockReturnValue(instrumented);
+      const delivered: string[] = [];
+      let active = true;
+      try {
+        await pollEmployeeConversationSteers({
+          ownership,
+          generation: binding.generation,
+          threadId: turn.nativeSessionId,
+          turnId: binding.activeTurnId!,
+          signal: new AbortController().signal,
+          polling: () => active,
+          adapter: {
+            capabilities: { steer: true },
+            steer: async (input: { clientUserMessageId?: string }) => {
+              delivered.push(input.clientUserMessageId!);
+              if (input.clientUserMessageId === inputId) return proof;
+              active = false;
+              return {
+                ...proof,
+                inputId: nextId,
+                messageId: 'next-message',
+                checkpoint: 'step_user_message',
+              };
+            },
+          },
+        });
+      } finally {
+        vi.mocked(client.getDatabase).mockReturnValue(db);
+      }
+      expect(delivered).toEqual([inputId, nextId]);
+      const [command] =
+        await db`select id,state,native_proof from allrice_conversation_commands
+        where client_user_message_id=${inputId}`;
+      expect(command).toMatchObject({ state: 'pending', native_proof: proof });
+      expect(
+        await db`select state from allrice_conversation_commands where client_user_message_id=${nextId}`,
+      ).toEqual([{ state: 'consumed' }]);
+      if (boundary === 'projection-commit') {
+        expect(interleaved).toBe(true);
+        expect(pids.size).toBeGreaterThanOrEqual(2);
+        const claimed = await claimConversationSteer({ ...scope, drain: true });
+        expect(claimed?.id).toBe(command!.id);
+        await consumeConversationSteer({
+          commandId: command!.id,
+          workerId: turn.workerId,
+          proof,
+        });
+        const receipt = await getSessionRunTimings(f.owner, f.session.id, db, {
+          inputs: true,
+        });
+        expect(receipt.inputs?.find((r) => r.inputId === inputId)?.status).toBe(
+          'consumed',
+        );
+      } else {
+        // A transport failure and weaker ACKs after a real projection-lag defer
+        // cannot destroy the adopted proof needed by release's durable reroute.
+        for (const weaker of [
+          undefined,
+          { status: 'pending' as const, inputId, messageId: answer.questionId },
+          { status: 'unknown' as const, inputId, messageId: answer.questionId },
+        ]) {
+          expect(
+            (await claimConversationSteer({ ...scope, drain: true }))?.id,
+          ).toBe(command!.id);
+          await deferConversationSteer({
+            commandId: command!.id,
+            workerId: turn.workerId,
+            ...(weaker ? { proof: weaker } : {}),
+          });
+        }
+        await sendView(
+          turn,
+          4,
+          [],
+          [{ callId: q.callId, answers: answer.answers }],
+        );
+      }
+      await completeJob({ ...turn, result: { text: '本轮结束。' } });
+      if (boundary === 'proof-reclaim') {
+        const job = await claimNextJob(randomUUID(), 120000);
+        expect(job?.id).toBe(
+          (
+            await db`select id from allrice_jobs where run_id=${sent.fallbackRunId}`
+          )[0]?.id,
+        );
+        expect(
+          await db`select c.state,c.native_proof,f.mode,f.state as followup_state
+          from allrice_conversation_commands c join allrice_conversation_followups f on f.run_id=c.followup_run_id
+          where c.id=${command!.id}`,
+        ).toEqual([
+          {
+            state: 'pending',
+            native_proof: proof,
+            mode: 'follow_up',
+            followup_state: 'released',
+          },
+        ]);
       }
     },
   );

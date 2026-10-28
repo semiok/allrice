@@ -12,8 +12,6 @@ import { refreshTaskClock } from '../task-clock.ts';
 import {
   lockNativeQuestionMode,
   nativeQuestionAnswerAdopted,
-  readNativeQuestion,
-  readNativeQuestionMode,
 } from '../native-questions.ts';
 
 const TurnIdSchema = z.string().trim().min(1).max(255);
@@ -227,22 +225,10 @@ export async function consumeConversationSteer(input: {
             answer.questionId,
             proof,
             answer,
+            true,
           ))
-        ) {
-          const q = await readNativeQuestion(
-            transaction,
-            live[0]!.session_id,
-            answer.questionId,
-          );
-          if (
-            q &&
-            !q.closed_at &&
-            (await readNativeQuestionMode(transaction)) === 'timed' &&
-            (q.state !== 'settled' || proof.sequence > q.sequence)
-          )
-            throw Error('QUESTION_ADOPTION_PENDING');
+        )
           throw new Error('QUESTION_ANSWER_NOT_ADOPTED');
-        }
       }
     }
     const captureAdoptedFeedback =
@@ -344,7 +330,9 @@ export async function deferConversationSteer(input: {
   const db = getDatabase();
   if (input.proof) RuntimeNativeInputProofSchema.parse(input.proof);
   await db`update allrice_conversation_commands set state='pending',worker_id=null,claimed_at=null,
-    native_proof=${input.proof ? db.json(input.proof) : null},next_attempt_at=now()+interval '500 milliseconds',updated_at=now()
+    native_proof=case when native_proof->>'status'='adopted' then native_proof
+      else coalesce(${input.proof ? db.json(input.proof) : null},native_proof) end,
+    next_attempt_at=now()+interval '500 milliseconds',updated_at=now()
     where id=${UuidSchema.parse(input.commandId)} and worker_id=${UuidSchema.parse(input.workerId)} and state='claimed'`;
 }
 

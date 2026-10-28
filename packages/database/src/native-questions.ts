@@ -259,12 +259,12 @@ export async function nativeQuestionAnswerAdopted(
   questionId: string,
   proofValue: unknown,
   answer: unknown,
+  deferPending = false,
 ) {
   const proof = RuntimeNativeInputProofSchema.safeParse(proofValue);
   const row = await readNativeQuestion(tx, sessionId, questionId);
   if (
     !row ||
-    row.state !== 'settled' ||
     row.closed_at ||
     (await readNativeQuestionMode(tx)) !== 'timed' ||
     !proof.success ||
@@ -273,16 +273,21 @@ export async function nativeQuestionAnswerAdopted(
       proof.data.checkpoint,
     ) ||
     proof.data.callId !== row.call_id ||
-    proof.data.messageId !== questionId ||
-    proof.data.sequence > row.sequence
+    proof.data.messageId !== questionId
   )
     return false;
   const matched = matchUserQuestionAnswer(
     { questionId, questions: row.questions },
     answer,
   );
+  if (!matched) return false;
+  // Decide pending and adopted from this one projection read. A newer commit
+  // between READ COMMITTED statements must not turn a valid proof into rejection.
+  if (row.state !== 'settled' || proof.data.sequence > row.sequence) {
+    if (deferPending) throw Error('QUESTION_ADOPTION_PENDING');
+    return false;
+  }
   return (
-    !!matched &&
     runtimePolicyDigest(matched.answers) === runtimePolicyDigest(row.answers)
   );
 }

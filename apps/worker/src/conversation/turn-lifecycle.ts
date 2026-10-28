@@ -353,6 +353,12 @@ export async function pollEmployeeConversationSteers(input: {
             workerId: input.ownership.workerId,
             ...(proof ? { proof } : {}),
           });
+          if (
+            error.message === 'QUESTION_ADOPTION_PENDING' &&
+            !input.drain &&
+            !input.handoff
+          )
+            continue;
           return;
         }
         // Completion rejected this command before native insertion. Retain both
