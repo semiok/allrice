@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import type { z } from 'zod';
-import { RepositoryReviewCommandSchema } from '../../../../packages/database/src/platform-repository-review-contracts.ts';
+import { RepositoryReviewCommandSchema } from '@allrice/database/technical-contracts';
 import { platformRepositoryReviewToolDefinition } from '../jobs/platform-repository-review.js';
 import { selectDshNativeTools } from './dsh/native-tools.js';
 import {
