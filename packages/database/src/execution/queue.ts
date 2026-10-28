@@ -1816,6 +1816,7 @@ export async function requestEmployeeAccessCancellationTransaction(
     actor,
     true,
     true,
+    true,
   );
 }
 
@@ -1830,6 +1831,7 @@ async function requestCancellationTransaction(
   },
   ignoreTerminal: boolean,
   nonBlocking = false,
+  revokeCompletedReview = false,
 ) {
   await lockRootCreation(transaction, runId, nonBlocking);
   // Persistent tree cutoff precedes job cancellation and native drain. No root
@@ -1847,7 +1849,13 @@ async function requestCancellationTransaction(
   const job = rows[0];
   if (!job) throw new QueueError('not_found');
   if (job.status === 'canceled') return;
-  if (isTerminalJobStatus(job.status)) {
+  // Explicit employee revocation also invalidates completed review authority.
+  // Preserve the succeeded history; later reassignment cannot clear this mark.
+  const revokeResult =
+    revokeCompletedReview &&
+    job.status === 'succeeded' &&
+    hasRepositoryReviewMarker(job);
+  if (isTerminalJobStatus(job.status) && !revokeResult) {
     if (ignoreTerminal) return;
     throw new QueueError('conflict');
   }
@@ -1859,14 +1867,15 @@ async function requestCancellationTransaction(
     `;
   // Freeze the first stop before a later clock refresh or second request. A
   // queued/claimed Job has no executing handler and needs no receipt lease.
-  await retainStopReceiptLease(
-    transaction,
-    {
-      ...job,
-      cancel_requested_at: job.cancel_requested_at ?? new Date(),
-    },
-    queueStopCause(job, new Date()) ?? 'cancel',
-  );
+  if (!revokeResult)
+    await retainStopReceiptLease(
+      transaction,
+      {
+        ...job,
+        cancel_requested_at: job.cancel_requested_at ?? new Date(),
+      },
+      queueStopCause(job, new Date()) ?? 'cancel',
+    );
   await audit(transaction, {
     organizationId: job.organization_id,
     workspaceId: job.workspace_id,
@@ -1880,6 +1889,7 @@ async function requestCancellationTransaction(
     metadata: {
       jobId: job.id,
       status: job.status,
+      ...(revokeResult ? { resultAuthorityRevoked: true } : {}),
       ...(actor.actorLabel ? { actorLabel: actor.actorLabel } : {}),
     },
   });

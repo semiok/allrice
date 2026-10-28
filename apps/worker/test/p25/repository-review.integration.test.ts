@@ -46,6 +46,8 @@ import {
 import {
   savePlatformEmployeeDraft,
   publishPlatformEmployee,
+  disablePlatformEmployee,
+  assignPublishedPlatformEmployeeToWorkspace,
 } from '../../../../packages/database/src/employees/platform-employees.ts';
 import { ensureQualityEmployee } from '../../../../packages/database/src/platform-quality.ts';
 import { resolvePlatformPreviewContext } from '../../../../packages/database/src/platform-employees/preview-context.ts';
@@ -163,6 +165,7 @@ suite(
   'platform repository review native workflow and current authority',
   () => {
     let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let platformEmployeeId: string;
     const emails = new Set<string>();
     let manifestPath: string, previousManifest: Buffer | undefined;
     const testHarnessExecArgv = process.execArgv;
@@ -201,6 +204,7 @@ suite(
       await f.db`update allrice_model_providers set enabled=true where provider_key='codex'`;
       const [revision] =
         await f.db`select r.* from allrice_platform_employee_revisions r join allrice_platform_employees e on e.current_published_revision_id=r.id where e.employee_key='rice'`;
+      platformEmployeeId = revision!.employee_id as string;
       const toolNames = [
         'workspace.project',
         'browser.workspace',
@@ -486,6 +490,7 @@ suite(
       'saved-assistants',
       'revise',
       'missing-review',
+      'question-attempt',
       'cancel',
       'revoked',
     ] as const)(
@@ -507,16 +512,28 @@ suite(
         });
         let candidate: DevelopmentArtifactRef;
         const model = await p24Fixture(async (request, index) => {
+          // Inspect the complete real profile, including tools that the Host
+          // does not forward through the AllRice Broker.
+          expect(request.tools?.map((t) => t.function.name)).toEqual([
+            'platform_repository_review',
+          ]);
           if (index === 1) {
-            expect(request.tools?.map((t) => t.function.name)).toContain(
-              'platform_repository_review',
-            );
-            expect(
-              request.tools?.some(
-                (t) => t.function.name === 'assistant_delegate',
-              ),
-            ).not.toBe(true);
             if (mode === 'missing-review') return { text: '已经审查通过。' };
+            if (mode === 'question-attempt')
+              return {
+                nativeTool: {
+                  name: 'ask_user_question',
+                  arguments: {
+                    questions: [
+                      {
+                        id: 'continue',
+                        question: '是否继续复核？',
+                        options: [{ label: '继续' }],
+                      },
+                    ],
+                  },
+                },
+              };
             if (mode === 'cancel') {
               await cancelPlatformRepositoryReview(s.admin, review.id);
               return { text: '停止。' };
@@ -528,7 +545,8 @@ suite(
           }
           // A native failure is an ordinary DSH tool result. Finish the turn;
           // the unchanged Job completion authority must reject this review.
-          if (mode === 'revoked') return { text: '权限已撤回。' };
+          if (mode === 'revoked' || mode === 'question-attempt')
+            return { text: '未取得复核意见。' };
           const result = request.messages
             .filter((m) => m.role === 'tool')
             .at(-1);
@@ -626,6 +644,21 @@ suite(
           expect(JSON.stringify(model.requests)).not.toContain(
             '<allrice_tool_result>',
           );
+          if (mode === 'question-attempt') {
+            expect(
+              await f.db`select question_id from allrice_task_questions where run_id=${review.runId}`,
+            ).toHaveLength(0);
+            expect(
+              await f.db`select run_id from allrice_native_question_waits where run_id=${review.runId}`,
+            ).toHaveLength(0);
+            await expect(
+              getPlatformRepositoryReviewPanel(
+                s.admin,
+                s.data.publication.id,
+                1,
+              ),
+            ).resolves.toHaveProperty('reviews.0.status', 'failed');
+          }
           const artifacts =
             await f.db`select w.run_id,o.state,o.checksum from allrice_workbench_artifacts w join allrice_deliverable_versions v on v.id=w.version_id join allrice_storage_objects o on o.id=v.object_id where w.run_id=${review.runId}`;
           expect(artifacts).toHaveLength(
@@ -985,7 +1018,7 @@ suite(
     async function completedReview() {
       return completeReview(await start(await setup()));
     }
-    async function completeReview(s: Awaited<ReturnType<typeof start>>) {
+    async function readyReview(s: Awaited<ReturnType<typeof start>>) {
       const o = await opinion(s);
       await s.development({
         action: 'deliver',
@@ -999,12 +1032,23 @@ suite(
         s.data.publication.ci,
         s.data.publication.ci_evidence,
       );
+      return { ...s, o };
+    }
+    async function completeReview(input: Awaited<ReturnType<typeof start>>) {
+      const s = await readyReview(input);
       await completeJob({
         ...s.lease,
         result: { syntheticProtocolOnly: true },
       });
       await f.db`update allrice_jobs set timeout_at=created_at+interval '1 millisecond' where id=${s.lease.jobId}`;
-      return { ...s, o };
+      return s;
+    }
+    async function republishReviewEmployee() {
+      const publication = await publishPlatformEmployee(platformEmployeeId, {
+        scope: 'assigned',
+      });
+      expect(publication.errors).toEqual([]);
+      expect(publication.valid).toBe(true);
     }
     async function rerunReview(s: Awaited<ReturnType<typeof completedReview>>) {
       const p = s.data.publication;
@@ -1494,6 +1538,232 @@ suite(
         retryable: false,
       });
     }, 30000);
+
+    it.each(['proof', 'completion'] as const)(
+      'real employee disable follows an in-flight %s and permanently revokes the succeeded result',
+      async (first) => {
+        const s =
+          first === 'proof'
+            ? await completedReview()
+            : await readyReview(await start(await setup()));
+        const held = readPathSignal<{
+            tx: RuntimeLedgerTransaction;
+            pid: number;
+          }>(),
+          release = readPathSignal(),
+          revokerStarted = readPathSignal<number>(),
+          lockBusy = readPathSignal();
+        const holder = createReadPathProbe(f.db, {
+          beforeCommit: async (tx) => {
+            const [backend] = await tx<{ pid: number }[]>`
+              select pg_backend_pid() as pid`;
+            held.resolve({ tx, pid: backend!.pid });
+            await release.promise;
+          },
+        });
+        const revoker = reviewLockConnection(f.db, async ({ execute, pid }) => {
+          revokerStarted.resolve(pid);
+          try {
+            return await execute();
+          } catch (error) {
+            if ((error as { code?: string }).code === '55P03')
+              lockBusy.resolve();
+            throw error;
+          }
+        });
+        vi.mocked(client.getDatabase).mockReturnValue(holder.db);
+        const earlier =
+          first === 'proof'
+            ? holder.db.begin((tx) =>
+                readCompletedRepositoryReview(tx, s.internal, s.review.id),
+              )
+            : completeJob({
+                ...s.lease,
+                result: { syntheticProtocolOnly: true },
+              });
+        void earlier.catch((error: unknown) => held.reject(error));
+        let disabled: ReturnType<typeof disablePlatformEmployee> | undefined;
+        try {
+          const owner = await held.promise;
+          vi.mocked(client.getDatabase).mockReturnValue(revoker.db);
+          disabled = disablePlatformEmployee(platformEmployeeId, {
+            reason: 'Revoke the completed reviewer authority',
+          });
+          void disabled.catch((error: unknown) => {
+            revokerStarted.reject(error);
+            lockBusy.reject(error);
+          });
+          const revokerPid = await revokerStarted.promise;
+          expect(revokerPid).not.toBe(owner.pid);
+          if (first === 'proof') {
+            // Completed proof holds Job SHARE. Existing NOWAIT access
+            // cancellation rolls back and retries the entire disable.
+            await lockBusy.promise;
+          } else {
+            // Live completion also holds assignment/deployment authority.
+            // Prove disable waits on that transaction, then sees success.
+            await vi.waitFor(
+              async () => {
+                const [wait] = await owner.tx<{ blockers: number[] }[]>`
+                  select pg_blocking_pids(${revokerPid}) as blockers`;
+                expect(wait!.blockers).toContain(owner.pid);
+              },
+              { timeout: 2000, interval: 10 },
+            );
+          }
+          release.resolve();
+          await Promise.all([earlier, disabled]);
+          if (first === 'proof') {
+            expect(await earlier).toHaveProperty(
+              'reviewerRunId',
+              s.review.runId,
+            );
+            expect(revoker.trace.transactions).toBeGreaterThan(1);
+          } else expect(revoker.trace.transactions).toBe(1);
+          const [history] = await f.db`
+            select j.status,r.state,j.cancel_requested_at,j.cancel_reason
+            from allrice_jobs j join allrice_runs r on r.id=j.run_id
+            where j.id=${s.review.jobId}`;
+          expect(history).toMatchObject({
+            status: 'succeeded',
+            state: 'succeeded',
+            cancel_reason: 'Revoke the completed reviewer authority',
+          });
+          expect(history!.cancel_requested_at).toBeInstanceOf(Date);
+          const [audit] = await f.db`
+            select metadata from allrice_audit_events
+            where resource_id=${s.review.runId} and action='run.cancel.request'`;
+          expect(audit!.metadata).toMatchObject({
+            status: 'succeeded',
+            resultAuthorityRevoked: true,
+          });
+          await expect(
+            f.db.begin((tx) =>
+              readCompletedRepositoryReview(tx, s.internal, s.review.id),
+            ),
+          ).rejects.toMatchObject({ code: 'authorization_denied' });
+        } finally {
+          release.resolve();
+          await Promise.allSettled([earlier, disabled]);
+          vi.mocked(client.getDatabase).mockReturnValue(f.db);
+          await republishReviewEmployee();
+        }
+        if (first === 'proof') {
+          // Reactivate through the real published assignment API. Authority
+          // restored for future work must not resurrect this old result.
+          await assignPublishedPlatformEmployeeToWorkspace(
+            'rice',
+            s.internal.workspaceId!,
+          );
+          const [active] = await f.db`
+            select a.active,d.active deployment_active,e.status
+            from allrice_employee_runs r
+            join allrice_employee_assignments a on a.id=r.employee_assignment_id
+            join allrice_platform_employee_tenant_assignments d on d.tenant_employee_id=a.employee_id and d.workspace_id=a.workspace_id
+            join allrice_employees e on e.id=a.employee_id where r.run_id=${s.review.runId}`;
+          expect(active).toMatchObject({
+            active: true,
+            deployment_active: true,
+            status: 'active',
+          });
+          await expect(
+            createPlatformRepositoryMerge(s.admin, mergeRequest(s)),
+          ).rejects.toMatchObject({ code: 'authorization_denied' });
+          expect(
+            (await getPlatformRepositoryReview(s.admin, s.review.id)).status,
+          ).toBe('succeeded');
+        }
+      },
+      30000,
+    );
+
+    it.each(['proof', 'completion'] as const)(
+      'a %s waiting for real employee disable observes the committed revocation',
+      async (later) => {
+        const s =
+          later === 'proof'
+            ? await completedReview()
+            : await readyReview(await start(await setup()));
+        const held = readPathSignal<{
+            tx: RuntimeLedgerTransaction;
+            pid: number;
+          }>(),
+          release = readPathSignal(),
+          attempted = readPathSignal<number>();
+        const revoker = createReadPathProbe(f.db, {
+          beforeCommit: async (tx) => {
+            const [backend] = await tx<{ pid: number }[]>`
+              select pg_backend_pid() as pid`;
+            held.resolve({ tx, pid: backend!.pid });
+            await release.promise;
+          },
+        });
+        const consumer = reviewLockConnection(
+          f.db,
+          async ({ sql, execute, pid }) => {
+            if (sql.includes('allrice_jobs') && sql.includes('for '))
+              attempted.resolve(pid);
+            return execute();
+          },
+        );
+        vi.mocked(client.getDatabase).mockReturnValue(revoker.db);
+        const disabled = disablePlatformEmployee(platformEmployeeId, {
+          reason: 'Revoke before proof or completion consumes authority',
+        });
+        void disabled.catch((error: unknown) => held.reject(error));
+        let consumed: Promise<unknown> | undefined;
+        try {
+          const owner = await held.promise;
+          vi.mocked(client.getDatabase).mockReturnValue(consumer.db);
+          consumed =
+            later === 'proof'
+              ? consumer.db.begin((tx) =>
+                  readCompletedRepositoryReview(tx, s.internal, s.review.id),
+                )
+              : completeJob({
+                  ...s.lease,
+                  result: { syntheticProtocolOnly: true },
+                });
+          void consumed.catch((error: unknown) => attempted.reject(error));
+          const consumerPid = await attempted.promise;
+          expect(consumerPid).not.toBe(owner.pid);
+          await vi.waitFor(
+            async () => {
+              const [wait] = await owner.tx<{ blockers: number[] }[]>`
+                select pg_blocking_pids(${consumerPid}) as blockers`;
+              expect(wait!.blockers).toContain(owner.pid);
+            },
+            { timeout: 2000, interval: 10 },
+          );
+          release.resolve();
+          await disabled;
+          if (later === 'proof')
+            await expect(consumed).rejects.toMatchObject({
+              code: 'authorization_denied',
+            });
+          else await consumed;
+          const [job] = await f.db`
+            select status,cancel_requested_at from allrice_jobs where id=${s.review.jobId}`;
+          expect(job!.status).toBe(
+            later === 'proof' ? 'succeeded' : 'canceled',
+          );
+          expect(job!.cancel_requested_at).toBeInstanceOf(Date);
+          await expect(
+            f.db.begin((tx) =>
+              readCompletedRepositoryReview(tx, s.internal, s.review.id),
+            ),
+          ).rejects.toMatchObject({ code: 'authorization_denied' });
+          expect(consumer.trace.transactions).toBe(1);
+        } finally {
+          release.resolve();
+          await Promise.allSettled([disabled, consumed]);
+          vi.mocked(client.getDatabase).mockReturnValue(f.db);
+          await republishReviewEmployee();
+        }
+      },
+      30000,
+    );
+
     it('requires ordinary Job completion and current artifact facts even when the review opinion is retained', async () => {
       for (const fault of ['artifact', 'job-cancel', 'run-state'] as const) {
         const s = await completedReview();

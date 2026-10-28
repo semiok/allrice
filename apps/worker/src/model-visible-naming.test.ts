@@ -177,7 +177,9 @@ describe('names the model reads (MET-214)', () => {
 
   it('Broker definitions and the platform repository review instructions carry no old name', () => {
     expect(offenders(strings(riceToolDefinitions))).toEqual([]);
-    expect(platformRepositoryReviewInstructions).toContain('主员工');
+    expect(platformRepositoryReviewInstructions).toContain(
+      'platform.repository.review',
+    );
     expect(offenders([platformRepositoryReviewInstructions])).toEqual([]);
   });
 

@@ -1324,6 +1324,7 @@ export async function executeEmployeeRun({
     if (
       taskProgress &&
       !repairTask &&
+      !repositoryReviewTask &&
       !assistants &&
       !selectedWorkflow &&
       nativeQuestionMode !== 'timed' &&

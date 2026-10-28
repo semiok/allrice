@@ -334,10 +334,10 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 ### allrice-repository-review-native-v1
 
 - ID：`allrice-repository-review-native-v1`；归属 MET-210；业务工具，保留普通独立仓库复核 Job 的门卫/账本。
-- 依据：用户 2026-10-28 PR2a 独立复核修复派工；DSH `@deepseek-ai/dsh-tools@0.2.1-rc.2` 的公开 `defineTool` / `ctx.tools.register` / `restrict`。当前 restricted profile 的 tools 服务由既有 Host 注册 `platform_repository_review`，以 `allrice/tool-call` 回到 Worker；仅冻结此工具的 review Run 可用。
-- AllRice 声明与 Broker DTO 严格校验保持一致，identity、冻结候选、作者排除、原始 CI pre/postflight、意见与交付仍来自普通 Job 与不可变成果；Job → 身份/凭证锁序和等待后租约复查与 heartbeat 一致。DSH 拥有原生 function call、工具结果和后续模型步骤；不使用 XML 工具循环或旧 assistant report。
+- 依据：用户 2026-10-28 / 29 PR2a 独立复核修复派工；DSH `@deepseek-ai/dsh-tools@0.2.1-rc.2` 的公开 `defineTool` / `ctx.tools.register` / `agent.ctx.tools.restrict`。当前 restricted profile 的 tools 服务由既有 Host 注册 `platform_repository_review`，以 `allrice/tool-call` 回到 Worker；Agent 创建时将完整继承工具集限制为此工具，原生 `ask_user_question` 也不可用。
+- AllRice 声明与 Broker DTO 严格校验保持一致，identity、冻结候选、作者排除、原始 CI pre/postflight、意见与交付仍来自普通 Job 与不可变成果；Job → 身份/凭证锁序和等待后租约复查与 heartbeat 一致。明确停用员工通过既有 Job `cancel_requested_at` 永久撤回已完成 proof 权限，保留成功历史；重新启用不清除标记，自然租约过期不撤销历史证据。DSH 拥有原生 function call、工具结果和后续模型步骤；不使用 XML 工具循环或旧 assistant report。
 - 来源与升级：本项修改原生 `.mjs`，**执行包内容 ID 会变化**，既有 artifact/nativeTools 指纹随实测内容更新；未升级 DSH 依赖或修改上游。升级时核对公开工具注册、声明参数、Host/Worker allowlist 与 Broker 结果。
-- 验收：`dsh-repository-review-native.test.ts`、`test/p25/repository-review.integration.test.ts`；真实 Worker → Host → PostgreSQL 的 function-call 转发及两连接 heartbeat/工具锁交错，等待后失租/身份/撤权拒绝。上线仍须独立复核、CI 和发布后 Dev 验收。
+- 验收：`dsh-repository-review-native.test.ts`、`test/p25/repository-review.integration.test.ts`；真实 Worker → Host → PostgreSQL 的完整工具名单、越名单提问无问题卡/挂起、function-call 转发及两连接 heartbeat/工具锁交错；真实停用入口与完成/proof 消费双向交错，重新启用仍拒绝旧 proof。上线仍须独立复核、CI 和发布后 Dev 验收。
 
 ### allrice-development-workflow-v1
 

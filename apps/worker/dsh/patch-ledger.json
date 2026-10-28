@@ -79,7 +79,7 @@
       "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-technical-native-tools.mjs",
-      "reason": "Business tool on the public dsh-tools defineTool/register seam: platform_repository_review forwards inspect/review/deliver to the ordinary independent review Job through the existing Host Broker. AllRice keeps current tenant/credential/lease authority, frozen candidate and immutable opinion/delivery accounting. No XML fallback, assistant report, additional agent loop or new execution authority."
+      "reason": "Business tool on the public dsh-tools defineTool/register/restrict seams: platform_repository_review forwards inspect/review/deliver to the ordinary independent review Job through the existing Host Broker; agent.ctx.tools.restrict limits the complete inherited profile to this tool. AllRice keeps current tenant/credential/lease authority, frozen candidate and immutable opinion/delivery accounting. Explicit employee revocation permanently invalidates completed proof through the existing Job cancellation ledger without changing succeeded history. No XML fallback, assistant report, additional agent loop or new execution authority."
     },
     {
       "id": "allrice-development-workflow-v1",
