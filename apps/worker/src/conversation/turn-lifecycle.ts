@@ -33,11 +33,11 @@ function isQuestionDetaching(error: unknown): boolean {
   );
 }
 
-function isSessionQuestion(message: string, sessionId: string) {
+function isSessionQuestion(message: string, nativeSessionId: string) {
   try {
     return (
       JSON.parse(message.slice(message.indexOf('{'))).questionId?.startsWith(
-        `dsh-${sessionId}:`,
+        `${nativeSessionId}:`,
       ) === true
     );
   } catch {
@@ -308,7 +308,7 @@ export async function pollEmployeeConversationSteers(input: {
       }
       const nativeAnswer =
         command.inputKind === 'ask_user' &&
-        isSessionQuestion(command.message, input.ownership.sessionId);
+        isSessionQuestion(command.message, input.threadId);
       let proof: RuntimeNativeInputProof | void = undefined;
       try {
         proof = await input.adapter.steer({

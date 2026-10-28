@@ -239,6 +239,7 @@ export async function rerouteNativeQuestionSteers(
     where f.session_id=${sessionId} and f.mode in ('steer_only','follow_up') and f.state='queued'
       and c.followup_run_id=f.run_id and c.input_kind='ask_user' and c.state in ('pending','claimed')
       and m.id=f.user_message_id and q.session_id=f.session_id and q.native_present
+      and q.native_session_id=(select thread_id from allrice_conversation_runtimes where session_id=f.session_id)
       and q.native_session_id||':'||q.call_id=m.content->'interaction'->'answer'->>'questionId'
       and (q.state in ('open','continued') or (q.state='settled' and
         (f.mode='follow_up' or c.native_proof->>'status'='adopted')))
