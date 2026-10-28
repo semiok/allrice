@@ -132,6 +132,34 @@ describe('user question contracts', () => {
       },
     });
   });
+  it('admits a native Session question without a live turn while preserving attachment and ordinary-steer fences', () => {
+    const input = {
+      clientMessageId: '00000000-0000-4000-8000-000000000001',
+      text: '跳过本题',
+      userQuestionAnswer: {
+        questionId: 'dsh-00000000-0000-4000-8000-000000000001:call:1',
+        answers: [{ id: 'q', selected: [] }],
+      },
+    };
+    for (const deliveryMode of ['auto', 'follow_up', 'steer'])
+      expect(
+        SendChatMessageInputSchema.safeParse({ ...input, deliveryMode })
+          .success,
+      ).toBe(true);
+    expect(
+      SendChatMessageInputSchema.safeParse({
+        ...input,
+        attachmentIds: ['00000000-0000-4000-8000-000000000002'],
+      }).success,
+    ).toBe(false);
+    expect(
+      SendChatMessageInputSchema.safeParse({
+        ...input,
+        userQuestionAnswer: undefined,
+        deliveryMode: 'steer',
+      }).success,
+    ).toBe(false);
+  });
 });
 
 // MET-210: the one answer rule shared by the native input, the parked wait

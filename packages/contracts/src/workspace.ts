@@ -360,8 +360,8 @@ export const SendChatMessageInputSchema = z
     }
     if (
       value.deliveryMode === 'steer' &&
-      (!value.expectedTurnId ||
-        value.expectedGeneration === undefined ||
+      ((!value.userQuestionAnswer?.questionId.startsWith('dsh-') &&
+        (!value.expectedTurnId || value.expectedGeneration === undefined)) ||
         value.attachmentIds.length)
     ) {
       context.addIssue({
@@ -371,9 +371,10 @@ export const SendChatMessageInputSchema = z
     }
     if (!value.userQuestionAnswer) return;
     if (
-      value.deliveryMode !== 'steer' ||
-      !value.expectedTurnId ||
-      value.expectedGeneration === undefined ||
+      (!value.userQuestionAnswer.questionId.startsWith('dsh-') &&
+        (value.deliveryMode !== 'steer' ||
+          !value.expectedTurnId ||
+          value.expectedGeneration === undefined)) ||
       value.attachmentIds.length > 0
     ) {
       context.addIssue({

@@ -737,7 +737,13 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
           await waitingOn(reader, 'native_question_mode');
           expect((await rows(f.session.id))[0]?.closed_at).toBeNull();
           gate.release();
-          await entry;
+          // PR5 also fences the separate enqueue transaction. Rollback wins
+          // this gap after message persistence: no stale answer Run is admitted.
+          if (order === 'answer-first')
+            await expect(entry).rejects.toMatchObject({
+              code: 'question_expired',
+            });
+          else await entry;
           await rollback;
           if (order === 'answer-first') {
             expect(
@@ -1477,9 +1483,13 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
     await completeJob({ ...turn, result: { text: '本轮结束。' } });
   });
 
-  it.each(['open', 'continued'] as const)(
-    'PR5 reroutes a deferred %s answer after the real Run releases its lease',
-    async (state) => {
+  it.each([
+    ['open', 'live'],
+    ['continued', 'live'],
+    ['continued', 'starting'],
+  ] as const)(
+    'PR5 preserves a %s answer across %s Run release and FIFO claim',
+    async (state, phase) => {
       const f = await createExperienceFixture(isolated.db);
       await updateNativeQuestionMode(f.reviewer, 'timed');
       const turn = await startTurn(f, '需要决定的地方先问我，其他工作照常做。');
@@ -1502,11 +1512,14 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
         ...ownership,
         threadId: turn.nativeSessionId,
       });
-      const binding = await recordConversationTurn({
-        ...ownership,
-        threadId: turn.nativeSessionId,
-        turnId: `${turn.nativeSessionId}:turn:2`,
-      });
+      const binding =
+        phase === 'live'
+          ? await recordConversationTurn({
+              ...ownership,
+              threadId: turn.nativeSessionId,
+              turnId: `${turn.nativeSessionId}:turn:2`,
+            })
+          : null;
       const inputId = randomUUID();
       const answer = {
         questionId: `${turn.nativeSessionId}:${current.callId}`,
@@ -1520,20 +1533,28 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
         expectedGeneration: 0,
         userQuestionAnswer: answer,
       });
-      expect(sent.delivery).toBe('steer_pending');
-      const command = await claimConversationSteer({
-        ...ownership,
-        generation: binding.generation,
-        turnId: binding.activeTurnId!,
-      });
-      expect(command).toMatchObject({
-        inputKind: 'ask_user',
-        clientUserMessageId: inputId,
-      });
-      await deferConversationSteer({
-        commandId: command!.id,
-        workerId: turn.workerId,
-      });
+      expect(sent.delivery).toBe(
+        phase === 'live' ? 'steer_pending' : 'follow_up',
+      );
+      const command = binding
+        ? await claimConversationSteer({
+            ...ownership,
+            generation: binding.generation,
+            turnId: binding.activeTurnId!,
+          })
+        : (
+            await isolated.db`select id from allrice_conversation_commands where client_user_message_id=${inputId}`
+          )[0]!;
+      if (binding) {
+        expect(command).toMatchObject({
+          inputKind: 'ask_user',
+          clientUserMessageId: inputId,
+        });
+        await deferConversationSteer({
+          commandId: command!.id,
+          workerId: turn.workerId,
+        });
+      }
       await completeJob({ ...turn, result: { text: '等你回答后继续。' } });
       expect(
         await isolated.db`select c.state,c.error_code,c.expected_turn_id,f.mode,f.state as followup_state

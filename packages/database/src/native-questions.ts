@@ -235,7 +235,7 @@ export async function rerouteNativeQuestionSteers(
   >`update allrice_conversation_followups f
     set mode='follow_up' from allrice_conversation_commands c,
       allrice_messages m,allrice_native_questions q
-    where f.session_id=${sessionId} and f.mode='steer_only' and f.state='queued'
+    where f.session_id=${sessionId} and f.mode in ('steer_only','follow_up') and f.state='queued'
       and c.followup_run_id=f.run_id and c.input_kind='ask_user' and c.state in ('pending','claimed')
       and m.id=f.user_message_id and q.session_id=f.session_id and q.native_present
       and q.native_session_id||':'||q.call_id=m.content->'interaction'->'answer'->>'questionId'
