@@ -376,8 +376,8 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
     const f = await setup(
       true,
       async (request) => {
-        const firstUser = request.messages.find((m) => m.role === 'user');
-        if (JSON.stringify(firstUser?.content).includes('PR1B_CHILD_TASK')) {
+        const userInputs = request.messages.filter((m) => m.role === 'user');
+        if (JSON.stringify(userInputs).includes('PR1B_CHILD_TASK')) {
           childEntered.release();
           await releaseChild.promise;
           return { text: 'PR1B_CHILD_RESULT' };
@@ -394,7 +394,6 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
             },
           };
         if (rootCalls === 2) return { text: '子任务仍在执行。' };
-        expect(JSON.stringify(request.messages)).toContain('PR1B_CHILD_RESULT');
         return { text: answer };
       },
       true,
@@ -453,6 +452,21 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
       });
       expect(rootCalls).toBe(3);
       expect(model!.requests).toHaveLength(4);
+      expect(JSON.stringify(model!.requests.at(-1)!.messages)).toContain(
+        'PR1B_CHILD_RESULT',
+      );
+    } catch (error) {
+      console.info(
+        'Synthetic descendant requests',
+        model!.requests.map((r) => ({
+          messages: r.messages.map((m) => ({
+            role: m.role,
+            content: JSON.stringify(m.content).slice(-1500),
+            tools: m.tool_calls,
+          })),
+        })),
+      );
+      throw error;
     } finally {
       releaseChild.release();
       task.controller.abort();
