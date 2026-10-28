@@ -1715,7 +1715,9 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
       await completeJob({ ...turn, result: { text: '本轮结束。' } });
       if (boundary === 'turn-ended') {
         expect((await claimNextJob(randomUUID(), 120000))?.id).toBe(
-          sent.run.job.id,
+          (
+            await isolated.db`select id from allrice_jobs where run_id=${sent.fallbackRunId}`
+          )[0]?.id,
         );
         expect(
           await isolated.db`select c.state,f.mode from allrice_conversation_commands c
