@@ -145,6 +145,10 @@ jobs:
         run: |
           git fetch --no-tags --depth=1 origin "$BASE"
           pnpm user-text-regex:verify --base "$BASE"
+      - name: Block unapproved DSH adaptations and private interfaces (MET-210 #4)
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: node --import tsx scripts/dsh-convergence-gate.ts --base "$BASE"
       - name: Unit-test the M1 monitor (standard-library Python, no services)
         run: python3 -m unittest discover -s scripts/m1 -p 'test_*.py'
       # Native child processes and fsync journals need bounded contention.
@@ -199,6 +203,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm doctor:ci
       - run: pnpm db:setup
+      - name: Check DSH convergence after all migrations (MET-210 #4)
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE"
+          node --import tsx scripts/dsh-convergence-gate.ts --tables --base "$BASE"
       - name: Reserve PostgreSQL lock capacity for disposable migration schemas
         run: |
           docker compose --project-name allrice-dev --file compose.dev.yaml exec -T postgres psql -U allrice -d allrice -v ON_ERROR_STOP=1 -c 'ALTER SYSTEM SET max_locks_per_transaction = 512;'
@@ -210,6 +221,11 @@ jobs:
             sleep 1
           done
           exit 1
+      - name: Test DSH convergence on an isolated migrated schema (MET-210 #4)
+        env:
+          ALLRICE_RUN_DB_INTEGRATION: 1
+          ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
+        run: pnpm exec vitest run --maxWorkers=1 scripts/dsh-convergence-gate.integration.test.ts
       - name: Capture versioned PostgreSQL regression source
         id: postgres-capture
         run: pnpm exec tsx scripts/acceptance/platform/quality-scenarios.ts capture --group=postgres --output=.local/quality/postgres/capture.json
