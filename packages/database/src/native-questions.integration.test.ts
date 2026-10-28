@@ -1488,13 +1488,17 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
     ['open', 'live'],
     ['continued', 'live'],
     ['continued', 'starting'],
+    ['settled', 'live'],
   ] as const)(
     'PR5 preserves a %s answer across %s Run release and FIFO claim',
     async (state, phase) => {
       const f = await createExperienceFixture(isolated.db);
       await updateNativeQuestionMode(f.reviewer, 'timed');
       const turn = await startTurn(f, '需要决定的地方先问我，其他工作照常做。');
-      const current = { ...question('reply-after-release'), state };
+      const current = {
+        ...question('reply-after-release'),
+        state: state === 'settled' ? ('open' as const) : state,
+      };
       await sendView(turn, 1, [current]);
       const ownership = {
         organizationId: f.org,
@@ -1556,6 +1560,13 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
           workerId: turn.workerId,
         });
       }
+      if (state === 'settled')
+        await sendView(
+          turn,
+          2,
+          [],
+          [{ callId: current.callId, answers: answer.answers }],
+        );
       await completeJob({ ...turn, result: { text: '等你回答后继续。' } });
       expect(
         await isolated.db`select c.state,c.error_code,c.expected_turn_id,f.mode,f.state as followup_state
@@ -1817,7 +1828,7 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
                       !armed ||
                       !args[0]
                         ?.join?.('')
-                        .includes('select * from allrice_native_questions')
+                        .includes('select q.* from allrice_native_questions')
                     )
                       return result;
                     armed = false;

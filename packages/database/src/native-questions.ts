@@ -241,8 +241,7 @@ export async function rerouteNativeQuestionSteers(
       and m.id=f.user_message_id and q.session_id=f.session_id and q.native_present
       and q.native_session_id=(select thread_id from allrice_conversation_runtimes where session_id=f.session_id)
       and q.native_session_id||':'||q.call_id=m.content->'interaction'->'answer'->>'questionId'
-      and (q.state in ('open','continued') or (q.state='settled' and
-        (f.mode='follow_up' or c.native_proof->>'status'='adopted')))
+      and q.state in ('open','continued','settled')
       and q.closed_at is null returning c.id`;
   const ids = rows.map((row) => row.id);
   if (ids.length)
