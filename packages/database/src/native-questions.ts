@@ -5,6 +5,11 @@ import type {
   UserQuestionItem,
   UserQuestionAnswerSubmission,
 } from '@allrice/contracts';
+import {
+  matchUserQuestionAnswer,
+  RuntimeNativeInputProofSchema,
+} from '@allrice/contracts';
+import { runtimePolicyDigest } from './runtime-policy.ts';
 import { getDatabase } from './core/client.ts';
 import { requirePlatformAdmin } from './platform-authority.ts';
 
@@ -183,6 +188,64 @@ export async function readNativeQuestion(
     where session_id=${sessionId} and native_present and native_session_id||':'||call_id=${questionId}
       and native_session_id=(select thread_id from allrice_conversation_runtimes where session_id=${sessionId})`;
   return row ?? null;
+}
+
+export class NativeQuestionError extends Error {
+  readonly code = 'question_expired';
+  constructor() {
+    super('这道题已失效，请等待新的提问。');
+  }
+}
+
+/** Admission fence only: routing a live/continued answer is PR5. Lock the same
+ * setting as rollback before persisting input, so an old card cannot become a
+ * normal prompt when the platform has returned to legacy. */
+export async function requireNativeQuestionAdmission(
+  tx: TransactionSql,
+  sessionId: string,
+  questionId: string,
+) {
+  if (!questionId.startsWith(`dsh-${sessionId}:`)) return;
+  await lockNativeQuestionMode(tx);
+  const row = await readNativeQuestion(tx, sessionId, questionId);
+  if (!row || row.closed_at || (await readNativeQuestionMode(tx)) !== 'timed')
+    throw new NativeQuestionError();
+}
+
+/** Caller holds the mode fence plus tenant/owner and consumed-command authority. A native
+ * proof alone cannot authorize: its answer must match DSH's settled batch. */
+export async function nativeQuestionAnswerAdopted(
+  tx: TransactionSql,
+  sessionId: string,
+  questionId: string,
+  proofValue: unknown,
+  answer: unknown,
+) {
+  const proof = RuntimeNativeInputProofSchema.safeParse(proofValue);
+  const row = await readNativeQuestion(tx, sessionId, questionId);
+  if (
+    !row ||
+    row.state !== 'settled' ||
+    row.closed_at ||
+    (await readNativeQuestionMode(tx)) !== 'timed' ||
+    !proof.success ||
+    proof.data.status !== 'adopted' ||
+    !['question_resolved', 'question_replied'].includes(
+      proof.data.checkpoint,
+    ) ||
+    proof.data.callId !== row.call_id ||
+    proof.data.messageId !== questionId ||
+    proof.data.sequence > row.sequence
+  )
+    return false;
+  const matched = matchUserQuestionAnswer(
+    { questionId, questions: row.questions },
+    answer,
+  );
+  return (
+    !!matched &&
+    runtimePolicyDigest(matched.answers) === runtimePolicyDigest(row.answers)
+  );
 }
 
 /** Same predicate for both clock reads; legacy and unprojected program cards

@@ -1,3 +1,4 @@
+import { requireNativeQuestionAdmission } from '../native-questions.ts';
 import { archivePrivateExperience } from '../experience-runtime.ts';
 import { nativeContextExecutionRetired } from '../conversation/native-context-retirement.ts';
 import type { ResourcePrincipal } from '../resource-principal.ts';
@@ -1439,6 +1440,12 @@ async function persistChatMessageInTransaction(
 ): Promise<PersistedChatMessage> {
   const { context, workspaceId, session, message, requestDigest, options } =
     input;
+  if (message.userQuestionAnswer)
+    await requireNativeQuestionAdmission(
+      transaction,
+      session.id,
+      message.userQuestionAnswer.questionId,
+    );
   if (options.folderEventId) {
     const { assertFolderTriggerMessage } =
       await import('../folder-triggers.ts');

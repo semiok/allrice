@@ -994,14 +994,14 @@ export async function createAllRiceRuntime(
             process.env.ALLRICE_ASK_USER_MODE === 'timed'
               ? request.wait?.callId
               : undefined;
-          const questionId = callId
-            ? `${sessionId}:${callId}`
-            : `question-${randomUUID()}`;
           const durable =
             !!callId &&
             nativeUserQuestions(this, sessionId).questions?.some(
               (q) => q.callId === callId,
             );
+          const questionId = durable
+            ? `${sessionId}:${callId}`
+            : `question-${randomUUID()}`;
           let markDone;
           const done = new Promise((resolveDone) => {
             markDone = resolveDone;
@@ -1667,6 +1667,14 @@ export async function createAllRiceRuntime(
             agent: record.agent,
             sessionId,
             pendingQuestion,
+            ...(process.env.ALLRICE_ASK_USER_MODE === 'timed'
+              ? {
+                  questionView: () =>
+                    this.ctx
+                      .get('sessionProjections')
+                      .stateOf(record.agent.session, 'userQuestions').questions,
+                }
+              : {}),
             flush: () => this.ctx.sessions.flush(record.agent.session),
             isCurrent: () =>
               (params.kind === 'ask_user' || this.detaching === undefined) &&
@@ -1676,6 +1684,7 @@ export async function createAllRiceRuntime(
                 `${sessionId}:turn:${record.agent.session.snapshotEvents().findLast((e) => e.type === 'turn/start')?.data.turn}`,
             notify: () => {
               this.pendingUserQuestions.delete(sessionId);
+              if (pendingQuestion.callId) return;
               this.userQuestionNotify({
                 sessionId,
                 questionId: pendingQuestion.questionId,

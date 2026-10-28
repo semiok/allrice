@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as Database from '@allrice/database';
-import { ArtifactReviewError, EmployeeHubError } from '@allrice/database';
+import {
+  ArtifactReviewError,
+  EmployeeHubError,
+  NativeQuestionError,
+} from '@allrice/database';
 import { POST } from './route';
 
 const ports = vi.hoisted(() => ({ context: vi.fn(), send: vi.fn() }));
@@ -50,6 +54,14 @@ describe('typed message browser boundary', () => {
     expect((await call(forged)).status).toBe(403);
     expect(ports.context).not.toHaveBeenCalled();
     expect(ports.send).not.toHaveBeenCalled();
+  });
+  it('returns an expired-card conflict instead of accepting an ordinary prompt', async () => {
+    ports.send.mockRejectedValue(new NativeQuestionError());
+    const response = await call();
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      error: { code: 'question_expired' },
+    });
   });
   it('requires a logged-in actor before reading input', async () => {
     ports.context.mockResolvedValue(null);

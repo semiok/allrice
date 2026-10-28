@@ -18,6 +18,7 @@ import {
   updateOrganizationPerson,
 } from '../organization-administration.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
+import { updateNativeQuestionMode } from '../native-questions.ts';
 import {
   CurrentPlatformTestOriginSchema,
   freezePlatformTestExecutionBinding,
@@ -813,6 +814,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     department: boolean | 'company' | 'selected' = false,
     inheritedCommon = false,
     companyCommon: boolean | 'max' = false,
+    native = false,
   ) {
     const base = companyCommon
       ? await companyCommonFixture(companyCommon === 'max')
@@ -909,17 +911,53 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       configChecksum: `sha256:${'a'.repeat(64)}`,
       compactThresholdTokens: 10000,
     });
-    const threadId = `native-${randomUUID()}`,
-      turnId = `turn-${randomUUID()}`;
+    const threadId = native ? `dsh-${run.sessionId}` : `native-${randomUUID()}`;
+    let turnId = `turn-${randomUUID()}`;
     await bindConversationThread({ ...runtime, threadId });
-    const binding = await recordConversationTurn({
+    let binding = await recordConversationTurn({
       ...runtime,
       threadId,
       turnId,
     });
-    const questionId = `question-${randomUUID()}`;
-    const show = (question = preview.question) =>
+    const callId = `ask-${randomUUID()}`;
+    const questionId = native
+      ? `${threadId}:${callId}`
+      : `question-${randomUUID()}`;
+    const project = (
+      sequence: number,
+      answers?: unknown[],
+      projectedQuestion = preview.question,
+      source = run,
+    ) =>
       queue.appendJobEvent({
+        workerId: source.context.worker.id,
+        jobId: source.context.jobId,
+        leaseToken: source.worker.leaseToken,
+        type: 'harness.native',
+        payload: {
+          source: 'dsh',
+          sourceEventType: 'session/user-questions',
+          nativePayload: {
+            sessionId: threadId,
+            sequence,
+            questions: {
+              active: answers
+                ? []
+                : [{ callId, state: 'open', questions: [projectedQuestion] }],
+              settled: answers ? [{ callId, answers }] : [],
+            },
+          },
+        },
+      });
+    const show = async (
+      question = preview.question,
+      projectedQuestion = preview.question,
+    ) => {
+      if (native) {
+        await fixture.db`update allrice_settings set value='"timed"'::jsonb where scope_type='system' and key='native_question_mode'`;
+        await project(1, undefined, projectedQuestion);
+      }
+      return queue.appendJobEvent({
         workerId: run.context.worker.id,
         jobId: run.context.jobId,
         leaseToken: run.worker.leaseToken,
@@ -927,14 +965,31 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         payload: {
           source: 'dsh',
           sourceEventType: 'session/user-question',
-          nativePayload: { questionId, questions: [question] },
+          nativePayload: {
+            questionId,
+            questions: [question],
+            ...(native
+              ? { nativeSessionId: threadId, callId, durable: true }
+              : {}),
+          },
         },
       });
+    };
     const answer = async (
       selected = ['确认启用'],
       custom?: string,
       adopt = true,
+      checkpoint:
+        'question_resolved' | 'question_replied' = 'question_resolved',
     ) => {
+      if (native && checkpoint === 'question_replied') {
+        turnId = `${threadId}:turn:2`;
+        binding = await recordConversationTurn({
+          ...runtime,
+          threadId,
+          turnId,
+        });
+      }
       const clientMessageId = randomUUID();
       await sendChatMessage(f.a.context, f.a.workspaceId, run.sessionId, {
         // The chat page labels a skipped item "跳过".
@@ -966,8 +1021,13 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         messageId: questionId,
         turnId,
         sequence: 5,
-        checkpoint: 'question_resolved' as const,
+        checkpoint,
+        ...(native ? { callId } : {}),
       };
+      if (native && adopt)
+        await project(6, [
+          { id: preview.question.id, selected, ...(custom ? { custom } : {}) },
+        ]);
       if (adopt)
         await consumeConversationSteer({
           commandId: command!.id,
@@ -990,11 +1050,299 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       runtime,
       threadId,
       turnId,
+      callId,
+      project,
       show,
       answer,
       activate,
     };
   }
+
+  it.each(['question_resolved', 'question_replied'] as const)(
+    'native %s preserves exact structured activation consent across turn changes',
+    async (checkpoint) => {
+      const x = await activationFixture(false, false, false, true);
+      await x.show();
+      // Exact words in ordinary chat carry no card evidence.
+      await sendChatMessage(x.f.a.context, x.f.a.workspaceId, x.run.sessionId, {
+        text: '确认启用',
+        clientMessageId: randomUUID(),
+        deliveryMode: 'follow_up',
+      });
+      await expect(x.activate()).rejects.toThrow('activation_answer_pending');
+      const adopted = await x.answer(
+        checkpoint === 'question_resolved' ? ['确认启用'] : [],
+        checkpoint === 'question_replied' ? '确认启用' : undefined,
+        true,
+        checkpoint,
+      );
+      await fixture.db`update allrice_conversation_commands set owner_id=${x.f.b.user.id} where id=${adopted.command.id}`;
+      await expect(x.activate()).rejects.toThrow('activation_answer_pending');
+      await fixture.db`update allrice_conversation_commands set owner_id=${x.f.a.user.id} where id=${adopted.command.id}`;
+      await expect(x.activate()).resolves.toMatchObject({ enabled: true });
+      await x.run.finish();
+    },
+  );
+
+  it('PR4 native activation keeps the prepared source while a later Run consumes the answer', async () => {
+    const x = await activationFixture(false, false, false, true);
+    await x.show();
+    const consumer = await methodRun(
+      x.f,
+      x.instance.id,
+      '请按我对原确认题的回答处理。',
+      x.run.sessionId,
+    );
+    await x.answer([], '确认启用', true, 'question_replied');
+    expect(consumer.context.runId).not.toBe(x.run.context.runId);
+    await expect(x.activate(consumer)).resolves.toMatchObject({
+      enabled: true,
+    });
+    await consumer.finish();
+    await x.run.finish();
+  });
+
+  it.each(['rollback-first', 'activation-first'] as const)(
+    'PR4 native activation and rollback serialize without receipt/root inversion: %s',
+    async (order) => {
+      const x = await activationFixture(false, false, false, true);
+      await x.show();
+      await x.answer();
+      // Verify the real platform principal before introducing either blocker.
+      await updateNativeQuestionMode(x.f.admin.context, 'timed');
+      let release!: () => void, ready!: (pid: number) => void;
+      const proceed = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const held = new Promise<number>((resolve) => {
+        ready = resolve;
+      });
+      const gate = fixture.db.begin(async (tx) => {
+        if (order === 'rollback-first')
+          await tx`select id from allrice_settings where scope_type='system' and scope_id is null
+            and key='native_question_mode' for update`;
+        else
+          // The receipt uses NOWAIT. Hold the existing content mutex instead,
+          // after activation has acquired its mode fence and before its receipt.
+          await tx`select pg_advisory_xact_lock(hashtextextended(${`employee-content:${x.f.a.organizationId}`},0))`;
+        const [row] = await tx<{ pid: number }[]>`select pg_backend_pid() pid`;
+        ready(row!.pid);
+        await proceed;
+      });
+      const pending: Promise<unknown>[] = [];
+      const failures: unknown[] = [];
+      const start = <T>(work: Promise<T>) => {
+        pending.push(work);
+        void work.catch((error: unknown) => failures.push(error));
+        return work;
+      };
+      const blocked = async (pid: number, query: string) => {
+        let rows: { pid: number }[] = [];
+        await expect
+          .poll(
+            async () => {
+              if (failures.length) throw failures[0];
+              rows = await fixture.db<{ pid: number }[]>`
+            select pid from pg_stat_activity where ${pid}=any(pg_blocking_pids(pid))
+              and query like ${`%${query}%`} and wait_event_type='Lock'`;
+              return rows.length;
+            },
+            { timeout: 2000, interval: 10 },
+          )
+          .toBe(1);
+        return rows[0]!.pid;
+      };
+      try {
+        const pid = await held;
+        if (order === 'rollback-first') {
+          const rollback = start(
+            updateNativeQuestionMode(x.f.admin.context, 'legacy'),
+          );
+          const rollbackPid = await blocked(pid, 'native_question_mode');
+          const activation = start(x.activate());
+          // PostgreSQL queues this reader behind the earlier mode writer.
+          await blocked(rollbackPid, 'for share');
+          // A waiting mode reader must not already own the business receipt.
+          await fixture.db.begin(async (tx) => {
+            await tx`select id from allrice_employee_method_activations where id=${x.preview.receiptId} for update nowait`;
+            await tx`select id from allrice_jobs where id=${x.run.context.jobId} for update nowait`;
+          });
+          release();
+          await gate;
+          await rollback;
+          await expect(activation).rejects.toMatchObject({
+            code: 'activation_answer_pending',
+          });
+          expect(
+            (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set
+              .active,
+          ).toBeNull();
+          expect(
+            await fixture.db`select consumed_at from allrice_employee_method_activations where id=${x.preview.receiptId}`,
+          ).toMatchObject([{ consumed_at: null }]);
+        } else {
+          const activation = start(x.activate());
+          const activationPid = await blocked(pid, 'pg_advisory_xact_lock');
+          const rollback = start(
+            updateNativeQuestionMode(x.f.admin.context, 'legacy'),
+          );
+          await blocked(activationPid, 'native_question_mode');
+          release();
+          await gate;
+          await expect(activation).resolves.toMatchObject({ enabled: true });
+          await rollback;
+        }
+      } finally {
+        release();
+        await gate;
+        await Promise.allSettled(pending);
+        await x.run.finish();
+      }
+    },
+  );
+
+  it('PR4 native activation requires the durable question body to match the exact prepared candidate', async () => {
+    const x = await activationFixture(false, false, false, true);
+    // Model/Host snapshots are synthetic; both presentation and projection
+    // still enter via appendJobEvent with the real live Worker lease.
+    const differentQuestion = {
+      ...x.preview.question,
+      question: '是否确认另一份工作方法？这不是刚才准备的候选。',
+    };
+    await x.show(x.preview.question, differentQuestion);
+    await x.answer();
+    expect(
+      await fixture.db`select questions,source_run_id,state from allrice_native_questions
+        where session_id=${x.run.sessionId} and call_id=${x.callId}`,
+    ).toMatchObject([
+      {
+        questions: [differentQuestion],
+        source_run_id: x.run.context.runId,
+        state: 'settled',
+      },
+    ]);
+    await expect.soft(x.activate()).rejects.toThrow();
+    expect
+      .soft(
+        (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set.active,
+      )
+      .toBeNull();
+    expect
+      .soft(
+        await fixture.db`select consumed_at,answer_message_id from allrice_employee_method_activations
+        where id=${x.preview.receiptId}`,
+      )
+      .toMatchObject([{ consumed_at: null, answer_message_id: null }]);
+    await x.run.finish();
+  }, 60000);
+
+  it.each([
+    'wrong-call',
+    'different-answer',
+    'settled-only',
+    'revoked',
+    'new-candidate',
+  ] as const)(
+    'PR4 native activation refuses %s without publishing or consuming the receipt',
+    async (boundary) => {
+      const x = await activationFixture(false, false, false, true);
+      if (boundary === 'settled-only') {
+        await fixture.db`update allrice_settings set value='"timed"'::jsonb
+          where scope_type='system' and key='native_question_mode'`;
+        // Recovery can first observe settled, which has no body. The older
+        // active snapshot in show() must not manufacture one afterwards.
+        await x.project(6, [
+          { id: x.preview.question.id, selected: ['确认启用'] },
+        ]);
+      }
+      await x.show();
+      const adopted = await x.answer();
+      if (boundary === 'wrong-call') {
+        // Fault injection into a consumed receipt: it must still be checked
+        // against the durable native identity by the business gate.
+        await fixture.db`update allrice_conversation_commands
+          set native_proof=${fixture.db.json({ ...adopted.proof, callId: 'another-call' })}
+          where id=${adopted.command.id}`;
+      } else if (boundary === 'different-answer') {
+        await x.project(7, [
+          { id: x.preview.question.id, selected: ['暂不启用'] },
+        ]);
+      } else if (boundary === 'settled-only') {
+        expect(
+          await fixture.db`select questions from allrice_native_questions
+            where session_id=${x.run.sessionId} and call_id=${x.callId}`,
+        ).toMatchObject([{ questions: [] }]);
+      } else if (boundary === 'revoked') {
+        await fixture.db`update allrice_native_questions set closed_at=clock_timestamp()
+          where session_id=${x.run.sessionId} and call_id=${x.callId}`;
+      } else {
+        const edit = await methodRun(
+          x.f,
+          x.instance.id,
+          '请修改我的工作场景候选：增加复核。',
+        );
+        await saveEmployeeMethodFromChat({
+          ...edit,
+          arguments: {
+            expectedRevision: x.saved.revision,
+            section: 'scene',
+            scene: { id: x.args.sceneId },
+            procedure: '新版必须重新确认',
+            changeSummary: '确认后候选发生变化',
+          },
+        });
+        await edit.finish();
+      }
+      await expect(x.activate()).rejects.toMatchObject({
+        code:
+          boundary === 'new-candidate'
+            ? 'version_conflict'
+            : 'activation_answer_pending',
+      });
+      expect(
+        (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set.active,
+      ).toBeNull();
+      expect(
+        await fixture.db`select consumed_at,answer_message_id from allrice_employee_method_activations
+          where id=${x.preview.receiptId}`,
+      ).toMatchObject([{ consumed_at: null, answer_message_id: null }]);
+      await x.run.finish();
+    },
+    60000,
+  );
+
+  it('PR4 native activation requires the question source Run to match its preparation receipt', async () => {
+    const x = await activationFixture(false, false, false, true);
+    await fixture.db`update allrice_settings set value='"timed"'::jsonb
+      where scope_type='system' and key='native_question_mode'`;
+    const other = await methodRun(
+      x.f,
+      x.instance.id,
+      '只整理资料，先不启用工作方法。',
+      x.run.sessionId,
+    );
+    await x.project(1, undefined, x.preview.question, other);
+    await other.finish();
+    await x.show();
+    await x.answer();
+    expect(
+      await fixture.db`select source_run_id,state from allrice_native_questions
+        where session_id=${x.run.sessionId} and call_id=${x.callId}`,
+    ).toMatchObject([{ source_run_id: other.context.runId, state: 'settled' }]);
+    expect(other.context.runId).not.toBe(x.run.context.runId);
+    await expect.soft(x.activate()).rejects.toThrow();
+    expect
+      .soft(
+        (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set.active,
+      )
+      .toBeNull();
+    expect
+      .soft(
+        await fixture.db`select consumed_at from allrice_employee_method_activations where id=${x.preview.receiptId}`,
+      )
+      .toMatchObject([{ consumed_at: null }]);
+    await x.run.finish();
+  }, 60000);
 
   async function publishDepartmentOverlay(
     x: Awaited<ReturnType<typeof retryFixture>>,

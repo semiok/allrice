@@ -72,6 +72,27 @@ describe('projectPendingUserQuestion', () => {
     ).toBeNull();
   });
 
+  it('uses native settled snapshots to clear the matching durable card', () => {
+    const asked = event(1, 'session/user-question', {
+      questionId: 'dsh-session:call',
+      nativeSessionId: 'dsh-session',
+      callId: 'call',
+      durable: true,
+      questions: [{ id: 'q', question: '继续？' }],
+    });
+    expect(projectPendingUserQuestion([asked])?.questionId).toBe(
+      'dsh-session:call',
+    );
+    expect(
+      projectPendingUserQuestion([
+        asked,
+        event(2, 'session/user-questions', {
+          sessionId: 'dsh-session',
+          questions: { active: [], settled: [{ callId: 'call', answers: [] }] },
+        }),
+      ]),
+    ).toBeNull();
+  });
   it('ignores legacy summary-only events that cannot be answered safely', () => {
     expect(
       projectPendingUserQuestion([

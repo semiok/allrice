@@ -9,6 +9,7 @@ import {
   type EmployeeMethodSharedTarget,
 } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
+import { lockNativeQuestionMode } from '../native-questions.ts';
 import { lockWorkspaceStorageQuota } from '../core/storage-quota.ts';
 import { DataAccessError } from '../data.ts';
 import { readContentPrincipal } from '../content-maintenance.ts';
@@ -621,6 +622,8 @@ export async function enterMethodChat<T>(
 ) {
   const { scope } = employeeChatIdentity(input);
   return employeeAccessTransaction(getDatabase(), async (tx) => {
+    if (tool === 'workspace.employee.method.activate')
+      await lockNativeQuestionMode(tx);
     if (options.reserveStorage)
       await lockWorkspaceStorageQuota(
         tx,

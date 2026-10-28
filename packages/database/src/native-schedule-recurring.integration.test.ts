@@ -2481,6 +2481,7 @@ suite(
     async function confirmedFrequency(
       r: Awaited<ReturnType<typeof leasedChat>>,
       label = '每隔 1 分钟提醒',
+      checkpoint?: 'question_resolved' | 'question_replied',
     ) {
       const followup = await sendChatMessage(
         f.context,
@@ -2492,7 +2493,10 @@ suite(
           deliveryMode: 'follow_up',
         },
       );
-      const questionId = `question-${randomUUID()}`;
+      const callId = `ask-${randomUUID()}`;
+      const questionId = checkpoint
+        ? `dsh-${r.input.sessionId}:${callId}`
+        : `question-${randomUUID()}`;
       const turnId = `dsh-${r.input.context.runId}:turn:1`;
       const question = {
         questionId,
@@ -2527,9 +2531,51 @@ suite(
         client_user_message_id,expected_generation,expected_turn_id,message,input_kind,state,native_proof)
         values(${f.organizationId},${f.workspaceId},${r.input.sessionId},${r.input.context.policySnapshot.subjectId},${followup.run.id},'steer',
           ${clientId},1,${turnId},${'allrice:user-question:v1:' + JSON.stringify(answer)},'ask_user','consumed',
-          ${f.db.json({ status: 'adopted', turnId, inputId: clientId, sequence: 18, messageId: questionId, checkpoint: 'question_resolved' })}) returning id`;
-      return { commandId: c!.id, followup, questionId, turnId };
+          ${f.db.json({ status: 'adopted', turnId, inputId: clientId, sequence: 18, messageId: questionId, checkpoint: checkpoint ?? 'question_resolved', ...(checkpoint ? { callId, turnId: 'later:turn:2' } : {}) })}) returning id`;
+      if (checkpoint) {
+        await f.db`update allrice_settings set value='"timed"'::jsonb where scope_type='system' and key='native_question_mode'`;
+        await f.db`insert into allrice_native_questions(session_id,native_session_id,call_id,source_run_id,state,questions,answers,sequence)
+          values(${r.input.sessionId},${`dsh-${r.input.sessionId}`},${callId},${r.input.context.runId},'settled',
+            ${f.db.json(question.questions)},${f.db.json(answer.answers)},19)`;
+      }
+      return {
+        commandId: c!.id,
+        followup,
+        questionId,
+        turnId,
+        callId,
+        answers: answer.answers,
+      };
     }
+    it.each(['question_resolved', 'question_replied'] as const)(
+      'native %s authorizes one schedule by settled answer, regardless of original turn',
+      async (checkpoint) => {
+        const r = await leasedChat('1 分钟尖叫一次', {
+          kind: 'every',
+          seconds: 60,
+        });
+        try {
+          const choice = await confirmedFrequency(r, undefined, checkpoint);
+          await f.db`update allrice_native_questions set answers='[]'::jsonb where session_id=${r.input.sessionId}`;
+          await expect(
+            createRecurringTaskFromExecutionContext(r.input),
+          ).rejects.toMatchObject({ code: 'confirmation_required' });
+          await f.db`update allrice_native_questions set answers=${f.db.json(choice.answers)} where session_id=${r.input.sessionId}`;
+          const created = await createRecurringTaskFromExecutionContext(
+            r.input,
+          );
+          expect(created.rule).toEqual({ kind: 'every', seconds: 60 });
+          await expect(
+            createRecurringTaskFromExecutionContext({
+              ...r.input,
+              callId: randomUUID(),
+            }),
+          ).rejects.toMatchObject({ code: 'confirmation_required' });
+        } finally {
+          await r.finish();
+        }
+      },
+    );
     it('creates the reported recurring shorthand only after its same-Run typed confirmation, preserves both human sources, and compares the chosen rule', async () => {
       const r = await leasedChat('1 分钟尖叫一次', {
         kind: 'every',

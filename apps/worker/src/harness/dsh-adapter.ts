@@ -2100,9 +2100,20 @@ export class DshHarnessAdapter implements HarnessAdapter {
         const questions = Array.isArray(notification.params.questions)
           ? notification.params.questions
           : [];
-        const questionId = shortText(notification.params.questionId, 240);
+        const durable = notification.params.durable === true;
+        const questionId =
+          durable && typeof notification.params.questionId === 'string'
+            ? notification.params.questionId
+            : shortText(notification.params.questionId, 240);
         const normalized = UserQuestionRequestSchema.safeParse({
           questionId,
+          ...(durable
+            ? {
+                durable: true,
+                callId: notification.params.callId,
+                nativeSessionId: notification.params.nativeSessionId,
+              }
+            : {}),
           questions: questions.map((value) => {
             const question = record(value);
             const intent = record(question?.intent);
@@ -2158,20 +2169,14 @@ export class DshHarnessAdapter implements HarnessAdapter {
           status: 'started',
           label: 'Rice 需要你确认',
           ...(summary ? { summary } : {}),
-          sourceEventId: `dsh:${questionId ?? randomUUID()}`,
+          sourceEventId:
+            durable && questionId
+              ? `dsh:question:${createHash('sha256').update(questionId).digest('hex')}`
+              : `dsh:${questionId ?? randomUUID()}`,
           sourceEventType: 'session/user-question',
           sourceOccurredAt: new Date().toISOString(),
           sourcePayload: normalized.success
-            ? {
-                ...normalized.data,
-                ...(notification.params.durable === true
-                  ? {
-                      durable: true,
-                      callId: notification.params.callId,
-                      nativeSessionId: notification.params.nativeSessionId,
-                    }
-                  : {}),
-              }
+            ? normalized.data
             : { questionId, questionCount: questions.length },
         });
         if (input.questionWait && questionId && normalized.success) {

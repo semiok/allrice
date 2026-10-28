@@ -1,3 +1,4 @@
+import { nativeQuestionAnswerAdopted } from '../native-questions.ts';
 import type { TransactionSql } from 'postgres';
 import {
   clarifiedScheduleIntent,
@@ -17,9 +18,9 @@ export async function readScheduleClarification(
   request: string,
 ) {
   const ctx = input.context;
-  // Parallel calls of one Run read and consume its answers one at a time.
-  await tx`select pg_advisory_xact_lock(hashtextextended(${`schedule-answer:${ctx.runId}`},0))`;
-  const [row] = await tx<
+  // Parallel calls of one Session read and consume its answers one at a time.
+  await tx`select pg_advisory_xact_lock(hashtextextended(${`schedule-answer:${input.sessionId}`},0))`;
+  const [legacy] = await tx<
     { question: unknown; answer: unknown; answered_at: Date }[]
   >`
     select e.payload->'nativePayload' question,m.content->'interaction'->'answer' answer,
@@ -45,9 +46,58 @@ export async function readScheduleClarification(
       and m.content->'interaction'->>'type'='user_question_answer'
     where e.organization_id=${ctx.organizationId} and e.workspace_id=${ctx.workspaceId!}
       and e.run_id=${ctx.runId} and e.payload->>'sourceEventType'='session/user-question'
+      and not (e.payload->'nativePayload'->>'questionId' like ${`dsh-${input.sessionId}:%`})
       and e.sequence=(select max(q.sequence) from allrice_run_events q
         where q.run_id=e.run_id and q.payload->>'sourceEventType'='session/user-question')
     order by c.created_at desc,c.id desc limit 1`;
+  // A continued answer may be adopted in a later native turn. Its typed
+  // command must belong to this Run (or its live turn), not the original turn.
+  // The public DSH settled view supplies the answers; receipt rows only gate it.
+  const [native] = await tx<
+    {
+      question: unknown;
+      answer: unknown;
+      answered_at: Date;
+      question_id: string;
+      native_proof: unknown;
+      client_user_message_id: string;
+    }[]
+  >`select jsonb_build_object('questionId',m.content->'interaction'->'answer'->>'questionId',
+      'questions',q.questions) question,
+      m.content->'interaction'->'answer' answer,m.created_at answered_at,
+      m.content->'interaction'->'answer'->>'questionId' question_id,c.native_proof,c.client_user_message_id
+    from allrice_conversation_commands c
+    join allrice_conversation_followups f on f.run_id=c.followup_run_id
+      and f.organization_id=c.organization_id and f.workspace_id=c.workspace_id
+      and f.session_id=c.session_id and f.owner_id=c.owner_id
+    join allrice_messages m on m.id=f.user_message_id and m.organization_id=c.organization_id
+      and m.workspace_id=c.workspace_id and m.session_id=c.session_id and m.owner_id=c.owner_id
+      and m.role='user' and m.status='completed' and m.client_message_id=c.client_user_message_id
+      and m.content->'interaction'->>'type'='user_question_answer'
+    left join allrice_native_questions q on q.session_id=c.session_id
+      and q.native_session_id||':'||q.call_id=m.content->'interaction'->'answer'->>'questionId'
+    where c.organization_id=${ctx.organizationId} and c.workspace_id=${ctx.workspaceId!}
+      and c.session_id=${input.sessionId} and c.owner_id=${ctx.policySnapshot.subjectId}
+      and c.input_kind='ask_user' and c.state='consumed'
+      and m.content->'interaction'->'answer'->>'questionId' like ${`dsh-${input.sessionId}:%`}
+      and (q.source_run_id=${ctx.runId} or c.followup_run_id=${ctx.runId}
+        or exists(select 1 from allrice_conversation_runtimes r where r.session_id=c.session_id
+          and r.active_run_id=${ctx.runId} and r.active_turn_id=c.native_proof->>'turnId'))
+    order by c.created_at desc,c.id desc limit 1`;
+  if (
+    native &&
+    ((native.native_proof as { inputId?: string } | null)?.inputId !==
+      native.client_user_message_id ||
+      !(await nativeQuestionAnswerAdopted(
+        tx,
+        input.sessionId,
+        native.question_id,
+        native.native_proof,
+        native.answer,
+      )))
+  )
+    return { intent: null, answers: [], confirmedRequests: [] as string[] };
+  const row = native ?? legacy;
   if (!row) {
     // A question still open (or skipped) in this Run is not "never asked":
     // an earlier decline or consumed answer must not fall back to wording.
@@ -87,7 +137,7 @@ export async function readScheduleClarification(
         <>all(${kinds.map((kind) => id(kind, input.callId))}::uuid[])`;
   return {
     // A selected frequency is consumed by another call of this Run.
-    intent: enrolled.some((task) => others.has(task.request_id))
+    intent: enrolled.some((task) => !!native || others.has(task.request_id))
       ? null
       : clarifiedScheduleIntent(request, row.question, row.answer),
     answers: selectedScheduleAnswers(row.question, row.answer),

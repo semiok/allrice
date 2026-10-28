@@ -19,7 +19,7 @@ const digest = (input) =>
 
 /** Read actual native journal facts; inbox admission alone is not step adoption.
  * Uses pinned native DSH events, not a model's promise or guessed timing. */
-export function inspectDshInput(agent, input) {
+export function inspectDshInput(agent, input, questionView) {
   const events = agent.session.snapshotEvents();
   const bound = events.findLast(
     (e) =>
@@ -35,7 +35,39 @@ export function inspectDshInput(agent, input) {
   const entered = events.findLast(
     (e) => e.type === 'user/message' && e.data.id === bound.data.messageId,
   );
-  const proof = answer ?? entered;
+  let proof = answer ?? entered;
+  const prefix = `${agent.session.id}:`;
+  const callId =
+    input.kind === 'ask_user' && bound.data.messageId.startsWith(prefix)
+      ? bound.data.messageId.slice(prefix.length)
+      : undefined;
+  const view = callId && questionView?.();
+  const nativeQuestion =
+    view &&
+    ([...view.active, ...view.settled].some((q) => q.callId === callId) ||
+      events.some(
+        (e) =>
+          e.type === 'tool/call' &&
+          e.data.callId === callId &&
+          e.data.name === 'ask_user_question',
+      ));
+  if (nativeQuestion) {
+    const settled = view.settled.find((q) => q.callId === callId);
+    const native = events.findLast(
+      (e) =>
+        (e.type === 'tool/result' && e.data.message.toolCallId === callId) ||
+        (e.type === 'user/message' &&
+          e.data.source.kind === 'user-question-reply' &&
+          e.data.source.callId === callId),
+    );
+    if (!settled || !native)
+      return {
+        status: native ? 'unknown' : 'pending',
+        inputId: input.inputId,
+        messageId: bound.data.messageId,
+      };
+    proof = native;
+  }
   if (proof) {
     const nativeTurn = events.findLast(
       (e) => e.type === 'turn/start' && e.seq < proof.seq,
@@ -60,6 +92,15 @@ export function inspectDshInput(agent, input) {
       sequence: proof.seq,
       turnId: input.turnId,
       checkpoint: answer ? 'question_resolved' : 'step_user_message',
+      ...(nativeQuestion
+        ? {
+            callId,
+            checkpoint:
+              proof.type === 'user/message'
+                ? 'question_replied'
+                : 'question_resolved',
+          }
+        : {}),
     };
   const pending = [...agent.inbox.nextStep, ...agent.inbox.nextTurn].some(
     (m) => m.id === bound.data.messageId,
@@ -88,6 +129,7 @@ export async function deliverDshInput(
     flush,
     isCurrent,
     suspended = false,
+    questionView,
   },
   input,
 ) {
@@ -99,7 +141,8 @@ export async function deliverDshInput(
     input.text.length > 80_000
   )
     throw new TypeError('INVALID_TYPED_INPUT');
-  const previous = inspectDshInput(agent, input);
+  const inspect = () => inspectDshInput(agent, input, questionView);
+  const previous = inspect();
   if (previous.status !== 'not_found') {
     await flush();
     return previous;
@@ -130,7 +173,7 @@ export async function deliverDshInput(
       turnId: input.turnId,
     });
     await flush();
-    if (!isCurrent()) return inspectDshInput(agent, input);
+    if (!isCurrent()) return inspect();
     pendingQuestion.resolve(answer);
     agent.session.append('allrice/input/answered', {
       inputId: input.inputId,
@@ -152,12 +195,11 @@ export async function deliverDshInput(
       turnId: input.turnId,
     });
     await flush();
-    if (!isCurrent() || agent.status !== 'running')
-      return inspectDshInput(agent, input);
+    if (!isCurrent() || agent.status !== 'running') return inspect();
     agent.steer(message);
   }
   await flush();
-  return inspectDshInput(agent, input);
+  return inspect();
 }
 
 /** Do not let an old turn's unadopted correction leak into a later turn. */

@@ -396,6 +396,7 @@ export {
 export * from './providers/dsh-runtime-close-observations.ts';
 // Private server/Worker contract. Not exported as a model tool or HTTP API.
 export {
+  NativeQuestionError,
   readNativeQuestionMode,
   getNativeQuestionMode,
   updateNativeQuestionMode,

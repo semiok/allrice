@@ -1,5 +1,6 @@
 import {
   DataAccessError,
+  NativeQuestionError,
   ReferenceRuntimeError,
   SessionReferenceError,
   sendChatMessage,
@@ -56,6 +57,11 @@ export async function POST(
       headers: { 'Cache-Control': 'private, no-store' },
     });
   } catch (error) {
+    if (error instanceof NativeQuestionError)
+      return Response.json(
+        { error: { code: error.code, message: error.message } },
+        { status: 409, headers: { 'Cache-Control': 'private, no-store' } },
+      );
     if (error instanceof ReferenceRuntimeError)
       return Response.json(
         {

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { lockNativeQuestionMode } from './native-questions.ts';
 import {
   NativeCalendarControlSchema,
   NativeMonthlyCalendarRevisionSchema,
@@ -681,6 +682,7 @@ export async function createRecurringTaskFromExecutionContext(
   return employeeAccessTransaction(getDatabase(), async (tx) => {
     await tx`set local lock_timeout='1000ms'`;
     await tx`set local statement_timeout='10000ms'`;
+    await lockNativeQuestionMode(tx);
     await acquireDevAdmission(tx);
     const ownerScope = {
       organizationId: scope.organizationId,
