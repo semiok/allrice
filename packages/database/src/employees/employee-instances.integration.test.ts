@@ -1363,13 +1363,20 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         ]);
       }
       await x.show();
-      const adopted = await x.answer();
+      // PR5 admission rejects a bodyless settled card before a command exists.
+      // The business consumer must still leave the candidate/receipt untouched.
+      if (boundary === 'settled-only')
+        await expect(x.answer()).rejects.toMatchObject({
+          code: 'question_expired',
+        });
+      const adopted =
+        boundary === 'settled-only' ? undefined : await x.answer();
       if (boundary === 'wrong-call') {
         // Fault injection into a consumed receipt: it must still be checked
         // against the durable native identity by the business gate.
         await fixture.db`update allrice_conversation_commands
-          set native_proof=${fixture.db.json({ ...adopted.proof, callId: 'another-call' })}
-          where id=${adopted.command.id}`;
+          set native_proof=${fixture.db.json({ ...adopted!.proof, callId: 'another-call' })}
+          where id=${adopted!.command.id}`;
       } else if (boundary === 'different-answer') {
         await x.project(7, [
           { id: x.preview.question.id, selected: ['暂不启用'] },
