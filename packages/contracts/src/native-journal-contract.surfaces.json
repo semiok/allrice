@@ -36,7 +36,7 @@
       "occurrences": {
         "apps/worker/dsh/allrice-dsh-runtime-compatibility.mjs": 1,
         "packages/database/migrations/0078_typed_chat_inputs.sql": 2,
-        "packages/database/src/conversation/conversation-input.ts": 1,
+        "packages/database/src/conversation/conversation-input.ts": 2,
         "packages/database/src/execution/queue.ts": 1,
         "packages/database/src/task-native-wait.ts": 1,
         "packages/database/src/workspace/service.ts": 3,
