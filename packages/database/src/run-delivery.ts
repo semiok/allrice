@@ -6,6 +6,10 @@ import {
   assertRunDeliveryAuthority,
   type RunDeliveryAuthority,
 } from './run-delivery-authority.ts';
+import {
+  readFinalDeliveryTurnStartsTransaction,
+  type FinalDeliveryReplyOrigin,
+} from './final-delivery-reply-origin.ts';
 import { continuingProjectServiceIds } from './project-services.ts';
 import {
   captureFinalDeliveryProof,
@@ -17,6 +21,7 @@ import {
   type FinalDeliveryCommitProof,
   type JobCompletionGuard,
 } from './final-delivery-commit.ts';
+export type { FinalDeliveryReplyOrigin } from './final-delivery-reply-origin.ts';
 export type { RunDeliveryAuthority } from './run-delivery-authority.ts';
 export type { JobCompletionGuard } from './final-delivery-commit.ts';
 
@@ -46,14 +51,44 @@ export async function readDeliverySnapshot(authority: RunDeliveryAuthority) {
   );
 }
 
+async function readOrigin(tx: TransactionSql, authority: RunDeliveryAuthority) {
+  const current = await assertRunDeliveryAuthority(tx, authority);
+  const origin = await readFinalDeliveryTurnStartsTransaction(tx, {
+    ...current,
+    generation: authority.worker.generation,
+  });
+  await assertRunDeliveryAuthority(tx, authority);
+  return origin;
+}
+
+/** Current Run/lease only, without assistant roots, instances or run links. */
+export async function readRunDeliveryReplyOrigin(
+  authority: RunDeliveryAuthority,
+) {
+  const captured = structuredClone(authority);
+  return getDatabase().begin('isolation level read committed', (tx) =>
+    readOrigin(tx, captured),
+  );
+}
+
 /** Called only after the trusted native candidate has passed Worker validation.
  * completeJob rechecks evidence and the actual stored reply in its transaction. */
 export function createDeliveryCommitGuard(input: {
   authority: RunDeliveryAuthority;
   proof: FinalDeliveryCommitProof;
+  origin: FinalDeliveryReplyOrigin;
 }): JobCompletionGuard {
   const authority = structuredClone(input.authority);
   const proof = captureFinalDeliveryProof(input.proof);
+  if (
+    !input.origin ||
+    input.origin.schemaVersion !== 1 ||
+    input.origin.rootRunId !== authority.rootRunId ||
+    input.origin.nativeSessionId !== proof.nativeSessionId ||
+    !input.origin.starts.length
+  )
+    finalDeliveryUnavailable();
+  const origin = JSON.stringify(input.origin);
   return registerJobCompletionGuard(async (tx, job, result) => {
     const { worker, rootRunId } = authority;
     if (
@@ -73,7 +108,10 @@ export function createDeliveryCommitGuard(input: {
     if (finalDeliveryTextDigest(answer) !== proof.candidateDigest)
       finalDeliveryUnavailable();
     const current = await assertRunDeliveryAuthority(tx, authority);
-    if (current.nativeSessionId !== proof.nativeSessionId)
+    if (
+      current.nativeSessionId !== proof.nativeSessionId ||
+      JSON.stringify(await readOrigin(tx, authority)) !== origin
+    )
       finalDeliveryUnavailable();
     const facts = await readSnapshot(tx, authority);
     if (finalDeliveryFactsDigest(facts) !== proof.factSetDigest)

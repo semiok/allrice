@@ -86,6 +86,31 @@ export async function readFinalDeliveryReplyOriginTransaction(
     Number(identity.fence) !== (worker.fence ?? 1)
   )
     finalDeliveryUnavailable();
+  return readFinalDeliveryTurnStartsTransaction(tx, {
+    task,
+    nativeSessionId,
+    generation: worker.generation,
+    activeTurnId: identity.active_turn_id,
+  });
+}
+
+/** SELECT-only control anchors; the caller holds the current Run authority. */
+export async function readFinalDeliveryTurnStartsTransaction(
+  tx: RuntimeLedgerTransaction,
+  {
+    task,
+    nativeSessionId,
+    generation,
+    activeTurnId,
+  }: {
+    task: RuntimeTaskRef;
+    nativeSessionId: string;
+    generation: number;
+    activeTurnId: string | null;
+  },
+): Promise<FinalDeliveryReplyOrigin | null> {
+  if (!finalDeliveryRootIsLocked(tx, task.rootRunId))
+    finalDeliveryUnavailable();
   // Do not filter malformed/foreign turn records away: an inconsistent anchor
   // in this Run is uncertainty. No all-session lookup or historical backfill.
   const rows = await tx<
@@ -120,7 +145,7 @@ export async function readFinalDeliveryReplyOriginTransaction(
       row.sequence <= lastSequence ||
       payload?.source !== 'dsh' ||
       payload.threadId !== nativeSessionId ||
-      payload.generation !== worker.generation ||
+      payload.generation !== generation ||
       typeof payload.turnId !== 'string' ||
       !payload.turnId.startsWith(prefix) ||
       !/^[1-9][0-9]*$/.test(payload.turnId.slice(prefix.length)) ||
@@ -139,8 +164,7 @@ export async function readFinalDeliveryReplyOriginTransaction(
     ids.add(row.id);
     lastSequence = row.sequence;
   }
-  if (identity.active_turn_id !== starts.at(-1)!.turnId)
-    finalDeliveryUnavailable();
+  if (activeTurnId !== starts.at(-1)!.turnId) finalDeliveryUnavailable();
   return Object.freeze({
     schemaVersion: 1,
     rootRunId: task.rootRunId,

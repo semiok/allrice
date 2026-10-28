@@ -84,10 +84,11 @@ export async function assertRunDeliveryAuthority(
       lease_expires_at: Date;
       timeout_at: Date;
       thread_id: string;
+      active_turn_id: string | null;
     }[]
   >`select r.owner_id,e.session_id,e.assistant_message_id,v.employee_id,e.employee_version_id,e.employee_assignment_id,
       v.manifest,v.config_checksum,v.version,e.execution_snapshot,r.execution_spec,r.policy_snapshot_id,
-      p.payload policy_payload,p.expires_at policy_expires_at,j.lease_expires_at,j.timeout_at,c.thread_id
+      p.payload policy_payload,p.expires_at policy_expires_at,j.lease_expires_at,j.timeout_at,c.thread_id,c.active_turn_id
     from allrice_jobs j
     join allrice_runs r on r.id=j.run_id and r.organization_id=j.organization_id and r.workspace_id=j.workspace_id and r.owner_id=j.owner_id
     join allrice_employee_runs e on e.run_id=r.id and e.organization_id=r.organization_id and e.workspace_id=r.workspace_id and e.owner_id=r.owner_id
@@ -208,6 +209,7 @@ export async function assertRunDeliveryAuthority(
       },
     }),
     nativeSessionId: row.thread_id,
+    activeTurnId: row.active_turn_id,
     assistantMessageId: row.assistant_message_id,
     deadlines,
   };
