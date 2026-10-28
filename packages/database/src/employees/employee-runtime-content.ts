@@ -538,10 +538,15 @@ async function brandSourceSessions(
 
 /** Discover immutable dependencies before acquiring locks. Never acquire a new
  * owner's principal or an out-of-order context lock during recursive reading. */
-async function contentGraph(scope: RunScope, sql: ContentSql) {
+async function contentGraph(
+  scope: RunScope,
+  sql: ContentSql,
+  resumedGenerationId?: string,
+) {
   const run = await ownedRun(scope, sql);
-  const [root] = run.content_generation_id
-    ? await sql`select generation_id from allrice_employee_content_contexts where generation_id=${run.content_generation_id}`
+  const rootGenerationId = resumedGenerationId ?? run.content_generation_id;
+  const [root] = rootGenerationId
+    ? await sql`select generation_id from allrice_employee_content_contexts where generation_id=${rootGenerationId}`
     : await sql`select generation_id from allrice_employee_content_contexts where session_id=${scope.sessionId} and invalidated_at is null and retired_at is null`;
   const pending = new Set<string>(root ? [root.generation_id] : []);
   const owners = new Set([scope.ownerId]),
@@ -637,12 +642,12 @@ async function contentGraph(scope: RunScope, sql: ContentSql) {
 }
 
 async function withContentLocks<T>(
-  scope: RunScope,
+  scope: RunScope & { resumedGenerationId?: string },
   operation: (tx: ContentTx) => Promise<T>,
 ): Promise<T> {
   for (let attempt = 0; attempt < 3; attempt++) {
     const result = await getDatabase().begin(async (tx) => {
-      const before = await contentGraph(scope, tx);
+      const before = await contentGraph(scope, tx, scope.resumedGenerationId);
       for (const ownerId of before.owners)
         await readContentPrincipal(
           { ...identity(scope), actor: { type: 'user', id: ownerId } },
@@ -663,7 +668,10 @@ async function withContentLocks<T>(
       if (before.generations.length)
         await tx`select generation_id from allrice_employee_content_contexts where generation_id in ${tx(before.generations)} order by generation_id for update`;
       await tx`select pg_advisory_xact_lock(hashtextextended(${`employee-content-context:${scope.sessionId}`},0))`;
-      if ((await contentGraph(scope, tx)).checksum !== before.checksum)
+      if (
+        (await contentGraph(scope, tx, scope.resumedGenerationId)).checksum !==
+        before.checksum
+      )
         return { retry: true as const };
       return { value: await operation(tx) };
     });
@@ -865,8 +873,15 @@ export async function assertEmployeeBrandWorkflowContext(scope: RunScope) {
 
 /** Bind once per Run. A content generation outlives native process/config
  * changes. Its exact Run references cover text derived through compaction. */
-export async function prepareEmployeeContentContext(scope: RunScope) {
-  const result = await withContentLocks(scope, async (tx) => {
+export async function prepareEmployeeContentContext(
+  scope: RunScope,
+  nativeReply?: { generationId: string | null; nativeContextKey?: string },
+) {
+  const lockScope = {
+    ...scope,
+    resumedGenerationId: nativeReply?.generationId ?? undefined,
+  };
+  const result = await withContentLocks(lockScope, async (tx) => {
     const run = await ownedRun(scope, tx);
     await assertPersonalProvenance(identity(scope), run, tx);
     if (!run.content) {
@@ -902,6 +917,18 @@ export async function prepareEmployeeContentContext(scope: RunScope) {
       RunRow[]
     >`select content_generation_id from allrice_employee_runs where run_id=${scope.runId}`;
     run.content_generation_id = boundRun!.content_generation_id;
+    // A typed answer continues an exact, already authorized native binding.
+    // Never rotate to a new context when the source's content was revoked.
+    if (nativeReply) {
+      if (
+        !nativeReply.generationId ||
+        !nativeReply.nativeContextKey ||
+        (run.content_generation_id &&
+          run.content_generation_id !== nativeReply.generationId)
+      )
+        return unavailable();
+      run.content_generation_id = nativeReply.generationId;
+    }
     let [context] = run.content_generation_id
       ? await tx<
           ContentContextRow[]
@@ -991,14 +1018,15 @@ export async function prepareEmployeeContentContext(scope: RunScope) {
       ...current,
       generationId: context!.generation_id,
       nativeContextKey:
-        ExperienceReadPinsSchema.parse(run.experience_reads ?? []).length ||
+        nativeReply?.nativeContextKey ??
+        (ExperienceReadPinsSchema.parse(run.experience_reads ?? []).length ||
         run.brand_workflow ||
         run.personal_skills ||
         current.scenes.length ||
         current.sources.some((s) => s.referenceFile) ||
         priorScene
           ? `${context!.generation_id}-${scope.runId}`
-          : context!.generation_id,
+          : context!.generation_id),
       historyFromMessageId: context!.history_from_message_id,
       allowedMessageIds: allowedMessages?.map((m) => m.id) ?? null,
     };

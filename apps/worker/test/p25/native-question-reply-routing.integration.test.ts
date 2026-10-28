@@ -307,7 +307,7 @@ suite('PR5 native reply routing through the actual employee handler', () => {
       await tx`insert into allrice_personal_skill_installations(id,organization_id,owner_id,name,state,current_version_id)
         values(${pin.installationId},${pin.organizationId},${pin.ownerId},${skill.definition.name},'installed',${pin.versionId})`;
       await tx`insert into allrice_personal_skill_versions(id,organization_id,owner_id,installation_id,version,source,original_text,definition,definition_checksum)
-        values(${pin.versionId},${pin.organizationId},${pin.ownerId},${pin.installationId},1,'{}',${skill.definition.content},${tx.json(skill.definition)},${pin.definitionChecksum})`;
+        values(${pin.versionId},${pin.organizationId},${pin.ownerId},${pin.installationId},1,${tx.json({ kind: 'attachment', objectId: randomUUID(), fileName: 'SKILL.md', originalChecksum: skill.definition.checksum, byteLength: Buffer.byteLength(skill.definition.content) })},${skill.definition.content},${tx.json(skill.definition)},${pin.definitionChecksum})`;
       await tx`insert into allrice_personal_skill_bindings(id,organization_id,workspace_id,owner_id,instance_id,installation_id,enabled,epoch)
         values(${pin.bindingId},${pin.organizationId},${f.identity.workspace},${pin.ownerId},${pin.instanceId},${pin.installationId},true,1)`;
     });

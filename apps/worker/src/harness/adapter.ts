@@ -81,6 +81,7 @@ export interface HarnessExecutionInput {
   nativeQuestionWait?: QuestionWait;
   /** This Job's durable ask_user command, loaded by the Worker, never HTTP/RPC callbacks. */
   questionReply?: {
+    receipt?: 'adopted' | 'rejected';
     inputId: string;
     text: string;
     assertCurrent(): Promise<unknown>;

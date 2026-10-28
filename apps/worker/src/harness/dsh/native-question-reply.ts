@@ -13,6 +13,10 @@ export async function driveNativeQuestionReply(input: {
   flushEvents(): Promise<void>;
 }) {
   const { client, sessionId, reply, signal } = input;
+  if (reply.receipt) {
+    await reply.assertCurrent();
+    return { rejected: reply.receipt === 'rejected' };
+  }
   const questionId = JSON.parse(
     reply.text.slice('allrice:user-question:v1:'.length),
   ).questionId as string;

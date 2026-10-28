@@ -1,9 +1,11 @@
 import {
   UserQuestionAnswerSubmissionSchema,
+  matchUserQuestionAnswer,
   type ExecutionContext,
   type RuntimeNativeInputProof,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
+import { runtimePolicyDigest } from './runtime-policy-digest.ts';
 import { lockNativeQuestionOwner } from './task-native-wait.ts';
 import {
   lockNativeQuestionMode,
@@ -13,16 +15,15 @@ import {
   nativeQuestionAnswerAdopted,
 } from './native-questions.ts';
 
-/** A private port for this Job's typed input, never the active-turn poller.
- * The existing followup_run_id uniquely binds command, messages and Job; every
- * operation rechecks the exact current lease and current Session authority. */
-export async function prepareNativeQuestionReply(
-  input: {
-    context: ExecutionContext;
-    worker: { jobId: string; workerId: string; leaseToken: string };
-    sessionId: string;
-  },
-  db = getDatabase(),
+type ReplyOwner = {
+  context: ExecutionContext;
+  worker: { jobId: string; workerId: string; leaseToken: string };
+  sessionId: string;
+};
+
+async function replyRequest(
+  input: ReplyOwner,
+  db: ReturnType<typeof getDatabase>,
 ) {
   const [request] = await db`select m.content->'interaction'->'answer' as answer
     from allrice_employee_runs e join allrice_messages m on m.id=e.user_message_id
@@ -31,38 +32,149 @@ export async function prepareNativeQuestionReply(
       and e.organization_id=${input.context.organizationId} and e.workspace_id=${input.context.workspaceId!}
       and e.owner_id=${input.context.delegatedBy.id}`;
   if (!request?.answer?.questionId?.startsWith('dsh-')) return undefined;
-  const answer = UserQuestionAnswerSubmissionSchema.parse(request.answer);
-  const current = async (tx: Parameters<typeof lockNativeQuestionOwner>[0]) => {
-    await lockNativeQuestionMode(tx);
-    await lockNativeQuestionOwner(tx, input);
-    const q = await readNativeQuestion(tx, input.sessionId, answer.questionId);
-    if (!q || q.closed_at || (await readNativeQuestionMode(tx)) !== 'timed')
+  return UserQuestionAnswerSubmissionSchema.parse(request.answer);
+}
+
+async function currentQuestion(
+  tx: Parameters<typeof lockNativeQuestionOwner>[0],
+  input: ReplyOwner,
+  questionId: string,
+) {
+  await lockNativeQuestionMode(tx);
+  await lockNativeQuestionOwner(tx, input);
+  const q = await readNativeQuestion(tx, input.sessionId, questionId);
+  if (!q || q.closed_at || (await readNativeQuestionMode(tx)) !== 'timed')
+    throw new NativeQuestionError();
+  return q;
+}
+
+/** Read-only preparation after Job start, before ordinary content selection.
+ * Exact binding + current lease authorize the source context, never its prefix.
+ * The actual command claim remains after acquiring the current runtime. */
+export async function readNativeQuestionReplyContext(
+  input: ReplyOwner,
+  db = getDatabase(),
+) {
+  const answer = await replyRequest(input, db);
+  if (!answer) return undefined;
+  return db.begin(async (tx) => {
+    const q = await currentQuestion(tx, input, answer.questionId);
+    const [source] = await tx<
+      { content_generation_id: string | null }[]
+    >`select content_generation_id
+      from allrice_employee_runs where run_id=${q.source_run_id} and session_id=${input.sessionId}
+      and organization_id=${input.context.organizationId} and workspace_id=${input.context.workspaceId!}
+      and owner_id=${input.context.delegatedBy.id}`;
+    if (!source) throw new NativeQuestionError();
+    const generationId = source.content_generation_id;
+    const nativeSessionId = q.native_session_id as string;
+    const nativeContextKey = generationId
+      ? nativeSessionId.slice(`dsh-${input.sessionId}-`.length)
+      : undefined;
+    if (
+      generationId &&
+      (nativeSessionId !== `dsh-${input.sessionId}-${nativeContextKey}` ||
+        (nativeContextKey !== generationId &&
+          !nativeContextKey?.startsWith(`${generationId}-`)))
+    )
       throw new NativeQuestionError();
+    return {
+      sourceRunId: q.source_run_id as string,
+      generationId,
+      nativeContextKey,
+    };
+  });
+}
+
+/** A private port for this Job's typed input, never the active-turn poller.
+ * Existing command + followup identities also scope terminal receipt recovery. */
+export async function prepareNativeQuestionReply(
+  input: ReplyOwner,
+  db = getDatabase(),
+) {
+  const answer = await replyRequest(input, db);
+  if (!answer) return undefined;
+  const current = async (tx: Parameters<typeof lockNativeQuestionOwner>[0]) => {
+    const q = await currentQuestion(tx, input, answer.questionId);
+    const [runtime] =
+      await tx`select session_id from allrice_conversation_runtimes
+      where session_id=${input.sessionId} and active_run_id=${input.context.runId}
+        and worker_id=${input.worker.workerId} and state='running'`;
+    if (!runtime) throw new NativeQuestionError();
+    return q;
+  };
+  const rejectedAnswer = (
+    q: NonNullable<Awaited<ReturnType<typeof readNativeQuestion>>>,
+  ) => {
+    const matched = matchUserQuestionAnswer(
+      { questionId: answer.questionId, questions: q.questions },
+      answer,
+    );
+    return (
+      q.state === 'settled' &&
+      matched &&
+      runtimePolicyDigest(matched.answers) !== runtimePolicyDigest(q.answers)
+    );
   };
   const command = await db.begin(async (tx) => {
-    await current(tx);
+    const q = await current(tx);
     const [row] = await tx<
-      { id: string; client_user_message_id: string; message: string }[]
-    >`
-      update allrice_conversation_commands c set state='claimed',worker_id=${input.worker.workerId},
+      {
+        id: string;
+        client_user_message_id: string;
+        message: string;
+        state: string;
+        error_code: string | null;
+        native_proof: RuntimeNativeInputProof | null;
+      }[]
+    >`select c.id,c.client_user_message_id,c.message,c.state,c.error_code,c.native_proof
+      from allrice_conversation_commands c
+      join allrice_conversation_followups f on f.run_id=c.followup_run_id and f.mode='follow_up'
+      join allrice_employee_runs e on e.run_id=f.run_id and e.session_id=f.session_id
+      join allrice_chat_input_requests i on i.user_message_id=e.user_message_id and i.client_message_id=c.client_user_message_id
+      join allrice_conversation_runtimes cr on cr.session_id=e.session_id and cr.active_run_id=e.run_id
+      where c.followup_run_id=${input.context.runId} and c.input_kind='ask_user'
+        and c.state in ('pending','claimed','consumed','rejected') and e.session_id=${input.sessionId}
+        and c.organization_id=e.organization_id and c.workspace_id=e.workspace_id and c.owner_id=e.owner_id
+        and cr.state='running' and cr.worker_id=${input.worker.workerId} for update of c`;
+    if (
+      !row ||
+      row.message !== `allrice:user-question:v1:${JSON.stringify(answer)}`
+    )
+      throw new NativeQuestionError();
+    let receipt: 'adopted' | 'rejected' | undefined;
+    if (row.state === 'consumed') {
+      if (
+        row.native_proof?.inputId !== row.client_user_message_id ||
+        !(await nativeQuestionAnswerAdopted(
+          tx,
+          input.sessionId,
+          answer.questionId,
+          row.native_proof,
+          answer,
+        ))
+      )
+        throw new NativeQuestionError();
+      receipt = 'adopted';
+    } else if (row.state === 'rejected') {
+      if (
+        row.error_code !== 'QUESTION_ANSWER_NOT_ADOPTED' ||
+        !rejectedAnswer(q)
+      )
+        throw new NativeQuestionError();
+      receipt = 'rejected';
+    } else {
+      await tx`update allrice_conversation_commands c set state='claimed',worker_id=${input.worker.workerId},
         claimed_at=now(),error_code=null,delivery_attempts=delivery_attempts+1,
         expected_generation=cr.thread_generation,expected_turn_id=null,updated_at=now()
-      from allrice_conversation_followups f,allrice_conversation_runtimes cr,allrice_employee_runs e,
-        allrice_chat_input_requests i
-      where c.followup_run_id=${input.context.runId} and c.input_kind='ask_user'
-        and c.state in ('pending','claimed') and f.run_id=c.followup_run_id and f.mode='follow_up'
-        and e.run_id=f.run_id and e.session_id=${input.sessionId} and f.session_id=e.session_id
-        and i.user_message_id=e.user_message_id and i.client_message_id=c.client_user_message_id
-        and c.organization_id=e.organization_id and c.workspace_id=e.workspace_id and c.owner_id=e.owner_id
-        and cr.session_id=e.session_id and cr.active_run_id=e.run_id and cr.state='running'
-        and cr.worker_id=${input.worker.workerId}
-      returning c.id,c.client_user_message_id,c.message`;
-    if (!row) throw new NativeQuestionError();
-    return row;
+        from allrice_conversation_runtimes cr where c.id=${row.id} and cr.session_id=${input.sessionId}`;
+    }
+    return { ...row, receipt };
   });
   return {
     inputId: command.client_user_message_id,
     text: command.message,
+    receipt: command.receipt,
     assertCurrent: () => db.begin(current),
     adopted: (proof: RuntimeNativeInputProof) =>
       db.begin(async (tx) => {
@@ -86,7 +198,8 @@ export async function prepareNativeQuestionReply(
       }),
     rejected: () =>
       db.begin(async (tx) => {
-        await current(tx);
+        const q = await current(tx);
+        if (!rejectedAnswer(q)) throw new NativeQuestionError();
         await tx`update allrice_conversation_commands set state='rejected',error_code='QUESTION_ANSWER_NOT_ADOPTED',updated_at=now()
         where id=${command.id} and state='claimed' and worker_id=${input.worker.workerId}`;
       }),

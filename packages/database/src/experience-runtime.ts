@@ -166,6 +166,7 @@ export async function assertExperienceWorker(
 export async function prepareRunExperiences(
   scope: ExperienceRunScope,
   worker: ExperienceWorker,
+  nativeReplySourceRunId?: string,
 ) {
   if (!experienceReviewEnabled()) return { memories: [], receipt: null };
   return employeeAccessTransaction(getDatabase(), async (tx) => {
@@ -185,7 +186,9 @@ export async function prepareRunExperiences(
       return { memories: [], receipt: null };
     if ((run.employee_instance_id ?? run.employee_assignment_id) !== instanceId)
       return deny();
-    const target = explicitExperienceForgetRequest(run.current_request ?? '');
+    const target = nativeReplySourceRunId
+      ? null
+      : explicitExperienceForgetRequest(run.current_request ?? '');
     await assertExperienceWorker(tx, scope, worker);
     if (target)
       await tx`select pg_advisory_xact_lock(hashtextextended(${`employee-content:${scope.organizationId}`},0))`;
@@ -200,8 +203,13 @@ export async function prepareRunExperiences(
     );
     await tx`select pg_advisory_xact_lock(hashtextextended(${`experience-run:${scope.runId}`},183))`;
     const [fresh] =
-      await tx`select experience_reads,experience_prepared_at,experience_action_receipt from allrice_employee_runs where run_id=${scope.runId}`;
-    if (fresh!.experience_prepared_at) {
+      await tx`select experience_reads,experience_prepared_at,experience_action_receipt
+      from allrice_employee_runs where run_id=${nativeReplySourceRunId ?? scope.runId}
+        and session_id=${scope.sessionId} and organization_id=${scope.organizationId}
+        and workspace_id=${scope.workspaceId} and owner_id=${scope.ownerId}
+        and execution_snapshot->'instance'->>'id'=${instanceId}`;
+    if (!fresh) return deny();
+    if (nativeReplySourceRunId || fresh.experience_prepared_at) {
       const pins = ExperienceReadPinsSchema.parse(fresh!.experience_reads);
       const memories = await memoriesForPins(
         tx,
@@ -212,6 +220,12 @@ export async function prepareRunExperiences(
         run.execution_snapshot,
       );
       await assertExperienceWorker(tx, scope, worker);
+      // Reuse only existing, re-authorized reads; answer text is never an
+      // ordinary memory search/forget request. No recall or action is replayed.
+      if (nativeReplySourceRunId)
+        await tx`update allrice_employee_runs set experience_reads=${tx.json(pins)},
+          experience_prepared_at=clock_timestamp(),experience_action_receipt=${fresh.experience_action_receipt ? tx.json(fresh.experience_action_receipt) : null}
+          where run_id=${scope.runId}`;
       return {
         memories,
         receipt: fresh!.experience_action_receipt

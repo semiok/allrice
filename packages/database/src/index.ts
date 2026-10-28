@@ -395,7 +395,10 @@ export {
 } from './automation-manual.ts';
 
 export * from './providers/dsh-runtime-close-observations.ts';
-export { prepareNativeQuestionReply } from './native-question-replies.ts';
+export {
+  prepareNativeQuestionReply,
+  readNativeQuestionReplyContext,
+} from './native-question-replies.ts';
 // Private server/Worker contract. Not exported as a model tool or HTTP API.
 export {
   NativeQuestionError,

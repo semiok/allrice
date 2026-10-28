@@ -58,6 +58,7 @@ import {
   claimConversationSteer,
   consumeConversationSteer,
   prepareNativeQuestionReply,
+  readNativeQuestionReplyContext,
   beginNativeTaskWithStopReceipt,
   completeNativeTask,
   readParkedNativeUsage,
@@ -295,12 +296,21 @@ export async function executeEmployeeRun({
     sessionId: input.sessionId,
     runId: execution.context.runId,
   };
+  const nativeReplyContext = await readNativeQuestionReplyContext({
+    context: execution.context,
+    worker: workflowLease,
+    sessionId: input.sessionId,
+  });
   let contentRuntime: Awaited<ReturnType<typeof prepareEmployeeContentContext>>;
   try {
-    const experience = await prepareRunExperiences(contentScope, {
-      ...workflowLease,
-      attempt: execution.job.attempt,
-    });
+    const experience = await prepareRunExperiences(
+      contentScope,
+      {
+        ...workflowLease,
+        attempt: execution.job.attempt,
+      },
+      nativeReplyContext?.sourceRunId,
+    );
     resolved = {
       ...resolved,
       promptSnapshot: {
@@ -322,7 +332,10 @@ export async function executeEmployeeRun({
             : ''),
       },
     };
-    contentRuntime = await prepareEmployeeContentContext(contentScope);
+    contentRuntime = await prepareEmployeeContentContext(
+      contentScope,
+      nativeReplyContext,
+    );
   } catch (error) {
     if (error instanceof EmployeeRuntimeContentError)
       throw new HandlerError(error.code, error.message, false);
