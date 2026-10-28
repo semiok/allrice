@@ -48,8 +48,12 @@ export async function hold(signal, barrier) {
 export async function host({
   model = async () => text('完成'),
   depth = 1,
+  rootId = 'pr0-root',
   active = 8,
   prepare = async () => {},
+  bridge = async (method) => {
+    throw Error(`unexpected bridge ${method}`);
+  },
 } = {}) {
   const directory = await realpath(
     await mkdtemp(join(tmpdir(), 'allrice-pr0-')),
@@ -112,9 +116,7 @@ export async function host({
   const { ctx, server } = await createAllRiceRuntime(
     {
       notify: (method, params) => notices.push({ method, params }),
-      request: async (method) => {
-        throw Error(`unexpected bridge ${method}`);
-      },
+      request: bridge,
     },
     {
       runtimeName: 'pr0-test',
@@ -167,7 +169,7 @@ export async function host({
     requireContentGuard: false,
     requireTaskProgress: false,
   });
-  const root = (await server.ensureRoot('pr0-root')).agent;
+  const root = (await server.ensureRoot(rootId)).agent;
   const spawn = (parent = root, prompt = '子任务', options = {}) =>
     ctx.subagents.startActivation({
       provider: 'spawn',

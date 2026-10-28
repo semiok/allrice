@@ -334,33 +334,7 @@ export function createBoundedFinalDeliveryRepair(ctx, ports) {
         return await abandon(state);
       state.used = true;
       state.phase = 'queued';
-      const notice = createUserMessage({
-        source: {
-          kind: REPAIR_SOURCE,
-          form: 'notice',
-          summary: 'AllRice 平台：仅修正最终交付说明，保留已有成果',
-        },
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              origin: 'allrice-platform-host',
-              operation: 'final-delivery-repair',
-              originalMessageId: answer.publicMessageId,
-              originalDigest: answer.candidateDigest,
-              instructions:
-                'This is platform-host context, not a human user message. ' +
-                'Correct only the final reply using the exact existing references below. ' +
-                'Remove unfinished editing instructions. Return the complete final answer. ' +
-                'Do not use tools, ask questions, recreate files, change data, invent facts, ' +
-                'or claim that an unsuccessful check passed. Preserve factual limitations. ' +
-                'These instructions apply only to this one response, not later human inputs.',
-              issues: checked.issues,
-              references: checked.references,
-            }),
-          },
-        ],
-      });
+      const notice = finalDeliveryRepairNotice(answer, checked);
       // No asynchronous gap between the final gate check and same-turn steer.
       state.noticeId = notice.id;
       agent.steer(notice);
@@ -446,5 +420,36 @@ export function createBoundedFinalDeliveryRepair(ctx, ports) {
       }
       states.delete(id);
     },
+  });
+}
+
+/** The platform notice is shared by legacy same-turn and post-wait repair. */
+export function finalDeliveryRepairNotice(answer, checked) {
+  return createUserMessage({
+    source: {
+      kind: REPAIR_SOURCE,
+      form: 'notice',
+      summary: 'AllRice 平台：仅修正最终交付说明，保留已有成果',
+    },
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify({
+          origin: 'allrice-platform-host',
+          operation: 'final-delivery-repair',
+          originalMessageId: answer.publicMessageId,
+          originalDigest: answer.candidateDigest,
+          instructions:
+            'This is platform-host context, not a human user message. ' +
+            'Correct only the final reply using the exact existing references below. ' +
+            'Remove unfinished editing instructions. Return the complete final answer. ' +
+            'Do not use tools, ask questions, recreate files, change data, invent facts, ' +
+            'or claim that an unsuccessful check passed. Preserve factual limitations. ' +
+            'These instructions apply only to this one response, not later human inputs.',
+          issues: checked.issues,
+          references: checked.references,
+        }),
+      },
+    ],
   });
 }

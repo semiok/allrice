@@ -1,3 +1,4 @@
+import { createRunFinalDelivery } from './allrice-final-delivery.mjs';
 import { readBootstrapCoverage } from './allrice-bootstrap-coverage.mjs';
 import { BootstrapReceiptSchema } from '@allrice/contracts/native-runtime';
 import {
@@ -1085,6 +1086,7 @@ export async function createAllRiceRuntime(
     }
 
     async prompt(params) {
+      this.runFinalDelivery?.assertAccepting(params.sessionId);
       const images = Array.isArray(params?.images) ? params.images : [];
       const imageBlocks = images.length
         ? await this.ctx.attachments.admitPromptContent(
@@ -1637,6 +1639,7 @@ export async function createAllRiceRuntime(
     }
 
     async steer(params) {
+      this.runFinalDelivery?.assertAccepting(params.sessionId);
       const sessionId = requiredSessionId(params);
       if (typeof params.text !== 'string' || !params.text.trim()) {
         throw new TypeError('steer text is required');
@@ -1876,6 +1879,13 @@ export async function createAllRiceRuntime(
     async handleRequest(method, params) {
       // A detaching Host only waits to exit; it takes no further input.
       if (this.detaching !== undefined) throw Error('QUESTION_DETACHING');
+      if (method.startsWith('allrice/final-delivery/')) {
+        this.runFinalDelivery ??= createRunFinalDelivery(this);
+        return this.runFinalDelivery.handle(
+          method.slice('allrice/final-delivery/'.length),
+          params,
+        );
+      }
       if (method.startsWith('allrice/assistant/')) {
         const action = method.slice('allrice/assistant/'.length);
         if (

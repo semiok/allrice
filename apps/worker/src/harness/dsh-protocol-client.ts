@@ -440,6 +440,13 @@ export class DshProtocolClient {
     return this.request('session/recover', { sessionId });
   }
 
+  async finalDelivery(
+    action: 'bind' | 'candidate' | 'repair' | 'finish',
+    params: Record<string, unknown>,
+  ) {
+    return this.request(`allrice/final-delivery/${action}`, params, 0);
+  }
+
   async assistant(
     action:
       | 'bind'
