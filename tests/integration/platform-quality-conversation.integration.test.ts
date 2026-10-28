@@ -1,10 +1,10 @@
-/** Production send -> queue -> Worker -> Broker -> publication -> HTTP.
- * Isolated PG/storage and a deterministic adapter; no native or paid model.
- * Actual DSH/Office execution has separate native/physical scenario evidence. */
+/** Production send -> queue -> Worker -> DSH Host -> publication -> HTTP.
+ * Isolated PG/storage and a loopback model; native completion stays real.
+ * The Office scenario additionally requires the physical cloud executor. */
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as Database from '@allrice/database';
 import type { RequestContext } from '@allrice/contracts';
@@ -24,7 +24,15 @@ import {
 import { claimNextJob } from '../../packages/database/src/execution/queue.ts';
 import { listWorkbenchArtifacts } from '../../packages/database/src/artifact-review.ts';
 import { DshHarnessAdapter } from '../../apps/worker/src/harness/dsh-adapter.ts';
-import { DshRuntimePool } from '../../apps/worker/src/harness/dsh/runtime-pool.ts';
+import * as Router from '../../apps/worker/src/harness/router.ts';
+import * as NativeArtifact from '../../apps/worker/src/harness/dsh-native-artifact.ts';
+import {
+  DSH_DISTRIBUTION_CURRENT_GENERATION,
+  DSH_DISTRIBUTION_CURRENT_VERSION,
+} from '../../apps/worker/src/harness/dsh-distribution.ts';
+import * as ModelPool from '../../packages/database/src/providers/model-pool.ts';
+import { p24Fixture } from '../../apps/worker/test/p24/fixture.ts';
+import { getCheckedFinalDelivery } from '../../apps/worker/src/final-delivery/checked-delivery.ts';
 import { executeEmployeeRun } from '../../apps/worker/src/jobs/employee-run.ts';
 import { runClaimedJob } from '../../apps/worker/src/job-runner.ts';
 import { artifactHttp } from '../../apps/web/lib/runtime/artifact-http.ts';
@@ -55,12 +63,7 @@ suite(
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
       vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
-      vi.spyOn(DshRuntimePool.prototype, 'acquire').mockRejectedValue(
-        Error('PAID_OR_NATIVE_MODEL_FORBIDDEN'),
-      );
-      vi.spyOn(DshHarnessAdapter.prototype, 'isConfigured').mockReturnValue(
-        true,
-      );
+      vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
     });
     afterEach(() => {
       ports.context = null;
@@ -69,13 +72,15 @@ suite(
       vi.unstubAllEnvs();
     });
     async function verifyDelivery(format: 'text' | 'xlsx') {
-      const root = await mkdtemp(
-        join(tmpdir(), 'allrice-quality-conversation-'),
+      const root = await realpath(
+        await mkdtemp(join(tmpdir(), 'allrice-quality-conversation-')),
       );
       const f = await createP27CodexWorkerFixture({
         allowCiDatabase: true,
         imageGeneration: true,
       });
+      let model: Awaited<ReturnType<typeof p24Fixture>> | undefined;
+      let adapter: DshHarnessAdapter | undefined;
       try {
         await f.db`update allrice_memberships set role='member' where user_id=${f.ownerId}`;
         const ownerContext: RequestContext = {
@@ -124,95 +129,144 @@ suite(
           employeeAssignmentId: f.assignmentId,
           title: 'Fixed two-turn quality case',
         });
-        const calls: string[] = [];
+        const answers: string[] = [];
         const prompts: string[] = [];
+        const proofs: NonNullable<
+          ReturnType<typeof getCheckedFinalDelivery>
+        >[] = [];
         let parentObjectId: string | undefined;
         let parentChecksum: string | undefined;
         let turn = 0;
-        vi.spyOn(DshHarnessAdapter.prototype, 'execute').mockImplementation(
-          async (input) => {
-            turn++;
-            prompts.push(JSON.stringify(input.kernel));
-            expect(input.tools.map((t) => t.name)).toContain(
-              'workspace.export.create',
+        const callsForTurn = () => [
+          {
+            name: 'workspace_file_list',
+            arguments: { limit: 10 },
+          },
+          {
+            name: 'workspace_export_create',
+            arguments: {
+              fileName: `fixed-report.${format === 'text' ? 'txt' : format}`,
+              format,
+              ...(format === 'text'
+                ? { content: `fixed revision ${turn}` }
+                : {
+                    location: 'cloud',
+                    python: {
+                      inputs: parentObjectId
+                        ? [
+                            {
+                              path: 'source.xlsx',
+                              objectId: parentObjectId,
+                              checksum: parentChecksum,
+                            },
+                          ]
+                        : [],
+                      sourceObjectId: parentObjectId ?? null,
+                      script: `from openpyxl import Workbook,load_workbook\n${parentObjectId ? "w=load_workbook('/tmp/work/input/source.xlsx'); assert w.active['A2'].value=='00123'; assert w.active['B2'].value==10" : "w=Workbook();w.active.append(['编号','金额']);w.active.append(['00123',10])"}\nw.active['B2']=${turn * 10}\nw.save('/tmp/work/output/result.xlsx')\nr=load_workbook('/tmp/work/output/result.xlsx'); assert r.active['A2'].value=='00123'; assert r.active['B2'].value==${turn * 10}`,
+                    },
+                  }),
+              ...(parentObjectId ? { parentObjectId } : {}),
+            },
+          },
+        ];
+        let calls: ReturnType<typeof callsForTurn> = [];
+        const runs: string[] = [];
+        model = await p24Fixture(async (request) => {
+          const call = calls.shift();
+          if (call) {
+            if (call.name === 'workspace_file_list')
+              prompts.push(JSON.stringify(request.messages));
+            expect(request.tools?.map((tool) => tool.function.name)).toContain(
+              call.name,
             );
-            await input.onThreadBound?.({
-              threadId: 'fixed-quality-conversation',
-              resumed: turn > 1,
-              replacedThreadId: null,
+            return { nativeTool: call };
+          }
+          const content = request.messages
+            .filter((m) => m.role === 'tool')
+            .at(-1)?.content;
+          expect(typeof content).toBe('string');
+          const receipt = JSON.parse(content as string);
+          parentObjectId = receipt.objectId;
+          parentChecksum = receipt.digest;
+          if (format === 'xlsx') {
+            expect(receipt.nativeExecution).toMatchObject({
+              status: 'checked',
+              executionLocation: 'cloud',
             });
-            await input.onTurnStarted?.({
-              threadId: 'fixed-quality-conversation',
-              turnId: `fixed-turn-${turn}`,
-            });
-            for (const call of [
-              {
-                id: `list-${turn}`,
-                name: 'workspace.file.list',
-                arguments: { limit: 10 },
-              },
-              {
-                id: `export-${turn}`,
-                name: 'workspace.export.create',
-                arguments: {
-                  fileName: `fixed-report.${format === 'text' ? 'txt' : format}`,
-                  format,
-                  ...(format === 'text'
-                    ? { content: `fixed revision ${turn}` }
-                    : {
-                        location: 'cloud',
-                        python: {
-                          inputs: parentObjectId
-                            ? [
-                                {
-                                  path: 'source.xlsx',
-                                  objectId: parentObjectId,
-                                  checksum: parentChecksum,
-                                },
-                              ]
-                            : [],
-                          sourceObjectId: parentObjectId ?? null,
-                          script: `from openpyxl import Workbook,load_workbook\n${parentObjectId ? "w=load_workbook('/tmp/work/input/source.xlsx'); assert w.active['A2'].value=='00123'; assert w.active['B2'].value==10" : "w=Workbook();w.active.append(['编号','金额']);w.active.append(['00123',10])"}\nw.active['B2']=${turn * 10}\nw.save('/tmp/work/output/result.xlsx')\nr=load_workbook('/tmp/work/output/result.xlsx'); assert r.active['A2'].value=='00123'; assert r.active['B2'].value==${turn * 10}`,
-                        },
-                      }),
-                  ...(parentObjectId ? { parentObjectId } : {}),
-                },
-              },
-            ]) {
-              calls.push(call.id);
-              const result = await input.onToolCall!(call);
-              if (call.name === 'workspace.export.create') {
-                const receipt = JSON.parse(result.modelContent);
-                parentObjectId = receipt.objectId;
-                parentChecksum = receipt.digest;
-                if (format === 'xlsx') {
-                  expect(receipt.nativeExecution).toMatchObject({
-                    status: 'checked',
-                    executionLocation: 'cloud',
-                  });
-                  expect(receipt.nativeExecution.output).toContain(
-                    '"verdict": "pass"',
-                  );
-                }
-              }
-            }
+            expect(receipt.nativeExecution.output).toContain(
+              '"verdict": "pass"',
+            );
+          }
+          const { artifacts } = await listWorkbenchArtifacts(
+            ownerContext,
+            session.id,
+          );
+          const current = artifacts.filter(
+            (a) => a.provenance.runId === runs.at(-1),
+          );
+          expect(current).toHaveLength(1);
+          expect(receipt).toMatchObject({
+            objectId: current[0]!.object.id,
+            digest: current[0]!.object.checksum,
+          });
+          const answer = `Fixed answer ${turn}\n\n[${current[0]!.version.fileName}](/api/v1/files/${current[0]!.object.id}/download)`;
+          answers[turn - 1] = answer;
+          return { text: answer };
+        });
+        const artifactId = process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID!;
+        vi.stubEnv('ALLRICE_DSH_PLATFORM_HOME', join(root, 'unused-platform'));
+        vi.spyOn(NativeArtifact, 'checkedDshNativeLaunch').mockReturnValue({
+          artifactId,
+          profileId: 'restricted',
+        });
+        vi.spyOn(NativeArtifact, 'currentDshNativeLaunch').mockImplementation(
+          (profile) => {
+            expect(profile).toBe('restricted');
             return {
-              answer: `Fixed answer ${turn}`,
-              provider: 'openai-codex',
-              model: input.providerSnapshot.model,
-              usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 3 },
-              usageComplete: true,
-              cacheUsageKnown: true,
-              threadId: 'fixed-quality-conversation',
-              turnId: `fixed-turn-${turn}`,
+              artifactId,
+              generation: DSH_DISTRIBUTION_CURRENT_GENERATION,
+              version: DSH_DISTRIBUTION_CURRENT_VERSION,
+              command: process.execPath,
+              args: [resolve('apps/worker/dsh/allrice-jsonrpc-runtime.mjs')],
+              profile: resolve('apps/worker/dsh/allrice-restricted.cordis.yml'),
             };
           },
         );
-        const runs: string[] = [];
+        adapter = new DshHarnessAdapter({
+          runtimeRoot: join(root, 'native'),
+          idleCloseMs: 0,
+          requestTimeoutMs: 15000,
+          credentialResolver: {
+            resolve: async () => ({ apiKey: 'synthetic-loopback-only' }),
+          },
+        });
+        vi.spyOn(Router, 'getHarnessRouter').mockReturnValue(
+          new Router.HarnessRouter([adapter]),
+        );
+        // Observe the real result; never manufacture its private completion proof.
+        const execution = vi.spyOn(adapter, 'execute');
+        const freezeModel = ModelPool.freezeSessionModelSnapshot;
+        vi.spyOn(ModelPool, 'freezeSessionModelSnapshot').mockImplementation(
+          async (input, database) => {
+            const frozen = await freezeModel(input, database);
+            const snapshot = {
+              ...frozen,
+              provider: 'openai-compatible',
+              authMode: 'api_key' as const,
+              credentialReference: 'test:quality-conversation',
+              baseUrl: model!.baseUrl,
+            };
+            const db = database ?? f.db;
+            await db`update allrice_session_model_snapshots set snapshot=${db.json(snapshot)} where session_id=${input.sessionId}`;
+            return snapshot;
+          },
+        );
         for (const text of [
           'Create fixed report',
           'Revise the same fixed report',
         ]) {
+          turn++;
+          calls = callsForTurn();
           const input = {
             clientMessageId: randomUUID(),
             text,
@@ -232,6 +286,12 @@ suite(
           );
           expect(duplicate.run.id).toBe(submitted.run.id);
           runs.push(submitted.run.id);
+          const [frozen] =
+            await f.db`select execution_snapshot from allrice_employee_runs where run_id=${submitted.run.id}`;
+          expect(frozen!.execution_snapshot).toMatchObject({
+            finalDeliveryPolicy: { mode: 'checked_native_v1', artifactId },
+            officeFirstDeliveryPolicy: 'xlsx_formula_cache_v1',
+          });
           const workerId = randomUUID();
           const job = await claimNextJob(workerId, 30000);
           const [expectedJob] =
@@ -251,19 +311,29 @@ suite(
             executeEmployeeRun,
           );
           const [actual] =
-            await f.db`select r.state,j.status job_status,m.status message_status,m.content,e.employee_version_id
+            await f.db`select r.state,j.status job_status,m.status message_status,m.error_code,m.content,e.employee_version_id
           from allrice_runs r join allrice_jobs j on j.run_id=r.id join allrice_employee_runs e on e.run_id=r.id
           join allrice_messages m on m.id=e.assistant_message_id where r.id=${submitted.run.id}`;
           expect(actual).toMatchObject({
             state: 'succeeded',
             job_status: 'succeeded',
             message_status: 'completed',
+            error_code: null,
             employee_version_id: f.employeeVersionId,
           });
-          expect(actual!.content.text).toBe(`Fixed answer ${turn}`);
+          expect(actual!.content.text).toBe(answers[turn - 1]);
+          const proof = getCheckedFinalDelivery(
+            await execution.mock.results.at(-1)!.value,
+          );
+          expect(proof).toBeDefined();
+          proofs.push(proof!);
         }
         expect(turn).toBe(2);
-        expect(calls).toEqual(['list-1', 'export-1', 'list-2', 'export-2']);
+        expect(execution).toHaveBeenCalledTimes(2);
+        expect(model.requests).toHaveLength(6);
+        expect(proofs[1]!.nativeSessionId).toBe(proofs[0]!.nativeSessionId);
+        expect(proofs[1]!.publicMessageId).not.toBe(proofs[0]!.publicMessageId);
+        expect(proofs[1]!.durableSeq).toBeGreaterThan(proofs[0]!.durableSeq);
         expect(prompts[1]).toContain('Fixed answer 1');
         const history = await getChatSessionHistory(
           ownerContext,
@@ -274,7 +344,7 @@ suite(
           history.messages
             .filter((m) => m.role === 'assistant')
             .map((m) => m.content.text),
-        ).toEqual(['Fixed answer 1', 'Fixed answer 2']);
+        ).toEqual(answers);
         const { artifacts } = await listWorkbenchArtifacts(
           ownerContext,
           session.id,
@@ -366,9 +436,17 @@ suite(
           )[0]!.n,
         ).toBe(2);
       } finally {
-        const proof = await f.close();
-        expect(proof.fixture?.schemaRemoved).toBe(true);
-        await rm(root, { recursive: true, force: true });
+        try {
+          await adapter?.close();
+        } finally {
+          try {
+            await model?.close();
+          } finally {
+            const proof = await f.close();
+            expect(proof.fixture?.schemaRemoved).toBe(true);
+            await rm(root, { recursive: true, force: true });
+          }
+        }
       }
     }
     it(
