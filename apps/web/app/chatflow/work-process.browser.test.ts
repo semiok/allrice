@@ -87,51 +87,86 @@ suite('one receipt within each native call in the chat transcript', () => {
       if ((await group.getAttribute('aria-expanded')) === 'false')
         await group.click();
   };
-  it('preserves an opened receipt and its focused node when late trace prepends a step', async () => {
-    const page = await browser.newPage();
-    try {
-      await page.goto(`${origin}/?delayed-trace`);
-      await expect.poll(() => calls(page).count()).toBe(32);
-      await processOf(page).locator('[data-disclosure-row]').first().click();
-      await expandGroups(page);
-      expect(await calls(page).first().getAttribute('data-work-call')).toBe(
-        'tool:call-0',
-      );
-      const call = page.locator('#operation-receipt-1');
-      await call.getByRole('button').click();
-      const receipt = call.locator('article');
-      await receipt
-        .getByRole('button', { name: '执行结果', exact: true })
-        .click();
-      const detail = receipt.getByRole('button', {
-        name: '技术详情',
-        exact: true,
-      });
-      await detail.click();
-      await detail.focus();
-      const focused = await detail.elementHandle();
-      expect(await receipt.innerText()).toContain('synthetic-result-1');
-      // Resolve the pending fetch stub without clicking a fixture control or helper.
-      await page.evaluate(() => window.processDeliverTrace());
-      await page.locator('main[data-delayed-trace="loaded"]').waitFor();
-      expect(await calls(page).first().getAttribute('data-work-call')).toBe(
-        'think:1:1:0',
-      );
-      expect(
-        await focused!.evaluate(
-          (node) => node.isConnected && document.activeElement === node,
-        ),
-      ).toBe(true);
-      expect(await detail.getAttribute('aria-expanded')).toBe('true');
-      expect(await receipt.innerText()).toContain('synthetic-result-1');
-      expect(await page.locator('#operation-receipt-0 article').count()).toBe(
-        0,
-      );
-      expect(await page.locator('[id="operation-receipt-1"]').count()).toBe(1);
-    } finally {
-      await page.close();
-    }
-  });
+  it.each(['single', 'split', 'append'] as const)(
+    'preserves an opened receipt and focus through %s trace or receipt updates',
+    async (scenario) => {
+      const page = await browser.newPage();
+      try {
+        await page.goto(
+          `${origin}/?${scenario === 'append' ? 'live&append-operation' : `delayed-trace${scenario === 'split' ? '&split-trace' : ''}`}`,
+        );
+        await expect
+          .poll(() => calls(page).count())
+          .toBe(scenario === 'append' ? 1 : 32);
+        if (scenario !== 'append')
+          await processOf(page)
+            .locator('[data-disclosure-row]')
+            .first()
+            .click();
+        await expandGroups(page);
+        expect(await calls(page).first().getAttribute('data-work-call')).toBe(
+          scenario === 'append' ? 'tool:call-1' : 'tool:call-0',
+        );
+        const target = scenario === 'split' ? 18 : 1;
+        const call = page.locator(`#operation-receipt-${target}`);
+        await call.getByRole('button').click();
+        const receipt = call.locator('article');
+        await receipt
+          .getByRole('button', { name: '执行结果', exact: true })
+          .click();
+        const detail = receipt.getByRole('button', {
+          name: '技术详情',
+          exact: true,
+        });
+        await detail.click();
+        await detail.focus();
+        const focused = await detail.elementHandle();
+        expect(await receipt.innerText()).toContain(
+          `synthetic-result-${target}`,
+        );
+        // Resolve the pending fetch stub without clicking a fixture control or helper.
+        if (scenario === 'append') {
+          await page.evaluate(() => window.processAppendOperation());
+          await expect.poll(() => calls(page).count()).toBe(2);
+          await page
+            .locator('#operation-receipt-0')
+            .waitFor({ state: 'attached' });
+        } else {
+          await page.evaluate(() => window.processDeliverTrace());
+          await page.locator('main[data-delayed-trace="loaded"]').waitFor();
+          expect(await calls(page).first().getAttribute('data-work-call')).toBe(
+            'think:1:1:0',
+          );
+          if (scenario === 'split') {
+            const middle = page.getByText('已定位入口，继续核对依赖。', {
+              exact: true,
+            });
+            await middle.waitFor();
+            expect((await middle.boundingBox())!.y).toBeLessThan(
+              (await call.boundingBox())!.y,
+            );
+          }
+        }
+        expect(
+          await focused!.evaluate(
+            (node) => node.isConnected && document.activeElement === node,
+          ),
+        ).toBe(true);
+        expect(await detail.getAttribute('aria-expanded')).toBe('true');
+        expect(await receipt.innerText()).toContain(
+          `synthetic-result-${target}`,
+        );
+        expect(await page.locator('#operation-receipt-0 article').count()).toBe(
+          0,
+        );
+        expect(
+          await page.locator(`[id="operation-receipt-${target}"]`).count(),
+        ).toBe(1);
+      } finally {
+        await page.close();
+      }
+    },
+  );
   for (const width of [1440, 390])
     for (const unified of [false, true])
       it(`keeps 34 calls once and receipts on demand at ${width}px, unified=${unified}`, async () => {

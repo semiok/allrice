@@ -137,7 +137,9 @@ const restoredEvents: ChatFlowEventEnvelope[] = [
       payload: { turn: 1, step: 1, chunk: { index: 0 } },
     },
   },
-  ...events.filter((event) => event.type.startsWith('tool.')),
+  ...events.filter(
+    (event) => params.has('split-trace') || event.type.startsWith('tool.'),
+  ),
   completion,
 ];
 
@@ -146,12 +148,14 @@ declare global {
     processWrites: unknown[];
     processReads: number;
     processDeliverTrace: () => void;
+    processAppendOperation: () => void;
   }
 }
 window.processWrites = [];
 window.processReads = 0;
 let failRead = params.has('load-error');
 let answered = false;
+let appended = !params.has('append-operation');
 window.fetch = async (input, init) => {
   const url = String(input);
   if (url === '/fixture/late-trace')
@@ -166,15 +170,24 @@ window.fetch = async (input, init) => {
       return Response.json({}, { status: 503 });
     }
     return Response.json({
-      operations: operations.map((op) =>
-        answered && op.snapshot.status === 'waiting_user'
-          ? {
-              ...op,
-              snapshot: { ...op.snapshot, status: 'dispatched' },
-              approval: { ...op.approval, response: { decision: 'approved' } },
-            }
-          : op,
-      ),
+      operations: operations
+        .filter((_, i) =>
+          params.has('append-operation')
+            ? i === 1 || (appended && i === 0)
+            : true,
+        )
+        .map((op) =>
+          answered && op.snapshot.status === 'waiting_user'
+            ? {
+                ...op,
+                snapshot: { ...op.snapshot, status: 'dispatched' },
+                approval: {
+                  ...op.approval,
+                  response: { decision: 'approved' },
+                },
+              }
+            : op,
+        ),
     });
   }
   if (url.startsWith('/api/v1/runtime/approvals/')) {
@@ -211,13 +224,33 @@ function Fixture() {
         .then((data) => setRestored(data.events));
   }, [delayed]);
   const [running, setRunning] = useState(params.has('live'));
+  const [hasAppend, setHasAppend] = useState(false);
+  window.processAppendOperation = () => {
+    appended = true;
+    setHasAppend(true);
+  };
   const [next, setNext] = useState(false);
   const [traceFailed, setTraceFailed] = useState(params.has('trace-error'));
   const current = delayed
     ? (restored ?? [])
-    : running
+    : params.has('append-operation')
       ? events
-      : [...events, completion];
+          .filter(
+            (event) =>
+              event.payload.toolCallId === 'call-1' ||
+              (hasAppend && event.payload.toolCallId === 'call-0'),
+          )
+          .sort((a, b) =>
+            a.payload.toolCallId === b.payload.toolCallId
+              ? a.sequence - b.sequence
+              : a.payload.toolCallId === 'call-1'
+                ? -1
+                : 1,
+          )
+          .map((event, i) => ({ ...event, sequence: i + 1 }))
+      : running
+        ? events
+        : [...events, completion];
   return (
     <main
       data-delayed-trace={
