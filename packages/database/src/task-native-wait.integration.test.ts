@@ -33,7 +33,10 @@ import { createEmployeeAdministrationFixture } from './employee-administration.f
 import { buildEmployeeRuntimePackage } from './platform-employees/runtime-package.ts';
 import { newNativeGeneration } from './conversation/native-root-origin.ts';
 import { createTaskProgressRuntime } from './task-progress.ts';
-import { acquireConversationRuntime } from './conversation/conversation-runtime.ts';
+import {
+  acquireConversationRuntime,
+  releaseConversationRuntime,
+} from './conversation/conversation-runtime.ts';
 import {
   ensureGeneralEmployeeInstance,
   changeEmployeeInstanceLifecycle,
@@ -210,6 +213,57 @@ suite('MET153 durable native waits and queue authority', () => {
       await s.f
         .db`select state from allrice_native_task_dispatches where run_id=${s.f.rootRunId} and attempt=1`
     )[0]!.state;
+  }
+
+  async function chatContext(f: Awaited<ReturnType<typeof setup>>['f']) {
+    const context = await authenticateSession(
+      (await createSession(f.user)).token,
+      { organizationId: f.org, workspaceId: f.workspace },
+    );
+    if (!context) throw Error('fixture_login');
+    return context;
+  }
+  async function sendOrdinary(
+    f: Awaited<ReturnType<typeof setup>>['f'],
+    text = '继续：用一句话写线上例会开场白，不调用其他工具。',
+  ) {
+    const sent = await sendChatMessage(
+      await chatContext(f),
+      f.workspace,
+      f.session,
+      { text, clientMessageId: randomUUID(), deliveryMode: 'follow_up' },
+    );
+    if (!sent.run) throw Error('fixture_followup_run_missing');
+    return sent.run.id;
+  }
+  async function runtime(f: Awaited<ReturnType<typeof setup>>['f']) {
+    return (
+      await f.db`select state,active_run_id,active_turn_id,worker_id
+        from allrice_conversation_runtimes where session_id=${f.session}`
+    )[0]!;
+  }
+  async function stop(
+    f: Awaited<ReturnType<typeof setup>>['f'],
+    runId: string,
+  ) {
+    await cancelRun(f.requestContext, f.workspace, runId, {
+      reason: 'user_requested',
+    });
+    await maintainQueue();
+  }
+  async function answer(s: Awaited<ReturnType<typeof setup>>) {
+    await sendChatMessage(await chatContext(s.f), s.f.workspace, s.f.session, {
+      clientMessageId: randomUUID(),
+      text: 'Continue',
+      deliveryMode: 'steer',
+      expectedTurnId: s.checkpoint.turnId,
+      expectedGeneration: s.owner.generation,
+      userQuestionAnswer: {
+        questionId: s.checkpoint.questionId,
+        answers: [{ id: 'choice', selected: ['Continue'] }],
+      },
+    });
+    await maintainQueue();
   }
 
   it('settles only the confirmed canceled native segment without changing Run/Job or model usage', async () => {
@@ -708,6 +762,172 @@ suite('MET153 durable native waits and queue authority', () => {
       await f.db`select pending from allrice_task_questions where run_id=${f.rootRunId}`,
     ).toEqual([{ pending: false }]);
   });
+  it.each(['before-stop', 'after-stop'] as const)(
+    'MET-228: an ordinary message sent %s claims immediately after an unowned parked Run stops',
+    async (when) => {
+      const { f, checkpoint, owner } = await setup();
+      await parkNativeQuestion({ ...owner, checkpoint });
+      expect(
+        await f.db`select status,worker_id,lease_token from allrice_jobs where id=${f.worker.jobId}`,
+      ).toEqual([
+        { status: 'waiting_approval', worker_id: null, lease_token: null },
+      ]);
+      let next = when === 'before-stop' ? await sendOrdinary(f) : undefined;
+      if (next) expect(await claimNextJob(randomUUID(), 30000)).toBeNull();
+      await stop(f, f.rootRunId);
+      expect(await runtime(f)).toEqual({
+        state: 'interrupted',
+        active_run_id: null,
+        active_turn_id: null,
+        worker_id: null,
+      });
+      next ??= await sendOrdinary(f);
+      const claimed = await claimNextJob(randomUUID(), 30000);
+      expect(claimed).toMatchObject({ runId: next, attempt: 1 });
+      expect(await claimNextJob(randomUUID(), 30000)).toBeNull();
+      await maintainQueue();
+      expect(
+        await f.db`select event_type from allrice_run_events where run_id=${f.rootRunId}
+          and event_type in ('run.canceled','run.failed','run.succeeded')`,
+      ).toEqual([{ event_type: 'run.canceled' }]);
+      await stop(f, next);
+    },
+  );
+  it('MET-228: cancellation after wake and a replacement claim releases the previous runtime owner', async () => {
+    const s = await setup();
+    const { f, checkpoint, owner } = s;
+    await parkNativeQuestion({ ...owner, checkpoint });
+    await answer(s);
+    const replacement = randomUUID();
+    const claimed = await claimNextJob(replacement, 30000);
+    expect(claimed).toMatchObject({ id: f.worker.jobId, attempt: 2 });
+    expect(await runtime(f)).toMatchObject({
+      active_run_id: f.rootRunId,
+      worker_id: f.worker.workerId,
+    });
+    // Stop before this new Worker calls acquireConversationRuntime.
+    await stop(f, f.rootRunId);
+    expect(await runtime(f)).toEqual({
+      state: 'interrupted',
+      active_run_id: null,
+      active_turn_id: null,
+      worker_id: null,
+    });
+    expect(
+      await f.db`select state,error_code from allrice_conversation_commands where session_id=${f.session}`,
+    ).toEqual([{ state: 'rejected', error_code: 'TURN_CLOSED' }]);
+    await expect(
+      heartbeatJob(replacement, claimed!.id, claimed!.lease!.token, 30000),
+    ).rejects.toMatchObject({ code: 'lease_lost' });
+    const next = await sendOrdinary(f);
+    expect(await claimNextJob(randomUUID(), 30000)).toMatchObject({
+      runId: next,
+      attempt: 1,
+    });
+    await stop(f, next);
+  });
+  it('MET-228: an unowned ready wait keeps JOB_TIMEOUT and releases its conversation', async () => {
+    const s = await setup();
+    const { f, checkpoint, owner } = s;
+    await parkNativeQuestion({ ...owner, checkpoint });
+    await answer(s);
+    // Expire the frozen authorization, not timeout_at: the latter is only a
+    // projection refreshed by the real maintenance transaction.
+    await f.db`update allrice_task_clocks set policy=jsonb_set(policy,
+      '{authorizationExpiresAt}',to_jsonb((clock_timestamp()-interval '1 second')::text))
+      where run_id=${f.rootRunId}`;
+    await f.db.begin((tx) => refreshTaskClock(tx, f.rootRunId));
+    await maintainQueue();
+    expect(
+      await f.db`select state,error_code from allrice_runs where id=${f.rootRunId}`,
+    ).toEqual([{ state: 'failed', error_code: 'JOB_TIMEOUT' }]);
+    expect(await runtime(f)).toEqual({
+      state: 'error',
+      active_run_id: null,
+      active_turn_id: null,
+      worker_id: null,
+    });
+  });
+  it('MET-228: a late old terminal cannot clear a newer Run owned by the same Worker', async () => {
+    const { f, checkpoint, owner } = await setup();
+    await parkNativeQuestion({ ...owner, checkpoint });
+    const next = await sendOrdinary(f);
+    // Existing error/paused callers can release before queue termination.
+    // Exercise the public release and acquire APIs, with an identical worker.
+    await releaseConversationRuntime({
+      organizationId: f.org,
+      workspaceId: f.workspace,
+      sessionId: f.session,
+      runId: f.rootRunId,
+      workerId: f.worker.workerId,
+      outcome: 'interrupted',
+    });
+    const claimed = await claimNextJob(f.worker.workerId, 30000);
+    expect(claimed).toMatchObject({ runId: next });
+    await acquireConversationRuntime({
+      organizationId: f.org,
+      workspaceId: f.workspace,
+      sessionId: f.session,
+      ownerId: f.user,
+      runId: next,
+      workerId: f.worker.workerId,
+      configChecksum: owner.configChecksum,
+      compactThresholdTokens: 40000,
+    });
+    const newer = await runtime(f);
+    await stop(f, f.rootRunId);
+    expect(await runtime(f)).toEqual(newer);
+    await expect(
+      heartbeatJob(
+        f.worker.workerId,
+        f.worker.jobId,
+        f.worker.leaseToken,
+        30000,
+      ),
+    ).rejects.toMatchObject({ code: 'lease_lost' });
+    await stop(f, next);
+  });
+  it('MET-228: historical terminal ownership releases only the FIFO head under competing claims', async () => {
+    const { f, checkpoint, owner } = await setup();
+    await parkNativeQuestion({ ...owner, checkpoint });
+    const retained = await runtime(f);
+    await stop(f, f.rootRunId);
+    // Isolated historical fixture: reproduce exactly the c99 retained row.
+    // New submissions and claims below use normal product entrypoints.
+    await f.db`update allrice_conversation_runtimes
+      set state='running',active_run_id=${retained.active_run_id},
+        active_turn_id=${retained.active_turn_id},worker_id=${retained.worker_id}
+      where session_id=${f.session}`;
+    const first = await sendOrdinary(f, '第一条普通后续消息');
+    const second = await sendOrdinary(f, '第二条普通后续消息');
+    expect(
+      await f.db`select f.state,j.attempt,j.available_at>clock_timestamp()+interval '23 hours' deferred
+        from allrice_conversation_followups f join allrice_jobs j on j.run_id=f.run_id
+        where f.run_id in (${first},${second})`,
+    ).toEqual([
+      { state: 'queued', attempt: 0, deferred: true },
+      { state: 'queued', attempt: 0, deferred: true },
+    ]);
+    // Two real PostgreSQL transactions cannot skip a locked earlier message.
+    const claims = await Promise.all([
+      claimNextJob(randomUUID(), 30000),
+      claimNextJob(randomUUID(), 30000),
+    ]);
+    expect(claims.filter(Boolean)).toMatchObject([
+      { runId: first, attempt: 1 },
+    ]);
+    expect(await claimNextJob(randomUUID(), 30000)).toBeNull();
+    await stop(f, first);
+    expect(await claimNextJob(randomUUID(), 30000)).toMatchObject({
+      runId: second,
+      attempt: 1,
+    });
+    expect(await claimNextJob(randomUUID(), 30000)).toBeNull();
+    await stop(f, second);
+    expect(
+      await f.db`select status,attempt from allrice_jobs where id=${f.worker.jobId}`,
+    ).toEqual([{ status: 'canceled', attempt: 1 }]);
+  });
   it('MET-210: stopping a Run that is waiting live on a question clears it', async () => {
     const { f } = await setup();
     expect(
@@ -756,5 +976,17 @@ suite('MET153 durable native waits and queue authority', () => {
       )[0]!.status,
     ).toBe('canceled');
     expect(await claimNextJob(randomUUID(), 30000)).toBeNull();
+    expect(await runtime(f)).toEqual({
+      state: 'interrupted',
+      active_run_id: null,
+      active_turn_id: null,
+      worker_id: null,
+    });
+    const next = await sendOrdinary(f);
+    expect(await claimNextJob(randomUUID(), 30000)).toMatchObject({
+      runId: next,
+      attempt: 1,
+    });
+    await stop(f, next);
   });
 });
