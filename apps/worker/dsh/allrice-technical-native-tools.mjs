@@ -6,6 +6,39 @@ const TechnicalDiagnosticInputSchema = z
   .object({ scope: z.literal('current') })
   .strict();
 const checksum = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+const reviewCandidate = z
+  .object({ artifactId: z.string().uuid(), digest: checksum })
+  .strict();
+export const reviewNativeInputSchema = z.discriminatedUnion('action', [
+  z
+    .object({
+      action: z.literal('inspect'),
+      candidate: reviewCandidate.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('review'),
+      candidate: reviewCandidate,
+      evidence: z
+        .object({
+          kind: z.literal('repository_ci'),
+          subjectId: z.string().uuid(),
+          evidenceDigest: checksum,
+        })
+        .strict(),
+      verdict: z.enum(['accept', 'revise']),
+      summary: z.string().trim().min(1).max(16000),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('deliver'),
+      candidate: reviewCandidate,
+      reviewId: z.string().uuid(),
+    })
+    .strict(),
+]);
 export const repairNativeInputSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('read') }).strict(),
   z
@@ -55,6 +88,53 @@ export const repairNativeInputSchema = z.discriminatedUnion('action', [
 
 // Private platform kernel only. This declaration is not an employee capability.
 export const technicalNativeTools = [
+  {
+    canonicalName: 'platform.repository.review',
+    wireName: 'platform_repository_review',
+    isConcurrencySafe: false,
+    presentation: 'tool',
+    description:
+      'Inspect the frozen repository candidate, record its independent review opinion, or seal its accepted delivery. No edits, execution, network or repository writes.',
+    parameters: {
+      action: {
+        type: 'string',
+        enum: ['inspect', 'review', 'deliver'],
+        required: true,
+      },
+      candidate: {
+        type: 'object',
+        additionalProperties: false,
+        description:
+          'Exact candidate reference returned by inspect; required for review and deliver.',
+        properties: {
+          artifactId: { type: 'string', required: true },
+          digest: { type: 'string', required: true },
+        },
+      },
+      evidence: {
+        type: 'object',
+        additionalProperties: false,
+        description: 'Exact evidence returned by inspect; required for review.',
+        properties: {
+          kind: { type: 'string', enum: ['repository_ci'], required: true },
+          subjectId: { type: 'string', required: true },
+          evidenceDigest: { type: 'string', required: true },
+        },
+      },
+      verdict: { type: 'string', enum: ['accept', 'revise'] },
+      summary: {
+        type: 'string',
+        description:
+          'Review opinion, 1 to 16000 characters; required for review.',
+      },
+      reviewId: {
+        type: 'string',
+        description:
+          'Accepted opinion ID returned by review; required for deliver.',
+      },
+    },
+    validateArguments: (args) => reviewNativeInputSchema.parse(args),
+  },
   {
     canonicalName: 'platform.repository.repair',
     wireName: 'platform_repository_repair',

@@ -1437,6 +1437,7 @@ export async function publishWorkbenchArtifact(
    * assignment/version each time. Storage still uses the real root job. */
   development?: {
     requiredTool?:
+      | 'workspace.export.create'
       | 'assistant.development'
       | 'workspace.project'
       | 'browser.workspace'

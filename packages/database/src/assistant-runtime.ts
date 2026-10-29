@@ -579,13 +579,7 @@ export function createAssistantRuntime(
       where d.root_run_id=h.root_run_id and d.candidate_id=h.head_artifact_id and d.digest=h.head_digest
         and not exists(select 1 from allrice_deliverable_versions n where n.series_id=v.series_id and n.version>v.version)
         and not exists(select 1 from allrice_development_reviews reject where reject.root_run_id=h.root_run_id and reject.artifact_id=h.head_artifact_id and reject.verdict='revise'))`;
-    const { repositoryDevelopmentIncomplete } =
-      await import('./platform-repository-development.ts');
-    const repositoryIncomplete = await repositoryDevelopmentIncomplete(
-      tx,
-      root.root_run_id,
-    );
-    return { developmentIncomplete, repositoryIncomplete };
+    return { developmentIncomplete };
   }
   /** One child completion rule for finalizeRoot and the checked commit guard.
    * Every child must deliver a completed result its parent adopted, and every
@@ -968,15 +962,16 @@ export function createAssistantRuntime(
           await tx`select 1 from allrice_runtime_operations where root_run_id=${captured.rootRunId}
           and not (id=any(${services}::uuid[])) and snapshot->>'status' not in ('succeeded','failed','partial','canceled') limit 1`;
         const open = await openChildren(tx, root);
-        const { developmentIncomplete, repositoryIncomplete } =
-          await currentDevelopmentCompletion(tx, root);
+        const { developmentIncomplete } = await currentDevelopmentCompletion(
+          tx,
+          root,
+        );
         if (
           unresolved.blocking ||
           pending ||
           open.unresolved ||
           open.incomplete ||
-          developmentIncomplete ||
-          repositoryIncomplete
+          developmentIncomplete
         )
           finalDeliveryUnavailable();
         const [identity] = await tx<
@@ -1298,15 +1293,17 @@ export function createAssistantRuntime(
         // Generic assistant.report is not the development completion gate.
         // Only a current, tested/reviewed delivery may complete an initialized
         // development task; a later head/version or rejection invalidates it.
-        const { developmentIncomplete, repositoryIncomplete } =
-          await currentDevelopmentCompletion(tx, root);
+        const { developmentIncomplete } = await currentDevelopmentCompletion(
+          tx,
+          root,
+        );
         const status =
           unsettled.blocking ||
           pending ||
           open.unresolved ||
           children.some((child) => !terminal.has(child.status))
             ? 'unknown'
-            : developmentIncomplete || repositoryIncomplete || open.incomplete
+            : developmentIncomplete || open.incomplete
               ? 'partial'
               : 'completed';
         await assertLease(tx, root, input.worker);

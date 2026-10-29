@@ -353,6 +353,15 @@ export const baseline: readonly BaselineEntry[] = [
   },
   {
     kind: 'patch',
+    id: 'allrice-repository-review-native-v1',
+    category: '业务工具',
+    basis:
+      'MET-210 PR2a：DSH 公开 defineTool/register/restrict 接缝提供独立仓库复核业务工具及完整工具名单门卫，权限/租约与不可变意见仍为门卫/账本；不新增 Agent 生命周期。',
+    approvedBy:
+      '2026-10-28 / 29 用户 PR2a 独立复核修复任务说明：原生注册、Agent 工具限制门卫、Host allowlist 和真实 function-call；AGENTS.md §0 业务工具。',
+  },
+  {
+    kind: 'patch',
     id: 'allrice-development-workflow-v1',
     category: '待删',
     basis:

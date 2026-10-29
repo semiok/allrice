@@ -12,8 +12,8 @@ import {
 import { RepositoryPublicationMetadataSchema } from './platform-repository-publication-contracts.ts';
 import { RepairReportSchema } from './platform-repair-contracts.ts';
 
-/** Platform adaptation of assistant.development, not an execution grant or a
- * Changeset. Identity and all verification material come from persisted facts. */
+/** Read-only repository business tool. Identity and all verification material
+ * come from the registered Job, never from model arguments. */
 export const RepositoryReviewRequestSchema = z
   .object({
     requestId: UuidSchema,
@@ -34,14 +34,6 @@ export const RepositoryReviewCommandSchema = z.discriminatedUnion('action', [
     .object({
       action: z.literal('inspect'),
       candidate: DevelopmentArtifactRefSchema.optional(),
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal('assign'),
-      expectedHead: DevelopmentArtifactRefSchema,
-      ownerRunId: UuidSchema,
-      role: z.literal('review'),
     })
     .strict(),
   z
@@ -88,20 +80,7 @@ export type RepositoryReviewCommand = z.infer<
   typeof RepositoryReviewCommandSchema
 >;
 
-export const repositoryReviewTools = [
-  'assistant.delegate',
-  'assistant.development',
-  'assistant.report',
-  'assistant.stop',
-] as const;
-export const repositoryReviewConfiguration = {
-  version: 1 as const,
-  mode: 'daily' as const,
-  allowAssistants: true,
-  maxConcurrent: 1,
-  maxDepth: 1,
-  maxChildren: 1,
-};
+export const repositoryReviewToolName = 'platform.repository.review';
 export const RepositoryReviewFrozenSchema =
   RepositoryReviewRequestSchema.extend({
     version: z.literal(1),

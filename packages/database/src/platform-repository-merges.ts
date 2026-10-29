@@ -16,7 +16,7 @@ import {
 } from './platform-repository-publication-authority.ts';
 import {
   readCompletedRepositoryReview,
-  lockCompletedRepositoryReviewRoot,
+  lockCompletedRepositoryReviewJob,
 } from './platform-repository-completed-review.ts';
 import { readRepositoryReviewMaterial } from './platform-repository-review-authority.ts';
 import { withRepositoryMerge } from './platform-repository-merge-authority.ts';
@@ -25,7 +25,6 @@ import { cloudStableId } from './cloud-execution.ts';
 import {
   RepositoryMergeRequestSchema,
   RepositoryMergeBindingSchema,
-  RepositoryCompletedReviewSchema,
   RepositoryMergeViewSchema,
   RepositoryMergePanelSchema,
   RepositoryMergeReceiptSchema,
@@ -39,9 +38,11 @@ export async function getPlatformRepositoryMerge(
 ) {
   const owner = await requirePlatformAdmin(context);
   const [m] =
-    await getDatabase()`select * from allrice_platform_repository_merges where id=${UuidSchema.parse(id)} and owner_id=${owner}`;
+    await getDatabase()`select m.*,s.subject_digest from allrice_platform_repository_merges m
+      join allrice_platform_repository_review_subjects s on s.id=m.review_subject_id and s.owner_id=m.owner_id and s.organization_id=m.organization_id and s.workspace_id=m.workspace_id
+      where m.id=${UuidSchema.parse(id)} and m.owner_id=${owner}`;
   if (!m) throw new DataAccessError('not_found');
-  const proof = RepositoryCompletedReviewSchema.parse(m.review);
+  // Display reads the business ledger; execution alone consumes a proof.
   const actions =
     await getDatabase()`select a.*,j.status,j.last_error_code from allrice_platform_repository_merge_actions a
     join allrice_jobs j on j.id=a.job_id and j.run_id=a.run_id and j.owner_id=a.owner_id
@@ -50,7 +51,7 @@ export async function getPlatformRepositoryMerge(
     id: m.id,
     publicationId: m.publication_id,
     reviewSubjectId: m.review_subject_id,
-    subjectDigest: proof.material.subjectDigest,
+    subjectDigest: m.subject_digest,
     readyStarted: !!m.ready_intent,
     mergeStarted: !!m.merge_intent,
     receipt: m.receipt,
@@ -111,7 +112,7 @@ export async function getPlatformRepositoryMergePanel(
       where s.publication_id=${id} and s.owner_id=${context.actor.id} and j.status='succeeded'
       order by s.created_at desc,s.id desc limit 1`;
         if (!s) return;
-        await lockCompletedRepositoryReviewRoot(tx, internal, s.id, false);
+        await lockCompletedRepositoryReviewJob(tx, internal, s.id, false);
         await assertRepositoryCredentialAuthority(
           tx,
           internal,
@@ -197,7 +198,7 @@ export async function createPlatformRepositoryMerge(
         if (!m) throw new DataAccessError('not_found');
         subjectId = m.review_subject_id as string;
       }
-      await lockCompletedRepositoryReviewRoot(tx, internal, subjectId!);
+      await lockCompletedRepositoryReviewJob(tx, internal, subjectId!);
       await assertRepositoryCredentialAuthority(
         tx,
         internal,

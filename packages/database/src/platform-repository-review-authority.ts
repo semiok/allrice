@@ -11,8 +11,6 @@ import {
   RepositoryReviewBindingSchema,
   RepositoryReviewFrozenSchema,
   RepositoryReviewRequestSchema,
-  repositoryReviewConfiguration,
-  repositoryReviewTools,
   type RepositoryReviewBinding,
 } from './platform-repository-review-contracts.ts';
 import { technicalDigest } from './platform-technical-tasks.ts';
@@ -133,9 +131,18 @@ export async function admitRepositoryReviewBinding(
     context.actor.id,
   );
   const [d] =
-    await tx`select * from allrice_platform_quality_deployments where assignment_id=${assignmentId} ${lock ? tx`for share` : tx``}`;
+    await tx`select d.*,a.active assignment_active,a.selection_mode,emp.status employee_status,pa.active deployment_active
+      from allrice_platform_quality_deployments d
+      join allrice_employee_assignments a on a.id=d.assignment_id and a.user_id=d.owner_id
+      join allrice_employees emp on emp.id=a.employee_id
+      join allrice_platform_employee_tenant_assignments pa on pa.tenant_employee_id=a.employee_id and pa.workspace_id=d.workspace_id
+      where d.assignment_id=${assignmentId} ${lock ? tx`for share of d,a,emp,pa` : tx``}`;
   if (
     !d ||
+    !d.assignment_active ||
+    d.selection_mode === 'exclude' ||
+    d.employee_status !== 'active' ||
+    !d.deployment_active ||
     d.owner_id !== context.actor.id ||
     d.organization_id !== context.organizationId ||
     d.workspace_id !== context.workspaceId ||
@@ -164,11 +171,11 @@ export async function bindRepositoryReview(
   const [blocked] =
     await tx`select s.id from allrice_platform_repository_review_subjects s join allrice_jobs j on j.id=s.job_id
     left join allrice_platform_repository_reviews r on r.subject_id=s.id where s.owner_id=${context.actor.id} and
-    ((s.publication_id=${b.frozen.publicationId} and (j.status in ('queued','claimed','running') or (j.status='succeeded' and s.subject_digest=${b.frozen.material.subjectDigest} and r.verdict='accept' and s.delivery_artifact_id is not null)))
+    ((s.publication_id=${b.frozen.publicationId} and (j.status in ('queued','claimed','running') or (j.status='succeeded' and j.cancel_requested_at is null and s.reviewer_run_id=s.run_id and s.subject_digest=${b.frozen.material.subjectDigest} and r.verdict='accept' and s.delivery_artifact_id is not null)))
       or (s.content_digest=${b.frozen.material.candidateContentDigest} and r.verdict='revise')) limit 1`;
   if (blocked) throw new QueueError('conflict');
-  await tx`insert into allrice_platform_repository_review_subjects(id,publication_id,owner_id,organization_id,workspace_id,request_id,input_digest,run_id,job_id,session_id,frozen,subject_digest,content_digest)
-    values(${b.id},${b.frozen.publicationId},${context.actor.id},${context.organizationId},${context.workspaceId!},${b.frozen.requestId},${b.inputDigest},${runId},${jobId},${sessionId},${tx.json(b.frozen)},${b.frozen.material.subjectDigest},${b.frozen.material.candidateContentDigest})`;
+  await tx`insert into allrice_platform_repository_review_subjects(id,publication_id,owner_id,organization_id,workspace_id,request_id,input_digest,run_id,job_id,session_id,frozen,subject_digest,content_digest,reviewer_run_id)
+    values(${b.id},${b.frozen.publicationId},${context.actor.id},${context.organizationId},${context.workspaceId!},${b.frozen.requestId},${b.inputDigest},${runId},${jobId},${sessionId},${tx.json(b.frozen)},${b.frozen.material.subjectDigest},${b.frozen.material.candidateContentDigest},${runId})`;
 }
 export async function assertExistingRepositoryReviewBinding(
   tx: Tx,
@@ -186,8 +193,8 @@ export async function assertExistingRepositoryReviewBinding(
   )
     throw new QueueError('conflict');
 }
-/** Additional platform restrictions; canonical Employee/assistant admission is
- * still required. Missing markers cannot turn a registered subject into chat. */
+/** Current private deployment, frozen candidate and ordinary Job authority.
+ * Missing markers cannot turn a registered subject into chat. */
 export async function isRepositoryReviewJobAuthorized(
   tx: Tx,
   job: JobRow,
@@ -196,9 +203,12 @@ export async function isRepositoryReviewJobAuthorized(
   if (!(await repositoryReviewSchemaAvailable(tx)))
     return !hasRepositoryReviewMarker(job);
   const [s] =
-    await tx`select s.*,e.employee_assignment_id,e.employee_version_id,e.session_id employee_session,r.input run_input
+    await tx`select s.*,e.employee_assignment_id,e.employee_version_id,e.session_id employee_session,r.input run_input,sess.archived_at session_archived,p.expires_at policy_expires_at
     from allrice_platform_repository_review_subjects s join allrice_employee_runs e on e.run_id=s.run_id and e.owner_id=s.owner_id and e.organization_id=s.organization_id and e.workspace_id=s.workspace_id
-    join allrice_runs r on r.id=e.run_id where s.run_id=${job.run_id} and s.job_id=${job.id}`;
+    join allrice_runs r on r.id=e.run_id and r.owner_id=s.owner_id and r.organization_id=s.organization_id and r.workspace_id=s.workspace_id
+    join allrice_policy_snapshots p on p.id=r.policy_snapshot_id and p.subject_id=s.owner_id and p.organization_id=s.organization_id
+    join allrice_chat_sessions sess on sess.id=s.session_id and sess.owner_id=s.owner_id and sess.organization_id=s.organization_id and sess.workspace_id=s.workspace_id
+    where s.run_id=${job.run_id} and s.job_id=${job.id}`;
   if (!s) return !hasRepositoryReviewMarker(job);
   if (!hasRepositoryReviewMarker(job) || !repositoryReviewFrozenValid(s.frozen))
     return false;
@@ -208,10 +218,11 @@ export async function isRepositoryReviewJobAuthorized(
     i.repositoryReviewRequestId !== f.requestId ||
     i.repositoryReviewInputDigest !== s.input_digest ||
     !runtimeContractEqual(i, s.run_input) ||
-    !runtimeContractEqual(
-      i.assistantConfiguration,
-      repositoryReviewConfiguration,
-    ) ||
+    Object.hasOwn(i, 'assistantConfiguration') ||
+    s.reviewer_run_id !== s.run_id ||
+    f.material.authorRunIds.includes(s.run_id) ||
+    s.session_archived ||
+    s.policy_expires_at <= new Date() ||
     s.employee_assignment_id !== f.assignmentId ||
     s.employee_version_id !== f.employeeVersionId ||
     s.employee_session !== s.session_id ||
@@ -249,33 +260,6 @@ export async function isRepositoryReviewJobAuthorized(
     return false;
   }
 }
-export async function assertRepositoryReviewAssistantAuthority(
-  tx: Tx,
-  rootRunId: string,
-  tools: string[],
-  lock = true,
-) {
-  if (!(await repositoryReviewSchemaAvailable(tx))) return false;
-  const [s] =
-    await tx`select job_id from allrice_platform_repository_review_subjects where run_id=${rootRunId}`;
-  if (!s) return false;
-  const [job] = await tx<
-    JobRow[]
-  >`select * from allrice_jobs where id=${s.job_id} ${lock ? tx`for share` : tx``}`;
-  if (
-    !job ||
-    !(await isRepositoryReviewJobAuthorized(tx, job, lock)) ||
-    tools.some(
-      (t) =>
-        !repositoryReviewTools.includes(
-          t as (typeof repositoryReviewTools)[number],
-        ),
-    )
-  )
-    deny();
-  await assertRepositoryReviewLease(tx, job, lock);
-  return true;
-}
 export async function repositoryReviewCompletionAllowed(
   tx: Tx,
   job: JobRow,
@@ -289,35 +273,28 @@ export async function repositoryReviewCompletionAllowed(
   if (!(await isRepositoryReviewJobAuthorized(tx, job))) return false;
   await assertRepositoryReviewLease(tx, job);
   const [s] =
-    await tx`select s.id,s.frozen,s.preflight,s.postflight,s.reviewer_run_id,s.delivery_artifact_id,r.verdict,r.artifact_id,i.status,i.cancel_requested_at,
-    (rt.root_run_id is not null and rt.cancel_request_id is null and rt.deadline_at>clock_timestamp() and authority.root_run_id is not null and authority.revoked_at is null and root_instance.run_id is not null and root_instance.cancel_requested_at is null) as root_live,
-    ar.delivery_id,ar.parent_adopted_seq,
-    exists(select 1 from jsonb_array_elements(ar.payload->'evidence') e where e->>'id'=r.artifact_id::text) as reported_review,
+    await tx`select s.frozen,s.preflight,s.postflight,s.reviewer_run_id,s.delivery_artifact_id,r.verdict,r.artifact_id,
     (select count(*)::int from allrice_deliverable_versions v join allrice_storage_objects o on o.id=v.object_id and o.state='ready' and o.immutable and o.deleted_at is null
-      where v.id=any(array[s.seed_artifact_id,r.artifact_id,s.delivery_artifact_id]) and v.owner_id=s.owner_id and v.organization_id=s.organization_id and v.workspace_id=s.workspace_id and v.session_id=s.session_id) as ready_artifacts
-    from allrice_platform_repository_review_subjects s left join allrice_platform_repository_reviews r on r.subject_id=s.id
-    left join allrice_runtime_roots rt on rt.root_run_id=s.run_id and rt.organization_id=s.organization_id and rt.workspace_id=s.workspace_id
-    left join allrice_assistant_roots authority on authority.root_run_id=rt.root_run_id
-    left join allrice_assistant_instances root_instance on root_instance.run_id=s.run_id and root_instance.root_run_id=s.run_id
-    left join allrice_assistant_instances i on i.run_id=s.reviewer_run_id and i.root_run_id=s.run_id and i.parent_run_id=s.run_id
-    left join allrice_assistant_results ar on ar.run_id=i.run_id where s.run_id=${job.run_id} and s.job_id=${job.id}`;
-  if (!s) return !hasRepositoryReviewMarker(job);
-  if (!s.root_live || s.cancel_requested_at) return false;
+      join allrice_workbench_artifacts w on w.version_id=v.id and w.run_id=s.run_id and w.kind='document'
+      where v.id=any(array[s.seed_artifact_id,r.artifact_id,s.delivery_artifact_id]) and v.owner_id=s.owner_id and v.organization_id=s.organization_id and v.workspace_id=s.workspace_id and v.session_id=s.session_id
+      and not exists(select 1 from allrice_deliverable_versions n where n.series_id=v.series_id and n.version>v.version)) as ready_artifacts
+    from allrice_platform_repository_review_subjects s left join allrice_platform_repository_reviews r on r.subject_id=s.id and r.reviewer_run_id=s.run_id
+    where s.run_id=${job.run_id} and s.job_id=${job.id}`;
+  if (!s) return false;
   if (
     requireRemoteProof &&
     (!s.preflight ||
       !s.postflight ||
       s.preflight.subjectDigest !== s.frozen.material.subjectDigest ||
       s.postflight.subjectDigest !== s.frozen.material.subjectDigest ||
+      s.preflight.evidenceDigest !== s.frozen.material.evidenceDigest ||
       s.postflight.evidenceDigest !== s.frozen.material.evidenceDigest ||
+      s.preflight.jobAttempt !== job.attempt ||
       s.postflight.jobAttempt !== job.attempt)
   )
     return false;
   return (
-    s.status === 'completed' &&
-    !!s.delivery_id &&
-    s.parent_adopted_seq !== null &&
-    s.reported_review === true &&
+    s.reviewer_run_id === job.run_id &&
     !!s.artifact_id &&
     (s.verdict === 'revise'
       ? s.ready_artifacts === 2

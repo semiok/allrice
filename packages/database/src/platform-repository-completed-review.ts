@@ -1,10 +1,5 @@
 import type postgres from 'postgres';
-import {
-  AssistantResultSchema,
-  RuntimeTaskRefSchema,
-  runtimeContractEqual,
-  type RequestContext,
-} from '@allrice/contracts';
+import { runtimeContractEqual, type RequestContext } from '@allrice/contracts';
 import { DataAccessError } from './data.ts';
 import { technicalDigest } from './platform-technical-tasks.ts';
 import { repositoryDigest } from './platform-repository-source.ts';
@@ -12,7 +7,6 @@ import {
   RepositoryReviewFrozenSchema,
   RepositoryReviewRequestSchema,
   RepositoryReviewRemoteReceiptSchema,
-  repositoryReviewConfiguration,
 } from './platform-repository-review-contracts.ts';
 import {
   repositoryReviewFrozenValid,
@@ -22,7 +16,6 @@ import { repositoryReviewAuthorRunIds } from './platform-repository-review-mater
 import { freezeRepositoryPublicationSource } from './platform-repository-publication-source.ts';
 import { RepairFrozenSchema } from './platform-repair-authority.ts';
 import { RepositoryCompletedReviewSchema } from './platform-repository-merge-contracts.ts';
-import { runtimeLedgerInputDigest } from './runtime-ledger/ledger.ts';
 import {
   lockRepositoryReviewContent,
   repositoryReviewOpinion,
@@ -34,9 +27,9 @@ function deny(): never {
   throw new DataAccessError('authorization_denied');
 }
 
-/** Locate only, then lock the old native root before current credential or
- * publication locks. Never refresh an old clock or reinstate its worker lease. */
-export async function lockCompletedRepositoryReviewRoot(
+/** Lock the completed ordinary Job before current credential/publication
+ * locks. Historical expiry never reinstates or extends its Worker lease. */
+export async function lockCompletedRepositoryReviewJob(
   tx: Tx,
   context: RequestContext,
   subjectId: string,
@@ -46,23 +39,12 @@ export async function lockCompletedRepositoryReviewRoot(
     await tx`select * from allrice_platform_repository_review_subjects where id=${subjectId}
     and owner_id=${context.actor.id} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId!}`;
   if (!s) throw new DataAccessError('not_found');
-  const [root] =
-    await tx`select * from allrice_runtime_roots where root_run_id=${s.run_id}
-    and organization_id=${s.organization_id} and workspace_id=${s.workspace_id} ${lock ? tx`for share` : tx``}`;
-  const [assistant] =
-    await tx`select * from allrice_assistant_roots where root_run_id=${s.run_id} ${lock ? tx`for share` : tx``}`;
   const [job] =
     await tx`select j.*,r.input as run_input,r.state as run_state,r.owner_id as run_owner,
     r.organization_id as run_org,r.workspace_id as run_workspace,ps.subject_id as policy_owner
     from allrice_jobs j join allrice_runs r on r.id=j.run_id join allrice_policy_snapshots ps on ps.id=r.policy_snapshot_id
     where j.id=${s.job_id} and j.run_id=${s.run_id} ${lock ? tx`for share of j,r` : tx``}`;
   if (
-    !root ||
-    root.cancel_request_id ||
-    root.cancel_requested_at ||
-    !assistant ||
-    assistant.revoked_at ||
-    assistant.worker_job_id !== s.job_id ||
     !job ||
     job.status !== 'succeeded' ||
     job.run_state !== 'succeeded' ||
@@ -70,7 +52,7 @@ export async function lockCompletedRepositoryReviewRoot(
     job.max_attempts !== 1
   )
     deny();
-  return { s, root, assistant, job };
+  return { s, job };
 }
 
 /** Consume immutable completed facts separately from live completion. Old
@@ -82,7 +64,7 @@ export async function readCompletedRepositoryReview(
   subjectId: string,
   lock = true,
 ) {
-  const locked = await lockCompletedRepositoryReviewRoot(
+  const locked = await lockCompletedRepositoryReviewJob(
       tx,
       context,
       subjectId,
@@ -150,21 +132,6 @@ export async function readCompletedRepositoryReview(
     j.policy_owner !== s.owner_id
   )
     deny();
-  const task = RuntimeTaskRefSchema.parse(locked.root.task);
-  if (
-    task.runId !== s.run_id ||
-    task.rootRunId !== s.run_id ||
-    task.parentRunId !== null ||
-    task.chatSessionId !== s.session_id ||
-    task.scope.organizationId !== s.organization_id ||
-    task.scope.workspaceId !== s.workspace_id ||
-    task.frozenConfiguration.employeeVersionId !== f.employeeVersionId ||
-    !runtimeContractEqual(
-      locked.assistant.configuration,
-      repositoryReviewConfiguration,
-    )
-  )
-    deny();
   const [employee] =
     await tx`select * from allrice_employee_runs where run_id=${s.run_id}
     and owner_id=${s.owner_id} and organization_id=${s.organization_id} and workspace_id=${s.workspace_id} ${lock ? tx`for share` : tx``}`;
@@ -186,62 +153,18 @@ export async function readCompletedRepositoryReview(
     i.employeeAssignmentId !== f.assignmentId ||
     i.employeeVersionId !== f.employeeVersionId ||
     i.sessionId !== s.session_id ||
-    !runtimeContractEqual(
-      i.assistantConfiguration,
-      repositoryReviewConfiguration,
-    )
-  )
-    deny();
-  const instances =
-    await tx`select * from allrice_assistant_instances where root_run_id=${s.run_id}
-    and run_id=any(array[${s.run_id}::uuid,${s.reviewer_run_id}::uuid]) order by run_id ${lock ? tx`for share` : tx``}`;
-  const root = instances.find((row) => row.run_id === s.run_id),
-    child = instances.find((row) => row.run_id === s.reviewer_run_id);
-  if (
-    !root ||
-    root.status !== 'completed' ||
-    root.cancel_request_id ||
-    root.cancel_requested_at ||
-    root.parent_run_id ||
-    root.depth !== 0 ||
-    !child ||
-    child.status !== 'completed' ||
-    child.cancel_request_id ||
-    child.cancel_requested_at ||
-    child.parent_run_id !== s.run_id ||
-    child.depth !== 1 ||
-    child.native_session_id === root.native_session_id ||
-    m.authorRunIds.includes(child.run_id)
+    Object.hasOwn(i, 'assistantConfiguration') ||
+    s.reviewer_run_id !== s.run_id ||
+    m.authorRunIds.includes(s.run_id)
   )
     deny();
   const [review] =
     await tx`select * from allrice_platform_repository_reviews where subject_id=${s.id} ${lock ? tx`for share` : tx``}`;
-  const reports =
-    await tx`select * from allrice_assistant_results where run_id=${child.run_id} order by delivery_id ${lock ? tx`for share` : tx``}`;
-  const report = reports[0];
   if (
     !review ||
     review.verdict !== 'accept' ||
-    review.reviewer_run_id !== child.run_id ||
-    review.evidence_digest !== m.evidenceDigest ||
-    reports.length !== 1 ||
-    !report ||
-    report.root_run_id !== s.run_id ||
-    !report.parent_message_id ||
-    report.parent_adopted_seq === null ||
-    report.parent_adopted_seq === undefined
-  )
-    deny();
-  const result = AssistantResultSchema.parse(report.payload);
-  if (
-    result.status !== 'completed' ||
-    result.incomplete.length ||
-    result.deliveryId !== report.delivery_id ||
-    ![true, false].some(
-      (usageComplete) =>
-        runtimeLedgerInputDigest({ ...result, usageComplete }) ===
-        report.payload_digest,
-    )
+    review.reviewer_run_id !== s.run_id ||
+    review.evidence_digest !== m.evidenceDigest
   )
     deny();
   const preflight = RepositoryReviewRemoteReceiptSchema.parse(s.preflight),
@@ -276,7 +199,7 @@ export async function readCompletedRepositoryReview(
     return { id, checksum: a.checksum as string };
   };
   const seed = ref(s.seed_artifact_id, s.run_id),
-    opinion = ref(review.artifact_id, child.run_id),
+    opinion = ref(review.artifact_id, s.run_id),
     delivery = ref(s.delivery_artifact_id, s.run_id);
   const candidate = { artifactId: seed.id, digest: seed.checksum };
   const reviewCommand = {
@@ -303,7 +226,7 @@ export async function readCompletedRepositoryReview(
               review.id,
               candidate,
               m,
-              child.run_id,
+              s.run_id,
               'accept',
               review.summary,
             ),
@@ -320,23 +243,16 @@ export async function readCompletedRepositoryReview(
               candidate,
               m,
               review.id,
-              child.run_id,
+              s.run_id,
               review.summary,
             ),
             null,
             2,
           ),
         ),
-      ) ||
-    !result.evidence.some(
-      (e) => e.id === opinion.id && e.digest === opinion.checksum,
-    )
+      )
   )
     deny();
-  const [registered] =
-    await tx`select artifact_id from allrice_assistant_artifacts where run_id=${child.run_id}
-    and artifact_id=${opinion.id} and digest=${opinion.checksum} ${lock ? tx`for share` : tx``}`;
-  if (!registered) deny();
   // Shared by the actual verdict insert transaction. Query after acquiring it;
   // never lock another subject/publication in reverse order under this mutex.
   if (lock)
@@ -346,28 +262,21 @@ export async function readCompletedRepositoryReview(
     where q.owner_id=${s.owner_id} and q.content_digest=${m.candidateContentDigest} and r.verdict='revise' limit 1`;
   if (rejected) deny();
   const fields = {
-    version: 1 as const,
+    version: 2 as const,
     subjectId: s.id as string,
     reviewId: review.id as string,
     reviewRunId: s.run_id as string,
     reviewJobId: s.job_id as string,
-    reviewerRunId: child.run_id as string,
+    reviewerRunId: s.run_id as string,
     employeeVersionId: f.employeeVersionId,
     employeeRevisionId: f.employeeRevisionId,
     assignmentId: f.assignmentId,
     reviewAttempt: Number(j.attempt),
     frozenFingerprint: f.fingerprint,
     inputDigest: s.input_digest as string,
-    rootNativeSessionId: root.native_session_id as string,
-    reviewerNativeSessionId: child.native_session_id as string,
     seed,
     opinion,
     delivery,
-    reportDeliveryId: report.delivery_id as string,
-    adoptedSeq: Number(report.parent_adopted_seq),
-    parentMessageId: report.parent_message_id as string,
-    reportInputDigest: report.payload_digest as string,
-    reportPayloadDigest: runtimeLedgerInputDigest(result),
     preflight,
     postflight,
     material: m,

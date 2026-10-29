@@ -98,7 +98,8 @@ export async function cancelEmployeeAccessRuns(
           ? tx`coalesce(s.employee_instance_id,a.id)=${scope.instanceId}`
           : tx`a.employee_id=${scope.employeeId} ${scope.inactiveAssignmentsOnly ? tx`and not a.active` : tx``}`
       }
-      and j.status not in ('succeeded','failed','dead_letter','canceled')
+      and (j.status not in ('succeeded','failed','dead_letter','canceled')
+        or (j.status='succeeded' and j.payload->'input' ? 'repositoryReviewRequestId'))
       and j.cancel_requested_at is null order by er.run_id`;
   for (const run of runs) {
     await requestEmployeeAccessCancellationTransaction(

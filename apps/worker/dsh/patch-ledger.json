@@ -74,6 +74,14 @@
       "reason": "Report actual coordinator idle for the durable root clock; join waits under Worker lease/cancel supervision, while single requests and tools retain bounded lifetimes. No second agent loop or implicit authority."
     },
     {
+      "id": "allrice-repository-review-native-v1",
+      "issue": "MET-210",
+      "upstreamVersion": "0.2.1-rc.2",
+      "kind": "protocol-extension",
+      "path": "apps/worker/dsh/allrice-technical-native-tools.mjs",
+      "reason": "Business tool on the public dsh-tools defineTool/register/restrict seams: platform_repository_review forwards inspect/review/deliver to the ordinary independent review Job through the existing Host Broker; agent.ctx.tools.restrict limits the complete inherited profile to this tool. AllRice keeps current tenant/credential/lease authority, frozen candidate and immutable opinion/delivery accounting. Explicit employee revocation permanently invalidates completed proof through the existing Job cancellation ledger without changing succeeded history. No XML fallback, assistant report, additional agent loop or new execution authority."
+    },
+    {
       "id": "allrice-development-workflow-v1",
       "issue": "MET-144",
       "upstreamVersion": "0.2.1-rc.2",

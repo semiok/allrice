@@ -69,7 +69,6 @@ import {
   getPlatformRepositoryReviewExecution,
   platformRepositoryReviewInstructions,
 } from '@allrice/database';
-import { repositoryReviewTools } from '@allrice/database/technical-contracts';
 
 import { AgentLoopGuard, AgentLoopGuardError } from '../agent-loop-guard.js';
 import { finalizeEmployeeConversationContext } from '../conversation/checkpoint-maintenance.js';
@@ -93,7 +92,11 @@ import {
   requireCheckedFinalDelivery,
   transferCheckedFinalDeliveryForExecution,
 } from '../final-delivery/checked-delivery.js';
-import { verifyRepositoryReviewRemote } from './platform-repository-review.js';
+import {
+  verifyRepositoryReviewRemote,
+  platformRepositoryReviewToolDefinition,
+  executePlatformRepositoryReviewTool,
+} from './platform-repository-review.js';
 import type { ClaimedJobHandlerInput } from '../job-runner.js';
 import {
   classifyProviderFailure,
@@ -532,7 +535,7 @@ export async function executeEmployeeRun({
     }),
   );
   const assistantConfiguration =
-    !repairTask && (repositoryReviewTask || workAutomation.settings.assistants)
+    !repairTask && !repositoryReviewTask && workAutomation.settings.assistants
       ? input.assistantConfiguration
       : undefined;
   resolved = {
@@ -761,24 +764,20 @@ export async function executeEmployeeRun({
               : undefined,
           )
         : undefined;
-    const authorizedTools = repairTask
-      ? [platformRepairToolDefinition]
-      : riceToolDefinitionsForCapabilities(
-          resolved.grantedCapabilities,
-          allowedToolNames,
-          executionSnapshot.schemaVersion === 2
-            ? executionSnapshot.mcpTools
-            : [],
-          executionSnapshot.schemaVersion === 2
-            ? executionSnapshot.localMcp
-            : undefined,
-        ).filter(
-          (tool) =>
-            !repositoryReviewTask ||
-            repositoryReviewTools.includes(
-              tool.name as (typeof repositoryReviewTools)[number],
-            ),
-        );
+    const authorizedTools = repositoryReviewTask
+      ? [platformRepositoryReviewToolDefinition]
+      : repairTask
+        ? [platformRepairToolDefinition]
+        : riceToolDefinitionsForCapabilities(
+            resolved.grantedCapabilities,
+            allowedToolNames,
+            executionSnapshot.schemaVersion === 2
+              ? executionSnapshot.mcpTools
+              : [],
+            executionSnapshot.schemaVersion === 2
+              ? executionSnapshot.localMcp
+              : undefined,
+          );
     const routePlan = decideCapabilityRoute({
       request: {
         schemaVersion: 1,
@@ -1258,7 +1257,6 @@ export async function executeEmployeeRun({
           ? executionSnapshot.finalDeliveryPolicy?.artifactId
           : undefined,
       nativeSkills: repositoryReviewTask ? [] : resolved.nativeSkills,
-      repositoryReview: !!repositoryReviewTask,
       configuration: assistantConfiguration,
       context: execution.context,
       worker: workflowLease,
@@ -1326,6 +1324,7 @@ export async function executeEmployeeRun({
     if (
       taskProgress &&
       !repairTask &&
+      !repositoryReviewTask &&
       !assistants &&
       !selectedWorkflow &&
       nativeQuestionMode !== 'timed' &&
@@ -1429,6 +1428,13 @@ export async function executeEmployeeRun({
           workflowLease,
         })
       : null;
+    const taskTool = repositoryReviewTask
+      ? (call: Parameters<typeof executePlatformRepositoryReviewTool>[1]) =>
+          executePlatformRepositoryReviewTool(
+            { execution, isolation, signal, onHarnessEvent, workflowLease },
+            call,
+          )
+      : repairController?.onToolCall;
     routeExecutionStarted = true;
     const delivery = documentDeliveryGuard(
       officeFirstDeliveryPolicy,
@@ -1926,8 +1932,8 @@ export async function executeEmployeeRun({
                 tools.length > 0
                   ? (call) =>
                       delivery.execute(call, () =>
-                        repairController
-                          ? repairController.onToolCall(call)
+                        taskTool
+                          ? taskTool(call)
                           : executeRiceTool({
                               nativeSkills: resolved.nativeSkills,
                               localMcp:

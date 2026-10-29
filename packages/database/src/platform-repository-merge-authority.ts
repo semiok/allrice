@@ -10,7 +10,7 @@ import { resolvePlatformPreviewContext } from './platform-employees/preview-cont
 import { technicalDigest } from './platform-technical-tasks.ts';
 import {
   readCompletedRepositoryReview,
-  lockCompletedRepositoryReviewRoot,
+  lockCompletedRepositoryReviewJob,
 } from './platform-repository-completed-review.ts';
 import { readRepositoryReviewMaterial } from './platform-repository-review-authority.ts';
 import {
@@ -89,7 +89,7 @@ export async function bindRepositoryMerge(
     m.workspaceId !== context.workspaceId
   )
     deny();
-  await lockCompletedRepositoryReviewRoot(tx, context, b.review.subjectId);
+  await lockCompletedRepositoryReviewJob(tx, context, b.review.subjectId);
   await assertRepositoryCredentialAuthority(tx, context, r.credentialRevision);
   await lockCurrentMergeScope(tx, context);
   await tx`select pg_advisory_xact_lock(hashtextextended(${`platform-repository-merge:${m.publicationId}`},0))`;
@@ -210,7 +210,7 @@ async function authority(tx: Tx, job: JobRow) {
     sessionId: a.login_session_id,
     authenticatedAt: a.login_authenticated_at.toISOString(),
   };
-  await lockCompletedRepositoryReviewRoot(tx, context, review.subjectId);
+  await lockCompletedRepositoryReviewJob(tx, context, review.subjectId);
   const token = await assertRepositoryCredentialAuthority(
     tx,
     context,

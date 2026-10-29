@@ -1235,6 +1235,15 @@ export async function createAllRiceRuntime(
         );
       }
       this.registerNativeTools();
+      if (this.nativeTools.has('platform.repository.review')) {
+        // The profile also installs native tools. Restrict the review Agent's
+        // complete inherited set, not only the calls forwarded to the Broker.
+        this.ownDisposers.push(
+          this.ctx.on('agent/created', ({ agent }) => {
+            agent.ctx.tools.restrict({ allow: ['platform_repository_review'] });
+          }),
+        );
+      }
       await this.initializeSdk(forwardedParams);
       if (!this.modelErrorNormalization)
         this.modelErrorNormalization = installModelErrorNormalization(this.ctx);

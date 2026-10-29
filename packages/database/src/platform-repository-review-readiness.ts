@@ -3,7 +3,10 @@ import type {
   RepositoryReviewMaterial,
 } from './platform-repository-review-contracts.ts';
 import type { z } from 'zod';
-type Review = z.infer<typeof RepositoryReviewPanelSchema>['reviews'][number];
+type Review = z.infer<typeof RepositoryReviewPanelSchema>['reviews'][number] & {
+  /** Internal projection of the Job marker; history keeps its succeeded state. */
+  cancelRequested?: boolean;
+};
 /** Presentation of attributed evidence, never a merge/deploy authorization. */
 export function repositoryReviewReadiness(
   material: RepositoryReviewMaterial | null,
@@ -64,13 +67,19 @@ export function repositoryReviewReadiness(
       state: 'revise' as const,
       reasons: ['revision_required' as const],
     };
+  if (current.cancelRequested)
+    return {
+      ...common,
+      state: 'unknown' as const,
+      reasons: ['authority_revoked' as const],
+    };
   if (
     current.verdict === 'accept' &&
     current.remoteVerifiedAt &&
     current.reviewerRunId &&
     current.reviewArtifactId &&
     current.deliveryArtifactId &&
-    current.reviewerRunId !== current.runId &&
+    current.reviewerRunId === current.runId &&
     !material.authorRunIds.includes(current.reviewerRunId)
   )
     return { ...common, state: 'accepted' as const, reasons: [] };

@@ -33,7 +33,7 @@ export const RepositoryMergeRequestSchema = z.discriminatedUnion('action', [
 ]);
 export const RepositoryCompletedReviewSchema = z
   .object({
-    version: z.literal(1),
+    version: z.literal(2),
     subjectId: UuidSchema,
     reviewId: UuidSchema,
     reviewRunId: UuidSchema,
@@ -45,16 +45,9 @@ export const RepositoryCompletedReviewSchema = z
     reviewAttempt: z.number().int().positive(),
     frozenFingerprint: ChecksumSchema,
     inputDigest: ChecksumSchema,
-    rootNativeSessionId: z.string().min(1).max(200),
-    reviewerNativeSessionId: z.string().min(1).max(200),
     seed: z.object({ id: UuidSchema, checksum: ChecksumSchema }).strict(),
     opinion: z.object({ id: UuidSchema, checksum: ChecksumSchema }).strict(),
     delivery: z.object({ id: UuidSchema, checksum: ChecksumSchema }).strict(),
-    reportDeliveryId: UuidSchema,
-    adoptedSeq: z.number().int().nonnegative(),
-    parentMessageId: z.string().min(1).max(200),
-    reportInputDigest: ChecksumSchema,
-    reportPayloadDigest: ChecksumSchema,
     preflight: RepositoryReviewRemoteReceiptSchema,
     postflight: RepositoryReviewRemoteReceiptSchema,
     material: RepositoryReviewMaterialSchema,

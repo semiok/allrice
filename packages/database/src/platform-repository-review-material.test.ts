@@ -141,9 +141,24 @@ describe('repository review stable source/CI and attributed opinion', () => {
       createdAt: new Date().toISOString(),
       remoteVerifiedAt: new Date().toISOString(),
     });
+    review.reviewerRunId = review.runId;
     expect(repositoryReviewReadiness(material, [review], false).state).toBe(
       'accepted',
     );
+    expect(
+      repositoryReviewReadiness(
+        material,
+        [{ ...review, cancelRequested: true }],
+        false,
+      ),
+    ).toMatchObject({ state: 'unknown', reasons: ['authority_revoked'] });
+    expect(
+      repositoryReviewReadiness(
+        material,
+        [{ ...review, cancelRequested: true }],
+        true,
+      ).state,
+    ).toBe('revise');
     expect(
       repositoryReviewReadiness(
         material,

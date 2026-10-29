@@ -45,6 +45,7 @@ export const privateDshNativeToolNames: ReadonlySet<string> = new Set([
   'platform.employee.method.step',
   'platform.technical.diagnostics',
   'platform.repository.repair',
+  'platform.repository.review',
 ]);
 
 export function isDshNativeTool(name: string) {
@@ -74,7 +75,7 @@ export function dshHostCapabilityInstructions(
 }
 
 export function dshToolBridgeInstructions(
-  input: HarnessExecutionInput,
+  input: Pick<HarnessExecutionInput, 'tools'>,
   runtimeNativeTools?: ReadonlySet<string>,
 ) {
   const availableNative = (name: string) =>

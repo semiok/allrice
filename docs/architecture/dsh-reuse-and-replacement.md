@@ -334,12 +334,21 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 - 退役条件：可以替换重复的 idle 探测，不能迁走权威时钟。需要证明助手活跃/工具未知时不暂停、多个参与者时间取并集、等待不耗预算、接管不重置。
 - 验收：`task-clock.integration.test.ts`、`task-wait-worker.integration.test.ts`。回退读取同一时钟表，不能另起内存计时器。
 
+### allrice-repository-review-native-v1
+
+- ID：`allrice-repository-review-native-v1`；归属 MET-210；业务工具，保留普通独立仓库复核 Job 的门卫/账本。
+- 依据：用户 2026-10-28 / 29 PR2a 独立复核修复派工；DSH `@deepseek-ai/dsh-tools@0.2.1-rc.2` 的公开 `defineTool` / `ctx.tools.register` / `agent.ctx.tools.restrict`。当前 restricted profile 的 tools 服务由既有 Host 注册 `platform_repository_review`，以 `allrice/tool-call` 回到 Worker；Agent 创建时将完整继承工具集限制为此工具，原生 `ask_user_question` 也不可用。
+- AllRice 声明与 Broker DTO 严格校验保持一致，identity、冻结候选、作者排除、原始 CI pre/postflight、意见与交付仍来自普通 Job 与不可变成果；Job → 身份/凭证锁序和等待后租约复查与 heartbeat 一致。明确停用员工通过既有 Job `cancel_requested_at` 永久撤回已完成 proof 权限，保留成功历史；重新启用不清除标记，自然租约过期不撤销历史证据。DSH 拥有原生 function call、工具结果和后续模型步骤；不使用 XML 工具循环或旧 assistant report。
+- 来源与升级：本项修改原生 `.mjs`，**执行包内容 ID 会变化**，既有 artifact/nativeTools 指纹随实测内容更新；未升级 DSH 依赖或修改上游。升级时核对公开工具注册、声明参数、Host/Worker allowlist 与 Broker 结果。
+- 验收：`dsh-repository-review-native.test.ts`、`test/p25/repository-review.integration.test.ts`；真实 Worker → Host → PostgreSQL 的完整工具名单、越名单提问无问题卡/挂起、function-call 转发及两连接 heartbeat/工具锁交错；真实停用入口与完成/proof 消费双向交错，重新启用仍拒绝旧 proof。上线仍须独立复核、CI 和发布后 Dev 验收。
+
 ### allrice-development-workflow-v1
 
 - ID：`allrice-development-workflow-v1`；归属 MET-144；**保留**（PR-3 已复核；原生派发已复用，剩余为平台治理）。
 - Allrice：[allrice-assistant-runtime.mjs](../../apps/worker/dsh/allrice-assistant-runtime.mjs)、数据库 `development-cooperation.ts` / `development-workflow.ts`。现有 message/report/stop 已使用原生子助手，不是从零搭建消息系统。
 - 上游：[rc.3 subagent][subagent] 用 `sendMessage` 取代旧 `followup`，PR-2 已改用 Host 专用 `queueHostSubagentPrompt` 保留 Queue 与 coordinator 来源，不能用会唤醒接收者的 `sendMessage` 冒充旧 quiet report。冷恢复使用官方 session-query-sqlite 的 `openAt: never`，仅启用精确读取，不创建索引或注册模型查询工具；[Agent Team][team]有持久排队→目标采纳→ACK、任务 revision CAS、事件等待和中断后保留 Inbox，可借鉴这些机制。
 - 退役条件：只替换重复派发/唤醒/等待路径；固定候选 SHA、同版本测试、独立审查、文件 CAS、租户授权和交付证据仍由 Allrice 核验。Team 的单进程任务板不能成为 PostgreSQL 队列的第二个权威来源，`writeScopes` 也不是锁。
+- MET-210 PR2a（用户 2026-10-28 派工）：仓库审查从本层抽出，普通 Employee Job 直接使用受限 `platform.repository.review` 业务工具，原生注册见 `allrice-repository-review-native-v1`；固定候选、权限和成果存储为门卫/账本，执行与取消仍由既有 Job/DSH 承担。reviewer 指向自身独立 Run；完成及 merge 证据不再读取助手实例、report 或采纳序号。旧开发协作与其余助手包装仍待 PR2b 原子退役，本项未整体回归。
 - 验收：数据库 `development-cooperation.integration.test.ts` / `development-workflow.integration.test.ts`、`apps/worker/test/p25/assistant-production.integration.test.ts` 和 MET-144 真实交付链。回退必须排空候选助手树，不能让旧/新两个协调器同时投递。
 
 ### allrice-assistant-required-delivery-v1
