@@ -344,16 +344,16 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 
 ### allrice-development-workflow-v1（已退役）
 
-- MET-210 PR2b 原子删除旧开发协作工具、角色协调代码、8 张专属表、随包 Skill 与专属 UI/API；从 patch-ledger 和收敛基线移除。
+- MET-210 PR2b 删除旧开发协作工具、角色协调代码、随包 Skill 与专属 UI/API；执行适配从 patch-ledger 删除。2026-10-29 主会话按 `decommission-gate-plan.md` §4 选择先退役执行器：8 张专属表与所有原行/引用仍是被动历史，在收敛台账如实登记，数据销毁后移。
 - 原生 DSH 子代理的状态与生命周期不由 AllRice 重建。本次不提前启用 PR3 原生子代理；仓库复核已是普通独立 Job，见 `allrice-repository-review-native-v1`。
 - 0229 只禁用精确内置 Skill ID `d78b3556-821a-5550-bf13-d9dd84b9bbe0`。普通历史发布版本引用的冻结 bundle 保留，不再作为可装配入口。
 
 ### allrice-assistant-required-delivery-v1（已退役）
 
-- MET-210 PR2b 删除旧 wrapper/controller、quiet report 私有调用、助手 report/采纳/结算权威和 9 张专属表；`compatibility.json.privateInterfaces` 清空。
+- MET-210 PR2b 删除旧 wrapper/controller、quiet report 私有调用、助手 report/采纳/结算权威；9 张专属表及其全部行、费用与 failed/unknown 原样保留为待销毁被动历史，`compatibility.json.privateInterfaces` 清空。
 - 普通 Run 交付沿用 DSH `runOnce` 的候选接缝与普通 Job 当前租约、不可变成果核对；无第二套 Agent 状态机。必须与 PR1c #635 同次发布，不能单独部署资格放开或残留旧执行器。
-- 0097 通用订阅不可变守卫、0146/0147 通用记录守卫、runtime roots/budgets/operations/reservations/run_links 及普通历史/文件保留。迁移按显式集合与 FK 顺序删除；保留业务记录引用旧专属对象时带 ID 拒绝，禁止 CASCADE。
-- 0229 是数据库回滚下限；旧写者停止且隔离副本演练通过后由发布负责人执行快照/迁移/同窗发布。结构测试与真实 before/after 两成员群体见 `assistant-retirement.integration.test.ts` 和 `retired-assistant-delivery.integration.test.ts`；最终组合候选的 SHA 与结果单独记录。
+- 0097 通用订阅不可变守卫、0146/0147 通用记录守卫、runtime roots/budgets/operations/reservations/run_links 及普通历史/文件保留。本阶段不删旧 child、专属成果或任何 FK 必需来源，不新增旧表生产查询/兼容层。破坏性候选与完整测试冻结在 `2970378c58a5550cd8fc825776e2e50841fc9d72`；其停止与共享引用门禁属于后续数据销毁审查，不装入当前活动迁移。
+- `0229_retire_legacy_assistant_configuration.sql` 仅移除旧配置键并禁用精确内置 Skill；它仍前移回滚下限：旧二进制的 strict schema 要求 assistants，且不认识新迁移名，不能因旧表仍在就直接回滚。正常停写/快照/原样副本演练仍由发布负责人执行；保留数据不证明旧 Host 停止，历史 stop 缺口及17表销毁仍未完成。当前结构测试为 `assistant-configuration-retirement.integration.test.ts`；真实 before/after 两成员群体见 `retired-assistant-delivery.integration.test.ts`，不再宣称17表消失。
 
 ### allrice-workbench-native-changeset-v1
 

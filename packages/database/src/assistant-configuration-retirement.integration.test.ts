@@ -1,6 +1,7 @@
 /** Isolated synthetic legacy rows, never a retired executor or stop receipt.
  * Real before APIs/Worker/Host histories are covered by p25 retirement delivery. */
 import { createHash, randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ExecutionContextSchema,
@@ -22,6 +23,8 @@ import {
   applyNativeTestChatRetirement,
   previewNativeTestChatRetirement,
 } from './conversation/native-context-retirement.ts';
+import { getWorkAutomation } from './work-automation.ts';
+import { updateUserPreferences } from './user-preferences.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -59,6 +62,67 @@ const rows = (db: Database, table: string) =>
   db`select to_jsonb(r) value from ${db(table)} r order by to_jsonb(r)::text`;
 async function legacySnapshot(db: Database) {
   return Promise.all(legacyTables.map((table) => rows(db, table)));
+}
+const migration = () =>
+  readFile(
+    new URL(
+      '../migrations/0229_retire_legacy_assistant_configuration.sql',
+      import.meta.url,
+    ),
+    'utf8',
+  );
+async function preservation(db: Database) {
+  return {
+    rows: await Promise.all(
+      [
+        ...legacyTables,
+        'allrice_runtime_roots',
+        'allrice_runtime_budgets',
+        'allrice_runtime_reservations',
+        'allrice_runtime_run_links',
+        'allrice_messages',
+        'allrice_employee_runs',
+        'allrice_workbench_artifacts',
+        'allrice_deliverable_versions',
+        'allrice_storage_objects',
+        'allrice_file_references',
+        'allrice_route_decisions',
+        'allrice_model_usage_ledger',
+        'allrice_user_preferences',
+        'allrice_execution_targets',
+      ].map((table) => rows(db, table)),
+    ),
+    guards:
+      await db`select tgrelid::regclass::text relation,tgname,tgenabled from pg_trigger where not tgisinternal and tgrelid in(select oid from pg_class where relnamespace=current_schema()::regnamespace) order by 1,2`,
+    constraints:
+      await db`select conrelid::regclass::text relation,conname,pg_get_constraintdef(oid) definition from pg_constraint where connamespace=current_schema()::regnamespace order by 1,2`,
+  };
+}
+async function oldConfiguration(f: Awaited<ReturnType<typeof historical>>) {
+  const { db } = f;
+  const settings = { assistants: true, cloud: false, computer: true };
+  await db`insert into allrice_member_work_automation(organization_id,workspace_id,user_id,revision,settings)
+    values(${f.org},${f.workspace},${f.user},7,${db.json(settings)})`;
+  await db`update allrice_runtime_operations set member_automation=${db.json({ revision: 7, settings })} where id=${f.operation}`;
+  const input = {
+    assistantConfiguration: { allowAssistants: true },
+    ordinary: { assistantConfiguration: 'keep nested data' },
+  };
+  await db`update allrice_runs set input=${db.json(input)} where id=${f.rootRunId}`;
+  await db`update allrice_jobs set payload=jsonb_set(payload,'{input}',${db.json(input)}::jsonb) where id=${f.worker.jobId}`;
+  await updateUserPreferences(f.context, {
+    questionWait: { mode: 'timed', seconds: 47 },
+    subagents: { maxDepth: 2, maxActive: 5 },
+  });
+  const builtin = 'd78b3556-821a-5550-bf13-d9dd84b9bbe0',
+    custom = randomUUID();
+  for (const [id, name] of [
+    [builtin, 'development-cooperation'],
+    [custom, 'custom-development'],
+  ])
+    await db`insert into allrice_platform_dsh_skills(id,name,description,content,checksum,source_ref,version,license,review_status)
+      values(${id!},${name!},'Synthetic passive history','Original frozen bundle',${digest('bundle')},'https://example.test/synthetic','1.0.0','Apache-2.0','draft')`;
+  return { builtin, custom };
 }
 
 async function historical() {
@@ -211,6 +275,7 @@ suite('executor-first retirement: passive legacy history', () => {
       { db } = f;
     const before = await legacySnapshot(db);
     expect(before.every((table) => table.length > 0)).toBe(true);
+    await db.begin(async (tx) => tx.unsafe(await migration()));
     const history = await getChatSessionHistory(
       f.context,
       f.workspace,
@@ -257,5 +322,102 @@ suite('executor-first retirement: passive legacy history', () => {
     expect(
       (await getChatSessionHistory(f.context, f.workspace, f.session)).messages,
     ).toEqual(history.messages);
+  }, 120000);
+  it('removes only retired configuration while preserving all 17 nonempty tables, failures, unknown costs, files and generic references', async () => {
+    const f = await historical(),
+      { db } = f;
+    const { builtin, custom } = await oldConfiguration(f);
+    const before = await preservation(db);
+    const runs = await rows(db, 'allrice_runs'),
+      jobs = await rows(db, 'allrice_jobs'),
+      operations = await rows(db, 'allrice_runtime_operations'),
+      members = await rows(db, 'allrice_member_work_automation');
+    const skills =
+      await db`select id,content,checksum,source from allrice_platform_dsh_skills order by id`;
+    await db.begin(async (tx) => tx.unsafe(await migration()));
+    expect(await preservation(db)).toEqual(before);
+    expect(await rows(db, 'allrice_runs')).toEqual(
+      runs.map(({ value }) => {
+        const input = { ...value.input };
+        delete input.assistantConfiguration;
+        return { value: { ...value, input } };
+      }),
+    );
+    expect(await rows(db, 'allrice_jobs')).toEqual(
+      jobs.map(({ value }) => {
+        const input = { ...value.payload.input };
+        delete input.assistantConfiguration;
+        return { value: { ...value, payload: { ...value.payload, input } } };
+      }),
+    );
+    expect(await rows(db, 'allrice_runtime_operations')).toEqual(
+      operations.map(({ value }) => ({
+        value: {
+          ...value,
+          member_automation: {
+            ...value.member_automation,
+            settings: { cloud: false, computer: true },
+          },
+        },
+      })),
+    );
+    expect(await rows(db, 'allrice_member_work_automation')).toEqual(
+      members.map(({ value }) => ({
+        value: { ...value, settings: { cloud: false, computer: true } },
+      })),
+    );
+    expect(await getWorkAutomation(f.context, f.workspace)).toMatchObject({
+      revision: 7,
+      settings: { cloud: false, computer: true },
+    });
+    expect(
+      await db`select id,content,checksum,source from allrice_platform_dsh_skills order by id`,
+    ).toEqual(skills);
+    expect(
+      (
+        await db`select enabled from allrice_platform_dsh_skills where id=${builtin}`
+      )[0]!.enabled,
+    ).toBe(false);
+    expect(
+      (
+        await db`select enabled from allrice_platform_dsh_skills where id=${custom}`
+      )[0]!.enabled,
+    ).toBe(true);
+    const artifact = await getWorkbenchArtifact(
+      f.context,
+      f.session,
+      f.versionId,
+    );
+    expect(await readArtifactBytes(f.storage, artifact.object)).toEqual(
+      f.bytes,
+    );
+    await expect(
+      db`update allrice_runtime_operations set member_automation=jsonb_set(member_automation,'{revision}','8') where id=${f.operation}`,
+    ).rejects.toThrow('operation member automation is immutable');
+  }, 120000);
+  it('rolls back configuration and disabled-guard state when an operation update fails', async () => {
+    const f = await historical(),
+      { db } = f;
+    await oldConfiguration(f);
+    await db.unsafe(`create function executor_first_fixture_failure() returns trigger language plpgsql as $$ begin raise exception 'synthetic configuration failure'; end $$;
+      create trigger executor_first_fixture_failure before update on allrice_runtime_operations for each row execute function executor_first_fixture_failure()`);
+    const before = await preservation(db);
+    const tables = [
+      'allrice_runs',
+      'allrice_jobs',
+      'allrice_runtime_operations',
+      'allrice_member_work_automation',
+      'allrice_platform_dsh_skills',
+    ];
+    const configuration = await Promise.all(
+      tables.map((table) => rows(db, table)),
+    );
+    await expect(
+      db.begin(async (tx) => tx.unsafe(await migration())),
+    ).rejects.toThrow('synthetic configuration failure');
+    expect(await preservation(db)).toEqual(before);
+    expect(await Promise.all(tables.map((table) => rows(db, table)))).toEqual(
+      configuration,
+    );
   }, 120000);
 });

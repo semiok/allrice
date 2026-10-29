@@ -10,6 +10,150 @@ import type { BaselineEntry } from './dsh-convergence-gate.ts';
 export const baseline: readonly BaselineEntry[] = [
   {
     kind: 'table',
+    id: 'allrice_assistant_artifacts',
+    category: '待删',
+    basis:
+      'MET-210 PR2b：旧执行器已删，待销毁的被动历史；保留原行、FK、失败/unknown 和计费事实，不参与当前执行。2026-10-29 主会话按 decommission-gate-plan §4 分期，数据销毁后移；本项仍是初始待删存量。',
+    approvedBy: 'baseline 2026-10-27',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_assistant_cost_receipts',
+    category: '待删',
+    basis:
+      'MET-210 PR2b：旧执行器已删，待销毁的被动历史；保留原行、FK、失败/unknown 和计费事实，不参与当前执行。2026-10-29 主会话按 decommission-gate-plan §4 分期，数据销毁后移；本项仍是初始待删存量。',
+    approvedBy: 'baseline 2026-10-27',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_assistant_instances',
+    category: '待删',
+    basis:
+      'MET-210 PR2b：旧执行器已删，待销毁的被动历史；保留原行、FK、失败/unknown 和计费事实，不参与当前执行。2026-10-29 主会话按 decommission-gate-plan §4 分期，数据销毁后移；本项仍是初始待删存量。',
+    approvedBy: 'baseline 2026-10-27',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_assistant_messages',
+    category: '待删',
+    basis:
+      'MET-210 PR2b：旧执行器已删，待销毁的被动历史；保留原行、FK、失败/unknown 和计费事实，不参与当前执行。2026-10-29 主会话按 decommission-gate-plan §4 分期，数据销毁后移；本项仍是初始待删存量。',
+    approvedBy: 'baseline 2026-10-27',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_assistant_model_admissions',
+    category: '待删',
+    basis:
+      'MET-210 PR2b：旧执行器已删，待销毁的被动历史；保留原行、FK、失败/unknown 和计费事实，不参与当前执行。2026-10-29 主会话按 decommission-gate-plan §4 分期，数据销毁后移；本项仍是初始待删存量。',
+    approvedBy: 'baseline 2026-10-27',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_assistant_price_snapshots',
+    category: '待删',
+    basis:
+      'MET-210 PR2b：旧执行器已删，待销毁的被动历史；保留原行、FK、失败/unknown 和计费事实，不参与当前执行。2026-10-29 主会话按 decommission-gate-plan §4 分期，数据销毁后移；本项仍是初始待删存量。',
+    approvedBy: 'baseline 2026-10-27',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_assistant_results',
+    category: '待删',
+    basis:
+      'MET-210 PR2b：旧执行器已删，待销毁的被动历史；保留原行、FK、失败/unknown 和计费事实，不参与当前执行。2026-10-29 主会话按 decommission-gate-plan §4 分期，数据销毁后移；本项仍是初始待删存量。',
+    approvedBy: 'baseline 2026-10-27',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_assistant_roots',
+    category: '待删',
+    basis:
+      'MET-210 PR2b：旧执行器已删，待销毁的被动历史；保留原行、FK、失败/unknown 和计费事实，不参与当前执行。2026-10-29 主会话按 decommission-gate-plan §4 分期，数据销毁后移；本项仍是初始待删存量。',
+    approvedBy: 'baseline 2026-10-27',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_assistant_usage',
+    category: '待删',
+    basis:
+      'MET-210 PR2b：旧执行器已删，待销毁的被动历史；保留原行、FK、失败/unknown 和计费事实，不参与当前执行。2026-10-29 主会话按 decommission-gate-plan §4 分期，数据销毁后移；本项仍是初始待删存量。',
+    approvedBy: 'baseline 2026-10-27',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_development_heads',
+    category: '存储后端',
+    basis:
+      '旧执行器已删，待销毁的被动历史；0101/0102 的已有行及 FK 必需来源原样保留，没有生产查询/写入入口。只登记实际仍存在的历史存储，不保留协调执行能力。',
+    approvedBy:
+      '2026-10-29 主会话 executor-first 书面任务：按 decommission-gate-plan §4 保留17表，显式后移数据销毁；AGENTS §11 方案取舍。',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_development_assignments',
+    category: '存储后端',
+    basis:
+      '旧执行器已删，待销毁的被动历史；0101/0102 的已有行及 FK 必需来源原样保留，没有生产查询/写入入口。只登记实际仍存在的历史存储，不保留协调执行能力。',
+    approvedBy:
+      '2026-10-29 主会话 executor-first 书面任务：按 decommission-gate-plan §4 保留17表，显式后移数据销毁；AGENTS §11 方案取舍。',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_development_proposals',
+    category: '存储后端',
+    basis:
+      '旧执行器已删，待销毁的被动历史；0101/0102 的已有行及 FK 必需来源原样保留，没有生产查询/写入入口。只登记实际仍存在的历史存储，不保留协调执行能力。',
+    approvedBy:
+      '2026-10-29 主会话 executor-first 书面任务：按 decommission-gate-plan §4 保留17表，显式后移数据销毁；AGENTS §11 方案取舍。',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_development_merges',
+    category: '存储后端',
+    basis:
+      '旧执行器已删，待销毁的被动历史；0101/0102 的已有行及 FK 必需来源原样保留，没有生产查询/写入入口。只登记实际仍存在的历史存储，不保留协调执行能力。',
+    approvedBy:
+      '2026-10-29 主会话 executor-first 书面任务：按 decommission-gate-plan §4 保留17表，显式后移数据销毁；AGENTS §11 方案取舍。',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_development_merge_sources',
+    category: '存储后端',
+    basis:
+      '旧执行器已删，待销毁的被动历史；0101/0102 的已有行及 FK 必需来源原样保留，没有生产查询/写入入口。只登记实际仍存在的历史存储，不保留协调执行能力。',
+    approvedBy:
+      '2026-10-29 主会话 executor-first 书面任务：按 decommission-gate-plan §4 保留17表，显式后移数据销毁；AGENTS §11 方案取舍。',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_development_verifiers',
+    category: '存储后端',
+    basis:
+      '旧执行器已删，待销毁的被动历史；0101/0102 的已有行及 FK 必需来源原样保留，没有生产查询/写入入口。只登记实际仍存在的历史存储，不保留协调执行能力。',
+    approvedBy:
+      '2026-10-29 主会话 executor-first 书面任务：按 decommission-gate-plan §4 保留17表，显式后移数据销毁；AGENTS §11 方案取舍。',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_development_reviews',
+    category: '存储后端',
+    basis:
+      '旧执行器已删，待销毁的被动历史；0101/0102 的已有行及 FK 必需来源原样保留，没有生产查询/写入入口。只登记实际仍存在的历史存储，不保留协调执行能力。',
+    approvedBy:
+      '2026-10-29 主会话 executor-first 书面任务：按 decommission-gate-plan §4 保留17表，显式后移数据销毁；AGENTS §11 方案取舍。',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_development_deliveries',
+    category: '存储后端',
+    basis:
+      '旧执行器已删，待销毁的被动历史；0101/0102 的已有行及 FK 必需来源原样保留，没有生产查询/写入入口。只登记实际仍存在的历史存储，不保留协调执行能力。',
+    approvedBy:
+      '2026-10-29 主会话 executor-first 书面任务：按 decommission-gate-plan §4 保留17表，显式后移数据销毁；AGENTS §11 方案取舍。',
+  },
+  {
+    kind: 'table',
     id: 'allrice_native_questions',
     category: '账本',
     basis:

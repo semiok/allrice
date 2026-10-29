@@ -25,8 +25,27 @@ const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
     : describe.skip;
-// Independent deletion baseline only. A combined rehearsal MUST provide its
+// Executor retirement predecessor only; legacy data remains passive history. A combined rehearsal MUST provide its
 // frozen predecessor explicitly and retain it with the candidate's test log.
+const legacyTables = [
+  'allrice_assistant_roots',
+  'allrice_assistant_instances',
+  'allrice_assistant_messages',
+  'allrice_assistant_results',
+  'allrice_assistant_usage',
+  'allrice_assistant_artifacts',
+  'allrice_assistant_model_admissions',
+  'allrice_assistant_price_snapshots',
+  'allrice_assistant_cost_receipts',
+  'allrice_development_deliveries',
+  'allrice_development_reviews',
+  'allrice_development_verifiers',
+  'allrice_development_merge_sources',
+  'allrice_development_merges',
+  'allrice_development_proposals',
+  'allrice_development_assignments',
+  'allrice_development_heads',
+];
 const beforeRef =
   process.env.ALLRICE_RUN_RETIREMENT_BEFORE_SHA ??
   '9daa017c3ae370a0b63938c2228217ba570af8f2';
@@ -37,6 +56,14 @@ suite(
     let harness: DeliveryHarness | undefined;
     let cohorts: DeliveryCohort[];
     let replies: string[] = [];
+    let legacyBefore: unknown;
+    const legacySnapshot = () =>
+      Promise.all(
+        legacyTables.map(
+          (table) =>
+            upgrade.db`select to_jsonb(r) value from ${upgrade.db(table)} r order by to_jsonb(r)::text`,
+        ),
+      );
     beforeAll(async () => {
       expect(beforeRef).toMatch(/^[a-f0-9]{40}$/);
       upgrade = await createRetirementUpgradeFixture({
@@ -51,6 +78,7 @@ suite(
         'never-enabled',
         'previously-enabled',
       ]);
+      legacyBefore = await legacySnapshot();
       const migration = await upgrade.applyRetirement();
       console.info(
         'retirement-delivery-upgrade',
@@ -78,6 +106,8 @@ suite(
     afterAll(async () => {
       try {
         await harness?.close();
+        if (upgrade && legacyBefore)
+          expect(await legacySnapshot()).toEqual(legacyBefore);
       } finally {
         try {
           if (upgrade) {
@@ -134,29 +164,12 @@ suite(
         await db`select current_schema() schema,current_setting('search_path') path`;
       expect(scope!.schema).toBe(upgrade.descriptor.schema);
       expect(scope!.path).toBe(`${upgrade.descriptor.schema},public`);
-      for (const relation of [
-        'allrice_assistant_roots',
-        'allrice_assistant_instances',
-        'allrice_assistant_messages',
-        'allrice_assistant_results',
-        'allrice_assistant_usage',
-        'allrice_assistant_artifacts',
-        'allrice_assistant_model_admissions',
-        'allrice_assistant_price_snapshots',
-        'allrice_assistant_cost_receipts',
-        'allrice_development_deliveries',
-        'allrice_development_reviews',
-        'allrice_development_verifiers',
-        'allrice_development_merge_sources',
-        'allrice_development_merges',
-        'allrice_development_proposals',
-        'allrice_development_assignments',
-        'allrice_development_heads',
-      ]) {
+      for (const relation of legacyTables) {
         const [row] =
-          await db`select to_regclass(format('%I.%I',current_schema(),${relation}::text)) is null absent`;
-        expect(row!.absent).toBe(true);
+          await db`select to_regclass(format('%I.%I',current_schema(),${relation}::text)) is not null present`;
+        expect(row!.present).toBe(true);
       }
+      expect(await legacySnapshot()).toEqual(legacyBefore);
       for (const cohort of cohorts) {
         await assertHistory(cohort);
         const settings =

@@ -39,7 +39,7 @@ export interface RetirementDescriptor {
 export async function createRetirementUpgradeFixture(options: {
   beforeRef: string;
   beforeDriver: string | URL;
-  migrationName?: '0229_retire_legacy_assistants.sql';
+  migrationName?: '0229_retire_legacy_assistant_configuration.sql';
 }) {
   if (!/^[a-f0-9]{40}$/.test(options.beforeRef))
     throw Error('Exact before SHA required');
@@ -238,7 +238,7 @@ it('seeds actual pre-retirement APIs and stops all writers before handoff', asyn
         throw Error(`Before migration bytes changed: ${migration.name}`);
     }
     const url = new URL(databaseUrl);
-    // Normal API queries need public's pgvector type/operators. Every retired
+    // Normal API queries need public's pgvector type/operators. Every legacy
     // relation assertion below is schema-qualified; the source schema is first.
     const searchPath = `${descriptor.schema},public`;
     url.searchParams.set('options', `-csearch_path=${searchPath}`);
@@ -260,7 +260,8 @@ it('seeds actual pre-retirement APIs and stops all writers before handoff', asyn
       async applyRetirement() {
         if (applied) throw Error('Retirement already applied');
         const name =
-          options.migrationName ?? '0229_retire_legacy_assistants.sql';
+          options.migrationName ??
+          '0229_retire_legacy_assistant_configuration.sql';
         const bytes = await readFile(
           new URL(`../migrations/${name}`, import.meta.url),
           'utf8',

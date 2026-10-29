@@ -6,7 +6,7 @@ MET-210 第四道防回退门禁。用户 2026-10-27 同意加入，原则是“
 
 `scripts/dsh-convergence-gate.baseline.ts` 是唯一的当前基线，初始盘点基于 main `5edb28d2`（2026-10-27），按 2026-10-28 主会话首次复核处理决定补齐范围：
 
-- `table`：执行全部迁移后，查询 PostgreSQL catalog 的当前 schema。`TABLE_PREFIXES` 是 `allrice_native_`、`allrice_assistant_`、`allrice_dsh_`；`EXACT_TABLE_NAMES` 只列 `allrice_brand_content_reminders`、`allrice_brand_native_reminder_targets` 两个确切表名，不扩成品牌宽前缀，不做全库闭世界。
+- `table`：执行全部迁移后，查询 PostgreSQL catalog 的当前 schema。`TABLE_PREFIXES` 是 `allrice_native_`、`allrice_assistant_`、`allrice_dsh_`；`EXACT_TABLE_NAMES` 列两个既有品牌提醒表及 PR2b 后移销毁的八个确切 `allrice_development_*` 表名；后者是旧执行器已删、待销毁的被动历史。九张助手表也仍按实际存在登记。不扩成品牌/开发协作宽前缀，不做全库闭世界。
 - `patch`：`apps/worker/dsh/patch-ledger.json` 的全部 `patches[].id`。
 - `private-interface`：`apps/worker/dsh/compatibility.json` 的全部 `privateInterfaces`，以 `id: upstreamInterface` 标识；同 id 换成另一个私有入口也算新增。清单内重复 id 直接报错，即使 adapter 或上游入口不同。
 

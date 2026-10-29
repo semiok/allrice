@@ -125,6 +125,7 @@ integration('DSH convergence after every migration (PostgreSQL)', () => {
       'allrice_brand_content_reminders_test_x',
       'allrice_brand_native_reminder_targets_test_x',
       'allrice_brand_other_test_x',
+      'allrice_development_unrelated_test_x',
     ];
     for (const name of outsideScope)
       await sql!.unsafe(`create table ${name} (id integer)`);
