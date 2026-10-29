@@ -56,6 +56,7 @@ import type {
 } from './chatflow-types';
 import { employeeDetailsFixture } from '../../test/employee-details-fixture';
 import { layoutPreferenceKey } from './use-workbench-layout';
+import { cloudOperations as operationFixtures } from '../../test/technical-details-fixtures';
 
 const settingsReviewDir = process.env.ALLRICE_SETTINGS_REVIEW_DIR;
 const suite =
@@ -76,6 +77,23 @@ async function selectSessionAction(page: Page, row: Locator, name: string) {
   await row.hover();
   await row.getByRole('button', { name: /^会话.*的操作$/ }).click();
   await page.getByRole('menuitem', { name, exact: true }).click();
+}
+
+const callToggle = (row: Locator) =>
+  row.locator('[data-disclosure-row]').first();
+async function openOperationRow(page: Page, operationId: string) {
+  const row = page.locator(`#operation-${operationId}`);
+  await row.waitFor({ state: 'attached' });
+  const process = row.locator('xpath=ancestor::section[@data-process-open][1]');
+  if ((await process.getAttribute('data-process-open')) === 'false')
+    await process.locator('[data-disclosure-row]').first().click();
+  const group = row.locator(
+    'xpath=ancestor::section[@data-work-group-open][1]',
+  );
+  if ((await group.getAttribute('data-work-group-open')) === 'false')
+    await group.locator('[data-disclosure-row]').first().click();
+  await row.waitFor();
+  return row;
 }
 
 const id = (n: number) =>
@@ -2954,26 +2972,38 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           else if (width < 760)
             await header.getByText('工作过程', { exact: true }).tap();
           else await header.getByText('工作过程', { exact: true }).click();
-          await cards.first().waitFor();
+          const tools = process.getByRole('button', { name: '工具 · 4 项' });
+          await tools.waitFor();
           await settle();
           const after = await geometry();
           expect(Math.abs(after.top - before.top)).toBeLessThan(2);
           expect(Math.abs(after.scroll - before.scroll)).toBeLessThan(2);
           expect(await cards.count()).toBe(4);
-          expect((await cards.first().boundingBox())!.y).toBeGreaterThan(
-            after.top,
-          );
+          expect(await cards.first().isVisible()).toBe(false);
           expect(
             (await process.locator('[data-work-reply]').boundingBox())!.y,
-          ).toBeGreaterThan((await cards.last().boundingBox())!.y);
-          const tools = process.getByRole('button', { name: '工具 · 4 项' });
+          ).toBeGreaterThan((await tools.boundingBox())!.y);
           const toolsTop = (await tools.boundingBox())!.y;
           await tools.click();
           await process.getByRole('list', { name: '工作步骤' }).waitFor();
+          expect(
+            await process
+              .getByRole('list', { name: '工作步骤' })
+              .evaluate(
+                (node) => getComputedStyle(node.parentElement!).maxHeight,
+              ),
+          ).toBe('360px');
+          await cards.first().waitFor();
           await settle();
           expect(
             Math.abs((await tools.boundingBox())!.y - toolsTop),
           ).toBeLessThan(2);
+          expect((await cards.first().boundingBox())!.y).toBeGreaterThan(
+            toolsTop,
+          );
+          expect(
+            (await process.locator('[data-work-reply]').boundingBox())!.y,
+          ).toBeGreaterThan((await cards.last().boundingBox())!.y);
           await tools.click();
           await header.press('Space');
           await settle();
@@ -3038,10 +3068,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           if (await hide.isVisible()) await hide.click();
         }
         const scroll = f.page.locator('[data-conversation-scroll]');
-        const card = f.page.locator(`#operation-${id(8900)}`);
+        const card = await openOperationRow(f.page, id(8900));
         const next = f.page.locator(`#operation-${id(8901)}`);
-        const header = card.locator('header');
-        const toggle = header.getByRole('button');
+        const toggle = callToggle(card);
+        const header = toggle;
         await toggle.waitFor();
         await scroll.evaluate((node) => {
           node.scrollTop = node.scrollHeight;
@@ -3087,7 +3117,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           else await toggle.click();
           await settle();
           const after = await geometry();
-          expect(after.height - before.height).toBe(72);
+          expect(after.height - before.height).toBe(
+            (await card.locator('article').boundingBox())!.height + 12,
+          );
           expect(Math.abs(after.top - before.top)).toBeLessThan(2);
           expect(Math.abs(after.scroll - before.scroll)).toBeLessThan(2);
           expect(
@@ -3118,9 +3150,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .toBeLessThan(2);
         // Native parameter/result disclosures follow the same reading behavior.
         const last = f.page.locator(`#operation-${id(8904)}`);
-        await last
-          .getByRole('button', { name: '查看详情', exact: true })
-          .click();
+        await callToggle(last).click();
         await f.page
           .getByRole('button', { name: '回到底部', exact: true })
           .click();
@@ -3252,16 +3282,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           });
           if (await collapse.isVisible()) await collapse.click();
         }
-        const first = f.page.locator(`#operation-${id(8870)}`);
-        await first.waitFor({ state: 'attached' });
-        if (!(await first.isVisible())) {
-          await f.page
-            .getByRole('region', { name: '工作过程', exact: true })
-            .last()
-            .locator('[data-disclosure-row]')
-            .first()
-            .click();
-        }
+        const first = await openOperationRow(f.page, id(8870));
         const measure = () =>
           f.page.evaluate(
             ({ a, b }) => {
@@ -3277,13 +3298,24 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             { a: `operation-${id(8870)}`, b: `operation-${id(8871)}` },
           );
         const before = await measure();
-        expect(before).toMatchObject({ height: 72, secondHeight: 72, gap: 12 });
-        await first
-          .getByRole('button', { name: '查看详情', exact: true })
-          .click();
+        // Failed calls expose their inline receipt; successful siblings stay compact.
+        expect(before).toMatchObject({ height: 192, secondHeight: 36, gap: 0 });
+        expect(await callToggle(first).getAttribute('aria-expanded')).toBe(
+          'true',
+        );
+        await callToggle(first).click();
+        expect(await measure()).toMatchObject({
+          height: 36,
+          secondHeight: 36,
+          gap: 0,
+        });
+        await callToggle(first).click();
         const after = await measure();
-        expect(after).toMatchObject({ height: 144, secondHeight: 72, gap: 12 });
-        expect(after.distance - before.distance).toBe(72);
+        expect(after).toEqual(before);
+        expect(await first.locator('article').count()).toBe(1);
+        expect(
+          await f.page.locator(`#operation-${id(8871)} article`).count(),
+        ).toBe(0);
         const choices = first.getByLabel('执行摘要').getByRole('button');
         expect(await choices.count()).toBe(4);
         const positions = () =>
@@ -3455,56 +3487,23 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           });
           if (await collapse.isVisible()) await collapse.click();
         }
-        const card = f.page.locator(`#operation-${id(8801)}`);
+        const card = await openOperationRow(f.page, id(8801));
         const stop = card.getByRole('button', {
           name: '请求停止本轮全部操作',
           exact: true,
         });
-        const detail = card.getByRole('button', {
-          name: '查看详情',
-          exact: true,
-        });
+        const detail = callToggle(card);
         await detail.waitFor();
         const runningHeight = (await card.boundingBox())!.height;
-        expect(runningHeight).toBe(72);
-        const label = card
-          .locator('header')
-          .getByText('应用工具', { exact: true });
-        const labelBox = (await label.boundingBox())!;
-        expect(
-          await card.locator('header').getByRole('status').innerText(),
-        ).toBe('进行中');
-        expect(
-          await card
-            .locator('header')
-            .getByRole('status')
-            .evaluate((node) => getComputedStyle(node).fontSize),
-        ).toBe(width === 1440 ? '12px' : '11px');
+        expect(runningHeight).toBe(36);
         const detailBox = (await detail.boundingBox())!;
-        expect(detailBox.width).toBeLessThanOrEqual(80);
+        expect(detailBox.width).toBeGreaterThan(80);
         const cardBox = (await card.boundingBox())!;
-        expect(detailBox.x + detailBox.width).toBeLessThan(
+        expect(detailBox.x + detailBox.width).toBeLessThanOrEqual(
           cardBox.x + cardBox.width,
         );
-        const content = f.page.locator(
-          `[id="${await detail.getAttribute('aria-controls')}"]`,
-        );
-        // The tool name and unused header space must not expand the receipt.
-        await label.click();
-        expect(await detail.getAttribute('aria-expanded')).toBe('false');
-        const gapX = cardBox.x + 8;
-        const gapY = labelBox.y + labelBox.height / 2;
-        await f.page.mouse.move(gapX, gapY);
-        expect(
-          await f.page.evaluate(
-            ({ x, y }) =>
-              document.elementFromPoint(x, y)?.closest('button, summary') !==
-              null,
-            { x: gapX, y: gapY },
-          ),
-        ).toBe(false);
-        await f.page.mouse.click(gapX, gapY);
-        expect(await content.isVisible()).toBe(false);
+        const content = card.locator('article');
+        expect(await content.count()).toBe(0);
         await detail.hover();
         expect(
           await detail.evaluate((node) => {
@@ -3518,7 +3517,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           }),
         ).toBe(true);
         await detail.focus();
-        const headerTop = (await card.locator('header').boundingBox())!.y;
+        const headerTop = (await detail.boundingBox())!.y;
         await f.page.keyboard.press('Enter');
         await f.page.evaluate(
           () =>
@@ -3529,14 +3528,20 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             ),
         );
         expect(
-          Math.abs((await card.locator('header').boundingBox())!.y - headerTop),
+          Math.abs((await detail.boundingBox())!.y - headerTop),
         ).toBeLessThan(2);
-        const collapse = card.getByRole('button', {
-          name: '收起详情',
-          exact: true,
-        });
+        const collapse = detail;
         expect(await collapse.getAttribute('aria-expanded')).toBe('true');
         expect(await content.isVisible()).toBe(true);
+        expect(
+          await card.locator('header').getByRole('status').innerText(),
+        ).toBe('进行中');
+        expect(
+          await card
+            .locator('header')
+            .getByRole('status')
+            .evaluate((node) => getComputedStyle(node).fontSize),
+        ).toBe(width === 1440 ? '12px' : '11px');
         await content
           .getByRole('button', { name: '发送内容', exact: true })
           .click();
@@ -3601,12 +3606,20 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           output: 'network request failed',
           trusted: false,
         };
+        await expect
+          .poll(() =>
+            card
+              .locator('header')
+              .getByRole('status', { includeHidden: true })
+              .getAttribute('aria-label'),
+          )
+          .toBe('未完成');
+        expect((await card.boundingBox())!.height).toBe(runningHeight);
+        await detail.click();
         await card
           .locator('header')
           .getByText('未完成', { exact: true })
           .waitFor();
-        expect((await card.boundingBox())!.height).toBe(runningHeight);
-        await detail.click();
         await content
           .getByRole('button', { name: '应用与工具', exact: true })
           .click();
@@ -3620,6 +3633,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         ).toBe(true);
         await collapse.click();
         operation.snapshot.status = 'unknown';
+        await expect
+          .poll(() =>
+            card
+              .locator('header')
+              .getByRole('status', { includeHidden: true })
+              .getAttribute('aria-label'),
+          )
+          .toBe('结果待确认');
+        expect((await card.boundingBox())!.height).toBe(runningHeight);
+        await detail.click();
         await card
           .locator('header')
           .getByText('结果待确认', { exact: true })
@@ -7655,17 +7678,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           name: '工作过程',
           exact: true,
         });
-        const toggle = process.getByRole('button', { name: /^工作过程/ });
+        const toggle = process.locator('[data-disclosure-row]').first();
         await expect.poll(() => toggle.innerText()).toContain('1 次未成功');
         expect(await toggle.innerText()).toContain('1 次未成功');
-        expect(await toggle.getAttribute('aria-expanded')).toBe('false');
-        expect(await process.getByRole('list').count()).toBe(0);
-        await toggle.focus();
-        await f.page.keyboard.press('Enter');
-        await process
-          .getByRole('region', { name: '工作步骤', exact: true })
-          .getByRole('button')
-          .click();
+        // A failure is attention material: its process and rows cannot be folded away.
+        expect(await process.getAttribute('data-process-open')).toBe('true');
+        expect(await toggle.getAttribute('aria-expanded')).toBeNull();
+        expect(await toggle.getAttribute('tabindex')).toBeNull();
         const groups = process.getByRole('list', { name: '工作步骤' });
         expect(await groups.getByRole('listitem').count()).toBe(10);
         expect(await groups.innerText()).toContain('已查询第 1 个标的的行情');
@@ -7678,7 +7697,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await groups.evaluate(
             (el) => getComputedStyle(el.parentElement!).maxHeight,
           ),
-        ).toBe('360px');
+        ).toBe('none');
         expect(
           await f.page.getByLabel('子智能体任务', { exact: true }).count(),
         ).toBe(0);
@@ -7699,9 +7718,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await f.page.screenshot({
             path: `${globalThis.process.env.ALLRICE_EMPLOYEE_SCREENSHOT}-process.png`,
           });
-        await toggle.focus();
-        await f.page.keyboard.press(' ');
-        expect(await toggle.getAttribute('aria-expanded')).toBe('false');
+        expect(await process.getByRole('button').count()).toBe(0);
       } finally {
         await f.close();
       }
@@ -8997,7 +9014,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const process = f.page
         .locator(`#message-${assistant.id}`)
         .getByRole('region', { name: '工作过程', exact: true });
-      const detail = process.getByText('核对客户名单', { exact: true });
+      const detail = process
+        .locator('[data-work-call="tool:read"]')
+        .getByText('核对客户名单', { exact: true });
       await detail.waitFor();
       const settings = f.page.getByRole('dialog', {
         name: '设置',
@@ -9029,7 +9048,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       ).toBe(1);
       expect(await detail.isVisible()).toBe(false);
       await set('工作步骤展示', 'standard');
-      await detail.waitFor();
+      await process
+        .getByRole('button', { name: '阅读 · 1 项 核对客户名单', exact: true })
+        .waitFor();
+      expect(await detail.isVisible()).toBe(false);
       expect(
         await process
           .getByRole('region', { name: '工作步骤', exact: true })
@@ -9610,6 +9632,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       });
       const first = f.page.locator(`#operation-${id(8990)}`),
         second = f.page.locator(`#operation-${id(8991)}`);
+      await openOperationRow(f.page, id(8990));
+      await openOperationRow(f.page, id(8991));
+      await callToggle(second).click();
       await second
         .locator('header')
         .getByRole('status', { name: '进行中', exact: true })
@@ -9643,18 +9668,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(await groups.count()).toBe(2);
       for (const group of await groups.all()) {
         const summary = group.getByRole('button', { name: '工具 · 1 项' });
-        await summary.click();
+        expect(await summary.getAttribute('aria-expanded')).toBe('true');
         const steps = group.getByRole('list', { name: '工作步骤' });
         await steps.waitFor();
         expect(await steps.locator('li').count()).toBe(1);
-        expect(await steps.getByText('进行中', { exact: true }).count()).toBe(
-          0,
-        );
+        expect(await steps.locator('[data-work-call] > small').count()).toBe(0);
       }
       expect(await groups.last().innerText()).toContain('使用已连接的服务');
-      await second
-        .getByRole('button', { name: '查看详情', exact: true })
-        .click();
       expect(
         await second
           .getByRole('button', { name: '发送内容', exact: true })
@@ -9680,12 +9700,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page.screenshot({ path: '/tmp/allrice-timeline-order.png' });
       await f.page.reload();
       await final.waitFor();
-      await f.page.getByRole('button', { name: /工作过程/ }).click();
-      await second.waitFor();
+      await openOperationRow(f.page, id(8991));
       expect(await first.count()).toBe(1);
       expect(await second.count()).toBe(1);
       expect(await groups.count()).toBe(2);
-      await groups.last().getByRole('button', { name: '工具 · 1 项' }).click();
+      expect(
+        await groups
+          .last()
+          .getByRole('button', { name: '工具 · 1 项' })
+          .getAttribute('aria-expanded'),
+      ).toBe('true');
       expect(
         await groups.last().getByRole('list', { name: '工作步骤' }).isVisible(),
       ).toBe(true);
@@ -10102,6 +10126,163 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }
     }
   });
+
+  it.each([1440, 390])(
+    'reveals the inline receipt from both workbench operation links at %ipx',
+    async (width) => {
+      const f = await fixture({ width, touch: width < 760 });
+      const base = operationFixtures([])[0]!;
+      const operations = ['failed', 'succeeded', 'waiting_user'].map(
+        (status, index) => ({
+          ...base,
+          nativeCallId: `linked-${index}`,
+          snapshot: {
+            ...base.snapshot,
+            status,
+            binding: {
+              ...base.snapshot.binding,
+              task: { runId: run },
+              attempt: { operationId: id(9800 + index) },
+            },
+            result:
+              status === 'waiting_user'
+                ? null
+                : {
+                    status,
+                    effects: index ? 'applied' : 'none',
+                    evidence: {
+                      recordedAt: new Date(
+                        Date.now() - 60_000 + index * 1000,
+                      ).toISOString(),
+                    },
+                  },
+          },
+          proposal: { ...base.proposal, risk: 'write' },
+          approval: status === 'waiting_user' ? base.approval : null,
+          result:
+            status === 'waiting_user'
+              ? null
+              : {
+                  code: index ? 'OK' : 'MCP_REMOTE_ERROR',
+                  output: 'link-result',
+                  trusted: false,
+                },
+        }),
+      );
+      try {
+        f.state.messages = navigationHistory(8);
+        f.state.messages.at(-1)!.runId = run;
+        f.state.messages.at(-1)!.content.text = '本次操作结果已保留。';
+        f.state.events = operations.map((op, index) => ({
+          schemaVersion: 3,
+          eventId: id(9820 + index),
+          organizationId: org,
+          workspaceId: workspace,
+          conversationId: A,
+          runId: run,
+          generation: 1,
+          sequence: index + 1,
+          cursor: `${run}:${index + 1}`,
+          harness: 'dsh',
+          occurredAt: now,
+          sourceEvent: null,
+          type:
+            index === 0
+              ? 'tool.failed'
+              : index === 1
+                ? 'tool.completed'
+                : 'tool.started',
+          payload: { toolCallId: op.nativeCallId, name: 'cloud.mcp.call' },
+        }));
+        await f.page.route('**/api/v1/runtime/cloud-operations?**', (route) =>
+          route.fulfill({
+            json: {
+              operations:
+                new URL(route.request().url()).searchParams.get('runId') === run
+                  ? operations
+                  : [],
+            },
+          }),
+        );
+        await f.page.route('**/interactions?**', (route) =>
+          route.fulfill({
+            json: {
+              runtime: null,
+              inputs: [],
+              pendingActions: [
+                {
+                  approvalId: base.approval.request.approvalId,
+                  operationId: id(9802),
+                  runId: run,
+                  expiresAt: base.approval.request.expiresAt,
+                },
+              ],
+            },
+          }),
+        );
+        await f.page.reload();
+        if (width < 760) {
+          const hide = f.page.getByRole('button', {
+            name: '收起侧边栏',
+            exact: true,
+          });
+          if (await hide.isVisible()) await hide.click();
+        }
+        const pending = await openOperationRow(f.page, id(9802));
+        await callToggle(pending).click();
+        expect(await pending.locator('article').isVisible()).toBe(false);
+        await f.page
+          .getByRole('button', { name: '查看并确认', exact: true })
+          .click();
+        await expect
+          .poll(() =>
+            pending.evaluate((node) => document.activeElement === node),
+          )
+          .toBe(true);
+        expect(
+          await pending
+            .getByRole('button', { name: '允许写入数据', exact: true })
+            .isEnabled(),
+        ).toBe(true);
+        expect(await callToggle(pending).getAttribute('aria-expanded')).toBe(
+          'true',
+        );
+        const success = f.page.locator(`#operation-${id(9801)}`);
+        expect(await success.locator('article').count()).toBe(0);
+        await f.page
+          .getByRole('link', { name: '查看完成的那次', exact: true })
+          .click();
+        await expect
+          .poll(() =>
+            success.evaluate((node) => document.activeElement === node),
+          )
+          .toBe(true);
+        expect(await success.locator('article').isVisible()).toBe(true);
+        expect(
+          await success.locator('header').getByRole('status').innerText(),
+        ).toBe('已完成');
+        await expect
+          .poll(async () => {
+            const target = (await success.boundingBox())!;
+            const view = (await f.page
+              .locator('[data-conversation-scroll]')
+              .boundingBox())!;
+            return (
+              target.y >= view.y &&
+              target.y + target.height <= view.y + view.height
+            );
+          })
+          .toBe(true);
+        expect(
+          await f.page.locator(`[id="operation-${id(9801)}"]`).count(),
+        ).toBe(1);
+        expect(f.writes).toEqual([]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
 
   it('offers a bounded read retry only after a status read failure and preserves unknown outcomes', async () => {
     const f = await fixture();

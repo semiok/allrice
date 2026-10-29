@@ -327,7 +327,7 @@ suite('one receipt within each native call in the chat transcript', () => {
       await page.goto(`${origin}/?attention&delayed-trace&split-trace`);
       const call = page.locator('#operation-receipt-28');
       const approve = call.getByRole('button', {
-        name: '允许这次写入',
+        name: '允许写入数据',
         exact: true,
       });
       await approve.waitFor();
@@ -357,8 +357,8 @@ suite('one receipt within each native call in the chat transcript', () => {
       await expect
         .poll(() => page.evaluate(() => window.processWrites.length))
         .toBe(1);
-      expect(await page.evaluate(() => window.processWrites)).toEqual([
-        { decision: 'approved' },
+      expect(await page.evaluate(() => window.processWrites)).toMatchObject([
+        { contractVersion: 1, kind: 'action_approval', decision: 'approved' },
       ]);
     } finally {
       await page.close();

@@ -15,7 +15,7 @@ export function TechnicalDetails({
   rows?: [string, ReactNode][];
   children?: ReactNode;
 }) {
-  const [open, setOpen] = useProcessDisclosure('technical', false);
+  const [open, setOpen] = useProcessDisclosure<boolean>('technical', false);
   return (
     <DisclosureRow
       icon={<IconInfoOutlineRegular />}
