@@ -504,6 +504,46 @@ describe('current employee source policy: immutable original identities', () => 
 });
 
 describe('current employee v2 birth and per-Run binding', () => {
+  it.each(['definition', 'plain', 'bundled'] as const)(
+    'rejects a rehashed replacement for the original %s birth source',
+    (format) => {
+      const source =
+        format === 'definition'
+          ? definitionOnly()
+          : packaged(newNativeGeneration, format);
+      const { input, origin } = chat(source);
+      const changed = structuredClone(source);
+      manifestOf(changed).systemPrompt += '\nChanged after birth.';
+      if (format === 'definition')
+        changed.configChecksum = employeeManifestChecksum(manifestOf(changed));
+      else {
+        packageOf(changed).files.agentsMd += '\nChanged after birth.';
+        changed.configChecksum = reseal(packageOf(changed)).checksum;
+      }
+      expect(() =>
+        assertCurrentEmployeeChatOrigin(origin, {
+          ...input,
+          source: changed,
+        }),
+      ).toThrow('CURRENT_EMPLOYEE_ORIGIN_SOURCE_MISMATCH');
+      expect(assertCurrentEmployeeChatOrigin(origin, input)).toEqual(origin);
+    },
+  );
+  it.each(['assistant.delegate', 'unknown.never_registered'])(
+    'does not grant %s through a new birth or Run binding',
+    (tool) => {
+      const source = definitionOnly();
+      const original = chat(source);
+      manifestOf(source).capabilityBindings.toolNames.push(tool);
+      source.configChecksum = employeeManifestChecksum(manifestOf(source));
+      expect(() => chat(source)).toThrow(
+        'CURRENT_EXECUTION_SOURCE_TOOL_INVALID',
+      );
+      expect(() =>
+        freezeEmployeeRunExecutionBinding(run(source, original)),
+      ).toThrow('CURRENT_EXECUTION_SOURCE_TOOL_INVALID');
+    },
+  );
   it.each(['primary-missing', 'primary-malformed'] as const)(
     'requires the exact release primary: %s',
     (change) => {
