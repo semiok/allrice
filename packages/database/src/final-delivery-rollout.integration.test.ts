@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { EmployeeRuntimePackage } from '@allrice/contracts';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
-import { createAssistantAuthorityFixture } from './assistant-authority.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
+import { createRunAuthorityFixture } from './run-authority.fixture.ts';
 import { createEmployeeAdministrationFixture } from './employee-administration.fixture.ts';
 import { buildEmployeeRuntimePackage } from './platform-employees/runtime-package.ts';
 import { createSession, authenticateSession } from './identity.ts';
@@ -26,10 +26,10 @@ const current = 'sha256:' + 'a'.repeat(64),
 suite(
   'checked delivery follows the generation, artifact IDs are provenance: real isolated PostgreSQL',
   () => {
-    let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let runtimePackage: EmployeeRuntimePackage;
     beforeAll(async () => {
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', current);
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
@@ -47,12 +47,7 @@ suite(
           ...e.definition,
           capabilities: {
             ...e.definition.capabilities,
-            toolNames: [
-              'workspace.skill.read',
-              'assistant.delegate',
-              'assistant.report',
-              'workspace.export.create',
-            ],
+            toolNames: ['workspace.skill.read', 'workspace.export.create'],
           },
         },
         skills,
@@ -67,7 +62,7 @@ suite(
       artifact = current,
       memberAssistants?: boolean | null,
     ) {
-      const f = await createAssistantAuthorityFixture(fixture.db, {
+      const f = await createRunAuthorityFixture(fixture.db, {
         configure: false,
         memberAssistants,
         runtimePackage,
@@ -89,6 +84,12 @@ suite(
         workspaceId: f.workspace,
       });
       if (!context) throw Error('isolated login required');
+      if (memberAssistants !== undefined && memberAssistants !== null)
+        await updateWorkAutomation(context, f.workspace, {
+          expectedRevision: 0,
+          capability: 'assistants',
+          enabled: memberAssistants,
+        });
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', artifact);
       const session = await createAssignedChatSession(context, {
         workspaceId: f.workspace,
@@ -213,39 +214,38 @@ suite(
         (await snapshot(sent.run!.id)).finalDeliveryPolicy.artifactId,
       ).toBe(current);
     });
-    it('a pre-upgrade NULL birth and explicit assistant opt-out receive no new protocol marker', async () => {
+    it('a pre-upgrade NULL birth still receives no new protocol marker', async () => {
       const f = await subject();
-      for (const [chat, enabled] of [
-        [f.session, true],
-        [f.chat, false],
-      ] as const) {
-        const sent = await send(f, chat, randomUUID(), enabled),
-          value = await snapshot(sent.run!.id);
-        expect(value).not.toHaveProperty('finalDeliveryPolicy');
-        expect(value).not.toHaveProperty('officeFirstDeliveryPolicy');
-      }
+      const sent = await send(f, f.session),
+        value = await snapshot(sent.run!.id);
+      expect(value).not.toHaveProperty('finalDeliveryPolicy');
+      expect(value).not.toHaveProperty('officeFirstDeliveryPolicy');
     });
-    // MET-210: checked delivery is frozen only when assistants are allowed.
-    // Members who never saved work settings get the legacy delivery path
-    // until delivery checks no longer depend on the assistant switch.
-    it('a member who never saved work settings gets legacy delivery until assistants are turned on', async () => {
-      const f = await subject(current, null);
-      const legacy = await snapshot((await send(f)).run!.id);
-      expect(legacy).not.toHaveProperty('finalDeliveryPolicy');
-      expect(legacy).not.toHaveProperty('officeFirstDeliveryPolicy');
-      await updateWorkAutomation(f.context, f.workspace, {
-        expectedRevision: 0,
-        capability: 'assistants',
-        enabled: true,
-      });
-      const checked = await snapshot((await send(f)).run!.id);
-      expect(checked.finalDeliveryPolicy).toEqual({
-        version: 1,
-        mode: 'checked_native_v1',
-        artifactId: current,
-      });
-      expect(checked.officeFirstDeliveryPolicy).toBe('xlsx_formula_cache_v1');
-    });
+    it.each([null, false, true] as const)(
+      'member assistants=%s: feature off, explicit opt-out and no delegate tool cannot suppress delivery checks',
+      async (memberAssistants) => {
+        const f = await subject(current, memberAssistants);
+        vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
+        try {
+          const checked = await snapshot(
+            (await send(f, f.chat, randomUUID(), false)).run!.id,
+          );
+          expect(checked.capabilitySnapshot.bindings.toolNames).not.toContain(
+            'assistant.delegate',
+          );
+          expect(checked.finalDeliveryPolicy).toEqual({
+            version: 1,
+            mode: 'checked_native_v1',
+            artifactId: current,
+          });
+          expect(checked.officeFirstDeliveryPolicy).toBe(
+            'xlsx_formula_cache_v1',
+          );
+        } finally {
+          vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
+        }
+      },
+    );
     it.each(['basis', 'digest', 'owner'] as const)(
       'rejects a conflicting %s pin before creating a new Run',
       async (kind) => {

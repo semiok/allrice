@@ -796,7 +796,8 @@ integration(
     // MET-221: checked final delivery is every release's protocol on the
     // restricted profile. The retired allowlist is ignored and the frozen
     // artifact is the origin's (provenance), even under a later primary.
-    it('admits checked final delivery for a business-origin chat with its origin artifact and retains assistant opt-out', async () => {
+    // MET-210 PR1c: opting out of assistants cannot opt out of delivery checks.
+    it('admits checked final delivery from the origin artifact even with assistant opt-out', async () => {
       const f = await subject('current-package2');
       vi.stubEnv('ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS', '[]');
       expect(
@@ -830,9 +831,18 @@ integration(
         artifactId: currentArtifact,
       });
       const optedOut = await send(f, randomUUID(), false);
-      expect((await stored(optedOut)).execution_snapshot).not.toHaveProperty(
-        'finalDeliveryPolicy',
+      const optedOutSnapshot = (await stored(optedOut)).execution_snapshot;
+      expect(optedOutSnapshot.finalDeliveryPolicy).toEqual({
+        version: 1,
+        mode: 'checked_native_v1',
+        artifactId: currentArtifact,
+      });
+      expect(optedOutSnapshot.officeFirstDeliveryPolicy).toBe(
+        'xlsx_formula_cache_v1',
       );
+      const [run] =
+        await fixture.db`select input from allrice_runs where id=${optedOut}`;
+      expect(run!.input.assistantConfiguration.allowAssistants).toBe(false);
       const history = await subject('legacy-package2', true);
       expect(
         await fixture.db.begin((tx) =>

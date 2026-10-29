@@ -717,15 +717,6 @@ export async function executeEmployeeRun({
         false,
       );
     }
-    const officeFirstDeliveryPolicy =
-      executionSnapshot.schemaVersion === 2
-        ? executionSnapshot.officeFirstDeliveryPolicy
-        : undefined;
-    const finalDeliveryMode =
-      executionSnapshot.schemaVersion === 2 &&
-      executionSnapshot.finalDeliveryPolicy?.mode === 'checked_native_v1'
-        ? ('checked_native_v1' as const)
-        : ('legacy' as const);
     if (
       await getChangesetRun(
         {
@@ -1163,6 +1154,19 @@ export async function executeEmployeeRun({
             (binding) => binding.revision.id === revisionId,
           )
         : undefined;
+    // Admission precedes capability routing. Only a selected frozen Workflow
+    // revision is outside this check; installing a Workflow does not exempt
+    // this employee's ordinary turns or rewrite the immutable Run snapshot.
+    const officeFirstDeliveryPolicy =
+      !selectedWorkflow && executionSnapshot.schemaVersion === 2
+        ? executionSnapshot.officeFirstDeliveryPolicy
+        : undefined;
+    const finalDeliveryMode =
+      !selectedWorkflow &&
+      executionSnapshot.schemaVersion === 2 &&
+      executionSnapshot.finalDeliveryPolicy?.mode === 'checked_native_v1'
+        ? ('checked_native_v1' as const)
+        : ('legacy' as const);
     const workflowToolNames =
       selectedWorkflow?.revision.definition.steps.flatMap((step) => {
         const name = step.input.toolName;
@@ -1281,7 +1285,6 @@ export async function executeEmployeeRun({
     }
     const independentDelivery =
       finalDeliveryMode === 'checked_native_v1' &&
-      !assistants &&
       adapter.kind === 'dsh' &&
       !selectedWorkflow &&
       !repositoryReviewTask &&
@@ -1290,7 +1293,7 @@ export async function executeEmployeeRun({
       (officeFirstDeliveryPolicy ||
         finalDeliveryMode === 'checked_native_v1') &&
       (finalDeliveryMode !== 'checked_native_v1' ||
-        (!assistants && !independentDelivery) ||
+        !independentDelivery ||
         !workbenchEnabled())
     )
       throw new HandlerError(

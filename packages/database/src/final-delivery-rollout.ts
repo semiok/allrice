@@ -7,8 +7,8 @@ type DeliveryAdmissionSnapshot = Omit<
   'tenantContext' | 'createdAt'
 >;
 
-/** Admission supplies eligibility. PR1a deliberately keeps its existing
- * assistant gate; PR1c can widen it without changing this frozen projection. */
+/** Admission supplies the ordinary employee business scope. Assistant
+ * preferences and tools do not authorize or suppress final-delivery checks. */
 export async function freezeDeliveryPolicy(
   tx: postgres.TransactionSql,
   input: {

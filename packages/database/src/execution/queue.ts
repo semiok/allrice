@@ -103,7 +103,6 @@ import {
   ChatMessageContentSchema,
   CreateRunInputSchema,
   EmployeeExecutionSnapshotSchema,
-  AssistantRunConfigurationSchema,
   runtimeFeatureEnabled,
   ExecutionContextSchema,
   JobPayloadSchema,
@@ -1558,15 +1557,6 @@ async function enqueueRunInTransaction(
     `;
   }
   if (options.employeeBinding) {
-    const submittedInput =
-      submission.input &&
-      typeof submission.input === 'object' &&
-      !Array.isArray(submission.input)
-        ? (submission.input as Record<string, unknown>)
-        : {};
-    const assistantConfiguration = AssistantRunConfigurationSchema.safeParse(
-      submittedInput.assistantConfiguration,
-    );
     const officePolicyEligible =
       (admission.kind === 'browser' ||
         admission.kind === 'native_once' ||
@@ -1581,14 +1571,8 @@ async function enqueueRunInTransaction(
       !options.technicalBinding &&
       !options.workflowBinding &&
       !options.skillBinding &&
-      runtimeFeatureEnabled('ALLRICE_ASSISTANTS_ENABLED') &&
       runtimeFeatureEnabled('ALLRICE_WORKBENCH_ENABLED') &&
-      assistantConfiguration.success &&
-      assistantConfiguration.data.allowAssistants &&
       options.employeeBinding.providerSnapshot.provider === 'dsh' &&
-      options.employeeBinding.executionSnapshot.capabilitySnapshot.bindings.toolNames.includes(
-        'assistant.delegate',
-      ) &&
       options.employeeBinding.executionSnapshot.capabilitySnapshot.bindings.toolNames.includes(
         'workspace.export.create',
       );
