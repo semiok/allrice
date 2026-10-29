@@ -10,6 +10,7 @@ import { releaseNextConversationFollowup } from './queued-messages.ts';
 import { cancelUnadoptedSteers } from './conversation-input.ts';
 
 import { getDatabase } from '../core/client.ts';
+import { nativeModelReceiptSource } from '../execution/native-model-receipts.ts';
 import {
   conversationUsageWatermark,
   effectiveContextTokens,
@@ -589,6 +590,7 @@ export async function listDshRuntimeEventTimeline(
       where event.run_id = employee_run.run_id
         and event.organization_id = employee_run.organization_id
         and event.workspace_id = employee_run.workspace_id
+        and event.payload->>'source' is distinct from ${nativeModelReceiptSource}
       order by event.sequence desc limit ${selectedRun ? 150 : null}::int
     ) event on true
     where employee_run.session_id = ${sessionId}

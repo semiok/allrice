@@ -69,7 +69,13 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
         perform pg_advisory_xact_lock(hashtextextended(new.payload->'fact'->>'callId',9187));
       end if; return new; end $$;
       create trigger native_receipt_test_gate before insert on allrice_run_events
-        for each row execute function native_receipt_test_gate()`);
+        for each row execute function native_receipt_test_gate();
+      create function native_route_test_gate() returns trigger language plpgsql as $$
+      begin if old.completed_at is null and new.completed_at is not null then
+        perform pg_advisory_xact_lock(hashtextextended(new.id::text,9187));
+      end if; return new; end $$;
+      create trigger native_route_test_gate before update on allrice_route_decisions
+        for each row execute function native_route_test_gate()`);
   }, 120000);
   afterAll(async () => {
     vi.restoreAllMocks();
@@ -208,6 +214,27 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
       runId: f.rootRunId,
       routeDecisionId: decisionId,
     });
+  const settle = (f: Fixture) =>
+    completeRouteDecision({
+      organizationId: f.org,
+      workspaceId: f.workspace,
+      outcome: {
+        decisionId: f.decision.id,
+        status: 'failed',
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        costCents: null,
+        usageComplete: false,
+        cacheUsageKnown: false,
+        errorCode: 'synthetic_stop',
+        failureCategory: null,
+        completedAt: new Date().toISOString(),
+      },
+    }).then(
+      () => ({ closed: true }),
+      (error) => ({ error }),
+    );
   async function held(callId: string) {
     const connection = await fixture.db.reserve();
     const [r] =
@@ -576,6 +603,125 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
     await expect(write(open, start(open))).rejects.toThrow('conflict');
     expect(await read(open)).toEqual([]);
   });
+  it('keeps route settlement behind an in-flight receipt INSERT until the fact commits', async () => {
+    const f = await setup(),
+      call = start(f);
+    await write(f, call);
+    const gate = await held(call.callId);
+    let writing: Promise<unknown> | undefined,
+      closing: Promise<unknown> | undefined;
+    try {
+      writing = write(f, finish(call)).then(
+        (value) => ({ value }),
+        (error) => ({ error }),
+      );
+      const writer = await nativeBindingWaiter(fixture.db, gate.pid);
+      closing = settle(f);
+      await nativeBindingWaiter(fixture.db, writer);
+      const [route] =
+        await fixture.db`select completed_at from allrice_route_decisions where id=${f.decision.id}`;
+      expect(route!.completed_at).toBeNull();
+      expect((await read(f)).map((r) => r.fact.phase)).toEqual(['start']);
+    } finally {
+      await gate.release();
+      await Promise.all([writing, closing]);
+    }
+    expect(await writing).toMatchObject({ value: { fact: finish(call) } });
+    expect(await closing).toEqual({ closed: true });
+    expect((await read(f)).map((r) => r.fact.phase)).toEqual([
+      'start',
+      'finish',
+    ]);
+    await expect(write(f, start(f))).rejects.toThrow('conflict');
+    // This proves the shared closure boundary, not aggregation: the legacy
+    // outcome above is synthetic. The next slice must read facts under it.
+  });
+  it('does not acquire tenant admission while holding the leased Job', async () => {
+    const f = await setup(),
+      connection = await fixture.db.reserve();
+    try {
+      await connection`select pg_advisory_lock(hashtext(${`tenant:${f.org.toLowerCase()}`}))`;
+      await expect(write(f, start(f))).resolves.toMatchObject({
+        runId: f.rootRunId,
+        fact: { phase: 'start' },
+      });
+    } finally {
+      await connection`select pg_advisory_unlock(hashtext(${`tenant:${f.org.toLowerCase()}`}))`;
+      connection.release();
+    }
+  }, 10000);
+  it('rechecks closure after a real route UPDATE wins the race and rejects a late finish', async () => {
+    const f = await setup(),
+      call = start(f);
+    await write(f, call);
+    const gate = await held(f.decision.id);
+    let writing: Promise<unknown> | undefined,
+      closing: Promise<unknown> | undefined;
+    try {
+      closing = settle(f);
+      const closer = await nativeBindingWaiter(fixture.db, gate.pid);
+      writing = write(f, finish(call)).then(
+        (value) => ({ value }),
+        (error) => ({ error }),
+      );
+      await nativeBindingWaiter(fixture.db, closer);
+      expect((await read(f)).map((r) => r.fact.phase)).toEqual(['start']);
+    } finally {
+      await gate.release();
+      await Promise.all([writing, closing]);
+    }
+    expect(await closing).toEqual({ closed: true });
+    expect(await writing).toMatchObject({ error: { code: 'conflict' } });
+    expect((await read(f)).map((r) => r.fact.phase)).toEqual(['start']);
+  });
+  it('rolls back a new start that crosses the original job deadline during INSERT', async () => {
+    const f = await setup(),
+      call = start(f);
+    const gate = await held(call.callId);
+    let writing: Promise<unknown> | undefined;
+    try {
+      const [deadline] =
+        await fixture.db`update allrice_jobs set timeout_at=clock_timestamp()+interval '2 seconds'
+        where id=${f.worker.jobId} returning timeout_at,lease_expires_at`;
+      writing = write(f, call).then(
+        (value) => ({ value }),
+        (error) => ({ error }),
+      );
+      await nativeBindingWaiter(fixture.db, gate.pid);
+      await fixture.db`select pg_sleep(greatest(0,extract(epoch from ${deadline!.timeout_at}::timestamptz-clock_timestamp()))+0.02)`;
+      const [clock] = await fixture.db`select clock_timestamp() now`;
+      expect(clock!.now.getTime()).toBeGreaterThan(
+        deadline!.timeout_at.getTime(),
+      );
+      expect(deadline!.lease_expires_at.getTime()).toBeGreaterThan(
+        clock!.now.getTime(),
+      );
+    } finally {
+      await gate.release();
+      await writing;
+    }
+    expect(await writing).toMatchObject({ error: { code: 'policy_denied' } });
+    expect(await read(f)).toEqual([]);
+    const [count] =
+      await fixture.db`select count(*)::int n from allrice_task_clocks where run_id=${f.rootRunId}`;
+    expect(count!.n).toBe(0);
+  });
+  it('still accepts an existing call finish after the job deadline inside its valid lease and drain', async () => {
+    const f = await setup(),
+      call = start(f);
+    await write(f, call);
+    await cancelRun(f.context, f.workspace, f.rootRunId, {
+      reason: 'user_requested',
+    });
+    await fixture.db`update allrice_jobs set timeout_at=clock_timestamp()-interval '1 second' where id=${f.worker.jobId}`;
+    const ended = { ...finish(call), outcome: 'canceled' as const };
+    await expect(write(f, ended)).resolves.toMatchObject({ fact: ended });
+    await expect(write(f, start(f))).rejects.toThrow('policy_denied');
+    expect((await read(f)).map((r) => r.fact.phase)).toEqual([
+      'start',
+      'finish',
+    ]);
+  });
   it('keeps “把资料归纳成摘要” process cards unchanged and blocks generic native impersonation', async () => {
     const f = await setup();
     await fixture.db`update allrice_messages set content='{"text":"把资料归纳成摘要","citations":[]}'
@@ -597,6 +743,12 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
     const call = start(f),
       receipt = await write(f, call);
     await write(f, finish(call));
+    // More internal facts than the selected-Run limit must not evict a card.
+    for (let i = 1; i < 75; i++) {
+      const next = start(f);
+      await write(f, next);
+      await write(f, finish(next));
+    }
     for (const type of ['harness.native', 'tool.completed'] as const) {
       await expect(
         appendJobEvent({ ...f.worker, type, payload: receipt }),
@@ -604,11 +756,15 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
     }
     const after = await listDshRuntimeEventTimeline(f.session);
     expect(after.turns[0]?.events).toEqual(before.turns[0]?.events);
+    const selected = await listDshRuntimeEventTimeline(f.session, {
+      runId: f.rootRunId,
+    });
+    expect(selected.turns[0]?.events).toEqual(before.turns[0]?.events);
     const steps =
       await fixture.db`select event_type,payload from allrice_employee_run_steps where run_id=${f.rootRunId} order by sequence`;
     expect(steps).toHaveLength(1);
     expect(steps[0]?.payload.source).toBe('dsh');
-    expect(await read(f)).toHaveLength(2);
+    expect(await read(f)).toHaveLength(150);
   });
   it('applies the actual partial index with historical native events and rejects a cross-Run duplicate at SQL level', async () => {
     const f = await setup(),

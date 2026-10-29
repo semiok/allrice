@@ -3016,11 +3016,13 @@ export async function appendNativeModelReceipt(input: {
         and p.owner_id=${job.owner_id} and (p.first_run_id=${job.run_id} or exists (
           select 1 from allrice_employee_runs e where e.run_id=${job.run_id}
             and p.context_kind='chat' and e.session_id=p.context_id))`;
+    // Keep the existing root -> clock -> Job prefix. The route row serializes
+    // closure through INSERT; this fact writer never enters tenant admission.
     const [route] =
       await tx`select id,attempt,completed_at,clock_timestamp() now
       from allrice_route_decisions where id=${UuidSchema.parse(input.routeDecisionId)}
         and run_id=${job.run_id} and organization_id=${job.organization_id}
-        and workspace_id=${job.workspace_id}`;
+        and workspace_id=${job.workspace_id} for update`;
     if (!pin || !route) throw new QueueError('policy_denied');
     const sourceKey = nativeRootDigest([
       job.organization_id,
@@ -3087,6 +3089,10 @@ export async function appendNativeModelReceipt(input: {
       payload: receipt,
       internalReceipt: true,
     });
+    if (fact.phase === 'start') {
+      const [clock] = await tx`select clock_timestamp() now`;
+      if (job.timeout_at <= clock!.now) throw new QueueError('policy_denied');
+    }
     return receipt;
   });
 }
