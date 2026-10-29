@@ -61,7 +61,7 @@ function fixture(files, options = {}) {
       resources,
       rules: { db: ['packages/database/'], browser: ['apps/web/'] },
       files: options.files ?? {},
-      extra: {},
+      extra: options.extra ?? {},
       tags: { ...tags, ...options.tags },
     }),
   );
@@ -189,6 +189,9 @@ it('rejects unclassified candidates, nonexistent declarations and conflicting as
   expect(() =>
     inventory(fixture({ [db]: '' }, { files: { db: [db], browser: [db] } })),
   ).toThrow('Missing or conflicting');
+  expect(() =>
+    inventory(fixture({}, { extra: { ALLRICE_RUN_DB_INTEGRATION: [db] } })),
+  ).toThrow('Missing resource prerequisite file');
 }, 30_000);
 
 it('uses one real run for dynamic each/map/loops; a native ordinary instance never satisfies whole-file DB responsibility', () => {
@@ -205,7 +208,9 @@ it.each(['x','y'].map(x=>[x]))('mapped %s',()=>{});`,
   const ordinary = instances(first).instances;
   expect(ordinary).toHaveLength(5);
   expect(ordinary.every((item) => !item.responsible)).toBe(true);
-  const full = execute(root, 'db', [], { ALLRICE_RUN_DB_INTEGRATION: '1' });
+  const full = execute(root, 'db', ['--outputFile=original.json'], {
+    ALLRICE_RUN_DB_INTEGRATION: '1',
+  });
   expect(full.status, full.stdout + full.stderr).toBe(0);
   const second = receipts(root).find(
     (receipt) => receipt.directory !== first.directory,
@@ -216,7 +221,11 @@ it.each(['x','y'].map(x=>[x]))('mapped %s',()=>{});`,
       (item) => item.responsible && item.state === 'passed',
     ),
   ).toBe(true);
-  const raw = JSON.parse(readFileSync(second.report, 'utf8'));
+  const original = readFileSync(join(root, second.report), 'utf8');
+  expect(readFileSync(join(second.directory, 'vitest.json'), 'utf8')).toBe(
+    original,
+  );
+  const raw = JSON.parse(original);
   expect(raw.numPassedTests).toBe(6);
   expect(
     raw.testResults[0].assertionResults.some((item) =>
@@ -225,6 +234,15 @@ it.each(['x','y'].map(x=>[x]))('mapped %s',()=>{});`,
   ).toBe(false);
   expect(new Set(instances(second).instances.map((item) => item.id)).size).toBe(
     6,
+  );
+  expect(
+    execute(root, 'db', ['--outputFile=original.json'], {
+      ALLRICE_RUN_DB_INTEGRATION: '1',
+    }).status,
+  ).toBe(1);
+  expect(readFileSync(join(root, 'original.json'), 'utf8')).toBe(original);
+  expect(receipts(root).find((receipt) => !receipt.complete).error).toMatch(
+    'Original report already exists',
   );
 }, 30_000);
 

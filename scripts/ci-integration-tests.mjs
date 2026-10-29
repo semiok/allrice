@@ -53,6 +53,9 @@ export function inventory(root = process.cwd()) {
       declared.set(file, group);
     }
   }
+  for (const paths of Object.values(data.extra))
+    if (paths.some((file) => !files.includes(file)))
+      throw Error('Missing resource prerequisite file');
   for (const [tag, value] of Object.entries(data.tags))
     if (
       !/^(manual|platform):[\w-]+$/.test(tag) ||
