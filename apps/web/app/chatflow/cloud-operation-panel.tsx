@@ -94,7 +94,10 @@ export function cloudOperationCompactStatus(
 
 /** One parameter: its path as a label, its real value kept apart below. */
 function ApprovalField({ field }: { field: ApprovalFieldView }) {
-  const [open, setOpen] = useProcessDisclosure(`field:${field.path}`, false);
+  const [open, setOpen] = useProcessDisclosure<boolean>(
+    `field:${field.path}`,
+    false,
+  );
   return (
     <div>
       <dt>{field.path}</dt>

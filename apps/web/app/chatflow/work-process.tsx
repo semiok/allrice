@@ -129,7 +129,7 @@ export function WorkProcess({
   const currentPresentation =
     presentation ?? workProcessPresentation([], parts, undefined, false);
   const withReadingState = (content: ReactNode) => (
-    <WorkProcessReadingState runId={currentPresentation.runId} root={root}>
+    <WorkProcessReadingState key={currentPresentation.runId} root={root}>
       {content}
     </WorkProcessReadingState>
   );

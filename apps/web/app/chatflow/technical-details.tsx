@@ -15,11 +15,13 @@ export function TechnicalDetails({
   rows?: [string, ReactNode][];
   children?: ReactNode;
 }) {
-  const [open, setOpen] = useProcessDisclosure('technical', false);
+  const [open, setOpen] = useProcessDisclosure<boolean>('technical', false);
   return (
     <DisclosureRow
       icon={<IconInfoOutlineRegular />}
-      title={<span data-process-control="technical">技术详情</span>}
+      title="技术详情"
+      collapsedContent={<span data-process-control="technical" />}
+      keepContentWhenOpen
       open={open}
       expandable
       expandOnRowClick

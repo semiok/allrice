@@ -74,6 +74,7 @@ function eventsFor(runId: string): ChatFlowEventEnvelope[] {
       cursor: `${runId}:${seq}`,
       sequence: seq,
       harness: 'dsh',
+      sourceEvent: null,
       occurredAt: at,
       type,
       payload,

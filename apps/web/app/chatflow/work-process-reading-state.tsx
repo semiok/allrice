@@ -169,25 +169,21 @@ type Snapshot = ReturnType<typeof takeReadingSnapshot> | null;
 
 /** One synchronous React commit, never an event cache or an async restore. */
 export class WorkProcessReadingState extends Component<
-  { runId: string; root: RefObject<HTMLElement | null>; children: ReactNode },
-  { runId: string; values: Choices },
+  { root: RefObject<HTMLElement | null>; children: ReactNode },
+  { values: Choices },
   Snapshot
 > {
-  state = { runId: this.props.runId, values: new Map<string, Choice>() };
-  static getDerivedStateFromProps(
-    props: { runId: string },
-    state: { runId: string },
-  ) {
-    return props.runId === state.runId
-      ? null
-      : { runId: props.runId, values: new Map() };
-  }
-  getSnapshotBeforeUpdate(previous: Readonly<{ runId: string }>) {
-    return previous.runId === this.props.runId && this.props.root.current
+  override state = { values: new Map<string, Choice>() };
+  override getSnapshotBeforeUpdate() {
+    return this.props.root.current
       ? takeReadingSnapshot(this.props.root.current)
       : null;
   }
-  componentDidUpdate(_props: unknown, _state: unknown, saved: Snapshot) {
+  override componentDidUpdate(
+    _props: unknown,
+    _state: unknown,
+    saved: Snapshot,
+  ) {
     const root = this.props.root.current;
     if (!root || !saved) return;
     const untouchedFocus =
@@ -237,11 +233,11 @@ export class WorkProcessReadingState extends Component<
       inline: 'nearest',
     });
   }
-  render() {
+  override render() {
     return (
       <ReadingContext.Provider
         value={{
-          scope: [this.props.runId],
+          scope: [],
           values: this.state.values,
           setValues: (next) =>
             this.setState((state) => ({
