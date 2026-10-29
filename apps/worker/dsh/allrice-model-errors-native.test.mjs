@@ -417,8 +417,8 @@ async function scenario({
         .toBe(2);
     }
     if (rebind) {
-      await client.closeSession(sessionId);
-      await client.resume(sessionId);
+      await client.close();
+      await launch();
       await client.prompt(sessionId, 'Load the same frozen method once again.');
       await expect
         .poll(() => events().filter((e) => e.type === 'turn/end').length, {
@@ -526,7 +526,7 @@ describe('content authorization uses actual DSH dispatch and compaction', () => 
 });
 
 describe('ordinary Run uses the actual native Skill loader', () => {
-  it('exposes and loads the frozen method before creation and after Session close/reopen', async () => {
+  it('exposes and loads the frozen method before creation and after Host restart', async () => {
     const result = await scenario({
       skillFirst: true,
       rebind: true,
@@ -756,7 +756,7 @@ describe('personal Skills use the native loader with current authority', () => {
       'SAVED_TOOL_RESULT_42',
     );
   }, 30000);
-  it('checks exact private pin before native Skill content and after rebind', async () => {
+  it('checks exact private pin before native Skill content and after Host restart', async () => {
     const result = await scenario({
       personalSkill: true,
       skillFirst: true,
