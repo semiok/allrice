@@ -1,0 +1,583 @@
+/** Real isolated PostgreSQL and Worker receipt entrypoints. No Host/provider is
+ * enabled in this storage slice; metadata and Token facts below are synthetic. */
+import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import {
+  RouteDecisionSchema,
+  type EmployeeRuntimePackage,
+} from '@allrice/contracts';
+import * as client from '../core/client.ts';
+import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
+import { createRunAuthorityFixture } from '../run-authority.fixture.ts';
+import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
+import {
+  nativeBindingDescriptor,
+  nativeBindingWaiter,
+} from '../native-session-binding.fixture.ts';
+import { buildEmployeeRuntimePackage } from '../platform-employees/runtime-package.ts';
+import {
+  acquireConversationRuntime,
+  listDshRuntimeEventTimeline,
+} from '../conversation/conversation-runtime.ts';
+import {
+  appendJobEvent,
+  appendNativeModelReceipt,
+  bindJobNativeSession,
+  cancelRun,
+  finishJobDrain,
+} from './queue.ts';
+import {
+  recordRouteDecision,
+  completeRouteDecision,
+} from './route-decision.ts';
+import {
+  readNativeModelReceipts,
+  type NativeModelFact,
+} from './native-model-receipts.ts';
+
+const suite =
+  process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
+    ? describe.sequential
+    : describe.skip;
+suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
+  let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
+  let runtimePackage: EmployeeRuntimePackage;
+  beforeAll(async () => {
+    vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
+    vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'c'.repeat(64));
+    fixture = await createRuntimeFixtureDatabase();
+    vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
+    const employee = await createEmployeeAdministrationFixture(fixture.db);
+    runtimePackage = buildEmployeeRuntimePackage({
+      revision: 1,
+      definition: {
+        ...employee.definition,
+        capabilities: {
+          ...employee.definition.capabilities,
+          nativeSkillIds: [],
+        },
+      },
+      skills: [],
+    });
+    // Actual INSERT barrier: lets a receipt outlive its original DB deadline.
+    // Unheld keys return immediately; no product algorithm is mocked.
+    await fixture.db
+      .unsafe(`create function native_receipt_test_gate() returns trigger language plpgsql as $$
+      begin if new.payload->>'source'='native_model_receipt_v1' then
+        perform pg_advisory_xact_lock(hashtextextended(new.payload->'fact'->>'callId',9187));
+      end if; return new; end $$;
+      create trigger native_receipt_test_gate before insert on allrice_run_events
+        for each row execute function native_receipt_test_gate()`);
+  }, 120000);
+  afterAll(async () => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    const cleanup = await fixture?.close();
+    expect(cleanup).toMatchObject({
+      schemaRemoved: true,
+      storageRemoved: true,
+      databaseClosed: true,
+      adminClosed: true,
+    });
+  });
+  async function route(
+    f: Awaited<ReturnType<typeof createRunAuthorityFixture>>,
+    attempt = 1,
+    generation = 1,
+  ) {
+    return recordRouteDecision(
+      RouteDecisionSchema.parse({
+        schemaVersion: 1,
+        id: randomUUID(),
+        runId: f.rootRunId,
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        actorId: f.user,
+        employeeId: f.employee,
+        inputChecksum: 'sha256:' + '3'.repeat(64),
+        candidates: [
+          {
+            id: 'synthetic-direct',
+            kind: 'direct',
+            name: 'Synthetic no-provider route',
+            bindingId: null,
+            requiredCapabilities: [],
+            risk: 'low',
+            requiresApproval: false,
+            authorized: true,
+            exclusionReason: null,
+            score: 1,
+          },
+        ],
+        selectedKind: 'direct',
+        selectedCandidateId: 'synthetic-direct',
+        harness: 'dsh',
+        provider: 'synthetic',
+        model: 'never-called',
+        generation,
+        attempt,
+        reasonCodes: ['direct_no_capability_match'],
+        createdAt: new Date().toISOString(),
+      }),
+    );
+  }
+  async function setup() {
+    const f = await createRunAuthorityFixture(fixture.db, {
+      runtimePackage,
+      businessCreationOrigin: true,
+    });
+    await fixture.db`update allrice_jobs set attempt=1 where id=${f.worker.jobId}`;
+    f.context.memberships = [
+      {
+        id: f.membership,
+        userId: f.user,
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        role: 'admin',
+        active: true,
+      },
+    ];
+    const [runtime] =
+      await fixture.db`select * from allrice_conversation_runtimes where session_id=${f.session}`;
+    const descriptor = nativeBindingDescriptor({
+      organizationId: f.org,
+      workspaceId: f.workspace,
+      ownerId: f.user,
+      contextKey: f.session,
+    });
+    await bindJobNativeSession({
+      workerId: f.worker.workerId,
+      jobId: f.worker.jobId,
+      leaseToken: f.worker.leaseToken,
+      attempt: 1,
+      subject: {
+        kind: 'chat',
+        id: f.session,
+        configChecksum: runtime!.config_checksum,
+        generation: runtime!.thread_generation,
+        expectedThreadId: runtime!.thread_id,
+      },
+      descriptor,
+    });
+    const decision = await route(f);
+    return { ...f, descriptor, decision };
+  }
+  type Fixture = Awaited<ReturnType<typeof setup>>;
+  const start = (
+    f: Fixture,
+    overrides: Partial<Extract<NativeModelFact, { phase: 'start' }>> = {},
+  ) => ({
+    phase: 'start' as const,
+    callId: randomUUID(),
+    nativeSessionId: f.descriptor.nativeSessionId,
+    provider: 'synthetic',
+    model: 'never-called',
+    ...overrides,
+  });
+  const finish = (fact: ReturnType<typeof start>): NativeModelFact => ({
+    ...fact,
+    phase: 'finish',
+    outcome: 'succeeded',
+    usageComplete: true,
+    usage: {
+      inputTokens: 100,
+      cacheReadTokens: 20,
+      cacheWriteTokens: 10,
+      outputTokens: 5,
+    },
+  });
+  const write = (
+    f: Fixture,
+    fact: NativeModelFact,
+    decisionId = f.decision.id,
+  ) =>
+    appendNativeModelReceipt({
+      ...f.worker,
+      rootSessionId: f.descriptor.nativeSessionId,
+      routeDecisionId: decisionId,
+      fact,
+    });
+  const read = (f: Fixture, decisionId = f.decision.id) =>
+    readNativeModelReceipts({
+      organizationId: f.org,
+      workspaceId: f.workspace,
+      runId: f.rootRunId,
+      routeDecisionId: decisionId,
+    });
+  async function held(callId: string) {
+    const connection = await fixture.db.reserve();
+    const [r] =
+      await connection`select pg_backend_pid() pid,pg_advisory_lock(hashtextextended(${callId},9187))`;
+    return {
+      pid: r!.pid as number,
+      release: async () => {
+        await connection`select pg_advisory_unlock(hashtextextended(${callId},9187))`;
+        connection.release();
+      },
+    };
+  }
+  async function followup(f: Fixture) {
+    const runId = randomUUID(),
+      jobId = randomUUID(),
+      workerId = randomUUID(),
+      leaseToken = randomUUID();
+    const um = randomUUID(),
+      am = randomUUID();
+    await fixture.db.begin(async (tx) => {
+      // Arrange a later turn as in the native binding fixture, without running a model.
+      await tx`update allrice_runs set state='succeeded' where id=${f.rootRunId}`;
+      await tx`update allrice_jobs set status='succeeded',lease_token=null,lease_expires_at=null where id=${f.worker.jobId}`;
+      await tx`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input)
+        values(${runId},${f.org},${f.workspace},${f.user},'running','{}','{}')`;
+      await tx`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,attempt,timeout_at,payload,worker_id,lease_token,claimed_at,heartbeat_at,lease_expires_at)
+        values(${jobId},${f.org},${f.workspace},${f.user},${runId},'running',${randomUUID()},1,clock_timestamp()+interval '10 minutes',
+          '{"schemaVersion":1,"type":"allrice.employee.run","input":{}}',${workerId},${leaseToken},clock_timestamp(),clock_timestamp(),clock_timestamp()+interval '10 minutes')`;
+      await tx`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content)
+        values(${um},${f.org},${f.workspace},${f.session},${f.user},'user','{}'),(${am},${f.org},${f.workspace},${f.session},${f.user},'assistant','{}')`;
+      await tx`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,user_message_id,assistant_message_id,provider_snapshot,prompt_snapshot,native_skills,execution_snapshot)
+        select ${runId},organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,${um},${am},provider_snapshot,prompt_snapshot,native_skills,execution_snapshot
+        from allrice_employee_runs where run_id=${f.rootRunId}`;
+    });
+    const runtime = await acquireConversationRuntime({
+      organizationId: f.org,
+      workspaceId: f.workspace,
+      ownerId: f.user,
+      sessionId: f.session,
+      runId,
+      workerId,
+      configChecksum: runtimePackage.checksum,
+      compactThresholdTokens: 4096,
+    });
+    const worker = {
+      jobId,
+      workerId,
+      leaseToken,
+      generation: runtime.generation,
+    };
+    await bindJobNativeSession({
+      workerId,
+      jobId,
+      leaseToken,
+      attempt: 1,
+      descriptor: f.descriptor,
+      subject: {
+        kind: 'chat',
+        id: f.session,
+        configChecksum: runtime.configChecksum,
+        generation: runtime.generation,
+        expectedThreadId: runtime.threadId,
+      },
+    });
+    const next = {
+      ...f,
+      rootRunId: runId,
+      task: { ...f.task, runId, rootRunId: runId },
+      worker,
+    };
+    return { ...next, decision: await route(next, 1, runtime.generation) };
+  }
+
+  it('deduplicates concurrent start and finish retransmissions without adding a task clock', async () => {
+    const f = await setup(),
+      call = start(f);
+    const starts = await Promise.all(
+      Array.from({ length: 4 }, () => write(f, call)),
+    );
+    expect(
+      starts.every(
+        (receipt) => JSON.stringify(receipt) === JSON.stringify(starts[0]),
+      ),
+    ).toBe(true);
+    const finishes = await Promise.all(
+      Array.from({ length: 4 }, () => write(f, finish(call))),
+    );
+    expect(finishes[0]?.sourceKey).toBe(starts[0]?.sourceKey);
+    expect(await read(f)).toEqual([starts[0], finishes[0]]);
+    expect(
+      await fixture.db`select * from allrice_task_clocks where run_id=${f.rootRunId}`,
+    ).toHaveLength(0);
+    expect(
+      await fixture.db`select * from allrice_model_usage_ledger where run_id=${f.rootRunId}`,
+    ).toHaveLength(0);
+  });
+  it('requires a matching immutable start, including provider, purpose and route attempt', async () => {
+    const f = await setup(),
+      call = start(f);
+    await expect(write(f, finish(call))).rejects.toThrow('conflict');
+    await write(f, call);
+    await expect(write(f, { ...call, provider: 'different' })).rejects.toThrow(
+      'conflict',
+    );
+    await expect(
+      write(f, { ...finish(call), purpose: 'compaction' }),
+    ).rejects.toThrow('conflict');
+    const secondRoute = await route(f, 2);
+    await expect(write(f, call, secondRoute.id)).rejects.toThrow('conflict');
+    await expect(write(f, finish(call), secondRoute.id)).rejects.toThrow(
+      'conflict',
+    );
+    const done = await write(f, finish(call));
+    expect(
+      await write(f, {
+        ...finish(call),
+        usage: {
+          outputTokens: 5,
+          cacheWriteTokens: 10,
+          inputTokens: 100,
+          cacheReadTokens: 20,
+        },
+      }),
+    ).toEqual(done);
+    await expect(
+      write(f, { ...finish(call), usage: { inputTokens: 101 } }),
+    ).rejects.toThrow();
+    expect(await read(f, secondRoute.id)).toEqual([]);
+  });
+  it('keeps incomplete and zero usage distinct, and records fresh retry/compaction calls separately', async () => {
+    const f = await setup();
+    const interrupted = start(f, {
+      nativeSessionId: 'synthetic-child-session',
+    });
+    await write(f, interrupted);
+    await write(f, {
+      ...interrupted,
+      phase: 'finish',
+      outcome: 'failed',
+      usageComplete: false,
+      usage: { inputTokens: 7 },
+    });
+    const retry = start(f, { nativeSessionId: interrupted.nativeSessionId });
+    await write(f, retry);
+    await write(f, {
+      ...retry,
+      phase: 'finish',
+      outcome: 'succeeded',
+      usageComplete: true,
+      usage: {
+        inputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        outputTokens: 0,
+      },
+    });
+    const compaction = start(f, { purpose: 'compaction' });
+    await write(f, compaction); // A hard stop has no finish: leave exactly that fact.
+    const receipts = await read(f);
+    expect(receipts).toHaveLength(5);
+    expect(new Set(receipts.map((r) => r.sourceKey)).size).toBe(3);
+    expect(receipts[1]?.fact).toMatchObject({
+      usageComplete: false,
+      usage: { inputTokens: 7 },
+    });
+    expect(receipts[1]?.fact).not.toHaveProperty('usage.outputTokens');
+    expect(receipts[3]?.fact).toMatchObject({
+      usageComplete: true,
+      usage: { inputTokens: 0, outputTokens: 0 },
+    });
+    expect(receipts[4]?.fact.phase).toBe('start');
+  });
+  it('rejects unsafe usage, fake completeness and presentation fields at the private contract', async () => {
+    const f = await setup(),
+      call = start(f);
+    for (const fact of [
+      { ...finish(call), usage: undefined },
+      { ...finish(call), usage: { inputTokens: -1 } },
+      { ...finish(call), usage: { inputTokens: Number.MAX_SAFE_INTEGER + 1 } },
+      { ...call, presentation: 'tool', nativePayload: { text: 'not a fact' } },
+    ])
+      await expect(write(f, fact as NativeModelFact)).rejects.toThrow();
+    expect(await read(f)).toEqual([]);
+  });
+  it('does not move a prior call into the next Run or conversation generation', async () => {
+    const f = await setup(),
+      call = start(f);
+    const initial = await write(f, call),
+      later = await followup(f);
+    expect(later.worker.generation).toBeGreaterThan(f.worker.generation);
+    await expect(write(later, call)).rejects.toThrow('conflict');
+    await expect(write(later, finish(call))).rejects.toThrow('conflict');
+    expect(await read(later)).toEqual([]);
+    expect(await read(f)).toEqual([initial]);
+    await expect(write(later, start(later))).resolves.toMatchObject({
+      runId: later.rootRunId,
+    });
+  });
+  it('scopes root, route and reads to the leased tenant without revealing foreign facts', async () => {
+    const f = await setup(),
+      other = await setup(),
+      call = start(f);
+    await write(f, call);
+    await expect(
+      appendNativeModelReceipt({
+        ...other.worker,
+        rootSessionId: f.descriptor.nativeSessionId,
+        routeDecisionId: other.decision.id,
+        fact: call,
+      }),
+    ).rejects.toThrow('policy_denied');
+    await expect(write(f, start(f), other.decision.id)).rejects.toThrow(
+      'policy_denied',
+    );
+    await expect(write(other, start(other), f.decision.id)).rejects.toThrow(
+      'policy_denied',
+    );
+    expect(
+      await readNativeModelReceipts({
+        organizationId: other.org,
+        workspaceId: other.workspace,
+        runId: f.rootRunId,
+        routeDecisionId: f.decision.id,
+      }),
+    ).toEqual([]);
+    expect(await read(other)).toEqual([]);
+  });
+  it('finishes an admitted call during the original cancellation drain but denies new starts and post-terminal writes', async () => {
+    const f = await setup(),
+      call = start(f);
+    await write(f, call);
+    await cancelRun(f.context, f.workspace, f.rootRunId, {
+      reason: 'user_requested',
+    });
+    await expect(write(f, start(f))).rejects.toThrow('policy_denied');
+    await expect(
+      write(f, {
+        ...call,
+        phase: 'finish',
+        outcome: 'canceled',
+        usageComplete: false,
+      }),
+    ).resolves.toMatchObject({ fact: { outcome: 'canceled' } });
+    await finishJobDrain(f.worker);
+    await expect(write(f, finish(call))).rejects.toThrow('lease_lost');
+    expect(await read(f)).toHaveLength(2);
+  });
+  it.each(['lease_token', 'drain', 'lease'] as const)(
+    'rejects %s revocation without fabricating a missing finish',
+    async (kind) => {
+      const f = await setup(),
+        call = start(f);
+      await write(f, call);
+      if (kind === 'lease_token')
+        await fixture.db`update allrice_jobs set lease_token=${randomUUID()} where id=${f.worker.jobId}`;
+      if (kind === 'drain')
+        await fixture.db`update allrice_jobs set drain_deadline_at=clock_timestamp()-interval '1 second' where id=${f.worker.jobId}`;
+      if (kind === 'lease')
+        await fixture.db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${f.worker.jobId}`;
+      await expect(write(f, finish(call))).rejects.toThrow('lease_lost');
+      expect((await read(f)).map((r) => r.fact.phase)).toEqual(['start']);
+    },
+  );
+  it('rolls back a real INSERT when its original receipt drain expires before commit', async () => {
+    const f = await setup(),
+      call = start(f);
+    await write(f, call);
+    const gate = await held(call.callId);
+    let writing: Promise<unknown> | undefined;
+    try {
+      const [deadline] =
+        await fixture.db`update allrice_jobs set drain_deadline_at=clock_timestamp()+interval '2 seconds'
+        where id=${f.worker.jobId} returning drain_deadline_at`;
+      // Attach the rejection handler immediately; gate/DB-clock, not a timing guess.
+      writing = write(f, finish(call)).then(
+        (value) => ({ value }),
+        (error) => ({ error }),
+      );
+      await nativeBindingWaiter(fixture.db, gate.pid);
+      await fixture.db`select pg_sleep(greatest(0,extract(epoch from ${deadline!.drain_deadline_at}::timestamptz-clock_timestamp()))+0.02)`;
+    } finally {
+      await gate.release();
+    }
+    expect(await writing).toMatchObject({ error: { code: 'lease_lost' } });
+    expect((await read(f)).map((r) => r.fact.phase)).toEqual(['start']);
+  });
+  it('refuses new facts after route settlement or a terminal Run event', async () => {
+    const f = await setup(),
+      call = start(f);
+    await write(f, call);
+    await completeRouteDecision({
+      organizationId: f.org,
+      workspaceId: f.workspace,
+      outcome: {
+        decisionId: f.decision.id,
+        status: 'failed',
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        costCents: null,
+        usageComplete: false,
+        cacheUsageKnown: false,
+        errorCode: 'synthetic_stop',
+        failureCategory: null,
+        completedAt: new Date().toISOString(),
+      },
+    });
+    await expect(write(f, finish(call))).rejects.toThrow('conflict');
+    expect(await read(f)).toHaveLength(1);
+    const open = await setup();
+    await fixture.db`insert into allrice_run_events(organization_id,workspace_id,run_id,sequence,event_type,payload)
+      values(${open.org},${open.workspace},${open.rootRunId},0,'run.failed','{}')`;
+    await expect(write(open, start(open))).rejects.toThrow('conflict');
+    expect(await read(open)).toEqual([]);
+  });
+  it('keeps “把资料归纳成摘要” process cards unchanged and blocks generic native impersonation', async () => {
+    const f = await setup();
+    await fixture.db`update allrice_messages set content='{"text":"把资料归纳成摘要","citations":[]}'
+      where id=(select user_message_id from allrice_employee_runs where run_id=${f.rootRunId})`;
+    await appendJobEvent({
+      ...f.worker,
+      type: 'harness.native',
+      payload: {
+        source: 'dsh',
+        presentation: 'tool',
+        label: '查阅资料',
+        status: 'completed',
+        nativePayload: { callId: 'fixture-tool' },
+      },
+    });
+    const before = await listDshRuntimeEventTimeline(f.session);
+    expect(before.turns[0]?.userMessage.text).toBe('把资料归纳成摘要');
+    expect(before.turns[0]?.events.map((e) => e.title)).toEqual(['查阅资料']);
+    const call = start(f),
+      receipt = await write(f, call);
+    await write(f, finish(call));
+    for (const type of ['harness.native', 'tool.completed'] as const) {
+      await expect(
+        appendJobEvent({ ...f.worker, type, payload: receipt }),
+      ).rejects.toThrow('policy_denied');
+    }
+    const after = await listDshRuntimeEventTimeline(f.session);
+    expect(after.turns[0]?.events).toEqual(before.turns[0]?.events);
+    const steps =
+      await fixture.db`select event_type,payload from allrice_employee_run_steps where run_id=${f.rootRunId} order by sequence`;
+    expect(steps).toHaveLength(1);
+    expect(steps[0]?.payload.source).toBe('dsh');
+    expect(await read(f)).toHaveLength(2);
+  });
+  it('applies the actual partial index with historical native events and rejects a cross-Run duplicate at SQL level', async () => {
+    const f = await setup(),
+      call = start(f),
+      receipt = await write(f, call);
+    const later = await followup(f);
+    const migration = await readFile(
+      new URL(
+        '../../migrations/0230_native_model_receipts.sql',
+        import.meta.url,
+      ),
+      'utf8',
+    );
+    await fixture.db.begin(async (tx) => {
+      await tx.unsafe('drop index allrice_native_model_receipt_once');
+      for (const sequence of [10, 11])
+        await tx`insert into allrice_run_events(organization_id,workspace_id,run_id,sequence,event_type,payload)
+        values(${f.org},${f.workspace},${f.rootRunId},${sequence},'harness.native','{"source":"dsh","nativeType":"model/usage"}')`;
+      await tx.unsafe(migration);
+    });
+    await expect(fixture.db`insert into allrice_run_events(organization_id,workspace_id,run_id,sequence,event_type,payload)
+      values(${later.org},${later.workspace},${later.rootRunId},0,'harness.native',${fixture.db.json(receipt)})`).rejects.toMatchObject(
+      { code: '23505', constraint_name: 'allrice_native_model_receipt_once' },
+    );
+    expect(await read(f)).toEqual([receipt]);
+    expect(await read(later)).toEqual([]);
+  });
+});
