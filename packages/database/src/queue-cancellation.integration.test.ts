@@ -6,7 +6,8 @@ import {
 } from './runtime.fixture.ts';
 import { closeDatabase } from './core/client.ts';
 import { createRuntimeOperationLedger } from './runtime-ledger/ledger.ts';
-import { defaultAssistantRunConfiguration } from '@allrice/contracts';
+import type { ExecutionContext } from '@allrice/contracts';
+import { createTaskProgressRuntime } from './task-progress.ts';
 import { refreshTaskClock } from './task-clock.ts';
 import { resolveTaskRuntimePolicy } from './task-runtime-policy.ts';
 import {
@@ -25,14 +26,13 @@ const suite =
 suite('MET193 original-incarnation receipt drain — isolated PostgreSQL', () => {
   let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   beforeAll(async () => {
-    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
     database = await createRuntimeFixtureDatabase();
     const [scope] = await database.db<
       { schema: string }[]
     >`select current_schema() schema`;
     const schema = scope!.schema;
     const url = new URL(process.env.ALLRICE_TEST_DATABASE_URL!);
-    url.searchParams.set('options', '-csearch_path=' + schema + ',public');
+    url.searchParams.set('options', '-csearch_path=' + schema);
     vi.stubEnv('DATABASE_URL', url.href);
   }, 120000);
   afterAll(async () => {
@@ -52,20 +52,34 @@ suite('MET193 original-incarnation receipt drain — isolated PostgreSQL', () =>
       role: m.role,
       active: m.active,
     }));
+    await f.db`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy)
+      values(${f.task.runId},${f.task.scope.organizationId},${f.task.scope.workspaceId},${f.db.json({ ...resolveTaskRuntimePolicy([]) })})`;
+    const progress = createTaskProgressRuntime(
+      {
+        context: {
+          runId: f.task.runId,
+          organizationId: f.task.scope.organizationId,
+          workspaceId: f.task.scope.workspaceId,
+          delegatedBy: f.context.actor,
+        } as ExecutionContext,
+        worker: f.worker,
+      },
+      f.db,
+    );
     const callId = randomUUID();
-    await f.runtime.prepareModelUsage({
-      ...f.base,
-      runId: f.task.runId,
+    const receipt = {
+      action: 'finish',
+      nativeSessionId: f.nativeSessionId,
       callId,
-      requestedOutputTokens: 100,
-    });
-    await f.runtime.dispatchModelUsage({
-      ...f.base,
-      runId: f.task.runId,
+      kind: 'model',
+      resultDigest: 'sha256:' + 'a'.repeat(64),
+      outcome: 'success',
+    };
+    await progress({
+      action: 'start',
+      nativeSessionId: f.nativeSessionId,
       callId,
-      inputTokens: 100,
-      outputTokens: 100,
-      requestDigest: 'sha256:' + 'a'.repeat(64),
+      kind: 'model',
     });
     const row = async () =>
       (
@@ -82,22 +96,22 @@ suite('MET193 original-incarnation receipt drain — isolated PostgreSQL', () =>
         f.worker.leaseToken,
         30000,
       );
-    const settle = () =>
-      f.runtime.settleUsage({
-        ...f.base,
-        callId,
-        amounts: {
-          model_calls: 1,
-          tool_calls: 0,
-          input_tokens: 20,
-          output_tokens: 7,
-        },
-      });
+    const settle = () => progress(receipt);
     const finish = () => finishJobDrain(f.worker);
-    return { f, callId, row, cancel, heartbeat, settle, finish };
+    return {
+      f,
+      callId,
+      receipt,
+      progress,
+      row,
+      cancel,
+      heartbeat,
+      settle,
+      finish,
+    };
   }
   it.each(['heartbeat', 'maintenance'] as const)(
-    '%s preserves late usage/stopped receipts, denies new admission and finalizes once',
+    '%s preserves existing-call receipts, denies new admission and finalizes once',
     async (trigger) => {
       const s = await setup();
       await s.cancel();
@@ -114,30 +128,25 @@ suite('MET193 original-incarnation receipt drain — isolated PostgreSQL', () =>
       expect(current.lease_token).toBe(s.f.worker.leaseToken);
       expect(current.drain_deadline_at).toEqual(before.drain_deadline_at);
       await expect(
-        s.f.runtime.prepareModelUsage({
-          ...s.f.base,
-          runId: s.f.task.runId,
+        s.progress({
+          action: 'start',
+          nativeSessionId: s.f.nativeSessionId,
           callId: randomUUID(),
-          requestedOutputTokens: 100,
+          kind: 'model',
         }),
-      ).rejects.toThrow('lease_lost');
+      ).rejects.toThrow('task_progress_lease_lost');
       await expect(s.settle()).resolves.toBeDefined();
       await expect(s.settle()).resolves.toBeDefined();
       await expect(
-        s.f.runtime.settleUsage({
-          ...s.f.base,
-          callId: s.callId,
-          amounts: {
-            model_calls: 1,
-            tool_calls: 0,
-            input_tokens: 21,
-            output_tokens: 7,
-          },
-        }),
-      ).rejects.toThrow('conflict');
-      await expect(
-        s.f.runtime.confirmStopped({ ...s.f.base, runId: s.f.task.runId }),
-      ).resolves.toEqual({ stopped: true });
+        s.progress({ ...s.receipt, resultDigest: 'sha256:' + 'b'.repeat(64) }),
+      ).rejects.toThrow('task_progress_receipt_conflict');
+      const [receipt] =
+        await database.db`select finished_at,result_digest,settled_output_tokens from allrice_task_calls where run_id=${s.f.task.runId} and call_id=${s.callId}`;
+      expect(receipt).toMatchObject({
+        finished_at: expect.any(Date),
+        result_digest: s.receipt.resultDigest,
+        settled_output_tokens: null,
+      });
       await expect(s.finish()).resolves.toEqual({ finalized: true });
       expect((await s.row()).status).toBe('canceled');
       await expect(s.finish()).rejects.toThrow('lease_lost');
@@ -165,14 +174,13 @@ suite('MET193 original-incarnation receipt drain — isolated PostgreSQL', () =>
     await database.db`update allrice_jobs set drain_deadline_at=clock_timestamp()-interval '1 second',lease_expires_at=clock_timestamp()-interval '1 second' where id=${s.f.worker.jobId}`;
     await maintainQueue();
     expect((await s.row()).status).toBe('canceled');
-    await expect(s.settle()).rejects.toThrow('lease_lost');
-    const [instance] =
-      await database.db`select stopped_at,status from allrice_assistant_instances where run_id=${s.f.task.runId}`;
-    expect(instance!.stopped_at).toBeNull();
-    expect(instance!.status).toBe('cancel_requested');
-    const admissions =
-      await database.db`select finished_at from allrice_assistant_model_admissions where call_id=${s.callId}`;
-    expect(admissions[0]!.finished_at).toBeNull();
+    await expect(s.settle()).rejects.toThrow('task_progress_lease_lost');
+    const [call] =
+      await database.db`select finished_at,settled_output_tokens from allrice_task_calls where run_id=${s.f.task.runId} and call_id=${s.callId}`;
+    expect(call).toEqual({ finished_at: null, settled_output_tokens: null });
+    expect(
+      await database.db`select id from allrice_run_events where run_id=${s.f.task.runId} and event_type='harness.native'`,
+    ).toHaveLength(0);
   });
   it('an already expired lease is never revived, even before the drain deadline', async () => {
     const s = await setup();
@@ -186,7 +194,7 @@ suite('MET193 original-incarnation receipt drain — isolated PostgreSQL', () =>
     const s = await setup();
     await s.cancel();
     await database.db`update allrice_jobs set worker_id=${randomUUID()},lease_token=${randomUUID()} where id=${s.f.worker.jobId}`;
-    await expect(s.settle()).rejects.toThrow('lease_lost');
+    await expect(s.settle()).rejects.toThrow('task_progress_lease_lost');
     await expect(s.finish()).rejects.toThrow('lease_lost');
     await database.db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${s.f.worker.jobId}`;
     await maintainQueue();
@@ -237,11 +245,11 @@ suite('MET193 original-incarnation receipt drain — isolated PostgreSQL', () =>
     expect(after.lease_token).toBe(original.lease_token);
     await s.finish();
   }, 15000);
-  it.each(['heartbeat', 'maintenance', 'authority'] as const)(
+  it.each(['heartbeat', 'maintenance'] as const)(
     'timeout stays failed after %s, cancellation and a refreshed deadline',
     async (trigger) => {
       const s = await setup();
-      await database.db`update allrice_jobs set created_at=clock_timestamp()-interval '2 seconds',timeout_at=clock_timestamp()-interval '1 second' where id=${s.f.worker.jobId}`;
+      await database.db`update allrice_task_clocks set phase='active',active_ms=(policy->>'timeoutMs')::double precision+1,changed_at=clock_timestamp() where run_id=${s.f.task.runId}`;
       if (trigger === 'heartbeat')
         expect(await s.heartbeat()).toMatchObject({
           active: false,
@@ -249,14 +257,6 @@ suite('MET193 original-incarnation receipt drain — isolated PostgreSQL', () =>
           draining: true,
         });
       else if (trigger === 'maintenance') await maintainQueue();
-      else
-        expect(
-          await s.f.runtime.assertCurrentAuthority(s.f.base),
-        ).toMatchObject({
-          cancelRequested: true,
-          stopReason: 'timeout',
-          drainDeadlineAt: expect.any(String),
-        });
       const first = await s.row();
       expect(first.drain_reason).toBe('timeout');
       expect(first.status).toBe('running');
@@ -264,7 +264,6 @@ suite('MET193 original-incarnation receipt drain — isolated PostgreSQL', () =>
       await s.cancel();
       expect((await s.row()).drain_reason).toBe('timeout');
       await s.settle();
-      await s.f.runtime.confirmStopped({ ...s.f.base, runId: s.f.task.runId });
       await completeJob({ ...s.f.worker, result: { answer: 'too late' } });
       const final = await s.row();
       expect(final.status).toBe('failed');
@@ -324,8 +323,6 @@ suite('MET193 original-incarnation receipt drain — isolated PostgreSQL', () =>
     // Remove only this new empty synthetic root, in the existing FK order;
     // no native/model dispatch or company data has ever been attached.
     await database.db.begin(async (tx) => {
-      await tx`delete from allrice_assistant_instances where root_run_id=${f.task.runId}`;
-      await tx`delete from allrice_assistant_roots where root_run_id=${f.task.runId}`;
       await tx`delete from allrice_runtime_budgets where root_run_id=${f.task.runId}`;
       await tx`delete from allrice_runtime_run_links where root_run_id=${f.task.runId}`;
       await tx`delete from allrice_runtime_roots where root_run_id=${f.task.runId}`;
@@ -396,7 +393,7 @@ suite('MET193 original-incarnation receipt drain — isolated PostgreSQL', () =>
         )
         .toBeGreaterThan(0);
       // Cancellation is waiting on the pre-root mutex, not holding the job
-      // that configureRoot will need once creation commits.
+      // that the queue will need once creation commits.
       await database.db.begin(async (tx) => {
         await tx`select id from allrice_jobs where id=${f.worker.jobId} for update nowait`;
       });
@@ -405,17 +402,17 @@ suite('MET193 original-incarnation receipt drain — isolated PostgreSQL', () =>
       await creation;
       await cancellation;
       await expect(
-        f.runtime.configureRoot({
-          task: f.task,
-          configuration: {
-            ...defaultAssistantRunConfiguration(),
-            allowAssistants: true,
-          },
-          nativeSessionId: f.nativeSessionId,
-          worker: f.worker,
-          allowedTools: ['read'],
-        }),
-      ).rejects.toThrow('canceled');
+        heartbeatJob(
+          f.worker.workerId,
+          f.worker.jobId,
+          f.worker.leaseToken,
+          30000,
+        ),
+      ).resolves.toMatchObject({
+        active: false,
+        canceled: true,
+        draining: true,
+      });
       const [root] =
         await database.db`select cancel_requested_at from allrice_runtime_roots where root_run_id=${f.task.runId}`;
       expect(root!.cancel_requested_at).not.toBeNull();
@@ -429,7 +426,7 @@ suite('MET193 original-incarnation receipt drain — isolated PostgreSQL', () =>
       ]);
     }
   }, 120000);
-  it.each(['heartbeat', 'maintenance', 'authority'] as const)(
+  it.each(['heartbeat', 'maintenance'] as const)(
     'durable active-time projection reaches %s without reopening its receipt deadline',
     async (trigger) => {
       const s = await setup(),
@@ -440,8 +437,7 @@ suite('MET193 original-incarnation receipt drain — isolated PostgreSQL', () =>
       await database.db`update allrice_jobs set created_at=clock_timestamp()-interval '10 seconds' where id=${f.worker.jobId}`;
       // Existing clock-test technique: advance only this isolated persisted
       // checkpoint, then execute the actual production projection on DB time.
-      await database.db`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy,phase,changed_at,started_at)
-      values(${f.task.runId},${f.task.scope.organizationId},${f.task.scope.workspaceId},${database.db.json({ ...policy })},'active',clock_timestamp()-interval '2 seconds',clock_timestamp()-interval '2 seconds')`;
+      await database.db`update allrice_task_clocks set policy=${database.db.json({ ...policy })},phase='active',changed_at=clock_timestamp()-interval '2 seconds',started_at=clock_timestamp()-interval '2 seconds' where run_id=${f.task.runId}`;
       await database.db.begin((tx) => refreshTaskClock(tx, f.task.runId));
       if (trigger === 'heartbeat')
         expect(await s.heartbeat()).toMatchObject({
@@ -449,11 +445,6 @@ suite('MET193 original-incarnation receipt drain — isolated PostgreSQL', () =>
           draining: true,
         });
       else if (trigger === 'maintenance') await maintainQueue();
-      else
-        expect(await f.runtime.assertCurrentAuthority(f.base)).toMatchObject({
-          cancelRequested: true,
-          stopReason: 'timeout',
-        });
       const first = await s.row();
       expect(first.drain_reason).toBe('timeout');
       expect(first.status).toBe('running');
@@ -464,15 +455,14 @@ suite('MET193 original-incarnation receipt drain — isolated PostgreSQL', () =>
         first.drain_deadline_at,
       );
       await expect(
-        f.runtime.prepareModelUsage({
-          ...f.base,
-          runId: f.task.runId,
+        s.progress({
+          action: 'start',
+          nativeSessionId: f.nativeSessionId,
           callId: randomUUID(),
-          requestedOutputTokens: 100,
+          kind: 'model',
         }),
-      ).rejects.toThrow('lease_lost');
+      ).rejects.toThrow('task_progress_lease_lost');
       await s.settle();
-      await f.runtime.confirmStopped({ ...f.base, runId: f.task.runId });
       await s.finish();
       const final = await s.row();
       expect(final.status).toBe('failed');
