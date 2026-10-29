@@ -242,6 +242,13 @@ suite('MET153 durable native waits and queue authority', () => {
         from allrice_conversation_runtimes where session_id=${f.session}`
     )[0]!;
   }
+  async function jobId(
+    f: Awaited<ReturnType<typeof setup>>['f'],
+    runId: string,
+  ) {
+    return (await f.db`select id from allrice_jobs where run_id=${runId}`)[0]!
+      .id;
+  }
   async function stop(
     f: Awaited<ReturnType<typeof setup>>['f'],
     runId: string,
@@ -783,7 +790,7 @@ suite('MET153 durable native waits and queue authority', () => {
       });
       next ??= await sendOrdinary(f);
       const claimed = await claimNextJob(randomUUID(), 30000);
-      expect(claimed).toMatchObject({ runId: next, attempt: 1 });
+      expect(claimed).toMatchObject({ id: await jobId(f, next), attempt: 1 });
       expect(await claimNextJob(randomUUID(), 30000)).toBeNull();
       await maintainQueue();
       expect(
@@ -821,7 +828,7 @@ suite('MET153 durable native waits and queue authority', () => {
     ).rejects.toMatchObject({ code: 'lease_lost' });
     const next = await sendOrdinary(f);
     expect(await claimNextJob(randomUUID(), 30000)).toMatchObject({
-      runId: next,
+      id: await jobId(f, next),
       attempt: 1,
     });
     await stop(f, next);
@@ -833,6 +840,8 @@ suite('MET153 durable native waits and queue authority', () => {
     await answer(s);
     // Expire the frozen authorization, not timeout_at: the latter is only a
     // projection refreshed by the real maintenance transaction.
+    await f.db`update allrice_jobs set created_at=clock_timestamp()-interval '1 minute'
+      where id=${f.worker.jobId}`;
     await f.db`update allrice_task_clocks set policy=jsonb_set(policy,
       '{authorizationExpiresAt}',to_jsonb((clock_timestamp()-interval '1 second')::text))
       where run_id=${f.rootRunId}`;
@@ -863,7 +872,7 @@ suite('MET153 durable native waits and queue authority', () => {
       outcome: 'interrupted',
     });
     const claimed = await claimNextJob(f.worker.workerId, 30000);
-    expect(claimed).toMatchObject({ runId: next });
+    expect(claimed).toMatchObject({ id: await jobId(f, next) });
     await acquireConversationRuntime({
       organizationId: f.org,
       workspaceId: f.workspace,
@@ -914,12 +923,12 @@ suite('MET153 durable native waits and queue authority', () => {
       claimNextJob(randomUUID(), 30000),
     ]);
     expect(claims.filter(Boolean)).toMatchObject([
-      { runId: first, attempt: 1 },
+      { id: await jobId(f, first), attempt: 1 },
     ]);
     expect(await claimNextJob(randomUUID(), 30000)).toBeNull();
     await stop(f, first);
     expect(await claimNextJob(randomUUID(), 30000)).toMatchObject({
-      runId: second,
+      id: await jobId(f, second),
       attempt: 1,
     });
     expect(await claimNextJob(randomUUID(), 30000)).toBeNull();
@@ -984,7 +993,7 @@ suite('MET153 durable native waits and queue authority', () => {
     });
     const next = await sendOrdinary(f);
     expect(await claimNextJob(randomUUID(), 30000)).toMatchObject({
-      runId: next,
+      id: await jobId(f, next),
       attempt: 1,
     });
     await stop(f, next);
