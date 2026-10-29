@@ -157,6 +157,7 @@ function takeReadingSnapshot(root: HTMLElement) {
     }));
   return {
     active,
+    selectedText: selection?.toString(),
     control: marker && keyOf(marker, 'data-process-control'),
     scroll,
     selection:
@@ -212,7 +213,7 @@ export class WorkProcessReadingState extends Component<
     if (
       untouchedFocus &&
       saved.selection &&
-      selection?.isCollapsed &&
+      selection &&
       (!saved.selection.anchor.block.isConnected ||
         !saved.selection.focus.block.isConnected)
     ) {
@@ -225,13 +226,16 @@ export class WorkProcessReadingState extends Component<
           focus.node,
           focus.offset,
         );
-        reading = focus.block;
+        if (selection.toString() !== saved.selectedText)
+          selection.removeAllRanges();
+        else reading = focus.block;
       }
     }
-    (reading ?? focused)?.scrollIntoView({
-      block: 'nearest',
-      inline: 'nearest',
-    });
+    if (untouchedFocus)
+      (reading ?? focused)?.scrollIntoView({
+        block: 'nearest',
+        inline: 'nearest',
+      });
   }
   override render() {
     return (

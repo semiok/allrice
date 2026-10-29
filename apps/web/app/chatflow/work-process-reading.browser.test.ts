@@ -308,6 +308,38 @@ suite('reading a receipt while late native trace changes its group', () => {
       await page.close();
     }
   });
+  it('does not restore changed text between selection endpoints after a native split', async () => {
+    const page = await open(390);
+    try {
+      await card(page, 0)
+        .getByRole('button', { name: '技术详情', exact: true })
+        .click();
+      await readResult(page);
+      await update(page, 'prefix');
+      const expected = await page.evaluate(() => {
+        (document.activeElement as HTMLElement)?.blur();
+        const from = document.querySelector(
+          '#operation-reading-0 pre',
+        )!.firstChild!;
+        const to = document.querySelector(
+          '#operation-reading-5 [data-process-content="result"]',
+        )!.firstChild!;
+        document
+          .getSelection()!
+          .setBaseAndExtent(from, from.textContent!.length - 15, to, 50);
+        return document.getSelection()!.toString();
+      });
+      for (const stage of ['split', 'merge'] as const) {
+        await update(page, stage);
+        expect(
+          await page.evaluate(() => document.getSelection()!.toString()),
+        ).toBe('');
+      }
+      expect(expected.length).toBeGreaterThan(50);
+    } finally {
+      await page.close();
+    }
+  });
   it('distinguishes same-named technical controls by operation and section', async () => {
     const page = await open();
     try {
