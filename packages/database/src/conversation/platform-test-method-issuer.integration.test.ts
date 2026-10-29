@@ -45,11 +45,15 @@ import {
   savePlatformEmployeeDraft,
 } from '../employees/platform-employees.ts';
 import {
+  appendNativeModelReceipt,
   bindJobNativeSession,
   prepareJobNativeSession,
   startClaimedJob,
 } from '../execution/queue.ts';
-import { nativeBindingDescriptor } from '../native-session-binding.fixture.ts';
+import {
+  nativeBindingDescriptor,
+  nativeBindingWaiter,
+} from '../native-session-binding.fixture.ts';
 import { newNativeGeneration } from './current-execution-binding.ts';
 
 const suite =
@@ -382,6 +386,139 @@ suite(
       expect(cold.binding?.firstRunId).toBe(claimed.previewExecution.runId);
       return claimed;
     }
+
+    it.each([
+      { closer: 'direct', first: 'receipt' },
+      { closer: 'direct', first: 'finalizer' },
+      { closer: 'timeout-scan', first: 'receipt' },
+      { closer: 'timeout-scan', first: 'finalizer' },
+    ] as const)(
+      'serializes native receipts with real method $closer, $first first',
+      async ({ closer, first }) => {
+        const x = await candidate();
+        const test = await startEmployeeMethodTestFromChat({
+          ...x.testing,
+          arguments: x.args,
+        });
+        await x.testing.finish();
+        const claimed = await claimAndBind(test.id, x.f);
+        const [job] =
+          await fixture.db`select worker_id from allrice_jobs where id=${claimed.previewExecution.jobId}`;
+        const [pin] =
+          await fixture.db`select native_session_id from allrice_native_session_bindings where first_run_id=${claimed.previewExecution.runId}`;
+        const request = {
+          workerId: job!.worker_id as string,
+          jobId: claimed.previewExecution.jobId,
+          leaseToken: claimed.previewExecution.leaseToken,
+          rootSessionId: pin!.native_session_id as string,
+          routeDecisionId: claimed.methodCandidate!.decision.id,
+        };
+        const call = {
+          phase: 'start' as const,
+          callId: randomUUID(),
+          nativeSessionId: request.rootSessionId,
+          provider: 'synthetic',
+          model: 'never-called',
+        };
+        await appendNativeModelReceipt({ ...request, fact: call });
+        if (closer === 'timeout-scan')
+          await fixture.db`update allrice_platform_employee_test_runs set timeout_at=clock_timestamp() where id=${test.id}`;
+        const write = () =>
+          appendNativeModelReceipt({
+            ...request,
+            fact: {
+              ...call,
+              phase: 'finish',
+              outcome: 'succeeded',
+              usageComplete: true,
+              usage: {
+                inputTokens: 1,
+                cacheReadTokens: 0,
+                cacheWriteTokens: 0,
+                outputTokens: 1,
+              },
+            },
+          }).then(
+            () => 'committed',
+            (error: unknown) => error,
+          );
+        const end = () =>
+          (closer === 'timeout-scan'
+            ? claimNextPlatformEmployeeTestRun(randomUUID())
+            : completePlatformEmployeeTestRun(test.id, {
+                answer: 'Synthetic complete',
+                provider: 'synthetic',
+                model: 'never-called',
+                threadId: null,
+                usage: null,
+                events: [],
+                error: null,
+              })
+          ).then(
+            () => 'closed',
+            (error: unknown) => error,
+          );
+        const gate = await fixture.db.reserve();
+        await gate`begin`;
+        const [held] = await gate`select pg_backend_pid() pid`;
+        let writing: Promise<unknown> | undefined;
+        let ending: Promise<unknown> | undefined;
+        try {
+          if (first === 'receipt') {
+            await gate`select id from allrice_route_decisions where id=${request.routeDecisionId} for update`;
+            writing = write();
+            const writer = await nativeBindingWaiter(
+              fixture.db,
+              held!.pid as number,
+            );
+            ending = end();
+            await nativeBindingWaiter(fixture.db, writer);
+            // A blocked closer must not hold Run while waiting for the receipt's Job.
+            // NOWAIT also prevents the claim transaction's retry wrapper hiding 40P01.
+            await gate`select id from allrice_runs where id=${claimed.previewExecution.runId} for update nowait`;
+          } else {
+            await gate`select pg_advisory_xact_lock(hashtext(${`tenant:${x.f.owner.organizationId.toLowerCase()}`}))`;
+            ending = end();
+            const finalizer = await nativeBindingWaiter(
+              fixture.db,
+              held!.pid as number,
+            );
+            writing = write();
+            await nativeBindingWaiter(fixture.db, finalizer);
+          }
+        } finally {
+          await gate`rollback`;
+          gate.release();
+          await Promise.all([writing, ending]);
+        }
+        expect(await ending).toBe('closed');
+        if (first === 'receipt') expect(await writing).toBe('committed');
+        else expect(await writing).toMatchObject({ code: 'lease_lost' });
+        const status = closer === 'timeout-scan' ? 'failed' : 'succeeded';
+        const [closed] =
+          await fixture.db`select t.status test_status,r.state run_status,j.status job_status,j.lease_token,d.status route_status,d.completed_at
+          from allrice_platform_employee_test_runs t
+          join allrice_runs r on r.id=${claimed.previewExecution.runId}
+          join allrice_jobs j on j.run_id=r.id
+          join allrice_route_decisions d on d.id=${request.routeDecisionId}
+          where t.id=${test.id}`;
+        expect(closed).toMatchObject({
+          test_status: status,
+          run_status: status,
+          job_status: status,
+          route_status: status,
+          lease_token: null,
+        });
+        expect(closed!.completed_at).toBeInstanceOf(Date);
+        const facts =
+          await fixture.db`select payload->'fact'->>'phase' phase from allrice_run_events
+          where run_id=${claimed.previewExecution.runId} and payload->>'source'='native_model_receipt_v1' order by sequence`;
+        expect(facts.map((r) => r.phase)).toEqual(
+          first === 'receipt' ? ['start', 'finish'] : ['start'],
+        );
+      },
+      30000,
+    );
 
     it('first INSERT freezes the published source; replay is one test and claim owns the first real execution', async () => {
       const x = await candidate();
