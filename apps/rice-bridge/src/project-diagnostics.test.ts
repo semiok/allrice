@@ -136,38 +136,46 @@ const socket = process.env.ALLRICE_LOCAL_DOCKER_TEST_SOCKET;
       });
       return result;
     }
-    it('probes versions, manifests, locks and missing dependencies without running project scripts', async () => {
-      vi.stubEnv('PATH', '/untrusted/host/path');
-      vi.stubEnv('NODE_OPTIONS', '--require=/untrusted/inject.js');
-      const r = await run();
-      expect(r.diagnostics).toMatchObject({
-        target: 'local_linux_isolated_copy',
-        hostToolchain: 'not_inspected',
-        platform: 'linux',
-        directory: '/workspace',
-        project: 'available',
-        packageManager: 'npm',
-        lockfile: 'package-lock.json',
-        dependencies: 'not_prepared',
-        node: { version: 'v22.23.2', status: 'available' },
-        npm: { status: 'available' },
-        nodeEngine: '>=22',
-        engineStatus: 'requires_review',
-        installedOrRepaired: false,
-      });
-    }, 30000);
-    it('reports explicit mismatches without upgrading or silently using the host binary', async () => {
-      const r = await run(
-        { 'package.json': '{}' },
-        { expectedNodeMajor: 99, expectedNpmMajor: 99 },
-      );
-      expect(r.diagnostics).toMatchObject({
-        dependencies: 'none_declared',
-        lockfile: 'missing',
-        node: { status: 'version_mismatch' },
-        npm: { status: 'version_mismatch' },
-      });
-    }, 30000);
+    it(
+      'probes versions, manifests, locks and missing dependencies without running project scripts',
+      { tags: ['manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET'], timeout: 30000 },
+      async () => {
+        vi.stubEnv('PATH', '/untrusted/host/path');
+        vi.stubEnv('NODE_OPTIONS', '--require=/untrusted/inject.js');
+        const r = await run();
+        expect(r.diagnostics).toMatchObject({
+          target: 'local_linux_isolated_copy',
+          hostToolchain: 'not_inspected',
+          platform: 'linux',
+          directory: '/workspace',
+          project: 'available',
+          packageManager: 'npm',
+          lockfile: 'package-lock.json',
+          dependencies: 'not_prepared',
+          node: { version: 'v22.23.2', status: 'available' },
+          npm: { status: 'available' },
+          nodeEngine: '>=22',
+          engineStatus: 'requires_review',
+          installedOrRepaired: false,
+        });
+      },
+    );
+    it(
+      'reports explicit mismatches without upgrading or silently using the host binary',
+      { tags: ['manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET'], timeout: 30000 },
+      async () => {
+        const r = await run(
+          { 'package.json': '{}' },
+          { expectedNodeMajor: 99, expectedNpmMajor: 99 },
+        );
+        expect(r.diagnostics).toMatchObject({
+          dependencies: 'none_declared',
+          lockfile: 'missing',
+          node: { status: 'version_mismatch' },
+          npm: { status: 'version_mismatch' },
+        });
+      },
+    );
     it.each([
       [{ 'readme.txt': 'fixture' }, 'manifest_missing', 'missing'],
       [{ 'package.json': 'not json' }, 'manifest_invalid', 'missing'],
@@ -178,30 +186,34 @@ const socket = process.env.ALLRICE_LOCAL_DOCKER_TEST_SOCKET;
       ],
     ] as const)(
       'handles missing/invalid manifests and ambiguous locks: %s',
+      { tags: ['manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET'], timeout: 30000 },
       async (files, project, lockfile) => {
         expect((await run(files)).diagnostics).toMatchObject({
           project,
           lockfile,
         });
       },
-      30000,
     );
-    it('does not echo arbitrary manifest properties, credentials, scripts or engine injections', async () => {
-      const r = await run({
-        'package.json': JSON.stringify({
-          scripts: { test: 'SUPER_SECRET_FIXTURE' },
-          engines: { node: 'https://secret.invalid/?token=fixture' },
-          _authToken: 'SUPER_SECRET_FIXTURE',
-          packageManager: 'https://secret.invalid',
-        }),
-      });
-      expect(r.stdout).not.toContain('SUPER_SECRET_FIXTURE');
-      expect(r.stdout).not.toContain('secret.invalid');
-      expect(r.diagnostics).toMatchObject({
-        nodeEngine: null,
-        engineStatus: 'requires_review',
-        packageManager: 'unknown',
-      });
-    }, 30000);
+    it(
+      'does not echo arbitrary manifest properties, credentials, scripts or engine injections',
+      { tags: ['manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET'], timeout: 30000 },
+      async () => {
+        const r = await run({
+          'package.json': JSON.stringify({
+            scripts: { test: 'SUPER_SECRET_FIXTURE' },
+            engines: { node: 'https://secret.invalid/?token=fixture' },
+            _authToken: 'SUPER_SECRET_FIXTURE',
+            packageManager: 'https://secret.invalid',
+          }),
+        });
+        expect(r.stdout).not.toContain('SUPER_SECRET_FIXTURE');
+        expect(r.stdout).not.toContain('secret.invalid');
+        expect(r.diagnostics).toMatchObject({
+          nodeEngine: null,
+          engineStatus: 'requires_review',
+          packageManager: 'unknown',
+        });
+      },
+    );
   },
 );

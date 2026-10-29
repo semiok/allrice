@@ -1,9 +1,11 @@
 import { fileURLToPath } from 'node:url';
 
 import { defineConfig } from 'vitest/config';
+import { testTags } from './scripts/ci-integration-tests.mjs';
 
 export default defineConfig({
   test: {
+    tags: testTags(),
     // Transform official UI ESM dependencies so Node suites stub their CSS modules.
     server: {
       deps: { inline: [/@deepseek-ai\/dsh-client-ui-(dockkit|primitives)/] },

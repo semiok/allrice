@@ -1371,6 +1371,10 @@ suite(
     });
     it.runIf(process.env.ALLRICE_RUN_PROJECT_CLOUD_INTEGRATION === '1')(
       'first closed loop: known error -> actual runsc failure -> source fix -> original assertion -> details/private static + source download',
+      {
+        tags: ['manual:ALLRICE_RUN_PROJECT_CLOUD_INTEGRATION'],
+        timeout: 120000,
+      },
       async () => {
         const f = await setup(true, true);
         await f.setState('offline');
@@ -1556,7 +1560,6 @@ suite(
           getToolBrokerFile(other.context, html.objectId, f.db),
         ).rejects.toThrow();
       },
-      120000,
     );
     it('shares an eight-call and elapsed budget across projects, preserves same-call replay and read/delivery', async () => {
       const f = await setup();

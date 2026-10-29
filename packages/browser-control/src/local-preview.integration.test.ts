@@ -307,274 +307,369 @@ suite(
         },
       };
     }
-    it('renders real HTML/JavaScript and requires exact body approval before the project receives POST', async () => {
-      let approve!: () => void;
-      const approvalGate = new Promise<void>((resolve) => {
-        approve = resolve;
-      });
-      const value = await launch({
-        relay: true,
-        allowWrite: true,
-        approvalGate,
-      });
-      try {
-        await value.driver.perform(
-          {
-            type: 'navigate',
-            url: localPreviewOrigin(target.endpointId) + '/',
-          },
-          null,
-        );
-        const view = await value.driver.observe(1);
-        expect(view.observation.text).toContain('Actual container project');
-        expect(view.observation.text).toContain(
-          'Actual project JavaScript loaded',
-        );
-        expect(view.screenshot.length).toBeGreaterThan(100);
-        const button = view.observation.elements.find(
-          (e) => e.label === 'Save',
-        );
-        expect(button).toBeDefined();
-        // The production click waits for its intercepted form navigation.
-        // Observe approval while it is pending; consume either outcome now.
-        const click = value.driver
-          .perform({ type: 'click', elementId: button!.id }, view.observation)
-          .then(
-            () => true,
-            () => false,
-          );
-        await expect.poll(() => value.effects.length).toBe(1);
-        expect(JSON.parse((await get('/status')).body.toString()).writes).toBe(
-          0,
-        );
-        expect(value.receipts).toEqual([]);
-        approve();
-        expect(await click).toBe(true);
-        await expect
-          .poll(
-            async () =>
-              JSON.parse((await get('/status')).body.toString()).writes,
-          )
-          .toBe(1);
-        expect(value.effects).toHaveLength(1);
-        expect(value.effects[0]).toMatchObject({
-          method: 'POST',
-          url: localPreviewOrigin(target.endpointId) + '/save',
-          urlDigest:
-            'sha256:' +
-            createHash('sha256')
-              .update(localPreviewOrigin(target.endpointId) + '/save')
-              .digest('hex'),
-          bodyDigest: 'sha256:' + createHash('sha256').update('').digest('hex'),
-          bodyBytes: 0,
+    it(
+      'renders real HTML/JavaScript and requires exact body approval before the project receives POST',
+      {
+        tags: [
+          'manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET',
+          'manual:ALLRICE_TEST_LOCAL_BROWSER_NATIVE',
+        ],
+        timeout: 35000,
+      },
+      async () => {
+        let approve!: () => void;
+        const approvalGate = new Promise<void>((resolve) => {
+          approve = resolve;
         });
-        await expect.poll(() => value.receipts).toEqual([true]);
-      } finally {
-        approve();
-        await value.driver.close('lost');
-      }
-    }, 35000);
-    it('refused write approval sends no request to the actual service', async () => {
-      const before = JSON.parse((await get('/status')).body.toString()).writes;
-      const value = await launch({ relay: true, allowWrite: false });
-      try {
-        await value.driver.perform(
-          {
-            type: 'navigate',
-            url: localPreviewOrigin(target.endpointId) + '/',
-          },
-          null,
-        );
-        const { observation } = await value.driver.observe(1),
-          button = observation.elements.find((e) => e.label === 'Save')!;
-        // A completed DOM click is not an approved network write. Chromium
-        // can finish the click after its intercepted navigation is refused.
-        await value.driver.perform(
-          { type: 'click', elementId: button.id },
-          observation,
-        );
-        await expect.poll(() => value.effects.length).toBe(1);
-        expect(JSON.parse((await get('/status')).body.toString()).writes).toBe(
-          before,
-        );
-        expect(value.receipts).toEqual([]);
-      } finally {
-        await value.driver.close('lost');
-      }
-    }, 30000);
-    it('reserved origins never fall back to network if the trusted relay is absent', async () => {
-      const value = await launch({ relay: false, allowWrite: false });
-      try {
-        await expect(
-          value.driver.perform(
+        const value = await launch({
+          relay: true,
+          allowWrite: true,
+          approvalGate,
+        });
+        try {
+          await value.driver.perform(
             {
               type: 'navigate',
               url: localPreviewOrigin(target.endpointId) + '/',
             },
             null,
-          ),
-        ).rejects.toThrow();
-        expect(value.effects).toEqual([]);
-      } finally {
-        await value.driver.close('lost');
-      }
-    }, 20000);
-    it('revocation rejects navigation before relay execution', async () => {
-      const value = await launch({ relay: true, allowWrite: true });
-      try {
-        value.revoke();
-        await expect(
-          value.driver.perform(
-            {
-              type: 'navigate',
-              url: localPreviewOrigin(target.endpointId) + '/',
-            },
-            null,
-          ),
-        ).rejects.toThrow();
-        expect(value.effects).toEqual([]);
-      } finally {
-        await value.driver.close('lost');
-      }
-    }, 20000);
-    it('closing while exact approval is pending cannot send the later-approved request', async () => {
-      let approve!: () => void;
-      const approvalGate = new Promise<void>((resolve) => {
-        approve = resolve;
-      });
-      const value = await launch({
-        relay: true,
-        allowWrite: true,
-        approvalGate,
-      });
-      try {
-        await value.driver.perform(
-          {
-            type: 'navigate',
-            url: localPreviewOrigin(target.endpointId) + '/',
-          },
-          null,
-        );
-        const { observation } = await value.driver.observe(1);
-        // Closing must interrupt the pending navigation, not wait for approval.
-        const click = value.driver
-          .perform(
-            {
-              type: 'click',
-              elementId: observation.elements.find((e) => e.label === 'Save')!
-                .id,
-            },
-            observation,
-          )
-          .then(
-            () => true,
-            () => false,
           );
-        await expect.poll(() => value.effects.length).toBe(1);
+          const view = await value.driver.observe(1);
+          expect(view.observation.text).toContain('Actual container project');
+          expect(view.observation.text).toContain(
+            'Actual project JavaScript loaded',
+          );
+          expect(view.screenshot.length).toBeGreaterThan(100);
+          const button = view.observation.elements.find(
+            (e) => e.label === 'Save',
+          );
+          expect(button).toBeDefined();
+          // The production click waits for its intercepted form navigation.
+          // Observe approval while it is pending; consume either outcome now.
+          const click = value.driver
+            .perform({ type: 'click', elementId: button!.id }, view.observation)
+            .then(
+              () => true,
+              () => false,
+            );
+          await expect.poll(() => value.effects.length).toBe(1);
+          expect(
+            JSON.parse((await get('/status')).body.toString()).writes,
+          ).toBe(0);
+          expect(value.receipts).toEqual([]);
+          approve();
+          expect(await click).toBe(true);
+          await expect
+            .poll(
+              async () =>
+                JSON.parse((await get('/status')).body.toString()).writes,
+            )
+            .toBe(1);
+          expect(value.effects).toHaveLength(1);
+          expect(value.effects[0]).toMatchObject({
+            method: 'POST',
+            url: localPreviewOrigin(target.endpointId) + '/save',
+            urlDigest:
+              'sha256:' +
+              createHash('sha256')
+                .update(localPreviewOrigin(target.endpointId) + '/save')
+                .digest('hex'),
+            bodyDigest:
+              'sha256:' + createHash('sha256').update('').digest('hex'),
+            bodyBytes: 0,
+          });
+          await expect.poll(() => value.receipts).toEqual([true]);
+        } finally {
+          approve();
+          await value.driver.close('lost');
+        }
+      },
+    );
+    it(
+      'refused write approval sends no request to the actual service',
+      {
+        tags: [
+          'manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET',
+          'manual:ALLRICE_TEST_LOCAL_BROWSER_NATIVE',
+        ],
+        timeout: 30000,
+      },
+      async () => {
         const before = JSON.parse(
           (await get('/status')).body.toString(),
         ).writes;
-        const began = Date.now();
-        await value.driver.close('lost');
-        expect(Date.now() - began).toBeLessThan(8000);
-        approve();
-        // Closing may resolve or reject the DOM click depending on Chromium's
-        // navigation timing. The security contract is no late POST and a
-        // negative approval receipt, asserted below, not the click outcome.
-        await click;
-        await new Promise((resolve) => setTimeout(resolve, 150));
-        expect(JSON.parse((await get('/status')).body.toString()).writes).toBe(
-          before,
-        );
-        await expect.poll(() => value.receipts).toEqual([false]);
-      } finally {
-        approve();
-        await value.driver.close('lost');
-      }
-    }, 20000);
-    it('a changed preview generation is rejected without writing to the real service', async () => {
-      const before = JSON.parse((await get('/status')).body.toString()).writes;
-      const value = await launch({ relay: true, allowWrite: true });
-      try {
-        value.mutateTarget();
-        await expect(
-          value.driver.perform(
+        const value = await launch({ relay: true, allowWrite: false });
+        try {
+          await value.driver.perform(
             {
               type: 'navigate',
               url: localPreviewOrigin(target.endpointId) + '/',
             },
             null,
-          ),
-        ).rejects.toThrow();
-        expect(value.effects).toEqual([]);
-        expect(JSON.parse((await get('/status')).body.toString()).writes).toBe(
-          before,
-        );
-      } finally {
-        await value.driver.close('lost');
-      }
-    }, 20000);
-    it('an expired preview lease kills the real browser and does not leave close waiting on CDP', async () => {
-      const value = await launch({ relay: true, allowWrite: true });
-      try {
-        await value.driver.perform(
-          {
-            type: 'navigate',
-            url: localPreviewOrigin(target.endpointId) + '/',
-          },
-          null,
-        );
-        value.expire();
-        await new Promise((resolve) => setTimeout(resolve, 1400));
-        await expect(value.driver.observe(1)).rejects.toThrow();
-        const began = Date.now();
-        await value.driver.close('lost');
-        expect(Date.now() - began).toBeLessThan(8000);
-      } finally {
-        await value.driver.close('lost');
-      }
-    }, 20000);
-    it('never forwards unauthorized loopback, cross-preview or external addresses', async () => {
-      const value = await launch({ relay: true, allowWrite: true });
-      try {
-        for (const url of [
-          'http://127.0.0.1:3100/',
-          localPreviewOrigin(randomUUID()) + '/',
-          'https://example.com/',
-          localPreviewOrigin(target.endpointId) + ':444/',
-        ])
+          );
+          const { observation } = await value.driver.observe(1),
+            button = observation.elements.find((e) => e.label === 'Save')!;
+          // A completed DOM click is not an approved network write. Chromium
+          // can finish the click after its intercepted navigation is refused.
+          await value.driver.perform(
+            { type: 'click', elementId: button.id },
+            observation,
+          );
+          await expect.poll(() => value.effects.length).toBe(1);
+          expect(
+            JSON.parse((await get('/status')).body.toString()).writes,
+          ).toBe(before);
+          expect(value.receipts).toEqual([]);
+        } finally {
+          await value.driver.close('lost');
+        }
+      },
+    );
+    it(
+      'reserved origins never fall back to network if the trusted relay is absent',
+      {
+        tags: [
+          'manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET',
+          'manual:ALLRICE_TEST_LOCAL_BROWSER_NATIVE',
+        ],
+        timeout: 20000,
+      },
+      async () => {
+        const value = await launch({ relay: false, allowWrite: false });
+        try {
           await expect(
-            value.driver.perform({ type: 'navigate', url }, null),
+            value.driver.perform(
+              {
+                type: 'navigate',
+                url: localPreviewOrigin(target.endpointId) + '/',
+              },
+              null,
+            ),
           ).rejects.toThrow();
-        expect(value.effects).toEqual([]);
-      } finally {
-        await value.driver.close('lost');
-      }
-    }, 20000);
-    it('stopping the real owned service invalidates preview I/O and still closes the supervised browser', async () => {
-      const value = await launch({ relay: true, allowWrite: true });
-      try {
-        await value.driver.perform(
-          {
-            type: 'navigate',
-            url: localPreviewOrigin(target.endpointId) + '/',
-          },
-          null,
-        );
-        stop = true;
-        await lifecycle;
-        await expect(
-          value.driver.perform(
+          expect(value.effects).toEqual([]);
+        } finally {
+          await value.driver.close('lost');
+        }
+      },
+    );
+    it(
+      'revocation rejects navigation before relay execution',
+      {
+        tags: [
+          'manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET',
+          'manual:ALLRICE_TEST_LOCAL_BROWSER_NATIVE',
+        ],
+        timeout: 20000,
+      },
+      async () => {
+        const value = await launch({ relay: true, allowWrite: true });
+        try {
+          value.revoke();
+          await expect(
+            value.driver.perform(
+              {
+                type: 'navigate',
+                url: localPreviewOrigin(target.endpointId) + '/',
+              },
+              null,
+            ),
+          ).rejects.toThrow();
+          expect(value.effects).toEqual([]);
+        } finally {
+          await value.driver.close('lost');
+        }
+      },
+    );
+    it(
+      'closing while exact approval is pending cannot send the later-approved request',
+      {
+        tags: [
+          'manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET',
+          'manual:ALLRICE_TEST_LOCAL_BROWSER_NATIVE',
+        ],
+        timeout: 20000,
+      },
+      async () => {
+        let approve!: () => void;
+        const approvalGate = new Promise<void>((resolve) => {
+          approve = resolve;
+        });
+        const value = await launch({
+          relay: true,
+          allowWrite: true,
+          approvalGate,
+        });
+        try {
+          await value.driver.perform(
             {
               type: 'navigate',
-              url: localPreviewOrigin(target.endpointId) + '/status',
+              url: localPreviewOrigin(target.endpointId) + '/',
             },
             null,
-          ),
-        ).rejects.toThrow();
-      } finally {
-        await value.driver.close('lost');
-      }
-    }, 20000);
+          );
+          const { observation } = await value.driver.observe(1);
+          // Closing must interrupt the pending navigation, not wait for approval.
+          const click = value.driver
+            .perform(
+              {
+                type: 'click',
+                elementId: observation.elements.find((e) => e.label === 'Save')!
+                  .id,
+              },
+              observation,
+            )
+            .then(
+              () => true,
+              () => false,
+            );
+          await expect.poll(() => value.effects.length).toBe(1);
+          const before = JSON.parse(
+            (await get('/status')).body.toString(),
+          ).writes;
+          const began = Date.now();
+          await value.driver.close('lost');
+          expect(Date.now() - began).toBeLessThan(8000);
+          approve();
+          // Closing may resolve or reject the DOM click depending on Chromium's
+          // navigation timing. The security contract is no late POST and a
+          // negative approval receipt, asserted below, not the click outcome.
+          await click;
+          await new Promise((resolve) => setTimeout(resolve, 150));
+          expect(
+            JSON.parse((await get('/status')).body.toString()).writes,
+          ).toBe(before);
+          await expect.poll(() => value.receipts).toEqual([false]);
+        } finally {
+          approve();
+          await value.driver.close('lost');
+        }
+      },
+    );
+    it(
+      'a changed preview generation is rejected without writing to the real service',
+      {
+        tags: [
+          'manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET',
+          'manual:ALLRICE_TEST_LOCAL_BROWSER_NATIVE',
+        ],
+        timeout: 20000,
+      },
+      async () => {
+        const before = JSON.parse(
+          (await get('/status')).body.toString(),
+        ).writes;
+        const value = await launch({ relay: true, allowWrite: true });
+        try {
+          value.mutateTarget();
+          await expect(
+            value.driver.perform(
+              {
+                type: 'navigate',
+                url: localPreviewOrigin(target.endpointId) + '/',
+              },
+              null,
+            ),
+          ).rejects.toThrow();
+          expect(value.effects).toEqual([]);
+          expect(
+            JSON.parse((await get('/status')).body.toString()).writes,
+          ).toBe(before);
+        } finally {
+          await value.driver.close('lost');
+        }
+      },
+    );
+    it(
+      'an expired preview lease kills the real browser and does not leave close waiting on CDP',
+      {
+        tags: [
+          'manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET',
+          'manual:ALLRICE_TEST_LOCAL_BROWSER_NATIVE',
+        ],
+        timeout: 20000,
+      },
+      async () => {
+        const value = await launch({ relay: true, allowWrite: true });
+        try {
+          await value.driver.perform(
+            {
+              type: 'navigate',
+              url: localPreviewOrigin(target.endpointId) + '/',
+            },
+            null,
+          );
+          value.expire();
+          await new Promise((resolve) => setTimeout(resolve, 1400));
+          await expect(value.driver.observe(1)).rejects.toThrow();
+          const began = Date.now();
+          await value.driver.close('lost');
+          expect(Date.now() - began).toBeLessThan(8000);
+        } finally {
+          await value.driver.close('lost');
+        }
+      },
+    );
+    it(
+      'never forwards unauthorized loopback, cross-preview or external addresses',
+      {
+        tags: [
+          'manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET',
+          'manual:ALLRICE_TEST_LOCAL_BROWSER_NATIVE',
+        ],
+        timeout: 20000,
+      },
+      async () => {
+        const value = await launch({ relay: true, allowWrite: true });
+        try {
+          for (const url of [
+            'http://127.0.0.1:3100/',
+            localPreviewOrigin(randomUUID()) + '/',
+            'https://example.com/',
+            localPreviewOrigin(target.endpointId) + ':444/',
+          ])
+            await expect(
+              value.driver.perform({ type: 'navigate', url }, null),
+            ).rejects.toThrow();
+          expect(value.effects).toEqual([]);
+        } finally {
+          await value.driver.close('lost');
+        }
+      },
+    );
+    it(
+      'stopping the real owned service invalidates preview I/O and still closes the supervised browser',
+      {
+        tags: [
+          'manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET',
+          'manual:ALLRICE_TEST_LOCAL_BROWSER_NATIVE',
+        ],
+        timeout: 20000,
+      },
+      async () => {
+        const value = await launch({ relay: true, allowWrite: true });
+        try {
+          await value.driver.perform(
+            {
+              type: 'navigate',
+              url: localPreviewOrigin(target.endpointId) + '/',
+            },
+            null,
+          );
+          stop = true;
+          await lifecycle;
+          await expect(
+            value.driver.perform(
+              {
+                type: 'navigate',
+                url: localPreviewOrigin(target.endpointId) + '/status',
+              },
+              null,
+            ),
+          ).rejects.toThrow();
+        } finally {
+          await value.driver.close('lost');
+        }
+      },
+    );
   },
 );

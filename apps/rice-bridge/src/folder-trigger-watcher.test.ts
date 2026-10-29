@@ -508,6 +508,7 @@ describe('folder stability and scoped watcher lifecycle', () => {
 
 describe.skipIf(process.platform !== 'darwin')(
   'actual Chokidar and sealed native-byte ports on owned temp',
+  { tags: ['platform:macos'] },
   () => {
     let executable: string, compileRoot: string;
     beforeAll(async () => {

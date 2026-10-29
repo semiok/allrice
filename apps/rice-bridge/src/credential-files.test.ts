@@ -296,6 +296,7 @@ it('rechecks the opened inode after reading and refuses a same-size concurrent c
 });
 it.runIf(process.platform === 'darwin' || process.platform === 'linux')(
   'opens a real synthetic FIFO nonblocking and rejects it before reading',
+  { tags: ['platform:posix'], timeout: 2000 },
   async () => {
     const path = join(root, 'synthetic-fifo');
     // This command creates only this test's named pipe; never invokes security.
@@ -306,5 +307,4 @@ it.runIf(process.platform === 'darwin' || process.platform === 'linux')(
     expect(flags & constants.O_NONBLOCK).toBe(constants.O_NONBLOCK);
     expect(flags & constants.O_NOFOLLOW).toBe(constants.O_NOFOLLOW);
   },
-  2000,
 );

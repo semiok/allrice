@@ -4462,6 +4462,7 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
   );
   it.skipIf(!process.env.ALLRICE_LOCAL_DOCKER_TEST_SOCKET)(
     'P09-c actual HTTP Bridge VM service preserves output across lost ACK before targeted stop evidence',
+    { tags: ['manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET'], timeout: 60000 },
     async () => {
       const socketPath = process.env.ALLRICE_LOCAL_DOCKER_TEST_SOCKET!;
       const f = await commandFixture(
@@ -4749,7 +4750,6 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
         await new Promise<void>((resolve) => server.close(() => resolve()));
       }
     },
-    60000,
   );
   it('P09-c scopes bounded human input, handles input before readiness and never calls pipe delivery application consumption', async () => {
     const f = await serviceFixture();
@@ -5140,6 +5140,7 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
   });
   it.skipIf(!process.env.ALLRICE_LOCAL_DOCKER_TEST_SOCKET)(
     'P05 real Chrome → approval DB → HTTP Bridge → local VM → durable receipt; lost ACK never repeats execution',
+    { tags: ['manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET'], timeout: 60_000 },
     async () => {
       const f = await commandFixture(
         undefined,
@@ -5665,7 +5666,6 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
         await rm(temporary, { recursive: true, force: true });
       }
     },
-    60_000,
   );
   it('persists Ask; re-created production factory consumes exact approval atomically and starts once', async () => {
     const f = await fixture(),

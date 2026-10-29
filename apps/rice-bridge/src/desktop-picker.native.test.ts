@@ -9,6 +9,7 @@ const execute = promisify(execFile);
 
 it.skipIf(process.platform !== 'darwin')(
   'compiles actual native Swift picker callbacks and isolates canceled/stale panel ownership',
+  { tags: ['platform:macos'], timeout: 35_000 },
   async () => {
     const [application, fixture] = await Promise.all([
       readFile(
@@ -56,5 +57,4 @@ it.skipIf(process.platform !== 'darwin')(
       await rm(root, { recursive: true, force: true });
     }
   },
-  35_000,
 );

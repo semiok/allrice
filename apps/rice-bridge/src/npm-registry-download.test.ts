@@ -198,6 +198,7 @@ it('never retries certificate validation errors', async () => {
 });
 it.skipIf(!process.env.ALLRICE_REGISTRY_TEST_IPV4)(
   'actual public npm TLS download (test DNS pinned to an independently verified public A record)',
+  { tags: ['manual:ALLRICE_REGISTRY_TEST_IPV4'], timeout: 20000 },
   async () => {
     const actual = await vi.importActual<typeof Https>('node:https');
     ports.request.mockImplementation(actual.request);
@@ -211,5 +212,4 @@ it.skipIf(!process.env.ALLRICE_REGISTRY_TEST_IPV4)(
     expect(bytes.length).toBeGreaterThan(100);
     expect(bytes.length).toBeLessThan(131072);
   },
-  20000,
 );

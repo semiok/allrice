@@ -996,6 +996,7 @@ it('a failed runtime cannot be relabelled paused or acknowledged as a clean stop
 
 it.skipIf(!supportedNativeSandbox)(
   'saved macOS sandbox opt-in enables the operation protocol without an operation environment flag',
+  { tags: ['platform:native-macos'], timeout: 15_000 },
   async () => {
     const f = await fixture(true, null);
     await writeFile(
@@ -1021,11 +1022,11 @@ it.skipIf(!supportedNativeSandbox)(
     await exited(app.child);
     expect(app.child.exitCode).toBe(0);
   },
-  15_000,
 );
 
 it.skipIf(supportedNativeSandbox)(
   'unavailable native sandbox does not disable paired file operations or claim runner readiness',
+  { tags: ['platform:non-native-macos'], timeout: 15_000 },
   async () => {
     expect(() => nativeSandboxConfig()).toThrow('UNSUPPORTED_NATIVE_PLATFORM');
     const f = await fixture(true, null);
@@ -1040,5 +1041,4 @@ it.skipIf(supportedNativeSandbox)(
     expect(app.child.exitCode).toBe(0);
     expect(JSON.parse(await readFile(f.path, 'utf8'))).toMatchObject(f.config);
   },
-  15_000,
 );

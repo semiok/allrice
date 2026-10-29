@@ -13,13 +13,56 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('DSH native Office in the real task sandbox', () => {
-  it('queues three concurrent native Office exports within the two-slot VM limit', async () => {
-    const results = await Promise.all(
-      Object.entries(cases).map(async ([format, script]) => {
+  it(
+    'queues three concurrent native Office exports within the two-slot VM limit',
+    { tags: ['manual:ALLRICE_RUN_OFFICE_INTEGRATION'], timeout: 90000 },
+    async () => {
+      const results = await Promise.all(
+        Object.entries(cases).map(async ([format, script]) => {
+          const backend = new CloudRunnerBackend(),
+            attemptId = randomUUID();
+          try {
+            return await backend.executeOffice(
+              CloudCommandInputSchema.parse({
+                script,
+                outputs: [
+                  {
+                    path: `result.${format}`,
+                    fileName: `result.${format}`,
+                    format: 'txt',
+                  },
+                ],
+                limits: { timeoutMs: 60000, memoryMiB: 512, cpuMillis: 1000 },
+              }),
+              [],
+              {
+                attemptId,
+                deadlineAt: new Date(Date.now() + 60000).toISOString(),
+                maintainLease: async () => true,
+              },
+            );
+          } finally {
+            await backend.stop(attemptId);
+            await backend.cleanup(attemptId);
+          }
+        }),
+      );
+      for (const result of results) {
+        expect(result.reason, result.output).toBe('completed');
+        expect(result.exitCode).toBe(0);
+        expect(result.artifacts).toHaveLength(1);
+      }
+    },
+  );
+  for (const [format, script] of Object.entries(cases)) {
+    it(
+      `executes native ${format} features and upstream package checks`,
+      { tags: ['manual:ALLRICE_RUN_OFFICE_INTEGRATION'], timeout: 70000 },
+      async () => {
         const backend = new CloudRunnerBackend(),
           attemptId = randomUUID();
         try {
-          return await backend.executeOffice(
+          const result = await backend.executeOffice(
             CloudCommandInputSchema.parse({
               script,
               outputs: [
@@ -38,81 +81,50 @@ suite('DSH native Office in the real task sandbox', () => {
               maintainLease: async () => true,
             },
           );
+          expect(result.reason, result.output).toBe('completed');
+          expect(result.output).toContain('"verdict": "pass"');
+          expect(result.artifacts).toHaveLength(1);
+          expect(
+            Buffer.from(result.artifacts[0]!.contentBase64, 'base64')
+              .subarray(0, 2)
+              .toString(),
+          ).toBe('PK');
         } finally {
           await backend.stop(attemptId);
           await backend.cleanup(attemptId);
         }
-      }),
+      },
     );
-    for (const result of results) {
-      expect(result.reason, result.output).toBe('completed');
-      expect(result.exitCode).toBe(0);
-      expect(result.artifacts).toHaveLength(1);
-    }
-  }, 90000);
-  for (const [format, script] of Object.entries(cases)) {
-    it(`executes native ${format} features and upstream package checks`, async () => {
+  }
+  it(
+    'does not publish a corrupt document even when Python exits successfully',
+    { tags: ['manual:ALLRICE_RUN_OFFICE_INTEGRATION'], timeout: 40000 },
+    async () => {
       const backend = new CloudRunnerBackend(),
         attemptId = randomUUID();
       try {
         const result = await backend.executeOffice(
           CloudCommandInputSchema.parse({
-            script,
+            script:
+              "open('/tmp/work/output/result.xlsx','wb').write(b'not an Office file')",
             outputs: [
-              {
-                path: `result.${format}`,
-                fileName: `result.${format}`,
-                format: 'txt',
-              },
+              { path: 'result.xlsx', fileName: 'result.xlsx', format: 'txt' },
             ],
-            limits: { timeoutMs: 60000, memoryMiB: 512, cpuMillis: 1000 },
           }),
           [],
           {
             attemptId,
-            deadlineAt: new Date(Date.now() + 60000).toISOString(),
+            deadlineAt: new Date(Date.now() + 30000).toISOString(),
             maintainLease: async () => true,
           },
         );
-        expect(result.reason, result.output).toBe('completed');
-        expect(result.output).toContain('"verdict": "pass"');
-        expect(result.artifacts).toHaveLength(1);
-        expect(
-          Buffer.from(result.artifacts[0]!.contentBase64, 'base64')
-            .subarray(0, 2)
-            .toString(),
-        ).toBe('PK');
+        expect(result.reason).toBe('failed');
+        expect(result.artifacts).toEqual([]);
+        expect(result.output).toContain('"verdict": "fail"');
       } finally {
         await backend.stop(attemptId);
         await backend.cleanup(attemptId);
       }
-    }, 70000);
-  }
-  it('does not publish a corrupt document even when Python exits successfully', async () => {
-    const backend = new CloudRunnerBackend(),
-      attemptId = randomUUID();
-    try {
-      const result = await backend.executeOffice(
-        CloudCommandInputSchema.parse({
-          script:
-            "open('/tmp/work/output/result.xlsx','wb').write(b'not an Office file')",
-          outputs: [
-            { path: 'result.xlsx', fileName: 'result.xlsx', format: 'txt' },
-          ],
-        }),
-        [],
-        {
-          attemptId,
-          deadlineAt: new Date(Date.now() + 30000).toISOString(),
-          maintainLease: async () => true,
-        },
-      );
-      expect(result.reason).toBe('failed');
-      expect(result.artifacts).toEqual([]);
-      expect(result.output).toContain('"verdict": "fail"');
-    } finally {
-      await backend.stop(attemptId);
-      await backend.cleanup(attemptId);
-    }
-  }, 40000);
+    },
+  );
 });

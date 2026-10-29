@@ -725,6 +725,7 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
   });
   (process.env.ALLRICE_RUN_COMPILED_REPAIR_NATIVE === '1' ? it : it.skip)(
     'the real Employee handler reuses accepted data without a model, compiles two packages and completes its own durable Run',
+    { tags: ['manual:ALLRICE_RUN_COMPILED_REPAIR_NATIVE'], timeout: 900000 },
     async () => {
       const baselinePath = process.env.ALLRICE_REPOSITORY_NATIVE_BASELINE,
         catalog = process.env.ALLRICE_REPOSITORY_NATIVE_CATALOG,
@@ -1013,10 +1014,10 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
         }
       }
     },
-    900000,
   );
   (process.env.ALLRICE_RUN_REPAIR_CHAIN_NATIVE === '1' ? it : it.skip)(
     'minimum private DSH proposal, real cloud verifier, durable files, owner detail/download and completion chain',
+    { tags: ['manual:ALLRICE_RUN_REPAIR_CHAIN_NATIVE'], timeout: 240000 },
     async () => {
       if (
         !process.env.ALLRICE_REPOSITORY_NATIVE_BASELINE ||
@@ -1403,6 +1404,5 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
         else expect(ownedRuntime?.active_run_id).not.toBe(q.runId);
       }
     },
-    240000,
   );
 });

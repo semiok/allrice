@@ -564,6 +564,7 @@ it('push preserves the cached authorization lease and detaches expired unknown a
 
 it.skipIf(process.platform !== 'darwin')(
   'push carries a real native character burst and ordered ACKs without credits',
+  { tags: ['platform:macos'], timeout: 15_000 },
   async () => {
     const f = await fixture();
     const channel = await f.open(f.target, 'push');
@@ -606,11 +607,11 @@ it.skipIf(process.platform !== 'darwin')(
       value: [{ id: terminal, state: 'running' }],
     });
   },
-  15_000,
 );
 
 it.skipIf(process.platform !== 'darwin')(
   'revocation drains a push attachment and terminates its native background processes',
+  { tags: ['platform:macos'], timeout: 15_000 },
   async () => {
     const f = await fixture();
     const channel = await f.open(f.target, 'push');
@@ -657,11 +658,11 @@ it.skipIf(process.platform !== 'darwin')(
     ).rejects.toMatchObject({ code: 'ENOENT' });
     await f.relay.disconnect();
   },
-  15_000,
 );
 
 it.skipIf(process.platform !== 'darwin')(
   'native PTY passes TTY, Tab, Ctrl+C, resize and owned background-process cleanup through the typed relay',
+  { tags: ['platform:macos'], timeout: 25_000 },
   async () => {
     const f = await fixture();
     const channel = await f.open();
@@ -763,7 +764,6 @@ it.skipIf(process.platform !== 'darwin')(
       }),
     ).toMatchObject({ ok: false, error: { code: 'terminal/unavailable' } });
   },
-  25_000,
 );
 
 it.skipIf(process.platform !== 'darwin').each([
@@ -818,6 +818,7 @@ it.skipIf(process.platform !== 'darwin').each([
   },
 ])(
   'native PTY preserves Chinese filenames and input bytes with $name',
+  { tags: ['platform:macos'], timeout: 20_000 },
   async ({ name, locale, expected }) => {
     for (const [key, value] of Object.entries(locale)) vi.stubEnv(key, value);
     const f = await fixture();
@@ -920,11 +921,11 @@ it.skipIf(process.platform !== 'darwin').each([
         );
     }
   },
-  20_000,
 );
 
 it.skipIf(process.platform !== 'darwin')(
   'the newest native attachment owns input; an older browser receives a read-only ACK without executing',
+  { tags: ['platform:macos'], timeout: 15_000 },
   async () => {
     const f = await fixture();
     const first = await f.open();
@@ -983,11 +984,11 @@ it.skipIf(process.platform !== 'darwin')(
       'Terminal no longer exists in this Session',
     );
   },
-  15_000,
 );
 
 it.skipIf(process.platform !== 'darwin')(
   'expired unknown authority suspends input and preserves the PTY; explicit revocation cleans it up',
+  { tags: ['platform:macos'], timeout: 15_000 },
   async () => {
     const f = await fixture();
     const channel = await f.open();
@@ -1046,11 +1047,11 @@ it.skipIf(process.platform !== 'darwin')(
       'HUMAN_TERMINAL_AUTHORIZATION_REVOKED',
     );
   },
-  15_000,
 );
 
 it.skipIf(process.platform !== 'darwin')(
   'large native screen snapshots cross bounded fragments without extra stream credits or byte rewriting',
+  { tags: ['platform:macos'], timeout: 15_000 },
   async () => {
     const f = await fixture();
     const channel = await f.open();
@@ -1096,5 +1097,4 @@ it.skipIf(process.platform !== 'darwin')(
       ).toBe(Buffer.byteLength(JSON.stringify(snapshot)));
     }
   },
-  15_000,
 );

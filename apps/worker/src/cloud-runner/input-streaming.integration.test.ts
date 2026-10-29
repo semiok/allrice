@@ -89,63 +89,79 @@ suite('actual gVisor streamed inputs and task-owned disk volume', () => {
       },
     );
   }
-  it('reads the two original file sizes, nested CJK paths and exact hashes', async () => {
-    const files = [
-      source('资料/一.csv', 1651149),
-      source('资料/二.csv', 1494177),
-    ];
-    const result = await run(files);
-    expect(result.reason, result.output).toBe('completed');
-    const output = JSON.parse(result.output);
-    expect(output.sizes.sort((a: number, b: number) => a - b)).toEqual([
-      1494177, 1651149,
-    ]);
-    expect(output.sha256.sort()).toEqual(
-      files.map((f) => f.checksum.slice(7)).sort(),
-    );
-    expect(output).toMatchObject({ uid: 65532, host: false });
-  }, 70000);
-  it('streams 40 MiB beyond former control-frame/archive/tmpfs boundaries', async () => {
-    const file = source('large.csv', 40 * 1024 * 1024),
-      result = await run([file]);
-    expect(result.reason, result.output).toBe('completed');
-    expect(JSON.parse(result.output)).toMatchObject({
-      sizes: [file.sizeBytes],
-      sha256: [file.checksum.slice(7)],
-    });
-  }, 70000);
-  it('stops without running the script on a changed object', async () => {
-    const file = source('changed.csv', 5000000);
-    file.checksum = 'sha256:' + '0'.repeat(64);
-    const result = await run([file]);
-    expect(result).toMatchObject({
-      reason: 'failed',
-      stopped: true,
-      errorCode: 'INPUT_VERSION_CHANGED',
-      artifacts: [],
-    });
-    expect(result.output).not.toContain('"sizes"');
-  }, 70000);
-  it('cancels a stalled source and releases its reader and volume', async () => {
-    const controller = new AbortController();
-    let canceled = false;
-    const file = source('slow.csv', 4000000);
-    file.open = async () =>
-      new ReadableStream({
-        start(c) {
-          c.enqueue(Buffer.alloc(100));
-          setTimeout(() => controller.abort(), 150);
-        },
-        cancel() {
-          canceled = true;
-        },
+  it(
+    'reads the two original file sizes, nested CJK paths and exact hashes',
+    { tags: ['manual:ALLRICE_RUN_PYTHON_INTEGRATION'], timeout: 70000 },
+    async () => {
+      const files = [
+        source('资料/一.csv', 1651149),
+        source('资料/二.csv', 1494177),
+      ];
+      const result = await run(files);
+      expect(result.reason, result.output).toBe('completed');
+      const output = JSON.parse(result.output);
+      expect(output.sizes.sort((a: number, b: number) => a - b)).toEqual([
+        1494177, 1651149,
+      ]);
+      expect(output.sha256.sort()).toEqual(
+        files.map((f) => f.checksum.slice(7)).sort(),
+      );
+      expect(output).toMatchObject({ uid: 65532, host: false });
+    },
+  );
+  it(
+    'streams 40 MiB beyond former control-frame/archive/tmpfs boundaries',
+    { tags: ['manual:ALLRICE_RUN_PYTHON_INTEGRATION'], timeout: 70000 },
+    async () => {
+      const file = source('large.csv', 40 * 1024 * 1024),
+        result = await run([file]);
+      expect(result.reason, result.output).toBe('completed');
+      expect(JSON.parse(result.output)).toMatchObject({
+        sizes: [file.sizeBytes],
+        sha256: [file.checksum.slice(7)],
       });
-    const result = await run([file], controller.signal);
-    expect(result).toMatchObject({
-      reason: 'canceled',
-      stopped: true,
-      artifacts: [],
-    });
-    expect(canceled).toBe(true);
-  }, 70000);
+    },
+  );
+  it(
+    'stops without running the script on a changed object',
+    { tags: ['manual:ALLRICE_RUN_PYTHON_INTEGRATION'], timeout: 70000 },
+    async () => {
+      const file = source('changed.csv', 5000000);
+      file.checksum = 'sha256:' + '0'.repeat(64);
+      const result = await run([file]);
+      expect(result).toMatchObject({
+        reason: 'failed',
+        stopped: true,
+        errorCode: 'INPUT_VERSION_CHANGED',
+        artifacts: [],
+      });
+      expect(result.output).not.toContain('"sizes"');
+    },
+  );
+  it(
+    'cancels a stalled source and releases its reader and volume',
+    { tags: ['manual:ALLRICE_RUN_PYTHON_INTEGRATION'], timeout: 70000 },
+    async () => {
+      const controller = new AbortController();
+      let canceled = false;
+      const file = source('slow.csv', 4000000);
+      file.open = async () =>
+        new ReadableStream({
+          start(c) {
+            c.enqueue(Buffer.alloc(100));
+            setTimeout(() => controller.abort(), 150);
+          },
+          cancel() {
+            canceled = true;
+          },
+        });
+      const result = await run([file], controller.signal);
+      expect(result).toMatchObject({
+        reason: 'canceled',
+        stopped: true,
+        artifacts: [],
+      });
+      expect(canceled).toBe(true);
+    },
+  );
 });

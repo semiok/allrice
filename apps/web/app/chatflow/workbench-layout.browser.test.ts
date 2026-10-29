@@ -10971,6 +10971,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     .skipIf(!process.env.ALLRICE_OFFICE_PREVIEW_DIR)
     .each(['docx', 'xlsx', 'pptx'])(
     'MET160 real %s renderer output opens in native zoom viewport',
+    { tags: ['manual:ALLRICE_OFFICE_PREVIEW_DIR'], timeout: 25_000 },
     async (format) => {
       const rendered = OfficeRenderResponseSchema.parse(
         JSON.parse(
@@ -11040,7 +11041,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await f.close();
       }
     },
-    25_000,
   );
 
   it('shows Office pages and actual formula errors without confusing rendering with layout approval', async () => {

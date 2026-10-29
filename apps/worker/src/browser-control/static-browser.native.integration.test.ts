@@ -49,26 +49,30 @@ suite('static browser in the dedicated gVisor VM', () => {
     );
   }
 
-  it('renders saved CJK HTML, runs fixed steps and returns a 1280x720 screenshot', async () => {
-    const result = await verify(
-      '<!doctype html><meta charset="utf-8"><title>验收页</title><h1>你好 AllRice</h1>' +
-        "<button onclick=\"document.querySelector('h1').textContent='已点击'\">确认</button>",
-      [
-        { type: 'title_equals', expected: '验收页' },
-        { type: 'text_contains', expected: '你好 AllRice' },
-        { type: 'click', selector: { tag: 'button', label: '确认' } },
-        { type: 'text_contains', expected: '已点击' },
-      ],
-    );
-    expect(result.reason).toBe('completed');
-    expect(result.imageDigest).toBe(staticBrowserImageV1);
-    expect(result.staticVerification?.report.verdict).toBe('passed');
-    expect(result.staticVerification?.browserVersion).toMatch(/^\S+/);
-    const png = Buffer.from(
-      result.staticVerification!.screenshotBase64,
-      'base64',
-    );
-    expect(png.readUInt32BE(16)).toBe(1280);
-    expect(png.readUInt32BE(20)).toBe(720);
-  }, 90_000);
+  it(
+    'renders saved CJK HTML, runs fixed steps and returns a 1280x720 screenshot',
+    { tags: ['manual:ALLRICE_RUN_CLOUD_INTEGRATION'], timeout: 90_000 },
+    async () => {
+      const result = await verify(
+        '<!doctype html><meta charset="utf-8"><title>验收页</title><h1>你好 AllRice</h1>' +
+          "<button onclick=\"document.querySelector('h1').textContent='已点击'\">确认</button>",
+        [
+          { type: 'title_equals', expected: '验收页' },
+          { type: 'text_contains', expected: '你好 AllRice' },
+          { type: 'click', selector: { tag: 'button', label: '确认' } },
+          { type: 'text_contains', expected: '已点击' },
+        ],
+      );
+      expect(result.reason).toBe('completed');
+      expect(result.imageDigest).toBe(staticBrowserImageV1);
+      expect(result.staticVerification?.report.verdict).toBe('passed');
+      expect(result.staticVerification?.browserVersion).toMatch(/^\S+/);
+      const png = Buffer.from(
+        result.staticVerification!.screenshotBase64,
+        'base64',
+      );
+      expect(png.readUInt32BE(16)).toBe(1280);
+      expect(png.readUInt32BE(20)).toBe(720);
+    },
+  );
 });

@@ -2,57 +2,94 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import {
   mkdtempSync,
   mkdirSync,
-  writeFileSync,
-  rmSync,
   readFileSync,
-  symlinkSync,
-  existsSync,
+  readdirSync,
   realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { stringify } from 'yaml';
-import { audit, inventory } from './ci-integration-tests.mjs';
+import { auditInstances, inventory } from './ci-integration-tests.mjs';
 
 const roots = [];
-afterEach(() => {
-  for (const root of roots.splice(0))
-    rmSync(root, { recursive: true, force: true });
-});
-const dbFile = 'packages/database/src/new.integration.test.ts';
-const browserFile = 'apps/web/new.browser.test.ts';
-const dbGate = "process.env.ALLRICE_RUN_DB_INTEGRATION === '1'";
-function fixture(files, oldSteps = []) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'allrice-collection-')));
+const db = 'packages/database/src/new.integration.test.ts';
+const gate = "process.env.ALLRICE_RUN_DB_INTEGRATION === '1'";
+const manual = 'manual:ALLRICE_RUN_CLOUD_INTEGRATION';
+const other = 'manual:ALLRICE_OFFICE_PREVIEW_DIR';
+const script = resolve('scripts/ci-integration-tests.mjs');
+afterEach(() =>
+  roots
+    .splice(0)
+    .forEach((root) => rmSync(root, { recursive: true, force: true })),
+);
+function fixture(files, options = {}) {
+  const root = realpathSync(
+    mkdtempSync(join(tmpdir(), 'allrice-native-collection-')),
+  );
   roots.push(root);
-  const save = (file, value) => {
-    mkdirSync(dirname(join(root, file)), { recursive: true });
-    writeFileSync(join(root, file), value);
+  const save = (path, value) => {
+    mkdirSync(join(root, path, '..'), { recursive: true });
+    writeFileSync(join(root, path), value);
   };
-  const steps = [
-    ...oldSteps,
-    ...['db', 'browser', 'browser+db'].map((group) => ({
-      run: `node scripts/ci-integration-tests.mjs run ${group} -- --maxWorkers=1`,
-      env: {
-        ALLRICE_RUN_DB_INTEGRATION: 1,
-        ALLRICE_RUN_BROWSER_INTEGRATION: 1,
-        ALLRICE_NATIVE_ONCE_PROBE_MODULE_BASE: '$PWD/apps/worker/package.json',
+  const resources = {
+    native: [],
+    manual: [],
+    db: ['ALLRICE_RUN_DB_INTEGRATION'],
+    browser: ['ALLRICE_RUN_BROWSER_INTEGRATION'],
+    'browser+db': [
+      'ALLRICE_RUN_DB_INTEGRATION',
+      'ALLRICE_RUN_BROWSER_INTEGRATION',
+    ],
+  };
+  const tags = Object.fromEntries(
+    [manual, other].map((name) => [
+      name,
+      {
+        reason: 'Actual external physical fixture',
+        command: 'pnpm exec vitest run {file} --maxWorkers=2',
       },
-    })),
-  ];
-  save('.github/workflows/ci.yml', stringify({ jobs: { test: { steps } } }));
+    ]),
+  );
   save(
     'scripts/ci-manual-environments.yml',
     stringify({
-      ALLRICE_RUN_CLOUD_INTEGRATION: {
-        reason: 'Physical runsc VM',
-        command: 'ALLRICE_RUN_CLOUD_INTEGRATION=1 pnpm exec vitest run {file}',
-      },
+      resources,
+      rules: { db: ['packages/database/'], browser: ['apps/web/'] },
+      files: options.files ?? {},
+      extra: {},
+      tags,
     }),
   );
-  for (const [file, value] of Object.entries(files)) save(file, value);
+  const steps = [
+    {
+      name: 'native',
+      run: 'node scripts/ci-integration-tests.mjs run native --',
+    },
+    ...(options.steps ?? []),
+    ...['db', 'browser', 'browser+db'].map((group) => ({
+      name: group,
+      run: `node scripts/ci-integration-tests.mjs run ${group} --`,
+      env: {
+        ALLRICE_RUN_DB_INTEGRATION: 1,
+        ALLRICE_RUN_BROWSER_INTEGRATION: 1,
+      },
+    })),
+  ];
+  save('.github/workflows/ci.yml', stringify({ jobs: { tests: { steps } } }));
+  save('package.json', '{"private":true,"type":"module"}');
+  save('scripts/ci-integration-tests.mjs', readFileSync(script));
+  save(
+    'vitest.config.mjs',
+    `import {testTags} from './scripts/ci-integration-tests.mjs'; export default {test:{tags:testTags(),${options.config ?? ''}}};`,
+  );
+  for (const [file, source] of Object.entries(files)) save(file, source);
+  symlinkSync(resolve('node_modules'), join(root, 'node_modules'));
   execFileSync('git', ['init', '-q', root]);
+  execFileSync('git', ['-C', root, 'add', '.']);
   execFileSync('git', [
     '-C',
     root,
@@ -61,507 +98,274 @@ function fixture(files, oldSteps = []) {
     '-c',
     'user.email=fixture@example.test',
     'commit',
-    '--allow-empty',
     '-qm',
     'fixture',
   ]);
   return root;
 }
-
-it('collects a newly added DB file without a CI filename and rejects disabled directory coverage', () => {
-  const source = `const enabled = ${dbGate}; const suite = enabled ? describe.sequential : describe.skip; suite('database', () => { it('persists', () => {}); });`;
-  const root = fixture({ [dbFile]: source }, [
-    {
-      run: 'pnpm exec vitest run packages/database/src',
-      env: { ALLRICE_RUN_DB_INTEGRATION: 0 },
-    },
-  ]);
-  const plan = inventory(root);
-  expect(plan.entries[0].group).toBe('db');
-  expect(plan.entries[0].coveredBy).toEqual([]);
-  expect(plan.additions.db).toMatchObject([{ file: dbFile }]);
-});
-
-it('recognizes enabled directory collection and does not mistake fixture strings for switches', () => {
-  const root = fixture(
-    {
-      [dbFile]: `describe.skipIf(!(${dbGate})).sequential('DB', () => { it('writes', () => { const fixture = 'process.env.ALLRICE_RUN_CLOUD_INTEGRATION'; }); });`,
-    },
-    [
-      {
-        run: 'pnpm exec vitest run packages/database/src',
-        env: { ALLRICE_RUN_DB_INTEGRATION: 1 },
-      },
-    ],
-  );
-  expect(inventory(root).additions.db).toEqual([]);
-  expect(inventory(root).entries[0].gates).toEqual([
-    'ALLRICE_RUN_DB_INTEGRATION',
-  ]);
-});
-
-it('separates real external whole-file and partial cases from automatic browser cases', () => {
-  const root = fixture({
-    [dbFile]: `describe.skipIf(!(${dbGate}))('DB', () => { it('SQL',()=>{}); it.skipIf(process.env.ALLRICE_RUN_CLOUD_INTEGRATION !== '1')('physical',()=>{}); it.runIf(process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1')('DOM',()=>{}); });`,
-    [browserFile]: `it.skipIf(process.env.ALLRICE_RUN_CLOUD_INTEGRATION !== '1')('physical-only',()=>{});`,
-  });
-  const plan = inventory(root);
-  expect(plan.entries.find((entry) => entry.file === browserFile).group).toBe(
-    'manual',
-  );
-  expect(plan.additions['browser+db']).toMatchObject([
-    { file: dbFile, title: 'DOM' },
-  ]);
-  expect(
-    plan.entries
-      .find((entry) => entry.file === dbFile)
-      .cases.find((item) => item.title === 'physical').group,
-  ).toBe('manual');
-  expect(
-    plan.entries.find((entry) => entry.file === dbFile).manualCommands[0]
-      .command,
-  ).toContain('ALLRICE_RUN_DB_INTEGRATION=1');
-  expect(
-    plan.entries.find((entry) => entry.file === dbFile).manualCommands[0]
-      .command,
-  ).toContain('ALLRICE_RUN_CLOUD_INTEGRATION=1');
-});
-
-it('fails collection when a new registration switch has no classified environment', () => {
-  const root = fixture({
-    [dbFile]: `describe.skipIf(process.env.ALLRICE_RUN_UNKNOWN !== '1')('new',()=>{});`,
-  });
-  expect(() => inventory(root)).toThrow('Unclassified test gate');
-});
-
-it('does not count a name-filtered browser step as whole-file execution', () => {
-  const root = fixture(
-    {
-      [browserFile]: `describe.skipIf(process.env.ALLRICE_RUN_BROWSER_INTEGRATION !== '1')('browser',()=>{it('first',()=>{});it('second',()=>{});});`,
-    },
-    [
-      {
-        run: `pnpm exec vitest run ${browserFile} -t 'first'`,
-        env: { ALLRICE_RUN_BROWSER_INTEGRATION: 1 },
-      },
-    ],
-  );
-  expect(inventory(root).additions.browser).toMatchObject([
-    { file: browserFile },
-  ]);
-});
-
-it('rejects missing reports and disabled/skipped tests; records external skips as zero passes', () => {
-  const entry = {
-    file: dbFile,
-    group: 'db',
-    gates: ['ALLRICE_RUN_DB_INTEGRATION'],
-    cases: [
-      {
-        title: 'SQL',
-        line: 1,
-        column: 1,
-        group: 'db',
-        gates: ['ALLRICE_RUN_DB_INTEGRATION'],
-      },
-      {
-        title: 'physical',
-        line: 2,
-        column: 1,
-        group: 'manual',
-        gates: ['ALLRICE_RUN_DB_INTEGRATION', 'ALLRICE_RUN_CLOUD_INTEGRATION'],
-      },
-    ],
-  };
-  const report = (sql = 'passed', physical = 'pending') => ({
-    testResults: [
-      {
-        name: resolve(dbFile),
-        assertionResults: entry.cases.map((item, index) => ({
-          title: item.title,
-          fullName: 'DB ' + item.title,
-          status: index ? physical : sql,
-          location: { line: item.line, column: item.column },
-        })),
-      },
-    ],
-  });
-  const enabled = { ALLRICE_RUN_DB_INTEGRATION: '1' };
-  expect(() => audit([entry], { testResults: [] }, [dbFile], enabled)).toThrow(
-    'Not collected',
-  );
-  expect(() => audit([entry], report('pending'), [dbFile], enabled)).toThrow(
-    'Unexpected pending',
-  );
-  expect(() => audit([entry], report(), [dbFile], enabled, 'physical')).toThrow(
-    'No executed passing tests',
-  );
-  expect(() => audit([entry], report(), [dbFile], {})).toThrow(
-    'Explicit suite gate is disabled',
-  );
-  expect(() =>
-    audit([entry], report(), [dbFile], { ALLRICE_RUN_DB_INTEGRATION: '0' }),
-  ).toThrow('Explicit suite gate is disabled');
-  expect(() =>
-    audit([entry], report('passed', 'passed'), [dbFile], enabled),
-  ).toThrow('Disabled case unexpectedly ran');
-  const [result] = audit([entry], report(), [dbFile], enabled);
-  expect(result.passed).toBe(1);
-  expect(result.deferred).toEqual([
-    { title: 'physical', group: 'manual', gates: entry.cases[1].gates },
-  ]);
-  expect(() =>
-    audit([entry], report(), [dbFile], {
-      ...enabled,
-      ALLRICE_RUN_CLOUD_INTEGRATION: '1',
-    }),
-  ).toThrow('Unexpected pending');
-});
-
-it('rejects a wholly skipped explicit file while exposing separately covered directory skips', () => {
-  const entry = {
-    file: dbFile,
-    group: 'db',
-    gates: ['ALLRICE_RUN_DB_INTEGRATION'],
-    cases: [],
-    coveredBy: ['other DB step'],
-  };
-  const report = {
-    testResults: [
-      {
-        name: resolve(dbFile),
-        assertionResults: [
-          { title: 'SQL', fullName: 'DB SQL', status: 'pending' },
-        ],
-      },
-    ],
-  };
-  expect(() => audit([entry], report, [dbFile], {})).toThrow(
-    'Explicit suite gate is disabled',
-  );
-  expect(audit([entry], report, ['packages/database/src'], {})).toEqual([
-    {
-      file: dbFile,
-      passed: 0,
-      deferred: [{ group: 'db', gates: ['ALLRICE_RUN_DB_INTEGRATION'] }],
-    },
-  ]);
-});
-
-it('keeps PostgreSQL suite.each out of the ungated native inventory', () => {
-  const root = fixture(
-    {
-      [dbFile]: `const suite = ${dbGate} ? describe.sequential : describe.skip; suite.each(['checkpoint', undefined] as const)('release %s',()=>{it('checks retention',()=>{});});`,
-    },
-    [{ run: 'pnpm test' }],
-  );
-  const plan = inventory(root);
-  expect(plan.entries[0].group).toBe('db');
-  expect(plan.entries[0].coveredBy).toEqual([]);
-  expect(plan.additions.db).toMatchObject([{ file: dbFile }]);
-});
-
-it('does not let a nested subprocess variable shadow the registered database suite alias', () => {
-  const root = fixture(
-    {
-      [dbFile]: `const run = ${dbGate} ? describe.sequential : describe.skip; run('recovery SQL',()=>{function recover(){const run=spawnSync('psql');return run.status;}it('uses the isolated database',()=>{});});`,
-    },
-    [{ run: 'pnpm test' }],
-  );
-  expect(inventory(root).entries[0].group).toBe('db');
-  expect(inventory(root).additions.db).toMatchObject([{ file: dbFile }]);
-});
-
-it('accounts for actual parameterized external cases and rejects missing locations or enabled skips', () => {
-  const root = runnableFixture({
-    [dbFile]: `describe.skipIf(!(${dbGate}))('DB',()=>{
-it('SQL',()=>{});
-it.skipIf(!process.env.ALLRICE_RUN_CLOUD_INTEGRATION).each(['docx','xlsx'])('physical %s renderer',()=>{});
-});`,
-  });
-  const run = execute(
-    root,
-    [
-      '--',
-      dbFile,
-      '--maxWorkers=1',
-      '--reporter=json',
-      '--outputFile=raw.json',
-    ],
-    { ALLRICE_RUN_CLOUD_INTEGRATION: '' },
-  );
-  expect(run.status, run.stdout + run.stderr).toBe(0);
-  const plan = inventory(root),
-    observed = JSON.parse(readFileSync(join(root, 'raw.json'), 'utf8'));
-  const env = { ALLRICE_RUN_DB_INTEGRATION: '1' };
-  const [result] = audit(
-    plan.entries,
-    observed,
-    [dbFile],
-    env,
-    undefined,
-    root,
-  );
-  expect(result.passed).toBe(1);
-  expect(result.deferred.map((item) => item.title)).toEqual([
-    'physical docx renderer',
-    'physical xlsx renderer',
-  ]);
-  expect(result.deferred.every((item) => item.group === 'manual')).toBe(true);
-  expect(() =>
-    audit(
-      plan.entries,
-      observed,
-      [dbFile],
-      { ...env, ALLRICE_RUN_CLOUD_INTEGRATION: '1' },
-      undefined,
-      root,
-    ),
-  ).toThrow(/Unexpected (pending|skipped)/);
-  const incomplete = globalThis.structuredClone(observed);
-  incomplete.testResults[0].assertionResults =
-    incomplete.testResults[0].assertionResults.filter(
-      (test) => test.status === 'passed',
-    );
-  expect(() =>
-    audit(plan.entries, incomplete, [dbFile], env, undefined, root),
-  ).toThrow('Missing registered test');
-});
-
-function runnableFixture(files, oldSteps = []) {
-  const root = fixture(files, oldSteps);
-  symlinkSync(resolve('node_modules'), join(root, 'node_modules'));
-  writeFileSync(join(root, 'package.json'), '{"private":true,"type":"module"}');
-  writeFileSync(
-    join(root, 'vitest.config.mjs'),
-    'export default {test:{globals:true,includeTaskLocation:true}};',
-  );
-  writeFileSync(
-    join(root, 'scripts/ci-integration-tests.mjs'),
-    readFileSync(resolve('scripts/ci-integration-tests.mjs')),
-  );
-  return root;
-}
-
-it('audits real parenthesized conditional registrations with their gates enabled and disabled', () => {
-  const root = runnableFixture({
-    [dbFile]: `describe.runIf(${dbGate})('DB',()=>{
-  it('SQL',()=>{});
-  (process.env.ALLRICE_RUN_CLOUD_INTEGRATION === '1' ? it : it.skip)(
-    'physical conditional',()=>{});
-});`,
-  });
-  for (const gate of ['', '1']) {
-    const output = `conditional-${gate || 'disabled'}.json`;
-    const run = execute(
-      root,
-      [
-        '--',
-        dbFile,
-        '--maxWorkers=1',
-        '--reporter=json',
-        `--outputFile=${output}`,
-      ],
-      { ALLRICE_RUN_CLOUD_INTEGRATION: gate },
-    );
-    expect(run.status, run.stdout + run.stderr).toBe(0);
-    const report = JSON.parse(readFileSync(join(root, output), 'utf8'));
-    const entry = inventory(root).entries[0];
-    const env = {
-      ALLRICE_RUN_DB_INTEGRATION: '1',
-      ALLRICE_RUN_CLOUD_INTEGRATION: gate,
-    };
-    const [result] = audit([entry], report, [dbFile], env, undefined, root);
-    expect(result.passed).toBe(gate ? 2 : 1);
-    expect(result.deferred).toHaveLength(gate ? 0 : 1);
-    if (!gate)
-      expect(() =>
-        audit(
-          [entry],
-          report,
-          [dbFile],
-          { ...env, ALLRICE_RUN_CLOUD_INTEGRATION: '1' },
-          undefined,
-          root,
-        ),
-      ).toThrow(/Unexpected (pending|skipped)/);
-    const missing = globalThis.structuredClone(report);
-    missing.testResults[0].assertionResults =
-      missing.testResults[0].assertionResults.filter(
-        (test) => test.title !== 'physical conditional',
-      );
-    expect(() =>
-      audit([entry], missing, [dbFile], env, undefined, root),
-    ).toThrow('Missing registered test');
-  }
-});
-function execute(root, args, env = {}) {
+function execute(root, group, args = [], env = {}) {
   return spawnSync(
     process.execPath,
-    [join(root, 'scripts/ci-integration-tests.mjs'), 'run', ...args],
-    {
-      cwd: root,
-      encoding: 'utf8',
-      env: { ...process.env, ALLRICE_RUN_DB_INTEGRATION: '1', ...env },
-    },
-  );
-}
-
-it('registers the real native-once case-only module path gates as two scheduled cases', () => {
-  const file = 'apps/worker/src/native-schedule-once.test.ts';
-  const root = fixture({ [file]: readFileSync(resolve(file), 'utf8') }, [
-    { run: 'pnpm test' },
-  ]);
-  const plan = inventory(root);
-  expect(plan.entries.find((item) => item.file === file)).toBeDefined();
-  expect(plan.additions.db.filter((item) => item.file === file)).toHaveLength(
-    2,
-  );
-});
-
-it('fails unsupported outer conditional and helper registration instead of accepting one ordinary pass', () => {
-  const conditional = `it('ordinary',()=>{}); if (${dbGate}) { it('SQL',()=>{}); }`;
-  const root = runnableFixture({ [dbFile]: conditional }, [
-    { run: 'pnpm test' },
-  ]);
-  const run = spawnSync(
-    process.execPath,
     [
-      resolve('node_modules/vitest/vitest.mjs'),
+      join(root, 'scripts/ci-integration-tests.mjs'),
       'run',
-      '--root',
-      root,
-      '--config',
-      join(root, 'vitest.config.mjs'),
+      ...(group ? [group] : []),
+      '--',
       '--maxWorkers=1',
-      '--reporter=json',
-      '--outputFile=' + join(root, 'conditional.json'),
+      ...args,
     ],
     {
       cwd: root,
       encoding: 'utf8',
-      env: { ...process.env, ALLRICE_RUN_DB_INTEGRATION: '' },
+      env: {
+        ...process.env,
+        ALLRICE_RUN_DB_INTEGRATION: '',
+        ALLRICE_RUN_CLOUD_INTEGRATION: '',
+        ALLRICE_OFFICE_PREVIEW_DIR: '',
+        ...env,
+      },
     },
   );
-  expect(run.status, run.stdout + run.stderr).toBe(0);
-  const raw = JSON.parse(readFileSync(join(root, 'conditional.json'), 'utf8'));
-  expect(raw.numPassedTests).toBe(1);
-  expect(raw.testResults[0].assertionResults.map((test) => test.title)).toEqual(
-    ['ordinary'],
-  );
-  for (const source of [
-    `it('ordinary',()=>{}); if (${dbGate}) { it('SQL',()=>{}); }`,
-    `it('ordinary',()=>{}); ${dbGate} && it('SQL',()=>{});`,
-    `it('ordinary',()=>{}); function register(){it('SQL',()=>{});} register();`,
-    `it['runIf'](${dbGate})('SQL',()=>{});`,
-    `import * as checks from 'vitest'; it('ordinary',()=>{}); checks.it.runIf(${dbGate})('SQL',()=>{});`,
-    `it.for(['SQL'])('SQL',()=>{});`,
-  ]) {
-    const root = fixture({ [dbFile]: source });
-    expect(() => inventory(root)).toThrow('Unsupported registration');
-  }
-});
-
-it('verifies every expected registration against actual Vitest locations, including each and loop names', () => {
-  const source = `it('ordinary',()=>{});
-it.each(['a','b'])(
-  'parameter %s',()=>{});
-for (const name of ['x','y']) {
-  it(\`generated \${name}\`,()=>{});
 }
-it.runIf(${dbGate})('SQL',()=>{});
-`;
-  const root = runnableFixture({ [dbFile]: source }, [{ run: 'pnpm test' }]);
-  const run = execute(root, [
-    '--',
-    dbFile,
-    '--maxWorkers=1',
-    '--reporter=json',
-    '--outputFile=raw.json',
-  ]);
-  expect(run.status, run.stdout + run.stderr).toBe(0);
-  const report = JSON.parse(readFileSync(join(root, 'raw.json'), 'utf8'));
-  const entry = inventory(root).entries[0];
-  const env = { ALLRICE_RUN_DB_INTEGRATION: '1' };
-  expect(audit([entry], report, [dbFile], env, undefined, root)[0].passed).toBe(
+function receipts(root) {
+  const base = join(root, '.local/integration-collection');
+  return readdirSync(base).map((name) => {
+    const directory = join(base, name);
+    return {
+      directory,
+      ...JSON.parse(readFileSync(join(directory, 'receipt.json'), 'utf8')),
+    };
+  });
+}
+const instances = (receipt) =>
+  JSON.parse(
+    readFileSync(join(receipt.directory, 'batch.json.instances.json'), 'utf8'),
+  );
+
+it('discovers tracked conventional and declared nonstandard files; plans only complete, resource-ready commands', () => {
+  const unusual = 'apps/worker/plain.test.ts';
+  const root = fixture(
+    { [db]: 'it("SQL",()=>{});', [unusual]: 'it("ordinary",()=>{});' },
+    {
+      files: { db: [unusual] },
+      steps: [
+        {
+          run: `node scripts/ci-integration-tests.mjs run -- ${db} -t 'first'`,
+          env: { ALLRICE_RUN_DB_INTEGRATION: 1 },
+        },
+        {
+          run: `node scripts/ci-integration-tests.mjs run -- ${unusual}`,
+          env: { ALLRICE_RUN_DB_INTEGRATION: 0 },
+        },
+      ],
+    },
+  );
+  const plan = inventory(root);
+  expect(plan.additions.db).toEqual([unusual, db]);
+  expect(plan.entries.every((entry) => !entry.plannedBy.length)).toBe(true);
+  const covered = fixture(
+    { [db]: '' },
+    {
+      steps: [
+        {
+          name: 'complete DB',
+          run: 'node scripts/ci-integration-tests.mjs run -- packages/database/src',
+          env: { ALLRICE_RUN_DB_INTEGRATION: 1 },
+        },
+      ],
+    },
+  );
+  expect(inventory(covered).additions.db).toEqual([]);
+}, 30_000);
+
+it('rejects unclassified candidates, nonexistent declarations and conflicting assignments', () => {
+  expect(() =>
+    inventory(fixture({ 'unknown/new.integration.test.ts': '' })),
+  ).toThrow('Unclassified');
+  expect(() => inventory(fixture({}, { files: { db: [db] } }))).toThrow(
+    'Missing or conflicting',
+  );
+  expect(() =>
+    inventory(fixture({ [db]: '' }, { files: { db: [db], browser: [db] } })),
+  ).toThrow('Missing or conflicting');
+}, 30_000);
+
+it('uses one real run for dynamic each/map/loops; a native ordinary instance never satisfies whole-file DB responsibility', () => {
+  const root = fixture({
+    [db]: `import {it} from 'vitest';
+const modes = ${gate} ? ['ordinary','SQL'] : ['ordinary'];
+it.each(modes)('%s',()=>{});
+for (const name of ['loop-a','loop-b']) it(name,()=>{});
+it.each(['x','y'].map(x=>[x]))('mapped %s',()=>{});`,
+  });
+  const native = execute(root, 'native');
+  expect(native.status, native.stdout + native.stderr).toBe(0);
+  const first = receipts(root)[0];
+  const ordinary = instances(first).instances;
+  expect(ordinary).toHaveLength(5);
+  expect(ordinary.every((item) => !item.responsible)).toBe(true);
+  const full = execute(root, 'db', [], { ALLRICE_RUN_DB_INTEGRATION: '1' });
+  expect(full.status, full.stdout + full.stderr).toBe(0);
+  const second = receipts(root).find(
+    (receipt) => receipt.directory !== first.directory,
+  );
+  expect(instances(second).instances).toHaveLength(6);
+  expect(
+    instances(second).instances.every(
+      (item) => item.responsible && item.state === 'passed',
+    ),
+  ).toBe(true);
+  const raw = JSON.parse(readFileSync(second.report, 'utf8'));
+  expect(raw.numPassedTests).toBe(6);
+  expect(
+    raw.testResults[0].assertionResults.some((item) =>
+      Object.hasOwn(item, 'id'),
+    ),
+  ).toBe(false);
+  expect(new Set(instances(second).instances.map((item) => item.id)).size).toBe(
     6,
   );
-  const incomplete = globalThis.structuredClone(report);
-  incomplete.testResults[0].assertionResults =
-    incomplete.testResults[0].assertionResults.filter(
-      (test) => test.title !== 'SQL',
-    );
-  expect(() =>
-    audit([entry], incomplete, [dbFile], env, undefined, root),
-  ).toThrow('Missing registered test');
-});
+}, 30_000);
 
-it('uses actual suite ancestry when SQL and an external child have the same case name', () => {
-  const root = runnableFixture({
-    [dbFile]: `describe.runIf(${dbGate})('DB',()=>{
-  it('same name',()=>{});
-  describe.runIf(process.env.ALLRICE_RUN_CLOUD_INTEGRATION === '1')('physical',()=>{
-    it('same name',()=>{throw Error('physical fixture must stay deferred');});
-  });
+it('keeps ordinary SQL automatic and parameterized external leaves manual, including inherited suite tags', () => {
+  const root = fixture({
+    [db]: `import {describe,it} from 'vitest';
+describe.runIf(${gate})('DB',()=>{
+it('same name',()=>{});
+describe.skipIf(!process.env.ALLRICE_RUN_CLOUD_INTEGRATION)('physical',{tags:['${manual}']},()=>{
+it.each(['docx','xlsx'])('same name %s',()=>{throw Error('external prerequisite is absent');});
+});
 });`,
   });
-  const entry = inventory(root).entries[0];
-  expect(entry.group).toBe('db');
-  expect(entry.cases.map((item) => item.group)).toEqual(['db', 'manual']);
-  const run = execute(root, [
-    '--',
-    dbFile,
-    '--maxWorkers=1',
-    '--reporter=json',
-    '--outputFile=raw.json',
-  ]);
+  const run = execute(root, 'db', [], { ALLRICE_RUN_DB_INTEGRATION: '1' });
   expect(run.status, run.stdout + run.stderr).toBe(0);
-  const receipt = JSON.parse(
-    readFileSync(join(root, 'raw.json.collection.json'), 'utf8'),
-  );
-  expect(receipt.evidence[0].passed).toBe(1);
-  expect(receipt.evidence[0].deferred).toHaveLength(1);
-  expect(receipt.evidence[0].deferred[0].group).toBe('manual');
-});
+  const receipt = receipts(root)[0];
+  expect(receipt.counts).toMatchObject({ passed: 1, skipped: 2, pending: 0 });
+  const physical = instances(receipt).instances.filter((item) => item.manual);
+  expect(physical).toHaveLength(2);
+  expect(physical.every((item) => item.disposition === 'manual')).toBe(true);
+}, 30_000);
 
-it('retains both real whole/cases raw reports and collection receipts with a separate summary', () => {
-  const mixed = 'apps/worker/src/mixed.integration.test.ts';
-  const root = runnableFixture(
+it('accepts all-manual files with independent gates as zero passes instead of taking a gate intersection', () => {
+  const root = fixture(
     {
-      [dbFile]: `describe.runIf(${dbGate})('DB',()=>{
-it('whole SQL',()=>{});
-});`,
-      [mixed]: `it('ordinary',()=>{});
-it.runIf(${dbGate})('conditional SQL',()=>{});`,
+      [db]: `import {it} from 'vitest';
+it.skipIf(!process.env.ALLRICE_RUN_CLOUD_INTEGRATION)('cloud',{tags:['${manual}']},()=>{});
+it.skipIf(!process.env.ALLRICE_OFFICE_PREVIEW_DIR)('office',{tags:['${other}']},()=>{});`,
     },
-    [{ run: 'pnpm test' }],
+    { files: { manual: [db] } },
   );
-  const run = execute(root, [
-    'db',
-    '--',
-    '--maxWorkers=1',
-    '--reporter=json',
-    '--outputFile=vitest-auto.json',
-  ]);
+  const run = execute(root, 'native');
   expect(run.status, run.stdout + run.stderr).toBe(0);
-  const paths = ['vitest-auto-whole.json', 'vitest-auto-cases.json'];
-  for (const path of paths) {
-    expect(existsSync(join(root, path)), path).toBe(true);
-    expect(existsSync(join(root, path + '.collection.json'))).toBe(true);
+  const receipt = receipts(root)[0];
+  expect(receipt.counts).toMatchObject({ passed: 0, skipped: 2 });
+  expect(
+    instances(receipt).instances.every(
+      (item) => item.manual && !item.responsible,
+    ),
+  ).toBe(true);
+}, 30_000);
+
+it('rejects a visible unclassified native skip, enabled resource skip and unknown native tag', () => {
+  for (const [source, env] of [
+    [`it.skip('ordinary',()=>{});`, {}],
+    [`it.skip('SQL',()=>{});`, { ALLRICE_RUN_DB_INTEGRATION: '1' }],
+    [`it.skip('unknown',{tags:['manual:UNKNOWN']},()=>{});`, {}],
+  ]) {
+    const root = fixture({ [db]: `import {it} from 'vitest'; ${source}` });
+    const run = execute(root, null, [db], env);
+    if (!env.ALLRICE_RUN_DB_INTEGRATION && !source.includes('UNKNOWN')) {
+      // Use an undeclared-resource ordinary file for the native-skip branch.
+      const ordinary = 'apps/worker/ordinary.test.ts';
+      const otherRoot = fixture(
+        { [ordinary]: `import {it} from 'vitest'; ${source}` },
+        { files: { native: [ordinary] } },
+      );
+      expect(execute(otherRoot, 'native').status).toBe(1);
+    } else expect(run.status, run.stdout + run.stderr).toBe(1);
   }
-  const whole = JSON.parse(readFileSync(join(root, paths[0]), 'utf8'));
-  const cases = JSON.parse(readFileSync(join(root, paths[1]), 'utf8'));
-  expect(whole.testResults.map((test) => test.name)).toEqual([
-    join(root, dbFile),
-  ]);
-  expect(cases.testResults.map((test) => test.name)).toEqual([
-    join(root, mixed),
-  ]);
-  expect(cases.numPassedTests).toBe(1);
-  expect(cases.numPendingTests).toBe(1);
-  const summary = JSON.parse(
-    readFileSync(join(root, 'vitest-auto.json.summary.json'), 'utf8'),
+}, 30_000);
+
+it('cannot wash away a missing parameter instance, missing result callback, module or unhandled error', () => {
+  const root = fixture({
+    [db]: `import {it} from 'vitest'; it.each(['a','b'])('%s',()=>{});`,
+  });
+  const run = execute(root, 'db', [], { ALLRICE_RUN_DB_INTEGRATION: '1' });
+  expect(run.status, run.stdout + run.stderr).toBe(0);
+  const receipt = receipts(root)[0];
+  const batch = JSON.parse(
+    readFileSync(join(receipt.directory, 'batch.json'), 'utf8'),
   );
-  expect(summary.batches.map((batch) => batch.report)).toEqual(paths);
-  expect(existsSync(join(root, 'vitest-auto.json'))).toBe(false);
-});
+  const tests = instances(receipt).instances;
+  const collected = {
+    [db]: tests.map(({ id, name, tags, location }) => ({
+      id,
+      name,
+      tags,
+      location,
+    })),
+  };
+  const results = Object.fromEntries(
+    tests.map((test) => [test.id, ['passed']]),
+  );
+  const module = { file: db, ended: true, state: 'passed', errors: [], tests };
+  const audit = (mods, events = results, errors = []) =>
+    auditInstances(batch, collected, events, mods, errors, 'passed');
+  expect(
+    audit([{ ...module, tests: tests.slice(0, 1) }]).errors.join(),
+  ).toMatch('Missing/changed instance');
+  expect(audit([module], { [tests[0].id]: ['passed'] }).errors.join()).toMatch(
+    'Missing case result event',
+  );
+  expect(audit([]).errors.join()).toMatch('Missing/empty/unfinished module');
+  expect(
+    audit([module], results, ['unhandled rejection']).errors.join(),
+  ).toMatch('unhandled rejection');
+}, 30_000);
+
+it('retains distinct original raw reports and failure receipts when a batch fails or never produces JSON', () => {
+  const root = fixture({
+    [db]: `import {it} from 'vitest'; it('fails',()=>{throw Error('original failure');});`,
+  });
+  const failed = execute(root, 'db', [], { ALLRICE_RUN_DB_INTEGRATION: '1' });
+  expect(failed.status).toBe(1);
+  const first = receipts(root)[0];
+  expect(first.complete).toBe(false);
+  expect(JSON.parse(readFileSync(first.report, 'utf8')).numFailedTests).toBe(1);
+  const missing = execute(root, 'db', ['--config=absent.config.mjs'], {
+    ALLRICE_RUN_DB_INTEGRATION: '1',
+  });
+  expect(missing.status).toBe(1);
+  const all = receipts(root);
+  expect(all).toHaveLength(2);
+  expect(
+    all.every((receipt) => !receipt.complete && receipt.exitCode === 1),
+  ).toBe(true);
+  expect(JSON.parse(readFileSync(first.report, 'utf8')).numFailedTests).toBe(1);
+}, 30_000);
+
+it('rejects a responsible file omitted by Vitest despite another passing file and records filtered runs as partial', () => {
+  const omitted = 'packages/database/src/omitted.integration.test.ts';
+  const root = fixture(
+    {
+      [db]: `import {it} from 'vitest'; it('selected',()=>{}); it('other',()=>{});`,
+      [omitted]: `import {it} from 'vitest'; it('missing',()=>{});`,
+    },
+    { config: "exclude:['**/omitted.integration.test.ts']" },
+  );
+  const run = execute(root, 'db', [], { ALLRICE_RUN_DB_INTEGRATION: '1' });
+  expect(run.status, run.stdout + run.stderr).toBe(1);
+  expect(receipts(root)[0].error).toMatch('Missing/empty/unfinished module');
+  const partial = execute(root, null, [db, '-t', 'selected'], {
+    ALLRICE_RUN_DB_INTEGRATION: '1',
+  });
+  expect(partial.status, partial.stdout + partial.stderr).toBe(0);
+  const second = receipts(root).find((receipt) => receipt.complete);
+  expect(instances(second).instances.every((item) => !item.responsible)).toBe(
+    true,
+  );
+  expect(
+    instances(second).instances.find((item) => item.state === 'skipped')
+      .disposition,
+  ).toBe('filtered');
+}, 30_000);

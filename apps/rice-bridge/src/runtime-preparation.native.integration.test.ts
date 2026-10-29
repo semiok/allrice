@@ -12,6 +12,7 @@ import { saveLocalBrowserOptIn } from './local-browser-settings.js';
 
 it.skipIf(process.env.ALLRICE_TEST_LOCAL_BROWSER_NATIVE !== '1')(
   'a new pairing actually starts the existing native browser without a VM or manual browser opt-in',
+  { tags: ['manual:ALLRICE_TEST_LOCAL_BROWSER_NATIVE'], timeout: 30000 },
   async () => {
     const root = await mkdtemp(join(tmpdir(), 'allrice-met159-native-'));
     vi.stubEnv('ALLRICE_BRIDGE_CONFIG_PATH', join(root, 'config.json'));
@@ -39,5 +40,4 @@ it.skipIf(process.env.ALLRICE_TEST_LOCAL_BROWSER_NATIVE !== '1')(
       await rm(root, { recursive: true, force: true });
     }
   },
-  30000,
 );

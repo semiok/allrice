@@ -67,6 +67,7 @@ const capture =
 
 capture(
   'captures one once and one recurring control partition',
+  { tags: ['manual:ALLRICE_CAPTURE_CONTROL_CORPUS'], timeout: 300_000 },
   async () => {
     const root = resolve(import.meta.dirname, '../../../..');
     const { current, readsFrom } = NATIVE_JOURNAL_CONTRACT;
@@ -405,5 +406,4 @@ capture(
       flag: 'wx',
     });
   },
-  300_000,
 );

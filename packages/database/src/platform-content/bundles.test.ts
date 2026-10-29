@@ -153,6 +153,7 @@ describe('P18 real file assembly stays in reviewed resource tree', () => {
   });
   it.skipIf(process.platform === 'win32')(
     'rejects a private FIFO without blocking while opening it',
+    { tags: ['platform:posix'], timeout: 2000 },
     async () => {
       const f = await fixture();
       await rm(f.asset);
@@ -161,7 +162,6 @@ describe('P18 real file assembly stays in reviewed resource tree', () => {
         'platform_skill_resource_unsafe',
       );
     },
-    2000,
   );
   it('rejects unknown hooks, embedded resource bodies and traversal before read', async () => {
     const f = await fixture(),

@@ -219,72 +219,92 @@ const socket = process.env.ALLRICE_LOCAL_DOCKER_TEST_SOCKET;
       ).rejects.toThrow();
       return result;
     }
-    it('installs an exact real npm archive and runs a verification using that dependency', async () => {
-      const r = await run();
-      expect(r.reason).toBe('exited');
-      expect(r.exitCode).toBe(0);
-      expect(r.stdout).toContain('dependency verification: 42');
-      expect(r.dependencies?.status).toBe(
-        'installed_and_verification_succeeded',
-      );
-    }, 30000);
-    it('disables lifecycle scripts unless this exact installation grants them', async () => {
-      const r = await run('node -e "process.exit(42)"');
-      expect(r.exitCode).toBe(0);
-      expect(r.stdout).toContain('dependency verification: 42');
-      const denied = await run('node -e "process.exit(42)"', true);
-      expect(denied.exitCode).not.toBe(0);
-      expect(denied.stdout).not.toContain('dependency verification: 42');
-      expect(denied.dependencies?.status).toBe(
-        'installation_or_verification_failed',
-      );
-    }, 60000);
-    it('authorized installation scripts remain unable to write outside the sandbox', async () => {
-      const r = await run(
-        `node -e "require('fs').writeFileSync('/outside','escape')"`,
-        true,
-      );
-      expect(r.exitCode).not.toBe(0);
-      expect(r.stderr).toMatch(/EROFS|EACCES/);
-    }, 30000);
-    it('cancels running verification and confirms the entire container stopped', async () => {
-      const abort = new AbortController();
-      let started = false;
-      const r = await run(
-        undefined,
-        false,
-        'console.log("p09b-verification-running");setInterval(()=>{},100)',
-        abort.signal,
-        (text) => {
-          if (text.split('\n').includes('p09b-verification-running')) {
-            started = true;
-            abort.abort();
-          }
-        },
-      );
-      expect(started).toBe(true);
-      expect(r.reason).toBe('canceled');
-      expect(r.stopped).toBe(true);
-    }, 30000);
-    it('cancels a truly running installation script and its detached descendants, not just a queued request', async () => {
-      const abort = new AbortController();
-      let started = false;
-      const r = await run(
-        `node -e "require('child_process').spawn(process.execPath,['-e','setInterval(()=>{},100)'],{detached:true,stdio:'ignore'}).unref();console.log('p09b-install-running');setInterval(()=>{},100)"`,
-        true,
-        undefined,
-        abort.signal,
-        (text) => {
-          if (text.split('\n').includes('p09b-install-running')) {
-            started = true;
-            abort.abort();
-          }
-        },
-      );
-      expect(started).toBe(true);
-      expect(r.reason).toBe('canceled');
-      expect(r.stopped).toBe(true);
-      expect(r.stdout).not.toContain('dependency verification: 42');
-    }, 30000);
+    it(
+      'installs an exact real npm archive and runs a verification using that dependency',
+      { tags: ['manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET'], timeout: 30000 },
+      async () => {
+        const r = await run();
+        expect(r.reason).toBe('exited');
+        expect(r.exitCode).toBe(0);
+        expect(r.stdout).toContain('dependency verification: 42');
+        expect(r.dependencies?.status).toBe(
+          'installed_and_verification_succeeded',
+        );
+      },
+    );
+    it(
+      'disables lifecycle scripts unless this exact installation grants them',
+      { tags: ['manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET'], timeout: 60000 },
+      async () => {
+        const r = await run('node -e "process.exit(42)"');
+        expect(r.exitCode).toBe(0);
+        expect(r.stdout).toContain('dependency verification: 42');
+        const denied = await run('node -e "process.exit(42)"', true);
+        expect(denied.exitCode).not.toBe(0);
+        expect(denied.stdout).not.toContain('dependency verification: 42');
+        expect(denied.dependencies?.status).toBe(
+          'installation_or_verification_failed',
+        );
+      },
+    );
+    it(
+      'authorized installation scripts remain unable to write outside the sandbox',
+      { tags: ['manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET'], timeout: 30000 },
+      async () => {
+        const r = await run(
+          `node -e "require('fs').writeFileSync('/outside','escape')"`,
+          true,
+        );
+        expect(r.exitCode).not.toBe(0);
+        expect(r.stderr).toMatch(/EROFS|EACCES/);
+      },
+    );
+    it(
+      'cancels running verification and confirms the entire container stopped',
+      { tags: ['manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET'], timeout: 30000 },
+      async () => {
+        const abort = new AbortController();
+        let started = false;
+        const r = await run(
+          undefined,
+          false,
+          'console.log("p09b-verification-running");setInterval(()=>{},100)',
+          abort.signal,
+          (text) => {
+            if (text.split('\n').includes('p09b-verification-running')) {
+              started = true;
+              abort.abort();
+            }
+          },
+        );
+        expect(started).toBe(true);
+        expect(r.reason).toBe('canceled');
+        expect(r.stopped).toBe(true);
+      },
+    );
+    it(
+      'cancels a truly running installation script and its detached descendants, not just a queued request',
+      { tags: ['manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET'], timeout: 30000 },
+      async () => {
+        const abort = new AbortController();
+        let started = false;
+        const r = await run(
+          `node -e "require('child_process').spawn(process.execPath,['-e','setInterval(()=>{},100)'],{detached:true,stdio:'ignore'}).unref();console.log('p09b-install-running');setInterval(()=>{},100)"`,
+          true,
+          undefined,
+          abort.signal,
+          (text) => {
+            if (text.split('\n').includes('p09b-install-running')) {
+              started = true;
+              abort.abort();
+            }
+          },
+        );
+        expect(started).toBe(true);
+        expect(r.reason).toBe('canceled');
+        expect(r.stopped).toBe(true);
+        expect(r.stdout).not.toContain('dependency verification: 42');
+      },
+    );
   },
 );
