@@ -190,14 +190,20 @@ suite(
       if (kind === 'member')
         await db`update allrice_memberships set active=false where id=${f.membership}`;
       if (kind === 'employee')
-        await db`update allrice_employees set status='disabled' where id=${f.employee}`;
+        await db`update allrice_employees set status='archived' where id=${f.employee}`;
       if (kind === 'policy')
         await db`update allrice_runtime_policy_controls set controls=jsonb_set(controls,'{enabled}','false') where organization_id=${f.org}`;
       if (kind === 'cancel')
         await db`update allrice_jobs set cancel_requested_at=clock_timestamp() where id=${f.worker.jobId}`;
       if (kind === 'lease')
         await db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${f.worker.jobId}`;
-      await expect(f.complete(p.guard)).rejects.toThrow();
+      if (kind === 'cancel') {
+        await f.complete(p.guard);
+        expect(await f.state()).toMatchObject({
+          status: 'canceled',
+          state: 'canceled',
+        });
+      } else await expect(f.complete(p.guard)).rejects.toThrow();
       expect((await f.state()).successes).toBe(0);
     });
     it('a new actual artifact invalidates earlier facts; no successful body survives the rollback', async () => {

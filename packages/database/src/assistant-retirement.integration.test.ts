@@ -165,6 +165,50 @@ suite('0229 bounded legacy retirement', () => {
       await db`select id from allrice_deliverable_versions where id=${f.removed.artifactId}`,
     ).toHaveLength(1);
   }, 120000);
+  it('ordinary final file links block deletion without a foreign key and preserve every row and trigger', async () => {
+    const { db } = await database(),
+      f = await oldChild(db),
+      messageId = randomUUID();
+    const [object] =
+      await db`select object_id from allrice_deliverable_versions where id=${f.removed.artifactId}`;
+    const objectId = String(object!.object_id);
+    const text = `[下载旧成果](/api/v1/files/${objectId}/download?name=evidence.txt)`;
+    await db`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,status,content)
+      values(${messageId},${f.task.scope.organizationId},${f.task.scope.workspaceId},${f.task.chatSessionId},${f.context.actor.id},'assistant','completed',${db.json({ text, citations: [] })})`;
+    const tables = [
+      'allrice_messages',
+      'allrice_runs',
+      'allrice_jobs',
+      'allrice_workbench_artifacts',
+      'allrice_storage_objects',
+      'allrice_deliverable_versions',
+      ...retired,
+    ];
+    const rows = () =>
+      Promise.all(
+        tables.map(
+          (table) =>
+            db`select to_jsonb(r) value from ${db(table)} r order by to_jsonb(r)::text`,
+        ),
+      );
+    const guards = () =>
+      db`select tgrelid::regclass::text relation,tgname,tgenabled from pg_trigger where not tgisinternal and tgrelid in(select oid from pg_class where relnamespace=current_schema()::regnamespace) order by 1,2`;
+    const before = await rows(),
+      beforeGuards = await guards();
+    const error = await db
+      .begin(async (tx) => tx.unsafe(await migration()))
+      .catch((e) => e);
+    // With only the old FK preflight this transaction succeeds: the message
+    // keeps this exact URL while its object is gone. No UUID/name inference.
+    expect(error).toMatchObject({
+      code: '23503',
+      message: 'MET210_SHARED_FILE_REFERENCE',
+    });
+    expect(error.detail).toContain(messageId);
+    expect(error.detail).toContain(objectId);
+    expect(await rows()).toEqual(before);
+    expect(await guards()).toEqual(beforeGuards);
+  }, 120000);
   it('ordinary queued null/false/disabled fields are stripped without blocking or losing queued jobs', async () => {
     const { db } = await database();
     const ids: string[] = [];

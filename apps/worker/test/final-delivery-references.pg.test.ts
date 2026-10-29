@@ -50,7 +50,7 @@ let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
 const db = () => database.db;
 const storage = () => runtimeFixtureStorage(db());
 const originalEnvironment = Object.fromEntries(
-  ['DATABASE_URL', 'ALLRICE_ASSISTANTS_ENABLED'].map((key) => [
+  ['DATABASE_URL', 'ALLRICE_WORKBENCH_ENABLED'].map((key) => [
     key,
     process.env[key],
   ]),
@@ -420,7 +420,7 @@ describe
     'frozen reference production producer, actual isolated PG',
     () => {
       beforeAll(async () => {
-        process.env.ALLRICE_ASSISTANTS_ENABLED = '1';
+        process.env.ALLRICE_WORKBENCH_ENABLED = '1';
         database = await createRuntimeFixtureDatabase();
         const [location] =
           await db()`select current_database() database,current_schema() schema`;
