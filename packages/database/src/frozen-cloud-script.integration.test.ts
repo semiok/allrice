@@ -3,7 +3,7 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import postgres from 'postgres';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { type DshNativeSkillSnapshot } from '@allrice/contracts';
 import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
 import { loadPlatformContentCatalog } from './platform-content/catalog.ts';
@@ -135,10 +135,22 @@ suite(
       expect(resolved.script.endsWith('\n')).toBe(true);
       process.env.ALLRICE_CLOUD_RUNNER_ENABLED = '1';
       process.env.ALLRICE_RUNTIME_POLICY_ENABLED = '1';
+      const timeout = process.env.ALLRICE_CLOUD_COMMAND_TIMEOUT_MS;
+      const output = process.env.ALLRICE_CLOUD_COMMAND_OUTPUT_BYTES;
+      vi.stubEnv('ALLRICE_CLOUD_COMMAND_TIMEOUT_MS', '2500');
+      vi.stubEnv('ALLRICE_CLOUD_COMMAND_OUTPUT_BYTES', '3072');
       try {
         const created = await f.create('reference', resolved);
         expect(created.payload.arguments.script).toBe(resolved.script);
         expect(created.snapshot.status).toBe('waiting_user');
+        expect(created.payload.arguments.limits).toMatchObject({
+          timeoutMs: 2500,
+          outputBytes: 3072,
+        });
+        vi.stubEnv('ALLRICE_CLOUD_COMMAND_TIMEOUT_MS', '5000');
+        expect(
+          (await f.create('reference', resolved)).snapshot.binding,
+        ).toEqual(created.snapshot.binding);
         await expect(
           created.ledger.dispatch({
             scope: created.snapshot.binding.task.scope,
@@ -148,6 +160,8 @@ suite(
           }),
         ).rejects.toThrow();
       } finally {
+        vi.stubEnv('ALLRICE_CLOUD_COMMAND_TIMEOUT_MS', timeout);
+        vi.stubEnv('ALLRICE_CLOUD_COMMAND_OUTPUT_BYTES', output);
         delete process.env.ALLRICE_CLOUD_RUNNER_ENABLED;
         delete process.env.ALLRICE_RUNTIME_POLICY_ENABLED;
       }

@@ -4,6 +4,12 @@ import { ChecksumSchema } from '../runs.ts';
 import { isRuntimeRelativePath } from './policy.ts';
 import { cloudPlatform } from './cloud-platform.ts';
 import {
+  CloudCommandRuntimeLimitsSchema,
+  cloudCommandRuntimeDefaults,
+  resolveCloudCommandRuntimeLimits,
+  type CloudCommandRuntimeLimits,
+} from './cloud-command-limits.ts';
+import {
   SandboxNetworkRequestSchema,
   SandboxNetworkGrantSchema,
 } from './sandbox-network.ts';
@@ -33,8 +39,12 @@ export function cloudRuntimeImage(
 const path = z.string().max(240).refine(isRuntimeRelativePath);
 export const CloudCommandLimitsSchema = z
   .object({
-    timeoutMs: z.number().int().min(500).max(60_000).default(30_000),
-    outputBytes: z.number().int().min(1024).max(65_536).default(32_768),
+    timeoutMs: CloudCommandRuntimeLimitsSchema.shape.timeoutMs.default(
+      cloudCommandRuntimeDefaults.timeoutMs,
+    ),
+    outputBytes: CloudCommandRuntimeLimitsSchema.shape.outputBytes.default(
+      cloudCommandRuntimeDefaults.outputBytes,
+    ),
     artifactBytes: z.number().int().min(1024).max(4_000_000).default(1_000_000),
     memoryMiB: z.number().int().min(128).max(512).default(256),
     cpuMillis: z.number().int().min(100).max(1000).default(500),
@@ -87,8 +97,7 @@ export const CloudCommandInputSchema = z
       .max(8)
       .default([]),
     limits: CloudCommandLimitsSchema.default({
-      timeoutMs: 30_000,
-      outputBytes: 32_768,
+      ...cloudCommandRuntimeDefaults,
       artifactBytes: 1_000_000,
       memoryMiB: 256,
       cpuMillis: 500,
@@ -134,6 +143,42 @@ export const CloudCommandInputSchema = z
       });
   });
 export type CloudCommandInput = z.infer<typeof CloudCommandInputSchema>;
+
+/** Broker requests preserve omissions until the operation is frozen. Reuse all
+ * durable command validation without materializing its historical defaults. */
+export const CloudCommandRequestSchema = z
+  .object({
+    ...CloudCommandInputSchema.shape,
+    limits: CloudCommandLimitsSchema.extend({
+      timeoutMs: CloudCommandRuntimeLimitsSchema.shape.timeoutMs.optional(),
+      outputBytes: CloudCommandRuntimeLimitsSchema.shape.outputBytes.optional(),
+    }).prefault({}),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const result = CloudCommandInputSchema.safeParse(value);
+    if (!result.success)
+      for (const issue of result.error.issues)
+        ctx.addIssue({
+          code: 'custom',
+          path: issue.path,
+          message: issue.message,
+        });
+  });
+
+export function normalizeCloudCommandArguments(
+  original: unknown,
+  defaults: CloudCommandRuntimeLimits,
+): CloudCommandInput {
+  const args = CloudCommandRequestSchema.parse(original);
+  return CloudCommandInputSchema.parse({
+    ...args,
+    limits: {
+      ...args.limits,
+      ...resolveCloudCommandRuntimeLimits(args.limits, defaults),
+    },
+  });
+}
 /** Server-created proof of the canonical call, not a model-selectable tool. */
 export const CloudPythonOriginSchema = z
   .object({

@@ -1,5 +1,5 @@
 import {
-  CloudCommandInputSchema,
+  CloudCommandRequestSchema,
   SkillResourcePathSchema,
 } from '@allrice/contracts';
 import { z } from 'zod';
@@ -20,15 +20,15 @@ export const FrozenCloudScriptReferenceSchema = z
 // Public tool input only. The durable CloudCommand remains exact inline bytes.
 // A reference cannot select another Run, version, catalog, URL or host path.
 export const CloudToolInputSchema = z.union([
-  CloudCommandInputSchema,
+  CloudCommandRequestSchema,
   z
     .object({
       frozenScript: FrozenCloudScriptReferenceSchema,
-      network: CloudCommandInputSchema.shape.network,
-      execution: CloudCommandInputSchema.shape.execution,
-      inputs: CloudCommandInputSchema.shape.inputs,
-      outputs: CloudCommandInputSchema.shape.outputs,
-      limits: CloudCommandInputSchema.shape.limits,
+      network: CloudCommandRequestSchema.shape.network,
+      execution: CloudCommandRequestSchema.shape.execution,
+      inputs: CloudCommandRequestSchema.shape.inputs,
+      outputs: CloudCommandRequestSchema.shape.outputs,
+      limits: CloudCommandRequestSchema.shape.limits,
     })
     .strict(),
 ]);

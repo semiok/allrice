@@ -159,6 +159,19 @@ suite(
         ).length,
       ).toBe(1);
     });
+    it('does not replace an explicit renewable budget with the ordinary deployment timeout', async () => {
+      const timeout = process.env.ALLRICE_CLOUD_COMMAND_TIMEOUT_MS;
+      vi.stubEnv('ALLRICE_CLOUD_COMMAND_TIMEOUT_MS', '500');
+      try {
+        const { c, exchange } = await start();
+        expect(c.payload.arguments.limits.timeoutMs).toBe(500);
+        expect(c.payload.executionBudget?.policy.maxExecutionMs).toBe(600000);
+        const state = await exchange();
+        expect(state!.deadlineAt - state!.startedAt).toBe(60000);
+      } finally {
+        vi.stubEnv('ALLRICE_CLOUD_COMMAND_TIMEOUT_MS', timeout);
+      }
+    });
     it('serializes retries without extending twice and rejects revoked or expired authority', async () => {
       const { f, receipt, c, exchange } = await start();
       const initial = await exchange();

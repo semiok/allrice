@@ -2,6 +2,7 @@ import { createCloudProjectPreviewTransport } from './server/cloud-project-previ
 import { portalEntries } from './server/portal-hosts.mjs';
 import {
   cloudArchitectureTranslationProblem,
+  configuredCloudCommandRuntimeLimits,
   runtimeFeatureEnabled,
 } from '@allrice/contracts';
 import console from 'node:console';
@@ -165,6 +166,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     return i < 0 ? fallback : args[i + 1];
   };
   // Same check as the Worker: Web also derives cloud profiles from the host CPU.
+  configuredCloudCommandRuntimeLimits();
   if (runtimeFeatureEnabled('ALLRICE_CLOUD_RUNNER_ENABLED')) {
     const problem = cloudArchitectureTranslationProblem();
     if (problem) throw new Error(problem);

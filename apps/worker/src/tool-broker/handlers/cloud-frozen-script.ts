@@ -1,5 +1,5 @@
 import {
-  CloudCommandInputSchema,
+  CloudCommandRequestSchema,
   EmployeeExecutionSnapshotSchema,
   type ExecutionContext,
 } from '@allrice/contracts';
@@ -75,7 +75,7 @@ export async function resolveCloudToolArguments(
       throw Error('frozen_script_media_type_invalid');
     // No grant, dependency installation, host path or platform review is inferred
     // from a private package. The normal cloud proposal binds these exact bytes.
-    return CloudCommandInputSchema.parse({
+    return CloudCommandRequestSchema.parse({
       language,
       script: decodeScript(resource.contentBase64),
       ...(args.network ? { network: args.network } : {}),
@@ -107,7 +107,7 @@ export async function resolveCloudToolArguments(
   )
     throw Error('frozen_script_media_type_invalid');
   const script = decodeScript(resource.contentBase64);
-  return CloudCommandInputSchema.parse({
+  return CloudCommandRequestSchema.parse({
     script,
     ...(args.network ? { network: args.network } : {}),
     ...(args.execution ? { execution: args.execution } : {}),

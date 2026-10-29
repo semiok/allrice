@@ -13,6 +13,9 @@ import {
 import { cloudStableId } from './cloud-execution.ts';
 import { revokeRuntimeActionApproval } from './runtime-policy.ts';
 import { listCloudRuntimeOperations } from './cloud-operation-view.ts';
+import { executeRiceTool } from '../../../apps/worker/src/tool-broker.js';
+import { resolveCloudToolArguments } from '../../../apps/worker/src/tool-broker/handlers/cloud-frozen-script.js';
+import { getToolBrokerFile } from './execution/tool-broker.ts';
 import type * as Client from './core/client.ts';
 let db: ReturnType<typeof postgres>,
   admin: ReturnType<typeof postgres>,
@@ -136,6 +139,174 @@ suite('P15 real PostgreSQL governance and SaaS gVisor delivery', () => {
       ],
     });
     expect(created.snapshot.binding.attempt.operationId).toBeTruthy();
+  });
+  it('freezes deployment limits through the real Broker for CSV summary, approval and Worker receipt', async () => {
+    const f = await fixture();
+    const csv = await f.upload(Buffer.from('金额\n12\n8\n5\n'), 'text/csv');
+    const args = {
+      script: '/* model fixture: summarize selected CSV */',
+      inputs: [{ path: 'data.csv', objectId: csv.id, checksum: csv.checksum }],
+      outputs: [{ path: 'summary.csv', fileName: '汇总.csv', format: 'csv' }],
+    };
+    const raw = structuredClone(args);
+    const timeout = process.env.ALLRICE_CLOUD_COMMAND_TIMEOUT_MS;
+    const output = process.env.ALLRICE_CLOUD_COMMAND_OUTPUT_BYTES;
+    vi.stubEnv('ALLRICE_CLOUD_COMMAND_TIMEOUT_MS', '1500');
+    vi.stubEnv('ALLRICE_CLOUD_COMMAND_OUTPUT_BYTES', '2048');
+    const execute = vi
+      .spyOn(CloudRunnerBackend.prototype, 'execute')
+      .mockResolvedValue({
+        containerId: '1'.repeat(64),
+        exitCode: 0,
+        stopped: true,
+        reason: 'completed',
+        output: '共3条，合计25',
+        elapsedMs: 1,
+        artifacts: [
+          {
+            path: 'summary.csv',
+            contentBase64: Buffer.from('合计\n25\n').toString('base64'),
+          },
+        ],
+      });
+    const inspect = vi
+      .spyOn(CloudRunnerBackend.prototype, 'inspect')
+      .mockResolvedValue(null);
+    const cleanup = vi
+      .spyOn(CloudRunnerBackend.prototype, 'cleanup')
+      .mockResolvedValue(undefined);
+    const controller = new AbortController();
+    const pending = executeRiceTool({
+      context: f.execution,
+      capabilities: ['storage:read', 'storage:write'],
+      storageRoot,
+      sessionId: f.session,
+      signal: controller.signal,
+      userRequest: '把这份CSV汇总，打印几条中文结果并保存汇总文件',
+      call: { id: 'summary', name: 'cloud.process.execute', arguments: args },
+    });
+    // Attach rejection immediately; the real executor waits for exact approval.
+    const settled = pending.then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
+    try {
+      await vi.waitFor(
+        async () => {
+          const rows =
+            await db`select operation_id from allrice_cloud_execution_inputs
+          where operation_id=${cloudStableId(`cloud-command:${f.run}:summary`)}`;
+          expect(rows).toHaveLength(1);
+        },
+        { timeout: 5000 },
+      );
+      const created = await f.create('summary', args);
+      expect(created.payload.arguments.limits).toMatchObject({
+        timeoutMs: 1500,
+        outputBytes: 2048,
+      });
+      const binding = structuredClone(created.snapshot.binding);
+      vi.stubEnv('ALLRICE_CLOUD_COMMAND_TIMEOUT_MS', '2000');
+      vi.stubEnv('ALLRICE_CLOUD_COMMAND_OUTPUT_BYTES', '4096');
+      const resolved = await resolveCloudToolArguments(
+        { context: f.execution, arguments: args },
+        db,
+      );
+      expect((await f.create('summary', resolved)).snapshot.binding).toEqual(
+        binding,
+      );
+      await expect(
+        f.create('summary', { ...args, limits: { timeoutMs: 2000 } }),
+      ).rejects.toThrow('idempotency_conflict');
+      const next = await f.create(
+        'next',
+        await resolveCloudToolArguments(
+          {
+            context: f.execution,
+            arguments: { ...args, limits: { outputBytes: 1024 } },
+          },
+          db,
+        ),
+      );
+      expect(next.payload.arguments.limits).toMatchObject({
+        timeoutMs: 2000,
+        outputBytes: 1024,
+      });
+      await f.approve(created);
+      const result = await settled;
+      if ('error' in result) throw result.error;
+      const value = JSON.parse(result.value.modelContent);
+      expect(value.status).toBe('succeeded');
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(execute.mock.calls[0]![0].arguments.limits).toMatchObject({
+        timeoutMs: 1500,
+        outputBytes: 2048,
+      });
+      expect(args).toEqual(raw);
+      const [stored] =
+        await db`select binding,payload from allrice_cloud_execution_inputs where operation_id=${binding.attempt.operationId}`;
+      expect(stored!.binding).toEqual(binding);
+      const [receipt] =
+        await db`select payload->'evidence' as evidence from allrice_runtime_operation_receipts
+        where receipt_id=${cloudStableId(`${binding.attempt.operationId}:result`)}`;
+      expect(receipt!.evidence).toMatchObject({
+        reason: 'completed',
+        stopped: true,
+      });
+      const { object } = await getToolBrokerFile(
+        f.execution,
+        value.artifacts[0].objectId,
+      );
+      expect(await new Response(await f.storage.get(object)).text()).toBe(
+        '合计\n25\n',
+      );
+    } finally {
+      controller.abort();
+      await settled;
+      execute.mockRestore();
+      inspect.mockRestore();
+      cleanup.mockRestore();
+      vi.stubEnv('ALLRICE_CLOUD_COMMAND_TIMEOUT_MS', timeout);
+      vi.stubEnv('ALLRICE_CLOUD_COMMAND_OUTPUT_BYTES', output);
+    }
+  });
+  it('preserves both exact runtime endpoints through Broker normalization and rejects outside them before freezing', async () => {
+    const f = await fixture();
+    for (const [index, limits] of [
+      { timeoutMs: 500, outputBytes: 1024 },
+      { timeoutMs: 60000, outputBytes: 65536 },
+    ].entries()) {
+      const args = await resolveCloudToolArguments(
+        {
+          context: f.execution,
+          arguments: { ...f.args, limits },
+        },
+        db,
+      );
+      const created = await f.create(`endpoint-${index}`, args);
+      const [stored] =
+        await db`select payload from allrice_cloud_execution_inputs
+        where operation_id=${created.snapshot.binding.attempt.operationId}`;
+      expect(stored!.payload.arguments.limits).toMatchObject(limits);
+    }
+    for (const limits of [
+      { timeoutMs: 499 },
+      { timeoutMs: 60001 },
+      { outputBytes: 1023 },
+      { outputBytes: 65537 },
+    ])
+      await expect(
+        resolveCloudToolArguments(
+          {
+            context: f.execution,
+            arguments: { ...f.args, limits },
+          },
+          db,
+        ),
+      ).rejects.toThrow();
+    const [count] =
+      await db`select count(*)::int as n from allrice_cloud_execution_inputs where run_id=${f.run}`;
+    expect(count!.n).toBe(2);
   });
   it('refuses cross-tenant file IDs, changed input checksums and revoked grants', async () => {
     const f = await fixture(),
