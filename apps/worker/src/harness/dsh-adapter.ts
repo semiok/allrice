@@ -2641,14 +2641,14 @@ export class DshHarnessAdapter implements HarnessAdapter {
           : input.start
             ? input.start()
             : input.resume
-            ? input.runtime.client.continueWait(input.resume)
-            : input.runtime.client.prompt(
-                input.runtime.sessionId,
-                input.prompt,
-                input.images,
-                input.sessionReferences,
-                input.bootstrapReceipt,
-              )
+              ? input.runtime.client.continueWait(input.resume)
+              : input.runtime.client.prompt(
+                  input.runtime.sessionId,
+                  input.prompt,
+                  input.images,
+                  input.sessionReferences,
+                  input.bootstrapReceipt,
+                )
       ).catch(async (error: unknown) => {
         await eventChain;
         if (
