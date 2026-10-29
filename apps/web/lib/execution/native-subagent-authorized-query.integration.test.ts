@@ -36,13 +36,16 @@ import { nativeBindingDescriptor } from '../../../../packages/database/src/nativ
 import { createEmployeeAdministrationFixture } from '../../../../packages/database/src/employee-administration.fixture.ts';
 import { buildEmployeeRuntimePackage } from '../../../../packages/database/src/platform-employees/runtime-package.ts';
 import { bindJobNativeSession } from '../../../../packages/database/src/execution/queue.ts';
-import * as artifact from '../../src/harness/dsh-native-artifact.ts';
-import { readAuthorizedNativeSubagentSummary } from '../../src/harness/native-subagent-query.ts';
-import { createNativeRunDiagnosticsHttpHandler } from '../../src/native-run-diagnostics-http.ts';
+import * as artifact from '../../../worker/src/harness/dsh-native-artifact.ts';
+import { readAuthorizedNativeSubagentSummary } from '../../../worker/src/harness/native-subagent-query.ts';
+import { createNativeRunDiagnosticsHttpHandler } from '../../../worker/src/native-run-diagnostics-http.ts';
 // This fixture installs test-only delegation to produce native descendants. It
 // does not assert delegation is enabled in either production profile.
-// @ts-expect-error existing actual Host fixture is JavaScript
-import { gate, host, text } from '../native-subagent/fixture.mjs';
+import {
+  gate,
+  host,
+  text,
+} from '../../../worker/test/native-subagent/fixture.mjs';
 
 const cookie = vi.hoisted(() => ({ token: '' }));
 // Only Next's request-local cookie adapter is replaced; Web/Worker auth and
@@ -55,12 +58,7 @@ vi.mock('next/headers', () => ({
         : undefined,
   }),
 }));
-const { GET } = await vi.importActual<{
-  GET: (
-    request: Request,
-    route: { params: Promise<{ id: string }> },
-  ) => Promise<Response>;
-}>('../../../web/app/api/v1/sessions/[id]/subagents/route.ts');
+import { GET } from '../../app/api/v1/sessions/[id]/subagents/route';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -112,11 +110,14 @@ suite(
         version: '0.2.1-rc.2',
         command: process.execPath,
         args: [
-          resolve(import.meta.dirname, '../../dsh/allrice-jsonrpc-runtime.mjs'),
+          resolve(
+            import.meta.dirname,
+            '../../../worker/dsh/allrice-jsonrpc-runtime.mjs',
+          ),
         ],
         profile: resolve(
           import.meta.dirname,
-          '../../dsh/allrice-restricted.cordis.yml',
+          '../../../worker/dsh/allrice-restricted.cordis.yml',
         ),
       });
     });
@@ -449,11 +450,25 @@ suite(
       expect(await writes(f)).toEqual(sql);
     });
     it('returns unavailable for a malformed native root catalog, preserving the source bytes', async () => {
-      const f = await chat();
+      const f = await chat(false);
+      const h = await host({
+        prepare: () => {
+          vi.stubEnv('DSH_SESSION_ROOT', f.descriptor.storageNamespace);
+        },
+      });
       // Malformed fixture through the public Session append/flush API, without
-      // depending on JSONL paths or changing the native parser.
-      f.h.root.session.append('subagent/catalog', { bad: true });
-      await f.h.ctx.sessions.flush(f.h.root.session);
+      // an Agent for that root, JSONL paths or changes to the native parser.
+      const root = h.ctx.sessions.create(f.descriptor.nativeSessionId, {
+        meta: { createdAt: 1, cwd: h.directory },
+      });
+      root.append('subagent/catalog', { bad: true });
+      const writer = await h.ctx.sessionPersistence.create(root.header);
+      try {
+        await writer.append(root.snapshotEvents());
+        await writer.flush();
+      } finally {
+        await writer.close();
+      }
       const before = await files(f.descriptor.storageNamespace),
         api = await start(f);
       const response = await api.request();
