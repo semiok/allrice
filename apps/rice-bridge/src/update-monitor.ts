@@ -61,6 +61,8 @@ export async function monitorBridgeUpdate(input: UpdateMonitorInput) {
       for (let n = 0; n < (input.healthAttempts ?? 240); n++) {
         const current = await engine.state();
         if (current?.id !== state.id) fail('UPDATE_HEALTH_MISMATCH');
+        if (child.exitCode !== null || child.signalCode !== null)
+          fail('UPDATE_LAUNCH_FAILED');
         if (current.phase === 'ready-health') {
           commitAttempted = true;
           if (await engine.confirmHealthy(state.version, state.id)) {
@@ -71,8 +73,6 @@ export async function monitorBridgeUpdate(input: UpdateMonitorInput) {
           // lock. No commit began; keep waiting within the same health bound.
           commitAttempted = false;
         }
-        if (child.exitCode !== null || child.signalCode !== null)
-          fail('UPDATE_LAUNCH_FAILED');
         await sleep(250);
       }
       fail('UPDATE_HEALTH_TIMEOUT');

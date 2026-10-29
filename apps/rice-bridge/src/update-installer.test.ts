@@ -461,9 +461,13 @@ it('missing or misleading parent process hints cannot bypass a still-held config
     owner.close();
   }
 });
-it.each([false, true])(
-  'monitor uses real child initialization/credential read and no acquisition until persisted commit (hold ready fsync: %s)',
-  async (holdReadyFsync) => {
+it.each([
+  [false, false],
+  [true, false],
+  [true, true],
+])(
+  'monitor uses real child initialization/credential read and no acquisition until persisted commit (hold ready fsync: %s, exit during wait: %s)',
+  async (holdReadyFsync, exitDuringWait) => {
     const f = await monitoredFixture();
     const marker = join(f.root, 'acquired-after-commit');
     const installModule = fileURLToPath(
@@ -519,8 +523,11 @@ it.each([false, true])(
       }
     } finally { owner.close(); process.disconnect(); }
   `;
-    f.input.launch = async (_app, id) => {
-      expect(id).toBeTruthy();
+    f.input.launch = vi.fn(async (_app, id) => {
+      if (!id) {
+        expect(exitDuringWait).toBe(true);
+        return f.fake;
+      }
       await expect(readFile(marker)).rejects.toMatchObject({ code: 'ENOENT' });
       const child = spawn(
         process.execPath,
@@ -559,7 +566,7 @@ it.each([false, true])(
         blockedChild = child;
       }
       return child;
-    };
+    });
     f.input.healthAttempts = 200;
     f.input.sleep = async (ms) => {
       if (blockedChild) {
@@ -568,6 +575,13 @@ it.each([false, true])(
         await expect(readFile(marker)).rejects.toMatchObject({
           code: 'ENOENT',
         });
+        if (exitDuringWait) {
+          const exited = once(blockedChild, 'exit');
+          blockedChild.kill('SIGTERM');
+          expect(await exited).toEqual([null, 'SIGTERM']);
+          blockedChild = undefined;
+          return;
+        }
         const ready = once(blockedChild, 'message');
         blockedChild.send('release-ready-fsync');
         blockedChild = undefined;
@@ -575,7 +589,33 @@ it.each([false, true])(
       } else await delay(Math.min(ms, 25));
     };
     try {
-      expect((await monitorBridgeUpdate(f.input)).status).toBe('healthy');
+      const result = await monitorBridgeUpdate(f.input);
+      if (exitDuringWait) {
+        expect({
+          result,
+          phase: (await f.engine().state())?.phase,
+          core: await readFile(f.core, 'utf8'),
+          confirmations,
+        }).toEqual({
+          result: {
+            status: 'rolled-back',
+            failureCode: 'UPDATE_LAUNCH_FAILED',
+          },
+          phase: 'rolled-back',
+          core: 'new-app',
+          confirmations: [false],
+        });
+        await expect(readFile(marker)).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+        expect(await readFile(f.credentials, 'utf8')).toBe(
+          'keep-device-and-source-record-unchanged',
+        );
+        expect(f.input.verifyRollback).toHaveBeenCalledOnce();
+        expect(f.input.launch).toHaveBeenCalledTimes(2);
+        return;
+      }
+      expect(result.status).toBe('healthy');
       if (holdReadyFsync) expect(confirmations).toEqual([false, true]);
       for (
         let n = 0;
