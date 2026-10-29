@@ -1887,16 +1887,19 @@ export async function claimNextJob(
   const sql = getDatabase();
   const row = await sql.begin(async (transaction) => {
     if (!(await devAdmissionOpen(transaction))) return null;
+    // Preserve one PostgreSQL scan instant at microsecond precision. Both the
+    // result and bound parameters must use text: the driver's timestamptz
+    // parser/serializer otherwise round-trips through millisecond JS Dates.
     const [scanClock] = await transaction<
-      { now: Date }[]
-    >`select clock_timestamp() as now`;
+      { now: string }[]
+    >`select clock_timestamp()::text as now`;
     const scanNow = scanClock!.now;
     const rows = await transaction<JobRow[]>`
       select candidate.* from allrice_jobs candidate
       where candidate.status = 'queued'
         and (${options.allowBackground === true} or candidate.payload->>'type'<>${experienceConsolidationJobType})
         and coalesce(candidate.payload->>'type','') not like 'allrice.platform.dev.%'
-        and (candidate.available_at <= ${scanNow} or exists (
+        and (candidate.available_at <= ${scanNow}::text::timestamptz or exists (
           -- A terminal Run may never have acquired its runtime, or an older
           -- parked handler may have retained its projection after stopping.
           -- A receipt alone is insufficient: an owned Job must still await
@@ -1929,7 +1932,7 @@ export async function claimNextJob(
                     and (earlier.created_at,earlier.run_id)<(f.created_at,f.run_id)))
             )
         ))
-        and candidate.timeout_at > ${scanNow}
+        and candidate.timeout_at > ${scanNow}::text::timestamptz
         and candidate.cancel_requested_at is null
         and not exists (select 1 from allrice_conversation_followups f where f.run_id=candidate.run_id and f.mode='steer_only')
       order by (candidate.payload->>'type'=${experienceConsolidationJobType}) asc, (
