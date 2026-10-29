@@ -488,11 +488,13 @@ function WorkProcessStepRow({
   const status =
     step.status === 'failed'
       ? `未成功${step.error ? `：${step.error}` : ''}`
-      : step.status === 'info'
-        ? '等待处理'
-        : pending && !running
-          ? '结果未确认'
-          : undefined;
+      : step.operationStatus
+        ? undefined
+        : step.status === 'info'
+          ? '等待处理'
+          : pending && !running
+            ? '结果未确认'
+            : undefined;
   return (
     <li
       id={step.operationId ? `operation-${step.operationId}` : undefined}

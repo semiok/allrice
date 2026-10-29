@@ -202,6 +202,9 @@ suite('one receipt within each native call in the chat transcript', () => {
         exact: true,
       });
       await approve.waitFor();
+      expect(
+        await page.locator('#operation-receipt-28').innerText(),
+      ).not.toContain('结果未确认');
       expect(await processOf(page).getAttribute('data-process-open')).toBe(
         'true',
       );
