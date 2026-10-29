@@ -78,7 +78,12 @@ export async function lockNativeQuestionOwner(
       and j.cancel_requested_at is null and r.organization_id=${context.organizationId}
       and r.workspace_id=${context.workspaceId!} and r.owner_id=${context.delegatedBy.id} for update of j`;
   if (!job) throw Error('native_wait_lease_lost');
-  const [authority] = await tx`select r.id from allrice_runs r
+  // Admission locks the user before the Session. Hold the same current
+  // authority rows through the caller's transaction, including final writes.
+  await tx`select id from allrice_users where id=${context.delegatedBy.id} for share`;
+  const [authority] = await tx<
+    { policy_expires_at: Date }[]
+  >`select p.expires_at policy_expires_at from allrice_runs r
     join allrice_users u on u.id=r.owner_id and u.status='active'
     join allrice_organizations o on o.id=r.organization_id and o.archived_at is null
     join allrice_workspaces w on w.id=r.workspace_id and w.organization_id=o.id and w.archived_at is null
@@ -89,11 +94,13 @@ export async function lockNativeQuestionOwner(
     join allrice_employees e on e.id=a.employee_id and e.status='active'
     join allrice_chat_sessions s on s.id=er.session_id and s.owner_id=r.owner_id and s.organization_id=r.organization_id
       and s.workspace_id=r.workspace_id and s.archived_at is null
+    join allrice_memberships m on m.user_id=r.owner_id and m.organization_id=r.organization_id
+      and (m.workspace_id is null or m.workspace_id=r.workspace_id) and m.active and m.role in ('admin','member')
     where r.id=${context.runId} and r.policy_snapshot_id=${context.policySnapshot.id}
-      and exists(select 1 from allrice_memberships m where m.user_id=r.owner_id and m.organization_id=r.organization_id
-        and (m.workspace_id is null or m.workspace_id=r.workspace_id) and m.active and m.role in ('admin','member'))`;
+    for share of u,o,w,p,er,a,e,s,m`;
   if (!authority)
     throw new NativeWaitAuthorityError('native_wait_authority_changed');
+  return { policyExpiresAt: authority.policy_expires_at };
 }
 
 /** Native has drained the question callback and flushed its journal before

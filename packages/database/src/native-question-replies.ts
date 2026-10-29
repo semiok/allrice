@@ -14,6 +14,7 @@ import {
   checkedResultAnswer,
   finalDeliveryUnavailable,
   registerJobCompletionGuard,
+  type JobCompletionGuard,
 } from './final-delivery-commit.ts';
 import type { TransactionSql } from 'postgres';
 import type { EnqueueOptions } from './execution/queue.ts';
@@ -59,11 +60,11 @@ async function currentQuestion(
   questionId: string,
 ) {
   await lockNativeQuestionMode(tx);
-  await lockNativeQuestionOwner(tx, input);
+  const { policyExpiresAt } = await lockNativeQuestionOwner(tx, input);
   const q = await readNativeQuestion(tx, input.sessionId, questionId);
   if (!q || q.closed_at || (await readNativeQuestionMode(tx)) !== 'timed')
     throw new NativeQuestionError();
-  return q;
+  return { q, policyExpiresAt };
 }
 
 /** Called only after the ordinary current-configuration admission checks. Copy
@@ -173,7 +174,7 @@ export async function readNativeQuestionReplyContext(
   const answer = await replyRequest(input, db);
   if (!answer) return undefined;
   return db.begin(async (tx) => {
-    const q = await currentQuestion(tx, input, answer.questionId);
+    const { q } = await currentQuestion(tx, input, answer.questionId);
     const [source] = await tx<
       { content_generation_id: string | null }[]
     >`select content_generation_id
@@ -288,7 +289,7 @@ export async function prepareNativeQuestionReply(
     return receipt;
   };
   const command = await db.begin(async (tx) => {
-    const q = await current(tx);
+    const { q } = await current(tx);
     const row = await readCommand(tx);
     const receipt = await terminalReceipt(tx, q, row);
     if (!receipt) {
@@ -310,13 +311,18 @@ export async function prepareNativeQuestionReply(
     // candidate. Recheck it under completeJob's actual transaction and lease.
     completionGuard: async () => {
       const assertReceipt = async (tx: TransactionSql) => {
-        const q = await current(tx);
+        const { q, policyExpiresAt } = await current(tx);
         const row = await readCommand(tx);
         if (row.id !== command.id || !(await terminalReceipt(tx, q, row)))
           finalDeliveryUnavailable();
+        return policyExpiresAt;
       };
       await db.begin(assertReceipt);
-      return registerJobCompletionGuard(async (tx, job, result) => {
+      const assertCurrent: JobCompletionGuard['assertCurrent'] = async (
+        tx,
+        job,
+        result,
+      ) => {
         if (
           job.id !== input.worker.jobId ||
           job.run_id !== input.context.runId ||
@@ -325,7 +331,7 @@ export async function prepareNativeQuestionReply(
           job.drain_reason
         )
           finalDeliveryUnavailable();
-        await assertReceipt(tx);
+        const policyExpiresAt = await assertReceipt(tx);
         // Historical turns may belong to a recovered consumed command. This
         // attempt must have no turn or model usage of its own.
         const [turn] =
@@ -364,12 +370,14 @@ export async function prepareNativeQuestionReply(
               checkedResultAnswer(result) !== answerText ||
               !job.lease_expires_at ||
               job.lease_expires_at <= stored.now ||
-              job.timeout_at <= stored.now
+              job.timeout_at <= stored.now ||
+              policyExpiresAt <= stored.now
             )
               finalDeliveryUnavailable();
           },
         };
-      });
+      };
+      return registerJobCompletionGuard(assertCurrent, lockNativeQuestionMode);
     },
     adopted: (proof: RuntimeNativeInputProof) =>
       db.begin(async (tx) => {
@@ -393,7 +401,7 @@ export async function prepareNativeQuestionReply(
       }),
     rejected: () =>
       db.begin(async (tx) => {
-        const q = await current(tx);
+        const { q } = await current(tx);
         if (!rejectedAnswer(q)) throw new NativeQuestionError();
         await tx`update allrice_conversation_commands set state='rejected',error_code='QUESTION_ANSWER_NOT_ADOPTED',updated_at=now()
         where id=${command.id} and state='claimed' and worker_id=${input.worker.workerId}`;

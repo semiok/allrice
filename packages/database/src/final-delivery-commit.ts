@@ -68,6 +68,10 @@ export interface JobCompletionCheck {
   assertCommitted(): Promise<void>;
 }
 export interface JobCompletionGuard {
+  /** Shared revocation fence, acquired before 703/root/clock/Job locks. */
+  readonly lockBeforeLease?: (
+    transaction: postgres.TransactionSql,
+  ) => Promise<void>;
   readonly assertCurrent: (
     transaction: postgres.TransactionSql,
     leasedJob: JobRow,
@@ -78,8 +82,9 @@ const guards = new WeakSet<object>();
 /** Internal runtime composition only. Never exported through HTTP/tool/RPC. */
 export function registerJobCompletionGuard(
   assertCurrent: JobCompletionGuard['assertCurrent'],
+  lockBeforeLease?: JobCompletionGuard['lockBeforeLease'],
 ): JobCompletionGuard {
-  const guard = Object.freeze({ assertCurrent });
+  const guard = Object.freeze({ assertCurrent, lockBeforeLease });
   guards.add(guard);
   return guard;
 }

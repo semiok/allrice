@@ -2670,10 +2670,20 @@ async function lockedLeasedJob(
 function leasedTransaction<T>(
   sql: ReturnType<typeof getDatabase>,
   mode: string,
-  lease: { workerId: string; jobId: string; leaseToken: string },
+  lease: {
+    workerId: string;
+    jobId: string;
+    leaseToken: string;
+    lockBeforeLease?: JobCompletionGuard['lockBeforeLease'];
+  },
   body: (transaction: TransactionSql, job: JobRow) => Promise<T>,
 ) {
   return sql.begin(mode, async (transaction) => {
+    if (lease.lockBeforeLease) {
+      await transaction`select set_config('lock_timeout',${`${leaseLockWaitMs}ms`},true)`;
+      await transaction`set local statement_timeout='10s'`;
+      await lease.lockBeforeLease(transaction);
+    }
     const job = await lockedLeasedJob(
       transaction,
       lease.workerId,
@@ -3142,7 +3152,12 @@ export async function completeJob(input: {
   const leaseToken = UuidSchema.parse(input.leaseToken);
   const sql = getDatabase();
   const isolation = guard ? 'isolation level read committed' : '';
-  const lease = { workerId, jobId, leaseToken };
+  const lease = {
+    workerId,
+    jobId,
+    leaseToken,
+    lockBeforeLease: guard?.lockBeforeLease,
+  };
   await leasedTransaction(sql, isolation, lease, async (transaction, job) => {
     const stopped = queueStopCause(job, new Date());
     if (stopped) {
