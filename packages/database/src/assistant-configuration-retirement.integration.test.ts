@@ -2,7 +2,10 @@
  * Real before APIs/Worker/Host histories are covered by p25 retirement delivery. */
 import { createHash, randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ExecutionContextSchema } from '@allrice/contracts';
+import {
+  ExecutionContextSchema,
+  RequestContextSchema,
+} from '@allrice/contracts';
 import {
   createRuntimeFixtureDatabase,
   runtimeFixtureStorage,
@@ -184,7 +187,22 @@ async function historical() {
     values(${review},${f.rootRunId},${child},${versionId},${object.checksum},${operation},'revise','Original failed review')`;
   await db`insert into allrice_development_deliveries(artifact_id,root_run_id,candidate_id,digest,review_id)
     values(${versionId},${f.rootRunId},${versionId},${object.checksum},${review})`;
-  return { ...f, child, object, versionId, bytes, storage, operation };
+  const [membership] =
+    await db`select * from allrice_memberships where id=${f.membership}`;
+  const context = RequestContextSchema.parse({
+    ...f.context,
+    memberships: [
+      {
+        id: membership!.id,
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        userId: f.user,
+        role: membership!.role,
+        active: membership!.active,
+      },
+    ],
+  });
+  return { ...f, context, child, object, versionId, bytes, storage, operation };
 }
 
 suite('executor-first retirement: passive legacy history', () => {
