@@ -399,7 +399,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     const runs = [
       { input: 477758, cached: 0, calls: 6 },
       { input: 207369, cached: 0, calls: 3 },
-      { input: 2745756, cached: 2708224, calls: 36 },
+      { input: 2745756, cached: 0, calls: 36 },
     ];
     let phase = 0,
       step = 0;
@@ -511,7 +511,9 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           cached_input_tokens: runs[phase]!.cached,
           output_tokens: runs[phase]!.calls * 5,
           usage_complete: true,
-          cache_usage_known: true,
+          // The pinned pi-ai transport omits zero cache buckets. Preserve that
+          // absence; subscription/cache-bucket folding has its own unit coverage.
+          cache_usage_known: false,
         });
         expect(
           await f.db`select route_decision_id id,input_tokens,cached_input_tokens,output_tokens,usage_complete,cache_usage_known from allrice_model_usage_ledger where route_decision_id=${route!.id}`,
