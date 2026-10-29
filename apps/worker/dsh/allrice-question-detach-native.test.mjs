@@ -604,6 +604,18 @@ describe('MET-210 timed questions on the AllRice host', () => {
         )
         .toBe(true);
       const callId = f.askCall().data.callId;
+      expect(JSON.parse(f.askCall().data.arguments).timeout).toBe(-1);
+      expect(
+        f.notices.find((n) => n.method === 'session.user-question').params,
+      ).not.toHaveProperty('deadlineAt');
+      expect(
+        f
+          .events()
+          .filter(
+            (e) =>
+              e.type === 'tool/result' && e.data.message.toolCallId === callId,
+          ),
+      ).toEqual([]);
       if (mode === 'shutdown') await client.close();
       else {
         client.child.kill('SIGTERM');
@@ -615,8 +627,8 @@ describe('MET-210 timed questions on the AllRice host', () => {
         (await f.journal(sessionId)).find(
           (e) =>
             e.type === 'tool/result' && e.data.message.toolCallId === callId,
-        )?.data.error.code,
-      ).toBe('ASK_ABORTED');
+        )?.data,
+      ).toMatchObject({ error: { code: 'ASK_ABORTED' } });
       client = await f.launch();
       await client.resume(sessionId);
       const state = await client.userQuestions(sessionId);
