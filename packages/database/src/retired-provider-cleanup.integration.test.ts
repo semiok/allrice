@@ -7,7 +7,7 @@ import {
 } from './runtime.fixture.ts';
 
 type Database = Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>['db'];
-type Assistant = Awaited<ReturnType<typeof runtimeTaskFixture>>;
+type HistoricalRun = Awaited<ReturnType<typeof runtimeTaskFixture>>;
 const digest = `sha256:${'a'.repeat(64)}`;
 const geminiProvider = '51000000-0000-4000-8000-000000000005';
 const geminiConnection = '52000000-0000-4000-8000-000000000005';
@@ -52,7 +52,7 @@ async function guards(db: Database) {
   };
 }
 async function accounting(
-  f: Assistant,
+  f: HistoricalRun,
   provider: string,
   connectionId: string,
   catalogId: string,
@@ -63,22 +63,16 @@ async function accounting(
     callId = randomUUID();
   const [employee] =
     await db`select id from allrice_employees where organization_id=${scope.organizationId}`;
+  // This suite deliberately runs at 0223. Seed its historical accounting FKs
+  // directly; the retired executor is not available in the current application.
+  await db`insert into allrice_assistant_roots(root_run_id,configuration,worker_job_id,worker_id,worker_lease_digest,generation)
+    values(${f.task.runId},'{}',${f.worker.jobId},${f.worker.workerId},${digest},1)`;
+  await db`insert into allrice_assistant_instances(run_id,root_run_id,native_session_id,delegation_id,creation_digest,label,depth,allowed_tools,artifact_namespace,status)
+    values(${f.task.runId},${f.task.runId},${'historical-' + f.task.runId},${randomUUID()},${digest},'Historical accounting',0,'[]',${'historical/' + f.task.runId},'completed')`;
+  await db`insert into allrice_assistant_model_admissions(call_id,run_id,root_run_id,requested_output_tokens,granted_output_tokens,input_tokens,request_digest,dispatched_at)
+    values(${callId},${f.task.runId},${f.task.runId},1,1,1,${digest},clock_timestamp())`;
   await db`insert into allrice_assistant_price_snapshots(root_run_id,snapshot_digest,snapshot,currency)
     values(${f.task.runId},${digest},${db.json({ price: { target: { provider, connectionId, catalogId, model: 'synthetic-only' } } })},'USD')`;
-  await f.runtime.prepareModelUsage({
-    ...f.base,
-    runId: f.task.runId,
-    callId,
-    requestedOutputTokens: 1,
-  });
-  await f.runtime.dispatchModelUsage({
-    ...f.base,
-    runId: f.task.runId,
-    callId,
-    inputTokens: 1,
-    outputTokens: 1,
-    requestDigest: digest,
-  });
   await db`insert into allrice_assistant_cost_receipts(call_id,root_run_id,run_id,snapshot_digest,request_digest,receipt_digest,usage,usage_complete,cache_usage_known,cost_basis,cost_picounits)
     values(${callId},${f.task.runId},${f.task.runId},${digest},${digest},${digest},'{}',true,false,'conservative_upper_bound',1)`;
   await db`insert into allrice_route_decisions(id,organization_id,workspace_id,actor_id,employee_id,run_id,input_checksum,candidates,selected_kind,selected_candidate_id,harness,provider,model,generation,attempt,reason_codes,created_at,model_connection_id,model_catalog_entry_id)

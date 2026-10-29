@@ -191,6 +191,9 @@ jobs:
     timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The retirement upgrade fixture archives the exact pre-upgrade commit.
+          fetch-depth: 0
       - name: Capture actual checked-out repository identity
         run: node scripts/acceptance/platform/repository-ci.mjs capture --output=.local/repository-ci/source.json
       - uses: pnpm/action-setup@v4
