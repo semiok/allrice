@@ -167,109 +167,137 @@ suite('P23 real service HTTP relay in dedicated VM (no host port)', () => {
       await rm(root, { recursive: true, force: true });
     }
   }, 20000);
-  it('serves actual HTML and project asset bytes without publishing a host port', async () => {
-    const html = await get('/');
-    expect(html.status).toBe(200);
-    expect(html.body.toString()).toContain('Real project preview');
-    const asset = await get('/app.js');
-    expect(asset.body.toString()).toContain('real-container');
-    const container = await runner.api.json<{
-      HostConfig: { NetworkMode: string; PortBindings: unknown };
-    }>('GET', `/containers/${target.containerId}/json`);
-    expect(container.HostConfig.NetworkMode).toBe('none');
-    expect(container.HostConfig.PortBindings ?? {}).toEqual({});
-  }, 20000);
-  it('delivers a single exact approved request and strips cookies and authorization', async () => {
-    const response = await relay.fetch(
-      target,
-      {
-        url: localPreviewOrigin(target.endpointId) + '/save?synthetic=1',
-        method: 'POST',
-        headers: {
-          'content-type': 'text/plain',
-          cookie: 'private-cookie=synthetic',
-          authorization: 'Bearer synthetic',
-          origin: localPreviewOrigin(target.endpointId),
-        },
-        body: Buffer.from('synthetic-save'),
-      },
-      { assertCurrent: current },
-    );
-    const actual = JSON.parse(response.body.toString());
-    expect(actual).toMatchObject({
-      path: '/save?synthetic=1',
-      method: 'POST',
-      body: 'synthetic-save',
-      writes: 1,
-    });
-    expect(actual.headers.cookie).toBeUndefined();
-    expect(actual.headers.authorization).toBeUndefined();
-    expect(response.headers['set-cookie']).toBeUndefined();
-    expect(actual.headers.host).toBe(
-      new URL(localPreviewOrigin(target.endpointId)).host,
-    );
-  }, 15000);
-  it('keeps same-origin redirects but rejects external and loopback redirects', async () => {
-    expect((await get('/redirect')).headers.location).toBe(
-      localPreviewOrigin(target.endpointId) + '/',
-    );
-    await expect(get('/away')).rejects.toMatchObject({
-      code: 'LOCAL_PREVIEW_NETWORK_DENIED',
-    });
-  }, 15000);
-  it('rejects arbitrary port/host and foreign container identity before HTTP', async () => {
-    await expect(
-      relay.fetch(
-        target,
-        { url: 'http://127.0.0.1:5432/', method: 'GET', headers: {} },
-        { assertCurrent: current },
-      ),
-    ).rejects.toMatchObject({ code: 'LOCAL_PREVIEW_REQUEST_INVALID' });
-    await expect(
-      relay.fetch(
-        { ...target, processId: randomUUID() },
-        {
-          url: localPreviewOrigin(target.endpointId) + '/',
-          method: 'GET',
-          headers: {},
-        },
-        { assertCurrent: current },
-      ),
-    ).rejects.toMatchObject({ code: 'LOCAL_PREVIEW_TARGET_DENIED' });
-  });
-  it('rejects expired authority without replaying an earlier write', async () => {
-    authority = false;
-    try {
-      await expect(get('/status')).rejects.toThrow();
-    } finally {
-      authority = true;
-    }
-    expect(JSON.parse((await get('/status')).body.toString()).writes).toBe(1);
-  }, 15000);
-  it('enforces body/output bounds and an absolute response deadline', async () => {
-    await expect(
-      relay.fetch(
+  it(
+    'serves actual HTML and project asset bytes without publishing a host port',
+    { tags: ['manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET'], timeout: 20000 },
+    async () => {
+      const html = await get('/');
+      expect(html.status).toBe(200);
+      expect(html.body.toString()).toContain('Real project preview');
+      const asset = await get('/app.js');
+      expect(asset.body.toString()).toContain('real-container');
+      const container = await runner.api.json<{
+        HostConfig: { NetworkMode: string; PortBindings: unknown };
+      }>('GET', `/containers/${target.containerId}/json`);
+      expect(container.HostConfig.NetworkMode).toBe('none');
+      expect(container.HostConfig.PortBindings ?? {}).toEqual({});
+    },
+  );
+  it(
+    'delivers a single exact approved request and strips cookies and authorization',
+    { tags: ['manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET'], timeout: 15000 },
+    async () => {
+      const response = await relay.fetch(
         target,
         {
-          url: localPreviewOrigin(target.endpointId) + '/',
+          url: localPreviewOrigin(target.endpointId) + '/save?synthetic=1',
           method: 'POST',
-          headers: {},
-          body: Buffer.alloc(1000001),
+          headers: {
+            'content-type': 'text/plain',
+            cookie: 'private-cookie=synthetic',
+            authorization: 'Bearer synthetic',
+            origin: localPreviewOrigin(target.endpointId),
+          },
+          body: Buffer.from('synthetic-save'),
         },
         { assertCurrent: current },
-      ),
-    ).rejects.toMatchObject({ code: 'LOCAL_PREVIEW_REQUEST_INVALID' });
-    await expect(get('/huge')).rejects.toThrow();
-    const started = Date.now();
-    await expect(get('/hang')).rejects.toThrow();
-    expect(Date.now() - started).toBeLessThan(8000);
-  }, 20000);
-  it('denies access immediately after the actual service stops', async () => {
-    stop = true;
-    const result = await lifecycle;
-    expect(result.stopped).toBe(true);
-    await expect(get('/')).rejects.toMatchObject({
-      code: 'LOCAL_PREVIEW_TARGET_DENIED',
-    });
-  }, 20000);
+      );
+      const actual = JSON.parse(response.body.toString());
+      expect(actual).toMatchObject({
+        path: '/save?synthetic=1',
+        method: 'POST',
+        body: 'synthetic-save',
+        writes: 1,
+      });
+      expect(actual.headers.cookie).toBeUndefined();
+      expect(actual.headers.authorization).toBeUndefined();
+      expect(response.headers['set-cookie']).toBeUndefined();
+      expect(actual.headers.host).toBe(
+        new URL(localPreviewOrigin(target.endpointId)).host,
+      );
+    },
+  );
+  it(
+    'keeps same-origin redirects but rejects external and loopback redirects',
+    { tags: ['manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET'], timeout: 15000 },
+    async () => {
+      expect((await get('/redirect')).headers.location).toBe(
+        localPreviewOrigin(target.endpointId) + '/',
+      );
+      await expect(get('/away')).rejects.toMatchObject({
+        code: 'LOCAL_PREVIEW_NETWORK_DENIED',
+      });
+    },
+  );
+  it(
+    'rejects arbitrary port/host and foreign container identity before HTTP',
+    { tags: ['manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET'] },
+    async () => {
+      await expect(
+        relay.fetch(
+          target,
+          { url: 'http://127.0.0.1:5432/', method: 'GET', headers: {} },
+          { assertCurrent: current },
+        ),
+      ).rejects.toMatchObject({ code: 'LOCAL_PREVIEW_REQUEST_INVALID' });
+      await expect(
+        relay.fetch(
+          { ...target, processId: randomUUID() },
+          {
+            url: localPreviewOrigin(target.endpointId) + '/',
+            method: 'GET',
+            headers: {},
+          },
+          { assertCurrent: current },
+        ),
+      ).rejects.toMatchObject({ code: 'LOCAL_PREVIEW_TARGET_DENIED' });
+    },
+  );
+  it(
+    'rejects expired authority without replaying an earlier write',
+    { tags: ['manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET'], timeout: 15000 },
+    async () => {
+      authority = false;
+      try {
+        await expect(get('/status')).rejects.toThrow();
+      } finally {
+        authority = true;
+      }
+      expect(JSON.parse((await get('/status')).body.toString()).writes).toBe(1);
+    },
+  );
+  it(
+    'enforces body/output bounds and an absolute response deadline',
+    { tags: ['manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET'], timeout: 20000 },
+    async () => {
+      await expect(
+        relay.fetch(
+          target,
+          {
+            url: localPreviewOrigin(target.endpointId) + '/',
+            method: 'POST',
+            headers: {},
+            body: Buffer.alloc(1000001),
+          },
+          { assertCurrent: current },
+        ),
+      ).rejects.toMatchObject({ code: 'LOCAL_PREVIEW_REQUEST_INVALID' });
+      await expect(get('/huge')).rejects.toThrow();
+      const started = Date.now();
+      await expect(get('/hang')).rejects.toThrow();
+      expect(Date.now() - started).toBeLessThan(8000);
+    },
+  );
+  it(
+    'denies access immediately after the actual service stops',
+    { tags: ['manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET'], timeout: 20000 },
+    async () => {
+      stop = true;
+      const result = await lifecycle;
+      expect(result.stopped).toBe(true);
+      await expect(get('/')).rejects.toMatchObject({
+        code: 'LOCAL_PREVIEW_TARGET_DENIED',
+      });
+    },
+  );
 });

@@ -15,6 +15,10 @@ suite('owned runsc VM physical project guard', () => {
       service
         ? 'stops a SIGSTOP project when its root-owned physical lease is lost'
         : 'retains the original 65-second ceiling for ordinary commands',
+      {
+        tags: ['manual:ALLRICE_RUN_CLOUD_PROJECT_SERVICE_NATIVE'],
+        timeout: 30000,
+      },
       async () => {
         const backend = new CloudRunnerBackend(),
           attempt = randomUUID(),
@@ -139,6 +143,5 @@ suite('owned runsc VM physical project guard', () => {
             );
         }
       },
-      30000,
     );
 });

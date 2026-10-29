@@ -67,36 +67,60 @@ jobs:
         env:
           ALLRICE_RUN_BROWSER_INTEGRATION: 1
           ALLRICE_RUN_BRAND_CONTENT_BROWSER: 1
-        run: pnpm exec vitest run --maxWorkers=1 --testTimeout=30000 apps/web/components/admin/admin-shell.browser.test.ts apps/web/components/theme/theme.browser.test.ts packages/ui/src/design-tokens.browser.test.ts apps/web/app/login/auth-submit.browser.test.ts apps/web/app/chatflow/workbench-layout.browser.test.ts apps/web/app/chatflow/native-document-preview.browser.test.ts apps/web/app/chatflow/terminal-workbench.browser.test.ts apps/web/app/chatflow/once-tasks.browser.test.ts apps/web/app/chatflow/recurring-tasks.browser.test.ts apps/web/app/chatflow/automation-tasks.browser.test.ts apps/web/app/chatflow/composer-isolation.browser.test.ts apps/web/app/chatflow/composer-status.browser.test.ts apps/web/app/chatflow/chat-contrast.browser.test.ts apps/web/app/chatflow/plain-copy.browser.test.ts apps/web/app/chatflow/technical-details.browser.test.ts apps/web/app/chatflow/work-process-reading.browser.test.ts apps/web/app/chatflow/experience-command-theme.browser.test.ts apps/web/app/chatflow/sidebar-labels.browser.test.ts apps/web/app/chatflow/catalog-contrast.browser.test.ts apps/web/app/chatflow/browser-workspace-panel.browser.test.ts apps/web/app/chatflow/brand-content-panel.test.tsx apps/web/app/workspace/mcp/connected-apps.browser.test.ts apps/web/app/runtime-console/platform-model-settings.browser.test.ts apps/web/app/runtime-console/codex-subscriptions.browser.test.ts apps/web/app/runtime-console/codex-authorization.browser.test.ts apps/web/app/runtime-console/platform-mcp-settings.browser.test.ts apps/web/app/runtime-console/technical-tasks.browser.test.ts apps/web/app/runtime-console/platform-quality.browser.test.ts apps/web/app/runtime-console/platform-quality-evidence.browser.test.ts apps/web/app/runtime-console/platform-repository-repair.browser.test.ts apps/web/app/runtime-console/platform-repository-publications.browser.test.ts apps/web/app/runtime-console/platform-repository-reviews.browser.test.ts apps/web/app/runtime-console/platform-repository-merges.browser.test.ts apps/web/server/project-preview.test.mjs
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 --testTimeout=30000 apps/web/components/admin/admin-shell.browser.test.ts apps/web/components/theme/theme.browser.test.ts packages/ui/src/design-tokens.browser.test.ts apps/web/app/login/auth-submit.browser.test.ts apps/web/app/chatflow/workbench-layout.browser.test.ts apps/web/app/chatflow/native-document-preview.browser.test.ts apps/web/app/chatflow/terminal-workbench.browser.test.ts apps/web/app/chatflow/once-tasks.browser.test.ts apps/web/app/chatflow/recurring-tasks.browser.test.ts apps/web/app/chatflow/automation-tasks.browser.test.ts apps/web/app/chatflow/composer-isolation.browser.test.ts apps/web/app/chatflow/composer-status.browser.test.ts apps/web/app/chatflow/chat-contrast.browser.test.ts apps/web/app/chatflow/plain-copy.browser.test.ts apps/web/app/chatflow/technical-details.browser.test.ts apps/web/app/chatflow/work-process-reading.browser.test.ts apps/web/app/chatflow/experience-command-theme.browser.test.ts apps/web/app/chatflow/sidebar-labels.browser.test.ts apps/web/app/chatflow/catalog-contrast.browser.test.ts apps/web/app/chatflow/browser-workspace-panel.browser.test.ts apps/web/app/chatflow/brand-content-panel.test.tsx apps/web/app/workspace/mcp/connected-apps.browser.test.ts apps/web/app/runtime-console/platform-model-settings.browser.test.ts apps/web/app/runtime-console/codex-subscriptions.browser.test.ts apps/web/app/runtime-console/codex-authorization.browser.test.ts apps/web/app/runtime-console/platform-mcp-settings.browser.test.ts apps/web/app/runtime-console/technical-tasks.browser.test.ts apps/web/app/runtime-console/platform-quality.browser.test.ts apps/web/app/runtime-console/platform-quality-evidence.browser.test.ts apps/web/app/runtime-console/platform-repository-repair.browser.test.ts apps/web/app/runtime-console/platform-repository-publications.browser.test.ts apps/web/app/runtime-console/platform-repository-reviews.browser.test.ts apps/web/app/runtime-console/platform-repository-merges.browser.test.ts apps/web/server/project-preview.test.mjs
+      - name: Collect remaining standalone browser integration tests
+        env:
+          ALLRICE_RUN_BROWSER_INTEGRATION: 1
+          ALLRICE_RUN_BRAND_CONTENT_BROWSER: 1
+          ALLRICE_TEST_STATIC_BROWSER: 1
+          ALLRICE_MANAGED_BROWSER_EXECUTABLE: /opt/google/chrome/chrome
+        run: |
+          test -x "$ALLRICE_MANAGED_BROWSER_EXECUTABLE"
+          "$ALLRICE_MANAGED_BROWSER_EXECUTABLE" --version
+          node scripts/ci-integration-tests.mjs run browser -- --maxWorkers=1 --testTimeout=30000
+      - name: Collect remaining browser and PostgreSQL integration tests
+        env:
+          ALLRICE_RUN_DB_INTEGRATION: 1
+          ALLRICE_RUN_BROWSER_INTEGRATION: 1
+          ALLRICE_WORKBENCH_BROWSER_TEST: 1
+          ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
+        run: node scripts/ci-integration-tests.mjs run browser+db -- --maxWorkers=1
       - name: Verify private repository credential write reconciliation
         env:
           ALLRICE_RUN_BROWSER_INTEGRATION: 1
-        run: pnpm exec vitest run --maxWorkers=1 apps/web/app/runtime-console/platform-repository-credential.browser.test.ts apps/web/app/runtime-console/platform-maintenance.browser.test.ts apps/web/app/runtime-console/platform-maintenance-github-bot.browser.test.ts apps/web/app/runtime-console/platform-maintenance-report-actions.browser.test.ts
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 apps/web/app/runtime-console/platform-repository-credential.browser.test.ts apps/web/app/runtime-console/platform-maintenance.browser.test.ts apps/web/app/runtime-console/platform-maintenance-github-bot.browser.test.ts apps/web/app/runtime-console/platform-maintenance-report-actions.browser.test.ts
       - name: Verify diagnosis-only historical results without repository writes
         env:
           ALLRICE_RUN_BROWSER_INTEGRATION: 1
-        run: pnpm exec vitest run --maxWorkers=1 apps/web/app/runtime-console/platform-report-only.browser.test.ts
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 apps/web/app/runtime-console/platform-report-only.browser.test.ts
       - name: Verify tenant management UI, HTTP authorization and PostgreSQL persistence
         # Synthetic principals in disposable schemas, never real tenant permissions.
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_RUN_BROWSER_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: pnpm exec vitest run --maxWorkers=1 --testTimeout=30000 packages/database/src/reference-library.integration.test.ts packages/database/src/workbench-files.integration.test.ts packages/database/src/reference-artifacts.integration.test.ts packages/database/src/bridge-presence.integration.test.ts apps/web/app/chatflow/reference-library.browser.test.ts packages/database/src/tenant-administration.integration.test.ts packages/database/src/tenant-employees.integration.test.ts packages/database/src/employees/employee-instances.integration.test.ts packages/database/src/employees/employee-content.integration.test.ts packages/database/src/employees/personal-skills.integration.test.ts packages/database/src/employees/employee-base-skills.integration.test.ts packages/database/src/tenant-inheritance.integration.test.ts packages/database/src/employee-administration.integration.test.ts packages/database/src/tenant-resources.integration.test.ts packages/database/src/tenant-validation.integration.test.ts packages/database/src/user-monthly-quota.integration.test.ts packages/database/src/user-preferences.integration.test.ts packages/database/src/native-preferences.integration.test.ts apps/web/app/runtime-console/tenant-administration.browser.test.ts apps/web/app/chatflow/work-automation.browser.test.ts packages/database/src/work-automation.integration.test.ts packages/database/src/workspace/session-references.integration.test.ts
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 --testTimeout=30000 packages/database/src/reference-library.integration.test.ts packages/database/src/workbench-files.integration.test.ts packages/database/src/reference-artifacts.integration.test.ts packages/database/src/bridge-presence.integration.test.ts apps/web/app/chatflow/reference-library.browser.test.ts packages/database/src/tenant-administration.integration.test.ts packages/database/src/tenant-employees.integration.test.ts packages/database/src/employees/employee-instances.integration.test.ts packages/database/src/employees/employee-content.integration.test.ts packages/database/src/employees/personal-skills.integration.test.ts packages/database/src/employees/employee-base-skills.integration.test.ts packages/database/src/tenant-inheritance.integration.test.ts packages/database/src/employee-administration.integration.test.ts packages/database/src/tenant-resources.integration.test.ts packages/database/src/tenant-validation.integration.test.ts packages/database/src/user-monthly-quota.integration.test.ts packages/database/src/user-preferences.integration.test.ts packages/database/src/native-preferences.integration.test.ts apps/web/app/runtime-console/tenant-administration.browser.test.ts apps/web/app/chatflow/work-automation.browser.test.ts packages/database/src/work-automation.integration.test.ts packages/database/src/workspace/session-references.integration.test.ts
       - name: Verify organization and employee account management in Chromium
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_RUN_BROWSER_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: pnpm exec vitest run --maxWorkers=1 --testTimeout=30000 packages/database/src/organization-administration.integration.test.ts packages/database/src/organization-ai-directory.integration.test.ts packages/database/src/organization-departments.integration.test.ts packages/database/src/content-maintenance.integration.test.ts packages/database/src/organization-employee-assignments.integration.test.ts packages/database/src/organization-publication.integration.test.ts packages/database/src/organization-activity.integration.test.ts packages/database/src/organization-migration.integration.test.ts packages/database/src/investment.integration.test.ts apps/web/app/runtime-console/organization-administration.browser.test.ts
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 --testTimeout=30000 packages/database/src/organization-administration.integration.test.ts packages/database/src/organization-ai-directory.integration.test.ts packages/database/src/organization-departments.integration.test.ts packages/database/src/content-maintenance.integration.test.ts packages/database/src/organization-employee-assignments.integration.test.ts packages/database/src/organization-publication.integration.test.ts packages/database/src/organization-activity.integration.test.ts packages/database/src/organization-migration.integration.test.ts packages/database/src/investment.integration.test.ts apps/web/app/runtime-console/organization-administration.browser.test.ts
       - name: Verify immutable custom workflow packages and brand content stages
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: pnpm exec vitest run --maxWorkers=1 packages/database/src/capabilities/workflow-packages.integration.test.ts packages/database/src/brand-content/brand-content.integration.test.ts packages/database/src/execution/workflow-runtime.integration.test.ts packages/database/src/verify-database.integration.test.ts
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 packages/database/src/capabilities/workflow-packages.integration.test.ts packages/database/src/brand-content/brand-content.integration.test.ts packages/database/src/execution/workflow-runtime.integration.test.ts packages/database/src/verify-database.integration.test.ts
       - name: Build contracts for the native Host in delivery browser scenarios
         # The separate Node Host uses package exports, outside Vitest aliases.
         run: pnpm --filter @allrice/contracts build
+      - name: Collect remaining ordinary PostgreSQL integration tests
+        env:
+          ALLRICE_RUN_DB_INTEGRATION: 1
+          ALLRICE_NATIVE_ONCE_PROBE_MODULE_BASE: ${{ github.workspace }}/apps/worker/package.json
+          TSX_TSCONFIG_PATH: ${{ github.workspace }}/tsconfig.base.json
+          ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
+        run: node scripts/ci-integration-tests.mjs run db -- --maxWorkers=1 --outputFile=.local/quality/postgres/vitest-auto.json
       - name: Verify formal partial-delivery and preview facts in Chromium
         # Same real queue/Worker/Broker/PG/HTTP as the API matrix; only these two
         # UI cases are repeated. Deterministic adapters use no paid model/device.
@@ -104,7 +128,15 @@ jobs:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_RUN_BROWSER_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: pnpm exec vitest run --maxWorkers=1 tests/integration/platform-quality-delivery.integration.test.ts -t 'one available file|pending and failed'
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 tests/integration/platform-quality-delivery.integration.test.ts -t 'one available file|pending and failed'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-collection-${{ github.job }}-${{ github.run_attempt }}
+          path: .local/integration-collection/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
       - name: Record complete original CI gate
         run: node scripts/acceptance/platform/repository-ci.mjs finish --capture=.local/repository-ci/source.json --output=.local/repository-ci/receipt.json
       - uses: actions/upload-artifact@v4
@@ -133,6 +165,10 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Check environment-aware integration collection
+        run: |
+          mkdir -p .local/integration-collection
+          node scripts/ci-integration-tests.mjs inventory > .local/integration-collection/inventory.json
       - run: pnpm dsh:verify
       - name: Reject retired native SQL references
         run: node scripts/verify-native-generation-sql.mjs
@@ -160,7 +196,13 @@ jobs:
         run: pnpm exec tsx scripts/acceptance/platform/quality-scenarios.ts capture --group=native --output=.local/quality/native/capture.json
       - name: Run existing tests and retain their original evidence
         id: native-tests
-        run: pnpm test --maxWorkers=2 --reporter=default --reporter=json --outputFile=.local/quality/native/vitest-native.json
+        env:
+          ALLRICE_NATIVE_ONCE_PROBE_MODULE_BASE: ${{ github.workspace }}/apps/worker/package.json
+          TSX_TSCONFIG_PATH: ${{ github.workspace }}/tsconfig.base.json
+        run: |
+          pnpm --filter @allrice/contracts build
+          node --test --test-concurrency=1 scripts/ci-integration-tests.node.test.mjs
+          node scripts/ci-integration-tests.mjs run native -- --maxWorkers=2 --outputFile=.local/quality/native/vitest-native.json
       - name: Collect deterministic scenario evidence without rerunning tests
         if: always() && steps.native-capture.outcome == 'success'
         env:
@@ -176,6 +218,14 @@ jobs:
       - name: Build all workspace production packages
         id: workspace-build
         run: pnpm build
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-collection-${{ github.job }}-${{ github.run_attempt }}
+          path: .local/integration-collection/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
       - name: Record complete original CI gate
         run: node scripts/acceptance/platform/repository-ci.mjs finish --capture=.local/repository-ci/source.json --output=.local/repository-ci/receipt.json
       - uses: actions/upload-artifact@v4
@@ -231,7 +281,7 @@ jobs:
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: pnpm exec vitest run --maxWorkers=1 scripts/dsh-convergence-gate.integration.test.ts
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 scripts/dsh-convergence-gate.integration.test.ts
       - name: Capture versioned PostgreSQL regression source
         id: postgres-capture
         run: pnpm exec tsx scripts/acceptance/platform/quality-scenarios.ts capture --group=postgres --output=.local/quality/postgres/capture.json
@@ -247,97 +297,99 @@ jobs:
             printf '#!/bin/sh\nexec docker compose --project-name allrice-dev --file compose.dev.yaml exec -T -e PGDATABASE -e PGUSER -e PGPASSWORD postgres %s "$@"\n' "$tool" > "$RUNNER_TEMP/allrice-pg-client/$tool"
             chmod +x "$RUNNER_TEMP/allrice-pg-client/$tool"
           done
-          PATH="$RUNNER_TEMP/allrice-pg-client:$PATH" pnpm exec vitest run --maxWorkers=1 packages/database/src/function-search-path.integration.test.ts
+          PATH="$RUNNER_TEMP/allrice-pg-client:$PATH" node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 packages/database/src/function-search-path.integration.test.ts
       - name: Verify platform content synchronization against PostgreSQL
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: pnpm exec vitest run --maxWorkers=1 packages/database/src/platform-content/sync.integration.test.ts
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 packages/database/src/platform-content/sync.integration.test.ts
       - name: Verify shared operation ledger against PostgreSQL
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: pnpm exec vitest run --maxWorkers=1 packages/database/src/runtime-ledger/ledger.integration.test.ts packages/database/src/cloud-ledger-lock-order.integration.test.ts
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 packages/database/src/runtime-ledger/ledger.integration.test.ts packages/database/src/cloud-ledger-lock-order.integration.test.ts
       - name: Verify unified account login and password lifecycle
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: pnpm exec vitest run --maxWorkers=2 packages/database/src/unified-login.integration.test.ts apps/web/lib/identity/unified-login.integration.test.ts
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=2 packages/database/src/unified-login.integration.test.ts apps/web/lib/identity/unified-login.integration.test.ts
       - name: Verify Worker capability heartbeats and actual tenant publications
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: pnpm exec vitest run --maxWorkers=1 packages/database/src/providers/runtime-capabilities.integration.test.ts packages/database/src/providers/codex-subscriptions.integration.test.ts
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 packages/database/src/providers/runtime-capabilities.integration.test.ts packages/database/src/providers/codex-subscriptions.integration.test.ts
       - name: Verify managed dependency resolution authority and diagnostic publication
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: pnpm exec vitest run --maxWorkers=1 packages/database/src/project-resolution.integration.test.ts
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 packages/database/src/project-resolution.integration.test.ts
       - name: Verify MET-153 durable task time and approval resume against PostgreSQL
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: pnpm exec vitest run --maxWorkers=1 --reporter=default --reporter=json --outputFile=.local/quality/postgres/vitest-task.json packages/database/src/session-archive.integration.test.ts packages/database/src/task-clock.integration.test.ts packages/database/src/native-questions.integration.test.ts packages/database/src/execution-diagnostics.integration.test.ts packages/database/src/execution/native-run-diagnostics.integration.test.ts packages/database/src/operations-resources.integration.test.ts packages/database/src/task-progress.integration.test.ts packages/database/src/queue-cancellation.integration.test.ts packages/database/src/worker-lease-lock.integration.test.ts packages/database/src/worker-lease-boundaries.integration.test.ts packages/database/src/queue-start-failure.integration.test.ts packages/database/src/native-session-binding.integration.test.ts packages/database/src/conversation/native-root-origin.integration.test.ts packages/database/src/conversation/current-execution-binding.integration.test.ts packages/database/src/conversation/platform-test-binding-migration.integration.test.ts packages/database/src/conversation/platform-test-current-lifecycle.integration.test.ts packages/database/src/conversation/platform-test-method-issuer.integration.test.ts packages/database/src/conversation/native-context-retirement.integration.test.ts packages/database/src/providers/dsh-runtime-close-observations.integration.test.ts apps/worker/test/dsh-runtime-finalization.integration.test.ts packages/database/src/final-delivery-rollout.integration.test.ts packages/database/src/native-journal-contract-store.integration.test.ts packages/database/src/native-generation-binding.integration.test.ts packages/database/src/native-generation-history.integration.test.ts packages/database/src/platform-employee-seed.integration.test.ts packages/database/src/task-native-wait.integration.test.ts apps/worker/test/p25/task-wait-worker.integration.test.ts
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 --outputFile=.local/quality/postgres/vitest-task.json packages/database/src/session-archive.integration.test.ts packages/database/src/task-clock.integration.test.ts packages/database/src/native-questions.integration.test.ts packages/database/src/execution-diagnostics.integration.test.ts packages/database/src/execution/native-run-diagnostics.integration.test.ts packages/database/src/operations-resources.integration.test.ts packages/database/src/task-progress.integration.test.ts packages/database/src/queue-cancellation.integration.test.ts packages/database/src/worker-lease-lock.integration.test.ts packages/database/src/worker-lease-boundaries.integration.test.ts packages/database/src/queue-start-failure.integration.test.ts packages/database/src/native-session-binding.integration.test.ts packages/database/src/conversation/native-root-origin.integration.test.ts packages/database/src/conversation/current-execution-binding.integration.test.ts packages/database/src/conversation/platform-test-binding-migration.integration.test.ts packages/database/src/conversation/platform-test-current-lifecycle.integration.test.ts packages/database/src/conversation/platform-test-method-issuer.integration.test.ts packages/database/src/conversation/native-context-retirement.integration.test.ts packages/database/src/providers/dsh-runtime-close-observations.integration.test.ts apps/worker/test/dsh-runtime-finalization.integration.test.ts packages/database/src/final-delivery-rollout.integration.test.ts packages/database/src/native-journal-contract-store.integration.test.ts packages/database/src/native-generation-binding.integration.test.ts packages/database/src/native-generation-history.integration.test.ts packages/database/src/platform-employee-seed.integration.test.ts packages/database/src/task-native-wait.integration.test.ts apps/worker/test/p25/task-wait-worker.integration.test.ts
       - name: Verify governed Bridge policy and real HTTP journal integration
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: pnpm exec vitest run --maxWorkers=1 packages/database/src/bridge-owner-isolation.integration.test.ts packages/database/src/bridge-presence.integration.test.ts packages/database/src/runtime-policy.integration.test.ts packages/database/src/runtime-governed-bridge.integration.test.ts packages/database/src/runtime-ledger/bridge-http.integration.test.ts packages/database/src/local-python-execution.integration.test.ts packages/database/src/python-execution.integration.test.ts
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 packages/database/src/bridge-owner-isolation.integration.test.ts packages/database/src/bridge-presence.integration.test.ts packages/database/src/runtime-policy.integration.test.ts packages/database/src/runtime-ledger/bridge-http.integration.test.ts packages/database/src/local-python-execution.integration.test.ts packages/database/src/python-execution.integration.test.ts
       - name: Verify MCP employee binding, native DSH, per-tool authorization and real HTTP ledger
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
         # These suites use their own synthetic MCP server and random PG schemas.
         # This Linux CI job does not provision the dedicated macOS/runsc test VM.
-        run: pnpm exec vitest run --maxWorkers=1 --reporter=default --reporter=json --outputFile=.local/quality/postgres/vitest-mcp.json packages/database/src/mcp-connections.integration.test.ts packages/database/src/mcp-http.integration.test.ts packages/database/src/mcp-execution.integration.test.ts packages/database/src/cloud-execution.integration.test.ts packages/database/src/cloud-network.integration.test.ts packages/database/src/cloud-execution-budget.integration.test.ts packages/database/src/cloud-python.integration.test.ts packages/database/src/workspace-access.integration.test.ts tests/integration/mcp-revocation.integration.test.ts
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 --outputFile=.local/quality/postgres/vitest-mcp.json packages/database/src/mcp-connections.integration.test.ts packages/database/src/mcp-http.integration.test.ts packages/database/src/mcp-execution.integration.test.ts packages/database/src/cloud-execution.integration.test.ts packages/database/src/cloud-network.integration.test.ts packages/database/src/cloud-execution-budget.integration.test.ts packages/database/src/cloud-python.integration.test.ts packages/database/src/workspace-access.integration.test.ts tests/integration/mcp-revocation.integration.test.ts
       - name: Verify platform model inheritance and image receipts
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: pnpm exec vitest run --maxWorkers=1 packages/database/src/platform-model-settings.integration.test.ts packages/database/src/retired-provider-cleanup.integration.test.ts apps/worker/test/met163/image-generation.integration.test.ts
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 packages/database/src/platform-model-settings.integration.test.ts packages/database/src/retired-provider-cleanup.integration.test.ts apps/worker/test/met163/image-generation.integration.test.ts
       - name: Verify employee Run binding in caller transactions
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
         # Real isolated schemas prove one connection, rollback and lock contention.
         # These checks do not enqueue business work or call a model.
-        run: pnpm exec vitest run --maxWorkers=1 packages/database/src/providers/model-freeze-readers.transaction.integration.test.ts packages/database/src/providers/model-freeze-chain.transaction.integration.test.ts packages/database/src/freeze-helpers.transaction.test.ts packages/database/src/employees/employee-run-binding.transaction.integration.test.ts
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 packages/database/src/providers/model-freeze-readers.transaction.integration.test.ts packages/database/src/providers/model-freeze-chain.transaction.integration.test.ts packages/database/src/freeze-helpers.transaction.test.ts packages/database/src/employees/employee-run-binding.transaction.integration.test.ts
       - name: Verify native scheduling, transactional dispatch and cold recovery
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        # Real public Host timers and disposable SQL schemas, without model calls.
-        run: ALLRICE_NATIVE_ONCE_PROBE_MODULE_BASE="$PWD/apps/worker/package.json" pnpm exec vitest run --maxWorkers=1 packages/database/src/native-schedule-once.integration.test.ts packages/database/src/native-schedule-recurring.integration.test.ts packages/database/src/native-schedule-recover.integration.test.ts packages/database/src/automation-admission-concurrency.integration.test.ts packages/database/src/platform-quality-native.integration.test.ts packages/database/src/platform-quality-native-locks.integration.test.ts apps/worker/test/native-schedule-once-sql.integration.test.ts apps/worker/test/p25/native-schedule-recurring.integration.test.ts apps/worker/test/p25/platform-quality-recurring.integration.test.ts
+          # Real public Host timers and disposable SQL schemas, without model calls.
+          ALLRICE_NATIVE_ONCE_PROBE_MODULE_BASE: ${{ github.workspace }}/apps/worker/package.json
+          TSX_TSCONFIG_PATH: ${{ github.workspace }}/tsconfig.base.json
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 packages/database/src/native-schedule-once.integration.test.ts packages/database/src/native-schedule-recurring.integration.test.ts packages/database/src/native-schedule-recover.integration.test.ts packages/database/src/automation-admission-concurrency.integration.test.ts packages/database/src/platform-quality-native.integration.test.ts packages/database/src/platform-quality-native-locks.integration.test.ts apps/worker/test/native-schedule-once-sql.integration.test.ts apps/worker/test/p25/native-schedule-recurring.integration.test.ts apps/worker/test/p25/platform-quality-recurring.integration.test.ts
       - name: Verify read paths take no row locks (MET-210 #4)
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
         # Polling transactions are probed for a transaction id before COMMIT and
         # interleaved with writers in both orders; write paths keep their locks.
-        run: pnpm exec vitest run --maxWorkers=1 packages/database/src/cloud-operation-view-locks.integration.test.ts packages/database/src/read-path-locks.integration.test.ts
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 packages/database/src/cloud-operation-view-locks.integration.test.ts packages/database/src/read-path-locks.integration.test.ts
       - name: Verify frozen Skill bundles and rollback against PostgreSQL
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: pnpm exec vitest run --maxWorkers=1 packages/database/src/skill-bundles.integration.test.ts packages/database/src/platform-skill-publication.integration.test.ts
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 packages/database/src/skill-bundles.integration.test.ts packages/database/src/platform-skill-publication.integration.test.ts
       - name: Verify fixed company publications, Run inputs and derived outputs
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: pnpm exec vitest run --maxWorkers=1 --testTimeout=30000 --hookTimeout=120000 --reporter=default --reporter=json --outputFile=.local/quality/postgres/vitest-company.json packages/database/src/company-assets.integration.test.ts packages/database/src/company-run-assets.integration.test.ts packages/database/src/company-deliverables.integration.test.ts packages/database/src/local-pdf-execution.integration.test.ts packages/database/src/office-pdf-execution.integration.test.ts apps/worker/test/office-receipt-publication.integration.test.ts apps/worker/test/final-delivery-commit.integration.test.ts apps/worker/test/final-delivery-references.pg.test.ts apps/worker/test/office-first-quality-publication.integration.test.ts
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 --testTimeout=30000 --hookTimeout=120000 --outputFile=.local/quality/postgres/vitest-company.json packages/database/src/company-assets.integration.test.ts packages/database/src/company-run-assets.integration.test.ts packages/database/src/company-deliverables.integration.test.ts packages/database/src/local-pdf-execution.integration.test.ts packages/database/src/office-pdf-execution.integration.test.ts apps/worker/test/office-receipt-publication.integration.test.ts apps/worker/test/final-delivery-commit.integration.test.ts apps/worker/test/final-delivery-references.pg.test.ts apps/worker/test/office-first-quality-publication.integration.test.ts
       - name: Verify P19 frozen script authority and acceptance SQL against PostgreSQL
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
         # These checks do not require a VM or spend model budget.
-        run: pnpm exec vitest run --maxWorkers=1 packages/database/src/frozen-cloud-script.integration.test.ts packages/database/src/reconciliation-audit.integration.test.ts
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 packages/database/src/frozen-cloud-script.integration.test.ts packages/database/src/reconciliation-audit.integration.test.ts
       - name: Verify B5 local MCP, experience, browser and preview authority against PostgreSQL
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
         # Native Chrome/VM and final macOS package gates have separate physical
         # evidence; this step must not advertise those skipped gates as passed.
-        run: pnpm exec vitest run --maxWorkers=1 --reporter=default --reporter=json --outputFile=.local/quality/postgres/vitest-local.json packages/database/src/local-mcp.integration.test.ts packages/database/src/experience.integration.test.ts packages/database/src/experience-evidence.integration.test.ts packages/database/src/experience-consolidation.integration.test.ts packages/database/src/message-feedback.integration.test.ts packages/database/src/browser-control.integration.test.ts packages/database/src/local-browser.integration.test.ts packages/database/src/browser-execution-choice.integration.test.ts packages/database/src/local-files.integration.test.ts packages/database/src/folder-triggers.integration.test.ts packages/database/src/local-preview.integration.test.ts packages/database/src/storage-quota.integration.test.ts packages/database/src/browser-operation-locks.integration.test.ts
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 --outputFile=.local/quality/postgres/vitest-local.json packages/database/src/local-mcp.integration.test.ts packages/database/src/experience.integration.test.ts packages/database/src/experience-evidence.integration.test.ts packages/database/src/experience-consolidation.integration.test.ts packages/database/src/message-feedback.integration.test.ts packages/database/src/browser-control.integration.test.ts packages/database/src/local-browser.integration.test.ts packages/database/src/browser-execution-choice.integration.test.ts packages/database/src/local-files.integration.test.ts packages/database/src/folder-triggers.integration.test.ts packages/database/src/local-preview.integration.test.ts packages/database/src/storage-quota.integration.test.ts packages/database/src/browser-operation-locks.integration.test.ts
       - name: Verify retirement, ordinary authority and native dispatch against PostgreSQL
         # B6 model endpoints are synthetic loopback services. This step does not
         # use provider keys, tenants, native macOS devices or release credentials.
@@ -345,19 +397,19 @@ jobs:
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: pnpm exec vitest run --maxWorkers=1 packages/database/src/assistant-configuration-retirement.integration.test.ts packages/database/src/local-command-candidate.integration.test.ts packages/database/src/route-usage-unknown.integration.test.ts apps/worker/test/p25 apps/web/lib/execution/native-subagent-authorized-query.integration.test.mjs
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 packages/database/src/assistant-configuration-retirement.integration.test.ts packages/database/src/local-command-candidate.integration.test.ts packages/database/src/route-usage-unknown.integration.test.ts apps/worker/test/p25 apps/web/lib/execution/native-subagent-authorized-query.integration.test.mjs
       - name: Verify private project snapshots and version conflicts against PostgreSQL
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: pnpm exec vitest run --maxWorkers=1 packages/database/src/project-workspace.integration.test.ts packages/database/src/project-execution.integration.test.ts packages/database/src/static-browser.integration.test.ts packages/database/src/project-service.integration.test.ts packages/database/src/cloud-project-service.integration.test.ts
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 packages/database/src/project-workspace.integration.test.ts packages/database/src/project-execution.integration.test.ts packages/database/src/static-browser.integration.test.ts packages/database/src/project-service.integration.test.ts packages/database/src/cloud-project-service.integration.test.ts
       - name: Verify platform technical facts, problem evidence and authority against PostgreSQL
         id: postgres-quality
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
         # Separate synthetic schemas; no actual provider, host control or company data.
-        run: pnpm exec vitest run --maxWorkers=1 --reporter=default --reporter=json --outputFile=.local/quality/postgres/vitest-quality.json packages/database/src/dev-release-control.integration.test.ts packages/database/src/dev-maintenance.integration.test.ts packages/database/src/platform-technical.integration.test.ts packages/database/src/platform-technical-tasks.integration.test.ts packages/database/src/platform-quality.integration.test.ts packages/database/src/platform-repair.integration.test.ts packages/database/src/platform-repository-credentials.integration.test.ts packages/database/src/platform-maintenance.integration.test.ts packages/database/src/platform-maintenance-reports.integration.test.ts packages/database/src/platform-maintenance-authority.integration.test.ts packages/database/src/platform-maintenance-github.integration.test.ts packages/database/src/platform-repository-publication.integration.test.ts packages/database/src/browser-lifecycle.integration.test.ts packages/database/src/artifact-publication-concurrency.integration.test.ts tests/integration/platform-quality-conversation.integration.test.ts tests/integration/platform-quality-delivery.integration.test.ts
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 --outputFile=.local/quality/postgres/vitest-quality.json packages/database/src/dev-release-control.integration.test.ts packages/database/src/dev-maintenance.integration.test.ts packages/database/src/platform-technical.integration.test.ts packages/database/src/platform-technical-tasks.integration.test.ts packages/database/src/platform-quality.integration.test.ts packages/database/src/platform-repair.integration.test.ts packages/database/src/platform-repository-credentials.integration.test.ts packages/database/src/platform-maintenance.integration.test.ts packages/database/src/platform-maintenance-reports.integration.test.ts packages/database/src/platform-maintenance-authority.integration.test.ts packages/database/src/platform-maintenance-github.integration.test.ts packages/database/src/platform-repository-publication.integration.test.ts packages/database/src/browser-lifecycle.integration.test.ts packages/database/src/artifact-publication-concurrency.integration.test.ts tests/integration/platform-quality-conversation.integration.test.ts tests/integration/platform-quality-delivery.integration.test.ts
       - name: Collect PostgreSQL scenario evidence without rerunning tests
         if: always() && steps.postgres-capture.outcome == 'success'
         env:
@@ -378,7 +430,7 @@ jobs:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
           TSX_TSCONFIG_PATH: ${{ github.workspace }}/tsconfig.base.json
-        run: pnpm exec vitest run --maxWorkers=1 packages/database/src/subscription-migration-recovery.integration.test.ts packages/database/src/providers/status.integration.test.ts packages/database/src/route-subscription.integration.test.ts scripts/acceptance/runtime/p27-codex-worker-fixture.test.ts
+        run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 packages/database/src/subscription-migration-recovery.integration.test.ts packages/database/src/providers/status.integration.test.ts packages/database/src/route-subscription.integration.test.ts scripts/acceptance/runtime/p27-codex-worker-fixture.test.ts
       - name: Build contracts, database and Web for real Bridge startup verification
         run: pnpm --filter @allrice/web... build
       - name: Verify real Bridge WSS, PostgreSQL and production Next startup
@@ -386,10 +438,18 @@ jobs:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_P11_NEXT_BUILD: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: pnpm exec vitest run apps/web/server/bridge-socket.test.mjs
+        run: node scripts/ci-integration-tests.mjs run -- apps/web/server/bridge-socket.test.mjs
       - name: Stop development database
         if: always()
         run: pnpm db:dev:down
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-collection-${{ github.job }}-${{ github.run_attempt }}
+          path: .local/integration-collection/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
       - name: Record complete original CI gate
         run: node scripts/acceptance/platform/repository-ci.mjs finish --capture=.local/repository-ci/source.json --output=.local/repository-ci/receipt.json
       - uses: actions/upload-artifact@v4

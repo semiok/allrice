@@ -6,6 +6,7 @@ import { expect, it } from 'vitest';
 
 it.skipIf(process.platform !== 'darwin')(
   'resolves only the RSS exit-zero race using the actual Swift completion function and native stop evidence',
+  { tags: ['platform:macos'], timeout: 40_000 },
   async () => {
     const source = await readFile(
       new URL('../apps/rice-bridge/native/PdfGuardian.swift', import.meta.url),
@@ -119,13 +120,13 @@ try! FileHandle.standardOutput.write(contentsOf: bytes)
       await rm(directory, { recursive: true, force: true });
     }
   },
-  40_000,
 );
 
 // A killed reader closes stdin before the supervisor has necessarily finished
 // its bounded document write. Exercise the actual Darwin broken-pipe behavior.
 it.skipIf(process.platform !== 'darwin')(
   'keeps the supervisor alive when cancellation closes the document input pipe',
+  { tags: ['platform:macos'], timeout: 40_000 },
   async () => {
     const source = await readFile(
       new URL('../apps/rice-bridge/native/PdfGuardian.swift', import.meta.url),
@@ -179,5 +180,4 @@ try FileHandle.standardOutput.write(contentsOf: receipt)
       await rm(directory, { recursive: true, force: true });
     }
   },
-  40_000,
 );

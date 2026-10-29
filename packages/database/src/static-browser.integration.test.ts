@@ -904,6 +904,7 @@ suite(
     });
     physical(
       'a real stopped verifier timeout produces a failed receipt without a forged page verdict',
+      { tags: ['manual:ALLRICE_STATIC_BROWSER_PHYSICAL'], timeout: 120000 },
       async () => {
         const f = await fixture(
           false,
@@ -976,10 +977,10 @@ suite(
           await new CloudRunnerBackend().inspect(saved!.attempt_id),
         ).toBeNull();
       },
-      120000,
     );
     physical(
       'native DSH -> production Broker -> real runsc -> DB -> private details contract/download bytes, with no project execution',
+      { tags: ['manual:ALLRICE_STATIC_BROWSER_PHYSICAL'], timeout: 180000 },
       async () => {
         const f = await fixture();
         const execute = CloudRunnerBackend.prototype.executeStaticBrowser;
@@ -1117,7 +1118,6 @@ suite(
           );
         probe.mockRestore();
       },
-      180000,
     );
   },
 );

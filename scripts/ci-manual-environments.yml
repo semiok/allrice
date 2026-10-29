@@ -1,0 +1,211 @@
+# Files declare complete CI resource responsibility; tags declare only external leaves.
+# {file} commands require the stated isolated prerequisite, never shared Dev.
+resources:
+  native: []
+  manual: []
+  db:
+    - ALLRICE_RUN_DB_INTEGRATION
+  browser:
+    - ALLRICE_RUN_BROWSER_INTEGRATION
+  browser+db:
+    - ALLRICE_RUN_BROWSER_INTEGRATION
+    - ALLRICE_RUN_DB_INTEGRATION
+  publicHost:
+    - ALLRICE_NATIVE_ONCE_PROBE_MODULE_BASE
+    - TSX_TSCONFIG_PATH
+  build:
+    - ALLRICE_RUN_DB_INTEGRATION
+    - ALLRICE_P11_NEXT_BUILD
+  manual-db:
+    - ALLRICE_RUN_DB_INTEGRATION
+rules:
+  db:
+    - packages/database/
+    - apps/worker/test/
+    - apps/web/lib/identity/
+    - tests/integration/
+    - scripts/
+  browser:
+    - apps/web/app/
+    - apps/web/components/
+    - packages/ui/
+    - packages/browser-control/
+    - apps/worker/src/browser-control/
+  manual:
+    - apps/rice-bridge/
+    - apps/web/server/
+    - apps/worker/src/cloud-runner/
+    - apps/worker/src/office/
+    - apps/worker/src/repository-repair/
+files:
+  native:
+    - apps/rice-bridge/src/credential-files.test.ts
+    - apps/rice-bridge/src/dependency-preparation.test.ts
+    - apps/rice-bridge/src/desktop-controller.test.ts
+    - apps/rice-bridge/src/desktop-picker.native.test.ts
+    - apps/rice-bridge/src/folder-trigger-watcher.test.ts
+    - apps/rice-bridge/src/human-terminal-relay.test.ts
+    - apps/rice-bridge/src/journal.test.ts
+    - apps/rice-bridge/src/local-command-preflight.test.ts
+    - apps/rice-bridge/src/native-file-reader.test.ts
+    - apps/rice-bridge/src/npm-registry-download.test.ts
+    - apps/rice-bridge/src/project-diagnostics.test.ts
+    - apps/rice-bridge/src/update-installer.test.ts
+    - apps/worker/src/cloud-runner/backend.test.ts
+    - apps/worker/src/memory-gate.test.ts
+    - apps/worker/test/p25/dsh-images-native.integration.test.ts
+    - apps/worker/test/p25/session-reference-native.integration.test.ts
+    - apps/worker/test/p25/task-progress-native.integration.test.ts
+    - apps/worker/test/p25/task-wait-native.integration.test.ts
+    - packages/database/src/platform-content/bundles.test.ts
+    - scripts/acceptance/platform/p27-internal-readiness.test.mjs
+    - scripts/rice-bridge-pdf-guardian.test.mjs
+    - scripts/rice-bridge-terminal-runtime.test.mjs
+  manual:
+    - apps/rice-bridge/src/local-browser-login.native.test.ts
+    - apps/worker/src/browser-control/driver.production.integration.test.ts
+    - apps/worker/src/browser-control/static-browser.native.integration.test.ts
+    - apps/worker/test/project-runtime.integration.test.ts
+    - packages/browser-control/src/local-preview.integration.test.ts
+  browser:
+    - apps/web/app/chatflow/brand-content-panel.test.tsx
+    - apps/web/server/project-preview.test.mjs
+  browser+db:
+    - apps/web/app/chatflow/reference-library.browser.test.ts
+    - apps/web/app/chatflow/work-automation.browser.test.ts
+    - apps/web/app/runtime-console/organization-administration.browser.test.ts
+    - apps/web/app/runtime-console/tenant-administration.browser.test.ts
+    - packages/database/src/runtime-governed-bridge.integration.test.ts
+  build:
+    - apps/web/server/bridge-socket.test.mjs
+  publicHost:
+    - apps/worker/src/native-schedule-once.test.ts
+  db:
+    - apps/web/lib/execution/native-subagent-authorized-query.integration.test.mjs
+    - apps/worker/test/final-delivery-references.pg.test.ts
+    - packages/database/src/freeze-helpers.transaction.test.ts
+    - scripts/acceptance/runtime/p27-codex-worker-fixture.test.ts
+  manual-db:
+    - apps/worker/test/native-schedule-calendar.integration.test.ts
+    - apps/worker/test/native-schedule-monthly.integration.test.ts
+    - apps/worker/test/p25/dsh-control-journal-capture.test.ts
+    - packages/database/src/desktop-bridge.integration.test.ts
+    - packages/database/src/local-browser-native-http.integration.test.ts
+    - packages/database/src/local-preview-native-http.integration.test.ts
+    - packages/database/src/reconciliation-cloud.integration.test.ts
+    - tests/integration/static-browser-native-http.test.ts
+    - tests/integration/static-browser-workbench-native.test.ts
+extra:
+  ALLRICE_RUN_BRAND_CONTENT_BROWSER:
+    - apps/web/app/chatflow/brand-content-panel.test.tsx
+  ALLRICE_TEST_STATIC_BROWSER:
+    - packages/browser-control/src/static-document.browser.test.ts
+  ALLRICE_WORKBENCH_BROWSER_TEST:
+    - packages/database/src/runtime-governed-bridge.integration.test.ts
+  ALLRICE_NATIVE_ONCE_PROBE_MODULE_BASE:
+    - apps/worker/test/p25/native-schedule-recurring.integration.test.ts
+    - apps/worker/test/p25/platform-quality-recurring.integration.test.ts
+tags:
+  manual:ALLRICE_OFFICE_PREVIEW_DIR:
+    reason: Actual native Office renderer output from the task sandbox; requires docx.json, xlsx.json and pptx.json OfficeRenderResponse documents plus their rendered page bytes, produced by the external Office rendering environment.
+    command: ALLRICE_OFFICE_PREVIEW_DIR="$OFFICE_PREVIEW_DIR" pnpm exec vitest run {file} --maxWorkers=2
+  manual:ALLRICE_LOCAL_DOCKER_TEST_SOCKET:
+    reason: Dedicated allrice-b2 macOS Colima VM, pinned toolchain image and its Docker socket; these tests execute containers and verify physical isolation.
+    command: ALLRICE_LOCAL_DOCKER_TEST_SOCKET="$HOME/.colima/allrice-b2/docker.sock" pnpm exec vitest run {file} --maxWorkers=2
+  manual:ALLRICE_TEST_LOCAL_BROWSER_NATIVE:
+    reason: Built and signed macOS BrowserLauncher/guardian plus actual native Chrome; preview tests additionally require the dedicated allrice-b2 VM (local-preview-native-http requires Intel macOS).
+    command: ALLRICE_TEST_LOCAL_BROWSER_NATIVE=1 pnpm exec vitest run {file} --maxWorkers=2
+  manual:ALLRICE_BROWSER_FIXTURE_STATE:
+    reason: Provisioned production HTTPS/DNS proxy and owned login/upload/download fixture; the JSON state file is written by that external service, not a synthetic loopback server.
+    command: ALLRICE_BROWSER_FIXTURE_STATE="$BROWSER_FIXTURE_STATE" pnpm exec vitest run {file} --maxWorkers=2
+  manual:ALLRICE_RUN_CLOUD_INTEGRATION:
+    reason: Actual dedicated gVisor/runsc VM and pinned cloud image; tests inspect and destroy physical containers/volumes.
+    command: ALLRICE_RUN_CLOUD_INTEGRATION=1 pnpm exec vitest run {file} --maxWorkers=2
+  manual:ALLRICE_RUN_PYTHON_INTEGRATION:
+    reason: Actual gVisor Python image and Chinese chart fonts; validates physical volume/input streaming and generated image bytes.
+    command: ALLRICE_RUN_PYTHON_INTEGRATION=1 pnpm exec vitest run {file} --maxWorkers=2
+  manual:ALLRICE_RUN_OFFICE_INTEGRATION:
+    reason: Actual task sandbox with DSH Office toolchain/rendering containers; verifies original XLSX/PDF/PPTX bytes rather than fixture receipts.
+    command: ALLRICE_RUN_OFFICE_INTEGRATION=1 pnpm exec vitest run {file} --maxWorkers=2
+  manual:ALLRICE_RUN_CLOUD_PROJECT_SERVICE_NATIVE:
+    reason: Owned runsc VM with actual project service, preview socket, source fixture and physical stop/guard evidence; needs isolated backend configuration.
+    command: ALLRICE_RUN_CLOUD_PROJECT_SERVICE_NATIVE=1 pnpm exec vitest run {file} --maxWorkers=2
+  manual:ALLRICE_RUN_PROJECT_SERVICE_NATIVE:
+    reason: Dedicated native Bridge project service socket and prepared architecture-specific project fixture; launches an actual private preview service.
+    command: ALLRICE_RUN_PROJECT_SERVICE_NATIVE=1 pnpm exec vitest run {file} --maxWorkers=2
+  manual:ALLRICE_RUN_PROJECT_CLOUD_INTEGRATION:
+    reason: Dedicated runsc VM with managed project toolchain and real failing/passing project builds; requires project manager root/backend configuration.
+    command: ALLRICE_RUN_PROJECT_CLOUD_INTEGRATION=1 pnpm exec vitest run {file} --maxWorkers=2
+  manual:ALLRICE_RUN_REPOSITORY_NATIVE:
+    reason: Actual runsc verification of archived full repository source; requires registered baseline/catalog paths and pinned verification image.
+    command: ALLRICE_RUN_REPOSITORY_NATIVE=1 pnpm exec vitest run {file} --maxWorkers=2
+  manual:ALLRICE_RUN_NATIVE_CALENDAR_HOST:
+    reason: Isolated M1 allrice_b2 fixture plus prepared native controller artifact and empty physical state partition supplied by ALLRICE_NATIVE_RECURRING_REFERENCE/ALLRICE_NATIVE_CALENDAR_HOST_ARTIFACT_ROOT; test explicitly rejects CI database.
+    command: ALLRICE_RUN_NATIVE_CALENDAR_HOST=1 pnpm exec vitest run {file} --maxWorkers=2
+  manual:ALLRICE_RUN_NATIVE_MONTHLY_HOST:
+    reason: Same isolated physical controller/calendar Host prerequisites, exercising a real monthly clock and retained acceptance evidence.
+    command: ALLRICE_RUN_NATIVE_CALENDAR_HOST=1 ALLRICE_RUN_NATIVE_MONTHLY_HOST=1 pnpm exec vitest run {file} --maxWorkers=2
+  manual:ALLRICE_RUN_QUALITY_NATIVE:
+    reason: Actual fixed cloud project build, browser assertion and immutable artifact export inside the dedicated VM.
+    command: ALLRICE_RUN_QUALITY_NATIVE=1 pnpm exec vitest run {file} --maxWorkers=2
+  manual:ALLRICE_RUN_COMPILED_REPAIR_NATIVE:
+    reason: Registered full repository baseline/catalog and retained accepted repair history; compiles real packages through the cloud verifier.
+    command: ALLRICE_RUN_COMPILED_REPAIR_NATIVE=1 pnpm exec vitest run {file} --maxWorkers=2
+  manual:ALLRICE_RUN_REPAIR_CHAIN_NATIVE:
+    reason: Real DSH proposal/provider credentials plus dedicated cloud verifier and registered repository baseline/catalog; unavailable in credential-free CI.
+    command: ALLRICE_RUN_REPAIR_CHAIN_NATIVE=1 pnpm exec vitest run {file} --maxWorkers=2
+  manual:ALLRICE_OFFICE_FIRST_ORIGINAL_V1:
+    reason: Retained original finance workbook from external model/Office acceptance; supplied immutable file is compared byte-for-byte, not regenerated synthetic data.
+    command: ALLRICE_OFFICE_FIRST_ORIGINAL_V1="$ORIGINAL_V1" ALLRICE_OFFICE_FIRST_ORIGINAL_V2="$ORIGINAL_V2" pnpm exec vitest run {file} --maxWorkers=2
+  manual:ALLRICE_OFFICE_FIRST_ORIGINAL_V2:
+    reason: Retained second original finance workbook from the same external Office acceptance, required together with V1.
+    command: ALLRICE_OFFICE_FIRST_ORIGINAL_V1="$ORIGINAL_V1" ALLRICE_OFFICE_FIRST_ORIGINAL_V2="$ORIGINAL_V2" pnpm exec vitest run {file} --maxWorkers=2
+  manual:ALLRICE_STATIC_BROWSER_PHYSICAL:
+    reason: Dedicated macOS Bridge device/VM and native saved-page renderer; verifies physical local browser operation receipts.
+    command: ALLRICE_STATIC_BROWSER_PHYSICAL=1 pnpm exec vitest run {file} --maxWorkers=2
+  manual:ALLRICE_STATIC_BROWSER_LOCAL_PHYSICAL:
+    reason: Actual macOS device HTTP Bridge and built native saved-page renderer, with dedicated disposable database and VM.
+    command: ALLRICE_STATIC_BROWSER_LOCAL_PHYSICAL=1 pnpm exec vitest run {file} --maxWorkers=2
+  manual:ALLRICE_STATIC_BROWSER_WORKBENCH:
+    reason: Running isolated candidate Web/Worker, authenticated workbench and physical native renderer; requires external candidate origin and private download endpoints.
+    command: ALLRICE_STATIC_BROWSER_WORKBENCH=1 pnpm exec vitest run {file} --maxWorkers=2
+  manual:ALLRICE_REGISTRY_TEST_IPV4:
+    reason: Independently verified public npm registry A record, genuine public TLS, exact archive bytes and integrity; never a loopback mock.
+    command: ALLRICE_REGISTRY_TEST_IPV4="$PUBLIC_NPM_IPV4" pnpm exec vitest run {file} --maxWorkers=2
+  manual:ALLRICE_CAPTURE_CONTROL_CORPUS:
+    reason: Explicit corpus-generation operation requiring the prior chat corpus and disposable PostgreSQL; writes new immutable fixtures and refuses overwrite. Not an automatic regression pass.
+    command: ALLRICE_CAPTURE_CONTROL_CORPUS=1 ALLRICE_TEST_DATABASE_URL="$ISOLATED_TEST_DATABASE_URL" pnpm exec vitest run {file} --maxWorkers=2
+  platform:macos:
+    platforms:
+      - darwin
+    reason: macOS native frameworks, xcrun Swift, PTY or native process inspection; Linux CI cannot execute these leaves.
+    command: pnpm exec vitest run {file} --maxWorkers=2
+  platform:posix:
+    platforms:
+      - darwin
+      - linux
+    reason: POSIX filesystem and FIFO semantics; unsupported Windows skips remain explicit.
+    command: pnpm exec vitest run {file} --maxWorkers=2
+  platform:non-macos:
+    platforms:
+      - darwin
+    negate: true
+    reason: Non-macOS fallback behavior; macOS skips remain explicit.
+    command: pnpm exec vitest run {file} --maxWorkers=2
+  platform:native-macos:
+    platforms:
+      - darwin
+    archs:
+      - arm64
+      - x64
+    reason: Architecture-specific native macOS sandbox support branch.
+    command: pnpm exec vitest run {file} --maxWorkers=2
+  platform:non-native-macos:
+    platforms:
+      - darwin
+    archs:
+      - arm64
+      - x64
+    negate: true
+    reason: Fallback branch for platforms without the architecture-specific native macOS sandbox.
+    command: pnpm exec vitest run {file} --maxWorkers=2

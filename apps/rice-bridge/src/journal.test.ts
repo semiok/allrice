@@ -279,6 +279,7 @@ describe('durable Bridge journal (real SQLite/filesystem)', () => {
 
   it.skipIf(process.platform === 'win32')(
     'detects a live owner losing its OS lock after injected same-inode fd close',
+    { tags: ['platform:posix'], timeout: 20_000 },
     async () => {
       const { input, dispatch, root } = await fixture();
       const owner = journalOwnerFixture({
@@ -310,7 +311,6 @@ describe('durable Bridge journal (real SQLite/filesystem)', () => {
         await owner.kill();
       }
     },
-    20_000,
   );
 
   it('records a provable not-started failure on recovery of received only', async () => {

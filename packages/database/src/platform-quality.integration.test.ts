@@ -285,6 +285,7 @@ suite(
     });
     it.skipIf(process.env.ALLRICE_RUN_QUALITY_NATIVE !== '1')(
       'real fixed cloud project: build, source ZIP, browser assertion, stored bytes and canonical completion',
+      { tags: ['manual:ALLRICE_RUN_QUALITY_NATIVE'], timeout: 180000 },
       async () => {
         const root = await mkdtemp(join(tmpdir(), 'allrice-quality-native-'));
         const previousStorage = process.env.ALLRICE_STORAGE_ROOT;
@@ -437,7 +438,6 @@ suite(
           await rm(root, { recursive: true, force: true });
         }
       },
-      180000,
     );
     it('generic chat submission cannot use the reserved quality assignment without a server binding', async () => {
       const q = await submit();

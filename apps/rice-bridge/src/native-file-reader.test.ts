@@ -131,6 +131,7 @@ describe('strict native read receipt validation', () => {
 
 describe.skipIf(process.platform !== 'darwin')(
   'actual descriptor-relative Swift reads',
+  { tags: ['platform:macos'] },
   () => {
     let suiteRoot: string, executable: string;
     const owned: string[] = [];

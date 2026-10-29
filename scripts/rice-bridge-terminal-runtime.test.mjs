@@ -90,6 +90,7 @@ test('fixed terminal loader rejects tampered, injected, writable and symlinked s
 
 test.skipIf(process.platform !== 'darwin')(
   'copied locked native closure opens a real PTY and retains required helper permissions',
+  { tags: ['platform:macos'], timeout: 30_000 },
   async () => {
     const root = await realpath(
       await mkdtemp(join(tmpdir(), 'allrice-terminal-runtime-')),
@@ -190,5 +191,4 @@ test.skipIf(process.platform !== 'darwin')(
       await rm(root, { recursive: true, force: true });
     }
   },
-  30_000,
 );

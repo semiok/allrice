@@ -380,6 +380,7 @@ it('serializes two installer instances using the OS lock, not only in-memory fla
 });
 it.runIf(process.platform === 'darwin')(
   'uses real Apple verification to reject unsigned synthetic App before executing it',
+  { tags: ['platform:macos'] },
   async () => {
     const f = await fixture();
     await f.ports.extract('', f.managed);
@@ -745,6 +746,7 @@ it.each(['synthetic-after-save-failure', 'BRIDGE_ALREADY_RUNNING'])(
 );
 it.runIf(process.platform === 'darwin')(
   'accepts a real system ditto ZIP with resource forks excluded',
+  { tags: ['platform:macos'] },
   async () => {
     const f = await fixture();
     await f.ports.extract('', f.managed);

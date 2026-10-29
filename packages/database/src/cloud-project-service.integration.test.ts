@@ -156,6 +156,10 @@ suite(
     );
     it.runIf(process.env.ALLRICE_RUN_CLOUD_PROJECT_SERVICE_NATIVE === '1')(
       'keeps the real unequal-deadline preview alive after Run completion and physically stops it on user request',
+      {
+        tags: ['manual:ALLRICE_RUN_CLOUD_PROJECT_SERVICE_NATIVE'],
+        timeout: 180000,
+      },
       async () => {
         const source = process.env.ALLRICE_PROJECT_SERVICE_SOURCE_FIXTURE
           ? (JSON.parse(
@@ -244,7 +248,6 @@ suite(
             );
         }
       },
-      180000,
     );
     it('the same ready service survives successful Run completion and has no device or new agent budget', async () => {
       const f = await readyFixture();

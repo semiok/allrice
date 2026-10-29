@@ -753,6 +753,12 @@ suite(
       ),
     )(
       'reads retained finance bytes through an isolated synthetic version chain (data-only, no original model-success claim)',
+      {
+        tags: [
+          'manual:ALLRICE_OFFICE_FIRST_ORIGINAL_V1',
+          'manual:ALLRICE_OFFICE_FIRST_ORIGINAL_V2',
+        ],
+      },
       async () => {
         const oldBytes = readFileSync(
           process.env.ALLRICE_OFFICE_FIRST_ORIGINAL_V1!,

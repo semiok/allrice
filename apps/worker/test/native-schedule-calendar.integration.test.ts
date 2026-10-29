@@ -147,107 +147,111 @@ suite(
         vi.unstubAllEnvs();
       }
     }, 30_000);
-    it('recovers/delivers/decides/retires with fixed coexistence and a cold public reopen', async () => {
-      // Vitest injects --require/--conditions. Run the built production code in a
-      // normal Node child, never change execArgv or weaken artifact approval.
-      const url = new URL(f.databaseUrl),
-        authorized = new URL(process.env.ALLRICE_TEST_DATABASE_URL!);
-      if (
-        process.env.DATABASE_URL !== f.databaseUrl ||
-        url.pathname !== '/allrice_b2' ||
-        url.host !== authorized.host ||
-        url.username !== authorized.username ||
-        url.password !== authorized.password ||
-        !/^p25_[a-f0-9]{32}$/.test(f.schema) ||
-        url.searchParams.get('options') !==
-          `-csearch_path=${f.schema},public` ||
-        process.env.NODE_OPTIONS?.trim()
-      )
-        throw Error(
-          'actual_host_requires_exact_isolated_fixture_and_clean_node_options',
-        );
-      const [scope] =
-        await f.db`select current_schema() schema,current_database() database`;
-      if (!scope) throw Error('actual_host_fixture_scope_missing');
-      expect(scope.schema).toBe(f.schema);
-      expect(scope.database).toBe('allrice_b2');
-      const reference = process.env.ALLRICE_NATIVE_RECURRING_REFERENCE!;
-      expect(await readdir(JSON.parse(reference).stateRoot)).toEqual([]);
-      const env = {
-        PATH: process.env.PATH,
-        TMPDIR: process.env.TMPDIR,
-        LANG: process.env.LANG,
-        TZ: process.env.TZ,
-        DATABASE_URL: f.databaseUrl,
-        ALLRICE_TEST_DATABASE_URL: process.env.ALLRICE_TEST_DATABASE_URL,
-        ALLRICE_RUN_DB_INTEGRATION: '1',
-        ALLRICE_RUN_NATIVE_CALENDAR_HOST: '1',
-        ALLRICE_SERVICE_ROLE: 'worker',
-        ALLRICE_ASSISTANTS_ENABLED: '0',
-        ALLRICE_EXPERIENCE_REVIEW_ENABLED: '1',
-        ALLRICE_NATIVE_RECURRING_ENABLED: '1',
-        ALLRICE_NATIVE_CALENDAR_ENABLED: '1',
-        ALLRICE_NATIVE_RECURRING_REFERENCE: reference,
-        ALLRICE_DSH_NATIVE_ARTIFACT_ID:
-          process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID,
-        ALLRICE_NATIVE_CALENDAR_HOST_ARTIFACT_ROOT:
-          process.env.ALLRICE_NATIVE_CALENDAR_HOST_ARTIFACT_ROOT,
-      };
-      const startedAt = new Date().toISOString();
-      const pending = run(
-        process.execPath,
-        [
-          fileURLToPath(
-            new URL('./native-schedule-calendar-host.mjs', import.meta.url),
-          ),
-          JSON.stringify({
-            schema: f.schema,
-            automationId: seeded.automationId,
-            P: seeded.P.toISOString(),
-            fixedId,
-          }),
-        ],
-        { env, timeout: 170_000, maxBuffer: 8 * 1024 * 1024 },
-      );
-      const child = pending.child;
-      process.stdout.write(
-        `NATIVE_CALENDAR_HOST_PARENT_START ${JSON.stringify({ pid: child.pid, startedAt, schema: f.schema, stateRoot: JSON.parse(reference).stateRoot })}\n`,
-      );
-      let result;
-      try {
-        result = await pending;
-      } catch (error) {
-        const stdout = (error as { stdout?: string }).stdout;
-        if (stdout)
-          process.stdout.write(
-            stdout
-              .split('\n')
-              .filter((s) => s.startsWith('NATIVE_CALENDAR_HOST_'))
-              .join('\n') + '\n',
+    it(
+      'recovers/delivers/decides/retires with fixed coexistence and a cold public reopen',
+      { tags: ['manual:ALLRICE_RUN_NATIVE_CALENDAR_HOST'], timeout: 180_000 },
+      async () => {
+        // Vitest injects --require/--conditions. Run the built production code in a
+        // normal Node child, never change execArgv or weaken artifact approval.
+        const url = new URL(f.databaseUrl),
+          authorized = new URL(process.env.ALLRICE_TEST_DATABASE_URL!);
+        if (
+          process.env.DATABASE_URL !== f.databaseUrl ||
+          url.pathname !== '/allrice_b2' ||
+          url.host !== authorized.host ||
+          url.username !== authorized.username ||
+          url.password !== authorized.password ||
+          !/^p25_[a-f0-9]{32}$/.test(f.schema) ||
+          url.searchParams.get('options') !==
+            `-csearch_path=${f.schema},public` ||
+          process.env.NODE_OPTIONS?.trim()
+        )
+          throw Error(
+            'actual_host_requires_exact_isolated_fixture_and_clean_node_options',
           );
-        throw error;
-      } finally {
-        process.stdout.write(
-          `NATIVE_CALENDAR_HOST_PARENT_EXIT ${JSON.stringify({ pid: child.pid, startedAt, endedAt: new Date().toISOString(), exitCode: child.exitCode, signalCode: child.signalCode })}\n`,
+        const [scope] =
+          await f.db`select current_schema() schema,current_database() database`;
+        if (!scope) throw Error('actual_host_fixture_scope_missing');
+        expect(scope.schema).toBe(f.schema);
+        expect(scope.database).toBe('allrice_b2');
+        const reference = process.env.ALLRICE_NATIVE_RECURRING_REFERENCE!;
+        expect(await readdir(JSON.parse(reference).stateRoot)).toEqual([]);
+        const env = {
+          PATH: process.env.PATH,
+          TMPDIR: process.env.TMPDIR,
+          LANG: process.env.LANG,
+          TZ: process.env.TZ,
+          DATABASE_URL: f.databaseUrl,
+          ALLRICE_TEST_DATABASE_URL: process.env.ALLRICE_TEST_DATABASE_URL,
+          ALLRICE_RUN_DB_INTEGRATION: '1',
+          ALLRICE_RUN_NATIVE_CALENDAR_HOST: '1',
+          ALLRICE_SERVICE_ROLE: 'worker',
+          ALLRICE_ASSISTANTS_ENABLED: '0',
+          ALLRICE_EXPERIENCE_REVIEW_ENABLED: '1',
+          ALLRICE_NATIVE_RECURRING_ENABLED: '1',
+          ALLRICE_NATIVE_CALENDAR_ENABLED: '1',
+          ALLRICE_NATIVE_RECURRING_REFERENCE: reference,
+          ALLRICE_DSH_NATIVE_ARTIFACT_ID:
+            process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID,
+          ALLRICE_NATIVE_CALENDAR_HOST_ARTIFACT_ROOT:
+            process.env.ALLRICE_NATIVE_CALENDAR_HOST_ARTIFACT_ROOT,
+        };
+        const startedAt = new Date().toISOString();
+        const pending = run(
+          process.execPath,
+          [
+            fileURLToPath(
+              new URL('./native-schedule-calendar-host.mjs', import.meta.url),
+            ),
+            JSON.stringify({
+              schema: f.schema,
+              automationId: seeded.automationId,
+              P: seeded.P.toISOString(),
+              fixedId,
+            }),
+          ],
+          { env, timeout: 170_000, maxBuffer: 8 * 1024 * 1024 },
         );
-      }
-      const line = result.stdout
-        .split('\n')
-        .find((s) => s.startsWith('NATIVE_CALENDAR_HOST_EVIDENCE '));
-      expect(line).toBeTruthy();
-      const evidence = JSON.parse(
-        line!.slice('NATIVE_CALENDAR_HOST_EVIDENCE '.length),
-      );
-      expect(evidence.models).toBe(0);
-      expect(evidence.coldEpoch).toBe(evidence.firstEpoch + 1);
-      expect(evidence.retiredTaskId).not.toBe(evidence.nextTaskId);
-      process.stdout.write(
-        result.stdout
+        const child = pending.child;
+        process.stdout.write(
+          `NATIVE_CALENDAR_HOST_PARENT_START ${JSON.stringify({ pid: child.pid, startedAt, schema: f.schema, stateRoot: JSON.parse(reference).stateRoot })}\n`,
+        );
+        let result;
+        try {
+          result = await pending;
+        } catch (error) {
+          const stdout = (error as { stdout?: string }).stdout;
+          if (stdout)
+            process.stdout.write(
+              stdout
+                .split('\n')
+                .filter((s) => s.startsWith('NATIVE_CALENDAR_HOST_'))
+                .join('\n') + '\n',
+            );
+          throw error;
+        } finally {
+          process.stdout.write(
+            `NATIVE_CALENDAR_HOST_PARENT_EXIT ${JSON.stringify({ pid: child.pid, startedAt, endedAt: new Date().toISOString(), exitCode: child.exitCode, signalCode: child.signalCode })}\n`,
+          );
+        }
+        const line = result.stdout
           .split('\n')
-          .filter((s) => s.startsWith('NATIVE_CALENDAR_HOST_'))
-          .join('\n') + '\n',
-      );
-      acceptancePassed = true;
-    }, 180_000);
+          .find((s) => s.startsWith('NATIVE_CALENDAR_HOST_EVIDENCE '));
+        expect(line).toBeTruthy();
+        const evidence = JSON.parse(
+          line!.slice('NATIVE_CALENDAR_HOST_EVIDENCE '.length),
+        );
+        expect(evidence.models).toBe(0);
+        expect(evidence.coldEpoch).toBe(evidence.firstEpoch + 1);
+        expect(evidence.retiredTaskId).not.toBe(evidence.nextTaskId);
+        process.stdout.write(
+          result.stdout
+            .split('\n')
+            .filter((s) => s.startsWith('NATIVE_CALENDAR_HOST_'))
+            .join('\n') + '\n',
+        );
+        acceptancePassed = true;
+      },
+    );
   },
 );

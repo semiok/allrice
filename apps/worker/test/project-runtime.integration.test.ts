@@ -126,6 +126,10 @@ suite(
     }
     it.each(['regular', 'ancestor-link', 'oversized'] as const)(
       'collects only bounded declared regular outputs: %s',
+      {
+        tags: ['manual:ALLRICE_RUN_PROJECT_CLOUD_INTEGRATION'],
+        timeout: 90000,
+      },
       async (kind) => {
         const f = cloudProjectFixture(),
           a = f.command.arguments,
@@ -190,10 +194,13 @@ suite(
           ),
         ).toBe(true);
       },
-      90000,
     );
     it.each(['pnpm', 'uv'] as const)(
       'installs %s cold, warm, offline and restores exact source on bounded work volumes',
+      {
+        tags: ['manual:ALLRICE_RUN_PROJECT_CLOUD_INTEGRATION'],
+        timeout: 210000,
+      },
       async (manager) => {
         const f = cloudProjectFixture(manager);
         for (const pass of ['cold', 'warm', 'offline'] as const) {
@@ -245,229 +252,270 @@ suite(
           );
         }
       },
-      210000,
     );
-    it('offline cache miss rejects before create/start and does not fabricate a preparation result', async () => {
-      const f = cloudProjectFixture();
-      f.command.arguments.projectPreparation.offline = true;
-      delete f.command.arguments.projectPreparation.packages[0]!.archivePath;
-      const id = randomUUID();
-      attempts.push({ id, command: f.command });
-      await expect(
-        backend.execute(f.command, [], {
-          attemptId: id,
-          projectScope: f.scope,
-          deadlineAt: new Date(Date.now() + 60000).toISOString(),
-          maintainLease: async () => true,
-        }),
-      ).rejects.toBeInstanceOf(CloudProjectPreparationError);
-      expect(await backend.inspect(id)).toBeNull();
-      await expect(
-        backend.json('GET', `/volumes/allrice-project-work-${id}`),
-      ).rejects.toThrow('CLOUD_DAEMON_404');
-      records.push({ case: 'offline-miss', attemptId: id, notStarted: true });
-      await save();
-    }, 90000);
-    it('preserves work/fence on a delayed create ACK and reclaims the eventual physical attempt without start', async () => {
-      const f = cloudProjectFixture(),
-        id = randomUUID();
-      attempts.push({ id, command: f.command });
-      class DelayedCreate extends CloudRunnerBackend {
-        pending?: { path: string; body: unknown };
-        starts = 0;
-        override async call(
-          method: string,
-          path: string,
-          body?: unknown,
-        ): Promise<Buffer> {
-          if (
-            method === 'POST' &&
-            path === `/containers/create?name=allrice-cloud-${id}`
-          ) {
-            this.pending = { path, body };
-            throw new CloudRunnerError('CLOUD_DAEMON_TIMEOUT');
+    it(
+      'offline cache miss rejects before create/start and does not fabricate a preparation result',
+      {
+        tags: ['manual:ALLRICE_RUN_PROJECT_CLOUD_INTEGRATION'],
+        timeout: 90000,
+      },
+      async () => {
+        const f = cloudProjectFixture();
+        f.command.arguments.projectPreparation.offline = true;
+        delete f.command.arguments.projectPreparation.packages[0]!.archivePath;
+        const id = randomUUID();
+        attempts.push({ id, command: f.command });
+        await expect(
+          backend.execute(f.command, [], {
+            attemptId: id,
+            projectScope: f.scope,
+            deadlineAt: new Date(Date.now() + 60000).toISOString(),
+            maintainLease: async () => true,
+          }),
+        ).rejects.toBeInstanceOf(CloudProjectPreparationError);
+        expect(await backend.inspect(id)).toBeNull();
+        await expect(
+          backend.json('GET', `/volumes/allrice-project-work-${id}`),
+        ).rejects.toThrow('CLOUD_DAEMON_404');
+        records.push({ case: 'offline-miss', attemptId: id, notStarted: true });
+        await save();
+      },
+    );
+    it(
+      'preserves work/fence on a delayed create ACK and reclaims the eventual physical attempt without start',
+      {
+        tags: ['manual:ALLRICE_RUN_PROJECT_CLOUD_INTEGRATION'],
+        timeout: 90000,
+      },
+      async () => {
+        const f = cloudProjectFixture(),
+          id = randomUUID();
+        attempts.push({ id, command: f.command });
+        class DelayedCreate extends CloudRunnerBackend {
+          pending?: { path: string; body: unknown };
+          starts = 0;
+          override async call(
+            method: string,
+            path: string,
+            body?: unknown,
+          ): Promise<Buffer> {
+            if (
+              method === 'POST' &&
+              path === `/containers/create?name=allrice-cloud-${id}`
+            ) {
+              this.pending = { path, body };
+              throw new CloudRunnerError('CLOUD_DAEMON_TIMEOUT');
+            }
+            if (method === 'POST' && path.endsWith('/start')) this.starts++;
+            return super.call(method, path, body);
           }
-          if (method === 'POST' && path.endsWith('/start')) this.starts++;
-          return super.call(method, path, body);
+          async finishCreate() {
+            return super.call('POST', this.pending!.path, this.pending!.body);
+          }
         }
-        async finishCreate() {
-          return super.call('POST', this.pending!.path, this.pending!.body);
-        }
-      }
-      const delayed = new DelayedCreate();
-      await expect(
-        delayed.execute(f.command, [], {
+        const delayed = new DelayedCreate();
+        await expect(
+          delayed.execute(f.command, [], {
+            attemptId: id,
+            projectScope: f.scope,
+            deadlineAt: new Date(Date.now() + 60000).toISOString(),
+            maintainLease: async () => true,
+          }),
+        ).rejects.toThrow('CLOUD_DAEMON_TIMEOUT');
+        expect(await delayed.inspect(id)).toBeNull();
+        expect(
+          (
+            await delayed.json<{ Labels: Record<string, string> }>(
+              'GET',
+              `/volumes/allrice-project-work-${id}`,
+            )
+          ).Labels['xyz.bplabs.allrice.cloud.attempt'],
+        ).toBe(id);
+        expect(
+          (
+            await delayed.json<{ Config: { Labels: Record<string, string> } }>(
+              'GET',
+              '/containers/allrice-project-cache-fence/json',
+            )
+          ).Config.Labels['xyz.bplabs.allrice.project.fence-owner'],
+        ).toBe(id);
+        await delayed.finishCreate();
+        expect((await delayed.inspect(id))?.State.Status).toBe('created');
+        expect(delayed.starts).toBe(0);
+        await delayed.cleanup(id, f.command);
+        await expect(
+          delayed.json('GET', `/volumes/allrice-project-work-${id}`),
+        ).rejects.toThrow('CLOUD_DAEMON_404');
+        records.push({
+          case: 'delayed-create-fault-injection',
           attemptId: id,
-          projectScope: f.scope,
-          deadlineAt: new Date(Date.now() + 60000).toISOString(),
-          maintainLease: async () => true,
-        }),
-      ).rejects.toThrow('CLOUD_DAEMON_TIMEOUT');
-      expect(await delayed.inspect(id)).toBeNull();
-      expect(
-        (
-          await delayed.json<{ Labels: Record<string, string> }>(
-            'GET',
-            `/volumes/allrice-project-work-${id}`,
-          )
-        ).Labels['xyz.bplabs.allrice.cloud.attempt'],
-      ).toBe(id);
-      expect(
-        (
-          await delayed.json<{ Config: { Labels: Record<string, string> } }>(
-            'GET',
-            '/containers/allrice-project-cache-fence/json',
-          )
-        ).Config.Labels['xyz.bplabs.allrice.project.fence-owner'],
-      ).toBe(id);
-      await delayed.finishCreate();
-      expect((await delayed.inspect(id))?.State.Status).toBe('created');
-      expect(delayed.starts).toBe(0);
-      await delayed.cleanup(id, f.command);
-      await expect(
-        delayed.json('GET', `/volumes/allrice-project-work-${id}`),
-      ).rejects.toThrow('CLOUD_DAEMON_404');
-      records.push({
-        case: 'delayed-create-fault-injection',
-        attemptId: id,
-        starts: delayed.starts,
-        retainedUntilPhysicalAttempt: true,
-        cleanup: true,
-      });
-      await save();
-    }, 90000);
-    it('reclaims the actual pre-created work volume after an explicit create rejection', async () => {
-      const f = cloudProjectFixture(),
-        id = randomUUID();
-      attempts.push({ id, command: f.command });
-      class RejectCreate extends CloudRunnerBackend {
-        override async call(
-          method: string,
-          path: string,
-          body?: unknown,
-        ): Promise<Buffer> {
-          if (
-            method === 'POST' &&
-            path === `/containers/create?name=allrice-cloud-${id}`
-          )
-            throw new CloudRunnerError('CLOUD_DAEMON_400');
-          return super.call(method, path, body);
+          starts: delayed.starts,
+          retainedUntilPhysicalAttempt: true,
+          cleanup: true,
+        });
+        await save();
+      },
+    );
+    it(
+      'reclaims the actual pre-created work volume after an explicit create rejection',
+      {
+        tags: ['manual:ALLRICE_RUN_PROJECT_CLOUD_INTEGRATION'],
+        timeout: 90000,
+      },
+      async () => {
+        const f = cloudProjectFixture(),
+          id = randomUUID();
+        attempts.push({ id, command: f.command });
+        class RejectCreate extends CloudRunnerBackend {
+          override async call(
+            method: string,
+            path: string,
+            body?: unknown,
+          ): Promise<Buffer> {
+            if (
+              method === 'POST' &&
+              path === `/containers/create?name=allrice-cloud-${id}`
+            )
+              throw new CloudRunnerError('CLOUD_DAEMON_400');
+            return super.call(method, path, body);
+          }
         }
-      }
-      const rejected = new RejectCreate();
-      await expect(
-        rejected.execute(f.command, [], {
+        const rejected = new RejectCreate();
+        await expect(
+          rejected.execute(f.command, [], {
+            attemptId: id,
+            projectScope: f.scope,
+            deadlineAt: new Date(Date.now() + 60000).toISOString(),
+            maintainLease: async () => true,
+          }),
+        ).rejects.toBeInstanceOf(CloudProjectPreparationError);
+        expect(await rejected.inspect(id)).toBeNull();
+        await rejected.cleanup(id, f.command);
+        await expect(
+          rejected.json('GET', `/volumes/allrice-project-work-${id}`),
+        ).rejects.toThrow('CLOUD_DAEMON_404');
+        records.push({
+          case: 'explicit-create-rejection',
           attemptId: id,
-          projectScope: f.scope,
-          deadlineAt: new Date(Date.now() + 60000).toISOString(),
-          maintainLease: async () => true,
-        }),
-      ).rejects.toBeInstanceOf(CloudProjectPreparationError);
-      expect(await rejected.inspect(id)).toBeNull();
-      await rejected.cleanup(id, f.command);
-      await expect(
-        rejected.json('GET', `/volumes/allrice-project-work-${id}`),
-      ).rejects.toThrow('CLOUD_DAEMON_404');
-      records.push({
-        case: 'explicit-create-rejection',
-        attemptId: id,
-        notStarted: true,
-        namedWorkReclaimed: true,
-      });
-      await save();
-    }, 90000);
-    it('serializes cache mutation across independent Workers and isolates owner cache identities', async () => {
-      const first = cloudProjectFixture(),
-        second = cloudProjectFixture();
-      first.command.arguments.args = [
-        '-e',
-        "console.log('fence-command-started');setTimeout(()=>{},3000)",
-      ];
-      first.command.arguments.limits.timeoutMs = 60000;
-      second.command.arguments.limits.timeoutMs = 60000;
-      expect(first.command.arguments.projectSource.cacheKey).not.toBe(
-        second.command.arguments.projectSource.cacheKey,
-      );
-      let next: ReturnType<typeof run> | undefined,
-        notRunningAtSecondCreate = false;
-      const one = await run(first, {
-        observe: async (e) => {
-          if (e.stage === 'executing') {
-            await waitForCommand(e.containerId!, 'fence-command-started\n');
-            next = run(
-              second,
-              {
-                onCreated: async () => {
-                  notRunningAtSecondCreate =
-                    (
-                      await backend.json<{ State: { Running: boolean } }>(
-                        'GET',
-                        `/containers/${e.containerId!}/json`,
-                      )
-                    ).State.Running === false;
+          notStarted: true,
+          namedWorkReclaimed: true,
+        });
+        await save();
+      },
+    );
+    it(
+      'serializes cache mutation across independent Workers and isolates owner cache identities',
+      {
+        tags: ['manual:ALLRICE_RUN_PROJECT_CLOUD_INTEGRATION'],
+        timeout: 120000,
+      },
+      async () => {
+        const first = cloudProjectFixture(),
+          second = cloudProjectFixture();
+        first.command.arguments.args = [
+          '-e',
+          "console.log('fence-command-started');setTimeout(()=>{},3000)",
+        ];
+        first.command.arguments.limits.timeoutMs = 60000;
+        second.command.arguments.limits.timeoutMs = 60000;
+        expect(first.command.arguments.projectSource.cacheKey).not.toBe(
+          second.command.arguments.projectSource.cacheKey,
+        );
+        let next: ReturnType<typeof run> | undefined,
+          notRunningAtSecondCreate = false;
+        const one = await run(first, {
+          observe: async (e) => {
+            if (e.stage === 'executing') {
+              await waitForCommand(e.containerId!, 'fence-command-started\n');
+              next = run(
+                second,
+                {
+                  onCreated: async () => {
+                    notRunningAtSecondCreate =
+                      (
+                        await backend.json<{ State: { Running: boolean } }>(
+                          'GET',
+                          `/containers/${e.containerId!}/json`,
+                        )
+                      ).State.Running === false;
+                  },
                 },
-              },
-              new CloudRunnerBackend(),
-            );
-          }
-        },
-      });
-      expect(next).toBeDefined();
-      const two = await next!;
-      expect(one.result.reason).toBe('completed');
-      expect(two.result.reason).toBe('completed');
-      expect(notRunningAtSecondCreate).toBe(true);
-      records.push({
-        case: 'cross-worker-fence-owner-isolation',
-        attempts: [one.id, two.id],
-        notRunningAtSecondCreate,
-      });
-      await save();
-    }, 120000);
-    it('cancels a running command and confirms physical stopped/source proof before cleanup', async () => {
-      const f = cloudProjectFixture();
-      f.command.arguments.args = [
-        '-e',
-        "console.log('command-running');setInterval(()=>{},1000)",
-      ];
-      const abort = new AbortController();
-      const { id, result } = await run(f, {
-        signal: abort.signal,
-        observe: async (e) => {
-          if (e.stage === 'executing') {
-            await waitForCommand(e.containerId!, 'command-running\n');
-            abort.abort();
-          }
-        },
-      });
-      expect(result.reason).toBe('canceled');
-      expect(result.output).toContain('command-running');
-      expect(result.projectPreparation?.installation).toBe('succeeded');
-      expect(result.stopped).toBe(true);
-      expect(result.projectPreparation?.savedSource?.restoredDigest).toBe(
-        f.command.arguments.projectPreparation.sourceDigest,
-      );
-      expect((await backend.inspect(id))?.State.Running).toBe(false);
-    }, 90000);
-    it('stops after lease loss, preserving evidence without success or a new attempt', async () => {
-      const f = cloudProjectFixture();
-      f.command.arguments.args = [
-        '-e',
-        "console.log('lease-command-started');setInterval(()=>{},1000)",
-      ];
-      let valid = true;
-      const { id, result } = await run(f, {
-        maintainLease: async () => valid,
-        observe: async (e) => {
-          if (e.stage === 'executing') {
-            await waitForCommand(e.containerId!, 'lease-command-started\n');
-            valid = false;
-          }
-        },
-      });
-      expect(result.reason).toBe('canceled');
-      expect(result.stopped).toBe(true);
-      expect((await backend.inspect(id))?.State.Running).toBe(false);
-    }, 90000);
+                new CloudRunnerBackend(),
+              );
+            }
+          },
+        });
+        expect(next).toBeDefined();
+        const two = await next!;
+        expect(one.result.reason).toBe('completed');
+        expect(two.result.reason).toBe('completed');
+        expect(notRunningAtSecondCreate).toBe(true);
+        records.push({
+          case: 'cross-worker-fence-owner-isolation',
+          attempts: [one.id, two.id],
+          notRunningAtSecondCreate,
+        });
+        await save();
+      },
+    );
+    it(
+      'cancels a running command and confirms physical stopped/source proof before cleanup',
+      {
+        tags: ['manual:ALLRICE_RUN_PROJECT_CLOUD_INTEGRATION'],
+        timeout: 90000,
+      },
+      async () => {
+        const f = cloudProjectFixture();
+        f.command.arguments.args = [
+          '-e',
+          "console.log('command-running');setInterval(()=>{},1000)",
+        ];
+        const abort = new AbortController();
+        const { id, result } = await run(f, {
+          signal: abort.signal,
+          observe: async (e) => {
+            if (e.stage === 'executing') {
+              await waitForCommand(e.containerId!, 'command-running\n');
+              abort.abort();
+            }
+          },
+        });
+        expect(result.reason).toBe('canceled');
+        expect(result.output).toContain('command-running');
+        expect(result.projectPreparation?.installation).toBe('succeeded');
+        expect(result.stopped).toBe(true);
+        expect(result.projectPreparation?.savedSource?.restoredDigest).toBe(
+          f.command.arguments.projectPreparation.sourceDigest,
+        );
+        expect((await backend.inspect(id))?.State.Running).toBe(false);
+      },
+    );
+    it(
+      'stops after lease loss, preserving evidence without success or a new attempt',
+      {
+        tags: ['manual:ALLRICE_RUN_PROJECT_CLOUD_INTEGRATION'],
+        timeout: 90000,
+      },
+      async () => {
+        const f = cloudProjectFixture();
+        f.command.arguments.args = [
+          '-e',
+          "console.log('lease-command-started');setInterval(()=>{},1000)",
+        ];
+        let valid = true;
+        const { id, result } = await run(f, {
+          maintainLease: async () => valid,
+          observe: async (e) => {
+            if (e.stage === 'executing') {
+              await waitForCommand(e.containerId!, 'lease-command-started\n');
+              valid = false;
+            }
+          },
+        });
+        expect(result.reason).toBe('canceled');
+        expect(result.stopped).toBe(true);
+        expect((await backend.inspect(id))?.State.Running).toBe(false);
+      },
+    );
   },
 );

@@ -456,8 +456,8 @@ suite(
     );
     it.skipIf(process.env.ALLRICE_RUN_OFFICE_INTEGRATION !== '1')(
       'office.native-delivery.v1: native XLSX generation, source revision, physical checker and authenticated immutable downloads',
+      { tags: ['manual:ALLRICE_RUN_OFFICE_INTEGRATION'], timeout: 180000 },
       () => verifyDelivery('xlsx'),
-      180000,
     );
   },
 );

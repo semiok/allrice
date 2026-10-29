@@ -5,6 +5,7 @@ import { LocalCommandRunner } from './local-command-runner.js';
 const nativeArchitecture = process.arch === 'arm64' ? 'arm64' : 'amd64';
 describe.skipIf(process.platform !== 'darwin')(
   'native runner preflight',
+  { tags: ['platform:macos'] },
   () => {
     afterEach(() => vi.restoreAllMocks());
     it.each([

@@ -482,6 +482,7 @@ suite('P15 real PostgreSQL governance and SaaS gVisor delivery', () => {
   });
   it.skipIf(process.env.ALLRICE_RUN_CLOUD_INTEGRATION !== '1')(
     'actually computes, persists immutable tool-result artifact, destroys sandbox, reopens bytes; replay never computes twice',
+    { tags: ['manual:ALLRICE_RUN_CLOUD_INTEGRATION'], timeout: 30000 },
     async () => {
       const f = await fixture(),
         c = await f.create();
@@ -534,10 +535,10 @@ suite('P15 real PostgreSQL governance and SaaS gVisor delivery', () => {
       expect(Number(usage!.reserved)).toBe(0);
       expect(Number(usage!.spent)).toBe(1);
     },
-    30000,
   );
   it.skipIf(process.env.ALLRICE_RUN_CLOUD_INTEGRATION !== '1')(
     'does not publish after authority revoked; cold recovery preserves journal and destroys stopped sandbox',
+    { tags: ['manual:ALLRICE_RUN_CLOUD_INTEGRATION'], timeout: 30000 },
     async () => {
       const f = await fixture(),
         c = await f.create();
@@ -585,10 +586,10 @@ suite('P15 real PostgreSQL governance and SaaS gVisor delivery', () => {
       expect(journal!.outcome.artifacts).toHaveLength(1);
       expect(journal!.cleanup_confirmed_at).not.toBeNull();
     },
-    30000,
   );
   it.skipIf(process.env.ALLRICE_RUN_CLOUD_INTEGRATION !== '1')(
     'retains stopped result through storage failure; recovery publishes without rerunning',
+    { tags: ['manual:ALLRICE_RUN_CLOUD_INTEGRATION'], timeout: 30000 },
     async () => {
       const f = await fixture(),
         c = await f.create();
@@ -623,10 +624,10 @@ suite('P15 real PostgreSQL governance and SaaS gVisor delivery', () => {
         await backend.inspect(c.snapshot.binding.attempt.attemptId),
       ).toBeNull();
     },
-    30000,
   );
   it.skipIf(process.env.ALLRICE_RUN_CLOUD_INTEGRATION !== '1')(
     'never reexecutes after started admission without container evidence',
+    { tags: ['manual:ALLRICE_RUN_CLOUD_INTEGRATION'], timeout: 30000 },
     async () => {
       const f = await fixture(),
         c = await f.create();
@@ -660,6 +661,5 @@ suite('P15 real PostgreSQL governance and SaaS gVisor delivery', () => {
       expect(recovered.status).toBe('unknown');
       expect(await backend.inspect(b.attempt.attemptId)).toBeNull();
     },
-    30000,
   );
 });

@@ -26,6 +26,7 @@ describe.skipIf(process.env.ALLRICE_TEST_LOCAL_BROWSER_NATIVE !== '1')(
       'lease-file-invalid',
     ] as const)(
       'creates a pipe-only fresh context and closes it after %s parent exit',
+      { tags: ['manual:ALLRICE_TEST_LOCAL_BROWSER_NATIVE'], timeout: 35000 },
       async (mode) => {
         const root = await mkdtemp(join(tmpdir(), 'allrice-p22-native-'));
         const worker = fileURLToPath(
@@ -192,7 +193,6 @@ describe.skipIf(process.env.ALLRICE_TEST_LOCAL_BROWSER_NATIVE !== '1')(
         }
         expect(children.filter(({ pid }) => exists(pid))).toEqual([]);
       },
-      35000,
     );
   },
 );

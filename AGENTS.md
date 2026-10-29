@@ -195,7 +195,7 @@
    ```bash
    ~/allrice-dev/bin/m5-test [<提交>] --db -- packages/database/src/<名字>.integration.test.ts
    ~/allrice-dev/bin/m5-test --browser -- apps/web/app/chatflow/<名字>.browser.test.ts
-   ~/allrice-dev/bin/m5-test --        # 整套单元测试
+   ~/allrice-dev/bin/m5-test --wait 0 --build 'pnpm --filter @allrice/contracts build && node --test --test-concurrency=1 scripts/ci-integration-tests.node.test.mjs' -- --maxWorkers=2  # 完整自测及全量 Vitest，顶层顺序避免嵌套锁
    ~/allrice-dev/bin/m5-test status
    ```
 
@@ -217,7 +217,7 @@
 1. **每个 PR 至少带一条用户视角的行为测试**，由写代码的一方写，Codex 补测时检查：从用户在聊天里会说的原话出发，走真实入口（接口或 Worker 管线，模型可以用桩），断言落库的结构化结果（任务记录、附件类型、定时任务行、回执），不断言模型措辞。纯界面的改动用浏览器测试断言界面状态。纯重构、纯文档、纯运维脚本、只改 CI 配置的 PR 例外，在 PR 描述里说明。
 2. **改 AI 行为的要拿真实结果说话**：评测集还没有建（计划见 MET-208）。建成之前，改提示词、工具描述、技能文档、模型路由的 PR，在描述里列出几条用户原话，以及合并前在验收实例上用真实模型跑出的落库结果；验收实例跑不了的（例如要用云端执行的），写进 MET 卡“Dev 上要验什么”，合并部署后补上结果。评测集建成后，改为跑评测集，命令写进本节。
 3. **环境相关的测试失败当场修，不记成“已知失败”**：总有几条红的测试，大家会习惯性忽略，真正的失败就混进去了。与本 PR 相关的在本 PR 修；无关的另开一个小 PR 马上修。常见的两类：macOS 上 `/var` 是 `/private/var` 的别名，测试的临时目录要先取 `realpath`；Node 不是第 3 节的 22.23.2 时，先换版本再判断是不是环境问题。
-4. **新测试要确认 CI 真的会跑**：集成和浏览器测试靠环境变量开关，`pnpm test` 会收集所有测试，但没有开关变量时会直接跳过；新写的集成和浏览器测试也要按同样的变量加开关，否则在没有数据库的 `pnpm test` 里会失败。新加的数据库集成测试，要加进 `.github/workflows/ci.yml` 里带 `ALLRICE_RUN_DB_INTEGRATION=1` 的 `vitest run` 步骤；浏览器测试要加进带 `ALLRICE_RUN_BROWSER_INTEGRATION=1` 的步骤。`apps/worker/test/p25/` 按目录收集，放在这里的不用单独登记。不进 CI 的（需要真实沙箱、Bridge 的 native 测试），在 PR 描述里写明在哪里跑过。改成按目录自动收集的工作记在 MET-220。本地跑集成和浏览器测试用 `m5-test`（第 9 节第 7 条）。
+4. **新测试要确认 CI 真的会跑**：集成和浏览器测试靠环境变量开关，`pnpm test` 会收集所有测试，但没有开关变量时会直接跳过；新写的集成和浏览器测试也要按同样的变量加开关，否则在没有数据库的 `pnpm test` 里会失败。集成和浏览器测试由 `scripts/ci-integration-tests.mjs` 从 Git 的 integration/browser 命名文件及 `scripts/ci-manual-environments.yml` 显式非标准文件发现，按声明的完整文件资源责任补齐现有 CI，`inventory` 只输出计划、不代表通过。新增或修改资源条件、影响用例集合的环境分支，必须同步文件资源声明；真实外部或平台前提只在所依赖 suite/叶上标原生 manual/platform tags，并在 manifest 写具体理由、前提及 `{file}` 可运行命令，普通数据库不得归手工。一次真实 Vitest run 的公开 Reporter 核对本批原生实例 ID、可见 skip 和结束结果，保留每批原始 JSON、收集旁证及失败回执；未执行的任意 TS 分支不在自动证明范围。`apps/worker/test/p25/` 原有目录收集保留；语料生成入口单列为人工操作，不计测试通过；手工项在 PR 描述里写明实际跑过或未跑及原因。本地跑集成和浏览器测试用 `m5-test`（第 9 节第 7 条）。
 
 **PR**
 

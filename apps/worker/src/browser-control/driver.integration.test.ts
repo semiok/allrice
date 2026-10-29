@@ -25,7 +25,9 @@ suite(
       browser = await chromium.launch({
         executablePath:
           process.env.ALLRICE_MANAGED_BROWSER_EXECUTABLE ??
-          '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+          (process.platform === 'darwin'
+            ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+            : chromium.executablePath()),
         headless: true,
         chromiumSandbox: true,
       });

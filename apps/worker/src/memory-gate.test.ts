@@ -106,6 +106,7 @@ describe('host memory (MET-219)', () => {
 
   it.runIf(process.platform === 'darwin')(
     'reads this Mac without privilege',
+    { tags: ['platform:macos'] },
     async () => {
       for (const reading of [await readHostMemory(), readHostMemorySync()]) {
         expect(reading).toMatchObject({ source: 'memorystatus' });

@@ -1282,6 +1282,7 @@ test('hidden files, traversal, absolute paths, missing files and symlinks cannot
 
 test.skipIf(process.platform === 'win32')(
   'source FIFOs are rejected before composing the original reader, without hanging',
+  { tags: ['platform:posix'] },
   () => {
     for (const relativePath of [
       'pnpm-lock.yaml',
