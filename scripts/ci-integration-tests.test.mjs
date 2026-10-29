@@ -342,6 +342,59 @@ function runnableFixture(files, oldSteps = []) {
   );
   return root;
 }
+
+it('audits real parenthesized conditional registrations with their gates enabled and disabled', () => {
+  const root = runnableFixture({
+    [dbFile]: `describe.runIf(${dbGate})('DB',()=>{
+  it('SQL',()=>{});
+  (process.env.ALLRICE_RUN_CLOUD_INTEGRATION === '1' ? it : it.skip)(
+    'physical conditional',()=>{});
+});`,
+  });
+  for (const gate of ['', '1']) {
+    const output = `conditional-${gate || 'disabled'}.json`;
+    const run = execute(
+      root,
+      [
+        '--',
+        dbFile,
+        '--maxWorkers=1',
+        '--reporter=json',
+        `--outputFile=${output}`,
+      ],
+      { ALLRICE_RUN_CLOUD_INTEGRATION: gate },
+    );
+    expect(run.status, run.stdout + run.stderr).toBe(0);
+    const report = JSON.parse(readFileSync(join(root, output), 'utf8'));
+    const entry = inventory(root).entries[0];
+    const env = {
+      ALLRICE_RUN_DB_INTEGRATION: '1',
+      ALLRICE_RUN_CLOUD_INTEGRATION: gate,
+    };
+    const [result] = audit([entry], report, [dbFile], env, undefined, root);
+    expect(result.passed).toBe(gate ? 2 : 1);
+    expect(result.deferred).toHaveLength(gate ? 0 : 1);
+    if (!gate)
+      expect(() =>
+        audit(
+          [entry],
+          report,
+          [dbFile],
+          { ...env, ALLRICE_RUN_CLOUD_INTEGRATION: '1' },
+          undefined,
+          root,
+        ),
+      ).toThrow(/Unexpected (pending|skipped)/);
+    const missing = globalThis.structuredClone(report);
+    missing.testResults[0].assertionResults =
+      missing.testResults[0].assertionResults.filter(
+        (test) => test.title !== 'physical conditional',
+      );
+    expect(() =>
+      audit([entry], missing, [dbFile], env, undefined, root),
+    ).toThrow('Missing registered test');
+  }
+});
 function execute(root, args, env = {}) {
   return spawnSync(
     process.execPath,

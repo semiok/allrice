@@ -175,11 +175,13 @@ export function registrations(file, source) {
           else visit(callback.body, inherited, [...ancestors, title]);
         } else {
           const expression = node.expression;
-          const position = ts.isCallExpression(expression)
-            ? expression.end
-            : ts.isPropertyAccessExpression(expression)
-              ? expression.name.getStart(ast)
-              : expression.getStart(ast);
+          const position = ts.isParenthesizedExpression(expression)
+            ? expression.end - 1
+            : ts.isCallExpression(expression)
+              ? expression.end
+              : ts.isPropertyAccessExpression(expression)
+                ? expression.name.getStart(ast)
+                : expression.getStart(ast);
           const location = ast.getLineAndCharacterOfPosition(position);
           cases.push({
             title,
