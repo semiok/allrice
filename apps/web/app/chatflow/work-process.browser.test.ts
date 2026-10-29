@@ -126,6 +126,9 @@ suite('one receipt within each native call in the chat transcript', () => {
             ),
           ).toBe(34);
           expect(await processOf(page).locator('article').count()).toBe(0);
+          await page.screenshot({
+            path: join(screenshots, `${width}-${unified}-expanded.png`),
+          });
           const first = process.locator('[data-work-call="tool:call-0"]');
           await first.getByRole('button').click();
           const receipt = first.locator('article');
@@ -207,6 +210,12 @@ suite('one receipt within each native call in the chat transcript', () => {
       ).toBe(true);
       expect(await processOf(page).locator('article:visible').count()).toBe(2);
       await page.screenshot({ path: join(screenshots, 'attention.png') });
+      await page
+        .locator('#operation-receipt-28')
+        .screenshot({ path: join(screenshots, 'pending-call.png') });
+      await page
+        .locator('#operation-receipt-29')
+        .screenshot({ path: join(screenshots, 'failed-call.png') });
       await approve.click();
       await expect
         .poll(() => page.evaluate(() => window.processWrites.length))
