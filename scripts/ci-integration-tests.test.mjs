@@ -107,6 +107,14 @@ it('separates real external whole-file and partial cases from automatic browser 
       .find((entry) => entry.file === dbFile)
       .cases.find((item) => item.title === 'physical').group,
   ).toBe('manual');
+  expect(
+    plan.entries.find((entry) => entry.file === dbFile).manualCommands[0]
+      .command,
+  ).toContain('ALLRICE_RUN_DB_INTEGRATION=1');
+  expect(
+    plan.entries.find((entry) => entry.file === dbFile).manualCommands[0]
+      .command,
+  ).toContain('ALLRICE_RUN_CLOUD_INTEGRATION=1');
 });
 
 it('fails collection when a new registration switch has no classified environment', () => {

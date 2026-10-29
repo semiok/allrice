@@ -177,6 +177,18 @@ export function inventory(root = process.cwd()) {
         ? !!env[gate]
         : String(env[gate]) === '1',
     );
+  const manualCommand = (file, gates) => {
+    const assignments = unique(
+      gates.flatMap((gate) =>
+        manual[gate]
+          ? manual[gate].command.split(' pnpm exec vitest run ')[0].split(' ')
+          : [
+              `${gate}=${gate === 'ALLRICE_NATIVE_ONCE_PROBE_MODULE_BASE' ? '"$PWD/apps/worker/package.json"' : '1'}`,
+            ],
+      ),
+    );
+    return `${assignments.join(' ')} pnpm exec vitest run ${file} --maxWorkers=2`;
+  };
   const covered = (file, gates, title) =>
     steps.filter((step) => {
       const pattern = step.run.match(/(?:^|\s)-t\s+(['"])(.*?)\1/);
@@ -225,6 +237,20 @@ export function inventory(root = process.cwd()) {
               },
             ]),
         ),
+        manualCommands: (group === 'manual'
+          ? [{ gates: registration.gates }]
+          : registration.cases.filter(
+              (item) =>
+                classify(unique([...registration.gates, ...item.gates])) ===
+                'manual',
+            )
+        ).map((item) => ({
+          title: item.title ?? null,
+          command: manualCommand(
+            file,
+            unique([...registration.gates, ...item.gates]),
+          ),
+        })),
       },
     ];
   });
