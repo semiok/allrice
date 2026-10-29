@@ -13,6 +13,10 @@ export ALLRICE_STORAGE_SIGNING_SECRET="${ALLRICE_STORAGE_SIGNING_SECRET:-allrice
 export ALLRICE_WORKER_POLL_INTERVAL_MS="${ALLRICE_WORKER_POLL_INTERVAL_MS:-250}"
 export ALLRICE_WORKER_LEASE_MS="${ALLRICE_WORKER_LEASE_MS:-3000}"
 export ALLRICE_WORKER_HEARTBEAT_MS="${ALLRICE_WORKER_HEARTBEAT_MS:-1000}"
+# This disposable fixture has no dedicated execution socket, runsc/watchdog or
+# pinned sandbox images. It verifies Web/DB and office-renderer, not cloud
+# execution. Keep compose.yaml's actual deployment default enabled.
+export ALLRICE_CLOUD_RUNNER_ENABLED=0
 
 cleanup() {
   exit_code="$?"

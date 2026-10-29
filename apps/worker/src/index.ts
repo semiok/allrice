@@ -18,6 +18,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createNativeRunDiagnosticsHttpHandler } from './native-run-diagnostics-http.js';
+import { createWorkerReadinessResponder } from './worker-readiness.js';
 
 import {
   DSH_INSTALLED_DISTRIBUTION,
@@ -430,6 +431,7 @@ const nativeRunDiagnosticsHttp = createNativeRunDiagnosticsHttpHandler(
   undefined,
   httpAborter.signal,
 );
+const respondWorkerReadiness = createWorkerReadinessResponder();
 const server = createServer(async (request, response) => {
   if (await nativeRunDiagnosticsHttp(request, response, stopping)) return;
   response.setHeader('content-type', 'application/json; charset=utf-8');
@@ -493,10 +495,9 @@ const server = createServer(async (request, response) => {
       !nativeOnceRestartRequired &&
       !nativeRecurringBlocked &&
       !nativeRecurringRestartRequired;
-    response.statusCode = ready ? 200 : 503;
-    if (ready) response.once('finish', () => startup.mark('health_ready'));
-    response.end(
-      JSON.stringify({
+    await respondWorkerReadiness(
+      response,
+      {
         ...makeHealthResponse(
           'worker',
           ready ? 'ready' : 'not_ready',
@@ -525,7 +526,8 @@ const server = createServer(async (request, response) => {
         ...(maintenance
           ? { producerLifecycle: readDevProducerLifecycle('worker') }
           : {}),
-      }),
+      },
+      () => startup.mark('health_ready'),
     );
     return;
   }
