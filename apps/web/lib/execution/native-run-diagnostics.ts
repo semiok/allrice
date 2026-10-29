@@ -1,5 +1,6 @@
 import {
   NativeRunDiagnosticsSchema,
+  NativeSubagentSummarySchema,
   type RequestContext,
 } from '@allrice/contracts';
 
@@ -9,13 +10,18 @@ export class NativeDiagnosticsUnavailable extends Error {
   }
 }
 
-export async function requestNativeRunDiagnostics(input: {
+type NativeReadInput = {
   token: string;
   context: RequestContext;
   workspaceId: string;
-  runId: string;
   signal: AbortSignal;
-}) {
+};
+
+async function requestNativeRead<T>(
+  input: NativeReadInput,
+  address: { runId: string } | { sessionId: string },
+  read: (body: Record<string, unknown>) => T,
+) {
   try {
     // Fixed deployment address, never a request URL. Redirects must not carry
     // an authenticated user's session token to another destination.
@@ -32,7 +38,12 @@ export async function requestNativeRunDiagnostics(input: {
     )
       throw new NativeDiagnosticsUnavailable();
     const response = await fetch(
-      new URL('/internal/native-run-diagnostics', base),
+      new URL(
+        'runId' in address
+          ? '/internal/native-run-diagnostics'
+          : '/internal/native-subagent-summary',
+        base,
+      ),
       {
         method: 'POST',
         cache: 'no-store',
@@ -42,11 +53,14 @@ export async function requestNativeRunDiagnostics(input: {
           authorization: `Bearer ${input.token}`,
         },
         body: JSON.stringify({
-          runId: input.runId,
+          ...address,
           organizationId: input.context.organizationId,
           workspaceId: input.workspaceId,
         }),
-        signal: AbortSignal.any([input.signal, AbortSignal.timeout(12_000)]),
+        signal:
+          'runId' in address
+            ? AbortSignal.any([input.signal, AbortSignal.timeout(12_000)])
+            : input.signal,
       },
     );
     if (!response.ok)
@@ -54,16 +68,32 @@ export async function requestNativeRunDiagnostics(input: {
         [401, 404].includes(response.status) ? response.status : 503,
       );
     const body: unknown = await response.json();
-    const diagnostics = NativeRunDiagnosticsSchema.parse(
-      body && typeof body === 'object' && 'diagnostics' in body
-        ? body.diagnostics
-        : undefined,
-    );
-    if (diagnostics.runId !== input.runId)
+    if (!body || typeof body !== 'object')
       throw new NativeDiagnosticsUnavailable();
-    return diagnostics;
+    return read(body as Record<string, unknown>);
   } catch (error) {
     if (error instanceof NativeDiagnosticsUnavailable) throw error;
     throw new NativeDiagnosticsUnavailable();
   }
+}
+
+export function requestNativeRunDiagnostics(
+  input: NativeReadInput & { runId: string },
+) {
+  return requestNativeRead(input, { runId: input.runId }, (body) => {
+    const diagnostics = NativeRunDiagnosticsSchema.parse(body.diagnostics);
+    if (diagnostics.runId !== input.runId)
+      throw new NativeDiagnosticsUnavailable();
+    return diagnostics;
+  });
+}
+
+export function requestNativeSubagentSummary(
+  input: NativeReadInput & { sessionId: string },
+) {
+  return requestNativeRead(input, { sessionId: input.sessionId }, (body) => {
+    if (body.sessionId !== input.sessionId)
+      throw new NativeDiagnosticsUnavailable();
+    return NativeSubagentSummarySchema.parse(body.summary);
+  });
 }
