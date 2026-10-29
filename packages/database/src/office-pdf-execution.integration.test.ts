@@ -51,7 +51,6 @@ suite(
       const f = await createRunAuthorityFixture(database.db, {
         allowedTools: ['workspace.export.create', 'workspace.document.read'],
         memberRole: 'member',
-        configure: false,
         snapshot: (frozen: EmployeeExecutionSnapshot) => ({
           ...frozen,
           capabilitySnapshot: {
