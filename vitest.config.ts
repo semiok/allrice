@@ -15,6 +15,7 @@ export default defineConfig({
       '**/dist/**',
       '**/.next/**',
       '**/.local/**',
+      'scripts/ci-integration-tests.node.test.mjs',
     ],
   },
   resolve: {

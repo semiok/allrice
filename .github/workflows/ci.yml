@@ -201,6 +201,7 @@ jobs:
           TSX_TSCONFIG_PATH: ${{ github.workspace }}/tsconfig.base.json
         run: |
           pnpm --filter @allrice/contracts build
+          node --test --test-concurrency=1 scripts/ci-integration-tests.node.test.mjs
           node scripts/ci-integration-tests.mjs run native -- --maxWorkers=2 --outputFile=.local/quality/native/vitest-native.json
       - name: Collect deterministic scenario evidence without rerunning tests
         if: always() && steps.native-capture.outcome == 'success'

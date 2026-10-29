@@ -49,7 +49,7 @@
     "met62:verify": "pnpm acceptance:release-gate",
     "met62:auth-smoke": "pnpm acceptance:platform-governance",
     "preflight": "node scripts/preflight.mjs",
-    "test": "pnpm --filter @allrice/contracts build && vitest run",
+    "test": "pnpm --filter @allrice/contracts build && node --test --test-concurrency=1 scripts/ci-integration-tests.node.test.mjs && vitest run",
     "test:compose": "bash scripts/compose-smoke.sh",
     "typecheck": "pnpm -r --if-present run typecheck && pnpm typecheck:integration",
     "typecheck:integration": "tsc -p tests/integration/tsconfig.json",

@@ -195,7 +195,7 @@
    ```bash
    ~/allrice-dev/bin/m5-test [<提交>] --db -- packages/database/src/<名字>.integration.test.ts
    ~/allrice-dev/bin/m5-test --browser -- apps/web/app/chatflow/<名字>.browser.test.ts
-   ~/allrice-dev/bin/m5-test --        # 整套单元测试
+   ~/allrice-dev/bin/m5-test --wait 0 --build 'pnpm --filter @allrice/contracts build && node --test --test-concurrency=1 scripts/ci-integration-tests.node.test.mjs' -- --maxWorkers=2  # 完整自测及全量 Vitest，顶层顺序避免嵌套锁
    ~/allrice-dev/bin/m5-test status
    ```
 

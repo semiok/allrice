@@ -43,7 +43,12 @@ export function inventory(root = process.cwd()) {
   const data = manifest(root);
   const files = git(root, ['ls-files', '-z'])
     .split('\0')
-    .filter((file) => /\.(test|spec)\.[cm]?[jt]sx?$/.test(file));
+    // The public Node self-test runs serially before Vitest acquires its lock.
+    .filter(
+      (file) =>
+        /\.(test|spec)\.[cm]?[jt]sx?$/.test(file) &&
+        file !== 'scripts/ci-integration-tests.node.test.mjs',
+    );
   const declared = new Map();
   for (const [group, paths] of Object.entries(data.files)) {
     if (!data.resources[group]) throw Error(`Unknown resource: ${group}`);
