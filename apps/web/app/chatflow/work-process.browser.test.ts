@@ -103,9 +103,9 @@ suite('one receipt within each native call in the chat transcript', () => {
               .getByText('已核对，最终结论保留在这里。', { exact: true })
               .isVisible(),
           ).toBe(true);
-          expect(
-            await page.locator('article[id^="operation-"]:visible').count(),
-          ).toBe(0);
+          expect(await processOf(page).locator('article:visible').count()).toBe(
+            0,
+          );
           await page.screenshot({
             path: join(screenshots, `${width}-${unified}-default.png`),
           });
@@ -125,16 +125,12 @@ suite('one receipt within each native call in the chat transcript', () => {
                   .size,
             ),
           ).toBe(34);
-          expect(await page.locator('article[id^="operation-"]').count()).toBe(
-            0,
-          );
+          expect(await processOf(page).locator('article').count()).toBe(0);
           const first = process.locator('[data-work-call="tool:call-0"]');
           await first.getByRole('button').click();
-          const receipt = first.locator('#operation-receipt-0');
+          const receipt = first.locator('article');
           await receipt.waitFor();
-          expect(await page.locator('article[id^="operation-"]').count()).toBe(
-            1,
-          );
+          expect(await processOf(page).locator('article').count()).toBe(1);
           expect(await receipt.innerText()).toContain('授权等级：写入');
           expect(
             await receipt.getByRole('button', { name: '查看详情' }).count(),
@@ -153,6 +149,15 @@ suite('one receipt within each native call in the chat transcript', () => {
             .click();
           expect(await process.getAttribute('data-process-open')).toBe('true');
           expect(await receipt.isVisible()).toBe(true);
+          await first.locator('[data-disclosure-row]').first().click();
+          await process.locator('[data-disclosure-row]').first().click();
+          await page
+            .getByRole('button', { name: '定位已有调用', exact: true })
+            .click();
+          await receipt.waitFor();
+          expect(await page.locator('[id="operation-receipt-0"]').count()).toBe(
+            1,
+          );
           expect(
             await page.evaluate(
               () => document.documentElement.scrollWidth > innerWidth,
@@ -195,12 +200,10 @@ suite('one receipt within each native call in the chat transcript', () => {
       expect(await processOf(page).getAttribute('data-process-open')).toBe(
         'true',
       );
-      expect(await page.locator('#operation-receipt-29').isVisible()).toBe(
-        true,
-      );
       expect(
-        await page.locator('article[id^="operation-"]:visible').count(),
-      ).toBe(2);
+        await page.locator('#operation-receipt-29 article').isVisible(),
+      ).toBe(true);
+      expect(await processOf(page).locator('article:visible').count()).toBe(2);
       await page.screenshot({ path: join(screenshots, 'attention.png') });
       await approve.click();
       await expect
@@ -212,9 +215,9 @@ suite('one receipt within each native call in the chat transcript', () => {
         ),
       ).toBe('approved');
       await expect.poll(() => approve.count()).toBe(0);
-      expect(await page.locator('#operation-receipt-29').isVisible()).toBe(
-        true,
-      );
+      expect(
+        await page.locator('#operation-receipt-29 article').isVisible(),
+      ).toBe(true);
     } finally {
       await page.close();
     }
@@ -253,9 +256,30 @@ suite('one receipt within each native call in the chat transcript', () => {
       );
       await processOf(page).locator('[data-disclosure-row]').first().click();
       await expandGroups(page);
-      expect(await page.locator('#operation-receipt-0').isVisible()).toBe(true);
+      expect(
+        await page.locator('#operation-receipt-0 article').isVisible(),
+      ).toBe(true);
     } finally {
       await page.close();
     }
   });
+  for (const preference of ['next-input', 'verbose'])
+    it(`preserves the existing ${preference} preference`, async () => {
+      const page = await browser.newPage();
+      try {
+        await page.goto(`${origin}/?${preference}`);
+        await expect.poll(() => calls(page).count()).toBe(34);
+        expect(await processOf(page).getAttribute('data-process-open')).toBe(
+          'true',
+        );
+        await page
+          .getByRole('button', { name: '下一轮输入', exact: true })
+          .click();
+        expect(await processOf(page).getAttribute('data-process-open')).toBe(
+          preference === 'verbose' ? 'true' : 'false',
+        );
+      } finally {
+        await page.close();
+      }
+    });
 });

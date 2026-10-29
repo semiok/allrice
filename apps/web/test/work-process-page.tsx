@@ -4,6 +4,7 @@ import { createRef, useState } from 'react';
 import type { ChatFlowEventEnvelope } from '@allrice/contracts';
 import type { CloudOperationView } from '@allrice/database';
 import { ChatTranscript } from '../app/chatflow/chat-transcript';
+import { revealOperation } from '../lib/chatflow/reveal-operation';
 import type { Message } from '../app/chatflow/chatflow-types';
 import { cloudOperations, ids } from './technical-details-fixtures';
 import '../app/dsh-upstream/design-platform.css';
@@ -167,6 +168,7 @@ const user: Message = {
   role: 'user',
   content: { text: '帮我检查这个仓库最近的改动。' },
   status: 'completed',
+  runId: null,
   createdAt: at,
 };
 const assistant: Message = {
@@ -188,6 +190,9 @@ function Fixture() {
       <nav>
         <button onClick={() => setRunning(false)}>完成本轮</button>
         <button onClick={() => setNext(true)}>下一轮输入</button>
+        <button onClick={() => revealOperation('receipt-0')}>
+          定位已有调用
+        </button>
       </nav>
       <ChatTranscript
         atBottom

@@ -34,6 +34,7 @@ import {
   unconfirmedNote,
 } from '../../lib/chatflow/cloud-operation-presenter';
 import { shortDateTime } from '../../lib/chatflow/browser-workspace-presenter';
+import { revealOperation } from '../../lib/chatflow/reveal-operation';
 
 function operationFailure(op: CloudOperationView) {
   return op.proposal.kind === 'mcp' &&
@@ -379,7 +380,14 @@ export function CloudOperationCard({
       {laterSuccessId && (
         <p className={styles.notice}>
           之后再试的一次已经完成，这次的记录仍保留。
-          <a href={`#operation-${laterSuccessId}`}>查看完成的那次</a>
+          <a
+            href={`#operation-${laterSuccessId}`}
+            onClick={(event) => {
+              if (revealOperation(laterSuccessId)) event.preventDefault();
+            }}
+          >
+            查看完成的那次
+          </a>
         </p>
       )}
       {!op.enabled && (
@@ -778,7 +786,11 @@ export function CloudOperationCard({
   return (
     <article
       className={styles.card}
-      id={`operation-${op.snapshot.binding.attempt.operationId}`}
+      id={
+        embedded
+          ? undefined
+          : `operation-${op.snapshot.binding.attempt.operationId}`
+      }
       data-status={op.snapshot.status}
     >
       {op.projectService && projectServiceContext && (

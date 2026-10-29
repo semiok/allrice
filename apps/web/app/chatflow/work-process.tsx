@@ -411,7 +411,7 @@ function NativeStepsGroup({
         ? steps[0]?.description
         : undefined;
   return (
-    <section aria-label="工作步骤">
+    <section aria-label="工作步骤" data-work-group-open={!showGroup || open}>
       {showGroup && (
         <DisclosureRow
           icon={stepIcons[steps[0]!.category]}
@@ -495,6 +495,7 @@ function WorkProcessStepRow({
           : undefined;
   return (
     <li
+      id={step.operationId ? `operation-${step.operationId}` : undefined}
       data-work-call={step.id}
       data-category={step.category}
       data-failed={step.status === 'failed' || undefined}
