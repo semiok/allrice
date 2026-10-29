@@ -46,7 +46,6 @@ import {
   getChatSessionHistory,
 } from './workspace/service.ts';
 import { getWorkspaceReadiness } from './workspace-readiness.ts';
-import { updateWorkAutomation } from './work-automation.ts';
 import { claimNextJob, startClaimedJob } from './execution/queue.ts';
 import { acquireConversationRuntime } from './conversation/conversation-runtime.ts';
 import {
@@ -108,8 +107,6 @@ suite(
         'workspace.skill.read',
         'cloud.process.execute',
         'browser.workspace',
-        'assistant.delegate',
-        'assistant.report',
       ];
       await savePlatformEmployeeDraft(source.employeeId, {
         definition: {
@@ -373,48 +370,41 @@ suite(
           text: 'Use the assigned employee',
           deliveryMode: 'follow_up',
           clientMessageId: randomUUID(),
-          assistantPreference: { mode: 'daily', allowAssistants: true },
         },
       );
       const [run] =
         await fdb.db`select input from allrice_runs where id=${sent.run.id}`;
-      // A new member has not turned assistants on; the grant is still inherited.
-      expect(run!.input.assistantConfiguration).toMatchObject({
-        allowAssistants: false,
-        mode: 'daily',
-      });
-      await updateWorkAutomation(joined.context, f.tenant.workspaceId, {
-        expectedRevision: 0,
-        capability: 'assistants',
-        enabled: true,
-      });
-      const enabled = await sendChatMessage(
+      expect(run!.input).not.toHaveProperty('assistantConfiguration');
+      const continued = await sendChatMessage(
         joined.context,
         f.tenant.workspaceId,
         session.id,
         {
-          text: 'Use the assigned employee with assistants',
+          text: 'Keep using the assigned employee',
           deliveryMode: 'follow_up',
           clientMessageId: randomUUID(),
-          assistantPreference: { mode: 'daily', allowAssistants: true },
         },
       );
-      const [enabledRun] =
-        await fdb.db`select input from allrice_runs where id=${enabled.run.id}`;
-      expect(enabledRun!.input.assistantConfiguration).toMatchObject({
-        allowAssistants: true,
-        mode: 'daily',
-      });
+      const [continuedRun] =
+        await fdb.db`select input from allrice_runs where id=${continued.run.id}`;
+      expect(continuedRun!.input).not.toHaveProperty('assistantConfiguration');
       const [frozen] =
-        await fdb.db`select execution_snapshot from allrice_employee_runs where run_id=${sent.run.id}`;
+        await fdb.db`select employee_version_id,execution_snapshot from allrice_employee_runs where run_id=${sent.run.id}`;
+      expect(frozen!.employee_version_id).toBe(old.currentVersion.id);
       expect(
         frozen!.execution_snapshot.capabilitySnapshot.bindings.toolNames,
       ).toEqual(
         expect.arrayContaining([
           'browser.workspace',
           'cloud.process.execute',
-          'assistant.delegate',
+          'workspace.skill.read',
         ]),
+      );
+      const [continuedFrozen] =
+        await fdb.db`select employee_version_id,execution_snapshot from allrice_employee_runs where run_id=${continued.run.id}`;
+      expect(continuedFrozen!.employee_version_id).toBe(old.currentVersion.id);
+      expect(continuedFrozen!.execution_snapshot.capabilitySnapshot).toEqual(
+        frozen!.execution_snapshot.capabilitySnapshot,
       );
       expect(joined.context.memberships.every((m) => m.role === 'member')).toBe(
         true,
@@ -727,7 +717,7 @@ suite(
       const [controls] =
         await fdb.db`select controls from allrice_runtime_policy_controls where workspace_id=${f.tenant.workspaceId}`;
       expect(
-        runtimePolicyActionDecision(controls!.controls, 'assistant.delegate')
+        runtimePolicyActionDecision(controls!.controls, 'cloud.browser.observe')
           .effect,
       ).toBe('allow');
       await fdb.db`update allrice_execution_targets set last_heartbeat_at=clock_timestamp()-interval '3 minutes' where workspace_id=${f.tenant.workspaceId}`;

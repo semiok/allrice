@@ -202,7 +202,7 @@ suite('MET-151 policy and exact employee publication administration', () => {
             ...f.definition.capabilities,
             toolNames: [
               'local.process.execute',
-              'assistant.delegate',
+              'local.fs.write',
               'web.search',
               'workspace.skill.read',
               'cloud.process.execute',
@@ -220,7 +220,7 @@ suite('MET-151 policy and exact employee publication administration', () => {
       await fixture.db`delete from allrice_platform_employee_test_runs where employee_id=${f.employeeId}`;
       await fixture.db`update allrice_provider_status set checked_at=clock_timestamp()-interval '1 hour' where provider='codex'`;
       const before = await f.write(null, [
-        { action: 'assistant.delegate', effect: 'deny' },
+        { action: 'local.fs.write', effect: 'deny' },
       ]);
       const review = await f.review();
       expect(review.valid).toBe(true);
@@ -259,8 +259,7 @@ suite('MET-151 policy and exact employee publication administration', () => {
         where workspace_id=${f.workspaceId} and enabled and revoked_at is null`;
       expect(cloud?.n).toBeGreaterThan(0);
       expect(
-        runtimePolicyActionDecision(policy.controls, 'assistant.delegate')
-          .effect,
+        runtimePolicyActionDecision(policy.controls, 'local.fs.write').effect,
       ).toBe('allow');
       expect(
         runtimePolicyActionDecision(policy.controls, 'local.process.execute')
@@ -271,7 +270,7 @@ suite('MET-151 policy and exact employee publication administration', () => {
       expect(assigned?.manifest.capabilityBindings.toolNames).toEqual(
         expect.arrayContaining([
           'local.process.execute',
-          'assistant.delegate',
+          'local.fs.write',
           'web.search',
         ]),
       );
@@ -303,10 +302,6 @@ suite('MET-151 policy and exact employee publication administration', () => {
       'browser.workspace',
       'local.browser.workspace',
       'local.preview.open',
-      'assistant.delegate',
-      'assistant.message',
-      'assistant.report',
-      'assistant.stop',
       'local.process.status',
       'local.process.stop',
     ]) {
@@ -327,6 +322,28 @@ suite('MET-151 policy and exact employee publication administration', () => {
       expect((await compilePlatformEmployee(f.employeeId)).valid, name).toBe(
         true,
       );
+    }
+    for (const name of [
+      'assistant.delegate',
+      'assistant.message',
+      'assistant.report',
+      'assistant.stop',
+      'assistant.development',
+    ]) {
+      const definition = {
+        ...f.definition,
+        capabilities: {
+          ...f.definition.capabilities,
+          toolNames: ['workspace.skill.read', name],
+        },
+      };
+      expect(employeeToolConfigurationErrors(definition), name).toEqual([
+        `未注册工具：${name}`,
+      ]);
+      await savePlatformEmployeeDraft(f.employeeId, { definition });
+      const compilation = await compilePlatformEmployee(f.employeeId);
+      expect(compilation.valid, name).toBe(false);
+      expect(compilation.errors, name).toContain(`未注册工具：${name}`);
     }
     const base = {
       ...f.definition,
