@@ -226,6 +226,19 @@ suite(
       for (const cohort of cohorts) await harness.connectSubject(cohort);
       const cohort = cohorts.find((value) => value.kind === 'retired-source')!;
       const source = cohort.publication!;
+      const before =
+        await db`select run_id from allrice_employee_runs where session_id=${cohort.sessionId}`;
+      // A valid historical identity does not make its retired tools executable.
+      // Before the current publication, admission must still fail closed.
+      await expect(
+        sendChatMessage(cohort.context, cohort.workspaceId, cohort.sessionId, {
+          text: '继续旧版本的月报。',
+          clientMessageId: randomUUID(),
+        }),
+      ).rejects.toThrow();
+      expect(
+        await db`select run_id from allrice_employee_runs where session_id=${cohort.sessionId}`,
+      ).toEqual(before);
       // A normal new publication, not a rewrite of the birth version. This is
       // the same platform API path used for the real Dev rollout.
       await savePlatformEmployeeDraft(source.employeeId, {
