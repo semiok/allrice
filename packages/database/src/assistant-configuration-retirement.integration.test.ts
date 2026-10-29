@@ -65,8 +65,21 @@ async function historical() {
   fixtures.push(fixture);
   const { db } = fixture;
   vi.spyOn(client, 'getDatabase').mockReturnValue(db);
-  const f = await createRunAuthorityFixture(db),
+  const f = await createRunAuthorityFixture(db, { configure: false }),
     child = randomUUID();
+  await f.ledger.createRoot({
+    task: f.task,
+    deadlineAt: new Date(Date.now() + 600000).toISOString(),
+    budgets: [
+      {
+        metric: 'model_calls',
+        unit: 'calls',
+        currency: null,
+        capacity: 10,
+        source: { kind: 'worker', sourceId: 'passive-history-fixture' },
+      },
+    ],
+  });
   await db`update allrice_runs set state='failed',result='{"answer":"Original failed history"}',completed_at=clock_timestamp() where id=${f.rootRunId}`;
   await db`update allrice_employee_runs set status='failed',completed_at=clock_timestamp() where run_id=${f.rootRunId}`;
   await db`update allrice_jobs set status='failed',completed_at=clock_timestamp(),worker_id=null,lease_token=null,claimed_at=null,heartbeat_at=null,lease_expires_at=null where id=${f.worker.jobId}`;
