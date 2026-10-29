@@ -223,6 +223,64 @@ suite('reading a receipt while late native trace changes its group', () => {
         await page.close();
       }
     });
+    it(`keeps native Tab focus and keyboard selection in the long output at ${width}px`, async () => {
+      const page = await open(width);
+      try {
+        await readResult(page);
+        await page.keyboard.press('Tab');
+        expect(
+          await output(page).evaluate(
+            (node) => node === document.activeElement,
+          ),
+        ).toBe(true);
+        for (const stage of ['prefix', 'split', 'merge'] as const) {
+          await page.keyboard.press('End');
+          await expect
+            .poll(() =>
+              output(page).evaluate(
+                (node) =>
+                  node.scrollHeight - node.clientHeight - node.scrollTop,
+              ),
+            )
+            .toBeLessThan(2);
+          await output(page).dblclick({ position: { x: 80, y: 24 } });
+          const mouseSelection = await page.evaluate(() =>
+            document.getSelection()!.toString(),
+          );
+          expect(mouseSelection.length).toBeGreaterThan(0);
+          await page.keyboard.press('Shift+ArrowRight');
+          const selected = await page.evaluate(() =>
+            document.getSelection()!.toString(),
+          );
+          expect(selected.length).toBeGreaterThan(0);
+          expect(selected).not.toBe(mouseSelection);
+          expect(
+            await output(page).evaluate(
+              (node) => node === document.activeElement,
+            ),
+          ).toBe(true);
+          const before = await output(page).evaluate((node) => node.scrollTop);
+          await update(page, stage);
+          expect(
+            await output(page).evaluate(
+              (node) => node === document.activeElement,
+            ),
+          ).toBe(true);
+          expect(
+            await page.evaluate(() => document.getSelection()!.toString()),
+          ).toBe(selected);
+          expect(await output(page).evaluate((node) => node.scrollTop)).toBe(
+            before,
+          );
+          await page.keyboard.press('Home');
+          await expect
+            .poll(() => output(page).evaluate((node) => node.scrollTop))
+            .toBe(0);
+        }
+      } finally {
+        await page.close();
+      }
+    });
   }
   it('preserves a mouse reading position without any focused control or selection', async () => {
     const page = await open(390);
@@ -368,6 +426,40 @@ suite('reading a receipt while late native trace changes its group', () => {
         expect(
           await page.evaluate(() => document.activeElement === document.body),
         ).toBe(true);
+      }
+    } finally {
+      await page.close();
+    }
+  });
+  it('keeps an offscreen focused group title without pulling back a wheel reader', async () => {
+    const page = await open(390);
+    try {
+      const group = () =>
+        processOf(page).getByRole('button', { name: /项$/ }).first();
+      await group().focus();
+      await page.keyboard.press('Enter');
+      await page.mouse.move(200, 850);
+      await page.mouse.wheel(0, 100000);
+      const later = card(page, 35);
+      await expect
+        .poll(async () => {
+          const box = (await later.boundingBox())!;
+          return box.y < 900 && box.y + box.height > 0;
+        })
+        .toBe(true);
+      expect(
+        await group().evaluate((node) => node === document.activeElement),
+      ).toBe(true);
+      const old = (await group().boundingBox())!;
+      expect(old.y + old.height).toBeLessThan(0);
+      for (const stage of ['prefix', 'split', 'merge'] as const) {
+        await update(page, stage);
+        expect(
+          await group().evaluate((node) => node === document.activeElement),
+        ).toBe(true);
+        const box = (await later.boundingBox())!;
+        expect(box.y).toBeLessThan(900);
+        expect(box.y + box.height).toBeGreaterThan(0);
       }
     } finally {
       await page.close();
