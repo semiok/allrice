@@ -138,7 +138,9 @@ suite('one receipt within each native call in the chat transcript', () => {
           await receipt
             .getByRole('button', { name: '执行结果', exact: true })
             .click();
-          await receipt.getByText('技术详情', { exact: true }).click();
+          await receipt
+            .getByRole('button', { name: '技术详情', exact: true })
+            .click();
           expect(await receipt.innerText()).toContain('synthetic-result-0');
           await page.screenshot({
             path: join(screenshots, `${width}-${unified}-detail.png`),
@@ -282,4 +284,19 @@ suite('one receipt within each native call in the chat transcript', () => {
         await page.close();
       }
     });
+  it('keeps compact live details hidden until their existing group is expanded', async () => {
+    const page = await browser.newPage();
+    try {
+      await page.goto(`${origin}/?live&compact`);
+      await expect.poll(() => calls(page).count()).toBe(34);
+      expect(await calls(page).locator(':visible').count()).toBe(0);
+      expect(await page.locator('main').innerText()).not.toContain(
+        '检查第 1 项公开资料',
+      );
+      await expandGroups(page);
+      expect(await page.locator('[data-work-call]:visible').count()).toBe(34);
+    } finally {
+      await page.close();
+    }
+  });
 });

@@ -101,7 +101,7 @@ describe('native process display surface', () => {
     const compact = render({ running: true, transcriptView: 'compact' });
     const standard = render({ running: true, transcriptView: 'standard' });
     // Group content remains mounted so a manually opened call survives folding.
-    expect(compact).toContain('hidden=""');
+    expect(compact).toContain('data-work-group-open="false"');
     expect(standard).toContain('检查入口文件');
     expect(compact).toContain('阅读 · 1 项');
     const detailed = render({ running: true, transcriptView: 'detailed' });

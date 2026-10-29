@@ -197,7 +197,13 @@ function Fixture() {
       <ChatTranscript
         atBottom
         streamingOutput={!unified}
-        transcriptView={params.has('verbose') ? 'verbose' : 'detailed'}
+        transcriptView={
+          params.has('verbose')
+            ? 'verbose'
+            : params.has('compact')
+              ? 'compact'
+              : 'detailed'
+        }
         collapseTiming={params.has('next-input') ? 'next-input' : 'completion'}
         messages={[
           user,
