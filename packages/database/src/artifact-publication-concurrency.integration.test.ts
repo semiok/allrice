@@ -642,6 +642,7 @@ suite(
       let eventHeld = false,
         eventPid = 0,
         publisherPid = 0;
+      let lockEvidence: unknown;
       const eventDb = new Proxy(fixture.db, {
         get(target, key) {
           if (key !== 'begin') return Reflect.get(target, key, target);
@@ -654,7 +655,11 @@ suite(
                   apply(query, receiver, args) {
                     const text = (args[0] as TemplateStringsArray).join('?');
                     const pending = Reflect.apply(query, receiver, args);
-                    if (/select id from allrice_runs\s+where id =.*for update/s.test(text))
+                    if (
+                      /select id from allrice_runs\s+where id =.*for update/s.test(
+                        text,
+                      )
+                    )
                       return (async () => {
                         eventHeld = true;
                         await resume.promise;
@@ -691,18 +696,21 @@ suite(
         publication = publishWorkbenchArtifact(f.input, f.storage, publisherDb);
         void publication.catch(() => {});
         await expect
-          .poll(async () => {
-            if (!publisherPid) return false;
-            const [row] =
-              await fixture.db`select ${eventPid}=any(pg_blocking_pids(${publisherPid})) blocked`;
-            return row!.blocked;
-          }, { timeout: 4000, interval: 20 })
+          .poll(
+            async () => {
+              if (!publisherPid) return false;
+              const [row] =
+                await fixture.db`select ${eventPid}=any(pg_blocking_pids(${publisherPid})) blocked`;
+              return row!.blocked;
+            },
+            { timeout: 4000, interval: 20 },
+          )
           .toBe(true);
-        const locks = await fixture.db`select a.pid,a.query,l.locktype,l.mode,l.granted,c.relname
+        lockEvidence =
+          await fixture.db`select a.pid,a.query,l.locktype,l.mode,l.granted,c.relname
           from pg_stat_activity a join pg_locks l on l.pid=a.pid left join pg_class c on c.oid=l.relation
           where a.pid in (${eventPid},${publisherPid}) and (not l.granted or c.relname in ('allrice_runs','allrice_jobs','allrice_chat_sessions'))
           order by a.pid,l.locktype,l.mode`;
-        console.info('ordinary publication/event lock evidence', JSON.stringify(locks));
       } finally {
         resume.resolve();
         vi.mocked(client.getDatabase).mockReturnValue(fixture.db);
@@ -714,6 +722,7 @@ suite(
               code: cause.code,
               detail: cause.detail,
               query: cause.query,
+              locks: lockEvidence,
             });
           }
         expect(outcomes.map((result) => result.status)).toEqual([
