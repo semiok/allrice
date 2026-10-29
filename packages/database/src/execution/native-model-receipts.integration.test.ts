@@ -713,7 +713,15 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
     await cancelRun(f.context, f.workspace, f.rootRunId, {
       reason: 'user_requested',
     });
-    await fixture.db`update allrice_jobs set timeout_at=clock_timestamp()-interval '1 second' where id=${f.worker.jobId}`;
+    const [window] =
+      await fixture.db`update allrice_jobs set timeout_at=clock_timestamp() where id=${f.worker.jobId}
+        returning timeout_at<=clock_timestamp() expired,lease_expires_at>clock_timestamp() leased,
+          drain_deadline_at>clock_timestamp() draining`;
+    expect(window).toMatchObject({
+      expired: true,
+      leased: true,
+      draining: true,
+    });
     const ended = { ...finish(call), outcome: 'canceled' as const };
     await expect(write(f, ended)).resolves.toMatchObject({ fact: ended });
     await expect(write(f, start(f))).rejects.toThrow('policy_denied');
