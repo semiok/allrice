@@ -3629,8 +3629,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .isVisible(),
         ).toBe(true);
         await collapse.click();
+        // A failed fallback call retains its 22px failure line outside the receipt.
+        expect((await card.boundingBox())!.height).toBe(runningHeight + 22);
+        expect(await card.locator(':scope > small').innerText()).toContain(
+          '未成功',
+        );
         operation.snapshot.status = 'unknown';
-        expect((await card.boundingBox())!.height).toBe(runningHeight);
         expect(await detail.getAttribute('aria-expanded')).toBe('false');
         await detail.click();
         await card
@@ -3643,6 +3647,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .getByText('未完成', { exact: true })
             .count(),
         ).toBe(0);
+        await collapse.click();
+        expect((await card.boundingBox())!.height).toBe(runningHeight);
+        expect(await card.locator(':scope > small').count()).toBe(0);
         expect(requests).toHaveLength(2);
       } finally {
         release();
