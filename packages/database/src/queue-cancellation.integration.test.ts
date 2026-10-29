@@ -250,6 +250,9 @@ suite('MET193 original-incarnation receipt drain — isolated PostgreSQL', () =>
     async (trigger) => {
       const s = await setup();
       await database.db`update allrice_task_clocks set phase='active',active_ms=(policy->>'timeoutMs')::double precision+1,changed_at=clock_timestamp() where run_id=${s.f.task.runId}`;
+      // Maintenance scans the persisted job deadline before opening its
+      // transaction, so publish this elapsed checkpoint through the real clock.
+      await database.db.begin((tx) => refreshTaskClock(tx, s.f.task.runId));
       if (trigger === 'heartbeat')
         expect(await s.heartbeat()).toMatchObject({
           active: false,
