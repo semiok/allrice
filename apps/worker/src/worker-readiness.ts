@@ -55,9 +55,10 @@ export function createWorkerReadinessResponder() {
   let pending: Promise<string | undefined> | undefined;
   return async (
     response: ServerResponse,
-    health: HealthResponse & Record<string, unknown>,
+    readCurrentHealth: () => HealthResponse & Record<string, unknown>,
     onReady: () => void,
   ) => {
+    let health = readCurrentHealth();
     if (
       health.status === 'ready' &&
       runtimeFeatureEnabled('ALLRICE_CLOUD_RUNNER_ENABLED')
@@ -65,7 +66,11 @@ export function createWorkerReadinessResponder() {
       const detail = await (pending ??= probeCloudDependencies().finally(() => {
         pending = undefined;
       }));
-      if (detail) health = { ...health, status: 'not_ready', detail };
+      // Local prerequisites can fail while a bounded cloud check is pending.
+      // Re-read them and their metadata immediately before the synchronous send.
+      health = readCurrentHealth();
+      if (health.status === 'ready' && detail)
+        health = { ...health, status: 'not_ready', detail };
     }
     const ready = health.status === 'ready';
     response.statusCode = ready ? 200 : 503;
