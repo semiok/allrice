@@ -35,6 +35,13 @@ import { IconThinkOutline14 } from './dsh-upstream/ProgressIcons';
 import reasoning from './dsh-upstream/ReasoningRow.module.css';
 import { RunElapsedTime } from './run-timing';
 import styles from './dsh-saas.module.css';
+import {
+  WorkProcessDisclosureProvider,
+  WorkProcessDisclosureScope,
+  useWorkProcessDisclosures,
+  useProcessDisclosure,
+  useWorkGroupDisclosure,
+} from './work-process-disclosure';
 import { presentationPolicyFor } from './dsh-upstream/presentation/presentation-policy';
 import type { ChatPresentationPolicy } from '@deepseek-ai/dsh-client-ui-chat/client';
 import {
@@ -123,6 +130,12 @@ export function WorkProcess({
   const policy = presentationPolicyFor(transcriptView, collapseTiming);
   const currentPresentation =
     presentation ?? workProcessPresentation([], parts, undefined, false);
+  const disclosures = useWorkProcessDisclosures(currentPresentation.runId);
+  const withDisclosures = (content: ReactNode) => (
+    <WorkProcessDisclosureProvider value={disclosures.value}>
+      {content}
+    </WorkProcessDisclosureProvider>
+  );
   useEffect(() => {
     // A history answer can be expanded before its trace arrives. Bind that
     // choice once to the restored identity, so a later retry still resets it.
@@ -233,17 +246,7 @@ export function WorkProcess({
           />
         </div>
       ) : (
-        // Restoring trace can prepend native steps and rename the group. Keep
-        // its receipt subtree anchored to the same Run/operation, including focus.
-        <div
-          key={JSON.stringify([
-            currentPresentation.runId,
-            part.items
-              .flatMap((item) => (item.operationId ? [item.operationId] : []))
-              .sort()[0] ?? part.id,
-          ])}
-          hidden={!showHistory}
-        >
+        <div key={part.id} hidden={!showHistory}>
           <NativeStepsGroup
             key={currentPresentation.runId}
             items={part.items}
@@ -254,8 +257,9 @@ export function WorkProcess({
           />
         </div>
       );
-    return (
+    return withDisclosures(
       <section
+        {...disclosures.focusProps}
         className={styles.workProcess}
         aria-label={label}
         data-transcript-view={policy.mode}
@@ -317,11 +321,12 @@ export function WorkProcess({
             ) : null}
           </div>
         ) : null}
-      </section>
+      </section>,
     );
   }
-  return (
+  return withDisclosures(
     <section
+      {...disclosures.focusProps}
       className={`${reasoning.root} ${styles.workProcess}`}
       aria-label={label}
       data-transcript-view={policy.mode}
@@ -388,7 +393,7 @@ export function WorkProcess({
         </div>
         {children}
       </div>
-    </section>
+    </section>,
   );
 }
 
@@ -405,8 +410,10 @@ function NativeStepsGroup({
   policy: ChatPresentationPolicy;
   renderOperation?: RenderOperation;
 }) {
-  const [open, setOpen] = useState(false);
   const { steps } = summarizeWorkProcess(items);
+  const [open, setOpen] = useWorkGroupDisclosure(
+    steps.map((step) => step.operationId ?? step.id),
+  );
   if (!steps.length || onlyLiveThinking(steps, running)) return null;
   const showGroup = grouped && !steps.some(workProcessStepNeedsAttention);
   const categories = [...new Set(steps.map((step) => step.label))].join('、');
@@ -429,7 +436,7 @@ function NativeStepsGroup({
           open={open}
           expandable
           expandOnRowClick
-          onToggle={() => setOpen((value) => !value)}
+          onToggle={() => setOpen(!open)}
           rowClassName={styles.processHeader}
           titleClassName={styles.processTitle}
           collapsedContent={
@@ -469,12 +476,16 @@ function WorkProcessSteps({
   return (
     <ul className={styles.processSteps} aria-label="工作步骤">
       {steps.map((step) => (
-        <WorkProcessStepRow
+        <WorkProcessDisclosureScope
           key={step.operationId ?? step.id}
-          step={step}
-          running={running}
-          renderOperation={renderOperation}
-        />
+          id={step.operationId ?? step.id}
+        >
+          <WorkProcessStepRow
+            step={step}
+            running={running}
+            renderOperation={renderOperation}
+          />
+        </WorkProcessDisclosureScope>
       ))}
     </ul>
   );
@@ -490,7 +501,10 @@ function WorkProcessStepRow({
   running: boolean;
   renderOperation?: RenderOperation;
 }) {
-  const [disclosure, setDisclosure] = useState<boolean>();
+  const [disclosure, setDisclosure] = useProcessDisclosure<boolean | undefined>(
+    'call',
+    undefined,
+  );
   const open = disclosure ?? workProcessStepNeedsAttention(step);
   const hasReceipt = Boolean(step.operationId && renderOperation);
   const pending =

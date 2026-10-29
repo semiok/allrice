@@ -120,7 +120,6 @@ suite('one receipt within each native call in the chat transcript', () => {
         });
         await detail.click();
         await detail.focus();
-        const focused = await detail.elementHandle();
         expect(await receipt.innerText()).toContain(
           `synthetic-result-${target}`,
         );
@@ -147,11 +146,12 @@ suite('one receipt within each native call in the chat transcript', () => {
             );
           }
         }
-        expect(
-          await focused!.evaluate(
-            (node) => node.isConnected && document.activeElement === node,
-          ),
-        ).toBe(true);
+        await expect
+          .poll(() =>
+            detail.evaluate((node) => document.activeElement === node),
+          )
+          .toBe(true);
+        expect(await receipt.isVisible()).toBe(true);
         expect(await detail.getAttribute('aria-expanded')).toBe('true');
         expect(await receipt.innerText()).toContain(
           `synthetic-result-${target}`,
@@ -162,6 +162,11 @@ suite('one receipt within each native call in the chat transcript', () => {
         expect(
           await page.locator(`[id="operation-receipt-${target}"]`).count(),
         ).toBe(1);
+        // The restored semantic control remains usable from the keyboard.
+        await page.keyboard.press('Space');
+        expect(await detail.getAttribute('aria-expanded')).toBe('false');
+        await page.keyboard.press('Enter');
+        expect(await detail.getAttribute('aria-expanded')).toBe('true');
       } finally {
         await page.close();
       }
@@ -312,6 +317,49 @@ suite('one receipt within each native call in the chat transcript', () => {
       expect(
         await page.locator('#operation-receipt-29 article').isVisible(),
       ).toBe(true);
+    } finally {
+      await page.close();
+    }
+  });
+  it('keeps an approval being reviewed usable after late replies split its group', async () => {
+    const page = await browser.newPage();
+    try {
+      await page.goto(`${origin}/?attention&delayed-trace&split-trace`);
+      const call = page.locator('#operation-receipt-28');
+      const approve = call.getByRole('button', {
+        name: '允许这次写入',
+        exact: true,
+      });
+      await approve.waitFor();
+      const full = call.getByRole('button', { name: '展开全文', exact: true });
+      await full.click();
+      const technical = call.getByRole('button', {
+        name: '技术详情',
+        exact: true,
+      });
+      await technical.click();
+      await approve.focus();
+      await page.evaluate(() => window.processDeliverTrace());
+      await page.locator('main[data-delayed-trace="loaded"]').waitFor();
+      await expect
+        .poll(() => approve.evaluate((node) => document.activeElement === node))
+        .toBe(true);
+      expect(await approve.isEnabled()).toBe(true);
+      expect(
+        await call
+          .getByRole('button', { name: '收起', exact: true })
+          .getAttribute('aria-expanded'),
+      ).toBe('true');
+      expect(await technical.getAttribute('aria-expanded')).toBe('true');
+      expect(await call.getByLabel('发送的原始参数').isVisible()).toBe(true);
+      expect(await page.evaluate(() => window.processWrites)).toEqual([]);
+      await page.keyboard.press('Enter');
+      await expect
+        .poll(() => page.evaluate(() => window.processWrites.length))
+        .toBe(1);
+      expect(await page.evaluate(() => window.processWrites)).toEqual([
+        { decision: 'approved' },
+      ]);
     } finally {
       await page.close();
     }

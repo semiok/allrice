@@ -1,5 +1,6 @@
 'use client';
-import { useState, type ReactNode } from 'react';
+import { type ReactNode } from 'react';
+import { useProcessDisclosure } from './work-process-disclosure';
 import {
   DisclosureRow,
   IconInfoOutlineRegular,
@@ -14,7 +15,7 @@ export function TechnicalDetails({
   rows?: [string, ReactNode][];
   children?: ReactNode;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useProcessDisclosure('technical', false);
   return (
     <DisclosureRow
       icon={<IconInfoOutlineRegular />}

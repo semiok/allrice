@@ -96,7 +96,12 @@ for (let i = 0; i < 34; i++) {
             ...samples[0]!.proposal,
             tool: i < 2 ? 'tools' : 'get_file_contents',
             risk: 'write',
-            arguments: { path: `src/file-${i}.ts` },
+            arguments: {
+              path: `src/file-${i}.ts`,
+              ...(attention && i === 28
+                ? { body: 'review-target-'.repeat(100) }
+                : {}),
+            },
           }
         : base.proposal,
     approval: status === 'waiting_user' ? samples[0]!.approval : null,

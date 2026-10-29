@@ -2,6 +2,10 @@
 import { ProjectServiceCard } from './project-service-card';
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import {
+  WorkProcessDisclosureScope,
+  useProcessDisclosure,
+} from './work-process-disclosure';
+import {
   Button,
   IconChevronDownOutlineRegular,
   IconLoadingOutlineRegular,
@@ -91,7 +95,7 @@ export function cloudOperationCompactStatus(
 
 /** One parameter: its path as a label, its real value kept apart below. */
 function ApprovalField({ field }: { field: ApprovalFieldView }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useProcessDisclosure(`approval:${field.path}`, false);
   return (
     <div>
       <dt>{field.path}</dt>
@@ -206,7 +210,10 @@ function OperationDetails({
   sections: OperationSection[];
   initialSection: string | null;
 }) {
-  const [selected, setSelected] = useState(initialSection);
+  const [selected, setSelected] = useProcessDisclosure(
+    'section',
+    initialSection,
+  );
   const panelId = useId();
   const section = sections.find((item) => item.key === selected);
   return (
@@ -248,10 +255,13 @@ function OperationDetails({
         {sections.map((item) => (
           <div
             key={item.key}
+            data-operation-section={item.key}
             hidden={item.key !== selected}
             className={styles.detailContent}
           >
-            {item.content}
+            <WorkProcessDisclosureScope id={item.key}>
+              {item.content}
+            </WorkProcessDisclosureScope>
           </div>
         ))}
       </div>
@@ -869,11 +879,15 @@ export function CloudOperationCard({
       </header>
       {!isMcp && notices}
       <div id={detailsId} hidden={!embedded && !detailsOpen}>
-        <OperationDetails
-          key={`${op.snapshot.binding.attempt.operationId}-${!!pending}`}
-          sections={sections}
-          initialSection={pending ? (isMcp ? 'arguments' : 'execution') : null}
-        />
+        <WorkProcessDisclosureScope id={`details:${!!pending}`}>
+          <OperationDetails
+            key={`${op.snapshot.binding.attempt.operationId}-${!!pending}`}
+            sections={sections}
+            initialSection={
+              pending ? (isMcp ? 'arguments' : 'execution') : null
+            }
+          />
+        </WorkProcessDisclosureScope>
         {isMcp && (
           <div className={styles.receiptNotes}>
             {notices}
