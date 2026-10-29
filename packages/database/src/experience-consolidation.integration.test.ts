@@ -1575,6 +1575,7 @@ suite(
                     userMessageId: scope.userMessageId,
                     assistantMessageId: scope.assistantMessageId,
                     resolved: {
+                      projectId: null,
                       promptSnapshot: {
                         userRequest: request,
                         systemPrompt: 'Synthetic memory formatter probe',

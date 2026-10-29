@@ -1,3 +1,4 @@
+import type { createRunDeliveryPort } from '../final-delivery/run-delivery.js';
 import type {
   NativeRootOrigin,
   NativeRunExecutionBinding,
@@ -88,6 +89,12 @@ export interface HarnessExecutionInput {
    * Never populated from kernel preferences, browser input or a model tool result.
    */
   finalDelivery?: FinalDeliveryPort;
+  /** Independent checked Run path; authority and input pause stay Worker-owned. */
+  runDelivery?: {
+    rootRunId: string;
+    bind(generation: number): ReturnType<typeof createRunDeliveryPort>;
+    pauseInput(): Promise<void>;
+  };
   /** Frozen governance evidence; never grants a native or Broker tool. */
   baseSkillCatalog?: EmployeeBaseSkillCatalog;
   questionWait?: {

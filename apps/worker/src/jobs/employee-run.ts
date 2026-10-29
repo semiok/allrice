@@ -1,3 +1,4 @@
+import { createRunDeliveryPort } from '../final-delivery/run-delivery.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { createJobNativeBinding } from '../harness/native-session-binding.js';
 import { documentDeliveryGuard } from './document-delivery.js';
@@ -1280,13 +1281,18 @@ export async function executeEmployeeRun({
         false,
       );
     }
-    if (finalDeliveryMode === 'checked_native_v1')
-      requireCheckedFinalDelivery(workflowLease);
+    const independentDelivery =
+      finalDeliveryMode === 'checked_native_v1' &&
+      !assistants &&
+      adapter.kind === 'dsh' &&
+      !selectedWorkflow &&
+      !repositoryReviewTask &&
+      !repairTask;
     if (
       (officeFirstDeliveryPolicy ||
         finalDeliveryMode === 'checked_native_v1') &&
       (finalDeliveryMode !== 'checked_native_v1' ||
-        !assistants ||
+        (!assistants && !independentDelivery) ||
         !workbenchEnabled())
     )
       throw new HandlerError(
@@ -1822,6 +1828,32 @@ export async function executeEmployeeRun({
                   ? executionSnapshot.nativePreferences?.questionWait
                   : undefined,
               assistants,
+              ...(independentDelivery
+                ? {
+                    runDelivery: {
+                      rootRunId: execution.context.runId,
+                      bind: (generation: number) =>
+                        createRunDeliveryPort({
+                          scope: {
+                            organizationId: execution.context.organizationId,
+                            workspaceId: execution.context.workspaceId!,
+                            projectId: resolved.projectId,
+                          },
+                          rootRunId: execution.context.runId,
+                          worker: {
+                            ...workflowLease,
+                            attempt: execution.job.attempt,
+                            generation,
+                          },
+                        }),
+                      pauseInput: async () => {
+                        steerPolling = false;
+                        await steerLoop;
+                        signal.throwIfAborted();
+                      },
+                    },
+                  }
+                : {}),
               ...(assistants
                 ? {
                     inputDelivery: {
@@ -1997,6 +2029,7 @@ export async function executeEmployeeRun({
                   });
                   steerDelivery = delivery;
                 }
+                if (independentDelivery && !steerPolling) return;
                 steerLoop = pollEmployeeConversationSteers({
                   ownership,
                   generation: runtime.generation,
@@ -2019,7 +2052,11 @@ export async function executeEmployeeRun({
                     error instanceof Error ? error.message : 'unknown error',
                 });
               });
-              if (runtime.threadId && runtime.activeTurnId) {
+              if (
+                !independentDelivery &&
+                runtime.threadId &&
+                runtime.activeTurnId
+              ) {
                 await pollEmployeeConversationSteers({
                   ownership,
                   generation: runtime.generation,
@@ -2032,7 +2069,8 @@ export async function executeEmployeeRun({
                 });
               }
             });
-    if (result.waitingForUser) {
+    const waitingForProgress = !!result.waitingForUser;
+    if (waitingForProgress) {
       const progress = await taskProgress?.({
         action: 'check',
         nativeSessionId: result.threadId ?? runtime.threadId,
@@ -2046,6 +2084,11 @@ export async function executeEmployeeRun({
         throw new HandlerError('DSH_TURN_FAILED', 'DSH turn failed', false);
       result.answer = '等你回答后继续。';
     }
+    // The existing native progress wait, verified against the current durable
+    // pause/lease above, is not a final delivery. Every other checked result
+    // still requires the private proof, including a result that lost it.
+    if (!waitingForProgress && finalDeliveryMode === 'checked_native_v1')
+      requireCheckedFinalDelivery(workflowLease);
     if (questionWait)
       await completeNativeTask({
         context: execution.context,
@@ -2129,6 +2172,9 @@ export async function executeEmployeeRun({
     );
     if (officeFirstDeliveryPolicy) delivery.assertComplete();
     runtime = await finalizeEmployeeConversationContext({
+      ...(independentDelivery && !waitingForProgress
+        ? { retainTurnUntilCommit: runtime }
+        : {}),
       contentGenerationId: contentRuntime?.generationId,
       allowedMessageIds: contentRuntime?.allowedMessageIds ?? undefined,
       checkContent: contentGuard?.check,

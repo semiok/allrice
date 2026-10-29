@@ -24,6 +24,7 @@ import type {
   HarnessExecutionResult,
 } from '../harness/adapter.js';
 import { buildCheckpointMemoryCandidate } from '../memory-lifecycle.js';
+import { checkedFinalDeliveryCheckpointGuard } from '../final-delivery/checked-delivery.js';
 import type { ConversationOwnership } from './turn-lifecycle.js';
 
 function requestContextFromExecution(context: ExecutionContext) {
@@ -41,9 +42,9 @@ function requestContextFromExecution(context: ExecutionContext) {
 /**
  * Finishes the active turn and maintains ChatFlow's durable checkpoint.
  *
- * The operation order intentionally mirrors the original Worker path:
- * clear the active turn, persist usage/native pressure, then compact and save
- * a checkpoint only at the resulting safe boundary.
+ * Ordinary runs clear the active turn before checkpointing. Independent native
+ * delivery retains it for completeJob's atomic proof check and ownership release;
+ * only the registered completion capability can authorize that checkpoint.
  */
 export async function finalizeEmployeeConversationContext(input: {
   ownership: ConversationOwnership;
@@ -56,6 +57,7 @@ export async function finalizeEmployeeConversationContext(input: {
   checkpoint: ContextCheckpoint | null;
   checkpointMessages: CheckpointMessage[];
   configChecksum: string;
+  retainTurnUntilCommit?: Awaited<ReturnType<typeof clearConversationTurn>>;
   contentGenerationId?: string;
   allowedMessageIds?: string[];
   checkContent?: () => Promise<void>;
@@ -66,7 +68,22 @@ export async function finalizeEmployeeConversationContext(input: {
     leaseMs: number;
   };
 }) {
-  let runtime = await clearConversationTurn(input.ownership);
+  const retained = input.retainTurnUntilCommit;
+  if (
+    retained &&
+    (input.adapter.kind !== 'dsh' ||
+      input.adapter.contextStrategy !== 'harness-native' ||
+      !retained.activeTurnId)
+  )
+    throw new Error('context_checkpoint_unsafe_boundary');
+  const checkedDelivery = retained
+    ? {
+        guard: checkedFinalDeliveryCheckpointGuard(input.result),
+        result: input.result,
+        jobId: input.workflowLease.jobId,
+      }
+    : undefined;
+  let runtime = retained ?? (await clearConversationTurn(input.ownership));
   const applicationEstimatedTokens = estimateConversationTokens(
     [
       input.kernel.bootstrapConversation,
@@ -163,6 +180,7 @@ export async function finalizeEmployeeConversationContext(input: {
         configChecksum: input.configChecksum,
         estimatedTokens,
         messageCount: input.checkpointMessages.length,
+        ...(checkedDelivery ? { checkedDelivery } : {}),
       });
       if (memoryCandidate) {
         try {

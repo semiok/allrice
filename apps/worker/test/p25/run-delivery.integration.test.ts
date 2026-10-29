@@ -1,4 +1,6 @@
 import { createRuntimeOperationLedger } from '../../../../packages/database/src/runtime-ledger/ledger.ts';
+// @ts-expect-error Native test host is JavaScript and runs the production DSH module unchanged.
+import { host, text } from '../native-subagent/fixture.mjs';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ExecutionContextSchema } from '@allrice/contracts';
@@ -15,6 +17,8 @@ import {
   prepareEmployeeInstanceSnapshot,
 } from '../../../../packages/database/src/employees/employee-instances.ts';
 import { completeJob } from '../../../../packages/database/src/execution/queue.ts';
+import { saveContextCheckpoint } from '../../../../packages/database/src/conversation/conversation-checkpoint.ts';
+import { releaseConversationRuntime } from '../../../../packages/database/src/conversation/conversation-runtime.ts';
 import {
   finalDeliveryTextDigest,
   registerJobCompletionGuard,
@@ -188,6 +192,108 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
   }
   type Subject = Awaited<ReturnType<typeof subject>>;
 
+  it.each([
+    'current',
+    'replaced-lease',
+    'replaced-worker',
+    'expired-during-save',
+  ] as const)(
+    '保留 turn 的检查点以完成守卫复核 %s，失租不能写入或清除来源',
+    async (mode) => {
+      const f = await subject();
+      const answer = '本轮没有导出文件。';
+      const { guard } = await f.validate(answer);
+      const db = fixture.db;
+      const [runtime] =
+        await db`select * from allrice_conversation_runtimes where session_id=${f.session}`;
+      const [message] =
+        await db`select id from allrice_messages where session_id=${f.session} and role='user' limit 1`;
+      const input = {
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        sessionId: f.session,
+        ownerId: f.user,
+        runId: f.rootRunId,
+        workerId: f.worker.workerId,
+        harness: 'dsh' as const,
+        threadId: f.native,
+        generation: 1,
+        coveredThroughMessageId: message!.id,
+        summary: 'Synthetic checkpoint',
+        configChecksum: runtime!.config_checksum,
+        estimatedTokens: 100,
+        messageCount: 1,
+        checkedDelivery: { guard, result: { answer }, jobId: f.worker.jobId },
+      };
+      if (mode === 'replaced-lease')
+        await db`update allrice_jobs set lease_token=${randomUUID()} where id=${f.worker.jobId}`;
+      // Token-only replacement does not exercise stale handler cleanup. Give
+      // the same Run a new Worker and turn, then invoke the old lifecycle APIs.
+      const replacementWorker = randomUUID();
+      const replacementTurn = `${f.native}:turn:2`;
+      if (mode === 'replaced-worker') {
+        await db`update allrice_jobs set worker_id=${replacementWorker},lease_token=${randomUUID()} where id=${f.worker.jobId}`;
+        await db`update allrice_conversation_runtimes set worker_id=${replacementWorker},active_turn_id=${replacementTurn} where session_id=${f.session}`;
+      }
+      if (mode === 'expired-during-save')
+        await db.unsafe(`create function checkpoint_expire_lease() returns trigger language plpgsql as $$
+          begin update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id='${f.worker.jobId}'::uuid; return new; end $$;
+          create trigger checkpoint_expire_lease before insert on allrice_context_checkpoints for each row execute function checkpoint_expire_lease()`);
+      try {
+        if (mode === 'current') {
+          // Ordinary callers still cannot checkpoint an active turn.
+          await expect(
+            saveContextCheckpoint({ ...input, checkedDelivery: undefined }),
+          ).rejects.toThrow('context_checkpoint_unsafe_boundary');
+          await saveContextCheckpoint(input);
+        } else {
+          await expect(saveContextCheckpoint(input)).rejects.toMatchObject({
+            code: 'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE',
+          });
+        }
+        if (mode === 'replaced-worker') {
+          await expect(f.complete(guard, answer)).rejects.toMatchObject({
+            code: 'lease_lost',
+          });
+          await expect(
+            releaseConversationRuntime({
+              organizationId: f.org,
+              workspaceId: f.workspace,
+              sessionId: f.session,
+              runId: f.rootRunId,
+              workerId: f.worker.workerId,
+              outcome: 'error',
+            }),
+          ).rejects.toMatchObject({ code: 'conversation_ownership_lost' });
+          expect(await f.state()).toMatchObject({
+            status: 'running',
+            state: 'running',
+            successes: 0,
+          });
+        }
+        const [retained] =
+          await db`select active_turn_id,active_run_id,worker_id from allrice_conversation_runtimes where session_id=${f.session}`;
+        expect(retained).toEqual({
+          active_turn_id:
+            mode === 'replaced-worker'
+              ? replacementTurn
+              : runtime!.active_turn_id,
+          active_run_id: f.rootRunId,
+          worker_id:
+            mode === 'replaced-worker' ? replacementWorker : f.worker.workerId,
+        });
+        expect(
+          await db`select id from allrice_context_checkpoints where session_id=${f.session}`,
+        ).toHaveLength(mode === 'current' ? 1 : 0);
+      } finally {
+        if (mode === 'expired-during-save') {
+          await db`drop trigger checkpoint_expire_lease on allrice_context_checkpoints`;
+          await db`drop function checkpoint_expire_lease()`;
+        }
+      }
+    },
+  );
+
   async function withRuntimeRoot(f: Subject) {
     await createRuntimeOperationLedger({
       database: fixture.db,
@@ -278,6 +384,85 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
     },
   );
 
+  it('用户要下载月报：真实 DSH 回复来源经过 Worker 检查和原子提交，旧助手表不参与', async () => {
+    const f = await subject();
+    const artifact = await f.publish();
+    const answer = `[月报](/api/v1/files/${artifact.object.id}/download)`;
+    const native = await host({
+      rootId: f.native,
+      model: async () => text(answer),
+      bridge: async (method: string) => {
+        expect(method).toBe('allrice/final-delivery-origin');
+        return { origin: await f.port.readOrigin() };
+      },
+    });
+    // host fixture changes only its native flags; restore the SaaS workbench gate.
+    vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
+    await native.server.handleRequest('allrice/final-delivery/bind', {
+      sessionId: f.native,
+      rootRunId: f.rootRunId,
+    });
+    await native.prompt('请把这份月报整理成文件，把下载链接给我。');
+    const candidate = await native.server.handleRequest(
+      'allrice/final-delivery/candidate',
+      { sessionId: f.native },
+    );
+    const decision = await f.port.check({
+      nativeText: candidate.answer,
+      projectedText: candidate.answer,
+      nativeSessionId: f.native,
+      publicMessageId: candidate.publicMessageId,
+      durableSeq: candidate.durableSeq,
+      nativeBindingId: candidate.rootBinding.bindingId,
+      rootRunId: f.rootRunId,
+      attempt: 1,
+      generation: 1,
+    });
+    expect(decision.status).toBe('valid');
+    const proof = {
+      nativeSessionId: f.native,
+      publicMessageId: candidate.publicMessageId,
+      durableSeq: candidate.durableSeq,
+      nativeBindingId: candidate.rootBinding.bindingId,
+      nativeCandidateDigest: candidate.textDigest,
+      candidateDigest: decision.candidateDigest,
+      factSetDigest: decision.factSetDigest,
+      attempt: 1,
+      generation: 1,
+    };
+    expect(() =>
+      f.port.finish({ ...proof, publicMessageId: randomUUID() }),
+    ).toThrow();
+    await native.server.handleRequest('allrice/final-delivery/finish', {
+      sessionId: f.native,
+      completionToken: candidate.completionToken,
+      candidateDigest: candidate.textDigest,
+      factSetDigest: decision.factSetDigest,
+    });
+    f.port.finish(proof);
+    const execution = {},
+      result = { answer };
+    beginCheckedFinalDeliveryExecution(execution);
+    requireCheckedFinalDelivery(execution);
+    attachCheckedFinalDelivery(result, proof);
+    transferCheckedFinalDeliveryForExecution(execution, result, result);
+    const coverage = readCheckedFinalDeliveryForExecution(execution, result);
+    if (coverage.coverage !== 'checked_native_v1')
+      throw Error('missing checked proof');
+    await f.complete(coverage.checkedDelivery, answer);
+    expect(await f.state()).toMatchObject({
+      status: 'succeeded',
+      text: answer,
+      successes: 1,
+    });
+    expect(
+      await fixture.db`select root_run_id from allrice_assistant_roots where root_run_id=${f.rootRunId}`,
+    ).toHaveLength(0);
+    expect(
+      await fixture.db`select run_id from allrice_runtime_run_links where root_run_id=${f.rootRunId}`,
+    ).toHaveLength(0);
+  });
+
   it('第二次检查失败后不能消费上一份有效候选 proof', async () => {
     const f = await subject();
     const answer = '本轮没有导出文件。';
@@ -345,6 +530,14 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
     await fixture.db`update allrice_conversation_runtimes set active_turn_id=${`${f.native}:turn:2`} where session_id=${f.session}`;
     await fixture.db`insert into allrice_run_events(run_id,organization_id,workspace_id,sequence,event_type,payload)
       values(${f.rootRunId},${f.org},${f.workspace},2,'turn.started',${fixture.db.json({ source: 'dsh', threadId: f.native, turnId: `${f.native}:turn:2`, generation: 1 })})`;
+    await expect(f.complete(guard, answer)).rejects.toThrow(
+      'final_delivery_evidence_unavailable',
+    );
+    // Restoring an older pointer must not make a newer durable turn disappear.
+    await fixture.db`update allrice_conversation_runtimes set active_turn_id=${`${f.native}:turn:1`} where session_id=${f.session}`;
+    await expect(f.port.readOrigin()).rejects.toThrow(
+      'final_delivery_evidence_unavailable',
+    );
     await expect(f.complete(guard, answer)).rejects.toThrow(
       'final_delivery_evidence_unavailable',
     );
@@ -485,6 +678,24 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
 
   it.each([
     [
+      'worker lease expires after proof creation',
+      async (f: Subject) => {
+        await fixture.db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${f.worker.jobId}`;
+      },
+    ],
+    [
+      'control origin is replaced while text and turn remain unchanged',
+      async (f: Subject) => {
+        await fixture.db`update allrice_run_events set id=${randomUUID()} where run_id=${f.rootRunId} and event_type='turn.started'`;
+      },
+    ],
+    [
+      'active turn is cleared after proof creation',
+      async (f: Subject) => {
+        await fixture.db`update allrice_conversation_runtimes set active_turn_id=null where session_id=${f.session}`;
+      },
+    ],
+    [
       'member revoked',
       async (f: Subject) => {
         await fixture.db`update allrice_memberships set active=false where id=${f.membership}`;
@@ -572,6 +783,40 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
       }).readSnapshot(),
     ).rejects.toThrow();
   });
+
+  it.each(['cancel', 'timeout'] as const)(
+    '%s after proof creation retains queue stop semantics and never publishes success',
+    async (mode) => {
+      const f = await subject();
+      const answer = '本轮没有导出文件。';
+      const { guard } = await f.validate(answer);
+      if (mode === 'cancel')
+        await fixture.db`update allrice_jobs set cancel_requested_at=clock_timestamp() where id=${f.worker.jobId}`;
+      else
+        await fixture.db`update allrice_jobs set created_at=clock_timestamp()-interval '1 hour',timeout_at=clock_timestamp()-interval '1 second' where id=${f.worker.jobId}`;
+      await expect(f.port.readOrigin()).rejects.toMatchObject({
+        code: 'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE',
+      });
+      await f.complete(guard, answer);
+      const terminal = mode === 'cancel' ? 'canceled' : 'failed';
+      expect(await f.state()).toMatchObject({
+        status: terminal,
+        state: terminal,
+        successes: 0,
+      });
+      const [event] =
+        await fixture.db`select payload from allrice_run_events where run_id=${f.rootRunId} and event_type=${mode === 'cancel' ? 'run.canceled' : 'run.failed'}`;
+      expect(event).toBeDefined();
+      if (mode === 'timeout') expect(event!.payload.code).toBe('JOB_TIMEOUT');
+      const [released] =
+        await fixture.db`select active_turn_id,active_run_id,worker_id from allrice_conversation_runtimes where session_id=${f.session}`;
+      expect(released).toEqual({
+        active_turn_id: null,
+        active_run_id: null,
+        worker_id: null,
+      });
+    },
+  );
 
   it('rejects changed facts and changed answer, without writing a terminal result', async () => {
     const f = await subject();

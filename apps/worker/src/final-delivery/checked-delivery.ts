@@ -232,6 +232,19 @@ export function getCheckedFinalDelivery(
   return entry.proof;
 }
 
+/** Reuse the actual completion capability for a native-owned checkpoint while
+ * its turn binding is retained. A copied result or JSON proof cannot grant it. */
+export function checkedFinalDeliveryCheckpointGuard(
+  target: unknown,
+): JobCompletionGuard {
+  if (!object(target)) unavailable();
+  const entry = deliveries.get(target);
+  if (!entry?.commit) unavailable();
+  assertAnswer(target, entry);
+  assertCommit(entry.commit);
+  return entry.commit.guard;
+}
+
 /** Explicit copy across a Worker result spread. Both bodies must still be the
  * exact checked string and hash to candidateDigest. Never overwrite a target
  * belonging to another attachment, even if its public answer happens to match. */

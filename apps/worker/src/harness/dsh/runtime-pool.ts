@@ -855,6 +855,7 @@ export class DshRuntimePool {
       // Run authority is rebound by the adapter and released by finish.
       // Only process configuration belongs in the session reuse key.
       assistantsEnabled: !!input.input.assistants,
+      runDeliveryEnabled: !!input.input.runDelivery,
       maxTokens,
       nativeTools: [...nativeTools].sort(),
       nativeSkills: input.nativeSkills.map((skill) => ({

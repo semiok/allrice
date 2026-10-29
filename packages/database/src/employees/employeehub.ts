@@ -1694,6 +1694,7 @@ export async function resolveEmployeeExecution(input: {
       native_execution_binding: unknown;
       native_root_origin: { schemaVersion?: number } | null;
       session_id: string;
+      project_id: string | null;
       employee_version_id: string;
       config_checksum: string;
       birth_version_id: string | null;
@@ -1707,7 +1708,7 @@ export async function resolveEmployeeExecution(input: {
     select er.provider_snapshot, er.skill_bindings, er.native_skills,
       er.prompt_snapshot,
       er.execution_snapshot,er.native_execution_binding,er.session_id,er.employee_version_id,
-      c.native_root_origin,v.config_checksum,bv.id birth_version_id,bv.manifest birth_manifest,bv.config_checksum birth_config_checksum,
+      c.project_id,c.native_root_origin,v.config_checksum,bv.id birth_version_id,bv.manifest birth_manifest,bv.config_checksum birth_config_checksum,
       m.content->>'text' current_user_request,
       v.system_prompt, v.manifest
     from allrice_employee_runs er
@@ -1816,6 +1817,7 @@ export async function resolveEmployeeExecution(input: {
     storageObject: ReturnType<typeof StorageObjectSchema.parse>;
   }[] = [];
   return {
+    projectId: row.project_id,
     providerSnapshot: HarnessExecutionSnapshotSchema.parse(
       row.provider_snapshot,
     ),
