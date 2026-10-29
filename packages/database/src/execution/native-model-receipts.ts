@@ -1,0 +1,61 @@
+import { z } from 'zod';
+import { UuidSchema } from '@allrice/contracts';
+
+const token = z.number().int().nonnegative().safe().optional();
+const usage = z.strictObject({
+  inputTokens: token,
+  cacheReadTokens: token,
+  cacheWriteTokens: token,
+  outputTokens: token,
+  totalTokens: token,
+});
+const identity = {
+  callId: UuidSchema,
+  nativeSessionId: z.string().min(1).max(255),
+  provider: z.string().min(1).max(160),
+  model: z.string().min(1).max(160),
+  purpose: z.string().min(1).max(160).optional(),
+};
+// DSH's four disjoint buckets, never inherited Session totals. Missing is unknown.
+export const NativeModelFactSchema = z.discriminatedUnion('phase', [
+  z.strictObject({ ...identity, phase: z.literal('start') }),
+  z
+    .strictObject({
+      ...identity,
+      phase: z.literal('finish'),
+      outcome: z.enum(['succeeded', 'failed', 'canceled', 'incomplete']),
+      usage: usage.optional(),
+      usageComplete: z.boolean(),
+    })
+    .refine(
+      (v) =>
+        !v.usageComplete ||
+        (v.outcome !== 'incomplete' &&
+          v.usage?.inputTokens !== undefined &&
+          v.usage.cacheReadTokens !== undefined &&
+          v.usage.cacheWriteTokens !== undefined &&
+          v.usage.outputTokens !== undefined),
+      'Complete usage requires all four buckets',
+    ),
+]);
+export const nativeModelReceiptSource = 'native_model_receipt_v1';
+export function isNativeModelReceipt(value: unknown) {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    'source' in value &&
+    value.source === nativeModelReceiptSource
+  );
+}
+export const NativeModelReceiptSchema = z.strictObject({
+  source: z.literal(nativeModelReceiptSource),
+  sourceKey: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  rootSessionId: z.string().min(1).max(255),
+  runId: UuidSchema,
+  jobId: UuidSchema,
+  jobAttempt: z.number().int().positive(),
+  routeDecisionId: UuidSchema,
+  routeAttempt: z.number().int().positive(),
+  fact: NativeModelFactSchema,
+});
+export type NativeModelFact = z.infer<typeof NativeModelFactSchema>;

@@ -633,12 +633,14 @@ export async function experienceValidationStillCurrent(
   },
 ) {
   return getDatabase().begin(async (tx) => {
-    // Same test -> Run/Job -> authority order as finalization.
+    // Same test -> Job -> Run -> authority order as finalization.
     const [test] =
       await tx`select id,experience_run_id,experience_binding from allrice_platform_employee_test_runs
       where id=${id} and purpose='experience_validation' and status='running' for share`;
     if (!test || test.experience_run_id !== execution.runId) return false;
     const b = BindingSchema.parse(test.experience_binding);
+    await tx`select id from allrice_jobs
+      where id=${execution.jobId} and run_id=${execution.runId} for share`;
     const [job] =
       await tx`select j.id from allrice_jobs j join allrice_runs r on r.id=j.run_id
       where j.id=${execution.jobId} and r.id=${execution.runId}

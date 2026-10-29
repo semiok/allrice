@@ -1,6 +1,7 @@
 import { createReadPathProbe } from './read-path-probe.fixture.ts';
 import type * as NativeBudget from './run-memory-context.ts';
 import {
+  appendNativeModelReceipt,
   bindJobNativeSession,
   prepareJobNativeSession,
 } from './execution/queue.ts';
@@ -3420,6 +3421,106 @@ suite(
         ).toBeNull();
       },
     );
+    it.each(['receipt', 'authority-check'] as const)(
+      'serializes native receipts with real experience revalidation, %s first',
+      async (first) => {
+        const f = await validationFixture();
+        await syncExperienceValidations();
+        const workerId = randomUUID();
+        const test = (await claimNextPlatformEmployeeTestRun(workerId))!;
+        const pin = await bindJobNativeSession({
+          workerId,
+          jobId: test.previewExecution.jobId,
+          leaseToken: test.previewExecution.leaseToken,
+          attempt: test.previewExecution.jobAttempt,
+          subject: { kind: 'platform_employee_test', id: test.id },
+          descriptor: nativeBindingDescriptor({
+            ...test.previewContext,
+            contextKey: test.id,
+            distributionGeneration: newNativeGeneration,
+          }),
+        });
+        const request = {
+          workerId,
+          jobId: test.previewExecution.jobId,
+          leaseToken: test.previewExecution.leaseToken,
+          rootSessionId: pin.binding.nativeSessionId,
+          routeDecisionId: test.experienceCandidate!.decision.id,
+        };
+        const call = {
+          phase: 'start' as const,
+          callId: randomUUID(),
+          nativeSessionId: request.rootSessionId,
+          provider: 'synthetic',
+          model: 'never-called',
+        };
+        await appendNativeModelReceipt({ ...request, fact: call });
+        const write = () =>
+          appendNativeModelReceipt({
+            ...request,
+            fact: {
+              ...call,
+              phase: 'finish',
+              outcome: 'succeeded',
+              usageComplete: true,
+              usage: {
+                inputTokens: 1,
+                cacheReadTokens: 0,
+                cacheWriteTokens: 0,
+                outputTokens: 1,
+              },
+            },
+          }).then(
+            () => 'committed',
+            (error: unknown) => error,
+          );
+        const check = () =>
+          experienceValidationStillCurrent(test.id, {
+            ...test.previewExecution,
+            workerId,
+          }).then(
+            (value) => value,
+            (error: unknown) => error,
+          );
+        const gate = await db.reserve();
+        await gate`begin`;
+        const [held] = await gate`select pg_backend_pid() pid`;
+        let writing: Promise<unknown> | undefined;
+        let checking: Promise<unknown> | undefined;
+        try {
+          if (first === 'receipt') {
+            await gate`select id from allrice_route_decisions where id=${request.routeDecisionId} for update`;
+            writing = write();
+            const writer = await nativeBindingWaiter(db, held!.pid as number);
+            checking = check();
+            await nativeBindingWaiter(db, writer);
+            await gate`select id from allrice_runs where id=${test.previewExecution.runId} for update nowait`;
+          } else {
+            await gate`select id from allrice_users where id=${f.user} for update`;
+            checking = check();
+            const checker = await nativeBindingWaiter(db, held!.pid as number);
+            writing = write();
+            await nativeBindingWaiter(db, checker);
+          }
+        } finally {
+          await gate`rollback`;
+          gate.release();
+          await Promise.all([writing, checking]);
+        }
+        expect(await checking).toBe(true);
+        expect(await writing).toBe('committed');
+        expect(
+          await db`select payload from allrice_run_events where run_id=${test.previewExecution.runId}
+          and payload->>'source'='native_model_receipt_v1'`,
+        ).toHaveLength(2);
+        await completePlatformEmployeeTestRun(
+          test.id,
+          await validationReceipt(test, attendanceAnswer),
+        );
+      },
+      30000,
+    );
+
     it.each(['canceled', 'lease-expired', 'terminal'] as const)(
       'stops the exact validation worker after %s and rejects another lease',
       async (kind) => {

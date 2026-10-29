@@ -674,6 +674,14 @@ async function finalizePlatformEmployeeTestRunInTransaction(
   if (!platformEmployeeTestCanFinalize(existing.status)) {
     return { row: existing, changed: false };
   }
+  // Match queue writers' Job-before-Run order; no later root/clock lock here.
+  // Re-read execution state below after waiting for the Job lock.
+  await transaction`
+    select job.id from allrice_jobs job
+    join allrice_runs run on run.id = job.run_id
+    where run.execution_spec ->> 'platformEmployeeTestRunId' = ${input.testRunId}
+    for update of job
+  `;
   const executions = await transaction<
     {
       run_id: string;

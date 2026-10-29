@@ -5,6 +5,14 @@ import {
   lockNativeQuestionMode,
 } from '../native-questions.ts';
 import {
+  NativeModelFactSchema,
+  NativeModelReceiptSchema,
+  isNativeModelReceipt,
+  nativeModelReceiptSource,
+  type NativeModelFact,
+} from './native-model-receipts.ts';
+import { nativeRootDigest } from '../conversation/native-identity-digest.ts';
+import {
   employeeAccessTransaction,
   employeeAccessTransactionMaxAttempts,
 } from '../employees/employee-access-cancellation.ts';
@@ -260,9 +268,12 @@ async function appendEvent(
     runId: string;
     type: RunEventType;
     payload: unknown;
+    internalReceipt?: true;
   },
 ) {
   RunEventTypeSchema.parse(input.type);
+  if (isNativeModelReceipt(input.payload) && !input.internalReceipt)
+    throw new QueueError('policy_denied');
   await transaction`
     select id from allrice_runs where id = ${input.runId} for update
   `;
@@ -292,7 +303,8 @@ async function appendEvent(
   `;
   const event = rows[0];
   if (!event) throw new Error('run event creation failed');
-  await transaction`
+  if (!input.internalReceipt)
+    await transaction`
     insert into allrice_employee_run_steps (
       organization_id, workspace_id, run_id, sequence, event_type, payload,
       occurred_at
@@ -2977,6 +2989,111 @@ export async function appendJobEvent(input: {
         await assertLockedLeaseCurrent(transaction, job);
         return event;
       }),
+  });
+}
+
+/** Only the admitted Worker's captured root scope calls this port. Native/model
+ * payloads cannot self-authorize through appendJobEvent. No task clock required. */
+export async function appendNativeModelReceipt(input: {
+  workerId: string;
+  jobId: string;
+  leaseToken: string;
+  rootSessionId: string;
+  routeDecisionId: string;
+  fact: NativeModelFact;
+}) {
+  const fact = NativeModelFactSchema.parse(input.fact);
+  const lease = {
+    workerId: UuidSchema.parse(input.workerId),
+    jobId: UuidSchema.parse(input.jobId),
+    leaseToken: UuidSchema.parse(input.leaseToken),
+  };
+  return leasedTransaction(getDatabase(), '', lease, async (tx, job) => {
+    const [pin] =
+      await tx`select p.storage_namespace from allrice_native_session_bindings p
+      where p.native_session_id=${input.rootSessionId}
+        and p.organization_id=${job.organization_id} and p.workspace_id=${job.workspace_id}
+        and p.owner_id=${job.owner_id} and (p.first_run_id=${job.run_id} or exists (
+          select 1 from allrice_employee_runs e where e.run_id=${job.run_id}
+            and p.context_kind='chat' and e.session_id=p.context_id))`;
+    // Keep the existing root -> clock -> Job prefix. The route row serializes
+    // closure through INSERT; this fact writer never enters tenant admission.
+    const [route] =
+      await tx`select id,attempt,completed_at,clock_timestamp() now
+      from allrice_route_decisions where id=${UuidSchema.parse(input.routeDecisionId)}
+        and run_id=${job.run_id} and organization_id=${job.organization_id}
+        and workspace_id=${job.workspace_id} for update`;
+    if (!pin || !route) throw new QueueError('policy_denied');
+    const sourceKey = nativeRootDigest([
+      job.organization_id,
+      job.workspace_id,
+      pin.storage_namespace,
+      input.rootSessionId,
+      fact.nativeSessionId,
+      fact.callId,
+      'model',
+    ]);
+    const receipt = NativeModelReceiptSchema.parse({
+      source: nativeModelReceiptSource,
+      sourceKey,
+      rootSessionId: input.rootSessionId,
+      runId: job.run_id,
+      jobId: job.id,
+      jobAttempt: job.attempt,
+      routeDecisionId: route.id,
+      routeAttempt: route.attempt,
+      fact,
+    });
+    const prior = await tx`select payload from allrice_run_events
+      where organization_id=${job.organization_id} and workspace_id=${job.workspace_id}
+        and event_type='harness.native' and payload->>'source'=${nativeModelReceiptSource}
+        and payload->>'sourceKey'=${sourceKey}`;
+    const existing = prior.find((row) => row.payload.fact.phase === fact.phase);
+    if (existing) {
+      if (nativeRootDigest(existing.payload) !== nativeRootDigest(receipt))
+        throw new QueueError('conflict');
+      return NativeModelReceiptSchema.parse(existing.payload);
+    }
+    if (route.completed_at) throw new QueueError('conflict');
+    if (fact.phase === 'start') {
+      if (
+        job.cancel_requested_at ||
+        job.drain_deadline_at ||
+        job.timeout_at <= route.now
+      )
+        throw new QueueError('policy_denied');
+    } else {
+      const start = {
+        ...receipt,
+        fact: {
+          phase: 'start',
+          callId: fact.callId,
+          nativeSessionId: fact.nativeSessionId,
+          provider: fact.provider,
+          model: fact.model,
+          purpose: fact.purpose,
+        },
+      };
+      if (
+        !prior.some(
+          (row) => nativeRootDigest(row.payload) === nativeRootDigest(start),
+        )
+      )
+        throw new QueueError('conflict');
+    }
+    await appendEvent(tx, {
+      organizationId: job.organization_id,
+      workspaceId: job.workspace_id,
+      runId: job.run_id,
+      type: 'harness.native',
+      payload: receipt,
+      internalReceipt: true,
+    });
+    if (fact.phase === 'start') {
+      const [clock] = await tx`select clock_timestamp() now`;
+      if (job.timeout_at <= clock!.now) throw new QueueError('policy_denied');
+    }
+    return receipt;
   });
 }
 
