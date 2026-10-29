@@ -171,3 +171,13 @@
 
 - id: native-working-directory
   name: '@deepseek-ai/dsh-working-directory'
+
+# Read-only catalog/projection services; no delegation provider or tool.
+- id: subagents
+  name: '@deepseek-ai/dsh-subagent'
+
+- id: native-session-query
+  name: '@deepseek-ai/dsh-session-query-sqlite'
+  config:
+    path: ':memory:'
+    openAt: never

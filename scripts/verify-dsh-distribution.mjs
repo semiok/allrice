@@ -289,6 +289,8 @@ const allowedProfilePackages = new Set(
     'tool-ask-user',
     'tool-todo',
     'session-projection',
+    'session-query-sqlite',
+    'subagent',
     'token-meter',
     'compaction-tool-result-pruner',
     'compaction-basic',

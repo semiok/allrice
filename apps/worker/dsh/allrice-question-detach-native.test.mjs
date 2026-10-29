@@ -188,9 +188,6 @@ async function fixture({
         ? `
 - name: '@deepseek-ai/dsh-user-approval'
   config: { policy: never }
-- name: '@deepseek-ai/dsh-session-query-sqlite'
-  config: { path: ':memory:', openAt: never }
-- name: '@deepseek-ai/dsh-subagent'
 - name: '@deepseek-ai/dsh-subagent-spawn-in-process'
 - name: './child-fixture.mjs'
 `
@@ -343,7 +340,7 @@ process.on('SIGUSR2', () => { for (const exit of exits.splice(0)) immediate(exit
     );
     cleanups.push(async () => {
       runtime.server.detaching = undefined;
-      await runtime.server.shutdown();
+      await runtime.server.shutdown().catch(() => {});
       await runtime.ctx.fiber.dispose();
     });
     await runtime.server.handleRequest('initialize', initialize);
@@ -604,6 +601,18 @@ describe('MET-210 timed questions on the AllRice host', () => {
         )
         .toBe(true);
       const callId = f.askCall().data.callId;
+      expect(JSON.parse(f.askCall().data.arguments).timeout).toBe(-1);
+      expect(
+        f.notices.find((n) => n.method === 'session.user-question').params,
+      ).not.toHaveProperty('deadlineAt');
+      expect(
+        f
+          .events()
+          .filter(
+            (e) =>
+              e.type === 'tool/result' && e.data.message.toolCallId === callId,
+          ),
+      ).toEqual([]);
       if (mode === 'shutdown') await client.close();
       else {
         client.child.kill('SIGTERM');
@@ -615,8 +624,8 @@ describe('MET-210 timed questions on the AllRice host', () => {
         (await f.journal(sessionId)).find(
           (e) =>
             e.type === 'tool/result' && e.data.message.toolCallId === callId,
-        )?.data.error.code,
-      ).toBe('ASK_ABORTED');
+        )?.data,
+      ).toMatchObject({ error: { code: 'ASK_ABORTED' } });
       client = await f.launch();
       await client.resume(sessionId);
       const state = await client.userQuestions(sessionId);
@@ -937,6 +946,64 @@ async function blockedHost() {
 }
 
 describe('detach failure and ingress interleavings on the real host', () => {
+  it.each(['drain', 'cancel'])(
+    'root disposal releases the waiter when native %s fails during shutdown',
+    async (stage) => {
+      const h = await blockedHost();
+      const failure = new Error(`fixture ${stage} failure`);
+      if (stage === 'drain')
+        vi.spyOn(h.ctx.subagents, 'drainDescendants').mockRejectedValueOnce(
+          failure,
+        );
+      else
+        vi.spyOn(h.agent, 'cancel').mockImplementationOnce(() => {
+          throw failure;
+        });
+      await expect(h.server.shutdown()).rejects.toBe(failure);
+      expect(h.server.phase).toBe('failed');
+      // The production shutdown coordinator always attempts root disposal,
+      // even when SDK shutdown failed; no cleanup success receipt is invented.
+      await h.ctx.root.fiber.dispose();
+      await h.agent.whenIdle();
+      expect(h.server.pendingUserQuestions.has(h.sessionId)).toBe(false);
+      expect(h.requests).toHaveLength(1);
+    },
+  );
+
+  it('keeps the question pending while native descendants drain, then records cancellation through DSH', async () => {
+    const h = await blockedHost();
+    const entered = barrier(),
+      gate = barrier();
+    const drain = h.ctx.subagents.drainDescendants.bind(h.ctx.subagents);
+    vi.spyOn(h.ctx.subagents, 'drainDescendants').mockImplementation(
+      async (parents) => {
+        entered.release();
+        await gate.promise;
+        return drain(parents);
+      },
+    );
+    const closing = h.server.shutdown();
+    try {
+      await entered.promise;
+      expect(h.server.pendingUserQuestions.has(h.sessionId)).toBe(true);
+      expect(h.events().some((e) => e.type === 'tool/result')).toBe(false);
+      expect(h.requests).toHaveLength(1);
+      gate.release();
+      await closing;
+      const results = (await h.journal(h.sessionId)).filter(
+        (e) =>
+          e.type === 'tool/result' &&
+          e.data.message.toolCallId === h.askCall().data.callId,
+      );
+      expect(results).toHaveLength(1);
+      expect(results[0].data).toMatchObject({ error: { code: 'ASK_ABORTED' } });
+      expect(h.requests).toHaveLength(1);
+    } finally {
+      gate.release();
+      await closing;
+    }
+  });
+
   it('a previously admitted legacy park cannot cancel after detach commits', async () => {
     const h = await blockedHost();
     const entered = barrier(),

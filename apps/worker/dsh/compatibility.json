@@ -35,7 +35,9 @@
     "tool-result-pruner",
     "compaction-basic",
     "native-fs",
-    "native-working-directory"
+    "native-working-directory",
+    "subagents",
+    "native-session-query"
   ],
   "securityBoundaries": {
     "shell": false,

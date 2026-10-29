@@ -8,7 +8,8 @@
 - name: '@deepseek-ai/dsh-subagent-fork-in-process'
 - name: '@deepseek-ai/dsh-user-approval'
   config: { policy: never }
-- name: '@deepseek-ai/dsh-session-query-sqlite'
+- id: native-session-query
+  name: '@deepseek-ai/dsh-session-query-sqlite'
   config: { path: ':memory:', openAt: never }
 - name: '@deepseek-ai/dsh-tool-subagent'
   config: { provider: spawn, toolName: subagent }

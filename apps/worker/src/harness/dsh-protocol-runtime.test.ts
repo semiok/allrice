@@ -307,6 +307,9 @@ describe('real cold wrapper shutdown without a model', () => {
       maxTokens: 128,
       expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
     });
+    await expect(client.nativeSubagentSummary('not-created')).rejects.toThrow(
+      'INPUT_SESSION_NOT_LIVE',
+    );
     await expect(client.close()).resolves.toBeUndefined();
     expect(client.closureEvidence()).toMatchObject({
       process: {

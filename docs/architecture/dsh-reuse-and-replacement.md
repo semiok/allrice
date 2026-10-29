@@ -373,6 +373,8 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 
 ### allrice-jsonrpc-lifecycle-v1
 
+MET-229 PR3b-1a adds an internal `session/subagent-summary` read for the existing Host's exact root. `allrice-native-query.mjs` composes public 0.2.1-rc.2 Session/query/projection/subagent services; exact reads use `openAt: never`, without a search index. Catalog/header/own-descriptor checks and text-only final output are SaaS gatekeeping/display; each native cut keeps live/prepared provenance. Prepared synthetic closers and native inactive never prove activation completion, and cumulative fork usage is not billing. The separate cold composition installs no Agent, model or writer. Tests: `allrice-native-query.test.mjs` and the actual Host fixture; retirement when the public SDK exposes equivalent scoped summary reads. No new private interface, PG mirror, external endpoint, tenant routing or delegation activation; those gates remain in PR3b-1b/PR3d. Reverting this read surface does not grant an older generation permission to write current logs.
+
 MET-226 删除初始化中退役供应商的专用拒绝分支。供应商仍由 `@deepseek-ai/dsh-llm-pi-ai` 的 `providers` 配置声明；恢复由 DSH 原生模型解析处理未配置路线。此次不修改 profile、Codex 设置、助手状态或生命周期。
 
 - ID：`allrice-jsonrpc-lifecycle-v1`；归属 MET-85；**已替换**（图片准入后的有序引用转换）；生命周期扩展保留。

@@ -1,4 +1,5 @@
 import { realpath } from 'node:fs/promises';
+import { readNativeSubagentSummary } from './allrice-native-query.mjs';
 /* global AbortController */
 import { HarnessSdkJsonRpcServer } from '@deepseek-ai/dsh-sdk-jsonrpc-server';
 import { SessionId } from '@deepseek-ai/dsh-session';
@@ -104,6 +105,13 @@ export class AllRiceSdkRoot {
   assertRoot(record, sessionId) {
     if (this.requireRoot(sessionId) !== record)
       throw Error('INPUT_SESSION_NOT_LIVE');
+  }
+
+  async nativeSubagentSummary(sessionId) {
+    const record = this.requireRoot(sessionId);
+    const result = await readNativeSubagentSummary(this.ctx, sessionId);
+    this.assertRoot(record, sessionId);
+    return result;
   }
   async ensureRoot(sessionId, { resumeOnly = false } = {}) {
     if (
@@ -220,9 +228,11 @@ export class AllRiceSdkRoot {
           ? record.agent
           : undefined;
       if (agent) {
-        await this.clearRootQuestion?.(sessionId, 'Session closing');
         await this.ctx.subagents?.drainDescendants([agent]);
         agent.cancel({ kind: 'user' });
+        // Let native cancellation settle the question before clearing its UI;
+        // rejecting it before async drain loses DSH's ASK_ABORTED taxonomy.
+        await this.clearRootQuestion?.(sessionId, 'Session closing');
         await agent.whenIdle();
         await this.taskProgress?.flush();
         await this.ctx.sessions.flush(agent.session);
