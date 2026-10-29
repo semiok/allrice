@@ -158,9 +158,11 @@ create function pg_temp.met210_file_ids(value text) returns table(object_id uuid
 language plpgsql immutable strict as $body$
 declare token text; path text; authority text; segment text; parts text[]; normalized text[]; match text[]; n integer;
 begin
+  -- IPv6 authority brackets belong to the URL; other brackets still delimit
+  -- Markdown tokens. Keep the existing exact endpoint check below.
   for token in select found.parts[1]
     from regexp_matches(regexp_replace(value,$slash$\\+/$slash$,'/','g'),
-      $url$(?:^|[[:space:]<(="'\[]|\]:)([^[:space:]<>"'\[\]()]+)$url$,'g') found(parts)
+      $url$(?:^|[[:space:]<(="'\[]|\]:)((?:[hH][tT][tT][pP][sS]?:)?//\[[0-9A-Fa-f:.]+\](?::[0-9]+)?/[^[:space:]<>"'\[\]()]*|[^[:space:]<>"'\[\]()]+)$url$,'g') found(parts)
   loop
     path:=regexp_replace(token,'^https?:','', 'i');
     if path like '//%' then

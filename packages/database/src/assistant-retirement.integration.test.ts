@@ -490,6 +490,58 @@ suite('0229 bounded legacy retirement', () => {
     ).toBe(true);
     expect(await snapshot(db)).toEqual(before);
   }, 120000);
+  it.each(
+    ['http://[::1]:3001', 'https://[2001:db8::1]', '//[::1]:3001'].flatMap(
+      (origin) => ['message', 'run'].map((source) => ({ origin, source })),
+    ),
+  )(
+    'blocks a single IPv6 file link from $origin in an ordinary $source without a foreign key or citation',
+    async ({ origin, source }) => {
+      const { db } = await database(),
+        f = await oldChild(db);
+      const [object] =
+        await db`select object_id from allrice_deliverable_versions where id=${f.removed.artifactId}`;
+      const objectId = String(object!.object_id),
+        href = `${origin}/api/v1/files/${objectId}/download`,
+        text = `[原件](${href})`,
+        messageId = source === 'message' ? randomUUID() : null;
+      expect(
+        artifactForDownloadLink(href, [
+          { object: { id: objectId }, version: { fileName: 'evidence.txt' } },
+        ])?.object.id,
+      ).toBe(objectId);
+      expect(
+        await db`select object_id from allrice_file_references where object_id=${objectId}`,
+      ).toHaveLength(0);
+      expect(
+        await db`select run_id from allrice_employee_runs where run_id=${f.task.runId}`,
+      ).toHaveLength(0);
+      if (messageId) {
+        await db`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,status,content)
+          values(${messageId},${f.task.scope.organizationId},${f.task.scope.workspaceId},${f.task.chatSessionId},${f.context.actor.id},'assistant','completed',${db.json({ text })})`;
+      } else {
+        await db`update allrice_runs set result=${db.json({ answer: text })} where id=${f.task.runId}`;
+      }
+      const before = await snapshot(db);
+      const error = await db
+        .begin(async (tx) => tx.unsafe(await migration()))
+        .catch((e) => e);
+      expect(error).toMatchObject({
+        code: '23503',
+        message: 'MET210_SHARED_FILE_REFERENCE',
+      });
+      expect(JSON.parse(error.detail)).toEqual([
+        {
+          table: messageId ? 'allrice_messages' : 'allrice_runs',
+          messageId,
+          runId: messageId ? null : f.task.runId,
+          objectId,
+        },
+      ]);
+      expect(await snapshot(db)).toEqual(before);
+    },
+    120000,
+  );
   it('does not treat bare UUIDs, names, unrelated paths or retired delegation results as ordinary file references', async () => {
     const { db } = await database(),
       f = await oldChild(db),
