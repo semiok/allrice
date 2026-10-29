@@ -233,7 +233,15 @@ export function WorkProcess({
           />
         </div>
       ) : (
-        <div key={part.id} hidden={!showHistory}>
+        // Restoring trace can prepend native steps and rename the group. Keep
+        // its receipt subtree anchored to the same Run/operation, including focus.
+        <div
+          key={JSON.stringify([
+            currentPresentation.runId,
+            part.items.find((item) => item.operationId)?.operationId ?? part.id,
+          ])}
+          hidden={!showHistory}
+        >
           <NativeStepsGroup
             key={currentPresentation.runId}
             items={part.items}
@@ -460,7 +468,7 @@ function WorkProcessSteps({
     <ul className={styles.processSteps} aria-label="工作步骤">
       {steps.map((step) => (
         <WorkProcessStepRow
-          key={step.id}
+          key={step.operationId ?? step.id}
           step={step}
           running={running}
           renderOperation={renderOperation}
