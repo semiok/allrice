@@ -125,11 +125,12 @@ function restoredPoint(
 
 function takeReadingSnapshot(root: HTMLElement) {
   const active = document.activeElement;
-  const marker =
-    active instanceof HTMLElement && root.contains(active)
-      ? (active.closest<HTMLElement>('[data-process-control]') ??
-        active.querySelector<HTMLElement>('[data-process-control]'))
-      : null;
+  const inside =
+    active instanceof HTMLElement && root.contains(active) ? active : null;
+  const marker = inside?.matches('[data-process-control]')
+    ? inside
+    : (inside?.querySelector<HTMLElement>('[data-process-control]') ??
+      inside?.closest<HTMLElement>('[data-process-control]'));
   const selection = document.getSelection();
   const anchor =
     selection?.anchorNode && root.contains(selection.anchorNode)
@@ -153,22 +154,22 @@ function takeReadingSnapshot(root: HTMLElement) {
     }));
   return {
     active,
-    selectedText: selection?.toString(),
-    control: marker && keyOf(marker, 'data-process-control'),
+    control: marker ? keyOf(marker, 'data-process-control') : null,
+    content: inside && textPoint(inside, 0),
+    inView: !!inside && inView(inside),
     scroll,
     selection:
       selection && !selection.isCollapsed && anchor && focus
-        ? { anchor, focus }
+        ? { anchor, focus, text: selection.toString() }
         : undefined,
   };
 }
-type Snapshot = ReturnType<typeof takeReadingSnapshot>;
 
 /** One synchronous React commit, never an event cache or an async restore. */
 export class WorkProcessReadingState extends Component<
   { root: RefObject<HTMLElement | null>; children: ReactNode },
   { values: Choices },
-  Snapshot
+  ReturnType<typeof takeReadingSnapshot>
 > {
   override state = { values: new Map<string, Choice>() };
   override getSnapshotBeforeUpdate() {
@@ -177,13 +178,13 @@ export class WorkProcessReadingState extends Component<
   override componentDidUpdate(
     _props: unknown,
     _state: unknown,
-    saved: Snapshot,
+    saved: ReturnType<typeof takeReadingSnapshot>,
   ) {
     const root = this.props.root.current!;
     const untouchedFocus =
       (document.activeElement === document.body ||
         document.activeElement === saved.active) &&
-      (saved.active === document.body || !!saved.control);
+      (saved.active === document.body || !!(saved.control ?? saved.content));
     let reading: HTMLElement | undefined;
     for (const item of saved.scroll) {
       if (item.node.isConnected) continue;
@@ -193,14 +194,15 @@ export class WorkProcessReadingState extends Component<
       target.scrollLeft = item.left;
       if (item.inView) reading = target;
     }
-    let focused: HTMLElement | undefined;
-    if (untouchedFocus && saved.control && !saved.active?.isConnected) {
-      const marker = locate(root, 'data-process-control', saved.control);
+    if (untouchedFocus && !saved.active?.isConnected) {
+      const marker =
+        locate(root, 'data-process-content', saved.content?.key ?? null) ??
+        locate(root, 'data-process-control', saved.control);
       const target =
         marker?.closest<HTMLElement>('[data-disclosure-row]') ?? marker;
       if (target && !target.matches(':disabled,[aria-disabled="true"]')) {
         target.focus({ preventScroll: true });
-        focused = target;
+        if (saved.inView) reading ??= target;
       }
     }
     const selection = document.getSelection();
@@ -220,13 +222,13 @@ export class WorkProcessReadingState extends Component<
           focus.node,
           focus.offset,
         );
-        if (selection.toString() !== saved.selectedText)
+        if (selection.toString() !== saved.selection.text)
           selection.removeAllRanges();
         else if (saved.selection.focus.inView) reading = focus.block;
       }
     }
     if (untouchedFocus)
-      (reading ?? focused)?.scrollIntoView({
+      reading?.scrollIntoView({
         block: 'nearest',
         inline: 'nearest',
       });
