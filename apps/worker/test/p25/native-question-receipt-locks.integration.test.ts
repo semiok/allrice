@@ -142,51 +142,87 @@ suite('PR5 exact receipt completion locks', () => {
         await f.db`select id from allrice_run_events where run_id=${runId} and event_type='run.succeeded'`,
       ).toHaveLength(0);
   }
-  it('holds current account authority until the blocked terminal message commits, then real revocation proceeds', async () => {
-    const { runId, requests } = await prepare();
-    const actor = await admin();
-    const person = (
-      await listOrganizationPeople(actor, f.identity.org)
-    ).people.find((p) => p.userId === f.identity.user)!;
-    const ready = gate();
-    let held: Awaited<ReturnType<typeof hold>>;
-    const running = execute(f, runId, 'succeeded', {
-      afterHandler: async (result, lease) => {
+  it.each(['account-api', 'owner', 'membership', 'assignment'] as const)(
+    'holds current %s authority until the blocked terminal message commits, then real revocation proceeds',
+    async (kind) => {
+      const { runId, requests } = await prepare();
+      const actor = await admin();
+      const person = (
+        await listOrganizationPeople(actor, f.identity.org)
+      ).people.find((p) => p.userId === f.identity.user)!;
+      const ready = gate();
+      let held: Awaited<ReturnType<typeof hold>>;
+      const running = execute(f, runId, 'succeeded', {
+        afterHandler: async (result, lease) => {
+          expect(
+            readCheckedFinalDeliveryForExecution(lease, result).coverage,
+          ).toBe('native_question_receipt');
+          held = await hold(async (tx) => {
+            await tx`select id from allrice_messages where id=(select assistant_message_id from allrice_employee_runs where run_id=${runId}) for update`;
+          });
+          ready.release();
+        },
+      });
+      void running.catch(() => ready.release());
+      await ready.promise;
+      let revocation: Promise<unknown> | undefined;
+      try {
+        const completing = await waitingOn(
+          held!.pid,
+          'update allrice_messages',
+        );
+        const table =
+          kind === 'membership'
+            ? 'allrice_memberships'
+            : kind === 'assignment'
+              ? 'allrice_employee_assignments'
+              : 'allrice_users';
+        revocation =
+          kind === 'account-api'
+            ? setOrganizationAccountStatus(
+                actor,
+                f.identity.org,
+                f.identity.user,
+                { active: false, expectedVersion: person.version },
+              )
+            : f.db.begin(async (tx) => {
+                if (kind === 'owner')
+                  await tx`update allrice_users set status='disabled' where id=${f.identity.user}`;
+                if (kind === 'membership')
+                  await tx`update allrice_memberships set active=false where user_id=${f.identity.user} and organization_id=${f.identity.org}`;
+                if (kind === 'assignment')
+                  await tx`update allrice_employee_assignments set active=false where id=${f.identity.assignment}`;
+              });
+        void revocation.catch(() => {});
+        await waitingOn(completing, table);
+      } finally {
+        held!.release();
+        await held!.done;
+        await running;
+        await revocation;
+      }
+      if (kind === 'account-api' || kind === 'owner')
         expect(
-          readCheckedFinalDeliveryForExecution(lease, result).coverage,
-        ).toBe('native_question_receipt');
-        held = await hold(async (tx) => {
-          await tx`select id from allrice_messages where id=(select assistant_message_id from allrice_employee_runs where run_id=${runId}) for update`;
-        });
-        ready.release();
-      },
-    });
-    void running.catch(() => ready.release());
-    await ready.promise;
-    let revocation: ReturnType<typeof setOrganizationAccountStatus> | undefined;
-    try {
-      const completing = await waitingOn(held!.pid, 'update allrice_messages');
-      revocation = setOrganizationAccountStatus(
-        actor,
-        f.identity.org,
-        f.identity.user,
-        { active: false, expectedVersion: person.version },
-      );
-      void revocation.catch(() => {});
-      await waitingOn(completing, 'allrice_users');
-    } finally {
-      held!.release();
-      await held!.done;
-      await running;
-      await revocation;
-    }
-    expect(
-      (
-        await f.db`select status from allrice_users where id=${f.identity.user}`
-      )[0]!.status,
-    ).toBe('disabled');
-    await noNewWork(runId, requests, true);
-  }, 60000);
+          (
+            await f.db`select status from allrice_users where id=${f.identity.user}`
+          )[0]!.status,
+        ).toBe('disabled');
+      if (kind === 'membership')
+        expect(
+          (
+            await f.db`select active from allrice_memberships where user_id=${f.identity.user} and organization_id=${f.identity.org}`
+          )[0]!.active,
+        ).toBe(false);
+      if (kind === 'assignment')
+        expect(
+          (
+            await f.db`select active from allrice_employee_assignments where id=${f.identity.assignment}`
+          )[0]!.active,
+        ).toBe(false);
+      await noNewWork(runId, requests, true);
+    },
+    60000,
+  );
   it('rejects the receipt when real account revocation commits before completion', async () => {
     const { runId, requests } = await prepare();
     const actor = await admin();
