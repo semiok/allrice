@@ -2,6 +2,7 @@
  * Only rollout eligibility and the loopback model are synthetic. */
 import { randomUUID } from 'node:crypto';
 import type { TransactionSql } from 'postgres';
+import * as Queue from '@allrice/database';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as Rollout from '../../../../packages/database/src/final-delivery-rollout.ts';
 import {
@@ -282,6 +283,17 @@ suite('PR5 exact receipt completion locks', () => {
       const ready = gate(),
         start = gate();
       let rootLock: Awaited<ReturnType<typeof hold>>;
+      // Delay the real completeJob entry, after Worker event flush and
+      // step.completed. No guard/adapter/Host result is replaced.
+      const complete = Queue.completeJob;
+      vi.spyOn(Queue, 'completeJob').mockImplementation(async (input) => {
+        rootLock = await hold(async (tx) => {
+          await tx`select pg_advisory_xact_lock(hashtextextended(${runId},703))`;
+        });
+        ready.release();
+        await start.promise;
+        return complete(input);
+      });
       const running = execute(
         f,
         runId,
@@ -291,11 +303,6 @@ suite('PR5 exact receipt completion locks', () => {
             expect(
               readCheckedFinalDeliveryForExecution(lease, result).coverage,
             ).toBe('native_question_receipt');
-            rootLock = await hold(async (tx) => {
-              await tx`select pg_advisory_xact_lock(hashtextextended(${runId},703))`;
-            });
-            ready.release();
-            await start.promise;
           },
         },
       );
