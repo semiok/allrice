@@ -156,7 +156,7 @@ suite('0229 bounded legacy retirement', () => {
     ]) {
       const f = await runtimeTaskFixture(db);
       ids.push(f.worker.jobId);
-      await db`update allrice_jobs set status='queued',worker_id=null,lease_token=null,lease_expires_at=null,payload=${db.json({ schemaVersion: 1, type: 'allrice.employee.run', input: { assistantConfiguration: config, ordinary: 'keep' } })} where id=${f.worker.jobId}`;
+      await db`update allrice_jobs set status='queued',worker_id=null,lease_token=null,lease_expires_at=null,claimed_at=null,heartbeat_at=null,payload=${db.json({ schemaVersion: 1, type: 'allrice.employee.run', input: { assistantConfiguration: config, ordinary: 'keep' } })} where id=${f.worker.jobId}`;
       await db`update allrice_runs set state='queued',input=${db.json({ assistantConfiguration: config, ordinary: 'keep' })} where id=${f.task.runId}`;
     }
     await db.begin(async (tx) => tx.unsafe(await migration()));
