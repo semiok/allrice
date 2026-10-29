@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { WorkerCapabilitySnapshot } from '@allrice/contracts';
 import {
   runtimeTaskFixture,
@@ -18,12 +18,10 @@ const suite =
 suite('capability facts from PostgreSQL', () => {
   let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   beforeAll(async () => {
-    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
     fixture = await createRuntimeFixtureDatabase();
   }, 60_000);
   afterAll(async () => {
     await fixture?.close();
-    vi.unstubAllEnvs();
   });
   it('expires missing Worker heartbeats and removes orderly shutdown reports', async () => {
     const snapshot: WorkerCapabilitySnapshot = {
@@ -61,10 +59,7 @@ suite('capability facts from PostgreSQL', () => {
       version: 1,
       skillIds: [],
       policyEnabled: false,
-      toolNames: expect.arrayContaining([
-        'assistant.delegate',
-        'assistant.report',
-      ]),
+      toolNames: expect.arrayContaining(['workspace.document.read']),
     });
     await fixture.db`update allrice_memberships set active=false`;
     expect(
