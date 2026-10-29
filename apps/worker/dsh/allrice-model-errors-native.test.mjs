@@ -53,6 +53,7 @@ async function scenario({
   failures = [overload],
   toolFirst = false,
   skillFirst = false,
+  emptyCatalog = false,
   personalSkill = false,
   personalInstall = false,
   personalInstallArguments,
@@ -303,7 +304,7 @@ async function scenario({
           ? ['workspace.personal_skill.install']
           : ['local.fs.list'],
         nativeSkills:
-          skillFirst || personalSkill
+          (skillFirst || personalSkill) && !emptyCatalog
             ? [
                 {
                   id: personalSkill
@@ -417,6 +418,7 @@ async function scenario({
     }
     if (rebind) {
       await client.closeSession(sessionId);
+      await client.resume(sessionId);
       await client.prompt(sessionId, 'Load the same frozen method once again.');
       await expect
         .poll(() => events().filter((e) => e.type === 'turn/end').length, {
@@ -451,7 +453,7 @@ async function scenario({
 }
 
 describe('content authorization uses actual DSH dispatch and compaction', () => {
-  it(`rechecks content after a native progress pause and before dispatch accounting`, async () => {
+  it(`rechecks content after a native progress pause before the provider request`, async () => {
     const result = await scenario({
       contentCallsAllowed: 10,
       failures: [],
@@ -459,22 +461,18 @@ describe('content authorization uses actual DSH dispatch and compaction', () => 
     });
     expect(result.requests).toHaveLength(0);
     expect(result.contentCalls).toBeGreaterThan(0);
-    expect(
-      result.bridgeCalls.some(
-        (c) =>
-          c.method === 'allrice/progress' &&
-          c.action === 'start' &&
-          c.kind === 'model',
-      ),
-    ).toBe(false);
-    expect(
-      result.bridgeCalls.some(
-        (c) =>
-          c.method === 'allrice/progress' &&
-          c.action === 'finish' &&
-          c.kind === 'model',
-      ),
-    ).toBe(false);
+    // Ordinary progress records the attempted model step, even when the
+    // content guard rejects it before the provider receives any request.
+    const modelCalls = result.bridgeCalls.filter(
+      (c) => c.method === 'allrice/progress' && c.kind === 'model',
+    );
+    expect(modelCalls).toMatchObject([
+      { action: 'start' },
+      { action: 'finish', outcome: 'error' },
+    ]);
+    expect(modelCalls[1].callId).toBe(modelCalls[0].callId);
+    expect(modelCalls[1]).not.toHaveProperty('inputTokens');
+    expect(modelCalls[1]).not.toHaveProperty('outputTokens');
   });
   it(`blocks the provider before the first request`, async () => {
     const result = await scenario({
@@ -483,22 +481,18 @@ describe('content authorization uses actual DSH dispatch and compaction', () => 
     });
     expect(result.requests).toHaveLength(0);
     expect(result.contentCalls).toBeGreaterThan(0);
-    expect(
-      result.bridgeCalls.some(
-        (c) =>
-          c.method === 'allrice/progress' &&
-          c.action === 'start' &&
-          c.kind === 'model',
-      ),
-    ).toBe(false);
-    expect(
-      result.bridgeCalls.some(
-        (c) =>
-          c.method === 'allrice/progress' &&
-          c.action === 'finish' &&
-          c.kind === 'model',
-      ),
-    ).toBe(false);
+    // Ordinary progress records the attempted model step, even when the
+    // content guard rejects it before the provider receives any request.
+    const modelCalls = result.bridgeCalls.filter(
+      (c) => c.method === 'allrice/progress' && c.kind === 'model',
+    );
+    expect(modelCalls).toMatchObject([
+      { action: 'start' },
+      { action: 'finish', outcome: 'error' },
+    ]);
+    expect(modelCalls[1].callId).toBe(modelCalls[0].callId);
+    expect(modelCalls[1]).not.toHaveProperty('inputTokens');
+    expect(modelCalls[1]).not.toHaveProperty('outputTokens');
     expect(result.events.some((e) => e.type === 'turn/end')).toBe(true);
   });
   it(`rechecks before native compaction`, async () => {
@@ -564,11 +558,23 @@ describe('ordinary Run uses the actual native Skill loader', () => {
     expect(result.toolCalls).toHaveLength(0);
   }, 30000);
 
-  it('keeps an empty native catalog out of the ordinary root scope', async () => {
-    const result = await scenario({ failures: [] });
-    expect(result.requests[0].tools.map((tool) => tool.name)).not.toContain(
+  it('the native loader refuses a method absent from the ordinary root catalog', async () => {
+    const result = await scenario({
+      failures: [],
+      skillFirst: true,
+      emptyCatalog: true,
+    });
+    // DSH keeps its native Skill tool; an empty catalog grants no method.
+    expect(result.requests[0].tools.map((tool) => tool.name)).toContain(
       'skill',
     );
+    const loaded = result.events.filter((e) => e.type === 'tool/result');
+    expect(loaded).toHaveLength(1);
+    expect(readDshToolResult(loaded[0].data.message).isError).toBe(true);
+    expect(JSON.stringify(result.requests)).not.toContain(
+      'FROZEN_NATIVE_SKILL_BODY_42',
+    );
+    expect(result.toolCalls).toHaveLength(0);
   }, 30000);
 });
 
