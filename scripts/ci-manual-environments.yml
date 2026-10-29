@@ -81,6 +81,7 @@ files:
   publicHost:
     - apps/worker/src/native-schedule-once.test.ts
   db:
+    - apps/web/lib/execution/native-subagent-authorized-query.integration.test.mjs
     - apps/worker/test/final-delivery-references.pg.test.ts
     - packages/database/src/freeze-helpers.transaction.test.ts
     - scripts/acceptance/runtime/p27-codex-worker-fixture.test.ts
