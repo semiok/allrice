@@ -91,45 +91,15 @@ describe('MET-153 frozen task policy and elapsed-time accounting', () => {
       ).remainingMs,
     ).toBeNull();
   });
-  const root = { run_id: 'root', status: 'running' },
-    child = { run_id: 'child', status: 'running' };
-  const input = {
-    state: 'running',
-    runId: 'root',
-    instances: [root],
-    operations: [{ agent_id: 'root', status: 'waiting_user' }],
-  };
-  it('pauses only a wholly blocked tree, never because a child merely exists', () => {
+  it('pauses a blocked ordinary Run but counts an in-flight model call', () => {
+    const input = {
+      state: 'running',
+      runId: 'root',
+      operations: [{ agent_id: 'root', status: 'waiting_user' }],
+    };
     expect(taskClockPhase(input)).toBe('waiting');
-    expect(taskClockPhase({ ...input, instances: [root, child] })).toBe(
-      'active',
-    );
-    expect(
-      taskClockPhase({
-        ...input,
-        instances: [root, child],
-        operations: [
-          ...input.operations,
-          { agent_id: 'child', status: 'waiting_device' },
-        ],
-      }),
-    ).toBe('waiting');
-    expect(
-      taskClockPhase({
-        ...input,
-        instances: [root, child],
-        operations: [{ agent_id: 'child', status: 'waiting_user' }],
-      }),
-    ).toBe('active');
     expect(taskClockPhase({ ...input, modelInFlight: true })).toBe('active');
-    expect(
-      taskClockPhase({
-        ...input,
-        operations: [
-          ...input.operations,
-          { agent_id: 'root', status: 'unknown' },
-        ],
-      }),
-    ).toBe('active');
+    expect(taskClockPhase({ ...input, operations: [] })).toBe('active');
+    expect(taskClockPhase({ ...input, state: 'succeeded' })).toBe('terminal');
   });
 });

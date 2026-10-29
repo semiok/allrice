@@ -1,3 +1,4 @@
+import { prepareDeliveryAuthorityFixture } from './final-delivery-reference-authority.fixture.ts';
 /** Synthetic immutable inputs; actual PG/production ACL/reader/runtime/queue.
  * No model, parser, Dev account, native SDK or reference-read receipt is run. */
 import assert from 'node:assert/strict';
@@ -12,12 +13,10 @@ import {
   type RequestContext,
 } from '@allrice/contracts';
 import {
-  createAssistantFixtureDatabase,
-  assistantFixtureStorage,
-} from '../../../packages/database/src/assistant-runtime.fixture.ts';
+  createRuntimeFixtureDatabase,
+  runtimeFixtureStorage,
+} from '../../../packages/database/src/runtime.fixture.ts';
 import { createFinalReferenceAuthorityFixture } from './final-delivery-reference-authority.fixture.ts';
-import { assertAssistantAuthority } from '../../../packages/database/src/assistant-authority.ts';
-import { createAssistantRuntime } from '../../../packages/database/src/assistant-runtime.ts';
 import { closeDatabase } from '../../../packages/database/src/core/client.ts';
 import { completeJob } from '../../../packages/database/src/execution/queue.ts';
 import { readFinalDeliveryReferences } from '../../../packages/database/src/final-delivery-references.ts';
@@ -47,11 +46,11 @@ const record = (name: string, detail: unknown) => {
   cases.push({ name, detail });
   save('case-facts', cases);
 };
-let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
 const db = () => database.db;
-const storage = () => assistantFixtureStorage(db());
+const storage = () => runtimeFixtureStorage(db());
 const originalEnvironment = Object.fromEntries(
-  ['DATABASE_URL', 'ALLRICE_ASSISTANTS_ENABLED'].map((key) => [
+  ['DATABASE_URL', 'ALLRICE_WORKBENCH_ENABLED'].map((key) => [
     key,
     process.env[key],
   ]),
@@ -345,36 +344,16 @@ async function fixture(plan: Plan = {}) {
   let seeded!: Awaited<ReturnType<typeof seedInput>>;
   const f = await createFinalReferenceAuthorityFixture(db(), {
     memberRole: 'member',
-    allowedTools: [
-      'assistant.delegate',
-      'assistant.report',
-      'workspace.export.create',
-      'workspace.document.read',
-    ],
+    allowedTools: ['workspace.export.create', 'workspace.document.read'],
     preparePrompt: async (tx, x) => {
       seeded = await seedInput(tx, x, plan);
       return seeded.prompt;
     },
   });
-  const native = 'dsh-' + f.session;
-  await db()`update allrice_jobs set attempt=1 where id=${f.worker.jobId}`;
-  await db()`update allrice_assistant_instances set native_session_id=${native} where run_id=${f.rootRunId}`;
-  await db()`update allrice_conversation_runtimes set thread_id=${native} where session_id=${f.session}`;
-  await db()`insert into allrice_native_session_bindings(native_session_id,organization_id,workspace_id,owner_id,context_kind,context_id,storage_context_key,storage_namespace,
-    artifact_id,artifact_manifest_digest,distribution_generation,profile_id,first_run_id,first_job_id,first_attempt,binding_basis)
-    values(${native},${f.org},${f.workspace},${f.user},'chat',${f.session},${f.session},${'/synthetic/' + f.session + '/sessions'},${sha('artifact')},${sha('artifact')},'fixture-approved-reader','restricted',${randomUUID()},${randomUUID()},5,'approved_compatibility_reader')`;
-  const runtime = createAssistantRuntime({
-    database: db(),
-    authorize: assertAssistantAuthority,
-    checkedDelivery: true,
-    readFinalDeliveryReferences,
+  const { native, port } = await prepareDeliveryAuthorityFixture(f, {
+    startTurn: true,
   });
-  const input = {
-    scope: f.task.scope,
-    rootRunId: f.rootRunId,
-    worker: f.worker,
-  };
-  const read = () => runtime.readFinalDeliveryEvidence(input);
+  const read = () => port.readSnapshot();
   const proof = async () => ({
     nativeSessionId: native,
     publicMessageId: randomUUID(),
@@ -387,13 +366,9 @@ async function fixture(plan: Plan = {}) {
     generation: f.worker.generation,
   });
   const finish = async (p: Awaited<ReturnType<typeof proof>>) => {
-    expect(
-      (await runtime.finalizeRoot({ ...input, finalDelivery: p })).status,
-    ).toBe('completed');
-    return runtime.createFinalDeliveryCommitGuard({
-      ...input,
-      finalDelivery: p,
-    });
+    const origin = await port.readOrigin();
+    if (!origin) throw Error('Missing synthetic turn origin');
+    return port.createCommitGuard(p, origin);
   };
   const login = await createSession(f.user);
   await db()`insert into allrice_organization_people(organization_id,user_id,display_name,content_maintenance_level) values(${f.org},${f.user},'Synthetic publisher','company')`;
@@ -417,8 +392,6 @@ async function fixture(plan: Plan = {}) {
   return {
     ...f,
     ...seeded,
-    runtime,
-    input,
     read,
     proof,
     finish,
@@ -447,8 +420,8 @@ describe
     'frozen reference production producer, actual isolated PG',
     () => {
       beforeAll(async () => {
-        process.env.ALLRICE_ASSISTANTS_ENABLED = '1';
-        database = await createAssistantFixtureDatabase();
+        process.env.ALLRICE_WORKBENCH_ENABLED = '1';
+        database = await createRuntimeFixtureDatabase();
         const [location] =
           await db()`select current_database() database,current_schema() schema`;
         assert.equal(
@@ -466,7 +439,7 @@ describe
           ...location,
           storageRoot: database.storageRoot,
           immutableFirstInsert: true,
-          realAuthority: 'assertAssistantAuthority',
+          realAuthority: 'assertRunDeliveryAuthority',
           realProducer: 'readFinalDeliveryReferences',
           syntheticNativePin: true,
           models: 0,
@@ -732,25 +705,26 @@ describe
         const f = await fixture();
         const held = deferred(),
           release = deferred();
+        let writerPid = 0;
         const writer = db().begin(async (tx) => {
+          writerPid = Number((await tx`select pg_backend_pid() pid`)[0]!.pid);
           await tx`update allrice_knowledge_sources set status='archived' where id=${f.sourceId!}`;
           held.resolve();
           await release.promise;
         });
         await held.promise;
-        const read = f.read();
-        const rejected = expect(read).rejects.toThrow();
+        const read = f.read().catch((error) => error);
         try {
           await waitFor(async () => {
             const [r] =
-              await db()`select exists(select 1 from pg_stat_activity where application_name=current_schema() and wait_event_type='Lock' and query like '%allrice_knowledge_sources%') waiting`;
+              await db()`select exists(select 1 from pg_stat_activity where ${writerPid}=any(pg_blocking_pids(pid)) and wait_event_type='Lock' and query like '%allrice_knowledge_sources%') waiting`;
             return r?.waiting === true;
           }, 'source lock wait');
         } finally {
           release.resolve();
         }
         await writer;
-        await rejected;
+        expect(await read).toBeInstanceOf(Error);
         record('waited current source writer', {
           sourceId: f.sourceId,
           seesArchived: true,

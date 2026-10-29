@@ -159,10 +159,9 @@ describe('AllRice restricted DSH profile', () => {
     expect(production).not.toContain('p24_proposal');
     expect(production).not.toContain('poc.cordis.yml');
     expect(production).not.toContain('startContinuable');
-    expect(production).toContain(
-      "if (process.env.ALLRICE_ASSISTANTS_ENABLED === '1')",
-    );
-    expect(production).toContain("policy: 'never'");
+    expect(production).not.toContain('ALLRICE_ASSISTANTS_ENABLED');
+    expect(production).not.toContain('governedAssistants');
+    expect(production).not.toContain('@deepseek-ai/dsh-subagent/internal');
     const profile = await readFile(
       resolve(import.meta.dirname, '../../dsh/allrice-restricted.cordis.yml'),
       'utf8',

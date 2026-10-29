@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { HandlerError } from '../errors.js';
 import {
-  attachAssistantFailureUsage,
-  getAssistantFailureUsage,
-} from './dsh/assistant-outcome.js';
+  attachExecutionFailureUsage,
+  getExecutionFailureUsage,
+} from './dsh/execution-failure-usage.js';
 import {
   DshClientCleanupError,
   getDshCleanupFailures,
@@ -26,7 +26,7 @@ describe('separate execution and cleanup failure evidence', () => {
         usageComplete: false,
         cacheUsageKnown: false,
       };
-      attachAssistantFailureUsage(failure, 'run-one', 1, receipt);
+      attachExecutionFailureUsage(failure, 'run-one', 1, receipt);
       const cleanup = new HandlerError(
         'DSH_RUNTIME_CLOSE_UNCONFIRMED',
         'cleanup',
@@ -38,8 +38,8 @@ describe('separate execution and cleanup failure evidence', () => {
         retryable: false,
         message: 'original',
       });
-      expect(getAssistantFailureUsage(failure, 'run-one', 1)).toEqual(receipt);
-      expect(getAssistantFailureUsage(failure, 'run-other', 1)).toBeUndefined();
+      expect(getExecutionFailureUsage(failure, 'run-one', 1)).toEqual(receipt);
+      expect(getExecutionFailureUsage(failure, 'run-other', 1)).toBeUndefined();
       expect(getDshCleanupFailures(failure)).toEqual([cleanup]);
       if (!frozen) expect(failure.cause).toBe(cleanup);
     },

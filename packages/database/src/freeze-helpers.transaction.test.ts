@@ -17,7 +17,7 @@ import type {
   McpDiscoveredTool,
 } from '@allrice/contracts';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { employeeManifest } from './employees/employee-config.ts';
 import { freezeEmployeeBaseSkills } from './employees/employee-base-skills.ts';
 import { createEmployeeMcpBindingStore } from './mcp-employee-bindings.ts';
@@ -70,11 +70,11 @@ async function waitForLockWait(
 suite(
   'freeze helpers with an actual caller-owned PostgreSQL transaction',
   () => {
-    let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let published: Awaited<ReturnType<typeof freezeEmployeeBaseSkills>>;
 
     beforeAll(async () => {
-      f = await createAssistantFixtureDatabase();
+      f = await createRuntimeFixtureDatabase();
       for (const name of [
         'ALLRICE_LOCAL_MCP_ENABLED',
         'ALLRICE_LOCAL_COMMAND_ENABLED',
@@ -108,7 +108,7 @@ suite(
         });
     });
 
-    // Only synthetic scoped rows in createAssistantFixtureDatabase's owned
+    // Only synthetic scoped rows in createRuntimeFixtureDatabase's owned
     // schema. No network discovery, credential decryption, Bridge or model call.
     async function cloudFixture() {
       const organizationId = randomUUID(),

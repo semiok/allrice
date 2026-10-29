@@ -73,11 +73,6 @@ import {
   projectVersionParameter,
   projectPreparationParameter,
 } from './allrice-project-native-tools.mjs';
-import {
-  createGovernedAssistantNativeRuntime,
-  assertAssistantBusinessInputOpen,
-  runAssistantBusinessInput,
-} from './allrice-assistant-runtime.mjs';
 import { installTaskProgress } from './allrice-task-progress.mjs';
 import { askProgramQuestion } from './allrice-program-questions.mjs';
 import { UserQuestionError } from '@deepseek-ai/dsh-user-questions';
@@ -1202,38 +1197,6 @@ export async function createAllRiceRuntime(
           },
         );
       }
-      if (this.assistantBridge) {
-        this.governedAssistants = createGovernedAssistantNativeRuntime(
-          this.ctx,
-          this.assistantBridge,
-          {
-            nativeSkillsAvailable:
-              scenes.length > 0 ||
-              requestedSkills.some((skill) => skill.invocation.modelInvocable),
-            // Private native-to-owning-Worker bridge, never a model tool or bind
-            // parameter. Worker reads current same-Run controls under authority.
-            restoreFinalDeliveryOrigin: async (params) =>
-              (await this.assistantBridge('final-delivery-origin', params))
-                .origin,
-            onModelWait: (state) => this.modelWaitNotify(state),
-            onModelStream: (state) => this.modelStreamNotify(state),
-            onModelTiming: (state) => this.modelTimingNotify(state),
-            modelStreamOptions: {
-              // Bounded deployment/test setting; never supplied by model input.
-              idleMs: Math.min(
-                300_000,
-                Math.max(
-                  100,
-                  Number(process.env.ALLRICE_MODEL_STREAM_IDLE_MS) || 300_000,
-                ),
-              ),
-            },
-            controlTools: requestedTools.filter((name) =>
-              name.startsWith('assistant.'),
-            ),
-          },
-        );
-      }
       this.registerNativeTools();
       if (this.nativeTools.has('platform.repository.review')) {
         // The profile also installs native tools. Restrict the review Agent's
@@ -1387,28 +1350,6 @@ export async function createAllRiceRuntime(
               const queries = [
                 ...new Set(args.queries.map((query) => query.trim())),
               ];
-              if (this.governedAssistants) {
-                const agent = this.ctx.agents.requireInitiator();
-                const responses = await Promise.all(
-                  queries.map((query, index) =>
-                    this.assistantBridge(
-                      'tool',
-                      {
-                        nativeSessionId: agent.id,
-                        callId: `${exec.callId}:${index}`,
-                        name: 'web.search',
-                        arguments: { query, maxResults: 5 },
-                      },
-                      exec.signal,
-                    ),
-                  ),
-                );
-                return {
-                  content: responses
-                    .map((response) => response.modelContent)
-                    .join('\n\n'),
-                };
-              }
               const results = await Promise.all(
                 queries.map((query, index) =>
                   this.toolBrokerRequest(
@@ -1584,27 +1525,6 @@ export async function createAllRiceRuntime(
                   ? this.preparedMethodQuestions.begin(agent)
                   : undefined;
               tool.validateArguments?.(args);
-              if (this.governedAssistants) {
-                const response = await this.assistantBridge(
-                  'tool',
-                  {
-                    nativeSessionId: agent.id,
-                    callId: exec.callId,
-                    name: tool.canonicalName,
-                    arguments: args,
-                  },
-                  exec.signal,
-                );
-                if (typeof response?.modelContent !== 'string')
-                  throw Error('assistant_tool_response_invalid');
-                return this.waitForApplicationConnection(
-                  tool.canonicalName,
-                  response,
-                  agent,
-                  exec.signal,
-                  preparation,
-                );
-              }
               const response = await this.toolBrokerRequest(
                 {
                   toolCallId: exec.callId,
@@ -1919,28 +1839,6 @@ export async function createAllRiceRuntime(
           params,
         );
       }
-      if (method.startsWith('allrice/assistant/')) {
-        const action = method.slice('allrice/assistant/'.length);
-        if (
-          !this.governedAssistants ||
-          ![
-            'bind',
-            'drain',
-            'flush',
-            'join',
-            'joinForFinalDelivery',
-            'inspect',
-            'finish',
-            'diagnostics',
-          ].includes(action)
-        )
-          throw Error('assistant_runtime_disabled');
-        return this.governedAssistants[action](params);
-      }
-      // Reject before any native journal/inbox mutation. The Worker retains
-      // the durable input command and applies its existing defer/readmission
-      // semantics; this is an error, never a fabricated pending/adopted ACK.
-      assertAssistantBusinessInputOpen(this.governedAssistants, method, params);
       switch (method) {
         case 'session/park-question':
           return {
@@ -1952,55 +1850,25 @@ export async function createAllRiceRuntime(
           };
         case 'session/answer-wait':
           requiredSessionId(params);
-          return runAssistantBusinessInput(
-            this.governedAssistants,
-            method,
-            params,
-            () => answerNativeWait(this, params),
-          );
+          return answerNativeWait(this, params);
         case 'session/continue-wait':
           requiredSessionId(params);
-          return runAssistantBusinessInput(
-            this.governedAssistants,
-            method,
-            params,
-            () => continueNativeWait(this, params),
-          );
+          return continueNativeWait(this, params);
         case 'session/detach':
           return detachNativeQuestion(this, requiredSessionId(params));
         case 'session/user-questions':
           return nativeUserQuestions(this, requiredSessionId(params));
         case 'session/question-reply':
           requiredSessionId(params);
-          return runAssistantBusinessInput(
-            this.governedAssistants,
-            method,
-            params,
-            () => replyNativeQuestion(this, params),
-          );
+          return replyNativeQuestion(this, params);
         case 'session/interrupt':
           return this.interrupt(params);
         case 'session/steer':
-          return runAssistantBusinessInput(
-            this.governedAssistants,
-            method,
-            params,
-            () => this.steer(params),
-          );
+          return this.steer(params);
         case 'session/compact':
-          return runAssistantBusinessInput(
-            this.governedAssistants,
-            method,
-            params,
-            () => this.compact(params),
-          );
+          return this.compact(params);
         case 'session/prompt':
-          return runAssistantBusinessInput(
-            this.governedAssistants,
-            method,
-            params,
-            () => this.prompt(params),
-          );
+          return this.prompt(params);
         case 'session/bootstrap-coverage': {
           const sessionId = requiredSessionId(params);
           const record = this.roots.get(sessionId);
@@ -2010,12 +1878,7 @@ export async function createAllRiceRuntime(
         case 'session/projection':
           return this.sessionProjection(params);
         case 'session/recover':
-          return runAssistantBusinessInput(
-            this.governedAssistants,
-            method,
-            params,
-            () => this.recover(params),
-          );
+          return this.recover(params);
         case 'session/close':
           return this.closeSession(params);
         case 'provider/status':
@@ -2076,25 +1939,6 @@ export async function createAllRiceRuntime(
     !ctx.tools.get('ask_user_question')
   )
     throw Error('NATIVE_ASK_USER_TOOL_UNAVAILABLE');
-  if (process.env.ALLRICE_ASSISTANTS_ENABLED === '1') {
-    await ctx.plugin((await import('@deepseek-ai/dsh-user-approval')).default, {
-      policy: 'never',
-    });
-    await ctx.plugin(
-      (await import('@deepseek-ai/dsh-session-query-sqlite')).default,
-      {
-        path: ':memory:',
-        openAt: 'never',
-      },
-    );
-    await ctx.plugin((await import('@deepseek-ai/dsh-subagent')).default);
-    await ctx.plugin(
-      await import('@deepseek-ai/dsh-subagent-spawn-in-process'),
-      {
-        providerName: 'spawn',
-      },
-    );
-  }
   assertInitializationOpen();
   const server = new AllRiceHarnessSdkJsonRpcServer(ctx, transport, {
     maxTokensAsSuccess: false,
@@ -2120,9 +1964,6 @@ export async function createAllRiceRuntime(
   server.modelTimingNotify = (state) =>
     transport.notify('allrice.modelTiming', state);
   server.installUserQuestionProvider();
-  if (process.env.ALLRICE_ASSISTANTS_ENABLED === '1')
-    server.assistantBridge = (method, params, signal) =>
-      transport.request(`allrice/assistant/${method}`, params, signal);
   server.toolBrokerRequest = (params, signal) =>
     transport.request('allrice/tool-call', params, signal);
   server.personalSkillBridge = (params, signal) =>

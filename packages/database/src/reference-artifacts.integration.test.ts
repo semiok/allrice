@@ -5,9 +5,9 @@ import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import type { RequestContext, StoragePort } from '@allrice/contracts';
 import * as client from './core/client.ts';
 import {
-  createAssistantFixtureDatabase,
-  assistantFixtureStorage,
-} from './assistant-runtime.fixture.ts';
+  createRuntimeFixtureDatabase,
+  runtimeFixtureStorage,
+} from './runtime.fixture.ts';
 import { tenantValidationFixture } from './tenant-validation.fixture.ts';
 import {
   createSession,
@@ -31,13 +31,13 @@ const suite =
 suite(
   'artifact reference publication: exact version, current authority and retry boundaries',
   () => {
-    let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
+    let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
       storage: StoragePort;
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-      f = await createAssistantFixtureDatabase();
+      f = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
-      storage = assistantFixtureStorage(f.db);
+      storage = runtimeFixtureStorage(f.db);
     }, 120000);
     afterAll(async () => {
       vi.restoreAllMocks();
@@ -452,9 +452,10 @@ suite(
           }),
         ).rejects.toThrow('source_unavailable');
       }
-      // A child tool's delivery has no root employee Run matching its owner/Session.
-      const child = await a.delegate();
-      const childArtifact = await a.createArtifact(child.instance.runId);
+      // An unrelated tool Run has no root employee Run matching its owner/Session.
+      const child = randomUUID();
+      await f.db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input) values(${child},${owner.organizationId},${owner.workspaceId!},${owner.actor.id},'succeeded','{}','{}')`;
+      const childArtifact = await a.createArtifact(child);
       await expect(
         save(owner, {
           ...input,

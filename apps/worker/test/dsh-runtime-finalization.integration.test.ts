@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
 import * as client from '../../../packages/database/src/core/client.ts';
-import { createAssistantFixtureDatabase } from '../../../packages/database/src/assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../../../packages/database/src/runtime.fixture.ts';
 import { assertRuntimeFixtureDatabase } from '../../../packages/database/src/runtime-fixture-database.ts';
 import {
   readDshRuntimeCloseCoverage as barrelReadCoverage,
@@ -37,7 +37,7 @@ const suite =
 suite(
   'C3 real SQL final registry and same-boot durable closure; all close evidence synthetic',
   () => {
-    let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     const report: Record<string, unknown> = {
       kind: 'c3-actual-sql-boundary',
       database: null,
@@ -54,7 +54,7 @@ suite(
       // The verifier and these fixtures must execute the same source functions.
       expect(barrelReadCoverage).toBe(readDshRuntimeCloseCoverage);
       expect(barrelFinalizeInventory).toBe(finalizeWorkerDshRuntimeInventory);
-      f = await createAssistantFixtureDatabase({ ownSchemaOnly: true });
+      f = await createRuntimeFixtureDatabase({ ownSchemaOnly: true });
       const [where] =
         await f.db`select current_database() db,current_schema() schema`;
       if (!where) throw Error('Private fixture database identity missing');

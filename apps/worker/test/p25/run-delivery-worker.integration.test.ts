@@ -16,8 +16,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import ExcelJS from 'exceljs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readRetiredExecutionHistory } from './retired-execution-history.fixture.ts';
 import * as DatabaseClient from '../../../../packages/database/src/core/client.ts';
-import { updateWorkAutomation } from '../../../../packages/database/src/work-automation.ts';
 import {
   createRuntimeFixtureDatabase,
   runtimeFixtureStorage,
@@ -100,11 +100,9 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
 
   async function setup(
     reply: Parameters<typeof p24Fixture>[0],
-    memberAssistants: true | null = null,
     nativeSubagents = false,
     progressWait = false,
   ) {
-    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
     vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
     vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
     vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
@@ -196,12 +194,6 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       organizationId: identity.org,
       workspaceId: identity.workspace,
     }))!;
-    if (memberAssistants)
-      await updateWorkAutomation(context, identity.workspace, {
-        expectedRevision: 0,
-        capability: 'assistants',
-        enabled: true,
-      });
     await authorizeFixturePlatformAdministrator(db, identity.user);
     const connectionId = randomUUID(),
       catalogId = randomUUID();
@@ -273,7 +265,6 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         text: prompt,
         clientMessageId: randomUUID(),
         deliveryMode: 'follow_up',
-        assistantPreference: { mode: 'daily', allowAssistants: false },
       },
     );
     expect(sent.run).toBeDefined();
@@ -360,6 +351,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
   it('从未开启助手的普通聊天也由根 Run 核对正文并提交真实 proof', async () => {
     const answer = '```js\nconst sum = (a, b) => a + b;\n```';
     const f = await setup(async () => ({ text: answer }));
+    const legacyHistory = await readRetiredExecutionHistory(f.db);
     const task = await prepare(
       f,
       '帮我完成这项任务：写一个返回两数之和的 JavaScript 函数。',
@@ -387,6 +379,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       expect(
         await f.db`select run_id from allrice_runtime_run_links where root_run_id=${task.runId}`,
       ).toHaveLength(0);
+      expect(await readRetiredExecutionHistory(f.db)).toEqual(legacyHistory);
       expect(model!.requests).toHaveLength(1);
     } finally {
       await task.isolation.cleanup();
@@ -411,7 +404,6 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
             },
           };
         },
-        null,
         false,
         true,
       );
@@ -538,31 +530,27 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       releaseOriginWrite = gate();
     let rootCalls = 0;
     const answer = '已汇总子智能体的实际结果。';
-    const f = await setup(
-      async (request) => {
-        const userInputs = request.messages.filter((m) => m.role === 'user');
-        if (JSON.stringify(userInputs).includes('PR1B_CHILD_TASK')) {
-          childEntered.release();
-          await releaseChild.promise;
-          return { text: 'PR1B_CHILD_RESULT' };
-        }
-        rootCalls++;
-        if (rootCalls === 1)
-          return {
-            nativeTool: {
-              name: 'subagent',
-              arguments: {
-                description: '检查独立子任务',
-                prompt: 'PR1B_CHILD_TASK',
-              },
+    const f = await setup(async (request) => {
+      const userInputs = request.messages.filter((m) => m.role === 'user');
+      if (JSON.stringify(userInputs).includes('PR1B_CHILD_TASK')) {
+        childEntered.release();
+        await releaseChild.promise;
+        return { text: 'PR1B_CHILD_RESULT' };
+      }
+      rootCalls++;
+      if (rootCalls === 1)
+        return {
+          nativeTool: {
+            name: 'subagent',
+            arguments: {
+              description: '检查独立子任务',
+              prompt: 'PR1B_CHILD_TASK',
             },
-          };
-        if (rootCalls === 2) return { text: '子任务仍在执行。' };
-        return { text: answer };
-      },
-      null,
-      true,
-    );
+          },
+        };
+      if (rootCalls === 2) return { text: '子任务仍在执行。' };
+      return { text: answer };
+    }, true);
     const task = await prepare(f, '启动子任务，结束后汇总，不需要文件。');
     let rootId: unknown;
     const finalDelivery = DshProtocolClient.prototype.finalDelivery;
@@ -845,26 +833,22 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
   );
 
   it.each([
-    { mode: 'valid', history: false, memberAssistants: null },
-    { mode: 'valid', history: true, memberAssistants: true },
-    { mode: 'repair', history: true, memberAssistants: null },
-    { mode: 'repair', history: true, memberAssistants: true },
+    { mode: 'valid', history: false },
+    { mode: 'valid', history: true },
+    { mode: 'repair', history: true },
   ] as const)(
-    '真实资格 $mode / 旧偏好 $memberAssistants / 历史 $history：月报由根 wait 后落库来源与精确版本',
-    async ({ mode, history, memberAssistants }) => {
+    '真实资格 $mode / 历史 $history：月报由根 wait 后落库来源与精确版本',
+    async ({ mode, history }) => {
       let answer = '';
       const original = `[月报](/api/v1/files/${randomUUID()}/download)`;
-      const f = await setup(
-        async (_request, count) => ({
-          text: count === 1 && mode === 'repair' ? original : answer,
-          usage: {
-            prompt_tokens: 2000,
-            completion_tokens: 10,
-            total_tokens: 2010,
-          },
-        }),
-        memberAssistants,
-      );
+      const f = await setup(async (_request, count) => ({
+        text: count === 1 && mode === 'repair' ? original : answer,
+        usage: {
+          prompt_tokens: 2000,
+          completion_tokens: 10,
+          total_tokens: 2010,
+        },
+      }));
       // Admission checkpoints completed history, never the current user input.
       // Seed ordinary history before admission so its real frozen snapshot
       // contains a covered message; keep a first-turn case without a checkpoint.
@@ -1242,104 +1226,90 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     }
   }, 45000);
 
-  it.each([null, true] as const)(
-    '旧偏好 %s：真实 Worker 不用文字修正掩盖 Excel 缺失公式缓存',
-    async (memberAssistants) => {
-      let answer = '';
-      const f = await setup(async () => ({ text: answer }), memberAssistants);
-      const task = await prepare(
-        f,
-        '把 1 加 1 的结果写到 Excel，给我下载链接。',
-      );
-      const workbook = new ExcelJS.Workbook();
-      workbook.addWorksheet('合计').getCell('A1').value = { formula: '1+1' };
-      const bytes = Buffer.from(await workbook.xlsx.writeBuffer());
-      const receipt = await checkOfficeExport(bytes, 'xlsx', {
-        cloudQualityAllowed: false,
+  it('真实 Worker 不用文字修正掩盖 Excel 缺失公式缓存', async () => {
+    let answer = '';
+    const f = await setup(async () => ({ text: answer }));
+    const task = await prepare(f, '把 1 加 1 的结果写到 Excel，给我下载链接。');
+    const workbook = new ExcelJS.Workbook();
+    workbook.addWorksheet('合计').getCell('A1').value = { formula: '1+1' };
+    const bytes = Buffer.from(await workbook.xlsx.writeBuffer());
+    const receipt = await checkOfficeExport(bytes, 'xlsx', {
+      cloudQualityAllowed: false,
+    });
+    expect(receipt.savedValues).toMatchObject({
+      inspection: 'complete',
+      counts: { formulaCount: 1, missingCacheCount: 1 },
+    });
+    const artifact = await publishWorkbenchArtifact(
+      {
+        context: task.execution.context,
+        sessionId: f.chat.id,
+        callId: randomUUID(),
+        kind: 'document',
+        fileName: '合计.xlsx',
+        format: 'xlsx',
+        mediaType:
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        bytes,
+        trustedOfficeExport: true,
+        officeReceipt: receipt,
+      },
+      runtimeFixtureStorage(fixture!.db),
+      fixture!.db,
+    );
+    answer = `[合计](/api/v1/files/${artifact.object.id}/download)`;
+    try {
+      await expect(task.run()).rejects.toMatchObject({
+        code: 'FINAL_DELIVERY_RESPONSE_INVALID',
+        retryable: false,
       });
-      expect(receipt.savedValues).toMatchObject({
-        inspection: 'complete',
-        counts: { formulaCount: 1, missingCacheCount: 1 },
+      expect(await state(f, task.runId)).toMatchObject({
+        status: 'running',
+        successes: 0,
       });
-      const artifact = await publishWorkbenchArtifact(
-        {
-          context: task.execution.context,
-          sessionId: f.chat.id,
-          callId: randomUUID(),
-          kind: 'document',
-          fileName: '合计.xlsx',
-          format: 'xlsx',
-          mediaType:
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-          bytes,
-          trustedOfficeExport: true,
-          officeReceipt: receipt,
-        },
-        runtimeFixtureStorage(fixture!.db),
-        fixture!.db,
-      );
-      answer = `[合计](/api/v1/files/${artifact.object.id}/download)`;
-      try {
-        await expect(task.run()).rejects.toMatchObject({
-          code: 'FINAL_DELIVERY_RESPONSE_INVALID',
-          retryable: false,
-        });
-        expect(await state(f, task.runId)).toMatchObject({
-          status: 'running',
-          successes: 0,
-        });
-        expect(model!.requests).toHaveLength(1);
-        expect(
-          await f.db`select id from allrice_audit_events where action='artifact.office-quality' and resource_id=${artifact.id}`,
-        ).toHaveLength(1);
-      } finally {
-        await task.isolation.cleanup();
-      }
-    },
-    45000,
-  );
+      expect(model!.requests).toHaveLength(1);
+      expect(
+        await f.db`select id from allrice_audit_events where action='artifact.office-quality' and resource_id=${artifact.id}`,
+      ).toHaveLength(1);
+    } finally {
+      await task.isolation.cleanup();
+    }
+  }, 45000);
 
-  it.each([null, true] as const)(
-    '旧偏好 %s：真实 Worker proof 不能越过提交前失效的租约',
-    async (memberAssistants) => {
-      const f = await setup(
-        async () => ({ text: '本轮已解释数组排序。' }),
-        memberAssistants,
+  it('真实 Worker proof 不能越过提交前失效的租约', async () => {
+    const f = await setup(async () => ({ text: '本轮已解释数组排序。' }));
+    const task = await prepare(f, '解释数组排序，不需要文件。');
+    try {
+      const result = await task.run();
+      const coverage = readCheckedFinalDeliveryForExecution(
+        task.workflowLease,
+        result,
       );
-      const task = await prepare(f, '解释数组排序，不需要文件。');
-      try {
-        const result = await task.run();
-        const coverage = readCheckedFinalDeliveryForExecution(
-          task.workflowLease,
+      if (coverage.coverage !== 'checked_native_v1')
+        throw Error('Worker lost checked proof');
+      const [before] =
+        await f.db`select active_run_id,active_turn_id from allrice_conversation_runtimes where session_id=${f.chat.id}`;
+      expect(before!.active_turn_id).toBeTruthy();
+      await f.db`update allrice_jobs set lease_token=${randomUUID()} where id=${task.workflowLease.jobId}`;
+      await expect(
+        completeJob({
+          ...task.workflowLease,
           result,
-        );
-        if (coverage.coverage !== 'checked_native_v1')
-          throw Error('Worker lost checked proof');
-        const [before] =
-          await f.db`select active_run_id,active_turn_id from allrice_conversation_runtimes where session_id=${f.chat.id}`;
-        expect(before!.active_turn_id).toBeTruthy();
-        await f.db`update allrice_jobs set lease_token=${randomUUID()} where id=${task.workflowLease.jobId}`;
-        await expect(
-          completeJob({
-            ...task.workflowLease,
-            result,
-            checkedDelivery: coverage.checkedDelivery,
-          }),
-        ).rejects.toMatchObject({ code: 'lease_lost' });
-        expect(await state(f, task.runId)).toMatchObject({
-          status: 'running',
-          successes: 0,
-        });
-        const [after] =
-          await f.db`select active_run_id,active_turn_id from allrice_conversation_runtimes where session_id=${f.chat.id}`;
-        expect(after).toEqual(before);
-        expect(model!.requests).toHaveLength(1);
-      } finally {
-        await task.isolation.cleanup();
-      }
-    },
-    45000,
-  );
+          checkedDelivery: coverage.checkedDelivery,
+        }),
+      ).rejects.toMatchObject({ code: 'lease_lost' });
+      expect(await state(f, task.runId)).toMatchObject({
+        status: 'running',
+        successes: 0,
+      });
+      const [after] =
+        await f.db`select active_run_id,active_turn_id from allrice_conversation_runtimes where session_id=${f.chat.id}`;
+      expect(after).toEqual(before);
+      expect(model!.requests).toHaveLength(1);
+    } finally {
+      await task.isolation.cleanup();
+    }
+  }, 45000);
 
   // Existing cancellation happens inside the repair model. These boundaries
   // instead stop an already-settled model, before proof or before terminal SQL.

@@ -2,7 +2,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
 import type { RequestContext } from '@allrice/contracts';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import {
   authenticateSession,
   createSession,
@@ -26,12 +26,12 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('central maintenance configuration, isolation and write boundary', () => {
-  let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
+  let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
     admin: RequestContext,
     other: RequestContext,
     ordinary: RequestContext;
   beforeAll(async () => {
-    fixture = await createAssistantFixtureDatabase();
+    fixture = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     async function principal(email: string) {
       const p = await ensureBootstrapPortalPrincipal({

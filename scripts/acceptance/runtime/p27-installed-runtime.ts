@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { readFile, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { requireCheck, strictDescendant } from './p27-assistant-preflight.ts';
+import { requireCheck, strictDescendant } from './p27-runtime-preflight.ts';
 
 const names = [
   'dsh-app-boot',

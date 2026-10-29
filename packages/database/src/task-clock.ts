@@ -55,11 +55,10 @@ export function projectTaskClock(row: TaskClockRow, now: Date) {
   };
 }
 
-/** Explicit blocking only; a child existing is NOT evidence its parent paused.
+/** Explicit blocking only; an operation existing is not evidence of a pause.
  * Unknown/dispatched work is active until a terminal receipt proves otherwise. */
 export function taskClockPhase(input: {
   state: string;
-  instances: { run_id: string; status: string }[];
   operations: { agent_id: string; status: string }[];
   runId: string;
   modelInFlight?: boolean;
@@ -78,21 +77,9 @@ export function taskClockPhase(input: {
   if (liveOps.some((op) => !blocked.has(op.status))) return 'active';
   if (input.progressPaused) return 'waiting';
   if (input.state === 'queued' && liveOps.length === 0) return 'queued';
-  const liveInstances = input.instances.filter(
-    (inst) =>
-      !['completed', 'failed', 'canceled', 'partial'].includes(inst.status),
-  );
-  const participants = liveInstances.length
-    ? liveInstances
-    : [{ run_id: input.runId, status: 'running' }];
-  const allBlocked = participants.every(
-    (inst) =>
-      inst.status === 'waiting' ||
-      liveOps.some(
-        (op) => op.agent_id === inst.run_id && blocked.has(op.status),
-      ),
-  );
-  return allBlocked && liveOps.some((op) => blocked.has(op.status))
+  return liveOps.some(
+    (op) => op.agent_id === input.runId && blocked.has(op.status),
+  )
     ? 'waiting'
     : 'active';
 }
@@ -114,9 +101,6 @@ async function observeTaskClock(tx: Tx, runId: string, forUpdate: boolean) {
   const [run] = await tx<
     { state: string }[]
   >`select state from allrice_runs where id=${runId}`;
-  const instances = await tx<
-    { run_id: string; status: string }[]
-  >`select run_id,status from allrice_assistant_instances where root_run_id=${runId}`;
   const operations = await tx<
     { id?: string; agent_id: string; status: string }[]
   >`
@@ -138,9 +122,8 @@ async function observeTaskClock(tx: Tx, runId: string, forUpdate: boolean) {
     ? await tx<
         { call_id: string; operation_id: string | null; agent_id: string }[]
       >`
-    select distinct w.call_id,w.operation_id,coalesce(u.run_id,w.run_id)::text as agent_id
+    select distinct w.call_id,w.operation_id,w.run_id::text as agent_id
     from allrice_task_resource_waits w join allrice_jobs j on j.id=w.job_id
-    left join allrice_assistant_usage u on u.root_run_id=w.run_id and u.native_call_id=w.call_id and u.metric='tool_calls'
     where w.run_id=${runId} and w.state='waiting' and j.status='running'
       and j.lease_token=w.lease_token and j.worker_id=w.worker_id and j.lease_expires_at>clock_timestamp()`
     : [];
@@ -154,18 +137,6 @@ async function observeTaskClock(tx: Tx, runId: string, forUpdate: boolean) {
     for (const w of resourceWaits)
       operations.push({ agent_id: w.agent_id, status: 'waiting_resource' });
   }
-  const [model] = await tx<
-    { active: boolean }[]
-  >`select exists(select 1 from allrice_assistant_model_admissions
-    where root_run_id=${runId} and dispatched_at is not null and finished_at is null) as active`;
-  const [tool] = await tx<
-    { active: boolean }[]
-  >`select exists(select 1 from allrice_assistant_usage u
-    where u.root_run_id=${runId} and u.metric='tool_calls' and u.amount>0 and u.settled_amount is null
-      ${resourceCalls.length ? tx`and u.native_call_id not in ${tx(resourceCalls)}` : tx``}
-      and not exists(select 1 from allrice_task_operation_calls c join allrice_runtime_operations o on o.id=c.operation_id
-        where c.run_id=u.root_run_id and c.agent_id=u.run_id and c.native_call_id=u.native_call_id
-          and o.snapshot->>'status' in ('waiting_user','waiting_device'))) as active`;
   const [progressTable] =
     await tx`select to_regclass(format('%I.allrice_task_progress',current_schema())) is not null as available`;
   let progressPaused = false,
@@ -179,18 +150,16 @@ async function observeTaskClock(tx: Tx, runId: string, forUpdate: boolean) {
       ${resourceCalls.length ? tx`and not (c.kind='tool' and c.call_id in ${tx(resourceCalls)} and (select count(*) from allrice_task_calls collision where collision.run_id=c.run_id and collision.call_id=c.call_id and collision.kind='tool' and collision.finished_at is null)=1)` : tx``}
       and not exists(select 1 from allrice_task_operation_calls b join allrice_runtime_operations o on o.id=b.operation_id
         where b.run_id=c.run_id and b.native_call_id=c.call_id
-          and (exists(select 1 from allrice_assistant_instances i where i.run_id=b.agent_id and i.native_session_id=c.native_session_id)
-            or (b.agent_id=c.run_id and exists(select 1 from allrice_employee_runs e where e.run_id=c.run_id and 'dsh-'||e.session_id::text=c.native_session_id)))
+          and b.agent_id=c.run_id and exists(select 1 from allrice_employee_runs e where e.run_id=c.run_id and 'dsh-'||e.session_id::text=c.native_session_id)
           and o.snapshot->>'status' in ('waiting_user','waiting_device'))
       and not (c.kind='tool' and c.name='ask_user_question' and ${answerable})) as active`;
     nativeActive = !!calls?.active;
   }
   const phase = taskClockPhase({
     state: run!.state,
-    instances,
     operations,
     runId,
-    modelInFlight: model?.active || tool?.active || nativeActive,
+    modelInFlight: nativeActive,
     progressPaused,
   });
   const current = projectTaskClock(row, now);

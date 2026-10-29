@@ -15,7 +15,7 @@ import {
   localFileCapabilities,
   LocalFilePayloadSchema,
 } from '@allrice/contracts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
 import { approveSyntheticCurrentEmployeeExecution } from './current-execution.fixture.ts';
 import * as client from './core/client.ts';
@@ -68,11 +68,11 @@ const stream = (b: Uint8Array) =>
 suite(
   'folder rules preserve current ordinary authority, originals and one durable Run',
   () => {
-    let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
+    let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
       root: string;
     beforeAll(async () => {
       approveSyntheticCurrentEmployeeExecution();
-      database = await createAssistantFixtureDatabase();
+      database = await createRuntimeFixtureDatabase();
       root = await realpath(
         await mkdtemp(join(tmpdir(), 'allrice-folder-db-')),
       );

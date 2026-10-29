@@ -66,7 +66,6 @@ export interface TenantRunInspection {
   operationsTruncated: boolean;
   artifacts: WorkbenchArtifact[];
   artifactsTruncated: boolean;
-  development?: TenantDevelopmentInspection | null;
   executionDiagnostics?: {
     jobState: string;
     workerId: string | null;
@@ -96,43 +95,4 @@ export interface TenantRunInspection {
     }[];
     truncated: boolean;
   };
-}
-
-/** Read-only provenance, never a command approval or a new execution grant. */
-export interface TenantDevelopmentInspection {
-  candidateId: string;
-  digest: string;
-  revision: number;
-  proposals: {
-    artifactId: string;
-    authorRunId: string;
-    digest: string;
-    accepted: boolean;
-  }[];
-  tests: {
-    operationId: string;
-    testerRunId: string;
-    candidateId: string;
-    digest: string;
-    status: string;
-    evidenceMatched: boolean;
-    exitCode: number | null;
-    reason: string | null;
-  }[];
-  reviews: {
-    id: string;
-    reviewerRunId: string;
-    candidateId: string;
-    digest: string;
-    operationId: string;
-    verdict: 'accept' | 'revise';
-    summary: string;
-  }[];
-  deliveries: {
-    artifactId: string;
-    candidateId: string;
-    digest: string;
-    reviewId: string;
-  }[];
-  truncated: boolean;
 }

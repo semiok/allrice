@@ -25,7 +25,7 @@ export async function archiveSessionActivity(
     join allrice_employee_runs e on e.run_id=j.run_id
     where e.session_id=${sessionId} and e.organization_id=${context.organizationId}
       and e.workspace_id=${context.workspaceId!} and e.owner_id=${context.actor.id}
-      and (j.status not in ('succeeded','failed','dead_letter','canceled') or exists (select 1 from allrice_assistant_instances a where a.root_run_id=j.run_id and a.status not in ('completed','partial','failed','canceled'))) 
+      and j.status not in ('succeeded','failed','dead_letter','canceled')
     order by j.run_id`;
   const schedules = await tx<{ id: string; name: string }[]>`
     select id,name from allrice_automations where session_id=${sessionId}
@@ -39,7 +39,7 @@ export async function archiveSessionActivity(
         id: r.id,
         label: ['queued', 'retry_wait'].includes(r.status)
           ? '排队中的工作'
-          : '正在执行或等待处理的工作（含子智能体）',
+          : '正在执行或等待处理的工作',
       })),
     });
   if (schedules.length)
@@ -49,7 +49,7 @@ export async function archiveSessionActivity(
     });
   if (activity.length && !stop) throw new SessionActiveError(activity);
   if (!stop) return;
-  // Reuse the same persistent root/assistant cutoff and queue cancellation as Stop.
+  // Reuse the same persistent root cutoff and queue cancellation as Stop.
   // Restoring only changes visibility; these cancellation requests stay in place.
   for (const run of runs)
     await requestRunCancellationTransaction(

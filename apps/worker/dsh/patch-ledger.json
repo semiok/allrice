@@ -31,7 +31,7 @@
       "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-content-guard.mjs",
-      "reason": "Recheck Worker-owned frozen content provenance at the public llm/stream seam, including native retry and compaction with assistants enabled or disabled. A revoked generation cannot dispatch or replay its old native log. No DSH core edit, alternative loop or model-supplied permission is introduced."
+      "reason": "Recheck Worker-owned frozen content provenance at the public llm/stream seam, including native retry and compaction across ordinary Run routes. A revoked generation cannot dispatch or replay its old native log. No DSH core edit, alternative loop or model-supplied permission is introduced."
     },
     {
       "id": "allrice-codex-overload-normalization-v1",
@@ -70,8 +70,8 @@
       "issue": "MET-153",
       "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
-      "path": "apps/worker/dsh/allrice-assistant-runtime.mjs",
-      "reason": "Report actual coordinator idle for the durable root clock; join waits under Worker lease/cancel supervision, while single requests and tools retain bounded lifetimes. No second agent loop or implicit authority."
+      "path": "apps/worker/dsh/allrice-task-progress.mjs",
+      "reason": "Project ordinary Run activity into the durable SaaS task-clock ledger through the public agent and tool events; no legacy assistant lifecycle or descendant join."
     },
     {
       "id": "allrice-repository-review-native-v1",
@@ -80,22 +80,6 @@
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-technical-native-tools.mjs",
       "reason": "Business tool on the public dsh-tools defineTool/register/restrict seams: platform_repository_review forwards inspect/review/deliver to the ordinary independent review Job through the existing Host Broker; agent.ctx.tools.restrict limits the complete inherited profile to this tool. AllRice keeps current tenant/credential/lease authority, frozen candidate and immutable opinion/delivery accounting. Explicit employee revocation permanently invalidates completed proof through the existing Job cancellation ledger without changing succeeded history. No XML fallback, assistant report, additional agent loop or new execution authority."
-    },
-    {
-      "id": "allrice-development-workflow-v1",
-      "issue": "MET-144",
-      "upstreamVersion": "0.2.1-rc.2",
-      "kind": "protocol-extension",
-      "path": "apps/worker/dsh/allrice-assistant-runtime.mjs",
-      "reason": "Bounded native development coordination: pre-dispatch assignments, real attributed proposals, exact-version tests and independent reviews; no new loop, implicit tools, direct file writes or approval."
-    },
-    {
-      "id": "allrice-assistant-required-delivery-v1",
-      "issue": "MET-151",
-      "upstreamVersion": "0.2.1-rc.2",
-      "kind": "protocol-extension",
-      "path": "apps/worker/dsh/allrice-assistant-runtime.mjs",
-      "reason": "Describe required explicit assistant.report permission and exact artifact/output result schema. Worker rejects an undeliverable child before provisioning and returns correctable validation errors without ending the child turn; no implicit tool grant, fabricated evidence or native-idle success."
     },
     {
       "id": "allrice-workbench-native-changeset-v1",
@@ -150,7 +134,7 @@
       "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-final-delivery.mjs",
-      "reason": "SaaS authority and persistence gate: root-Run-only reply origin and artifact/Office evidence bind the native message to atomic Job completion. Worker awaits public session/wait, pauses input, and may request one same-Agent/Run/model text repair via public steer with platform source (a new native turn). Public runMaintenance holds the candidate during validation; tools, retries and compaction are denied for repair, with existing content/task-progress accounting and cancellation. No DSH core/private API or eligibility expansion. Legacy assistant same-turn wrapper remains pending deletion with PR2b; PR1c activation shares that window."
+      "reason": "SaaS authority and persistence gate: root-Run-only reply origin and artifact/Office evidence bind the native message to atomic Job completion. Worker awaits public session/wait, pauses input, and may request one same-Agent/Run/model text repair via public steer with platform source (a new native turn). Public runMaintenance holds the candidate during validation; tools, retries and compaction are denied for repair, with existing content/task-progress accounting and cancellation. No DSH core/private API or eligibility expansion."
     },
     {
       "id": "allrice-observed-native-close-v1",

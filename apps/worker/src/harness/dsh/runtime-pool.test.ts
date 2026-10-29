@@ -237,20 +237,6 @@ it('a witnessed exit stays owned until its durable close settles, without appear
   expect(instance.closureInventory()).toEqual([]);
 });
 
-it('input hold disposal failure does not skip the original child close', async () => {
-  const instance = ownershipPool(),
-    failure = Error('hold disposal failed');
-  const original = ownedRuntime(async () => {});
-  vi.spyOn(instance, 'clearInputDelivery').mockImplementation(() => {
-    throw failure;
-  });
-  await expect(instance.closeOwned(original)).rejects.toBe(failure);
-  expect(original.client.close).toHaveBeenCalledOnce();
-  expect(instance.closureInventory()).toMatchObject([
-    { id: original.id, state: 'unconfirmed' },
-  ]);
-});
-
 it.each([false, true])(
   'global close waits an in-flight owner reservation; write failure=%s',
   async (writeFailure) => {
@@ -416,14 +402,6 @@ function request(): Parameters<DshRuntimePool['acquire']>[0] {
       ALLRICE_WORKSPACE_ID: randomUUID(),
       ALLRICE_OWNER_ID: randomUUID(),
       ALLRICE_RUN_ID: runId,
-    },
-    assistants: {
-      deliveryMode: 'legacy',
-      rootRunId: runId,
-      maxOutputTokens: 1000,
-      bind: async () => {
-        throw Error('Pool acquisition must not dispatch a model or controller');
-      },
     },
     maxOutputTokens: 1000,
     tools: [],
@@ -758,7 +736,6 @@ it('reuses one current executor across Run bindings while rechecking the new Run
         ...value.input.executionEnvironment,
         ALLRICE_RUN_ID: nextRun,
       },
-      assistants: { ...value.input.assistants!, rootRunId: nextRun },
     },
   };
   const second = await runtimes.acquire(next);
@@ -1032,7 +1009,6 @@ it.each([false, true])(
 it('restarts once when the frozen question wait changes and then reuses the Host', async () => {
   const runtimes = pool();
   const value = request();
-  value.input.assistants = undefined;
   const initial = await runtimes.acquire(value);
   expect((await runtimes.acquire(value)).runtime).toBe(initial.runtime);
   value.input.nativeQuestionWait = { mode: 'timed', seconds: 120 };
@@ -1055,7 +1031,6 @@ it('shares the rollout mode with the Host and restarts once when it changes', as
   const launched = vi.spyOn(CloseObserver, 'createObservedDshClient');
   const runtimes = pool();
   const value = request();
-  value.input.assistants = undefined;
   const legacy = await runtimes.acquire(value);
   expect(
     launched.mock.calls.at(-1)![0].launch.environment.ALLRICE_ASK_USER_MODE,
@@ -1079,7 +1054,6 @@ it('keeps the frozen timeout but uses blocking program questions for a Workflow 
   const launched = vi.spyOn(CloseObserver, 'createObservedDshClient');
   const runtimes = pool(false, undefined, 60000);
   const value = request();
-  value.input.assistants = undefined;
   value.input.nativeQuestionWait = { mode: 'timed', seconds: 7 };
   const ordinary = await runtimes.acquire(value);
   expect(launched.mock.calls.at(-1)![0].launch.environment).toMatchObject({
@@ -1107,7 +1081,7 @@ it('keeps the frozen timeout but uses blocking program questions for a Workflow 
   );
 });
 
-it('reuses the session process across business Runs with assistants enabled', async () => {
+it('reuses the session process across business Runs', async () => {
   const runtimes = pool();
   const first = request();
   const cold = await runtimes.acquire(first);
@@ -1117,7 +1091,6 @@ it('reuses the session process across business Runs with assistants enabled', as
     ...first,
     input: {
       ...first.input,
-      assistants: { ...first.input.assistants!, rootRunId: nextRun },
       executionEnvironment: {
         ...first.input.executionEnvironment,
         ALLRICE_RUN_ID: nextRun,
@@ -1270,26 +1243,20 @@ it.each(['owner', 'workspace', 'session'] as const)(
   },
 );
 
-it.each(['assistant mode', 'assistant output cap', 'ordinary output cap'])(
+it.each(['ordinary output cap'])(
   'restarts when process configuration changes: %s',
-  async (change) => {
+  async () => {
     const runtimes = pool();
     const first = request();
-    if (change === 'ordinary output cap') first.input.assistants = undefined;
     const cold = await runtimes.acquire(first);
     const close = vi.spyOn(cold.runtime.client, 'close');
-    if (change === 'assistant mode') first.input.assistants = undefined;
-    else if (first.input.assistants)
-      first.input.assistants.maxOutputTokens = 500;
-    else first.input.maxOutputTokens = 500;
+    first.input.maxOutputTokens = 500;
     const changed = await runtimes.acquire(first);
     expect(changed.fresh).toBe(true);
     expect(changed.preparation).toMatchObject({
       cache: 'miss',
       reason: 'configuration_changed',
-      changedFields: [
-        change === 'assistant mode' ? 'assistantsEnabled' : 'maxTokens',
-      ],
+      changedFields: ['maxTokens'],
     });
     expect(JSON.stringify(changed.preparation)).not.toContain('synthetic-only');
     expect(changed.runtime).not.toBe(cold.runtime);
@@ -1300,7 +1267,6 @@ it.each(['assistant mode', 'assistant output cap', 'ordinary output cap'])(
 it('离开独立交付模式时更换宿主，不能把上一 Run 的输入关闭状态带到普通 Run', async () => {
   const runtimes = pool(),
     first = request();
-  first.input.assistants = undefined;
   first.input.runDelivery = {
     rootRunId: randomUUID(),
     bind: vi.fn(),
@@ -1318,38 +1284,6 @@ it('离开独立交付模式时更换宿主，不能把上一 Run 的输入关�
   expect(next.runtime).not.toBe(previous.runtime);
   expect(close).toHaveBeenCalledOnce();
 });
-
-it('the actual DSH host releases the old Run binding and accepts a new Run on the same warm process', async () => {
-  const runtimes = pool(true);
-  const first = request();
-  const cold = await runtimes.acquire(first);
-  expect(cold.preparation.skillRegistrationMs).toBeGreaterThanOrEqual(0);
-  const bind = () => ({
-    nativeSessionId: first.threadId,
-    runId: first.input.assistants!.rootRunId,
-    wireTools: [],
-  });
-  await expect(cold.runtime.client.assistant('bind', bind())).resolves.toEqual({
-    bound: true,
-  });
-  // The real host must still reject overlapping authority before finish.
-  await expect(cold.runtime.client.assistant('bind', bind())).rejects.toThrow();
-  await expect(
-    cold.runtime.client.assistant('finish', {
-      nativeSessionId: first.threadId,
-    }),
-  ).resolves.toEqual({ released: true });
-  first.input.assistants!.rootRunId = randomUUID();
-  const warm = await runtimes.acquire(first);
-  expect(warm.fresh).toBe(false);
-  expect(warm.runtime).toBe(cold.runtime);
-  await expect(warm.runtime.client.assistant('bind', bind())).resolves.toEqual({
-    bound: true,
-  });
-  await warm.runtime.client.assistant('finish', {
-    nativeSessionId: first.threadId,
-  });
-}, 30_000);
 
 describe('idle close (MET-216)', () => {
   const longAgo = () => new Date(Date.now() - 3_600_000).toISOString();
@@ -1488,15 +1422,6 @@ describe('idle close (MET-216)', () => {
       (pool, runtime) => {
         Object.assign(runtime.client, { steer: () => new Promise(() => {}) });
         void pool.steer(runtime.sessionId, 'synthetic steer');
-      },
-    ],
-    [
-      'an input-delivery hold',
-      (pool, runtime) => {
-        (Reflect.get(pool, 'inputHolds') as Map<DshRuntime, unknown>).set(
-          runtime,
-          { phase: 'paused', hold: { dispose() {} } },
-        );
       },
     ],
     [
@@ -1653,67 +1578,6 @@ describe('idle close (MET-216)', () => {
     await runtimes.close();
     expect(Reflect.get(runtimes, 'idleTimer')).toBeUndefined();
     await runtimes.reclaimIdle(Date.now() + 86_400_000);
-  });
-
-  it('retains input holds through pending pause and release acknowledgements until cleanup', async () => {
-    const instance = idlePool(60_000);
-    pools.push(instance);
-    const runtime = resident(instance);
-    const pause = deferred(),
-      resume = deferred();
-    const hold = {
-      settled: pause.promise,
-      current: () => true,
-      resumeBeforeTurnClose: vi.fn(() => resume.promise),
-      dispose: vi.fn(),
-    };
-    const params = {
-      gateId: randomUUID(),
-      nativeSessionId: runtime.sessionId,
-      runId: randomUUID(),
-      turnId: 'held-turn',
-    };
-    const context = {
-      runId: params.runId,
-      turnId: () => params.turnId,
-      signal: new AbortController().signal,
-      delivery: { pause: () => hold },
-      assertAuthority: async () => {},
-    };
-    const notReclaimed = async () => {
-      await instance.reclaimIdle(Date.now() + 86_400_000);
-      expect(instance.get(runtime.sessionId)).toBe(runtime);
-      expect(runtime.client.close).not.toHaveBeenCalled();
-    };
-    try {
-      const pausing = instance.inputDeliveryControl(
-        runtime,
-        'pause',
-        params,
-        context,
-      );
-      await notReclaimed();
-      pause.resolve();
-      await expect(pausing).resolves.toMatchObject({ paused: true });
-      await notReclaimed();
-      const releasing = instance.inputDeliveryControl(
-        runtime,
-        'release',
-        params,
-        context,
-      );
-      expect(hold.resumeBeforeTurnClose).toHaveBeenCalledOnce();
-      await notReclaimed();
-      resume.resolve();
-      await expect(releasing).resolves.toMatchObject({ released: true });
-      await notReclaimed();
-      instance.clearInputDelivery(runtime);
-      await instance.reclaimIdle(Date.now() + 86_400_000);
-      expect(runtime.client.close).toHaveBeenCalledOnce();
-    } finally {
-      pause.resolve();
-      resume.resolve();
-    }
   });
 
   it.each(['idle-first', 'worker-first'] as const)(

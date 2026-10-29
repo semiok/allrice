@@ -9,7 +9,7 @@ import {
 } from 'vitest';
 
 import * as client from '../core/client.ts';
-import { createAssistantFixtureDatabase } from '../assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
 import { readPlatformModelSettings } from './platform-model-settings.ts';
 import {
   readEnabledCodexSubscription,
@@ -24,11 +24,11 @@ const integration =
     : describe.skip;
 
 integration('model freeze reader prerequisites: isolated PostgreSQL', () => {
-  let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   let schema: string;
 
   beforeAll(async () => {
-    fixture = await createAssistantFixtureDatabase();
+    fixture = await createRuntimeFixtureDatabase();
     const [scope] = await fixture.db<
       {
         schema: string;

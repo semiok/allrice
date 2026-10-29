@@ -31,7 +31,7 @@ import {
   type StoragePort,
   type StorageObject,
 } from '@allrice/contracts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
 import {
   createCloudPythonOperation,
@@ -114,7 +114,7 @@ const modernProfile = RuntimeLocalPythonProfileSchema.parse({
 });
 
 async function readCloudPublicationState(
-  db: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>['db'],
+  db: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>['db'],
   rootRunId: string,
   sessionId: string,
   operationIds: string[],
@@ -164,7 +164,7 @@ async function readCloudPublicationState(
 suite(
   'canonical Python exact cloud origin and local ready-object lifecycle',
   () => {
-    let isolated: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
+    let isolated: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
       storageRoot: string;
     beforeAll(async () => {
       for (const flag of [
@@ -177,7 +177,7 @@ suite(
       ])
         vi.stubEnv(flag, '1');
       vi.stubEnv('ALLRICE_LOCAL_COMMAND_ENABLED', '0');
-      isolated = await createAssistantFixtureDatabase();
+      isolated = await createRuntimeFixtureDatabase();
       storageRoot = await mkdtemp(join(tmpdir(), 'allrice-canonical-python-'));
       vi.spyOn(client, 'getDatabase').mockReturnValue(isolated.db);
     }, 60000);

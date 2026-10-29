@@ -7,9 +7,9 @@ import { employeeChatUuid } from './employee-chat-authority.ts';
 import * as client from '../core/client.ts';
 import * as queue from '../execution/queue.ts';
 import {
-  createAssistantFixtureDatabase,
-  assistantFixtureStorage,
-} from '../assistant-runtime.fixture.ts';
+  createRuntimeFixtureDatabase,
+  runtimeFixtureStorage,
+} from '../runtime.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
 import {
   authenticateSession,
@@ -60,9 +60,9 @@ const suite =
 suite(
   'personal Skill attachment → Broker → native parser → binding → frozen context',
   () => {
-    let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     beforeAll(async () => {
-      f = await createAssistantFixtureDatabase();
+      f = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
       await synchronizePlatformContent(await loadPlatformContentCatalog());
     }, 120000);
@@ -136,7 +136,7 @@ suite(
             retentionUntil: null,
             immutable: false,
           });
-          await assistantFixtureStorage(f.db).put(
+          await runtimeFixtureStorage(f.db).put(
             pending.object,
             new Blob([bytes]).stream(),
           );
@@ -1529,7 +1529,7 @@ suite(
             retentionUntil: null,
             immutable: false,
           });
-          await assistantFixtureStorage(f.db).put(
+          await runtimeFixtureStorage(f.db).put(
             stored.object,
             new Blob([Buffer.from(archive.bytes)]).stream(),
           );

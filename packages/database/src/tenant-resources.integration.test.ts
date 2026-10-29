@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
-  createAssistantFixtureDatabase,
-  assistantFixture,
-} from './assistant-runtime.fixture.ts';
+  createRuntimeFixtureDatabase,
+  runtimeTaskFixture,
+} from './runtime.fixture.ts';
 import * as client from './core/client.ts';
 import {
   ensureBootstrapPortalPrincipal,
@@ -33,9 +33,9 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('MET-151 PR3 tenant resources (isolated PostgreSQL)', () => {
-  let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   beforeAll(async () => {
-    f = await createAssistantFixtureDatabase();
+    f = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
   }, 120000);
   afterAll(async () => {
@@ -361,7 +361,7 @@ suite('MET-151 PR3 tenant resources (isolated PostgreSQL)', () => {
   it('uses cache-inclusive receipts; unknown is not zero and old periods are excluded', async () => {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
     const t = await setup(),
-      a = await assistantFixture(f.db),
+      a = await runtimeTaskFixture(f.db),
       target = {
         organizationId: a.context.organizationId,
         workspaceId: a.context.workspaceId!,

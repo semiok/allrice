@@ -106,21 +106,11 @@ const states: Partial<
   >
 > = {
   report: { state: 'ready', reason: 'ready', action: 'compose' },
-  assistants: {
-    state: 'unsupported',
-    reason: 'provider_unsupported',
-    action: 'guide',
-  },
   boost: { state: 'not_released', reason: 'release_disabled', action: 'guide' },
   teamwork: { state: 'not_released', reason: 'planned', action: 'guide' },
   local_command: {
     state: 'unsupported',
     reason: 'runner_missing',
-    action: 'bridge',
-  },
-  development: {
-    state: 'unsupported',
-    reason: 'candidate_runner_missing',
     action: 'bridge',
   },
   local_browser: {

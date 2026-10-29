@@ -18,8 +18,8 @@ import {
   type EmployeeRuntimePackage,
 } from '@allrice/contracts';
 import * as client from '../core/client.ts';
-import { createAssistantFixtureDatabase } from '../assistant-runtime.fixture.ts';
-import { createAssistantAuthorityFixture } from '../assistant-authority.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
+import { createRunAuthorityFixture } from '../run-authority.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
 import { createSession, authenticateSession } from '../identity.ts';
 import {
@@ -66,8 +66,7 @@ const integration =
 const currentArtifact = `sha256:${'a'.repeat(64)}`;
 const otherArtifact = `sha256:${'b'.repeat(64)}`;
 const tools = [
-  'assistant.delegate',
-  'assistant.report',
+  'workspace.document.read',
   'workspace.export.create',
   'workspace.skill.read',
 ];
@@ -83,7 +82,7 @@ type SourceKind =
 integration(
   'MET195 current execution binding: complete isolated SQL chain',
   () => {
-    let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let schema: string;
     let currentPackage: EmployeeRuntimePackage;
     let plainPackage: EmployeeRuntimePackage;
@@ -106,7 +105,6 @@ integration(
       // new-root ID and checked-delivery allowlist are not read.
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', currentArtifact);
       for (const flag of [
-        'ALLRICE_ASSISTANTS_ENABLED',
         'ALLRICE_WORKBENCH_ENABLED',
         'ALLRICE_RUNTIME_POLICY_ENABLED',
       ])
@@ -116,7 +114,7 @@ integration(
         .mockRejectedValue(
           Error('This isolated SQL test must not make external requests'),
         );
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
       const [scope] =
         await fixture.db`select current_schema() name,current_database() database`;
@@ -249,7 +247,7 @@ integration(
 
     async function subject(kind: SourceKind, legacyBirth = false) {
       const pkg = kind === 'default-rice' ? undefined : packageFor(kind);
-      const f = await createAssistantAuthorityFixture(fixture.db, {
+      const f = await createRunAuthorityFixture(fixture.db, {
         configure: false,
         memberRole: 'member',
         runtimePackage: pkg,
@@ -330,16 +328,11 @@ integration(
         await fixture.db`select native_root_origin from allrice_chat_sessions where id=${f.chat}`;
       return row!.native_root_origin;
     }
-    async function send(
-      f: Subject,
-      clientMessageId = randomUUID(),
-      assistants = false,
-    ) {
+    async function send(f: Subject, clientMessageId = randomUUID()) {
       const result = await sendChatMessage(f.context, f.workspace, f.chat, {
         text: 'Synthetic SQL-only current execution acceptance; do not call a model',
         clientMessageId,
         deliveryMode: 'follow_up',
-        assistantPreference: { mode: 'daily', allowAssistants: assistants },
       });
       if (!result.run) throw Error('fixture_run_not_enqueued');
       if (!submitted.some((item) => item.runId === result.run!.id))
@@ -796,8 +789,7 @@ integration(
     // MET-221: checked final delivery is every release's protocol on the
     // restricted profile. The retired allowlist is ignored and the frozen
     // artifact is the origin's (provenance), even under a later primary.
-    // MET-210 PR1c: opting out of assistants cannot opt out of delivery checks.
-    it('admits checked final delivery from the origin artifact even with assistant opt-out', async () => {
+    it('admits ordinary checked final delivery from the origin artifact without retired assistant input', async () => {
       const f = await subject('current-package2');
       vi.stubEnv('ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS', '[]');
       expect(
@@ -805,7 +797,7 @@ integration(
           selectCheckedFinalDeliveryArtifact(tx, scope(f)),
         ),
       ).toBe(currentArtifact);
-      const included = await send(f, randomUUID(), true);
+      const included = await send(f);
       expect(
         (await stored(included)).execution_snapshot.finalDeliveryPolicy,
       ).toEqual({
@@ -822,7 +814,7 @@ integration(
           selectCheckedFinalDeliveryArtifact(tx, scope(f)),
         ),
       ).toBe(currentArtifact);
-      const later = await send(f, randomUUID(), true);
+      const later = await send(f);
       expect(
         (await stored(later)).execution_snapshot.finalDeliveryPolicy,
       ).toEqual({
@@ -830,19 +822,19 @@ integration(
         mode: 'checked_native_v1',
         artifactId: currentArtifact,
       });
-      const optedOut = await send(f, randomUUID(), false);
-      const optedOutSnapshot = (await stored(optedOut)).execution_snapshot;
-      expect(optedOutSnapshot.finalDeliveryPolicy).toEqual({
+      const ordinary = await send(f);
+      const ordinarySnapshot = (await stored(ordinary)).execution_snapshot;
+      expect(ordinarySnapshot.finalDeliveryPolicy).toEqual({
         version: 1,
         mode: 'checked_native_v1',
         artifactId: currentArtifact,
       });
-      expect(optedOutSnapshot.officeFirstDeliveryPolicy).toBe(
+      expect(ordinarySnapshot.officeFirstDeliveryPolicy).toBe(
         'xlsx_formula_cache_v1',
       );
       const [run] =
-        await fixture.db`select input from allrice_runs where id=${optedOut}`;
-      expect(run!.input.assistantConfiguration.allowAssistants).toBe(false);
+        await fixture.db`select input from allrice_runs where id=${ordinary}`;
+      expect(run!.input).not.toHaveProperty('assistantConfiguration');
       const history = await subject('legacy-package2', true);
       expect(
         await fixture.db.begin((tx) =>

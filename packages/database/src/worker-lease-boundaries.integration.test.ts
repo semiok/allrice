@@ -11,10 +11,13 @@ import {
   it,
   vi,
 } from 'vitest';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
-import { createAssistantAuthorityFixture } from './assistant-authority.fixture.ts';
-import { assertAssistantAuthority } from './assistant-authority.ts';
-import { createAssistantRuntime } from './assistant-runtime.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
+import { createRunAuthorityFixture } from './run-authority.fixture.ts';
+import {
+  RuntimeOperationSnapshotSchema,
+  type RuntimeUsageObservation,
+} from '@allrice/contracts';
+import { createRuntimeOperationLedger } from './runtime-ledger/ledger.ts';
 import * as client from './core/client.ts';
 import {
   appendJobEvent,
@@ -39,10 +42,10 @@ const suite =
 const delay = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
 const tag = '[MET-210] Worker lease transaction rolled back';
-type Fixture = Awaited<ReturnType<typeof createAssistantAuthorityFixture>>;
+type Fixture = Awaited<ReturnType<typeof createRunAuthorityFixture>>;
 
 suite('MET-210 supplemental lease boundaries', () => {
-  let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   const releases = new Set<() => Promise<unknown>>();
   const pending = new Set<Promise<unknown>>();
   const track = <T>(promise: Promise<T>) => {
@@ -51,9 +54,8 @@ suite('MET-210 supplemental lease boundaries', () => {
     return promise;
   };
   beforeAll(async () => {
-    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
     vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
-    database = await createAssistantFixtureDatabase();
+    database = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(database.db);
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -84,7 +86,25 @@ suite('MET-210 supplemental lease boundaries', () => {
       )
       .map(([, data]) => data as Record<string, unknown>);
   async function setup(leaseMs = 30_000) {
-    const f = await createAssistantAuthorityFixture(database.db);
+    const f = await createRunAuthorityFixture(database.db, {
+      configure: false,
+    });
+    await f.ledger.createRoot({
+      task: f.task,
+      deadlineAt: new Date(Date.now() + 600000).toISOString(),
+      budgets: (
+        ['model_calls', 'tool_calls', 'input_tokens', 'output_tokens'] as const
+      ).map((metric) => ({
+        metric,
+        unit: metric.endsWith('tokens') ? 'tokens' : 'calls',
+        currency: null,
+        capacity: 100000,
+        source: {
+          kind: 'worker' as const,
+          sourceId: 'ordinary-lease-regression',
+        },
+      })),
+    });
     const [employee] =
       await f.db`select * from allrice_employee_runs where run_id=${f.rootRunId}`;
     // A complete persisted employee payload permits real queue takeover/start.
@@ -387,124 +407,60 @@ suite('MET-210 supplemental lease boundaries', () => {
       20_000,
     );
 
-  // Force only the snapshot preflight to fall through; every authority decision
-  // still uses assertAssistantAuthority and the original real locked transaction.
-  const slowRuntime = () =>
-    createAssistantRuntime({
-      database: database.db,
-      authorize: async (input) => {
-        if (input.lock === false) throw Error('test_force_locked_fallback');
-        await assertAssistantAuthority(input);
-      },
-    });
-  const decision = async (promise: Promise<unknown>) => {
-    try {
-      return { value: JSON.parse(JSON.stringify(await promise)) };
-    } catch (error) {
-      return { error: (error as Error).message };
-    }
-  };
-
   it.each([
     'clear',
-    'policy-deny',
-    'member-disabled',
-    'employee-disabled',
     'root-cancel',
-    'child-cancel',
     'stored-deadline',
     'projected-deadline',
     'token',
     'worker',
-    'generation',
-    'fence',
-    'revoked',
   ] as const)(
-    'snapshot/locked authority decisions agree for %s',
+    'the ordinary heartbeat enforces %s using its current queue lease',
     async (state) => {
       const f = await setup();
-      let expected: object = { value: { cancelRequested: false } };
-      if (state === 'policy-deny')
-        await f.setControls({
-          version: 2,
-          enabled: true,
-          mode: 'execute',
-          rules: [{ action: 'assistant.delegate', effect: 'deny' }],
-        });
-      if (state === 'member-disabled')
-        await f.db`update allrice_memberships set active=false where id=${f.membership}`;
-      if (state === 'employee-disabled')
-        await f.db`update allrice_employees set status='archived' where id=${f.employee}`;
-      if (
-        ['policy-deny', 'member-disabled', 'employee-disabled'].includes(state)
-      )
-        expected = { error: 'assistant_authority_denied' };
-      if (state === 'root-cancel') {
-        await f.runtime.cancelRoot(f.context, {
-          runId: f.rootRunId,
-          requestId: randomUUID(),
-        });
-        expected = { value: { cancelRequested: true } };
-      }
-      if (state === 'child-cancel') {
-        const child = await f.runtime.provision({
-          ...f.base,
-          parentRunId: f.rootRunId,
-          delegationId: randomUUID(),
-          label: 'helper',
-          text: 'Read synthetic input',
-          tools: ['web.fetch'],
-        });
-        await f.runtime.cancelChild(f.context, {
-          runId: f.rootRunId,
-          childRunId: child.instance.runId,
-          requestId: randomUUID(),
-        });
-        const [row] =
-          await f.db`select status,cancel_requested_at from allrice_assistant_instances where run_id=${child.instance.runId}`;
-        expect(row!.status).toBe('cancel_requested');
-        expect(row!.cancel_requested_at).toBeInstanceOf(Date);
-      }
+      if (state === 'root-cancel')
+        await f.db.begin((tx) =>
+          requestEmployeeAccessCancellationTransaction(
+            tx,
+            f.rootRunId,
+            'employee_access_revoked',
+            { actorId: null, requestId: null, actorLabel: 'lease-regression' },
+          ),
+        );
       if (state === 'stored-deadline') {
         await f.db`delete from allrice_task_clock_events where run_id=${f.rootRunId}`;
         await f.db`delete from allrice_task_clocks where run_id=${f.rootRunId}`;
         await f.db`update allrice_jobs set created_at=clock_timestamp()-interval '5 minutes',timeout_at=clock_timestamp()-interval '1 second' where id=${f.worker.jobId}`;
         await f.db`update allrice_runtime_roots set deadline_at=clock_timestamp()-interval '1 second' where root_run_id=${f.rootRunId}`;
       }
-      if (state === 'projected-deadline') {
-        expect((await job(f)).timeout_at.getTime()).toBeGreaterThan(
-          Date.now() + 60_000,
-        );
+      if (state === 'projected-deadline')
         await f.db`update allrice_task_clocks set phase='active',active_ms=${defaultTaskRuntimeMs},changed_at=clock_timestamp() where run_id=${f.rootRunId}`;
-      }
-      if (state.includes('deadline'))
-        expected = {
-          value: {
-            cancelRequested: true,
-            stopReason: 'timeout',
-            drainDeadlineAt: expect.any(String),
-          },
-        };
       if (state === 'token')
         await f.db`update allrice_jobs set lease_token=${randomUUID()} where id=${f.worker.jobId}`;
       if (state === 'worker')
         await f.db`update allrice_jobs set worker_id=${randomUUID()} where id=${f.worker.jobId}`;
-      if (state === 'generation')
-        await f.db`update allrice_assistant_roots set generation=generation+1 where root_run_id=${f.rootRunId}`;
-      if (state === 'fence')
-        await f.db`update allrice_assistant_roots set fence=fence+1 where root_run_id=${f.rootRunId}`;
-      if (state === 'revoked')
-        await f.db`update allrice_assistant_roots set revoked_at=clock_timestamp() where root_run_id=${f.rootRunId}`;
-      if (['token', 'worker', 'generation', 'fence', 'revoked'].includes(state))
-        expected = { error: 'lease_lost' };
-      const fast = await decision(f.runtime.assertCurrentAuthority(f.base));
-      const slow = await decision(slowRuntime().assertCurrentAuthority(f.base));
-      expect(fast).toMatchObject(expected);
-      expect(slow).toEqual(fast);
+      if (state === 'token' || state === 'worker')
+        await expect(beat(f)).rejects.toMatchObject({ code: 'lease_lost' });
+      else if (state === 'clear')
+        await expect(beat(f)).resolves.toEqual({
+          active: true,
+          canceled: false,
+        });
+      else {
+        await expect(beat(f)).resolves.toMatchObject({
+          active: false,
+          canceled: state === 'root-cancel',
+          draining: true,
+          drainDeadlineAt: expect.any(String),
+        });
+        expect((await job(f)).drain_reason).toBe(
+          state === 'root-cancel' ? 'cancel' : 'timeout',
+        );
+      }
     },
   );
 
-  it('the locked fallback refreshes the task clock exactly once', async () => {
+  it('an ordinary heartbeat refreshes the task clock exactly once', async () => {
     const f = await setup();
     await f.db`create table met210_clock_updates(run_id uuid)`;
     await f.db
@@ -514,9 +470,7 @@ suite('MET-210 supplemental lease boundaries', () => {
       'create trigger met210_clock_count after update on allrice_task_clocks for each row execute function met210_count_clock()',
     );
     try {
-      await expect(
-        slowRuntime().assertCurrentAuthority(f.base),
-      ).resolves.toMatchObject({ cancelRequested: false });
+      await expect(beat(f)).resolves.toEqual({ active: true, canceled: false });
       const rows =
         await f.db`select * from met210_clock_updates where run_id=${f.rootRunId}`;
       expect(rows).toHaveLength(1);
@@ -530,7 +484,7 @@ suite('MET-210 supplemental lease boundaries', () => {
   });
 
   it.each(['root', '703'] as const)(
-    'a blocked %s does not delay snapshot polls or another Run',
+    'a blocked %s does not delay another ordinary Run',
     async (kind) => {
       const a = await setup();
       const b = await setup();
@@ -544,15 +498,7 @@ suite('MET-210 supplemental lease boundaries', () => {
       }, 2_500);
       try {
         const start = performance.now();
-        for (let n = 0; n < 4; n++)
-          await expect(
-            a.runtime.assertCurrentAuthority(a.base),
-          ).resolves.toMatchObject({ cancelRequested: false });
-        await Promise.all([
-          beat(b),
-          event(b, 'free'),
-          b.runtime.assertCurrentAuthority(b.base),
-        ]);
+        await Promise.all([beat(b), event(b, 'free')]);
         expect(performance.now() - start).toBeLessThan(1_000);
         expect(
           await a.db`select xmin::text from allrice_task_clocks where run_id=${a.rootRunId}`,
@@ -653,124 +599,181 @@ suite('MET-210 supplemental lease boundaries', () => {
     expect(await events(f)).toHaveLength(1);
   }, 20_000);
 
-  it('usage rollback logs only metadata; concurrent/repeated settlements charge exactly once', async () => {
-    const f = await setup();
-    const callId = randomUUID();
-    await f.runtime.prepareModelUsage({
-      ...f.base,
-      runId: f.rootRunId,
-      callId,
-      requestedOutputTokens: 100,
-    });
-    await f.runtime.dispatchModelUsage({
-      ...f.base,
-      runId: f.rootRunId,
-      callId,
-      inputTokens: 100,
-      outputTokens: 100,
-      requestDigest: 'sha256:' + 'a'.repeat(64),
-    });
-    const usage = {
-      ...f.base,
-      callId,
-      amounts: {
-        model_calls: 1,
-        tool_calls: 0,
-        input_tokens: 23,
-        output_tokens: 11,
+  it('ordinary operation usage rolls back under a root lock and duplicate measured receipts charge exactly once', async () => {
+    const f = await setup(),
+      targetId = randomUUID();
+    const digest = 'sha256:' + 'a'.repeat(64);
+    await f.db`insert into allrice_execution_targets(id,organization_id,workspace_id,target_key,kind,label,state,capabilities)
+      values(${targetId},${f.org},${f.workspace},'lease-regression','cloud_sandbox','Synthetic ledger target','online','[]')`;
+    const snapshot = RuntimeOperationSnapshotSchema.parse({
+      contractVersion: 1,
+      binding: {
+        task: f.task,
+        attempt: {
+          operationId: randomUUID(),
+          attemptId: randomUUID(),
+          attemptNumber: 1,
+          generation: 0,
+          fence: 1,
+        },
+        requestedBy: { type: 'user', id: f.user },
+        policy: { snapshotId: randomUUID(), digest },
+        execution: {
+          targetId,
+          targetKind: 'cloud_sandbox',
+          deviceId: null,
+          grantId: randomUUID(),
+          grantVersion: 1,
+          scopeDigest: digest,
+          workCopy: { id: randomUUID(), kind: 'cloud_copy' },
+        },
+        action: 'cloud.synthetic.test',
+        inputDigest: digest,
+        dataScope: [],
+        baseline: [],
+        command: null,
       },
+      stepId: null,
+      agentInstanceId: null,
+      processId: null,
+      cancelRequestId: null,
+      idempotencyKey: randomUUID(),
+      status: 'planned',
+      result: null,
+    });
+    const amounts = {
+      model_calls: 1,
+      tool_calls: 0,
+      input_tokens: 23,
+      output_tokens: 11,
     };
+    const metrics = [
+      'model_calls',
+      'tool_calls',
+      'input_tokens',
+      'output_tokens',
+    ] as const;
+    const reservations = metrics.map((metric) => ({
+      metric,
+      accountingId: randomUUID(),
+      amount: 100,
+    }));
+    await f.ledger.createOperation({ snapshot, reservations });
+    const operationId = snapshot.binding.attempt.operationId;
+    const lease = await f.ledger.dispatch({
+      scope: f.task.scope,
+      operationId,
+      leaseOwner: randomUUID(),
+      leaseMs: 60000,
+    });
+    await f.ledger.recordReceipt({
+      scope: f.task.scope,
+      operationId,
+      leaseToken: lease.leaseToken,
+      receiptId: randomUUID(),
+      attempt: snapshot.binding.attempt,
+      signal: {
+        type: 'operation.outcome',
+        result: {
+          status: 'succeeded',
+          effects: 'none',
+          evidence: {
+            id: randomUUID(),
+            recordedAt: new Date().toISOString(),
+            digest,
+          },
+        },
+      },
+    });
+    const now = new Date().toISOString();
+    const receipts = reservations.map((reservation) => ({
+      scope: f.task.scope,
+      operationId,
+      leaseToken: lease.leaseToken,
+      observation: {
+        contractVersion: 1,
+        observationId: randomUUID(),
+        accountingId: reservation.accountingId,
+        task: f.task,
+        source: { kind: 'worker', sourceId: 'ordinary-lease-regression' },
+        accountingBoundary: {
+          kind: 'operation',
+          attempt: snapshot.binding.attempt,
+        },
+        aggregation: 'self_only',
+        metric: reservation.metric,
+        unit: reservation.metric.endsWith('tokens') ? 'tokens' : 'calls',
+        currency: null,
+        mode: 'cumulative',
+        quality: 'measured',
+        amount: amounts[reservation.metric],
+        state: 'settled',
+        window: { id: randomUUID(), startedAt: now, endedAt: now },
+        observedAt: now,
+      } as RuntimeUsageObservation,
+    }));
+    const budgets = () =>
+      f.db`select metric,spent,reserved from allrice_runtime_budgets where root_run_id=${f.rootRunId} order by metric`;
+    const before = await budgets();
     const [scope] = await f.db`select current_schema() name`;
     const url = new URL(process.env.ALLRICE_TEST_DATABASE_URL!);
-    url.searchParams.set('options', `-csearch_path=${scope!.name},public`);
+    url.searchParams.set('options', `-csearch_path=${scope!.name}`);
     const impatient = postgres(url.href, {
       max: 1,
       connection: { lock_timeout: 300 },
     });
     try {
-      const [connection] = await impatient<
-        { pid: number }[]
-      >`select pg_backend_pid() pid`;
-      const runtime = createAssistantRuntime({
+      const ledger = createRuntimeOperationLedger({
         database: impatient,
-        authorize: assertAssistantAuthority,
+        admission: async () => {},
       });
       const locked = await hold(f, 'root');
-      await expect(runtime.settleUsage(usage)).rejects.toMatchObject({
-        code: '55P03',
-      });
-      await locked.commit();
-      const [record] = records(f.worker.jobId, 'usage_settlement');
-      expect(record).toMatchObject({
-        site: 'usage_settlement',
-        sqlState: '55P03',
-        runId: f.rootRunId,
-        jobId: f.worker.jobId,
-        backendPid: expect.any(Number),
-        durationMs: expect.any(Number),
-        firstStatementMs: expect.any(Number),
-        attempt: 1,
-        outcome: 'failed',
-      });
-      expect(Object.keys(record!).sort()).toEqual([
-        'attempt',
-        'backendPid',
-        'durationMs',
-        'firstStatementMs',
-        'jobId',
-        'outcome',
-        'processCount',
-        'runId',
-        'site',
-        'sqlState',
-      ]);
-      expect(record!.durationMs).toBeGreaterThanOrEqual(250);
-      expect(record!.backendPid).toBe(connection!.pid);
-      expect(Number(record!.firstStatementMs)).toBeLessThanOrEqual(
-        Number(record!.durationMs),
-      );
-      const logged = JSON.stringify(record);
-      for (const secret of [
-        callId,
-        f.worker.leaseToken,
-        f.org,
-        f.workspace,
-        'requestDigest',
-        'input_tokens',
-        'select ',
-        'params',
-      ])
-        expect(logged).not.toContain(secret);
-      const before =
-        await f.db`select metric,spent,reserved from allrice_runtime_budgets where root_run_id=${f.rootRunId} order by metric`;
-      await Promise.all([
-        f.runtime.settleUsage(usage),
-        f.runtime.settleUsage(usage),
-        f.runtime.settleUsage(usage),
-      ]);
-      const once =
-        await f.db`select metric,spent,reserved from allrice_runtime_budgets where root_run_id=${f.rootRunId} order by metric`;
-      await f.runtime.settleUsage(usage);
+      try {
+        await expect(ledger.settleUsage(receipts[0]!)).rejects.toMatchObject({
+          code: '55P03',
+        });
+      } finally {
+        await locked.commit();
+      }
+      expect(await budgets()).toEqual(before);
       expect(
-        await f.db`select metric,spent,reserved from allrice_runtime_budgets where root_run_id=${f.rootRunId} order by metric`,
-      ).toEqual(once);
+        await f.db`select metric from allrice_runtime_reservations where operation_id=${operationId} and observation_id is not null`,
+      ).toHaveLength(0);
+      await Promise.all(
+        receipts.flatMap((receipt) => [
+          f.ledger.settleUsage(receipt),
+          f.ledger.settleUsage(receipt),
+          f.ledger.settleUsage(receipt),
+        ]),
+      );
+      const once = await budgets();
+      await Promise.all(
+        receipts.map((receipt) => f.ledger.settleUsage(receipt)),
+      );
+      expect(await budgets()).toEqual(once);
       const settled =
-        await f.db`select metric,settled_amount from allrice_assistant_usage where call_id=${callId}`;
+        await f.db`select metric,settled_amount from allrice_runtime_reservations where operation_id=${operationId}`;
       expect(
         Object.fromEntries(
           settled.map((row) => [row.metric, Number(row.settled_amount)]),
         ),
-      ).toMatchObject(usage.amounts);
-      for (const metric of [
-        'model_calls',
-        'input_tokens',
-        'output_tokens',
-      ] as const) {
+      ).toEqual(amounts);
+      for (const metric of metrics) {
         expect(
-          Number(once.find((r) => r.metric === metric)!.spent) -
-            Number(before.find((r) => r.metric === metric)!.spent),
-        ).toBe(usage.amounts[metric]);
+          Number(once.find((row) => row.metric === metric)!.spent) -
+            Number(before.find((row) => row.metric === metric)!.spent),
+        ).toBe(amounts[metric]);
+        expect(
+          Number(once.find((row) => row.metric === metric)!.reserved),
+        ).toBe(0);
       }
+      await expect(
+        f.ledger.settleUsage({
+          ...receipts[0]!,
+          observation: { ...receipts[0]!.observation, amount: 2 },
+        }),
+      ).rejects.toThrow('receipt_conflict');
+      expect(await budgets()).toEqual(once);
     } finally {
       await impatient.end({ timeout: 2 });
     }

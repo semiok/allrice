@@ -1786,8 +1786,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }
       if (path === '/api/v1/runtime/cloud-operations')
         return answer({ operations: [] });
-      if (path === '/api/v1/runtime/assistants')
-        return answer({ trees: [], nextCursor: null });
       if (path.endsWith('/interactions'))
         return answer(
           {
@@ -3929,7 +3927,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(f.state.personalSkillWrites).toEqual([]);
 
         await selectSettings(dialog, '工作方式');
-        for (const label of ['云端自动工作', '电脑自动工作', '子智能体'])
+        for (const label of ['云端自动工作', '电脑自动工作'])
           await expect
             .poll(() =>
               dialog
@@ -3952,7 +3950,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           'report',
           'cloud_command',
           'cloud_browser',
-          'assistants',
           'boost',
           'teamwork',
         ]);
@@ -3987,7 +3984,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           'changeset',
           'local_command',
           'local_browser',
-          'development',
         ]);
         expect(
           await dialog
@@ -11526,7 +11522,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   );
 
   it(
-    'UX01-B keeps cloud and assistant entries in work settings, distinguishes release-off and preserves drafts without execution',
+    'MET-210 keeps cloud work settings and drafts available after retiring assistant controls',
     { timeout: 20_000 },
     async () => {
       const f = await fixture();
@@ -11564,15 +11560,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           'report',
           'cloud_command',
           'cloud_browser',
-          'assistants',
           'boost',
           'teamwork',
         ]);
         expect(
-          await dialog
-            .locator('[data-capability="assistants"]')
-            .getAttribute('data-state'),
-        ).toBe('not_released');
+          await dialog.locator('[data-capability="assistants"]').count(),
+        ).toBe(0);
+        expect(
+          await dialog.getByRole('switch', { name: '子智能体' }).count(),
+        ).toBe(0);
         expect(
           await dialog
             .locator('[data-capability="boost"]')
@@ -11780,17 +11776,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             ],
           },
         ];
-        // This Mac's version has no environment for testing a change proposal.
-        f.state.capabilities = f.state.capabilities.map((c) =>
-          c.id === 'development'
-            ? {
-                ...c,
-                state: 'needs_configuration',
-                reason: 'candidate_runner_missing',
-                action: 'bridge',
-              }
-            : c,
-        );
         await f.page.reload();
         await openCapabilities(f, 'computer');
         const settings = f.page.getByRole('dialog', {
@@ -11798,15 +11783,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           exact: true,
         });
         const notice = 'Intel 芯片的电脑不再提供新版本，现有版本可以继续使用。';
-        const development = settings.locator('[data-capability="development"]');
-        await development
-          .getByText(
-            'Intel 芯片的电脑不再提供新版本，现有版本不支持在隔离副本里测试修改方案。',
-            { exact: true },
-          )
-          .first()
-          .waitFor();
-        expect(await development.innerText()).not.toMatch(/请更新/);
         // 我的电脑: switches and browser login say why, not "please update".
         const permissions = settings.getByRole('region', {
           name: 'iMac-Intel.local',
@@ -11862,72 +11838,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           )
           .waitFor();
         expect(await computer.getByText(/直接替换/).count()).toBe(0);
-        expect(f.errors).toEqual([]);
-      } finally {
-        await f.close();
-      }
-    },
-  );
-
-  it.each([
-    [
-      'an online Intel Mac and an offline Apple silicon Mac',
-      'offline',
-      'Intel 芯片的电脑不再提供新版本，现有版本不支持在隔离副本里测试修改方案。',
-    ],
-    [
-      'online Intel and Apple silicon Macs',
-      'online',
-      '这台电脑还不能测试修改方案。Apple 芯片的电脑请更新 AllRice 助手，更新后会自动检查并准备独立的沙箱；Intel 芯片的电脑不再提供新版本，现有版本不支持在隔离副本里测试修改方案。',
-    ],
-  ] as const)(
-    'MET-214 names the chips in the development card for %s',
-    async (_, appleStatus, reason) => {
-      const f = await fixture({ width: 1440 });
-      try {
-        f.state.bridgeDevices = [
-          {
-            id: id(903),
-            name: 'iMac-Intel.local · Rice Bridge',
-            platform: 'macos-x64',
-            status: 'online',
-            clientVersion: '0.6.0-dev.40',
-            lastSeenAt: now,
-            folderGrants: [],
-          },
-          {
-            id: id(904),
-            name: 'MacBook-Air.local · AllRice 助手',
-            platform: 'macos-arm64',
-            status: appleStatus,
-            clientVersion: '0.6.0-dev.62',
-            lastSeenAt: now,
-            folderGrants: [],
-          },
-        ];
-        f.state.capabilities = f.state.capabilities.map((c) =>
-          c.id === 'development'
-            ? {
-                ...c,
-                state: 'needs_configuration',
-                reason: 'candidate_runner_missing',
-                action: 'bridge',
-              }
-            : c,
-        );
-        await f.page.reload();
-        await openCapabilities(f, 'computer');
-        const development = f.page
-          .getByRole('dialog', { name: '设置', exact: true })
-          .locator('[data-capability="development"]');
-        await development.getByText(reason, { exact: true }).first().waitFor();
-        // Only an Apple silicon Mac is ever asked to update.
-        expect(
-          (await development.innerText()).replaceAll(
-            'Apple 芯片的电脑请更新 AllRice 助手',
-            '',
-          ),
-        ).not.toMatch(/请更新/);
         expect(f.errors).toEqual([]);
       } finally {
         await f.close();
@@ -12031,7 +11941,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const dialog = f.page.getByRole('dialog', { name: '设置', exact: true });
       const refresh = dialog.getByRole('button', { name: '刷新能力状态' });
       await expect.poll(() => refresh.isEnabled()).toBe(true);
-      const unavailable = dialog.locator('[data-capability="assistants"]');
+      const unavailable = dialog.locator('[data-capability="boost"]');
       await unavailable.getByText('查看处理步骤', { exact: true }).click();
       const before = await dialog
         .locator('[data-capability]')
@@ -12083,7 +11993,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
-  it('shows connection status only in linked apps while keeping five local capabilities in computer settings', async () => {
+  it('shows connection status only in linked apps while keeping four local capabilities in computer settings', async () => {
     const f = await fixture();
     try {
       f.state.connections = ['GitHub', 'Linear'].map((name, index) =>
@@ -12129,7 +12039,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(await work.getByText('Linear', { exact: true }).count()).toBe(0);
       await selectSettings(dialog, '我的电脑');
       const computer = dialog.locator('[data-capability-scope="computer"]');
-      expect(await computer.locator('[data-capability]').count()).toBe(5);
+      expect(await computer.locator('[data-capability]').count()).toBe(4);
       expect(
         await computer.locator('[data-capability="local_mcp"]').count(),
       ).toBe(0);

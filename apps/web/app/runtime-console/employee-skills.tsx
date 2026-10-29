@@ -14,7 +14,6 @@ import styles from './employee-skills.module.css';
 
 export function employeeSkillLabel(skill: EmployeeSkillChoice) {
   const labels: Record<string, string> = {
-    'development-cooperation': '开发协作',
     'business-reconciliation': '业务对账',
     'browser-research': '浏览器调研',
     'governed-memory': '工作记忆',
@@ -39,11 +38,6 @@ type Skill = EmployeeSkillChoice & {
 };
 
 const basicTools = [
-  {
-    name: 'assistant.delegate',
-    label: '调用子智能体',
-    description: '把子任务交给子智能体处理，再汇总结果。',
-  },
   {
     name: 'web.search',
     label: '联网搜索',

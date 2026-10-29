@@ -3,8 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
 import { type EmployeeRuntimePackage } from '@allrice/contracts';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
-import { createAssistantAuthorityFixture } from './assistant-authority.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
+import { createRunAuthorityFixture } from './run-authority.fixture.ts';
 import { createEmployeeAdministrationFixture } from './employee-administration.fixture.ts';
 import { ensureBootstrapPortalPrincipal } from './identity.ts';
 import {
@@ -33,15 +33,14 @@ const suite =
 suite(
   'MET192 immutable native reader binding: real Job leases, CAS and finalizers',
   () => {
-    let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let runtimePackage: EmployeeRuntimePackage;
     beforeAll(async () => {
-      vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
       // MET-221: only a business origin binds, so chats are born on the
       // current generation under this synthetic release primary.
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'c'.repeat(64));
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
       const employee = await createEmployeeAdministrationFixture(fixture.db);
       runtimePackage = buildEmployeeRuntimePackage({
@@ -72,8 +71,7 @@ suite(
       await fixture?.close();
     });
     async function chat() {
-      const f = await createAssistantAuthorityFixture(fixture.db, {
-        configure: false,
+      const f = await createRunAuthorityFixture(fixture.db, {
         runtimePackage,
         businessCreationOrigin: true,
       });
@@ -420,8 +418,11 @@ suite(
           await fixture.db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${input.jobId}`;
         if (mode === 'timeout')
           await fixture.db`update allrice_jobs set created_at=clock_timestamp()-interval '2 minutes',timeout_at=clock_timestamp()-interval '1 second' where id=${input.jobId}`;
-        if (mode === 'root_cancel')
-          await fixture.db`update allrice_runtime_roots set cancel_requested_at=clock_timestamp(),cancel_request_id=${randomUUID()},cancel_reason='user_request' where root_run_id=${f.rootRunId}`;
+        if (mode === 'root_cancel') {
+          const roots =
+            await fixture.db`update allrice_runtime_roots set cancel_requested_at=clock_timestamp(),cancel_request_id=${randomUUID()},cancel_reason='user_request' where root_run_id=${f.rootRunId} returning root_run_id`;
+          expect(roots).toEqual([{ root_run_id: f.rootRunId }]);
+        }
         if (mode === 'archived')
           await fixture.db`update allrice_organizations set archived_at=clock_timestamp() where id=${f.org}`;
         if (mode === 'membership')

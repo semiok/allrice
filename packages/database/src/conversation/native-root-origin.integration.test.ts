@@ -11,8 +11,8 @@ import type { EmployeeRuntimePackage } from '@allrice/contracts';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as client from '../core/client.ts';
-import { createAssistantFixtureDatabase } from '../assistant-runtime.fixture.ts';
-import { createAssistantAuthorityFixture } from '../assistant-authority.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
+import { createRunAuthorityFixture } from '../run-authority.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
 import { queuePlatformEmployeeTestRun } from '../employees/platform-employees.ts';
 import {
@@ -35,7 +35,7 @@ const suite =
 suite(
   'MET192 immutable first business INSERT origin: isolated real PostgreSQL',
   () => {
-    let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     const legacySeed = {
       artifactId: 'sha256:' + '0'.repeat(64),
       generation: 'dsh-0.1.5-rc.3-a4c74a9' as const,
@@ -43,7 +43,7 @@ suite(
     };
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_DSH_RETAINED_1_ARTIFACT_ID', legacySeed.artifactId);
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
       vi.stubEnv(
         'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
@@ -59,7 +59,7 @@ suite(
       await fixture?.close();
     }, 30000);
     async function authority(runtimePackage: EmployeeRuntimePackage) {
-      const f = await createAssistantAuthorityFixture(fixture.db, {
+      const f = await createRunAuthorityFixture(fixture.db, {
         configure: false,
         runtimePackage,
         allowedTools: runtimePackage.runtimeManifest.toolNames,

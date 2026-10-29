@@ -2,14 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
 import {
-  assistantFixture,
-  createAssistantFixtureDatabase,
-} from './assistant-runtime.fixture.ts';
+  runtimeTaskFixture,
+  createRuntimeFixtureDatabase,
+} from './runtime.fixture.ts';
 
-type Database = Awaited<
-  ReturnType<typeof createAssistantFixtureDatabase>
->['db'];
-type Assistant = Awaited<ReturnType<typeof assistantFixture>>;
+type Database = Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>['db'];
+type HistoricalRun = Awaited<ReturnType<typeof runtimeTaskFixture>>;
 const digest = `sha256:${'a'.repeat(64)}`;
 const geminiProvider = '51000000-0000-4000-8000-000000000005';
 const geminiConnection = '52000000-0000-4000-8000-000000000005';
@@ -27,7 +25,7 @@ const integration =
 
 async function scenario(run: (db: Database) => Promise<void>) {
   vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-  const f = await createAssistantFixtureDatabase({
+  const f = await createRuntimeFixtureDatabase({
     throughMigration: '0223_agent_preferences.sql',
   });
   try {
@@ -54,7 +52,7 @@ async function guards(db: Database) {
   };
 }
 async function accounting(
-  f: Assistant,
+  f: HistoricalRun,
   provider: string,
   connectionId: string,
   catalogId: string,
@@ -65,22 +63,16 @@ async function accounting(
     callId = randomUUID();
   const [employee] =
     await db`select id from allrice_employees where organization_id=${scope.organizationId}`;
+  // This suite deliberately runs at 0223. Seed its historical accounting FKs
+  // directly; the retired executor is not available in the current application.
+  await db`insert into allrice_assistant_roots(root_run_id,configuration,worker_job_id,worker_id,worker_lease_digest,generation)
+    values(${f.task.runId},'{}',${f.worker.jobId},${f.worker.workerId},${digest},1)`;
+  await db`insert into allrice_assistant_instances(run_id,root_run_id,native_session_id,delegation_id,creation_digest,label,depth,allowed_tools,artifact_namespace,status)
+    values(${f.task.runId},${f.task.runId},${'historical-' + f.task.runId},${randomUUID()},${digest},'Historical accounting',0,'[]',${'historical/' + f.task.runId},'completed')`;
+  await db`insert into allrice_assistant_model_admissions(call_id,run_id,root_run_id,requested_output_tokens,granted_output_tokens,input_tokens,request_digest,dispatched_at)
+    values(${callId},${f.task.runId},${f.task.runId},1,1,1,${digest},clock_timestamp())`;
   await db`insert into allrice_assistant_price_snapshots(root_run_id,snapshot_digest,snapshot,currency)
     values(${f.task.runId},${digest},${db.json({ price: { target: { provider, connectionId, catalogId, model: 'synthetic-only' } } })},'USD')`;
-  await f.runtime.prepareModelUsage({
-    ...f.base,
-    runId: f.task.runId,
-    callId,
-    requestedOutputTokens: 1,
-  });
-  await f.runtime.dispatchModelUsage({
-    ...f.base,
-    runId: f.task.runId,
-    callId,
-    inputTokens: 1,
-    outputTokens: 1,
-    requestDigest: digest,
-  });
   await db`insert into allrice_assistant_cost_receipts(call_id,root_run_id,run_id,snapshot_digest,request_digest,receipt_digest,usage,usage_complete,cache_usage_known,cost_basis,cost_picounits)
     values(${callId},${f.task.runId},${f.task.runId},${digest},${digest},${digest},'{}',true,false,'conservative_upper_bound',1)`;
   await db`insert into allrice_route_decisions(id,organization_id,workspace_id,actor_id,employee_id,run_id,input_checksum,candidates,selected_kind,selected_candidate_id,harness,provider,model,generation,attempt,reason_codes,created_at,model_connection_id,model_catalog_entry_id)
@@ -118,9 +110,9 @@ async function historicalRevision(
 integration('retired provider data deletion', { timeout: 120000 }, () => {
   it('deletes only retired catalog and owned accounting; preserves gateway models, audit, receipts and actual subscription state', async () =>
     scenario(async (db) => {
-      const retired = await assistantFixture(db),
-        kept = await assistantFixture(db),
-        subscribed = await assistantFixture(db);
+      const retired = await runtimeTaskFixture(db),
+        kept = await runtimeTaskFixture(db),
+        subscribed = await runtimeTaskFixture(db);
       const other = await gateway(db);
       const removed = await accounting(
         retired,
@@ -236,7 +228,7 @@ integration('retired provider data deletion', { timeout: 120000 }, () => {
 
   it('preserves a Codex Run whose business input and frozen preferences contain provider google', async () =>
     scenario(async (db) => {
-      const f = await assistantFixture(db),
+      const f = await runtimeTaskFixture(db),
         scope = f.task.scope;
       const [assignment] =
         await db`select * from allrice_employee_assignments where organization_id=${scope.organizationId}`;
@@ -283,7 +275,7 @@ integration('retired provider data deletion', { timeout: 120000 }, () => {
       const employeeId = randomUUID(),
         published = randomUUID(),
         draft = randomUUID();
-      const f = await assistantFixture(db);
+      const f = await runtimeTaskFixture(db);
       await db`insert into allrice_audit_events(id,organization_id,workspace_id,action,resource_type,resource_id,decision,reason)
         values(${randomUUID()},${f.task.scope.organizationId},${f.task.scope.workspaceId},'employee.published','platform_employee',${employeeId},'recorded','Mixed employee history')`;
       await db`insert into allrice_platform_employees(id,employee_key,name,description) values(${employeeId},${`mixed-${employeeId}`},'Mixed','Synthetic')`;
@@ -343,7 +335,7 @@ integration('retired provider data deletion', { timeout: 120000 }, () => {
           'openai-compatible',
           credentialReference,
         );
-        const f = await assistantFixture(db);
+        const f = await runtimeTaskFixture(db);
         const versionId = randomUUID();
         const provider = { provider: 'codex', credentialReference };
         await db`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest,provider_snapshot)
@@ -497,7 +489,7 @@ integration('retired provider data deletion', { timeout: 120000 }, () => {
     }));
 
   it('also bootstraps all migrations in one transaction on a new isolated schema', async () => {
-    const f = await createAssistantFixtureDatabase({ ownSchemaOnly: true });
+    const f = await createRuntimeFixtureDatabase({ ownSchemaOnly: true });
     try {
       expect(
         await f.db`select id from allrice_model_providers where provider_key in ('gemini','google') or auth_mode='gemini_oauth'`,

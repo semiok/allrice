@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
 import { getWorkAutomation, updateWorkAutomation } from './work-automation.ts';
 import { setRuntimePolicyControls } from './runtime-policy.ts';
@@ -14,14 +14,14 @@ const suite =
     ? describe.sequential
     : describe.skip;
 let storageRoot: string;
-let fixtureDb: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+let fixtureDb: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
 vi.mock('./core/client.ts', async (original) => ({
   ...(await original<typeof DatabaseClient>()),
   getDatabase: () => fixtureDb.db,
 }));
 suite('MET-159 member work settings and actual cloud admission', () => {
   beforeAll(async () => {
-    fixtureDb = await createAssistantFixtureDatabase();
+    fixtureDb = await createRuntimeFixtureDatabase();
     storageRoot = await mkdtemp(join(tmpdir(), 'allrice-auto-work-'));
     vi.stubEnv('ALLRICE_CLOUD_RUNNER_ENABLED', '1');
     vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
@@ -39,14 +39,14 @@ suite('MET-159 member work settings and actual cloud admission', () => {
     await fixtureDb.db`update allrice_memberships set role='member' where organization_id=${f.org}`;
     return f;
   }
-  it('defaults cloud and computer ON and assistants OFF for ordinary members, persists without admin, isolates users and rejects stale writes', async () => {
+  it('defaults cloud and computer ON for ordinary members, persists without admin, isolates users and rejects stale writes', async () => {
     const f = await fresh(),
       other = await fresh(),
       db = fixtureDb.db;
     expect(await getWorkAutomation(f.context, f.workspace, db)).toMatchObject({
       revision: 0,
       editable: true,
-      settings: { cloud: true, computer: true, assistants: false },
+      settings: { cloud: true, computer: true },
     });
     const attempts = await Promise.allSettled(
       ['cloud', 'computer'].map((capability) =>

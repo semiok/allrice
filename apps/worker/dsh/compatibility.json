@@ -5,15 +5,7 @@
   "sessionFormat": "dsh-session-jsonl-v4@0.2.1-rc.2",
   "runtimeProfile": "apps/worker/dsh/allrice-restricted.cordis.yml",
   "runtimeAdapter": "apps/worker/dsh/allrice-jsonrpc-runtime.mjs",
-  "privateInterfaces": [
-    {
-      "id": "dsh-subagent-host-prompt",
-      "upstreamInterface": "@deepseek-ai/dsh-subagent/internal",
-      "adapter": "apps/worker/dsh/allrice-assistant-runtime.mjs",
-      "upstreamVersion": "0.2.1-rc.2",
-      "ledgerId": "allrice-development-workflow-v1"
-    }
-  ],
+  "privateInterfaces": [],
   "configurationTree": [
     "credentials",
     "authorization",

@@ -730,8 +730,7 @@ async function requireReferenceArtifact(
     where dv.id=${versionId} and dv.organization_id=${context.organizationId} and dv.workspace_id=${context.workspaceId} and dv.owner_id=${context.actor.id}
       and dv.platform_test_run_id is null and o.state='ready' and o.deleted_at is null and (o.retention_until is null or o.retention_until>clock_timestamp())
       and ${businessDeliverablePredicate(tx)}
-      and exists(select 1 from allrice_employee_runs er where er.organization_id=dv.organization_id and er.workspace_id=dv.workspace_id and er.owner_id=dv.owner_id and er.session_id=dv.session_id and (a.run_id is null or a.run_id=er.run_id)
-        and not exists(select 1 from allrice_assistant_instances ai where ai.run_id=er.run_id and ai.run_id<>ai.root_run_id))
+      and exists(select 1 from allrice_employee_runs er where er.organization_id=dv.organization_id and er.workspace_id=dv.workspace_id and er.owner_id=dv.owner_id and er.session_id=dv.session_id and (a.run_id is null or a.run_id=er.run_id))
     for share of dv,o`;
   if (!valid) throw new ReferenceLibraryError('source_unavailable');
   return readArtifact(tx, context, candidate.session_id, versionId);

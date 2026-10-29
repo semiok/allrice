@@ -11,12 +11,10 @@ import {
 import { resolveTaskRuntimePolicy } from './task-runtime-policy.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
 import {
-  createAssistantFixtureDatabase,
-  assistantFixtureStorage,
-} from './assistant-runtime.fixture.ts';
-import { createAssistantAuthorityFixture } from './assistant-authority.fixture.ts';
+  createRuntimeFixtureDatabase,
+  runtimeFixtureStorage,
+} from './runtime.fixture.ts';
 import { createRunAuthorityFixture } from './run-authority.fixture.ts';
-import { assertAssistantAuthority } from './assistant-authority.ts';
 import { refreshTaskClock } from './task-clock.ts';
 import * as client from './core/client.ts';
 import { appendJobEvent, cancelRun, completeJob } from './execution/queue.ts';
@@ -63,14 +61,14 @@ const storageWithPut = (
   delete: storage.delete.bind(storage),
 });
 suite(
-  'artifact publication versus assistant clock and confirmed rollback — isolated PostgreSQL',
+  'artifact publication versus ordinary clock and confirmed rollback — isolated PostgreSQL',
   () => {
-    let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let admin: NonNullable<Awaited<ReturnType<typeof authenticateSession>>>;
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
       vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
       const principal = await ensureBootstrapPortalPrincipal(
         {
@@ -94,16 +92,10 @@ suite(
       vi.restoreAllMocks();
       vi.unstubAllEnvs();
     });
-    async function setup(extraTools: string[] = [], ordinary = false) {
-      const create = ordinary
-        ? createRunAuthorityFixture
-        : createAssistantAuthorityFixture;
-      const f = await create(fixture.db, {
-        allowedTools: [
-          ...(ordinary ? [] : ['assistant.delegate']),
-          'workspace.export.create',
-          ...extraTools,
-        ],
+    async function setup(extraTools: string[] = [], withoutRoot = false) {
+      const f = await createRunAuthorityFixture(fixture.db, {
+        configure: !withoutRoot,
+        allowedTools: ['workspace.export.create', ...extraTools],
         memberRole: 'member',
       });
       const [basis] =
@@ -160,7 +152,7 @@ suite(
           ...f.context,
           memberships: context.policySnapshot.memberships,
         },
-        storage: assistantFixtureStorage(fixture.db),
+        storage: runtimeFixtureStorage(fixture.db),
       };
     }
 
@@ -752,12 +744,6 @@ suite(
         await refreshTaskClock(tx, f.rootRunId);
         held.resolve();
         await resume.promise;
-        await assertAssistantAuthority({
-          transaction: tx,
-          task: f.task,
-          tools: ['workspace.export.create'],
-          phase: 'tool',
-        });
       });
       void check.catch(() => {});
       await held.promise;

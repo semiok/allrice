@@ -23,8 +23,9 @@ import {
   managedPythonPayloadForPlatform,
   localCommandToolchainImageV1,
 } from '@allrice/contracts';
-import { createAssistantFixtureDatabase } from '../../../packages/database/src/assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../../../packages/database/src/runtime.fixture.ts';
 import { projectServiceFixture } from '../../../packages/database/src/project-service.fixture.ts';
+import { completeJob } from '../../../packages/database/src/execution/queue.ts';
 import { createBridgeConnectionAuthority } from '../../../packages/database/src/bridge-connections.ts';
 import { bridgeDeviceStatus } from '../../../packages/database/src/bridge.ts';
 import { reportLocalCommandProfile } from '../../../packages/database/src/local-command-profile.ts';
@@ -82,7 +83,6 @@ suite('project service first complete native chain', () => {
     };
     try {
       for (const key of [
-        'ASSISTANTS',
         'WORKBENCH',
         'RUNTIME_POLICY',
         'BRIDGE_OPERATION_LEDGER',
@@ -91,7 +91,7 @@ suite('project service first complete native chain', () => {
         'BRIDGE_WSS',
       ])
         vi.stubEnv(`ALLRICE_${key}_ENABLED`, '1');
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createRuntimeFixtureDatabase();
       database = fixture.db;
       const folder = new URL(
           '../../rice-bridge/test/project-service-vite/',
@@ -505,14 +505,19 @@ suite('project service first complete native chain', () => {
       );
       proof.sourceAfterSync = project;
       proof.wiring.push('private HTTP/modules and actual WebSocket hot update');
-      const complete = await f.runtime.finalizeRoot({
-        scope: f.task.scope,
-        rootRunId: f.context.runId,
-        worker: f.assistantWorker,
+      await completeJob({
+        workerId: f.context.worker.id,
+        jobId: f.context.jobId,
+        leaseToken: f.worker.leaseToken,
+        result: { answer: 'Preview ready' },
       });
-      expect(complete.status).toBe('completed');
-      await database`update allrice_runs set state='succeeded' where id=${f.context.runId}`;
-      await database`update allrice_jobs set status='succeeded' where id=${f.context.jobId}`;
+      const [completed] =
+        await database`select r.state,j.status,j.lease_token from allrice_runs r join allrice_jobs j on j.run_id=r.id where j.id=${f.context.jobId}`;
+      expect(completed).toEqual({
+        state: 'succeeded',
+        status: 'succeeded',
+        lease_token: null,
+      });
       await delay(2200);
       await page.reload({ waitUntil: 'networkidle' });
       expect(await page.locator('#result').textContent()).toBe('source:43');

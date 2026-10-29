@@ -9,6 +9,7 @@ import {
   it,
   vi,
 } from 'vitest';
+import * as runtimeFixture from '../../../packages/database/src/runtime.fixture.ts';
 import {
   createP27CodexWorkerFixture,
   type P27CodexWorkerFixture,
@@ -26,13 +27,33 @@ describe.sequential(
   () => {
     const local = 'postgres://a123@127.0.0.1:5432/allrice_b2';
     const ci = 'postgres://allrice:allrice@127.0.0.1:54329/allrice';
+    const noIoCleanup = {
+      schema: 'not-created',
+      schemaRemoved: true,
+      storageRoot: null,
+      storageRemoved: true,
+      databaseClosed: true,
+      adminClosed: true,
+    };
     beforeEach(() => {
       vi.stubEnv('DATABASE_URL', undefined);
       vi.stubEnv('ALLRICE_TEST_DATABASE_URL', local);
-      // A valid URL must stop here, before ownership, pools, schema or imports.
-      vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
+      // Stop authorized calls at the database boundary before creating any
+      // resources. The real cleanup path must release process-local ownership.
+      vi.spyOn(
+        runtimeFixture,
+        'createRuntimeFixtureDatabase',
+      ).mockRejectedValue(
+        new runtimeFixture.RuntimeFixtureInitializationError(
+          noIoCleanup,
+          Error('Database initialization intercepted before I/O'),
+        ),
+      );
     });
-    afterEach(() => vi.unstubAllEnvs());
+    afterEach(() => {
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+    });
 
     it.each([undefined, false])(
       'does not authorize CI through the environment when opt-in is %s',
@@ -43,6 +64,9 @@ describe.sequential(
         ).rejects.toMatchObject({
           code: 'P27_CODEX_WORKER_DATABASE_NOT_AUTHORIZED',
         });
+        expect(
+          runtimeFixture.createRuntimeFixtureDatabase,
+        ).not.toHaveBeenCalled();
       },
     );
     it.each([
@@ -56,8 +80,16 @@ describe.sequential(
         await expect(
           createP27CodexWorkerFixture({ allowCiDatabase }),
         ).rejects.toMatchObject({
-          code: 'P27_CODEX_WORKER_FIXTURE_FLAGS_REQUIRED',
+          code: 'P27_CODEX_WORKER_INITIALIZATION_FAILED',
+          cleanup: {
+            globalDatabaseClosed: true,
+            databaseEnvironmentRestored: true,
+            fixture: noIoCleanup,
+          },
         });
+        expect(
+          runtimeFixture.createRuntimeFixtureDatabase,
+        ).toHaveBeenCalledOnce();
         expect(process.env.DATABASE_URL).toBeUndefined();
       },
     );
@@ -79,6 +111,9 @@ describe.sequential(
         ).rejects.toMatchObject({
           code: 'P27_CODEX_WORKER_DATABASE_NOT_AUTHORIZED',
         });
+        expect(
+          runtimeFixture.createRuntimeFixtureDatabase,
+        ).not.toHaveBeenCalled();
         expect(process.env.DATABASE_URL).toBeUndefined();
       },
     );
@@ -93,6 +128,12 @@ describe.sequential(
       ).rejects.toMatchObject({
         code: 'P27_CODEX_WORKER_AMBIENT_DATABASE',
       });
+      expect(
+        runtimeFixture.createRuntimeFixtureDatabase,
+      ).not.toHaveBeenCalled();
+      expect(process.env.DATABASE_URL).toBe(
+        'postgres://test-only@prod.invalid:5432/allrice',
+      );
     });
   },
 );
@@ -103,7 +144,6 @@ integration(
     let fixture: P27CodexWorkerFixture;
     beforeAll(async () => {
       expect(process.env.DATABASE_URL).toBeUndefined();
-      vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
       // A rejected checkpoint owns no pools/schema and must not poison the
       // subsequent normal fixture's process-local ownership fence.
@@ -166,10 +206,8 @@ integration(
       expect(fixture.schema).toMatch(/^p25_[a-f0-9]{32}$/);
       const [counts] = await fixture.db`select
       (select count(*)::int from allrice_runs) as runs,
-      (select count(*)::int from allrice_jobs) as jobs,
-      (select count(*)::int from allrice_assistant_roots) as roots,
-      (select count(*)::int from allrice_assistant_price_snapshots) as prices`;
-      expect(counts).toEqual({ runs: 0, jobs: 0, roots: 0, prices: 0 });
+      (select count(*)::int from allrice_jobs) as jobs`;
+      expect(counts).toEqual({ runs: 0, jobs: 0 });
       await expect(createP27CodexWorkerFixture()).rejects.toMatchObject({
         code: 'P27_CODEX_WORKER_FIXTURE_ALREADY_OWNED',
       });
@@ -229,9 +267,9 @@ integration(
       expect(
         riceToolDefinitionsForCapabilities(resolved.grantedCapabilities, []),
       ).toEqual([]);
-      expect(task.execution.payload.input).toMatchObject({
-        assistantConfiguration: { allowAssistants: false },
-      });
+      expect(task.execution.payload.input).not.toHaveProperty(
+        'assistantConfiguration',
+      );
       const [job] = await fixture.db`select status,attempt,max_attempts,
       lease_expires_at>clock_timestamp() as live from allrice_jobs where id=${task.workflowLease.jobId}`;
       expect(job).toEqual({
@@ -255,14 +293,12 @@ integration(
       (select count(*)::int from allrice_runs) as runs,
       (select count(*)::int from allrice_jobs) as jobs,
       (select count(*)::int from allrice_route_decisions) as routes,
-      (select count(*)::int from allrice_model_usage_ledger) as ledgers,
-      (select count(*)::int from allrice_assistant_roots) as roots`;
+      (select count(*)::int from allrice_model_usage_ledger) as ledgers`;
       expect(counts).toEqual({
         runs: 1,
         jobs: 1,
         routes: 0,
         ledgers: 0,
-        roots: 0,
       });
       await expect(codexWorkerFailureSnapshot(fixture, task)).resolves.toEqual({
         runId: task.runId,

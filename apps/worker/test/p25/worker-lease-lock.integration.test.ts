@@ -18,8 +18,8 @@ import {
 } from '@allrice/database';
 import * as client from '../../../../packages/database/src/core/client.ts';
 import * as modelPool from '../../../../packages/database/src/providers/model-pool.ts';
-import { createAssistantFixtureDatabase } from '../../../../packages/database/src/assistant-runtime.fixture.ts';
-import { createAssistantAuthorityFixture } from '../../../../packages/database/src/assistant-authority.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../../../../packages/database/src/runtime.fixture.ts';
+import { createRunAuthorityFixture } from '../../../../packages/database/src/run-authority.fixture.ts';
 import {
   authenticateSession,
   createSession,
@@ -45,7 +45,7 @@ const suite =
 const failureTag = '[MET-210] Worker lease transaction rolled back';
 
 suite('MET-210 a chat Run survives a 703 lock held past lock_timeout', () => {
-  let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   let manifestPath: string;
   let previousManifest: Buffer | undefined;
   const testHarnessExecArgv = process.execArgv;
@@ -82,7 +82,7 @@ suite('MET-210 a chat Run survives a 703 lock held past lock_timeout', () => {
     await installDshNativeArtifact({ root, expectedId: artifact.artifactId });
     vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', artifact.artifactId);
     vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', artifact.artifactId);
-    database = await createAssistantFixtureDatabase();
+    database = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(database.db);
   }, 120_000);
 
@@ -133,7 +133,7 @@ suite('MET-210 a chat Run survives a 703 lock held past lock_timeout', () => {
       },
       requestTimeoutMs: 30_000,
     });
-    const f = await createAssistantAuthorityFixture(database.db, {
+    const f = await createRunAuthorityFixture(database.db, {
       configure: false,
       allowedTools: [],
       runtimePolicy: {
@@ -162,7 +162,6 @@ suite('MET-210 a chat Run survives a 703 lock held past lock_timeout', () => {
       text: request,
       clientMessageId: randomUUID(),
       deliveryMode: 'follow_up',
-      assistantPreference: { mode: 'daily', allowAssistants: false },
     });
     if (!sent.run) throw Error('fixture_run_not_enqueued');
     const runId = sent.run.id;

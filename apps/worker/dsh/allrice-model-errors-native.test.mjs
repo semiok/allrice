@@ -1,5 +1,5 @@
 import { readDshToolResult } from '@allrice/contracts';
-/* global Buffer, process, setInterval, clearInterval */
+/* global Buffer, process */
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
@@ -53,6 +53,7 @@ async function scenario({
   failures = [overload],
   toolFirst = false,
   skillFirst = false,
+  emptyCatalog = false,
   personalSkill = false,
   personalInstall = false,
   personalInstallArguments,
@@ -65,11 +66,9 @@ async function scenario({
   rebind = false,
   settle = true,
   cancel = false,
-  assistants = true,
   contentCallsAllowed,
   compact = false,
   progressPause = false,
-  stalls = [],
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'allrice-model-recovery-'));
   const requests = [],
@@ -101,36 +100,6 @@ async function scenario({
       res.on('close', () => connections.push(`close:${index}`));
       const firstTool =
         toolFirst || skillFirst || sceneFirst || personalInstall;
-      const stall = stalls[index - (firstTool ? 1 : 0)];
-      if (stall) {
-        if (stall === 'missing_terminal') {
-          send({
-            type: 'response.output_item.added',
-            output_index: 0,
-            item: { type: 'message', id: 'partial', content: [] },
-          });
-          send({
-            type: 'response.output_text.delta',
-            output_index: 0,
-            delta: 'PARTIAL_REPORT',
-          });
-          send({
-            type: 'response.output_item.done',
-            output_index: 0,
-            item: {
-              type: 'message',
-              id: 'partial',
-              role: 'assistant',
-              content: [{ type: 'output_text', text: 'PARTIAL_REPORT' }],
-            },
-          });
-        } else if (stall === 'heartbeat') {
-          res.write(': keep-alive\n\n');
-          const timer = setInterval(() => res.write(': keep-alive\n\n'), 40);
-          res.on('close', () => clearInterval(timer));
-        } else res.flushHeaders();
-        return;
-      }
       if (
         !(firstTool && index === 0) &&
         failures[index - (firstTool ? 1 : 0)]
@@ -270,9 +239,7 @@ async function scenario({
         requestTimeoutMs: 15000,
         environment: {
           PATH: process.env.PATH ?? '/usr/bin:/bin',
-          ...(stalls.length ? { ALLRICE_MODEL_STREAM_IDLE_MS: '350' } : {}),
-          ...(assistants ? { ALLRICE_ASSISTANTS_ENABLED: '1' } : {}),
-          ...(progressPause ? { ALLRICE_PROGRESS_GUARD_ENABLED: '1' } : {}),
+          ALLRICE_PROGRESS_GUARD_ENABLED: '1',
           DSH_CORDIS_CONFIG: join(root, 'profile.yml'),
           DSH_DISTRIBUTION_VERSION: DSH_DISTRIBUTION_CURRENT_VERSION,
           DSH_SESSION_ROOT: join(root, 'sessions'),
@@ -288,13 +255,12 @@ async function scenario({
       client.setRequestHandler(async (method, p) => {
         bridgeCalls.push({ method, ...p });
         if (method === 'allrice/progress') {
+          if (p.action === 'finish' && p.kind === 'model' && !settle)
+            throw Error('synthetic_model_receipt_rejected');
           if (p.action === 'check') progressChecks++;
           if (p.action === 'decide') progressContinued = true;
           return {
-            // Ordinary Runs check at llm/stream; legacy assistants also check
-            // at agent/request. Hold the actual dispatch boundary in both.
-            paused:
-              progressChecks >= (assistants ? 2 : 1) && !progressContinued,
+            paused: progressPause && progressChecks >= 1 && !progressContinued,
             pauseId: 'synthetic-pause',
             reason: 'repeated_failure',
             recent: [],
@@ -323,14 +289,7 @@ async function scenario({
             throw Error('employee_content_revoked');
           return { allowed: true };
         }
-        if (method === 'allrice/assistant/model-prepare')
-          return { prepared: true, outputTokens: p.outputTokens };
-        if (method === 'allrice/assistant/model-dispatch')
-          return { reserved: true, outputTokens: p.outputTokens };
-        if (method === 'allrice/assistant/model-settle')
-          return { settled: settle, tokenUsageObservational: true };
-        if (method === 'allrice/assistant/checkpoint') return { saved: true };
-        if (method === 'allrice/assistant/tool') {
+        if (method === 'allrice/tool-call') {
           toolCalls.push(p);
           return { modelContent: 'SAVED_TOOL_RESULT_42' };
         }
@@ -345,7 +304,7 @@ async function scenario({
           ? ['workspace.personal_skill.install']
           : ['local.fs.list'],
         nativeSkills:
-          skillFirst || personalSkill
+          (skillFirst || personalSkill) && !emptyCatalog
             ? [
                 {
                   id: personalSkill
@@ -386,18 +345,11 @@ async function scenario({
           sceneFirst ||
           sceneProbe ||
           personalSkill,
-        requireTaskProgress: progressPause,
+        requireTaskProgress: true,
       });
     }
     await launch();
     const sessionId = `synthetic-recovery-${randomUUID()}`;
-    if (assistants)
-      await client.assistant('bind', {
-        nativeSessionId: sessionId,
-        wireTools: personalInstall
-          ? ['workspace_personal_skill_install']
-          : ['local_fs_list'],
-      });
     const events = () =>
       notices
         .filter((n) => n.method === 'session.event')
@@ -454,13 +406,6 @@ async function scenario({
       expect(requests).toHaveLength(1);
       await client.close();
       await launch();
-      if (assistants)
-        await client.assistant('bind', {
-          nativeSessionId: sessionId,
-          wireTools: personalInstall
-            ? ['workspace_personal_skill_install']
-            : ['local_fs_list'],
-        });
       await client.prompt(
         sessionId,
         'Continue the same task using the loaded scene.',
@@ -472,13 +417,8 @@ async function scenario({
         .toBe(2);
     }
     if (rebind) {
-      await client.assistant('finish', { nativeSessionId: sessionId });
-      await client.assistant('bind', {
-        nativeSessionId: sessionId,
-        wireTools: personalInstall
-          ? ['workspace_personal_skill_install']
-          : ['local_fs_list'],
-      });
+      await client.close();
+      await launch();
       await client.prompt(sessionId, 'Load the same frozen method once again.');
       await expect
         .poll(() => events().filter((e) => e.type === 'turn/end').length, {
@@ -501,11 +441,6 @@ async function scenario({
       toolCalls,
       contentCalls,
       compactionRejected,
-      diagnostics: assistants
-        ? await client.assistant('diagnostics', {
-            nativeSessionId: sessionId,
-          })
-        : null,
       connections,
       notices,
     };
@@ -517,136 +452,59 @@ async function scenario({
   }
 }
 
-describe('observed idle recovery through the actual native loop', () => {
-  it.each([
-    ['silent', 'transport_silent'],
-    ['heartbeat', 'heartbeat_only'],
-    ['missing_terminal', 'missing_terminal'],
-  ])(
-    'closes %s before continuing saved tools and files',
-    async (stall, state) => {
-      const r = await scenario({
-        toolFirst: true,
-        failures: [],
-        stalls: [stall],
-      });
-      expect(r.requests).toHaveLength(3);
-      expect(r.toolCalls).toHaveLength(1);
-      expect(JSON.stringify(r.requests[2])).toContain('SAVED_TOOL_RESULT_42');
-      expect(r.connections.indexOf('close:1')).toBeLessThan(
-        r.connections.indexOf('open:2'),
-      );
-      expect(r.events.filter((e) => e.type === 'turn/start')).toHaveLength(1);
-      expect(r.events.filter((e) => e.type === 'llm/retry')).toHaveLength(1);
-      expect(r.events.find((e) => e.type === 'turn/end').data.reason.kind).toBe(
-        'completed',
-      );
-      expect(
-        r.diagnostics.failures.find((f) => f.code === 'TIMEOUT').stream,
-      ).toMatchObject({
-        transport: 'sse',
-        state,
-        localCloseConfirmed: true,
-        recoveryEligible: true,
-      });
-      const settlement = r.bridgeCalls.filter(
-        (c) => c.method === 'allrice/assistant/model-settle',
-      )[1];
-      expect(settlement).not.toHaveProperty('inputTokens');
-      expect(settlement).not.toHaveProperty('outputTokens');
-    },
-    30000,
-  );
-  it('caps repeated stalls at the existing two native retries', async () => {
-    const r = await scenario({
-      failures: [],
-      stalls: ['silent', 'heartbeat', 'silent'],
-    });
-    expect(r.requests).toHaveLength(3);
-    expect(r.events.filter((e) => e.type === 'llm/retry')).toHaveLength(2);
-    expect(r.events.find((e) => e.type === 'turn/end').data.reason.kind).toBe(
-      'error',
-    );
-  }, 30000);
-  it('does not continue without the accounting acknowledgement', async () => {
-    const r = await scenario({
-      failures: [],
-      stalls: ['silent'],
-      settle: false,
-    });
-    expect(r.requests).toHaveLength(1);
-    expect(r.diagnostics.failures[0].stream).toMatchObject({
-      localCloseConfirmed: true,
-      recoveryEligible: false,
-    });
-  }, 30000);
-  it('honors cancellation during native recovery without another provider call', async () => {
-    const r = await scenario({
-      failures: [],
-      stalls: ['heartbeat'],
-      cancel: true,
-    });
-    expect(r.requests).toHaveLength(1);
-    expect(r.events.find((e) => e.type === 'turn/end').data.reason.kind).toBe(
-      'aborted',
-    );
-  }, 30000);
-});
-
 describe('content authorization uses actual DSH dispatch and compaction', () => {
-  for (const assistants of [true, false]) {
-    it(`rechecks content after a native progress pause and before dispatch accounting (assistants=${assistants})`, async () => {
-      const result = await scenario({
-        assistants,
-        contentCallsAllowed: 10,
-        failures: [],
-        progressPause: true,
-      });
-      expect(result.requests).toHaveLength(0);
-      expect(result.contentCalls).toBeGreaterThan(0);
-      expect(
-        result.bridgeCalls.some(
-          (c) => c.method === 'allrice/assistant/model-dispatch',
-        ),
-      ).toBe(false);
-      expect(
-        result.bridgeCalls.some(
-          (c) => c.method === 'allrice/assistant/model-settle',
-        ),
-      ).toBe(false);
+  it(`rechecks content after a native progress pause before the provider request`, async () => {
+    const result = await scenario({
+      contentCallsAllowed: 10,
+      failures: [],
+      progressPause: true,
     });
-    it(`blocks the provider before the first request (assistants=${assistants})`, async () => {
-      const result = await scenario({
-        assistants,
-        contentCallsAllowed: 0,
-        failures: [],
-      });
-      expect(result.requests).toHaveLength(0);
-      expect(result.contentCalls).toBeGreaterThan(0);
-      expect(
-        result.bridgeCalls.some(
-          (c) => c.method === 'allrice/assistant/model-dispatch',
-        ),
-      ).toBe(false);
-      expect(
-        result.bridgeCalls.some(
-          (c) => c.method === 'allrice/assistant/model-settle',
-        ),
-      ).toBe(false);
-      expect(result.events.some((e) => e.type === 'turn/end')).toBe(true);
+    expect(result.requests).toHaveLength(0);
+    expect(result.contentCalls).toBeGreaterThan(0);
+    // Ordinary progress records the attempted model step, even when the
+    // content guard rejects it before the provider receives any request.
+    const modelCalls = result.bridgeCalls.filter(
+      (c) => c.method === 'allrice/progress' && c.kind === 'model',
+    );
+    expect(modelCalls).toMatchObject([
+      { action: 'start' },
+      { action: 'finish', outcome: 'error' },
+    ]);
+    expect(modelCalls[1].callId).toBe(modelCalls[0].callId);
+    expect(modelCalls[1]).not.toHaveProperty('inputTokens');
+    expect(modelCalls[1]).not.toHaveProperty('outputTokens');
+  });
+  it(`blocks the provider before the first request`, async () => {
+    const result = await scenario({
+      contentCallsAllowed: 0,
+      failures: [],
     });
-    it(`rechecks before native compaction (assistants=${assistants})`, async () => {
-      const result = await scenario({
-        assistants,
-        contentCallsAllowed: 1,
-        failures: [],
-        compact: true,
-      });
-      expect(result.requests).toHaveLength(1);
-      expect(result.contentCalls).toBeGreaterThan(1);
-      expect(result.compactionRejected).toBe(true);
+    expect(result.requests).toHaveLength(0);
+    expect(result.contentCalls).toBeGreaterThan(0);
+    // Ordinary progress records the attempted model step, even when the
+    // content guard rejects it before the provider receives any request.
+    const modelCalls = result.bridgeCalls.filter(
+      (c) => c.method === 'allrice/progress' && c.kind === 'model',
+    );
+    expect(modelCalls).toMatchObject([
+      { action: 'start' },
+      { action: 'finish', outcome: 'error' },
+    ]);
+    expect(modelCalls[1].callId).toBe(modelCalls[0].callId);
+    expect(modelCalls[1]).not.toHaveProperty('inputTokens');
+    expect(modelCalls[1]).not.toHaveProperty('outputTokens');
+    expect(result.events.some((e) => e.type === 'turn/end')).toBe(true);
+  });
+  it(`rechecks before native compaction`, async () => {
+    const result = await scenario({
+      contentCallsAllowed: 1,
+      failures: [],
+      compact: true,
     });
-  }
+    expect(result.requests).toHaveLength(1);
+    expect(result.contentCalls).toBeGreaterThan(1);
+    expect(result.compactionRejected).toBe(true);
+  });
   it('does not resend to the provider after revocation during a native retry', async () => {
     const result = await scenario({
       contentCallsAllowed: 1,
@@ -667,8 +525,8 @@ describe('content authorization uses actual DSH dispatch and compaction', () => 
   });
 });
 
-describe('governed root uses the actual native Skill loader', () => {
-  it('exposes and loads the frozen method before creation and after finish/rebind', async () => {
+describe('ordinary Run uses the actual native Skill loader', () => {
+  it('exposes and loads the frozen method before creation and after Host restart', async () => {
     const result = await scenario({
       skillFirst: true,
       rebind: true,
@@ -700,11 +558,23 @@ describe('governed root uses the actual native Skill loader', () => {
     expect(result.toolCalls).toHaveLength(0);
   }, 30000);
 
-  it('keeps an empty native catalog out of the governed root scope', async () => {
-    const result = await scenario({ failures: [] });
-    expect(result.requests[0].tools.map((tool) => tool.name)).not.toContain(
+  it('the native loader refuses a method absent from the ordinary root catalog', async () => {
+    const result = await scenario({
+      failures: [],
+      skillFirst: true,
+      emptyCatalog: true,
+    });
+    // DSH keeps its native Skill tool; an empty catalog grants no method.
+    expect(result.requests[0].tools.map((tool) => tool.name)).toContain(
       'skill',
     );
+    const loaded = result.events.filter((e) => e.type === 'tool/result');
+    expect(loaded).toHaveLength(1);
+    expect(readDshToolResult(loaded[0].data.message).isError).toBe(true);
+    expect(JSON.stringify(result.requests)).not.toContain(
+      'FROZEN_NATIVE_SKILL_BODY_42',
+    );
+    expect(result.toolCalls).toHaveLength(0);
   }, 30000);
 });
 
@@ -737,7 +607,10 @@ describe('AllRice overload recovery through the actual native loop', () => {
       result.events.find((e) => e.type === 'turn/end').data.reason.kind,
     ).toBe('completed');
     const settled = result.bridgeCalls.filter(
-      (p) => p.method === 'allrice/assistant/model-settle',
+      (p) =>
+        p.method === 'allrice/progress' &&
+        p.action === 'finish' &&
+        p.kind === 'model',
     );
     expect(settled).toHaveLength(3);
     expect(new Set(settled.map((p) => p.callId)).size).toBe(3);
@@ -772,7 +645,10 @@ describe('AllRice overload recovery through the actual native loop', () => {
     ).toBe('error');
     expect(
       result.bridgeCalls.filter(
-        (p) => p.method === 'allrice/assistant/model-dispatch',
+        (p) =>
+          p.method === 'allrice/progress' &&
+          p.action === 'start' &&
+          p.kind === 'model',
       ),
     ).toHaveLength(1);
   }, 30000);
@@ -787,29 +663,23 @@ describe('AllRice overload recovery through the actual native loop', () => {
 });
 
 describe('progressive native work scenes', () => {
-  it.each([false, true])(
-    'loads through the real native provider and commits adoption before dispatch (assistants=%s)',
-    async (assistants) => {
-      const r = await scenario({ failures: [], sceneFirst: true, assistants });
-      expect(r.requests).toHaveLength(2);
-      expect(JSON.stringify(r.requests[0])).toContain(sceneName);
-      expect(JSON.stringify(r.requests[0])).not.toContain(
-        'SCENE_WEEKLY_ONLY_85',
-      );
-      expect(JSON.stringify(r.requests[1])).toContain('SCENE_WEEKLY_ONLY_85');
-      const calls = r.bridgeCalls.map((c) => c.method);
-      expect(
-        calls.filter((c) => c === 'allrice/content-scene-load'),
-      ).toHaveLength(1);
-      expect(
-        calls.filter((c) => c === 'allrice/content-scene-adopt'),
-      ).toHaveLength(1);
-      expect(calls.indexOf('allrice/content-scene-adopt')).toBeLessThan(
-        calls.lastIndexOf('allrice/content-check'),
-      );
-    },
-    45000,
-  );
+  it('loads through the real native provider and commits adoption before dispatch', async () => {
+    const r = await scenario({ failures: [], sceneFirst: true });
+    expect(r.requests).toHaveLength(2);
+    expect(JSON.stringify(r.requests[0])).toContain(sceneName);
+    expect(JSON.stringify(r.requests[0])).not.toContain('SCENE_WEEKLY_ONLY_85');
+    expect(JSON.stringify(r.requests[1])).toContain('SCENE_WEEKLY_ONLY_85');
+    const calls = r.bridgeCalls.map((c) => c.method);
+    expect(
+      calls.filter((c) => c === 'allrice/content-scene-load'),
+    ).toHaveLength(1);
+    expect(
+      calls.filter((c) => c === 'allrice/content-scene-adopt'),
+    ).toHaveLength(1);
+    expect(calls.indexOf('allrice/content-scene-adopt')).toBeLessThan(
+      calls.lastIndexOf('allrice/content-check'),
+    );
+  }, 45000);
   it('slash get is a conservative read, not a successful native adoption', async () => {
     const r = await scenario({ failures: [], sceneProbe: true });
     expect(
@@ -886,7 +756,7 @@ describe('personal Skills use the native loader with current authority', () => {
       'SAVED_TOOL_RESULT_42',
     );
   }, 30000);
-  it('checks exact private pin before native Skill content and after rebind', async () => {
+  it('checks exact private pin before native Skill content and after Host restart', async () => {
     const result = await scenario({
       personalSkill: true,
       skillFirst: true,

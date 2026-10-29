@@ -6,7 +6,6 @@ import {
 } from './runtime-v2/policy.ts';
 
 export type EmployeeToolService =
-  | 'assistants'
   | 'workbench'
   | 'changeset'
   | 'local_mcp'
@@ -52,23 +51,6 @@ const requirements: Partial<Record<AllRiceToolName, ToolRequirements>> = {
     policyActions: ['local.python.execute'],
     services: ['workbench'],
     managedOffice: true,
-  },
-  'assistant.development': {
-    requiredTools: [
-      'assistant.delegate',
-      'assistant.report',
-      'workspace.export.create',
-    ],
-    workflowTools: ['local.fs.list', 'local.fs.read', 'local.process.execute'],
-    policyActions: [
-      'assistant.delegate',
-      'local.process.execute',
-      'local.fs.changeset',
-    ],
-    services: ['assistants', 'workbench', 'changeset'],
-    environment: 'device',
-    setupHint:
-      '开发协作使用已连接的电脑和已选项目目录，测试环境由 AllRice 助手自动准备；可在设置 → 我的电脑查看状态。',
   },
   'local.mcp.call': {
     requiredTools: ['local.mcp.discover'],
@@ -159,10 +141,7 @@ const requirements: Partial<Record<AllRiceToolName, ToolRequirements>> = {
 };
 
 export function employeeToolRequirements(name: string): ToolRequirements {
-  return (
-    requirements[name as AllRiceToolName] ??
-    (name.startsWith('assistant.') ? { services: ['assistants'] } : {})
-  );
+  return requirements[name as AllRiceToolName] ?? {};
 }
 
 export function resolveEmployeeToolDependencies(names: readonly string[]) {
@@ -179,18 +158,8 @@ export function resolveEmployeeToolDependencies(names: readonly string[]) {
   return [...resolved];
 }
 
-/** Root workflow tools, not a grant or a child tool allowlist. */
-export const developmentWorkflowToolNames = resolveEmployeeToolDependencies([
-  'assistant.development',
-]);
-
 // Presentation only. Registration, capability and risk come from the Broker manifest.
 const labels: Partial<Record<AllRiceToolName, string>> = {
-  'assistant.delegate': '委派受控子智能体',
-  'assistant.message': '子智能体消息',
-  'assistant.report': '子智能体结果汇报',
-  'assistant.development': '受控开发提案、测试与独立审查',
-  'assistant.stop': '停止子智能体',
   'local.process.execute': '本地隔离命令',
   'local.process.status': '本地服务状态',
   'local.process.stop': '停止本地服务',

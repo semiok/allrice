@@ -1,12 +1,8 @@
 import { readDshToolResult } from '@allrice/contracts/native-runtime';
-/* global process */
 /* Native DSH middleware only; no Agent loop, extra model or action authority. */
 import { createHash, randomUUID } from 'node:crypto';
 import { askProgramQuestion } from './allrice-program-questions.mjs';
-import {
-  hasModelOutput,
-  settledTokenUsage,
-} from './allrice-assistant-runtime.mjs';
+import { hasModelOutput, settledTokenUsage } from './allrice-model-usage.mjs';
 
 // Strip transport/log noise only. Business dates, paths and query text remain.
 const noise = new Set([
@@ -67,32 +63,17 @@ export function progressResult(name, block) {
     ['RATE_LIMIT', 'QUOTA', '429', '503', 'TIMEOUT', 'ETIMEDOUT'].includes(
       String(code),
     );
-  const control = [
-    'todo_write',
-    'ask_user_question',
-    'skill',
-    'assistant_delegate',
-    'assistant_message',
-    'assistant_report',
-  ].includes(name);
-  // Only semantically explicit status operations, not arbitrary empty tools.
-  const poll = [
-    'assistant_list',
-    'assistant_inspect',
-    'assistant_status',
-  ].includes(name);
+  const control = ['todo_write', 'ask_user_question', 'skill'].includes(name);
   return {
     outcome: retry
       ? 'retry'
       : control
         ? 'control'
-        : poll
-          ? 'poll'
-          : block?.isError === true
-            ? 'error'
-            : !text || text === 'null' || text === '[]' || text === '{}'
-              ? 'empty'
-              : 'success',
+        : block?.isError === true
+          ? 'error'
+          : !text || text === 'null' || text === '[]' || text === '{}'
+            ? 'empty'
+            : 'success',
     resultDigest: progressDigest(value),
   };
 }
@@ -274,12 +255,7 @@ export function installTaskProgress(ctx, bridge, configuration = {}) {
   ctx.on('agent/request', async ({ agent, signal }, next) => {
     // Ordinary questions must wait until llm/stream: DSH has claimed inbox
     // messages here but has not yet appended them to session history.
-    // 子智能体方案 PR4a/b/c 删除旧助手包装层时，一并删掉助手分支。
-    if (
-      configuration.maintenanceOutputTokens ||
-      process.env.ALLRICE_ASSISTANTS_ENABLED === '1'
-    )
-      await check(agent, signal);
+    if (configuration.maintenanceOutputTokens) await check(agent, signal);
     const config = await next();
     if (!configuration.maintenanceOutputTokens) return config;
     return {

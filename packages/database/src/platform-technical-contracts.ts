@@ -1,9 +1,5 @@
 import { z } from 'zod';
-import {
-  AssistantFailureDiagnosticsSchema,
-  UuidSchema,
-  WorkerOperationsSchema,
-} from '@allrice/contracts';
+import { UuidSchema, WorkerOperationsSchema } from '@allrice/contracts';
 export * from './platform-repair-contracts.ts';
 export * from './platform-maintenance-contracts.ts';
 export * from './platform-repository-credential-contracts.ts';
@@ -99,7 +95,6 @@ const Health = z
   .strict();
 export const TechnicalRunFailureDetailsSchema = z
   .object({
-    model: AssistantFailureDiagnosticsSchema.nullable(),
     cloud: z
       .array(
         z

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { afterAll, beforeAll, describe, it, expect, vi } from 'vitest';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { cloudProjectServiceFixture } from './cloud-project-service.fixture.ts';
 import {
   readProjectService,
@@ -21,7 +21,7 @@ import {
   stopCloudProjectServices,
 } from '../../../apps/worker/src/cloud-runner/executor.js';
 import type * as CoreClient from './core/client.ts';
-let fixtureDatabase: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+let fixtureDatabase: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
 vi.mock('./core/client.ts', async (original) => ({
   ...(await original<typeof CoreClient>()),
   getDatabase: () => fixtureDatabase.db,
@@ -33,7 +33,7 @@ const suite =
 suite(
   'shared cloud ProjectService authority and durable physical facts',
   () => {
-    let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     beforeAll(async () => {
       for (const key of [
         'ASSISTANTS',
@@ -45,7 +45,7 @@ suite(
         'BRIDGE_OPERATION_LEDGER',
       ])
         vi.stubEnv('ALLRICE_' + key + '_ENABLED', '1');
-      database = await createAssistantFixtureDatabase();
+      database = await createRuntimeFixtureDatabase();
       fixtureDatabase = database;
     });
     afterAll(async () => {
@@ -194,15 +194,6 @@ suite(
           proof.containerId = current!.Id;
           proof.containerDeadline = new Date(deadline).toISOString();
           proof.serviceHardDeadline = row!.hard_deadline_at.toISOString();
-          expect(
-            (
-              await f.runtime.finalizeRoot({
-                scope: f.task.scope,
-                rootRunId: f.context.runId,
-                worker: f.assistantWorker,
-              })
-            ).status,
-          ).toBe('completed');
           await completeJob({
             workerId: f.context.worker.id,
             jobId: f.context.jobId,
@@ -257,15 +248,6 @@ suite(
     );
     it('the same ready service survives successful Run completion and has no device or new agent budget', async () => {
       const f = await readyFixture();
-      expect(
-        (
-          await f.runtime.finalizeRoot({
-            scope: f.task.scope,
-            rootRunId: f.context.runId,
-            worker: f.assistantWorker,
-          })
-        ).status,
-      ).toBe('completed');
       await completeJob({
         workerId: f.context.worker.id,
         jobId: f.context.jobId,

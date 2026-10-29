@@ -83,7 +83,7 @@ import {
   ExperienceAdoptionProofSchema,
   type PersonalSkillPin,
   type HarnessEvent,
-  resolveAssistantSubscriptionSnapshot,
+  resolveSubscriptionSnapshot,
 } from '@allrice/contracts';
 import type * as Client from './core/client.ts';
 import { assertRuntimeFixtureDatabase } from './runtime-fixture-database.ts';
@@ -454,7 +454,7 @@ async function proof(f: Awaited<ReturnType<typeof leased>>, load = true) {
       createdAt: new Date().toISOString(),
     }),
   );
-  const snapshot = resolveAssistantSubscriptionSnapshot({
+  const snapshot = resolveSubscriptionSnapshot({
     occurrenceId: occurrence.id,
     modelSnapshot: model,
     decision,
@@ -624,7 +624,7 @@ suite(
       events: HarnessEvent[] = [],
     ) {
       const x = test.experienceCandidate!;
-      const snapshot = resolveAssistantSubscriptionSnapshot({
+      const snapshot = resolveSubscriptionSnapshot({
         occurrenceId: x.occurrenceId,
         modelSnapshot: x.modelSnapshot,
         decision: x.decision,

@@ -1,6 +1,7 @@
+import { continuingProjectServiceIds } from './project-services.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { projectServiceFixture } from './project-service.fixture.ts';
 import {
   projectServiceUserAction,
@@ -9,6 +10,7 @@ import {
   projectServiceWorkerControl,
 } from './project-services.ts';
 import { heartbeatBridgeDevice } from './bridge.ts';
+import { completeJob } from './execution/queue.ts';
 import type * as Client from './core/client.ts';
 
 let fixtureDatabase: ReturnType<typeof Client.getDatabase>;
@@ -23,7 +25,7 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('MET166 finite project service — real PostgreSQL', () => {
-  let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   beforeAll(async () => {
     for (const key of [
       'ASSISTANTS',
@@ -34,7 +36,7 @@ suite('MET166 finite project service — real PostgreSQL', () => {
       'LOCAL_SERVICE',
     ])
       vi.stubEnv(`ALLRICE_${key}_ENABLED`, '1');
-    database = await createAssistantFixtureDatabase();
+    database = await createRuntimeFixtureDatabase();
     fixtureDatabase = database.db;
   }, 120000);
   afterAll(async () => {
@@ -72,20 +74,21 @@ suite('MET166 finite project service — real PostgreSQL', () => {
   });
   it('successful Run keeps only its finite service, without reviving ended Job/root', async () => {
     const f = await projectServiceFixture(database.db);
-    const completed = await f.runtime.finalizeRoot({
-      scope: f.task.scope,
-      rootRunId: f.context.runId,
-      worker: f.assistantWorker,
+    await completeJob({
+      workerId: f.context.worker.id,
+      jobId: f.context.jobId,
+      leaseToken: f.worker.leaseToken,
+      result: { answer: 'Preview ready' },
     });
-    expect(completed.status).toBe('completed');
-    expect(completed.usageComplete).toBe(false);
-    await f.db`update allrice_runs set state='succeeded' where id=${f.context.runId}`;
-    await f.db`update allrice_jobs set status='succeeded' where id=${f.context.jobId}`;
     const continued = await f.exchange();
     expect(continued.stopRequested).toBe(false);
     const [job] =
-      await f.db`select status from allrice_jobs where id=${f.context.jobId}`;
-    expect(job!.status).toBe('succeeded');
+      await f.db`select r.state,j.status,j.lease_token from allrice_runs r join allrice_jobs j on j.run_id=r.id where j.id=${f.context.jobId}`;
+    expect(job).toEqual({
+      state: 'succeeded',
+      status: 'succeeded',
+      lease_token: null,
+    });
   });
   it('explicit cancellation stops a successfully detached service without claiming physical cleanup', async () => {
     const f = await projectServiceFixture(database.db);
@@ -107,14 +110,10 @@ suite('MET166 finite project service — real PostgreSQL', () => {
     const f = await projectServiceFixture(database.db);
     await f.db`update allrice_bridge_managed_runtime_grants set revoked_at=clock_timestamp() where device_id=${f.device.id}`;
     expect(
-      (
-        await f.runtime.finalizeRoot({
-          scope: f.task.scope,
-          rootRunId: f.context.runId,
-          worker: f.assistantWorker,
-        })
-      ).status,
-    ).toBe('unknown');
+      await f.db.begin((tx) =>
+        continuingProjectServiceIds(tx, f.context.runId),
+      ),
+    ).not.toContain(f.id);
   });
   it('stop races duplicate renewal without clearing confirmed physical evidence', async () => {
     const f = await projectServiceFixture(database.db),

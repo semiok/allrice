@@ -3,9 +3,9 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { RouteDecisionSchema, RouteOutcomeSchema } from '@allrice/contracts';
 import type {
-  assistantFixture as AssistantFixture,
-  createAssistantFixtureDatabase as CreateFixtureDatabase,
-} from './assistant-runtime.fixture.ts';
+  runtimeTaskFixture as RuntimeTaskFixture,
+  createRuntimeFixtureDatabase as CreateFixtureDatabase,
+} from './runtime.fixture.ts';
 import {
   completeRouteDecision,
   recordRouteDecision,
@@ -19,7 +19,7 @@ const integration =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
     : describe.skip;
-type Fixture = Awaited<ReturnType<typeof AssistantFixture>>;
+type Fixture = Awaited<ReturnType<typeof RuntimeTaskFixture>>;
 const knownOutcome = (decisionId: string) => ({
   decisionId,
   status: 'succeeded' as const,
@@ -34,13 +34,13 @@ const knownOutcome = (decisionId: string) => ({
 
 integration('route usage unknown cost and completeness (real PG)', () => {
   let database: Awaited<ReturnType<typeof CreateFixtureDatabase>>;
-  let createFixture: typeof AssistantFixture;
+  let createFixture: typeof RuntimeTaskFixture;
   beforeAll(async () => {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-    const { createAssistantFixtureDatabase, assistantFixture } =
-      await import('./assistant-runtime.fixture.ts');
-    createFixture = assistantFixture;
-    database = await createAssistantFixtureDatabase();
+    const { createRuntimeFixtureDatabase, runtimeTaskFixture } =
+      await import('./runtime.fixture.ts');
+    createFixture = runtimeTaskFixture;
+    database = await createRuntimeFixtureDatabase();
   }, 120000);
   afterAll(async () => {
     await database?.close();

@@ -15,7 +15,7 @@ import {
 } from 'vitest';
 import * as toolSelection from '@allrice/contracts';
 import * as client from '../core/client.ts';
-import { createAssistantFixtureDatabase } from '../assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
 import {
   authenticateSession,
@@ -60,7 +60,7 @@ const suite =
 suite(
   'B2a real method issuer, replay and explicit retry (isolated SQL)',
   () => {
-    let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     const artifactA = 'sha256:' + 'a'.repeat(64);
     const artifactB = 'sha256:' + 'b'.repeat(64);
     const currentMethodTools = toolSelection.withEmployeeCustomizationTools;
@@ -72,7 +72,7 @@ suite(
 
     beforeAll(async () => {
       approve();
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createRuntimeFixtureDatabase();
       const [where] =
         await fixture.db`select current_database() db,current_schema() schema`;
       expect(where!.db).toBe(

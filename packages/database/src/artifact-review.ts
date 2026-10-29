@@ -478,17 +478,10 @@ export function buildOfficeFirstDeliveryRequirements(
   return requirements;
 }
 
-/** @internal Worker-only transaction reader; no HTTP/model input or admin principal.
- * The host must supply the SAME transaction's root/job/lease/current-authority
- * closure. It locks root -> job, authorizes phase:evidence/tools:[], rechecks the
- * live incarnation, and returns the DB-bound task and frozen exact references.
- * Bound by createAssistantRuntime.readFinalDeliveryEvidence for an existing
- * assistant root, current Worker Job and generation/fence. The closure reacquires
- * that root before each head/tail check; authorize resolves its owner/session.
- * Ordinary non-assistant Worker routes require their own existing Job authority.
- * An independently committed assertCurrentAuthority() call is insufficient.
- * This reader does not acquire/consume a native completion fence or finish a Run.
- */
+/** @internal Ordinary Worker evidence reader. Its closure locks and rechecks the
+ * current Job/Run/lease/tenant authority in this SAME transaction, then returns
+ * exact frozen references. An independently committed authorization is not a
+ * substitute. This reads business evidence, never finishes a native Agent. */
 export async function readWorkerFinalDeliveryEvidenceTransaction(
   tx: TransactionSql,
   assertCurrent: (
@@ -1055,7 +1048,7 @@ export async function inspectCompanyDeliverable(
       left join allrice_workbench_artifacts a on a.version_id=dv.id and a.organization_id=dv.organization_id and a.workspace_id=dv.workspace_id and a.owner_id=dv.owner_id
       where dv.id=${artifactId} and dv.organization_id=${organizationId} and dv.session_id is not null and dv.platform_test_run_id is null
         and exists(select 1 from allrice_employee_runs er where er.organization_id=dv.organization_id and er.workspace_id=dv.workspace_id and er.owner_id=dv.owner_id and er.session_id=dv.session_id
-          and (a.run_id is null or a.run_id=er.run_id) and not exists(select 1 from allrice_assistant_instances ai where ai.run_id=er.run_id and ai.run_id<>ai.root_run_id))
+          and (a.run_id is null or a.run_id=er.run_id))
         and ${businessDeliverablePredicate(tx)}`;
     if (!row) fail('artifact_not_found');
     await requireTenantInspectionScope(
@@ -1438,7 +1431,6 @@ export async function publishWorkbenchArtifact(
   development?: {
     requiredTool?:
       | 'workspace.export.create'
-      | 'assistant.development'
       | 'workspace.project'
       | 'browser.workspace'
       | 'workspace.brand_content.step';
@@ -1690,7 +1682,7 @@ export async function publishWorkbenchArtifact(
           true,
         );
       const requiredTool = development
-        ? (development.requiredTool ?? 'assistant.development')
+        ? (development.requiredTool ?? 'workspace.export.create')
         : derivedSource
           ? 'workspace.reconciliation.export'
           : 'workspace.export.create';

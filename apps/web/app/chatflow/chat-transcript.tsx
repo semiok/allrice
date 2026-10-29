@@ -9,13 +9,11 @@ import {
 } from 'react';
 import {
   nativeExecutionFailureText,
-  nativeExecutionDiagnosticFailureText,
   mcpFailureCopy,
   type WorkbenchArtifact,
   type InteractionStatus,
   type UserPreferences,
 } from '@allrice/contracts';
-import type { AssistantTreeView } from '@allrice/database';
 
 import {
   isReplyStreaming,
@@ -47,13 +45,11 @@ import { LocalMcpPanel } from './local-mcp-panel';
 import { hasLocalMcpEvents } from '../../lib/chatflow/local-mcp-task-presenter';
 import { CloudOperationPanel } from './cloud-operation-panel';
 import { ArtifactSummaryCards } from './artifact-workbench';
-import { AssistantRunPanel } from './assistant-run-panel';
 import { SteeredWorkProcess } from './steered-work-process';
 import { type ReferenceDraft } from './reference-chips';
 import { TranscriptUserMessage } from './transcript-user-message';
 import { AutomationRunTaskCards } from './automation-run-task-cards';
 import { AssistantMessageActions } from './message-feedback';
-import { presentAssistantTree } from '../../lib/chatflow/assistant-tree-presenter';
 import { isMessageRunActive } from './run-view';
 import { HistoryRefreshNotice } from './history-refresh-notice';
 import { workProcessPresentation } from '../../lib/chatflow/work-process-presentation';
@@ -73,9 +69,7 @@ interface ChatTranscriptProps {
   employeeName?: string;
   localCommandsEnabled?: boolean;
   localMcpEnabled?: boolean;
-  assistantTrees?: Record<string, AssistantTreeView>;
   runTimings?: InteractionStatus['runTimings'];
-  onAssistantChanged?: () => void;
   messages: Message[];
   recoverableRunView?: RunView;
   /** The newest read of this conversation failed; offer to read it again. */
@@ -106,9 +100,7 @@ export const ChatTranscript = memo(function ChatTranscript({
   employeeName = 'AI 员工',
   localCommandsEnabled = false,
   localMcpEnabled = false,
-  assistantTrees = {},
   runTimings = [],
-  onAssistantChanged,
   messages,
   recoverableRunView,
   historyStale = false,
@@ -222,13 +214,6 @@ export const ChatTranscript = memo(function ChatTranscript({
                 message.content.text.length > 0 ||
                 adopted.some(
                   (input) => input.steering?.runId === message.runId,
-                ) ||
-                !!(
-                  message.runId &&
-                  assistantTrees[message.runId]?.instances.some(
-                    (item) =>
-                      item.parentRunId !== null && item.runId !== message.runId,
-                  )
                 ),
             )
             .map((message) => {
@@ -238,16 +223,8 @@ export const ChatTranscript = memo(function ChatTranscript({
               const trace = message.runId
                 ? runTraces[message.runId]
                 : undefined;
-              const assistantTree = message.runId
-                ? assistantTrees[message.runId]
-                : undefined;
-              const assistantState = assistantTree
-                ? presentAssistantTree(assistantTree)
-                : undefined;
               const timing = message.runId
-                ? (timingByRun.get(message.runId) ??
-                  assistantTree?.timing ??
-                  undefined)
+                ? timingByRun.get(message.runId)
                 : undefined;
               const traceEvents = messageRun?.events ?? trace?.events ?? [];
               const messageIsRunning = isMessageRunActive(message, messageRun);
@@ -263,17 +240,7 @@ export const ChatTranscript = memo(function ChatTranscript({
                   ? presentReplyFailure({
                       code: message.errorCode,
                       text: message.content.text,
-                      nativeText:
-                        nativeExecutionFailureText(message.errorCode) ??
-                        nativeExecutionDiagnosticFailureText(
-                          message.errorCode,
-                          traceEvents.findLast(
-                            (event) => event.type === 'turn.failed',
-                          )?.payload,
-                          traceEvents.findLast(
-                            (event) => event.type === 'run.failed',
-                          )?.payload.message,
-                        ),
+                      nativeText: nativeExecutionFailureText(message.errorCode),
                       budgetWarning: !!message.content.budgetWarning,
                     })
                   : null;
@@ -431,27 +398,7 @@ export const ChatTranscript = memo(function ChatTranscript({
                                     if (message.runId)
                                       void onLoadRunTrace(message.runId);
                                   }}
-                                  assistantCount={
-                                    assistantState?.children.length ?? 0
-                                  }
-                                  assistantAttention={
-                                    assistantState?.attention.length ?? 0
-                                  }
-                                >
-                                  {assistantTree &&
-                                  assistantState?.children.length &&
-                                  onAssistantChanged &&
-                                  onOpenArtifact ? (
-                                    <AssistantRunPanel
-                                      key={`${workspaceId}/${message.runId}`}
-                                      tree={assistantTree}
-                                      workspaceId={workspaceId}
-                                      headers={tenantHeaders}
-                                      onArtifact={onOpenArtifact}
-                                      onChanged={onAssistantChanged}
-                                    />
-                                  ) : null}
-                                </SteeredWorkProcess>
+                                />
                                 {!!message.content.citations?.some(
                                   (c) => c.type === 'knowledge' && c.reference,
                                 ) && (

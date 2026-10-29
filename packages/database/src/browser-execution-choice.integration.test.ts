@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createLocalBrowserFixture } from './local-browser.fixture.ts';
 import {
   selectBrowserExecution,
@@ -35,7 +35,7 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('MET164 real local choice and existing durable admission', () => {
-  let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   let storage: string;
   beforeAll(async () => {
     for (const flag of [
@@ -47,7 +47,7 @@ suite('MET164 real local choice and existing durable admission', () => {
       'ALLRICE_CLOUD_RUNNER_ENABLED',
     ])
       vi.stubEnv(flag, '1');
-    database = await createAssistantFixtureDatabase();
+    database = await createRuntimeFixtureDatabase();
     storage = await mkdtemp(join(tmpdir(), 'allrice-met164-'));
     vi.spyOn(client, 'getDatabase').mockReturnValue(database.db);
   }, 60000);

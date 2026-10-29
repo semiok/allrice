@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
 import { withFixturePlatformAdministrator } from '../../../scripts/acceptance/runtime/fixture-platform-authority.ts';
 import {
@@ -76,7 +76,7 @@ integration('platform-wide model inheritance', () => {
     }
   }, 40_000);
   it('sets GPT-6.1 Sol once while retaining reasoning, images, connection and timeout', async () => {
-    const f = await createAssistantFixtureDatabase();
+    const f = await createRuntimeFixtureDatabase();
     try {
       const migration = await readFile(
         new URL('../migrations/0122_gpt61_sol_default.sql', import.meta.url),
@@ -120,7 +120,7 @@ integration('platform-wide model inheritance', () => {
     }
   }, 40_000);
   it('migrates only retired defaults to Luna/xhigh and preserves other configuration', async () => {
-    const f = await createAssistantFixtureDatabase();
+    const f = await createRuntimeFixtureDatabase();
     try {
       const migration = await readFile(
         new URL('../migrations/0119_gpt6_platform_models.sql', import.meta.url),

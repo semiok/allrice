@@ -28,7 +28,7 @@ import { updateMaintenanceGithubBot } from './platform-maintenance-github.ts';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
 import type { RequestContext } from '@allrice/contracts';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import {
   ensureBootstrapPortalPrincipal,
   createSession,
@@ -97,7 +97,7 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('immutable report-bound maintenance authority', () => {
-  let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
+  let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
     admin: RequestContext,
     other: RequestContext,
     ordinary: RequestContext,
@@ -109,7 +109,7 @@ suite('immutable report-bound maintenance authority', () => {
     // approval/installation of any native runtime artifact.
     vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
     vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
-    fixture = await createAssistantFixtureDatabase();
+    fixture = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     async function principal(email: string) {
       const p = await ensureBootstrapPortalPrincipal({

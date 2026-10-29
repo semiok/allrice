@@ -16,12 +16,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { HarnessExecutionInput, HarnessToolCall } from './adapter.js';
 import { DshRuntimePool, type DshRuntime } from './dsh/runtime-pool.js';
-import { DshStartupRejection } from './dsh/startup-rejection.js';
 import { HandlerError, confirmToolFailure } from '../errors.js';
 import { getDshCleanupFailures } from './dsh-client-cleanup.js';
 import { HarnessEventBatcher } from './delta-batcher.js';
-import { getAssistantFailureUsage } from './dsh/assistant-outcome.js';
-import { assertAssistantProviderOutputBound } from './dsh/assistant-provider.js';
+import { getExecutionFailureUsage } from './dsh/execution-failure-usage.js';
 import type { DshRunTimingReport } from './dsh/run-timing.js';
 import {
   DshHarnessAdapter,
@@ -204,9 +202,6 @@ describe('confirmed native dispatch stop receipt', () => {
       },
     });
     vi.spyOn(DshRuntimePool.prototype, 'touch').mockImplementation(() => {});
-    vi.spyOn(DshRuntimePool.prototype, 'clearInputDelivery').mockImplementation(
-      () => {},
-    );
     const drop = vi
       .spyOn(DshRuntimePool.prototype, 'closeOwned')
       .mockImplementation(close);
@@ -1938,7 +1933,7 @@ describe('DshHarnessAdapter', () => {
     expect(events.some((e) => e.type === 'assistant.completed')).toBe(false);
     expect(adapter.runtimeInventory()).toEqual([]);
     expect(
-      getAssistantFailureUsage(
+      getExecutionFailureUsage(
         error,
         input.executionEnvironment.ALLRICE_RUN_ID!,
         input.attempt,
@@ -1949,77 +1944,6 @@ describe('DshHarnessAdapter', () => {
       cacheUsageKnown: false,
     });
   }, 5000);
-
-  it.each([
-    { fresh: true, matchingRoot: true, known: true },
-    { fresh: false, matchingRoot: true, known: false },
-    { fresh: true, matchingRoot: false, known: false },
-  ])(
-    'bind rejection proves only fresh matching startup: $fresh/$matchingRoot',
-    async ({ fresh, matchingRoot, known }) => {
-      const adapter = createAdapter();
-      const input = executionInput({
-        prompt: 'never dispatch',
-        provider: snapshot('openai-compatible'),
-      });
-      const original = new HandlerError('TEST_BIND_REJECTED', 'denied', false);
-      const prompt = vi.fn();
-      const nativeAssistant = vi.fn();
-      const runtime = {
-        client: { prompt, assistant: nativeAssistant },
-      } as unknown as DshRuntime;
-      vi.spyOn(DshRuntimePool.prototype, 'acquire').mockResolvedValue({
-        runtime,
-        fresh,
-        preparation: {
-          cache: fresh ? 'miss' : 'hit',
-          reason: fresh ? 'not_resident' : 'reused',
-          changedFields: [],
-          credentialResolutionMs: 0,
-          previousRuntimeCloseMs: 0,
-          initializeMs: 0,
-          skillRegistrationMs: null,
-          acquireMs: 0,
-        },
-      });
-      const drop = vi
-        .spyOn(DshRuntimePool.prototype, 'drop')
-        .mockResolvedValue();
-      input.assistants = {
-        deliveryMode: 'legacy',
-        rootRunId: matchingRoot
-          ? input.executionEnvironment.ALLRICE_RUN_ID!
-          : randomUUID(),
-        bind: vi.fn(async () => {
-          throw original;
-        }),
-      };
-      const error = await adapter
-        .execute(input)
-        .catch((error: unknown) => error);
-      expect(error).toMatchObject({
-        code: 'TEST_BIND_REJECTED',
-        retryable: false,
-      });
-      expect(error instanceof DshStartupRejection).toBe(known);
-      if (error instanceof DshStartupRejection) {
-        expect(error.cause).toBe(original);
-        expect(
-          error.belongsTo(input.executionEnvironment.ALLRICE_RUN_ID!, 1),
-        ).toBe(true);
-        expect(error.belongsTo(randomUUID(), 1)).toBe(false);
-        expect(
-          error.belongsTo(input.executionEnvironment.ALLRICE_RUN_ID!, 2),
-        ).toBe(false);
-        expect(
-          JSON.parse(JSON.stringify(error)) instanceof DshStartupRejection,
-        ).toBe(false);
-      } else expect(error).toBe(original);
-      expect(drop).toHaveBeenCalledOnce();
-      expect(prompt).not.toHaveBeenCalled();
-      expect(nativeAssistant).not.toHaveBeenCalled();
-    },
-  );
   it.each([
     ['usage-complete', true, true, 16, 5],
     ['usage-missing', false, false, 0, 0],
@@ -2101,7 +2025,7 @@ describe('DshHarnessAdapter', () => {
       try {
         await expect(adapter.execute(input)).rejects.toBe(failure);
         expect(
-          getAssistantFailureUsage(
+          getExecutionFailureUsage(
             failure,
             input.executionEnvironment.ALLRICE_RUN_ID!,
             input.attempt,
@@ -2115,55 +2039,6 @@ describe('DshHarnessAdapter', () => {
         await adapter.close();
         await rm(platform, { recursive: true, force: true });
       }
-    },
-  );
-  it('leaves ordinary Codex on its original acquisition path and permits only verified assistant protocols', async () => {
-    const adapter = createAdapter();
-    const acquire = vi
-      .spyOn(DshRuntimePool.prototype, 'acquire')
-      .mockRejectedValueOnce(Error('legacy_acquire_reached'));
-    const input = executionInput({
-      prompt: 'legacy path',
-      provider: snapshot('openai-codex'),
-    });
-    await expect(adapter.execute(input)).rejects.toThrow(
-      'legacy_acquire_reached',
-    );
-    expect(acquire).toHaveBeenCalledOnce();
-    expect(() =>
-      assertAssistantProviderOutputBound(input.providerSnapshot, false),
-    ).not.toThrow();
-    for (const route of ['openai-compatible'] as const)
-      expect(() =>
-        assertAssistantProviderOutputBound(snapshot(route), true),
-      ).not.toThrow();
-  });
-  it.each(['openai-codex', 'deepseek-official', 'unverified-route'] as const)(
-    'rejects unverified assistant output protocol %s before credentials or native acquisition',
-    async (route) => {
-      const resolve = vi.fn(async () => ({ apiKey: 'must-not-read' }));
-      const adapter = new DshHarnessAdapter({
-        credentialResolver: { resolve },
-      });
-      const bind = vi.fn();
-      const input = executionInput({
-        prompt: 'no provider call',
-        provider: snapshot(route as DshExecutionSnapshot['route']),
-      });
-      input.assistants = {
-        deliveryMode: 'legacy',
-        rootRunId: randomUUID(),
-        bind,
-      };
-      // At the Worker boundary this preflight runs before unknown accounting.
-      await expect(adapter.execute(input)).rejects.toMatchObject({
-        code: 'ASSISTANT_PROVIDER_OUTPUT_BOUND_UNSUPPORTED',
-        retryable: false,
-      });
-      expect(resolve).not.toHaveBeenCalled();
-      expect(bind).not.toHaveBeenCalled();
-      expect(adapter.runtimeInventory()).toEqual([]);
-      await adapter.close();
     },
   );
   it('forwards ordered image attachments to the native DSH prompt', async () => {

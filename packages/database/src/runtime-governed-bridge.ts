@@ -40,10 +40,6 @@ import {
 import { getDatabase } from './core/client.ts';
 import { assertProjectExecutionOrigin } from './project-execution.ts';
 import { bridgeSettingsView } from './bridge-settings.ts';
-import {
-  createAssistantOperationAuthority,
-  type AssistantOperationOrigin,
-} from './assistant-operation-authority.ts';
 import { assertLocalMcpAuthority } from './local-mcp-connections.ts';
 import { localMcpCommandBinding } from './local-mcp-execution.ts';
 import { readArtifact } from './artifact-review.ts';
@@ -101,7 +97,6 @@ const unavailablePolicyCodes = new Set([
   'action_not_registered',
   'bridge_authority_changed',
   'project_execution_origin_changed',
-  'assistant_authority_changed',
   'sandbox_execution_not_enabled',
   'sandbox_execution_policy_changed',
 ]);
@@ -118,7 +113,6 @@ export function createGovernedBridgeOperationLedger(
     initialOperation?: {
       binding: RuntimeActionBinding;
       payload: RuntimeBridgePayload;
-      assistant?: AssistantOperationOrigin;
     };
   } = {},
 ) {
@@ -237,7 +231,6 @@ export function createGovernedBridgePolicyOptions(
     initialOperation?: {
       binding: RuntimeActionBinding;
       payload: RuntimeBridgePayload;
-      assistant?: AssistantOperationOrigin;
     };
   } = {},
 ) {
@@ -250,9 +243,6 @@ export function createGovernedBridgePolicyOptions(
         payload: RuntimeBridgePayloadSchema.parse(
           options.initialOperation.payload,
         ),
-        ...(options.initialOperation.assistant
-          ? { assistant: options.initialOperation.assistant }
-          : {}),
       }
     : null;
   const context = {
@@ -261,18 +251,9 @@ export function createGovernedBridgePolicyOptions(
     workspaceId: device.workspaceId,
     requestId: options.requestId ?? randomUUID(),
   };
-  const assistantAuthority = createAssistantOperationAuthority(
-    device,
-    initial ?? undefined,
-  );
   const policyOptions: RuntimePolicyOptions = {
     context,
-    lockCurrentBinding: assistantAuthority.lockCurrentBinding,
     assertFinalBinding: async ({ transaction: tx, binding }) => {
-      await assistantAuthority.assertCurrentBinding({
-        transaction: tx,
-        binding,
-      });
       const [row] = await tx<
         { bridge_payload: unknown }[]
       >`select bridge_payload from allrice_runtime_operations where id=${binding.attempt.operationId} and organization_id=${device.organizationId} and workspace_id=${device.workspaceId} and device_id=${device.id}`;
@@ -310,11 +291,6 @@ export function createGovernedBridgePolicyOptions(
       binding: requested,
       lock = true,
     }) {
-      await assistantAuthority.assertCurrentBinding({
-        transaction: tx,
-        binding: requested,
-        lock,
-      });
       // Immutable inputs have a DB trigger. Plain SELECT avoids the inverse
       // controls→operation lock order in approval creation/decision transactions.
       const [row] = await tx<
@@ -334,27 +310,16 @@ export function createGovernedBridgePolicyOptions(
           : null;
       if (!stored) throw new RuntimePolicyError('bridge_authority_changed');
       const { binding, payload } = stored;
-      // Assistant proposals currently support only finite local commands. The
-      // immutable child origin is checked above; other side effects stay closed.
       const persisted = row
         ? RuntimeOperationSnapshotSchema.parse(row.initial_snapshot)
         : null;
-      if (
-        (persisted?.agentInstanceId ?? initial?.assistant?.runId) &&
-        (payload.capability !== 'local.process.execute' ||
-          payload.arguments.background)
-      )
-        throw new RuntimePolicyError('assistant_authority_changed');
+      if (persisted?.agentInstanceId != null)
+        throw new RuntimePolicyError('bridge_authority_changed');
       const command =
         payload.capability === 'local.process.execute' ? payload : null;
       const python =
         payload.capability === 'local.python.execute' ? payload : null;
       const projectSource = command?.arguments.projectSource;
-      if (
-        projectSource &&
-        (persisted?.agentInstanceId ?? initial?.assistant?.runId)
-      )
-        throw new RuntimePolicyError('assistant_authority_changed');
       const pdf = payload.capability === 'local.pdf.read' ? payload : null;
       const binaryFile = payload.capability.startsWith('local.file.');
       const mcp =
@@ -367,8 +332,7 @@ export function createGovernedBridgePolicyOptions(
       if (
         binding.task.scope.organizationId !== device.organizationId ||
         binding.task.scope.workspaceId !== device.workspaceId ||
-        (binding.task.scope.projectId !== null &&
-          !(persisted?.agentInstanceId ?? initial?.assistant?.runId)) ||
+        binding.task.scope.projectId !== null ||
         binding.execution.deviceId !== device.id ||
         binding.execution.targetKind !== 'rice_bridge' ||
         (!command && !mcp && !python && !pdf && binding.command !== null) ||
@@ -862,7 +826,7 @@ export function createGovernedBridgePolicyOptions(
           select id,employee_version_id from allrice_chat_sessions where id=${employee.session_id}
             and organization_id=${device.organizationId} and workspace_id=${device.workspaceId}
             and owner_id=${device.ownerId} and archived_at is null
-            and project_id is not distinct from ${(persisted?.agentInstanceId ?? initial?.assistant?.runId) ? run.project_id : null}::uuid ${lock ? tx`for share` : tx``}`;
+            and project_id is not distinct from ${null}::uuid ${lock ? tx`for share` : tx``}`;
         const [runtime] = await tx<{ thread_generation: number }[]>`
           select thread_generation from allrice_conversation_runtimes where session_id=${employee.session_id}
             and organization_id=${device.organizationId} and workspace_id=${device.workspaceId}
@@ -881,13 +845,6 @@ export function createGovernedBridgePolicyOptions(
             employee.session_id,
             command,
             binding.execution,
-            (persisted?.agentInstanceId ?? initial?.assistant?.runId)
-              ? {
-                  rootRunId: binding.task.rootRunId,
-                  runId: (persisted?.agentInstanceId ??
-                    initial?.assistant?.runId)!,
-                }
-              : undefined,
             lock,
           );
       }
@@ -958,10 +915,7 @@ export function createGovernedBridgePolicyOptions(
           scope: {
             organizationId: device.organizationId,
             workspaceId: device.workspaceId,
-            projectId:
-              (persisted?.agentInstanceId ?? initial?.assistant?.runId)
-                ? run.project_id
-                : null,
+            projectId: null,
           },
           frozenConfiguration: {
             employeeVersionId: employee?.employee_version_id ?? null,

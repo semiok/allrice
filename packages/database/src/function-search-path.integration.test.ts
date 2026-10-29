@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import postgres from 'postgres';
 import { describe, expect, it } from 'vitest';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { assertRuntimeFixtureDatabase } from './runtime-fixture-database.ts';
 
 const suite =
@@ -370,7 +370,7 @@ suite('0225 function search_path and standard backup restore', () => {
   );
 
   it('pins CHECK and recursive functions to the isolated schema and detects configuration lost on redefinition', async () => {
-    const f = await createAssistantFixtureDatabase({ ownSchemaOnly: true });
+    const f = await createRuntimeFixtureDatabase({ ownSchemaOnly: true });
     try {
       const [scope] = await f.db`select current_schema() as name`;
       const schema = scope!.name as string;

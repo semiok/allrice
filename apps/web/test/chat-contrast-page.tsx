@@ -303,8 +303,6 @@ const conversation =
                     failed
                     canceled={false}
                     onRetry={noop}
-                    assistantCount={0}
-                    assistantAttention={0}
                     transcriptView="verbose"
                   />
                 </div>

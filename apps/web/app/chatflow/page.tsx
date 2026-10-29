@@ -4,7 +4,6 @@ import {
   localOperationsFeatureEnabled,
   localMcpEnabled,
   experienceReviewEnabled,
-  assistantRuntimeEnabled,
 } from '@allrice/database';
 
 export const dynamic = 'force-dynamic';
@@ -16,7 +15,6 @@ export default function ChatFlowPage() {
       localCommandsEnabled={localOperationsFeatureEnabled()}
       localMcpEnabled={localMcpEnabled()}
       experienceEnabled={experienceReviewEnabled()}
-      assistantsEnabled={assistantRuntimeEnabled()}
     />
   );
 }

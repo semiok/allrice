@@ -4,10 +4,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
 import { type ChangesetDocument } from '@allrice/contracts';
 import {
-  createAssistantFixtureDatabase,
-  assistantFixtureStorage,
-} from './assistant-runtime.fixture.ts';
-import { createAssistantLocalCommandFixture } from './local-command-assistant.fixture.ts';
+  createRuntimeFixtureDatabase,
+  runtimeFixtureStorage,
+} from './runtime.fixture.ts';
+import { createLocalCommandFixture } from './local-command.fixture.ts';
 import {
   createLocalCommandOperation,
   listLocalCommandOperations,
@@ -27,7 +27,7 @@ const suite =
 const hash = (text: string | Buffer) =>
   `sha256:${createHash('sha256').update(text).digest('hex')}`;
 suite('MET-144 candidate authority / exact version / durable receipt', () => {
-  let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   beforeAll(async () => {
     for (const flag of [
       'ASSISTANTS',
@@ -37,16 +37,16 @@ suite('MET-144 candidate authority / exact version / durable receipt', () => {
       'WORKBENCH',
     ])
       vi.stubEnv(`ALLRICE_${flag}_ENABLED`, '1');
-    database = await createAssistantFixtureDatabase();
+    database = await createRuntimeFixtureDatabase();
   }, 120000);
   afterAll(async () => {
     await database?.close();
     vi.unstubAllEnvs();
   });
   async function setup() {
-    const f = await createAssistantLocalCommandFixture(database.db);
+    const f = await createLocalCommandFixture(database.db);
     const { db } = f;
-    const storage = assistantFixtureStorage(db);
+    const storage = runtimeFixtureStorage(db);
     const [target] = await db<{ target_id: string; grant_id: string }[]>`
       select t.id as target_id,g.id as grant_id from allrice_execution_targets t
       join allrice_bridge_folder_grants g on t.target_key='bridge.'||g.device_id::text
@@ -306,21 +306,6 @@ suite('MET-144 candidate authority / exact version / durable receipt', () => {
           grantVersion: 2,
         }),
       }),
-    ).rejects.toThrow('unavailable');
-  });
-  it('blocks a child without an exact development test assignment', async () => {
-    const f = await setup();
-    await expect(
-      createLocalCommandOperation(
-        {
-          context: f.context,
-          arguments: f.args,
-          callId: randomUUID(),
-          storage: f.storage,
-          assistant: { runId: f.child!.runId, worker: f.worker },
-        },
-        f.db,
-      ),
     ).rejects.toThrow('unavailable');
   });
   it.each(['preflight', 'nonzero', 'canceled'])(

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { RequestContext, WorkerOperations } from '@allrice/contracts';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createExperienceFixture } from './experience.fixture.ts';
 import { recordWorkerOperations } from './operations-resources.ts';
 import {
@@ -20,7 +20,7 @@ const suite =
 suite(
   'platform technical facts and durable evidence, isolated PostgreSQL / no model',
   () => {
-    let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let admin: RequestContext;
     let customer: Awaited<ReturnType<typeof createExperienceFixture>>;
     const workerId = randomUUID();
@@ -41,7 +41,7 @@ suite(
       pressure: null,
     };
     beforeAll(async () => {
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
       customer = await createExperienceFixture(fixture.db);
       const actorId = randomUUID();
@@ -151,7 +151,7 @@ suite(
         /SECRET|SYNTHETIC-ONLY|Reconciliation rule/,
       );
     });
-    it('reads original model-call failure metadata without copying private error bodies', async () => {
+    it('ignores retired assistant diagnostics without copying private error bodies', async () => {
       const callId = randomUUID();
       const model = {
         version: 1,
@@ -174,13 +174,13 @@ suite(
       const facts = await read();
       expect(
         facts.runs.value?.find((r) => r.id === customer.run)?.failureDetails,
-      ).toEqual({ model, cloud: [], cloudTruncated: false });
+      ).toEqual({ cloud: [], cloudTruncated: false });
       expect(JSON.stringify(facts)).not.toContain('SECRET');
       await fixture.db`update allrice_run_events set payload=${fixture.db.json({ assistantDiagnostics: { ...model, providerBody: 'SECRET' } })} where run_id=${customer.run} and sequence=99`;
       expect(
         (await read()).runs.value?.find((r) => r.id === customer.run)
-          ?.failureDetails?.model,
-      ).toBeNull();
+          ?.failureDetails,
+      ).toEqual({ cloud: [], cloudTruncated: false });
     });
     it('persists one problem and one occurrence for concurrent or ambiguous duplicate captures; explicitly groups related evidence', async () => {
       const capture = () =>

@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { WorkerCapabilitySnapshot } from '@allrice/contracts';
 import {
-  assistantFixture,
-  createAssistantFixtureDatabase,
-} from '../assistant-runtime.fixture.ts';
+  runtimeTaskFixture,
+  createRuntimeFixtureDatabase,
+} from '../runtime.fixture.ts';
 import {
   readRuntimeCapabilityInventory,
   recordWorkerCapabilities,
@@ -16,14 +16,12 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('capability facts from PostgreSQL', () => {
-  let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   beforeAll(async () => {
-    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-    fixture = await createAssistantFixtureDatabase();
+    fixture = await createRuntimeFixtureDatabase();
   }, 60_000);
   afterAll(async () => {
     await fixture?.close();
-    vi.unstubAllEnvs();
   });
   it('expires missing Worker heartbeats and removes orderly shutdown reports', async () => {
     const snapshot: WorkerCapabilitySnapshot = {
@@ -50,7 +48,7 @@ suite('capability facts from PostgreSQL', () => {
     );
   });
   it('reads actual assigned tenant versions and excludes revoked memberships', async () => {
-    await assistantFixture(fixture.db);
+    await runtimeTaskFixture(fixture.db);
     // A newer unassigned version must not replace the version users actually receive.
     await fixture.db`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest,provider_snapshot)
       select ${randomUUID()},organization_id,workspace_id,employee_id,version+1,name,model,system_prompt,capabilities,config_checksum,manifest,provider_snapshot
@@ -61,10 +59,7 @@ suite('capability facts from PostgreSQL', () => {
       version: 1,
       skillIds: [],
       policyEnabled: false,
-      toolNames: expect.arrayContaining([
-        'assistant.delegate',
-        'assistant.report',
-      ]),
+      toolNames: expect.arrayContaining(['workspace.document.read']),
     });
     await fixture.db`update allrice_memberships set active=false`;
     expect(

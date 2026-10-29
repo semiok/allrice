@@ -23,18 +23,6 @@ export function TechnicalFailureDetails({
           AllRice。此前工具失败单独列出，不代表已确认与最终中断存在因果关系。
         </p>
       )}
-      {details.model?.failures.map((failure) => (
-        <p key={failure.callId}>
-          模型调用 {failure.callId} · {failure.phase} / {failure.code} · 用量
-          {failure.inputUsageKnown && failure.outputUsageKnown
-            ? '已记录'
-            : '不完整，不能记为零'}
-          {failure.settlementFailureCode &&
-            ` · 结算诊断 ${failure.settlementFailureCode}`}
-        </p>
-      ))}
-      {!details.model && <p>没有可用的模型调用详细回执。</p>}
-      {details.model?.truncated && <p>模型回执有截断，请核对原始运行记录。</p>}
       {details.cloud.map((operation) => (
         <p key={operation.operationId}>
           {reasons[operation.reason]} · 操作 {operation.operationId} · 账本状态{' '}

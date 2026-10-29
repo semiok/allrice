@@ -4,8 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { createAssistantFixtureDatabase } from '../../../../packages/database/src/assistant-runtime.fixture.ts';
-import { createAssistantLocalCommandFixture } from '../../../../packages/database/src/local-command-assistant.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../../../../packages/database/src/runtime.fixture.ts';
+import { createLocalCommandFixture } from '../../../../packages/database/src/local-command.fixture.ts';
 import * as client from '../../../../packages/database/src/core/client.ts';
 import { resolveTaskRuntimePolicy } from '../../../../packages/database/src/task-runtime-policy.ts';
 import { readTaskClock } from '../../../../packages/database/src/task-clock.ts';
@@ -20,7 +20,7 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('MET153 separate Worker process recovery with actual native DSH', () => {
-  let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   beforeAll(async () => {
     for (const flag of [
       'ALLRICE_ASSISTANTS_ENABLED',
@@ -29,7 +29,7 @@ suite('MET153 separate Worker process recovery with actual native DSH', () => {
       'ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED',
     ])
       vi.stubEnv(flag, '1');
-    fixture = await createAssistantFixtureDatabase();
+    fixture = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
   }, 120000);
   afterAll(async () => {
@@ -64,12 +64,9 @@ suite('MET153 separate Worker process recovery with actual native DSH', () => {
           : { text: 'Same Run recovered successfully.' };
       });
       const children: ChildProcess[] = [];
-      const f = await createAssistantLocalCommandFixture(
-        fixture.db,
-        'ask',
-        false,
-        { deferRuntimeRoot: true, skipChild: true },
-      );
+      const f = await createLocalCommandFixture(fixture.db, 'ask', false, {
+        deferRuntimeRoot: true,
+      });
       f.requestContext.memberships = f.context.policySnapshot.memberships;
       const [scope] = await f.db<
         { schema: string }[]

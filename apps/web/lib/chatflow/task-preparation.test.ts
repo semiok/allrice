@@ -33,7 +33,7 @@ describe('task-specific preparation guidance', () => {
     ).toEqual([]);
   });
 
-  it.each(['local_command', 'development'] as const)(
+  it.each(['local_command'] as const)(
     'checks the declared %s backend instead of file readiness',
     (id) => {
       expect(

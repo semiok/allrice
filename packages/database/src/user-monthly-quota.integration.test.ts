@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
-  assistantFixture,
-  createAssistantFixtureDatabase,
-} from './assistant-runtime.fixture.ts';
+  runtimeTaskFixture,
+  createRuntimeFixtureDatabase,
+} from './runtime.fixture.ts';
 import { getUserMonthlyQuota } from './providers/model-governance.ts';
 
 const integration =
@@ -11,17 +11,17 @@ const integration =
     ? describe.sequential
     : describe.skip;
 integration('current user monthly quota (isolated PostgreSQL)', () => {
-  let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   beforeAll(async () => {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-    database = await createAssistantFixtureDatabase();
+    database = await createRuntimeFixtureDatabase();
   }, 120000);
   afterAll(async () => {
     if (database) await database.close();
     vi.unstubAllEnvs();
   });
   async function fixture() {
-    const f = await assistantFixture(database.db);
+    const f = await runtimeTaskFixture(database.db);
     const db = database.db,
       org = f.context.organizationId,
       ws = f.context.workspaceId!,

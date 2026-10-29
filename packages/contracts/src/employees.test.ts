@@ -400,12 +400,7 @@ describe('EmployeeHub contracts', () => {
     };
     const parse = (fields: Record<string, unknown>) =>
       EmployeeExecutionSnapshotSchema.parse({ ...snapshot, ...fields });
-    for (const fields of [
-      {},
-      { nativePreferences },
-      { subagentMode: 'native' },
-      { nativePreferences, subagentMode: 'native' },
-    ]) {
+    for (const fields of [{}, { nativePreferences }]) {
       expect(parse(fields)).toEqual({ ...snapshot, ...fields });
     }
     for (const subagents of [
@@ -466,6 +461,8 @@ describe('EmployeeHub contracts', () => {
       { nativePreferences: {} },
       { nativePreferences: { ...nativePreferences, version: 2 } },
       { nativePreferences: { ...nativePreferences, extra: true } },
+      { subagentMode: 'native' },
+      { nativePreferences, subagentMode: 'native' },
       { subagentMode: 'legacy' },
       { subagentMode: null },
       { unknown: true },

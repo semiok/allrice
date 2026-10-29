@@ -32,7 +32,6 @@ import { browserControlEnabled } from './browser-control-authority.ts';
 import { localBrowserEnabled } from './local-browser-grants.ts';
 import { mcpExecutionEnabled } from './mcp-authority.ts';
 import { localMcpEnabled } from './local-mcp-connections.ts';
-import { assistantRuntimeEnabled } from './assistant-runtime.ts';
 import { workbenchEnabled } from './artifact-review.ts';
 import { changesetFeatureEnabled } from './changeset-service.ts';
 import { mcpEmployeeEligibility } from './mcp-employee-bindings.ts';
@@ -438,12 +437,6 @@ async function readWorkspaceReadiness(
         local_browser: localBrowserEnabled(),
         cloud_mcp: mcpExecutionEnabled(),
         local_mcp: localMcpEnabled(),
-        assistants: assistantRuntimeEnabled(),
-        development:
-          assistantRuntimeEnabled() &&
-          workbenchEnabled() &&
-          changesetFeatureEnabled() &&
-          localCommandFeatureEnabled(),
         boost: false,
         teamwork: false,
       },

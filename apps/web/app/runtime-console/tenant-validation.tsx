@@ -20,7 +20,6 @@ import {
 } from '../../lib/chatflow/workbench-model';
 import { RunUsageSummary } from './run-usage';
 import { ExecutionDiagnostics } from './execution-diagnostics';
-import { DevelopmentInspection } from './development-inspection';
 import type { TenantResourceProps } from './tenant-resource-editor';
 import { bridgeDeviceName } from '../chatflow/bridge-view';
 import styles from './tenant-administration.module.css';
@@ -389,9 +388,6 @@ export function TenantValidation(
             />
             {detail.executionDiagnostics ? (
               <ExecutionDiagnostics data={detail.executionDiagnostics} />
-            ) : null}
-            {detail.development ? (
-              <DevelopmentInspection data={detail.development} />
             ) : null}
           </details>
           <details open={!!props.initialRunId}>

@@ -13,10 +13,10 @@ import {
 } from '@allrice/contracts';
 import * as client from '../core/client.ts';
 import {
-  assistantFixtureStorage,
-  createAssistantFixtureDatabase,
-} from '../assistant-runtime.fixture.ts';
-import { createAssistantAuthorityFixture } from '../assistant-authority.fixture.ts';
+  runtimeFixtureStorage,
+  createRuntimeFixtureDatabase,
+} from '../runtime.fixture.ts';
+import { createRunAuthorityFixture } from '../run-authority.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
 import { buildEmployeeRuntimePackage } from '../platform-employees/runtime-package.ts';
 import { bindJobNativeSession } from '../execution/queue.ts';
@@ -62,7 +62,7 @@ const digest = (value: string) =>
   'sha256:' + createHash('sha256').update(value).digest('hex');
 
 suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
-  let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   let runtimePackage: EmployeeRuntimePackage;
   let storageRoot: string;
   beforeAll(async () => {
@@ -70,10 +70,9 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
     for (const key of Object.keys(process.env))
       if (key.startsWith('ALLRICE_DSH_ORIGIN_READER_'))
         vi.stubEnv(key, undefined);
-    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
     vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
     vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
-    fixture = await createAssistantFixtureDatabase();
+    fixture = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     const [schema] = await fixture.db`select current_schema() name`;
     expect(schema!.name).toMatch(/^p25_[a-f0-9]{32}$/);
@@ -114,7 +113,7 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
     const artifactId = digest(randomUUID());
     vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', artifactId);
     vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', artifactId);
-    const f = await createAssistantAuthorityFixture(fixture.db, {
+    const f = await createRunAuthorityFixture(fixture.db, {
       configure: false,
       runtimePackage,
       businessCreationOrigin: true,
@@ -282,7 +281,7 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
       deletedAt: null,
       immutable: true,
     };
-    await assistantFixtureStorage(fixture.db).put(
+    await runtimeFixtureStorage(fixture.db).put(
       object,
       new Blob([body]).stream(),
     );
@@ -476,10 +475,13 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
     await applyNativeTestChatRetirement(plan);
     const before = await evidence(f);
     const retired = await retirementRows(f);
-    // Its independent fixture seed stays a legacy dependency even if archived;
-    // retiring f.session never implicitly retires another context.
+    // Create an explicit independent legacy context. The ordinary Run fixture
+    // no longer creates an extra assistant seed chat as a side effect.
+    const legacySession = randomUUID();
+    await fixture.db`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,title,employee_assignment_id,employee_version_id)
+      values(${legacySession},${f.org},${f.workspace},${f.user},'Independent legacy context',${f.assignment},${f.version})`;
     const seed =
-      await fixture.db`select id from allrice_chat_sessions c where c.organization_id=${f.org}
+      await fixture.db`select id from allrice_chat_sessions c where c.id=${legacySession}
       and c.native_root_origin is null and not exists(select 1 from allrice_native_session_bindings b where b.context_kind='chat' and b.context_id=c.id)`;
     expect(seed).toHaveLength(1);
     await fixture.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${seed[0]!.id}`;
@@ -510,10 +512,7 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
     expect(await evidence(f)).toEqual(before);
     expect(await retirementRows(f)).toEqual(retired);
     expect(
-      await readArtifactBytes(
-        assistantFixtureStorage(fixture.db),
-        output.object,
-      ),
+      await readArtifactBytes(runtimeFixtureStorage(fixture.db), output.object),
     ).toEqual(Buffer.from(output.body));
   }, 30_000);
 
@@ -587,7 +586,7 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
     ).toEqual(artifact);
     expect(
       await readArtifactBytes(
-        assistantFixtureStorage(fixture.db),
+        runtimeFixtureStorage(fixture.db),
         artifact.object,
       ),
     ).toEqual(Buffer.from(output.body));
@@ -753,10 +752,7 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
       status: 'not-found',
     });
     expect(
-      await readArtifactBytes(
-        assistantFixtureStorage(fixture.db),
-        output.object,
-      ),
+      await readArtifactBytes(runtimeFixtureStorage(fixture.db), output.object),
     ).toEqual(Buffer.from(output.body));
   }, 30_000);
 
@@ -770,7 +766,7 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
       key: `organizations/${f.org}/workspaces/${f.workspace}/owners/${f.user}/uploads/${uploadId}`,
       immutable: false,
     };
-    await assistantFixtureStorage(fixture.db).put(
+    await runtimeFixtureStorage(fixture.db).put(
       upload,
       new Blob([output.body]).stream(),
     );
@@ -816,10 +812,7 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
       status: 'not-found',
     });
     expect(
-      await readArtifactBytes(
-        assistantFixtureStorage(fixture.db),
-        output.object,
-      ),
+      await readArtifactBytes(runtimeFixtureStorage(fixture.db), output.object),
     ).toEqual(Buffer.from(output.body));
   }, 30_000);
 

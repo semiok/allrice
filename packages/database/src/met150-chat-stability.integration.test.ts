@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
 import {
   RouteDecisionSchema,
-  resolveAssistantSubscriptionSnapshot,
+  resolveSubscriptionSnapshot,
 } from '@allrice/contracts';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
 import {
@@ -259,7 +259,7 @@ suite(
             organizationId: f.organizationId,
             workspaceId: f.workspaceId,
             decisionId: decision.id,
-            snapshot: resolveAssistantSubscriptionSnapshot({
+            snapshot: resolveSubscriptionSnapshot({
               sessionId: task.sessionId,
               modelSnapshot: frozen,
               decision,

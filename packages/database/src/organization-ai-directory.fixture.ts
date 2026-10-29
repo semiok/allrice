@@ -6,8 +6,8 @@ import type {
   EmployeeContentReference,
   RequestContext,
 } from '@allrice/contracts';
-import type { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
-import { assistantFixtureStorage } from './assistant-runtime.fixture.ts';
+import type { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
+import { runtimeFixtureStorage } from './runtime.fixture.ts';
 import { createEmployeeAdministrationFixture } from './employee-administration.fixture.ts';
 import {
   createManagedOrganization,
@@ -36,7 +36,7 @@ import {
 import { captureReferenceSelections } from './reference-runtime.ts';
 
 export async function createOrganizationAiDirectoryFixture(
-  db: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>['db'],
+  db: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>['db'],
   admin: RequestContext,
 ) {
   const company = await createManagedOrganization(admin, {
@@ -128,7 +128,7 @@ export async function createOrganizationAiDirectoryFixture(
       contentBase64: Buffer.from(body).toString('base64'),
       ...(sourceId ? { sourceId, expectedRevision: 1 } : {}),
     });
-    await assistantFixtureStorage(db).put(
+    await runtimeFixtureStorage(db).put(
       prepared.object,
       new Blob([new Uint8Array(prepared.bytes)]).stream(),
     );

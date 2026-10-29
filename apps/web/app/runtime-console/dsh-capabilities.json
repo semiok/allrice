@@ -13,20 +13,6 @@
           "status": "随版本生效"
         },
         {
-          "id": "assistants",
-          "name": "子智能体",
-          "detail": "Rice 可分派子智能体、交换消息并汇总报告，共享任务时限和用量统计。",
-          "status": "按租户启用",
-          "action": "employees"
-        },
-        {
-          "id": "development",
-          "name": "开发协作",
-          "detail": "编辑提案、同版沙箱测试、独立审查和正式交付已完成真实 M5 验收。",
-          "status": "按租户启用",
-          "action": "employees"
-        },
-        {
           "id": "durable-wait",
           "name": "等待暂停与重启续接",
           "detail": "等待用户回答时暂停运行计时，Worker 重启后继续原任务；调用次数仅统计。",

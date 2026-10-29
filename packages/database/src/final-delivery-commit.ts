@@ -24,7 +24,6 @@ const proofSchema = z
 
 /** Private Worker/native completion receipt; not a model/JSON authorization. */
 export type FinalDeliveryCommitProof = Readonly<z.infer<typeof proofSchema>>;
-export type AssistantFinalDeliveryProof = FinalDeliveryCommitProof;
 export function finalDeliveryUnavailable(): never {
   throw Object.assign(new Error('final_delivery_evidence_unavailable'), {
     code: 'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE',

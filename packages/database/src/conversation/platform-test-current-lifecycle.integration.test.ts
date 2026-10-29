@@ -2,7 +2,7 @@ const oldGeneration = 'dsh-0.1.5-rc.3-a4c74a9' as const;
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as client from '../core/client.ts';
-import { createAssistantFixtureDatabase } from '../assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
 import {
   queuePlatformEmployeeTestRun,
@@ -24,7 +24,7 @@ const suite =
 suite(
   'current platform test first INSERT, real claim and leased binding',
   () => {
-    let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     const approved = 'sha256:' + 'a'.repeat(64);
     // MET-221: the release primary is the only birth input; the retired
     // new-root ID is neither read nor required.
@@ -32,7 +32,7 @@ suite(
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', approved);
     };
     beforeAll(async () => {
-      f = await createAssistantFixtureDatabase();
+      f = await createRuntimeFixtureDatabase();
       const [where] =
         await f.db`select current_database() db,current_schema() schema`;
       expect(where!.db).toBe(

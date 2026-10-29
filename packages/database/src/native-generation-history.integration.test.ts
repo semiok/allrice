@@ -1,6 +1,6 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -20,7 +20,7 @@ const originals = [
   '0216_native_legacy_chat_adoption.sql',
 ];
 const target = '0218_native_generation_binding.sql';
-type Fixture = Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+type Fixture = Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
 
 async function catalog(db: Fixture['db']) {
   const [schema] = await db`select current_schema() as name`;
@@ -64,10 +64,10 @@ async function catalog(db: Fixture['db']) {
 suite('0218 converges the deployed and fresh migration histories', () => {
   let deployed: Fixture, fresh: Fixture;
   beforeAll(async () => {
-    deployed = await createAssistantFixtureDatabase({
+    deployed = await createRuntimeFixtureDatabase({
       throughMigration: '0201_workbench_file_policies.sql',
     });
-    fresh = await createAssistantFixtureDatabase({
+    fresh = await createRuntimeFixtureDatabase({
       throughMigration: '0217_brand_content_feedback.sql',
     });
   }, 120_000);

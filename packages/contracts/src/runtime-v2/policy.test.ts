@@ -262,7 +262,6 @@ describe('member-controlled confirmation', () => {
       runtimePolicyActionDecision(policy, action, [], {
         cloud: false,
         computer: false,
-        assistants: true,
       }).effect,
     ).toBe('ask');
     expect(
@@ -306,18 +305,12 @@ describe('member-controlled confirmation', () => {
       ).effect,
     ).toBe('deny');
   });
-  it('lets members disable assistants without disabling reads', () => {
+  it('keeps reads available without member automation and denies unregistered actions', () => {
     const policy = {
       ...controls,
-      rules: [
-        { action: 'assistant.delegate', effect: 'allow' },
-        { action: 'local.fs.read', effect: 'allow' },
-      ],
+      rules: [{ action: 'local.fs.read', effect: 'allow' }],
     };
-    const off = { cloud: false, computer: false, assistants: false };
-    expect(
-      runtimePolicyActionDecision(policy, 'assistant.delegate', [], off).reason,
-    ).toBe('member_assistants_disabled');
+    const off = { cloud: false, computer: false };
     expect(
       runtimePolicyActionDecision(policy, 'local.fs.read', [], off).effect,
     ).toBe('allow');

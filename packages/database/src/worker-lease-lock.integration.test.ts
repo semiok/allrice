@@ -7,11 +7,9 @@ import type postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { ExecutionContext } from '@allrice/contracts';
 import {
-  assistantFixture,
-  createAssistantFixtureDatabase,
-} from './assistant-runtime.fixture.ts';
-import { createAssistantAuthorityFixture } from './assistant-authority.fixture.ts';
-import { createAssistantRuntime } from './assistant-runtime.ts';
+  runtimeTaskFixture,
+  createRuntimeFixtureDatabase,
+} from './runtime.fixture.ts';
 import * as client from './core/client.ts';
 import {
   appendJobEvent,
@@ -35,10 +33,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const failureTag = '[MET-210] Worker lease transaction rolled back';
 
 suite('MET-210 Worker lease transactions under a held root lock', () => {
-  let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   beforeAll(async () => {
-    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-    database = await createAssistantFixtureDatabase();
+    database = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(database.db);
   }, 120_000);
   afterAll(async () => {
@@ -50,7 +47,7 @@ suite('MET-210 Worker lease transactions under a held root lock', () => {
   /** A Worker-shaped job: 30 s lease and an enrolled task clock, so the
    * heartbeat really takes 703 -> root -> clock -> job like production. */
   async function setup(leaseSeconds = 30) {
-    const f = await assistantFixture(database.db);
+    const f = await runtimeTaskFixture(database.db);
     const { organizationId, workspaceId } = f.task.scope;
     await f.db`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy)
       values(${f.task.runId},${organizationId},${workspaceId},${f.db.json({ ...resolveTaskRuntimePolicy([]) })})`;
@@ -82,7 +79,7 @@ suite('MET-210 Worker lease transactions under a held root lock', () => {
   /** `both` takes 703 then the root, as the queue does; `run` is the Run row
    * an event write locks only after it already holds its Job. */
   async function hold(
-    kind: 'root' | '703' | 'both' | 'run' | 'instances',
+    kind: 'root' | '703' | 'both' | 'run' | 'cancel',
     runId: string,
   ) {
     let finish!: (
@@ -105,8 +102,8 @@ suite('MET-210 Worker lease transactions under a held root lock', () => {
         await tx`select root_run_id from allrice_runtime_roots where root_run_id=${runId} for update`;
       if (kind === 'run')
         await tx`select id from allrice_runs where id=${runId} for update`;
-      if (kind === 'instances')
-        await tx`select run_id from allrice_assistant_instances where root_run_id=${runId} for update`;
+      if (kind === 'cancel')
+        await tx`select pg_advisory_xact_lock(hashtextextended(${runId},704))`;
       ready(row!.pid);
       const work = await gate;
       await work?.(tx);
@@ -367,18 +364,41 @@ suite('MET-210 Worker lease transactions under a held root lock', () => {
     await s.f
       .db`update allrice_jobs set cancel_requested_at=clock_timestamp(),cancel_reason='user_requested' where id=${s.f.worker.jobId}`;
     const before = await s.job();
-    // The stop branch freezes the receipt drain, then cancels the assistant
-    // tree: that write queues on these rows until after the 3 s lease.
-    const held = await hold('instances', s.f.task.runId);
+    // Pause the ordinary root cancellation AFTER the Job drain write. The
+    // test trigger supplies only contention, never a new business lifecycle.
+    await s.f.db
+      .unsafe(`create function met210_hold_cancel() returns trigger language plpgsql as $$
+      begin
+        if old.cancel_requested_at is null and new.cancel_requested_at is not null then
+          perform pg_advisory_xact_lock(hashtextextended(new.root_run_id::text,704));
+        end if;
+        return new;
+      end $$`);
+    await s.f.db.unsafe(
+      'create trigger met210_hold_cancel before update on allrice_runtime_roots for each row execute function met210_hold_cancel()',
+    );
+    const held = await hold('cancel', s.f.task.runId);
     const beat = s.heartbeat();
     beat.catch(() => {});
-    await held.waiters();
-    await sleep(3_600);
-    await held.commit();
-    await expect(beat).rejects.toMatchObject({ code: 'lease_lost' });
-    const after = await s.job();
-    expect(after.drain_deadline_at).toBeNull();
-    expect(after.lease_expires_at).toEqual(before.lease_expires_at);
+    try {
+      await held.waiters();
+      await sleep(3_600);
+      await held.commit();
+      await expect(beat).rejects.toMatchObject({ code: 'lease_lost' });
+      const after = await s.job();
+      expect(after.drain_deadline_at).toBeNull();
+      expect(after.lease_expires_at).toEqual(before.lease_expires_at);
+      const [root] = await s.f
+        .db`select cancel_requested_at from allrice_runtime_roots where root_run_id=${s.f.task.runId}`;
+      expect(root!.cancel_requested_at).toBeNull();
+    } finally {
+      await held.commit();
+      await beat.catch(() => {});
+      await s.f.db.unsafe(
+        'drop trigger met210_hold_cancel on allrice_runtime_roots',
+      );
+      await s.f.db.unsafe('drop function met210_hold_cancel()');
+    }
   }, 30_000);
 
   it('an access revocation committed with the lock release is honored by the retried heartbeat', async () => {
@@ -412,50 +432,14 @@ suite('MET-210 Worker lease transactions under a held root lock', () => {
     expect(job.lease_expires_at.getTime()).toBeLessThanOrEqual(
       job.drain_deadline_at.getTime(),
     );
-    await expect(
-      s.f.runtime.assertCurrentAuthority(s.f.base),
-    ).resolves.toMatchObject({ cancelRequested: true });
+    await expect(s.heartbeat()).resolves.toMatchObject({
+      active: false,
+      canceled: true,
+      draining: true,
+    });
   }, 30_000);
 
-  it('the cancellation poll answers without waiting on a held root lock and writes nothing', async () => {
-    const s = await setup();
-    const rows = () => s.f.db`
-      select (select xmin::text from allrice_runtime_roots where root_run_id=${s.f.task.runId}) root,
-        (select xmin::text from allrice_assistant_roots where root_run_id=${s.f.task.runId}) assistant,
-        (select xmin::text from allrice_task_clocks where run_id=${s.f.task.runId}) clock,
-        (select xmin::text from allrice_jobs where id=${s.f.worker.jobId}) job`;
-    const before = await rows();
-    const held = await hold('root', s.f.task.runId);
-    // Release after 3 s: the old locked-only poll would wait for it.
-    const release = sleep(3_000).then(() => held.commit());
-    try {
-      const started = Date.now();
-      await expect(
-        s.f.runtime.assertCurrentAuthority(s.f.base),
-      ).resolves.toMatchObject({ cancelRequested: false });
-      expect(Date.now() - started).toBeLessThan(1_000);
-    } finally {
-      await release;
-    }
-    expect(await rows()).toEqual(before);
-  }, 30_000);
-
-  it('with the production authority hook the poll also answers without waiting on a held root lock', async () => {
-    const f = await createAssistantAuthorityFixture(database.db);
-    const held = await hold('root', f.rootRunId);
-    const release = sleep(3_000).then(() => held.commit());
-    try {
-      const started = Date.now();
-      await expect(
-        f.runtime.assertCurrentAuthority(f.base),
-      ).resolves.toMatchObject({ cancelRequested: false });
-      expect(Date.now() - started).toBeLessThan(1_000);
-    } finally {
-      await release;
-    }
-  }, 30_000);
-
-  it('the cancellation poll still stops on a projected deadline the stored deadline has not reached', async () => {
+  it('the ordinary heartbeat stops on a projected deadline the stored deadline has not reached', async () => {
     const s = await setup();
     await s.f
       .db`update allrice_task_clocks set phase='active',active_ms=${defaultTaskRuntimeMs},changed_at=clock_timestamp() where run_id=${s.f.task.runId}`;
@@ -463,110 +447,80 @@ suite('MET-210 Worker lease transactions under a held root lock', () => {
       .db`select j.timeout_at,r.deadline_at from allrice_jobs j join allrice_runtime_roots r on r.root_run_id=j.run_id where j.id=${s.f.worker.jobId}`;
     expect(stored!.timeout_at.getTime()).toBeGreaterThan(Date.now() + 60_000);
     expect(stored!.deadline_at.getTime()).toBeGreaterThan(Date.now() + 60_000);
-    const stopped = await s.f.runtime.assertCurrentAuthority(s.f.base);
+    const stopped = await s.heartbeat();
     expect(stopped).toMatchObject({
-      cancelRequested: true,
-      stopReason: 'timeout',
+      active: false,
+      canceled: false,
+      draining: true,
       drainDeadlineAt: expect.any(String),
     });
     expect(await s.job()).toMatchObject({ drain_reason: 'timeout' });
   });
 
-  it('the cancellation poll still enforces a revoked grant', async () => {
+  it('a blocked ordinary model receipt rolls back without marking the call finished', async () => {
     const s = await setup();
-    s.f.revoke();
-    await expect(s.f.runtime.assertCurrentAuthority(s.f.base)).rejects.toThrow(
-      'revoked',
-    );
-  });
-
-  it('a failed usage settlement is recorded with its backend and timings', async () => {
-    watchFailures();
-    const s = await setup();
-    const callId = randomUUID();
-    await s.f.runtime.prepareModelUsage({
-      ...s.f.base,
-      runId: s.f.task.runId,
+    const input = {
+      context: {
+        runId: s.f.task.runId,
+        organizationId: s.f.task.scope.organizationId,
+        workspaceId: s.f.task.scope.workspaceId,
+        delegatedBy: s.f.context.actor,
+      } as ExecutionContext,
+      worker: s.f.worker,
+    };
+    const progress = createTaskProgressRuntime(input, s.f.db);
+    const callId = randomUUID(),
+      nativeSessionId = randomUUID();
+    await progress({ action: 'start', kind: 'model', nativeSessionId, callId });
+    const receipt = {
+      action: 'finish',
+      kind: 'model',
+      nativeSessionId,
       callId,
-      requestedOutputTokens: 100,
-    });
-    await s.f.runtime.dispatchModelUsage({
-      ...s.f.base,
-      runId: s.f.task.runId,
-      callId,
-      inputTokens: 100,
-      outputTokens: 100,
-      requestDigest: 'sha256:' + 'a'.repeat(64),
-    });
-    // Same runtime over a pool whose sessions give up a lock after 300 ms.
+      resultDigest: 'sha256:' + 'a'.repeat(64),
+      outcome: 'success',
+    };
+    const before = await s.f
+      .db`select * from allrice_task_calls where run_id=${s.f.task.runId} and call_id=${callId}`;
     const url = new URL(process.env.ALLRICE_TEST_DATABASE_URL!);
-    const [scope] = await s.f.db<
-      { schema: string }[]
-    >`select current_schema() schema`;
-    url.searchParams.set('options', `-csearch_path=${scope!.schema},public`);
+    const [scope] = await s.f.db`select current_schema() schema`;
+    url.searchParams.set('options', `-csearch_path=${scope!.schema}`);
     const { default: postgresClient } = await import('postgres');
     const impatient = postgresClient(url.toString(), {
       max: 1,
       connection: { lock_timeout: 300 },
     });
     try {
-      const runtime = createAssistantRuntime({
-        database: impatient,
-        authorize: async () => {},
-      });
       const held = await hold('root', s.f.task.runId);
       try {
         await expect(
-          runtime.settleUsage({
-            ...s.f.base,
-            callId,
-            amounts: {
-              model_calls: 1,
-              tool_calls: 0,
-              input_tokens: 20,
-              output_tokens: 7,
-            },
-          }),
+          createTaskProgressRuntime(input, impatient)(receipt),
         ).rejects.toMatchObject({ code: '55P03' });
       } finally {
         await held.commit();
       }
+      expect(
+        await s.f
+          .db`select * from allrice_task_calls where run_id=${s.f.task.runId} and call_id=${callId}`,
+      ).toEqual(before);
+      await progress(receipt);
+      const [after] = await s.f
+        .db`select finished_at,result_digest,settled_output_tokens from allrice_task_calls where run_id=${s.f.task.runId} and call_id=${callId}`;
+      expect(after).toEqual({
+        finished_at: expect.any(Date),
+        result_digest: receipt.resultDigest,
+        settled_output_tokens: null,
+      });
     } finally {
       await impatient.end({ timeout: 2 });
     }
-    const [record] = failures('usage_settlement');
-    expect(record).toMatchObject({
-      sqlState: '55P03',
-      outcome: 'failed',
-      runId: s.f.task.runId,
-      jobId: s.f.worker.jobId,
-      backendPid: expect.any(Number),
-    });
-    expect(record!.durationMs).toBeGreaterThanOrEqual(250);
-    expect(Object.keys(record!).sort()).toEqual(recordKeys);
   }, 30_000);
 
-  it('polls, progress, heartbeats, events and a duplicated settlement share one root through a 7 s hold', async () => {
+  it('progress, heartbeats, events and a duplicated receipt share one root through a 7 s hold', async () => {
     watchFailures();
     const s = await setup();
     const { f } = s;
     const callId = randomUUID();
-    await f.runtime.prepareModelUsage({
-      ...f.base,
-      runId: f.task.runId,
-      callId,
-      requestedOutputTokens: 100,
-    });
-    await f.runtime.dispatchModelUsage({
-      ...f.base,
-      runId: f.task.runId,
-      callId,
-      inputTokens: 100,
-      outputTokens: 100,
-      requestDigest: 'sha256:' + 'b'.repeat(64),
-    });
-    const [budget] =
-      await f.db`select spent from allrice_runtime_budgets where root_run_id=${f.task.runId} and metric='model_calls'`;
     const progress = createTaskProgressRuntime(
       {
         context: {
@@ -580,8 +534,16 @@ suite('MET-210 Worker lease transactions under a held root lock', () => {
       f.db,
     );
     const nativeSessionId = randomUUID();
+    await progress({ action: 'start', kind: 'model', nativeSessionId, callId });
+    const receipt = {
+      action: 'finish',
+      kind: 'model',
+      nativeSessionId,
+      callId,
+      resultDigest: 'sha256:' + 'b'.repeat(64),
+      outcome: 'success',
+    };
     let running = true;
-    const pollMs: number[] = [];
     const heartbeats: unknown[] = [];
     const written: string[] = [];
     const progressCalls: string[] = [];
@@ -593,11 +555,6 @@ suite('MET-210 Worker lease transactions under a held root lock', () => {
       }
     };
     const loops = [
-      loop(250, async () => {
-        const started = performance.now();
-        await f.runtime.assertCurrentAuthority(f.base);
-        pollMs.push(performance.now() - started);
-      }),
       loop(1_000, async () => {
         heartbeats.push(await s.heartbeat());
       }),
@@ -637,17 +594,7 @@ suite('MET-210 Worker lease transactions under a held root lock', () => {
       // 703 and the root, as the queue takes them: every heartbeat and event
       // write that starts during the hold queues on 703 first.
       const held = await hold('both', f.task.runId);
-      const settle = () =>
-        f.runtime.settleUsage({
-          ...f.base,
-          callId,
-          amounts: {
-            model_calls: 1,
-            tool_calls: 0,
-            input_tokens: 20,
-            output_tokens: 7,
-          },
-        });
+      const settle = () => progress(receipt);
       const settling = Promise.allSettled([settle(), settle()]);
       // Longer than one heartbeat period plus lock_timeout.
       await sleep(7_000);
@@ -669,24 +616,22 @@ suite('MET-210 Worker lease transactions under a held root lock', () => {
     for (const beat of heartbeats)
       expect(beat).toEqual({ active: true, canceled: false });
     expect(failures('job_heartbeat').length).toBeGreaterThan(0);
-    // The snapshot poll never queued behind the held root lock.
-    expect(Math.max(...pollMs)).toBeLessThan(1_500);
     expect(progressCalls.length).toBeGreaterThan(0);
     // Events: each written once, in order, no gaps.
     const events = await s.events();
     expect(events.map((e) => e.sequence)).toEqual(events.map((_, i) => i));
     expect(events.flatMap((e) => (e.label ? [e.label] : []))).toEqual(written);
-    // Budget settled exactly once despite the duplicated settlement.
-    const [after] =
-      await f.db`select spent from allrice_runtime_budgets where root_run_id=${f.task.runId} and metric='model_calls'`;
-    expect(Number(after!.spent) - Number(budget!.spent)).toBe(1);
-    const usage =
-      await f.db`select metric,settled_amount from allrice_assistant_usage where call_id=${callId} order by metric`;
-    expect(
-      Object.fromEntries(
-        usage.map((u) => [u.metric, Number(u.settled_amount)]),
-      ),
-    ).toMatchObject({ model_calls: 1, input_tokens: 20, output_tokens: 7 });
+    // The same ordinary model receipt is accepted exactly once. No receipt
+    // invents token accounting that the native model did not supply.
+    const calls =
+      await f.db`select finished_at,result_digest,settled_output_tokens from allrice_task_calls where run_id=${f.task.runId} and call_id=${callId}`;
+    expect(calls).toEqual([
+      {
+        finished_at: expect.any(Date),
+        result_digest: receipt.resultDigest,
+        settled_output_tokens: null,
+      },
+    ]);
     // The clock never runs backwards, and stored deadlines are exactly the
     // clock's projection: nothing extended them while retrying.
     for (let i = 1; i < clocks.length; i++)

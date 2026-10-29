@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import {
   authenticateSession,
   createSession,
@@ -27,10 +27,10 @@ const integration =
     ? describe.sequential
     : describe.skip;
 integration('MET-161 company and employee account administration', () => {
-  let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
+  let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
     admin: RequestContext;
   beforeAll(async () => {
-    fixture = await createAssistantFixtureDatabase();
+    fixture = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     const p = await ensureBootstrapPortalPrincipal({
       organizationSlug: 'allrice-platform',

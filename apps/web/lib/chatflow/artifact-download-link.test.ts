@@ -12,6 +12,15 @@ describe('verified Artifact links, not model-invented download hosts', () => {
     path.replaceAll('/', '\\/'),
     path.replaceAll('/', '\\\\/'),
     `https://allrice.example${path}`,
+    `//allrice.example${path}`,
+    `http://[::1]:3001${path}`,
+    `https://[2001:db8::1]${path}`,
+    `//[::1]:3001${path}`,
+    `.${path}`,
+    `..${path}`,
+    path.slice(1),
+    `/other/../api/v1/files/${id}/download`,
+    `https://allrice.example/a/%2e%2e${path}`,
     `https://invented.invalid${path}?name=wrong&redirect=https://evil.example#fake`,
   ])('resolves a known current-Run file: %s', (href) => {
     expect(artifactDownloadLink(href, artifacts)).toBe(

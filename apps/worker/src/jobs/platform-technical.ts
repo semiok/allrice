@@ -10,7 +10,7 @@ import {
   type TechnicalTaskLease,
 } from '@allrice/database';
 import { HandlerError } from '../errors.js';
-import { getAssistantFailureUsage } from '../harness/dsh/assistant-outcome.js';
+import { getExecutionFailureUsage } from '../harness/dsh/execution-failure-usage.js';
 import { DshHarnessAdapter } from '../harness/dsh-adapter.js';
 import { executeRiceTool } from '../tool-broker.js';
 import type { ClaimedJobHandlerInput } from '../job-runner.js';
@@ -172,7 +172,7 @@ export async function executePlatformTechnicalTask(
       actualCost: null,
     };
   } catch (error) {
-    const usage = getAssistantFailureUsage(error, task.runId, lease.attempt);
+    const usage = getExecutionFailureUsage(error, task.runId, lease.attempt);
     if (usage)
       await recordPlatformTechnicalUsage(lease, usage.usage, {
         usageComplete: false,

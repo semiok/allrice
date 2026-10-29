@@ -27,11 +27,11 @@ import {
   type WorkflowPackage,
 } from '@allrice/contracts';
 import {
-  AssistantFixtureCleanupError,
-  assistantFixture,
-  assistantFixtureStorage,
-  createAssistantFixtureDatabase,
-} from '../assistant-runtime.fixture.ts';
+  RuntimeFixtureCleanupError,
+  runtimeTaskFixture,
+  runtimeFixtureStorage,
+  createRuntimeFixtureDatabase,
+} from '../runtime.fixture.ts';
 import * as client from '../core/client.ts';
 import { authenticateSession, createSession } from '../identity.ts';
 import { createEmployeeInstance } from '../employees/employee-instances.ts';
@@ -107,7 +107,7 @@ const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
     : describe.skip;
-type Fixture = Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+type Fixture = Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
 type Actor = Awaited<ReturnType<typeof prepareActor>>;
 type Brand = Awaited<ReturnType<typeof prepareBrand>>;
 let fixture: Fixture;
@@ -122,7 +122,7 @@ const ref = (artifact: WorkbenchArtifact): BrandContentVersionRef => ({
 const freshKey = (label: string) => `met194-isolated:${label}:${randomUUID()}`;
 
 async function prepareActor(label: 'A' | 'B') {
-  const base = await assistantFixture(fixture.db);
+  const base = await runtimeTaskFixture(fixture.db);
   const org = base.task.scope.organizationId,
     workspace = base.task.scope.workspaceId!;
   const user = base.context.actor.id;
@@ -324,7 +324,7 @@ async function seedDocument(
     }),
     immutable: true,
   };
-  const storage = assistantFixtureStorage(fixture.db);
+  const storage = runtimeFixtureStorage(fixture.db);
   await storage.put(object, new Blob([Uint8Array.from(bytes)]).stream());
   const version = await fixture.db
     .begin(async (tx) => {
@@ -431,7 +431,7 @@ async function seedUpload(
     }),
     immutable: true,
   };
-  const storage = assistantFixtureStorage(fixture.db);
+  const storage = runtimeFixtureStorage(fixture.db);
   await storage.put(object, new Blob([Uint8Array.from(bytes)]).stream());
   // Upload metadata is fixture input; business writes below always use APIs.
   await fixture.db`insert into allrice_storage_objects
@@ -576,7 +576,7 @@ async function prepareReminderPackage(
     },
     fixture.db,
   );
-  await assistantFixtureStorage(fixture.db).put(
+  await runtimeFixtureStorage(fixture.db).put(
     source.object,
     new Blob([Uint8Array.from(bytes)]).stream(),
   );
@@ -607,7 +607,7 @@ async function prepareReminderPackage(
         assets: [],
       },
     },
-    { storage: assistantFixtureStorage(fixture.db) },
+    { storage: runtimeFixtureStorage(fixture.db) },
   );
   const [binding] = await fixture.db<
     { binding_revision: number }[]
@@ -790,7 +790,7 @@ async function prepareRevocableBrandSource(
     },
     fixture.db,
   );
-  await assistantFixtureStorage(fixture.db).put(
+  await runtimeFixtureStorage(fixture.db).put(
     value.object,
     new Blob([Uint8Array.from(bytes)]).stream(),
   );
@@ -911,7 +911,7 @@ suite(
       // Ordinary business fixtures keep once disabled. Native delivery cases below
       // explicitly enable the existing isolated public SQL control fixture.
       vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', '0');
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
       vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
       // Only synthetic business INSERT metadata, never a measured native build.
@@ -948,7 +948,7 @@ suite(
           });
         }
       } catch (error) {
-        if (error instanceof AssistantFixtureCleanupError)
+        if (error instanceof RuntimeFixtureCleanupError)
           console.error(
             'BRAND_SQL_FIXTURE_CLEANUP_FAILED',
             JSON.stringify(error.cleanup),
@@ -1412,7 +1412,7 @@ suite(
       expect(
         Buffer.from(
           await readArtifactBytes(
-            assistantFixtureStorage(fixture.db),
+            runtimeFixtureStorage(fixture.db),
             historical.object,
           ),
         ).toString('utf8'),
@@ -2576,7 +2576,7 @@ suite(
                 a.context,
                 revocable!.objectId,
               );
-              await assistantFixtureStorage(fixture.db).delete(prepared.object);
+              await runtimeFixtureStorage(fixture.db).delete(prepared.object);
               await completeStorageDelete(a.context, revocable!.objectId);
               await expect(
                 getStoredFile(a.context, revocable!.objectId, fixture.db),

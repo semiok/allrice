@@ -718,7 +718,6 @@ export const EmployeeExecutionSnapshotV2Schema =
     personalSkills: PersonalSkillSnapshotSchema.optional(),
     // Read compatibility before PR2 / PR3a-2 write these; no defaults on old Runs.
     nativePreferences: NativePreferencesSnapshotSchema.optional(),
-    subagentMode: z.literal('native').optional(),
     taskRuntimePolicy: z
       .object({
         version: z.literal(1),

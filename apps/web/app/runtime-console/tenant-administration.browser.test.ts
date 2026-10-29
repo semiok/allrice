@@ -10,9 +10,9 @@ import type {
 } from '../../../worker/node_modules/playwright-core/index.js';
 import * as client from '../../../../packages/database/src/core/client.ts';
 import {
-  createAssistantFixtureDatabase,
-  assistantFixtureStorage,
-} from '../../../../packages/database/src/assistant-runtime.fixture.ts';
+  createRuntimeFixtureDatabase,
+  runtimeFixtureStorage,
+} from '../../../../packages/database/src/runtime.fixture.ts';
 import {
   authenticateSession,
   createSession,
@@ -78,7 +78,7 @@ const integration =
     ? describe.sequential
     : describe.skip;
 integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
-  let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
+  let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
     browser: Browser,
     server: Server,
     origin: string;
@@ -103,9 +103,8 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
     return { ...p, input, session };
   }
   beforeAll(async () => {
-    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-    fixture = await createAssistantFixtureDatabase();
-    ports.storage.mockReturnValue(assistantFixtureStorage(fixture.db));
+    fixture = await createRuntimeFixtureDatabase();
+    ports.storage.mockReturnValue(runtimeFixtureStorage(fixture.db));
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     platform = await principal('Platform fixture', 'admin');
     await fixture.db`update allrice_organizations set slug='allrice-platform' where id=${platform.organizationId}`;
@@ -661,9 +660,6 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
   it('opens scoped validation from a deep link, inspects the real stored Run and never exposes execution controls', async () => {
     const a = await tenantValidationFixture(fixture.db),
       { page, context } = await pageFor();
-    // Synthetic metadata only: the empty evidence state must not claim a test passed.
-    await fixture.db`insert into allrice_development_heads(root_run_id,seed_artifact_id,seed_digest,head_artifact_id,head_digest,execution)
-      values(${a.task.runId},${a.artifact.artifactId},${`sha256:${'a'.repeat(64)}`},${a.artifact.artifactId},${`sha256:${'a'.repeat(64)}`},'{}')`;
     try {
       const start = requests.length;
       await page.goto(
@@ -686,9 +682,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       expect(text).toContain('运行中，用量待结算');
       expect(text).toContain('process.execute');
       expect(text).toContain('evidence.txt');
-      expect(text).toContain('开发协作证据链 · 只读');
-      expect(text).toContain('尚无候选版本测试操作');
-      expect(text).toContain('尚无正式开发交付记录');
+      expect(text).not.toContain('尚无正式开发交付记录');
       expect(text).not.toContain('NEVER_EXPOSE_RAW_SNAPSHOT');
       expect(text).not.toContain('PRIVATE_TEST_SECRET');
       expect(
@@ -1036,8 +1030,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
           .nth(2)
           .textContent(),
       ).toContain('按成员工作方式执行');
-      // Assistants are off by default for members, but the tenant result shows
-      // the allowed rule, not one member's setting.
+      // A saved allow policy does not make the retired delegation capability available.
       expect(
         await page
           .getByRole('row')
@@ -1047,7 +1040,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
           .locator('td')
           .nth(2)
           .textContent(),
-      ).toContain('按成员工作方式执行');
+      ).toContain('策略允许 · 子智能体暂不可用');
       const [stored] =
         await fixture.db`select controls from allrice_runtime_policy_controls where workspace_id=${snow.workspaceId}`;
       expect(stored!.controls).toMatchObject({
@@ -1304,17 +1297,11 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       const original = await directory();
       await page.getByRole('button', { name: '技能', exact: true }).click();
       await openIndependentTools(page);
-      await page
-        .getByRole('checkbox', {
-          name: '受控开发提案、测试与独立审查',
-          exact: true,
-        })
-        .check();
       expect(
         await page
           .getByRole('checkbox', { name: /受控开发提案、测试与独立审查/ })
-          .isChecked(),
-      ).toBe(true);
+          .count(),
+      ).toBe(0);
       const mcp = page.getByRole('checkbox', {
         name: '本地 MCP 调用',
         exact: true,
@@ -1332,7 +1319,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await mcp.uncheck();
       expect(await mcp.isChecked()).toBe(false);
       expect((await directory()).currentDraft).toEqual(original.currentDraft);
-      // Discard the unsaved development bundle before the independent MCP scenario.
+      // Discard the unsaved local selection before the independent cloud MCP scenario.
       await page.reload();
       await page
         .getByRole('button')

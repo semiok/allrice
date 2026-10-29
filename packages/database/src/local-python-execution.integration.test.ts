@@ -15,7 +15,7 @@ import {
   managedPythonPayloadForPlatform,
   runtimeContractEqual,
 } from '@allrice/contracts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
 import { heartbeatBridgeDevice } from './bridge.ts';
 import {
@@ -68,7 +68,7 @@ const profile = RuntimeLocalPythonProfileSchema.parse({
 suite(
   'MET164 managed Office exact frozen delegation and existing ledger',
   () => {
-    let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
+    let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
       storage: string;
     beforeAll(async () => {
       for (const flag of [
@@ -80,7 +80,7 @@ suite(
         vi.stubEnv(flag, '1');
       // The Python capability must not depend on the existing Node-specific gate.
       vi.stubEnv('ALLRICE_LOCAL_COMMAND_ENABLED', '0');
-      database = await createAssistantFixtureDatabase();
+      database = await createRuntimeFixtureDatabase();
       storage = await mkdtemp(join(tmpdir(), 'allrice-managed-office-'));
       vi.spyOn(client, 'getDatabase').mockReturnValue(database.db);
     }, 60000);

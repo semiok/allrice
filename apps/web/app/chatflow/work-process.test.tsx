@@ -42,8 +42,6 @@ const render = (overrides: Partial<ComponentProps<typeof WorkProcess>> = {}) =>
       failed={false}
       canceled={false}
       onRetry={() => {}}
-      assistantCount={0}
-      assistantAttention={0}
       {...overrides}
     />,
   );

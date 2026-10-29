@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type * as Client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createExperienceFixture } from './experience.fixture.ts';
 import { sendChatMessage } from './workspace/service.ts';
 import {
@@ -9,7 +9,7 @@ import {
   updateUserPreferences,
 } from './user-preferences.ts';
 
-let isolated: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+let isolated: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
 vi.mock('./core/client.ts', async (original) => ({
   ...(await original<typeof Client>()),
   getDatabase: () => isolated.db,
@@ -50,7 +50,7 @@ const controls = (effect?: 'deny' | 'ask' | 'allow') => ({
 // DSH settings, frozen into each Run they start (plan v4.2, PR2).
 suite('MET-210 agent preferences frozen into each Run', () => {
   beforeAll(async () => {
-    isolated = await createAssistantFixtureDatabase();
+    isolated = await createRuntimeFixtureDatabase();
   }, 120000);
   afterAll(async () => {
     await isolated?.close();

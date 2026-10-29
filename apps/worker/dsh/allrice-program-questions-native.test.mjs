@@ -240,12 +240,10 @@ describe('MET-210 actual answerer claims and display timers', () => {
       f.notices.filter((n) => n.method === 'session.user-question-pending'),
     ).toHaveLength(0);
   });
-  it.each(['disabled-release', 'legacy-assistants', 'maintenance'])(
+  it.each(['disabled-release', 'maintenance'])(
     'keeps a program question blocking for %s, even past the release point',
     async (mode) => {
       const f = await fixture(mode === 'disabled-release' ? 0 : 30);
-      if (mode === 'legacy-assistants')
-        vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
       if (mode === 'maintenance')
         vi.stubEnv('ALLRICE_MAINTENANCE_OUTPUT_TOKENS', '16000');
       const requestId = randomUUID();

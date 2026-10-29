@@ -6,7 +6,7 @@ import type {
   RequestContext,
 } from '@allrice/contracts';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import {
   authenticateSession,
   createSession,
@@ -34,10 +34,10 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('current cumulative content maintenance authority', () => {
-  let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
+  let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
     admin: RequestContext;
   beforeAll(async () => {
-    f = await createAssistantFixtureDatabase();
+    f = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
     const p = await ensureBootstrapPortalPrincipal({
       organizationSlug: 'allrice-platform',

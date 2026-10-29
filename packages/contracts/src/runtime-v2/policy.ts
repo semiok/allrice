@@ -126,21 +126,14 @@ export function runtimePolicyActionDecision(
   if (
     automation &&
     group &&
-    matches.some(
-      (rule) =>
-        rule.effect === 'allow' ||
-        (group !== 'assistants' && rule.effect === 'ask'),
-    )
+    matches.some((rule) => rule.effect === 'allow' || rule.effect === 'ask')
   ) {
-    if (group === 'assistants' && !automation.assistants)
-      return { effect: 'deny', reason: 'member_assistants_disabled' };
-    if (group !== 'assistants')
-      return automation[group]
-        ? { effect: 'allow', reason: 'member_scope_automation' }
-        : { effect: 'ask', reason: 'member_confirmation_required' };
+    return automation[group]
+      ? { effect: 'allow', reason: 'member_scope_automation' }
+      : { effect: 'ask', reason: 'member_confirmation_required' };
   }
-  // The existing assistant authority requires explicit Allow and rejects Ask;
-  // there is no per-delegation approval/resume path to advertise.
+  // A policy value is not an installed tool. Preserve the existing delegation
+  // deny semantics; no per-delegation approval/resume capability is registered.
   if (
     action === 'assistant.delegate' &&
     matches.some((r) => r.effect === 'ask')

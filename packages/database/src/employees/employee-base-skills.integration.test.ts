@@ -10,7 +10,7 @@ import {
 } from 'vitest';
 import { EmployeeExecutionSnapshotSchema } from '@allrice/contracts';
 import * as client from '../core/client.ts';
-import { createAssistantFixtureDatabase } from '../assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
 import { authenticateSession, createSession } from '../identity.ts';
 import {
@@ -36,10 +36,10 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('foundation Skills: catalog → ordinary Run → frozen execution', () => {
-  let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   let catalog: Awaited<ReturnType<typeof loadPlatformContentCatalog>>;
   beforeAll(async () => {
-    f = await createAssistantFixtureDatabase();
+    f = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
     catalog = await loadPlatformContentCatalog();
   }, 120000);

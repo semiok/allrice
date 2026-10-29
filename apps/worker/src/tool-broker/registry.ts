@@ -131,23 +131,6 @@ export const riceToolHandlerRegistry = Object.freeze({
   ),
   'image.generate': registration('delivery', generateImage),
   'image.edit': registration('delivery', generateImage),
-  ...(Object.fromEntries(
-    (['delegate', 'message', 'report', 'stop', 'development'] as const).map(
-      (action) => [
-        `assistant.${action}`,
-        registration('workspace', async () => {
-          throw new HandlerError(
-            'ASSISTANT_NATIVE_REQUIRED',
-            'Assistant coordination requires the governed native DSH runtime',
-            false,
-          );
-        }),
-      ],
-    ),
-  ) as Record<
-    `assistant.${'delegate' | 'message' | 'report' | 'stop' | 'development'}`,
-    RiceToolHandlerRegistration
-  >),
   'local.preview.open': registration('managed_browser', runLocalPreview),
   'browser.workspace': registration('managed_browser', runBrowserWorkspace),
   'local.browser.workspace': registration(

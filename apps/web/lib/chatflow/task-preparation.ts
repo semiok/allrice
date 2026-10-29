@@ -10,7 +10,6 @@ const localCapabilities = new Set<WorkspaceCapabilityId>([
   'local_command',
   'local_browser',
   'local_mcp',
-  'development',
 ]);
 const preparedStates = new Set(['ready', 'busy', 'preparing']);
 

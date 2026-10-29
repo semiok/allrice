@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { beforeAll, afterAll, it, expect, describe, vi } from 'vitest';
 import { resolveTaskRuntimePolicy } from './task-runtime-policy.ts';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { tenantValidationFixture } from './tenant-validation.fixture.ts';
 import {
   ensureBootstrapPortalPrincipal,
@@ -24,12 +24,12 @@ const suite =
 suite(
   'company activity uses existing scoped records (isolated PostgreSQL)',
   () => {
-    let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let a: Awaited<ReturnType<typeof tenantValidationFixture>>, b: typeof a;
     let admin: NonNullable<Awaited<ReturnType<typeof authenticateSession>>>;
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-      f = await createAssistantFixtureDatabase();
+      f = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
       const p = await ensureBootstrapPortalPrincipal(
         {

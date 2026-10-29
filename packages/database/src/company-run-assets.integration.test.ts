@@ -10,9 +10,9 @@ import type {
 } from '@allrice/contracts';
 import * as client from './core/client.ts';
 import {
-  assistantFixtureStorage,
-  createAssistantFixtureDatabase,
-} from './assistant-runtime.fixture.ts';
+  runtimeFixtureStorage,
+  createRuntimeFixtureDatabase,
+} from './runtime.fixture.ts';
 import { tenantValidationFixture } from './tenant-validation.fixture.ts';
 import {
   authenticateSession,
@@ -55,7 +55,7 @@ const suite =
 suite(
   'company references in formal Runs (isolated PostgreSQL, real private bytes)',
   () => {
-    let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let a: Awaited<ReturnType<typeof tenantValidationFixture>>;
     let owner: RequestContext, reader: RequestContext, admin: RequestContext;
     let template: CompanyAsset, rule: CompanyAsset;
@@ -83,13 +83,13 @@ suite(
         ctx,
         a.context.organizationId,
         value,
-        assistantFixtureStorage(f.db),
+        runtimeFixtureStorage(f.db),
         administration,
         f.db,
       );
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-      f = await createAssistantFixtureDatabase();
+      f = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
       a = await tenantValidationFixture(f.db);
       await f.db`insert into allrice_organization_people(organization_id,user_id,display_name,content_maintenance_level) values(${a.context.organizationId},${a.context.actor.id},'Company publisher','company') on conflict(organization_id,user_id) do update set content_maintenance_level='company'`;
@@ -421,7 +421,7 @@ suite(
       const one = await prepareCompanyRunMaterials(
         execution,
         v1,
-        assistantFixtureStorage(f.db),
+        runtimeFixtureStorage(f.db),
         f.db,
       );
       materialId = one[0]!.object.id;
@@ -429,7 +429,7 @@ suite(
       const two = await prepareCompanyRunMaterials(
         next,
         v1,
-        assistantFixtureStorage(f.db),
+        runtimeFixtureStorage(f.db),
         f.db,
       );
       expect(two[0]!.object.id).toBe(materialId);
@@ -438,7 +438,7 @@ suite(
       const three = await prepareCompanyRunMaterials(
         other,
         otherSnapshot,
-        assistantFixtureStorage(f.db),
+        runtimeFixtureStorage(f.db),
         f.db,
       );
       expect(three[0]!.object.id).not.toBe(materialId);
@@ -448,14 +448,11 @@ suite(
         immutable: true,
       });
       const bytes = await readArtifactBytes(
-        assistantFixtureStorage(f.db),
+        runtimeFixtureStorage(f.db),
         one[0]!.object,
       );
       expect(
-        await readArtifactBytes(
-          assistantFixtureStorage(f.db),
-          three[0]!.object,
-        ),
+        await readArtifactBytes(runtimeFixtureStorage(f.db), three[0]!.object),
       ).toEqual(bytes);
       expect(
         await f.db`select id from allrice_deliverable_versions where object_id=${materialId}`,
@@ -547,7 +544,7 @@ suite(
       });
       const source = (await getToolBrokerFile(execution, materialId)).object;
       const bytes = await readArtifactBytes(
-        assistantFixtureStorage(f.db),
+        runtimeFixtureStorage(f.db),
         source,
       );
       const object = {
@@ -559,7 +556,7 @@ suite(
         }),
         immutable: true,
       };
-      await assistantFixtureStorage(f.db).put(
+      await runtimeFixtureStorage(f.db).put(
         object,
         new Blob([new Uint8Array(bytes)]).stream(),
       );
@@ -637,7 +634,7 @@ suite(
         prepareCompanyRunMaterials(
           ctx,
           snapshot,
-          assistantFixtureStorage(f.db),
+          runtimeFixtureStorage(f.db),
           ambiguous,
         ),
       ).rejects.toThrow('commit_acknowledgement_lost');
@@ -650,7 +647,7 @@ suite(
         )
       ).object;
       expect(
-        (await readArtifactBytes(assistantFixtureStorage(f.db), retained))
+        (await readArtifactBytes(runtimeFixtureStorage(f.db), retained))
           .byteLength,
       ).toBe(retained.sizeBytes);
       expect(
@@ -658,7 +655,7 @@ suite(
           await prepareCompanyRunMaterials(
             ctx,
             snapshot,
-            assistantFixtureStorage(f.db),
+            runtimeFixtureStorage(f.db),
             f.db,
           )
         )[0]!.object.id,
@@ -677,7 +674,7 @@ suite(
         prepareCompanyRunMaterials(
           execution,
           v1,
-          assistantFixtureStorage(f.db),
+          runtimeFixtureStorage(f.db),
           f.db,
         ),
       ).rejects.toThrow('asset_unavailable');

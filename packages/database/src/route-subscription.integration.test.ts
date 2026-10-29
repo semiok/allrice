@@ -11,12 +11,8 @@ import {
 } from 'vitest';
 import {
   RouteDecisionSchema,
-  resolveAssistantSubscriptionSnapshot,
-  defaultAssistantRunConfiguration,
-  RuntimeOperationSnapshotSchema,
+  resolveSubscriptionSnapshot,
 } from '@allrice/contracts';
-import { createAssistantRuntime } from './assistant-runtime.ts';
-import { createRuntimeOperationLedger } from './runtime-ledger/ledger.ts';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
 import {
   recordRouteDecision,
@@ -122,7 +118,7 @@ integration(
           createdAt: new Date().toISOString(),
         });
         await recordRouteDecision(decision, fixture.db);
-        const snapshot = resolveAssistantSubscriptionSnapshot({
+        const snapshot = resolveSubscriptionSnapshot({
           sessionId: task.sessionId,
           modelSnapshot: frozen,
           decision,
@@ -225,228 +221,6 @@ integration(
             .db`select * from allrice_subscription_usage_budget_reviews`,
         ).toHaveLength(0);
       }));
-    it.each(['oversized_receipts', 'missing_receipts', 'unverified'] as const)(
-      'assistant observation keeps call/lease gates while handling %s',
-      (mode) =>
-        scenario(async (f) => {
-          vi.stubEnv('ALLRICE_CODEX_TOKEN_POLICY', undefined);
-          vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-          if (mode !== 'unverified')
-            await freezeRouteSubscriptionSnapshot(f.identity, f.fixture.db);
-          const task = {
-            scope: {
-              organizationId: f.fixture.organizationId,
-              workspaceId: f.fixture.workspaceId,
-              projectId: null,
-            },
-            runId: f.task.runId,
-            rootRunId: f.task.runId,
-            parentRunId: null,
-            chatSessionId: f.task.sessionId,
-            frozenConfiguration: {
-              employeeVersionId: null,
-              digest: `sha256:${'a'.repeat(64)}`,
-            },
-          };
-          const worker = { ...f.task.workflowLease, generation: 1 };
-          const base = { scope: task.scope, rootRunId: task.rootRunId, worker };
-          const ledger = createRuntimeOperationLedger({
-            database: f.fixture.db,
-            admission: async () => {},
-          });
-          await ledger.createRoot({
-            task,
-            deadlineAt: new Date(Date.now() + 300000).toISOString(),
-            budgets: (
-              [
-                ['model_calls', 'calls', 2],
-                ['tool_calls', 'calls', 2],
-                ['input_tokens', 'tokens', 10],
-                ['output_tokens', 'tokens', 10],
-              ] as const
-            ).map(([metric, unit, capacity]) => ({
-              metric,
-              unit,
-              capacity,
-              currency: null,
-              source: { kind: 'worker' as const, sourceId: 'test-observation' },
-            })),
-          });
-          const runtime = createAssistantRuntime({
-            database: f.fixture.db,
-            authorize: async () => {},
-          });
-          await runtime.configureRoot({
-            task,
-            configuration: {
-              ...defaultAssistantRunConfiguration(),
-              allowAssistants: true,
-            },
-            nativeSessionId: randomUUID(),
-            worker,
-            allowedTools: ['assistant.delegate', 'assistant.report'],
-          });
-          const callId = randomUUID();
-          const prepared = await runtime.prepareModelUsage({
-            ...base,
-            runId: task.runId,
-            callId,
-            requestedOutputTokens: 1000,
-          });
-          const dispatch = {
-            ...base,
-            runId: task.runId,
-            callId,
-            inputTokens: 1_000_000,
-            outputTokens: prepared.outputTokens,
-            requestDigest: `sha256:${'b'.repeat(64)}`,
-          };
-          expect(prepared.outputTokens).toBe(1000);
-          await runtime.dispatchModelUsage(dispatch);
-          await runtime.settleUsage({
-            ...base,
-            runId: task.runId,
-            callId,
-            amounts: {
-              model_calls: 1,
-              tool_calls: 0,
-              ...(mode === 'oversized_receipts'
-                ? { input_tokens: 2_000_000, output_tokens: 2000 }
-                : {}),
-            },
-          });
-          const tree = await runtime.getTree(f.fixture.context, {
-            runId: task.runId,
-          });
-          expect(tree.cancelRequested).toBe(false);
-          expect(
-            tree.budgets.find((b) => b.metric === 'input_tokens'),
-          ).toMatchObject({
-            enforced: false,
-            spent: mode === 'oversized_receipts' ? 2_000_000 : 0,
-            usageComplete: mode === 'oversized_receipts',
-          });
-          const second = randomUUID();
-          await runtime.prepareModelUsage({
-            ...base,
-            runId: task.runId,
-            callId: second,
-            requestedOutputTokens: 1000,
-          });
-          await runtime.dispatchModelUsage({ ...dispatch, callId: second });
-          await runtime.settleUsage({
-            ...base,
-            callId: second,
-            amounts: {
-              model_calls: 1,
-              tool_calls: 0,
-              input_tokens: 1,
-              output_tokens: 1,
-            },
-          });
-          const third = randomUUID();
-          await expect(
-            runtime.prepareModelUsage({
-              ...base,
-              runId: task.runId,
-              callId: third,
-              requestedOutputTokens: 1,
-            }),
-          ).resolves.toMatchObject({ prepared: true, outputTokens: 1 });
-          await runtime.dispatchModelUsage({
-            ...dispatch,
-            callId: third,
-            outputTokens: 1,
-          });
-          await runtime.settleUsage({
-            ...base,
-            callId: third,
-            amounts: {
-              model_calls: 1,
-              tool_calls: 0,
-              input_tokens: 1,
-              output_tokens: 1,
-            },
-          });
-          await expect(
-            runtime.prepareModelUsage({
-              ...base,
-              worker: { ...worker, leaseToken: randomUUID() },
-              runId: task.runId,
-              callId: randomUUID(),
-              requestedOutputTokens: 1,
-            }),
-          ).rejects.toMatchObject({ code: 'lease_lost' });
-          if (mode === 'oversized_receipts') {
-            // A no-Token tool must remain admissible after observed model overage.
-            // Its unresolved external execution still prevents a success claim.
-            const targetId = randomUUID(),
-              digest = `sha256:${'a'.repeat(64)}`;
-            await f.fixture
-              .db`insert into allrice_execution_targets(id,organization_id,workspace_id,target_key,kind,label,state,capabilities)
-            values(${targetId},${task.scope.organizationId},${task.scope.workspaceId},'test.observed','cloud_sandbox','Synthetic','online','[]')`;
-            await ledger.createOperation({
-              snapshot: RuntimeOperationSnapshotSchema.parse({
-                contractVersion: 1,
-                binding: {
-                  task,
-                  attempt: {
-                    operationId: randomUUID(),
-                    attemptId: randomUUID(),
-                    attemptNumber: 1,
-                    generation: 0,
-                    fence: 1,
-                  },
-                  requestedBy: { type: 'user', id: f.fixture.ownerId },
-                  policy: { snapshotId: randomUUID(), digest },
-                  execution: {
-                    targetId,
-                    targetKind: 'cloud_sandbox',
-                    deviceId: null,
-                    grantId: randomUUID(),
-                    grantVersion: 1,
-                    scopeDigest: digest,
-                    workCopy: { id: randomUUID(), kind: 'cloud_copy' },
-                  },
-                  action: 'cloud.synthetic.test',
-                  inputDigest: digest,
-                  dataScope: [],
-                  baseline: [],
-                  command: null,
-                },
-                stepId: null,
-                agentInstanceId: null,
-                processId: null,
-                cancelRequestId: null,
-                idempotencyKey: randomUUID(),
-                status: 'planned',
-                result: null,
-              }),
-              reservations: (
-                [
-                  'model_calls',
-                  'tool_calls',
-                  'input_tokens',
-                  'output_tokens',
-                ] as const
-              ).map((metric) => ({
-                metric,
-                accountingId: randomUUID(),
-                amount: metric === 'tool_calls' ? 1 : 0,
-              })),
-            });
-            expect(await runtime.finalizeRoot(base)).toMatchObject({
-              status: 'unknown',
-              usageComplete: false,
-            });
-            return;
-          }
-          expect(await runtime.finalizeRoot(base)).toMatchObject({
-            status: 'completed',
-            usageComplete: false,
-          });
-        }),
-    );
     it('freezes immutable N/A proof, preserves real tokens and never emits a price receipt', () =>
       scenario(async (f) => {
         const proof = await freezeRouteSubscriptionSnapshot(
@@ -500,15 +274,11 @@ integration(
           assertQuotaAvailable({ ...quota, monthlyCostLimitCents: 0 }),
         ).not.toThrow();
         const [row] = await f.fixture
-          .db`select l.cost_cents,d.cost_cents as route_cost,
-      (select count(*)::int from allrice_assistant_price_snapshots) as prices,
-      (select count(*)::int from allrice_assistant_cost_receipts) as receipts
+          .db`select l.cost_cents,d.cost_cents as route_cost
       from allrice_model_usage_ledger l join allrice_route_decisions d on d.id=l.route_decision_id where d.id=${f.decision.id}`;
         expect(row).toEqual({
           cost_cents: null,
           route_cost: null,
-          prices: 0,
-          receipts: 0,
         });
         await f.fixture
           .db`insert into allrice_organization_model_quotas(organization_id,monthly_cost_limit_cents) values(${f.fixture.organizationId},0)`;

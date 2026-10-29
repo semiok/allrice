@@ -19,28 +19,23 @@ import {
 
 describe('AllRice worker tool manifest contract', () => {
   afterEach(() => vi.unstubAllEnvs());
-  it('never grants assistant coordination through broad model permission or an OFF flag', () => {
-    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
-    expect(
-      riceToolDefinitionsForCapabilities(
-        ['model:invoke'],
-        ['assistant.delegate'],
-      ),
-    ).toEqual([]);
-    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-    expect(
-      riceToolDefinitionsForCapabilities(['model:invoke']).some((tool) =>
-        tool.name.startsWith('assistant.'),
-      ),
-    ).toBe(false);
-    expect(
-      riceToolDefinitionsForCapabilities(
-        ['model:invoke'],
-        ['assistant.delegate'],
-      ).map((tool) => tool.name),
-    ).toEqual(['assistant.delegate']);
-    expect(riceToolRisk('assistant.report')).toBe('managed_write');
-  });
+  it.each(['0', '1'])(
+    'never exposes retired assistant tools with the former flag at %s',
+    (value) => {
+      vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', value);
+      expect(
+        riceToolDefinitionsForCapabilities(['model:invoke']).some((tool) =>
+          tool.name.startsWith('assistant.'),
+        ),
+      ).toBe(false);
+      expect(
+        riceToolDefinitionsForCapabilities(
+          ['model:invoke'],
+          ['assistant.delegate', 'assistant.report'],
+        ),
+      ).toEqual([]);
+    },
+  );
   it('never exposes the new command through broad storage access or default flags', () => {
     vi.stubEnv('ALLRICE_LOCAL_COMMAND_ENABLED', '0');
     expect(

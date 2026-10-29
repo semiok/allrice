@@ -512,15 +512,6 @@ export const baseline: readonly BaselineEntry[] = [
     ],
   },
   {
-    file: 'packages/contracts/src/workspace.ts',
-    owner: 'resolveAssistantPreference',
-    kind: 'decide',
-    use: '原话以“不用助手”等说法开头时，关掉本轮的助手（只会收权，不会放权）',
-    sites: [
-      String.raw`/^(?:本次|这次)?(?:不使用助手|不要使用助手|不要用助手|不用助手)(?:[，,。.!！：:\n]|$)/u`,
-    ],
-  },
-  {
     file: 'packages/database/src/browser-execution-choice.ts',
     owner: 'executionRequestConstraints',
     kind: 'decide',

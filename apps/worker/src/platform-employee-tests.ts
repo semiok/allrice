@@ -27,10 +27,10 @@ import {
 import { HandlerError } from './errors.js';
 import { DshHarnessAdapter } from './harness/dsh-adapter.js';
 import { providerSnapshotForModelTarget } from './routing/provider-snapshot.js';
-import { preflightAssistantSubscription } from './assistant-pricing-preflight.js';
+import { preflightSubscription } from './subscription-preflight.js';
 import { estimateModelCostCents } from './model-cost.js';
 import { checkCompletedModelBudget } from './model-result-budget.js';
-import { getAssistantFailureUsage } from './harness/dsh/assistant-outcome.js';
+import { getExecutionFailureUsage } from './harness/dsh/execution-failure-usage.js';
 import {
   executeRiceTool,
   riceReadOnlyToolDefinitionsForPreview,
@@ -180,14 +180,14 @@ export async function executeNextPlatformEmployeeTest(input: {
           baseUrl: test.runtimeProfile.baseUrl,
         });
     const subscriptionSnapshot = experience
-      ? preflightAssistantSubscription({
+      ? preflightSubscription({
           occurrenceId: experience.occurrenceId,
           modelSnapshot: experience.modelSnapshot,
           decision: experience.decision,
           providerSnapshot: snapshot,
         })
       : method
-        ? preflightAssistantSubscription({
+        ? preflightSubscription({
             sessionId: method.sourceSessionId,
             modelSnapshot: method.modelSnapshot,
             decision: method.decision,
@@ -433,7 +433,7 @@ export async function executeNextPlatformEmployeeTest(input: {
     });
   } catch (error) {
     const failedUsage = candidate
-      ? getAssistantFailureUsage(
+      ? getExecutionFailureUsage(
           error,
           test.previewExecution.runId,
           test.previewExecution.jobAttempt,

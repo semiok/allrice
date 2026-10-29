@@ -3,8 +3,8 @@
  * 40-minute sleep; operation states are changed only by production entrypoints. */
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
-import { createAssistantLocalCommandFixture } from './local-command-assistant.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
+import { createLocalCommandFixture } from './local-command.fixture.ts';
 import * as client from './core/client.ts';
 import {
   heartbeatJob,
@@ -38,7 +38,7 @@ const suite =
 suite(
   'MET-153 durable clock, real PostgreSQL/approval/Worker heartbeat',
   () => {
-    let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     beforeAll(async () => {
       for (const flag of [
         'ALLRICE_ASSISTANTS_ENABLED',
@@ -47,7 +47,7 @@ suite(
         'ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED',
       ])
         vi.stubEnv(flag, '1');
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     }, 120000);
     afterAll(async () => {
@@ -56,12 +56,7 @@ suite(
       await fixture?.close();
     });
     async function setup() {
-      const f = await createAssistantLocalCommandFixture(
-        fixture.db,
-        'ask',
-        false,
-        { skipChild: true },
-      );
+      const f = await createLocalCommandFixture(fixture.db, 'ask', false, {});
       await f.db`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy)
       values(${f.rootRunId},${f.org},${f.workspace},${f.db.json({ ...resolveTaskRuntimePolicy([]) })})`;
       await f.db.begin((tx) => refreshTaskClock(tx, f.rootRunId));
@@ -75,11 +70,11 @@ suite(
           { scope: 'user', scopeId: f.user, timeoutMs: 1800000 },
         ]);
         await f.db`update allrice_task_clocks set policy=${f.db.json({ ...explicitPolicy })} where run_id=${f.rootRunId}`;
-        const other = await createAssistantLocalCommandFixture(
+        const other = await createLocalCommandFixture(
           fixture.db,
           'ask',
           false,
-          { skipChild: true },
+          {},
         );
         // No child assistant is created; use the same real approval wait as the Worker.
         await createLocalCommandOperation(
@@ -288,80 +283,6 @@ suite(
       expect(
         (await f.db.begin((tx) => readTaskClock(tx, f.rootRunId)))!.phase,
       ).toBe('terminal');
-    });
-    it('does not pause a concurrent read just because the same agent has a blocked proposal', async () => {
-      const f = await setup();
-      const amounts = {
-        model_calls: 0,
-        tool_calls: 1,
-        input_tokens: 0,
-        output_tokens: 0,
-      };
-      const proposalId = randomUUID(),
-        readId = randomUUID();
-      const nativeId = randomUUID();
-      await f.runtime.reserveUsage({
-        ...f.base,
-        runId: f.rootRunId,
-        callId: proposalId,
-        kind: 'tool',
-        tool: 'local.process.execute',
-        proposal: true,
-        amounts,
-        nativeCall: {
-          id: nativeId,
-          argumentsDigest: `sha256:${'a'.repeat(64)}`,
-        },
-      });
-      await createLocalCommandOperation(
-        { context: f.context, arguments: f.args, callId: nativeId },
-        f.db,
-      );
-      const read = () => f.db.begin((tx) => readTaskClock(tx, f.rootRunId));
-      expect((await read())!.phase).toBe('waiting');
-      await f.runtime.reserveUsage({
-        ...f.base,
-        runId: f.rootRunId,
-        callId: readId,
-        kind: 'tool',
-        tool: 'web.fetch',
-        amounts,
-        nativeCall: {
-          id: randomUUID(),
-          argumentsDigest: `sha256:${'b'.repeat(64)}`,
-        },
-      });
-      expect((await read())!.phase).toBe('active');
-      await f.runtime.settleUsage({
-        ...f.base,
-        runId: f.rootRunId,
-        callId: readId,
-        amounts,
-      });
-      expect((await read())!.phase).toBe('waiting');
-    });
-    it('counts a working coordinator, pauses only after native idle, and resumes on model preparation', async () => {
-      const f = await createAssistantLocalCommandFixture(fixture.db);
-      await f.db`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy)
-        values(${f.rootRunId},${f.org},${f.workspace},${f.db.json({ ...resolveTaskRuntimePolicy([]) })})`;
-      await f.db.begin((tx) => refreshTaskClock(tx, f.rootRunId));
-      const c = await f.create();
-      expect(c.snapshot.status).toBe('waiting_user');
-      const read = () => f.db.begin((tx) => readTaskClock(tx, f.rootRunId));
-      expect((await read())!.phase).toBe('active');
-      await f.runtime.markNativeIdle({ ...f.base, runId: f.rootRunId });
-      expect((await read())!.phase).toBe('waiting');
-      await f.db`update allrice_task_clocks set changed_at=clock_timestamp()-interval '40 minutes' where run_id=${f.rootRunId}`;
-      await f.runtime.prepareModelUsage({
-        ...f.base,
-        runId: f.rootRunId,
-        callId: randomUUID(),
-        requestedOutputTokens: 100,
-      });
-      expect((await read())!.phase).toBe('active');
-      expect((await read())!.waitingMs).toBeGreaterThanOrEqual(2400000);
-      await f.runtime.markNativeIdle({ ...f.base, runId: f.rootRunId });
-      expect((await read())!.phase).toBe('active');
     });
     it('still rejects a revoked local grant after an excluded approval wait', async () => {
       const f = await setup();

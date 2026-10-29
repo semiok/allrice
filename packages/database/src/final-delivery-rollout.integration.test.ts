@@ -13,7 +13,6 @@ import {
 } from './workspace/service.ts';
 import { nativeRootDigest } from './conversation/native-root-origin.ts';
 import { selectCheckedFinalDeliveryArtifact } from './final-delivery-rollout.ts';
-import { updateWorkAutomation } from './work-automation.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -32,7 +31,6 @@ suite(
       fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', current);
-      vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
       vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
       const e = await createEmployeeAdministrationFixture(fixture.db);
@@ -58,13 +56,9 @@ suite(
       vi.unstubAllEnvs();
       await fixture?.close();
     }, 30000);
-    async function subject(
-      artifact = current,
-      memberAssistants?: boolean | null,
-    ) {
+    async function subject(artifact = current) {
       const f = await createRunAuthorityFixture(fixture.db, {
         configure: false,
-        memberAssistants,
         runtimePackage,
         allowedTools: runtimePackage.runtimeManifest.toolNames,
         runtimePolicy: {
@@ -84,12 +78,6 @@ suite(
         workspaceId: f.workspace,
       });
       if (!context) throw Error('isolated login required');
-      if (memberAssistants !== undefined && memberAssistants !== null)
-        await updateWorkAutomation(context, f.workspace, {
-          expectedRevision: 0,
-          capability: 'assistants',
-          enabled: memberAssistants,
-        });
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', artifact);
       const session = await createAssignedChatSession(context, {
         workspaceId: f.workspace,
@@ -104,13 +92,11 @@ suite(
       f: Subject,
       chat = f.chat,
       clientMessageId = randomUUID(),
-      allowAssistants = true,
     ) {
       return sendChatMessage(f.context, f.workspace, chat, {
         text: 'Synthetic no-model delivery admission',
         clientMessageId,
         deliveryMode: 'follow_up',
-        assistantPreference: { mode: 'daily', allowAssistants },
       });
     }
     async function snapshot(runId: string) {
@@ -214,38 +200,25 @@ suite(
         (await snapshot(sent.run!.id)).finalDeliveryPolicy.artifactId,
       ).toBe(current);
     });
-    it('a pre-upgrade NULL birth still receives no new protocol marker', async () => {
+    it('a pre-upgrade NULL business origin receives no new protocol marker', async () => {
       const f = await subject();
-      const sent = await send(f, f.session),
-        value = await snapshot(sent.run!.id);
+      const value = await snapshot((await send(f, f.session)).run!.id);
       expect(value).not.toHaveProperty('finalDeliveryPolicy');
       expect(value).not.toHaveProperty('officeFirstDeliveryPolicy');
     });
-    it.each([null, false, true] as const)(
-      'member assistants=%s: feature off, explicit opt-out and no delegate tool cannot suppress delivery checks',
-      async (memberAssistants) => {
-        const f = await subject(current, memberAssistants);
-        vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
-        try {
-          const checked = await snapshot(
-            (await send(f, f.chat, randomUUID(), false)).run!.id,
-          );
-          expect(checked.capabilitySnapshot.bindings.toolNames).not.toContain(
-            'assistant.delegate',
-          );
-          expect(checked.finalDeliveryPolicy).toEqual({
-            version: 1,
-            mode: 'checked_native_v1',
-            artifactId: current,
-          });
-          expect(checked.officeFirstDeliveryPolicy).toBe(
-            'xlsx_formula_cache_v1',
-          );
-        } finally {
-          vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-        }
-      },
-    );
+    it('ordinary admission without retired tools receives checked delivery and Office policy', async () => {
+      const f = await subject();
+      const checked = await snapshot((await send(f)).run!.id);
+      expect(checked.capabilitySnapshot.bindings.toolNames).not.toContain(
+        'assistant.delegate',
+      );
+      expect(checked.finalDeliveryPolicy).toEqual({
+        version: 1,
+        mode: 'checked_native_v1',
+        artifactId: current,
+      });
+      expect(checked.officeFirstDeliveryPolicy).toBe('xlsx_formula_cache_v1');
+    });
     it.each(['basis', 'digest', 'owner'] as const)(
       'rejects a conflicting %s pin before creating a new Run',
       async (kind) => {

@@ -6,8 +6,8 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { appendJobEvent } from '@allrice/database';
 import * as databaseClient from '../../../../packages/database/src/core/client.ts';
-import { createAssistantFixtureDatabase } from '../../../../packages/database/src/assistant-runtime.fixture.ts';
-import { createAssistantAuthorityFixture } from '../../../../packages/database/src/assistant-authority.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../../../../packages/database/src/runtime.fixture.ts';
+import { createRunAuthorityFixture } from '../../../../packages/database/src/run-authority.fixture.ts';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.js';
 import { normalizeHarnessRunEvent } from '../../src/harness/runtime-contract.js';
 import { p24Fixture } from '../p24/fixture.js';
@@ -18,10 +18,10 @@ const integration =
     : describe.skip;
 
 integration('MET-210 native Todo defaults through the AllRice host', () => {
-  let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   beforeAll(async () => {
     expect(process.env.DATABASE_URL).toBeUndefined();
-    database = await createAssistantFixtureDatabase();
+    database = await createRuntimeFixtureDatabase();
     vi.spyOn(databaseClient, 'getDatabase').mockReturnValue(database.db);
   }, 120_000);
 
@@ -63,7 +63,7 @@ integration('MET-210 native Todo defaults through the AllRice host', () => {
       // setting before exercising the host without any assistant tools.
       const assistantsEnabled = process.env.ALLRICE_ASSISTANTS_ENABLED;
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-      const f = await createAssistantAuthorityFixture(database.db, {
+      const f = await createRunAuthorityFixture(database.db, {
         configure: false,
         allowedTools: [],
       }).finally(() => {

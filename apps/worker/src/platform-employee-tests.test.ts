@@ -16,7 +16,7 @@ import {
 } from '@allrice/database';
 import { DshHarnessAdapter } from './harness/dsh-adapter.js';
 import { executeNextPlatformEmployeeTest } from './platform-employee-tests.js';
-import { attachAssistantFailureUsage } from './harness/dsh/assistant-outcome.js';
+import { attachExecutionFailureUsage } from './harness/dsh/execution-failure-usage.js';
 
 vi.mock('@allrice/database', () => ({
   claimNextPlatformEmployeeTestRun: vi.fn(),
@@ -292,7 +292,7 @@ it.each([false, true])(
     vi.spyOn(DshHarnessAdapter.prototype, 'execute').mockImplementation(
       async (input) => {
         const error = new Error('Synthetic interrupted stream');
-        attachAssistantFailureUsage(
+        attachExecutionFailureUsage(
           error,
           foreign ? randomUUID() : input.executionEnvironment.ALLRICE_RUN_ID!,
           1,

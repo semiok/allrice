@@ -73,50 +73,6 @@ function message(
 ) {
   return { id, role, content: { text }, runId: run, status, createdAt: now };
 }
-function tree(status = 'cancel_requested') {
-  return {
-    rootRunId: runId,
-    configuration: {
-      mode: 'daily',
-      allowAssistants: true,
-      maxConcurrent: 2,
-      maxDepth: 1,
-      maxChildren: 4,
-    },
-    cancelRequested: false,
-    instances: [
-      {
-        runId,
-        parentRunId: null,
-        rootRunId: runId,
-        nativeSessionId: runId,
-        label: 'Rice',
-        depth: 0,
-        status: 'running',
-        allowedTools: [],
-        artifactNamespace: 'root',
-        cancelRequestedAt: null,
-        stoppedAt: null,
-      },
-      {
-        runId: childId,
-        parentRunId: runId,
-        rootRunId: runId,
-        nativeSessionId: childId,
-        label: '资料核对',
-        depth: 1,
-        status,
-        allowedTools: [],
-        artifactNamespace: 'child',
-        cancelRequestedAt: now,
-        stoppedAt: status === 'canceled' ? now : null,
-      },
-    ],
-    messages: [],
-    results: [],
-    budgets: [],
-  };
-}
 function event(question: boolean | string | string[] = false) {
   return {
     schemaVersion: 3,
@@ -203,7 +159,7 @@ suite(
                   build.onLoad(
                     {
                       filter:
-                        /\/chatflow\/(chatflow-client|use-session|use-attachments|session-selection|assistant-run-panel|use-assistant-session)\.(tsx|ts)$/,
+                        /\/chatflow\/(chatflow-client|use-session|use-attachments|session-selection)\.(tsx|ts)$/,
                     },
                     ({ path }) => ({
                       contents: execFileSync(
@@ -336,7 +292,6 @@ suite(
       const historyBGate = new Promise<void>((done) => {
         releaseHistoryB = done;
       });
-      let assistantStatus = 'cancel_requested';
       let showTiming = false;
       const messages: Record<string, ReturnType<typeof message>[]> = {
         [A]: [message('history-a', 'Existing A')],
@@ -465,7 +420,7 @@ suite(
                         harness: 'dsh',
                         provider: 'openai-compatible',
                       },
-                      capabilityBindings: { toolNames: ['assistant.delegate'] },
+                      capabilityBindings: { toolNames: [] },
                     },
                   },
                 },
@@ -544,21 +499,6 @@ suite(
             sessions: [session(A), session(B)],
             nextCursor: null,
           });
-          return;
-        }
-        if (path === '/api/v1/runtime/assistants') {
-          answer(
-            response,
-            url.searchParams.has('runId')
-              ? { tree: tree(assistantStatus) }
-              : {
-                  trees:
-                    options.running && url.searchParams.get('sessionId') === A
-                      ? [tree(assistantStatus)]
-                      : [],
-                  nextCursor: null,
-                },
-          );
           return;
         }
         if (path.endsWith('/artifacts')) {
@@ -771,9 +711,6 @@ suite(
               `data: ${JSON.stringify({ ...event(), eventId: 'event-2', sequence: 2, cursor: `${runId}:2`, type: 'run.canceled', payload: {} })}\n\n`,
             );
           }
-        },
-        setAssistantStatus(value: string) {
-          assistantStatus = value;
         },
         disconnect() {
           for (const response of streams) response.destroy();
@@ -1188,6 +1125,28 @@ suite(
       },
       15_000,
     );
+    it('MET-210 sends an ordinary message without retired assistant state or requests', async () => {
+      const f = await fixture();
+      try {
+        await f.send('请核对这份资料并给我摘要');
+        await f.waitPending(1);
+        expect(f.pending[0]!.body.text).toBe('请核对这份资料并给我摘要');
+        expect(f.pending[0]!.body).not.toHaveProperty('assistantPreference');
+        await f.respond(0);
+        expect(
+          await f.page
+            .getByRole('region', { name: '子智能体任务', exact: true })
+            .count(),
+        ).toBe(0);
+        expect(f.reads.some((url) => url.includes('/runtime/assistants'))).toBe(
+          false,
+        );
+        expect(f.writes).toHaveLength(1);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
     // MET-210: answers past the polled window (or with the workbench off) keep
     // the receipt stored in history; a live status still wins per message.
     it('keeps each answer receipt from history and live status', async () => {
@@ -3305,39 +3264,6 @@ suite(
         await f.close();
       }
     }, 15_000);
-    it('a late assistant stop acknowledgement cannot refresh a different session after its panel unmounts', async () => {
-      const f = await fixture({ running: true });
-      try {
-        // Running work is already visible under the native display policy.
-        // Wait for the assistant panel without clicking its stop control.
-        await f.page
-          .getByRole('region', { name: '子智能体任务', exact: true })
-          .waitFor();
-        await f.page
-          .getByRole('button', {
-            name: '取消整项任务（含所有子智能体）',
-            exact: true,
-          })
-          .click();
-        await f.waitPending(1);
-        expect(f.pending[0]!.body.action).toBe('cancel_root');
-        await f.choose(B);
-        const readsB = () =>
-          f.reads.filter(
-            (url) =>
-              url.includes('/runtime/assistants?') &&
-              url.includes(`sessionId=${B}`),
-          ).length;
-        await expect.poll(readsB).toBeGreaterThan(0);
-        const before = readsB();
-        await f.respond(0);
-        expect(readsB()).toBe(before);
-        expect(f.writes).toHaveLength(1);
-        expect(f.errors).toEqual([]);
-      } finally {
-        await f.close();
-      }
-    }, 15_000);
     it.each([
       [320, 568],
       [390, 844],
@@ -3615,84 +3541,5 @@ suite(
         await f.close();
       }
     }, 15_000);
-    it('real reload and offline→online restore persisted assistant status without inventing a stop ACK', async () => {
-      const f = await fixture({ running: true });
-      try {
-        await f.page
-          .getByRole('region', { name: '子智能体任务', exact: true })
-          .getByText(/已请求停止不代表进程已退出/)
-          .waitFor();
-        await f.page.reload();
-        await f.page
-          .getByRole('region', { name: '子智能体任务', exact: true })
-          .getByText(/已请求停止不代表进程已退出/)
-          .waitFor();
-        await f.context.setOffline(true);
-        f.disconnect();
-        const failedRead = await f.page.waitForEvent(
-          'requestfailed',
-          (request) => request.url().includes('/runtime/assistants'),
-        );
-        expect(failedRead.failure()).not.toBeNull();
-        expect(
-          await f.page.getByText(/已请求停止不代表进程已退出/).count(),
-        ).toBe(1);
-        f.setAssistantStatus('canceled');
-        await f.context.setOffline(false);
-        await expect
-          .poll(() => f.page.getByText(/已请求停止不代表进程已退出/).count(), {
-            timeout: 12_000,
-          })
-          .toBe(0);
-        expect(f.writes).toEqual([]);
-        expect(f.errors).toEqual([]);
-      } finally {
-        await f.close();
-      }
-    }, 20_000);
-    it('an expanded assistant panel recovers after exhausting offline retries, with an authoritative stop ACK', async () => {
-      const f = await fixture({ running: true });
-      try {
-        await f.page
-          .getByRole('region', { name: '子智能体任务', exact: true })
-          .getByText(/已请求停止不代表进程已退出/)
-          .waitFor();
-        await f.page.getByText('分工、结果与消耗', { exact: true }).click();
-        await expect
-          .poll(
-            () =>
-              f.reads.filter(
-                (url) =>
-                  url.includes('/runtime/assistants?') &&
-                  url.includes(`runId=${runId}`),
-              ).length,
-          )
-          .toBeGreaterThan(0);
-        const failedDetails: string[] = [];
-        f.page.on('requestfailed', (request) => {
-          if (
-            request.url().includes(`runId=${runId}`) &&
-            request.url().includes('/runtime/assistants?')
-          )
-            failedDetails.push(request.url());
-        });
-        await f.context.setOffline(true);
-        f.disconnect();
-        await expect
-          .poll(() => failedDetails.length, { timeout: 15000 })
-          .toBeGreaterThanOrEqual(3);
-        expect(await f.page.getByText(/执行端已确认停止/).count()).toBe(0);
-        f.setAssistantStatus('canceled');
-        await f.context.setOffline(false);
-        await f.page.getByText(/执行端已确认停止/).waitFor({ timeout: 7000 });
-        expect(
-          await f.page.getByText(/已请求停止不代表进程已退出/).count(),
-        ).toBe(0);
-        expect(f.writes).toEqual([]);
-        expect(f.errors).toEqual([]);
-      } finally {
-        await f.close();
-      }
-    }, 30_000);
   },
 );

@@ -1,3 +1,4 @@
+import type { RuntimeLedgerTransaction } from './runtime-ledger/types.ts';
 /** Synthetic isolated PostgreSQL fixture only; not a production entrypoint. */
 import { randomUUID } from 'node:crypto';
 import {
@@ -16,6 +17,8 @@ import {
   employeeManifest,
   employeeManifestChecksum,
 } from './employees/employee-config.ts';
+import { createRuntimeOperationLedger } from './runtime-ledger/ledger.ts';
+import { ensureRuntimeOperationRoot } from './runtime-ledger/root-service.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
 import { newEmployeeNativeRootOrigin } from './conversation/native-root-origin.ts';
 const defaultControls = (): RuntimePolicyControls => ({
@@ -27,6 +30,23 @@ const defaultControls = (): RuntimePolicyControls => ({
 export async function createRunAuthorityFixture(
   db: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>['db'],
   options: {
+    preparePrompt?: (
+      transaction: RuntimeLedgerTransaction,
+      identity: {
+        organizationId: string;
+        workspaceId: string;
+        userId: string;
+        sessionId: string;
+        rootRunId: string;
+        employeeVersionId: string;
+        employeeAssignmentId: string;
+        policyId: string;
+        executionSnapshot: EmployeeExecutionSnapshot;
+        providerSnapshot: unknown;
+        workerId: string;
+        jobId: string;
+      },
+    ) => Promise<Parameters<RuntimeLedgerTransaction['json']>[0]>;
     controls?: RuntimePolicyControls | null;
     toolNames?: string[];
     allowedTools?: string[];
@@ -44,8 +64,6 @@ export async function createRunAuthorityFixture(
     runtimePackage?: EmployeeRuntimePackage;
     /** Test-only first-INSERT issuance; historical fixtures remain NULL. */
     businessCreationOrigin?: boolean;
-    /** The member's saved assistants switch; null leaves work settings unsaved. */
-    memberAssistants?: boolean | null;
   } = {},
   suppliedBase?: Awaited<ReturnType<typeof runFixture>>,
 ) {
@@ -208,20 +226,49 @@ export async function createRunAuthorityFixture(
       (${am},${org},${workspace},${session},${user},'assistant','{"text":"synthetic","citations":[]}')`;
     await tx`insert into allrice_conversation_runtimes(organization_id,workspace_id,session_id,owner_id,thread_generation,config_checksum,state,active_run_id,worker_id)
     values(${org},${workspace},${session},${user},${base.worker.generation},${checksum},'running',${rootRunId},${base.worker.workerId})`;
+    const prompt = options.preparePrompt
+      ? await options.preparePrompt(tx, {
+          organizationId: org,
+          workspaceId: workspace,
+          userId: user,
+          sessionId: session,
+          rootRunId,
+          employeeVersionId: version,
+          employeeAssignmentId: assignment,
+          policyId: policy,
+          executionSnapshot: snapshot,
+          providerSnapshot: manifest.provider,
+          workerId: base.worker.workerId,
+          jobId: base.worker.jobId,
+        })
+      : {};
     await tx`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,user_message_id,assistant_message_id,provider_snapshot,prompt_snapshot,native_skills,execution_snapshot)
-    values(${rootRunId},${org},${workspace},${user},${assignment},${version},${session},${um},${am},${tx.json(manifest.provider)},'{}','[]',${tx.json(JSON.parse(JSON.stringify(options.snapshot ? options.snapshot(snapshot, { sessionId: session }) : snapshot)))})`;
+    values(${rootRunId},${org},${workspace},${user},${assignment},${version},${session},${um},${am},${tx.json(manifest.provider)},${tx.json(prompt)},'[]',${tx.json(JSON.parse(JSON.stringify(options.snapshot ? options.snapshot(snapshot, { sessionId: session }) : snapshot)))})`;
     const controls =
       options.controls === undefined ? defaultControls() : options.controls;
     if (controls)
       await tx`insert into allrice_runtime_policy_controls(organization_id,workspace_id,version,controls)
     values(${org},${workspace},${controls.version},${tx.json(controls)})`;
   });
+  const ledger = createRuntimeOperationLedger({
+    database: db,
+    admission: async () => {},
+  });
+  if (options.configure !== false)
+    await ensureRuntimeOperationRoot(
+      ledger,
+      task,
+      new Date(Date.now() + 600000).toISOString(),
+      db,
+    );
   const setControls = (controls: RuntimePolicyControls) => db`
   update allrice_runtime_policy_controls set version=${controls.version},controls=${db.json(controls)}
   where organization_id=${org} and workspace_id=${workspace}`;
   return {
     ...base,
     task,
+    ledger,
+    base: { scope: task.scope, rootRunId, worker: base.worker },
     db,
     org,
     workspace,

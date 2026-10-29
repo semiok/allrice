@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import {
   RouteDecisionSchema,
-  resolveAssistantSubscriptionSnapshot,
+  resolveSubscriptionSnapshot,
 } from '@allrice/contracts';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
 import {
@@ -79,7 +79,7 @@ suite(
           createdAt: new Date().toISOString(),
         });
         await recordRouteDecision(decision, f.db);
-        const snapshot = resolveAssistantSubscriptionSnapshot({
+        const snapshot = resolveSubscriptionSnapshot({
           sessionId: task.sessionId,
           modelSnapshot: frozen,
           decision,

@@ -10,19 +10,10 @@ import type { BaselineEntry } from './dsh-convergence-gate.ts';
 export const baseline: readonly BaselineEntry[] = [
   {
     kind: 'table',
-    id: 'allrice_native_questions',
-    category: '账本',
-    basis:
-      'MET-210 v4.5 PR4：DSH userQuestions 公开投影单向镜像；租户会话身份、任务时钟和授权证据需要 PG 查询，native_present 仅镜像集合成员资格；首次题与 closed_at 撤权事实不随原生移除丢弃，closed_at 仅是停止/回拨的 SaaS 撤权门卫。',
-    approvedBy:
-      '2026-10-28 主会话 PR4 草稿实现任务：核定会话账本属单向账本，运行开关为已批准上线策略。',
-  },
-  {
-    kind: 'table',
     id: 'allrice_assistant_artifacts',
     category: '待删',
     basis:
-      '0093：旧助手成果命名空间；子智能体 plan-v3-draft-astra.md §2 PR2b 九表退役，独立交付先上线。',
+      'MET-210 PR2b：旧执行器已删，待销毁的被动历史；保留原行、FK、失败/unknown 和计费事实，不参与当前执行。2026-10-29 主会话按 decommission-gate-plan §4 分期，数据销毁后移；本项仍是初始待删存量。',
     approvedBy: 'baseline 2026-10-27',
   },
   {
@@ -30,7 +21,7 @@ export const baseline: readonly BaselineEntry[] = [
     id: 'allrice_assistant_cost_receipts',
     category: '待删',
     basis:
-      '0096：依赖旧助手的计费回执；子智能体 plan-v3-draft-astra.md §2 PR2b 九表退役，保留通用订阅和账本。',
+      'MET-210 PR2b：旧执行器已删，待销毁的被动历史；保留原行、FK、失败/unknown 和计费事实，不参与当前执行。2026-10-29 主会话按 decommission-gate-plan §4 分期，数据销毁后移；本项仍是初始待删存量。',
     approvedBy: 'baseline 2026-10-27',
   },
   {
@@ -38,7 +29,7 @@ export const baseline: readonly BaselineEntry[] = [
     id: 'allrice_assistant_instances',
     category: '待删',
     basis:
-      '0093：旧助手实例与自写执行状态；子智能体 plan-v3-draft-astra.md §2 PR2b 九表退役，生命周期回归 DSH。',
+      'MET-210 PR2b：旧执行器已删，待销毁的被动历史；保留原行、FK、失败/unknown 和计费事实，不参与当前执行。2026-10-29 主会话按 decommission-gate-plan §4 分期，数据销毁后移；本项仍是初始待删存量。',
     approvedBy: 'baseline 2026-10-27',
   },
   {
@@ -46,7 +37,7 @@ export const baseline: readonly BaselineEntry[] = [
     id: 'allrice_assistant_messages',
     category: '待删',
     basis:
-      '0093：旧助手消息队列与投递状态；子智能体 plan-v3-draft-astra.md §2 PR2b 九表退役，消息由 DSH 管理。',
+      'MET-210 PR2b：旧执行器已删，待销毁的被动历史；保留原行、FK、失败/unknown 和计费事实，不参与当前执行。2026-10-29 主会话按 decommission-gate-plan §4 分期，数据销毁后移；本项仍是初始待删存量。',
     approvedBy: 'baseline 2026-10-27',
   },
   {
@@ -54,7 +45,7 @@ export const baseline: readonly BaselineEntry[] = [
     id: 'allrice_assistant_model_admissions',
     category: '待删',
     basis:
-      '0095：旧助手两阶段模型准入；子智能体 plan-v3-draft-astra.md §2 PR2b 九表退役，不删除通用预算设施。',
+      'MET-210 PR2b：旧执行器已删，待销毁的被动历史；保留原行、FK、失败/unknown 和计费事实，不参与当前执行。2026-10-29 主会话按 decommission-gate-plan §4 分期，数据销毁后移；本项仍是初始待删存量。',
     approvedBy: 'baseline 2026-10-27',
   },
   {
@@ -62,7 +53,7 @@ export const baseline: readonly BaselineEntry[] = [
     id: 'allrice_assistant_price_snapshots',
     category: '待删',
     basis:
-      '0096：旧助手根计价快照；子智能体 plan-v3-draft-astra.md §2 PR2b 九表退役，保留订阅共用的不可变触发函数。',
+      'MET-210 PR2b：旧执行器已删，待销毁的被动历史；保留原行、FK、失败/unknown 和计费事实，不参与当前执行。2026-10-29 主会话按 decommission-gate-plan §4 分期，数据销毁后移；本项仍是初始待删存量。',
     approvedBy: 'baseline 2026-10-27',
   },
   {
@@ -70,7 +61,7 @@ export const baseline: readonly BaselineEntry[] = [
     id: 'allrice_assistant_results',
     category: '待删',
     basis:
-      '0093：旧助手 report 结果协议；子智能体 plan-v3-draft-astra.md §2 PR2b 九表退役，须先完成独立交付链。',
+      'MET-210 PR2b：旧执行器已删，待销毁的被动历史；保留原行、FK、失败/unknown 和计费事实，不参与当前执行。2026-10-29 主会话按 decommission-gate-plan §4 分期，数据销毁后移；本项仍是初始待删存量。',
     approvedBy: 'baseline 2026-10-27',
   },
   {
@@ -78,7 +69,7 @@ export const baseline: readonly BaselineEntry[] = [
     id: 'allrice_assistant_roots',
     category: '待删',
     basis:
-      '0093：旧助手根配置与 generation/fence；子智能体 plan-v3-draft-astra.md §2 PR2b 九表退役，保留通用 runtime_roots。',
+      'MET-210 PR2b：旧执行器已删，待销毁的被动历史；保留原行、FK、失败/unknown 和计费事实，不参与当前执行。2026-10-29 主会话按 decommission-gate-plan §4 分期，数据销毁后移；本项仍是初始待删存量。',
     approvedBy: 'baseline 2026-10-27',
   },
   {
@@ -86,8 +77,89 @@ export const baseline: readonly BaselineEntry[] = [
     id: 'allrice_assistant_usage',
     category: '待删',
     basis:
-      '0093：依赖旧助手实例的用量预留与结算；子智能体 plan-v3-draft-astra.md §2 PR2b 九表退役，原生用量归通用根账本。',
+      'MET-210 PR2b：旧执行器已删，待销毁的被动历史；保留原行、FK、失败/unknown 和计费事实，不参与当前执行。2026-10-29 主会话按 decommission-gate-plan §4 分期，数据销毁后移；本项仍是初始待删存量。',
     approvedBy: 'baseline 2026-10-27',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_development_heads',
+    category: '存储后端',
+    basis:
+      '旧执行器已删，待销毁的被动历史；0101/0102 的已有行及 FK 必需来源原样保留，没有生产查询/写入入口。只登记实际仍存在的历史存储，不保留协调执行能力。',
+    approvedBy:
+      '2026-10-29 主会话 executor-first 书面任务：按 decommission-gate-plan §4 保留17表，显式后移数据销毁；AGENTS §11 方案取舍。',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_development_assignments',
+    category: '存储后端',
+    basis:
+      '旧执行器已删，待销毁的被动历史；0101/0102 的已有行及 FK 必需来源原样保留，没有生产查询/写入入口。只登记实际仍存在的历史存储，不保留协调执行能力。',
+    approvedBy:
+      '2026-10-29 主会话 executor-first 书面任务：按 decommission-gate-plan §4 保留17表，显式后移数据销毁；AGENTS §11 方案取舍。',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_development_proposals',
+    category: '存储后端',
+    basis:
+      '旧执行器已删，待销毁的被动历史；0101/0102 的已有行及 FK 必需来源原样保留，没有生产查询/写入入口。只登记实际仍存在的历史存储，不保留协调执行能力。',
+    approvedBy:
+      '2026-10-29 主会话 executor-first 书面任务：按 decommission-gate-plan §4 保留17表，显式后移数据销毁；AGENTS §11 方案取舍。',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_development_merges',
+    category: '存储后端',
+    basis:
+      '旧执行器已删，待销毁的被动历史；0101/0102 的已有行及 FK 必需来源原样保留，没有生产查询/写入入口。只登记实际仍存在的历史存储，不保留协调执行能力。',
+    approvedBy:
+      '2026-10-29 主会话 executor-first 书面任务：按 decommission-gate-plan §4 保留17表，显式后移数据销毁；AGENTS §11 方案取舍。',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_development_merge_sources',
+    category: '存储后端',
+    basis:
+      '旧执行器已删，待销毁的被动历史；0101/0102 的已有行及 FK 必需来源原样保留，没有生产查询/写入入口。只登记实际仍存在的历史存储，不保留协调执行能力。',
+    approvedBy:
+      '2026-10-29 主会话 executor-first 书面任务：按 decommission-gate-plan §4 保留17表，显式后移数据销毁；AGENTS §11 方案取舍。',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_development_verifiers',
+    category: '存储后端',
+    basis:
+      '旧执行器已删，待销毁的被动历史；0101/0102 的已有行及 FK 必需来源原样保留，没有生产查询/写入入口。只登记实际仍存在的历史存储，不保留协调执行能力。',
+    approvedBy:
+      '2026-10-29 主会话 executor-first 书面任务：按 decommission-gate-plan §4 保留17表，显式后移数据销毁；AGENTS §11 方案取舍。',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_development_reviews',
+    category: '存储后端',
+    basis:
+      '旧执行器已删，待销毁的被动历史；0101/0102 的已有行及 FK 必需来源原样保留，没有生产查询/写入入口。只登记实际仍存在的历史存储，不保留协调执行能力。',
+    approvedBy:
+      '2026-10-29 主会话 executor-first 书面任务：按 decommission-gate-plan §4 保留17表，显式后移数据销毁；AGENTS §11 方案取舍。',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_development_deliveries',
+    category: '存储后端',
+    basis:
+      '旧执行器已删，待销毁的被动历史；0101/0102 的已有行及 FK 必需来源原样保留，没有生产查询/写入入口。只登记实际仍存在的历史存储，不保留协调执行能力。',
+    approvedBy:
+      '2026-10-29 主会话 executor-first 书面任务：按 decommission-gate-plan §4 保留17表，显式后移数据销毁；AGENTS §11 方案取舍。',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_native_questions',
+    category: '账本',
+    basis:
+      'MET-210 v4.5 PR4：DSH userQuestions 公开投影单向镜像；租户会话身份、任务时钟和授权证据需要 PG 查询，native_present 仅镜像集合成员资格；首次题与 closed_at 撤权事实不随原生移除丢弃，closed_at 仅是停止/回拨的 SaaS 撤权门卫。',
+    approvedBy:
+      '2026-10-28 主会话 PR4 草稿实现任务：核定会话账本属单向账本，运行开关为已批准上线策略。',
   },
   {
     kind: 'table',
@@ -348,7 +420,8 @@ export const baseline: readonly BaselineEntry[] = [
     kind: 'patch',
     id: 'allrice-durable-task-clock-v1',
     category: '待删',
-    basis: 'MET-153：自写根时钟与等待生命周期，是否仅为 SaaS 租约部分待核。',
+    basis:
+      'MET-210 PR2b 已删旧助手 join/flush；仍保留普通 Run 的任务时钟投影，未改变此待核分类。',
     approvedBy: 'baseline 2026-10-27',
   },
   {
@@ -359,21 +432,6 @@ export const baseline: readonly BaselineEntry[] = [
       'MET-210 PR2a：DSH 公开 defineTool/register/restrict 接缝提供独立仓库复核业务工具及完整工具名单门卫，权限/租约与不可变意见仍为门卫/账本；不新增 Agent 生命周期。',
     approvedBy:
       '2026-10-28 / 29 用户 PR2a 独立复核修复任务说明：原生注册、Agent 工具限制门卫、Host allowlist 和真实 function-call；AGENTS.md §0 业务工具。',
-  },
-  {
-    kind: 'patch',
-    id: 'allrice-development-workflow-v1',
-    category: '待删',
-    basis:
-      'MET-144：自写子代理开发协作与评审流程，按 MET-210 子代理收敛计划核定。',
-    approvedBy: 'baseline 2026-10-27',
-  },
-  {
-    kind: 'patch',
-    id: 'allrice-assistant-required-delivery-v1',
-    category: '待删',
-    basis: 'MET-151：自写子代理交付权限和结果校验混用，按冻结包装层规则待核。',
-    approvedBy: 'baseline 2026-10-27',
   },
   {
     kind: 'patch',
@@ -426,7 +484,7 @@ export const baseline: readonly BaselineEntry[] = [
     id: 'allrice-final-delivery-v1',
     category: '待删',
     basis:
-      'MET-210 PR1b：独立根 Run 仅保留 SaaS 权限/持久化门卫，公开 wait 后一次平台 steer 修正；旧助手同回合包装仍待 PR2b 删除，资格由 PR1c 同窗放开。',
+      'MET-210 PR1b：独立根 Run 仅保留 SaaS 权限/持久化门卫，公开 wait 后一次平台 steer 修正；PR2b 已删除旧助手同回合包装，资格与 PR1c 同窗放开；分类保留原待删基线，未擅自重新核定。',
     approvedBy: 'baseline 2026-10-27',
   },
   {
@@ -435,14 +493,6 @@ export const baseline: readonly BaselineEntry[] = [
     category: '账本',
     basis:
       'MET-195：单向记录公开 shutdown/dispose 的关闭结果与 Worker 观察，供 SaaS 审计。',
-    approvedBy: 'baseline 2026-10-27',
-  },
-  {
-    kind: 'private-interface',
-    id: 'dsh-subagent-host-prompt: @deepseek-ai/dsh-subagent/internal',
-    category: '待删',
-    basis:
-      'compatibility.json：子代理包装层使用私有 host prompt 入口，公开替代接缝待主会话核定。',
     approvedBy: 'baseline 2026-10-27',
   },
 ];

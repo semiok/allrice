@@ -2,16 +2,16 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   RouteDecisionSchema,
-  resolveAssistantSubscriptionSnapshot,
-  defaultAssistantRunConfiguration,
+  resolveSubscriptionSnapshot,
 } from '@allrice/contracts';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
-import { recordRouteDecision } from './execution/route-decision.ts';
+import {
+  recordRouteDecision,
+  completeRouteDecision,
+} from './execution/route-decision.ts';
 import { freezeRouteSubscriptionSnapshot } from './execution/route-subscription.ts';
 import { createTaskProgressRuntime } from './task-progress.ts';
 import { readTaskClock } from './task-clock.ts';
-import { createRuntimeOperationLedger } from './runtime-ledger/ledger.ts';
-import { createAssistantRuntime } from './assistant-runtime.ts';
 import { listDshRuntimeEventTimeline } from './conversation/conversation-runtime.ts';
 import { cancelRun } from './execution/queue.ts';
 
@@ -28,7 +28,6 @@ suite(
       vi.unstubAllEnvs();
     });
     async function setup(proof = true) {
-      vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
       f = await createP27CodexWorkerFixture({ allowCiDatabase: true });
       const task = await f.prepareOrdinaryTask(
@@ -78,7 +77,7 @@ suite(
       });
       await recordRouteDecision(decision, f.db);
       if (proof) {
-        const snapshot = resolveAssistantSubscriptionSnapshot({
+        const snapshot = resolveSubscriptionSnapshot({
           sessionId: task.sessionId,
           modelSnapshot: frozen,
           decision,
@@ -106,135 +105,102 @@ suite(
         context = task.execution.context;
       const port = () => createTaskProgressRuntime({ context, worker }, f.db);
       const nativeSessionId = randomUUID();
-      return { task, context, worker, port, nativeSessionId };
+      return { task, context, worker, port, nativeSessionId, decision };
     }
-    it.each([
-      [true, 'observe', true],
-      [false, 'observe', true],
-      [true, 'enforce', true],
-    ] as const)(
-      'returns authoritative token policy (proof=%s, policy=%s) while preserving unknown usage',
-      async (proof, policy, observational) => {
-        vi.stubEnv('ALLRICE_CODEX_TOKEN_POLICY', policy);
-        const s = await setup(proof);
-        vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-        const task = {
-          scope: {
-            organizationId: f.organizationId,
-            workspaceId: f.workspaceId,
-            projectId: null,
-          },
-          rootRunId: s.task.runId,
-          runId: s.task.runId,
-          parentRunId: null,
-          chatSessionId: s.task.sessionId,
-          frozenConfiguration: {
-            employeeVersionId: null,
-            digest: `sha256:${'a'.repeat(64)}`,
-          },
-        };
-        const worker = { ...s.worker, generation: 1 };
-        const base = { scope: task.scope, rootRunId: task.rootRunId, worker };
-        const ledger = createRuntimeOperationLedger({
-          database: f.db,
-          admission: async () => {},
-        });
-        await ledger.createRoot({
-          task,
-          deadlineAt: s.task.execution.job.timeoutAt,
-          budgets: (
-            [
-              { metric: 'model_calls', capacity: 16 },
-              { metric: 'tool_calls', capacity: 64 },
-              { metric: 'input_tokens', capacity: 100000 },
-              { metric: 'output_tokens', capacity: 100000 },
-            ] as const
-          ).map((b) => ({
-            ...b,
-            unit: b.metric.endsWith('tokens') ? 'tokens' : 'calls',
-            currency: null,
-            source: {
-              kind: 'worker' as const,
-              sourceId: 'subscription-retry-test',
-            },
-          })),
-        });
-        const runtime = createAssistantRuntime({
-          database: f.db,
-          authorize: async () => {},
-        });
-        await runtime.configureRoot({
-          task,
-          configuration: {
-            ...defaultAssistantRunConfiguration(),
-            allowAssistants: true,
-          },
+    it.each([true, false])(
+      'ordinary model receipts preserve unknown usage across a retry (subscription proof=%s)',
+      async (proof) => {
+        const s = await setup(proof),
+          handle = s.port();
+        const firstCall = randomUUID();
+        await handle({
+          action: 'start',
+          kind: 'model',
           nativeSessionId: s.nativeSessionId,
-          worker,
-          allowedTools: [],
+          callId: firstCall,
         });
-        const dispatch = async (callId: string) => {
-          await runtime.prepareModelUsage({
-            ...base,
-            runId: task.runId,
-            callId,
-            requestedOutputTokens: 100,
-          });
-          return runtime.dispatchModelUsage({
-            ...base,
-            runId: task.runId,
-            callId,
-            inputTokens: 100,
-            outputTokens: 100,
-            requestDigest: `sha256:${'b'.repeat(64)}`,
-          });
+        const receipt = {
+          action: 'finish',
+          kind: 'model',
+          nativeSessionId: s.nativeSessionId,
+          callId: firstCall,
+          resultDigest: `sha256:${'a'.repeat(64)}`,
+          outcome: 'error',
         };
-        const failed = randomUUID();
-        await dispatch(failed);
-        await expect(
-          runtime.settleUsage({
-            ...base,
-            callId: failed,
-            amounts: { model_calls: 1, tool_calls: 0 },
-          }),
-        ).resolves.toEqual({ tokenUsageObservational: observational });
-        if (observational) {
-          const retry = randomUUID();
-          await expect(dispatch(retry)).resolves.toMatchObject({
-            reserved: true,
-          });
-          await runtime.settleUsage({
-            ...base,
-            callId: retry,
-            amounts: {
-              model_calls: 1,
-              tool_calls: 0,
-              input_tokens: 20,
-              output_tokens: 10,
+        await handle(receipt);
+        await handle(receipt);
+        const outcome = {
+          decisionId: s.decision.id,
+          status: 'failed' as const,
+          inputTokens: 0,
+          cachedInputTokens: 0,
+          outputTokens: 0,
+          costCents: null,
+          usageComplete: false,
+          cacheUsageKnown: false,
+          errorCode: 'SYNTHETIC_UNKNOWN_USAGE',
+          completedAt: new Date().toISOString(),
+        };
+        const settle = (value = outcome) =>
+          completeRouteDecision(
+            {
+              organizationId: f.organizationId,
+              workspaceId: f.workspaceId,
+              outcome: value,
             },
-          });
-          // The old request can never be dispatched a second time.
-          await expect(
-            runtime.dispatchModelUsage({
-              ...base,
-              runId: task.runId,
-              callId: failed,
-              inputTokens: 100,
-              outputTokens: 100,
-              requestDigest: `sha256:${'b'.repeat(64)}`,
-            }),
-          ).resolves.toMatchObject({ reserved: false });
-          await expect(runtime.finalizeRoot(base)).resolves.toMatchObject({
-            status: 'completed',
-            usageComplete: false,
-          });
-        }
-        const unknown =
-          await f.db`select metric,settled_amount from allrice_assistant_usage where call_id=${failed} and metric in ('input_tokens','output_tokens') order by metric`;
-        expect([...unknown]).toEqual([
-          { metric: 'input_tokens', settled_amount: null },
-          { metric: 'output_tokens', settled_amount: null },
-        ]);
+            f.db,
+          );
+        await settle();
+        await settle();
+        const before =
+          await f.db`select * from allrice_model_usage_ledger where route_decision_id=${s.decision.id}`;
+        expect(before).toHaveLength(1);
+        expect(before[0]).toMatchObject({
+          input_tokens: 0,
+          output_tokens: 0,
+          usage_complete: false,
+          cache_usage_known: false,
+          cost_cents: null,
+        });
+        // A new ordinary call can start; it must not repair the first call's
+        // unknown accounting or make the old dispatch replayable.
+        const retry = randomUUID();
+        await handle({
+          action: 'start',
+          kind: 'model',
+          nativeSessionId: s.nativeSessionId,
+          callId: retry,
+        });
+        await handle({
+          ...receipt,
+          callId: retry,
+          resultDigest: `sha256:${'b'.repeat(64)}`,
+          outcome: 'success',
+        });
+        await expect(
+          handle({
+            action: 'start',
+            kind: 'model',
+            nativeSessionId: s.nativeSessionId,
+            callId: firstCall,
+          }),
+        ).rejects.toThrow('task_progress_call_unknown_no_replay');
+        await expect(
+          settle({ ...outcome, usageComplete: true }),
+        ).rejects.toThrow('route decision outcome conflict');
+        expect(
+          await f.db`select * from allrice_model_usage_ledger where route_decision_id=${s.decision.id}`,
+        ).toEqual(before);
+        const calls =
+          await f.db`select finished_at,settled_output_tokens from allrice_task_calls where run_id=${s.task.runId} and kind='model'`;
+        expect(calls).toHaveLength(2);
+        expect(
+          calls.every(
+            (call) =>
+              call.finished_at instanceof Date &&
+              call.settled_output_tokens === null,
+          ),
+        ).toBe(true);
       },
     );
     it.each([true, false])(
@@ -243,122 +209,24 @@ suite(
         const s = await setup(proof),
           handle = s.port();
         await handle({ action: 'check', nativeSessionId: s.nativeSessionId });
-        vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-        const task = {
-          scope: {
-            organizationId: f.organizationId,
-            workspaceId: f.workspaceId,
-            projectId: null,
-          },
-          rootRunId: s.task.runId,
-          runId: s.task.runId,
-          parentRunId: null,
-          chatSessionId: s.task.sessionId,
-          frozenConfiguration: {
-            employeeVersionId: null,
-            digest: `sha256:${'a'.repeat(64)}`,
-          },
-        };
-        const ledger = createRuntimeOperationLedger({
-          database: f.db,
-          admission: async () => {},
-        });
-        await ledger.createRoot({
-          task,
-          deadlineAt: s.task.execution.job.timeoutAt,
-          budgets: (
-            [
-              { metric: 'model_calls', capacity: 16 },
-              { metric: 'tool_calls', capacity: 64 },
-              { metric: 'input_tokens', capacity: 100000 },
-              { metric: 'output_tokens', capacity: 100000 },
-            ] as const
-          ).map((b) => ({
-            ...b,
-            unit: b.metric.endsWith('tokens') ? 'tokens' : 'calls',
-            currency: null,
-            source: { kind: 'worker' as const, sourceId: 'met153-test' },
-          })),
-        });
-        const runtime = createAssistantRuntime({
-            database: f.db,
-            authorize: async () => {},
-          }),
-          worker = { ...s.worker, generation: 1 },
-          base = { scope: task.scope, rootRunId: task.rootRunId, worker };
-        await runtime.configureRoot({
-          task,
-          configuration: {
-            ...defaultAssistantRunConfiguration(),
-            allowAssistants: true,
-          },
-          nativeSessionId: s.nativeSessionId,
-          worker,
-          allowedTools: ['read', 'assistant.delegate'],
-        });
-        const child = (
-          await runtime.provision({
-            ...base,
-            parentRunId: task.runId,
-            delegationId: randomUUID(),
-            label: 'Read',
-            text: 'Synthetic read',
-            tools: ['read'],
-          })
-        ).instance;
+        const task = { runId: s.task.runId };
         for (let i = 0; i < 81; i++) {
-          const runId = i % 2 ? task.runId : child.runId,
-            callId = randomUUID();
-          await runtime.prepareModelUsage({
-            ...base,
-            runId,
+          const callId = randomUUID();
+          await handle({
+            action: 'start',
+            kind: 'model',
+            nativeSessionId: s.nativeSessionId,
             callId,
-            requestedOutputTokens: 10,
           });
-          await runtime.dispatchModelUsage({
-            ...base,
-            runId,
+          await handle({
+            action: 'finish',
+            kind: 'model',
+            nativeSessionId: s.nativeSessionId,
             callId,
-            inputTokens: 10,
-            outputTokens: 10,
-            requestDigest: `sha256:${'1'.repeat(64)}`,
-          });
-          await runtime.settleUsage({
-            ...base,
-            runId,
-            callId,
-            amounts: {
-              model_calls: 1,
-              tool_calls: 0,
-              input_tokens: 10,
-              output_tokens: 5,
-            },
+            resultDigest: `sha256:${i.toString(16).padStart(64, '0')}`,
+            outcome: 'success',
           });
           const toolId = randomUUID();
-          await runtime.reserveUsage({
-            ...base,
-            runId,
-            callId: toolId,
-            kind: 'tool',
-            tool: 'read',
-            amounts: {
-              model_calls: 0,
-              tool_calls: 1,
-              input_tokens: 0,
-              output_tokens: 0,
-            },
-          });
-          await runtime.settleUsage({
-            ...base,
-            runId,
-            callId: toolId,
-            amounts: {
-              model_calls: 0,
-              tool_calls: 1,
-              input_tokens: 0,
-              output_tokens: 0,
-            },
-          });
           await handle({
             action: 'start',
             kind: 'tool',
@@ -376,13 +244,12 @@ suite(
             outcome: 'success',
           });
         }
-        const tree = await runtime.getTree(f.context, { runId: task.runId });
         expect(
-          tree.budgets.find((b) => b.metric === 'model_calls'),
-        ).toMatchObject({ spent: 81, enforced: false });
-        expect(
-          tree.budgets.find((b) => b.metric === 'tool_calls'),
-        ).toMatchObject({ spent: 81, enforced: false });
+          await f.db`select kind,count(*)::int calls,count(*) filter(where finished_at is null)::int pending from allrice_task_calls where run_id=${task.runId} group by kind order by kind`,
+        ).toEqual([
+          { kind: 'model', calls: 81, pending: 0 },
+          { kind: 'tool', calls: 81, pending: 0 },
+        ]);
         for (let i = 0; i < 3; i++) {
           await handle({
             action: 'start',

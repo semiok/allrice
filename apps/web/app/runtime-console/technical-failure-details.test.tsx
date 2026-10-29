@@ -17,22 +17,6 @@ const record = TechnicalRecordSchema.parse({
   category: null,
   observedAt: '2026-10-14T08:35:13.000Z',
   failureDetails: {
-    model: {
-      version: 1,
-      truncated: false,
-      failures: [
-        {
-          nativeSessionId: 'dsh-original',
-          callId: id,
-          phase: 'finish',
-          code: 'PI_AI_ERROR',
-          stopKind: 'error',
-          inputUsageKnown: false,
-          outputUsageKnown: false,
-          settlementConfirmed: true,
-        },
-      ],
-    },
     cloud: [
       {
         operationId: id,
@@ -54,9 +38,6 @@ describe('technical failure attribution', () => {
     for (const text of [
       '根因尚未确认',
       '不能据此认定',
-      'finish',
-      'PI_AI_ERROR',
-      '不能记为零',
       '计算达到执行时限',
       'unknown',
       '已确认停止',

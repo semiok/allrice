@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import {
   ProjectSnapshotSchema,
   projectSourceLimits,
-  developmentPathsOverlap,
+  workspacePathsOverlap,
   type ProjectSnapshot,
   type RuntimeContentRef,
   type ProjectWorkspaceCommand,
@@ -100,7 +100,7 @@ export function applyProjectProposal(
     proposal.files.some((f, i) =>
       proposal.files
         .slice(i + 1)
-        .some((g) => developmentPathsOverlap(f.path, g.path)),
+        .some((g) => workspacePathsOverlap(f.path, g.path)),
     )
   )
     projectFail('path_conflict');

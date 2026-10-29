@@ -8,9 +8,9 @@ import type {
 } from '@allrice/contracts';
 import * as client from './core/client.ts';
 import {
-  createAssistantFixtureDatabase,
-  assistantFixtureStorage,
-} from './assistant-runtime.fixture.ts';
+  createRuntimeFixtureDatabase,
+  runtimeFixtureStorage,
+} from './runtime.fixture.ts';
 import { tenantValidationFixture } from './tenant-validation.fixture.ts';
 import {
   ensureBootstrapPortalPrincipal,
@@ -51,7 +51,7 @@ const suite =
 suite(
   'explicit company publications (isolated PostgreSQL and real storage)',
   () => {
-    let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
+    let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
       a: Awaited<ReturnType<typeof tenantValidationFixture>>,
       foreign: typeof a;
     let owner: RequestContext, member: RequestContext, admin: RequestContext;
@@ -72,7 +72,7 @@ suite(
     });
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-      f = await createAssistantFixtureDatabase();
+      f = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
       const p = await ensureBootstrapPortalPrincipal(
         {
@@ -135,7 +135,7 @@ suite(
         ctx,
         a.context.organizationId,
         value,
-        assistantFixtureStorage(f.db),
+        runtimeFixtureStorage(f.db),
         administration,
         f.db,
       );
@@ -214,9 +214,9 @@ suite(
         f.db,
       );
       expect(
-        await readArtifactBytes(assistantFixtureStorage(f.db), shared.object),
+        await readArtifactBytes(runtimeFixtureStorage(f.db), shared.object),
       ).toEqual(
-        await readArtifactBytes(assistantFixtureStorage(f.db), original.object),
+        await readArtifactBytes(runtimeFixtureStorage(f.db), original.object),
       );
       expect(shared.object.retentionUntil).toBeNull();
       expect(shared.object.immutable).toBe(true);
@@ -551,12 +551,8 @@ suite(
         f.db,
       );
       expect(
-        (
-          await readArtifactBytes(
-            assistantFixtureStorage(f.db),
-            retained.object,
-          )
-        ).length,
+        (await readArtifactBytes(runtimeFixtureStorage(f.db), retained.object))
+          .length,
       ).toBeGreaterThan(0);
       saved = await mutate(
         admin,
@@ -716,7 +712,7 @@ suite(
         expect(
           (
             await readArtifactBytes(
-              assistantFixtureStorage(f.db),
+              runtimeFixtureStorage(f.db),
               file.object,
               100000,
             )
@@ -1092,7 +1088,7 @@ suite(
     });
     it('rolls back failed snapshot copies and removes only the uncommitted object', async () => {
       let allocated: StorageObject | undefined;
-      const storage = assistantFixtureStorage(f.db),
+      const storage = runtimeFixtureStorage(f.db),
         assetId = randomUUID();
       const failing = {
         ...storage,

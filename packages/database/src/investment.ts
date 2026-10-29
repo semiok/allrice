@@ -153,7 +153,7 @@ export async function saveInvestmentEntry(
       const facts: Record<string, unknown> = {};
       if (content.kind === 'work') {
         const sourceRuns =
-          await tx`select r.id,er.session_id from allrice_runs r join allrice_employee_runs er on er.run_id=r.id and er.organization_id=r.organization_id and er.workspace_id=r.workspace_id and er.owner_id=r.owner_id where r.id in ${tx(content.sourceRunIds)} and r.organization_id=${org} and r.workspace_id=${workspace} and r.owner_id=${context.actor.id} and not exists(select 1 from allrice_assistant_instances ai where ai.run_id=r.id and ai.run_id<>ai.root_run_id)`;
+          await tx`select r.id,er.session_id from allrice_runs r join allrice_employee_runs er on er.run_id=r.id and er.organization_id=r.organization_id and er.workspace_id=r.workspace_id and er.owner_id=r.owner_id where r.id in ${tx(content.sourceRunIds)} and r.organization_id=${org} and r.workspace_id=${workspace} and r.owner_id=${context.actor.id}`;
         if (sourceRuns.length !== content.sourceRunIds.length)
           throw new InvestmentEvidenceError('source_unavailable');
         facts.sourceRunIds = content.sourceRunIds;

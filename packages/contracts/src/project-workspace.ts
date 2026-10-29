@@ -4,7 +4,7 @@ import { ChecksumSchema } from './runs.ts';
 import { RuntimeContentRefSchema } from './runtime-v2/identity.ts';
 import { isRuntimeRelativePath } from './runtime-v2/policy.ts';
 import { TextChangesetProposalSchema } from './runtime-v2/artifact-review.ts';
-import { developmentPathsOverlap } from './development-cooperation.ts';
+import { workspacePathsOverlap } from './workspace-path.ts';
 
 export const projectSourceLimits = Object.freeze({
   files: 64,
@@ -60,7 +60,7 @@ export const ProjectSnapshotSchema = z
       snapshot.files.some((f, i) =>
         snapshot.files
           .slice(i + 1)
-          .some((g) => developmentPathsOverlap(f.path, g.path)),
+          .some((g) => workspacePathsOverlap(f.path, g.path)),
       )
     )
       ctx.addIssue({ code: 'custom', message: 'project_path_conflict' });

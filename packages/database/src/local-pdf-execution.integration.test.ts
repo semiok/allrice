@@ -18,9 +18,9 @@ import {
   type RuntimeLocalPdfPayload,
 } from '@allrice/contracts';
 import {
-  createAssistantFixtureDatabase,
-  assistantFixtureStorage,
-} from './assistant-runtime.fixture.ts';
+  createRuntimeFixtureDatabase,
+  runtimeFixtureStorage,
+} from './runtime.fixture.ts';
 import { heartbeatBridgeDevice } from './bridge.ts';
 import {
   employeeManifest,
@@ -99,14 +99,14 @@ const profile = RuntimeLocalPdfProfileSchema.parse({
 });
 
 suite('MET166 independent read-only PDF original-call authority', () => {
-  let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   beforeAll(async () => {
     vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
     vi.stubEnv('ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED', '1');
     vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
     vi.stubEnv('ALLRICE_LOCAL_COMMAND_ENABLED', '0');
     vi.stubEnv('ALLRICE_CLOUD_RUNNER_ENABLED', '0');
-    database = await createAssistantFixtureDatabase();
+    database = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(database.db);
   }, 60000);
   afterAll(async () => {
@@ -386,7 +386,7 @@ suite('MET166 independent read-only PDF original-call authority', () => {
         sizeBytes: bytes.length,
         checksum: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
       });
-    await assistantFixtureStorage(db).put(
+    await runtimeFixtureStorage(db).put(
       object,
       new Blob([Uint8Array.from(bytes)]).stream(),
     );
@@ -567,7 +567,7 @@ suite('MET166 independent read-only PDF original-call authority', () => {
           sourceVersionId: f.source.artifactVersionId,
         },
       },
-      assistantFixtureStorage(db),
+      runtimeFixtureStorage(db),
       false,
       db,
     );
@@ -579,7 +579,7 @@ suite('MET166 independent read-only PDF original-call authority', () => {
         assetId: asset.id,
         expectedRevision: asset.revision,
       },
-      assistantFixtureStorage(db),
+      runtimeFixtureStorage(db),
       false,
       db,
     );
@@ -615,7 +615,7 @@ suite('MET166 independent read-only PDF original-call authority', () => {
     const [material] = await prepareCompanyRunMaterials(
       execution,
       snapshot,
-      assistantFixtureStorage(db),
+      runtimeFixtureStorage(db),
       db,
     );
     const source = {
@@ -672,7 +672,7 @@ suite('MET166 independent read-only PDF original-call authority', () => {
         assetId: asset.id,
         expectedRevision: asset.revision,
       },
-      assistantFixtureStorage(db),
+      runtimeFixtureStorage(db),
       false,
       db,
     );
@@ -762,7 +762,7 @@ suite('MET166 independent read-only PDF original-call authority', () => {
       db,
     );
     expect(input.object.checksum).toBe(f.object.checksum);
-    const stored = await assistantFixtureStorage(db).get(input.object);
+    const stored = await runtimeFixtureStorage(db).get(input.object);
     expect(Buffer.from(await new Response(stored).arrayBuffer())).toEqual(
       f.bytes,
     );

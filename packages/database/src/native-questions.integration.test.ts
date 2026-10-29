@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import type { TransactionSql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
-import { createAssistantLocalCommandFixture } from './local-command-assistant.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
+import { createLocalCommandFixture } from './local-command.fixture.ts';
 import * as client from './core/client.ts';
 import { bindNativeQuestionFixture } from './native-question-binding.fixture.ts';
 import { createSession, authenticateSession } from './identity.ts';
@@ -50,7 +50,7 @@ const suite =
 suite(
   'MET-210 session question projection through the leased Worker event entry',
   () => {
-    let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     beforeAll(async () => {
       for (const flag of [
         'ALLRICE_ASSISTANTS_ENABLED',
@@ -59,7 +59,7 @@ suite(
         'ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED',
       ])
         vi.stubEnv(flag, '1');
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     }, 120000);
     afterAll(async () => {
@@ -68,12 +68,7 @@ suite(
       await fixture?.close();
     });
     async function setup() {
-      const f = await createAssistantLocalCommandFixture(
-        fixture.db,
-        'ask',
-        false,
-        { skipChild: true },
-      );
+      const f = await createLocalCommandFixture(fixture.db, 'ask', false, {});
       await f.db`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy)
       values(${f.rootRunId},${f.org},${f.workspace},${f.db.json({ ...resolveTaskRuntimePolicy([]) })})`;
       const [user] =
@@ -292,7 +287,7 @@ suite(
 // chat admission, Worker lease checks, clocks and cancellation use real SQL.
 // No claim is made about PR4b/4c answer routing or enabling timed in the UI.
 suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
-  let isolated: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let isolated: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   type Conversation = Awaited<ReturnType<typeof createExperienceFixture>>;
   type Turn = Awaited<ReturnType<typeof startTurn>>;
   type Active = NativeQuestionProjection['questions']['active'];
@@ -302,7 +297,7 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(
       Error('PR4a SQL tests must not access external services'),
     );
-    isolated = await createAssistantFixtureDatabase();
+    isolated = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(isolated.db);
   }, 120000);
   afterAll(async () => {
@@ -962,7 +957,7 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
   });
 
   it('upgrades populated pre-0226 chat history without changing legacy model/program waits or clocks', async () => {
-    const checkpoint = await createAssistantFixtureDatabase({
+    const checkpoint = await createRuntimeFixtureDatabase({
       throughMigration: '0223_agent_preferences.sql',
     });
     const db = checkpoint.db;
@@ -988,9 +983,7 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
           );
         });
       }
-      const f = await createAssistantLocalCommandFixture(db, 'ask', false, {
-        skipChild: true,
-      });
+      const f = await createLocalCommandFixture(db, 'ask', false, {});
       await db`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy)
         values(${f.rootRunId},${f.org},${f.workspace},${db.json({ ...resolveTaskRuntimePolicy([]) })})`;
       const turn: Turn = {

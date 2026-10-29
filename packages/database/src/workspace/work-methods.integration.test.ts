@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { createAssistantFixtureDatabase } from '../assistant-runtime.fixture.ts';
-import { createAssistantLocalCommandFixture } from '../local-command-assistant.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
+import { createLocalCommandFixture } from '../local-command.fixture.ts';
 import { createLocalCommandOperation } from '../local-command-service.ts';
 import { appendJobEvent } from '../execution/queue.ts';
 import * as client from '../core/client.ts';
@@ -13,7 +13,7 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('message work methods from durable execution receipts', () => {
-  let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   beforeAll(async () => {
     for (const flag of [
       'ALLRICE_ASSISTANTS_ENABLED',
@@ -22,7 +22,7 @@ suite('message work methods from durable execution receipts', () => {
       'ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED',
     ])
       vi.stubEnv(flag, '1');
-    fixture = await createAssistantFixtureDatabase();
+    fixture = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
   }, 120000);
   afterAll(async () => {
@@ -30,10 +30,7 @@ suite('message work methods from durable execution receipts', () => {
     vi.unstubAllEnvs();
     await fixture?.close();
   });
-  const setup = () =>
-    createAssistantLocalCommandFixture(fixture.db, 'ask', false, {
-      skipChild: true,
-    });
+  const setup = () => createLocalCommandFixture(fixture.db, 'ask', false, {});
   it('ignores plain prose, tool intents and unavailable async returns; deduplicates actual completed work in history', async () => {
     const f = await setup();
     const read = () =>

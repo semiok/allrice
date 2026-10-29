@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
-  assistantFixture,
-  createAssistantFixtureDatabase,
-} from './assistant-runtime.fixture.ts';
+  runtimeTaskFixture,
+  createRuntimeFixtureDatabase,
+} from './runtime.fixture.ts';
 import { closeDatabase } from './core/client.ts';
 import { cancelRun, failClaimedJobStart } from './execution/queue.ts';
 import type { EventRow, JobRow, RunRow } from './queue/row-mappers.ts';
@@ -15,11 +15,11 @@ const suite =
     : describe.skip;
 
 suite('claimed start failure — isolated PostgreSQL', () => {
-  let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
 
   beforeAll(async () => {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-    database = await createAssistantFixtureDatabase();
+    database = await createRuntimeFixtureDatabase();
     const [scope] = await database.db<
       { schema: string }[]
     >`select current_schema() as schema`;
@@ -42,7 +42,7 @@ suite('claimed start failure — isolated PostgreSQL', () => {
   });
 
   async function setup() {
-    const f = await assistantFixture(database.db);
+    const f = await runtimeTaskFixture(database.db);
     f.context.memberships = (
       await database.db`select * from allrice_memberships where user_id=${f.context.actor.id}`
     ).map((m) => ({

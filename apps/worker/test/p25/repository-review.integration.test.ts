@@ -1,4 +1,6 @@
+import type { RepositoryReviewArtifactRef } from '../../../../packages/database/src/platform-repository-review-contracts.ts';
 import { createReadPathProbe } from '../../../../packages/database/src/read-path-probe.fixture.ts';
+import { readRetiredExecutionHistory } from './retired-execution-history.fixture.ts';
 import {
   expectReadPathRowLocked,
   readPathSignal,
@@ -18,7 +20,6 @@ import {
 } from '../../src/harness/dsh-native-artifact.js';
 import JSZip from 'jszip';
 import { repositoryDigest } from '../../../../packages/database/src/platform-repository-source.ts';
-import { updateWorkAutomation } from '../../../../packages/database/src/work-automation.ts';
 import { RepositoryCompletedReviewSchema } from '../../../../packages/database/src/platform-repository-merge-contracts.ts';
 import * as modelPool from '../../../../packages/database/src/providers/model-pool.ts';
 import * as harnessRouter from '../../src/harness/router.js';
@@ -30,13 +31,12 @@ import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import {
   PlatformEmployeeDefinitionSchema,
   type RequestContext,
-  type DevelopmentArtifactRef,
 } from '@allrice/contracts';
 import * as client from '../../../../packages/database/src/core/client.ts';
 import {
-  createAssistantFixtureDatabase,
-  assistantFixtureStorage,
-} from '../../../../packages/database/src/assistant-runtime.fixture.ts';
+  createRuntimeFixtureDatabase,
+  runtimeFixtureStorage,
+} from '../../../../packages/database/src/runtime.fixture.ts';
 import { createExperienceFixture } from '../../../../packages/database/src/experience.fixture.ts';
 import {
   ensureBootstrapPortalPrincipal,
@@ -164,7 +164,7 @@ function reviewLockConnection(
 suite(
   'platform repository review native workflow and current authority',
   () => {
-    let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let platformEmployeeId: string;
     const emails = new Set<string>();
     let manifestPath: string, previousManifest: Buffer | undefined;
@@ -190,7 +190,7 @@ suite(
       await installDshNativeArtifact({ root, expectedId: artifact.artifactId });
       vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', artifact.artifactId);
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', artifact.artifactId);
-      f = await createAssistantFixtureDatabase();
+      f = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
       vi.stubEnv('ALLRICE_ENV', 'development');
       vi.stubEnv('ALLRICE_MCP_CREDENTIAL_KEY', 'a'.repeat(64));
@@ -487,7 +487,6 @@ suite(
 
     it.each([
       'accept',
-      'saved-assistants',
       'revise',
       'missing-review',
       'question-attempt',
@@ -496,21 +495,13 @@ suite(
     ] as const)(
       '真实入口 → Worker → DSH → PG，无助手：%s',
       async (mode) => {
+        const legacyHistory = await readRetiredExecutionHistory(f.db);
         const s = await setup();
-        const assistantsEnabled = process.env.ALLRICE_ASSISTANTS_ENABLED;
-        if (mode === 'saved-assistants') {
-          vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-          await updateWorkAutomation(s.internal, s.internal.workspaceId!, {
-            expectedRevision: 0,
-            capability: 'assistants',
-            enabled: true,
-          });
-        }
         let review: Awaited<ReturnType<typeof s.create>>;
         const command = (args: Record<string, unknown>) => ({
           nativeTool: { name: 'platform_repository_review', arguments: args },
         });
-        let candidate: DevelopmentArtifactRef;
+        let candidate: RepositoryReviewArtifactRef;
         const model = await p24Fixture(async (request, index) => {
           // Inspect the complete real profile, including tools that the Host
           // does not forward through the AllRice Broker.
@@ -629,9 +620,7 @@ suite(
           const [diagnostic] =
             await f.db`select last_error_code,last_error_message from allrice_jobs where id=${review.jobId}`;
           expect(detail.status, JSON.stringify(diagnostic)).toBe(
-            mode === 'accept' ||
-              mode === 'saved-assistants' ||
-              mode === 'revise'
+            mode === 'accept' || mode === 'revise'
               ? 'succeeded'
               : mode === 'cancel'
                 ? 'canceled'
@@ -662,17 +651,9 @@ suite(
           const artifacts =
             await f.db`select w.run_id,o.state,o.checksum from allrice_workbench_artifacts w join allrice_deliverable_versions v on v.id=w.version_id join allrice_storage_objects o on o.id=v.object_id where w.run_id=${review.runId}`;
           expect(artifacts).toHaveLength(
-            mode === 'accept' || mode === 'saved-assistants'
-              ? 3
-              : mode === 'revise'
-                ? 2
-                : 0,
+            mode === 'accept' ? 3 : mode === 'revise' ? 2 : 0,
           );
-          if (
-            mode === 'accept' ||
-            mode === 'saved-assistants' ||
-            mode === 'revise'
-          ) {
+          if (mode === 'accept' || mode === 'revise') {
             expect(detail.verdict).toBe(
               mode === 'revise' ? 'revise' : 'accept',
             );
@@ -699,17 +680,9 @@ suite(
               })),
             );
           }
-          for (const table of [
-            'allrice_assistant_roots',
-            'allrice_assistant_instances',
-            'allrice_assistant_results',
-          ]) {
-            const rows = await f.db.unsafe(
-              `select 1 from ${table} where ${table === 'allrice_assistant_roots' ? 'root_run_id' : 'run_id'}=$1`,
-              [review.runId],
-            );
-            expect(rows).toHaveLength(0);
-          }
+          expect(await readRetiredExecutionHistory(f.db)).toEqual(
+            legacyHistory,
+          );
         } finally {
           await adapter.close();
           await model.close();
@@ -717,7 +690,6 @@ suite(
           freeze.mockRestore();
           router.mockRestore();
           vi.stubEnv('ALLRICE_DSH_PLATFORM_HOME', oldHome);
-          vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', assistantsEnabled);
         }
       },
       60000,
@@ -750,12 +722,11 @@ suite(
       ).toHaveLength(0);
     });
 
-    it('0228 moves both reviewer FKs to ordinary Runs while keeping the separate 0101/0102 deletion closure intact', async () => {
+    it('0229 retains both ordinary reviewer Run FKs from 0228', async () => {
       const rows =
         await f.db`select c.conrelid::regclass::text relation,c.confrelid::regclass::text target
         from pg_constraint c where c.connamespace=(select oid from pg_namespace where nspname=current_schema()) and c.contype='f' and
-        ((c.conrelid in ('allrice_platform_repository_review_subjects'::regclass,'allrice_platform_repository_reviews'::regclass) and c.conkey=array[(select attnum from pg_attribute where attrelid=c.conrelid and attname='reviewer_run_id')])
-          or (c.conrelid in ('allrice_development_verifiers'::regclass,'allrice_development_reviews'::regclass) and c.confrelid='allrice_assistant_instances'::regclass))`;
+        (c.conrelid in ('allrice_platform_repository_review_subjects'::regclass,'allrice_platform_repository_reviews'::regclass) and c.conkey=array[(select attnum from pg_attribute where attrelid=c.conrelid and attname='reviewer_run_id')])`;
       const review = rows.filter((r) =>
         r.relation.includes('platform_repository'),
       );
@@ -763,7 +734,7 @@ suite(
       expect(review.every((r) => r.target.endsWith('allrice_runs'))).toBe(true);
       expect(
         rows.filter((r) => !r.relation.includes('platform_repository')),
-      ).toHaveLength(2);
+      ).toHaveLength(0);
     });
 
     async function start(
@@ -800,7 +771,7 @@ suite(
             requestId,
             arguments: args,
           },
-          assistantFixtureStorage(f.db),
+          runtimeFixtureStorage(f.db),
           f.db,
         );
       const allowed = () =>
@@ -817,7 +788,7 @@ suite(
       verdict: 'accept' | 'revise' = 'accept',
     ) {
       const seed = (await s.development({ action: 'inspect' })) as {
-        candidate: DevelopmentArtifactRef;
+        candidate: RepositoryReviewArtifactRef;
         evidence: unknown;
         material: RepositoryReviewMaterial;
       };
@@ -828,7 +799,7 @@ suite(
         evidence: seed.evidence,
         verdict,
         summary: 'Synthetic test opinion, not real model review',
-      })) as { id: string; artifact: DevelopmentArtifactRef };
+      })) as { id: string; artifact: RepositoryReviewArtifactRef };
       return { seed, review };
     }
 
@@ -897,7 +868,7 @@ suite(
             requestId: randomUUID(),
             arguments: { action: 'inspect' },
           },
-          assistantFixtureStorage(f.db),
+          runtimeFixtureStorage(f.db),
           tool.db,
         ),
       );
@@ -979,7 +950,7 @@ suite(
               requestId: randomUUID(),
               arguments: { action: 'inspect' },
             },
-            assistantFixtureStorage(f.db),
+            runtimeFixtureStorage(f.db),
             tool.db,
           ),
         );
@@ -2177,6 +2148,7 @@ suite(
     }, 30000);
 
     it('completes independent Job inspect → saved opinion → delivery → canonical completion and private download without assistants', async () => {
+      const legacyHistory = await readRetiredExecutionHistory(f.db);
       const s = await start(await setup()),
         o = await opinion(s);
       await expect(
@@ -2192,7 +2164,7 @@ suite(
         action: 'deliver',
         candidate: o.seed.candidate,
         reviewId: o.review.id,
-      })) as { artifact: DevelopmentArtifactRef };
+      })) as { artifact: RepositoryReviewArtifactRef };
       expect(await s.allowed()).toBe(true);
       await recordRepositoryReviewRemote(
         s.lease,
@@ -2237,11 +2209,7 @@ suite(
           detail.reviewArtifactId!,
         ),
       ).rejects.toMatchObject({ code: 'not_found' });
-      expect(
-        (
-          await f.db`select root_run_id from allrice_development_heads where root_run_id=${s.review.runId}`
-        ).length,
-      ).toBe(0);
+      expect(await readRetiredExecutionHistory(f.db)).toEqual(legacyHistory);
     }, 30000);
     it('cancellation of the review Job invalidates delivery and final completion', async () => {
       const s = await start(await setup()),

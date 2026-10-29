@@ -192,16 +192,8 @@ async function assertIdle(tx: Tx, scope: NativeTestChatRetirementScope) {
         or lease_expires_at>clock_timestamp())
     union all select 1 from allrice_conversation_runtimes where session_id=${scope.contextId}
       and (state='running' or active_run_id is not null)
-    union all select 1 from allrice_assistant_model_admissions where root_run_id in (select run_id from subjects)
-      and finished_at is null
-    union all select 1 from allrice_assistant_instances where root_run_id in (select run_id from roots)
-      and (status not in ('completed','partial','failed','canceled') or stopped_at is null)
-    union all select 1 from allrice_assistant_messages where root_run_id in (select run_id from roots)
-      and status not in ('adopted','canceled')
     union all select 1 from allrice_native_question_waits where run_id in (select run_id from subjects) and state<>'continued'
     union all select 1 from allrice_native_task_dispatches where run_id in (select run_id from subjects) and state<>'completed'
-    union all select 1 from allrice_assistant_usage where root_run_id in (select run_id from roots)
-      and metric='tool_calls' and amount>0 and settled_amount is null
     union all select 1 from allrice_task_calls where run_id in (select run_id from subjects) and finished_at is null
     union all select 1 from allrice_task_resource_waits where run_id in (select run_id from subjects)
       and (state not in ('completed','failed','canceled') or finished_at is null)

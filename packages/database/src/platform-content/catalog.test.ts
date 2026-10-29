@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  DevelopmentCommandSchema,
-  ProjectWorkspaceToolInputSchema,
-} from '@allrice/contracts';
+import { ProjectWorkspaceToolInputSchema } from '@allrice/contracts';
 
 import {
   loadPlatformContentCatalog,
@@ -37,33 +34,10 @@ describe('platform content catalog', () => {
       'workspace.skill.read',
     ]);
   });
-  it('validates the shipped development review example against the actual tool contract', async () => {
-    const catalog = await loadPlatformContentCatalog();
-    const skill = catalog.skills.find(
-      (s) => s.name === 'development-cooperation',
-    )!;
-    const resource = skill.bundle!.resources.find(
-      (r) => r.path === 'references/review.md',
-    )!;
-    const markdown = Buffer.from(resource.contentBase64, 'base64').toString(
-      'utf8',
-    );
-    const example = markdown.match(/```json\n([\s\S]*?)\n```/)![1]!;
-    const resolved = example
-      .replaceAll('$CANDIDATE_ID', '00000000-0000-4000-8000-000000000001')
-      .replaceAll('$CANDIDATE_DIGEST', `sha256:${'a'.repeat(64)}`)
-      .replaceAll('$TEST_OPERATION_ID', '00000000-0000-4000-8000-000000000002');
-    const command = JSON.parse(resolved);
-    expect(DevelopmentCommandSchema.safeParse(command).success).toBe(true);
-    expect(
-      DevelopmentCommandSchema.safeParse({ ...command, verdict: 'revise' })
-        .success,
-    ).toBe(true);
-  });
   it('loads every current production Skill from its canonical source file', async () => {
     const catalog = await loadPlatformContentCatalog();
 
-    expect(catalog.skills).toHaveLength(18);
+    expect(catalog.skills).toHaveLength(17);
     expect(catalog.skills.map((skill) => skill.name)).toEqual([
       'business-reconciliation',
       'web-research',
@@ -77,7 +51,6 @@ describe('platform content catalog', () => {
       'workflow-automation',
       'browser-research',
       'office',
-      'development-cooperation',
       'project-development',
       'scientific-analysis',
       'operations-review',
@@ -101,7 +74,7 @@ describe('platform content catalog', () => {
       'structured-deliverable',
     ]);
     expect(legacy.every((skill) => !skill.enabled)).toBe(true);
-    expect(catalog.skills.filter((skill) => skill.enabled)).toHaveLength(16);
+    expect(catalog.skills.filter((skill) => skill.enabled)).toHaveLength(15);
     expect(office.requiredToolRefs).toEqual(
       expect.arrayContaining(legacy.flatMap((skill) => skill.requiredToolRefs)),
     );

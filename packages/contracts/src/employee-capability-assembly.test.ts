@@ -2,7 +2,6 @@ import { expect, it } from 'vitest';
 import {
   assembleEmployeeCapabilities,
   prepareEmployeeEditorDefinition,
-  developmentWorkflowToolNames,
   employeePublicationPolicy,
   upgradeEmployeeSkillBindings,
   employeeToolDependencySources,
@@ -208,17 +207,15 @@ it('selecting MCP assembles its identity permission and local discovery dependen
     'storage:write',
   );
 });
-it('makes a development selection include the whole delivery workflow and required Bridge mode', () => {
+it('does not grant dependencies or Bridge authority for the retired development tool', () => {
   const input = definition();
   input.capabilities.toolNames = ['assistant.development'];
   const result = assembleEmployeeCapabilities(input, []);
-  expect(result.capabilities.toolNames).toEqual(
-    expect.arrayContaining([...developmentWorkflowToolNames]),
-  );
-  expect(result.securityPolicy.bridgeAccess).toBe('read_write');
-  expect(result.securityPolicy.deniedCapabilities).not.toContain(
-    'storage:write',
-  );
+  expect(result.capabilities.toolNames).toEqual(['assistant.development']);
+  expect(result.securityPolicy).toEqual(input.securityPolicy);
+  expect(employeeToolConfigurationErrors(result)).toEqual([
+    '未注册工具：assistant.development',
+  ]);
 });
 it('publishing selected tools enables their rules while retaining unrelated restrictions', () => {
   const policy = employeePublicationPolicy(
@@ -227,11 +224,11 @@ it('publishing selected tools enables their rules while retaining unrelated rest
       enabled: false,
       mode: 'plan_only',
       rules: [
-        { action: 'assistant.delegate', effect: 'deny' },
+        { action: 'local.fs.write', effect: 'deny' },
         { action: 'cloud.mcp.call', effect: 'deny' },
       ],
     },
-    ['assistant.delegate', 'local.process.execute'],
+    ['local.fs.write', 'local.process.execute'],
     3,
   );
   expect(policy).toEqual({
@@ -240,7 +237,7 @@ it('publishing selected tools enables their rules while retaining unrelated rest
     mode: 'execute',
     rules: [
       { action: 'cloud.mcp.call', effect: 'deny' },
-      { action: 'assistant.delegate', effect: 'allow' },
+      { action: 'local.fs.write', effect: 'allow' },
       { action: 'local.process.execute', effect: 'allow' },
     ],
   });

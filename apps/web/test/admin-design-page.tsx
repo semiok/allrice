@@ -22,7 +22,6 @@ function SkillTimelineFixture() {
   const names = [
     'browser-research',
     'business-reconciliation',
-    'development-cooperation',
     'governed-memory',
     'market-data',
     'office',
@@ -49,7 +48,7 @@ function SkillTimelineFixture() {
     ? [
         {
           ...records[0]!,
-          title: 'Skill 已就绪 · 13 个',
+          title: `Skill 已就绪 · ${names.length} 个`,
           detail: names.join('、'),
         },
       ]

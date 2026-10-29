@@ -110,7 +110,6 @@ export async function parkNativeQuestion(
     const [safe] = await tx`select 1 from allrice_task_clocks t
       join allrice_task_questions q on q.run_id=t.run_id and q.question_id=${checkpoint.questionId} and q.pending
       where t.run_id=${runId} and t.phase='waiting'
-      and not exists(select 1 from allrice_assistant_roots where root_run_id=t.run_id)
       and not exists(select 1 from allrice_task_calls c where c.run_id=t.run_id and c.finished_at is null)
       and not exists(select 1 from allrice_runtime_operations o where o.root_run_id=t.run_id and o.snapshot->>'status' not in ('succeeded','failed','canceled','partial'))`;
     if (!safe) throw Error('native_wait_not_quiescent');

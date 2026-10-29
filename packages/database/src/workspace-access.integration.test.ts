@@ -241,9 +241,7 @@ suite('workspace MCP page scope — actual isolated PostgreSQL', () => {
     expect(value.capabilities.map((capability) => capability.id)).toEqual([
       ...workspaceCapabilityIds,
     ]);
-    expect(
-      value.capabilities.find((capability) => capability.id === 'development'),
-    ).toMatchObject({ state: 'not_released' });
+    expect(value.capabilities.map((c) => c.id)).not.toContain('development');
     expect(value.viewerId).toBe(f.userId);
     expect(JSON.stringify(value)).not.toMatch(
       /credential|envelope|token_hash|root_fingerprint|endpoint/,

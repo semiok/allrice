@@ -51,7 +51,6 @@ import {
   ReferenceRuntimeError,
   ModelGovernanceError,
   assertReviewRunCurrent,
-  assertAssistantAuthority,
   parkNativeQuestion,
   readNativeQuestionWait,
   continueNativeQuestion,
@@ -75,7 +74,6 @@ import { finalizeEmployeeConversationContext } from '../conversation/checkpoint-
 import {
   beginEmployeeConversationTurn,
   bindEmployeeConversationThread,
-  createConversationInputDelivery,
   pollEmployeeConversationSteers,
 } from '../conversation/turn-lifecycle.js';
 import { assembleEmployeeKernel } from '../employee-kernel.js';
@@ -115,12 +113,9 @@ import {
   modelAdmissionTokenEstimate,
 } from '../model-result-budget.js';
 import {
-  preflightAssistantPricing,
-  assistantResultCostCents,
-  preflightAssistantSubscription,
-  assertAssistantSubscriptionResult,
-  assistantSubscriptionSnapshotDigest,
-} from '../assistant-pricing-preflight.js';
+  preflightSubscription,
+  subscriptionSnapshotDigest,
+} from '../subscription-preflight.js';
 import { decideCapabilityRoute } from '../routing/capability-router.js';
 import { nativeGovernedToolNames } from '../tool-broker/definitions.js';
 import {
@@ -129,14 +124,7 @@ import {
 } from '../routing/provider-snapshot.js';
 import { executeDurableWorkflow, WorkflowPaused } from '../workflow-engine.js';
 import { loadHarnessImages } from '../harness/prompt-images.js';
-import { productionAssistantController } from '../harness/dsh/assistant-controller.js';
-import { getAssistantFailureDiagnostics } from '../harness/dsh/assistant-diagnostics.js';
-import {
-  AssistantExecutionUnresolvedError,
-  getAssistantFailureUsage,
-  assertAssistantTaskComplete,
-} from '../harness/dsh/assistant-outcome.js';
-import { assertAssistantProviderOutputBound } from '../harness/dsh/assistant-provider.js';
+import { getExecutionFailureUsage } from '../harness/dsh/execution-failure-usage.js';
 import { mcpCatalogAdmissionInstructions } from '../harness/dsh/native-tools.js';
 import { DshStartupRejection } from '../harness/dsh/startup-rejection.js';
 import type {
@@ -534,10 +522,6 @@ export async function executeEmployeeRun({
       userId: execution.job.ownerId,
     }),
   );
-  const assistantConfiguration =
-    !repairTask && !repositoryReviewTask && workAutomation.settings.assistants
-      ? input.assistantConfiguration
-      : undefined;
   resolved = {
     ...resolved,
     promptSnapshot: {
@@ -1014,7 +998,7 @@ export async function executeEmployeeRun({
             fallbacks: fallbackSnapshots,
             reasoningEffort: executionSnapshot.runtimePolicy.reasoningEffort,
           });
-    const subscriptionSnapshot = preflightAssistantSubscription({
+    const subscriptionSnapshot = preflightSubscription({
       sessionId: input.sessionId,
       modelSnapshot: frozenModelSnapshot,
       decision: routeDecision,
@@ -1022,8 +1006,6 @@ export async function executeEmployeeRun({
     });
     const modelBudgetScope = {
       verifiedSubscription: !!subscriptionSnapshot,
-      governedAssistants:
-        objectInput(assistantConfiguration).allowAssistants === true,
       workflow: routeDecision.selectedKind === 'workflow',
     };
     const taskProgress =
@@ -1031,32 +1013,14 @@ export async function executeEmployeeRun({
       executionSnapshot.taskRuntimePolicy
         ? createTaskProgressRuntime({
             context: execution.context,
-            // 子智能体方案 PR4a/b/c 删除旧助手包装层时，一并删掉这个分支。
             sessionId:
-              repairTask ||
-              routeDecision.selectedKind === 'workflow' ||
-              objectInput(assistantConfiguration).allowAssistants === true
+              repairTask || routeDecision.selectedKind === 'workflow'
                 ? undefined
                 : input.sessionId,
             worker: workflowLease,
           })
         : undefined;
     if (taskProgress) loopGuard.observeCallsOnly();
-    assertAssistantProviderOutputBound(
-      providerSnapshot,
-      objectInput(assistantConfiguration).allowAssistants === true,
-      subscriptionSnapshot,
-    );
-    const assistantPriceSnapshot = preflightAssistantPricing({
-      enabled: objectInput(assistantConfiguration).allowAssistants === true,
-      sessionId: input.sessionId,
-      deadlineAt: execution.job.timeoutAt,
-      modelSnapshot: frozenModelSnapshot,
-      decision: routeDecision,
-      providerSnapshot,
-      hasNonTextInput:
-        kernel.imageAttachments.length > 0 || harnessImages.length > 0,
-    });
     if (frozenModelSnapshot) {
       if (
         frozenRouteTargets.length !== 1 ||
@@ -1192,10 +1156,6 @@ export async function executeEmployeeRun({
             executionSnapshot.schemaVersion === 2
               ? executionSnapshot.localMcp
               : undefined,
-          ).filter(
-            (tool) =>
-              !tool.name.startsWith('assistant.') ||
-              objectInput(assistantConfiguration).allowAssistants === true,
           );
     const turnToolCapabilities = tools.flatMap((tool) => {
       const capability = riceToolCapability(tool.name);
@@ -1254,35 +1214,6 @@ export async function executeEmployeeRun({
       executionSnapshot.schemaVersion === 2
         ? executionSnapshot.modelSnapshot?.runLimits
         : undefined;
-    const assistants = productionAssistantController({
-      deliveryMode: finalDeliveryMode,
-      deliveryArtifactId:
-        executionSnapshot.schemaVersion === 2
-          ? executionSnapshot.finalDeliveryPolicy?.artifactId
-          : undefined,
-      nativeSkills: repositoryReviewTask ? [] : resolved.nativeSkills,
-      configuration: assistantConfiguration,
-      context: execution.context,
-      worker: workflowLease,
-      runLimits,
-      priceSnapshot: assistantPriceSnapshot,
-      subscriptionSnapshot,
-      serverPricingProviderSnapshot:
-        providerSnapshot.provider === 'dsh' ? providerSnapshot : undefined,
-      tools,
-      authorize: assertAssistantAuthority,
-      storage: new LocalStorageAdapter(
-        process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
-      ),
-      signal,
-    });
-    if (assistants && (adapter.kind !== 'dsh' || selectedWorkflow)) {
-      throw new HandlerError(
-        'ASSISTANT_ROUTE_UNAVAILABLE',
-        'Governed 子智能体 require an ordinary native DSH task',
-        false,
-      );
-    }
     const independentDelivery =
       finalDeliveryMode === 'checked_native_v1' &&
       adapter.kind === 'dsh' &&
@@ -1321,14 +1252,11 @@ export async function executeEmployeeRun({
     }
     let steerPolling = true;
     let steerLoop: Promise<void> | undefined;
-    let steerDelivery:
-      ReturnType<typeof createConversationInputDelivery> | undefined;
     let questionWait: HarnessExecutionInput['questionWait'];
     if (
       taskProgress &&
       !repairTask &&
       !repositoryReviewTask &&
-      !assistants &&
       !selectedWorkflow &&
       nativeQuestionMode !== 'timed' &&
       adapter.kind === 'dsh'
@@ -1410,14 +1338,8 @@ export async function executeEmployeeRun({
       };
     }
     const workflowCitations: typeof knowledge.citations = [];
-    // Once a normal assistant or subscription execution starts, any transport, tool,
-    // revocation or lease failure is incomplete accounting until an authoritative
-    // tree outcome replaces it. Zero here is only a confirmed subtotal, not free
-    // completed execution. Legacy API single-agent routes are unchanged.
-    if (
-      subscriptionSnapshot ||
-      (assistants && routeDecision.selectedKind !== 'workflow')
-    ) {
+    // Costs stay unknown until the frozen subscription receipt is verified.
+    if (subscriptionSnapshot) {
       routeCostCents = null;
       routeUsageComplete = false;
       routeCacheUsageKnown = false;
@@ -1836,7 +1758,6 @@ export async function executeEmployeeRun({
                 executionSnapshot.schemaVersion === 2
                   ? executionSnapshot.nativePreferences?.questionWait
                   : undefined,
-              assistants,
               ...(independentDelivery
                 ? {
                     runDelivery: {
@@ -1859,21 +1780,6 @@ export async function executeEmployeeRun({
                         steerPolling = false;
                         await steerLoop;
                         signal.throwIfAborted();
-                      },
-                    },
-                  }
-                : {}),
-              ...(assistants
-                ? {
-                    inputDelivery: {
-                      pause: (scope: { threadId: string; turnId: string }) => {
-                        if (!steerDelivery)
-                          throw new HandlerError(
-                            'INPUT_GATE_UNBOUND',
-                            'INPUT_GATE_UNBOUND',
-                            false,
-                          );
-                        return steerDelivery.pause(scope);
                       },
                     },
                   }
@@ -1995,10 +1901,6 @@ export async function executeEmployeeRun({
                 return { generation: runtime.generation };
               },
               onTurnStarted: async ({ threadId, turnId }) => {
-                if (steerDelivery) {
-                  steerDelivery.dispose();
-                  await steerLoop;
-                }
                 runtime = await beginEmployeeConversationTurn({
                   ownership,
                   adapterKind: adapter.kind,
@@ -2006,38 +1908,6 @@ export async function executeEmployeeRun({
                   turnId,
                   appendEvent: appendChatFlowEvent,
                 });
-                if (assistants) {
-                  const generation = runtime.generation;
-                  const delivery: ReturnType<
-                    typeof createConversationInputDelivery
-                  > = createConversationInputDelivery({
-                    threadId,
-                    turnId,
-                    signal,
-                    deadlineAt: execution.job.timeoutAt
-                      ? Date.parse(execution.job.timeoutAt)
-                      : Number.NaN,
-                    isCurrent: () =>
-                      steerPolling &&
-                      runtime.threadId === threadId &&
-                      runtime.activeTurnId === turnId &&
-                      runtime.generation === generation,
-                    handoff: () =>
-                      pollEmployeeConversationSteers({
-                        ownership,
-                        generation,
-                        threadId,
-                        turnId,
-                        signal,
-                        adapter,
-                        polling: () => false,
-                        drain: true,
-                        handoff: true,
-                        delivery,
-                      }),
-                  });
-                  steerDelivery = delivery;
-                }
                 if (independentDelivery && !steerPolling) return;
                 steerLoop = pollEmployeeConversationSteers({
                   ownership,
@@ -2047,13 +1917,11 @@ export async function executeEmployeeRun({
                   signal,
                   adapter,
                   polling: () => steerPolling,
-                  ...(steerDelivery ? { delivery: steerDelivery } : {}),
                 });
               },
             })
             .finally(async () => {
               steerPolling = false;
-              steerDelivery?.dispose();
               await steerLoop?.catch((error) => {
                 console.error('[M5] Active turn steer polling failed', {
                   sessionId: input.sessionId,
@@ -2084,12 +1952,7 @@ export async function executeEmployeeRun({
         action: 'check',
         nativeSessionId: result.threadId ?? runtime.threadId,
       });
-      if (
-        assistants ||
-        repairTask ||
-        !progress?.pauseId ||
-        progress.canceled !== false
-      )
+      if (repairTask || !progress?.pauseId || progress.canceled !== false)
         throw new HandlerError('DSH_TURN_FAILED', 'DSH turn failed', false);
       result.answer = '等你回答后继续。';
     }
@@ -2122,9 +1985,7 @@ export async function executeEmployeeRun({
       ? false
       : (result.cacheUsageKnown ?? true);
     if (subscriptionSnapshot) {
-      if (assistants)
-        assertAssistantSubscriptionResult(subscriptionSnapshot, result);
-      else {
+      {
         if (
           result.provider !== subscriptionSnapshot.provider ||
           result.model !== subscriptionSnapshot.model ||
@@ -2149,7 +2010,7 @@ export async function executeEmployeeRun({
           usageComplete: result.usageComplete ?? false,
           cacheUsageKnown: result.cacheUsageKnown ?? false,
           subscriptionSnapshotDigest:
-            assistantSubscriptionSnapshotDigest(subscriptionSnapshot),
+            subscriptionSnapshotDigest(subscriptionSnapshot),
         });
       }
       routeUsageComplete = result.usageComplete ?? false;
@@ -2157,20 +2018,17 @@ export async function executeEmployeeRun({
     }
     routeCostCents = subscriptionSnapshot
       ? null
-      : assistants && assistantPriceSnapshot
-        ? assistantResultCostCents(assistantPriceSnapshot, result)
-        : result.costEstimateAvailable === false
-          ? null
-          : estimateModelCostCents({
-              provider: result.provider,
-              model: result.model,
-              ...result.usage,
-            });
+      : result.costEstimateAvailable === false
+        ? null
+        : estimateModelCostCents({
+            provider: result.provider,
+            model: result.model,
+            ...result.usage,
+          });
     checkCompletedModelBudget({
       ...modelBudgetScope,
       limits: runLimits,
       result,
-      governedAssistants: !!assistants,
       costCents: routeCostCents,
     });
     const checkpointMessages = resolved.promptSnapshot.conversation.flatMap(
@@ -2199,7 +2057,6 @@ export async function executeEmployeeRun({
       configChecksum,
       workflowLease,
     });
-    assertAssistantTaskComplete(result, modelBudgetScope.verifiedSubscription);
     if (!officeFirstDeliveryPolicy) delivery.assertComplete();
     if (repairController) {
       const proof = await repairController.finish();
@@ -2279,7 +2136,7 @@ export async function executeEmployeeRun({
         : caught instanceof ReferenceRuntimeError
           ? new HandlerError(caught.code, caught.message, false)
           : caught;
-    const failedUsage = getAssistantFailureUsage(
+    const failedUsage = getExecutionFailureUsage(
       error,
       execution.context.runId,
       execution.job.attempt,
@@ -2289,11 +2146,6 @@ export async function executeEmployeeRun({
       routeCostCents = null;
       routeUsageComplete = failedUsage.usageComplete;
       routeCacheUsageKnown = failedUsage.cacheUsageKnown;
-    } else if (error instanceof AssistantExecutionUnresolvedError) {
-      routeUsage = error.usage;
-      routeCostCents = null;
-      routeUsageComplete = error.usageComplete;
-      routeCacheUsageKnown = false;
     }
     if (error instanceof WorkflowPaused) {
       outcome = 'idle';
@@ -2301,7 +2153,6 @@ export async function executeEmployeeRun({
     }
     outcome = signal.aborted ? 'interrupted' : 'error';
     if (runtime.activeTurnId) {
-      const assistantDiagnostics = getAssistantFailureDiagnostics(error);
       await appendChatFlowEvent(
         signal.aborted ? 'turn.canceled' : 'turn.failed',
         {
@@ -2310,9 +2161,6 @@ export async function executeEmployeeRun({
           turnId: runtime.activeTurnId,
           generation: runtime.generation,
           attempt: execution.job.attempt,
-          ...(assistantDiagnostics?.failures.length
-            ? { assistantDiagnostics }
-            : {}),
         },
       ).catch(() => undefined);
     }

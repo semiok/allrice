@@ -3,8 +3,8 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { createAssistantFixtureDatabase } from '../../../../packages/database/src/assistant-runtime.fixture.ts';
-import { createAssistantAuthorityFixture } from '../../../../packages/database/src/assistant-authority.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../../../../packages/database/src/runtime.fixture.ts';
+import { createRunAuthorityFixture } from '../../../../packages/database/src/run-authority.fixture.ts';
 import * as client from '../../../../packages/database/src/core/client.ts';
 import { runClaimedJob } from '../../src/job-runner.js';
 
@@ -20,11 +20,11 @@ function gate() {
   return { promise, release };
 }
 suite('MET-210 runner closes heartbeat retries', () => {
-  let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   beforeAll(async () => {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
     vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
-    database = await createAssistantFixtureDatabase();
+    database = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(database.db);
   }, 120_000);
   afterAll(async () => {
@@ -35,7 +35,7 @@ suite('MET-210 runner closes heartbeat retries', () => {
   it.each(['attempt', 'revalidation'] as const)(
     'returns during %s and never retries the blocked heartbeat afterwards',
     async (phase) => {
-      const f = await createAssistantAuthorityFixture(database.db);
+      const f = await createRunAuthorityFixture(database.db);
       const [employee] =
         await f.db`select * from allrice_employee_runs where run_id=${f.rootRunId}`;
       const payload = {

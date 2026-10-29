@@ -180,7 +180,7 @@ Run `851fafd3` 一次成功、无工具失败，仅返回示例文字和图表�
 
 2026-09-27，业务对账沿用现成的冻结脚本、云端执行与 XLSX 导出，使用 PR1 同一依赖装配和发布链路。仅升级 SOP 到 1.0.1，使其遵循成员自动工作设置，消除不必要的预先等待审批；没有重写脚本、Office 或报表引擎。三批实际删除/保留范围和验收要求见 [PR3 记录](allrice-3.0/reconciliation-and-acceptance.md)。
 
-### MET-155 PR2：开发协作流程资源化
+### MET-155 PR2：开发协作流程资源化（历史，MET-210 PR2b 已退役）
 
 2026-09-27，复用既有 DSH Subagents、冻结 Skill Bundle、候选账本、沙箱及交付能力。新增 Allrice `development-cooperation` Skill 承载现有角色 SOP；Worker 从本次冻结资源读取对应角色说明，保留真实引用和程序校验。后台统一从技能页装配，移除开发工具专用装配按钮。未选择新 Skill 的旧包保留兼容提示。没有新建 Team 或开发执行框架；具体职责与回退见 [PR2 ADR](allrice-3.0/development-skill-adr.md)。
 
@@ -304,7 +304,7 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 
 ### allrice-durable-native-question-wait-v1
 
-- MET-210 PR4（2026-10-28 主会话草稿任务）：平台 settings 中的 `native_question_mode` 默认 legacy；timed 直接配置 `dsh-tool-ask-user` 的 mode/timeout，默认偏好省略 timeout 跟随 DSH。`attachWait` 和 `ASK_TIMED_OUT` 复用 PR3 回答方，题 ID 使用原生 Session + callId。`sessionProjections.stateOf(..., 'userQuestions')` 在原生事件和 ensureRoot 后单向投影到 PG；不写第二份折叠器。DSH settled 只有 callId/answers，题正文保留自首次原生 active 快照；native_present 只镜像当前投影成员资格，原生移除不删除首次题和撤权事实；source_run_id 保留首次出现的 Run，停止只撤销该 Run 的题。closed_at 仅是停止/开关回拨的授权门卫，不改原生状态。平台切换和有效偏好进宿主指纹。旧助手/维护/Workflow 程序题沿用 PR3 边界；生产 detach、迟到回答路由仍待 PR5/PR6。迁移 0226 为加法式；部署后旧版本不认识迁移，按部署工具门禁禁止直接回滚，配置回拨只撤权、不回退 schema。守护：native-questions.integration、runtime-pool、allrice-question-detach-native；MET-225 拟修改“问题卡等待时长”和“问题卡旧实现”。
+- MET-210 PR4（2026-10-28 主会话草稿任务）：平台 settings 中的 `native_question_mode` 默认 legacy；timed 直接配置 `dsh-tool-ask-user` 的 mode/timeout，默认偏好省略 timeout 跟随 DSH。`attachWait` 和 `ASK_TIMED_OUT` 复用 PR3 回答方，题 ID 使用原生 Session + callId。`sessionProjections.stateOf(..., 'userQuestions')` 在原生事件和 ensureRoot 后单向投影到 PG；不写第二份折叠器。DSH settled 只有 callId/answers，题正文保留自首次原生 active 快照；native_present 只镜像当前投影成员资格，原生移除不删除首次题和撤权事实；source_run_id 保留首次出现的 Run，停止只撤销该 Run 的题。closed_at 仅是停止/开关回拨的授权门卫，不改原生状态。平台切换和有效偏好进宿主指纹。维护/Workflow 程序题沿用 PR3 边界；旧助手分支由 PR2b 删除；生产 detach、迟到回答路由仍待 PR5/PR6。迁移 0226 为加法式；部署后旧版本不认识迁移，按部署工具门禁禁止直接回滚，配置回拨只撤权、不回退 schema。守护：native-questions.integration、runtime-pool、allrice-question-detach-native；MET-225 拟修改“问题卡等待时长”和“问题卡旧实现”。
 - PR4c（2026-10-28 本轮授权）：工作方法/定时授权接受 DSH `tool/result` 的 question_resolved 或 `user-question-reply` 的 question_replied，绑定完整题 ID、原生 settled 答案摘要及已消费命令属主，不要求原提问 turn。现有精确确认标签（包含卡内 custom 精确标签）、有效期和其他校验不变。普通聊天文字无题目证据不能授权。`closed_at`/平台 legacy 阻止旧题提交，返回 question_expired，未加迟到路由。AllRice 产品 UUID Session 前缀的完整 native 题 ID 不截断、不受 legacy 显示 ID 长度限制；legacy ID 上限不变。程序题不进入原生投影，保持原 UUID 与证据路径。此段属权限门卫/单向审计，原生日志词表/字段不变，reader 的 messageId/questionId 原本就是无长度上限 text（与基线文件 SHA256 相同），仅入口完整题 ID schema 放宽，故 journal current/readsFrom 保持 1；描述按兼容入口变更更新，旧 corpus 和长 ID 实际原生日志均验证读取。私有 ask_user 收据删除留 PR9。
 - PR4 独立补测修正（2026-10-28）：启用必须将首次原生题正文及 source_run_id 与准备凭证的题/来源相等绑定，后续消费 Run/turn 仍可不同。mode 回拨同事务撤权并刷新受影响会话的活跃 Run 时钟/截止时间；投影和授权事务先持 mode SHARE，再持既有业务或 703→root→clock→Job 锁，回拨持 mode UPDATE 后按稳定 Run 顺序获取上述运行锁。停止不反向获取 mode 锁。确定性锁等待用例覆盖回拨/投影、回拨/停止收尾、授权与回拨两种提交顺序；不新增审批语义。
 - PR4 独立 r2 修正（2026-10-28，本轮主会话确认）：后续 Run 消费原生定时答案时，once/recurring 从已核验题目的首次 source_run_id 读取同主体/会话的原始人类请求，复用现有内部消息排除；频率解释与精确确认卡比较沿用该原文。当前消费者仍须持有效租约，答案仍需 settled/属主/摘要证据且只准创建一次；不要求首次 Run/turn 继续存活，不引入新审批或状态。
@@ -314,7 +314,7 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 - 退役条件：候选原生机制覆盖静止边界、持久答案幂等及续接意图，且 Worker 权威检查仍在；当前无整项替代。先完成显式私有事件迁移，不删除事件或标记 ignorable 来通关。
 - 验收：`dsh-legacy-replay.test.ts`、`task-wait-native.integration.test.ts`、`task-wait-worker.integration.test.ts`，以及数据库 `task-native-wait.integration.test.ts`。回退需同时保留私有事件读写能力与原格式副本。
 - MET-210 PR3（方案 v4.5）：连接应用、进度暂停这两类程序题复用 `dsh-user-questions` 的 `askTimed` / `attachWait` / `ASK_TIMED_OUT`；从展示时起计时，以 Run 冻结的属主偏好和 Worker 空闲回收释放点为准，释放点 0 保留阻塞 `ask`。模型工具的 timed 配置和旧 30 秒挂起留给后续 PR。
-- 过渡例外：既有 `allowAssistants` / `ALLRICE_ASSISTANTS_ENABLED` 路径的 Run 保留原阻塞程序题。用户 10-26 冻结旧包装层，主会话 10-27 根据场景 30 的模型预留、join 冲突定此边界；子智能体方案 PR4a/b/c 删除旧层时一起删除分支。平台维护修复 Run 按既有 `repairTask` / `ALLRICE_MAINTENANCE_OUTPUT_TOKENS` 同样保留阻塞（主会话 10-27）。到期与 detach 一样先结算已受理回答的写盘。守护：`allrice-program-questions-native.test.mjs`、`assistant-production.integration.test.ts` 的 `progress_legacy`。
+- MET-210 PR2b 删除 `allowAssistants` / `ALLRICE_ASSISTANTS_ENABLED` 和旧助手阻塞程序题分支。平台维护修复 Run 按既有 `repairTask` / `ALLRICE_MAINTENANCE_OUTPUT_TOKENS` 保留阻塞，Workflow 边界不变。到期与 detach 一样先结算已受理回答的写盘。守护：`allrice-program-questions-native.test.mjs`、`timed-progress-worker.integration.test.ts`。
 
 ### allrice-durable-progress-guard-v1
 
@@ -323,13 +323,13 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 - 上游：[重复工具提醒][repeat]是模型提示策略，[Goal driver][goal]是目标推进机制，都没有等价的租约、跨进程暂停状态和精确决策账本。
 - 退役条件：上游提供可接入现有权威状态的等价事实回调与暂停机制，并覆盖失败、空进展、取消和重启；PR-2 已适配 `user-questions/request`，保持原策略，不引入固定调用次数上限或第二套 Agent 循环。
 - 验收：`task-progress-native.integration.test.ts`、数据库 `task-progress.integration.test.ts`。回退保留暂停记录和原决策版本，不通过清空状态“恢复”。
-- MET-210 PR3：非旧助手 Run 在 `llm/stream`（消息入历史之后）出卡，到期凭宿主 `session.user-question-pending` 和本 Run 未决暂停账本以 `succeeded + waitingForUser` 收尾，跳过经验抽取；下一普通 Run 首次建行时在同一事务搬移同 org/workspace/session 的最近到期暂停，源 Run/job 必须 succeeded、暂停未决未取消且已释放租约；停止、失败、超时和仍在跑的 Run 不承接（主会话 10-27，Opus/Fable 首次复核）。旧助手和平台维护修复 Run 不承接，保持原检查位置、阻塞 ask，不改助手包装层、控制器或账本。非维护 compaction 先 flush 工具回执，再做模型 admission；只跳过出卡及到期抛错，第三次失败落账后仍拒绝模型调用。新卡或回答清除 adapter 旧到期证据。Workflow 模型/技能步骤保持原阻塞程序题，不 pending、不以 waitingForUser 结束、不跨 Run 承接；已有 Workflow 路由分支通过既有释放点 0 选择阻塞 ask，冻结偏好仍传入宿主。回答前保留 Run/租约，回答后正常完成，不新增 Workflow 状态或字段（主会话 10-27 第二轮复核决定；跨 Run 续接 Workflow 不在 PR3 范围）。
-- 依据与接缝：用户 10-27 要求到期保持暂停；`dsh-user-questions` 0.2.1-rc.2 README 的 Role / Runtime invariant 只覆盖工具题投影，程序题不持久；跨 Run 搬移属现有门卫与账本的作用域修正。守护：`timed-progress-continuation.integration.test.ts`（热/冷宿主、继续/取消/再次到期、隔离反例）、`timed-progress-worker.integration.test.ts`（真实 Worker 的二轮接线、维护/助手边界及 Workflow 阻塞后正常完成）和 `subscription-worker.integration.test.ts`（Worker 账本确认与成功收尾）。回滚保留两端历史及决策行，不反向复制暂停。
+- MET-210 PR3：非旧助手 Run 在 `llm/stream`（消息入历史之后）出卡，到期凭宿主 `session.user-question-pending` 和本 Run 未决暂停账本以 `succeeded + waitingForUser` 收尾，跳过经验抽取；下一普通 Run 首次建行时在同一事务搬移同 org/workspace/session 的最近到期暂停，源 Run/job 必须 succeeded、暂停未决未取消且已释放租约；停止、失败、超时和仍在跑的 Run 不承接（主会话 10-27，Opus/Fable 首次复核）。平台维护修复 Run 不承接，保持原检查位置与阻塞 ask；MET-210 PR2b 删除旧助手分支。非维护 compaction 先 flush 工具回执，再做模型 admission；只跳过出卡及到期抛错，第三次失败落账后仍拒绝模型调用。新卡或回答清除 adapter 旧到期证据。Workflow 模型/技能步骤保持原阻塞程序题，不 pending、不以 waitingForUser 结束、不跨 Run 承接；已有 Workflow 路由分支通过既有释放点 0 选择阻塞 ask，冻结偏好仍传入宿主。回答前保留 Run/租约，回答后正常完成，不新增 Workflow 状态或字段（主会话 10-27 第二轮复核决定；跨 Run 续接 Workflow 不在 PR3 范围）。
+- 依据与接缝：用户 10-27 要求到期保持暂停；`dsh-user-questions` 0.2.1-rc.2 README 的 Role / Runtime invariant 只覆盖工具题投影，程序题不持久；跨 Run 搬移属现有门卫与账本的作用域修正。守护：`timed-progress-continuation.integration.test.ts`（热/冷宿主、继续/取消/再次到期、隔离反例）、`timed-progress-worker.integration.test.ts`（真实 Worker 的二轮接线、维护边界及 Workflow 阻塞后正常完成）和 `subscription-worker.integration.test.ts`（Worker 账本确认与成功收尾）。回滚保留两端历史及决策行，不反向复制暂停。
 
 ### allrice-durable-task-clock-v1
 
 - ID：`allrice-durable-task-clock-v1`；归属 MET-153；**保留**。
-- Allrice：[allrice-assistant-runtime.mjs](../../apps/worker/dsh/allrice-assistant-runtime.mjs) 向 Worker 报告真实 idle；权威计算在 `packages/database/src/task-clock.ts`。
+- Allrice：[allrice-task-progress.mjs](../../apps/worker/dsh/allrice-task-progress.mjs) 通过公开模型/工具事件向 Worker 投影普通 Run 活动；权威计算在 `packages/database/src/task-clock.ts`。
 - 上游：[子助手的 idle、结算与 Inbox 状态][subagent]可提供更精确的事实，但不拥有 Allrice 的 PostgreSQL 时钟、并发参与者和跨 Worker 租约。
 - 退役条件：可以替换重复的 idle 探测，不能迁走权威时钟。需要证明助手活跃/工具未知时不暂停、多个参与者时间取并集、等待不耗预算、接管不重置。
 - 验收：`task-clock.integration.test.ts`、`task-wait-worker.integration.test.ts`。回退读取同一时钟表，不能另起内存计时器。
@@ -342,22 +342,18 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 - 来源与升级：本项修改原生 `.mjs`，**执行包内容 ID 会变化**，既有 artifact/nativeTools 指纹随实测内容更新；未升级 DSH 依赖或修改上游。升级时核对公开工具注册、声明参数、Host/Worker allowlist 与 Broker 结果。
 - 验收：`dsh-repository-review-native.test.ts`、`test/p25/repository-review.integration.test.ts`；真实 Worker → Host → PostgreSQL 的完整工具名单、越名单提问无问题卡/挂起、function-call 转发及两连接 heartbeat/工具锁交错；真实停用入口与完成/proof 消费双向交错，重新启用仍拒绝旧 proof。上线仍须独立复核、CI 和发布后 Dev 验收。
 
-### allrice-development-workflow-v1
+### allrice-development-workflow-v1（已退役）
 
-- ID：`allrice-development-workflow-v1`；归属 MET-144；**保留**（PR-3 已复核；原生派发已复用，剩余为平台治理）。
-- Allrice：[allrice-assistant-runtime.mjs](../../apps/worker/dsh/allrice-assistant-runtime.mjs)、数据库 `development-cooperation.ts` / `development-workflow.ts`。现有 message/report/stop 已使用原生子助手，不是从零搭建消息系统。
-- 上游：[rc.3 subagent][subagent] 用 `sendMessage` 取代旧 `followup`，PR-2 已改用 Host 专用 `queueHostSubagentPrompt` 保留 Queue 与 coordinator 来源，不能用会唤醒接收者的 `sendMessage` 冒充旧 quiet report。冷恢复使用官方 session-query-sqlite 的 `openAt: never`，仅启用精确读取，不创建索引或注册模型查询工具；[Agent Team][team]有持久排队→目标采纳→ACK、任务 revision CAS、事件等待和中断后保留 Inbox，可借鉴这些机制。
-- 退役条件：只替换重复派发/唤醒/等待路径；固定候选 SHA、同版本测试、独立审查、文件 CAS、租户授权和交付证据仍由 Allrice 核验。Team 的单进程任务板不能成为 PostgreSQL 队列的第二个权威来源，`writeScopes` 也不是锁。
-- MET-210 PR2a（用户 2026-10-28 派工）：仓库审查从本层抽出，普通 Employee Job 直接使用受限 `platform.repository.review` 业务工具，原生注册见 `allrice-repository-review-native-v1`；固定候选、权限和成果存储为门卫/账本，执行与取消仍由既有 Job/DSH 承担。reviewer 指向自身独立 Run；完成及 merge 证据不再读取助手实例、report 或采纳序号。旧开发协作与其余助手包装仍待 PR2b 原子退役，本项未整体回归。
-- 验收：数据库 `development-cooperation.integration.test.ts` / `development-workflow.integration.test.ts`、`apps/worker/test/p25/assistant-production.integration.test.ts` 和 MET-144 真实交付链。回退必须排空候选助手树，不能让旧/新两个协调器同时投递。
+- MET-210 PR2b 删除旧开发协作工具、角色协调代码、随包 Skill 与专属 UI/API；执行适配从 patch-ledger 删除。2026-10-29 主会话按 `decommission-gate-plan.md` §4 选择先退役执行器：8 张专属表与所有原行/引用仍是被动历史，在收敛台账如实登记，数据销毁后移。
+- 原生 DSH 子代理的状态与生命周期不由 AllRice 重建。本次不提前启用 PR3 原生子代理；仓库复核已是普通独立 Job，见 `allrice-repository-review-native-v1`。
+- 0229 只禁用精确内置 Skill ID `d78b3556-821a-5550-bf13-d9dd84b9bbe0`。普通历史发布版本引用的冻结 bundle 保留，不再作为可装配入口。
 
-### allrice-assistant-required-delivery-v1
+### allrice-assistant-required-delivery-v1（已退役）
 
-- ID：`allrice-assistant-required-delivery-v1`；归属 MET-151；**保留**（PR-3 已复核；原生结算通知仍需平台授权后唤醒）。
-- Allrice：[allrice-assistant-runtime.mjs](../../apps/worker/dsh/allrice-assistant-runtime.mjs)。report 权限、输出 grant、证据结构、幂等通知和可修正参数错误都属于 Allrice 合约。
-- 上游：[子助手结算][subagent]、[alpha.2 完成唤醒修复][alpha-release]可降低消息适配成本，但 native idle/结束仍不等于已提交可验收结果，alpha 修复也不能推定 rc.3 已包含。PR-3 核对后保留 `guardSettlement` 与 delivery 去重，具体差异见 [复用收敛记录](dsh-upgrades/met154-rc3-reuse.md)。
-- 退役条件：原生唤醒保留真实平台 report、拒绝重复/换父节点通知，且不制造成功。需逐段删除旧唤醒包装，而不是只增加一条新路径。
-- 验收：`assistant-native-delivery.test.mjs`、数据库 `assistant-output.integration.test.ts` / `assistant-output-budget.integration.test.ts`。回退保留 durable delivery ID，避免第二次投递。
+- MET-210 PR2b 删除旧 wrapper/controller、quiet report 私有调用、助手 report/采纳/结算权威；9 张专属表及其全部行、费用与 failed/unknown 原样保留为待销毁被动历史，`compatibility.json.privateInterfaces` 清空。
+- 普通 Run 交付沿用 DSH `runOnce` 的候选接缝与普通 Job 当前租约、不可变成果核对；无第二套 Agent 状态机。必须与 PR1c #635 同次发布，不能单独部署资格放开或残留旧执行器。
+- 0097 通用订阅不可变守卫、0146/0147 通用记录守卫、runtime roots/budgets/operations/reservations/run_links 及普通历史/文件保留。本阶段不删旧 child、专属成果或任何 FK 必需来源，不新增旧表生产查询/兼容层。破坏性候选与完整测试冻结在 `2970378c58a5550cd8fc825776e2e50841fc9d72`；其停止与共享引用门禁属于后续数据销毁审查，不装入当前活动迁移。
+- `0229_retire_legacy_assistant_configuration.sql` 仅移除旧配置键并禁用精确内置 Skill；它仍前移回滚下限：旧二进制的 strict schema 要求 assistants，且不认识新迁移名，不能因旧表仍在就直接回滚。正常停写/快照/原样副本演练仍由发布负责人执行；保留数据不证明旧 Host 停止，历史 stop 缺口及17表销毁仍未完成。当前结构测试为 `assistant-configuration-retirement.integration.test.ts`；真实 before/after 两成员群体见 `retired-assistant-delivery.integration.test.ts`，不再宣称17表消失。
 
 ### allrice-workbench-native-changeset-v1
 
@@ -394,13 +390,13 @@ MET181 公司组合验收发现固定 `dsh-tool-ask-user@0.1.5-rc.3` 的 Consume
 - ID：`allrice-final-delivery-v1`；归属 MET-184；**保留平台交付适配**。复用固定 `0.2.1-rc.2` 的公开 Agent、turn、消息日志、steer 和工具 middleware；不修改 DSH 核心、不增加另一套 Agent 循环。DSH 不持有 AllRice 成果对象、当前权限或业务完成事务。
 - MET-210 PR1b 来源端口：不开助手的根 Run 通过通用 job/member/conversation/native binding 权限闭包读取 `turn.started`，不查助手表或 `run_links`。原生持久消息核验后的 proof 与该组来源锚点绑定，`completeJob` 重读并拒绝来源变化；资格仍由后续 PR1c 与旧层删除同窗放开。
 - Worker 将当前根 Run 的真实成果版本、授权与 Office 字节检查事实交给独立的 Markdown/GFM 链接检查器。独立路径复用 SDK `session/wait`，停止并等待输入投递，随后以公开 `Agent.runMaintenance` 持有当前日志；私有 proof 绑定原生消息、序号和 Run 来源，直到 Job 同一事务重验权限、租约、来源与事实摘要。模型正文、工具参数和公开事件不能签发该凭据。
-- 独立交付的 `active_turn_id` 保留到 `completeJob` 原子重验与终态释放；原检查点继续保存，但仅凭已注册完成守卫，在写前和写后复核同一来源、答复和租约。用量/压力仍记录，不新增压缩；失败、取消由既有所有权清理，普通聊天和旧助手保持原检查点边界。
+- 独立交付的 `active_turn_id` 保留到 `completeJob` 原子重验与终态释放；原检查点继续保存，但仅凭已注册完成守卫，在写前和写后复核同一来源、答复和租约。用量/压力仍记录，不新增压缩；失败、取消由既有所有权清理，未采用独立交付的普通路径保持原检查点边界。
 - MET-210 #632 独审修复：真实通知订阅覆盖公开 wait、输入暂停和候选内部的最终 wait；来源读取等待同一事件队列落库，后代结算唤醒的根 turn 不从 journal 补造 PG 来源。交付失败保留已完成调用与中断调用的可信用量小计及完整性，沿既有 Run/attempt 私有凭据进入路由与模型账本，不重复累计、不把未知用量当零。
 - 候选拒绝不撤销公开 wait 或候选来源请求已确认的用量完整性；新 turn、进程丢失、事件处理失败仍保持未知。原生 runtime-progress 等待经既有 PG 暂停/租约校验后走原等待出口与检查点，不要求最终成果 proof；普通答复丢失 proof 仍失败，不从缺失回执推断等待。
-- 既有成果已就绪而答复链接缺失、无效或正文为空时，Worker 在根 `session/wait` 后发起同一 Agent/AllRice Run/模型最多一次文字修正。公开 `steer` 的平台来源 notice 产生一个新原生 turn，不是人工消息或新业务 Run；不能在 `agent/turn-stopping` 内等待当前根。复用原内容授权、任务进度记账和执行取消信号；工具、重试和压缩被拒绝。原答复和成果不改写，已有效答复不增加模型请求，Worker 收尾不再投递迟到输入。旧助手同 turn 修正/独立预留分支保持原行为，待 PR2b 一起删除。
+- 既有成果已就绪而答复链接缺失、无效或正文为空时，Worker 在根 `session/wait` 后发起同一 Agent/AllRice Run/模型最多一次文字修正。公开 `steer` 的平台来源 notice 产生一个新原生 turn，不是人工消息或新业务 Run；不能在 `agent/turn-stopping` 内等待当前根。复用原内容授权、任务进度记账和执行取消信号；工具、重试和压缩被拒绝。原答复和成果不改写，已有效答复不增加模型请求，Worker 收尾不再投递迟到输入。旧助手同 turn 修正/独立预留分支在 PR2b 删除。
 - 新 Run 的检查协议按独立批准的精确 artifact ID 冻结；旧包/旧 origin 保留原协议。冷恢复只能由当前 Job/lease/turn 持久事实重建完成边界，不能用“最后一条回复”猜测归属或重新发送原任务。
 - Office 首交沿用原 checker、publisher 与版本链：真实保存字节中的公式缓存缺失、错误或不完整不能记完整交付。同系列有效修订可解除旧版义务，常数版本不能消除已观察到的公式义务；旧版仍可下载。此技术检查不证明金额、公式语义、缓存新鲜度、视觉质量或全部业务要求。
-- 回归：独立路径的 `native-subagent/final-delivery.test.mjs`、`p25/run-delivery.integration.test.ts`、`p25/run-delivery-worker.integration.test.ts`（真实聊天入队→Worker→DSH→提交及检查点收尾）；旧路径的 `final-delivery-cold/`、`bounded-final-delivery-repair.test.ts`、`final-delivery-commit.integration.test.ts`、`final-delivery-rollout.integration.test.ts`、`assistant-model-preparation-close.integration.test.ts`、`office-first-quality-publication.integration.test.ts`。合成 provider、真实 PostgreSQL 和实际 Dev 验收分别记录，不互相冒充。PR1b 仍是待复核草稿，不能据此宣称未开助手的普通 Run 已取得新资格。
+- 回归：`native-subagent/final-delivery.test.mjs`、`p25/run-delivery.integration.test.ts`、`p25/run-delivery-worker.integration.test.ts`、`final-delivery-commit.integration.test.ts`、`final-delivery-references.pg.test.ts`、`office-first-quality-publication.integration.test.ts`。旧助手专属冷恢复、模型预留和 rollout 测试随旧执行层删除；普通租约、撤销、来源并发和 Office 缓存边界保留真实 PostgreSQL 回归。普通资格放开 PR1c 必须与 PR2b 同次发布；两成员升级和问题卡回执以最终组合 SHA 单独验收，不能以删除分支的定向通过代替。
 - 退役条件：上游提供可绑定同一持久 turn/当前租约且可组合 AllRice 事务提交的公开完成边界，并通过输入竞态、冷恢复、取消/未知用量、权限撤回、原字节/旧版本和普通网页交付回归；可替换对应适配，AllRice 成果与权限事实仍由平台负责。
 
 ### 随 0.1.x 退役的条目（2026-10-25，MET-221）
@@ -508,7 +504,7 @@ WebUI 账本 `message-image-send` 记录三份原生文件及一个原生函数�
 
 ### `dsh-pi-ai-premature-websocket-close-v2`
 
-Run 917f3a15 exposed a pinned pi-ai classification gap: `WebSocket closed 1006` fell through to `PI_AI_ERROR`. Run 4299ba50 also exposed premature close `1000`: pinned pi-ai emits this error only before receiving a response terminal event. The dependency patch maps these observed closes to `TRANSPORT` (1000 must have no reason suffix), reusing DSH’s provider policy (at most two request retries) and existing assistant settlement checks. It does not retry authentication/policy failures, replay tool calls, or restart the whole prompt. After native recovery ends, Worker persists the original failure code as terminal and keeps existing results visible. Remove this patch when the pinned upstream includes equivalent classification.
+Run 917f3a15 exposed a pinned pi-ai classification gap: `WebSocket closed 1006` fell through to `PI_AI_ERROR`. Run 4299ba50 also exposed premature close `1000`: pinned pi-ai emits this error only before receiving a response terminal event. The dependency patch maps these observed closes to `TRANSPORT` (1000 must have no reason suffix), reusing DSH’s provider policy (at most two request retries) and existing Worker usage-ledger checks. It does not retry authentication/policy failures, replay tool calls, or restart the whole prompt. After native recovery ends, Worker persists the original failure code as terminal and keeps existing results visible. Remove this patch when the pinned upstream includes equivalent classification.
 
 ## Codex 明确过载的错误归类（2026-10-13）
 

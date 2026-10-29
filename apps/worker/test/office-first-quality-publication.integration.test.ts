@@ -1,3 +1,4 @@
+import { prepareDeliveryAuthorityFixture } from './final-delivery-reference-authority.fixture.ts';
 /** Real publisher -> current transaction reader -> deterministic final policy.
  * All identities/leases belong to the fixture's private UUID PostgreSQL schema.
  * No real account, renderer, native SDK, model, cloud tool or Dev is invoked. */
@@ -14,13 +15,10 @@ import {
 } from '@allrice/contracts';
 import * as client from '../../../packages/database/src/core/client.ts';
 import {
-  assistantFixtureStorage,
-  createAssistantFixtureDatabase,
-} from '../../../packages/database/src/assistant-runtime.fixture.ts';
-import { createAssistantAuthorityFixture } from '../../../packages/database/src/assistant-authority.fixture.ts';
-import { assertAssistantAuthority } from '../../../packages/database/src/assistant-authority.ts';
-import { createAssistantRuntime } from '../../../packages/database/src/assistant-runtime.ts';
-import { readFinalDeliveryReferences } from '../../../packages/database/src/final-delivery-references.ts';
+  runtimeFixtureStorage,
+  createRuntimeFixtureDatabase,
+} from '../../../packages/database/src/runtime.fixture.ts';
+import { createRunAuthorityFixture } from '../../../packages/database/src/run-authority.fixture.ts';
 import {
   getWorkbenchArtifact,
   publishWorkbenchArtifact,
@@ -82,18 +80,13 @@ async function workbook(kind: 'missing' | 'cached' | 'constant') {
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }
 
-let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
 const db = () => database.db;
-const storage = () => assistantFixtureStorage(db());
+const storage = () => runtimeFixtureStorage(db());
 async function fixture(covered = true) {
-  const f = await createAssistantAuthorityFixture(db(), {
+  const f = await createRunAuthorityFixture(db(), {
     memberRole: 'member',
-    allowedTools: [
-      'assistant.delegate',
-      'assistant.report',
-      'workspace.export.create',
-      'workspace.document.read',
-    ],
+    allowedTools: ['workspace.export.create', 'workspace.document.read'],
     snapshot: (snapshot) =>
       covered
         ? {
@@ -129,17 +122,7 @@ async function fixture(covered = true) {
       ...policy.payload,
     },
   });
-  const runtime = createAssistantRuntime({
-    database: db(),
-    authorize: assertAssistantAuthority,
-    checkedDelivery: true,
-    readFinalDeliveryReferences,
-  });
-  const input = {
-    scope: f.task.scope,
-    rootRunId: f.rootRunId,
-    worker: f.worker,
-  };
+  const { port } = await prepareDeliveryAuthorityFixture(f);
   const [frozen] =
     await db()`select execution_snapshot from allrice_employee_runs where run_id=${f.rootRunId}`;
   expect(frozen!.execution_snapshot.officeFirstDeliveryPolicy).toBe(
@@ -157,9 +140,7 @@ async function fixture(covered = true) {
   return {
     ...f,
     context,
-    runtime,
-    input,
-    read: () => runtime.readFinalDeliveryEvidence(input),
+    read: () => port.readSnapshot(),
     principal: {
       actor: { type: 'user' as const, id: f.user },
       organizationId: f.org,
@@ -275,7 +256,7 @@ suite(
       vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
       vi.stubEnv('ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED', '1');
       try {
-        database = await createAssistantFixtureDatabase();
+        database = await createRuntimeFixtureDatabase();
         const [location] =
           await db()`select current_database() database,current_schema() schema`;
         assert.ok(location);
@@ -294,7 +275,7 @@ suite(
           storageRoot: database.storageRoot,
           actualPublisher: 'publishWorkbenchArtifact',
           actualAuthority: 'assertAssistantAuthority',
-          actualReader: 'createAssistantRuntime.readFinalDeliveryEvidence',
+          actualReader: 'readDeliverySnapshot',
           actualPolicy: 'checkFinalDelivery',
           actualReferences: 'readFinalDeliveryReferences',
           modelCalls: 0,

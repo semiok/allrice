@@ -18,7 +18,7 @@ import {
   cloudPlatform,
 } from '@allrice/contracts';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createExperienceFixture } from './experience.fixture.ts';
 import { ensureBootstrapPortalPrincipal } from './identity.ts';
 import {
@@ -63,7 +63,7 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('MET167 private repository repair normal Employee Run authority', () => {
-  let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
+  let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
     company: Awaited<ReturnType<typeof createExperienceFixture>>,
     admin: RequestContext,
     adminEmail: string,
@@ -74,7 +74,7 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
     // approval/installation of any native runtime artifact.
     vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
     vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
-    fixture = await createAssistantFixtureDatabase();
+    fixture = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     company = await createExperienceFixture(fixture.db);
     const account = await ensureBootstrapPortalPrincipal({
@@ -654,9 +654,8 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
       compactThresholdTokens: 40000,
     });
     const { preparePlatformRepairInput } = await import('./platform-repair.ts');
-    const { assistantFixtureStorage } =
-      await import('./assistant-runtime.fixture.ts');
-    const storage = assistantFixtureStorage(fixture.db);
+    const { runtimeFixtureStorage } = await import('./runtime.fixture.ts');
+    const storage = runtimeFixtureStorage(fixture.db);
     await preparePlatformRepairInput(lease, execution!.context, storage);
     await preparePlatformRepairInput(
       lease,
@@ -896,8 +895,7 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
         const { getPlatformRepairArtifact } =
           await import('./platform-repair.ts');
         const { readArtifactBytes } = await import('./artifact-review.ts');
-        const { assistantFixtureStorage } =
-          await import('./assistant-runtime.fixture.ts');
+        const { runtimeFixtureStorage } = await import('./runtime.fixture.ts');
         const downloaded = [];
         for (const file of detail.report.artifacts) {
           const artifact = await getPlatformRepairArtifact(
@@ -906,7 +904,7 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
             file.artifactId,
           );
           const bytes = await readArtifactBytes(
-            assistantFixtureStorage(fixture.db),
+            runtimeFixtureStorage(fixture.db),
             artifact.object,
           );
           expect(repositoryDigest(bytes)).toBe(file.checksum);
@@ -1118,8 +1116,7 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
           await import('../../../apps/worker/src/jobs/platform-repair.ts');
         const { nativeBrokerRoundtrip } =
           await import('../../../apps/worker/src/harness/dsh-native-broker.fixture.ts');
-        const { assistantFixtureStorage } =
-          await import('./assistant-runtime.fixture.ts');
+        const { runtimeFixtureStorage } = await import('./runtime.fixture.ts');
         let physicalExecutions = 0,
           revokeAfterExecution = true;
         class PublicationBarrierBackend extends CloudRunnerBackend {
@@ -1154,7 +1151,7 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
             onHarnessEvent: async () => undefined,
             isolation: {} as never,
           },
-          { storage: assistantFixtureStorage(fixture.db), backend },
+          { storage: runtimeFixtureStorage(fixture.db), backend },
         );
         expect(controller.before.report.exitCode).toBe(1);
         const { file } = await readPlatformRepairSource(lease),
@@ -1213,7 +1210,7 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
               payload: pendingWrite!.payload,
               artifacts: pendingWrite!.outcome.artifacts,
             },
-            assistantFixtureStorage(fixture.db),
+            runtimeFixtureStorage(fixture.db),
             fixture.db,
           );
         vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', 'unrelated@example.test');
@@ -1232,7 +1229,7 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
         // Hold an actual publication after q-S is acquired but before its
         // session writer. Reconcile the already committed native apply call,
         // which must wait for q-X without holding a session-S upgrade blocker.
-        const baseStorage = assistantFixtureStorage(fixture.db),
+        const baseStorage = runtimeFixtureStorage(fixture.db),
           originalPut = baseStorage.put.bind(baseStorage);
         let entered!: () => void, unblock!: () => void;
         const reached = new Promise<void>((done) => {
@@ -1292,7 +1289,7 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
         revokeAfterExecution = false;
         authorityBarrier = false;
         const resumed = await createPlatformRepairController(controllerInput, {
-          storage: assistantFixtureStorage(fixture.db),
+          storage: runtimeFixtureStorage(fixture.db),
           backend,
         });
         const report = await resumed.finish();
@@ -1312,7 +1309,7 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
               file.artifactId,
             ),
             bytes = await readArtifactBytes(
-              assistantFixtureStorage(fixture.db),
+              runtimeFixtureStorage(fixture.db),
               artifact.object,
             );
           expect(repositoryDigest(bytes)).toBe(file.checksum);

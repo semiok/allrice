@@ -11,9 +11,9 @@ import {
 } from '@allrice/contracts';
 import * as client from './core/client.ts';
 import {
-  createAssistantFixtureDatabase,
-  assistantFixtureStorage,
-} from './assistant-runtime.fixture.ts';
+  createRuntimeFixtureDatabase,
+  runtimeFixtureStorage,
+} from './runtime.fixture.ts';
 import { createExperienceFixture } from './experience.fixture.ts';
 import { ensureBootstrapPortalPrincipal } from './identity.ts';
 import { executionRequestConstraints } from './browser-execution-choice.ts';
@@ -71,7 +71,7 @@ const suite =
 suite(
   'MET167 fixed project checks: private real employee Run and current authority',
   () => {
-    let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
+    let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
       company: Awaited<ReturnType<typeof createExperienceFixture>>,
       admin: RequestContext,
       adminEmail: string,
@@ -84,7 +84,7 @@ suite(
         'sha256:' + 'a'.repeat(64),
       );
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
       company = await createExperienceFixture(fixture.db);
       const account = await ensureBootstrapPortalPrincipal({
@@ -646,7 +646,7 @@ suite(
             errorCode: null,
             cleanup: 'confirmed',
           },
-          assistantFixtureStorage(fixture.db),
+          runtimeFixtureStorage(fixture.db),
         ),
       ).rejects.toThrow();
     });

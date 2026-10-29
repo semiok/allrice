@@ -28,9 +28,7 @@ export function usageBudgetReviewMatches(
     and exists (select 1 from allrice_route_decisions d join allrice_runs r on r.id=d.run_id
       where d.id=l.route_decision_id and r.state in ('failed','canceled')
       and not exists(select 1 from allrice_jobs j where j.run_id=r.id
-        and j.status in ('queued','claimed','running','waiting_approval'))
-      and not exists(select 1 from allrice_assistant_roots a where a.root_run_id=r.id)
-      and not exists(select 1 from allrice_assistant_instances a where a.run_id=r.id))`;
+        and j.status in ('queued','claimed','running','waiting_approval')))`;
 }
 
 async function requireAdmin(
@@ -55,9 +53,7 @@ export async function listUnknownSubscriptionUsage(
       b.reserved_tokens,b.reason,b.created_at as reviewed_at,
       (${usageBudgetReviewMatches(sql)}) as approved,
       r.state in ('failed','canceled')
-        and not exists(select 1 from allrice_jobs j where j.run_id=r.id and j.status in ('queued','claimed','running','waiting_approval'))
-        and not exists(select 1 from allrice_assistant_roots a where a.root_run_id=r.id)
-        and not exists(select 1 from allrice_assistant_instances a where a.run_id=r.id) as terminal_ordinary
+        and not exists(select 1 from allrice_jobs j where j.run_id=r.id and j.status in ('queued','claimed','running','waiting_approval')) as terminal_ordinary
     from allrice_model_usage_ledger l
     join allrice_route_decisions d on d.id=l.route_decision_id
     join allrice_runs r on r.id=d.run_id
@@ -124,8 +120,6 @@ export async function reviewSubscriptionUsageBudget(
     const [route] = await tx`
       select d.id,d.run_id,d.workspace_id,r.state,
         exists(select 1 from allrice_route_subscription_snapshots s where s.route_decision_id=d.id) as subscription,
-        (exists(select 1 from allrice_assistant_roots a where a.root_run_id=r.id)
-          or exists(select 1 from allrice_assistant_instances a where a.run_id=r.id)) as assistant,
         exists(select 1 from allrice_jobs j where j.run_id=r.id and j.status in ('queued','claimed','running','waiting_approval')) as active
       from allrice_route_decisions d join allrice_runs r on r.id=d.run_id
       where d.id=${review.decisionId} and d.organization_id=${input.context.organizationId}
@@ -137,7 +131,6 @@ export async function reviewSubscriptionUsageBudget(
       !ledger ||
       ledger.usage_complete ||
       !route.subscription ||
-      route.assistant ||
       route.active ||
       !['failed', 'canceled'].includes(route.state)
     )

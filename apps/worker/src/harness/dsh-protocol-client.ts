@@ -447,32 +447,6 @@ export class DshProtocolClient {
     return this.request(`allrice/final-delivery/${action}`, params, 0);
   }
 
-  async assistant(
-    action:
-      | 'bind'
-      | 'drain'
-      | 'flush'
-      | 'join'
-      | 'joinForFinalDelivery'
-      | 'inspect'
-      | 'finish'
-      | 'diagnostics',
-    params: Record<string, unknown>,
-  ) {
-    return this.request(
-      `allrice/assistant/${action}`,
-      params,
-      // Join waits for owned background agents, including human approval. Its
-      // lifetime is governed by Worker lease/cancel and the durable task clock,
-      // not the short protocol acknowledgement timeout.
-      action === 'diagnostics'
-        ? 2_000
-        : ['join', 'joinForFinalDelivery'].includes(action)
-          ? 0
-          : undefined,
-    );
-  }
-
   async closeSession(sessionId: string) {
     return this.request('session/close', { sessionId }, 10_000);
   }
@@ -769,17 +743,9 @@ export class DshProtocolClient {
       this.pending.delete(frame.id);
       const error = record(frame.error);
       if (error) {
-        const businessCode =
-          typeof error.code === 'string'
-            ? error.code
-            : record(error.data)?.code;
-        const completing =
-          businessCode === 'ASSISTANT_COMPLETING' ||
-          (businessCode === undefined &&
-            error.message === 'ASSISTANT_COMPLETING');
         pending.reject(
           new HandlerError(
-            completing ? 'ASSISTANT_COMPLETING' : 'DSH_REQUEST_FAILED',
+            'DSH_REQUEST_FAILED',
             typeof error.message === 'string'
               ? error.message
               : 'DSH runtime rejected the request',

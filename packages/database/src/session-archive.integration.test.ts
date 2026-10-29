@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createExperienceFixture } from './experience.fixture.ts';
 import { approveSyntheticCurrentEmployeeExecution } from './current-execution.fixture.ts';
-import { createAssistantLocalCommandFixture } from './local-command-assistant.fixture.ts';
+import { createLocalCommandFixture } from './local-command.fixture.ts';
 import * as client from './core/client.ts';
 import {
   getChatSessionHistory,
@@ -26,9 +26,9 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('session archive: actual isolated PostgreSQL, no model', () => {
-  let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   beforeAll(async () => {
-    fixture = await createAssistantFixtureDatabase();
+    fixture = await createRuntimeFixtureDatabase();
     approveSyntheticCurrentEmployeeExecution();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     for (const flag of [
@@ -345,7 +345,7 @@ suite('session archive: actual isolated PostgreSQL, no model', () => {
     ).rejects.toBeDefined();
   });
   it('requires confirmation, durably cuts off assistants and pauses schedules; restoration cannot revive tasks', async () => {
-    const f = await createAssistantLocalCommandFixture(fixture.db);
+    const f = await createLocalCommandFixture(fixture.db);
     f.requestContext.memberships = f.context.policySnapshot.memberships;
     await fixture.db`insert into allrice_automations(organization_id,workspace_id,owner_id,name,prompt,schedule,session_id)
       values(${f.org},${f.workspace},${f.user},'Test schedule','Synthetic','{}',${f.session})`;
@@ -386,14 +386,8 @@ suite('session archive: actual isolated PostgreSQL, no model', () => {
       drain_reason: 'cancel',
     });
     expect(draining?.drain_deadline_at).toBeInstanceOf(Date);
-    const startModel = () =>
-      f.runtime.prepareModelUsage({
-        ...f.base,
-        runId: f.rootRunId,
-        callId: randomUUID(),
-        requestedOutputTokens: 100,
-      });
-    await expect(startModel()).rejects.toThrow('lease_lost');
+    const startOperation = () => f.create();
+    await expect(startOperation()).rejects.toThrow();
     await updateChatSession(f.requestContext, f.workspace, f.session, {
       archived: false,
     });
@@ -407,7 +401,7 @@ suite('session archive: actual isolated PostgreSQL, no model', () => {
       await fixture.db`select status,drain_deadline_at from allrice_jobs where run_id=${f.rootRunId}`;
     expect(restored?.status).toBe('running');
     expect(restored?.drain_deadline_at).toEqual(draining?.drain_deadline_at);
-    await expect(startModel()).rejects.toThrow('lease_lost');
+    await expect(startOperation()).rejects.toThrow();
     // Advance only this synthetic Job's receipt cutoff. Restoration never
     // renews it, and maintenance must not invent a native stopped receipt.
     await fixture.db`update allrice_jobs set drain_deadline_at=clock_timestamp()-interval '1 second',lease_expires_at=clock_timestamp()-interval '1 second' where run_id=${f.rootRunId}`;
@@ -417,11 +411,6 @@ suite('session archive: actual isolated PostgreSQL, no model', () => {
         await fixture.db`select status from allrice_jobs where run_id=${f.rootRunId}`
       )[0]?.status,
     ).toBe('canceled');
-    expect(
-      (
-        await fixture.db`select stopped_at from allrice_assistant_instances where run_id=${f.rootRunId}`
-      )[0]?.stopped_at,
-    ).toBeNull();
     expect(
       (
         await fixture.db`select status from allrice_automations where session_id=${f.session}`

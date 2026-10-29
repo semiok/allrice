@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { createAssistantFixtureDatabase } from '../assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
 import { assertRuntimeFixtureDatabase } from '../runtime-fixture-database.ts';
 import { source, scope } from './platform-test-binding.fixture.ts';
 import {
@@ -17,7 +17,7 @@ const suite =
 suite(
   'new platform test binding migration guards in a private complete schema',
   () => {
-    let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let originalHistory: unknown;
     const own = scope(),
       s = source(undefined, 'empty');
@@ -41,7 +41,7 @@ suite(
       vi.spyOn(globalThis, 'fetch').mockRejectedValue(
         Error('No network from migration fixture'),
       );
-      f = await createAssistantFixtureDatabase({
+      f = await createRuntimeFixtureDatabase({
         throughMigration: '0210_current_employee_execution_binding.sql',
       });
       const db = f.db;

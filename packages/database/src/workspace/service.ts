@@ -15,7 +15,6 @@ import {
 } from './session-references.ts';
 import { SessionReferenceSnapshotsSchema } from '@allrice/contracts';
 export { SessionReferenceError } from './session-references.ts';
-import { readWorkAutomation } from '../work-automation.ts';
 import { readSessionWorkMethods } from './work-methods.ts';
 import {
   answerReceiptStatus,
@@ -50,8 +49,6 @@ import {
   SessionModelSnapshotSchema,
   SendChatMessageInputSchema,
   RequestContextSchema,
-  resolveAssistantPreference,
-  defaultAssistantRunConfiguration,
   UpdateChatSessionInputSchema,
   UuidSchema,
   authorize,
@@ -79,10 +76,6 @@ import {
 } from '../data.ts';
 import { getDatabase } from '../core/client.ts';
 import { workbenchFileSchemaReady } from '../workbench-file-access.ts';
-import {
-  assistantRuntimeEnabled,
-  AssistantRuntimeError,
-} from '../assistant-runtime.ts';
 import {
   employeeManifestChecksum,
   riceEmployeeKey,
@@ -1422,8 +1415,6 @@ type ChatRunPreparationInput = Omit<
 > & {
   result: PersistedChatMessage;
   effectiveEmployeeVersionId: string;
-  assistantPreference:
-    ReturnType<typeof resolveAssistantPreference> | undefined;
   conversationMessage: string;
 };
 
@@ -1566,8 +1557,7 @@ async function persistChatMessageInTransaction(
           message.reviewContinuation ||
           message.changesetAction ||
           message.companyTemplates?.length ||
-          message.referenceRevisionIds?.length ||
-          message.assistantPreference))
+          message.referenceRevisionIds?.length))
     )
       throw new ArtifactReviewError('input_id_conflict');
     message.text = ChatMessageContentSchema.parse(userMessage.content).text;
@@ -1898,46 +1888,19 @@ async function prepareChatRunBinding(
   return binding;
 }
 
-/** Prepare the original queue input; the public wrapper retains actual enqueue.
- * Existing callers use the original short work-settings transaction. An outer
- * transaction caller reads those settings directly on its existing SQL. */
+/** Prepare the ordinary queue input; the public wrapper retains actual enqueue. */
 async function prepareChatRunInput(
   input: ChatRunPreparationInput,
   binding: Awaited<ReturnType<typeof prepareChatRunBinding>>,
-  database: ChatRunDatabase,
 ) {
   const {
-    context,
     workspaceId,
     session,
     message,
     options,
     result,
-    assistantPreference,
     conversationMessage,
   } = input;
-  const readSettings = (transaction: TransactionSql) =>
-    readWorkAutomation(transaction, {
-      organizationId: context.organizationId,
-      workspaceId,
-      userId: context.actor.id,
-    });
-  const workAutomation =
-    database.kind === 'transaction'
-      ? await readSettings(database.sql)
-      : await database.sql.begin(readSettings);
-  const allowAssistants =
-    assistantPreference?.allowAssistants === true &&
-    workAutomation.settings.assistants;
-
-  if (
-    allowAssistants &&
-    (!assistantRuntimeEnabled() ||
-      !binding.executionSnapshot.capabilitySnapshot.bindings.toolNames.includes(
-        'assistant.delegate',
-      ))
-  )
-    throw new AssistantRuntimeError('forbidden');
   return {
     submission: {
       workspaceId,
@@ -1949,14 +1912,6 @@ async function prepareChatRunInput(
         sessionId: binding.sessionId,
         userMessageId: binding.userMessageId,
         assistantMessageId: binding.assistantMessageId,
-        ...(assistantPreference
-          ? {
-              assistantConfiguration: {
-                ...defaultAssistantRunConfiguration(),
-                allowAssistants,
-              },
-            }
-          : {}),
       },
       maxAttempts: 2,
       timeoutMs: binding.executionSnapshot.runtimePolicy.timeoutMs,
@@ -2126,7 +2081,6 @@ async function prepareAutomationChatRunInTransaction(
     result,
     options: {},
     effectiveEmployeeVersionId: result.currentAssignment.employee_version_id,
-    assistantPreference: resolveAssistantPreference(undefined, message.text),
     conversationMessage: message.text,
   };
   const database: ChatRunDatabase = { kind: 'transaction', sql: transaction };
@@ -2139,7 +2093,6 @@ async function prepareAutomationChatRunInTransaction(
   const { submission, enqueueOptions } = await prepareChatRunInput(
     preparation,
     binding,
-    database,
   );
   const queued = await enqueue(submission, enqueueOptions);
   if (queued.delivery === 'steer_pending')
@@ -2184,13 +2137,6 @@ export async function sendChatMessage(
       ),
     )
     .digest('hex')}`;
-  const assistantPreference =
-    message.deliveryMode === 'follow_up' &&
-    !message.userQuestionAnswer &&
-    !message.reviewContinuation &&
-    !message.changesetAction
-      ? resolveAssistantPreference(message.assistantPreference, message.text)
-      : undefined;
   const conversationMessage = message.userQuestionAnswer
     ? `allrice:user-question:v1:${JSON.stringify(message.userQuestionAnswer)}`
     : message.text;
@@ -2276,7 +2222,6 @@ export async function sendChatMessage(
       options,
       result,
       effectiveEmployeeVersionId,
-      assistantPreference,
       conversationMessage,
     };
     const database: ChatRunDatabase = { kind: 'database', sql };
@@ -2289,7 +2234,6 @@ export async function sendChatMessage(
     const { submission, enqueueOptions } = await prepareChatRunInput(
       runPreparation,
       binding,
-      database,
     );
     const queued = await enqueueRun(context, submission, enqueueOptions);
     const responseRun =
