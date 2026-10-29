@@ -5,6 +5,7 @@ import {
   type EmployeeRuntimePackage,
 } from '@allrice/contracts';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { TransactionSql } from 'postgres';
 import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createLocalCommandFixture } from './local-command.fixture.ts';
 import * as client from './core/client.ts';
@@ -67,6 +68,13 @@ suite('MET153 durable native waits and queue authority', () => {
     // on the current generation under this synthetic release primary.
     vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'c'.repeat(64));
     fixture = await createRuntimeFixtureDatabase();
+    // Only the explicitly clocked transactions below put this isolated schema
+    // ahead of pg_catalog. PostgreSQL still parses, stores and compares the
+    // timestamps; the real driver still transports every production query.
+    await fixture.db`create function clock_timestamp() returns timestamptz
+      language sql volatile as $$ select current_setting('allrice.test_clock')::timestamptz $$`;
+    await fixture.db`create function now() returns timestamptz
+      language sql stable as $$ select current_setting('allrice.test_clock')::timestamptz $$`;
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     const employee = await createEmployeeAdministrationFixture(fixture.db);
     runtimePackage = buildEmployeeRuntimePackage({
@@ -272,6 +280,112 @@ suite('MET153 durable native waits and queue authority', () => {
     });
     await maintainQueue();
   }
+
+  function atDatabaseTime<T>(instant: string, work: () => Promise<T>) {
+    const clocked = new Proxy(fixture.db, {
+      get(target, key) {
+        if (key !== 'begin') return Reflect.get(target, key, target);
+        return (body: (tx: TransactionSql) => Promise<unknown>) =>
+          target.begin(async (tx) => {
+            await tx`select set_config('search_path',current_schema()||',pg_catalog,public',true),
+              set_config('allrice.test_clock',${instant},true)`;
+            return body(tx);
+          });
+      },
+    });
+    vi.mocked(client.getDatabase).mockReturnValueOnce(clocked);
+    return work();
+  }
+
+  it.each([
+    {
+      name: 'already released within the millisecond',
+      releaseUs: 200,
+      timeoutUs: null,
+      eligible: true,
+    },
+    {
+      name: 'released exactly at the scan instant',
+      releaseUs: 800,
+      timeoutUs: null,
+      eligible: true,
+    },
+    {
+      name: 'not available yet within the millisecond',
+      releaseUs: 900,
+      timeoutUs: null,
+      eligible: false,
+    },
+    {
+      name: 'expired within the millisecond',
+      releaseUs: -1000,
+      timeoutUs: 700,
+      eligible: false,
+    },
+    {
+      name: 'expired exactly at the scan instant',
+      releaseUs: -1000,
+      timeoutUs: 800,
+      eligible: false,
+    },
+  ])(
+    'MET-228 scan precision: $name',
+    async ({ releaseUs, timeoutUs, eligible }) => {
+      const { f } = await setup();
+      const next = await sendOrdinary(
+        f,
+        '停止后继续：给线上例会写一句开场白。',
+      );
+      try {
+        // Give release and scan deterministic, distinct microsecond instants in
+        // one millisecond, without sleeps or retries around the actual claim.
+        const [times] = await f.db<{ release: string; scan: string }[]>`
+        with base as (select date_trunc('second',clock_timestamp())+interval '1 second' at)
+        select (at+${releaseUs}*interval '1 microsecond')::text release,
+          (at+interval '800 microseconds')::text scan from base`;
+        await atDatabaseTime(times!.release, () =>
+          releaseConversationRuntime({
+            organizationId: f.org,
+            workspaceId: f.workspace,
+            sessionId: f.session,
+            runId: f.rootRunId,
+            workerId: f.worker.workerId,
+            outcome: 'interrupted',
+          }),
+        );
+        if (timeoutUs !== null)
+          await f.db`update allrice_jobs
+          set timeout_at=date_trunc('second',${times!.scan}::text::timestamptz)+${timeoutUs}*interval '1 microsecond'
+          where run_id=${next}`;
+        const [boundary] = await f.db`
+        select f.state,j.available_at::text,j.timeout_at::text,
+          ${times!.scan}::text scan_text,${times!.scan}::text::timestamptz scan_date,
+          j.available_at<=${times!.scan}::text::timestamptz and j.timeout_at>${times!.scan}::text::timestamptz exact_eligible,
+          j.available_at<=${new Date(times!.scan)} and j.timeout_at>${new Date(times!.scan)} date_eligible
+        from allrice_jobs j join allrice_conversation_followups f on f.run_id=j.run_id
+        where j.run_id=${next}`;
+        expect(boundary!.state).toBe('released');
+        expect(boundary!.exact_eligible).toBe(eligible);
+        expect(boundary!.scan_date).toBeInstanceOf(Date);
+        if (releaseUs !== 900) expect(boundary!.date_eligible).toBe(!eligible);
+        console.info('MET-228 scan precision evidence', boundary);
+        const claimed = await atDatabaseTime(times!.scan, () =>
+          claimNextJob(randomUUID(), 30000),
+        );
+        if (eligible)
+          expect(claimed).toMatchObject({
+            id: await jobId(f, next),
+            attempt: 1,
+          });
+        else expect(claimed).toBeNull();
+      } finally {
+        // A deliberately red precision assertion must not leak a queued Job
+        // into a later case and turn one failure into a misleading cascade.
+        await stop(f, next);
+        await stop(f, f.rootRunId);
+      }
+    },
+  );
 
   it('settles only the confirmed canceled native segment without changing Run/Job or model usage', async () => {
     const s = await stoppedSegment();
