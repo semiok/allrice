@@ -81,6 +81,10 @@ suite('reading a receipt while late native trace changes its group', () => {
   const output = (page: Page) => card(page, 5).locator('pre').last();
   async function open(width = 1440) {
     const page = await browser.newPage({ viewport: { width, height: 900 } });
+    page.setDefaultTimeout(8000);
+    page.on('pageerror', (error) =>
+      console.log(`Reading fixture error: ${error.message}`),
+    );
     await page.goto(origin);
     await expect
       .poll(() => page.locator('article[id^="operation-reading-"]').count())
@@ -101,6 +105,10 @@ suite('reading a receipt while late native trace changes its group', () => {
       await page
         .getByText('补充发现：继续核对后半部分。', { exact: true })
         .waitFor();
+    if (stage === 'append')
+      await expect
+        .poll(() => page.locator('article[id^="operation-reading-"]').count())
+        .toBe(37);
   }
   async function readResult(page: Page) {
     await card(page, 5)
@@ -230,6 +238,70 @@ suite('reading a receipt while late native trace changes its group', () => {
       expect(
         await page.evaluate(() => document.activeElement === document.body),
       ).toBe(true);
+    } finally {
+      await page.close();
+    }
+  });
+  it.each(['field', 'arguments'] as const)(
+    'preserves the real selection in %s when a prefix replaces its group',
+    async (area) => {
+      const page = await open(390);
+      try {
+        await card(page, 0)
+          .getByRole('button', { name: '展开全文', exact: true })
+          .click();
+        if (area === 'arguments')
+          await card(page, 0)
+            .getByRole('button', { name: '技术详情', exact: true })
+            .click();
+        const content =
+          area === 'arguments'
+            ? card(page, 0).getByLabel('发送的原始参数')
+            : card(page, 0)
+                .getByLabel('参数', { exact: true })
+                .locator('dd span')
+                .first();
+        const expected = await content.evaluate((node) => {
+          (document.activeElement as HTMLElement)?.blur();
+          const text = node.firstChild!;
+          document.getSelection()!.setBaseAndExtent(text, 40, text, 15);
+          return document.getSelection()!.toString();
+        });
+        await update(page, 'prefix');
+        expect(
+          await page.evaluate(() => document.getSelection()?.toString()),
+        ).toBe(expected);
+        expect(await content.isVisible()).toBe(true);
+        expect(
+          await page.evaluate(
+            () =>
+              document.getSelection()!.anchorOffset >
+              document.getSelection()!.focusOffset,
+          ),
+        ).toBe(true);
+      } finally {
+        await page.close();
+      }
+    },
+  );
+  it('does not reapply a selection to changed result text', async () => {
+    const page = await open(390);
+    try {
+      await readResult(page);
+      const selected = await output(page).evaluate((node) => {
+        (document.activeElement as HTMLElement)?.blur();
+        document
+          .getSelection()!
+          .setBaseAndExtent(node.firstChild!, 300, node.firstChild!, 340);
+        return document.getSelection()!.toString();
+      });
+      await page.evaluate(() => window.readingUpdate('prefix', true));
+      await expect
+        .poll(() => output(page).textContent())
+        .toContain('内容已更新');
+      expect(
+        await page.evaluate(() => document.getSelection()?.toString()),
+      ).not.toBe(selected);
     } finally {
       await page.close();
     }

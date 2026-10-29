@@ -174,7 +174,7 @@ function Fixture() {
           ]}
           runTraces={{ [run]: { status: 'loaded', events } }}
           runViews={{}}
-          tenantHeaders={headers}
+          tenantHeaders={changed ? { 'x-fixture-content': 'changed' } : headers}
           transcriptColumn={column}
           workspaceId={ids.workspace}
           onLoadRunTrace={() => {}}
