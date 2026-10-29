@@ -84,6 +84,7 @@ async function oldChild(db: Database) {
   return { ...f, child, removed, retained };
 }
 async function publishedChild(db: Database) {
+  vi.stubEnv('ALLRICE_LOCAL_COMMAND_ENABLED', '1');
   const f = await createLocalCommandFixture(db, 'allow'),
     child = await stoppedChild(db, { ...f, owner: f.user });
   const bytes = Buffer.from(
@@ -326,21 +327,36 @@ suite('0229 bounded legacy retirement', () => {
         )[0]!.relation,
       ).toBeNull();
   }, 120000);
-  it('blocks runnable preserved provenance instead of changing its state or manufacturing a stop', async () => {
-    const { db } = await database(),
-      f = await publishedChild(db);
-    await db`update allrice_runs set state='running' where id=${f.child}`;
-    const before = await snapshot(db);
-    const error = await db
-      .begin(async (tx) => tx.unsafe(await migration()))
-      .catch((e) => e);
-    expect(error).toMatchObject({
-      code: '55000',
-      message: 'MET210_PRESERVED_SOURCE_ACTIVE',
-    });
-    expect(error.detail).toContain(f.child);
-    expect(await snapshot(db)).toEqual(before);
-  }, 120000);
+  it.each(['run', 'queued-job', 'leased-terminal-job'] as const)(
+    'blocks runnable preserved provenance (%s) without changing its state or manufacturing a stop',
+    async (mode) => {
+      const { db } = await database(),
+        f = await publishedChild(db);
+      if (mode === 'run')
+        await db`update allrice_runs set state='running' where id=${f.child}`;
+      else {
+        const jobId = randomUUID();
+        await db`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,timeout_at,payload)
+        values(${jobId},${f.org},${f.workspace},${f.user},${f.child},'queued',${randomUUID()},clock_timestamp()+interval '10 minutes','{"schemaVersion":1,"type":"allrice.employee.run","input":{}}')`;
+        if (mode === 'leased-terminal-job')
+          await db`update allrice_jobs set status='succeeded',worker_id=${randomUUID()},lease_token=${randomUUID()},claimed_at=clock_timestamp(),heartbeat_at=clock_timestamp(),lease_expires_at=clock_timestamp()+interval '10 minutes',completed_at=clock_timestamp() where id=${jobId}`;
+      }
+      const before = await snapshot(db);
+      const error = await db
+        .begin(async (tx) => tx.unsafe(await migration()))
+        .catch((e) => e);
+      expect(error).toMatchObject({
+        code: '55000',
+        message:
+          mode === 'queued-job'
+            ? 'MET210_OLD_WRITERS_ACTIVE'
+            : 'MET210_PRESERVED_SOURCE_ACTIVE',
+      });
+      expect(error.detail).toContain(f.child);
+      expect(await snapshot(db)).toEqual(before);
+    },
+    120000,
+  );
   it('does not treat a file reference without an ordinary parent source as approved preservation', async () => {
     const { db } = await database(),
       f = await oldChild(db);
