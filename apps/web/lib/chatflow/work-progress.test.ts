@@ -191,6 +191,9 @@ it('joins receipts only by native call ID and retains an unlinked repeated tool'
     'exact',
   );
   expect(view.items.filter((item) => item.operationId)).toHaveLength(2);
+  expect(
+    view.items.filter((item) => item.operationStatus === 'succeeded'),
+  ).toHaveLength(2);
   expect(view.parts?.at(-1)).toMatchObject({ kind: 'reply', text: '结束' });
   expect(
     projectWorkProgress([], '历史结论', false, true, [

@@ -1835,7 +1835,7 @@ div.composerAttachmentMenu,
   margin: 0;
   padding: 0;
 }
-.processSteps li {
+.processSteps > li {
   padding: 4px 0;
 }
 .processSteps .processStepRow {
@@ -1924,10 +1924,8 @@ div.composerAttachmentMenu,
   min-width: 0;
   color: var(--dsw-alias-label-primary);
 }
-.processReceipts {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+.operationReceipt {
+  margin: 6px 0 6px 22px;
 }
 .operationReceipt:empty {
   display: none;

@@ -447,7 +447,7 @@ describe('historical transcript capability gating', () => {
       },
     );
     expect(executing).toContain('执行中…');
-    expect(executing).not.toContain('查询实时行情');
+    expect(executing).toContain('data-work-group-open="false"');
     expect(executing).not.toContain('market.quote');
   });
   it('does not borrow another Run clock or invent timing for historical Runs', () => {

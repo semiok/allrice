@@ -1,4 +1,6 @@
 'use client';
+
+import { revealOperation } from '../../lib/chatflow/reveal-operation';
 import { ReferenceLibrary } from './reference-library';
 import {
   UnifiedWorkbenchControls,
@@ -2132,19 +2134,11 @@ export function ChatFlowClient({
                         workbench.show(id);
                       }}
                       onOperation={(id) => {
-                        const card = document.getElementById(`operation-${id}`);
-                        if (!card) {
+                        if (!revealOperation(id)) {
                           setError(
                             '这张卡片还没加载出来，请稍后再点一次「查看并确认」。',
                           );
-                          return;
                         }
-                        card.tabIndex = -1;
-                        card.scrollIntoView({
-                          block: 'center',
-                          behavior: 'smooth',
-                        });
-                        card.focus({ preventScroll: true });
                       }}
                     />
                   ) : null}

@@ -2,6 +2,10 @@
 import { ProjectServiceCard } from './project-service-card';
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import {
+  WorkProcessDisclosureScope,
+  useProcessDisclosure,
+} from './work-process-disclosure';
+import {
   Button,
   IconChevronDownOutlineRegular,
   IconLoadingOutlineRegular,
@@ -34,6 +38,7 @@ import {
   unconfirmedNote,
 } from '../../lib/chatflow/cloud-operation-presenter';
 import { shortDateTime } from '../../lib/chatflow/browser-workspace-presenter';
+import { revealOperation } from '../../lib/chatflow/reveal-operation';
 
 function operationFailure(op: CloudOperationView) {
   return op.proposal.kind === 'mcp' &&
@@ -90,9 +95,12 @@ export function cloudOperationCompactStatus(
 
 /** One parameter: its path as a label, its real value kept apart below. */
 function ApprovalField({ field }: { field: ApprovalFieldView }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useProcessDisclosure<boolean>(
+    `approval:${field.path}`,
+    false,
+  );
   return (
-    <div>
+    <div data-operation-section={`approval:${field.path}`}>
       <dt>{field.path}</dt>
       <dd className={styles.approvalValue}>
         {open ? field.full : field.text}
@@ -205,7 +213,10 @@ function OperationDetails({
   sections: OperationSection[];
   initialSection: string | null;
 }) {
-  const [selected, setSelected] = useState(initialSection);
+  const [selected, setSelected] = useProcessDisclosure(
+    'section',
+    initialSection,
+  );
   const panelId = useId();
   const section = sections.find((item) => item.key === selected);
   return (
@@ -247,10 +258,13 @@ function OperationDetails({
         {sections.map((item) => (
           <div
             key={item.key}
+            data-operation-section={item.key}
             hidden={item.key !== selected}
             className={styles.detailContent}
           >
-            {item.content}
+            <WorkProcessDisclosureScope id={item.key}>
+              {item.content}
+            </WorkProcessDisclosureScope>
           </div>
         ))}
       </div>
@@ -279,8 +293,10 @@ export function CloudOperationCard({
   laterSuccessId,
   onAct,
   projectServiceContext,
+  embedded = false,
 }: {
   op: CloudOperationView;
+  embedded?: boolean;
   projectServiceContext?: {
     workspaceId: string;
     tenantHeaders: Record<string, string>;
@@ -377,7 +393,14 @@ export function CloudOperationCard({
       {laterSuccessId && (
         <p className={styles.notice}>
           之后再试的一次已经完成，这次的记录仍保留。
-          <a href={`#operation-${laterSuccessId}`}>查看完成的那次</a>
+          <a
+            href={`#operation-${laterSuccessId}`}
+            onClick={(event) => {
+              if (revealOperation(laterSuccessId)) event.preventDefault();
+            }}
+          >
+            查看完成的那次
+          </a>
         </p>
       )}
       {!op.enabled && (
@@ -504,7 +527,7 @@ export function CloudOperationCard({
             <DetailFields
               rows={[
                 ['应用', serviceHost(proposal.endpoint)],
-                ['操作类别', mcpRiskLabel(proposal.risk)],
+                ['授权等级', mcpRiskLabel(proposal.risk)],
               ]}
             />
             <TechnicalDetails
@@ -520,12 +543,12 @@ export function CloudOperationCard({
         key: 'arguments',
         label: '操作',
         title: '发送内容',
-        value: `${mcpRiskLabel(proposal.risk)} · ${argumentCount} 项`,
+        value: `授权等级：${mcpRiskLabel(proposal.risk)} · ${argumentCount} 项`,
         content: (
           <>
             <DetailFields
               rows={[
-                ['操作类别', mcpRiskLabel(proposal.risk)],
+                ['授权等级', mcpRiskLabel(proposal.risk)],
                 ['发送内容', `${argumentCount} 项`],
               ]}
             />
@@ -776,7 +799,11 @@ export function CloudOperationCard({
   return (
     <article
       className={styles.card}
-      id={`operation-${op.snapshot.binding.attempt.operationId}`}
+      id={
+        embedded
+          ? undefined
+          : `operation-${op.snapshot.binding.attempt.operationId}`
+      }
       data-status={op.snapshot.status}
     >
       {op.projectService && projectServiceContext && (
@@ -786,7 +813,7 @@ export function CloudOperationCard({
         />
       )}
       <header className={styles.cloudHeader}>
-        <strong className={styles.title}>
+        <strong className={styles.title} hidden={embedded}>
           <span className={styles.icon} aria-hidden="true">
             <svg
               width="17"
@@ -821,7 +848,7 @@ export function CloudOperationCard({
               <span className={styles.serviceHost} title={proposal.endpoint}>
                 {serviceHost(proposal.endpoint)}
               </span>
-              <span>{mcpRiskLabel(proposal.risk)}</span>
+              <span>授权等级：{mcpRiskLabel(proposal.risk)}</span>
             </>
           ) : (
             <>
@@ -849,17 +876,21 @@ export function CloudOperationCard({
               {cloudOperationCompactStatus(op)}
             </span>
           </Tooltip>
-          {detailsToggle}
+          {!embedded && detailsToggle}
           {stopButton}
         </div>
       </header>
       {!isMcp && notices}
-      <div id={detailsId} hidden={!detailsOpen}>
-        <OperationDetails
-          key={`${op.snapshot.binding.attempt.operationId}-${!!pending}`}
-          sections={sections}
-          initialSection={pending ? (isMcp ? 'arguments' : 'execution') : null}
-        />
+      <div id={detailsId} hidden={!embedded && !detailsOpen}>
+        <WorkProcessDisclosureScope id={`details:${!!pending}`}>
+          <OperationDetails
+            key={`${op.snapshot.binding.attempt.operationId}-${!!pending}`}
+            sections={sections}
+            initialSection={
+              pending ? (isMcp ? 'arguments' : 'execution') : null
+            }
+          />
+        </WorkProcessDisclosureScope>
         {isMcp && (
           <div className={styles.receiptNotes}>
             {notices}
@@ -917,7 +948,7 @@ export function CloudOperationPanel({
   runActive: boolean;
   children?: (feed: {
     operations: CloudOperationView[];
-    renderOperation: (operationId: string) => ReactNode;
+    renderOperation: (operationId: string, embedded?: boolean) => ReactNode;
     feedback: ReactNode;
   }) => ReactNode;
 }) {
@@ -1075,7 +1106,7 @@ export function CloudOperationPanel({
       )}
     </>
   );
-  const renderOperation = (operationId: string) => {
+  const renderOperation = (operationId: string, embedded = false) => {
     const op = operations.find(
       (op) => op.snapshot.binding.attempt.operationId === operationId,
     );
@@ -1087,6 +1118,7 @@ export function CloudOperationPanel({
           onChanged: () => setRevision((value) => value + 1),
         }}
         key={op.snapshot.binding.attempt.operationId}
+        embedded={embedded}
         op={op}
         runActive={runActive}
         laterSuccessId={laterSuccessfulMcpCall(op, operations)}
