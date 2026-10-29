@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
+import { parse as parseYaml } from 'yaml';
 import { LocalStorageAdapter } from '../../storage/src/index.ts';
 import { assertRuntimeFixtureDatabase } from './runtime-fixture-database.ts';
 
@@ -135,11 +136,37 @@ export async function createRetirementUpgradeFixture(options: {
     await copyFile(source, join(before, driverPath));
     // Do not reuse candidate workspace package symlinks: old imports must resolve
     // to this exact checkout. The normal test store already contains the lockfile.
-    await exec('pnpm', ['install', '--offline', '--frozen-lockfile'], {
-      cwd: before,
-      maxBuffer: 10 * 1024 * 1024,
-      env: { ...process.env, CI: 'true' },
-    });
+    // m5-test installs into an explicit shared store while Vitest can run with
+    // a different HOME. Reuse this candidate's actual dependency store; do not
+    // change host configuration or fetch a different dependency graph.
+    const modules = parseYaml(
+      await readFile(join(repository, 'node_modules/.modules.yaml'), 'utf8'),
+    ) as { storeDir?: unknown };
+    if (typeof modules.storeDir !== 'string')
+      throw Error('Installed pnpm store metadata missing');
+    try {
+      await exec(
+        'pnpm',
+        [
+          'install',
+          '--offline',
+          '--frozen-lockfile',
+          '--store-dir',
+          modules.storeDir,
+        ],
+        {
+          cwd: before,
+          maxBuffer: 10 * 1024 * 1024,
+          env: { ...process.env, CI: 'true' },
+        },
+      );
+    } catch (error) {
+      const output = error as { stdout?: string; stderr?: string };
+      throw new Error(
+        `Before dependency install failed: ${output.stdout ?? ''} ${output.stderr ?? ''}`,
+        { cause: error },
+      );
+    }
     await exec('pnpm', ['--filter', '@allrice/contracts', 'build'], {
       cwd: before,
       maxBuffer: 10 * 1024 * 1024,

@@ -618,9 +618,7 @@ suite(
           const [diagnostic] =
             await f.db`select last_error_code,last_error_message from allrice_jobs where id=${review.jobId}`;
           expect(detail.status, JSON.stringify(diagnostic)).toBe(
-            mode === 'accept' ||
-              mode === 'saved-assistants' ||
-              mode === 'revise'
+            mode === 'accept' || mode === 'revise'
               ? 'succeeded'
               : mode === 'cancel'
                 ? 'canceled'
@@ -651,17 +649,9 @@ suite(
           const artifacts =
             await f.db`select w.run_id,o.state,o.checksum from allrice_workbench_artifacts w join allrice_deliverable_versions v on v.id=w.version_id join allrice_storage_objects o on o.id=v.object_id where w.run_id=${review.runId}`;
           expect(artifacts).toHaveLength(
-            mode === 'accept' || mode === 'saved-assistants'
-              ? 3
-              : mode === 'revise'
-                ? 2
-                : 0,
+            mode === 'accept' ? 3 : mode === 'revise' ? 2 : 0,
           );
-          if (
-            mode === 'accept' ||
-            mode === 'saved-assistants' ||
-            mode === 'revise'
-          ) {
+          if (mode === 'accept' || mode === 'revise') {
             expect(detail.verdict).toBe(
               mode === 'revise' ? 'revise' : 'accept',
             );
