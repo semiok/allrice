@@ -917,7 +917,17 @@ suite('MET153 durable native waits and queue authority', () => {
       { state: 'queued', attempt: 0, deferred: true },
       { state: 'queued', attempt: 0, deferred: true },
     ]);
-    // Two real PostgreSQL transactions cannot skip a locked earlier message.
+    // A locked FIFO head must not let SKIP LOCKED admit the later message.
+    const held = await f.db.reserve();
+    try {
+      await held`begin`;
+      await held`select id from allrice_jobs where run_id=${first} for update`;
+      expect(await claimNextJob(randomUUID(), 30000)).toBeNull();
+    } finally {
+      await held`rollback`;
+      held.release();
+    }
+    // Competing claim transactions grant the head to exactly one Worker.
     const claims = await Promise.all([
       claimNextJob(randomUUID(), 30000),
       claimNextJob(randomUUID(), 30000),
