@@ -1,6 +1,7 @@
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
+import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { BridgeInstanceLock } from './instance-lock.js';
@@ -460,92 +461,191 @@ it('missing or misleading parent process hints cannot bypass a still-held config
     owner.close();
   }
 });
-it('monitor uses real child initialization/credential read and no acquisition until persisted commit', async () => {
-  const f = await monitoredFixture();
-  const marker = join(f.root, 'acquired-after-commit');
-  const installModule = fileURLToPath(
-    new URL('./update-installer.ts', import.meta.url),
-  );
-  const lockModule = fileURLToPath(
-    new URL('./instance-lock.ts', import.meta.url),
-  );
-  const children: ReturnType<typeof spawn>[] = [];
-  const script = `
+it.each([
+  [false, false],
+  [true, false],
+  [true, true],
+])(
+  'monitor uses real child initialization/credential read and no acquisition until persisted commit (hold ready fsync: %s, exit during wait: %s)',
+  async (holdReadyFsync, exitDuringWait) => {
+    const f = await monitoredFixture();
+    const marker = join(f.root, 'acquired-after-commit');
+    const installModule = fileURLToPath(
+      new URL('./update-installer.ts', import.meta.url),
+    );
+    const lockModule = fileURLToPath(
+      new URL('./instance-lock.ts', import.meta.url),
+    );
+    const children: ReturnType<typeof spawn>[] = [];
+    let blockedChild: ReturnType<typeof spawn> | undefined;
+    const confirmations: boolean[] = [];
+    const create = f.input.createInstaller;
+    f.input.createInstaller = (quiescent) => {
+      const engine = create(quiescent),
+        confirm = engine.confirmHealthy.bind(engine);
+      engine.confirmHealthy = async (version, id) => {
+        const result = await confirm(version, id);
+        confirmations.push(result);
+        return result;
+      };
+      return engine;
+    };
+    const script = `
     const data = JSON.parse(process.argv[1]);
     const { BridgeUpdateInstaller } = await import(data.installModule);
     const { BridgeInstanceLock } = await import(data.lockModule);
-    const { readFile, writeFile } = await import('node:fs/promises');
+    const { open, readFile, writeFile } = await import('node:fs/promises');
     const { setTimeout } = await import('node:timers/promises');
     const owner = await BridgeInstanceLock.acquire(data.owner);
     try {
       const bytes = await readFile(data.credentials, 'utf8');
       if (bytes !== 'keep-device-and-source-record-unchanged') process.exit(3);
+      if (data.holdReadyFsync) {
+        // Pause the actual directory fsync after rename, with the update OS lock held.
+        const probe = await open(data.root, 'r');
+        const prototype = Object.getPrototypeOf(probe), sync = prototype.sync;
+        await probe.close();
+        prototype.sync = async function () {
+          if ((await this.stat()).isDirectory()) {
+            prototype.sync = sync;
+            process.send('ready-visible-before-fsync');
+            await new Promise(resolve => process.once('message', resolve));
+          }
+          return sync.call(this);
+        };
+      }
       const engine = new BridgeUpdateInstaller(data.root, data.trust, { assertQuiescent: async () => {}, extract: async () => {}, verifyBundle: async () => {} });
       await engine.reportReady('0.7.0-dev.1', data.id);
+      if (data.holdReadyFsync) process.send('ready-fsync-complete');
       for (let n = 0; n < 200; n++) {
         if ((await engine.state()).phase === 'healthy') { await writeFile(data.marker, 'work-after-health', { mode: 0o600 }); break; }
         await setTimeout(25);
       }
-    } finally { owner.close(); }
+    } finally { owner.close(); process.disconnect(); }
   `;
-  f.input.launch = async (_app, id) => {
-    expect(id).toBeTruthy();
-    await expect(readFile(marker)).rejects.toMatchObject({ code: 'ENOENT' });
-    const child = spawn(
-      process.execPath,
-      [
-        '--import',
-        'tsx',
-        '--input-type=module',
-        '-e',
-        script,
-        JSON.stringify({
-          installModule,
-          lockModule,
-          owner: join(f.root, 'synthetic-owner-config'),
-          credentials: f.credentials,
-          root: f.managed,
-          trust,
-          id,
-          marker,
-        }),
-      ],
-      { stdio: 'ignore' },
-    );
-    children.push(child);
-    return child;
-  };
-  f.input.healthAttempts = 200;
-  f.input.sleep = (ms) => delay(Math.min(ms, 25));
-  try {
-    expect((await monitorBridgeUpdate(f.input)).status).toBe('healthy');
-    for (
-      let n = 0;
-      n < 100 &&
-      !(await readFile(marker, 'utf8').then(
-        (contents) => contents === 'work-after-health',
-        () => false,
-      ));
-      n++
-    )
-      await delay(25);
-    expect(await readFile(marker, 'utf8')).toBe('work-after-health');
-  } finally {
-    for (const child of children) {
-      if (child.exitCode === null && child.signalCode === null)
-        child.kill('SIGTERM');
-    }
-    for (
-      let n = 0;
-      n < 100 &&
-      children.some(
-        (child) => child.exitCode === null && child.signalCode === null,
+    f.input.launch = vi.fn(async (_app, id) => {
+      if (!id) {
+        expect(exitDuringWait).toBe(true);
+        return f.fake;
+      }
+      await expect(readFile(marker)).rejects.toMatchObject({ code: 'ENOENT' });
+      const child = spawn(
+        process.execPath,
+        [
+          '--import',
+          'tsx',
+          '--input-type=module',
+          '-e',
+          script,
+          JSON.stringify({
+            installModule,
+            lockModule,
+            owner: join(f.root, 'synthetic-owner-config'),
+            credentials: f.credentials,
+            root: f.managed,
+            trust,
+            id,
+            marker,
+            holdReadyFsync,
+          }),
+        ],
+        { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] },
       );
-      n++
-    )
-      await delay(25);
-  }
-}, 15000);
+      children.push(child);
+      if (holdReadyFsync) {
+        expect((await once(child, 'message'))[0]).toBe(
+          'ready-visible-before-fsync',
+        );
+        expect((await f.engine().state())?.phase).toBe('ready-health');
+        await expect(
+          BridgeInstanceLock.acquire(join(f.managed, 'update')),
+        ).rejects.toThrow('BRIDGE_ALREADY_RUNNING');
+        await expect(readFile(marker)).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+        blockedChild = child;
+      }
+      return child;
+    });
+    f.input.healthAttempts = 200;
+    f.input.sleep = async (ms) => {
+      if (blockedChild) {
+        expect(confirmations).toEqual([false]);
+        expect((await f.engine().state())?.phase).toBe('ready-health');
+        await expect(readFile(marker)).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+        if (exitDuringWait) {
+          const exited = once(blockedChild, 'exit');
+          blockedChild.kill('SIGTERM');
+          expect(await exited).toEqual([null, 'SIGTERM']);
+          blockedChild = undefined;
+          return;
+        }
+        const ready = once(blockedChild, 'message');
+        blockedChild.send('release-ready-fsync');
+        blockedChild = undefined;
+        expect((await ready)[0]).toBe('ready-fsync-complete');
+      } else await delay(Math.min(ms, 25));
+    };
+    try {
+      const result = await monitorBridgeUpdate(f.input);
+      if (exitDuringWait) {
+        expect({
+          result,
+          phase: (await f.engine().state())?.phase,
+          core: await readFile(f.core, 'utf8'),
+          confirmations,
+        }).toEqual({
+          result: {
+            status: 'rolled-back',
+            failureCode: 'UPDATE_LAUNCH_FAILED',
+          },
+          phase: 'rolled-back',
+          core: 'new-app',
+          confirmations: [false],
+        });
+        await expect(readFile(marker)).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+        expect(await readFile(f.credentials, 'utf8')).toBe(
+          'keep-device-and-source-record-unchanged',
+        );
+        expect(f.input.verifyRollback).toHaveBeenCalledOnce();
+        expect(f.input.launch).toHaveBeenCalledTimes(2);
+        return;
+      }
+      expect(result.status).toBe('healthy');
+      if (holdReadyFsync) expect(confirmations).toEqual([false, true]);
+      for (
+        let n = 0;
+        n < 100 &&
+        !(await readFile(marker, 'utf8').then(
+          (contents) => contents === 'work-after-health',
+          () => false,
+        ));
+        n++
+      )
+        await delay(25);
+      expect(await readFile(marker, 'utf8')).toBe('work-after-health');
+    } finally {
+      for (const child of children) {
+        if (child.exitCode === null && child.signalCode === null)
+          child.kill('SIGTERM');
+      }
+      for (
+        let n = 0;
+        n < 100 &&
+        children.some(
+          (child) => child.exitCode === null && child.signalCode === null,
+        );
+        n++
+      )
+        await delay(25);
+    }
+  },
+  15000,
+);
 it('failed candidate launch reacquires owner, restores actual previous bytes and relaunches verified rollback', async () => {
   const f = await monitoredFixture();
   f.input.launch = vi.fn(async (_app, id) => {
@@ -573,6 +673,41 @@ it('health timeout stops only the owned candidate and preserves original credent
     'keep-device-and-source-record-unchanged',
   );
 });
+it('a busy health lock uses only the existing health wait bound before stopping and recovering', async () => {
+  const f = await monitoredFixture();
+  let held: BridgeInstanceLock | undefined;
+  f.input.launch = vi.fn(async (_app, id) => {
+    if (id) {
+      await f.engine().reportReady('0.7.0-dev.1', id);
+      held = await BridgeInstanceLock.acquire(join(f.managed, 'update'));
+    }
+    return f.fake;
+  });
+  const stop = f.fake.kill.bind(f.fake);
+  f.fake.kill = vi.fn((signal) => {
+    held?.close();
+    return stop(signal);
+  });
+  f.input.sleep = vi.fn(async () => {
+    expect((await f.engine().state())?.phase).toBe('ready-health');
+    expect(f.fake.kill).not.toHaveBeenCalled();
+  });
+  try {
+    expect(await monitorBridgeUpdate(f.input)).toEqual({
+      status: 'rolled-back',
+      failureCode: 'UPDATE_HEALTH_TIMEOUT',
+    });
+    expect(f.input.sleep).toHaveBeenCalledTimes(f.input.healthAttempts!);
+    expect(f.fake.kill).toHaveBeenCalledExactlyOnceWith('SIGTERM');
+    expect((await f.engine().state())?.phase).toBe('rolled-back');
+    expect(await readFile(f.core, 'utf8')).toBe('new-app');
+    expect(await readFile(f.credentials, 'utf8')).toBe(
+      'keep-device-and-source-record-unchanged',
+    );
+  } finally {
+    held?.close();
+  }
+});
 it('unconfirmed child stop does not restore underneath a potentially running candidate', async () => {
   const f = await monitoredFixture();
   f.input.launch = async () => f.fake;
@@ -584,24 +719,30 @@ it('unconfirmed child stop does not restore underneath a potentially running can
   expect(await readFile(f.core, 'utf8')).toBe('candidate');
   expect(f.input.verifyRollback).not.toHaveBeenCalled();
 });
-it('a lost final health commit ACK never kills or rolls back a possibly active committed Core', async () => {
-  const f = await monitoredFixture();
-  const create = f.input.createInstaller;
-  f.input.createInstaller = (quiescent) => {
-    const engine = create(quiescent),
-      confirm = engine.confirmHealthy.bind(engine);
-    engine.confirmHealthy = async (version, id) => {
-      await confirm(version, id);
-      throw Error('synthetic-after-save-failure');
+it.each(['synthetic-after-save-failure', 'BRIDGE_ALREADY_RUNNING'])(
+  'a lost final health commit ACK never kills or rolls back a possibly active committed Core (%s)',
+  async (failure) => {
+    const f = await monitoredFixture();
+    f.input.sleep = vi.fn(async () => undefined);
+    const create = f.input.createInstaller;
+    f.input.createInstaller = (quiescent) => {
+      const engine = create(quiescent),
+        confirm = engine.confirmHealthy.bind(engine);
+      engine.confirmHealthy = async (version, id) => {
+        await confirm(version, id);
+        throw Error(failure);
+      };
+      return engine;
     };
-    return engine;
-  };
-  await expect(monitorBridgeUpdate(f.input)).rejects.toThrow(
-    'UPDATE_HEALTH_UNCONFIRMED',
-  );
-  expect((await f.engine().state())?.phase).toBe('healthy');
-  expect(f.fake.kill).not.toHaveBeenCalled();
-});
+    await expect(monitorBridgeUpdate(f.input)).rejects.toThrow(
+      'UPDATE_HEALTH_UNCONFIRMED',
+    );
+    expect((await f.engine().state())?.phase).toBe('healthy');
+    expect(f.fake.kill).not.toHaveBeenCalled();
+    expect(f.input.verifyRollback).not.toHaveBeenCalled();
+    expect(f.input.sleep).not.toHaveBeenCalled();
+  },
+);
 it.runIf(process.platform === 'darwin')(
   'accepts a real system ditto ZIP with resource forks excluded',
   async () => {
