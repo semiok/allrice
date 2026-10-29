@@ -35,6 +35,13 @@ do $$ declare blockers jsonb; begin
     raise exception using errcode='55000',message='MET210_OLD_WRITERS_ACTIVE',detail=blockers::text,
       hint='Stop/drain the old Worker and Hosts before retrying. No data was changed.';
   end if;
+  select jsonb_agg(jsonb_build_object('runId',a.run_id,'rootRunId',a.root_run_id,'status',a.status)) into blockers
+  from allrice_assistant_instances a join met210_children c using(run_id)
+  where a.status not in ('completed','partial','failed','canceled');
+  if blockers is not null then
+    raise exception using errcode='55000',message='MET210_CHILD_STOP_UNCONFIRMED',detail=blockers::text,
+      hint='Confirm the old child execution stopped before retrying. This migration never fabricates a stop receipt.';
+  end if;
   select jsonb_agg(jsonb_build_object('operationId',o.id,'runId',o.run_id,'status',o.snapshot->>'status')) into blockers
   from allrice_runtime_operations o join met210_children c
     on o.initial_snapshot->>'agentInstanceId'=c.run_id::text

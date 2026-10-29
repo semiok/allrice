@@ -2,7 +2,17 @@
 import { createHash } from 'node:crypto';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
-import { access, copyFile, mkdir, mkdtemp, readFile, realpath, readdir, rm, writeFile } from 'node:fs/promises';
+import {
+  access,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  readdir,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,7 +21,8 @@ import { LocalStorageAdapter } from '../../storage/src/index.ts';
 import { assertRuntimeFixtureDatabase } from './runtime-fixture-database.ts';
 
 const exec = promisify(execFile);
-const sha = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
+const sha = (bytes: string | Uint8Array) =>
+  createHash('sha256').update(bytes).digest('hex');
 const pause = () => new Promise((done) => setTimeout(done, 50));
 export interface RetirementDescriptor {
   beforeRef: string;
@@ -30,15 +41,27 @@ export async function createRetirementUpgradeFixture(options: {
   beforeDriver: string | URL;
   migrationName?: '0229_retire_legacy_assistants.sql';
 }) {
-  if (!/^[a-f0-9]{40}$/.test(options.beforeRef)) throw Error('Exact before SHA required');
+  if (!/^[a-f0-9]{40}$/.test(options.beforeRef))
+    throw Error('Exact before SHA required');
   const databaseUrl = process.env.ALLRICE_TEST_DATABASE_URL;
   if (!databaseUrl) throw Error('Dedicated ALLRICE_TEST_DATABASE_URL required');
   assertRuntimeFixtureDatabase(new URL(databaseUrl));
-  const repository = resolve(fileURLToPath(new URL('../../../', import.meta.url)));
-  const source = options.beforeDriver instanceof URL ? fileURLToPath(options.beforeDriver) : resolve(options.beforeDriver);
+  const repository = resolve(
+    fileURLToPath(new URL('../../../', import.meta.url)),
+  );
+  const source =
+    options.beforeDriver instanceof URL
+      ? fileURLToPath(options.beforeDriver)
+      : resolve(options.beforeDriver);
   const driverPath = relative(repository, source);
-  if (driverPath.startsWith('..') || !driverPath.startsWith('apps/worker/test/')) throw Error('Before driver must be a repository-owned Worker test');
-  const temp = await realpath(await mkdtemp(join(tmpdir(), 'allrice-retirement-')));
+  if (
+    driverPath.startsWith('..') ||
+    !driverPath.startsWith('apps/worker/test/')
+  )
+    throw Error('Before driver must be a repository-owned Worker test');
+  const temp = await realpath(
+    await mkdtemp(join(tmpdir(), 'allrice-retirement-')),
+  );
   const before = join(temp, 'before');
   await mkdir(before);
   let child: ChildProcess | undefined;
@@ -46,42 +69,89 @@ export async function createRetirementUpgradeFixture(options: {
   let exit: number | null | undefined;
   let db: ReturnType<typeof postgres> | undefined;
   let descriptor: RetirementDescriptor | undefined;
-  const ready = join(temp, 'ready.json'), release = join(temp, 'release'), closed = join(temp, 'closed.json');
+  const ready = join(temp, 'ready.json'),
+    release = join(temp, 'release'),
+    closed = join(temp, 'closed.json');
   const log: string[] = [];
   async function waitFor(path: string, timeoutMs = 120_000) {
     const end = Date.now() + timeoutMs;
     while (Date.now() < end) {
-      if (await access(path).then(() => true, () => false)) return;
-      if (exit !== undefined) throw Error(`Before keeper exited ${exit}: ${log.join('').slice(-8000)}`);
+      if (
+        await access(path).then(
+          () => true,
+          () => false,
+        )
+      )
+        return;
+      if (exit !== undefined)
+        throw Error(
+          `Before keeper exited ${exit}: ${log.join('').slice(-8000)}`,
+        );
       await pause();
     }
-    throw Error(`Before keeper did not produce ${relative(temp, path)}: ${log.join('').slice(-8000)}`);
+    throw Error(
+      `Before keeper did not produce ${relative(temp, path)}: ${log.join('').slice(-8000)}`,
+    );
   }
   async function close() {
     await db?.end({ timeout: 5 });
     await writeFile(release, 'release');
-    if (child && exit === undefined) await Promise.race([ended, new Promise((_, reject) => setTimeout(() => reject(Error('Before keeper cleanup timeout')), 30_000))]);
+    if (child && exit === undefined)
+      await Promise.race([
+        ended,
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(Error('Before keeper cleanup timeout')),
+            30_000,
+          ),
+        ),
+      ]);
     const cleanup = await readFile(closed, 'utf8').then(JSON.parse);
-    if (!cleanup.schemaRemoved || !cleanup.storageRemoved || !cleanup.databaseClosed || !cleanup.adminClosed) throw Error('Before keeper cleanup unconfirmed');
+    if (
+      !cleanup.schemaRemoved ||
+      !cleanup.storageRemoved ||
+      !cleanup.databaseClosed ||
+      !cleanup.adminClosed
+    )
+      throw Error('Before keeper cleanup unconfirmed');
     await rm(temp, { recursive: true, force: true });
     return cleanup;
   }
   try {
-    const actual = (await exec('git', ['rev-parse', `${options.beforeRef}^{commit}`], { cwd: repository })).stdout.trim();
+    const actual = (
+      await exec('git', ['rev-parse', `${options.beforeRef}^{commit}`], {
+        cwd: repository,
+      })
+    ).stdout.trim();
     if (actual !== options.beforeRef) throw Error('Before commit mismatch');
     const archive = join(temp, 'before.tar');
-    await exec('git', ['archive', '--format=tar', `--output=${archive}`, actual], { cwd: repository });
+    await exec(
+      'git',
+      ['archive', '--format=tar', `--output=${archive}`, actual],
+      { cwd: repository },
+    );
     await exec('tar', ['-xf', archive, '-C', before]);
     await rm(archive);
     await mkdir(dirname(join(before, driverPath)), { recursive: true });
     await copyFile(source, join(before, driverPath));
     // Do not reuse candidate workspace package symlinks: old imports must resolve
     // to this exact checkout. The normal test store already contains the lockfile.
-    await exec('pnpm', ['install', '--offline', '--frozen-lockfile'], { cwd: before, maxBuffer: 10 * 1024 * 1024, env: { ...process.env, CI: 'true' } });
-    await exec('pnpm', ['--filter', '@allrice/contracts', 'build'], { cwd: before, maxBuffer: 10 * 1024 * 1024 });
-    const keeperPath = 'apps/worker/test/met210-retirement-keeper.integration.test.ts';
-    const driverImport = './' + relative(dirname(keeperPath), driverPath).replaceAll('\\', '/');
-    await writeFile(join(before, keeperPath), `
+    await exec('pnpm', ['install', '--offline', '--frozen-lockfile'], {
+      cwd: before,
+      maxBuffer: 10 * 1024 * 1024,
+      env: { ...process.env, CI: 'true' },
+    });
+    await exec('pnpm', ['--filter', '@allrice/contracts', 'build'], {
+      cwd: before,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    const keeperPath =
+      'apps/worker/test/met210-retirement-keeper.integration.test.ts';
+    const driverImport =
+      './' + relative(dirname(keeperPath), driverPath).replaceAll('\\', '/');
+    await writeFile(
+      join(before, keeperPath),
+      `
 import { it } from 'vitest';
 import { mkdir, readFile, readdir, writeFile, access } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -103,37 +173,80 @@ it('seeds actual pre-retirement APIs and stops all writers before handoff', asyn
   while (!(await access(${JSON.stringify(release)}).then(()=>true,()=>false))) await new Promise(done=>setTimeout(done,50));
  } finally {await writeFile(${JSON.stringify(closed)},JSON.stringify(await f.close()));}
 },1200000);
-`);
-    child = spawn('pnpm', ['exec', 'vitest', 'run', '--maxWorkers=1', keeperPath], { cwd: before, env: { ...process.env, ALLRICE_RUN_DB_INTEGRATION: '1' }, stdio: ['ignore', 'pipe', 'pipe'] });
+`,
+    );
+    child = spawn(
+      'pnpm',
+      ['exec', 'vitest', 'run', '--maxWorkers=1', keeperPath],
+      {
+        cwd: before,
+        env: { ...process.env, ALLRICE_RUN_DB_INTEGRATION: '1' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
     child.stdout?.on('data', (chunk) => log.push(String(chunk)));
     child.stderr?.on('data', (chunk) => log.push(String(chunk)));
     ended = new Promise((done, reject) => {
       child!.once('error', reject);
-      child!.once('exit', (code) => { exit = code; done(code); });
+      child!.once('exit', (code) => {
+        exit = code;
+        done(code);
+      });
     });
     await waitFor(ready, 300_000);
-    descriptor = JSON.parse(await readFile(ready, 'utf8')) as RetirementDescriptor;
-    if (descriptor.beforeRef !== actual || !/^p25_[a-f0-9]{32}$/.test(descriptor.schema) || await realpath(descriptor.storageRoot) !== descriptor.storageRoot || descriptor.nativeRoot !== join(temp, 'native')) throw Error('Invalid before ownership descriptor');
+    descriptor = JSON.parse(
+      await readFile(ready, 'utf8'),
+    ) as RetirementDescriptor;
+    if (
+      descriptor.beforeRef !== actual ||
+      !/^p25_[a-f0-9]{32}$/.test(descriptor.schema) ||
+      (await realpath(descriptor.storageRoot)) !== descriptor.storageRoot ||
+      descriptor.nativeRoot !== join(temp, 'native')
+    )
+      throw Error('Invalid before ownership descriptor');
     for (const migration of descriptor.migrations) {
-      const current = await readFile(new URL(`../migrations/${migration.name}`, import.meta.url));
-      if (sha(current) !== migration.sha256) throw Error(`Before migration bytes changed: ${migration.name}`);
+      const current = await readFile(
+        new URL(`../migrations/${migration.name}`, import.meta.url),
+      );
+      if (sha(current) !== migration.sha256)
+        throw Error(`Before migration bytes changed: ${migration.name}`);
     }
     const url = new URL(databaseUrl);
     url.searchParams.set('options', `-csearch_path=${descriptor.schema}`);
-    db = postgres(url.toString(), { max: 4, onnotice: () => {}, connection: { application_name: `retirement-after-${descriptor.schema}` } });
-    const [identity] = await db`select current_schema() as schema,current_setting('search_path') as path`;
-    if (identity?.schema !== descriptor.schema || identity.path !== descriptor.schema) throw Error('Upgrade schema continuity failed');
+    db = postgres(url.toString(), {
+      max: 4,
+      onnotice: () => {},
+      connection: { application_name: `retirement-after-${descriptor.schema}` },
+    });
+    const [identity] =
+      await db`select current_schema() as schema,current_setting('search_path') as path`;
+    if (
+      identity?.schema !== descriptor.schema ||
+      identity.path !== descriptor.schema
+    )
+      throw Error('Upgrade schema continuity failed');
     const storage = new LocalStorageAdapter(descriptor.storageRoot);
     let applied = false;
     return {
-      descriptor, db, storage,
+      descriptor,
+      db,
+      storage,
       async applyRetirement() {
         if (applied) throw Error('Retirement already applied');
-        const name = options.migrationName ?? '0229_retire_legacy_assistants.sql';
-        const bytes = await readFile(new URL(`../migrations/${name}`, import.meta.url), 'utf8');
+        const name =
+          options.migrationName ?? '0229_retire_legacy_assistants.sql';
+        const bytes = await readFile(
+          new URL(`../migrations/${name}`, import.meta.url),
+          'utf8',
+        );
         await db!.begin((tx) => tx.unsafe(bytes));
         applied = true;
-        return { name, sha256: sha(bytes), schema: descriptor!.schema, storageRoot: descriptor!.storageRoot };
+        return {
+          name,
+          sha256: sha(bytes),
+          schema: descriptor!.schema,
+          storageRoot: descriptor!.storageRoot,
+        };
       },
       close,
     };
@@ -141,11 +254,21 @@ it('seeds actual pre-retirement APIs and stops all writers before handoff', asyn
     await writeFile(release, 'release').catch(() => {});
     await db?.end({ timeout: 5 }).catch(() => {});
     if (child && exit === undefined) {
-      await Promise.race([ended, new Promise((done) => setTimeout(done, 10_000))]);
+      await Promise.race([
+        ended,
+        new Promise((done) => setTimeout(done, 10_000)),
+      ]);
       if (exit === undefined) child.kill('SIGTERM');
     }
     // Preserve failed evidence if a keeper cannot prove its owned cleanup.
-    if (!child || await access(closed).then(() => true, () => false)) await rm(temp, { recursive: true, force: true });
+    if (
+      !child ||
+      (await access(closed).then(
+        () => true,
+        () => false,
+      ))
+    )
+      await rm(temp, { recursive: true, force: true });
     throw error;
   }
 }
