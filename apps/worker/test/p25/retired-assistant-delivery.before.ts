@@ -602,17 +602,6 @@ export default async function seed(resources: DeliveryResources) {
       organizationId: source.organizationId,
       workspaceId: source.workspaceId,
     }))!;
-    await setRuntimePolicyControls(
-      context,
-      {
-        version: 1,
-        enabled: true,
-        mode: 'execute',
-        rules: [],
-      },
-      null,
-      db,
-    );
     const [assigned] = await db`select a.id,a.employee_id,a.employee_version_id
       from allrice_employee_assignments a join allrice_platform_employee_tenant_assignments p
         on p.tenant_employee_id=a.employee_id and p.workspace_id=a.workspace_id
@@ -626,6 +615,12 @@ export default async function seed(resources: DeliveryResources) {
       sessionId: '',
     };
     await harness.connectSubject(subject);
+    await setRuntimePolicyControls(
+      context,
+      { version: 1, enabled: true, mode: 'execute', rules: [] },
+      null,
+      db,
+    );
     const chat = await createAssignedChatSession(context, {
       workspaceId: subject.workspaceId,
       employeeAssignmentId: subject.assignmentId,
