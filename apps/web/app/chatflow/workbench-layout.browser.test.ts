@@ -11993,7 +11993,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
-  it('shows connection status only in linked apps while keeping five local capabilities in computer settings', async () => {
+  it('shows connection status only in linked apps while keeping four local capabilities in computer settings', async () => {
     const f = await fixture();
     try {
       f.state.connections = ['GitHub', 'Linear'].map((name, index) =>
@@ -12039,7 +12039,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(await work.getByText('Linear', { exact: true }).count()).toBe(0);
       await selectSettings(dialog, '我的电脑');
       const computer = dialog.locator('[data-capability-scope="computer"]');
-      expect(await computer.locator('[data-capability]').count()).toBe(5);
+      expect(await computer.locator('[data-capability]').count()).toBe(4);
       expect(
         await computer.locator('[data-capability="local_mcp"]').count(),
       ).toBe(0);

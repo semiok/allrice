@@ -1,7 +1,5 @@
 /** Same schema/storage upgrade, old real API -> unmodified retirement SQL ->
  * candidate admission/Worker/Host. No eligibility or adapter mocks.
- * Exact settled-question receipts are tested in the existing #640 suite on the
- * same combined candidate; they intentionally use that suite's own fixture.
  */
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -235,7 +233,13 @@ suite(
           ).toContain(cohort.ordinaryRuns[0]!.artifact.object.id);
           if (repair) {
             const second = h.model.requests[requests + 1]!;
-            expect(second.tools ?? []).toHaveLength(0);
+            // Native tool schemas stay in the conversation. The existing
+            // public tools.guard/pre-execute seam rejects repair tool calls;
+            // its attempted-call coverage lives in native-subagent/final-delivery.
+            const repairContext = JSON.stringify(second.messages);
+            expect(repairContext).toContain('allrice-platform-host');
+            expect(repairContext).toContain('final-delivery-repair');
+            expect(repairContext).toContain(artifact.object.id);
           }
           expect(await readDeliveryBytes(resources(), artifact)).toEqual(bytes);
           expect(artifact.object.checksum).toBe(sha256(bytes));

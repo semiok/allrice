@@ -682,7 +682,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       expect(text).toContain('运行中，用量待结算');
       expect(text).toContain('process.execute');
       expect(text).toContain('evidence.txt');
-      expect(text).toContain('尚无正式开发交付记录');
+      expect(text).not.toContain('尚无正式开发交付记录');
       expect(text).not.toContain('NEVER_EXPOSE_RAW_SNAPSHOT');
       expect(text).not.toContain('PRIVATE_TEST_SECRET');
       expect(
