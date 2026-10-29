@@ -340,6 +340,104 @@ suite('reading a receipt while late native trace changes its group', () => {
       await page.close();
     }
   });
+  it('keeps the reader at the later receipt after scrolling away from an old selection', async () => {
+    const page = await open(390);
+    try {
+      await readResult(page);
+      const selected = await output(page).evaluate((node) => {
+        node.scrollTop = 650;
+        node.scrollIntoView({ block: 'center' });
+        (document.activeElement as HTMLElement)?.blur();
+        document
+          .getSelection()!
+          .setBaseAndExtent(node.firstChild!, 1000, node.firstChild!, 1030);
+        return document.getSelection()!.toString();
+      });
+      const later = card(page, 30);
+      await later.evaluate((node) => node.scrollIntoView({ block: 'center' }));
+      const old = (await output(page).boundingBox())!;
+      expect(old.y + old.height).toBeLessThan(0);
+      for (const stage of ['prefix', 'split', 'merge'] as const) {
+        await update(page, stage);
+        const box = (await later.boundingBox())!;
+        expect(box.y).toBeLessThan(900);
+        expect(box.y + box.height).toBeGreaterThan(0);
+        expect(
+          await page.evaluate(() => document.getSelection()!.toString()),
+        ).toBe(selected);
+        expect(
+          await page.evaluate(() => document.activeElement === document.body),
+        ).toBe(true);
+      }
+    } finally {
+      await page.close();
+    }
+  });
+  it('keeps the native group title focused and keyboard-operable after prefix and merge', async () => {
+    const page = await open(390);
+    try {
+      const groups = () => processOf(page).getByRole('button', { name: /项$/ });
+      await groups().first().focus();
+      await page.keyboard.press('Enter');
+      await update(page, 'prefix');
+      expect(
+        await groups()
+          .first()
+          .evaluate((node) => document.activeElement === node),
+      ).toBe(true);
+      await page.keyboard.press('Space');
+      expect(await groups().first().getAttribute('aria-expanded')).toBe(
+        'false',
+      );
+      await page.keyboard.press('Enter');
+      expect(await groups().first().getAttribute('aria-expanded')).toBe('true');
+      await update(page, 'split');
+      expect(await groups().count()).toBe(2);
+      await groups().last().focus();
+      await page.keyboard.press('Space');
+      expect(await groups().last().getAttribute('aria-expanded')).toBe('false');
+      await page.keyboard.press('Enter');
+      await update(page, 'merge');
+      expect(await groups().count()).toBe(1);
+      expect(
+        await groups()
+          .first()
+          .evaluate((node) => document.activeElement === node),
+      ).toBe(true);
+      await page.keyboard.press('Space');
+      expect(await groups().first().getAttribute('aria-expanded')).toBe(
+        'false',
+      );
+      await page.keyboard.press('Enter');
+      expect(await groups().first().getAttribute('aria-expanded')).toBe('true');
+    } finally {
+      await page.close();
+    }
+  });
+  it('inherits the open group choice when an appended member later splits into its own group', async () => {
+    const page = await open(390);
+    try {
+      const groups = () => processOf(page).getByRole('button', { name: /项$/ });
+      await groups().first().click();
+      await update(page, 'append');
+      expect(await groups().first().getAttribute('aria-expanded')).toBe('true');
+      expect(
+        await processOf(page)
+          .getByText('核对第 36 项资料', { exact: true })
+          .isVisible(),
+      ).toBe(true);
+      await update(page, 'split');
+      expect(await groups().count()).toBe(2);
+      expect(await groups().last().getAttribute('aria-expanded')).toBe('true');
+      expect(
+        await processOf(page)
+          .getByText('核对第 36 项资料', { exact: true })
+          .isVisible(),
+      ).toBe(true);
+    } finally {
+      await page.close();
+    }
+  });
   it('distinguishes same-named technical controls by operation and section', async () => {
     const page = await open();
     try {
@@ -427,16 +525,28 @@ suite('reading a receipt while late native trace changes its group', () => {
       await page.close();
     }
   });
-  it('does not steal a later focus choice', async () => {
+  it('does not steal a later input focus or scroll back to its old selected output', async () => {
     const page = await open();
     try {
       await readResult(page);
+      await output(page).evaluate((node) => {
+        node.scrollTop = 650;
+        node.scrollIntoView({ block: 'center' });
+        (document.activeElement as HTMLElement)?.blur();
+        document
+          .getSelection()!
+          .setBaseAndExtent(node.firstChild!, 1000, node.firstChild!, 1030);
+      });
       const outside = page.getByRole('textbox', { name: '另外阅读的位置' });
       await outside.focus();
+      const before = await page.evaluate(() => scrollY);
       await update(page, 'prefix');
       expect(
         await outside.evaluate((node) => node === document.activeElement),
       ).toBe(true);
+      expect(await page.evaluate(() => scrollY)).toBeCloseTo(before, 0);
+      expect((await outside.boundingBox())!.y).toBeGreaterThanOrEqual(0);
+      expect((await outside.boundingBox())!.y).toBeLessThan(900);
     } finally {
       await page.close();
     }

@@ -21,6 +21,7 @@ const samples = cloudOperations([]);
 let stage: Stage = 'initial';
 let changed = false;
 let answered = false;
+let appended = false;
 const operation = (i: number): CloudOperationView => {
   const sample = samples[1]!;
   return {
@@ -82,8 +83,8 @@ function eventsFor(runId: string): ChatFlowEventEnvelope[] {
   };
   if (stage !== 'initial')
     add('harness.native', { presentation: 'think', status: 'completed' });
-  for (let i = 0; i < (stage === 'append' ? 37 : 36); i++) {
-    if (stage === 'split' && i === 4)
+  for (let i = 0; i < (appended ? 37 : 36); i++) {
+    if (stage === 'split' && i === (appended ? 36 : 4))
       add('assistant.text.delta', {
         replyId: 'middle',
         text: '补充发现：继续核对后半部分。',
@@ -115,7 +116,7 @@ window.fetch = async (input, init) => {
   const url = String(input);
   if (url.startsWith('/api/v1/runtime/cloud-operations'))
     return Response.json({
-      operations: Array.from({ length: stage === 'append' ? 37 : 36 }, (_, i) =>
+      operations: Array.from({ length: appended ? 37 : 36 }, (_, i) =>
         operation(i),
       ),
     });
@@ -142,6 +143,7 @@ function Fixture() {
   const [mounted, setMounted] = useState(true);
   window.readingUpdate = (next, replace = false) => {
     stage = next;
+    if (next === 'append') appended = true;
     changed = replace;
     setCurrent(next);
   };
