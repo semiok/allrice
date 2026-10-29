@@ -30,6 +30,7 @@ import {
   claimConversationSteer,
   consumeConversationSteer,
   deferConversationSteer,
+  rejectConversationSteer,
 } from './conversation/conversation-input.ts';
 import {
   closeNativeRunQuestions,
@@ -1950,6 +1951,97 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
       }
     },
   );
+
+  it('PR5 revalidates normalized conflict receipts through successive FIFO releases', async () => {
+    const f = await createExperienceFixture(isolated.db);
+    await updateNativeQuestionMode(f.reviewer, 'timed');
+    const turn = await startTurn(f);
+    const ownership = {
+      organizationId: f.org,
+      workspaceId: f.workspace,
+      sessionId: f.session.id,
+      runId: turn.runId,
+      workerId: turn.workerId,
+    };
+    const acquire = async (runId: string, workerId: string) => {
+      const owner = { ...ownership, runId, workerId };
+      await acquireConversationRuntime({
+        ...owner,
+        ownerId: f.owner.actor.id,
+        configChecksum: `sha256:${'a'.repeat(64)}`,
+        compactThresholdTokens: 10000,
+      });
+      await bindConversationThread({
+        ...owner,
+        threadId: turn.nativeSessionId,
+      });
+    };
+    await acquire(turn.runId, turn.workerId);
+    const binding = await recordConversationTurn({
+      ...ownership,
+      threadId: turn.nativeSessionId,
+      turnId: `${turn.nativeSessionId}:turn:1`,
+    });
+    const q = question('fifo-conflict');
+    await sendView(turn, 1, [q]);
+    const replies = [];
+    for (let i = 0; i < 2; i++) {
+      const reply = await sendChatMessage(f.owner, f.workspace, f.session.id, {
+        text: '方案 A',
+        clientMessageId: randomUUID(),
+        userQuestionAnswer: {
+          questionId: `${turn.nativeSessionId}:${q.callId}`,
+          answers: [{ id: 'priority', selected: ['方案 A'] }],
+        },
+      });
+      expect(reply.delivery).toBe('steer_pending');
+      replies.push(reply.fallbackRunId!);
+    }
+    await sendView(
+      turn,
+      2,
+      [],
+      [{ callId: q.callId, answers: [{ id: 'priority', selected: [] }] }],
+    );
+    for (const runId of replies) {
+      const command = await claimConversationSteer({
+        ...ownership,
+        generation: binding.generation,
+        turnId: binding.activeTurnId!,
+      });
+      expect(command!.followupRunId).toBe(runId);
+      await rejectConversationSteer({
+        commandId: command!.id,
+        workerId: turn.workerId,
+        errorCode: 'STEER_REJECTED',
+      });
+    }
+    await completeJob({ ...turn, result: { text: '已采用跳过' } });
+    for (const runId of replies) {
+      const [receipt] =
+        await isolated.db`select c.state,c.error_code,f.state followup_state
+        from allrice_conversation_commands c join allrice_conversation_followups f on f.run_id=c.followup_run_id where c.followup_run_id=${runId}`;
+      expect(receipt).toEqual({
+        state: 'rejected',
+        error_code: 'QUESTION_ANSWER_NOT_ADOPTED',
+        followup_state: 'released',
+      });
+      const workerId = randomUUID();
+      const job = (await claimNextJob(workerId, 120000))!;
+      expect(job.runId).toBe(runId);
+      await startClaimedJob(workerId, job.id, job.lease!.token);
+      await acquire(runId, workerId);
+      await completeJob({
+        workerId,
+        jobId: job.id,
+        leaseToken: job.lease!.token,
+        result: { text: '没有被采用' },
+      });
+    }
+    expect(
+      await isolated.db`select state from allrice_runs where id=any(${replies}::uuid[])`,
+    ).toEqual([{ state: 'succeeded' }, { state: 'succeeded' }]);
+  });
 
   it('PR5 admits a late skipped answer into the durable FIFO and rejects stale native cards before writing messages', async () => {
     const f = await createExperienceFixture(isolated.db);
