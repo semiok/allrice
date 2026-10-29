@@ -351,7 +351,13 @@ export async function activateEmployeeMethodFromChat(input: EmployeeChatCall) {
           receipt,
         };
       }
-      if (r.source_run_id !== input.context.runId)
+      if (
+        r.source_run_id !== input.context.runId &&
+        !(
+          r.question_id &&
+          (await readNativeQuestion(tx, input.sessionId, r.question_id))
+        )
+      )
         throw new DataAccessError('not_found');
       if (r.expires_at <= new Date())
         throw new EmployeeMethodActivationError('activation_expired');
@@ -410,3 +416,4 @@ export async function activateEmployeeMethodFromChat(input: EmployeeChatCall) {
     },
   );
 }
+import { readNativeQuestion } from '../native-questions.ts';

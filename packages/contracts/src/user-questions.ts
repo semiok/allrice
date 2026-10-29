@@ -33,16 +33,39 @@ export const UserQuestionAnswerItemSchema = z
   })
   .strict();
 
+// Native identity is lossless. Keep the existing legacy ID limit; the full
+// DSH Session + call ID is not a display label and must never be truncated.
+export const NativeUserQuestionIdSchema = z
+  .string()
+  .regex(/^dsh-[0-9a-f-]{36}(?:-[^:\s]+)?:.+$/s);
+const questionIdSchema = z.union([
+  NativeUserQuestionIdSchema,
+  z.string().trim().min(1).max(240),
+]);
+
 export const UserQuestionRequestSchema = z
   .object({
-    questionId: z.string().trim().min(1).max(240),
+    questionId: questionIdSchema,
     questions: z.array(UserQuestionItemSchema).min(1).max(10),
+    // Trusted presentation metadata, not answer authority. Program cards may
+    // have callId without a durable tool question in DSH's projection.
+    nativeSessionId: z.string().min(1).optional(),
+    callId: z.string().min(1).optional(),
+    durable: z.boolean().optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (request) =>
+      !request.durable ||
+      (!!request.nativeSessionId &&
+        !!request.callId &&
+        request.questionId === `${request.nativeSessionId}:${request.callId}`),
+    'Native question identity must match its Session and call ID',
+  );
 
 export const UserQuestionAnswerSubmissionSchema = z
   .object({
-    questionId: z.string().trim().min(1).max(240),
+    questionId: questionIdSchema,
     answers: z.array(UserQuestionAnswerItemSchema).min(1).max(10),
   })
   .strict();

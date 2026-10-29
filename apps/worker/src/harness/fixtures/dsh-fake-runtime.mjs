@@ -307,6 +307,19 @@ lines.on('line', (line) => {
     notify('session.status', { sessionId, status: 'idle' });
     return;
   }
+  if (prompt.includes('long-native-question-id')) {
+    const callId = 'native:call:'.repeat(40);
+    notify('session.user-question', {
+      sessionId,
+      questionId: `${sessionId}:${callId}`,
+      callId,
+      durable: true,
+      nativeSessionId: sessionId,
+      questions: [
+        { id: 'q', question: '继续？', options: [{ label: '继续' }] },
+      ],
+    });
+  }
   if (prompt.includes('long-method-confirmation-question')) {
     notify('session.user-question', {
       sessionId,

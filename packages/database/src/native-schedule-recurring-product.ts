@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { lockNativeQuestionMode } from './native-questions.ts';
 import {
   NativeCalendarControlSchema,
   NativeMonthlyCalendarRevisionSchema,
@@ -681,6 +682,7 @@ export async function createRecurringTaskFromExecutionContext(
   return employeeAccessTransaction(getDatabase(), async (tx) => {
     await tx`set local lock_timeout='1000ms'`;
     await tx`set local statement_timeout='10000ms'`;
+    await lockNativeQuestionMode(tx);
     await acquireDevAdmission(tx);
     const ownerScope = {
       organizationId: scope.organizationId,
@@ -711,6 +713,7 @@ export async function createRecurringTaskFromExecutionContext(
     // frequency, or the server's own card for exactly this call. Anything
     // else gets that card; unrecognized wording is never a refusal.
     const clarified = await readScheduleClarification(tx, input, current.text);
+    const request = clarified?.request ?? current.text;
     const mode = input.conversationMode;
     const recognized = clarified
       ? clarified.intent?.kind === 'recurring'
@@ -724,14 +727,14 @@ export async function createRecurringTaskFromExecutionContext(
     const card =
       clarified &&
       recurringConfirmation(
-        current.text,
+        request,
         input.prompt,
         rule,
         mode,
         clarified.answers,
       );
     const confirmedRequest = confirmedRecurringRequest(
-      current.text,
+      request,
       input.prompt,
       rule,
       mode,
@@ -769,7 +772,7 @@ export async function createRecurringTaskFromExecutionContext(
           throw new NativeRecurringProductError('declined');
         throw new NativeRecurringProductError('confirmation_required', {
           askUserQuestion: recurringConfirmationQuestion(
-            current.text,
+            request,
             input.prompt,
             rule,
             mode,

@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import type { TransactionSql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 import { createAssistantLocalCommandFixture } from './local-command-assistant.fixture.ts';
 import * as client from './core/client.ts';
 import { bindNativeQuestionFixture } from './native-question-binding.fixture.ts';
-import { bindConversationThread } from './conversation/conversation-runtime.ts';
 import { createSession, authenticateSession } from './identity.ts';
 import {
   appendJobEvent,
@@ -18,15 +18,30 @@ import { createExperienceFixture } from './experience.fixture.ts';
 import { createChatSession, sendChatMessage } from './workspace/service.ts';
 import { getSessionRunTimings } from './conversation/interaction-status.ts';
 import { createTaskProgressRuntime } from './task-progress.ts';
-import { readTaskClock } from './task-clock.ts';
+import { createRuntimeOperationLedger } from './runtime-ledger/ledger.ts';
+import { projectCurrentTaskClock, readTaskClock } from './task-clock.ts';
 import { resolveTaskRuntimePolicy } from './task-runtime-policy.ts';
 import {
+  acquireConversationRuntime,
+  bindConversationThread,
+  recordConversationTurn,
+} from './conversation/conversation-runtime.ts';
+import {
   closeNativeRunQuestions,
+  nativeQuestionAnswerAdopted,
+  requireNativeQuestionAdmission,
   readNativeQuestion,
   readNativeQuestionMode,
   updateNativeQuestionMode,
   type NativeQuestionProjection,
 } from './native-questions.ts';
+
+// The HTTP handler and every database write are real. Only the browser login
+// lookup is supplied by the isolated fixture; no real cookie/credential reads.
+const webIdentity = vi.hoisted(() => ({
+  getRequestContext: vi.fn(),
+}));
+vi.mock('../../../apps/web/lib/identity/session.ts', () => webIdentity);
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -125,6 +140,13 @@ suite(
       expect(
         await f.db`select * from allrice_task_questions where run_id=${f.rootRunId}`,
       ).toHaveLength(0);
+      await f.db`update allrice_task_clocks set active_ms=60000,changed_at=clock_timestamp()-interval '31 minutes' where run_id=${f.rootRunId}`;
+      const waiting = await f.db.begin((tx) => readTaskClock(tx, f.rootRunId));
+      expect(waiting!.activeMs).toBe(60000);
+      expect(waiting!.waitingMs).toBeGreaterThanOrEqual(31 * 60_000);
+      expect(waiting!.deadlineAt.getTime()).toBeGreaterThan(
+        Date.now() + 31 * 60_000,
+      );
       await f.send(11, [{ ...f.question, state: 'continued' }]);
       expect((await f.read())?.state).toBe('continued');
       const answers = [{ id: 'q', selected: [] }];
@@ -143,6 +165,26 @@ suite(
         f.send(13, [], [], f.nativeSessionId, randomUUID()),
       ).rejects.toThrow();
       expect((await f.read())?.state).toBe('settled');
+    });
+    it('PR4 generation admission rejects revoked and unbound cards without legacy fallback', async () => {
+      const f = await setup();
+      await updateNativeQuestionMode(f.adminContext, 'timed');
+      const nativeId = `dsh-${f.session}-${randomUUID()}`;
+      await bindNativeQuestionFixture(f.db, f.rootRunId, nativeId);
+      await f.send(1, [f.question], [], nativeId);
+      const admit = (id = `${nativeId}:call:1`) =>
+        f.db.begin((tx) => requireNativeQuestionAdmission(tx, f.session, id));
+      await expect(admit()).resolves.toBeUndefined();
+      await expect(admit(`${nativeId}:missing`)).rejects.toMatchObject({
+        code: 'question_expired',
+      });
+      await f.db`delete from allrice_native_session_bindings where native_session_id=${nativeId}`;
+      await expect(admit()).rejects.toMatchObject({ code: 'question_expired' });
+      await bindNativeQuestionFixture(f.db, f.rootRunId, nativeId);
+      await updateNativeQuestionMode(f.adminContext, 'legacy');
+      await expect(admit()).rejects.toMatchObject({ code: 'question_expired' });
+      await updateNativeQuestionMode(f.adminContext, 'timed');
+      await expect(admit()).rejects.toMatchObject({ code: 'question_expired' });
     });
     it('rollback revokes active calls across later snapshots and re-enable; stop closes only its source Run', async () => {
       const f = await setup();
@@ -163,6 +205,74 @@ suite(
       );
       expect((await other.read())?.closed_at).toBeInstanceOf(Date);
       expect((await other.read())?.state).toBe('open');
+    });
+    it('binds both adoption proofs to the native settled answers and revocation fence', async () => {
+      const f = await setup();
+      await updateNativeQuestionMode(f.adminContext, 'timed');
+      const questionId = `${f.nativeSessionId}:call:1`;
+      const answers = [{ id: 'q', selected: ['继续'] }];
+      const proof = {
+        status: 'adopted',
+        inputId: randomUUID(),
+        messageId: questionId,
+        sequence: 3,
+        turnId: 'later:turn:2',
+        checkpoint: 'question_replied',
+        callId: 'call:1',
+      };
+      const verify = (patch = {}, batch = answers) =>
+        f.db.begin((tx) =>
+          nativeQuestionAnswerAdopted(
+            tx,
+            f.session,
+            questionId,
+            { ...proof, ...patch },
+            { questionId, answers: batch },
+          ),
+        );
+      await f.send(1);
+      expect(await verify()).toBe(false);
+      await f.send(4, [], [{ callId: 'call:1', answers }]);
+      expect(await verify()).toBe(true);
+      const other = await setup();
+      expect(
+        await f.db.begin((tx) =>
+          nativeQuestionAnswerAdopted(tx, other.session, questionId, proof, {
+            questionId,
+            answers,
+          }),
+        ),
+      ).toBe(false);
+      expect(await verify({ checkpoint: 'question_resolved' })).toBe(true);
+      for (const patch of [
+        { callId: 'other' },
+        { messageId: `other:${questionId}` },
+        { checkpoint: 'step_user_message' },
+        { sequence: 5 },
+        { status: 'pending' },
+      ])
+        expect(await verify(patch)).toBe(false);
+      expect(await verify({}, [{ id: 'q', selected: [] }])).toBe(false);
+      await updateNativeQuestionMode(other.adminContext, 'legacy');
+      expect(await verify()).toBe(false);
+      await expect(
+        f.db.begin((tx) =>
+          requireNativeQuestionAdmission(tx, f.session, questionId),
+        ),
+      ).rejects.toMatchObject({ code: 'question_expired' });
+      await updateNativeQuestionMode(other.adminContext, 'timed');
+      await f.db.begin((tx) =>
+        requireNativeQuestionAdmission(tx, f.session, 'question-program'),
+      );
+      await expect(
+        f.db.begin((tx) =>
+          requireNativeQuestionAdmission(
+            tx,
+            f.session,
+            `${f.nativeSessionId}:missing`,
+          ),
+        ),
+      ).rejects.toMatchObject({ code: 'question_expired' });
     });
     it('copies DSH removal rather than inventing a settled answer and preserves archived sessions', async () => {
       const f = await setup();
@@ -299,6 +409,353 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
       (row) => row.runId === runId,
     )?.timing.phase;
 
+  async function holdLock(take: (tx: TransactionSql) => Promise<unknown>) {
+    let release!: () => void;
+    let ready!: (pid: number) => void;
+    let failed!: (error: unknown) => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const held = new Promise<number>((resolve, reject) => {
+      ready = resolve;
+      failed = reject;
+    });
+    const done = isolated.db.begin(async (tx) => {
+      await take(tx);
+      const [row] = await tx<{ pid: number }[]>`select pg_backend_pid() pid`;
+      ready(row!.pid);
+      await gate;
+    });
+    void done.catch(failed);
+    return { pid: await held, release, done };
+  }
+
+  // Observe the actual PostgreSQL wait graph, never infer order from elapsed
+  // time or a single successful Promise.all race.
+  async function waitingOn(pid: number, query: string) {
+    let matches: { pid: number }[] = [];
+    await expect
+      .poll(
+        async () => {
+          matches = await isolated.db<{ pid: number }[]>`
+        select pid from pg_stat_activity where ${pid}=any(pg_blocking_pids(pid))
+          and query like ${`%${query}%`} and wait_event_type='Lock'`;
+          return matches.length;
+        },
+        { timeout: 2000, interval: 10 },
+      )
+      .toBe(1);
+    return matches[0]!.pid;
+  }
+
+  it.each(['commit', 'abort'] as const)(
+    'PR4 rollback changes every live session Run and budget in one transaction: %s',
+    async (outcome) => {
+      vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', `sha256:${'a'.repeat(64)}`);
+      const f = await createExperienceFixture(isolated.db);
+      await updateNativeQuestionMode(f.reviewer, 'timed');
+      const terminal = await startTurn(f);
+      const old = {
+        ...question('from-finished-run'),
+        state: 'continued' as const,
+      };
+      await sendView(terminal, 1, [old]);
+      await completeJob({
+        ...terminal,
+        result: { text: '本轮结束，仍可补答' },
+      });
+      const a = await startTurn(f);
+      // The public chat queue serializes Runs of one Session. Its next queued
+      // Run is still in rollback's live set and must receive a refreshed clock.
+      const queued = await sendChatMessage(f.owner, f.workspace, f.session.id, {
+        text: '下一轮继续整理',
+        clientMessageId: randomUUID(),
+        deliveryMode: 'follow_up',
+      });
+      const b = { runId: queued.run.id, sessionId: f.session.id };
+      const separate = async (title: string) => {
+        const session = await createChatSession(f.owner, {
+          workspaceId: f.workspace,
+          title,
+        });
+        return startTurn(f, title, session.id);
+      };
+      const quiet = await separate('没有问题的会话');
+      const native = await separate('另一个有原生题的会话');
+      await sendView(native, 1, [question('another-native')]);
+      const legacy = await separate('只有程序题的会话');
+      await sendNotice(legacy, 'program-progress');
+      const mixed = await separate('原生题和程序题都未答');
+      await sendView(mixed, 1, [question('native-with-program')]);
+      await sendNotice(mixed, 'program-progress');
+      const turns = [terminal, a, b, quiet, native, legacy, mixed];
+      const ids = turns.map((t) => t.runId);
+      // Chat-only Runs need not have an operation root. Register real roots
+      // for these two so both root and Job budget projections are exercised.
+      const ledger = createRuntimeOperationLedger({
+        database: isolated.db,
+        admission: async () => {},
+      });
+      for (const t of [a, native]) {
+        const clock = await isolated.db.begin((tx) =>
+          readTaskClock(tx, t.runId),
+        );
+        await ledger.createRoot({
+          task: {
+            scope: {
+              organizationId: f.org,
+              workspaceId: f.workspace,
+              projectId: null,
+            },
+            runId: t.runId,
+            rootRunId: t.runId,
+            parentRunId: null,
+            chatSessionId: t.sessionId,
+            frozenConfiguration: {
+              employeeVersionId: null,
+              digest: `sha256:${'a'.repeat(64)}`,
+            },
+          },
+          deadlineAt: clock!.deadlineAt.toISOString(),
+          budgets: [
+            {
+              metric: 'model_calls',
+              unit: 'calls',
+              currency: null,
+              capacity: 10,
+              source: { kind: 'worker', sourceId: 'pr4-isolated-budget' },
+            },
+          ],
+        });
+      }
+      // Simulated elapsed waiting, without wall-clock sleeps or changing the
+      // frozen policy. The rollback must preserve already charged active time.
+      await isolated.db`update allrice_task_clocks set active_ms=25000,
+        changed_at=clock_timestamp()-interval '2 minutes' where run_id in (${a.runId},${native.runId})`;
+      const snapshot = async () => ({
+        mode: await readNativeQuestionMode(),
+        clocks:
+          await isolated.db`select c.*,r.deadline_at,j.timeout_at from allrice_task_clocks c
+          left join allrice_runtime_roots r on r.root_run_id=c.run_id
+          join allrice_jobs j on j.run_id=c.run_id where c.run_id in ${isolated.db(ids)} order by c.run_id`,
+        questions: await isolated.db`select * from allrice_native_questions
+          where session_id in (${f.session.id},${mixed.sessionId},${native.sessionId}) order by session_id,call_id`,
+        program:
+          await isolated.db`select * from allrice_task_questions where run_id in ${isolated.db(ids)} order by run_id,question_id`,
+        events:
+          await isolated.db`select * from allrice_task_clock_events where run_id in ${isolated.db(ids)} order by run_id,occurred_at`,
+      });
+      const before = await snapshot();
+      expect(before.clocks).toHaveLength(turns.length);
+      for (const t of [a, native, mixed, legacy])
+        expect(before.clocks.find((c) => c.run_id === t.runId)?.phase).toBe(
+          'waiting',
+        );
+      const key = randomUUID();
+      // A deferred trigger parks the REAL transaction at COMMIT, after all
+      // revocations and both clock passes. Other connections must see only the
+      // old complete state; an injected commit failure must roll everything back.
+      await isolated.db
+        .unsafe(`create function pr4_mode_commit_barrier() returns trigger language plpgsql as $$
+        begin
+          perform set_config('lock_timeout','5s',true);
+          perform pg_advisory_xact_lock(hashtextextended(tg_argv[0],0));
+          if tg_argv[1]='abort' then raise exception 'pr4 injected commit failure'; end if;
+          return new;
+        end $$;
+        create constraint trigger pr4_mode_commit_barrier after update on allrice_settings
+          deferrable initially deferred for each row
+          when (new.key='native_question_mode' and new.value='"legacy"'::jsonb)
+          execute function pr4_mode_commit_barrier('${key}','${outcome}')`);
+      const gate = await holdLock(async (tx) => {
+        await tx`select pg_advisory_xact_lock(hashtextextended(${key},0))`;
+      });
+      const rollback = updateNativeQuestionMode(f.reviewer, 'legacy');
+      void rollback.catch(() => {});
+      try {
+        await waitingOn(gate.pid, 'commit');
+        expect(await snapshot()).toEqual(before);
+        gate.release();
+        await gate.done;
+        if (outcome === 'abort') {
+          await expect(rollback).rejects.toThrow('pr4 injected commit failure');
+          expect(await snapshot()).toEqual(before);
+        } else {
+          await expect(rollback).resolves.toBe('legacy');
+          const after = await snapshot();
+          expect(after.mode).toBe('legacy');
+          expect(after.questions).toHaveLength(3);
+          expect(
+            after.questions.every((q) => q.closed_at instanceof Date),
+          ).toBe(true);
+          expect(after.program).toEqual(before.program);
+          for (const t of [terminal, quiet, legacy])
+            expect(after.clocks.find((c) => c.run_id === t.runId)).toEqual(
+              before.clocks.find((c) => c.run_id === t.runId),
+            );
+          expect(
+            after.clocks.find((c) => c.run_id === mixed.runId)?.phase,
+          ).toBe('waiting');
+          expect(after.clocks.find((c) => c.run_id === b.runId)?.phase).toBe(
+            'queued',
+          );
+          expect(
+            after.clocks.find((c) => c.run_id === b.runId)?.changed_at,
+          ).not.toEqual(
+            before.clocks.find((c) => c.run_id === b.runId)?.changed_at,
+          );
+          for (const t of [a, native]) {
+            const c = after.clocks.find((c) => c.run_id === t.runId)!;
+            expect(c.phase).toBe('active');
+            expect(c.active_ms).toBe(25000);
+            expect(c.waiting_ms).toBeGreaterThanOrEqual(120000);
+            const deadline = new Date(
+              c.changed_at.getTime() + c.policy.timeoutMs - c.active_ms,
+            );
+            expect(c.timeout_at).toEqual(deadline);
+            expect(c.deadline_at).toEqual(deadline);
+          }
+          await updateNativeQuestionMode(f.reviewer, 'timed');
+          await sendView(a, 2, [old]);
+          expect((await rows(f.session.id))[0]?.closed_at).toEqual(
+            after.questions.find((q) => q.session_id === f.session.id)
+              ?.closed_at,
+          );
+          expect(await phase(f, a.runId)).toBe('active');
+          expect(await phase(f, b.runId)).toBe('queued');
+        }
+      } finally {
+        gate.release();
+        await gate.done;
+        await Promise.allSettled([rollback]);
+        await isolated.db.unsafe(
+          'drop trigger pr4_mode_commit_barrier on allrice_settings; drop function pr4_mode_commit_barrier()',
+        );
+      }
+    },
+    30000,
+  );
+
+  it.each(['append-first', 'answer-first', 'rollback-first'] as const)(
+    'PR4 mode fence serializes the real input/event entry: %s',
+    async (order) => {
+      const f = await createExperienceFixture(isolated.db);
+      await updateNativeQuestionMode(f.reviewer, 'timed');
+      const turn = await startTurn(f);
+      const current = question('fenced-input');
+      await sendView(turn, 1, [current]);
+      const runtime = {
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        sessionId: f.session.id,
+        ownerId: f.owner.actor.id,
+        runId: turn.runId,
+        workerId: turn.workerId,
+      };
+      await acquireConversationRuntime({
+        ...runtime,
+        configChecksum: `sha256:${'a'.repeat(64)}`,
+        compactThresholdTokens: 10000,
+      });
+      await bindConversationThread({
+        ...runtime,
+        threadId: turn.nativeSessionId,
+      });
+      const turnId = `${turn.nativeSessionId}:turn:1`;
+      const binding = await recordConversationTurn({
+        ...runtime,
+        threadId: turn.nativeSessionId,
+        turnId,
+      });
+      const clientMessageId = randomUUID();
+      const answer = () =>
+        sendChatMessage(f.owner, f.workspace, f.session.id, {
+          text: '方案 A',
+          clientMessageId,
+          deliveryMode: 'steer',
+          expectedTurnId: turnId,
+          expectedGeneration: binding.generation,
+          userQuestionAnswer: {
+            questionId: `${turn.nativeSessionId}:${current.callId}`,
+            answers: [{ id: 'priority', selected: ['方案 A'] }],
+          },
+        });
+      const gate = await holdLock(async (tx) => {
+        if (order === 'rollback-first')
+          await tx`select id from allrice_settings where key='native_question_mode' and scope_type='system' and scope_id is null for update`;
+        else if (order === 'answer-first')
+          await tx`select pg_advisory_xact_lock(hashtextextended(${`${f.session.id}:${clientMessageId}`},50))`;
+        else
+          await tx`select pg_advisory_xact_lock(hashtextextended(${turn.runId},703))`;
+      });
+      const pending: Promise<unknown>[] = [];
+      const start = <T>(work: Promise<T>) => {
+        pending.push(work);
+        void work.catch(() => {});
+        return work;
+      };
+      try {
+        if (order === 'rollback-first') {
+          const rollback = start(
+            updateNativeQuestionMode(f.reviewer, 'legacy'),
+          );
+          const writer = await waitingOn(gate.pid, 'native_question_mode');
+          const input = start(answer());
+          await waitingOn(writer, 'for share');
+          expect(
+            await isolated.db`select id from allrice_messages where client_message_id=${clientMessageId}`,
+          ).toEqual([]);
+          gate.release();
+          await rollback;
+          await expect(input).rejects.toMatchObject({
+            code: 'question_expired',
+          });
+          expect(
+            await isolated.db`select id from allrice_messages where client_message_id=${clientMessageId}`,
+          ).toEqual([]);
+          expect(
+            await isolated.db`select user_message_id from allrice_chat_input_requests where client_message_id=${clientMessageId}`,
+          ).toEqual([]);
+          expect(
+            await isolated.db`select id from allrice_conversation_commands where client_user_message_id=${clientMessageId}`,
+          ).toEqual([]);
+        } else {
+          const entry =
+            order === 'append-first'
+              ? start(
+                  sendView(turn, 2, [current, question('new-before-rollback')]),
+                )
+              : start(answer());
+          const reader = await waitingOn(gate.pid, 'pg_advisory_xact_lock');
+          const rollback = start(
+            updateNativeQuestionMode(f.reviewer, 'legacy'),
+          );
+          await waitingOn(reader, 'native_question_mode');
+          expect((await rows(f.session.id))[0]?.closed_at).toBeNull();
+          gate.release();
+          await entry;
+          await rollback;
+          if (order === 'answer-first') {
+            expect(
+              await isolated.db`select kind from allrice_chat_input_requests where client_message_id=${clientMessageId}`,
+            ).toEqual([{ kind: 'ask_user' }]);
+            expect(
+              await isolated.db`select native_proof from allrice_conversation_commands where client_user_message_id=${clientMessageId} and native_proof is not null`,
+            ).toEqual([]);
+          } else expect(await rows(f.session.id)).toHaveLength(2);
+        }
+        expect(
+          (await rows(f.session.id)).every((q) => q.closed_at instanceof Date),
+        ).toBe(true);
+        expect(await phase(f, turn.runId)).toBe('active');
+      } finally {
+        gate.release();
+        await gate.done;
+        await Promise.allSettled(pending);
+      }
+    },
+  );
+
   it.each(['append', 'stop'] as const)(
     'mode rollback atomically refreshes clocks while a competing %s waits on explicit locks',
     async (boundary) => {
@@ -383,6 +840,126 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
       }
     },
   );
+
+  it('PR4 current-chat HTTP answer preserves long native IDs and rejects removed or revoked cards atomically', async () => {
+    // Web uses Bundler resolution; do not include its sources in the database
+    // package's NodeNext typecheck. Vitest still loads the actual route here.
+    const { POST: postChatMessage } = await import(
+      new URL(
+        '../../../apps/web/app/api/v1/sessions/[id]/messages/route.ts',
+        import.meta.url,
+      ).href
+    );
+    const f = await createExperienceFixture(isolated.db);
+    await updateNativeQuestionMode(f.reviewer, 'timed');
+    const turn = await startTurn(f, '请先问我优先采用哪个方案。');
+    const current = question('long:call:'.repeat(50));
+    const questionId = `${turn.nativeSessionId}:${current.callId}`;
+    await sendView(turn, 1, [current]);
+    const runtime = {
+      organizationId: f.org,
+      workspaceId: f.workspace,
+      sessionId: f.session.id,
+      ownerId: f.owner.actor.id,
+      runId: turn.runId,
+      workerId: turn.workerId,
+    };
+    await acquireConversationRuntime({
+      ...runtime,
+      configChecksum: `sha256:${'a'.repeat(64)}`,
+      compactThresholdTokens: 10000,
+    });
+    await bindConversationThread({
+      ...runtime,
+      threadId: turn.nativeSessionId,
+    });
+    const turnId = `${turn.nativeSessionId}:turn:1`;
+    const binding = await recordConversationTurn({
+      ...runtime,
+      threadId: turn.nativeSessionId,
+      turnId,
+    });
+    webIdentity.getRequestContext.mockResolvedValue(f.owner);
+    const post = (clientMessageId: string) =>
+      postChatMessage(
+        new Request(
+          `http://127.0.0.1:3200/api/v1/sessions/${f.session.id}/messages?workspaceId=${f.workspace}`,
+          {
+            method: 'POST',
+            headers: {
+              origin: 'http://127.0.0.1:3200',
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              text: '方案 A',
+              clientMessageId,
+              deliveryMode: 'steer',
+              expectedTurnId: turnId,
+              expectedGeneration: binding.generation,
+              userQuestionAnswer: {
+                questionId,
+                answers: [{ id: 'priority', selected: ['方案 A'] }],
+              },
+            }),
+          },
+        ),
+        { params: Promise.resolve({ id: f.session.id }) },
+      );
+    const acceptedId = randomUUID();
+    const accepted = await post(acceptedId);
+    expect(accepted.status).toBe(202);
+    expect(questionId.length).toBeGreaterThan(255);
+    expect(
+      await isolated.db`select content->'interaction'->'answer'->>'questionId' question_id
+        from allrice_messages where client_message_id=${acceptedId} and session_id=${f.session.id}`,
+    ).toEqual([{ question_id: questionId }]);
+    expect(
+      await isolated.db`select input_kind,native_proof from allrice_conversation_commands
+        where client_user_message_id=${acceptedId} and session_id=${f.session.id}`,
+    ).toMatchObject([{ input_kind: 'ask_user', native_proof: null }]);
+
+    for (const boundary of ['removed', 'revoked'] as const) {
+      if (boundary === 'removed') await sendView(turn, 2, []);
+      else {
+        await sendView(turn, 3, [current]);
+        await updateNativeQuestionMode(f.reviewer, 'legacy');
+        await updateNativeQuestionMode(f.reviewer, 'timed');
+      }
+      const rejectedId = randomUUID();
+      const rejected = await post(rejectedId);
+      expect(rejected.status, boundary).toBe(409);
+      expect(await rejected.json()).toMatchObject({
+        error: { code: 'question_expired' },
+      });
+      expect(
+        await isolated.db`select id from allrice_messages where client_message_id=${rejectedId}`,
+      ).toEqual([]);
+      expect(
+        await isolated.db`select user_message_id from allrice_chat_input_requests where client_message_id=${rejectedId}`,
+      ).toEqual([]);
+      expect(
+        await isolated.db`select id from allrice_conversation_commands where client_user_message_id=${rejectedId}`,
+      ).toEqual([]);
+      expect(
+        (
+          await isolated.db.begin((tx) =>
+            projectCurrentTaskClock(tx, turn.runId),
+          )
+        )?.phase,
+        `${boundary}: current native membership/revocation facts`,
+      ).toBe('active');
+      expect
+        .soft(
+          await phase(f, turn.runId),
+          `${boundary}: user-visible persisted clock`,
+        )
+        .toBe('active');
+    }
+    await cancelRun(f.owner, f.workspace, turn.runId, {
+      reason: 'user_requested',
+    });
+    await completeJob({ ...turn, result: { text: '停止本轮' } });
+  });
 
   it('upgrades populated pre-0226 chat history without changing legacy model/program waits or clocks', async () => {
     const checkpoint = await createAssistantFixtureDatabase({
@@ -567,9 +1144,28 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
     await updateNativeQuestionMode(f.reviewer, 'timed');
     const previous = await startTurn(f);
     const original = question('immutable:call', '原问题：是否采用方案 A？');
-    await sendView(previous, 20, [original]);
+    // A restored settled-only view has no body. Removal and a later Run may
+    // supply the first nonempty body, but never replace the first source Run.
+    await sendView(
+      previous,
+      18,
+      [],
+      [
+        {
+          callId: original.callId,
+          answers: [{ id: 'priority', selected: [] }],
+        },
+      ],
+    );
+    expect((await rows(f.session.id))[0]?.questions).toEqual([]);
+    await sendView(previous, 19, []);
     await completeJob({ ...previous, result: { text: '已整理' } });
     const next = await startTurn(f, '请继续整理其他内容。');
+    await sendView(next, 20, [original]);
+    expect((await rows(f.session.id))[0]).toMatchObject({
+      source_run_id: previous.runId,
+      questions: original.questions,
+    });
     await sendView(next, 21, [
       {
         ...question(original.callId, '冒名新问题：是否删除全部资料？'),
