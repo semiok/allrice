@@ -19,13 +19,14 @@ const approvedPlugins = [
   '@deepseek-ai/dsh-user-questions',
   '@deepseek-ai/dsh-tool-ask-user',
   '@deepseek-ai/dsh-tool-todo',
+  '@deepseek-ai/dsh-subagent',
+  '@deepseek-ai/dsh-session-query-sqlite',
 ] as const;
 
 const deniedHostPlugins = [
   '@deepseek-ai/dsh-tool-bash',
   '@deepseek-ai/dsh-tool-fs',
   '@deepseek-ai/dsh-tool-mcp',
-  '@deepseek-ai/dsh-subagent',
   '@deepseek-ai/dsh-dynamic-plugin',
 ] as const;
 
@@ -40,7 +41,7 @@ async function readProfile(name: string) {
         { tag: 'tag:yaml.org,2002:js', resolve: (value: string) => value },
       ],
     },
-  ).toJS() as { id: string; config?: Record<string, unknown> }[];
+  ).toJS() as { id: string; name: string; config?: Record<string, unknown> }[];
 }
 
 describe('AllRice restricted DSH profile', () => {
@@ -162,11 +163,27 @@ describe('AllRice restricted DSH profile', () => {
     expect(production).not.toContain('ALLRICE_ASSISTANTS_ENABLED');
     expect(production).not.toContain('governedAssistants');
     expect(production).not.toContain('@deepseek-ai/dsh-subagent/internal');
-    const profile = await readFile(
-      resolve(import.meta.dirname, '../../dsh/allrice-restricted.cordis.yml'),
-      'utf8',
-    );
-    expect(profile).not.toContain('dsh-subagent');
-    expect(profile).not.toContain('dsh-user-approval');
+    for (const name of ['allrice-restricted', 'allrice-technical']) {
+      const profile = await readProfile(name);
+      expect(
+        profile.filter((p) => p.name === '@deepseek-ai/dsh-subagent'),
+      ).toEqual([{ id: 'subagents', name: '@deepseek-ai/dsh-subagent' }]);
+      expect(
+        profile.filter(
+          (p) => p.name === '@deepseek-ai/dsh-session-query-sqlite',
+        ),
+      ).toEqual([
+        {
+          id: 'native-session-query',
+          name: '@deepseek-ai/dsh-session-query-sqlite',
+          config: { path: ':memory:', openAt: 'never' },
+        },
+      ]);
+      // The catalog service grants neither a backend nor model-facing tools.
+      for (const plugin of profile)
+        expect(plugin.name).not.toMatch(
+          /^@deepseek-ai\/dsh-(subagent-|tool-subagent|user-approval)/,
+        );
+    }
   });
 });

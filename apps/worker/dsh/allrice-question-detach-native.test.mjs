@@ -188,9 +188,6 @@ async function fixture({
         ? `
 - name: '@deepseek-ai/dsh-user-approval'
   config: { policy: never }
-- name: '@deepseek-ai/dsh-session-query-sqlite'
-  config: { path: ':memory:', openAt: never }
-- name: '@deepseek-ai/dsh-subagent'
 - name: '@deepseek-ai/dsh-subagent-spawn-in-process'
 - name: './child-fixture.mjs'
 `
@@ -949,6 +946,40 @@ async function blockedHost() {
 }
 
 describe('detach failure and ingress interleavings on the real host', () => {
+  it('keeps the question pending while native descendants drain, then records cancellation through DSH', async () => {
+    const h = await blockedHost();
+    const entered = barrier(),
+      gate = barrier();
+    const drain = h.ctx.subagents.drainDescendants.bind(h.ctx.subagents);
+    vi.spyOn(h.ctx.subagents, 'drainDescendants').mockImplementation(
+      async (parents) => {
+        entered.release();
+        await gate.promise;
+        return drain(parents);
+      },
+    );
+    const closing = h.server.shutdown();
+    try {
+      await entered.promise;
+      expect(h.server.pendingUserQuestions.has(h.sessionId)).toBe(true);
+      expect(h.events().some((e) => e.type === 'tool/result')).toBe(false);
+      expect(h.requests).toHaveLength(1);
+      gate.release();
+      await closing;
+      const results = (await h.journal(h.sessionId)).filter(
+        (e) =>
+          e.type === 'tool/result' &&
+          e.data.message.toolCallId === h.askCall().data.callId,
+      );
+      expect(results).toHaveLength(1);
+      expect(results[0].data).toMatchObject({ error: { code: 'ASK_ABORTED' } });
+      expect(h.requests).toHaveLength(1);
+    } finally {
+      gate.release();
+      await closing;
+    }
+  });
+
   it('a previously admitted legacy park cannot cancel after detach commits', async () => {
     const h = await blockedHost();
     const entered = barrier(),
