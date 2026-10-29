@@ -112,7 +112,10 @@ import {
   checkCompletedModelBudget,
   modelAdmissionTokenEstimate,
 } from '../model-result-budget.js';
-import { preflightSubscription, subscriptionSnapshotDigest } from '../subscription-preflight.js';
+import {
+  preflightSubscription,
+  subscriptionSnapshotDigest,
+} from '../subscription-preflight.js';
 import { decideCapabilityRoute } from '../routing/capability-router.js';
 import { nativeGovernedToolNames } from '../tool-broker/definitions.js';
 import {
@@ -1020,8 +1023,7 @@ export async function executeEmployeeRun({
         ? createTaskProgressRuntime({
             context: execution.context,
             sessionId:
-              repairTask ||
-              routeDecision.selectedKind === 'workflow'
+              repairTask || routeDecision.selectedKind === 'workflow'
                 ? undefined
                 : input.sessionId,
             worker: workflowLease,
@@ -1946,11 +1948,7 @@ export async function executeEmployeeRun({
         action: 'check',
         nativeSessionId: result.threadId ?? runtime.threadId,
       });
-      if (
-        repairTask ||
-        !progress?.pauseId ||
-        progress.canceled !== false
-      )
+      if (repairTask || !progress?.pauseId || progress.canceled !== false)
         throw new HandlerError('DSH_TURN_FAILED', 'DSH turn failed', false);
       result.answer = '等你回答后继续。';
     }
@@ -2017,12 +2015,12 @@ export async function executeEmployeeRun({
     routeCostCents = subscriptionSnapshot
       ? null
       : result.costEstimateAvailable === false
-          ? null
-          : estimateModelCostCents({
-              provider: result.provider,
-              model: result.model,
-              ...result.usage,
-            });
+        ? null
+        : estimateModelCostCents({
+            provider: result.provider,
+            model: result.model,
+            ...result.usage,
+          });
     checkCompletedModelBudget({
       ...modelBudgetScope,
       limits: runLimits,

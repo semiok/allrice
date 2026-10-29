@@ -102,8 +102,18 @@ const definitions: Record<
     actions: ['cloud.mcp.call'],
     authorization: 'per_action',
   },
-  boost: { target: 'none', tools: [], capabilities: [], authorization: 'unavailable' },
-  teamwork: { target: 'none', tools: [], capabilities: [], authorization: 'unavailable' },
+  boost: {
+    target: 'none',
+    tools: [],
+    capabilities: [],
+    authorization: 'unavailable',
+  },
+  teamwork: {
+    target: 'none',
+    tools: [],
+    capabilities: [],
+    authorization: 'unavailable',
+  },
   local_mcp: {
     target: 'local',
     tools: resolveEmployeeToolDependencies(['local.mcp.call']),
@@ -195,8 +205,8 @@ export function projectWorkspacePrerequisites(
         (id === 'local_browser'
           ? f.preparation?.browser
           : id === 'local_command'
-              ? f.preparation?.sandbox
-              : undefined);
+            ? f.preparation?.sandbox
+            : undefined);
       if (preparation === 'preparing')
         add('preparing', 'environment_preparing', 'user', 'guide');
       if (preparation === 'paused' && !realState)
@@ -210,10 +220,7 @@ export function projectWorkspacePrerequisites(
         !f.folder
       )
         add('needs_configuration', 'folder_missing', 'user', 'bridge');
-      if (
-        ['local_command', 'local_mcp'].includes(id) &&
-        !f.runner
-      )
+      if (['local_command', 'local_mcp'].includes(id) && !f.runner)
         add('needs_configuration', 'runner_missing', 'user');
     }
     const environment =

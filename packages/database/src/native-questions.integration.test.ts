@@ -53,12 +53,7 @@ suite(
       await fixture?.close();
     });
     async function setup() {
-      const f = await createLocalCommandFixture(
-        fixture.db,
-        'ask',
-        false,
-        { skipChild: true },
-      );
+      const f = await createLocalCommandFixture(fixture.db, 'ask', false, {});
       await f.db`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy)
       values(${f.rootRunId},${f.org},${f.workspace},${f.db.json({ ...resolveTaskRuntimePolicy([]) })})`;
       const [user] =
@@ -411,8 +406,7 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
           );
         });
       }
-      const f = await createLocalCommandFixture(db, 'ask', false, {
-          });
+      const f = await createLocalCommandFixture(db, 'ask', false, {});
       await db`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy)
         values(${f.rootRunId},${f.org},${f.workspace},${db.json({ ...resolveTaskRuntimePolicy([]) })})`;
       const turn: Turn = {

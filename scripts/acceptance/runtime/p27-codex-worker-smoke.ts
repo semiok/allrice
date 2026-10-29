@@ -51,7 +51,7 @@ import {
 import {
   readCodexSubscriptionEvidence,
   verifyCodexSubscriptionResult,
-} from './p27-codex-assistants-verification.ts';
+} from './p27-subscription-verification.ts';
 
 const root = resolve(fileURLToPath(new URL('../../../', import.meta.url)));
 const hash = (value: string | Uint8Array) =>
@@ -60,7 +60,7 @@ const check: typeof requireCheck = requireCheck;
 export const P27_CODEX_ORDINARY_SOURCE_FILES = [
   'pnpm-lock.yaml',
   'tsconfig.base.json',
-  'packages/contracts/src/assistant-subscription.ts',
+  'packages/contracts/src/subscription-snapshot.ts',
   'packages/contracts/src/models.ts',
   'packages/contracts/src/skills.ts',
   'packages/database/src/runtime-policy.ts',
@@ -68,13 +68,11 @@ export const P27_CODEX_ORDINARY_SOURCE_FILES = [
   'packages/database/migrations/0097_route_subscription_snapshots.sql',
   'apps/worker/src/jobs/employee-run.ts',
   'apps/worker/src/model-cost.ts',
-  'apps/worker/src/assistant-pricing-preflight.ts',
+  'apps/worker/src/subscription-preflight.ts',
   'apps/worker/src/harness/dsh-adapter.ts',
-  'apps/worker/src/harness/dsh/assistant-controller.ts',
-  'apps/worker/src/harness/dsh/assistant-diagnostics.ts',
-  'apps/worker/dsh/allrice-assistant-runtime.mjs',
+  'apps/worker/src/harness/dsh/execution-failure-usage.ts',
+  'apps/worker/dsh/allrice-model-usage.mjs',
   'apps/worker/dsh/allrice-restricted.cordis.yml',
-  'packages/database/src/assistant-pricing.ts',
   'packages/database/src/execution/queue.ts',
   'packages/database/src/providers/model-governance.ts',
   ...[
@@ -82,16 +80,12 @@ export const P27_CODEX_ORDINARY_SOURCE_FILES = [
     'codex-worker-fixture',
     'codex-worker-preflight',
     'codex-worker-preflight.test',
-    'codex-assistants-verification',
-    'codex-assistants-verification.test',
+    'subscription-verification',
     'codex-evidence-stages.test',
-    'codex-assistants-preflight',
+    'runtime-preflight',
     'codex-json',
     'codex-json.test',
-    'codex-assistants-artifact.test',
     'worker-preflight',
-    'assistant-preflight',
-    'assistant-diagnostics',
     'error-diagnostics',
     'owned-clients',
     'installed-runtime',
@@ -230,7 +224,6 @@ export async function mainP27CodexWorker(argsInput = process.argv.slice(2)) {
         P27_CODEX_ORDINARY_LIMITS.timeoutMs,
       ),
       ALLRICE_STORAGE_ROOT: join(temporary, 'storage'),
-      ALLRICE_ASSISTANTS_ENABLED: '0',
     });
     report.phase = 'worker_fixture_prepare';
     const { createP27CodexWorkerFixture } =
@@ -551,20 +544,16 @@ export async function verifyCodexOrdinary(
 ) {
   const parsed = parseP27CodexJson(result.answer, 'ordinary_answer', observe);
   check(
-    result.assistantStatus === undefined &&
-      result.provider === 'openai-codex' &&
+    result.provider === 'openai-codex' &&
       result.model === task.binding.executionSnapshot.modelSnapshot?.model &&
       parsed.value.sum === 579,
     'codex_worker_ordinary_result',
   );
-  const [counts] = await fixture.db<
-    { roots: number; jobs: number; runs: number }[]
-  >`
-    select (select count(*)::int from allrice_assistant_roots) as roots,
-      (select count(*)::int from allrice_jobs) as jobs,
+  const [counts] = await fixture.db<{ jobs: number; runs: number }[]>`
+    select (select count(*)::int from allrice_jobs) as jobs,
       (select count(*)::int from allrice_runs) as runs`;
   check(
-    counts?.roots === 0 && counts.jobs === 1 && counts.runs === 1,
+    counts?.jobs === 1 && counts.runs === 1,
     'codex_worker_exact_one_ordinary_task',
   );
   const rows = await fixture.db<
@@ -633,7 +622,7 @@ export async function verifyCodexOrdinary(
     'codex_worker_observed_tokens',
   );
   const evidence = await readCodexSubscriptionEvidence(fixture, task);
-  const accounting = verifyCodexSubscriptionResult(result, evidence, false);
+  const accounting = verifyCodexSubscriptionResult(result, evidence);
   return {
     ledger: evidence.row,
     accounting,

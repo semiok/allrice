@@ -141,3 +141,8 @@ update allrice_runtime_operations set member_automation=member_automation#-'{set
 alter table allrice_runtime_operations enable trigger allrice_operation_member_automation_immutable;
 update allrice_runs set input=input-'assistantConfiguration' where input ? 'assistantConfiguration';
 update allrice_jobs set payload=payload#-'{input,assistantConfiguration}' where payload->'input' ? 'assistantConfiguration';
+
+-- Remove the obsolete installable entry; frozen bundles referenced by ordinary
+-- historical employee versions remain historical content, never a live tool.
+update allrice_platform_dsh_skills set enabled=false,updated_at=clock_timestamp()
+where id='d78b3556-821a-5550-bf13-d9dd84b9bbe0' and source='allrice' and enabled;

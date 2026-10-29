@@ -1,3 +1,4 @@
+import { continuingProjectServiceIds } from './project-services.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
 import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
@@ -72,13 +73,6 @@ suite('MET166 finite project service — real PostgreSQL', () => {
   });
   it('successful Run keeps only its finite service, without reviving ended Job/root', async () => {
     const f = await projectServiceFixture(database.db);
-    const completed = await f.runtime.finalizeRoot({
-      scope: f.task.scope,
-      rootRunId: f.context.runId,
-      worker: f.assistantWorker,
-    });
-    expect(completed.status).toBe('completed');
-    expect(completed.usageComplete).toBe(false);
     await f.db`update allrice_runs set state='succeeded' where id=${f.context.runId}`;
     await f.db`update allrice_jobs set status='succeeded' where id=${f.context.jobId}`;
     const continued = await f.exchange();
@@ -107,14 +101,10 @@ suite('MET166 finite project service — real PostgreSQL', () => {
     const f = await projectServiceFixture(database.db);
     await f.db`update allrice_bridge_managed_runtime_grants set revoked_at=clock_timestamp() where device_id=${f.device.id}`;
     expect(
-      (
-        await f.runtime.finalizeRoot({
-          scope: f.task.scope,
-          rootRunId: f.context.runId,
-          worker: f.assistantWorker,
-        })
-      ).status,
-    ).toBe('unknown');
+      await f.db.begin((tx) =>
+        continuingProjectServiceIds(tx, f.context.runId),
+      ),
+    ).not.toContain(f.id);
   });
   it('stop races duplicate renewal without clearing confirmed physical evidence', async () => {
     const f = await projectServiceFixture(database.db),

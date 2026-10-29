@@ -74,10 +74,7 @@ import {
 import { exchangeLocalServiceLocked } from '../local-service-runtime.ts';
 import { localCommandCandidateEvidence } from '../local-command-candidate.ts';
 import { refreshTaskClock, readTaskClock } from '../task-clock.ts';
-import {
-  isObservedExecutionMetric,
-  isTokenMetric,
-} from '../execution-usage-policy.ts';
+import { isObservedExecutionMetric } from '../execution-usage-policy.ts';
 
 type Tx = RuntimeLedgerTransaction;
 type Json = Parameters<Tx['json']>[0];
@@ -472,8 +469,6 @@ function receiptContent(receipt: RuntimeLedgerReceipt) {
     evidence: receipt.evidence ?? null,
   };
 }
-
-
 
 /**
  * Server-only adapter, not an HTTP authorization boundary. Required admission is

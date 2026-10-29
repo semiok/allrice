@@ -3,9 +3,7 @@ import type {
   NativeRootOrigin,
   NativeRunExecutionBinding,
 } from '@allrice/database';
-import type {
-  FinalDeliveryPort,
-} from '../final-delivery/guard.js';
+import type { FinalDeliveryPort } from '../final-delivery/guard.js';
 import type {
   EmployeeKernelRequest,
   InternalKernelRequest,

@@ -32,20 +32,15 @@ const ChatSubscriptionSnapshotSchema = z
     frozenAt: TimestampSchema,
   })
   .strict();
-export const SubscriptionSnapshotSchema = z.discriminatedUnion(
-  'version',
-  [
-    ChatSubscriptionSnapshotSchema,
-    ChatSubscriptionSnapshotSchema.extend({
-      version: z.literal(2),
-      sessionId: z.null(),
-      occurrenceId: UuidSchema,
-    }).strict(),
-  ],
-);
-export type SubscriptionSnapshot = z.infer<
-  typeof SubscriptionSnapshotSchema
->;
+export const SubscriptionSnapshotSchema = z.discriminatedUnion('version', [
+  ChatSubscriptionSnapshotSchema,
+  ChatSubscriptionSnapshotSchema.extend({
+    version: z.literal(2),
+    sessionId: z.null(),
+    occurrenceId: UuidSchema,
+  }).strict(),
+]);
+export type SubscriptionSnapshot = z.infer<typeof SubscriptionSnapshotSchema>;
 
 /** Fail closed for any claimed Codex route. Only an unambiguously non-Codex
  * selection returns undefined; model/browser text never supplies this input. */

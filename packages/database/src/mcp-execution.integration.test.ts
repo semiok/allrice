@@ -4,14 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createMcpExecutionFixture } from './mcp-execution.fixture.ts';
-import {
-  createMcpRuntimeOperation,
-  describeMcpRuntimeTool,
-  createMcpOperationLedger,
-} from './mcp-execution.ts';
-import { createAssistantRuntime } from './assistant-runtime.ts';
-import { assertAssistantAuthority } from './assistant-authority.ts';
-import { productionAssistantController } from '../../../apps/worker/src/harness/dsh/assistant-controller.js';
+import { describeMcpRuntimeTool } from './mcp-execution.ts';
 import * as McpConnections from './mcp-connections.ts';
 import {
   revokeRuntimeActionApproval,
@@ -258,31 +251,6 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
       arguments: { value: 'x'.repeat(101) },
     });
     const task = invalid.snapshot.binding.task;
-    const worker = {
-      workerId: f.worker,
-      jobId: f.job,
-      leaseToken: invalid.jobLeaseToken,
-      generation: invalid.snapshot.binding.attempt.generation,
-    };
-    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-    const assistants = createAssistantRuntime({
-      database: db,
-      authorize: async () => {},
-    });
-    await assistants.configureRoot({
-      task,
-      worker,
-      nativeSessionId: `dsh-${f.session}`,
-      allowedTools: ['cloud.mcp.call'],
-      configuration: {
-        version: 1,
-        mode: 'daily',
-        allowAssistants: true,
-        maxDepth: 1,
-        maxChildren: 4,
-        maxConcurrent: 2,
-      },
-    });
     await f.decide(invalid);
     const rejected = await McpExecutor.runMcpRuntimeOperation(invalid, {
       database: db,
@@ -316,13 +284,6 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
     });
     expect(result.status).toBe('succeeded');
     expect(f.service.state.rows).toEqual(['same-task']);
-    expect(
-      await assistants.finalizeRoot({
-        scope: task.scope,
-        rootRunId: f.run,
-        worker,
-      }),
-    ).toMatchObject({ status: 'completed' });
     const [unchanged] =
       await db`select execution_snapshot from allrice_employee_runs where run_id=${f.run}`;
     expect(
@@ -1291,32 +1252,7 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
         tool: 'records.list',
         arguments: {},
       });
-      vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-      const assistants = createAssistantRuntime({
-        database: db,
-        authorize: async () => {},
-      });
       const task = c.snapshot.binding.task;
-      const worker = {
-        workerId: f.worker,
-        jobId: f.job,
-        leaseToken: c.jobLeaseToken,
-        generation: c.snapshot.binding.attempt.generation,
-      };
-      await assistants.configureRoot({
-        task,
-        worker,
-        nativeSessionId: `dsh-${f.session}`,
-        allowedTools: ['cloud.mcp.call'],
-        configuration: {
-          version: 1,
-          mode: 'daily',
-          allowAssistants: true,
-          maxDepth: 1,
-          maxChildren: 4,
-          maxConcurrent: 2,
-        },
-      });
       await f.decide(c);
       const invoke = vi.spyOn(f.transport, 'invoke');
       if (failure === 'network')
@@ -1348,13 +1284,6 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
           )
         ).result,
       ).toMatchObject({ status: 'failed', effects: 'none' });
-      expect(
-        await assistants.finalizeRoot({
-          scope: task.scope,
-          rootRunId: f.run,
-          worker,
-        }),
-      ).toMatchObject({ status: 'completed' });
     },
   );
   it('loss of the reply after the write is unknown and re-entry never repeats it', async () => {

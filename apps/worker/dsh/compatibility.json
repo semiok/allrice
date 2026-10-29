@@ -45,12 +45,8 @@
     "workerEnvironmentInheritance": false,
     "toolBrokerRequired": true
   },
-  "productionSkillSources": [
-    "allrice-published-runtime"
-  ],
-  "excludedSkillSources": [
-    "dsh-repository-development-skills"
-  ],
+  "productionSkillSources": ["allrice-published-runtime"],
+  "excludedSkillSources": ["dsh-repository-development-skills"],
   "goldenReplay": [
     {
       "id": "ordinary-chat",

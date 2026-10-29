@@ -456,8 +456,10 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
       successes: 1,
     });
     expect(
-      await fixture.db`select root_run_id from allrice_assistant_roots where root_run_id=${f.rootRunId}`,
-    ).toHaveLength(0);
+      (
+        await fixture.db`select to_regclass('allrice_assistant_roots') as relation`
+      )[0]!.relation,
+    ).toBeNull();
     expect(
       await fixture.db`select run_id from allrice_runtime_run_links where root_run_id=${f.rootRunId}`,
     ).toHaveLength(0);
@@ -558,8 +560,10 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
       },
     ]);
     expect(
-      await fixture.db`select run_id from allrice_assistant_instances where root_run_id=${f.rootRunId}`,
-    ).toHaveLength(0);
+      (
+        await fixture.db`select to_regclass('allrice_assistant_instances') as relation`
+      )[0]!.relation,
+    ).toBeNull();
     const queries: string[] = [];
     const guardQueries: string[] = [];
     const captureGuardQueries = async <T>(operation: () => Promise<T>) => {

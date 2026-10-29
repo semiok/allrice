@@ -84,17 +84,12 @@ suite('MET153 durable native waits and queue authority', () => {
     await fixture?.close();
   });
   async function setup(withStopReceipt = false) {
-    const f = await createLocalCommandFixture(
-      fixture.db,
-      'ask',
-      false,
-      {
-            deferRuntimeRoot: true,
-        ...(withStopReceipt
-          ? { runtimePackage, businessCreationOrigin: true }
-          : {}),
-      },
-    );
+    const f = await createLocalCommandFixture(fixture.db, 'ask', false, {
+      deferRuntimeRoot: true,
+      ...(withStopReceipt
+        ? { runtimePackage, businessCreationOrigin: true }
+        : {}),
+    });
     f.requestContext.memberships = f.context.policySnapshot.memberships;
     if (withStopReceipt) {
       // The generic assistant fixture leaves Job.input empty. This fresh

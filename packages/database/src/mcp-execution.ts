@@ -59,9 +59,8 @@ export function createMcpOperationLedger(
       transaction: Parameters<typeof checkMcpBindingAuthority>[0];
       binding: RuntimeActionBinding;
     }) => {
-      return (
-        await checkMcpBindingAuthority(transaction, context, binding)
-      ).binding;
+      return (await checkMcpBindingAuthority(transaction, context, binding))
+        .binding;
     },
   };
   return Object.assign(
@@ -130,9 +129,7 @@ async function resolveMcpRuntimeTool(
   let matches = frozen.mcpTools.filter(
     (t) => t.connectionId === args.connectionId && t.name === args.tool,
   );
-  if (
-    frozen.capabilitySnapshot.bindings.toolNames.includes('cloud.mcp.call')
-  ) {
+  if (frozen.capabilitySnapshot.bindings.toolNames.includes('cloud.mcp.call')) {
     const [managed] =
       await database`select binding_id from allrice_mcp_binding_config where binding_id=${args.connectionId}
       and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and managed_by=${owner}`;

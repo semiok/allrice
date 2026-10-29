@@ -18,9 +18,6 @@ export function readinessFixture(): ReadinessFacts {
     'cloud.mcp.call',
     'local.mcp.discover',
     'local.mcp.call',
-    'assistant.delegate',
-    'assistant.development',
-    'assistant.report',
   ];
   const actions = [
     ...tools,
@@ -73,32 +70,12 @@ export function readinessFixture(): ReadinessFacts {
 const item = (f: ReadinessFacts, id: string) =>
   projectWorkspaceReadiness(f).find((c) => c.id === id)!;
 describe('MET-147 capability matrix: discovery is not authority', () => {
-  it('development requires the complete tools, candidate runner and explicit delegation allow', () => {
-    const f = readinessFixture();
-    expect(item(f, 'development')).toMatchObject({
-      state: 'ready',
-      target: 'local',
-      authorization: 'per_action',
-    });
-    f.developmentRunner = false;
-    expect(item(f, 'development').reason).toBe('candidate_runner_missing');
-    expect(item(f, 'local_command').state).toBe('ready');
-    f.developmentRunner = true;
-    f.tools = f.tools.filter((t) => t !== 'assistant.report');
-    expect(item(f, 'development').reason).toBe('employee_policy');
-    f.tools.push('assistant.report');
-    f.controls!.rules.push({ action: 'assistant.delegate', effect: 'ask' });
-    expect(item(f, 'development').reason).toBe('policy_denied');
-    f.flags.development = false;
-    expect(item(f, 'development').reason).toBe('release_disabled');
-  });
   it('offers implemented capabilities with original per-action/root-budget boundaries', () => {
     const f = readinessFixture();
     expect(
       projectWorkspaceReadiness(f).filter((c) => c.state === 'ready'),
-    ).toHaveLength(11);
+    ).toHaveLength(9);
     expect(item(f, 'local_command').authorization).toBe('per_action');
-    expect(item(f, 'assistants').authorization).toBe('root_budget');
     expect(item(f, 'boost')).toMatchObject({
       state: 'not_released',
       reason: 'planned',
@@ -141,8 +118,6 @@ describe('MET-147 capability matrix: discovery is not authority', () => {
     const f = readinessFixture();
     f.controls!.rules.push({ action: 'local.process.execute', effect: 'deny' });
     expect(item(f, 'local_command').reason).toBe('policy_denied');
-    f.controls!.rules.push({ action: 'assistant.delegate', effect: 'ask' });
-    expect(item(f, 'assistants').reason).toBe('policy_denied');
     f.controls!.mode = 'plan_only';
     expect(item(f, 'local_files').state).toBe('ready');
     expect(item(f, 'cloud_command').reason).toBe('policy_denied');
@@ -202,7 +177,6 @@ describe('MET-147 capability matrix: discovery is not authority', () => {
       state: 'unknown',
       reason: 'invalid_configuration',
     });
-    expect(item(f, 'assistants').reason).toBe('provider_unsupported');
     f.canExecute = false;
     expect(item(f, 'report').reason).toBe('read_only');
   });

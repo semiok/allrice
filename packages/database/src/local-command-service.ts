@@ -178,7 +178,7 @@ async function createLocalBridgeToolOperation(
     )
       throw new RuntimePolicyError('bridge_authority_changed');
   }
-  let ref = requestedCandidate;
+  const ref = requestedCandidate;
   let candidate:
     { artifactId: string; checksum: string; content: string } | undefined;
   let candidateTargetId: string | null = null;
@@ -459,8 +459,7 @@ async function createLocalBridgeToolOperation(
     : undefined;
   if (
     args?.network &&
-    (!executionBudget ||
-      !profile?.features?.includes('sandbox_network_v1'))
+    (!executionBudget || !profile?.features?.includes('sandbox_network_v1'))
   )
     throw new RuntimePolicyError('local_runner_upgrade_required');
   const networkGrant = args?.network
@@ -593,11 +592,7 @@ async function createLocalBridgeToolOperation(
       amount: metric === 'tool_calls' ? 1 : 0,
     })),
   });
-  await linkTaskOperationCall(
-    database,
-    operationId,
-    input.callId,
-  );
+  await linkTaskOperationCall(database, operationId, input.callId);
   if (snapshot.status === 'waiting_user')
     await requestRuntimeActionApproval(
       ledger.policyOptions,

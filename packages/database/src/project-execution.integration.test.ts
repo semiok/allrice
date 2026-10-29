@@ -142,30 +142,23 @@ suite(
         outbound?: boolean;
       } = {},
     ) {
-      const f = await createLocalCommandFixture(
-        database.db,
-        'allow',
-        false,
-        {
-                projectWorkspace: true,
-          projectCloud: cloud,
-          snapshot: (s) => ({
-            ...s,
-            ...(sandbox.policy
-              ? { sandboxExecutionPolicy: sandbox.policy }
-              : {}),
-            capabilitySnapshot: {
-              ...s.capabilitySnapshot,
-              grantedCapabilities:
-                sandbox.outbound === false
-                  ? s.capabilitySnapshot.grantedCapabilities.filter(
-                      (c) => c !== 'network:outbound',
-                    )
-                  : s.capabilitySnapshot.grantedCapabilities,
-            },
-          }),
-        },
-      );
+      const f = await createLocalCommandFixture(database.db, 'allow', false, {
+        projectWorkspace: true,
+        projectCloud: cloud,
+        snapshot: (s) => ({
+          ...s,
+          ...(sandbox.policy ? { sandboxExecutionPolicy: sandbox.policy } : {}),
+          capabilitySnapshot: {
+            ...s.capabilitySnapshot,
+            grantedCapabilities:
+              sandbox.outbound === false
+                ? s.capabilitySnapshot.grantedCapabilities.filter(
+                    (c) => c !== 'network:outbound',
+                  )
+                : s.capabilitySnapshot.grantedCapabilities,
+          },
+        }),
+      });
       const storage = runtimeFixtureStorage(f.db),
         [job] = await f.db<
           { attempt: number }[]

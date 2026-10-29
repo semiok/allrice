@@ -276,7 +276,8 @@ export const baseline: readonly BaselineEntry[] = [
     kind: 'patch',
     id: 'allrice-durable-task-clock-v1',
     category: '待删',
-    basis: 'MET-210 PR2b 已删旧助手 join/flush；仍保留普通 Run 的任务时钟投影，未改变此待核分类。',
+    basis:
+      'MET-210 PR2b 已删旧助手 join/flush；仍保留普通 Run 的任务时钟投影，未改变此待核分类。',
     approvedBy: 'baseline 2026-10-27',
   },
   {
@@ -339,7 +340,7 @@ export const baseline: readonly BaselineEntry[] = [
     id: 'allrice-final-delivery-v1',
     category: '待删',
     basis:
-      'MET-210 PR1b：独立根 Run 仅保留 SaaS 权限/持久化门卫，公开 wait 后一次平台 steer 修正；旧助手同回合包装仍待 PR2b 删除，资格由 PR1c 同窗放开。',
+      'MET-210 PR1b：独立根 Run 仅保留 SaaS 权限/持久化门卫，公开 wait 后一次平台 steer 修正；PR2b 已删除旧助手同回合包装，资格与 PR1c 同窗放开；分类保留原待删基线，未擅自重新核定。',
     approvedBy: 'baseline 2026-10-27',
   },
   {

@@ -86,16 +86,17 @@ describe('execution usage is telemetry across all billing routes', () => {
       ).toThrow();
     },
   );
-  it.each([
-    { result: { ...result, answer: '  ' }, code: 'EMPTY_RESPONSE' },
-  ])('retains actual incomplete outcomes: $code', ({ result, code }) => {
-    expect(() =>
-      checkCompletedModelBudget({
-        verifiedSubscription: false,
-        limits,
-        result,
-        costCents: null,
-      }),
-    ).toThrow(expect.objectContaining({ code }));
-  });
+  it.each([{ result: { ...result, answer: '  ' }, code: 'EMPTY_RESPONSE' }])(
+    'retains actual incomplete outcomes: $code',
+    ({ result, code }) => {
+      expect(() =>
+        checkCompletedModelBudget({
+          verifiedSubscription: false,
+          limits,
+          result,
+          costCents: null,
+        }),
+      ).toThrow(expect.objectContaining({ code }));
+    },
+  );
 });

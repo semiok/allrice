@@ -30,9 +30,7 @@ suite('message work methods from durable execution receipts', () => {
     vi.unstubAllEnvs();
     await fixture?.close();
   });
-  const setup = () =>
-    createLocalCommandFixture(fixture.db, 'ask', false, {
-      });
+  const setup = () => createLocalCommandFixture(fixture.db, 'ask', false, {});
   it('ignores plain prose, tool intents and unavailable async returns; deduplicates actual completed work in history', async () => {
     const f = await setup();
     const read = () =>

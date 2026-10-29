@@ -72,8 +72,7 @@ describe('trusted subscription identity, no price or credential resolution', () 
     ]) {
       expect(snapshot).not.toHaveProperty(key);
       expect(
-        SubscriptionSnapshotSchema.safeParse({ ...snapshot, [key]: 0 })
-          .success,
+        SubscriptionSnapshotSchema.safeParse({ ...snapshot, [key]: 0 }).success,
       ).toBe(false);
     }
   });

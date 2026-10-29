@@ -19,7 +19,6 @@ import {
   createRuntimeFixtureDatabase,
 } from '../../../packages/database/src/runtime.fixture.ts';
 import { createRunAuthorityFixture } from '../../../packages/database/src/run-authority.fixture.ts';
-import { readFinalDeliveryReferences } from '../../../packages/database/src/final-delivery-references.ts';
 import {
   getWorkbenchArtifact,
   publishWorkbenchArtifact,
@@ -87,10 +86,7 @@ const storage = () => runtimeFixtureStorage(db());
 async function fixture(covered = true) {
   const f = await createRunAuthorityFixture(db(), {
     memberRole: 'member',
-    allowedTools: [
-      'workspace.export.create',
-      'workspace.document.read',
-    ],
+    allowedTools: ['workspace.export.create', 'workspace.document.read'],
     snapshot: (snapshot) =>
       covered
         ? {

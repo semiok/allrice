@@ -44,22 +44,13 @@ export async function createP27CodexWorkerFixture(
     /** Synthetic SQL tests only. Live model drivers retain the default local pin. */
     allowCiDatabase?: boolean;
     /** Synthetic Worker regression only; never used by live Codex smoke. */
-    syntheticImagesWithAssistants?: boolean;
+    syntheticImages?: boolean;
     /** Isolated MET-163 image execution acceptance. */
     imageGeneration?: boolean;
-    /** Exercise platform image tools and the production assistant controller together. */
-    imageGenerationAssistants?: boolean;
     /** Synthetic current-schema instance/Worker wiring regression. */
-    personalProfile?: 'writable' | 'read_only' | 'writable_with_assistants';
+    personalProfile?: 'writable' | 'read_only';
   } = {},
 ) {
-  const profileAssistants =
-    options.personalProfile === 'writable_with_assistants';
-  // Assistants are off until the member saves them on (MET-210).
-  const memberAssistants =
-    options.syntheticImagesWithAssistants === true ||
-    options.imageGenerationAssistants === true ||
-    profileAssistants;
   const requestedRunLimits = options.imageGeneration
     ? { ...ordinaryRunLimits, timeoutMs: 600_000 }
     : ordinaryRunLimits;
@@ -75,11 +66,7 @@ export async function createP27CodexWorkerFixture(
     'P27_PROFILE_REQUIRES_CURRENT_SYNTHETIC_FIXTURE',
   );
   requireFixture(
-    !options.imageGenerationAssistants || options.imageGeneration === true,
-    'P27_IMAGE_ASSISTANTS_REQUIRE_IMAGES',
-  );
-  requireFixture(
-    !options.syntheticImagesWithAssistants || options.allowCiDatabase === true,
+    !options.syntheticImages || options.allowCiDatabase === true,
     'P27_CODEX_WORKER_SYNTHETIC_IMAGES_ONLY',
   );
   requireFixture(
@@ -95,10 +82,6 @@ export async function createP27CodexWorkerFixture(
   requireFixture(
     process.env.ALLRICE_TEST_DATABASE_URL === fixtureDatabaseUrl,
     'P27_CODEX_WORKER_DATABASE_NOT_AUTHORIZED',
-  );
-  requireFixture(
-    process.env.ALLRICE_ASSISTANTS_ENABLED === '0',
-    'P27_CODEX_WORKER_FIXTURE_FLAGS_REQUIRED',
   );
   owned = true;
   let fixture:
@@ -168,10 +151,7 @@ export async function createP27CodexWorkerFixture(
         await import('../../../packages/database/src/current-execution.fixture.ts');
       approveSyntheticCurrentEmployeeExecution();
     }
-    const {
-      createRuntimeFixtureDatabase,
-      RuntimeFixtureInitializationError,
-    } =
+    const { createRuntimeFixtureDatabase, RuntimeFixtureInitializationError } =
       await import('../../../packages/database/src/runtime.fixture.ts');
     initializationAttempted = true;
     try {
@@ -288,20 +268,10 @@ export async function createP27CodexWorkerFixture(
             'workspace.file.list',
             'workspace.document.read',
             'workspace.export.create',
-            ...(options.imageGenerationAssistants
-              ? ['assistant.delegate', 'assistant.report']
-              : []),
           ]
-        : options.syntheticImagesWithAssistants
-          ? ['assistant.delegate', 'assistant.report']
-          : options.personalProfile?.startsWith('writable')
-            ? [
-                'workspace.export.create',
-                ...(profileAssistants
-                  ? ['assistant.delegate', 'assistant.report']
-                  : []),
-              ]
-            : [],
+        : options.personalProfile === 'writable'
+          ? ['workspace.export.create']
+          : [],
       runtimePolicy: {
         harness: 'dsh',
         provider: 'openai-codex',
@@ -337,9 +307,6 @@ export async function createP27CodexWorkerFixture(
       await tx`insert into allrice_organizations(id,slug,name) values(${organizationId},${`p27-codex-worker-${organizationId}`},'P27 isolated')`;
       await tx`insert into allrice_workspaces(id,organization_id,slug,name) values(${workspaceId},${organizationId},'synthetic','P27 isolated')`;
       await tx`insert into allrice_memberships(id,organization_id,workspace_id,user_id,role) values(${membershipId},${organizationId},${workspaceId},${ownerId},'admin')`;
-      if (memberAssistants && !options.throughMigration)
-        await tx`insert into allrice_member_work_automation(organization_id,workspace_id,user_id,revision,settings)
-          values(${organizationId},${workspaceId},${ownerId},1,${tx.json({ cloud: true, computer: true, assistants: true })})`;
       await tx`insert into allrice_employees(id,organization_id,workspace_id,employee_key,name) values(${employeeId},${organizationId},${workspaceId},'p27-codex-worker','P27 isolated')`;
       await tx`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest,provider_snapshot)
         values(${employeeVersionId},${organizationId},${workspaceId},${employeeId},1,'P27 isolated',${manifest.provider.model},${manifest.systemPrompt},${tx.json(manifest.capabilities)},${checksum},${tx.json(manifest)},${tx.json(manifest.provider)})`;
@@ -356,7 +323,7 @@ export async function createP27CodexWorkerFixture(
       if (options.imageGeneration)
         await tx`update allrice_platform_model_settings set configuration=jsonb_set(configuration,'{imagesEnabled}','true'::jsonb) where singleton`;
       await tx`insert into allrice_runtime_policy_controls(organization_id,workspace_id,version,controls)
-        values(${organizationId},${workspaceId},1,${tx.json({ version: 1, enabled: true, mode: 'execute', rules: options.imageGenerationAssistants || profileAssistants ? [{ action: 'assistant.delegate', effect: 'allow' }] : [] })})`;
+        values(${organizationId},${workspaceId},1,${tx.json({ version: 1, enabled: true, mode: 'execute', rules: [] })})`;
     });
     if (options.imageGeneration)
       platformSettings = await readPlatformModelSettings(db);
@@ -469,17 +436,6 @@ export async function createP27CodexWorkerFixture(
               sessionId,
               userMessageId,
               assistantMessageId,
-              assistantConfiguration: {
-                version: 1,
-                mode: 'daily',
-                allowAssistants:
-                  images !== undefined ||
-                  options.imageGenerationAssistants === true ||
-                  profileAssistants,
-                maxConcurrent: 1,
-                maxDepth: 1,
-                maxChildren: 1,
-              },
             },
           },
           // The 0096 checkpoint represents an already-created historical Run,
@@ -583,19 +539,18 @@ export async function createP27CodexWorkerFixture(
       runLimits,
       async prepareOrdinaryTask(
         prompt: string,
-        syntheticAssistantImages?: PromptImageAttachment[],
+        syntheticImages?: PromptImageAttachment[],
       ) {
         // Capture attachments BEFORE the production snapshot is frozen. The
         // live ordinary smoke retains its no-assistant behavior; only opted-in
         // synthetic integration tests may exercise this image/assistant path.
         requireFixture(
-          syntheticAssistantImages === undefined ||
-            options.syntheticImagesWithAssistants === true,
+          syntheticImages === undefined || options.syntheticImages === true,
           'P27_CODEX_WORKER_SYNTHETIC_IMAGES_ONLY',
         );
         requireFixture(!attempted, 'P27_CODEX_WORKER_ALREADY_ATTEMPTED');
         attempted = true;
-        return prepare(prompt, syntheticAssistantImages);
+        return prepare(prompt, syntheticImages);
       },
       close,
     };

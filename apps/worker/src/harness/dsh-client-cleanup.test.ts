@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { HandlerError } from '../errors.js';
-import { attachExecutionFailureUsage, getExecutionFailureUsage } from './dsh/execution-failure-usage.js';
+import {
+  attachExecutionFailureUsage,
+  getExecutionFailureUsage,
+} from './dsh/execution-failure-usage.js';
 import {
   DshClientCleanupError,
   getDshCleanupFailures,

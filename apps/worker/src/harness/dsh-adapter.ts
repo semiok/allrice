@@ -28,7 +28,10 @@ import {
 import { attachCheckedFinalDelivery } from '../final-delivery/checked-delivery.js';
 import { NativeQuestionParked } from './dsh/native-question-wait.js';
 import { ReceiptDrainWindow } from './dsh/receipt-drain.js';
-import { attachExecutionFailureUsage, type ExecutionFailureUsage } from './dsh/execution-failure-usage.js';
+import {
+  attachExecutionFailureUsage,
+  type ExecutionFailureUsage,
+} from './dsh/execution-failure-usage.js';
 import { projectNativeUsage } from './dsh/native-usage.js';
 import { DshAssistantStream } from './dsh/assistant-stream.js';
 import {
@@ -38,7 +41,6 @@ import {
   type DshRunTimingPoint,
 } from './dsh/run-timing.js';
 import { toolActivityDetail } from './dsh/tool-activity.js';
-import { DshStartupRejection } from './dsh/startup-rejection.js';
 import { retainDshCleanupFailure } from './dsh-client-cleanup.js';
 import { nativeSessionRecoveryFailure } from './dsh/native-tools.js';
 import type {
@@ -122,9 +124,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
 
   async execute(input: HarnessExecutionInput): Promise<HarnessExecutionResult> {
     const timing = new DshRunTiming({
-      runId:
-        input.executionEnvironment.ALLRICE_RUN_ID ??
-        null,
+      runId: input.executionEnvironment.ALLRICE_RUN_ID ?? null,
       sessionId: input.kernel.sessionId,
       attempt: input.attempt,
       generation: input.generation,
@@ -432,7 +432,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
       (ownedDrop ??= this.runtimePool.closeOwned(runtime));
     const stopWindow = new ReceiptDrainWindow(dropOwnedHost);
     const executionSignal = input.signal;
-    const onAbort = () => { stopWindow.begin(); };
+    const onAbort = () => {
+      stopWindow.begin();
+    };
     input.signal.addEventListener('abort', onAbort, { once: true });
     if (input.signal.aborted) onAbort();
     let order = 0;
@@ -576,9 +578,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           '[AllRice:model-timing]',
           JSON.stringify({
             event: 'allrice.model_timing',
-            runId:
-              input.executionEnvironment.ALLRICE_RUN_ID ??
-                    null,
+            runId: input.executionEnvironment.ALLRICE_RUN_ID ?? null,
             sessionId: runtime.productSessionId,
             nativeSessionId: entry.sessionId,
             callId: entry.callId,
@@ -725,131 +725,129 @@ export class DshHarnessAdapter implements HarnessAdapter {
             'DSH execution was interrupted',
             false,
           );
-        const completion: { candidate: Record<string, unknown> | null } = { candidate: null };
+        const completion: { candidate: Record<string, unknown> | null } = {
+          candidate: null,
+        };
         const result = await this.runOnce({
-              runtime,
-              start: deliveryRepair
-                ? () => nativeDelivery('repair', deliveryRepair!)
-                : undefined,
-              onTimingPoint: (point) => timing.mark(point),
-              prompt,
-              bootstrapReceipt: callIndex === 0 ? bootstrapReceipt : undefined,
-              images: callIndex === 0 ? (input.images ?? []) : [],
-              sessionReferences:
-                callIndex === 0 ? input.kernel.sessionReferences : undefined,
-              signal: executionSignal,
-              subscription: snapshot.route === 'openai-codex',
-              questionWait: input.questionWait,
-              resume: callIndex === 0 ? input.questionWait?.resume : undefined,
-              settleDelivery: runDelivery
-                ? async (confirmSettled) => {
-                    await deliveryNativeCall(() =>
-                      runtime.client.wait(threadId),
-                    );
-                    confirmSettled();
-                    executionSignal.throwIfAborted();
-                    await input.runDelivery!.pauseInput();
-                    // candidate closes native ingress and waits once more.
-                    // Keep runOnce's real notifications/usage subscribed across
-                    // both waits, including any descendant-woken root turns.
-                    completion.candidate = await nativeDelivery('candidate', {
-                      sessionId: threadId,
-                    });
-                  }
-                : undefined,
-              onFailureUsage: (receipt) => {
-                interruptedUsage = {
-                  ...receipt,
-                  usageComplete: usageComplete && receipt.usageComplete,
-                  cacheUsageKnown: cacheUsageKnown && receipt.cacheUsageKnown,
-                  usage: {
-                    inputTokens: usage.inputTokens + receipt.usage.inputTokens,
-                    cachedInputTokens:
-                      usage.cachedInputTokens + receipt.usage.cachedInputTokens,
-                    outputTokens:
-                      usage.outputTokens + receipt.usage.outputTokens,
+          runtime,
+          start: deliveryRepair
+            ? () => nativeDelivery('repair', deliveryRepair!)
+            : undefined,
+          onTimingPoint: (point) => timing.mark(point),
+          prompt,
+          bootstrapReceipt: callIndex === 0 ? bootstrapReceipt : undefined,
+          images: callIndex === 0 ? (input.images ?? []) : [],
+          sessionReferences:
+            callIndex === 0 ? input.kernel.sessionReferences : undefined,
+          signal: executionSignal,
+          subscription: snapshot.route === 'openai-codex',
+          questionWait: input.questionWait,
+          resume: callIndex === 0 ? input.questionWait?.resume : undefined,
+          settleDelivery: runDelivery
+            ? async (confirmSettled) => {
+                await deliveryNativeCall(() => runtime.client.wait(threadId));
+                confirmSettled();
+                executionSignal.throwIfAborted();
+                await input.runDelivery!.pauseInput();
+                // candidate closes native ingress and waits once more.
+                // Keep runOnce's real notifications/usage subscribed across
+                // both waits, including any descendant-woken root turns.
+                completion.candidate = await nativeDelivery('candidate', {
+                  sessionId: threadId,
+                });
+              }
+            : undefined,
+          onFailureUsage: (receipt) => {
+            interruptedUsage = {
+              ...receipt,
+              usageComplete: usageComplete && receipt.usageComplete,
+              cacheUsageKnown: cacheUsageKnown && receipt.cacheUsageKnown,
+              usage: {
+                inputTokens: usage.inputTokens + receipt.usage.inputTokens,
+                cachedInputTokens:
+                  usage.cachedInputTokens + receipt.usage.cachedInputTokens,
+                outputTokens: usage.outputTokens + receipt.usage.outputTokens,
+              },
+            };
+          },
+          ...(runDelivery
+            ? {
+                installTurnOriginBarrier: (
+                  barrier: (settled?: boolean) => Promise<void>,
+                ) => {
+                  awaitTurnOrigin = barrier;
+                },
+              }
+            : {}),
+          onTurn: async (nextTurnId) => {
+            turnId = nextTurnId;
+            if (runDelivery && !input.onTurnStarted) finalDeliveryUnavailable();
+            await input.onTurnStarted?.({ threadId, turnId: nextTurnId });
+          },
+          onDelta: async (text, source, replyId, textMode) => {
+            if (text) timing.mark('firstVisibleText');
+            await emit({
+              type: 'assistant.delta',
+              text,
+              ...source,
+              replyId,
+              textMode,
+            });
+          },
+          onNative: async (event) => {
+            // Directory registration is not adoption. Attach exact frozen
+            // identity only to an actual native Skill call/result.
+            if (
+              (event.type === 'tool.started' ||
+                event.type === 'tool.completed' ||
+                event.type === 'tool.failed') &&
+              event.name === 'skill'
+            ) {
+              const name = event.sourcePayload?.skillName;
+              const skill = nativeSkills.find((s) => s.name === name);
+              const governance = input.baseSkillCatalog?.skills.find(
+                (s) => s.id === skill?.id,
+              );
+              const scene = input.contentGuard?.scenes?.find(
+                (s) => s.nativeName === name,
+              );
+              if (scene)
+                event = {
+                  ...event,
+                  label: `工作场景 · ${scene.name}`,
+                  sourcePayload: {
+                    ...event.sourcePayload,
+                    sceneId: scene.id,
+                    sceneDigest: scene.digest,
+                    sceneName: scene.name,
                   },
                 };
-              },
-              ...(runDelivery
-                ? {
-                    installTurnOriginBarrier: (
-                      barrier: (settled?: boolean) => Promise<void>,
-                    ) => {
-                      awaitTurnOrigin = barrier;
-                    },
-                  }
-                : {}),
-              onTurn: async (nextTurnId) => {
-                turnId = nextTurnId;
-                if ((runDelivery) && !input.onTurnStarted)
-                  finalDeliveryUnavailable();
-                await input.onTurnStarted?.({ threadId, turnId: nextTurnId });
-              },
-              onDelta: async (text, source, replyId, textMode) => {
-                if (text) timing.mark('firstVisibleText');
-                await emit({
-                  type: 'assistant.delta',
-                  text,
-                  ...source,
-                  replyId,
-                  textMode,
-                });
-              },
-              onNative: async (event) => {
-                // Directory registration is not adoption. Attach exact frozen
-                // identity only to an actual native Skill call/result.
-                if (
-                  (event.type === 'tool.started' ||
-                    event.type === 'tool.completed' ||
-                    event.type === 'tool.failed') &&
-                  event.name === 'skill'
-                ) {
-                  const name = event.sourcePayload?.skillName;
-                  const skill = nativeSkills.find((s) => s.name === name);
-                  const governance = input.baseSkillCatalog?.skills.find(
-                    (s) => s.id === skill?.id,
-                  );
-                  const scene = input.contentGuard?.scenes?.find(
-                    (s) => s.nativeName === name,
-                  );
-                  if (scene)
-                    event = {
-                      ...event,
-                      label: `工作场景 · ${scene.name}`,
-                      sourcePayload: {
-                        ...event.sourcePayload,
-                        sceneId: scene.id,
-                        sceneDigest: scene.digest,
-                        sceneName: scene.name,
-                      },
-                    };
-                  if (skill)
-                    event = {
-                      ...event,
-                      sourcePayload: {
-                        ...event.sourcePayload,
-                        skillId: skill.id,
-                        skillChecksum: skill.checksum,
-                        ...(skill.personal
-                          ? { personalSkill: skill.personal }
-                          : {}),
-                        ...(governance
-                          ? {
-                              skillVersion: governance.version,
-                              skillCatalogChecksum:
-                                input.baseSkillCatalog!.catalogChecksum,
-                            }
-                          : {}),
-                        ...(skill.bundle
-                          ? { skillBundleChecksum: skill.bundle.checksum }
-                          : {}),
-                      },
-                    };
-                }
-                await emit(event);
-              },
-            });
+              if (skill)
+                event = {
+                  ...event,
+                  sourcePayload: {
+                    ...event.sourcePayload,
+                    skillId: skill.id,
+                    skillChecksum: skill.checksum,
+                    ...(skill.personal
+                      ? { personalSkill: skill.personal }
+                      : {}),
+                    ...(governance
+                      ? {
+                          skillVersion: governance.version,
+                          skillCatalogChecksum:
+                            input.baseSkillCatalog!.catalogChecksum,
+                        }
+                      : {}),
+                    ...(skill.bundle
+                      ? { skillBundleChecksum: skill.bundle.checksum }
+                      : {}),
+                  },
+                };
+            }
+            await emit(event);
+          },
+        });
         const joined = completion.candidate;
         deliveryRepair = undefined;
         usage.inputTokens += result.usage.inputTokens;
@@ -907,7 +905,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           const privateId =
             /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
           if (
-            (runDelivery) &&
+            runDelivery &&
             (!joined ||
               typeof joined.answer !== 'string' ||
               !joined.answer.trim() ||
@@ -922,8 +920,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
               typeof joined.completionToken !== 'string' ||
               !privateId.test(joined.completionToken) ||
               rootBinding?.nativeSessionId !== threadId ||
-              rootBinding?.runId !==
-                runDelivery!.rootRunId ||
+              rootBinding?.runId !== runDelivery!.rootRunId ||
               typeof rootBinding?.bindingId !== 'string' ||
               !privateId.test(rootBinding.bindingId))
           )
@@ -949,8 +946,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
                         publicMessageId: joined.publicMessageId as string,
                         durableSeq: joined.durableSeq as number,
                         nativeBindingId: rootBinding!.bindingId as string,
-                        rootRunId:
-                          runDelivery!.rootRunId,
+                        rootRunId: runDelivery!.rootRunId,
                       }
                     : {}),
                   attempt: input.attempt,
@@ -1134,7 +1130,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           // confirmed rejections are results for DSH to handle, just as in the
           // native tool path; assistant settlement keeps its own lifecycle.
           const confirmedFailure =
-                !executionSignal.aborted &&
+            !executionSignal.aborted &&
             !contentAuthorizationFailure &&
             error instanceof HandlerError &&
             !!runId &&
@@ -1176,10 +1172,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         }
       }
     } catch (caught) {
-      if (
-        caught instanceof NativeQuestionParked &&
-        input.questionWait
-      ) {
+      if (caught instanceof NativeQuestionParked && input.questionWait) {
         for (const key of [
           'inputTokens',
           'cachedInputTokens',
@@ -1233,8 +1226,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
             // intent on a rejected or unknown receipt write. Never retry it.
           });
       const attachUsage = (failure: unknown) => {
-        const runId =
-            input.executionEnvironment.ALLRICE_RUN_ID;
+        const runId = input.executionEnvironment.ALLRICE_RUN_ID;
         if (failedUsage && runId)
           attachExecutionFailureUsage(
             failure,

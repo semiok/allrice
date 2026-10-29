@@ -1,8 +1,5 @@
 import { z } from 'zod';
-import {
-  ChecksumSchema,
-  UuidSchema,
-} from '@allrice/contracts';
+import { ChecksumSchema, UuidSchema } from '@allrice/contracts';
 import {
   RepositoryPublicationSourceSchema,
   RepositoryPublicationRemoteSchema,
@@ -11,8 +8,12 @@ import {
 import { RepositoryPublicationMetadataSchema } from './platform-repository-publication-contracts.ts';
 import { RepairReportSchema } from './platform-repair-contracts.ts';
 
-export const RepositoryReviewArtifactRefSchema = z.object({ artifactId: UuidSchema, digest: ChecksumSchema }).strict();
-export type RepositoryReviewArtifactRef = z.infer<typeof RepositoryReviewArtifactRefSchema>;
+export const RepositoryReviewArtifactRefSchema = z
+  .object({ artifactId: UuidSchema, digest: ChecksumSchema })
+  .strict();
+export type RepositoryReviewArtifactRef = z.infer<
+  typeof RepositoryReviewArtifactRefSchema
+>;
 
 /** Read-only repository business tool. Identity and all verification material
  * come from the registered Job, never from model arguments. */

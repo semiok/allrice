@@ -64,12 +64,9 @@ suite('MET153 separate Worker process recovery with actual native DSH', () => {
           : { text: 'Same Run recovered successfully.' };
       });
       const children: ChildProcess[] = [];
-      const f = await createLocalCommandFixture(
-        fixture.db,
-        'ask',
-        false,
-        { deferRuntimeRoot: true, skipChild: true },
-      );
+      const f = await createLocalCommandFixture(fixture.db, 'ask', false, {
+        deferRuntimeRoot: true,
+      });
       f.requestContext.memberships = f.context.policySnapshot.memberships;
       const [scope] = await f.db<
         { schema: string }[]

@@ -308,21 +308,6 @@ suite('MET-144 candidate authority / exact version / durable receipt', () => {
       }),
     ).rejects.toThrow('unavailable');
   });
-  it('blocks a child without an exact development test assignment', async () => {
-    const f = await setup();
-    await expect(
-      createLocalCommandOperation(
-        {
-          context: f.context,
-          arguments: f.args,
-          callId: randomUUID(),
-          storage: f.storage,
-          assistant: { runId: f.child!.runId, worker: f.worker },
-        },
-        f.db,
-      ),
-    ).rejects.toThrow('unavailable');
-  });
   it.each(['preflight', 'nonzero', 'canceled'])(
     'preserves %s without turning it into success or an endless unknown',
     async (scenario) => {

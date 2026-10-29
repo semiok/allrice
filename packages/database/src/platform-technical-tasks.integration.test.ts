@@ -35,7 +35,7 @@ import { runClaimedJob } from '../../../apps/worker/src/job-runner.ts';
 import { executePlatformTechnicalTask } from '../../../apps/worker/src/jobs/platform-technical.ts';
 import { DshHarnessAdapter } from '../../../apps/worker/src/harness/dsh-adapter.ts';
 import { HandlerError } from '../../../apps/worker/src/errors.ts';
-import { attachExecutionFailureUsage } from '../../../apps/worker/src/harness/dsh/assistant-outcome.ts';
+import { attachExecutionFailureUsage } from '../../../apps/worker/src/harness/dsh/execution-failure-usage.ts';
 import { executeRiceTool } from '../../../apps/worker/src/tool-broker.ts';
 import { TechnicalTaskDetailSchema } from './platform-technical-contracts.ts';
 

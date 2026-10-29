@@ -1881,16 +1881,12 @@ async function prepareChatRunBinding(
   return binding;
 }
 
-/** Prepare the original queue input; the public wrapper retains actual enqueue.
- * Existing callers use the original short work-settings transaction. An outer
- * transaction caller reads those settings directly on its existing SQL. */
+/** Prepare the ordinary queue input; the public wrapper retains actual enqueue. */
 async function prepareChatRunInput(
   input: ChatRunPreparationInput,
   binding: Awaited<ReturnType<typeof prepareChatRunBinding>>,
-  database: ChatRunDatabase,
 ) {
   const {
-    context,
     workspaceId,
     session,
     message,
@@ -2090,7 +2086,6 @@ async function prepareAutomationChatRunInTransaction(
   const { submission, enqueueOptions } = await prepareChatRunInput(
     preparation,
     binding,
-    database,
   );
   const queued = await enqueue(submission, enqueueOptions);
   if (queued.delivery === 'steer_pending')
@@ -2220,7 +2215,7 @@ export async function sendChatMessage(
       options,
       result,
       effectiveEmployeeVersionId,
-        conversationMessage,
+      conversationMessage,
     };
     const database: ChatRunDatabase = { kind: 'database', sql };
     const binding = await prepareChatRunBinding(
@@ -2232,7 +2227,6 @@ export async function sendChatMessage(
     const { submission, enqueueOptions } = await prepareChatRunInput(
       runPreparation,
       binding,
-      database,
     );
     const queued = await enqueueRun(context, submission, enqueueOptions);
     const responseRun =

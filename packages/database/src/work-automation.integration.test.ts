@@ -39,14 +39,14 @@ suite('MET-159 member work settings and actual cloud admission', () => {
     await fixtureDb.db`update allrice_memberships set role='member' where organization_id=${f.org}`;
     return f;
   }
-  it('defaults cloud and computer ON and assistants OFF for ordinary members, persists without admin, isolates users and rejects stale writes', async () => {
+  it('defaults cloud and computer ON for ordinary members, persists without admin, isolates users and rejects stale writes', async () => {
     const f = await fresh(),
       other = await fresh(),
       db = fixtureDb.db;
     expect(await getWorkAutomation(f.context, f.workspace, db)).toMatchObject({
       revision: 0,
       editable: true,
-      settings: { cloud: true, computer: true, assistants: false },
+      settings: { cloud: true, computer: true },
     });
     const attempts = await Promise.allSettled(
       ['cloud', 'computer'].map((capability) =>

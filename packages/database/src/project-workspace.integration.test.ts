@@ -46,12 +46,10 @@ suite('MET166 PR3a private project checkpoints', () => {
     vi.unstubAllEnvs();
   });
   async function setup(deferRuntimeRoot = false) {
-    const f = await createLocalCommandFixture(
-      database.db,
-      'allow',
-      false,
-      { skipChild: true, projectWorkspace: true, deferRuntimeRoot },
-    );
+    const f = await createLocalCommandFixture(database.db, 'allow', false, {
+      projectWorkspace: true,
+      deferRuntimeRoot,
+    });
     if (deferRuntimeRoot)
       await f.db`update allrice_runs set input=jsonb_set(input,'{assistantConfiguration,allowAssistants}','false'::jsonb) where id=${f.rootRunId}`;
     const rootsBefore =

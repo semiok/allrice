@@ -452,10 +452,7 @@ suite(
         one[0]!.object,
       );
       expect(
-        await readArtifactBytes(
-          runtimeFixtureStorage(f.db),
-          three[0]!.object,
-        ),
+        await readArtifactBytes(runtimeFixtureStorage(f.db), three[0]!.object),
       ).toEqual(bytes);
       expect(
         await f.db`select id from allrice_deliverable_versions where object_id=${materialId}`,

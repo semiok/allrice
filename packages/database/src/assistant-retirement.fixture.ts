@@ -9,7 +9,6 @@ import {
   mkdtemp,
   readFile,
   realpath,
-  readdir,
   rm,
   writeFile,
 } from 'node:fs/promises';

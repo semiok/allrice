@@ -551,12 +551,8 @@ suite(
         f.db,
       );
       expect(
-        (
-          await readArtifactBytes(
-            runtimeFixtureStorage(f.db),
-            retained.object,
-          )
-        ).length,
+        (await readArtifactBytes(runtimeFixtureStorage(f.db), retained.object))
+          .length,
       ).toBeGreaterThan(0);
       saved = await mutate(
         admin,

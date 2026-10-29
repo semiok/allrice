@@ -38,4 +38,3 @@ export function settledTokenUsage(usage, observedOutput = false) {
       : {}),
   };
 }
-

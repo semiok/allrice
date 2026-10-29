@@ -3,10 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { BrowserObservationSchema } from '@allrice/contracts';
 import type * as Client from './core/client.ts';
-import {
-  runtimeTaskFixture,
-  createRuntimeFixtureDatabase,
-} from './runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
 import { createLocalBrowserFixture } from './local-browser.fixture.ts';
 import { createLocalPreviewFixture } from './local-preview.fixture.ts';

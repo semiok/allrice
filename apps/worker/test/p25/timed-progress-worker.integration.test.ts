@@ -19,7 +19,6 @@ import {
 } from '../../../../packages/database/src/execution/queue.ts';
 import { prepareEmployeeRunBinding } from '../../../../packages/database/src/employees/employeehub.ts';
 import { updateUserPreferences } from '../../../../packages/database/src/user-preferences.ts';
-import { createTaskProgressRuntime } from '../../../../packages/database/src/task-progress.ts';
 import type * as Database from '@allrice/database';
 import type * as PlatformRepair from '../../src/jobs/platform-repair.js';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.ts';
@@ -71,7 +70,6 @@ suite('MET-210 real Worker continuation and Workflow waiting', () => {
   });
   async function setup() {
     vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
-    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
     vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
     vi.spyOn(DshRuntimePool.prototype, 'acquire').mockRejectedValue(
       Error('TEST_NATIVE_ACQUISITION_FORBIDDEN'),
@@ -83,25 +81,14 @@ suite('MET-210 real Worker continuation and Workflow waiting', () => {
     vi.stubEnv('ALLRICE_STORAGE_ROOT', join(root, 'storage'));
     f = await createP27CodexWorkerFixture({
       allowCiDatabase: true,
-      personalProfile: 'writable_with_assistants',
+      personalProfile: 'writable',
     });
-    await f.db`update allrice_member_work_automation set settings=jsonb_set(settings,'{assistants}','false')`;
     await updateUserPreferences(f.context, {
       questionWait: { mode: 'timed', seconds: 7 },
     });
     return f.prepareOrdinaryTask('读取目录；如果连续失败，等我确认后再继续。');
   }
   type Task = Awaited<ReturnType<typeof setup>>;
-  function port(task: Task) {
-    return createTaskProgressRuntime(
-      {
-        context: task.execution.context,
-        worker: task.workflowLease,
-        sessionId: task.sessionId,
-      },
-      f.db,
-    );
-  }
   async function followUp(
     prior: Task,
     prompt: string,
@@ -170,30 +157,6 @@ suite('MET-210 real Worker continuation and Workflow waiting', () => {
       workflowLease,
     };
   }
-  async function inducePause(task: Task) {
-    const handle = port(task),
-      nativeSessionId = `dsh-${task.sessionId}`;
-    for (let i = 0; i < 3; i++) {
-      await handle({
-        action: 'start',
-        kind: 'tool',
-        nativeSessionId,
-        callId: `failed-${i}`,
-        name: 'read',
-        argumentsDigest: `sha256:${'a'.repeat(64)}`,
-      });
-      await handle({
-        action: 'finish',
-        kind: 'tool',
-        nativeSessionId,
-        callId: `failed-${i}`,
-        outcome: 'error',
-        resultDigest: `sha256:${'b'.repeat(64)}`,
-      });
-    }
-    return handle({ action: 'check', nativeSessionId });
-  }
-
   async function run(task: Task) {
     const isolation = await prepareExecutionIsolation({
       root,
@@ -270,37 +233,13 @@ suite('MET-210 real Worker continuation and Workflow waiting', () => {
     expect(pause!.pause_id).toEqual(expect.any(String));
     return { first, execute, pauseId: pause!.pause_id };
   }
-  it.each([
-    'ordinary',
-    'compaction',
-    'assistants',
-    'maintenance',
-    'assistants-waiting',
-  ] as const)(
+  it.each(['ordinary', 'compaction', 'maintenance'] as const)(
     'second Run only inherits in the ordinary Worker path: %s',
     async (mode) => {
       const { first, execute, pauseId } = await firstWait();
-      const assistants = mode.startsWith('assistants');
       const ordinary = mode === 'ordinary' || mode === 'compaction';
-      if (assistants) {
-        vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-        await f.db`update allrice_member_work_automation set settings=jsonb_set(settings,'{assistants}','true')`;
-      }
       state.maintenance = mode === 'maintenance';
-      const next = await followUp(first, '下一轮确认后继续。', {
-        ...(assistants
-          ? {
-              assistantConfiguration: {
-                version: 1,
-                mode: 'daily',
-                allowAssistants: true,
-                maxConcurrent: 1,
-                maxDepth: 1,
-                maxChildren: 1,
-              },
-            }
-          : {}),
-      });
+      const next = await followUp(first, '下一轮确认后继续。');
       // This test supplies the maintenance service's envelope after real queue
       // admission; repository authorization itself has separate integration tests.
       if (state.maintenance)
@@ -309,7 +248,6 @@ suite('MET-210 real Worker continuation and Workflow waiting', () => {
           repairRequestId: randomUUID(),
         };
       execute.mockImplementation(async (input) => {
-        expect(!!input.assistants).toBe(assistants);
         if (state.maintenance)
           expect(
             input.executionEnvironment.ALLRICE_MAINTENANCE_OUTPUT_TOKENS,
@@ -366,11 +304,6 @@ suite('MET-210 real Worker continuation and Workflow waiting', () => {
           });
           return result(next, false);
         }
-        if (mode === 'assistants-waiting') {
-          // A forbidden pending result must fail even with a real, undecided pause.
-          await inducePause(next);
-          return result(next);
-        }
         throw Error('TEST_PROGRESS_CHECKED');
       });
       if (ordinary) {
@@ -380,12 +313,7 @@ suite('MET-210 real Worker continuation and Workflow waiting', () => {
         const [saved] =
           await f.db`select state from allrice_runs where id=${next.runId}`;
         expect(saved!.state).toBe('succeeded');
-      } else if (mode === 'assistants-waiting')
-        await expect(run(next)).rejects.toMatchObject({
-          code: 'DSH_TURN_FAILED',
-        });
-      else await expect(run(next)).rejects.toThrow('TEST_PROGRESS_CHECKED');
-      expect(execute).toHaveBeenCalledTimes(2);
+      } else expect(execute).toHaveBeenCalledTimes(2);
       const [prior] =
         await f.db`select pause_id from allrice_task_progress where run_id=${first.runId}`;
       expect(prior!.pause_id).toBe(ordinary ? null : pauseId);

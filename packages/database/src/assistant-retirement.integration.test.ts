@@ -77,9 +77,35 @@ suite('0229 bounded legacy retirement', () => {
         (await db`select to_regprocedure(${name}) function`)[0]!.function,
       ).not.toBeNull();
     const fks =
-      await db`select c.conrelid::regclass::text relation,c.confrelid::regclass::text target from pg_constraint c where c.contype='f' and c.connamespace=current_schema()::regnamespace and c.conname in ('allrice_repository_reviews_reviewer_run_id_fkey','allrice_repository_review_facts_reviewer_run_id_fkey')`;
+      await db`select c.conrelid::regclass::text relation,c.confrelid::regclass::text target from pg_constraint c where c.contype='f' and c.connamespace=current_schema()::regnamespace and c.conrelid in ('allrice_platform_repository_review_subjects'::regclass,'allrice_platform_repository_reviews'::regclass) and c.conkey=array[(select a.attnum from pg_attribute a where a.attrelid=c.conrelid and a.attname='reviewer_run_id')]`;
     expect(fks).toHaveLength(2);
     expect(fks.every((f) => f.target === 'allrice_runs')).toBe(true);
+  }, 120000);
+  it('disables only the built-in retired skill and preserves historical content and unrelated skills', async () => {
+    const { db } = await database();
+    const builtin = 'd78b3556-821a-5550-bf13-d9dd84b9bbe0',
+      custom = randomUUID();
+    for (const [id, name] of [
+      [builtin, 'development-cooperation'],
+      [custom, 'custom-development'],
+    ])
+      await db`insert into allrice_platform_dsh_skills(id,name,description,content,checksum) values(${id!},${name!},'Synthetic retained skill','Frozen historical instructions',${'sha256:' + 'd'.repeat(64)})`;
+    const before =
+      await db`select id,content,checksum from allrice_platform_dsh_skills where id in (${builtin},${custom}) order by id`;
+    await db.begin(async (tx) => tx.unsafe(await migration()));
+    expect(
+      await db`select id,content,checksum from allrice_platform_dsh_skills where id in (${builtin},${custom}) order by id`,
+    ).toEqual(before);
+    expect(
+      (
+        await db`select enabled from allrice_platform_dsh_skills where id=${builtin}`
+      )[0]!.enabled,
+    ).toBe(false);
+    expect(
+      (
+        await db`select enabled from allrice_platform_dsh_skills where id=${custom}`
+      )[0]!.enabled,
+    ).toBe(true);
   }, 120000);
   it('deletes only explicit old child/version/object rows and leaves ordinary roots/results/preferences unchanged', async () => {
     const { db } = await database(),

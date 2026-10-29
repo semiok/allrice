@@ -637,8 +637,7 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
       compactThresholdTokens: 40000,
     });
     const { preparePlatformRepairInput } = await import('./platform-repair.ts');
-    const { runtimeFixtureStorage } =
-      await import('./runtime.fixture.ts');
+    const { runtimeFixtureStorage } = await import('./runtime.fixture.ts');
     const storage = runtimeFixtureStorage(fixture.db);
     await preparePlatformRepairInput(lease, execution!.context, storage);
     await preparePlatformRepairInput(
@@ -879,8 +878,7 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
         const { getPlatformRepairArtifact } =
           await import('./platform-repair.ts');
         const { readArtifactBytes } = await import('./artifact-review.ts');
-        const { runtimeFixtureStorage } =
-          await import('./runtime.fixture.ts');
+        const { runtimeFixtureStorage } = await import('./runtime.fixture.ts');
         const downloaded = [];
         for (const file of detail.report.artifacts) {
           const artifact = await getPlatformRepairArtifact(
@@ -1101,8 +1099,7 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
           await import('../../../apps/worker/src/jobs/platform-repair.ts');
         const { nativeBrokerRoundtrip } =
           await import('../../../apps/worker/src/harness/dsh-native-broker.fixture.ts');
-        const { runtimeFixtureStorage } =
-          await import('./runtime.fixture.ts');
+        const { runtimeFixtureStorage } = await import('./runtime.fixture.ts');
         let physicalExecutions = 0,
           revokeAfterExecution = true;
         class PublicationBarrierBackend extends CloudRunnerBackend {

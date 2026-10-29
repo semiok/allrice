@@ -141,9 +141,7 @@ const requirements: Partial<Record<AllRiceToolName, ToolRequirements>> = {
 };
 
 export function employeeToolRequirements(name: string): ToolRequirements {
-  return (
-    requirements[name as AllRiceToolName] ?? {}
-  );
+  return requirements[name as AllRiceToolName] ?? {};
 }
 
 export function resolveEmployeeToolDependencies(names: readonly string[]) {

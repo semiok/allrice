@@ -65,9 +65,7 @@ integration('subscription incremental migration and cold SQL readers', () => {
   let fixture: Awaited<ReturnType<typeof createP27CodexWorkerFixture>>;
   let task: Awaited<ReturnType<typeof fixture.prepareOrdinaryTask>>;
   let decision: ReturnType<typeof RouteDecisionSchema.parse>;
-  let subscription: NonNullable<
-    ReturnType<typeof resolveSubscriptionSnapshot>
-  >;
+  let subscription: NonNullable<ReturnType<typeof resolveSubscriptionSnapshot>>;
   let history: unknown;
   let shadow: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   let shadowSchema: string;

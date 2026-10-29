@@ -222,9 +222,7 @@ export async function reviewEmployeePublication(
         ...runtimePolicyActionDecision(controls, action),
       }));
       for (const action of actions)
-        if (
-          action.effect === 'deny'
-        )
+        if (action.effect === 'deny')
           warnings.push(
             `${target.organizationName} / ${target.name}：${action.action} 当前${action.effect === 'deny' ? '策略禁止' : '策略不满足执行条件'}（${action.reason}），请检查该租户的执行设置。`,
           );

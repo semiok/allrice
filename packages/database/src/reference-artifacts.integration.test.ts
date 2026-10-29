@@ -452,9 +452,10 @@ suite(
           }),
         ).rejects.toThrow('source_unavailable');
       }
-      // A child tool's delivery has no root employee Run matching its owner/Session.
-      const child = await a.delegate();
-      const childArtifact = await a.createArtifact(child.instance.runId);
+      // An unrelated tool Run has no root employee Run matching its owner/Session.
+      const child = randomUUID();
+      await f.db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input) values(${child},${owner.organizationId},${owner.workspaceId!},${owner.actor.id},'succeeded','{}','{}')`;
+      const childArtifact = await a.createArtifact(child);
       await expect(
         save(owner, {
           ...input,

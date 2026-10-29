@@ -37,7 +37,6 @@ export async function createMcpExecutionFixture(
   db: ReturnType<typeof postgres>,
   options: {
     bind?: boolean;
-    assistants?: boolean;
     githubRead?: boolean;
     deniedCapabilities?: ('secret:use' | 'network:outbound')[];
     authorize?: (scope: {
@@ -140,13 +139,7 @@ export async function createMcpExecutionFixture(
       key: 'p16',
       name: 'P16',
       description: 'Synthetic MCP employee',
-      toolNames: [
-        'cloud.mcp.call',
-        'web.fetch',
-        ...(options.assistants
-          ? ['assistant.delegate', 'assistant.report']
-          : []),
-      ],
+      toolNames: ['cloud.mcp.call', 'web.fetch'],
       securityPolicy: {
         dataScopes: ['workspace'],
         connectorIdentityModes: ['service'],
@@ -242,7 +235,7 @@ export async function createMcpExecutionFixture(
       {
         expectedRevision: 0,
         capability: 'cloud',
-        enabled: options.assistants ?? false,
+        enabled: false,
       },
       db,
     );
@@ -252,31 +245,13 @@ export async function createMcpExecutionFixture(
       { expectedRevision: 1, capability: 'computer', enabled: false },
       db,
     );
-    // Saved rows keep their values; assistants must be turned on explicitly.
-    if (options.assistants)
-      await updateWorkAutomation(
-        context,
-        workspace,
-        { expectedRevision: 2, capability: 'assistants', enabled: true },
-        db,
-      );
     await setRuntimePolicyControls(
       context,
       {
         version: 1,
         enabled: true,
         mode: 'execute',
-        rules: [
-          { action: 'cloud.mcp.call', effect: 'allow' },
-          ...(options.assistants
-            ? [
-                {
-                  action: 'assistant.delegate' as const,
-                  effect: 'allow' as const,
-                },
-              ]
-            : []),
-        ],
+        rules: [{ action: 'cloud.mcp.call', effect: 'allow' }],
       },
       null,
       db,

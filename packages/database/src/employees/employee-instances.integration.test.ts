@@ -1,3 +1,4 @@
+import { heartbeatJob } from '../execution/queue.ts';
 import { createReadPathProbe } from '../read-path-probe.fixture.ts';
 import { sharedHistoryMethodAcceptancePhrases } from './employee-method-shared-history.fixture.ts';
 import { bindJobNativeSession } from '../execution/queue.ts';
@@ -7739,14 +7740,16 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       )[0],
     ).toEqual(cutoff);
     expect(
-      await f.runtime.assertCurrentAuthority({
-        scope: f.task.scope,
-        rootRunId: f.rootRunId,
-        worker: f.worker,
-      }),
-    ).toEqual({
-      cancelRequested: true,
-      stopReason: 'cancel',
+      await heartbeatJob(
+        f.worker.workerId,
+        f.worker.jobId,
+        f.worker.leaseToken,
+        60000,
+      ),
+    ).toMatchObject({
+      active: false,
+      canceled: true,
+      draining: true,
       drainDeadlineAt: drain!.drain_deadline_at.toISOString(),
     });
   });

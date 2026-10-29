@@ -344,16 +344,15 @@ async function fixture(plan: Plan = {}) {
   let seeded!: Awaited<ReturnType<typeof seedInput>>;
   const f = await createFinalReferenceAuthorityFixture(db(), {
     memberRole: 'member',
-    allowedTools: [
-      'workspace.export.create',
-      'workspace.document.read',
-    ],
+    allowedTools: ['workspace.export.create', 'workspace.document.read'],
     preparePrompt: async (tx, x) => {
       seeded = await seedInput(tx, x, plan);
       return seeded.prompt;
     },
   });
-  const { native, port } = await prepareDeliveryAuthorityFixture(f, {startTurn:true});
+  const { native, port } = await prepareDeliveryAuthorityFixture(f, {
+    startTurn: true,
+  });
   const read = () => port.readSnapshot();
   const proof = async () => ({
     nativeSessionId: native,
@@ -393,8 +392,6 @@ async function fixture(plan: Plan = {}) {
   return {
     ...f,
     ...seeded,
-    runtime,
-    input,
     read,
     proof,
     finish,

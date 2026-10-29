@@ -163,8 +163,7 @@ export async function checkMcpBindingAuthority(
     const [managed] =
       await tx`select binding_id from allrice_mcp_binding_config where binding_id=${tool.connectionId}
       and organization_id=${context.organizationId} and workspace_id=${context.workspaceId} and managed_by=${context.actor.id}`;
-    if (!managed)
-      throw new RuntimePolicyError('mcp_frozen_tool_not_allowed');
+    if (!managed) throw new RuntimePolicyError('mcp_frozen_tool_not_allowed');
   }
   const [connection] = await tx<
     {

@@ -56,12 +56,9 @@ suite('MET166 PR3b exact saved-source local command — real PostgreSQL', () => 
     vi.unstubAllEnvs();
   });
   async function setup(withOutput = false, revisionKind?: 'document' | 'file') {
-    const f = await createLocalCommandFixture(
-      database.db,
-      'allow',
-      false,
-      { skipChild: true, projectWorkspace: true },
-    );
+    const f = await createLocalCommandFixture(database.db, 'allow', false, {
+      projectWorkspace: true,
+    });
     const storage = runtimeFixtureStorage(f.db),
       [job] = await f.db<
         { attempt: number }[]

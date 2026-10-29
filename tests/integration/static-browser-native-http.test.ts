@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
-import { createAssistantFixtureDatabase } from '../../packages/database/src/assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../../packages/database/src/runtime.fixture.ts';
 import { createLocalBrowserFixture } from '../../packages/database/src/local-browser.fixture.ts';
 import {
   publishWorkbenchArtifact,
@@ -39,7 +39,7 @@ const suite =
 suite(
   'finite saved-page verification through actual local device HTTP and native renderer',
   () => {
-    let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
+    let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
       root: string;
     beforeAll(async () => {
       expect(process.platform).toBe('darwin');
@@ -51,7 +51,7 @@ suite(
         'ALLRICE_WORKBENCH_ENABLED',
       ])
         vi.stubEnv(key, '1');
-      database = await createAssistantFixtureDatabase();
+      database = await createRuntimeFixtureDatabase();
       root = await mkdtemp(join(tmpdir(), 'allrice-static-browser-native-'));
       vi.spyOn(client, 'getDatabase').mockReturnValue(database.db);
     }, 60000);

@@ -194,15 +194,6 @@ suite(
           proof.containerId = current!.Id;
           proof.containerDeadline = new Date(deadline).toISOString();
           proof.serviceHardDeadline = row!.hard_deadline_at.toISOString();
-          expect(
-            (
-              await f.runtime.finalizeRoot({
-                scope: f.task.scope,
-                rootRunId: f.context.runId,
-                worker: f.assistantWorker,
-              })
-            ).status,
-          ).toBe('completed');
           await completeJob({
             workerId: f.context.worker.id,
             jobId: f.context.jobId,
@@ -257,15 +248,6 @@ suite(
     );
     it('the same ready service survives successful Run completion and has no device or new agent budget', async () => {
       const f = await readyFixture();
-      expect(
-        (
-          await f.runtime.finalizeRoot({
-            scope: f.task.scope,
-            rootRunId: f.context.runId,
-            worker: f.assistantWorker,
-          })
-        ).status,
-      ).toBe('completed');
       await completeJob({
         workerId: f.context.worker.id,
         jobId: f.context.jobId,

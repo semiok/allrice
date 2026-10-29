@@ -9,10 +9,8 @@ import { createP27CodexWorkerFixture } from '../../../../scripts/acceptance/runt
 import { executeEmployeeRun } from '../../src/jobs/employee-run.ts';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.ts';
 import { DshRuntimePool } from '../../src/harness/dsh/runtime-pool.ts';
-import type { DshRuntime } from '../../src/harness/dsh/runtime-pool.ts';
-import * as AssistantController from '../../src/harness/dsh/assistant-controller.ts';
 import { DshStartupRejection } from '../../src/harness/dsh/startup-rejection.ts';
-import { attachExecutionFailureUsage } from '../../src/harness/dsh/assistant-outcome.ts';
+import { attachExecutionFailureUsage } from '../../src/harness/dsh/execution-failure-usage.ts';
 import { HandlerError } from '../../src/errors.ts';
 import { prepareExecutionIsolation } from '../../src/isolation.ts';
 import {
@@ -27,7 +25,6 @@ import {
   type PromptImageAttachment,
 } from '@allrice/contracts';
 import { LocalStorageAdapter } from '@allrice/storage';
-import { subscriptionSnapshotDigest } from '../../src/assistant-pricing-preflight.ts';
 
 const status = vi.hoisted(() => ({
   quota: undefined as unknown,
@@ -94,16 +91,14 @@ integration(
       'progress_missing',
       'progress_canceled',
       'personal_profile_writable',
-      'personal_profile_with_assistants',
-      'personal_method_with_assistants',
+      'personal_method',
       'personal_profile_read_only',
-      'image_with_assistants',
-      'image_generation_with_assistants',
+      'image',
+      'image_generation',
       'transport_failure',
       'mismatched_result',
       'missing_usage',
       'quota_exhausted',
-      'startup_undispatched',
       'startup_other_run',
       'startup_other_attempt',
       'startup_forged',
@@ -116,13 +111,11 @@ integration(
         const unknownUsage = ![
           'complete',
           'personal_profile_writable',
-          'personal_profile_with_assistants',
-          'personal_method_with_assistants',
+          'personal_method',
           'personal_profile_read_only',
           'quota_exhausted',
-          'image_with_assistants',
-          'image_generation_with_assistants',
-          'startup_undispatched',
+          'image',
+          'image_generation',
           'failed_known_usage',
         ].includes(mode);
         const temporary = await mkdtemp(
@@ -132,15 +125,10 @@ integration(
         // local/CI database URLs. Live Codex smoke callers retain the local pin.
         const fixture = await createP27CodexWorkerFixture({
           allowCiDatabase: true,
-          syntheticImagesWithAssistants: mode === 'image_with_assistants',
-          imageGeneration: mode === 'image_generation_with_assistants',
-          imageGenerationAssistants:
-            mode === 'image_generation_with_assistants',
-          personalProfile: [
-            'personal_profile_with_assistants',
-            'personal_method_with_assistants',
-          ].includes(mode)
-            ? 'writable_with_assistants'
+          syntheticImages: mode === 'image',
+          imageGeneration: mode === 'image_generation',
+          personalProfile: ['personal_method'].includes(mode)
+            ? 'writable'
             : mode === 'personal_profile_writable'
               ? 'writable'
               : mode === 'personal_profile_read_only'
@@ -153,7 +141,7 @@ integration(
           const png =
             'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWP4z8AAAAMBAQCc479ZAAAAAElFTkSuQmCC';
           let images: PromptImageAttachment[] | undefined;
-          if (mode === 'image_with_assistants') {
+          if (mode === 'image') {
             // Exercise the production Worker image loader and billing/controller
             // wiring with an image captured in the initial immutable snapshot.
             vi.stubEnv(
@@ -190,7 +178,7 @@ integration(
             images = [image];
           }
           const task = await fixture.prepareOrdinaryTask(
-            mode === 'personal_method_with_assistants'
+            mode === 'personal_method'
               ? '请保存我的工作场景候选：每周核对数据。'
               : mode.startsWith('personal_profile')
                 ? '请把你的名字改为小禾。以后回答保持简洁。'
@@ -241,14 +229,11 @@ integration(
           }
           if (
             images ||
-            mode === 'image_generation_with_assistants' ||
-            [
-              'personal_profile_with_assistants',
-              'personal_method_with_assistants',
-            ].includes(mode)
+            mode === 'image_generation' ||
+            ['personal_method'].includes(mode)
           )
             vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-          if (mode === 'image_generation_with_assistants')
+          if (mode === 'image_generation')
             vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
           const isolation = await prepareExecutionIsolation({
             root: temporary,
@@ -296,48 +281,12 @@ integration(
           const nativeAssistant = vi.fn(async () => {
             throw Error('TEST_NATIVE_ASSISTANT_BIND_FORBIDDEN');
           });
-          if (mode === 'startup_undispatched') {
-            // Exercise the actual adapter -> Worker -> PG classification. Only
-            // the local controller rejection/empty host are fault-injected;
-            // no native prompt, credential or model can be reached.
-            vi.mocked(DshRuntimePool.prototype.acquire).mockResolvedValue({
-              runtime: {
-                client: { prompt: nativePrompt, assistant: nativeAssistant },
-              } as unknown as DshRuntime,
-              fresh: true,
-              preparation: {
-                cache: 'miss',
-                reason: 'not_resident',
-                changedFields: [],
-                credentialResolutionMs: 0,
-                previousRuntimeCloseMs: 0,
-                initializeMs: 0,
-                skillRegistrationMs: null,
-                acquireMs: 0,
-              },
-            });
-            vi.spyOn(DshRuntimePool.prototype, 'drop').mockResolvedValue();
-            vi.spyOn(
-              AssistantController,
-              'productionAssistantController',
-            ).mockImplementation((input) => ({
-              deliveryMode: input.deliveryMode,
-              rootRunId: input.context.runId,
-              subscriptionSnapshot: input.subscriptionSnapshot,
-              bind: async () => {
-                throw Error('synthetic bind rejected before prompt');
-              },
-            }));
-          }
-          const originalExecute = DshHarnessAdapter.prototype.execute;
           const execute = vi
             .spyOn(DshHarnessAdapter.prototype, 'execute')
             .mockImplementation(async function (
               this: DshHarnessAdapter,
               input,
             ) {
-              if (mode === 'startup_undispatched')
-                return originalExecute.call(this, input);
               if (mode === 'complete') {
                 expect(input.kernel.authorizedMemoryContext).not.toContain(
                   'QUEUED_DRAFT_MEMORY',
@@ -347,29 +296,7 @@ integration(
                 );
               }
               const profileTool = 'workspace.employee.profile.update';
-              if (
-                mode === 'personal_profile_writable' ||
-                mode === 'personal_profile_with_assistants'
-              ) {
-                let bridge:
-                  | Awaited<
-                      ReturnType<NonNullable<typeof input.assistants>['bind']>
-                    >
-                  | undefined;
-                if (mode === 'personal_profile_with_assistants') {
-                  bridge = await input.assistants!.bind(
-                    `dsh-${task.sessionId}`,
-                    input.generation,
-                    input.onToolCall,
-                  );
-                  expect(await bridge.cancellation()).toBeDefined();
-                  const [assistant] =
-                    await fixture.db`select allowed_tools from allrice_assistant_instances where run_id=${task.runId}`;
-                  expect(assistant?.allowed_tools).toContain(
-                    'assistant.delegate',
-                  );
-                  expect(assistant?.allowed_tools).toContain(profileTool);
-                }
+              if (mode === 'personal_profile_writable') {
                 // Exercise the actual frozen binding -> Worker -> adapter
                 // envelope and Broker write, without any model or credential.
                 expect(input.tools?.map((tool) => tool.name)).toContain(
@@ -385,14 +312,7 @@ integration(
                     expressionStyle: 'concise',
                   },
                 };
-                const receipt = bridge
-                  ? await bridge.handle('tool', {
-                      nativeSessionId: `dsh-${task.sessionId}`,
-                      callId: call.id,
-                      name: call.name,
-                      arguments: call.arguments,
-                    })
-                  : await input.onToolCall!(call);
+                const receipt = await input.onToolCall!(call);
                 expect(JSON.parse(String(receipt.modelContent))).toMatchObject({
                   revision: 2,
                   profile: { name: '小禾', expressionStyle: 'concise' },
@@ -407,22 +327,7 @@ integration(
                 expect(task.binding.executionSnapshot.instance?.revision).toBe(
                   1,
                 );
-                if (bridge) {
-                  const usage =
-                    await fixture.db`select amount,settled_amount from allrice_assistant_usage where run_id=${task.runId} and metric='tool_calls'`;
-                  expect(usage).toHaveLength(1);
-                  expect(Number(usage[0]!.amount)).toBe(1);
-                  expect(Number(usage[0]!.settled_amount)).toBe(1);
-                  await expect(
-                    bridge.handle('tool', {
-                      nativeSessionId: `dsh-${task.sessionId}`,
-                      callId: call.id,
-                      name: call.name,
-                      arguments: call.arguments,
-                    }),
-                  ).rejects.toThrow('assistant_tool_unknown_no_replay');
-                }
-              } else if (mode === 'image_generation_with_assistants') {
+              } else if (mode === 'image_generation') {
                 // This general employee has storage:write. It can persist its
                 // owner's expression preference but cannot edit work methods.
                 expect(input.tools?.map((tool) => tool.name)).toContain(
@@ -433,17 +338,12 @@ integration(
                     tool.name.startsWith('workspace.employee.method.'),
                   ),
                 ).toEqual([]);
-              } else if (mode !== 'personal_method_with_assistants') {
+              } else if (mode !== 'personal_method') {
                 expect(input.tools?.map((tool) => tool.name)).not.toContain(
                   profileTool,
                 );
               }
-              if (mode === 'personal_method_with_assistants') {
-                const bridge = await input.assistants!.bind(
-                  `dsh-${task.sessionId}`,
-                  input.generation,
-                  input.onToolCall,
-                );
+              if (mode === 'personal_method') {
                 const inspectTool = 'workspace.employee.method.inspect',
                   saveTool = 'workspace.employee.method.save_candidate';
                 expect(input.tools?.map((t) => t.name)).toEqual(
@@ -461,11 +361,14 @@ integration(
                   expect(input.authorizedToolNames).not.toContain(
                     `workspace.employee.method.${stage}`,
                   );
-                const call = (name: string, callId: string, args: unknown) =>
-                  bridge.handle('tool', {
-                    nativeSessionId: `dsh-${task.sessionId}`,
+                const call = (
+                  name: string,
+                  callId: string,
+                  args: Record<string, unknown>,
+                ) =>
+                  input.onToolCall!({
                     name,
-                    callId,
+                    id: callId,
                     arguments: args,
                   });
                 expect(
@@ -501,38 +404,16 @@ integration(
                   candidate_revision_id: receipt.candidate.id,
                   active_revision_id: receipt.candidate.id,
                 });
-                const usage =
-                  await fixture.db`select amount,settled_amount from allrice_assistant_usage where run_id=${task.runId} and metric='tool_calls'`;
-                expect(usage).toHaveLength(2);
-                expect(
-                  usage.every(
-                    (u) =>
-                      Number(u.amount) === 1 && Number(u.settled_amount) === 1,
-                  ),
-                ).toBe(true);
               }
-              if (mode === 'image_generation_with_assistants') {
+              if (mode === 'image_generation') {
                 expect(input.tools?.map((t) => t.name)).toEqual(
-                  expect.arrayContaining([
-                    'image.generate',
-                    'image.edit',
-                    'assistant.delegate',
-                  ]),
+                  expect.arrayContaining(['image.generate', 'image.edit']),
                 );
-                const bridge = await input.assistants!.bind(
-                  `dsh-${task.sessionId}`,
-                  input.generation,
-                  input.onToolCall,
-                );
-                await expect(bridge.cancellation()).resolves.toBeDefined();
               }
-              if (mode === 'image_with_assistants') {
+              if (mode === 'image') {
                 expect(input.images).toEqual([
                   { mediaType: 'image/png', data: png, name: 'chart.png' },
                 ]);
-                expect(input.assistants?.subscriptionSnapshot).toMatchObject({
-                  billingMode: 'subscription',
-                });
               }
               if (mode === 'transport_failure')
                 throw Error('synthetic transport failed after dispatch');
@@ -633,26 +514,6 @@ integration(
                 },
                 usageComplete: mode === 'missing_usage' ? undefined : true,
                 cacheUsageKnown: mode === 'missing_usage' ? undefined : true,
-                ...([
-                  'image_with_assistants',
-                  'image_generation_with_assistants',
-                  'personal_profile_with_assistants',
-                  'personal_method_with_assistants',
-                ].includes(mode)
-                  ? {
-                      assistantStatus: 'completed' as const,
-                      billingMode: 'subscription' as const,
-                      costBasis: 'not_applicable' as const,
-                      estimatedCostCents: null,
-                      costEstimateAvailable: false,
-                      actualCostKnown: false as const,
-                      cacheUsageKnown: false,
-                      subscriptionSnapshotDigest:
-                        subscriptionSnapshotDigest(
-                          input.assistants!.subscriptionSnapshot!,
-                        ),
-                    }
-                  : {}),
               };
             });
           const pending = executeEmployeeRun({
@@ -723,9 +584,7 @@ integration(
               usage: { inputTokens: 10, outputTokens: 3 },
             });
           expect(execute).toHaveBeenCalledTimes(1);
-          expect(DshRuntimePool.prototype.acquire).toHaveBeenCalledTimes(
-            mode === 'startup_undispatched' ? 1 : 0,
-          );
+          expect(DshRuntimePool.prototype.acquire).toHaveBeenCalledTimes(0);
           expect(nativePrompt).not.toHaveBeenCalled();
           expect(nativeAssistant).not.toHaveBeenCalled();
           const [ledger] =
@@ -753,19 +612,6 @@ integration(
             subscriptionRuns: 1,
             usageComplete: !unknownUsage,
           });
-          if (mode === 'startup_undispatched') {
-            expect(ledger).toMatchObject({
-              input_tokens: 0,
-              cached_input_tokens: 0,
-              output_tokens: 0,
-            });
-            const [decision] =
-              await fixture.db`select status,error_code from allrice_route_decisions`;
-            expect(decision).toMatchObject({
-              status: 'failed',
-              error_code: 'CONVERSATION_FAILED',
-            });
-          }
           // Unknown accounting must stay unknown, but no longer locks the account.
           expect(() =>
             assertQuotaAvailable(quota, 'subscription'),

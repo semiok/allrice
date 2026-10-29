@@ -1,3 +1,4 @@
+import type { RepositoryReviewArtifactRef } from '../../../../packages/database/src/platform-repository-review-contracts.ts';
 import { createReadPathProbe } from '../../../../packages/database/src/read-path-probe.fixture.ts';
 import {
   expectReadPathRowLocked,
@@ -30,7 +31,6 @@ import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import {
   PlatformEmployeeDefinitionSchema,
   type RequestContext,
-  type DevelopmentArtifactRef,
 } from '@allrice/contracts';
 import * as client from '../../../../packages/database/src/core/client.ts';
 import {
@@ -510,7 +510,7 @@ suite(
         const command = (args: Record<string, unknown>) => ({
           nativeTool: { name: 'platform_repository_review', arguments: args },
         });
-        let candidate: DevelopmentArtifactRef;
+        let candidate: RepositoryReviewArtifactRef;
         const model = await p24Fixture(async (request, index) => {
           // Inspect the complete real profile, including tools that the Host
           // does not forward through the AllRice Broker.
@@ -704,11 +704,8 @@ suite(
             'allrice_assistant_instances',
             'allrice_assistant_results',
           ]) {
-            const rows = await f.db.unsafe(
-              `select 1 from ${table} where ${table === 'allrice_assistant_roots' ? 'root_run_id' : 'run_id'}=$1`,
-              [review.runId],
-            );
-            expect(rows).toHaveLength(0);
+            const [row] = await f.db`select to_regclass(${table}) as relation`;
+            expect(row!.relation).toBeNull();
           }
         } finally {
           await adapter.close();
@@ -750,12 +747,11 @@ suite(
       ).toHaveLength(0);
     });
 
-    it('0228 moves both reviewer FKs to ordinary Runs while keeping the separate 0101/0102 deletion closure intact', async () => {
+    it('0229 retains both ordinary reviewer Run FKs from 0228', async () => {
       const rows =
         await f.db`select c.conrelid::regclass::text relation,c.confrelid::regclass::text target
         from pg_constraint c where c.connamespace=(select oid from pg_namespace where nspname=current_schema()) and c.contype='f' and
-        ((c.conrelid in ('allrice_platform_repository_review_subjects'::regclass,'allrice_platform_repository_reviews'::regclass) and c.conkey=array[(select attnum from pg_attribute where attrelid=c.conrelid and attname='reviewer_run_id')])
-          or (c.conrelid in ('allrice_development_verifiers'::regclass,'allrice_development_reviews'::regclass) and c.confrelid='allrice_assistant_instances'::regclass))`;
+        (c.conrelid in ('allrice_platform_repository_review_subjects'::regclass,'allrice_platform_repository_reviews'::regclass) and c.conkey=array[(select attnum from pg_attribute where attrelid=c.conrelid and attname='reviewer_run_id')])`;
       const review = rows.filter((r) =>
         r.relation.includes('platform_repository'),
       );
@@ -763,7 +759,7 @@ suite(
       expect(review.every((r) => r.target.endsWith('allrice_runs'))).toBe(true);
       expect(
         rows.filter((r) => !r.relation.includes('platform_repository')),
-      ).toHaveLength(2);
+      ).toHaveLength(0);
     });
 
     async function start(
@@ -817,7 +813,7 @@ suite(
       verdict: 'accept' | 'revise' = 'accept',
     ) {
       const seed = (await s.development({ action: 'inspect' })) as {
-        candidate: DevelopmentArtifactRef;
+        candidate: RepositoryReviewArtifactRef;
         evidence: unknown;
         material: RepositoryReviewMaterial;
       };
@@ -828,7 +824,7 @@ suite(
         evidence: seed.evidence,
         verdict,
         summary: 'Synthetic test opinion, not real model review',
-      })) as { id: string; artifact: DevelopmentArtifactRef };
+      })) as { id: string; artifact: RepositoryReviewArtifactRef };
       return { seed, review };
     }
 
@@ -2192,7 +2188,7 @@ suite(
         action: 'deliver',
         candidate: o.seed.candidate,
         reviewId: o.review.id,
-      })) as { artifact: DevelopmentArtifactRef };
+      })) as { artifact: RepositoryReviewArtifactRef };
       expect(await s.allowed()).toBe(true);
       await recordRepositoryReviewRemote(
         s.lease,

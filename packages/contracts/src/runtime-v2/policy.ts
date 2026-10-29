@@ -126,14 +126,11 @@ export function runtimePolicyActionDecision(
   if (
     automation &&
     group &&
-    matches.some(
-      (rule) =>
-        rule.effect === 'allow' || rule.effect === 'ask',
-    )
+    matches.some((rule) => rule.effect === 'allow' || rule.effect === 'ask')
   ) {
     return automation[group]
-        ? { effect: 'allow', reason: 'member_scope_automation' }
-        : { effect: 'ask', reason: 'member_confirmation_required' };
+      ? { effect: 'allow', reason: 'member_scope_automation' }
+      : { effect: 'ask', reason: 'member_confirmation_required' };
   }
   // A policy value is not an installed tool. Preserve the existing delegation
   // deny semantics; no per-delegation approval/resume capability is registered.

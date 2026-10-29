@@ -510,10 +510,7 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
     expect(await evidence(f)).toEqual(before);
     expect(await retirementRows(f)).toEqual(retired);
     expect(
-      await readArtifactBytes(
-        runtimeFixtureStorage(fixture.db),
-        output.object,
-      ),
+      await readArtifactBytes(runtimeFixtureStorage(fixture.db), output.object),
     ).toEqual(Buffer.from(output.body));
   }, 30_000);
 
@@ -753,10 +750,7 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
       status: 'not-found',
     });
     expect(
-      await readArtifactBytes(
-        runtimeFixtureStorage(fixture.db),
-        output.object,
-      ),
+      await readArtifactBytes(runtimeFixtureStorage(fixture.db), output.object),
     ).toEqual(Buffer.from(output.body));
   }, 30_000);
 
@@ -816,10 +810,7 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
       status: 'not-found',
     });
     expect(
-      await readArtifactBytes(
-        runtimeFixtureStorage(fixture.db),
-        output.object,
-      ),
+      await readArtifactBytes(runtimeFixtureStorage(fixture.db), output.object),
     ).toEqual(Buffer.from(output.body));
   }, 30_000);
 

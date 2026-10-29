@@ -16,7 +16,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { HarnessExecutionInput, HarnessToolCall } from './adapter.js';
 import { DshRuntimePool, type DshRuntime } from './dsh/runtime-pool.js';
-import { DshStartupRejection } from './dsh/startup-rejection.js';
 import { HandlerError, confirmToolFailure } from '../errors.js';
 import { getDshCleanupFailures } from './dsh-client-cleanup.js';
 import { HarnessEventBatcher } from './delta-batcher.js';

@@ -35,15 +35,12 @@ suite(
       await f?.close();
       vi.unstubAllEnvs();
     });
-    async function setup(legacy = false) {
+    async function setup() {
       vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
       f = await createP27CodexWorkerFixture({
         allowCiDatabase: true,
-        ...(legacy
-          ? { personalProfile: 'writable_with_assistants' as const }
-          : {}),
       });
       return f.prepareOrdinaryTask(
         '读取目录；如果连续失败，等我确认后再继续。',
@@ -320,17 +317,15 @@ suite(
       'different-workspace',
       'different-org',
       'already-initialized',
-      'legacy-assistants',
       'stopped',
       'failed',
       'timed-out',
       'previous-running',
       'previous-leased',
-      'previous-assistants',
     ] as const)(
       'does not transfer a pause for %s',
       async (variant) => {
-        const first = await setup(variant === 'previous-assistants');
+        const first = await setup();
         const pause = await inducePause(first);
         const nativeSessionId = `dsh-${first.sessionId}`;
         if (variant === 'continued' || variant === 'canceled')
@@ -349,11 +344,7 @@ suite(
               'user_stop',
             ),
           );
-        if (
-          ['stopped', 'failed', 'timed-out', 'previous-assistants'].includes(
-            variant,
-          )
-        ) {
+        if (['stopped', 'failed', 'timed-out'].includes(variant)) {
           await failJob({
             ...first.workflowLease,
             code:
@@ -425,13 +416,7 @@ suite(
             { context: next.execution.context, worker: next.workflowLease },
             f.db,
           )({ action: 'check', nativeSessionId });
-        const handle =
-          variant === 'legacy-assistants'
-            ? createTaskProgressRuntime(
-                { context: next.execution.context, worker: next.workflowLease },
-                f.db,
-              )
-            : port(next);
+        const handle = port(next);
         expect(
           await handle({ action: 'check', nativeSessionId }),
         ).toMatchObject({ paused: false, pauseId: null });

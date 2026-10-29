@@ -7,9 +7,7 @@ import {
   rejectConversationSteer,
 } from '@allrice/database';
 
-import type {
-  HarnessAdapter,
-} from '../harness/adapter.js';
+import type { HarnessAdapter } from '../harness/adapter.js';
 
 export interface ConversationOwnership {
   organizationId: string;
@@ -92,80 +90,80 @@ export async function pollEmployeeConversationSteers(input: {
     (input.drain ? Date.now() < deadline : input.polling()) &&
     !input.signal.aborted
   ) {
-      const command = await claimConversationSteer({
-        organizationId: input.ownership.organizationId,
-        workspaceId: input.ownership.workspaceId,
-        sessionId: input.ownership.sessionId,
+    const command = await claimConversationSteer({
+      organizationId: input.ownership.organizationId,
+      workspaceId: input.ownership.workspaceId,
+      sessionId: input.ownership.sessionId,
+      workerId: input.ownership.workerId,
+      generation: input.generation,
+      turnId: input.turnId,
+      drain: input.drain,
+    });
+    if (!command) {
+      if (input.drain) return;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      continue;
+    }
+    if (!input.adapter.capabilities.steer || !input.adapter.steer) {
+      await rejectConversationSteer({
+        commandId: command.id,
         workerId: input.ownership.workerId,
-        generation: input.generation,
-        turnId: input.turnId,
-        drain: input.drain,
+        errorCode: 'HARNESS_STEER_UNSUPPORTED',
       });
-      if (!command) {
-        if (input.drain) return;
-        await new Promise((resolve) => setTimeout(resolve, 150));
-        continue;
-      }
-      if (!input.adapter.capabilities.steer || !input.adapter.steer) {
-        await rejectConversationSteer({
-          commandId: command.id,
-          workerId: input.ownership.workerId,
-          errorCode: 'HARNESS_STEER_UNSUPPORTED',
-        });
-        continue;
-      }
-      try {
-        const proof = await input.adapter.steer({
-          threadId: input.threadId,
-          turnId: input.turnId,
-          message: command.message,
-          clientUserMessageId: command.clientUserMessageId,
-          ...(command.inputKind ? { inputKind: command.inputKind } : {}),
-        });
-        if (command.inputKind && (!proof || proof.status !== 'adopted')) {
-          if (proof?.status === 'unknown' || input.drain)
-            await rejectConversationSteer({
-              commandId: command.id,
-              workerId: input.ownership.workerId,
-              errorCode: 'INPUT_OUTCOME_UNKNOWN',
-            });
-          else
-            await deferConversationSteer({
-              commandId: command.id,
-              workerId: input.ownership.workerId,
-              ...(proof ? { proof } : {}),
-            });
-          continue;
-        }
-        await consumeConversationSteer({
-          commandId: command.id,
-          workerId: input.ownership.workerId,
-          ...(proof ? { proof } : {}),
-        });
-      } catch (error) {
-        if (
-          command.inputKind &&
-          !/INPUT_TURN_CHANGED|QUESTION_|INPUT_ID_CONFLICT|INVALID_TYPED_INPUT/.test(
-            error instanceof Error ? error.message : '',
-          )
-        ) {
+      continue;
+    }
+    try {
+      const proof = await input.adapter.steer({
+        threadId: input.threadId,
+        turnId: input.turnId,
+        message: command.message,
+        clientUserMessageId: command.clientUserMessageId,
+        ...(command.inputKind ? { inputKind: command.inputKind } : {}),
+      });
+      if (command.inputKind && (!proof || proof.status !== 'adopted')) {
+        if (proof?.status === 'unknown' || input.drain)
+          await rejectConversationSteer({
+            commandId: command.id,
+            workerId: input.ownership.workerId,
+            errorCode: 'INPUT_OUTCOME_UNKNOWN',
+          });
+        else
           await deferConversationSteer({
             commandId: command.id,
             workerId: input.ownership.workerId,
+            ...(proof ? { proof } : {}),
           });
-          if (input.drain) return;
-          continue;
-        }
-        await rejectConversationSteer({
+        continue;
+      }
+      await consumeConversationSteer({
+        commandId: command.id,
+        workerId: input.ownership.workerId,
+        ...(proof ? { proof } : {}),
+      });
+    } catch (error) {
+      if (
+        command.inputKind &&
+        !/INPUT_TURN_CHANGED|QUESTION_|INPUT_ID_CONFLICT|INVALID_TYPED_INPUT/.test(
+          error instanceof Error ? error.message : '',
+        )
+      ) {
+        await deferConversationSteer({
           commandId: command.id,
           workerId: input.ownership.workerId,
-          errorCode: 'STEER_REJECTED',
         });
-        console.error('[M5] Active turn steer failed', {
-          sessionId: input.ownership.sessionId,
-          turnId: input.turnId,
-          message: error instanceof Error ? error.message : 'unknown error',
-        });
+        if (input.drain) return;
+        continue;
       }
+      await rejectConversationSteer({
+        commandId: command.id,
+        workerId: input.ownership.workerId,
+        errorCode: 'STEER_REJECTED',
+      });
+      console.error('[M5] Active turn steer failed', {
+        sessionId: input.ownership.sessionId,
+        turnId: input.turnId,
+        message: error instanceof Error ? error.message : 'unknown error',
+      });
+    }
   }
 }

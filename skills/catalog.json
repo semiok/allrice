@@ -244,24 +244,6 @@
       ]
     },
     {
-      "id": "d78b3556-821a-5550-bf13-d9dd84b9bbe0",
-      "name": "development-cooperation",
-      "contentFile": "skills/development-cooperation/SKILL.md",
-      "bundleFile": "skills/development-cooperation/bundle.json",
-      "version": "1.0.2",
-      "checksum": "sha256:b5b0a1c275fb9ca85db61a3448f8515f1f934e6fa304aebc288c40f8d958b511",
-      "source": "allrice",
-      "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/development-cooperation?content-sha256=b5b0a1c275fb9ca85db61a3448f8515f1f934e6fa304aebc288c40f8d958b511",
-      "license": "Apache-2.0",
-      "reviewStatus": "reviewed",
-      "reviewedByLabel": "MET-155 existing governed Subagents workflow",
-      "createdByLabel": "MET-155",
-      "modelInvocable": true,
-      "userInvocable": true,
-      "requiredToolRefs": ["assistant.development", "workspace.skill.read"],
-      "enabled": true
-    },
-    {
       "id": "cd2f1428-dba3-57ea-bb4d-d7296c678d1b",
       "name": "project-development",
       "contentFile": "skills/project-development/SKILL.md",

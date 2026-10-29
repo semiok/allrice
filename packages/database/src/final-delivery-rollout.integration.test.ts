@@ -13,7 +13,6 @@ import {
 } from './workspace/service.ts';
 import { nativeRootDigest } from './conversation/native-root-origin.ts';
 import { selectCheckedFinalDeliveryArtifact } from './final-delivery-rollout.ts';
-import { updateWorkAutomation } from './work-automation.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -32,7 +31,6 @@ suite(
       fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', current);
-      vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
       vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
       const e = await createEmployeeAdministrationFixture(fixture.db);
@@ -47,12 +45,7 @@ suite(
           ...e.definition,
           capabilities: {
             ...e.definition.capabilities,
-            toolNames: [
-              'workspace.skill.read',
-              'assistant.delegate',
-              'assistant.report',
-              'workspace.export.create',
-            ],
+            toolNames: ['workspace.skill.read', 'workspace.export.create'],
           },
         },
         skills,
@@ -63,13 +56,9 @@ suite(
       vi.unstubAllEnvs();
       await fixture?.close();
     }, 30000);
-    async function subject(
-      artifact = current,
-      memberAssistants?: boolean | null,
-    ) {
+    async function subject(artifact = current) {
       const f = await createRunAuthorityFixture(fixture.db, {
         configure: false,
-        memberAssistants,
         runtimePackage,
         allowedTools: runtimePackage.runtimeManifest.toolNames,
         runtimePolicy: {
@@ -103,13 +92,11 @@ suite(
       f: Subject,
       chat = f.chat,
       clientMessageId = randomUUID(),
-      allowAssistants = true,
     ) {
       return sendChatMessage(f.context, f.workspace, chat, {
         text: 'Synthetic no-model delivery admission',
         clientMessageId,
         deliveryMode: 'follow_up',
-        assistantPreference: { mode: 'daily', allowAssistants },
       });
     }
     async function snapshot(runId: string) {
@@ -213,38 +200,11 @@ suite(
         (await snapshot(sent.run!.id)).finalDeliveryPolicy.artifactId,
       ).toBe(current);
     });
-    it('a pre-upgrade NULL birth and explicit assistant opt-out receive no new protocol marker', async () => {
+    it('a pre-upgrade NULL business origin receives no new protocol marker', async () => {
       const f = await subject();
-      for (const [chat, enabled] of [
-        [f.session, true],
-        [f.chat, false],
-      ] as const) {
-        const sent = await send(f, chat, randomUUID(), enabled),
-          value = await snapshot(sent.run!.id);
-        expect(value).not.toHaveProperty('finalDeliveryPolicy');
-        expect(value).not.toHaveProperty('officeFirstDeliveryPolicy');
-      }
-    });
-    // MET-210: checked delivery is frozen only when assistants are allowed.
-    // Members who never saved work settings get the legacy delivery path
-    // until delivery checks no longer depend on the assistant switch.
-    it('a member who never saved work settings gets legacy delivery until assistants are turned on', async () => {
-      const f = await subject(current, null);
-      const legacy = await snapshot((await send(f)).run!.id);
-      expect(legacy).not.toHaveProperty('finalDeliveryPolicy');
-      expect(legacy).not.toHaveProperty('officeFirstDeliveryPolicy');
-      await updateWorkAutomation(f.context, f.workspace, {
-        expectedRevision: 0,
-        capability: 'assistants',
-        enabled: true,
-      });
-      const checked = await snapshot((await send(f)).run!.id);
-      expect(checked.finalDeliveryPolicy).toEqual({
-        version: 1,
-        mode: 'checked_native_v1',
-        artifactId: current,
-      });
-      expect(checked.officeFirstDeliveryPolicy).toBe('xlsx_formula_cache_v1');
+      const value = await snapshot((await send(f, f.session)).run!.id);
+      expect(value).not.toHaveProperty('finalDeliveryPolicy');
+      expect(value).not.toHaveProperty('officeFirstDeliveryPolicy');
     });
     it.each(['basis', 'digest', 'owner'] as const)(
       'rejects a conflicting %s pin before creating a new Run',

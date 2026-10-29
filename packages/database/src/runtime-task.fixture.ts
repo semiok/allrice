@@ -29,9 +29,7 @@ export async function runtimeTaskFixture(
     key: 'p25-fixture',
     name: 'P25 Fixture',
     description: 'Synthetic fixture only',
-    toolNames: [
-      'workspace.document.read',
-    ],
+    toolNames: ['workspace.document.read'],
   });
   await db`insert into allrice_employees(id,organization_id,workspace_id,employee_key,name) values(${employeeId},${org},${workspace},'p25-fixture','P25 Fixture')`;
   await db`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest,provider_snapshot) values(${versionId},${org},${workspace},${employeeId},1,'P25 Fixture',${manifest.provider.model},${manifest.systemPrompt},${db.json(manifest.capabilities)},${`sha256:${'a'.repeat(64)}`},${db.json(manifest)},${db.json(manifest.provider)})`;
@@ -99,7 +97,12 @@ export async function runtimeTaskFixture(
       },
     ],
   });
-  return { db, task, context, worker, ledger,
+  return {
+    db,
+    task,
+    context,
+    worker,
+    ledger,
     nativeSessionId: options.nativeSessionId ?? randomUUID(),
     base: { scope: task.scope, rootRunId: runId, worker },
     async artifact(

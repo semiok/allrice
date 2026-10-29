@@ -12,10 +12,7 @@ import {
   type TechnicalEvidence,
   type TechnicalRecord,
 } from './platform-technical-contracts.ts';
-import {
-  UuidSchema,
-  type RequestContext,
-} from '@allrice/contracts';
+import { UuidSchema, type RequestContext } from '@allrice/contracts';
 import type { z } from 'zod';
 import type postgres from 'postgres';
 import { getDatabase, getDiagnosticsDatabase } from './core/client.ts';

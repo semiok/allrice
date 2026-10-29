@@ -249,8 +249,16 @@ export async function createRunAuthorityFixture(
       await tx`insert into allrice_runtime_policy_controls(organization_id,workspace_id,version,controls)
     values(${org},${workspace},${controls.version},${tx.json(controls)})`;
   });
-  const ledger = createRuntimeOperationLedger({ database: db, admission: async () => {} });
-  if (options.configure !== false) await ledger.createRoot({ task, deadlineAt: new Date(Date.now()+600000).toISOString(), budgets: [] });
+  const ledger = createRuntimeOperationLedger({
+    database: db,
+    admission: async () => {},
+  });
+  if (options.configure !== false)
+    await ledger.createRoot({
+      task,
+      deadlineAt: new Date(Date.now() + 600000).toISOString(),
+      budgets: [],
+    });
   const setControls = (controls: RuntimePolicyControls) => db`
   update allrice_runtime_policy_controls set version=${controls.version},controls=${db.json(controls)}
   where organization_id=${org} and workspace_id=${workspace}`;

@@ -640,12 +640,6 @@ suite(
         await refreshTaskClock(tx, f.rootRunId);
         held.resolve();
         await resume.promise;
-        await assertAssistantAuthority({
-          transaction: tx,
-          task: f.task,
-          tools: ['workspace.export.create'],
-          phase: 'tool',
-        });
       });
       void check.catch(() => {});
       await held.promise;

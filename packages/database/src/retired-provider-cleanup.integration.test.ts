@@ -6,10 +6,8 @@ import {
   createRuntimeFixtureDatabase,
 } from './runtime.fixture.ts';
 
-type Database = Awaited<
-  ReturnType<typeof createRuntimeFixtureDatabase>
->['db'];
-type Assistant = Awaited<ReturnType<typeof assistantFixture>>;
+type Database = Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>['db'];
+type Assistant = Awaited<ReturnType<typeof runtimeTaskFixture>>;
 const digest = `sha256:${'a'.repeat(64)}`;
 const geminiProvider = '51000000-0000-4000-8000-000000000005';
 const geminiConnection = '52000000-0000-4000-8000-000000000005';

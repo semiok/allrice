@@ -12,10 +12,7 @@ import {
 import {
   RouteDecisionSchema,
   resolveSubscriptionSnapshot,
-  defaultAssistantRunConfiguration,
-  RuntimeOperationSnapshotSchema,
 } from '@allrice/contracts';
-import { createRuntimeOperationLedger } from './runtime-ledger/ledger.ts';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
 import {
   recordRouteDecision,
@@ -277,15 +274,11 @@ integration(
           assertQuotaAvailable({ ...quota, monthlyCostLimitCents: 0 }),
         ).not.toThrow();
         const [row] = await f.fixture
-          .db`select l.cost_cents,d.cost_cents as route_cost,
-      (select count(*)::int from allrice_assistant_price_snapshots) as prices,
-      (select count(*)::int from allrice_assistant_cost_receipts) as receipts
+          .db`select l.cost_cents,d.cost_cents as route_cost
       from allrice_model_usage_ledger l join allrice_route_decisions d on d.id=l.route_decision_id where d.id=${f.decision.id}`;
         expect(row).toEqual({
           cost_cents: null,
           route_cost: null,
-          prices: 0,
-          receipts: 0,
         });
         await f.fixture
           .db`insert into allrice_organization_model_quotas(organization_id,monthly_cost_limit_cents) values(${f.fixture.organizationId},0)`;

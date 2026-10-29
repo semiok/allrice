@@ -56,12 +56,7 @@ suite(
       await fixture?.close();
     });
     async function setup() {
-      const f = await createLocalCommandFixture(
-        fixture.db,
-        'ask',
-        false,
-        { skipChild: true },
-      );
+      const f = await createLocalCommandFixture(fixture.db, 'ask', false, {});
       await f.db`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy)
       values(${f.rootRunId},${f.org},${f.workspace},${f.db.json({ ...resolveTaskRuntimePolicy([]) })})`;
       await f.db.begin((tx) => refreshTaskClock(tx, f.rootRunId));
@@ -79,7 +74,7 @@ suite(
           fixture.db,
           'ask',
           false,
-          { skipChild: true },
+          {},
         );
         // No child assistant is created; use the same real approval wait as the Worker.
         await createLocalCommandOperation(

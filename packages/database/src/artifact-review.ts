@@ -478,17 +478,10 @@ export function buildOfficeFirstDeliveryRequirements(
   return requirements;
 }
 
-/** @internal Worker-only transaction reader; no HTTP/model input or admin principal.
- * The host must supply the SAME transaction's root/job/lease/current-authority
- * closure. It locks root -> job, authorizes phase:evidence/tools:[], rechecks the
- * live incarnation, and returns the DB-bound task and frozen exact references.
- * Bound by createAssistantRuntime.readFinalDeliveryEvidence for an existing
- * assistant root, current Worker Job and generation/fence. The closure reacquires
- * that root before each head/tail check; authorize resolves its owner/session.
- * Ordinary non-assistant Worker routes require their own existing Job authority.
- * An independently committed assertCurrentAuthority() call is insufficient.
- * This reader does not acquire/consume a native completion fence or finish a Run.
- */
+/** @internal Ordinary Worker evidence reader. Its closure locks and rechecks the
+ * current Job/Run/lease/tenant authority in this SAME transaction, then returns
+ * exact frozen references. An independently committed authorization is not a
+ * substitute. This reads business evidence, never finishes a native Agent. */
 export async function readWorkerFinalDeliveryEvidenceTransaction(
   tx: TransactionSql,
   assertCurrent: (

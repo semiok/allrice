@@ -92,10 +92,14 @@ describe('MET-153 frozen task policy and elapsed-time accounting', () => {
     ).toBeNull();
   });
   it('pauses a blocked ordinary Run but counts an in-flight model call', () => {
-    const input = { state: 'running', runId: 'root', operations: [{agent_id:'root',status:'waiting_user'}] };
+    const input = {
+      state: 'running',
+      runId: 'root',
+      operations: [{ agent_id: 'root', status: 'waiting_user' }],
+    };
     expect(taskClockPhase(input)).toBe('waiting');
-    expect(taskClockPhase({...input,modelInFlight:true})).toBe('active');
-    expect(taskClockPhase({...input,operations:[]})).toBe('active');
-    expect(taskClockPhase({...input,state:'succeeded'})).toBe('terminal');
+    expect(taskClockPhase({ ...input, modelInFlight: true })).toBe('active');
+    expect(taskClockPhase({ ...input, operations: [] })).toBe('active');
+    expect(taskClockPhase({ ...input, state: 'succeeded' })).toBe('terminal');
   });
 });

@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { chromium } from '../../apps/worker/src/harness/browser-qa.fixture.ts';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { createAssistantFixtureDatabase } from '../../packages/database/src/assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../../packages/database/src/runtime.fixture.ts';
 import { createLocalBrowserFixture } from '../../packages/database/src/local-browser.fixture.ts';
 import { installBrowserControlGrant } from '../../packages/database/src/browser-control.ts';
 import { publishWorkbenchArtifact } from '../../packages/database/src/artifact-review.ts';
@@ -34,7 +34,7 @@ const suite =
 suite(
   'saved-page verification: real candidate Web HTTP, workbench and private downloads',
   () => {
-    let db: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
+    let db: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
       root: string;
     beforeAll(async () => {
       for (const key of [
@@ -46,7 +46,7 @@ suite(
         'ALLRICE_CLOUD_RUNNER_ENABLED',
       ])
         vi.stubEnv(key, '1');
-      db = await createAssistantFixtureDatabase();
+      db = await createRuntimeFixtureDatabase();
       root = await mkdtemp(join(tmpdir(), 'allrice-static-workbench-'));
       vi.spyOn(client, 'getDatabase').mockReturnValue(db.db);
     }, 60000);

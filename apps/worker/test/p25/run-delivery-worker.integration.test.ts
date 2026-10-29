@@ -371,8 +371,10 @@ suite('MET-210 PR1b real Worker delivery (synthetic local model)', () => {
         successes: 1,
       });
       expect(
-        await f.db`select root_run_id from allrice_assistant_roots where root_run_id=${task.runId}`,
-      ).toHaveLength(0);
+        (
+          await f.db`select to_regclass('allrice_assistant_roots') as relation`
+        )[0]!.relation,
+      ).toBeNull();
       expect(model!.requests).toHaveLength(1);
     } finally {
       await task.isolation.cleanup();

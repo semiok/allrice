@@ -1245,7 +1245,7 @@ it.each(['owner', 'workspace', 'session'] as const)(
 
 it.each(['ordinary output cap'])(
   'restarts when process configuration changes: %s',
-  async (change) => {
+  async () => {
     const runtimes = pool();
     const first = request();
     const cold = await runtimes.acquire(first);
