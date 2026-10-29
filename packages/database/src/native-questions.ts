@@ -262,7 +262,8 @@ export async function rerouteNativeQuestionSteers(
     join allrice_chat_sessions s on s.id=e.session_id and s.organization_id=e.organization_id
       and s.workspace_id=e.workspace_id and s.owner_id=e.owner_id
     where c.session_id=${sessionId} and c.input_kind='ask_user' and c.state='rejected'
-      and c.error_code='STEER_REJECTED' and f.state='queued' for update of c,f`;
+      and c.error_code in ('STEER_REJECTED','QUESTION_ANSWER_NOT_ADOPTED')
+      and f.state='queued' for update of c,f`;
   for (const row of conflicts) {
     const answer = UserQuestionAnswerSubmissionSchema.safeParse(row.answer);
     if (
