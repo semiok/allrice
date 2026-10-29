@@ -2028,7 +2028,11 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
       });
       const workerId = randomUUID();
       const job = (await claimNextJob(workerId, 120000))!;
-      expect(job.runId).toBe(runId);
+      expect(job.id).toBe(
+        (
+          await isolated.db`select id from allrice_jobs where run_id=${runId}`
+        )[0]!.id,
+      );
       await startClaimedJob(workerId, job.id, job.lease!.token);
       await acquire(runId, workerId);
       await completeJob({
