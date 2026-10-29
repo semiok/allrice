@@ -34,12 +34,12 @@ suite(
     });
     afterEach(() => vi.unstubAllEnvs());
     it.each([1, 0])(
-      'uses only the current attempt diagnosis for a masked disconnect (%s)',
+      'historical assistant diagnostics do not override explicit DSH_UNKNOWN (diagnostic attempt %s)',
       async (attempt) => {
         const f = await createP27CodexWorkerFixture({ allowCiDatabase: true });
         try {
           const task = await f.prepareOrdinaryTask(
-            'Synthetic masked disconnect; no model call.',
+            'Synthetic historical diagnosis with an explicit unknown error; no model call.',
           );
           await appendJobEvent({
             ...task.workflowLease,
@@ -69,22 +69,27 @@ suite(
             await failJob({
               ...task.workflowLease,
               code: 'DSH_UNKNOWN',
-              message: 'assistant_model_unknown_no_replay',
+              message: 'Synthetic explicit DSH_UNKNOWN failure',
               retryable: false,
             }),
           ).toEqual({ retrying: false });
           const [message] =
-            await f.db`select m.content,m.error_code,j.attempt,j.status
+            await f.db`select m.content,m.error_code,m.status message_status,j.attempt,j.status,j.last_error_code
           from allrice_employee_runs e join allrice_messages m on m.id=e.assistant_message_id
           join allrice_jobs j on j.run_id=e.run_id where e.run_id=${task.runId}`;
           expect(message).toMatchObject({
             error_code: 'DSH_UNKNOWN',
+            message_status: 'failed',
             attempt: 1,
             status: 'failed',
+            last_error_code: 'DSH_UNKNOWN',
           });
-          expect(message!.content.text).toContain(
-            attempt === 1 ? '模型连接中断' : 'Rice 暂时无法完成',
+          // Root contract ruling (2026-10-29): #645 removed the historical
+          // assistantDiagnostics projection; the explicit failure code wins.
+          expect(message!.content.text).toBe(
+            'Rice 暂时无法完成这次请求，请稍后重试。',
           );
+          expect(message!.content.text).not.toContain('模型连接中断');
         } finally {
           await f.close();
         }
