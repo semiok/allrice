@@ -162,7 +162,6 @@ suite('MET-210 a chat Run survives a 703 lock held past lock_timeout', () => {
       text: request,
       clientMessageId: randomUUID(),
       deliveryMode: 'follow_up',
-      assistantPreference: { mode: 'daily', allowAssistants: false },
     });
     if (!sent.run) throw Error('fixture_run_not_enqueued');
     const runId = sent.run.id;

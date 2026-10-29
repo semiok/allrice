@@ -1,4 +1,5 @@
 import { createRuntimeOperationLedger } from '../../../../packages/database/src/runtime-ledger/ledger.ts';
+import { readRetiredExecutionHistory } from './retired-execution-history.fixture.ts';
 // @ts-expect-error Native test host is JavaScript and runs the production DSH module unchanged.
 import { host, text } from '../native-subagent/fixture.mjs';
 import { randomUUID } from 'node:crypto';
@@ -385,6 +386,7 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
   );
 
   it('用户要下载月报：真实 DSH 回复来源经过 Worker 检查和原子提交，旧助手表不参与', async () => {
+    const legacyHistory = await readRetiredExecutionHistory(fixture.db);
     const f = await subject();
     const artifact = await f.publish();
     const answer = `[月报](/api/v1/files/${artifact.object.id}/download)`;
@@ -455,11 +457,9 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
       text: answer,
       successes: 1,
     });
-    expect(
-      (
-        await fixture.db`select to_regclass('allrice_assistant_roots') as relation`
-      )[0]!.relation,
-    ).toBeNull();
+    expect(await readRetiredExecutionHistory(fixture.db)).toEqual(
+      legacyHistory,
+    );
     expect(
       await fixture.db`select run_id from allrice_runtime_run_links where root_run_id=${f.rootRunId}`,
     ).toHaveLength(0);
@@ -547,6 +547,7 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
   });
 
   it('用户要月报下载链接：无助手配置也能经新 Worker 端口检查并原子落库', async () => {
+    const legacyHistory = await readRetiredExecutionHistory(fixture.db);
     const f = await subject();
     const artifact = await f.publish();
     const answer = `[月报](/api/v1/files/${artifact.object.id}/download)`;
@@ -559,11 +560,6 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
         checksum: artifact.object.checksum,
       },
     ]);
-    expect(
-      (
-        await fixture.db`select to_regclass('allrice_assistant_instances') as relation`
-      )[0]!.relation,
-    ).toBeNull();
     const queries: string[] = [];
     const guardQueries: string[] = [];
     const captureGuardQueries = async <T>(operation: () => Promise<T>) => {
@@ -638,6 +634,9 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
       run_id: f.rootRunId,
       format: 'text',
     });
+    expect(await readRetiredExecutionHistory(fixture.db)).toEqual(
+      legacyHistory,
+    );
   });
 
   it('reads no assistant tree, even if a legacy child link is not a valid task', async () => {

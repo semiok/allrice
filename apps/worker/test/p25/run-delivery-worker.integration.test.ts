@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import ExcelJS from 'exceljs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readRetiredExecutionHistory } from './retired-execution-history.fixture.ts';
 import * as DatabaseClient from '../../../../packages/database/src/core/client.ts';
 import {
   createRuntimeFixtureDatabase,
@@ -350,6 +351,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
   it('从未开启助手的普通聊天也由根 Run 核对正文并提交真实 proof', async () => {
     const answer = '```js\nconst sum = (a, b) => a + b;\n```';
     const f = await setup(async () => ({ text: answer }));
+    const legacyHistory = await readRetiredExecutionHistory(f.db);
     const task = await prepare(
       f,
       '帮我完成这项任务：写一个返回两数之和的 JavaScript 函数。',
@@ -377,11 +379,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       expect(
         await f.db`select run_id from allrice_runtime_run_links where root_run_id=${task.runId}`,
       ).toHaveLength(0);
-      expect(
-        (
-          await f.db`select to_regclass(format('%I.allrice_assistant_roots',current_schema())) relation`
-        )[0]!.relation,
-      ).toBeNull();
+      expect(await readRetiredExecutionHistory(f.db)).toEqual(legacyHistory);
       expect(model!.requests).toHaveLength(1);
     } finally {
       await task.isolation.cleanup();

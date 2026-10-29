@@ -200,7 +200,6 @@ suite(
           text,
           clientMessageId: randomUUID(),
           deliveryMode: 'follow_up',
-          assistantPreference: { mode: 'daily', allowAssistants: false },
         });
         if (!sent.run) throw Error('fixture_run_not_enqueued');
         beforeClaim?.();

@@ -1,5 +1,6 @@
 import type { RepositoryReviewArtifactRef } from '../../../../packages/database/src/platform-repository-review-contracts.ts';
 import { createReadPathProbe } from '../../../../packages/database/src/read-path-probe.fixture.ts';
+import { readRetiredExecutionHistory } from './retired-execution-history.fixture.ts';
 import {
   expectReadPathRowLocked,
   readPathSignal,
@@ -494,6 +495,7 @@ suite(
     ] as const)(
       '真实入口 → Worker → DSH → PG，无助手：%s',
       async (mode) => {
+        const legacyHistory = await readRetiredExecutionHistory(f.db);
         const s = await setup();
         let review: Awaited<ReturnType<typeof s.create>>;
         const command = (args: Record<string, unknown>) => ({
@@ -678,14 +680,9 @@ suite(
               })),
             );
           }
-          for (const table of [
-            'allrice_assistant_roots',
-            'allrice_assistant_instances',
-            'allrice_assistant_results',
-          ]) {
-            const [row] = await f.db`select to_regclass(${table}) as relation`;
-            expect(row!.relation).toBeNull();
-          }
+          expect(await readRetiredExecutionHistory(f.db)).toEqual(
+            legacyHistory,
+          );
         } finally {
           await adapter.close();
           await model.close();
@@ -2151,6 +2148,7 @@ suite(
     }, 30000);
 
     it('completes independent Job inspect → saved opinion → delivery → canonical completion and private download without assistants', async () => {
+      const legacyHistory = await readRetiredExecutionHistory(f.db);
       const s = await start(await setup()),
         o = await opinion(s);
       await expect(
@@ -2211,11 +2209,7 @@ suite(
           detail.reviewArtifactId!,
         ),
       ).rejects.toMatchObject({ code: 'not_found' });
-      expect(
-        (
-          await f.db`select to_regclass('allrice_development_heads') relation`
-        )[0]!.relation,
-      ).toBeNull();
+      expect(await readRetiredExecutionHistory(f.db)).toEqual(legacyHistory);
     }, 30000);
     it('cancellation of the review Job invalidates delivery and final completion', async () => {
       const s = await start(await setup()),
