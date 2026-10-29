@@ -1297,17 +1297,11 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       const original = await directory();
       await page.getByRole('button', { name: '技能', exact: true }).click();
       await openIndependentTools(page);
-      await page
-        .getByRole('checkbox', {
-          name: '受控开发提案、测试与独立审查',
-          exact: true,
-        })
-        .check();
       expect(
         await page
           .getByRole('checkbox', { name: /受控开发提案、测试与独立审查/ })
-          .isChecked(),
-      ).toBe(true);
+          .count(),
+      ).toBe(0);
       const mcp = page.getByRole('checkbox', {
         name: '本地 MCP 调用',
         exact: true,
@@ -1325,7 +1319,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await mcp.uncheck();
       expect(await mcp.isChecked()).toBe(false);
       expect((await directory()).currentDraft).toEqual(original.currentDraft);
-      // Discard the unsaved development bundle before the independent MCP scenario.
+      // Discard the unsaved local selection before the independent cloud MCP scenario.
       await page.reload();
       await page
         .getByRole('button')
