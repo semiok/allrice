@@ -19,7 +19,6 @@ import {
 } from '../../src/harness/dsh-native-artifact.js';
 import JSZip from 'jszip';
 import { repositoryDigest } from '../../../../packages/database/src/platform-repository-source.ts';
-import { updateWorkAutomation } from '../../../../packages/database/src/work-automation.ts';
 import { RepositoryCompletedReviewSchema } from '../../../../packages/database/src/platform-repository-merge-contracts.ts';
 import * as modelPool from '../../../../packages/database/src/providers/model-pool.ts';
 import * as harnessRouter from '../../src/harness/router.js';
@@ -487,7 +486,6 @@ suite(
 
     it.each([
       'accept',
-      'saved-assistants',
       'revise',
       'missing-review',
       'question-attempt',
@@ -497,15 +495,6 @@ suite(
       '真实入口 → Worker → DSH → PG，无助手：%s',
       async (mode) => {
         const s = await setup();
-        const assistantsEnabled = process.env.ALLRICE_ASSISTANTS_ENABLED;
-        if (mode === 'saved-assistants') {
-          vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-          await updateWorkAutomation(s.internal, s.internal.workspaceId!, {
-            expectedRevision: 0,
-            capability: 'assistants',
-            enabled: true,
-          });
-        }
         let review: Awaited<ReturnType<typeof s.create>>;
         const command = (args: Record<string, unknown>) => ({
           nativeTool: { name: 'platform_repository_review', arguments: args },
@@ -714,7 +703,6 @@ suite(
           freeze.mockRestore();
           router.mockRestore();
           vi.stubEnv('ALLRICE_DSH_PLATFORM_HOME', oldHome);
-          vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', assistantsEnabled);
         }
       },
       60000,
@@ -2235,9 +2223,9 @@ suite(
       ).rejects.toMatchObject({ code: 'not_found' });
       expect(
         (
-          await f.db`select root_run_id from allrice_development_heads where root_run_id=${s.review.runId}`
-        ).length,
-      ).toBe(0);
+          await f.db`select to_regclass('allrice_development_heads') relation`
+        )[0]!.relation,
+      ).toBeNull();
     }, 30000);
     it('cancellation of the review Job invalidates delivery and final completion', async () => {
       const s = await start(await setup()),

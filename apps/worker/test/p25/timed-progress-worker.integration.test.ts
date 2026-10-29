@@ -313,7 +313,8 @@ suite('MET-210 real Worker continuation and Workflow waiting', () => {
         const [saved] =
           await f.db`select state from allrice_runs where id=${next.runId}`;
         expect(saved!.state).toBe('succeeded');
-      } else expect(execute).toHaveBeenCalledTimes(2);
+      } else await expect(run(next)).rejects.toThrow('TEST_PROGRESS_CHECKED');
+      expect(execute).toHaveBeenCalledTimes(2);
       const [prior] =
         await f.db`select pause_id from allrice_task_progress where run_id=${first.runId}`;
       expect(prior!.pause_id).toBe(ordinary ? null : pauseId);

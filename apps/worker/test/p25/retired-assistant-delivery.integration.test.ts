@@ -31,7 +31,7 @@ const suite =
 // frozen predecessor explicitly and retain it with the candidate's test log.
 const beforeRef =
   process.env.ALLRICE_RUN_RETIREMENT_BEFORE_SHA ??
-  'f383925782105cc800f6e98a3bae8c42baf3045e';
+  '9daa017c3ae370a0b63938c2228217ba570af8f2';
 suite(
   'retired assistants: real ordinary delivery across one stopped upgrade',
   () => {

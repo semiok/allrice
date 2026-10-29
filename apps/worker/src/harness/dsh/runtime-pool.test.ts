@@ -1425,15 +1425,6 @@ describe('idle close (MET-216)', () => {
       },
     ],
     [
-      'an input-delivery hold',
-      (pool, runtime) => {
-        (Reflect.get(pool, 'inputHolds') as Map<DshRuntime, unknown>).set(
-          runtime,
-          { phase: 'paused', hold: { dispose() {} } },
-        );
-      },
-    ],
-    [
       'an unreadable activity time',
       (_pool, runtime) => {
         runtime.lastActivityAt = 'unknown';

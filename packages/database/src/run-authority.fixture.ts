@@ -18,6 +18,7 @@ import {
   employeeManifestChecksum,
 } from './employees/employee-config.ts';
 import { createRuntimeOperationLedger } from './runtime-ledger/ledger.ts';
+import { ensureRuntimeOperationRoot } from './runtime-ledger/root-service.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
 import { newEmployeeNativeRootOrigin } from './conversation/native-root-origin.ts';
 const defaultControls = (): RuntimePolicyControls => ({
@@ -254,11 +255,12 @@ export async function createRunAuthorityFixture(
     admission: async () => {},
   });
   if (options.configure !== false)
-    await ledger.createRoot({
+    await ensureRuntimeOperationRoot(
+      ledger,
       task,
-      deadlineAt: new Date(Date.now() + 600000).toISOString(),
-      budgets: [],
-    });
+      new Date(Date.now() + 600000).toISOString(),
+      db,
+    );
   const setControls = (controls: RuntimePolicyControls) => db`
   update allrice_runtime_policy_controls set version=${controls.version},controls=${db.json(controls)}
   where organization_id=${org} and workspace_id=${workspace}`;

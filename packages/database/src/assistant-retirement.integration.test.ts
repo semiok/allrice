@@ -89,7 +89,7 @@ suite('0229 bounded legacy retirement', () => {
       [builtin, 'development-cooperation'],
       [custom, 'custom-development'],
     ])
-      await db`insert into allrice_platform_dsh_skills(id,name,description,content,checksum) values(${id!},${name!},'Synthetic retained skill','Frozen historical instructions',${'sha256:' + 'd'.repeat(64)})`;
+      await db`insert into allrice_platform_dsh_skills(id,name,description,content,checksum,source_ref,version,license,review_status) values(${id!},${name!},'Synthetic retained skill','Frozen historical instructions',${'sha256:' + 'd'.repeat(64)},'https://example.test/synthetic','1.0.0','Apache-2.0','draft')`;
     const before =
       await db`select id,content,checksum from allrice_platform_dsh_skills where id in (${builtin},${custom}) order by id`;
     await db.begin(async (tx) => tx.unsafe(await migration()));

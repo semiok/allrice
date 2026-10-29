@@ -310,7 +310,7 @@ export class DshRuntimePool {
   }
 
   /** Close resident Hosts idle past the configured limit through closeOwned.
-   * Skips leased threads, input holds and in-flight steers. Selection and
+   * Skips leased threads, including in-flight ordinary steers. Selection and
    * cache removal are synchronous, so an acquisition either holds a lease
    * first or waits for this close and starts a fresh Host. One sweep and one
    * close at a time, so a burst of shutdowns cannot starve their acks. */
@@ -1137,7 +1137,12 @@ export class DshRuntimePool {
         true,
       );
     }
-    return runtime.client.steer(runtime.sessionId, message, typed);
+    const release = this.lease(threadId);
+    try {
+      return await runtime.client.steer(runtime.sessionId, message, typed);
+    } finally {
+      release();
+    }
   }
 
   inventory(): readonly HarnessRuntimeProcessSnapshot[] {
