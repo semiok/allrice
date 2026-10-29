@@ -559,7 +559,7 @@ export default async function seed(resources: DeliveryResources) {
     const { db } = resources;
     const { createEmployeeAdministrationFixture } =
       await import('../../../../packages/database/src/employee-administration.fixture.ts');
-    const { savePlatformEmployeeDraft } =
+    const { compilePlatformEmployee, savePlatformEmployeeDraft } =
       await import('../../../../packages/database/src/employees/platform-employees.ts');
     const { skillBundleChecksum } =
       await import('../../../../packages/database/src/skill-bundles.ts');
@@ -585,8 +585,14 @@ export default async function seed(resources: DeliveryResources) {
           ...retiredTools,
         ],
       },
+      securityPolicy: {
+        ...source.definition.securityPolicy,
+        bridgeAccess: 'read_write' as const,
+      },
     };
     await savePlatformEmployeeDraft(source.employeeId, { definition });
+    const compilation = await compilePlatformEmployee(source.employeeId);
+    expect(compilation.errors).toEqual([]);
     const preview = await source.preview();
     expect((await source.publish()).valid).toBe(true);
     const login = await createSession(source.ownerId);
