@@ -803,31 +803,59 @@ describe
           await db()`select assistant_message_id from allrice_employee_runs where run_id=${f.rootRunId}`;
         const held = deferred(),
           release = deferred();
+        let blockerPid = 0,
+          completionPid = 0;
+        let publicationWait: unknown;
         const blocker = db().begin(async (tx) => {
+          blockerPid = Number((await tx`select pg_backend_pid() pid`)[0]!.pid);
           await tx`select id from allrice_messages where id=${message!.assistant_message_id} for update`;
           held.resolve();
           await release.promise;
         });
-        await held.promise;
-        const committing = f.complete(p);
-        const [schema] = await db()`select current_schema() name`;
-        await waitFor(async () => {
-          const [x] =
-            await db()`select count(*)::int n from pg_stat_activity where application_name in (${schema!.name},'allrice-app') and wait_event_type='Lock' and query like '%allrice_messages%'`;
-          return x!.n >= 1;
-        }, 'message write');
-        const publisher = f.publish('too-late.txt').then(
-          (value) => ({ value }),
-          (error) => ({ error: String(error) }),
-        );
-        await waitFor(async () => {
-          const [x] =
-            await db()`select count(*)::int n from pg_stat_activity where application_name=${schema!.name} and wait_event_type='Lock' and query like '%allrice_runtime_roots%'`;
-          return x!.n >= 1;
-        }, 'root publisher');
-        release.resolve();
+        void blocker.catch(() => {});
+        let committing: ReturnType<typeof f.complete> | undefined;
+        let publisher:
+          | Promise<
+              | { value: Awaited<ReturnType<typeof f.publish>> }
+              | { error: string }
+            >
+          | undefined;
+        try {
+          await Promise.race([held.promise, blocker]);
+          committing = f.complete(p);
+          void committing.catch(() => {});
+          await waitFor(async () => {
+            const [waiting] = await db()`select pid from pg_stat_activity
+                where ${blockerPid}=any(pg_blocking_pids(pid))
+                  and wait_event_type='Lock' and query like '%allrice_messages%'`;
+            completionPid = Number(waiting?.pid ?? 0);
+            return completionPid > 0;
+          }, 'checked completion waits for its message');
+          publisher = f.publish('too-late.txt').then(
+            (value) => ({ value }),
+            (error) => ({ error: String(error) }),
+          );
+          await waitFor(async () => {
+            // The publisher now waits at the shared pre-root mutex. Observe
+            // this Run's exact 703 lock and its real completion transaction.
+            const [waiting] = await db()`select a.pid,a.query,a.wait_event,
+                pg_blocking_pids(a.pid) blockers
+              from pg_stat_activity a join pg_locks l on l.pid=a.pid
+              where ${completionPid}=any(pg_blocking_pids(a.pid))
+                and a.wait_event_type='Lock' and l.locktype='advisory' and not l.granted
+                and l.classid=((hashtextextended(${f.rootRunId},703)>>32)&4294967295)::oid
+                and l.objid=(hashtextextended(${f.rootRunId},703)&4294967295)::oid
+                and l.objsubid=1`;
+            publicationWait = waiting;
+            return Boolean(waiting);
+          }, 'publisher waits for checked completion on the Run 703 lock');
+        } finally {
+          release.resolve();
+          await Promise.allSettled([blocker, committing, publisher]);
+        }
         await blocker;
         await committing;
+        assert.ok(publisher);
         const late = await publisher;
         expect(late).toHaveProperty('error');
         expect(await f.state()).toMatchObject({
@@ -838,9 +866,17 @@ describe
           await db()`select count(*)::int n from allrice_deliverable_versions where session_id=${f.session}`;
         expect(count!.n).toBe(0);
         record('reverse publisher blocked', {
+          blockerPid,
+          completionPid,
+          publicationWait,
           late,
           result: await f.state(),
           lateVersions: count!.n,
+        });
+        console.info('checked completion/publication wait graph', {
+          blockerPid,
+          completionPid,
+          publicationWait,
         });
       });
       it('unknown unsettled outcome retains unknown and cannot issue a completed guard', async () => {
