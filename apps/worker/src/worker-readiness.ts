@@ -55,9 +55,10 @@ export function createWorkerReadinessResponder() {
   let pending: Promise<string | undefined> | undefined;
   return async (
     response: ServerResponse,
-    readCurrentHealth: () => HealthResponse & Record<string, unknown>,
+    prepareCurrentHealth: () => Promise<() => HealthResponse>,
     onReady: () => void,
   ) => {
+    let readCurrentHealth = await prepareCurrentHealth();
     let health = readCurrentHealth();
     if (
       health.status === 'ready' &&
@@ -66,8 +67,9 @@ export function createWorkerReadinessResponder() {
       const detail = await (pending ??= probeCloudDependencies().finally(() => {
         pending = undefined;
       }));
-      // Local prerequisites can fail while a bounded cloud check is pending.
-      // Re-read them and their metadata immediately before the synchronous send.
+      // Requery and observe maintenance after all cloud probes settle.
+      // Then read synchronous local state and send without another await.
+      readCurrentHealth = await prepareCurrentHealth();
       health = readCurrentHealth();
       if (health.status === 'ready' && detail)
         health = { ...health, status: 'not_ready', detail };
