@@ -1979,7 +1979,9 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
         browser = await chromium.launch({
           headless: true,
           executablePath:
-            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+            process.platform === 'darwin'
+              ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+              : chromium.executablePath(),
         });
         page = await browser.newPage({
           viewport: { width: 1200, height: 900 },
@@ -5330,7 +5332,9 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       const browser = await chromium.launch({
         headless: true,
         executablePath:
-          '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+          process.platform === 'darwin'
+            ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+            : chromium.executablePath(),
       });
       let child: ReturnType<typeof spawn> | undefined,
         recoveredJournal: BridgeJournal | undefined;
