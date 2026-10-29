@@ -16,6 +16,8 @@ resources:
   build:
     - ALLRICE_RUN_DB_INTEGRATION
     - ALLRICE_P11_NEXT_BUILD
+  manual-db:
+    - ALLRICE_RUN_DB_INTEGRATION
 rules:
   db:
     - packages/database/
@@ -63,17 +65,8 @@ files:
     - apps/rice-bridge/src/local-browser-login.native.test.ts
     - apps/worker/src/browser-control/driver.production.integration.test.ts
     - apps/worker/src/browser-control/static-browser.native.integration.test.ts
-    - apps/worker/test/native-schedule-calendar.integration.test.ts
-    - apps/worker/test/native-schedule-monthly.integration.test.ts
-    - apps/worker/test/p25/dsh-control-journal-capture.test.ts
     - apps/worker/test/project-runtime.integration.test.ts
     - packages/browser-control/src/local-preview.integration.test.ts
-    - packages/database/src/desktop-bridge.integration.test.ts
-    - packages/database/src/local-browser-native-http.integration.test.ts
-    - packages/database/src/local-preview-native-http.integration.test.ts
-    - packages/database/src/reconciliation-cloud.integration.test.ts
-    - tests/integration/static-browser-native-http.test.ts
-    - tests/integration/static-browser-workbench-native.test.ts
   browser:
     - apps/web/app/chatflow/brand-content-panel.test.tsx
     - apps/web/server/project-preview.test.mjs
@@ -91,6 +84,16 @@ files:
     - apps/worker/test/final-delivery-references.pg.test.ts
     - packages/database/src/freeze-helpers.transaction.test.ts
     - scripts/acceptance/runtime/p27-codex-worker-fixture.test.ts
+  manual-db:
+    - apps/worker/test/native-schedule-calendar.integration.test.ts
+    - apps/worker/test/native-schedule-monthly.integration.test.ts
+    - apps/worker/test/p25/dsh-control-journal-capture.test.ts
+    - packages/database/src/desktop-bridge.integration.test.ts
+    - packages/database/src/local-browser-native-http.integration.test.ts
+    - packages/database/src/local-preview-native-http.integration.test.ts
+    - packages/database/src/reconciliation-cloud.integration.test.ts
+    - tests/integration/static-browser-native-http.test.ts
+    - tests/integration/static-browser-workbench-native.test.ts
 extra:
   ALLRICE_RUN_BRAND_CONTENT_BROWSER:
     - apps/web/app/chatflow/brand-content-panel.test.tsx

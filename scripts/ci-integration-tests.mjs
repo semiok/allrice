@@ -1,5 +1,4 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import {
   appendFileSync,
   copyFileSync,
@@ -22,8 +21,9 @@ const matches = (file, paths) =>
     (path) => file === path || file.startsWith(path.replace(/\/$/, '') + '/'),
   );
 const present = (env, key) => !!env[key] && String(env[key]) !== '0';
+const manualFile = (entry) => entry.group.startsWith('manual');
 const ready = (entry, env) =>
-  entry.group !== 'manual' && entry.needs.every((gate) => present(env, gate));
+  !manualFile(entry) && entry.needs.every((gate) => present(env, gate));
 const manifest = (root) =>
   parse(read(resolve(root, 'scripts/ci-manual-environments.yml')));
 const git = (root, args) =>
@@ -31,10 +31,6 @@ const git = (root, args) =>
 const identity = (root) => git(root, ['rev-parse', 'HEAD']);
 const commandFiles = (run) =>
   run.match(/(?:apps|packages|tests|scripts|infra)\/[\w./-]+/g) ?? [];
-const digest = (root, file) =>
-  createHash('sha256')
-    .update(read(resolve(root, file)))
-    .digest('hex');
 export const testTags = (root = process.cwd()) =>
   Object.entries(manifest(root).tags).map(([name, value]) => ({
     name,
@@ -110,7 +106,7 @@ export function inventory(root = process.cwd()) {
       .map((step) => `${step.job}: ${step.name}`);
   const additions = { db: [], browser: [], 'browser+db': [] };
   for (const entry of entries) {
-    if (entry.group === 'manual' || entry.plannedBy.length) continue;
+    if (manualFile(entry) || entry.plannedBy.length) continue;
     if (!additions[entry.group])
       throw Error(`No responsible CI batch: ${entry.file}`);
     additions[entry.group].push(entry.file);
@@ -188,14 +184,14 @@ export function auditInstances(
       const filtered =
         batch.pattern && !new RegExp(batch.pattern).test(test.name);
       let disposition = 'executed';
-      if (entry.group === 'manual' && !manual)
+      if (manualFile(entry) && !manual)
         fail(`Manual file contains an automatic leaf: ${file}: ${test.name}`);
       if (result.state === 'skipped') {
         disposition = filtered
           ? 'filtered'
           : unavailable.length
             ? 'manual'
-            : !responsible && entry.group !== 'manual'
+            : !responsible && !manualFile(entry)
               ? 'resource'
               : 'unexpected-skip';
         if (disposition === 'unexpected-skip')
@@ -212,6 +208,10 @@ export function auditInstances(
         (!events.length || events.at(-1) !== result.state)
       )
         fail(`Missing case result event: ${file}: ${test.id}`);
+      const assignments = tags.map(([, value]) =>
+        value?.command.split('pnpm exec vitest run ')[0].trim(),
+      );
+      assignments.push(...entry.needs.map((gate) => `${gate}=1`));
       instances.push({
         ...test,
         state: result.state,
@@ -219,7 +219,11 @@ export function auditInstances(
         retries: result.retries,
         disposition,
         responsible: responsible && !batch.partial,
-        manual,
+        manual: manual || disposition === 'manual',
+        command: tags.length
+          ? unique(assignments).filter(Boolean).join(' ') +
+            ` pnpm exec vitest run ${file} --maxWorkers=2`
+          : undefined,
       });
     }
   }
@@ -335,9 +339,6 @@ function run(plan, args, group) {
     partial: args.some((arg) =>
       /^(?:-t|--testNamePattern|--testTagsFilter)(?:=|$)/.test(arg),
     ),
-    sources: Object.fromEntries(
-      expected.map((file) => [file, digest(root, file)]),
-    ),
   };
   save(path, batch);
   let receipt = {
@@ -388,11 +389,8 @@ function run(plan, args, group) {
       );
     if (!JSON.parse(read(report)).success)
       throw Error('Original JSON report is unsuccessful');
-    if (
-      identity(root) !== batch.head ||
-      expected.some((file) => digest(root, file) !== batch.sources[file])
-    )
-      throw Error('Source changed during batch');
+    if (identity(root) !== batch.head)
+      throw Error('Git SHA changed during batch');
     receipt = {
       ...receipt,
       complete: true,

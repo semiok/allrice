@@ -38,6 +38,7 @@ function fixture(files, options = {}) {
   const resources = {
     native: [],
     manual: [],
+    'manual-db': ['ALLRICE_RUN_DB_INTEGRATION'],
     db: ['ALLRICE_RUN_DB_INTEGRATION'],
     browser: ['ALLRICE_RUN_BROWSER_INTEGRATION'],
     'browser+db': [
@@ -50,7 +51,7 @@ function fixture(files, options = {}) {
       name,
       {
         reason: 'Actual external physical fixture',
-        command: 'pnpm exec vitest run {file} --maxWorkers=2',
+        command: `${name.slice(7)}=1 pnpm exec vitest run {file} --maxWorkers=2`,
       },
     ]),
   );
@@ -61,7 +62,7 @@ function fixture(files, options = {}) {
       rules: { db: ['packages/database/'], browser: ['apps/web/'] },
       files: options.files ?? {},
       extra: {},
-      tags,
+      tags: { ...tags, ...options.tags },
     }),
   );
   const steps = [
@@ -244,6 +245,13 @@ it.each(['docx','xlsx'])('same name %s',()=>{throw Error('external prerequisite 
   const physical = instances(receipt).instances.filter((item) => item.manual);
   expect(physical).toHaveLength(2);
   expect(physical.every((item) => item.disposition === 'manual')).toBe(true);
+  expect(
+    physical.every(
+      (item) =>
+        item.command.includes('ALLRICE_RUN_DB_INTEGRATION=1') &&
+        item.command.includes('ALLRICE_RUN_CLOUD_INTEGRATION=1'),
+    ),
+  ).toBe(true);
 }, 30_000);
 
 it('accepts all-manual files with independent gates as zero passes instead of taking a gate intersection', () => {
@@ -253,7 +261,7 @@ it('accepts all-manual files with independent gates as zero passes instead of ta
 it.skipIf(!process.env.ALLRICE_RUN_CLOUD_INTEGRATION)('cloud',{tags:['${manual}']},()=>{});
 it.skipIf(!process.env.ALLRICE_OFFICE_PREVIEW_DIR)('office',{tags:['${other}']},()=>{});`,
     },
-    { files: { manual: [db] } },
+    { files: { 'manual-db': [db] } },
   );
   const run = execute(root, 'native');
   expect(run.status, run.stdout + run.stderr).toBe(0);
@@ -368,4 +376,38 @@ it('rejects a responsible file omitted by Vitest despite another passing file an
     instances(second).instances.find((item) => item.state === 'skipped')
       .disposition,
   ).toBe('filtered');
+}, 30_000);
+
+it('classifies visible platform skips using declared OS support and rejects a skip on the supported platform', () => {
+  const file = 'apps/worker/platform.test.ts';
+  for (const supported of [false, true]) {
+    const root = fixture(
+      {
+        [file]:
+          "import {it} from 'vitest'; it.skip('platform',{tags:['platform:fixture']},()=>{});",
+      },
+      {
+        files: { native: [file] },
+        tags: {
+          'platform:fixture': {
+            platforms: [
+              supported
+                ? process.platform
+                : process.platform === 'darwin'
+                  ? 'linux'
+                  : 'darwin',
+            ],
+            reason: 'Exact fixture platform prerequisite',
+            command: 'pnpm exec vitest run {file} --maxWorkers=2',
+          },
+        },
+      },
+    );
+    const run = execute(root, 'native');
+    expect(run.status, run.stdout + run.stderr).toBe(supported ? 1 : 0);
+    if (!supported)
+      expect(instances(receipts(root)[0]).instances[0].disposition).toBe(
+        'manual',
+      );
+  }
 }, 30_000);
