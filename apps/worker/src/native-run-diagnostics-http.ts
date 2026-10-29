@@ -1,10 +1,16 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { NativeRunDiagnosticsRequestSchema } from '@allrice/contracts';
+import {
+  NativeRunDiagnosticsRequestSchema,
+  NativeSubagentQueryRequestSchema,
+} from '@allrice/contracts';
 import {
   authenticateSession,
   getRunNativeDiagnosticTarget,
+  getSessionNativeSubagentTarget,
+  nativeRootDigest,
 } from '@allrice/database';
 import { readNativeRunDiagnostics } from './harness/native-run-diagnostics.js';
+import { readAuthorizedNativeSubagentSummary } from './harness/native-subagent-query.js';
 
 type Dependencies = {
   authenticate: typeof authenticateSession;
@@ -21,6 +27,10 @@ const defaults: Dependencies = {
  * each authenticate the real session; no admin impersonation or caller paths. */
 export function createNativeRunDiagnosticsHttpHandler(
   deps: Dependencies = defaults,
+  subagents = {
+    target: getSessionNativeSubagentTarget,
+    read: readAuthorizedNativeSubagentSummary,
+  },
 ) {
   let active = 0;
   return async (
@@ -28,7 +38,9 @@ export function createNativeRunDiagnosticsHttpHandler(
     response: ServerResponse,
     stopping = false,
   ): Promise<boolean> => {
-    if (request.url !== '/internal/native-run-diagnostics') return false;
+    const summaryRequest = request.url === '/internal/native-subagent-summary';
+    if (!summaryRequest && request.url !== '/internal/native-run-diagnostics')
+      return false;
     const send = (status: number, body: unknown) => {
       if (response.destroyed) return;
       response.writeHead(status, {
@@ -41,7 +53,7 @@ export function createNativeRunDiagnosticsHttpHandler(
       send(404, { error: 'not_found' });
       return true;
     }
-    if (stopping || active >= 2) {
+    if (stopping || (!summaryRequest && active >= 2)) {
       send(503, { error: 'diagnostics_unavailable' });
       return true;
     }
@@ -56,10 +68,12 @@ export function createNativeRunDiagnosticsHttpHandler(
       if (!response.writableEnded) abort.abort();
     };
     response.once('close', onClose);
-    const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(10_000)]);
+    const signal = summaryRequest
+      ? abort.signal
+      : AbortSignal.any([abort.signal, AbortSignal.timeout(10_000)]);
     const cancelRead = () => request.destroy();
     signal.addEventListener('abort', cancelRead, { once: true });
-    active++;
+    if (!summaryRequest) active++;
     try {
       let size = 0;
       const chunks: Buffer[] = [];
@@ -72,9 +86,11 @@ export function createNativeRunDiagnosticsHttpHandler(
         }
         chunks.push(Buffer.from(chunk));
       }
-      const parsed = NativeRunDiagnosticsRequestSchema.safeParse(
-        JSON.parse(Buffer.concat(chunks).toString('utf8')),
-      );
+      const parsed = (
+        summaryRequest
+          ? NativeSubagentQueryRequestSchema
+          : NativeRunDiagnosticsRequestSchema
+      ).safeParse(JSON.parse(Buffer.concat(chunks).toString('utf8')));
       if (!parsed.success) {
         send(400, { error: 'invalid_request' });
         return true;
@@ -87,6 +103,30 @@ export function createNativeRunDiagnosticsHttpHandler(
       const context = await deps.authenticate(token, tenant);
       if (!context) {
         send(401, { error: 'authentication_required' });
+        return true;
+      }
+      if ('sessionId' in input) {
+        const target = await subagents.target(
+          context,
+          input.workspaceId,
+          input.sessionId,
+        );
+        signal.throwIfAborted();
+        const summary = await subagents.read(target, signal);
+        const current = await deps.authenticate(token, tenant);
+        if (!current || current.actor.id !== context.actor.id) {
+          send(401, { error: 'authentication_required' });
+          return true;
+        }
+        const after = await subagents.target(
+          current,
+          input.workspaceId,
+          input.sessionId,
+        );
+        if (nativeRootDigest(after) !== nativeRootDigest(target))
+          throw Error('NATIVE_QUERY_TARGET_CHANGED');
+        signal.throwIfAborted();
+        send(200, { sessionId: input.sessionId, summary });
         return true;
       }
       const target = await deps.target(context, input.workspaceId, input.runId);
@@ -116,7 +156,7 @@ export function createNativeRunDiagnosticsHttpHandler(
         send(400, { error: 'invalid_request' });
       else send(503, { error: 'diagnostics_unavailable' });
     } finally {
-      active--;
+      if (!summaryRequest) active--;
       response.off('close', onClose);
       signal.removeEventListener('abort', cancelRead);
     }

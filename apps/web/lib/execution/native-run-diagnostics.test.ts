@@ -1,6 +1,9 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import type { RequestContext } from '@allrice/contracts';
-import { requestNativeRunDiagnostics } from './native-run-diagnostics';
+import {
+  requestNativeRunDiagnostics,
+  requestNativeSubagentSummary,
+} from './native-run-diagnostics';
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -76,4 +79,51 @@ it('rejects unexpected Run/fields and masks remote bodies without exposing them'
     status: 503,
     message: 'Native diagnostics unavailable',
   });
+});
+
+it('uses the same fixed authenticated transport for a business Session without diagnostic limits', async () => {
+  vi.stubEnv('ALLRICE_WORKER_INTERNAL_URL', 'http://worker:3101');
+  const summary = {
+    rootId: 'dsh-root',
+    root: { source: 'prepared', cursor: -1 },
+    descendants: [],
+  };
+  const fetch = vi
+    .fn()
+    .mockResolvedValue(Response.json({ sessionId: runId, summary }));
+  vi.stubGlobal('fetch', fetch);
+  expect(
+    await requestNativeSubagentSummary({ ...input, sessionId: runId }),
+  ).toEqual(summary);
+  expect(fetch).toHaveBeenCalledWith(
+    new URL('http://worker:3101/internal/native-subagent-summary'),
+    expect.objectContaining({
+      signal: input.signal,
+      cache: 'no-store',
+      redirect: 'error',
+      body: JSON.stringify({
+        sessionId: runId,
+        organizationId: input.context.organizationId,
+        workspaceId: input.workspaceId,
+      }),
+    }),
+  );
+});
+
+it('refuses a mismatched Session envelope or malformed summary without exposing remote bodies', async () => {
+  const fetch = vi
+    .fn()
+    .mockResolvedValue(
+      Response.json({ sessionId: input.workspaceId, summary: {} }),
+    );
+  vi.stubGlobal('fetch', fetch);
+  await expect(
+    requestNativeSubagentSummary({ ...input, sessionId: runId }),
+  ).rejects.toMatchObject({ status: 503 });
+  fetch.mockResolvedValue(
+    Response.json({ sessionId: runId, summary: { private: 'secret' } }),
+  );
+  await expect(
+    requestNativeSubagentSummary({ ...input, sessionId: runId }),
+  ).rejects.toMatchObject({ status: 503 });
 });

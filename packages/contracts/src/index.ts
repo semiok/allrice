@@ -185,3 +185,4 @@ export * from './brand-content-feedback.ts';
 export * from './bootstrap-context.ts';
 export * from './model-diagnostics.ts';
 export * from './native-subagent-summary.ts';
+export * from './native-subagent-query.ts';
