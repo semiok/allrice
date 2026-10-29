@@ -340,9 +340,9 @@ suite('MET153 durable native waits and queue authority', () => {
         // Give release and scan deterministic, distinct microsecond instants in
         // one millisecond, without sleeps or retries around the actual claim.
         const [times] = await f.db<{ release: string; scan: string }[]>`
-        with base as (select date_trunc('second',clock_timestamp())+interval '1 second' at)
-        select (at+${releaseUs}*interval '1 microsecond')::text release,
-          (at+interval '800 microseconds')::text scan from base`;
+        with base as (select date_trunc('second',clock_timestamp())+interval '1 second' as instant)
+        select (instant+${releaseUs}*interval '1 microsecond')::text release,
+          (instant+interval '800 microseconds')::text scan from base`;
         await atDatabaseTime(times!.release, () =>
           releaseConversationRuntime({
             organizationId: f.org,
