@@ -257,6 +257,10 @@ export async function executeNativeReplyJob(
   state = 'succeeded',
   hooks: {
     onEvent?(event: HarnessEvent): Promise<void>;
+    afterHandler?(
+      result: Awaited<ReturnType<typeof executeEmployeeRun>>,
+      lease: Parameters<typeof executeEmployeeRun>[0]['workflowLease'],
+    ): Promise<void>;
     crashAfterHandler?: boolean;
   } = {},
 ) {
@@ -285,6 +289,7 @@ export async function executeNativeReplyJob(
           await hooks.onEvent?.(event);
         },
       });
+      await hooks.afterHandler?.(result, input.workflowLease);
       if (hooks.crashAfterHandler) {
         // Real command/Host result is committed; simulate process loss before
         // runClaimedJob can call completeJob. Recover through maintainQueue.
