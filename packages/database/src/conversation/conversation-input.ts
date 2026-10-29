@@ -79,6 +79,7 @@ export interface ClaimedSteerCommand {
   clientUserMessageId: string;
   message: string;
   inputKind: 'steer_current' | 'ask_user' | null;
+  turnId: string;
 }
 
 export async function claimConversationSteer(input: {
@@ -88,6 +89,7 @@ export async function claimConversationSteer(input: {
   workerId: string;
   generation: number;
   turnId: string;
+  runId?: string;
   drain?: boolean;
 }): Promise<ClaimedSteerCommand | null> {
   const values = {
@@ -97,16 +99,18 @@ export async function claimConversationSteer(input: {
     workerId: UuidSchema.parse(input.workerId),
     generation: z.number().int().nonnegative().parse(input.generation),
     turnId: TurnIdSchema.parse(input.turnId),
+    runId: input.runId ? UuidSchema.parse(input.runId) : null,
   };
   const sql = getDatabase();
   return sql.begin(async (transaction) => {
     // Serialize with turn release/replacement and fence by the live job lease.
     const live =
-      await transaction`select cr.session_id,j.id as job_id from allrice_conversation_runtimes cr
+      await transaction`select cr.session_id,cr.active_turn_id,j.id as job_id from allrice_conversation_runtimes cr
       join allrice_jobs j on j.run_id=cr.active_run_id and j.worker_id=cr.worker_id
       where cr.organization_id=${values.organizationId} and cr.workspace_id=${values.workspaceId}
       and cr.session_id=${values.sessionId} and cr.worker_id=${values.workerId} and cr.state='running'
-      and cr.thread_generation=${values.generation} and cr.active_turn_id=${values.turnId}
+      and cr.thread_generation=${values.generation}
+      and (${values.runId}::uuid is not null and cr.active_run_id=${values.runId} or ${values.runId}::uuid is null and cr.active_turn_id=${values.turnId})
       and j.status in ('claimed','running') and j.lease_expires_at>clock_timestamp() and j.cancel_requested_at is null
       for update of cr`;
     if (!live.length) return null;
@@ -123,15 +127,21 @@ export async function claimConversationSteer(input: {
         client_user_message_id: string;
         message: string;
         input_kind: 'steer_current' | 'ask_user' | null;
+        expected_turn_id: string;
       }[]
     >`
-      select id, followup_run_id, client_user_message_id, message, input_kind
-      from allrice_conversation_commands
+      select id, followup_run_id, client_user_message_id, message, input_kind, expected_turn_id
+      from allrice_conversation_commands c
       where organization_id = ${values.organizationId}
         and workspace_id = ${values.workspaceId}
         and session_id = ${values.sessionId}
         and expected_generation = ${values.generation}
-        and expected_turn_id = ${values.turnId}
+        and (expected_turn_id = ${live[0]!.active_turn_id}
+          or (${values.runId}::uuid is not null and input_kind='steer_current' and exists(
+            select 1 from allrice_run_events e where e.run_id=${values.runId}
+              and e.organization_id=c.organization_id and e.workspace_id=c.workspace_id
+              and e.event_type='turn.started' and e.payload->>'turnId'=c.expected_turn_id
+              and e.payload->>'generation'=c.expected_generation::text)))
         and (${input.drain === true} or next_attempt_at <= now())
         and (state = 'pending' or (state = 'claimed' and claimed_at < now() - interval '30 seconds'))
       order by created_at, id
@@ -153,6 +163,7 @@ export async function claimConversationSteer(input: {
       clientUserMessageId: command.client_user_message_id,
       message: command.message,
       inputKind: command.input_kind,
+      turnId: command.expected_turn_id,
     };
   });
 }
@@ -173,7 +184,12 @@ export async function consumeConversationSteer(input: {
       join allrice_conversation_commands c on c.session_id=cr.session_id
       join allrice_jobs j on j.run_id=cr.active_run_id and j.worker_id=cr.worker_id
       where c.id=${values.commandId} and cr.worker_id=${values.workerId} and cr.state='running'
-      and cr.thread_generation=c.expected_generation and cr.active_turn_id=c.expected_turn_id
+      and cr.thread_generation=c.expected_generation
+      and (cr.active_turn_id=c.expected_turn_id or (c.input_kind='steer_current' and exists(
+        select 1 from allrice_run_events e where e.run_id=cr.active_run_id
+          and e.organization_id=c.organization_id and e.workspace_id=c.workspace_id
+          and e.event_type='turn.started' and e.payload->>'turnId'=c.expected_turn_id
+          and e.payload->>'generation'=c.expected_generation::text)))
       and j.status in ('claimed','running') and j.lease_expires_at>clock_timestamp()
       for update of cr`;
     if (!live.length) return;
@@ -205,7 +221,10 @@ export async function consumeConversationSteer(input: {
       if (
         proof.status !== 'adopted' ||
         proof.inputId !== command.client_user_message_id ||
-        proof.turnId !== command.expected_turn_id
+        (proof.runId
+          ? command.input_kind !== 'steer_current' ||
+            proof.runId !== live[0]!.active_run_id
+          : proof.turnId !== command.expected_turn_id)
       )
         throw new Error('INPUT_ADOPTION_PROOF_REQUIRED');
     }

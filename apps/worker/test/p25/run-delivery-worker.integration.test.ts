@@ -56,6 +56,7 @@ import {
   failJob,
   finishJobDrain,
   appendJobEvent,
+  maintainQueue,
 } from '../../../../packages/database/src/execution/queue.ts';
 import { publishWorkbenchArtifact } from '../../../../packages/database/src/artifact-review.ts';
 import {
@@ -65,6 +66,7 @@ import {
 import { readDeliverySnapshot } from '../../../../packages/database/src/run-delivery.ts';
 import { executeEmployeeRun } from '../../src/jobs/employee-run.ts';
 import * as TurnLifecycle from '../../src/conversation/turn-lifecycle.ts';
+import * as SubscriptionPreflight from '../../src/subscription-preflight.ts';
 import { prepareExecutionIsolation } from '../../src/isolation.ts';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.ts';
 import { DshProtocolClient } from '../../src/harness/dsh-protocol-client.ts';
@@ -109,6 +111,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     reply: Parameters<typeof p24Fixture>[0],
     nativeSubagents = false,
     progressWait = false,
+    allowedTools = ['workspace.export.create', 'workspace.document.read'],
   ) {
     vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
     vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
@@ -184,7 +187,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     const db = fixture.db;
     const identity = await createRunAuthorityFixture(db, {
       configure: false,
-      allowedTools: ['workspace.export.create', 'workspace.document.read'],
+      allowedTools,
       runtimePolicy: {
         harness: 'dsh',
         provider: 'openai-compatible',
@@ -275,10 +278,13 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       },
     );
     expect(sent.run).toBeDefined();
+    return claim(f, sent.run!.id, persistEvents);
+  }
+  async function claim(f: Setup, runId: string, persistEvents = false) {
     const workerId = randomUUID();
     const job = (await claimNextJob(workerId, 300000))!;
     const [queued] =
-      await f.db`select id from allrice_jobs where run_id=${sent.run!.id}`;
+      await f.db`select id from allrice_jobs where run_id=${runId}`;
     expect(job.id).toBe(queued!.id);
     const workflowLease = {
       workerId,
@@ -296,12 +302,12 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       organizationId: f.identity.org,
       workspaceId: f.identity.workspace,
       ownerId: f.identity.user,
-      runId: sent.run!.id,
+      runId,
       jobId: job.id,
       attempt: execution.job.attempt,
     });
     const [stored] =
-      await f.db`select execution_snapshot from allrice_employee_runs where run_id=${sent.run!.id}`;
+      await f.db`select execution_snapshot from allrice_employee_runs where run_id=${runId}`;
     expect(stored!.execution_snapshot.modelSnapshot).toMatchObject({
       provider: 'openai-compatible',
       model: 'pr1b-synthetic',
@@ -309,7 +315,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     const controller = new AbortController();
     beginCheckedFinalDeliveryExecution(workflowLease);
     return {
-      runId: sent.run!.id,
+      runId,
       execution,
       workflowLease,
       isolation,
@@ -354,6 +360,175 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       .filter(Boolean)
       .map((line) => JSON.parse(line));
   }
+
+  it.each([
+    { mode: 'plan_only', workbench: '1' },
+    { mode: 'execute', workbench: '0' },
+    { mode: 'plan_only', workbench: '0' },
+  ] as const)(
+    'PR3a 非交付工具保留合法读取：$mode / workbench=$workbench',
+    async ({ mode, workbench }) => {
+      const f = await setup(
+        async (_request, count) => {
+          if (count === 1)
+            return {
+              nativeTool: { name: 'workspace_file_list', arguments: {} },
+            };
+          if (count === 2)
+            return {
+              nativeTool: {
+                name: 'todo_write',
+                arguments: {
+                  todos: [{ content: '已读取文件列表', status: 'completed' }],
+                },
+              },
+            };
+          return { text: '已读取当前文件列表。' };
+        },
+        false,
+        false,
+        ['workspace.file.list'],
+      );
+      await f.identity.setControls({
+        version: 1,
+        enabled: true,
+        mode,
+        rules: [],
+      });
+      vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', workbench);
+      const task = await prepare(f, '列出当前可访问文件。');
+      expect(task.snapshot.finalDeliveryPolicy?.mode).not.toBe(
+        'checked_native_v1',
+      );
+      try {
+        const result = await task.run();
+        expect(result.answer).toBe('已读取当前文件列表。');
+        expect(model!.requests).toHaveLength(3);
+        const events = await journal();
+        expect(events.some((e) => e.type === 'todo/write')).toBe(true);
+        const [audit] = await f.db`select metadata from allrice_audit_events
+          where organization_id=${f.identity.org} and action='tool.execute' and decision='allowed'
+          and metadata->>'toolName'='workspace.file.list'`;
+        expect(audit).toBeDefined();
+        await completeJob({ ...task.workflowLease, result });
+      } finally {
+        await task.isolation.cleanup();
+      }
+    },
+    45000,
+  );
+
+  it('PR3a legacy 进度问题超过 30s 暂停，真实答复恢复原 Run 且保留完整调用身份', async () => {
+    const requests: Record<string, unknown>[] = [];
+    const setHandler = DshProtocolClient.prototype.setRequestHandler;
+    vi.spyOn(
+      DshProtocolClient.prototype,
+      'setRequestHandler',
+    ).mockImplementation(function (this: DshProtocolClient, handler) {
+      setHandler.call(
+        this,
+        handler &&
+          (async (method, params) => {
+            if (method === 'allrice/progress') requests.push({ ...params });
+            return handler(method, params);
+          }),
+      );
+    });
+    const f = await setup(async (request, count) => {
+      if (count <= 3)
+        return {
+          nativeTool: { name: 'local_fs_list', arguments: { path: 42 } },
+        };
+      expect(JSON.stringify(request.messages)).toContain('重新检查后继续');
+      return { text: '已按答复继续原任务。' };
+    });
+    const task = await prepare(f, '检查目录；重复失败时等我确认。', true);
+    const started = Date.now();
+    try {
+      await expect(task.run()).rejects.toMatchObject({
+        message: 'native_question_parked',
+        persisted: true,
+      });
+      expect(Date.now() - started).toBeGreaterThanOrEqual(30000);
+      expect(adapter!.runtimeInventory()).toHaveLength(0);
+      expect(model!.requests).toHaveLength(3);
+      const [wait] =
+        await f.db`select checkpoint,generation,state from allrice_native_question_waits
+        where run_id=${task.runId}`;
+      expect(wait!.state).toBe('parked');
+      const { checkpoint, generation } = wait!;
+      expect(checkpoint.questions).toEqual([
+        expect.objectContaining({ id: 'runtime-progress' }),
+      ]);
+      const inputId = randomUUID();
+      await sendChatMessage(f.context, f.identity.workspace, f.chat.id, {
+        text: `allrice:user-question:v1:${JSON.stringify({
+          questionId: checkpoint.questionId,
+          answers: [{ id: 'runtime-progress', selected: ['重新检查后继续'] }],
+        })}`,
+        clientMessageId: inputId,
+        deliveryMode: 'steer',
+        expectedTurnId: checkpoint.turnId,
+        expectedGeneration: generation,
+      });
+      await maintainQueue();
+      const resumed = await claim(f, task.runId, true);
+      const beforeResume = requests.length;
+      try {
+        expect(resumed.execution.job.attempt).toBe(
+          task.execution.job.attempt + 1,
+        );
+        const result = await resumed.run();
+        expect(result.answer).toBe('已按答复继续原任务。');
+        const controls = requests
+          .slice(beforeResume)
+          .filter((p) => p.action === 'check' || p.action === 'decide');
+        expect(controls.slice(0, 2).map((p) => p.action)).toEqual([
+          'check',
+          'decide',
+        ]);
+        expect(controls[1]).toMatchObject({ decision: 'continue' });
+        for (const request of requests)
+          expect(request).toMatchObject({
+            runId: task.runId,
+            nativeSessionId: checkpoint.sessionId,
+            rootSessionId: checkpoint.sessionId,
+            parentSessionId: null,
+            delegationDepth: 0,
+          });
+        const [command] =
+          await f.db`select state,native_proof from allrice_conversation_commands
+          where client_user_message_id=${inputId}`;
+        expect(command).toMatchObject({
+          state: 'consumed',
+          native_proof: { status: 'adopted' },
+        });
+        const [decision] =
+          await f.db`select decision from allrice_task_progress_decisions where run_id=${task.runId}`;
+        expect(decision?.decision).toBe('continue');
+        const coverage = readCheckedFinalDeliveryForExecution(
+          resumed.workflowLease,
+          result,
+        );
+        if (coverage.coverage !== 'checked_native_v1')
+          throw Error('Missing checked continuation');
+        await completeJob({
+          ...resumed.workflowLease,
+          result,
+          checkedDelivery: coverage.checkedDelivery,
+        });
+        expect(await state(f, task.runId)).toMatchObject({
+          status: 'succeeded',
+          successes: 1,
+        });
+        expect(model!.requests).toHaveLength(4);
+      } finally {
+        await resumed.isolation.cleanup();
+      }
+    } finally {
+      await task.isolation.cleanup();
+    }
+  }, 90000);
 
   it('从未开启助手的普通聊天也由根 Run 核对正文并提交真实 proof', async () => {
     const answer = '```js\nconst sum = (a, b) => a + b;\n```';
@@ -735,17 +910,74 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     45000,
   );
 
+  it('PR3a 子智能体调用工具前撤销成员权限，真实 Worker 拒绝并收树', async () => {
+    let rootCalls = 0;
+    let childCalls = 0;
+    const f: Setup = await setup(async (request) => {
+      if (
+        JSON.stringify(
+          request.messages.filter((m) => m.role === 'user'),
+        ).includes('PR3A_REVOKED_CHILD')
+      ) {
+        childCalls++;
+        await f.db`update allrice_memberships set active=false where organization_id=${f.identity.org} and user_id=${f.identity.user}`;
+        return {
+          nativeTool: {
+            name: 'todo_write',
+            arguments: {
+              todos: [{ content: '未经授权的新操作', status: 'pending' }],
+            },
+          },
+        };
+      }
+      if (++rootCalls === 1)
+        return {
+          nativeTool: {
+            name: 'subagent',
+            arguments: {
+              description: '权限边界',
+              prompt: 'PR3A_REVOKED_CHILD',
+            },
+          },
+        };
+      return { text: '等待子任务' };
+    }, true);
+    const task = await prepare(f, '请派一个子智能体整理待办。');
+    try {
+      await expect(task.run()).rejects.toMatchObject({ retryable: false });
+      expect(childCalls).toBe(1);
+      expect(await state(f, task.runId)).toMatchObject({ successes: 0 });
+      expect(
+        (await journal()).filter((e) => e.type === 'todo/write'),
+      ).toHaveLength(0);
+      expect(adapter!.runtimeInventory()).toHaveLength(0);
+    } finally {
+      await task.isolation.cleanup();
+    }
+  }, 45000);
+
   it('后代晚于根首次 idle 结算并唤醒根：真实 Worker 将后续 turn 写入 PG 后提交', async () => {
     const childEntered = gate(),
       releaseChild = gate(),
       releaseOriginWrite = gate();
     let rootCalls = 0;
+    let childCalls = 0;
+    const preflight = vi.spyOn(SubscriptionPreflight, 'preflightSubscription');
     const answer = '已汇总子智能体的实际结果。';
     const f = await setup(async (request) => {
       const userInputs = request.messages.filter((m) => m.role === 'user');
       if (JSON.stringify(userInputs).includes('PR1B_CHILD_TASK')) {
         childEntered.release();
         await releaseChild.promise;
+        if (++childCalls === 1)
+          return {
+            nativeTool: {
+              name: 'todo_write',
+              arguments: {
+                todos: [{ content: '核对原生子级权限', status: 'completed' }],
+              },
+            },
+          };
         return { text: 'PR1B_CHILD_RESULT' };
       }
       rootCalls++;
@@ -763,17 +995,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       return { text: answer };
     }, true);
     const task = await prepare(f, '启动子任务，结束后汇总，不需要文件。');
-    let rootId: unknown;
-    const finalDelivery = DshProtocolClient.prototype.finalDelivery;
-    vi.spyOn(DshProtocolClient.prototype, 'finalDelivery').mockImplementation(
-      function (this: DshProtocolClient, action, params) {
-        if (action === 'bind') rootId = params.sessionId;
-        return finalDelivery.call(this, action, params);
-      },
-    );
-    // PR3 will provide child SaaS admission/accounting. Stub only those two
-    // child seams for this future native composition, never root authority,
-    // origin, notifications, wait, journal or PostgreSQL persistence.
+    // PR3a: real child identity, authority and progress ports; no child bypass.
     const setHandler = DshProtocolClient.prototype.setRequestHandler;
     vi.spyOn(
       DshProtocolClient.prototype,
@@ -783,10 +1005,6 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         this,
         handler &&
           (async (method, params) => {
-            if (rootId && params.nativeSessionId !== rootId) {
-              if (method === 'allrice/content-check') return { allowed: true };
-              if (method === 'allrice/progress') return { paused: false };
-            }
             if (method === 'allrice/final-delivery-origin')
               releaseOriginWrite.release();
             return handler(method, params);
@@ -859,7 +1077,18 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       });
       expect(rootCalls).toBe(3);
       expect(heldOriginWrite).toBe(true);
-      expect(model!.requests).toHaveLength(4);
+      expect(model!.requests).toHaveLength(5);
+      // Once at Run freeze and once per real root/child model dispatch.
+      expect(preflight).toHaveBeenCalledTimes(6);
+      const calls =
+        await f.db`select distinct native_session_id from allrice_task_calls where run_id=${task.runId}`;
+      expect(calls.map((row) => row.native_session_id)).toContain(
+        coverage.proof.nativeSessionId,
+      );
+      expect(calls).toHaveLength(2);
+      expect(
+        (await journal()).filter((e) => e.type === 'todo/write'),
+      ).toHaveLength(1);
       expect(JSON.stringify(model!.requests.at(-1)!.messages)).toContain(
         'PR1B_CHILD_RESULT',
       );

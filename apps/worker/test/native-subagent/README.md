@@ -28,7 +28,7 @@ node apps/worker/test/native-subagent/baseline.mjs \
 
 ## 共用入口
 
-- `DshProtocolClient.wait(sessionId)`：直接发 `session/wait`，不用短 RPC 超时；保留拒绝原因文本，但现有 `request` 会统一映射为 `DSH_REQUEST_FAILED, retryable=true`，不能据此认定原生失败都可重试。PR3a-1 负责错误分类；Worker 的 lease/cancel 仍负责生命周期。
+- `DshProtocolClient.wait(sessionId)`：直接发 `session/wait`，不用短 RPC 超时；PR3a 把未确认的完成映射为不可自动重放的 `DSH_WAIT_FAILED`，原始拒绝保留在 cause。Worker 的本地 lease/cancel 来源仍决定取消，不能把并发 recover 的 wait 返回当完成。
 - `apps/worker/dsh/allrice-agent-tree.mjs` 的 `noRunningDescendants(root)`：以 `root.ctx.agents.list()` 和公开 `isOwnedBy()` 读当前树，排除根自身和无关根；供问题卡 PR6 快速拒绝。
 - 同文件 `treeQuiescent(root)`：再要求根 `nextStep`、`nextTurn` 都为空；供交付检查 PR1b 快速拒绝。
 
@@ -69,3 +69,11 @@ recover 已经通过 `closeRoot → sdk.shutdown → drainDescendants` 收子树
 ## 原生黄金语料
 
 `golden/manifest.json` 记录固定版本和 SHA-256；`root.jsonl` / `child.jsonl` 来自真实 Worker 宿主、原生 subagent / list_agents 工具和合成模型。根派生子级，子级完成后通知进入仍在运行的根 inbox；捕获前根以 keepInbox 停止并 flush，捕获点在宿主 dispose 之前。工作区路径与子级 ID 做了归一，其余日志保留。测试先将固定语料装进全新的临时会话目录，再启动宿主；不是当场生成一份历史来证明自己。断言历史事件前缀、历史工具结果、通知 ID 保留，根领取旧通知后冷续聊子级产生一条新通知，历史工具调用数不增长。
+
+## MET-228 / PR3a：公开宿主和真实 Worker 链
+
+`run-admission.test.mjs` 在同一生产宿主上验证父子孙真实身份、绝对/符号链接 cwd 越界、无活跃 Run 的迟到模型唤醒拒绝、跨原生 turn 的 Run steer、wait 后拒绝输入、先收后代再清根 inbox，以及 recover 后再次委派。`run-scope.test.ts` 只测试 Worker 对有序身份观察的拒绝边界。
+
+`test/p25/run-delivery-worker.integration.test.ts` 通过真实聊天入队、Worker、公开 JSON-RPC、原生工具及隔离 PostgreSQL 验证子级身份/进度（无绕过桩）、根与子级逐次通用订阅预检、工具执行前撤权阻断、后代结算唤醒根并提交。`run-delivery.integration.test.ts` 验证只读无锁 Run 权限及租户/代次/租约/撤权拒绝；数据库 `runtime-governed-bridge.integration.test.ts` 覆盖旧 turn 输入和跨 turn 的 Run 采纳、错 Run 拒绝及历史投影。全部由现有 Vitest/CI 收集。
+
+原生依据均为 `0.2.1-rc.2`：`dsh-subagent` README 的父子消息/驻留语义及 `lib/index.js` 的公开 `subagent/start`、`drainDescendants`；`dsh-agent` 的 `agent/created`、`isOwnedBy`；`dsh-tools` README 的异步 pre-execute 与单调 guard；`dsh-working-directory` README 的有效 cwd 与 `ensure`；`dsh-sdk-jsonrpc-server` 的 `wait`。不调用 internal。委派只在测试 profile 安装，生产委派、子级用量归根、网页卡片/控制仍待后续 PR，不能以这些测试宣称已恢复。

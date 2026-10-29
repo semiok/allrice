@@ -66,11 +66,13 @@ it('T14 Worker session/wait outlives the RPC timeout and forwards the native res
   f.exit();
 });
 
-it('T14 Worker preserves native disposal rejection for the caller to classify', async () => {
+it('T14 Worker preserves native disposal cause without permitting replay', async () => {
   const f = fixture();
-  const wait = expect(f.client.wait('root')).rejects.toThrow(
-    'session agent was disposed outside the server',
-  );
+  const wait = expect(f.client.wait('root')).rejects.toMatchObject({
+    code: 'DSH_WAIT_FAILED',
+    retryable: false,
+    cause: { message: 'session agent was disposed outside the server' },
+  });
   f.reply({
     error: {
       code: -32603,

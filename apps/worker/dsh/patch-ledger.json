@@ -55,7 +55,7 @@
       "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-dsh-waits.mjs",
-      "reason": "Checkpoint a sole root's quiescent user question, drain and release its host, adopt the exact typed answer from the durable journal and continue the existing conversation once. Active tools/children exclude parking; unknown dispatch is never replayed. No second Agent loop or implicit action approval."
+      "reason": "Checkpoint a sole root's quiescent user question, drain and release its host, adopt the exact typed answer from the durable journal and continue the existing conversation once. MET-228 PR3a captures the authorized resumed root Run/parent/depth identity for direct progress check/decide; queued settlement receipts keep their event-time Run attribution. Active tools/children exclude parking; unknown dispatch is never replayed. No second Agent loop or implicit action approval."
     },
     {
       "id": "allrice-durable-progress-guard-v1",
@@ -103,7 +103,7 @@
       "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-jsonrpc-runtime.mjs",
-      "reason": "Single existing Host composes the published public SDK, one business root and SDK-owned AgentHandles. AllRice retains its own exact-Agent/epoch lifecycle fence, public event forwarding through bounded teardown, resume-only recovery, questions, references and authorization. No SDK private access, alternate loop or second Worker."
+      "reason": "Single Host composes public SDK AgentHandles and bounded resume-only recovery. MET-228 PR3a adds Run admission, live parent/cwd identity, tool-seam authority, frozen model-route preflight and Run-scoped input receipts through allrice-run-admission.mjs. Tool admission shares tenant/member/employee/Run/lease/deadline checks with PR1, without delivery-only workbench/execute constraints or changes to per-action policy. Public drainDescendants precedes root cancel without keepInbox and SDK shutdown. Identity/start observations and queued receipt attribution are one-way only; no child lifecycle controller, PG state, private SDK access or production delegation tool enablement."
     },
     {
       "id": "allrice-session-reference-v1",

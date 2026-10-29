@@ -1071,6 +1071,7 @@ export class DshRuntimePool {
         maxTokens,
         expectedVersion:
           nativeIdentity?.version ?? DSH_DISTRIBUTION_CURRENT_VERSION,
+        requireRunAdmission: !!input.input.executionEnvironment.ALLRICE_RUN_ID,
         requireTaskProgress: !!input.input.progress,
         requireDurableQuestions: !!input.input.questionWait,
         requireContentGuard: !!input.input.contentGuard,
@@ -1124,6 +1125,7 @@ export class DshRuntimePool {
     threadId: string,
     message: string,
     typed?: {
+      runId?: string;
       inputId: string;
       turnId: string;
       kind: 'steer_current' | 'ask_user';

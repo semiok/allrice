@@ -177,6 +177,7 @@ describe('confirmed native dispatch stop receipt', () => {
       nativeTools: [],
       client: {
         prompt,
+        beginRun: vi.fn(),
         setRequestHandler: vi.fn(),
         subscribe: vi.fn(() => () => {}),
       },
@@ -954,7 +955,10 @@ describe('DshHarnessAdapter', () => {
       try {
         const result = await runtime.adapter.execute(input);
         expect(result.answer).toBe('SYNTHETIC_TOOL_RECEIPT_OBSERVED');
-        expect(onToolCall).toHaveBeenCalledExactlyOnceWith(call);
+        expect(onToolCall).toHaveBeenCalledExactlyOnceWith({
+          ...call,
+          ...(native ? { nativeSessionId: result.threadId } : {}),
+        });
         expect(onTurnStarted).toHaveBeenCalledTimes(native ? 1 : 2);
         expect(runtime.requests).toHaveLength(2);
         expect(completionChecks).toEqual([2, 2, 2]);
@@ -2873,6 +2877,7 @@ describe('DshHarnessAdapter', () => {
     expect(calls).toEqual([
       {
         id: 'native-local-1',
+        nativeSessionId: result.threadId,
         name: 'local.fs.list',
         arguments: { path: '.', limit: 20 },
       },
@@ -2930,6 +2935,7 @@ describe('DshHarnessAdapter', () => {
     expect(calls).toEqual([
       {
         id: 'native-wechat-1',
+        nativeSessionId: result.threadId,
         name: 'wechat.article.search',
         arguments: { query: 'AllRice', limit: 3 },
       },
