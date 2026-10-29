@@ -31,6 +31,7 @@ export function useWorkProcessDisclosures(runId: string) {
     section?: string;
     tag: string;
     name: string;
+    control: 'operation' | 'call' | 'named';
   }>(undefined);
   const nameOf = (node: HTMLElement) =>
     node.getAttribute('aria-label') ??
@@ -49,23 +50,28 @@ export function useWorkProcessDisclosures(runId: string) {
       return;
     const operation = document.getElementById(saved.operation);
     if (!operation || !ref.current?.contains(operation)) return;
-    const target = [
-      operation,
-      ...operation.querySelectorAll<HTMLElement>(
-        'button,a[href],[role="button"],input,select,textarea,[tabindex]',
-      ),
-    ].find(
-      (node) =>
-        node.tagName === saved.tag &&
-        nameOf(node) === saved.name &&
-        node.closest<HTMLElement>('[data-operation-section]')?.dataset
-          .operationSection === saved.section,
-    );
+    const target =
+      saved.control === 'operation'
+        ? operation
+        : saved.control === 'call'
+          ? operation.querySelector<HTMLElement>('[data-disclosure-row]')
+          : [
+              ...operation.querySelectorAll<HTMLElement>(
+                'button,a[href],[role="button"],input,select,textarea,[tabindex]',
+              ),
+            ].find(
+              (node) =>
+                node.tagName === saved.tag &&
+                nameOf(node) === saved.name &&
+                node.closest<HTMLElement>('[data-operation-section]')?.dataset
+                  .operationSection === saved.section,
+            );
     if (
       target &&
       !target.matches(':disabled') &&
       target.getClientRects().length
     ) {
+      if (saved.control === 'operation') target.tabIndex = -1;
       target.focus({ preventScroll: true });
       target.scrollIntoView({ block: 'nearest' });
     }
@@ -83,6 +89,12 @@ export function useWorkProcessDisclosures(runId: string) {
               operation: operation.id,
               tag: node.tagName,
               name: nameOf(node),
+              control:
+                node === operation
+                  ? 'operation'
+                  : node === operation.querySelector('[data-disclosure-row]')
+                    ? 'call'
+                    : 'named',
               section: node.closest<HTMLElement>('[data-operation-section]')
                 ?.dataset.operationSection,
             }

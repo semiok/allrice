@@ -100,7 +100,7 @@ function ApprovalField({ field }: { field: ApprovalFieldView }) {
     false,
   );
   return (
-    <div>
+    <div data-operation-section={`approval:${field.path}`}>
       <dt>{field.path}</dt>
       <dd className={styles.approvalValue}>
         {open ? field.full : field.text}

@@ -3159,6 +3159,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           name: '执行结果',
           exact: true,
         });
+        // The native group has its own scroll viewport; measure after the
+        // trigger is visible there, as it must be for a real pointer click.
+        await result.scrollIntoViewIfNeeded();
+        await settle();
         const resultTop = (await result.boundingBox())!.y;
         const lastHeight = (await last.boundingBox())!.height;
         const scrollTop = await scroll.evaluate((node) => node.scrollTop);
@@ -3606,14 +3610,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           output: 'network request failed',
           trusted: false,
         };
-        await expect
-          .poll(() =>
-            card
-              .locator('header')
-              .getByRole('status', { includeHidden: true })
-              .getAttribute('aria-label'),
-          )
-          .toBe('未完成');
+        await expect.poll(() => card.getAttribute('data-failed')).toBe('true');
         expect((await card.boundingBox())!.height).toBe(runningHeight);
         await detail.click();
         await card
@@ -3633,14 +3630,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         ).toBe(true);
         await collapse.click();
         operation.snapshot.status = 'unknown';
-        await expect
-          .poll(() =>
-            card
-              .locator('header')
-              .getByRole('status', { includeHidden: true })
-              .getAttribute('aria-label'),
-          )
-          .toBe('结果待确认');
+        await expect.poll(() => card.getAttribute('data-failed')).toBeNull();
         expect((await card.boundingBox())!.height).toBe(runningHeight);
         await detail.click();
         await card
@@ -9063,6 +9053,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await process
           .getByRole('region', { name: '工作步骤', exact: true })
           .count(),
+      ).toBe(1);
+      expect(
+        await process.getByRole('button', { name: /^阅读 · 1 项/ }).count(),
       ).toBe(0);
       await set('工作步骤展示', 'verbose');
       f.state.events.push(
@@ -9655,12 +9648,19 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect((await second.boundingBox())!.y).toBeLessThan(
         (await final.boundingBox())!.y,
       );
-      // Only the running receipt's own status says it is in progress.
+      // The running receipt exposes its header status and result summary;
+      // the native call row must not add a separate pending-status line.
       const inProgress = f.page
         .getByRole('region', { name: '工作过程', exact: true })
         .getByText('进行中', { exact: true })
         .filter({ visible: true });
-      expect(await inProgress.count()).toBe(1);
+      expect(await inProgress.count()).toBe(2);
+      expect(
+        await second
+          .getByRole('button', { name: '执行结果', exact: true })
+          .getByText('进行中', { exact: true })
+          .count(),
+      ).toBe(1);
       expect(
         await second.locator('header').getByRole('status').innerText(),
       ).toBe('进行中');
@@ -10211,10 +10211,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               inputs: [],
               pendingActions: [
                 {
-                  approvalId: base.approval.request.approvalId,
+                  approvalId: base.approval!.request.approvalId,
                   operationId: id(9802),
                   runId: run,
-                  expiresAt: base.approval.request.expiresAt,
+                  expiresAt: base.approval!.request.expiresAt,
                 },
               ],
             },
