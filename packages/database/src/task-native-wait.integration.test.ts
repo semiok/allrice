@@ -947,6 +947,61 @@ suite('MET153 durable native waits and queue authority', () => {
       await f.db`select status,attempt from allrice_jobs where id=${f.worker.jobId}`,
     ).toEqual([{ status: 'canceled', attempt: 1 }]);
   });
+  it.each(['live', 'expired'] as const)(
+    'MET-228: a terminal receipt retaining a %s lease still waits for native release',
+    async (lease) => {
+      const { f } = await setup();
+      const next = await sendOrdinary(f);
+      // An early ledger receipt is not the canonical terminal transition:
+      // even completed_at and an expired lease do not confirm owner release.
+      await f.db`update allrice_runs set state='failed',completed_at=clock_timestamp()
+        where id=${f.rootRunId}`;
+      await f.db`update allrice_jobs set status='failed',completed_at=clock_timestamp(),
+        lease_expires_at=clock_timestamp()+${lease === 'live' ? 30000 : -1000}*interval '1 millisecond'
+        where id=${f.worker.jobId}`;
+      expect(await claimNextJob(randomUUID(), 30000)).toBeNull();
+      expect(await runtime(f)).toMatchObject({
+        state: 'running',
+        active_run_id: f.rootRunId,
+        worker_id: f.worker.workerId,
+      });
+      await releaseConversationRuntime({
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        sessionId: f.session,
+        runId: f.rootRunId,
+        workerId: f.worker.workerId,
+        outcome: 'error',
+      });
+      expect(await claimNextJob(randomUUID(), 30000)).toMatchObject({
+        id: await jobId(f, next),
+        attempt: 1,
+      });
+      await stop(f, next);
+    },
+  );
+  it('MET-228: a terminal Run receipt alone cannot release an unowned nonterminal Job', async () => {
+    const { f, checkpoint, owner } = await setup();
+    await parkNativeQuestion({ ...owner, checkpoint });
+    const next = await sendOrdinary(f);
+    await f.db`update allrice_runs set state='failed',completed_at=clock_timestamp()
+      where id=${f.rootRunId}`;
+    expect(await claimNextJob(randomUUID(), 30000)).toBeNull();
+    expect(
+      await f.db`select status,worker_id,lease_token from allrice_jobs where id=${f.worker.jobId}`,
+    ).toEqual([
+      { status: 'waiting_approval', worker_id: null, lease_token: null },
+    ]);
+    // Restore only the synthetic early receipt before ordinary cancellation.
+    await f.db`update allrice_runs set state='waiting_approval',completed_at=null
+      where id=${f.rootRunId}`;
+    await stop(f, f.rootRunId);
+    expect(await claimNextJob(randomUUID(), 30000)).toMatchObject({
+      id: await jobId(f, next),
+      attempt: 1,
+    });
+    await stop(f, next);
+  });
   it('MET-210: stopping a Run that is waiting live on a question clears it', async () => {
     const { f } = await setup();
     expect(
