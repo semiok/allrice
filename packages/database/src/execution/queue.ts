@@ -1899,16 +1899,25 @@ export async function claimNextJob(
         and (candidate.available_at <= ${scanNow} or exists (
           -- A terminal Run may never have acquired its runtime, or an older
           -- parked handler may have retained its projection after stopping.
-          -- Release its FIFO successor through the existing queue.
+          -- A receipt alone is insufficient: an owned Job must still await
+          -- native release, even if its lease has already expired.
           select 1 from allrice_conversation_followups f
           where f.run_id=candidate.run_id and f.mode='follow_up' and f.state='queued'
             and not exists (select 1 from allrice_conversation_runtimes runtime
               where runtime.session_id=f.session_id and runtime.state='running'
                 and not exists (select 1 from allrice_runs terminal
+                  join allrice_jobs finished on finished.run_id=terminal.id
+                    and finished.organization_id=terminal.organization_id
+                    and finished.workspace_id=terminal.workspace_id and finished.owner_id=terminal.owner_id
                   where terminal.id=runtime.active_run_id
                     and terminal.organization_id=runtime.organization_id
-                    and terminal.workspace_id=runtime.workspace_id
-                    and terminal.state in ('succeeded','failed','canceled')))
+                    and terminal.workspace_id=runtime.workspace_id and terminal.owner_id=runtime.owner_id
+                    and terminal.state in ('succeeded','failed','canceled')
+                    and finished.status in ('succeeded','failed','dead_letter','canceled')
+                    and finished.completed_at is not null
+                    and finished.worker_id is null and finished.lease_token is null
+                    and finished.claimed_at is null and finished.heartbeat_at is null
+                    and finished.lease_expires_at is null))
             and not exists (
               select 1 from allrice_employee_runs e
               join allrice_runs r on r.id=e.run_id
