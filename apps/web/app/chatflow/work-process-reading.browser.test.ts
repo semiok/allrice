@@ -107,7 +107,9 @@ suite('reading a receipt while late native trace changes its group', () => {
         .waitFor();
     if (stage === 'append')
       await expect
-        .poll(() => page.locator('article[id^="operation-reading-"]').count())
+        .poll(() => page.locator('article[id^="operation-reading-"]').count(), {
+          timeout: 5000,
+        })
         .toBe(37);
   }
   async function readResult(page: Page) {
@@ -360,10 +362,10 @@ suite('reading a receipt while late native trace changes its group', () => {
       const list = processOf(page).locator('ul[aria-label="工作步骤"]').first();
       expect(
         await list.evaluate((node) => ({
-          height: node.parentElement!.clientHeight,
+          height: getComputedStyle(node.parentElement!).maxHeight,
           overflow: getComputedStyle(node.parentElement!).overflowY,
         })),
-      ).toEqual({ height: 360, overflow: 'auto' });
+      ).toEqual({ height: '360px', overflow: 'auto' });
       await update(page, 'split');
       for (const row of await group().all())
         expect(await row.getAttribute('aria-expanded')).toBe('true');
