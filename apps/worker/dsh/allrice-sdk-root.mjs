@@ -188,7 +188,8 @@ export class AllRiceSdkRoot {
   }
   async waitRoot(sessionId) {
     this.requireRoot(sessionId);
-    return this.sdk.wait({ sessionId });
+    const wait = () => this.sdk.wait({ sessionId });
+    return this.runAdmission ? this.runAdmission.wait(wait) : wait();
   }
   async closeRoot(sessionId) {
     if (this.rootId && this.rootId !== sessionId)
@@ -202,6 +203,7 @@ export class AllRiceSdkRoot {
     }
     const recovery = this.recovering;
     this.phase = 'closing';
+    this.runAdmission?.stop();
     this.epoch++;
     this.closing = (async () => {
       await this.initializing?.catch(() => {});
@@ -218,7 +220,9 @@ export class AllRiceSdkRoot {
           ? record.agent
           : undefined;
       if (agent) {
-        agent.cancel({ kind: 'user' }, { keepInbox: true });
+        await this.clearRootQuestion?.(sessionId, 'Session closing');
+        await this.ctx.subagents?.drainDescendants([agent]);
+        agent.cancel({ kind: 'user' });
         await agent.whenIdle();
         await this.taskProgress?.flush();
         await this.ctx.sessions.flush(agent.session);

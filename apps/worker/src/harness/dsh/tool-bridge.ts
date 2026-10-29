@@ -204,7 +204,14 @@ export function dshInboundToolHandler(
         false,
       );
     }
-    const result = await input.onToolCall({ id, name, arguments: args });
+    const result = await input.onToolCall({
+      id,
+      name,
+      arguments: args,
+      ...(typeof params.nativeSessionId === 'string'
+        ? { nativeSessionId: params.nativeSessionId }
+        : {}),
+    });
     return {
       modelContent: result.modelContent,
       summary: result.summary,

@@ -122,6 +122,7 @@ export class DshProtocolClient {
   private readonly closed: Promise<void>;
   private inboundRequestHandler: DshInboundRequestHandler | null = null;
   private requestId = 0;
+  private runId?: string;
   private closing = false;
   private initializeStarted = false;
   private closeTask: Promise<void> | undefined;
@@ -210,6 +211,7 @@ export class DshProtocolClient {
     requireTaskProgress?: boolean;
     requireDurableQuestions?: boolean;
     requireContentGuard?: boolean;
+    requireRunAdmission?: boolean;
   }) {
     const {
       expectedVersion,
@@ -222,6 +224,15 @@ export class DshProtocolClient {
       ...params,
       ...(requireContentGuard ? { requireContentGuard: true } : {}),
     });
+    if (
+      input.requireRunAdmission &&
+      record(result.capabilities)?.runAdmission !== true
+    )
+      throw new HandlerError(
+        'DSH_RUN_GUARD_UNAVAILABLE',
+        'DSH Run admission is unavailable',
+        false,
+      );
     const serverInfo = record(result.serverInfo);
     if (
       input.contentScenes?.length &&
@@ -327,8 +338,30 @@ export class DshProtocolClient {
   /** DSH owns the tree wait, including follow-up turns and parked children.
    * Like assistant join, its lifetime belongs to Worker cancellation/lease,
    * not the short RPC acknowledgement timeout. Preserve native rejections. */
+  async beginRun(sessionId: string, runId: string) {
+    await this.request('run/begin', { sessionId, runId });
+    this.runId = runId;
+  }
+
+  async endRun(sessionId: string) {
+    try {
+      return await this.request('run/end', { sessionId, runId: this.runId });
+    } finally {
+      this.runId = undefined;
+    }
+  }
+
   async wait(sessionId: string) {
-    return this.request('session/wait', { sessionId }, 0);
+    try {
+      return await this.request('session/wait', { sessionId }, 0);
+    } catch (cause) {
+      throw new HandlerError(
+        'DSH_WAIT_FAILED',
+        'DSH completion was not confirmed; no automatic replay',
+        false,
+        { cause },
+      );
+    }
   }
 
   async parkQuestion(sessionId: string, questionId: string) {
@@ -393,6 +426,7 @@ export class DshProtocolClient {
     sessionId: string,
     text: string,
     typed?: {
+      runId?: string;
       inputId: string;
       turnId: string;
       kind: 'steer_current' | 'ask_user';
@@ -700,6 +734,12 @@ export class DshProtocolClient {
               );
             }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
+      if (['session/prompt', 'session/steer'].includes(method) && this.runId)
+        params = {
+          ...params,
+          runId: this.runId,
+          ...(params?.runId ? { runId: params.runId } : {}),
+        };
       this.child.stdin.write(
         `${JSON.stringify({ jsonrpc: '2.0', id, method, ...(params ? { params } : {}) })}\n`,
         (error) => {

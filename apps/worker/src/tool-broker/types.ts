@@ -26,6 +26,7 @@ export interface RiceToolCall {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+  nativeSessionId?: string;
 }
 
 export interface RiceToolResult {

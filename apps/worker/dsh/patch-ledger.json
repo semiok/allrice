@@ -103,7 +103,7 @@
       "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-jsonrpc-runtime.mjs",
-      "reason": "Single existing Host composes the published public SDK, one business root and SDK-owned AgentHandles. AllRice retains its own exact-Agent/epoch lifecycle fence, public event forwarding through bounded teardown, resume-only recovery, questions, references and authorization. No SDK private access, alternate loop or second Worker."
+      "reason": "Single Host composes public SDK AgentHandles and bounded resume-only recovery. MET-228 PR3a adds Run admission, live parent/cwd identity, tool-seam authority, frozen model-route preflight and Run-scoped input receipts through allrice-run-admission.mjs. Public drainDescendants precedes root cancel without keepInbox and SDK shutdown. Identity/start observations and queued receipt attribution are one-way only; no child lifecycle controller, PG state, private SDK access or production delegation tool enablement."
     },
     {
       "id": "allrice-session-reference-v1",

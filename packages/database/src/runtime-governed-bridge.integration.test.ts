@@ -2595,7 +2595,7 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
     expect(clock?.phase).toBe('terminal');
     expect(clock?.completed_at).not.toBeNull();
   });
-  it('P10 persists strict input identity, native adoption and cancels expired steer without creating a later task', async () => {
+  it('P10 persists strict Run input and cross-turn adoption without creating a later task', async () => {
     const f = await artifactFixture(riceManifest());
     f.context.memberships = f.policyPayload.memberships;
     const workerId = f.execution.worker.id;
@@ -2654,7 +2654,18 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       workerId,
       generation: 3,
       turnId,
+      runId: f.run,
     };
+    const adoptedTurn = `native-${f.sessionId}:turn:2`;
+    {
+      await database`update allrice_conversation_runtimes set active_turn_id=${adoptedTurn} where session_id=${f.sessionId}`;
+      await database`insert into allrice_run_events(organization_id,workspace_id,run_id,sequence,event_type,payload)
+        select ${f.context.organizationId},${f.context.workspaceId!},${f.run},coalesce(max(sequence),-1)+1,'turn.started',
+          ${database.json({ turnId: adoptedTurn, generation: 3 })} from allrice_run_events where run_id=${f.run}`;
+      expect(
+        await claimConversationSteer({ ...claimInput, runId: randomUUID() }),
+      ).toBeNull();
+    }
     expect(
       await claimConversationSteer({ ...claimInput, workerId: randomUUID() }),
     ).toBeNull();
@@ -2684,11 +2695,23 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
     const proof = {
       ...pending,
       status: 'adopted' as const,
-      turnId,
+      turnId: adoptedTurn,
+      runId: f.run,
       sequence: 17,
       checkpoint: 'step_user_message' as const,
     };
-    await consumeConversationSteer({ commandId: command!.id, workerId, proof });
+    await expect(
+      consumeConversationSteer({
+        commandId: command!.id,
+        workerId,
+        proof: { ...proof, runId: randomUUID() },
+      }),
+    ).rejects.toThrow('INPUT_ADOPTION_PROOF_REQUIRED');
+    await consumeConversationSteer({
+      commandId: command!.id,
+      workerId,
+      proof,
+    });
     const status = await getInteractionStatus(f.context, f.sessionId);
     expect(status.inputs[0]).toMatchObject({
       status: 'adopted',
@@ -2719,6 +2742,7 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
     ).toBe(false);
     const unanswered = {
       ...input,
+      expectedTurnId: adoptedTurn,
       clientMessageId: randomUUID(),
       text: 'later correction',
     };

@@ -47,7 +47,9 @@ export async function readSessionSteering(
       row.state === 'consumed' &&
       proof?.status === 'adopted' &&
       proof.inputId === row.client_user_message_id &&
-      proof.turnId === row.expected_turn_id;
+      (proof.runId
+        ? proof.runId === row.run_id
+        : proof.turnId === row.expected_turn_id);
     return {
       messageId: row.user_message_id,
       receiptId: adopted ? row.assistant_message_id : null,

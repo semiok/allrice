@@ -81,7 +81,9 @@ export function progressResult(name, block) {
 const exactModelDigest = (value) =>
   `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
 
-export function installTaskProgress(ctx, bridge, configuration = {}) {
+export function installTaskProgress(ctx, send, configuration = {}) {
+  const attribute = configuration.attribute ?? ((p) => p);
+  const bridge = (p, signal) => send(attribute(p), signal);
   let writes = Promise.resolve(),
     failure;
   const toolNames = new Map(); // outstanding calls only; cleared at receipt
@@ -125,8 +127,9 @@ export function installTaskProgress(ctx, bridge, configuration = {}) {
     throw Error('task_progress_root_not_live');
   }
   function track(request) {
+    const attributed = attribute(request);
     writes = writes
-      .then(() => bridge(request))
+      .then(() => send(attributed))
       .catch((error) => {
         failure = error;
       });

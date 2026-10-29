@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ExecutionContextSchema } from '@allrice/contracts';
 import * as client from '../../../../packages/database/src/core/client.ts';
+import { assertNativeRunAuthority } from '../../../../packages/database/src/run-delivery-authority.ts';
 import {
   createRuntimeFixtureDatabase,
   runtimeFixtureStorage,
@@ -192,6 +193,23 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
     };
   }
   type Subject = Awaited<ReturnType<typeof subject>>;
+
+  it.each(['current', 'tenant', 'generation', 'lease', 'revoked'] as const)(
+    'PR3a 工具门卫只读复用 Run 权限：%s',
+    async (mode) => {
+      const f = await subject();
+      const authority = structuredClone(f.authority);
+      if (mode === 'tenant') authority.scope.organizationId = randomUUID();
+      if (mode === 'generation') authority.worker.generation++;
+      if (mode === 'lease') authority.worker.leaseToken = randomUUID();
+      if (mode === 'revoked')
+        await fixture.db`update allrice_memberships set active=false where organization_id=${f.org} and user_id=${f.user}`;
+      // PostgreSQL READ ONLY rejects accidental writes or locking SELECTs.
+      const admission = assertNativeRunAuthority(authority);
+      if (mode === 'current') await expect(admission).resolves.toBeDefined();
+      else await expect(admission).rejects.toThrow();
+    },
+  );
 
   it.each([
     'current',

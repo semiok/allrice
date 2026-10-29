@@ -1,3 +1,4 @@
+import { nativeRunScope } from './dsh/run-scope.js';
 import type { BootstrapReceipt } from '@allrice/contracts';
 import { readDshToolResult } from '@allrice/contracts';
 import type { SessionReferenceSnapshot } from '@allrice/contracts';
@@ -302,6 +303,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
     // child join/retry; a later runOnce replaces it with its own turn barrier.
     let awaitTurnOrigin: ((settled?: boolean) => Promise<void>) | undefined;
     const ordinaryHandler = dshInboundToolHandler(input);
+    const runId = input.executionEnvironment.ALLRICE_RUN_ID;
+    const runScope = runId
+      ? nativeRunScope(runtime.client, threadId, runId)
+      : undefined;
+    const authorizeRun = input.nativeRunAuthority?.(generation);
     let turnId: string | null = null;
     let contentAuthorizationFailure: HandlerError | undefined;
     const checkContent = async (phase: DshContentCheckPhase = 'other') => {
@@ -356,9 +362,26 @@ export class DshHarnessAdapter implements HarnessAdapter {
         executionSignal.throwIfAborted();
         return { origin };
       }
+      if (runScope) params = runScope.check(params);
+      if (method === 'allrice/run-authorize') {
+        executionSignal.throwIfAborted();
+        try {
+          if (params.kind === 'tool') await authorizeRun?.();
+          else if (params.kind === 'model') await input.modelPreflight?.();
+          else throw Error('DSH_RUN_REQUEST_DENIED');
+          executionSignal.throwIfAborted();
+          return { allowed: true };
+        } catch (error) {
+          contentAuthorizationFailure ??= contentGuardFailure(error);
+          void runtime.client.interrupt(threadId).catch(() => {});
+          throw contentAuthorizationFailure;
+        }
+      }
       if (method === 'allrice/personal-skill-check') {
         if (!input.contentGuard) throw Error('personal_skill_guard_unbound');
-        const pin = PersonalSkillPinSchema.parse(params);
+        const pinParams = { ...params };
+        delete pinParams.nativeSessionId;
+        const pin = PersonalSkillPinSchema.parse(pinParams);
         const skill = nativeSkills.find(
           (s) => s.id === pin.versionId && s.personal,
         );
@@ -379,9 +402,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
         try {
           await checkContent('sceneLoad');
           if (method === 'allrice/content-scene-load') {
+            const selectionParams = { ...params };
+            delete selectionParams.nativeSessionId;
             const selection = EmployeeSceneReadSchema.omit({
               receiptId: true,
-            }).parse(params);
+            }).parse(selectionParams);
             if (!input.contentGuard?.loadScene)
               throw Error('employee_scene_unbound');
             return await input.contentGuard.loadScene(selection);
@@ -389,7 +414,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           const evidence = EmployeeSceneStateSchema.shape.adopted
             .unwrap()
             .parse(params);
-          if (evidence.nativeSessionId !== threadId)
+          if (!runScope && evidence.nativeSessionId !== threadId)
             throw Error('employee_scene_native_scope');
           if (!input.contentGuard?.adoptScene)
             throw Error('employee_scene_unbound');
@@ -401,7 +426,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       }
       if (method === 'allrice/content-check') {
         if (!input.contentGuard) throw Error('employee_content_guard_unbound');
-        if (params.nativeSessionId !== threadId)
+        if (!runScope && params.nativeSessionId !== threadId)
           throw Error('employee_content_native_scope');
         await checkContent('nativeDispatch');
         return { allowed: true };
@@ -414,7 +439,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         )
           await checkContent('modelAdmission');
         if (!input.progress) throw Error('task_progress_disabled');
-        if (params.nativeSessionId !== threadId)
+        if (!runScope && params.nativeSessionId !== threadId)
           throw Error('task_progress_native_scope');
         const progress = await input.progress(params);
         if (params.kind === 'model' && typeof params.callId === 'string') {
@@ -611,6 +636,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           throw nativeSessionRecoveryFailure(error);
         }
       }
+      if (runId) await runtime.client.beginRun(threadId, runId);
       let bootstrap = fresh ? input.kernel.bootstrapConversation : '';
       if (
         runtime.bootstrapCoverage &&
@@ -756,7 +782,13 @@ export class DshHarnessAdapter implements HarnessAdapter {
                   sessionId: threadId,
                 });
               }
-            : undefined,
+            : runId
+              ? async (confirmSettled) => {
+                  await runtime.client.wait(threadId);
+                  executionSignal.throwIfAborted();
+                  confirmSettled();
+                }
+              : undefined,
           onFailureUsage: (receipt) => {
             interruptedUsage = {
               ...receipt,
@@ -1072,6 +1104,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
               name: toolCall.name,
               argumentsDigest: envelopeDigest(toolCall.arguments),
             });
+          await authorizeRun?.();
           const toolResult = await input.onToolCall(toolCall);
           if (input.progress)
             await input.progress({
@@ -1171,6 +1204,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           throw error;
         }
       }
+      if (runId) await runtime.client.endRun(threadId);
     } catch (caught) {
       if (caught instanceof NativeQuestionParked && input.questionWait) {
         for (const key of [
@@ -1254,6 +1288,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         input.signal.removeEventListener('abort', onAbort);
         this.runtimePool.touch(runtime);
         runtime.client.setRequestHandler(null);
+        runScope?.unsubscribe();
       } finally {
         stopWindow.dispose();
         unsubscribeModelTiming();
@@ -1303,6 +1338,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
   async steer(input: {
     threadId: string;
     message: string;
+    runId?: string;
     turnId: string;
     clientUserMessageId: string;
     inputKind?: 'steer_current' | 'ask_user';
@@ -1312,6 +1348,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
       input.message,
       input.inputKind
         ? {
+            ...(input.inputKind === 'steer_current'
+              ? { runId: input.runId }
+              : {}),
             inputId: input.clientUserMessageId,
             turnId: input.turnId,
             kind: input.inputKind,
@@ -1324,7 +1363,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
       const proof = RuntimeNativeInputProofSchema.parse(result);
       if (
         proof.inputId !== input.clientUserMessageId ||
-        (proof.status === 'adopted' && proof.turnId !== input.turnId)
+        (proof.status === 'adopted' &&
+          (proof.runId
+            ? proof.runId !== input.runId
+            : proof.turnId !== input.turnId))
       )
         throw new Error('DSH_INPUT_PROOF_MISMATCH');
       return proof;

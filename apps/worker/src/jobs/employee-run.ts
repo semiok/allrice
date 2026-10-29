@@ -43,6 +43,7 @@ import {
   prepareRunExperiences,
   prepareRunMemoryContext,
   assertEmployeeContentContext,
+  assertNativeRunAuthority,
   loadEmployeeRuntimeScene,
   loadEmployeeRuntimeReferences,
   readEmployeeReferenceCitations,
@@ -998,12 +999,15 @@ export async function executeEmployeeRun({
             fallbacks: fallbackSnapshots,
             reasoningEffort: executionSnapshot.runtimePolicy.reasoningEffort,
           });
-    const subscriptionSnapshot = preflightSubscription({
+    const subscriptionPreflightInput = {
       sessionId: input.sessionId,
       modelSnapshot: frozenModelSnapshot,
       decision: routeDecision,
       providerSnapshot,
-    });
+    };
+    const subscriptionSnapshot = preflightSubscription(
+      subscriptionPreflightInput,
+    );
     const modelBudgetScope = {
       verifiedSubscription: !!subscriptionSnapshot,
       workflow: routeDecision.selectedKind === 'workflow',
@@ -1751,6 +1755,26 @@ export async function executeEmployeeRun({
         : await adapter
             .execute({
               nativeQuestionMode,
+              ...(!repairTask && !repositoryReviewTask
+                ? {
+                    nativeRunAuthority: (generation: number) => () =>
+                      assertNativeRunAuthority({
+                        scope: {
+                          organizationId: execution.context.organizationId,
+                          workspaceId: execution.context.workspaceId!,
+                          projectId: resolved.projectId,
+                        },
+                        rootRunId: execution.context.runId,
+                        worker: {
+                          ...workflowLease,
+                          attempt: execution.job.attempt,
+                          generation,
+                        },
+                      }),
+                  }
+                : {}),
+              modelPreflight: async () =>
+                preflightSubscription(subscriptionPreflightInput),
               contentGuard,
               progress: taskProgress,
               questionWait,
@@ -1908,7 +1932,7 @@ export async function executeEmployeeRun({
                   turnId,
                   appendEvent: appendChatFlowEvent,
                 });
-                if (independentDelivery && !steerPolling) return;
+                if (steerLoop || (independentDelivery && !steerPolling)) return;
                 steerLoop = pollEmployeeConversationSteers({
                   ownership,
                   generation: runtime.generation,

@@ -13,7 +13,13 @@ const uuid =
 const digest = (input) =>
   `sha256:${createHash('sha256')
     .update(
-      JSON.stringify([input.inputId, input.turnId, input.kind, input.text]),
+      JSON.stringify([
+        input.inputId,
+        input.turnId,
+        input.kind,
+        input.text,
+        ...(input.runId ? [input.runId] : []),
+      ]),
     )
     .digest('hex')}`;
 
@@ -72,11 +78,12 @@ export function inspectDshInput(agent, input, questionView) {
     const nativeTurn = events.findLast(
       (e) => e.type === 'turn/start' && e.seq < proof.seq,
     )?.data.turn;
-    // Do not manufacture evidence for the requested turn if an inbox entry
-    // somehow crossed a turn boundary during recovery.
+    // Run inputs bind the requested turn and Run in the existing digest;
+    // expose the actual native adoption turn, never manufacture that evidence.
     if (
-      bound.data.turnId !== input.turnId ||
-      !input.turnId.endsWith(`:turn:${nativeTurn}`)
+      !input.runId &&
+      (bound.data.turnId !== input.turnId ||
+        !input.turnId.endsWith(`:turn:${nativeTurn}`))
     )
       return {
         status: 'unknown',
@@ -90,7 +97,10 @@ export function inspectDshInput(agent, input, questionView) {
       inputId: input.inputId,
       messageId: bound.data.messageId,
       sequence: proof.seq,
-      turnId: input.turnId,
+      turnId: input.runId
+        ? `${agent.session.id}:turn:${events.findLast((e) => e.type === 'turn/start' && e.seq < proof.seq)?.data.turn}`
+        : input.turnId,
+      ...(input.runId ? { runId: input.runId } : {}),
       checkpoint: answer ? 'question_resolved' : 'step_user_message',
       ...(nativeQuestion
         ? {
@@ -151,8 +161,9 @@ export async function deliverDshInput(
     .snapshotEvents()
     .findLast((e) => e.type === 'turn/start')?.data.turn;
   if (
-    agent.status !== (suspended ? 'idle' : 'running') ||
-    input.turnId !== `${sessionId}:turn:${turn}`
+    !input.runId &&
+    (agent.status !== (suspended ? 'idle' : 'running') ||
+      input.turnId !== `${sessionId}:turn:${turn}`)
   )
     throw new TypeError('INPUT_TURN_CHANGED');
   if (input.kind === 'ask_user') {
@@ -192,10 +203,11 @@ export async function deliverDshInput(
       inputId: input.inputId,
       digest: digest(input),
       messageId: message.id,
-      turnId: input.turnId,
+      turnId: input.runId ? `${sessionId}:turn:${turn}` : input.turnId,
     });
     await flush();
-    if (!isCurrent() || agent.status !== 'running') return inspect();
+    if (!isCurrent() || (!input.runId && agent.status !== 'running'))
+      return inspect();
     agent.steer(message);
   }
   await flush();

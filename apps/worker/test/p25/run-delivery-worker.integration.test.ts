@@ -58,6 +58,7 @@ import {
 import { readDeliverySnapshot } from '../../../../packages/database/src/run-delivery.ts';
 import { executeEmployeeRun } from '../../src/jobs/employee-run.ts';
 import * as TurnLifecycle from '../../src/conversation/turn-lifecycle.ts';
+import * as SubscriptionPreflight from '../../src/subscription-preflight.ts';
 import { prepareExecutionIsolation } from '../../src/isolation.ts';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.ts';
 import { DshProtocolClient } from '../../src/harness/dsh-protocol-client.ts';
@@ -524,17 +525,74 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     45000,
   );
 
+  it('PR3a 子智能体调用工具前撤销成员权限，真实 Worker 拒绝并收树', async () => {
+    let rootCalls = 0;
+    let childCalls = 0;
+    const f: Setup = await setup(async (request) => {
+      if (
+        JSON.stringify(
+          request.messages.filter((m) => m.role === 'user'),
+        ).includes('PR3A_REVOKED_CHILD')
+      ) {
+        childCalls++;
+        await f.db`update allrice_memberships set active=false where organization_id=${f.identity.org} and user_id=${f.identity.user}`;
+        return {
+          nativeTool: {
+            name: 'todo_write',
+            arguments: {
+              todos: [{ content: '未经授权的新操作', status: 'pending' }],
+            },
+          },
+        };
+      }
+      if (++rootCalls === 1)
+        return {
+          nativeTool: {
+            name: 'subagent',
+            arguments: {
+              description: '权限边界',
+              prompt: 'PR3A_REVOKED_CHILD',
+            },
+          },
+        };
+      return { text: '等待子任务' };
+    }, true);
+    const task = await prepare(f, '请派一个子智能体整理待办。');
+    try {
+      await expect(task.run()).rejects.toMatchObject({ retryable: false });
+      expect(childCalls).toBe(1);
+      expect(await state(f, task.runId)).toMatchObject({ successes: 0 });
+      expect(
+        (await journal()).filter((e) => e.type === 'todo/write'),
+      ).toHaveLength(0);
+      expect(adapter!.runtimeInventory()).toHaveLength(0);
+    } finally {
+      await task.isolation.cleanup();
+    }
+  }, 45000);
+
   it('后代晚于根首次 idle 结算并唤醒根：真实 Worker 将后续 turn 写入 PG 后提交', async () => {
     const childEntered = gate(),
       releaseChild = gate(),
       releaseOriginWrite = gate();
     let rootCalls = 0;
+    let childCalls = 0;
+    const preflight = vi.spyOn(SubscriptionPreflight, 'preflightSubscription');
     const answer = '已汇总子智能体的实际结果。';
     const f = await setup(async (request) => {
       const userInputs = request.messages.filter((m) => m.role === 'user');
       if (JSON.stringify(userInputs).includes('PR1B_CHILD_TASK')) {
         childEntered.release();
         await releaseChild.promise;
+        if (++childCalls === 1)
+          return {
+            nativeTool: {
+              name: 'todo_write',
+              arguments: {
+                todos: [{ content: '核对原生子级权限', status: 'completed' }],
+              },
+            },
+          };
         return { text: 'PR1B_CHILD_RESULT' };
       }
       rootCalls++;
@@ -552,17 +610,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       return { text: answer };
     }, true);
     const task = await prepare(f, '启动子任务，结束后汇总，不需要文件。');
-    let rootId: unknown;
-    const finalDelivery = DshProtocolClient.prototype.finalDelivery;
-    vi.spyOn(DshProtocolClient.prototype, 'finalDelivery').mockImplementation(
-      function (this: DshProtocolClient, action, params) {
-        if (action === 'bind') rootId = params.sessionId;
-        return finalDelivery.call(this, action, params);
-      },
-    );
-    // PR3 will provide child SaaS admission/accounting. Stub only those two
-    // child seams for this future native composition, never root authority,
-    // origin, notifications, wait, journal or PostgreSQL persistence.
+    // PR3a: real child identity, authority and progress ports; no child bypass.
     const setHandler = DshProtocolClient.prototype.setRequestHandler;
     vi.spyOn(
       DshProtocolClient.prototype,
@@ -572,10 +620,6 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         this,
         handler &&
           (async (method, params) => {
-            if (rootId && params.nativeSessionId !== rootId) {
-              if (method === 'allrice/content-check') return { allowed: true };
-              if (method === 'allrice/progress') return { paused: false };
-            }
             if (method === 'allrice/final-delivery-origin')
               releaseOriginWrite.release();
             return handler(method, params);
@@ -648,7 +692,18 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       });
       expect(rootCalls).toBe(3);
       expect(heldOriginWrite).toBe(true);
-      expect(model!.requests).toHaveLength(4);
+      expect(model!.requests).toHaveLength(5);
+      // Once at Run freeze and once per real root/child model dispatch.
+      expect(preflight).toHaveBeenCalledTimes(6);
+      const calls =
+        await f.db`select distinct native_session_id from allrice_task_calls where run_id=${task.runId}`;
+      expect(calls.map((row) => row.native_session_id)).toContain(
+        coverage.proof.nativeSessionId,
+      );
+      expect(calls).toHaveLength(2);
+      expect(
+        (await journal()).filter((e) => e.type === 'todo/write'),
+      ).toHaveLength(1);
       expect(JSON.stringify(model!.requests.at(-1)!.messages)).toContain(
         'PR1B_CHILD_RESULT',
       );
