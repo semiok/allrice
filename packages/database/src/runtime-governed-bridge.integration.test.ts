@@ -3653,7 +3653,9 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       const browser = await chromium.launch({
         headless: true,
         executablePath:
-          '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+          process.platform === 'darwin'
+            ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+            : chromium.executablePath(),
       });
       try {
         const page = await browser.newPage({
@@ -4367,7 +4369,9 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       const browser = await chromium.launch({
         headless: true,
         executablePath:
-          '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+          process.platform === 'darwin'
+            ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+            : chromium.executablePath(),
       });
       try {
         const page = await browser.newPage({

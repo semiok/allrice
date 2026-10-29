@@ -44,7 +44,9 @@ suite('saved-document real browser boundary', () => {
     const browser = await chromium.launch({
       headless: true,
       executablePath:
-        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        process.platform === 'darwin'
+          ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+          : chromium.executablePath(),
     });
     const context = await browser.newContext({
       viewport: { width: 1280, height: 720 },

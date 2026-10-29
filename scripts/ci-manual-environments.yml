@@ -1,0 +1,63 @@
+# Only physical/external prerequisites belong here. {file} is filled by inventory.
+# Commands run in the task worktree after provisioning the stated prerequisite;
+# never point them at shared Dev or reuse the user's default Docker context.
+ALLRICE_LOCAL_DOCKER_TEST_SOCKET:
+  reason: Dedicated allrice-b2 macOS Colima VM, pinned toolchain image and its Docker socket; these tests execute containers and verify physical isolation.
+  command: ALLRICE_LOCAL_DOCKER_TEST_SOCKET="$HOME/.colima/allrice-b2/docker.sock" pnpm exec vitest run {file} --maxWorkers=2
+ALLRICE_TEST_LOCAL_BROWSER_NATIVE:
+  reason: Built and signed macOS BrowserLauncher/guardian plus actual native Chrome; preview tests additionally require the dedicated allrice-b2 VM (local-preview-native-http requires Intel macOS).
+  command: ALLRICE_TEST_LOCAL_BROWSER_NATIVE=1 pnpm exec vitest run {file} --maxWorkers=2
+ALLRICE_BROWSER_FIXTURE_STATE:
+  reason: Provisioned production HTTPS/DNS proxy and owned login/upload/download fixture; the JSON state file is written by that external service, not a synthetic loopback server.
+  command: ALLRICE_BROWSER_FIXTURE_STATE="$BROWSER_FIXTURE_STATE" pnpm exec vitest run {file} --maxWorkers=2
+ALLRICE_RUN_CLOUD_INTEGRATION:
+  reason: Actual dedicated gVisor/runsc VM and pinned cloud image; tests inspect and destroy physical containers/volumes.
+  command: ALLRICE_RUN_CLOUD_INTEGRATION=1 pnpm exec vitest run {file} --maxWorkers=2
+ALLRICE_RUN_PYTHON_INTEGRATION:
+  reason: Actual gVisor Python image and Chinese chart fonts; validates physical volume/input streaming and generated image bytes.
+  command: ALLRICE_RUN_PYTHON_INTEGRATION=1 pnpm exec vitest run {file} --maxWorkers=2
+ALLRICE_RUN_OFFICE_INTEGRATION:
+  reason: Actual task sandbox with DSH Office toolchain/rendering containers; verifies original XLSX/PDF/PPTX bytes rather than fixture receipts.
+  command: ALLRICE_RUN_OFFICE_INTEGRATION=1 pnpm exec vitest run {file} --maxWorkers=2
+ALLRICE_RUN_CLOUD_PROJECT_SERVICE_NATIVE:
+  reason: Owned runsc VM with actual project service, preview socket, source fixture and physical stop/guard evidence; needs isolated backend configuration.
+  command: ALLRICE_RUN_CLOUD_PROJECT_SERVICE_NATIVE=1 pnpm exec vitest run {file} --maxWorkers=2
+ALLRICE_RUN_PROJECT_SERVICE_NATIVE:
+  reason: Dedicated native Bridge project service socket and prepared architecture-specific project fixture; launches an actual private preview service.
+  command: ALLRICE_RUN_PROJECT_SERVICE_NATIVE=1 pnpm exec vitest run {file} --maxWorkers=2
+ALLRICE_RUN_PROJECT_CLOUD_INTEGRATION:
+  reason: Dedicated runsc VM with managed project toolchain and real failing/passing project builds; requires project manager root/backend configuration.
+  command: ALLRICE_RUN_PROJECT_CLOUD_INTEGRATION=1 pnpm exec vitest run {file} --maxWorkers=2
+ALLRICE_RUN_REPOSITORY_NATIVE:
+  reason: Actual runsc verification of archived full repository source; requires registered baseline/catalog paths and pinned verification image.
+  command: ALLRICE_RUN_REPOSITORY_NATIVE=1 pnpm exec vitest run {file} --maxWorkers=2
+ALLRICE_RUN_NATIVE_CALENDAR_HOST:
+  reason: Isolated M1 allrice_b2 fixture plus prepared native controller artifact and empty physical state partition supplied by ALLRICE_NATIVE_RECURRING_REFERENCE/ALLRICE_NATIVE_CALENDAR_HOST_ARTIFACT_ROOT; test explicitly rejects CI database.
+  command: ALLRICE_RUN_NATIVE_CALENDAR_HOST=1 pnpm exec vitest run {file} --maxWorkers=2
+ALLRICE_RUN_NATIVE_MONTHLY_HOST:
+  reason: Same isolated physical controller/calendar Host prerequisites, exercising a real monthly clock and retained acceptance evidence.
+  command: ALLRICE_RUN_NATIVE_CALENDAR_HOST=1 ALLRICE_RUN_NATIVE_MONTHLY_HOST=1 pnpm exec vitest run {file} --maxWorkers=2
+ALLRICE_RUN_QUALITY_NATIVE:
+  reason: Actual fixed cloud project build, browser assertion and immutable artifact export inside the dedicated VM.
+  command: ALLRICE_RUN_QUALITY_NATIVE=1 pnpm exec vitest run {file} --maxWorkers=2
+ALLRICE_RUN_COMPILED_REPAIR_NATIVE:
+  reason: Registered full repository baseline/catalog and retained accepted repair history; compiles real packages through the cloud verifier.
+  command: ALLRICE_RUN_COMPILED_REPAIR_NATIVE=1 pnpm exec vitest run {file} --maxWorkers=2
+ALLRICE_RUN_REPAIR_CHAIN_NATIVE:
+  reason: Real DSH proposal/provider credentials plus dedicated cloud verifier and registered repository baseline/catalog; unavailable in credential-free CI.
+  command: ALLRICE_RUN_REPAIR_CHAIN_NATIVE=1 pnpm exec vitest run {file} --maxWorkers=2
+ALLRICE_OFFICE_FIRST_ORIGINAL_V1:
+  reason: Retained original finance workbook from external model/Office acceptance; supplied immutable file is compared byte-for-byte, not regenerated synthetic data.
+  command: ALLRICE_OFFICE_FIRST_ORIGINAL_V1="$ORIGINAL_V1" ALLRICE_OFFICE_FIRST_ORIGINAL_V2="$ORIGINAL_V2" pnpm exec vitest run {file} --maxWorkers=2
+ALLRICE_OFFICE_FIRST_ORIGINAL_V2:
+  reason: Retained second original finance workbook from the same external Office acceptance, required together with V1.
+  command: ALLRICE_OFFICE_FIRST_ORIGINAL_V1="$ORIGINAL_V1" ALLRICE_OFFICE_FIRST_ORIGINAL_V2="$ORIGINAL_V2" pnpm exec vitest run {file} --maxWorkers=2
+ALLRICE_STATIC_BROWSER_PHYSICAL:
+  reason: Dedicated macOS Bridge device/VM and native saved-page renderer; verifies physical local browser operation receipts.
+  command: ALLRICE_STATIC_BROWSER_PHYSICAL=1 pnpm exec vitest run {file} --maxWorkers=2
+ALLRICE_STATIC_BROWSER_LOCAL_PHYSICAL:
+  reason: Actual macOS device HTTP Bridge and built native saved-page renderer, with dedicated disposable database and VM.
+  command: ALLRICE_STATIC_BROWSER_LOCAL_PHYSICAL=1 pnpm exec vitest run {file} --maxWorkers=2
+ALLRICE_STATIC_BROWSER_WORKBENCH:
+  reason: Running isolated candidate Web/Worker, authenticated workbench and physical native renderer; requires external candidate origin and private download endpoints.
+  command: ALLRICE_STATIC_BROWSER_WORKBENCH=1 pnpm exec vitest run {file} --maxWorkers=2
