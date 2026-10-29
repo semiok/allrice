@@ -448,6 +448,19 @@ suite(
       });
       expect(await writes(f)).toEqual(sql);
     });
+    it('returns unavailable for a malformed native root catalog, preserving the source bytes', async () => {
+      const f = await chat();
+      // Malformed fixture through the public Session append/flush API, without
+      // depending on JSONL paths or changing the native parser.
+      f.h.root.session.append('subagent/catalog', { bad: true });
+      await f.h.ctx.sessions.flush(f.h.root.session);
+      const before = await files(f.descriptor.storageNamespace),
+        api = await start(f);
+      const response = await api.request();
+      expect(response.status).toBe(503);
+      expect(await response.text()).not.toContain('native private child reply');
+      expect(await files(f.descriptor.storageNamespace)).toEqual(before);
+    });
     it('rejects a missing approved reader instead of starting a Host or returning empty state', async () => {
       const f = await chat(false),
         api = await start(f);
