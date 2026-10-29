@@ -148,7 +148,7 @@ suite(
         'allrice_assistant_cost_receipts',
       ]) {
         const [row] =
-          await db`select to_regclass(format('%I.%I',current_schema(),${relation})) is null absent`;
+          await db`select to_regclass(format('%I.%I',current_schema(),${relation}::text)) is null absent`;
         expect(row!.absent).toBe(true);
       }
       for (const cohort of cohorts) {
