@@ -1,0 +1,338 @@
+/** Normal transcript updates in Chrome; synthetic HTTP, no DB/auth/model. */
+import { createRequire } from 'node:module';
+import { createServer, type Server } from 'node:http';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type {
+  Browser,
+  Page,
+} from '../../../worker/node_modules/playwright-core/index.js';
+
+const suite =
+  process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
+    ? describe.sequential
+    : describe.skip;
+suite('reading a receipt while late native trace changes its group', () => {
+  let browser: Browser, server: Server, origin: string;
+  beforeAll(async () => {
+    const require = createRequire(import.meta.url);
+    const { build } = createRequire(require.resolve('tsx'))('esbuild');
+    const result = await build({
+      entryPoints: ['apps/web/test/work-process-reading-page.tsx'],
+      bundle: true,
+      format: 'esm',
+      platform: 'browser',
+      write: false,
+      outdir: '/fixture',
+      jsx: 'automatic',
+      loader: { '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl' },
+      define: { 'process.env.NODE_ENV': '"development"' },
+    });
+    const assets = new Map<string, Uint8Array>(
+      result.outputFiles.map((file: { path: string; contents: Uint8Array }) => [
+        file.path.slice(file.path.lastIndexOf('/')),
+        file.contents,
+      ]),
+    );
+    server = createServer((req, res) => {
+      const path = new URL(req.url!, origin).pathname,
+        asset = assets.get(path);
+      res.setHeader(
+        'Content-Type',
+        asset
+          ? path.endsWith('.css')
+            ? 'text/css'
+            : 'text/javascript'
+          : 'text/html',
+      );
+      res.end(
+        asset ??
+          '<meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/work-process-reading-page.css"><div id="root"></div><script type="module" src="/work-process-reading-page.js"></script>',
+      );
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve),
+    );
+    origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    const { chromium } = createRequire(
+      new URL('../../../worker/package.json', import.meta.url),
+    )('playwright-core');
+    browser = await chromium.launch({
+      headless: true,
+      executablePath:
+        process.env.ALLRICE_TEST_CHROME_EXECUTABLE ??
+        (process.platform === 'darwin'
+          ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+          : chromium.executablePath()),
+    });
+  }, 60_000);
+  afterAll(async () => {
+    await browser?.close();
+    if (server) {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 60_000);
+  const processOf = (page: Page) =>
+    page.getByRole('region', { name: '工作过程', exact: true });
+  const card = (page: Page, i: number) =>
+    page.locator(`#operation-reading-${i}`);
+  const fullButton = (page: Page) =>
+    card(page, 0).getByRole('button', { name: '收起', exact: true });
+  const output = (page: Page) => card(page, 5).locator('pre').last();
+  async function open(width = 1440) {
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    await page.goto(origin);
+    await expect
+      .poll(() => page.locator('article[id^="operation-reading-"]').count())
+      .toBe(36);
+    expect(await processOf(page).getAttribute('data-process-open')).toBe(
+      'false',
+    );
+    await processOf(page).locator('[data-disclosure-row]').first().click();
+    return page;
+  }
+  async function update(
+    page: Page,
+    stage: 'prefix' | 'split' | 'merge' | 'append',
+  ) {
+    await page.evaluate((stage) => window.readingUpdate(stage), stage);
+    await page.locator(`main[data-stage="${stage}"]`).waitFor();
+    if (stage === 'split')
+      await page
+        .getByText('补充发现：继续核对后半部分。', { exact: true })
+        .waitFor();
+  }
+  async function readResult(page: Page) {
+    await card(page, 5)
+      .getByRole('button', { name: '查看详情', exact: true })
+      .click();
+    await card(page, 5)
+      .getByRole('button', { name: '执行结果', exact: true })
+      .click();
+    await card(page, 5)
+      .getByRole('button', { name: '技术详情', exact: true })
+      .click();
+    await output(page).waitFor();
+  }
+  for (const width of [1440, 390]) {
+    it(`keeps the expanded field's semantic focus and sends one approval at ${width}px`, async () => {
+      const page = await open(width);
+      try {
+        await card(page, 0)
+          .getByRole('button', { name: '展开全文', exact: true })
+          .click();
+        for (const stage of ['prefix', 'split', 'merge', 'append'] as const) {
+          await update(page, stage);
+          expect(await fullButton(page).getAttribute('aria-expanded')).toBe(
+            'true',
+          );
+          expect(
+            await fullButton(page).evaluate(
+              (node) => document.activeElement === node,
+            ),
+          ).toBe(true);
+          expect(
+            await card(page, 0).getByLabel('参数', { exact: true }).innerText(),
+          ).toContain('核对这次对外发送的内容及附件。'.repeat(60));
+        }
+        await page.keyboard.press('Space');
+        expect(
+          await card(page, 0)
+            .getByRole('button', { name: '展开全文', exact: true })
+            .getAttribute('aria-expanded'),
+        ).toBe('false');
+        await page.keyboard.press('Enter');
+        expect(await fullButton(page).getAttribute('aria-expanded')).toBe(
+          'true',
+        );
+        await card(page, 0)
+          .getByRole('button', { name: '允许对外发送内容', exact: true })
+          .click();
+        await expect
+          .poll(() => page.evaluate(() => window.readingWrites.length))
+          .toBe(1);
+        expect(
+          await page.evaluate(() => window.readingWrites[0]),
+        ).toMatchObject({
+          url: '/api/v1/runtime/approvals/10000000-0000-4000-8000-000000000035',
+          body: {
+            contractVersion: 1,
+            kind: 'action_approval',
+            decision: 'approved',
+          },
+        });
+        await expect
+          .poll(() =>
+            card(page, 0)
+              .getByRole('button', { name: '允许对外发送内容', exact: true })
+              .count(),
+          )
+          .toBe(0);
+        expect(await page.evaluate(() => window.readingWrites.length)).toBe(1);
+      } finally {
+        await page.close();
+      }
+    });
+    it(`keeps a long result's internal scroll and selected text through regrouping at ${width}px`, async () => {
+      const page = await open(width);
+      try {
+        await readResult(page);
+        const expected = await output(page).evaluate((node) => {
+          node.scrollTop = 900;
+          node.scrollIntoView({ block: 'center' });
+          (document.activeElement as HTMLElement)?.blur();
+          const text = node.firstChild!;
+          const start = text.textContent!.indexOf('结果第 050 行');
+          const range = document.createRange();
+          range.setStart(text, start);
+          range.setEnd(text, start + 24);
+          document.getSelection()!.removeAllRanges();
+          document.getSelection()!.addRange(range);
+          return { text: range.toString(), top: node.scrollTop };
+        });
+        for (const stage of ['prefix', 'split', 'merge', 'append'] as const) {
+          await update(page, stage);
+          expect(await output(page).evaluate((node) => node.scrollTop)).toBe(
+            expected.top,
+          );
+          expect(
+            await page.evaluate(() => document.getSelection()?.toString()),
+          ).toBe(expected.text);
+          expect(await output(page).isVisible()).toBe(true);
+          const box = await output(page).boundingBox();
+          expect(box!.y).toBeLessThan(900);
+          expect(box!.y + box!.height).toBeGreaterThan(0);
+        }
+        expect(await page.evaluate(() => window.readingWrites.length)).toBe(0);
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth > innerWidth,
+          ),
+        ).toBe(false);
+      } finally {
+        await page.close();
+      }
+    });
+  }
+  it('preserves a mouse reading position without any focused control or selection', async () => {
+    const page = await open(390);
+    try {
+      await readResult(page);
+      await output(page).evaluate((node) => {
+        node.scrollTop = 650;
+        (document.activeElement as HTMLElement)?.blur();
+        document.getSelection()?.removeAllRanges();
+      });
+      await update(page, 'prefix');
+      await update(page, 'split');
+      await update(page, 'merge');
+      expect(await output(page).evaluate((node) => node.scrollTop)).toBe(650);
+      expect(
+        await page.evaluate(() => document.activeElement === document.body),
+      ).toBe(true);
+    } finally {
+      await page.close();
+    }
+  });
+  it('distinguishes same-named technical controls by operation and section', async () => {
+    const page = await open();
+    try {
+      await readResult(page);
+      const raw = card(page, 0).getByRole('button', {
+        name: '技术详情',
+        exact: true,
+      });
+      await raw.click();
+      await update(page, 'prefix');
+      expect(await raw.getAttribute('aria-expanded')).toBe('true');
+      expect(
+        await raw.evaluate((node) => node === document.activeElement),
+      ).toBe(true);
+      const result = card(page, 5).getByRole('button', {
+        name: '技术详情',
+        exact: true,
+      });
+      await result.focus();
+      await update(page, 'split');
+      expect(
+        await result.evaluate((node) => node === document.activeElement),
+      ).toBe(true);
+      await card(page, 5)
+        .getByRole('button', { name: '应用与工具', exact: true })
+        .click();
+      const app = card(page, 5).getByRole('button', {
+        name: '技术详情',
+        exact: true,
+      });
+      expect(await app.getAttribute('aria-expanded')).toBe('false');
+      await app.click();
+      await update(page, 'merge');
+      expect(
+        await app.evaluate((node) => node === document.activeElement),
+      ).toBe(true);
+      await page.keyboard.press('Space');
+      expect(await app.getAttribute('aria-expanded')).toBe('false');
+      await card(page, 5)
+        .getByRole('button', { name: '执行结果', exact: true })
+        .click();
+      expect(await result.getAttribute('aria-expanded')).toBe('true');
+    } finally {
+      await page.close();
+    }
+  });
+  it('keeps the original 360px group, inherits expansion after split and releases choices for a Run or unmount', async () => {
+    const page = await open(390);
+    try {
+      const group = () => processOf(page).getByRole('button', { name: /项$/ });
+      await group().first().click();
+      const list = processOf(page).locator('ul[aria-label="工作步骤"]').first();
+      expect(
+        await list.evaluate((node) => ({
+          height: node.parentElement!.clientHeight,
+          overflow: getComputedStyle(node.parentElement!).overflowY,
+        })),
+      ).toEqual({ height: 360, overflow: 'auto' });
+      await update(page, 'split');
+      for (const row of await group().all())
+        expect(await row.getAttribute('aria-expanded')).toBe('true');
+      await readResult(page);
+      await page.evaluate(() => window.readingRun('different-run'));
+      await page.locator('main[data-run="different-run"]').waitFor();
+      await processOf(page).locator('[data-disclosure-row]').first().click();
+      expect(
+        await card(page, 5)
+          .getByRole('button', { name: '查看详情', exact: true })
+          .getAttribute('aria-expanded'),
+      ).toBe('false');
+      for (const row of await group().all())
+        expect(await row.getAttribute('aria-expanded')).toBe('false');
+      await readResult(page);
+      await page.evaluate(() => window.readingMount(false));
+      await expect.poll(() => processOf(page).count()).toBe(0);
+      await page.evaluate(() => window.readingMount(true));
+      await processOf(page).waitFor();
+      await processOf(page).locator('[data-disclosure-row]').first().click();
+      expect(
+        await card(page, 5)
+          .getByRole('button', { name: '查看详情', exact: true })
+          .getAttribute('aria-expanded'),
+      ).toBe('false');
+    } finally {
+      await page.close();
+    }
+  });
+  it('does not steal a later focus choice', async () => {
+    const page = await open();
+    try {
+      await readResult(page);
+      const outside = page.getByRole('textbox', { name: '另外阅读的位置' });
+      await outside.focus();
+      await update(page, 'prefix');
+      expect(
+        await outside.evaluate((node) => node === document.activeElement),
+      ).toBe(true);
+    } finally {
+      await page.close();
+    }
+  });
+});
