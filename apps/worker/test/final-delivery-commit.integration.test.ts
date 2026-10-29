@@ -29,6 +29,11 @@ const gate = () => {
   });
   return { resolve, promise };
 };
+async function waitFor(predicate: () => Promise<boolean>, label: string) {
+  await expect
+    .poll(predicate, { timeout: 4000, interval: 10, message: label })
+    .toBe(true);
+}
 suite(
   'ordinary Run checked completion and current evidence — isolated PostgreSQL',
   () => {
@@ -286,6 +291,82 @@ suite(
       release.resolve();
       await writing;
       expect(await reading).toBeInstanceOf(Error);
+    });
+    it('a later real publisher waits behind checked completion and cannot publish after success', async () => {
+      const f = await fixture(),
+        db = database.db;
+      await f.startTurn();
+      const p = await f.issue();
+      const [message] =
+        await db`select assistant_message_id from allrice_employee_runs where run_id=${f.rootRunId}`;
+      const held = gate(),
+        release = gate();
+      let blockerPid = 0,
+        completionPid = 0;
+      let publicationWait: unknown;
+      const blocker = db.begin(async (tx) => {
+        blockerPid = Number((await tx`select pg_backend_pid() pid`)[0]!.pid);
+        await tx`select id from allrice_messages where id=${message!.assistant_message_id} for update`;
+        held.resolve();
+        await release.promise;
+      });
+      void blocker.catch(() => {});
+      let committing: ReturnType<typeof f.complete> | undefined;
+      let publisher:
+        | Promise<
+            { value: Awaited<ReturnType<typeof f.publish>> } | { error: string }
+          >
+        | undefined;
+      try {
+        await Promise.race([held.promise, blocker]);
+        committing = f.complete(p.guard);
+        void committing.catch(() => {});
+        await waitFor(async () => {
+          const [waiting] = await db`select pid from pg_stat_activity
+                where ${blockerPid}=any(pg_blocking_pids(pid))
+                  and wait_event_type='Lock' and query like '%allrice_messages%'`;
+          completionPid = Number(waiting?.pid ?? 0);
+          return completionPid > 0;
+        }, 'checked completion waits for its message');
+        publisher = f.publish('too-late.txt').then(
+          (value) => ({ value }),
+          (error) => ({ error: String(error) }),
+        );
+        await waitFor(async () => {
+          // The publisher now waits at the shared pre-root mutex. Observe
+          // this Run's exact 703 lock and its real completion transaction.
+          const [waiting] = await db`select a.pid,a.query,a.wait_event,
+                pg_blocking_pids(a.pid) blockers
+              from pg_stat_activity a join pg_locks l on l.pid=a.pid
+              where ${completionPid}=any(pg_blocking_pids(a.pid))
+                and a.wait_event_type='Lock' and l.locktype='advisory' and not l.granted
+                and l.classid=((hashtextextended(${f.rootRunId},703)>>32)&4294967295)::oid
+                and l.objid=(hashtextextended(${f.rootRunId},703)&4294967295)::oid
+                and l.objsubid=1`;
+          publicationWait = waiting;
+          return Boolean(waiting);
+        }, 'publisher waits for checked completion on the Run 703 lock');
+      } finally {
+        release.resolve();
+        await Promise.allSettled([blocker, committing, publisher]);
+      }
+      await blocker;
+      await committing;
+      if (!publisher) throw Error('Publisher was not started');
+      const late = await publisher;
+      expect(late).toHaveProperty('error');
+      expect(await f.state()).toMatchObject({
+        status: 'succeeded',
+        successes: 1,
+      });
+      const [count] =
+        await db`select count(*)::int n from allrice_deliverable_versions where session_id=${f.session}`;
+      expect(count!.n).toBe(0);
+      console.info('checked completion/publication wait graph', {
+        blockerPid,
+        completionPid,
+        publicationWait,
+      });
     });
     it('last-SQL lease expiry rolls back Job, Run, message and succeeded event together', async () => {
       const f = await fixture();

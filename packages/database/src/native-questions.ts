@@ -5,6 +5,11 @@ import type {
   UserQuestionItem,
   UserQuestionAnswerSubmission,
 } from '@allrice/contracts';
+import {
+  matchUserQuestionAnswer,
+  RuntimeNativeInputProofSchema,
+} from '@allrice/contracts';
+import { runtimePolicyDigest } from './runtime-policy-digest.ts';
 import { getDatabase } from './core/client.ts';
 import { requirePlatformAdmin } from './platform-authority.ts';
 
@@ -179,10 +184,75 @@ export async function readNativeQuestion(
   sessionId: string,
   questionId: string,
 ) {
-  const [row] = await tx`select * from allrice_native_questions
-    where session_id=${sessionId} and native_present and native_session_id||':'||call_id=${questionId}
-      and native_session_id=(select thread_id from allrice_conversation_runtimes where session_id=${sessionId})`;
+  const [row] = await tx`select q.* from allrice_native_questions q
+    join allrice_chat_sessions s on s.id=q.session_id
+    join allrice_conversation_runtimes r on r.session_id=s.id and r.thread_id=q.native_session_id
+    join allrice_native_session_bindings b on b.native_session_id=q.native_session_id
+      and b.context_kind='chat' and b.context_id=s.id and b.organization_id=s.organization_id
+      and b.workspace_id=s.workspace_id and b.owner_id=s.owner_id
+    where q.session_id=${sessionId} and q.native_present
+      and q.native_session_id||':'||q.call_id=${questionId}`;
   return row ?? null;
+}
+
+export class NativeQuestionError extends Error {
+  readonly code = 'question_expired';
+  constructor() {
+    super('这道题已失效，请等待新的提问。');
+  }
+}
+
+/** Admission fence only: routing a live/continued answer is PR5. Lock the same
+ * setting as rollback before persisting input, so an old card cannot become a
+ * normal prompt when the platform has returned to legacy. */
+export async function requireNativeQuestionAdmission(
+  tx: TransactionSql,
+  sessionId: string,
+  questionId: string,
+) {
+  // A reserved native identity must be verified, including a missing or
+  // malformed binding. This prefix classifies; it never grants authority.
+  if (!questionId.startsWith('dsh-')) return;
+  await lockNativeQuestionMode(tx);
+  const row = await readNativeQuestion(tx, sessionId, questionId);
+  if (!row || row.closed_at || (await readNativeQuestionMode(tx)) !== 'timed')
+    throw new NativeQuestionError();
+}
+
+/** Caller holds the mode fence plus tenant/owner and consumed-command authority. A native
+ * proof alone cannot authorize: its answer must match DSH's settled batch. */
+export async function nativeQuestionAnswerAdopted(
+  tx: TransactionSql,
+  sessionId: string,
+  questionId: string,
+  proofValue: unknown,
+  answer: unknown,
+) {
+  const proof = RuntimeNativeInputProofSchema.safeParse(proofValue);
+  const row = await readNativeQuestion(tx, sessionId, questionId);
+  if (
+    !row ||
+    row.state !== 'settled' ||
+    row.closed_at ||
+    (await readNativeQuestionMode(tx)) !== 'timed' ||
+    !proof.success ||
+    proof.data.status !== 'adopted' ||
+    !['question_resolved', 'question_replied'].includes(
+      proof.data.checkpoint,
+    ) ||
+    proof.data.callId !== row.call_id ||
+    proof.data.messageId !== questionId ||
+    proof.data.sequence > row.sequence
+  )
+    return false;
+  const matched = matchUserQuestionAnswer(
+    { questionId, questions: row.questions },
+    answer,
+  );
+  return (
+    !!matched &&
+    runtimePolicyDigest(matched.answers) === runtimePolicyDigest(row.answers)
+  );
 }
 
 /** Same predicate for both clock reads; legacy and unprojected program cards

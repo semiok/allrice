@@ -47,7 +47,15 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "questionId": { "type": "string", "minLength": 1, "maxLength": 240 },
+          "questionId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^dsh-[0-9a-f-]{36}(?:-[^:\\s]+)?:.+$"
+              },
+              { "type": "string", "minLength": 1, "maxLength": 240 }
+            ]
+          },
           "answers": {
             "minItems": 1,
             "maxItems": 10,

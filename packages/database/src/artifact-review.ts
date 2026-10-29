@@ -1542,9 +1542,11 @@ export async function publishWorkbenchArtifact(
         context.organizationId,
         context.workspaceId,
       );
-      // Same order as assistant admission/clock maintenance: root before job
-      // and session. Holding session first can deadlock with an assistant check
-      // which refreshes the job deadline before SHARE-locking the session.
+      // Queue events take this existing pre-root mutex before Job -> Run. An
+      // ordinary Run has no runtime-root row, so locking that row alone leaves
+      // our Run -> Job SHARE locks able to deadlock with an event. Match queue
+      // and root creation before taking any root, session, Run or Job row locks.
+      await tx`select pg_advisory_xact_lock(hashtextextended(${context.runId},703))`;
       await tx`select root_run_id from allrice_runtime_roots where root_run_id=${context.runId} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId!} for update`;
       if (input.trustedOfficePdfLease)
         await assertOfficePdfLease(tx, context, input.trustedOfficePdfLease);

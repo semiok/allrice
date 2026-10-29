@@ -1463,6 +1463,22 @@ describe('DshHarnessAdapter', () => {
     },
   );
 
+  it('preserves full native identity while bounding only the audit event ID', async () => {
+    const events: HarnessEvent[] = [];
+    const input = executionInput({ prompt: 'long-native-question-id', events });
+    await createAdapter().execute(input);
+    const event = events.find(
+      (e) =>
+        e.type === 'native.event' &&
+        e.sourceEventType === 'session/user-question',
+    );
+    expect(HarnessEventSchema.safeParse(event).success).toBe(true);
+    if (event?.type !== 'native.event') throw Error('missing question');
+    expect(
+      UserQuestionRequestSchema.parse(event.sourcePayload).questionId,
+    ).toBe(`dsh-${input.kernel.sessionId}:${'native:call:'.repeat(40)}`);
+  });
+
   it('bounds a long native question event summary while preserving its exact confirmation payload', async () => {
     const events: HarnessEvent[] = [];
     await createAdapter().execute(

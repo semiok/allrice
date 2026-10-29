@@ -4,6 +4,7 @@ import { TimestampSchema, UuidSchema } from '../common.ts';
 import { ChecksumSchema } from '../runs.ts';
 import {
   matchUserQuestionAnswer,
+  NativeUserQuestionIdSchema,
   UserQuestionAnswerSubmissionSchema,
   UserQuestionRequestSchema,
 } from '../user-questions.ts';
@@ -518,21 +519,30 @@ export const RuntimeNativeInputProofSchema = z.discriminatedUnion('status', [
     .object({
       status: z.literal('pending'),
       inputId: UuidSchema,
-      messageId: z.string().min(1).max(255),
+      messageId: z.union([
+        NativeUserQuestionIdSchema,
+        z.string().min(1).max(255),
+      ]),
     })
     .strict(),
   z
     .object({
       status: z.literal('unknown'),
       inputId: UuidSchema,
-      messageId: z.string().min(1).max(255),
+      messageId: z.union([
+        NativeUserQuestionIdSchema,
+        z.string().min(1).max(255),
+      ]),
     })
     .strict(),
   z
     .object({
       status: z.literal('adopted'),
       inputId: UuidSchema,
-      messageId: z.string().min(1).max(255),
+      messageId: z.union([
+        NativeUserQuestionIdSchema,
+        z.string().min(1).max(255),
+      ]),
       sequence: RuntimeCounterSchema,
       turnId: z.string().min(1).max(255),
       // question_replied: a late answer DSH admitted as the call's
@@ -543,7 +553,7 @@ export const RuntimeNativeInputProofSchema = z.discriminatedUnion('status', [
         'step_user_message',
       ]),
       // DSH tool call id of the answered question, scoped by its Session.
-      callId: z.string().min(1).max(255).optional(),
+      callId: z.string().min(1).optional(),
     })
     .strict(),
 ]);

@@ -65,6 +65,7 @@ async function fixture({
   child = false,
   extraTool = false,
   configuredTimeout,
+  modelCallId = 'call_ask_go',
 }) {
   const root = await realpath(
     await mkdtemp(join(tmpdir(), 'allrice-question-detach-')),
@@ -94,7 +95,7 @@ async function fixture({
           ? {
               type: 'function_call',
               id: 'fc_ask',
-              call_id: 'call_ask_go',
+              call_id: modelCallId,
               name: 'ask_user_question',
               arguments: JSON.stringify({ questions: [question], timeout }),
               status: 'completed',
@@ -449,6 +450,7 @@ describe('MET-210 timed questions on the AllRice host', () => {
           .poll(() => client.steer(sessionId, text, input), { timeout: 15000 })
           .toMatchObject({
             status: 'adopted',
+            callId,
             checkpoint: 'question_resolved',
           });
         expect(
@@ -690,6 +692,54 @@ describe('MET-210 timed questions on the AllRice host', () => {
           }),
         ]),
       );
+  }, 60000);
+
+  it('adopts a foreground typed answer only after the actual native tool result', async () => {
+    const f = await fixture({
+      timeout: 30,
+      modelCallId: 'native:call:'.repeat(40),
+    });
+    const sessionId = `dsh-${randomUUID()}`;
+    const client = await f.launch();
+    await client.prompt(sessionId, '请先问我。');
+    await expect
+      .poll(() => f.notices.some((n) => n.method === 'session.user-question'))
+      .toBe(true);
+    const callId = f.askCall().data.callId;
+    const typed = {
+      inputId: randomUUID(),
+      turnId: `${sessionId}:turn:1`,
+      kind: 'ask_user',
+    };
+    const text =
+      'allrice:user-question:v1:' +
+      JSON.stringify({
+        questionId: `${sessionId}:${callId}`,
+        answers: [{ id: 'go', selected: ['继续'] }],
+      });
+    await expect
+      .poll(() => client.steer(sessionId, text, typed))
+      .toMatchObject({
+        status: 'adopted',
+        inputId: typed.inputId,
+        messageId: `${sessionId}:${callId}`,
+        callId,
+        checkpoint: 'question_resolved',
+      });
+    const proof = await client.steer(sessionId, text, typed);
+    expect(f.events().find((e) => e.seq === proof.sequence)).toMatchObject({
+      type: 'tool/result',
+      data: { message: { toolCallId: callId } },
+    });
+    expect(
+      f.notices.some((n) => n.method === 'session.user-question-answered'),
+    ).toBe(false);
+    await client.close();
+    expect(
+      (await f.journal(sessionId)).find(
+        (e) => e.type === 'allrice/input/request',
+      )?.data.messageId,
+    ).toBe(`${sessionId}:${callId}`);
   }, 60000);
 
   it('refuses to detach without a pending question and rejects an answer outside the options', async () => {

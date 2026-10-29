@@ -206,6 +206,19 @@ suite(
       expect(value).not.toHaveProperty('finalDeliveryPolicy');
       expect(value).not.toHaveProperty('officeFirstDeliveryPolicy');
     });
+    it('ordinary admission without retired tools receives checked delivery and Office policy', async () => {
+      const f = await subject();
+      const checked = await snapshot((await send(f)).run!.id);
+      expect(checked.capabilitySnapshot.bindings.toolNames).not.toContain(
+        'assistant.delegate',
+      );
+      expect(checked.finalDeliveryPolicy).toEqual({
+        version: 1,
+        mode: 'checked_native_v1',
+        artifactId: current,
+      });
+      expect(checked.officeFirstDeliveryPolicy).toBe('xlsx_formula_cache_v1');
+    });
     it.each(['basis', 'digest', 'owner'] as const)(
       'rejects a conflicting %s pin before creating a new Run',
       async (kind) => {

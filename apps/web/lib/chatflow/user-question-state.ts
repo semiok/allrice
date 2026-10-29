@@ -36,6 +36,19 @@ export function projectPendingUserQuestion(
       continue;
     }
     if (event.type !== 'harness.native' || !event.sourceEvent) continue;
+    if (event.sourceEvent.type === 'session/user-questions') {
+      const { sessionId, questions } = event.sourceEvent.payload;
+      if (
+        typeof sessionId === 'string' &&
+        questions &&
+        typeof questions === 'object' &&
+        'settled' in questions &&
+        Array.isArray(questions.settled)
+      )
+        for (const q of questions.settled)
+          pending.delete(`${sessionId}:${q.callId}`);
+      continue;
+    }
     if (event.sourceEvent.type === 'session/user-question-answered') {
       const answeredId = text(event.sourceEvent.payload.questionId);
       if (answeredId) pending.delete(answeredId);

@@ -1,3 +1,4 @@
+import { lockNativeQuestionMode } from './native-questions.ts';
 import {
   scheduleIdentity as identity,
   lockSchedulePrincipal as lockPrincipal,
@@ -768,6 +769,7 @@ export async function createOnceTaskFromExecutionContext(
   return employeeAccessTransaction(getDatabase(), async (tx) => {
     await tx`set local lock_timeout='1000ms'`;
     await tx`set local statement_timeout='10000ms'`;
+    await lockNativeQuestionMode(tx);
     await acquireDevAdmission(tx);
     await tx`select pg_advisory_xact_lock(hashtextextended(${`native-once-request:${scope.organizationId}:${scope.actor.id}:${requestId}`},0))`;
     const ownerScope = {

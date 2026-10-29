@@ -23,7 +23,7 @@ function finalDeliveryUnavailable(): never {
   );
 }
 
-/** Worker-owned composition. Queue eligibility is deliberately unchanged. */
+/** Worker-owned composition for the admitted root Run. */
 export function createRunDeliveryPort(authority: RunDeliveryAuthority) {
   const captured = structuredClone(authority);
   let checked:

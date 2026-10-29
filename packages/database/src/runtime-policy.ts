@@ -1,5 +1,13 @@
 import { isPlatformAdmin } from './platform-authority.ts';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
+import {
+  RuntimePolicyError,
+  runtimePolicyDigest,
+} from './runtime-policy-digest.ts';
+export {
+  RuntimePolicyError,
+  runtimePolicyDigest,
+} from './runtime-policy-digest.ts';
 
 import {
   evaluateRuntimePolicy,
@@ -43,11 +51,6 @@ export type RuntimePolicyPrincipal = Pick<
   RequestContext,
   'actor' | 'organizationId' | 'workspaceId' | 'requestId'
 >;
-export class RuntimePolicyError extends Error {
-  constructor(public readonly code: string) {
-    super(code);
-  }
-}
 
 /** What decided where a project may run, recorded as separate facts so the message to
  * the model can name every obstacle (one combined reason loses some). */
@@ -78,40 +81,6 @@ export class ProjectLockPlatformError extends RuntimePolicyError {
   constructor(readonly facts: ProjectLockPlatformFacts) {
     super('project_lock_platform_mismatch');
   }
-}
-
-/** Canonical JSON only; callers must schema-parse before hashing. No secret values logged. */
-export function runtimePolicyDigest(input: unknown): string {
-  function canonical(value: unknown): string {
-    if (
-      value === null ||
-      typeof value === 'string' ||
-      typeof value === 'boolean'
-    )
-      return JSON.stringify(value);
-    if (typeof value === 'number' && Number.isFinite(value))
-      return JSON.stringify(value);
-    if (Array.isArray(value)) {
-      for (let i = 0; i < value.length; i++)
-        if (!Object.hasOwn(value, i))
-          throw new RuntimePolicyError('non_json_binding');
-      return `[${value.map(canonical).join(',')}]`;
-    }
-    if (
-      value &&
-      typeof value === 'object' &&
-      Object.getPrototypeOf(value) === Object.prototype
-    )
-      return `{${Object.keys(value)
-        .sort()
-        .map(
-          (key) =>
-            `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`,
-        )
-        .join(',')}}`;
-    throw new RuntimePolicyError('non_json_binding');
-  }
-  return `sha256:${createHash('sha256').update(canonical(input)).digest('hex')}`;
 }
 
 async function clock(transaction: Transaction) {
