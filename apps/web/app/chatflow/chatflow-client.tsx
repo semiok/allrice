@@ -54,7 +54,6 @@ import {
   companyAssetJson,
   companyAssetUrl,
 } from './company-template-publisher';
-import { AssistantHistoryButton } from './assistant-history-button';
 import {
   AutomationTaskList,
   AutomationTaskDetail,
@@ -63,11 +62,6 @@ import {
 import { WorkspaceStartup } from './workspace-startup';
 import { QueuedMessagesDock } from './queued-messages-dock';
 import { TaskPlanDock } from './task-plan-dock';
-import {
-  assistantEligibility,
-  assistantPreferenceForTask,
-} from './assistant-eligibility';
-import { useAssistantSession } from './use-assistant-session';
 import {
   useInteractionStatus,
   InteractionStatusPanel,
@@ -159,14 +153,12 @@ export function ChatFlowClient({
   localCommandsEnabled = false,
   localMcpEnabled = false,
   experienceEnabled = false,
-  assistantsEnabled = false,
   taskSuggestionsEnabled = false,
 }: {
   workbenchEnabled?: boolean;
   localCommandsEnabled?: boolean;
   localMcpEnabled?: boolean;
   experienceEnabled?: boolean;
-  assistantsEnabled?: boolean;
   taskSuggestionsEnabled?: boolean;
 }) {
   const [draftStore] = useState(createComposerDraftStore);
@@ -782,18 +774,6 @@ export function ChatFlowClient({
     },
     [activeId, loadHistory, streamRun, reloadInteractions],
   );
-  const assistants = useAssistantSession({
-    enabled: workbenchEnabled,
-    sessionId: activeId,
-    workspaceId: workspace?.workspaceId,
-    headers: tenantHeaders,
-    runRevision: Object.values(runViews)
-      .map((view) => `${view.runId}:${view.status}`)
-      .join(','),
-    hasRunningRun: Object.values(runViews).some(
-      (view) => view.status === 'running' || view.status === 'connecting',
-    ),
-  });
   // Observe server transitions, including another tab's queue and the worker's
   // automatic FIFO release. The browser never dispatches the next task itself.
   const inputRevision = interactions.data?.inputs
@@ -907,12 +887,6 @@ export function ChatFlowClient({
       const messageAttachments = uploadResults.map(
         (result) => (result as PromiseFulfilledResult<Attachment>).value,
       );
-      const assistantPreference = assistantPreferenceForTask({
-        enabled: assistantsEnabled,
-        deliveryMode: mode,
-        eligible: assistantAvailability.eligible,
-        allowAssistants: true,
-      });
       const inputBody = {
         text,
         ...(draftCompanyReferences.length
@@ -934,7 +908,6 @@ export function ChatFlowClient({
           : {}),
         attachmentIds: messageAttachments.map((item) => item.id),
         deliveryMode: mode,
-        ...(assistantPreference ? { assistantPreference } : {}),
       };
       const retry = await inputRetry(
         `${workspace.organizationId}/${sessionId}`,
@@ -1347,21 +1320,6 @@ export function ChatFlowClient({
   const activeEmployeeColor =
     activeEmployee?.currentVersion.manifest.appearance?.accentColor ??
     activeEmployeeProfile?.appearance?.accentColor;
-  const employeeAssistantAvailability = assistantEligibility({
-    enabled: assistantsEnabled,
-    sessionId: activeId,
-    sessionModels: workspace.sessionModels,
-    employee: activeEmployee,
-  });
-  const assistantReady = readiness.data?.capabilities.find(
-    (c) => c.id === 'assistants',
-  );
-  const assistantAvailability = {
-    ...employeeAssistantAvailability,
-    eligible:
-      employeeAssistantAvailability.eligible &&
-      assistantReady?.state === 'ready',
-  };
   const activeRunMessages = (history?.messages ?? []).filter(
     (message) =>
       message.runId && isMessageRunActive(message, runViews[message.runId]),
@@ -2190,22 +2148,8 @@ export function ChatFlowClient({
                       }}
                     />
                   ) : null}
-                  {workbenchEnabled && assistants.error ? (
-                    <p role="status">
-                      {assistants.error}{' '}
-                      <button type="button" onClick={assistants.reload}>
-                        重试子智能体记录
-                      </button>
-                    </p>
-                  ) : null}
                   {!workbenchEnabled && interactions.error ? (
                     <p role="status">{interactions.error}</p>
-                  ) : null}
-                  {workbenchEnabled && assistants.hasMore ? (
-                    <AssistantHistoryButton
-                      key={activeId}
-                      onLoadMore={assistants.loadMore}
-                    />
                   ) : null}
                   <MessageFeedbackProvider
                     readOnly={sessionArchived}
@@ -2226,10 +2170,8 @@ export function ChatFlowClient({
                         atBottom={atTranscriptBottom}
                         localCommandsEnabled={localCommandsEnabled}
                         localMcpEnabled={localMcpEnabled}
-                        assistantTrees={assistants.trees}
                         onResolveArtifactLink={workbench.resolveDownloadLink}
                         runTimings={interactions.data?.runTimings}
-                        onAssistantChanged={assistants.reload}
                         messages={transcriptMessages}
                         messageImages={messageImages}
                         onLoadRunTrace={loadRunTrace}

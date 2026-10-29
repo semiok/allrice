@@ -17,26 +17,13 @@ const groups: Record<
   { label: string; description?: string; ids: WorkspaceCapabilityId[] }
 > = {
   work: {
-    label: '云端与子智能体状态',
-    ids: [
-      'report',
-      'cloud_command',
-      'cloud_browser',
-      'assistants',
-      'boost',
-      'teamwork',
-    ],
+    label: '云端能力状态',
+    ids: ['report', 'cloud_command', 'cloud_browser', 'boost', 'teamwork'],
   },
   computer: {
     label: '本地能力状态',
     description: '根据当前员工、电脑环境和已授权文件夹检查。',
-    ids: [
-      'local_files',
-      'changeset',
-      'local_command',
-      'local_browser',
-      'development',
-    ],
+    ids: ['local_files', 'changeset', 'local_command', 'local_browser'],
   },
 };
 

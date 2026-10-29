@@ -11,7 +11,6 @@ import {
   IconBrowseOutlineRegular,
   IconEditOutlineRegular,
   IconApiOutlineRegular,
-  IconAgentPresetOutlineRegular,
   IconPlanOutlineRegular,
   IconQuestionOutlineRegular,
   IconCordisPluginOutlineRegular,
@@ -56,7 +55,6 @@ const stepIcons: Record<WorkProcessCategory, ReactNode> = {
   execute: <IconApiOutlineRegular />,
   browse: <IconBrowseOutlineRegular />,
   skill: <IconSkillOutlineRegular />,
-  collaborate: <IconAgentPresetOutlineRegular />,
   question: <IconQuestionOutlineRegular />,
   organize: <IconRefreshOutlineRegular />,
   plan: <IconPlanOutlineRegular />,
@@ -89,8 +87,6 @@ export function WorkProcess({
   canceled,
   traceStatus,
   onRetry,
-  assistantCount,
-  assistantAttention,
   children,
   artifacts,
   accessibleFiles,
@@ -111,8 +107,6 @@ export function WorkProcess({
   canceled: boolean;
   traceStatus?: string;
   onRetry: () => void;
-  assistantCount: number;
-  assistantAttention: number;
   children?: ReactNode;
   artifacts?: readonly WorkbenchArtifact[];
   accessibleFiles?: readonly { id: string; fileName: string }[];
@@ -194,7 +188,6 @@ export function WorkProcess({
     !items.some((item) => item.operationId && renderOperation) &&
     !timing &&
     !microStatus &&
-    !assistantCount &&
     traceStatus !== 'loading'
   )
     return null;
@@ -203,9 +196,6 @@ export function WorkProcess({
     traceStatus === 'failed' ? '过程加载失败' : undefined,
     traceStatus === 'loading' && !process.steps.length
       ? '加载过程…'
-      : undefined,
-    assistantCount
-      ? `${assistantCount} 个子智能体${assistantAttention ? `，${assistantAttention} 个需关注` : ''}`
       : undefined,
   ]
     .filter(Boolean)

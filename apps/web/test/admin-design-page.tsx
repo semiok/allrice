@@ -22,7 +22,6 @@ function SkillTimelineFixture() {
   const names = [
     'browser-research',
     'business-reconciliation',
-    'development-cooperation',
     'governed-memory',
     'market-data',
     'office',

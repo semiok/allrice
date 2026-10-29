@@ -8,11 +8,11 @@ import { tmpdir } from 'node:os';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
 import type { RequestContext } from '@allrice/contracts';
-import { createAssistantFixtureDatabase } from '../../../../packages/database/src/assistant-runtime.fixture';
+import { createRuntimeFixtureDatabase } from '../../../../packages/database/src/runtime.fixture';
 import { createCloudExecutionFixture } from '../../../../packages/database/src/cloud-execution.fixture';
 import { GET, PATCH } from '../api/v1/me/work-automation/route';
 
-let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
 let context: RequestContext | null;
 vi.mock('../../lib/identity/session', () => ({
   getRequestContext: async () => context,
@@ -37,7 +37,7 @@ suite('member work settings: real browser, route and PostgreSQL', () => {
     workspaceId: string,
     gets = 0;
   beforeAll(async () => {
-    fixture = await createAssistantFixtureDatabase();
+    fixture = await createRuntimeFixtureDatabase();
     storageRoot = await mkdtemp(join(tmpdir(), 'allrice-work-settings-'));
     const f = await createCloudExecutionFixture(fixture.db, storageRoot);
     context = f.context;
@@ -149,10 +149,10 @@ suite('member work settings: real browser, route and PostgreSQL', () => {
       const cloud = page.getByRole('switch', { name: '云端自动工作' });
       await cloud.waitFor();
       expect(await cloud.getAttribute('aria-checked')).toBe('true');
-      expect(await page.getByRole('switch').count()).toBe(3);
-      // MET-210: assistants stay off until this member turns them on.
-      const assistants = page.getByRole('switch', { name: '子智能体' });
-      expect(await assistants.getAttribute('aria-checked')).toBe('false');
+      expect(await page.getByRole('switch').count()).toBe(2);
+      expect(await page.getByRole('switch', { name: '子智能体' }).count()).toBe(
+        0,
+      );
       await cloud.click();
       await page.waitForFunction(
         () =>
@@ -163,8 +163,6 @@ suite('member work settings: real browser, route and PostgreSQL', () => {
       await page.reload();
       await cloud.waitFor();
       expect(await cloud.getAttribute('aria-checked')).toBe('false');
-      // Saving one switch stores all three; the unsaved default stays off.
-      expect(await assistants.getAttribute('aria-checked')).toBe('false');
       const { updateWorkAutomation } =
         await import('../../../../packages/database/src/work-automation');
       await updateWorkAutomation(
@@ -172,6 +170,9 @@ suite('member work settings: real browser, route and PostgreSQL', () => {
         workspaceId,
         { expectedRevision: 1, capability: 'computer', enabled: false },
         fixture.db,
+      );
+      expect(await page.getByRole('switch', { name: '子智能体' }).count()).toBe(
+        0,
       );
       await cloud.click();
       await page.getByRole('alert').waitFor();
@@ -185,14 +186,6 @@ suite('member work settings: real browser, route and PostgreSQL', () => {
           .getByRole('switch', { name: '电脑自动工作' })
           .getAttribute('aria-checked'),
       ).toBe('false');
-      // Turning assistants on is the member's own choice and survives a reload.
-      await assistants.click();
-      await page
-        .getByRole('switch', { name: '子智能体', checked: true })
-        .waitFor();
-      await page.reload();
-      await assistants.waitFor();
-      expect(await assistants.getAttribute('aria-checked')).toBe('true');
       const before = gets;
       await page.clock.install();
       await page.clock.fastForward(30000);

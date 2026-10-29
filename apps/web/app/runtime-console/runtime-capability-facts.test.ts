@@ -39,10 +39,7 @@ it('reports Web UI independently from Worker availability and honors the actual 
 const data = (): RuntimeCapabilityResponse => ({
   checkedAt: new Date().toISOString(),
   skills: [],
-  webTools: [
-    { name: 'assistant.delegate', enabled: true },
-    { name: 'assistant.report', enabled: true },
-  ],
+  webTools: [],
   publications: [
     {
       employeeName: 'Rice',
@@ -50,7 +47,7 @@ const data = (): RuntimeCapabilityResponse => ({
       workspaceName: 'Test',
       version: 2,
       skillIds: ['skill-a', 'skill-b'],
-      toolNames: ['assistant.delegate', 'assistant.report'],
+      toolNames: [],
       policyEnabled: true,
       policyMode: 'execute',
     },
@@ -79,10 +76,7 @@ const data = (): RuntimeCapabilityResponse => ({
           state: 'missing',
         },
       ],
-      tools: [
-        { name: 'assistant.delegate', enabled: true },
-        { name: 'assistant.report', enabled: true },
-      ],
+      tools: [],
     },
   ],
 });
@@ -158,7 +152,7 @@ describe('live capability projection', () => {
     const input = data();
     input.workers[0]!.online = false;
     expect(runtimeCapabilityFacts(input).componentCount).toBe('—');
-    expect(integratedCapabilityStatus('assistants', input)).toBe(
+    expect(integratedCapabilityStatus('native-images', input)).toBe(
       '运行状态未知',
     );
     expect(integratedCapabilityStatus('native-images', null)).toBe(
@@ -174,32 +168,6 @@ describe('live capability projection', () => {
       tools: [],
     });
     expect(runtimeCapabilityFacts(input).componentCount).toBe('0–1');
-    expect(integratedCapabilityStatus('assistants', input)).toBe(
-      'Worker 配置不一致',
-    );
-  });
-  it('checks both services and tenant publication before claiming a released capability', () => {
-    const input = data();
-    expect(integratedCapabilityStatus('assistants', input)).toContain(
-      '已发布到 1 个工作区',
-    );
-    input.webTools = [];
-    expect(integratedCapabilityStatus('assistants', input)).toBe(
-      'Web 功能开关未开启',
-    );
-    input.webTools = input.workers[0]!.tools;
-    input.publications[0]!.policyEnabled = false;
-    expect(integratedCapabilityStatus('assistants', input)).toBe(
-      '已发布 · 租户执行策略未开启',
-    );
-    input.publications = [];
-    expect(integratedCapabilityStatus('assistants', input)).toBe(
-      '尚未发布到租户员工',
-    );
-    input.workers[0]!.tools = [];
-    expect(integratedCapabilityStatus('assistants', input)).toBe(
-      'Worker 功能开关未开启',
-    );
   });
 
   it('reports Office from the synchronized Skill and actual published bindings, not merely existing export tools', () => {

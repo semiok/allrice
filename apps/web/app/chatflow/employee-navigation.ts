@@ -108,7 +108,7 @@ export const employeeTranslate: WorkspaceBrowserProps['t'] = (key, params) => {
           : key === 'toast.stoppedAndArchived'
             ? '已归档，并已请求停止相关工作。可'
             : key === 'archive.confirm.desc'
-              ? '“{title}”仍有未完成的工作。归档将停止相关任务与子智能体、取消排队消息，并暂停该会话的定时任务。恢复会话不会自动重启这些工作。'
+              ? '“{title}”仍有未完成的工作。归档将停止相关任务、取消排队消息，并暂停该会话的定时任务。恢复会话不会自动重启这些工作。'
               : key === 'actions.newSession.aria'
                 ? '与 {name} 新建工作'
                 : key === 'copy'

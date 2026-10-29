@@ -34,9 +34,6 @@ const toolLabels: Record<string, string> = {
   run_code: '运行代码',
   skill: '加载技能',
   ask_user_question: '等待你的回答',
-  'assistant.delegate': '安排子智能体',
-  'assistant.report': '汇总子智能体结果',
-  'assistant.development': '协作开发',
 };
 
 export function toolActivityLabel(name: string, search = false) {
@@ -63,7 +60,6 @@ export type WorkProcessCategory =
   | 'execute'
   | 'browse'
   | 'skill'
-  | 'collaborate'
   | 'question'
   | 'organize'
   | 'plan'
@@ -112,7 +108,6 @@ function classification(
   if (/memory/.test(name)) return ['organize', '记忆'];
   if (name === 'skill') return ['skill', '技能'];
   if (name === 'ask_user_question') return ['question', '确认'];
-  if (/assistant\.|subagent/.test(name)) return ['collaborate', '协作'];
   if (/process|service|bash|run_code/.test(name)) return ['execute', '执行'];
   return ['tool', '工具'];
 }

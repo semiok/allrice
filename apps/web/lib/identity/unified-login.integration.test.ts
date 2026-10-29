@@ -9,7 +9,7 @@ import {
   vi,
 } from 'vitest';
 import * as client from '../../../../packages/database/src/core/client.ts';
-import { createAssistantFixtureDatabase } from '../../../../packages/database/src/assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../../../../packages/database/src/runtime.fixture.ts';
 import {
   ensureBootstrapPortalPrincipal,
   initializeAccountLogin,
@@ -43,9 +43,9 @@ const integration =
     : describe.skip;
 
 integration('shared portal HTTP identity with real PostgreSQL', () => {
-  let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   beforeAll(async () => {
-    fixture = await createAssistantFixtureDatabase();
+    fixture = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     vi.spyOn(client, 'getDiagnosticsDatabase').mockReturnValue(fixture.db);
     vi.stubEnv('ALLRICE_PORTAL_AUTH_ENABLED', '1');

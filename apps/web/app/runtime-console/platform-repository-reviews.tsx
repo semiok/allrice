@@ -20,7 +20,7 @@ const reasons = {
   repository_authorization_required: '请先配置当前管理员的仓库授权。',
   current_ci_required: '请先核对远端和四项原始 CI，确认当前版本通过。',
   subject_changed: '候选或 CI 身份已变化，旧意见仅供查看。',
-  independent_review_required: '需要全新的独立子智能体审查这份准确候选。',
+  independent_review_required: '需要新的独立审查任务检查这份准确候选。',
   revision_required: '同一份代码已有拒绝意见；请修改候选，不能换审查员覆盖。',
   review_not_complete: '审查及成果封存尚未完成。',
   authority_revoked: '本次权限已失效。',
@@ -169,7 +169,7 @@ export function PlatformRepositoryReviews({
       if (mounted.current) {
         remember(null);
         await read();
-        setNotice('已安排一个新的独立审查子智能体。');
+        setNotice('已安排新的独立审查任务。');
       }
     } catch {
       if (mounted.current)
@@ -202,8 +202,8 @@ export function PlatformRepositoryReviews({
     <section aria-label="仓库候选独立审查">
       <h4>独立审查</h4>
       <p className={css.meta}>
-        审查子智能体只阅读这份候选和准确 CI 证据。意见会保存为交付成果；合并
-        main 与 Dev 验收另行执行。
+        审查任务只读取这份候选和准确 CI 证据。意见会保存为交付成果；合并 main 与
+        Dev 验收另行执行。
       </p>
       <div className={css.controls}>
         <AdminButton
@@ -270,7 +270,7 @@ export function PlatformRepositoryReviews({
                   : ''}
               </summary>
               <p className={css.meta}>
-                Run {review.runId} · 独立子智能体{' '}
+                Run {review.runId} · 独立审查任务{' '}
                 {review.reviewerRunId ?? '尚未安排'} · {review.status}
                 {review.errorCode ? ' · ' + review.errorCode : ''}
               </p>

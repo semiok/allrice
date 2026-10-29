@@ -19,12 +19,6 @@ const choices = [
     title: '电脑自动工作',
     description: '在已授权范围内执行本地操作。关闭后，执行前逐次确认。',
   },
-  {
-    key: 'assistants',
-    title: '子智能体',
-    description:
-      '允许当前员工按需安排子智能体协作。关闭后，由当前员工独立处理。',
-  },
 ] as const;
 type View = z.infer<typeof WorkAutomationViewSchema>;
 

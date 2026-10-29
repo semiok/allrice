@@ -12,7 +12,7 @@ import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import { describe, it, expect, vi } from 'vitest';
 import { ProjectServiceViewSchema } from '@allrice/contracts';
-import { createAssistantFixtureDatabase } from '../../../packages/database/src/assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../../../packages/database/src/runtime.fixture.ts';
 import { cloudProjectServiceCandidate } from '../../../packages/database/src/cloud-project-service.fixture.ts';
 import {
   readProjectService,
@@ -72,7 +72,6 @@ suite('cloud project first complete native chain', () => {
       };
     try {
       for (const key of [
-        'ASSISTANTS',
         'WORKBENCH',
         'RUNTIME_POLICY',
         'CLOUD_RUNNER',
@@ -82,7 +81,7 @@ suite('cloud project first complete native chain', () => {
       ])
         vi.stubEnv('ALLRICE_' + key + '_ENABLED', '1');
       vi.stubEnv('ALLRICE_CLOUD_PREVIEW_SOCKET', join(owned, 'ipc', 'p.sock'));
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createRuntimeFixtureDatabase();
       database = fixture.db;
       const folder = new URL(
           '../../rice-bridge/test/project-service-vite/',
@@ -406,7 +405,7 @@ suite('cloud project first complete native chain', () => {
       const finalized = await f.runtime.finalizeRoot({
         scope: f.task.scope,
         rootRunId: f.context.runId,
-        worker: f.assistantWorker,
+        worker: f.worker,
       });
       expect(finalized.status).toBe('completed');
       await completeJob({

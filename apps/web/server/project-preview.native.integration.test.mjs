@@ -23,7 +23,7 @@ import {
   managedPythonPayloadForPlatform,
   localCommandToolchainImageV1,
 } from '@allrice/contracts';
-import { createAssistantFixtureDatabase } from '../../../packages/database/src/assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../../../packages/database/src/runtime.fixture.ts';
 import { projectServiceFixture } from '../../../packages/database/src/project-service.fixture.ts';
 import { createBridgeConnectionAuthority } from '../../../packages/database/src/bridge-connections.ts';
 import { bridgeDeviceStatus } from '../../../packages/database/src/bridge.ts';
@@ -82,7 +82,6 @@ suite('project service first complete native chain', () => {
     };
     try {
       for (const key of [
-        'ASSISTANTS',
         'WORKBENCH',
         'RUNTIME_POLICY',
         'BRIDGE_OPERATION_LEDGER',
@@ -91,7 +90,7 @@ suite('project service first complete native chain', () => {
         'BRIDGE_WSS',
       ])
         vi.stubEnv(`ALLRICE_${key}_ENABLED`, '1');
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createRuntimeFixtureDatabase();
       database = fixture.db;
       const folder = new URL(
           '../../rice-bridge/test/project-service-vite/',
@@ -508,7 +507,7 @@ suite('project service first complete native chain', () => {
       const complete = await f.runtime.finalizeRoot({
         scope: f.task.scope,
         rootRunId: f.context.runId,
-        worker: f.assistantWorker,
+        worker: f.worker,
       });
       expect(complete.status).toBe('completed');
       await database`update allrice_runs set state='succeeded' where id=${f.context.runId}`;

@@ -15,9 +15,9 @@ import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
 import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
 import * as client from '../../../../packages/database/src/core/client.ts';
 import {
-  assistantFixtureStorage,
-  createAssistantFixtureDatabase,
-} from '../../../../packages/database/src/assistant-runtime.fixture.ts';
+  runtimeFixtureStorage,
+  createRuntimeFixtureDatabase,
+} from '../../../../packages/database/src/runtime.fixture.ts';
 import {
   authenticateSession,
   createSession,
@@ -60,20 +60,19 @@ const integration =
     ? describe.sequential
     : describe.skip;
 integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
-  let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
+  let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
     browser: Browser,
     server: Server,
     origin: string,
     adminToken: string;
   const failures: string[] = [];
   beforeAll(async () => {
-    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
     vi.stubEnv('ALLRICE_EXPERIENCE_REVIEW_ENABLED', '1');
     vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '1');
     vi.stubEnv('ALLRICE_NATIVE_CALENDAR_ENABLED', '1');
-    fixture = await createAssistantFixtureDatabase();
+    fixture = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
-    ports.storage.mockReturnValue(assistantFixtureStorage(fixture.db));
+    ports.storage.mockReturnValue(runtimeFixtureStorage(fixture.db));
     const p = await ensureBootstrapPortalPrincipal({
       organizationSlug: 'allrice-platform',
       organizationName: 'Platform',
@@ -1090,7 +1089,7 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         checksum,
         sizeBytes: bytes.length,
       };
-      await assistantFixtureStorage(fixture.db).put(
+      await runtimeFixtureStorage(fixture.db).put(
         object,
         new Blob([bytes]).stream(),
       );

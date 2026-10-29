@@ -26,14 +26,6 @@ export const runtimeCapabilityCatalog: readonly RuntimeCapabilityCatalogGroup[] 
         '以下说明各能力的接入方式；实际开启与发布状态以上方实时数据为准。',
       items: [
         {
-          id: 'subagent',
-          name: '并行子智能体与开发协作',
-          packageName: '@deepseek-ai/dsh-subagent',
-          detail:
-            '复用原生子智能体派发与消息，已接通父子任务、共享预算、候选测试和独立审查。',
-          policy: '员工配置后按租户试用与发布',
-        },
-        {
           id: 'chatflow',
           name: 'ChatFlow 3.0',
           detail: '管理多租户 Session、Run、原生事件流、恢复和 Harness 路由。',

@@ -18,7 +18,6 @@ type Snapshot = {
 const memberSettingsOn: WorkAutomation = {
   cloud: true,
   computer: true,
-  assistants: true,
 };
 const empty = (): RuntimePolicyControls => ({
   version: 1,
@@ -125,7 +124,7 @@ export function TenantPolicyEditor({
     <section aria-label="执行策略">
       <h3>执行策略</h3>
       <p>
-        这里保留工作区的明确禁止规则。日常使用请到前台设置的「员工工作方式」，选择自动执行或每次确认。云端和电脑操作默认在已授权范围内自动执行；子智能体默认关闭，由成员自己打开，已保存的设置保持不变。
+        这里保留工作区的明确禁止规则。日常使用请到前台设置的「员工工作方式」，选择自动执行或每次确认。云端和电脑操作默认在已授权范围内自动执行。子智能体暂不可用，已保存的委派策略继续保留。
       </p>
       <p>
         允许不会增加员工工具、文件夹或账号权限。旧的「每次审批」规则按成员工作方式执行；已有审批继续保留。
@@ -244,7 +243,11 @@ export function TenantPolicyEditor({
                             })
                           }
                         >
-                          <option value="unset">未配置（禁止）</option>
+                          <option value="unset">
+                            {action === 'assistant.delegate'
+                              ? '未配置（跟随默认策略）'
+                              : '未配置（禁止）'}
+                          </option>
                           <option value="deny">禁止</option>
                           {effect === 'ask' ? (
                             <option value="ask" disabled>
@@ -257,11 +260,15 @@ export function TenantPolicyEditor({
                         </select>
                       </td>
                       <td>
-                        {decision.effect === 'deny'
-                          ? '禁止'
-                          : decision.effect === 'ask'
-                            ? '需精确审批'
-                            : '按成员工作方式执行'}
+                        {action === 'assistant.delegate'
+                          ? decision.effect === 'deny'
+                            ? '策略禁止委派'
+                            : '策略允许 · 子智能体暂不可用'
+                          : decision.effect === 'deny'
+                            ? '禁止'
+                            : decision.effect === 'ask'
+                              ? '需精确审批'
+                              : '按成员工作方式执行'}
                         <small>{decision.reason}</small>
                       </td>
                     </tr>

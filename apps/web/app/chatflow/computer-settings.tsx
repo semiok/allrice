@@ -55,7 +55,7 @@ const choices = [
     key: 'development',
     title: '受控开发协作',
     description:
-      '允许子智能体修改、测试和检查项目，需要先开启本地沙箱命令并授权文件夹。',
+      '在隔离副本里修改和测试项目，需要先开启本地沙箱命令并授权文件夹。',
     state: 'development',
   },
 ] as const;

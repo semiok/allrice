@@ -9,9 +9,9 @@ import type { Browser } from '../../../worker/node_modules/playwright-core/index
 import * as client from '../../../../packages/database/src/core/client.ts';
 import { tenantValidationFixture } from '../../../../packages/database/src/tenant-validation.fixture.ts';
 import {
-  createAssistantFixtureDatabase,
-  assistantFixtureStorage,
-} from '../../../../packages/database/src/assistant-runtime.fixture.ts';
+  createRuntimeFixtureDatabase,
+  runtimeFixtureStorage,
+} from '../../../../packages/database/src/runtime.fixture.ts';
 import {
   ensureBootstrapPortalPrincipal,
   createSession,
@@ -53,7 +53,7 @@ const suite =
 suite(
   'reference drawer -> real HTTP -> fixed storage -> Worker -> preview/download',
   () => {
-    let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
+    let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
       browser: Browser,
       server: Server,
       origin: string;
@@ -65,10 +65,9 @@ suite(
       readerToken: string;
     const failures: string[] = [];
     beforeAll(async () => {
-      vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-      f = await createAssistantFixtureDatabase();
+      f = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
-      ports.storage.mockReturnValue(assistantFixtureStorage(f.db));
+      ports.storage.mockReturnValue(runtimeFixtureStorage(f.db));
       const p = await ensureBootstrapPortalPrincipal({
         organizationSlug: 'allrice-platform',
         organizationName: 'Platform',
@@ -300,7 +299,7 @@ suite(
           workspaceId: a.context.workspaceId,
         };
         await f.db`insert into allrice_organization_people(organization_id,user_id,display_name,content_maintenance_level) values(${ctx.organizationId},${ctx.actor.id},'Publisher','company')`;
-        const storage = assistantFixtureStorage(f.db),
+        const storage = runtimeFixtureStorage(f.db),
           assetId = randomUUID();
         let asset = await mutateCompanyAsset(
           ctx,
@@ -808,7 +807,7 @@ suite(
     });
     it('rechecks authorization after preview IO and rejects an already loaded version after login revocation', async () => {
       const file = (await references()).find((r) => r.fileName === '口径.txt')!;
-      const storage = assistantFixtureStorage(f.db),
+      const storage = runtimeFixtureStorage(f.db),
         original = storage.get.bind(storage);
       const read = vi
         .spyOn(storage, 'get')

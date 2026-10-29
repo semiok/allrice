@@ -74,8 +74,6 @@ export function SteeredWorkProcess({
         canceled={segment.last && props.canceled}
         failureTitle={segment.last ? props.failureTitle : undefined}
         traceStatus={segment.last ? props.traceStatus : undefined}
-        assistantCount={segment.last ? props.assistantCount : 0}
-        assistantAttention={segment.last ? props.assistantAttention : 0}
       >
         {segment.last ? props.children : null}
       </WorkProcess>

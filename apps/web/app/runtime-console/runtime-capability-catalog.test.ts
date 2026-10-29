@@ -22,7 +22,7 @@ describe('runtime capability source catalog', () => {
       (group) => group.source === 'allrice',
     );
     expect(allrice?.description).toContain('实时数据');
-    expect(allrice?.items.some((item) => item.id === 'subagent')).toBe(true);
+    expect(allrice?.items.some((item) => item.id === 'subagent')).toBe(false);
     const differences = runtimeCapabilityCatalog.find(
       (group) => group.source === 'blocked',
     );
