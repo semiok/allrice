@@ -27,6 +27,7 @@ import type {
 import type { NativeExperienceItem } from '../../lib/chatflow/native-experience';
 import {
   summarizeWorkProcess,
+  workProcessStepNeedsAttention,
   type WorkProcessCategory,
   type WorkProcessStep,
 } from '../../lib/chatflow/work-process';
@@ -60,7 +61,7 @@ const stepIcons: Record<WorkProcessCategory, ReactNode> = {
   plan: <IconPlanOutlineRegular />,
   tool: <IconCordisPluginOutlineRegular />,
 };
-const noop = () => {};
+type RenderOperation = (operationId: string, embedded?: boolean) => ReactNode;
 
 /** A live reasoning lifecycle adds no detail beyond the current phase header. */
 function onlyLiveThinking(steps: WorkProcessStep[], running: boolean) {
@@ -112,7 +113,7 @@ export function WorkProcess({
   accessibleFiles?: readonly { id: string; fileName: string }[];
   onOpenArtifact?: (id: string) => void;
   label?: string;
-  renderOperation?: (operationId: string) => ReactNode;
+  renderOperation?: RenderOperation;
   transcriptView?: UserPreferences['transcriptView'];
   collapseTiming?: UserPreferences['collapseTiming'];
   presentation?: WorkProcessPresentation;
@@ -178,6 +179,7 @@ export function WorkProcess({
     canceled,
     hasHistory: parts ? Boolean(history?.length || expandable) : expandable,
     disclosure,
+    needsAttention: process.steps.some(workProcessStepNeedsAttention),
   });
   const toggle = () =>
     setDisclosure({ presentation: currentPresentation, open: !display.open });
@@ -232,13 +234,13 @@ export function WorkProcess({
         </div>
       ) : (
         <div key={part.id} hidden={!showHistory}>
-          <WorkProcessGroup
+          <NativeStepsGroup
+            key={currentPresentation.runId}
             items={part.items}
             renderOperation={renderOperation}
             running={running && !part.closed}
             grouped={display.groupSteps}
             policy={policy}
-            answerGeneration={currentPresentation.answerGeneration}
           />
         </div>
       );
@@ -357,11 +359,12 @@ export function WorkProcess({
       <div hidden={!display.open || !expandable}>
         <div className={styles.processDetails}>
           <NativeStepsGroup
-            key={currentPresentation.answerGeneration}
+            key={currentPresentation.runId}
             items={items}
             running={running}
             grouped={display.groupSteps}
             policy={policy}
+            renderOperation={renderOperation}
           />
           {traceStatus === 'failed' ? (
             <button
@@ -375,59 +378,7 @@ export function WorkProcess({
         </div>
         {children}
       </div>
-      {renderOperation && (
-        <div className={styles.processReceipts}>
-          {items
-            .filter((item) => item.operationId)
-            .map((item) => (
-              <div className={styles.operationReceipt} key={item.id}>
-                {renderOperation(item.operationId!)}
-              </div>
-            ))}
-        </div>
-      )}
     </section>
-  );
-}
-
-/** Native disclosure for concrete step history; only the owning turn announces
- * the current phase. Do not recursively render another turn-status header.
- */
-function WorkProcessGroup({
-  items,
-  running,
-  renderOperation,
-  grouped,
-  policy,
-  answerGeneration,
-}: {
-  items: NativeExperienceItem[];
-  running: boolean;
-  renderOperation?: (operationId: string) => ReactNode;
-  grouped: boolean;
-  policy: ChatPresentationPolicy;
-  answerGeneration: string;
-}) {
-  // Receipts supplement the native summary; they must not replace its steps.
-  // Keep both at this process boundary, before any later assistant reply.
-  return (
-    <div className={styles.processReceipts}>
-      <NativeStepsGroup
-        key={answerGeneration}
-        items={items}
-        running={running}
-        grouped={grouped}
-        policy={policy}
-      />
-      {renderOperation &&
-        items
-          .filter((item) => item.operationId)
-          .map((item) => (
-            <div className={styles.operationReceipt} key={item.id}>
-              {renderOperation(item.operationId!)}
-            </div>
-          ))}
-    </div>
   );
 }
 
@@ -436,16 +387,18 @@ function NativeStepsGroup({
   running,
   grouped,
   policy,
+  renderOperation,
 }: {
   items: NativeExperienceItem[];
   running: boolean;
   grouped: boolean;
   policy: ChatPresentationPolicy;
+  renderOperation?: RenderOperation;
 }) {
   const [open, setOpen] = useState(false);
   const { steps } = summarizeWorkProcess(items);
   if (!steps.length || onlyLiveThinking(steps, running)) return null;
-  if (!grouped) return <WorkProcessSteps items={items} running={running} />;
+  const showGroup = grouped && !steps.some(workProcessStepNeedsAttention);
   const categories = [...new Set(steps.map((step) => step.label))].join('、');
   const live = [...steps]
     .reverse()
@@ -459,93 +412,128 @@ function NativeStepsGroup({
         : undefined;
   return (
     <section aria-label="工作步骤">
-      <DisclosureRow
-        icon={stepIcons[steps[0]!.category]}
-        title={`${categories} · ${steps.length} 项`}
-        open={open}
-        expandable
-        expandOnRowClick
-        onToggle={() => setOpen((value) => !value)}
-        rowClassName={styles.processHeader}
-        titleClassName={styles.processTitle}
-        collapsedContent={
-          preview ? (
-            <>
-              <span className={reasoning.separator} aria-hidden />
-              <span className={styles.processStepDescription}>{preview}</span>
-            </>
-          ) : undefined
-        }
+      {showGroup && (
+        <DisclosureRow
+          icon={stepIcons[steps[0]!.category]}
+          title={`${categories} · ${steps.length} 项`}
+          open={open}
+          expandable
+          expandOnRowClick
+          onToggle={() => setOpen((value) => !value)}
+          rowClassName={styles.processHeader}
+          titleClassName={styles.processTitle}
+          collapsedContent={
+            preview ? (
+              <>
+                <span className={reasoning.separator} aria-hidden />
+                <span className={styles.processStepDescription}>{preview}</span>
+              </>
+            ) : undefined
+          }
+        />
+      )}
+      <div
+        className={showGroup ? styles.processDetails : undefined}
+        hidden={showGroup && !open}
       >
-        <div className={styles.processDetails}>
-          <WorkProcessSteps items={items} running={running} />
-        </div>
-      </DisclosureRow>
+        <WorkProcessSteps
+          steps={steps}
+          running={running}
+          renderOperation={renderOperation}
+        />
+      </div>
     </section>
   );
 }
 
 function WorkProcessSteps({
-  items,
+  steps,
   running,
+  renderOperation,
 }: {
-  items: NativeExperienceItem[];
+  steps: WorkProcessStep[];
   running: boolean;
+  renderOperation?: RenderOperation;
 }) {
-  const { steps } = summarizeWorkProcess(items);
   if (!steps.length) return null;
   return (
     <ul className={styles.processSteps} aria-label="工作步骤">
-      {steps.map((step) => {
-        const pending =
-          ['started', 'updated'].includes(step.status) &&
-          step.category !== 'plan';
-        const status =
-          step.status === 'failed'
-            ? `未成功${step.error ? `：${step.error}` : ''}`
-            : step.status === 'info'
-              ? '等待处理'
-              : pending && !running
-                ? '结果未确认'
-                : undefined;
-        return (
-          <li
-            key={step.id}
-            data-category={step.category}
-            data-failed={step.status === 'failed' || undefined}
-          >
-            <DisclosureRow
-              icon={
-                <span
-                  className={
-                    pending && running ? styles.processPulse : undefined
-                  }
-                  aria-hidden
-                >
-                  {stepIcons[step.category]}
-                </span>
-              }
-              title={step.label}
-              open={false}
-              expandable={false}
-              onToggle={noop}
-              rowClassName={styles.processStepRow}
-              titleClassName={styles.processStepLabel}
-              collapsedContent={
-                <>
-                  <span className={reasoning.separator} aria-hidden />
-                  <span className={styles.processStepDescription}>
-                    {step.description}
-                  </span>
-                </>
-              }
-            />
-            {status ? (
-              <small className={styles.processStepStatus}>{status}</small>
-            ) : null}
-          </li>
-        );
-      })}
+      {steps.map((step) => (
+        <WorkProcessStepRow
+          key={step.id}
+          step={step}
+          running={running}
+          renderOperation={renderOperation}
+        />
+      ))}
     </ul>
+  );
+}
+
+/** The receipt is the content of its call row, never a second transcript list. */
+function WorkProcessStepRow({
+  step,
+  running,
+  renderOperation,
+}: {
+  step: WorkProcessStep;
+  running: boolean;
+  renderOperation?: RenderOperation;
+}) {
+  const [disclosure, setDisclosure] = useState<boolean>();
+  const open = disclosure ?? workProcessStepNeedsAttention(step);
+  const hasReceipt = Boolean(step.operationId && renderOperation);
+  const pending =
+    ['started', 'updated'].includes(step.status) && step.category !== 'plan';
+  const status =
+    step.status === 'failed'
+      ? `未成功${step.error ? `：${step.error}` : ''}`
+      : step.status === 'info'
+        ? '等待处理'
+        : pending && !running
+          ? '结果未确认'
+          : undefined;
+  return (
+    <li
+      data-work-call={step.id}
+      data-category={step.category}
+      data-failed={step.status === 'failed' || undefined}
+    >
+      <DisclosureRow
+        icon={
+          <span
+            className={pending && running ? styles.processPulse : undefined}
+            aria-hidden
+          >
+            {stepIcons[step.category]}
+          </span>
+        }
+        title={step.label}
+        open={hasReceipt && open}
+        expandable={hasReceipt}
+        expandOnRowClick
+        keepContentWhenOpen
+        onToggle={() => setDisclosure(!open)}
+        rowClassName={styles.processStepRow}
+        titleClassName={styles.processStepLabel}
+        collapsedContent={
+          <>
+            <span className={reasoning.separator} aria-hidden />
+            <span className={styles.processStepDescription}>
+              {step.description}
+            </span>
+          </>
+        }
+      >
+        {hasReceipt ? (
+          <div className={styles.operationReceipt}>
+            {renderOperation!(step.operationId!, true)}
+          </div>
+        ) : null}
+      </DisclosureRow>
+      {status ? (
+        <small className={styles.processStepStatus}>{status}</small>
+      ) : null}
+    </li>
   );
 }

@@ -90,6 +90,7 @@ export function projectWorkProgress(
       : undefined;
     if (item) {
       item.operationId = operationId;
+      item.operationStatus = op.snapshot.status;
       continue;
     }
     // History can arrive after receipts. Keep every receipt visible without
@@ -103,6 +104,7 @@ export function projectWorkProgress(
         ? `tool:${op.nativeCallId}`
         : `operation:${operationId}`,
       operationId,
+      operationStatus: op.snapshot.status,
       kind: 'tool',
       toolName: op.snapshot.binding.action,
       title: op.proposal.kind === 'mcp' ? op.proposal.tool : '云端计算',

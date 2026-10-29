@@ -1,4 +1,5 @@
 import type { ChatFlowEventEnvelope } from '@allrice/contracts';
+import type { CloudOperationView } from '@allrice/database';
 
 export type NativeExperienceKind =
   'context' | 'think' | 'search' | 'tool' | 'todo' | 'compaction' | 'lifecycle';
@@ -15,6 +16,7 @@ export interface NativeExperienceItem {
   lastSequence?: number;
   toolName?: string;
   operationId?: string;
+  operationStatus?: CloudOperationView['snapshot']['status'];
   startedAt?: string;
   finishedAt?: string;
 }

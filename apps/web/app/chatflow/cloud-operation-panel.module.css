@@ -95,6 +95,9 @@
   font-size: 14px;
   font-weight: 500;
 }
+.title[hidden] {
+  display: none;
+}
 .icon {
   display: grid;
   place-items: center;

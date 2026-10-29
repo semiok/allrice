@@ -279,8 +279,10 @@ export function CloudOperationCard({
   laterSuccessId,
   onAct,
   projectServiceContext,
+  embedded = false,
 }: {
   op: CloudOperationView;
+  embedded?: boolean;
   projectServiceContext?: {
     workspaceId: string;
     tenantHeaders: Record<string, string>;
@@ -504,7 +506,7 @@ export function CloudOperationCard({
             <DetailFields
               rows={[
                 ['应用', serviceHost(proposal.endpoint)],
-                ['操作类别', mcpRiskLabel(proposal.risk)],
+                ['授权等级', mcpRiskLabel(proposal.risk)],
               ]}
             />
             <TechnicalDetails
@@ -520,12 +522,12 @@ export function CloudOperationCard({
         key: 'arguments',
         label: '操作',
         title: '发送内容',
-        value: `${mcpRiskLabel(proposal.risk)} · ${argumentCount} 项`,
+        value: `授权等级：${mcpRiskLabel(proposal.risk)} · ${argumentCount} 项`,
         content: (
           <>
             <DetailFields
               rows={[
-                ['操作类别', mcpRiskLabel(proposal.risk)],
+                ['授权等级', mcpRiskLabel(proposal.risk)],
                 ['发送内容', `${argumentCount} 项`],
               ]}
             />
@@ -786,7 +788,7 @@ export function CloudOperationCard({
         />
       )}
       <header className={styles.cloudHeader}>
-        <strong className={styles.title}>
+        <strong className={styles.title} hidden={embedded}>
           <span className={styles.icon} aria-hidden="true">
             <svg
               width="17"
@@ -821,7 +823,7 @@ export function CloudOperationCard({
               <span className={styles.serviceHost} title={proposal.endpoint}>
                 {serviceHost(proposal.endpoint)}
               </span>
-              <span>{mcpRiskLabel(proposal.risk)}</span>
+              <span>授权等级：{mcpRiskLabel(proposal.risk)}</span>
             </>
           ) : (
             <>
@@ -849,12 +851,12 @@ export function CloudOperationCard({
               {cloudOperationCompactStatus(op)}
             </span>
           </Tooltip>
-          {detailsToggle}
+          {!embedded && detailsToggle}
           {stopButton}
         </div>
       </header>
       {!isMcp && notices}
-      <div id={detailsId} hidden={!detailsOpen}>
+      <div id={detailsId} hidden={!embedded && !detailsOpen}>
         <OperationDetails
           key={`${op.snapshot.binding.attempt.operationId}-${!!pending}`}
           sections={sections}
@@ -917,7 +919,7 @@ export function CloudOperationPanel({
   runActive: boolean;
   children?: (feed: {
     operations: CloudOperationView[];
-    renderOperation: (operationId: string) => ReactNode;
+    renderOperation: (operationId: string, embedded?: boolean) => ReactNode;
     feedback: ReactNode;
   }) => ReactNode;
 }) {
@@ -1075,7 +1077,7 @@ export function CloudOperationPanel({
       )}
     </>
   );
-  const renderOperation = (operationId: string) => {
+  const renderOperation = (operationId: string, embedded = false) => {
     const op = operations.find(
       (op) => op.snapshot.binding.attempt.operationId === operationId,
     );
@@ -1087,6 +1089,7 @@ export function CloudOperationPanel({
           onChanged: () => setRevision((value) => value + 1),
         }}
         key={op.snapshot.binding.attempt.operationId}
+        embedded={embedded}
         op={op}
         runActive={runActive}
         laterSuccessId={laterSuccessfulMcpCall(op, operations)}

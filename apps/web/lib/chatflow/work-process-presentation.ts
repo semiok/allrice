@@ -91,6 +91,7 @@ export function workProcessDisplayState({
   failed,
   canceled,
   hasHistory,
+  needsAttention = false,
   disclosure,
 }: {
   policy: ChatPresentationPolicy;
@@ -99,10 +100,15 @@ export function workProcessDisplayState({
   failed: boolean;
   canceled: boolean;
   hasHistory: boolean;
+  needsAttention?: boolean;
   disclosure?: WorkProcessDisclosure;
 }) {
   const alwaysOpen =
-    running || failed || canceled || presentation.hasInterleavedInput;
+    running ||
+    failed ||
+    canceled ||
+    needsAttention ||
+    presentation.hasInterleavedInput;
   const canFold = policy.foldCompletedTurns && !alwaysOpen && hasHistory;
   const deferCollapse =
     policy.collapseTiming === 'next-input' && !presentation.hasNextInput;

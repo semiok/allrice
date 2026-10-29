@@ -72,6 +72,18 @@ export interface WorkProcessStep {
   description: string;
   status: NativeExperienceItem['status'];
   error?: string;
+  operationId?: string;
+  operationStatus?: NativeExperienceItem['operationStatus'];
+}
+
+/** Keep unresolved receipts and decisions reachable; this does not drive execution. */
+export function workProcessStepNeedsAttention(step: WorkProcessStep) {
+  return (
+    step.status === 'failed' ||
+    ['waiting_user', 'failed', 'unknown', 'partial'].includes(
+      step.operationStatus ?? '',
+    )
+  );
 }
 
 /** Only tenant-facing summaries, never raw reasoning, argument JSON or output. */
@@ -139,6 +151,8 @@ export function summarizeWorkProcess(items: NativeExperienceItem[]) {
         category,
         label,
         status: item.status,
+        operationId: item.operationId,
+        operationStatus: item.operationStatus,
         // Reasoning events expose lifecycle only. Do not infer or quote private thoughts.
         description:
           item.kind === 'think'
