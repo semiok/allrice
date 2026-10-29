@@ -10,6 +10,7 @@ import {
   projectServiceWorkerControl,
 } from './project-services.ts';
 import { heartbeatBridgeDevice } from './bridge.ts';
+import { completeJob } from './execution/queue.ts';
 import type * as Client from './core/client.ts';
 
 let fixtureDatabase: ReturnType<typeof Client.getDatabase>;
@@ -73,13 +74,21 @@ suite('MET166 finite project service — real PostgreSQL', () => {
   });
   it('successful Run keeps only its finite service, without reviving ended Job/root', async () => {
     const f = await projectServiceFixture(database.db);
-    await f.db`update allrice_runs set state='succeeded' where id=${f.context.runId}`;
-    await f.db`update allrice_jobs set status='succeeded' where id=${f.context.jobId}`;
+    await completeJob({
+      workerId: f.context.worker.id,
+      jobId: f.context.jobId,
+      leaseToken: f.worker.leaseToken,
+      result: { answer: 'Preview ready' },
+    });
     const continued = await f.exchange();
     expect(continued.stopRequested).toBe(false);
     const [job] =
-      await f.db`select status from allrice_jobs where id=${f.context.jobId}`;
-    expect(job!.status).toBe('succeeded');
+      await f.db`select r.state,j.status,j.lease_token from allrice_runs r join allrice_jobs j on j.run_id=r.id where j.id=${f.context.jobId}`;
+    expect(job).toEqual({
+      state: 'succeeded',
+      status: 'succeeded',
+      lease_token: null,
+    });
   });
   it('explicit cancellation stops a successfully detached service without claiming physical cleanup', async () => {
     const f = await projectServiceFixture(database.db);

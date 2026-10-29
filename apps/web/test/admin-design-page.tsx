@@ -48,7 +48,7 @@ function SkillTimelineFixture() {
     ? [
         {
           ...records[0]!,
-          title: 'Skill 已就绪 · 13 个',
+          title: `Skill 已就绪 · ${names.length} 个`,
           detail: names.join('、'),
         },
       ]

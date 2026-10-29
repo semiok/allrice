@@ -1,12 +1,18 @@
 /** Real isolated PostgreSQL structure/data upgrade; synthetic legacy child rows
  * are explicit here. Actual before APIs/Worker histories live in p25 retirement. */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createRuntimeFixtureDatabase,
   runtimeTaskFixture,
+  runtimeFixtureStorage,
 } from './runtime.fixture.ts';
+import type { RuntimeTaskRef } from '@allrice/contracts';
+import { createLocalCommandFixture } from './local-command.fixture.ts';
+import { registerToolBrokerExport } from './execution/tool-broker.ts';
+import { listWorkbenchArtifacts } from './artifact-review.ts';
+import { artifactForDownloadLink } from '../../../apps/web/lib/chatflow/artifact-download-link.ts';
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -38,6 +44,7 @@ const migration = () =>
 const fixtures: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>[] = [];
 afterEach(async () => {
   for (const f of fixtures.splice(0)) await f.close();
+  vi.unstubAllEnvs();
 });
 async function database(fresh = false) {
   const f = await createRuntimeFixtureDatabase(
@@ -48,21 +55,112 @@ async function database(fresh = false) {
   fixtures.push(f);
   return f;
 }
-async function oldChild(db: Awaited<ReturnType<typeof database>>['db']) {
-  const f = await runtimeTaskFixture(db),
-    child = randomUUID();
+type Database = Awaited<ReturnType<typeof database>>['db'];
+async function stoppedChild(
+  db: Database,
+  f: {
+    task: RuntimeTaskRef;
+    worker: { jobId: string; workerId: string };
+    owner: string;
+  },
+) {
+  const child = randomUUID();
   await db`update allrice_jobs set status='succeeded',completed_at=clock_timestamp() where id=${f.worker.jobId}`;
   await db`insert into allrice_assistant_roots(root_run_id,configuration,worker_job_id,worker_id,worker_lease_digest,generation) values(${f.task.runId},'{"allowAssistants":true}',${f.worker.jobId},${f.worker.workerId},${'sha256:' + 'a'.repeat(64)},1)`;
   const insert = async (runId: string, parent: string | null, depth: number) =>
     db`insert into allrice_assistant_instances(run_id,root_run_id,parent_run_id,native_session_id,delegation_id,creation_digest,label,depth,allowed_tools,artifact_namespace,status,stopped_at) values(${runId},${f.task.runId},${parent},${'legacy-' + runId},${randomUUID()},'synthetic','old fixture',${depth},'[]',${'legacy/' + runId},'canceled',clock_timestamp())`;
   await insert(f.task.runId, null, 0);
-  await db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input) values(${child},${f.task.scope.organizationId},${f.task.scope.workspaceId},${f.context.actor.id},'canceled','{}','{}')`;
+  await db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input) values(${child},${f.task.scope.organizationId},${f.task.scope.workspaceId},${f.owner},'canceled','{}','{}')`;
   await db`insert into allrice_runtime_run_links(run_id,root_run_id,parent_run_id,organization_id,workspace_id,task) values(${child},${f.task.runId},${f.task.runId},${f.task.scope.organizationId},${f.task.scope.workspaceId},${db.json({ ...f.task, runId: child, parentRunId: f.task.runId })})`;
   await insert(child, f.task.runId, 1);
+  return child;
+}
+async function oldChild(db: Database) {
+  const f = await runtimeTaskFixture(db),
+    child = await stoppedChild(db, { ...f, owner: f.context.actor.id });
   const removed = await f.artifact(child),
     retained = await f.artifact(f.task.runId, 'ordinary result remains');
   await db`insert into allrice_assistant_artifacts(run_id,relative_path,artifact_id,digest) values(${child},'legacy.txt',${removed.artifactId},${removed.digest})`;
   return { ...f, child, removed, retained };
+}
+async function publishedChild(db: Database) {
+  const f = await createLocalCommandFixture(db, 'allow'),
+    child = await stoppedChild(db, { ...f, owner: f.user });
+  const bytes = Buffer.from(
+    JSON.stringify({
+      version: 1,
+      kind: 'assistant_generated',
+      rootRunId: f.rootRunId,
+      childRunId: child,
+      content: 'Frozen old report',
+    }),
+  );
+  const object = {
+    id: randomUUID(),
+    organizationId: f.org,
+    workspaceId: f.workspace,
+    ownerId: f.user,
+    key: `organizations/${f.org}/workspaces/${f.workspace}/owners/${f.user}/exports/${randomUUID()}`,
+    checksum: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+    sizeBytes: bytes.length,
+    mediaType: 'application/json',
+    immutable: true,
+    retentionUntil: null,
+    deletedAt: null,
+  };
+  const storage = runtimeFixtureStorage(db);
+  await storage.put(object, new Blob([bytes]).stream());
+  // The same generic publisher used by old publishAssistantOutput creates the
+  // parent-session file_reference itself. Only legacy provenance rows are SQL.
+  await registerToolBrokerExport(
+    {
+      context: f.context,
+      sessionId: f.session,
+      fileName: 'old-report.json',
+      format: 'json',
+      object,
+    },
+    db,
+  );
+  const [version] =
+    await db`select id from allrice_deliverable_versions where object_id=${object.id}`;
+  await db`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,request_id,request_digest)
+    values(${version!.id},${f.org},${f.workspace},${f.user},${child},'document',${db.json({ kind: 'model_proposal', runId: child, operationId: null, stepId: randomUUID() })},${'assistant-output:' + randomUUID()},${object.checksum})`;
+  await db`insert into allrice_assistant_artifacts(run_id,relative_path,artifact_id,digest) values(${child},'old-report.json',${version!.id},${object.checksum})`;
+  await db`update allrice_runs set state='succeeded' where id=${f.rootRunId}`;
+  await db`update allrice_employee_runs set status='succeeded' where run_id=${f.rootRunId}`;
+  await db`update allrice_jobs set worker_id=null,lease_token=null,lease_expires_at=null,claimed_at=null,heartbeat_at=null where id=${f.worker.jobId}`;
+  return {
+    ...f,
+    child,
+    object,
+    bytes,
+    storage,
+    version: version!.id as string,
+  };
+}
+async function snapshot(db: Database) {
+  const tables = [
+    'allrice_messages',
+    'allrice_runs',
+    'allrice_jobs',
+    'allrice_workbench_artifacts',
+    'allrice_storage_objects',
+    'allrice_deliverable_versions',
+    'allrice_file_references',
+    'allrice_runtime_run_links',
+    ...retired,
+  ];
+  return {
+    rows: await Promise.all(
+      tables.map(
+        (table) =>
+          db`select to_jsonb(r) value from ${db(table)} r order by to_jsonb(r)::text`,
+      ),
+    ),
+    guards:
+      await db`select tgrelid::regclass::text relation,tgname,tgenabled from pg_trigger where not tgisinternal and tgrelid in(select oid from pg_class where relnamespace=current_schema()::regnamespace) order by 1,2`,
+  };
 }
 suite('0229 bounded legacy retirement', () => {
   it('new database has no retired tables, preserves shared guards and ordinary reviewer Run FKs', async () => {
@@ -167,6 +265,102 @@ suite('0229 bounded legacy retirement', () => {
       await db`select id from allrice_deliverable_versions where id=${f.removed.artifactId}`,
     ).toHaveLength(1);
   }, 120000);
+  it('retains automatically published parent-chat files and original generic provenance, without retaining old execution or creating a Job', async () => {
+    vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
+    const { db } = await database(),
+      f = await publishedChild(db),
+      ancestor = randomUUID();
+    // A stopped intermediate child is required by the existing run-link FK.
+    await db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input)
+      select ${ancestor},organization_id,workspace_id,owner_id,'succeeded',execution_spec,input from allrice_runs where id=${f.child}`;
+    await db`insert into allrice_runtime_run_links(run_id,root_run_id,parent_run_id,organization_id,workspace_id,task)
+      values(${ancestor},${f.rootRunId},${f.rootRunId},${f.org},${f.workspace},${db.json({ ...f.task, runId: ancestor, parentRunId: f.rootRunId })})`;
+    await db`insert into allrice_assistant_instances(run_id,root_run_id,parent_run_id,native_session_id,delegation_id,creation_digest,label,depth,allowed_tools,artifact_namespace,status,stopped_at)
+      values(${ancestor},${f.rootRunId},${f.rootRunId},${'legacy-' + ancestor},${randomUUID()},'synthetic','old ancestor',1,'[]',${'legacy/' + ancestor},'completed',clock_timestamp())`;
+    await db`update allrice_assistant_instances set parent_run_id=${ancestor},depth=2 where run_id=${f.child}`;
+    await db`update allrice_runtime_run_links set parent_run_id=${ancestor},task=jsonb_set(task,'{parentRunId}',to_jsonb(${ancestor}::text)) where run_id=${f.child}`;
+    await db`update allrice_assistant_instances set status='unknown' where run_id=${f.rootRunId}`;
+    const generic = [
+      'allrice_storage_objects',
+      'allrice_deliverable_versions',
+      'allrice_file_references',
+      'allrice_workbench_artifacts',
+      'allrice_runs',
+      'allrice_runtime_run_links',
+      'allrice_jobs',
+      'allrice_messages',
+    ];
+    const rows = () =>
+      Promise.all(
+        generic.map(
+          (table) =>
+            db`select to_jsonb(r) value from ${db(table)} r order by to_jsonb(r)::text`,
+        ),
+      );
+    const before = await rows();
+    expect(
+      await db`select object_id from allrice_file_references where object_id=${f.object.id} and session_id=${f.session}`,
+    ).toHaveLength(1);
+    const read = () =>
+      listWorkbenchArtifacts(f.requestContext, f.session, undefined, db);
+    const artifacts = await read();
+    expect(artifacts.artifacts.map((a) => a.version.id)).toContain(f.version);
+    await db.begin(async (tx) => tx.unsafe(await migration()));
+    expect(await rows()).toEqual(before);
+    expect(await read()).toEqual(artifacts);
+    expect(
+      Buffer.from(
+        await new Response(await f.storage.get(f.object)).arrayBuffer(),
+      ),
+    ).toEqual(f.bytes);
+    expect(
+      await db`select id from allrice_jobs where run_id in (${f.child},${ancestor})`,
+    ).toHaveLength(0);
+    expect(
+      await db`select id from allrice_runs where id in (${f.child},${ancestor}) and state not in ('succeeded','failed','canceled')`,
+    ).toHaveLength(0);
+    for (const name of retired)
+      expect(
+        (
+          await db`select to_regclass(format('%I.%I',current_schema(),${name}::text)) relation`
+        )[0]!.relation,
+      ).toBeNull();
+  }, 120000);
+  it('blocks runnable preserved provenance instead of changing its state or manufacturing a stop', async () => {
+    const { db } = await database(),
+      f = await publishedChild(db);
+    await db`update allrice_runs set state='running' where id=${f.child}`;
+    const before = await snapshot(db);
+    const error = await db
+      .begin(async (tx) => tx.unsafe(await migration()))
+      .catch((e) => e);
+    expect(error).toMatchObject({
+      code: '55000',
+      message: 'MET210_PRESERVED_SOURCE_ACTIVE',
+    });
+    expect(error.detail).toContain(f.child);
+    expect(await snapshot(db)).toEqual(before);
+  }, 120000);
+  it('does not treat a file reference without an ordinary parent source as approved preservation', async () => {
+    const { db } = await database(),
+      f = await oldChild(db);
+    const [object] =
+      await db`select object_id from allrice_deliverable_versions where id=${f.removed.artifactId}`;
+    // Same ownership, but no ordinary parent Run/session source relationship.
+    await db`insert into allrice_file_references(organization_id,workspace_id,object_id,session_id,owner_id,file_name)
+      values(${f.task.scope.organizationId},${f.task.scope.workspaceId},${object!.object_id},${f.task.chatSessionId},${f.context.actor.id},'not-published-by-parent.txt')`;
+    const before = await snapshot(db);
+    const error = await db
+      .begin(async (tx) => tx.unsafe(await migration()))
+      .catch((e) => e);
+    expect(error).toMatchObject({
+      code: '23503',
+      message: 'MET210_SHARED_REFERENCE',
+    });
+    expect(error.detail).toContain(object!.object_id);
+    expect(error.detail).toContain('allrice_file_references');
+    expect(await snapshot(db)).toEqual(before);
+  }, 120000);
   it('ordinary final file links block deletion without a foreign key and preserve every row and trigger', async () => {
     const { db } = await database(),
       f = await oldChild(db),
@@ -226,6 +420,22 @@ suite('0229 bounded legacy retirement', () => {
       `[引用式链接][file]\n\n[file]: <${path}>`,
       `<a href="${path}">原件</a>`,
     ];
+    const normalizedUrls = [
+      `//current.example${path}`,
+      `.${path}`,
+      `..${path}`,
+      path.slice(1),
+      `/other/..${path}`,
+      `https://current.example/other/%2e%2e${path}`,
+    ];
+    for (const href of normalizedUrls) {
+      expect(
+        artifactForDownloadLink(href, [
+          { object: { id: objectId }, version: { fileName: 'evidence.txt' } },
+        ])?.object.id,
+      ).toBe(objectId);
+      texts.push(`[已支持的链接](${href})`);
+    }
     const messages: string[] = [];
     for (const text of texts) {
       const id = randomUUID();
@@ -237,7 +447,8 @@ suite('0229 bounded legacy retirement', () => {
     messages.push(citation);
     await db`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content)
       values(${citation},${f.task.scope.organizationId},${f.task.scope.workspaceId},${f.task.chatSessionId},${f.context.actor.id},'assistant',${db.json({ text: '见文件引用', citations: [{ type: 'file', id: objectId, label: '原件' }] })})`;
-    await db`update allrice_runs set result=${db.json({ answer: `[原件](${path})` })} where id=${f.task.runId}`;
+    await db`update allrice_runs set result=${db.json({ answer: normalizedUrls.map((href) => `[原件](${href})`).join('\n') })} where id=${f.task.runId}`;
+    const before = await snapshot(db);
     const error = await db
       .begin(async (tx) => tx.unsafe(await migration()))
       .catch((e) => e);
@@ -261,6 +472,7 @@ suite('0229 bounded legacy retirement', () => {
     expect(
       blockers.every((b: { objectId: string }) => b.objectId === objectId),
     ).toBe(true);
+    expect(await snapshot(db)).toEqual(before);
   }, 120000);
   it('does not treat bare UUIDs, names, unrelated paths or retired delegation results as ordinary file references', async () => {
     const { db } = await database(),
@@ -344,13 +556,48 @@ suite('0229 bounded legacy retirement', () => {
         code: '55000',
         message:
           kind === 'unconfirmed-child'
-            ? 'MET210_CHILD_STOP_UNCONFIRMED'
+            ? 'MET210_OLD_STOP_UNCONFIRMED'
             : 'MET210_OLD_WRITERS_ACTIVE',
       });
       expect(error.detail).toBeTypeOf('string');
       expect(
         await db`select run_id from allrice_assistant_instances where run_id=${f.child}`,
       ).toHaveLength(1);
+    },
+    120000,
+  );
+  it.each(['root', 'child'] as const)(
+    'blocks every terminal %s without its actual stop receipt even when the Job failed',
+    async (target) => {
+      const { db } = await database(),
+        f = await oldChild(db),
+        runId = target === 'root' ? f.task.runId : f.child;
+      await db`update allrice_jobs set status='failed' where id=${f.worker.jobId}`;
+      for (const status of [
+        'completed',
+        'partial',
+        'failed',
+        'canceled',
+        'unknown',
+      ]) {
+        await db`update allrice_assistant_instances set status=${status},stopped_at=null where run_id=${runId}`;
+        const before = await snapshot(db);
+        const error = await db
+          .begin(async (tx) => tx.unsafe(await migration()))
+          .catch((e) => e);
+        expect(error).toMatchObject({
+          code: '55000',
+          message: 'MET210_OLD_STOP_UNCONFIRMED',
+        });
+        expect(JSON.parse(error.detail)).toContainEqual({
+          runId,
+          rootRunId: f.task.runId,
+          jobId: f.worker.jobId,
+          status,
+          stoppedAt: null,
+        });
+        expect(await snapshot(db)).toEqual(before);
+      }
     },
     120000,
   );

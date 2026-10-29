@@ -172,7 +172,7 @@ integration('shared administration shell and dialogs', () => {
         expect(await summary.getAttribute('aria-expanded')).toBe('false');
         expect(await rows.first().isVisible()).toBe(false);
         await summary.press('Enter');
-        expect(await rows.count()).toBe(13);
+        expect(await rows.count()).toBe(12);
         expect(await rows.first().isVisible()).toBe(true);
         const measured = await rows.first().evaluate((element) => ({
           height: element.getBoundingClientRect().height,
@@ -193,10 +193,10 @@ integration('shared administration shell and dialogs', () => {
         expect(await summary.innerText()).toContain('1 项失败');
         expect(await rows.first().isVisible()).toBe(false);
         await page.getByRole('button', { name: '切换汇总格式' }).click();
-        expect(await summary.innerText()).toContain('技能已就绪 · 13 个');
+        expect(await summary.innerText()).toContain('技能已就绪 · 12 个');
         expect(await rows.first().isVisible()).toBe(false);
         await summary.click();
-        expect(await rows.count()).toBe(13);
+        expect(await rows.count()).toBe(12);
         expect(await rows.last().innerText()).toContain('workspace-briefing');
       } finally {
         await page.close();

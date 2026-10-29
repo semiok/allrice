@@ -70,7 +70,6 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
     for (const key of Object.keys(process.env))
       if (key.startsWith('ALLRICE_DSH_ORIGIN_READER_'))
         vi.stubEnv(key, undefined);
-    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
     vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
     vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
     fixture = await createRuntimeFixtureDatabase();
@@ -476,10 +475,13 @@ suite('native test chat retirement: isolated real PostgreSQL, no model', () => {
     await applyNativeTestChatRetirement(plan);
     const before = await evidence(f);
     const retired = await retirementRows(f);
-    // Its independent fixture seed stays a legacy dependency even if archived;
-    // retiring f.session never implicitly retires another context.
+    // Create an explicit independent legacy context. The ordinary Run fixture
+    // no longer creates an extra assistant seed chat as a side effect.
+    const legacySession = randomUUID();
+    await fixture.db`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,title,employee_assignment_id,employee_version_id)
+      values(${legacySession},${f.org},${f.workspace},${f.user},'Independent legacy context',${f.assignment},${f.version})`;
     const seed =
-      await fixture.db`select id from allrice_chat_sessions c where c.organization_id=${f.org}
+      await fixture.db`select id from allrice_chat_sessions c where c.id=${legacySession}
       and c.native_root_origin is null and not exists(select 1 from allrice_native_session_bindings b where b.context_kind='chat' and b.context_id=c.id)`;
     expect(seed).toHaveLength(1);
     await fixture.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${seed[0]!.id}`;

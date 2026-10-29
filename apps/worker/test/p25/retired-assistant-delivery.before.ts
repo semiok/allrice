@@ -527,6 +527,8 @@ export default async function seed(resources: DeliveryResources) {
   // These old API calls deliberately stay in this driver, never in after code.
   const { updateWorkAutomation } =
     await import('../../../../packages/database/src/work-automation.ts');
+  const { updateUserPreferences } =
+    await import('../../../../packages/database/src/user-preferences.ts');
   // Do not suppress the old feature globally to manufacture an ordinary Run.
   // The actual old admission sees the saved setting and this employee's tools.
   vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
@@ -538,6 +540,12 @@ export default async function seed(resources: DeliveryResources) {
   try {
     for (const kind of ['never-enabled', 'previously-enabled'] as const) {
       const subject = await harness.createSubject();
+      // Persist non-default native choices through the real before API. The
+      // old assistants switch must neither replace nor reset these choices.
+      await updateUserPreferences(subject.context, {
+        questionWait: { mode: 'timed', seconds: 47 },
+        subagents: { maxDepth: 2, maxActive: 5 },
+      });
       if (kind === 'previously-enabled') {
         await updateWorkAutomation(
           subject.context,
@@ -573,7 +581,13 @@ export default async function seed(resources: DeliveryResources) {
       );
       const preferences =
         await db`select * from allrice_user_preferences where user_id=${subject.context.actor.id}`;
-      expect(preferences).toHaveLength(0);
+      expect(preferences).toHaveLength(1);
+      expect(preferences[0]).toMatchObject({
+        question_wait_mode: 'timed',
+        question_wait_seconds: 47,
+      });
+      expect(Number(preferences[0]!.subagent_max_depth)).toBe(2);
+      expect(Number(preferences[0]!.subagent_max_active)).toBe(5);
       const audits =
         await db`select id,action,metadata from allrice_audit_events where actor_id=${subject.context.actor.id} and action='member.work_automation.update' order by metadata->>'revision'`;
       expect(audits).toHaveLength(kind === 'never-enabled' ? 0 : 3);
@@ -619,7 +633,7 @@ export default async function seed(resources: DeliveryResources) {
           workAutomationBefore: settings[0]
             ? (jsonValue(settings[0]) as DeliveryCohort['workAutomationBefore'])
             : null,
-          nativePreferencesBefore: [],
+          nativePreferencesBefore: jsonValue(preferences) as unknown[],
           auditEventIds: audits.map((row) => row.id),
           auditEventsBefore: jsonValue(audits) as unknown[],
           ordinaryRuns: [

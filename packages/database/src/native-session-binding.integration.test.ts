@@ -36,7 +36,6 @@ suite(
     let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let runtimePackage: EmployeeRuntimePackage;
     beforeAll(async () => {
-      vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
       // MET-221: only a business origin binds, so chats are born on the
       // current generation under this synthetic release primary.
@@ -73,7 +72,6 @@ suite(
     });
     async function chat() {
       const f = await createRunAuthorityFixture(fixture.db, {
-        configure: false,
         runtimePackage,
         businessCreationOrigin: true,
       });
@@ -420,8 +418,11 @@ suite(
           await fixture.db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${input.jobId}`;
         if (mode === 'timeout')
           await fixture.db`update allrice_jobs set created_at=clock_timestamp()-interval '2 minutes',timeout_at=clock_timestamp()-interval '1 second' where id=${input.jobId}`;
-        if (mode === 'root_cancel')
-          await fixture.db`update allrice_runtime_roots set cancel_requested_at=clock_timestamp(),cancel_request_id=${randomUUID()},cancel_reason='user_request' where root_run_id=${f.rootRunId}`;
+        if (mode === 'root_cancel') {
+          const roots =
+            await fixture.db`update allrice_runtime_roots set cancel_requested_at=clock_timestamp(),cancel_request_id=${randomUUID()},cancel_reason='user_request' where root_run_id=${f.rootRunId} returning root_run_id`;
+          expect(roots).toEqual([{ root_run_id: f.rootRunId }]);
+        }
         if (mode === 'archived')
           await fixture.db`update allrice_organizations set archived_at=clock_timestamp() where id=${f.org}`;
         if (mode === 'membership')

@@ -144,6 +144,14 @@ suite(
         'allrice_assistant_model_admissions',
         'allrice_assistant_price_snapshots',
         'allrice_assistant_cost_receipts',
+        'allrice_development_deliveries',
+        'allrice_development_reviews',
+        'allrice_development_verifiers',
+        'allrice_development_merge_sources',
+        'allrice_development_merges',
+        'allrice_development_proposals',
+        'allrice_development_assignments',
+        'allrice_development_heads',
       ]) {
         const [row] =
           await db`select to_regclass(format('%I.%I',current_schema(),${relation}::text)) is null absent`;
@@ -165,15 +173,19 @@ suite(
         );
         const preferences =
           await db`select * from allrice_user_preferences where user_id=${cohort.context.actor.id}`;
+        expect(preferences).toHaveLength(1);
         expect(jsonValue(preferences)).toEqual(cohort.nativePreferencesBefore);
+        expect(preferences[0]).toMatchObject({
+          question_wait_mode: 'timed',
+          question_wait_seconds: 47,
+        });
+        expect(Number(preferences[0]!.subagent_max_depth)).toBe(2);
+        expect(Number(preferences[0]!.subagent_max_active)).toBe(5);
         const audits =
           await db`select id,action,metadata from allrice_audit_events where actor_id=${cohort.context.actor.id} and action='member.work_automation.update' order by metadata->>'revision'`;
         expect(jsonValue(audits)).toEqual(cohort.auditEventsBefore);
         expect(audits.map((row) => row.id)).toEqual(cohort.auditEventIds);
       }
-      expect(cohorts[0]!.nativePreferencesBefore).toEqual(
-        cohorts[1]!.nativePreferencesBefore,
-      );
       harness = await createDeliveryHarness(resources(), async () => {
         const text = replies.shift();
         if (text === undefined)

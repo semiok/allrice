@@ -1,6 +1,7 @@
 -- MET-210 PR2b. Snapshot + stop all old writers before this transaction.
 -- 0229 is the rollback floor: the old executor must never run after these drops.
--- Ownership is explicit. References never expand the deletion set.
+-- Ownership is explicit. Ordinary parent-session files retain their original
+-- identities/provenance; other references never expand the deletion set.
 create temporary table met210_retired_relations(name regclass primary key) on commit drop;
 insert into met210_retired_relations values
   ('allrice_development_deliveries'), ('allrice_development_reviews'),
@@ -29,18 +30,28 @@ do $$ declare blockers jsonb; begin
   select jsonb_agg(jsonb_build_object('jobId',j.id,'runId',j.run_id,'status',j.status)) into blockers
   from allrice_jobs j where j.status not in ('succeeded','failed','dead_letter','canceled')
     and (exists(select 1 from allrice_assistant_roots a where a.worker_job_id=j.id)
+      or exists(select 1 from met210_children c where c.run_id=j.run_id)
       or j.payload#>'{input,assistantConfiguration,allowAssistants}'='true'::jsonb
       or exists(select 1 from allrice_runs r where r.id=j.run_id and r.input#>'{assistantConfiguration,allowAssistants}'='true'::jsonb));
   if blockers is not null then
     raise exception using errcode='55000',message='MET210_OLD_WRITERS_ACTIVE',detail=blockers::text,
       hint='Stop/drain the old Worker and Hosts before retrying. No data was changed.';
   end if;
-  select jsonb_agg(jsonb_build_object('runId',a.run_id,'rootRunId',a.root_run_id,'status',a.status)) into blockers
-  from allrice_assistant_instances a join met210_children c using(run_id)
-  where a.status not in ('completed','partial','failed','canceled');
+  select jsonb_agg(jsonb_build_object('runId',s.run_id,'rootRunId',s.root_run_id,
+    'jobId',s.worker_job_id,'status',s.status,'stoppedAt',s.stopped_at)
+    order by s.root_run_id,s.run_id) into blockers
+  from (
+    select a.run_id,a.root_run_id,r.worker_job_id,a.status,a.stopped_at
+    from allrice_assistant_instances a join allrice_assistant_roots r using(root_run_id)
+    where a.stopped_at is null or a.status not in ('completed','partial','failed','canceled','unknown')
+    union all
+    select r.root_run_id,r.root_run_id,r.worker_job_id,null,null
+    from allrice_assistant_roots r where not exists(
+      select 1 from allrice_assistant_instances a where a.run_id=r.root_run_id)
+  ) s;
   if blockers is not null then
-    raise exception using errcode='55000',message='MET210_CHILD_STOP_UNCONFIRMED',detail=blockers::text,
-      hint='Confirm the old child execution stopped before retrying. This migration never fabricates a stop receipt.';
+    raise exception using errcode='55000',message='MET210_OLD_STOP_UNCONFIRMED',detail=blockers::text,
+      hint='Confirm every old root/child execution stopped before retrying. A terminal result is not a stop receipt; this migration never fabricates one.';
   end if;
   select jsonb_agg(jsonb_build_object('operationId',o.id,'runId',o.run_id,'status',o.snapshot->>'status')) into blockers
   from allrice_runtime_operations o join met210_children c
@@ -52,9 +63,54 @@ do $$ declare blockers jsonb; begin
   end if;
 end $$;
 
+-- Old report publication used the generic exporter to attach files to the
+-- ordinary parent's chat. Keep that existing history, not the old executor.
+-- Match actual source/parent/owner relationships, never a fixed list of IDs.
+-- Parent versions and Run-link ancestors are required provenance FK closure.
+create temporary table met210_preserved_versions on commit drop as
+with recursive kept as (
+  select v.id,v.object_id,v.parent_version_id
+  from met210_objects o join allrice_deliverable_versions v on v.object_id=o.id
+  join allrice_storage_objects s on s.id=v.object_id and s.owner_id=v.owner_id
+  join allrice_workbench_artifacts a on a.version_id=v.id
+  left join allrice_assistant_instances i on i.run_id=a.run_id
+  join allrice_employee_runs e on e.run_id=coalesce(i.root_run_id,a.run_id)
+  join allrice_file_references f on f.object_id=v.object_id and f.session_id=e.session_id
+  where v.session_id=e.session_id and f.owner_id=v.owner_id and a.owner_id=v.owner_id
+    and e.owner_id=v.owner_id and not exists(select 1 from met210_children c where c.run_id=e.run_id)
+  union
+  select v.id,v.object_id,v.parent_version_id
+  from allrice_deliverable_versions v join kept k on v.id=k.parent_version_id
+) select * from kept;
+create temporary table met210_preserved_runs on commit drop as
+with recursive kept(run_id) as (
+  select a.run_id from allrice_workbench_artifacts a join met210_preserved_versions v on v.id=a.version_id
+  union
+  select l.parent_run_id from allrice_runtime_run_links l join kept k using(run_id)
+  where l.parent_run_id is not null
+) select run_id from kept;
+-- Keeping provenance cannot carry a runnable old child through the cutover.
+-- Do not rewrite its outcome or retire its Job on its behalf.
+do $$ declare blockers jsonb; begin
+  select jsonb_agg(jsonb_build_object('runId',r.id,'state',r.state,'jobId',j.id,'jobStatus',j.status)) into blockers
+  from met210_preserved_runs k join met210_children c using(run_id)
+  join allrice_runs r on r.id=k.run_id left join allrice_jobs j on j.run_id=r.id
+  where r.state not in ('succeeded','failed','canceled')
+    or (j.id is not null and (j.status not in ('succeeded','failed','dead_letter','canceled')
+      or j.worker_id is not null or j.lease_token is not null or j.lease_expires_at is not null));
+  if blockers is not null then
+    raise exception using errcode='55000',message='MET210_PRESERVED_SOURCE_ACTIVE',detail=blockers::text,
+      hint='Preserved file provenance must already be stopped history. Resolve the old execution; no new identity or Job is created here.';
+  end if;
+end $$;
+delete from met210_versions where id in(select id from met210_preserved_versions);
+delete from met210_objects where id in(select object_id from met210_preserved_versions);
+create temporary table met210_deleted_children on commit drop as
+  select * from met210_children where run_id not in(select run_id from met210_preserved_runs);
+
 create temporary table met210_rows(relation oid,tuple tid,primary key(relation,tuple)) on commit drop;
-insert into met210_rows select r.tableoid,r.ctid from allrice_runs r join met210_children c on c.run_id=r.id;
-insert into met210_rows select r.tableoid,r.ctid from allrice_runtime_run_links r join met210_children c using(run_id);
+insert into met210_rows select r.tableoid,r.ctid from allrice_runs r join met210_deleted_children c on c.run_id=r.id;
+insert into met210_rows select r.tableoid,r.ctid from allrice_runtime_run_links r join met210_deleted_children c using(run_id);
 insert into met210_rows select r.tableoid,r.ctid from allrice_task_operation_calls r join met210_children c on c.run_id=r.agent_id;
 insert into met210_rows select r.tableoid,r.ctid from allrice_run_events r join met210_children c using(run_id);
 insert into met210_rows select r.tableoid,r.ctid from allrice_workbench_artifacts r join met210_versions v on v.id=r.version_id;
@@ -94,14 +150,43 @@ end $$;
 
 -- Attachments already have FKs above. Ordinary final text and file citations do
 -- not: preserve their exact managed object identities as well. Match the file
--- endpoint used by artifact-download-link.ts (including escaped separators,
--- HTTP(S) origins, /download and name queries), never arbitrary UUIDs or names.
+-- endpoint used by artifact-download-link.ts. Normalize explicit URL tokens
+-- against its root base: HTTP(S)/protocol-relative origins, dot segments,
+-- escaped separators, /download and queries. Never infer from UUIDs/names.
 -- Only ordinary message/result fields are read, not old delegation logs.
 create function pg_temp.met210_file_ids(value text) returns table(object_id uuid)
-language sql immutable strict as $body$
-  select distinct (found.parts[1])::uuid
-  from regexp_matches(regexp_replace(value,$slash$\\+/$slash$,'/','g'),
-    $path$(?:^|[[:space:]<(="'\[]|\]:)(?:https?://[^[:space:]/?#@<>]+|sandbox:)?/api/v1/files/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:/download)?(?:[?#][^[:space:]<>"')\]]*)?(?=$|[[:space:])>"'\]])$path$,'g') found(parts)
+language plpgsql immutable strict as $body$
+declare token text; path text; authority text; segment text; parts text[]; normalized text[]; match text[]; n integer;
+begin
+  for token in select found.parts[1]
+    from regexp_matches(regexp_replace(value,$slash$\\+/$slash$,'/','g'),
+      $url$(?:^|[[:space:]<(="'\[]|\]:)([^[:space:]<>"'\[\]()]+)$url$,'g') found(parts)
+  loop
+    path:=regexp_replace(token,'^https?:','', 'i');
+    if path like '//%' then
+      authority:=substring(path from '^//([^/?#]*)');
+      if authority='' or authority like '%@%' then continue; end if;
+      path:=regexp_replace(path,'^//[^/?#]*','');
+    elsif path like 'sandbox:/%' then path:=substring(path from 9);
+    elsif path ~ '^[^/?#]*:' then continue;
+    end if;
+    path:=regexp_replace(path,'[?#].*$','');
+    -- WHATWG URL dot segments also recognize percent-encoded dots. Other
+    -- percent encodings are not decoded by the renderer's pathname matcher.
+    parts:=string_to_array(regexp_replace(path,'^/',''),'/');
+    normalized:='{}';
+    for n in 1..coalesce(array_length(parts,1),0) loop
+      segment:=regexp_replace(parts[n],'%2e','.', 'gi');
+      if segment='..' then normalized:=normalized[1:greatest(cardinality(normalized)-1,0)];
+      elsif segment<>'.' then normalized:=array_append(normalized,parts[n]);
+      end if;
+      if segment in ('.','..') and n=cardinality(parts) then normalized:=array_append(normalized,''); end if;
+    end loop;
+    match:=regexp_match('/'||array_to_string(normalized,'/'),
+      '^/api/v1/files/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(/download)?$');
+    if match is not null then object_id:=match[1]::uuid; return next; end if;
+  end loop;
+end;
 $body$;
 do $$ declare blockers jsonb; begin
   with retained as (
@@ -114,7 +199,7 @@ do $$ declare blockers jsonb; begin
     select 'allrice_runs',null,r.id,r.result,r.result->>'answer' from allrice_runs r
       where not exists(select 1 from met210_children c where c.run_id=r.id)
   ), file_references as (
-    select r.relation,r.message_id,r.run_id,f.object_id from retained r
+    select distinct r.relation,r.message_id,r.run_id,f.object_id from retained r
       cross join lateral pg_temp.met210_file_ids(r.text) f
     union
     select r.relation,r.message_id,r.run_id,o.id from retained r
@@ -152,7 +237,7 @@ drop table allrice_assistant_messages;
 drop table allrice_assistant_instances;
 drop table allrice_assistant_roots;
 
--- The exact selected child artifacts are retired data, not ordinary versions.
+-- Only the remaining unshared child artifacts are retired data.
 -- This is the migration's bounded DELETE, not a test bypass. Restore the guard
 -- before proceeding; all constraints remain enabled throughout.
 alter table allrice_workbench_artifacts disable trigger allrice_workbench_artifact_immutable;
@@ -165,8 +250,8 @@ delete from allrice_task_operation_calls where agent_id in(select run_id from me
 delete from allrice_task_calls t using met210_children c
   where t.run_id=c.root_run_id and t.native_session_id=c.native_session_id;
 delete from allrice_run_events where run_id in(select run_id from met210_children);
-delete from allrice_runtime_run_links where run_id in(select run_id from met210_children);
-delete from allrice_runs where id in(select run_id from met210_children);
+delete from allrice_runtime_run_links where run_id in(select run_id from met210_deleted_children);
+delete from allrice_runs where id in(select run_id from met210_deleted_children);
 
 -- Remove the retired preference, preserving each cloud/computer value. Never
 -- translate it to nativePreferences, a new opt-in, a depth or a capability grant.

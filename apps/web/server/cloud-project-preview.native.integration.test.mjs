@@ -402,17 +402,18 @@ suite('cloud project first complete native chain', () => {
       );
       proof.hmr = true;
       proof.renewalContinuesDuringSlowSourceStaging = true;
-      const finalized = await f.runtime.finalizeRoot({
-        scope: f.task.scope,
-        rootRunId: f.context.runId,
-        worker: f.worker,
-      });
-      expect(finalized.status).toBe('completed');
       await completeJob({
         workerId: f.context.worker.id,
         jobId: f.context.jobId,
         leaseToken: f.worker.leaseToken,
         result: { answer: 'Preview ready' },
+      });
+      const [completed] =
+        await database`select r.state,j.status,j.lease_token from allrice_runs r join allrice_jobs j on j.run_id=r.id where j.id=${f.context.jobId}`;
+      expect(completed).toEqual({
+        state: 'succeeded',
+        status: 'succeeded',
+        lease_token: null,
       });
       const [conversation] =
         await database`select state,active_run_id from allrice_conversation_runtimes where session_id=${f.task.chatSessionId}`;
