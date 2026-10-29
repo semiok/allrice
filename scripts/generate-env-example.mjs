@@ -144,13 +144,10 @@ export function generateExample(
         throw Error(`Non-literal declaration in ${file}`);
     };
     const visit = (n) => {
-      if (
-        (ts.isImportDeclaration(n) || ts.isExportDeclaration(n)) &&
-        processModule(n.moduleSpecifier)
-      ) {
+      if (processModule(n.moduleSpecifier ?? n.moduleReference?.expression)) {
         const bindings = n.importClause?.namedBindings;
         if (
-          ts.isExportDeclaration(n) ||
+          !ts.isImportDeclaration(n) ||
           (bindings &&
             (ts.isNamespaceImport(bindings) ||
               bindings.elements.some((entry) =>

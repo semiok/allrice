@@ -411,6 +411,7 @@ test('unsupported process import and re-export variations fail independently of 
     "import {env} from 'process'; env.ALLRICE_HIDDEN;",
     "import * as deployment from 'node:process'; deployment.env.ALLRICE_HIDDEN;",
     "import {default as deployment} from 'process'; deployment.env.ALLRICE_HIDDEN;",
+    "import deployment = require('node:process'); deployment.env.ALLRICE_HIDDEN;",
     "export {env as deployment} from 'node:process';",
     "const deployment = await import('node:process'); deployment.env.ALLRICE_HIDDEN;",
     "const deployment = require('process'); deployment.env.ALLRICE_HIDDEN;",
