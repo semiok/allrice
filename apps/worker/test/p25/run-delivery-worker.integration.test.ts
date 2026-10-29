@@ -400,7 +400,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         const events = await journal();
         expect(events.some((e) => e.type === 'todo/write')).toBe(true);
         const [audit] = await f.db`select metadata from allrice_audit_events
-          where organization_id=${f.identity.org} and action='tool.execute'
+          where organization_id=${f.identity.org} and action='tool.execute' and decision='allowed'
           and metadata->>'toolName'='workspace.file.list'`;
         expect(audit).toBeDefined();
         await completeJob({ ...task.workflowLease, result });
