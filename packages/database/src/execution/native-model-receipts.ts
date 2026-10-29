@@ -8,6 +8,7 @@ const usage = z.strictObject({
   cacheReadTokens: token,
   cacheWriteTokens: token,
   outputTokens: token,
+  totalTokens: token,
 });
 const identity = {
   callId: UuidSchema,
@@ -30,7 +31,8 @@ export const NativeModelFactSchema = z.discriminatedUnion('phase', [
     .refine(
       (v) =>
         !v.usageComplete ||
-        (v.usage?.inputTokens !== undefined &&
+        (v.outcome !== 'incomplete' &&
+          v.usage?.inputTokens !== undefined &&
           v.usage.cacheReadTokens !== undefined &&
           v.usage.cacheWriteTokens !== undefined &&
           v.usage.outputTokens !== undefined),

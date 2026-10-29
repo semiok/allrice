@@ -3061,13 +3061,17 @@ export async function appendNativeModelReceipt(input: {
       )
         throw new QueueError('policy_denied');
     } else {
-      const {
-        outcome: _outcome,
-        usage: _usage,
-        usageComplete: _complete,
-        ...identity
-      } = fact;
-      const start = { ...receipt, fact: { ...identity, phase: 'start' } };
+      const start = {
+        ...receipt,
+        fact: {
+          phase: 'start',
+          callId: fact.callId,
+          nativeSessionId: fact.nativeSessionId,
+          provider: fact.provider,
+          model: fact.model,
+          purpose: fact.purpose,
+        },
+      };
       if (
         !prior.some(
           (row) => nativeRootDigest(row.payload) === nativeRootDigest(start),

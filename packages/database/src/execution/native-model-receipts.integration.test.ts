@@ -332,8 +332,11 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
       }),
     ).toEqual(done);
     await expect(
-      write(f, { ...finish(call), usage: { inputTokens: 101 } }),
-    ).rejects.toThrow();
+      write(f, {
+        ...finish(call),
+        usage: { ...finish(call).usage, inputTokens: 101 },
+      }),
+    ).rejects.toThrow('conflict');
     expect(await read(f, secondRoute.id)).toEqual([]);
   });
   it('keeps incomplete and zero usage distinct, and records fresh retry/compaction calls separately', async () => {
@@ -384,6 +387,7 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
       call = start(f);
     for (const fact of [
       { ...finish(call), usage: undefined },
+      { ...finish(call), outcome: 'incomplete' },
       { ...finish(call), usage: { inputTokens: -1 } },
       { ...finish(call), usage: { inputTokens: Number.MAX_SAFE_INTEGER + 1 } },
       { ...call, presentation: 'tool', nativePayload: { text: 'not a fact' } },
