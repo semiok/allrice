@@ -73,7 +73,11 @@ jobs:
           ALLRICE_RUN_BROWSER_INTEGRATION: 1
           ALLRICE_RUN_BRAND_CONTENT_BROWSER: 1
           ALLRICE_TEST_STATIC_BROWSER: 1
-        run: node scripts/ci-integration-tests.mjs run browser -- --maxWorkers=1 --testTimeout=30000
+          ALLRICE_MANAGED_BROWSER_EXECUTABLE: /opt/google/chrome/chrome
+        run: |
+          test -x "$ALLRICE_MANAGED_BROWSER_EXECUTABLE"
+          "$ALLRICE_MANAGED_BROWSER_EXECUTABLE" --version
+          node scripts/ci-integration-tests.mjs run browser -- --maxWorkers=1 --testTimeout=30000
       - name: Collect remaining browser and PostgreSQL integration tests
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
@@ -186,7 +190,7 @@ jobs:
       - name: Run existing tests and retain their original evidence
         id: native-tests
         run: |
-          pnpm test --maxWorkers=2 --reporter=default --reporter=json --outputFile=.local/quality/native/vitest-native.json
+          pnpm test --includeTaskLocation --maxWorkers=2 --reporter=default --reporter=json --outputFile=.local/quality/native/vitest-native.json
           node scripts/ci-integration-tests.mjs audit-native .local/quality/native/vitest-native.json
       - name: Collect deterministic scenario evidence without rerunning tests
         if: always() && steps.native-capture.outcome == 'success'
@@ -396,6 +400,8 @@ jobs:
       - name: Collect remaining ordinary PostgreSQL integration tests
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
+          ALLRICE_NATIVE_ONCE_PROBE_MODULE_BASE: ${{ github.workspace }}/apps/worker/package.json
+          TSX_TSCONFIG_PATH: ${{ github.workspace }}/tsconfig.base.json
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
         run: node scripts/ci-integration-tests.mjs run db -- --maxWorkers=1 --reporter=default --reporter=json --outputFile=.local/quality/postgres/vitest-auto.json
       - name: Collect PostgreSQL scenario evidence without rerunning tests

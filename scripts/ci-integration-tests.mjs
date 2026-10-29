@@ -20,48 +20,42 @@ const read = (path) => readFileSync(path, 'utf8');
 const tokens = (command) =>
   command.match(/(?:apps|packages|tests|scripts)\/[\w./-]+/g) ?? [];
 const matches = (file, filters) =>
-  filters.some((filter) => file === filter || file.startsWith(filter + '/'));
-const escapePattern = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const titlePattern = (item) =>
-  item.parameterized
-    ? item.title
-        .split(/(%[sdifjoO#$]|\$[\w.]+)/)
-        .map((part) =>
-          /^(%[sdifjoO#$]|\$[\w.]+)$/.test(part) ? '.*?' : escapePattern(part),
-        )
-        .join('')
-    : escapePattern(item.title);
+  filters.some(
+    (filter) => file === filter.split(':')[0] || file.startsWith(filter + '/'),
+  );
+const enabled = (gates, env) =>
+  gates.every((gate) =>
+    automatic[gate] && gate !== 'ALLRICE_NATIVE_ONCE_PROBE_MODULE_BASE'
+      ? String(env[gate]) === '1'
+      : !!env[gate] && String(env[gate]) !== '0',
+  );
+const sameSite = (item, test) =>
+  item.line === test.location?.line && item.column === test.location?.column;
 
 // Read registration conditions, including suite aliases; do not confuse fixture
 // environment writes or child-process strings with switches that skip tests.
 export function registrations(file, source) {
   const ast = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
-  const variables = new Map();
-  const scope = (node) => {
-    while (node.parent && !ts.isBlock(node) && !ts.isSourceFile(node))
-      node = node.parent;
-    return node;
+  const checker = ts
+    .createProgram(
+      [file],
+      { noResolve: true, noLib: true, allowJs: true },
+      {
+        ...ts.createCompilerHost({}),
+        getSourceFile: (name) => (name === file ? ast : undefined),
+      },
+    )
+    .getTypeChecker();
+  const declaration = (node) =>
+    checker.getSymbolAtLocation(node)?.declarations?.[0];
+  const binding = (node) => declaration(node)?.initializer;
+  const errors = [];
+  const unsupported = (node) => {
+    errors.push(
+      `Unsupported registration: ${file}:${ast.getLineAndCharacterOfPosition(node.getStart(ast)).line + 1}: ${node.getText(ast).slice(0, 100)}`,
+    );
+    switches.push(...environment(node));
   };
-  const binding = (identifier) => {
-    for (let node = identifier.parent; node; node = node.parent) {
-      const value = variables.get(node)?.get(identifier.text);
-      if (value) return value;
-    }
-    return undefined;
-  };
-  function variablesIn(node) {
-    if (
-      ts.isVariableDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
-      node.initializer
-    ) {
-      const owner = scope(node);
-      if (!variables.has(owner)) variables.set(owner, new Map());
-      variables.get(owner).set(node.name.text, node.initializer);
-    }
-    ts.forEachChild(node, variablesIn);
-  }
-  variablesIn(ast);
   function environment(node, seen = new Set()) {
     if (!node) return [];
     if (
@@ -81,20 +75,45 @@ export function registrations(file, source) {
     if (ts.isParenthesizedExpression(node))
       return callee(node.expression, seen);
     if (ts.isIdentifier(node)) {
-      if (['describe', 'it', 'test'].includes(node.text))
-        return { kind: node.text, gates: [] };
       if (binding(node) && !seen.has(node.text))
         return callee(binding(node), new Set([...seen, node.text]));
+      const declared = declaration(node);
+      const name =
+        declared &&
+        ts.isImportSpecifier(declared) &&
+        declared.parent.parent.parent.moduleSpecifier.text === 'vitest'
+          ? (declared.propertyName ?? declared.name).text
+          : !declared
+            ? node.text
+            : null;
+      if (['describe', 'it', 'test'].includes(name))
+        return { kind: name, gates: [] };
     }
-    if (ts.isPropertyAccessExpression(node))
-      return callee(node.expression, seen);
+    if (
+      ts.isElementAccessExpression(node) ||
+      ts.isTaggedTemplateExpression(node)
+    ) {
+      if (callee(node.expression ?? node.tag, seen)) unsupported(node.parent);
+      return null;
+    }
+    if (ts.isPropertyAccessExpression(node)) {
+      const base = callee(node.expression, seen);
+      if (
+        base &&
+        !['sequential', 'concurrent', 'only', 'skip', 'todo', 'fails'].includes(
+          node.name.text,
+        )
+      )
+        unsupported(node);
+      return base;
+    }
     if (
       ts.isCallExpression(node) &&
       ts.isPropertyAccessExpression(node.expression) &&
       node.expression.name.text === 'each'
     ) {
       const base = callee(node.expression.expression, seen);
-      return base ? { ...base, parameterized: true } : null;
+      return base;
     }
     if (
       ts.isCallExpression(node) &&
@@ -102,11 +121,11 @@ export function registrations(file, source) {
       ['skipIf', 'runIf'].includes(node.expression.name.text)
     ) {
       const base = callee(node.expression.expression, seen);
-      if (base)
-        return {
-          ...base,
-          gates: unique([...base.gates, ...environment(node.arguments[0])]),
-        };
+      if (base) {
+        const gates = environment(node.arguments[0]);
+        if (!gates.length) unsupported(node);
+        return { ...base, gates: unique([...base.gates, ...gates]) };
+      }
     }
     if (ts.isConditionalExpression(node)) {
       const base = callee(node.whenTrue, seen) ?? callee(node.whenFalse, seen);
@@ -116,39 +135,87 @@ export function registrations(file, source) {
           gates: unique([...base.gates, ...environment(node.condition)]),
         };
     }
-    return null;
-  }
-  const suites = [],
-    cases = [];
-  function visit(node) {
     if (
       ts.isCallExpression(node) &&
-      node.arguments[0] &&
-      ts.isStringLiteralLike(node.arguments[0])
-    ) {
+      node.arguments.some((arg) => callee(arg, seen))
+    )
+      unsupported(node);
+    return null;
+  }
+  const cases = [],
+    switches = [];
+  function visit(node, gates = [], ancestors = [], blocked = null) {
+    if (
+      ts.isNamespaceImport(node) &&
+      node.parent.parent.moduleSpecifier.text === 'vitest'
+    )
+      throw Error(
+        `Unsupported registration: ${file}: use named Vitest imports`,
+      );
+    if (ts.isCallExpression(node)) {
+      if (
+        ts.isPropertyAccessExpression(node.expression) &&
+        ['each', 'skipIf', 'runIf'].includes(node.expression.name.text)
+      )
+        return;
       const registration = callee(node.expression);
       if (registration) {
-        if (registration.kind === 'describe')
-          suites.push(...registration.gates);
-        else
+        switches.push(...registration.gates);
+        if (blocked || !node.arguments[0]) unsupported(blocked ?? node);
+        if (!node.arguments[0]) return;
+        const title = ts.isStringLiteralLike(node.arguments[0])
+          ? node.arguments[0].text
+          : node.arguments[0]?.getText(ast);
+        const inherited = unique([...gates, ...registration.gates]);
+        if (registration.kind === 'describe') {
+          const callback = node.arguments.find(
+            (arg) => ts.isArrowFunction(arg) || ts.isFunctionExpression(arg),
+          );
+          if (!callback) unsupported(node);
+          else visit(callback.body, inherited, [...ancestors, title]);
+        } else {
+          const expression = node.expression;
+          const position = ts.isCallExpression(expression)
+            ? expression.end
+            : ts.isPropertyAccessExpression(expression)
+              ? expression.name.getStart(ast)
+              : expression.getStart(ast);
+          const location = ast.getLineAndCharacterOfPosition(position);
           cases.push({
-            title: node.arguments[0].text,
-            gates: registration.gates,
-            parameterized: registration.parameterized ?? false,
+            title,
+            ancestors,
+            gates: inherited,
+            line: location.line + 1,
+            column: location.character + 1,
           });
+        }
+        return; // Test bodies are not registration scope.
       }
     }
-    ts.forEachChild(node, visit);
+    const conditional =
+      ts.isIfStatement(node) ||
+      ts.isSwitchStatement(node) ||
+      ts.isConditionalExpression(node) ||
+      ts.isFunctionLike(node) ||
+      (ts.isBinaryExpression(node) &&
+        [
+          ts.SyntaxKind.AmpersandAmpersandToken,
+          ts.SyntaxKind.BarBarToken,
+          ts.SyntaxKind.QuestionQuestionToken,
+        ].includes(node.operatorToken.kind));
+    ts.forEachChild(node, (child) =>
+      visit(child, gates, ancestors, blocked || (conditional ? node : null)),
+    );
   }
   visit(ast);
-  const common = cases.length
-    ? cases[0].gates.filter((gate) =>
-        cases.every((item) => item.gates.includes(gate)),
-      )
-    : [];
   return {
-    gates: unique([...suites, ...common]),
-    cases: cases.filter((item) => item.gates.length),
+    gates:
+      cases[0]?.gates.filter((gate) =>
+        cases.every((item) => item.gates.includes(gate)),
+      ) ?? [],
+    cases,
+    errors,
+    switches: unique(switches),
   };
 }
 
@@ -203,12 +270,6 @@ export function inventory(root = process.cwd()) {
           .filter(Boolean)
           .join('+') || 'native';
   }
-  const enabled = (gates, env) =>
-    gates.every((gate) =>
-      gate === 'ALLRICE_NATIVE_ONCE_PROBE_MODULE_BASE'
-        ? !!env[gate]
-        : String(env[gate]) === '1',
-    );
   const manualCommand = (file, gates) => {
     const assignments = unique(
       gates.flatMap((gate) =>
@@ -234,9 +295,11 @@ export function inventory(root = process.cwd()) {
     const registration = registrations(file, read(resolve(root, file)));
     if (
       !/\.(integration|browser)\.test\./.test(file) &&
-      !registration.gates.some((gate) => automatic[gate])
+      !registration.switches.some((gate) => automatic[gate] || manual[gate])
     )
       return [];
+    if (registration.errors.length) throw Error(registration.errors.join('\n'));
+    classify(registration.switches);
     const group = classify(registration.gates);
     return [
       {
@@ -248,18 +311,13 @@ export function inventory(root = process.cwd()) {
         ),
         cases: registration.cases.map((item) => ({
           ...item,
-          group: classify(unique([...registration.gates, ...item.gates])),
-          coveredBy: covered(
-            file,
-            unique([...registration.gates, ...item.gates]),
-            item.title,
-          ).map((step) => step.job),
+          group: classify(item.gates),
+          coveredBy: covered(file, item.gates, item.title).map(
+            (step) => step.job,
+          ),
         })),
         manual: Object.fromEntries(
-          unique([
-            ...registration.gates,
-            ...registration.cases.flatMap((item) => item.gates),
-          ])
+          unique(registration.cases.flatMap((item) => item.gates))
             .filter((gate) => manual[gate])
             .map((gate) => [
               gate,
@@ -272,16 +330,11 @@ export function inventory(root = process.cwd()) {
         manualCommands: (group === 'manual'
           ? [{ gates: registration.gates }]
           : registration.cases.filter(
-              (item) =>
-                classify(unique([...registration.gates, ...item.gates])) ===
-                'manual',
+              (item) => classify(item.gates) === 'manual',
             )
         ).map((item) => ({
           title: item.title ?? null,
-          command: manualCommand(
-            file,
-            unique([...registration.gates, ...item.gates]),
-          ),
+          command: manualCommand(file, item.gates),
         })),
       },
     ];
@@ -292,7 +345,7 @@ export function inventory(root = process.cwd()) {
     if (!entry.coveredBy.length) {
       if (!additions[entry.group])
         throw Error(`No automatic runner: ${entry.file} (${entry.group})`);
-      additions[entry.group].push({ file: entry.file });
+      additions[entry.group].push({ file: entry.file, gates: entry.gates });
     }
     for (const item of entry.cases) {
       if (
@@ -306,7 +359,9 @@ export function inventory(root = process.cwd()) {
       additions[item.group].push({
         file: entry.file,
         title: item.title,
-        ...(item.parameterized ? { parameterized: true } : {}),
+        line: item.line,
+        column: item.column,
+        gates: item.gates,
       });
     }
   }
@@ -316,16 +371,9 @@ export function inventory(root = process.cwd()) {
     );
     if (!step) throw Error(`Missing CI collection step: ${group}`);
     for (const item of items) {
-      const entry = entries.find((entry) => entry.file === item.file);
-      const gates = unique([
-        ...entry.gates,
-        ...(item.title
-          ? entry.cases.find((test) => test.title === item.title).gates
-          : []),
-      ]);
-      if (!enabled(gates, step.env))
+      if (!enabled(item.gates, step.env))
         throw Error(
-          `Collection step disables ${item.file}: ${gates.join(',')}`,
+          `Collection step disables ${item.file}: ${item.gates.join(',')}`,
         );
     }
   }
@@ -340,19 +388,30 @@ export function inventory(root = process.cwd()) {
   };
 }
 
-export function audit(entries, report, filters, env, pattern) {
+export function audit(
+  entries,
+  report,
+  filters,
+  env,
+  pattern,
+  root = process.cwd(),
+) {
   const result = [];
   for (const entry of entries.filter(
     (entry) => entry.group !== 'manual' && matches(entry.file, filters),
   )) {
     const suite = report.testResults.find(
       (suite) =>
-        relative(process.cwd(), suite.name).replaceAll('\\', '/') ===
-        entry.file,
+        relative(root, suite.name).replaceAll('\\', '/') === entry.file,
     );
     if (!suite?.assertionResults.length)
       throw Error(`Not collected: ${entry.file}`);
-    if (entry.gates.some((gate) => !env[gate])) {
+    for (const item of entry.cases)
+      if (!suite.assertionResults.some((test) => sameSite(item, test)))
+        throw Error(
+          `Missing registered test: ${entry.file}:${item.line}:${item.column} ${item.title}`,
+        );
+    if (!enabled(entry.gates, env)) {
       if (filters.includes(entry.file) || !entry.coveredBy?.length)
         throw Error(`Explicit suite gate is disabled: ${entry.file}`);
       if (
@@ -372,17 +431,27 @@ export function audit(entries, report, filters, env, pattern) {
     const deferred = [];
     for (const test of suite.assertionResults) {
       if (pattern && !new RegExp(pattern).test(test.fullName)) continue;
+      const lines = filters
+        .filter((filter) => filter.startsWith(entry.file + ':'))
+        .map((filter) => Number(filter.split(':').at(-1)));
+      if (lines.length && !lines.includes(test.location?.line)) continue;
+      const condition = entry.cases.find((item) => sameSite(item, test));
+      if (!condition)
+        throw Error(
+          `Unclassified registered test: ${entry.file}: ${test.fullName}`,
+        );
       if (test.status === 'passed') {
+        if (!enabled(condition.gates, env))
+          throw Error(
+            `Disabled case unexpectedly ran: ${entry.file}: ${test.fullName}`,
+          );
         passed++;
         continue;
       }
-      const condition = entry.cases.find((item) =>
-        new RegExp('^' + titlePattern(item) + '$').test(test.title),
-      );
       if (
         ['pending', 'skipped'].includes(test.status) &&
         condition &&
-        condition.gates.some((gate) => !env[gate] || String(env[gate]) === '0')
+        !enabled(condition.gates, env)
       ) {
         deferred.push({
           title: test.title,
@@ -440,32 +509,47 @@ function main() {
     // Whole suites and conditional cases have different filters; never run an
     // entire DB suite with browser switches just to enable one browser case.
     for (const item of items) {
-      const entry = plan.entries.find((entry) => entry.file === item.file);
-      const gates = [
-        ...entry.gates,
-        ...(item.title
-          ? entry.cases.find((test) => test.title === item.title).gates
-          : []),
-      ];
-      if (gates.some((gate) => !process.env[gate]))
+      if (!enabled(item.gates, process.env))
         throw Error(`Automatic runner gate is disabled: ${item.file}`);
     }
-    const whole = items.filter((item) => !item.title),
-      cases = items.filter((item) => item.title);
-    for (const batch of [whole, cases]) {
-      if (!batch.length) continue;
-      const pattern =
-        batch === cases ? batch.map(titlePattern).join('|') : null;
-      run(plan, [
-        ...vitest,
-        ...unique(batch.map((item) => item.file)),
-        ...(pattern ? ['-t', pattern] : []),
-      ]);
+    const batches = [];
+    for (const batch of ['whole', 'cases']) {
+      const selected = items.filter(
+        (item) => !!item.line === (batch === 'cases'),
+      );
+      if (!selected.length) continue;
+      const args = vitest.map((arg) =>
+        arg.startsWith('--outputFile=')
+          ? arg.replace(/(?:\.json)?$/, `-${batch}.json`)
+          : arg,
+      );
+      batches.push(
+        run(plan, [
+          ...args,
+          ...unique(
+            selected.map(
+              (item) => item.file + (item.line ? `:${item.line}` : ''),
+            ),
+          ),
+        ]),
+      );
     }
+    const output =
+      vitest
+        .find((arg) => arg.startsWith('--outputFile='))
+        ?.slice('--outputFile='.length) ??
+      `.local/integration-collection/${group}`;
+    writeFileSync(
+      `${output}.summary.json`,
+      JSON.stringify({ head: plan.head, group, batches }, null, 2) + '\n',
+    );
   } else run(plan, vitest);
 }
 function run(plan, args) {
-  const filters = tokens(args.join(' '));
+  const filters = args.flatMap(
+    (arg) =>
+      arg.match(/(?:apps|packages|tests|scripts)\/[\w./-]+(?::\d+)?/g) ?? [],
+  );
   if (!filters.length)
     throw Error('Explicit test files or directories required');
   const supplied = args.find((arg) => arg.startsWith('--outputFile='));
@@ -479,31 +563,46 @@ function run(plan, args) {
       ? ['--reporter=default', '--reporter=json', `--outputFile=${report}`]
       : []),
   ];
-  const child = spawnSync('pnpm', ['exec', 'vitest', 'run', ...command], {
-    stdio: 'inherit',
-    env: process.env,
-  });
-  if (child.error || child.status !== 0) {
-    process.exitCode = child.status || 1;
-    return;
+  const child = spawnSync(
+    'pnpm',
+    ['exec', 'vitest', 'run', '--includeTaskLocation', ...command],
+    {
+      stdio: 'inherit',
+    },
+  );
+  const receipt = { head: plan.head, args, exitCode: child.status ?? 1 };
+  try {
+    if (child.error || child.status !== 0)
+      throw child.error ?? Error(`Vitest exit ${child.status}`);
+    const patternIndex = args.findIndex((arg) =>
+      ['-t', '--testNamePattern'].includes(arg),
+    );
+    receipt.evidence = audit(
+      plan.entries,
+      JSON.parse(read(report)),
+      filters,
+      process.env,
+      patternIndex >= 0 ? args[patternIndex + 1] : undefined,
+    );
+  } catch (error) {
+    receipt.error = error.message;
+    process.exitCode = receipt.exitCode = child.status || 1;
+    console.error(receipt.error);
   }
-  const patternIndex = args.findIndex((arg) =>
-    ['-t', '--testNamePattern'].includes(arg),
-  );
-  const evidence = audit(
-    plan.entries,
-    JSON.parse(read(report)),
-    filters,
-    process.env,
-    patternIndex >= 0 ? args[patternIndex + 1] : undefined,
-  );
   writeFileSync(
     `${report}.collection.json`,
-    JSON.stringify({ head: plan.head, args, evidence }, null, 2) + '\n',
+    JSON.stringify(receipt, null, 2) + '\n',
   );
-  console.log(
-    `Verified collection: ${evidence.length} files; ${evidence.reduce((total, item) => total + item.passed, 0)} passed assertions; ${evidence.reduce((total, item) => total + item.deferred.length, 0)} explicitly deferred assertions (not passes)`,
-  );
+  const evidence = receipt.evidence ?? [];
+  if (receipt.evidence)
+    console.log(
+      `Verified collection: ${evidence.length} files; ${evidence.reduce((total, item) => total + item.passed, 0)} passed assertions; ${evidence.reduce((total, item) => total + item.deferred.length, 0)} explicitly deferred assertions (not passes)`,
+    );
+  return {
+    report,
+    collection: `${report}.collection.json`,
+    exitCode: receipt.exitCode,
+  };
 }
 if (
   process.argv[1] &&
