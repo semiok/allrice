@@ -418,6 +418,118 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     45000,
   );
 
+  it('MET-228: legacy 原生问题停放超过30s，停止后普通新输入及时完成', async () => {
+    const followup = '继续：用一句话给刚才线上例会写开场白，不调用其他工具。';
+    const f = await setup(async (request, count) => {
+      if (count === 1)
+        return {
+          nativeTool: {
+            name: 'ask_user_question',
+            arguments: {
+              questions: [
+                {
+                  id: 'delivery',
+                  question: '开场白放在聊天还是文件？',
+                  options: [{ label: '聊天' }, { label: '文件' }],
+                },
+              ],
+            },
+          },
+        };
+      expect(count).toBe(2);
+      expect(JSON.stringify(request.messages)).toContain(followup);
+      return { text: '各位好，欢迎参加今天的线上例会。' };
+    });
+    const task = await prepare(f, '先问我开场白要放在聊天还是文件。', true);
+    const started = Date.now();
+    try {
+      await expect(task.run()).rejects.toMatchObject({
+        message: 'native_question_parked',
+        persisted: true,
+      });
+      expect(Date.now() - started).toBeGreaterThanOrEqual(30000);
+      expect(adapter!.runtimeInventory()).toHaveLength(0);
+      expect(model!.requests).toHaveLength(1);
+      const [wait] = await f.db`select checkpoint,state,continued_at
+        from allrice_native_question_waits where run_id=${task.runId}`;
+      expect(wait).toMatchObject({ state: 'parked', continued_at: null });
+      expect(
+        await f.db`select status,worker_id,lease_token from allrice_jobs where run_id=${task.runId}`,
+      ).toEqual([
+        { status: 'waiting_approval', worker_id: null, lease_token: null },
+      ]);
+      const parkedEvents = await journal();
+      expect(parkedEvents.some((e) => e.type === 'turn/end')).toBe(true);
+      expect(JSON.stringify(parkedEvents)).toContain('ASK_ABORTED');
+      await cancelRun(f.context, f.identity.workspace, task.runId, {
+        reason: 'user_requested',
+      });
+      await maintainQueue();
+      expect(await state(f, task.runId)).toMatchObject({
+        status: 'canceled',
+        state: 'canceled',
+        successes: 0,
+      });
+      expect(
+        await f.db`select state,active_run_id,active_turn_id,worker_id
+          from allrice_conversation_runtimes where session_id=${f.chat.id}`,
+      ).toEqual([
+        {
+          state: 'interrupted',
+          active_run_id: null,
+          active_turn_id: null,
+          worker_id: null,
+        },
+      ]);
+      const next = await prepare(f, followup, true);
+      try {
+        expect(next.execution.job.attempt).toBe(1);
+        const result = await next.run();
+        expect(result.answer).toBe('各位好，欢迎参加今天的线上例会。');
+        const coverage = readCheckedFinalDeliveryForExecution(
+          next.workflowLease,
+          result,
+        );
+        if (coverage.coverage !== 'checked_native_v1')
+          throw Error('Missing checked ordinary continuation');
+        await completeJob({
+          ...next.workflowLease,
+          result,
+          checkedDelivery: coverage.checkedDelivery,
+        });
+        expect(await state(f, next.runId)).toMatchObject({
+          status: 'succeeded',
+          successes: 1,
+        });
+        expect(
+          await f.db`select thread_id,state,active_run_id,worker_id
+            from allrice_conversation_runtimes where session_id=${f.chat.id}`,
+        ).toEqual([
+          {
+            thread_id: wait!.checkpoint.sessionId,
+            state: 'idle',
+            active_run_id: null,
+            worker_id: null,
+          },
+        ]);
+        expect(
+          await f.db`select continued_at from allrice_native_question_waits where run_id=${task.runId}`,
+        ).toEqual([{ continued_at: null }]);
+        expect(
+          await f.db`select id from allrice_conversation_commands where session_id=${f.chat.id}`,
+        ).toEqual([]);
+        const events = await journal();
+        expect(events.filter((e) => e.type === 'turn/start')).toHaveLength(2);
+        expect(events.filter((e) => e.type === 'turn/end')).toHaveLength(2);
+        expect(model!.requests).toHaveLength(2);
+      } finally {
+        await next.isolation.cleanup();
+      }
+    } finally {
+      await task.isolation.cleanup();
+    }
+  }, 90000);
+
   it('PR3a legacy 进度问题超过 30s 暂停，真实答复恢复原 Run 且保留完整调用身份', async () => {
     const requests: Record<string, unknown>[] = [];
     const setHandler = DshProtocolClient.prototype.setRequestHandler;
