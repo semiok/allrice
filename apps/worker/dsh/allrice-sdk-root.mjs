@@ -228,9 +228,11 @@ export class AllRiceSdkRoot {
           ? record.agent
           : undefined;
       if (agent) {
-        await this.clearRootQuestion?.(sessionId, 'Session closing');
         await this.ctx.subagents?.drainDescendants([agent]);
         agent.cancel({ kind: 'user' });
+        // Let native cancellation settle the question before clearing its UI;
+        // rejecting it before async drain loses DSH's ASK_ABORTED taxonomy.
+        await this.clearRootQuestion?.(sessionId, 'Session closing');
         await agent.whenIdle();
         await this.taskProgress?.flush();
         await this.ctx.sessions.flush(agent.session);
