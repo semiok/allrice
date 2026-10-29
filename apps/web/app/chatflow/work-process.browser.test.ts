@@ -1,4 +1,4 @@
-/** Real transcript entry in Chrome; synthetic HTTP, no auth, database or model. */
+/** Real transcript in Chrome; component fetches are stubbed, no auth/DB/model. */
 import { createRequire } from 'node:module';
 import { createServer, type Server } from 'node:http';
 import { mkdtemp } from 'node:fs/promises';
@@ -87,6 +87,51 @@ suite('one receipt within each native call in the chat transcript', () => {
       if ((await group.getAttribute('aria-expanded')) === 'false')
         await group.click();
   };
+  it('preserves an opened receipt and its focused node when late trace prepends a step', async () => {
+    const page = await browser.newPage();
+    try {
+      await page.goto(`${origin}/?delayed-trace`);
+      await expect.poll(() => calls(page).count()).toBe(32);
+      await processOf(page).locator('[data-disclosure-row]').first().click();
+      await expandGroups(page);
+      expect(await calls(page).first().getAttribute('data-work-call')).toBe(
+        'tool:call-0',
+      );
+      const call = page.locator('#operation-receipt-1');
+      await call.getByRole('button').click();
+      const receipt = call.locator('article');
+      await receipt
+        .getByRole('button', { name: '执行结果', exact: true })
+        .click();
+      const detail = receipt.getByRole('button', {
+        name: '技术详情',
+        exact: true,
+      });
+      await detail.click();
+      await detail.focus();
+      const focused = await detail.elementHandle();
+      expect(await receipt.innerText()).toContain('synthetic-result-1');
+      // Resolve the pending fetch stub without clicking a fixture control or helper.
+      await page.evaluate(() => window.processDeliverTrace());
+      await page.locator('main[data-delayed-trace="loaded"]').waitFor();
+      expect(await calls(page).first().getAttribute('data-work-call')).toBe(
+        'think:1:1:0',
+      );
+      expect(
+        await focused!.evaluate(
+          (node) => node.isConnected && document.activeElement === node,
+        ),
+      ).toBe(true);
+      expect(await detail.getAttribute('aria-expanded')).toBe('true');
+      expect(await receipt.innerText()).toContain('synthetic-result-1');
+      expect(await page.locator('#operation-receipt-0 article').count()).toBe(
+        0,
+      );
+      expect(await page.locator('[id="operation-receipt-1"]').count()).toBe(1);
+    } finally {
+      await page.close();
+    }
+  });
   for (const width of [1440, 390])
     for (const unified of [false, true])
       it(`keeps 34 calls once and receipts on demand at ${width}px, unified=${unified}`, async () => {

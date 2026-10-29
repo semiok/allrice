@@ -1,6 +1,6 @@
-// Real transcript and receipt components; synthetic records and HTTP only.
+// Real transcript and receipt components; window.fetch is stubbed below.
 import { createRoot } from 'react-dom/client';
-import { createRef, useState } from 'react';
+import { createRef, useEffect, useState } from 'react';
 import type { ChatFlowEventEnvelope } from '@allrice/contracts';
 import type { CloudOperationView } from '@allrice/database';
 import { ChatTranscript } from '../app/chatflow/chat-transcript';
@@ -125,11 +125,27 @@ const completion = {
   type: 'assistant.text.completed' as const,
   payload: { replyId: 'answer', text: '已核对，最终结论保留在这里。' },
 };
+const restoredEvents: ChatFlowEventEnvelope[] = [
+  {
+    ...events[0]!,
+    eventId: 'restored-think',
+    sequence: 0.1,
+    type: 'harness.native',
+    payload: { presentation: 'think', status: 'completed' },
+    sourceEvent: {
+      ...events[0]!.sourceEvent!,
+      payload: { turn: 1, step: 1, chunk: { index: 0 } },
+    },
+  },
+  ...events.filter((event) => event.type.startsWith('tool.')),
+  completion,
+];
 
 declare global {
   interface Window {
     processWrites: unknown[];
     processReads: number;
+    processDeliverTrace: () => void;
   }
 }
 window.processWrites = [];
@@ -138,6 +154,11 @@ let failRead = params.has('load-error');
 let answered = false;
 window.fetch = async (input, init) => {
   const url = String(input);
+  if (url === '/fixture/late-trace')
+    return new Promise<Response>((resolve) => {
+      window.processDeliverTrace = () =>
+        resolve(Response.json({ events: restoredEvents }));
+    });
   if (url.startsWith('/api/v1/runtime/cloud-operations')) {
     window.processReads++;
     if (failRead) {
@@ -181,12 +202,29 @@ const assistant: Message = {
 const headers = {};
 const column = createRef<HTMLDivElement>();
 function Fixture() {
+  const delayed = params.has('delayed-trace');
+  const [restored, setRestored] = useState<ChatFlowEventEnvelope[]>();
+  useEffect(() => {
+    if (delayed)
+      void fetch('/fixture/late-trace')
+        .then((response) => response.json())
+        .then((data) => setRestored(data.events));
+  }, [delayed]);
   const [running, setRunning] = useState(params.has('live'));
   const [next, setNext] = useState(false);
   const [traceFailed, setTraceFailed] = useState(params.has('trace-error'));
-  const current = running ? events : [...events, completion];
+  const current = delayed
+    ? (restored ?? [])
+    : running
+      ? events
+      : [...events, completion];
   return (
-    <main style={{ maxWidth: 780, margin: '0 auto', padding: 16 }}>
+    <main
+      data-delayed-trace={
+        delayed ? (restored ? 'loaded' : 'waiting') : undefined
+      }
+      style={{ maxWidth: 780, margin: '0 auto', padding: 16 }}
+    >
       <nav>
         <button onClick={() => setRunning(false)}>完成本轮</button>
         <button onClick={() => setNext(true)}>下一轮输入</button>
@@ -214,7 +252,11 @@ function Fixture() {
         ]}
         runTraces={{
           [ids.run]: {
-            status: traceFailed ? 'failed' : 'loaded',
+            status: traceFailed
+              ? 'failed'
+              : delayed && !restored
+                ? 'loading'
+                : 'loaded',
             events: current,
           },
         }}
