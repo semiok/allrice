@@ -31,6 +31,7 @@ export function createNativeRunDiagnosticsHttpHandler(
     target: getSessionNativeSubagentTarget,
     read: readAuthorizedNativeSubagentSummary,
   },
+  serviceSignal?: AbortSignal,
 ) {
   let active = 0;
   return async (
@@ -53,7 +54,11 @@ export function createNativeRunDiagnosticsHttpHandler(
       send(404, { error: 'not_found' });
       return true;
     }
-    if (stopping || (!summaryRequest && active >= 2)) {
+    if (
+      stopping ||
+      serviceSignal?.aborted ||
+      (!summaryRequest && active >= 2)
+    ) {
       send(503, { error: 'diagnostics_unavailable' });
       return true;
     }
@@ -69,9 +74,15 @@ export function createNativeRunDiagnosticsHttpHandler(
     };
     response.once('close', onClose);
     const signal = summaryRequest
-      ? abort.signal
+      ? AbortSignal.any([
+          abort.signal,
+          ...(serviceSignal ? [serviceSignal] : []),
+        ])
       : AbortSignal.any([abort.signal, AbortSignal.timeout(10_000)]);
-    const cancelRead = () => request.destroy();
+    const cancelRead = () => {
+      // A complete summary response drains only after the reader's finally.
+      if (!summaryRequest || !request.complete) request.destroy();
+    };
     signal.addEventListener('abort', cancelRead, { once: true });
     if (!summaryRequest) active++;
     try {

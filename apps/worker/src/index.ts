@@ -422,7 +422,12 @@ function refreshDshRuntimeInventory() {
     });
 }
 
-const nativeRunDiagnosticsHttp = createNativeRunDiagnosticsHttpHandler();
+const httpAborter = new AbortController();
+const nativeRunDiagnosticsHttp = createNativeRunDiagnosticsHttpHandler(
+  undefined,
+  undefined,
+  httpAborter.signal,
+);
 const server = createServer(async (request, response) => {
   if (await nativeRunDiagnosticsHttp(request, response, stopping)) return;
   response.setHeader('content-type', 'application/json; charset=utf-8');
@@ -860,6 +865,7 @@ function shutdown(signal: string) {
         name: 'http_server',
         run: () =>
           new Promise<void>((resolve, reject) => {
+            httpAborter.abort();
             server.close((error) => (error ? reject(error) : resolve()));
           }),
       },
