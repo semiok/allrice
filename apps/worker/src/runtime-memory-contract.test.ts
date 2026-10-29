@@ -3,33 +3,7 @@ import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-describe('worker memory checkpoint contract', () => {
-  it('persists a user-only candidate after the context checkpoint is saved', async () => {
-    const source = await readFile(
-      resolve(import.meta.dirname, 'conversation/checkpoint-maintenance.ts'),
-      'utf8',
-    );
-    const checkpointBlock = source;
-
-    expect(checkpointBlock).toContain('buildCheckpointMemoryCandidate');
-    expect(checkpointBlock).toContain(
-      'const savedCheckpoint = await saveContextCheckpoint',
-    );
-    expect(checkpointBlock).toContain('createCheckpointMemoryCandidate');
-    expect(checkpointBlock).toContain(
-      'checkpointId: savedCheckpoint.checkpointId',
-    );
-    const saveIndex = checkpointBlock.indexOf(
-      'const savedCheckpoint = await saveContextCheckpoint',
-    );
-    const candidateIndex = checkpointBlock.indexOf(
-      'await createCheckpointMemoryCandidate',
-      saveIndex,
-    );
-    expect(saveIndex).toBeGreaterThanOrEqual(0);
-    expect(candidateIndex).toBeGreaterThan(saveIndex);
-  });
-
+describe('worker explicit memory provenance', () => {
   it('passes the current employee and user message provenance to native tools', async () => {
     const source = await readFile(
       resolve(import.meta.dirname, 'jobs/employee-run.ts'),

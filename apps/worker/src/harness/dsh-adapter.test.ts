@@ -17,6 +17,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { HarnessExecutionInput, HarnessToolCall } from './adapter.js';
 import { DshRuntimePool, type DshRuntime } from './dsh/runtime-pool.js';
 import { HandlerError, confirmToolFailure } from '../errors.js';
+import { bootstrapContextForCheckpoint } from '../employee-kernel.js';
 import { getDshCleanupFailures } from './dsh-client-cleanup.js';
 import { HarnessEventBatcher } from './delta-batcher.js';
 import { getExecutionFailureUsage } from './dsh/execution-failure-usage.js';
@@ -1554,6 +1555,9 @@ describe('DshHarnessAdapter', () => {
     input.workDirectory = root;
     input.tools = [];
     input.kernel.systemInstructions = 'OLD_COMMON_REQUIREMENT_42';
+    input.kernel.bootstrapContext = bootstrapContextForCheckpoint([
+      { id: randomUUID(), role: 'user', text: 'OLD_AUTHORIZED_HISTORY_42' },
+    ]);
     input.contentGuard = { generationId: randomUUID(), check: async () => {} };
     try {
       const first = await adapter.execute(input);
@@ -1572,15 +1576,24 @@ describe('DshHarnessAdapter', () => {
       input.kernel.userRequest = 'CURRENT_REQUEST_73';
       input.kernel.userMessageId = randomUUID();
       input.kernel.assistantMessageId = randomUUID();
+      input.kernel.bootstrapContext = bootstrapContextForCheckpoint([
+        {
+          id: randomUUID(),
+          role: 'user',
+          text: 'CURRENT_AUTHORIZED_HISTORY_73',
+        },
+      ]);
       const second = await adapter.execute(input);
       expect(second.threadId).not.toBe(first.threadId);
       expect(requests).toHaveLength(2);
       const sent = JSON.stringify(requests[1]);
       expect(sent).toContain('CURRENT_COMMON_REQUIREMENT_73');
       expect(sent).toContain('CURRENT_REQUEST_73');
+      expect(sent).toContain('CURRENT_AUTHORIZED_HISTORY_73');
       expect(sent).not.toContain('OLD_COMMON_REQUIREMENT_42');
       expect(sent).not.toContain('OLD_PRIVATE_REQUEST_42');
       expect(sent).not.toContain('OLD_DERIVED_ANSWER_42');
+      expect(sent).not.toContain('OLD_AUTHORIZED_HISTORY_42');
       input.threadId = second.threadId;
       input.contentGuard.check = async () => {
         throw new HandlerError(

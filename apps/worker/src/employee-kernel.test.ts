@@ -93,7 +93,48 @@ it('assembles each frozen common rule once and rejects conflicting implicit vers
   );
 });
 
-describe('Employee Kernel checkpoint recovery', () => {
+it('bootstraps authorized messages and memories without consuming a retired automatic summary', () => {
+  const messageId = randomUUID();
+  const input = {
+    employeeAssignmentId: randomUUID(),
+    employeeVersionId: randomUUID(),
+    sessionId: randomUUID(),
+    userMessageId: randomUUID(),
+    assistantMessageId: randomUUID(),
+    resolved: {
+      promptSnapshot: {
+        systemPrompt: 'Platform',
+        userRequest: 'Continue',
+        conversation: [
+          { id: messageId, role: 'user', text: 'AUTHORIZED_HISTORY' },
+        ],
+        memories: [{ id: randomUUID(), content: 'EXPLICIT_MEMORY' }],
+      },
+      executionSnapshot: null,
+      grantedCapabilities: ['model:invoke'],
+      nativeSkills: [],
+    },
+    // Old callers cannot revive summary injection through an extra property.
+    checkpoint: {
+      coveredThroughMessageId: messageId,
+      summary: 'RETIRED_SUMMARY',
+      summaryVersion: 'extractive-v1',
+      generation: 1,
+    },
+  } as unknown as Parameters<typeof assembleEmployeeKernel>[0];
+  const kernel = assembleEmployeeKernel(input);
+  expect(kernel.bootstrapConversation).toBe('user: AUTHORIZED_HISTORY');
+  expect(kernel.bootstrapContext?.segments).toEqual([
+    expect.objectContaining({
+      key: `user:${messageId}`,
+      text: 'user: AUTHORIZED_HISTORY',
+    }),
+  ]);
+  expect(kernel.authorizedMemoryContext).toContain('EXPLICIT_MEMORY');
+  expect(JSON.stringify(kernel)).not.toContain('RETIRED_SUMMARY');
+});
+
+describe('Historical checkpoint journal encoding', () => {
   it('injects a verified checkpoint and only the uncovered message window', () => {
     const checkpoint = {
       summaryVersion: 'extractive-v1',

@@ -18,6 +18,23 @@ describe('pinned native subscription receipts', () => {
     });
     expect(projectNativeUsage(usage, true, false).inputTokens).toBe(10);
   });
+  it('preserves MET-236 subscription totals without inventing a missing cache-write bucket', () => {
+    const receipt = {
+      inputTokens: 37532,
+      cacheReadTokens: 2708224,
+      outputTokens: 10960,
+    };
+    expect(projectNativeUsage(receipt, true, true)).toEqual({
+      inputTokens: 2745756,
+      cachedInputTokens: 2708224,
+      outputTokens: 10960,
+      usageComplete: true,
+      cacheUsageKnown: false,
+    });
+    expect(
+      projectNativeUsage({ ...receipt, cacheWriteTokens: 0 }, true, true),
+    ).toMatchObject({ inputTokens: 2745756, cacheUsageKnown: true });
+  });
   it.each([
     undefined,
     null,
