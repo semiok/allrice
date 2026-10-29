@@ -165,6 +165,11 @@ export function inventory(root = process.cwd()) {
     for (const gate of gates)
       if (!automatic[gate] && !manual[gate])
         throw Error(`Unclassified test gate: ${gate}`);
+      else if (
+        manual[gate] &&
+        (!manual[gate].reason || !manual[gate].command?.includes('{file}'))
+      )
+        throw Error(`Manual gate needs a reason and runnable entry: ${gate}`);
     return gates.some((gate) => manual[gate])
       ? 'manual'
       : unique(gates.map((gate) => automatic[gate]))
@@ -317,6 +322,8 @@ export function audit(entries, report, filters, env, pattern) {
     if (!suite?.assertionResults.length)
       throw Error(`Not collected: ${entry.file}`);
     if (entry.gates.some((gate) => !env[gate])) {
+      if (filters.includes(entry.file) || !entry.coveredBy?.length)
+        throw Error(`Explicit suite gate is disabled: ${entry.file}`);
       if (
         suite.assertionResults.some(
           (test) => !['pending', 'skipped'].includes(test.status),

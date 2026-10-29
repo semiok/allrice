@@ -175,7 +175,7 @@ it('rejects missing reports and disabled/skipped tests; records external skips a
     audit([entry], report(['physical', 'pending']), [dbFile], enabled),
   ).toThrow('No executed passing tests');
   expect(() => audit([entry], report(['SQL', 'passed']), [dbFile], {})).toThrow(
-    'Disabled suite unexpectedly ran',
+    'Explicit suite gate is disabled',
   );
   const [result] = audit(
     [entry],
@@ -199,4 +199,34 @@ it('rejects missing reports and disabled/skipped tests; records external skips a
       { ...enabled, ALLRICE_RUN_CLOUD_INTEGRATION: '1' },
     ),
   ).toThrow('Unexpected pending');
+});
+
+it('rejects a wholly skipped explicit file while exposing separately covered directory skips', () => {
+  const entry = {
+    file: dbFile,
+    group: 'db',
+    gates: ['ALLRICE_RUN_DB_INTEGRATION'],
+    cases: [],
+    coveredBy: ['other DB step'],
+  };
+  const report = {
+    testResults: [
+      {
+        name: resolve(dbFile),
+        assertionResults: [
+          { title: 'SQL', fullName: 'DB SQL', status: 'pending' },
+        ],
+      },
+    ],
+  };
+  expect(() => audit([entry], report, [dbFile], {})).toThrow(
+    'Explicit suite gate is disabled',
+  );
+  expect(audit([entry], report, ['packages/database/src'], {})).toEqual([
+    {
+      file: dbFile,
+      passed: 0,
+      deferred: [{ group: 'db', gates: ['ALLRICE_RUN_DB_INTEGRATION'] }],
+    },
+  ]);
 });
