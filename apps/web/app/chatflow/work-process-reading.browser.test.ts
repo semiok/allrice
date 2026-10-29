@@ -243,17 +243,25 @@ suite('reading a receipt while late native trace changes its group', () => {
               ),
             )
             .toBeLessThan(2);
-          await output(page).dblclick({ position: { x: 80, y: 24 } });
-          const mouseSelection = await page.evaluate(() =>
-            document.getSelection()!.toString(),
-          );
-          expect(mouseSelection.length).toBeGreaterThan(0);
+          const priorSelection = await output(page).evaluate((node) => {
+            const text = node.firstChild!;
+            const start = text.textContent!.length - 30;
+            document
+              .getSelection()!
+              .setBaseAndExtent(text, start, text, start + 18);
+            return document.getSelection()!.toString();
+          });
+          expect(
+            await output(page).evaluate(
+              (node) => node === document.activeElement,
+            ),
+          ).toBe(true);
           await page.keyboard.press('Shift+ArrowRight');
           const selected = await page.evaluate(() =>
             document.getSelection()!.toString(),
           );
           expect(selected.length).toBeGreaterThan(0);
-          expect(selected).not.toBe(mouseSelection);
+          expect(selected).not.toBe(priorSelection);
           expect(
             await output(page).evaluate(
               (node) => node === document.activeElement,
