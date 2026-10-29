@@ -43,7 +43,6 @@ interface SourcedText {
 }
 
 const dsh = resolve(import.meta.dirname, '../dsh');
-const harness = resolve(import.meta.dirname, 'harness/dsh');
 const repository = resolve(import.meta.dirname, '../../..');
 
 /** String literals and template text, never comments or identifiers. */
@@ -142,7 +141,7 @@ function kernelInstructions() {
     sessionId: crypto.randomUUID(),
     userMessageId: crypto.randomUUID(),
     assistantMessageId: crypto.randomUUID(),
-    workAutomation: { cloud: true, computer: true, assistants: true },
+    workAutomation: { cloud: true, computer: true },
     resolved: {
       promptSnapshot: {
         systemPrompt: 'Platform',
@@ -159,14 +158,12 @@ function kernelInstructions() {
 }
 
 describe('names the model reads (MET-214)', () => {
-  it('the assembled work settings and host instructions name 「AllRice 助手」 and 「子智能体」', () => {
+  it('the assembled work settings and host instructions keep 「AllRice 助手」 without retired coordination settings', () => {
     const kernel = kernelInstructions();
     expect(kernel).toContain(
       'computer=automatic within authorized folders and AllRice 助手',
     );
-    expect(kernel).toContain(
-      '子智能体=allowed if this task has authorized 子智能体',
-    );
+    expect(kernel).not.toContain('子智能体=');
     const host = dshHostCapabilityInstructions([
       { name: 'python.execute' },
       { name: 'workspace.export.create' },
@@ -183,22 +180,13 @@ describe('names the model reads (MET-214)', () => {
     expect(offenders([platformRepositoryReviewInstructions])).toEqual([]);
   });
 
-  it('DSH native declarations, prompt sections and governed tool messages carry no old name', async () => {
+  it('DSH native declarations and prompt sections carry no old name', async () => {
     const native = (
       await sources(dsh, (name) => name.endsWith('.mjs'))
     ).flatMap(({ name, source }) => literals(name, source));
     expect(native.length).toBeGreaterThan(2000);
     expect(offenders(native)).toEqual([]);
-    expect(native.map(({ text }) => text).join('\n')).toContain(
-      '子智能体 only: deliver',
-    );
-    const governed = (
-      await sources(harness, (name) => /^assistant-.*\.ts$/.test(name))
-    ).flatMap(({ name, source }) => literals(name, source, 'messages'));
-    expect(governed.map(({ text }) => text).join('\n')).toContain(
-      '当前任务没有这个子智能体',
-    );
-    expect(offenders(governed)).toEqual([]);
+    expect(native.map(({ text }) => text).join('\n')).toContain('AllRice 助手');
   });
 
   it('platform Skills carry no old name', async () => {

@@ -998,32 +998,6 @@ describe('detach failure and ingress interleavings on the real host', () => {
     expect(await reply).toMatchObject({ message: 'QUESTION_DETACHING' });
   }, 30000);
 
-  it('routes question-reply through the existing assistant gate and input tracking', async () => {
-    const h = await blockedHost();
-    const guard = vi.fn();
-    const track = vi.fn((_params, work) => work());
-    h.server.governedAssistants = {
-      assertBusinessInputOpen: guard,
-      trackBusinessInput: track,
-    };
-    const params = {
-      sessionId: h.sessionId,
-      callId: h.askCall().data.callId,
-      answers: [{ id: 'go', selected: ['继续'] }],
-    };
-    expect(
-      await h.server.handleRequest('session/question-reply', params),
-    ).toEqual({ queued: false });
-    expect(track).toHaveBeenCalledTimes(1);
-    guard.mockImplementation(() => {
-      throw Error('ASSISTANT_COMPLETING');
-    });
-    await expect(
-      h.server.handleRequest('session/question-reply', params),
-    ).rejects.toThrow('ASSISTANT_COMPLETING');
-    expect(track).toHaveBeenCalledTimes(1);
-  }, 30000);
-
   it.each(['progress', 'session'])(
     'a failed %s flush restores input and permits a retry',
     async (stage) => {
