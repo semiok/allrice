@@ -1,6 +1,6 @@
+/* global process, Request, fetch, AbortController */
 import { createHash, randomUUID } from 'node:crypto';
-import { createServer, type Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import { createServer } from 'node:http';
 import {
   mkdtemp,
   readdir,
@@ -21,13 +21,11 @@ import {
   it,
   vi,
 } from 'vitest';
-import type { EmployeeRuntimePackage } from '@allrice/contracts';
 import {
   authenticateSession,
   createSession,
   revokeSession,
   getSessionNativeSubagentTarget,
-  type NativeSubagentQueryTarget,
 } from '@allrice/database';
 import * as client from '../../../../packages/database/src/core/client.ts';
 import { createRuntimeFixtureDatabase } from '../../../../packages/database/src/runtime.fixture.ts';
@@ -46,20 +44,18 @@ import {
   host,
   text,
 } from '../../../worker/test/native-subagent/fixture.mjs';
-
 const cookie = vi.hoisted(() => ({ token: '' }));
 // Only Next's request-local cookie adapter is replaced; Web/Worker auth and
 // root resolution run against the isolated database with a real opaque token.
 vi.mock('next/headers', () => ({
   cookies: async () => ({
-    get: (name: string) =>
+    get: (name) =>
       name === 'allrice_session' && cookie.token
         ? { value: cookie.token }
         : undefined,
   }),
 }));
 import { GET } from '../../app/api/v1/sessions/[id]/subagents/route';
-
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -67,10 +63,10 @@ const suite =
 suite(
   'authorized persisted native summary through the actual Web and Worker entrypoints',
   () => {
-    let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
-    let runtimePackage: EmployeeRuntimePackage;
-    let directory: string;
-    const servers: Server[] = [];
+    let fixture;
+    let runtimePackage;
+    let directory;
+    const servers = [];
     beforeAll(async () => {
       fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
@@ -125,7 +121,7 @@ suite(
       cookie.token = '';
       for (const server of servers.splice(0)) {
         server.closeAllConnections();
-        await new Promise<void>((done) => server.close(() => done()));
+        await new Promise((done) => server.close(() => done()));
       }
     });
     afterAll(async () => {
@@ -166,9 +162,9 @@ suite(
         subject: {
           kind: 'chat',
           id: f.session,
-          configChecksum: runtime!.config_checksum,
-          generation: runtime!.thread_generation,
-          expectedThreadId: runtime!.thread_id,
+          configChecksum: runtime.config_checksum,
+          generation: runtime.thread_generation,
+          expectedThreadId: runtime.thread_id,
         },
         descriptor,
       });
@@ -191,30 +187,24 @@ suite(
         await h.wait();
         await h.ctx.sessions.flush(h.root.session);
       }
-      return { ...f, descriptor, context: context!, token, h };
+      return { ...f, descriptor, context: context, token, h };
     }
-    type Chat = Awaited<ReturnType<typeof chat>>;
-    async function peer(f: Chat) {
+    async function peer(f) {
       const id = randomUUID();
       await fixture.db`insert into allrice_users(id,email,display_name,password_hash) values(${id},${`${id}@example.test`},'peer','not-login')`;
       await fixture.db`insert into allrice_memberships(organization_id,workspace_id,user_id,role) values(${f.org},${f.workspace},${id},'member')`;
       return { ...(await createSession(id)), id };
     }
-    async function start(
-      f: Chat,
-      afterRead?: (signal: AbortSignal) => Promise<void>,
-    ) {
+    async function start(f, afterRead) {
       const target = vi.fn(getSessionNativeSubagentTarget);
-      const read = vi.fn(
-        async (value: NativeSubagentQueryTarget, signal: AbortSignal) => {
-          const summary = await readAuthorizedNativeSubagentSummary(
-            value,
-            signal,
-          );
-          await afterRead?.(signal);
-          return summary;
-        },
-      );
+      const read = vi.fn(async (value, signal) => {
+        const summary = await readAuthorizedNativeSubagentSummary(
+          value,
+          signal,
+        );
+        await afterRead?.(signal);
+        return summary;
+      });
       const handler = createNativeRunDiagnosticsHttpHandler(undefined, {
         target,
         read,
@@ -226,8 +216,8 @@ suite(
         }
       });
       servers.push(server);
-      await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
-      const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      await new Promise((done) => server.listen(0, '127.0.0.1', done));
+      const base = `http://127.0.0.1:${server.address().port}`;
       vi.stubEnv('ALLRICE_WORKER_INTERNAL_URL', base);
       const input = {
         sessionId: f.session,
@@ -237,12 +227,7 @@ suite(
       return {
         target,
         read,
-        request: (
-          body: unknown = input,
-          token = f.token,
-          signal?: AbortSignal,
-          headers = {},
-        ) =>
+        request: (body = input, token = f.token, signal, headers = {}) =>
           fetch(base + '/internal/native-subagent-summary', {
             method: 'POST',
             headers: {
@@ -256,7 +241,7 @@ suite(
         input,
       };
     }
-    function web(f: Chat, token = f.token, query = '') {
+    function web(f, token = f.token, query = '') {
       cookie.token = token;
       return GET(
         new Request(
@@ -272,8 +257,8 @@ suite(
         { params: Promise.resolve({ id: f.session }) },
       );
     }
-    async function files(root: string): Promise<unknown[]> {
-      const result: unknown[] = [];
+    async function files(root) {
+      const result = [];
       for (const name of (await readdir(root)).sort()) {
         const path = join(root, name),
           info = await stat(path);
@@ -289,20 +274,19 @@ suite(
       }
       return result;
     }
-    async function writes(f: Chat) {
+    async function writes(f) {
       return Promise.all([
         fixture.db`select * from allrice_jobs where id=${f.worker.jobId}`,
         fixture.db`select * from allrice_native_session_bindings where context_id=${f.session}`,
         fixture.db`select * from allrice_conversation_runtimes where session_id=${f.session}`,
       ]);
     }
-    async function replacePin(f: Chat, changes: Record<string, unknown>) {
+    async function replacePin(f, changes) {
       // Corrupt only this isolated fixture; production pins remain immutable.
       const [pin] =
         await fixture.db`delete from allrice_native_session_bindings where native_session_id=${f.descriptor.nativeSessionId} returning *`;
       await fixture.db`insert into allrice_native_session_bindings select * from jsonb_populate_record(null::allrice_native_session_bindings,${fixture.db.json({ ...pin, ...changes })})`;
     }
-
     it('returns an authorized persisted prefix beside a resident writer, without owner/close admission or writes', async () => {
       const f = await chat();
       await fixture.db`update allrice_conversation_runtimes set state='idle',worker_id=null,active_run_id=null,active_turn_id=null where session_id=${f.session}`;
