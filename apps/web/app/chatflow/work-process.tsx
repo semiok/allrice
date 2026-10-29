@@ -411,9 +411,7 @@ function NativeStepsGroup({
   renderOperation?: RenderOperation;
 }) {
   const { steps } = summarizeWorkProcess(items);
-  const [open, setOpen] = useWorkGroupDisclosure(
-    steps.map((step) => step.id),
-  );
+  const [open, setOpen] = useWorkGroupDisclosure(steps.map((step) => step.id));
   if (!steps.length || onlyLiveThinking(steps, running)) return null;
   const showGroup = grouped && !steps.some(workProcessStepNeedsAttention);
   const categories = [...new Set(steps.map((step) => step.label))].join('、');
