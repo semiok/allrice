@@ -361,12 +361,14 @@ suite('MET153 durable native waits and queue authority', () => {
         select f.state,j.available_at::text,j.timeout_at::text,
           ${times!.scan}::text scan_text,${times!.scan}::text::timestamptz scan_date,
           j.available_at<=${times!.scan}::text::timestamptz and j.timeout_at>${times!.scan}::text::timestamptz exact_eligible,
+          j.available_at<=${times!.scan} and j.timeout_at>${times!.scan} inferred_eligible,
           j.available_at<=${new Date(times!.scan)} and j.timeout_at>${new Date(times!.scan)} date_eligible
         from allrice_jobs j join allrice_conversation_followups f on f.run_id=j.run_id
         where j.run_id=${next}`;
         expect(boundary!.state).toBe('released');
         expect(boundary!.exact_eligible).toBe(eligible);
         expect(boundary!.scan_date).toBeInstanceOf(Date);
+        expect(boundary!.inferred_eligible).toBe(boundary!.date_eligible);
         if (releaseUs !== 900) expect(boundary!.date_eligible).toBe(!eligible);
         console.info('MET-228 scan precision evidence', boundary);
         const claimed = await atDatabaseTime(times!.scan, () =>
