@@ -25,6 +25,7 @@ import {
   appendNativeModelReceipt,
   bindJobNativeSession,
   cancelRun,
+  completeJob,
   finishJobDrain,
 } from './queue.ts';
 import {
@@ -226,10 +227,12 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
       leaseToken = randomUUID();
     const um = randomUUID(),
       am = randomUUID();
+    await completeJob({
+      ...f.worker,
+      result: { text: 'Synthetic previous turn' },
+    });
     await fixture.db.begin(async (tx) => {
       // Arrange a later turn as in the native binding fixture, without running a model.
-      await tx`update allrice_runs set state='succeeded' where id=${f.rootRunId}`;
-      await tx`update allrice_jobs set status='succeeded',lease_token=null,lease_expires_at=null where id=${f.worker.jobId}`;
       await tx`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input)
         values(${runId},${f.org},${f.workspace},${f.user},'running','{}','{}')`;
       await tx`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,attempt,timeout_at,payload,worker_id,lease_token,claimed_at,heartbeat_at,lease_expires_at)
@@ -339,6 +342,27 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
     ).rejects.toThrow('conflict');
     expect(await read(f, secondRoute.id)).toEqual([]);
   });
+  it('commits only one of two concurrently conflicting finish facts', async () => {
+    const f = await setup(),
+      call = start(f);
+    await write(f, call);
+    const outcomes = await Promise.allSettled([
+      write(f, finish(call)),
+      write(f, {
+        ...finish(call),
+        usage: { ...finish(call).usage, outputTokens: 6 },
+      }),
+    ]);
+    expect(outcomes.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(outcomes.find((r) => r.status === 'rejected')).toMatchObject({
+      reason: { code: 'conflict' },
+    });
+    const receipts = await read(f);
+    expect(receipts).toHaveLength(2);
+    expect(outcomes.find((r) => r.status === 'fulfilled')).toMatchObject({
+      value: receipts[1],
+    });
+  });
   it('keeps incomplete and zero usage distinct, and records fresh retry/compaction calls separately', async () => {
     const f = await setup();
     const interrupted = start(f, {
@@ -437,6 +461,25 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
       }),
     ).toEqual([]);
     expect(await read(other)).toEqual([]);
+    // An existing pin for a different business root, with the SAME tenant and
+    // owner, is not authority merely because this Worker holds some live Job.
+    const unrelated = 'dsh-' + randomUUID();
+    await fixture.db`insert into allrice_native_session_bindings(
+      native_session_id,organization_id,workspace_id,owner_id,context_kind,context_id,
+      storage_context_key,storage_namespace,artifact_id,artifact_manifest_digest,
+      distribution_generation,profile_id,first_run_id,first_job_id,first_attempt,binding_basis,root_origin_digest)
+      select ${unrelated},organization_id,workspace_id,owner_id,context_kind,${randomUUID()},
+        ${randomUUID()},storage_namespace,artifact_id,artifact_manifest_digest,
+        distribution_generation,profile_id,${randomUUID()},${randomUUID()},first_attempt,binding_basis,root_origin_digest
+      from allrice_native_session_bindings where native_session_id=${f.descriptor.nativeSessionId}`;
+    await expect(
+      appendNativeModelReceipt({
+        ...f.worker,
+        rootSessionId: unrelated,
+        routeDecisionId: f.decision.id,
+        fact: start(f),
+      }),
+    ).rejects.toThrow('policy_denied');
   });
   it('finishes an admitted call during the original cancellation drain but denies new starts and post-terminal writes', async () => {
     const f = await setup(),
@@ -466,8 +509,12 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
       await write(f, call);
       if (kind === 'lease_token')
         await fixture.db`update allrice_jobs set lease_token=${randomUUID()} where id=${f.worker.jobId}`;
-      if (kind === 'drain')
+      if (kind === 'drain') {
+        await cancelRun(f.context, f.workspace, f.rootRunId, {
+          reason: 'user_requested',
+        });
         await fixture.db`update allrice_jobs set drain_deadline_at=clock_timestamp()-interval '1 second' where id=${f.worker.jobId}`;
+      }
       if (kind === 'lease')
         await fixture.db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${f.worker.jobId}`;
       await expect(write(f, finish(call))).rejects.toThrow('lease_lost');
@@ -478,6 +525,9 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
     const f = await setup(),
       call = start(f);
     await write(f, call);
+    await cancelRun(f.context, f.workspace, f.rootRunId, {
+      reason: 'user_requested',
+    });
     const gate = await held(call.callId);
     let writing: Promise<unknown> | undefined;
     try {
