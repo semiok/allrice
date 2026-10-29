@@ -1900,6 +1900,8 @@ export async function createAllRiceRuntime(
         }
         case 'session/projection':
           return this.sessionProjection(params);
+        case 'session/subagent-summary':
+          return this.nativeSubagentSummary(requiredSessionId(params));
         case 'session/recover':
           return this.recover(params);
         case 'session/close':

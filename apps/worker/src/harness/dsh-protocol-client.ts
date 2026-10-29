@@ -1,5 +1,6 @@
 import {
   BootstrapCoverageResultSchema,
+  NativeSubagentSummarySchema,
   type BootstrapCoverageQuery,
   type BootstrapReceipt,
 } from '@allrice/contracts';
@@ -437,6 +438,12 @@ export class DshProtocolClient {
 
   async compact(sessionId: string) {
     return this.request('session/compact', { sessionId });
+  }
+
+  async nativeSubagentSummary(sessionId: string) {
+    return NativeSubagentSummarySchema.parse(
+      await this.request('session/subagent-summary', { sessionId }),
+    );
   }
 
   async sessionProjection(sessionId: string) {
