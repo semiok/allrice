@@ -5,6 +5,7 @@ import {
   EmployeeDefinitionSchema,
   EmployeeExecutionSnapshotSchema,
   UuidSchema,
+  type EmployeeDefinition,
   type EmployeeRuntimePackage,
 } from '@allrice/contracts';
 import { employeeManifestChecksum } from '../employees/employee-config.ts';
@@ -250,9 +251,8 @@ export function validateEmployeeExecutionSource(
   );
   assertTools(manifest.capabilityBindings.toolNames);
   const pkg = manifest.runtimePackage;
-  let skills: ReturnType<typeof frozenPackageSkills> = [];
   if (pkg !== null) {
-    skills = validateCurrentDeclarativeRuntimePackage({
+    validateCurrentDeclarativeRuntimePackage({
       runtimePackage: pkg,
       expectedChecksum: configChecksum,
       declaration: {
@@ -268,9 +268,23 @@ export function validateEmployeeExecutionSource(
       'CURRENT_EXECUTION_SOURCE_CHECKSUM_MISMATCH',
     );
   }
-  const source = EmployeeExecutionSourceSchema.parse({
-    employeeVersionId,
-    configChecksum,
+  const source = employeeExecutionSourceIdentity(
+    { ...input, employeeVersionId, configChecksum },
+    manifest,
+  );
+  return { source, sourcePolicy: policyFor(source) };
+}
+
+/** Identity is catalog-independent. Birth records attest the source that was
+ * validated at issuance; only a new Run may grant current executable tools. */
+function employeeExecutionSourceIdentity(
+  input: EmployeeExecutionSourceInput,
+  manifest: EmployeeDefinition,
+): EmployeeExecutionSource {
+  const pkg = manifest.runtimePackage;
+  return EmployeeExecutionSourceSchema.parse({
+    employeeVersionId: input.employeeVersionId,
+    configChecksum: input.configChecksum,
     manifestDigest: nativeRootDigest(input.manifest),
     manifestSchema: 2,
     packageSchema: pkg?.schemaVersion ?? null,
@@ -280,10 +294,9 @@ export function validateEmployeeExecutionSource(
       capabilities: manifest.capabilities,
       bindings: manifest.capabilityBindings,
       securityPolicy: manifest.securityPolicy,
-      skills,
+      skills: pkg?.skills ?? [],
     }),
   });
-  return { source, sourcePolicy: policyFor(source) };
 }
 
 const ownerScope = z
@@ -367,8 +380,15 @@ export function assertCurrentEmployeeChatOrigin(
   input: CurrentEmployeeChatOriginInput,
 ): CurrentEmployeeChatOrigin {
   const origin = CurrentEmployeeChatOriginSchema.parse(value);
-  const { source, sourcePolicy } = validateEmployeeExecutionSource(
-    input.source,
+  const manifest = EmployeeDefinitionSchema.parse(input.source.manifest);
+  const source = employeeExecutionSourceIdentity(input.source, manifest);
+  // Recheck the exact immutable bytes and original checksum, never today's
+  // executable catalog. Retired tools/Skills here are provenance, not grants.
+  need(
+    (manifest.runtimePackage
+      ? verifiedRuntimePackageChecksum(manifest.runtimePackage)
+      : employeeManifestChecksum(manifest)) === source.configChecksum,
+    'CURRENT_EXECUTION_SOURCE_CHECKSUM_MISMATCH',
   );
   need(
     origin.contextId === UuidSchema.parse(input.sessionId) &&
@@ -381,7 +401,7 @@ export function assertCurrentEmployeeChatOrigin(
         }),
       ) &&
       equal(origin.birthSource, source) &&
-      equal(origin.sourcePolicy, sourcePolicy),
+      equal(origin.sourcePolicy, policyFor(source)),
     'CURRENT_EMPLOYEE_ORIGIN_SOURCE_MISMATCH',
   );
   return origin;

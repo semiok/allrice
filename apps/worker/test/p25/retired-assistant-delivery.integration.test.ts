@@ -6,6 +6,14 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createRetirementUpgradeFixture } from '../../../../packages/database/src/assistant-retirement.fixture.ts';
 import { failJob } from '../../../../packages/database/src/execution/queue.ts';
+import { sendChatMessage } from '../../../../packages/database/src/workspace/service.ts';
+import {
+  completePlatformEmployeeTestRun,
+  disablePlatformEmployee,
+  publishPlatformEmployee,
+  queuePlatformEmployeeTestRun,
+  savePlatformEmployeeDraft,
+} from '../../../../packages/database/src/employees/platform-employees.ts';
 import { DshProtocolClient } from '../../src/harness/dsh-protocol-client.ts';
 import {
   assertDeliveryProof,
@@ -16,6 +24,7 @@ import {
   jsonValue,
   publishDelivery,
   readDeliveryBytes,
+  retiredTools,
   sha256,
   type DeliveryCohort,
   type DeliveryHarness,
@@ -77,6 +86,7 @@ suite(
       expect(cohorts.map((cohort) => cohort.kind)).toEqual([
         'never-enabled',
         'previously-enabled',
+        'retired-source',
       ]);
       legacyBefore = await legacySnapshot();
       const migration = await upgrade.applyRetirement();
@@ -137,6 +147,14 @@ suite(
     });
     async function assertHistory(cohort: DeliveryCohort) {
       const { db } = upgrade;
+      if (cohort.publication) {
+        const [version] =
+          await db`select * from allrice_employee_versions where id=${cohort.employeeVersionId}`;
+        const [revision] =
+          await db`select * from allrice_platform_employee_revisions where id=${cohort.publication.revisionId}`;
+        expect(jsonValue(version)).toEqual(cohort.publication.versionBefore);
+        expect(jsonValue(revision)).toEqual(cohort.publication.revisionBefore);
+      }
       for (const old of cohort.ordinaryRuns) {
         expect(jsonValue(await deliveryState(db, old.runId))).toEqual(
           old.runBefore,
@@ -175,7 +193,7 @@ suite(
         const settings =
           await db`select revision,settings from allrice_member_work_automation where organization_id=${cohort.context.organizationId} and workspace_id=${cohort.workspaceId} and user_id=${cohort.context.actor.id}`;
         expect(jsonValue(settings)).toEqual(
-          cohort.kind === 'never-enabled'
+          cohort.kind !== 'previously-enabled'
             ? []
             : [
                 {
@@ -206,9 +224,59 @@ suite(
         return { text };
       });
       for (const cohort of cohorts) await harness.connectSubject(cohort);
+      const cohort = cohorts.find((value) => value.kind === 'retired-source')!;
+      const source = cohort.publication!;
+      // A normal new publication, not a rewrite of the birth version. This is
+      // the same platform API path used for the real Dev rollout.
+      await savePlatformEmployeeDraft(source.employeeId, {
+        definition: {
+          ...source.definition,
+          capabilities: {
+            ...source.definition.capabilities,
+            nativeSkillIds: [],
+            toolNames: source.definition.capabilities.toolNames.filter(
+              (name) => !retiredTools.includes(name),
+            ),
+          },
+        },
+      });
+      const preview = await queuePlatformEmployeeTestRun(source.employeeId, {
+        environment: 'company',
+        workspaceId: cohort.workspaceId,
+        ownerId: cohort.context.actor.id,
+        prompt: '检查升级后的月报员工。',
+      });
+      expect(preview.queued).toBe(true);
+      const testId = preview.testRun!.id;
+      await db`update allrice_platform_employee_test_runs set status='running',started_at=clock_timestamp(),timeout_at=clock_timestamp()+interval '5 minutes' where id=${testId}`;
+      expect(
+        (
+          await completePlatformEmployeeTestRun(testId, {
+            answer: 'Synthetic publication preview.',
+            provider: 'openai-codex',
+            model: 'gpt-5.6-luna',
+            threadId: null,
+            usage: null,
+            events: [],
+            error: null,
+          })
+        ).status,
+      ).toBe('succeeded');
+      await db`update allrice_provider_status set status='connected',checked_at=clock_timestamp() where provider='codex'`;
+      expect(
+        (
+          await publishPlatformEmployee(source.employeeId, {
+            scope: 'assigned',
+          })
+        ).valid,
+      ).toBe(true);
+      const [current] =
+        await db`select employee_version_id from allrice_employee_assignments where id=${cohort.assignmentId}`;
+      expect(current!.employee_version_id).not.toBe(cohort.employeeVersionId);
+      await assertHistory(cohort);
     }, 30000);
 
-    it.each(['never-enabled', 'previously-enabled'] as const)(
+    it.each(['never-enabled', 'previously-enabled', 'retired-source'] as const)(
       '%s continues the same chat with checked proof, exact files and at most one text repair',
       async (kind) => {
         const cohort = cohorts.find((value) => value.kind === kind)!;
@@ -218,6 +286,24 @@ suite(
           '继续之前的月报，整理本月数据并把文件下载链接给我。',
         );
         try {
+          if (cohort.publication) {
+            const [current] =
+              await h.db`select employee_version_id from allrice_employee_assignments where id=${cohort.assignmentId}`;
+            expect(task.snapshot.employee.versionId).toBe(
+              current!.employee_version_id,
+            );
+            expect(task.snapshot.employee.versionId).not.toBe(
+              cohort.employeeVersionId,
+            );
+            expect(
+              task.snapshot.employee.definition.runtimePackage.skills,
+            ).toEqual([]);
+            expect(
+              task.snapshot.capabilitySnapshot.bindings.toolNames.some(
+                (name: string) => retiredTools.includes(name),
+              ),
+            ).toBe(false);
+          }
           expect(task.snapshot.finalDeliveryPolicy).toEqual({
             version: 1,
             mode: 'checked_native_v1',
@@ -252,6 +338,13 @@ suite(
           expect(starts).toHaveLength(repair ? 2 : 1);
           expect(h.model.requests.length - requests).toBe(repair ? 2 : 1);
           expect(replies).toHaveLength(0);
+          if (cohort.publication) {
+            const nativeTools = JSON.stringify(
+              h.model.requests[requests]!.tools,
+            );
+            for (const name of retiredTools)
+              expect(nativeTools).not.toContain(name.replace('.', '_'));
+          }
           // A continued native conversation receives the real pre-upgrade answer.
           expect(
             JSON.stringify(h.model.requests[requests]!.messages),
@@ -360,5 +453,38 @@ suite(
       },
       60000,
     );
+
+    it('denies a foreign tenant and revoked access to the upgraded historical chat without admitting a Run', async () => {
+      const cohort = cohorts.find((value) => value.kind === 'retired-source')!;
+      const foreign = cohorts.find((value) => value.kind === 'never-enabled')!;
+      const counts = () =>
+        upgrade.db`select (select count(*) from allrice_employee_runs where session_id=${cohort.sessionId}) runs, (select count(*) from allrice_jobs where owner_id=${cohort.context.actor.id}) jobs`;
+      const before = await counts();
+      const message = {
+        text: '继续之前的月报。',
+        clientMessageId: randomUUID(),
+      };
+      await expect(
+        sendChatMessage(
+          foreign.context,
+          cohort.workspaceId,
+          cohort.sessionId,
+          message,
+        ),
+      ).rejects.toThrow();
+      await disablePlatformEmployee(cohort.publication!.employeeId, {
+        reason: 'Owned fixture access revocation',
+      });
+      await expect(
+        sendChatMessage(
+          cohort.context,
+          cohort.workspaceId,
+          cohort.sessionId,
+          message,
+        ),
+      ).rejects.toThrow();
+      expect(await counts()).toEqual(before);
+      await assertHistory(cohort);
+    }, 30000);
   },
 );

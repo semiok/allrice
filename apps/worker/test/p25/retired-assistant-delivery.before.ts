@@ -5,7 +5,11 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import type { RequestContext, StoragePort } from '@allrice/contracts';
+import type {
+  PlatformEmployeeDefinition,
+  RequestContext,
+  StoragePort,
+} from '@allrice/contracts';
 import { expect, vi } from 'vitest';
 import * as Client from '../../../../packages/database/src/core/client.ts';
 import { createRunAuthorityFixture } from '../../../../packages/database/src/run-authority.fixture.ts';
@@ -84,7 +88,14 @@ export interface OrdinaryDelivery {
   modelRequests: number;
 }
 export interface DeliveryCohort extends DeliverySubject {
-  kind: 'never-enabled' | 'previously-enabled';
+  kind: 'never-enabled' | 'previously-enabled' | 'retired-source';
+  publication?: {
+    employeeId: string;
+    revisionId: string;
+    definition: PlatformEmployeeDefinition;
+    versionBefore: unknown;
+    revisionBefore: unknown;
+  };
   ordinaryRuns: OrdinaryDelivery[];
   workAutomationBefore: {
     revision: number;
@@ -95,6 +106,13 @@ export interface DeliveryCohort extends DeliverySubject {
   auditEventsBefore: unknown[];
 }
 export const deliveryArtifactId = `sha256:${'a'.repeat(64)}`;
+export const retiredTools = [
+  'assistant.delegate',
+  'assistant.message',
+  'assistant.report',
+  'assistant.stop',
+  'assistant.development',
+];
 const modelName = 'retirement-loopback';
 export const sha256 = (bytes: string | Buffer) =>
   `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
@@ -537,9 +555,93 @@ export default async function seed(resources: DeliveryResources) {
     text: answer,
   }));
   const cohorts: DeliveryCohort[] = [];
+  async function publishedSubject() {
+    const { db } = resources;
+    const { createEmployeeAdministrationFixture } =
+      await import('../../../../packages/database/src/employee-administration.fixture.ts');
+    const { savePlatformEmployeeDraft } =
+      await import('../../../../packages/database/src/employees/platform-employees.ts');
+    const { skillBundleChecksum } =
+      await import('../../../../packages/database/src/skill-bundles.ts');
+    const source = await createEmployeeAdministrationFixture(db);
+    // Old tools and a reviewed bundle are actually compiled/published by the
+    // predecessor. No post-upgrade source or birth identity is manufactured.
+    const bundle = structuredClone(source.a);
+    bundle.version = '1.0.1';
+    bundle.dependencies.push({ kind: 'tool', name: 'assistant.delegate' });
+    const { checksum: unused, ...payload } = bundle;
+    void unused;
+    bundle.checksum = skillBundleChecksum(payload);
+    await source.catalog(bundle);
+    await db`update allrice_platform_dsh_skills set required_tool_refs=${db.json(['workspace.skill.read', 'assistant.delegate'])} where id=${source.skillId}`;
+    const definition = {
+      ...source.definition,
+      capabilities: {
+        ...source.definition.capabilities,
+        toolNames: [
+          'workspace.skill.read',
+          'workspace.document.read',
+          'workspace.export.create',
+          ...retiredTools,
+        ],
+      },
+    };
+    await savePlatformEmployeeDraft(source.employeeId, { definition });
+    const preview = await source.preview();
+    expect((await source.publish()).valid).toBe(true);
+    const login = await createSession(source.ownerId);
+    const context = (await authenticateSession(login.token, {
+      organizationId: source.organizationId,
+      workspaceId: source.workspaceId,
+    }))!;
+    const [assigned] = await db`select a.id,a.employee_id,a.employee_version_id
+      from allrice_employee_assignments a join allrice_platform_employee_tenant_assignments p
+        on p.tenant_employee_id=a.employee_id and p.workspace_id=a.workspace_id
+      where p.employee_id=${source.employeeId} and a.user_id=${source.ownerId} and a.active`;
+    const subject: DeliverySubject = {
+      context,
+      workspaceId: source.workspaceId,
+      employeeId: assigned!.employee_id,
+      employeeVersionId: assigned!.employee_version_id,
+      assignmentId: assigned!.id,
+      sessionId: '',
+    };
+    await harness.connectSubject(subject);
+    const chat = await createAssignedChatSession(context, {
+      workspaceId: subject.workspaceId,
+      employeeAssignmentId: subject.assignmentId,
+      title: 'Published employee before tool retirement',
+    });
+    const [version] =
+      await db`select * from allrice_employee_versions where id=${subject.employeeVersionId}`;
+    expect(version!.manifest.capabilityBindings.toolNames).toEqual(
+      expect.arrayContaining(retiredTools),
+    );
+    expect(
+      version!.manifest.runtimePackage.skills[0].bundle.dependencies,
+    ).toContainEqual({ kind: 'tool', name: 'assistant.delegate' });
+    return {
+      ...subject,
+      sessionId: chat.id,
+      publication: {
+        employeeId: source.employeeId,
+        revisionId: preview.revisionId,
+        definition,
+        versionBefore: jsonValue(version),
+        revisionBefore: jsonValue(await source.revision(preview.revisionId)),
+      },
+    };
+  }
   try {
-    for (const kind of ['never-enabled', 'previously-enabled'] as const) {
-      const subject = await harness.createSubject();
+    for (const kind of [
+      'never-enabled',
+      'previously-enabled',
+      'retired-source',
+    ] as const) {
+      const subject =
+        kind === 'retired-source'
+          ? await publishedSubject()
+          : await harness.createSubject();
       // Persist non-default native choices through the real before API. The
       // old assistants switch must neither replace nor reset these choices.
       await updateUserPreferences(subject.context, {
@@ -570,7 +672,7 @@ export default async function seed(resources: DeliveryResources) {
       const settings =
         await db`select revision,settings from allrice_member_work_automation where organization_id=${subject.context.organizationId} and workspace_id=${subject.workspaceId} and user_id=${subject.context.actor.id}`;
       expect(jsonValue(settings)).toEqual(
-        kind === 'never-enabled'
+        kind !== 'previously-enabled'
           ? []
           : [
               {
@@ -590,7 +692,7 @@ export default async function seed(resources: DeliveryResources) {
       expect(Number(preferences[0]!.subagent_max_active)).toBe(5);
       const audits =
         await db`select id,action,metadata from allrice_audit_events where actor_id=${subject.context.actor.id} and action='member.work_automation.update' order by metadata->>'revision'`;
-      expect(audits).toHaveLength(kind === 'never-enabled' ? 0 : 3);
+      expect(audits).toHaveLength(kind === 'previously-enabled' ? 3 : 0);
       const task = await harness.prepare(
         subject,
         '帮我完成这项任务：把本月收支整理成月报文件，把下载链接给我。',
