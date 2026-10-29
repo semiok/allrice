@@ -2,6 +2,7 @@
  * Real before APIs/Worker/Host histories are covered by p25 retirement delivery. */
 import { createHash, randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ExecutionContextSchema } from '@allrice/contracts';
 import {
   createRuntimeFixtureDatabase,
   runtimeFixtureStorage,
@@ -122,9 +123,30 @@ async function historical() {
   };
   const storage = runtimeFixtureStorage(db);
   await storage.put(object, new Blob([bytes]).stream());
+  const [policy] =
+    await db`select * from allrice_policy_snapshots where id=${f.policy}`;
+  const executionContext = ExecutionContextSchema.parse({
+    executionId: randomUUID(),
+    runId: f.rootRunId,
+    jobId: f.worker.jobId,
+    worker: { type: 'worker', id: f.worker.workerId },
+    delegatedBy: f.context.actor,
+    organizationId: f.org,
+    workspaceId: f.workspace,
+    startedAt: new Date().toISOString(),
+    policySnapshot: {
+      id: f.policy,
+      organizationId: f.org,
+      subjectId: f.user,
+      version: 1,
+      issuedAt: policy!.issued_at.toISOString(),
+      expiresAt: policy!.expires_at.toISOString(),
+      ...policy!.payload,
+    },
+  });
   await registerToolBrokerExport(
     {
-      context: f.context,
+      context: executionContext,
       sessionId: f.session,
       fileName: 'history.txt',
       format: 'text',
