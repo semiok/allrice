@@ -261,7 +261,7 @@ export async function prepareNativeQuestionReply(
   };
   const terminalReceipt = async (
     tx: TransactionSql,
-    q: Awaited<ReturnType<typeof current>>,
+    q: Awaited<ReturnType<typeof current>>['q'],
     row: Awaited<ReturnType<typeof readCommand>>,
   ) => {
     let receipt: 'adopted' | 'rejected' | undefined;
