@@ -466,14 +466,24 @@ export class BridgeUpdateInstaller {
   }
 
   /** Only the monitor commits after observing ready. New Core waits for this
-   * commit before it is allowed to acquire browser or foreground work. */
+   * commit before it is allowed to acquire browser or foreground work.
+   * False means the update lock was busy before any health write began. */
   async confirmHealthy(version: string, id: string) {
     if (this.busy) error('UPDATE_BUSY');
     this.busy = true;
     let lock: BridgeInstanceLock | undefined;
     try {
       const root = await this.checkRoot();
-      lock = await BridgeInstanceLock.acquire(join(root, 'update'));
+      try {
+        lock = await BridgeInstanceLock.acquire(join(root, 'update'));
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message === 'BRIDGE_ALREADY_RUNNING'
+        )
+          return false;
+        throw error;
+      }
       const state = await this.state();
       if (
         !state ||
@@ -483,6 +493,7 @@ export class BridgeUpdateInstaller {
       )
         error('UPDATE_HEALTH_MISMATCH');
       await this.save({ ...state, phase: 'healthy' });
+      return true;
     } finally {
       lock?.close();
       this.busy = false;

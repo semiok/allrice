@@ -63,9 +63,13 @@ export async function monitorBridgeUpdate(input: UpdateMonitorInput) {
         if (current?.id !== state.id) fail('UPDATE_HEALTH_MISMATCH');
         if (current.phase === 'ready-health') {
           commitAttempted = true;
-          await engine.confirmHealthy(state.version, state.id);
-          child.unref();
-          return { status: 'healthy' as const, failureCode: null };
+          if (await engine.confirmHealthy(state.version, state.id)) {
+            child.unref();
+            return { status: 'healthy' as const, failureCode: null };
+          }
+          // reportReady can be visible before its fsync releases the update
+          // lock. No commit began; keep waiting within the same health bound.
+          commitAttempted = false;
         }
         if (child.exitCode !== null || child.signalCode !== null)
           fail('UPDATE_LAUNCH_FAILED');
