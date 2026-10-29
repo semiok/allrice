@@ -161,7 +161,7 @@ suite('PR5 checked exact native question receipts', () => {
           return await steer(input);
         } catch (error) {
           expect(String(error)).toContain('QUESTION_ANSWER_NOT_ADOPTED');
-          if (++rejections === 2) finish.open();
+          if (++rejections === 2) finish.release();
           throw error;
         }
       });
@@ -174,7 +174,7 @@ suite('PR5 checked exact native question receipts', () => {
             (e.sourcePayload as { questions?: { active?: unknown[] } })
               ?.questions?.active?.length
           )
-            ready.open();
+            ready.release();
         },
       });
       try {
@@ -196,7 +196,7 @@ suite('PR5 checked exact native question receipts', () => {
           expect(reply.delivery).toBe('steer_pending');
           conflicts.push(reply.fallbackRunId!);
         }
-        admitted.open();
+        admitted.release();
         await running;
         expect(rejections).toBe(2);
         expect(
@@ -226,8 +226,8 @@ suite('PR5 checked exact native question receipts', () => {
         }
         expect(f.model.requests).toHaveLength(requests);
       } finally {
-        admitted.open();
-        finish.open();
+        admitted.release();
+        finish.release();
         await running;
       }
     },
