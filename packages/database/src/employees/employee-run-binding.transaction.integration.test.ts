@@ -15,7 +15,7 @@ import {
 } from 'vitest';
 
 import * as client from '../core/client.ts';
-import { createAssistantFixtureDatabase } from '../assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
 import { readPlatformModelSettings } from '../providers/platform-model-settings.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
 import { skillBytesChecksum } from '../skill-bundles.ts';
@@ -67,11 +67,11 @@ const countsBeforeBinding = {
 integration(
   'complete employee binding: caller transaction and real authority',
   () => {
-    let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let schema: string;
 
     beforeAll(async () => {
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createRuntimeFixtureDatabase();
       const [scope] = await fixture.db<{ schema: string }[]>`
       select current_schema() as schema`;
       if (!scope || !/^p25_[a-f0-9]{32}$/.test(scope.schema)) {

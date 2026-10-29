@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { RequestContext } from '@allrice/contracts';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import {
   bridgeDeviceStatus,
   createBridgePairing,
@@ -21,9 +21,9 @@ const integration =
     : describe.skip;
 
 integration('organization/employee Bridge ownership', () => {
-  let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   beforeAll(async () => {
-    fixture = await createAssistantFixtureDatabase();
+    fixture = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
   }, 120000);
   afterAll(async () => {

@@ -15,7 +15,7 @@ import {
   parseArguments,
   readCandidate,
   requireCheck,
-} from './p27-assistant-preflight.ts';
+} from './p27-runtime-preflight.ts';
 import { collectP27InstalledRuntime } from './p27-installed-runtime.ts';
 
 const root = resolve(fileURLToPath(new URL('../../../', import.meta.url)));
@@ -28,7 +28,7 @@ const sourceFiles = [
   'apps/worker/dsh/allrice-codex-cap-probe.cordis.yml',
   'apps/worker/src/harness/dsh-egress-environment.ts',
   'scripts/acceptance/runtime/p27-codex-cap-probe.ts',
-  'scripts/acceptance/runtime/p27-assistant-preflight.ts',
+  'scripts/acceptance/runtime/p27-runtime-preflight.ts',
   'scripts/acceptance/runtime/p27-installed-runtime.ts',
 ];
 

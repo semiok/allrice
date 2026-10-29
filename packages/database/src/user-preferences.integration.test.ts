@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { defaultUserPreferences } from '@allrice/contracts';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createExperienceFixture } from './experience.fixture.ts';
 import {
   getUserPreferences,
@@ -14,9 +14,9 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('account output preferences', () => {
-  let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   beforeAll(async () => {
-    fixture = await createAssistantFixtureDatabase();
+    fixture = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
   }, 120000);
   afterAll(async () => {

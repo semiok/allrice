@@ -7,8 +7,8 @@ import {
   cloudToolchainImageV1,
   cloudPlatform,
 } from '@allrice/contracts';
-import { assistantFixtureStorage } from './assistant-runtime.fixture.ts';
-import { createAssistantLocalCommandFixture } from './local-command-assistant.fixture.ts';
+import { runtimeFixtureStorage } from './runtime.fixture.ts';
+import { createLocalCommandFixture } from './local-command.fixture.ts';
 import { executeProjectWorkspace } from './project-workspace.ts';
 import { selectProjectExecution } from './project-execution.ts';
 import { createCloudProjectOperation } from './cloud-execution.ts';
@@ -23,8 +23,7 @@ export async function cloudProjectServiceCandidate(
     callId?: string;
   } = {},
 ) {
-  const f = await createAssistantLocalCommandFixture(db, 'allow', false, {
-    skipChild: true,
+  const f = await createLocalCommandFixture(db, 'allow', false, {
     projectWorkspace: true,
     projectCloud: true,
   });
@@ -39,7 +38,7 @@ export async function cloudProjectServiceCandidate(
     },
     db,
   );
-  const storage = assistantFixtureStorage(db),
+  const storage = runtimeFixtureStorage(db),
     [job] = await db<
       { attempt: number }[]
     >`select attempt from allrice_jobs where id=${f.context.jobId}`;

@@ -9,7 +9,7 @@ import {
 } from './platform-repair-authority.ts';
 import type { JobRow } from './queue/row-mappers.ts';
 import { refreshTaskClock } from './task-clock.ts';
-import { cancelAssistantRootTransaction } from './assistant-runtime.ts';
+import { cancelRuntimeRootTransaction } from './runtime-ledger/ledger.ts';
 import {
   initialProgressState,
   observeProgress,
@@ -223,7 +223,7 @@ export function createTaskProgressRuntime(
           await tx`insert into allrice_task_progress_decisions(run_id,pause_id,decision,actor_id) values(${runId},${p.pauseId},${p.decision},${context.delegatedBy.id})`;
           if (p.decision === 'cancel') {
             await tx`update allrice_task_progress set canceled=true where run_id=${runId}`;
-            await cancelAssistantRootTransaction(tx, runId, randomUUID());
+            await cancelRuntimeRootTransaction(tx, runId, randomUUID());
             await tx`update allrice_jobs set cancel_requested_at=coalesce(cancel_requested_at,clock_timestamp()) where id=${worker.jobId}`;
           } else {
             state = initialProgressState();

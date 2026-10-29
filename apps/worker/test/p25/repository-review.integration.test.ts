@@ -34,9 +34,9 @@ import {
 } from '@allrice/contracts';
 import * as client from '../../../../packages/database/src/core/client.ts';
 import {
-  createAssistantFixtureDatabase,
-  assistantFixtureStorage,
-} from '../../../../packages/database/src/assistant-runtime.fixture.ts';
+  createRuntimeFixtureDatabase,
+  runtimeFixtureStorage,
+} from '../../../../packages/database/src/runtime.fixture.ts';
 import { createExperienceFixture } from '../../../../packages/database/src/experience.fixture.ts';
 import {
   ensureBootstrapPortalPrincipal,
@@ -164,7 +164,7 @@ function reviewLockConnection(
 suite(
   'platform repository review native workflow and current authority',
   () => {
-    let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let platformEmployeeId: string;
     const emails = new Set<string>();
     let manifestPath: string, previousManifest: Buffer | undefined;
@@ -190,7 +190,7 @@ suite(
       await installDshNativeArtifact({ root, expectedId: artifact.artifactId });
       vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', artifact.artifactId);
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', artifact.artifactId);
-      f = await createAssistantFixtureDatabase();
+      f = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
       vi.stubEnv('ALLRICE_ENV', 'development');
       vi.stubEnv('ALLRICE_MCP_CREDENTIAL_KEY', 'a'.repeat(64));
@@ -800,7 +800,7 @@ suite(
             requestId,
             arguments: args,
           },
-          assistantFixtureStorage(f.db),
+          runtimeFixtureStorage(f.db),
           f.db,
         );
       const allowed = () =>
@@ -897,7 +897,7 @@ suite(
             requestId: randomUUID(),
             arguments: { action: 'inspect' },
           },
-          assistantFixtureStorage(f.db),
+          runtimeFixtureStorage(f.db),
           tool.db,
         ),
       );
@@ -979,7 +979,7 @@ suite(
               requestId: randomUUID(),
               arguments: { action: 'inspect' },
             },
-            assistantFixtureStorage(f.db),
+            runtimeFixtureStorage(f.db),
             tool.db,
           ),
         );

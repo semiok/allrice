@@ -59,7 +59,7 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
     // Reuse identity setup only; no assistant root/instance is configured.
     const f = await createRunAuthorityFixture(db, {
       configure: false,
-      memberAssistants: null,
+
       memberRole: 'member',
       allowedTools: ['workspace.export.create', 'workspace.document.read'],
       controls: {

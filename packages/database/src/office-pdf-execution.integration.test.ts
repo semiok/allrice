@@ -8,10 +8,10 @@ import {
   type EmployeeExecutionSnapshot,
 } from '@allrice/contracts';
 import {
-  createAssistantFixtureDatabase,
-  assistantFixtureStorage,
-} from './assistant-runtime.fixture.ts';
-import { createAssistantAuthorityFixture } from './assistant-authority.fixture.ts';
+  createRuntimeFixtureDatabase,
+  runtimeFixtureStorage,
+} from './runtime.fixture.ts';
+import { createRunAuthorityFixture } from './run-authority.fixture.ts';
 import { publishWorkbenchArtifact } from './artifact-review.ts';
 import {
   createToolBrokerExportObject,
@@ -29,12 +29,12 @@ const hash = (bytes: Uint8Array) =>
 suite(
   'MET166 Office PDF provider authority and independent format lineage',
   () => {
-    let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
       vi.stubEnv('ALLRICE_CLOUD_RUNNER_ENABLED', '0');
-      database = await createAssistantFixtureDatabase();
+      database = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(database.db);
     }, 60000);
     afterAll(async () => {
@@ -48,7 +48,7 @@ suite(
         missing?: 'storage:read' | 'storage:write';
       } = {},
     ) {
-      const f = await createAssistantAuthorityFixture(database.db, {
+      const f = await createRunAuthorityFixture(database.db, {
         allowedTools: ['workspace.export.create', 'workspace.document.read'],
         memberRole: 'member',
         configure: false,
@@ -96,7 +96,7 @@ suite(
       const [job] = await db<
         { attempt: number; lease_token: string }[]
       >`select attempt,lease_token from allrice_jobs where id=${f.worker.jobId}`;
-      const storage = assistantFixtureStorage(db);
+      const storage = runtimeFixtureStorage(db);
       const publish = (
         format: 'docx' | 'pdf' | 'text',
         sourceFile?: { objectId: string; checksum: string },

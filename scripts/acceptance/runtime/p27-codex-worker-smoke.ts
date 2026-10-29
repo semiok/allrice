@@ -32,7 +32,7 @@ import {
   prepareP27PlatformEnvironment,
   readCandidate,
   requireCheck,
-} from './p27-assistant-preflight.ts';
+} from './p27-runtime-preflight.ts';
 import {
   boundedP27Wait,
   maintainP27Lease,

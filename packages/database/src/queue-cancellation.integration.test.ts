@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
-  assistantFixture,
-  createAssistantFixtureDatabase,
-} from './assistant-runtime.fixture.ts';
+  runtimeTaskFixture,
+  createRuntimeFixtureDatabase,
+} from './runtime.fixture.ts';
 import { closeDatabase } from './core/client.ts';
 import { createRuntimeOperationLedger } from './runtime-ledger/ledger.ts';
 import { defaultAssistantRunConfiguration } from '@allrice/contracts';
@@ -23,10 +23,10 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('MET193 original-incarnation receipt drain — isolated PostgreSQL', () => {
-  let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   beforeAll(async () => {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-    database = await createAssistantFixtureDatabase();
+    database = await createRuntimeFixtureDatabase();
     const [scope] = await database.db<
       { schema: string }[]
     >`select current_schema() schema`;
@@ -41,7 +41,7 @@ suite('MET193 original-incarnation receipt drain — isolated PostgreSQL', () =>
     vi.unstubAllEnvs();
   });
   async function setup() {
-    const f = await assistantFixture(database.db);
+    const f = await runtimeTaskFixture(database.db);
     f.context.memberships = (
       await database.db`select * from allrice_memberships where user_id=${f.context.actor.id}`
     ).map((m) => ({
@@ -310,7 +310,7 @@ suite('MET193 original-incarnation receipt drain — isolated PostgreSQL', () =>
     },
   );
   it('root creation and cancellation serialize before taking job locks, including before the root exists', async () => {
-    const f = await assistantFixture(database.db);
+    const f = await runtimeTaskFixture(database.db);
     f.context.memberships = (
       await database.db`select * from allrice_memberships where user_id=${f.context.actor.id}`
     ).map((m) => ({

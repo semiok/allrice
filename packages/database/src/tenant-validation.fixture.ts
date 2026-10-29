@@ -1,9 +1,9 @@
 /** Synthetic data for isolated PostgreSQL tests, never real tenant acceptance. */
 import { randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
-import { assistantFixture } from './assistant-runtime.fixture.ts';
+import { runtimeTaskFixture } from './runtime.fixture.ts';
 export async function tenantValidationFixture(db: ReturnType<typeof postgres>) {
-  const a = await assistantFixture(db),
+  const a = await runtimeTaskFixture(db),
     { organizationId: org, workspaceId: workspace } = a.task.scope,
     owner = a.context.actor.id,
     run = a.task.runId,

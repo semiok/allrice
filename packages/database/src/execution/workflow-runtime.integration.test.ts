@@ -9,9 +9,9 @@ import {
 } from '@allrice/contracts';
 import * as client from '../core/client.ts';
 import {
-  assistantFixture,
-  createAssistantFixtureDatabase,
-} from '../assistant-runtime.fixture.ts';
+  runtimeTaskFixture,
+  createRuntimeFixtureDatabase,
+} from '../runtime.fixture.ts';
 import { heartbeatJob } from './queue.ts';
 import {
   completeWorkflowStep,
@@ -30,10 +30,10 @@ const suite =
 suite(
   'Workflow job-incarnation recovery and heartbeat — isolated PostgreSQL',
   () => {
-    let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-      database = await createAssistantFixtureDatabase();
+      database = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(database.db);
     }, 120_000);
     afterAll(async () => {
@@ -48,7 +48,7 @@ suite(
         recoveryPolicy?: WorkflowDefinition['recoveryPolicy'];
       } = {},
     ) {
-      const f = await assistantFixture(database.db);
+      const f = await runtimeTaskFixture(database.db);
       const org = f.context.organizationId,
         workspace = f.context.workspaceId!;
       const user = f.context.actor.id,

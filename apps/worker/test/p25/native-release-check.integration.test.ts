@@ -9,9 +9,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { DSH_INSTALLED_DISTRIBUTION } from '@allrice/contracts';
 import * as client from '../../../../packages/database/src/core/client.ts';
 import {
-  assistantFixture,
-  createAssistantFixtureDatabase,
-} from '../../../../packages/database/src/assistant-runtime.fixture.ts';
+  runtimeTaskFixture,
+  createRuntimeFixtureDatabase,
+} from '../../../../packages/database/src/runtime.fixture.ts';
 import { initializeNativeOncePartition } from '../../../../packages/database/src/native-schedule-once-product.ts';
 import { NATIVE_JOURNAL_CONTRACT_KEY } from '../../../../packages/database/src/native-journal-contract-store.ts';
 import { checkNativeReleaseCandidate } from '../../src/harness/dsh-native-release-check.js';
@@ -28,7 +28,7 @@ const primary = {
 suite.each(['0217_brand_content_feedback.sql', undefined] as const)(
   'release candidate pre-stop check (checkpoint %s)',
   (throughMigration) => {
-    let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let runtimeRoot: string;
     let stateRoot: string;
     const verifyControlHistory = vi.fn(async () => 0);
@@ -58,7 +58,7 @@ suite.each(['0217_brand_content_feedback.sql', undefined] as const)(
       // Empty retired settings, as older compose files wrote them, are not settings.
       vi.stubEnv('ALLRICE_DSH_RETAINED_1_ROOT', '');
       vi.stubEnv('ALLRICE_DSH_ORIGIN_READER_2_APPROVAL_PATH', '');
-      fixture = await createAssistantFixtureDatabase({
+      fixture = await createRuntimeFixtureDatabase({
         throughMigration,
       });
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
@@ -150,7 +150,7 @@ suite.each(['0217_brand_content_feedback.sql', undefined] as const)(
         runtimeRoot,
         join(process.env.ALLRICE_EXECUTION_ROOT!, 'platform-employee-tests'),
       ]) {
-        const f = await assistantFixture(fixture.db);
+        const f = await runtimeTaskFixture(fixture.db);
         const chat = f.task.chatSessionId;
         await fixture.db`insert into allrice_native_session_bindings
         (native_session_id,organization_id,workspace_id,owner_id,context_kind,context_id,storage_context_key,storage_namespace,
@@ -166,7 +166,7 @@ suite.each(['0217_brand_content_feedback.sql', undefined] as const)(
     });
 
     it('refuses a pin outside the deployment storage roots, except an archived chat', async () => {
-      const f = await assistantFixture(fixture.db);
+      const f = await runtimeTaskFixture(fixture.db);
       const chat = f.task.chatSessionId;
       await fixture.db`insert into allrice_native_session_bindings
       (native_session_id,organization_id,workspace_id,owner_id,context_kind,context_id,storage_context_key,storage_namespace,

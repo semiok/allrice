@@ -11,9 +11,9 @@ import {
 } from '@allrice/contracts';
 import * as client from './core/client.ts';
 import {
-  createAssistantFixtureDatabase,
-  assistantFixtureStorage,
-} from './assistant-runtime.fixture.ts';
+  createRuntimeFixtureDatabase,
+  runtimeFixtureStorage,
+} from './runtime.fixture.ts';
 import { createEmployeeAdministrationFixture } from './employee-administration.fixture.ts';
 import {
   ensureBootstrapPortalPrincipal,
@@ -67,9 +67,9 @@ const suite =
 suite(
   'MET-159 continuous member inheritance and automatic cloud access (isolated PostgreSQL)',
   () => {
-    let fdb: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let fdb: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     beforeEach(async () => {
-      fdb = await createAssistantFixtureDatabase();
+      fdb = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fdb.db);
       vi.stubEnv('ALLRICE_ENV', 'development');
     }, 120000);
@@ -585,7 +585,7 @@ suite(
         retentionUntil: null,
         deletedAt: null,
       };
-      const storage = assistantFixtureStorage(fdb.db);
+      const storage = runtimeFixtureStorage(fdb.db);
       await storage.put(object, new Blob([bytes]).stream());
       const captureInput = {
         context: execution.context,

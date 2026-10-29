@@ -4,7 +4,7 @@ import {
   ExecutionPressureSchema,
   type WorkerOperations,
 } from '@allrice/contracts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import {
   readOperationsInventory,
   recordWorkerOperations,
@@ -16,7 +16,7 @@ const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1' ? describe : describe.skip;
 suite('operations resource inventory', () => {
   it('uses real database freshness, tolerates malformed reports and retires stale workers on restart', async () => {
-    const f = await createAssistantFixtureDatabase();
+    const f = await createRuntimeFixtureDatabase();
     try {
       const report: WorkerOperations = {
         workerId: randomUUID(),

@@ -8,7 +8,7 @@ import type {
   RequestContext,
 } from '@allrice/contracts';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { tenantValidationFixture } from './tenant-validation.fixture.ts';
 import {
   authenticateSession,
@@ -25,7 +25,7 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('human-confirmed investment evidence (private PostgreSQL schema)', () => {
-  let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
+  let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
     a: Awaited<ReturnType<typeof tenantValidationFixture>>,
     b: typeof a,
     admin: RequestContext,
@@ -116,7 +116,7 @@ suite('human-confirmed investment evidence (private PostgreSQL schema)', () => {
     );
   beforeAll(async () => {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-    f = await createAssistantFixtureDatabase();
+    f = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
     a = await tenantValidationFixture(f.db);
     b = await tenantValidationFixture(f.db);

@@ -12,7 +12,7 @@ import { DshRuntimePool } from '../../src/harness/dsh/runtime-pool.ts';
 import type { DshRuntime } from '../../src/harness/dsh/runtime-pool.ts';
 import * as AssistantController from '../../src/harness/dsh/assistant-controller.ts';
 import { DshStartupRejection } from '../../src/harness/dsh/startup-rejection.ts';
-import { attachAssistantFailureUsage } from '../../src/harness/dsh/assistant-outcome.ts';
+import { attachExecutionFailureUsage } from '../../src/harness/dsh/assistant-outcome.ts';
 import { HandlerError } from '../../src/errors.ts';
 import { prepareExecutionIsolation } from '../../src/isolation.ts';
 import {
@@ -27,7 +27,7 @@ import {
   type PromptImageAttachment,
 } from '@allrice/contracts';
 import { LocalStorageAdapter } from '@allrice/storage';
-import { assistantSubscriptionSnapshotDigest } from '../../src/assistant-pricing-preflight.ts';
+import { subscriptionSnapshotDigest } from '../../src/assistant-pricing-preflight.ts';
 
 const status = vi.hoisted(() => ({
   quota: undefined as unknown,
@@ -542,7 +542,7 @@ integration(
                   'synthetic internal budget stop',
                   false,
                 );
-                attachAssistantFailureUsage(
+                attachExecutionFailureUsage(
                   error,
                   mode === 'failed_foreign_usage' ? 'another-run' : task.runId,
                   input.attempt,
@@ -648,7 +648,7 @@ integration(
                       actualCostKnown: false as const,
                       cacheUsageKnown: false,
                       subscriptionSnapshotDigest:
-                        assistantSubscriptionSnapshotDigest(
+                        subscriptionSnapshotDigest(
                           input.assistants!.subscriptionSnapshot!,
                         ),
                     }

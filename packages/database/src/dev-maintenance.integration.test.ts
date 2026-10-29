@@ -11,7 +11,7 @@ import {
   vi,
 } from 'vitest';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createExperienceFixture } from './experience.fixture.ts';
 import {
   enqueueRun,
@@ -39,7 +39,7 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('Durable maintenance fence, without installed host authority', () => {
-  let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   let company: Awaited<ReturnType<typeof createExperienceFixture>>;
   let owner: DevMaintenanceOwner;
   const instances = {
@@ -50,7 +50,7 @@ suite('Durable maintenance fence, without installed host authority', () => {
     },
   };
   beforeAll(async () => {
-    fixture = await createAssistantFixtureDatabase();
+    fixture = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     company = await createExperienceFixture(fixture.db);
     await fixture.db`create table allrice_dev_lifecycle_witness(n integer not null)`;

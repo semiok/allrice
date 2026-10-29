@@ -10,7 +10,7 @@ import {
 } from 'vitest';
 import type postgres from 'postgres';
 import * as client from '../core/client.ts';
-import { createAssistantFixtureDatabase } from '../assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
 import { employeeManifest } from '../employees/employee-config.ts';
 import {
   reserveDshRuntimeOwner,
@@ -38,13 +38,13 @@ const artifact = digest('C2 SQL-only uninstalled artifact');
 suite(
   'C2 durable close observations: real PostgreSQL, no Native or model',
   () => {
-    let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let port: typeof fixture.db;
     beforeAll(async () => {
       // The original fixture validates the exact approved local/CI URL pair.
       // Its database name is not fixed to the developer's local test database.
       const fixtureUrl = new URL(process.env.ALLRICE_TEST_DATABASE_URL!);
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createRuntimeFixtureDatabase();
       const [where] =
         await fixture.db`select current_database() db,current_schema() schema`;
       if (!where) throw Error('Private fixture database identity missing');

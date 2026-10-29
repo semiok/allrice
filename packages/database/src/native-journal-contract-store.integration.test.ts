@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
-  assistantFixture,
-  createAssistantFixtureDatabase,
-} from './assistant-runtime.fixture.ts';
+  runtimeTaskFixture,
+  createRuntimeFixtureDatabase,
+} from './runtime.fixture.ts';
 import { inspectNativeContextCompatibility } from './conversation/native-context-compatibility.ts';
 import {
   NATIVE_JOURNAL_CONTRACT_KEY,
@@ -17,7 +17,7 @@ const suite =
 const generation = 'dsh-0.2.1-rc.2-687f282';
 
 suite('DSH journal contract high-water and context compatibility', () => {
-  let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   const row = async () =>
     (
       await fixture.db<{ value: unknown }[]>`
@@ -25,7 +25,7 @@ suite('DSH journal contract high-water and context compatibility', () => {
     )[0]?.value;
   beforeAll(async () => {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-    fixture = await createAssistantFixtureDatabase({
+    fixture = await createRuntimeFixtureDatabase({
       throughMigration: '0217_brand_content_feedback.sql',
     });
   }, 60_000);
@@ -82,7 +82,7 @@ suite('DSH journal contract high-water and context compatibility', () => {
       fixture.db,
     );
     // The fixture chat has no business origin, so no release can execute it.
-    const { task } = await assistantFixture(fixture.db);
+    const { task } = await runtimeTaskFixture(fixture.db);
     const sessionId = task.chatSessionId;
     const after = await inspectNativeContextCompatibility(
       { generation, storageRoots: ['/'] },

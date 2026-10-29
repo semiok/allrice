@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { createAssistantFixtureDatabase } from '../../../packages/database/src/assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../../../packages/database/src/runtime.fixture.ts';
 import { verifyCodexWorkerSessionsInChrome } from './p28-codex-session-ui.ts';
 
 type Input = Parameters<typeof verifyCodexWorkerSessionsInChrome>[0];
@@ -88,7 +88,7 @@ integration(
       expect(process.env.ALLRICE_TEST_DATABASE_URL).toBe(
         'postgres://a123@127.0.0.1:5432/allrice_b2',
       );
-      const fixture = await createAssistantFixtureDatabase();
+      const fixture = await createRuntimeFixtureDatabase();
       const directory = await realpath(
         await mkdtemp(join(tmpdir(), 'allrice-p27-codex-ui-guard-')),
       );

@@ -5,10 +5,10 @@ import { randomUUID, createHash } from 'node:crypto';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { ProjectVersionRefSchema } from '@allrice/contracts';
 import {
-  createAssistantFixtureDatabase,
-  assistantFixtureStorage,
-} from './assistant-runtime.fixture.ts';
-import { createAssistantLocalCommandFixture } from './local-command-assistant.fixture.ts';
+  createRuntimeFixtureDatabase,
+  runtimeFixtureStorage,
+} from './runtime.fixture.ts';
+import { createLocalCommandFixture } from './local-command.fixture.ts';
 import { executeProjectWorkspace } from './project-workspace.ts';
 import { parseProjectSnapshotBytes } from './project-source.ts';
 import {
@@ -29,7 +29,7 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('MET166 PR3a private project checkpoints', () => {
-  let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   beforeAll(async () => {
     for (const name of [
       'ASSISTANTS',
@@ -39,14 +39,14 @@ suite('MET166 PR3a private project checkpoints', () => {
       'LOCAL_COMMAND',
     ])
       vi.stubEnv(`ALLRICE_${name}_ENABLED`, '1');
-    database = await createAssistantFixtureDatabase();
+    database = await createRuntimeFixtureDatabase();
   }, 120000);
   afterAll(async () => {
     await database?.close();
     vi.unstubAllEnvs();
   });
   async function setup(deferRuntimeRoot = false) {
-    const f = await createAssistantLocalCommandFixture(
+    const f = await createLocalCommandFixture(
       database.db,
       'allow',
       false,
@@ -56,7 +56,7 @@ suite('MET166 PR3a private project checkpoints', () => {
       await f.db`update allrice_runs set input=jsonb_set(input,'{assistantConfiguration,allowAssistants}','false'::jsonb) where id=${f.rootRunId}`;
     const rootsBefore =
       await f.db`select root_run_id from allrice_runtime_roots where root_run_id=${f.rootRunId}`;
-    const storage = assistantFixtureStorage(f.db);
+    const storage = runtimeFixtureStorage(f.db);
     const [job] = await f.db<
       { attempt: number }[]
     >`select attempt from allrice_jobs where id=${f.worker.jobId}`;

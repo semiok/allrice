@@ -1,6 +1,5 @@
 import { z } from 'zod';
 import {
-  AssistantFailureDiagnosticsSchema,
   UuidSchema,
   WorkerOperationsSchema,
 } from '@allrice/contracts';
@@ -99,7 +98,6 @@ const Health = z
   .strict();
 export const TechnicalRunFailureDetailsSchema = z
   .object({
-    model: AssistantFailureDiagnosticsSchema.nullable(),
     cloud: z
       .array(
         z

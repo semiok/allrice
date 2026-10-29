@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { RouteDecisionSchema } from '@allrice/contracts';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { tenantValidationFixture } from './tenant-validation.fixture.ts';
 import {
   authenticateSession,
@@ -26,7 +26,7 @@ const suite =
 suite(
   'company dashboard reads formal scoped facts (isolated PostgreSQL)',
   () => {
-    let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let a: Awaited<ReturnType<typeof tenantValidationFixture>>, b: typeof a;
     let admin: NonNullable<Awaited<ReturnType<typeof authenticateSession>>>;
     const now = new Date(),
@@ -40,7 +40,7 @@ suite(
     };
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-      f = await createAssistantFixtureDatabase();
+      f = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
       const p = await ensureBootstrapPortalPrincipal(
         {

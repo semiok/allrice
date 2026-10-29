@@ -1,9 +1,9 @@
 import {
-  AssistantSubscriptionSnapshotSchema,
+  SubscriptionSnapshotSchema,
   SessionModelSnapshotSchema,
   ExperienceModelSnapshotSchema,
-  resolveAssistantSubscriptionSnapshot,
-  type AssistantSubscriptionSnapshot,
+  resolveSubscriptionSnapshot,
+  type SubscriptionSnapshot,
 } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
 import { runtimeLedgerInputDigest } from '../runtime-ledger/ledger.ts';
@@ -15,11 +15,11 @@ export async function freezeRouteSubscriptionSnapshot(
     organizationId: string;
     workspaceId: string;
     decisionId: string;
-    snapshot: AssistantSubscriptionSnapshot;
+    snapshot: SubscriptionSnapshot;
   },
   sql = getDatabase(),
 ) {
-  const snapshot = AssistantSubscriptionSnapshotSchema.parse(input.snapshot);
+  const snapshot = SubscriptionSnapshotSchema.parse(input.snapshot);
   const snapshotDigest = runtimeLedgerInputDigest(snapshot);
   return sql.begin(async (tx) => {
     await tx`select pg_advisory_xact_lock(hashtext(${`tenant:${input.organizationId.toLowerCase()}`}))`;
@@ -72,7 +72,7 @@ export async function freezeRouteSubscriptionSnapshot(
         t.modelCatalogEntryId === snapshot.modelCatalogEntryId,
     );
     if (!target) throw Error('ASSISTANT_SUBSCRIPTION_ROUTE_UNVERIFIED');
-    const expected = resolveAssistantSubscriptionSnapshot({
+    const expected = resolveSubscriptionSnapshot({
       ...(row.occurrence_id
         ? { occurrenceId: row.occurrence_id }
         : { sessionId: row.session_id }),
@@ -102,7 +102,7 @@ export async function freezeRouteSubscriptionSnapshot(
       if (
         row.old_digest !== snapshotDigest ||
         runtimeLedgerInputDigest(
-          AssistantSubscriptionSnapshotSchema.parse(row.old_snapshot),
+          SubscriptionSnapshotSchema.parse(row.old_snapshot),
         ) !== snapshotDigest
       )
         throw Error('ASSISTANT_SUBSCRIPTION_SNAPSHOT_CONFLICT');
@@ -126,11 +126,11 @@ export async function verifyRouteSubscriptionSnapshot(
     organizationId: string;
     workspaceId: string;
     runId: string;
-    snapshot: AssistantSubscriptionSnapshot;
+    snapshot: SubscriptionSnapshot;
   },
   sql = getDatabase(),
 ) {
-  const snapshot = AssistantSubscriptionSnapshotSchema.parse(input.snapshot);
+  const snapshot = SubscriptionSnapshotSchema.parse(input.snapshot);
   const snapshotDigest = runtimeLedgerInputDigest(snapshot);
   const rows = await sql`
     select s.snapshot,s.snapshot_digest from allrice_route_subscription_snapshots s
@@ -141,7 +141,7 @@ export async function verifyRouteSubscriptionSnapshot(
   if (
     rows.length !== 1 ||
     runtimeLedgerInputDigest(
-      AssistantSubscriptionSnapshotSchema.parse(rows[0]!.snapshot),
+      SubscriptionSnapshotSchema.parse(rows[0]!.snapshot),
     ) !== snapshotDigest
   )
     throw Error('ASSISTANT_SUBSCRIPTION_SNAPSHOT_UNVERIFIED');

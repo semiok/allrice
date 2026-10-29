@@ -8,7 +8,7 @@ import { resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { RequestContext } from '@allrice/contracts';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createExperienceFixture } from './experience.fixture.ts';
 import { ensureBootstrapPortalPrincipal } from './identity.ts';
 import {
@@ -35,7 +35,7 @@ import { runClaimedJob } from '../../../apps/worker/src/job-runner.ts';
 import { executePlatformTechnicalTask } from '../../../apps/worker/src/jobs/platform-technical.ts';
 import { DshHarnessAdapter } from '../../../apps/worker/src/harness/dsh-adapter.ts';
 import { HandlerError } from '../../../apps/worker/src/errors.ts';
-import { attachAssistantFailureUsage } from '../../../apps/worker/src/harness/dsh/assistant-outcome.ts';
+import { attachExecutionFailureUsage } from '../../../apps/worker/src/harness/dsh/assistant-outcome.ts';
 import { executeRiceTool } from '../../../apps/worker/src/tool-broker.ts';
 import { TechnicalTaskDetailSchema } from './platform-technical-contracts.ts';
 
@@ -46,12 +46,12 @@ const suite =
 suite(
   'private platform technical task: real PG queue, receipts and pinned native tools / no paid model',
   () => {
-    let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let customer: Awaited<ReturnType<typeof createExperienceFixture>>;
     let admin: RequestContext;
     let adminEmail: string;
     beforeAll(async () => {
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
       vi.spyOn(client, 'getDiagnosticsDatabase').mockReturnValue(fixture.db);
       customer = await createExperienceFixture(fixture.db);
@@ -413,7 +413,7 @@ suite(
                 'Synthetic model receipt then failure',
                 false,
               );
-              attachAssistantFailureUsage(error, d.task.runId, job!.attempt, {
+              attachExecutionFailureUsage(error, d.task.runId, job!.attempt, {
                 usage,
                 usageComplete: false,
                 cacheUsageKnown: true,

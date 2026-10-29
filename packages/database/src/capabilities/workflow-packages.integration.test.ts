@@ -13,9 +13,9 @@ import {
 } from '@allrice/contracts';
 import * as client from '../core/client.ts';
 import {
-  assistantFixtureStorage,
-  createAssistantFixtureDatabase,
-} from '../assistant-runtime.fixture.ts';
+  runtimeFixtureStorage,
+  createRuntimeFixtureDatabase,
+} from '../runtime.fixture.ts';
 import {
   authenticateSession,
   createSession,
@@ -62,9 +62,9 @@ const suite =
 suite(
   'MET194 Workflow packages (isolated PostgreSQL and real source bytes)',
   () => {
-    let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     beforeAll(async () => {
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createRuntimeFixtureDatabase();
       // Substitute only the connection destination. Every repository query,
       // trigger, constraint and transaction below runs on real PostgreSQL.
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
@@ -306,7 +306,7 @@ suite(
         },
         fixture.db,
       );
-      await assistantFixtureStorage(fixture.db).put(
+      await runtimeFixtureStorage(fixture.db).put(
         stored.object,
         new ReadableStream<Uint8Array>({
           start(controller) {
@@ -413,7 +413,7 @@ suite(
       input: Awaited<ReturnType<typeof packageInput>>['request'],
     ) =>
       registerWorkflowPackage(s.owner.context, input, {
-        storage: assistantFixtureStorage(fixture.db),
+        storage: runtimeFixtureStorage(fixture.db),
       });
     const enable = (s: Setup, value: WorkflowPackage, expectedRevision = 0) =>
       setWorkflowPackageBinding(s.owner.context, {
@@ -461,7 +461,7 @@ suite(
       const bytes = await readWorkflowPackageSourceForInstance(
         s.owner.context,
         selection(s, value),
-        assistantFixtureStorage(fixture.db),
+        runtimeFixtureStorage(fixture.db),
       );
       expect(
         Buffer.from(
@@ -688,7 +688,7 @@ suite(
         registerWorkflowPackage(
           s.owner.context,
           { ...request, requestId: randomUUID(), instanceId: s.assignmentId },
-          { storage: assistantFixtureStorage(fixture.db) },
+          { storage: runtimeFixtureStorage(fixture.db) },
         ),
       ).rejects.toThrow();
       await expect(
@@ -987,7 +987,7 @@ suite(
           // Deliberate corruption inside this isolated fixture's storage, while DB
           // and manifest retain their original exact object checksum.
           const bytes = Buffer.from('tampered physical package bytes');
-          await assistantFixtureStorage(fixture.db).put(
+          await runtimeFixtureStorage(fixture.db).put(
             {
               ...prepared.source,
               checksum: workflowPackageBytesChecksum(bytes),

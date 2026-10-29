@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { EmployeeRuntimePackage } from '@allrice/contracts';
 import * as client from '../core/client.ts';
-import { createAssistantFixtureDatabase } from '../assistant-runtime.fixture.ts';
-import { createAssistantAuthorityFixture } from '../assistant-authority.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
+import { createRunAuthorityFixture } from '../run-authority.fixture.ts';
 import { nativeBindingDescriptor } from '../native-session-binding.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
 import { buildEmployeeRuntimePackage } from '../platform-employees/runtime-package.ts';
@@ -22,7 +22,7 @@ const suite =
 suite(
   'MET200 native diagnostic Run authority and immutable reader association',
   () => {
-    let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let runtimePackage: EmployeeRuntimePackage;
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
@@ -30,7 +30,7 @@ suite(
       // MET-221: only a business origin binds. The chat is born under this
       // primary and bound by another same-generation one (fixture artifact).
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'c'.repeat(64));
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
       const employee = await createEmployeeAdministrationFixture(fixture.db);
       runtimePackage = buildEmployeeRuntimePackage({
@@ -51,7 +51,7 @@ suite(
       await fixture?.close();
     });
     async function chat() {
-      const f = await createAssistantAuthorityFixture(fixture.db, {
+      const f = await createRunAuthorityFixture(fixture.db, {
         configure: false,
         memberRole: 'member',
         runtimePackage,

@@ -1,5 +1,5 @@
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
-import { createAssistantFixtureDatabase } from '../assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
 import { createMcpExecutionFixture } from '../mcp-execution.fixture.ts';
 import { runMcpRuntimeOperation } from '../../../../apps/worker/src/mcp/executor.js';
 import { readSessionMcpFailures } from './mcp-failures.ts';
@@ -10,13 +10,13 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('historical MCP failure notices from scoped immutable receipts', () => {
-  let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   let f: Awaited<ReturnType<typeof createMcpExecutionFixture>>;
   beforeAll(async () => {
     vi.stubEnv('ALLRICE_CLOUD_MCP_ENABLED', '1');
     vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
     vi.stubEnv('ALLRICE_MCP_CREDENTIAL_KEY', 'af'.repeat(32));
-    fixture = await createAssistantFixtureDatabase();
+    fixture = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     f = await createMcpExecutionFixture(fixture.db);
   }, 120000);

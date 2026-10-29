@@ -13,7 +13,6 @@ import {
   type TechnicalRecord,
 } from './platform-technical-contracts.ts';
 import {
-  AssistantFailureDiagnosticsSchema,
   UuidSchema,
   type RequestContext,
 } from '@allrice/contracts';
@@ -97,10 +96,6 @@ async function records(
   // boundary: never prompts, tool output, scripts, provider bodies or headers.
   for (const item of result) {
     if (item.status !== 'failed') continue;
-    const [terminal] = await sql`select payload->'assistantDiagnostics' model
-      from allrice_run_events where run_id=${item.runId} and event_type='turn.failed'
-      order by sequence desc limit 1`;
-    const parsed = AssistantFailureDiagnosticsSchema.safeParse(terminal?.model);
     const cloud =
       await sql`select o.id as "operationId",o.snapshot->>'status' status,
       a.outcome->>'reason' reason,(a.outcome->>'exitCode')::int as "exitCode",
@@ -111,7 +106,6 @@ async function records(
         and a.outcome->>'reason' in ('deadline','output_limit','failed','canceled','unknown')
       order by a.created_at desc,o.id limit 9`;
     item.failureDetails = TechnicalRunFailureDetailsSchema.parse({
-      model: parsed.success ? parsed.data : null,
       cloud: cloud.slice(0, 8),
       cloudTruncated: cloud.length > 8,
     });

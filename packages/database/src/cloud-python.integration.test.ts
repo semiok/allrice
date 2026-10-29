@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { cloudPythonImageV1, cloudToolchainImageV1 } from '@allrice/contracts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
 import { publishCloudOperationArtifacts } from './cloud-execution.ts';
 import { listCloudRuntimeOperations } from './cloud-operation-view.ts';
@@ -27,7 +27,7 @@ import { runCloudCommandOperation } from '../../../apps/worker/src/cloud-runner/
 import type * as Client from './core/client.ts';
 
 let db: ReturnType<typeof postgres>;
-let isolated: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+let isolated: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
 let storageRoot: string;
 vi.mock('./core/client.ts', async (original) => ({
   ...(await original<typeof Client>()),
@@ -90,7 +90,7 @@ suite(
       vi.stubEnv('ALLRICE_CLOUD_RUNNER_ENABLED', '1');
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
       vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
-      isolated = await createAssistantFixtureDatabase();
+      isolated = await createRuntimeFixtureDatabase();
       db = isolated.db;
       storageRoot = await mkdtemp(join(tmpdir(), 'allrice-met166-cloud-'));
     }, 60000);

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createEmployeeAdministrationFixture } from './employee-administration.fixture.ts';
 import { ensureBootstrapPortalPrincipal } from './identity.ts';
 import {
@@ -16,10 +16,10 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('isolated platform draft previews (PostgreSQL; no model)', () => {
-  let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   let admin: Awaited<ReturnType<typeof ensureBootstrapPortalPrincipal>>;
   beforeAll(async () => {
-    fixture = await createAssistantFixtureDatabase();
+    fixture = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     admin = await ensureBootstrapPortalPrincipal({
       organizationSlug: 'allrice-platform',

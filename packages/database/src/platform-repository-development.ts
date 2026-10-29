@@ -1,9 +1,9 @@
+import type { RepositoryReviewArtifactRef } from './platform-repository-review-contracts.ts';
 import {
   runtimeContractEqual,
   runtimeFeatureEnabled,
   type ExecutionContext,
   type StoragePort,
-  type DevelopmentArtifactRef,
 } from '@allrice/contracts';
 import type { getDatabase } from './core/client.ts';
 import type { RuntimeLedgerTransaction } from './runtime-ledger/types.ts';
@@ -75,7 +75,7 @@ export async function executeRepositoryReview(
     material = f.material;
   const seedBytes = Buffer.from(JSON.stringify(material, null, 2)),
     seedDigest = repositoryDigest(seedBytes);
-  const reference = async (tx: Tx, candidate: DevelopmentArtifactRef) => {
+  const reference = async (tx: Tx, candidate: RepositoryReviewArtifactRef) => {
     const s = await current(tx);
     if (
       !s.seed_artifact_id ||

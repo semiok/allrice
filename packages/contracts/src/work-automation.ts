@@ -5,16 +5,13 @@ export const WorkAutomationSchema = z
   .object({
     cloud: z.boolean(),
     computer: z.boolean(),
-    assistants: z.boolean(),
   })
   .strict();
 export type WorkAutomation = z.infer<typeof WorkAutomationSchema>;
 // Members without a saved row use these values; a saved row is never rewritten.
-// Assistants stay off unless the member turns them on (native DSH default).
 export const defaultWorkAutomation: WorkAutomation = {
   cloud: true,
   computer: true,
-  assistants: false,
 };
 export const WorkAutomationViewSchema = z
   .object({
@@ -27,7 +24,7 @@ export const WorkAutomationViewSchema = z
 export const UpdateWorkAutomationSchema = z
   .object({
     expectedRevision: z.number().int().nonnegative(),
-    capability: z.enum(['cloud', 'computer', 'assistants']),
+    capability: z.enum(['cloud', 'computer']),
     enabled: z.boolean(),
   })
   .strict();
@@ -36,7 +33,6 @@ export const UpdateWorkAutomationSchema = z
 export function workAutomationGroup(
   action: string,
 ): keyof WorkAutomation | null {
-  if (action === 'assistant.delegate') return 'assistants';
   if (
     [
       'local.fs.write',

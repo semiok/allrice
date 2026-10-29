@@ -3,8 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
 import { type EmployeeRuntimePackage } from '@allrice/contracts';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
-import { createAssistantAuthorityFixture } from './assistant-authority.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
+import { createRunAuthorityFixture } from './run-authority.fixture.ts';
 import { createEmployeeAdministrationFixture } from './employee-administration.fixture.ts';
 import { ensureBootstrapPortalPrincipal } from './identity.ts';
 import {
@@ -33,7 +33,7 @@ const suite =
 suite(
   'MET192 immutable native reader binding: real Job leases, CAS and finalizers',
   () => {
-    let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let runtimePackage: EmployeeRuntimePackage;
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
@@ -41,7 +41,7 @@ suite(
       // MET-221: only a business origin binds, so chats are born on the
       // current generation under this synthetic release primary.
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'c'.repeat(64));
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
       const employee = await createEmployeeAdministrationFixture(fixture.db);
       runtimePackage = buildEmployeeRuntimePackage({
@@ -72,7 +72,7 @@ suite(
       await fixture?.close();
     });
     async function chat() {
-      const f = await createAssistantAuthorityFixture(fixture.db, {
+      const f = await createRunAuthorityFixture(fixture.db, {
         configure: false,
         runtimePackage,
         businessCreationOrigin: true,

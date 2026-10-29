@@ -12,7 +12,6 @@ describe('execution usage is telemetry across all billing routes', () => {
     provider: 'fixture',
     model: 'fixture',
     answer: 'Complete answer',
-    assistantStatus: 'completed',
     usageComplete: false,
     usage: {
       inputTokens: 1_500_000,
@@ -28,10 +27,8 @@ describe('execution usage is telemetry across all billing routes', () => {
     maxCostCents: 1,
   };
   it.each([
-    { verifiedSubscription: false, governedAssistants: false },
-    { verifiedSubscription: false, governedAssistants: true },
-    { verifiedSubscription: true, governedAssistants: false },
-    { verifiedSubscription: true, governedAssistants: true },
+    { verifiedSubscription: false },
+    { verifiedSubscription: true },
     { verifiedSubscription: false, workflow: true },
   ])(
     'finishes useful work over old limits without inventing receipts: %j',
@@ -91,10 +88,6 @@ describe('execution usage is telemetry across all billing routes', () => {
   );
   it.each([
     { result: { ...result, answer: '  ' }, code: 'EMPTY_RESPONSE' },
-    {
-      result: { ...result, assistantStatus: 'partial' as const },
-      code: 'ASSISTANT_PARTIAL_RESULT',
-    },
   ])('retains actual incomplete outcomes: $code', ({ result, code }) => {
     expect(() =>
       checkCompletedModelBudget({

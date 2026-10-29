@@ -3,10 +3,8 @@ import type {
   NativeRootOrigin,
   NativeRunExecutionBinding,
 } from '@allrice/database';
-import type { BoundDeliveryRepair } from '../final-delivery/repair.js';
 import type {
   FinalDeliveryPort,
-  FinalDeliveryProof,
 } from '../final-delivery/guard.js';
 import type {
   EmployeeKernelRequest,
@@ -20,7 +18,6 @@ import type {
   StorageObject,
   ImageMediaType,
   RuntimeNativeInputProof,
-  AssistantSubscriptionSnapshot,
   NativeQuestionCheckpoint,
   QuestionWait,
 } from '@allrice/contracts';
@@ -64,16 +61,6 @@ export interface FinalDeliveryReplyOrigin {
 }
 
 /** Private Worker control plane; never an input adoption acknowledgement. */
-export interface HarnessInputDeliveryHold {
-  settled: Promise<void>;
-  current(): boolean;
-  resumeBeforeTurnClose(): Promise<void>;
-  dispose(): void;
-}
-export interface HarnessInputDeliveryPort {
-  pause(scope: { threadId: string; turnId: string }): HarnessInputDeliveryHold;
-}
-
 export interface HarnessExecutionInput {
   /** Current platform rollout switch, shared with Web through PostgreSQL. */
   nativeQuestionMode?: 'legacy' | 'timed';
@@ -82,7 +69,6 @@ export interface HarnessExecutionInput {
   /** Server-loaded current human message before attachment/template augmentation.
    * Selects an existing tool transport only; database admission grants writes. */
   currentUserRequest?: string;
-  inputDelivery?: HarnessInputDeliveryPort;
   /**
    * Worker-only, same-Run deterministic delivery check before native finish.
    * Employee jobs must bind this closure; optionality preserves other adapters/callers.
@@ -127,65 +113,6 @@ export interface HarnessExecutionInput {
   progress?: (
     request: Record<string, unknown>,
   ) => Promise<Record<string, unknown>>;
-  /** Trusted Worker port; never deserialized from model or browser input. */
-  assistants?: {
-    rootRunId: string;
-    deliveryMode: FinalDeliveryMode;
-    deliveryArtifactId?: string;
-    /** Trusted controller proof; never populated from browser/model preferences. */
-    subscriptionSnapshot?: AssistantSubscriptionSnapshot;
-    maxOutputTokens?: number;
-    bind(
-      nativeSessionId: string,
-      generation: number,
-      onToolCall?: (call: HarnessToolCall) => Promise<HarnessToolResult>,
-      inspect?: (nativeSessionId: string) => Promise<Record<string, unknown>>,
-    ): Promise<{
-      /** True only for the same persisted root and still-current lease. */
-      hasPriorRoot: boolean;
-      /** Private native-host lookup; never added to the model tool bridge. */
-      readFinalDeliveryReplyOrigin?(): Promise<FinalDeliveryReplyOrigin | null>;
-      /** Private same-root facts/policy closure, bound to this native incarnation. */
-      finalDelivery?: FinalDeliveryPort;
-      /** Private same-incarnation final-text repair; never a model tool. */
-      deliveryRepair?: BoundDeliveryRepair;
-      handle(
-        method: string,
-        params: Record<string, unknown>,
-      ): Promise<Record<string, unknown>>;
-      cancellation(): Promise<{
-        nativeSessionId?: string;
-        drainDeadlineAt?: string;
-        stopReason?: 'cancel' | 'timeout';
-        instances: readonly { nativeSessionId: string }[];
-      }>;
-      cancel(): Promise<void>;
-      /** Trusted durable ledger read; never derived from an RPC error payload. */
-      failureUsage?(): Promise<{
-        usage: HarnessExecutionResult['usage'];
-        usageComplete: boolean;
-        cacheUsageKnown: boolean;
-      }>;
-      finish?(delivery?: FinalDeliveryProof): Promise<{
-        status: string;
-        usage: {
-          inputTokens: number;
-          cachedInputTokens: number;
-          outputTokens: number;
-        };
-        usageComplete: boolean;
-        cacheUsageKnown: boolean;
-        costEstimateAvailable: boolean;
-        estimatedCostCents?: number | null;
-        billingMode?: 'subscription';
-        costBasis?: 'conservative_upper_bound' | 'unknown' | 'not_applicable';
-        subscriptionSnapshotDigest?: string;
-        priceSnapshotDigest?: string;
-        costCurrency?: string;
-        actualCostKnown?: false;
-      }>;
-    }>;
-  };
   kernel: EmployeeKernelRequest | InternalKernelRequest;
   providerSnapshot: HarnessExecutionSnapshot;
   storageObjects: StorageObject[];
@@ -263,7 +190,6 @@ export interface HarnessExecutionInput {
 
 export interface HarnessExecutionResult {
   waitingForUser?: { questionId: string };
-  assistantStatus?: 'completed' | 'partial';
   usageComplete?: boolean;
   cacheUsageKnown?: boolean;
   costEstimateAvailable?: boolean;

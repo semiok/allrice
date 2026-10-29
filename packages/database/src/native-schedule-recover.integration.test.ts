@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import type { Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createNativeScheduleControlSqlStore } from './native-schedule-control-sql.ts';
 import {
   nativeOnceDigest,
@@ -35,11 +35,11 @@ type Target = {
  * exit with this SQL, through psql exactly as here; the store's own takeover must then
  * accept it. */
 run('schedule-recover.sql on an orphaned schedule partition', () => {
-  let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   let db: Sql;
   let url: string;
   beforeAll(async () => {
-    fixture = await createAssistantFixtureDatabase();
+    fixture = await createRuntimeFixtureDatabase();
     db = fixture.db;
     const [scope] = await db<
       { schema: string }[]

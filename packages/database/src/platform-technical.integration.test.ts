@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { RequestContext, WorkerOperations } from '@allrice/contracts';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createExperienceFixture } from './experience.fixture.ts';
 import { recordWorkerOperations } from './operations-resources.ts';
 import {
@@ -20,7 +20,7 @@ const suite =
 suite(
   'platform technical facts and durable evidence, isolated PostgreSQL / no model',
   () => {
-    let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let admin: RequestContext;
     let customer: Awaited<ReturnType<typeof createExperienceFixture>>;
     const workerId = randomUUID();
@@ -41,7 +41,7 @@ suite(
       pressure: null,
     };
     beforeAll(async () => {
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
       customer = await createExperienceFixture(fixture.db);
       const actorId = randomUUID();

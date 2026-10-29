@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { type TaskNextStepsInput } from '@allrice/contracts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { tenantValidationFixture } from './tenant-validation.fixture.ts';
 import { readTaskNextSteps } from './task-next-steps.ts';
 import {
@@ -16,10 +16,10 @@ const suite =
 suite(
   'MET168 next-turn suggestions (isolated PostgreSQL ordinary member)',
   () => {
-    let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-      f = await createAssistantFixtureDatabase();
+      f = await createRuntimeFixtureDatabase();
     }, 60000);
     afterAll(async () => {
       await f?.close();

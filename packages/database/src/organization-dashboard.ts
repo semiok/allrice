@@ -59,8 +59,6 @@ export function organizationWorkSource(
       and (${filter.userId ?? null}::uuid is null or r.owner_id=${filter.userId ?? null})
       and (${filter.employeeId ?? null}::uuid is null or coalesce(d.employee_id,e.id)=${filter.employeeId ?? null})
       and (${filter.jobTitle || null}::text is null or coalesce(person.job_title,'')=${filter.jobTitle || null})
-      and not exists(select 1 from allrice_assistant_instances assistant
-        where assistant.run_id=r.id and assistant.run_id<>assistant.root_run_id)
   `;
 }
 

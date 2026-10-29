@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createExperienceFixture } from './experience.fixture.ts';
 import { approveSyntheticCurrentEmployeeExecution } from './current-execution.fixture.ts';
-import { createAssistantLocalCommandFixture } from './local-command-assistant.fixture.ts';
+import { createLocalCommandFixture } from './local-command.fixture.ts';
 import * as client from './core/client.ts';
 import {
   getChatSessionHistory,
@@ -26,9 +26,9 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('session archive: actual isolated PostgreSQL, no model', () => {
-  let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   beforeAll(async () => {
-    fixture = await createAssistantFixtureDatabase();
+    fixture = await createRuntimeFixtureDatabase();
     approveSyntheticCurrentEmployeeExecution();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     for (const flag of [
@@ -345,7 +345,7 @@ suite('session archive: actual isolated PostgreSQL, no model', () => {
     ).rejects.toBeDefined();
   });
   it('requires confirmation, durably cuts off assistants and pauses schedules; restoration cannot revive tasks', async () => {
-    const f = await createAssistantLocalCommandFixture(fixture.db);
+    const f = await createLocalCommandFixture(fixture.db);
     f.requestContext.memberships = f.context.policySnapshot.memberships;
     await fixture.db`insert into allrice_automations(organization_id,workspace_id,owner_id,name,prompt,schedule,session_id)
       values(${f.org},${f.workspace},${f.user},'Test schedule','Synthetic','{}',${f.session})`;

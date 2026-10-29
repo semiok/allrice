@@ -2,7 +2,6 @@ import { z } from 'zod';
 import {
   ChecksumSchema,
   UuidSchema,
-  DevelopmentArtifactRefSchema,
 } from '@allrice/contracts';
 import {
   RepositoryPublicationSourceSchema,
@@ -11,6 +10,9 @@ import {
 } from './platform-repository-publication-contracts.ts';
 import { RepositoryPublicationMetadataSchema } from './platform-repository-publication-contracts.ts';
 import { RepairReportSchema } from './platform-repair-contracts.ts';
+
+export const RepositoryReviewArtifactRefSchema = z.object({ artifactId: UuidSchema, digest: ChecksumSchema }).strict();
+export type RepositoryReviewArtifactRef = z.infer<typeof RepositoryReviewArtifactRefSchema>;
 
 /** Read-only repository business tool. Identity and all verification material
  * come from the registered Job, never from model arguments. */
@@ -33,13 +35,13 @@ export const RepositoryReviewCommandSchema = z.discriminatedUnion('action', [
   z
     .object({
       action: z.literal('inspect'),
-      candidate: DevelopmentArtifactRefSchema.optional(),
+      candidate: RepositoryReviewArtifactRefSchema.optional(),
     })
     .strict(),
   z
     .object({
       action: z.literal('review'),
-      candidate: DevelopmentArtifactRefSchema,
+      candidate: RepositoryReviewArtifactRefSchema,
       evidence: RepositoryReviewEvidenceSchema,
       verdict: z.enum(['accept', 'revise']),
       summary: z.string().trim().min(1).max(16000),
@@ -48,7 +50,7 @@ export const RepositoryReviewCommandSchema = z.discriminatedUnion('action', [
   z
     .object({
       action: z.literal('deliver'),
-      candidate: DevelopmentArtifactRefSchema,
+      candidate: RepositoryReviewArtifactRefSchema,
       reviewId: UuidSchema,
     })
     .strict(),

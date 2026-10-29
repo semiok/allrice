@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { DSH_INSTALLED_DISTRIBUTION } from '@allrice/contracts';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import {
   authenticateSession,
   createSession,
@@ -30,9 +30,9 @@ const suite =
     : describe.skip;
 
 suite('unmodified Rice seed in a freshly migrated database', () => {
-  let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   beforeAll(async () => {
-    f = await createAssistantFixtureDatabase();
+    f = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
     vi.stubEnv('ALLRICE_ENV', 'development');
   }, 60_000);

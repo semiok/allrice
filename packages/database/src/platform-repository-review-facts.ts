@@ -1,5 +1,5 @@
+import type { RepositoryReviewArtifactRef } from './platform-repository-review-contracts.ts';
 import type postgres from 'postgres';
-import type { DevelopmentArtifactRef } from '@allrice/contracts';
 import type { RepositoryReviewMaterial } from './platform-repository-review-contracts.ts';
 
 /** Serializes verdict insertion and consumption across every subject with the
@@ -15,7 +15,7 @@ export async function lockRepositoryReviewContent(
 // Preserve the original property order and JSON encoding of saved artifacts.
 export function repositoryReviewOpinion(
   id: string,
-  candidate: DevelopmentArtifactRef,
+  candidate: RepositoryReviewArtifactRef,
   material: RepositoryReviewMaterial,
   reviewerRunId: string,
   verdict: 'accept' | 'revise',
@@ -34,7 +34,7 @@ export function repositoryReviewOpinion(
 }
 
 export function repositoryReviewDelivery(
-  candidate: DevelopmentArtifactRef,
+  candidate: RepositoryReviewArtifactRef,
   material: RepositoryReviewMaterial,
   reviewId: string,
   reviewerRunId: string,

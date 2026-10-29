@@ -5,9 +5,9 @@ import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import type { RequestContext, StoragePort } from '@allrice/contracts';
 import * as client from './core/client.ts';
 import {
-  createAssistantFixtureDatabase,
-  assistantFixtureStorage,
-} from './assistant-runtime.fixture.ts';
+  createRuntimeFixtureDatabase,
+  runtimeFixtureStorage,
+} from './runtime.fixture.ts';
 import { tenantValidationFixture } from './tenant-validation.fixture.ts';
 import {
   createSession,
@@ -31,13 +31,13 @@ const suite =
 suite(
   'artifact reference publication: exact version, current authority and retry boundaries',
   () => {
-    let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
+    let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
       storage: StoragePort;
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-      f = await createAssistantFixtureDatabase();
+      f = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
-      storage = assistantFixtureStorage(f.db);
+      storage = runtimeFixtureStorage(f.db);
     }, 120000);
     afterAll(async () => {
       vi.restoreAllMocks();

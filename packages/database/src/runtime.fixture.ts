@@ -34,12 +34,12 @@ export class RuntimeFixtureInitializationError extends Error {
     readonly cleanup: RuntimeFixtureCleanupProof,
     cause: unknown,
   ) {
-    super('assistant_fixture_initialization_failed', { cause });
+    super('runtime_fixture_initialization_failed', { cause });
   }
 }
 export class RuntimeFixtureCleanupError extends Error {
   constructor(readonly cleanup: RuntimeFixtureCleanupProof) {
-    super('assistant_fixture_cleanup_unconfirmed');
+    super('runtime_fixture_cleanup_unconfirmed');
   }
 }
 
@@ -54,7 +54,8 @@ export async function createRuntimeFixtureDatabase(
       | '0201_workbench_file_policies.sql'
       | '0210_current_employee_execution_binding.sql'
       | '0217_brand_content_feedback.sql'
-      | '0223_agent_preferences.sql';
+      | '0223_agent_preferences.sql'
+      | '0228_repository_review_jobs.sql';
   } = {},
 ) {
   if (options.ownSchemaOnly !== undefined && options.ownSchemaOnly !== true)
@@ -69,6 +70,7 @@ export async function createRuntimeFixtureDatabase(
       '0210_current_employee_execution_binding.sql',
       '0217_brand_content_feedback.sql',
       '0223_agent_preferences.sql',
+      '0228_repository_review_jobs.sql',
     ].includes(options.throughMigration)
   )
     throw Error('Unsupported isolated migration checkpoint');
@@ -248,3 +250,5 @@ export async function runFixture(db: ReturnType<typeof postgres>) {
     worker: { jobId, workerId, leaseToken, generation: 1 },
   };
 }
+
+export { runtimeTaskFixture } from './runtime-task.fixture.ts';

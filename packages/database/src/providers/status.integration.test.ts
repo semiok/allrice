@@ -13,7 +13,7 @@ import {
   vi,
 } from 'vitest';
 
-import { createAssistantFixtureDatabase } from '../assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
 import { getCodexProviderStatus, recordCodexProviderStatus } from './status.ts';
 // Pure normalization/admission only: never construct or start the broker/client.
 import { codexQuotaObservation } from '../../../../apps/worker/src/codex-auth-broker.ts';
@@ -21,7 +21,7 @@ import { assertSubscriptionQuotaNotExhausted } from '../../../../apps/worker/src
 
 const state = vi.hoisted(() => ({
   database: undefined as
-    Awaited<ReturnType<typeof createAssistantFixtureDatabase>> | undefined,
+    Awaited<ReturnType<typeof createRuntimeFixtureDatabase>> | undefined,
 }));
 vi.mock('../core/client.ts', async (original) => ({
   ...(await original<Record<string, unknown>>()),
@@ -89,9 +89,9 @@ function status(
 }
 
 integration('Codex quota status write ordering (isolated PG)', () => {
-  let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   beforeAll(async () => {
-    database = await createAssistantFixtureDatabase();
+    database = await createRuntimeFixtureDatabase();
     state.database = database;
   }, 120_000);
   beforeEach(async () => {

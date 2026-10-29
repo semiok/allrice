@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { EmployeeRuntimePackage } from '@allrice/contracts';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
-import { createAssistantAuthorityFixture } from './assistant-authority.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
+import { createRunAuthorityFixture } from './run-authority.fixture.ts';
 import { createEmployeeAdministrationFixture } from './employee-administration.fixture.ts';
 import { buildEmployeeRuntimePackage } from './platform-employees/runtime-package.ts';
 import { createSession, authenticateSession } from './identity.ts';
@@ -26,10 +26,10 @@ const current = 'sha256:' + 'a'.repeat(64),
 suite(
   'checked delivery follows the generation, artifact IDs are provenance: real isolated PostgreSQL',
   () => {
-    let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let runtimePackage: EmployeeRuntimePackage;
     beforeAll(async () => {
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', current);
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
@@ -67,7 +67,7 @@ suite(
       artifact = current,
       memberAssistants?: boolean | null,
     ) {
-      const f = await createAssistantAuthorityFixture(fixture.db, {
+      const f = await createRunAuthorityFixture(fixture.db, {
         configure: false,
         memberAssistants,
         runtimePackage,

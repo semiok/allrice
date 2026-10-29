@@ -304,10 +304,7 @@ async function cancelLocked(
   await tx`update allrice_runtime_roots set cancel_request_id=${acceptedId},
     cancel_reason=coalesce(cancel_reason,${reason}),
     cancel_requested_at=coalesce(cancel_requested_at,clock_timestamp()) where root_run_id=${root.root_run_id}`;
-  // P25 uses the same root ledger: command/Bridge overspend or deadline must
-  // cut off native admission before the Worker drains any running descendants.
-  await tx`update allrice_assistant_instances set cancel_request_id=coalesce(cancel_request_id,${acceptedId}),cancel_requested_at=coalesce(cancel_requested_at,clock_timestamp()),status=case when status in ('completed','partial','failed','canceled') then status else 'cancel_requested' end where root_run_id=${root.root_run_id}`;
-  await tx`update allrice_assistant_messages set status='canceled' where root_run_id=${root.root_run_id} and status='pending'`;
+  // Command/Bridge overspend or a deadline cuts off root operation admission.
   const rows = await tx<
     OperationRow[]
   >`select * from allrice_runtime_operations where root_run_id=${root.root_run_id} order by id for update`;
@@ -328,6 +325,26 @@ async function cancelLocked(
 /** Trusted caller already holds the shared root scheduling lock. Child
  * cancellation never cancels its parent/siblings; in-flight actions still need
  * actual device stop evidence, and never-dispatched actions can prove none. */
+export async function cancelRuntimeRootTransaction(
+  tx: Tx,
+  rootRunId: string,
+  requestId: string,
+  reason: 'user_request' | 'budget_exhausted' = 'user_request',
+  nonBlocking = false,
+) {
+  UuidSchema.parse(rootRunId);
+  UuidSchema.parse(requestId);
+  const [root] =
+    await tx`select root_run_id from allrice_runtime_roots where root_run_id=${rootRunId} for update ${nonBlocking ? tx`nowait` : tx``}`;
+  if (!root) return;
+  // Operation cancellation refreshes the task clock and may update its Job.
+  // Preserve the existing NOWAIT fence before those indirect writes.
+  if (nonBlocking)
+    await tx`select id from allrice_jobs where run_id=${rootRunId} for update nowait`;
+  await tx`update allrice_runtime_roots set cancel_request_id=coalesce(cancel_request_id,${requestId}),cancel_reason=coalesce(cancel_reason,${reason}),cancel_requested_at=coalesce(cancel_requested_at,clock_timestamp()) where root_run_id=${rootRunId}`;
+  await cancelRuntimeAgentOperationsTransaction(tx, rootRunId, requestId);
+}
+
 export async function cancelRuntimeAgentOperationsTransaction(
   tx: Tx,
   rootRunId: string,
@@ -456,90 +473,7 @@ function receiptContent(receipt: RuntimeLedgerReceipt) {
   };
 }
 
-/** Only the platform's bounded assistant command meter is derivable from an
- * authenticated terminal local-runner receipt: one tool call, zero model use.
- * This does not settle model admissions, unknown execution or arbitrary meters. */
-async function settleAssistantCommandReceipt(
-  tx: Tx,
-  row: OperationRow,
-  content: ReturnType<typeof receiptContent>,
-) {
-  if (
-    row.snapshot.agentInstanceId === null ||
-    row.bridge_payload === null ||
-    row.snapshot.binding.action !== 'local.process.execute' ||
-    content.signal.type !== 'operation.outcome' ||
-    !['succeeded', 'failed'].includes(row.snapshot.status)
-  )
-    return;
-  const payload = RuntimeBridgePayloadSchema.parse(row.bridge_payload);
-  const result = RuntimeLocalCommandResultSchema.safeParse(
-    (content.evidence as { output?: unknown } | null)?.output,
-  );
-  if (
-    payload.capability !== 'local.process.execute' ||
-    payload.arguments.background ||
-    !result.success ||
-    result.data.imageDigest !== payload.arguments.imageDigest
-  )
-    return;
-  const reservations = await tx<
-    (Pick<BudgetRow, 'metric' | 'unit' | 'currency' | 'source'> & {
-      accounting_id: string;
-      amount: string;
-      settled_amount: string | null;
-    })[]
-  >`select r.metric,r.accounting_id,r.amount,r.settled_amount,b.unit,b.currency,b.source
-    from allrice_runtime_reservations r join allrice_runtime_budgets b using(root_run_id,metric)
-    where r.operation_id=${row.id} for update of r`;
-  if (
-    reservations.length !== 4 ||
-    reservations.some(
-      (r) =>
-        ![
-          'tool_calls',
-          'model_calls',
-          'input_tokens',
-          'output_tokens',
-        ].includes(r.metric) ||
-        r.amount !== (r.metric === 'tool_calls' ? '1' : '0') ||
-        r.unit !== (isTokenMetric(r.metric) ? 'tokens' : 'calls') ||
-        r.currency !== null,
-    )
-  )
-    return;
-  const at = (await now(tx)).toISOString();
-  for (const r of reservations) {
-    if (r.settled_amount !== null) continue;
-    const observation = RuntimeUsageObservationSchema.parse({
-      contractVersion: 1,
-      observationId: randomUUID(),
-      accountingId: r.accounting_id,
-      task: row.snapshot.binding.task,
-      source: r.source,
-      accountingBoundary: {
-        kind: 'operation',
-        attempt: row.snapshot.binding.attempt,
-      },
-      aggregation: 'self_only',
-      metric: r.metric,
-      unit: r.unit,
-      currency: r.currency,
-      mode: 'cumulative',
-      quality: 'measured',
-      amount: Number(r.amount),
-      state: 'settled',
-      window: {
-        id: randomUUID(),
-        startedAt: row.created_at.toISOString(),
-        endedAt: at,
-      },
-      observedAt: at,
-    });
-    await tx`update allrice_runtime_reservations set settled_amount=${r.amount},observation_id=${observation.observationId},observation=${json(tx, observation)} where operation_id=${row.id} and metric=${r.metric}`;
-    await tx`update allrice_runtime_budgets set reserved=reserved-${r.amount}::bigint,spent=spent+${r.amount}::bigint where root_run_id=${row.root_run_id} and metric=${r.metric}`;
-  }
-}
+
 
 /**
  * Server-only adapter, not an HTTP authorization boundary. Required admission is
@@ -2097,8 +2031,6 @@ export function createRuntimeOperationLedger(options: {
         }
         await tx`insert into allrice_runtime_operation_receipts(receipt_id,operation_id,payload,disposition)
           values(${input.receiptId},${row.id},${json(tx, content)},${disposition})`;
-        if (disposition === 'applied')
-          await settleAssistantCommandReceipt(tx, row, content);
         return { snapshot: row.snapshot, disposition };
       });
     },

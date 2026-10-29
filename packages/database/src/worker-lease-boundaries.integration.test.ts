@@ -11,8 +11,8 @@ import {
   it,
   vi,
 } from 'vitest';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
-import { createAssistantAuthorityFixture } from './assistant-authority.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
+import { createRunAuthorityFixture } from './run-authority.fixture.ts';
 import { assertAssistantAuthority } from './assistant-authority.ts';
 import { createAssistantRuntime } from './assistant-runtime.ts';
 import * as client from './core/client.ts';
@@ -39,10 +39,10 @@ const suite =
 const delay = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
 const tag = '[MET-210] Worker lease transaction rolled back';
-type Fixture = Awaited<ReturnType<typeof createAssistantAuthorityFixture>>;
+type Fixture = Awaited<ReturnType<typeof createRunAuthorityFixture>>;
 
 suite('MET-210 supplemental lease boundaries', () => {
-  let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   const releases = new Set<() => Promise<unknown>>();
   const pending = new Set<Promise<unknown>>();
   const track = <T>(promise: Promise<T>) => {
@@ -53,7 +53,7 @@ suite('MET-210 supplemental lease boundaries', () => {
   beforeAll(async () => {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
     vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
-    database = await createAssistantFixtureDatabase();
+    database = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(database.db);
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -84,7 +84,7 @@ suite('MET-210 supplemental lease boundaries', () => {
       )
       .map(([, data]) => data as Record<string, unknown>);
   async function setup(leaseMs = 30_000) {
-    const f = await createAssistantAuthorityFixture(database.db);
+    const f = await createRunAuthorityFixture(database.db);
     const [employee] =
       await f.db`select * from allrice_employee_runs where run_id=${f.rootRunId}`;
     // A complete persisted employee payload permits real queue takeover/start.

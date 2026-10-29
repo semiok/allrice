@@ -7,10 +7,10 @@ import type postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { ExecutionContext } from '@allrice/contracts';
 import {
-  assistantFixture,
-  createAssistantFixtureDatabase,
-} from './assistant-runtime.fixture.ts';
-import { createAssistantAuthorityFixture } from './assistant-authority.fixture.ts';
+  runtimeTaskFixture,
+  createRuntimeFixtureDatabase,
+} from './runtime.fixture.ts';
+import { createRunAuthorityFixture } from './run-authority.fixture.ts';
 import { createAssistantRuntime } from './assistant-runtime.ts';
 import * as client from './core/client.ts';
 import {
@@ -35,10 +35,10 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const failureTag = '[MET-210] Worker lease transaction rolled back';
 
 suite('MET-210 Worker lease transactions under a held root lock', () => {
-  let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   beforeAll(async () => {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-    database = await createAssistantFixtureDatabase();
+    database = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(database.db);
   }, 120_000);
   afterAll(async () => {
@@ -50,7 +50,7 @@ suite('MET-210 Worker lease transactions under a held root lock', () => {
   /** A Worker-shaped job: 30 s lease and an enrolled task clock, so the
    * heartbeat really takes 703 -> root -> clock -> job like production. */
   async function setup(leaseSeconds = 30) {
-    const f = await assistantFixture(database.db);
+    const f = await runtimeTaskFixture(database.db);
     const { organizationId, workspaceId } = f.task.scope;
     await f.db`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy)
       values(${f.task.runId},${organizationId},${workspaceId},${f.db.json({ ...resolveTaskRuntimePolicy([]) })})`;
@@ -441,7 +441,7 @@ suite('MET-210 Worker lease transactions under a held root lock', () => {
   }, 30_000);
 
   it('with the production authority hook the poll also answers without waiting on a held root lock', async () => {
-    const f = await createAssistantAuthorityFixture(database.db);
+    const f = await createRunAuthorityFixture(database.db);
     const held = await hold('root', f.rootRunId);
     const release = sleep(3_000).then(() => held.commit());
     try {

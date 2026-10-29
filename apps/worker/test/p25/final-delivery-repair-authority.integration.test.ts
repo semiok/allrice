@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { createAssistantFixtureDatabase } from '../../../../packages/database/src/assistant-runtime.fixture.ts';
-import { createAssistantAuthorityFixture } from '../../../../packages/database/src/assistant-authority.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../../../../packages/database/src/runtime.fixture.ts';
+import { createRunAuthorityFixture } from '../../../../packages/database/src/run-authority.fixture.ts';
 import { assertAssistantAuthority } from '../../../../packages/database/src/assistant-authority.ts';
 import { productionAssistantController } from '../../src/harness/dsh/assistant-controller.js';
 
@@ -17,10 +17,10 @@ const outputBound = 5000;
 integration(
   'MET-219 observed repair budget with current PostgreSQL authority',
   () => {
-    let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-      database = await createAssistantFixtureDatabase();
+      database = await createRuntimeFixtureDatabase();
     }, 120000);
     afterAll(async () => {
       await database?.close();
@@ -28,7 +28,7 @@ integration(
     });
 
     async function fixture() {
-      const f = await createAssistantAuthorityFixture(database.db, {
+      const f = await createRunAuthorityFixture(database.db, {
         configure: false,
         memberRole: 'member',
         allowedTools: ['assistant.delegate', 'assistant.report'],

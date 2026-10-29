@@ -8,10 +8,10 @@ import {
 } from '@allrice/contracts';
 import * as client from '../../../packages/database/src/core/client.ts';
 import {
-  assistantFixtureStorage,
-  createAssistantFixtureDatabase,
-} from '../../../packages/database/src/assistant-runtime.fixture.ts';
-import { createAssistantAuthorityFixture } from '../../../packages/database/src/assistant-authority.fixture.ts';
+  runtimeFixtureStorage,
+  createRuntimeFixtureDatabase,
+} from '../../../packages/database/src/runtime.fixture.ts';
+import { createRunAuthorityFixture } from '../../../packages/database/src/run-authority.fixture.ts';
 import {
   getWorkbenchArtifact,
   publishWorkbenchArtifact,
@@ -53,11 +53,11 @@ async function workbook(cached = '') {
 suite(
   'Office final bytes and publication receipts (isolated PostgreSQL)',
   () => {
-    let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
-    let f: Awaited<ReturnType<typeof createAssistantAuthorityFixture>>;
+    let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
+    let f: Awaited<ReturnType<typeof createRunAuthorityFixture>>;
     let context: ReturnType<typeof ExecutionContextSchema.parse>;
     const db = () => database.db;
-    const storage = () => assistantFixtureStorage(db());
+    const storage = () => runtimeFixtureStorage(db());
     const original: OfficeDeliveryReceipt = {
       quality: {
         status: 'unavailable',
@@ -69,9 +69,9 @@ suite(
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
       vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
       vi.stubEnv('ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED', '1');
-      database = await createAssistantFixtureDatabase();
+      database = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(db());
-      f = await createAssistantAuthorityFixture(db(), {
+      f = await createRunAuthorityFixture(db(), {
         memberRole: 'member',
         allowedTools: [
           'assistant.delegate',

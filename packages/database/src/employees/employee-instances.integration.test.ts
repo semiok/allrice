@@ -54,7 +54,7 @@ import {
   publishCloudOperationArtifacts,
   loadCloudCommandInputs,
 } from '../cloud-execution.ts';
-import { assistantFixtureStorage } from '../assistant-runtime.fixture.ts';
+import { runtimeFixtureStorage } from '../runtime.fixture.ts';
 import { getStoredFile } from '../data.ts';
 import {
   inspectEmployeeMethodFromChat,
@@ -74,7 +74,7 @@ import {
   readPlatformModelSettings,
   updatePlatformModelSettings,
 } from '../providers/platform-model-settings.ts';
-import { resolveAssistantSubscriptionSnapshot } from '@allrice/contracts';
+import { resolveSubscriptionSnapshot } from '@allrice/contracts';
 import {
   prepareEmployeeContentContext,
   assertEmployeeContentContext,
@@ -115,11 +115,11 @@ import * as accessCancellation from './employee-access-cancellation.ts';
 import { updateEmployeeRelease } from './employee-quality.ts';
 import * as folderTriggers from '../folder-triggers.ts';
 import { lockSchedulePrincipal } from '../native-schedule-authority.ts';
-import { createAssistantFixtureDatabase } from '../assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
 import { assertWorkbenchSession } from '../artifact-review.ts';
-import { createAssistantAuthorityFixture } from '../assistant-authority.fixture.ts';
-import { createAssistantLocalCommandFixture } from '../local-command-assistant.fixture.ts';
+import { createRunAuthorityFixture } from '../run-authority.fixture.ts';
+import { createLocalCommandFixture } from '../local-command.fixture.ts';
 import { resolveTaskRuntimePolicy } from '../task-runtime-policy.ts';
 import {
   authenticateSession,
@@ -175,7 +175,7 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
-  let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   // Preserve regression coverage for the historical draft/test/activation
   // protocol by freezing its original grants only in legacy fixtures.
   const currentMethodTools = toolSelection.withEmployeeCustomizationTools;
@@ -184,7 +184,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     // Synthetic SQL approval only; production must provide a measured artifact.
     vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
     vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
-    fixture = await createAssistantFixtureDatabase();
+    fixture = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     vi.spyOn(
       toolSelection,
@@ -764,7 +764,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     const method = claim!.methodCandidate!;
     if (!method.modelSnapshot.credentialReference)
       throw Error('fixture credential missing');
-    const subscription = resolveAssistantSubscriptionSnapshot({
+    const subscription = resolveSubscriptionSnapshot({
       sessionId: method.sourceSessionId,
       modelSnapshot: method.modelSnapshot,
       decision: method.decision,
@@ -3909,7 +3909,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       policySnapshot: claim.previewExecution.policySnapshot,
       startedAt: claim.previewExecution.startedAt,
     });
-    const storage = assistantFixtureStorage(fixture.db);
+    const storage = runtimeFixtureStorage(fixture.db);
     const create = (
       stage: 'normalize' | 'summarize',
       script = 'console.log("fixture script");',
@@ -4372,7 +4372,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     const method = claim!.methodCandidate!;
     expect(method.modelSnapshot).toEqual(run.frozen.modelSnapshot);
     expect(method.sourceSessionId).toBe(run.sessionId);
-    const subscription = resolveAssistantSubscriptionSnapshot({
+    const subscription = resolveSubscriptionSnapshot({
       sessionId: method.sourceSessionId,
       modelSnapshot: method.modelSnapshot,
       decision: method.decision,
@@ -4662,7 +4662,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       throw new Error(
         'The subscription fixture requires its frozen credential',
       );
-    const subscription = resolveAssistantSubscriptionSnapshot({
+    const subscription = resolveSubscriptionSnapshot({
       sessionId: method.sourceSessionId,
       modelSnapshot: method.modelSnapshot,
       decision: method.decision,
@@ -4763,7 +4763,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       throw new Error(
         'The subscription fixture requires its frozen credential',
       );
-    const secondSubscription = resolveAssistantSubscriptionSnapshot({
+    const secondSubscription = resolveSubscriptionSnapshot({
       sessionId: secondMethod.sourceSessionId,
       modelSnapshot: secondMethod.modelSnapshot,
       decision: secondMethod.decision,
@@ -7024,7 +7024,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       'ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED',
     ])
       vi.stubEnv(flag, '1');
-    const f = await createAssistantLocalCommandFixture(fixture.db);
+    const f = await createLocalCommandFixture(fixture.db);
     const operation = await f.create();
     const operationId = operation.snapshot.binding.attempt.operationId;
     await f.db`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy)
@@ -7674,7 +7674,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
   });
   it('reads a stored legacy Run without adding instance data or rewriting its frozen JSON', async () => {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-    const f = await createAssistantAuthorityFixture(fixture.db, {
+    const f = await createRunAuthorityFixture(fixture.db, {
       memberRole: 'member',
     });
     const before = (
@@ -7703,7 +7703,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
   });
   it('keeps an existing native assistant root canceled after the archived instance is restored', async () => {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-    const f = await createAssistantAuthorityFixture(fixture.db, {
+    const f = await createRunAuthorityFixture(fixture.db, {
       memberRole: 'member',
     });
     await ensureGeneralEmployeeInstance(fixture.db, f.assignment);

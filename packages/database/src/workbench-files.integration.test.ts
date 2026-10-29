@@ -3,10 +3,10 @@ import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import type { RequestContext, WorkbenchFileSharing } from '@allrice/contracts';
 import * as client from './core/client.ts';
 import {
-  createAssistantFixtureDatabase,
-  assistantFixtureStorage,
-  assistantFixture,
-} from './assistant-runtime.fixture.ts';
+  createRuntimeFixtureDatabase,
+  runtimeFixtureStorage,
+  runtimeTaskFixture,
+} from './runtime.fixture.ts';
 import {
   ensureBootstrapPortalPrincipal,
   createSession,
@@ -47,11 +47,11 @@ const suite =
 suite(
   'unified workbench files use live authority without sharing their source chat',
   () => {
-    let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let platform: RequestContext;
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
       const principal = await ensureBootstrapPortalPrincipal({
         organizationSlug: 'allrice-platform',
@@ -154,7 +154,7 @@ suite(
         ...(sharing ? { sharing } : {}),
       };
     }
-    const storage = () => assistantFixtureStorage(fixture.db);
+    const storage = () => runtimeFixtureStorage(fixture.db);
     function change(
       context: RequestContext,
       id: string,
@@ -495,7 +495,7 @@ suite(
       expect(policy).toMatchObject({ revision: 1, reference_enabled: false });
     });
     it('shares a deliverable series without exposing its private chat and retains exact old reference bytes across replacement', async () => {
-      const synthetic = await assistantFixture(fixture.db),
+      const synthetic = await runtimeTaskFixture(fixture.db),
         owner = {
           ...(await authenticateSession(
             (await createSession(synthetic.context.actor.id)).token,

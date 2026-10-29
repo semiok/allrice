@@ -19,10 +19,10 @@ import {
   cloudPlatform,
 } from '@allrice/contracts';
 import {
-  createAssistantFixtureDatabase,
-  assistantFixtureStorage,
-} from './assistant-runtime.fixture.ts';
-import { createAssistantLocalCommandFixture } from './local-command-assistant.fixture.ts';
+  createRuntimeFixtureDatabase,
+  runtimeFixtureStorage,
+} from './runtime.fixture.ts';
+import { createLocalCommandFixture } from './local-command.fixture.ts';
 import { executeProjectWorkspace } from './project-workspace.ts';
 import { reportLocalCommandProfile } from './local-command-profile.ts';
 import { listCloudRuntimeOperations } from './cloud-operation-view.ts';
@@ -64,7 +64,7 @@ const suite =
     : describe.skip;
 
 async function readCloudPublicationState(
-  db: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>['db'],
+  db: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>['db'],
   rootRunId: string,
   sessionId: string,
   operationIds: string[],
@@ -114,7 +114,7 @@ async function readCloudPublicationState(
 suite(
   'MET166 PR3c canonical saved-project location and original Worker — real PostgreSQL',
   () => {
-    let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     beforeAll(async () => {
       for (const key of [
         'ASSISTANTS',
@@ -125,7 +125,7 @@ suite(
         'CLOUD_RUNNER',
       ])
         vi.stubEnv(`ALLRICE_${key}_ENABLED`, '1');
-      database = await createAssistantFixtureDatabase();
+      database = await createRuntimeFixtureDatabase();
     }, 120000);
     afterAll(async () => {
       if (database)
@@ -142,13 +142,12 @@ suite(
         outbound?: boolean;
       } = {},
     ) {
-      const f = await createAssistantLocalCommandFixture(
+      const f = await createLocalCommandFixture(
         database.db,
         'allow',
         false,
         {
-          skipChild: true,
-          projectWorkspace: true,
+                projectWorkspace: true,
           projectCloud: cloud,
           snapshot: (s) => ({
             ...s,
@@ -167,7 +166,7 @@ suite(
           }),
         },
       );
-      const storage = assistantFixtureStorage(f.db),
+      const storage = runtimeFixtureStorage(f.db),
         [job] = await f.db<
           { attempt: number }[]
         >`select attempt from allrice_jobs where id=${f.context.jobId}`;

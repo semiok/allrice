@@ -132,13 +132,6 @@ export const riceToolDefinitions = [
       '仅在原样展示的服务端确认题收到用户明确确认并持久采用后启用。只传 receiptId；服务端核对真实回答、当前权限、候选及测试。未知结果回读同一回执，不创建另一发布。后续独立任务采用新版本，当前任务快照保留。',
     inputSchema: z.toJSONSchema(EmployeeMethodActivateSchema),
   },
-  ...(['delegate', 'message', 'report', 'stop', 'development'] as const).map(
-    (action) => ({
-      name: `assistant.${action}` as const,
-      description: `Governed 子智能体 ${action}. Requires explicit employee authorization and this Run's frozen opt-in; native DSH only.`,
-      inputSchema: { type: 'object', additionalProperties: true },
-    }),
-  ),
   {
     name: 'local.mcp.discover',
     description:
@@ -839,9 +832,6 @@ export function riceToolDefinitionsForCapabilities(
         (allowed?.has(definition.name) &&
           capabilities.includes('model:invoke') &&
           runtimeFeatureEnabled('ALLRICE_WORKBENCH_ENABLED'))) &&
-      (!definition.name.startsWith('assistant.') ||
-        (allowed?.has(definition.name) &&
-          runtimeFeatureEnabled('ALLRICE_ASSISTANTS_ENABLED'))) &&
       (!['local.mcp.discover', 'local.mcp.call'].includes(definition.name) ||
         (allowed?.has(definition.name) &&
           capabilities.includes('storage:write') &&

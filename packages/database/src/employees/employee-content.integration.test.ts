@@ -29,9 +29,9 @@ import type {
 } from '@allrice/contracts';
 import * as client from '../core/client.ts';
 import {
-  createAssistantFixtureDatabase,
-  assistantFixtureStorage,
-} from '../assistant-runtime.fixture.ts';
+  createRuntimeFixtureDatabase,
+  runtimeFixtureStorage,
+} from '../runtime.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
 import {
   authenticateSession,
@@ -107,13 +107,13 @@ const suite =
 suite(
   'layered employee content: isolated transactions and current authority',
   () => {
-    let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
+    let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
       admin: RequestContext,
       publication: Awaited<
         ReturnType<typeof createEmployeeAdministrationFixture>
       >;
     beforeAll(async () => {
-      f = await createAssistantFixtureDatabase();
+      f = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
       const p = await ensureBootstrapPortalPrincipal({
         organizationSlug: 'allrice-platform',
@@ -411,7 +411,7 @@ suite(
         contentBase64: Buffer.from(body).toString('base64'),
       };
       const ref = await prepareReferenceUpload(s.a, input);
-      await assistantFixtureStorage(f.db).put(
+      await runtimeFixtureStorage(f.db).put(
         ref.object,
         new Blob([new Uint8Array(ref.bytes)]).stream(),
       );
@@ -2485,7 +2485,7 @@ suite(
               operation: 'archive',
               expectedRevision: 2,
             },
-            assistantFixtureStorage(f.db),
+            runtimeFixtureStorage(f.db),
             administration,
           ),
         ).rejects.toMatchObject({ code: 'not_found' });

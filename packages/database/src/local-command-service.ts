@@ -63,7 +63,6 @@ import {
   parseChangesetBytes,
 } from './artifact-review.ts';
 import { localCommandCandidateEvidence } from './local-command-candidate.ts';
-import type { AssistantOperationOrigin } from './assistant-operation-authority.ts';
 import { ensureRuntimeOperationRoot } from './runtime-ledger/root-service.ts';
 import { cancelRuntimeAgentOperationsTransaction } from './runtime-ledger/ledger.ts';
 import { createGovernedBridgeOperationLedger } from './runtime-governed-bridge.ts';
@@ -110,7 +109,6 @@ async function createLocalBridgeToolOperation(
     callId: string;
     /** Internal Worker provenance only; deliberately absent from the public
      * RuntimeLocalCommandToolInputSchema and the user/model ExecutionContext. */
-    assistant?: AssistantOperationOrigin;
     storage?: StoragePort;
     worker?: { attempt: number; leaseToken: string };
     projectSelection?: ProjectExecutionSelection;
@@ -134,11 +132,6 @@ async function createLocalBridgeToolOperation(
           })
         : RuntimeLocalCommandToolInputSchema
       ).parse(input.arguments);
-  if (input.assistant) {
-    UuidSchema.parse(input.assistant.runId);
-    if (args?.background || args?.project)
-      throw new RuntimePolicyError('assistant_authority_changed');
-  }
   if (args?.background && !localServiceFeatureEnabled())
     throw new RuntimePolicyError('runtime_policy_disabled');
   const ctx = input.context;
@@ -186,29 +179,6 @@ async function createLocalBridgeToolOperation(
       throw new RuntimePolicyError('bridge_authority_changed');
   }
   let ref = requestedCandidate;
-  if (input.assistant && !ref) {
-    // A development tester already has an immutable, server-assigned version.
-    // Bind that version before generating the approval digest; never silently
-    // test the unmodified workspace when the model omits this optional field.
-    const assignments = await database<
-      { artifact_id: string; digest: string; current: boolean }[]
-    >`select v.artifact_id,v.digest,
-        (h.head_artifact_id=v.artifact_id and h.head_digest=v.digest) as current
-      from allrice_development_verifiers v
-      join allrice_development_heads h on h.root_run_id=v.root_run_id
-      join allrice_workbench_artifacts a on a.version_id=v.artifact_id and a.run_id=h.root_run_id
-      where v.root_run_id=${ctx.runId} and v.run_id=${input.assistant.runId} and v.role='test'
-        and a.organization_id=${ctx.organizationId} and a.workspace_id=${ctx.workspaceId} and a.owner_id=${owner}`;
-    if (assignments.length) {
-      const current = assignments.filter((v) => v.current);
-      if (current.length !== 1)
-        throw new RuntimePolicyError('assistant_authority_changed');
-      ref = {
-        artifactId: current[0]!.artifact_id,
-        checksum: current[0]!.digest,
-      };
-    }
-  }
   let candidate:
     { artifactId: string; checksum: string; content: string } | undefined;
   let candidateTargetId: string | null = null;
@@ -293,9 +263,7 @@ async function createLocalBridgeToolOperation(
   });
   // Same-call retries read the existing operation/receipts even when its work
   // makes the device busy; they never create a second attempt.
-  const key = input.assistant
-    ? `local-command:${ctx.runId}:assistant:${input.assistant.runId}:${input.callId}`
-    : `${input.file ? input.file.capability : 'local-command'}:${ctx.runId}:${input.callId}`;
+  const key = `${input.file ? input.file.capability : 'local-command'}:${ctx.runId}:${input.callId}`;
   const operationId = id(key);
   if (
     input.projectSelection &&
@@ -492,8 +460,7 @@ async function createLocalBridgeToolOperation(
   if (
     args?.network &&
     (!executionBudget ||
-      !profile?.features?.includes('sandbox_network_v1') ||
-      input.assistant)
+      !profile?.features?.includes('sandbox_network_v1'))
   )
     throw new RuntimePolicyError('local_runner_upgrade_required');
   const networkGrant = args?.network
@@ -545,7 +512,7 @@ async function createLocalBridgeToolOperation(
     scope: {
       organizationId: ctx.organizationId,
       workspaceId: ctx.workspaceId,
-      projectId: input.assistant ? row.project_id : null,
+      projectId: null,
     },
     runId: ctx.runId,
     rootRunId: ctx.runId,
@@ -595,17 +562,8 @@ async function createLocalBridgeToolOperation(
     initialOperation: {
       binding,
       payload,
-      ...(input.assistant ? { assistant: input.assistant } : {}),
     },
   });
-  if (input.assistant) {
-    // Assistant reads retain their existing precheck. Saved-source replay also
-    // rechecks its exact Worker lease inside the ledger after all lock waits.
-    await database.begin(async (transaction) => {
-      await ledger.policyOptions.lockCurrentBinding?.({ transaction, binding });
-      await ledger.policyOptions.assertFinalBinding?.({ transaction, binding });
-    });
-  }
   const budgets = await ensureRuntimeOperationRoot(
     ledger,
     binding.task,
@@ -617,7 +575,7 @@ async function createLocalBridgeToolOperation(
       contractVersion: 1,
       binding,
       stepId: null,
-      agentInstanceId: input.assistant?.runId ?? null,
+      agentInstanceId: null,
       processId: null,
       cancelRequestId: null,
       idempotencyKey: id(`${key}:delivery`),
@@ -639,7 +597,6 @@ async function createLocalBridgeToolOperation(
     database,
     operationId,
     input.callId,
-    input.assistant?.runId,
   );
   if (snapshot.status === 'waiting_user')
     await requestRuntimeActionApproval(
@@ -966,7 +923,7 @@ export async function waitLocalCommandOperation(
           stored.binding.task.rootRunId !==
           created.snapshot.binding.task.rootRunId
         )
-          throw new RuntimePolicyError('assistant_authority_changed');
+          throw new RuntimePolicyError('bridge_authority_changed');
         if (!stored.agentInstanceId) {
           await created.ledger.cancelRoot(
             scope,

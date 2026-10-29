@@ -5,8 +5,8 @@ import {
   type EmployeeRuntimePackage,
 } from '@allrice/contracts';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
-import { createAssistantLocalCommandFixture } from './local-command-assistant.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
+import { createLocalCommandFixture } from './local-command.fixture.ts';
 import * as client from './core/client.ts';
 import {
   parkNativeQuestion,
@@ -50,7 +50,7 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('MET153 durable native waits and queue authority', () => {
-  let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   let runtimePackage: EmployeeRuntimePackage;
   beforeAll(async () => {
     for (const flag of [
@@ -63,7 +63,7 @@ suite('MET153 durable native waits and queue authority', () => {
     // MET-221: only a business origin binds, so a bound segment's chat is born
     // on the current generation under this synthetic release primary.
     vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'c'.repeat(64));
-    fixture = await createAssistantFixtureDatabase();
+    fixture = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     const employee = await createEmployeeAdministrationFixture(fixture.db);
     runtimePackage = buildEmployeeRuntimePackage({
@@ -84,13 +84,12 @@ suite('MET153 durable native waits and queue authority', () => {
     await fixture?.close();
   });
   async function setup(withStopReceipt = false) {
-    const f = await createAssistantLocalCommandFixture(
+    const f = await createLocalCommandFixture(
       fixture.db,
       'ask',
       false,
       {
-        skipChild: true,
-        deferRuntimeRoot: true,
+            deferRuntimeRoot: true,
         ...(withStopReceipt
           ? { runtimePackage, businessCreationOrigin: true }
           : {}),

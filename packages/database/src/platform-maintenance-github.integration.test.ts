@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
 import type { RequestContext } from '@allrice/contracts';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import {
   ensureBootstrapPortalPrincipal,
   authenticateSession,
@@ -19,7 +19,7 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('central personal GitHub token and immutable identity', () => {
-  let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
+  let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
     admin: RequestContext,
     other: RequestContext,
     ordinary: RequestContext;
@@ -37,7 +37,7 @@ suite('central personal GitHub token and immutable identity', () => {
     ),
   ) as unknown as typeof fetch;
   beforeAll(async () => {
-    f = await createAssistantFixtureDatabase();
+    f = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
     async function p(email: string) {
       const a = await ensureBootstrapPortalPrincipal({

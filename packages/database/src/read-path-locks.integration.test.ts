@@ -4,10 +4,9 @@ import type postgres from 'postgres';
 import { BrowserObservationSchema } from '@allrice/contracts';
 import type * as Client from './core/client.ts';
 import {
-  assistantFixture,
-  createAssistantFixtureDatabase,
-} from './assistant-runtime.fixture.ts';
-import { createAssistantRuntime } from './assistant-runtime.ts';
+  runtimeTaskFixture,
+  createRuntimeFixtureDatabase,
+} from './runtime.fixture.ts';
 import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
 import { createLocalBrowserFixture } from './local-browser.fixture.ts';
 import { createLocalPreviewFixture } from './local-preview.fixture.ts';
@@ -66,7 +65,7 @@ const suite =
 suite(
   'MET-210 populated GET paths and retained write locks — isolated PostgreSQL',
   () => {
-    let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let db: postgres.Sql;
     beforeAll(async () => {
       for (const key of [
@@ -83,7 +82,7 @@ suite(
         'ALLRICE_ASSISTANTS_ENABLED',
       ])
         vi.stubEnv(key, '1');
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createRuntimeFixtureDatabase();
       db = fixture.db;
       current = db;
     }, 120_000);
@@ -378,16 +377,6 @@ suite(
         ).items,
       ).toMatchObject([{ rating: 'positive' }]);
     }, 30_000);
-    it('assistant tree reads actual child and budget records without an xid', async () => {
-      const f = await assistantFixture(db);
-      const child = (await f.delegate()).instance;
-      const tree = await read((sql) =>
-        createAssistantRuntime({ database: sql }).getTree(f.context, {
-          runId: f.task.runId,
-        }),
-      );
-      expect(tree.instances.some((r) => r.runId === child.runId)).toBe(true);
-    });
 
     for (const order of ['reader first', 'writer first'] as const) {
       it(`browser polling and control mutation complete with ${order}`, async () => {

@@ -22,7 +22,7 @@ import {
   type LocalFileVersion,
   type RequestContext,
 } from '@allrice/contracts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
 import {
   bridgeDeviceStatus,
@@ -91,7 +91,7 @@ async function fixtureSource(
 suite(
   'MET164 PR3 existing commands, storage and real Run ledger in isolated PostgreSQL',
   () => {
-    let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
+    let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
       root: string;
     // Next routes have their own bundler typecheck; load the actual implementation
     // at runtime without pulling that bundler graph into this NodeNext project.
@@ -103,7 +103,7 @@ suite(
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
       vi.stubEnv('ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED', '1');
-      database = await createAssistantFixtureDatabase();
+      database = await createRuntimeFixtureDatabase();
       root = await realpath(
         await mkdtemp(join(tmpdir(), 'allrice-local-files-db-')),
       );

@@ -7,8 +7,8 @@ import {
   projectServiceLimits,
   RuntimeLocalCommandSchema,
 } from '@allrice/contracts';
-import { assistantFixtureStorage } from './assistant-runtime.fixture.ts';
-import { createAssistantLocalCommandFixture } from './local-command-assistant.fixture.ts';
+import { runtimeFixtureStorage } from './runtime.fixture.ts';
+import { createLocalCommandFixture } from './local-command.fixture.ts';
 import { executeProjectWorkspace } from './project-workspace.ts';
 import { reportLocalCommandProfile } from './local-command-profile.ts';
 import { getWorkAutomation, updateWorkAutomation } from './work-automation.ts';
@@ -27,8 +27,7 @@ export async function projectServiceFixture(
     markReady?: boolean;
   } = {},
 ) {
-  const f = await createAssistantLocalCommandFixture(db, 'allow', false, {
-    skipChild: true,
+  const f = await createLocalCommandFixture(db, 'allow', false, {
     projectWorkspace: true,
   });
   const architecture = options.architecture ?? 'amd64',
@@ -50,7 +49,7 @@ export async function projectServiceFixture(
       db,
     );
   }
-  const storage = assistantFixtureStorage(db),
+  const storage = runtimeFixtureStorage(db),
     [job] = await db<
       { attempt: number }[]
     >`select attempt from allrice_jobs where id=${f.context.jobId}`;

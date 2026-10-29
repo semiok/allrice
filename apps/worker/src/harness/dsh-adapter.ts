@@ -16,7 +16,6 @@ import {
   ModelCallTimingNotificationSchema,
   type HarnessEvent,
 } from '@allrice/contracts';
-import { AssistantRuntimeError } from '@allrice/database';
 import type { NativeSessionPin } from '@allrice/database';
 
 import { AgentLoopGuard } from '../agent-loop-guard.js';
@@ -29,17 +28,7 @@ import {
 import { attachCheckedFinalDelivery } from '../final-delivery/checked-delivery.js';
 import { NativeQuestionParked } from './dsh/native-question-wait.js';
 import { ReceiptDrainWindow } from './dsh/receipt-drain.js';
-import {
-  AssistantExecutionUnresolvedError,
-  attachAssistantFailureUsage,
-  type AssistantFailureUsage,
-} from './dsh/assistant-outcome.js';
-import {
-  attachAssistantFailureDiagnostics,
-  parseAssistantFailureDiagnostics,
-  type AssistantFailureDiagnostics,
-} from './dsh/assistant-diagnostics.js';
-import { assertAssistantProviderOutputBound } from './dsh/assistant-provider.js';
+import { attachExecutionFailureUsage, type ExecutionFailureUsage } from './dsh/execution-failure-usage.js';
 import { projectNativeUsage } from './dsh/native-usage.js';
 import { DshAssistantStream } from './dsh/assistant-stream.js';
 import {
@@ -90,53 +79,6 @@ export {
   normalizeAllRiceManagedFileLinks,
 } from './dsh/tool-bridge.js';
 
-/** Private inbound control seam; arguments are captured from execute(), not RPC grants. */
-export function controlDshInputDelivery(input: {
-  pool: DshRuntimePool;
-  runtime: DshRuntime;
-  operation: 'pause' | 'release';
-  params: Record<string, unknown>;
-  runId: string | undefined;
-  delivery: HarnessExecutionInput['inputDelivery'];
-  signal: AbortSignal;
-  turnId(): string | null;
-  checkContent(): Promise<void>;
-  assistant:
-    | {
-        cancellation(): Promise<{
-          stopReason?: unknown;
-          instances: readonly unknown[];
-        }>;
-      }
-    | undefined;
-}) {
-  if (!input.assistant || !input.delivery || !input.runId)
-    throw new HandlerError('INPUT_GATE_UNBOUND', 'INPUT_GATE_UNBOUND', false);
-  const assistant = input.assistant;
-  return input.pool.inputDeliveryControl(
-    input.runtime,
-    input.operation,
-    input.params,
-    {
-      runId: input.runId,
-      turnId: input.turnId,
-      signal: input.signal,
-      delivery: input.delivery,
-      assertAuthority: async () => {
-        input.signal.throwIfAborted();
-        await input.checkContent();
-        const authority = await assistant.cancellation();
-        if (authority.stopReason || authority.instances.length)
-          throw new HandlerError(
-            'INPUT_GATE_SCOPE_CHANGED',
-            'INPUT_GATE_SCOPE_CHANGED',
-            false,
-          );
-      },
-    },
-  );
-}
-
 type HarnessEventPayload = HarnessEvent extends infer Event
   ? Event extends HarnessEvent
     ? Omit<
@@ -182,7 +124,6 @@ export class DshHarnessAdapter implements HarnessAdapter {
     const timing = new DshRunTiming({
       runId:
         input.executionEnvironment.ALLRICE_RUN_ID ??
-        input.assistants?.rootRunId ??
         null,
       sessionId: input.kernel.sessionId,
       attempt: input.attempt,
@@ -197,7 +138,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       const result = await this.executeObserved(input, timing, (threadId) => {
         releaseLease = this.runtimePool.lease(threadId);
       });
-      outcome = result.assistantStatus === 'partial' ? 'partial' : 'completed';
+      outcome = 'completed';
       return result;
     } catch (error) {
       outcome = input.signal.aborted
@@ -218,11 +159,6 @@ export class DshHarnessAdapter implements HarnessAdapter {
     leaseThread: (threadId: string) => void,
   ): Promise<HarnessExecutionResult> {
     const preparationStarted = performance.now();
-    assertAssistantProviderOutputBound(
-      input.providerSnapshot,
-      !!input.assistants,
-      input.assistants?.subscriptionSnapshot,
-    );
     if (input.providerSnapshot.provider !== 'dsh') {
       throw new TypeError('DSH harness requires a DSH provider snapshot');
     }
@@ -279,8 +215,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     // Checked final delivery is this release's protocol on the restricted
     // profile. The artifact frozen on the Run is provenance only (MET-221).
     if (
-      (input.assistants?.deliveryMode === 'checked_native_v1' ||
-        input.runDelivery) &&
+      input.runDelivery &&
       (!nativeDescriptor || nativeDescriptor.profileId !== 'restricted')
     )
       throw new HandlerError(
@@ -355,22 +290,6 @@ export class DshHarnessAdapter implements HarnessAdapter {
     });
     const runtimeBindingStarted = performance.now();
     this.runtimePool.touch(runtime);
-    const assistant = await input.assistants
-      ?.bind(threadId, generation, input.onToolCall, (nativeSessionId) =>
-        runtime.client.assistant('inspect', { nativeSessionId }),
-      )
-      .catch(async (error) => {
-        await this.runtimePool.drop(threadId);
-        // This local controller bind only configures/validates the root. The
-        // fresh host has not received assistant/bind or session/prompt yet.
-        // Reused hosts and failures after this boundary remain uncertain.
-        const runId = input.executionEnvironment.ALLRICE_RUN_ID;
-        if (fresh && runId && input.assistants?.rootRunId === runId)
-          throw new DshStartupRejection(error, runId, input.attempt);
-        throw error;
-      });
-    const checkedAssistant =
-      input.assistants?.deliveryMode === 'checked_native_v1';
     const finalDeliveryUnavailable = (): never => {
       input.signal.throwIfAborted();
       throw new HandlerError(
@@ -379,18 +298,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
         false,
       );
     };
-    if (
-      assistant &&
-      !['checked_native_v1', 'legacy'].includes(input.assistants!.deliveryMode)
-    )
-      finalDeliveryUnavailable();
     // Installed synchronously by runOnce before prompting. Keep it through
     // child join/retry; a later runOnce replaces it with its own turn barrier.
     let awaitTurnOrigin: ((settled?: boolean) => Promise<void>) | undefined;
-    let restoredOriginTurnId: string | undefined;
     const ordinaryHandler = dshInboundToolHandler(input);
     let turnId: string | null = null;
-    let assistantAdmissionFailure: HandlerError | undefined;
     let contentAuthorizationFailure: HandlerError | undefined;
     const checkContent = async (phase: DshContentCheckPhase = 'other') => {
       if (!input.contentGuard) return;
@@ -432,7 +344,6 @@ export class DshHarnessAdapter implements HarnessAdapter {
       ) {
         if (
           !runDelivery ||
-          assistant ||
           params.nativeSessionId !== threadId ||
           params.rootRunId !== runDelivery.rootRunId
         )
@@ -444,26 +355,6 @@ export class DshHarnessAdapter implements HarnessAdapter {
         if (!origin) finalDeliveryUnavailable();
         executionSignal.throwIfAborted();
         return { origin };
-      }
-      if (
-        method === 'allrice/assistant/input-gate-pause' ||
-        method === 'allrice/assistant/input-gate-release'
-      ) {
-        return controlDshInputDelivery({
-          pool: this.runtimePool,
-          runtime,
-          operation:
-            method === 'allrice/assistant/input-gate-pause'
-              ? 'pause'
-              : 'release',
-          params,
-          runId: input.assistants?.rootRunId,
-          delivery: input.inputDelivery,
-          signal: input.signal,
-          turnId: () => turnId,
-          checkContent: () => checkContent('inputGate'),
-          assistant,
-        });
       }
       if (method === 'allrice/personal-skill-check') {
         if (!input.contentGuard) throw Error('personal_skill_guard_unbound');
@@ -498,12 +389,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
           const evidence = EmployeeSceneStateSchema.shape.adopted
             .unwrap()
             .parse(params);
-          if (evidence.nativeSessionId !== threadId) {
-            if (!assistant) throw Error('employee_scene_native_scope');
-            await assistant.handle('progress-identity', {
-              nativeSessionId: evidence.nativeSessionId,
-            });
-          }
+          if (evidence.nativeSessionId !== threadId)
+            throw Error('employee_scene_native_scope');
           if (!input.contentGuard?.adoptScene)
             throw Error('employee_scene_unbound');
           return await input.contentGuard.adoptScene(evidence);
@@ -514,27 +401,12 @@ export class DshHarnessAdapter implements HarnessAdapter {
       }
       if (method === 'allrice/content-check') {
         if (!input.contentGuard) throw Error('employee_content_guard_unbound');
-        if (params.nativeSessionId !== threadId) {
-          if (!assistant) throw Error('employee_content_native_scope');
-          await assistant.handle('progress-identity', {
-            nativeSessionId: params.nativeSessionId,
-          });
-        }
+        if (params.nativeSessionId !== threadId)
+          throw Error('employee_content_native_scope');
         await checkContent('nativeDispatch');
         return { allowed: true };
       }
-      if (
-        method === 'allrice/tool-call' ||
-        method === 'allrice/assistant/model-prepare' ||
-        method === 'allrice/assistant/model-dispatch' ||
-        method === 'allrice/assistant/tool' ||
-        method === 'allrice/assistant/proposal'
-      )
-        await checkContent(
-          method === 'allrice/tool-call' || method === 'allrice/assistant/tool'
-            ? 'toolDispatch'
-            : 'modelAdmission',
-        );
+      if (method === 'allrice/tool-call') await checkContent('toolDispatch');
       if (method === 'allrice/progress') {
         if (
           params.action === 'model_prepare' ||
@@ -542,14 +414,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
         )
           await checkContent('modelAdmission');
         if (!input.progress) throw Error('task_progress_disabled');
-        if (params.nativeSessionId !== threadId) {
-          if (!assistant) throw Error('task_progress_native_scope');
-          // Existing owned-tree lookup, with lease and tenant checks, runs
-          // before accepting a child's progress report.
-          await assistant.handle('progress-identity', {
-            nativeSessionId: params.nativeSessionId,
-          });
-        }
+        if (params.nativeSessionId !== threadId)
+          throw Error('task_progress_native_scope');
         const progress = await input.progress(params);
         if (params.kind === 'model' && typeof params.callId === 'string') {
           // Worker progress receipts bracket the model call chain, including
@@ -559,176 +425,16 @@ export class DshHarnessAdapter implements HarnessAdapter {
         }
         return progress;
       }
-      if (method === 'allrice/assistant/final-delivery-origin') {
-        if (
-          !checkedAssistant ||
-          !assistant?.readFinalDeliveryReplyOrigin ||
-          params.nativeSessionId !== threadId ||
-          params.rootRunId !== input.assistants!.rootRunId
-        )
-          finalDeliveryUnavailable();
-        const origin = await assistant!.readFinalDeliveryReplyOrigin!();
-        restoredOriginTurnId = origin?.starts.at(-1)?.turnId;
-        return { origin };
-      }
-      if (
-        method === 'allrice/assistant/delivery-repair-inspect' ||
-        method === 'allrice/assistant/delivery-repair-authorize' ||
-        method === 'allrice/assistant/delivery-repair-close-preparation'
-      ) {
-        if (
-          !checkedAssistant ||
-          !assistant?.deliveryRepair ||
-          params.nativeSessionId !== threadId
-        )
-          finalDeliveryUnavailable();
-        const repair = assistant!.deliveryRepair!;
-        if (method === 'allrice/assistant/delivery-repair-close-preparation')
-          return repair.closePreparation({
-            nativeSessionId: threadId,
-            callId: params.callId,
-          });
-        await checkContent('deliveryRepair');
-        if (method === 'allrice/assistant/delivery-repair-inspect')
-          return { ...(await repair.inspect(params.candidate)) };
-        return repair.authorize({
-          phase: params.phase,
-          candidate: params.candidate,
-        });
-      }
-      if (
-        checkedAssistant &&
-        (method === 'allrice/assistant/model-prepare' ||
-          method === 'allrice/assistant/model-dispatch')
-      ) {
-        if (!awaitTurnOrigin) finalDeliveryUnavailable();
-        await awaitTurnOrigin!();
-      }
-      if (method.startsWith('allrice/assistant/')) {
-        if (!assistant) throw Error('assistant_runtime_disabled');
-        try {
-          return await assistant.handle(
-            method.slice('allrice/assistant/'.length),
-            params,
-          );
-        } catch (error) {
-          if (
-            error instanceof AssistantRuntimeError &&
-            error.code === 'budget_exhausted'
-          ) {
-            assistantAdmissionFailure = new HandlerError(
-              'ASSISTANT_BUDGET_EXHAUSTED',
-              '本次任务达到平台内部执行预算，已停止继续调用；这不代表 Codex 订阅额度耗尽。',
-              false,
-            );
-            throw assistantAdmissionFailure;
-          }
-          throw error;
-        }
-      }
       return ordinaryHandler(method, params);
     });
-    if (assistant)
-      await runtime.client.assistant('bind', {
-        nativeSessionId: threadId,
-        runId: input.assistants!.rootRunId,
-        ...(checkedAssistant ? { deliveryMode: 'checked_native_v1' } : {}),
-        wireTools: Object.entries(dshNativeWireNames)
-          .filter(([, canonical]) => runtime.nativeTools.includes(canonical))
-          .map(([wire]) => wire),
-      });
-    let cancellationTask: Promise<unknown> | undefined;
-    let rootDrainTask: Promise<unknown> | undefined;
-    let rootStopTask: Promise<unknown> | undefined;
     let ownedDrop: Promise<void> | undefined;
     const dropOwnedHost = () =>
       (ownedDrop ??= this.runtimePool.closeOwned(runtime));
     const stopWindow = new ReceiptDrainWindow(dropOwnedHost);
-    const assistantFailureSignal = new AbortController();
-    const executionSignal = assistant
-      ? AbortSignal.any([input.signal, assistantFailureSignal.signal])
-      : input.signal;
-    const drainRequest = (request: {
-      nativeSessionId?: string;
-      drainDeadlineAt?: string;
-      instances: readonly { nativeSessionId: string }[];
-    }) => {
-      const root = request.instances.some(
-        (i) => i.nativeSessionId === threadId,
-      );
-      if (root || stopWindow.started) {
-        stopWindow.begin(request.drainDeadlineAt);
-        return (rootDrainTask ??= stopWindow.within(() =>
-          runtime.client.assistant('drain', request),
-        ));
-      }
-      // A canceled child must not consume a later root stop's budget or close a
-      // healthy parent after its own successful drain.
-      const childWindow = new ReceiptDrainWindow(dropOwnedHost);
-      return childWindow
-        .within(() => runtime.client.assistant('drain', request))
-        .finally(() => childWindow.dispose());
-    };
-    const pollCancellation = () => {
-      if (!assistant || cancellationTask || rootStopTask || rootDrainTask)
-        return;
-      cancellationTask = assistant
-        .cancellation()
-        .then((request) => {
-          if (request.stopReason === 'timeout')
-            assistantAdmissionFailure ??= new HandlerError(
-              'ASSISTANT_BUDGET_EXHAUSTED',
-              '本次任务已达到配置的执行时限，已停止继续运行；这不是 Token 配额限制。',
-              false,
-            );
-          return request.instances.length ? drainRequest(request) : undefined;
-        })
-        .catch(async (error) => {
-          if (
-            error instanceof AssistantRuntimeError &&
-            error.code === 'budget_exhausted'
-          ) {
-            assistantAdmissionFailure ??= new HandlerError(
-              'ASSISTANT_BUDGET_EXHAUSTED',
-              '本次任务已达到配置的执行时限，已停止继续运行；这不是 Token 配额限制。',
-              false,
-            );
-          }
-          assistantFailureSignal.abort();
-          await dropOwnedHost();
-        })
-        .finally(() => {
-          cancellationTask = undefined;
-        });
-      // A close failure above rejects after the variable is cleared, when no
-      // later stop may await it; unobserved, Node would end the Worker. The
-      // failure path still records the same close through ownedDrop.
-      void cancellationTask.catch(() => {});
-    };
-    const cancellationTimer = assistant
-      ? setInterval(pollCancellation, 250)
-      : undefined;
-    const stopAssistants = () => {
-      stopWindow.begin();
-      if (assistant) {
-        rootStopTask ??= stopWindow
-          .within(() => assistant.cancel())
-          .then(() => stopWindow.within(() => assistant.cancellation()))
-          .then(drainRequest);
-        // The failure path still observes this same promise before reading
-        // durable usage.
-        void rootStopTask.catch(() => {});
-      }
-      return rootStopTask ?? Promise.resolve();
-    };
-    // The listener must not return the promise: Node's EventTarget rethrows a
-    // rejected listener result as an uncaught exception, so one stop that
-    // outlives its drain window (DSH_DRAIN_TIMEOUT) would end the Worker.
-    const onAbort = () => {
-      void stopAssistants();
-    };
+    const executionSignal = input.signal;
+    const onAbort = () => { stopWindow.begin(); };
     input.signal.addEventListener('abort', onAbort, { once: true });
-    if (input.signal.aborted) void stopAssistants();
+    if (input.signal.aborted) onAbort();
     let order = 0;
     const usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
     let usageComplete = true;
@@ -849,32 +555,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
     let bootstrapReceipt: BootstrapReceipt | undefined;
     let answer = '';
     let waitingForUser: HarnessExecutionResult['waitingForUser'];
-    let assistantFinished = false;
-    let completedUsage: AssistantFailureUsage | undefined;
-    let interruptedUsage: AssistantFailureUsage | undefined;
-    let assistantDiagnostics: AssistantFailureDiagnostics | undefined;
-    const captureAssistantDiagnostics = async () => {
-      if (!assistant || assistantFinished || assistantDiagnostics) return;
-      try {
-        // The protocol request has its own 2s timeout and removes its pending
-        // entry. A missing/old/broken diagnostic endpoint never changes outcome.
-        assistantDiagnostics = parseAssistantFailureDiagnostics(
-          await runtime.client.assistant('diagnostics', {
-            nativeSessionId: threadId,
-          }),
-        );
-      } catch {
-        // Keep the original execution error and fail-closed accounting.
-      }
-    };
-    let assistantOutcome:
-      | Awaited<
-          ReturnType<NonNullable<NonNullable<typeof assistant>['finish']>>
-        >
-      | undefined;
+    let completedUsage: ExecutionFailureUsage | undefined;
+    let interruptedUsage: ExecutionFailureUsage | undefined;
     let checkedDeliveryProof: FinalDeliveryProof | undefined;
-    let restoredFinal: Record<string, unknown> | null = null;
-    let restoredUsage: AssistantFailureUsage | undefined;
     const timingReceipts = new Set<string>();
     // Keep the operator subscription for the entire Run, including child join,
     // failure drain and final flush. Chat events retain their own turn listener.
@@ -895,8 +578,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
             event: 'allrice.model_timing',
             runId:
               input.executionEnvironment.ALLRICE_RUN_ID ??
-              input.assistants?.rootRunId ??
-              null,
+                    null,
             sessionId: runtime.productSessionId,
             nativeSessionId: entry.sessionId,
             callId: entry.callId,
@@ -989,29 +671,6 @@ export class DshHarnessAdapter implements HarnessAdapter {
       ]
         .filter(Boolean)
         .join('\n\n');
-      // Same-authority cold final reconciliation is a read, never a new
-      // prompt. The reader/journal must prove the completed current-Run turn.
-      // Ordinary question waits and explicit legacy paths keep their lifecycle.
-      if (
-        checkedAssistant &&
-        fresh &&
-        prepared?.requiresRecovery &&
-        assistant?.hasPriorRoot
-      ) {
-        try {
-          restoredFinal = await runtime.client.assistant(
-            'joinForFinalDelivery',
-            {
-              nativeSessionId: threadId,
-            },
-          );
-          if (!assistant.failureUsage) finalDeliveryUnavailable();
-          restoredUsage = await assistant.failureUsage!();
-          turnId = restoredOriginTurnId ?? turnId;
-        } catch {
-          finalDeliveryUnavailable();
-        }
-      }
       const preparationMs = performance.now() - preparationStarted;
       timing.mark('preparationCompleted');
       // This receipt measures preparation before prompting. Its own write is
@@ -1037,7 +696,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         },
       });
       if (runDelivery) {
-        if (input.assistants || !input.runDelivery) finalDeliveryUnavailable();
+        if (!input.runDelivery) finalDeliveryUnavailable();
         // Existing same-Run turns cannot authorize replay of the business prompt.
         if (!input.questionWait?.resume && (await runDelivery.readOrigin()))
           finalDeliveryUnavailable();
@@ -1066,22 +725,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
             'DSH execution was interrupted',
             false,
           );
-        let joined: Record<string, unknown> | null = restoredFinal;
-        const result = restoredFinal
-          ? {
-              answer: String(restoredFinal.answer ?? ''),
-              replyId:
-                typeof restoredFinal.publicMessageId === 'string'
-                  ? restoredFinal.publicMessageId
-                  : undefined,
-              usage: restoredUsage!.usage,
-              usageComplete: restoredUsage!.usageComplete,
-              cacheUsageKnown: restoredUsage!.cacheUsageKnown,
-              completionSource: undefined,
-              usageSource: undefined,
-              waitingForUser: undefined,
-            }
-          : await this.runOnce({
+        const completion: { candidate: Record<string, unknown> | null } = { candidate: null };
+        const result = await this.runOnce({
               runtime,
               start: deliveryRepair
                 ? () => nativeDelivery('repair', deliveryRepair!)
@@ -1094,7 +739,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
                 callIndex === 0 ? input.kernel.sessionReferences : undefined,
               signal: executionSignal,
               subscription: snapshot.route === 'openai-codex',
-              questionWait: !assistant ? input.questionWait : undefined,
+              questionWait: input.questionWait,
               resume: callIndex === 0 ? input.questionWait?.resume : undefined,
               settleDelivery: runDelivery
                 ? async (confirmSettled) => {
@@ -1107,7 +752,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
                     // candidate closes native ingress and waits once more.
                     // Keep runOnce's real notifications/usage subscribed across
                     // both waits, including any descendant-woken root turns.
-                    joined = await nativeDelivery('candidate', {
+                    completion.candidate = await nativeDelivery('candidate', {
                       sessionId: threadId,
                     });
                   }
@@ -1126,7 +771,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
                   },
                 };
               },
-              ...(checkedAssistant || runDelivery
+              ...(runDelivery
                 ? {
                     installTurnOriginBarrier: (
                       barrier: (settled?: boolean) => Promise<void>,
@@ -1137,7 +782,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
                 : {}),
               onTurn: async (nextTurnId) => {
                 turnId = nextTurnId;
-                if ((checkedAssistant || runDelivery) && !input.onTurnStarted)
+                if ((runDelivery) && !input.onTurnStarted)
                   finalDeliveryUnavailable();
                 await input.onTurnStarted?.({ threadId, turnId: nextTurnId });
               },
@@ -1205,6 +850,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
                 await emit(event);
               },
             });
+        const joined = completion.candidate;
         deliveryRepair = undefined;
         usage.inputTokens += result.usage.inputTokens;
         usage.cachedInputTokens += result.usage.cachedInputTokens;
@@ -1225,8 +871,6 @@ export class DshHarnessAdapter implements HarnessAdapter {
         // do not reuse it across tools, resumed waits or assistant work.
         const plainCompletion =
           !toolCall &&
-          !input.assistants &&
-          !assistant &&
           !input.finalDelivery &&
           !runDelivery &&
           callIndex === 0 &&
@@ -1234,30 +878,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
           !toolActivityObserved;
         if (!plainCompletion) await checkContent('afterNativeResult');
         if (!toolCall) {
-          if (assistantAdmissionFailure) throw assistantAdmissionFailure;
           // These capabilities remain in this call frame. Never attach them to
           // Harness events, model prompts, execution results or failure diagnostics.
-          const finalDelivery = assistant
-            ? checkedAssistant
-              ? assistant.finalDelivery
-              : undefined
-            : (runDelivery ?? input.finalDelivery);
-          if (checkedAssistant && (!finalDelivery || !assistant?.finish))
-            finalDeliveryUnavailable();
-          if (assistant && !joined) {
-            try {
-              joined = await runtime.client.assistant(
-                checkedAssistant ? 'joinForFinalDelivery' : 'join',
-                {
-                  nativeSessionId: threadId,
-                },
-              );
-            } catch {
-              // A missing same-Run durable boundary cannot authorize a replay
-              // or a fallback to runOnce's observed/last assistant message.
-              finalDeliveryUnavailable();
-            }
-          }
+          const finalDelivery = runDelivery ?? input.finalDelivery;
           if (runDelivery) {
             if (!joined) finalDeliveryUnavailable();
             const inspection = await runDelivery.inspect({
@@ -1284,7 +907,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           const privateId =
             /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
           if (
-            (checkedAssistant || runDelivery) &&
+            (runDelivery) &&
             (!joined ||
               typeof joined.answer !== 'string' ||
               !joined.answer.trim() ||
@@ -1300,12 +923,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
               !privateId.test(joined.completionToken) ||
               rootBinding?.nativeSessionId !== threadId ||
               rootBinding?.runId !==
-                (runDelivery?.rootRunId ?? input.assistants!.rootRunId) ||
+                runDelivery!.rootRunId ||
               typeof rootBinding?.bindingId !== 'string' ||
               !privateId.test(rootBinding.bindingId))
           )
             finalDeliveryUnavailable();
-          if (assistantAdmissionFailure) throw assistantAdmissionFailure;
           const nativeCandidate =
             typeof joined?.answer === 'string' ? joined.answer : result.answer;
           const projectedCandidate =
@@ -1328,7 +950,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
                         durableSeq: joined.durableSeq as number,
                         nativeBindingId: rootBinding!.bindingId as string,
                         rootRunId:
-                          runDelivery?.rootRunId ?? input.assistants!.rootRunId,
+                          runDelivery!.rootRunId,
                       }
                     : {}),
                   attempt: input.attempt,
@@ -1388,88 +1010,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
             runDelivery.finish(proof);
             checkedDeliveryProof = proof;
           }
-          if (assistant) {
-            // The owned native tree stays held through facts/policy and finish.
-            // Stop and await the active-run
-            // poll before persisting a terminal root, whose authority is no
-            // longer admissible. Finalization performs its own current check.
-            if (cancellationTimer) clearInterval(cancellationTimer);
-            await cancellationTask;
-            executionSignal.throwIfAborted();
-            // finish deliberately clears the native Run-bound maps.
-            await captureAssistantDiagnostics();
-            let proof: FinalDeliveryProof | undefined;
-            if (checkedAssistant) {
-              if (!joined || !deliveryReceipt) finalDeliveryUnavailable();
-              proof = Object.freeze({
-                nativeSessionId: threadId,
-                publicMessageId: joined!.publicMessageId as string,
-                durableSeq: joined!.durableSeq as number,
-                nativeBindingId: rootBinding!.bindingId as string,
-                nativeCandidateDigest: deliveryReceipt!.nativeCandidateDigest,
-                candidateDigest: deliveryReceipt!.candidateDigest,
-                factSetDigest: deliveryReceipt!.factSetDigest,
-                attempt: input.attempt,
-                generation,
-              });
-              try {
-                const released = await runtime.client.assistant('finish', {
-                  nativeSessionId: threadId,
-                  completionToken: joined!.completionToken,
-                  candidateDigest: proof.nativeCandidateDigest,
-                  factSetDigest: proof.factSetDigest,
-                });
-                if (
-                  released.released !== true ||
-                  released.publicMessageId !== proof.publicMessageId ||
-                  released.durableSeq !== proof.durableSeq ||
-                  released.textDigest !== proof.nativeCandidateDigest ||
-                  released.factSetDigest !== proof.factSetDigest
-                )
-                  finalDeliveryUnavailable();
-              } catch {
-                finalDeliveryUnavailable();
-              }
-            } else {
-              // Explicit frozen legacy mode preserves the original native and
-              // runtime finalization. Missing checked evidence never selects it.
-              await runtime.client.assistant('finish', {
-                nativeSessionId: threadId,
-              });
-            }
-            try {
-              assistantOutcome = checkedAssistant
-                ? await assistant.finish?.(proof!)
-                : await assistant.finish?.();
-            } catch (error) {
-              executionSignal.throwIfAborted();
-              if (error instanceof HandlerError && !error.retryable)
-                throw error;
-              finalDeliveryUnavailable();
-            }
-            const outcome = assistantOutcome ?? finalDeliveryUnavailable();
-            assistantFinished = true;
-            Object.assign(usage, outcome.usage);
-            if (!['completed', 'partial'].includes(outcome.status))
-              throw new AssistantExecutionUnresolvedError(
-                usage,
-                outcome.usageComplete,
-                assistantDiagnostics,
-              );
-            if (outcome.status === 'completed') checkedDeliveryProof = proof;
-          }
           answer = projectedCandidate;
-          if (assistantOutcome?.status === 'partial')
-            await emit({
-              type: 'native.event',
-              presentation: 'lifecycle',
-              status: 'failed',
-              label: '任务尚未完成',
-              summary:
-                '子智能体已返回可用内容，但仍有未完成事项；已有结果已保留。',
-              sourceEventType: 'allrice/assistant-partial',
-              sourcePayload: { status: 'partial' },
-            });
           timing.mark('beforePublication');
           await emit({
             type: 'assistant.completed',
@@ -1535,23 +1076,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
               name: toolCall.name,
               argumentsDigest: envelopeDigest(toolCall.arguments),
             });
-          const assistantResult = assistant
-            ? await assistant.handle('tool', {
-                nativeSessionId: threadId,
-                callId: toolCall.id,
-                name: toolCall.name,
-                arguments: toolCall.arguments,
-              })
-            : null;
-          const toolResult = assistantResult
-            ? {
-                modelContent: String(assistantResult.modelContent),
-                summary: String(assistantResult.summary),
-                ...(typeof assistantResult.itemCount === 'number'
-                  ? { itemCount: assistantResult.itemCount }
-                  : {}),
-              }
-            : await input.onToolCall(toolCall);
+          const toolResult = await input.onToolCall(toolCall);
           if (input.progress)
             await input.progress({
               action: 'finish',
@@ -1609,11 +1134,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
           // confirmed rejections are results for DSH to handle, just as in the
           // native tool path; assistant settlement keeps its own lifecycle.
           const confirmedFailure =
-            !input.assistants &&
-            !assistant &&
-            !executionSignal.aborted &&
+                !executionSignal.aborted &&
             !contentAuthorizationFailure &&
-            !assistantAdmissionFailure &&
             error instanceof HandlerError &&
             !!runId &&
             isConfirmedToolFailure(error, {
@@ -1656,8 +1178,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     } catch (caught) {
       if (
         caught instanceof NativeQuestionParked &&
-        input.questionWait &&
-        !assistant
+        input.questionWait
       ) {
         for (const key of [
           'inputTokens',
@@ -1679,7 +1200,6 @@ export class DshHarnessAdapter implements HarnessAdapter {
       // generic retryable wrapper. Never classify from model-supplied text.
       const error =
         contentAuthorizationFailure ??
-        assistantAdmissionFailure ??
         (input.questionWait?.resume &&
         caught instanceof HandlerError &&
         caught.retryable
@@ -1690,42 +1210,12 @@ export class DshHarnessAdapter implements HarnessAdapter {
             )
           : caught);
       stopWindow.begin();
-      // Capture before cancel/drop destroys the host, without widening root
-      // authority or reading another native session's transcript.
-      await captureAssistantDiagnostics();
-      attachAssistantFailureDiagnostics(error, assistantDiagnostics);
-      let failedUsage: AssistantFailureUsage | undefined = assistant
-        ? undefined
-        : (interruptedUsage ?? completedUsage);
-      if (cancellationTimer) clearInterval(cancellationTimer);
-      await stopWindow
-        .within(() => cancellationTask ?? Promise.resolve())
-        .catch(() => {});
+      const failedUsage = interruptedUsage ?? completedUsage;
       let cleanupFailure: { error: unknown } | undefined;
       try {
-        if (
-          assistant &&
-          !assistantFinished &&
-          !assistantFailureSignal.signal.aborted
-        )
-          await stopAssistants();
-      } catch {
-        // Revoked membership/lease may forbid tree reads; still close our host.
-      } finally {
-        // Read only genuine durable usage while the original receipt window is
-        // open; a failed/late read never replaces known earlier evidence.
-        if (assistant?.failureUsage)
-          failedUsage =
-            (await stopWindow
-              .within(() => assistant.failureUsage!())
-              .catch(() => undefined)) ?? failedUsage;
-        try {
-          await dropOwnedHost();
-        } catch (closeError) {
-          // Keep the execution failure and its usage receipt as the primary
-          // outcome. Pool ownership/durable close evidence remain unresolved.
-          cleanupFailure = { error: closeError };
-        }
+        await dropOwnedHost();
+      } catch (closeError) {
+        cleanupFailure = { error: closeError };
       }
       // The original dispatch owns this closure. dropOwnedHost awaits the
       // exact child's close event, rather than treating interrupt/abort, a
@@ -1744,10 +1234,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
           });
       const attachUsage = (failure: unknown) => {
         const runId =
-          input.assistants?.rootRunId ??
-          input.executionEnvironment.ALLRICE_RUN_ID;
+            input.executionEnvironment.ALLRICE_RUN_ID;
         if (failedUsage && runId)
-          attachAssistantFailureUsage(
+          attachExecutionFailureUsage(
             failure,
             runId,
             input.attempt,
@@ -1766,30 +1255,14 @@ export class DshHarnessAdapter implements HarnessAdapter {
         : failure;
       // An unconfirmed close may conservatively disable a retryable failure.
       // Bind trusted usage/diagnostics to the exact object the Worker receives.
-      attachAssistantFailureDiagnostics(finalFailure, assistantDiagnostics);
       attachUsage(finalFailure);
       throw finalFailure;
     } finally {
       try {
-        if (cancellationTimer) clearInterval(cancellationTimer);
         input.signal.removeEventListener('abort', onAbort);
-        if (stopWindow.started) {
-          await stopWindow
-            .within(() => rootStopTask ?? cancellationTask ?? Promise.resolve())
-            .catch(() => {});
-          if (assistant)
-            await stopWindow
-              .within(() => runtime.client.assistant('flush', {}))
-              .catch(() => {});
-        } else {
-          await cancellationTask?.catch(() => {});
-          if (assistant)
-            await runtime.client.assistant('flush', {}).catch(() => {});
-        }
         this.runtimePool.touch(runtime);
         runtime.client.setRequestHandler(null);
       } finally {
-        this.runtimePool.clearInputDelivery(runtime);
         stopWindow.dispose();
         unsubscribeModelTiming();
       }
@@ -1800,33 +1273,6 @@ export class DshHarnessAdapter implements HarnessAdapter {
       usage,
       usageComplete,
       cacheUsageKnown,
-      ...(assistantOutcome
-        ? {
-            assistantStatus: assistantOutcome.status as 'completed' | 'partial',
-            usageComplete: assistantOutcome.usageComplete,
-            cacheUsageKnown: assistantOutcome.cacheUsageKnown,
-            costEstimateAvailable: assistantOutcome.costEstimateAvailable,
-            ...(assistantOutcome.billingMode === 'subscription'
-              ? {
-                  billingMode: assistantOutcome.billingMode,
-                  costBasis: assistantOutcome.costBasis,
-                  estimatedCostCents: assistantOutcome.estimatedCostCents,
-                  subscriptionSnapshotDigest:
-                    assistantOutcome.subscriptionSnapshotDigest,
-                  actualCostKnown: assistantOutcome.actualCostKnown,
-                }
-              : {}),
-            ...(assistantOutcome.priceSnapshotDigest
-              ? {
-                  estimatedCostCents: assistantOutcome.estimatedCostCents,
-                  costBasis: assistantOutcome.costBasis,
-                  priceSnapshotDigest: assistantOutcome.priceSnapshotDigest,
-                  costCurrency: assistantOutcome.costCurrency,
-                  actualCostKnown: assistantOutcome.actualCostKnown,
-                }
-              : {}),
-          }
-        : {}),
       provider: snapshot.route,
       model: snapshot.model,
       threadId,
@@ -1845,9 +1291,6 @@ export class DshHarnessAdapter implements HarnessAdapter {
         )
         .catch(() => null),
     };
-    // Partial outcomes return to the Worker before its completion gate throws.
-    // Preserve the same closed sidecar without adding a serializable result field.
-    attachAssistantFailureDiagnostics(result, assistantDiagnostics);
     if (checkedDeliveryProof)
       attachCheckedFinalDelivery(result, checkedDeliveryProof);
     return result;
@@ -1882,7 +1325,6 @@ export class DshHarnessAdapter implements HarnessAdapter {
             kind: input.inputKind,
           }
         : undefined,
-      input.turnId,
     );
     if (input.inputKind) {
       const { RuntimeNativeInputProofSchema } =
@@ -1927,7 +1369,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     resume?: NonNullable<HarnessExecutionInput['questionWait']>['resume'];
     /** Hold event intake through public wait, input pause and final candidate. */
     settleDelivery?(confirmSettled: () => void): Promise<void>;
-    onFailureUsage(receipt: AssistantFailureUsage): void;
+    onFailureUsage(receipt: ExecutionFailureUsage): void;
     onTurn(turnId: string): Promise<void>;
     /** Private persistence ACK, never a model-supplied barrier. */
     installTurnOriginBarrier?(

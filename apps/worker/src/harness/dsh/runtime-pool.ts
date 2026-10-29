@@ -26,8 +26,6 @@ import {
 import type {
   HarnessExecutionInput,
   HarnessRuntimeProcessSnapshot,
-  HarnessInputDeliveryHold,
-  HarnessInputDeliveryPort,
 } from '../adapter.js';
 import {
   DeploymentDshCredentialResolver,
@@ -223,19 +221,6 @@ export class DshRuntimePool {
   private readonly failedCloses = new WeakSet<DshRuntime>();
   private closing = false;
   private closeTask: Promise<void> | undefined;
-  private readonly inputSteers = new Map<DshRuntime, Set<Promise<boolean>>>();
-  private readonly inputHolds = new Map<
-    DshRuntime,
-    {
-      gateId: string;
-      turnId: string;
-      runId: string;
-      phase: 'paused' | 'releasing' | 'released';
-      hold: HarnessInputDeliveryHold;
-      paused: Promise<Record<string, unknown>>;
-      released?: Promise<Record<string, unknown>>;
-    }
-  >();
   private readonly credentialResolver: DshCredentialResolver;
   private readonly runtimeCommand: string | undefined;
   private readonly runtimeArgs: readonly string[];
@@ -344,8 +329,6 @@ export class DshRuntimePool {
         this.runtimes.get(threadId) !== runtime ||
         !(idleMs >= this.idleCloseMs) ||
         this.leases.has(threadId) ||
-        this.inputHolds.has(runtime) ||
-        this.inputSteers.get(runtime)?.size ||
         this.runtimeCloseTasks.has(runtime)
       )
         continue;
@@ -777,10 +760,7 @@ export class DshRuntimePool {
       );
     }
     const credentialResolutionMs = performance.now() - credentialStarted;
-    const maxTokens =
-      input.input.assistants?.maxOutputTokens ??
-      input.input.maxOutputTokens ??
-      (input.input.assistants ? 16_000 : undefined);
+    const maxTokens = input.input.maxOutputTokens;
     const nativeTools = await selectDshNativeTools(
       input.input.tools.map((tool) => tool.name),
       nativeIdentity?.args[0],
@@ -854,7 +834,6 @@ export class DshRuntimePool {
       durableQuestions: !!input.input.questionWait,
       // Run authority is rebound by the adapter and released by finish.
       // Only process configuration belongs in the session reuse key.
-      assistantsEnabled: !!input.input.assistants,
       runDeliveryEnabled: !!input.input.runDelivery,
       maxTokens,
       nativeTools: [...nativeTools].sort(),
@@ -976,7 +955,6 @@ export class DshRuntimePool {
       ...(questionWait.mode === 'default'
         ? {}
         : { ALLRICE_ASK_USER_TIMEOUT: String(questionTimeout) }),
-      ...(input.input.assistants ? { ALLRICE_ASSISTANTS_ENABLED: '1' } : {}),
       ...(input.input.progress ? { ALLRICE_PROGRESS_GUARD_ENABLED: '1' } : {}),
       ...(input.input.progress &&
       input.input.executionEnvironment.ALLRICE_MAINTENANCE_OUTPUT_TOKENS
@@ -1150,7 +1128,6 @@ export class DshRuntimePool {
       turnId: string;
       kind: 'steer_current' | 'ask_user';
     },
-    originalTurnId?: string,
   ) {
     const runtime = this.runtimes.get(threadId);
     if (!runtime) {
@@ -1160,150 +1137,7 @@ export class DshRuntimePool {
         true,
       );
     }
-    const held = this.inputHolds.get(runtime);
-    if (
-      held?.phase === 'paused' &&
-      held.turnId === (originalTurnId ?? typed?.turnId)
-    )
-      throw new HandlerError(
-        'ASSISTANT_COMPLETING',
-        'ASSISTANT_COMPLETING',
-        false,
-      );
-    const work = runtime.client.steer(runtime.sessionId, message, typed);
-    const outcome = work.then(
-      () => false,
-      (error: unknown) =>
-        error instanceof HandlerError && error.code === 'ASSISTANT_COMPLETING',
-    );
-    const active = this.inputSteers.get(runtime) ?? new Set<Promise<boolean>>();
-    this.inputSteers.set(runtime, active);
-    active.add(outcome);
-    void outcome.then(() => {
-      active.delete(outcome);
-      if (!active.size && this.inputSteers.get(runtime) === active)
-        this.inputSteers.delete(runtime);
-    });
-    return work;
-  }
-
-  /** Native/Worker private handshake. ACK means drained control state, never adopted input. */
-  async inputDeliveryControl(
-    runtime: DshRuntime,
-    operation: 'pause' | 'release',
-    params: Record<string, unknown>,
-    context: {
-      runId: string;
-      turnId(): string | null;
-      signal: AbortSignal;
-      delivery: HarnessInputDeliveryPort;
-      assertAuthority(): Promise<void>;
-    },
-  ) {
-    const gateId = UuidSchema.parse(params.gateId);
-    if (
-      this.runtimes.get(runtime.sessionId) !== runtime ||
-      params.nativeSessionId !== runtime.sessionId ||
-      params.runId !== context.runId ||
-      typeof params.turnId !== 'string'
-    )
-      throw new HandlerError(
-        'INPUT_GATE_SCOPE_CHANGED',
-        'INPUT_GATE_SCOPE_CHANGED',
-        false,
-      );
-    const prior = this.inputHolds.get(runtime);
-    if (operation === 'release') {
-      if (
-        !prior ||
-        prior.gateId !== gateId ||
-        prior.turnId !== params.turnId ||
-        prior.runId !== context.runId
-      )
-        throw new HandlerError(
-          'INPUT_GATE_SCOPE_CHANGED',
-          'INPUT_GATE_SCOPE_CHANGED',
-          false,
-        );
-      return (prior.released ??= (async () => {
-        prior.phase = 'releasing'; // allow the existing poller's real handoff RPCs
-        try {
-          await prior.hold.resumeBeforeTurnClose();
-          await context.assertAuthority();
-          context.signal.throwIfAborted();
-          if (context.turnId() !== prior.turnId)
-            throw new HandlerError(
-              'INPUT_GATE_SCOPE_CHANGED',
-              'INPUT_GATE_SCOPE_CHANGED',
-              false,
-            );
-          return { released: true, gateId, turnId: prior.turnId };
-        } finally {
-          prior.phase = 'released';
-          prior.hold.dispose();
-        }
-      })());
-    }
-    context.signal.throwIfAborted();
-    if (context.turnId() !== params.turnId)
-      throw new HandlerError(
-        'INPUT_GATE_SCOPE_CHANGED',
-        'INPUT_GATE_SCOPE_CHANGED',
-        false,
-      );
-    if (prior?.gateId === gateId) {
-      if (prior.phase !== 'paused')
-        throw new HandlerError(
-          'INPUT_GATE_RELEASED',
-          'INPUT_GATE_RELEASED',
-          false,
-        );
-      return prior.paused;
-    }
-    if (prior && prior.phase !== 'released')
-      throw new HandlerError('INPUT_GATE_BUSY', 'INPUT_GATE_BUSY', false);
-    const hold = context.delivery.pause({
-      threadId: runtime.sessionId,
-      turnId: params.turnId,
-    });
-    const inFlight = [...(this.inputSteers.get(runtime) ?? [])];
-    const state = {
-      gateId,
-      turnId: params.turnId,
-      runId: context.runId,
-      phase: 'paused' as 'paused' | 'releasing' | 'released',
-      hold,
-      paused: Promise.resolve({}) as Promise<Record<string, unknown>>,
-    };
-    this.inputHolds.set(runtime, state);
-    state.paused = (async () => {
-      const outcomes = (
-        await Promise.all([hold.settled, Promise.all(inFlight)])
-      )[1];
-      if (outcomes.some((knownRefusal) => !knownRefusal) || !hold.current())
-        throw new HandlerError(
-          'INPUT_GATE_NOT_QUIESCENT',
-          'INPUT_GATE_NOT_QUIESCENT',
-          false,
-        );
-      await context.assertAuthority();
-      context.signal.throwIfAborted();
-      if (!hold.current() || context.turnId() !== state.turnId)
-        throw new HandlerError(
-          'INPUT_GATE_SCOPE_CHANGED',
-          'INPUT_GATE_SCOPE_CHANGED',
-          false,
-        );
-      return { paused: true, gateId, turnId: state.turnId };
-    })();
-    return state.paused;
-  }
-
-  clearInputDelivery(runtime: DshRuntime) {
-    this.inputHolds.get(runtime)?.hold.dispose();
-    this.inputHolds.delete(runtime);
-    // A prior caller may have returned while its RPC is still unresolved.
-    if (!this.inputSteers.get(runtime)?.size) this.inputSteers.delete(runtime);
+    return runtime.client.steer(runtime.sessionId, message, typed);
   }
 
   inventory(): readonly HarnessRuntimeProcessSnapshot[] {
@@ -1374,7 +1208,6 @@ export class DshRuntimePool {
     const task = (async () => {
       // Try the process close even if an input-hold disposer itself fails.
       const results = await Promise.allSettled([
-        Promise.resolve().then(() => this.clearInputDelivery(runtime)),
         Promise.resolve().then(() => runtime.client.close()),
       ]);
       const failures = results.flatMap((result) =>

@@ -8,7 +8,7 @@ import {
   listToolBrokerFiles,
 } from './execution/tool-broker.ts';
 import { linkWorkspaceFileToSession } from './workspace/service.ts';
-import { assistantFixture } from './assistant-runtime.fixture.ts';
+import { runtimeTaskFixture } from './runtime.fixture.ts';
 import {
   createKnowledgeSource,
   manageEmployeeCapabilities,
@@ -24,9 +24,9 @@ import type {
 } from '@allrice/contracts';
 import * as client from './core/client.ts';
 import {
-  createAssistantFixtureDatabase,
-  assistantFixtureStorage,
-} from './assistant-runtime.fixture.ts';
+  createRuntimeFixtureDatabase,
+  runtimeFixtureStorage,
+} from './runtime.fixture.ts';
 import {
   ensureBootstrapPortalPrincipal,
   createSession,
@@ -72,11 +72,11 @@ const suite =
 suite(
   'fixed reference files share by current ownership, not original Session or workspace',
   () => {
-    let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
+    let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
       admin: RequestContext;
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-      f = await createAssistantFixtureDatabase();
+      f = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
       const p = await ensureBootstrapPortalPrincipal({
         organizationSlug: 'allrice-platform',
@@ -174,7 +174,7 @@ suite(
     });
     async function upload(c: RequestContext, v = input(c)) {
       const p = await prepareReferenceUpload(c, v);
-      await assistantFixtureStorage(f.db).put(
+      await runtimeFixtureStorage(f.db).put(
         p.object,
         new Blob([new Uint8Array(p.bytes)]).stream(),
       );
@@ -219,7 +219,7 @@ suite(
       expect(file.object.id).toBe(p.object.id);
       expect(
         await new Response(
-          await assistantFixtureStorage(f.db).get(file.object),
+          await runtimeFixtureStorage(f.db).get(file.object),
         ).text(),
       ).toContain('一千元');
       const claim = await claimReferenceProcessing();
@@ -484,7 +484,7 @@ suite(
     it.each(['text/plain', 'text/csv'])(
       'rejects retained %s files through legacy broad Knowledge, bindings, tool readers and attachment linking',
       async (mediaType) => {
-        const a = await assistantFixture(f.db);
+        const a = await runtimeTaskFixture(f.db);
         const c = {
           ...(await authenticateSession(
             (await createSession(a.context.actor.id)).token,
@@ -509,7 +509,7 @@ suite(
           immutable: false,
           retentionUntil: null,
         });
-        await assistantFixtureStorage(f.db).put(
+        await runtimeFixtureStorage(f.db).put(
           ordinary.object,
           new Blob([new Uint8Array(retained.bytes)]).stream(),
         );

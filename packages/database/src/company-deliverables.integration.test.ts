@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as client from './core/client.ts';
 import {
-  assistantFixtureStorage,
-  createAssistantFixtureDatabase,
-} from './assistant-runtime.fixture.ts';
+  runtimeFixtureStorage,
+  createRuntimeFixtureDatabase,
+} from './runtime.fixture.ts';
 import { tenantValidationFixture } from './tenant-validation.fixture.ts';
 import {
   authenticateSession,
@@ -30,7 +30,7 @@ const suite =
 suite(
   'company delivery library uses immutable business versions (isolated PostgreSQL)',
   () => {
-    let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
+    let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
       a: Awaited<ReturnType<typeof tenantValidationFixture>>,
       b: typeof a;
     let admin: NonNullable<Awaited<ReturnType<typeof authenticateSession>>>;
@@ -38,7 +38,7 @@ suite(
     let original: StorageObject, originalBytes: Uint8Array;
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-      f = await createAssistantFixtureDatabase();
+      f = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
       const p = await ensureBootstrapPortalPrincipal(
         {
@@ -71,7 +71,7 @@ suite(
         )
       ).object;
       originalBytes = await readArtifactBytes(
-        assistantFixtureStorage(f.db),
+        runtimeFixtureStorage(f.db),
         original,
       );
     }, 120000);
@@ -101,7 +101,7 @@ suite(
         objectId = randomUUID();
         const key = original.key.replace(original.id, objectId);
         if (!deleted)
-          await assistantFixtureStorage(f.db).put(
+          await runtimeFixtureStorage(f.db).put(
             { ...original, id: objectId, key },
             new Blob([new Uint8Array(originalBytes)]).stream(),
           );
@@ -159,10 +159,10 @@ suite(
         immutable: true,
       };
       const bytes = await readArtifactBytes(
-        assistantFixtureStorage(f.db),
+        runtimeFixtureStorage(f.db),
         source,
       );
-      await assistantFixtureStorage(f.db).put(
+      await runtimeFixtureStorage(f.db).put(
         object,
         new Blob([new Uint8Array(bytes)]).stream(),
       );
@@ -257,7 +257,7 @@ suite(
         f.db,
       );
       const bytes = await readArtifactBytes(
-        assistantFixtureStorage(f.db),
+        runtimeFixtureStorage(f.db),
         file.object,
       );
       expect(Buffer.from(bytes).toString()).toContain(

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import type { RequestContext } from '@allrice/contracts';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import {
   ensureBootstrapPortalPrincipal,
   createSession,
@@ -50,7 +50,7 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('private publication canonical queue and authority boundaries', () => {
-  let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
+  let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
     admin: RequestContext,
     other: RequestContext,
     execution: RequestContext,
@@ -71,7 +71,7 @@ suite('private publication canonical queue and authority boundaries', () => {
     author,
   };
   beforeAll(async () => {
-    f = await createAssistantFixtureDatabase();
+    f = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
     vi.stubEnv(
       'ALLRICE_PLATFORM_ADMIN_EMAILS',

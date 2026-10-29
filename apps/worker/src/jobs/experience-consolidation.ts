@@ -3,7 +3,7 @@ import { createJobNativeBinding } from '../harness/native-session-binding.js';
 import {
   InternalKernelRequestSchema,
   RouteDecisionSchema,
-  resolveAssistantSubscriptionSnapshot,
+  resolveSubscriptionSnapshot,
   validateExperienceDraftOutput,
 } from '@allrice/contracts';
 import {
@@ -17,7 +17,7 @@ import {
 } from '@allrice/database';
 import type { ClaimedJobHandlerInput } from '../job-runner.js';
 import { DshHarnessAdapter } from '../harness/dsh-adapter.js';
-import { getAssistantFailureUsage } from '../harness/dsh/assistant-outcome.js';
+import { getExecutionFailureUsage } from '../harness/dsh/execution-failure-usage.js';
 import { providerSnapshotForModelTarget } from '../routing/provider-snapshot.js';
 import {
   checkCompletedModelBudget,
@@ -186,7 +186,7 @@ export async function executeExperienceConsolidation({
       });
   }, 2000);
   try {
-    const subscription = resolveAssistantSubscriptionSnapshot({
+    const subscription = resolveSubscriptionSnapshot({
       occurrenceId: occurrence.id,
       modelSnapshot: model,
       decision: route,
@@ -308,7 +308,7 @@ export async function executeExperienceConsolidation({
     });
     return output;
   } catch (error) {
-    const failed = getAssistantFailureUsage(
+    const failed = getExecutionFailureUsage(
       error,
       job.context.runId,
       job.job.attempt,

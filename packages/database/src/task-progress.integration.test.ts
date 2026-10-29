@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   RouteDecisionSchema,
-  resolveAssistantSubscriptionSnapshot,
+  resolveSubscriptionSnapshot,
   defaultAssistantRunConfiguration,
 } from '@allrice/contracts';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
@@ -78,7 +78,7 @@ suite(
       });
       await recordRouteDecision(decision, f.db);
       if (proof) {
-        const snapshot = resolveAssistantSubscriptionSnapshot({
+        const snapshot = resolveSubscriptionSnapshot({
           sessionId: task.sessionId,
           modelSnapshot: frozen,
           decision,

@@ -13,7 +13,7 @@ import {
   ArtifactBrowserVerificationSchema,
   BrowserObservationSchema,
 } from '@allrice/contracts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createLocalBrowserFixture } from './local-browser.fixture.ts';
 import {
   installBrowserControlGrant,
@@ -87,7 +87,7 @@ function deferred<T>() {
 suite(
   'saved HTML verification: exact authority, native wire, real runsc and workbench parsing',
   () => {
-    let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
+    let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
       storageRoot: string;
     beforeAll(async () => {
       for (const key of [
@@ -99,7 +99,7 @@ suite(
         'ALLRICE_CLOUD_RUNNER_ENABLED',
       ])
         vi.stubEnv(key, '1');
-      database = await createAssistantFixtureDatabase();
+      database = await createRuntimeFixtureDatabase();
       storageRoot = await mkdtemp(join(tmpdir(), 'allrice-static-browser-qa-'));
       vi.spyOn(client, 'getDatabase').mockReturnValue(database.db);
     }, 60000);

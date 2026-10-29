@@ -1,6 +1,6 @@
 import { beforeAll, afterAll, it, expect, describe, vi } from 'vitest';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import {
   ensureBootstrapPortalPrincipal,
   createSession,
@@ -20,9 +20,9 @@ const suite =
 suite(
   'unified portal account migration preserves existing company data',
   () => {
-    let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     beforeAll(async () => {
-      f = await createAssistantFixtureDatabase();
+      f = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
     }, 120000);
     afterAll(async () => {

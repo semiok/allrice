@@ -18,8 +18,8 @@ import {
   type EmployeeRuntimePackage,
 } from '@allrice/contracts';
 import * as client from '../core/client.ts';
-import { createAssistantFixtureDatabase } from '../assistant-runtime.fixture.ts';
-import { createAssistantAuthorityFixture } from '../assistant-authority.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
+import { createRunAuthorityFixture } from '../run-authority.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
 import { createSession, authenticateSession } from '../identity.ts';
 import {
@@ -83,7 +83,7 @@ type SourceKind =
 integration(
   'MET195 current execution binding: complete isolated SQL chain',
   () => {
-    let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let schema: string;
     let currentPackage: EmployeeRuntimePackage;
     let plainPackage: EmployeeRuntimePackage;
@@ -116,7 +116,7 @@ integration(
         .mockRejectedValue(
           Error('This isolated SQL test must not make external requests'),
         );
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
       const [scope] =
         await fixture.db`select current_schema() name,current_database() database`;
@@ -249,7 +249,7 @@ integration(
 
     async function subject(kind: SourceKind, legacyBirth = false) {
       const pkg = kind === 'default-rice' ? undefined : packageFor(kind);
-      const f = await createAssistantAuthorityFixture(fixture.db, {
+      const f = await createRunAuthorityFixture(fixture.db, {
         configure: false,
         memberRole: 'member',
         runtimePackage: pkg,

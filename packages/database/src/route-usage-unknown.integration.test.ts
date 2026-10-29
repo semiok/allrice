@@ -4,8 +4,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { RouteDecisionSchema, RouteOutcomeSchema } from '@allrice/contracts';
 import type {
   assistantFixture as AssistantFixture,
-  createAssistantFixtureDatabase as CreateFixtureDatabase,
-} from './assistant-runtime.fixture.ts';
+  createRuntimeFixtureDatabase as CreateFixtureDatabase,
+} from './runtime.fixture.ts';
 import {
   completeRouteDecision,
   recordRouteDecision,
@@ -37,10 +37,10 @@ integration('route usage unknown cost and completeness (real PG)', () => {
   let createFixture: typeof AssistantFixture;
   beforeAll(async () => {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-    const { createAssistantFixtureDatabase, assistantFixture } =
-      await import('./assistant-runtime.fixture.ts');
+    const { createRuntimeFixtureDatabase, assistantFixture } =
+      await import('./runtime.fixture.ts');
     createFixture = assistantFixture;
-    database = await createAssistantFixtureDatabase();
+    database = await createRuntimeFixtureDatabase();
   }, 120000);
   afterAll(async () => {
     await database?.close();

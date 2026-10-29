@@ -1,9 +1,9 @@
 import { mutateCompanyAsset } from './company-assets.ts';
-import { assistantFixtureStorage } from './assistant-runtime.fixture.ts';
+import { runtimeFixtureStorage } from './runtime.fixture.ts';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createEmployeeAdministrationFixture } from './employee-administration.fixture.ts';
 import {
   authenticateSession,
@@ -36,9 +36,9 @@ const suite =
 suite(
   'MET-159 published employee deployments (isolated PostgreSQL; no model)',
   () => {
-    let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     beforeAll(async () => {
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     }, 120000);
     afterAll(async () => {
@@ -128,7 +128,7 @@ suite(
           f.admin.context,
           f.tenant.organizationId,
           value,
-          assistantFixtureStorage(fixture.db),
+          runtimeFixtureStorage(fixture.db),
           true,
           fixture.db,
         );

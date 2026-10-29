@@ -1055,7 +1055,7 @@ export async function inspectCompanyDeliverable(
       left join allrice_workbench_artifacts a on a.version_id=dv.id and a.organization_id=dv.organization_id and a.workspace_id=dv.workspace_id and a.owner_id=dv.owner_id
       where dv.id=${artifactId} and dv.organization_id=${organizationId} and dv.session_id is not null and dv.platform_test_run_id is null
         and exists(select 1 from allrice_employee_runs er where er.organization_id=dv.organization_id and er.workspace_id=dv.workspace_id and er.owner_id=dv.owner_id and er.session_id=dv.session_id
-          and (a.run_id is null or a.run_id=er.run_id) and not exists(select 1 from allrice_assistant_instances ai where ai.run_id=er.run_id and ai.run_id<>ai.root_run_id))
+          and (a.run_id is null or a.run_id=er.run_id))
         and ${businessDeliverablePredicate(tx)}`;
     if (!row) fail('artifact_not_found');
     await requireTenantInspectionScope(
@@ -1438,7 +1438,6 @@ export async function publishWorkbenchArtifact(
   development?: {
     requiredTool?:
       | 'workspace.export.create'
-      | 'assistant.development'
       | 'workspace.project'
       | 'browser.workspace'
       | 'workspace.brand_content.step';
@@ -1688,7 +1687,7 @@ export async function publishWorkbenchArtifact(
           true,
         );
       const requiredTool = development
-        ? (development.requiredTool ?? 'assistant.development')
+        ? (development.requiredTool ?? 'workspace.export.create')
         : derivedSource
           ? 'workspace.reconciliation.export'
           : 'workspace.export.create';

@@ -24,8 +24,6 @@ export async function completedBudgetAnswers(
       and er.owner_id=${input.ownerId} and er.session_id=${input.sessionId}
       and e.organization_id=r.organization_id and e.workspace_id=r.workspace_id
       and r.id in ${sql(input.runIds)} and r.state='failed'
-      and not exists(select 1 from allrice_assistant_roots a where a.root_run_id=r.id)
-      and not exists(select 1 from allrice_assistant_instances a where a.run_id=r.id)
       and r.error_code in ('MODEL_OUTPUT_BUDGET_EXCEEDED','MODEL_TOTAL_TOKEN_BUDGET_EXCEEDED')
       and e.event_type='assistant.text.completed'
       and e.payload->>'attempt'=j.attempt::text

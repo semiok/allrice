@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import {
   NativeJournalContractRowSchema,
   readNativeJournalContractHighWater,
@@ -18,9 +18,9 @@ const migration = await readFile(
 const rollback = Error('test transaction rollback');
 
 suite('0218 native generation binding migration', () => {
-  let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   beforeAll(async () => {
-    f = await createAssistantFixtureDatabase({
+    f = await createRuntimeFixtureDatabase({
       throughMigration: '0217_brand_content_feedback.sql',
     });
   }, 60_000);

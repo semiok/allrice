@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
 import type * as Client from './core/client.ts';
 
@@ -10,7 +10,7 @@ const suite =
     ? describe.sequential
     : describe.skip;
 type Fixture = Awaited<ReturnType<typeof createCloudExecutionFixture>>;
-let isolated: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+let isolated: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
 vi.mock('./core/client.ts', async (original) => ({
   ...(await original<typeof Client>()),
   getDatabase: () => isolated.db,
@@ -69,7 +69,7 @@ suite('cloud policy and health refresh lock ordering', () => {
     vi.stubEnv('ALLRICE_CLOUD_RUNNER_ENABLED', '1');
     vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
     vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
-    isolated = await createAssistantFixtureDatabase();
+    isolated = await createRuntimeFixtureDatabase();
   }, 60000);
   afterAll(async () => {
     await isolated?.close();

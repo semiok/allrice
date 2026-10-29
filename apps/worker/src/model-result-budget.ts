@@ -5,7 +5,6 @@ import { HandlerError } from './errors.js';
 type BudgetScope = {
   /** Derived from the server-verified frozen route, never from request input. */
   verifiedSubscription: boolean;
-  governedAssistants?: boolean;
   workflow?: boolean;
 };
 
@@ -54,13 +53,6 @@ export function checkCompletedModelBudget(
   },
 ) {
   const { result } = input;
-  // Accounting completeness is independent of deliverable completeness.
-  if (result.assistantStatus === 'partial')
-    throw new HandlerError(
-      'ASSISTANT_PARTIAL_RESULT',
-      'Only a partial answer was produced',
-      false,
-    );
   if (!result.answer.trim())
     throw new HandlerError(
       'EMPTY_RESPONSE',

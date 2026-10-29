@@ -24,7 +24,6 @@ import { browserControlEnabled } from './browser-control-authority.ts';
 import { localBrowserEnabled } from './local-browser-grants.ts';
 import { mcpExecutionEnabled } from './mcp-authority.ts';
 import { localMcpEnabled } from './local-mcp-connections.ts';
-import { assistantRuntimeEnabled } from './assistant-runtime.ts';
 import { changesetFeatureEnabled } from './changeset-service.ts';
 import { workbenchEnabled } from './artifact-review.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
@@ -32,7 +31,6 @@ import { employeePublicationTargets } from './employees/publication-targets.ts';
 
 export function listEmployeeToolAvailability() {
   const services: Record<EmployeeToolService, () => boolean> = {
-    assistants: assistantRuntimeEnabled,
     workbench: workbenchEnabled,
     changeset: changesetFeatureEnabled,
     local_command: localCommandFeatureEnabled,
@@ -225,11 +223,10 @@ export async function reviewEmployeePublication(
       }));
       for (const action of actions)
         if (
-          action.effect === 'deny' ||
-          (action.action === 'assistant.delegate' && action.effect !== 'allow')
+          action.effect === 'deny'
         )
           warnings.push(
-            `${target.organizationName} / ${target.name}：${action.action} 当前${action.effect === 'deny' ? '策略禁止' : '策略不满足执行条件'}（${action.reason}），请检查该租户的执行设置${action.action === 'assistant.delegate' ? '；子智能体委派需要允许执行' : ''}。`,
+            `${target.organizationName} / ${target.name}：${action.action} 当前${action.effect === 'deny' ? '策略禁止' : '策略不满足执行条件'}（${action.reason}），请检查该租户的执行设置。`,
           );
       return {
         id: target.id,

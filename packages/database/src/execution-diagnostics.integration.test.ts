@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, it, expect, vi } from 'vitest';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
 import { executionResourceObserver } from './execution-diagnostics.ts';
@@ -15,7 +15,7 @@ const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1' ? describe : describe.skip;
 suite('MET162 durable resource waiting', () => {
   it('advances twenty independent tenants and skips canceled/expired queue heads', async () => {
-    const f = await createAssistantFixtureDatabase();
+    const f = await createRuntimeFixtureDatabase();
     const storage = await mkdtemp(join(tmpdir(), 'allrice-met162-'));
     const spy = vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
     vi.stubEnv('ALLRICE_CLOUD_RUNNER_ENABLED', '1');

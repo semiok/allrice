@@ -11,7 +11,7 @@ import {
 } from 'vitest';
 
 import * as client from '../core/client.ts';
-import { createAssistantFixtureDatabase } from '../assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
 import { employeeManifest } from '../employees/employee-config.ts';
 import { readPlatformModelSettings } from './platform-model-settings.ts';
 import {
@@ -29,11 +29,11 @@ const integration =
 // The owned fixture seeds a Session identity only; no Run, Job, occurrence,
 // provider authorization, model request, tool call or live state is created.
 integration('model freeze full SQL chain: isolated PostgreSQL', () => {
-  let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   let schema: string;
 
   beforeAll(async () => {
-    fixture = await createAssistantFixtureDatabase();
+    fixture = await createRuntimeFixtureDatabase();
     const [scope] = await fixture.db<{ schema: string }[]>`
       select current_schema() as schema`;
     if (!scope || !/^p25_[a-f0-9]{32}$/.test(scope.schema)) {

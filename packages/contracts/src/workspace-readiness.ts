@@ -11,8 +11,6 @@ export const workspaceCapabilityIds = [
   'local_browser',
   'cloud_mcp',
   'local_mcp',
-  'assistants',
-  'development',
   'boost',
   'teamwork',
 ] as const;

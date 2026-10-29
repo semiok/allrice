@@ -2,7 +2,7 @@ import {
   authorizedPlatformHome,
   parseArguments,
   requireCheck,
-} from './p27-assistant-preflight.ts';
+} from './p27-runtime-preflight.ts';
 
 export const P27_CODEX_PLATFORM_HOME =
   '/Users/a123/allrice-dev/.local/dsh-platform';

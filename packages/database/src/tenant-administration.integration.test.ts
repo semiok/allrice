@@ -5,7 +5,7 @@ import { decideConnectorApproval } from './capabilities/connector-broker.ts';
 import { randomUUID } from 'node:crypto';
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import {
   authenticateSession,
   createSession,
@@ -24,9 +24,9 @@ const integration =
     ? describe.sequential
     : describe.skip;
 integration('MET-151 tenant administration (isolated PostgreSQL)', () => {
-  let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   beforeAll(async () => {
-    fixture = await createAssistantFixtureDatabase();
+    fixture = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
   }, 120000);
   afterAll(async () => {

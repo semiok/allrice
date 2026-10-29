@@ -1,6 +1,5 @@
 import {
   workspaceCapabilityIds,
-  developmentWorkflowToolNames,
   resolveEmployeeToolDependencies,
   type WorkspaceCapability,
   type WorkspaceCapabilityId,
@@ -103,42 +102,14 @@ const definitions: Record<
     actions: ['cloud.mcp.call'],
     authorization: 'per_action',
   },
+  boost: { target: 'none', tools: [], capabilities: [], authorization: 'unavailable' },
+  teamwork: { target: 'none', tools: [], capabilities: [], authorization: 'unavailable' },
   local_mcp: {
     target: 'local',
     tools: resolveEmployeeToolDependencies(['local.mcp.call']),
     capabilities: ['secret:use', 'storage:write'],
     actions: ['local.mcp.discover', 'local.mcp.call'],
     authorization: 'per_action',
-  },
-  assistants: {
-    target: 'cloud_or_local',
-    tools: ['assistant.delegate'],
-    capabilities: ['model:invoke'],
-    authorization: 'root_budget',
-  },
-  development: {
-    target: 'local',
-    tools: [...developmentWorkflowToolNames],
-    capabilities: ['model:invoke', 'storage:read', 'storage:write'],
-    actions: [
-      'local.fs.list',
-      'local.fs.read',
-      'local.process.execute',
-      'local.fs.changeset',
-    ],
-    authorization: 'per_action',
-  },
-  boost: {
-    target: 'none',
-    tools: [],
-    capabilities: [],
-    authorization: 'unavailable',
-  },
-  teamwork: {
-    target: 'none',
-    tools: [],
-    capabilities: [],
-    authorization: 'unavailable',
   },
 };
 
@@ -186,7 +157,7 @@ export function projectWorkspacePrerequisites(
       id === 'local_files' && f.governedLocalReads
         ? ['local.fs.list', 'local.fs.read']
         : d.actions;
-    if (actions || id === 'assistants') {
+    if (actions) {
       if (!f.controls)
         add('needs_configuration', 'policy_missing', 'platform_admin');
       if (
@@ -201,15 +172,7 @@ export function projectWorkspacePrerequisites(
               f.controls!.rules.some(
                 (r) => r.action === a && r.effect === 'deny',
               ),
-          ) ||
-          ((id === 'assistants' || id === 'development') &&
-            (!f.controls.rules.some(
-              (r) => r.action === 'assistant.delegate' && r.effect === 'allow',
-            ) ||
-              f.controls.rules.some(
-                (r) =>
-                  r.action === 'assistant.delegate' && r.effect !== 'allow',
-              ))))
+          ))
       )
         add('needs_authorization', 'policy_denied', 'platform_admin');
     }
@@ -231,9 +194,7 @@ export function projectWorkspacePrerequisites(
         realState ??
         (id === 'local_browser'
           ? f.preparation?.browser
-          : id === 'development'
-            ? (f.preparation?.development ?? f.preparation?.sandbox)
-            : id === 'local_command'
+          : id === 'local_command'
               ? f.preparation?.sandbox
               : undefined);
       if (preparation === 'preparing')
@@ -250,17 +211,10 @@ export function projectWorkspacePrerequisites(
       )
         add('needs_configuration', 'folder_missing', 'user', 'bridge');
       if (
-        ['local_command', 'local_mcp', 'development'].includes(id) &&
+        ['local_command', 'local_mcp'].includes(id) &&
         !f.runner
       )
         add('needs_configuration', 'runner_missing', 'user');
-      if (id === 'development' && !f.developmentRunner)
-        add(
-          'needs_configuration',
-          'candidate_runner_missing',
-          'user',
-          'bridge',
-        );
     }
     const environment =
       id === 'cloud_command'
@@ -320,11 +274,6 @@ export function projectWorkspacePrerequisites(
         'mcp_settings',
       );
     }
-    if (
-      (id === 'assistants' || id === 'development') &&
-      !['openai-codex', 'openai-compatible'].includes(f.provider)
-    )
-      add('needs_configuration', 'provider_unsupported', 'platform_admin');
     return reasons.length
       ? reasons
       : [

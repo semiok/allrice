@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { afterAll, beforeAll, describe, it, expect, vi } from 'vitest';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { cloudProjectServiceFixture } from './cloud-project-service.fixture.ts';
 import {
   readProjectService,
@@ -21,7 +21,7 @@ import {
   stopCloudProjectServices,
 } from '../../../apps/worker/src/cloud-runner/executor.js';
 import type * as CoreClient from './core/client.ts';
-let fixtureDatabase: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+let fixtureDatabase: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
 vi.mock('./core/client.ts', async (original) => ({
   ...(await original<typeof CoreClient>()),
   getDatabase: () => fixtureDatabase.db,
@@ -33,7 +33,7 @@ const suite =
 suite(
   'shared cloud ProjectService authority and durable physical facts',
   () => {
-    let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     beforeAll(async () => {
       for (const key of [
         'ASSISTANTS',
@@ -45,7 +45,7 @@ suite(
         'BRIDGE_OPERATION_LEDGER',
       ])
         vi.stubEnv('ALLRICE_' + key + '_ENABLED', '1');
-      database = await createAssistantFixtureDatabase();
+      database = await createRuntimeFixtureDatabase();
       fixtureDatabase = database;
     });
     afterAll(async () => {

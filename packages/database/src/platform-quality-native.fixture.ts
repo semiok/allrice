@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { PlatformEmployeeDefinitionSchema } from '@allrice/contracts';
 import { expect, vi } from 'vitest';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createExperienceFixture } from './experience.fixture.ts';
 import {
   authenticateSession,
@@ -32,7 +32,7 @@ export async function createPlatformQualityNativeFixture() {
     'WORKBENCH',
   ])
     vi.stubEnv(`ALLRICE_${feature}_ENABLED`, '1');
-  const fixture = await createAssistantFixtureDatabase();
+  const fixture = await createRuntimeFixtureDatabase();
   const databaseSpy = vi
     .spyOn(client, 'getDatabase')
     .mockReturnValue(fixture.db);

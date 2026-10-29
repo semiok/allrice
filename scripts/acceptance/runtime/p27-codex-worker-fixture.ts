@@ -6,9 +6,9 @@ import type {
   RequestContext,
 } from '../../../packages/contracts/src/index.ts';
 import type {
-  AssistantFixtureCleanupProof,
-  createAssistantFixtureDatabase,
-} from '../../../packages/database/src/assistant-runtime.fixture.ts';
+  RuntimeFixtureCleanupProof,
+  createRuntimeFixtureDatabase,
+} from '../../../packages/database/src/runtime.fixture.ts';
 import { P27_CODEX_ORDINARY_LIMITS as ordinaryRunLimits } from './p27-codex-worker-preflight.ts';
 
 const localFixtureDatabaseUrl = 'postgres://a123@127.0.0.1:5432/allrice_b2';
@@ -19,7 +19,7 @@ let owned = false;
 export interface P27CodexWorkerFixtureCleanup {
   globalDatabaseClosed: boolean;
   databaseEnvironmentRestored: boolean;
-  fixture: AssistantFixtureCleanupProof | null;
+  fixture: RuntimeFixtureCleanupProof | null;
 }
 
 export class P27CodexWorkerFixtureError extends Error {
@@ -102,10 +102,10 @@ export async function createP27CodexWorkerFixture(
   );
   owned = true;
   let fixture:
-    Awaited<ReturnType<typeof createAssistantFixtureDatabase>> | undefined;
+    Awaited<ReturnType<typeof createRuntimeFixtureDatabase>> | undefined;
   let databaseUrl: string | undefined;
   let initializationAttempted = false;
-  let initializationCleanup: AssistantFixtureCleanupProof | null = null;
+  let initializationCleanup: RuntimeFixtureCleanupProof | null = null;
   let globalAttempted = false;
   let globalOwned = false;
   let globalClose: (() => Promise<void>) | undefined;
@@ -131,9 +131,9 @@ export async function createP27CodexWorkerFixture(
         try {
           proof.fixture = await fixture.close();
         } catch (error) {
-          const { AssistantFixtureCleanupError } =
-            await import('../../../packages/database/src/assistant-runtime.fixture.ts');
-          if (error instanceof AssistantFixtureCleanupError)
+          const { RuntimeFixtureCleanupError } =
+            await import('../../../packages/database/src/runtime.fixture.ts');
+          if (error instanceof RuntimeFixtureCleanupError)
             proof.fixture = error.cleanup;
         }
       }
@@ -169,17 +169,17 @@ export async function createP27CodexWorkerFixture(
       approveSyntheticCurrentEmployeeExecution();
     }
     const {
-      createAssistantFixtureDatabase,
-      AssistantFixtureInitializationError,
+      createRuntimeFixtureDatabase,
+      RuntimeFixtureInitializationError,
     } =
-      await import('../../../packages/database/src/assistant-runtime.fixture.ts');
+      await import('../../../packages/database/src/runtime.fixture.ts');
     initializationAttempted = true;
     try {
-      fixture = await createAssistantFixtureDatabase({
+      fixture = await createRuntimeFixtureDatabase({
         throughMigration: options.throughMigration,
       });
     } catch (error) {
-      if (error instanceof AssistantFixtureInitializationError)
+      if (error instanceof RuntimeFixtureInitializationError)
         initializationCleanup = error.cleanup;
       throw error;
     }

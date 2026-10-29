@@ -6,7 +6,7 @@ import { askProgramQuestion } from './allrice-program-questions.mjs';
 import {
   hasModelOutput,
   settledTokenUsage,
-} from './allrice-assistant-runtime.mjs';
+} from './allrice-model-usage.mjs';
 
 // Strip transport/log noise only. Business dates, paths and query text remain.
 const noise = new Set([
@@ -71,24 +71,13 @@ export function progressResult(name, block) {
     'todo_write',
     'ask_user_question',
     'skill',
-    'assistant_delegate',
-    'assistant_message',
-    'assistant_report',
-  ].includes(name);
-  // Only semantically explicit status operations, not arbitrary empty tools.
-  const poll = [
-    'assistant_list',
-    'assistant_inspect',
-    'assistant_status',
   ].includes(name);
   return {
     outcome: retry
       ? 'retry'
       : control
         ? 'control'
-        : poll
-          ? 'poll'
-          : block?.isError === true
+        : block?.isError === true
             ? 'error'
             : !text || text === 'null' || text === '[]' || text === '{}'
               ? 'empty'

@@ -27,7 +27,7 @@ import {
 } from 'vitest';
 import {
   RouteDecisionSchema,
-  resolveAssistantSubscriptionSnapshot,
+  resolveSubscriptionSnapshot,
   type CodexSubscriptionQuotaSnapshot,
 } from '@allrice/contracts';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
@@ -49,7 +49,7 @@ import {
   recordCodexProviderStatus,
 } from './providers/status.ts';
 import { assertSubscriptionQuotaNotExhausted } from '../../../apps/worker/src/subscription-quota-admission.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import {
   isPlatformQualityJobAuthorized,
   platformQualityCompletionAllowed,
@@ -66,10 +66,10 @@ integration('subscription incremental migration and cold SQL readers', () => {
   let task: Awaited<ReturnType<typeof fixture.prepareOrdinaryTask>>;
   let decision: ReturnType<typeof RouteDecisionSchema.parse>;
   let subscription: NonNullable<
-    ReturnType<typeof resolveAssistantSubscriptionSnapshot>
+    ReturnType<typeof resolveSubscriptionSnapshot>
   >;
   let history: unknown;
-  let shadow: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let shadow: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   let shadowSchema: string;
   let shadowBefore: unknown;
   let publicBefore: unknown;
@@ -141,7 +141,7 @@ integration('subscription incremental migration and cold SQL readers', () => {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
     vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
     expect(process.env.DATABASE_URL).toBeUndefined();
-    shadow = await createAssistantFixtureDatabase();
+    shadow = await createRuntimeFixtureDatabase();
     const [shadowScope] = await shadow.db`select current_schema() as schema`;
     shadowSchema = shadowScope!.schema;
     await shadow.db`insert into allrice_provider_status
@@ -344,7 +344,7 @@ integration('subscription incremental migration and cold SQL readers', () => {
       reasonCodes: ['direct_no_capability_match'],
       createdAt: new Date().toISOString(),
     });
-    subscription = resolveAssistantSubscriptionSnapshot({
+    subscription = resolveSubscriptionSnapshot({
       sessionId: task.sessionId,
       modelSnapshot: frozen,
       decision,

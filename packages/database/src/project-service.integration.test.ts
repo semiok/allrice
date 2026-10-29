@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { projectServiceFixture } from './project-service.fixture.ts';
 import {
   projectServiceUserAction,
@@ -23,7 +23,7 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('MET166 finite project service — real PostgreSQL', () => {
-  let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   beforeAll(async () => {
     for (const key of [
       'ASSISTANTS',
@@ -34,7 +34,7 @@ suite('MET166 finite project service — real PostgreSQL', () => {
       'LOCAL_SERVICE',
     ])
       vi.stubEnv(`ALLRICE_${key}_ENABLED`, '1');
-    database = await createAssistantFixtureDatabase();
+    database = await createRuntimeFixtureDatabase();
     fixtureDatabase = database.db;
   }, 120000);
   afterAll(async () => {

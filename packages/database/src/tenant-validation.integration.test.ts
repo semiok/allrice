@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { beforeAll, afterAll, it, expect, describe, vi } from 'vitest';
 import * as client from './core/client.ts';
 import * as quotas from './tenant-quotas.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { tenantValidationFixture } from './tenant-validation.fixture.ts';
 import {
   ensureBootstrapPortalPrincipal,
@@ -20,13 +20,13 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('MET-151 PR4 scoped inspection (isolated PostgreSQL)', () => {
-  let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   let a: Awaited<ReturnType<typeof tenantValidationFixture>>, b: typeof a;
   let admin: NonNullable<Awaited<ReturnType<typeof authenticateSession>>>;
   let adminToken: string;
   beforeAll(async () => {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-    f = await createAssistantFixtureDatabase();
+    f = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
     const slug = `v-${randomUUID()}`,
       p = await ensureBootstrapPortalPrincipal(

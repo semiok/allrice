@@ -20,8 +20,8 @@ import {
 } from '@allrice/database';
 import * as client from '../../../../packages/database/src/core/client.ts';
 import * as modelPool from '../../../../packages/database/src/providers/model-pool.ts';
-import { createAssistantFixtureDatabase } from '../../../../packages/database/src/assistant-runtime.fixture.ts';
-import { createAssistantAuthorityFixture } from '../../../../packages/database/src/assistant-authority.fixture.ts';
+import { createRuntimeFixtureDatabase } from '../../../../packages/database/src/runtime.fixture.ts';
+import { createRunAuthorityFixture } from '../../../../packages/database/src/run-authority.fixture.ts';
 import {
   authenticateSession,
   createSession,
@@ -54,7 +54,7 @@ const suite =
 suite(
   'MET221 cross-release chat continuation through the real queue and native binding',
   () => {
-    let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let database: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let manifestPath: string;
     let previousManifest: Buffer | undefined;
     const testHarnessExecArgv = process.execArgv;
@@ -94,7 +94,7 @@ suite(
       await installDshNativeArtifact({ root, expectedId: artifact.artifactId });
       primary = artifact.artifactId;
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', primary);
-      database = await createAssistantFixtureDatabase();
+      database = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(database.db);
     }, 120_000);
 
@@ -153,7 +153,7 @@ suite(
       const recover = vi.spyOn(DshProtocolClient.prototype, 'recover');
       const prepared: { requiresRecovery: boolean; bound: boolean }[] = [];
       let firstRuntime: DshRuntime | undefined;
-      const f = await createAssistantAuthorityFixture(database.db, {
+      const f = await createRunAuthorityFixture(database.db, {
         configure: false,
         allowedTools: [],
         runtimePolicy: {

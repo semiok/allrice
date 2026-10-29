@@ -103,7 +103,6 @@ import {
   ChatMessageContentSchema,
   CreateRunInputSchema,
   EmployeeExecutionSnapshotSchema,
-  AssistantRunConfigurationSchema,
   runtimeFeatureEnabled,
   ExecutionContextSchema,
   JobPayloadSchema,
@@ -113,7 +112,6 @@ import {
   authorize,
   authorizeExecution,
   modelGovernanceFailureText,
-  nativeExecutionDiagnosticFailureText,
   type ExecutionContext,
   type EmployeeExecutionSnapshot,
   type Job,
@@ -169,7 +167,7 @@ import {
   assertExistingRepairBinding,
   type RepairBinding,
 } from '../platform-repair-authority.ts';
-import { cancelAssistantRootTransaction } from '../assistant-runtime.ts';
+import { cancelRuntimeRootTransaction } from '../runtime-ledger/ledger.ts';
 import { unboundedTaskDeadline } from '../task-runtime-policy.ts';
 import {
   refreshTaskClock,
@@ -1558,15 +1556,6 @@ async function enqueueRunInTransaction(
     `;
   }
   if (options.employeeBinding) {
-    const submittedInput =
-      submission.input &&
-      typeof submission.input === 'object' &&
-      !Array.isArray(submission.input)
-        ? (submission.input as Record<string, unknown>)
-        : {};
-    const assistantConfiguration = AssistantRunConfigurationSchema.safeParse(
-      submittedInput.assistantConfiguration,
-    );
     const officePolicyEligible =
       (admission.kind === 'browser' ||
         admission.kind === 'native_once' ||
@@ -1581,14 +1570,8 @@ async function enqueueRunInTransaction(
       !options.technicalBinding &&
       !options.workflowBinding &&
       !options.skillBinding &&
-      runtimeFeatureEnabled('ALLRICE_ASSISTANTS_ENABLED') &&
       runtimeFeatureEnabled('ALLRICE_WORKBENCH_ENABLED') &&
-      assistantConfiguration.success &&
-      assistantConfiguration.data.allowAssistants &&
       options.employeeBinding.providerSnapshot.provider === 'dsh' &&
-      options.employeeBinding.executionSnapshot.capabilitySnapshot.bindings.toolNames.includes(
-        'assistant.delegate',
-      ) &&
       options.employeeBinding.executionSnapshot.capabilitySnapshot.bindings.toolNames.includes(
         'workspace.export.create',
       );
@@ -1834,9 +1817,8 @@ async function requestCancellationTransaction(
   revokeCompletedReview = false,
 ) {
   await lockRootCreation(transaction, runId, nonBlocking);
-  // Persistent tree cutoff precedes job cancellation and native drain. No root
-  // row means an unchanged legacy single-agent Run.
-  await cancelAssistantRootTransaction(
+  // The persistent root cutoff precedes Job cancellation and native drain.
+  await cancelRuntimeRootTransaction(
     transaction,
     runId,
     randomUUID(),
@@ -2088,20 +2070,7 @@ async function transitionTerminal(
             candidate.type === citation.type && candidate.id === citation.id,
         ) === index,
     );
-    const [nativeFailure] =
-      input.runStatus === 'failed' && input.code === 'DSH_UNKNOWN'
-        ? await transaction<{ payload: Record<string, unknown> }[]>`
-          select payload from allrice_run_events where run_id=${job.run_id}
-            and organization_id=${job.organization_id} and workspace_id=${job.workspace_id}
-            and event_type='turn.failed' and payload->>'attempt'=${String(job.attempt)}
-          order by sequence desc limit 1`
-        : [];
     const failureText =
-      nativeExecutionDiagnosticFailureText(
-        input.code,
-        nativeFailure?.payload,
-        input.message,
-      ) ??
       modelGovernanceFailureText(input.code) ??
       (input.code === 'SKILL_ARTIFACT_MISSING'
         ? 'Rice 暂时无法使用已引用的 Skill：Skill 文件在本地存储中缺失。请重新安装或刷新该 Skill 后重试。'
@@ -2216,7 +2185,7 @@ async function retainStopReceiptLease(
     cause,
     leaseMs,
   );
-  await cancelAssistantRootTransaction(
+  await cancelRuntimeRootTransaction(
     transaction,
     job.run_id,
     randomUUID(),

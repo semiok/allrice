@@ -11,11 +11,10 @@ import {
 import { resolveTaskRuntimePolicy } from './task-runtime-policy.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
 import {
-  createAssistantFixtureDatabase,
-  assistantFixtureStorage,
-} from './assistant-runtime.fixture.ts';
-import { createAssistantAuthorityFixture } from './assistant-authority.fixture.ts';
-import { assertAssistantAuthority } from './assistant-authority.ts';
+  createRuntimeFixtureDatabase,
+  runtimeFixtureStorage,
+} from './runtime.fixture.ts';
+import { createRunAuthorityFixture } from './run-authority.fixture.ts';
 import { refreshTaskClock } from './task-clock.ts';
 import * as client from './core/client.ts';
 import { cancelRun, completeJob } from './execution/queue.ts';
@@ -64,12 +63,12 @@ const storageWithPut = (
 suite(
   'artifact publication versus assistant clock and confirmed rollback — isolated PostgreSQL',
   () => {
-    let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let admin: NonNullable<Awaited<ReturnType<typeof authenticateSession>>>;
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
       vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
       const principal = await ensureBootstrapPortalPrincipal(
         {
@@ -94,7 +93,7 @@ suite(
       vi.unstubAllEnvs();
     });
     async function setup(extraTools: string[] = []) {
-      const f = await createAssistantAuthorityFixture(fixture.db, {
+      const f = await createRunAuthorityFixture(fixture.db, {
         allowedTools: [
           'assistant.delegate',
           'workspace.export.create',
@@ -156,7 +155,7 @@ suite(
           ...f.context,
           memberships: context.policySnapshot.memberships,
         },
-        storage: assistantFixtureStorage(fixture.db),
+        storage: runtimeFixtureStorage(fixture.db),
       };
     }
 

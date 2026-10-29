@@ -19,78 +19,6 @@ export const baseline: readonly BaselineEntry[] = [
   },
   {
     kind: 'table',
-    id: 'allrice_assistant_artifacts',
-    category: '待删',
-    basis:
-      '0093：旧助手成果命名空间；子智能体 plan-v3-draft-astra.md §2 PR2b 九表退役，独立交付先上线。',
-    approvedBy: 'baseline 2026-10-27',
-  },
-  {
-    kind: 'table',
-    id: 'allrice_assistant_cost_receipts',
-    category: '待删',
-    basis:
-      '0096：依赖旧助手的计费回执；子智能体 plan-v3-draft-astra.md §2 PR2b 九表退役，保留通用订阅和账本。',
-    approvedBy: 'baseline 2026-10-27',
-  },
-  {
-    kind: 'table',
-    id: 'allrice_assistant_instances',
-    category: '待删',
-    basis:
-      '0093：旧助手实例与自写执行状态；子智能体 plan-v3-draft-astra.md §2 PR2b 九表退役，生命周期回归 DSH。',
-    approvedBy: 'baseline 2026-10-27',
-  },
-  {
-    kind: 'table',
-    id: 'allrice_assistant_messages',
-    category: '待删',
-    basis:
-      '0093：旧助手消息队列与投递状态；子智能体 plan-v3-draft-astra.md §2 PR2b 九表退役，消息由 DSH 管理。',
-    approvedBy: 'baseline 2026-10-27',
-  },
-  {
-    kind: 'table',
-    id: 'allrice_assistant_model_admissions',
-    category: '待删',
-    basis:
-      '0095：旧助手两阶段模型准入；子智能体 plan-v3-draft-astra.md §2 PR2b 九表退役，不删除通用预算设施。',
-    approvedBy: 'baseline 2026-10-27',
-  },
-  {
-    kind: 'table',
-    id: 'allrice_assistant_price_snapshots',
-    category: '待删',
-    basis:
-      '0096：旧助手根计价快照；子智能体 plan-v3-draft-astra.md §2 PR2b 九表退役，保留订阅共用的不可变触发函数。',
-    approvedBy: 'baseline 2026-10-27',
-  },
-  {
-    kind: 'table',
-    id: 'allrice_assistant_results',
-    category: '待删',
-    basis:
-      '0093：旧助手 report 结果协议；子智能体 plan-v3-draft-astra.md §2 PR2b 九表退役，须先完成独立交付链。',
-    approvedBy: 'baseline 2026-10-27',
-  },
-  {
-    kind: 'table',
-    id: 'allrice_assistant_roots',
-    category: '待删',
-    basis:
-      '0093：旧助手根配置与 generation/fence；子智能体 plan-v3-draft-astra.md §2 PR2b 九表退役，保留通用 runtime_roots。',
-    approvedBy: 'baseline 2026-10-27',
-  },
-  {
-    kind: 'table',
-    id: 'allrice_assistant_usage',
-    category: '待删',
-    basis:
-      '0093：依赖旧助手实例的用量预留与结算；子智能体 plan-v3-draft-astra.md §2 PR2b 九表退役，原生用量归通用根账本。',
-    approvedBy: 'baseline 2026-10-27',
-  },
-  {
-    kind: 'table',
     id: 'allrice_brand_content_reminders',
     category: '待删',
     basis:
@@ -348,7 +276,7 @@ export const baseline: readonly BaselineEntry[] = [
     kind: 'patch',
     id: 'allrice-durable-task-clock-v1',
     category: '待删',
-    basis: 'MET-153：自写根时钟与等待生命周期，是否仅为 SaaS 租约部分待核。',
+    basis: 'MET-210 PR2b 已删旧助手 join/flush；仍保留普通 Run 的任务时钟投影，未改变此待核分类。',
     approvedBy: 'baseline 2026-10-27',
   },
   {
@@ -359,21 +287,6 @@ export const baseline: readonly BaselineEntry[] = [
       'MET-210 PR2a：DSH 公开 defineTool/register/restrict 接缝提供独立仓库复核业务工具及完整工具名单门卫，权限/租约与不可变意见仍为门卫/账本；不新增 Agent 生命周期。',
     approvedBy:
       '2026-10-28 / 29 用户 PR2a 独立复核修复任务说明：原生注册、Agent 工具限制门卫、Host allowlist 和真实 function-call；AGENTS.md §0 业务工具。',
-  },
-  {
-    kind: 'patch',
-    id: 'allrice-development-workflow-v1',
-    category: '待删',
-    basis:
-      'MET-144：自写子代理开发协作与评审流程，按 MET-210 子代理收敛计划核定。',
-    approvedBy: 'baseline 2026-10-27',
-  },
-  {
-    kind: 'patch',
-    id: 'allrice-assistant-required-delivery-v1',
-    category: '待删',
-    basis: 'MET-151：自写子代理交付权限和结果校验混用，按冻结包装层规则待核。',
-    approvedBy: 'baseline 2026-10-27',
   },
   {
     kind: 'patch',
@@ -435,14 +348,6 @@ export const baseline: readonly BaselineEntry[] = [
     category: '账本',
     basis:
       'MET-195：单向记录公开 shutdown/dispose 的关闭结果与 Worker 观察，供 SaaS 审计。',
-    approvedBy: 'baseline 2026-10-27',
-  },
-  {
-    kind: 'private-interface',
-    id: 'dsh-subagent-host-prompt: @deepseek-ai/dsh-subagent/internal',
-    category: '待删',
-    basis:
-      'compatibility.json：子代理包装层使用私有 host prompt 入口，公开替代接缝待主会话核定。',
     approvedBy: 'baseline 2026-10-27',
   },
 ];
