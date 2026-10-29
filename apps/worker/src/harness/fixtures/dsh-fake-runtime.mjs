@@ -5,10 +5,13 @@ import { setImmediate } from 'node:timers';
 let seq = 0;
 let initializedProvider = '';
 let initializedSkills = [];
+let runIdentity;
 const turns = new Map();
 const pendingToolRequests = new Map();
 
 function write(value) {
+  if (value.method === 'allrice/tool-call' && runIdentity)
+    value.params = { ...value.params, ...runIdentity };
   process.stdout.write(`${JSON.stringify(value)}\n`);
 }
 
@@ -152,11 +155,30 @@ lines.on('line', (line) => {
         version: `${process.env.DSH_DISTRIBUTION_VERSION ?? '0.2.1-rc.2'}-fake`,
       },
       capabilities: {
+        runAdmission: true,
         taskProgress:
           process.env.ALLRICE_PROGRESS_GUARD_ENABLED === '1' &&
           frame.params.model !== 'legacy-progress',
       },
     });
+    return;
+  }
+  // Protocol stub only; real wait/lineage/authority are tested with the native Host.
+  if (frame.method === 'run/begin') {
+    runIdentity = {
+      runId: frame.params.runId,
+      nativeSessionId: frame.params.sessionId,
+      rootSessionId: frame.params.sessionId,
+      parentSessionId: null,
+      delegationDepth: 0,
+    };
+    notify('allrice.run-session', runIdentity);
+    respond(frame.id, { bound: true });
+    return;
+  }
+  if (frame.method === 'run/end' || frame.method === 'session/wait') {
+    if (frame.method === 'run/end') runIdentity = undefined;
+    respond(frame.id, {});
     return;
   }
   if (frame.method === 'shutdown') {
