@@ -474,7 +474,7 @@ suite(
             ending = end();
             await nativeBindingWaiter(fixture.db, writer);
             // A blocked closer must not hold Run while waiting for the receipt's Job.
-            // NOWAIT also prevents the claim transaction's retry wrapper hiding 40P01.
+            // Claim retries only 55P03; this NOWAIT proves the lock order directly.
             await gate`select id from allrice_runs where id=${claimed.previewExecution.runId} for update nowait`;
           } else {
             await gate`select pg_advisory_xact_lock(hashtext(${`tenant:${x.f.owner.organizationId.toLowerCase()}`}))`;

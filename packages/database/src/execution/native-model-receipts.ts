@@ -1,6 +1,5 @@
 import { z } from 'zod';
 import { UuidSchema } from '@allrice/contracts';
-import { getDatabase } from '../core/client.ts';
 
 const token = z.number().int().nonnegative().safe().optional();
 const usage = z.strictObject({
@@ -60,22 +59,3 @@ export const NativeModelReceiptSchema = z.strictObject({
   fact: NativeModelFactSchema,
 });
 export type NativeModelFact = z.infer<typeof NativeModelFactSchema>;
-
-/** Worker-only aggregation input. Starts without finishes remain visible and
- * unknown; no inferred finish, inherited history, zero-fill or cash arithmetic. */
-export async function readNativeModelReceipts(input: {
-  organizationId: string;
-  workspaceId: string;
-  runId: string;
-  routeDecisionId: string;
-}) {
-  const sql = getDatabase();
-  const rows = await sql`select payload from allrice_run_events
-    where organization_id=${UuidSchema.parse(input.organizationId)}
-      and workspace_id=${UuidSchema.parse(input.workspaceId)}
-      and run_id=${UuidSchema.parse(input.runId)} and event_type='harness.native'
-      and payload->>'source'=${nativeModelReceiptSource}
-      and payload->>'routeDecisionId'=${UuidSchema.parse(input.routeDecisionId)}
-    order by sequence`;
-  return rows.map((row) => NativeModelReceiptSchema.parse(row.payload));
-}

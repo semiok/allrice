@@ -1,8 +1,14 @@
 import { heartbeatJob } from '../execution/queue.ts';
 import { createReadPathProbe } from '../read-path-probe.fixture.ts';
 import { sharedHistoryMethodAcceptancePhrases } from './employee-method-shared-history.fixture.ts';
-import { bindJobNativeSession } from '../execution/queue.ts';
-import { nativeBindingDescriptor } from '../native-session-binding.fixture.ts';
+import {
+  appendNativeModelReceipt,
+  bindJobNativeSession,
+} from '../execution/queue.ts';
+import {
+  nativeBindingDescriptor,
+  nativeBindingWaiter,
+} from '../native-session-binding.fixture.ts';
 import { bindNativeQuestionFixture } from '../native-question-binding.fixture.ts';
 import {
   departmentCommonAcceptancePhrases,
@@ -4420,6 +4426,111 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     };
     return { ...f, claim, context, storage, create, publish };
   }
+  it.each(['receipt', 'file-operation'] as const)(
+    'serializes native receipts with real file operation, %s first',
+    async (first) => {
+      const f = await fileTestFixture();
+      const request = {
+        workerId: f.context.worker.id,
+        jobId: f.claim.previewExecution.jobId,
+        leaseToken: f.claim.previewExecution.leaseToken,
+        rootSessionId: 'dsh-' + f.test.id,
+        routeDecisionId: f.claim.methodCandidate!.decision.id,
+      };
+      await bindJobNativeSession({
+        workerId: request.workerId,
+        jobId: request.jobId,
+        leaseToken: request.leaseToken,
+        attempt: f.claim.previewExecution.jobAttempt,
+        subject: { kind: 'platform_employee_test', id: f.test.id },
+        descriptor: nativeBindingDescriptor({
+          ...f.claim.previewContext,
+          contextKey: f.test.id,
+        }),
+      });
+      const fact = {
+        phase: 'start' as const,
+        callId: randomUUID(),
+        nativeSessionId: request.rootSessionId,
+        provider: 'synthetic',
+        model: 'never-called',
+      };
+      await appendNativeModelReceipt({ ...request, fact });
+      // The real file admission runs before finishCloudOperation creates a root.
+      expect(
+        await fixture.db`select root_run_id from allrice_runtime_roots where root_run_id=${f.context.runId}`,
+      ).toHaveLength(0);
+      const gate = await fixture.db.reserve();
+      await gate`begin`;
+      const [held] = await gate`select pg_backend_pid() pid`;
+      const write = () =>
+        appendNativeModelReceipt({
+          ...request,
+          fact: {
+            ...fact,
+            phase: 'finish',
+            outcome: 'succeeded',
+            usageComplete: true,
+            usage: {
+              inputTokens: 1,
+              cacheReadTokens: 0,
+              cacheWriteTokens: 0,
+              outputTokens: 1,
+            },
+          },
+        }).then(
+          () => 'committed',
+          (error: unknown) => error,
+        );
+      const create = () =>
+        f.create('normalize').then(
+          () => 'created',
+          (error: unknown) => error,
+        );
+      let writing: Promise<unknown> | undefined;
+      let creating: Promise<unknown> | undefined;
+      try {
+        if (first === 'receipt') {
+          await gate`select id from allrice_route_decisions where id=${request.routeDecisionId} for update`;
+          writing = write();
+          const writer = await nativeBindingWaiter(
+            fixture.db,
+            held!.pid as number,
+          );
+          creating = create();
+          await nativeBindingWaiter(fixture.db, writer);
+          // Job wait must happen before any Run lock, including with no root.
+          await gate`select id from allrice_runs where id=${f.context.runId} for update nowait`;
+        } else {
+          await gate`select pg_advisory_xact_lock(hashtextextended(${`method-file:${f.test.id}`},0))`;
+          creating = create();
+          const creator = await nativeBindingWaiter(
+            fixture.db,
+            held!.pid as number,
+          );
+          writing = write();
+          const writer = await nativeBindingWaiter(fixture.db, creator);
+          const [blocked] =
+            await fixture.db`select query from pg_stat_activity where pid=${writer}`;
+          expect(blocked!.query).toContain('allrice_jobs');
+        }
+      } finally {
+        await gate`rollback`;
+        gate.release();
+        await Promise.all([writing, creating]);
+      }
+      expect(await writing).toBe('committed');
+      expect(await creating).toBe('created');
+      expect(
+        await fixture.db`select stage from allrice_employee_method_file_steps where test_id=${f.test.id}`,
+      ).toEqual([{ stage: 'normalize' }]);
+      expect(
+        await fixture.db`select payload->'fact'->>'phase' phase from allrice_run_events
+          where run_id=${f.context.runId} and payload->>'source'='native_model_receipt_v1' order by sequence`,
+      ).toEqual([{ phase: 'start' }, { phase: 'finish' }]);
+    },
+    30000,
+  );
   it('keeps a wrong-stage business failure through a later transport failure and forbids retry washing', async () => {
     const f = await fileTestFixture();
     await expect(f.create('summarize')).rejects.toThrow(

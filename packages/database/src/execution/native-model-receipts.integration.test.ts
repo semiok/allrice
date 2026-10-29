@@ -10,6 +10,7 @@ import {
 import * as client from '../core/client.ts';
 import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
 import { createRunAuthorityFixture } from '../run-authority.fixture.ts';
+import { prepareRunMemoryContext } from '../run-memory-context.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
 import {
   nativeBindingDescriptor,
@@ -33,7 +34,7 @@ import {
   completeRouteDecision,
 } from './route-decision.ts';
 import {
-  readNativeModelReceipts,
+  NativeModelReceiptSchema,
   type NativeModelFact,
 } from './native-model-receipts.ts';
 
@@ -88,6 +89,89 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
       adminClosed: true,
     });
   });
+  it.each([
+    { root: true, first: 'memory' },
+    { root: true, first: 'receipt' },
+    { root: false, first: 'receipt' },
+  ] as const)(
+    'serializes native receipts with real memory preparation, root=$root, $first first',
+    async ({ root, first }) => {
+      const f = await setup(root);
+      await fixture.db`update allrice_employee_runs set status='running' where run_id=${f.rootRunId}`;
+      expect(
+        await fixture.db`select root_run_id from allrice_runtime_roots where root_run_id=${f.rootRunId}`,
+      ).toHaveLength(root ? 1 : 0);
+      const auth = {
+        scope: {
+          organizationId: f.org,
+          workspaceId: f.workspace,
+          ownerId: f.user,
+          sessionId: f.session,
+          runId: f.rootRunId,
+        },
+        worker: { ...f.worker, attempt: 1 },
+      };
+      // Prove the public entry accepts this fixture before opening the lock window.
+      expect(await prepareRunMemoryContext(auth, [])).toEqual([]);
+      const call = start(f);
+      await write(f, call);
+      const gate = await fixture.db.reserve();
+      await gate`begin`;
+      const [held] = await gate`select pg_backend_pid() pid`;
+      const send = () =>
+        write(f, finish(call)).then(
+          () => 'committed',
+          (error: unknown) => error,
+        );
+      const prepare = () =>
+        prepareRunMemoryContext(auth, []).then(
+          () => 'prepared',
+          (error: unknown) => error,
+        );
+      let writing: Promise<unknown> | undefined;
+      let preparing: Promise<unknown> | undefined;
+      try {
+        if (first === 'receipt') {
+          await gate`select id from allrice_route_decisions where id=${f.decision.id} for update`;
+          writing = send();
+          const writer = await nativeBindingWaiter(
+            fixture.db,
+            held!.pid as number,
+          );
+          preparing = prepare();
+          if (root) {
+            // Keep the existing root NOWAIT denial; do not retry it into success.
+            expect(await preparing).toMatchObject({
+              message: 'employee_access_busy',
+            });
+          } else {
+            await nativeBindingWaiter(fixture.db, writer);
+          }
+          await gate`select id from allrice_runs where id=${f.rootRunId} for update nowait`;
+        } else {
+          await gate`select id from allrice_users where id=${f.user} for update`;
+          preparing = prepare();
+          const reader = await nativeBindingWaiter(
+            fixture.db,
+            held!.pid as number,
+          );
+          writing = send();
+          const writer = await nativeBindingWaiter(fixture.db, reader);
+          const [blocked] =
+            await fixture.db`select query from pg_stat_activity where pid=${writer}`;
+          expect(blocked!.query).toContain('allrice_runtime_roots');
+        }
+      } finally {
+        await gate`rollback`;
+        gate.release();
+        await Promise.all([writing, preparing]);
+      }
+      expect(await writing).toBe('committed');
+      if (!root || first === 'memory') expect(await preparing).toBe('prepared');
+      expect(await read(f)).toHaveLength(2);
+    },
+    30000,
+  );
   async function route(
     f: Awaited<ReturnType<typeof createRunAuthorityFixture>>,
     attempt = 1,
@@ -129,9 +213,10 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
       }),
     );
   }
-  async function setup() {
+  async function setup(configure = true) {
     const f = await createRunAuthorityFixture(fixture.db, {
       runtimePackage,
+      configure,
       businessCreationOrigin: true,
     });
     await fixture.db`update allrice_jobs set attempt=1 where id=${f.worker.jobId}`;
@@ -207,13 +292,14 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
       routeDecisionId: decisionId,
       fact,
     });
-  const read = (f: Fixture, decisionId = f.decision.id) =>
-    readNativeModelReceipts({
-      organizationId: f.org,
-      workspaceId: f.workspace,
-      runId: f.rootRunId,
-      routeDecisionId: decisionId,
-    });
+  const read = async (f: Fixture, decisionId = f.decision.id) => {
+    const rows = await fixture.db`select payload from allrice_run_events
+      where run_id=${f.rootRunId} and payload->>'source'='native_model_receipt_v1'
+      order by sequence`;
+    return rows
+      .map((row) => NativeModelReceiptSchema.parse(row.payload))
+      .filter((row) => row.routeDecisionId === decisionId);
+  };
   const settle = (f: Fixture) =>
     completeRouteDecision({
       organizationId: f.org,
@@ -460,7 +546,7 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
       runId: later.rootRunId,
     });
   });
-  it('scopes root, route and reads to the leased tenant without revealing foreign facts', async () => {
+  it('scopes root and route writes to the leased tenant', async () => {
     const f = await setup(),
       other = await setup(),
       call = start(f);
@@ -479,14 +565,6 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
     await expect(write(other, start(other), f.decision.id)).rejects.toThrow(
       'policy_denied',
     );
-    expect(
-      await readNativeModelReceipts({
-        organizationId: other.org,
-        workspaceId: other.workspace,
-        runId: f.rootRunId,
-        routeDecisionId: f.decision.id,
-      }),
-    ).toEqual([]);
     expect(await read(other)).toEqual([]);
     // An existing pin for a different business root, with the SAME tenant and
     // owner, is not authority merely because this Worker holds some live Job.

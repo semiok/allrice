@@ -893,6 +893,9 @@ export async function assertEmployeeMethodFileExecution(
     b,
     SessionModelSnapshotSchema.parse(b.model_snapshot),
   );
+  // Match receipt/finalizer Job-before-Run order; recheck authority after waiting.
+  await tx`select id from allrice_jobs
+    where id=${context.jobId} and run_id=${context.runId} for share`;
   const [run] = await tx<
     {
       execution_spec: Record<string, unknown>;
