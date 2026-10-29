@@ -439,7 +439,7 @@ describe
           ...location,
           storageRoot: database.storageRoot,
           immutableFirstInsert: true,
-          realAuthority: 'assertAssistantAuthority',
+          realAuthority: 'assertRunDeliveryAuthority',
           realProducer: 'readFinalDeliveryReferences',
           syntheticNativePin: true,
           models: 0,
@@ -705,25 +705,26 @@ describe
         const f = await fixture();
         const held = deferred(),
           release = deferred();
+        let writerPid = 0;
         const writer = db().begin(async (tx) => {
+          writerPid = Number((await tx`select pg_backend_pid() pid`)[0]!.pid);
           await tx`update allrice_knowledge_sources set status='archived' where id=${f.sourceId!}`;
           held.resolve();
           await release.promise;
         });
         await held.promise;
-        const read = f.read();
-        const rejected = expect(read).rejects.toThrow();
+        const read = f.read().catch((error) => error);
         try {
           await waitFor(async () => {
             const [r] =
-              await db()`select exists(select 1 from pg_stat_activity where application_name=current_schema() and wait_event_type='Lock' and query like '%allrice_knowledge_sources%') waiting`;
+              await db()`select exists(select 1 from pg_stat_activity where ${writerPid}=any(pg_blocking_pids(pid)) and wait_event_type='Lock' and query like '%allrice_knowledge_sources%') waiting`;
             return r?.waiting === true;
           }, 'source lock wait');
         } finally {
           release.resolve();
         }
         await writer;
-        await rejected;
+        expect(await read).toBeInstanceOf(Error);
         record('waited current source writer', {
           sourceId: f.sourceId,
           seesArchived: true,

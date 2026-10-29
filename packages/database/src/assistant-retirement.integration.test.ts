@@ -41,7 +41,9 @@ afterEach(async () => {
 });
 async function database(fresh = false) {
   const f = await createRuntimeFixtureDatabase(
-    fresh ? {} : { throughMigration: '0228_repository_review_jobs.sql' },
+    fresh
+      ? { ownSchemaOnly: true }
+      : { throughMigration: '0228_repository_review_jobs.sql' },
   );
   fixtures.push(f);
   return f;

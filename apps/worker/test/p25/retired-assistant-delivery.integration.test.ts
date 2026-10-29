@@ -135,7 +135,7 @@ suite(
       const [scope] =
         await db`select current_schema() schema,current_setting('search_path') path`;
       expect(scope!.schema).toBe(upgrade.descriptor.schema);
-      expect(scope!.path).toBe(upgrade.descriptor.schema);
+      expect(scope!.path).toBe(`${upgrade.descriptor.schema},public`);
       for (const relation of [
         'allrice_assistant_roots',
         'allrice_assistant_instances',

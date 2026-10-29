@@ -157,7 +157,7 @@ import { createHash } from 'node:crypto';
 import { createAssistantFixtureDatabase, assistantFixtureStorage } from '../../../packages/database/src/assistant-runtime.fixture.ts';
 import seed from ${JSON.stringify(driverImport)};
 it('seeds actual pre-retirement APIs and stops all writers before handoff', async () => {
- const f = await createAssistantFixtureDatabase({ownSchemaOnly:true});
+ const f = await createAssistantFixtureDatabase();
  try {
   const nativeRoot=${JSON.stringify(join(temp, 'native'))}; await mkdir(nativeRoot);
   const data=await seed({db:f.db,storage:assistantFixtureStorage(f.db),storageRoot:f.storageRoot,nativeRoot});
@@ -211,7 +211,10 @@ it('seeds actual pre-retirement APIs and stops all writers before handoff', asyn
         throw Error(`Before migration bytes changed: ${migration.name}`);
     }
     const url = new URL(databaseUrl);
-    url.searchParams.set('options', `-csearch_path=${descriptor.schema}`);
+    // Normal API queries need public's pgvector type/operators. Every retired
+    // relation assertion below is schema-qualified; the source schema is first.
+    const searchPath = `${descriptor.schema},public`;
+    url.searchParams.set('options', `-csearch_path=${searchPath}`);
     db = postgres(url.toString(), {
       max: 4,
       onnotice: () => {},
@@ -219,10 +222,7 @@ it('seeds actual pre-retirement APIs and stops all writers before handoff', asyn
     });
     const [identity] =
       await db`select current_schema() as schema,current_setting('search_path') as path`;
-    if (
-      identity?.schema !== descriptor.schema ||
-      identity.path !== descriptor.schema
-    )
+    if (identity?.schema !== descriptor.schema || identity.path !== searchPath)
       throw Error('Upgrade schema continuity failed');
     const storage = new LocalStorageAdapter(descriptor.storageRoot);
     let applied = false;

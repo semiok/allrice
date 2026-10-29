@@ -157,7 +157,7 @@ export async function createRuntimeFixtureDatabase(
     await admin.unsafe(`create schema "${schema}"`);
     // An incremental checkpoint must not borrow tables introduced by later
     // migrations from a fully migrated public schema (as CI db:setup has).
-    const ownSchemaOnly = true;
+    const ownSchemaOnly = options.throughMigration || options.ownSchemaOnly;
     const searchPath = ownSchemaOnly ? schema : `${schema},public`;
     url.searchParams.set('options', `-csearch_path=${searchPath}`);
     db = postgres(url.toString(), {
