@@ -55,12 +55,12 @@ vi.mock('next/headers', () => ({
         : undefined,
   }),
 }));
-const { GET } = await import(
-  new URL(
-    '../../../web/app/api/v1/sessions/[id]/subagents/route.ts',
-    import.meta.url,
-  ).href
-);
+const { GET } = await vi.importActual<{
+  GET: (
+    request: Request,
+    route: { params: Promise<{ id: string }> },
+  ) => Promise<Response>;
+}>('../../../web/app/api/v1/sessions/[id]/subagents/route.ts');
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -197,7 +197,7 @@ suite(
       const id = randomUUID();
       await fixture.db`insert into allrice_users(id,email,display_name,password_hash) values(${id},${`${id}@example.test`},'peer','not-login')`;
       await fixture.db`insert into allrice_memberships(organization_id,workspace_id,user_id,role) values(${f.org},${f.workspace},${id},'member')`;
-    return { ...(await createSession(id)), id };
+      return { ...(await createSession(id)), id };
     }
     async function start(
       f: Chat,
@@ -304,7 +304,7 @@ suite(
 
     it('returns an authorized persisted prefix beside a resident writer, without owner/close admission or writes', async () => {
       const f = await chat();
-      await fixture.db`update allrice_conversation_runtimes set worker_id=null where session_id=${f.session}`;
+      await fixture.db`update allrice_conversation_runtimes set state='idle',worker_id=null,active_run_id=null,active_turn_id=null where session_id=${f.session}`;
       const api = await start(f),
         before = await files(f.descriptor.storageNamespace),
         sql = await writes(f),
