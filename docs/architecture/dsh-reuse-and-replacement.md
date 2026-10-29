@@ -619,7 +619,7 @@ Run `9620a5c1` 的本地五分钟等待截止只能证明没有新的归一化�
 
 旧助手执行器和 `queueHostSubagentPrompt` 私有接缝已在 MET-210 PR2b 删除；以下为 MET-228 / PR3a 的候选接线，不代表生产委派已恢复。
 
-`allrice-jsonrpc-lifecycle-v1` 的 [Run 门卫](../../apps/worker/dsh/allrice-run-admission.mjs) 复用同代公开 `agents.isOwnedBy`、`subagent/start`、`workingDirectory.ensure`、`tools.guard` / `tools/pre-execute`、`agent/request` / `llm/stream`。真实父链及 canonical cwd 随请求校验；Worker 按有序 start 事实复核真实调用者。工具逐次复用 PR1 的 Run 权限函数（只读、不加行锁），根和子级模型逐次复用已冻结的通用订阅预检，不另设模型路线。身份观察只服务门卫及既有单向进度/工具审计，不镜像子级执行状态。
+`allrice-jsonrpc-lifecycle-v1` 的 [Run 门卫](../../apps/worker/dsh/allrice-run-admission.mjs) 复用同代公开 `agents.isOwnedBy`、`subagent/start`、`workingDirectory.ensure`、`tools.guard` / `tools/pre-execute`、`agent/request` / `llm/stream`。真实父链及 canonical cwd 随请求校验；Worker 按有序 start 事实复核真实调用者。工具逐次复用与 PR1 共享的租户/成员/员工版本/Run/租约/期限授权（只读、不加行锁）；交付入口独有的 workbench 开关、execute 模式仍由交付入口检查，逐 action 策略保持原处。根和子级模型逐次复用已冻结的通用订阅预检，不另设模型路线。legacy 进度问题续接从当前授权根取得完整身份；单向进度回执仍在事件发生时固定原 Run，传输时不重新归属。身份观察只服务门卫及既有单向进度/工具审计，不镜像子级执行状态。
 
 提前结束统一关闭输入、处理问题，再公开 `drainDescendants`、取消根且不保留 inbox、SDK shutdown/recover；正常完成仍以公开 `session/wait` 为准。无活跃 Run 拒绝模型，等待期间 steer 绑定 Run；现有输入回执记录真实采纳 turn，SQL 只读现有 `turn.started` 证明同 Run。四类归属为门卫、租约和单向账本；没有新增存储后端、PG 字段/表、私有接口、容量限制或重试。旧生命周期适配的基线分类仍待主会话核定，本 PR 不把它整体改称已回归。
 

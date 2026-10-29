@@ -175,9 +175,14 @@ export async function continueNativeWait(server, params) {
   server.assertRoot(record, params.sessionId);
   if (wait.questions.some((q) => q.id === 'runtime-progress')) {
     if (!server.progressBridge) throw Error('task_progress_disabled');
+    // This resume is outside task-progress middleware. Capture the authorized
+    // root once; do not reattribute queued settlement receipts at the transport.
+    const caller = server.runAdmission?.attribute({
+      nativeSessionId: agent.id,
+    }) ?? { nativeSessionId: agent.id };
     const status = await server.progressBridge({
       action: 'check',
-      nativeSessionId: params.sessionId,
+      ...caller,
     });
     server.assertRoot(record, params.sessionId);
     if (!status.paused) throw Error('task_progress_stale_pause');
@@ -196,7 +201,7 @@ export async function continueNativeWait(server, params) {
       throw Error('task_progress_answer_required');
     await server.progressBridge({
       action: 'decide',
-      nativeSessionId: params.sessionId,
+      ...caller,
       pauseId: status.pauseId,
       decision: cancel ? 'cancel' : 'continue',
     });

@@ -32,16 +32,14 @@ export interface RunDeliveryAuthority {
   };
 }
 
-/** Same tenant/member/employee/policy gates as assistant evidence admission,
- * without assistant configuration, instances, run links or delegation rights. */
-export async function assertRunDeliveryAuthority(
+/** Shared tenant/member/employee/Run/lease admission. Action-specific policy
+ * remains with each tool or delivery endpoint. */
+async function assertRunAuthority(
   tx: TransactionSql,
   input: RunDeliveryAuthority,
-  lock = true,
+  lock: boolean,
 ) {
   const { scope, rootRunId, worker } = input;
-  if (!runtimeFeatureEnabled('ALLRICE_WORKBENCH_ENABLED'))
-    finalDeliveryUnavailable();
   // Job precedes run/session, matching queue completion. These locks also
   // exclude publication's SHARE job/run and UPDATE session locks.
   const [job] =
@@ -63,8 +61,7 @@ export async function assertRunDeliveryAuthority(
   if (
     !controls.success ||
     controls.data.version !== policy?.version ||
-    !controls.data.enabled ||
-    controls.data.mode !== 'execute'
+    !controls.data.enabled
   )
     finalDeliveryUnavailable();
   const [row] = await tx<
@@ -197,8 +194,7 @@ export async function assertRunDeliveryAuthority(
   ];
   if (!clock || deadlines.some((d) => d <= clock.now))
     finalDeliveryUnavailable();
-  if (lock) markFinalDeliveryRootLocked(tx, rootRunId);
-  return {
+  const authority = {
     task: RuntimeTaskRefSchema.parse({
       scope,
       runId: rootRunId,
@@ -215,11 +211,26 @@ export async function assertRunDeliveryAuthority(
     assistantMessageId: row.assistant_message_id,
     deadlines,
   };
+  return { authority, controls: controls.data };
 }
 
-/** Tool-seam admission reuses PR1 authority without publication row locks. */
+/** Delivery retains its feature/mode gates and publication locking contract. */
+export async function assertRunDeliveryAuthority(
+  tx: TransactionSql,
+  input: RunDeliveryAuthority,
+) {
+  if (!runtimeFeatureEnabled('ALLRICE_WORKBENCH_ENABLED'))
+    finalDeliveryUnavailable();
+  const { controls, authority } = await assertRunAuthority(tx, input, true);
+  if (controls.mode !== 'execute') finalDeliveryUnavailable();
+  markFinalDeliveryRootLocked(tx, input.rootRunId);
+  return authority;
+}
+
+/** Tool-seam admission is read-only; it grants no action or delivery rights. */
 export async function assertNativeRunAuthority(input: RunDeliveryAuthority) {
-  return getDatabase().begin('read only', (tx) =>
-    assertRunDeliveryAuthority(tx, input, false),
+  return getDatabase().begin(
+    'read only',
+    async (tx) => (await assertRunAuthority(tx, input, false)).authority,
   );
 }
