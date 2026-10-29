@@ -92,6 +92,7 @@ import {
 import { HandlerError } from '../errors.js';
 import {
   requireCheckedFinalDelivery,
+  hasCheckedNativeQuestionReceipt,
   transferCheckedFinalDeliveryForExecution,
 } from '../final-delivery/checked-delivery.js';
 import {
@@ -2101,6 +2102,7 @@ export async function executeEmployeeRun({
               }
             });
     const waitingForProgress = !!result.waitingForUser;
+    const questionReceiptOnly = hasCheckedNativeQuestionReceipt(result);
     if (waitingForProgress) {
       const progress = await taskProgress?.({
         action: 'check',
@@ -2117,8 +2119,12 @@ export async function executeEmployeeRun({
     }
     // The existing native progress wait, verified against the current durable
     // pause/lease above, is not a final delivery. Every other checked result
-    // still requires the private proof, including a result that lost it.
-    if (!waitingForProgress && finalDeliveryMode === 'checked_native_v1')
+    // requires the private proof or the exact no-turn typed receipt's commit
+    // capability. A result that lost its private attachment still fails.
+    if (
+      (!waitingForProgress && finalDeliveryMode === 'checked_native_v1') ||
+      questionReceiptOnly
+    )
       requireCheckedFinalDelivery(workflowLease);
     if (questionWait)
       await completeNativeTask({
@@ -2203,7 +2209,7 @@ export async function executeEmployeeRun({
     );
     if (officeFirstDeliveryPolicy) delivery.assertComplete();
     runtime = await finalizeEmployeeConversationContext({
-      ...(independentDelivery && !waitingForProgress
+      ...(independentDelivery && !waitingForProgress && !questionReceiptOnly
         ? { retainTurnUntilCommit: runtime }
         : {}),
       contentGenerationId: contentRuntime?.generationId,

@@ -10,6 +10,11 @@ import {
   type RuntimeNativeInputProof,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
+import {
+  checkedResultAnswer,
+  finalDeliveryUnavailable,
+  registerJobCompletionGuard,
+} from './final-delivery-commit.ts';
 import type { TransactionSql } from 'postgres';
 import type { EnqueueOptions } from './execution/queue.ts';
 import type { ExperienceRunScope } from './experience-runtime.ts';
@@ -226,8 +231,7 @@ export async function prepareNativeQuestionReply(
       runtimePolicyDigest(matched.answers) !== runtimePolicyDigest(q.answers)
     );
   };
-  const command = await db.begin(async (tx) => {
-    const q = await current(tx);
+  const readCommand = async (tx: TransactionSql) => {
     const [row] = await tx<
       {
         id: string;
@@ -252,6 +256,13 @@ export async function prepareNativeQuestionReply(
       row.message !== `allrice:user-question:v1:${JSON.stringify(answer)}`
     )
       throw new NativeQuestionError();
+    return row;
+  };
+  const terminalReceipt = async (
+    tx: TransactionSql,
+    q: Awaited<ReturnType<typeof current>>,
+    row: Awaited<ReturnType<typeof readCommand>>,
+  ) => {
     let receipt: 'adopted' | 'rejected' | undefined;
     if (row.state === 'consumed') {
       if (
@@ -273,19 +284,93 @@ export async function prepareNativeQuestionReply(
       )
         throw new NativeQuestionError();
       receipt = 'rejected';
-    } else {
+    }
+    return receipt;
+  };
+  const command = await db.begin(async (tx) => {
+    const q = await current(tx);
+    const row = await readCommand(tx);
+    const receipt = await terminalReceipt(tx, q, row);
+    if (!receipt) {
       await tx`update allrice_conversation_commands c set state='claimed',worker_id=${input.worker.workerId},
         claimed_at=now(),error_code=null,delivery_attempts=delivery_attempts+1,
         expected_generation=cr.thread_generation,expected_turn_id=null,updated_at=now()
         from allrice_conversation_runtimes cr where c.id=${row.id} and cr.session_id=${input.sessionId}`;
     }
-    return { ...row, receipt };
+    const [watermark] =
+      await tx`select coalesce(max(sequence),-1)::int sequence from allrice_run_events where run_id=${input.context.runId}`;
+    return { ...row, receipt, sequence: watermark!.sequence as number };
   });
   return {
     inputId: command.client_user_message_id,
     text: command.message,
     receipt: command.receipt,
     assertCurrent: () => db.begin(current),
+    // The existing terminal command contract is the receipt, not a missing
+    // candidate. Recheck it under completeJob's actual transaction and lease.
+    completionGuard: async () => {
+      const assertReceipt = async (tx: TransactionSql) => {
+        const q = await current(tx);
+        const row = await readCommand(tx);
+        if (row.id !== command.id || !(await terminalReceipt(tx, q, row)))
+          finalDeliveryUnavailable();
+      };
+      await db.begin(assertReceipt);
+      return registerJobCompletionGuard(async (tx, job, result) => {
+        if (
+          job.id !== input.worker.jobId ||
+          job.run_id !== input.context.runId ||
+          job.worker_id !== input.worker.workerId ||
+          job.lease_token !== input.worker.leaseToken ||
+          job.drain_reason
+        )
+          finalDeliveryUnavailable();
+        await assertReceipt(tx);
+        // Historical turns may belong to a recovered consumed command. This
+        // attempt must have no turn or model usage of its own.
+        const [turn] =
+          await tx`select id from allrice_run_events where run_id=${job.run_id}
+          and sequence>${command.sequence} and
+          (event_type='turn.started' or payload->>'sourceEventType'='turn/start') limit 1`;
+        const value = result as {
+          usage?: Record<string, unknown>;
+          usageComplete?: unknown;
+          cacheUsageKnown?: unknown;
+        };
+        if (
+          turn ||
+          value.usageComplete !== true ||
+          value.cacheUsageKnown !== true ||
+          !value.usage ||
+          ['inputTokens', 'cachedInputTokens', 'outputTokens'].some(
+            (key) => value.usage![key] !== 0,
+          )
+        )
+          finalDeliveryUnavailable();
+        const answerText = checkedResultAnswer(result);
+        return {
+          assertCommitted: async () => {
+            const [stored] =
+              await tx`select r.result->>'answer' answer,m.content->>'text' text,j.status,r.state,clock_timestamp() now
+            from allrice_jobs j join allrice_runs r on r.id=j.run_id
+            join allrice_employee_runs e on e.run_id=r.id join allrice_messages m on m.id=e.assistant_message_id
+            where j.id=${job.id}`;
+            if (
+              !stored ||
+              stored.status !== 'succeeded' ||
+              stored.state !== 'succeeded' ||
+              stored.answer !== answerText ||
+              stored.text !== answerText ||
+              checkedResultAnswer(result) !== answerText ||
+              !job.lease_expires_at ||
+              job.lease_expires_at <= stored.now ||
+              job.timeout_at <= stored.now
+            )
+              finalDeliveryUnavailable();
+          },
+        };
+      });
+    },
     adopted: (proof: RuntimeNativeInputProof) =>
       db.begin(async (tx) => {
         await current(tx);

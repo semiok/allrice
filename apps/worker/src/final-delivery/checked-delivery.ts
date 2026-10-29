@@ -11,11 +11,14 @@ type CommitBinding = Readonly<{
 }>;
 const commitGuards = new WeakMap<object, CommitBinding>();
 
-type Entry = Readonly<{
-  answer: string;
-  proof: FinalDeliveryProof;
-  commit?: CommitBinding;
-}>;
+type Entry = Readonly<
+  {
+    answer: string;
+  } & (
+    | { proof: FinalDeliveryProof; commit?: CommitBinding; receipt?: never }
+    | { proof?: never; commit?: never; receipt: JobCompletionGuard }
+  )
+>;
 
 // Worker-private bookkeeping. No symbol/property is attached to the carrier,
 // so spread/JSON/clone/event serialization cannot manufacture or expose it.
@@ -30,6 +33,10 @@ const executions = new WeakMap<object, ExecutionCoverage>();
 /** Private per-invocation result, never a serializable Job/result property. */
 export type CheckedFinalDeliveryCoverage =
   | Readonly<{ coverage: 'uncovered' }>
+  | Readonly<{
+      coverage: 'native_question_receipt';
+      checkedDelivery: JobCompletionGuard;
+    }>
   | Readonly<{
       coverage: 'checked_native_v1';
       proof: FinalDeliveryProof;
@@ -136,7 +143,7 @@ function assertAnswer(value: unknown, entry: Entry): void {
   const current = answer(value);
   if (
     current !== entry.answer ||
-    digest(current) !== entry.proof.candidateDigest
+    (entry.proof && digest(current) !== entry.proof.candidateDigest)
   )
     unavailable();
 }
@@ -204,6 +211,7 @@ export function attachCheckedFinalDelivery(
   if (existing) {
     assertAnswer(target, existing);
     if (
+      !existing.proof ||
       fields.some((key) => existing.proof[key] !== safe[key]) ||
       existing.commit !== commit
     )
@@ -218,6 +226,34 @@ export function attachCheckedFinalDelivery(
       ...(commit ? { commit } : {}),
     }),
   );
+}
+
+/** The adapter may attach only the guard returned by the authorized typed-input
+ * port after native settlement and a no-turn result. Same private carrier and
+ * execution identity as checked delivery; no JSON flag can grant this path. */
+export function attachCheckedNativeQuestionReceipt(
+  target: unknown,
+  guard: JobCompletionGuard,
+): void {
+  const current = answer(target);
+  if (
+    deliveries.has(target as object) ||
+    !object(guard) ||
+    !Object.isFrozen(guard)
+  )
+    unavailable();
+  deliveries.set(
+    target as object,
+    Object.freeze({ answer: current, receipt: guard }),
+  );
+}
+
+export function hasCheckedNativeQuestionReceipt(target: unknown): boolean {
+  if (!object(target)) return false;
+  const entry = deliveries.get(target);
+  if (!entry?.receipt) return false;
+  assertAnswer(target, entry);
+  return true;
 }
 
 /** Missing metadata stays missing. An attached but changed carrier is an
@@ -288,13 +324,20 @@ export function transferCheckedFinalDeliveryForExecution(
   if (!object(scope)) unavailable();
   const state = executions.get(scope);
   if (!state?.required) {
-    if (getCheckedFinalDelivery(source) || getCheckedFinalDelivery(target))
+    if (
+      (object(source) && deliveries.has(source)) ||
+      (object(target) && deliveries.has(target))
+    )
       unavailable();
     return;
   }
   if (!object(source)) unavailable();
   const entry = deliveries.get(source);
-  if (!entry?.commit || (state.entry && state.entry !== entry)) unavailable();
+  if (
+    (!entry?.commit && !entry?.receipt) ||
+    (state.entry && state.entry !== entry)
+  )
+    unavailable();
   if (state.output && state.output !== target) unavailable();
   transferCheckedFinalDelivery(source, target);
   state.entry = entry;
@@ -312,17 +355,23 @@ export function readCheckedFinalDeliveryForExecution(
   const state = executions.get(scope);
   if (!state) unavailable();
   const proof = getCheckedFinalDelivery(result);
+  const entry = object(result) ? deliveries.get(result) : undefined;
   if (!state.required) {
-    if (proof) unavailable();
+    if (entry) unavailable();
     return Object.freeze({ coverage: 'uncovered' });
   }
   if (
-    !proof ||
     state.output !== result ||
     !object(result) ||
     deliveries.get(result) !== state.entry
   )
     unavailable();
+  if (entry?.receipt)
+    return Object.freeze({
+      coverage: 'native_question_receipt',
+      checkedDelivery: entry.receipt,
+    });
+  if (!proof) unavailable();
   const commit = deliveries.get(result)!.commit;
   if (!commit) unavailable();
   assertCommit(commit);

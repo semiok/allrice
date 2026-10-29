@@ -250,7 +250,7 @@ export async function runClaimedJob(
       jobId: input.jobId,
       leaseToken: input.leaseToken,
       result,
-      ...(delivery.coverage === 'checked_native_v1'
+      ...(delivery.coverage !== 'uncovered'
         ? { checkedDelivery: delivery.checkedDelivery }
         : {}),
     });

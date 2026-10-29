@@ -18,7 +18,7 @@ import {
   type HarnessEvent,
 } from '@allrice/contracts';
 import { AssistantRuntimeError } from '@allrice/database';
-import type { NativeSessionPin } from '@allrice/database';
+import type { NativeSessionPin, JobCompletionGuard } from '@allrice/database';
 
 import { AgentLoopGuard } from '../agent-loop-guard.js';
 import { HandlerError, isConfirmedToolFailure } from '../errors.js';
@@ -27,7 +27,10 @@ import {
   assertFinalDelivery,
   type FinalDeliveryProof,
 } from '../final-delivery/guard.js';
-import { attachCheckedFinalDelivery } from '../final-delivery/checked-delivery.js';
+import {
+  attachCheckedFinalDelivery,
+  attachCheckedNativeQuestionReceipt,
+} from '../final-delivery/checked-delivery.js';
 import { NativeQuestionParked } from './dsh/native-question-wait.js';
 import { ReceiptDrainWindow } from './dsh/receipt-drain.js';
 import {
@@ -874,6 +877,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         >
       | undefined;
     let checkedDeliveryProof: FinalDeliveryProof | undefined;
+    let questionReceipt: JobCompletionGuard | undefined;
     let restoredFinal: Record<string, unknown> | null = null;
     let restoredUsage: AssistantFailureUsage | undefined;
     const timingReceipts = new Set<string>();
@@ -1041,7 +1045,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
       if (runDelivery) {
         if (input.assistants || !input.runDelivery) finalDeliveryUnavailable();
         // Existing same-Run turns cannot authorize replay of the business prompt.
-        if (!input.questionWait?.resume && (await runDelivery.readOrigin()))
+        if (
+          !input.questionWait?.resume &&
+          !input.questionReply?.receipt &&
+          (await runDelivery.readOrigin())
+        )
           finalDeliveryUnavailable();
         await nativeDelivery('bind', {
           sessionId: threadId,
@@ -1082,6 +1090,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
               completionSource: undefined,
               usageSource: undefined,
               waitingForUser: undefined,
+              questionReceipt: undefined,
             }
           : await this.runOnce({
               runtime,
@@ -1215,6 +1224,13 @@ export class DshHarnessAdapter implements HarnessAdapter {
         usageComplete &&= result.usageComplete;
         cacheUsageKnown &&= result.cacheUsageKnown;
         completedUsage = { usage, usageComplete, cacheUsageKnown };
+        if (result.questionReceipt) {
+          await checkContent('beforePublication');
+          executionSignal.throwIfAborted();
+          questionReceipt = result.questionReceipt;
+          answer = result.answer;
+          break;
+        }
         waitingForUser = result.waitingForUser;
         if (waitingForUser) {
           executionSignal.throwIfAborted();
@@ -1853,6 +1869,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
     attachAssistantFailureDiagnostics(result, assistantDiagnostics);
     if (checkedDeliveryProof)
       attachCheckedFinalDelivery(result, checkedDeliveryProof);
+    if (questionReceipt)
+      attachCheckedNativeQuestionReceipt(result, questionReceipt);
     return result;
   }
 
@@ -1970,6 +1988,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     };
     let idle = false;
     let replyOnly = false;
+    let questionReceipt: JobCompletionGuard | undefined;
     let started = false;
     let turnOriginCommitted = false;
     let usageSettled = false;
@@ -2624,6 +2643,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
           },
         });
         replyOnly = !started;
+        if (replyOnly)
+          questionReceipt = await input.questionReply.completionGuard();
         if (receipt.rejected)
           answer = '这道题已经采用了另一份回答，本次回答没有被采用。';
         else if (!started) answer = '这道题已经回答过。';
@@ -2683,7 +2704,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
             cacheUsageKnown: messageReceipts > 0 && cacheUsageKnown,
           },
         );
-      if (!waitingForUser && !parseDshToolCall(answer)) {
+      if (!questionReceipt && !waitingForUser && !parseDshToolCall(answer)) {
         await input.settleDelivery?.(confirmUsageSettled);
         await flushEvents();
         input.signal.throwIfAborted();
@@ -2702,6 +2723,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       }
       return {
         answer,
+        questionReceipt,
         waitingForUser,
         replyId,
         usage,

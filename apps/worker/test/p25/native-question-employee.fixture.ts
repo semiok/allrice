@@ -260,7 +260,7 @@ export async function executeNativeReplyJob(
     afterHandler?(
       result: Awaited<ReturnType<typeof executeEmployeeRun>>,
       lease: Parameters<typeof executeEmployeeRun>[0]['workflowLease'],
-    ): Promise<void>;
+    ): Promise<void | Awaited<ReturnType<typeof executeEmployeeRun>>>;
     crashAfterHandler?: boolean;
   } = {},
 ) {
@@ -282,14 +282,15 @@ export async function executeNativeReplyJob(
       onAbortReady() {},
     },
     async (input) => {
-      const result = await executeEmployeeRun({
+      let result = await executeEmployeeRun({
         ...input,
         onHarnessEvent: async (event) => {
           await input.onHarnessEvent(event);
           await hooks.onEvent?.(event);
         },
       });
-      await hooks.afterHandler?.(result, input.workflowLease);
+      result =
+        (await hooks.afterHandler?.(result, input.workflowLease)) ?? result;
       if (hooks.crashAfterHandler) {
         // Real command/Host result is committed; simulate process loss before
         // runClaimedJob can call completeJob. Recover through maintainQueue.

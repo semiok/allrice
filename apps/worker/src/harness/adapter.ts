@@ -2,6 +2,7 @@ import type { createRunDeliveryPort } from '../final-delivery/run-delivery.js';
 import type {
   NativeRootOrigin,
   NativeRunExecutionBinding,
+  JobCompletionGuard,
 } from '@allrice/database';
 import type { BoundDeliveryRepair } from '../final-delivery/repair.js';
 import type {
@@ -87,6 +88,7 @@ export interface HarnessExecutionInput {
     assertCurrent(): Promise<unknown>;
     adopted(proof: RuntimeNativeInputProof): Promise<void>;
     rejected(): Promise<void>;
+    completionGuard(): Promise<JobCompletionGuard>;
   };
   /** Server-loaded current human message before attachment/template augmentation.
    * Selects an existing tool transport only; database admission grants writes. */

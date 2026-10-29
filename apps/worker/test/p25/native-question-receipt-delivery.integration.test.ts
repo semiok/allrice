@@ -233,4 +233,63 @@ suite('PR5 checked exact native question receipts', () => {
     },
     60000,
   );
+  it.each([
+    'revoked-at-commit',
+    'cross-question-proof',
+    'unknown-error',
+    'forged-json',
+  ] as const)(
+    'does not complete an exact receipt after %s',
+    async (failure) => {
+      f = await setup(async (_r, n) => (n === 1 ? ask : { text: '已完成。' }));
+      checked();
+      const source = await send(f, '需要决定的地方先问我。');
+      await execute(f, source.run.id);
+      const [q] =
+        await f.db`select * from allrice_native_questions where session_id=${f.chat.id}`;
+      const answer = {
+        questionId: `${q!.native_session_id}:${q!.call_id}`,
+        answers: [{ id: 'choice', selected: [] as string[] }],
+      };
+      const first = await send(f, '跳过', answer),
+        duplicate = await send(f, '另一客户端跳过', answer);
+      await execute(f, first.run.id);
+      const requests = f.model.requests.length;
+      if (failure === 'unknown-error') {
+        const reply = DshProtocolClient.prototype.typedQuestionReply;
+        vi.spyOn(
+          DshProtocolClient.prototype,
+          'typedQuestionReply',
+        ).mockImplementation(async function (this: DshProtocolClient, ...args) {
+          await reply.apply(this, args);
+          throw Error('Synthetic unknown reply transport error');
+        });
+      }
+      const result = await execute(f, duplicate.run.id, 'failed', {
+        afterHandler: async (value, lease) => {
+          await receipt(value, lease);
+          if (failure === 'revoked-at-commit')
+            await f.db`update allrice_employee_assignments set active=false where id=${f.identity.assignment}`;
+          if (failure === 'cross-question-proof')
+            await f.db`update allrice_conversation_commands set native_proof=jsonb_set(native_proof,'{messageId}',to_jsonb(${answer.questionId + '-foreign'}::text)) where followup_run_id=${duplicate.run.id}`;
+          if (failure === 'forged-json')
+            return JSON.parse(
+              JSON.stringify({
+                ...value,
+                questionReply: true,
+                receiptOnly: true,
+                receipt: 'adopted',
+              }),
+            );
+        },
+      });
+      expect(result.state).toBe('failed');
+      expect(f.model.requests).toHaveLength(requests);
+      expect(await turns(duplicate.run.id)).toHaveLength(0);
+      expect(
+        await f.db`select id from allrice_run_events where run_id=${duplicate.run.id} and event_type='run.succeeded'`,
+      ).toHaveLength(0);
+    },
+    60000,
+  );
 });

@@ -20,6 +20,11 @@ import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.js';
 import { DshProtocolClient } from '../../src/harness/dsh-protocol-client.js';
 import { pollEmployeeConversationSteers } from '../../src/conversation/turn-lifecycle.js';
 import { HandlerError } from '../../src/errors.js';
+import {
+  hasCheckedNativeQuestionReceipt,
+  requireCheckedFinalDelivery,
+  transferCheckedFinalDeliveryForExecution,
+} from '../../src/final-delivery/checked-delivery.js';
 import { p24Fixture } from '../p24/fixture.js';
 
 const suite =
@@ -259,6 +264,14 @@ suite(
                 holdRoot = false;
                 rootReturned();
                 await rootGate;
+              }
+              if (hasCheckedNativeQuestionReceipt(result)) {
+                requireCheckedFinalDelivery(workflowLease);
+                transferCheckedFinalDeliveryForExecution(
+                  workflowLease,
+                  result,
+                  result,
+                );
               }
               return result;
             },
