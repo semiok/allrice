@@ -175,7 +175,9 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
     model: 'never-called',
     ...overrides,
   });
-  const finish = (fact: ReturnType<typeof start>): NativeModelFact => ({
+  const finish = (
+    fact: ReturnType<typeof start>,
+  ): Extract<NativeModelFact, { phase: 'finish' }> => ({
     ...fact,
     phase: 'finish',
     outcome: 'succeeded',
@@ -298,7 +300,7 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
       await fixture.db`select * from allrice_task_clocks where run_id=${f.rootRunId}`,
     ).toHaveLength(0);
     expect(
-      await fixture.db`select * from allrice_model_usage_ledger where run_id=${f.rootRunId}`,
+      await fixture.db`select * from allrice_model_usage_ledger where route_decision_id=${f.decision.id}`,
     ).toHaveLength(0);
   });
   it('requires a matching immutable start, including provider, purpose and route attempt', async () => {
