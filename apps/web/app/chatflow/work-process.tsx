@@ -238,7 +238,9 @@ export function WorkProcess({
         <div
           key={JSON.stringify([
             currentPresentation.runId,
-            part.items.find((item) => item.operationId)?.operationId ?? part.id,
+            part.items
+              .flatMap((item) => (item.operationId ? [item.operationId] : []))
+              .sort()[0] ?? part.id,
           ])}
           hidden={!showHistory}
         >
