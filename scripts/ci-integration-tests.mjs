@@ -21,19 +21,44 @@ const tokens = (command) =>
   command.match(/(?:apps|packages|tests|scripts)\/[\w./-]+/g) ?? [];
 const matches = (file, filters) =>
   filters.some((filter) => file === filter || file.startsWith(filter + '/'));
+const escapePattern = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const titlePattern = (item) =>
+  item.parameterized
+    ? item.title
+        .split(/(%[sdifjoO#$]|\$[\w.]+)/)
+        .map((part) =>
+          /^(%[sdifjoO#$]|\$[\w.]+)$/.test(part) ? '.*?' : escapePattern(part),
+        )
+        .join('')
+    : escapePattern(item.title);
 
 // Read registration conditions, including suite aliases; do not confuse fixture
 // environment writes or child-process strings with switches that skip tests.
 export function registrations(file, source) {
   const ast = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
   const variables = new Map();
+  const scope = (node) => {
+    while (node.parent && !ts.isBlock(node) && !ts.isSourceFile(node))
+      node = node.parent;
+    return node;
+  };
+  const binding = (identifier) => {
+    for (let node = identifier.parent; node; node = node.parent) {
+      const value = variables.get(node)?.get(identifier.text);
+      if (value) return value;
+    }
+    return undefined;
+  };
   function variablesIn(node) {
     if (
       ts.isVariableDeclaration(node) &&
       ts.isIdentifier(node.name) &&
       node.initializer
-    )
-      variables.set(node.name.text, node.initializer);
+    ) {
+      const owner = scope(node);
+      if (!variables.has(owner)) variables.set(owner, new Map());
+      variables.get(owner).set(node.name.text, node.initializer);
+    }
     ts.forEachChild(node, variablesIn);
   }
   variablesIn(ast);
@@ -44,15 +69,8 @@ export function registrations(file, source) {
       node.expression.getText(ast) === 'process.env'
     )
       return [node.name.text];
-    if (
-      ts.isIdentifier(node) &&
-      variables.has(node.text) &&
-      !seen.has(node.text)
-    )
-      return environment(
-        variables.get(node.text),
-        new Set([...seen, node.text]),
-      );
+    if (ts.isIdentifier(node) && binding(node) && !seen.has(node.text))
+      return environment(binding(node), new Set([...seen, node.text]));
     const result = [];
     ts.forEachChild(node, (child) => {
       result.push(...environment(child, seen));
@@ -65,11 +83,19 @@ export function registrations(file, source) {
     if (ts.isIdentifier(node)) {
       if (['describe', 'it', 'test'].includes(node.text))
         return { kind: node.text, gates: [] };
-      if (variables.has(node.text) && !seen.has(node.text))
-        return callee(variables.get(node.text), new Set([...seen, node.text]));
+      if (binding(node) && !seen.has(node.text))
+        return callee(binding(node), new Set([...seen, node.text]));
     }
     if (ts.isPropertyAccessExpression(node))
       return callee(node.expression, seen);
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === 'each'
+    ) {
+      const base = callee(node.expression.expression, seen);
+      return base ? { ...base, parameterized: true } : null;
+    }
     if (
       ts.isCallExpression(node) &&
       ts.isPropertyAccessExpression(node.expression) &&
@@ -108,6 +134,7 @@ export function registrations(file, source) {
           cases.push({
             title: node.arguments[0].text,
             gates: registration.gates,
+            parameterized: registration.parameterized ?? false,
           });
       }
     }
@@ -276,7 +303,11 @@ export function inventory(root = process.cwd()) {
         continue;
       if (!additions[item.group])
         throw Error(`No automatic case runner: ${entry.file}: ${item.title}`);
-      additions[item.group].push({ file: entry.file, title: item.title });
+      additions[item.group].push({
+        file: entry.file,
+        title: item.title,
+        ...(item.parameterized ? { parameterized: true } : {}),
+      });
     }
   }
   for (const [group, items] of Object.entries(additions)) {
@@ -345,7 +376,9 @@ export function audit(entries, report, filters, env, pattern) {
         passed++;
         continue;
       }
-      const condition = entry.cases.find((item) => item.title === test.title);
+      const condition = entry.cases.find((item) =>
+        new RegExp('^' + titlePattern(item) + '$').test(test.title),
+      );
       if (
         ['pending', 'skipped'].includes(test.status) &&
         condition &&
@@ -422,11 +455,7 @@ function main() {
     for (const batch of [whole, cases]) {
       if (!batch.length) continue;
       const pattern =
-        batch === cases
-          ? batch
-              .map((item) => item.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-              .join('|')
-          : null;
+        batch === cases ? batch.map(titlePattern).join('|') : null;
       run(plan, [
         ...vitest,
         ...unique(batch.map((item) => item.file)),

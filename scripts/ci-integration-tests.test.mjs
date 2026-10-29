@@ -230,3 +230,76 @@ it('rejects a wholly skipped explicit file while exposing separately covered dir
     },
   ]);
 });
+
+it('keeps PostgreSQL suite.each out of the ungated native inventory', () => {
+  const root = fixture(
+    {
+      [dbFile]: `const suite = ${dbGate} ? describe.sequential : describe.skip; suite.each(['checkpoint', undefined] as const)('release %s',()=>{it('checks retention',()=>{});});`,
+    },
+    [{ run: 'pnpm test' }],
+  );
+  const plan = inventory(root);
+  expect(plan.entries[0].group).toBe('db');
+  expect(plan.entries[0].coveredBy).toEqual([]);
+  expect(plan.additions.db).toEqual([{ file: dbFile }]);
+});
+
+it('does not let a nested subprocess variable shadow the registered database suite alias', () => {
+  const root = fixture(
+    {
+      [dbFile]: `const run = ${dbGate} ? describe.sequential : describe.skip; run('recovery SQL',()=>{function recover(){const run=spawnSync('psql');return run.status;}it('uses the isolated database',()=>{});});`,
+    },
+    [{ run: 'pnpm test' }],
+  );
+  expect(inventory(root).entries[0].group).toBe('db');
+  expect(inventory(root).additions.db).toEqual([{ file: dbFile }]);
+});
+
+it('accounts for parameterized external cases without accepting unrelated or enabled skips', () => {
+  const root = fixture({
+    [dbFile]: `describe.skipIf(!(${dbGate}))('DB',()=>{it('SQL',()=>{});it.skipIf(!process.env.ALLRICE_RUN_CLOUD_INTEGRATION).each(['docx','xlsx'])('physical %s renderer',()=>{});});`,
+  });
+  const plan = inventory(root);
+  const report = (...tests) => ({
+    testResults: [
+      {
+        name: resolve(dbFile),
+        assertionResults: tests.map(([title, status]) => ({
+          title,
+          fullName: 'DB ' + title,
+          status,
+        })),
+      },
+    ],
+  });
+  const env = { ALLRICE_RUN_DB_INTEGRATION: '1' };
+  const observed = report(
+    ['SQL', 'passed'],
+    ['physical docx renderer', 'pending'],
+    ['physical xlsx renderer', 'pending'],
+  );
+  const [result] = audit(plan.entries, observed, [dbFile], env);
+  expect(result.passed).toBe(1);
+  expect(result.deferred.map((item) => item.title)).toEqual([
+    'physical docx renderer',
+    'physical xlsx renderer',
+  ]);
+  expect(result.deferred.every((item) => item.group === 'manual')).toBe(true);
+  expect(() =>
+    audit(plan.entries, observed, [dbFile], {
+      ...env,
+      ALLRICE_RUN_CLOUD_INTEGRATION: '1',
+    }),
+  ).toThrow('Unexpected pending');
+  expect(() =>
+    audit(
+      plan.entries,
+      report(
+        ['SQL', 'passed'],
+        ['unrelated physical docx renderer', 'pending'],
+      ),
+      [dbFile],
+      env,
+    ),
+  ).toThrow('Unexpected pending');
+});

@@ -1,6 +1,9 @@
 # Only physical/external prerequisites belong here. {file} is filled by inventory.
 # Commands run in the task worktree after provisioning the stated prerequisite;
 # never point them at shared Dev or reuse the user's default Docker context.
+ALLRICE_OFFICE_PREVIEW_DIR:
+  reason: Actual native Office renderer output from the task sandbox; requires docx.json, xlsx.json and pptx.json OfficeRenderResponse documents plus their rendered page bytes, produced by the external Office rendering environment.
+  command: ALLRICE_OFFICE_PREVIEW_DIR="$OFFICE_PREVIEW_DIR" pnpm exec vitest run {file} --maxWorkers=2
 ALLRICE_LOCAL_DOCKER_TEST_SOCKET:
   reason: Dedicated allrice-b2 macOS Colima VM, pinned toolchain image and its Docker socket; these tests execute containers and verify physical isolation.
   command: ALLRICE_LOCAL_DOCKER_TEST_SOCKET="$HOME/.colima/allrice-b2/docker.sock" pnpm exec vitest run {file} --maxWorkers=2
