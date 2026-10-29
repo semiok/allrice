@@ -50,6 +50,7 @@ export async function host({
   depth = 1,
   rootId = 'pr0-root',
   active = 8,
+  runId,
   prepare = async () => {},
   bridge = async (method) => {
     throw Error(`unexpected bridge ${method}`);
@@ -162,8 +163,11 @@ export async function host({
     contentScenes: [],
     requireContentGuard: false,
     requireTaskProgress: false,
+    requireRunAdmission: !!runId,
   });
   const root = (await server.ensureRoot(rootId)).agent;
+  if (runId)
+    await server.handleRequest('run/begin', { sessionId: rootId, runId });
   const spawn = (parent = root, prompt = '子任务', options = {}) =>
     ctx.subagents.startActivation({
       provider: 'spawn',
@@ -184,6 +188,7 @@ export async function host({
     prompt: (value) =>
       server.handleRequest('session/prompt', {
         sessionId: root.id,
+        runId,
         contentBlocks: text(value),
       }),
     wait: () => server.handleRequest('session/wait', { sessionId: root.id }),

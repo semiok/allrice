@@ -96,6 +96,7 @@ export async function pollEmployeeConversationSteers(input: {
       sessionId: input.ownership.sessionId,
       workerId: input.ownership.workerId,
       generation: input.generation,
+      runId: input.ownership.runId,
       turnId: input.turnId,
       drain: input.drain,
     });
@@ -115,7 +116,8 @@ export async function pollEmployeeConversationSteers(input: {
     try {
       const proof = await input.adapter.steer({
         threadId: input.threadId,
-        turnId: input.turnId,
+        runId: input.ownership.runId,
+        turnId: command.turnId,
         message: command.message,
         clientUserMessageId: command.clientUserMessageId,
         ...(command.inputKind ? { inputKind: command.inputKind } : {}),
@@ -143,7 +145,7 @@ export async function pollEmployeeConversationSteers(input: {
     } catch (error) {
       if (
         command.inputKind &&
-        !/INPUT_TURN_CHANGED|QUESTION_|INPUT_ID_CONFLICT|INVALID_TYPED_INPUT/.test(
+        !/RUN_NOT_ACTIVE|RUN_COMPLETING|INPUT_TURN_CHANGED|QUESTION_|INPUT_ID_CONFLICT|INVALID_TYPED_INPUT/.test(
           error instanceof Error ? error.message : '',
         )
       ) {

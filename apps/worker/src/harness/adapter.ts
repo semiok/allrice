@@ -24,6 +24,7 @@ export interface HarnessToolCall {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+  nativeSessionId?: string;
 }
 
 export interface HarnessToolDefinition {
@@ -60,6 +61,8 @@ export interface FinalDeliveryReplyOrigin {
 
 /** Private Worker control plane; never an input adoption acknowledgement. */
 export interface HarnessExecutionInput {
+  nativeRunAuthority?: (generation: number) => () => Promise<unknown>;
+  modelPreflight?: () => Promise<unknown>;
   /** Current platform rollout switch, shared with Web through PostgreSQL. */
   nativeQuestionMode?: 'legacy' | 'timed';
   /** Owner preference frozen when this Run was enqueued. */
@@ -269,6 +272,7 @@ export interface HarnessAdapter {
     turnId: string;
     message: string;
     clientUserMessageId: string;
+    runId?: string;
     inputKind?: 'steer_current' | 'ask_user';
   }): Promise<void | RuntimeNativeInputProof>;
   compact?(input: { threadId: string }): Promise<void>;

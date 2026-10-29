@@ -47,6 +47,7 @@ import { AllRiceSdkRoot } from './allrice-sdk-root.mjs';
 import { createModels } from '@earendil-works/pi-ai';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 
+import { installRunAdmission } from './allrice-run-admission.mjs';
 import { steerDshAgent } from './allrice-dsh-runtime-compatibility.mjs';
 import {
   detachNativeQuestion,
@@ -55,6 +56,7 @@ import {
 } from './allrice-dsh-detach.mjs';
 import {
   deliverDshInput,
+  inspectDshInput,
   discardPendingDshInputs,
 } from './allrice-dsh-inputs.mjs';
 import { cloudNativeTools } from './allrice-cloud-native-tools.mjs';
@@ -1097,6 +1099,7 @@ export async function createAllRiceRuntime(
 
     async prompt(params) {
       this.runFinalDelivery?.assertAccepting(params.sessionId);
+      const confirmAdmission = this.runAdmission?.prompt(params.runId);
       const images = Array.isArray(params?.images) ? params.images : [];
       const imageBlocks = images.length
         ? await this.ctx.attachments.admitPromptContent(
@@ -1126,6 +1129,7 @@ export async function createAllRiceRuntime(
         ? await prepareSessionReferenceContext(agent, params.sessionReferences)
         : undefined;
       this.assertRoot(record, params.sessionId);
+      confirmAdmission?.();
       const message = createUserMessage({
         content: contentBlocks,
         source: {
@@ -1149,6 +1153,8 @@ export async function createAllRiceRuntime(
         installSessionReferenceAdmission(this.ctx);
         this.referenceAdmissionInstalled = true;
       }
+      if (params.requireRunAdmission && !this.runAdmission)
+        this.runAdmission = installRunAdmission(this);
       const forwardedParams = { ...params };
       const requestedTools = Array.isArray(params?.nativeTools)
         ? params.nativeTools.filter((name) => typeof name === 'string')
@@ -1180,6 +1186,7 @@ export async function createAllRiceRuntime(
       // Human/progress waits happen before content authorization and accounting.
       if (this.progressBridge && !this.taskProgress)
         this.taskProgress = installTaskProgress(this.ctx, this.progressBridge, {
+          attribute: (p) => this.runAdmission?.attribute(p) ?? p,
           maintenanceOutputTokens: process.env.ALLRICE_MAINTENANCE_OUTPUT_TOKENS
             ? Number(process.env.ALLRICE_MAINTENANCE_OUTPUT_TOKENS)
             : undefined,
@@ -1217,6 +1224,7 @@ export async function createAllRiceRuntime(
           version: installedDshRuntimeVersion,
         },
         capabilities: {
+          runAdmission: !!this.runAdmission,
           durableQuestions: true,
           taskProgress: !!this.taskProgress,
           contentGuard: !!this.contentGuard,
@@ -1354,6 +1362,7 @@ export async function createAllRiceRuntime(
                 queries.map((query, index) =>
                   this.toolBrokerRequest(
                     {
+                      nativeSessionId: exec.agent.id,
                       toolCallId: `${exec.callId}:${index}`,
                       name: 'web.search',
                       arguments: { query, maxResults: 5 },
@@ -1527,6 +1536,7 @@ export async function createAllRiceRuntime(
               tool.validateArguments?.(args);
               const response = await this.toolBrokerRequest(
                 {
+                  nativeSessionId: exec.agent.id,
                   toolCallId: exec.callId,
                   name: tool.canonicalName,
                   arguments: args,
@@ -1570,15 +1580,9 @@ export async function createAllRiceRuntime(
       const sessionId = requiredSessionId(params);
       const record = this.roots.get(sessionId);
       if (!record) return { interrupted: false };
-      this.preparedMethodQuestions.clear(record.agent);
+      await this.clearRootQuestion(sessionId, 'User question was interrupted');
       discardPendingDshInputs(record.agent);
-      const pendingQuestion = this.pendingUserQuestions.get(sessionId);
-      if (pendingQuestion) {
-        this.pendingUserQuestions.delete(sessionId);
-        pendingQuestion.reject(new Error('User question was interrupted'));
-      }
-      record.agent.cancel({ kind: 'user' }, { keepInbox: true });
-      await record.agent.whenIdle();
+      await this.recoverRoot(sessionId);
       return { interrupted: true };
     }
 
@@ -1588,6 +1592,13 @@ export async function createAllRiceRuntime(
       if (typeof params.text !== 'string' || !params.text.trim()) {
         throw new TypeError('steer text is required');
       }
+      if (params.kind !== 'ask_user')
+        this.runAdmission?.accepting(
+          params.runId,
+          params.inputId &&
+            inspectDshInput(this.requireRoot(sessionId).agent, params)
+              .status !== 'not_found',
+        );
       const pendingQuestion = this.pendingUserQuestions.get(sessionId);
       if (params.inputId !== undefined) {
         const record = this.requireRoot(sessionId);
@@ -1609,8 +1620,10 @@ export async function createAllRiceRuntime(
               (params.kind === 'ask_user' || this.detaching === undefined) &&
               this.isRootCurrent(record, sessionId) &&
               this.pendingUserQuestions.get(sessionId) === pendingQuestion &&
-              params.turnId ===
-                `${sessionId}:turn:${record.agent.session.snapshotEvents().findLast((e) => e.type === 'turn/start')?.data.turn}`,
+              (params.kind === 'steer_current' && this.runAdmission
+                ? (this.runAdmission.accepting(params.runId), true)
+                : params.turnId ===
+                  `${sessionId}:turn:${record.agent.session.snapshotEvents().findLast((e) => e.type === 'turn/start')?.data.turn}`),
             notify: () => {
               this.pendingUserQuestions.delete(sessionId);
               if (pendingQuestion.callId) return;
@@ -1621,7 +1634,13 @@ export async function createAllRiceRuntime(
               });
             },
           },
-          params,
+          {
+            ...params,
+            runId:
+              params.kind === 'steer_current' && this.runAdmission
+                ? params.runId
+                : undefined,
+          },
         );
         if (params.kind !== 'ask_user' || !pendingQuestion) return delivery;
         // Admission above is synchronous through the request append. Detach
@@ -1660,9 +1679,8 @@ export async function createAllRiceRuntime(
 
     async recover(params) {
       const sessionId = requiredSessionId(params);
-      const recovery = this.recoverRoot(sessionId);
       await this.clearRootQuestion(sessionId, 'Session recovery');
-      const record = await recovery;
+      const record = await this.recoverRoot(sessionId);
       return { recovered: true, sequence: record.agent.session.seq };
     }
 
@@ -1861,6 +1879,11 @@ export async function createAllRiceRuntime(
         case 'session/question-reply':
           requiredSessionId(params);
           return replyNativeQuestion(this, params);
+        case 'run/begin':
+          return this.runAdmission.begin(params);
+        case 'run/end':
+          await this.taskProgress?.flush();
+          return this.runAdmission.end(params.runId);
         case 'session/interrupt':
           return this.interrupt(params);
         case 'session/steer':
@@ -1964,14 +1987,24 @@ export async function createAllRiceRuntime(
   server.modelTimingNotify = (state) =>
     transport.notify('allrice.modelTiming', state);
   server.installUserQuestionProvider();
+  const attributed = (params) =>
+    server.runAdmission?.attribute(params) ?? params;
   server.toolBrokerRequest = (params, signal) =>
-    transport.request('allrice/tool-call', params, signal);
+    transport.request('allrice/tool-call', attributed(params), signal);
   server.personalSkillBridge = (params, signal) =>
-    transport.request('allrice/personal-skill-check', params, signal);
+    transport.request(
+      'allrice/personal-skill-check',
+      attributed(params),
+      signal,
+    );
   server.contentBridge = (params, signal) =>
-    transport.request('allrice/content-check', params, signal);
+    transport.request('allrice/content-check', attributed(params), signal);
   server.sceneBridge = (action, params, signal) =>
-    transport.request(`allrice/content-scene-${action}`, params, signal);
+    transport.request(
+      `allrice/content-scene-${action}`,
+      attributed(params),
+      signal,
+    );
   if (process.env.ALLRICE_PROGRESS_GUARD_ENABLED === '1')
     server.progressBridge = (params, signal) =>
       transport.request('allrice/progress', params, signal);

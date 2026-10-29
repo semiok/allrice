@@ -1,4 +1,5 @@
 import type { TransactionSql } from 'postgres';
+import { getDatabase } from './core/client.ts';
 import {
   EmployeeExecutionSnapshotSchema,
   EmployeeManifestSchema,
@@ -31,15 +32,14 @@ export interface RunDeliveryAuthority {
   };
 }
 
-/** Same tenant/member/employee/policy gates as assistant evidence admission,
- * without assistant configuration, instances, run links or delegation rights. */
-export async function assertRunDeliveryAuthority(
+/** Shared tenant/member/employee/Run/lease admission. Action-specific policy
+ * remains with each tool or delivery endpoint. */
+async function assertRunAuthority(
   tx: TransactionSql,
   input: RunDeliveryAuthority,
+  lock: boolean,
 ) {
   const { scope, rootRunId, worker } = input;
-  if (!runtimeFeatureEnabled('ALLRICE_WORKBENCH_ENABLED'))
-    finalDeliveryUnavailable();
   // Job precedes run/session, matching queue completion. These locks also
   // exclude publication's SHARE job/run and UPDATE session locks.
   const [job] =
@@ -47,22 +47,21 @@ export async function assertRunDeliveryAuthority(
     and run_id=${rootRunId} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
     and worker_id=${worker.workerId} and lease_token=${worker.leaseToken} and attempt=${worker.attempt}
     and status='running' and cancel_requested_at is null and drain_reason is null
-    and lease_expires_at>clock_timestamp() and timeout_at>clock_timestamp() for update`;
+    and lease_expires_at>clock_timestamp() and timeout_at>clock_timestamp() ${lock ? tx`for update` : tx``}`;
   if (!job) finalDeliveryUnavailable();
   // Admission takes user NO KEY UPDATE before Session UPDATE. Take user SHARE
   // before the join locks the Session, or each transaction can wait on the other.
   // The owner comes from the locked job; assertWorkbenchSession still checks
   // current tenant/member authority below.
-  await tx`select id from allrice_users where id=${job.owner_id} for share`;
+  await tx`select id from allrice_users where id=${job.owner_id} ${lock ? tx`for share` : tx``}`;
   const [policy] =
     await tx`select version,controls from allrice_runtime_policy_controls
-    where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} for share`;
+    where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} ${lock ? tx`for share` : tx``}`;
   const controls = RuntimePolicyControlsSchema.safeParse(policy?.controls);
   if (
     !controls.success ||
     controls.data.version !== policy?.version ||
-    !controls.data.enabled ||
-    controls.data.mode !== 'execute'
+    !controls.data.enabled
   )
     finalDeliveryUnavailable();
   const [row] = await tx<
@@ -107,14 +106,14 @@ export async function assertRunDeliveryAuthority(
       and p.expires_at>clock_timestamp() and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp()
       and not exists(select 1 from allrice_platform_employee_tenant_assignments d where d.tenant_employee_id=employee.id
         and d.organization_id=e.organization_id and d.workspace_id=e.workspace_id and not d.active)
-    for update of r,c for share of j,e,v,employee,a,p,s,n`;
+    ${lock ? tx`for update of r,c for share of j,e,v,employee,a,p,s,n` : tx``}`;
   if (!row) finalDeliveryUnavailable();
   await assertWorkbenchSession(
     tx,
     { actor: { type: 'user', id: row.owner_id }, ...scope },
     row.session_id,
     true,
-    'share',
+    lock ? 'share' : false,
   );
   const snapshot = EmployeeExecutionSnapshotSchema.parse(
     row.execution_snapshot,
@@ -184,7 +183,7 @@ export async function assertRunDeliveryAuthority(
   if (scope.projectId !== null) {
     const [project] =
       await tx`select id from allrice_projects where id=${scope.projectId} and organization_id=${scope.organizationId}
-      and workspace_id=${scope.workspaceId} and archived_at is null and (owner_id=${row.owner_id} or visibility in ('workspace','organization')) for share`;
+      and workspace_id=${scope.workspaceId} and archived_at is null and (owner_id=${row.owner_id} or visibility in ('workspace','organization')) ${lock ? tx`for share` : tx``}`;
     if (!project) finalDeliveryUnavailable();
   }
   const [clock] = await tx<{ now: Date }[]>`select clock_timestamp() now`;
@@ -195,8 +194,7 @@ export async function assertRunDeliveryAuthority(
   ];
   if (!clock || deadlines.some((d) => d <= clock.now))
     finalDeliveryUnavailable();
-  markFinalDeliveryRootLocked(tx, rootRunId);
-  return {
+  const authority = {
     task: RuntimeTaskRefSchema.parse({
       scope,
       runId: rootRunId,
@@ -213,4 +211,26 @@ export async function assertRunDeliveryAuthority(
     assistantMessageId: row.assistant_message_id,
     deadlines,
   };
+  return { authority, controls: controls.data };
+}
+
+/** Delivery retains its feature/mode gates and publication locking contract. */
+export async function assertRunDeliveryAuthority(
+  tx: TransactionSql,
+  input: RunDeliveryAuthority,
+) {
+  if (!runtimeFeatureEnabled('ALLRICE_WORKBENCH_ENABLED'))
+    finalDeliveryUnavailable();
+  const { controls, authority } = await assertRunAuthority(tx, input, true);
+  if (controls.mode !== 'execute') finalDeliveryUnavailable();
+  markFinalDeliveryRootLocked(tx, input.rootRunId);
+  return authority;
+}
+
+/** Tool-seam admission is read-only; it grants no action or delivery rights. */
+export async function assertNativeRunAuthority(input: RunDeliveryAuthority) {
+  return getDatabase().begin(
+    'read only',
+    async (tx) => (await assertRunAuthority(tx, input, false)).authority,
+  );
 }

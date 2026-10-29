@@ -118,6 +118,7 @@ export { localPreviewEnabled } from './local-preview-authority.ts';
 export * from './execution-usage-policy.ts';
 export { readFinalDeliveryReferences } from './final-delivery-references.ts';
 export * from './run-delivery.ts';
+export { assertNativeRunAuthority } from './run-delivery-authority.ts';
 export * from './execution/route-subscription.ts';
 export * from './tenant-quotas.ts';
 export * from './tenant-validation.ts';

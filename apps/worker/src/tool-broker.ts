@@ -37,6 +37,9 @@ function auditMetadata(
   return {
     skillVersionIds: input.skillVersionIds ?? [],
     requiredCapability,
+    ...(input.call.nativeSessionId
+      ? { nativeSessionId: input.call.nativeSessionId }
+      : {}),
     ...(input.platformTestRunId
       ? {
           platformTestRunId: input.platformTestRunId,

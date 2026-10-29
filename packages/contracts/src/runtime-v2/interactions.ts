@@ -545,6 +545,7 @@ export const RuntimeNativeInputProofSchema = z.discriminatedUnion('status', [
       ]),
       sequence: RuntimeCounterSchema,
       turnId: z.string().min(1).max(255),
+      runId: UuidSchema.optional(),
       // question_replied: a late answer DSH admitted as the call's
       // user-question-reply (MET-210 timed questions). Accepted from PR4 on.
       checkpoint: z.enum([
