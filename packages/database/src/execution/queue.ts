@@ -1897,13 +1897,18 @@ export async function claimNextJob(
         and (${options.allowBackground === true} or candidate.payload->>'type'<>${experienceConsolidationJobType})
         and coalesce(candidate.payload->>'type','') not like 'allrice.platform.dev.%'
         and (candidate.available_at <= ${scanNow} or exists (
-          -- A startup failure/cancellation can finish before any runtime was
-          -- acquired. Release its FIFO successor through the existing queue,
-          -- instead of depending solely on native turn-completion callbacks.
+          -- A terminal Run may never have acquired its runtime, or an older
+          -- parked handler may have retained its projection after stopping.
+          -- Release its FIFO successor through the existing queue.
           select 1 from allrice_conversation_followups f
           where f.run_id=candidate.run_id and f.mode='follow_up' and f.state='queued'
             and not exists (select 1 from allrice_conversation_runtimes runtime
-              where runtime.session_id=f.session_id and runtime.state='running')
+              where runtime.session_id=f.session_id and runtime.state='running'
+                and not exists (select 1 from allrice_runs terminal
+                  where terminal.id=runtime.active_run_id
+                    and terminal.organization_id=runtime.organization_id
+                    and terminal.workspace_id=runtime.workspace_id
+                    and terminal.state in ('succeeded','failed','canceled')))
             and not exists (
               select 1 from allrice_employee_runs e
               join allrice_runs r on r.id=e.run_id
@@ -2142,34 +2147,34 @@ async function transitionTerminal(
     type: input.eventType,
     payload: input.payload,
   });
-  if (job.worker_id) {
-    // A successful handler retains ownership until this terminal transaction.
-    // Older handlers may already have released it; never release another Run.
-    // If final event flushing fails or cancellation wins, release that retained
-    // ownership with the real terminal outcome rather than leaving it running.
-    const [conversation] = await transaction<{ session_id: string }[]>`
-      select c.session_id from allrice_conversation_runtimes c
+  // The locked Job/Run is now terminal. A parked segment cleared its Job lease
+  // while retaining its runtime owner; a resumed claim may also have changed
+  // workers before acquiring that runtime. Release the same Run's projection
+  // using its locked owner, never an owner already acquired by a newer Run.
+  const [conversation] = await transaction<
+    { session_id: string; worker_id: string }[]
+  >`
+      select c.session_id,c.worker_id from allrice_conversation_runtimes c
       join allrice_employee_runs e on e.session_id=c.session_id
         and e.organization_id=c.organization_id and e.workspace_id=c.workspace_id and e.owner_id=c.owner_id
       where e.run_id=${job.run_id} and c.organization_id=${job.organization_id} and c.workspace_id=${job.workspace_id}
-        and c.state='running' and c.active_run_id=${job.run_id} and c.worker_id=${job.worker_id}
+        and c.state='running' and c.active_run_id=${job.run_id}
       for update of c`;
-    if (conversation)
-      await releaseConversationRuntimeTransaction(transaction, {
-        organizationId: job.organization_id,
-        workspaceId: job.workspace_id,
-        sessionId: conversation.session_id,
-        runId: job.run_id,
-        workerId: job.worker_id,
-        outcome:
-          input.runStatus === 'succeeded'
-            ? 'idle'
-            : input.runStatus === 'canceled'
-              ? 'interrupted'
-              : 'error',
-        ...(input.code ? { errorCode: input.code } : {}),
-      });
-  }
+  if (conversation)
+    await releaseConversationRuntimeTransaction(transaction, {
+      organizationId: job.organization_id,
+      workspaceId: job.workspace_id,
+      sessionId: conversation.session_id,
+      runId: job.run_id,
+      workerId: conversation.worker_id,
+      outcome:
+        input.runStatus === 'succeeded'
+          ? 'idle'
+          : input.runStatus === 'canceled'
+            ? 'interrupted'
+            : 'error',
+      ...(input.code ? { errorCode: input.code } : {}),
+    });
 }
 
 /** Queue and authority polling share the same durable cutoff. */
