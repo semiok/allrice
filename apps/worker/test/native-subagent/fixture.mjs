@@ -47,6 +47,9 @@ export async function hold(signal, barrier) {
  * synthetic adapter. Its responses use the same content blocks as p24. */
 export async function host({
   model = async () => text('完成'),
+  // An explicit production profile is loaded unchanged, without the test-only
+  // query/delegation composition; only the synthetic LLM adapter is replaced.
+  productionProfile,
   depth = 1,
   rootId = 'pr0-root',
   active = 8,
@@ -65,14 +68,20 @@ export async function host({
     join(directory, 'node_modules'),
   );
   const profile = await readFile(
-    resolve(import.meta.dirname, '../../dsh/allrice-restricted.cordis.yml'),
+    resolve(
+      import.meta.dirname,
+      `../../dsh/${productionProfile ?? 'allrice-restricted'}.cordis.yml`,
+    ),
     'utf8',
   );
-  const plugins = await readFile(
-    resolve(import.meta.dirname, 'plugins.cordis.yml'),
-    'utf8',
-  );
-  await writeFile(join(directory, 'profile.yml'), profile + '\n' + plugins);
+  const plugins = productionProfile
+    ? ''
+    : '\n' +
+      (await readFile(
+        resolve(import.meta.dirname, 'plugins.cordis.yml'),
+        'utf8',
+      ));
+  await writeFile(join(directory, 'profile.yml'), profile + plugins);
   await writeFile(
     join(directory, 'credentials.yml'),
     '{"version":1,"records":{}}',
