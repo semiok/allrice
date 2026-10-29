@@ -28,7 +28,6 @@ import {
   completeRouteDecision,
   estimateConversationTokens,
   getCodexProviderStatus,
-  getLatestContextCheckpoint,
   getModelGovernanceSnapshot,
   listFailedRouteDecisions,
   recordRouteDecision,
@@ -508,13 +507,6 @@ export async function executeEmployeeRun({
       }),
     )
     .digest('hex')}`;
-  const checkpoint = await getLatestContextCheckpoint({
-    organizationId: execution.context.organizationId,
-    workspaceId: execution.context.workspaceId!,
-    sessionId: input.sessionId,
-    ownerId: execution.job.ownerId,
-    configChecksum,
-  });
   const workAutomation = await getDatabase().begin((transaction) =>
     readWorkAutomation(transaction, {
       organizationId: execution.context.organizationId,
@@ -551,10 +543,7 @@ export async function executeEmployeeRun({
     companyMaterials: companyInputBindings,
     workAutomation: workAutomation.settings,
   };
-  const assembledKernel = assembleEmployeeKernel({
-    ...kernelInput,
-    checkpoint,
-  });
+  const assembledKernel = assembleEmployeeKernel(kernelInput);
   const kernel =
     repairTask || repositoryReviewTask
       ? EmployeeKernelRequestSchema.parse({
@@ -2031,31 +2020,14 @@ export async function executeEmployeeRun({
       result,
       costCents: routeCostCents,
     });
-    const checkpointMessages = resolved.promptSnapshot.conversation.flatMap(
-      (message) =>
-        message.id
-          ? [{ id: message.id, role: message.role, text: message.text }]
-          : [],
-    );
     if (officeFirstDeliveryPolicy) delivery.assertComplete();
     runtime = await finalizeEmployeeConversationContext({
       ...(independentDelivery && !waitingForProgress
         ? { retainTurnUntilCommit: runtime }
         : {}),
-      contentGenerationId: contentRuntime?.generationId,
-      allowedMessageIds: contentRuntime?.allowedMessageIds ?? undefined,
-      checkContent: contentGuard?.check,
       ownership,
-      ownerId: execution.job.ownerId,
-      executionContext: execution.context,
-      employeeId: executionSnapshot.employee.id,
-      kernel,
       result,
       adapter,
-      checkpoint,
-      checkpointMessages,
-      configChecksum,
-      workflowLease,
     });
     if (!officeFirstDeliveryPolicy) delivery.assertComplete();
     if (repairController) {

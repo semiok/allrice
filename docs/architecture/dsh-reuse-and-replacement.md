@@ -542,7 +542,9 @@ SSE 测试端点，覆盖已有工具结果保留且工具只执行一次、恢�
 
 登记 ID：`allrice-employee-content-authorization-v1`；使用现有 DSH `0.1.5-rc.3` 的公开 middleware，不增加物理补丁。
 
-共同要求沿用 employee-content 的不可变来源与发布记录，Run 只冻结已启用引用；部门、个人权限及明确纠错在实际使用时复查。内容授权代独立于 native thread 的配置与进程生命周期，依赖由已绑定 Run 引用推导，不复制正文。失效后同 Run 不换代重放；新 Run 使用新的 native session ID、受限消息白名单和对应 checkpoint。
+共同要求沿用 employee-content 的不可变来源与发布记录，Run 只冻结已启用引用；部门、个人权限及明确纠错在实际使用时复查。内容授权代独立于 native thread 的配置与进程生命周期，依赖由已绑定 Run 引用推导，不复制正文。失效后同 Run 不换代重放；新 Run 使用新的 native session ID 和受限消息白名单 bootstrap。
+
+MET-236（用户 2026-10-29 决定“按 DSH 收敛，停旧自动候选链”）：普通 Worker 不再从累计计费 input 推导上下文压力，不再生成旧 40k 自动摘要及其记忆候选，也不把旧自动摘要注入 live kernel。`@deepseek-ai/dsh-token-meter` 的 `contextPressure` 是当前请求的单向计量投影；`dsh-session-persistence-jsonl` 的原生日志负责同代续聊，`dsh-compaction-basic` 通过 meter 决定原生压缩，既有 summary `maxTokens: 8192` 不变。首次或新内容授权代仅导入已授权消息窗口，沿用原生覆盖回执去重；不另造摘要或恢复生命周期。历史 checkpoint/checksum 与记忆记录保持可读，旧 checkpoint 编码只保留给冻结日志兼容向量，主动记忆入口保持。
 
 AllRice 通过公开的 `llm/stream` middleware 请求 Worker 校验，覆盖原生重试和 compaction，并保留原生循环、摘要器与模型传输。工具执行前复用相同校验。`allrice/content-authorized` 仅证明本次授权检查与引用装配，不代表模型已完成任务或 Knowledge 文件已读取。Skills 注册、加载与共同要求的装配仍分别留证。
 

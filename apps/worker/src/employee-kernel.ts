@@ -72,6 +72,9 @@ export function employeeInstanceInstructions(
   ];
 }
 
+// The optional checkpoint encoding remains for historical journal contract
+// vectors. Live kernel assembly bootstraps only the authorized message window;
+// persisted native sessions own continuation and compaction.
 export function bootstrapConversationForCheckpoint(
   messages: KernelConversationMessage[],
   checkpoint?: ContextCheckpoint | null,
@@ -148,7 +151,6 @@ export function assembleEmployeeKernel(input: {
   userMessageId: string;
   assistantMessageId: string;
   resolved: ResolvedEmployeeExecution;
-  checkpoint?: ContextCheckpoint | null;
   workAutomation?: WorkAutomation;
   companyMaterials?: {
     assetId: string;
@@ -185,11 +187,9 @@ export function assembleEmployeeKernel(input: {
   }
   const bootstrapConversation = bootstrapConversationForCheckpoint(
     input.resolved.promptSnapshot.conversation,
-    input.checkpoint,
   );
   const bootstrapContext = bootstrapContextForCheckpoint(
     input.resolved.promptSnapshot.conversation,
-    input.checkpoint,
   );
   if (bootstrapContext) {
     bootstrapContext.userMessage = {

@@ -31,7 +31,14 @@ import {
 import {
   createAssignedChatSession,
   sendChatMessage,
+  createTraceableMemory,
+  createCheckpointMemoryCandidate,
+  listWorkspaceMemories,
 } from '../../../../packages/database/src/workspace/service.ts';
+import {
+  contextCheckpointChecksum,
+  getLatestContextCheckpoint,
+} from '../../../../packages/database/src/conversation/conversation-checkpoint.ts';
 import { upsertEmployeeModelPolicy } from '../../../../packages/database/src/providers/model-pool.ts';
 import { updateUserPreferences } from '../../../../packages/database/src/user-preferences.ts';
 import {
@@ -386,8 +393,212 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     }
   }, 45000);
 
+  it('MET-236: cumulative usage stays in billing while native history owns continuation', async () => {
+    // Spread each Run's billed input across real native steps below the native
+    // per-request compaction threshold. These are transport fixtures, not a benchmark.
+    const runs = [
+      { input: 477758, cached: 0, calls: 6 },
+      { input: 207369, cached: 0, calls: 3 },
+      { input: 2745756, cached: 2708224, calls: 36 },
+    ];
+    let phase = 0,
+      step = 0;
+    const f = await setup(async () => {
+      const run = runs[phase]!;
+      step++;
+      expect(step).toBeLessThanOrEqual(run.calls);
+      const share = (total: number) =>
+        Math.floor(total / run.calls) +
+        (step === run.calls ? total % run.calls : 0);
+      return {
+        ...(step === run.calls
+          ? { text: `NATIVE_REPLY_${phase}` }
+          : {
+              nativeTool: {
+                name: 'todo_write',
+                arguments: {
+                  todos: [
+                    { content: `Step ${phase}-${step}`, status: 'completed' },
+                  ],
+                },
+              },
+            }),
+        usage: {
+          prompt_tokens: share(run.input),
+          prompt_tokens_details: { cached_tokens: share(run.cached) },
+          completion_tokens: 5,
+          total_tokens: share(run.input) + 5,
+        },
+      };
+    });
+    const historyId = randomUUID();
+    await f.db`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,status,content)
+      values(${historyId},${f.identity.org},${f.identity.workspace},${f.chat.id},${f.identity.user},'user','completed',
+      '{"text":"AUTHORIZED_HISTORY_236","citations":[]}')`;
+    const explicit = await createTraceableMemory(f.context, {
+      workspaceId: f.identity.workspace,
+      employeeId: f.identity.employee,
+      content: '我的偏好是中文周报。',
+      sourceType: 'message',
+      sourceId: historyId,
+      sourceLabel: '用户明确要求记住',
+      lifecycleState: 'durable',
+      memoryClass: 'user_preference',
+      confidence: 1,
+    });
+    let historical: Awaited<ReturnType<typeof getLatestContextCheckpoint>> =
+      null;
+    const memoryFacts = async () =>
+      (
+        await listWorkspaceMemories(
+          f.context,
+          f.identity.workspace,
+          f.identity.employee,
+        )
+      ).map(
+        ({ id, content, lifecycleState, sourceId, sourceType, revision }) => ({
+          id,
+          content,
+          lifecycleState,
+          sourceId,
+          sourceType,
+          revision,
+        }),
+      );
+    let memories: Awaited<ReturnType<typeof memoryFacts>> = [];
+    let threadId: string | undefined;
+    for (phase = 0; phase < runs.length; phase++) {
+      step = 0;
+      const start = model!.requests.length;
+      const task = await prepare(
+        f,
+        `继续核对记录 NATIVE_REQUEST_${phase}`,
+        true,
+      );
+      try {
+        const result = await task.run();
+        const coverage = readCheckedFinalDeliveryForExecution(
+          task.workflowLease,
+          result,
+        );
+        if (coverage.coverage !== 'checked_native_v1')
+          throw Error('Missing native delivery proof');
+        expect(result).toMatchObject({
+          usage: {
+            inputTokens: runs[phase]!.input,
+            cachedInputTokens: runs[phase]!.cached,
+            outputTokens: runs[phase]!.calls * 5,
+          },
+        });
+        await completeJob({
+          ...task.workflowLease,
+          result,
+          checkedDelivery: coverage.checkedDelivery,
+        });
+        const [runtime] =
+          await f.db`select * from allrice_conversation_runtimes where session_id=${f.chat.id}`;
+        threadId ??= runtime!.thread_id;
+        expect(runtime!.thread_id).toBe(threadId);
+        expect(runtime!.context_pressure_tokens).toBe(0);
+        expect(runtime!.dsh_context_projected_tokens).toBeGreaterThan(0);
+        expect(runtime!.dsh_context_projected_tokens).toBeLessThan(
+          runtime!.dsh_context_window_tokens,
+        );
+        const [route] =
+          await f.db`select id,input_tokens,cached_input_tokens,output_tokens,usage_complete,cache_usage_known from allrice_route_decisions where run_id=${task.runId}`;
+        expect(route).toMatchObject({
+          input_tokens: runs[phase]!.input,
+          cached_input_tokens: runs[phase]!.cached,
+          output_tokens: runs[phase]!.calls * 5,
+          usage_complete: true,
+          cache_usage_known: true,
+        });
+        expect(
+          await f.db`select route_decision_id id,input_tokens,cached_input_tokens,output_tokens,usage_complete,cache_usage_known from allrice_model_usage_ledger where route_decision_id=${route!.id}`,
+        ).toEqual([route]);
+        const firstMessages = model!.requests[start]!.messages;
+        const userInput = JSON.stringify(
+          firstMessages.findLast(
+            (m) =>
+              m.role === 'user' &&
+              JSON.stringify(m.content).includes(`NATIVE_REQUEST_${phase}`),
+          ),
+        );
+        expect(JSON.stringify(firstMessages)).toContain(
+          'AUTHORIZED_HISTORY_236',
+        );
+        expect(JSON.stringify(firstMessages)).not.toContain(
+          'RETIRED_AUTO_SUMMARY_236',
+        );
+        if (phase === 0) expect(userInput).toContain('AUTHORIZED_HISTORY_236');
+        else {
+          expect(userInput).not.toContain('AUTHORIZED_HISTORY_236');
+          expect(userInput).not.toContain(`NATIVE_REPLY_${phase - 1}`);
+          expect(JSON.stringify(firstMessages)).toContain(
+            `NATIVE_REPLY_${phase - 1}`,
+          );
+        }
+        expect(step).toBe(runs[phase]!.calls);
+        if (phase === 0) {
+          // Preserve a valid historical row and candidate, with the old baseline
+          // that formerly made the third Run look like 2,267,998 context tokens.
+          const values = {
+            sessionId: f.chat.id,
+            harness: 'dsh' as const,
+            threadId: runtime!.thread_id,
+            generation: runtime!.thread_generation,
+            coveredThroughMessageId: historyId,
+            summaryVersion: 'extractive-v1' as const,
+            summary: 'RETIRED_AUTO_SUMMARY_236',
+            configChecksum: runtime!.config_checksum,
+            estimatedTokens: 40000,
+            messageCount: 1,
+          };
+          const checkpointId = randomUUID();
+          await f.db`insert into allrice_context_checkpoints(id,organization_id,workspace_id,session_id,owner_id,harness,thread_id,thread_generation,covered_through_message_id,summary_version,summary,checksum,config_checksum,estimated_tokens,message_count)
+            values(${checkpointId},${f.identity.org},${f.identity.workspace},${f.chat.id},${f.identity.user},'dsh',${values.threadId},${values.generation},${historyId},'extractive-v1',${values.summary},${contextCheckpointChecksum(values)},${values.configChecksum},40000,1)`;
+          await f.db`update allrice_conversation_runtimes set usage_baseline_input_tokens=477758 where session_id=${f.chat.id}`;
+          await createCheckpointMemoryCandidate(f.context, {
+            workspaceId: f.identity.workspace,
+            employeeId: f.identity.employee,
+            sessionId: f.chat.id,
+            checkpointId,
+            content: '历史候选偏好：每周整理记录。',
+            sourceLabel: '历史自动候选',
+          });
+          memories = await memoryFacts();
+          expect(memories.some((m) => m.id === explicit.id)).toBe(true);
+        } else {
+          expect(runtime!.usage_baseline_input_tokens).toBe(477758);
+          expect(await memoryFacts()).toEqual(memories);
+        }
+        const saved = await getLatestContextCheckpoint({
+          organizationId: f.identity.org,
+          workspaceId: f.identity.workspace,
+          sessionId: f.chat.id,
+          ownerId: f.identity.user,
+          configChecksum: runtime!.config_checksum,
+        });
+        if (historical) expect(saved).toEqual(historical);
+        historical = saved;
+        expect(historical?.summary).toBe('RETIRED_AUTO_SUMMARY_236');
+        expect(
+          await f.db`select id from allrice_context_checkpoints where session_id=${f.chat.id}`,
+        ).toHaveLength(1);
+        expect(
+          await f.db`select id from allrice_run_events where run_id=${task.runId} and event_type in ('context.checkpoint.created','context.compaction.started','context.compaction.completed','context.compaction.failed')`,
+        ).toEqual([]);
+      } finally {
+        await task.isolation.cleanup();
+      }
+    }
+    expect(
+      (await journal()).filter((e) => e.type.startsWith('compaction/')),
+    ).toEqual([]);
+  }, 120000);
+
   it.each([false, true])(
-    'checked 资格下真实原生进度等待沿持久暂停回执返回，checkpoint 阈值达到=%s',
+    'checked 资格下真实原生进度等待沿持久暂停回执返回，旧 checkpoint 阈值达到也不生成摘要=%s',
     async (checkpointDue) => {
       const f = await setup(
         async (_request, count) => {
@@ -456,9 +667,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         ).toEqual({ coverage: 'uncovered' });
         const checkpoints =
           await f.db`select covered_through_message_id from allrice_context_checkpoints where session_id=${f.chat.id}`;
-        expect(checkpoints).toEqual(
-          checkpointDue ? [{ covered_through_message_id: historyId }] : [],
-        );
+        expect(checkpoints).toEqual([]);
         await completeJob({ ...task.workflowLease, result });
         expect(await state(f, task.runId)).toMatchObject({
           status: 'succeeded',
@@ -849,9 +1058,8 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           total_tokens: 2010,
         },
       }));
-      // Admission checkpoints completed history, never the current user input.
-      // Seed ordinary history before admission so its real frozen snapshot
-      // contains a covered message; keep a first-turn case without a checkpoint.
+      // Authorized SQL history bootstraps the first native turn. Later Runs
+      // resume its persisted session without synthesizing another summary.
       const historyMessageId = randomUUID();
       if (history)
         await f.db`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,status,content)
@@ -922,13 +1130,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         });
         const checkpoints =
           await f.db`select id,summary,covered_through_message_id from allrice_context_checkpoints where session_id=${f.chat.id}`;
-        expect(checkpoints).toHaveLength(history ? 1 : 0);
-        if (history) {
-          expect(checkpoints[0]!.covered_through_message_id).toBe(
-            historyMessageId,
-          );
-          expect(checkpoints[0]!.summary).toContain('请继续整理每月记录。');
-        }
+        expect(checkpoints).toEqual([]);
         expect(
           starts.every(
             (row) => row.payload.threadId === coverage.proof.nativeSessionId,
@@ -996,7 +1198,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           await f.db`select * from allrice_task_calls where run_id=${task.runId} and reserved_output_tokens is not null`,
         ).toHaveLength(0);
         // This is the job-runner's actual final transaction. A valid native
-        // answer/proof must survive the Worker's checkpoint finalization.
+        // answer/proof must survive the Worker's native context projection.
         try {
           await completeJob({
             ...task.workflowLease,
@@ -1024,8 +1226,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           worker_id: null,
           state: 'idle',
         });
-        // A checkpoint row alone does not prove that the next real Worker can
-        // read it or that the native model still receives the uncovered history.
+        // Prove continuation through the next real Worker and native history.
         if (history && mode === 'valid') {
           const previousAnswer = answer;
           answer = '已继续整理每月记录。';
@@ -1051,8 +1252,8 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
             ).toEqual(
               expect.arrayContaining([
                 expect.objectContaining({
-                  key: 'checkpoint',
-                  text: expect.stringContaining(checkpoints[0]!.summary),
+                  key: `user:${historyMessageId}`,
+                  text: 'user: 请继续整理每月记录。',
                 }),
               ]),
             );
