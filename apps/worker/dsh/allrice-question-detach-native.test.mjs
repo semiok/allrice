@@ -340,7 +340,7 @@ process.on('SIGUSR2', () => { for (const exit of exits.splice(0)) immediate(exit
     );
     cleanups.push(async () => {
       runtime.server.detaching = undefined;
-      await runtime.server.shutdown();
+      await runtime.server.shutdown().catch(() => {});
       await runtime.ctx.fiber.dispose();
     });
     await runtime.server.handleRequest('initialize', initialize);
@@ -946,6 +946,30 @@ async function blockedHost() {
 }
 
 describe('detach failure and ingress interleavings on the real host', () => {
+  it.each(['drain', 'cancel'])(
+    'root disposal releases the waiter when native %s fails during shutdown',
+    async (stage) => {
+      const h = await blockedHost();
+      const failure = new Error(`fixture ${stage} failure`);
+      if (stage === 'drain')
+        vi.spyOn(h.ctx.subagents, 'drainDescendants').mockRejectedValueOnce(
+          failure,
+        );
+      else
+        vi.spyOn(h.agent, 'cancel').mockImplementationOnce(() => {
+          throw failure;
+        });
+      await expect(h.server.shutdown()).rejects.toBe(failure);
+      expect(h.server.phase).toBe('failed');
+      // The production shutdown coordinator always attempts root disposal,
+      // even when SDK shutdown failed; no cleanup success receipt is invented.
+      await h.ctx.root.fiber.dispose();
+      await h.agent.whenIdle();
+      expect(h.server.pendingUserQuestions.has(h.sessionId)).toBe(false);
+      expect(h.requests).toHaveLength(1);
+    },
+  );
+
   it('keeps the question pending while native descendants drain, then records cancellation through DSH', async () => {
     const h = await blockedHost();
     const entered = barrier(),
