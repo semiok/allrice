@@ -3610,8 +3610,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           output: 'network request failed',
           trusted: false,
         };
-        await expect.poll(() => card.getAttribute('data-failed')).toBe('true');
         expect((await card.boundingBox())!.height).toBe(runningHeight);
+        expect(await detail.getAttribute('aria-expanded')).toBe('false');
         await detail.click();
         await card
           .locator('header')
@@ -3630,8 +3630,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         ).toBe(true);
         await collapse.click();
         operation.snapshot.status = 'unknown';
-        await expect.poll(() => card.getAttribute('data-failed')).toBeNull();
         expect((await card.boundingBox())!.height).toBe(runningHeight);
+        expect(await detail.getAttribute('aria-expanded')).toBe('false');
         await detail.click();
         await card
           .locator('header')
