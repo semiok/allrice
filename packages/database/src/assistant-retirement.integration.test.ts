@@ -209,6 +209,85 @@ suite('0229 bounded legacy retirement', () => {
     expect(await rows()).toEqual(before);
     expect(await guards()).toEqual(beforeGuards);
   }, 120000);
+  it('recognizes renderer-supported managed paths and structured file citations in retained messages/results', async () => {
+    const { db } = await database(),
+      f = await oldChild(db);
+    const [object] =
+      await db`select object_id from allrice_deliverable_versions where id=${f.removed.artifactId}`;
+    const objectId = String(object!.object_id),
+      path = `/api/v1/files/${objectId}/download`;
+    const texts = [
+      `[原件](/api/v1/files/${objectId})`,
+      `[绝对链接](https://invented.invalid${path}?name=evidence.txt#download)`,
+      `[转义链接](${path.replaceAll('/', '\\/')})`,
+      `[双重转义](${path.replaceAll('/', '\\\\/')})`,
+      `[引用式链接][file]\n\n[file]: <${path}>`,
+      `<a href="${path}">原件</a>`,
+    ];
+    const messages: string[] = [];
+    for (const text of texts) {
+      const id = randomUUID();
+      messages.push(id);
+      await db`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content)
+        values(${id},${f.task.scope.organizationId},${f.task.scope.workspaceId},${f.task.chatSessionId},${f.context.actor.id},'assistant',${db.json({ text, citations: [] })})`;
+    }
+    const citation = randomUUID();
+    messages.push(citation);
+    await db`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content)
+      values(${citation},${f.task.scope.organizationId},${f.task.scope.workspaceId},${f.task.chatSessionId},${f.context.actor.id},'assistant',${db.json({ text: '见文件引用', citations: [{ type: 'file', id: objectId, label: '原件' }] })})`;
+    await db`update allrice_runs set result=${db.json({ answer: `[原件](${path})` })} where id=${f.task.runId}`;
+    const error = await db
+      .begin(async (tx) => tx.unsafe(await migration()))
+      .catch((e) => e);
+    expect(error).toMatchObject({
+      code: '23503',
+      message: 'MET210_SHARED_FILE_REFERENCE',
+    });
+    const blockers = JSON.parse(error.detail);
+    expect(
+      blockers
+        .map((b: { messageId: string | null }) => b.messageId)
+        .filter(Boolean)
+        .sort(),
+    ).toEqual(messages.sort());
+    expect(blockers).toContainEqual({
+      table: 'allrice_runs',
+      messageId: null,
+      runId: f.task.runId,
+      objectId,
+    });
+    expect(
+      blockers.every((b: { objectId: string }) => b.objectId === objectId),
+    ).toBe(true);
+  }, 120000);
+  it('does not treat bare UUIDs, names, unrelated paths or retired delegation results as ordinary file references', async () => {
+    const { db } = await database(),
+      f = await oldChild(db),
+      messageId = randomUUID();
+    const [object] =
+      await db`select object_id from allrice_deliverable_versions where id=${f.removed.artifactId}`;
+    const objectId = String(object!.object_id);
+    const content = {
+      text: `历史标识 ${objectId}，evidence.txt；[其他](https://example.test/other/${objectId})；[子路径](/api/v1/files/${objectId}/different)；[其他根路径](/other/api/v1/files/${objectId})`,
+      citations: [],
+    };
+    await db`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content)
+      values(${messageId},${f.task.scope.organizationId},${f.task.scope.workspaceId},${f.task.chatSessionId},${f.context.actor.id},'assistant',${db.json(content)})`;
+    const oldResult = {
+      answer: `[旧子任务成果](/api/v1/files/${objectId}/download)`,
+    };
+    await db`update allrice_runs set result=${db.json(oldResult)} where id=${f.child}`;
+    await db`insert into allrice_assistant_results(delivery_id,run_id,root_run_id,payload,payload_digest)
+      values(${randomUUID()},${f.child},${f.task.runId},${db.json(oldResult)},${'sha256:' + 'b'.repeat(64)})`;
+    await db.begin(async (tx) => tx.unsafe(await migration()));
+    expect(
+      await db`select id from allrice_storage_objects where id=${objectId}`,
+    ).toHaveLength(0);
+    expect(
+      (await db`select content from allrice_messages where id=${messageId}`)[0]!
+        .content,
+    ).toEqual(content);
+  }, 120000);
   it('ordinary queued null/false/disabled fields are stripped without blocking or losing queued jobs', async () => {
     const { db } = await database();
     const ids: string[] = [];

@@ -92,6 +92,45 @@ do $$ declare fk record;join_keys text;blockers jsonb;begin
   end if;
 end $$;
 
+-- Attachments already have FKs above. Ordinary final text and file citations do
+-- not: preserve their exact managed object identities as well. Match the file
+-- endpoint used by artifact-download-link.ts (including escaped separators,
+-- HTTP(S) origins, /download and name queries), never arbitrary UUIDs or names.
+-- Only ordinary message/result fields are read, not old delegation logs.
+create function pg_temp.met210_file_ids(value text) returns table(object_id uuid)
+language sql immutable strict as $body$
+  select distinct (found.parts[1])::uuid
+  from regexp_matches(regexp_replace(value,$slash$\\+/$slash$,'/','g'),
+    $path$(?:^|[[:space:]<(="'\[]|\]:)(?:https?://[^[:space:]/?#@<>]+|sandbox:)?/api/v1/files/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:/download)?(?:[?#][^[:space:]<>"')\]]*)?(?=$|[[:space:])>"'\]])$path$,'g') found(parts)
+$body$;
+do $$ declare blockers jsonb; begin
+  with retained as (
+    select 'allrice_messages'::text relation,m.id message_id,null::uuid run_id,
+      m.content body,m.content->>'text' text
+    from allrice_messages m where m.role in ('user','assistant')
+      and not exists(select 1 from allrice_employee_runs e join met210_children c using(run_id)
+        where m.id in(e.user_message_id,e.assistant_message_id))
+    union all
+    select 'allrice_runs',null,r.id,r.result,r.result->>'answer' from allrice_runs r
+      where not exists(select 1 from met210_children c where c.run_id=r.id)
+  ), file_references as (
+    select r.relation,r.message_id,r.run_id,f.object_id from retained r
+      cross join lateral pg_temp.met210_file_ids(r.text) f
+    union
+    select r.relation,r.message_id,r.run_id,o.id from retained r
+      cross join lateral jsonb_array_elements(case when jsonb_typeof(r.body->'citations')='array'
+        then r.body->'citations' else '[]'::jsonb end) citation
+      join met210_objects o on citation->>'type'='file' and citation->>'id'=o.id::text
+  )
+  select jsonb_agg(jsonb_build_object('table',r.relation,'messageId',r.message_id,
+    'runId',r.run_id,'objectId',r.object_id) order by r.relation,r.message_id,r.run_id,r.object_id)
+    into blockers from file_references r join met210_objects o on o.id=r.object_id;
+  if blockers is not null then
+    raise exception using errcode='23503',message='MET210_SHARED_FILE_REFERENCE',detail=blockers::text,
+      hint='No data was changed. Retained ordinary messages/results reference these exact old objects; do not expand the deletion set.';
+  end if;
+end $$;
+
 -- Explicit FK order. Shared functions from 0097 and 0146/0147 remain installed.
 drop table allrice_development_deliveries;
 drop table allrice_development_reviews;
