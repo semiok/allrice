@@ -4,7 +4,7 @@ import { Children, useEffect, useState, useRef, type ReactNode } from 'react';
 import {
   WorkProcessReadingState,
   WorkProcessDisclosureScope,
-  useWorkGroupDisclosure,
+  useProcessDisclosure,
 } from './work-process-reading-state';
 import { AssistantMarkdown } from './assistant-markdown';
 import type { WorkProgressPart } from '../../lib/chatflow/work-progress';
@@ -467,7 +467,10 @@ function NativeStepsGroup({
   grouped: boolean;
   policy: ChatPresentationPolicy;
 }) {
-  const [open, setOpen] = useWorkGroupDisclosure(items.map((item) => item.id));
+  const [open, setOpen] = useProcessDisclosure<boolean>(
+    items.map((item) => `group:${item.id}`),
+    false,
+  );
   const { steps } = summarizeWorkProcess(items);
   if (!steps.length || onlyLiveThinking(steps, running)) return null;
   if (!grouped) return <WorkProcessSteps items={items} running={running} />;
@@ -490,16 +493,22 @@ function NativeStepsGroup({
         open={open}
         expandable
         expandOnRowClick
+        keepContentWhenOpen
         onToggle={() => setOpen(!open)}
         rowClassName={styles.processHeader}
         titleClassName={styles.processTitle}
         collapsedContent={
-          preview ? (
-            <>
-              <span className={reasoning.separator} aria-hidden />
-              <span className={styles.processStepDescription}>{preview}</span>
-            </>
-          ) : undefined
+          <>
+            {items.map((item) => (
+              <span key={item.id} data-process-control={`group:${item.id}`} />
+            ))}
+            {!open && preview ? (
+              <>
+                <span className={reasoning.separator} aria-hidden />
+                <span className={styles.processStepDescription}>{preview}</span>
+              </>
+            ) : null}
+          </>
         }
       >
         <div className={styles.processDetails}>

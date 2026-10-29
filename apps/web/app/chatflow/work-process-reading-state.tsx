@@ -4,6 +4,7 @@ import {
   Component,
   createContext,
   useContext,
+  useLayoutEffect,
   useState,
   type Dispatch,
   type ReactNode,
@@ -27,67 +28,63 @@ export function WorkProcessDisclosureScope({
   children: ReactNode;
 }) {
   const context = useContext(ReadingContext);
-  return context ? (
+  return (
     <ReadingContext.Provider
-      value={{ ...context, scope: [...context.scope, id] }}
+      value={context && { ...context, scope: [...context.scope, id] }}
     >
       {children}
     </ReadingContext.Provider>
-  ) : (
-    children
   );
 }
 
 /** Manual choices live only in this mounted WorkProcess and Run. */
 export function useProcessDisclosure<T extends Choice>(
-  key: string,
+  key: string | string[],
   initial: T,
 ) {
   const context = useContext(ReadingContext);
   const local = useState(initial);
-  if (!context) return local;
-  const id = JSON.stringify([...context.scope, key]);
-  const value = context.values.has(id)
-    ? (context.values.get(id) as T)
-    : initial;
-  const setValue: Dispatch<SetStateAction<T>> = (next) =>
+  const keys = (Array.isArray(key) ? key : [key]).map((id) =>
+    JSON.stringify([...(context?.scope ?? []), id]),
+  );
+  const current = (values: Choices) => {
+    const id = keys.find((id) => values.get(id) === true) ?? keys[0]!;
+    return values.has(id) ? (values.get(id) as T) : initial;
+  };
+  const value = context ? current(context.values) : local[0];
+  const setValue = (next: SetStateAction<T>, missingOnly = false) => {
+    if (!context) return local[1](next);
     context.setValues((old) => {
       const values = new Map(old);
-      const current = old.has(id) ? (old.get(id) as T) : initial;
-      values.set(id, typeof next === 'function' ? next(current) : next);
+      const selected = typeof next === 'function' ? next(current(old)) : next;
+      for (const id of keys)
+        if (!missingOnly || !values.has(id)) values.set(id, selected);
       return values;
     });
+  };
+  useLayoutEffect(() => {
+    if (
+      Array.isArray(key) &&
+      context &&
+      value === true &&
+      keys.some((id) => !context.values.has(id))
+    )
+      setValue(value, true);
+  });
   return [value, setValue] as const;
 }
 
-/** A native split inherits the choice for its remaining members. */
-export function useWorkGroupDisclosure(ids: string[]) {
-  const context = useContext(ReadingContext);
-  const local = useState(false);
-  if (!context) return local;
-  const keys = ids.map((id) => JSON.stringify([...context.scope, 'group', id]));
-  return [
-    keys.some((key) => context.values.get(key) === true),
-    (next: boolean) =>
-      context.setValues((old) => {
-        const values = new Map(old);
-        for (const key of keys) values.set(key, next);
-        return values;
-      }),
-  ] as const;
-}
-
+const inView = (node: HTMLElement) =>
+  node.getBoundingClientRect().bottom > 0 &&
+  node.getBoundingClientRect().top < innerHeight;
 const visible = (node: HTMLElement) => node.getClientRects().length > 0;
 function keyOf(node: HTMLElement, attribute: string) {
   const operation = node.closest<HTMLElement>('[data-process-operation]');
-  return (
-    operation &&
-    JSON.stringify([
-      operation.dataset.processOperation,
-      node.closest<HTMLElement>('[data-process-region]')?.dataset.processRegion,
-      node.getAttribute(attribute),
-    ])
-  );
+  return JSON.stringify([
+    operation?.dataset.processOperation,
+    node.closest<HTMLElement>('[data-process-region]')?.dataset.processRegion,
+    node.getAttribute(attribute),
+  ]);
 }
 function locate(root: HTMLElement, attribute: string, key: string | null) {
   const matches = [
@@ -106,6 +103,7 @@ function textPoint(node: Node, offset: number) {
   return {
     block,
     key: keyOf(block, 'data-process-content'),
+    inView: inView(block),
     text: block.textContent,
     offset: range.toString().length,
   };
@@ -151,9 +149,7 @@ function takeReadingSnapshot(root: HTMLElement) {
       text: node.textContent,
       top: node.scrollTop,
       left: node.scrollLeft,
-      inView:
-        node.getBoundingClientRect().bottom > 0 &&
-        node.getBoundingClientRect().top < innerHeight,
+      inView: inView(node),
     }));
   return {
     active,
@@ -166,7 +162,7 @@ function takeReadingSnapshot(root: HTMLElement) {
         : undefined,
   };
 }
-type Snapshot = ReturnType<typeof takeReadingSnapshot> | null;
+type Snapshot = ReturnType<typeof takeReadingSnapshot>;
 
 /** One synchronous React commit, never an event cache or an async restore. */
 export class WorkProcessReadingState extends Component<
@@ -176,20 +172,18 @@ export class WorkProcessReadingState extends Component<
 > {
   override state = { values: new Map<string, Choice>() };
   override getSnapshotBeforeUpdate() {
-    return this.props.root.current
-      ? takeReadingSnapshot(this.props.root.current)
-      : null;
+    return takeReadingSnapshot(this.props.root.current!);
   }
   override componentDidUpdate(
     _props: unknown,
     _state: unknown,
     saved: Snapshot,
   ) {
-    const root = this.props.root.current;
-    if (!root || !saved) return;
+    const root = this.props.root.current!;
     const untouchedFocus =
-      document.activeElement === document.body ||
-      document.activeElement === saved.active;
+      (document.activeElement === document.body ||
+        document.activeElement === saved.active) &&
+      (saved.active === document.body || !!saved.control);
     let reading: HTMLElement | undefined;
     for (const item of saved.scroll) {
       if (item.node.isConnected) continue;
@@ -228,7 +222,7 @@ export class WorkProcessReadingState extends Component<
         );
         if (selection.toString() !== saved.selectedText)
           selection.removeAllRanges();
-        else reading = focus.block;
+        else if (saved.selection.focus.inView) reading = focus.block;
       }
     }
     if (untouchedFocus)

@@ -389,14 +389,34 @@ suite('reading a receipt while late native trace changes its group', () => {
       expect(await groups().first().getAttribute('aria-expanded')).toBe(
         'false',
       );
+      expect(
+        await processOf(page)
+          .getByText('核对第 0 项资料', { exact: true })
+          .isVisible(),
+      ).toBe(false);
       await page.keyboard.press('Enter');
       expect(await groups().first().getAttribute('aria-expanded')).toBe('true');
+      expect(
+        await processOf(page)
+          .getByText('核对第 0 项资料', { exact: true })
+          .isVisible(),
+      ).toBe(true);
       await update(page, 'split');
       expect(await groups().count()).toBe(2);
       await groups().last().focus();
       await page.keyboard.press('Space');
       expect(await groups().last().getAttribute('aria-expanded')).toBe('false');
+      expect(
+        await processOf(page)
+          .getByText('核对第 4 项资料', { exact: true })
+          .isVisible(),
+      ).toBe(false);
       await page.keyboard.press('Enter');
+      expect(
+        await processOf(page)
+          .getByText('核对第 4 项资料', { exact: true })
+          .isVisible(),
+      ).toBe(true);
       await update(page, 'merge');
       expect(await groups().count()).toBe(1);
       expect(
@@ -408,8 +428,18 @@ suite('reading a receipt while late native trace changes its group', () => {
       expect(await groups().first().getAttribute('aria-expanded')).toBe(
         'false',
       );
+      expect(
+        await processOf(page)
+          .getByText('核对第 0 项资料', { exact: true })
+          .isVisible(),
+      ).toBe(false);
       await page.keyboard.press('Enter');
       expect(await groups().first().getAttribute('aria-expanded')).toBe('true');
+      expect(
+        await processOf(page)
+          .getByText('核对第 0 项资料', { exact: true })
+          .isVisible(),
+      ).toBe(true);
     } finally {
       await page.close();
     }
@@ -434,6 +464,15 @@ suite('reading a receipt while late native trace changes its group', () => {
           .getByText('核对第 36 项资料', { exact: true })
           .isVisible(),
       ).toBe(true);
+      await groups().last().click();
+      await update(page, 'merge');
+      await update(page, 'split');
+      expect(await groups().last().getAttribute('aria-expanded')).toBe('false');
+      expect(
+        await processOf(page)
+          .getByText('核对第 36 项资料', { exact: true })
+          .isVisible(),
+      ).toBe(false);
     } finally {
       await page.close();
     }
@@ -547,6 +586,8 @@ suite('reading a receipt while late native trace changes its group', () => {
       expect(await page.evaluate(() => scrollY)).toBeCloseTo(before, 0);
       expect((await outside.boundingBox())!.y).toBeGreaterThanOrEqual(0);
       expect((await outside.boundingBox())!.y).toBeLessThan(900);
+      await page.keyboard.type('继续编辑');
+      expect(await outside.inputValue()).toBe('继续编辑');
     } finally {
       await page.close();
     }
