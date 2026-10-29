@@ -165,6 +165,7 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm env:check
       - name: Check environment-aware integration collection
         run: |
           mkdir -p .local/integration-collection

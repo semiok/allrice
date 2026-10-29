@@ -1,0 +1,74 @@
+# Only safe example values; names must still exist in the static source inventory.
+examples:
+  ALLRICE_ENV: development
+  ALLRICE_WEB_PORT: '3000'
+  ALLRICE_BRIDGE_WSS_ENABLED: '1'
+  ALLRICE_PUBLIC_URL: http://localhost:3000
+  ALLRICE_ADMIN_PUBLIC_URL: http://localhost:3000
+  ALLRICE_WORKER_PORT: '3101'
+  ALLRICE_TECHNICAL_WORKER_HEALTH_URL: http://127.0.0.1:3101/health/ready
+  ALLRICE_TECHNICAL_WEB_HEALTH_URL: http://127.0.0.1:3000/api/health/ready
+  ALLRICE_WORKER_POLL_INTERVAL_MS: '1000'
+  ALLRICE_WORKER_LEASE_MS: '30000'
+  ALLRICE_WORKER_HEARTBEAT_MS: '10000'
+  ALLRICE_WORKER_CONCURRENCY: auto
+  ALLRICE_WORKER_MIN_AVAILABLE_MEMORY_MB: '256'
+  ALLRICE_WORKER_MEMORY_PAUSE_PRESSURE: critical
+  ALLRICE_EXECUTION_ROOT: .local/executions
+  ALLRICE_STORAGE_ROOT: .local/storage
+  ALLRICE_DSH_CODEX_MODEL: gpt-6-luna
+  ALLRICE_DSH_CODEX_REASONING_EFFORT: xhigh
+  ALLRICE_DSH_PLATFORM_HOME: .local/dsh-platform
+  ALLRICE_MODEL_PRICING_JSON: '{}'
+  ALLRICE_PORTAL_AUTH_ENABLED: '0'
+  ALLRICE_LOCAL_PORTAL: unified
+  ALLRICE_PORTAL_SECURE_COOKIE: '1'
+  ALLRICE_PLATFORM_ADMIN_USER: admin
+  ALLRICE_SNOW_USER: snow
+  ALLRICE_DRINK_USER: drink
+  ALLRICE_DEV_DB_PORT: '54329'
+  POSTGRES_DB: allrice
+  POSTGRES_USER: allrice
+  ALLRICE_FRAMEWORK_V2: '1'
+  ALLRICE_CHATFLOW_REALTIME: '1'
+# Existing literal tables/fields; computed values/spreads/calls fail closed.
+definitions:
+  - packages/contracts/src/runtime-feature-flags.ts#employeeRuntimeFeatureFlags
+  - packages/contracts/src/runtime-v2/cloud-command-limits.ts#cloudCommandRuntimeLimitDefinitions
+  - apps/web/lib/bridge/client-releases.ts#platforms
+  - apps/web/lib/portal/config.ts#passwordEnvironmentVariable
+# Exact helper call arguments; non-literal names require an explicit source audit.
+calls:
+  apps/worker/src/index.ts#integerSetting: 0
+  packages/database/src/bootstrap-identity.ts#required: 0
+  apps/web/server/portal-hosts.mjs#configuredPortalEntries: 0
+  apps/worker/src/harness/dsh-egress-environment.ts#configuredProxy: 1
+  '*#runtimeFeatureEnabled': 0
+exclude:
+  '^(HOME|USER|LOGNAME|LANG|PATH|NODE_ENV|NODE_OPTIONS|CHOKIDAR_USEPOLLING|NAPI_RS_FORCE_WASI|NAPI_RS_NATIVE_LIBRARY_PATH)$': Inherited OS/engine/tool controls, outside application deployment examples.
+  '^ALLRICE_(SERVICE_ROLE|BRIDGE_UPDATE_HEALTH_ID|STATIC_BROWSER_DEADLINE|NATIVE_ONCE_REFERENCE|NATIVE_RECURRING_REFERENCE)$': Internal process identity/update/approved-reference channels; not manually populated.
+  '^ALLRICE_BRIDGE_STATIC_(DEVICE_ID|DEVICE_NAME|SERVER)$': Bridge static harness identity overrides, outside the common application environment.
+  '^ALLRICE_MANAGED_BROWSER_DISABLE_CHROMIUM_SANDBOX$': Test-only sandbox opt-out, refused in production and excluded from deployment examples.
+# Explicitly reviewed opaque reads. This is not proof of their runtime domain.
+# Additions/changes fail closed; stale entries fail. Generated comments show observed counts.
+audit:
+  apps/rice-bridge/src/desktop-update.ts#environment[key]: Fixed inherited OS allowlist in nativeEnvironment; no application keys inferred.
+  apps/web/lib/bridge/client-releases.ts#process.env[key]: platforms literal table above; no cross-procedural evaluation.
+  apps/web/lib/portal/config.ts#process.env[portal.passwordEnvironmentVariable]: Portal passwordEnvironmentVariable literal fields above.
+  apps/web/lib/portal/session.ts#process.env[portal.passwordEnvironmentVariable]: Same portal definitions; arbitrary portal objects are not inferred.
+  apps/web/server/portal-hosts.mjs#env[variable]: configuredPortalEntries literal argument above.
+  apps/worker/src/harness/dsh-egress-environment.ts#environment[name]: configuredProxy literal argument above.
+  apps/worker/src/harness/dsh-native-artifact.ts#env[key]: Retired DSH prefix rejection/ignored legacy settings, never active configuration examples.
+  apps/worker/src/index.ts#process.env[name]: integerSetting literal argument above.
+  packages/contracts/src/runtime-feature-flags.ts#environment[name]: Employee flag table and literal runtimeFeatureEnabled callers above.
+  packages/contracts/src/runtime-v2/cloud-command-limits.ts#env[definition.env]: cloudCommandRuntimeLimitDefinitions literal env fields above.
+  packages/database/src/bootstrap-identity.ts#process.env[name]: required literal argument above; module is never imported.
+  apps/rice-bridge/src/human-terminal-host.ts#whole: Inherited terminal child environment; arbitrary inherited names are not inferred.
+  apps/rice-bridge/src/runtime-preparation.ts#whole: Inherited package-manager child environment; arbitrary inherited names are not inferred.
+  scripts/dev-environment.mjs#whole: Environment passthrough to development subprocesses; only named reads are inventoried.
+  apps/rice-bridge/src/local-command-supervisor.ts#embedded: Embedded child program/IPC; outside root configuration inventory.
+  apps/rice-bridge/src/local-mcp-supervisor.ts#embedded: Embedded child program/IPC; outside root configuration inventory.
+  apps/rice-bridge/src/local-service-supervisor.ts#embedded: Embedded child program/IPC; outside root configuration inventory.
+  packages/contracts/src/project-resolution-script.ts#embedded: Generated project-resolution child program; outside root configuration inventory.
+  packages/project-runtime/src/project-service-supervisor.ts#embedded: Embedded project child program/IPC; outside root configuration inventory.
+  packages/project-runtime/src/project-supervisor.ts#embedded: Embedded project child program/IPC; outside root configuration inventory.

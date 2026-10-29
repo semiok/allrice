@@ -40,6 +40,8 @@
     "met83:fallback-smoke": "pnpm acceptance:routing",
     "met86:ui-smoke": "pnpm acceptance:ui",
     "met90:runtime-console-smoke": "pnpm acceptance:runtime-console",
+    "env:generate": "node scripts/generate-env-example.mjs",
+    "env:check": "node scripts/generate-env-example.mjs --check",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "framework:verify": "pnpm dsh:golden-replay && pnpm exec vitest run packages/contracts/src/runtime-contract.test.ts packages/contracts/src/framework.test.ts apps/worker/src/harness/runtime-contract.test.ts packages/ui/src/runtime-events.test.ts",

@@ -32,6 +32,12 @@ not create a different native ID. The preparation command never
 automatically approves shared Dev or Prod, and neither development nor production
 startup bypasses native content verification.
 
+## Environment example
+
+Run `pnpm env:generate` after staging configuration source changes; `pnpm env:check` rejects drift in CI.
+Names come from finite static TS/JS syntax, never real env values. Safe active examples and audited exclusions/opaque reads live in `scripts/env-example-policy.yml`; this does not prove arbitrary dynamic configuration coverage.
+Commented values are unset. Direct/production startup requires `DATABASE_URL`; `pnpm dev` can prepare its local Docker database. Supply credentials/secrets before enabling the corresponding features, and prepare/review `ALLRICE_DSH_NATIVE_ARTIFACT_ID` as above. Never copy production secrets into policy.
+
 ## Requirements
 
 - Node.js 22+
