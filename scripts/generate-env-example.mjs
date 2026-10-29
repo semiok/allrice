@@ -14,21 +14,9 @@ const property = (n) =>
     : ts.isStringLiteralLike(n.argumentExpression)
       ? n.argumentExpression.text
       : undefined;
-const processObject = (n) =>
-  (ts.isIdentifier(n) && n.text === 'process') ||
-  (access(n) &&
-    property(n) === 'process' &&
-    n.expression.getText() === 'globalThis');
-const direct = (n) =>
-  n && access(n) && processObject(n.expression) && property(n) === 'env';
-const seed = (n) =>
-  direct(n) ||
-  (n &&
-    ts.isBinaryExpression(n) &&
-    n.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken &&
-    direct(n.left) &&
-    ts.isObjectLiteralExpression(n.right) &&
-    !n.right.properties.length);
+const processModule = (n) =>
+  n && ts.isStringLiteralLike(n) && /^(node:)?process$/.test(n.text);
+const sha256 = (text) => createHash('sha256').update(text).digest('hex');
 const keyPattern = /^[A-Z][A-Z0-9_]*$/;
 
 export function generateExample(
@@ -65,16 +53,67 @@ export function generateExample(
     const ast = program.getSourceFile(path),
       checker = program.getTypeChecker();
     if (ast.parseDiagnostics.length) throw Error(`Cannot parse ${file}`);
+    const symbol = (n) =>
+      ts.isShorthandPropertyAssignment(n.parent)
+        ? checker.getShorthandAssignmentValueSymbol(n.parent)
+        : ts.isExportSpecifier(n.parent)
+          ? checker.getExportSpecifierLocalTargetSymbol(n.parent)
+          : checker.getSymbolAtLocation(n);
+    const declarationName = (n) =>
+      n.parent.name === n &&
+      !ts.isShorthandPropertyAssignment(n.parent) &&
+      !ts.isExportSpecifier(n.parent);
+    const global = (n, name) =>
+      ts.isIdentifier(n) && n.text === name && !symbol(n)?.declarations?.length;
+    const processObject = (n) =>
+      global(n, 'process') ||
+      (ts.isIdentifier(n) &&
+        symbol(n)?.declarations?.some(
+          (d) =>
+            ts.isImportClause(d) && processModule(d.parent.moduleSpecifier),
+        )) ||
+      (access(n) &&
+        property(n) === 'process' &&
+        global(n.expression, 'globalThis'));
+    const direct = (n) =>
+      n && access(n) && processObject(n.expression) && property(n) === 'env';
+    const seed = (n) =>
+      direct(n) ||
+      (n &&
+        ts.isBinaryExpression(n) &&
+        n.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken &&
+        direct(n.left) &&
+        ts.isObjectLiteralExpression(n.right) &&
+        !n.right.properties.length);
     const environment = (n) =>
       direct(n) ||
       (ts.isIdentifier(n) &&
-        checker
-          .getSymbolAtLocation(n)
-          ?.declarations?.some(
-            (d) =>
-              seed(d.initializer) ||
-              /^(?:NodeJS\.)?ProcessEnv$/.test(d.type?.getText(ast) ?? ''),
-          ));
+        symbol(n)?.declarations?.some(
+          (d) =>
+            (ts.isVariableDeclaration(d) || ts.isParameter(d)) &&
+            (seed(d.initializer) ||
+              /^(?:NodeJS\.)?ProcessEnv$/.test(d.type?.getText(ast) ?? '')),
+        ));
+    const helperIndex = (n) => {
+      const d = ts.isIdentifier(n) && symbol(n)?.declarations?.[0];
+      if (
+        !d ||
+        !(
+          ts.isFunctionDeclaration(d) ||
+          ts.isVariableDeclaration(d) ||
+          ts.isImportSpecifier(d)
+        )
+      )
+        return;
+      const name = (
+        ts.isImportSpecifier(d) ? (d.propertyName ?? d.name) : d.name
+      )?.getText(ast);
+      const index =
+        policy.calls[`${file}#${name}`] ?? policy.calls[`*#${name}`];
+      if (index !== undefined && ts.isImportSpecifier(d) && d.propertyName)
+        throw Error(`Unsupported helper import alias: ${file}#${name}`);
+      return index;
+    };
     const add = (name) => {
       if (!keyPattern.test(name))
         throw Error(`Invalid environment name in ${file}`);
@@ -83,6 +122,9 @@ export function generateExample(
     const audit = (kind) => {
       const id = `${file}#${kind}`;
       if (!policy.audit[id]) throw Error(`Unaudited environment access: ${id}`);
+      if (policy.auditSources[file] !== sha256(readFileSync(path)))
+        throw Error(`Stale source audit: ${file}`);
+      found.add(file);
       found.add(id);
       audits.set(id, (audits.get(id) ?? 0) + 1);
     };
@@ -102,6 +144,38 @@ export function generateExample(
         throw Error(`Non-literal declaration in ${file}`);
     };
     const visit = (n) => {
+      if (
+        (ts.isImportDeclaration(n) || ts.isExportDeclaration(n)) &&
+        processModule(n.moduleSpecifier)
+      ) {
+        const bindings = n.importClause?.namedBindings;
+        if (
+          ts.isExportDeclaration(n) ||
+          (bindings &&
+            (ts.isNamespaceImport(bindings) ||
+              bindings.elements.some((entry) =>
+                ['env', 'default'].includes(
+                  (entry.propertyName ?? entry.name).text,
+                ),
+              )))
+        )
+          throw Error(`Unsupported process import: ${file}`);
+      }
+      if (
+        ts.isCallExpression(n) &&
+        processModule(n.arguments[0]) &&
+        (n.expression.kind === ts.SyntaxKind.ImportKeyword ||
+          (ts.isIdentifier(n.expression) && n.expression.text === 'require'))
+      )
+        throw Error(`Unsupported dynamic process import: ${file}`);
+      if (
+        ts.isIdentifier(n) &&
+        helperIndex(n) !== undefined &&
+        !declarationName(n) &&
+        !(ts.isCallExpression(n.parent) && n.parent.expression === n)
+      )
+        throw Error(`Unsupported helper escape: ${file}#${n.text}`);
+
       if (
         ts.isVariableDeclaration(n) &&
         n.initializer &&
@@ -126,7 +200,7 @@ export function generateExample(
       }
       if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) {
         const id = `${file}#${n.expression.text}`,
-          index = policy.calls[id] ?? policy.calls[`*#${n.expression.text}`];
+          index = helperIndex(n.expression);
         if (index !== undefined) {
           const argument = n.arguments[index];
           if (!argument || !ts.isStringLiteralLike(argument))
@@ -137,7 +211,11 @@ export function generateExample(
           );
         }
       }
-      if (direct(n) && !(access(n.parent) && n.parent.expression === n)) {
+      if (
+        environment(n) &&
+        !(access(n.parent) && n.parent.expression === n) &&
+        !(ts.isIdentifier(n) && declarationName(n))
+      ) {
         const value =
           ts.isBinaryExpression(n.parent) && seed(n.parent) ? n.parent : n;
         if (!(
@@ -164,6 +242,7 @@ export function generateExample(
     ...policy.definitions,
     ...Object.keys(policy.calls),
     ...Object.keys(policy.audit),
+    ...Object.keys(policy.auditSources),
   ])
     if (!found.has(id)) throw Error(`Stale environment metadata: ${id}`);
   const omitted = new Set();
@@ -199,9 +278,7 @@ export function generateExample(
       .map((name) => `# ${name}=`),
     '',
     '# Opaque reads/exclusions are outside complete coverage; see scripts/env-example-policy.yml.',
-    `# Audit inventory SHA256: ${createHash('sha256')
-      .update(JSON.stringify([...audits]))
-      .digest('hex')}`,
+    `# Audit inventory SHA256: ${sha256(JSON.stringify([[...audits], policy.auditSources, policy.audit]))}`,
   ];
   return {
     text: lines.join('\n') + '\n',

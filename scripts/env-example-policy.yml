@@ -72,3 +72,29 @@ audit:
   packages/contracts/src/project-resolution-script.ts#embedded: Generated project-resolution child program; outside root configuration inventory.
   packages/project-runtime/src/project-service-supervisor.ts#embedded: Embedded project child program/IPC; outside root configuration inventory.
   packages/project-runtime/src/project-supervisor.ts#embedded: Embedded project child program/IPC; outside root configuration inventory.
+  apps/web/server/portal-hosts.mjs#whole: Environment forwarded to configuredPortalEntries with the literal names declared above.
+  apps/worker/src/harness/dsh-egress-environment.ts#whole: Environment forwarded to configuredProxy with the literal names declared above.
+  apps/worker/src/harness/dsh-native-artifact.ts#whole: Object.keys enumerates the inherited environment only to reject retired prefixes.
+# Manually reviewed full-file SHA256 at main 3b3c2fd7; generation never approves these.
+# Re-read changed source and its audit reason before explicitly updating a hash.
+auditSources:
+  apps/rice-bridge/src/desktop-update.ts: 4699c9cc0b01b51fb6c2bacbd93eacf97bb15647c40bc614fc362a12f45e27be
+  apps/rice-bridge/src/human-terminal-host.ts: a7b9892f9881c20492a6da38c574dded9c796a60a9fb222027e8644dfb7524db
+  apps/rice-bridge/src/local-command-supervisor.ts: 563d8291d9d6181f4e84a3bcef8c3ffb7245b7bc7ee3617be2fed16901fdacc2
+  apps/rice-bridge/src/local-mcp-supervisor.ts: 6a4d0a1adccfff6eb3c805099d8e6658992557ae63b7c55809ba3eac6841a3e2
+  apps/rice-bridge/src/local-service-supervisor.ts: a0dd703b01a1eafd702ec7464f6a76df19d2b3699c3068161cd77caef9c23e2f
+  apps/rice-bridge/src/runtime-preparation.ts: 590092dfca0723dbc83e105ad697ba861082b5603d5a77c780f4cc2f7f0890f9
+  apps/web/lib/bridge/client-releases.ts: bb2ccbc8179d7878a02a9915188899eb1e1602c19a8bb99ef9d3dc8e4cef00bb
+  apps/web/lib/portal/config.ts: d05ba5e0e41450b4acac68d31f6a36396e5c8aad669f894e60b7c80ca4003dd7
+  apps/web/lib/portal/session.ts: bd502d92d9b6659b68c37a0cabd1da8933be57450578475f04cd8fc71a78f66e
+  apps/web/server/portal-hosts.mjs: e1aac7dc0735860478e564ff33dc77799452589d35ad4fd7744af5f74cf90901
+  apps/worker/src/harness/dsh-egress-environment.ts: 315fc969e7e880f139ea06e3be3c8208e0f411fb6fa760e583bbccb6aefa5594
+  apps/worker/src/harness/dsh-native-artifact.ts: ffe6bdf780cf13b1cc40666a5233d2a3e8b18df657195e9492a0bba56f5f71fe
+  apps/worker/src/index.ts: 38bf79ef2b007df425e4df7fde7ab081c4696b9003a80004fdcb7a18d704ad84
+  packages/contracts/src/project-resolution-script.ts: d4261249ef18115e6293d804a0d14a770e2c0df5b14a5a6db133444dd76ff9ee
+  packages/contracts/src/runtime-feature-flags.ts: 9545293314ee45ed2d42dd9393a50123fad67250c4454346c341d0955bb200f9
+  packages/contracts/src/runtime-v2/cloud-command-limits.ts: a6c831b9b3c85c016e88a292cf0c2baf8ff3ebc47d00cdec6bca3dc313b1ad6f
+  packages/database/src/bootstrap-identity.ts: 1257cdfbc66c5c6038a5f780871a1f653663581a0584a96336cd8b188b9dcaf5
+  packages/project-runtime/src/project-service-supervisor.ts: 1ce6b79bcadabceb4b9bf47cb5ce809fe580d3dfc542d22a769f1d57d83223d0
+  packages/project-runtime/src/project-supervisor.ts: 7a832d1e0d549be9568485816708d6e274d1fa0bfe0b3544ac6f01e0603b73f2
+  scripts/dev-environment.mjs: 9e5bf7bfaa0ed318e73d54a7eb008422ef36d826f387bf993e60706fcc07be75

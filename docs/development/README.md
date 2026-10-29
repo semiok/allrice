@@ -37,6 +37,8 @@ startup bypasses native content verification.
 Run `pnpm env:generate` after staging configuration source changes; `pnpm env:check` rejects drift in CI.
 Names come from finite static TS/JS syntax, never real env values. Safe active examples and audited exclusions/opaque reads live in `scripts/env-example-policy.yml`; this does not prove arbitrary dynamic configuration coverage.
 Commented values are unset. Direct/production startup requires `DATABASE_URL`; `pnpm dev` can prepare its local Docker database. Supply credentials/secrets before enabling the corresponding features, and prepare/review `ALLRICE_DSH_NATIVE_ARTIFACT_ID` as above. Never copy production secrets into policy.
+Audit reasons are bound to the manually reviewed full-file SHA256 in `auditSources`. Any change requires re-reading the source and explicitly approving its hash/reason; generation never refreshes approvals. Do not refresh hashes to bypass a failure or accept a new main without review.
+Only direct env members, one binding, canonical process imports and registered literal helper calls are supported. Whole-env escapes require a source-bound audit; unsupported process imports/helper aliases fail closed.
 
 ## Requirements
 
