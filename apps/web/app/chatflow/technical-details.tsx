@@ -1,5 +1,6 @@
 'use client';
-import { useState, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
+import { useProcessDisclosure } from './work-process-reading-state';
 import {
   DisclosureRow,
   IconInfoOutlineRegular,
@@ -14,11 +15,13 @@ export function TechnicalDetails({
   rows?: [string, ReactNode][];
   children?: ReactNode;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useProcessDisclosure<boolean>('technical', false);
   return (
     <DisclosureRow
       icon={<IconInfoOutlineRegular />}
       title="技术详情"
+      collapsedContent={<span data-process-control="technical" />}
+      keepContentWhenOpen
       open={open}
       expandable
       expandOnRowClick

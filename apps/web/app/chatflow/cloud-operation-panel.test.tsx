@@ -249,7 +249,7 @@ describe('Cloud/MCP approval presentation', () => {
     expect(html).toContain('records.append（写入数据）');
     // The name and the escaped value are separate elements.
     expect(html).toMatch(
-      /<dt>value<\/dt><dd class="[^"]+">&lt;script&gt;alert\(1\)&lt;\/script&gt;<\/dd>/,
+      /<dt>value<\/dt><dd class="[^"]+"><span data-process-content="field:value">&lt;script&gt;alert\(1\)&lt;\/script&gt;<\/span><\/dd>/,
     );
     expect(html).not.toContain('<script>');
     expect(html).not.toContain('&quot;value&quot;');

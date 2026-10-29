@@ -1,6 +1,11 @@
 'use client';
 
-import { Children, useEffect, useState, type ReactNode } from 'react';
+import { Children, useEffect, useState, useRef, type ReactNode } from 'react';
+import {
+  WorkProcessReadingState,
+  WorkProcessDisclosureScope,
+  useProcessDisclosure,
+} from './work-process-reading-state';
 import { AssistantMarkdown } from './assistant-markdown';
 import type { WorkProgressPart } from '../../lib/chatflow/work-progress';
 import {
@@ -117,11 +122,17 @@ export function WorkProcess({
   collapseTiming?: UserPreferences['collapseTiming'];
   presentation?: WorkProcessPresentation;
 }) {
+  const root = useRef<HTMLElement>(null);
   const [disclosure, setDisclosure] = useState<WorkProcessDisclosure>();
   const [settledOnMount] = useState(!running);
   const policy = presentationPolicyFor(transcriptView, collapseTiming);
   const currentPresentation =
     presentation ?? workProcessPresentation([], parts, undefined, false);
+  const withReadingState = (content: ReactNode) => (
+    <WorkProcessReadingState key={currentPresentation.runId} root={root}>
+      {content}
+    </WorkProcessReadingState>
+  );
   useEffect(() => {
     // A history answer can be expanded before its trace arrives. Bind that
     // choice once to the restored identity, so a later retry still resets it.
@@ -242,8 +253,9 @@ export function WorkProcess({
           />
         </div>
       );
-    return (
+    return withReadingState(
       <section
+        ref={root}
         className={styles.workProcess}
         aria-label={label}
         data-transcript-view={policy.mode}
@@ -305,11 +317,12 @@ export function WorkProcess({
             ) : null}
           </div>
         ) : null}
-      </section>
+      </section>,
     );
   }
-  return (
+  return withReadingState(
     <section
+      ref={root}
       className={`${reasoning.root} ${styles.workProcess}`}
       aria-label={label}
       data-transcript-view={policy.mode}
@@ -380,13 +393,19 @@ export function WorkProcess({
           {items
             .filter((item) => item.operationId)
             .map((item) => (
-              <div className={styles.operationReceipt} key={item.id}>
-                {renderOperation(item.operationId!)}
+              <div
+                className={styles.operationReceipt}
+                key={item.id}
+                data-process-operation={item.operationId}
+              >
+                <WorkProcessDisclosureScope id={item.operationId!}>
+                  {renderOperation(item.operationId!)}
+                </WorkProcessDisclosureScope>
               </div>
             ))}
         </div>
       )}
-    </section>
+    </section>,
   );
 }
 
@@ -423,8 +442,14 @@ function WorkProcessGroup({
         items
           .filter((item) => item.operationId)
           .map((item) => (
-            <div className={styles.operationReceipt} key={item.id}>
-              {renderOperation(item.operationId!)}
+            <div
+              className={styles.operationReceipt}
+              key={item.id}
+              data-process-operation={item.operationId}
+            >
+              <WorkProcessDisclosureScope id={item.operationId!}>
+                {renderOperation(item.operationId!)}
+              </WorkProcessDisclosureScope>
             </div>
           ))}
     </div>
@@ -442,7 +467,10 @@ function NativeStepsGroup({
   grouped: boolean;
   policy: ChatPresentationPolicy;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useProcessDisclosure<boolean>(
+    items.map((item) => `group:${item.id}`),
+    false,
+  );
   const { steps } = summarizeWorkProcess(items);
   if (!steps.length || onlyLiveThinking(steps, running)) return null;
   if (!grouped) return <WorkProcessSteps items={items} running={running} />;
@@ -465,16 +493,22 @@ function NativeStepsGroup({
         open={open}
         expandable
         expandOnRowClick
-        onToggle={() => setOpen((value) => !value)}
+        keepContentWhenOpen
+        onToggle={() => setOpen(!open)}
         rowClassName={styles.processHeader}
         titleClassName={styles.processTitle}
         collapsedContent={
-          preview ? (
-            <>
-              <span className={reasoning.separator} aria-hidden />
-              <span className={styles.processStepDescription}>{preview}</span>
-            </>
-          ) : undefined
+          <>
+            {items.map((item) => (
+              <span key={item.id} data-process-control={`group:${item.id}`} />
+            ))}
+            {!open && preview ? (
+              <>
+                <span className={reasoning.separator} aria-hidden />
+                <span className={styles.processStepDescription}>{preview}</span>
+              </>
+            ) : null}
+          </>
         }
       >
         <div className={styles.processDetails}>

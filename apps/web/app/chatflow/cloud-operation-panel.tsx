@@ -17,6 +17,10 @@ import type { CloudOperationView } from '@allrice/database';
 import styles from './cloud-operation-panel.module.css';
 import { TechnicalDetails } from './technical-details';
 import {
+  WorkProcessDisclosureScope,
+  useProcessDisclosure,
+} from './work-process-reading-state';
+import {
   approvalState,
   approvalSummary,
   approveLabel,
@@ -90,18 +94,24 @@ export function cloudOperationCompactStatus(
 
 /** One parameter: its path as a label, its real value kept apart below. */
 function ApprovalField({ field }: { field: ApprovalFieldView }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useProcessDisclosure<boolean>(
+    `field:${field.path}`,
+    false,
+  );
   return (
     <div>
       <dt>{field.path}</dt>
       <dd className={styles.approvalValue}>
-        {open ? field.full : field.text}
+        <span data-process-content={`field:${field.path}`}>
+          {open ? field.full : field.text}
+        </span>
         {field.full !== field.text && (
           <Button
             className={styles.decision}
             size="sm"
             variant="ghost"
             aria-expanded={open}
+            data-process-control={`field:${field.path}`}
             onClick={() => setOpen((value) => !value)}
           >
             {open ? '收起' : '展开全文'}
@@ -205,7 +215,10 @@ function OperationDetails({
   sections: OperationSection[];
   initialSection: string | null;
 }) {
-  const [selected, setSelected] = useState(initialSection);
+  const [selected, setSelected] = useProcessDisclosure(
+    'section',
+    initialSection,
+  );
   const panelId = useId();
   const section = sections.find((item) => item.key === selected);
   return (
@@ -219,6 +232,7 @@ function OperationDetails({
             aria-label={item.title}
             aria-expanded={selected === item.key}
             aria-controls={panelId}
+            data-process-control={`section:${item.key}`}
             onClick={() =>
               setSelected((current) => (current === item.key ? null : item.key))
             }
@@ -237,6 +251,7 @@ function OperationDetails({
               <button
                 type="button"
                 aria-label="关闭当前详情"
+                data-process-control="close-section"
                 onClick={() => setSelected(null)}
               >
                 ×
@@ -249,8 +264,11 @@ function OperationDetails({
             key={item.key}
             hidden={item.key !== selected}
             className={styles.detailContent}
+            data-process-region={item.key}
           >
-            {item.content}
+            <WorkProcessDisclosureScope id={item.key}>
+              {item.content}
+            </WorkProcessDisclosureScope>
           </div>
         ))}
       </div>
@@ -322,10 +340,16 @@ export function CloudOperationCard({
       ? projectResolutionErrorMessage(op.result?.code ?? undefined)
       : undefined;
   const detailsId = useId();
-  const [detailsOpen, setDetailsOpen] = useState(!!pending);
+  const detailsKey = `${op.snapshot.binding.attempt.operationId}:${!!pending}`;
+  const [detailsOpen, setDetailsOpen] = useProcessDisclosure(
+    `details:${!!pending}`,
+    !!pending,
+  );
+  const previousDetailsKey = useRef(detailsKey);
   useEffect(() => {
-    setDetailsOpen(!!pending);
-  }, [pending, op.snapshot.binding.attempt.operationId]);
+    if (previousDetailsKey.current !== detailsKey) setDetailsOpen(!!pending);
+    previousDetailsKey.current = detailsKey;
+  }, [pending, detailsKey, setDetailsOpen]);
   const isMcp = proposal.kind === 'mcp';
   const fullStatus = laterSuccessId
     ? '这次未完成，之后再试已完成'
@@ -341,6 +365,7 @@ export function CloudOperationCard({
       aria-label={detailsOpen ? '收起详情' : '查看详情'}
       aria-expanded={detailsOpen}
       aria-controls={detailsId}
+      data-process-control="details"
       onClick={() => setDetailsOpen((open) => !open)}
     >
       <span>{detailsOpen ? '收起详情' : '查看详情'}</span>
@@ -358,6 +383,7 @@ export function CloudOperationCard({
         className={styles.stopButton}
         aria-label={stopping ? '正在停止本轮全部操作' : '请求停止本轮全部操作'}
         disabled={busy || stopping}
+        data-process-control="stop"
         onClick={() => onAct(op, 'cancel')}
       >
         <span className={styles.stopIcon} aria-hidden="true" />
@@ -377,7 +403,12 @@ export function CloudOperationCard({
       {laterSuccessId && (
         <p className={styles.notice}>
           之后再试的一次已经完成，这次的记录仍保留。
-          <a href={`#operation-${laterSuccessId}`}>查看完成的那次</a>
+          <a
+            href={`#operation-${laterSuccessId}`}
+            data-process-control="later-success"
+          >
+            查看完成的那次
+          </a>
         </p>
       )}
       {!op.enabled && (
@@ -466,7 +497,7 @@ export function CloudOperationCard({
             ['返回代码', op.result?.code ?? '无'],
           ]}
         >
-          <pre>
+          <pre data-process-content="result">
             {op.result
               ? op.result.output || '没有返回内容。'
               : '还没有返回内容。'}
@@ -530,7 +561,7 @@ export function CloudOperationCard({
               ]}
             />
             <TechnicalDetails>
-              <pre aria-label="发送的原始参数">
+              <pre aria-label="发送的原始参数" data-process-content="arguments">
                 {JSON.stringify(proposal.arguments, null, 2)}
               </pre>
             </TechnicalDetails>
@@ -621,7 +652,7 @@ export function CloudOperationCard({
                     ['工作目录', proposal.path],
                   ]}
                 >
-                  <pre aria-label="云端项目命令">
+                  <pre aria-label="云端项目命令" data-process-content="command">
                     {JSON.stringify(
                       {
                         executable: proposal.executable,
@@ -671,7 +702,12 @@ export function CloudOperationCard({
                   </ul>
                 )}
                 <TechnicalDetails>
-                  <pre aria-label="云端待执行脚本">{proposal.script}</pre>
+                  <pre
+                    aria-label="云端待执行脚本"
+                    data-process-content="script"
+                  >
+                    {proposal.script}
+                  </pre>
                 </TechnicalDetails>
               </>
             ),
@@ -695,7 +731,7 @@ export function CloudOperationCard({
                     ],
                   ]}
                 >
-                  <pre>
+                  <pre data-process-content="version">
                     {JSON.stringify(
                       {
                         project: proposal.project,
@@ -855,11 +891,15 @@ export function CloudOperationCard({
       </header>
       {!isMcp && notices}
       <div id={detailsId} hidden={!detailsOpen}>
-        <OperationDetails
-          key={`${op.snapshot.binding.attempt.operationId}-${!!pending}`}
-          sections={sections}
-          initialSection={pending ? (isMcp ? 'arguments' : 'execution') : null}
-        />
+        <WorkProcessDisclosureScope id={`details:${!!pending}`}>
+          <OperationDetails
+            key={`${op.snapshot.binding.attempt.operationId}-${!!pending}`}
+            sections={sections}
+            initialSection={
+              pending ? (isMcp ? 'arguments' : 'execution') : null
+            }
+          />
+        </WorkProcessDisclosureScope>
         {isMcp && (
           <div className={styles.receiptNotes}>
             {notices}
@@ -880,6 +920,7 @@ export function CloudOperationCard({
               size="sm"
               variant="primary"
               disabled={busy}
+              data-process-control="approve"
               onClick={() => onAct(op, 'approved')}
             >
               {approveLabel(proposal)}
@@ -889,6 +930,7 @@ export function CloudOperationCard({
               size="sm"
               variant="outline"
               disabled={busy}
+              data-process-control="reject"
               onClick={() => onAct(op, 'rejected')}
             >
               拒绝
