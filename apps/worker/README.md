@@ -66,6 +66,19 @@ minute.
 The Worker does not invoke Codex CLI. DSH is the only Harness; the Codex
 subscription is authorized and executed as DSH's `openai-codex` Provider.
 
+`ALLRICE_CLOUD_COMMAND_TIMEOUT_MS` (default `30000`, range `500..60000`) and
+`ALLRICE_CLOUD_COMMAND_OUTPUT_BYTES` (default `32768`, range `1024..65536`)
+set deployment defaults for new `cloud.process.execute` calls (inline or frozen
+scripts) and the cloud branch of `python.execute`. Supply integers in the shared
+Web/Worker environment and restart both; invalid values stop startup with the
+variable name and allowed range. Explicit call fields override only that field.
+The operation freezes effective limits before approval; retries, approvals and
+Worker recovery keep those values after configuration changes. Output counts raw
+UTF-8 bytes across stdout and stderr together; exceeding the limit still stops
+the process. Local Python, Office/project controllers, other resource limits,
+long-execution budgets and the DSH outer tool timeout remain unchanged. These are
+deployment settings, with no tenant override or management UI in this batch.
+
 `ALLRICE_DSH_IDLE_CLOSE_MINUTES` must be `0` or a decimal number of minutes,
 at least `1`; any other value stops the Worker at startup. A process is never
 closed during a turn, and the next turn of a closed conversation recovers its

@@ -24,6 +24,56 @@ const command = (script: string, extra: Record<string, unknown> = {}) =>
     network: 'none',
   });
 describe('P15 cloud contract fail-closed', () => {
+  it.each([1024, 1025])(
+    'counts %i combined UTF-8 output bytes at collection without character-based truncation',
+    async (bytes) => {
+      const stdout = Buffer.from('中'.repeat(170));
+      const stderr = Buffer.concat([
+        Buffer.from('文'.repeat(170)),
+        Buffer.alloc(bytes - 1020, 120),
+      ]);
+      class CapturedFrames extends CloudRunnerBackend {
+        override async inspect() {
+          return {
+            Id: '1'.repeat(64),
+            Config: { Labels: {} },
+            HostConfig: { Runtime: 'runsc' },
+            State: {
+              Running: false,
+              ExitCode: 0,
+              OOMKilled: false,
+              Status: 'exited',
+            },
+          };
+        }
+        override async call() {
+          const body = Buffer.from(
+            [stdout, stderr]
+              .map((chunk) =>
+                JSON.stringify({
+                  type: 'output',
+                  data: chunk.toString('base64'),
+                }),
+              )
+              .join('\n'),
+          );
+          const header = Buffer.alloc(8);
+          header[0] = 1;
+          header.writeUInt32BE(body.length, 4);
+          return Buffer.concat([header, body]);
+        }
+      }
+      const result = await new CapturedFrames().collect(
+        randomUUID(),
+        command('0', { limits: { outputBytes: 1024 } }),
+        Date.now(),
+      );
+      expect(result.reason).toBe(bytes === 1024 ? 'completed' : 'output_limit');
+      expect(Buffer.byteLength(result.output)).toBe(
+        bytes === 1024 ? 1024 : 510,
+      );
+    },
+  );
   it('recovers a stopped v1 repository container with the original frozen supervisor bytes', async () => {
     // Golden from the deployed v1 release, not a hash recalculated by the test.
     expect(createHash('sha256').update(cloudSupervisor).digest('hex')).toBe(

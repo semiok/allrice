@@ -4,6 +4,7 @@ import { processNextReference } from './reference-processing.js';
 import { startCloudProjectPreviewTransport } from './cloud-runner/project-preview-transport.js';
 import {
   cloudArchitectureTranslationProblem,
+  configuredCloudCommandRuntimeLimits,
   runtimeFeatureEnabled,
 } from '@allrice/contracts';
 import { startExecutionPressureLog } from './execution-pressure.js';
@@ -103,6 +104,7 @@ import {
 
 // An x64 Node translated by Rosetta would select the amd64 cloud toolchain on an
 // Apple-silicon host (MET-216): refuse to start instead of running emulated.
+configuredCloudCommandRuntimeLimits();
 if (runtimeFeatureEnabled('ALLRICE_CLOUD_RUNNER_ENABLED')) {
   const problem = cloudArchitectureTranslationProblem();
   if (problem) throw new Error(problem);

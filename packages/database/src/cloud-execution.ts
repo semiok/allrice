@@ -17,7 +17,8 @@ import { linkTaskOperationCall } from './task-clock.ts';
 import {
   cloudPlatform,
   type CloudArchitecture,
-  CloudCommandInputSchema,
+  configuredCloudCommandRuntimeLimits,
+  normalizeCloudCommandArguments,
   SandboxExecutionPolicySchema,
   sandboxExecutionBudgetSpec,
   EmployeeMethodFileStepSchema,
@@ -434,11 +435,7 @@ export async function createCloudPythonOperation(
     selection.metadata.localInputs
   )
     throw new RuntimePolicyError('cloud_input_changed');
-  return createCloudOperation(
-    { ...input, arguments: normalizeCloudPythonArguments(originalArguments) },
-    database,
-    { origin, originalArguments },
-  );
+  return createCloudOperation(input, database, { origin, originalArguments });
 }
 
 /** Saved-source cloud ingress: the selected target and original Worker are mandatory. */
@@ -667,11 +664,25 @@ async function createCloudOperation(
 ) {
   if (!cloudExecutionEnabled())
     throw new RuntimePolicyError('runtime_policy_disabled');
-  const args = CloudCommandInputSchema.parse(input.arguments),
-    ctx = input.context,
+  const ctx = input.context,
     owner = ctx.policySnapshot.subjectId;
   if (!input.callId || input.callId.length > 255 || !ctx.workspaceId)
     throw new RuntimePolicyError('invalid_tool_call');
+  const key = `${canonical?.origin.toolName === 'workspace.project' ? 'cloud-project-resolution' : canonical ? 'cloud-python' : 'cloud-command'}:${ctx.runId}:${input.callId}`,
+    operationId = cloudStableId(key);
+  const [prior] = await database<{ payload: unknown }[]>`
+    select payload from allrice_cloud_execution_inputs where operation_id=${operationId}
+      and run_id=${ctx.runId} and organization_id=${ctx.organizationId}
+      and workspace_id=${ctx.workspaceId} and owner_id=${owner}`;
+  // Re-entry after deployment must retain the already approved defaults. Exact
+  // explicit arguments, payload and binding are still compared below.
+  const defaults = prior
+    ? CloudCommandSchema.parse(prior.payload).arguments.limits
+    : configuredCloudCommandRuntimeLimits();
+  const args =
+    canonical?.origin.toolName === 'python.execute'
+      ? normalizeCloudPythonArguments(canonical.originalArguments, defaults)
+      : normalizeCloudCommandArguments(input.arguments, defaults);
   const [run] = await database<
     {
       execution_spec: unknown;
@@ -687,11 +698,6 @@ async function createCloudOperation(
   >`select r.execution_spec,e.execution_snapshot,r.policy_snapshot_id,p.payload,e.session_id,e.employee_version_id,c.thread_generation,j.timeout_at,j.lease_token::text from allrice_runs r join allrice_employee_runs e on e.run_id=r.id and e.organization_id=r.organization_id and e.workspace_id=r.workspace_id and e.owner_id=r.owner_id join allrice_jobs j on j.run_id=r.id and j.id=${ctx.jobId} and j.organization_id=r.organization_id and j.workspace_id=r.workspace_id and j.owner_id=r.owner_id join allrice_policy_snapshots p on p.id=r.policy_snapshot_id and p.organization_id=r.organization_id and p.subject_id=r.owner_id join allrice_conversation_runtimes c on c.session_id=e.session_id and c.organization_id=r.organization_id and c.workspace_id=r.workspace_id and c.owner_id=r.owner_id and c.active_run_id=r.id and c.state='running' where r.id=${ctx.runId} and r.organization_id=${ctx.organizationId} and r.workspace_id=${ctx.workspaceId} and r.owner_id=${owner} and r.state='running' and j.status='running' and j.worker_id=${ctx.worker.id} and j.lease_expires_at>clock_timestamp() and j.cancel_requested_at is null and j.timeout_at>clock_timestamp()`;
   if (!run || run.policy_snapshot_id !== ctx.policySnapshot.id)
     throw new RuntimePolicyError('run_or_frozen_configuration_changed');
-  const priorRevision = args.outputs.some((output) => !!output.parentObjectId)
-    ? (
-        await database`select operation_id from allrice_cloud_execution_inputs where operation_id=${cloudStableId(`${canonical ? 'cloud-python' : 'cloud-command'}:${ctx.runId}:${input.callId}`)} and run_id=${ctx.runId} and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId} and owner_id=${owner}`
-      )[0]
-    : null;
   for (const output of args.outputs) {
     if (!output.parentObjectId) continue;
     await assertExplicitOutputParent(
@@ -711,7 +717,7 @@ async function createCloudOperation(
       },
       database,
       false,
-      !priorRevision,
+      !prior,
     );
   }
   if (args.execution) {
@@ -755,8 +761,6 @@ async function createCloudOperation(
     if (authorized.object.checksum !== file.checksum)
       throw new RuntimePolicyError('cloud_input_changed');
   }
-  const key = `${canonical?.origin.toolName === 'workspace.project' ? 'cloud-project-resolution' : canonical ? 'cloud-python' : 'cloud-command'}:${ctx.runId}:${input.callId}`,
-    operationId = cloudStableId(key);
   return finishCloudOperation({
     input,
     database,

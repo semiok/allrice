@@ -22,6 +22,9 @@ import {
   EmployeeExecutionSnapshotSchema,
   EmployeeDefinitionSchema,
   PythonExecuteArgsSchema,
+  cloudCommandRuntimeDefaults,
+  resolveCloudCommandRuntimeLimits,
+  type CloudCommandRuntimeLimits,
   runtimeContractEqual,
   type RuntimeActionBinding,
   projectResolutionCloudArguments,
@@ -49,14 +52,23 @@ export const cloudExecutionEnabled = () =>
   runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED');
 
 /** Execution normalization never mutates or defaults the original tool call. */
-export function normalizeCloudPythonArguments(original: unknown) {
+export function normalizeCloudPythonArguments(
+  original: unknown,
+  defaults: CloudCommandRuntimeLimits = cloudCommandRuntimeDefaults,
+) {
   const args = PythonExecuteArgsSchema.parse(original);
   return CloudCommandInputSchema.parse({
     script: args.script,
     language: 'python',
     inputs: args.inputs,
     outputs: args.outputs,
-    limits: args.limits,
+    limits: {
+      ...args.limits,
+      ...resolveCloudCommandRuntimeLimits(
+        (original as { limits?: unknown }).limits,
+        defaults,
+      ),
+    },
     ...(args.execution ? { execution: args.execution } : {}),
     ...(args.network ? { network: args.network } : {}),
   });
@@ -235,7 +247,10 @@ export async function checkCloudBindingAuthority(
               frozenResolutionRequest(stored.original_arguments, origin),
             ),
           )
-        : normalizeCloudPythonArguments(stored.original_arguments);
+        : normalizeCloudPythonArguments(
+            stored.original_arguments,
+            payload.arguments.limits,
+          );
     if (
       digest(stored.original_arguments) !== origin.argumentsDigest ||
       !runtimeContractEqual(normalized, payload.arguments)

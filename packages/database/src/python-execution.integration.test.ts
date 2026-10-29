@@ -596,6 +596,83 @@ suite(
       expect(total).toBe(3145326);
       expect(get).toHaveBeenCalledTimes(2);
     });
+    it('retains raw canonical Python and its frozen approval across deployment default changes', async () => {
+      const f = await fixture();
+      const original = {
+        script: 'print("汇总完成")',
+        location: 'cloud',
+        limits: { outputBytes: 1024 },
+      };
+      const raw = structuredClone(original);
+      const r = await request(f, original);
+      await selectManagedPythonExecution(r, isolated.db);
+      const input = {
+        context: f.execution,
+        callId: r.callId,
+        arguments: original,
+      };
+      const timeout = process.env.ALLRICE_CLOUD_COMMAND_TIMEOUT_MS;
+      const output = process.env.ALLRICE_CLOUD_COMMAND_OUTPUT_BYTES;
+      vi.stubEnv('ALLRICE_CLOUD_COMMAND_TIMEOUT_MS', '1500');
+      vi.stubEnv('ALLRICE_CLOUD_COMMAND_OUTPUT_BYTES', '2048');
+      try {
+        const created = await createCloudPythonOperation(input, isolated.db);
+        expect(created.payload.arguments.limits).toMatchObject({
+          timeoutMs: 1500,
+          outputBytes: 1024,
+        });
+        expect(created.payload.origin).toMatchObject({
+          argumentsDigest: digest(raw),
+        });
+        vi.stubEnv('ALLRICE_CLOUD_COMMAND_TIMEOUT_MS', '2500');
+        vi.stubEnv('ALLRICE_CLOUD_COMMAND_OUTPUT_BYTES', '4096');
+        expect(
+          (await createCloudPythonOperation(input, isolated.db)).snapshot
+            .binding,
+        ).toEqual(created.snapshot.binding);
+        await f.approve(created);
+        const lease = await created.ledger.dispatch({
+          scope: created.snapshot.binding.task.scope,
+          operationId: created.snapshot.binding.attempt.operationId,
+          leaseOwner: f.worker,
+          leaseMs: 15000,
+        });
+        expect(lease.leaseToken).toBeTruthy();
+        const [stored] =
+          await isolated.db`select original_arguments,payload,binding from allrice_cloud_execution_inputs
+          where operation_id=${created.snapshot.binding.attempt.operationId}`;
+        expect(stored!.original_arguments).toEqual(raw);
+        expect(stored!.binding).toEqual(created.snapshot.binding);
+        expect(original).toEqual(raw);
+        await expect(
+          createCloudPythonOperation(
+            {
+              ...input,
+              arguments: { ...original, limits: { outputBytes: 2048 } },
+            },
+            isolated.db,
+          ),
+        ).rejects.toThrow('cloud_input_changed');
+        const nextRequest = await request(f, original);
+        await selectManagedPythonExecution(nextRequest, isolated.db);
+        const next = await createCloudPythonOperation(
+          { ...input, callId: nextRequest.callId },
+          isolated.db,
+        );
+        expect(next.payload.arguments.limits).toMatchObject({
+          timeoutMs: 2500,
+          outputBytes: 1024,
+        });
+        // Local normalization keeps the static existing default even in this env.
+        expect(normalizeCloudPythonArguments(original).limits).toMatchObject({
+          timeoutMs: 30000,
+          outputBytes: 1024,
+        });
+      } finally {
+        vi.stubEnv('ALLRICE_CLOUD_COMMAND_TIMEOUT_MS', timeout);
+        vi.stubEnv('ALLRICE_CLOUD_COMMAND_OUTPUT_BYTES', output);
+      }
+    });
     it('requires streaming capability for oversized local inputs and keeps explicit local requests local', async () => {
       const f = await fixture(),
         d = await device(f);

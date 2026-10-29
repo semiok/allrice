@@ -44,6 +44,10 @@ export {
 export { PLATFORM_IMAGE_MODELS } from './platform-model-settings.ts';
 export { ProjectWorkspaceToolInputSchema } from './project-execution.ts';
 export { RuntimeLocalCommandToolInputSchema } from './runtime-v2/local-command.ts';
+export {
+  CloudCommandRuntimeLimitsSchema,
+  cloudCommandRuntimeLimitDefinitions,
+} from './runtime-v2/cloud-command-limits.ts';
 export { SandboxExecutionRequestSchema } from './runtime-v2/sandbox-execution.ts';
 export { SandboxNetworkRequestSchema } from './runtime-v2/sandbox-network.ts';
 export { SessionReferenceSnapshotsSchema } from './session-reference.ts';

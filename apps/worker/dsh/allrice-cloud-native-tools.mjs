@@ -7,6 +7,8 @@ import { z } from 'zod';
 import {
   SandboxNetworkRequestSchema,
   SandboxExecutionRequestSchema,
+  CloudCommandRuntimeLimitsSchema,
+  cloudCommandRuntimeLimitDefinitions,
 } from '@allrice/contracts/native-runtime';
 
 // The DSH DSL projects shape only. These bounds run before JSON-RPC; the
@@ -24,8 +26,8 @@ const path = z
   );
 const limits = z
   .object({
-    timeoutMs: z.number().int().min(500).max(60000).optional(),
-    outputBytes: z.number().int().min(1024).max(65536).optional(),
+    timeoutMs: CloudCommandRuntimeLimitsSchema.shape.timeoutMs.optional(),
+    outputBytes: CloudCommandRuntimeLimitsSchema.shape.outputBytes.optional(),
     artifactBytes: z.number().int().min(1024).max(4000000).optional(),
     memoryMiB: z.number().int().min(128).max(512).optional(),
     cpuMillis: z.number().int().min(100).max(1000).optional(),
@@ -224,8 +226,17 @@ export const cloudNativeTools = [
         description:
           'Optional bounded resource limits; omitting uses server defaults.',
         properties: {
-          timeoutMs: { type: 'integer', description: '500..60000 ms' },
-          outputBytes: { type: 'integer', description: '1024..65536 bytes' },
+          ...Object.fromEntries(
+            Object.entries(cloudCommandRuntimeLimitDefinitions).map(
+              ([name, limit]) => [
+                name,
+                {
+                  type: 'integer',
+                  description: `${limit.min}..${limit.max} ${limit.unit}; omit to use the server deployment default.`,
+                },
+              ],
+            ),
+          ),
           artifactBytes: {
             type: 'integer',
             description: '1024..4000000 bytes',
