@@ -273,7 +273,10 @@ export async function executeExperienceConsolidation({
     )
       throw Error('EXPERIENCE_RESULT_IDENTITY_UNVERIFIED');
     costCents =
-      subscription || result.costEstimateAvailable === false
+      subscription ||
+      result.costEstimateAvailable === false ||
+      (providerSnapshot.provider === 'dsh' &&
+        (!result.usageComplete || !result.cacheUsageKnown))
         ? null
         : estimateModelCostCents({
             provider: result.provider,

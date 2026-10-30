@@ -69,6 +69,8 @@ async function scenario({
   contentCallsAllowed,
   compact = false,
   progressPause = false,
+  accounting = false,
+  accountingStall = false,
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'allrice-model-recovery-'));
   const requests = [],
@@ -76,6 +78,8 @@ async function scenario({
     bridgeCalls = [],
     toolCalls = [];
   const connections = [];
+  const receiptEntered = Promise.withResolvers(),
+    receiptRelease = Promise.withResolvers();
   let serverError;
   let adoptionAttempts = 0;
   let contentCalls = 0,
@@ -254,6 +258,14 @@ async function scenario({
       client.subscribe((notice) => notices.push(notice));
       client.setRequestHandler(async (method, p) => {
         bridgeCalls.push({ method, ...p });
+        if (method === 'allrice/run-authorize') return { allowed: true };
+        if (method === 'allrice/model-receipt') {
+          if (accountingStall && p.fact?.phase === 'finish') {
+            receiptEntered.resolve();
+            await receiptRelease.promise;
+          }
+          return {};
+        }
         if (method === 'allrice/progress') {
           if (p.action === 'finish' && p.kind === 'model' && !settle)
             throw Error('synthetic_model_receipt_rejected');
@@ -346,10 +358,13 @@ async function scenario({
           sceneProbe ||
           personalSkill,
         requireTaskProgress: true,
+        requireRunAdmission: accounting,
+        requireNativeAccounting: accounting,
       });
     }
     await launch();
     const sessionId = `synthetic-recovery-${randomUUID()}`;
+    if (accounting) await client.beginRun(sessionId, randomUUID());
     const events = () =>
       notices
         .filter((n) => n.method === 'session.event')
@@ -362,6 +377,12 @@ async function scenario({
           ? `/${sceneName} Synthetic request`
           : 'Synthetic request: list once then answer.',
     );
+    if (accountingStall) {
+      await receiptEntered.promise;
+      await client.close();
+      receiptRelease.resolve();
+      return { requests, bridgeCalls, closed: true };
+    }
     if (progressPause) {
       await expect
         .poll(() => notices.some((n) => n.method === 'session.user-question'), {
@@ -434,6 +455,7 @@ async function scenario({
       }
     }
     if (serverError) throw serverError;
+    if (accounting) await client.endRun(sessionId);
     return {
       requests,
       events: events(),
@@ -445,6 +467,7 @@ async function scenario({
       notices,
     };
   } finally {
+    receiptRelease.resolve();
     await client?.close();
     server.closeAllConnections();
     await new Promise((r) => server.close(r));
@@ -823,4 +846,47 @@ describe('personal Skills use the native loader with current authority', () => {
       'FROZEN_NATIVE_SKILL_BODY_42',
     );
   }, 30000);
+});
+
+describe('native accounting over the real JSON-RPC Host and native retry/compaction', () => {
+  it('records each real retry once with a new UUID, including the failed attempt', async () => {
+    const result = await scenario({ toolFirst: true, accounting: true });
+    const starts = result.bridgeCalls.filter(
+      (p) => p.method === 'allrice/model-receipt' && p.fact?.phase === 'start',
+    );
+    const finishes = result.bridgeCalls.filter(
+      (p) => p.method === 'allrice/model-receipt' && p.fact?.phase === 'finish',
+    );
+    expect(result.requests).toHaveLength(3);
+    expect(starts).toHaveLength(3);
+    expect(new Set(starts.map((p) => p.fact.callId)).size).toBe(3);
+    expect(finishes.map((p) => p.fact.callId)).toEqual(
+      starts.map((p) => p.fact.callId),
+    );
+    expect(result.bridgeCalls.findLast((p) => p.delivery)?.delivery).toEqual({
+      calls: 3,
+      complete: true,
+    });
+  }, 30000);
+  it('observes real compaction on the public stream with its native purpose', async () => {
+    const result = await scenario({
+      failures: [],
+      accounting: true,
+      compact: true,
+    });
+    expect(result.compactionRejected).toBe(false);
+    const starts = result.bridgeCalls.filter((p) => p.fact?.phase === 'start');
+    expect(starts.some((p) => p.fact.purpose === 'compaction')).toBe(true);
+    expect(starts).toHaveLength(result.requests.length);
+  }, 30000);
+  it('physically closes a real Host whose finish receipt never answers, without claiming a complete flush', async () => {
+    const result = await scenario({
+      failures: [],
+      accounting: true,
+      accountingStall: true,
+    });
+    expect(result.closed).toBe(true);
+    expect(result.requests).toHaveLength(1);
+    expect(result.bridgeCalls.some((p) => p.delivery?.complete)).toBe(false);
+  }, 15000);
 });

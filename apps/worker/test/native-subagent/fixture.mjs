@@ -52,6 +52,11 @@ export async function host({
   productionProfile,
   depth = 1,
   rootId = 'pr0-root',
+  accounting = false,
+  provider = 'pr0-synthetic',
+  modelName = 'fixed',
+  usage = { inputTokens: 20, outputTokens: 7, totalTokens: 27 },
+  stream,
   active = 8,
   runId,
   prepare = async () => {},
@@ -141,6 +146,10 @@ export async function host({
     }
     async *stream(request) {
       calls.push(request);
+      if (stream) {
+        yield* stream(request, calls.length);
+        return;
+      }
       const blocks = await model(request, calls.length);
       for (const [index, block] of blocks.entries()) {
         yield { type: 'block-start', index, blockType: block.type };
@@ -150,7 +159,7 @@ export async function host({
       }
       yield {
         type: 'usage',
-        usage: { inputTokens: 20, outputTokens: 7, totalTokens: 27 },
+        usage,
       };
       yield {
         type: 'finish',
@@ -162,11 +171,12 @@ export async function host({
       };
     }
   }
-  ctx.llm.registerAdapter(['pr0-synthetic'], new Synthetic());
+  ctx.llm.registerAdapter([provider], new Synthetic());
   await server.handleRequest('initialize', {
     cwd: directory,
-    provider: 'pr0-synthetic',
-    model: 'fixed',
+    provider,
+    model: modelName,
+    requireNativeAccounting: accounting,
     nativeTools: [],
     nativeSkills: [],
     contentScenes: [],

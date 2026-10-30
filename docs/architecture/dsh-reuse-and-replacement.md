@@ -687,3 +687,11 @@ SQL 消息 ID 和内容匹配。压缩及冷恢复仍由原生 SDK/persistence �
 时间、次数和用量，隐藏内容、思考、工具参数/结果及路径。缺失或不支持的原生事实
 保留 unavailable/partial，供应商 wire 时间仍为 unknown。新 adapter 内容必须独立
 测量、批准并通过 Dev 验证；保留的旧原生包和其存储不随本次变更重绑。
+
+### MET-229：公开模型调用的归根账本（第二片）
+
+沿 `allrice-jsonrpc-lifecycle-v1`，只在员工 Worker 私有 accounting port 存在时组合公开 `llm/stream` 观察。每次实际调用固定 UUID 和原根/Run/route；原准入检查在 start 交付之后执行，账本错误不触发模型重跑。正常、失败/取消和 legacy park 在原 drain/close 边界交付，现有 tenant→route 事务内读取原 facts、聚合并封口；不新增锁层、状态或终态修复。
+
+原生四桶互斥，input 统一含 read/write cache；沿用当前二价估算，缺桶/缺价/未确认交付保持 unknown，订阅证明仍 N/A。fork/replay前缀不收费。普通调用不要求 task clock；不新增 PG lifecycle writer，不承诺跨重启完整 activation 审计。只用当前 primary 的真实 capability，不更改旧 origin 来源记录。
+
+依据：`dsh-llm` 公共 stream/TokenUsage、`dsh-subagent` 原生谱系与树等待，MET-229 root 2026-10-30 第二片核定。归属为 SaaS 账本、门卫、既有存储/租约接线；无 DSH patch 或私有接口。升级时复核 stream 异常/usage、实际授权顺序和 close/park 交付；原生若提供 SaaS root billing 后再替换本接线。生产委派仍由 PR3d 独立启用。

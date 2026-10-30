@@ -1,3 +1,7 @@
+import {
+  aggregateNativeModelReceipts,
+  type NativeModelSettlement,
+} from './native-model-receipts.ts';
 import type postgres from 'postgres';
 import {
   RouteDecisionSchema,
@@ -144,6 +148,7 @@ export async function completeRouteDecision(
     organizationId: string;
     workspaceId: string;
     outcome: RouteOutcome;
+    native?: NativeModelSettlement;
     /** Trusted Worker pre-dispatch failure only; never reconciles old usage.
      * The fresh flag must come from this attempt's actual freeze result. */
     undispatched?: { subscriptionSnapshotCreated: boolean };
@@ -158,6 +163,7 @@ export async function completeRouteDecisionInTransaction(
     organizationId: string;
     workspaceId: string;
     outcome: RouteOutcome;
+    native?: NativeModelSettlement;
     /** Trusted Worker pre-dispatch failure only; never reconciles old usage.
      * The fresh flag must come from this attempt's actual freeze result. */
     undispatched?: { subscriptionSnapshotCreated: boolean };
@@ -181,6 +187,10 @@ export async function completeRouteDecisionInTransaction(
   const decisions = await transaction<
     {
       id: string;
+      run_id: string;
+      attempt: number;
+      provider: string;
+      model: string;
       model_connection_id: string | null;
       model_catalog_entry_id: string | null;
       status: string;
@@ -194,7 +204,7 @@ export async function completeRouteDecisionInTransaction(
       subscription: boolean;
     }[]
   >`
-      select id, model_connection_id, model_catalog_entry_id, status,
+      select id, run_id, attempt, provider, model, model_connection_id, model_catalog_entry_id, status,
         input_tokens, cached_input_tokens, output_tokens, cost_cents,
         usage_complete, cache_usage_known, completed_at,
         exists(select 1 from allrice_route_subscription_snapshots s where s.route_decision_id=allrice_route_decisions.id) as subscription
@@ -206,6 +216,33 @@ export async function completeRouteDecisionInTransaction(
     `;
   const decision = decisions[0];
   if (!decision) throw new Error('route decision outcome was not accepted');
+  if (input.native) {
+    if (decision.completed_at) {
+      if (decision.status !== outcome.status)
+        throw Error('route decision outcome conflict');
+      return {
+        ...outcome,
+        inputTokens: decision.input_tokens,
+        cachedInputTokens: decision.cached_input_tokens,
+        outputTokens: decision.output_tokens,
+        usageComplete: decision.usage_complete,
+        cacheUsageKnown: decision.cache_usage_known,
+        costCents:
+          decision.cost_cents === null ? null : Number(decision.cost_cents),
+        completedAt: decision.completed_at.toISOString(),
+      };
+    }
+    outcome = {
+      ...outcome,
+      ...(await aggregateNativeModelReceipts(
+        transaction,
+        input,
+        decision,
+        input.native,
+      )),
+    };
+    if (decision.subscription) outcome.costCents = null;
+  }
   if (input.undispatched) {
     // Both receipt writers and this refusal hold tenant then route locks.
     // Recheck here, after any wait: even a late receipt must remain byte-for-
@@ -285,7 +322,7 @@ export async function completeRouteDecisionInTransaction(
         usage_complete = excluded.usage_complete,
         occurred_at = excluded.occurred_at
     `;
-  if (!decision.model_connection_id) return;
+  if (!decision.model_connection_id) return outcome;
   const previous = await transaction<
     { circuit_state: 'closed' | 'open' | 'half_open' }[]
   >`
@@ -315,9 +352,9 @@ export async function completeRouteDecisionInTransaction(
           )
         `;
     }
-    return;
+    return outcome;
   }
-  if (outcome.status !== 'failed' || !outcome.failureCategory) return;
+  if (outcome.status !== 'failed' || !outcome.failureCategory) return outcome;
   const circuits = await transaction<
     {
       circuit_state: 'closed' | 'open' | 'half_open';
@@ -366,6 +403,7 @@ export async function completeRouteDecisionInTransaction(
         )
       `;
   }
+  return outcome;
 }
 
 export async function getRouteDecisionForRun(input: {

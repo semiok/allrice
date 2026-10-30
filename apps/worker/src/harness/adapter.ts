@@ -1,6 +1,8 @@
 import type { createRunDeliveryPort } from '../final-delivery/run-delivery.js';
 import type {
   NativeRootOrigin,
+  NativeModelFact,
+  NativeModelSettlement,
   NativeRunExecutionBinding,
 } from '@allrice/database';
 import type { FinalDeliveryPort } from '../final-delivery/guard.js';
@@ -61,6 +63,13 @@ export interface FinalDeliveryReplyOrigin {
 
 /** Private Worker control plane; never an input adoption acknowledgement. */
 export interface HarnessExecutionInput {
+  /** Captured Worker accounting only; never a model/browser authority. */
+  nativeAccounting?: {
+    bind(rootSessionId: string): {
+      record(fact: NativeModelFact): Promise<unknown>;
+      delivered(value: NativeModelSettlement['delivery']): void;
+    };
+  };
   nativeRunAuthority?: (generation: number) => () => Promise<unknown>;
   modelPreflight?: () => Promise<unknown>;
   /** Current platform rollout switch, shared with Web through PostgreSQL. */

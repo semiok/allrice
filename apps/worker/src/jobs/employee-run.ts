@@ -26,6 +26,8 @@ import {
   appendJobEvent,
   createTaskProgressRuntime,
   completeRouteDecision,
+  appendNativeModelReceipt,
+  type NativeModelSettlement,
   estimateConversationTokens,
   getCodexProviderStatus,
   getModelGovernanceSnapshot,
@@ -106,7 +108,7 @@ import {
   buildAuthorizedKnowledgeContext,
   formatKnowledgeExcerpts,
 } from '../knowledge.js';
-import { estimateModelCostCents } from '../model-cost.js';
+import { estimateModelCostCents, readModelPricing } from '../model-cost.js';
 import {
   assertInitialModelInputBudget,
   checkCompletedModelBudget,
@@ -621,6 +623,26 @@ export async function executeEmployeeRun({
   let routeCostCents: number | null = 0;
   let routeUsageComplete = true;
   let routeCacheUsageKnown = true;
+  let nativeSettlement: NativeModelSettlement | undefined;
+  const settleRoute = async (
+    input: Parameters<typeof completeRouteDecision>[0],
+  ) => {
+    try {
+      return await completeRouteDecision({
+        ...input,
+        native: nativeSettlement,
+      });
+    } catch (error) {
+      if (nativeSettlement)
+        throw new HandlerError(
+          'NATIVE_ACCOUNTING_SETTLEMENT_FAILED',
+          '模型用量未能完成核对；不会自动重跑本轮。',
+          false,
+          { cause: error },
+        );
+      throw error;
+    }
+  };
   let routeExecutionStarted = false;
   let subscriptionSnapshotCreated = false;
   const loopGuard = new AgentLoopGuard(
@@ -1305,7 +1327,7 @@ export async function executeEmployeeRun({
         park: async (next, receipt) => {
           // This native segment was deliberately interrupted at a question;
           // its usage is settled once, while the original Run stays waiting.
-          await completeRouteDecision({
+          await settleRoute({
             organizationId: ownership.organizationId,
             workspaceId: ownership.workspaceId,
             outcome: {
@@ -1627,6 +1649,42 @@ export async function executeEmployeeRun({
                 });
                 const stepResult = await adapter.execute({
                   nativeQuestionMode,
+                  nativeAccounting:
+                    adapter.kind === 'dsh'
+                      ? {
+                          bind: (rootSessionId: string) => {
+                            const decisionId = routeDecision!.id;
+                            let price;
+                            try {
+                              price =
+                                readModelPricing()[
+                                  `${providerName(providerSnapshot)}:${providerSnapshot.model}`
+                                ];
+                            } catch {
+                              /* Optional tariff stays unknown. */
+                            }
+                            const captured = (nativeSettlement = {
+                              rootSessionId,
+                              jobId: execution.job.id,
+                              jobAttempt: execution.job.attempt,
+                              delivery: { calls: 0, complete: false },
+                              price,
+                            });
+                            return {
+                              record: (fact) =>
+                                appendNativeModelReceipt({
+                                  ...workflowLease,
+                                  rootSessionId,
+                                  routeDecisionId: decisionId,
+                                  fact,
+                                }),
+                              delivered: (value) => {
+                                captured.delivery = value;
+                              },
+                            };
+                          },
+                        }
+                      : undefined,
                   contentGuard,
                   progress: taskProgress,
                   nativeQuestionWait:
@@ -2064,7 +2122,7 @@ export async function executeEmployeeRun({
         'postflight',
       );
     }
-    await completeRouteDecision({
+    const settled = await settleRoute({
       organizationId: execution.context.organizationId,
       workspaceId: execution.context.workspaceId!,
       outcome: {
@@ -2079,6 +2137,17 @@ export async function executeEmployeeRun({
         completedAt: new Date().toISOString(),
       },
     });
+    if (nativeSettlement && settled)
+      Object.assign(result, {
+        usage: {
+          inputTokens: settled.inputTokens,
+          cachedInputTokens: settled.cachedInputTokens,
+          outputTokens: settled.outputTokens,
+        },
+        usageComplete: settled.usageComplete,
+        cacheUsageKnown: settled.cacheUsageKnown,
+        estimatedCostCents: settled.costCents,
+      });
     outcome = 'idle';
     const priorWaitUsage = questionWait?.resume
       ? await readParkedNativeUsage(execution.context)
@@ -2164,7 +2233,7 @@ export async function executeEmployeeRun({
       error instanceof HandlerError ? error.code : 'CONVERSATION_FAILED';
     if (routeDecision) {
       const decision = routeDecision;
-      await completeRouteDecision({
+      await settleRoute({
         organizationId: execution.context.organizationId,
         workspaceId: execution.context.workspaceId!,
         ...(!routeExecutionStarted ||

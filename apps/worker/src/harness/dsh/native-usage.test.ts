@@ -1,3 +1,4 @@
+import { estimateModelCostCents } from '../../model-cost.js';
 import { describe, expect, it } from 'vitest';
 import { projectNativeUsage } from './native-usage.js';
 
@@ -16,7 +17,7 @@ describe('pinned native subscription receipts', () => {
       usageComplete: true,
       cacheUsageKnown: true,
     });
-    expect(projectNativeUsage(usage, true, false).inputTokens).toBe(10);
+    expect(projectNativeUsage(usage, true, false).inputTokens).toBe(15);
   });
   it('preserves MET-236 subscription totals without inventing a missing cache-write bucket', () => {
     const receipt = {
@@ -54,4 +55,36 @@ describe('pinned native subscription receipts', () => {
       projectNativeUsage({ inputTokens: 10, outputTokens: 7 }, true, true),
     ).toMatchObject({ usageComplete: true, cacheUsageKnown: false });
   });
+});
+
+it('uses inclusive DSH input so the existing cash formula subtracts cache-read exactly once', () => {
+  const usage = projectNativeUsage(
+    {
+      inputTokens: 1000,
+      cacheReadTokens: 2000,
+      cacheWriteTokens: 500,
+      outputTokens: 100,
+    },
+    true,
+    false,
+  );
+  expect(usage).toMatchObject({
+    inputTokens: 3500,
+    cachedInputTokens: 2000,
+    usageComplete: true,
+    cacheUsageKnown: true,
+  });
+  expect(
+    estimateModelCostCents({
+      ...usage,
+      provider: 'synthetic',
+      model: 'fixed',
+      pricing: {
+        'synthetic:fixed': {
+          inputCentsPerMillion: 100,
+          outputCentsPerMillion: 400,
+        },
+      },
+    }),
+  ).toBeCloseTo(0.19);
 });

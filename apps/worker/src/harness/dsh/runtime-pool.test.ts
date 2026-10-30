@@ -716,6 +716,41 @@ it.each(['definition', 'current'] as const)(
   },
 );
 
+it('checks accounting on current primary while retaining an older same-generation origin', async () => {
+  const { runtimes, value, primary, launch } = currentExecutionRequest(
+    'current',
+    { recordedArtifactId: 'sha256:' + 'b'.repeat(64) },
+  );
+  const before = structuredClone({
+    origin: value.nativeOrigin,
+    pin: value.nativePin,
+    kernel: value.input.kernel,
+  });
+  value.input.nativeAccounting = {
+    bind: () => ({ record: async () => {}, delivered: () => {} }),
+  };
+  const acquired = await runtimes.acquire(value);
+  expect(acquired.runtime.nativeArtifactId).toBe(launch.artifactId);
+  expect(primary).toHaveBeenCalled();
+  expect({
+    origin: value.nativeOrigin,
+    pin: value.nativePin,
+    kernel: value.input.kernel,
+  }).toEqual(before);
+});
+it('rejects an actual current-primary handshake missing accounting before accepting the Host', async () => {
+  const { runtimes, value } = currentExecutionRequest('current');
+  value.input.nativeAccounting = {
+    bind: () => ({ record: async () => {}, delivered: () => {} }),
+  };
+  value.snapshot = { ...value.snapshot, model: 'legacy-accounting' };
+  await expect(runtimes.acquire(value)).rejects.toMatchObject({
+    code: 'DSH_ACCOUNTING_UNAVAILABLE',
+    retryable: false,
+  });
+  expect(runtimes.get(value.threadId)).toBeUndefined();
+});
+
 it('reuses one current executor across Run bindings while rechecking the new Run identity', async () => {
   const { runtimes, value, payload } = currentExecutionRequest('current');
   const first = await runtimes.acquire(value);
