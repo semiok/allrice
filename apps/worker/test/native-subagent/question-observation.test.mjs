@@ -1,3 +1,4 @@
+/* global AbortController */
 import { randomUUID } from 'node:crypto';
 import { expect, it } from 'vitest';
 import { askProgramQuestion } from '../../dsh/allrice-program-questions.mjs';
@@ -175,6 +176,11 @@ it('a native timed question remains ended when continued and later settled', asy
   await h.prompt('先问我，有其他工作就继续。');
   await h.wait();
   expect(observations(h).map((n) => n.phase)).toEqual(['opened', 'ended']);
+  expect(observations(h)[0]).toMatchObject({
+    deadlineAt: h.notices.find((n) => n.method === 'session.user-question')
+      .params.deadlineAt,
+    releaseLimited: true,
+  });
   const { questions: pending } = await h.server.handleRequest(
     'session/user-questions',
     { sessionId: h.root.id },

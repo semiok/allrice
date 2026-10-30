@@ -72,7 +72,7 @@ suite(
         vi.stubEnv('ALLRICE_DSH_PLATFORM_HOME', join(root, 'unused-platform'));
         adapter = new DshHarnessAdapter({
           runtimeRoot: join(root, 'runtime'),
-          idleCloseMs: login ? 1000 : 60000,
+          idleCloseMs: 60000,
           credentialResolver: {
             resolve: async () => ({ apiKey: 'synthetic-only' }),
           },
@@ -129,6 +129,9 @@ suite(
                 },
               ]
             : [],
+          nativeQuestionWait: login
+            ? { mode: 'timed', seconds: 1 }
+            : { mode: 'default' },
           signal: controller.signal,
           attempt: 2,
           generation: 7,
@@ -204,7 +207,7 @@ suite(
             ].sort(),
           );
           if (login) {
-            expect(payload.nativePayload.releaseLimited).toBe(true);
+            expect(payload.nativePayload.releaseLimited).toBe(false);
             await Promise.race([resourceEntered.promise, execution]);
           } else {
             await adapter.steer({
