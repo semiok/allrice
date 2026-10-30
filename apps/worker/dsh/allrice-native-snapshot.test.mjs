@@ -1,8 +1,13 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import {
+  AssistantStreamAccumulator,
+  assembleAssistantStream,
+} from '@deepseek-ai/dsh-llm';
+import {
   NativeSubagentSnapshotSchema,
   nativeChildViewLimits as limits,
+  toolActivityDetail,
 } from '@allrice/contracts/native-runtime';
 import { gate, hold, host, text } from '../test/native-subagent/fixture.mjs';
 import {
@@ -172,6 +177,93 @@ it('用户查看两个子任务各自在做什么：真实 Host 中途打开、f
     await h.wait();
   }
 }, 30_000);
+
+it.each([
+  ['a', 'b', 'ab', 'b', 'ab'],
+  ['ab', '', 'ab', 'b', 'abb'],
+  ['<thi', 'nk>PRIVATE', '', 'nk>PRIVATE</think>safe', 'safe'],
+])(
+  'consumes safe Host replacements from a mid-attempt cut: %j / %j',
+  async (left, right, before, ending, after) => {
+    const entered = gate(),
+      release = gate(),
+      updated = gate(),
+      finish = gate();
+    let selected, consumer;
+    const received = [];
+    const h = await host({
+      onNotification: ({ method, params }) => {
+        if (
+          method === 'session.assistant-stream' &&
+          params.sessionId === selected
+        ) {
+          // This consumer never reads frame, records, hidden prefixes or block IDs.
+          consumer = params.display;
+          received.push(consumer);
+        }
+      },
+      stream: async function* (request) {
+        if (request.sessionId === 'pr0-root') {
+          yield block('root');
+        } else {
+          yield { type: 'text-delta', index: 0, text: left };
+          yield { type: 'text-delta', index: 1, text: right };
+          entered.resolve();
+          await hold(request.signal, release);
+          yield {
+            type: 'block-end',
+            index: 1,
+            block: { type: 'text', text: ending },
+          };
+          updated.resolve();
+          await hold(request.signal, finish);
+        }
+        yield { type: 'finish', reason: { kind: 'stop' } };
+      },
+    });
+    const activation = await h.spawn();
+    try {
+      await entered.promise;
+      const snapshot = await query(h, activation.childId);
+      selected = activation.childId;
+      consumer = snapshot.stream;
+      expect(consumer).toMatchObject({
+        mode: 'replace',
+        cursor: snapshot.observation.cursor,
+        complete: true,
+        active: { text: before },
+      });
+      release.resolve();
+      await updated.promise;
+      expect(consumer.active.text).toBe(after);
+      expect(consumer).toEqual((await query(h, activation.childId)).stream);
+      expect(received).toHaveLength(1);
+      expect(consumer).toMatchObject({
+        mode: 'replace',
+        instanceId: snapshot.stream.instanceId,
+        complete: true,
+        active: {
+          attemptId: snapshot.stream.active.attemptId,
+          nextIndex: snapshot.stream.active.nextIndex + 1,
+          truncated: false,
+        },
+      });
+      expect(consumer.revision).toBe(snapshot.stream.revision + 1);
+      expect(JSON.stringify([snapshot.stream, ...received])).not.toMatch(
+        /PRIVATE|<think>|reasoning|records/,
+      );
+      // The original native frame still reports the original unprojected block.
+      expect(h.notices.at(-1).params.frame.chunk.block.text).toBe(ending);
+    } finally {
+      release.resolve();
+      finish.resolve();
+      await activation.result;
+      await h.wait();
+    }
+    expect(consumer.active).toBeNull();
+  },
+  30_000,
+);
 
 it('captures the stream baseline before the public observation Promise yields to a new chunk', async () => {
   const first = gate(),
@@ -445,6 +537,7 @@ it('bounds retained stream memory and projected history, reports every omitted b
     truncated: true,
     nextIndex: limits.chunks + 1,
   });
+  expect(s.view().complete).toBe(false);
   s.start();
   s.push({
     type: 'text-delta',
@@ -452,6 +545,7 @@ it('bounds retained stream memory and projected history, reports every omitted b
     text: 'x'.repeat(limits.streamCharacters + 1),
   });
   expect(s.view().active.truncated).toBe(true);
+  expect(s.view().complete).toBe(false);
   expect(s.display.state(s.agent).active.stream.snapshot()).toEqual([]);
   s.start();
   s.push(block('<allrice_tool_call>{"command":"PRIVATE"}</allrice_tool_call>'));
@@ -567,4 +661,93 @@ it('bounds retained stream memory and projected history, reports every omitted b
   expect(reusedId.rows).toHaveLength(2);
   expect(reusedId.rows[0].result.failed).toBe(true);
   expect(reusedId.rows[1].result).toBeUndefined();
+});
+
+it('keeps native text block appearance order and counts zero-character starts against the display budget', () => {
+  const s = streamFixture(),
+    native = new AssistantStreamAccumulator();
+  for (const chunk of [
+    { type: 'block-start', index: 0, blockType: 'text' },
+    { type: 'block-start', index: 1, blockType: 'text' },
+    { type: 'text-delta', index: 1, text: 'B' },
+    { type: 'text-delta', index: 0, text: 'A' },
+  ]) {
+    s.push(chunk);
+    native.push({ time: 123, chunk });
+  }
+  const expected = assembleAssistantStream(native.snapshot())
+    .blocks()
+    .map((block) => block.text)
+    .join('');
+  expect(expected).toBe('AB');
+  expect(s.view().active.text).toBe(expected);
+  s.start();
+  for (let i = 0; i <= limits.chunks; i++)
+    s.push({ type: 'block-start', index: i, blockType: 'text' });
+  expect(s.view()).toMatchObject({
+    complete: false,
+    active: { text: '', truncated: true },
+  });
+  expect(s.display.state(s.agent).active.stream.snapshot()).toHaveLength(
+    limits.chunks,
+  );
+});
+
+it.each([
+  ['search', 'query', 100, (n) => 'q'.repeat(n), (s) => `搜索资料：${s}`],
+  ['search', 'queries', 100, (n) => ['q'.repeat(n)], (s) => `搜索资料：${s}`],
+  [
+    'market.quote',
+    'symbol',
+    32,
+    (n) => 'A'.repeat(n),
+    (s) => `查询 ${s} 的实时行情`,
+  ],
+  ['read_file', 'path', 500, (n) => 'p'.repeat(n), (s) => `阅读文件：${s}`],
+  ['bash', 'description', 120, (n) => '测'.repeat(n), (s) => s],
+])(
+  'reports safe field cuts without changing legacy strings: %s.%s',
+  (name, field, maximum, make, describe) => {
+    for (const length of [maximum - 1, maximum, maximum + 1]) {
+      const args = { [field]: make(length) },
+        shortened = vi.fn(),
+        detail = toolActivityDetail(name, args, shortened),
+        original = Array.isArray(args[field]) ? args[field][0] : args[field];
+      expect(detail).toBe(describe(original.slice(0, maximum)));
+      expect(detail).toBe(toolActivityDetail(name, args));
+      expect(shortened).toHaveBeenCalledTimes(length > maximum ? 1 : 0);
+      const view = projectNativeChildCut({
+        inheritedEventCount: 0,
+        events: [
+          {
+            seq: 0,
+            type: 'tool/call',
+            data: { name, callId: 'call', arguments: JSON.stringify(args) },
+          },
+        ],
+      });
+      expect(view.rows[0]).toMatchObject({
+        activityDetail: detail,
+        truncated: length > maximum,
+      });
+    }
+  },
+);
+
+it('preserves query-array whitespace and ignores cuts of unused or rejected description fields', () => {
+  const shortened = vi.fn(),
+    args = { queries: ['  ' + 'q'.repeat(100)], symbol: 'x'.repeat(100) };
+  expect(toolActivityDetail('search', args, shortened)).toBe(
+    '搜索资料：  ' + 'q'.repeat(98),
+  );
+  expect(shortened).toHaveBeenCalledTimes(1);
+  shortened.mockClear();
+  expect(
+    toolActivityDetail('search', { ...args, query: 'ok' }, shortened),
+  ).toBe('搜索资料：ok');
+  expect(shortened).not.toHaveBeenCalled();
+  expect(
+    toolActivityDetail('bash', { description: 'x'.repeat(121) }, shortened),
+  ).toBeUndefined();
+  expect(shortened).not.toHaveBeenCalled();
 });

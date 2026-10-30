@@ -73,6 +73,7 @@ export class AllRiceSdkRoot {
           sessionId: String(agent.session.id),
           instanceId,
           hostEpoch: this.epoch,
+          display: this.childDisplay.snapshot(agent),
           frame,
         });
       }),

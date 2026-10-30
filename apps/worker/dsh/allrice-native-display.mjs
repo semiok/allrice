@@ -81,6 +81,9 @@ export function projectNativeChildCut(cut) {
             row.activityDetail = toolActivityDetail(
               data.name,
               JSON.parse(data.arguments),
+              () => {
+                row.truncated = true;
+              },
             );
           } catch {
             /* No safe target. */
@@ -160,15 +163,18 @@ export class NativeChildDisplay {
         const safe =
           chunk.type === 'text-delta'
             ? { type: chunk.type, index: chunk.index, text: chunk.text }
-            : chunk.type === 'block-end' && chunk.block.type === 'text'
-              ? {
-                  type: chunk.type,
-                  index: chunk.index,
-                  block: { type: 'text', text: chunk.block.text },
-                }
-              : null;
+            : chunk.type === 'block-start' && chunk.blockType === 'text'
+              ? { type: chunk.type, index: chunk.index, blockType: 'text' }
+              : chunk.type === 'block-end' && chunk.block.type === 'text'
+                ? {
+                    type: chunk.type,
+                    index: chunk.index,
+                    block: { type: 'text', text: chunk.block.text },
+                  }
+                : null;
         if (safe && !active.truncated) {
-          active.characters += safe.text?.length ?? safe.block.text.length;
+          active.characters +=
+            safe.text?.length ?? safe.block?.text.length ?? 0;
           if (
             ++active.chunks > limits.chunks ||
             active.characters > limits.streamCharacters
@@ -205,9 +211,11 @@ export class NativeChildDisplay {
         )
       : null;
     return {
+      mode: 'replace',
+      cursor: agent.session.seq - 1,
       instanceId,
       revision,
-      complete,
+      complete: complete && !active?.truncated && !text?.truncated,
       active: active
         ? {
             attemptId: active.attemptId,

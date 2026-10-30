@@ -51,6 +51,9 @@ export const NativeSubagentSnapshotSchema = z.object({
     )
     .max(nativeChildViewLimits.events),
   stream: z.object({
+    // Full safe display replacement; never a replayable native block state.
+    mode: z.literal('replace'),
+    cursor,
     // Host-local display binding to the exact public Agent object, not native state.
     instanceId: z.string(),
     revision: seq,
