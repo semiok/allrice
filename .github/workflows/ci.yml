@@ -239,10 +239,11 @@ jobs:
 
   developer-bootstrap:
     runs-on: ubuntu-latest
-    # The complete PostgreSQL migration suite and final real Next/Bridge startup
-    # now take about 34m on a busy day (10-26: three runs cut off at 35m); retain
-    # their individual test deadlines. Making the job faster is tracked in MET-216.
-    timeout-minutes: 50
+    # Run 41078519901 attempts 1/2 hit the 50m job cap at the final
+    # build/Bridge boundary; all completed test batches passed.
+    # Allow ~10m headroom while keeping test deadlines and every gate.
+    # Making the job faster is tracked in MET-216.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:

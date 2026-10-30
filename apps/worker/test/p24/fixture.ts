@@ -12,6 +12,7 @@ export interface ModelRequest {
 }
 export interface ModelReply {
   text?: string;
+  reasoning?: string;
   tool?: { marker: string };
   nativeTool?: { name: string; arguments: Record<string, unknown> };
   usage?: Record<string, unknown> | null;
@@ -119,6 +120,9 @@ export async function p24Fixture(
           : {
               role: 'assistant',
               content: result.text ?? 'Synthetic completed.',
+              ...(result.reasoning
+                ? { reasoning_content: result.reasoning }
+                : {}),
             };
       for (const data of [
         { ...common, choices: [{ index: 0, delta, finish_reason: null }] },

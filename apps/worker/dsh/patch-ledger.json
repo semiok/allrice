@@ -134,7 +134,7 @@
       "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-final-delivery.mjs",
-      "reason": "SaaS authority and persistence gate: root-Run-only reply origin and artifact/Office evidence bind the native message to atomic Job completion. Worker awaits public session/wait, pauses input, and may request one same-Agent/Run/model text repair via public steer with platform source (a new native turn). Public runMaintenance holds the candidate during validation; tools, retries and compaction are denied for repair, with existing content/task-progress accounting and cancellation. No DSH core/private API or eligibility expansion."
+      "reason": "SaaS authority and persistence gate: root-Run-only reply origin and artifact/Office evidence bind the native message to atomic Job completion. Worker awaits public session/wait, pauses input, and may request one same-Agent/Run/model text repair via public steer with platform source (a new native turn). Public runMaintenance holds the candidate during validation; tools, retries and compaction are denied for repair, with existing content/task-progress accounting and cancellation. MET-231 binds one append-origin message in the latest anchored completed turn across only native silent closure; public sessionProjections.restore checks removed settlement inputs without hydrating the owner. Candidate and publication metadata share that record; full-head, lease, facts, commit and usage guards remain. No extra model call, DSH core/private API or eligibility expansion."
     },
     {
       "id": "allrice-observed-native-close-v1",
