@@ -5,7 +5,9 @@ import {
   type TaskSuggestionDisplay,
   type TaskNextSteps,
   type WorkspaceReadiness,
+  type NativeSubagentSummary,
 } from '@allrice/contracts';
+import { NativeSubagentFixtureFeed } from '../../test/native-subagent-fixture-feed';
 import type { Attachment, WorkspaceFile } from './chatflow-types';
 import { createRequire } from 'node:module';
 import { createServer, type ServerResponse } from 'node:http';
@@ -236,6 +238,11 @@ suite(
         settled?: 'failed' | 'canceled';
         width?: number;
         height?: number;
+        /** Isolated HTTP/1 samples, not production measurements. */
+        nativeParents?: 3 | 5;
+        nativeOtherOwner?: boolean;
+        nativeDelayFull?: boolean;
+        nativeClock?: boolean;
         workspaceFiles?: WorkspaceFile[];
         taskSuggestions?: TaskSuggestionDisplay[];
         nextSteps?: TaskNextSteps;
@@ -278,6 +285,59 @@ suite(
       const reads: string[] = [];
       const writes: string[] = [];
       const streams = new Set<ServerResponse>();
+      const nativeFeed = new NativeSubagentFixtureFeed();
+      const nativeWorkspace = { id: B };
+      const nativeIds = [
+        A,
+        B,
+        C,
+        ...[4, 5].map(
+          (i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+        ),
+      ].slice(0, options.nativeParents ?? 3);
+      const nativeSummary = (id: string): NativeSubagentSummary => ({
+        rootId: `${nativeWorkspace.id}/${id}`,
+        root: { source: 'live', cursor: 8 },
+        descendants: Array.from(
+          {
+            length: id === A && nativeWorkspace.id === C ? 3 : id === B ? 2 : 1,
+          },
+          (_, i) => ({
+            kind: 'child',
+            id: `child-${i}`,
+            parentId: `${nativeWorkspace.id}/${id}`,
+            depth: 1,
+            mode: 'continuable',
+            label: `Child ${i}`,
+            running: true,
+            activity: 'running',
+            observation: { source: 'live', cursor: 8 },
+            timing: { settledMs: 0 },
+            lastReply: `${id} own reply`,
+            usage: {
+              uncachedInputTokens: 0,
+              cacheReadTokens: 0,
+              cacheWriteTokens: 0,
+              outputTokens: 0,
+            },
+          }),
+        ),
+      });
+      let nativeDenied = false;
+      const nativeSource = {
+        summary: (id: string) => nativeSummary(id),
+        status: 0,
+      };
+      const nativeFixture = nativeFeed.register(nativeSource);
+      const nativeRequests: { at: number; path: string; protocol: string }[] =
+        [];
+      const browserWrites = { count: 0 };
+      let releaseNativeFull!: () => void;
+      const nativeFullGate = new Promise<void>((done) => {
+        releaseNativeFull = done;
+      });
+      let nativeFullRequests = 0;
+      const nativeSelectionNames: { id: string; ax: string }[] = [];
       const uploaded = new Map<string, Attachment>();
       let nextSteps = options.nextSteps;
       let holdNextReply = false;
@@ -288,6 +348,9 @@ suite(
       });
       const fixtureSession = (id: string) => ({
         ...session(id),
+        ...(options.nativeParents
+          ? { ownerId: options.nativeOtherOwner && id === A ? A : C }
+          : {}),
         ...(options.nextSteps
           ? { employeeAssignmentId: nextAssignmentId }
           : {}),
@@ -344,6 +407,14 @@ suite(
       const server = createServer(async (request, response) => {
         const url = new URL(request.url!, 'http://localhost');
         const path = url.pathname;
+        if (options.nativeParents) {
+          nativeRequests.push({
+            at: Date.now(),
+            path: request.url!,
+            protocol: request.httpVersion,
+          });
+          if (nativeRequests.length > 128) nativeRequests.shift();
+        }
         if (path === '/') {
           response.writeHead(200, {
             'content-type': 'text/html; charset=utf-8',
@@ -392,10 +463,30 @@ suite(
         )?.[1];
         if (subagentSession) {
           if (
-            ![A, B, C].includes(subagentSession) ||
-            url.searchParams.get('workspaceId') !== B
+            !nativeIds.includes(subagentSession) ||
+            url.searchParams.get('workspaceId') !== nativeWorkspace.id ||
+            (options.nativeParents &&
+              subagentSession === A &&
+              (nativeDenied || options.nativeOtherOwner))
           ) {
             answer(response, { error: 'authorization_denied' }, 403);
+            return;
+          }
+          if (options.nativeParents) {
+            if (url.searchParams.get('follow') === 'true') {
+              url.searchParams.set('fixture', nativeFixture);
+              request.url = url.pathname + url.search;
+              nativeFeed.handle(request, response);
+            } else {
+              if (
+                subagentSession === A &&
+                url.searchParams.get('liveOnly') !== 'true'
+              ) {
+                nativeFullRequests++;
+                if (options.nativeDelayFull) await nativeFullGate;
+              }
+              answer(response, { summary: nativeSummary(subagentSession) });
+            }
             return;
           }
           answer(response, {
@@ -411,12 +502,16 @@ suite(
           answer(response, {
             workspace: {
               organizationId: A,
-              workspaceId: B,
-              ...(options.readiness || options.nextSteps
+              workspaceId: nativeWorkspace.id,
+              ...(options.readiness ||
+              options.nextSteps ||
+              options.nativeParents
                 ? { viewerId: C }
                 : {}),
               canAdminister: false,
-              sessions: [fixtureSession(A), fixtureSession(B)],
+              sessions: (options.nativeParents ? nativeIds : [A, B]).map(
+                fixtureSession,
+              ),
               sessionModels: [A, B].map((sessionId) => ({
                 sessionId,
                 harness: 'dsh',
@@ -644,15 +739,21 @@ suite(
           height: options.height ?? 1000,
         },
         hasTouch: (options.width ?? 1440) < 760,
-        ...(process.env.ALLRICE_TEST_DEV_STORAGE_STATE
+        ...(!options.nativeParents && process.env.ALLRICE_TEST_DEV_STORAGE_STATE
           ? { storageState: process.env.ALLRICE_TEST_DEV_STORAGE_STATE }
           : {}),
       });
       const page: Page = await context.newPage();
+      if (options.nativeClock) await page.clock.install();
+      if (options.nativeParents)
+        page.on('request', (request) => {
+          if (request.method() !== 'GET') browserWrites.count++;
+        });
       let closing = false;
       // Real Dev HTML/JS/CSS with only this page's API requests routed to the
       // fixture. No company messages, file uploads, or model runs are created.
-      const liveOrigin = process.env.ALLRICE_TEST_DEV_ORIGIN;
+      const liveOrigin =
+        !options.nativeParents && process.env.ALLRICE_TEST_DEV_ORIGIN;
       if (liveOrigin) {
         await page.route(`${liveOrigin}/api/v1/**`, async (route) => {
           const url = new URL(route.request().url());
@@ -724,6 +825,44 @@ suite(
           releaseHeldNextReply?.();
         },
         errors,
+        native: {
+          origin,
+          nativeIds,
+          nativeRequests,
+          browserWrites,
+          nativeSelectionNames,
+          fullRequests: () => nativeFullRequests,
+          releaseFull: () => releaseNativeFull(),
+          connections: () => [...nativeFeed.connections],
+          summary: nativeSummary,
+          push(id: string, summary: NativeSubagentSummary) {
+            nativeFeed.push(
+              nativeFixture,
+              { type: 'directory', summary },
+              null,
+              id,
+            );
+          },
+          deny() {
+            nativeDenied = true;
+            for (const c of nativeFeed.connections)
+              if (c.sessionId === A) c.response.end();
+          },
+          allowReady() {
+            nativeDenied = false;
+            for (const response of streams)
+              response.write(
+                `data: ${JSON.stringify({ ...event(), eventId: 'ready-2', sequence: 2, cursor: `${runId}:2`, sourceEvent: { id: 'ready', type: 'request/header', occurredAt: now, payload: {} } })}\n\n`,
+              );
+          },
+          switchWorkspace() {
+            nativeWorkspace.id = C;
+          },
+          release() {
+            nativeSource.status = 503;
+            for (const c of nativeFeed.connections) c.response.end();
+          },
+        },
         releaseHistoryB,
         showTiming() {
           showTiming = true;
@@ -736,7 +875,7 @@ suite(
             }
           for (const response of streams) {
             response.end(
-              `data: ${JSON.stringify({ ...event(), eventId: 'event-2', sequence: 2, cursor: `${runId}:2`, type: 'run.canceled', payload: {} })}\n\n`,
+              `data: ${JSON.stringify({ ...event(), eventId: 'event-2', sequence: options.nativeParents ? 3 : 2, cursor: `${runId}:${options.nativeParents ? 3 : 2}`, type: 'run.canceled', payload: {} })}\n\n`,
             );
           }
         },
@@ -744,14 +883,19 @@ suite(
           for (const response of streams) response.destroy();
         },
         async choose(id: string) {
-          await page
-            .getByRole('treeitem', {
-              name: id === A ? /^Session A/ : /^Session B/,
-            })
-            .click();
+          const row = options.nativeParents
+            ? page.locator(`[data-row-key="session:${id}"]`)
+            : page.getByRole('treeitem', {
+                name: id === A ? /^Session A/ : /^Session B/,
+              });
+          if (options.nativeParents)
+            nativeSelectionNames.push({ id, ax: await row.ariaSnapshot() });
+          await row.click();
           await expect
             .poll(() => page.getByRole('heading', { level: 1 }).textContent())
             .toContain(id === A ? 'Session A' : 'Session B');
+          if (options.nativeParents)
+            expect(new URL(page.url()).searchParams.get('session')).toBe(id);
         },
         async send(text: string, attachment?: string) {
           if (attachment)
@@ -980,6 +1124,425 @@ suite(
         .toBe(true);
       return data;
     }
+
+    it('navigates with five visible live parents while sharing the active native directory (isolated HTTP1 sample)', async () => {
+      const f = await fixture({ nativeParents: 5, height: 1800 });
+      const directory = resolve(
+        root,
+        '.local/integration-collection/native-active-read-share',
+      );
+      await mkdir(directory, { recursive: true });
+      const evidence: unknown[] = [];
+      let released = false;
+      const target = `${f.native.origin}/?session=${A}&native-navigation=after`;
+      const documents: unknown[] = [];
+      f.page.on('request', (r) => {
+        if (r.isNavigationRequest())
+          documents.push({ at: Date.now(), kind: 'start', url: r.url() });
+      });
+      f.page.on('framenavigated', (frame) => {
+        if (frame === f.page.mainFrame())
+          documents.push({ at: Date.now(), kind: 'commit', url: frame.url() });
+      });
+      try {
+        const rows = f.page.locator('[data-row-key^="session:"]');
+        await expect.poll(() => rows.count()).toBe(5);
+        await expect
+          .poll(
+            () => new Set(f.native.connections().map((c) => c.sessionId)).size,
+          )
+          .toBe(5);
+        const visible = await rows.evaluateAll((rows) =>
+          rows
+            .filter((row) => {
+              const r = row.getBoundingClientRect();
+              return r.top >= 0 && r.bottom <= innerHeight;
+            })
+            .map((row) => row.getAttribute('data-row-key')),
+        );
+        expect(visible).toHaveLength(5);
+        const activeHeld = f.native
+          .connections()
+          .filter((c) => c.sessionId === A && !c.childId).length;
+        evidence.push({
+          phase: 'before-navigation',
+          at: Date.now(),
+          visible,
+          held: f.native
+            .connections()
+            .map((c) => ({ sessionId: c.sessionId, childId: c.childId })),
+          activeHeld,
+        });
+        await f.page.screenshot({
+          path: resolve(directory, 'five-before-navigation.png'),
+          fullPage: true,
+          timeout: 4000,
+        });
+        const failure = await f.page
+          .goto(target, { waitUntil: 'domcontentloaded', timeout: 4000 })
+          .then(
+            () => null,
+            (e) => String(e),
+          );
+        if (failure) {
+          const beforeRelease = {
+            at: Date.now(),
+            committed: f.page.url() === target,
+            held: f.native.connections().length,
+          };
+          f.native.release();
+          released = true;
+          await f.page.waitForURL(target, {
+            waitUntil: 'domcontentloaded',
+            timeout: 4000,
+          });
+          evidence.push({
+            failure,
+            beforeRelease,
+            sameNavigationReleasedAt: Date.now(),
+          });
+        }
+        expect(
+          failure,
+          'held SSE must not prevent the new document committing',
+        ).toBeNull();
+        expect(
+          activeHeld,
+          'header and sidebar share one active directory stream',
+        ).toBe(1);
+        await f.page.getByText('Existing A', { exact: true }).waitFor();
+        await startNewWork(f.page);
+        await f.page
+          .getByRole('dialog', { name: '选择 AI 员工' })
+          .waitFor({ state: 'hidden' });
+        await f.page
+          .getByRole('heading', { level: 1, name: '新的工作', exact: true })
+          .waitFor();
+        await f.page
+          .getByText('Existing A', { exact: true })
+          .waitFor({ state: 'hidden' });
+        expect(new URL(f.page.url()).searchParams.get('session')).toBeNull();
+        expect(
+          await f.page
+            .getByRole('textbox', { name: '给 Rice 的消息' })
+            .inputValue(),
+        ).toBe('');
+        await f.page.screenshot({
+          path: resolve(directory, 'five-new-work.png'),
+          fullPage: true,
+          timeout: 4000,
+        });
+      } catch (error) {
+        await f.page
+          .screenshot({
+            path: resolve(directory, 'five-failure.png'),
+            fullPage: true,
+            timeout: 4000,
+          })
+          .catch((e) => evidence.push({ screenshotError: String(e) }));
+        throw error;
+      } finally {
+        expect.soft(f.native.browserWrites.count).toBe(0);
+        expect.soft(f.writes).toEqual([]);
+        console.log(
+          'native-active-share-navigation',
+          JSON.stringify({
+            evidence,
+            documents,
+            requests: f.native.nativeRequests,
+            released,
+            browserWrites: f.native.browserWrites.count,
+            serverWrites: f.writes.length,
+            pageerror: f.errors,
+          }),
+        );
+        await f.close();
+      }
+    });
+
+    it('keeps keyboard focus from a stable hot native summary through a delayed full read and Enter detail', async () => {
+      const f = await fixture({
+        nativeParents: 3,
+        nativeDelayFull: true,
+        height: 1800,
+      });
+      try {
+        const trigger = f.page.getByRole('button', {
+          name: '1 个子智能体 · 1 个运行中',
+          exact: true,
+        });
+        await trigger.waitFor();
+        await expect
+          .poll(
+            () =>
+              f.native
+                .connections()
+                .filter((c) => c.sessionId === A && !c.childId).length,
+          )
+          .toBe(1);
+        await expect
+          .poll(() =>
+            f.page.locator(`[data-row-key="session:${A}"]`).innerText(),
+          )
+          .toContain('1 个子智能体运行中');
+        expect(await trigger.getAttribute('aria-expanded')).toBe('false');
+        expect(f.native.fullRequests()).toBe(0);
+        await trigger.focus();
+        await f.page.keyboard.press('ArrowDown');
+        await expect.poll(f.native.fullRequests).toBe(1);
+        const first = f.page.getByRole('button', {
+          name: '查看Child 0摘要',
+          exact: true,
+        });
+        expect(await first.count()).toBe(0);
+        f.native.releaseFull();
+        await first.waitFor();
+        await expect
+          .poll(() => first.evaluate((node) => node === document.activeElement))
+          .toBe(true);
+        await f.page.keyboard.press('Enter');
+        await f.page
+          .getByLabel('子智能体摘要', { exact: true })
+          .getByText(`${A} own reply`, { exact: true })
+          .waitFor();
+        await expect
+          .poll(
+            () =>
+              f.native
+                .connections()
+                .filter((c) => c.sessionId === A && c.childId === 'child-0')
+                .length,
+          )
+          .toBe(1);
+        expect(f.native.fullRequests()).toBe(1);
+        expect(f.native.browserWrites.count).toBe(0);
+        expect(f.writes).toEqual([]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        f.native.releaseFull();
+        await f.close();
+      }
+    });
+
+    it.each(['Escape', 'button'] as const)(
+      'keeps a native detail closed when %s cancels a pending hover timer',
+      async (action) => {
+        const f = await fixture({
+          nativeParents: 3,
+          nativeClock: true,
+          height: 1800,
+        });
+        try {
+          const trigger = f.page.getByRole('button', {
+            name: '1 个子智能体 · 1 个运行中',
+            exact: true,
+          });
+          await trigger.click();
+          await f.page
+            .getByRole('button', { name: '查看Child 0摘要', exact: true })
+            .click();
+          const detail = f.page.getByLabel('子智能体摘要', { exact: true });
+          await detail.getByText(`${A} own reply`, { exact: true }).waitFor();
+          const closeButton = f.page.getByRole('button', {
+            name: '关闭摘要',
+            exact: true,
+          });
+          await expect
+            .poll(() =>
+              closeButton.evaluate((node) => node === document.activeElement),
+            )
+            .toBe(true);
+          const childConnections = () =>
+            f.native
+              .connections()
+              .filter((c) => c.sessionId === A && c.childId === 'child-0')
+              .length;
+          await expect.poll(childConnections).toBe(1);
+          await f.page.mouse.move(0, 0);
+          await f.page.clock.pauseAt(
+            await f.page.evaluate(() => Date.now() + 1000),
+          );
+          expect(await detail.count()).toBe(1);
+          expect(await trigger.getAttribute('aria-expanded')).toBe('false');
+          const box = await trigger.boundingBox();
+          expect(box).not.toBeNull();
+          // Real pointer entry schedules open; pointer leave schedules close.
+          await f.page.mouse.move(
+            box!.x + box!.width / 2,
+            box!.y + box!.height / 2,
+          );
+          if (action === 'button') await f.page.mouse.move(0, 0);
+          await f.page.clock.runFor(100);
+          expect(await trigger.getAttribute('aria-expanded')).toBe('false');
+          expect(
+            await closeButton.evaluate(
+              (node) => node === document.activeElement,
+            ),
+          ).toBe(true);
+          // Enter activates the focused close button without moving the pointer.
+          await f.page.keyboard.press(action === 'Escape' ? 'Escape' : 'Enter');
+          await detail.waitFor({ state: 'hidden' });
+          await f.page.clock.runFor(200);
+          expect(await detail.count()).toBe(0);
+          expect(
+            await f.page.getByRole('tree', { name: '子智能体目录' }).count(),
+          ).toBe(0);
+          await expect.poll(childConnections).toBe(0);
+          expect(
+            await trigger.evaluate((node) => node === document.activeElement),
+          ).toBe(true);
+          expect(f.native.browserWrites.count).toBe(0);
+          expect(f.writes).toEqual([]);
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+    );
+
+    it('shares the active native read through parent switches, detail, permission errors, readyKey and Workspace changes', async () => {
+      const f = await fixture({
+        nativeParents: 3,
+        running: true,
+        height: 1800,
+      });
+      const active = (id: string) =>
+        f.native.connections().filter((c) => c.sessionId === id && !c.childId);
+      const badge = (id: string) =>
+        f.page.locator(`[data-row-key="session:${id}"]`);
+      const phases: string[] = [];
+      try {
+        const header = (count: number) =>
+          f.page.getByRole('button', {
+            name: `${count} 个子智能体 · ${count} 个运行中`,
+            exact: true,
+          });
+        await header(1).waitFor();
+        await expect.poll(() => active(A).length).toBe(1);
+        await expect
+          .poll(() => badge(A).innerText())
+          .toContain('1 个子智能体运行中');
+        await expect
+          .poll(() => badge(B).innerText())
+          .toContain('2 个子智能体运行中');
+        const beforeFocusB = active(B)[0];
+        f.native.deny();
+        await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+        await f.page
+          .getByRole('button', { name: '子智能体读取失败', exact: true })
+          .waitFor();
+        expect(await badge(A).innerText()).not.toContain('2 个子智能体运行中');
+        await expect.poll(() => active(B).length).toBe(1);
+        await expect.poll(() => active(B)[0] !== beforeFocusB).toBe(true);
+        const readyBackgroundB = active(B)[0];
+        expect(readyBackgroundB).not.toBeUndefined();
+        f.native.allowReady();
+        await header(1).waitFor();
+        await expect.poll(() => active(A).length).toBe(1);
+        // Native readiness only replaces current-parent ownership; background B is not refreshed by readyKey.
+        expect(active(B)[0]).toBe(readyBackgroundB);
+        phases.push('ready-key');
+        await header(1).click();
+        await f.page
+          .getByRole('button', { name: '查看Child 0摘要', exact: true })
+          .click();
+        await f.page
+          .getByLabel('子智能体摘要', { exact: true })
+          .getByText(`${A} own reply`, { exact: true })
+          .waitFor();
+        await expect.poll(() => active(A).length).toBe(1);
+        await expect
+          .poll(
+            () =>
+              f.native
+                .connections()
+                .filter((c) => c.sessionId === A && c.childId === 'child-0')
+                .length,
+          )
+          .toBe(1);
+        expect(active(B)[0]).toBe(readyBackgroundB);
+        phases.push('hot-detail');
+        await f.page
+          .getByRole('button', { name: '关闭摘要', exact: true })
+          .click();
+        await f.choose(B);
+        await header(2).waitFor();
+        await expect.poll(() => active(B).length).toBe(1);
+        await expect
+          .poll(() => badge(A).innerText())
+          .toContain('1 个子智能体运行中');
+        phases.push('parent-b');
+        await f.choose(A);
+        await header(1).waitFor();
+        f.native.switchWorkspace();
+        f.finishRun();
+        await expect
+          .poll(() =>
+            f.native.nativeRequests.some((r) =>
+              r.path.includes(`workspaceId=${C}`),
+            ),
+          )
+          .toBe(true);
+        await header(3).waitFor();
+        await expect.poll(() => active(A).length).toBe(1);
+        phases.push('workspace-c');
+        await f.page
+          .getByRole('button', { name: '收起侧边栏', exact: true })
+          .click();
+        await badge(A).waitFor({ state: 'hidden' });
+        await header(3).waitFor();
+        await expect.poll(() => active(A).length).toBe(1);
+        phases.push('active-outside-sidebar');
+        expect(
+          await f.page.getByText(`${B} own reply`, { exact: true }).count(),
+        ).toBe(0);
+        expect(f.native.browserWrites.count).toBe(0);
+        expect(f.writes).toEqual([]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        console.log(
+          'native-active-share-boundaries',
+          JSON.stringify({
+            phases,
+            selections: f.native.nativeSelectionNames,
+            workspaceRequests: f.native.nativeRequests.filter((r) =>
+              r.path.includes(`workspaceId=${C}`),
+            ),
+            browserWrites: f.native.browserWrites.count,
+            serverWrites: f.writes.length,
+            pageerror: f.errors,
+          }),
+        );
+        await f.close();
+      }
+    });
+
+    it('does not read an active native parent owned by a different viewer or borrow another parent count', async () => {
+      const f = await fixture({ nativeParents: 3, nativeOtherOwner: true });
+      try {
+        await f.page
+          .getByRole('button', { name: '子智能体读取失败', exact: true })
+          .waitFor();
+        await expect
+          .poll(() =>
+            f.page.locator(`[data-row-key="session:${B}"]`).innerText(),
+          )
+          .toContain('2 个子智能体运行中');
+        expect(
+          f.native.nativeRequests.filter((r) =>
+            r.path.startsWith(`/api/v1/sessions/${A}/subagents?`),
+          ),
+        ).toEqual([]);
+        expect(f.native.connections().filter((c) => c.sessionId === A)).toEqual(
+          [],
+        );
+        expect(f.native.browserWrites.count).toBe(0);
+        expect(f.writes).toEqual([]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
 
     it.each([1440, 390])(
       'hands image previews from composer to transcript without waiting or blank frames at %ipx',

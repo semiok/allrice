@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   useNativeSubagents,
   nativeSubagentActivityUnknown,
+  type NativeSubagentRead,
 } from './use-native-subagents';
 import {
   IconChevronDownOutlineRegular,
@@ -34,6 +35,7 @@ export function EmployeeSidebar({
   sessions,
   activeId,
   nativeReadyKey = '',
+  nativeReads,
   collapsed,
   onSelectSession,
   onPrepareSession,
@@ -47,6 +49,7 @@ export function EmployeeSidebar({
   sessions: Session[];
   activeId: string | null;
   nativeReadyKey?: string;
+  nativeReads?: Record<string, NativeSubagentRead>;
   collapsed: boolean;
   onSelectSession: (id: string) => void;
   onPrepareSession: (id: string) => void;
@@ -83,7 +86,8 @@ export function EmployeeSidebar({
       'x-allrice-organization-id': workspace.organizationId,
       'x-allrice-workspace-id': workspace.workspaceId,
     },
-    activeSession &&
+    nativeReads === undefined &&
+      activeSession &&
       visible.includes(activeSession.id) &&
       (!activeSession.ownerId || activeSession.ownerId === workspace.viewerId)
       ? {
@@ -93,8 +97,15 @@ export function EmployeeSidebar({
     true,
   );
   const reads = useMemo(
-    () => ({ ...backgroundReads, ...activeReads }),
-    [backgroundReads, activeReads],
+    () => ({
+      ...backgroundReads,
+      ...(nativeReads === undefined
+        ? activeReads
+        : activeId && activeId in nativeReads
+          ? { [activeId]: nativeReads[activeId]! }
+          : {}),
+    }),
+    [backgroundReads, activeReads, nativeReads, activeId],
   );
   const [expansion, setExpansion] = useState(() => readEmployeeExpansion(key));
   const [all, setAll] = useState<Record<string, boolean>>({});

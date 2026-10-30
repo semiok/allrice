@@ -3,7 +3,10 @@ import { createRoot } from 'react-dom/client';
 import { EmployeeSidebar } from '../app/chatflow/employee-sidebar';
 import { NativeSubagentDirectory } from '../app/chatflow/native-subagent-directory';
 import { presentationPolicyFor } from '../app/chatflow/dsh-upstream/presentation/presentation-policy';
-import { nativeSubagentReadyKey } from '../app/chatflow/use-native-subagents';
+import {
+  nativeSubagentReadyKey,
+  useNativeSubagents,
+} from '../app/chatflow/use-native-subagents';
 import { createSessionRunStream } from '../app/chatflow/session-run-stream';
 import conversationUi from '../app/chatflow/dsh-upstream/ConversationRoot.module.css';
 import shellUi from '../app/chatflow/dsh-saas.module.css';
@@ -63,6 +66,13 @@ function Page() {
     return stream.deactivate;
   }, [stream, rootEvents]);
   const nativeReadyKey = nativeSubagentReadyKey(runViews['root-run']);
+  const [liveOnly, setLiveOnly] = useState(true);
+  const observation = useNativeSubagents(
+    'workspace',
+    headers,
+    { [activeId]: `initial/${nativeReadyKey}` },
+    liveOnly,
+  );
   const presentation = presentationPolicyFor(
     query.get('view') === 'verbose' ? 'verbose' : 'detailed',
     query.get('collapse') === 'next-input' ? 'next-input' : 'completion',
@@ -101,7 +111,7 @@ function Page() {
                 workspaceId="workspace"
                 sessionId={activeId}
                 headers={headers}
-                refreshKey={`initial/${nativeReadyKey}`}
+                observation={{ ...observation, setLiveOnly }}
                 presentation={presentation}
               />
             </div>

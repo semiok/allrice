@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 import { Button, Menu, StateDot } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { NativeSubagentSummary } from '@allrice/contracts';
 import { AssistantMarkdown } from './assistant-markdown';
-import { useNativeSubagents } from './use-native-subagents';
+import type { useNativeSubagents } from './use-native-subagents';
 import { useNativeSubagentFollow } from './use-native-subagent-follow';
 import { NativeSubagentProcess } from './native-subagent-process';
 import type { ChatPresentationPolicy } from './dsh-upstream/presentation/presentation-policy';
@@ -42,24 +42,27 @@ export function NativeSubagentDirectory({
   workspaceId,
   sessionId,
   headers,
-  refreshKey,
+  observation,
   presentation,
 }: {
   workspaceId: string;
   sessionId: string;
   headers: Record<string, string>;
-  refreshKey: string;
+  observation: ReturnType<typeof useNativeSubagents> & {
+    setLiveOnly: (liveOnly: boolean) => void;
+  };
   presentation: ChatPresentationPolicy;
 }) {
   const [open, setOpen] = useState(false),
     [pinned, setPinned] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
-  const { reads, refresh, revision } = useNativeSubagents(
-    workspaceId,
-    headers,
-    { [sessionId]: refreshKey },
-    !open && !selected,
-  );
+  const { reads, refresh, revision, setLiveOnly } = observation;
+  useEffect(() => () => setLiveOnly(true), [setLiveOnly]);
+  const showCatalog = (nextOpen: boolean, nextSelected = selected) => {
+    setOpen(nextOpen);
+    setSelected(nextSelected);
+    setLiveOnly(!nextOpen && !nextSelected);
+  };
   const read = reads[sessionId];
   const summary = read && read !== 'error' ? read : null;
   const follow = useNativeSubagentFollow(
@@ -79,9 +82,9 @@ export function NativeSubagentDirectory({
     trigger = useRef<HTMLButtonElement>(null);
   const pendingFocus = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const close = () => {
+  const close = (nextSelected = selected) => {
     clearTimeout(timer.current);
-    setOpen(false);
+    showCatalog(false, nextSelected);
     setPinned(false);
   };
   useEffect(() => () => clearTimeout(timer.current), []);
@@ -143,8 +146,7 @@ export function NativeSubagentDirectory({
                 aria-label={`查看${label}摘要`}
                 disabled={entry.kind === 'diagnostic'}
                 onClick={() => {
-                  setSelected(entry.id);
-                  close();
+                  close(entry.id);
                 }}
               >
                 {entry.kind === 'child' && entry.running !== null ? (
@@ -195,7 +197,8 @@ export function NativeSubagentDirectory({
       : '运行状态未知'
     : `${running} 个运行中`;
   const dismissDetail = () => {
-    setSelected(null);
+    clearTimeout(timer.current);
+    showCatalog(open, null);
     trigger.current?.focus();
   };
   if (!selected && !open && summary && !direct.length) return null;
@@ -204,11 +207,12 @@ export function NativeSubagentDirectory({
       <div
         onMouseEnter={() => {
           clearTimeout(timer.current);
-          timer.current = setTimeout(() => setOpen(true), 150);
+          timer.current = setTimeout(() => showCatalog(true), 150);
         }}
         onMouseLeave={() => {
           clearTimeout(timer.current);
-          if (!pinned) timer.current = setTimeout(() => setOpen(false), 120);
+          if (!pinned)
+            timer.current = setTimeout(() => showCatalog(false), 120);
         }}
         onKeyDown={(event) => {
           if (event.key === 'Escape') {
@@ -233,7 +237,7 @@ export function NativeSubagentDirectory({
           if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
             event.preventDefault();
             pendingFocus.current = at < 0 && !buttons.length;
-            setOpen(true);
+            showCatalog(true);
             requestAnimationFrame(() =>
               catalog.current
                 ?.querySelectorAll<HTMLButtonElement>(
@@ -279,7 +283,7 @@ export function NativeSubagentDirectory({
               onClick={() => {
                 clearTimeout(timer.current);
                 setPinned(!pinned);
-                setOpen(!pinned);
+                showCatalog(!pinned);
               }}
             >
               {read === 'error'
