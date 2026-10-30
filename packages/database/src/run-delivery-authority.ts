@@ -210,6 +210,7 @@ async function assertRunAuthority(
     activeTurnId: row.active_turn_id,
     assistantMessageId: row.assistant_message_id,
     deadlines,
+    validUntil: Math.min(...deadlines.map((deadline) => deadline.getTime())),
   };
   return { authority, controls: controls.data };
 }
