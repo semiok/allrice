@@ -27,6 +27,10 @@ const suite =
     ? describe
     : describe.skip;
 const root = resolve(fileURLToPath(new URL('../../../../', import.meta.url)));
+const navigationEvidenceDirectory = resolve(
+  root,
+  '.local/integration-collection/native-navigation-probe',
+);
 const require = createRequire(import.meta.url);
 const A = '11111111-1111-4111-8111-111111111111';
 // Question answers: stored message ids differ from the client input ids.
@@ -694,6 +698,7 @@ suite(
       });
       const page: Page = await context.newPage();
       const inFlight = new Set<Request>();
+      const browserWrites = { count: 0 };
       const requestOrigins = new Set<string>();
       const network: string[] = [],
         lifecycle: string[] = [];
@@ -706,6 +711,7 @@ suite(
           if (network.length > 128) network.shift();
         };
         page.on('request', (request) => {
+          if (request.method() !== 'GET') browserWrites.count++;
           inFlight.add(request);
           record('started', request);
         });
@@ -761,6 +767,8 @@ suite(
       });
       const errors: string[] = [];
       page.on('pageerror', (error) => errors.push(error.message));
+      if (options.nativeParents)
+        await mkdir(navigationEvidenceDirectory, { recursive: true });
       try {
         await page.goto(
           liveOrigin
@@ -773,11 +781,35 @@ suite(
         // empty-state composer can race its replacement by the active composer.
         await page.getByText('Existing A', { exact: true }).waitFor();
       } catch (cause) {
+        const screenshotPath = resolve(
+          navigationEvidenceDirectory,
+          `${options.nativeParents}-setup-failure.png`,
+        );
+        const screenshotError = options.nativeParents
+          ? await page
+              .screenshot({
+                path: screenshotPath,
+                fullPage: true,
+                timeout: 4000,
+              })
+              .then(
+                () => null,
+                (error: Error) => error.message,
+              )
+          : undefined;
         const diagnostic = {
           errors,
           reads,
           ...(options.nativeParents
-            ? { network, lifecycle, serverRequests }
+            ? {
+                network,
+                lifecycle,
+                serverRequests,
+                screenshotPath,
+                screenshotError,
+                browserWrites: browserWrites.count,
+                serverWrites: writes.length,
+              }
             : {}),
           text: await page
             .locator('body')
@@ -805,6 +837,7 @@ suite(
           network,
           lifecycle,
           inFlight,
+          browserWrites,
           requestOrigins,
           release() {
             source.status = 503;
@@ -1055,9 +1088,52 @@ suite(
         const f = await fixture({ nativeParents, height: 1800 });
         const probe = f.nativeProbe;
         const evidence: unknown[] = [];
+        let currentPhase = 'first-load',
+          releasedNavigation = false;
+        let beforeNewWork = new Set(probe.feed.connections);
+        const visibleParents = () =>
+          f.page.locator('[data-row-key^="session:"]').evaluateAll((nodes) =>
+            nodes
+              .filter((node) => {
+                const r = node.getBoundingClientRect(),
+                  root = node.closest('[role="tree"]')!.getBoundingClientRect();
+                return (
+                  r.bottom > root.top &&
+                  r.top < root.bottom &&
+                  r.bottom > 0 &&
+                  r.top < innerHeight
+                );
+              })
+              .map((node) =>
+                node.getAttribute('data-row-key')!.slice('session:'.length),
+              ),
+          );
         try {
           for (const phase of ['first-load', 'after-navigation']) {
+            currentPhase = phase;
             if (phase === 'after-navigation') {
+              const visibleParentIds = await visibleParents();
+              await expect
+                .poll(
+                  () =>
+                    [...probe.feed.connections].filter(
+                      (connection) => !beforeNewWork.has(connection),
+                    ).length,
+                )
+                .toBeGreaterThan(0);
+              const connections = [...probe.feed.connections].map(
+                ({ sessionId, childId }) => ({ sessionId, childId }),
+              );
+              evidence.push({
+                phase,
+                beforeNavigation: {
+                  at: Date.now(),
+                  held: connections.length,
+                  connections,
+                  visibleParentIds,
+                  visible: visibleParentIds.length,
+                },
+              });
               const target = `${probe.origin}/?session=${A}&navigation-probe=after`;
               const failure = await f.page
                 .goto(target, {
@@ -1085,6 +1161,7 @@ suite(
                     () => true,
                     () => false,
                   );
+                releasedNavigation = released;
                 evidence.push({
                   phase,
                   failure,
@@ -1105,21 +1182,7 @@ suite(
                 .click();
             const rows = f.page.locator('[data-row-key^="session:"]');
             await expect.poll(() => rows.count()).toBe(nativeParents);
-            const visible = await rows.evaluateAll(
-              (nodes) =>
-                nodes.filter((node) => {
-                  const r = node.getBoundingClientRect(),
-                    root = node
-                      .closest('[role="tree"]')!
-                      .getBoundingClientRect();
-                  return (
-                    r.bottom > root.top &&
-                    r.top < root.bottom &&
-                    r.bottom > 0 &&
-                    r.top < innerHeight
-                  );
-                }).length,
-            );
+            const visible = (await visibleParents()).length;
             expect(visible).toBe(nativeParents);
             await expect
               .poll(() => probe.feed.connections.size)
@@ -1135,18 +1198,34 @@ suite(
                 },
               );
             const held = probe.feed.connections.size;
+            beforeNewWork = new Set(probe.feed.connections);
             await f.page
               .getByRole('button', { name: '新的工作', exact: true })
               .click();
             const picker = f.page.getByRole('dialog', { name: '选择 AI 员工' });
             await picker.waitFor();
             await picker.getByText('Rice', { exact: true }).click();
+            await picker.waitFor({ state: 'hidden' });
+            await f.page
+              .getByRole('heading', { level: 1, name: '新的工作', exact: true })
+              .waitFor();
+            await f.page
+              .getByText('Existing A', { exact: true })
+              .waitFor({ state: 'hidden' });
+            expect(
+              new URL(f.page.url()).searchParams.get('session'),
+            ).toBeNull();
             expect(
               await f.page
                 .getByRole('textbox', { name: '给 Rice 的消息' })
                 .inputValue(),
             ).toBe('');
+            const screenshotPath = resolve(
+              navigationEvidenceDirectory,
+              `${nativeParents}-${phase}.png`,
+            );
             const screenshot = await f.page.screenshot({
+              path: screenshotPath,
               fullPage: true,
               timeout: 4000,
             });
@@ -1157,7 +1236,11 @@ suite(
               held,
               idle,
               screenshotBytes: screenshot.length,
+              screenshotPath,
+              browserWrites: probe.browserWrites.count,
+              serverWrites: f.writes.length,
             });
+            expect(probe.browserWrites.count).toBe(0);
             expect(f.writes).toEqual([]); // No Session/message admission or model invocation.
             expect(f.errors).toEqual([]);
           }
@@ -1167,6 +1250,26 @@ suite(
             ),
           ).toBe(true);
           expect([...probe.requestOrigins]).toEqual([probe.origin]);
+        } catch (error) {
+          const screenshotPath = resolve(
+            navigationEvidenceDirectory,
+            `${nativeParents}-${currentPhase}-failure.png`,
+          );
+          const screenshotError = await f.page
+            .screenshot({ path: screenshotPath, fullPage: true, timeout: 4000 })
+            .then(
+              () => null,
+              (cause: Error) => cause.message,
+            );
+          evidence.push({
+            phase: currentPhase,
+            screenshotPath,
+            screenshotError,
+            capturedAfterRelease: releasedNavigation,
+          });
+          expect.soft(probe.browserWrites.count).toBe(0);
+          expect.soft(f.writes).toEqual([]);
+          throw error;
         } finally {
           console.info(
             'native-navigation-probe',
@@ -1182,6 +1285,8 @@ suite(
                 path: new URL(request.url()).pathname,
               })),
               writes: f.writes,
+              browserWrites: probe.browserWrites.count,
+              serverWrites: f.writes.length,
             }),
           );
           await f.close();
