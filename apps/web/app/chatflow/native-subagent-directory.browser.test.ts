@@ -270,6 +270,7 @@ suite('native subagent directory and employee sidebar', () => {
         .toBe(0);
       await trigger.click();
       await page.mouse.move(1100, 800);
+      await page.getByRole('tree', { name: '子智能体目录' }).waitFor();
       expect(
         await page.getByRole('tree', { name: '子智能体目录' }).count(),
       ).toBe(1);
@@ -298,6 +299,40 @@ suite('native subagent directory and employee sidebar', () => {
         .toBe(true);
       await page.keyboard.press('Escape');
     } finally {
+      await page.close();
+    }
+  });
+
+  it('keeps a clicked catalog pinned while its full summary is still loading', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((done) => {
+      release = done;
+    });
+    const { page } = await open(summary(), 1200, {
+      gate,
+      delivered: () => {},
+    });
+    try {
+      await page.clock.install();
+      const trigger = page.locator('button[aria-haspopup="tree"]');
+      const tree = page.getByRole('tree', { name: '子智能体目录' });
+      const loading = page.getByText('正在读取子智能体摘要…', { exact: true });
+      await trigger.click();
+      await loading.waitFor();
+      expect(await tree.count()).toBe(0);
+      expect(await trigger.getAttribute('aria-expanded')).toBe('true');
+      await page.mouse.move(1100, 800);
+      await page.clock.runFor(121);
+      expect(await trigger.getAttribute('aria-expanded')).toBe('true');
+      expect(await loading.isVisible()).toBe(true);
+      release();
+      await tree.waitFor();
+      expect(await trigger.getAttribute('aria-expanded')).toBe('true');
+      expect(await tree.count()).toBe(1);
+      await page.keyboard.press('Escape');
+      expect(await tree.count()).toBe(0);
+    } finally {
+      release();
       await page.close();
     }
   });
