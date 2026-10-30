@@ -1104,6 +1104,7 @@ it('shares the rollout mode with the Host and restarts once when it changes', as
   expect((await runtimes.acquire(value)).runtime).not.toBe(timed.runtime);
 });
 
+// This test sequentially starts and closes five real Hosts, beyond the 5s CI budget.
 it('freezes native delegation defaults and preferences into real Host reuse and clears the composition for other callers', async () => {
   const launched = vi.spyOn(CloseObserver, 'createObservedDshClient');
   const runtimes = pool(true);
@@ -1160,7 +1161,7 @@ it('freezes native delegation defaults and preferences into real Host reuse and 
   expect(
     launched.mock.calls.at(-1)![0].launch.environment.ALLRICE_NATIVE_SUBAGENTS,
   ).toBeUndefined();
-});
+}, 15_000);
 
 it.each(['nativeRunAuthority', 'modelPreflight', 'nativeAccounting'] as const)(
   'refuses delegation before Host creation without the existing %s gate',
