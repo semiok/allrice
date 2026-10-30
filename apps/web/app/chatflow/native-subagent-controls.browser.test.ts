@@ -78,6 +78,7 @@ type Scenario = {
   gets: string[];
   rootReads: string[];
   reply?: (body: Body) => Mode;
+  observationUnavailable?: boolean;
   gate?: Promise<void>;
   release?: () => void;
 };
@@ -209,8 +210,14 @@ suite('native child Stop request identity and truthful receipts', () => {
       }
       if (scenario && url.pathname.endsWith('/subagents')) {
         res
-          .writeHead(200, { 'content-type': 'application/json' })
-          .end(JSON.stringify({ summary }));
+          .writeHead(scenario.observationUnavailable ? 503 : 200, {
+            'content-type': 'application/json',
+          })
+          .end(
+            JSON.stringify({
+              summary: scenario.observationUnavailable ? null : summary,
+            }),
+          );
         return;
       }
       const asset = assets.get(url.pathname);
@@ -453,6 +460,150 @@ suite('native child Stop request identity and truthful receipts', () => {
       await page.close();
     }
   });
+
+  it('a late response from an unmounted business session cannot erase its successor request reference', async () => {
+    const { page, scenario, errors } = await open('accepted', true);
+    const releaseA = scenario.release!;
+    let releaseB: (() => void) | undefined;
+    try {
+      await detail(page).getByRole('button', { name: 'Stop 此子任务' }).click();
+      await expect.poll(() => scenario.posts.length).toBe(1);
+      const idA = scenario.posts[0]!.input.requestId;
+      await page.keyboard.press('Escape');
+      for (const [index, id] of ['parent-b', 'parent-a'].entries()) {
+        await page.locator(`[data-row-key="session:${id}"]`).focus();
+        await page.keyboard.press('Enter');
+        await expect
+          .poll(() => page.getByRole('heading', { level: 1 }).textContent())
+          .toBe(`${id} 父级任务`);
+        await expect.poll(() => scenario.rootReads.length).toBe(index + 2);
+        await expect
+          .poll(
+            () =>
+              [...feed.rootConnections].filter(
+                (c) => c.fixture === scenario.feedId,
+              ).length,
+          )
+          .toBe(1);
+      }
+      rootEvent(scenario, 'turn.started', 1);
+      await show(page, '甲');
+      scenario.gate = new Promise<void>((done) => {
+        releaseB = done;
+      });
+      await detail(page)
+        .getByRole('button', { name: '发起新的 Stop 请求' })
+        .click();
+      await expect.poll(() => receipt(page).count()).toBe(2);
+      const ids = await receipt(page).locator('code').allTextContents();
+      expect(ids[0]).toBe(idA);
+      expect(new Set(ids).size).toBe(2);
+      const responseA = page.waitForResponse(
+        (response) =>
+          response.url().includes('/subagents/controls') &&
+          response.request().method() === 'POST' &&
+          response.request().postDataJSON().input.requestId === idA,
+      );
+      releaseA();
+      await (await responseA).finished();
+      // Five held SSE plus old A occupy all six HTTP/1 connections. B is created
+      // before A returns, then reaches the server and stays held through reload.
+      await expect.poll(() => scenario.posts.length).toBe(2);
+      expect(scenario.posts.map((body) => body.input.requestId)).toEqual(ids);
+      await page.evaluate(() => new Promise(requestAnimationFrame));
+      const savedIds = await page.evaluate(() =>
+        Object.entries(sessionStorage)
+          .filter(([key]) => key.startsWith('allrice-child-control-refs:'))
+          .flatMap(([, value]) =>
+            JSON.parse(value).map((r: Body) => r.input.requestId),
+          ),
+      );
+      expect(savedIds).toEqual(ids);
+      expect(await receipt(page).last().textContent()).toContain('正在提交');
+      await page.reload();
+      releaseB!();
+      await show(page, '甲');
+      expect(await receipt(page).locator('code').allTextContents()).toEqual(
+        ids,
+      );
+      expect(await detail(page).textContent()).not.toContain('停止请求已接收');
+      for (const id of ids) {
+        const original = receipt(page).filter({ hasText: id });
+        await original.getByRole('button', { name: '查看回执' }).click();
+        await expect
+          .poll(() => original.textContent())
+          .toContain('停止请求已接收');
+      }
+      expect(scenario.gets).toEqual(ids);
+      expect(scenario.posts).toHaveLength(2);
+      expect(errors).toEqual([]);
+    } finally {
+      releaseA();
+      releaseB?.();
+      await page.close();
+    }
+  });
+
+  it.each(['recorded', 'unknown'] as const)(
+    '%s references remain queryable when directory and detail observation fail, including after reload',
+    async (mode) => {
+      const { page, scenario } = await open(mode);
+      try {
+        await detail(page)
+          .getByRole('button', { name: 'Stop 此子任务' })
+          .click();
+        await expect
+          .poll(() => detail(page).textContent())
+          .toContain(mode === 'recorded' ? '请求已记录' : '原生接收结果未知');
+        const id = scenario.posts[0]!.input.requestId;
+        scenario.observationUnavailable = true;
+        feed.sources.get(scenario.feedId)!.status = 503;
+        feed.end(scenario.feedId, null, true);
+        feed.end(scenario.feedId, 'native-child-0', true);
+        await expect
+          .poll(() => detail(page).textContent())
+          .toContain('暂时无法读取摘要');
+        expect(await receipt(page).locator('code').textContent()).toBe(id);
+        expect(
+          await detail(page).getByRole('button', { name: /Stop/ }).count(),
+        ).toBe(0);
+        expect(await detail(page).textContent()).not.toContain(
+          '运行摘要 · 运行中',
+        );
+        await detail(page).getByRole('button', { name: '查看回执' }).click();
+        await expect
+          .poll(() => detail(page).textContent())
+          .toContain('停止请求已接收；不代表子任务已经停止。');
+        expect(scenario.posts).toHaveLength(1);
+        await page.reload();
+        await page
+          .getByRole('button', { name: '子智能体读取失败', exact: true })
+          .click();
+        await page
+          .getByRole('button', {
+            name: '查看native-child-0原请求回执',
+            exact: true,
+          })
+          .click();
+        expect(await receipt(page).locator('code').textContent()).toBe(id);
+        expect(await detail(page).textContent()).toContain('尚无确认结果');
+        expect(await detail(page).textContent()).not.toContain(
+          '停止请求已接收',
+        );
+        expect(
+          await detail(page).getByRole('button', { name: /Stop/ }).count(),
+        ).toBe(0);
+        await detail(page).getByRole('button', { name: '查看回执' }).click();
+        await expect
+          .poll(() => detail(page).textContent())
+          .toContain('停止请求已接收；不代表子任务已经停止。');
+        expect(scenario.gets).toEqual([id, id]);
+        expect(scenario.posts).toHaveLength(1);
+      } finally {
+        await page.close();
+      }
+    },
+  );
 
   it('current root/owner gate new actions while a closed root still permits original-ticket GET', async () => {
     const { page, scenario } = await open('unknown', false, false);

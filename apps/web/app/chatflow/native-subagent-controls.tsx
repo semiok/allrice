@@ -93,14 +93,15 @@ export function useNativeSubagentControls(
   });
   const latest = useRef(attempts),
     locks = useRef(new Set<string>());
-  const publish = (attempt: Attempt) => {
+  const publish = (attempt: Attempt, remember = false) => {
     latest.current = {
       ...latest.current,
       [attempt.reference.input.requestId]: attempt,
     };
     setAttempts(latest.current);
+    if (!remember) return;
     try {
-      // References never restore a confirmation or replay an input after reload.
+      // Only explicit creation persists immutable references, never network results.
       sessionStorage.setItem(
         storageKey,
         JSON.stringify(Object.values(latest.current).map((a) => a.reference)),
@@ -120,7 +121,7 @@ export function useNativeSubagentControls(
     if (locks.current.has(key)) return;
     locks.current.add(key);
     const previous = latest.current[input.requestId];
-    publish({ ...previous, reference, busy: true });
+    publish({ ...previous, reference, busy: true }, post);
     try {
       const response = await fetch(
         post ? url : `${url}&requestId=${input.requestId}`,
@@ -188,34 +189,39 @@ export function useNativeSubagentControls(
 }
 
 export function NativeSubagentControls({
+  childId,
   child,
   root,
   permitted,
   controls,
 }: {
-  child: Child;
+  childId: string;
+  child?: Child;
   root: Root | null;
   permitted: boolean;
   controls: ReturnType<typeof useNativeSubagentControls>;
 }) {
   const attempts = controls.attempts.filter(
     ({ reference: { input } }) =>
-      input.parentSessionId === child.parentId &&
-      input.childSessionId === child.id,
+      input.childSessionId === childId &&
+      (!child || input.parentSessionId === child.parentId),
   );
   const reason = !permitted
     ? '仅会话所有者可控制子任务。'
     : !root
       ? '当前没有可控制的根运行，子任务保持只读。'
-      : '';
+      : !child
+        ? '当前无法读取子任务状态，仅可查看已有回执。'
+        : '';
   const busy = attempts.some(
     (attempt) => attempt.busy && rootKey(attempt.reference) === rootKey(root),
   );
+  if (!child && !attempts.length) return null;
   return (
     <section className={css.controls} aria-label="子任务控制">
       <h3>子任务控制</h3>
       {reason && <p role="status">{reason}</p>}
-      {child.running === true && child.mode === 'continuable' && (
+      {child?.running === true && child.mode === 'continuable' && (
         <Button
           size="sm"
           disabled={!!reason || busy}
