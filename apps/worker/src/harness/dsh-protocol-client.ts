@@ -376,11 +376,9 @@ export class DshProtocolClient {
   }
 
   async parkQuestion(sessionId: string, questionId: string) {
-    return this.request(
-      'session/park-question',
-      { sessionId, questionId },
-      15_000,
-    );
+    // Like session/wait, parking may join live children. Worker cancellation,
+    // lease loss and Host closure own its lifetime, not an RPC acknowledgement timer.
+    return this.request('session/park-question', { sessionId, questionId }, 0);
   }
 
   async answerWait(input: {

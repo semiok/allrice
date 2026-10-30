@@ -89,3 +89,30 @@ it('T14 Worker rejects a pending wait when the process dies', async () => {
   f.exit();
   await wait;
 });
+
+it.each(['checkpoint', 'closed'])(
+  'legacy park outlives the short RPC timeout and settles on %s',
+  async (result) => {
+    vi.useFakeTimers();
+    const f = fixture();
+    let settled = false;
+    const parking = f.client.parkQuestion('root', 'question').finally(() => {
+      settled = true;
+    });
+    const outcome = parking.catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(settled).toBe(false);
+    expect(f.frames[0]).toMatchObject({
+      method: 'session/park-question',
+      params: { sessionId: 'root', questionId: 'question' },
+    });
+    if (result === 'closed') {
+      f.exit();
+      expect(await outcome).toMatchObject({ code: 'DSH_RUNTIME_CLOSED' });
+    } else {
+      f.reply({ result: { checkpoint: { questionId: 'question' } } });
+      expect(await outcome).toEqual({ checkpoint: { questionId: 'question' } });
+      f.exit();
+    }
+  },
+);

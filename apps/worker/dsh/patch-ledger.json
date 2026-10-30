@@ -55,7 +55,7 @@
       "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-dsh-waits.mjs",
-      "reason": "Checkpoint a sole root's quiescent user question, drain and release its host, adopt the exact typed answer from the durable journal and continue the existing conversation once. MET-231 joins public waitForChildren and rechecks the same root/question, in-flight input, active agents/tools and current Worker lease before cancel; full accounting flush follows root idle, then rechecks the lease. Host-generated questionId carries the original program Run/pause through strict v1 checkpoints; resume verifies it before adoption. Model item/call IDs cannot choose that outer ID. Active tools/children exclude parking; unknown dispatch is never replayed. No second Agent loop or implicit action approval."
+      "reason": "Checkpoint a sole root's quiescent user question, drain and release its host, adopt the exact typed answer from the durable journal and continue the existing conversation once. MET-231 joins public waitForChildren before rejecting resident children; the park RPC shares the Worker cancellation/lease lifetime of session/wait. Recheck the same root/question, in-flight input, active agents/tools and current Worker lease before cancel; full accounting flush follows root idle, then rechecks the lease. Host-generated questionId carries the original program Run/pause through strict v1 checkpoints; resume verifies it before adoption. Model item/call IDs cannot choose that outer ID. Active tools/resident children exclude host release; unknown dispatch is never replayed. No second Agent loop or implicit action approval."
     },
     {
       "id": "allrice-durable-progress-guard-v1",
