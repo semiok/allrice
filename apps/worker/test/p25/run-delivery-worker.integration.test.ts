@@ -357,6 +357,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       rootEntered = gate(),
       answerRelease = gate();
     const answer = '甲：21  \n乙：55';
+    const privateReasoning = 'Synthetic private silent closure.';
     let rootCalls = 0,
       childCalls = 0;
     const f = await setup(async (request) => {
@@ -386,7 +387,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         await answerRelease.promise;
         return { text: answer };
       }
-      return { text: '' };
+      return { text: '', reasoning: privateReasoning };
     });
     // The spy calls the actual JSON-RPC/production Host and does not replace a reply.
     const delivery = vi.spyOn(DshProtocolClient.prototype, 'finalDelivery');
@@ -435,6 +436,14 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       expect(body.surfaceOp).toBe('append');
       expect(body.data.turn).toBe(silent.data.turn);
       expect(
+        silent.data.message.content.some(
+          (b: { type: string }) => b.type === 'reasoning',
+        ),
+      ).toBe(true);
+      expect(JSON.stringify(silent.data.message.content)).toContain(
+        privateReasoning,
+      );
+      expect(
         body.data.message.content
           .filter((b: { type: string }) => b.type === 'text')
           .map((b: { text: string }) => b.text)
@@ -476,6 +485,9 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         where run_id=${task.runId} and event_type in ('assistant.text.delta','assistant.text.completed') order by sequence`;
       const completed = publicEvents.filter(
         (e) => e.event_type === 'assistant.text.completed',
+      );
+      expect(JSON.stringify({ candidate, result, publicEvents })).not.toContain(
+        privateReasoning,
       );
       expect(completed).toHaveLength(1);
       expect(completed[0]!.payload).toMatchObject({
