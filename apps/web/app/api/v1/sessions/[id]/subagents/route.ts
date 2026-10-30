@@ -43,7 +43,7 @@ export async function GET(
     const token = (await cookies()).get(sessionCookieName)?.value;
     if (!token) throw new DataAccessError('authentication_required');
     if (follow)
-      return requestNativeSubagentFollow({
+      return await requestNativeSubagentFollow({
         token,
         context,
         workspaceId,
