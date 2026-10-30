@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 import { Button, Menu, StateDot } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { NativeSubagentSummary } from '@allrice/contracts';
 import { AssistantMarkdown } from './assistant-markdown';
-import { useNativeSubagents } from './use-native-subagents';
+import type { useNativeSubagents } from './use-native-subagents';
 import { useNativeSubagentFollow } from './use-native-subagent-follow';
 import { NativeSubagentProcess } from './native-subagent-process';
 import type { ChatPresentationPolicy } from './dsh-upstream/presentation/presentation-policy';
@@ -42,24 +42,26 @@ export function NativeSubagentDirectory({
   workspaceId,
   sessionId,
   headers,
-  refreshKey,
+  observation,
   presentation,
 }: {
   workspaceId: string;
   sessionId: string;
   headers: Record<string, string>;
-  refreshKey: string;
+  observation: ReturnType<typeof useNativeSubagents> & {
+    setLiveOnly: (liveOnly: boolean) => void;
+  };
   presentation: ChatPresentationPolicy;
 }) {
   const [open, setOpen] = useState(false),
     [pinned, setPinned] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
-  const { reads, refresh, revision } = useNativeSubagents(
-    workspaceId,
-    headers,
-    { [sessionId]: refreshKey },
-    !open && !selected,
+  const { reads, refresh, revision, setLiveOnly } = observation;
+  useEffect(
+    () => setLiveOnly(!open && !selected),
+    [open, selected, setLiveOnly],
   );
+  useEffect(() => () => setLiveOnly(true), [setLiveOnly]);
   const read = reads[sessionId];
   const summary = read && read !== 'error' ? read : null;
   const follow = useNativeSubagentFollow(

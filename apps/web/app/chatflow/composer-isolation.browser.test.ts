@@ -1259,12 +1259,15 @@ suite(
         await expect
           .poll(() => badge(B).innerText())
           .toContain('2 个子智能体运行中');
+        const beforeFocusB = active(B)[0];
         f.native.deny();
         await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
         await f.page
           .getByRole('button', { name: '子智能体读取失败', exact: true })
           .waitFor();
         expect(await badge(A).innerText()).not.toContain('2 个子智能体运行中');
+        await expect.poll(() => active(B).length).toBe(1);
+        await expect.poll(() => active(B)[0] !== beforeFocusB).toBe(true);
         const readyBackgroundB = active(B)[0];
         expect(readyBackgroundB).not.toBeUndefined();
         f.native.allowReady();

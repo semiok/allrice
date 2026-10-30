@@ -22,6 +22,7 @@ import type { useSessionArchive } from './use-session-archive';
 import archiveCss from './session-archive.module.css';
 import { EmployeeSidebar } from './employee-sidebar';
 import { employeePreferenceKey } from './employee-navigation';
+import type { NativeSubagentRead } from './use-native-subagents';
 import frameUi from './dsh-upstream/AppFrame.module.css';
 import sidebarUi from './dsh-upstream/SidebarRoot.module.css';
 import styles from './dsh-saas.module.css';
@@ -32,6 +33,7 @@ interface ChatSidebarProps {
   archive?: ReturnType<typeof useSessionArchive>;
   activeId: string | null;
   nativeReadyKey?: string;
+  nativeReads?: Record<string, NativeSubagentRead>;
   collapsed: boolean;
   overlay?: boolean;
   sessions: Session[];
@@ -60,6 +62,7 @@ export function ChatSidebar({
   archive,
   activeId,
   nativeReadyKey,
+  nativeReads,
   collapsed,
   overlay = false,
   sessions,
@@ -294,6 +297,7 @@ export function ChatSidebar({
             sessions={sessions}
             activeId={activeId}
             nativeReadyKey={nativeReadyKey}
+            nativeReads={nativeReads}
             collapsed={collapsed}
             onSelectSession={onSelectSession}
             onPrepareSession={onPrepareSession}

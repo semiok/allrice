@@ -1,7 +1,10 @@
 'use client';
 import { ReferenceLibrary } from './reference-library';
 import { NativeSubagentDirectory } from './native-subagent-directory';
-import { nativeSubagentReadyKey } from './use-native-subagents';
+import {
+  nativeSubagentReadyKey,
+  useNativeSubagents,
+} from './use-native-subagents';
 import { presentationPolicyFor } from './dsh-upstream/presentation/presentation-policy';
 import {
   UnifiedWorkbenchControls,
@@ -1289,6 +1292,50 @@ export function ChatFlowClient({
     requestAnimationFrame(() => composerInput.current?.focus());
   }
 
+  const activeRunMessages = (history?.messages ?? []).filter(
+    (message) =>
+      message.runId && isMessageRunActive(message, runViews[message.runId]),
+  );
+  const isRunning = activeRunMessages.length > 0;
+  const nativeReadyKey =
+    history?.session.id === activeId
+      ? nativeSubagentReadyKey(
+          runViews[history.messages.findLast((m) => m.runId)?.runId ?? ''],
+        )
+      : '';
+  const nativeSession =
+    archive.sessions.find((session) => session.id === activeId) ??
+    (history?.session.id === activeId ? history.session : undefined);
+  const nativeReadable =
+    !!workspace &&
+    !!activeId &&
+    (!nativeSession?.ownerId || nativeSession.ownerId === workspace.viewerId);
+  const nativeScope = `${settingsScope}/${activeId}`;
+  // Only the catalog/detail UI chooses a full cut; observation ownership stays
+  // here even when the active parent has no visible sidebar row.
+  const [nativeFullScope, setNativeFullScope] = useState('');
+  const setNativeLiveOnly = useCallback(
+    (liveOnly: boolean) => {
+      setNativeFullScope(liveOnly ? '' : nativeScope);
+    },
+    [nativeScope],
+  );
+  const nativeObservation = useNativeSubagents(
+    workspace?.workspaceId ?? '',
+    tenantHeaders,
+    nativeReadable
+      ? {
+          [activeId!]: `${settingsScope}/${nativeSession?.updatedAt}/${nativeSession?.running}/${isRunning}/${history?.messages.at(-1)?.status}/${nativeReadyKey}`,
+        }
+      : {},
+    nativeFullScope !== nativeScope,
+  );
+  const activeNativeReads = nativeReadable
+    ? nativeObservation.reads
+    : activeId
+      ? { [activeId]: 'error' as const }
+      : {};
+
   if (!workspace || !manifest) {
     return <WorkspaceStartup error={error} />;
   }
@@ -1323,17 +1370,6 @@ export function ChatFlowClient({
   const activeEmployeeColor =
     activeEmployee?.currentVersion.manifest.appearance?.accentColor ??
     activeEmployeeProfile?.appearance?.accentColor;
-  const activeRunMessages = (history?.messages ?? []).filter(
-    (message) =>
-      message.runId && isMessageRunActive(message, runViews[message.runId]),
-  );
-  const isRunning = activeRunMessages.length > 0;
-  const nativeReadyKey =
-    history?.session.id === activeId
-      ? nativeSubagentReadyKey(
-          runViews[history.messages.findLast((m) => m.runId)?.runId ?? ''],
-        )
-      : '';
   const contextCompacting = Object.values(runViews).some(
     (view) =>
       (view.status === 'running' || view.status === 'connecting') &&
@@ -1762,6 +1798,7 @@ export function ChatFlowClient({
         />
       )}
       <ChatSidebar
+        nativeReads={activeNativeReads}
         nativeReadyKey={nativeReadyKey}
         scheduledSessions={scheduledSessions}
         experienceEnabled={experienceEnabled}
@@ -1934,7 +1971,11 @@ export function ChatFlowClient({
                         workspaceId={workspace.workspaceId}
                         sessionId={activeId}
                         headers={tenantHeaders}
-                        refreshKey={`${isRunning}/${history?.messages.at(-1)?.status}/${nativeReadyKey}`}
+                        observation={{
+                          ...nativeObservation,
+                          reads: activeNativeReads,
+                          setLiveOnly: setNativeLiveOnly,
+                        }}
                         presentation={presentationPolicyFor(
                           preferences.value.transcriptView,
                           preferences.value.collapseTiming,
