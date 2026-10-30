@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { expect, it } from 'vitest';
 import { gate, host, text } from '../test/native-subagent/fixture.mjs';
+import { projectNativeUsage } from '../src/harness/dsh/native-usage.ts';
 
 const usage = {
   inputTokens: 1000,
@@ -270,3 +271,47 @@ it('an exact zero-cache total does not manufacture a missing native finish', asy
     },
   });
 });
+
+it.each([false, true])(
+  'keeps message-only cache unknown while actual ledger requires finish=%s',
+  async (terminal) => {
+    const receipts = [],
+      runId = randomUUID();
+    const raw = { inputTokens: 20, outputTokens: 5, totalTokens: 25 };
+    const h = await host({
+      productionProfile: 'allrice-restricted',
+      accounting: true,
+      runId,
+      bridge: recorder(receipts),
+      stream: async function* () {
+        yield { type: 'text-delta', index: 0, text: '只记录实际调用。' };
+        yield { type: 'usage', usage: raw };
+        if (terminal) yield { type: 'finish', reason: { kind: 'stop' } };
+      },
+    });
+    await h.prompt('只记录实际调用，不从消息假定模型已终止。');
+    await h.wait();
+    await h.server.handleRequest('run/end', { runId });
+    expect(h.calls).toHaveLength(1);
+    const message = h.notices.find(
+      (p) =>
+        p.method === 'session.event' &&
+        p.params.event.type === 'assistant/message',
+    )?.params.event.data;
+    expect(message?.usage).toEqual(raw);
+    expect(projectNativeUsage(message.usage, true, false)).toMatchObject({
+      inputTokens: 20,
+      outputTokens: 5,
+      usageComplete: true,
+      cacheUsageKnown: false,
+    });
+    expect(receipts.find((p) => p.fact?.phase === 'finish').fact).toMatchObject(
+      {
+        outcome: terminal ? 'succeeded' : 'incomplete',
+        usageComplete: terminal,
+        usage: { ...raw, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      },
+    );
+    expect(receipts.at(-1).delivery).toEqual({ calls: 1, complete: true });
+  },
+);

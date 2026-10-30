@@ -33,7 +33,7 @@ export function projectNativeUsage(
     cachedInputTokens: valid(read) ? read : 0,
     outputTokens: valid(output) ? output : 0,
     usageComplete: complete,
-    cacheUsageKnown:
-      complete && ((valid(read) && valid(write)) || valid(raw?.totalTokens)),
+    // Message projection has no actual finish proof for omitted cache buckets.
+    cacheUsageKnown: complete && valid(read) && valid(write),
   };
 }

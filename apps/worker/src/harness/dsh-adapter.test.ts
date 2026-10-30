@@ -1180,9 +1180,9 @@ describe('DshHarnessAdapter', () => {
       const result = await runtime.adapter.execute(input);
       expect(result.answer).toBe(answer);
       expect(result.usageComplete).toBe(true);
-      // The real pi-ai mapper derives exact totals from prompt/output; the
-      // missing write-cache bucket therefore has a proven zero remainder.
-      expect(result.cacheUsageKnown).toBe(true);
+      // The old message caller carries no actual stream finish proof, so its
+      // missing write-cache bucket stays unknown even with an exact total.
+      expect(result.cacheUsageKnown).toBe(false);
       expect(result.usage).toEqual({
         inputTokens: 220,
         cachedInputTokens: 50,

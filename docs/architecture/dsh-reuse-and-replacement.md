@@ -694,7 +694,9 @@ SQL 消息 ID 和内容匹配。压缩及冷恢复仍由原生 SDK/persistence �
 
 原生四桶互斥，input 统一含 read/write cache；沿用当前二价估算，缺桶/缺价/未确认交付保持 unknown，订阅证明仍 N/A。fork/replay前缀不收费。普通调用不要求 task clock；不新增 PG lifecycle writer，不承诺跨重启完整 activation 审计。只用当前 primary 的真实 capability，不更改旧 origin 来源记录。
 
-pi-ai 会省略零 cache；仅在原始有效桶与公开 exact total 严格相等时将真正 undefined 的 cache 规范为0并保留 total。缺 total/有余量的缺桶，以及非法桶或已给但冲突的 total 保持 unknown；不按 provider 名字猜，不升级历史事实。
+pi-ai 会省略零 cache；仅有实际 finish 证明且原始有效桶与公开 exact total 严格相等时，将真正 undefined 的 cache 计为已知0并保留 total。缺 total/有余量的缺桶，以及非法桶或已给但冲突的 total 保持 unknown；不按 provider 名字猜，不升级历史事实。
+
+旧 assistant/message 投影没有实际 finish 凭据，缺 cache 仍未知。结算事务逐调用重验已给 total 与四桶之和；矛盾时保留用量小计、完整性为 false、金额为 null，不改原事实。
 
 依据：`dsh-llm` 公共 stream/TokenUsage、`dsh-subagent` 原生谱系与树等待，MET-229 root 2026-10-30 第二片核定。归属为 SaaS 账本、门卫、既有存储/租约接线；无 DSH patch 或私有接口。升级时复核 stream 异常/usage、实际授权顺序和 close/park 交付；原生若提供 SaaS root billing 后再替换本接线。生产委派仍由 PR3d 独立启用。
 

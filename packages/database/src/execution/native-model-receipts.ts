@@ -133,17 +133,17 @@ export async function aggregateNativeModelReceipts(
       throw Error('NATIVE_RECEIPT_PAIR_CONFLICT');
     usageComplete &&= finish.usageComplete;
     const u = finish.usage;
-    inputTokens +=
+    const input =
       (u?.inputTokens ?? 0) +
       (u?.cacheReadTokens ?? 0) +
       (u?.cacheWriteTokens ?? 0);
+    inputTokens += input;
     cachedInputTokens += u?.cacheReadTokens ?? 0;
     outputTokens += u?.outputTokens ?? 0;
     usageComplete &&=
-      (u?.inputTokens ?? 0) +
-        (u?.cacheReadTokens ?? 0) +
-        (u?.cacheWriteTokens ?? 0) >
-      0;
+      input > 0 &&
+      (u?.totalTokens === undefined ||
+        u.totalTokens === input + (u.outputTokens ?? 0));
   }
   if (
     ![

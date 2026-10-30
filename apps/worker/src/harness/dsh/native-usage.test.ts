@@ -55,7 +55,7 @@ describe('pinned native subscription receipts', () => {
       projectNativeUsage({ inputTokens: 10, outputTokens: 7 }, true, true),
     ).toMatchObject({ usageComplete: true, cacheUsageKnown: false });
   });
-  it('proves omitted zero cache from exact total without changing cash or subscription projection', () => {
+  it('does not infer omitted cache from a message total without actual finish proof', () => {
     for (const subscription of [true, false])
       expect(
         projectNativeUsage(
@@ -68,7 +68,7 @@ describe('pinned native subscription receipts', () => {
         outputTokens: 5,
         cachedInputTokens: 0,
         usageComplete: true,
-        cacheUsageKnown: true,
+        cacheUsageKnown: false,
       });
   });
   it.each([

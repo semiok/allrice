@@ -536,6 +536,48 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
       costCents: null,
     });
   });
+  it.each([999, 25, undefined])(
+    'rechecks supplied total=%s through actual receipt commit and root settlement',
+    async (totalTokens) => {
+      const f = await setup(),
+        call = start(f);
+      const fact: NativeModelFact = {
+        ...finish(call),
+        usage: {
+          inputTokens: 20,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          outputTokens: 5,
+          ...(totalTokens === undefined ? {} : { totalTokens }),
+        },
+      };
+      expect(NativeModelFactSchema.safeParse(fact).success).toBe(true);
+      await write(f, call);
+      await write(f, fact);
+      const before = await read(f);
+      expect(before.find((p) => p.fact.phase === 'finish')?.fact).toEqual(fact);
+      const complete = totalTokens !== 999;
+      expect(await nativeOutcome(f)).toMatchObject({
+        inputTokens: 20,
+        cachedInputTokens: 0,
+        outputTokens: 5,
+        usageComplete: complete,
+        cacheUsageKnown: complete,
+        costCents: complete ? 0.004 : null,
+      });
+      const [ledger] =
+        await fixture.db`select * from allrice_model_usage_ledger where route_decision_id=${f.decision.id}`;
+      expect(ledger).toMatchObject({
+        input_tokens: 20,
+        output_tokens: 5,
+        usage_complete: complete,
+        cache_usage_known: complete,
+      });
+      if (complete) expect(Number(ledger!.cost_cents)).toBeCloseTo(0.004);
+      else expect(ledger!.cost_cents).toBeNull();
+      expect(await read(f)).toEqual(before);
+    },
+  );
   it.each(['delivery', 'missing-finish', 'missing-cache', 'count'] as const)(
     'keeps %s incomplete without falling back to the caller cumulative snapshot',
     async (fault) => {
