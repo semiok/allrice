@@ -303,7 +303,7 @@ suite('native subagent directory and employee sidebar', () => {
   });
 
   it.each(['select', 'Escape', 'outside', 'scope'])(
-    'preserves delayed Enter → ArrowDown focus intent until selection or %s cancellation',
+    'preserves keyboard intent during a delayed cold read (%s)',
     async (action) => {
       const cold = summary();
       cold.root.source = 'prepared';
@@ -339,7 +339,10 @@ suite('native subagent directory and employee sidebar', () => {
         if (action === 'Escape') await page.keyboard.press('Escape');
         else if (action === 'outside')
           await page.getByRole('heading', { level: 1 }).click();
-        else if (action === 'scope') await row(page, 'parent-b').click();
+        else if (action === 'scope') {
+          await row(page, 'parent-b').focus();
+          await page.keyboard.press('Enter');
+        }
         release();
         await delivered;
         if (action === 'select') {
