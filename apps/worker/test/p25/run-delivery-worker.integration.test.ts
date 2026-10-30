@@ -694,6 +694,8 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         where run_id=${task.runId}`;
       expect(wait!.state).toBe('parked');
       const { checkpoint, generation } = wait!;
+      const [originalPause] =
+        await f.db`select pause_id from allrice_task_progress where run_id=${task.runId}`;
       expect(checkpoint.questions).toEqual([
         expect.objectContaining({ id: 'runtime-progress' }),
       ]);
@@ -720,11 +722,11 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         const controls = requests
           .slice(beforeResume)
           .filter((p) => p.action === 'check' || p.action === 'decide');
-        expect(controls.slice(0, 2).map((p) => p.action)).toEqual([
-          'check',
-          'decide',
+        expect(controls[0]).toMatchObject({ action: 'check' });
+        // answer-wait and continue-wait each recheck before adopting/resuming.
+        expect(controls.filter((p) => p.action === 'decide')).toMatchObject([
+          { decision: 'continue', pauseId: originalPause!.pause_id },
         ]);
-        expect(controls[1]).toMatchObject({ decision: 'continue' });
         for (const request of requests)
           expect(request).toMatchObject({
             runId: task.runId,
