@@ -114,6 +114,7 @@ export class NativeSubagentFixtureFeed {
   end(fixture: string, childId: string | null, abrupt = false) {
     for (const connection of this.connections)
       if (connection.fixture === fixture && connection.childId === childId)
-        abrupt ? connection.response.destroy() : connection.response.end();
+        if (abrupt) connection.response.destroy();
+        else connection.response.end();
   }
 }
