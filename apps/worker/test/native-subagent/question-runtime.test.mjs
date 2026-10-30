@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { setImmediate } from 'node:timers/promises';
 import { expect, it, vi } from 'vitest';
+import { askProgramQuestion } from '../../dsh/allrice-program-questions.mjs';
 import { gate, hold, host, text } from './fixture.mjs';
 
 const tool = (name, args, id = randomUUID()) => [
@@ -160,10 +161,18 @@ it.each(['重新检查后继续', '取消任务'])(
   },
 );
 
-it('expiry fences calls before native child settlement can reawaken the idle root', async () => {
-  const h = await pausedChild(100);
+it('expiry fences calls and queued program cards before child settlement can reawaken root', async () => {
+  const h = await pausedChild(250);
   const q = await card(h);
+  const queued = expect(
+    askProgramQuestion(
+      h.ctx.userQuestions,
+      { agent: h.root, ...question('runtime-progress') },
+      `runtime-progress:${randomUUID()}:1`,
+    ),
+  ).rejects.toThrow('RUN_NOT_ACTIVE');
   await h.waiting;
+  await queued;
   expect(h.decisions).toEqual([]);
   expect(
     h.notices.filter((n) => n.method === 'session.user-question-pending'),
@@ -210,6 +219,27 @@ it('a model-authored runtime-progress ID cannot impersonate a Run program questi
   ).rejects.toThrow('INPUT_TURN_CHANGED');
   await answer({ ...h, runId }, q, ['继续']);
   await h.wait();
+});
+
+it('JSON metadata cannot grant an ordinary public question the idle Run exception', async () => {
+  const runId = randomUUID();
+  const h = await host({ runId, bridge: async () => ({ allowed: true }) });
+  await h.prompt('完成本轮。');
+  await h.root.whenIdle();
+  const request = h.ctx.userQuestions.ask({
+    agent: h.root,
+    ...question('runtime-progress'),
+    programRunId: runId,
+    progressPauseId: 'fake-pause',
+    metadata: { programQuestion: 'runtime-progress:fake-pause:1' },
+    'Symbol(allrice-program-question)': 'runtime-progress:fake-pause:1',
+  });
+  const rejected = expect(request).rejects.toThrow();
+  const q = await card(h);
+  expect(q.programRunId).toBeUndefined();
+  await expect(answer({ ...h, runId }, q, ['继续'])).rejects.toThrow();
+  await h.server.closeRoot(h.root.id);
+  await rejected;
 });
 
 async function blockedRoot() {

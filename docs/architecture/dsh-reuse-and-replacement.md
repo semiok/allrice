@@ -304,7 +304,7 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 
 ### allrice-durable-native-question-wait-v1
 
-- MET-231 原生恢复共同前置（2026-10-30 用户选择先恢复普通对话委派、网页控制与旧 Workflow 后接）：DSH 0.2.1-rc.2 `subagents.waitForChildren(exactRoot)` 负责创建/释放/结算屏障；AllRice 仍拒绝任何其他 live Agent，随后 finite accounting flush、已受理 typed input 结算与同根/同题/当前 Worker 租约重验，才写原 legacy checkpoint/cancel。只加门卫和租约接线，不等被题阻塞的整根 `session/wait`，不为 park 强停子级；30 秒触发值和恢复协议不变。守护：`native-subagent/question-runtime.test.mjs`、既有 `task-wait-native.integration.test.ts` / `task-wait-worker.integration.test.ts`；MET-225 更新 L07。
+- MET-231 原生恢复共同前置（2026-10-30 用户选择先恢复普通对话委派、网页控制与旧 Workflow 后接）：DSH 0.2.1-rc.2 `subagents.waitForChildren(exactRoot)` 负责创建/释放/结算屏障；AllRice 仍拒绝任何其他 live Agent，随后已受理 typed input 结算与同根/同题/当前 Worker 租约重验，才写原 legacy checkpoint/cancel；根 idle 后 finite accounting flush 再验租约，避免等待正被该题阻塞的根迭代器。只加门卫和租约接线，不等被题阻塞的整根 `session/wait`，不为 park 强停子级；30 秒触发值和恢复协议不变。守护：`native-subagent/question-runtime.test.mjs`、既有 `task-wait-native.integration.test.ts` / `task-wait-worker.integration.test.ts`；MET-225 更新 L07。
 
 - MET-228 legacy 停放后停止（2026-10-30 主会话核定 A+B；Dev c99 复现）：DSH rc.2 公开 `agent.cancel({kind:'user'},{keepInbox:true})` / `whenIdle()` 结束旧轮，普通新输入用 `agent.followup()`；不增加 wake 或答案路由。AllRice 统一终态事务在既有 root→clock→Job→runtime 锁序内，按完整租户/属主/会话与同一 active Run 释放停放遗留投影，使用被锁 runtime 的 owner，不要求 Job 仍有 worker；绝不清新 Run 的归属。既有 claim FIFO 回退仅识别同属主终态 Run 且其唯一 Job 已终态完成、五项执行归属全部清空的历史残留；只有终态回执、仍持 owner/lease（即使已过期）或 Job 尚非终态时继续等原生 release。不新建扫描器/表/状态、不重发消息。属于租约和单向账本，原生物理 close、授权与超时依据不变。守护：`task-native-wait.integration.test.ts` 的无 owner/换 owner/超时/撤权/FIFO 回归，以及 `run-delivery-worker.integration.test.ts` 的真实30s park→stop→普通新轮；MET-225 修改 L07 legacy旧等待修复补记，不为旧30s桥本身补依据。
 

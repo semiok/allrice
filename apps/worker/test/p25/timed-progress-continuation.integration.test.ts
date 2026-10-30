@@ -450,13 +450,18 @@ suite(
             }
           }
           expect(cards).toBe(1);
-          expect(
-            facts.filter(
-              (v) =>
-                v.phase === 'finish' &&
-                v.nativeSessionId !== `dsh-${task.sessionId}`,
-            ),
-          ).toHaveLength(decision === 'continue' ? 4 : 3);
+          const childFinishes = facts.filter(
+            (v) =>
+              v.phase === 'finish' &&
+              v.nativeSessionId !== `dsh-${task.sessionId}`,
+          );
+          expect(childFinishes).toHaveLength(4);
+          if (decision !== 'continue')
+            expect(childFinishes.at(-1)).toMatchObject({
+              outcome: 'incomplete',
+              usage: {},
+              usageComplete: false,
+            });
           expect(new Set(facts.map((v) => v.nativeSessionId)).size).toBe(2);
           const [lease] =
             await f.db`select worker_id, lease_token from allrice_jobs where id=${task.workflowLease.jobId}`;

@@ -97,8 +97,8 @@ export async function checkpointNativeQuestion(server, sessionId, questionId) {
   // Registry absence is only a fast rejection check. Public DSH wait also
   // joins creation, disposal and delivery already in flight, never the blocked root.
   await server.ctx.subagents?.waitForChildren(agent);
+  if (!canPark()) return null;
   await server.taskProgress?.flush();
-  await server.nativeAccounting?.flush();
   await Promise.allSettled(question.inputDeliveries ?? []);
   await server.runAdmission?.authorizeInput(runId);
   // A user answer can race the preceding flush.
@@ -122,7 +122,10 @@ export async function checkpointNativeQuestion(server, sessionId, questionId) {
   agent.cancel({ kind: 'user' }, { keepInbox: true });
   await agent.whenIdle();
   await server.taskProgress?.flush();
+  // A program question can suspend the root's accounting iterator. Its full
+  // receipt drain is finite only after cancel/idle, never before that boundary.
   await server.nativeAccounting?.flush();
+  await server.runAdmission?.authorizeInput(runId);
   await server.ctx.sessions.flush(agent.session);
   return pendingNativeWait(agent);
 }

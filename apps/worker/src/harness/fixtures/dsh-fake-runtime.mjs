@@ -271,7 +271,7 @@ lines.on('line', (line) => {
       notify('session.user-question', {
         sessionId,
         questionId: 'progress-proof',
-        ...(mode === 'pending' ? { progressPauseId: 'trusted-pause' } : {}),
+        ...(mode !== 'connection' ? { progressPauseId: 'trusted-pause' } : {}),
         questions: [
           {
             id: mode === 'connection' ? 'app-connect:test' : 'runtime-progress',
@@ -280,11 +280,7 @@ lines.on('line', (line) => {
           },
         ],
       });
-    if (
-      ['pending', 'wrong-id', 'connection', 'new-card', 'answered'].includes(
-        mode,
-      )
-    )
+    if (['pending', 'wrong-id', 'connection'].includes(mode))
       notify('session.user-question-pending', {
         sessionId,
         questionId: mode === 'wrong-id' ? 'another-question' : 'progress-proof',
@@ -293,6 +289,7 @@ lines.on('line', (line) => {
       notify('session.user-question', {
         sessionId,
         questionId: 'next-progress-proof',
+        progressPauseId: 'next-trusted-pause',
         questions: [
           {
             id: 'runtime-progress',
@@ -307,6 +304,11 @@ lines.on('line', (line) => {
         questionId: 'progress-proof',
       });
     if (mode === 'new-card' || mode === 'answered') {
+      // A delayed old pending receipt cannot resurrect an answered/replaced card.
+      notify('session.user-question-pending', {
+        sessionId,
+        questionId: 'progress-proof',
+      });
       event(sessionId, 'turn/end', { turn, reason: { kind: 'completed' } });
       notify('session.status', { sessionId, status: 'idle' });
       return;

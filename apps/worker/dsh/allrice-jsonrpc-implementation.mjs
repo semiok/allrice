@@ -998,6 +998,7 @@ export async function createAllRiceRuntime(
             });
           }
           request.signal?.throwIfAborted();
+          if (programRunId) this.runAdmission.accepting(programRunId);
           if (this.requireRoot(sessionId).agent !== request.agent)
             throw Error('INPUT_SESSION_NOT_LIVE');
           const questions = this.preparedMethodQuestions.take(
@@ -1101,6 +1102,7 @@ export async function createAllRiceRuntime(
                     // Fence new native calls before a child result can wake root.
                     this.runAdmission.stop();
                   } catch (error) {
+                    request.signal?.removeEventListener('abort', abort);
                     this.pendingUserQuestions.delete(sessionId);
                     markDone();
                     rejectQuestion(error);

@@ -797,7 +797,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           settleDelivery: runDelivery
             ? async (confirmSettled) => {
                 await deliveryNativeCall(() => runtime.client.wait(threadId));
-                if (!(await confirmSettled())) return;
+                if (!confirmSettled()) return;
                 executionSignal.throwIfAborted();
                 await input.runDelivery!.pauseInput();
                 // candidate closes native ingress and waits once more.
@@ -811,7 +811,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
               ? async (confirmSettled) => {
                   await runtime.client.wait(threadId);
                   executionSignal.throwIfAborted();
-                  await confirmSettled();
+                  confirmSettled();
                 }
               : undefined,
           onFailureUsage: (receipt) => {
@@ -1426,7 +1426,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     questionWait?: HarnessExecutionInput['questionWait'];
     resume?: NonNullable<HarnessExecutionInput['questionWait']>['resume'];
     /** Hold event intake through public wait, input pause and final candidate. */
-    settleDelivery?(confirmSettled: () => Promise<boolean>): Promise<void>;
+    settleDelivery?(confirmSettled: () => boolean): Promise<void>;
     stopForProgress(): Promise<void>;
     onFailureUsage(receipt: ExecutionFailureUsage): void;
     onTurn(turnId: string): Promise<void>;
@@ -1657,6 +1657,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         const summary = normalized.success
           ? shortText(normalized.data.questions[0]?.question, 1000)
           : shortText(record(questions[0])?.question, 500);
+        waitingForUser = undefined;
         progressPauseId =
           shortText(notification.params.progressPauseId, 240) ?? undefined;
         progressQuestionId =
@@ -1720,6 +1721,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         return;
       }
       if (notification.method === 'session.user-question-answered') {
+        waitingForUser = undefined;
         progressPauseId = undefined;
         progressQuestionId = undefined;
         clearTimeout(waitTimer);
@@ -2167,8 +2169,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         );
       if (!waitingForUser && !parseDshToolCall(answer)) {
         try {
-          await input.settleDelivery?.(async () => {
-            await flushEvents();
+          await input.settleDelivery?.(() => {
             confirmUsageSettled();
             return !waitingForUser;
           });

@@ -196,7 +196,7 @@ suite('MET-210 real Worker continuation and Workflow waiting', () => {
       ...(waiting ? { waitingForUser: { questionId: 'progress-card' } } : {}),
     };
   }
-  async function firstWait() {
+  async function firstWait(wrongPause = false) {
     const first = await setup();
     const execute = vi
       .spyOn(DshHarnessAdapter.prototype, 'execute')
@@ -221,7 +221,16 @@ suite('MET-210 real Worker continuation and Workflow waiting', () => {
             resultDigest: `sha256:${'b'.repeat(64)}`,
           });
         }
-        return result(first);
+        const response = result(first);
+        return wrongPause
+          ? {
+              ...response,
+              waitingForUser: {
+                questionId: 'progress-card',
+                pauseId: randomUUID(),
+              },
+            }
+          : response;
       });
     const waiting = await run(first);
     expect(waiting).toHaveProperty('waitingForUser', {
@@ -233,6 +242,11 @@ suite('MET-210 real Worker continuation and Workflow waiting', () => {
     expect(pause!.pause_id).toEqual(expect.any(String));
     return { first, execute, pauseId: pause!.pause_id };
   }
+  it('rejects a pending result for another pause before completing the real Worker Run', async () => {
+    await expect(firstWait(true)).rejects.toMatchObject({
+      code: 'DSH_TURN_FAILED',
+    });
+  });
   it.each(['ordinary', 'compaction', 'maintenance'] as const)(
     'second Run only inherits in the ordinary Worker path: %s',
     async (mode) => {
