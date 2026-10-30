@@ -1,6 +1,7 @@
 import { posix } from 'node:path';
 import { z } from 'zod';
 import type { RequestContext } from '@allrice/contracts';
+import type { TransactionSql } from 'postgres';
 import { getDatabase } from '../core/client.ts';
 import { authorizeSessionOwner } from '../workspace/service.ts';
 import {
@@ -22,7 +23,19 @@ export async function getSessionNativeSubagentTarget(
     ownerId: session.ownerId,
     sessionId: session.id,
   };
-  const db = getDatabase();
+  return readSessionNativeSubagentTarget(getDatabase(), scope);
+}
+
+/** Caller establishes current tenant/owner authority; this only checks the pin. */
+export async function readSessionNativeSubagentTarget(
+  db: ReturnType<typeof getDatabase> | TransactionSql,
+  scope: {
+    organizationId: string;
+    workspaceId: string;
+    ownerId: string;
+    sessionId: string;
+  },
+) {
   const origin = await readChatNativeRootOrigin(db, scope);
   const [pin] = await db`
     select b.*,c.thread_generation from allrice_conversation_runtimes c

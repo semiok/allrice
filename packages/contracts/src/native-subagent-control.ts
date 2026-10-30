@@ -66,3 +66,43 @@ export type NativeSubagentControlRequest = z.infer<
 export type NativeSubagentControlAcceptance = z.infer<
   typeof NativeSubagentControlAcceptanceSchema
 >;
+
+export const NativeSubagentControlResultSchema = z.discriminatedUnion(
+  'status',
+  [
+    z
+      .object({
+        status: z.literal('accepted'),
+        acceptance: NativeSubagentControlAcceptanceSchema,
+        source: z.discriminatedUnion('kind', [
+          z.object({ kind: z.literal('native_ack') }).strict(),
+          z
+            .object({
+              kind: z.literal('user_rpc'),
+              rpcId: UuidSchema,
+              sequence: z.number().int().nonnegative(),
+            })
+            .strict(),
+        ]),
+      })
+      .strict(),
+    z.object({ status: z.literal('unknown') }).strict(),
+    z
+      .object({
+        status: z.literal('rejected'),
+        code: z
+          .string()
+          .min(1)
+          .refine((code) => code !== 'INPUT_OUTCOME_UNKNOWN'),
+      })
+      .strict(),
+  ],
+);
+export type NativeSubagentControlResult = z.infer<
+  typeof NativeSubagentControlResultSchema
+>;
+export interface NativeSubagentControlTicket {
+  requestId: string;
+  kind: NativeSubagentControlInput['kind'];
+  result: NativeSubagentControlResult | { status: 'recorded' };
+}
