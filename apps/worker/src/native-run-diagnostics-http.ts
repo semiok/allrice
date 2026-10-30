@@ -156,7 +156,7 @@ export function createNativeRunDiagnosticsHttpHandler(
               childId: input.childId,
               signal,
               check,
-              terminal: () => subagents.read(target, signal, false),
+              readSummary: () => subagents.read(target, signal, false),
               send: async (event, followSignal) => {
                 followSignal.throwIfAborted();
                 if (

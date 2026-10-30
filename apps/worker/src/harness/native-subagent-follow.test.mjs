@@ -87,7 +87,7 @@ function fixture(detail = true) {
     childId: detail ? 'child' : undefined,
     signal: abort.signal,
     check: vi.fn(async () => {}),
-    terminal: vi.fn(async () => summary),
+    readSummary: vi.fn(async () => summary),
     send: vi.fn(async (event) => {
       events.push(event);
       for (const resolve of waiting.splice(0)) resolve();
@@ -262,14 +262,14 @@ it('ignores other roots/children and never turns a directory-only finished edge 
     childSessionId: 'child',
   });
   await f.stop();
-  expect(f.input.terminal).not.toHaveBeenCalled();
+  expect(f.input.readSummary).not.toHaveBeenCalled();
   expect(f.client.nativeSubagentSnapshot).not.toHaveBeenCalled();
   expect(
     f.client.nativeSubagentSummary.mock.calls.every((args) => args[1] === true),
   ).toBe(true);
 });
 
-it('performs one terminal read for a verified selected child, preserves source facts, and ends', async () => {
+it('reads one safe summary for a verified selected child and keeps the address subscribed', async () => {
   const f = fixture();
   f.start();
   await f.until((e) => e?.type === 'snapshot');
@@ -287,11 +287,11 @@ it('performs one terminal read for a verified selected child, preserves source f
     childSessionId: 'child',
     lastAssistantMessage: 'PRIVATE',
   });
-  await f.done();
+  await f.until((e) => e?.type === 'summary');
   expect(f.error()).toBeUndefined();
-  expect(f.input.terminal).toHaveBeenCalledOnce();
+  expect(f.input.readSummary).toHaveBeenCalledOnce();
   expect(f.events.at(-1)).toMatchObject({
-    type: 'terminal',
+    type: 'summary',
     summary: {
       descendants: [
         { observation: { source: 'prepared' }, lastReply: 'safe final' },
@@ -299,7 +299,68 @@ it('performs one terminal read for a verified selected child, preserves source f
     },
   });
   expect(JSON.stringify(f.events)).not.toContain('PRIVATE');
-  expect(f.listeners.size).toBe(0);
+  expect(f.listeners.size).toBe(1);
+});
+
+it('keeps a selected address across a cold directory cut without cold polling, then requires a fresh baseline', async () => {
+  vi.useFakeTimers();
+  const f = fixture();
+  f.start();
+  await f.until((e) => e?.type === 'snapshot');
+  const final = structuredClone(f.summary);
+  final.descendants[0].running = null;
+  final.descendants[0].observation.source = 'prepared';
+  final.descendants[0].lastReply = 'A final';
+  f.input.readSummary.mockResolvedValue(final);
+  f.client.nativeSubagentSummary.mockResolvedValue({
+    ...f.summary,
+    descendants: [
+      {
+        kind: 'diagnostic',
+        id: 'child',
+        parentId: 'root',
+        depth: 1,
+        reason: 'unavailable',
+      },
+    ],
+  });
+  f.notify('subagent.finished', {
+    parentSessionId: 'root',
+    childSessionId: 'child',
+  });
+  await f.until((e) => e?.type === 'summary');
+  f.notify('session.status', { sessionId: 'root' });
+  await f.until(
+    (e) =>
+      e?.type === 'directory' && e.summary.descendants[0].kind === 'diagnostic',
+  );
+  const reads = f.client.nativeSubagentSummary.mock.calls.length;
+  await vi.advanceTimersByTimeAsync(45_000);
+  expect(f.input.readSummary).toHaveBeenCalledOnce();
+  expect(f.client.nativeSubagentSummary).toHaveBeenCalledTimes(reads);
+  expect(f.client.nativeSubagentSnapshot).toHaveBeenCalledOnce();
+  expect(f.listeners.size).toBe(1);
+  f.summary.descendants[0].observation.cursor = 8;
+  f.client.nativeSubagentSummary.mockImplementation(async () =>
+    structuredClone(f.summary),
+  );
+  f.snapshot.observation.cursor = f.snapshot.stream.cursor = 8;
+  f.snapshot.stream.instanceId = 'agent-b';
+  f.snapshot.stream.revision = 1;
+  f.snapshot.stream.active.text = 'B';
+  f.frame(1, 'B', { instanceId: 'agent-b', cursor: 8 });
+  await f.until(
+    (e) => e?.type === 'snapshot' && e.snapshot.stream.instanceId === 'agent-b',
+  );
+  expect(
+    f.events
+      .slice(f.events.findIndex((e) => e?.type === 'summary') + 1)
+      .some((e) => e?.type === 'display'),
+  ).toBe(false);
+  f.frame(2, 'B updated', { instanceId: 'agent-b', cursor: 8 });
+  await f.until(
+    (e) => e?.type === 'display' && e.display.active.text === 'B updated',
+  );
 });
 
 it.each(['abort', 'failure', 'overflow'])(

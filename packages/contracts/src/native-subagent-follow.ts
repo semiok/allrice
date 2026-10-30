@@ -19,7 +19,7 @@ export const NativeSubagentFollowEventSchema = z.discriminatedUnion('type', [
     display: NativeSubagentSnapshotSchema.shape.stream,
   }),
   z.object({
-    type: z.literal('terminal'),
+    type: z.literal('summary'),
     childId: z.string(),
     summary: NativeSubagentSummarySchema.nullable(),
   }),

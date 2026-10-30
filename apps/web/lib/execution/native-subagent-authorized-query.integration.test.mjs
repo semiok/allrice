@@ -11,6 +11,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import {
   afterAll,
   afterEach,
@@ -403,11 +404,11 @@ suite(
               detail = { kind: 'hot', ...event.snapshot };
             if (event.type === 'display' && detail?.kind === 'hot')
               detail.stream = event.display;
-            // Terminal replaces the hot detail view; it never appends another
+            // A summary cut replaces the hot detail view; it never appends another
             // copy of the final assistant row or interprets active:null as final.
-            if (event.type === 'terminal')
+            if (event.type === 'summary')
               detail = {
-                kind: 'terminal',
+                kind: 'summary',
                 child: event.summary?.descendants.find(
                   (row) => row.id === event.childId,
                 ),
@@ -418,6 +419,269 @@ suite(
         },
       };
     }
+    it.each(['summary-response', 'final-authorization'])(
+      'continues A/B/C on one address when B starts during %s',
+      async (window) => {
+        const ready = [gate(), gate(), gate()],
+          finish = [gate(), gate(), gate()],
+          cut = gate(),
+          release = gate();
+        let selectedSession,
+          attempt = 0;
+        const f = await chat(true, undefined, false, {
+          stream: async function* (request) {
+            selectedSession ??= request.sessionId;
+            const n = request.sessionId === selectedSession ? attempt++ : -1;
+            yield { type: 'block-start', index: 0, blockType: 'text' };
+            yield {
+              type: 'text-delta',
+              index: 0,
+              text: n < 0 ? 'root acknowledged' : ['A', 'B', 'C'][n],
+            };
+            if (n >= 0) {
+              ready[n].resolve();
+              await hold(request.signal, finish[n]);
+            }
+            yield { type: 'finish', reason: { kind: 'stop' } };
+          },
+        });
+        const a = await f.h.spawn(f.h.root, 'A', { delivery: 'caller' });
+        await ready[0].promise;
+        const { runtime } = await hotHost(f);
+        const api = await start(f, async () => {
+          if (window === 'summary-response') {
+            cut.resolve();
+            await release.promise;
+          }
+        });
+        const originalTarget = api.target.getMockImplementation();
+        let gated = false;
+        api.target.mockImplementation(async (...args) => {
+          const value = await originalTarget(...args);
+          if (
+            window === 'final-authorization' &&
+            api.read.mock.calls.length &&
+            !gated
+          ) {
+            gated = true;
+            cut.resolve();
+            await release.promise;
+          }
+          return value;
+        });
+        const abort = new AbortController();
+        try {
+          const consumer = consume(
+            await web(
+              f,
+              f.token,
+              `&follow=true&childId=${a.childId}`,
+              abort.signal,
+            ),
+          );
+          const initial = await consumer.until((e) => e.type === 'snapshot');
+          finish[0].resolve();
+          await a.result;
+          await cut.promise;
+          await f.h.ctx.subagents.sendMessage(f.h.root, a.childId, text('B'), {
+            signal: abort.signal,
+          });
+          await ready[1].promise;
+          expect(f.h.ctx.agents.get(a.childId)?.status).toBe('running');
+          release.resolve();
+          const second = await consumer.until(
+            (e) =>
+              e.type === 'snapshot' && e.snapshot.stream.active?.text === 'B',
+          );
+          expect(second.snapshot.stream.instanceId).not.toBe(
+            initial.snapshot.stream.instanceId,
+          );
+          expect(f.listeners.size).toBe(1);
+          expect(consumer.detail().stream.active.text).toBe('B');
+          finish[1].resolve();
+          await f.h.wait();
+          const settled = await consumer.until(
+            (e) =>
+              e.type === 'summary' &&
+              e.summary?.descendants.some(
+                (r) => r.id === a.childId && r.lastReply === 'B',
+              ),
+          );
+          expect(
+            settled.summary.descendants.find((r) => r.id === a.childId)
+              .observation.source,
+          ).toBe('prepared');
+          expect(f.h.ctx.agents.get(a.childId)).toBeUndefined();
+          const filesBefore = await files(f.descriptor.storageNamespace),
+            sqlBefore = await writes(f),
+            calls = f.h.calls.length,
+            activity = runtime.lastActivityAt;
+          await delay(50);
+          expect(api.read).toHaveBeenCalledTimes(2);
+          expect(await files(f.descriptor.storageNamespace)).toEqual(
+            filesBefore,
+          );
+          expect(await writes(f)).toEqual(sqlBefore);
+          expect(f.h.calls).toHaveLength(calls);
+          expect(runtime.lastActivityAt).toBe(activity);
+          await f.h.ctx.subagents.sendMessage(f.h.root, a.childId, text('C'), {
+            signal: abort.signal,
+          });
+          await ready[2].promise;
+          const third = await consumer.until(
+            (e) =>
+              e.type === 'snapshot' && e.snapshot.stream.active?.text === 'C',
+          );
+          expect(third.snapshot.stream.instanceId).not.toBe(
+            second.snapshot.stream.instanceId,
+          );
+          expect(consumer.detail().stream.active.text).toBe('C');
+          expect(f.listeners.size).toBe(1);
+          expect(
+            consumer.events.filter((e) => e.type === 'summary'),
+          ).toHaveLength(2);
+          expect(
+            consumer.events.some(
+              (e) =>
+                e.type === 'terminal' ||
+                (e.type === 'clear' && e.reason === 'unavailable'),
+            ),
+          ).toBe(false);
+          console.log(
+            'SESSION_FOLLOW_ABC',
+            JSON.stringify({
+              window,
+              types: consumer.events.map((e) => e.type),
+              reads: api.read.mock.calls.length,
+              listeners: f.listeners.size,
+            }),
+          );
+          await consumer.reader.cancel();
+          await vi.waitFor(() => expect(f.listeners.size).toBe(0));
+        } finally {
+          abort.abort();
+          release.resolve();
+          for (const end of finish) end.resolve();
+          await a.result;
+          await f.h.wait();
+        }
+      },
+      30_000,
+    );
+
+    it('retains a nested selected address after a cold directory cut and a short native reactivation', async () => {
+      const parentReady = gate(),
+        parentEnd = gate(),
+        childReady = gate(),
+        childEnd = gate();
+      const f = await chat(true, undefined, false, {
+        depth: 2,
+        stream: async function* (request, n) {
+          yield { type: 'block-start', index: 0, blockType: 'text' };
+          yield {
+            type: 'text-delta',
+            index: 0,
+            text: n === 1 ? 'parent' : n === 2 ? 'nested A' : 'nested B',
+          };
+          if (n === 1) {
+            parentReady.resolve();
+            await hold(request.signal, parentEnd);
+          } else if (n === 2) {
+            childReady.resolve();
+            await hold(request.signal, childEnd);
+          }
+          yield { type: 'finish', reason: { kind: 'stop' } };
+        },
+      });
+      const parent = await f.h.spawn(f.h.root, 'parent', {
+        delivery: 'caller',
+      });
+      await parentReady.promise;
+      const parentAgent = f.h.ctx.agents.get(parent.childId),
+        child = await f.h.spawn(parentAgent, 'nested A', {
+          delivery: 'caller',
+        });
+      await childReady.promise;
+      await hotHost(f);
+      const api = await start(f),
+        abort = new AbortController();
+      try {
+        const consumer = consume(
+          await web(
+            f,
+            f.token,
+            `&follow=true&childId=${child.childId}`,
+            abort.signal,
+          ),
+        );
+        await consumer.until((e) => e.type === 'snapshot');
+        childEnd.resolve();
+        await child.result;
+        await consumer.until((e) => e.type === 'summary');
+        await f.h.ctx.subagents.sendMessage(
+          f.h.root,
+          parent.childId,
+          text('parent remains working'),
+          { signal: abort.signal },
+        );
+        await consumer.until(
+          (e) =>
+            e.type === 'directory' &&
+            e.summary.descendants.some(
+              (r) => r.id === child.childId && r.kind === 'diagnostic',
+            ),
+        );
+        expect(f.listeners.size).toBe(1);
+        await f.h.ctx.subagents.sendMessage(
+          parentAgent,
+          child.childId,
+          text('short continuation'),
+          { signal: abort.signal },
+        );
+        const second = await consumer.until(
+          (e) =>
+            e.type === 'summary' &&
+            e.summary?.descendants.some(
+              (r) => r.id === child.childId && r.lastReply === 'nested B',
+            ),
+        );
+        expect(
+          second.summary.descendants.find((r) => r.id === child.childId),
+        ).toMatchObject({
+          parentId: parent.childId,
+          running: null,
+          observation: { source: 'prepared' },
+          lastReply: 'nested B',
+        });
+        expect(consumer.detail()).toMatchObject({
+          kind: 'summary',
+          child: { lastReply: 'nested B' },
+        });
+        expect(api.read).toHaveBeenCalledTimes(2);
+        expect(f.listeners.size).toBe(1);
+        expect(
+          consumer.events.some(
+            (e) => e.type === 'clear' && e.reason === 'unavailable',
+          ),
+        ).toBe(false);
+        console.log(
+          'SESSION_FOLLOW_NESTED_SHORT',
+          JSON.stringify({
+            types: consumer.events.map((e) => e.type),
+            reads: api.read.mock.calls.length,
+            listeners: f.listeners.size,
+          }),
+        );
+      } finally {
+        abort.abort();
+        childEnd.resolve();
+        parentEnd.resolve();
+        await child.result;
+        await parent.result;
+        await f.h.wait();
+      }
+    }, 30_000);
+
     it.each([
       ['a', 'b', 'b', 'ab', 'ab'],
       ['ab', '', 'b', 'ab', 'abb'],
@@ -508,9 +772,9 @@ suite(
           for (const spy of spies) expect(spy).not.toHaveBeenCalled();
           finish.resolve();
           await activation.result;
-          await consumer.until((e) => e.type === 'terminal');
+          await consumer.until((e) => e.type === 'summary');
           expect(consumer.detail()).toMatchObject({
-            kind: 'terminal',
+            kind: 'summary',
             child: {
               mode: 'continuable',
               activity: 'inactive',
@@ -520,16 +784,20 @@ suite(
             },
           });
           expect(
-            consumer.events.filter((e) => e.type === 'terminal'),
+            consumer.events.filter((e) => e.type === 'summary'),
           ).toHaveLength(1);
           expect(api.read).toHaveBeenCalledOnce();
           expect(api.read.mock.calls[0][2]).toBe(false);
           expect(JSON.stringify(consumer.events)).not.toMatch(
             /PRIVATE|<think>|allrice_tool_call|"frame"|"chunk"|"records"|argumentsDelta/,
           );
-          expect((await consumer.reader.read()).done).toBe(true);
-          expect(f.listeners.size).toBe(0);
-          expect(f.failures.size).toBe(0);
+          expect(f.listeners.size).toBe(1);
+          expect(f.failures.size).toBe(1);
+          await consumer.reader.cancel();
+          await vi.waitFor(() => {
+            expect(f.listeners.size).toBe(0);
+            expect(f.failures.size).toBe(0);
+          });
         } finally {
           controller.abort();
           release.resolve();
@@ -590,7 +858,7 @@ suite(
       }
     }, 30_000);
 
-    it('blind HTTP: nested child terminal during the initial cut reaches safe terminal, not clear/unavailable', async () => {
+    it('blind HTTP: nested child finished during the initial cut reaches a safe summary, not clear/unavailable', async () => {
       const pReady = gate(),
         gReady = gate(),
         pEnd = gate(),
@@ -645,7 +913,7 @@ suite(
         release.resolve();
         const consumer = consume(await opening);
         const final = await consumer.until(
-          (e) => e.type === 'terminal' || e.type === 'clear',
+          (e) => e.type === 'summary' || e.type === 'clear',
         );
         console.log(
           'BLIND_NESTED_HTTP',
@@ -659,7 +927,7 @@ suite(
             preparedReads: api.read.mock.calls.length,
           }),
         );
-        expect(final.type).toBe('terminal');
+        expect(final.type).toBe('summary');
         expect(
           final.summary.descendants.find((r) => r.id === g.childId).lastReply,
         ).toBe('nested safe final');
@@ -740,7 +1008,7 @@ suite(
         updateB.resolve();
         const next = await consumer.until(
           (e) =>
-            e.type === 'display' || e.type === 'terminal' || e.type === 'clear',
+            e.type === 'display' || e.type === 'summary' || e.type === 'clear',
         );
         console.log(
           'BLIND_REACTIVATION_HTTP',

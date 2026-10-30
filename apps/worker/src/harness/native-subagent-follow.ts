@@ -14,7 +14,7 @@ export interface NativeSubagentFollowInput {
     event: NativeSubagentFollowEvent | null,
     signal: AbortSignal,
   ): Promise<void>;
-  terminal(): Promise<NativeSubagentSummary | null>;
+  readSummary(): Promise<NativeSubagentSummary | null>;
 }
 
 /** A disposable observer on the existing stdio owner; never a runtime lease. */
@@ -169,6 +169,7 @@ export async function followNativeSubagent(
     );
     if (summary.rootId !== rootId || summary.root.source !== 'live')
       throw Error('NATIVE_QUERY_SOURCE_MISMATCH');
+    const selected = input.childId && known.get(input.childId);
     known = new Map([[rootId, '']]);
     cursors = new Map([[rootId, summary.root.cursor]]);
     for (const row of summary.descendants)
@@ -176,6 +177,12 @@ export async function followNativeSubagent(
         known.set(row.id, row.parentId);
         cursors.set(row.id, row.observation.cursor);
       }
+    // A selected durable address survives unload; cursors contain live cuts only.
+    if (input.childId && selected) {
+      if (known.has(input.childId) && known.get(input.childId) !== selected)
+        throw Error('NATIVE_QUERY_CHILD_UNVERIFIED');
+      known.set(input.childId, selected);
+    }
     verified ||= Boolean(input.childId && known.has(input.childId));
     await emit({ type: 'directory', summary });
   };
@@ -256,7 +263,7 @@ export async function followNativeSubagent(
       }
       batch.length = 0;
       if (settled && input.childId && verified) {
-        const summary = await read(input.terminal).catch(() => null);
+        const summary = await read(input.readSummary).catch(() => null);
         if (
           !summary?.descendants.some(
             (row) =>
@@ -265,8 +272,9 @@ export async function followNativeSubagent(
               row.running === true,
           )
         ) {
-          await emit({ type: 'terminal', childId: input.childId, summary });
-          return;
+          await emit({ type: 'summary', childId: input.childId, summary });
+          baseline = undefined;
+          continue;
         }
       }
       if (gap) await emit({ type: 'clear', reason: 'resync' });
@@ -274,6 +282,7 @@ export async function followNativeSubagent(
       if (changed || gap) await directory();
       if (
         input.childId &&
+        cursors.has(input.childId) &&
         (detailChanged ||
           gap ||
           !baseline ||
@@ -284,7 +293,7 @@ export async function followNativeSubagent(
         } catch (error) {
           if (!pending.some(ended)) throw error;
         }
-      } else if (display && revision! > (baseline?.revision ?? -1)) {
+      } else if (baseline && display && revision! > baseline.revision) {
         baseline = binding(display.hostEpoch, display.display);
         await emit(display);
       }
