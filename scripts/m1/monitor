@@ -7,6 +7,7 @@
 #   monitor peer [--config <file>]                  huihuimac side: is M1 alive, is it reachable from outside
 #   monitor daily [--config <file>]                 send the daily report now (rounds send it once a day)
 #   monitor failures [--json] [--config <file>]     failed runs of the last 24 hours by error code: new, increased
+#   monitor online-waits [--json] [--config <file>] current online question waits and Worker slot occupancy (read-only)
 #   monitor status [--config <file>]                open alerts, last round, delivery backlog
 #   monitor test-alert [--config <file>]            send one test message
 #   monitor launchd install|remove [--peer] [--config <file>]
@@ -138,6 +139,7 @@ M1 = dict(
         'bridge_active_hours': 24, 'bridge_offline_minutes': 5, 'bridge_work_wait_minutes': 30,
         'deadlock_critical_per_hour': 5, 'pg_errors_critical_per_hour': 20,
         'failure_baseline_days': 7, 'failure_increase_min': 3, 'failure_increase_ratio': 2,
+        'online_wait_warn_pct': 80, 'online_wait_critical_pct': 95,  # monitor quota alert convention; never execution limits
     },
     pgLog='/opt/homebrew/var/log/postgresql@17.log',  # log_line_prefix '%m [%p] %d ' names the database
 )
@@ -1328,6 +1330,82 @@ where j.status = 'running' and r.state = 'running' and j.lease_expires_at > now(
   and not exists (select 1 from allrice_runtime_operations o where o.root_run_id = r.id
                   and o.snapshot->>'status' in ('dispatched', 'running', 'cancel_requested') and o.lease_expires_at > now())"""
 
+# Only a complete current Host snapshot proves foreground, independently of the
+# Worker heartbeat. Missing router coverage is unknown for each leased Job.
+SQL_ONLINE_WAITS = """
+with leased as (
+  select j.id,j.run_id,j.worker_id,j.attempt,r.organization_id,r.workspace_id,r.owner_id,e.session_id,
+    cr.thread_id,cr.thread_generation,
+    cr.active_run_id=r.id and cr.worker_id=j.worker_id and cr.state='running' as current_chat
+  from allrice_jobs j join allrice_runs r on r.id=j.run_id
+  left join allrice_employee_runs e on e.run_id=r.id
+  left join allrice_conversation_runtimes cr on cr.session_id=e.session_id
+  where r.state not in ('succeeded','failed','canceled') and j.status in ('claimed','running')
+    and j.lease_token is not null and j.worker_id is not null and j.lease_expires_at>statement_timestamp()),
+observed as (
+  select l.*,m.value->'onlineQuestions' as report,v,v->'foreground' as f,
+    m.value->>'workerId'=l.worker_id::text as reporting_worker,
+    count(v) over(partition by l.id) as matches
+  from leased l left join allrice_runtime_metadata m on m.key='worker-operations:'||l.worker_id::text
+  left join lateral jsonb_array_elements(case when jsonb_typeof(m.value->'onlineQuestions'->'executions')='array'
+    then m.value->'onlineQuestions'->'executions' else '[]'::jsonb end) v on v->>'jobId'=l.id::text),
+proof as (
+  select l.id,l.run_id,
+    coalesce(l.current_chat and l.reporting_worker and l.matches=1 and o.runtime_id is not null and i.id is not null
+      and l.report->'version'='1'::jsonb and l.report->>'scope'='default_harness_router'
+      and l.v->>'runId'=l.run_id::text and l.v->>'rootSessionId'=l.thread_id
+      and l.v->'attempt'=to_jsonb(l.attempt) and l.v->'generation'=to_jsonb(l.thread_generation),false) as bound,
+    i.status='live' and i.last_seen_at>statement_timestamp()-interval '15 seconds' as alive,
+    x.runtime_id is not null as closed,
+    coalesce(l.f->'version'='1'::jsonb and l.f->'complete'='true'::jsonb
+      and l.f->>'runId'=l.run_id::text and l.f->>'rootSessionId'=l.thread_id
+      and jsonb_typeof(l.f->'sampledAt')='string'
+      and l.f->>'sampledAt' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?Z$'
+      and case when pg_input_is_valid(l.f->>'sampledAt','timestamp with time zone')
+        then (l.f->>'sampledAt')::timestamptz between statement_timestamp()-interval '90 seconds' and statement_timestamp()
+        else false end
+      and jsonb_typeof(l.f->'questions')='array' and q.valid and q.n=q.unique_ids,false) as valid,
+    q.n as question_count
+  from observed l
+  left join allrice_dsh_runtime_close_observations o on o.runtime_id::text=l.v->>'runtimeId' and o.observation_kind='owned'
+    and o.worker_boot_id::text=l.report->>'workerBootId'
+    and o.payload->>'workerId'=l.worker_id::text and o.payload->'context'->>'kind'='context'
+    and o.payload->'context'->>'organizationId'=l.organization_id::text
+    and o.payload->'context'->>'workspaceId'=l.workspace_id::text and o.payload->'context'->>'ownerId'=l.owner_id::text
+    and o.payload->'context'->>'contextKind'='chat' and o.payload->'context'->>'contextId'=l.session_id::text
+  left join allrice_dsh_runtime_close_observations x on x.runtime_id=o.runtime_id and x.worker_boot_id=o.worker_boot_id
+    and x.owner_digest=o.payload_digest and x.observation_kind='process_closed'
+  left join allrice_dsh_runtime_instances i on i.id::text=l.v->>'runtimeId' and i.worker_id=l.worker_id
+    and i.organization_id=l.organization_id and i.workspace_id=l.workspace_id and i.owner_id=l.owner_id
+    and i.session_id=l.session_id and i.thread_id=l.thread_id
+  cross join lateral (
+    select count(*) as n,count(distinct question.value->>'questionId') as unique_ids,
+      coalesce(bool_and(coalesce(jsonb_typeof(question.value->'questionId')='string' and length(question.value->>'questionId')>0
+        and question.value->>'runId'=l.run_id::text and question.value->>'rootSessionId'=l.thread_id
+        and question.value->>'nativeSessionId'=l.thread_id,false)),true) as valid
+    from jsonb_array_elements(case when jsonb_typeof(l.f->'questions')='array'
+      then l.f->'questions' else '[]'::jsonb end) question(value)) q),
+per_job as (
+  select id,run_id,bool_or(bound and not closed and valid and coalesce(alive,false) and question_count>0) as waiting,
+    bool_or(not (bound and (closed or (valid and coalesce(alive,false))))) as uncertain
+  from proof group by id,run_id)
+select statement_timestamp() as checked_at,
+  (select count(distinct run_id)::int from per_job where waiting) as online_runs,
+  (select count(distinct id)::int from per_job where waiting) as occupied_slots,
+  (select count(distinct run_id)::int from per_job where waiting or uncertain) as possible_online_runs,
+  (select count(distinct id)::int from per_job where waiting or uncertain) as possible_occupied_slots,
+  (select (array_agg(distinct run_id order by run_id))[1:3] from per_job where waiting) as samples,
+  (select count(distinct run_id)::int from per_job where uncertain and not waiting) as unclassified_runs,
+  (select (array_agg(distinct run_id order by run_id))[1:3] from per_job where uncertain and not waiting) as uncertain_samples,
+  (select array_agg(distinct case when not bound then 'execution_identity_or_coverage_missing'
+    when not coalesce(alive,false) then 'runtime_evidence_missing_or_stale' else 'foreground_snapshot_incomplete_or_stale' end)
+    from proof p where not (bound and (closed or (valid and coalesce(alive,false))))
+      and not exists(select 1 from per_job j where j.id=p.id and j.waiting)) as uncertain_reasons,
+  (select array_agg(distinct worker_id) from leased) as active_workers,
+  (select coalesce(jsonb_agg(jsonb_build_object('key',key,'value',value,'observed_at',updated_at,
+    'online',updated_at between statement_timestamp()-interval '90 seconds' and statement_timestamp())), '[]'::jsonb)
+    from allrice_runtime_metadata where starts_with(key,'worker-operations:')) as workers"""
+
 SQL_DEAD_LETTERS = """
 select count(*)::int as count, (array_agg(j.run_id order by j.completed_at desc))[1:3] as samples,
   array_agg(distinct j.last_error_code) as codes, array_agg(distinct j.payload->>'type') as types
@@ -1493,6 +1571,85 @@ def ids(row, key='samples'):
 
 def closed(row):
     return row.get('admission') not in (None, 'open')
+
+
+def online_wait_snapshot(r):
+    """One SQL snapshot; missing evidence stays unknown, including when no Run waits."""
+    try:
+        if not isinstance(r.cfg.get('business'), dict):
+            raise CheckError('business配置缺失或非法')
+        row = biz(r, SQL_ONLINE_WAITS)
+    except CheckError as err:
+        row = {'checked_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(r.now)),
+               'online_runs': None, 'occupied_slots': None, 'samples': [],
+               'unknown_reasons': ['采集失败：' + str(err)]}
+    reasons = row.setdefault('unknown_reasons', [])
+    workers, invalid = {}, 0
+    for report in row.pop('workers', []):
+        if not report['online']:
+            continue  # a crashed/restarted Worker must not inflate current capacity
+        try:
+            value = report['value']
+            worker_id = str(uuid.UUID(value['workerId']))
+            capacity = value['capacity']
+            n = capacity['concurrency']
+            if (report['key'] != 'worker-operations:' + worker_id or
+                    capacity['mode'] not in ('auto', 'configured') or
+                    type(n) not in (int, float) or not 1 <= n <= 32 or n != int(n) or worker_id in workers):
+                raise ValueError('invalid capacity identity or concurrency')
+            workers[worker_id] = {'worker_id': worker_id, 'concurrency': int(n), 'observed_at': report['observed_at']}
+        except (KeyError, TypeError, ValueError, AttributeError):
+            invalid += 1
+    missing = set(row.pop('active_workers', None) or []) - set(workers)
+    if not workers:
+        reasons.append('无90秒内可信Worker容量')
+    if invalid:
+        reasons.append('%d条在线Worker容量身份或数值非法' % invalid)
+    if missing:
+        reasons.append('%d个有效租约Worker缺可信在线容量' % len(missing))
+    row['capacity_workers'] = sorted(workers.values(), key=lambda w: w['worker_id'])
+    row['total_slots'] = sum(w['concurrency'] for w in workers.values()) if workers and not invalid and not missing else None
+    row['confirmed_online_runs'], row['confirmed_occupied_slots'] = row['online_runs'], row['occupied_slots']
+    row.setdefault('possible_online_runs', row['online_runs'])
+    row.setdefault('possible_occupied_slots', row['occupied_slots'])
+    if row.get('unclassified_runs'):
+        reasons.append('%d个Run当前前台不确定（%s）；例%s' % (
+            row['unclassified_runs'], ids(row, 'uncertain_reasons') or '观察缺失/冲突或物理状态未知', ids(row, 'uncertain_samples') or '无'))
+        row['online_runs'] = row['occupied_slots'] = None
+    b = r.cfg.get('business') if isinstance(r.cfg.get('business'), dict) else {}
+    warn, critical = b.get('online_wait_warn_pct'), b.get('online_wait_critical_pct')
+    thresholds_valid = type(warn) in (int, float) and type(critical) in (int, float) and 0 < warn <= critical <= 100
+    if not thresholds_valid:
+        reasons.append('在线等答比例告警阈值缺失或非法')
+    row['occupancy_pct'] = 100.0 * row['occupied_slots'] / row['total_slots'] if not reasons else None
+    row['occupancy_lower_pct'] = (100.0 * row['confirmed_occupied_slots'] / row['total_slots']
+                                  if thresholds_valid and row['total_slots'] and row['confirmed_occupied_slots'] is not None else None)
+    row['thresholds'] = {'warning_pct': warn, 'critical_pct': critical}
+    r.facts['online_waits'] = row
+    return row
+
+
+def online_wait_detail(row):
+    count = lambda key: row.get(key) if row.get(key) is not None else '未知'
+    pct = '%.1f%%' % row['occupancy_pct'] if row.get('occupancy_pct') is not None else '未知'
+    text = '在线等答（%s）：Run %s个，占Worker执行位 %s/%s，占比%s；例 %s；容量来源worker-operations（90秒内，%d个Worker）' % (
+        row.get('checked_at', '采集失败'), count('online_runs'), count('occupied_slots'), count('total_slots'), pct, ids(row) or '无',
+        len(row.get('capacity_workers', [])))
+    if row.get('unclassified_runs'):
+        text += '；已确认Run%s/执行位%s，可能上限Run%s/执行位%s' % tuple(row.get(k, '?') for k in (
+            'confirmed_online_runs', 'confirmed_occupied_slots', 'possible_online_runs', 'possible_occupied_slots'))
+    return text + ('；未知：' + '；'.join(row['unknown_reasons']) if row.get('unknown_reasons') else '')
+
+
+def check_online_waits(r):
+    row = online_wait_snapshot(r)
+    pct, lower, t = row['occupancy_pct'], row['occupancy_lower_pct'], row['thresholds']
+    sev = ('critical' if lower is not None and lower >= t['critical_pct'] else
+           'warning' if lower is not None and lower >= t['warning_pct'] else 'unknown' if pct is None else 'ok')
+    detail = online_wait_detail(row)
+    return [finding('business.online_waits', sev, '有前台待答问题的Run占位比例高', detail, BUSINESS_RUNBOOK, 'monitor online-waits --json'),
+            finding('business.online_waits_data', 'warning' if row['unknown_reasons'] else 'ok', '在线等答执行位统计不完整',
+                    detail, BUSINESS_RUNBOOK, 'monitor online-waits --json')]
 
 
 def check_failed_runs(r):
@@ -1687,6 +1844,7 @@ BUSINESS_CHECKS = [
     ('failed_runs', check_failed_runs, False, 'postgres'),
     ('stuck_runs', check_stuck_runs, False, 'postgres'),
     ('silent_runs', check_silent_runs, False, 'postgres'),
+    ('online_waits', check_online_waits, True, 'postgres'),
     ('dead_letters', check_dead_letters, False, 'postgres'),
     ('queue', check_queue, True, 'postgres'),
     ('schedules', check_schedules, False, 'postgres'),
@@ -1715,12 +1873,13 @@ def daily_business(r):
         return ['运行：查询失败（%s）' % err]
     lines = ['运行：24 小时结束 %d 个，失败 %d 个，取消 %d 个（含冒烟测试）；新增死信 %d 个' % (d['finished'], d['failed'], d['canceled'], d['dead_letters']),
              '现在：运行中 %d 个，等用户 %d 个，结果未知的操作 %d 个，启用中的定时任务 %d 个' % (d['running'], d['waiting'], d['unknown_ops'], d['schedules'])]
-    for name, fn in (('longWaits', check_waits), ('bridge', check_bridge)):
+    for name, fn in (('longWaits', check_waits), ('bridge', check_bridge), ('online_waits', check_online_waits)):
         if name not in r.facts:  # `monitor daily` alone has not run the checks: read them now
             try:
                 fn(r)
             except CheckError:
                 pass
+    lines.append(online_wait_detail(r.facts.get('online_waits', {})))
     lines.append('等用户超过 %d 小时：%s 个；Bridge 最近 24 小时在线过 %s 台、现在离线 %s 台' % (
         r.cfg['business']['wait_minutes'] // 60, r.facts.get('longWaits', '?'), (r.facts.get('bridge') or {}).get('expected', '?'),
         (r.facts.get('bridge') or {}).get('count', '?')))
@@ -2083,12 +2242,12 @@ def status(cfg):
 
 def main(argv):
     p = argparse.ArgumentParser(prog='monitor')
-    p.add_argument('command', choices=['run', 'peer', 'daily', 'failures', 'status', 'test-alert', 'launchd', 'ingest-incidents'])
+    p.add_argument('command', choices=['run', 'peer', 'daily', 'failures', 'online-waits', 'status', 'test-alert', 'launchd', 'ingest-incidents'])
     p.add_argument('action', nargs='?', choices=['install', 'remove'])
     p.add_argument('--config')
     p.add_argument('--peer', action='store_true')
     p.add_argument('--dry-run', action='store_true', help='run/peer/daily: print what would be sent; send and store nothing')
-    p.add_argument('--json', action='store_true', help='failures: the groups as JSON')
+    p.add_argument('--json', action='store_true', help='failures/online-waits: the snapshot as JSON')
     a = p.parse_args(argv)
     peer = a.command == 'peer' or a.peer
     cfg = load_config(a.config, peer)
@@ -2103,6 +2262,9 @@ def main(argv):
         print('\n\n'.join(compose(r, evaluate(r, findings, ran))) or '(nothing to send)')
     elif a.command in ('run', 'peer'):
         do_round(cfg, peer)
+    elif a.command == 'online-waits':
+        out = online_wait_snapshot(Round(cfg))
+        print(json.dumps(out, ensure_ascii=False, indent=1) if a.json else online_wait_detail(out))
     elif a.command == 'failures':
         out = failure_groups(Round(cfg))
         if a.json:
