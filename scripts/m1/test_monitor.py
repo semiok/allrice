@@ -990,7 +990,7 @@ class OnlineWaits(unittest.TestCase):
         r.cfg['business']['online_wait_warn_pct'] = 50
         self.assertEqual(self.collect(r, self.row(2, 4))[0]['severity'], 'warning')
 
-    def test_missing_or_invalid_capacity_and_clock_stay_unknown(self):
+    def test_missing_or_invalid_capacity_and_observation_stay_unknown(self):
         rows = [self.row(workers=[]), self.row(active_workers=[None]),
                 self.row(0, workers=[]), self.row(unclassified_runs=1)]
         stale = self.row()
@@ -1051,6 +1051,32 @@ class OnlineWaits(unittest.TestCase):
         self.assertEqual(step(r, self.collect(r, self.row(0)), 1200), [('recovered', 'business.online_waits', False)])
         self.assertEqual(len(r.state['incidentOutbox']), 4)
         self.assertEqual(r.state['alerts'], {})
+
+    def test_known_lower_bound_alerts_even_with_an_unclassified_candidate(self):
+        r = make_round()
+        row = self.row(4, 5, unclassified_runs=1, possible_online_runs=5, possible_occupied_slots=5,
+                       uncertain_reasons=['missing_or_invalid_observation'])
+        findings = self.collect(r, row)
+        self.assertEqual([f['severity'] for f in findings], ['warning', 'warning'])
+        snapshot = r.facts['online_waits']
+        self.assertIsNone(snapshot['occupancy_pct'])
+        self.assertEqual(snapshot['occupancy_lower_pct'], 80)
+        self.assertEqual((snapshot['confirmed_online_runs'], snapshot['possible_online_runs']), (4, 5))
+        self.assertIn('已确认Run4/执行位4', findings[0]['detail'])
+        self.assertEqual(len(step(r, findings, 0)), 2)
+
+    def test_question_conflict_does_not_recover_a_high_alert_but_matching_end_does(self):
+        r = make_round()
+        step(r, self.collect(r, self.row(4, 4)), 0)
+        conflict = self.row(0, unclassified_runs=1, possible_online_runs=1, possible_occupied_slots=1,
+                            uncertain_samples=['legacy-run'], uncertain_reasons=['question_projection_conflict'])
+        findings = self.collect(r, conflict)
+        self.assertEqual([f['severity'] for f in findings], ['unknown', 'warning'])
+        self.assertEqual(step(r, findings, 100), [('opened', 'business.online_waits_data', False)])
+        self.assertIn('business.online_waits', r.state['alerts'])
+        self.assertIn('question_projection_conflict', findings[0]['detail'])
+        self.assertEqual(step(r, self.collect(r, self.row(0)), 200), [
+            ('recovered', 'business.online_waits', False), ('recovered', 'business.online_waits_data', False)])
 
     def test_high_ratio_is_rechecked_before_alerting(self):
         r = make_round()

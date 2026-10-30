@@ -71,7 +71,7 @@ huihuimac 一侧（`monitor peer`）：
 | `business.failed_runs`                                 | 只算有 job 的根 run（子助手 run 不写 `completed_at`）；排除平台组织 `allrice-platform`、冒烟账号 `smoke`、员工预览/方法测试/经验验证；取消和 `APPROVAL_REJECTED` 不算失败 | 60 分钟里结束 ≥5 个时：失败 ≥3、≥20% 且（≥ 此前 24 小时基线的 2 倍或 ≥30%）为警告；失败 ≥5 且 ≥50% 为严重。不到 5 个时：失败 ≥3 且 ≥50% 为警告                                                      |
 | `business.stuck_runs`                                  | 心跳和租约在 job 上（租约默认 30 秒，心跳 10 秒），`maintainQueue` 每秒收回过期租约；过期好几分钟还在 = 没有活着的 Worker 在维护；或 run 是 running 而 job 已不在执行     | 超过 5 分钟 ≥1 个：严重                                                                                                                                                                             |
 | `business.silent_runs`                                 | 心跳定时器和业务处理分开，处理卡死时心跳照跳：看最后一条 run 事件，排除任务时钟暂停和有云端/本机操作在执行的                                                              | 30 分钟没有新事件：警告                                                                                                                                                                             |
-| `business.online_waits` / `business.online_waits_data` | 非终态 Run 的有效 claimed/running Job lease + 当前前台待答题 + task clock waiting；容量来自90秒内可信 Worker `capacity.concurrency`                                       | 占总执行位 ≥80% 警告、≥95% 严重；数据/容量/阈值未知另报警告，并保留已有比例告警；失败复查一次，复用去重和恢复                                                                                       |
+| `business.online_waits` / `business.online_waits_data` | 当前真实前台题的 opened/ended 观察 + 当前 Job/attempt/运行归属及物理证据；容量来自90秒内 Worker `capacity.concurrency`                                                    | 占总执行位 ≥80% 警告、≥95% 严重；缺失/冲突为局部未知，不能恢复旧告警；可信下界达到阈值仍报警；失败复查一次                                                                                          |
 | `business.dead_letters`                                | 死信只有三条路：可重试错误用完次数、最后一次租约过期（`LEASE_EXHAUSTED`）、开始时策略拒绝（`POLICY_DENIED`）；按 `completed_at` 统计                                      | 60 分钟内 ≥1：警告；≥3 或出现 `POLICY_DENIED`：严重                                                                                                                                                 |
 | `business.queue`                                       | 到点（`available_at`）的 queued/retry_wait 没人领；排除平台 Dev 作业、经验整理（只在空闲时领）、待放行的追加消息。正常领取延迟 p95 约 2 秒                                | 等待 >5 分钟：警告；>15 分钟或此时没有任何作业在执行：严重                                                                                                                                          |
 | `business.overdue_schedules`                           | 一次性任务以当前 revision 的 occurrence 行证明已触发；周期任务的 `next_run_at` 与 occurrence 同事务推进；两者都经 outbox 交给队列；旧版定时（legacy）已下线，永远不会触发 | 晚 4 分钟：警告；晚 30 分钟或定时分区（一次性/周期，只看上面有启用任务的）关闭或租约过期：严重；旧版残留、创建时已过时间而没执行的一次性提醒（`target_not_future`，直到有人改期、暂停或删除）：警告 |
@@ -83,13 +83,17 @@ huihuimac 一侧（`monitor peer`）：
 
 日报里有一行“失败分组”：24 小时的失败按错误码分组，分出新出现（此前 7 天没有）和变多（≥3 且 ≥ 此前日均 2 倍）；`monitor failures --json` 导出同样的数据（每组带样本 run 和错误信息前 200 字），供之后的每日问题报告直接读。
 
-在线等答复用 `native-questions.ts:answerableTaskQuestions` / `task-clock.ts` 的既有投影并收窄为当前前台等待：legacy/程序题 `pending=true`，或当前 Run/Worker/session 的原生 `open` 且 present/未关闭，再与任务时钟 `waiting` 相交。原生 `continued` 已结束前台回调，只是仍可晚答；它与活跃工作、资源等待都不计。单独的设备/资源等待、已答/settled、parked 已释放租约、过期租约和终态 Run 不计。多题按 Run/Job 去重；子任务和驻留 Host 不额外占位。题仍开但 clock 为 active 的并行工作不算空等；有当前题却缺 clock 时计数未知。
+在线等答按“有当前真实前台待答问题的在线 Run 及有效 Job 占位”统计，依赖前台观察片先部署：既有 `run_events` 的 `allrice/user-question-opened|ended` v1，仅取身份元数据。匹配原 Run/Job/attempt、native/root Session 与当前 chat thread/generation；相同 questionId/runtimeId 的 ended 优先于旧 pending，重复 opened 不重开。clock active、仍有 child 或其他工作均不排除真实前台题；没有题的资源/设备等待不计。Run 与 Job 分别去重，多题/Host/child不叠加占位；终态、parked 已释放和过期 lease 排除。
+
+物理证据复用 exact runtimeId 的 owned（Worker/租户/成员/上下文）和同 boot/owner_digest 的 process_closed；真实关闭优先，即使 inventory 暂未刷新也为0。chat还须同runtime/Worker/session/thread的inventory live且15秒内；非chat只沿可信owned和当前Job lease，不伪造chat绑定。close_started/request不是物理关闭；缺失、过期或offline但无关闭证明保持未知。deadlineAt只是原生窗口元数据，即使已过也不自行推断结束或未知；有效opened+当前归属+可信存活且无ended可持续为1。
+
+旧原生 open/present/未closed可由当前绑定、同attempt/generation的投影事件和可信物理记录提供正证据；continued/settled/closed/absent不能重开。legacy/program pending没有对应v1观察覆盖才列未确定候选；有覆盖的旧attempt/thread不会被继承。只有opened但同题旧投影已答/非open时标 `question_projection_conflict`，不伪造精确0或1；正常新legacy opened确定1、同题ended确定0，不会每题都未知。有候选时精确总数/比例null，JSON给出confirmed/possible上下界及最多3个未知Run样本；同Run已有确定题则不重复增加未知Run。未知不恢复旧高比例告警，只有完整精确健康才恢复；可信容量下，确定下界已高时仍报警。
 
 总执行位只加总 `allrice_runtime_metadata` 的 `worker-operations:<workerId>`：key 与合法 UUID 身份相符，`capacity.mode` 为 auto/configured、concurrency 为1–32整数、报告在90秒内（沿 `operations-resources.ts`）。这是 Worker 实际采用的配置，不重算 CPU/环境中的 auto，不累加每个 Worker 所带的全局 `pressure.jobs`。旧无有效租约的报告排除；新鲜非法报告、有效租约的 Worker 缺可信容量、完全无在线容量时，总位/占比保留未知，不能报0%健康。缺表/采集失败也保持未知；数据恢复不会提前消除仍高的占比告警。
 
 `business.online_wait_warn_pct` / `online_wait_critical_pct` 可在现有配置调整，须 `0 < warning <= critical <= 100`。80/95 是本次用户批准比例告警后，参考现有 monitor 配额告警分级的运维初值，不是 DSH 默认，也不参与拒绝任务或强制结束。每轮采样和20秒复查存在投影传播窗口，不是进程级实时计数。
 
-只读取同一 SQL 快照的 `monitor online-waits --json` / `monitor online-waits` 输出采集时间、Run 数、占位/总位、占比、最多3个 Run ID，以及 Worker 容量和报告时间（JSON）；日报含同一口径。命令不发送告警、不写 incident/alert，也不读取题目/答案正文。真实验收创建在线等答题后取该输出截图，回答后再取下降快照；高比例和未知分支在隔离 schema 验证，不为演练改执行容量或批量造真实任务。
+只读取同一 SQL 快照的 `monitor online-waits --json` / `monitor online-waits` 输出采集时间、Run 数、占位/总位、占比、最多3个已确认及3个未知 Run ID，以及 Worker 容量和报告时间（JSON）；日报含同一口径。命令不发送告警、不写 incident/alert，也不读取题目/答案正文。真实验收创建在线等答题后取该输出截图（child活跃仍应计1），回答后再取下降快照；高比例和未知分支在隔离 schema 验证，不为演练改执行容量或批量造真实任务。
 
 收到业务告警的第一步：按告警里给的样本 ID（完整 UUID，可直接放进 SQL）在后台“租户运行检查”或用 SQL 查对应 run/job；多数业务告警是组件告警的后果（订阅不可用 → 失败突增，Worker 挂了 → 队列积压），先处理同时出现的组件告警。
 
@@ -136,7 +140,7 @@ huihuimac 的告警通过 `ssh m1 allrice-dev/bin/monitor ingest-incidents` 写�
 ~/allrice-dev/bin/monitor run --dry-run   # 现在跑一遍，只打印，不发不写
 ~/allrice-dev/bin/monitor daily           # 立刻发日报
 ~/allrice-dev/bin/monitor failures --json # 24 小时失败按错误码分组（新出现/变多/其余），给每日问题报告读
-~/allrice-dev/bin/monitor online-waits --json # 当前在线空等、实际占位/容量及来源；只读，可截图
+~/allrice-dev/bin/monitor online-waits --json # 当前前台待答Run、实际占位/容量及来源；只读，可截图
 tail -50 ~/allrice-dev/monitor/monitor.log
 ```
 

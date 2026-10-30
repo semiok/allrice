@@ -1330,28 +1330,90 @@ where j.status = 'running' and r.state = 'running' and j.lease_expires_at > now(
   and not exists (select 1 from allrice_runtime_operations o where o.root_run_id = r.id
                   and o.snapshot->>'status' in ('dispatched', 'running', 'cancel_requested') and o.lease_expires_at > now())"""
 
-# A clock may wait for a device/resource; an answerable continued card may coexist
-# with active work. Count only current foreground questions AND a waiting clock.
-# Native/legacy predicates follow native-questions.ts and task-clock.ts; no bodies.
+# Foreground facts come from the existing public request's published/finally
+# observations. A clock phase, child activity or a deadline cannot end a question.
 SQL_ONLINE_WAITS = """
 with leased as (
-  select j.id,j.run_id,j.worker_id,c.phase,
-    (exists(select 1 from allrice_task_questions q where q.run_id=r.id and q.pending)
-     or exists(select 1 from allrice_native_questions q
-       join allrice_employee_runs e on e.session_id=q.session_id and e.run_id=r.id
-       join allrice_conversation_runtimes cr on cr.session_id=q.session_id and cr.thread_id=q.native_session_id
-       where q.source_run_id=r.id and q.native_present and q.state='open' and q.closed_at is null
-         and cr.active_run_id=r.id and cr.worker_id=j.worker_id and cr.state='running')) as pending
+  select j.id,j.run_id,j.worker_id,j.attempt,r.organization_id,r.workspace_id,r.owner_id,e.session_id,
+    cr.thread_id,cr.thread_generation,
+    cr.active_run_id=r.id and cr.worker_id=j.worker_id and cr.state='running' as current_chat
   from allrice_jobs j join allrice_runs r on r.id=j.run_id
-  left join allrice_task_clocks c on c.run_id=r.id
+  left join allrice_employee_runs e on e.run_id=r.id
+  left join allrice_conversation_runtimes cr on cr.session_id=e.session_id
   where r.state not in ('succeeded','failed','canceled') and j.status in ('claimed','running')
     and j.lease_token is not null and j.worker_id is not null and j.lease_expires_at>statement_timestamp()),
-waiting as (select distinct id,run_id from leased where pending and phase='waiting')
+history as (
+  select l.id,e.payload as p,e.payload->'nativePayload' as v,e.payload->>'sourceEventType' as kind
+  from leased l join allrice_run_events e on e.run_id=l.run_id
+  where e.event_type='harness.native' and e.payload->>'source'='dsh'
+    and e.payload->>'sourceEventType' in ('allrice/user-question-opened','allrice/user-question-ended')),
+covered as (
+  select h.id,h.v->>'questionId' as question_id from history h join leased l on l.id=h.id
+  where h.v->'version'='1'::jsonb and h.v->>'runId'=l.run_id::text and h.v->>'jobId'=l.id::text
+    and h.v->>'nativeSessionId'=h.v->>'rootSessionId' and h.v->>'rootSessionId'=h.p->>'threadId'),
+observed as (
+  select l.id,l.run_id,h.v->>'questionId' as question_id,h.v->>'runtimeId' as runtime_id,
+    coalesce(bool_or(h.kind='allrice/user-question-ended' and h.v->'version'='1'::jsonb
+      and jsonb_typeof(h.v->'timed')='boolean'),false) as ended,
+    bool_and(h.v->'version'='1'::jsonb and jsonb_typeof(h.v->'timed')='boolean') as valid
+  from history h join leased l on l.id=h.id
+  where h.v->>'runId'=l.run_id::text and h.v->>'jobId'=l.id::text and h.p->>'attempt'=l.attempt::text
+    and h.v->>'nativeSessionId'=h.v->>'rootSessionId' and h.v->>'rootSessionId'=h.p->>'threadId'
+    and (l.session_id is null or (l.current_chat and h.p->>'threadId'=l.thread_id
+      and h.p->>'generation'=l.thread_generation::text))
+  group by l.id,l.run_id,h.v->>'questionId',h.v->>'runtimeId'),
+candidates as (
+  select * from observed
+  union all
+  select l.id,l.run_id,q.native_session_id||':'||q.call_id,i.id::text,false,
+    exists(select 1 from allrice_run_events e where e.run_id=l.run_id and e.event_type='harness.native'
+      and e.payload->>'source'='dsh' and e.payload->>'sourceEventType'='session/user-questions'
+      and e.payload->>'attempt'=l.attempt::text and e.payload->>'generation'=l.thread_generation::text
+      and e.payload->>'threadId'=l.thread_id and e.payload->'nativePayload'->>'sessionId'=q.native_session_id
+      and e.payload->'nativePayload'->>'sequence'=q.sequence::text)
+  from leased l join allrice_native_questions q on q.session_id=l.session_id and q.source_run_id=l.run_id
+  left join allrice_dsh_runtime_instances i on i.thread_id=l.thread_id and i.worker_id=l.worker_id and i.session_id=l.session_id
+  where l.current_chat and q.native_session_id=l.thread_id and q.native_present and q.state='open' and q.closed_at is null
+    and not exists(select 1 from covered c where c.id=l.id and c.question_id=q.native_session_id||':'||q.call_id)
+  union all
+  select l.id,l.run_id,q.question_id,null,false,false
+  from leased l join allrice_task_questions q on q.run_id=l.run_id and q.pending
+  where not exists(select 1 from covered c where c.id=l.id and c.question_id=q.question_id)),
+proof as (
+  select c.*,o.runtime_id is not null and (l.session_id is null or
+      (i.status='live' and i.last_seen_at>statement_timestamp()-interval '15 seconds')) as alive,
+    c.ended or x.runtime_id is not null as closed,
+    exists(select 1 from allrice_task_questions q where q.run_id=l.run_id and q.question_id=c.question_id and not q.pending)
+      or exists(select 1 from allrice_native_questions q where q.session_id=l.session_id
+        and q.native_session_id||':'||q.call_id=c.question_id and (q.state<>'open' or not q.native_present or q.closed_at is not null)) as conflict
+  from candidates c join leased l on l.id=c.id
+  left join allrice_dsh_runtime_close_observations o on o.runtime_id::text=c.runtime_id and o.observation_kind='owned'
+    and o.payload->>'workerId'=l.worker_id::text and o.payload->'context'->>'kind'='context'
+    and o.payload->'context'->>'organizationId'=l.organization_id::text
+    and o.payload->'context'->>'workspaceId'=l.workspace_id::text and o.payload->'context'->>'ownerId'=l.owner_id::text
+    and ((l.session_id is null and o.payload->'context'->>'contextKind'<>'chat') or
+      (l.current_chat and o.payload->'context'->>'contextKind'='chat' and o.payload->'context'->>'contextId'=l.session_id::text))
+  left join allrice_dsh_runtime_close_observations x on x.runtime_id=o.runtime_id and x.worker_boot_id=o.worker_boot_id
+    and x.owner_digest=o.payload_digest and x.observation_kind='process_closed'
+  left join allrice_dsh_runtime_instances i on i.id::text=c.runtime_id and i.worker_id=l.worker_id
+    and i.organization_id=l.organization_id and i.workspace_id=l.workspace_id and i.owner_id=l.owner_id
+    and i.session_id=l.session_id and i.thread_id=l.thread_id),
+per_job as (
+  select id,run_id,bool_or(not closed and coalesce(valid,false) and coalesce(alive,false) and not conflict) as waiting,
+    bool_or(not closed and (not coalesce(valid,false) or not coalesce(alive,false) or conflict)) as uncertain
+  from proof group by id,run_id)
 select statement_timestamp() as checked_at,
-  (select count(distinct run_id)::int from waiting) as online_runs,
-  (select count(distinct id)::int from waiting) as occupied_slots,
-  (select (array_agg(distinct run_id order by run_id))[1:3] from waiting) as samples,
-  (select count(distinct run_id)::int from leased where pending and phase is null) as unclassified_runs,
+  (select count(distinct run_id)::int from per_job where waiting) as online_runs,
+  (select count(distinct id)::int from per_job where waiting) as occupied_slots,
+  (select count(distinct run_id)::int from per_job where waiting or uncertain) as possible_online_runs,
+  (select count(distinct id)::int from per_job where waiting or uncertain) as possible_occupied_slots,
+  (select (array_agg(distinct run_id order by run_id))[1:3] from per_job where waiting) as samples,
+  (select count(distinct run_id)::int from per_job where uncertain and not waiting) as unclassified_runs,
+  (select (array_agg(distinct run_id order by run_id))[1:3] from per_job where uncertain and not waiting) as uncertain_samples,
+  (select array_agg(distinct case when conflict then 'question_projection_conflict'
+    when not coalesce(valid,false) then 'missing_or_invalid_observation' else 'runtime_evidence_missing_or_stale' end)
+    from proof p where not closed and (not coalesce(valid,false) or not coalesce(alive,false) or conflict)
+      and not exists(select 1 from per_job j where j.id=p.id and j.waiting)) as uncertain_reasons,
   (select array_agg(distinct worker_id) from allrice_jobs where status in ('claimed','running')
     and lease_token is not null and lease_expires_at>statement_timestamp()) as active_workers,
   (select coalesce(jsonb_agg(jsonb_build_object('key',key,'value',value,'observed_at',updated_at,
@@ -1561,14 +1623,21 @@ def online_wait_snapshot(r):
         reasons.append('%d个有效租约Worker缺可信在线容量' % len(missing))
     row['capacity_workers'] = sorted(workers.values(), key=lambda w: w['worker_id'])
     row['total_slots'] = sum(w['concurrency'] for w in workers.values()) if workers and not invalid and not missing else None
+    row['confirmed_online_runs'], row['confirmed_occupied_slots'] = row['online_runs'], row['occupied_slots']
+    row.setdefault('possible_online_runs', row['online_runs'])
+    row.setdefault('possible_occupied_slots', row['occupied_slots'])
     if row.get('unclassified_runs'):
-        reasons.append('%d个当前待答Run缺任务时钟' % row['unclassified_runs'])
+        reasons.append('%d个Run当前前台不确定（%s）；例%s' % (
+            row['unclassified_runs'], ids(row, 'uncertain_reasons') or '观察缺失/冲突或物理状态未知', ids(row, 'uncertain_samples') or '无'))
         row['online_runs'] = row['occupied_slots'] = None
     b = r.cfg.get('business') if isinstance(r.cfg.get('business'), dict) else {}
     warn, critical = b.get('online_wait_warn_pct'), b.get('online_wait_critical_pct')
-    if not (type(warn) in (int, float) and type(critical) in (int, float) and 0 < warn <= critical <= 100):
+    thresholds_valid = type(warn) in (int, float) and type(critical) in (int, float) and 0 < warn <= critical <= 100
+    if not thresholds_valid:
         reasons.append('在线等答比例告警阈值缺失或非法')
     row['occupancy_pct'] = 100.0 * row['occupied_slots'] / row['total_slots'] if not reasons else None
+    row['occupancy_lower_pct'] = (100.0 * row['confirmed_occupied_slots'] / row['total_slots']
+                                  if thresholds_valid and row['total_slots'] and row['confirmed_occupied_slots'] is not None else None)
     row['thresholds'] = {'warning_pct': warn, 'critical_pct': critical}
     r.facts['online_waits'] = row
     return row
@@ -1580,16 +1649,19 @@ def online_wait_detail(row):
     text = '在线等答（%s）：Run %s个，占Worker执行位 %s/%s，占比%s；例 %s；容量来源worker-operations（90秒内，%d个Worker）' % (
         row.get('checked_at', '采集失败'), count('online_runs'), count('occupied_slots'), count('total_slots'), pct, ids(row) or '无',
         len(row.get('capacity_workers', [])))
+    if row.get('unclassified_runs'):
+        text += '；已确认Run%s/执行位%s，可能上限Run%s/执行位%s' % tuple(row.get(k, '?') for k in (
+            'confirmed_online_runs', 'confirmed_occupied_slots', 'possible_online_runs', 'possible_occupied_slots'))
     return text + ('；未知：' + '；'.join(row['unknown_reasons']) if row.get('unknown_reasons') else '')
 
 
 def check_online_waits(r):
     row = online_wait_snapshot(r)
-    pct, t = row['occupancy_pct'], row['thresholds']
-    sev = ('unknown' if pct is None else 'critical' if pct >= t['critical_pct'] else
-           'warning' if pct >= t['warning_pct'] else 'ok')
+    pct, lower, t = row['occupancy_pct'], row['occupancy_lower_pct'], row['thresholds']
+    sev = ('critical' if lower is not None and lower >= t['critical_pct'] else
+           'warning' if lower is not None and lower >= t['warning_pct'] else 'unknown' if pct is None else 'ok')
     detail = online_wait_detail(row)
-    return [finding('business.online_waits', sev, '在线等答占用Worker执行位比例高', detail, BUSINESS_RUNBOOK, 'monitor online-waits --json'),
+    return [finding('business.online_waits', sev, '有前台待答问题的Run占位比例高', detail, BUSINESS_RUNBOOK, 'monitor online-waits --json'),
             finding('business.online_waits_data', 'warning' if row['unknown_reasons'] else 'ok', '在线等答执行位统计不完整',
                     detail, BUSINESS_RUNBOOK, 'monitor online-waits --json')]
 

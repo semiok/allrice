@@ -1,14 +1,33 @@
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
+import { HarnessEventSchema } from '@allrice/contracts';
+import * as client from '../../packages/database/src/core/client.ts';
+import { appendJobEvent } from '../../packages/database/src/execution/queue.ts';
+import { normalizeHarnessRunEvent } from '../../apps/worker/src/harness/runtime-contract.ts';
 import {
   createRuntimeFixtureDatabase,
   runFixture,
 } from '../../packages/database/src/runtime.fixture.ts';
 import { createRunAuthorityFixture } from '../../packages/database/src/run-authority.fixture.ts';
+import { bindNativeQuestionFixture } from '../../packages/database/src/native-question-binding.fixture.ts';
+import {
+  reserveDshRuntimeOwner,
+  recordDshRuntimeCloseObservation,
+} from '../../packages/database/src/providers/dsh-runtime-close-observations.ts';
+import { replaceWorkerDshRuntimeInventory } from '../../packages/database/src/providers/dsh-runtime-registry.ts';
 import { recordWorkerOperations } from '../../packages/database/src/operations-resources.ts';
 import { recordTaskQuestion } from '../../packages/database/src/task-clock.ts';
+import { createTaskProgressRuntime } from '../../packages/database/src/task-progress.ts';
 import { resolveTaskRuntimePolicy } from '../../packages/database/src/task-runtime-policy.ts';
 
 const suite =
@@ -43,6 +62,11 @@ type Snapshot = {
   occupancy_pct: number | null;
   samples: string[] | null;
   unclassified_runs?: number;
+  confirmed_online_runs: number | null;
+  confirmed_occupied_slots: number | null;
+  possible_online_runs: number | null;
+  possible_occupied_slots: number | null;
+  uncertain_reasons?: string[];
   unknown_reasons: string[];
   capacity_workers: {
     worker_id: string;
@@ -57,6 +81,7 @@ suite('MET-222 online human waits through real monitor SQL', () => {
   let psql: string;
   beforeAll(async () => {
     fixture = await createRuntimeFixtureDatabase({ ownSchemaOnly: true });
+    vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     const [row] = await fixture.db`select current_schema() name`;
     schema = row!.name;
     psql = execFileSync('/usr/bin/which', ['psql'], {
@@ -68,8 +93,10 @@ suite('MET-222 online human waits through real monitor SQL', () => {
     // leaving their old questions to prove that history cannot inflate counts.
     await fixture.db`update allrice_jobs set status='succeeded'`;
     await fixture.db`delete from allrice_runtime_metadata where starts_with(key,'worker-operations:')`;
+    await fixture.db`delete from allrice_settings where scope_type='system' and scope_id is null and key='native_question_mode'`;
   });
   afterAll(async () => {
+    vi.restoreAllMocks();
     await fixture?.close();
   });
 
@@ -136,29 +163,162 @@ suite('MET-222 online human waits through real monitor SQL', () => {
     );
   }
 
-  async function legacy() {
-    const f = await runFixture(fixture.db);
+  async function context(owned = true) {
+    const f = await createRunAuthorityFixture(fixture.db, { configure: false });
     await clock(f);
-    await notice(f, 'legacy-question', true);
+    await fixture.db`update allrice_jobs set attempt=1 where id=${f.worker.jobId}`;
+    const thread = `dsh-${f.session}`;
+    await bindNativeQuestionFixture(fixture.db, f.rootRunId, thread);
+    const [cr] =
+      await fixture.db`select thread_generation from allrice_conversation_runtimes where session_id=${f.session}`;
+    const runtimeId = randomUUID();
+    const owner = owned
+      ? await reserveDshRuntimeOwner({
+          version: 1,
+          kind: 'owned',
+          runtimeId,
+          workerBootId: randomUUID(),
+          workerId: f.worker.workerId,
+          serviceManifestDigest: `sha256:${'a'.repeat(64)}`,
+          artifactId: `sha256:${'b'.repeat(64)}`,
+          profileId: 'restricted',
+          context: {
+            kind: 'context',
+            contextKind: 'chat',
+            contextId: f.session,
+            organizationId: f.org,
+            workspaceId: f.workspace,
+            ownerId: f.user,
+          },
+          observedAt: new Date().toISOString(),
+        })
+      : null;
+    await replaceWorkerDshRuntimeInventory({
+      workerId: f.worker.workerId,
+      runtimes: [
+        {
+          id: runtimeId,
+          organizationId: f.org,
+          workspaceId: f.workspace,
+          ownerId: f.user,
+          sessionId: f.session,
+          threadId: thread,
+          providerRoute: 'synthetic',
+          model: 'never-called',
+          reasoningEffort: 'low',
+          profileFingerprint: 'a'.repeat(64),
+          nativeTools: [],
+          startedAt: new Date().toISOString(),
+          lastActivityAt: new Date().toISOString(),
+        },
+      ],
+    });
     await report(f.worker.workerId);
+    return {
+      ...f,
+      thread,
+      runtimeId,
+      owner,
+      threadGeneration: Number(cr!.thread_generation),
+    };
+  }
+
+  type Context = Awaited<ReturnType<typeof context>>;
+  let order = 0;
+  // Contract inputs traverse the real Harness schema, normalizer and leased
+  // Worker append transaction. Host publication/finally is covered by #675.
+  async function send(
+    f: Context,
+    sourceEventType: string,
+    sourcePayload: Record<string, unknown>,
+    envelope = {},
+  ) {
+    const event = HarnessEventSchema.parse({
+      schemaVersion: 1,
+      harness: 'dsh',
+      type: 'native.event',
+      presentation: 'context',
+      status: 'info',
+      label: '前台观察',
+      generation: f.threadGeneration,
+      attempt: 1,
+      order: ++order,
+      threadId: f.thread,
+      turnId: 'synthetic-turn',
+      sessionId: f.session,
+      messageId: null,
+      sourceEventId: randomUUID(),
+      sourceEventType,
+      sourcePayload,
+      sourceOccurredAt: new Date().toISOString(),
+      ...envelope,
+    });
+    expect(
+      await appendJobEvent({ ...f.worker, ...normalizeHarnessRunEvent(event) }),
+    ).toBeTruthy();
+  }
+  async function observe(
+    f: Context,
+    questionId: string,
+    phase: 'opened' | 'ended',
+    metadata = {},
+    envelope = {},
+  ) {
+    await send(
+      f,
+      `allrice/user-question-${phase}`,
+      {
+        version: 1,
+        questionId,
+        runId: f.rootRunId,
+        nativeSessionId: f.thread,
+        rootSessionId: f.thread,
+        timed: false,
+        runtimeId: f.runtimeId,
+        jobId: f.worker.jobId,
+        ...metadata,
+      },
+      envelope,
+    );
+  }
+
+  async function legacy() {
+    const f = await context();
+    await notice(f, 'legacy-question', true);
+    await observe(f, 'legacy-question', 'opened');
     return f;
   }
 
-  async function native() {
-    const f = await createRunAuthorityFixture(fixture.db, { configure: false });
-    await clock(f);
-    const thread = `dsh-${f.session}`;
-    await fixture.db`update allrice_conversation_runtimes set thread_id=${thread} where session_id=${f.session}`;
-    // Synthetic projection rows only: no Host starts and no question is asked.
-    await fixture.db`insert into allrice_native_questions(session_id,native_session_id,call_id,source_run_id,state,questions,sequence)
-      values(${f.session},${thread},'native-call',${f.rootRunId},'open','[{"question":"DO_NOT_EXPORT_BODY"}]',1)`;
-    await report(f.worker.workerId);
+  async function native(owned = true) {
+    const f = await context(owned);
+    await fixture.db`insert into allrice_settings(scope_type,key,value) values('system','native_question_mode','"timed"'::jsonb)`;
+    await send(f, 'session/user-questions', {
+      sessionId: f.thread,
+      sequence: 1,
+      questions: {
+        active: [
+          {
+            callId: 'native-call',
+            state: 'open',
+            questions: [
+              {
+                id: 'q',
+                question: 'DO_NOT_EXPORT_BODY',
+                options: [{ label: '继续' }],
+              },
+            ],
+          },
+        ],
+        settled: [],
+      },
+    });
     return f;
   }
 
   it('counts one occupied Run/Job for multiple current questions; an accepted answer drops it once', async () => {
     const f = await legacy();
     await notice(f, 'program-question', true);
+    await observe(f, 'program-question', 'opened');
     expect(collect()).toMatchObject({
       online_runs: 1,
       occupied_slots: 1,
@@ -167,11 +327,17 @@ suite('MET-222 online human waits through real monitor SQL', () => {
       samples: [f.task.runId],
       unknown_reasons: [],
     });
+    await fixture.db`delete from allrice_task_clock_events where run_id=${f.rootRunId}`;
+    await fixture.db`delete from allrice_task_clocks where run_id=${f.rootRunId}`;
+    expect(collect().online_runs).toBe(1); // trusted foreground facts do not require a clock
     await notice(f, 'legacy-question', false);
+    await observe(f, 'legacy-question', 'ended');
     expect(collect().occupied_slots).toBe(1);
     await notice(f, 'program-question', false);
+    await observe(f, 'program-question', 'ended');
     // Reordered duplicate notices cannot reopen an already answered callback.
     await notice(f, 'program-question', true);
+    await observe(f, 'program-question', 'opened');
     expect(collect()).toMatchObject({
       online_runs: 0,
       occupied_slots: 0,
@@ -182,6 +348,14 @@ suite('MET-222 online human waits through real monitor SQL', () => {
   it('requires current foreground open identity; continued late-answer cards never stand in for a live wait', async () => {
     const f = await native();
     expect(collect()).toMatchObject({ online_runs: 1, occupied_slots: 1 });
+    await fixture.db`update allrice_jobs set attempt=2 where id=${f.worker.jobId}`;
+    expect(collect()).toMatchObject({
+      online_runs: null,
+      confirmed_online_runs: 0,
+      unclassified_runs: 1,
+      uncertain_reasons: ['missing_or_invalid_observation'],
+    });
+    await fixture.db`update allrice_jobs set attempt=1 where id=${f.worker.jobId}`;
     // Coexisting legacy/program projection is not a second slot.
     await notice(f, 'program-question', true);
     expect(collect().occupied_slots).toBe(1);
@@ -197,7 +371,7 @@ suite('MET-222 online human waits through real monitor SQL', () => {
     await fixture.db`update allrice_native_questions set state='open' where source_run_id=${f.rootRunId}`;
     expect(collect().online_runs).toBe(1);
     await fixture.db`update allrice_task_clocks set phase='active' where run_id=${f.rootRunId}`;
-    expect(collect().online_runs).toBe(0); // still doing useful concurrent work
+    expect(collect().online_runs).toBe(1); // a foreground question remains while other work runs
     await fixture.db`update allrice_task_clocks set phase='waiting' where run_id=${f.rootRunId}`;
     await fixture.db`update allrice_native_questions set native_present=false where source_run_id=${f.rootRunId}`;
     expect(collect().online_runs).toBe(0);
@@ -299,9 +473,8 @@ suite('MET-222 online human waits through real monitor SQL', () => {
     expect(collect().total_slots).toBeNull();
   });
 
-  it('returns unknown when a foreground candidate lacks its clock or collection cannot read a source', async () => {
-    const f = await native();
-    await fixture.db`delete from allrice_task_clocks where run_id=${f.rootRunId}`;
+  it('returns unknown for a missing physical owner or an unreadable source; clock is not proof', async () => {
+    await native(false);
     expect(collect()).toMatchObject({
       online_runs: null,
       occupied_slots: null,
@@ -322,5 +495,192 @@ suite('MET-222 online human waits through real monitor SQL', () => {
     } finally {
       await fixture.db`alter table hidden_native_questions rename to allrice_native_questions`;
     }
+  });
+
+  it('counts a normal legacy foreground with active progress and drops only on matching ended', async () => {
+    const f = await legacy();
+    const progress = createTaskProgressRuntime(
+      { context: f.context, worker: f.worker },
+      fixture.db,
+    );
+    await progress({
+      action: 'start',
+      nativeSessionId: f.thread,
+      callId: 'login-cloud-call',
+      kind: 'tool',
+      name: 'cloud_mcp_call',
+      argumentsDigest: `sha256:${'c'.repeat(64)}`,
+    });
+    await progress({
+      action: 'start',
+      nativeSessionId: `${f.thread}-child`,
+      callId: 'child-model',
+      kind: 'model',
+    });
+    const [c] =
+      await fixture.db`select phase from allrice_task_clocks where run_id=${f.rootRunId}`;
+    expect(c!.phase).toBe('active');
+    expect(collect()).toMatchObject({
+      online_runs: 1,
+      occupied_slots: 1,
+      occupancy_pct: 25,
+      unknown_reasons: [],
+    });
+    await notice(f, 'legacy-question', false);
+    expect(collect()).toMatchObject({
+      online_runs: null,
+      uncertain_reasons: ['question_projection_conflict'],
+    });
+    await observe(f, 'legacy-question', 'ended');
+    expect(collect()).toMatchObject({
+      online_runs: 0,
+      occupied_slots: 0,
+      occupancy_pct: 0,
+      unknown_reasons: [],
+    });
+  });
+
+  it('does not turn an elapsed timed deadline into closure; ended prevents stale program pending from inflating resource waits', async () => {
+    const f = await context();
+    await notice(f, 'program-question', true);
+    const timed = {
+      timed: true,
+      deadlineAt: new Date(Date.now() - 60000).toISOString(),
+      releaseLimited: true,
+    };
+    await observe(f, 'program-question', 'opened', timed);
+    expect(collect()).toMatchObject({
+      online_runs: 1,
+      occupied_slots: 1,
+      unknown_reasons: [],
+    });
+    await observe(f, 'program-question', 'ended', timed);
+    const [q] =
+      await fixture.db`select pending from allrice_task_questions where run_id=${f.rootRunId}`;
+    expect(q!.pending).toBe(true); // actual askTimed timeout leaves this older projection
+    await fixture.db`update allrice_task_clocks set phase='waiting' where run_id=${f.rootRunId}`;
+    expect(collect()).toMatchObject({
+      online_runs: 0,
+      occupied_slots: 0,
+      occupancy_pct: 0,
+      unknown_reasons: [],
+    });
+  });
+
+  it('does not inherit old attempt, generation, current Run or Worker observations', async () => {
+    const f = await legacy();
+    await fixture.db`update allrice_jobs set attempt=2 where id=${f.worker.jobId}`;
+    expect(collect()).toMatchObject({ online_runs: 0, unclassified_runs: 0 });
+    await fixture.db`update allrice_jobs set attempt=1 where id=${f.worker.jobId}`;
+    await fixture.db`update allrice_conversation_runtimes set thread_generation=thread_generation+1 where session_id=${f.session}`;
+    expect(collect()).toMatchObject({ online_runs: 0, unclassified_runs: 0 });
+    await fixture.db`update allrice_conversation_runtimes set thread_generation=${f.threadGeneration},active_run_id=null where session_id=${f.session}`;
+    expect(collect().online_runs).toBe(0);
+    await fixture.db`update allrice_conversation_runtimes set active_run_id=${f.rootRunId},worker_id=${randomUUID()} where session_id=${f.session}`;
+    expect(collect().online_runs).toBe(0);
+  });
+
+  it('requires exact live inventory and lets physical closure override a still-fresh inventory', async () => {
+    const f = await legacy();
+    await fixture.db`update allrice_dsh_runtime_instances set last_seen_at=clock_timestamp()-interval '16 seconds' where id=${f.runtimeId}`;
+    expect(collect()).toMatchObject({
+      online_runs: null,
+      confirmed_online_runs: 0,
+      possible_online_runs: 1,
+      uncertain_reasons: ['runtime_evidence_missing_or_stale'],
+    });
+    await fixture.db`update allrice_dsh_runtime_instances set last_seen_at=clock_timestamp() where id=${f.runtimeId}`;
+    const owner = f.owner!;
+    await recordDshRuntimeCloseObservation(owner, {
+      version: 1,
+      runtimeId: f.runtimeId,
+      workerBootId: owner.owner.workerBootId,
+      ownerDigest: owner.ownerDigest,
+      kind: 'close_started',
+      observedAt: new Date().toISOString(),
+    });
+    expect(collect()).toMatchObject({ online_runs: 1, unknown_reasons: [] });
+    await recordDshRuntimeCloseObservation(owner, {
+      version: 1,
+      runtimeId: f.runtimeId,
+      workerBootId: owner.owner.workerBootId,
+      ownerDigest: owner.ownerDigest,
+      kind: 'process_closed',
+      observedAt: new Date().toISOString(),
+      fact: {
+        source: 'child_close',
+        stdioClosed: true,
+        exitCode: 0,
+        signal: null,
+        terminationAttempted: null,
+      },
+    });
+    expect(collect()).toMatchObject({
+      online_runs: 0,
+      occupied_slots: 0,
+      unknown_reasons: [],
+    });
+  });
+
+  it('keeps uncovered legacy pending and invalid observation versions unknown; unknown ended is not authoritative', async () => {
+    const f = await context();
+    await notice(f, 'legacy-question', true);
+    expect(collect()).toMatchObject({
+      online_runs: null,
+      occupied_slots: null,
+      confirmed_occupied_slots: 0,
+      possible_occupied_slots: 1,
+      uncertain_reasons: ['missing_or_invalid_observation'],
+    });
+    await observe(f, 'legacy-question', 'ended', { version: 2 });
+    expect(collect()).toMatchObject({
+      online_runs: null,
+      possible_online_runs: 1,
+    });
+  });
+
+  it('distinguishes native continued late answers from a current callback and never reopens an ended request', async () => {
+    const f = await native();
+    const questionId = `${f.thread}:native-call`;
+    await observe(f, questionId, 'opened', { timed: true });
+    expect(collect().online_runs).toBe(1);
+    await send(f, 'session/user-questions', {
+      sessionId: f.thread,
+      sequence: 2,
+      questions: {
+        active: [
+          {
+            callId: 'native-call',
+            state: 'continued',
+            questions: [
+              {
+                id: 'q',
+                question: 'DO_NOT_EXPORT_BODY',
+                options: [{ label: '继续' }],
+              },
+            ],
+          },
+        ],
+        settled: [],
+      },
+    });
+    expect(collect()).toMatchObject({
+      online_runs: null,
+      confirmed_online_runs: 0,
+      uncertain_reasons: ['question_projection_conflict'],
+    });
+    await observe(f, questionId, 'ended', { timed: true });
+    expect(collect()).toMatchObject({
+      online_runs: 0,
+      occupied_slots: 0,
+      unknown_reasons: [],
+    });
+    await fixture.db`update allrice_native_questions set state='settled' where source_run_id=${f.rootRunId}`;
+    await observe(f, questionId, 'opened', { timed: true });
+    expect(collect()).toMatchObject({
+      online_runs: 0,
+      occupied_slots: 0,
+      unknown_reasons: [],
+    });
   });
 });
