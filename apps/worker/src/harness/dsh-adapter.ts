@@ -394,11 +394,13 @@ export class DshHarnessAdapter implements HarnessAdapter {
       if (runScope) params = runScope.check(params);
       if (method === 'allrice/subagent-authorize') {
         // A malformed/stale command must not revoke the current root Run.
-        const scope = NativeSubagentControlScopeSchema.parse(params.scope);
+        const controlScope = NativeSubagentControlScopeSchema.parse(
+          params.scope,
+        );
         const assertCurrent = () => {
           if (!runScope || params.nativeSessionId !== threadId)
             throw Error('NATIVE_CONTROL_SCOPE_MISMATCH');
-          assertNativeControlScope(runtime, scope);
+          assertNativeControlScope(runtime, controlScope);
           assertCurrentRun();
         };
         assertCurrent();
