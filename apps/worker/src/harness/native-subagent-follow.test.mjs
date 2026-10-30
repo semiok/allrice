@@ -363,6 +363,35 @@ it('keeps a selected address across a cold directory cut without cold polling, t
   );
 });
 
+it('keeps the address without forwarding an old display after its live lineage cut disappears', async () => {
+  vi.useFakeTimers();
+  const f = fixture();
+  f.start();
+  await f.until((e) => e?.type === 'snapshot');
+  f.client.nativeSubagentSummary.mockResolvedValue({
+    ...f.summary,
+    descendants: [
+      {
+        kind: 'diagnostic',
+        id: 'child',
+        parentId: 'root',
+        depth: 1,
+        reason: 'unavailable',
+      },
+    ],
+  });
+  f.notify('session.status', { sessionId: 'root' });
+  await f.until(
+    (e) =>
+      e?.type === 'directory' && e.summary.descendants[0].kind === 'diagnostic',
+  );
+  f.frame(4, 'late old display');
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.events.some((e) => e?.type === 'display')).toBe(false);
+  expect(f.client.nativeSubagentSnapshot).toHaveBeenCalledOnce();
+  expect(f.listeners.size).toBe(1);
+});
+
 it.each(['abort', 'failure', 'overflow'])(
   'releases observers promptly on %s while the source read is pending',
   async (cause) => {

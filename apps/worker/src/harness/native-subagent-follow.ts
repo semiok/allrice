@@ -183,6 +183,7 @@ export async function followNativeSubagent(
         throw Error('NATIVE_QUERY_CHILD_UNVERIFIED');
       known.set(input.childId, selected);
     }
+    if (input.childId && !cursors.has(input.childId)) baseline = undefined;
     verified ||= Boolean(input.childId && known.has(input.childId));
     await emit({ type: 'directory', summary });
   };
