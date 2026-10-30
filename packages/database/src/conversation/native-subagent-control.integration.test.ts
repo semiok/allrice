@@ -62,7 +62,7 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
     vi.unstubAllEnvs();
     await fixture?.close();
   });
-  async function chat(nativeRootId?: string) {
+  async function chat(nativeRootSuffix?: string) {
     const f = await createRunAuthorityFixture(fixture.db, {
       configure: false,
       memberRole: 'member',
@@ -93,7 +93,7 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
       contextKey: f.session,
       distributionGeneration: newNativeGeneration,
     });
-    if (nativeRootId) descriptor.nativeSessionId = nativeRootId;
+    if (nativeRootSuffix) descriptor.nativeSessionId += '-' + nativeRootSuffix;
     const bound = await bindJobNativeSession({
       workerId: f.worker.workerId,
       jobId: f.worker.jobId,
@@ -262,7 +262,7 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
   });
 
   it('canonicalizes PG UUID identities on first uppercase submission and retries while retaining opaque native case', async () => {
-    const f = await chat('dsh-NativeRoot-MixedCase-' + randomUUID());
+    const f = await chat('MixedCase');
     const input = {
       ...prompt(f),
       requestId: 'A1000000-A001-4000-8000-000000000001',
