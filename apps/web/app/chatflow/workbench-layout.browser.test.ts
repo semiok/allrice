@@ -3498,6 +3498,99 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     30_000,
   );
 
+  it.each([
+    [1440, 'maxDepth', '-'],
+    [390, 'maxDepth', '-'],
+    [1440, 'maxActive', '1e'],
+    [390, 'maxActive', '1e'],
+  ] as const)(
+    'MET231 preserves saved limits for an incomplete number at %ipx (%s %s)',
+    async (width, field, text) => {
+      const saved: UserPreferences = {
+        ...defaultUserPreferences,
+        appearance: 'dark',
+        fontSize: 18,
+        streamingOutput: false,
+        questionWait: { mode: 'timed', seconds: 300 },
+        subagents: { maxDepth: 0, maxActive: 1 },
+      };
+      const f = await fixture({
+        width,
+        touch: width < 600,
+        preferences: { [user]: saved },
+        brandContent: { kind: 'custom', registered: true },
+      });
+      const patches: unknown[] = [];
+      f.page.on('request', (request) => {
+        if (
+          request.url().endsWith('/api/v1/me/preferences') &&
+          request.method() === 'PATCH'
+        )
+          patches.push(request.postDataJSON());
+      });
+      try {
+        const dialog = await openSettings(f);
+        const input = dialog.getByRole('spinbutton', {
+          name:
+            field === 'maxDepth'
+              ? '子智能体最大递归深度'
+              : '子智能体并行数量上限',
+          exact: true,
+        });
+        await expect.poll(() => input.isEnabled()).toBe(true);
+        await input.fill('');
+        await input.pressSequentially(text);
+        expect(
+          await input.evaluate((node: HTMLInputElement) => ({
+            value: node.value,
+            badInput: node.validity.badInput,
+          })),
+        ).toEqual({ value: '', badInput: true });
+        await input.press('Enter');
+        await f.page.waitForLoadState('networkidle');
+        expect(patches).toEqual([]);
+        expect(f.state.preferences[user]).toEqual(saved);
+        await expect
+          .poll(() => input.inputValue())
+          .toBe(String(saved.subagents[field]));
+
+        await input.fill('');
+        expect(
+          await input.evaluate(
+            (node: HTMLInputElement) => node.validity.badInput,
+          ),
+        ).toBe(false);
+        await input.press('Enter');
+        const cleared = { ...saved.subagents, [field]: null };
+        await expect
+          .poll(() => f.state.preferences[user]!.subagents)
+          .toEqual(cleared);
+        await expect.poll(() => input.isEnabled()).toBe(true);
+        expect(patches).toEqual([{ subagents: cleared }]);
+        expect(f.state.preferences[user]).toEqual({
+          ...saved,
+          subagents: cleared,
+          updatedAt: now,
+        });
+
+        await input.fill(String(saved.subagents[field]));
+        await input.press('Enter');
+        await expect
+          .poll(() => f.state.preferences[user]!.subagents)
+          .toEqual(saved.subagents);
+        await expect.poll(() => input.isEnabled()).toBe(true);
+        expect(patches).toEqual([
+          { subagents: cleared },
+          { subagents: saved.subagents },
+        ]);
+        expect(f.state.preferences[user]).toEqual({ ...saved, updatedAt: now });
+      } finally {
+        await f.close();
+      }
+    },
+    30_000,
+  );
+
   it.each([1440, 390, 320])(
     'keeps compact cloud cancellation run-scoped until acknowledged at %ipx',
     async (width) => {

@@ -123,12 +123,18 @@ function PersonalPreferencesSettings({
     });
   }, [preferences.value.subagents, preferences.scope, preferences.pending]);
 
-  function commitSubagent(field: keyof typeof subagentDrafts) {
+  function commitSubagent(
+    field: keyof typeof subagentDrafts,
+    input: HTMLInputElement,
+  ) {
     if (disabled) return;
     const draft = subagentDrafts[field].trim();
     const value = draft === '' ? null : Number(draft);
     const subagents = { ...preferences.value.subagents, [field]: value };
-    if (!SubagentPreferencesSchema.safeParse(subagents).success) {
+    if (
+      input.validity.badInput ||
+      !SubagentPreferencesSchema.safeParse(subagents).success
+    ) {
       setSubagentDrafts((current) => ({
         ...current,
         [field]: preferences.value.subagents[field]?.toString() ?? '',
@@ -381,7 +387,7 @@ function PersonalPreferencesSettings({
                     [field]: event.target.value,
                   }))
                 }
-                onBlur={() => commitSubagent(field)}
+                onBlur={(event) => commitSubagent(field, event.currentTarget)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') {
                     event.preventDefault();
