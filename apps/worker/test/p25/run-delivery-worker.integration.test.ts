@@ -806,6 +806,206 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     }
   }, 90000);
 
+  it.each(['before', 'after'] as const)(
+    'MET231: child settles %s the real 30s legacy check; live Worker consumes one answer and the native result',
+    async (settles) => {
+      const childEntered = gate(),
+        releaseChild = gate(),
+        checked = gate();
+      let roots = 0,
+        questionAt = 0,
+        checkedAt = 0;
+      const childResult = `MET231_NATIVE_RESULT_${settles}`;
+      const f = await setup(async (request) => {
+        const users = JSON.stringify(
+          request.messages.filter((m) => m.role === 'user'),
+        );
+        if (users.includes('MET231_HOT_CHILD')) {
+          childEntered.release();
+          await releaseChild.promise;
+          return { text: childResult };
+        }
+        if (++roots === 1)
+          return {
+            nativeTool: {
+              name: 'subagent',
+              arguments: {
+                description: '独立核对',
+                prompt: 'MET231_HOT_CHILD',
+              },
+            },
+          };
+        if (roots === 2) {
+          await childEntered.promise;
+          questionAt = Date.now();
+          return {
+            nativeTool: {
+              name: 'ask_user_question',
+              arguments: {
+                questions: [
+                  {
+                    id: 'continue',
+                    question: '继续汇总吗？',
+                    options: [{ label: '继续' }],
+                  },
+                ],
+              },
+            },
+          };
+        }
+        expect(users).toContain(childResult);
+        expect(JSON.stringify(request.messages)).toContain('继续');
+        return { text: '已按确认汇总原生子任务结果。' };
+      }, true);
+      const task = await prepare(
+        f,
+        '派一个子任务核对，先问我确认，再汇总结果。',
+        true,
+      );
+      const park = DshProtocolClient.prototype.parkQuestion;
+      let parkResult:
+        Awaited<ReturnType<DshProtocolClient['parkQuestion']>> | undefined;
+      const parking = vi
+        .spyOn(DshProtocolClient.prototype, 'parkQuestion')
+        .mockImplementation(async function (
+          this: DshProtocolClient,
+          sessionId,
+          questionId,
+        ) {
+          try {
+            parkResult = await park.call(this, sessionId, questionId);
+            checkedAt = Date.now();
+            return parkResult;
+          } finally {
+            checked.release();
+          }
+        });
+      let ended = false;
+      const running = task.run();
+      void running.then(
+        () => {
+          ended = true;
+        },
+        () => {
+          ended = true;
+        },
+      );
+      try {
+        const readQuestion = async () =>
+          (
+            await f.db`select payload->'nativePayload' question from allrice_run_events
+          where run_id=${task.runId} and event_type='harness.native' and payload->>'sourceEventType'='session/user-question'`
+          )[0]?.question;
+        await expect.poll(readQuestion, { timeout: 15000 }).toBeTruthy();
+        const question = await readQuestion();
+        if (settles === 'before') releaseChild.release();
+        const settlement = async () =>
+          (await journal()).find(
+            (e) =>
+              e.type === 'agent/inbox/spliced' &&
+              e.data.inserted?.some(
+                (m: { source?: { kind: string } }) =>
+                  m.source?.kind === 'subagent-settled',
+              ),
+          );
+        if (settles === 'before') {
+          await expect.poll(settlement, { timeout: 10000 }).toBeTruthy();
+          expect(Date.now() - questionAt).toBeLessThan(30000);
+        }
+        // Observe the actual adapter timer; no fake clock or test-triggered park.
+        await checked.promise;
+        expect(parkResult).toEqual({ checkpoint: null });
+        expect(checkedAt - questionAt).toBeGreaterThanOrEqual(30000);
+        expect(parking).toHaveBeenCalledTimes(1);
+        if (settles === 'after') {
+          expect(await settlement()).toBeUndefined();
+          releaseChild.release();
+          await expect.poll(settlement, { timeout: 10000 }).toBeTruthy();
+        }
+        expect(ended).toBe(false);
+        expect(model!.abortedRequests).toEqual([]);
+        expect(model!.requests).toHaveLength(3);
+        expect(adapter!.runtimeInventory()).toHaveLength(1);
+        expect(
+          await f.db`select state from allrice_native_question_waits where run_id=${task.runId}`,
+        ).toEqual([]);
+        expect(
+          await f.db`select status,attempt,worker_id,lease_token from allrice_jobs where id=${task.workflowLease.jobId}`,
+        ).toEqual([
+          {
+            status: 'running',
+            attempt: 1,
+            worker_id: task.workflowLease.workerId,
+            lease_token: task.workflowLease.leaseToken,
+          },
+        ]);
+        const [runtime] =
+          await f.db`select thread_generation as generation,active_turn_id from allrice_conversation_runtimes where session_id=${f.chat.id}`;
+        const inputId = randomUUID();
+        await sendChatMessage(f.context, f.identity.workspace, f.chat.id, {
+          text: `allrice:user-question:v1:${JSON.stringify({ questionId: question.questionId, answers: [{ id: 'continue', selected: ['继续'] }] })}`,
+          clientMessageId: inputId,
+          deliveryMode: 'steer',
+          expectedTurnId: runtime!.active_turn_id,
+          expectedGeneration: runtime!.generation,
+        });
+        const result = await running;
+        const coverage = readCheckedFinalDeliveryForExecution(
+          task.workflowLease,
+          result,
+        );
+        if (coverage.coverage !== 'checked_native_v1')
+          throw Error('Missing checked hot-wait completion');
+        await completeJob({
+          ...task.workflowLease,
+          result,
+          checkedDelivery: coverage.checkedDelivery,
+        });
+        expect(await state(f, task.runId)).toMatchObject({
+          status: 'succeeded',
+          state: 'succeeded',
+          successes: 1,
+        });
+        expect(
+          await f.db`select attempt,worker_id,lease_token from allrice_jobs where id=${task.workflowLease.jobId}`,
+        ).toEqual([{ attempt: 1, worker_id: null, lease_token: null }]);
+        const commands =
+          await f.db`select state,native_proof from allrice_conversation_commands where client_user_message_id=${inputId}`;
+        expect(commands).toHaveLength(1);
+        expect(commands[0]).toMatchObject({
+          state: 'consumed',
+          native_proof: {
+            status: 'adopted',
+            inputId,
+            checkpoint: 'question_resolved',
+          },
+        });
+        expect(model!.requests).toHaveLength(4);
+        expect(parking).toHaveBeenCalledTimes(1);
+        const events = await journal();
+        expect(
+          events.filter(
+            (e) =>
+              e.type === 'user/message' &&
+              e.data.source?.kind === 'subagent-settled',
+          ),
+        ).toHaveLength(1);
+        expect(
+          events.filter((e) => e.type === 'allrice/wait/checkpoint'),
+        ).toEqual([]);
+        expect(
+          await f.db`select active_run_id,worker_id from allrice_conversation_runtimes where session_id=${f.chat.id}`,
+        ).toEqual([{ active_run_id: null, worker_id: null }]);
+      } finally {
+        releaseChild.release();
+        task.controller.abort();
+        await running.catch(() => {});
+        await task.isolation.cleanup();
+      }
+    },
+    75000,
+  );
+
   it('PR3a legacy 进度问题超过 30s 暂停，真实答复恢复原 Run 且保留完整调用身份', async () => {
     const requests: Record<string, unknown>[] = [];
     const setHandler = DshProtocolClient.prototype.setRequestHandler;

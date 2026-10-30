@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { NativeQuestionCheckpointSchema } from '@allrice/contracts';
+import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { setImmediate } from 'node:timers/promises';
 import { expect, it, vi } from 'vitest';
 import { askProgramQuestion } from '../../dsh/allrice-program-questions.mjs';
@@ -584,12 +585,25 @@ it.each(['settle', 'answer', 'stop'])(
     const result = await parking.catch((error) => error);
     await closing;
     if (race === 'settle') {
-      expect(result.checkpoint).toMatchObject({ questionId: h.q.questionId });
+      expect(result).toEqual({ checkpoint: null });
       expect(
         h.root.inbox.nextStep.some(
           (m) => m.source?.kind === 'subagent-settled',
         ),
       ).toBe(true);
+      expect(await answer(h, h.q, ['继续'])).toMatchObject({
+        status: 'adopted',
+      });
+      await h.wait();
+      expect(
+        h.root.session
+          .snapshotEvents()
+          .filter(
+            (e) =>
+              e.type === 'user/message' &&
+              e.data.source?.senderSessionId === activation.childId,
+          ),
+      ).toHaveLength(1);
     } else expect(result.checkpoint).toBeFalsy();
   },
 );
@@ -630,4 +644,148 @@ it('legacy park rejects a live child without interrupting it, then rechecks an i
   finishFlush.resolve();
   expect(await replying).toMatchObject({ status: 'adopted' });
   await h.wait();
+});
+
+it('legacy hot wait derives a disposed child from this Run admission even after its result was consumed', async () => {
+  const runId = randomUUID();
+  let roots = 0;
+  const h = await host({
+    runId,
+    questionMode: 'legacy',
+    bridge: async () => ({ allowed: true }),
+    model: async (r) =>
+      r.sessionId === 'pr0-root' && ++roots === 1
+        ? tool('ask_user_question', question())
+        : text('已汇总'),
+  });
+  const child = await h.spawn();
+  await child.result;
+  const q = await card(h);
+  expect(h.ctx.agents.get(child.childId)).toBeUndefined();
+  expect([...h.root.inbox.nextStep, ...h.root.inbox.nextTurn]).toEqual([]);
+  expect(
+    await h.server.handleRequest('session/park-question', {
+      sessionId: h.root.id,
+      questionId: q.questionId,
+    }),
+  ).toEqual({ checkpoint: null });
+  expect(await answer({ ...h, runId }, q, ['继续'])).toMatchObject({
+    status: 'adopted',
+  });
+  await h.wait();
+  expect(roots).toBe(2);
+});
+
+it.each(
+  ['nextStep', 'nextTurn'].flatMap((target) =>
+    ['subagent-settled', 'agent-message'].map((kind) => ({ target, kind })),
+  ),
+)(
+  'legacy hot wait protects native $target/$kind without a child in the current binding',
+  async ({ target, kind }) => {
+    const h = await blockedRoot();
+    expect(h.server.runAdmission.hasAdmittedChild(h.runId)).toBe(false);
+    const message = createUserMessage({
+      content: text('先前子任务未消费的结果'),
+      source: {
+        kind,
+        senderSessionId: 'previous-child',
+        form: kind === 'agent-message' ? 'relay' : 'notice',
+        summary: '子任务完成',
+      },
+    });
+    h.root.inbox.append(
+      target === 'nextStep' ? 'next-step' : 'next-turn',
+      message,
+    );
+    expect(
+      await h.server.handleRequest('session/park-question', {
+        sessionId: h.root.id,
+        questionId: h.q.questionId,
+      }),
+    ).toEqual({ checkpoint: null });
+    expect(h.root.inbox[target]).toContainEqual(message);
+    expect(h.server.pendingUserQuestions.get(h.root.id)).toBe(h.q);
+    await h.server.closeRoot(h.root.id);
+    expect([...h.root.inbox.nextStep, ...h.root.inbox.nextTurn]).toEqual([]);
+    expect(h.calls).toHaveLength(1);
+  },
+);
+
+it.each([1, 2])(
+  'legacy hot wait rechecks native child input after authorization %s, before cancel',
+  async (at) => {
+    const h = await blockedRoot();
+    const authorize = h.server.runAdmission.authorizeInput;
+    let checks = 0;
+    vi.spyOn(h.server.runAdmission, 'authorizeInput').mockImplementation(
+      async (runId) => {
+        await authorize(runId);
+        if (++checks === at)
+          h.root.inbox.append(
+            'next-step',
+            createUserMessage({
+              content: text('授权期间到达的原生结果'),
+              source: {
+                kind: 'subagent-settled',
+                senderSessionId: 'previous-child',
+                form: 'notice',
+                summary: '完成',
+              },
+            }),
+          );
+      },
+    );
+    const cancel = vi.spyOn(h.root, 'cancel');
+    expect(
+      await h.server.handleRequest('session/park-question', {
+        sessionId: h.root.id,
+        questionId: h.q.questionId,
+      }),
+    ).toEqual({ checkpoint: null });
+    expect(checks).toBe(at);
+    expect(cancel).not.toHaveBeenCalled();
+    expect(h.server.pendingUserQuestions.get(h.root.id)).toBe(h.q);
+    expect(await answer(h, h.q, ['继续'])).toMatchObject({ status: 'adopted' });
+    await h.wait();
+    expect(h.root.inbox.nextStep).toEqual([]);
+  },
+);
+
+it('legacy park permits a new child-free Run with delegation enabled after prior child identities are released', async () => {
+  const runId = randomUUID();
+  let roots = 0;
+  const h = await host({
+    runId,
+    questionMode: 'legacy',
+    bridge: async () => ({ allowed: true }),
+    model: async (r) =>
+      r.sessionId === 'pr0-root' && ++roots === 2
+        ? tool('ask_user_question', question())
+        : text('完成'),
+  });
+  await (
+    await h.spawn()
+  ).result;
+  await h.wait();
+  expect(h.server.runAdmission.hasAdmittedChild(runId)).toBe(true);
+  await h.server.handleRequest('run/end', { runId });
+  const nextRunId = randomUUID();
+  await h.server.handleRequest('run/begin', {
+    sessionId: h.root.id,
+    runId: nextRunId,
+  });
+  expect(h.server.runAdmission.hasAdmittedChild(nextRunId)).toBe(false);
+  await h.server.prompt({
+    sessionId: h.root.id,
+    runId: nextRunId,
+    contentBlocks: text('这一轮先问我。'),
+  });
+  const q = await card(h);
+  expect(
+    await h.server.handleRequest('session/park-question', {
+      sessionId: h.root.id,
+      questionId: q.questionId,
+    }),
+  ).toMatchObject({ checkpoint: { questionId: q.questionId } });
 });
