@@ -13,6 +13,7 @@ import {
 } from '@allrice/database';
 import { CloudRunnerBackend } from './cloud-runner/backend.js';
 import type { detectWorkerCapacity } from './worker-capacity.js';
+import { getHarnessRouter } from './harness/router.js';
 
 /** Eight 5 MB segments per Worker, sampled every 30 seconds. Per-run events
  * remain in the existing DB audit history; these files capture server-wide
@@ -21,6 +22,7 @@ export function startExecutionPressureLog(
   root: string,
   workerId: string,
   capacity: ReturnType<typeof detectWorkerCapacity>,
+  workerBootId: string,
 ) {
   let pending = false;
   let stopped = false;
@@ -49,6 +51,14 @@ export function startExecutionPressureLog(
       }
       const parsedPressure = ExecutionPressureSchema.safeParse(snapshot);
       const operations: WorkerOperations = {
+        onlineQuestions: {
+          version: 1,
+          workerBootId,
+          scope: 'default_harness_router',
+          executions: await getHarnessRouter()
+            .questionSnapshots()
+            .catch(() => []),
+        },
         workerId,
         hostname: hostname(),
         platform: process.platform,

@@ -1468,6 +1468,46 @@ describe('DshHarnessAdapter', () => {
     },
   );
 
+  it.each([1, 2])(
+    'samples exact attempt %s; old Host and failed reads remain unknown without failing execution',
+    async (attempt) => {
+      const adapter = createAdapter();
+      const input = executionInput({
+        prompt: 'normal question snapshot execution',
+      });
+      input.attempt = attempt;
+      input.generation = 3;
+      input.onThreadBound = async () => ({ generation: 7 });
+      let sampled = false;
+      input.onEvent = async (event) => {
+        if (event.sourceEventType !== 'allrice/runtime-preparation') return;
+        sampled = true;
+        const pool = Reflect.get(adapter, 'runtimePool') as DshRuntimePool;
+        const runtime = pool.get(`dsh-${input.kernel.sessionId}`)!;
+        expect(await adapter.questionSnapshots()).toEqual([
+          {
+            runtimeId: runtime.id,
+            rootSessionId: runtime.sessionId,
+            runId: input.executionEnvironment.ALLRICE_RUN_ID,
+            jobId: input.executionEnvironment.ALLRICE_JOB_ID,
+            attempt,
+            generation: 7,
+            foreground: null,
+          },
+        ]);
+        const read = vi
+          .spyOn(runtime.client, 'sessionProjection')
+          .mockRejectedValueOnce(Error('sample unavailable'));
+        expect((await adapter.questionSnapshots())[0]?.foreground).toBeNull();
+        expect(read).toHaveBeenCalledWith(runtime.sessionId);
+        read.mockRestore();
+      };
+      await expect(adapter.execute(input)).resolves.toHaveProperty('threadId');
+      expect(sampled).toBe(true);
+      expect(await adapter.questionSnapshots()).toEqual([]);
+    },
+  );
+
   it('preserves full native identity while bounding only the audit event ID', async () => {
     const events: HarnessEvent[] = [];
     const input = executionInput({ prompt: 'long-native-question-id', events });

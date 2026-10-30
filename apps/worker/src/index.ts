@@ -248,6 +248,7 @@ const stopPressureLog = startExecutionPressureLog(
   executionRoot,
   workerId,
   capacity,
+  startup.bootId,
 );
 let databaseReady = false;
 let lastDatabaseError: string | undefined;

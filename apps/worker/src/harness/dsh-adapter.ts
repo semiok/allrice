@@ -645,6 +645,15 @@ export class DshHarnessAdapter implements HarnessAdapter {
         /* Logging never changes execution, settlement or retry. */
       }
     });
+    runtime.executionObservation =
+      runId && input.executionEnvironment.ALLRICE_JOB_ID
+        ? {
+            runId,
+            jobId: input.executionEnvironment.ALLRICE_JOB_ID,
+            attempt: input.attempt,
+            generation,
+          }
+        : undefined;
     try {
       // Cold resume belongs inside the existing cancellation/receipt window.
       // Its host is already owned by the pool, so a stalled read is bounded by
@@ -1313,6 +1322,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       attachUsage(finalFailure);
       throw finalFailure;
     } finally {
+      runtime.executionObservation = undefined;
       try {
         input.signal.removeEventListener('abort', onAbort);
         this.runtimePool.touch(runtime);
@@ -1406,6 +1416,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
 
   runtimeClosureInventory() {
     return this.runtimePool.closureInventory();
+  }
+
+  questionSnapshots() {
+    return this.runtimePool.questionSnapshots();
   }
 
   runtimeInventory() {

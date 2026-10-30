@@ -1023,6 +1023,10 @@ export async function createAllRiceRuntime(
           const done = new Promise((resolveDone) => {
             markDone = resolveDone;
           });
+          const deadlineAt =
+            waitMs === undefined
+              ? undefined
+              : new Date(Date.now() + waitMs).toISOString();
           return await new Promise((resolveQuestion, rejectQuestion) => {
             const abort = () => {
               this.pendingUserQuestions.delete(sessionId);
@@ -1066,7 +1070,7 @@ export async function createAllRiceRuntime(
               ...(waitMs === undefined
                 ? {}
                 : {
-                    deadlineAt: new Date(Date.now() + waitMs).toISOString(),
+                    deadlineAt,
                     releaseLimited: releaseMs > 0 && remainingMs > releaseMs,
                     releaseMinutes: releaseMs / 60_000,
                   }),
@@ -1092,6 +1096,24 @@ export async function createAllRiceRuntime(
                   : {}),
               })),
             });
+            // Observe only a published card, with its original Run identity.
+            // Missing attribution/transport must not change DSH's wait result.
+            try {
+              const identity = this.runAdmission?.attribute({
+                nativeSessionId: sessionId,
+              });
+              const pending = this.pendingUserQuestions.get(sessionId);
+              if (identity && pending?.questionId === questionId) {
+                pending.foreground = Object.freeze({
+                  questionId,
+                  runId: identity.runId,
+                  nativeSessionId: identity.nativeSessionId,
+                  rootSessionId: identity.rootSessionId,
+                });
+              }
+            } catch {
+              /* Observation is not question authority. */
+            }
             if (waitMs !== undefined) {
               const pending = this.pendingUserQuestions.get(sessionId);
               timer = setTimeout(async () => {
@@ -1748,10 +1770,33 @@ export async function createAllRiceRuntime(
     async sessionProjection(params) {
       const sessionId = requiredSessionId(params);
       const record = this.roots.get(sessionId);
-      if (!record) {
-        return { asOfSeq: null, contextPressure: null };
+      const pending = this.pendingUserQuestions.get(sessionId);
+      let identity;
+      try {
+        if (record) {
+          this.assertRoot(record, sessionId);
+          identity = this.runAdmission?.attribute({
+            nativeSessionId: sessionId,
+          });
+        }
+      } catch {
+        /* Missing live attribution means unknown, never empty. */
       }
-      return nativeContextProjection(this.ctx, record.agent.session);
+      return {
+        ...(record
+          ? nativeContextProjection(this.ctx, record.agent.session)
+          : { asOfSeq: null, contextPressure: null }),
+        foreground: {
+          version: 1,
+          sampledAt: new Date().toISOString(),
+          rootSessionId: sessionId,
+          runId: identity?.runId ?? null,
+          complete:
+            !!identity &&
+            (!pending || pending.foreground?.runId === identity.runId),
+          questions: pending?.foreground ? [pending.foreground] : [],
+        },
+      };
     }
 
     async recover(params) {

@@ -11,6 +11,7 @@ import {
   SubagentPreferencesSchema,
   type DshExecutionSnapshot,
   type InternalKernelRequest,
+  type OnlineQuestionExecution,
 } from '@allrice/contracts';
 import type {
   NativeSessionDescriptor,
@@ -54,6 +55,10 @@ import {
 } from './native-tools.js';
 
 export interface DshRuntime {
+  executionObservation?: Pick<
+    OnlineQuestionExecution,
+    'runId' | 'jobId' | 'attempt' | 'generation'
+  >;
   client: DshProtocolClient;
   id: string;
   fingerprint: string;
@@ -1247,6 +1252,32 @@ export class DshRuntimePool {
     } finally {
       release();
     }
+  }
+
+  async questionSnapshots(): Promise<OnlineQuestionExecution[]> {
+    return Promise.all(
+      [...this.ownedRuntimes].flatMap((runtime) => {
+        const execution = runtime.executionObservation;
+        if (!execution) return [];
+        return [
+          runtime.client
+            .sessionProjection(runtime.sessionId)
+            .then(({ foreground }) =>
+              runtime.executionObservation === execution &&
+              runtime.client.processState().state === 'running'
+                ? foreground
+                : null,
+            )
+            .catch(() => null)
+            .then((foreground) => ({
+              ...execution,
+              runtimeId: runtime.id,
+              rootSessionId: runtime.sessionId,
+              foreground,
+            })),
+        ];
+      }),
+    );
   }
 
   inventory(): readonly HarnessRuntimeProcessSnapshot[] {

@@ -22,6 +22,7 @@ import type {
   NativeQuestionCheckpoint,
   QuestionWait,
   SubagentPreferences,
+  OnlineQuestionExecution,
   NativeSubagentSummary,
 } from '@allrice/contracts';
 
@@ -293,6 +294,7 @@ export interface HarnessAdapter {
   compact?(input: { threadId: string }): Promise<void>;
   recover?(input: { threadId: string }): Promise<void>;
   runtimeInventory?(): readonly HarnessRuntimeProcessSnapshot[];
+  questionSnapshots?(): Promise<OnlineQuestionExecution[]>;
   runtimeClosureInventory?(): readonly HarnessRuntimeClosureSnapshot[];
   nativeSubagentSummary?(
     target: NativeSubagentQueryTarget,
