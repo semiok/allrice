@@ -158,6 +158,16 @@ export function installRunAdmission(host) {
       live(agent);
       return current().record.agent;
     },
+    hasAdmittedChild(runId) {
+      const state = current(runId);
+      return [...identities.values()].some(
+        (value) =>
+          value.runId === state.runId &&
+          value.rootSessionId === state.record.agent.id &&
+          value.nativeSessionId !== state.record.agent.id &&
+          !!value.parentSessionId,
+      );
+    },
     async authorizeInput(runId) {
       const state = current(runId);
       await host.transport.request('allrice/run-authorize', {

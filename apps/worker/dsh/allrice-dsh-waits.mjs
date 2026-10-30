@@ -65,6 +65,18 @@ export async function checkpointNativeQuestion(server, sessionId, questionId) {
   };
   const canPark = () => {
     if (!current()) return false;
+    // Native dispose clears inbox. Keep the live question when this Run has
+    // admitted a child, or a recovered root still owns unconsumed child input.
+    if (server.runAdmission?.hasAdmittedChild(runId)) return false;
+    if (
+      [...agent.inbox.nextStep, ...agent.inbox.nextTurn].some(
+        ({ source }) =>
+          (source?.kind === 'subagent-settled' ||
+            source?.kind === 'agent-message') &&
+          source.senderSessionId !== agent.id,
+      )
+    )
+      return false;
     // Another agent/tool may still be doing real work. Never interrupt it just
     // because the root is asking a question.
     if (server.ctx.agents.list().some((a) => a !== agent)) return false;
