@@ -77,6 +77,7 @@ type Scenario = {
   posts: Body[];
   gets: string[];
   rootReads: string[];
+  reply?: (body: Body) => Mode;
   gate?: Promise<void>;
   release?: () => void;
 };
@@ -161,7 +162,9 @@ suite('native child Stop request identity and truthful receipts', () => {
         const requestId =
           body?.input.requestId ?? url.searchParams.get('requestId')!;
         if (!post) scenario.gets.push(requestId);
-        const mode = post ? scenario.mode : scenario.getMode;
+        const mode = post
+          ? (scenario.reply?.(body!) ?? scenario.mode)
+          : scenario.getMode;
         if (mode === 'drop') {
           res.destroy();
           return;
@@ -379,7 +382,9 @@ suite('native child Stop request identity and truthful receipts', () => {
       expect(await detail(page).textContent()).toContain('运行摘要 · 运行中');
       await page.keyboard.press('Escape');
       await show(page, '乙');
-      expect(await detail(page).textContent()).toContain('乙自己的任务');
+      await expect
+        .poll(() => detail(page).textContent())
+        .toContain('乙自己的任务');
       expect(await receipt(page).count()).toBe(0);
       expect(scenario.gets).toEqual([]);
       expect(errors).toEqual([]);
@@ -505,7 +510,7 @@ suite('native child Stop request identity and truthful receipts', () => {
     }
   });
 
-  it('switching roots does not block the successor or attach an old response to its request', async () => {
+  it('switching roots creates an independent request and keeps late receipts bound to their own root', async () => {
     const { page, scenario } = await open('accepted', true);
     try {
       await detail(page).getByRole('button', { name: 'Stop 此子任务' }).click();
@@ -528,9 +533,17 @@ suite('native child Stop request identity and truthful receipts', () => {
         name: '发起新的 Stop 请求',
       });
       await expect.poll(() => nextStop.isEnabled()).toBe(true);
-      // The predecessor is held; the successor receives its own immediate ACK.
+      scenario.reply = (body) =>
+        body.rootRunId === runId ? 'unknown' : 'accepted';
+      // With five held SSE, the first HTTP response occupies Chrome's sixth slot.
+      // The new operation must be created before it; transport can drain afterward.
       scenario.gate = undefined;
       await nextStop.click();
+      await expect.poll(() => receipt(page).count()).toBe(2);
+      const ids = await receipt(page).locator('code').allTextContents();
+      expect(new Set(ids).size).toBe(2);
+      expect(await receipt(page).last().textContent()).toContain('正在提交');
+      scenario.release!();
       await expect.poll(() => scenario.posts.length).toBe(2);
       expect(scenario.posts[0]!.rootRunId).toBe(runId);
       expect(scenario.posts[1]).toMatchObject({
@@ -540,8 +553,6 @@ suite('native child Stop request identity and truthful receipts', () => {
       await expect
         .poll(() => receipt(page).last().textContent())
         .toContain('停止请求已接收');
-      scenario.mode = 'unknown';
-      scenario.release!();
       await expect
         .poll(() => receipt(page).first().textContent())
         .toContain('原生接收结果未知');

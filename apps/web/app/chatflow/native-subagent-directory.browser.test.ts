@@ -299,7 +299,7 @@ suite('native subagent directory and employee sidebar', () => {
             .map((call) => call.id)
             .sort(),
         )
-        .toEqual(['parent-a', 'parent-a', 'parent-b', 'parent-c']);
+        .toEqual(['parent-a', 'parent-b', 'parent-c']);
       expect(
         calls.filter((call) => !call.liveOnly).map((call) => call.id),
       ).toEqual([]);
@@ -857,7 +857,7 @@ suite('native subagent directory and employee sidebar', () => {
               (c) => c.fixture === fixture && c.sessionId === 'parent-a',
             ).length,
         )
-        .toBe(2);
+        .toBe(1);
       const update = summary();
       update.descendants = update.descendants.map((entry) =>
         entry.kind === 'child' && entry.parentId === update.rootId
