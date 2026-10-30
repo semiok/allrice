@@ -57,6 +57,7 @@ function child(
   };
 }
 function summary(rootId = 'native-root'): NativeSubagentSummary {
+  const prefix = rootId === 'native-root' ? '' : `${rootId}:`;
   return {
     rootId,
     root: { source: 'live', cursor: 10 },
@@ -64,7 +65,11 @@ function summary(rootId = 'native-root'): NativeSubagentSummary {
       child('fork-a', rootId, { running: true, timing: { settledMs: 0 } }),
       child('idle-b', rootId),
       child('grandchild', 'fork-a', { depth: 2, running: true }),
-    ],
+    ].map((entry) => ({
+      ...entry,
+      id: prefix + entry.id,
+      parentId: entry.parentId === rootId ? rootId : prefix + entry.parentId,
+    })),
   };
 }
 
