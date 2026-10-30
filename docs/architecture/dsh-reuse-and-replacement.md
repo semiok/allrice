@@ -653,6 +653,8 @@ New 0.2.1 execution additionally requires an immutable business INSERT origin, w
 
 用户 10-30 选定先恢复普通对话、旧流程后接及网页逐子控制后补。Worker 只在普通员工分支传入原 Run 的服务端冻结 `nativePreferences.subagents`；本轮实际 selectedWorkflow、repair/review、preview/internal/technical 不选择该组合。有效执行策略无匹配 `assistant.delegate` 规则时跟随原生允许；deny/ask、无效/缺失、disabled、plan_only 和平台 deny 仍关闭。旧 Run 不补默认值、不重算；出生 artifact 保持原来源，执行仍用当前已封印 primary。
 
+已授权定时等来源若最终走同一非 Workflow 员工 Run，沿用相同冻结资格和原 Run/订阅/交付门卫，也可获得委派；定时控制器和引擎不变。`native-schedule-once-product.ts` 经既有 `prepareNativeOnceChatRunInTransaction` 入队，冻结 owner 偏好；来源定时不等于经验整理的 `InternalKernelRequest`，也不让其获得新建另一后台任务所需的真人授权。
+
 SaaS 门卫复用原真实树、租户/成员/员工/内容和冻结订阅检查；启用要求已有 Run authority 与逐调用归根端口。已有 Host 指纹同时包含冻结偏好和生效原生配置，变化时关闭旧 Host 后重建；不新增 PG 状态、子租约或生命周期。账本与问答/收树分别依赖 MET229 及 PR3d 提问运行前置。守护：正式 profile Host、普通 Worker/Workflow 负例、冻结策略与热池/冷恢复测试；网页逐子停止/消息/热过程及 Dev 真实模型验收由后续回执单列。
 
 ## MET192 固定 UI 0.2.1-rc.2 兼容升级（2026-10-18）
