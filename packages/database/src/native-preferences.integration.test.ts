@@ -111,7 +111,7 @@ suite('MET-210 agent preferences frozen into each Run', () => {
     ['deny', 0],
     ['ask', 0],
     ['allow', 4],
-    [undefined, 0],
+    [undefined, 4],
   ] as const)(
     'a tenant assistant.delegate %s rule freezes subagent depth %i',
     async (effect, maxDepth) => {
@@ -128,6 +128,19 @@ suite('MET-210 agent preferences frozen into each Run', () => {
       });
     },
   );
+
+  it('changes only newly queued Runs when the delegation policy changes', async () => {
+    const f = await createExperienceFixture(isolated.db);
+    await policy(f, controls('deny'));
+    const oldRun = await send(f);
+    await policy(f, controls());
+    expect(await frozen(f)).toMatchObject({
+      subagents: { maxDepth: null, maxActive: null },
+    });
+    expect(await snapshotOf(oldRun)).toMatchObject({
+      subagents: { maxDepth: 0, maxActive: null },
+    });
+  });
 
   it.each([
     ['disabled', { ...controls('allow'), enabled: false }],

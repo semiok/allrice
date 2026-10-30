@@ -37,6 +37,13 @@
     "native-fs",
     "native-working-directory",
     "subagents",
+    "native-subagent-spawn",
+    "native-subagent-fork",
+    "native-approval",
+    "native-tool-subagent",
+    "native-tool-subagent-fork",
+    "native-subagent-control",
+    "native-list-agents",
     "native-session-query"
   ],
   "securityBoundaries": {

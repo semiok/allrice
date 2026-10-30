@@ -115,8 +115,8 @@ export async function updateUserPreferences(
  * MET-210: the agent preferences one Run is frozen with, read for the session
  * owner when the Run is queued. A denied assistant.delegate decision freezes
  * maxDepth to 0; policy evaluation stays with the shared runtime decision.
- * Only company policy is read: PR3a-2 retires the member assistants switch,
- * so this is the final semantics. Until PR3a-2 these frozen values are unused.
+ * Only company policy is read; no legacy member assistants switch is consulted.
+ * Existing Runs keep their stored decision when the default policy changes.
  */
 export async function freezeNativePreferences(
   sql: Sql | TransactionSql,

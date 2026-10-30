@@ -1,6 +1,6 @@
 # AllRice owns identity, tools, authorization, credentials and durable context.
 # This DSH composition deliberately exposes no shell, terminal, filesystem,
-# browser, unrestricted network, MCP, subagent or dynamic-plugin tools. The
+# browser, unrestricted network, MCP or dynamic-plugin tools. The
 # runtime may register a reviewed native tool only when AllRice freezes that
 # capability into the current tenant Session policy.
 
@@ -88,7 +88,7 @@
   name: '@deepseek-ai/dsh-system-prompt'
   config:
     includeHarnessIdentity: false
-    includeRuntimeContext: false
+    includeRuntimeContext: !!js process.env.ALLRICE_NATIVE_SUBAGENTS !== undefined
     personaPrefix: !!js process.env.DSH_SYSTEM_PROMPT ?? 'You are an AllRice AI employee.'
 
 - id: tools
@@ -172,9 +172,43 @@
 - id: native-working-directory
   name: '@deepseek-ai/dsh-working-directory'
 
-# Read-only catalog/projection services; no delegation provider or tool.
+# Catalog/projection services remain available without delegation.
 - id: subagents
   name: '@deepseek-ai/dsh-subagent'
+  config: !!js JSON.parse(process.env.ALLRICE_NATIVE_SUBAGENTS ?? '{}')
+
+# Worker-only process configuration from the original Run's frozen eligibility.
+# Disabled entries are not installed; a tool mask is not child isolation.
+- id: native-subagent-spawn
+  name: '@deepseek-ai/dsh-subagent-spawn-in-process'
+  disabled: !!js process.env.ALLRICE_NATIVE_SUBAGENTS === undefined
+
+- id: native-subagent-fork
+  name: '@deepseek-ai/dsh-subagent-fork-in-process'
+  disabled: !!js process.env.ALLRICE_NATIVE_SUBAGENTS === undefined
+
+- id: native-approval
+  name: '@deepseek-ai/dsh-user-approval'
+  disabled: !!js process.env.ALLRICE_NATIVE_SUBAGENTS === undefined
+  config: { policy: never }
+
+- id: native-tool-subagent
+  name: '@deepseek-ai/dsh-tool-subagent'
+  disabled: !!js process.env.ALLRICE_NATIVE_SUBAGENTS === undefined
+  config: { provider: spawn, toolName: subagent }
+
+- id: native-tool-subagent-fork
+  name: '@deepseek-ai/dsh-tool-subagent'
+  disabled: !!js process.env.ALLRICE_NATIVE_SUBAGENTS === undefined
+  config: { provider: fork, toolName: subagent_fork }
+
+- id: native-subagent-control
+  name: '@deepseek-ai/dsh-tool-subagent-control'
+  disabled: !!js process.env.ALLRICE_NATIVE_SUBAGENTS === undefined
+
+- id: native-list-agents
+  name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+  disabled: !!js process.env.ALLRICE_NATIVE_SUBAGENTS === undefined
 
 - id: native-session-query
   name: '@deepseek-ai/dsh-session-query-sqlite'

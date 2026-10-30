@@ -262,6 +262,7 @@ suite('MET-210 real Worker continuation and Workflow waiting', () => {
           repairRequestId: randomUUID(),
         };
       execute.mockImplementation(async (input) => {
+        if (state.maintenance) expect(input.nativeSubagents).toBeUndefined();
         if (state.maintenance)
           expect(
             input.executionEnvironment.ALLRICE_MAINTENANCE_OUTPUT_TOKENS,
@@ -394,6 +395,7 @@ suite('MET-210 real Worker continuation and Workflow waiting', () => {
         yield { type: 'text', text: 'done' };
       });
       execute.mockImplementation(async (input) => {
+        expect(input.nativeSubagents).toBeUndefined();
         expect(input.nativeQuestionWait).toEqual({ mode: 'timed', seconds: 7 });
         expect(input.executionEnvironment.ALLRICE_QUESTION_RELEASE_MS).toBe(
           '0',

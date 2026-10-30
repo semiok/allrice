@@ -42,8 +42,24 @@ describe('Worker capability facts', () => {
       version: result.version,
       state: 'configured',
     });
+    expect(result.components.every((c) => c.version)).toBe(true);
     expect(
-      result.components.every((c) => c.version && c.state === 'configured'),
+      result.components
+        .filter((c) => c.state === 'conditional')
+        .map((c) => c.id),
+    ).toEqual([
+      'native-subagent-spawn',
+      'native-subagent-fork',
+      'native-approval',
+      'native-tool-subagent',
+      'native-tool-subagent-fork',
+      'native-subagent-control',
+      'native-list-agents',
+    ]);
+    expect(
+      result.components.every((c) =>
+        ['configured', 'conditional'].includes(c.state),
+      ),
     ).toBe(true);
   });
   it('does not execute !!js, disclose config, or count disabled/missing/conditional entries as configured', () => {

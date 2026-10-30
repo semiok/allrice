@@ -391,6 +391,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
             await authorizeRun?.();
           else if (params.kind === 'model') {
             accounting?.delivered({ calls: 0, complete: false });
+            await authorizeRun?.();
             await input.modelPreflight?.();
           } else throw Error('DSH_RUN_REQUEST_DENIED');
           executionSignal.throwIfAborted();

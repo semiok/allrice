@@ -2,11 +2,13 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { resolve, sep, dirname } from 'node:path';
 import { Config as AskUserConfig } from '@deepseek-ai/dsh-tool-ask-user';
+import SubagentRuntime from '@deepseek-ai/dsh-subagent';
 
 import {
   harnessContextKey,
   UuidSchema,
   QuestionWaitSchema,
+  SubagentPreferencesSchema,
   type DshExecutionSnapshot,
   type InternalKernelRequest,
 } from '@allrice/contracts';
@@ -793,6 +795,37 @@ export class DshRuntimePool {
       input.input.executionEnvironment.ALLRICE_QUESTION_RELEASE_MS === '0'
         ? 0
         : this.idleCloseMs;
+    const subagentPreferences = input.input.nativeSubagents
+      ? SubagentPreferencesSchema.parse(input.input.nativeSubagents)
+      : null;
+    const subagentSettings = SubagentRuntime.Config({
+      ...(subagentPreferences?.maxDepth == null
+        ? {}
+        : { maxDepth: subagentPreferences.maxDepth }),
+      ...(subagentPreferences?.maxActive == null
+        ? {}
+        : { maxActiveSubagents: subagentPreferences.maxActive }),
+    });
+    const nativeSubagents =
+      subagentPreferences && subagentPreferences.maxDepth !== 0
+        ? {
+            maxDepth: subagentSettings.maxDepth.get(),
+            maxActiveSubagents: subagentSettings.maxActiveSubagents.get(),
+          }
+        : null;
+    if (
+      nativeSubagents &&
+      (!input.input.nativeRunAuthority ||
+        !input.input.modelPreflight ||
+        !input.input.nativeAccounting ||
+        !input.input.executionEnvironment.ALLRICE_RUN_ID ||
+        'internalTask' in input.input.kernel)
+    )
+      throw new HandlerError(
+        'DSH_NATIVE_DELEGATION_AUTHORITY_REQUIRED',
+        'Native delegation requires the ordinary employee Run authority and accounting.',
+        false,
+      );
     if (
       input.input.nativeQuestionMode === 'timed' &&
       this.idleCloseMs === 0 &&
@@ -804,6 +837,10 @@ export class DshRuntimePool {
       );
     }
     const fingerprintInput = {
+      nativeSubagents: {
+        preferences: subagentPreferences,
+        config: nativeSubagents,
+      },
       questionWait: {
         mode: input.input.nativeQuestionMode ?? 'legacy',
         timeout: questionTimeout,
@@ -953,6 +990,9 @@ export class DshRuntimePool {
       DSH_MAX_OUTPUT_TOKENS: String(maxTokens ?? 16_000),
       ALLRICE_QUESTION_RELEASE_MS: String(questionReleaseMs),
       ALLRICE_ASK_USER_MODE: input.input.nativeQuestionMode ?? 'legacy',
+      ...(nativeSubagents
+        ? { ALLRICE_NATIVE_SUBAGENTS: JSON.stringify(nativeSubagents) }
+        : {}),
       ...(questionWait.mode === 'default'
         ? {}
         : { ALLRICE_ASK_USER_TIMEOUT: String(questionTimeout) }),

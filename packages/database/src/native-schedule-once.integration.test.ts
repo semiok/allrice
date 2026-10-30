@@ -318,8 +318,8 @@ suite(
         preferences: {
           version: 1,
           questionWait: { mode: 'timed', seconds: 300 },
-          // This fixture's tenant has no assistant.delegate allow rule.
-          subagents: { maxDepth: 0, maxActive: null },
+          // The valid policy has no delegation rule; preserve the owner's preference.
+          subagents: { maxDepth: 4, maxActive: null },
         },
       };
       expect(await snapshot()).toEqual(expected);

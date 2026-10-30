@@ -142,6 +142,17 @@ it('loads the exact consolidation Skill in a private non-chat runtime and carrie
     const names = model.requests[0]!.tools!.map((t) => t.function.name);
     expect(names).toContain('skill');
     expect(
+      names.filter((name) =>
+        [
+          'subagent',
+          'subagent_fork',
+          'send_message',
+          'interrupt_agent',
+          'list_agents',
+        ].includes(name),
+      ),
+    ).toEqual([]);
+    expect(
       names.some((n) =>
         /workspace|local|python|assistant|file|execute|shell/.test(n),
       ),

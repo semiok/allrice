@@ -41,7 +41,12 @@ async function readProfile(name: string) {
         { tag: 'tag:yaml.org,2002:js', resolve: (value: string) => value },
       ],
     },
-  ).toJS() as { id: string; name: string; config?: Record<string, unknown> }[];
+  ).toJS() as {
+    id: string;
+    name: string;
+    disabled?: unknown;
+    config?: Record<string, unknown>;
+  }[];
 }
 
 describe('AllRice restricted DSH profile', () => {
@@ -132,7 +137,7 @@ describe('AllRice restricted DSH profile', () => {
     },
   );
 
-  it('pins governed P25 services while keeping native delegation absent from the default profile', async () => {
+  it('pins governed services and conditionally installs delegation only in the restricted profile', async () => {
     const pkg = JSON.parse(
       await readFile(
         resolve(import.meta.dirname, '../../package.json'),
@@ -145,6 +150,9 @@ describe('AllRice restricted DSH profile', () => {
     for (const name of [
       '@deepseek-ai/dsh-subagent',
       '@deepseek-ai/dsh-subagent-spawn-in-process',
+      '@deepseek-ai/dsh-subagent-fork-in-process',
+      '@deepseek-ai/dsh-tool-subagent',
+      '@deepseek-ai/dsh-tool-subagent-control',
       '@deepseek-ai/dsh-user-approval',
     ]) {
       expect(pkg.dependencies[name]).toBe(DSH_DISTRIBUTION_CURRENT_VERSION);
@@ -167,7 +175,18 @@ describe('AllRice restricted DSH profile', () => {
       const profile = await readProfile(name);
       expect(
         profile.filter((p) => p.name === '@deepseek-ai/dsh-subagent'),
-      ).toEqual([{ id: 'subagents', name: '@deepseek-ai/dsh-subagent' }]);
+      ).toEqual([
+        {
+          id: 'subagents',
+          name: '@deepseek-ai/dsh-subagent',
+          ...(name === 'allrice-restricted'
+            ? {
+                config:
+                  "JSON.parse(process.env.ALLRICE_NATIVE_SUBAGENTS ?? '{}')",
+              }
+            : {}),
+        },
+      ]);
       expect(
         profile.filter(
           (p) => p.name === '@deepseek-ai/dsh-session-query-sqlite',
@@ -179,11 +198,27 @@ describe('AllRice restricted DSH profile', () => {
           config: { path: ':memory:', openAt: 'never' },
         },
       ]);
-      // The catalog service grants neither a backend nor model-facing tools.
-      for (const plugin of profile)
-        expect(plugin.name).not.toMatch(
+      const delegation = profile.filter((plugin) =>
+        plugin.name.match(
           /^@deepseek-ai\/dsh-(subagent-|tool-subagent|user-approval)/,
-        );
+        ),
+      );
+      if (name === 'allrice-technical') expect(delegation).toEqual([]);
+      else {
+        expect(delegation.map((plugin) => plugin.id)).toEqual([
+          'native-subagent-spawn',
+          'native-subagent-fork',
+          'native-approval',
+          'native-tool-subagent',
+          'native-tool-subagent-fork',
+          'native-subagent-control',
+          'native-list-agents',
+        ]);
+        for (const plugin of delegation)
+          expect(plugin.disabled).toBe(
+            'process.env.ALLRICE_NATIVE_SUBAGENTS === undefined',
+          );
+      }
     }
   });
 });

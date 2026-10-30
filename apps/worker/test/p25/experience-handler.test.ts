@@ -130,6 +130,7 @@ it.each([false, true])(
     expect(ports.subscription).not.toHaveBeenCalled();
     expect(ports.admit).toHaveBeenCalledOnce();
     const dispatched = ports.execute.mock.calls[0]![0];
+    expect(dispatched.nativeSubagents).toBeUndefined();
     expect(JSON.parse(dispatched.kernel.userRequest)).toMatchObject({
       currentRules: occurrence.currentRules,
       budget: model.runLimits,
