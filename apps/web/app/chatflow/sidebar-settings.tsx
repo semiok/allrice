@@ -8,6 +8,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from 'react';
+import { SubagentPreferencesSchema } from '@allrice/contracts';
 import {
   Button,
   IconChevronDownOutlineRegular,
@@ -54,6 +55,22 @@ const collapseTimingOptions = [
   { value: 'completion', label: '回答结束后' },
   { value: 'next-input', label: '下次有新消息时' },
 ] as const;
+const subagentOptions = [
+  {
+    field: 'maxDepth',
+    label: '子智能体最大递归深度',
+    minimum: 0,
+    defaultValue: 1,
+    help: '留空跟随默认（1）；0 禁用，1 仅允许主员工创建。下一次任务生效。',
+  },
+  {
+    field: 'maxActive',
+    label: '子智能体并行数量上限',
+    minimum: 1,
+    defaultValue: 8,
+    help: '留空跟随默认（8）。所有层级共用，主员工不计入；下一次任务生效。',
+  },
+] as const;
 
 export type SettingsSection =
   'preferences' | 'computer' | 'work' | 'apps' | 'account';
@@ -81,6 +98,10 @@ function PersonalPreferencesSettings({
   const [fontSizeDraft, setFontSizeDraft] = useState(
     String(preferences.value.fontSize),
   );
+  const [subagentDrafts, setSubagentDrafts] = useState({
+    maxDepth: preferences.value.subagents.maxDepth?.toString() ?? '',
+    maxActive: preferences.value.subagents.maxActive?.toString() ?? '',
+  });
   const disabled = preferences.pending || !preferences.available;
   const expanded = preferences.value.transcriptView === 'verbose';
   // What the page shows: the saved choice, or one just picked and saving.
@@ -95,6 +116,34 @@ function PersonalPreferencesSettings({
   useEffect(() => {
     setFontSizeDraft(String(preferences.value.fontSize));
   }, [preferences.value.fontSize, preferences.scope, preferences.pending]);
+  useEffect(() => {
+    setSubagentDrafts({
+      maxDepth: preferences.value.subagents.maxDepth?.toString() ?? '',
+      maxActive: preferences.value.subagents.maxActive?.toString() ?? '',
+    });
+  }, [preferences.value.subagents, preferences.scope, preferences.pending]);
+
+  function commitSubagent(
+    field: keyof typeof subagentDrafts,
+    input: HTMLInputElement,
+  ) {
+    if (disabled) return;
+    const draft = subagentDrafts[field].trim();
+    const value = draft === '' ? null : Number(draft);
+    const subagents = { ...preferences.value.subagents, [field]: value };
+    if (
+      input.validity.badInput ||
+      !SubagentPreferencesSchema.safeParse(subagents).success
+    ) {
+      setSubagentDrafts((current) => ({
+        ...current,
+        [field]: preferences.value.subagents[field]?.toString() ?? '',
+      }));
+      return;
+    }
+    if (value !== preferences.value.subagents[field])
+      void preferences.setPreferences({ subagents });
+  }
 
   function saveFontSize(value: number) {
     if (disabled) return;
@@ -122,7 +171,9 @@ function PersonalPreferencesSettings({
 
   return (
     <div className={preferenceStyles.root} aria-busy={preferences.pending}>
-      <p className={preferenceStyles.lead}>调整对话的阅读和展示方式。</p>
+      <p className={preferenceStyles.lead}>
+        调整对话的阅读、展示和子智能体使用方式。
+      </p>
       <div className={preferenceStyles.list}>
         <div className={preferenceStyles.row}>
           <div className={preferenceStyles.copy}>
@@ -309,6 +360,44 @@ function PersonalPreferencesSettings({
             <IconChevronDownOutlineRegular size={12} />
           </div>
         </div>
+        {subagentOptions.map(
+          ({ field, label, minimum, defaultValue, help }) => (
+            <div key={field} className={preferenceStyles.row}>
+              <div className={preferenceStyles.copy}>
+                <h3>
+                  <label htmlFor={`${id}-${field}`}>{label}</label>
+                </h3>
+                <p id={`${id}-${field}-help`}>{help}</p>
+              </div>
+              <Input
+                id={`${id}-${field}`}
+                className={preferenceStyles.subagentInput}
+                type="number"
+                inputMode="numeric"
+                min={minimum}
+                max={Number.MAX_SAFE_INTEGER}
+                step={1}
+                placeholder={`默认（${defaultValue}）`}
+                value={subagentDrafts[field]}
+                aria-describedby={`${id}-${field}-help`}
+                disabled={disabled}
+                onChange={(event) =>
+                  setSubagentDrafts((current) => ({
+                    ...current,
+                    [field]: event.target.value,
+                  }))
+                }
+                onBlur={(event) => commitSubagent(field, event.currentTarget)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    event.currentTarget.blur();
+                  }
+                }}
+              />
+            </div>
+          ),
+        )}
       </div>
       {preferences.error ? (
         <div role="alert" className={preferenceStyles.error}>

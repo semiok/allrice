@@ -16,6 +16,7 @@ import {
   employeeColorForeground,
   resolveEmployeeAccent,
   type EmployeeAccentColor,
+  type NativeSubagentSummary,
 } from '@allrice/contracts';
 import {
   deriveGroups,
@@ -25,7 +26,6 @@ import {
 import type {
   SessionListState,
   WorkspaceView,
-  SessionStatusSnapshot,
 } from './dsh-upstream/workspace/contracts';
 import { zh } from './dsh-upstream/workspace/locales';
 import type { WorkspaceBrowserProps } from './dsh-upstream/workspace/contracts';
@@ -148,6 +148,7 @@ export function employeeGroups(
   expansion: Record<string, boolean>,
   archivedFilter: ArchivedFilter = 'default',
   summaries: EmployeeSessionGroup[] = [],
+  nativeSummaries: Record<string, NativeSubagentSummary | null | 'error'> = {},
 ) {
   const assignments = new Map(
     employeeChoices(workspace).map((employee) => [
@@ -191,9 +192,29 @@ export function employeeGroups(
         },
       ]),
     ),
-    projectionsBySession: {},
+    projectionsBySession: Object.fromEntries(
+      Object.entries(nativeSummaries).flatMap(([id, summary]) =>
+        !summary || summary === 'error'
+          ? []
+          : [
+              [
+                id,
+                {
+                  values: {
+                    subagentCatalog: summary.descendants
+                      .filter((entry) => entry.parentId === summary.rootId)
+                      .map(({ id }) => ({ id })),
+                  },
+                },
+              ],
+            ],
+      ),
+    ),
   };
-  const statuses: SessionStatusSnapshot = new Map(
+  const statuses = new Map<
+    string,
+    { running: boolean; pendingInteraction?: { kind: string } }
+  >(
     sessions.map((session) => [
       session.id,
       {
@@ -204,6 +225,15 @@ export function employeeGroups(
       },
     ]),
   );
+  for (const summary of Object.values(nativeSummaries))
+    if (summary && summary !== 'error')
+      for (const child of summary.descendants)
+        if (
+          child.parentId === summary.rootId &&
+          child.kind === 'child' &&
+          child.running !== null
+        )
+          statuses.set(child.id, { running: child.running });
   const defaultEmployee =
     employeeChoices(workspace).find((employee) => employee.isDefault) ??
     employeeChoices(workspace)[0];
