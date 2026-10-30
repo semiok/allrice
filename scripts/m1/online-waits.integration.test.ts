@@ -10,7 +10,7 @@ import {
   it,
   vi,
 } from 'vitest';
-import { HarnessEventSchema } from '@allrice/contracts';
+import { ExecutionContextSchema, HarnessEventSchema } from '@allrice/contracts';
 import * as client from '../../packages/database/src/core/client.ts';
 import { appendJobEvent } from '../../packages/database/src/execution/queue.ts';
 import { normalizeHarnessRunEvent } from '../../apps/worker/src/harness/runtime-contract.ts';
@@ -329,9 +329,6 @@ suite('MET-222 online human waits through real monitor SQL', () => {
       samples: [f.task.runId],
       unknown_reasons: [],
     });
-    await fixture.db`delete from allrice_task_clock_events where run_id=${f.rootRunId}`;
-    await fixture.db`delete from allrice_task_clocks where run_id=${f.rootRunId}`;
-    expect(collect().online_runs).toBe(1); // trusted foreground facts do not require a clock
     await notice(f, 'legacy-question', false);
     await observe(f, 'legacy-question', 'ended');
     expect(collect().occupied_slots).toBe(1);
@@ -501,8 +498,29 @@ suite('MET-222 online human waits through real monitor SQL', () => {
 
   it('counts a normal legacy foreground with active progress and drops only on matching ended', async () => {
     const f = await legacy();
+    const [policy] =
+      await fixture.db`select payload,issued_at,expires_at from allrice_policy_snapshots where id=${f.policy}`;
+    const executionContext = ExecutionContextSchema.parse({
+      executionId: randomUUID(),
+      runId: f.rootRunId,
+      jobId: f.worker.jobId,
+      worker: { type: 'worker', id: f.worker.workerId },
+      delegatedBy: f.context.actor,
+      organizationId: f.org,
+      workspaceId: f.workspace,
+      startedAt: new Date().toISOString(),
+      policySnapshot: {
+        id: f.policy,
+        organizationId: f.org,
+        subjectId: f.user,
+        version: 1,
+        issuedAt: policy!.issued_at.toISOString(),
+        expiresAt: policy!.expires_at.toISOString(),
+        ...policy!.payload,
+      },
+    });
     const progress = createTaskProgressRuntime(
-      { context: f.context, worker: f.worker },
+      { context: executionContext, worker: f.worker, sessionId: f.session },
       fixture.db,
     );
     await progress({
@@ -576,7 +594,10 @@ suite('MET-222 online human waits through real monitor SQL', () => {
     await fixture.db`update allrice_jobs set attempt=1 where id=${f.worker.jobId}`;
     await fixture.db`update allrice_conversation_runtimes set thread_generation=thread_generation+1 where session_id=${f.session}`;
     expect(collect()).toMatchObject({ online_runs: 0, unclassified_runs: 0 });
-    await fixture.db`update allrice_conversation_runtimes set thread_generation=${f.threadGeneration},active_run_id=null where session_id=${f.session}`;
+    const currentRun = randomUUID();
+    await fixture.db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input)
+      select ${currentRun},organization_id,workspace_id,owner_id,'running','{}','{}' from allrice_runs where id=${f.rootRunId}`;
+    await fixture.db`update allrice_conversation_runtimes set thread_generation=${f.threadGeneration},active_run_id=${currentRun} where session_id=${f.session}`;
     expect(collect().online_runs).toBe(0);
     await fixture.db`update allrice_conversation_runtimes set active_run_id=${f.rootRunId},worker_id=${randomUUID()} where session_id=${f.session}`;
     expect(collect().online_runs).toBe(0);
@@ -679,6 +700,24 @@ suite('MET-222 online human waits through real monitor SQL', () => {
     });
     await fixture.db`update allrice_native_questions set state='settled' where source_run_id=${f.rootRunId}`;
     await observe(f, questionId, 'opened', { timed: true });
+    expect(collect()).toMatchObject({
+      online_runs: 0,
+      occupied_slots: 0,
+      unknown_reasons: [],
+    });
+  });
+
+  it('uses trusted foreground observations even when the older pending projection and clock are absent', async () => {
+    const f = await context();
+    await observe(f, 'foreground-only', 'opened');
+    await fixture.db`delete from allrice_task_clock_events where run_id=${f.rootRunId}`;
+    await fixture.db`delete from allrice_task_clocks where run_id=${f.rootRunId}`;
+    expect(collect()).toMatchObject({
+      online_runs: 1,
+      occupied_slots: 1,
+      unknown_reasons: [],
+    });
+    await observe(f, 'foreground-only', 'ended');
     expect(collect()).toMatchObject({
       online_runs: 0,
       occupied_slots: 0,
