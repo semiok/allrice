@@ -241,6 +241,7 @@ suite(
         /** Isolated HTTP/1 samples, not production measurements. */
         nativeParents?: 3 | 5;
         nativeOtherOwner?: boolean;
+        nativeDelayFull?: boolean;
         workspaceFiles?: WorkspaceFile[];
         taskSuggestions?: TaskSuggestionDisplay[];
         nextSteps?: TaskNextSteps;
@@ -330,6 +331,12 @@ suite(
       const nativeRequests: { at: number; path: string; protocol: string }[] =
         [];
       const browserWrites = { count: 0 };
+      let releaseNativeFull!: () => void;
+      const nativeFullGate = new Promise<void>((done) => {
+        releaseNativeFull = done;
+      });
+      let nativeFullRequests = 0;
+      const nativeSelectionNames: { id: string; ax: string }[] = [];
       const uploaded = new Map<string, Attachment>();
       let nextSteps = options.nextSteps;
       let holdNextReply = false;
@@ -469,8 +476,16 @@ suite(
               url.searchParams.set('fixture', nativeFixture);
               request.url = url.pathname + url.search;
               nativeFeed.handle(request, response);
-            } else
+            } else {
+              if (
+                subagentSession === A &&
+                url.searchParams.get('liveOnly') !== 'true'
+              ) {
+                nativeFullRequests++;
+                if (options.nativeDelayFull) await nativeFullGate;
+              }
               answer(response, { summary: nativeSummary(subagentSession) });
+            }
             return;
           }
           answer(response, {
@@ -813,6 +828,9 @@ suite(
           nativeIds,
           nativeRequests,
           browserWrites,
+          nativeSelectionNames,
+          fullRequests: () => nativeFullRequests,
+          releaseFull: () => releaseNativeFull(),
           connections: () => [...nativeFeed.connections],
           summary: nativeSummary,
           push(id: string, summary: NativeSubagentSummary) {
@@ -863,14 +881,19 @@ suite(
           for (const response of streams) response.destroy();
         },
         async choose(id: string) {
-          await page
-            .getByRole('treeitem', {
-              name: id === A ? /^Session A/ : /^Session B/,
-            })
-            .click();
+          const row = options.nativeParents
+            ? page.locator(`[data-row-key="session:${id}"]`)
+            : page.getByRole('treeitem', {
+                name: id === A ? /^Session A/ : /^Session B/,
+              });
+          if (options.nativeParents)
+            nativeSelectionNames.push({ id, ax: await row.ariaSnapshot() });
+          await row.click();
           await expect
             .poll(() => page.getByRole('heading', { level: 1 }).textContent())
             .toContain(id === A ? 'Session A' : 'Session B');
+          if (options.nativeParents)
+            expect(new URL(page.url()).searchParams.get('session')).toBe(id);
         },
         async send(text: string, attachment?: string) {
           if (attachment)
@@ -1235,6 +1258,70 @@ suite(
       }
     });
 
+    it('keeps keyboard focus from a stable hot native summary through a delayed full read and Enter detail', async () => {
+      const f = await fixture({
+        nativeParents: 3,
+        nativeDelayFull: true,
+        height: 1800,
+      });
+      try {
+        const trigger = f.page.getByRole('button', {
+          name: '1 个子智能体 · 1 个运行中',
+          exact: true,
+        });
+        await trigger.waitFor();
+        await expect
+          .poll(
+            () =>
+              f.native
+                .connections()
+                .filter((c) => c.sessionId === A && !c.childId).length,
+          )
+          .toBe(1);
+        await expect
+          .poll(() =>
+            f.page.locator(`[data-row-key="session:${A}"]`).innerText(),
+          )
+          .toContain('1 个子智能体运行中');
+        expect(await trigger.getAttribute('aria-expanded')).toBe('false');
+        expect(f.native.fullRequests()).toBe(0);
+        await trigger.focus();
+        await f.page.keyboard.press('ArrowDown');
+        await expect.poll(f.native.fullRequests).toBe(1);
+        const first = f.page.getByRole('button', {
+          name: '查看Child 0摘要',
+          exact: true,
+        });
+        expect(await first.count()).toBe(0);
+        f.native.releaseFull();
+        await first.waitFor();
+        await expect
+          .poll(() => first.evaluate((node) => node === document.activeElement))
+          .toBe(true);
+        await f.page.keyboard.press('Enter');
+        await f.page
+          .getByLabel('子智能体摘要', { exact: true })
+          .getByText(`${A} own reply`, { exact: true })
+          .waitFor();
+        await expect
+          .poll(
+            () =>
+              f.native
+                .connections()
+                .filter((c) => c.sessionId === A && c.childId === 'child-0')
+                .length,
+          )
+          .toBe(1);
+        expect(f.native.fullRequests()).toBe(1);
+        expect(f.native.browserWrites.count).toBe(0);
+        expect(f.writes).toEqual([]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        f.native.releaseFull();
+        await f.close();
+      }
+    });
+
     it('shares the active native read through parent switches, detail, permission errors, readyKey and Workspace changes', async () => {
       const f = await fixture({
         nativeParents: 3,
@@ -1245,6 +1332,7 @@ suite(
         f.native.connections().filter((c) => c.sessionId === id && !c.childId);
       const badge = (id: string) =>
         f.page.locator(`[data-row-key="session:${id}"]`);
+      const phases: string[] = [];
       try {
         const header = (count: number) =>
           f.page.getByRole('button', {
@@ -1275,6 +1363,7 @@ suite(
         await expect.poll(() => active(A).length).toBe(1);
         // Native readiness only replaces current-parent ownership; background B is not refreshed by readyKey.
         expect(active(B)[0]).toBe(readyBackgroundB);
+        phases.push('ready-key');
         await header(1).click();
         await f.page
           .getByRole('button', { name: '查看Child 0摘要', exact: true })
@@ -1294,6 +1383,7 @@ suite(
           )
           .toBe(1);
         expect(active(B)[0]).toBe(readyBackgroundB);
+        phases.push('hot-detail');
         await f.page
           .getByRole('button', { name: '关闭摘要', exact: true })
           .click();
@@ -1303,6 +1393,7 @@ suite(
         await expect
           .poll(() => badge(A).innerText())
           .toContain('1 个子智能体运行中');
+        phases.push('parent-b');
         await f.choose(A);
         await header(1).waitFor();
         f.native.switchWorkspace();
@@ -1316,12 +1407,14 @@ suite(
           .toBe(true);
         await header(3).waitFor();
         await expect.poll(() => active(A).length).toBe(1);
+        phases.push('workspace-c');
         await f.page
           .getByRole('button', { name: '收起侧边栏', exact: true })
           .click();
         await badge(A).waitFor({ state: 'hidden' });
         await header(3).waitFor();
         await expect.poll(() => active(A).length).toBe(1);
+        phases.push('active-outside-sidebar');
         expect(
           await f.page.getByText(`${B} own reply`, { exact: true }).count(),
         ).toBe(0);
@@ -1329,6 +1422,19 @@ suite(
         expect(f.writes).toEqual([]);
         expect(f.errors).toEqual([]);
       } finally {
+        console.log(
+          'native-active-share-boundaries',
+          JSON.stringify({
+            phases,
+            selections: f.native.nativeSelectionNames,
+            workspaceRequests: f.native.nativeRequests.filter((r) =>
+              r.path.includes(`workspaceId=${C}`),
+            ),
+            browserWrites: f.native.browserWrites.count,
+            serverWrites: f.writes.length,
+            pageerror: f.errors,
+          }),
+        );
         await f.close();
       }
     });
