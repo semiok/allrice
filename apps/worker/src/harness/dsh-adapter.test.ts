@@ -178,6 +178,7 @@ describe('confirmed native dispatch stop receipt', () => {
       client: {
         prompt,
         beginRun: vi.fn(),
+        closeRunInput: vi.fn().mockResolvedValue({ closed: true }),
         setRequestHandler: vi.fn(),
         subscribe: vi.fn(() => () => {}),
       },
@@ -251,9 +252,6 @@ describe('confirmed native dispatch stop receipt', () => {
         storageNamespace: scope.storageNamespace,
       } as NonNullable<DshRuntime['nativePin']>;
       f.runtime.client.interrupt = vi.fn().mockResolvedValue({});
-      f.runtime.client.closeRunInput = vi
-        .fn()
-        .mockResolvedValue({ closed: true });
       f.runtime.client.nativeSubagentControl = vi
         .fn()
         .mockResolvedValue({ kind: 'interrupt', accepted: true });
@@ -404,6 +402,9 @@ describe('confirmed native dispatch stop receipt', () => {
     });
     expect(getDshCleanupFailures(failure)).toEqual([unknown]);
     expect(failure).toHaveProperty('cause', unknown);
+    expect(f.runtime.client.closeRunInput).toHaveBeenCalledExactlyOnceWith(
+      f.input.executionEnvironment.ALLRICE_RUN_ID,
+    );
     expect(f.confirmStopped).not.toHaveBeenCalled();
     expect(f.prompt).not.toHaveBeenCalled();
     expect(f.drop).toHaveBeenCalledOnce();
