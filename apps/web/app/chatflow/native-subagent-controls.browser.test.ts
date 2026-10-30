@@ -469,6 +469,7 @@ suite('native child Stop request identity and truthful receipts', () => {
       await detail(page).getByRole('button', { name: 'Stop 此子任务' }).click();
       await expect.poll(() => scenario.posts.length).toBe(1);
       const idA = scenario.posts[0]!.input.requestId;
+      console.info('Unmount recovery: A held, leaving the business session');
       await page.keyboard.press('Escape');
       for (const [index, id] of ['parent-b', 'parent-a'].entries()) {
         await page.locator(`[data-row-key="session:${id}"]`).focus();
@@ -487,6 +488,7 @@ suite('native child Stop request identity and truthful receipts', () => {
           .toBe(1);
       }
       rootEvent(scenario, 'turn.started', 1);
+      console.info('Unmount recovery: returned to the business session');
       await show(page, '甲');
       scenario.gate = new Promise<void>((done) => {
         releaseB = done;
@@ -506,6 +508,9 @@ suite('native child Stop request identity and truthful receipts', () => {
       );
       releaseA();
       await (await responseA).finished();
+      console.info(
+        'Unmount recovery: old A response delivered after B creation',
+      );
       // Five held SSE plus old A occupy all six HTTP/1 connections. B is created
       // before A returns, then reaches the server and stays held through reload.
       await expect.poll(() => scenario.posts.length).toBe(2);
@@ -520,6 +525,21 @@ suite('native child Stop request identity and truthful receipts', () => {
       );
       expect(savedIds).toEqual(ids);
       expect(await receipt(page).last().textContent()).toContain('正在提交');
+      await page.keyboard.press('Escape');
+      await expect.poll(() => detail(page).count()).toBe(0);
+      // Closing detail frees a real HTTP/1 slot so navigation can start while B
+      // remains held. Keep the full Sidebar and all shared directory reads.
+      await expect
+        .poll(
+          () =>
+            [...feed.connections].filter(
+              (c) => c.fixture === scenario.feedId && c.childId !== null,
+            ).length,
+        )
+        .toBe(0);
+      console.info(
+        'Unmount recovery: both IDs saved; reloading while B remains held',
+      );
       await page.reload();
       releaseB!();
       await show(page, '甲');
