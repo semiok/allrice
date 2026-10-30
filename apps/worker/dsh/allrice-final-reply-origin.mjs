@@ -1,6 +1,90 @@
+import { isAppendSurfaceEvent } from '@deepseek-ai/dsh-session/surface';
+import { visibleNativeText } from './allrice-native-display.mjs';
+
+const text = (event) =>
+  event.data.message.content
+    .filter((block) => block.type === 'text')
+    .map((block) => block.text)
+    .join('');
+const publicMessage = (event, turn) =>
+  isAppendSurfaceEvent(event) &&
+  event.data.turn === turn &&
+  !event.data.interrupted &&
+  event.data.message?.source?.kind === 'model' &&
+  Array.isArray(event.data.message.content) &&
+  event.data.message.content.every((block) =>
+    ['text', 'reasoning'].includes(block.type),
+  );
+
+// Only native settlement and silent model closure may follow a public answer.
+// Read the registered native inbox fold at each removal; an empty insertion
+// alone does not prove that the removed input was harmless.
+function verifySilentTail(session, events, candidate, end, projections) {
+  const children = new Set(
+    events
+      .filter(
+        (event) =>
+          event.seq < candidate.seq &&
+          event.type === 'subagent/catalog' &&
+          ['one-shot', 'continuable'].includes(event.data.mode),
+      )
+      .map((event) => event.data.childId),
+  );
+  const settled = (message) =>
+    message?.source?.kind === 'subagent-settled' &&
+    message.source.form === 'notice' &&
+    children.has(message.source.senderSessionId);
+  for (const [index, event] of events.entries()) {
+    if (event.seq <= candidate.seq) continue;
+    const { type, data } = event;
+    if (event.seq > end.seq) return false;
+    if (type === 'assistant/message') {
+      if (!publicMessage(event, candidate.data.turn) || text(event).trim())
+        return false;
+    } else if (type === 'step/start' || type === 'step/end') {
+      if (data.turn !== candidate.data.turn || data.step < candidate.data.step)
+        return false;
+    } else if (type === 'turn/end') {
+      if (event !== end) return false;
+    } else if (type === 'user/message') {
+      if (!isAppendSurfaceEvent(event) || !settled(data)) return false;
+    } else if (type === 'agent/inbox/spliced') {
+      if (
+        data.target !== 'next-step' ||
+        data.outcome ||
+        !data.inserted.every(settled)
+      )
+        return false;
+      if (data.removedCount) {
+        const cut = projections.restore(
+          {},
+          events.slice(0, index),
+          0,
+          session.header,
+          0,
+        );
+        const pending = cut.checkpoint.inbox?.val?.['next-step'];
+        if (
+          !Array.isArray(pending) ||
+          !pending
+            .slice(data.start, data.start + data.removedCount)
+            .every(settled)
+        )
+          return false;
+      }
+    } else return false;
+  }
+  return true;
+}
+
 // Only the private Worker reader supplies control-record references. Neither a
 // bind argument nor JSON can restore a token, bindingId, proof or WeakMap entry.
-export function verifyRestoredFinalReplyOrigin(session, entry, origin) {
+export function verifyRestoredFinalReplyOrigin(
+  session,
+  entry,
+  origin,
+  projections,
+) {
   const unavailable = () => {
     throw Error('assistant_completion_origin_unavailable');
   };
@@ -75,14 +159,13 @@ export function verifyRestoredFinalReplyOrigin(session, entry, origin) {
   )
     unavailable();
   const last = events.findLast((event) => event.type === 'assistant/message');
+  const latestTurn = events.findLast((event) => event.type === 'turn/start');
   if (
     !last ||
     !turns.has(last.data.turn) ||
+    last.data.turn !== latestTurn?.data.turn ||
     last.seq <= lowerBoundary ||
-    last.data.interrupted ||
-    last.data.message?.source?.kind !== 'model' ||
-    !Array.isArray(last.data.message.content) ||
-    last.data.message.content.some((block) => block.type === 'tool-call')
+    !publicMessage(last, last.data.turn)
   )
     unavailable();
   const end = events.findLast(
@@ -90,5 +173,26 @@ export function verifyRestoredFinalReplyOrigin(session, entry, origin) {
   );
   if (!end || end.seq <= last.seq || end.data.reason?.kind !== 'completed')
     unavailable();
-  return Object.freeze({ lowerBoundary, turns: Object.freeze([...turns]) });
+  let candidate = last;
+  for (const event of events.toReversed()) {
+    if (event.seq <= latestTurn.seq) break;
+    if (event.type !== 'assistant/message') continue;
+    const body = text(event);
+    if (!body.trim()) continue;
+    if (
+      publicMessage(event, last.data.turn) &&
+      visibleNativeText(body) === body &&
+      verifySilentTail(session, events, event, end, projections)
+    )
+      candidate = event;
+    else if (event === last) unavailable();
+    break;
+  }
+  // Keep the existing empty-candidate inspection/repair behavior when this
+  // turn has no provable final body; never borrow a prior turn's answer.
+  return Object.freeze({
+    lowerBoundary,
+    turns: Object.freeze([...turns]),
+    event: candidate,
+  });
 }
