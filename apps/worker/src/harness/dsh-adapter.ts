@@ -294,6 +294,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
       requireRecovery: prepared?.requiresRecovery,
     });
     const runtimeBindingStarted = performance.now();
+    // Read authority follows the already-authorized business thread binding.
+    runtime.nativeGeneration = generation;
     this.runtimePool.touch(runtime);
     const finalDeliveryUnavailable = (): never => {
       input.signal.throwIfAborted();
@@ -1408,6 +1410,12 @@ export class DshHarnessAdapter implements HarnessAdapter {
 
   runtimeInventory() {
     return this.runtimePool.inventory();
+  }
+
+  nativeSubagentSummary(
+    ...args: Parameters<DshRuntimePool['nativeSubagentSummary']>
+  ) {
+    return this.runtimePool.nativeSubagentSummary(...args);
   }
 
   setIdleCloseGate(gate: () => boolean) {

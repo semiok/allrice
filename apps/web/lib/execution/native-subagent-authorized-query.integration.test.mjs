@@ -36,11 +36,13 @@ import { buildEmployeeRuntimePackage } from '../../../../packages/database/src/p
 import { bindJobNativeSession } from '../../../../packages/database/src/execution/queue.ts';
 import * as artifact from '../../../worker/src/harness/dsh-native-artifact.ts';
 import { readAuthorizedNativeSubagentSummary } from '../../../worker/src/harness/native-subagent-query.ts';
+import { getHarnessRouter } from '../../../worker/src/harness/router.ts';
 import { createNativeRunDiagnosticsHttpHandler } from '../../../worker/src/native-run-diagnostics-http.ts';
 // This fixture installs test-only delegation to produce native descendants. It
 // does not assert delegation is enabled in either production profile.
 import {
   gate,
+  hold,
   host,
   text,
 } from '../../../worker/test/native-subagent/fixture.mjs';
@@ -67,6 +69,7 @@ suite(
     let runtimePackage;
     let directory;
     const servers = [];
+    const residents = [];
     beforeAll(async () => {
       fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
@@ -119,6 +122,8 @@ suite(
     });
     afterEach(async () => {
       cookie.token = '';
+      for (const [pool, runtime] of residents.splice(0))
+        await pool.closeOwned(runtime);
       for (const server of servers.splice(0)) {
         server.closeAllConnections();
         await new Promise((done) => server.close(() => done()));
@@ -130,7 +135,11 @@ suite(
       await fixture?.close();
       if (directory) await rm(directory, { recursive: true, force: true });
     });
-    async function chat(persist = true) {
+    async function chat(
+      persist = true,
+      model = async () => text('native private child reply'),
+      spawn = true,
+    ) {
       const f = await createRunAuthorityFixture(fixture.db, {
         configure: false,
         memberRole: 'member',
@@ -154,7 +163,7 @@ suite(
         f.session,
         'sessions',
       );
-      await bindJobNativeSession({
+      const bound = await bindJobNativeSession({
         workerId: f.worker.workerId,
         jobId: f.worker.jobId,
         leaseToken: f.worker.leaseToken,
@@ -176,18 +185,54 @@ suite(
       const h = persist
         ? await host({
             rootId: descriptor.nativeSessionId,
-            model: async () => text('native private child reply'),
+            model,
             prepare: () =>
               vi.stubEnv('DSH_SESSION_ROOT', descriptor.storageNamespace),
           })
         : null;
-      if (h) {
+      if (h && spawn) {
         const activation = await h.spawn();
         await activation.result;
         await h.wait();
         await h.ctx.sessions.flush(h.root.session);
       }
-      return { ...f, descriptor, context: context, token, h };
+      return { ...f, descriptor, bound, context: context, token, h };
+    }
+    async function hotHost(f) {
+      const target = await getSessionNativeSubagentTarget(
+        f.context,
+        f.workspace,
+        f.session,
+      );
+      const pool = Reflect.get(
+        getHarnessRouter().resolve('dsh'),
+        'runtimePool',
+      );
+      // Only the stdio transport is in-process; the production pool, Host,
+      // native status/query and both authenticated HTTP entrypoints are real.
+      const runtime = {
+        id: randomUUID(),
+        sessionId: f.descriptor.nativeSessionId,
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        ownerId: f.user,
+        productSessionId: f.session,
+        nativePin: f.bound.binding,
+        nativeGeneration: target.generation,
+        nativeTools: [],
+        lastActivityAt: new Date(Date.now() - 3_600_000).toISOString(),
+        client: {
+          processState: () => ({ state: 'running' }),
+          nativeSubagentSummary: (id) =>
+            f.h.server.handleRequest('session/subagent-summary', {
+              sessionId: id,
+            }),
+          close: () => f.h.server.closeRoot(f.h.root.id),
+        },
+      };
+      Reflect.get(pool, 'runtimes').set(runtime.sessionId, runtime);
+      residents.push([pool, runtime]);
+      return { pool, runtime };
     }
     async function peer(f) {
       const id = randomUUID();
@@ -197,10 +242,11 @@ suite(
     }
     async function start(f, afterRead) {
       const target = vi.fn(getSessionNativeSubagentTarget);
-      const read = vi.fn(async (value, signal) => {
+      const read = vi.fn(async (value, signal, liveOnly) => {
         const summary = await readAuthorizedNativeSubagentSummary(
           value,
           signal,
+          liveOnly,
         );
         await afterRead?.(signal);
         return summary;
@@ -305,6 +351,7 @@ suite(
           {
             kind: 'child',
             activity: 'unknown',
+            running: null,
             observation: { source: 'prepared' },
             lastReply: 'native private child reply',
           },
@@ -316,6 +363,98 @@ suite(
       expect(await writes(f)).toEqual(sql);
       expect(f.h.calls).toHaveLength(calls);
       expect(f.h.ctx.agents.get(f.descriptor.nativeSessionId)).toBe(f.h.root);
+    });
+    it('shows actual native running then resident idle through Web GET, and falls back to unknown after cooling without reads waking work', async () => {
+      // User intent: 看看我的子智能体各自在做什么。
+      const entered = gate(),
+        release = gate();
+      const f = await chat(
+        true,
+        async (request) => {
+          if (request.sessionId !== f.descriptor.nativeSessionId) {
+            entered.resolve();
+            await hold(request.signal, release);
+          }
+          return text('parent answer');
+        },
+        false,
+      );
+      const activation = await f.h.spawn(f.h.root, '只读检查任务');
+      await entered.promise;
+      const child = f.h.ctx.agents.get(activation.childId);
+      const { pool, runtime } = await hotHost(f);
+      await start(f);
+      const beforeActivity = runtime.lastActivityAt;
+      const live = await web(f, f.token, '&liveOnly=true');
+      expect(live.status).toBe(200);
+      expect((await live.json()).summary.descendants[0]).toMatchObject({
+        running: true,
+        task: '只读检查任务',
+        observation: { source: 'live' },
+      });
+      f.h.inject(child, '下个 step 再处理');
+      await f.h.ctx.subagents.interruptByParent(
+        child.id,
+        f.h.root.id,
+        'continuable',
+      );
+      await child.whenIdle();
+      await f.h.wait();
+      for (const session of f.h.ctx.sessions.list())
+        await f.h.ctx.sessions.flush(session);
+      const beforeFiles = await files(f.descriptor.storageNamespace),
+        beforeSql = await writes(f),
+        calls = f.h.calls.length;
+      const beforeHosts = pool.inventory().map((row) => row.id);
+      const idle = await web(f);
+      expect(idle.status).toBe(200);
+      expect((await idle.json()).summary.descendants[0]).toMatchObject({
+        activity: 'running',
+        running: false,
+        task: '只读检查任务',
+      });
+      expect(runtime.lastActivityAt).toBe(beforeActivity);
+      expect(pool.inventory().map((row) => row.id)).toEqual(beforeHosts);
+      expect(await files(f.descriptor.storageNamespace)).toEqual(beforeFiles);
+      expect(await writes(f)).toEqual(beforeSql);
+      expect(f.h.calls).toHaveLength(calls);
+      await pool.reclaimIdle();
+      expect(pool.get(runtime.sessionId)).toBeUndefined();
+      const cold = await web(f);
+      expect(cold.status).toBe(200);
+      expect((await cold.json()).summary).toMatchObject({
+        root: { source: 'prepared' },
+        descendants: [
+          { running: null, activity: 'unknown', task: '只读检查任务' },
+        ],
+      });
+      expect(f.h.calls).toHaveLength(calls);
+    });
+    it('uses liveOnly as a local probe without reading or creating an absent journal; default reads still fail', async () => {
+      const f = await chat(false);
+      await start(f);
+      expect(await (await web(f, f.token, '&liveOnly=true')).json()).toEqual({
+        summary: null,
+      });
+      await expect(stat(f.descriptor.storageNamespace)).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      expect((await web(f)).status).toBe(503);
+      expect((await web(f, f.token, '&liveOnly=false')).status).toBe(400);
+    });
+    it('does not hide a mismatched local owner or old generation as a successful empty liveOnly probe', async () => {
+      const f = await chat();
+      const { runtime } = await hotHost(f);
+      await start(f);
+      for (const key of ['ownerId', 'nativeGeneration']) {
+        const old = runtime[key];
+        runtime[key] = key === 'nativeGeneration' ? old + 1 : randomUUID();
+        expect((await web(f, f.token, '&liveOnly=true')).status).toBe(503);
+        runtime[key] = old;
+      }
+      const live = await web(f, f.token, '&liveOnly=true');
+      expect(live.status).toBe(200);
+      expect((await live.json()).summary.root.source).toBe('live');
     });
     it('rejects anonymous, same-tenant peer, foreign tenant and workspace before reading', async () => {
       const f = await chat(false),

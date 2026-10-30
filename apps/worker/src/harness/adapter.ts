@@ -4,6 +4,7 @@ import type {
   NativeModelFact,
   NativeModelSettlement,
   NativeRunExecutionBinding,
+  NativeSubagentQueryTarget,
 } from '@allrice/database';
 import type { FinalDeliveryPort } from '../final-delivery/guard.js';
 import type {
@@ -21,6 +22,7 @@ import type {
   NativeQuestionCheckpoint,
   QuestionWait,
   SubagentPreferences,
+  NativeSubagentSummary,
 } from '@allrice/contracts';
 
 export interface HarnessToolCall {
@@ -292,6 +294,10 @@ export interface HarnessAdapter {
   recover?(input: { threadId: string }): Promise<void>;
   runtimeInventory?(): readonly HarnessRuntimeProcessSnapshot[];
   runtimeClosureInventory?(): readonly HarnessRuntimeClosureSnapshot[];
+  nativeSubagentSummary?(
+    target: NativeSubagentQueryTarget,
+    signal: AbortSignal,
+  ): Promise<NativeSubagentSummary | undefined>;
   /** Idle process close runs only while this returns true. */
   setIdleCloseGate?(gate: () => boolean): void;
   close?(): Promise<void>;

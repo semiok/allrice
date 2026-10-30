@@ -17,6 +17,7 @@ import type {
   NativeRootOrigin,
   NativeSessionPin,
   NativeRunExecutionBinding,
+  NativeSubagentQueryTarget,
 } from '@allrice/database';
 import { currentExecutionForNativeInput } from './current-execution-source.js';
 
@@ -73,6 +74,7 @@ export interface DshRuntime {
   nativeArtifactId?: string;
   nativeProfileId?: string;
   nativePin?: NativeSessionPin;
+  nativeGeneration?: number;
 }
 
 export interface DshRuntimePoolOptions {
@@ -262,6 +264,63 @@ export class DshRuntimePool {
 
   get(threadId: string) {
     return this.runtimes.get(threadId);
+  }
+
+  /** A point read of this Worker's existing Host. No acquisition, lease or
+   * activity touch: cooling may win, in which case this read is unavailable. */
+  async nativeSubagentSummary(
+    target: NativeSubagentQueryTarget,
+    signal: AbortSignal,
+  ) {
+    const id = target.descriptor.nativeSessionId;
+    const assertOpen = () => {
+      signal.throwIfAborted();
+      if (
+        this.closing ||
+        this.closureInventory().some((row) => row.threadId === id)
+      )
+        throw Error('NATIVE_QUERY_HOST_UNAVAILABLE');
+    };
+    assertOpen();
+    const runtime = this.get(id);
+    if (!runtime) {
+      if (this.inventory().some((row) => row.threadId === id))
+        throw Error('NATIVE_QUERY_HOST_UNAVAILABLE');
+      // Absence on this Worker is not proof of global coldness.
+      return undefined;
+    }
+    const assertOwner = () => {
+      assertOpen();
+      const pin = runtime.nativePin;
+      if (
+        this.get(id) !== runtime ||
+        runtime.client.processState().state !== 'running' ||
+        runtime.sessionId !== id ||
+        runtime.organizationId !== target.organizationId ||
+        runtime.workspaceId !== target.workspaceId ||
+        runtime.ownerId !== target.ownerId ||
+        runtime.productSessionId !== target.sessionId ||
+        runtime.nativeGeneration !== target.generation ||
+        !pin ||
+        pin.organizationId !== target.organizationId ||
+        pin.workspaceId !== target.workspaceId ||
+        pin.ownerId !== target.ownerId ||
+        pin.contextKind !== 'chat' ||
+        pin.contextId !== target.sessionId ||
+        pin.bindingBasis !== 'business_root_origin' ||
+        pin.rootOriginDigest !== target.rootOriginDigest ||
+        Object.entries(target.descriptor).some(
+          ([key, value]) => pin[key as keyof NativeSessionPin] !== value,
+        )
+      )
+        throw Error('NATIVE_QUERY_HOST_MISMATCH');
+    };
+    assertOwner();
+    const summary = await runtime.client.nativeSubagentSummary(id);
+    assertOwner();
+    if (summary.rootId !== id || summary.root.source !== 'live')
+      throw Error('NATIVE_QUERY_SOURCE_MISMATCH');
+    return summary;
   }
 
   private assertAcquisitionOpen(threadId: string) {

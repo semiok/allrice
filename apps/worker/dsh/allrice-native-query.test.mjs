@@ -52,6 +52,8 @@ it('shows the child result through the actual Host and reads the same cold summa
       kind: 'child',
       id: activation.childId,
       activity: 'inactive',
+      running: null,
+      task: '子任务',
       lastReply: 'native child output',
       usage: {
         uncachedInputTokens: 20,
@@ -95,6 +97,7 @@ it('shows the child result through the actual Host and reads the same cold summa
         {
           kind: 'child',
           activity: 'unknown',
+          running: null,
           observation: { source: 'prepared' },
           lastReply: 'native child output',
         },
@@ -154,12 +157,14 @@ it('keeps an actual running Host live while a different process sees only a prep
     expect(live.descendants[0]).toMatchObject({
       kind: 'child',
       activity: 'running',
+      running: true,
       observation: { source: 'live' },
     });
     expect(live.descendants[0].timing.active).toBeDefined();
     expect(cold.descendants[0]).toMatchObject({
       kind: 'child',
       activity: 'unknown',
+      running: null,
       observation: { source: 'prepared' },
     });
     expect(cold.descendants[0].observation.cursor).toBeGreaterThan(
@@ -211,21 +216,36 @@ it('uses only fork-owned output and requires an own descriptor rather than an in
   });
   await h.prompt('先完成父级历史');
   await h.wait();
+  h.ctx.sessionTitle.rename(h.root.session, 'parent-only title');
   const activation = await h.spawn(h.root, 'fork', { provider: 'fork' });
   try {
     await entered.promise;
     const summary = await query(h);
     expect(summary.descendants[0]).toMatchObject({
       kind: 'child',
+      task: 'fork',
       lastReply: null,
       usage: { uncachedInputTokens: 20, outputTokens: 7 },
     });
+    expect(summary.descendants[0].title).toBeUndefined();
+    const child = h.ctx.agents.get(activation.childId);
+    h.ctx.sessionTitle.rename(child.session, 'fork-only title');
+    expect((await query(h)).descendants[0].title).toBe('fork-only title');
   } finally {
     release.resolve();
     await activation.result;
     await h.wait();
   }
   expect((await query(h)).descendants[0].lastReply).toBe('fork-only reply');
+  const cold = await withNativeQueryReader(
+    join(h.directory, 'sessions'),
+    (ctx) => readNativeSubagentSummary(ctx, h.root.id),
+  );
+  expect(cold.descendants[0]).toMatchObject({
+    task: 'fork',
+    title: 'fork-only title',
+    running: null,
+  });
   const source = await h.ctx.sessionQuery.observeSession(activation.childId);
   try {
     const child = h.ctx.sessions.create('inherited-descriptor', {
@@ -247,6 +267,78 @@ it('uses only fork-owned output and requires an own descriptor rather than an in
   } finally {
     source[Symbol.dispose]();
   }
+});
+
+it('distinguishes a resident idle child from native running and leaves its parked work untouched', async () => {
+  const entered = gate(),
+    release = gate();
+  const h = await host({
+    model: async (request) => {
+      if (request.sessionId !== 'pr0-root') {
+        entered.resolve();
+        await hold(request.signal, release);
+      }
+      return text('parent answer');
+    },
+  });
+  const activation = await h.spawn(h.root, '只检查自己的任务');
+  await entered.promise;
+  const child = h.ctx.agents.get(activation.childId);
+  expect((await query(h)).descendants[0]).toMatchObject({
+    running: true,
+    task: '只检查自己的任务',
+  });
+  h.inject(child, '下个 step 再处理');
+  await h.ctx.subagents.interruptByParent(child.id, h.root.id, 'continuable');
+  await child.whenIdle();
+  await h.wait();
+  const calls = h.calls.length;
+  const create = vi.spyOn(h.ctx.sessions, 'create');
+  const ensure = vi.spyOn(h.server, 'ensureRoot');
+  const before = child.session.snapshotEvents();
+  expect((await query(h)).descendants[0]).toMatchObject({
+    activity: 'running',
+    running: false,
+    observation: { source: 'live' },
+    task: '只检查自己的任务',
+  });
+  expect(h.ctx.agents.get(child.id)).toBe(child);
+  expect(child.inbox.nextStep).toHaveLength(1);
+  expect(child.session.snapshotEvents()).toEqual(before);
+  expect(h.calls).toHaveLength(calls);
+  expect(create).not.toHaveBeenCalled();
+  expect(ensure).not.toHaveBeenCalled();
+  const getAgent = h.ctx.agents.get.bind(h.ctx.agents);
+  const mismatched = vi
+    .spyOn(h.ctx.agents, 'get')
+    .mockImplementation((id) =>
+      id === child.id
+        ? { status: 'running', session: h.root.session }
+        : getAgent(id),
+    );
+  expect((await query(h)).descendants[0].running).toBeNull();
+  mismatched.mockRestore();
+});
+
+it('rejects a root epoch change while the real Host summary is being read', async () => {
+  const h = await host();
+  const entered = gate(),
+    release = gate();
+  const list = h.ctx.subagents.listDescendants.bind(h.ctx.subagents);
+  vi.spyOn(h.ctx.subagents, 'listDescendants').mockImplementation(
+    async (...args) => {
+      entered.resolve();
+      await release.promise;
+      return list(...args);
+    },
+  );
+  const pending = query(h);
+  const rejected = expect(pending).rejects.toThrow('INPUT_SESSION_NOT_LIVE');
+  await entered.promise;
+  h.server.epoch++;
+  release.resolve();
+  await rejected;
+  expect(h.calls).toHaveLength(0);
 });
 
 it('reads a SIGKILL journal without recovery or invented terminal activity and does not create an absent namespace', async () => {

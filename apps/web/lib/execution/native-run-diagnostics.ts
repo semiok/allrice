@@ -19,7 +19,7 @@ type NativeReadInput = {
 
 async function requestNativeRead<T>(
   input: NativeReadInput,
-  address: { runId: string } | { sessionId: string },
+  address: { runId: string } | { sessionId: string; liveOnly?: boolean },
   read: (body: Record<string, unknown>) => T,
 ) {
   try {
@@ -89,11 +89,16 @@ export function requestNativeRunDiagnostics(
 }
 
 export function requestNativeSubagentSummary(
-  input: NativeReadInput & { sessionId: string },
+  input: NativeReadInput & { sessionId: string; liveOnly?: boolean },
 ) {
-  return requestNativeRead(input, { sessionId: input.sessionId }, (body) => {
-    if (body.sessionId !== input.sessionId)
-      throw new NativeDiagnosticsUnavailable();
-    return NativeSubagentSummarySchema.parse(body.summary);
-  });
+  return requestNativeRead(
+    input,
+    { sessionId: input.sessionId, liveOnly: input.liveOnly },
+    (body) => {
+      if (body.sessionId !== input.sessionId)
+        throw new NativeDiagnosticsUnavailable();
+      if (input.liveOnly && body.summary === null) return null;
+      return NativeSubagentSummarySchema.parse(body.summary);
+    },
+  );
 }
