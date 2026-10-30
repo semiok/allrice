@@ -4,6 +4,11 @@ import {
 } from '@allrice/contracts';
 import { createSseDataConsumer } from './sse-data-consumer';
 
+export type NativeSubagentSnapshot = Extract<
+  NativeSubagentFollowEvent,
+  { type: 'snapshot' }
+>['snapshot'];
+
 /** One authorized connection; no replay, retries, or native state assembly. */
 export async function followNativeSubagents(
   url: string,

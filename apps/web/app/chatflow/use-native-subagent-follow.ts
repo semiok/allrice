@@ -1,10 +1,10 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
-import type {
-  NativeSubagentSnapshot,
-  NativeSubagentSummary,
-} from '@allrice/contracts';
-import { followNativeSubagents } from './native-subagent-follow';
+import { useEffect, useState } from 'react';
+import type { NativeSubagentSummary } from '@allrice/contracts';
+import {
+  followNativeSubagents,
+  type NativeSubagentSnapshot,
+} from './native-subagent-follow';
 
 type View = NativeSubagentSnapshot | NativeSubagentSummary | null | 'error';
 export function useNativeSubagentFollow(
@@ -24,30 +24,22 @@ export function useNativeSubagentFollow(
     workspaceId,
     sessionId,
     headers,
-    enabled ? summary.rootId : null,
-    enabled ? childId : null,
+    childId,
     revision,
   ]);
-  const running = child?.kind === 'child' ? child.running : null;
-  const [probe, setProbe] = useState(0);
-  const previous = useRef({ scope, running });
-  const restarting =
-    previous.current.scope === scope &&
-    previous.current.running === false &&
-    running === true;
-  useEffect(() => {
-    if (restarting) setProbe((value) => value + 1);
-    previous.current = { scope, running };
-  }, [scope, running, restarting]);
-  const key = JSON.stringify([scope, probe]);
   const [state, setState] = useState<{ key: string; view: View }>({
     key: '',
     view: null,
   });
+  const [previousScope, previousRoot] = state.key ? JSON.parse(state.key) : [];
+  const rootId =
+    (previousScope === scope && (!summary || summary.rootId === previousRoot)
+      ? previousRoot
+      : null) ?? (enabled ? summary.rootId : null);
+  const key = JSON.stringify([scope, rootId]);
   useEffect(() => {
-    const [scope] = JSON.parse(key);
-    const [workspaceId, sessionId, headers, rootId, childId] =
-      JSON.parse(scope);
+    const [scope, rootId] = JSON.parse(key);
+    const [workspaceId, sessionId, headers, childId] = JSON.parse(scope);
     const abort = new AbortController();
     const publish = (view: View) => {
       if (!abort.signal.aborted) setState({ key, view });
@@ -55,8 +47,7 @@ export function useNativeSubagentFollow(
     publish(null);
     if (rootId && childId && navigator.onLine !== false)
       void (async () => {
-        let snapshot: NativeSubagentSnapshot | null = null,
-          terminal = false;
+        let snapshot: NativeSubagentSnapshot | null = null;
         try {
           const query = new URLSearchParams({
             workspaceId,
@@ -68,7 +59,6 @@ export function useNativeSubagentFollow(
             headers,
             abort.signal,
             (event) => {
-              if (terminal) throw new Error('event after terminal');
               if (event.type === 'snapshot') {
                 if (
                   event.snapshot.rootId !== rootId ||
@@ -88,23 +78,34 @@ export function useNativeSubagentFollow(
                   throw new Error('display scope changed');
                 snapshot = { ...snapshot, stream: event.display };
                 publish(snapshot);
-              } else if (event.type === 'terminal') {
+              } else if (event.type === 'summary') {
                 if (
                   event.childId !== childId ||
                   (event.summary && event.summary.rootId !== rootId)
                 )
-                  throw new Error('terminal scope changed');
-                terminal = true;
+                  throw new Error('summary scope changed');
                 snapshot = null;
                 publish(event.summary);
               } else if (event.type === 'clear') {
                 snapshot = null;
                 publish(null);
-              } else if (event.summary.rootId !== rootId)
-                throw new Error('directory scope changed');
+              } else {
+                if (event.summary.rootId !== rootId)
+                  throw new Error('directory scope changed');
+                const child = event.summary.descendants.find(
+                  (entry) => entry.id === childId,
+                );
+                if (
+                  child?.kind !== 'child' ||
+                  child.observation.source !== 'live'
+                ) {
+                  snapshot = null;
+                  publish(event.summary);
+                }
+              }
             },
           );
-          if (!terminal) publish(null);
+          publish(null);
         } catch {
           publish('error');
         }
@@ -112,7 +113,7 @@ export function useNativeSubagentFollow(
     return () => abort.abort();
   }, [key]);
   return {
-    view: !restarting && state.key === key ? state.view : null,
-    enabled,
+    view: state.key === key ? state.view : null,
+    enabled: !!rootId && !!childId,
   };
 }

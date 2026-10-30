@@ -5,6 +5,20 @@ import {
   type NativeSubagentSummary,
 } from '@allrice/contracts';
 import { followNativeSubagents } from './native-subagent-follow';
+import type { RunView } from './chatflow-types';
+
+export const nativeSubagentReadyKey = (view?: RunView) =>
+  view?.events.some(
+    (event) =>
+      event.runId === view.runId &&
+      event.harness === 'dsh' &&
+      event.type === 'harness.native' &&
+      ['request/header', 'request/context'].includes(
+        event.sourceEvent?.type ?? '',
+      ),
+  )
+    ? view.runId
+    : '';
 
 export type NativeSubagentRead = NativeSubagentSummary | null | 'error';
 export const nativeSubagentActivityUnknown = (

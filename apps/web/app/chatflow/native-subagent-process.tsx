@@ -1,4 +1,4 @@
-import type { NativeSubagentSnapshot } from '@allrice/contracts';
+import type { NativeSubagentSnapshot } from './native-subagent-follow';
 import {
   DisclosureRow,
   IconApiOutlineRegular,

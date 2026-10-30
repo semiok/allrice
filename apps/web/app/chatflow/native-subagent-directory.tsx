@@ -68,7 +68,7 @@ export function NativeSubagentDirectory({
     headers,
     summary,
     selected,
-    `${refreshKey}/${revision}`,
+    String(revision),
   );
   const hot =
     follow.view && typeof follow.view === 'object' ? follow.view : null;

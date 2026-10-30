@@ -1,9 +1,10 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type {
   NativeSubagentFollowEvent,
-  NativeSubagentSnapshot,
   NativeSubagentSummary,
+  ChatFlowEventEnvelope,
 } from '@allrice/contracts';
+import type { NativeSubagentSnapshot } from '../app/chatflow/native-subagent-follow';
 
 export function snapshotFor(
   summary: NativeSubagentSummary,
@@ -58,6 +59,7 @@ type Connection = {
 export class NativeSubagentFixtureFeed {
   sources = new Map<string, Source>();
   connections = new Set<Connection>();
+  rootConnections = new Set<{ fixture: string; response: ServerResponse }>();
   calls: Omit<Connection, 'response'>[] = [];
   register(source: Source) {
     const id = String(this.sources.size + 1);
@@ -67,6 +69,14 @@ export class NativeSubagentFixtureFeed {
   handle(request: IncomingMessage, response: ServerResponse) {
     const url = new URL(request.url!, 'http://127.0.0.1');
     const fixture = url.searchParams.get('fixture');
+    if (fixture && url.pathname.startsWith('/api/v1/runs/')) {
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      response.flushHeaders();
+      const connection = { fixture, response };
+      this.rootConnections.add(connection);
+      response.on('close', () => this.rootConnections.delete(connection));
+      return true;
+    }
     if (!fixture || url.searchParams.get('follow') !== 'true') return false;
     const source = this.sources.get(fixture);
     const sessionId = url.pathname.split('/')[4]!;
@@ -96,6 +106,11 @@ export class NativeSubagentFixtureFeed {
   }
   send(connection: Connection, event: NativeSubagentFollowEvent) {
     connection.response.write(`data: ${JSON.stringify(event)}\n\n`);
+  }
+  pushRoot(fixture: string, event: ChatFlowEventEnvelope) {
+    for (const connection of this.rootConnections)
+      if (connection.fixture === fixture)
+        connection.response.write(`data: ${JSON.stringify(event)}\n\n`);
   }
   push(
     fixture: string,

@@ -33,6 +33,7 @@ export function EmployeeSidebar({
   workspace,
   sessions,
   activeId,
+  nativeReadyKey = '',
   collapsed,
   onSelectSession,
   onPrepareSession,
@@ -45,6 +46,7 @@ export function EmployeeSidebar({
   workspace: Workspace;
   sessions: Session[];
   activeId: string | null;
+  nativeReadyKey?: string;
   collapsed: boolean;
   onSelectSession: (id: string) => void;
   onPrepareSession: (id: string) => void;
@@ -68,7 +70,7 @@ export function EmployeeSidebar({
         )
         .map((session) => [
           session.id,
-          `${session.updatedAt}/${session.running}`,
+          `${session.updatedAt}/${session.running}/${session.id === activeId ? nativeReadyKey : ''}`,
         ]),
     ),
     true,
