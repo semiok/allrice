@@ -140,10 +140,12 @@ export function createRunFinalDelivery(host) {
             !treeQuiescent(state.agent)
           )
             fail();
-          verifyRestoredFinalReplyOrigin(state.agent.session, state, origin);
-          const event = state.agent.session
-            .snapshotEvents()
-            .findLast((e) => e.type === 'assistant/message');
+          const { event } = verifyRestoredFinalReplyOrigin(
+            state.agent.session,
+            state,
+            origin,
+            ctx.sessionProjections,
+          );
           const message = event.data.message;
           const answer = message.content
             .filter((b) => b.type === 'text')
@@ -165,6 +167,18 @@ export function createRunFinalDelivery(host) {
             provider: message.source.provider,
             model: message.source.model,
             turn: event.data.turn,
+            sourceEvent: {
+              type: event.type,
+              seq: event.seq,
+              time: event.time,
+              data: {
+                turn: event.data.turn,
+                step: event.data.step,
+                message: {
+                  content: message.content.map(({ type }) => ({ type })),
+                },
+              },
+            },
           };
           state.head = state.agent.session.seq;
           state.token = randomUUID();

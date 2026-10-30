@@ -1,9 +1,12 @@
+/* global structuredClone */
 import { setImmediate } from 'node:timers';
 import { randomUUID } from 'node:crypto';
 import { expect, it } from 'vitest';
 import { createAssistantMessage } from '@deepseek-ai/dsh-llm';
+import { defineTool } from '@deepseek-ai/dsh-tools';
 import { host, text, gate, hold } from './fixture.mjs';
 import { digestText } from '../../dsh/allrice-final-delivery-repair.mjs';
+import { verifyRestoredFinalReplyOrigin } from '../../dsh/allrice-final-reply-origin.mjs';
 
 async function subject(
   model,
@@ -64,6 +67,333 @@ async function subject(
     });
   return { ...f, call, finish, repair, runId };
 }
+
+it.each(['', ' \n ', '更新后的汇总'])(
+  '双 child 结算尾步 %j：保留同一公开正文身份，不增加模型调用',
+  async (tail) => {
+    const childrenRelease = gate(),
+      rootEntered = gate(),
+      answerRelease = gate();
+    const answer = '甲：21  \n乙：55';
+    let rootCalls = 0,
+      childCalls = 0;
+    const f = await subject(async (request) => {
+      if (request.sessionId !== 'pr0-root') {
+        const value = ++childCalls === 1 ? '21' : '55';
+        await hold(request.signal, childrenRelease);
+        return text(value);
+      }
+      if (++rootCalls === 1) {
+        rootEntered.resolve();
+        await hold(request.signal, answerRelease);
+        return text(answer);
+      }
+      return [{ type: 'reasoning', text: 'private closure' }, ...text(tail)];
+    });
+    try {
+      const first = await f.spawn(f.root, 'child 21');
+      const second = await f.spawn(f.root, 'child 55');
+      await f.prompt('汇总两个子任务。');
+      await rootEntered.promise;
+      let returned = false;
+      const pending = f.call('candidate').then((value) => {
+        returned = true;
+        return value;
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(returned).toBe(false);
+      childrenRelease.resolve();
+      await Promise.all([first.result, second.result]);
+      answerRelease.resolve();
+      const candidate = await pending;
+      const events = f.root.session.snapshotEvents();
+      const messages = events.filter((e) => e.type === 'assistant/message');
+      expect(rootCalls).toBe(2);
+      expect(childCalls).toBe(2);
+      expect(events.filter((e) => e.type === 'turn/start')).toHaveLength(1);
+      expect(messages).toHaveLength(2);
+      const chosen = messages[tail.trim() ? 1 : 0];
+      const body = tail.trim() ? tail : answer;
+      expect(candidate).toMatchObject({
+        answer: body,
+        publicMessageId: chosen.data.message.id,
+        durableSeq: chosen.seq,
+        textDigest: digestText(body),
+        sourceEvent: {
+          type: chosen.type,
+          seq: chosen.seq,
+          time: chosen.time,
+          data: { turn: chosen.data.turn, step: chosen.data.step },
+        },
+      });
+      expect(JSON.stringify(candidate.sourceEvent)).not.toContain(
+        'private closure',
+      );
+      expect(
+        events.filter(
+          (e) =>
+            e.type === 'user/message' &&
+            e.data.source.kind === 'subagent-settled',
+        ),
+      ).toHaveLength(2);
+
+      if (tail === '') {
+        const ownedState = structuredClone(
+          f.ctx.sessionProjections.checkpoint(f.root.session),
+        );
+        const nativeNotices = f.notices.length;
+        // Mutate only a detached read cut; the production Host/journal remains intact.
+        const verify = (copy) => {
+          copy.forEach((e, seq) => {
+            e.seq = seq;
+          });
+          const session = {
+            id: f.root.id,
+            header: f.root.session.header,
+            snapshotEvents: () => copy,
+          };
+          const origin = {
+            schemaVersion: 1,
+            rootRunId: f.runId,
+            nativeSessionId: f.root.id,
+            starts: copy
+              .filter((e) => e.type === 'turn/start')
+              .map((e) => ({
+                runEventId: `control-${e.seq}`,
+                runEventSequence: e.seq,
+                turnId: `${f.root.id}:turn:${e.data.turn}`,
+              })),
+          };
+          return verifyRestoredFinalReplyOrigin(
+            session,
+            { runId: f.runId },
+            origin,
+            f.ctx.sessionProjections,
+          ).event;
+        };
+        const initial = (copy) =>
+          copy.find((e) => e.type === 'assistant/message');
+        const last = (copy) =>
+          copy.findLast((e) => e.type === 'assistant/message');
+        const insert = (copy, event) =>
+          copy.splice(copy.indexOf(initial(copy)) + 1, 0, event);
+        const cases = [
+          [
+            'interrupted',
+            (copy) => {
+              last(copy).data.interrupted = true;
+            },
+          ],
+          [
+            'tool draft',
+            (copy) => {
+              initial(copy).data.message.content.push({
+                type: 'tool-call',
+                name: 'bash',
+              });
+            },
+          ],
+          [
+            'tail tool',
+            (copy) => {
+              last(copy).data.message.content.push({
+                type: 'tool-call',
+                name: 'bash',
+              });
+            },
+          ],
+          [
+            'envelope',
+            (copy) => {
+              initial(copy).data.message.content = text(
+                '<allrice_tool_call>{}</allrice_tool_call>',
+              );
+            },
+          ],
+          [
+            'partial think',
+            (copy) => {
+              initial(copy).data.message.content = text('<think>hidden');
+            },
+          ],
+          [
+            'replacement',
+            (copy) => {
+              initial(copy).surfaceOp = { op: 'replace', start: 0, end: 0 };
+            },
+          ],
+          [
+            'new human',
+            (copy) =>
+              insert(copy, {
+                type: 'user/message',
+                surfaceOp: 'append',
+                data: { source: { kind: 'user' } },
+              }),
+          ],
+          [
+            'new relay',
+            (copy) =>
+              insert(copy, {
+                type: 'user/message',
+                surfaceOp: 'append',
+                data: { source: { kind: 'agent-message' } },
+              }),
+          ],
+          [
+            'new tool work',
+            (copy) => insert(copy, { type: 'tool/call', data: {} }),
+          ],
+          [
+            'unknown projection',
+            (copy) => insert(copy, { type: 'unknown/replacement', data: {} }),
+          ],
+          [
+            'canceled input',
+            (copy) =>
+              insert(copy, {
+                type: 'agent/inbox/spliced',
+                data: {
+                  target: 'next-step',
+                  outcome: 'canceled',
+                  inserted: [],
+                },
+              }),
+          ],
+          [
+            'removed human',
+            (copy) => {
+              const queued = copy.findLast(
+                (e) =>
+                  e.type === 'agent/inbox/spliced' && e.data.inserted.length,
+              );
+              queued.data.inserted[0].source = { kind: 'user' };
+            },
+          ],
+          [
+            'unknown child',
+            (copy) => {
+              copy.findLast(
+                (e) => e.type === 'user/message',
+              ).data.source.senderSessionId = 'unknown';
+            },
+          ],
+          [
+            'missing end',
+            (copy) => {
+              copy.pop();
+            },
+          ],
+          ...['aborted', 'error', 'interrupted'].map((kind) => [
+            kind,
+            (copy) => {
+              copy.at(-1).data.reason = { kind };
+            },
+          ]),
+        ];
+        for (const [name, mutate] of cases) {
+          const copy = structuredClone(events);
+          mutate(copy);
+          if (
+            [
+              'interrupted',
+              'tail tool',
+              'missing end',
+              'aborted',
+              'error',
+            ].includes(name)
+          ) {
+            expect(() => verify(copy), name).toThrow();
+          } else expect(verify(copy), name).toBe(last(copy));
+        }
+        const noBody = structuredClone(events);
+        initial(noBody).data.message.content = [
+          { type: 'tool-call', name: 'bash' },
+        ];
+        expect(verify(noBody)).toBe(last(noBody));
+        const newer = structuredClone(events),
+          empty = structuredClone(messages[1]);
+        empty.data.turn = 2;
+        empty.data.message.id = randomUUID();
+        newer.push({ type: 'turn/start', data: { turn: 2 } }, empty, {
+          type: 'turn/end',
+          data: { turn: 2, reason: { kind: 'completed' } },
+        });
+        expect(verify(newer)).toBe(empty);
+        expect(
+          empty.data.message.content
+            .filter((b) => b.type === 'text')
+            .map((b) => b.text)
+            .join(''),
+        ).toBe('');
+        expect(f.ctx.sessionProjections.checkpoint(f.root.session)).toEqual(
+          ownedState,
+        );
+        expect(f.root.session.snapshotEvents()).toEqual(events);
+        expect(f.notices).toHaveLength(nativeNotices);
+      }
+      expect(await f.finish(candidate)).toMatchObject({
+        released: true,
+        publicMessageId: chosen.data.message.id,
+        durableSeq: chosen.seq,
+        textDigest: digestText(body),
+      });
+      expect(f.calls).toHaveLength(4);
+    } finally {
+      childrenRelease.resolve();
+      answerRelease.resolve();
+      await f.server.interrupt({ sessionId: f.root.id });
+    }
+  },
+  20000,
+);
+
+it('中间文字之后真实工具再空答复：不给旧正文 proof，保留原有空候选修正路径', async () => {
+  let toolCalls = 0;
+  const f = await subject(async (_request, count) =>
+    count === 1
+      ? [
+          ...text('正在处理文件。'),
+          {
+            type: 'tool-call',
+            id: 'probe',
+            name: 'final_probe',
+            arguments: {},
+          },
+        ]
+      : text(count === 2 ? '' : '修正后的文件链接。'),
+  );
+  f.ctx.tools.register(
+    defineTool({
+      name: 'final_probe',
+      description: 'Offline delivery probe',
+      parameters: {},
+      output: {
+        schema: { type: 'string' },
+        render: (_args, value) => text(value),
+      },
+      execute: async () => {
+        toolCalls++;
+        return 'done';
+      },
+    }),
+  );
+  await f.prompt('处理文件。');
+  const original = await f.call('candidate');
+  expect(toolCalls).toBe(1);
+  expect(original.answer).toBe('');
+  expect(original.publicMessageId).toBe(
+    f.root.session
+      .snapshotEvents()
+      .findLast((e) => e.type === 'assistant/message').data.message.id,
+  );
+  await f.repair(original);
+  const repaired = await f.call('candidate');
+  expect(repaired.answer).toBe('修正后的文件链接。');
+  expect(f.calls).toHaveLength(3);
+  expect(toolCalls).toBe(1);
+  await f.finish(repaired);
+});
 
 it('用户要月报下载链接：绑定实际原生回复，关住迟到输入，完成凭据只消费一次', async () => {
   const answer =

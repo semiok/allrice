@@ -75,6 +75,10 @@ import {
   readCheckedFinalDeliveryForExecution,
 } from '../../src/final-delivery/checked-delivery.ts';
 import { p24Fixture, gate } from '../p24/fixture.ts';
+import {
+  assistantReplies,
+  assistantStreamText,
+} from '../../../web/lib/execution/assistant-stream.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -328,13 +332,17 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       join allrice_messages m on m.id=e.assistant_message_id where r.id=${runId}`
     )[0];
   }
-  async function journal() {
+  async function journal(sessionId?: string) {
     const root = join(directory!, 'native');
     const paths = await readdir(root, { recursive: true });
     const records = (
       await Promise.all(
         paths
-          .filter((p) => p.endsWith('.jsonl'))
+          .filter(
+            (p) =>
+              p.endsWith('.jsonl') &&
+              (!sessionId || p.split('/').includes(sessionId)),
+          )
           .map((p) => readFile(join(root, p), 'utf8')),
       )
     ).join('\n');
@@ -343,6 +351,186 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       .filter(Boolean)
       .map((line) => JSON.parse(line));
   }
+
+  it('MET231: 双 child 静默尾步的真实 Host 候选、Worker 发布与网页正文同源且只显示一次', async () => {
+    const childrenRelease = gate(),
+      rootEntered = gate(),
+      answerRelease = gate();
+    const answer = '甲：21  \n乙：55';
+    let rootCalls = 0,
+      childCalls = 0;
+    const f = await setup(async (request) => {
+      const users = JSON.stringify(
+        request.messages.filter((m) => m.role === 'user'),
+      );
+      for (const value of ['21', '55']) {
+        if (users.includes(`TAIL_CHILD_${value}`)) {
+          childCalls++;
+          await childrenRelease.promise;
+          return { text: value };
+        }
+      }
+      rootCalls++;
+      if (rootCalls <= 2)
+        return {
+          nativeTool: {
+            name: 'subagent',
+            arguments: {
+              description: `独立计算 ${rootCalls}`,
+              prompt: `TAIL_CHILD_${rootCalls === 1 ? '21' : '55'}`,
+            },
+          },
+        };
+      if (rootCalls === 3) {
+        rootEntered.release();
+        await answerRelease.promise;
+        return { text: answer };
+      }
+      return { text: '' };
+    });
+    // The spy calls the actual JSON-RPC/production Host and does not replace a reply.
+    const delivery = vi.spyOn(DshProtocolClient.prototype, 'finalDelivery');
+    const task = await prepare(
+      f,
+      '委派两个子任务并汇总甲乙结果，不需要文件。',
+      true,
+    );
+    const running = task.run();
+    void running.catch(() => {});
+    try {
+      await rootEntered.promise;
+      childrenRelease.release();
+      await vi.waitFor(
+        async () => {
+          const queued = (await journal()).flatMap((e) =>
+            e.type === 'agent/inbox/spliced' ? e.data.inserted : [],
+          );
+          expect(
+            queued.filter((m) => m.source.kind === 'subagent-settled'),
+          ).toHaveLength(2);
+        },
+        { timeout: 10000, interval: 50 },
+      );
+      answerRelease.release();
+      const result = await running;
+      expect(rootCalls).toBe(4);
+      expect(childCalls).toBe(2);
+      expect(model!.requests).toHaveLength(6);
+      expect(delivery.mock.calls.map(([action]) => action)).toEqual([
+        'bind',
+        'candidate',
+        'finish',
+      ]);
+      const candidate = await delivery.mock.results[1]!.value;
+      const events = await journal(candidate.rootBinding.nativeSessionId);
+      const messages = events.filter(
+        (e) =>
+          e.type === 'assistant/message' &&
+          !e.data.message.content.some(
+            (b: { type: string }) => b.type === 'tool-call',
+          ),
+      );
+      expect(messages).toHaveLength(2);
+      const [body, silent] = messages;
+      expect(body.surfaceOp).toBe('append');
+      expect(body.data.turn).toBe(silent.data.turn);
+      expect(
+        body.data.message.content
+          .filter((b: { type: string }) => b.type === 'text')
+          .map((b: { text: string }) => b.text)
+          .join(''),
+      ).toBe(answer);
+      expect(
+        silent.data.message.content
+          .filter((b: { type: string }) => b.type === 'text')
+          .map((b: { text: string }) => b.text)
+          .join(''),
+      ).toBe('');
+      expect(candidate).toMatchObject({
+        answer,
+        publicMessageId: body.data.message.id,
+        durableSeq: body.seq,
+        textDigest: finalDeliveryTextDigest(answer),
+        sourceEvent: {
+          type: body.type,
+          seq: body.seq,
+          time: body.time,
+          data: { turn: body.data.turn, step: body.data.step },
+        },
+      });
+      const coverage = readCheckedFinalDeliveryForExecution(
+        task.workflowLease,
+        result,
+      );
+      expect(coverage.coverage).toBe('checked_native_v1');
+      if (coverage.coverage !== 'checked_native_v1')
+        throw Error('missing proof');
+      expect(coverage.proof).toMatchObject({
+        publicMessageId: candidate.publicMessageId,
+        durableSeq: candidate.durableSeq,
+        nativeCandidateDigest: candidate.textDigest,
+        candidateDigest: candidate.textDigest,
+      });
+      const publicEvents =
+        await f.db`select id,sequence,event_type,payload from allrice_run_events
+        where run_id=${task.runId} and event_type in ('assistant.text.delta','assistant.text.completed') order by sequence`;
+      const completed = publicEvents.filter(
+        (e) => e.event_type === 'assistant.text.completed',
+      );
+      expect(completed).toHaveLength(1);
+      expect(completed[0]!.payload).toMatchObject({
+        text: answer,
+        replyId: body.data.message.id,
+        sourceEventId: `dsh:${body.seq}`,
+        sourceEventType: 'assistant/message',
+        sourceOccurredAt: new Date(body.time).toISOString(),
+        nativePayload: {
+          turn: body.data.turn,
+          step: body.data.step,
+          interrupted: false,
+        },
+      });
+      expect(completed[0]!.payload.nativePayload.step).not.toBe(
+        silent.data.step,
+      );
+      const stream = publicEvents.map((e) => ({
+        eventId: e.id,
+        sequence: e.sequence,
+        type: e.event_type,
+        payload: e.payload,
+      }));
+      expect(assistantReplies(stream).map((reply) => reply.text)).toEqual([
+        answer,
+      ]);
+      expect(assistantStreamText([...stream, ...stream], '未完成')).toBe(
+        answer,
+      );
+      const receipts =
+        await f.db`select payload->'fact' fact from allrice_run_events
+        where run_id=${task.runId} and payload->>'source'='native_model_receipt_v1' order by sequence`;
+      expect(receipts).toHaveLength(12);
+      expect(new Set(receipts.map((r) => r.fact.nativeSessionId)).size).toBe(3);
+      expect(result).toMatchObject({
+        answer,
+        usage: { inputTokens: 120, outputTokens: 30 },
+      });
+      await completeJob({
+        ...task.workflowLease,
+        result,
+        checkedDelivery: coverage.checkedDelivery,
+      });
+      expect(await state(f, task.runId)).toMatchObject({
+        status: 'succeeded',
+        state: 'succeeded',
+        text: answer,
+        successes: 1,
+      });
+    } finally {
+      childrenRelease.release();
+      answerRelease.release();
+      await task.isolation.cleanup();
+    }
+  }, 30000);
 
   it('MET231: 正式普通 Worker 双子、冷恢复 fork、下一轮 deny，只归账本轮真实模型调用', async () => {
     let phase = 'spawn';

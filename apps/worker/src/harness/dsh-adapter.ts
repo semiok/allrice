@@ -999,7 +999,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
                   projectedText: projectedCandidate,
                   nativeSessionId: threadId,
                   ...(result.replyId
-                    ? { observedReplyId: result.replyId }
+                    ? {
+                        observedReplyId: joined?.sourceEvent
+                          ? `${runtime.sessionId}:${joined.turn}:${record(record(joined.sourceEvent)?.data)?.step}`
+                          : result.replyId,
+                      }
                     : {}),
                   ...(joined
                     ? {
@@ -1073,7 +1077,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
             text: answer,
             replyId:
               (joined?.publicMessageId as string | undefined) ?? result.replyId,
-            ...(result.completionSource ?? {}),
+            ...(joined?.sourceEvent
+              ? sourceMetadata(record(joined.sourceEvent)!)
+              : (result.completionSource ?? {})),
           });
           timing.mark('publicationCompleted');
           await emit({
