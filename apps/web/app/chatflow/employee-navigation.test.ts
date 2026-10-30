@@ -5,7 +5,10 @@ import {
   employeeSessionPreview,
 } from './employee-navigation';
 import type { Session, Workspace } from './chatflow-types';
-import { EmployeeInstanceSchema } from '@allrice/contracts';
+import {
+  EmployeeInstanceSchema,
+  type NativeSubagentSummary,
+} from '@allrice/contracts';
 import {
   employeeChoice,
   employeeChoiceId,
@@ -38,6 +41,138 @@ const session = (id: string, assignmentId: string): Session => ({
   updatedAt: '2026-09-24T00:00:00Z',
   visibility: 'private',
   archivedAt: null,
+});
+const nativeSummary = (
+  rootId: string,
+  running: boolean | null,
+  childId = 'same-child',
+): NativeSubagentSummary => ({
+  rootId,
+  root: { source: 'live', cursor: 1 },
+  descendants: [
+    {
+      kind: 'child',
+      id: childId,
+      parentId: rootId,
+      depth: 1,
+      mode: 'continuable',
+      running,
+      activity: running === null ? 'unknown' : 'running',
+      observation: { source: 'live', cursor: 1 },
+      timing: { settledMs: 0 },
+      usage: {
+        uncachedInputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        outputTokens: 0,
+      },
+      lastReply: null,
+    },
+  ],
+});
+
+describe('native child counts in each business Session namespace', () => {
+  const parents = [session('parent-a', 'a'), session('parent-b', 'a')];
+  const rows = (
+    reads: Record<string, NativeSubagentSummary | null | 'error'>,
+    sessions = parents,
+  ) =>
+    employeeGroups(
+      workspace,
+      sessions,
+      'parent-a',
+      {},
+      'default',
+      [],
+      reads,
+    )[0]!.sessions;
+  const counts = (reads: Parameters<typeof rows>[0]) =>
+    rows(reads).map((row) => [row.id, row.runningSubagentCount]);
+
+  it.each(['root-a', 'root-b'])(
+    'isolates identical raw child IDs even when the second root is %s',
+    (secondRoot) => {
+      const entries = [
+        ['parent-a', nativeSummary('root-a', true)],
+        ['parent-b', nativeSummary(secondRoot, false)],
+      ] as const;
+      for (const ordered of [entries, [...entries].reverse()]) {
+        const reads = Object.fromEntries(ordered);
+        expect(counts(reads)).toEqual([
+          ['parent-a', 1],
+          ['parent-b', 0],
+        ]);
+        expect(
+          Object.values(reads).map((read) => read.descendants[0]?.id),
+        ).toEqual(['same-child', 'same-child']);
+      }
+    },
+  );
+
+  it('keeps A running while B updates its same-ID child or becomes unknown or unreadable', () => {
+    const a = nativeSummary('root-a', true);
+    for (const running of [true, false, null])
+      expect(
+        counts({ 'parent-a': a, 'parent-b': nativeSummary('root-b', running) }),
+      ).toEqual([
+        ['parent-a', 1],
+        ['parent-b', running === true ? 1 : 0],
+      ]);
+    for (const read of [null, 'error'] as const)
+      expect(counts({ 'parent-a': a, 'parent-b': read })).toEqual([
+        ['parent-a', 1],
+        ['parent-b', 0],
+      ]);
+  });
+
+  it('does not overwrite a business Session running or pending status with a matching raw child ID', () => {
+    const result = rows(
+      { 'parent-a': nativeSummary('root-a', true, 'parent-b') },
+      [
+        parents[0]!,
+        { ...parents[1]!, running: false, pendingInteraction: 'question' },
+      ],
+    );
+    expect(result[0]?.runningSubagentCount).toBe(1);
+    expect(result[1]).toMatchObject({
+      id: 'parent-b',
+      running: false,
+      pendingInteraction: 'question',
+      runningSubagentCount: 0,
+    });
+  });
+
+  it('counts only known-running direct children without falling back to a same-ID business Session', () => {
+    const unknown = nativeSummary('root-a', null, 'parent-b');
+    const running = nativeSummary('root-a', true).descendants[0]!;
+    unknown.descendants.push(
+      running,
+      { ...running, id: 'grandchild', parentId: 'same-child', depth: 2 },
+      {
+        kind: 'diagnostic',
+        id: 'parent-c',
+        parentId: 'root-a',
+        depth: 1,
+        reason: 'unavailable',
+      },
+    );
+    const result = rows({ 'parent-a': unknown }, [
+      parents[0]!,
+      { ...parents[1]!, running: true },
+      { ...session('parent-c', 'a'), running: true },
+    ]);
+    expect(
+      result.map((row) => [row.running, row.runningSubagentCount]),
+    ).toEqual([
+      [false, 1],
+      [true, 0],
+      [true, 0],
+    ]);
+    expect(unknown.descendants[0]).toMatchObject({
+      id: 'parent-b',
+      running: null,
+    });
+  });
 });
 
 describe('Allrice employee projection into the native DSH tree', () => {
