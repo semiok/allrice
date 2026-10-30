@@ -1,6 +1,6 @@
 /* global process, Request, fetch, AbortController, TextDecoder */
 import { createHash, randomUUID } from 'node:crypto';
-import { createServer } from 'node:http';
+import { createServer, ServerResponse } from 'node:http';
 import {
   mkdtemp,
   readdir,
@@ -510,7 +510,7 @@ suite(
             kind: 'terminal',
             child: {
               mode: 'continuable',
-              activity: 'unknown',
+              activity: 'inactive',
               running: null,
               observation: { source: 'prepared' },
               lastReply: after || null,
@@ -626,7 +626,7 @@ suite(
         );
         const unauthorized = await peer(f);
         expect((await web(f, unauthorized.token, '&follow=true')).status).toBe(
-          404,
+          403,
         );
         const foreign = consume(
           await web(f, f.token, '&follow=true&childId=foreign'),
@@ -654,14 +654,100 @@ suite(
         controller.abort();
         Reflect.get(pool, 'runtimes').set(runtime.sessionId, runtime);
       }
-      const before = await files(f.descriptor.storageNamespace);
       await pool.closeOwned(runtime);
       const afterClose = await files(f.descriptor.storageNamespace);
       const coldResponse = await web(f, f.token, '&follow=true');
       expect(coldResponse.status).toBe(503);
       expect(await files(f.descriptor.storageNamespace)).toEqual(afterClose);
-      expect(before).toBeDefined();
       expect(api.read).not.toHaveBeenCalled();
+    }, 30_000);
+    it('rejects changed configured namespace/current distribution before follow reads and clears a business generation switch', async () => {
+      const f = await chat(),
+        { runtime } = await hotHost(f),
+        api = await start(f),
+        controller = new AbortController();
+      const summary = vi.spyOn(runtime.client, 'nativeSubagentSummary');
+      const launch = artifact.currentDshNativeLaunch('restricted');
+      vi.stubEnv('ALLRICE_DSH_RUNTIME_ROOT', join(directory, 'other'));
+      expect((await web(f, f.token, '&follow=true')).status).toBe(503);
+      vi.stubEnv('ALLRICE_DSH_RUNTIME_ROOT', directory);
+      vi.mocked(artifact.currentDshNativeLaunch).mockReturnValue({
+        ...launch,
+        generation: 'another-generation',
+      });
+      expect((await web(f, f.token, '&follow=true')).status).toBe(503);
+      expect(summary).not.toHaveBeenCalled();
+      expect(f.listeners.size).toBe(0);
+      vi.mocked(artifact.currentDshNativeLaunch).mockReturnValue(launch);
+      try {
+        const consumer = consume(
+          await web(f, f.token, '&follow=true', controller.signal),
+        );
+        await consumer.until((e) => e.type === 'directory');
+        await fixture.db`update allrice_conversation_runtimes set thread_generation=thread_generation+1 where session_id=${f.session}`;
+        for (const listener of f.listeners)
+          listener({
+            method: 'session.status',
+            params: { sessionId: f.h.root.id },
+          });
+        await consumer.until((e) => e.type === 'clear');
+        expect((await consumer.reader.read()).done).toBe(true);
+        expect(f.listeners.size).toBe(0);
+        expect(api.read).not.toHaveBeenCalled();
+      } finally {
+        controller.abort();
+      }
+    }, 30_000);
+    it('cancels a blocked real HTTP writer on bounded notification overflow without touching Host execution', async () => {
+      const f = await chat(),
+        { runtime } = await hotHost(f),
+        api = await start(f),
+        controller = new AbortController();
+      const original = ServerResponse.prototype.write,
+        blocked = gate();
+      let block = true;
+      const write = vi
+        .spyOn(ServerResponse.prototype, 'write')
+        .mockImplementation(function (chunk, ...args) {
+          const result = original.call(this, chunk, ...args);
+          // Only the socket's drain signal is held; the authorized Worker HTTP
+          // response, Node once/drain cancellation and Web body remain real.
+          if (
+            block &&
+            typeof chunk === 'string' &&
+            chunk.startsWith('data: ')
+          ) {
+            block = false;
+            blocked.resolve();
+            return false;
+          }
+          return result;
+        });
+      try {
+        const consumer = consume(
+          await web(f, f.token, '&follow=true', controller.signal),
+        );
+        await blocked.promise;
+        await consumer.until((e) => e.type === 'directory');
+        const activity = runtime.lastActivityAt,
+          calls = f.h.calls.length;
+        for (let i = 0; i < 129; i++)
+          for (const listener of f.listeners)
+            listener({
+              method: 'session.status',
+              params: { sessionId: f.h.root.id },
+            });
+        await consumer.until((e) => e.type === 'clear');
+        expect((await consumer.reader.read()).done).toBe(true);
+        expect(f.listeners.size).toBe(0);
+        expect(f.failures.size).toBe(0);
+        expect(api.read).not.toHaveBeenCalled();
+        expect(runtime.lastActivityAt).toBe(activity);
+        expect(f.h.calls).toHaveLength(calls);
+      } finally {
+        write.mockRestore();
+        controller.abort();
+      }
     }, 30_000);
     it('returns an authorized persisted prefix beside a resident writer, without owner/close admission or writes', async () => {
       const f = await chat();
