@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { nativeChildViewLimits } from './native-subagent-snapshot.ts';
 
 // Each cut belongs to one Session, never an atomic tree or durable-end proof.
 const observation = z.object({
@@ -51,7 +52,8 @@ export const NativeSubagentSummarySchema = z.object({
           cacheWriteTokens: z.number().nonnegative(),
           outputTokens: z.number().nonnegative(),
         }),
-        lastReply: z.string().nullable(),
+        lastReply: z.string().max(nativeChildViewLimits.text).nullable(),
+        lastReplyTruncated: z.boolean().optional(),
       }),
     ]),
   ),

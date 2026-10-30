@@ -150,6 +150,11 @@
   max-width: 100%;
 }
 
+.subagentInput {
+  width: 137px;
+  max-width: 100%;
+}
+
 .select select {
   box-sizing: border-box;
   width: 100%;
@@ -221,7 +226,8 @@
   }
 
   .select,
-  .fontStepper {
+  .fontStepper,
+  .subagentInput {
     width: 126px;
   }
 

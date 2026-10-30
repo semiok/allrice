@@ -1986,6 +1986,11 @@ export async function createAllRiceRuntime(
             requiredSessionId(params),
             params.liveOnly === true,
           );
+        case 'session/subagent-snapshot':
+          return this.nativeSubagentSnapshot(
+            requiredSessionId(params),
+            params.childId,
+          );
         case 'session/recover':
           return this.recover(params);
         case 'session/close':
@@ -2053,16 +2058,6 @@ export async function createAllRiceRuntime(
     maxTokensAsSuccess: false,
   });
   ownServer(server);
-  // Since Session v2, live chunks use a separate Agent channel. The pinned SDK
-  // forwards durable Session events only; keep the native frame identity intact.
-  server.ownDisposers.push(
-    ctx.on('agent/assistant-stream', ({ agent, frame }) => {
-      transport.notify('session.assistant-stream', {
-        sessionId: String(agent.session.id),
-        frame,
-      });
-    }),
-  );
   installNativeContextProjection(ctx, (method, params) =>
     transport.notify(method, params),
   );

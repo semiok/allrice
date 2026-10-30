@@ -4,6 +4,7 @@ import {
   type BootstrapCoverageQuery,
   type BootstrapReceipt,
 } from '@allrice/contracts';
+import { NativeSubagentSnapshotSchema } from '@allrice/contracts/native-runtime';
 import type { DshCloseObservationDetails } from '@allrice/database';
 import type { SessionReferenceSnapshot } from '@allrice/contracts';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -453,6 +454,11 @@ export class DshProtocolClient {
   async nativeSubagentSummary(sessionId: string, liveOnly = false) {
     return NativeSubagentSummarySchema.parse(
       await this.request('session/subagent-summary', { sessionId, liveOnly }),
+    );
+  }
+  async nativeSubagentSnapshot(sessionId: string, childId: string) {
+    return NativeSubagentSnapshotSchema.parse(
+      await this.request('session/subagent-snapshot', { sessionId, childId }),
     );
   }
 
