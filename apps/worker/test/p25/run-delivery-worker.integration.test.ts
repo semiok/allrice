@@ -1315,6 +1315,90 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     45000,
   );
 
+  it.each(['membership', 'subscription'] as const)(
+    'MET231: 正式子级模型请求前 %s 失效，不外发并收妥真实树',
+    async (failure) => {
+      const rootContinued = gate();
+      let roots = 0;
+      let childId: unknown;
+      let mismatchedSubscription = false;
+      const preflight = SubscriptionPreflight.preflightSubscription;
+      vi.spyOn(
+        SubscriptionPreflight,
+        'preflightSubscription',
+      ).mockImplementation((input) =>
+        preflight(
+          mismatchedSubscription
+            ? {
+                ...input,
+                decision: { ...input.decision, provider: 'openai-codex' },
+              }
+            : input,
+        ),
+      );
+      const f = await setup(async () => {
+        if (++roots === 1)
+          return {
+            nativeTool: {
+              name: 'subagent',
+              arguments: {
+                description: '调用前门卫',
+                prompt: 'MET231_DENIED_CHILD',
+              },
+            },
+          };
+        rootContinued.release();
+        return { text: '等待子任务。' };
+      }, true);
+      const task = await prepare(f, '委派一次独立检查。');
+      const setHandler = DshProtocolClient.prototype.setRequestHandler;
+      vi.spyOn(
+        DshProtocolClient.prototype,
+        'setRequestHandler',
+      ).mockImplementation(function (this: DshProtocolClient, handler) {
+        setHandler.call(
+          this,
+          handler &&
+            (async (method, params) => {
+              if (
+                method === 'allrice/run-authorize' &&
+                params.kind === 'model' &&
+                params.nativeSessionId !== params.rootSessionId
+              ) {
+                childId = params.nativeSessionId;
+                await rootContinued.promise;
+                if (failure === 'membership')
+                  await f.db`update allrice_memberships set active=false where organization_id=${f.identity.org} and user_id=${f.identity.user}`;
+                else
+                  // Drive the real preflight's frozen-route mismatch branch;
+                  // the parent remains the frozen synthetic HTTP route.
+                  mismatchedSubscription = true;
+              }
+              return handler(method, params);
+            }),
+        );
+      });
+      try {
+        await expect(task.run()).rejects.toMatchObject({ retryable: false });
+        expect(typeof childId).toBe('string');
+        expect(model!.requests).toHaveLength(2);
+        expect(
+          model!.requests.some((r) =>
+            JSON.stringify(
+              r.messages.filter((m) => m.role === 'user'),
+            ).includes('MET231_DENIED_CHILD'),
+          ),
+        ).toBe(false);
+        expect(await state(f, task.runId)).toMatchObject({ successes: 0 });
+        expect(adapter!.runtimeInventory()).toHaveLength(0);
+      } finally {
+        rootContinued.release();
+        await task.isolation.cleanup();
+      }
+    },
+    45000,
+  );
+
   it('PR3a 子智能体调用工具前撤销成员权限，真实 Worker 拒绝并收树', async () => {
     let rootCalls = 0;
     let childCalls = 0;
