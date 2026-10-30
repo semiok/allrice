@@ -135,7 +135,11 @@ suite('native subagent directory and employee sidebar', () => {
     if (server) await new Promise<void>((done) => server.close(() => done()));
   }, 60_000);
 
-  async function open(value = summary(), width = 1200) {
+  async function open(
+    value = summary(),
+    width = 1200,
+    fullReply?: { gate: Promise<void>; delivered: () => void },
+  ) {
     const page = await browser.newPage({ viewport: { width, height: 850 } });
     const calls: { id: string; liveOnly: boolean }[] = [];
     let response: NativeSubagentSummary | 'error' = value;
@@ -157,7 +161,9 @@ suite('native subagent directory and employee sidebar', () => {
             : liveOnly && response.root.source === 'prepared'
               ? null
               : response;
+      if (!liveOnly) await fullReply?.gate;
       await route.fulfill({ json: { summary: read } });
+      if (!liveOnly) fullReply?.delivered();
     });
     await page.goto(origin);
     await page
@@ -272,11 +278,13 @@ suite('native subagent directory and employee sidebar', () => {
       await page.keyboard.press('ArrowRight');
       await page.getByRole('button', { name: '查看grandchild摘要' }).waitFor();
       await page.keyboard.press('End');
-      expect(
-        await page
-          .getByRole('button', { name: '查看idle-b摘要' })
-          .evaluate((node) => node === document.activeElement),
-      ).toBe(true);
+      await expect
+        .poll(() =>
+          page
+            .getByRole('button', { name: '查看idle-b摘要' })
+            .evaluate((node) => node === document.activeElement),
+        )
+        .toBe(true);
       await page.keyboard.press('Escape');
       expect(
         await page.getByRole('tree', { name: '子智能体目录' }).count(),
@@ -293,6 +301,80 @@ suite('native subagent directory and employee sidebar', () => {
       await page.close();
     }
   });
+
+  it.each(['select', 'Escape', 'outside', 'scope'])(
+    'preserves delayed Enter → ArrowDown focus intent until selection or %s cancellation',
+    async (action) => {
+      const cold = summary();
+      cold.root.source = 'prepared';
+      cold.descendants = cold.descendants.map((entry) => ({
+        ...entry,
+        running: null,
+        observation: { source: 'prepared', cursor: 8 },
+      }));
+      let release!: () => void, receive!: () => void;
+      const gate = new Promise<void>((done) => {
+        release = done;
+      });
+      const delivered = new Promise<void>((done) => {
+        receive = done;
+      });
+      const { page, calls } = await open(cold, 1200, {
+        gate,
+        delivered: receive,
+      });
+      try {
+        const trigger = page.locator('button[aria-haspopup="tree"]');
+        const first = page.getByRole('button', { name: '查看fork-a摘要' });
+        await trigger.focus();
+        await page.keyboard.press('Enter');
+        await expect
+          .poll(() => calls.filter((c) => !c.liveOnly).length)
+          .toBe(1);
+        await page
+          .getByText('正在读取子智能体摘要…', { exact: true })
+          .waitFor();
+        await page.keyboard.press('ArrowDown');
+        expect(await first.count()).toBe(0);
+        if (action === 'Escape') await page.keyboard.press('Escape');
+        else if (action === 'outside')
+          await page.getByRole('heading', { level: 1 }).click();
+        else if (action === 'scope') await row(page, 'parent-b').click();
+        release();
+        await delivered;
+        if (action === 'select') {
+          await expect
+            .poll(() =>
+              first.evaluate((node) => node === document.activeElement),
+            )
+            .toBe(true);
+          await page.keyboard.press('Enter');
+          const detail = page.getByRole('complementary', {
+            name: '子智能体摘要',
+          });
+          expect(await detail.innerText()).toContain('fork-a 自己的初始任务');
+        } else {
+          expect(await trigger.getAttribute('aria-expanded')).toBe('false');
+          expect(
+            await page.getByRole('tree', { name: '子智能体目录' }).count(),
+          ).toBe(0);
+          expect(
+            await page
+              .getByRole('complementary', { name: '子智能体摘要' })
+              .count(),
+          ).toBe(0);
+          if (action === 'scope')
+            expect(
+              await page.getByRole('heading', { level: 1 }).innerText(),
+            ).toBe('parent-b 父级任务');
+        }
+      } finally {
+        release();
+        await page.unrouteAll({ behavior: 'wait' });
+        await page.close();
+      }
+    },
+  );
 
   it('keeps historical completion separate from unknown current state, freezes elapsed time and never falls back to the parent task', async () => {
     const cold = summary();

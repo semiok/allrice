@@ -71,10 +71,13 @@ export function NativeSubagentDirectory({
   useEffect(() => {
     if (!open) pendingFocus.current = false;
     else if (summary && pendingFocus.current) {
-      pendingFocus.current = false;
-      catalog.current
-        ?.querySelector<HTMLButtonElement>('button[data-child]:not(:disabled)')
-        ?.focus();
+      const first = catalog.current?.querySelector<HTMLButtonElement>(
+        'button[data-child]:not(:disabled)',
+      );
+      if (first) {
+        pendingFocus.current = false;
+        first.focus();
+      }
     }
   }, [open, summary]);
   const direct =
@@ -212,7 +215,7 @@ export function NativeSubagentDirectory({
                   : at + (event.key === 'ArrowUp' ? -1 : 1);
           if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
             event.preventDefault();
-            pendingFocus.current = at < 0 && !open;
+            pendingFocus.current = at < 0 && !buttons.length;
             setOpen(true);
             requestAnimationFrame(() =>
               catalog.current
