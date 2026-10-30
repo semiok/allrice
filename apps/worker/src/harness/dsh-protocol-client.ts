@@ -1,6 +1,7 @@
 import {
   BootstrapCoverageResultSchema,
   NativeSubagentSummarySchema,
+  QuestionForegroundSnapshotSchema,
   type BootstrapCoverageQuery,
   type BootstrapReceipt,
 } from '@allrice/contracts';
@@ -462,19 +463,23 @@ export class DshProtocolClient {
     );
   }
 
-  async sessionProjection(sessionId: string) {
+  async sessionProjection(sessionId: string, timeoutMs = 10_000) {
     const result = await this.request(
       'session/projection',
       { sessionId },
-      10_000,
+      timeoutMs,
     );
     const pressure = record(result.contextPressure);
+    const foreground = QuestionForegroundSnapshotSchema.safeParse(
+      result.foreground,
+    );
     const optionalCount = (value: unknown) =>
       typeof value === 'number' && Number.isInteger(value) && value >= 0
         ? value
         : undefined;
     const contextWindow = optionalCount(pressure?.contextWindow);
     return {
+      foreground: foreground.success ? foreground.data : null,
       asOfSeq: optionalCount(result.asOfSeq),
       contextPressure:
         pressure && contextWindow && contextWindow > 0

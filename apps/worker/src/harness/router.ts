@@ -151,6 +151,16 @@ export class HarnessRouter {
     );
   }
 
+  async questionSnapshots() {
+    return (
+      await Promise.all(
+        [...this.adapters.values()].map(
+          (adapter) => adapter.questionSnapshots?.() ?? [],
+        ),
+      )
+    ).flat();
+  }
+
   setIdleCloseGate(gate: () => boolean) {
     for (const adapter of this.adapters.values())
       adapter.setIdleCloseGate?.(gate);

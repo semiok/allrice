@@ -1,6 +1,6 @@
 /* global process, AbortController */
 import { randomUUID } from 'node:crypto';
-import { realpath } from 'node:fs/promises';
+import { realpath, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as DatabaseClient from '../../../../packages/database/src/core/client.ts';
@@ -13,11 +13,15 @@ import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.ts';
 import { HarnessEventBatcher } from '../../src/harness/delta-batcher.ts';
 import { normalizeHarnessRunEvent } from '../../src/harness/runtime-contract.ts';
 import { p24Fixture, gate } from '../p24/fixture.ts';
+import { startExecutionPressureLog } from '../../src/execution-pressure.ts';
+import { detectWorkerCapacity } from '../../src/worker-capacity.ts';
+import * as Router from '../../src/harness/router.ts';
+import { readOperationsInventory } from '../../../../packages/database/src/operations-resources.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1' ? describe : describe.skip;
 suite(
-  'real Host -> adapter -> leased run_events foreground observations',
+  'real Host -> current snapshot -> independent WorkerOperations diagnostics',
   () => {
     let dbFixture, model, adapter;
     afterEach(async () => {
@@ -28,21 +32,29 @@ suite(
       vi.unstubAllEnvs();
     });
 
-    it.each(['legacy-answer', 'program-timeout'])(
-      '%s retains only exact execution metadata and closes the same foreground request',
+    it.each([
+      'legacy-answer',
+      'program-timeout',
+      'legacy-answer-write-fault',
+      'program-timeout-write-fault',
+    ])(
+      '%s samples true foreground and recovers diagnostics without affecting the Run',
       async (mode) => {
         dbFixture = await createRuntimeFixtureDatabase({ ownSchemaOnly: true });
         const db = dbFixture.db,
           f = await runFixture(db);
         vi.spyOn(DatabaseClient, 'getDatabase').mockReturnValue(db);
+        vi.spyOn(DatabaseClient, 'getDiagnosticsDatabase').mockReturnValue(db);
+        vi.stubEnv('ALLRICE_CLOUD_RUNNER_ENABLED', '0');
+        vi.stubEnv('ALLRICE_WORKER_CONCURRENCY', '4');
         const runId = f.task.runId,
           sessionId = randomUUID(),
           threadId = `dsh-${sessionId}`;
         const appeared = gate(),
-          ended = gate(),
           resourceEntered = gate(),
           release = gate();
-        const login = mode === 'program-timeout';
+        const login = mode.startsWith('program'),
+          fault = mode.endsWith('fault');
         model = await p24Fixture(async (_r, n) =>
           n === 1 || (login && n === 2)
             ? {
@@ -67,7 +79,9 @@ suite(
                       },
                     },
               }
-            : { text: '已继续完成。' },
+            : (resourceEntered.release(),
+              await release.promise,
+              { text: '已继续完成。' }),
         );
         const root = await realpath(model.root);
         vi.stubEnv('ALLRICE_DSH_PLATFORM_HOME', join(root, 'unused-platform'));
@@ -160,55 +174,105 @@ suite(
             await batcher.accept(event);
             if (event.sourceEventType === 'session/user-question')
               questionId = event.sourcePayload.questionId;
-            if (event.sourceEventType === 'allrice/user-question-opened')
+            if (event.sourceEventType === 'session/user-question')
               appeared.release();
-            if (event.sourceEventType === 'allrice/user-question-ended')
-              ended.release();
           },
         };
         await db`update allrice_jobs set attempt=2 where id=${f.worker.jobId}`;
         const execution = adapter.execute(input);
         void execution.catch(() => {});
-        const observations =
-          () => db`select payload from allrice_run_events where run_id=${runId}
-        and payload->>'sourceEventType' in ('allrice/user-question-opened','allrice/user-question-ended') order by sequence`;
+        vi.spyOn(Router, 'getHarnessRouter').mockReturnValue(
+          new Router.HarnessRouter([adapter]),
+        );
+        let tick,
+          stop,
+          samples = 0;
+        const realInterval = globalThis.setInterval;
+        vi.spyOn(globalThis, 'setInterval').mockImplementation(
+          (callback, ms, ...args) => {
+            if (ms === 30_000) tick = callback;
+            return realInterval(callback, ms, ...args);
+          },
+        );
+        const workerId = randomUUID(),
+          workerBootId = randomUUID();
+        const logPath = join(root, 'diagnostics', workerId, 'pressure.jsonl');
+        const persisted = async () =>
+          (await readOperationsInventory(db)).workers.find(
+            (w) => w.workerId === workerId,
+          );
+        const sampleDone = async () => {
+          samples++;
+          await expect
+            .poll(
+              async () =>
+                (await readFile(logPath, 'utf8').catch(() => ''))
+                  .trim()
+                  .split('\n')
+                  .filter(Boolean).length,
+            )
+            .toBe(samples);
+          return JSON.parse(
+            (await readFile(logPath, 'utf8')).trim().split('\n').at(-1),
+          );
+        };
         try {
           await Promise.race([appeared.promise, execution]);
-          const rows = await observations();
-          expect(rows).toHaveLength(1);
-          const payload = rows[0].payload;
+          stop = startExecutionPressureLog(
+            root,
+            workerId,
+            detectWorkerCapacity(),
+            workerBootId,
+          );
+          await sampleDone();
+          const first = await persisted(),
+            item = first.onlineQuestions.executions[0];
           const runtime = Reflect.get(adapter, 'runtimePool').get(threadId);
-          expect(payload).toMatchObject({
-            attempt: 2,
-            generation: 7,
-            threadId,
-            sourceEventType: 'allrice/user-question-opened',
-            nativePayload: {
+          expect(first).toMatchObject({
+            workerId,
+            capacity: { concurrency: 4 },
+            onlineQuestions: {
               version: 1,
-              questionId,
-              runId,
-              nativeSessionId: threadId,
-              rootSessionId: threadId,
-              runtimeId: runtime.id,
-              jobId: f.worker.jobId,
-              timed: login,
+              workerBootId,
+              scope: 'default_harness_router',
             },
           });
-          expect(Object.keys(payload.nativePayload).sort()).toEqual(
-            [
-              'version',
-              'questionId',
-              'runId',
-              'nativeSessionId',
-              'rootSessionId',
-              'runtimeId',
-              'jobId',
-              'timed',
-              ...(login ? ['deadlineAt', 'releaseLimited'] : []),
-            ].sort(),
-          );
+          expect(item).toMatchObject({
+            runId,
+            jobId: f.worker.jobId,
+            attempt: 2,
+            generation: 7,
+            runtimeId: runtime.id,
+            rootSessionId: threadId,
+            foreground: {
+              version: 1,
+              sampledAt: expect.any(String),
+              complete: true,
+              runId,
+              rootSessionId: threadId,
+              questions: [
+                {
+                  questionId,
+                  runId,
+                  nativeSessionId: threadId,
+                  rootSessionId: threadId,
+                },
+              ],
+            },
+          });
+          expect(Object.keys(item.foreground.questions[0]).sort()).toEqual([
+            'nativeSessionId',
+            'questionId',
+            'rootSessionId',
+            'runId',
+          ]);
+          if (fault) {
+            await db.unsafe(`create function foreground_diagnostics_fault() returns trigger language plpgsql as $$
+              begin raise exception 'fixture diagnostics unavailable' using errcode='P0001'; end $$;
+              create trigger foreground_diagnostics_fault before insert or update on allrice_runtime_metadata
+              for each row execute function foreground_diagnostics_fault()`);
+          }
           if (login) {
-            expect(payload.nativePayload.releaseLimited).toBe(false);
             await Promise.race([resourceEntered.promise, execution]);
           } else {
             await adapter.steer({
@@ -219,25 +283,51 @@ suite(
               message: `allrice:user-question:v1:${JSON.stringify({ questionId, answers: [{ id: 'go', selected: ['继续'] }] })}`,
             });
           }
-          await Promise.race([ended.promise, execution]);
-          const settled = await observations();
-          expect(settled.map((r) => r.payload.sourceEventType)).toEqual([
-            'allrice/user-question-opened',
-            'allrice/user-question-ended',
-          ]);
-          expect(settled[1].payload.nativePayload).toEqual(
-            payload.nativePayload,
-          );
-          if (login) {
-            const answered =
-              await db`select 1 from allrice_run_events where run_id=${runId} and payload->>'sourceEventType'='session/user-question-answered'`;
-            expect(answered).toHaveLength(0);
+          await Promise.race([resourceEntered.promise, execution]);
+          tick();
+          const observed = await sampleDone();
+          expect(
+            observed.onlineQuestions.executions[0].foreground,
+          ).toMatchObject({ complete: true, questions: [] });
+          if (fault) {
+            // The old row is stale, with its own unrefreshed Host timestamp.
+            expect((await persisted()).onlineQuestions).toEqual(
+              first.onlineQuestions,
+            );
+            await db.unsafe(
+              'drop trigger foreground_diagnostics_fault on allrice_runtime_metadata',
+            );
+            tick();
+            await sampleDone();
           }
+          const recovered = (await persisted()).onlineQuestions.executions[0]
+            .foreground;
+          expect(recovered).toMatchObject({ complete: true, questions: [] });
+          expect(recovered.sampledAt > item.foreground.sampledAt).toBe(true);
+          const events =
+            await db`select payload from allrice_run_events where run_id=${runId}`;
+          expect(
+            events.some((r) =>
+              [
+                'allrice/user-question-opened',
+                'allrice/user-question-ended',
+              ].includes(r.payload.sourceEventType),
+            ),
+          ).toBe(false);
+          if (login)
+            expect(
+              events.some(
+                (r) =>
+                  r.payload.sourceEventType ===
+                  'session/user-question-answered',
+              ),
+            ).toBe(false);
           release.release();
           await expect(execution).resolves.toMatchObject({ threadId });
           await batcher.flush();
-          expect(await observations()).toHaveLength(2);
+          expect(await adapter.questionSnapshots()).toEqual([]);
         } finally {
+          stop?.();
           release.release();
           controller.abort();
           await execution.catch(() => {});

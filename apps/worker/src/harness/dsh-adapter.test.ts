@@ -1468,61 +1468,45 @@ describe('DshHarnessAdapter', () => {
     },
   );
 
-  it('fences old Run/root notices and attaches each execution attempt and runtime itself', async () => {
-    let original: HarnessExecutionInput | undefined;
-    const runtimes = [];
-    for (const attempt of [1, 2]) {
-      const events: HarnessEvent[] = [];
+  it.each([1, 2])(
+    'samples exact attempt %s; old Host and failed reads remain unknown without failing execution',
+    async (attempt) => {
+      const adapter = createAdapter();
       const input = executionInput({
-        prompt: 'question-observation-contract',
-        events,
-        sameSessionAs: original,
+        prompt: 'normal question snapshot execution',
       });
       input.attempt = attempt;
-      input.generation = 5;
-      input.executionEnvironment = {
-        ...input.executionEnvironment,
-        ALLRICE_RUN_ID:
-          original?.executionEnvironment.ALLRICE_RUN_ID ??
-          input.executionEnvironment.ALLRICE_RUN_ID!,
-        ALLRICE_JOB_ID:
-          original?.executionEnvironment.ALLRICE_JOB_ID ??
-          input.executionEnvironment.ALLRICE_JOB_ID!,
-        ALLRICE_ATTEMPT: String(attempt),
+      input.generation = 3;
+      input.onThreadBound = async () => ({ generation: 7 });
+      let sampled = false;
+      input.onEvent = async (event) => {
+        if (event.sourceEventType !== 'allrice/runtime-preparation') return;
+        sampled = true;
+        const pool = Reflect.get(adapter, 'runtimePool') as DshRuntimePool;
+        const runtime = pool.get(`dsh-${input.kernel.sessionId}`)!;
+        expect(await adapter.questionSnapshots()).toEqual([
+          {
+            runtimeId: runtime.id,
+            rootSessionId: runtime.sessionId,
+            runId: input.executionEnvironment.ALLRICE_RUN_ID,
+            jobId: input.executionEnvironment.ALLRICE_JOB_ID,
+            attempt,
+            generation: 7,
+            foreground: null,
+          },
+        ]);
+        const read = vi
+          .spyOn(runtime.client, 'sessionProjection')
+          .mockRejectedValueOnce(Error('sample unavailable'));
+        expect((await adapter.questionSnapshots())[0]?.foreground).toBeNull();
+        expect(read).toHaveBeenCalledWith(runtime.sessionId, 5000);
+        read.mockRestore();
       };
-      original ??= input;
-      const adapter = createAdapter();
-      await adapter.execute(input);
-      const observations = events.filter((e) =>
-        e.sourceEventType?.startsWith('allrice/user-question-'),
-      );
-      expect(observations.map((e) => e.sourceEventType)).toEqual([
-        'allrice/user-question-opened',
-        'allrice/user-question-ended',
-      ]);
-      expect(observations[0]).toMatchObject({
-        attempt,
-        generation: 5,
-        sourcePayload: {
-          version: 1,
-          runId: input.executionEnvironment.ALLRICE_RUN_ID,
-          jobId: input.executionEnvironment.ALLRICE_JOB_ID,
-          rootSessionId: `dsh-${input.kernel.sessionId}`,
-          nativeSessionId: `dsh-${input.kernel.sessionId}`,
-        },
-      });
-      expect(observations[1]!.sourcePayload).toEqual(
-        observations[0]!.sourcePayload,
-      );
-      expect(observations[0]!.sourcePayload).not.toHaveProperty('question');
-      expect(observations[0]!.sourcePayload!.runtimeId).not.toBe(
-        'untrusted-runtime',
-      );
-      runtimes.push(observations[0]!.sourcePayload!.runtimeId);
-      await adapter.close();
-    }
-    expect(runtimes[0]).not.toBe(runtimes[1]);
-  });
+      await expect(adapter.execute(input)).resolves.toHaveProperty('threadId');
+      expect(sampled).toBe(true);
+      expect(await adapter.questionSnapshots()).toEqual([]);
+    },
+  );
 
   it('preserves full native identity while bounding only the audit event ID', async () => {
     const events: HarnessEvent[] = [];

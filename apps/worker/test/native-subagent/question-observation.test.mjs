@@ -1,26 +1,26 @@
 /* global AbortController */
 import { randomUUID } from 'node:crypto';
-import { expect, it } from 'vitest';
+import { setTimeout as delay } from 'node:timers/promises';
+import { expect, it, vi } from 'vitest';
 import { askProgramQuestion } from '../../dsh/allrice-program-questions.mjs';
 import { gate, hold, host, text } from './fixture.mjs';
 
 const questions = [
   { id: 'go', question: '请确认继续', options: [{ label: '继续' }] },
 ];
-const observations = (h) =>
-  h.notices
-    .filter((n) => n.method === 'allrice.user-question-foreground')
-    .map((n) => n.params);
-const ask = (h, signal, callId = randomUUID()) =>
+const snapshot = async (h, sessionId = h.root.id) =>
+  (await h.server.handleRequest('session/projection', { sessionId }))
+    .foreground;
+const ask = (h, signal) =>
   askProgramQuestion(
     h.ctx.userQuestions,
     { agent: h.root, signal, questions },
-    callId,
+    randomUUID(),
   );
 const card = async (h) => {
   await expect
-    .poll(() => observations(h).filter((n) => n.phase === 'opened').length)
-    .toBe(1);
+    .poll(() => h.server.pendingUserQuestions.get(h.root.id)?.foreground)
+    .toBeTruthy();
   return h.server.pendingUserQuestions.get(h.root.id);
 };
 const setup = (extra = {}) =>
@@ -31,9 +31,46 @@ const setup = (extra = {}) =>
     bridge: async () => ({ allowed: true }),
     ...extra,
   });
+const tool = (timeout) => [
+  {
+    type: 'tool-call',
+    id: 'timed-call',
+    name: 'ask_user_question',
+    arguments: JSON.stringify({ questions, ...(timeout ? { timeout } : {}) }),
+  },
+];
+const answer = (h, q) =>
+  h.server.handleRequest('session/steer', {
+    sessionId: h.root.id,
+    turnId: `${h.root.id}:turn:${h.root.session.snapshotEvents().findLast((e) => e.type === 'turn/start').data.turn}`,
+    inputId: randomUUID(),
+    kind: 'ask_user',
+    text: `allrice:user-question:v1:${JSON.stringify({ questionId: q.questionId, answers: [{ id: 'go', selected: ['继续'] }] })}`,
+  });
 
-it('observes only the published question; a canceled queued request never opens', async () => {
-  const h = await setup();
+it('reads complete empty and missing-root unknown without acquiring or touching a root', async () => {
+  const runId = randomUUID(),
+    h = await setup({ runId });
+  const ensure = vi.spyOn(h.server, 'ensureRoot');
+  expect(await snapshot(h)).toEqual({
+    version: 1,
+    sampledAt: expect.any(String),
+    rootSessionId: h.root.id,
+    runId,
+    complete: true,
+    questions: [],
+  });
+  expect(await snapshot(h, 'absent-root')).toMatchObject({
+    runId: null,
+    complete: false,
+    questions: [],
+  });
+  expect(ensure).not.toHaveBeenCalled();
+});
+
+it('samples only the published foreground; canceled queue and abort follow the original map', async () => {
+  const runId = randomUUID(),
+    h = await setup({ runId });
   const firstSignal = new AbortController(),
     queuedSignal = new AbortController();
   const first = ask(h, firstSignal.signal).catch((e) => e);
@@ -41,17 +78,35 @@ it('observes only the published question; a canceled queued request never opens'
   const queued = ask(h, queuedSignal.signal).catch((e) => e);
   queuedSignal.abort();
   expect(await queued).toMatchObject({ code: 'ASK_ABORTED' });
-  expect(observations(h)).toHaveLength(1);
-  expect(h.server.pendingUserQuestions.get(h.root.id)).toBe(q);
+  expect(await snapshot(h)).toMatchObject({
+    complete: true,
+    questions: [
+      {
+        questionId: q.questionId,
+        runId,
+        rootSessionId: h.root.id,
+        nativeSessionId: h.root.id,
+      },
+    ],
+  });
+  expect(Object.keys((await snapshot(h)).questions[0]).sort()).toEqual([
+    'nativeSessionId',
+    'questionId',
+    'rootSessionId',
+    'runId',
+  ]);
   firstSignal.abort();
   expect(await first).toMatchObject({ code: 'ASK_ABORTED' });
-  expect(observations(h).map((n) => n.phase)).toEqual(['opened', 'ended']);
+  expect(await snapshot(h)).toMatchObject({ complete: true, questions: [] });
   expect(
     h.notices.some((n) => n.method === 'session.user-question-answered'),
   ).toBe(false);
+  expect(
+    h.notices.some((n) => n.method === 'allrice.user-question-foreground'),
+  ).toBe(false);
 });
 
-it('an unrelated native child cancellation leaves the root card open; root cancellation ends it', async () => {
+it('an unrelated child cancellation leaves the root card; root cancellation clears it', async () => {
   const entered = gate(),
     release = gate();
   const h = await setup({
@@ -59,133 +114,146 @@ it('an unrelated native child cancellation leaves the root card open; root cance
       if (r.sessionId !== 'pr0-root') {
         entered.resolve();
         await hold(r.signal, release);
-        return text('子任务完成');
+        return text('完成');
       }
-      return [
-        {
-          type: 'tool-call',
-          id: randomUUID(),
-          name: 'ask_user_question',
-          arguments: JSON.stringify({ questions }),
-        },
-      ];
+      return tool();
     },
   });
   await h.prompt('先问我，同时保留子任务。');
-  await card(h);
-  const child = await h.spawn();
+  const q = await card(h),
+    child = await h.spawn();
   await entered.promise;
   h.ctx.agents.get(child.childId).cancel({ kind: 'user' });
   await child.result;
-  expect(observations(h).map((n) => n.phase)).toEqual(['opened']);
-  expect(h.server.pendingUserQuestions.has(h.root.id)).toBe(true);
+  expect((await snapshot(h)).questions[0].questionId).toBe(q.questionId);
   h.root.cancel({ kind: 'user' });
   await h.root.whenIdle();
-  await expect.poll(() => observations(h).length).toBe(2);
-  expect(observations(h)[1].phase).toBe('ended');
+  expect(await snapshot(h)).toMatchObject({ complete: true, questions: [] });
 });
 
-it.each(['clear', 'close', 'progress-signal', 'new-run'])(
-  'preserves the published identity when the request ends via %s',
+it.each(['clear', 'close', 'new-run'])(
+  'preserves original published identity through %s',
   async (mode) => {
     const runId = randomUUID(),
-      h = await setup({
-        runId,
-        ...(mode === 'progress-signal'
-          ? {
-              model: async (r) => {
-                await hold(r.signal, gate());
-                return text('完成');
-              },
-            }
-          : {}),
-      });
-    if (mode === 'progress-signal') {
-      await h.prompt('保持工作，等待进度确认。');
-      await expect.poll(() => h.root.status).toBe('running');
-    }
-    const signal = new AbortController();
-    const pending = ask(
-      h,
-      signal.signal,
-      mode === 'progress-signal'
-        ? `runtime-progress:${randomUUID()}:1`
-        : randomUUID(),
-    ).catch((e) => e);
+      h = await setup({ runId }),
+      signal = new AbortController();
+    const pending = ask(h, signal.signal).catch((e) => e);
     await card(h);
-    const opened = observations(h)[0];
     if (mode === 'new-run') {
       await h.server.handleRequest('run/end', { runId });
       await h.server.handleRequest('run/begin', {
         sessionId: h.root.id,
         runId: randomUUID(),
       });
+      expect(await snapshot(h)).toMatchObject({
+        complete: false,
+        questions: [{ runId }],
+      });
     }
-    if (mode === 'progress-signal') signal.abort();
-    else if (mode === 'close') await h.server.closeRoot(h.root.id);
+    if (mode === 'close')
+      await h.server.handleRequest('session/close', { sessionId: h.root.id });
     else await h.server.clearRootQuestion(h.root.id, 'fixture cleanup');
     await pending;
-    expect(observations(h)).toHaveLength(2);
-    expect(observations(h)[1]).toEqual({
-      ...opened,
-      phase: 'ended',
-      observedAt: expect.any(String),
+    expect(await snapshot(h)).toMatchObject({
+      complete: mode !== 'close',
+      questions: [],
     });
-    expect(opened).toMatchObject({
-      runId,
-      nativeSessionId: h.root.id,
-      rootSessionId: h.root.id,
-      timed: false,
-    });
-    expect(
-      h.notices.some((n) => n.method === 'session.user-question-answered'),
-    ).toBe(false);
   },
 );
 
-it('observation transport failure does not replace the question abort', async () => {
-  const h = await setup();
-  h.server.userQuestionObservationNotify = () => {
-    throw Error('observer disconnected');
-  };
-  const signal = new AbortController();
-  const pending = ask(h, signal.signal).catch((e) => e);
-  await expect
-    .poll(() => h.server.pendingUserQuestions.has(h.root.id))
-    .toBe(true);
-  signal.abort();
-  expect(await pending).toMatchObject({ code: 'ASK_ABORTED' });
+it.each(['publish', 'attribution'])(
+  'incomplete %s is unknown and never changes question authority',
+  async (mode) => {
+    const h = await setup(),
+      signal = new AbortController();
+    const target = mode === 'publish' ? h.server : h.server.runAdmission;
+    const method = mode === 'publish' ? 'userQuestionNotify' : 'attribute';
+    const failed = vi.spyOn(target, method).mockImplementation(() => {
+      throw Error('fixture unavailable');
+    });
+    const pending = ask(h, signal.signal).catch((e) => e);
+    await expect
+      .poll(() => h.server.pendingUserQuestions.has(h.root.id))
+      .toBe(true);
+    failed.mockRestore();
+    expect(await snapshot(h)).toMatchObject({ complete: false, questions: [] });
+    signal.abort();
+    await pending;
+    await h.server.clearRootQuestion(h.root.id, 'fixture cleanup');
+    expect(await snapshot(h)).toMatchObject({ complete: true, questions: [] });
+  },
+);
+
+it('real program timeout clears foreground even though no answer was submitted', async () => {
+  const h = await setup({ releaseMs: 100 });
+  const pending = ask(h, new AbortController().signal);
+  await card(h);
+  expect((await snapshot(h)).questions).toHaveLength(1);
+  expect(await pending).toMatchObject({ pending: true });
+  expect(await snapshot(h)).toMatchObject({ complete: true, questions: [] });
+  expect(
+    h.notices.some((n) => n.method === 'session.user-question-answered'),
+  ).toBe(false);
 });
 
-it('a native timed question remains ended when continued and later settled', async () => {
+it('slow accepted input remains foreground after deadline, then clears only after native adoption', async () => {
+  const h = await setup({
+    questionMode: 'timed',
+    model: async (_r, n) => (n === 1 ? tool(1) : text('继续工作')),
+  });
+  await h.prompt('先问我是否继续。');
+  const q = await card(h),
+    entered = gate(),
+    release = gate();
+  const original = h.ctx.sessions.flush.bind(h.ctx.sessions);
+  const flush = vi
+    .spyOn(h.ctx.sessions, 'flush')
+    .mockImplementation(async (...args) => {
+      entered.resolve();
+      await release.promise;
+      return original(...args);
+    });
+  const input = answer(h, q);
+  try {
+    await entered.promise;
+    await delay(1200);
+    expect(
+      Date.parse(
+        h.notices.find((n) => n.method === 'session.user-question').params
+          .deadlineAt,
+      ),
+    ).toBeLessThan(Date.now());
+    expect(await snapshot(h)).toMatchObject({
+      complete: true,
+      questions: [{ questionId: q.questionId }],
+    });
+    release.resolve();
+    expect(await input).toMatchObject({ status: 'adopted' });
+    await h.wait();
+    expect(await snapshot(h)).toMatchObject({ complete: true, questions: [] });
+  } finally {
+    release.resolve();
+    flush.mockRestore();
+    await input.catch(() => {});
+  }
+});
+
+it('continued timed pending and late answers do not reopen foreground', async () => {
   const h = await setup({
     questionMode: 'timed',
     releaseMs: 50,
-    model: async (_r, n) =>
-      n === 1
-        ? [
-            {
-              type: 'tool-call',
-              id: 'timed-call',
-              name: 'ask_user_question',
-              arguments: JSON.stringify({ questions }),
-            },
-          ]
-        : text('继续独立工作'),
+    model: async (_r, n) => (n === 1 ? tool() : text('继续工作')),
   });
   await h.prompt('先问我，有其他工作就继续。');
   await h.wait();
-  expect(observations(h).map((n) => n.phase)).toEqual(['opened', 'ended']);
-  expect(observations(h)[0]).toMatchObject({
-    deadlineAt: h.notices.find((n) => n.method === 'session.user-question')
-      .params.deadlineAt,
-    releaseLimited: true,
-  });
-  const { questions: pending } = await h.server.handleRequest(
-    'session/user-questions',
-    { sessionId: h.root.id },
-  );
-  expect(pending).toEqual([
+  expect(await snapshot(h)).toMatchObject({ complete: true, questions: [] });
+  expect(
+    (
+      await h.server.handleRequest('session/user-questions', {
+        sessionId: h.root.id,
+      })
+    ).questions,
+  ).toEqual([
     expect.objectContaining({ callId: 'timed-call', state: 'continued' }),
   ]);
   await h.server.handleRequest('session/question-reply', {
@@ -193,16 +261,5 @@ it('a native timed question remains ended when continued and later settled', asy
     callId: 'timed-call',
     answers: [{ id: 'go', selected: ['继续'] }],
   });
-  await expect
-    .poll(
-      () =>
-        h.notices.filter((n) => n.method === 'session.user-questions').at(-1)
-          ?.params.questions.settled,
-    )
-    .toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ callId: 'timed-call' }),
-      ]),
-    );
-  expect(observations(h).map((n) => n.phase)).toEqual(['opened', 'ended']);
+  expect(await snapshot(h)).toMatchObject({ complete: true, questions: [] });
 });

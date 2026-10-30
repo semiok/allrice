@@ -1,5 +1,4 @@
 import type { HarnessEvent } from '@allrice/contracts';
-import { QuestionObservationWriteError } from '@allrice/database';
 
 type AssistantDelta = Extract<HarnessEvent, { type: 'assistant.delta' }>;
 
@@ -77,22 +76,7 @@ export class HarnessEventBatcher {
   }
 
   private async enqueueWrite(event: HarnessEvent) {
-    this.writeChain = this.writeChain.then(async () => {
-      try {
-        await this.write(event);
-      } catch (error) {
-        // Only this INSERT's confirmed rollback is optional. Prior writes,
-        // authority/lease checks and the final flush retain their failures.
-        if (
-          !(error instanceof QuestionObservationWriteError) ||
-          event.type !== 'native.event' ||
-          event.harness !== 'dsh' ||
-          (event.sourceEventType !== 'allrice/user-question-opened' &&
-            event.sourceEventType !== 'allrice/user-question-ended')
-        )
-          throw error;
-      }
-    });
+    this.writeChain = this.writeChain.then(() => this.write(event));
     try {
       await this.writeChain;
     } catch (error) {

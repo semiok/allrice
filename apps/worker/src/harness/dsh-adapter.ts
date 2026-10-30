@@ -7,7 +7,6 @@ import type { BootstrapReceipt } from '@allrice/contracts';
 import { readDshToolResult } from '@allrice/contracts';
 import type { SessionReferenceSnapshot } from '@allrice/contracts';
 import { randomUUID, createHash } from 'node:crypto';
-import { z } from 'zod';
 
 import {
   HarnessEventSchema,
@@ -103,19 +102,6 @@ type HarnessEventPayload = HarnessEvent extends infer Event
       >
     : never
   : never;
-
-const QuestionForegroundObservationSchema = z.object({
-  version: z.literal(1),
-  phase: z.enum(['opened', 'ended']),
-  observedAt: z.string().datetime(),
-  questionId: z.string().min(1),
-  runId: z.string().min(1),
-  nativeSessionId: z.string().min(1),
-  rootSessionId: z.string().min(1),
-  timed: z.boolean(),
-  deadlineAt: z.string().datetime().optional(),
-  releaseLimited: z.boolean().optional(),
-});
 
 export class DshHarnessAdapter implements HarnessAdapter {
   readonly kind = 'dsh' as const;
@@ -659,6 +645,15 @@ export class DshHarnessAdapter implements HarnessAdapter {
         /* Logging never changes execution, settlement or retry. */
       }
     });
+    runtime.executionObservation =
+      runId && input.executionEnvironment.ALLRICE_JOB_ID
+        ? {
+            runId,
+            jobId: input.executionEnvironment.ALLRICE_JOB_ID,
+            attempt: input.attempt,
+            generation,
+          }
+        : undefined;
     try {
       // Cold resume belongs inside the existing cancellation/receipt window.
       // Its host is already owned by the pool, so a stalled read is bounded by
@@ -797,8 +792,6 @@ export class DshHarnessAdapter implements HarnessAdapter {
         };
         const result = await this.runOnce({
           runtime,
-          runId,
-          jobId: input.executionEnvironment.ALLRICE_JOB_ID,
           start: deliveryRepair
             ? () => nativeDelivery('repair', deliveryRepair!)
             : undefined,
@@ -1329,6 +1322,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       attachUsage(finalFailure);
       throw finalFailure;
     } finally {
+      runtime.executionObservation = undefined;
       try {
         input.signal.removeEventListener('abort', onAbort);
         this.runtimePool.touch(runtime);
@@ -1424,6 +1418,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
     return this.runtimePool.closureInventory();
   }
 
+  questionSnapshots() {
+    return this.runtimePool.questionSnapshots();
+  }
+
   runtimeInventory() {
     return this.runtimePool.inventory();
   }
@@ -1443,8 +1441,6 @@ export class DshHarnessAdapter implements HarnessAdapter {
     sessionReferences?: SessionReferenceSnapshot[];
     bootstrapReceipt?: BootstrapReceipt;
     runtime: DshRuntime;
-    runId?: string;
-    jobId?: string;
     prompt: string;
     start?(): Promise<unknown>;
     images: HarnessExecutionInput['images'];
@@ -1539,35 +1535,6 @@ export class DshHarnessAdapter implements HarnessAdapter {
     >();
     const processNotification = async (notification: DshNotification) => {
       if (notification.params.sessionId !== input.runtime.sessionId) return;
-      if (notification.method === 'allrice.user-question-foreground') {
-        const parsed = QuestionForegroundObservationSchema.safeParse(
-          notification.params,
-        );
-        if (
-          !parsed.success ||
-          !input.jobId ||
-          parsed.data.runId !== input.runId ||
-          parsed.data.rootSessionId !== input.runtime.sessionId ||
-          parsed.data.nativeSessionId !== input.runtime.sessionId
-        )
-          return;
-        const { phase, observedAt, ...observation } = parsed.data;
-        await input.onNative({
-          type: 'native.event',
-          presentation: 'context',
-          status: phase === 'opened' ? 'started' : 'completed',
-          label: phase === 'opened' ? '前台问题等待开始' : '前台问题等待结束',
-          sourceEventType: `allrice/user-question-${phase}`,
-          sourceEventId: `dsh:question-foreground:${input.runtime.id}:${createHash('sha256').update(observation.questionId).digest('hex')}:${phase}`,
-          sourceOccurredAt: observedAt,
-          sourcePayload: {
-            ...observation,
-            runtimeId: input.runtime.id,
-            jobId: input.jobId,
-          },
-        });
-        return;
-      }
       if (
         input.signal.aborted &&
         notification.method === 'session.assistant-stream'

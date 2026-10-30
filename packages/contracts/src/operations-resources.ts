@@ -29,7 +29,43 @@ export const ExecutionPressureSchema = z.object({
   ),
 });
 
+export const QuestionForegroundSnapshotSchema = z.object({
+  version: z.literal(1),
+  sampledAt: z.string().datetime(),
+  rootSessionId: z.string().min(1),
+  runId: z.string().min(1).nullable(),
+  complete: z.boolean(),
+  questions: z.array(
+    z.object({
+      questionId: z.string().min(1),
+      runId: z.string().min(1),
+      rootSessionId: z.string().min(1),
+      nativeSessionId: z.string().min(1),
+    }),
+  ),
+});
+const OnlineQuestionExecutionSchema = z.object({
+  runtimeId: z.string().uuid(),
+  rootSessionId: z.string().min(1),
+  runId: z.string().min(1),
+  jobId: z.string().min(1),
+  attempt: count,
+  generation: count,
+  foreground: QuestionForegroundSnapshotSchema.nullable(),
+});
+export type OnlineQuestionExecution = z.infer<
+  typeof OnlineQuestionExecutionSchema
+>;
+
 export const WorkerOperationsSchema = z.object({
+  onlineQuestions: z
+    .object({
+      version: z.literal(1),
+      workerBootId: z.string().uuid(),
+      scope: z.literal('default_harness_router'),
+      executions: z.array(OnlineQuestionExecutionSchema),
+    })
+    .optional(),
   workerId: z.string().uuid(),
   hostname: z.string().min(1).max(253),
   platform: z.string().max(32),

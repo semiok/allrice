@@ -383,11 +383,9 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 
 ### allrice-jsonrpc-lifecycle-v1
 
-MET-222 观察写入故障只在现有 run_events/employee_run_steps INSERT 边界标记，真实 batcher 在其原串行 writer 内消化这两类可选观察的 SQL 错误；原门卫、clock、lease、COMMIT、旧事件 flush 失败仍失败。没有重投或停机屏障；记录缺失由监控作为缺证处理。
+MET-222（用户 2026-10-30；root 核定单向运维账本）复用 `dsh-user-questions@0.2.1-rc.2` 公开 `user-questions/request` 的现有 provider：成功发布后只在原 pending 项冻结 Run/root/native/question 身份；原答案、超时、abort、clearRoot 删除即当前事实，不再新增 opened/ended 持久事件或专用写异常。只读 `session/projection` 用 roots.get 返回版本 1 的实际采样时间、完整性和必要 ID；无 root、归属缺失、未成功发布或旧 Host 是 unknown，完整空才代表采样时 0。无 ensure/resume/touch/park/续租，无题答正文，不改等待或用户 Run 结果。
 
-MET-222（用户 2026-10-30；root 核定账本/运维展示）复用 `dsh-user-questions@0.2.1-rc.2` 公开 `user-questions/request`：在现有 provider 真正发布前台卡后观察 opened，同一 Promise 的 finally 观察 ended。发布时固定既有 runAdmission 的原 Run/root/native Session；adapter 仅为当前执行附加 runtimeId/Job，沿原事件串行与 lease 写入既有 run_events。版本 1 元数据不含题目/答案/命令正文，不伪造 answered，不修改等待、审批、park/detach 或 Host 关闭。
-
-守护为 `apps/worker/test/native-subagent/question-observation.integration.test.mjs` 与 `question-observation.test.mjs`；原生不再提供同样的发布/结束语义时必须重新核对。退订后可能丢 ended，消费者须复用 exact runtime 的关闭、inventory 与有效 Job lease 事实；不新增关闭屏障或 PG 状态。上游提供覆盖 legacy 的等价公开观察后可替换接线；回退只损失观测覆盖，不能将缺记录当健康 0。MET-225 关联 L14/L07/E08/L19 在线等答观测行。
+既有每 30 秒 WorkerOperations 经独立 diagnostics DB 写 runtime_metadata JSON；当前执行附 runtime/Worker boot/Job/attempt/generation，采样失效不借 Worker 心跳刷新。scope 明确为 default_harness_router；未采到的活跃 Job（包括独立 technical/experience adapters）必须逐 Run unknown，消费者核真实租约/绑定和关闭事实。没有新 PG 状态、全局注册器或恢复机制。守护为 `question-observation.integration.test.mjs`、`question-observation.test.mjs`；升级核 provider map 发布与清理语义，回退缺覆盖不可当健康 0。MET-225 关联 L14/L07/E08/L19 在线等答只读快照行。
 
 MET-229 PR3b-1a adds an internal `session/subagent-summary` read for the existing Host's exact root. `allrice-native-query.mjs` composes public 0.2.1-rc.2 Session/query/projection/subagent services; exact reads use `openAt: never`, without a search index. Catalog/header/own-descriptor checks and text-only final output are SaaS gatekeeping/display; each native cut keeps live/prepared provenance. Prepared synthetic closers and native inactive never prove activation completion, and cumulative fork usage is not billing. The separate cold composition installs no Agent, model or writer. Tests: `allrice-native-query.test.mjs` and the actual Host fixture; retirement when the public SDK exposes equivalent scoped summary reads. No new private interface, PG mirror, external endpoint, tenant routing or delegation activation; those gates remain in PR3b-1b/PR3d. Reverting this read surface does not grant an older generation permission to write current logs.
 

@@ -972,7 +972,6 @@ export async function createAllRiceRuntime(
           : undefined;
         const claim = wait?.[Symbol.asyncIterator]();
         let timer;
-        let foreground;
         try {
           const remainingMs = (await claim?.next())?.value?.remainingMs;
           const releaseMs = Number(
@@ -1103,26 +1102,13 @@ export async function createAllRiceRuntime(
               const identity = this.runAdmission?.attribute({
                 nativeSessionId: sessionId,
               });
-              if (identity) {
-                foreground = {
-                  version: 1,
+              const pending = this.pendingUserQuestions.get(sessionId);
+              if (identity && pending?.questionId === questionId) {
+                pending.foreground = Object.freeze({
                   questionId,
                   runId: identity.runId,
                   nativeSessionId: identity.nativeSessionId,
                   rootSessionId: identity.rootSessionId,
-                  timed: request.wait?.timed === true,
-                  ...(deadlineAt
-                    ? {
-                        deadlineAt,
-                        releaseLimited:
-                          releaseMs > 0 && remainingMs > releaseMs,
-                      }
-                    : {}),
-                };
-                this.userQuestionObservationNotify({
-                  ...foreground,
-                  phase: 'opened',
-                  observedAt: new Date().toISOString(),
                 });
               }
             } catch {
@@ -1168,17 +1154,6 @@ export async function createAllRiceRuntime(
           });
         } finally {
           clearTimeout(timer);
-          if (foreground) {
-            try {
-              this.userQuestionObservationNotify({
-                ...foreground,
-                phase: 'ended',
-                observedAt: new Date().toISOString(),
-              });
-            } catch {
-              /* Close/abort may already have disconnected transport. */
-            }
-          }
           await claim?.return?.();
         }
       });
@@ -1795,10 +1770,33 @@ export async function createAllRiceRuntime(
     async sessionProjection(params) {
       const sessionId = requiredSessionId(params);
       const record = this.roots.get(sessionId);
-      if (!record) {
-        return { asOfSeq: null, contextPressure: null };
+      const pending = this.pendingUserQuestions.get(sessionId);
+      let identity;
+      try {
+        if (record) {
+          this.assertRoot(record, sessionId);
+          identity = this.runAdmission?.attribute({
+            nativeSessionId: sessionId,
+          });
+        }
+      } catch {
+        /* Missing live attribution means unknown, never empty. */
       }
-      return nativeContextProjection(this.ctx, record.agent.session);
+      return {
+        ...(record
+          ? nativeContextProjection(this.ctx, record.agent.session)
+          : { asOfSeq: null, contextPressure: null }),
+        foreground: {
+          version: 1,
+          sampledAt: new Date().toISOString(),
+          rootSessionId: sessionId,
+          runId: identity?.runId ?? null,
+          complete:
+            !!identity &&
+            (!pending || pending.foreground?.runId === identity.runId),
+          questions: pending?.foreground ? [pending.foreground] : [],
+        },
+      };
     }
 
     async recover(params) {
@@ -2115,11 +2113,6 @@ export async function createAllRiceRuntime(
   server.modelTimingNotify = (state) =>
     transport.notify('allrice.modelTiming', state);
   server.installUserQuestionProvider();
-  server.userQuestionObservationNotify = (notice) =>
-    transport.notify('allrice.user-question-foreground', {
-      sessionId: notice.rootSessionId,
-      ...notice,
-    });
   const attributed = (params) =>
     server.runAdmission?.attribute(params) ?? params;
   server.accountingBridge = (params, signal) =>
