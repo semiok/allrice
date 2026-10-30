@@ -41,6 +41,10 @@ import {
 } from '../dsh-distribution.js';
 import { dshEgressEnvironment } from '../dsh-egress-environment.js';
 import type { DshProtocolClient } from '../dsh-protocol-client.js';
+import {
+  followNativeSubagent,
+  type NativeSubagentFollowInput,
+} from '../native-subagent-follow.js';
 import { createObservedDshClient } from '../dsh-close-observer.js';
 import { assertStoredNativeSession } from '../dsh-native-storage.js';
 import {
@@ -278,6 +282,51 @@ export class DshRuntimePool {
     signal: AbortSignal,
     liveOnly = false,
   ) {
+    return this.withNativeSubagentOwner(
+      target,
+      signal,
+      async (runtime, check) => {
+        const summary = await runtime.client.nativeSubagentSummary(
+          runtime.sessionId,
+          liveOnly,
+        );
+        check();
+        if (
+          summary.rootId !== runtime.sessionId ||
+          summary.root.source !== 'live'
+        )
+          throw Error('NATIVE_QUERY_SOURCE_MISMATCH');
+        return summary;
+      },
+    );
+  }
+
+  nativeSubagentFollow(
+    target: NativeSubagentQueryTarget,
+    input: NativeSubagentFollowInput,
+  ) {
+    return this.withNativeSubagentOwner(
+      target,
+      input.signal,
+      async (runtime, check) => {
+        await followNativeSubagent(runtime.client, runtime.sessionId, {
+          ...input,
+          check: async (signal) => {
+            check();
+            await input.check(signal);
+            check();
+          },
+        });
+        return true;
+      },
+    );
+  }
+
+  private async withNativeSubagentOwner<T>(
+    target: NativeSubagentQueryTarget,
+    signal: AbortSignal,
+    read: (runtime: DshRuntime, check: () => void) => Promise<T>,
+  ) {
     const id = target.descriptor.nativeSessionId;
     const assertOpen = () => {
       signal.throwIfAborted();
@@ -322,11 +371,7 @@ export class DshRuntimePool {
         throw Error('NATIVE_QUERY_HOST_MISMATCH');
     };
     assertOwner();
-    const summary = await runtime.client.nativeSubagentSummary(id, liveOnly);
-    assertOwner();
-    if (summary.rootId !== id || summary.root.source !== 'live')
-      throw Error('NATIVE_QUERY_SOURCE_MISMATCH');
-    return summary;
+    return read(runtime, assertOwner);
   }
 
   private assertAcquisitionOpen(threadId: string) {

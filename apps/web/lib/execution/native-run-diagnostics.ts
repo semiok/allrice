@@ -19,9 +19,17 @@ type NativeReadInput = {
 
 async function requestNativeRead<T>(
   input: NativeReadInput,
-  address: { runId: string } | { sessionId: string; liveOnly?: boolean },
-  read: (body: Record<string, unknown>) => T,
+  address:
+    | { runId: string }
+    | {
+        sessionId: string;
+        liveOnly?: boolean;
+        follow?: true;
+        childId?: string;
+      },
+  read: (response: Response) => Promise<T>,
 ) {
+  let response: Response | undefined;
   try {
     // Fixed deployment address, never a request URL. Redirects must not carry
     // an authenticated user's session token to another destination.
@@ -37,7 +45,7 @@ async function requestNativeRead<T>(
       base.hash
     )
       throw new NativeDiagnosticsUnavailable();
-    const response = await fetch(
+    response = await fetch(
       new URL(
         'runId' in address
           ? '/internal/native-run-diagnostics'
@@ -67,11 +75,9 @@ async function requestNativeRead<T>(
       throw new NativeDiagnosticsUnavailable(
         [401, 404].includes(response.status) ? response.status : 503,
       );
-    const body: unknown = await response.json();
-    if (!body || typeof body !== 'object')
-      throw new NativeDiagnosticsUnavailable();
-    return read(body as Record<string, unknown>);
+    return await read(response);
   } catch (error) {
+    await response?.body?.cancel().catch(() => {});
     if (error instanceof NativeDiagnosticsUnavailable) throw error;
     throw new NativeDiagnosticsUnavailable();
   }
@@ -80,7 +86,8 @@ async function requestNativeRead<T>(
 export function requestNativeRunDiagnostics(
   input: NativeReadInput & { runId: string },
 ) {
-  return requestNativeRead(input, { runId: input.runId }, (body) => {
+  return requestNativeRead(input, { runId: input.runId }, async (response) => {
+    const body = await response.json();
     const diagnostics = NativeRunDiagnosticsSchema.parse(body.diagnostics);
     if (diagnostics.runId !== input.runId)
       throw new NativeDiagnosticsUnavailable();
@@ -94,11 +101,35 @@ export function requestNativeSubagentSummary(
   return requestNativeRead(
     input,
     { sessionId: input.sessionId, liveOnly: input.liveOnly },
-    (body) => {
+    async (response) => {
+      const body = await response.json();
       if (body.sessionId !== input.sessionId)
         throw new NativeDiagnosticsUnavailable();
       if (input.liveOnly && body.summary === null) return null;
       return NativeSubagentSummarySchema.parse(body.summary);
+    },
+  );
+}
+
+export function requestNativeSubagentFollow(
+  input: NativeReadInput & { sessionId: string; childId?: string },
+) {
+  return requestNativeRead(
+    input,
+    { sessionId: input.sessionId, childId: input.childId, follow: true },
+    async (response) => {
+      if (
+        !response.body ||
+        !response.headers.get('content-type')?.startsWith('text/event-stream')
+      )
+        throw new NativeDiagnosticsUnavailable();
+      return new Response(response.body, {
+        headers: {
+          'content-type': 'text/event-stream; charset=utf-8',
+          'cache-control': 'no-cache, no-transform',
+          'x-accel-buffering': 'no',
+        },
+      });
     },
   );
 }
