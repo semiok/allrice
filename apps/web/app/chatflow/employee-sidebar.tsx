@@ -1,5 +1,9 @@
 'use client';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useNativeSubagents,
+  nativeSubagentActivityUnknown,
+} from './use-native-subagents';
 import {
   IconChevronDownOutlineRegular,
   IconChevronRightOutlineRegular,
@@ -47,6 +51,28 @@ export function EmployeeSidebar({
   onDetails: (assignmentId: string) => void;
 }) {
   const key = employeePreferenceKey(workspace);
+  const root = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState<string[]>([]);
+  const { reads } = useNativeSubagents(
+    workspace.workspaceId,
+    {
+      'x-allrice-organization-id': workspace.organizationId,
+      'x-allrice-workspace-id': workspace.workspaceId,
+    },
+    Object.fromEntries(
+      sessions
+        .filter(
+          (session) =>
+            visible.includes(session.id) &&
+            (!session.ownerId || session.ownerId === workspace.viewerId),
+        )
+        .map((session) => [
+          session.id,
+          `${session.updatedAt}/${session.running}`,
+        ]),
+    ),
+    true,
+  );
   const [expansion, setExpansion] = useState(() => readEmployeeExpansion(key));
   const [all, setAll] = useState<Record<string, boolean>>({});
   const [rail, setRail] = useState<string | null>(null);
@@ -75,6 +101,7 @@ export function EmployeeSidebar({
         expansion,
         archive?.filter,
         archive?.employeeGroups,
+        reads,
       ),
     [
       workspace,
@@ -83,8 +110,30 @@ export function EmployeeSidebar({
       expansion,
       archive?.filter,
       archive?.employeeGroups,
+      reads,
     ],
   );
+  useEffect(() => {
+    const visible = new Set<string>();
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          const id = (entry.target as HTMLElement).dataset.rowKey!.slice(
+            'session:'.length,
+          );
+          if (entry.isIntersecting) visible.add(id);
+          else visible.delete(id);
+        }
+        const ids = [...visible].sort();
+        setVisible((before) => (before.join() === ids.join() ? before : ids));
+      },
+      { root: root.current },
+    );
+    const rows = root.current?.querySelectorAll('[data-row-key^="session:"]');
+    rows?.forEach((row) => observer.observe(row));
+    if (!rows?.length) setVisible([]);
+    return () => observer.disconnect();
+  }, [groups, collapsed, all]);
   useEffect(() => {
     if (collapsed || !archive || archive.loading) return;
     for (const group of groups) {
@@ -106,6 +155,7 @@ export function EmployeeSidebar({
   };
   return (
     <div
+      ref={root}
       className={css.root}
       data-collapsed={collapsed || undefined}
       role="tree"
@@ -277,6 +327,20 @@ export function EmployeeSidebar({
                           aria-label="有启用中的自动化任务"
                         >
                           <IconClockOutlineRegular size={14} />
+                        </span>
+                      ) : reads[node.id] === 'error' ? (
+                        <span
+                          title="子智能体状态读取失败"
+                          aria-label="子智能体状态读取失败"
+                        >
+                          ?
+                        </span>
+                      ) : nativeSubagentActivityUnknown(reads[node.id]) ? (
+                        <span
+                          title="子智能体当前活动状态未知"
+                          aria-label="子智能体当前活动状态未知"
+                        >
+                          ?
                         </span>
                       ) : undefined
                     }
