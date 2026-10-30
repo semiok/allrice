@@ -297,6 +297,7 @@ export interface HarnessAdapter {
   nativeSubagentSummary?(
     target: NativeSubagentQueryTarget,
     signal: AbortSignal,
+    liveOnly?: boolean,
   ): Promise<NativeSubagentSummary | undefined>;
   /** Idle process close runs only while this returns true. */
   setIdleCloseGate?(gate: () => boolean): void;

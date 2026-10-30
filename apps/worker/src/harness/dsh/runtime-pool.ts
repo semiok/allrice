@@ -271,6 +271,7 @@ export class DshRuntimePool {
   async nativeSubagentSummary(
     target: NativeSubagentQueryTarget,
     signal: AbortSignal,
+    liveOnly = false,
   ) {
     const id = target.descriptor.nativeSessionId;
     const assertOpen = () => {
@@ -316,7 +317,7 @@ export class DshRuntimePool {
         throw Error('NATIVE_QUERY_HOST_MISMATCH');
     };
     assertOwner();
-    const summary = await runtime.client.nativeSubagentSummary(id);
+    const summary = await runtime.client.nativeSubagentSummary(id, liveOnly);
     assertOwner();
     if (summary.rootId !== id || summary.root.source !== 'live')
       throw Error('NATIVE_QUERY_SOURCE_MISMATCH');

@@ -34,7 +34,7 @@ export async function readAuthorizedNativeSubagentSummary(
     launch.generation !== pin.distributionGeneration
   )
     throw Error('NATIVE_QUERY_READER_UNAVAILABLE');
-  const live = await adapter.nativeSubagentSummary?.(target, signal);
+  const live = await adapter.nativeSubagentSummary?.(target, signal, liveOnly);
   signal.throwIfAborted();
   if (live) return NativeSubagentSummarySchema.parse(live);
   if (liveOnly) return null;

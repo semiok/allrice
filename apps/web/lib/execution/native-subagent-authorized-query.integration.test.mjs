@@ -37,6 +37,7 @@ import { bindJobNativeSession } from '../../../../packages/database/src/executio
 import * as artifact from '../../../worker/src/harness/dsh-native-artifact.ts';
 import { readAuthorizedNativeSubagentSummary } from '../../../worker/src/harness/native-subagent-query.ts';
 import { getHarnessRouter } from '../../../worker/src/harness/router.ts';
+import { DshProtocolClient } from '../../../worker/src/harness/dsh-protocol-client.ts';
 import { createNativeRunDiagnosticsHttpHandler } from '../../../worker/src/native-run-diagnostics-http.ts';
 // This fixture installs test-only delegation to produce native descendants. It
 // does not assert delegation is enabled in either production profile.
@@ -223,9 +224,10 @@ suite(
         lastActivityAt: new Date(Date.now() - 3_600_000).toISOString(),
         client: {
           processState: () => ({ state: 'running' }),
-          nativeSubagentSummary: (id) =>
-            f.h.server.handleRequest('session/subagent-summary', {
-              sessionId: id,
+          nativeSubagentSummary:
+            DshProtocolClient.prototype.nativeSubagentSummary.bind({
+              request: (method, params) =>
+                f.h.server.handleRequest(method, params),
             }),
           close: () => f.h.server.closeRoot(f.h.root.id),
         },
@@ -429,6 +431,53 @@ suite(
         ],
       });
       expect(f.h.calls).toHaveLength(calls);
+    });
+    it('does not read unloaded child JSONL during a real hot liveOnly GET, and retains the unknown branch', async () => {
+      // Independent Astra P2 reproduction: normal child completion unloads it
+      // while its root Host stays resident. No query/native read mocks.
+      const f = await chat();
+      const { runtime } = await hotHost(f);
+      expect(
+        f.h.ctx.sessions.list().map((session) => String(session.id)),
+      ).toEqual([f.descriptor.nativeSessionId]);
+      const open = vi.spyOn(f.h.ctx.sessionPersistence, 'open');
+      const storedStat = vi.spyOn(f.h.ctx.sessionPersistence, 'stat');
+      const before = runtime.lastActivityAt;
+      await start(f);
+      try {
+        const response = await web(f, f.token, '&liveOnly=true');
+        const body = await response.json();
+        expect(response.status).toBe(200);
+        expect(body.summary).toMatchObject({
+          root: { source: 'live' },
+          descendants: [
+            { kind: 'diagnostic', depth: 1, reason: 'unavailable' },
+          ],
+        });
+        expect(body.summary.descendants).toHaveLength(1);
+        expect(runtime.lastActivityAt).toBe(before);
+        expect(
+          open.mock.calls.filter((call) => call[1] === 'read'),
+        ).toHaveLength(0);
+        expect(storedStat).not.toHaveBeenCalled();
+        const full = await web(f);
+        expect(full.status).toBe(200);
+        expect((await full.json()).summary.descendants).toMatchObject([
+          {
+            kind: 'child',
+            running: null,
+            observation: { source: 'prepared' },
+            lastReply: 'native private child reply',
+          },
+        ]);
+        expect(
+          open.mock.calls.filter((call) => call[1] === 'read'),
+        ).toHaveLength(1);
+        expect(storedStat).toHaveBeenCalled();
+      } finally {
+        open.mockRestore();
+        storedStat.mockRestore();
+      }
     });
     it('uses liveOnly as a local probe without reading or creating an absent journal; default reads still fail', async () => {
       const f = await chat(false);

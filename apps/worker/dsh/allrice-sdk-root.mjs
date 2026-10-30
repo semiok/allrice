@@ -107,9 +107,14 @@ export class AllRiceSdkRoot {
       throw Error('INPUT_SESSION_NOT_LIVE');
   }
 
-  async nativeSubagentSummary(sessionId) {
+  async nativeSubagentSummary(sessionId, liveOnly = false) {
     const record = this.requireRoot(sessionId);
-    const result = await readNativeSubagentSummary(this.ctx, sessionId);
+    const result = await readNativeSubagentSummary(
+      this.ctx,
+      sessionId,
+      undefined,
+      liveOnly,
+    );
     this.assertRoot(record, sessionId);
     return result;
   }
