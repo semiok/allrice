@@ -1042,9 +1042,6 @@ export async function createAllRiceRuntime(
                     progress: { runId: programRunId, pauseId: progressPauseId },
                   }
                 : {}),
-              programTurnId: programRunId
-                ? `${sessionId}:turn:${request.agent.session.snapshotEvents().findLast((e) => e.type === 'turn/start')?.data.turn}`
-                : undefined,
               ...(durable ? { callId } : {}),
               resolve: (answer) => {
                 request.signal?.removeEventListener('abort', abort);

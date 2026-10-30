@@ -221,9 +221,10 @@ export async function consumeConversationSteer(input: {
       const proof = RuntimeNativeInputProofSchema.parse(input.proof);
       let answeredQuestionId;
       try {
-        answeredQuestionId = JSON.parse(
-          command.message.slice('allrice:user-question:v1:'.length),
-        )?.questionId;
+        if (command.message.startsWith('allrice:user-question:v1:'))
+          answeredQuestionId = JSON.parse(
+            command.message.slice('allrice:user-question:v1:'.length),
+          )?.questionId;
       } catch {
         /* Only a typed question has an answer identity. */
       }

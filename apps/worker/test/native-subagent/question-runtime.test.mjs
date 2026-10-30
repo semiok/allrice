@@ -348,12 +348,14 @@ it('JSON metadata cannot grant an ordinary public question the idle Run exceptio
     ...question('runtime-progress'),
     programRunId: runId,
     progressPauseId: 'fake-pause',
+    progress: { runId, pauseId: 'fake-pause' },
     metadata: { programQuestion: 'runtime-progress:fake-pause:1' },
     'Symbol(allrice-program-question)': 'runtime-progress:fake-pause:1',
   });
   const rejected = expect(request).rejects.toThrow();
   const q = await card(h);
   expect(q.programRunId).toBeUndefined();
+  expect(q.progress).toBeUndefined();
   await expect(answer({ ...h, runId }, q, ['继续'])).rejects.toThrow();
   await h.server.closeRoot(h.root.id);
   await rejected;
