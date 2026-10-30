@@ -1,5 +1,6 @@
 'use client';
 import { ReferenceLibrary } from './reference-library';
+import { NativeSubagentDirectory } from './native-subagent-directory';
 import {
   UnifiedWorkbenchControls,
   announceWorkbenchRead,
@@ -1918,6 +1919,15 @@ export function ChatFlowClient({
                   <div
                     className={`${conversationUi.headerActions} ${styles.conversationActions}`}
                   >
+                    {activeId && (
+                      <NativeSubagentDirectory
+                        key={`${settingsScope}/${activeId}`}
+                        workspaceId={workspace.workspaceId}
+                        sessionId={activeId}
+                        headers={tenantHeaders}
+                        refreshKey={`${isRunning}/${history?.messages.at(-1)?.status}`}
+                      />
+                    )}
                     {!layout.compact && workbenchEnabled ? (
                       <UnifiedWorkbenchControls
                         scope={`${settingsScope}/${activeEmployee?.instanceId ?? 'none'}`}
