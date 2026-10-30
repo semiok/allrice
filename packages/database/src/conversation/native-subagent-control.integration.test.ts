@@ -77,7 +77,7 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
       contextKey: f.session,
       distributionGeneration: newNativeGeneration,
     });
-    await bindJobNativeSession({
+    const bound = await bindJobNativeSession({
       workerId: f.worker.workerId,
       jobId: f.worker.jobId,
       leaseToken: f.worker.leaseToken,
@@ -91,6 +91,21 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
       },
       descriptor,
     });
+    if (!bound.conversation) throw Error('fixture chat binding missing');
+    // First binding advances generation. Exercise the same returned identity
+    // that the real Worker carries forward, not the pre-bind fixture value.
+    expect(bound.conversation).toMatchObject({
+      state: 'running',
+      activeRunId: f.rootRunId,
+      workerId: f.worker.workerId,
+      threadId: descriptor.nativeSessionId,
+      generation: runtime!.thread_generation + 1,
+    });
+    const worker = {
+      ...f.worker,
+      generation: bound.conversation.generation,
+      attempt: 1,
+    };
     const login = await createSession(f.user);
     const context = await authenticateSession(login.token, {
       organizationId: f.org,
@@ -99,9 +114,10 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
     if (!context) throw Error('fixture authentication failed');
     return {
       ...f,
+      worker,
       context,
       descriptor,
-      authority: { ...f.base, worker: { ...f.worker, attempt: 1 } },
+      authority: { ...f.base, worker },
     };
   }
   type Chat = Awaited<ReturnType<typeof chat>>;
@@ -156,7 +172,7 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
     expect(saved?.request.scope).toMatchObject({
       rootRunId: f.rootRunId,
       nativeRootId: f.descriptor.nativeSessionId,
-      generation: 1,
+      generation: f.worker.generation,
       jobId: f.worker.jobId,
       jobAttempt: 1,
       storageNamespace: f.descriptor.storageNamespace,
@@ -171,7 +187,7 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
     await expect(
       enqueueNativeSubagentControl(f.context, f.session, {
         ...expected(f, input),
-        generation: 2,
+        generation: f.worker.generation + 1,
       }),
     ).rejects.toThrow('CHILD_CONTROL_CONFLICT');
     const [row] =
@@ -214,7 +230,7 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
     await expect(
       enqueueNativeSubagentControl(f.context, f.session, {
         ...expected(f, prompt(f)),
-        generation: 2,
+        generation: f.worker.generation + 1,
       }),
     ).rejects.toThrow('CHILD_CONTROL_UNAVAILABLE');
     await fixture.db`update allrice_memberships set active=false where id=${f.membership}`;
@@ -279,18 +295,18 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
       turnId = `${f.descriptor.nativeSessionId}:turn:1`;
     await expect(fixture.db`insert into allrice_conversation_commands
       (organization_id,workspace_id,session_id,owner_id,command_type,expected_generation)
-      values(${f.org},${f.workspace},${f.session},${f.user},'steer',1)`).rejects.toMatchObject(
+      values(${f.org},${f.workspace},${f.session},${f.user},'steer',${f.worker.generation})`).rejects.toMatchObject(
       { code: '23514' },
     );
     await fixture.db`update allrice_conversation_runtimes set active_turn_id=${turnId} where session_id=${f.session}`;
     await fixture.db`insert into allrice_run_events(organization_id,workspace_id,run_id,sequence,event_type,payload)
-      values(${f.org},${f.workspace},${f.rootRunId},1,'turn.started',${fixture.db.json({ turnId, generation: 1 })})`;
+      values(${f.org},${f.workspace},${f.rootRunId},1,'turn.started',${fixture.db.json({ turnId, generation: f.worker.generation })})`;
     const sent = await sendChatMessage(f.context, f.workspace, f.session, {
       clientMessageId: randomUUID(),
       text: 'A legacy steer.',
       deliveryMode: 'steer',
       expectedTurnId: turnId,
-      expectedGeneration: 1,
+      expectedGeneration: f.worker.generation,
     });
     expect(sent.delivery).toBe('steer_pending');
     const child = prompt(f);
@@ -300,7 +316,7 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
       workspaceId: f.workspace,
       sessionId: f.session,
       workerId: f.worker.workerId,
-      generation: 1,
+      generation: f.worker.generation,
       turnId,
       runId: f.rootRunId,
       drain: true,
