@@ -74,10 +74,12 @@ it('an unrelated native child cancellation leaves the root card open; root cance
   await card(h);
   const child = await h.spawn();
   await entered.promise;
-  await h.ctx.agents.get(child.childId).cancel();
+  h.ctx.agents.get(child.childId).cancel({ kind: 'user' });
+  await child.result;
   expect(observations(h).map((n) => n.phase)).toEqual(['opened']);
   expect(h.server.pendingUserQuestions.has(h.root.id)).toBe(true);
-  await h.root.cancel();
+  h.root.cancel({ kind: 'user' });
+  await h.root.whenIdle();
   await expect.poll(() => observations(h).length).toBe(2);
   expect(observations(h)[1].phase).toBe('ended');
 });

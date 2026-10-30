@@ -72,7 +72,7 @@ suite(
         vi.stubEnv('ALLRICE_DSH_PLATFORM_HOME', join(root, 'unused-platform'));
         adapter = new DshHarnessAdapter({
           runtimeRoot: join(root, 'runtime'),
-          idleCloseMs: 60000,
+          idleCloseMs: login ? 1000 : 60000,
           credentialResolver: {
             resolve: async () => ({ apiKey: 'synthetic-only' }),
           },

@@ -333,6 +333,33 @@ lines.on('line', (line) => {
     notify('session.status', { sessionId, status: 'idle' });
     return;
   }
+  if (prompt.includes('question-observation-contract')) {
+    const observation = {
+      ...runIdentity,
+      sessionId,
+      version: 1,
+      phase: 'opened',
+      observedAt: new Date().toISOString(),
+      questionId: 'foreground-proof',
+      timed: false,
+      runtimeId: 'untrusted-runtime',
+      jobId: 'untrusted-job',
+      question: 'must not persist',
+    };
+    for (const override of [
+      { runId: 'previous-run' },
+      { rootSessionId: 'previous-root' },
+      { nativeSessionId: 'previous-native' },
+      { version: 2 },
+      { phase: 'answered' },
+      {},
+      { phase: 'ended' },
+    ])
+      notify('allrice.user-question-foreground', {
+        ...observation,
+        ...override,
+      });
+  }
   if (prompt.includes('long-native-question-id')) {
     const callId = 'native:call:'.repeat(40);
     notify('session.user-question', {

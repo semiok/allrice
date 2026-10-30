@@ -1468,6 +1468,62 @@ describe('DshHarnessAdapter', () => {
     },
   );
 
+  it('fences old Run/root notices and attaches each execution attempt and runtime itself', async () => {
+    let original: HarnessExecutionInput | undefined;
+    const runtimes = [];
+    for (const attempt of [1, 2]) {
+      const events: HarnessEvent[] = [];
+      const input = executionInput({
+        prompt: 'question-observation-contract',
+        events,
+        sameSessionAs: original,
+      });
+      input.attempt = attempt;
+      input.generation = 5;
+      input.executionEnvironment = {
+        ...input.executionEnvironment,
+        ALLRICE_RUN_ID:
+          original?.executionEnvironment.ALLRICE_RUN_ID ??
+          input.executionEnvironment.ALLRICE_RUN_ID!,
+        ALLRICE_JOB_ID:
+          original?.executionEnvironment.ALLRICE_JOB_ID ??
+          input.executionEnvironment.ALLRICE_JOB_ID!,
+        ALLRICE_ATTEMPT: String(attempt),
+      };
+      original ??= input;
+      const adapter = createAdapter();
+      await adapter.execute(input);
+      const observations = events.filter((e) =>
+        e.sourceEventType?.startsWith('allrice/user-question-'),
+      );
+      expect(observations.map((e) => e.sourceEventType)).toEqual([
+        'allrice/user-question-opened',
+        'allrice/user-question-ended',
+      ]);
+      expect(observations[0]).toMatchObject({
+        attempt,
+        generation: 5,
+        sourcePayload: {
+          version: 1,
+          runId: input.executionEnvironment.ALLRICE_RUN_ID,
+          jobId: input.executionEnvironment.ALLRICE_JOB_ID,
+          rootSessionId: `dsh-${input.kernel.sessionId}`,
+          nativeSessionId: `dsh-${input.kernel.sessionId}`,
+        },
+      });
+      expect(observations[1]!.sourcePayload).toEqual(
+        observations[0]!.sourcePayload,
+      );
+      expect(observations[0]!.sourcePayload).not.toHaveProperty('question');
+      expect(observations[0]!.sourcePayload!.runtimeId).not.toBe(
+        'untrusted-runtime',
+      );
+      runtimes.push(observations[0]!.sourcePayload!.runtimeId);
+      await adapter.close();
+    }
+    expect(runtimes[0]).not.toBe(runtimes[1]);
+  });
+
   it('preserves full native identity while bounding only the audit event ID', async () => {
     const events: HarnessEvent[] = [];
     const input = executionInput({ prompt: 'long-native-question-id', events });
