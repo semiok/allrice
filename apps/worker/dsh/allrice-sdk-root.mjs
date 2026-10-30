@@ -1,5 +1,10 @@
 import { realpath } from 'node:fs/promises';
 import { readNativeSubagentSummary } from './allrice-native-query.mjs';
+import { NativeSubagentSnapshotSchema } from '@allrice/contracts/native-runtime';
+import {
+  NativeChildDisplay,
+  projectNativeChildCut,
+} from './allrice-native-display.mjs';
 /* global AbortController */
 import { HarnessSdkJsonRpcServer } from '@deepseek-ai/dsh-sdk-jsonrpc-server';
 import { SessionId } from '@deepseek-ai/dsh-session';
@@ -23,6 +28,7 @@ export class AllRiceSdkRoot {
     this.phase = 'uninitialized';
     this.terminated = false;
     this.forwardedSequences = new Map();
+    this.childDisplay = new NativeChildDisplay();
     this.sdkTransport = {
       request: (...args) => transport.request(...args),
       notify: (method, params) => {
@@ -42,6 +48,8 @@ export class AllRiceSdkRoot {
     // per-Session sequence de-duplication prevents double publication while SDK is live.
     this.ownDisposers.push(
       ctx.on('session/event', (session, event) => {
+        const agent = ctx.agents.get(session.id);
+        if (agent?.session === session) this.childDisplay.commit(agent, event);
         this.sdkTransport.notify('session.event', {
           sessionId: String(session.id),
           event,
@@ -54,6 +62,22 @@ export class AllRiceSdkRoot {
             this.transport.notify(...args),
           );
       }),
+      ctx.on('agent/assistant-stream', ({ agent, frame }) => {
+        if (
+          ctx.agents.get(agent.id) !== agent ||
+          ctx.sessions.get(agent.session.id) !== agent.session
+        )
+          return;
+        const instanceId = this.childDisplay.accept(agent, frame);
+        transport.notify('session.assistant-stream', {
+          sessionId: String(agent.session.id),
+          instanceId,
+          hostEpoch: this.epoch,
+          display: this.childDisplay.snapshot(agent),
+          frame,
+        });
+      }),
+      ctx.on('agent/disposed', ({ agent }) => this.childDisplay.dispose(agent)),
     );
     this.sdk = new HarnessSdkJsonRpcServer(ctx, this.sdkTransport, options);
   }
@@ -117,6 +141,49 @@ export class AllRiceSdkRoot {
     );
     this.assertRoot(record, sessionId);
     return result;
+  }
+  async nativeSubagentSnapshot(sessionId, childId) {
+    const root = this.requireRoot(sessionId);
+    const session = this.ctx.sessions.get(childId),
+      agent = this.ctx.agents.get(childId);
+    const assertChild = () => {
+      this.assertRoot(root, sessionId);
+      if (
+        !session ||
+        !agent ||
+        agent.session !== session ||
+        this.ctx.sessions.get(childId) !== session ||
+        this.ctx.agents.get(childId) !== agent
+      )
+        throw Error('NATIVE_QUERY_CHILD_NOT_LIVE');
+    };
+    assertChild();
+    const tree = await this.nativeSubagentSummary(sessionId, true);
+    if (
+      !tree.descendants.some(
+        (row) => row.kind === 'child' && row.id === childId,
+      )
+    )
+      throw Error('NATIVE_QUERY_CHILD_UNVERIFIED');
+    assertChild();
+    // The public query captures live synchronously, before returning its Promise.
+    // Take the same-tick stream baseline before awaiting; neither is a subscription.
+    const reading = this.ctx.sessionQuery.observeSession(childId);
+    const stream = this.childDisplay.snapshot(agent);
+    const observation = await reading;
+    try {
+      assertChild();
+      return NativeSubagentSnapshotSchema.parse({
+        rootId: sessionId,
+        childId,
+        hostEpoch: root.epoch,
+        observation: { source: observation.source, cursor: observation.cursor },
+        ...projectNativeChildCut(observation),
+        stream,
+      });
+    } finally {
+      observation[Symbol.dispose]();
+    }
   }
   async ensureRoot(sessionId, { resumeOnly = false } = {}) {
     if (
@@ -255,6 +322,7 @@ export class AllRiceSdkRoot {
       throw error;
     } finally {
       this.closing = undefined;
+      this.childDisplay.clear();
     }
   }
   async recoverRoot(sessionId) {

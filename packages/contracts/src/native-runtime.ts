@@ -2,6 +2,10 @@
  * definitions and shared module instances; never re-export the root index. */
 export { ModelTransportFailureCodeSchema } from './model-diagnostics.ts';
 export { NativeSubagentSummarySchema } from './native-subagent-summary.ts';
+export {
+  NativeSubagentSnapshotSchema,
+  nativeChildViewLimits,
+} from './native-subagent-snapshot.ts';
 export { BrandContentToolReadSchema } from './brand-content-workflow.ts';
 export { readDshToolResult } from './dsh-tool-results.ts';
 export {
