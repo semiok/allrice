@@ -120,6 +120,96 @@ it('“只停这个子任务，再给另一个补充材料” preserves the pare
   ).toBe(false);
 });
 
+it.each(['completed-before-grant', 'completed-during-grant', 'parked-idle'])(
+  '“停止这个子任务” preserves native accepted no-op: %s',
+  async (state) => {
+    const aEntered = gate(),
+      aRelease = gate(),
+      bRelease = gate();
+    const granting = gate(),
+      grantRelease = gate();
+    let childCalls = 0,
+      rootCalls = 0;
+    const h = await host({
+      runId,
+      bridge: async (method, params) => {
+        if (method === 'allrice/subagent-authorize') {
+          granting.resolve();
+          await grantRelease.promise;
+        }
+        return bridge(method, params);
+      },
+      model: async (r) => {
+        if (r.sessionId === 'pr0-root') {
+          if (++rootCalls === 1)
+            return [
+              {
+                type: 'tool-call',
+                id: 'ask',
+                name: 'ask_user_question',
+                arguments: JSON.stringify({
+                  timeout: -1,
+                  questions: [
+                    {
+                      id: 'go',
+                      question: '继续吗？',
+                      options: [{ label: '继续' }],
+                    },
+                  ],
+                }),
+              },
+            ];
+        } else if (++childCalls === 1) {
+          aEntered.resolve();
+          await hold(r.signal, aRelease);
+        } else await hold(r.signal, bRelease);
+        return text('完成');
+      },
+    });
+    await h.prompt('等我答题，先停选中的子任务。');
+    await expect
+      .poll(() => h.server.pendingUserQuestions.has(h.root.id))
+      .toBe(true);
+    const question = h.server.pendingUserQuestions.get(h.root.id);
+    const a = await h.spawn();
+    await aEntered.promise;
+    const aAgent = h.ctx.agents.get(a.childId);
+    const b = await h.spawn();
+    await expect.poll(() => childCalls).toBe(2);
+    if (state === 'parked-idle') {
+      h.inject(aAgent, '保留的材料');
+      h.ctx.subagents.interruptByParent(a.childId, h.root.id, 'continuable');
+      await aAgent.whenIdle();
+    } else if (state === 'completed-before-grant') {
+      aRelease.resolve();
+      await a.result;
+    }
+    const stopped = control(h, input(h, a));
+    await granting.promise;
+    if (state === 'completed-during-grant') {
+      aRelease.resolve();
+      await a.result;
+    }
+    grantRelease.resolve();
+    expect(await stopped).toEqual({ kind: 'interrupt', accepted: true });
+    expect(h.server.pendingUserQuestions.get(h.root.id)).toBe(question);
+    expect(rootCalls).toBe(1);
+    expect(h.ctx.agents.get(b.childId).status).toBe('running');
+    if (state === 'parked-idle') expect(aAgent.inbox.nextStep).toHaveLength(1);
+    else expect(h.ctx.agents.get(a.childId)).toBeUndefined();
+    await h.server.handleRequest('session/steer', {
+      sessionId: h.root.id,
+      runId,
+      inputId: randomUUID(),
+      turnId: `${h.root.id}:turn:1`,
+      kind: 'ask_user',
+      text: `allrice:user-question:v1:${JSON.stringify({ questionId: question.questionId, answers: [{ id: 'go', selected: ['继续'] }] })}`,
+    });
+    bRelease.resolve();
+    await h.wait();
+  },
+);
+
 it.each(['queue', 'steer'])(
   '“给完成的子任务补一句” resumes its same ID with native %s',
   async (delivery) => {
@@ -341,7 +431,7 @@ it('a pending child authorization does not serialize the root input handler', as
   await h.wait();
 });
 
-it('stop needs the exact live child but does not demand a live direct-parent registry entry', async () => {
+it('stop uses the exact durable child address without demanding a live direct parent', async () => {
   const release = gate();
   const h = await host({
     runId,

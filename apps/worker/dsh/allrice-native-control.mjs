@@ -1,5 +1,5 @@
 /* global AbortController, AbortSignal */
-import { NativeSubagentControlRequestSchema } from '@allrice/contracts';
+import { NativeSubagentControlRequestSchema } from '@allrice/contracts/native-runtime';
 import { clearTimeout, setTimeout } from 'node:timers';
 import { readNativeSubagentSummary } from './allrice-native-query.mjs';
 
@@ -58,13 +58,6 @@ export async function controlNativeSubagent(host, params) {
     const signal = AbortSignal.any([window.signal, expiry.signal]);
     signal.throwIfAborted();
     if (input.kind === 'interrupt') {
-      const child = host.ctx.agents.get(input.childSessionId);
-      if (
-        !child ||
-        child.session !== host.ctx.sessions.get(input.childSessionId) ||
-        child.session.header.parentSession !== input.parentSessionId
-      )
-        throw Error('NATIVE_CONTROL_CHILD_NOT_LIVE');
       return {
         kind: 'interrupt',
         ...host.ctx.subagents.interruptByParent(

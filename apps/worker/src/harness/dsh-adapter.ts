@@ -316,6 +316,25 @@ export class DshHarnessAdapter implements HarnessAdapter {
     const runScope = runId
       ? nativeRunScope(runtime.client, threadId, runId)
       : undefined;
+    const executionObservation =
+      runId && input.executionEnvironment.ALLRICE_JOB_ID
+        ? {
+            runId,
+            jobId: input.executionEnvironment.ALLRICE_JOB_ID,
+            attempt: input.attempt,
+            generation,
+          }
+        : undefined;
+    const assertCurrentRun = () => {
+      input.signal.throwIfAborted();
+      if (
+        !executionObservation ||
+        this.runtimePool.get(threadId) !== runtime ||
+        runtime.executionObservation !== executionObservation ||
+        runtime.nativeGeneration !== generation
+      )
+        throw Error('DSH_RUN_SESSION_DENIED');
+    };
     const authorizeRun = input.nativeRunAuthority?.(generation);
     const accounting = input.nativeAccounting?.bind(threadId);
     let turnId: string | null = null;
@@ -377,14 +396,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
         // A malformed/stale command must not revoke the current root Run.
         const scope = NativeSubagentControlScopeSchema.parse(params.scope);
         const assertCurrent = () => {
-          if (
-            !runScope ||
-            params.nativeSessionId !== threadId ||
-            this.runtimePool.get(threadId) !== runtime
-          )
+          if (!runScope || params.nativeSessionId !== threadId)
             throw Error('NATIVE_CONTROL_SCOPE_MISMATCH');
           assertNativeControlScope(runtime, scope);
-          executionSignal.throwIfAborted();
+          assertCurrentRun();
         };
         assertCurrent();
         try {
@@ -420,18 +435,20 @@ export class DshHarnessAdapter implements HarnessAdapter {
         return {};
       }
       if (method === 'allrice/run-authorize') {
-        executionSignal.throwIfAborted();
+        assertCurrentRun();
         try {
           if (params.kind === 'tool' || params.kind === 'input')
             await authorizeRun?.();
           else if (params.kind === 'model') {
             accounting?.delivered({ calls: 0, complete: false });
             await authorizeRun?.();
+            assertCurrentRun();
             await input.modelPreflight?.();
           } else throw Error('DSH_RUN_REQUEST_DENIED');
-          executionSignal.throwIfAborted();
+          assertCurrentRun();
           return { allowed: true };
         } catch (error) {
+          assertCurrentRun();
           contentAuthorizationFailure ??= contentGuardFailure(error);
           void runtime.client.interrupt(threadId).catch(() => {});
           throw contentAuthorizationFailure;
@@ -679,15 +696,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         /* Logging never changes execution, settlement or retry. */
       }
     });
-    runtime.executionObservation =
-      runId && input.executionEnvironment.ALLRICE_JOB_ID
-        ? {
-            runId,
-            jobId: input.executionEnvironment.ALLRICE_JOB_ID,
-            attempt: input.attempt,
-            generation,
-          }
-        : undefined;
+    runtime.executionObservation = executionObservation;
     try {
       // Cold resume belongs inside the existing cancellation/receipt window.
       // Its host is already owned by the pool, so a stalled read is bounded by

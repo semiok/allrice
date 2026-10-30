@@ -12,7 +12,7 @@ pnpm exec vitest run --maxWorkers=1 apps/worker/test/native-subagent \
 
 这些测试由普通 `pnpm test` 自动收集。T7 的 detach/恢复/answer 链直接复用问题卡 PR1 的 `allrice-question-detach-native.test.mjs` 中 `keeps a real child settlement...`，不复制另一份。T18 复用 contracts 的完整执行快照解析测试。
 
-MET-230 C2 的 `controls.test.mjs` 从生产 Host 的内部子控入口走真实公开 `prompt` / `interruptByParent`：一个子级停止不清父问题/不动兄弟；真人子消息不答父题；冷 child 同 ID 的 queue/steer；输入关闭、Run end、Host epoch 和租约期限取消在途恢复；原生 abort 期间新输入会在收敛后唤醒，已有 inbox 保留。父注册表缺席一例只在公开 `agents.get` 注入读故障，不夺取原生所有权句柄，也不冒称真实父 dispose 实景。`wait-client` 区分接收 ACK、超时 unknown 与实际取消，不自动重发；`dsh/run-scope` 核当前 Run/Job/epoch/source。上述合成模型验证不替代 C3 网页入口、持久命令票或 Dev 实景验收。
+MET-230 C2 的 `controls.test.mjs` 从生产 Host 的内部子控入口走真实公开 `prompt` / `interruptByParent`：一个子级停止不清父问题/不动兄弟；完成/idle 子级及授权等待中自然完成仍 accepted no-op；真人子消息不答父题；冷 child 同 ID 的 queue/steer；输入关闭、Run end、Host epoch 和租约期限取消在途恢复；原生 abort 期间新输入会在收敛后唤醒，已有 inbox 保留。父注册表缺席一例只在公开 `agents.get` 注入读故障，不夺取原生所有权句柄，也不冒称真实父 dispose 实景。`control-authority.test.mjs` 通过真实 SDK JSON-RPC 两端、Host/native child 与连续两次 adapter.execute，验证 single Stop 取消 Host 等待后旧 Worker tool/model authority/modelPreflight 成功或拒绝均不停止后继 B，当前 B 真撤权仍停止。仅进程放置在测试内注入；没有可执行 wrapper 的 close receipt 保持 unconfirmed，不伪造关闭证明。`wait-client` 区分接收 ACK、超时 unknown 与实际取消，不自动重发；`dsh/run-scope` 核当前 Run/Job/epoch/source。上述合成模型验证不替代 C3 网页入口、持久命令票或 Dev 实景验收。
 
 ## 两个宿主的行为基线
 
