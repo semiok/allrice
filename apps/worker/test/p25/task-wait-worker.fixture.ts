@@ -23,6 +23,7 @@ import {
 import { runClaimedJob } from '../../src/job-runner.js';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.js';
 import { HandlerError } from '../../src/errors.js';
+import { bindNativeQuestionFixture } from '../../../../packages/database/src/native-question-binding.fixture.ts';
 
 if (process.env.ALLRICE_NATIVE_WAIT_FIXTURE !== 'synthetic-only')
   throw Error('fixture_not_authorized');
@@ -181,6 +182,14 @@ await runClaimedJob(
         },
         onThreadBound: async (input) => {
           runtime = await bindConversationThread({ ...ownership, ...input });
+          // The synthetic Worker has no execution-package binder. Supply its
+          // isolated identity so the real Run/lease authorization can execute.
+          if (config.nativeChildren)
+            await bindNativeQuestionFixture(
+              getDatabase(),
+              execution.context.runId,
+              input.threadId,
+            );
           return { generation: runtime.generation };
         },
         onTurnStarted: async (input) => {

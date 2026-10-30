@@ -185,6 +185,7 @@ suite('MET153 separate Worker process recovery with actual native DSH', () => {
             () => ({
               calls: model.requests.length > 0,
               exit: first.child.exitCode,
+              report: first.report(),
               log: first.child.exitCode === null ? '' : first.log(),
             }),
             { timeout: 20000 },
