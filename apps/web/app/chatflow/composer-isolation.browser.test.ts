@@ -73,7 +73,7 @@ function message(
 ) {
   return { id, role, content: { text }, runId: run, status, createdAt: now };
 }
-function event(question: boolean | string | string[] = false) {
+function event(question: boolean | string | string[] = false, program = false) {
   return {
     schemaVersion: 3,
     eventId: 'event-1',
@@ -92,6 +92,9 @@ function event(question: boolean | string | string[] = false) {
           type: 'session/user-question',
           payload: {
             questionId: 'question-1',
+            ...(program
+              ? { progress: { runId, pauseId: 'original-pause' } }
+              : {}),
             questions: (Array.isArray(question)
               ? question
               : [typeof question === 'string' ? question : '确认范围？']
@@ -226,6 +229,7 @@ suite(
         bridgeFiles?: boolean;
         running?: boolean;
         question?: boolean | string | string[];
+        programTurn?: boolean;
         delayHistoryB?: boolean;
         immediateReply?: boolean;
         longHistory?: boolean;
@@ -571,8 +575,12 @@ suite(
             'cache-control': 'no-store',
           });
           response.write(
-            `data: ${JSON.stringify(event(options.question))}\n\n`,
+            `data: ${JSON.stringify(event(options.question, options.programTurn))}\n\n`,
           );
+          if (options.programTurn)
+            response.write(
+              `data: ${JSON.stringify({ ...event(), eventId: 'event-2', sequence: 2, cursor: `${runId}:2`, type: 'turn.started', payload: { turnId: 'turn-2' } })}\n\n`,
+            );
           streams.add(response);
           response.on('close', () => streams.delete(response));
           return;
@@ -3388,6 +3396,28 @@ suite(
             .isDisabled(),
         ).toBe(true);
         expect(f.writes).toHaveLength(1);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }, 15_000);
+    it('current Run program card follows a sibling turn in the real browser answer', async () => {
+      const f = await fixture({
+        running: true,
+        question: true,
+        programTurn: true,
+      });
+      try {
+        await f.page.getByRole('radio', { name: /只读检查/ }).click();
+        await f.page
+          .getByRole('button', { name: '提交并继续', exact: true })
+          .click();
+        await f.waitPending(1);
+        expect(f.pending[0]!.body).toMatchObject({
+          expectedTurnId: 'turn-2',
+          expectedGeneration: 1,
+          userQuestionAnswer: { questionId: 'question-1' },
+        });
         expect(f.errors).toEqual([]);
       } finally {
         await f.close();
