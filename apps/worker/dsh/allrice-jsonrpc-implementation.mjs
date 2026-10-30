@@ -972,6 +972,7 @@ export async function createAllRiceRuntime(
           : undefined;
         const claim = wait?.[Symbol.asyncIterator]();
         let timer;
+        let foreground;
         try {
           const remainingMs = (await claim?.next())?.value?.remainingMs;
           const releaseMs = Number(
@@ -1023,6 +1024,10 @@ export async function createAllRiceRuntime(
           const done = new Promise((resolveDone) => {
             markDone = resolveDone;
           });
+          const deadlineAt =
+            waitMs === undefined
+              ? undefined
+              : new Date(Date.now() + waitMs).toISOString();
           return await new Promise((resolveQuestion, rejectQuestion) => {
             const abort = () => {
               this.pendingUserQuestions.delete(sessionId);
@@ -1066,7 +1071,7 @@ export async function createAllRiceRuntime(
               ...(waitMs === undefined
                 ? {}
                 : {
-                    deadlineAt: new Date(Date.now() + waitMs).toISOString(),
+                    deadlineAt,
                     releaseLimited: releaseMs > 0 && remainingMs > releaseMs,
                     releaseMinutes: releaseMs / 60_000,
                   }),
@@ -1092,6 +1097,37 @@ export async function createAllRiceRuntime(
                   : {}),
               })),
             });
+            // Observe only a published card, with its original Run identity.
+            // Missing attribution/transport must not change DSH's wait result.
+            try {
+              const identity = this.runAdmission?.attribute({
+                nativeSessionId: sessionId,
+              });
+              if (identity) {
+                foreground = {
+                  version: 1,
+                  questionId,
+                  runId: identity.runId,
+                  nativeSessionId: identity.nativeSessionId,
+                  rootSessionId: identity.rootSessionId,
+                  timed: request.wait?.timed === true,
+                  ...(deadlineAt
+                    ? {
+                        deadlineAt,
+                        releaseLimited:
+                          releaseMs > 0 && remainingMs > releaseMs,
+                      }
+                    : {}),
+                };
+                this.userQuestionObservationNotify({
+                  ...foreground,
+                  phase: 'opened',
+                  observedAt: new Date().toISOString(),
+                });
+              }
+            } catch {
+              /* Observation is not question authority. */
+            }
             if (waitMs !== undefined) {
               const pending = this.pendingUserQuestions.get(sessionId);
               timer = setTimeout(async () => {
@@ -1132,6 +1168,17 @@ export async function createAllRiceRuntime(
           });
         } finally {
           clearTimeout(timer);
+          if (foreground) {
+            try {
+              this.userQuestionObservationNotify({
+                ...foreground,
+                phase: 'ended',
+                observedAt: new Date().toISOString(),
+              });
+            } catch {
+              /* Close/abort may already have disconnected transport. */
+            }
+          }
           await claim?.return?.();
         }
       });
@@ -2068,6 +2115,11 @@ export async function createAllRiceRuntime(
   server.modelTimingNotify = (state) =>
     transport.notify('allrice.modelTiming', state);
   server.installUserQuestionProvider();
+  server.userQuestionObservationNotify = (notice) =>
+    transport.notify('allrice.user-question-foreground', {
+      sessionId: notice.rootSessionId,
+      ...notice,
+    });
   const attributed = (params) =>
     server.runAdmission?.attribute(params) ?? params;
   server.accountingBridge = (params, signal) =>
