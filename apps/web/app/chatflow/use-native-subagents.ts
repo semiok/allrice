@@ -4,6 +4,7 @@ import {
   NativeSubagentSummarySchema,
   type NativeSubagentSummary,
 } from '@allrice/contracts';
+import { followNativeSubagents } from './native-subagent-follow';
 
 export type NativeSubagentRead = NativeSubagentSummary | null | 'error';
 export const nativeSubagentActivityUnknown = (
@@ -17,7 +18,7 @@ export const nativeSubagentActivityUnknown = (
         (entry.kind === 'diagnostic' || entry.running === null),
     ));
 
-/** Read-only cuts, invalidated on scope/lifecycle changes; C3 owns live updates. */
+/** Read-only cuts and hot directory replacements share the same request owner. */
 export function useNativeSubagents(
   workspaceId: string,
   headers: Record<string, string>,
@@ -54,6 +55,13 @@ export function useNativeSubagents(
       void Promise.all(
         Object.keys(requests).map(async (id) => {
           let read: NativeSubagentRead = 'error';
+          const publish = (read: NativeSubagentRead) => {
+            if (!abort.signal.aborted)
+              setState((state) => ({
+                key,
+                reads: { ...state.reads, [id]: read },
+              }));
+          };
           try {
             const query = new URLSearchParams({ workspaceId });
             if (liveOnly) query.set('liveOnly', 'true');
@@ -71,17 +79,34 @@ export function useNativeSubagents(
               liveOnly && body.summary === null
                 ? null
                 : NativeSubagentSummarySchema.parse(body.summary);
+            publish(read);
+            if (read?.root.source === 'live') {
+              const rootId = read.rootId;
+              query.delete('liveOnly');
+              query.set('follow', 'true');
+              await followNativeSubagents(
+                `/api/v1/sessions/${encodeURIComponent(id)}/subagents?${query}`,
+                headers,
+                abort.signal,
+                (event) => {
+                  if (
+                    event.type === 'directory' &&
+                    event.summary.rootId === rootId
+                  )
+                    publish(event.summary);
+                  else if (event.type === 'clear') publish(null);
+                  else throw new Error('directory scope changed');
+                },
+              );
+              read = null;
+            }
           } catch {
-            /* Failed reads remain visible, never an empty catalog. */
+            read = 'error';
           }
-          if (!abort.signal.aborted)
-            setState((state) => ({
-              key,
-              reads: { ...state.reads, [id]: read },
-            }));
+          publish(read);
         }),
       );
     return () => abort.abort();
   }, [key]);
-  return { reads: state.key === key ? state.reads : {}, refresh };
+  return { reads: state.key === key ? state.reads : {}, refresh, revision };
 }

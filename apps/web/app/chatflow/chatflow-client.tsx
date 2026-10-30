@@ -1,6 +1,7 @@
 'use client';
 import { ReferenceLibrary } from './reference-library';
 import { NativeSubagentDirectory } from './native-subagent-directory';
+import { presentationPolicyFor } from './dsh-upstream/presentation/presentation-policy';
 import {
   UnifiedWorkbenchControls,
   announceWorkbenchRead,
@@ -1926,6 +1927,10 @@ export function ChatFlowClient({
                         sessionId={activeId}
                         headers={tenantHeaders}
                         refreshKey={`${isRunning}/${history?.messages.at(-1)?.status}`}
+                        presentation={presentationPolicyFor(
+                          preferences.value.transcriptView,
+                          preferences.value.collapseTiming,
+                        )}
                       />
                     )}
                     {!layout.compact && workbenchEnabled ? (

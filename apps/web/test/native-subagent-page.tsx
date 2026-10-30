@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { EmployeeSidebar } from '../app/chatflow/employee-sidebar';
 import { NativeSubagentDirectory } from '../app/chatflow/native-subagent-directory';
+import { presentationPolicyFor } from '../app/chatflow/dsh-upstream/presentation/presentation-policy';
 import conversationUi from '../app/chatflow/dsh-upstream/ConversationRoot.module.css';
 import shellUi from '../app/chatflow/dsh-saas.module.css';
 import type { Session, Workspace } from '../app/chatflow/chatflow-types';
@@ -35,6 +36,11 @@ const headers = {
 };
 function Page() {
   const [activeId, setActiveId] = useState('parent-a');
+  const query = new URLSearchParams(location.search);
+  const presentation = presentationPolicyFor(
+    query.get('view') === 'verbose' ? 'verbose' : 'detailed',
+    query.get('collapse') === 'next-input' ? 'next-input' : 'completion',
+  );
   return (
     <main style={{ display: 'flex', minHeight: 600 }}>
       <nav
@@ -69,6 +75,7 @@ function Page() {
                 sessionId={activeId}
                 headers={headers}
                 refreshKey="initial"
+                presentation={presentation}
               />
             </div>
           </div>

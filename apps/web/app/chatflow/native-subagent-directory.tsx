@@ -5,6 +5,9 @@ import { Button, Menu, StateDot } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { NativeSubagentSummary } from '@allrice/contracts';
 import { AssistantMarkdown } from './assistant-markdown';
 import { useNativeSubagents } from './use-native-subagents';
+import { useNativeSubagentFollow } from './use-native-subagent-follow';
+import { NativeSubagentProcess } from './native-subagent-process';
+import type { ChatPresentationPolicy } from './dsh-upstream/presentation/presentation-policy';
 import css from './native-subagent-directory.module.css';
 
 type Entry = NativeSubagentSummary['descendants'][number];
@@ -40,16 +43,18 @@ export function NativeSubagentDirectory({
   sessionId,
   headers,
   refreshKey,
+  presentation,
 }: {
   workspaceId: string;
   sessionId: string;
   headers: Record<string, string>;
   refreshKey: string;
+  presentation: ChatPresentationPolicy;
 }) {
   const [open, setOpen] = useState(false),
     [pinned, setPinned] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
-  const { reads, refresh } = useNativeSubagents(
+  const { reads, refresh, revision } = useNativeSubagents(
     workspaceId,
     headers,
     { [sessionId]: refreshKey },
@@ -57,6 +62,18 @@ export function NativeSubagentDirectory({
   );
   const read = reads[sessionId];
   const summary = read && read !== 'error' ? read : null;
+  const follow = useNativeSubagentFollow(
+    workspaceId,
+    sessionId,
+    headers,
+    summary,
+    selected,
+    `${refreshKey}/${revision}`,
+  );
+  const hot =
+    follow.view && typeof follow.view === 'object' ? follow.view : null;
+  const snapshot = hot && 'rows' in hot ? hot : null;
+  const detailSummary = hot && 'descendants' in hot ? hot : summary;
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const catalog = useRef<HTMLDivElement>(null),
     trigger = useRef<HTMLButtonElement>(null);
@@ -83,7 +100,7 @@ export function NativeSubagentDirectory({
   const direct =
     summary?.descendants.filter((child) => child.parentId === summary.rootId) ??
     [];
-  const child = summary?.descendants.find(
+  const child = detailSummary?.descendants.find(
     (entry) => entry.id === selected && entry.kind === 'child',
   ) as Child | undefined;
   const toggle = (id: string) =>
@@ -306,11 +323,11 @@ export function NativeSubagentDirectory({
                 关闭摘要
               </Button>
             </header>
-            {child ? (
+            {child && follow.view !== 'error' && (!follow.enabled || hot) ? (
               <>
                 <p>
                   {child.observation.source === 'prepared'
-                    ? '历史摘要 · 当前活动状态未知'
+                    ? `历史摘要 · ${activity(child)}`
                     : `运行摘要 · ${activity(child)}`}
                 </p>
                 {child.title && <h2>{child.title}</h2>}
@@ -323,15 +340,26 @@ export function NativeSubagentDirectory({
                 <small>
                   用量可能包含继承历史，不代表本次运行账单。耗时冻结于读取时。
                 </small>
-                <h3>最后回复</h3>
-                <AssistantMarkdown
-                  text={child.lastReply ?? '暂无回复'}
-                  allowRemoteImages={false}
-                />
+                <h3>{snapshot ? '自己的过程' : '最后回复'}</h3>
+                {snapshot ? (
+                  <NativeSubagentProcess
+                    key={`${snapshot.childId}/${snapshot.hostEpoch}/${snapshot.stream.instanceId}`}
+                    snapshot={snapshot}
+                    policy={presentation}
+                  />
+                ) : (
+                  <AssistantMarkdown
+                    text={child.lastReply ?? '暂无回复'}
+                    allowRemoteImages={false}
+                  />
+                )}
+                {!snapshot && child.lastReplyTruncated && (
+                  <small>最后回复已截断。</small>
+                )}
               </>
             ) : (
               <p role="status">
-                {read === 'error'
+                {read === 'error' || follow.view === 'error'
                   ? '暂时无法读取摘要，请刷新。'
                   : '当前活动状态未知，请重新读取摘要。'}
               </p>
