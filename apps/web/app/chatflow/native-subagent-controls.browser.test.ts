@@ -76,6 +76,7 @@ type Scenario = {
   getMode: Mode;
   posts: Body[];
   gets: string[];
+  rootReads: string[];
   gate?: Promise<void>;
   release?: () => void;
 };
@@ -141,6 +142,8 @@ suite('native child Stop request identity and truthful receipts', () => {
         (url.pathname.startsWith('/api/v1/runs/') ||
           url.searchParams.get('follow') === 'true')
       ) {
+        if (url.pathname.startsWith('/api/v1/runs/'))
+          scenario.rootReads.push(url.pathname.split('/')[4]!);
         url.searchParams.set('fixture', scenario.feedId);
         req.url = url.pathname + url.search;
         if (feed.handle(req, res)) return;
@@ -251,6 +254,8 @@ suite('native child Stop request identity and truthful receipts', () => {
     scenario: Scenario,
     type: 'turn.started' | 'run.succeeded',
     sequence: number,
+    targetRunId = runId,
+    generation = 7,
   ) {
     feed.pushRoot(scenario.feedId, {
       schemaVersion: 3,
@@ -258,15 +263,15 @@ suite('native child Stop request identity and truthful receipts', () => {
       organizationId: randomUUID(),
       workspaceId: randomUUID(),
       conversationId: null,
-      runId,
-      generation: 7,
-      cursor: `${runId}:${sequence}`,
+      runId: targetRunId,
+      generation,
+      cursor: `${targetRunId}:${sequence}`,
       sequence,
       harness: 'dsh',
       type,
       occurredAt: '2026-10-31T00:00:00Z',
       sourceEvent: null,
-      payload: { turnId: 'root-turn', generation: 7 },
+      payload: { turnId: 'root-turn', generation },
     } satisfies ChatFlowEventEnvelope);
   }
   async function open(mode: Mode = 'accepted', hold = false, start = true) {
@@ -276,6 +281,7 @@ suite('native child Stop request identity and truthful receipts', () => {
       getMode: 'accepted',
       posts: [],
       gets: [],
+      rootReads: [],
     };
     if (hold)
       scenario.gate = new Promise<void>((done) => {
@@ -476,6 +482,71 @@ suite('native child Stop request identity and truthful receipts', () => {
       }
       expect(scenario.posts).toEqual([]);
     } finally {
+      await page.close();
+    }
+  });
+
+  it('switching roots does not block the successor or attach an old response to its request', async () => {
+    const { page, scenario } = await open('accepted', true);
+    try {
+      await detail(page).getByRole('button', { name: 'Stop 此子任务' }).click();
+      await expect.poll(() => scenario.posts.length).toBe(1);
+      await page
+        .getByRole('button', { name: '切换根运行', exact: true })
+        .click();
+      const nextRunId = '55555555-5555-4555-8555-555555555555';
+      await expect.poll(() => scenario.rootReads).toEqual([runId, nextRunId]);
+      await expect
+        .poll(
+          () =>
+            [...feed.rootConnections].filter(
+              (c) => c.fixture === scenario.feedId,
+            ).length,
+        )
+        .toBe(1);
+      rootEvent(scenario, 'turn.started', 1, nextRunId, 8);
+      const nextStop = detail(page).getByRole('button', {
+        name: '发起新的 Stop 请求',
+      });
+      await expect.poll(() => nextStop.isEnabled()).toBe(true);
+      // The predecessor is held; the successor receives its own immediate ACK.
+      scenario.gate = undefined;
+      await nextStop.click();
+      await expect.poll(() => scenario.posts.length).toBe(2);
+      expect(scenario.posts[0]!.rootRunId).toBe(runId);
+      expect(scenario.posts[1]).toMatchObject({
+        rootRunId: nextRunId,
+        generation: 8,
+      });
+      await expect
+        .poll(() => receipt(page).last().textContent())
+        .toContain('停止请求已接收');
+      scenario.mode = 'unknown';
+      scenario.release!();
+      await expect
+        .poll(() => receipt(page).first().textContent())
+        .toContain('原生接收结果未知');
+      expect(await receipt(page).first().textContent()).toContain(
+        '此前根运行的请求',
+      );
+      expect(await receipt(page).last().textContent()).not.toContain(
+        '此前根运行的请求',
+      );
+      scenario.getMode = 'unknown';
+      await receipt(page)
+        .first()
+        .getByRole('button', { name: '查看回执' })
+        .click();
+      await expect
+        .poll(() => receipt(page).first().textContent())
+        .toContain('原生接收结果未知');
+      expect(await receipt(page).last().textContent()).toContain(
+        '停止请求已接收',
+      );
+      expect(scenario.gets).toEqual([scenario.posts[0]!.input.requestId]);
+      expect(scenario.posts).toHaveLength(2);
+    } finally {
+      scenario.release?.();
       await page.close();
     }
   });

@@ -12,6 +12,8 @@ import type { RunView } from './chatflow-types';
 import css from './native-subagent-directory.module.css';
 
 type Root = { rootRunId: string; generation: number };
+const rootKey = (root?: Root | null) =>
+  `${root?.rootRunId}/${root?.generation}`;
 type Child = Extract<
   NativeSubagentSummary['descendants'][number],
   { kind: 'child' }
@@ -110,7 +112,11 @@ export function useNativeSubagentControls(
   const url = `/api/v1/sessions/${encodeURIComponent(sessionId)}/subagents/controls?${new URLSearchParams({ workspaceId })}`;
   const request = async (reference: Reference, post = false) => {
     const { input } = reference;
-    const key = JSON.stringify([input.parentSessionId, input.childSessionId]);
+    const key = JSON.stringify([
+      rootKey(reference),
+      input.parentSessionId,
+      input.childSessionId,
+    ]);
     if (locks.current.has(key)) return;
     locks.current.add(key);
     const previous = latest.current[input.requestId];
@@ -202,7 +208,9 @@ export function NativeSubagentControls({
     : !root
       ? '当前没有可控制的根运行，子任务保持只读。'
       : '';
-  const busy = attempts.some((attempt) => attempt.busy);
+  const busy = attempts.some(
+    (attempt) => attempt.busy && rootKey(attempt.reference) === rootKey(root),
+  );
   return (
     <section className={css.controls} aria-label="子任务控制">
       <h3>子任务控制</h3>
@@ -224,6 +232,9 @@ export function NativeSubagentControls({
       )}
       {attempts.map(({ reference, ticket, notice, busy }) => (
         <div key={reference.input.requestId} aria-label="Stop 回执">
+          {rootKey(reference) !== rootKey(root) && (
+            <small>此前根运行的请求</small>
+          )}
           <p role="status">
             {busy ? '正在提交或读取回执…' : ticketText(ticket)}
           </p>

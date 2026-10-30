@@ -45,9 +45,10 @@ function Page() {
   const query = new URLSearchParams(location.search);
   const controls = query.has('controls');
   const rootEvents = controls || query.has('root-events');
-  const rootRunId = controls
-    ? '44444444-4444-4444-8444-444444444444'
-    : 'root-run';
+  const [controlRunId, setControlRunId] = useState(
+    '44444444-4444-4444-8444-444444444444',
+  );
+  const rootRunId = controls ? controlRunId : 'root-run';
   const [ownerId, setOwnerId] = useState('viewer');
   const stream = useMemo(
     () =>
@@ -134,6 +135,16 @@ function Page() {
           <output aria-label="root事件游标">
             {runViews[rootRunId]?.cursor ?? 'empty'}
           </output>
+        )}
+        {controls && (
+          <button
+            style={{ position: 'fixed', bottom: 32, left: 0, zIndex: 90 }}
+            onClick={() =>
+              setControlRunId('55555555-5555-4555-8555-555555555555')
+            }
+          >
+            切换根运行
+          </button>
         )}
         {controls && (
           <button
