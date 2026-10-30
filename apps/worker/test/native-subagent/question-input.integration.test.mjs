@@ -1,5 +1,6 @@
 /* global process, Request */
 import { randomUUID } from 'node:crypto';
+import { setTimeout, clearTimeout } from 'node:timers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { host, gate, hold, text } from './fixture.mjs';
 import { createP27CodexWorkerFixture } from '../../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
@@ -23,6 +24,18 @@ vi.mock('../../../web/lib/identity/session', () => ({
 }));
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1' ? describe : describe.skip;
+function within(promise, boundary) {
+  let timeout;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timeout = setTimeout(
+        () => reject(Error(`native boundary timed out: ${boundary}`)),
+        8000,
+      );
+    }),
+  ]).finally(() => clearTimeout(timeout));
+}
 suite(
   'MET-231 real sibling turns through web projection, message API, PG and Host',
   () => {
@@ -136,7 +149,7 @@ suite(
         const askedTurn = currentTurn();
         await recordTurn(askedTurn);
         const first = await h.spawn();
-        await firstEntered.promise;
+        await within(firstEntered.promise, 'first child model');
         await h.spawn();
         const waiting = h.wait();
         void waiting.catch(() => {});
@@ -161,7 +174,7 @@ suite(
         events.push(asked);
         expect(projectPendingUserQuestion(events)?.turnId).toBe(askedTurn);
         releaseFirst.resolve();
-        await first.result;
+        await within(first.result, 'first child result');
         await expect.poll(currentTurn).not.toBe(askedTurn);
         await recordTurn(currentTurn());
         const card = projectPendingUserQuestion(events);
@@ -218,7 +231,7 @@ suite(
         await expect(
           h.server.steer({ ...params, turnId: askedTurn }),
         ).rejects.toThrow('INPUT_TURN_CHANGED');
-        const proof = await h.server.steer(params);
+        const proof = await within(h.server.steer(params), 'question adoption');
         expect(proof).toMatchObject({
           status: 'adopted',
           runId: task.runId,
@@ -238,10 +251,10 @@ suite(
               proof: { ...proof, ...patch },
             }),
           ).rejects.toThrow('INPUT_ADOPTION_PROOF_REQUIRED');
-        await secondEntered.promise;
-        await h.root.whenIdle();
+        await within(secondEntered.promise, 'second child after answer');
+        await within(h.root.whenIdle(), 'root turn after answer');
         releaseSecond.resolve();
-        await waiting;
+        await within(waiting, 'all children settled');
         expect(currentTurn()).not.toBe(card.turnId);
         await recordTurn(currentTurn());
         await consumeConversationSteer({
