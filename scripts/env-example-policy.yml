@@ -75,7 +75,7 @@ audit:
   apps/web/server/portal-hosts.mjs#whole: Environment forwarded to configuredPortalEntries with the literal names declared above.
   apps/worker/src/harness/dsh-egress-environment.ts#whole: Environment forwarded to configuredProxy with the literal names declared above.
   apps/worker/src/harness/dsh-native-artifact.ts#whole: Object.keys enumerates the inherited environment only to reject retired prefixes.
-# Manually reviewed full-file SHA256 at main 3b3c2fd7; generation never approves these.
+# Manually reviewed full-file SHA256 at main ea57f1cf; generation never approves these.
 # Re-read changed source and its audit reason before explicitly updating a hash.
 auditSources:
   apps/rice-bridge/src/desktop-update.ts: 4699c9cc0b01b51fb6c2bacbd93eacf97bb15647c40bc614fc362a12f45e27be
@@ -90,7 +90,7 @@ auditSources:
   apps/web/server/portal-hosts.mjs: e1aac7dc0735860478e564ff33dc77799452589d35ad4fd7744af5f74cf90901
   apps/worker/src/harness/dsh-egress-environment.ts: 315fc969e7e880f139ea06e3be3c8208e0f411fb6fa760e583bbccb6aefa5594
   apps/worker/src/harness/dsh-native-artifact.ts: ffe6bdf780cf13b1cc40666a5233d2a3e8b18df657195e9492a0bba56f5f71fe
-  apps/worker/src/index.ts: 38bf79ef2b007df425e4df7fde7ab081c4696b9003a80004fdcb7a18d704ad84
+  apps/worker/src/index.ts: a177730f9176fbefb276d8e8f8a443da7e11d30ebaa606e27ae6eba03fb42be8
   packages/contracts/src/project-resolution-script.ts: d4261249ef18115e6293d804a0d14a770e2c0df5b14a5a6db133444dd76ff9ee
   packages/contracts/src/runtime-feature-flags.ts: 9545293314ee45ed2d42dd9393a50123fad67250c4454346c341d0955bb200f9
   packages/contracts/src/runtime-v2/cloud-command-limits.ts: a6c831b9b3c85c016e88a292cf0c2baf8ff3ebc47d00cdec6bca3dc313b1ad6f
