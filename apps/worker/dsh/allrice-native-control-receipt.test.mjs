@@ -37,7 +37,8 @@ it('recovers only the original own child suffix, excluding a fork-inherited matc
   expect(
     await readNativeSubagentControlReceipt(h.ctx, request, signal),
   ).toBeNull();
-  const { kind: _kind, ...prompt } = request.input;
+  const prompt = { ...request.input };
+  delete prompt.kind;
   const received = await h.ctx.subagents.prompt(prompt, signal);
   await h.wait();
   const proof = await withNativeQueryReader(
