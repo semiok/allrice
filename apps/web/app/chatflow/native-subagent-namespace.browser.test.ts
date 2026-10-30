@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { createServer, type Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NativeSubagentSummary } from '@allrice/contracts';
+import { NativeSubagentFixtureFeed } from '../../test/native-subagent-fixture-feed';
 import type {
   Browser,
   Page,
@@ -53,6 +54,8 @@ suite('native child IDs retain the parent Session namespace', () => {
     'parent-b': summary('root-b', false),
     'parent-c': null,
   };
+  const feed = new NativeSubagentFixtureFeed();
+  const fixture = feed.register({ summary: (id) => reads[id] ?? null });
   const requests: {
     sessionId: string;
     workspaceId: string | null;
@@ -107,6 +110,7 @@ suite('native child IDs retain the parent Session namespace', () => {
           workspace: req.headers['x-allrice-workspace-id'],
           childId: url.searchParams.get('childId'),
         });
+        if (feed.handle(req, res)) return;
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ summary: reads[sessionId] ?? null }));
         return;
@@ -150,6 +154,12 @@ suite('native child IDs retain the parent Session namespace', () => {
     const errors: string[] = [];
     page.on('pageerror', (error) => errors.push(error.message));
     try {
+      await page.route('**/api/v1/sessions/*/subagents?**', (route) => {
+        const url = new URL(route.request().url());
+        if (url.searchParams.get('follow') === 'true')
+          url.searchParams.set('fixture', fixture);
+        return route.continue({ url: String(url) });
+      });
       await page.goto(origin);
       await expect
         .poll(() =>
@@ -162,19 +172,22 @@ suite('native child IDs retain the parent Session namespace', () => {
       expect(await row(page, 'parent-b').innerText()).not.toContain(
         '子智能体运行中',
       );
+      await expect
+        .poll(() =>
+          [...feed.connections].some(
+            (connection) =>
+              connection.sessionId === 'parent-b' && !connection.childId,
+          ),
+        )
+        .toBe(true);
       for (const running of [true, false, null]) {
         reads['parent-b'] = summary('root-b', running);
-        const before = requests.filter(
-          (request) => request.sessionId === 'parent-b',
-        ).length;
-        await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-        await expect
-          .poll(
-            () =>
-              requests.filter((request) => request.sessionId === 'parent-b')
-                .length,
-          )
-          .toBeGreaterThan(before);
+        feed.push(
+          fixture,
+          { type: 'directory', summary: reads['parent-b'] },
+          null,
+          'parent-b',
+        );
         if (running === true)
           await expect
             .poll(() => row(page, 'parent-b').innerText())
@@ -243,9 +256,17 @@ suite('native child IDs retain the parent Session namespace', () => {
         requests.every(
           (request) =>
             ['parent-a', 'parent-b', 'parent-c'].includes(request.sessionId) &&
-            request.childId === null,
+            (request.childId === null || request.childId === 'same-child'),
         ),
       ).toBe(true);
+      expect(
+        requests
+          .filter((request) => request.childId)
+          .map((request) => [request.sessionId, request.childId]),
+      ).toEqual([
+        ['parent-a', 'same-child'],
+        ['parent-b', 'same-child'],
+      ]);
       expect(reads['parent-b']?.descendants[0]).toMatchObject({
         id: 'same-child',
         running: null,
