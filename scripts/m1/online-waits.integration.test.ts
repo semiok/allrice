@@ -300,7 +300,7 @@ suite('MET-222 online human waits through real monitor SQL', () => {
   // explicit fixture supplies the wire JSON to the actual production consumer.
   async function writeOnline(f: Context, value: unknown) {
     await fixture.db`update allrice_runtime_metadata
-      set value=jsonb_set(value,'{onlineQuestions}',${fixture.db.json(JSON.parse(JSON.stringify(value)))}),updated_at=clock_timestamp()
+      set value=jsonb_set(value,'{onlineQuestions}',coalesce(${fixture.db.json(JSON.parse(JSON.stringify(value)))},'null'::jsonb)),updated_at=clock_timestamp()
       where key=${'worker-operations:' + f.worker.workerId}`;
   }
   async function publish(f: Context, questions = ['legacy-question']) {
@@ -550,9 +550,9 @@ suite('MET-222 online human waits through real monitor SQL', () => {
     await publish(f);
     await fixture.db`update allrice_dsh_runtime_instances set last_seen_at=clock_timestamp()-interval '16 seconds' where id=${f.runtimeId}`;
     expect(collect()).toMatchObject(unknown);
-    await fixture.db`update allrice_dsh_runtime_instances set last_seen_at=clock_timestamp(),status='offline' where id=${f.runtimeId}`;
+    await fixture.db`update allrice_dsh_runtime_instances set last_seen_at=clock_timestamp(),status='offline',ended_at=clock_timestamp() where id=${f.runtimeId}`;
     expect(collect()).toMatchObject(unknown);
-    await fixture.db`update allrice_dsh_runtime_instances set status='live' where id=${f.runtimeId}`;
+    await fixture.db`update allrice_dsh_runtime_instances set status='live',ended_at=null where id=${f.runtimeId}`;
     const owner = f.owner!;
     await recordDshRuntimeCloseObservation(owner, {
       version: 1,
