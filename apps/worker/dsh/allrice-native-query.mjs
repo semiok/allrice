@@ -9,7 +9,11 @@ import Subagents, { finalAssistantOutput } from '@deepseek-ai/dsh-subagent';
 import Fs from '@deepseek-ai/dsh-fs-local';
 import WorkingDirectory from '@deepseek-ai/dsh-working-directory';
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt';
-import { NativeSubagentSummarySchema } from '@allrice/contracts/native-runtime';
+import {
+  NativeSubagentSummarySchema,
+  nativeChildViewLimits as limits,
+} from '@allrice/contracts/native-runtime';
+import { visibleNativeText } from './allrice-native-display.mjs';
 import './allrice-dsh-inputs.mjs';
 import './allrice-dsh-waits.mjs';
 
@@ -172,12 +176,16 @@ export async function readNativeSubagentSummary(
           observation: cut(child),
           timing: values.subagentTiming,
           usage: values.tokenUsage,
-          lastReply:
+          lastReply: visibleNativeText(
             finalAssistantOutput(own)
               ?.filter((b) => b.type === 'text')
               .map((b) => b.text)
-              .join('') || null,
+              .join('') || '',
+          ),
+          lastReplyTruncated: false,
         };
+        summary.lastReplyTruncated = summary.lastReply.length > limits.text;
+        summary.lastReply = summary.lastReply.slice(0, limits.text) || null;
         // Validate before trusting this node as a parent for any later branch.
         NativeSubagentSummarySchema.parse({
           rootId,

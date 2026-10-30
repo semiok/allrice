@@ -13,6 +13,7 @@ import { gate, hold, host, text } from '../test/native-subagent/fixture.mjs';
 import {
   NativeChildDisplay,
   projectNativeChildCut,
+  visibleNativeText,
 } from './allrice-native-display.mjs';
 
 afterEach(() => vi.restoreAllMocks());
@@ -727,8 +728,8 @@ it.each([
         ],
       });
       expect(view.rows[0]).toMatchObject({
-        activityDetail: detail,
-        truncated: length > maximum,
+        activityDetail: detail.slice(0, 500),
+        truncated: length > maximum || detail.length > 500,
       });
     }
   },
@@ -751,3 +752,242 @@ it('preserves query-array whitespace and ignores cuts of unused or rejected desc
   ).toBeUndefined();
   expect(shortened).not.toHaveBeenCalled();
 });
+
+it.each([
+  [
+    'file_read',
+    { fileName: 'f'.repeat(495) },
+    '阅读文件：' + 'f'.repeat(495),
+    false,
+  ],
+  [
+    'file_read',
+    { fileName: 'f'.repeat(496) },
+    '阅读文件：' + 'f'.repeat(495),
+    true,
+  ],
+  [
+    'file_read',
+    { fileName: 'f'.repeat(501) },
+    '阅读文件：' + 'f'.repeat(495),
+    true,
+  ],
+  [
+    'browser',
+    { url: 'https://' + 'h'.repeat(494) },
+    '浏览 ' + 'h'.repeat(494) + ' 网页',
+    false,
+  ],
+  [
+    'browser',
+    { url: 'https://' + 'h'.repeat(495) },
+    '浏览 ' + 'h'.repeat(495) + ' 网',
+    true,
+  ],
+])(
+  'bounds the final activity field without changing the %s helper',
+  (name, args, expected, truncated) => {
+    const legacy = toolActivityDetail(name, args);
+    const view = projectNativeChildCut({
+      inheritedEventCount: 0,
+      events: [
+        {
+          seq: 0,
+          type: 'tool/call',
+          data: {
+            turn: 0,
+            step: 0,
+            name,
+            callId: 'call',
+            arguments: JSON.stringify(args),
+          },
+        },
+      ],
+    });
+    expect(expected).toHaveLength(500);
+    expect(view.rows[0]).toMatchObject({ activityDetail: expected, truncated });
+    expect(NativeSubagentSnapshotSchema.shape.rows.parse(view.rows)).toEqual(
+      view.rows,
+    );
+    expect(toolActivityDetail(name, args)).toBe(legacy);
+    if (truncated) expect(legacy.length).toBeGreaterThan(500);
+  },
+);
+
+it('keeps a real failed tool result readable when its activity label pushes the field over 500', async () => {
+  const entered = gate(),
+    finish = gate(),
+    steps = new Map();
+  const h = await host({
+    stream: async function* (request) {
+      if (request.sessionId === 'pr0-root') {
+        yield block('parent');
+        yield { type: 'finish', reason: { kind: 'stop' } };
+        return;
+      }
+      const step = steps.get(request.sessionId) ?? 0;
+      steps.set(request.sessionId, step + 1);
+      if (step === 0) {
+        yield {
+          type: 'block-end',
+          index: 0,
+          block: {
+            type: 'tool-call',
+            id: 'long-file',
+            name: 'file_read',
+            arguments: JSON.stringify({ fileName: 'f'.repeat(501) }),
+          },
+        };
+        yield { type: 'finish', reason: { kind: 'tool-calls' } };
+      } else {
+        yield { type: 'text-delta', index: 0, text: 'after tool' };
+        entered.resolve();
+        await hold(request.signal, finish);
+        yield { type: 'finish', reason: { kind: 'stop' } };
+      }
+    },
+  });
+  const child = await h.spawn(h.root, 'long tool activity', {
+    delivery: 'caller',
+  });
+  try {
+    await entered.promise;
+    const snapshot = await query(h, child.childId);
+    expect(snapshot.rows).toEqual([
+      expect.objectContaining({
+        kind: 'tool',
+        callId: 'long-file',
+        activityDetail: '阅读文件：' + 'f'.repeat(495),
+        truncated: true,
+        result: expect.objectContaining({
+          failed: true,
+          summary: '工具执行失败',
+        }),
+      }),
+    ]);
+    expect(snapshot.stream.active.text).toBe('after tool');
+    expect(NativeSubagentSnapshotSchema.parse(snapshot)).toEqual(snapshot);
+  } finally {
+    finish.resolve();
+    await child.result;
+  }
+}, 30_000);
+
+it.each([
+  ['plain', 'final answer', 'final answer', false],
+  ['think', '<think>PRIVATE_THINK</think>public final', 'public final', false],
+  [
+    'envelope',
+    '<allrice_tool_call>PRIVATE_CREDENTIAL</allrice_tool_call>',
+    null,
+    false,
+  ],
+  ['exact limit', 'a'.repeat(limits.text), 'a'.repeat(limits.text), false],
+  ['over limit', 'a'.repeat(limits.text + 1), 'a'.repeat(limits.text), true],
+  [
+    'long hidden text',
+    '<think>' + 'x'.repeat(limits.text + 1) + '</think>public',
+    'public',
+    false,
+  ],
+])(
+  'consumes one safe prepared final value after activation disposal: %s',
+  async (_name, raw, expected, truncated) => {
+    const entered = gate(),
+      finish = gate();
+    const consumer = { active: null, final: null };
+    let selected,
+      terminalRead,
+      reads = 0,
+      disposedBeforeRead = false;
+    const h = await host({
+      onNotification: ({ method, params }) => {
+        if (
+          method === 'session.assistant-stream' &&
+          params.sessionId === selected
+        )
+          consumer.active = params.display.active;
+        if (
+          method === 'subagent.finished' &&
+          params.childSessionId === selected
+        ) {
+          reads++;
+          disposedBeforeRead =
+            !h.ctx.agents.get(selected) && !h.ctx.sessions.get(selected);
+          terminalRead = h.server
+            .handleRequest('session/subagent-summary', {
+              sessionId: h.root.id,
+              liveOnly: false,
+            })
+            .then((summary) => {
+              const row = summary.descendants.find(
+                (row) => row.kind === 'child' && row.id === selected,
+              );
+              consumer.final = row.lastReply;
+              return row;
+            });
+        }
+      },
+      stream: async function* (request) {
+        if (request.sessionId === 'pr0-root') yield block('parent');
+        else {
+          yield { type: 'text-delta', index: 0, text: raw };
+          yield block(raw);
+          entered.resolve();
+          await hold(request.signal, finish);
+        }
+        yield { type: 'finish', reason: { kind: 'stop' } };
+      },
+    });
+    const child = await h.spawn(h.root, 'opened terminal detail', {
+      delivery: 'caller',
+    });
+    selected = child.childId;
+    try {
+      await entered.promise;
+      const snapshot = await query(h, selected);
+      consumer.active = snapshot.stream.active;
+      expect(consumer.active.text).toBe(expected ?? '');
+      const calls = h.calls.length,
+        seq = h.root.session.seq;
+      const create = vi.spyOn(h.ctx.sessions, 'create'),
+        ensure = vi.spyOn(h.server, 'ensureRoot');
+      finish.resolve();
+      await child.result;
+      const row = await terminalRead;
+      expect(reads).toBe(1);
+      expect(disposedBeforeRead).toBe(true);
+      expect(row).toMatchObject({
+        mode: 'continuable',
+        observation: { source: 'prepared' },
+        running: null,
+        lastReply: expected,
+        lastReplyTruncated: truncated,
+      });
+      expect(visibleNativeText(raw).slice(0, limits.text) || null).toBe(
+        expected,
+      );
+      expect(consumer.active).toBeNull();
+      // A cleared transient is not a new empty final; one final slot survives.
+      expect([consumer.active?.text, consumer.final].filter(Boolean)).toEqual(
+        expected ? [expected] : [],
+      );
+      expect(JSON.stringify(consumer)).not.toMatch(
+        /PRIVATE|<think>|allrice_tool_call/,
+      );
+      await expect(query(h, selected)).rejects.toThrow(
+        'NATIVE_QUERY_CHILD_NOT_LIVE',
+      );
+      expect(h.ctx.agents.get(selected)).toBeUndefined();
+      expect(h.ctx.sessions.get(selected)).toBeUndefined();
+      expect(create).not.toHaveBeenCalled();
+      expect(ensure).not.toHaveBeenCalled();
+      expect(h.calls).toHaveLength(calls);
+      expect(h.root.session.seq).toBe(seq);
+    } finally {
+      finish.resolve();
+      await child.result;
+    }
+  },
+  30_000,
+);

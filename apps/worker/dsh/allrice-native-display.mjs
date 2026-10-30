@@ -19,7 +19,7 @@ const bounded = (text) => ({
   text: text.slice(0, limits.text),
   truncated: text.length > limits.text,
 });
-const visible = (text) => {
+export const visibleNativeText = (text) => {
   const value = visibleModelText(text).text;
   const envelope = '<allrice_tool_call>';
   return envelope.startsWith(value.trimStart()) || value.includes(envelope)
@@ -42,7 +42,7 @@ export function projectNativeChildCut(cut) {
     if (event.surfaceOp === 'replace' || event.surfaceOp?.op === 'replace')
       continue;
     if (type === 'assistant/message') {
-      const text = visible(textBlocks(data.message.content));
+      const text = visibleNativeText(textBlocks(data.message.content));
       if (text)
         rows.push({
           kind: 'assistant',
@@ -85,6 +85,8 @@ export function projectNativeChildCut(cut) {
                 row.truncated = true;
               },
             );
+            row.truncated ||= (row.activityDetail?.length ?? 0) > 500;
+            row.activityDetail = row.activityDetail?.slice(0, 500);
           } catch {
             /* No safe target. */
           }
@@ -203,7 +205,7 @@ export class NativeChildDisplay {
     const { instanceId, revision, complete, active } = this.state(agent);
     const text = active
       ? bounded(
-          visible(
+          visibleNativeText(
             textBlocks(
               assembleAssistantStream(active.stream.snapshot()).blocks(),
             ),

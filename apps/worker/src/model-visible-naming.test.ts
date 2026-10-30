@@ -26,6 +26,7 @@ const englishChild = /(?<![\w./-])assistants?(?![\w./-])/i;
 // ID. Match whole literal values; "Assistant stopped" is never a protocol value.
 const protocolValues: Record<string, readonly string[]> = {
   'allrice-bootstrap-coverage.mjs': ['assistant', 'assistant:'],
+  'allrice-native-display.mjs': ['assistant'],
 };
 // These memory provenance rules refer to the model's own output, not delegated
 // children. Exempt only these phrases in their documented source files.
@@ -248,5 +249,15 @@ describe('names the model reads (MET-214)', () => {
     const text = 'assistant response';
     const entry = { source: 'skills/development-cooperation/SKILL.md', text };
     expect(offenders([entry])).toEqual([entry]);
+  });
+
+  it('exempts only the native display row kind, not prose or another source', () => {
+    const texts = literals(
+      'allrice-native-display.mjs',
+      "const values = ['assistant', 'Assistant stopped', 'child assistant'];",
+    );
+    expect(offenders(texts)).toEqual(texts.slice(1));
+    const foreign = { source: 'allrice-native-query.mjs', text: 'assistant' };
+    expect(offenders([foreign])).toEqual([foreign]);
   });
 });
