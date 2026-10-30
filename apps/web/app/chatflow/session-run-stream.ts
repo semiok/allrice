@@ -4,6 +4,7 @@ import { mergeChatFlowEvents } from '../../lib/chatflow/run-event-buffer';
 
 import type { History, RunTrace, RunView } from './chatflow-types';
 import { readJson } from './chatflow-utils';
+import { createSseDataConsumer } from './sse-data-consumer';
 
 interface SessionRunStreamOptions {
   sessionId: string | null;
@@ -116,8 +117,7 @@ export function createSessionRunStream({
           if (!response.ok || !response.body) await readJson(response);
           if (!current()) return;
           const reader = response.body!.getReader();
-          const decoder = new TextDecoder();
-          let buffer = '';
+          const consumeData = createSseDataConsumer();
           updateView(runId, {
             ...(snapshot.runViews[runId] ?? {
               runId,
@@ -132,17 +132,8 @@ export function createSessionRunStream({
               const chunk = await reader.read();
               if (!current()) return;
               if (chunk.done) break;
-              buffer += decoder.decode(chunk.value, { stream: true });
-              const blocks = buffer.split('\n\n');
-              buffer = blocks.pop() ?? '';
-              for (const block of blocks) {
+              for (const data of consumeData(chunk.value)) {
                 if (!current()) return;
-                const data = block
-                  .split('\n')
-                  .filter((line) => line.startsWith('data: '))
-                  .map((line) => line.slice(6))
-                  .join('\n');
-                if (!data) continue;
                 const event = JSON.parse(data) as ChatFlowEventEnvelope;
                 cursor = event.cursor;
                 accumulated = mergeChatFlowEvents(accumulated, [event]);

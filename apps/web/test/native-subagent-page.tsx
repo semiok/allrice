@@ -1,7 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { createRoot } from 'react-dom/client';
 import { EmployeeSidebar } from '../app/chatflow/employee-sidebar';
 import { NativeSubagentDirectory } from '../app/chatflow/native-subagent-directory';
+import { presentationPolicyFor } from '../app/chatflow/dsh-upstream/presentation/presentation-policy';
+import { nativeSubagentReadyKey } from '../app/chatflow/use-native-subagents';
+import { createSessionRunStream } from '../app/chatflow/session-run-stream';
 import conversationUi from '../app/chatflow/dsh-upstream/ConversationRoot.module.css';
 import shellUi from '../app/chatflow/dsh-saas.module.css';
 import type { Session, Workspace } from '../app/chatflow/chatflow-types';
@@ -35,6 +38,35 @@ const headers = {
 };
 function Page() {
   const [activeId, setActiveId] = useState('parent-a');
+  const query = new URLSearchParams(location.search);
+  const rootEvents = query.has('root-events');
+  const stream = useMemo(
+    () =>
+      createSessionRunStream({
+        sessionId: activeId,
+        workspaceId: 'workspace',
+        tenantHeaders: headers,
+        loadHistory: async () => {},
+        loadWorkspace: async () => {},
+        setError: () => {},
+      }),
+    [activeId],
+  );
+  const { runViews } = useSyncExternalStore(
+    stream.subscribe,
+    stream.getSnapshot,
+    stream.getSnapshot,
+  );
+  useEffect(() => {
+    stream.activate();
+    if (rootEvents) void stream.streamRun('root-run');
+    return stream.deactivate;
+  }, [stream, rootEvents]);
+  const nativeReadyKey = nativeSubagentReadyKey(runViews['root-run']);
+  const presentation = presentationPolicyFor(
+    query.get('view') === 'verbose' ? 'verbose' : 'detailed',
+    query.get('collapse') === 'next-input' ? 'next-input' : 'completion',
+  );
   return (
     <main style={{ display: 'flex', minHeight: 600 }}>
       <nav
@@ -50,6 +82,7 @@ function Page() {
           workspace={workspace}
           sessions={sessions}
           activeId={activeId}
+          nativeReadyKey={nativeReadyKey}
           collapsed={false}
           onSelectSession={setActiveId}
           onPrepareSession={() => {}}
@@ -68,11 +101,17 @@ function Page() {
                 workspaceId="workspace"
                 sessionId={activeId}
                 headers={headers}
-                refreshKey="initial"
+                refreshKey={`initial/${nativeReadyKey}`}
+                presentation={presentation}
               />
             </div>
           </div>
         </header>
+        {rootEvents && (
+          <output aria-label="root事件游标">
+            {runViews['root-run']?.cursor ?? 'empty'}
+          </output>
+        )}
       </section>
     </main>
   );

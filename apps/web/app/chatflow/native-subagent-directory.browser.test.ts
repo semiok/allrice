@@ -3,7 +3,14 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { createServer, type Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { NativeSubagentSummary } from '@allrice/contracts';
+import type {
+  ChatFlowEventEnvelope,
+  NativeSubagentSummary,
+} from '@allrice/contracts';
+import {
+  NativeSubagentFixtureFeed,
+  snapshotFor,
+} from '../../test/native-subagent-fixture-feed';
 import type {
   Browser,
   Page,
@@ -50,6 +57,7 @@ function child(
   };
 }
 function summary(rootId = 'native-root'): NativeSubagentSummary {
+  const prefix = rootId === 'native-root' ? '' : `${rootId}:`;
   return {
     rootId,
     root: { source: 'live', cursor: 10 },
@@ -57,12 +65,17 @@ function summary(rootId = 'native-root'): NativeSubagentSummary {
       child('fork-a', rootId, { running: true, timing: { settledMs: 0 } }),
       child('idle-b', rootId),
       child('grandchild', 'fork-a', { depth: 2, running: true }),
-    ],
+    ].map((entry) => ({
+      ...entry,
+      id: prefix + entry.id,
+      parentId: entry.parentId === rootId ? rootId : prefix + entry.parentId,
+    })),
   };
 }
 
 suite('native subagent directory and employee sidebar', () => {
   let browser: Browser, server: Server, origin: string;
+  const feed = new NativeSubagentFixtureFeed();
   beforeAll(async () => {
     const require = createRequire(import.meta.url);
     const { build } = createRequire(require.resolve('tsx'))('esbuild');
@@ -100,6 +113,7 @@ suite('native subagent directory and employee sidebar', () => {
     });
     assets.set('/layout.css', globals.outputFiles[0]!.contents);
     server = createServer((req, res) => {
+      if (feed.handle(req, res)) return;
       const path = new URL(req.url!, origin).pathname,
         asset = assets.get(path);
       res.setHeader(
@@ -139,18 +153,61 @@ suite('native subagent directory and employee sidebar', () => {
     value = summary(),
     width = 1200,
     fullReply?: { gate: Promise<void>; delivered: () => void },
+    snapshot?: typeof snapshotFor,
+    search = '',
+    initial?: { kind: 'error' | 'null'; gate?: Promise<void> },
   ) {
     const page = await browser.newPage({ viewport: { width, height: 850 } });
     const calls: { id: string; liveOnly: boolean }[] = [];
     let response: NativeSubagentSummary | 'error' = value;
+    const fixture = feed.register({
+      summary: (id) => (id === 'parent-b' ? summary('other-root') : response),
+      snapshot,
+    });
+    let initialDelivered = 0;
+    if (initial?.gate)
+      await page.addInitScript(() => {
+        const fetch = window.fetch.bind(window);
+        window.fetch = (input, init) =>
+          fetch(
+            input,
+            String(input).includes('/subagents?') &&
+              !String(input).includes('follow=true')
+              ? { ...init, signal: undefined }
+              : init,
+          );
+      });
+    await page.route('**/api/v1/runs/*/events?**', (route) => {
+      const url = new URL(route.request().url());
+      url.searchParams.set('fixture', fixture);
+      return route.continue({ url: String(url) });
+    });
     await page.route('**/api/v1/sessions/*/subagents?**', async (route) => {
       const url = new URL(route.request().url()),
         id = url.pathname.split('/')[4]!,
         liveOnly = url.searchParams.get('liveOnly') === 'true';
+      if (url.searchParams.get('follow') === 'true') {
+        url.searchParams.set('fixture', fixture);
+        return route.continue({ url: String(url) });
+      }
       calls.push({ id, liveOnly });
       expect(route.request().headers()['x-allrice-organization-id']).toBe(
         'org',
       );
+      if (
+        initial &&
+        id === 'parent-a' &&
+        calls.filter((call) => call.id === id).length <= 2
+      ) {
+        await initial.gate;
+        await route.fulfill(
+          initial.kind === 'error'
+            ? { status: 503, json: { error: 'unavailable' } }
+            : { json: { summary: null } },
+        );
+        initialDelivered += 1;
+        return;
+      }
       if (response === 'error')
         return route.fulfill({ status: 503, json: { error: 'unavailable' } });
       const read =
@@ -165,18 +222,22 @@ suite('native subagent directory and employee sidebar', () => {
       await route.fulfill({ json: { summary: read } });
       if (!liveOnly) fullReply?.delivered();
     });
-    await page.goto(origin);
+    await page.goto(origin + search);
     await page
       .getByRole('button', {
         name:
-          value.root.source === 'prepared'
-            ? '子智能体状态未知'
-            : /2 个子智能体/,
+          initial?.kind === 'error' && !initial.gate
+            ? '子智能体读取失败'
+            : initial || value.root.source === 'prepared'
+              ? '子智能体状态未知'
+              : /2 个子智能体/,
       })
       .waitFor();
     return {
       page,
       calls,
+      fixture,
+      initialDelivered: () => initialDelivered,
       setResponse: (next: NativeSubagentSummary | 'error') => {
         response = next;
       },
@@ -184,6 +245,46 @@ suite('native subagent directory and employee sidebar', () => {
   }
   const row = (page: Page, id: string) =>
     page.locator(`[data-row-key="session:${id}"]`);
+  const ownProcess: typeof snapshotFor = (value, id) => {
+    const cut = snapshotFor(value, id);
+    cut.rows = [
+      {
+        kind: 'assistant',
+        seq: 5,
+        turn: 0,
+        step: 0,
+        text: `${id} 已记录文字`,
+        truncated: false,
+      },
+      {
+        kind: 'tool',
+        seq: 6,
+        turn: 0,
+        step: 0,
+        callId: 'call-1',
+        name: '读取文件',
+        activityDetail: `${id} 安全路径`,
+        truncated: false,
+      },
+    ];
+    cut.stream.active = {
+      text: `${id} 中途基线`,
+      truncated: false,
+      attemptId: 'attempt-1',
+      turn: 0,
+      step: 1,
+      startedAfterSeq: 6,
+      nextIndex: 3,
+    };
+    return cut;
+  };
+  async function selectChild(page: Page, id = 'fork-a') {
+    await page.locator('button[aria-haspopup="tree"]').click();
+    await page.getByRole('button', { name: `查看${id}摘要` }).click();
+    const detail = page.getByRole('complementary', { name: '子智能体摘要' });
+    await expect.poll(() => detail.innerText()).toContain(`${id} 中途基线`);
+    return detail;
+  }
 
   it('probes every visible parent without cold reads, counts direct native running and hides children from business navigation', async () => {
     const { page, calls } = await open();
@@ -239,8 +340,12 @@ suite('native subagent directory and employee sidebar', () => {
       expect(await trigger.innerText()).toBe('2 个子智能体 · 1 个运行中');
       await page.getByRole('button', { name: '查看fork-a摘要' }).click();
       const detail = page.getByRole('complementary', { name: '子智能体摘要' });
-      expect(await detail.innerText()).toContain('fork-a 自己的初始任务');
-      expect(await detail.innerText()).toContain('fork-a 自己的最后回复');
+      await expect
+        .poll(() => detail.innerText())
+        .toContain('fork-a 自己的初始任务');
+      await expect
+        .poll(() => detail.innerText())
+        .toContain('fork-a 自己的最后回复');
       expect(await detail.innerText()).not.toContain('父级任务');
       expect(await detail.innerText()).not.toContain('上次回合已完成');
       expect(await page.getByRole('heading', { level: 1 }).innerText()).toBe(
@@ -512,6 +617,659 @@ suite('native subagent directory and employee sidebar', () => {
       await expect
         .poll(() => row(page, 'parent-a').innerText())
         .not.toContain('子智能体运行中');
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('opens from a hot baseline, replaces active text, clears only active:null and replaces safe tool rows', async () => {
+    const value = summary(),
+      { page, fixture } = await open(value, 390, undefined, ownProcess);
+    try {
+      const detail = await selectChild(page);
+      expect(await detail.innerText()).toContain('fork-a 已记录文字');
+      expect(await detail.innerText()).toContain('读取文件');
+      expect(await detail.innerText()).toContain('结果尚未确认');
+      const cut = ownProcess(value, 'fork-a');
+      const display = {
+        ...cut.stream,
+        revision: 1,
+        complete: false,
+        active: {
+          ...cut.stream.active!,
+          text: '完整替换的新文字',
+          truncated: true,
+        },
+      };
+      feed.push(
+        fixture,
+        {
+          type: 'display',
+          rootId: cut.rootId,
+          childId: cut.childId,
+          hostEpoch: cut.hostEpoch,
+          display,
+        },
+        'fork-a',
+      );
+      await expect.poll(() => detail.innerText()).toContain('完整替换的新文字');
+      expect(await detail.innerText()).not.toContain('中途基线');
+      expect(
+        await detail.getByText('完整替换的新文字', { exact: true }).count(),
+      ).toBe(1);
+      expect(await detail.innerText()).toContain('截断');
+      expect(await detail.innerText()).toContain('不完整');
+      const screenshot = resolve('.local/met231-u2-hot-fixture.png');
+      await page.screenshot({ path: screenshot });
+      console.log('U2_FIXTURE_SCREENSHOT ' + screenshot);
+      feed.push(
+        fixture,
+        {
+          type: 'display',
+          rootId: cut.rootId,
+          childId: cut.childId,
+          hostEpoch: cut.hostEpoch,
+          display: { ...display, revision: 2, active: null },
+        },
+        'fork-a',
+      );
+      await expect
+        .poll(() => detail.innerText())
+        .not.toContain('完整替换的新文字');
+      expect(await detail.innerText()).toContain('fork-a 已记录文字');
+      expect(await detail.innerText()).not.toContain('暂无回复');
+      cut.rows[1] = {
+        kind: 'tool',
+        seq: 6,
+        turn: 0,
+        step: 0,
+        callId: 'call-1',
+        name: '读取文件',
+        truncated: false,
+        result: { seq: 9, failed: true, summary: '安全错误摘要' },
+      };
+      cut.window.omittedEvents = 3;
+      cut.window.omittedRows = 1;
+      cut.stream.active = null;
+      feed.push(fixture, { type: 'snapshot', snapshot: cut }, 'fork-a');
+      await expect.poll(() => detail.innerText()).toContain('失败');
+      expect(await detail.getByText('读取文件', { exact: true }).count()).toBe(
+        1,
+      );
+      expect(await detail.innerText()).toContain('省略');
+      expect(await detail.innerText()).not.toContain('安全错误摘要');
+      await detail.getByText('读取文件', { exact: true }).click();
+      await expect.poll(() => detail.innerText()).toContain('安全错误摘要');
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth > innerWidth,
+        ),
+      ).toBe(false);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('replaces rows with one nonterminal safe lastReply and clears it on EOF without guessing truncation', async () => {
+    const value = summary(),
+      { page, fixture } = await open(value, 1200, undefined, ownProcess);
+    try {
+      const detail = await selectChild(page);
+      const ended = summary();
+      ended.descendants = ended.descendants.map((entry) =>
+        entry.kind === 'child'
+          ? { ...entry, running: false, lastReply: '唯一安全最后回复' }
+          : entry,
+      );
+      feed.push(
+        fixture,
+        { type: 'summary', childId: 'fork-a', summary: ended },
+        'fork-a',
+      );
+      await expect.poll(() => detail.innerText()).toContain('唯一安全最后回复');
+      expect(
+        await detail.getByText('唯一安全最后回复', { exact: true }).count(),
+      ).toBe(1);
+      expect(await detail.innerText()).not.toMatch(
+        /中途基线|已记录文字|读取文件|已确认未截断|内容完整|截断未知/,
+      );
+      feed.end(fixture, 'fork-a');
+      await expect
+        .poll(() => detail.innerText())
+        .not.toContain('唯一安全最后回复');
+      expect(await detail.innerText()).toContain('当前活动状态未知');
+      await page.keyboard.press('Escape');
+      expect(await detail.count()).toBe(0);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it.each([
+    'resync',
+    'unavailable',
+    'EOF',
+    'abrupt',
+    'epoch',
+    'child',
+    'root',
+    'instance',
+  ])(
+    'clears stale process on %s and requires a fresh matching snapshot after resync',
+    async (reason) => {
+      const value = summary(),
+        { page, fixture } = await open(value, 1200, undefined, ownProcess);
+      try {
+        const detail = await selectChild(page);
+        const cut = ownProcess(value, 'fork-a');
+        if (reason === 'resync' || reason === 'unavailable')
+          feed.push(fixture, { type: 'clear', reason }, 'fork-a');
+        else if (reason === 'EOF' || reason === 'abrupt')
+          feed.end(fixture, 'fork-a', reason === 'abrupt');
+        else
+          feed.push(
+            fixture,
+            {
+              type: 'display',
+              rootId: reason === 'root' ? 'other-root' : cut.rootId,
+              childId: reason === 'child' ? 'idle-b' : cut.childId,
+              hostEpoch: reason === 'epoch' ? 2 : cut.hostEpoch,
+              display:
+                reason === 'instance'
+                  ? { ...cut.stream, instanceId: 'another-agent' }
+                  : cut.stream,
+            },
+            'fork-a',
+          );
+        await expect
+          .poll(() => detail.innerText())
+          .not.toContain('fork-a 中途基线');
+        expect(await detail.innerText()).not.toMatch(
+          /fork-a 已记录文字|读取文件|自己的最后回复/,
+        );
+        if (reason === 'resync') {
+          feed.push(fixture, { type: 'snapshot', snapshot: cut }, 'fork-a');
+          await expect
+            .poll(() => detail.innerText())
+            .toContain('fork-a 中途基线');
+        }
+      } finally {
+        await page.close();
+      }
+    },
+  );
+
+  it('updates direct running in the directory and unselected parent sidebar without opening a child', async () => {
+    const { page, fixture } = await open();
+    try {
+      await expect
+        .poll(
+          () =>
+            [...feed.connections].filter(
+              (c) => c.fixture === fixture && c.sessionId === 'parent-a',
+            ).length,
+        )
+        .toBe(2);
+      const update = summary();
+      update.descendants = update.descendants.map((entry) =>
+        entry.kind === 'child' && entry.parentId === update.rootId
+          ? { ...entry, running: false }
+          : entry,
+      );
+      feed.push(fixture, { type: 'directory', summary: update });
+      await page
+        .getByRole('button', { name: '2 个子智能体 · 0 个运行中', exact: true })
+        .waitFor();
+      await expect
+        .poll(() => row(page, 'parent-a').innerText())
+        .not.toContain('子智能体运行中');
+      expect(
+        feed.calls.filter((call) => call.fixture === fixture && call.childId),
+      ).toEqual([]);
+      feed.push(fixture, { type: 'clear', reason: 'unavailable' });
+      await page
+        .getByRole('button', { name: '子智能体状态未知', exact: true })
+        .waitFor();
+      expect(await row(page, 'parent-a').innerText()).not.toContain(
+        '子智能体运行中',
+      );
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('follows A/B/C on one selected durable address through summary and temporary prepared or diagnostic cuts', async () => {
+    const value = summary(),
+      { page, fixture, setResponse } = await open(
+        value,
+        1200,
+        undefined,
+        ownProcess,
+      );
+    try {
+      const detail = await selectChild(page);
+      for (const phase of ['B', 'C']) {
+        const ended = summary();
+        ended.descendants = ended.descendants.map((entry) =>
+          entry.kind === 'child'
+            ? {
+                ...entry,
+                running: null,
+                activity: 'inactive',
+                observation: { source: 'prepared', cursor: 8 },
+                lastReply: `${phase}之前唯一安全回复`,
+              }
+            : entry,
+        );
+        setResponse(ended);
+        feed.push(fixture, { type: 'directory', summary: ended });
+        feed.push(fixture, { type: 'directory', summary: ended }, 'fork-a');
+        feed.push(
+          fixture,
+          { type: 'summary', childId: 'fork-a', summary: ended },
+          'fork-a',
+        );
+        await expect
+          .poll(() => detail.innerText())
+          .toContain(`${phase}之前唯一安全回复`);
+        expect(await detail.innerText()).not.toMatch(
+          /中途基线|已记录文字|读取文件/,
+        );
+        const unavailable = {
+          ...ended,
+          descendants: ended.descendants.map((entry) =>
+            entry.id === 'fork-a'
+              ? {
+                  kind: 'diagnostic' as const,
+                  id: entry.id,
+                  parentId: entry.parentId,
+                  depth: entry.depth,
+                  reason: 'unavailable' as const,
+                }
+              : entry,
+          ),
+        };
+        feed.push(fixture, { type: 'directory', summary: unavailable });
+        feed.push(
+          fixture,
+          { type: 'directory', summary: unavailable },
+          'fork-a',
+        );
+        await expect
+          .poll(() => detail.innerText())
+          .not.toContain(`${phase}之前唯一安全回复`);
+        setResponse(value);
+        feed.push(fixture, { type: 'directory', summary: value });
+        feed.push(fixture, { type: 'directory', summary: value }, 'fork-a');
+        const cut = ownProcess(value, 'fork-a');
+        cut.rows = [
+          {
+            kind: 'assistant',
+            seq: 5,
+            turn: 0,
+            step: 0,
+            text: `${phase}安全记录`,
+            truncated: false,
+          },
+        ];
+        cut.stream.instanceId = `${phase}-instance`;
+        cut.stream.active = {
+          ...cut.stream.active!,
+          text: '',
+          attemptId: `${phase}-attempt`,
+          nextIndex: 0,
+        };
+        feed.push(fixture, { type: 'snapshot', snapshot: cut }, 'fork-a');
+        await expect
+          .poll(() => detail.innerText())
+          .toContain(`${phase}安全记录`);
+        feed.push(
+          fixture,
+          {
+            type: 'display',
+            rootId: cut.rootId,
+            childId: cut.childId,
+            hostEpoch: cut.hostEpoch,
+            display: {
+              ...cut.stream,
+              revision: 1,
+              active: {
+                ...cut.stream.active!,
+                text: `${phase}持续更新文字`,
+                nextIndex: 1,
+              },
+            },
+          },
+          'fork-a',
+        );
+        await expect
+          .poll(() => detail.innerText())
+          .toContain(`${phase}持续更新文字`);
+        expect(await detail.innerText()).not.toContain(
+          `${phase}之前唯一安全回复`,
+        );
+      }
+      expect(
+        feed.calls.filter(
+          (call) => call.fixture === fixture && call.childId === 'fork-a',
+        ),
+      ).toHaveLength(1);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('rejects a display after summary until a fresh snapshot has authorized its baseline', async () => {
+    const value = summary(),
+      { page, fixture } = await open(value, 1200, undefined, ownProcess);
+    try {
+      const detail = await selectChild(page);
+      feed.push(
+        fixture,
+        { type: 'summary', childId: 'fork-a', summary: value },
+        'fork-a',
+      );
+      await expect
+        .poll(() => detail.innerText())
+        .toContain('fork-a 自己的最后回复');
+      const cut = ownProcess(value, 'fork-a');
+      feed.push(
+        fixture,
+        {
+          type: 'display',
+          rootId: cut.rootId,
+          childId: cut.childId,
+          hostEpoch: cut.hostEpoch,
+          display: cut.stream,
+        },
+        'fork-a',
+      );
+      await expect.poll(() => detail.innerText()).toContain('暂时无法读取');
+      expect(await detail.innerText()).not.toMatch(/中途基线|自己的最后回复/);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it.each(['503', 'null', 'late503'])(
+    'recovers initial %s from the current root Run ready event without token refresh or stale errors',
+    async (kind) => {
+      let release!: () => void;
+      const gate = new Promise<void>((done) => {
+        release = done;
+      });
+      const { page, calls, fixture, initialDelivered } = await open(
+        summary(),
+        1200,
+        undefined,
+        undefined,
+        '?root-events=1',
+        {
+          kind: kind === 'null' ? 'null' : 'error',
+          gate: kind === 'late503' ? gate : undefined,
+        },
+      );
+      try {
+        await expect
+          .poll(() => calls.filter((call) => call.id === 'parent-a').length)
+          .toBe(2);
+        await expect
+          .poll(
+            () =>
+              [...feed.rootConnections].filter((c) => c.fixture === fixture)
+                .length,
+          )
+          .toBe(1);
+        const backgroundConnections = () =>
+          [...feed.connections].filter(
+            (c) => c.fixture === fixture && c.sessionId === 'parent-b',
+          );
+        await expect.poll(() => backgroundConnections().length).toBe(1);
+        const originalBackground = backgroundConnections()[0]!;
+        expect(calls.filter((call) => call.id === 'parent-b')).toHaveLength(1);
+        const rootEvent = (
+          sequence: number,
+          type: string,
+          runId = 'root-run',
+        ): ChatFlowEventEnvelope => ({
+          schemaVersion: 3,
+          eventId: `${runId}-${sequence}`,
+          organizationId: 'org',
+          workspaceId: 'workspace',
+          conversationId: null,
+          runId,
+          generation: 1,
+          cursor: `root-run:${sequence}`,
+          sequence,
+          harness: 'dsh',
+          type: 'harness.native',
+          occurredAt: '2026-10-30T00:00:00Z',
+          payload: {},
+          sourceEvent: {
+            id: `native-${sequence}`,
+            type,
+            occurredAt: '2026-10-30T00:00:00Z',
+            payload: {},
+          },
+        });
+        feed.pushRoot(fixture, rootEvent(1, 'request/header', 'old-run'));
+        feed.pushRoot(fixture, rootEvent(2, 'allrice/runtime-preparation'));
+        await expect
+          .poll(() => page.getByLabel('root事件游标').innerText())
+          .toBe('root-run:2');
+        expect(calls.filter((call) => call.id === 'parent-a')).toHaveLength(2);
+        feed.pushRoot(
+          fixture,
+          rootEvent(3, kind === 'null' ? 'request/context' : 'request/header'),
+        );
+        await page
+          .getByRole('button', {
+            name: '2 个子智能体 · 1 个运行中',
+            exact: true,
+          })
+          .waitFor();
+        await expect
+          .poll(() => row(page, 'parent-a').innerText())
+          .toContain('1 个子智能体运行中');
+        await expect
+          .poll(
+            () =>
+              feed.calls.filter(
+                (call) =>
+                  call.fixture === fixture && call.sessionId === 'parent-a',
+              ).length,
+          )
+          .toBe(2);
+        expect(calls.filter((call) => call.id === 'parent-a')).toHaveLength(4);
+        release();
+        await expect.poll(initialDelivered).toBe(2);
+        feed.pushRoot(fixture, rootEvent(4, 'request/context'));
+        feed.pushRoot(fixture, rootEvent(5, 'assistant/message'));
+        await expect
+          .poll(() => page.getByLabel('root事件游标').innerText())
+          .toBe('root-run:5');
+        expect(calls.filter((call) => call.id === 'parent-a')).toHaveLength(4);
+        expect(await row(page, 'parent-a').innerText()).toContain(
+          '1 个子智能体运行中',
+        );
+        expect(calls.filter((call) => call.id === 'parent-b')).toHaveLength(1);
+        expect(
+          feed.calls.filter(
+            (call) => call.fixture === fixture && call.sessionId === 'parent-b',
+          ),
+        ).toHaveLength(1);
+        expect(backgroundConnections()[0]).toBe(originalBackground);
+        expect(originalBackground.response.destroyed).toBe(false);
+        expect(originalBackground.response.writableEnded).toBe(false);
+        const backgroundUpdate = summary('other-root');
+        backgroundUpdate.descendants = backgroundUpdate.descendants.map(
+          (entry) =>
+            entry.kind === 'child' && entry.parentId === backgroundUpdate.rootId
+              ? { ...entry, running: false }
+              : entry,
+        );
+        feed.send(originalBackground, {
+          type: 'directory',
+          summary: backgroundUpdate,
+        });
+        await expect
+          .poll(() => row(page, 'parent-b').innerText())
+          .not.toContain('子智能体运行中');
+        const next = summary();
+        next.descendants = next.descendants.map((entry) =>
+          entry.kind === 'child' && entry.parentId === next.rootId
+            ? { ...entry, running: true }
+            : entry,
+        );
+        feed.push(fixture, { type: 'directory', summary: next });
+        await page
+          .getByRole('button', {
+            name: '2 个子智能体 · 2 个运行中',
+            exact: true,
+          })
+          .waitFor();
+        await expect
+          .poll(() => row(page, 'parent-a').innerText())
+          .toContain('2 个子智能体运行中');
+        await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+        await expect
+          .poll(() => calls.filter((call) => call.id === 'parent-a').length)
+          .toBe(6);
+        await expect
+          .poll(() => calls.filter((call) => call.id === 'parent-b').length)
+          .toBe(2);
+        await expect
+          .poll(() => calls.filter((call) => call.id === 'parent-c').length)
+          .toBe(2);
+        await expect
+          .poll(() => originalBackground.response.destroyed)
+          .toBe(true);
+        await expect.poll(() => backgroundConnections().length).toBe(1);
+        expect(backgroundConnections()[0]).not.toBe(originalBackground);
+      } finally {
+        release();
+        await page.close();
+      }
+    },
+  );
+
+  it('clears detail on authorization failure and switches children and business scope without old text', async () => {
+    const { page, fixture } = await open(
+      summary(),
+      1200,
+      undefined,
+      ownProcess,
+    );
+    try {
+      await selectChild(page);
+      await page.keyboard.press('Escape');
+      const detail = await selectChild(page, 'idle-b');
+      expect(await detail.innerText()).not.toContain('fork-a 中途基线');
+      const old = [...feed.connections].find(
+        (connection) =>
+          connection.fixture === fixture && connection.childId === 'idle-b',
+      )!;
+      await row(page, 'parent-b').focus();
+      await page.keyboard.press('Enter');
+      expect(await detail.count()).toBe(0);
+      feed.send(old, {
+        type: 'snapshot',
+        snapshot: ownProcess(summary(), 'idle-b'),
+      });
+      expect(
+        await page.getByRole('complementary', { name: '子智能体摘要' }).count(),
+      ).toBe(0);
+      await page.locator('button[aria-haspopup="tree"]').click();
+      await page.getByRole('button', { name: '查看fork-a摘要' }).waitFor();
+      feed.sources.get(fixture)!.status = 403;
+      await page.getByRole('button', { name: '查看fork-a摘要' }).click();
+      const denied = page.getByRole('complementary', { name: '子智能体摘要' });
+      await expect.poll(() => denied.innerText()).toContain('暂时无法读取摘要');
+      expect(await denied.innerText()).not.toMatch(
+        /中途基线|已记录文字|自己的最后回复/,
+      );
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('keeps prepared source independent of explicit idle status, discloses truncation and never follows cold children', async () => {
+    const value = summary();
+    value.root.source = 'prepared';
+    value.descendants = value.descendants.map((entry) =>
+      entry.kind === 'child'
+        ? {
+            ...entry,
+            running: false,
+            activity: 'inactive',
+            observation: { source: 'prepared', cursor: 8 },
+            lastReplyTruncated: true,
+          }
+        : entry,
+    );
+    const { page, fixture } = await open(value);
+    try {
+      await page.locator('button[aria-haspopup="tree"]').click();
+      await page.getByRole('button', { name: '查看idle-b摘要' }).click();
+      const detail = page.getByRole('complementary', { name: '子智能体摘要' });
+      expect(await detail.innerText()).toContain('历史摘要 · 上次回合已完成');
+      expect(await detail.innerText()).toContain('最后回复已截断');
+      expect(await detail.innerText()).not.toContain('当前活动状态未知');
+      expect(
+        feed.calls.filter(
+          (call) => call.fixture === fixture && call.sessionId === 'parent-a',
+        ),
+      ).toEqual([]);
+      await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await expect
+        .poll(() => detail.innerText())
+        .toContain('idle-b 自己的最后回复');
+      expect(
+        feed.calls.filter((call) => call.fixture === fixture && call.childId),
+      ).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('uses the existing verbose and next-input disclosure preferences and preserves a manual tool choice across replacements', async () => {
+    const initial: typeof snapshotFor = (value, id) => {
+      const cut = ownProcess(value, id);
+      cut.rows[1] = {
+        kind: 'tool',
+        seq: 6,
+        turn: 0,
+        step: 0,
+        callId: 'call-1',
+        name: '读取文件',
+        truncated: false,
+        result: { seq: 7, failed: false, summary: '安全结果摘要' },
+      };
+      return cut;
+    };
+    const value = summary(),
+      { page, fixture } = await open(
+        value,
+        1200,
+        undefined,
+        initial,
+        '?view=verbose&collapse=next-input',
+      );
+    try {
+      const detail = await selectChild(page);
+      expect(await detail.innerText()).toContain('安全结果摘要');
+      await detail.getByText('读取文件', { exact: true }).click();
+      await expect.poll(() => detail.innerText()).not.toContain('安全结果摘要');
+      const cut = initial(value, 'fork-a');
+      cut.stream.active = {
+        ...cut.stream.active!,
+        text: '替换后仍保留手动折叠',
+      };
+      feed.push(fixture, { type: 'snapshot', snapshot: cut }, 'fork-a');
+      await expect
+        .poll(() => detail.innerText())
+        .toContain('替换后仍保留手动折叠');
+      expect(await detail.innerText()).not.toContain('安全结果摘要');
     } finally {
       await page.close();
     }

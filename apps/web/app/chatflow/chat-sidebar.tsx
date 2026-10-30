@@ -31,6 +31,7 @@ interface ChatSidebarProps {
   capabilities: (section: 'work' | 'computer') => ReactNode;
   archive?: ReturnType<typeof useSessionArchive>;
   activeId: string | null;
+  nativeReadyKey?: string;
   collapsed: boolean;
   overlay?: boolean;
   sessions: Session[];
@@ -58,6 +59,7 @@ export function ChatSidebar({
   capabilities,
   archive,
   activeId,
+  nativeReadyKey,
   collapsed,
   overlay = false,
   sessions,
@@ -291,6 +293,7 @@ export function ChatSidebar({
             workspace={workspace}
             sessions={sessions}
             activeId={activeId}
+            nativeReadyKey={nativeReadyKey}
             collapsed={collapsed}
             onSelectSession={onSelectSession}
             onPrepareSession={onPrepareSession}

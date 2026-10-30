@@ -1,6 +1,8 @@
 'use client';
 import { ReferenceLibrary } from './reference-library';
 import { NativeSubagentDirectory } from './native-subagent-directory';
+import { nativeSubagentReadyKey } from './use-native-subagents';
+import { presentationPolicyFor } from './dsh-upstream/presentation/presentation-policy';
 import {
   UnifiedWorkbenchControls,
   announceWorkbenchRead,
@@ -1326,6 +1328,12 @@ export function ChatFlowClient({
       message.runId && isMessageRunActive(message, runViews[message.runId]),
   );
   const isRunning = activeRunMessages.length > 0;
+  const nativeReadyKey =
+    history?.session.id === activeId
+      ? nativeSubagentReadyKey(
+          runViews[history.messages.findLast((m) => m.runId)?.runId ?? ''],
+        )
+      : '';
   const contextCompacting = Object.values(runViews).some(
     (view) =>
       (view.status === 'running' || view.status === 'connecting') &&
@@ -1754,6 +1762,7 @@ export function ChatFlowClient({
         />
       )}
       <ChatSidebar
+        nativeReadyKey={nativeReadyKey}
         scheduledSessions={scheduledSessions}
         experienceEnabled={experienceEnabled}
         automationsActive={automationsOpen}
@@ -1925,7 +1934,11 @@ export function ChatFlowClient({
                         workspaceId={workspace.workspaceId}
                         sessionId={activeId}
                         headers={tenantHeaders}
-                        refreshKey={`${isRunning}/${history?.messages.at(-1)?.status}`}
+                        refreshKey={`${isRunning}/${history?.messages.at(-1)?.status}/${nativeReadyKey}`}
+                        presentation={presentationPolicyFor(
+                          preferences.value.transcriptView,
+                          preferences.value.collapseTiming,
+                        )}
                       />
                     )}
                     {!layout.compact && workbenchEnabled ? (

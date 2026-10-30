@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { createServer, type Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NativeSubagentSummary } from '@allrice/contracts';
+import { NativeSubagentFixtureFeed } from '../../test/native-subagent-fixture-feed';
 import type {
   Browser,
   Page,
@@ -44,6 +45,7 @@ const hoverCard = (page: Page, id: string) =>
 
 suite('visible parent native running badges', () => {
   let browser: Browser, server: Server, origin: string;
+  const feed = new NativeSubagentFixtureFeed();
   beforeAll(async () => {
     const require = createRequire(import.meta.url);
     const { build } = createRequire(require.resolve('tsx'))('esbuild');
@@ -81,6 +83,7 @@ suite('visible parent native running badges', () => {
     });
     assets.set('/layout.css', globals.outputFiles[0]!.contents);
     server = createServer((req, res) => {
+      if (feed.handle(req, res)) return;
       const path = new URL(req.url!, origin).pathname,
         asset = assets.get(path);
       res.setHeader(
@@ -119,10 +122,17 @@ suite('visible parent native running badges', () => {
   it('reads unselected visible parents, counts direct native running while the root is idle and keeps children out of business rows', async () => {
     const page = await browser.newPage(),
       calls: string[] = [];
+    const fixture = feed.register({
+      summary: (id) => (id === 'parent-c' ? null : summary),
+    });
     try {
       await page.route('**/api/v1/sessions/*/subagents?**', async (route) => {
         const url = new URL(route.request().url()),
           id = url.pathname.split('/')[4]!;
+        if (url.searchParams.get('follow') === 'true') {
+          url.searchParams.set('fixture', fixture);
+          return route.continue({ url: String(url) });
+        }
         expect(url.searchParams.get('liveOnly')).toBe('true');
         expect(route.request().headers()['x-allrice-workspace-id']).toBe(
           'workspace',
@@ -159,8 +169,14 @@ suite('visible parent native running badges', () => {
   it('removes stale positive counts after an unknown observation, failure or offline transition', async () => {
     const page = await browser.newPage();
     let result: NativeSubagentSummary | null | 'error' = summary;
+    const fixture = feed.register({ summary: () => result });
     try {
       await page.route('**/api/v1/sessions/*/subagents?**', async (route) => {
+        const url = new URL(route.request().url());
+        if (url.searchParams.get('follow') === 'true') {
+          url.searchParams.set('fixture', fixture);
+          return route.continue({ url: String(url) });
+        }
         if (result === 'error')
           return route.fulfill({ status: 503, json: { error: 'unavailable' } });
         await route.fulfill({ json: { summary: result } });
@@ -216,12 +232,20 @@ suite('visible parent native running badges', () => {
         ],
       };
       let failed = false;
+      const fixture = feed.register({
+        summary: () => (failed ? 'error' : mixed),
+      });
       try {
-        await page.route('**/api/v1/sessions/*/subagents?**', (route) =>
-          failed
+        await page.route('**/api/v1/sessions/*/subagents?**', (route) => {
+          const url = new URL(route.request().url());
+          if (url.searchParams.get('follow') === 'true') {
+            url.searchParams.set('fixture', fixture);
+            return route.continue({ url: String(url) });
+          }
+          return failed
             ? route.fulfill({ status: 503, json: { error: 'unavailable' } })
-            : route.fulfill({ json: { summary: mixed } }),
-        );
+            : route.fulfill({ json: { summary: mixed } });
+        });
         await page.goto(`${origin}?state=${state}`);
         for (const id of ['parent-a', 'parent-b', 'parent-c']) {
           await page.locator(`[data-row-key="session:${id}"]`).hover();
