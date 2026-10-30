@@ -3401,6 +3401,103 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
   );
 
+  it.each([1440, 390])(
+    'MET231 saves and clears subagent preferences without changing other preferences at %ipx',
+    async (width) => {
+      const saved: UserPreferences = {
+        ...defaultUserPreferences,
+        appearance: 'dark',
+        fontSize: 18,
+        streamingOutput: false,
+        questionWait: { mode: 'timed', seconds: 300 },
+      };
+      const f = await fixture({
+        width,
+        touch: width < 600,
+        preferences: { [user]: saved },
+        brandContent: { kind: 'custom', registered: true },
+      });
+      const patches: unknown[] = [];
+      f.page.on('request', (request) => {
+        if (
+          request.url().endsWith('/api/v1/me/preferences') &&
+          request.method() === 'PATCH'
+        )
+          patches.push(request.postDataJSON());
+      });
+      try {
+        const dialog = await openSettings(f);
+        const depth = dialog.getByRole('spinbutton', {
+          name: '子智能体最大递归深度',
+          exact: true,
+        });
+        const active = dialog.getByRole('spinbutton', {
+          name: '子智能体并行数量上限',
+          exact: true,
+        });
+        await expect.poll(() => depth.isEnabled()).toBe(true);
+        expect(await depth.inputValue()).toBe('');
+        expect(await depth.getAttribute('placeholder')).toBe('默认（1）');
+        expect(await active.inputValue()).toBe('');
+        expect(await active.getAttribute('placeholder')).toBe('默认（8）');
+        expect(await dialog.getByText(/下一次任务生效/).count()).toBe(2);
+        await depth.focus();
+        await depth.press('Enter');
+        expect(patches).toEqual([]);
+
+        const save = async (input: Locator, value: string) => {
+          await input.fill(value);
+          await input.press('Enter');
+          await expect.poll(() => input.isEnabled()).toBe(true);
+          await expect.poll(() => input.inputValue()).toBe(value);
+        };
+        await save(depth, '0');
+        expect(f.state.preferences[user]!.subagents).toEqual({
+          maxDepth: 0,
+          maxActive: null,
+        });
+        await save(active, '16');
+        await save(depth, '');
+        expect(patches.at(-1)).toEqual({
+          subagents: { maxDepth: null, maxActive: 16 },
+        });
+        await save(active, '');
+        expect(patches.at(-1)).toEqual({
+          subagents: { maxDepth: null, maxActive: null },
+        });
+        expect(f.state.preferences[user]).toEqual({ ...saved, updatedAt: now });
+
+        f.state.preferenceError = true;
+        await depth.fill('2');
+        await depth.press('Enter');
+        await dialog.getByRole('alert').getByText('保存失败，请重试').waitFor();
+        await expect.poll(() => depth.inputValue()).toBe('');
+        expect(f.state.preferences[user]!.subagents.maxDepth).toBeNull();
+        f.state.preferenceError = false;
+        await dialog.getByRole('button', { name: '重新读取' }).click();
+        await expect.poll(() => depth.isEnabled()).toBe(true);
+        await f.page.reload();
+        await openSettings(f);
+        await expect.poll(() => depth.isEnabled()).toBe(true);
+        expect(await depth.inputValue()).toBe('');
+        expect(await active.inputValue()).toBe('');
+        expect(f.state.preferences[user]).toEqual({ ...saved, updatedAt: now });
+        expect(
+          await dialog.evaluate(
+            (node) => node.scrollWidth <= node.clientWidth + 1,
+          ),
+        ).toBe(true);
+        await active.scrollIntoViewIfNeeded();
+        await f.page.screenshot({
+          path: `.local/feedback/met231-subagent-preferences-${width}.png`,
+        });
+      } finally {
+        await f.close();
+      }
+    },
+    30_000,
+  );
+
   it.each([1440, 390, 320])(
     'keeps compact cloud cancellation run-scoped until acknowledged at %ipx',
     async (width) => {
