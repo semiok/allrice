@@ -962,5 +962,127 @@ class Business(unittest.TestCase):
         self.assertFalse(monitor.daily_due(r))
 
 
+class OnlineWaits(unittest.TestCase):
+    worker_id = 'd69d8923-e74d-45ab-9b38-1d4eb8f51aa0'
+
+    def row(self, n=1, capacity=4, **overrides):
+        return dict({'checked_at': '2026-10-30T08:30:00+00:00', 'online_runs': n, 'occupied_slots': n,
+                     'samples': ['cfbc8f02-6bee-4372-b785-d76dc0211224'] if n else [], 'unclassified_runs': 0,
+                     'active_workers': [self.worker_id] if n else [],
+                     'workers': [{'key': 'worker-operations:' + self.worker_id, 'online': True,
+                                  'observed_at': '2026-10-30T08:29:45+00:00',
+                                  'value': {'workerId': self.worker_id, 'capacity': {'mode': 'auto', 'concurrency': capacity},
+                                            'pressure': {'jobs': {'active': 99}}}}]}, **overrides)
+
+    def collect(self, r, row):
+        with mock.patch.object(monitor, 'biz', return_value=row):
+            return monitor.check_online_waits(r)
+
+    def test_thresholds_are_configurable_and_not_rounded_before_judging(self):
+        for n, capacity, sev in [(0, 4, 'ok'), (3, 4, 'ok'), (4, 5, 'warning'), (19, 20, 'critical')]:
+            with self.subTest(n=n, capacity=capacity):
+                r = make_round()
+                self.assertEqual(self.collect(r, self.row(n, capacity))[0]['severity'], sev)
+                self.assertEqual(r.facts['online_waits']['total_slots'], capacity)
+        r = make_round()
+        r.cfg['business'].update(online_wait_warn_pct=80.01, online_wait_critical_pct=96)
+        self.assertEqual(self.collect(r, self.row(4, 5))[0]['severity'], 'ok')
+        r.cfg['business']['online_wait_warn_pct'] = 50
+        self.assertEqual(self.collect(r, self.row(2, 4))[0]['severity'], 'warning')
+
+    def test_missing_or_invalid_capacity_and_clock_stay_unknown(self):
+        rows = [self.row(workers=[]), self.row(active_workers=[None]),
+                self.row(0, workers=[]), self.row(unclassified_runs=1)]
+        stale = self.row()
+        stale['workers'][0]['online'] = False
+        rows.append(stale)
+        for capacity in [None, 0, -1, 33, True, '4', 2.5]:
+            rows.append(self.row(capacity=capacity))
+        for row in rows:
+            with self.subTest(row=row):
+                r = make_round()
+                findings = self.collect(r, row)
+                self.assertEqual([f['severity'] for f in findings], ['unknown', 'warning'])
+                self.assertIsNone(r.facts['online_waits']['occupancy_pct'])
+                self.assertIn('未知', findings[0]['detail'])
+        r = make_round()
+        self.collect(r, self.row(unclassified_runs=1))
+        self.assertIsNone(r.facts['online_waits']['online_runs'])
+        self.assertIsNone(r.facts['online_waits']['occupied_slots'])
+
+    def test_identity_is_checked_and_global_pressure_does_not_add_slots(self):
+        for mutate in [lambda x: x.update(key='worker-operations:forged'),
+                       lambda x: x['value'].update(workerId='invalid'),
+                       lambda x: x['value']['capacity'].update(mode='invented')]:
+            row = self.row()
+            mutate(row['workers'][0])
+            self.assertEqual(self.collect(make_round(), row)[0]['severity'], 'unknown')
+        r = make_round()
+        row = self.row()
+        row['workers'].append(dict(row['workers'][0], online=False, key='worker-operations:old'))
+        self.collect(r, row)
+        self.assertEqual(r.facts['online_waits']['occupied_slots'], 1)
+        self.assertEqual(r.facts['online_waits']['total_slots'], 4)
+        self.assertNotIn('pressure', json.dumps(r.facts))
+
+    def test_collection_or_configuration_failure_cannot_report_zero_healthy(self):
+        r = make_round()
+        with mock.patch.object(monitor, 'biz', side_effect=monitor.CheckError('relation missing')):
+            findings = monitor.check_online_waits(r)
+        self.assertEqual([f['severity'] for f in findings], ['unknown', 'warning'])
+        self.assertIsNone(r.facts['online_waits']['online_runs'])
+        self.assertIsNone(r.facts['online_waits']['occupied_slots'])
+        for warn, critical in [(None, 95), (0, 95), (96, 95), (80, 101), ('80', 95), (True, 95)]:
+            r = make_round()
+            r.cfg['business'].update(online_wait_warn_pct=warn, online_wait_critical_pct=critical)
+            self.assertEqual(self.collect(r, self.row(0))[0]['severity'], 'unknown')
+        r.cfg['business'] = None
+        self.assertEqual(monitor.check_online_waits(r)[0]['severity'], 'unknown')
+
+    def test_dedup_unknown_and_recovery_use_existing_incident_outbox(self):
+        r = make_round()
+        high = lambda: self.collect(r, self.row(4, 4))
+        self.assertEqual(step(r, high(), 0), [('opened', 'business.online_waits', False)])
+        self.assertEqual(step(r, high(), 300), [])
+        missing = self.collect(r, self.row(4, 4, workers=[]))
+        self.assertEqual(step(r, missing, 600), [('opened', 'business.online_waits_data', False)])
+        self.assertIn('business.online_waits', r.state['alerts'])
+        self.assertEqual(step(r, high(), 900), [('recovered', 'business.online_waits_data', False)])
+        self.assertEqual(step(r, self.collect(r, self.row(0)), 1200), [('recovered', 'business.online_waits', False)])
+        self.assertEqual(len(r.state['incidentOutbox']), 4)
+        self.assertEqual(r.state['alerts'], {})
+
+    def test_high_ratio_is_rechecked_before_alerting(self):
+        r = make_round()
+        check = next(c for c in monitor.BUSINESS_CHECKS if c[0] == 'online_waits')
+        self.assertTrue(check[2])
+        with mock.patch.object(monitor, 'biz', side_effect=[self.row(4, 4), self.row(0)]):
+            findings, ran = monitor.run_checks(r, [check])
+        self.assertEqual(step(r, findings, 0, ran), [])
+
+    def test_readonly_command_prints_counts_without_delivery_or_state_writes(self):
+        r = make_round()
+        out = io.StringIO()
+        with mock.patch.object(monitor, 'load_config', return_value=r.cfg), \
+             mock.patch.object(monitor, 'derive_m1'), mock.patch.object(monitor, 'biz', return_value=self.row()), \
+             mock.patch.object(monitor, 'send_telegram', side_effect=AssertionError('no delivery')), \
+             mock.patch.object(monitor, 'incident', side_effect=AssertionError('no incident')), mock.patch('sys.stdout', out):
+            monitor.main(['online-waits', '--json'])
+        snapshot = json.loads(out.getvalue())
+        self.assertEqual((snapshot['online_runs'], snapshot['occupied_slots'], snapshot['total_slots'], snapshot['occupancy_pct']), (1, 1, 4, 25))
+        self.assertIn('2026-10-30', snapshot['checked_at'])
+        self.assertFalse(os.path.exists(r.state_file))
+
+    def test_daily_uses_same_collected_snapshot(self):
+        r = make_round()
+        self.collect(r, self.row())
+        r.facts.update(longWaits=0, bridge={'expected': 0, 'count': 0})
+        daily = dict(finished=0, failed=0, canceled=0, dead_letters=0, running=1, waiting=0, unknown_ops=0, schedules=0)
+        with mock.patch.object(monitor, 'biz', return_value=daily), \
+             mock.patch.object(monitor, 'failure_groups', return_value={'groups': []}):
+            lines = monitor.daily_business(r)
+        self.assertIn(monitor.online_wait_detail(r.facts['online_waits']), lines)
+
+
 if __name__ == '__main__':
     unittest.main()

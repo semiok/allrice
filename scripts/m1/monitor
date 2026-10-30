@@ -7,6 +7,7 @@
 #   monitor peer [--config <file>]                  huihuimac side: is M1 alive, is it reachable from outside
 #   monitor daily [--config <file>]                 send the daily report now (rounds send it once a day)
 #   monitor failures [--json] [--config <file>]     failed runs of the last 24 hours by error code: new, increased
+#   monitor online-waits [--json] [--config <file>] current online question waits and Worker slot occupancy (read-only)
 #   monitor status [--config <file>]                open alerts, last round, delivery backlog
 #   monitor test-alert [--config <file>]            send one test message
 #   monitor launchd install|remove [--peer] [--config <file>]
@@ -138,6 +139,7 @@ M1 = dict(
         'bridge_active_hours': 24, 'bridge_offline_minutes': 5, 'bridge_work_wait_minutes': 30,
         'deadlock_critical_per_hour': 5, 'pg_errors_critical_per_hour': 20,
         'failure_baseline_days': 7, 'failure_increase_min': 3, 'failure_increase_ratio': 2,
+        'online_wait_warn_pct': 80, 'online_wait_critical_pct': 95,  # monitor quota alert convention; never execution limits
     },
     pgLog='/opt/homebrew/var/log/postgresql@17.log',  # log_line_prefix '%m [%p] %d ' names the database
 )
@@ -1328,6 +1330,34 @@ where j.status = 'running' and r.state = 'running' and j.lease_expires_at > now(
   and not exists (select 1 from allrice_runtime_operations o where o.root_run_id = r.id
                   and o.snapshot->>'status' in ('dispatched', 'running', 'cancel_requested') and o.lease_expires_at > now())"""
 
+# A clock may wait for a device/resource; an answerable continued card may coexist
+# with active work. Count only current foreground questions AND a waiting clock.
+# Native/legacy predicates follow native-questions.ts and task-clock.ts; no bodies.
+SQL_ONLINE_WAITS = """
+with leased as (
+  select j.id,j.run_id,j.worker_id,c.phase,
+    (exists(select 1 from allrice_task_questions q where q.run_id=r.id and q.pending)
+     or exists(select 1 from allrice_native_questions q
+       join allrice_employee_runs e on e.session_id=q.session_id and e.run_id=r.id
+       join allrice_conversation_runtimes cr on cr.session_id=q.session_id and cr.thread_id=q.native_session_id
+       where q.source_run_id=r.id and q.native_present and q.state='open' and q.closed_at is null
+         and cr.active_run_id=r.id and cr.worker_id=j.worker_id and cr.state='running')) as pending
+  from allrice_jobs j join allrice_runs r on r.id=j.run_id
+  left join allrice_task_clocks c on c.run_id=r.id
+  where r.state not in ('succeeded','failed','canceled') and j.status in ('claimed','running')
+    and j.lease_token is not null and j.worker_id is not null and j.lease_expires_at>statement_timestamp()),
+waiting as (select distinct id,run_id from leased where pending and phase='waiting')
+select statement_timestamp() as checked_at,
+  (select count(distinct run_id)::int from waiting) as online_runs,
+  (select count(distinct id)::int from waiting) as occupied_slots,
+  (select (array_agg(distinct run_id order by run_id))[1:3] from waiting) as samples,
+  (select count(distinct run_id)::int from leased where pending and phase is null) as unclassified_runs,
+  (select array_agg(distinct worker_id) from allrice_jobs where status in ('claimed','running')
+    and lease_token is not null and lease_expires_at>statement_timestamp()) as active_workers,
+  (select coalesce(jsonb_agg(jsonb_build_object('key',key,'value',value,'observed_at',updated_at,
+    'online',updated_at>statement_timestamp()-interval '90 seconds')), '[]'::jsonb)
+    from allrice_runtime_metadata where starts_with(key,'worker-operations:')) as workers"""
+
 SQL_DEAD_LETTERS = """
 select count(*)::int as count, (array_agg(j.run_id order by j.completed_at desc))[1:3] as samples,
   array_agg(distinct j.last_error_code) as codes, array_agg(distinct j.payload->>'type') as types
@@ -1493,6 +1523,75 @@ def ids(row, key='samples'):
 
 def closed(row):
     return row.get('admission') not in (None, 'open')
+
+
+def online_wait_snapshot(r):
+    """One SQL snapshot; missing evidence stays unknown, including when no Run waits."""
+    try:
+        if not isinstance(r.cfg.get('business'), dict):
+            raise CheckError('business配置缺失或非法')
+        row = biz(r, SQL_ONLINE_WAITS)
+    except CheckError as err:
+        row = {'checked_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(r.now)),
+               'online_runs': None, 'occupied_slots': None, 'samples': [],
+               'unknown_reasons': ['采集失败：' + str(err)]}
+    reasons = row.setdefault('unknown_reasons', [])
+    workers, invalid = {}, 0
+    for report in row.pop('workers', []):
+        if not report['online']:
+            continue  # a crashed/restarted Worker must not inflate current capacity
+        try:
+            value = report['value']
+            worker_id = str(uuid.UUID(value['workerId']))
+            capacity = value['capacity']
+            n = capacity['concurrency']
+            if (report['key'] != 'worker-operations:' + worker_id or
+                    capacity['mode'] not in ('auto', 'configured') or
+                    type(n) not in (int, float) or not 1 <= n <= 32 or n != int(n) or worker_id in workers):
+                raise ValueError('invalid capacity identity or concurrency')
+            workers[worker_id] = {'worker_id': worker_id, 'concurrency': int(n), 'observed_at': report['observed_at']}
+        except (KeyError, TypeError, ValueError, AttributeError):
+            invalid += 1
+    missing = set(row.pop('active_workers', None) or []) - set(workers)
+    if not workers:
+        reasons.append('无90秒内可信Worker容量')
+    if invalid:
+        reasons.append('%d条在线Worker容量身份或数值非法' % invalid)
+    if missing:
+        reasons.append('%d个有效租约Worker缺可信在线容量' % len(missing))
+    row['capacity_workers'] = sorted(workers.values(), key=lambda w: w['worker_id'])
+    row['total_slots'] = sum(w['concurrency'] for w in workers.values()) if workers and not invalid and not missing else None
+    if row.get('unclassified_runs'):
+        reasons.append('%d个当前待答Run缺任务时钟' % row['unclassified_runs'])
+        row['online_runs'] = row['occupied_slots'] = None
+    b = r.cfg.get('business') if isinstance(r.cfg.get('business'), dict) else {}
+    warn, critical = b.get('online_wait_warn_pct'), b.get('online_wait_critical_pct')
+    if not (type(warn) in (int, float) and type(critical) in (int, float) and 0 < warn <= critical <= 100):
+        reasons.append('在线等答比例告警阈值缺失或非法')
+    row['occupancy_pct'] = 100.0 * row['occupied_slots'] / row['total_slots'] if not reasons else None
+    row['thresholds'] = {'warning_pct': warn, 'critical_pct': critical}
+    r.facts['online_waits'] = row
+    return row
+
+
+def online_wait_detail(row):
+    count = lambda key: row.get(key) if row.get(key) is not None else '未知'
+    pct = '%.1f%%' % row['occupancy_pct'] if row.get('occupancy_pct') is not None else '未知'
+    text = '在线等答（%s）：Run %s个，占Worker执行位 %s/%s，占比%s；例 %s；容量来源worker-operations（90秒内，%d个Worker）' % (
+        row.get('checked_at', '采集失败'), count('online_runs'), count('occupied_slots'), count('total_slots'), pct, ids(row) or '无',
+        len(row.get('capacity_workers', [])))
+    return text + ('；未知：' + '；'.join(row['unknown_reasons']) if row.get('unknown_reasons') else '')
+
+
+def check_online_waits(r):
+    row = online_wait_snapshot(r)
+    pct, t = row['occupancy_pct'], row['thresholds']
+    sev = ('unknown' if pct is None else 'critical' if pct >= t['critical_pct'] else
+           'warning' if pct >= t['warning_pct'] else 'ok')
+    detail = online_wait_detail(row)
+    return [finding('business.online_waits', sev, '在线等答占用Worker执行位比例高', detail, BUSINESS_RUNBOOK, 'monitor online-waits --json'),
+            finding('business.online_waits_data', 'warning' if row['unknown_reasons'] else 'ok', '在线等答执行位统计不完整',
+                    detail, BUSINESS_RUNBOOK, 'monitor online-waits --json')]
 
 
 def check_failed_runs(r):
@@ -1687,6 +1786,7 @@ BUSINESS_CHECKS = [
     ('failed_runs', check_failed_runs, False, 'postgres'),
     ('stuck_runs', check_stuck_runs, False, 'postgres'),
     ('silent_runs', check_silent_runs, False, 'postgres'),
+    ('online_waits', check_online_waits, True, 'postgres'),
     ('dead_letters', check_dead_letters, False, 'postgres'),
     ('queue', check_queue, True, 'postgres'),
     ('schedules', check_schedules, False, 'postgres'),
@@ -1715,12 +1815,13 @@ def daily_business(r):
         return ['运行：查询失败（%s）' % err]
     lines = ['运行：24 小时结束 %d 个，失败 %d 个，取消 %d 个（含冒烟测试）；新增死信 %d 个' % (d['finished'], d['failed'], d['canceled'], d['dead_letters']),
              '现在：运行中 %d 个，等用户 %d 个，结果未知的操作 %d 个，启用中的定时任务 %d 个' % (d['running'], d['waiting'], d['unknown_ops'], d['schedules'])]
-    for name, fn in (('longWaits', check_waits), ('bridge', check_bridge)):
+    for name, fn in (('longWaits', check_waits), ('bridge', check_bridge), ('online_waits', check_online_waits)):
         if name not in r.facts:  # `monitor daily` alone has not run the checks: read them now
             try:
                 fn(r)
             except CheckError:
                 pass
+    lines.append(online_wait_detail(r.facts.get('online_waits', {})))
     lines.append('等用户超过 %d 小时：%s 个；Bridge 最近 24 小时在线过 %s 台、现在离线 %s 台' % (
         r.cfg['business']['wait_minutes'] // 60, r.facts.get('longWaits', '?'), (r.facts.get('bridge') or {}).get('expected', '?'),
         (r.facts.get('bridge') or {}).get('count', '?')))
@@ -2083,12 +2184,12 @@ def status(cfg):
 
 def main(argv):
     p = argparse.ArgumentParser(prog='monitor')
-    p.add_argument('command', choices=['run', 'peer', 'daily', 'failures', 'status', 'test-alert', 'launchd', 'ingest-incidents'])
+    p.add_argument('command', choices=['run', 'peer', 'daily', 'failures', 'online-waits', 'status', 'test-alert', 'launchd', 'ingest-incidents'])
     p.add_argument('action', nargs='?', choices=['install', 'remove'])
     p.add_argument('--config')
     p.add_argument('--peer', action='store_true')
     p.add_argument('--dry-run', action='store_true', help='run/peer/daily: print what would be sent; send and store nothing')
-    p.add_argument('--json', action='store_true', help='failures: the groups as JSON')
+    p.add_argument('--json', action='store_true', help='failures/online-waits: the snapshot as JSON')
     a = p.parse_args(argv)
     peer = a.command == 'peer' or a.peer
     cfg = load_config(a.config, peer)
@@ -2103,6 +2204,9 @@ def main(argv):
         print('\n\n'.join(compose(r, evaluate(r, findings, ran))) or '(nothing to send)')
     elif a.command in ('run', 'peer'):
         do_round(cfg, peer)
+    elif a.command == 'online-waits':
+        out = online_wait_snapshot(Round(cfg))
+        print(json.dumps(out, ensure_ascii=False, indent=1) if a.json else online_wait_detail(out))
     elif a.command == 'failures':
         out = failure_groups(Round(cfg))
         if a.json:
