@@ -129,7 +129,7 @@ import {
   type ReviewContinuationInput,
   type ChangesetActionInput,
 } from '@allrice/contracts';
-import type postgres from 'postgres';
+import postgres from 'postgres';
 
 import { DataAccessError } from '../data.ts';
 import { getDatabase } from '../core/client.ts';
@@ -222,6 +222,31 @@ export class QueueError extends Error {
   }
 }
 
+/** Only optional foreground-observation INSERTs, never admission or COMMIT. */
+export class QuestionObservationWriteError extends Error {
+  readonly code: string;
+  constructor(cause: postgres.PostgresError) {
+    super('Question observation INSERT failed', { cause });
+    this.code = cause.code; // Preserve the existing lease-lock retry contract.
+  }
+}
+
+function observationInsertFailed(
+  input: { type: RunEventType; payload: unknown },
+  error: unknown,
+): never {
+  const payload = input.payload as Record<string, unknown> | null;
+  if (
+    error instanceof postgres.PostgresError &&
+    input.type === 'harness.native' &&
+    payload?.source === 'dsh' &&
+    (payload.sourceEventType === 'allrice/user-question-opened' ||
+      payload.sourceEventType === 'allrice/user-question-ended')
+  )
+    throw new QuestionObservationWriteError(error);
+  throw error;
+}
+
 function requireUser(context: ResourcePrincipal) {
   if (context.actor.type !== 'user') {
     throw new DataAccessError('authentication_required');
@@ -300,7 +325,7 @@ async function appendEvent(
       ${sequence}, ${input.type}, ${transaction.json(toJsonValue(input.payload))}
     )
     returning *
-  `;
+  `.catch((error: unknown) => observationInsertFailed(input, error));
   const event = rows[0];
   if (!event) throw new Error('run event creation failed');
   if (!input.internalReceipt)
@@ -316,7 +341,7 @@ async function appendEvent(
       select 1 from allrice_employee_runs where run_id = ${input.runId}
     )
     on conflict (run_id, sequence) do nothing
-  `;
+  `.catch((error: unknown) => observationInsertFailed(input, error));
   return mapEvent(event);
 }
 

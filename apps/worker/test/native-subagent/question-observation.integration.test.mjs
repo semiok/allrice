@@ -10,6 +10,7 @@ import {
 } from '../../../../packages/database/src/runtime.fixture.ts';
 import { appendJobEvent } from '../../../../packages/database/src/execution/queue.ts';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.ts';
+import { HarnessEventBatcher } from '../../src/harness/delta-batcher.ts';
 import { normalizeHarnessRunEvent } from '../../src/harness/runtime-contract.ts';
 import { p24Fixture, gate } from '../p24/fixture.ts';
 
@@ -82,6 +83,9 @@ suite(
           questionId,
           calls = 0;
         const controller = new AbortController();
+        const batcher = new HarnessEventBatcher((event) =>
+          appendJobEvent({ ...f.worker, ...normalizeHarnessRunEvent(event) }),
+        );
         const input = {
           kernel: {
             schemaVersion: 1,
@@ -153,10 +157,7 @@ suite(
             return { modelContent: 'resource available' };
           },
           onEvent: async (event) => {
-            await appendJobEvent({
-              ...f.worker,
-              ...normalizeHarnessRunEvent(event),
-            });
+            await batcher.accept(event);
             if (event.sourceEventType === 'session/user-question')
               questionId = event.sourcePayload.questionId;
             if (event.sourceEventType === 'allrice/user-question-opened')
@@ -234,6 +235,7 @@ suite(
           }
           release.release();
           await expect(execution).resolves.toMatchObject({ threadId });
+          await batcher.flush();
           expect(await observations()).toHaveLength(2);
         } finally {
           release.release();

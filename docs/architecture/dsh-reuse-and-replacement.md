@@ -383,6 +383,8 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 
 ### allrice-jsonrpc-lifecycle-v1
 
+MET-222 观察写入故障只在现有 run_events/employee_run_steps INSERT 边界标记，真实 batcher 在其原串行 writer 内消化这两类可选观察的 SQL 错误；原门卫、clock、lease、COMMIT、旧事件 flush 失败仍失败。没有重投或停机屏障；记录缺失由监控作为缺证处理。
+
 MET-222（用户 2026-10-30；root 核定账本/运维展示）复用 `dsh-user-questions@0.2.1-rc.2` 公开 `user-questions/request`：在现有 provider 真正发布前台卡后观察 opened，同一 Promise 的 finally 观察 ended。发布时固定既有 runAdmission 的原 Run/root/native Session；adapter 仅为当前执行附加 runtimeId/Job，沿原事件串行与 lease 写入既有 run_events。版本 1 元数据不含题目/答案/命令正文，不伪造 answered，不修改等待、审批、park/detach 或 Host 关闭。
 
 守护为 `apps/worker/test/native-subagent/question-observation.integration.test.mjs` 与 `question-observation.test.mjs`；原生不再提供同样的发布/结束语义时必须重新核对。退订后可能丢 ended，消费者须复用 exact runtime 的关闭、inventory 与有效 Job lease 事实；不新增关闭屏障或 PG 状态。上游提供覆盖 legacy 的等价公开观察后可替换接线；回退只损失观测覆盖，不能将缺记录当健康 0。MET-225 关联 L14/L07/E08/L19 在线等答观测行。

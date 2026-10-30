@@ -11,6 +11,7 @@ const ports = vi.hoisted(() => ({
   cleanup: vi.fn(),
 }));
 vi.mock('@allrice/database', () => ({
+  QuestionObservationWriteError: class extends Error {},
   QueueError: class extends Error {
     constructor(readonly code: string) {
       super(code);
