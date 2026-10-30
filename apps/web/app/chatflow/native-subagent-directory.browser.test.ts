@@ -615,6 +615,9 @@ suite('native subagent directory and employee sidebar', () => {
       ).toBe(1);
       expect(await detail.innerText()).toContain('截断');
       expect(await detail.innerText()).toContain('不完整');
+      const screenshot = resolve('.local/met231-u2-hot-fixture.png');
+      await page.screenshot({ path: screenshot });
+      console.log('U2_FIXTURE_SCREENSHOT ' + screenshot);
       feed.push(
         fixture,
         {
