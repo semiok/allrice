@@ -1,4 +1,5 @@
 import { cookies } from 'next/headers';
+import { z } from 'zod';
 import { NativeSubagentQueryRequestSchema } from '@allrice/contracts';
 import { authorizeSessionOwner, DataAccessError } from '@allrice/database';
 import {
@@ -20,9 +21,16 @@ export async function GET(
 ) {
   try {
     const context = await requireRequestContext(request);
-    const { workspaceId } = NativeSubagentQueryRequestSchema.pick({
+    const { workspaceId, liveOnly } = NativeSubagentQueryRequestSchema.pick({
       workspaceId: true,
-    }).parse(Object.fromEntries(new URL(request.url).searchParams));
+    })
+      .extend({
+        liveOnly: z
+          .literal('true')
+          .transform(() => true)
+          .optional(),
+      })
+      .parse(Object.fromEntries(new URL(request.url).searchParams));
     const { id } = await route.params;
     await authorizeSessionOwner(context, workspaceId, id);
     const token = (await cookies()).get(sessionCookieName)?.value;
@@ -32,6 +40,7 @@ export async function GET(
       context,
       workspaceId,
       sessionId: id,
+      liveOnly,
       signal: request.signal,
     });
     return Response.json(

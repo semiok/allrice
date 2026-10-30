@@ -123,7 +123,7 @@ export function createNativeRunDiagnosticsHttpHandler(
           input.sessionId,
         );
         signal.throwIfAborted();
-        const summary = await subagents.read(target, signal);
+        const summary = await subagents.read(target, signal, input.liveOnly);
         const current = await deps.authenticate(token, tenant);
         if (!current || current.actor.id !== context.actor.id) {
           send(401, { error: 'authentication_required' });

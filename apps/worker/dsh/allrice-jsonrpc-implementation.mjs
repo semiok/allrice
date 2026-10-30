@@ -1982,7 +1982,10 @@ export async function createAllRiceRuntime(
         case 'session/projection':
           return this.sessionProjection(params);
         case 'session/subagent-summary':
-          return this.nativeSubagentSummary(requiredSessionId(params));
+          return this.nativeSubagentSummary(
+            requiredSessionId(params),
+            params.liveOnly === true,
+          );
         case 'session/recover':
           return this.recover(params);
         case 'session/close':

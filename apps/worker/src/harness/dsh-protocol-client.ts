@@ -450,9 +450,9 @@ export class DshProtocolClient {
     return this.request('session/compact', { sessionId });
   }
 
-  async nativeSubagentSummary(sessionId: string) {
+  async nativeSubagentSummary(sessionId: string, liveOnly = false) {
     return NativeSubagentSummarySchema.parse(
-      await this.request('session/subagent-summary', { sessionId }),
+      await this.request('session/subagent-summary', { sessionId, liveOnly }),
     );
   }
 

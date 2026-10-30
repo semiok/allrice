@@ -7,5 +7,7 @@ export const NativeSubagentQueryRequestSchema = z
     organizationId: UuidSchema,
     workspaceId: UuidSchema,
     sessionId: UuidSchema,
+    // A local hot probe: absence is not global coldness or an empty tree.
+    liveOnly: z.boolean().optional(),
   })
   .strict();

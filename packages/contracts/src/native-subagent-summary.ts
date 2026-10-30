@@ -29,6 +29,11 @@ export const NativeSubagentSummarySchema = z.object({
         kind: z.literal('child'),
         mode: z.enum(['one-shot', 'continuable']),
         label: z.string().optional(),
+        // Exact Host-local Agent status: null is unknown, never inferred idle.
+        running: z.boolean().nullable().default(null),
+        // Own log only; task is the initial user message's first text block.
+        title: z.string().optional(),
+        task: z.string().optional(),
         // Inactive is native Host-local residency, not a terminal status.
         activity: z.enum(['running', 'inactive', 'unknown']),
         observation,

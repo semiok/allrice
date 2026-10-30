@@ -3,6 +3,7 @@ import Sessions from '@deepseek-ai/dsh-session';
 import * as Persistence from '@deepseek-ai/dsh-session-persistence-jsonl';
 import Projections from '@deepseek-ai/dsh-session-projection';
 import Query from '@deepseek-ai/dsh-session-query-sqlite';
+import { foldSessionTitle } from '@deepseek-ai/dsh-session-title';
 import TokenMeter from '@deepseek-ai/dsh-token-meter';
 import Subagents, { finalAssistantOutput } from '@deepseek-ai/dsh-subagent';
 import Fs from '@deepseek-ai/dsh-fs-local';
@@ -41,15 +42,38 @@ const cut = ({ source, cursor }) => ({ source, cursor });
 /** Read only native facts. Prepared cuts may contain synthetic interrupted-turn
  * closers: preserve their source, never manufacture activation completion.
  * The supplied root must already be authorized by the owning Host/Worker. */
-export async function readNativeSubagentSummary(ctx, rootId, signal) {
+export async function readNativeSubagentSummary(
+  ctx,
+  rootId,
+  signal,
+  liveOnly = false,
+) {
   const observations = new Map();
+  const liveSessions = new Map();
   const observe = async (id) => {
-    if (!observations.has(id))
+    if (!observations.has(id)) {
+      liveSessions.set(id, ctx.sessions.get(id));
+      // Native observeSession selects the attached Session synchronously.
+      // Refuse before calling it: a post-read source filter still does cold I/O.
+      if (liveOnly && !liveSessions.get(id))
+        throw Error('NATIVE_QUERY_SESSION_NOT_LIVE');
       observations.set(
         id,
         await ctx.sessionQuery.observeSession(id, { signal }),
       );
+    }
     return observations.get(id);
+  };
+  const liveChildren = (parent, parentId, depth) => {
+    const catalog = parent.projections?.values.subagentCatalog;
+    if (!catalog) throw Error('NATIVE_QUERY_CATALOG_UNAVAILABLE');
+    return catalog.map((entry) => ({
+      ...entry,
+      kind: 'child',
+      parentId,
+      depth,
+      activity: 'running',
+    }));
   };
   try {
     const root = await observe(rootId);
@@ -61,8 +85,17 @@ export async function readNativeSubagentSummary(ctx, rootId, signal) {
       throw Error('NATIVE_QUERY_ROOT_MISMATCH');
     const trusted = new Set([rootId]);
     const descendants = [];
-    for (const row of await ctx.subagents.listDescendants(rootId, signal)) {
+    // A probe walks only catalogs of verified attached Sessions. Cold entries
+    // remain diagnostics; their children cannot be observed without disk I/O.
+    const pending = (
+      liveOnly
+        ? liveChildren(root, rootId, 1)
+        : await ctx.subagents.listDescendants(rootId, signal)
+    ).reverse();
+    while (pending.length) {
+      const row = pending.pop();
       signal?.throwIfAborted();
+      if (liveOnly && trusted.has(row.id)) continue;
       const diagnostic = (reason) => ({
         kind: 'diagnostic',
         id: row.id,
@@ -78,7 +111,7 @@ export async function readNativeSubagentSummary(ctx, rootId, signal) {
         descendants.push(row);
         continue;
       }
-      if (row.mode === 'external') {
+      if (!['one-shot', 'continuable'].includes(row.mode)) {
         descendants.push(diagnostic('unsupported'));
         continue;
       }
@@ -109,6 +142,21 @@ export async function readNativeSubagentSummary(ctx, rootId, signal) {
           descendants.push(diagnostic('identity_mismatch'));
           continue;
         }
+        const session = liveSessions.get(row.id);
+        const agent = ctx.get('agents')?.get(row.id);
+        const status =
+          root.source === 'live' &&
+          child.source === 'live' &&
+          session &&
+          ctx.sessions.get(row.id) === session &&
+          agent?.session === session
+            ? agent.status
+            : undefined;
+        // The native tool supplies its task as the first text block; later
+        // blocks can be internal continuable return guidance, not the task.
+        const task = own.find(
+          (e) => e.type === 'user/message' && e.data.source.kind === 'user',
+        )?.data.content[0];
         const summary = {
           kind: 'child',
           id: row.id,
@@ -116,6 +164,10 @@ export async function readNativeSubagentSummary(ctx, rootId, signal) {
           depth: row.depth,
           mode: identity.mode,
           label: identity.label,
+          running:
+            status === 'running' ? true : status === 'idle' ? false : null,
+          title: foldSessionTitle(own)?.title,
+          task: task?.type === 'text' ? task.text : undefined,
           activity: root.source === 'live' ? row.activity : 'unknown',
           observation: cut(child),
           timing: values.subagentTiming,
@@ -132,6 +184,8 @@ export async function readNativeSubagentSummary(ctx, rootId, signal) {
           root: cut(root),
           descendants: [summary],
         });
+        if (liveOnly)
+          pending.push(...liveChildren(child, row.id, row.depth + 1).reverse());
         descendants.push(summary);
         trusted.add(row.id);
       } catch (error) {
