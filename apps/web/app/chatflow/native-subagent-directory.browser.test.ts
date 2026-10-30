@@ -204,7 +204,14 @@ suite('native subagent directory and employee sidebar', () => {
       ).not.toMatch(/fork-a|idle-b|grandchild/);
       await row(page, 'parent-c').hover();
       await expect
-        .poll(() => page.getByRole('tooltip').innerText())
+        .poll(() =>
+          page
+            .getByRole('button', {
+              name: '复制: parent-c 父级任务',
+              exact: true,
+            })
+            .innerText(),
+        )
         .toContain('子智能体当前活动状态未知');
       const trigger = page.getByRole('button', {
         name: '2 个子智能体 · 1 个运行中',
