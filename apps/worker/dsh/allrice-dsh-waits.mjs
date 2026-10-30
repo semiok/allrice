@@ -76,7 +76,6 @@ export async function checkpointNativeQuestion(server, sessionId, questionId) {
   )
     return null;
   await server.taskProgress?.flush();
-  await server.nativeAccounting?.flush();
   // A user answer can race the preceding flush.
   if (
     server.detaching !== undefined ||

@@ -866,7 +866,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           input_tokens: runs[phase]!.input,
           cached_input_tokens: runs[phase]!.cached,
           output_tokens: runs[phase]!.calls * 5,
-          usage_complete: true,
+          usage_complete: false,
           // The pinned pi-ai transport omits zero cache buckets. Preserve that
           // absence; subscription/cache-bucket folding has its own unit coverage.
           cache_usage_known: false,
@@ -999,7 +999,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           answer: '等你回答后继续。',
           waitingForUser: { questionId: expect.any(String) },
           usage: { inputTokens: 6000, cachedInputTokens: 0, outputTokens: 15 },
-          usageComplete: true,
+          usageComplete: false,
         });
         if (!('waitingForUser' in result) || !result.waitingForUser)
           throw Error('Missing native progress wait');
@@ -1046,7 +1046,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           status: 'succeeded',
           input_tokens: 6000,
           output_tokens: 15,
-          usage_complete: true,
+          usage_complete: false,
         });
         expect(
           await f.db`select route_decision_id id,status,input_tokens,output_tokens,usage_complete from allrice_model_usage_ledger where route_decision_id=${route!.id}`,
@@ -1237,13 +1237,13 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         await f.db`select active_turn_id from allrice_conversation_runtimes where session_id=${f.chat.id}`;
       expect(runtime!.active_turn_id).toBe(starts[1]!.payload.turnId);
       expect(result.answer).toBe(answer);
-      // Root receipts include the tool call, first idle and woken turn. Child
-      // usage归根 is PR3b; never synthesize it from a journal into this Run.
+      // Five actual calls: three root calls and two child calls, each 20 input / 5 output.
+      // Only these fresh receipts contribute; inherited history is not charged.
       expect(result).toMatchObject({
         usage: {
-          inputTokens: 60,
+          inputTokens: 100,
           cachedInputTokens: 0,
-          outputTokens: 15,
+          outputTokens: 25,
         },
       });
       await completeJob({
@@ -1406,7 +1406,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
             input_tokens: mode === 'interrupt' ? 20 : 40,
             cached_input_tokens: 0,
             output_tokens: mode === 'interrupt' ? 5 : 10,
-            usage_complete: mode !== 'interrupt',
+            usage_complete: false,
             cache_usage_known: false,
           });
           expect(

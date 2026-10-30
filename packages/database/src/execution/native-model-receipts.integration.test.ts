@@ -315,27 +315,6 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
       .map((row) => NativeModelReceiptSchema.parse(row.payload))
       .filter((row) => row.routeDecisionId === decisionId);
   };
-  const settle = (f: Fixture) =>
-    completeRouteDecision({
-      organizationId: f.org,
-      workspaceId: f.workspace,
-      outcome: {
-        decisionId: f.decision.id,
-        status: 'failed',
-        inputTokens: 0,
-        cachedInputTokens: 0,
-        outputTokens: 0,
-        costCents: null,
-        usageComplete: false,
-        cacheUsageKnown: false,
-        errorCode: 'synthetic_stop',
-        failureCategory: null,
-        completedAt: new Date().toISOString(),
-      },
-    }).then(
-      () => ({ closed: true }),
-      (error) => ({ error }),
-    );
   async function held(callId: string) {
     const connection = await fixture.db.reserve();
     const [r] =
@@ -883,7 +862,7 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
         (error) => ({ error }),
       );
       const writer = await nativeBindingWaiter(fixture.db, gate.pid);
-      closing = settle(f);
+      closing = nativeOutcome(f);
       await nativeBindingWaiter(fixture.db, writer);
       const [route] =
         await fixture.db`select completed_at from allrice_route_decisions where id=${f.decision.id}`;
@@ -894,14 +873,23 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
       await Promise.all([writing, closing]);
     }
     expect(await writing).toMatchObject({ value: { fact: finish(call) } });
-    expect(await closing).toEqual({ closed: true });
+    expect(await closing).toMatchObject({
+      inputTokens: 130,
+      cachedInputTokens: 20,
+      outputTokens: 5,
+      usageComplete: true,
+      cacheUsageKnown: true,
+    });
+    const [charged] =
+      await fixture.db`select input_tokens,usage_complete,cost_cents from allrice_model_usage_ledger where route_decision_id=${f.decision.id}`;
+    expect(charged).toMatchObject({ input_tokens: 130, usage_complete: true });
+    expect(Number(charged!.cost_cents)).toBeCloseTo(0.013);
     expect((await read(f)).map((r) => r.fact.phase)).toEqual([
       'start',
       'finish',
     ]);
     await expect(write(f, start(f))).rejects.toThrow('conflict');
-    // This proves the shared closure boundary, not aggregation: the legacy
-    // outcome above is synthetic. The next slice must read facts under it.
+    // The committed finish is read under the same route lock as this ledger write.
   });
   it('does not acquire tenant admission while holding the leased Job', async () => {
     const f = await setup(),
@@ -925,7 +913,7 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
     let writing: Promise<unknown> | undefined,
       closing: Promise<unknown> | undefined;
     try {
-      closing = settle(f);
+      closing = nativeOutcome(f);
       const closer = await nativeBindingWaiter(fixture.db, gate.pid);
       writing = write(f, finish(call)).then(
         (value) => ({ value }),
@@ -937,7 +925,14 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
       await gate.release();
       await Promise.all([writing, closing]);
     }
-    expect(await closing).toEqual({ closed: true });
+    expect(await closing).toMatchObject({
+      inputTokens: 0,
+      outputTokens: 0,
+      usageComplete: false,
+      cacheUsageKnown: false,
+      costCents: null,
+    });
+    expect(await nativeOutcome(f)).toEqual(await closing);
     expect(await writing).toMatchObject({ error: { code: 'conflict' } });
     expect((await read(f)).map((r) => r.fact.phase)).toEqual(['start']);
   });

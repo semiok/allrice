@@ -375,7 +375,10 @@ async function scenario({
         ? '/synthetic-method Synthetic request'
         : sceneProbe
           ? `/${sceneName} Synthetic request`
-          : 'Synthetic request: list once then answer.',
+          : accounting && compact
+            ? 'Summarize this synthetic source: ' +
+              'Prior material. '.repeat(3000)
+            : 'Synthetic request: list once then answer.',
     );
     if (accountingStall) {
       await receiptEntered.promise;
