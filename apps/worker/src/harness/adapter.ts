@@ -1,4 +1,5 @@
 import type { createRunDeliveryPort } from '../final-delivery/run-delivery.js';
+import type { NativeSubagentFollowInput } from './native-subagent-follow.js';
 import type {
   NativeRootOrigin,
   NativeModelFact,
@@ -301,6 +302,10 @@ export interface HarnessAdapter {
     signal: AbortSignal,
     liveOnly?: boolean,
   ): Promise<NativeSubagentSummary | undefined>;
+  nativeSubagentFollow?(
+    target: NativeSubagentQueryTarget,
+    input: NativeSubagentFollowInput,
+  ): Promise<boolean | undefined>;
   /** Idle process close runs only while this returns true. */
   setIdleCloseGate?(gate: () => boolean): void;
   close?(): Promise<void>;

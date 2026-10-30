@@ -1432,6 +1432,12 @@ export class DshHarnessAdapter implements HarnessAdapter {
     return this.runtimePool.nativeSubagentSummary(...args);
   }
 
+  nativeSubagentFollow(
+    ...args: Parameters<DshRuntimePool['nativeSubagentFollow']>
+  ) {
+    return this.runtimePool.nativeSubagentFollow(...args);
+  }
+
   setIdleCloseGate(gate: () => boolean) {
     this.runtimePool.setIdleCloseGate(gate);
   }

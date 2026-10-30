@@ -1,6 +1,6 @@
-/* global process, Request, fetch, AbortController */
+/* global process, Request, fetch, AbortController, TextDecoder, console */
 import { createHash, randomUUID } from 'node:crypto';
-import { createServer } from 'node:http';
+import { createServer, ServerResponse } from 'node:http';
 import {
   mkdtemp,
   readdir,
@@ -11,6 +11,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import {
   afterAll,
   afterEach,
@@ -140,6 +141,7 @@ suite(
       persist = true,
       model = async () => text('native private child reply'),
       spawn = true,
+      options = {},
     ) {
       const f = await createRunAuthorityFixture(fixture.db, {
         configure: false,
@@ -183,10 +185,16 @@ suite(
         organizationId: f.org,
         workspaceId: f.workspace,
       });
+      const listeners = new Set(),
+        failures = new Set();
       const h = persist
         ? await host({
+            ...options,
             rootId: descriptor.nativeSessionId,
             model,
+            onNotification: (notice) => {
+              for (const listener of listeners) listener(notice);
+            },
             prepare: () =>
               vi.stubEnv('DSH_SESSION_ROOT', descriptor.storageNamespace),
           })
@@ -197,7 +205,16 @@ suite(
         await h.wait();
         await h.ctx.sessions.flush(h.root.session);
       }
-      return { ...f, descriptor, bound, context: context, token, h };
+      return {
+        ...f,
+        descriptor,
+        bound,
+        context: context,
+        token,
+        h,
+        listeners,
+        failures,
+      };
     }
     async function hotHost(f) {
       const target = await getSessionNativeSubagentTarget(
@@ -229,6 +246,19 @@ suite(
               request: (method, params) =>
                 f.h.server.handleRequest(method, params),
             }),
+          nativeSubagentSnapshot:
+            DshProtocolClient.prototype.nativeSubagentSnapshot.bind({
+              request: (method, params) =>
+                f.h.server.handleRequest(method, params),
+            }),
+          subscribe: (listener) => {
+            f.listeners.add(listener);
+            return () => f.listeners.delete(listener);
+          },
+          onFailure: (listener) => {
+            f.failures.add(listener);
+            return () => f.failures.delete(listener);
+          },
           close: () => f.h.server.closeRoot(f.h.root.id),
         },
       };
@@ -242,7 +272,7 @@ suite(
       await fixture.db`insert into allrice_memberships(organization_id,workspace_id,user_id,role) values(${f.org},${f.workspace},${id},'member')`;
       return { ...(await createSession(id)), id };
     }
-    async function start(f, afterRead) {
+    async function start(f, afterRead, authenticate) {
       const target = vi.fn(getSessionNativeSubagentTarget);
       const read = vi.fn(async (value, signal, liveOnly) => {
         const summary = await readAuthorizedNativeSubagentSummary(
@@ -253,10 +283,13 @@ suite(
         await afterRead?.(signal);
         return summary;
       });
-      const handler = createNativeRunDiagnosticsHttpHandler(undefined, {
-        target,
-        read,
-      });
+      const handler = createNativeRunDiagnosticsHttpHandler(
+        authenticate ? { authenticate } : undefined,
+        {
+          target,
+          read,
+        },
+      );
       const server = createServer(async (req, res) => {
         if (!(await handler(req, res))) {
           res.writeHead(404);
@@ -289,12 +322,13 @@ suite(
         input,
       };
     }
-    function web(f, token = f.token, query = '') {
+    function web(f, token = f.token, query = '', signal) {
       cookie.token = token;
       return GET(
         new Request(
           `http://localhost/api/v1/sessions/${f.session}/subagents?workspaceId=${f.workspace}${query}`,
           {
+            signal,
             headers: {
               host: 'localhost',
               'x-allrice-organization-id': f.org,
@@ -335,6 +369,896 @@ suite(
         await fixture.db`delete from allrice_native_session_bindings where native_session_id=${f.descriptor.nativeSessionId} returning *`;
       await fixture.db`insert into allrice_native_session_bindings select * from jsonb_populate_record(null::allrice_native_session_bindings,${fixture.db.json({ ...pin, ...changes })})`;
     }
+    function consume(response) {
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-type')).toContain(
+        'text/event-stream',
+      );
+      const reader = response.body.getReader(),
+        decoder = new TextDecoder(),
+        events = [];
+      let buffered = '',
+        detail;
+      return {
+        events,
+        reader,
+        detail: () => detail,
+        async until(predicate) {
+          while (true) {
+            const boundary = buffered.indexOf('\n\n');
+            if (boundary < 0) {
+              const part = await reader.read();
+              if (part.done)
+                throw Error(
+                  `closed before event: ${events.map((e) => e.type)}`,
+                );
+              buffered += decoder.decode(part.value, { stream: true });
+              continue;
+            }
+            const packet = buffered.slice(0, boundary);
+            buffered = buffered.slice(boundary + 2);
+            if (!packet.startsWith('data: ')) continue;
+            const event = JSON.parse(packet.slice(6));
+            events.push(event);
+            if (event.type === 'snapshot')
+              detail = { kind: 'hot', ...event.snapshot };
+            if (event.type === 'display') {
+              expect(detail).toMatchObject({
+                kind: 'hot',
+                rootId: event.rootId,
+                childId: event.childId,
+                hostEpoch: event.hostEpoch,
+                stream: { instanceId: event.display.instanceId },
+              });
+              detail.stream = event.display;
+            }
+            // A summary cut replaces the hot detail view; it never appends another
+            // copy of the final assistant row or interprets active:null as final.
+            if (event.type === 'summary')
+              detail = {
+                kind: 'summary',
+                child: event.summary?.descendants.find(
+                  (row) => row.id === event.childId,
+                ),
+              };
+            if (event.type === 'clear') detail = undefined;
+            if (predicate(event)) return event;
+          }
+        },
+      };
+    }
+    it.each(['summary-response', 'final-authorization'])(
+      'continues A/B/C on one address when B starts during %s',
+      async (window) => {
+        const ready = [gate(), gate(), gate()],
+          finish = [gate(), gate(), gate()],
+          cut = gate(),
+          release = gate();
+        let selectedSession,
+          attempt = 0;
+        const f = await chat(true, undefined, false, {
+          stream: async function* (request) {
+            selectedSession ??= request.sessionId;
+            const n = request.sessionId === selectedSession ? attempt++ : -1;
+            yield { type: 'block-start', index: 0, blockType: 'text' };
+            yield {
+              type: 'text-delta',
+              index: 0,
+              text: n < 0 ? 'root acknowledged' : ['A', 'B', 'C'][n],
+            };
+            if (n >= 0) {
+              ready[n].resolve();
+              await hold(request.signal, finish[n]);
+            }
+            yield { type: 'finish', reason: { kind: 'stop' } };
+          },
+        });
+        const a = await f.h.spawn(f.h.root, 'A', { delivery: 'caller' });
+        await ready[0].promise;
+        const { runtime } = await hotHost(f);
+        const api = await start(f, async () => {
+          if (window === 'summary-response') {
+            cut.resolve();
+            await release.promise;
+          }
+        });
+        const originalTarget = api.target.getMockImplementation();
+        let gated = false;
+        api.target.mockImplementation(async (...args) => {
+          const value = await originalTarget(...args);
+          if (
+            window === 'final-authorization' &&
+            api.read.mock.calls.length &&
+            !gated
+          ) {
+            gated = true;
+            cut.resolve();
+            await release.promise;
+          }
+          return value;
+        });
+        const abort = new AbortController();
+        try {
+          const consumer = consume(
+            await web(
+              f,
+              f.token,
+              `&follow=true&childId=${a.childId}`,
+              abort.signal,
+            ),
+          );
+          const initial = await consumer.until((e) => e.type === 'snapshot');
+          finish[0].resolve();
+          await a.result;
+          await cut.promise;
+          await f.h.ctx.subagents.sendMessage(f.h.root, a.childId, text('B'), {
+            signal: abort.signal,
+          });
+          await ready[1].promise;
+          expect(f.h.ctx.agents.get(a.childId)?.status).toBe('running');
+          release.resolve();
+          // A fresh native cut may precede its first text; its safe replacement
+          // must then reach the same consumer, without waiting for another cut.
+          await consumer.until(
+            () => consumer.detail()?.stream?.active?.text === 'B',
+          );
+          const second = consumer.detail();
+          expect(second.stream.instanceId).not.toBe(
+            initial.snapshot.stream.instanceId,
+          );
+          expect(f.listeners.size).toBe(1);
+          expect(consumer.detail().stream.active.text).toBe('B');
+          finish[1].resolve();
+          await f.h.wait();
+          const settled = await consumer.until(
+            (e) =>
+              e.type === 'summary' &&
+              e.summary?.descendants.some(
+                (r) => r.id === a.childId && r.lastReply === 'B',
+              ),
+          );
+          expect(
+            settled.summary.descendants.find((r) => r.id === a.childId)
+              .observation.source,
+          ).toBe('prepared');
+          expect(f.h.ctx.agents.get(a.childId)).toBeUndefined();
+          const filesBefore = await files(f.descriptor.storageNamespace),
+            sqlBefore = await writes(f),
+            calls = f.h.calls.length,
+            activity = runtime.lastActivityAt;
+          await delay(50);
+          expect(api.read).toHaveBeenCalledTimes(2);
+          expect(await files(f.descriptor.storageNamespace)).toEqual(
+            filesBefore,
+          );
+          expect(await writes(f)).toEqual(sqlBefore);
+          expect(f.h.calls).toHaveLength(calls);
+          expect(runtime.lastActivityAt).toBe(activity);
+          await f.h.ctx.subagents.sendMessage(f.h.root, a.childId, text('C'), {
+            signal: abort.signal,
+          });
+          await ready[2].promise;
+          await consumer.until(
+            () => consumer.detail()?.stream?.active?.text === 'C',
+          );
+          const third = consumer.detail();
+          expect(third.stream.instanceId).not.toBe(second.stream.instanceId);
+          expect(consumer.detail().stream.active.text).toBe('C');
+          expect(f.listeners.size).toBe(1);
+          expect(
+            consumer.events.filter((e) => e.type === 'summary'),
+          ).toHaveLength(2);
+          expect(
+            consumer.events.some(
+              (e) =>
+                e.type === 'terminal' ||
+                (e.type === 'clear' && e.reason === 'unavailable'),
+            ),
+          ).toBe(false);
+          console.log(
+            'SESSION_FOLLOW_ABC',
+            JSON.stringify({
+              window,
+              types: consumer.events.map((e) => e.type),
+              snapshots: consumer.events
+                .filter((e) => e.type === 'snapshot')
+                .map((e) => e.snapshot.stream.active?.text),
+              displays: consumer.events
+                .filter((e) => e.type === 'display')
+                .map((e) => e.display.active?.text),
+              reads: api.read.mock.calls.length,
+              listeners: f.listeners.size,
+            }),
+          );
+          await consumer.reader.cancel();
+          await vi.waitFor(() => expect(f.listeners.size).toBe(0));
+        } finally {
+          abort.abort();
+          release.resolve();
+          for (const end of finish) end.resolve();
+          await a.result;
+          await f.h.wait();
+        }
+      },
+      30_000,
+    );
+
+    it('retains a nested selected address after a cold directory cut and a short native reactivation', async () => {
+      const parentReady = gate(),
+        parentEnd = gate(),
+        childReady = gate(),
+        childEnd = gate();
+      const f = await chat(true, undefined, false, {
+        depth: 2,
+        stream: async function* (request, n) {
+          yield { type: 'block-start', index: 0, blockType: 'text' };
+          yield {
+            type: 'text-delta',
+            index: 0,
+            text: n === 1 ? 'parent' : n === 2 ? 'nested A' : 'nested B',
+          };
+          if (n === 1) {
+            parentReady.resolve();
+            await hold(request.signal, parentEnd);
+          } else if (n === 2) {
+            childReady.resolve();
+            await hold(request.signal, childEnd);
+          }
+          yield { type: 'finish', reason: { kind: 'stop' } };
+        },
+      });
+      const parent = await f.h.spawn(f.h.root, 'parent', {
+        delivery: 'caller',
+      });
+      await parentReady.promise;
+      const parentAgent = f.h.ctx.agents.get(parent.childId),
+        child = await f.h.spawn(parentAgent, 'nested A', {
+          delivery: 'caller',
+        });
+      await childReady.promise;
+      await hotHost(f);
+      const api = await start(f),
+        abort = new AbortController();
+      try {
+        const consumer = consume(
+          await web(
+            f,
+            f.token,
+            `&follow=true&childId=${child.childId}`,
+            abort.signal,
+          ),
+        );
+        await consumer.until((e) => e.type === 'snapshot');
+        childEnd.resolve();
+        await child.result;
+        await consumer.until((e) => e.type === 'summary');
+        await f.h.ctx.subagents.sendMessage(
+          f.h.root,
+          parent.childId,
+          text('parent remains working'),
+          { signal: abort.signal },
+        );
+        await consumer.until(
+          (e) =>
+            e.type === 'directory' &&
+            e.summary.descendants.some(
+              (r) => r.id === child.childId && r.kind === 'diagnostic',
+            ),
+        );
+        expect(f.listeners.size).toBe(1);
+        await f.h.ctx.subagents.sendMessage(
+          parentAgent,
+          child.childId,
+          text('short continuation'),
+          { signal: abort.signal },
+        );
+        const second = await consumer.until(
+          (e) =>
+            e.type === 'summary' &&
+            e.summary?.descendants.some(
+              (r) => r.id === child.childId && r.lastReply === 'nested B',
+            ),
+        );
+        expect(
+          second.summary.descendants.find((r) => r.id === child.childId),
+        ).toMatchObject({
+          parentId: parent.childId,
+          running: null,
+          observation: { source: 'prepared' },
+          lastReply: 'nested B',
+        });
+        expect(consumer.detail()).toMatchObject({
+          kind: 'summary',
+          child: { lastReply: 'nested B' },
+        });
+        expect(api.read).toHaveBeenCalledTimes(2);
+        expect(f.listeners.size).toBe(1);
+        expect(
+          consumer.events.some(
+            (e) => e.type === 'clear' && e.reason === 'unavailable',
+          ),
+        ).toBe(false);
+        console.log(
+          'SESSION_FOLLOW_NESTED_SHORT',
+          JSON.stringify({
+            types: consumer.events.map((e) => e.type),
+            reads: api.read.mock.calls.length,
+            listeners: f.listeners.size,
+          }),
+        );
+      } finally {
+        abort.abort();
+        childEnd.resolve();
+        parentEnd.resolve();
+        await child.result;
+        await parent.result;
+        await f.h.wait();
+      }
+    }, 30_000);
+
+    it.each([
+      ['a', 'b', 'b', 'ab', 'ab'],
+      ['ab', '', 'b', 'ab', 'abb'],
+      ['<thi', 'nk>PRIVATE_THINK', 'nk>PRIVATE_THINK</think>safe', '', 'safe'],
+      [
+        '<allrice_tool_call>PRIVATE_COMMAND',
+        '',
+        '</allrice_tool_call>',
+        '',
+        '',
+      ],
+    ])(
+      'follows real authorized mid-attempt replacements and one safe prepared final: %s / %s',
+      async (left, right, ending, before, after) => {
+        const entered = gate(),
+          release = gate(),
+          updated = gate(),
+          finish = gate();
+        const f = await chat(true, undefined, false, {
+          stream: async function* (request) {
+            yield { type: 'text-delta', index: 0, text: left };
+            yield { type: 'text-delta', index: 1, text: right };
+            entered.resolve();
+            await hold(request.signal, release);
+            yield {
+              type: 'block-end',
+              index: 1,
+              block: { type: 'text', text: ending },
+            };
+            updated.resolve();
+            await hold(request.signal, finish);
+            yield { type: 'finish', reason: { kind: 'stop' } };
+          },
+        });
+        const activation = await f.h.spawn(f.h.root, 'opened detail', {
+          delivery: 'caller',
+        });
+        const controller = new AbortController();
+        try {
+          await entered.promise;
+          const { pool, runtime } = await hotHost(f);
+          const original = runtime.client.nativeSubagentSnapshot;
+          let first = true;
+          runtime.client.nativeSubagentSnapshot = async (...args) => {
+            const cut = await original(...args);
+            if (first) {
+              first = false;
+              release.resolve();
+              await updated.promise;
+            }
+            return cut;
+          };
+          const api = await start(f, () => {
+            expect(f.h.ctx.agents.get(activation.childId)).toBeUndefined();
+            expect(f.h.ctx.sessions.get(activation.childId)).toBeUndefined();
+          });
+          await f.h.ctx.sessions.flush(f.h.root.session);
+          await f.h.ctx.sessions.flush(
+            f.h.ctx.agents.get(activation.childId).session,
+          );
+          const storage = await files(f.descriptor.storageNamespace),
+            sql = await writes(f),
+            calls = f.h.calls.length,
+            activity = runtime.lastActivityAt;
+          const spies = ['acquire', 'lease', 'touch'].map((key) =>
+            vi.spyOn(pool, key),
+          );
+          const consumer = consume(
+            await web(
+              f,
+              f.token,
+              `&follow=true&childId=${activation.childId}`,
+              controller.signal,
+            ),
+          );
+          const initial = await consumer.until((e) => e.type === 'snapshot');
+          expect(initial.snapshot.stream.active.text).toBe(before);
+          await consumer.until(
+            (e) =>
+              e.type === 'display' &&
+              e.display.revision > initial.snapshot.stream.revision,
+          );
+          expect(consumer.detail().stream.active.text).toBe(after);
+          expect(await files(f.descriptor.storageNamespace)).toEqual(storage);
+          expect(await writes(f)).toEqual(sql);
+          expect(runtime.lastActivityAt).toBe(activity);
+          expect(f.h.calls).toHaveLength(calls);
+          for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+          finish.resolve();
+          await activation.result;
+          await consumer.until((e) => e.type === 'summary');
+          expect(consumer.detail()).toMatchObject({
+            kind: 'summary',
+            child: {
+              mode: 'continuable',
+              activity: 'inactive',
+              running: null,
+              observation: { source: 'prepared' },
+              lastReply: after || null,
+            },
+          });
+          expect(
+            consumer.events.filter((e) => e.type === 'summary'),
+          ).toHaveLength(1);
+          expect(api.read).toHaveBeenCalledOnce();
+          expect(api.read.mock.calls[0][2]).toBe(false);
+          expect(JSON.stringify(consumer.events)).not.toMatch(
+            /PRIVATE|<think>|allrice_tool_call|"frame"|"chunk"|"records"|argumentsDelta/,
+          );
+          expect(f.listeners.size).toBe(1);
+          expect(f.failures.size).toBe(1);
+          await consumer.reader.cancel();
+          await vi.waitFor(() => {
+            expect(f.listeners.size).toBe(0);
+            expect(f.failures.size).toBe(0);
+          });
+        } finally {
+          controller.abort();
+          release.resolve();
+          finish.resolve();
+          await activation.result;
+        }
+      },
+      30_000,
+    );
+    it('does not query target after an expired authorization returns late', async () => {
+      const f = await chat();
+      await hotHost(f);
+      const authenticate = vi.fn(authenticateSession);
+      const api = await start(f, undefined, authenticate);
+      const abort = new AbortController(),
+        entered = gate(),
+        release = gate();
+      const consumer = consume(
+        await web(f, f.token, '&follow=true', abort.signal),
+      );
+      await consumer.until((e) => e.type === 'directory');
+      const originalTimeout = globalThis.setTimeout;
+      let deadline;
+      const timer = vi
+        .spyOn(globalThis, 'setTimeout')
+        .mockImplementation((fn, ms, ...args) => {
+          if (ms === 10_000) deadline = fn;
+          return originalTimeout(fn, ms, ...args);
+        });
+      authenticate.mockImplementationOnce(async () => {
+        entered.resolve();
+        await release.promise;
+        return f.context;
+      });
+      try {
+        // Only notification invalidation is controlled; the HTTP gate and real target reader run unchanged.
+        for (const listener of f.listeners)
+          listener({
+            method: 'session.status',
+            params: { sessionId: f.h.root.id },
+          });
+        await entered.promise;
+        const calls = api.target.mock.calls.length;
+        deadline();
+        expect(await consumer.until((e) => e.type === 'clear')).toEqual({
+          type: 'clear',
+          reason: 'unavailable',
+        });
+        expect((await consumer.reader.read()).done).toBe(true);
+        expect(f.listeners.size).toBe(0);
+        release.resolve();
+        await new Promise((resolve) => originalTimeout(resolve, 0));
+        expect(api.target).toHaveBeenCalledTimes(calls);
+      } finally {
+        timer.mockRestore();
+        release.resolve();
+        abort.abort();
+      }
+    }, 30_000);
+
+    it('blind HTTP: nested child finished during the initial cut reaches a safe summary, not clear/unavailable', async () => {
+      const pReady = gate(),
+        gReady = gate(),
+        pEnd = gate(),
+        gEnd = gate(),
+        cut = gate(),
+        release = gate();
+      const f = await chat(
+        true,
+        async (request, n) => {
+          if (n === 1) {
+            pReady.resolve();
+            await hold(request.signal, pEnd);
+          } else {
+            gReady.resolve();
+            await hold(request.signal, gEnd);
+          }
+          return text('nested safe final');
+        },
+        false,
+        { depth: 2 },
+      );
+      const p = await f.h.spawn(f.h.root, 'parent', { delivery: 'caller' });
+      await pReady.promise;
+      const g = await f.h.spawn(f.h.ctx.agents.get(p.childId), 'nested', {
+        delivery: 'caller',
+      });
+      await gReady.promise;
+      const { runtime } = await hotHost(f),
+        api = await start(f),
+        abort = new AbortController();
+      const original = runtime.client.nativeSubagentSummary;
+      let first = true;
+      runtime.client.nativeSubagentSummary = async (...args) => {
+        const value = await original(...args);
+        if (first) {
+          first = false;
+          cut.resolve();
+          await release.promise;
+        }
+        return value;
+      };
+      try {
+        const opening = web(
+          f,
+          f.token,
+          `&follow=true&childId=${g.childId}`,
+          abort.signal,
+        );
+        await cut.promise;
+        gEnd.resolve();
+        await g.result;
+        release.resolve();
+        const consumer = consume(await opening);
+        const final = await consumer.until(
+          (e) => e.type === 'summary' || e.type === 'clear',
+        );
+        console.log(
+          'BLIND_NESTED_HTTP',
+          JSON.stringify({
+            types: consumer.events.map((e) => e.type),
+            finishedSeen: f.h.notices.some(
+              (n) =>
+                n.method === 'subagent.finished' &&
+                n.params.childSessionId === g.childId,
+            ),
+            preparedReads: api.read.mock.calls.length,
+          }),
+        );
+        expect(final.type).toBe('summary');
+        expect(
+          final.summary.descendants.find((r) => r.id === g.childId).lastReply,
+        ).toBe('nested safe final');
+      } finally {
+        abort.abort();
+        release.resolve();
+        gEnd.resolve();
+        pEnd.resolve();
+        await g.result;
+        await p.result;
+      }
+    }, 30000);
+    it('blind HTTP: a newer active instance survives the preceding activation finished notification', async () => {
+      const readyA = gate(),
+        readyB = gate(),
+        endA = gate(),
+        updateB = gate(),
+        endB = gate(),
+        snapshotEntered = gate(),
+        snapshotRelease = gate();
+      const f = await chat(true, undefined, false, {
+        stream: async function* (request, n) {
+          yield { type: 'block-start', index: 0, blockType: 'text' };
+          yield {
+            type: 'text-delta',
+            index: 0,
+            text: n === 1 ? 'first' : 'second',
+          };
+          if (n === 1) {
+            readyA.resolve();
+            await hold(request.signal, endA);
+          } else if (n === 2) {
+            readyB.resolve();
+            await hold(request.signal, updateB);
+            yield { type: 'text-delta', index: 0, text: ' update' };
+            await hold(request.signal, endB);
+          }
+          yield { type: 'finish', reason: { kind: 'stop' } };
+        },
+      });
+      const a = await f.h.spawn(f.h.root, 'first', { delivery: 'caller' });
+      await readyA.promise;
+      const { runtime } = await hotHost(f);
+      await start(f);
+      const abort = new AbortController();
+      const original = runtime.client.nativeSubagentSnapshot;
+      let first = true;
+      runtime.client.nativeSubagentSnapshot = async (...args) => {
+        if (first) {
+          first = false;
+          snapshotEntered.resolve();
+          await snapshotRelease.promise;
+        }
+        return original(...args);
+      };
+      try {
+        const consumer = consume(
+          await web(
+            f,
+            f.token,
+            `&follow=true&childId=${a.childId}`,
+            abort.signal,
+          ),
+        );
+        await snapshotEntered.promise;
+        endA.resolve();
+        await a.result;
+        await f.h.ctx.subagents.sendMessage(
+          f.h.root,
+          a.childId,
+          text('continue'),
+          { signal: new AbortController().signal },
+        );
+        await readyB.promise;
+        snapshotRelease.resolve();
+        const snapshot = await consumer.until((e) => e.type === 'snapshot');
+        expect(snapshot.snapshot.stream.active.text).toBe('second');
+        updateB.resolve();
+        const next = await consumer.until(
+          (e) =>
+            e.type === 'display' || e.type === 'summary' || e.type === 'clear',
+        );
+        console.log(
+          'BLIND_REACTIVATION_HTTP',
+          JSON.stringify({
+            types: consumer.events.map((e) => e.type),
+            running: f.h.ctx.agents.get(a.childId)?.status,
+            terminalRow: next.summary?.descendants.find(
+              (r) => r.id === a.childId,
+            ),
+          }),
+        );
+        expect(next.type).toBe('display');
+        expect(next.display.active.text).toBe('second update');
+      } finally {
+        abort.abort();
+        snapshotRelease.resolve();
+        endA.resolve();
+        updateB.resolve();
+        endB.resolve();
+        await a.result;
+        await f.h.wait();
+      }
+    }, 30000);
+    it('reconnects to the existing safe baseline, isolates children, and clears after real token revocation', async () => {
+      const entered = gate(),
+        finish = gate();
+      let count = 0;
+      const f = await chat(true, undefined, false, {
+        stream: async function* (request) {
+          yield {
+            type: 'text-delta',
+            index: 0,
+            text: `safe:${request.sessionId}`,
+          };
+          if (++count === 2) entered.resolve();
+          await hold(request.signal, finish);
+          yield { type: 'finish', reason: { kind: 'stop' } };
+        },
+      });
+      const a = await f.h.spawn(f.h.root, 'A', { delivery: 'caller' }),
+        b = await f.h.spawn(f.h.root, 'B', { delivery: 'caller' });
+      const controllers = [new AbortController(), new AbortController()];
+      try {
+        await entered.promise;
+        await hotHost(f);
+        const api = await start(f);
+        const first = consume(
+          await web(
+            f,
+            f.token,
+            `&follow=true&childId=${a.childId}`,
+            controllers[0].signal,
+          ),
+        );
+        const baseline = await first.until((e) => e.type === 'snapshot');
+        expect(baseline.snapshot.stream.active.text).toBe(`safe:${a.childId}`);
+        expect(
+          JSON.stringify(first.events.filter((e) => e.type !== 'directory')),
+        ).not.toContain(`safe:${b.childId}`);
+        controllers[0].abort();
+        await vi.waitFor(() => expect(f.listeners.size).toBe(0));
+        const second = consume(
+          await web(
+            f,
+            f.token,
+            `&follow=true&childId=${a.childId}`,
+            controllers[1].signal,
+          ),
+        );
+        expect(
+          (await second.until((e) => e.type === 'snapshot')).snapshot.stream,
+        ).toEqual(baseline.snapshot.stream);
+        await revokeSession(f.token);
+        for (const listener of f.listeners)
+          listener({
+            method: 'session.status',
+            params: { sessionId: f.h.root.id },
+          });
+        expect(await second.until((e) => e.type === 'clear')).toEqual({
+          type: 'clear',
+          reason: 'unavailable',
+        });
+        expect((await second.reader.read()).done).toBe(true);
+        expect(api.read).not.toHaveBeenCalled();
+        expect(f.listeners.size).toBe(0);
+      } finally {
+        for (const c of controllers) c.abort();
+        finish.resolve();
+        await Promise.all([a.result, b.result]);
+      }
+    }, 30_000);
+    it('keeps directory follow liveOnly, rejects foreign children/owners, and clears a changed runtime owner', async () => {
+      const f = await chat();
+      const { pool, runtime } = await hotHost(f),
+        api = await start(f),
+        controller = new AbortController();
+      const original = runtime.client.nativeSubagentSummary;
+      const summary = vi
+        .spyOn(runtime.client, 'nativeSubagentSummary')
+        .mockImplementation((...args) => original(...args));
+      const observe = vi.spyOn(f.h.ctx.sessionQuery, 'observeSession');
+      try {
+        const response = consume(
+          await web(f, f.token, '&follow=true', controller.signal),
+        );
+        const initial = await response.until((e) => e.type === 'directory');
+        const cold = initial.summary.descendants[0];
+        expect(cold.kind).toBe('diagnostic');
+        expect(observe.mock.calls.every(([id]) => id === f.h.root.id)).toBe(
+          true,
+        );
+        const unauthorized = await peer(f);
+        expect((await web(f, unauthorized.token, '&follow=true')).status).toBe(
+          403,
+        );
+        const foreign = consume(
+          await web(f, f.token, '&follow=true&childId=foreign'),
+        );
+        await foreign.until((e) => e.type === 'clear');
+        expect(
+          foreign.events.some(
+            (e) => e.type === 'snapshot' || e.type === 'display',
+          ),
+        ).toBe(false);
+        Reflect.get(pool, 'runtimes').set(runtime.sessionId, {
+          ...runtime,
+          id: randomUUID(),
+        });
+        for (const listener of f.listeners)
+          listener({
+            method: 'session.status',
+            params: { sessionId: f.h.root.id },
+          });
+        await response.until((e) => e.type === 'clear');
+        expect((await response.reader.read()).done).toBe(true);
+        expect(summary.mock.calls.every((args) => args[1] === true)).toBe(true);
+        expect(api.read).not.toHaveBeenCalled();
+      } finally {
+        controller.abort();
+        Reflect.get(pool, 'runtimes').set(runtime.sessionId, runtime);
+      }
+      await pool.closeOwned(runtime);
+      const afterClose = await files(f.descriptor.storageNamespace);
+      const coldResponse = await web(f, f.token, '&follow=true');
+      expect(coldResponse.status).toBe(503);
+      expect(await files(f.descriptor.storageNamespace)).toEqual(afterClose);
+      expect(api.read).not.toHaveBeenCalled();
+    }, 30_000);
+    it('rejects changed configured namespace/current distribution before follow reads and clears a business generation switch', async () => {
+      const f = await chat(),
+        { runtime } = await hotHost(f),
+        api = await start(f),
+        controller = new AbortController();
+      const summary = vi.spyOn(runtime.client, 'nativeSubagentSummary');
+      const launch = artifact.currentDshNativeLaunch('restricted');
+      vi.stubEnv('ALLRICE_DSH_RUNTIME_ROOT', join(directory, 'other'));
+      expect((await web(f, f.token, '&follow=true')).status).toBe(503);
+      vi.stubEnv('ALLRICE_DSH_RUNTIME_ROOT', directory);
+      vi.mocked(artifact.currentDshNativeLaunch).mockReturnValue({
+        ...launch,
+        generation: 'another-generation',
+      });
+      expect((await web(f, f.token, '&follow=true')).status).toBe(503);
+      expect(summary).not.toHaveBeenCalled();
+      expect(f.listeners.size).toBe(0);
+      vi.mocked(artifact.currentDshNativeLaunch).mockReturnValue(launch);
+      try {
+        const consumer = consume(
+          await web(f, f.token, '&follow=true', controller.signal),
+        );
+        await consumer.until((e) => e.type === 'directory');
+        await fixture.db`update allrice_conversation_runtimes set thread_generation=thread_generation+1 where session_id=${f.session}`;
+        for (const listener of f.listeners)
+          listener({
+            method: 'session.status',
+            params: { sessionId: f.h.root.id },
+          });
+        await consumer.until((e) => e.type === 'clear');
+        expect((await consumer.reader.read()).done).toBe(true);
+        expect(f.listeners.size).toBe(0);
+        expect(api.read).not.toHaveBeenCalled();
+      } finally {
+        controller.abort();
+      }
+    }, 30_000);
+    it('cancels a blocked real HTTP writer on bounded notification overflow without touching Host execution', async () => {
+      const f = await chat(),
+        { runtime } = await hotHost(f),
+        api = await start(f),
+        controller = new AbortController();
+      const original = ServerResponse.prototype.write,
+        blocked = gate();
+      let block = true;
+      const write = vi
+        .spyOn(ServerResponse.prototype, 'write')
+        .mockImplementation(function (chunk, ...args) {
+          const result = original.call(this, chunk, ...args);
+          // Only the socket's drain signal is held; the authorized Worker HTTP
+          // response, Node once/drain cancellation and Web body remain real.
+          if (
+            block &&
+            typeof chunk === 'string' &&
+            chunk.startsWith('data: ')
+          ) {
+            block = false;
+            blocked.resolve();
+            return false;
+          }
+          return result;
+        });
+      try {
+        const consumer = consume(
+          await web(f, f.token, '&follow=true', controller.signal),
+        );
+        await blocked.promise;
+        await consumer.until((e) => e.type === 'directory');
+        const activity = runtime.lastActivityAt,
+          calls = f.h.calls.length;
+        for (let i = 0; i < 129; i++)
+          for (const listener of f.listeners)
+            listener({
+              method: 'session.status',
+              params: { sessionId: f.h.root.id },
+            });
+        await consumer.until((e) => e.type === 'clear');
+        expect((await consumer.reader.read()).done).toBe(true);
+        expect(f.listeners.size).toBe(0);
+        expect(f.failures.size).toBe(0);
+        expect(api.read).not.toHaveBeenCalled();
+        expect(runtime.lastActivityAt).toBe(activity);
+        expect(f.h.calls).toHaveLength(calls);
+      } finally {
+        write.mockRestore();
+        controller.abort();
+      }
+    }, 30_000);
     it('returns an authorized persisted prefix beside a resident writer, without owner/close admission or writes', async () => {
       const f = await chat();
       await fixture.db`update allrice_conversation_runtimes set state='idle',worker_id=null,active_run_id=null,active_turn_id=null where session_id=${f.session}`;
