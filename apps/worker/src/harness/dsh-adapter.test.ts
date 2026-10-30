@@ -1499,7 +1499,7 @@ describe('DshHarnessAdapter', () => {
           .spyOn(runtime.client, 'sessionProjection')
           .mockRejectedValueOnce(Error('sample unavailable'));
         expect((await adapter.questionSnapshots())[0]?.foreground).toBeNull();
-        expect(read).toHaveBeenCalledWith(runtime.sessionId, 5000);
+        expect(read).toHaveBeenCalledWith(runtime.sessionId);
         read.mockRestore();
       };
       await expect(adapter.execute(input)).resolves.toHaveProperty('threadId');

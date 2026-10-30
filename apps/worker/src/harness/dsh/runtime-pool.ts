@@ -1261,7 +1261,7 @@ export class DshRuntimePool {
         if (!execution) return [];
         return [
           runtime.client
-            .sessionProjection(runtime.sessionId, this.requestTimeoutMs)
+            .sessionProjection(runtime.sessionId)
             .then(({ foreground }) =>
               runtime.executionObservation === execution &&
               runtime.client.processState().state === 'running'
