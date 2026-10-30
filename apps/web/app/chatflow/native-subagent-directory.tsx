@@ -7,6 +7,11 @@ import { AssistantMarkdown } from './assistant-markdown';
 import type { useNativeSubagents } from './use-native-subagents';
 import { useNativeSubagentFollow } from './use-native-subagent-follow';
 import { NativeSubagentProcess } from './native-subagent-process';
+import {
+  NativeSubagentControls,
+  useNativeSubagentControls,
+  type nativeSubagentControlRoot,
+} from './native-subagent-controls';
 import type { ChatPresentationPolicy } from './dsh-upstream/presentation/presentation-policy';
 import css from './native-subagent-directory.module.css';
 
@@ -44,6 +49,9 @@ export function NativeSubagentDirectory({
   headers,
   observation,
   presentation,
+  controlRoot,
+  canControl = false,
+  viewerId,
 }: {
   workspaceId: string;
   sessionId: string;
@@ -52,7 +60,16 @@ export function NativeSubagentDirectory({
     setLiveOnly: (liveOnly: boolean) => void;
   };
   presentation: ChatPresentationPolicy;
+  controlRoot?: ReturnType<typeof nativeSubagentControlRoot>;
+  canControl?: boolean;
+  viewerId?: string | null;
 }) {
+  const controls = useNativeSubagentControls(
+    workspaceId,
+    sessionId,
+    headers,
+    viewerId,
+  );
   const [open, setOpen] = useState(false),
     [pinned, setPinned] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
@@ -367,6 +384,15 @@ export function NativeSubagentDirectory({
                   ? '暂时无法读取摘要，请刷新。'
                   : '当前活动状态未知，请重新读取摘要。'}
               </p>
+            )}
+            {child && controlRoot !== undefined && (
+              <NativeSubagentControls
+                key={child.id}
+                child={child}
+                root={controlRoot}
+                permitted={canControl}
+                controls={controls}
+              />
             )}
             <Button size="sm" onClick={refresh}>
               刷新子智能体摘要

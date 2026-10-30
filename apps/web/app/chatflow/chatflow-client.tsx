@@ -5,6 +5,7 @@ import {
   nativeSubagentReadyKey,
   useNativeSubagents,
 } from './use-native-subagents';
+import { nativeSubagentControlRoot } from './native-subagent-controls';
 import { presentationPolicyFor } from './dsh-upstream/presentation/presentation-policy';
 import {
   UnifiedWorkbenchControls,
@@ -1976,6 +1977,19 @@ export function ChatFlowClient({
                           reads: activeNativeReads,
                           setLiveOnly: setNativeLiveOnly,
                         }}
+                        viewerId={workspace.viewerId}
+                        canControl={
+                          !!workspace.viewerId &&
+                          activeSession?.ownerId === workspace.viewerId &&
+                          !activeSession?.archivedAt
+                        }
+                        controlRoot={
+                          history?.session.id === activeId
+                            ? nativeSubagentControlRoot(
+                                runViews[activeRunMessages.at(-1)?.runId ?? ''],
+                              )
+                            : null
+                        }
                         presentation={presentationPolicyFor(
                           preferences.value.transcriptView,
                           preferences.value.collapseTiming,

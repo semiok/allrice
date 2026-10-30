@@ -58,3 +58,8 @@
 .text {
   white-space: pre-wrap;
 }
+.controls {
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  margin-block: 12px;
+  padding-block-start: 8px;
+}
