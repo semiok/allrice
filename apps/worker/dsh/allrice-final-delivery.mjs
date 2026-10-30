@@ -107,6 +107,7 @@ export function createRunFinalDelivery(host) {
         if (state.hold || state.acquiring) fail();
         state.acquiring = true;
         state.closing = true; // Synchronous ingress fence before the wait.
+        host.runAdmission?.closeInput(state.runId);
         await host.waitRoot(state.agent.id);
         if (current() !== state || !treeQuiescent(state.agent)) fail();
         const gate = new Promise((resolve) => {

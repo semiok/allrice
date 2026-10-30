@@ -1,3 +1,4 @@
+/* global AbortController */
 import { realpath } from 'node:fs/promises';
 import { isAbsolute, relative } from 'node:path';
 
@@ -7,6 +8,10 @@ export function installRunAdmission(host) {
   const { ctx } = host;
   let binding;
   const identities = new Map(); // Attribution retained until this Run releases.
+  function closeInput(state) {
+    state.inputClosed = true;
+    state.inputAbort.abort(Error('RUN_COMPLETING'));
+  }
   function current(runId = binding?.runId) {
     if (!binding || binding.closing || runId !== binding.runId)
       throw Error('RUN_NOT_ACTIVE');
@@ -136,6 +141,7 @@ export function installRunAdmission(host) {
         runId,
         waiting: 0,
         inputClosed: false,
+        inputAbort: new AbortController(),
         closing: false,
       };
       identities.clear();
@@ -147,12 +153,34 @@ export function installRunAdmission(host) {
     },
     end(runId) {
       if (binding?.runId !== runId) throw Error('RUN_NOT_ACTIVE');
+      closeInput(binding);
       binding = undefined;
       identities.clear();
       return { released: true };
     },
     stop() {
-      if (binding) binding.closing = true;
+      if (binding) {
+        closeInput(binding);
+        binding.closing = true;
+      }
+    },
+    closeInput(runId) {
+      if (binding?.runId !== runId) throw Error('RUN_NOT_ACTIVE');
+      closeInput(binding);
+      return { closed: true };
+    },
+    inputWindow(runId) {
+      this.accepting(runId);
+      const state = current(runId);
+      const signal = state.inputAbort.signal;
+      return {
+        signal,
+        check: () => {
+          signal.throwIfAborted();
+          if (current(runId) !== state) throw Error('RUN_NOT_ACTIVE');
+          this.accepting(runId);
+        },
+      };
     },
     rootFor(agent) {
       live(agent);
@@ -184,6 +212,8 @@ export function installRunAdmission(host) {
     },
     prompt(runId) {
       const state = current(runId);
+      if (state.inputAbort.signal.aborted)
+        state.inputAbort = new AbortController();
       state.inputClosed = false;
       return () => {
         if (current(runId) !== state || state.inputClosed)
@@ -206,7 +236,7 @@ export function installRunAdmission(host) {
         return await next();
       } finally {
         state.waiting--;
-        state.inputClosed = true;
+        closeInput(state);
       }
     },
   };

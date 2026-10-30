@@ -205,6 +205,7 @@ suite(
           ALLRICE_WORKSPACE_ID: f.workspaceId,
           ALLRICE_OWNER_ID: f.ownerId,
           ALLRICE_RUN_ID: task.runId,
+          ALLRICE_JOB_ID: task.workflowLease.jobId,
         },
         tools: [
           {

@@ -178,6 +178,7 @@ describe('confirmed native dispatch stop receipt', () => {
       client: {
         prompt,
         beginRun: vi.fn(),
+        closeRunInput: vi.fn().mockResolvedValue({ closed: true }),
         setRequestHandler: vi.fn(),
         subscribe: vi.fn(() => () => {}),
       },
@@ -209,6 +210,149 @@ describe('confirmed native dispatch stop receipt', () => {
       .mockImplementation(close);
     return { adapter, input, original, runtime, prompt, confirmStopped, drop };
   }
+
+  it.each([
+    'local-error',
+    'root-revoked',
+    'execution-aborted',
+    'run-replaced-during-grant',
+  ])(
+    'child command authorization isolates %s on the real executing adapter',
+    async (caseName) => {
+      const controller = new AbortController();
+      const f = stoppedExecution(async () => {});
+      f.input.signal = controller.signal;
+      const validUntil = Date.now() + 30_000;
+      const authority = vi.fn().mockResolvedValue({ validUntil });
+      f.input.nativeRunAuthority = () => authority;
+      const scope = {
+        rootRunId: f.input.executionEnvironment.ALLRICE_RUN_ID!,
+        nativeRootId: f.runtime.sessionId,
+        generation: f.input.generation,
+        jobId: f.input.executionEnvironment.ALLRICE_JOB_ID!,
+        jobAttempt: f.input.attempt,
+        rootOriginDigest: `sha256:${'b'.repeat(64)}`,
+        storageNamespace: '/frozen-source',
+      };
+      Object.assign(f.runtime, {
+        productSessionId: f.input.kernel.sessionId,
+        organizationId: f.input.executionEnvironment.ALLRICE_ORGANIZATION_ID,
+        workspaceId: f.input.executionEnvironment.ALLRICE_WORKSPACE_ID,
+        ownerId: f.input.executionEnvironment.ALLRICE_OWNER_ID,
+      });
+      f.runtime.nativePin = {
+        nativeSessionId: scope.nativeRootId,
+        contextKind: 'chat',
+        bindingBasis: 'business_root_origin',
+        contextId: f.runtime.productSessionId,
+        organizationId: f.runtime.organizationId,
+        workspaceId: f.runtime.workspaceId,
+        ownerId: f.runtime.ownerId,
+        rootOriginDigest: scope.rootOriginDigest,
+        storageNamespace: scope.storageNamespace,
+      } as NonNullable<DshRuntime['nativePin']>;
+      f.runtime.client.interrupt = vi.fn().mockResolvedValue({});
+      f.runtime.client.nativeSubagentControl = vi
+        .fn()
+        .mockResolvedValue({ kind: 'interrupt', accepted: true });
+      vi.spyOn(DshRuntimePool.prototype, 'get').mockReturnValue(f.runtime);
+      let checked = false;
+      f.input.onEvent = async (event) => {
+        if (event.sourceEventType !== 'allrice/runtime-preparation') return;
+        const identity = {
+          runId: scope.rootRunId,
+          nativeSessionId: scope.nativeRootId,
+          rootSessionId: scope.nativeRootId,
+          parentSessionId: null,
+          delegationDepth: 0,
+        };
+        vi.mocked(f.runtime.client.subscribe).mock.calls[0]![0]({
+          method: 'allrice.run-session',
+          params: identity,
+        });
+        const handler = vi.mocked(f.runtime.client.setRequestHandler).mock
+          .calls[0]![0]!;
+        for (const mismatch of [
+          { jobAttempt: 99 },
+          { generation: 99 },
+          { storageNamespace: '/foreign' },
+        ])
+          await expect(
+            handler('allrice/subagent-authorize', {
+              ...identity,
+              scope: { ...scope, ...mismatch },
+            }),
+          ).rejects.toThrow('NATIVE_CONTROL_SCOPE_MISMATCH');
+        expect(authority).not.toHaveBeenCalled();
+        expect(f.runtime.client.interrupt).not.toHaveBeenCalled();
+        if (caseName === 'run-replaced-during-grant') {
+          let reject: (error: Error) => void;
+          authority.mockImplementation(
+            () =>
+              new Promise((_, fail) => {
+                reject = fail;
+              }),
+          );
+          const pending = handler('allrice/subagent-authorize', {
+            ...identity,
+            scope,
+          });
+          f.runtime.executionObservation = {
+            ...f.runtime.executionObservation!,
+            runId: randomUUID(),
+          };
+          reject!(
+            new HandlerError('ROOT_AUTHORITY_REVOKED', 'old refusal', false),
+          );
+          await expect(pending).rejects.toThrow(
+            'NATIVE_CONTROL_SCOPE_MISMATCH',
+          );
+          expect(f.runtime.client.interrupt).not.toHaveBeenCalled();
+        } else if (caseName === 'root-revoked') {
+          authority.mockRejectedValue(
+            new HandlerError('ROOT_AUTHORITY_REVOKED', 'revoked', false),
+          );
+          await expect(
+            handler('allrice/subagent-authorize', { ...identity, scope }),
+          ).rejects.toThrow('revoked');
+          expect(f.runtime.client.interrupt).toHaveBeenCalledExactlyOnceWith(
+            scope.nativeRootId,
+          );
+        } else if (caseName === 'execution-aborted') {
+          controller.abort();
+          expect(
+            f.runtime.client.closeRunInput,
+          ).toHaveBeenCalledExactlyOnceWith(scope.rootRunId);
+          await expect(
+            handler('allrice/subagent-authorize', { ...identity, scope }),
+          ).rejects.toThrow();
+          expect(authority).not.toHaveBeenCalled();
+        } else {
+          await expect(
+            handler('allrice/subagent-authorize', { ...identity, scope }),
+          ).resolves.toEqual({ validUntil });
+          await expect(
+            f.adapter.nativeSubagentControl({
+              scope,
+              input: {
+                requestId: randomUUID(),
+                parentSessionId: scope.nativeRootId,
+                childSessionId: 'child',
+                mode: 'continuable',
+                kind: 'interrupt',
+              },
+            }),
+          ).resolves.toEqual({ kind: 'interrupt', accepted: true });
+          expect(f.runtime.client.interrupt).not.toHaveBeenCalled();
+        }
+        checked = true;
+        throw f.original;
+      };
+      await f.adapter.execute(f.input).catch(() => {});
+      expect(checked).toBe(true);
+      expect(f.prompt).not.toHaveBeenCalled();
+    },
+  );
 
   it('waits for the exact close acknowledgement and preserves the original failure', async () => {
     let closed!: () => void;
@@ -258,6 +402,9 @@ describe('confirmed native dispatch stop receipt', () => {
     });
     expect(getDshCleanupFailures(failure)).toEqual([unknown]);
     expect(failure).toHaveProperty('cause', unknown);
+    expect(f.runtime.client.closeRunInput).toHaveBeenCalledExactlyOnceWith(
+      f.input.executionEnvironment.ALLRICE_RUN_ID,
+    );
     expect(f.confirmStopped).not.toHaveBeenCalled();
     expect(f.prompt).not.toHaveBeenCalled();
     expect(f.drop).toHaveBeenCalledOnce();

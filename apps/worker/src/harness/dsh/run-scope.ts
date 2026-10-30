@@ -1,5 +1,38 @@
 import type { DshProtocolClient } from '../dsh-protocol-client.js';
 import { HandlerError } from '../../errors.js';
+import type { NativeSubagentControlScope } from '@allrice/contracts';
+import type { DshRuntime } from './runtime-pool.js';
+
+/** Compare server-frozen command provenance to the already executing Host. */
+export function assertNativeControlScope(
+  runtime: DshRuntime | undefined,
+  scope: NativeSubagentControlScope,
+) {
+  const execution = runtime?.executionObservation;
+  const pin = runtime?.nativePin;
+  if (
+    !runtime ||
+    !execution ||
+    !pin ||
+    runtime.sessionId !== scope.nativeRootId ||
+    pin.nativeSessionId !== scope.nativeRootId ||
+    pin.contextKind !== 'chat' ||
+    pin.bindingBasis !== 'business_root_origin' ||
+    pin.contextId !== runtime.productSessionId ||
+    pin.organizationId !== runtime.organizationId ||
+    pin.workspaceId !== runtime.workspaceId ||
+    pin.ownerId !== runtime.ownerId ||
+    execution.runId !== scope.rootRunId ||
+    execution.jobId !== scope.jobId ||
+    execution.attempt !== scope.jobAttempt ||
+    execution.generation !== scope.generation ||
+    runtime.nativeGeneration !== scope.generation ||
+    pin.rootOriginDigest !== scope.rootOriginDigest ||
+    pin.storageNamespace !== scope.storageNamespace
+  )
+    throw Error('NATIVE_CONTROL_SCOPE_MISMATCH');
+  return runtime;
+}
 
 /** Ordered native start observations only; not a child execution/terminal mirror. */
 export function nativeRunScope(
