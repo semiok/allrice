@@ -63,6 +63,7 @@ export async function host({
   questionMode = 'timed',
   releaseMs,
   nativeTools = [],
+  onNotification = () => {},
   prepare = async () => {},
   bridge = async (method) => {
     throw Error(`unexpected bridge ${method}`);
@@ -130,7 +131,10 @@ export async function host({
   await prepare(directory);
   const { ctx, server } = await createAllRiceRuntime(
     {
-      notify: (method, params) => notices.push({ method, params }),
+      notify: (method, params) => {
+        notices.push({ method, params });
+        onNotification({ method, params });
+      },
       request: bridge,
     },
     {

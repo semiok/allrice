@@ -15,6 +15,7 @@ import {
 import { appendJobEvent } from '../../../../packages/database/src/execution/queue.ts';
 import { createTaskProgressRuntime } from '../../../../packages/database/src/task-progress.ts';
 import { beginEmployeeConversationTurn } from '../../src/conversation/turn-lifecycle.ts';
+import { nativeRunScope } from '../../src/harness/dsh/run-scope.ts';
 import { projectPendingUserQuestion } from '../../../web/lib/chatflow/user-question-state.ts';
 import { POST } from '../../../web/app/api/v1/sessions/[id]/messages/route.ts';
 
@@ -63,6 +64,17 @@ suite(
       let firstChild,
         secondCalls = 0;
       const rootId = `dsh-${task.sessionId}`;
+      let observe;
+      const scope = nativeRunScope(
+        {
+          subscribe: (listener) => {
+            observe = listener;
+            return () => {};
+          },
+        },
+        rootId,
+        task.runId,
+      );
       const h = await host({
         runId: task.runId,
         rootId,
@@ -70,10 +82,13 @@ suite(
         questionMode: 'legacy',
         releaseMs: 0,
         nativeTools: ['local.fs.list'],
-        bridge: (method, p) =>
-          method === 'allrice/run-authorize'
+        onNotification: (notification) => observe(notification),
+        bridge: (method, p) => {
+          const request = scope.check(p);
+          return method === 'allrice/run-authorize'
             ? progress({ action: 'check', nativeSessionId: rootId })
-            : progress(p),
+            : progress(request);
+        },
         model: async (r) => {
           if (r.sessionId === rootId) return text('等子任务后汇总');
           firstChild ??= r.sessionId;
