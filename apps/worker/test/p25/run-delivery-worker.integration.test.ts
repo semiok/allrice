@@ -386,11 +386,10 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     ]) {
       if (phase === 'disabled')
         await f.identity.setControls({
-          executionPolicy: {
-            enabled: true,
-            mode: 'execute',
-            rules: [{ action: 'assistant.delegate', effect: 'deny' }],
-          },
+          version: 1,
+          enabled: true,
+          mode: 'execute',
+          rules: [{ action: 'assistant.delegate', effect: 'deny' }],
         });
       const before = model!.requests.length;
       const task = await prepare(f, prompt, true);
