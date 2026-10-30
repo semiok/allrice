@@ -5,7 +5,9 @@ import {
   type TaskSuggestionDisplay,
   type TaskNextSteps,
   type WorkspaceReadiness,
+  type NativeSubagentSummary,
 } from '@allrice/contracts';
+import { NativeSubagentFixtureFeed } from '../../test/native-subagent-fixture-feed';
 import type { Attachment, WorkspaceFile } from './chatflow-types';
 import { createRequire } from 'node:module';
 import { createServer, type ServerResponse } from 'node:http';
@@ -17,6 +19,7 @@ import type {
   Browser,
   BrowserContext,
   Page,
+  Request,
 } from '../../../worker/node_modules/playwright-core/index.js';
 
 const suite =
@@ -236,6 +239,8 @@ suite(
         settled?: 'failed' | 'canceled';
         width?: number;
         height?: number;
+        /** Isolated 3/8-parent samples, never a measurement of shared Dev. */
+        nativeParents?: 3 | 8;
         workspaceFiles?: WorkspaceFile[];
         taskSuggestions?: TaskSuggestionDisplay[];
         nextSteps?: TaskNextSteps;
@@ -278,6 +283,29 @@ suite(
       const reads: string[] = [];
       const writes: string[] = [];
       const streams = new Set<ServerResponse>();
+      const parentIds = options.nativeParents
+        ? [
+            A,
+            B,
+            C,
+            ...Array.from(
+              { length: 5 },
+              (_, i) =>
+                `00000000-0000-4000-8000-${String(i + 4).padStart(12, '0')}`,
+            ),
+          ].slice(0, options.nativeParents)
+        : [A, B];
+      const feed = new NativeSubagentFixtureFeed();
+      const source = {
+        status: undefined as number | undefined,
+        summary: (id: string): NativeSubagentSummary => ({
+          rootId: id,
+          root: { source: 'live', cursor: -1 },
+          descendants: [],
+        }),
+      };
+      const nativeFixture = feed.register(source);
+      const serverRequests: string[] = [];
       const uploaded = new Map<string, Attachment>();
       let nextSteps = options.nextSteps;
       let holdNextReply = false;
@@ -302,6 +330,7 @@ suite(
         [B]: [message('history-b', 'Existing B')],
         [C]: [],
       };
+      for (const id of parentIds) messages[id] ??= [];
       if (options.longHistory)
         messages[A]!.unshift(
           ...Array.from({ length: 20 }, (_, i) =>
@@ -344,6 +373,10 @@ suite(
       const server = createServer(async (request, response) => {
         const url = new URL(request.url!, 'http://localhost');
         const path = url.pathname;
+        if (options.nativeParents && serverRequests.length < 128)
+          serverRequests.push(
+            `${Date.now()} ${request.method} HTTP/${request.httpVersion} ${path}`,
+          );
         if (path === '/') {
           response.writeHead(200, {
             'content-type': 'text/html; charset=utf-8',
@@ -392,10 +425,18 @@ suite(
         )?.[1];
         if (subagentSession) {
           if (
-            ![A, B, C].includes(subagentSession) ||
+            ![A, B, C, ...parentIds].includes(subagentSession) ||
             url.searchParams.get('workspaceId') !== B
           ) {
             answer(response, { error: 'authorization_denied' }, 403);
+            return;
+          }
+          if (
+            options.nativeParents &&
+            url.searchParams.get('follow') === 'true'
+          ) {
+            request.url += `&fixture=${nativeFixture}`;
+            feed.handle(request, response);
             return;
           }
           answer(response, {
@@ -416,8 +457,8 @@ suite(
                 ? { viewerId: C }
                 : {}),
               canAdminister: false,
-              sessions: [fixtureSession(A), fixtureSession(B)],
-              sessionModels: [A, B].map((sessionId) => ({
+              sessions: parentIds.map(fixtureSession),
+              sessionModels: parentIds.map((sessionId) => ({
                 sessionId,
                 harness: 'dsh',
                 provider: 'openai-compatible',
@@ -518,9 +559,12 @@ suite(
           });
           return;
         }
-        if (path === '/api/v1/sessions' && options.taskSuggestions) {
+        if (
+          path === '/api/v1/sessions' &&
+          (options.taskSuggestions || options.nativeParents)
+        ) {
           answer(response, {
-            sessions: [session(A), session(B)],
+            sessions: parentIds.map(fixtureSession),
             nextCursor: null,
           });
           return;
@@ -644,15 +688,50 @@ suite(
           height: options.height ?? 1000,
         },
         hasTouch: (options.width ?? 1440) < 760,
-        ...(process.env.ALLRICE_TEST_DEV_STORAGE_STATE
+        ...(!options.nativeParents && process.env.ALLRICE_TEST_DEV_STORAGE_STATE
           ? { storageState: process.env.ALLRICE_TEST_DEV_STORAGE_STATE }
           : {}),
       });
       const page: Page = await context.newPage();
+      const inFlight = new Set<Request>();
+      const requestOrigins = new Set<string>();
+      const network: string[] = [],
+        lifecycle: string[] = [];
+      if (options.nativeParents) {
+        const record = (event: string, request: Request) => {
+          requestOrigins.add(new URL(request.url()).origin);
+          network.push(
+            `${Date.now()} ${event} ${request.method()} ${request.resourceType()} ${new URL(request.url()).pathname}`,
+          );
+          if (network.length > 128) network.shift();
+        };
+        page.on('request', (request) => {
+          inFlight.add(request);
+          record('started', request);
+        });
+        page.on('requestfinished', (request) => {
+          inFlight.delete(request);
+          record('finished', request);
+        });
+        page.on('requestfailed', (request) => {
+          inFlight.delete(request);
+          record('failed', request);
+        });
+        page.on('framenavigated', (frame) => {
+          if (frame === page.mainFrame() && lifecycle.length < 32)
+            lifecycle.push(`${Date.now()} commit ${frame.url()}`);
+        });
+        for (const event of ['domcontentloaded', 'load'] as const)
+          page.on(event, () => {
+            if (lifecycle.length < 32) lifecycle.push(`${Date.now()} ${event}`);
+          });
+      }
       let closing = false;
       // Real Dev HTML/JS/CSS with only this page's API requests routed to the
       // fixture. No company messages, file uploads, or model runs are created.
-      const liveOrigin = process.env.ALLRICE_TEST_DEV_ORIGIN;
+      const liveOrigin = options.nativeParents
+        ? undefined
+        : process.env.ALLRICE_TEST_DEV_ORIGIN;
       if (liveOrigin) {
         await page.route(`${liveOrigin}/api/v1/**`, async (route) => {
           const url = new URL(route.request().url());
@@ -697,7 +776,13 @@ suite(
         const diagnostic = {
           errors,
           reads,
-          text: await page.locator('body').innerText(),
+          ...(options.nativeParents
+            ? { network, lifecycle, serverRequests }
+            : {}),
+          text: await page
+            .locator('body')
+            .innerText()
+            .catch(() => '(body unavailable)'),
         };
         await context.close();
         server.closeAllConnections();
@@ -713,6 +798,19 @@ suite(
         pending,
         reads,
         writes,
+        nativeProbe: {
+          origin,
+          feed,
+          serverRequests,
+          network,
+          lifecycle,
+          inFlight,
+          requestOrigins,
+          release() {
+            source.status = 503;
+            feed.end(nativeFixture, null);
+          },
+        },
         releaseNextStepsA,
         setNextSteps(value: TaskNextSteps | undefined) {
           nextSteps = value;
@@ -950,6 +1048,147 @@ suite(
         },
       };
     }
+
+    it.each([3, 8] as const)(
+      'opens new work with %i visible live parents across a same-origin navigation (isolated sample)',
+      async (nativeParents) => {
+        const f = await fixture({ nativeParents, height: 1800 });
+        const probe = f.nativeProbe;
+        const evidence: unknown[] = [];
+        try {
+          for (const phase of ['first-load', 'after-navigation']) {
+            if (phase === 'after-navigation') {
+              const target = `${probe.origin}/?session=${A}&navigation-probe=after`;
+              const failure = await f.page
+                .goto(target, {
+                  waitUntil: 'domcontentloaded',
+                  timeout: 4000,
+                })
+                .then(
+                  () => null,
+                  (error: Error) => error.message,
+                );
+              const committed = probe.lifecycle.some((event) =>
+                event.includes(target),
+              );
+              if (failure && !committed && probe.feed.connections.size) {
+                // Release this navigation, never start a replacement one or change the product.
+                const releasedAt = Date.now();
+                const heldBeforeRelease = probe.feed.connections.size;
+                probe.release();
+                const released = await f.page
+                  .waitForURL(target, {
+                    waitUntil: 'domcontentloaded',
+                    timeout: 4000,
+                  })
+                  .then(
+                    () => true,
+                    () => false,
+                  );
+                evidence.push({
+                  phase,
+                  failure,
+                  releasedAt,
+                  heldBeforeRelease,
+                  committedBeforeRelease: committed,
+                  sameNavigationReleased: released,
+                });
+              }
+              expect(
+                failure,
+                'held SSE must not prevent the new document committing',
+              ).toBeNull();
+            }
+            if (nativeParents === 8)
+              await f.page
+                .getByRole('button', { name: '展开其余 3 个会话', exact: true })
+                .click();
+            const rows = f.page.locator('[data-row-key^="session:"]');
+            await expect.poll(() => rows.count()).toBe(nativeParents);
+            const visible = await rows.evaluateAll(
+              (nodes) =>
+                nodes.filter((node) => {
+                  const r = node.getBoundingClientRect(),
+                    root = node
+                      .closest('[role="tree"]')!
+                      .getBoundingClientRect();
+                  return (
+                    r.bottom > root.top &&
+                    r.top < root.bottom &&
+                    r.bottom > 0 &&
+                    r.top < innerHeight
+                  );
+                }).length,
+            );
+            expect(visible).toBe(nativeParents);
+            await expect
+              .poll(() => probe.feed.connections.size)
+              .toBeGreaterThan(0);
+            // Only a bounded diagnostic observation; not a new UI readiness gate.
+            const idle = await f.page
+              .waitForLoadState('networkidle', { timeout: 750 })
+              .then(
+                () => 'observed',
+                (error: Error) => {
+                  if (error.name !== 'TimeoutError') throw error;
+                  return 'not observed within 750ms';
+                },
+              );
+            const held = probe.feed.connections.size;
+            await f.page
+              .getByRole('button', { name: '新的工作', exact: true })
+              .click();
+            const picker = f.page.getByRole('dialog', { name: '选择 AI 员工' });
+            await picker.waitFor();
+            await picker.getByText('Rice', { exact: true }).click();
+            expect(
+              await f.page
+                .getByRole('textbox', { name: '给 Rice 的消息' })
+                .inputValue(),
+            ).toBe('');
+            const screenshot = await f.page.screenshot({
+              fullPage: true,
+              timeout: 4000,
+            });
+            expect(screenshot.length).toBeGreaterThan(0);
+            evidence.push({
+              phase,
+              visible,
+              held,
+              idle,
+              screenshotBytes: screenshot.length,
+            });
+            expect(f.writes).toEqual([]); // No Session/message admission or model invocation.
+            expect(f.errors).toEqual([]);
+          }
+          expect(
+            probe.serverRequests.every((request) =>
+              request.includes(' HTTP/1.1 '),
+            ),
+          ).toBe(true);
+          expect([...probe.requestOrigins]).toEqual([probe.origin]);
+        } finally {
+          console.info(
+            'native-navigation-probe',
+            JSON.stringify({
+              sample: nativeParents,
+              evidence,
+              pageerror: f.errors,
+              lifecycle: probe.lifecycle,
+              network: probe.network,
+              server: probe.serverRequests,
+              inFlight: [...probe.inFlight].map((request) => ({
+                type: request.resourceType(),
+                path: new URL(request.url()).pathname,
+              })),
+              writes: f.writes,
+            }),
+          );
+          await f.close();
+        }
+      },
+      30_000,
+    );
 
     async function imageDraft(page: Page) {
       const data = await page.evaluate(() => {
