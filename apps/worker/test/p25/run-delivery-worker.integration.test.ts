@@ -344,10 +344,14 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       .map((line) => JSON.parse(line));
   }
 
-  it('MET231: 正式普通 Worker 双子汇总后冷恢复 fork，只归账本轮真实模型调用', async () => {
+  it('MET231: 正式普通 Worker 双子、冷恢复 fork、下一轮 deny，只归账本轮真实模型调用', async () => {
     let phase = 'spawn';
     let rootCalls = 0;
     const f = await setup(async (request) => {
+      const toolNames = request.tools?.map((t) => t.function?.name) ?? [];
+      for (const tool of nativeDelegationTools)
+        if (phase === 'disabled') expect(toolNames).not.toContain(tool);
+        else expect(toolNames).toContain(tool);
       const userInputs = JSON.stringify(
         request.messages.filter((m) => m.role === 'user'),
       );
@@ -372,25 +376,35 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           },
         };
       return { text: '已汇总各子任务的结果。' };
-    }, true);
+    });
     const [birth] =
       await f.db`select native_root_origin from allrice_chat_sessions where id=${f.chat.id}`;
     for (const prompt of [
       'PR3D_HISTORY：请委派两个独立核对并汇总，不需要文件。',
       '沿用此前背景 fork 一次并汇总，不需要文件。',
+      '这轮继续独立处理，不需要文件。',
     ]) {
+      if (phase === 'disabled')
+        await f.identity.setControls({
+          executionPolicy: {
+            enabled: true,
+            mode: 'execute',
+            rules: [{ action: 'assistant.delegate', effect: 'deny' }],
+          },
+        });
       const before = model!.requests.length;
       const task = await prepare(f, prompt, true);
       expect(task.snapshot.nativePreferences.subagents).toEqual({
-        maxDepth: null,
+        maxDepth: phase === 'disabled' ? 0 : null,
         maxActive: null,
       });
       try {
         const result = await task.run();
         const requests = model!.requests.slice(before);
-        expect(JSON.stringify(requests.at(-1)!.messages)).toContain(
-          phase === 'spawn' ? 'PR3D_RESULT_TWO' : 'PR3D_RESULT_FORK',
-        );
+        if (phase !== 'disabled')
+          expect(JSON.stringify(requests.at(-1)!.messages)).toContain(
+            phase === 'spawn' ? 'PR3D_RESULT_TWO' : 'PR3D_RESULT_FORK',
+          );
         if (phase === 'spawn')
           expect(JSON.stringify(requests.at(-1)!.messages)).toContain(
             'PR3D_RESULT_ONE',
@@ -402,13 +416,15 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         expect(facts).toHaveLength(requests.length * 2);
         expect(
           new Set(starts.map((r) => r.payload.fact.nativeSessionId)).size,
-        ).toBe(phase === 'spawn' ? 3 : 2);
+        ).toBe(phase === 'spawn' ? 3 : phase === 'fork' ? 2 : 1);
         expect(new Set(starts.map((r) => r.payload.fact.callId)).size).toBe(
           requests.length,
         );
-        expect(result.usage).toMatchObject({
-          inputTokens: requests.length * 20,
-          outputTokens: requests.length * 5,
+        expect(result).toMatchObject({
+          usage: {
+            inputTokens: requests.length * 20,
+            outputTokens: requests.length * 5,
+          },
         });
         const coverage = readCheckedFinalDeliveryForExecution(
           task.workflowLease,
@@ -438,7 +454,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       vi.mocked(Router.getHarnessRouter).mockReturnValue(
         new Router.HarnessRouter([adapter]),
       );
-      phase = 'fork';
+      phase = phase === 'spawn' ? 'fork' : 'disabled';
       rootCalls = 0;
     }
     expect(

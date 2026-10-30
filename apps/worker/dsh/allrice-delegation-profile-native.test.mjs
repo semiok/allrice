@@ -1,4 +1,3 @@
-/* global AbortController */
 import { randomUUID } from 'node:crypto';
 import { expect, it, vi } from 'vitest';
 import { gate, hold, host, text } from '../test/native-subagent/fixture.mjs';
