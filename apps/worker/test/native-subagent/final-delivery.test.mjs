@@ -358,7 +358,7 @@ it('中间文字之后真实工具再空答复：不给旧正文 proof，保留�
             type: 'tool-call',
             id: 'probe',
             name: 'final_probe',
-            arguments: {},
+            arguments: '{}',
           },
         ]
       : text(count === 2 ? '' : '修正后的文件链接。'),
@@ -393,6 +393,12 @@ it('中间文字之后真实工具再空答复：不给旧正文 proof，保留�
   expect(f.calls).toHaveLength(3);
   expect(toolCalls).toBe(1);
   await f.finish(repaired);
+  const handle = await f.ctx.sessionPersistence.open(f.root.id, 'read');
+  try {
+    await expect(handle.read()).resolves.toBeDefined();
+  } finally {
+    await handle.close();
+  }
 });
 
 it('用户要月报下载链接：绑定实际原生回复，关住迟到输入，完成凭据只消费一次', async () => {
