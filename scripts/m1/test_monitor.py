@@ -1055,7 +1055,7 @@ class OnlineWaits(unittest.TestCase):
     def test_known_lower_bound_alerts_even_with_an_unclassified_candidate(self):
         r = make_round()
         row = self.row(4, 5, unclassified_runs=1, possible_online_runs=5, possible_occupied_slots=5,
-                       uncertain_reasons=['missing_or_invalid_observation'])
+                       uncertain_reasons=['execution_identity_or_coverage_missing'])
         findings = self.collect(r, row)
         self.assertEqual([f['severity'] for f in findings], ['warning', 'warning'])
         snapshot = r.facts['online_waits']
@@ -1065,25 +1065,28 @@ class OnlineWaits(unittest.TestCase):
         self.assertIn('已确认Run4/执行位4', findings[0]['detail'])
         self.assertEqual(len(step(r, findings, 0)), 2)
 
-    def test_question_conflict_does_not_recover_a_high_alert_but_matching_end_does(self):
+    def test_missing_snapshot_does_not_recover_a_high_alert_but_complete_empty_does(self):
         r = make_round()
         step(r, self.collect(r, self.row(4, 4)), 0)
         conflict = self.row(0, unclassified_runs=1, possible_online_runs=1, possible_occupied_slots=1,
-                            uncertain_samples=['legacy-run'], uncertain_reasons=['question_projection_conflict'])
+                            uncertain_samples=['legacy-run'], uncertain_reasons=['foreground_snapshot_incomplete_or_stale'])
         findings = self.collect(r, conflict)
         self.assertEqual([f['severity'] for f in findings], ['unknown', 'warning'])
         self.assertEqual(step(r, findings, 100), [('opened', 'business.online_waits_data', False)])
         self.assertIn('business.online_waits', r.state['alerts'])
-        self.assertIn('question_projection_conflict', findings[0]['detail'])
+        self.assertIn('foreground_snapshot_incomplete_or_stale', findings[0]['detail'])
         self.assertEqual(step(r, self.collect(r, self.row(0)), 200), [
             ('recovered', 'business.online_waits', False), ('recovered', 'business.online_waits_data', False)])
 
     def test_high_ratio_is_rechecked_before_alerting(self):
         r = make_round()
+        r.cfg['confirmSeconds'] = 20
         check = next(c for c in monitor.BUSINESS_CHECKS if c[0] == 'online_waits')
         self.assertTrue(check[2])
-        with mock.patch.object(monitor, 'biz', side_effect=[self.row(4, 4), self.row(0)]):
+        with mock.patch.object(monitor, 'biz', side_effect=[self.row(4, 4), self.row(0)]), \
+             mock.patch.object(monitor.time, 'sleep') as pause:
             findings, ran = monitor.run_checks(r, [check])
+        pause.assert_called_once_with(20)
         self.assertEqual(step(r, findings, 0, ran), [])
 
     def test_readonly_command_prints_counts_without_delivery_or_state_writes(self):
