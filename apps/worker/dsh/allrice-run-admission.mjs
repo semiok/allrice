@@ -154,6 +154,18 @@ export function installRunAdmission(host) {
     stop() {
       if (binding) binding.closing = true;
     },
+    rootFor(agent) {
+      live(agent);
+      return current().record.agent;
+    },
+    async authorizeInput(runId) {
+      const state = current(runId);
+      await host.transport.request('allrice/run-authorize', {
+        ...live(state.record.agent),
+        kind: 'input',
+      });
+      if (current(runId) !== state) throw Error('RUN_NOT_ACTIVE');
+    },
     attribute(params) {
       const id = params.nativeSessionId ?? ctx.agents.requireInitiator().id;
       const value = identities.get(id);

@@ -40,6 +40,35 @@ function event(
 }
 
 describe('projectPendingUserQuestion', () => {
+  it('retargets only a trusted program card within the same Run and generation', () => {
+    const asked = event(1, 'session/user-question', {
+      questionId: 'program',
+      progress: {
+        runId: '00000000-0000-4000-8000-000000000004',
+        pauseId: 'pause',
+      },
+      questions: [{ id: 'runtime-progress', question: '继续？' }],
+    });
+    const next = {
+      ...event(2, '', {}),
+      type: 'turn.started' as const,
+      payload: { turnId: 'turn-3' },
+    };
+    expect(projectPendingUserQuestion([asked, next])?.turnId).toBe('turn-3');
+    for (const changed of [
+      { ...next, runId: '00000000-0000-4000-8000-000000000005' },
+      { ...next, generation: 3 },
+    ])
+      expect(projectPendingUserQuestion([asked, changed])?.turnId).toBe(
+        'turn-2',
+      );
+    const ordinary = event(1, 'session/user-question', {
+      questionId: 'ordinary',
+      questions: [{ id: 'runtime-progress', question: '模型题' }],
+    });
+    expect(projectPendingUserQuestion([ordinary, next])?.turnId).toBe('turn-2');
+    expect(asked.payload.turnId).toBe('turn-2');
+  });
   it('retains the complete native question request until DSH resolves it', () => {
     const asked = event(1, 'session/user-question', {
       questionId: 'question-1',

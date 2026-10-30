@@ -387,7 +387,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
       if (method === 'allrice/run-authorize') {
         executionSignal.throwIfAborted();
         try {
-          if (params.kind === 'tool') await authorizeRun?.();
+          if (params.kind === 'tool' || params.kind === 'input')
+            await authorizeRun?.();
           else if (params.kind === 'model') {
             accounting?.delivered({ calls: 0, complete: false });
             await input.modelPreflight?.();
@@ -792,10 +793,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
           subscription: snapshot.route === 'openai-codex',
           questionWait: input.questionWait,
           resume: callIndex === 0 ? input.questionWait?.resume : undefined,
+          stopForProgress: dropOwnedHost,
           settleDelivery: runDelivery
             ? async (confirmSettled) => {
                 await deliveryNativeCall(() => runtime.client.wait(threadId));
-                confirmSettled();
+                if (!confirmSettled()) return;
                 executionSignal.throwIfAborted();
                 await input.runDelivery!.pauseInput();
                 // candidate closes native ingress and waits once more.
@@ -1227,7 +1229,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           throw error;
         }
       }
-      if (runId) await runtime.client.endRun(threadId);
+      if (runId && !waitingForUser) await runtime.client.endRun(threadId);
     } catch (caught) {
       if (caught instanceof NativeQuestionParked && input.questionWait) {
         for (const key of [
@@ -1372,9 +1374,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       input.message,
       input.inputKind
         ? {
-            ...(input.inputKind === 'steer_current'
-              ? { runId: input.runId }
-              : {}),
+            runId: input.runId,
             inputId: input.clientUserMessageId,
             turnId: input.turnId,
             kind: input.inputKind,
@@ -1426,7 +1426,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
     questionWait?: HarnessExecutionInput['questionWait'];
     resume?: NonNullable<HarnessExecutionInput['questionWait']>['resume'];
     /** Hold event intake through public wait, input pause and final candidate. */
-    settleDelivery?(confirmSettled: () => void): Promise<void>;
+    settleDelivery?(confirmSettled: () => boolean): Promise<void>;
+    stopForProgress(): Promise<void>;
     onFailureUsage(receipt: ExecutionFailureUsage): void;
     onTurn(turnId: string): Promise<void>;
     /** Private persistence ACK, never a model-supplied barrier. */
@@ -1489,7 +1490,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
     let parking: Promise<unknown> | undefined;
     let parkingQuestion = false;
     let progressQuestionId: string | undefined;
-    let progressQuestionPending: HarnessExecutionResult['waitingForUser'];
+    let progressPauseId: string | undefined;
+    let progressStopping: Promise<void> | undefined;
     let waitingForUser: HarnessExecutionResult['waitingForUser'];
     let settle!: () => void;
     const idlePromise = new Promise<void>((resolveIdle) => {
@@ -1607,6 +1609,14 @@ export class DshHarnessAdapter implements HarnessAdapter {
             : shortText(notification.params.questionId, 240);
         const normalized = UserQuestionRequestSchema.safeParse({
           questionId,
+          ...(notification.params.progressPauseId
+            ? {
+                progress: {
+                  runId: notification.params.programRunId,
+                  pauseId: notification.params.progressPauseId,
+                },
+              }
+            : {}),
           ...(durable
             ? {
                 durable: true,
@@ -1655,9 +1665,12 @@ export class DshHarnessAdapter implements HarnessAdapter {
         const summary = normalized.success
           ? shortText(normalized.data.questions[0]?.question, 1000)
           : shortText(record(questions[0])?.question, 500);
-        progressQuestionPending = undefined;
+        waitingForUser = undefined;
+        progressPauseId =
+          shortText(notification.params.progressPauseId, 240) ?? undefined;
         progressQuestionId =
           normalized.success &&
+          progressPauseId &&
           normalized.data.questions.some(
             (question) => question.id === 'runtime-progress',
           )
@@ -1699,12 +1712,25 @@ export class DshHarnessAdapter implements HarnessAdapter {
       if (notification.method === 'session.user-question-pending') {
         const questionId = shortText(notification.params.questionId, 240);
         clearTimeout(waitTimer);
-        if (questionId && questionId === progressQuestionId)
-          progressQuestionPending = { questionId };
+        if (
+          questionId &&
+          questionId === progressQuestionId &&
+          progressPauseId
+        ) {
+          waitingForUser = { questionId, pauseId: progressPauseId };
+          // Root can already be idle with a child blocked in the Run pause.
+          // Close the exact Host now; do not await another root turn/end.
+          progressStopping = input.stopForProgress();
+          void progressStopping.catch((error) => {
+            processingError ??= error;
+          });
+          settle();
+        }
         return;
       }
       if (notification.method === 'session.user-question-answered') {
-        progressQuestionPending = undefined;
+        waitingForUser = undefined;
+        progressPauseId = undefined;
         progressQuestionId = undefined;
         clearTimeout(waitTimer);
         await input.onNative({
@@ -2027,10 +2053,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         await input.onDelta('', source, replyId, 'replace');
       }
       if (event.type === 'turn/end') {
-        if (progressQuestionPending) {
-          waitingForUser = progressQuestionPending;
-          return;
-        }
+        if (waitingForUser) return;
         const reason = record(data.reason);
         if (reason?.kind === 'error') {
           const failure = record(reason.error);
@@ -2082,7 +2105,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       // The accepted prompt may have invoked tools before its host vanished.
       // A fresh prompt would replay the task, not recover its native callback.
       eventChain = eventChain.then(() => {
-        if (idle) return;
+        if (idle || progressStopping) return;
         processingError ??= new HandlerError(
           'DSH_EXECUTION_OUTCOME_UNKNOWN',
           '执行进程已中断，未确认的操作不会自动重试；已产生的内容与执行记录保留。',
@@ -2153,10 +2176,21 @@ export class DshHarnessAdapter implements HarnessAdapter {
           },
         );
       if (!waitingForUser && !parseDshToolCall(answer)) {
-        await input.settleDelivery?.(confirmUsageSettled);
+        try {
+          await input.settleDelivery?.(() => {
+            confirmUsageSettled();
+            return !waitingForUser;
+          });
+        } catch (error) {
+          await flushEvents();
+          if (!progressStopping) throw error;
+        }
         await flushEvents();
         input.signal.throwIfAborted();
       }
+      await progressStopping;
+      await flushEvents();
+      input.signal.throwIfAborted();
       if (deltaMode === 'unknown' && deltaBuffer && !parseDshToolCall(answer)) {
         await input.onDelta(
           deltaBuffer,

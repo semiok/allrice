@@ -77,7 +77,10 @@ import {
   projectPreparationParameter,
 } from './allrice-project-native-tools.mjs';
 import { installTaskProgress } from './allrice-task-progress.mjs';
-import { askProgramQuestion } from './allrice-program-questions.mjs';
+import {
+  askProgramQuestion,
+  programQuestion,
+} from './allrice-program-questions.mjs';
 import { UserQuestionError } from '@deepseek-ai/dsh-user-questions';
 import { installModelErrorNormalization } from './allrice-model-errors.mjs';
 import { installContentGuard } from './allrice-content-guard.mjs';
@@ -893,7 +896,13 @@ export async function createAllRiceRuntime(
       const session = [...this.roots.entries()].find(
         ([, record]) => record.agent === agent,
       );
-      if (!session) throw Error('connection_wait_session_missing');
+      if (!session) {
+        // Keep the real child's unresolved result. Native send_message/result
+        // delivery owns the route to its actual parent; only the root asks people.
+        if (!this.runAdmission) throw Error('connection_wait_session_missing');
+        this.runAdmission.rootFor(agent);
+        return { content: response.modelContent };
+      }
       const [sessionId] = session;
       const questionId = `app-connect:${result.requestId}`;
       this.managedConnectionWaits.add(sessionId);
@@ -945,6 +954,13 @@ export async function createAllRiceRuntime(
           );
         }
         const [sessionId] = session;
+        const progressPauseId = /^runtime-progress:(.+):\d+$/.exec(
+          request[programQuestion] ?? '',
+        )?.[1];
+        const programRunId = progressPauseId
+          ? this.runAdmission?.attribute({ nativeSessionId: sessionId }).runId
+          : undefined;
+        if (programRunId) this.runAdmission.rootFor(request.agent);
         // Claim before joining the display queue; DSH's original deadline
         // otherwise keeps running while another card owns the foreground.
         const wait = request.wait?.timed
@@ -982,6 +998,7 @@ export async function createAllRiceRuntime(
             });
           }
           request.signal?.throwIfAborted();
+          if (programRunId) this.runAdmission.accepting(programRunId);
           if (this.requireRoot(sessionId).agent !== request.agent)
             throw Error('INPUT_SESSION_NOT_LIVE');
           const questions = this.preparedMethodQuestions.take(
@@ -999,7 +1016,9 @@ export async function createAllRiceRuntime(
             );
           const questionId = durable
             ? `${sessionId}:${callId}`
-            : `question-${randomUUID()}`;
+            : progressPauseId
+              ? `question-${randomUUID()}:runtime-progress:${programRunId ?? '-'}:${progressPauseId}`
+              : `question-${randomUUID()}`;
           let markDone;
           const done = new Promise((resolveDone) => {
             markDone = resolveDone;
@@ -1019,6 +1038,12 @@ export async function createAllRiceRuntime(
               done,
               questionId,
               questions,
+              programRunId,
+              ...(progressPauseId
+                ? {
+                    progress: { runId: programRunId, pauseId: progressPauseId },
+                  }
+                : {}),
               ...(durable ? { callId } : {}),
               resolve: (answer) => {
                 request.signal?.removeEventListener('abort', abort);
@@ -1034,6 +1059,7 @@ export async function createAllRiceRuntime(
             this.userQuestionNotify({
               sessionId,
               questionId,
+              ...(progressPauseId ? { progressPauseId, programRunId } : {}),
               ...(callId
                 ? { callId, durable, nativeSessionId: sessionId }
                 : {}),
@@ -1074,6 +1100,19 @@ export async function createAllRiceRuntime(
                 await Promise.allSettled(pending.inputDeliveries ?? []);
                 if (this.pendingUserQuestions.get(sessionId) !== pending)
                   return;
+                if (programRunId) {
+                  try {
+                    this.runAdmission.accepting(programRunId);
+                    // Fence new native calls before a child result can wake root.
+                    this.runAdmission.stop();
+                  } catch (error) {
+                    request.signal?.removeEventListener('abort', abort);
+                    this.pendingUserQuestions.delete(sessionId);
+                    markDone();
+                    rejectQuestion(error);
+                    return;
+                  }
+                }
                 this.userQuestionNotify({
                   sessionId,
                   questionId,
@@ -1188,6 +1227,10 @@ export async function createAllRiceRuntime(
       if (this.progressBridge && !this.taskProgress)
         this.taskProgress = installTaskProgress(this.ctx, this.progressBridge, {
           attribute: (p) => this.runAdmission?.attribute(p) ?? p,
+          rootFor: (agent) =>
+            this.runAdmission
+              ? this.runAdmission.rootFor(agent)
+              : this.requireRoot(agent.id).agent,
           maintenanceOutputTokens: process.env.ALLRICE_MAINTENANCE_OUTPUT_TOKENS
             ? Number(process.env.ALLRICE_MAINTENANCE_OUTPUT_TOKENS)
             : undefined,
@@ -1610,6 +1653,26 @@ export async function createAllRiceRuntime(
       const pendingQuestion = this.pendingUserQuestions.get(sessionId);
       if (params.inputId !== undefined) {
         const record = this.requireRoot(sessionId);
+        const currentTurn = () =>
+          `${sessionId}:turn:${record.agent.session.snapshotEvents().findLast((e) => e.type === 'turn/start')?.data.turn}`;
+        let runQuestion =
+          params.kind === 'ask_user' && !!pendingQuestion?.programRunId;
+        if (!pendingQuestion && params.kind === 'ask_user' && params.runId) {
+          try {
+            runQuestion =
+              inspectDshInput(record.agent, params).status !== 'not_found';
+          } catch (error) {
+            if (error.message !== 'INPUT_ID_CONFLICT') throw error;
+            // Ordinary legacy answers retain their existing turn-only digest.
+          }
+        }
+        if (runQuestion) {
+          if (pendingQuestion && params.runId !== pendingQuestion.programRunId)
+            throw Error('RUN_NOT_ACTIVE');
+          if (pendingQuestion && params.turnId !== currentTurn())
+            throw Error('INPUT_TURN_CHANGED');
+          this.runAdmission.accepting(params.runId, !pendingQuestion);
+        }
         const delivery = deliverDshInput(
           {
             agent: record.agent,
@@ -1623,15 +1686,20 @@ export async function createAllRiceRuntime(
                       .stateOf(record.agent.session, 'userQuestions').questions,
                 }
               : {}),
-            flush: () => this.ctx.sessions.flush(record.agent.session),
+            flush: async () => {
+              await this.ctx.sessions.flush(record.agent.session);
+              if (runQuestion)
+                await this.runAdmission.authorizeInput(params.runId);
+            },
             isCurrent: () =>
               (params.kind === 'ask_user' || this.detaching === undefined) &&
               this.isRootCurrent(record, sessionId) &&
               this.pendingUserQuestions.get(sessionId) === pendingQuestion &&
-              (params.kind === 'steer_current' && this.runAdmission
+              (!runQuestion || params.turnId === currentTurn()) &&
+              ((params.kind === 'steer_current' || runQuestion) &&
+              this.runAdmission
                 ? (this.runAdmission.accepting(params.runId), true)
-                : params.turnId ===
-                  `${sessionId}:turn:${record.agent.session.snapshotEvents().findLast((e) => e.type === 'turn/start')?.data.turn}`),
+                : params.turnId === currentTurn()),
             notify: () => {
               this.pendingUserQuestions.delete(sessionId);
               if (pendingQuestion.callId) return;
@@ -1645,7 +1713,8 @@ export async function createAllRiceRuntime(
           {
             ...params,
             runId:
-              params.kind === 'steer_current' && this.runAdmission
+              (params.kind === 'steer_current' || runQuestion) &&
+              this.runAdmission
                 ? params.runId
                 : undefined,
           },

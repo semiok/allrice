@@ -2024,7 +2024,13 @@ export async function executeEmployeeRun({
         action: 'check',
         nativeSessionId: result.threadId ?? runtime.threadId,
       });
-      if (repairTask || !progress?.pauseId || progress.canceled !== false)
+      if (
+        repairTask ||
+        !progress?.pauseId ||
+        progress.canceled !== false ||
+        (result.waitingForUser?.pauseId &&
+          result.waitingForUser.pauseId !== progress.pauseId)
+      )
         throw new HandlerError('DSH_TURN_FAILED', 'DSH turn failed', false);
       result.answer = '等你回答后继续。';
     }

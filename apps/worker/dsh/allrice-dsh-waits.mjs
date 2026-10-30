@@ -4,6 +4,7 @@ import { readDshToolResult } from '@allrice/contracts/native-runtime';
 import { KNOWN_SESSION_EVENT_TYPES } from '@deepseek-ai/dsh-session';
 import { structuredUserQuestionAnswer } from './allrice-dsh-runtime-compatibility.mjs';
 import { deliverDshInput } from './allrice-dsh-inputs.mjs';
+import { programQuestionProgress } from './allrice-program-questions.mjs';
 
 for (const type of ['allrice/wait/checkpoint', 'allrice/wait/continued'])
   KNOWN_SESSION_EVENT_TYPES.add(type);
@@ -48,41 +49,61 @@ export async function checkpointNativeQuestion(server, sessionId, questionId) {
   const question = server.pendingUserQuestions.get(sessionId);
   if (!record || !question || question.questionId !== questionId) return null;
   const agent = record.agent;
-  // Another agent/tool may still be doing real work. Never interrupt it just
-  // because the root is asking a question.
-  if (server.ctx.agents.list().some((a) => a !== agent)) return null;
-  const open = new Map();
-  for (const e of agent.session.snapshotEvents()) {
-    if (e.type === 'tool/call') open.set(e.data.callId, e.data.name);
-    if (e.type === 'tool/result') {
-      const b = readDshToolResult(e.data.message);
-      open.delete(
-        b?.toolCallId ?? e.data.message?.toolCallId ?? e.data.message?.callId,
-      );
-    }
-  }
-  if (
-    open.size > 1 ||
-    [...open.values()].some(
-      (name) =>
-        name !== 'ask_user_question' &&
-        !(
-          name === 'cloud_mcp_call' &&
-          server.managedConnectionWaits?.has(sessionId) &&
-          question.questions.length === 1 &&
-          /^app-connect:[a-f0-9-]{36}$/.test(question.questions[0].id)
-        ),
+  const runId = server.runAdmission?.attribute({
+    nativeSessionId: sessionId,
+  }).runId;
+  const current = () => {
+    if (
+      server.detaching !== undefined ||
+      !server.isRootCurrent(record, sessionId) ||
+      server.pendingUserQuestions.get(sessionId) !== question ||
+      question.inputDeliveries?.size
     )
-  )
-    return null;
+      return false;
+    server.runAdmission?.accepting(runId);
+    return true;
+  };
+  const canPark = () => {
+    if (!current()) return false;
+    // Another agent/tool may still be doing real work. Never interrupt it just
+    // because the root is asking a question.
+    if (server.ctx.agents.list().some((a) => a !== agent)) return false;
+    const open = new Map();
+    for (const e of agent.session.snapshotEvents()) {
+      if (e.type === 'tool/call') open.set(e.data.callId, e.data.name);
+      if (e.type === 'tool/result') {
+        const b = readDshToolResult(e.data.message);
+        open.delete(
+          b?.toolCallId ?? e.data.message?.toolCallId ?? e.data.message?.callId,
+        );
+      }
+    }
+    if (
+      open.size > 1 ||
+      [...open.values()].some(
+        (name) =>
+          name !== 'ask_user_question' &&
+          !(
+            name === 'cloud_mcp_call' &&
+            server.managedConnectionWaits?.has(sessionId) &&
+            question.questions.length === 1 &&
+            /^app-connect:[a-f0-9-]{36}$/.test(question.questions[0].id)
+          ),
+      )
+    )
+      return false;
+    return true;
+  };
+  if (!canPark()) return null;
+  // Registry absence is only a fast rejection check. Public DSH wait also
+  // joins creation, disposal and delivery already in flight, never the blocked root.
+  await server.ctx.subagents?.waitForChildren(agent);
+  if (!canPark()) return null;
   await server.taskProgress?.flush();
+  await Promise.allSettled(question.inputDeliveries ?? []);
+  await server.runAdmission?.authorizeInput(runId);
   // A user answer can race the preceding flush.
-  if (
-    server.detaching !== undefined ||
-    !server.isRootCurrent(record, sessionId) ||
-    server.pendingUserQuestions.get(sessionId) !== question
-  )
-    return null;
+  if (!canPark()) return null;
   const turn = agent.session
     .snapshotEvents()
     .findLast((e) => e.type === 'turn/start')?.data.turn;
@@ -95,20 +116,29 @@ export async function checkpointNativeQuestion(server, sessionId, questionId) {
   };
   agent.session.append('allrice/wait/checkpoint', data);
   await server.ctx.sessions.flush(agent.session);
+  await server.runAdmission?.authorizeInput(runId);
   // No await between the final identity check and cancel. The only interrupted
   // callback is this non-executing question; its answer is stored on recovery.
-  if (
-    server.detaching !== undefined ||
-    !server.isRootCurrent(record, sessionId) ||
-    server.pendingUserQuestions.get(sessionId) !== question
-  )
-    return null;
+  if (!canPark()) return null;
   agent.cancel({ kind: 'user' }, { keepInbox: true });
   await agent.whenIdle();
   await server.taskProgress?.flush();
+  // A program question can suspend the root's accounting iterator. Its full
+  // receipt drain is finite only after cancel/idle, never before that boundary.
   await server.nativeAccounting?.flush();
+  await server.runAdmission?.authorizeInput(runId);
   await server.ctx.sessions.flush(agent.session);
   return pendingNativeWait(agent);
+}
+
+function progressWaitCaller(server, agent, progress) {
+  const caller = server.runAdmission?.attribute({
+    nativeSessionId: agent.id,
+  }) ?? {
+    nativeSessionId: agent.id,
+  };
+  if (progress.runId !== caller.runId) throw Error('task_progress_stale_pause');
+  return caller;
 }
 
 export async function answerNativeWait(server, params) {
@@ -126,6 +156,17 @@ export async function answerNativeWait(server, params) {
     throw Error('NATIVE_WAIT_CHANGED');
   const answer = structuredUserQuestionAnswer(wait, params.text);
   if (!answer) throw Error('QUESTION_ANSWER_REQUIRED');
+  const progress = programQuestionProgress(wait.questionId);
+  if (progress) {
+    if (!server.progressBridge) throw Error('task_progress_disabled');
+    const status = await server.progressBridge({
+      action: 'check',
+      ...progressWaitCaller(server, agent, progress),
+    });
+    server.assertRoot(record, params.sessionId);
+    if (!status.paused || status.pauseId !== progress.pauseId)
+      throw Error('task_progress_stale_pause');
+  }
   // Use the existing persisted typed-input proof and digest. It resolves this
   // checkpoint, without dispatching a model or treating an answer as approval.
   let resolved;
@@ -170,23 +211,17 @@ export async function continueNativeWait(server, params) {
   });
   const agent = record.agent;
   const wait = pendingNativeWait(agent);
-  if (!wait || wait.questionId !== params.questionId || agent.status !== 'idle')
+  if (
+    !wait ||
+    wait.questionId !== params.questionId ||
+    wait.turnId !== params.turnId ||
+    agent.status !== 'idle'
+  )
     throw Error('NATIVE_WAIT_CHANGED');
   const answered = await answerNativeWait(server, params);
   server.assertRoot(record, params.sessionId);
-  if (wait.questions.some((q) => q.id === 'runtime-progress')) {
-    if (!server.progressBridge) throw Error('task_progress_disabled');
-    // This resume is outside task-progress middleware. Capture the authorized
-    // root once; do not reattribute queued settlement receipts at the transport.
-    const caller = server.runAdmission?.attribute({
-      nativeSessionId: agent.id,
-    }) ?? { nativeSessionId: agent.id };
-    const status = await server.progressBridge({
-      action: 'check',
-      ...caller,
-    });
-    server.assertRoot(record, params.sessionId);
-    if (!status.paused) throw Error('task_progress_stale_pause');
+  const progress = programQuestionProgress(wait.questionId);
+  if (progress) {
     const chosen = structuredUserQuestionAnswer(wait, params.text).answers.find(
       (a) => a.id === 'runtime-progress',
     );
@@ -202,8 +237,8 @@ export async function continueNativeWait(server, params) {
       throw Error('task_progress_answer_required');
     await server.progressBridge({
       action: 'decide',
-      ...caller,
-      pauseId: status.pauseId,
+      ...progressWaitCaller(server, agent, progress),
+      pauseId: progress.pauseId,
       decision: cancel ? 'cancel' : 'continue',
     });
     server.assertRoot(record, params.sessionId);

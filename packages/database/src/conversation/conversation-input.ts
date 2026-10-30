@@ -185,7 +185,8 @@ export async function consumeConversationSteer(input: {
       join allrice_jobs j on j.run_id=cr.active_run_id and j.worker_id=cr.worker_id
       where c.id=${values.commandId} and cr.worker_id=${values.workerId} and cr.state='running'
       and cr.thread_generation=c.expected_generation
-      and (cr.active_turn_id=c.expected_turn_id or (c.input_kind='steer_current' and exists(
+      and (cr.active_turn_id=c.expected_turn_id or ((c.input_kind='steer_current'
+        or (c.input_kind='ask_user' and cr.active_run_id=${input.proof?.status === 'adopted' ? (input.proof.runId ?? null) : null})) and exists(
         select 1 from allrice_run_events e where e.run_id=cr.active_run_id
           and e.organization_id=c.organization_id and e.workspace_id=c.workspace_id
           and e.event_type='turn.started' and e.payload->>'turnId'=c.expected_turn_id
@@ -218,12 +219,26 @@ export async function consumeConversationSteer(input: {
     if (!command) return;
     if (command.input_kind) {
       const proof = RuntimeNativeInputProofSchema.parse(input.proof);
+      let answeredQuestionId;
+      try {
+        if (command.message.startsWith('allrice:user-question:v1:'))
+          answeredQuestionId = JSON.parse(
+            command.message.slice('allrice:user-question:v1:'.length),
+          )?.questionId;
+      } catch {
+        /* Only a typed question has an answer identity. */
+      }
       if (
         proof.status !== 'adopted' ||
         proof.inputId !== command.client_user_message_id ||
         (proof.runId
-          ? command.input_kind !== 'steer_current' ||
-            proof.runId !== live[0]!.active_run_id
+          ? proof.runId !== live[0]!.active_run_id ||
+            (command.input_kind !== 'steer_current' &&
+              (command.input_kind !== 'ask_user' ||
+                proof.checkpoint !== 'question_resolved' ||
+                !answeredQuestionId ||
+                proof.messageId !== answeredQuestionId ||
+                proof.turnId !== command.expected_turn_id))
           : proof.turnId !== command.expected_turn_id)
       )
         throw new Error('INPUT_ADOPTION_PROOF_REQUIRED');
