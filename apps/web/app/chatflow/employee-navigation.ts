@@ -192,24 +192,7 @@ export function employeeGroups(
         },
       ]),
     ),
-    projectionsBySession: Object.fromEntries(
-      Object.entries(nativeSummaries).flatMap(([id, summary]) =>
-        !summary || summary === 'error'
-          ? []
-          : [
-              [
-                id,
-                {
-                  values: {
-                    subagentCatalog: summary.descendants
-                      .filter((entry) => entry.parentId === summary.rootId)
-                      .map(({ id }) => ({ id })),
-                  },
-                },
-              ],
-            ],
-      ),
-    ),
+    projectionsBySession: {},
   };
   const statuses = new Map<
     string,
@@ -225,15 +208,6 @@ export function employeeGroups(
       },
     ]),
   );
-  for (const summary of Object.values(nativeSummaries))
-    if (summary && summary !== 'error')
-      for (const child of summary.descendants)
-        if (
-          child.parentId === summary.rootId &&
-          child.kind === 'child' &&
-          child.running !== null
-        )
-          statuses.set(child.id, { running: child.running });
   const defaultEmployee =
     employeeChoices(workspace).find((employee) => employee.isDefault) ??
     employeeChoices(workspace)[0];
@@ -262,6 +236,22 @@ export function employeeGroups(
     },
   ).map((group) => ({
     ...group,
+    sessions: group.sessions.map((session) => {
+      // Native child ids belong to this parent's storage namespace.
+      const summary = nativeSummaries[session.id];
+      return {
+        ...session,
+        runningSubagentCount:
+          summary && summary !== 'error'
+            ? summary.descendants.filter(
+                (child) =>
+                  child.kind === 'child' &&
+                  child.parentId === summary.rootId &&
+                  child.running === true,
+              ).length
+            : 0,
+      };
+    }),
     sessionCount: Math.max(
       group.sessionCount,
       counts.get(group.key)?.count ?? 0,
