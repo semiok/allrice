@@ -1,13 +1,19 @@
-import {
-  gate,
-  host,
-  text,
-} from '../../../../apps/worker/test/native-subagent/fixture.mjs';
-/** Real isolated PostgreSQL and Worker receipt entrypoints. No Host/provider is
- * enabled in this storage slice; metadata and Token facts below are synthetic. */
+// @ts-expect-error The shared actual Host fixture is JavaScript.
+import * as NativeHost from '../../../../apps/worker/test/native-subagent/fixture.mjs';
+const { gate, host, text } = NativeHost;
+/** Real isolated PostgreSQL and Worker receipt entrypoints. The added end-to-end
+ * case runs the actual DSH Host; only its provider and tokens are synthetic. */
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import {
   RouteDecisionSchema,
   type EmployeeRuntimePackage,
@@ -50,6 +56,10 @@ const suite =
 suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
   let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   let runtimePackage: EmployeeRuntimePackage;
+  beforeEach(() => {
+    vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
+    vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'c'.repeat(64));
+  });
   beforeAll(async () => {
     vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
     vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'c'.repeat(64));
@@ -404,9 +414,10 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
   function nativeOutcome(
     f: Fixture,
     delivery = { calls: 1, complete: true },
-    price:
-      | { inputCentsPerMillion: number; outputCentsPerMillion: number }
-      | undefined = { inputCentsPerMillion: 100, outputCentsPerMillion: 400 },
+    price: {
+      inputCentsPerMillion: number;
+      outputCentsPerMillion: number;
+    } | null = { inputCentsPerMillion: 100, outputCentsPerMillion: 400 },
   ) {
     return completeRouteDecision({
       organizationId: f.org,
@@ -416,7 +427,7 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
         jobId: f.worker.jobId,
         jobAttempt: 1,
         delivery,
-        price,
+        price: price ?? undefined,
       },
       outcome: {
         decisionId: f.decision.id,
@@ -517,6 +528,22 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
       }),
     ).toEqual(settled);
   }, 30000);
+  it('retains complete tokens but unknown cost when this Run has no frozen deployment tariff', async () => {
+    const f = await setup(),
+      call = start(f);
+    await write(f, call);
+    await write(f, finish(call));
+    expect(
+      await nativeOutcome(f, { calls: 1, complete: true }, null),
+    ).toMatchObject({
+      inputTokens: 130,
+      cachedInputTokens: 20,
+      outputTokens: 5,
+      usageComplete: true,
+      cacheUsageKnown: true,
+      costCents: null,
+    });
+  });
   it.each(['delivery', 'missing-finish', 'missing-cache', 'count'] as const)(
     'keeps %s incomplete without falling back to the caller cumulative snapshot',
     async (fault) => {

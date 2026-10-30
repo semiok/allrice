@@ -1184,7 +1184,7 @@ describe('DshHarnessAdapter', () => {
       // cache receipt; missing cache detail must remain unknown, not zero.
       expect(result.cacheUsageKnown).toBe(false);
       expect(result.usage).toEqual({
-        inputTokens: 170,
+        inputTokens: 220,
         cachedInputTokens: 50,
         outputTokens: 9,
       });
@@ -1956,7 +1956,7 @@ describe('DshHarnessAdapter', () => {
         input.attempt,
       ),
     ).toEqual({
-      usage: { inputTokens: 11, cachedInputTokens: 3, outputTokens: 5 },
+      usage: { inputTokens: 14, cachedInputTokens: 3, outputTokens: 5 },
       usageComplete: false,
       cacheUsageKnown: false,
     });
@@ -2167,12 +2167,12 @@ describe('DshHarnessAdapter', () => {
     expect(
       events.find((event) => event.type === 'usage.updated'),
     ).toMatchObject({
-      inputTokens: 11,
+      inputTokens: 14,
       cachedInputTokens: 3,
       outputTokens: 5,
     });
     expect(result.usage).toEqual({
-      inputTokens: 11,
+      inputTokens: 14,
       cachedInputTokens: 3,
       outputTokens: 5,
     });

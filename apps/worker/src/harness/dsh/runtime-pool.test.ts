@@ -751,6 +751,25 @@ it('rejects an actual current-primary handshake missing accounting before accept
   expect(runtimes.get(value.threadId)).toBeUndefined();
 });
 
+it.each([false, true])(
+  'separates new accounting and legacy caller runtime capabilities in both directions, first=%s',
+  async (firstAccounting) => {
+    const { runtimes, value } = currentExecutionRequest('current');
+    const port = {
+      bind: () => ({ record: async () => {}, delivered: () => {} }),
+    };
+    value.input.nativeAccounting = firstAccounting ? port : undefined;
+    const first = await runtimes.acquire(value);
+    value.input.nativeAccounting = firstAccounting ? undefined : port;
+    const second = await runtimes.acquire(value);
+    expect(second.runtime).not.toBe(first.runtime);
+    expect(first.runtime.client.processState()).toMatchObject({
+      state: 'exited',
+      stdioClosed: true,
+    });
+  },
+);
+
 it('reuses one current executor across Run bindings while rechecking the new Run identity', async () => {
   const { runtimes, value, payload } = currentExecutionRequest('current');
   const first = await runtimes.acquire(value);

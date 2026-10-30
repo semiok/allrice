@@ -1649,42 +1649,6 @@ export async function executeEmployeeRun({
                 });
                 const stepResult = await adapter.execute({
                   nativeQuestionMode,
-                  nativeAccounting:
-                    adapter.kind === 'dsh'
-                      ? {
-                          bind: (rootSessionId: string) => {
-                            const decisionId = routeDecision!.id;
-                            let price;
-                            try {
-                              price =
-                                readModelPricing()[
-                                  `${providerName(providerSnapshot)}:${providerSnapshot.model}`
-                                ];
-                            } catch {
-                              /* Optional tariff stays unknown. */
-                            }
-                            const captured = (nativeSettlement = {
-                              rootSessionId,
-                              jobId: execution.job.id,
-                              jobAttempt: execution.job.attempt,
-                              delivery: { calls: 0, complete: false },
-                              price,
-                            });
-                            return {
-                              record: (fact) =>
-                                appendNativeModelReceipt({
-                                  ...workflowLease,
-                                  rootSessionId,
-                                  routeDecisionId: decisionId,
-                                  fact,
-                                }),
-                              delivered: (value) => {
-                                captured.delivery = value;
-                              },
-                            };
-                          },
-                        }
-                      : undefined,
                   contentGuard,
                   progress: taskProgress,
                   nativeQuestionWait:
@@ -1802,6 +1766,43 @@ export async function executeEmployeeRun({
         : await adapter
             .execute({
               nativeQuestionMode,
+              nativeAccounting:
+                adapter.kind === 'dsh'
+                  ? {
+                      bind: (rootSessionId: string) => {
+                        const decisionId = routeDecision!.id;
+                        let price;
+                        try {
+                          price =
+                            readModelPricing()[
+                              `${providerName(providerSnapshot)}:${providerSnapshot.model}`
+                            ];
+                        } catch {
+                          /* Optional tariff stays unknown. */
+                        }
+                        const captured: NativeModelSettlement =
+                          (nativeSettlement = {
+                            rootSessionId,
+                            jobId: execution.job.id,
+                            jobAttempt: execution.job.attempt,
+                            delivery: { calls: 0, complete: false },
+                            price,
+                          });
+                        return {
+                          record: (fact) =>
+                            appendNativeModelReceipt({
+                              ...workflowLease,
+                              rootSessionId,
+                              routeDecisionId: decisionId,
+                              fact,
+                            }),
+                          delivered: (value) => {
+                            captured.delivery = value;
+                          },
+                        };
+                      },
+                    }
+                  : undefined,
               ...(!repairTask && !repositoryReviewTask
                 ? {
                     nativeRunAuthority: (generation: number) => () =>

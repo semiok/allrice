@@ -263,7 +263,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       employeeAssignmentId: identity.assignment,
       title: 'PR1b synthetic Worker',
     });
-    return { db, identity, context, chat, artifactId };
+    return { db, identity, context, chat, artifactId, launch };
   }
   type Setup = Awaited<ReturnType<typeof setup>>;
   async function prepare(f: Setup, prompt: string, persistEvents = false) {
@@ -360,6 +360,75 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       .filter(Boolean)
       .map((line) => JSON.parse(line));
   }
+
+  it('MET229: 普通 Worker 新账本逐 Run 结算，旧来源续聊不重计持久前缀', async () => {
+    const f = await setup(async () => ({
+      text: '会议结论：先整理资料，再确认下一步。',
+    }));
+    const [born] =
+      await f.db`select native_root_origin from allrice_chat_sessions where id=${f.chat.id}`;
+    for (const prompt of ['整理会议结论。', '继续补充下一步。']) {
+      const task = await prepare(f, prompt, true);
+      try {
+        const result = await task.run();
+        const facts =
+          await f.db`select payload from allrice_run_events where run_id=${task.runId} and payload->>'source'='native_model_receipt_v1' order by sequence`;
+        expect(facts).toHaveLength(2);
+        expect(facts.map((r) => r.payload.fact.phase)).toEqual([
+          'start',
+          'finish',
+        ]);
+        expect(facts[0]!.payload.fact.callId).toBe(
+          facts[1]!.payload.fact.callId,
+        );
+        expect(
+          facts.every(
+            (r) =>
+              r.payload.runId === task.runId &&
+              r.payload.jobId === task.workflowLease.jobId,
+          ),
+        ).toBe(true);
+        const [route] =
+          await f.db`select id,input_tokens,cached_input_tokens,output_tokens,usage_complete,cache_usage_known,cost_cents from allrice_route_decisions where run_id=${task.runId}`;
+        expect(route).toMatchObject({
+          input_tokens: 20,
+          cached_input_tokens: 0,
+          output_tokens: 5,
+          usage_complete: false,
+          cache_usage_known: false,
+          cost_cents: null,
+        });
+        expect(result).toMatchObject({
+          usage: { inputTokens: 20, cachedInputTokens: 0, outputTokens: 5 },
+          usageComplete: false,
+          cacheUsageKnown: false,
+          estimatedCostCents: null,
+        });
+        expect(
+          await f.db`select * from allrice_employee_run_steps where run_id=${task.runId} and payload->>'source'='native_model_receipt_v1'`,
+        ).toHaveLength(0);
+        await completeJob({ ...task.workflowLease, result });
+        f.launch.artifactId = 'sha256:' + 'b'.repeat(64);
+        vi.mocked(NativeArtifact.checkedDshNativeLaunch).mockReturnValue({
+          artifactId: f.launch.artifactId,
+          profileId: 'restricted',
+        });
+        vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', f.launch.artifactId);
+      } finally {
+        await task.isolation.cleanup();
+      }
+    }
+    expect(model!.requests).toHaveLength(2);
+    expect(
+      (
+        await f.db`select native_root_origin from allrice_chat_sessions where id=${f.chat.id}`
+      )[0],
+    ).toEqual(born);
+    expect(
+      vi.mocked(NativeArtifact.currentDshNativeLaunch).mock.results.at(-1)!
+        .value.artifactId,
+    ).toBe(f.launch.artifactId);
+  }, 45000);
 
   it.each([
     { mode: 'plan_only', workbench: '1' },
@@ -2135,16 +2204,9 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
             output_tokens: 5 * completedCalls,
             cost_cents: null,
           });
-          const complete = [
-            'missing-origin',
-            'missing-active-turn',
-            'missing-origin-after-repair',
-            'missing-candidate',
-            'invalid-repair',
-          ].includes(mode);
-          expect(route!.usage_complete).toBe(complete);
-          // Pinned pi-ai omits zero cache counters; the API receipt must
-          // preserve that unknown cache status even when token usage is complete.
+          expect(route!.usage_complete).toBe(false);
+          // Pinned pi-ai omits zero cache counters: the new strict four-bucket
+          // ledger retains raw tokens without claiming a complete cash receipt.
           expect(route!.cache_usage_known).toBe(false);
           const ledger =
             await f.db`select route_decision_id id,status,input_tokens,cached_input_tokens,output_tokens,usage_complete,cache_usage_known,cost_cents

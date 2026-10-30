@@ -80,7 +80,7 @@ async function scenario({
   const connections = [];
   const receiptEntered = Promise.withResolvers(),
     receiptRelease = Promise.withResolvers();
-  let serverError;
+  let serverError, compactionError, accountingCloseError;
   let adoptionAttempts = 0;
   let contentCalls = 0,
     compactionRejected = false,
@@ -379,9 +379,11 @@ async function scenario({
     );
     if (accountingStall) {
       await receiptEntered.promise;
-      await client.close();
+      await client.close().catch((error) => {
+        accountingCloseError = error;
+      });
       receiptRelease.resolve();
-      return { requests, bridgeCalls, closed: true };
+      return { requests, bridgeCalls, closeError: accountingCloseError };
     }
     if (progressPause) {
       await expect
@@ -450,7 +452,8 @@ async function scenario({
     if (compact) {
       try {
         await client.compact(sessionId);
-      } catch {
+      } catch (error) {
+        compactionError = { message: error.message, code: error.code };
         compactionRejected = true;
       }
     }
@@ -463,12 +466,13 @@ async function scenario({
       toolCalls,
       contentCalls,
       compactionRejected,
+      compactionError,
       connections,
       notices,
     };
   } finally {
     receiptRelease.resolve();
-    await client?.close();
+    if (!accountingCloseError) await client?.close();
     server.closeAllConnections();
     await new Promise((r) => server.close(r));
     await rm(root, { recursive: true, force: true });
@@ -874,7 +878,10 @@ describe('native accounting over the real JSON-RPC Host and native retry/compact
       accounting: true,
       compact: true,
     });
-    expect(result.compactionRejected).toBe(false);
+    expect({
+      rejected: result.compactionRejected,
+      error: result.compactionError,
+    }).toEqual({ rejected: false, error: undefined });
     const starts = result.bridgeCalls.filter((p) => p.fact?.phase === 'start');
     expect(starts.some((p) => p.fact.purpose === 'compaction')).toBe(true);
     expect(starts).toHaveLength(result.requests.length);
@@ -885,7 +892,16 @@ describe('native accounting over the real JSON-RPC Host and native retry/compact
       accounting: true,
       accountingStall: true,
     });
-    expect(result.closed).toBe(true);
+    expect(result.closeError).toMatchObject({
+      code: 'DSH_RUNTIME_CLOSE_UNCONFIRMED',
+      evidence: {
+        process: { state: 'exited', stdioClosed: true },
+        wrapperCleanupConfirmed: false,
+      },
+    });
+    expect(['SIGTERM', 'SIGKILL']).toContain(
+      result.closeError.evidence.terminationAttempted,
+    );
     expect(result.requests).toHaveLength(1);
     expect(result.bridgeCalls.some((p) => p.delivery?.complete)).toBe(false);
   }, 15000);
