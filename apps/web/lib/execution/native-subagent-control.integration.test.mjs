@@ -45,6 +45,7 @@ import {
   host,
   text,
 } from '../../../worker/test/native-subagent/fixture.mjs';
+import { controlStdio } from '../../../worker/test/native-subagent/control-stdio.fixture.mjs';
 
 const cookie = vi.hoisted(() => ({ token: '' }));
 vi.mock('next/headers', () => ({
@@ -129,6 +130,8 @@ suite(
     async function chat({
       model,
       questionMode,
+      stdio = false,
+      requestTimeoutMs,
       transport = async (send) => send(),
     } = {}) {
       const f = await createRunAuthorityFixture(fixture.db, {
@@ -225,6 +228,10 @@ suite(
       const adapter = getHarnessRouter().resolve('dsh'),
         pool = Reflect.get(adapter, 'runtimePool');
       const dispatched = [];
+      const sendControl = (method, params) => {
+        dispatched.push(params);
+        return transport(() => h.server.handleRequest(method, params), params);
+      };
       // Replace stdio with an in-process pipe, preserving the real adapter scope
       // check, protocol DTO parsing, production Host and native public services.
       runtime = {
@@ -242,22 +249,25 @@ suite(
           attempt: 1,
           generation: worker.generation,
         },
-        client: {
-          steer: DshProtocolClient.prototype.steer.bind({
-            request: (method, params) => h.server.handleRequest(method, params),
-          }),
-          nativeSubagentControl:
-            DshProtocolClient.prototype.nativeSubagentControl.bind({
-              runId: f.rootRunId,
-              request: (method, params) => {
-                dispatched.push(params);
-                return transport(
-                  () => h.server.handleRequest(method, params),
-                  params,
-                );
-              },
-            }),
-        },
+        client: stdio
+          ? await controlStdio(h, f.rootRunId, {
+              requestTimeoutMs,
+              handle: (method, params) =>
+                method === 'subagents/control'
+                  ? sendControl(method, params)
+                  : h.server.handleRequest(method, params),
+            })
+          : {
+              steer: DshProtocolClient.prototype.steer.bind({
+                request: (method, params) =>
+                  h.server.handleRequest(method, params),
+              }),
+              nativeSubagentControl:
+                DshProtocolClient.prototype.nativeSubagentControl.bind({
+                  runId: f.rootRunId,
+                  request: sendControl,
+                }),
+            },
       };
       Reflect.get(pool, 'runtimes').set(runtime.sessionId, runtime);
       residents.push([pool, runtime.sessionId]);
@@ -605,18 +615,26 @@ suite(
     });
 
     it('recovers a lost prompt ACK from the frozen own suffix after root closure without redispatch', async () => {
+      const admitted = gate();
       const f = await chat({
+        stdio: true,
+        requestTimeoutMs: 1_000,
         transport: async (send) => {
-          await send();
-          throw Error('lost ACK');
+          admitted.resolve(await send());
+          return new Promise(() => {});
         },
       });
+      const dispatch = vi.spyOn(f.runtime.client, 'nativeSubagentControl');
       await f.h.prompt('等我补充材料。');
       const child = await f.h.spawn();
       await child.result;
       const command = f.input(child, '真实补充内容');
       await f.request('POST', command);
       await f.poll();
+      const nativeReceipt = await admitted.promise;
+      await expect(dispatch.mock.results[0].value).rejects.toMatchObject({
+        code: 'DSH_REQUEST_TIMEOUT',
+      });
       await expect
         .poll(
           async () => (await f.read(command.requestId)).ticket.result.status,
@@ -631,7 +649,7 @@ suite(
       ).json();
       expect(recovered.ticket.result).toMatchObject({
         status: 'accepted',
-        acceptance: { kind: 'prompt', messageId: expect.any(String) },
+        acceptance: { kind: 'prompt', messageId: nativeReceipt.messageId },
         source: {
           kind: 'user_rpc',
           rpcId: command.requestId,
@@ -640,6 +658,43 @@ suite(
       });
       expect(f.dispatched).toHaveLength(1);
       expect(await f.poll()).toBe(false);
+    });
+
+    it('records an actual native refusal through OS stdio and the SDK as rejected, without another delivery', async () => {
+      const f = await chat({ stdio: true });
+      await f.h.prompt('保持根运行，补充子任务。');
+      const child = await f.h.spawn();
+      await child.result;
+      const command = {
+        ...f.input(child, '不能接收的时区'),
+        clientTimeZone: 'not-a-zone',
+      };
+      expect((await f.request('POST', command)).status).toBe(202);
+      await f.poll();
+      await expect
+        .poll(async () => (await f.read(command.requestId)).ticket.result)
+        .toEqual({
+          status: 'rejected',
+          code: 'subagent/invalid-time-zone',
+        });
+      expect(await f.poll()).toBe(false);
+      expect(f.dispatched).toHaveLength(1);
+      const observed = await f.h.ctx.sessionQuery.observeSession(child.childId);
+      try {
+        expect(
+          observed.events
+            .slice(observed.inheritedEventCount)
+            .some(
+              (event) =>
+                event.type === 'user/message' &&
+                event.data.source?.rpcId === command.requestId,
+            ),
+        ).toBe(false);
+      } finally {
+        observed[Symbol.dispose]();
+        f.rootHold.resolve();
+        await f.h.wait();
+      }
     });
 
     it('records a late positive ACK only on the original ticket after close', async () => {

@@ -5,6 +5,7 @@ import {
 } from '@allrice/database';
 import type { NativeSubagentControlResult } from '@allrice/contracts';
 import type { HarnessAdapter } from '../harness/adapter.js';
+import { NativeSubagentControlRefusal } from '../harness/dsh-protocol-client.js';
 
 /** One claim, one dispatch. DSH owns pending admission and Inbox execution. */
 export async function pollNativeSubagentControl(input: {
@@ -41,17 +42,21 @@ export async function pollNativeSubagentControl(input: {
           }
         : { status: 'rejected', code: 'RUN_COMPLETING' };
     } catch (error) {
-      const code = error instanceof Error ? error.message : '';
-      result = [
-        'RUN_NOT_ACTIVE',
-        'RUN_COMPLETING',
-        'NATIVE_CONTROL_CHILD_UNVERIFIED',
-        'NATIVE_CONTROL_GRANT_EXPIRED',
-        'NATIVE_CONTROL_SCOPE_MISMATCH',
-        'NATIVE_CONTROL_RUN_MISMATCH',
-      ].includes(code)
-        ? { status: 'rejected', code }
-        : { status: 'unknown' };
+      if (error instanceof NativeSubagentControlRefusal) {
+        result = { status: 'rejected', code: error.code };
+      } else {
+        const code = error instanceof Error ? error.message : '';
+        result = [
+          'RUN_NOT_ACTIVE',
+          'RUN_COMPLETING',
+          'NATIVE_CONTROL_CHILD_UNVERIFIED',
+          'NATIVE_CONTROL_GRANT_EXPIRED',
+          'NATIVE_CONTROL_SCOPE_MISMATCH',
+          'NATIVE_CONTROL_RUN_MISMATCH',
+        ].includes(code)
+          ? { status: 'rejected', code }
+          : { status: 'unknown' };
+      }
     }
     // A late positive ACK belongs to this immutable request, even after close.
     await recordNativeSubagentControlResult(

@@ -1,5 +1,6 @@
 /* global AbortController, AbortSignal */
 import { NativeSubagentControlRequestSchema } from '@allrice/contracts/native-runtime';
+import { remoteErrorOf } from '@deepseek-ai/dsh-typert-protocol';
 import { clearTimeout, setTimeout } from 'node:timers';
 import { readNativeSubagentSummary } from './allrice-native-query.mjs';
 
@@ -70,6 +71,24 @@ export async function controlNativeSubagent(host, params) {
     const { kind, ...prompt } = input;
     // Do not check cancellation after acceptance or turn a lost ACK into retry.
     return { kind, ...(await host.ctx.subagents.prompt(prompt, signal)) };
+  } catch (error) {
+    // SDK error frames discard native codes. Preserve only public, definite
+    // admission refusals as a result; cancellation/internal remain unknown.
+    const refusal = remoteErrorOf(error);
+    if (
+      refusal &&
+      [
+        'gateway/bad-request',
+        'subagent/attachment-invalid',
+        'subagent/invalid-time-zone',
+        'subagent/parent-unavailable',
+        'subagent/not-resumable',
+        'subagent/unauthorized',
+        'subagent/delivery-unavailable',
+      ].includes(refusal.code)
+    )
+      return { status: 'rejected', code: refusal.code };
+    throw error;
   } finally {
     clearTimeout(timer);
   }
