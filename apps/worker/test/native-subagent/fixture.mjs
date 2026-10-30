@@ -59,6 +59,10 @@ export async function host({
   stream,
   active = 8,
   runId,
+  progress = false,
+  questionMode = 'timed',
+  releaseMs,
+  nativeTools = [],
   prepare = async () => {},
   bridge = async (method) => {
     throw Error(`unexpected bridge ${method}`);
@@ -100,10 +104,12 @@ export async function host({
     DSH_CREDENTIALS_PATH: join(directory, 'credentials.yml'),
     PR0_MAX_DEPTH: String(depth),
     PR0_MAX_ACTIVE: String(active),
-    ALLRICE_ASK_USER_MODE: 'timed',
+    ALLRICE_ASK_USER_MODE: questionMode,
     ALLRICE_ASK_USER_TIMEOUT: undefined,
     ALLRICE_ASSISTANTS_ENABLED: undefined,
-    ALLRICE_PROGRESS_GUARD_ENABLED: undefined,
+    ALLRICE_PROGRESS_GUARD_ENABLED: progress ? '1' : undefined,
+    ALLRICE_QUESTION_RELEASE_MS:
+      releaseMs === undefined ? undefined : String(releaseMs),
     DSH_RUNTIME_HOME: undefined,
   }))
     vi.stubEnv(key, value);
@@ -177,7 +183,7 @@ export async function host({
     provider,
     model: modelName,
     requireNativeAccounting: accounting,
-    nativeTools: [],
+    nativeTools,
     nativeSkills: [],
     contentScenes: [],
     requireContentGuard: false,

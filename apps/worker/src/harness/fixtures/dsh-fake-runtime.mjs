@@ -271,6 +271,7 @@ lines.on('line', (line) => {
       notify('session.user-question', {
         sessionId,
         questionId: 'progress-proof',
+        ...(mode === 'pending' ? { progressPauseId: 'trusted-pause' } : {}),
         questions: [
           {
             id: mode === 'connection' ? 'app-connect:test' : 'runtime-progress',

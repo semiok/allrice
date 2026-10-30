@@ -199,7 +199,7 @@ export interface HarnessExecutionInput {
 }
 
 export interface HarnessExecutionResult {
-  waitingForUser?: { questionId: string };
+  waitingForUser?: { questionId: string; pauseId?: string };
   usageComplete?: boolean;
   cacheUsageKnown?: boolean;
   costEstimateAvailable?: boolean;

@@ -55,7 +55,7 @@
       "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-dsh-waits.mjs",
-      "reason": "Checkpoint a sole root's quiescent user question, drain and release its host, adopt the exact typed answer from the durable journal and continue the existing conversation once. MET-228 PR3a captures the authorized resumed root Run/parent/depth identity for direct progress check/decide; queued settlement receipts keep their event-time Run attribution. Active tools/children exclude parking; unknown dispatch is never replayed. No second Agent loop or implicit action approval."
+      "reason": "Checkpoint a sole root's quiescent user question, drain and release its host, adopt the exact typed answer from the durable journal and continue the existing conversation once. MET-231 joins public waitForChildren before finite accounting flush and rechecks the same root/question, in-flight input, active agents/tools and current Worker lease before cancel. Active tools/children exclude parking; unknown dispatch is never replayed. No second Agent loop or implicit action approval."
     },
     {
       "id": "allrice-durable-progress-guard-v1",
@@ -63,7 +63,7 @@
       "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-task-progress.mjs",
-      "reason": "Native middleware records request/tool receipts and pauses repeated failures through the root Ask User transport. Verified new subscription Runs observe call counts instead of fixed task caps. Durable Worker port preserves ownership, lease, cancellation, bounded state and unknown-side-effect no-replay; no extra Agent loop, LLM judge or implicit approval."
+      "reason": "Native middleware records request/tool receipts and pauses repeated failures through the actual authorized root Ask User transport. MET-231 binds trusted program-question provenance, Run and pause identity; only that pending question accepts an idle-root typed answer after Worker lease revalidation. Expiry fences native admission and closes the exact Host before returning the existing durable pause. Child ask remains DELEGATED_CALLER and needsLogin remains unresolved for native parent delivery. No extra Agent loop, LLM judge or implicit approval."
     },
     {
       "id": "allrice-durable-task-clock-v1",

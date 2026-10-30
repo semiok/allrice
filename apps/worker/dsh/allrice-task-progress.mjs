@@ -119,6 +119,7 @@ export function installTaskProgress(ctx, send, configuration = {}) {
     return reservation.outputTokens;
   }
   function rootFor(agent) {
+    if (configuration.rootFor) return configuration.rootFor(agent);
     for (let depth = 0; depth < 32; depth++) {
       if (ctx.agents.roots().includes(agent)) return agent;
       agent = ctx.agents.get(agent?.session?.header?.parentSession);

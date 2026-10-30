@@ -1,7 +1,8 @@
 /** Real queue/progress ledger + production adapter and native Host; loopback model.
  * Worker finalization is separately exercised in subscription-worker.integration. */
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { readFile, symlink, writeFile } from 'node:fs/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createP27CodexWorkerFixture } from '../../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
 import {
@@ -143,8 +144,9 @@ suite(
       }
       return handle({ action: 'check', nativeSessionId });
     }
-    function adapter() {
+    function adapter(cordisConfig?: string) {
       const value = new DshHarnessAdapter({
+        cordisConfig,
         runtimeRoot: join(model.root, 'runtime'),
         credentialResolver: {
           resolve: async () => ({ apiKey: 'synthetic-only' }),
@@ -231,7 +233,7 @@ suite(
           canceled: false,
         });
         await completeJob({ ...first.workflowLease, result });
-        const originalHostId = host.runtimeInventory()[0]!.id;
+        expect(host.runtimeInventory()).toHaveLength(0);
         if (temperature === 'cold') {
           await host.close();
           host = adapter();
@@ -259,7 +261,12 @@ suite(
             .client.steer(
               session,
               `allrice:user-question:v1:${JSON.stringify({ questionId: (event.sourcePayload as { questionId: string }).questionId, answers: [{ id: 'runtime-progress', selected: [decision === 'continue' ? '重新检查后继续' : '取消任务'] }] })}`,
-              { inputId: randomUUID(), turnId, kind: 'ask_user' },
+              {
+                inputId: randomUUID(),
+                turnId,
+                kind: 'ask_user',
+                runId: next.runId,
+              },
             );
         };
         const work = host.execute(input);
@@ -268,8 +275,8 @@ suite(
           const resumed = await work;
           expect(Boolean(resumed.waitingForUser)).toBe(decision === 'pending');
           await completeJob({ ...next.workflowLease, result: resumed });
-          expect(host.runtimeInventory()[0]!.id === originalHostId).toBe(
-            temperature === 'hot',
+          expect(host.runtimeInventory()).toHaveLength(
+            decision === 'pending' ? 0 : 1,
           );
         }
         expect(cards).toHaveLength(1);
@@ -310,6 +317,160 @@ suite(
       30000,
     );
 
+    it.each(['continue', 'cancel', 'pending', 'stop'] as const)(
+      'real adapter handles an idle root and paused native child: %s',
+      async (decision) => {
+        const task = await setup();
+        let releaseRoot!: () => void;
+        const rootIdle = new Promise<void>((resolveIdle) => {
+          releaseRoot = resolveIdle;
+        });
+        let rootRequests = 0,
+          childRequests = 0;
+        model = await p24Fixture(async (request) => {
+          const child = JSON.stringify(
+            request.messages.find((m) => m.role === 'user')?.content,
+          ).includes('CHILD_ONLY');
+          if (!child)
+            return ++rootRequests === 1
+              ? {
+                  nativeTool: {
+                    name: 'subagent',
+                    arguments: {
+                      description: '读取目录',
+                      prompt: 'CHILD_ONLY 读取目录，失败时请主员工问我',
+                    },
+                  },
+                }
+              : { text: '子任务结束后汇总。' };
+          await rootIdle;
+          return ++childRequests <= 3
+            ? { nativeTool: { name: 'local_fs_list', arguments: { path: 42 } } }
+            : { text: '子任务完成。' };
+        });
+        // Only tests append the same-generation public delegation composition.
+        // The production profiles remain unchanged and delegation stays OFF.
+        const profile = join(model.root, 'native-test.yml');
+        await symlink(
+          resolve(import.meta.dirname, '../../node_modules'),
+          join(model.root, 'node_modules'),
+        );
+        await writeFile(
+          profile,
+          (await readFile(
+            resolve(
+              import.meta.dirname,
+              '../../dsh/allrice-restricted.cordis.yml',
+            ),
+            'utf8',
+          )) +
+            '\n' +
+            (await readFile(
+              resolve(
+                import.meta.dirname,
+                '../native-subagent/plugins.cordis.yml',
+              ),
+              'utf8',
+            )),
+        );
+        const host = adapter(profile),
+          input = execution(task);
+        const controller = new AbortController();
+        input.signal = controller.signal;
+        const progress = port(task);
+        input.nativeRunAuthority = () => () =>
+          progress({
+            action: 'check',
+            nativeSessionId: `dsh-${task.sessionId}`,
+          });
+        const facts: Record<string, unknown>[] = [];
+        input.nativeAccounting = {
+          bind: () => ({
+            record: async (fact) => {
+              facts.push(fact);
+            },
+            delivered: () => {},
+          }),
+        };
+        let turnId = '',
+          idle = false,
+          cards = 0,
+          unsubscribe: (() => void) | undefined;
+        input.onTurnStarted = async (turn) => {
+          turnId = turn.turnId;
+        };
+        input.onEvent = async (event) => {
+          if (!unsubscribe) {
+            const pool = Reflect.get(host, 'runtimePool') as DshRuntimePool;
+            const runtime = pool.get(`dsh-${task.sessionId}`);
+            if (runtime)
+              unsubscribe = runtime.client.subscribe((n) => {
+                if (
+                  n.params.sessionId === runtime.sessionId &&
+                  n.method === 'session.status'
+                ) {
+                  idle = n.params.status === 'idle';
+                  if (idle) releaseRoot();
+                }
+              });
+          }
+          if (event.sourceEventType !== 'session/user-question') return;
+          cards++;
+          expect(idle).toBe(true);
+          expect(childRequests).toBe(3);
+          if (decision === 'pending') return;
+          if (decision === 'stop') {
+            controller.abort();
+            return;
+          }
+          const q = event.sourcePayload as { questionId: string };
+          const proof = await host.steer({
+            threadId: `dsh-${task.sessionId}`,
+            runId: task.runId,
+            turnId,
+            clientUserMessageId: randomUUID(),
+            inputKind: 'ask_user',
+            message: `allrice:user-question:v1:${JSON.stringify({ questionId: q.questionId, answers: [{ id: 'runtime-progress', selected: [decision === 'continue' ? '重新检查后继续' : '取消任务'] }] })}`,
+          });
+          expect(proof).toMatchObject({ status: 'adopted', runId: task.runId });
+        };
+        try {
+          const work = host.execute(input);
+          if (decision === 'cancel' || decision === 'stop')
+            await expect(work).rejects.toThrow();
+          else {
+            const result = await work;
+            expect(Boolean(result.waitingForUser)).toBe(decision === 'pending');
+            const [pause] =
+              await f.db`select pause_id, canceled from allrice_task_progress where run_id=${task.runId}`;
+            if (decision === 'pending') {
+              expect(result.waitingForUser?.pauseId).toBe(pause!.pause_id);
+              expect(pause!.canceled).toBe(false);
+              expect(host.runtimeInventory()).toHaveLength(0);
+            }
+          }
+          expect(cards).toBe(1);
+          expect(
+            facts.filter(
+              (v) =>
+                v.phase === 'finish' &&
+                v.nativeSessionId !== `dsh-${task.sessionId}`,
+            ),
+          ).toHaveLength(decision === 'continue' ? 4 : 3);
+          expect(new Set(facts.map((v) => v.nativeSessionId)).size).toBe(2);
+          const [lease] =
+            await f.db`select worker_id, lease_token from allrice_jobs where id=${task.workflowLease.jobId}`;
+          expect(lease).toMatchObject({
+            worker_id: task.workflowLease.workerId,
+            lease_token: task.workflowLease.leaseToken,
+          });
+        } finally {
+          releaseRoot();
+          unsubscribe?.();
+        }
+      },
+      30000,
+    );
     it.each([
       'continued',
       'canceled',
